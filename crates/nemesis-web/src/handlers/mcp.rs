@@ -64,7 +64,8 @@ fn load_mcp_config(workspace: &str) -> Result<nemesis_config::McpConfig, String>
 
 fn save_mcp_config(workspace: &str, config: &nemesis_config::McpConfig) -> Result<(), String> {
     let path = mcp_config_path(workspace);
-    nemesis_config::save_mcp_config(&path, config).map_err(|e| format!("failed to save MCP config: {}", e))
+    nemesis_config::save_mcp_config(&path, config)
+        .map_err(|e| format!("failed to save MCP config: {}", e))
 }
 
 impl McpHandler {
@@ -84,7 +85,11 @@ impl McpHandler {
             .map(|s| {
                 // Normalize for display
                 let url = if s.url.is_empty() { &s.command } else { &s.url };
-                let transport_type = if s.transport_type.is_empty() { "stdio" } else { &s.transport_type };
+                let transport_type = if s.transport_type.is_empty() {
+                    "stdio"
+                } else {
+                    &s.transport_type
+                };
                 serde_json::json!({
                     "name": s.name,
                     "transport_type": transport_type,
@@ -117,16 +122,29 @@ impl McpHandler {
 
         let mut server = nemesis_config::McpServerConfig {
             name: name.clone(),
-            transport_type: crate::handlers::get_opt_str(data, "transport_type").unwrap_or_else(|| "stdio".to_string()),
+            transport_type: crate::handlers::get_opt_str(data, "transport_type")
+                .unwrap_or_else(|| "stdio".to_string()),
             url: crate::handlers::get_opt_str(data, "url").unwrap_or_default(),
             description: crate::handlers::get_opt_str(data, "description").unwrap_or_default(),
-            headers: data.get("headers").and_then(|v| serde_json::from_value(v.clone()).ok()).unwrap_or_default(),
-            args: data.get("args").and_then(|v| serde_json::from_value(v.clone()).ok()).unwrap_or_default(),
-            env: data.get("env").and_then(|v| serde_json::from_value(v.clone()).ok()).unwrap_or_default(),
+            headers: data
+                .get("headers")
+                .and_then(|v| serde_json::from_value(v.clone()).ok())
+                .unwrap_or_default(),
+            args: data
+                .get("args")
+                .and_then(|v| serde_json::from_value(v.clone()).ok())
+                .unwrap_or_default(),
+            env: data
+                .get("env")
+                .and_then(|v| serde_json::from_value(v.clone()).ok())
+                .unwrap_or_default(),
             timeout: data.get("timeout").and_then(|v| v.as_i64()).unwrap_or(0),
             provider_name: crate::handlers::get_opt_str(data, "provider_name").unwrap_or_default(),
             provider_url: crate::handlers::get_opt_str(data, "provider_url").unwrap_or_default(),
-            tags: data.get("tags").and_then(|v| serde_json::from_value(v.clone()).ok()).unwrap_or_default(),
+            tags: data
+                .get("tags")
+                .and_then(|v| serde_json::from_value(v.clone()).ok())
+                .unwrap_or_default(),
             command: String::new(),
         };
         // Legacy compat: if url empty but command provided, use command as url
@@ -210,8 +228,8 @@ impl McpHandler {
 
     fn config_get(&self, workspace: &str) -> Result<Option<serde_json::Value>, String> {
         let config = load_mcp_config(workspace)?;
-        let json = serde_json::to_value(&config)
-            .map_err(|e| format!("failed to serialize: {}", e))?;
+        let json =
+            serde_json::to_value(&config).map_err(|e| format!("failed to serialize: {}", e))?;
         Ok(Some(json))
     }
 

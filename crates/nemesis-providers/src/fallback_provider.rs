@@ -93,7 +93,11 @@ impl FallbackProvider {
     }
 
     /// Create with a shared cooldown tracker.
-    pub fn with_cooldown(name: &str, chain: Vec<FallbackEntry>, cooldown: Arc<CooldownTracker>) -> Self {
+    pub fn with_cooldown(
+        name: &str,
+        chain: Vec<FallbackEntry>,
+        cooldown: Arc<CooldownTracker>,
+    ) -> Self {
         Self {
             chain,
             cooldown,
@@ -141,9 +145,17 @@ impl FallbackProvider {
 
         for (i, entry) in self.chain.iter().enumerate() {
             let provider_name = entry.provider.name();
-            let effective_model = if model.is_empty() { &entry.model } else { model };
+            let effective_model = if model.is_empty() {
+                &entry.model
+            } else {
+                model
+            };
 
-            match entry.provider.chat(messages, tools, effective_model, options).await {
+            match entry
+                .provider
+                .chat(messages, tools, effective_model, options)
+                .await
+            {
                 Ok(resp) => {
                     attempts.push(FallbackAttempt {
                         provider: provider_name.to_string(),
@@ -223,7 +235,10 @@ impl FallbackProvider {
     /// Resolve fallback candidates from a configuration string.
     ///
     /// Takes a comma-separated list of "provider/model" entries and deduplicates them.
-    pub fn resolve_candidates<'a>(chain: &'a [FallbackEntry], _model_override: &str) -> Vec<&'a FallbackEntry> {
+    pub fn resolve_candidates<'a>(
+        chain: &'a [FallbackEntry],
+        _model_override: &str,
+    ) -> Vec<&'a FallbackEntry> {
         let mut seen = std::collections::HashSet::new();
         chain
             .iter()
@@ -265,7 +280,11 @@ impl FallbackProvider {
 
         for entry in &self.chain {
             let provider_name = entry.provider.name();
-            let effective_model = if model.is_empty() { &entry.model } else { model };
+            let effective_model = if model.is_empty() {
+                &entry.model
+            } else {
+                model
+            };
 
             if !self.cooldown.is_available(provider_name) {
                 tracing::debug!(
@@ -281,7 +300,11 @@ impl FallbackProvider {
                 continue;
             }
 
-            match entry.provider.chat(messages, tools, effective_model, options).await {
+            match entry
+                .provider
+                .chat(messages, tools, effective_model, options)
+                .await
+            {
                 Ok(resp) => {
                     self.cooldown.mark_success(provider_name);
                     tracing::info!(
@@ -400,7 +423,9 @@ impl LLMProvider for FallbackProvider {
 
                     // Classify the error for additional context
                     let error_msg = format!("{}", err);
-                    if let Some(classified) = classify_error(&error_msg, provider_name, effective_model) {
+                    if let Some(classified) =
+                        classify_error(&error_msg, provider_name, effective_model)
+                    {
                         tracing::warn!(
                             provider = provider_name,
                             model = effective_model,

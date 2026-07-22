@@ -486,12 +486,19 @@ async fn test_do_request_with_retry_generic_500_then_200() {
         async move {
             let n = c.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             if n == 0 {
-                Ok(RetryableResponse { status: 503, body: "unavailable".to_string() })
+                Ok(RetryableResponse {
+                    status: 503,
+                    body: "unavailable".to_string(),
+                })
             } else {
-                Ok(RetryableResponse { status: 200, body: "ok".to_string() })
+                Ok(RetryableResponse {
+                    status: 200,
+                    body: "ok".to_string(),
+                })
             }
         }
-    }).await;
+    })
+    .await;
 
     assert!(result.is_ok());
     assert_eq!(result.unwrap().status, 200);
@@ -510,10 +517,14 @@ async fn test_do_request_with_retry_error_then_success() {
             if n == 0 {
                 Err("timeout".to_string())
             } else {
-                Ok(RetryableResponse { status: 200, body: "ok".to_string() })
+                Ok(RetryableResponse {
+                    status: 200,
+                    body: "ok".to_string(),
+                })
             }
         }
-    }).await;
+    })
+    .await;
 
     assert!(result.is_ok());
     assert_eq!(result.unwrap().status, 200);
@@ -530,12 +541,19 @@ async fn test_do_request_with_retry_429_then_200() {
         async move {
             let n = c.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             if n == 0 {
-                Ok(RetryableResponse { status: 429, body: "slow down".to_string() })
+                Ok(RetryableResponse {
+                    status: 429,
+                    body: "slow down".to_string(),
+                })
             } else {
-                Ok(RetryableResponse { status: 200, body: "ok".to_string() })
+                Ok(RetryableResponse {
+                    status: 200,
+                    body: "ok".to_string(),
+                })
             }
         }
-    }).await;
+    })
+    .await;
 
     assert!(result.is_ok());
     assert_eq!(result.unwrap().status, 200);
@@ -551,9 +569,13 @@ async fn test_do_request_with_retry_non_retryable_status_no_retry() {
         let c = count_clone.clone();
         async move {
             c.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-            Ok(RetryableResponse { status: 404, body: "not found".to_string() })
+            Ok(RetryableResponse {
+                status: 404,
+                body: "not found".to_string(),
+            })
         }
-    }).await;
+    })
+    .await;
 
     assert!(result.is_ok());
     assert_eq!(result.unwrap().status, 404);
@@ -572,7 +594,8 @@ async fn test_do_request_with_retry_simple_non_retryable_403() {
             c.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             Ok((403, "forbidden".to_string()))
         }
-    }).await;
+    })
+    .await;
 
     assert!(result.is_ok());
     assert_eq!(result.unwrap().0, 403);
@@ -581,9 +604,7 @@ async fn test_do_request_with_retry_simple_non_retryable_403() {
 
 #[tokio::test]
 async fn test_do_request_with_retry_simple_success_first_try() {
-    let result = do_request_with_retry_simple(|| {
-        async { Ok((200, "ok".to_string())) }
-    }).await;
+    let result = do_request_with_retry_simple(|| async { Ok((200, "ok".to_string())) }).await;
     assert_eq!(result.unwrap(), (200, "ok".to_string()));
 }
 
@@ -611,13 +632,19 @@ fn test_should_retry_boundary_codes() {
 
 #[test]
 fn test_has_status_code_trait() {
-    let resp = RetryableResponse { status: 201, body: "created".to_string() };
+    let resp = RetryableResponse {
+        status: 201,
+        body: "created".to_string(),
+    };
     assert_eq!(resp.status_code(), 201);
 }
 
 #[test]
 fn test_retryable_response_clone() {
-    let resp = RetryableResponse { status: 200, body: "ok".to_string() };
+    let resp = RetryableResponse {
+        status: 200,
+        body: "ok".to_string(),
+    };
     let cloned = resp.clone();
     assert_eq!(cloned.status, 200);
     assert_eq!(cloned.body, "ok");
@@ -703,8 +730,14 @@ async fn test_do_request_with_retry_error_then_500_then_success() {
             let n = c.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             match n {
                 0 => Err("connection failed".to_string()),
-                1 => Ok(RetryableResponse { status: 503, body: "unavailable".to_string() }),
-                _ => Ok(RetryableResponse { status: 200, body: "ok".to_string() }),
+                1 => Ok(RetryableResponse {
+                    status: 503,
+                    body: "unavailable".to_string(),
+                }),
+                _ => Ok(RetryableResponse {
+                    status: 200,
+                    body: "ok".to_string(),
+                }),
             }
         }
     })
@@ -716,7 +749,10 @@ async fn test_do_request_with_retry_error_then_500_then_success() {
 
 #[test]
 fn test_retryable_response_debug_output() {
-    let resp = RetryableResponse { status: 200, body: "ok".to_string() };
+    let resp = RetryableResponse {
+        status: 200,
+        body: "ok".to_string(),
+    };
     let debug = format!("{:?}", resp);
     assert!(debug.contains("200"));
     assert!(debug.contains("ok"));
@@ -834,7 +870,10 @@ async fn test_reqwest_retry_then_success_after_429() {
         .mount(&server)
         .await;
 
-    let req = client.get(format!("{}/data", server.uri())).build().unwrap();
+    let req = client
+        .get(format!("{}/data", server.uri()))
+        .build()
+        .unwrap();
 
     let resp = do_request_with_retry_reqwest(&client, &req)
         .await
@@ -855,11 +894,16 @@ async fn test_reqwest_retry_all_attempts_fail_returns_last_response() {
         .mount(&server)
         .await;
 
-    let req = client.get(format!("{}/data", server.uri())).build().unwrap();
+    let req = client
+        .get(format!("{}/data", server.uri()))
+        .build()
+        .unwrap();
 
     let result = do_request_with_retry_reqwest(&client, &req).await;
     // After exhausting retries, returns Some(Ok(last_503_response)).
-    let resp = result.expect("should be Some").expect("should be Ok response");
+    let resp = result
+        .expect("should be Some")
+        .expect("should be Ok response");
     assert_eq!(resp.status().as_u16(), 503);
 }
 
@@ -876,7 +920,10 @@ async fn test_reqwest_retry_non_retryable_status_not_retried() {
         .mount(&server)
         .await;
 
-    let req = client.get(format!("{}/data", server.uri())).build().unwrap();
+    let req = client
+        .get(format!("{}/data", server.uri()))
+        .build()
+        .unwrap();
 
     let resp = do_request_with_retry_reqwest(&client, &req)
         .await
@@ -901,7 +948,10 @@ async fn test_reqwest_retry_non_retryable_400_not_retried() {
         .mount(&server)
         .await;
 
-    let req = client.get(format!("{}/data", server.uri())).build().unwrap();
+    let req = client
+        .get(format!("{}/data", server.uri()))
+        .build()
+        .unwrap();
 
     let resp = do_request_with_retry_reqwest(&client, &req)
         .await
@@ -934,7 +984,10 @@ async fn test_reqwest_retry_connection_error_then_success() {
         .mount(&server)
         .await;
 
-    let req = client.get(format!("{}/data", server.uri())).build().unwrap();
+    let req = client
+        .get(format!("{}/data", server.uri()))
+        .build()
+        .unwrap();
 
     let resp = do_request_with_retry_reqwest(&client, &req)
         .await

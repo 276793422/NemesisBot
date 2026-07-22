@@ -4,8 +4,8 @@
 //! `WebServerOps` trait to avoid circular dependencies with nemesis-web.
 
 use async_trait::async_trait;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use tracing::{debug, error, info, warn};
 
 use nemesis_types::channel::OutboundMessage;
@@ -37,7 +37,11 @@ pub trait WebServerOps: Send + Sync {
     ) -> std::result::Result<(), String>;
 
     /// Send history content to a specific session.
-    fn send_history_to_session(&self, session_id: &str, content: &str) -> std::result::Result<(), String>;
+    fn send_history_to_session(
+        &self,
+        session_id: &str,
+        content: &str,
+    ) -> std::result::Result<(), String>;
 
     /// Broadcast a message to all active sessions.
     fn broadcast(&self, content: &str) -> std::result::Result<(), String>;
@@ -270,8 +274,13 @@ impl Channel for WebChannel {
 
         // Handle broadcast to all sessions
         if msg.chat_id == "web:broadcast" {
-            debug!(content_len = msg.content.len(), "[WebChannel] broadcasting to all sessions");
-            return srv.broadcast(&msg.content).map_err(|e| NemesisError::Channel(e));
+            debug!(
+                content_len = msg.content.len(),
+                "[WebChannel] broadcasting to all sessions"
+            );
+            return srv
+                .broadcast(&msg.content)
+                .map_err(|e| NemesisError::Channel(e));
         }
 
         // Extract session ID from chat ID (format: web:<session-id>)
@@ -283,7 +292,10 @@ impl Channel for WebChannel {
                 expected_format = "web:<session-id>",
                 "[WebChannel] invalid chat ID format"
             );
-            return Err(NemesisError::Channel(format!("invalid chat ID format: {}", msg.chat_id)));
+            return Err(NemesisError::Channel(format!(
+                "invalid chat ID format: {}",
+                msg.chat_id
+            )));
         };
 
         // Handle history responses via dedicated method
@@ -302,7 +314,12 @@ impl Channel for WebChannel {
             "[WebChannel] sending message to session"
         );
 
-        if let Err(e) = srv.send_to_session(session_id, "assistant", &msg.content, msg.meta.model.as_deref()) {
+        if let Err(e) = srv.send_to_session(
+            session_id,
+            "assistant",
+            &msg.content,
+            msg.meta.model.as_deref(),
+        ) {
             error!(
                 error = %e,
                 session_id = %session_id,

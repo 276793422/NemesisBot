@@ -161,10 +161,7 @@ impl Tool for McpAdapter {
         let result = match timeout(self.timeout, future).await {
             Ok(Ok(result)) => result,
             Ok(Err(e)) => {
-                return ToolResult::err(format!(
-                    "MCP tool '{}' error: {}",
-                    self.mcp_tool.name, e
-                ));
+                return ToolResult::err(format!("MCP tool '{}' error: {}", self.mcp_tool.name, e));
             }
             Err(_) => {
                 return ToolResult::err(format!(
@@ -187,7 +184,11 @@ impl Tool for McpAdapter {
             return ToolResult::err(format!(
                 "MCP tool '{}' returned error: {}",
                 self.mcp_tool.name,
-                if err_msg.is_empty() { "unknown error" } else { &err_msg }
+                if err_msg.is_empty() {
+                    "unknown error"
+                } else {
+                    &err_msg
+                }
             ));
         }
 
@@ -350,10 +351,7 @@ impl Tool for ArcClientAdapter {
         let result = match timeout(self.timeout, future).await {
             Ok(Ok(result)) => result,
             Ok(Err(e)) => {
-                return ToolResult::err(format!(
-                    "MCP tool '{}' error: {}",
-                    self.mcp_tool.name, e
-                ));
+                return ToolResult::err(format!("MCP tool '{}' error: {}", self.mcp_tool.name, e));
             }
             Err(_) => {
                 return ToolResult::err(format!(
@@ -375,7 +373,11 @@ impl Tool for ArcClientAdapter {
             return ToolResult::err(format!(
                 "MCP tool '{}' returned error: {}",
                 self.mcp_tool.name,
-                if err_msg.is_empty() { "unknown error" } else { &err_msg }
+                if err_msg.is_empty() {
+                    "unknown error"
+                } else {
+                    &err_msg
+                }
             ));
         }
 
@@ -442,7 +444,10 @@ fn sanitize_schema(mut schema: serde_json::Value) -> serde_json::Value {
         for (_key, prop_schema) in props.iter_mut() {
             flatten_type(prop_schema);
             // Recursively sanitize nested object properties
-            if let Some(nested) = prop_schema.get_mut("properties").and_then(|p| p.as_object_mut()) {
+            if let Some(nested) = prop_schema
+                .get_mut("properties")
+                .and_then(|p| p.as_object_mut())
+            {
                 for (_nk, ns) in nested.iter_mut() {
                     flatten_type(ns);
                 }

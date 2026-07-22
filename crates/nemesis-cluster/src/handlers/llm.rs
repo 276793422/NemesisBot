@@ -105,7 +105,10 @@ impl LlmProxyHandler {
             .unwrap_or(&self.default_model);
 
         // 3. Extract additional options
-        let options = payload.get("options").cloned().unwrap_or(serde_json::json!({}));
+        let options = payload
+            .get("options")
+            .cloned()
+            .unwrap_or(serde_json::json!({}));
 
         tracing::debug!(
             node_id = %self.node_id,
@@ -180,9 +183,7 @@ impl LlmProxyHandler {
             .get("messages")
             .ok_or("messages field is required")?;
 
-        let arr = messages
-            .as_array()
-            .ok_or("messages must be an array")?;
+        let arr = messages.as_array().ok_or("messages must be an array")?;
 
         if arr.is_empty() {
             return Err("messages must be a non-empty array".into());

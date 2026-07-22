@@ -116,12 +116,28 @@ async fn test_desktop_tool_parameters_schema() {
     // Verify action enum values
     let action_enum = params["properties"]["action"]["enum"].as_array().unwrap();
     assert_eq!(action_enum.len(), 6);
-    assert!(action_enum.iter().any(|v| v.as_str() == Some("find_window")));
-    assert!(action_enum.iter().any(|v| v.as_str() == Some("list_windows")));
+    assert!(
+        action_enum
+            .iter()
+            .any(|v| v.as_str() == Some("find_window"))
+    );
+    assert!(
+        action_enum
+            .iter()
+            .any(|v| v.as_str() == Some("list_windows"))
+    );
     assert!(action_enum.iter().any(|v| v.as_str() == Some("click_at")));
     assert!(action_enum.iter().any(|v| v.as_str() == Some("type_text")));
-    assert!(action_enum.iter().any(|v| v.as_str() == Some("take_screenshot")));
-    assert!(action_enum.iter().any(|v| v.as_str() == Some("get_window_text")));
+    assert!(
+        action_enum
+            .iter()
+            .any(|v| v.as_str() == Some("take_screenshot"))
+    );
+    assert!(
+        action_enum
+            .iter()
+            .any(|v| v.as_str() == Some("get_window_text"))
+    );
 }
 
 #[tokio::test]
@@ -220,10 +236,13 @@ async fn test_desktop_click_at_with_mcp_and_button() {
             &self,
             _tool_name: &str,
             _args: &serde_json::Value,
-        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send + '_>> {
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send + '_>>
+        {
             Box::pin(async { Ok("clicked".to_string()) })
         }
-        fn is_connected(&self) -> bool { true }
+        fn is_connected(&self) -> bool {
+            true
+        }
     }
     let tool = DesktopTool::new(PathBuf::from("."), Some(Arc::new(MockMCPCaller)));
     let result = tool
@@ -278,35 +297,45 @@ async fn test_desktop_tool_has_mcp_false_without_caller() {
 #[tokio::test]
 async fn test_desktop_tool_find_window_empty_title() {
     let tool = DesktopTool::new(PathBuf::from("/tmp"), None);
-    let result = tool.execute(&serde_json::json!({"action": "find_window", "title": ""})).await;
+    let result = tool
+        .execute(&serde_json::json!({"action": "find_window", "title": ""}))
+        .await;
     assert!(result.is_error);
 }
 
 #[tokio::test]
 async fn test_desktop_tool_click_at_only_x() {
     let tool = DesktopTool::new(PathBuf::from("/tmp"), None);
-    let result = tool.execute(&serde_json::json!({"action": "click_at", "x": 50})).await;
+    let result = tool
+        .execute(&serde_json::json!({"action": "click_at", "x": 50}))
+        .await;
     assert!(result.is_error);
 }
 
 #[tokio::test]
 async fn test_desktop_tool_click_at_only_y() {
     let tool = DesktopTool::new(PathBuf::from("/tmp"), None);
-    let result = tool.execute(&serde_json::json!({"action": "click_at", "y": 50})).await;
+    let result = tool
+        .execute(&serde_json::json!({"action": "click_at", "y": 50}))
+        .await;
     assert!(result.is_error);
 }
 
 #[tokio::test]
 async fn test_desktop_tool_type_text_empty() {
     let tool = DesktopTool::new(PathBuf::from("/tmp"), None);
-    let result = tool.execute(&serde_json::json!({"action": "type_text", "text": ""})).await;
+    let result = tool
+        .execute(&serde_json::json!({"action": "type_text", "text": ""}))
+        .await;
     assert!(result.is_error);
 }
 
 #[tokio::test]
 async fn test_desktop_tool_get_window_text_with_hwnd_no_mcp() {
     let tool = DesktopTool::new(PathBuf::from("/tmp"), None);
-    let result = tool.execute(&serde_json::json!({"action": "get_window_text", "hwnd": "12345"})).await;
+    let result = tool
+        .execute(&serde_json::json!({"action": "get_window_text", "hwnd": "12345"}))
+        .await;
     assert!(result.is_error);
     assert!(result.for_llm.contains("window-mcp"));
 }
@@ -315,7 +344,9 @@ async fn test_desktop_tool_get_window_text_with_hwnd_no_mcp() {
 async fn test_desktop_tool_list_windows_no_mcp() {
     let tool = DesktopTool::new(PathBuf::from("/tmp"), None);
     // This should try PowerShell and either succeed or fail - just verify no panic
-    let _ = tool.execute(&serde_json::json!({"action": "list_windows"})).await;
+    let _ = tool
+        .execute(&serde_json::json!({"action": "list_windows"}))
+        .await;
 }
 
 #[tokio::test]
@@ -326,19 +357,26 @@ async fn test_desktop_tool_mcp_find_window() {
             &self,
             tool_name: &str,
             _args: &serde_json::Value,
-        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send + '_>> {
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send + '_>>
+        {
             let name = tool_name.to_string();
             Box::pin(async move {
                 match name.as_str() {
-                    "find_window_by_title" => Ok(r#"{"hwnd":"HWND(0x999)","title":"Test"}"#.to_string()),
+                    "find_window_by_title" => {
+                        Ok(r#"{"hwnd":"HWND(0x999)","title":"Test"}"#.to_string())
+                    }
                     _ => Err("unknown tool".to_string()),
                 }
             })
         }
-        fn is_connected(&self) -> bool { true }
+        fn is_connected(&self) -> bool {
+            true
+        }
     }
     let tool = DesktopTool::new(PathBuf::from("."), Some(Arc::new(MockMCPCaller)));
-    let result = tool.execute(&serde_json::json!({"action": "find_window", "title": "Test"})).await;
+    let result = tool
+        .execute(&serde_json::json!({"action": "find_window", "title": "Test"}))
+        .await;
     assert!(!result.is_error);
 }
 
@@ -350,7 +388,8 @@ async fn test_desktop_tool_mcp_list_windows() {
             &self,
             tool_name: &str,
             _args: &serde_json::Value,
-        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send + '_>> {
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send + '_>>
+        {
             let name = tool_name.to_string();
             Box::pin(async move {
                 match name.as_str() {
@@ -359,10 +398,14 @@ async fn test_desktop_tool_mcp_list_windows() {
                 }
             })
         }
-        fn is_connected(&self) -> bool { true }
+        fn is_connected(&self) -> bool {
+            true
+        }
     }
     let tool = DesktopTool::new(PathBuf::from("."), Some(Arc::new(MockMCPCaller)));
-    let result = tool.execute(&serde_json::json!({"action": "list_windows"})).await;
+    let result = tool
+        .execute(&serde_json::json!({"action": "list_windows"}))
+        .await;
     assert!(!result.is_error);
 }
 
@@ -374,7 +417,8 @@ async fn test_desktop_tool_mcp_screenshot() {
             &self,
             tool_name: &str,
             _args: &serde_json::Value,
-        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send + '_>> {
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send + '_>>
+        {
             let name = tool_name.to_string();
             Box::pin(async move {
                 match name.as_str() {
@@ -383,10 +427,14 @@ async fn test_desktop_tool_mcp_screenshot() {
                 }
             })
         }
-        fn is_connected(&self) -> bool { true }
+        fn is_connected(&self) -> bool {
+            true
+        }
     }
     let tool = DesktopTool::new(PathBuf::from("."), Some(Arc::new(MockMCPCaller)));
-    let result = tool.execute(&serde_json::json!({"action": "take_screenshot"})).await;
+    let result = tool
+        .execute(&serde_json::json!({"action": "take_screenshot"}))
+        .await;
     assert!(!result.is_error);
 }
 
@@ -398,7 +446,8 @@ async fn test_desktop_tool_mcp_type_text() {
             &self,
             tool_name: &str,
             _args: &serde_json::Value,
-        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send + '_>> {
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send + '_>>
+        {
             let name = tool_name.to_string();
             Box::pin(async move {
                 match name.as_str() {
@@ -407,10 +456,14 @@ async fn test_desktop_tool_mcp_type_text() {
                 }
             })
         }
-        fn is_connected(&self) -> bool { true }
+        fn is_connected(&self) -> bool {
+            true
+        }
     }
     let tool = DesktopTool::new(PathBuf::from("."), Some(Arc::new(MockMCPCaller)));
-    let result = tool.execute(&serde_json::json!({"action": "type_text", "text": "hello"})).await;
+    let result = tool
+        .execute(&serde_json::json!({"action": "type_text", "text": "hello"}))
+        .await;
     assert!(!result.is_error);
 }
 
@@ -445,13 +498,18 @@ async fn test_desktop_tool_mcp_find_window_error() {
             &self,
             _tool_name: &str,
             _args: &serde_json::Value,
-        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send + '_>> {
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send + '_>>
+        {
             Box::pin(async { Err("connection lost".to_string()) })
         }
-        fn is_connected(&self) -> bool { true }
+        fn is_connected(&self) -> bool {
+            true
+        }
     }
     let tool = DesktopTool::new(PathBuf::from("."), Some(Arc::new(FailingMCPCaller)));
-    let result = tool.execute(&serde_json::json!({"action": "find_window", "title": "Test"})).await;
+    let result = tool
+        .execute(&serde_json::json!({"action": "find_window", "title": "Test"}))
+        .await;
     assert!(result.is_error);
     assert!(result.for_llm.contains("MCP find_window failed"));
 }
@@ -464,13 +522,18 @@ async fn test_desktop_tool_mcp_list_windows_error() {
             &self,
             _tool_name: &str,
             _args: &serde_json::Value,
-        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send + '_>> {
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send + '_>>
+        {
             Box::pin(async { Err("connection lost".to_string()) })
         }
-        fn is_connected(&self) -> bool { true }
+        fn is_connected(&self) -> bool {
+            true
+        }
     }
     let tool = DesktopTool::new(PathBuf::from("."), Some(Arc::new(FailingMCPCaller)));
-    let result = tool.execute(&serde_json::json!({"action": "list_windows"})).await;
+    let result = tool
+        .execute(&serde_json::json!({"action": "list_windows"}))
+        .await;
     assert!(result.is_error);
     assert!(result.for_llm.contains("MCP list_windows failed"));
 }
@@ -483,13 +546,18 @@ async fn test_desktop_tool_mcp_click_at_error() {
             &self,
             _tool_name: &str,
             _args: &serde_json::Value,
-        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send + '_>> {
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send + '_>>
+        {
             Box::pin(async { Err("click failed".to_string()) })
         }
-        fn is_connected(&self) -> bool { true }
+        fn is_connected(&self) -> bool {
+            true
+        }
     }
     let tool = DesktopTool::new(PathBuf::from("."), Some(Arc::new(FailingMCPCaller)));
-    let result = tool.execute(&serde_json::json!({"action": "click_at", "x": 50, "y": 100})).await;
+    let result = tool
+        .execute(&serde_json::json!({"action": "click_at", "x": 50, "y": 100}))
+        .await;
     assert!(result.is_error);
     assert!(result.for_llm.contains("MCP click_at failed"));
 }
@@ -502,13 +570,18 @@ async fn test_desktop_tool_mcp_type_text_error() {
             &self,
             _tool_name: &str,
             _args: &serde_json::Value,
-        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send + '_>> {
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send + '_>>
+        {
             Box::pin(async { Err("type failed".to_string()) })
         }
-        fn is_connected(&self) -> bool { true }
+        fn is_connected(&self) -> bool {
+            true
+        }
     }
     let tool = DesktopTool::new(PathBuf::from("."), Some(Arc::new(FailingMCPCaller)));
-    let result = tool.execute(&serde_json::json!({"action": "type_text", "text": "hello"})).await;
+    let result = tool
+        .execute(&serde_json::json!({"action": "type_text", "text": "hello"}))
+        .await;
     assert!(result.is_error);
     assert!(result.for_llm.contains("MCP type_text failed"));
 }
@@ -521,13 +594,18 @@ async fn test_desktop_tool_mcp_screenshot_error() {
             &self,
             _tool_name: &str,
             _args: &serde_json::Value,
-        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send + '_>> {
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send + '_>>
+        {
             Box::pin(async { Err("screenshot failed".to_string()) })
         }
-        fn is_connected(&self) -> bool { true }
+        fn is_connected(&self) -> bool {
+            true
+        }
     }
     let tool = DesktopTool::new(PathBuf::from("."), Some(Arc::new(FailingMCPCaller)));
-    let result = tool.execute(&serde_json::json!({"action": "take_screenshot"})).await;
+    let result = tool
+        .execute(&serde_json::json!({"action": "take_screenshot"}))
+        .await;
     assert!(result.is_error);
     assert!(result.for_llm.contains("MCP screenshot failed"));
 }
@@ -540,7 +618,8 @@ async fn test_desktop_tool_mcp_get_window_text_with_hwnd() {
             &self,
             tool_name: &str,
             _args: &serde_json::Value,
-        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send + '_>> {
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send + '_>>
+        {
             let name = tool_name.to_string();
             Box::pin(async move {
                 match name.as_str() {
@@ -549,10 +628,14 @@ async fn test_desktop_tool_mcp_get_window_text_with_hwnd() {
                 }
             })
         }
-        fn is_connected(&self) -> bool { true }
+        fn is_connected(&self) -> bool {
+            true
+        }
     }
     let tool = DesktopTool::new(PathBuf::from("."), Some(Arc::new(MockMCPCaller)));
-    let result = tool.execute(&serde_json::json!({"action": "get_window_text", "hwnd": "HWND(0x123)"})).await;
+    let result = tool
+        .execute(&serde_json::json!({"action": "get_window_text", "hwnd": "HWND(0x123)"}))
+        .await;
     assert!(!result.is_error);
     assert!(result.for_llm.contains("Window text content"));
 }
@@ -565,7 +648,8 @@ async fn test_desktop_tool_mcp_get_window_text_by_title() {
             &self,
             tool_name: &str,
             _args: &serde_json::Value,
-        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send + '_>> {
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send + '_>>
+        {
             let name = tool_name.to_string();
             Box::pin(async move {
                 match name.as_str() {
@@ -575,10 +659,14 @@ async fn test_desktop_tool_mcp_get_window_text_by_title() {
                 }
             })
         }
-        fn is_connected(&self) -> bool { true }
+        fn is_connected(&self) -> bool {
+            true
+        }
     }
     let tool = DesktopTool::new(PathBuf::from("."), Some(Arc::new(MockMCPCaller)));
-    let result = tool.execute(&serde_json::json!({"action": "get_window_text", "title": "MyApp"})).await;
+    let result = tool
+        .execute(&serde_json::json!({"action": "get_window_text", "title": "MyApp"}))
+        .await;
     assert!(!result.is_error);
     assert!(result.for_llm.contains("Found window text"));
 }
@@ -591,13 +679,18 @@ async fn test_desktop_tool_mcp_get_window_text_error() {
             &self,
             _tool_name: &str,
             _args: &serde_json::Value,
-        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send + '_>> {
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send + '_>>
+        {
             Box::pin(async { Err("get_text failed".to_string()) })
         }
-        fn is_connected(&self) -> bool { true }
+        fn is_connected(&self) -> bool {
+            true
+        }
     }
     let tool = DesktopTool::new(PathBuf::from("."), Some(Arc::new(FailingMCPCaller)));
-    let result = tool.execute(&serde_json::json!({"action": "get_window_text", "hwnd": "12345"})).await;
+    let result = tool
+        .execute(&serde_json::json!({"action": "get_window_text", "hwnd": "12345"}))
+        .await;
     assert!(result.is_error);
     assert!(result.for_llm.contains("MCP get_window_text failed"));
 }
@@ -610,7 +703,8 @@ async fn test_desktop_tool_mcp_get_window_text_by_title_find_fails() {
             &self,
             tool_name: &str,
             _args: &serde_json::Value,
-        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send + '_>> {
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send + '_>>
+        {
             let name = tool_name.to_string();
             Box::pin(async move {
                 match name.as_str() {
@@ -619,10 +713,14 @@ async fn test_desktop_tool_mcp_get_window_text_by_title_find_fails() {
                 }
             })
         }
-        fn is_connected(&self) -> bool { true }
+        fn is_connected(&self) -> bool {
+            true
+        }
     }
     let tool = DesktopTool::new(PathBuf::from("."), Some(Arc::new(MockMCPCaller)));
-    let result = tool.execute(&serde_json::json!({"action": "get_window_text", "title": "Nonexistent"})).await;
+    let result = tool
+        .execute(&serde_json::json!({"action": "get_window_text", "title": "Nonexistent"}))
+        .await;
     assert!(result.is_error);
     assert!(result.for_llm.contains("find_window"));
 }
@@ -635,7 +733,8 @@ async fn test_desktop_tool_mcp_get_window_text_by_title_find_returns_no_hwnd() {
             &self,
             tool_name: &str,
             _args: &serde_json::Value,
-        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send + '_>> {
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send + '_>>
+        {
             let name = tool_name.to_string();
             Box::pin(async move {
                 match name.as_str() {
@@ -644,10 +743,14 @@ async fn test_desktop_tool_mcp_get_window_text_by_title_find_returns_no_hwnd() {
                 }
             })
         }
-        fn is_connected(&self) -> bool { true }
+        fn is_connected(&self) -> bool {
+            true
+        }
     }
     let tool = DesktopTool::new(PathBuf::from("."), Some(Arc::new(MockMCPCaller)));
-    let result = tool.execute(&serde_json::json!({"action": "get_window_text", "title": "MyApp"})).await;
+    let result = tool
+        .execute(&serde_json::json!({"action": "get_window_text", "title": "MyApp"}))
+        .await;
     assert!(result.is_error);
     assert!(result.for_llm.contains("resolve window handle"));
 }
@@ -660,15 +763,20 @@ async fn test_desktop_tool_mcp_click_at_with_hwnd() {
             &self,
             _tool_name: &str,
             _args: &serde_json::Value,
-        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send + '_>> {
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send + '_>>
+        {
             Box::pin(async { Ok("clicked".to_string()) })
         }
-        fn is_connected(&self) -> bool { true }
+        fn is_connected(&self) -> bool {
+            true
+        }
     }
     let tool = DesktopTool::new(PathBuf::from("."), Some(Arc::new(MockMCPCaller)));
-    let result = tool.execute(&serde_json::json!({
-        "action": "click_at", "x": 50, "y": 100, "hwnd": "HWND(0x999)"
-    })).await;
+    let result = tool
+        .execute(&serde_json::json!({
+            "action": "click_at", "x": 50, "y": 100, "hwnd": "HWND(0x999)"
+        }))
+        .await;
     assert!(!result.is_error);
 }
 
@@ -680,15 +788,20 @@ async fn test_desktop_tool_mcp_type_text_with_hwnd() {
             &self,
             _tool_name: &str,
             _args: &serde_json::Value,
-        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send + '_>> {
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send + '_>>
+        {
             Box::pin(async { Ok("typed".to_string()) })
         }
-        fn is_connected(&self) -> bool { true }
+        fn is_connected(&self) -> bool {
+            true
+        }
     }
     let tool = DesktopTool::new(PathBuf::from("."), Some(Arc::new(MockMCPCaller)));
-    let result = tool.execute(&serde_json::json!({
-        "action": "type_text", "text": "hello", "hwnd": "HWND(0x999)"
-    })).await;
+    let result = tool
+        .execute(&serde_json::json!({
+            "action": "type_text", "text": "hello", "hwnd": "HWND(0x999)"
+        }))
+        .await;
     assert!(!result.is_error);
 }
 
@@ -700,15 +813,20 @@ async fn test_desktop_tool_mcp_screenshot_with_region() {
             &self,
             _tool_name: &str,
             _args: &serde_json::Value,
-        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send + '_>> {
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send + '_>>
+        {
             Box::pin(async { Ok("screenshot saved".to_string()) })
         }
-        fn is_connected(&self) -> bool { true }
+        fn is_connected(&self) -> bool {
+            true
+        }
     }
     let tool = DesktopTool::new(PathBuf::from("."), Some(Arc::new(MockMCPCaller)));
-    let result = tool.execute(&serde_json::json!({
-        "action": "take_screenshot", "x": 0, "y": 0, "width": 800, "height": 600
-    })).await;
+    let result = tool
+        .execute(&serde_json::json!({
+            "action": "take_screenshot", "x": 0, "y": 0, "width": 800, "height": 600
+        }))
+        .await;
     assert!(!result.is_error);
 }
 
@@ -720,15 +838,20 @@ async fn test_desktop_tool_mcp_screenshot_with_hwnd() {
             &self,
             _tool_name: &str,
             _args: &serde_json::Value,
-        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send + '_>> {
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send + '_>>
+        {
             Box::pin(async { Ok("screenshot saved".to_string()) })
         }
-        fn is_connected(&self) -> bool { true }
+        fn is_connected(&self) -> bool {
+            true
+        }
     }
     let tool = DesktopTool::new(PathBuf::from("."), Some(Arc::new(MockMCPCaller)));
-    let result = tool.execute(&serde_json::json!({
-        "action": "take_screenshot", "hwnd": "HWND(0x123)"
-    })).await;
+    let result = tool
+        .execute(&serde_json::json!({
+            "action": "take_screenshot", "hwnd": "HWND(0x123)"
+        }))
+        .await;
     assert!(!result.is_error);
 }
 
@@ -740,7 +863,8 @@ async fn test_desktop_tool_mcp_list_windows_with_title_filter() {
             &self,
             tool_name: &str,
             args: &serde_json::Value,
-        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send + '_>> {
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send + '_>>
+        {
             let name = tool_name.to_string();
             let has_title = args.get("title_contains").is_some();
             Box::pin(async move {
@@ -756,10 +880,14 @@ async fn test_desktop_tool_mcp_list_windows_with_title_filter() {
                 }
             })
         }
-        fn is_connected(&self) -> bool { true }
+        fn is_connected(&self) -> bool {
+            true
+        }
     }
     let tool = DesktopTool::new(PathBuf::from("."), Some(Arc::new(MockMCPCaller)));
-    let result = tool.execute(&serde_json::json!({"action": "list_windows", "title": "Chrome"})).await;
+    let result = tool
+        .execute(&serde_json::json!({"action": "list_windows", "title": "Chrome"}))
+        .await;
     assert!(!result.is_error);
 }
 
@@ -771,15 +899,20 @@ async fn test_desktop_tool_mcp_disconnected() {
             &self,
             _tool_name: &str,
             _args: &serde_json::Value,
-        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send + '_>> {
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send + '_>>
+        {
             Box::pin(async { Ok("should not be called".to_string()) })
         }
-        fn is_connected(&self) -> bool { false }
+        fn is_connected(&self) -> bool {
+            false
+        }
     }
     let tool = DesktopTool::new(PathBuf::from("."), Some(Arc::new(DisconnectedMCPCaller)));
     assert!(!tool.has_mcp());
     // Should fall back to standalone PowerShell (or error on non-Windows)
-    let _ = tool.execute(&serde_json::json!({"action": "list_windows"})).await;
+    let _ = tool
+        .execute(&serde_json::json!({"action": "list_windows"}))
+        .await;
 }
 
 // ============================================================
@@ -801,10 +934,13 @@ fn test_desktop_tool_new_with_mcp() {
             &self,
             _tool_name: &str,
             _args: &serde_json::Value,
-        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send + '_>> {
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send + '_>>
+        {
             Box::pin(async { Ok("ok".to_string()) })
         }
-        fn is_connected(&self) -> bool { true }
+        fn is_connected(&self) -> bool {
+            true
+        }
     }
     let tool = DesktopTool::new(PathBuf::from("."), Some(Arc::new(MockMCP)));
     assert!(tool.has_mcp());
@@ -860,13 +996,20 @@ fn test_desktop_tool_parameters_structure() {
     let params = tool.parameters();
     assert_eq!(params["type"], "object");
     assert!(params["properties"]["action"].is_object());
-    assert!(params["required"].as_array().unwrap().contains(&serde_json::json!("action")));
+    assert!(
+        params["required"]
+            .as_array()
+            .unwrap()
+            .contains(&serde_json::json!("action"))
+    );
 }
 
 #[tokio::test]
 async fn test_desktop_tool_missing_action_v2() {
     let tool = DesktopTool::new(PathBuf::from("."), None);
-    let result = tool.execute(&serde_json::json!({"action": "nonexistent"})).await;
+    let result = tool
+        .execute(&serde_json::json!({"action": "nonexistent"}))
+        .await;
     assert!(result.is_error);
 }
 
@@ -878,13 +1021,18 @@ async fn test_desktop_tool_find_window_mcp_success() {
             &self,
             _tool_name: &str,
             _args: &serde_json::Value,
-        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send + '_>> {
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send + '_>>
+        {
             Box::pin(async { Ok(r#"{"hwnd":"HWND(0x100)","title":"MyApp"}"#.to_string()) })
         }
-        fn is_connected(&self) -> bool { true }
+        fn is_connected(&self) -> bool {
+            true
+        }
     }
     let tool = DesktopTool::new(PathBuf::from("."), Some(Arc::new(MockMCPCaller)));
-    let result = tool.execute(&serde_json::json!({"action": "find_window", "title": "MyApp"})).await;
+    let result = tool
+        .execute(&serde_json::json!({"action": "find_window", "title": "MyApp"}))
+        .await;
     assert!(!result.is_error);
     assert!(result.for_llm.contains("HWND(0x100)"));
 }
@@ -897,13 +1045,18 @@ async fn test_desktop_tool_find_window_mcp_error() {
             &self,
             _tool_name: &str,
             _args: &serde_json::Value,
-        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send + '_>> {
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send + '_>>
+        {
             Box::pin(async { Err("find failed".to_string()) })
         }
-        fn is_connected(&self) -> bool { true }
+        fn is_connected(&self) -> bool {
+            true
+        }
     }
     let tool = DesktopTool::new(PathBuf::from("."), Some(Arc::new(FailingMCPCaller)));
-    let result = tool.execute(&serde_json::json!({"action": "find_window", "title": "Test"})).await;
+    let result = tool
+        .execute(&serde_json::json!({"action": "find_window", "title": "Test"}))
+        .await;
     assert!(result.is_error);
     assert!(result.for_llm.contains("find_window failed"));
 }
@@ -916,13 +1069,18 @@ async fn test_desktop_tool_find_window_missing_title_v2() {
             &self,
             _tool_name: &str,
             _args: &serde_json::Value,
-        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send + '_>> {
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send + '_>>
+        {
             Box::pin(async { Ok("ok".to_string()) })
         }
-        fn is_connected(&self) -> bool { true }
+        fn is_connected(&self) -> bool {
+            true
+        }
     }
     let tool = DesktopTool::new(PathBuf::from("."), Some(Arc::new(MockMCPCaller)));
-    let result = tool.execute(&serde_json::json!({"action": "find_window"})).await;
+    let result = tool
+        .execute(&serde_json::json!({"action": "find_window"}))
+        .await;
     assert!(result.is_error);
     assert!(result.for_llm.contains("title"));
 }
@@ -935,13 +1093,18 @@ async fn test_desktop_tool_list_windows_mcp_error_v2() {
             &self,
             _tool_name: &str,
             _args: &serde_json::Value,
-        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send + '_>> {
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send + '_>>
+        {
             Box::pin(async { Err("list failed".to_string()) })
         }
-        fn is_connected(&self) -> bool { true }
+        fn is_connected(&self) -> bool {
+            true
+        }
     }
     let tool = DesktopTool::new(PathBuf::from("."), Some(Arc::new(FailingMCPCaller)));
-    let result = tool.execute(&serde_json::json!({"action": "list_windows"})).await;
+    let result = tool
+        .execute(&serde_json::json!({"action": "list_windows"}))
+        .await;
     assert!(result.is_error);
     assert!(result.for_llm.contains("list_windows failed"));
 }
@@ -954,13 +1117,18 @@ async fn test_desktop_tool_click_at_missing_y() {
             &self,
             _tool_name: &str,
             _args: &serde_json::Value,
-        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send + '_>> {
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send + '_>>
+        {
             Box::pin(async { Ok("ok".to_string()) })
         }
-        fn is_connected(&self) -> bool { true }
+        fn is_connected(&self) -> bool {
+            true
+        }
     }
     let tool = DesktopTool::new(PathBuf::from("."), Some(Arc::new(MockMCPCaller)));
-    let result = tool.execute(&serde_json::json!({"action": "click_at", "x": 10})).await;
+    let result = tool
+        .execute(&serde_json::json!({"action": "click_at", "x": 10}))
+        .await;
     assert!(result.is_error);
     assert!(result.for_llm.contains("x") || result.for_llm.contains("y"));
 }
@@ -973,13 +1141,18 @@ async fn test_desktop_tool_click_at_mcp_error() {
             &self,
             _tool_name: &str,
             _args: &serde_json::Value,
-        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send + '_>> {
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send + '_>>
+        {
             Box::pin(async { Err("click failed".to_string()) })
         }
-        fn is_connected(&self) -> bool { true }
+        fn is_connected(&self) -> bool {
+            true
+        }
     }
     let tool = DesktopTool::new(PathBuf::from("."), Some(Arc::new(FailingMCPCaller)));
-    let result = tool.execute(&serde_json::json!({"action": "click_at", "x": 10, "y": 20})).await;
+    let result = tool
+        .execute(&serde_json::json!({"action": "click_at", "x": 10, "y": 20}))
+        .await;
     assert!(result.is_error);
     assert!(result.for_llm.contains("click_at failed"));
 }
@@ -992,13 +1165,18 @@ async fn test_desktop_tool_type_text_mcp_error() {
             &self,
             _tool_name: &str,
             _args: &serde_json::Value,
-        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send + '_>> {
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send + '_>>
+        {
             Box::pin(async { Err("type failed".to_string()) })
         }
-        fn is_connected(&self) -> bool { true }
+        fn is_connected(&self) -> bool {
+            true
+        }
     }
     let tool = DesktopTool::new(PathBuf::from("."), Some(Arc::new(FailingMCPCaller)));
-    let result = tool.execute(&serde_json::json!({"action": "type_text", "text": "hello"})).await;
+    let result = tool
+        .execute(&serde_json::json!({"action": "type_text", "text": "hello"}))
+        .await;
     assert!(result.is_error);
     assert!(result.for_llm.contains("type_text failed"));
 }
@@ -1011,13 +1189,18 @@ async fn test_desktop_tool_type_text_empty_text() {
             &self,
             _tool_name: &str,
             _args: &serde_json::Value,
-        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send + '_>> {
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send + '_>>
+        {
             Box::pin(async { Ok("ok".to_string()) })
         }
-        fn is_connected(&self) -> bool { true }
+        fn is_connected(&self) -> bool {
+            true
+        }
     }
     let tool = DesktopTool::new(PathBuf::from("."), Some(Arc::new(MockMCPCaller)));
-    let result = tool.execute(&serde_json::json!({"action": "type_text", "text": ""})).await;
+    let result = tool
+        .execute(&serde_json::json!({"action": "type_text", "text": ""}))
+        .await;
     assert!(result.is_error);
     assert!(result.for_llm.contains("text"));
 }
@@ -1030,13 +1213,18 @@ async fn test_desktop_tool_get_window_text_no_params() {
             &self,
             _tool_name: &str,
             _args: &serde_json::Value,
-        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send + '_>> {
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send + '_>>
+        {
             Box::pin(async { Ok("ok".to_string()) })
         }
-        fn is_connected(&self) -> bool { true }
+        fn is_connected(&self) -> bool {
+            true
+        }
     }
     let tool = DesktopTool::new(PathBuf::from("."), Some(Arc::new(MockMCPCaller)));
-    let result = tool.execute(&serde_json::json!({"action": "get_window_text"})).await;
+    let result = tool
+        .execute(&serde_json::json!({"action": "get_window_text"}))
+        .await;
     assert!(result.is_error);
     assert!(result.for_llm.contains("hwnd") || result.for_llm.contains("title"));
 }
@@ -1044,7 +1232,9 @@ async fn test_desktop_tool_get_window_text_no_params() {
 #[tokio::test]
 async fn test_desktop_tool_get_window_text_no_mcp() {
     let tool = DesktopTool::new(PathBuf::from("."), None);
-    let result = tool.execute(&serde_json::json!({"action": "get_window_text", "hwnd": "123"})).await;
+    let result = tool
+        .execute(&serde_json::json!({"action": "get_window_text", "hwnd": "123"}))
+        .await;
     // No MCP backend - should error about needing MCP
     // On non-Windows, platform check fires first
     if cfg!(target_os = "windows") {
@@ -1069,13 +1259,18 @@ async fn test_desktop_tool_screenshot_mcp_success() {
             &self,
             _tool_name: &str,
             _args: &serde_json::Value,
-        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send + '_>> {
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send + '_>>
+        {
             Box::pin(async { Ok("screenshot_saved.png".to_string()) })
         }
-        fn is_connected(&self) -> bool { true }
+        fn is_connected(&self) -> bool {
+            true
+        }
     }
     let tool = DesktopTool::new(PathBuf::from("."), Some(Arc::new(ScreenshotMCPCaller)));
-    let result = tool.execute(&serde_json::json!({"action": "take_screenshot"})).await;
+    let result = tool
+        .execute(&serde_json::json!({"action": "take_screenshot"}))
+        .await;
     assert!(!result.is_error);
     assert!(result.for_llm.contains("Screenshot"));
 }
@@ -1088,7 +1283,8 @@ async fn test_desktop_tool_screenshot_mcp_with_region() {
             &self,
             tool_name: &str,
             args: &serde_json::Value,
-        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send + '_>> {
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send + '_>>
+        {
             let tool_name = tool_name.to_string();
             let args = args.clone();
             Box::pin(async move {
@@ -1100,12 +1296,16 @@ async fn test_desktop_tool_screenshot_mcp_with_region() {
                 Ok("region_screenshot.png".to_string())
             })
         }
-        fn is_connected(&self) -> bool { true }
+        fn is_connected(&self) -> bool {
+            true
+        }
     }
     let tool = DesktopTool::new(PathBuf::from("."), Some(Arc::new(ScreenshotMCPCaller)));
-    let result = tool.execute(&serde_json::json!({
-        "action": "take_screenshot", "x": 10, "y": 20, "width": 100, "height": 200
-    })).await;
+    let result = tool
+        .execute(&serde_json::json!({
+            "action": "take_screenshot", "x": 10, "y": 20, "width": 100, "height": 200
+        }))
+        .await;
     assert!(!result.is_error);
 }
 
@@ -1117,13 +1317,18 @@ async fn test_desktop_tool_screenshot_mcp_error() {
             &self,
             _tool_name: &str,
             _args: &serde_json::Value,
-        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send + '_>> {
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send + '_>>
+        {
             Box::pin(async { Err("screenshot failed".to_string()) })
         }
-        fn is_connected(&self) -> bool { true }
+        fn is_connected(&self) -> bool {
+            true
+        }
     }
     let tool = DesktopTool::new(PathBuf::from("."), Some(Arc::new(FailingMCPCaller)));
-    let result = tool.execute(&serde_json::json!({"action": "take_screenshot"})).await;
+    let result = tool
+        .execute(&serde_json::json!({"action": "take_screenshot"}))
+        .await;
     assert!(result.is_error);
     assert!(result.for_llm.contains("screenshot failed"));
 }
@@ -1136,13 +1341,18 @@ async fn test_desktop_tool_list_windows_mcp_success() {
             &self,
             _tool_name: &str,
             _args: &serde_json::Value,
-        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send + '_>> {
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send + '_>>
+        {
             Box::pin(async { Ok("[{\"hwnd\":\"123\",\"title\":\"Test\"}]".to_string()) })
         }
-        fn is_connected(&self) -> bool { true }
+        fn is_connected(&self) -> bool {
+            true
+        }
     }
     let tool = DesktopTool::new(PathBuf::from("."), Some(Arc::new(ListMCPCaller)));
-    let result = tool.execute(&serde_json::json!({"action": "list_windows"})).await;
+    let result = tool
+        .execute(&serde_json::json!({"action": "list_windows"}))
+        .await;
     assert!(!result.is_error);
     assert!(result.for_llm.contains("Test"));
 }
@@ -1155,13 +1365,18 @@ async fn test_desktop_tool_list_windows_mcp_error() {
             &self,
             _tool_name: &str,
             _args: &serde_json::Value,
-        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send + '_>> {
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send + '_>>
+        {
             Box::pin(async { Err("list failed".to_string()) })
         }
-        fn is_connected(&self) -> bool { true }
+        fn is_connected(&self) -> bool {
+            true
+        }
     }
     let tool = DesktopTool::new(PathBuf::from("."), Some(Arc::new(FailingMCPCaller)));
-    let result = tool.execute(&serde_json::json!({"action": "list_windows"})).await;
+    let result = tool
+        .execute(&serde_json::json!({"action": "list_windows"}))
+        .await;
     assert!(result.is_error);
     assert!(result.for_llm.contains("list_windows failed"));
 }
@@ -1174,13 +1389,18 @@ async fn test_desktop_tool_find_window_with_mcp_success() {
             &self,
             _tool_name: &str,
             _args: &serde_json::Value,
-        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send + '_>> {
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send + '_>>
+        {
             Box::pin(async { Ok("{\"hwnd\":\"0x123\",\"title\":\"Chrome\"}".to_string()) })
         }
-        fn is_connected(&self) -> bool { true }
+        fn is_connected(&self) -> bool {
+            true
+        }
     }
     let tool = DesktopTool::new(PathBuf::from("."), Some(Arc::new(FindMCPCaller)));
-    let result = tool.execute(&serde_json::json!({"action": "find_window", "title": "Chrome"})).await;
+    let result = tool
+        .execute(&serde_json::json!({"action": "find_window", "title": "Chrome"}))
+        .await;
     assert!(!result.is_error);
     assert!(result.for_llm.contains("Chrome"));
 }
@@ -1193,13 +1413,18 @@ async fn test_desktop_tool_find_window_with_mcp_error() {
             &self,
             _tool_name: &str,
             _args: &serde_json::Value,
-        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send + '_>> {
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send + '_>>
+        {
             Box::pin(async { Err("find failed".to_string()) })
         }
-        fn is_connected(&self) -> bool { true }
+        fn is_connected(&self) -> bool {
+            true
+        }
     }
     let tool = DesktopTool::new(PathBuf::from("."), Some(Arc::new(FailingMCPCaller)));
-    let result = tool.execute(&serde_json::json!({"action": "find_window", "title": "Chrome"})).await;
+    let result = tool
+        .execute(&serde_json::json!({"action": "find_window", "title": "Chrome"}))
+        .await;
     assert!(result.is_error);
     assert!(result.for_llm.contains("find_window failed"));
 }
@@ -1212,13 +1437,18 @@ async fn test_desktop_tool_type_text_mcp_success() {
             &self,
             _tool_name: &str,
             _args: &serde_json::Value,
-        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send + '_>> {
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send + '_>>
+        {
             Box::pin(async { Ok("typed".to_string()) })
         }
-        fn is_connected(&self) -> bool { true }
+        fn is_connected(&self) -> bool {
+            true
+        }
     }
     let tool = DesktopTool::new(PathBuf::from("."), Some(Arc::new(TypeMCPCaller)));
-    let result = tool.execute(&serde_json::json!({"action": "type_text", "text": "hello"})).await;
+    let result = tool
+        .execute(&serde_json::json!({"action": "type_text", "text": "hello"}))
+        .await;
     assert!(!result.is_error);
     assert!(result.for_llm.contains("Typed"));
 }
@@ -1231,13 +1461,18 @@ async fn test_desktop_tool_click_at_mcp_success() {
             &self,
             _tool_name: &str,
             _args: &serde_json::Value,
-        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send + '_>> {
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send + '_>>
+        {
             Box::pin(async { Ok("clicked".to_string()) })
         }
-        fn is_connected(&self) -> bool { true }
+        fn is_connected(&self) -> bool {
+            true
+        }
     }
     let tool = DesktopTool::new(PathBuf::from("."), Some(Arc::new(ClickMCPCaller)));
-    let result = tool.execute(&serde_json::json!({"action": "click_at", "x": 100, "y": 200})).await;
+    let result = tool
+        .execute(&serde_json::json!({"action": "click_at", "x": 100, "y": 200}))
+        .await;
     assert!(!result.is_error);
     assert!(result.for_llm.contains("Clicked"));
 }
@@ -1250,7 +1485,8 @@ async fn test_desktop_tool_get_window_text_with_hwnd_mcp() {
             &self,
             tool_name: &str,
             _args: &serde_json::Value,
-        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send + '_>> {
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send + '_>>
+        {
             let name = tool_name.to_string();
             Box::pin(async move {
                 if name == "get_window_text" {
@@ -1260,10 +1496,14 @@ async fn test_desktop_tool_get_window_text_with_hwnd_mcp() {
                 }
             })
         }
-        fn is_connected(&self) -> bool { true }
+        fn is_connected(&self) -> bool {
+            true
+        }
     }
     let tool = DesktopTool::new(PathBuf::from("."), Some(Arc::new(TextMCPCaller)));
-    let result = tool.execute(&serde_json::json!({"action": "get_window_text", "hwnd": "0x123"})).await;
+    let result = tool
+        .execute(&serde_json::json!({"action": "get_window_text", "hwnd": "0x123"}))
+        .await;
     assert!(!result.is_error);
     assert!(result.for_llm.contains("Window Title Text"));
 }
@@ -1276,13 +1516,18 @@ async fn test_desktop_tool_get_window_text_with_title_mcp_find_error() {
             &self,
             _tool_name: &str,
             _args: &serde_json::Value,
-        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send + '_>> {
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send + '_>>
+        {
             Box::pin(async { Err("find failed".to_string()) })
         }
-        fn is_connected(&self) -> bool { true }
+        fn is_connected(&self) -> bool {
+            true
+        }
     }
     let tool = DesktopTool::new(PathBuf::from("."), Some(Arc::new(FailingMCPCaller)));
-    let result = tool.execute(&serde_json::json!({"action": "get_window_text", "title": "Chrome"})).await;
+    let result = tool
+        .execute(&serde_json::json!({"action": "get_window_text", "title": "Chrome"}))
+        .await;
     assert!(result.is_error);
     assert!(result.for_llm.contains("find_window"));
 }
@@ -1295,7 +1540,8 @@ async fn test_desktop_tool_get_window_text_with_title_mcp_find_returns_empty_hwn
             &self,
             tool_name: &str,
             _args: &serde_json::Value,
-        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send + '_>> {
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send + '_>>
+        {
             let name = tool_name.to_string();
             Box::pin(async move {
                 if name == "find_window_by_title" {
@@ -1305,10 +1551,14 @@ async fn test_desktop_tool_get_window_text_with_title_mcp_find_returns_empty_hwn
                 }
             })
         }
-        fn is_connected(&self) -> bool { true }
+        fn is_connected(&self) -> bool {
+            true
+        }
     }
     let tool = DesktopTool::new(PathBuf::from("."), Some(Arc::new(EmptyHwndMCPCaller)));
-    let result = tool.execute(&serde_json::json!({"action": "get_window_text", "title": "Chrome"})).await;
+    let result = tool
+        .execute(&serde_json::json!({"action": "get_window_text", "title": "Chrome"}))
+        .await;
     assert!(result.is_error);
     assert!(result.for_llm.contains("could not resolve"));
 }
@@ -1321,13 +1571,18 @@ async fn test_desktop_tool_get_window_text_mcp_error() {
             &self,
             _tool_name: &str,
             _args: &serde_json::Value,
-        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send + '_>> {
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send + '_>>
+        {
             Box::pin(async { Err("get_text failed".to_string()) })
         }
-        fn is_connected(&self) -> bool { true }
+        fn is_connected(&self) -> bool {
+            true
+        }
     }
     let tool = DesktopTool::new(PathBuf::from("."), Some(Arc::new(FailingMCPCaller)));
-    let result = tool.execute(&serde_json::json!({"action": "get_window_text", "hwnd": "0x123"})).await;
+    let result = tool
+        .execute(&serde_json::json!({"action": "get_window_text", "hwnd": "0x123"}))
+        .await;
     assert!(result.is_error);
     assert!(result.for_llm.contains("get_window_text failed"));
 }
@@ -1370,7 +1625,8 @@ async fn test_get_window_text_prefers_hwnd_over_title() {
             &self,
             tool_name: &str,
             _args: &serde_json::Value,
-        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send + '_>> {
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send + '_>>
+        {
             let name = tool_name.to_string();
             self.called.lock().unwrap().push(name.clone());
             Box::pin(async move {
@@ -1389,7 +1645,9 @@ async fn test_get_window_text_prefers_hwnd_over_title() {
     let called = Arc::new(std::sync::Mutex::new(Vec::new()));
     let tool = DesktopTool::new(
         PathBuf::from("."),
-        Some(Arc::new(MockMCPCaller { called: called.clone() })),
+        Some(Arc::new(MockMCPCaller {
+            called: called.clone(),
+        })),
     );
     let result = tool
         .execute(&serde_json::json!({
@@ -1417,7 +1675,8 @@ async fn test_get_window_text_find_returns_json_array_no_hwnd() {
             &self,
             tool_name: &str,
             _args: &serde_json::Value,
-        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send + '_>> {
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send + '_>>
+        {
             let name = tool_name.to_string();
             Box::pin(async move {
                 if name == "find_window_by_title" {
@@ -1448,7 +1707,8 @@ async fn test_get_window_text_find_returns_invalid_json() {
             &self,
             tool_name: &str,
             _args: &serde_json::Value,
-        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send + '_>> {
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send + '_>>
+        {
             let name = tool_name.to_string();
             Box::pin(async move {
                 if name == "find_window_by_title" {
@@ -1480,7 +1740,8 @@ async fn test_screenshot_mcp_with_partial_region_fields() {
             &self,
             tool_name: &str,
             args: &serde_json::Value,
-        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send + '_>> {
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send + '_>>
+        {
             let tool_name = tool_name.to_string();
             let args = args.clone();
             Box::pin(async move {
@@ -1513,7 +1774,8 @@ async fn test_click_at_default_button_is_left() {
             &self,
             tool_name: &str,
             args: &serde_json::Value,
-        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send + '_>> {
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send + '_>>
+        {
             let tool_name = tool_name.to_string();
             let args = args.clone();
             Box::pin(async move {
@@ -1544,7 +1806,8 @@ async fn test_click_at_middle_button_forwarded() {
             &self,
             _tool_name: &str,
             args: &serde_json::Value,
-        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send + '_>> {
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send + '_>>
+        {
             let args = args.clone();
             Box::pin(async move {
                 assert_eq!(args["button"], "middle");
@@ -1572,7 +1835,8 @@ async fn test_list_windows_no_title_does_not_set_title_contains() {
             &self,
             _tool_name: &str,
             args: &serde_json::Value,
-        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send + '_>> {
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send + '_>>
+        {
             let args = args.clone();
             Box::pin(async move {
                 assert_eq!(args["filter_visible"], true);
@@ -1585,6 +1849,8 @@ async fn test_list_windows_no_title_does_not_set_title_contains() {
         }
     }
     let tool = DesktopTool::new(PathBuf::from("."), Some(Arc::new(ListMCPCaller)));
-    let result = tool.execute(&serde_json::json!({"action": "list_windows"})).await;
+    let result = tool
+        .execute(&serde_json::json!({"action": "list_windows"}))
+        .await;
     assert!(!result.is_error);
 }

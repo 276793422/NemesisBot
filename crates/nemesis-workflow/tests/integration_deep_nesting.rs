@@ -18,7 +18,7 @@ use nemesis_providers::router::LLMProvider;
 use nemesis_providers::types::{ChatOptions, LLMResponse, Message, ToolDefinition};
 use nemesis_workflow::engine::WorkflowEngine;
 use nemesis_workflow::types::{
-    Edge, ExecutionState, NodeDef, TriggerSource, Workflow, MAX_RECURSION_DEPTH,
+    Edge, ExecutionState, MAX_RECURSION_DEPTH, NodeDef, TriggerSource, Workflow,
 };
 
 struct StubProvider;
@@ -75,13 +75,11 @@ fn wf_with_nodes(name: &str, nodes: Vec<NodeDef>) -> Workflow {
     let edges: Vec<Edge> = nodes
         .iter()
         .flat_map(|n| {
-            n.depends_on
-                .iter()
-                .map(move |dep| Edge {
-                    from_node: dep.clone(),
-                    to_node: n.id.clone(),
-                    condition: None,
-                })
+            n.depends_on.iter().map(move |dep| Edge {
+                from_node: dep.clone(),
+                to_node: n.id.clone(),
+                condition: None,
+            })
         })
         .collect();
     Workflow {
@@ -104,10 +102,7 @@ fn build_engine() -> Arc<WorkflowEngine> {
 
 /// Register a workflow that does nothing but call its child via sub_workflow.
 fn register_chain(engine: &Arc<WorkflowEngine>, parent: &str, child: &str) {
-    let wf = wf_with_nodes(
-        parent,
-        vec![sub_workflow_node("call_child", child, &[])],
-    );
+    let wf = wf_with_nodes(parent, vec![sub_workflow_node("call_child", child, &[])]);
     engine.register_workflow(wf).unwrap();
 }
 

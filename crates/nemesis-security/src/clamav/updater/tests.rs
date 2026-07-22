@@ -75,7 +75,9 @@ fn test_find_executable() {
 #[tokio::test]
 async fn test_update_exe_not_found() {
     let updater = Updater::new(test_config());
-    let result = updater.update(tokio_util::sync::CancellationToken::new(), None).await;
+    let result = updater
+        .update(tokio_util::sync::CancellationToken::new(), None)
+        .await;
     assert!(result.is_err());
     assert!(result.unwrap_err().contains("not found"));
 }
@@ -94,7 +96,9 @@ async fn test_update_db_dir_created_before_exe_check() {
         mirror_urls: Vec::new(),
     };
     let updater = Updater::new(config);
-    let result = updater.update(tokio_util::sync::CancellationToken::new(), None).await;
+    let result = updater
+        .update(tokio_util::sync::CancellationToken::new(), None)
+        .await;
     // Should fail because freshclam not found, not because of dir creation
     assert!(result.is_err());
     assert!(result.unwrap_err().contains("not found"));
@@ -229,7 +233,9 @@ async fn test_update_with_db_dir_but_no_freshclam() {
         mirror_urls: Vec::new(),
     };
     let updater = Updater::new(config);
-    let result = updater.update(tokio_util::sync::CancellationToken::new(), None).await;
+    let result = updater
+        .update(tokio_util::sync::CancellationToken::new(), None)
+        .await;
     assert!(result.is_err());
     // Should fail because freshclam not found
     assert!(result.unwrap_err().contains("not found"));
@@ -241,12 +247,18 @@ async fn test_update_with_config_file_but_no_freshclam() {
     let config = UpdaterConfig {
         clamav_path: "/nonexistent".to_string(),
         database_dir: String::new(),
-        config_file: dir.path().join("freshclam.conf").to_string_lossy().to_string(),
+        config_file: dir
+            .path()
+            .join("freshclam.conf")
+            .to_string_lossy()
+            .to_string(),
         update_interval: Duration::from_secs(3600),
         mirror_urls: Vec::new(),
     };
     let updater = Updater::new(config);
-    let result = updater.update(tokio_util::sync::CancellationToken::new(), None).await;
+    let result = updater
+        .update(tokio_util::sync::CancellationToken::new(), None)
+        .await;
     assert!(result.is_err());
 }
 

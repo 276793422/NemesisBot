@@ -7,8 +7,8 @@
 use async_trait::async_trait;
 use std::collections::HashMap;
 use std::fmt;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use tracing::{debug, warn};
 
@@ -80,7 +80,9 @@ pub trait VoiceTranscriber: Send + Sync {
     fn transcribe(
         &self,
         file_path: &str,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = std::result::Result<String, String>> + Send + '_>>;
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = std::result::Result<String, String>> + Send + '_>,
+    >;
 }
 
 /// Statistics for a channel instance.
@@ -245,9 +247,7 @@ impl BaseChannel {
                 || id_part == allowed_id
                 || (!allowed_user.is_empty() && sender_id == allowed_user)
                 || (!user_part.is_empty()
-                    && (user_part == allowed
-                        || user_part == trimmed
-                        || user_part == allowed_user))
+                    && (user_part == allowed || user_part == trimmed || user_part == allowed_user))
             {
                 return true;
             }
@@ -323,11 +323,7 @@ impl BaseChannel {
                 "[Channel] sending to sync target"
             );
 
-            match tokio::time::timeout(
-                std::time::Duration::from_secs(3),
-                target_ch.send(msg),
-            )
-            .await
+            match tokio::time::timeout(std::time::Duration::from_secs(3), target_ch.send(msg)).await
             {
                 Ok(Ok(())) => {}
                 Ok(Err(e)) => {

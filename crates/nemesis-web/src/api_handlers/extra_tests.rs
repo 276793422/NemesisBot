@@ -12,8 +12,8 @@
 use super::*;
 use crate::events::EventHub;
 use crate::session::SessionManager;
-use std::sync::atomic::{AtomicBool, AtomicUsize};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicUsize};
 use std::time::Instant;
 
 // ============================================================
@@ -52,7 +52,9 @@ fn make_state(
         cluster_service: None,
         cluster_log_dir: None,
         workflow_engine: None,
-        chat_secret_store: std::sync::Arc::new(nemesis_workflow::chat_secrets::ChatSecretStore::in_memory()),
+        chat_secret_store: std::sync::Arc::new(
+            nemesis_workflow::chat_secrets::ChatSecretStore::in_memory(),
+        ),
         webhook_rate_limiter: Arc::new(crate::handlers::workflow::WebhookRateLimiter::new()),
         internal_cmd_tx: None,
         estop: None,
@@ -91,7 +93,9 @@ fn make_state_with_tx(
         cluster_service: None,
         cluster_log_dir: None,
         workflow_engine: None,
-        chat_secret_store: std::sync::Arc::new(nemesis_workflow::chat_secrets::ChatSecretStore::in_memory()),
+        chat_secret_store: std::sync::Arc::new(
+            nemesis_workflow::chat_secrets::ChatSecretStore::in_memory(),
+        ),
         webhook_rate_limiter: Arc::new(crate::handlers::workflow::WebhookRateLimiter::new()),
         internal_cmd_tx: tx,
         estop: None,
@@ -127,7 +131,11 @@ async fn test_handle_api_readme_content_is_nonempty_string() {
     let json = resp.0;
     let content = json["content"].as_str().unwrap();
     // README should be at least a few hundred bytes (any real README)
-    assert!(content.len() > 100, "README content suspiciously small: {} bytes", content.len());
+    assert!(
+        content.len() > 100,
+        "README content suspiciously small: {} bytes",
+        content.len()
+    );
 }
 
 // ============================================================
@@ -148,7 +156,11 @@ async fn test_handle_api_license_content_is_nonempty_string() {
     let resp = handle_api_license().await;
     let json = resp.0;
     let content = json["content"].as_str().unwrap();
-    assert!(content.len() > 10, "LICENSE content suspiciously small: {} bytes", content.len());
+    assert!(
+        content.len() > 10,
+        "LICENSE content suspiciously small: {} bytes",
+        content.len()
+    );
 }
 
 // ============================================================
@@ -391,7 +403,9 @@ async fn test_handle_api_status_includes_model_base() {
         cluster_service: None,
         cluster_log_dir: None,
         workflow_engine: None,
-        chat_secret_store: std::sync::Arc::new(nemesis_workflow::chat_secrets::ChatSecretStore::in_memory()),
+        chat_secret_store: std::sync::Arc::new(
+            nemesis_workflow::chat_secrets::ChatSecretStore::in_memory(),
+        ),
         webhook_rate_limiter: Arc::new(crate::handlers::workflow::WebhookRateLimiter::new()),
         internal_cmd_tx: None,
         estop: None,
@@ -431,7 +445,11 @@ async fn test_handle_api_models_empty_api_key_not_sanitized() {
             {"name": "model2", "api_key": "sk-1234567890"}
         ]
     });
-    std::fs::write(dir.path().join("config.json"), serde_json::to_string(&config).unwrap()).unwrap();
+    std::fs::write(
+        dir.path().join("config.json"),
+        serde_json::to_string(&config).unwrap(),
+    )
+    .unwrap();
     let ws = dir.path().to_string_lossy().to_string();
     let state = make_state(None, Some(ws), "", "current-model", false);
     let resp = handle_api_models(State(state)).await;
@@ -450,7 +468,11 @@ async fn test_handle_api_models_short_api_key_becomes_stars() {
             {"name": "short", "api_key": "ab"}
         ]
     });
-    std::fs::write(dir.path().join("config.json"), serde_json::to_string(&config).unwrap()).unwrap();
+    std::fs::write(
+        dir.path().join("config.json"),
+        serde_json::to_string(&config).unwrap(),
+    )
+    .unwrap();
     let ws = dir.path().to_string_lossy().to_string();
     let state = make_state(None, Some(ws), "", "current-model", false);
     let resp = handle_api_models(State(state)).await;
@@ -465,7 +487,11 @@ async fn test_handle_api_models_4char_api_key_becomes_stars() {
     let config = serde_json::json!({
         "model_list": [{"name": "m", "api_key": "abcd"}]
     });
-    std::fs::write(dir.path().join("config.json"), serde_json::to_string(&config).unwrap()).unwrap();
+    std::fs::write(
+        dir.path().join("config.json"),
+        serde_json::to_string(&config).unwrap(),
+    )
+    .unwrap();
     let ws = dir.path().to_string_lossy().to_string();
     let state = make_state(None, Some(ws), "", "current-model", false);
     let resp = handle_api_models(State(state)).await;
@@ -480,7 +506,11 @@ async fn test_handle_api_models_5char_api_key_truncated() {
     let config = serde_json::json!({
         "model_list": [{"name": "m", "api_key": "abcde"}]
     });
-    std::fs::write(dir.path().join("config.json"), serde_json::to_string(&config).unwrap()).unwrap();
+    std::fs::write(
+        dir.path().join("config.json"),
+        serde_json::to_string(&config).unwrap(),
+    )
+    .unwrap();
     let ws = dir.path().to_string_lossy().to_string();
     let state = make_state(None, Some(ws), "", "current-model", false);
     let resp = handle_api_models(State(state)).await;
@@ -508,7 +538,11 @@ async fn test_handle_api_models_with_default_in_config() {
         "model_list": [{"name": "gpt-4"}],
         "agents": {"defaults": {"llm": "gpt-4"}}
     });
-    std::fs::write(dir.path().join("config.json"), serde_json::to_string(&config).unwrap()).unwrap();
+    std::fs::write(
+        dir.path().join("config.json"),
+        serde_json::to_string(&config).unwrap(),
+    )
+    .unwrap();
     let ws = dir.path().to_string_lossy().to_string();
     let state = make_state(None, Some(ws), "", "current-model", false);
     let resp = handle_api_models(State(state)).await;
@@ -521,7 +555,11 @@ async fn test_handle_api_models_with_default_in_config() {
 async fn test_handle_api_models_no_model_list_returns_empty_array() {
     let dir = tempfile::tempdir().unwrap();
     let config = serde_json::json!({"other_key": "value"});
-    std::fs::write(dir.path().join("config.json"), serde_json::to_string(&config).unwrap()).unwrap();
+    std::fs::write(
+        dir.path().join("config.json"),
+        serde_json::to_string(&config).unwrap(),
+    )
+    .unwrap();
     let ws = dir.path().to_string_lossy().to_string();
     let state = make_state(None, Some(ws), "", "test", false);
     let resp = handle_api_models(State(state)).await;
@@ -535,7 +573,11 @@ async fn test_handle_api_models_no_default_in_config() {
     let config = serde_json::json!({
         "model_list": [{"name": "gpt-4"}]
     });
-    std::fs::write(dir.path().join("config.json"), serde_json::to_string(&config).unwrap()).unwrap();
+    std::fs::write(
+        dir.path().join("config.json"),
+        serde_json::to_string(&config).unwrap(),
+    )
+    .unwrap();
     let ws = dir.path().to_string_lossy().to_string();
     let state = make_state(None, Some(ws), "", "test", false);
     let resp = handle_api_models(State(state)).await;
@@ -581,7 +623,11 @@ async fn test_handle_api_config_with_nested_sensitive_key() {
             "inner_key": "verylongsecret"
         }
     });
-    std::fs::write(dir.path().join("config.json"), serde_json::to_string(&config).unwrap()).unwrap();
+    std::fs::write(
+        dir.path().join("config.json"),
+        serde_json::to_string(&config).unwrap(),
+    )
+    .unwrap();
     let ws = dir.path().to_string_lossy().to_string();
     let state = make_state(Some(ws.clone()), Some(ws), "", "test", false);
     let resp = handle_api_config(State(state)).await;
@@ -611,12 +657,19 @@ async fn test_handle_api_logs_default_source_general() {
     let dir = tempfile::tempdir().unwrap();
     let logs_dir = dir.path().join("logs");
     std::fs::create_dir_all(&logs_dir).unwrap();
-    std::fs::write(logs_dir.join("nemesisbot.2026-06-17"), r#"{"msg":"default-source"}"#).unwrap();
+    std::fs::write(
+        logs_dir.join("nemesisbot.2026-06-17"),
+        r#"{"msg":"default-source"}"#,
+    )
+    .unwrap();
     let ws = dir.path().to_string_lossy().to_string();
     let state = make_state(Some(ws), None, "", "test", false);
 
     // No query parameters — should default to source=general, n=200
-    let query = Query(LogsQuery { source: None, n: None });
+    let query = Query(LogsQuery {
+        source: None,
+        n: None,
+    });
     let resp = handle_api_logs(State(state), query).await;
     assert!(resp.is_ok());
     let json = resp.unwrap().0;
@@ -632,7 +685,10 @@ async fn test_handle_api_logs_source_general_n_1() {
     std::fs::write(logs_dir.join("nemesisbot.2026-06-17"), lines.join("\n")).unwrap();
     let ws = dir.path().to_string_lossy().to_string();
     let state = make_state(Some(ws), None, "", "test", false);
-    let query = Query(LogsQuery { source: Some("general".to_string()), n: Some(1) });
+    let query = Query(LogsQuery {
+        source: Some("general".to_string()),
+        n: Some(1),
+    });
     let resp = handle_api_logs(State(state), query).await;
     let json = resp.unwrap().0;
     assert_eq!(json["entries"].as_array().unwrap().len(), 1);
@@ -647,7 +703,10 @@ async fn test_handle_api_logs_n_exactly_1000() {
     std::fs::write(logs_dir.join("nemesisbot.2026-06-17"), lines.join("\n")).unwrap();
     let ws = dir.path().to_string_lossy().to_string();
     let state = make_state(Some(ws), None, "", "test", false);
-    let query = Query(LogsQuery { source: Some("general".to_string()), n: Some(1000) });
+    let query = Query(LogsQuery {
+        source: Some("general".to_string()),
+        n: Some(1000),
+    });
     let resp = handle_api_logs(State(state), query).await;
     let json = resp.unwrap().0;
     assert_eq!(json["entries"].as_array().unwrap().len(), 1000);
@@ -661,7 +720,10 @@ async fn test_handle_api_logs_empty_log_file_returns_empty_array() {
     std::fs::write(logs_dir.join("nemesisbot.2026-06-17"), "").unwrap();
     let ws = dir.path().to_string_lossy().to_string();
     let state = make_state(Some(ws), None, "", "test", false);
-    let query = Query(LogsQuery { source: Some("general".to_string()), n: Some(100) });
+    let query = Query(LogsQuery {
+        source: Some("general".to_string()),
+        n: Some(100),
+    });
     let resp = handle_api_logs(State(state), query).await;
     let json = resp.unwrap().0;
     assert_eq!(json["entries"].as_array().unwrap().len(), 0);
@@ -741,7 +803,9 @@ async fn test_handle_api_sessions_with_count() {
         cluster_service: None,
         cluster_log_dir: None,
         workflow_engine: None,
-        chat_secret_store: std::sync::Arc::new(nemesis_workflow::chat_secrets::ChatSecretStore::in_memory()),
+        chat_secret_store: std::sync::Arc::new(
+            nemesis_workflow::chat_secrets::ChatSecretStore::in_memory(),
+        ),
         webhook_rate_limiter: Arc::new(crate::handlers::workflow::WebhookRateLimiter::new()),
         internal_cmd_tx: None,
         estop: None,
@@ -770,7 +834,8 @@ fn test_load_scanner_status_engine_disabled_state() {
     std::fs::write(
         config_dir.join("config.scanner.json"),
         serde_json::to_string_pretty(&config).unwrap(),
-    ).unwrap();
+    )
+    .unwrap();
     let ws = dir.path().to_string_lossy().to_string();
     let status = load_scanner_status(&ws);
     let engines = status["engines"].as_array().unwrap();
@@ -792,7 +857,8 @@ fn test_load_scanner_status_engine_pending_state() {
     std::fs::write(
         config_dir.join("config.scanner.json"),
         serde_json::to_string(&config).unwrap(),
-    ).unwrap();
+    )
+    .unwrap();
     let ws = dir.path().to_string_lossy().to_string();
     let status = load_scanner_status(&ws);
     let engines = status["engines"].as_array().unwrap();
@@ -813,7 +879,8 @@ fn test_load_scanner_status_engine_ready_state() {
     std::fs::write(
         config_dir.join("config.scanner.json"),
         serde_json::to_string(&config).unwrap(),
-    ).unwrap();
+    )
+    .unwrap();
     let ws = dir.path().to_string_lossy().to_string();
     let status = load_scanner_status(&ws);
     let engines = status["engines"].as_array().unwrap();
@@ -834,7 +901,8 @@ fn test_load_scanner_status_engine_failed_state() {
     std::fs::write(
         config_dir.join("config.scanner.json"),
         serde_json::to_string(&config).unwrap(),
-    ).unwrap();
+    )
+    .unwrap();
     let ws = dir.path().to_string_lossy().to_string();
     let status = load_scanner_status(&ws);
     let engines = status["engines"].as_array().unwrap();
@@ -855,7 +923,8 @@ fn test_load_scanner_status_engine_installed_partial_state() {
     std::fs::write(
         config_dir.join("config.scanner.json"),
         serde_json::to_string(&config).unwrap(),
-    ).unwrap();
+    )
+    .unwrap();
     let ws = dir.path().to_string_lossy().to_string();
     let status = load_scanner_status(&ws);
     let engines = status["engines"].as_array().unwrap();
@@ -877,7 +946,8 @@ fn test_load_scanner_status_engine_empty_install_status_treated_as_pending() {
     std::fs::write(
         config_dir.join("config.scanner.json"),
         serde_json::to_string(&config).unwrap(),
-    ).unwrap();
+    )
+    .unwrap();
     let ws = dir.path().to_string_lossy().to_string();
     let status = load_scanner_status(&ws);
     let engines = status["engines"].as_array().unwrap();
@@ -898,7 +968,8 @@ fn test_load_scanner_status_engine_with_unknown_install_status() {
     std::fs::write(
         config_dir.join("config.scanner.json"),
         serde_json::to_string(&config).unwrap(),
-    ).unwrap();
+    )
+    .unwrap();
     let ws = dir.path().to_string_lossy().to_string();
     let status = load_scanner_status(&ws);
     let engines = status["engines"].as_array().unwrap();
@@ -920,7 +991,8 @@ fn test_load_scanner_status_engine_case_insensitive_match() {
     std::fs::write(
         config_dir.join("config.scanner.json"),
         serde_json::to_string(&config).unwrap(),
-    ).unwrap();
+    )
+    .unwrap();
     let ws = dir.path().to_string_lossy().to_string();
     let status = load_scanner_status(&ws);
     let engines = status["engines"].as_array().unwrap();
@@ -941,7 +1013,8 @@ fn test_load_scanner_status_merges_config_fields() {
     std::fs::write(
         config_dir.join("config.scanner.json"),
         serde_json::to_string(&config).unwrap(),
-    ).unwrap();
+    )
+    .unwrap();
     let ws = dir.path().to_string_lossy().to_string();
     let status = load_scanner_status(&ws);
     let engines = status["engines"].as_array().unwrap();
@@ -1033,7 +1106,10 @@ fn test_sanitize_map_does_not_touch_empty_strings() {
         "api_key": "",
         "token": "",
         "secret": "",
-    }).as_object_mut().unwrap().clone();
+    })
+    .as_object_mut()
+    .unwrap()
+    .clone();
     sanitize_map(&mut map);
     assert_eq!(map["api_key"], "");
     assert_eq!(map["token"], "");
@@ -1049,7 +1125,10 @@ fn test_sanitize_map_recursive_into_array_values() {
             {"api_key": "verylongsecret"},
             {"token": "anotherlongtoken"}
         ]
-    }).as_object_mut().unwrap().clone();
+    })
+    .as_object_mut()
+    .unwrap()
+    .clone();
     sanitize_map(&mut map);
     // Array elements are not sanitized
     let items = map["items"].as_array().unwrap();
@@ -1063,7 +1142,10 @@ fn test_sanitize_map_object_inside_non_sensitive_key() {
             "api_key": "secretvalue",
             "port": 3000
         }
-    }).as_object_mut().unwrap().clone();
+    })
+    .as_object_mut()
+    .unwrap()
+    .clone();
     sanitize_map(&mut map);
     let settings = map["settings"].as_object().unwrap();
     assert_eq!(settings["api_key"], "secr****");
@@ -1077,7 +1159,10 @@ fn test_sanitize_map_partial_match_substring_key() {
         "my_api_key": "secretlongvalue",
         "user_token_value": "anotherlongtoken",
         "password_hash": "hashvalue1234",
-    }).as_object_mut().unwrap().clone();
+    })
+    .as_object_mut()
+    .unwrap()
+    .clone();
     sanitize_map(&mut map);
     assert_eq!(map["my_api_key"], "secr****");
     assert_eq!(map["user_token_value"], "anot****");
@@ -1115,7 +1200,9 @@ fn test_app_state_clone() {
         cluster_service: None,
         cluster_log_dir: None,
         workflow_engine: None,
-        chat_secret_store: std::sync::Arc::new(nemesis_workflow::chat_secrets::ChatSecretStore::in_memory()),
+        chat_secret_store: std::sync::Arc::new(
+            nemesis_workflow::chat_secrets::ChatSecretStore::in_memory(),
+        ),
         webhook_rate_limiter: Arc::new(crate::handlers::workflow::WebhookRateLimiter::new()),
         internal_cmd_tx: None,
         estop: None,

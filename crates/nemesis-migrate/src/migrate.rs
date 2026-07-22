@@ -107,7 +107,12 @@ impl Migrator {
     }
 
     /// Dry run: plan migration without executing.
-    pub fn dry_run(&self, src: &str, dst: &str, force: bool) -> Result<crate::workspace::MigrationPlan, String> {
+    pub fn dry_run(
+        &self,
+        src: &str,
+        dst: &str,
+        force: bool,
+    ) -> Result<crate::workspace::MigrationPlan, String> {
         WorkspaceMigrator::dry_run(src, dst, force)
     }
 }
@@ -138,7 +143,10 @@ pub fn run_full_migration(opts: &MigrateOptions) -> Result<FullMigrationResult, 
     let nemesisbot_home = resolve_nemesisbot_home(&effective_opts.nemesisbot_home)?;
 
     if !Path::new(&openclaw_home).exists() {
-        return Err(format!("OpenClaw installation not found at {}", openclaw_home));
+        return Err(format!(
+            "OpenClaw installation not found at {}",
+            openclaw_home
+        ));
     }
 
     let (actions, warnings) = plan(&effective_opts, &openclaw_home, &nemesisbot_home)?;
@@ -279,7 +287,9 @@ pub fn execute(
 
                             // Copy source to destination
                             if let Err(e) = fs::create_dir_all(
-                                Path::new(&action.destination).parent().unwrap_or(Path::new(".")),
+                                Path::new(&action.destination)
+                                    .parent()
+                                    .unwrap_or(Path::new(".")),
                             ) {
                                 result.errors.push(format!("{}", e));
                                 continue;
@@ -307,9 +317,11 @@ pub fn execute(
             }
             FullMigrationActionType::Copy => {
                 if let Some(ref src) = action.source {
-                    if let Err(e) =
-                        fs::create_dir_all(Path::new(&action.destination).parent().unwrap_or(Path::new(".")))
-                    {
+                    if let Err(e) = fs::create_dir_all(
+                        Path::new(&action.destination)
+                            .parent()
+                            .unwrap_or(Path::new(".")),
+                    ) {
                         result.errors.push(format!("{}", e));
                         continue;
                     }
@@ -465,8 +477,7 @@ pub fn print_summary(result: &FullMigrationResult) {
 
 /// Execute config migration: load OpenClaw config, convert, optionally merge, save.
 fn execute_config_migration(src_config_path: &str, dst_config_path: &str) -> Result<(), String> {
-    let data =
-        openclaw_config::load_openclaw_config(Path::new(src_config_path))?;
+    let data = openclaw_config::load_openclaw_config(Path::new(src_config_path))?;
     let (mut incoming, _warnings) = openclaw_config::convert_config(&data);
 
     // If destination config exists, merge

@@ -324,18 +324,12 @@ fn test_rpc_parse_prefix_no_space_after_bracket() {
 
 #[test]
 fn test_strip_rpc_prefix_with_space() {
-    assert_eq!(
-        RPCChannel::strip_rpc_prefix("[rpc:test] Hello"),
-        "Hello"
-    );
+    assert_eq!(RPCChannel::strip_rpc_prefix("[rpc:test] Hello"), "Hello");
 }
 
 #[test]
 fn test_strip_rpc_prefix_without_space() {
-    assert_eq!(
-        RPCChannel::strip_rpc_prefix("[rpc:test]Hello"),
-        "Hello"
-    );
+    assert_eq!(RPCChannel::strip_rpc_prefix("[rpc:test]Hello"), "Hello");
 }
 
 #[test]
@@ -529,7 +523,10 @@ fn test_parse_prefix_tabs_in_content() {
 
 #[test]
 fn test_strip_prefix_complex_cases() {
-    assert_eq!(RPCChannel::strip_rpc_prefix("[rpc:test] Line1\nLine2"), "Line1\nLine2");
+    assert_eq!(
+        RPCChannel::strip_rpc_prefix("[rpc:test] Line1\nLine2"),
+        "Line1\nLine2"
+    );
     // Whitespace-only content gets trimmed
     assert_eq!(RPCChannel::strip_rpc_prefix("[rpc:test]   \n\t  "), "");
 }
@@ -553,7 +550,9 @@ async fn test_rpc_input_with_custom_timeout_records_received() {
     let ch = RPCChannel::new(RPCChannelConfig::default());
     ch.start().await.unwrap();
 
-    let _rx = ch.input_with_timeout("timeout-stats", Duration::from_secs(10)).unwrap();
+    let _rx = ch
+        .input_with_timeout("timeout-stats", Duration::from_secs(10))
+        .unwrap();
     assert_eq!(ch.base.messages_received(), 1);
 }
 
@@ -562,7 +561,9 @@ async fn test_rpc_input_with_timeout_duplicate_fails() {
     let ch = RPCChannel::new(RPCChannelConfig::default());
     ch.start().await.unwrap();
 
-    let _rx1 = ch.input_with_timeout("dup-timeout", Duration::from_secs(10)).unwrap();
+    let _rx1 = ch
+        .input_with_timeout("dup-timeout", Duration::from_secs(10))
+        .unwrap();
     let result = ch.input_with_timeout("dup-timeout", Duration::from_secs(20));
     assert!(result.is_err());
 }
@@ -572,7 +573,9 @@ async fn test_rpc_input_with_timeout_delivers_response() {
     let ch = RPCChannel::new(RPCChannelConfig::default());
     ch.start().await.unwrap();
 
-    let rx = ch.input_with_timeout("custom-timeout-resp", Duration::from_secs(10)).unwrap();
+    let rx = ch
+        .input_with_timeout("custom-timeout-resp", Duration::from_secs(10))
+        .unwrap();
     let msg = OutboundMessage {
         channel: "rpc".to_string(),
         chat_id: "c".to_string(),
@@ -730,7 +733,9 @@ async fn test_rpc_cleanup_mixed_expired_and_valid() {
     let _rx_expire = ch.input("will-expire").unwrap();
 
     // Create one with custom longer timeout
-    let _rx_survive = ch.input_with_timeout("will-survive", Duration::from_secs(10)).unwrap();
+    let _rx_survive = ch
+        .input_with_timeout("will-survive", Duration::from_secs(10))
+        .unwrap();
 
     assert_eq!(ch.pending_count(), 2);
 
@@ -973,7 +978,9 @@ async fn test_rpc_multiple_cycles() {
         content: "[rpc:cycle-1] First".to_string(),
         message_type: String::new(),
         meta: Default::default(),
-    }).await.unwrap();
+    })
+    .await
+    .unwrap();
     let resp1 = tokio::time::timeout(Duration::from_secs(1), rx1).await;
     assert_eq!(resp1.unwrap().unwrap(), "First");
 
@@ -985,7 +992,9 @@ async fn test_rpc_multiple_cycles() {
         content: "[rpc:cycle-2] Second".to_string(),
         message_type: String::new(),
         meta: Default::default(),
-    }).await.unwrap();
+    })
+    .await
+    .unwrap();
     let resp2 = tokio::time::timeout(Duration::from_secs(1), rx2).await;
     assert_eq!(resp2.unwrap().unwrap(), "Second");
 
@@ -1053,7 +1062,9 @@ fn test_strip_rpc_prefix_various() {
 
 #[test]
 fn test_parse_rpc_prefix_uuid_like() {
-    let (id, rest) = RPCChannel::parse_rpc_prefix("[rpc:550e8400-e29b-41d4-a716-446655440000] Response").unwrap();
+    let (id, rest) =
+        RPCChannel::parse_rpc_prefix("[rpc:550e8400-e29b-41d4-a716-446655440000] Response")
+            .unwrap();
     assert_eq!(id, "550e8400-e29b-41d4-a716-446655440000");
     assert_eq!(rest, "Response");
 }
@@ -1083,13 +1094,16 @@ async fn test_rpc_concurrent_input_and_send() {
         handles.push(tokio::spawn(async move {
             let cid = format!("concurrent-{}", i);
             let rx = ch_clone.input(&cid).unwrap();
-            ch_clone.send(OutboundMessage {
-                channel: "rpc".to_string(),
-                chat_id: "c".to_string(),
-                content: format!("[rpc:{}] Answer {}", cid, i),
-                message_type: String::new(),
-                meta: Default::default(),
-            }).await.unwrap();
+            ch_clone
+                .send(OutboundMessage {
+                    channel: "rpc".to_string(),
+                    chat_id: "c".to_string(),
+                    content: format!("[rpc:{}] Answer {}", cid, i),
+                    message_type: String::new(),
+                    meta: Default::default(),
+                })
+                .await
+                .unwrap();
             let resp = tokio::time::timeout(Duration::from_secs(2), rx).await;
             assert_eq!(resp.unwrap().unwrap(), format!("Answer {}", i));
         }));
@@ -1117,7 +1131,9 @@ async fn test_rpc_stop_restart_new_requests() {
         content: "[rpc:before-stop] Before".to_string(),
         message_type: String::new(),
         meta: Default::default(),
-    }).await.unwrap();
+    })
+    .await
+    .unwrap();
     let _ = rx.await;
 
     ch.stop().await.unwrap();
@@ -1133,7 +1149,9 @@ async fn test_rpc_stop_restart_new_requests() {
         content: "[rpc:after-restart] After".to_string(),
         message_type: String::new(),
         meta: Default::default(),
-    }).await.unwrap();
+    })
+    .await
+    .unwrap();
     let resp = tokio::time::timeout(Duration::from_secs(1), rx2).await;
     assert_eq!(resp.unwrap().unwrap(), "After");
 }
@@ -1214,7 +1232,9 @@ async fn test_rpc_cleanup_only_delivered() {
         content: "[rpc:delivered-only] Response".to_string(),
         message_type: String::new(),
         meta: Default::default(),
-    }).await.unwrap();
+    })
+    .await
+    .unwrap();
     let _ = rx.await;
 
     // Wait for timeout
@@ -1239,7 +1259,9 @@ async fn test_rpc_pending_count_many_deliveries() {
             content: format!("[rpc:many-{}] ok", i),
             message_type: String::new(),
             meta: Default::default(),
-        }).await.unwrap();
+        })
+        .await
+        .unwrap();
         let _ = rx.await;
     }
 

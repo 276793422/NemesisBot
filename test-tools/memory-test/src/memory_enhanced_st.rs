@@ -216,13 +216,21 @@ async fn st_bot_degradation_missing_plugin() -> Result<()> {
 
         // Verify config was auto-disabled
         let em_cfg = std::fs::read_to_string(
-            ws.home().join("workspace").join("config").join("config.enhanced_memory.json")
-        ).unwrap_or_default();
-        assert!(em_cfg.contains("false"), "Config should be auto-disabled after missing plugin");
+            ws.home()
+                .join("workspace")
+                .join("config")
+                .join("config.enhanced_memory.json"),
+        )
+        .unwrap_or_default();
+        assert!(
+            em_cfg.contains("false"),
+            "Config should be auto-disabled after missing plugin"
+        );
 
         println!("[ST] Degradation with missing plugin — PASS");
         Ok::<(), anyhow::Error>(())
-    }.await;
+    }
+    .await;
 
     // Restore plugin DLL
     if had_dll && dll_bak.exists() {

@@ -118,11 +118,7 @@ fn test_parse_slack_event_allowed_users() {
     });
 
     // Not allowed
-    let msg = SlackChannel::parse_slack_event(
-        &event,
-        &bot_id,
-        &["U111".to_string()],
-    );
+    let msg = SlackChannel::parse_slack_event(&event, &bot_id, &["U111".to_string()]);
     assert!(msg.is_none());
 
     // Allowed

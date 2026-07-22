@@ -68,7 +68,10 @@ fn test_server_message_timestamp_iso8601() {
     let val: serde_json::Value = serde_json::from_str(&json).unwrap();
     let ts = val["timestamp"].as_str().unwrap();
     // Should contain 'T' separator (RFC 3339 / ISO 8601)
-    assert!(ts.contains('T'), "timestamp should be ISO 8601 format, got: {ts}");
+    assert!(
+        ts.contains('T'),
+        "timestamp should be ISO 8601 format, got: {ts}"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -135,10 +138,14 @@ fn test_channel_name() {
 // ---------------------------------------------------------------------------
 
 /// Helper: empty allow list (allow all)
-fn empty_allow() -> Vec<String> { vec![] }
+fn empty_allow() -> Vec<String> {
+    vec![]
+}
 
 /// Helper: specific allow list
-fn specific_allow() -> Vec<String> { vec!["websocket:client_allowed".to_string()] }
+fn specific_allow() -> Vec<String> {
+    vec!["websocket:client_allowed".to_string()]
+}
 
 #[test]
 fn test_handle_text_message_ping() {
@@ -404,7 +411,10 @@ fn test_server_message_unicode_content() {
 fn test_server_message_now_timestamp_format() {
     let ts = ServerMessage::now_timestamp();
     // Should be RFC 3339 (ISO 8601) — must contain 'T'
-    assert!(ts.contains('T'), "expected RFC 3339 timestamp with 'T' separator, got: {ts}");
+    assert!(
+        ts.contains('T'),
+        "expected RFC 3339 timestamp with 'T' separator, got: {ts}"
+    );
 }
 
 #[test]
@@ -592,7 +602,14 @@ fn test_handle_text_message_large_content() {
     let large = "x".repeat(10_000);
     let json = format!(r#"{{"type":"message","content":"{}"}}"#, large);
 
-    handle_text_message(&json, "client_1", &bus_tx, &send_tx, "websocket", &empty_allow());
+    handle_text_message(
+        &json,
+        "client_1",
+        &bus_tx,
+        &send_tx,
+        "websocket",
+        &empty_allow(),
+    );
 
     let inbound = bus_rx.try_recv().unwrap();
     assert_eq!(inbound.content.len(), 10_000);
@@ -767,7 +784,12 @@ async fn test_websocket_send_when_running_no_client() {
     };
     let result = ch.send(msg).await;
     assert!(result.is_err());
-    assert!(result.unwrap_err().to_string().contains("no websocket client"));
+    assert!(
+        result
+            .unwrap_err()
+            .to_string()
+            .contains("no websocket client")
+    );
     ch.stop().await.unwrap();
 }
 
@@ -1036,7 +1058,12 @@ async fn test_websocket_client_sends_message_publishes_to_bus() {
     let _ = read.next().await;
 
     // Send a message
-    write.send(Message::Text(r#"{"type":"message","content":"hello bus"}"#.into())).await.unwrap();
+    write
+        .send(Message::Text(
+            r#"{"type":"message","content":"hello bus"}"#.into(),
+        ))
+        .await
+        .unwrap();
 
     // Should arrive on the bus
     let inbound = tokio::time::timeout(std::time::Duration::from_secs(2), bus_rx.recv())
@@ -1074,7 +1101,10 @@ async fn test_websocket_client_sends_ping_gets_pong() {
     // Skip welcome
     let _ = read.next().await;
 
-    write.send(Message::Text(r#"{"type":"ping"}"#.into())).await.unwrap();
+    write
+        .send(Message::Text(r#"{"type":"ping"}"#.into()))
+        .await
+        .unwrap();
 
     let response = tokio::time::timeout(std::time::Duration::from_secs(2), read.next())
         .await
@@ -1114,7 +1144,10 @@ async fn test_websocket_client_sends_invalid_json_gets_error() {
     // Skip welcome
     let _ = read.next().await;
 
-    write.send(Message::Text("invalid json".into())).await.unwrap();
+    write
+        .send(Message::Text("invalid json".into()))
+        .await
+        .unwrap();
 
     let response = tokio::time::timeout(std::time::Duration::from_secs(2), read.next())
         .await
@@ -1156,23 +1189,18 @@ async fn test_websocket_second_client_rejected_when_one_connected() {
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
     // Second client tries to connect — server should drop the TCP connection
-    let result = tokio::time::timeout(
-        std::time::Duration::from_millis(500),
-        connect_async(url),
-    ).await;
+    let result =
+        tokio::time::timeout(std::time::Duration::from_millis(500), connect_async(url)).await;
 
     // Either times out, errors, or connects then immediately closes.
     // All three outcomes are acceptable for this assertion.
     match result {
-        Err(_) => {} // timeout
+        Err(_) => {}     // timeout
         Ok(Err(_)) => {} // connection error
         Ok(Ok((ws2, _))) => {
             // Even if connected, server should drop quickly
             let (_w2, mut r2) = ws2.split();
-            let _ = tokio::time::timeout(
-                std::time::Duration::from_millis(500),
-                r2.next(),
-            ).await;
+            let _ = tokio::time::timeout(std::time::Duration::from_millis(500), r2.next()).await;
         }
     }
 
@@ -1290,24 +1318,36 @@ async fn test_websocket_sync_to_targets_outbound_no_assert() {
 
 #[tokio::test]
 async fn test_websocket_add_and_remove_sync_target() {
-    use std::sync::Arc;
     use async_trait::async_trait;
     use nemesis_types::error::Result;
+    use std::sync::Arc;
 
-    struct StubChannel { name: String }
+    struct StubChannel {
+        name: String,
+    }
     #[async_trait]
     impl Channel for StubChannel {
-        fn name(&self) -> &str { &self.name }
-        async fn start(&self) -> Result<()> { Ok(()) }
-        async fn stop(&self) -> Result<()> { Ok(()) }
-        async fn send(&self, _msg: OutboundMessage) -> Result<()> { Ok(()) }
+        fn name(&self) -> &str {
+            &self.name
+        }
+        async fn start(&self) -> Result<()> {
+            Ok(())
+        }
+        async fn stop(&self) -> Result<()> {
+            Ok(())
+        }
+        async fn send(&self, _msg: OutboundMessage) -> Result<()> {
+            Ok(())
+        }
     }
 
     let (bus_tx, _) = tokio::sync::broadcast::channel::<InboundMessage>(64);
     let config = WebSocketChannelConfig::default();
     let ch = WebSocketChannel::new(config, bus_tx);
 
-    let stub = Arc::new(StubChannel { name: "stub".to_string() });
+    let stub = Arc::new(StubChannel {
+        name: "stub".to_string(),
+    });
     assert!(ch.add_sync_target("stub", stub.clone()).is_ok());
 
     // Adding self should fail

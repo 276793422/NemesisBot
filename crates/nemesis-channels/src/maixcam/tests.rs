@@ -46,7 +46,9 @@ fn test_process_person_detected() {
 
     let event = ch.process_message(&msg);
     match event {
-        MaixCamEvent::PersonDetected { content, metadata, .. } => {
+        MaixCamEvent::PersonDetected {
+            content, metadata, ..
+        } => {
             assert!(content.contains("Person detected"));
             assert!(content.contains("95.00%"));
             assert_eq!(metadata.get("class_name").unwrap(), "person");
@@ -287,7 +289,12 @@ fn test_person_detected_without_data() {
 
     let event = ch.process_message(&msg);
     match event {
-        MaixCamEvent::PersonDetected { content, metadata, sender_id, chat_id } => {
+        MaixCamEvent::PersonDetected {
+            content,
+            metadata,
+            sender_id,
+            chat_id,
+        } => {
             assert!(content.contains("Person detected"));
             assert!(content.contains("person")); // default class_name
             assert_eq!(sender_id, "maixcam");
@@ -406,7 +413,9 @@ fn test_process_message_with_coordinates() {
 
     let event = ch.process_message(&msg);
     match event {
-        MaixCamEvent::PersonDetected { content, metadata, .. } => {
+        MaixCamEvent::PersonDetected {
+            content, metadata, ..
+        } => {
             assert!(content.contains("Person detected"));
             assert!(content.contains("75.00%"));
             assert!(metadata.contains_key("score"));
@@ -563,7 +572,12 @@ fn test_process_person_detected_with_timestamp() {
 
     let event = ch.process_message(&msg);
     match event {
-        MaixCamEvent::PersonDetected { content, metadata, sender_id, chat_id } => {
+        MaixCamEvent::PersonDetected {
+            content,
+            metadata,
+            sender_id,
+            chat_id,
+        } => {
             assert!(content.contains("vehicle"));
             assert!(content.contains("75.00%"));
             assert!(metadata.contains_key("timestamp"));
@@ -589,7 +603,9 @@ fn test_process_person_detected_defaults() {
 
     let event = ch.process_message(&msg);
     match event {
-        MaixCamEvent::PersonDetected { content, metadata, .. } => {
+        MaixCamEvent::PersonDetected {
+            content, metadata, ..
+        } => {
             // Defaults: class_name="person", score=0.0, x/y/w/h=0.0
             assert!(content.contains("person"));
             assert!(content.contains("0.00%"));
@@ -601,7 +617,8 @@ fn test_process_person_detected_defaults() {
 
 #[test]
 fn test_deserialize_message_with_tips_field() {
-    let json = r#"{"type":"person_detected","tips":"high confidence","timestamp":1234.5,"data":{}}"#;
+    let json =
+        r#"{"type":"person_detected","tips":"high confidence","timestamp":1234.5,"data":{}}"#;
     let msg: MaixCamMessage = serde_json::from_str(json).unwrap();
     assert_eq!(msg.tips.as_deref(), Some("high confidence"));
 }
@@ -857,7 +874,9 @@ fn test_person_detected_with_non_standard_class() {
 
     let event = ch.process_message(&msg);
     match event {
-        MaixCamEvent::PersonDetected { content, metadata, .. } => {
+        MaixCamEvent::PersonDetected {
+            content, metadata, ..
+        } => {
             assert!(content.contains("vehicle"));
             assert!(content.contains("100.00%"));
             assert_eq!(metadata.get("class_name").unwrap(), "vehicle");
@@ -965,7 +984,9 @@ fn test_person_detected_score_as_string_defaults_to_zero() {
     };
     let event = ch.process_message(&msg);
     match event {
-        MaixCamEvent::PersonDetected { content, metadata, .. } => {
+        MaixCamEvent::PersonDetected {
+            content, metadata, ..
+        } => {
             // String score falls back to 0.0 -> 0.00%
             assert!(content.contains("0.00%"));
             assert_eq!(metadata.get("score").unwrap(), "0.00");
@@ -991,7 +1012,9 @@ fn test_person_detected_class_name_as_non_string_defaults_to_person() {
     };
     let event = ch.process_message(&msg);
     match event {
-        MaixCamEvent::PersonDetected { content, metadata, .. } => {
+        MaixCamEvent::PersonDetected {
+            content, metadata, ..
+        } => {
             assert!(content.contains("person"));
             assert_eq!(metadata.get("class_name").unwrap(), "person");
         }

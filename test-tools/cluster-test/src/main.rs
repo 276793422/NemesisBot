@@ -9,13 +9,13 @@ use std::net::{TcpStream, UdpSocket};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use nemesis_cluster::discovery::{
+    DiscoveryConfig, DiscoveryMessage, DiscoveryService, derive_key, encrypt_data,
+};
 use nemesis_cluster::rpc::{RpcServer, RpcServerConfig};
 use nemesis_cluster::task_manager::TaskManager;
 use nemesis_cluster::transport::conn::{Connection, TcpConn, TcpConnConfig, WireMessage};
 use nemesis_cluster::transport::frame::{read_frame, write_frame};
-use nemesis_cluster::discovery::{
-    derive_key, encrypt_data, DiscoveryConfig, DiscoveryMessage, DiscoveryService,
-};
 use nemesis_types::cluster::TaskStatus;
 
 use serde_json::json;
@@ -74,7 +74,10 @@ impl TestRunner {
             println!("  [{}] {:50} {}", icon, r.name, r.detail);
         }
         println!("------------------------------------------------------------");
-        println!("  Total: {} | Passed: {} | Failed: {}", total, passed, failed);
+        println!(
+            "  Total: {} | Passed: {} | Failed: {}",
+            total, passed, failed
+        );
         println!("============================================================\n");
     }
 }
@@ -306,10 +309,19 @@ fn test_bidirectional() -> Result<String, String> {
     // A -> B (using thread to simulate concurrency)
     let addr_b_clone = addr_b.clone();
     let h_a_to_b = std::thread::spawn(move || -> Result<String, String> {
-        let req = WireMessage::new_request("node-A", "node-B", "echo_B", json!({"id": "call-A-to-B"}));
+        let req =
+            WireMessage::new_request("node-A", "node-B", "echo_B", json!({"id": "call-A-to-B"}));
         let resp = tcp_send_recv(&addr_b_clone, &req)?;
-        let source = resp.payload.get("source").and_then(|v| v.as_str()).unwrap_or("");
-        let echo_id = resp.payload.get("echo_id").and_then(|v| v.as_str()).unwrap_or("");
+        let source = resp
+            .payload
+            .get("source")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        let echo_id = resp
+            .payload
+            .get("echo_id")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
         if source != "B" || echo_id != "call-A-to-B" {
             Err(format!("A->B: source={}, echo_id={}", source, echo_id))
         } else {
@@ -320,10 +332,19 @@ fn test_bidirectional() -> Result<String, String> {
     // B -> A
     let addr_a_clone = addr_a.clone();
     let h_b_to_a = std::thread::spawn(move || -> Result<String, String> {
-        let req = WireMessage::new_request("node-B", "node-A", "echo_A", json!({"id": "call-B-to-A"}));
+        let req =
+            WireMessage::new_request("node-B", "node-A", "echo_A", json!({"id": "call-B-to-A"}));
         let resp = tcp_send_recv(&addr_a_clone, &req)?;
-        let source = resp.payload.get("source").and_then(|v| v.as_str()).unwrap_or("");
-        let echo_id = resp.payload.get("echo_id").and_then(|v| v.as_str()).unwrap_or("");
+        let source = resp
+            .payload
+            .get("source")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        let echo_id = resp
+            .payload
+            .get("echo_id")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
         if source != "A" || echo_id != "call-B-to-A" {
             Err(format!("B->A: source={}, echo_id={}", source, echo_id))
         } else {
@@ -380,7 +401,10 @@ fn test_task_dispatch_callback() -> Result<String, String> {
             // Async callback via real TCP
             std::thread::spawn(move || {
                 std::thread::sleep(Duration::from_millis(100));
-                let source_node_id = source_info.get("node_id").and_then(|v| v.as_str()).unwrap_or("");
+                let source_node_id = source_info
+                    .get("node_id")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
                 if !source_node_id.is_empty() {
                     let cb_msg = WireMessage::new_request(
                         "node-B",
@@ -443,16 +467,10 @@ fn test_task_dispatch_callback() -> Result<String, String> {
     let cb = &cbs[0];
     let cb_task = cb.get("task_id").and_then(|v| v.as_str()).unwrap_or("");
     let cb_status = cb.get("status").and_then(|v| v.as_str()).unwrap_or("");
-    let cb_resp = cb
-        .get("response")
-        .and_then(|v| v.as_str())
-        .unwrap_or("");
+    let cb_resp = cb.get("response").and_then(|v| v.as_str()).unwrap_or("");
 
     if cb_task != task_id {
-        return Err(format!(
-            "expected task_id '{}', got '{}'",
-            task_id, cb_task
-        ));
+        return Err(format!("expected task_id '{}', got '{}'", task_id, cb_task));
     }
     if cb_status != "success" {
         return Err(format!("expected 'success', got '{}'", cb_status));
@@ -487,25 +505,22 @@ fn test_task_status_lifecycle() -> Result<String, String> {
     let task1 = tm.create_task("peer_chat", json!({"content": "test"}), "web", "chat-1");
     let got = tm.get_task(&task1.id).unwrap();
     if got.status != TaskStatus::Pending {
-        return Err(format!(
-            "expected Pending, got {:?}",
-            got.status
-        ));
+        return Err(format!("expected Pending, got {:?}", got.status));
     }
 
     tm.complete_task(&task1.id, json!("Done!"));
     let got = tm.get_task(&task1.id).unwrap();
     if got.status != TaskStatus::Completed {
-        return Err(format!(
-            "expected Completed, got {:?}",
-            got.status
-        ));
+        return Err(format!("expected Completed, got {:?}", got.status));
     }
 
     // Verify callback
     let cb_list = completed.lock().unwrap();
     if cb_list.len() != 1 || cb_list[0] != task1.id {
-        return Err(format!("expected callback for {}, got {:?}", task1.id, *cb_list));
+        return Err(format!(
+            "expected callback for {}, got {:?}",
+            task1.id, *cb_list
+        ));
     }
     drop(cb_list);
 
@@ -514,10 +529,7 @@ fn test_task_status_lifecycle() -> Result<String, String> {
     tm.fail_task(&task2.id, "connection refused");
     let got2 = tm.get_task(&task2.id).unwrap();
     if got2.status != TaskStatus::Failed {
-        return Err(format!(
-            "expected Failed, got {:?}",
-            got2.status
-        ));
+        return Err(format!("expected Failed, got {:?}", got2.status));
     }
 
     // --- CompleteCallback ---
@@ -591,7 +603,10 @@ fn test_concurrent_multi_task() -> Result<String, String> {
 
     server.stop().map_err(|e| e)?;
     if errors.is_empty() {
-        Ok(format!("{} concurrent tasks, no cross-contamination", num_tasks))
+        Ok(format!(
+            "{} concurrent tasks, no cross-contamination",
+            num_tasks
+        ))
     } else {
         Err(errors.join("; "))
     }
@@ -607,15 +622,16 @@ fn test_auth_token_enforcement() -> Result<String, String> {
     // Sub-test 1: Same token -> success
     {
         let (server, port) = start_server("shared-secret");
-        server.register_handler(
-            "echo",
-            Box::new(|_| Ok(json!({"status": "ok"}))),
-        );
+        server.register_handler("echo", Box::new(|_| Ok(json!({"status": "ok"}))));
         let addr = format!("127.0.0.1:{}", port);
         let req = WireMessage::new_request("node-A", "node-B", "echo", json!({}));
         match tcp_send_recv_auth(&addr, &req, "shared-secret") {
             Ok(resp) => {
-                let status = resp.payload.get("status").and_then(|v| v.as_str()).unwrap_or("");
+                let status = resp
+                    .payload
+                    .get("status")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
                 sub_results.push(format!(
                     "same_token: {}",
                     if status == "ok" { "OK" } else { "FAIL" }
@@ -629,10 +645,7 @@ fn test_auth_token_enforcement() -> Result<String, String> {
     // Sub-test 2: Different token -> failure
     {
         let (server, port) = start_server("server-token");
-        server.register_handler(
-            "echo",
-            Box::new(|_| Ok(json!({"status": "ok"}))),
-        );
+        server.register_handler("echo", Box::new(|_| Ok(json!({"status": "ok"}))));
         let addr = format!("127.0.0.1:{}", port);
         let req = WireMessage::new_request("node-A", "node-B", "echo", json!({}));
         match tcp_send_recv_auth(&addr, &req, "wrong-token") {
@@ -645,10 +658,7 @@ fn test_auth_token_enforcement() -> Result<String, String> {
     // Sub-test 3: Client no token + server has token -> failure
     {
         let (server, port) = start_server("server-token");
-        server.register_handler(
-            "echo",
-            Box::new(|_| Ok(json!({"status": "ok"}))),
-        );
+        server.register_handler("echo", Box::new(|_| Ok(json!({"status": "ok"}))));
         let addr = format!("127.0.0.1:{}", port);
         let req = WireMessage::new_request("node-A", "node-B", "echo", json!({}));
         // No token sent
@@ -662,10 +672,7 @@ fn test_auth_token_enforcement() -> Result<String, String> {
     // Sub-test 4: Both no token -> success
     {
         let (server, port) = start_server("");
-        server.register_handler(
-            "echo",
-            Box::new(|_| Ok(json!({"status": "ok"}))),
-        );
+        server.register_handler("echo", Box::new(|_| Ok(json!({"status": "ok"}))));
         let addr = format!("127.0.0.1:{}", port);
         let req = WireMessage::new_request("node-A", "node-B", "echo", json!({}));
         match tcp_send_recv(&addr, &req) {
@@ -694,7 +701,11 @@ fn test_role_capabilities() -> Result<String, String> {
     // Query capabilities
     let req = WireMessage::new_request("node-B", "node-A", "get_capabilities", json!({}));
     let resp = tcp_send_recv(&addr, &req)?;
-    let caps = resp.payload.get("capabilities").cloned().unwrap_or(json!([]));
+    let caps = resp
+        .payload
+        .get("capabilities")
+        .cloned()
+        .unwrap_or(json!([]));
     if caps.as_array().map_or(true, |a| a.is_empty()) {
         return Err("expected non-empty capabilities".into());
     }
@@ -726,11 +737,8 @@ fn test_encrypted_discovery() -> Result<String, String> {
     let cb = Arc::new(MockCallbacks::new("node-A", 9999));
     let cb_clone = cb.clone();
 
-    let config = DiscoveryConfig::with_encryption(
-        port,
-        Duration::from_secs(30),
-        "test-cluster-secret",
-    );
+    let config =
+        DiscoveryConfig::with_encryption(port, Duration::from_secs(30), "test-cluster-secret");
     let rt = tokio::runtime::Runtime::new().unwrap();
     let disc = rt.block_on(async {
         let d = DiscoveryService::new(cb_clone, config).map_err(|e| e.to_string())?;
@@ -820,7 +828,8 @@ fn test_node_offline_bye() -> Result<String, String> {
     let cb = Arc::new(MockCallbacks::new("node-A", 0));
     let cb_clone = cb.clone();
 
-    let config = DiscoveryConfig::with_encryption(port, Duration::from_secs(30), "test-cluster-secret");
+    let config =
+        DiscoveryConfig::with_encryption(port, Duration::from_secs(30), "test-cluster-secret");
     let rt = tokio::runtime::Runtime::new().unwrap();
     let disc = rt.block_on(async {
         let d = DiscoveryService::new(cb_clone, config).map_err(|e| e.to_string())?;
@@ -844,7 +853,10 @@ fn test_node_offline_bye() -> Result<String, String> {
                 return Err(format!("expected node-B, got {}", node_id));
             }
             disc.stop().map_err(|e| e.to_string())?;
-            return Ok(format!("offline event: node={}, reason={}", node_id, reason));
+            return Ok(format!(
+                "offline event: node={}, reason={}",
+                node_id, reason
+            ));
         }
         if start.elapsed() > Duration::from_secs(3) {
             disc.stop().map_err(|e| e.to_string())?;
@@ -946,7 +958,8 @@ fn test_full_e2e() -> Result<String, String> {
     let cb = Arc::new(MockCallbacks::new("node-A", 0));
     let cb_clone = cb.clone();
 
-    let disc_config = DiscoveryConfig::with_encryption(disc_port, Duration::from_secs(30), shared_token);
+    let disc_config =
+        DiscoveryConfig::with_encryption(disc_port, Duration::from_secs(30), shared_token);
     let rt_disc = tokio::runtime::Runtime::new().unwrap();
     let disc = rt_disc.block_on(async {
         let d = DiscoveryService::new(cb_clone, disc_config).map_err(|e| e.to_string())?;
@@ -987,7 +1000,10 @@ fn test_full_e2e() -> Result<String, String> {
 
             std::thread::spawn(move || {
                 std::thread::sleep(Duration::from_millis(100));
-                let source_node_id = source_info.get("node_id").and_then(|v| v.as_str()).unwrap_or("");
+                let source_node_id = source_info
+                    .get("node_id")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
                 if !source_node_id.is_empty() {
                     let cb_msg = WireMessage::new_request(
                         "node-B",
@@ -1080,7 +1096,10 @@ fn test_full_e2e() -> Result<String, String> {
     let cbs = callbacks.lock().unwrap();
     let cb_task = cbs[0].get("task_id").and_then(|v| v.as_str()).unwrap_or("");
     let cb_status = cbs[0].get("status").and_then(|v| v.as_str()).unwrap_or("");
-    let cb_resp = cbs[0].get("response").and_then(|v| v.as_str()).unwrap_or("");
+    let cb_resp = cbs[0]
+        .get("response")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
 
     if cb_task != task_id {
         return Err(format!("expected task_id '{}', got '{}'", task_id, cb_task));
@@ -1106,10 +1125,7 @@ fn stress_basic_rpc() -> Result<String, String> {
     let (server, port) = start_server("");
     let addr = format!("127.0.0.1:{}", port);
 
-    server.register_handler(
-        "echo",
-        Box::new(|payload| Ok(payload)),
-    );
+    server.register_handler("echo", Box::new(|payload| Ok(payload)));
 
     let req = WireMessage::new_request("client", "server", "echo", json!({"message": "hello"}));
     let resp = tcp_send_recv(&addr, &req)?;
@@ -1143,12 +1159,8 @@ fn stress_concurrent_rpc() -> Result<String, String> {
     for i in 0..num {
         let addr = addr.clone();
         handles.push(std::thread::spawn(move || -> bool {
-            let req = WireMessage::new_request(
-                &format!("client-{}", i),
-                "server",
-                "ping",
-                json!(null),
-            );
+            let req =
+                WireMessage::new_request(&format!("client-{}", i), "server", "ping", json!(null));
             match tcp_send_recv(&addr, &req) {
                 Ok(resp) => resp.msg_type == "response",
                 Err(_) => false,
@@ -1164,7 +1176,10 @@ fn stress_concurrent_rpc() -> Result<String, String> {
 
     server.stop().map_err(|e| e)?;
     if success_count == num {
-        Ok(format!("{}/{} concurrent calls succeeded", success_count, num))
+        Ok(format!(
+            "{}/{} concurrent calls succeeded",
+            success_count, num
+        ))
     } else {
         Err(format!(
             "{}/{} concurrent calls succeeded",
@@ -1190,12 +1205,7 @@ fn stress_sequential_rpc() -> Result<String, String> {
     let mut success = 0;
 
     for i in 0..total {
-        let req = WireMessage::new_request(
-            "client",
-            "server",
-            "counter",
-            json!({"n": i}),
-        );
+        let req = WireMessage::new_request("client", "server", "counter", json!({"n": i}));
         match tcp_send_recv(&addr, &req) {
             Ok(resp) if resp.msg_type == "response" => success += 1,
             _ => {}
@@ -1228,7 +1238,9 @@ fn stress_large_payload() -> Result<String, String> {
     server.register_handler(
         "large",
         Box::new(|payload| {
-            let size = serde_json::to_string(&payload).map(|s| s.len()).unwrap_or(0);
+            let size = serde_json::to_string(&payload)
+                .map(|s| s.len())
+                .unwrap_or(0);
             Ok(json!({"status": "ok", "received_size": size}))
         }),
     );
@@ -1238,12 +1250,7 @@ fn stress_large_payload() -> Result<String, String> {
     let data_str = serde_json::to_string(&large_data).unwrap_or_default();
 
     let start = std::time::Instant::now();
-    let req = WireMessage::new_request(
-        "client",
-        "server",
-        "large",
-        json!({"data": data_str}),
-    );
+    let req = WireMessage::new_request("client", "server", "large", json!({"data": data_str}));
     let resp = tcp_send_recv(&addr, &req)?;
     let elapsed = start.elapsed();
 
@@ -1263,10 +1270,13 @@ fn stress_timeout() -> Result<String, String> {
     let (server, port) = start_server("");
     let addr = format!("127.0.0.1:{}", port);
 
-    server.register_handler("slow", Box::new(|_| {
-        std::thread::sleep(Duration::from_secs(5));
-        Ok(json!({"status": "ok"}))
-    }));
+    server.register_handler(
+        "slow",
+        Box::new(|_| {
+            std::thread::sleep(Duration::from_secs(5));
+            Ok(json!({"status": "ok"}))
+        }),
+    );
 
     // Connect with short timeout
     let stream = TcpStream::connect(&addr).map_err(|e| format!("connect: {}", e))?;
@@ -1311,12 +1321,8 @@ fn stress_connection_pool() -> Result<String, String> {
     for i in 0..5 {
         match pool.get_or_connect(&addr) {
             Ok(mut conn) => {
-                let req = WireMessage::new_request(
-                    "client",
-                    "server",
-                    "pool_test",
-                    json!({"id": i}),
-                );
+                let req =
+                    WireMessage::new_request("client", "server", "pool_test", json!({"id": i}));
                 let data = req.to_bytes().map_err(|e| e.to_string())?;
                 if conn.send(&data).is_ok() {
                     if let Ok(resp_data) = conn.recv() {

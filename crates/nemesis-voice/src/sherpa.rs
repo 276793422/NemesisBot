@@ -506,10 +506,8 @@ pub fn init(dll_path: &Path) -> anyhow::Result<()> {
         // 0x100 = LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR
         // 0x1000 = LOAD_LIBRARY_SEARCH_DEFAULT_DIRS
         const FLAGS: u32 = 0x100 | 0x1000;
-        let lib = unsafe {
-            win_lib::Library::load_with_flags(dll_path, FLAGS)
-        }
-        .map_err(|e| anyhow::anyhow!("Failed to load {}: {}", dll_path.display(), e))?;
+        let lib = unsafe { win_lib::Library::load_with_flags(dll_path, FLAGS) }
+            .map_err(|e| anyhow::anyhow!("Failed to load {}: {}", dll_path.display(), e))?;
         SHERPA_LIB
             .set(lib.into())
             .map_err(|_| anyhow::anyhow!("sherpa-onnx already initialized"))?;
@@ -533,9 +531,12 @@ pub fn is_initialized() -> bool {
 /// Get a function pointer from the loaded library.
 /// Panics if the library is not loaded or the symbol is not found.
 unsafe fn get_fn<F>(name: &[u8]) -> libloading::Symbol<'static, F> {
-    let lib = SHERPA_LIB
-        .get()
-        .unwrap_or_else(|| panic!("sherpa-onnx not initialized (looking for {})", String::from_utf8_lossy(name)));
+    let lib = SHERPA_LIB.get().unwrap_or_else(|| {
+        panic!(
+            "sherpa-onnx not initialized (looking for {})",
+            String::from_utf8_lossy(name)
+        )
+    });
     // We transmute the symbol lifetime to 'static because the Library is never dropped.
     // This is safe because SHERPA_LIB is a OnceLock and lives for the entire program.
     let sym: libloading::Symbol<'_, F> = unsafe {
@@ -547,9 +548,12 @@ unsafe fn get_fn<F>(name: &[u8]) -> libloading::Symbol<'static, F> {
 
 /// Get a raw function pointer from the loaded library (extern "C" ABI).
 unsafe fn get_raw_fn<F>(name: &[u8]) -> libloading::Symbol<'static, F> {
-    let lib = SHERPA_LIB
-        .get()
-        .unwrap_or_else(|| panic!("sherpa-onnx not initialized (looking for {})", String::from_utf8_lossy(name)));
+    let lib = SHERPA_LIB.get().unwrap_or_else(|| {
+        panic!(
+            "sherpa-onnx not initialized (looking for {})",
+            String::from_utf8_lossy(name)
+        )
+    });
     let sym: libloading::Symbol<'_, F> = unsafe {
         lib.get(name)
             .unwrap_or_else(|e| panic!("Symbol {} not found: {}", String::from_utf8_lossy(name), e))
@@ -621,13 +625,20 @@ sherpa_fn!(SherpaOnnxDestroyOfflineTtsGeneratedAudio(audio: *const SherpaOnnxGen
 #[cfg(target_os = "windows")]
 unsafe extern "C" {
     fn safe_tts_create(
-        create_fn: unsafe extern "C" fn(*const SherpaOnnxOfflineTtsConfig) -> *const SherpaOnnxOfflineTts,
+        create_fn: unsafe extern "C" fn(
+            *const SherpaOnnxOfflineTtsConfig,
+        ) -> *const SherpaOnnxOfflineTts,
         config: *const SherpaOnnxOfflineTtsConfig,
         out: *mut *const SherpaOnnxOfflineTts,
     ) -> libc::c_int;
 
     fn safe_tts_generate(
-        generate_fn: unsafe extern "C" fn(*const SherpaOnnxOfflineTts, *const libc::c_char, libc::c_int, f32) -> *const SherpaOnnxGeneratedAudio,
+        generate_fn: unsafe extern "C" fn(
+            *const SherpaOnnxOfflineTts,
+            *const libc::c_char,
+            libc::c_int,
+            f32,
+        ) -> *const SherpaOnnxGeneratedAudio,
         tts: *const SherpaOnnxOfflineTts,
         text: *const libc::c_char,
         sid: libc::c_int,
@@ -637,24 +648,35 @@ unsafe extern "C" {
 }
 
 /// Safe TTS create — catches C++ exceptions on Windows.
-pub fn safe_create_offline_tts(config: *const SherpaOnnxOfflineTtsConfig) -> Result<*const SherpaOnnxOfflineTts, String> {
+pub fn safe_create_offline_tts(
+    config: *const SherpaOnnxOfflineTtsConfig,
+) -> Result<*const SherpaOnnxOfflineTts, String> {
     #[cfg(target_os = "windows")]
     {
-        let create_fn: unsafe extern "C" fn(*const SherpaOnnxOfflineTtsConfig) -> *const SherpaOnnxOfflineTts =
-            unsafe { *get_raw_fn(b"SherpaOnnxCreateOfflineTts\0") };
+        let create_fn: unsafe extern "C" fn(
+            *const SherpaOnnxOfflineTtsConfig,
+        ) -> *const SherpaOnnxOfflineTts = unsafe { *get_raw_fn(b"SherpaOnnxCreateOfflineTts\0") };
         let mut out: *const SherpaOnnxOfflineTts = std::ptr::null();
         let rc = unsafe { safe_tts_create(create_fn, config, &mut out) };
-        if rc != 0 { Err("sherpa-onnx TTS create threw C++ exception".into()) }
-        else if out.is_null() { Err("sherpa-onnx TTS create returned null".into()) }
-        else { Ok(out) }
+        if rc != 0 {
+            Err("sherpa-onnx TTS create threw C++ exception".into())
+        } else if out.is_null() {
+            Err("sherpa-onnx TTS create returned null".into())
+        } else {
+            Ok(out)
+        }
     }
     #[cfg(not(target_os = "windows"))]
     {
-        let create_fn: unsafe extern "C" fn(*const SherpaOnnxOfflineTtsConfig) -> *const SherpaOnnxOfflineTts =
-            unsafe { *get_raw_fn(b"SherpaOnnxCreateOfflineTts\0") };
+        let create_fn: unsafe extern "C" fn(
+            *const SherpaOnnxOfflineTtsConfig,
+        ) -> *const SherpaOnnxOfflineTts = unsafe { *get_raw_fn(b"SherpaOnnxCreateOfflineTts\0") };
         let out = unsafe { create_fn(config) };
-        if out.is_null() { Err("sherpa-onnx TTS create returned null".into()) }
-        else { Ok(out) }
+        if out.is_null() {
+            Err("sherpa-onnx TTS create returned null".into())
+        } else {
+            Ok(out)
+        }
     }
 }
 
@@ -667,21 +689,38 @@ pub fn safe_tts_generate_audio(
 ) -> Result<*const SherpaOnnxGeneratedAudio, String> {
     #[cfg(target_os = "windows")]
     {
-        let generate_fn: unsafe extern "C" fn(*const SherpaOnnxOfflineTts, *const libc::c_char, libc::c_int, f32) -> *const SherpaOnnxGeneratedAudio =
+        let generate_fn: unsafe extern "C" fn(
+            *const SherpaOnnxOfflineTts,
+            *const libc::c_char,
+            libc::c_int,
+            f32,
+        ) -> *const SherpaOnnxGeneratedAudio =
             unsafe { *get_raw_fn(b"SherpaOnnxOfflineTtsGenerate\0") };
         let mut out: *const SherpaOnnxGeneratedAudio = std::ptr::null();
         let rc = unsafe { safe_tts_generate(generate_fn, tts, text, sid, speed, &mut out) };
-        if rc != 0 { Err("sherpa-onnx TTS generate threw C++ exception".into()) }
-        else if out.is_null() { Err("sherpa-onnx TTS generate returned null".into()) }
-        else { Ok(out) }
+        if rc != 0 {
+            Err("sherpa-onnx TTS generate threw C++ exception".into())
+        } else if out.is_null() {
+            Err("sherpa-onnx TTS generate returned null".into())
+        } else {
+            Ok(out)
+        }
     }
     #[cfg(not(target_os = "windows"))]
     {
-        let generate_fn: unsafe extern "C" fn(*const SherpaOnnxOfflineTts, *const libc::c_char, libc::c_int, f32) -> *const SherpaOnnxGeneratedAudio =
+        let generate_fn: unsafe extern "C" fn(
+            *const SherpaOnnxOfflineTts,
+            *const libc::c_char,
+            libc::c_int,
+            f32,
+        ) -> *const SherpaOnnxGeneratedAudio =
             unsafe { *get_raw_fn(b"SherpaOnnxOfflineTtsGenerate\0") };
         let out = unsafe { generate_fn(tts, text, sid, speed) };
-        if out.is_null() { Err("sherpa-onnx TTS generate returned null".into()) }
-        else { Ok(out) }
+        if out.is_null() {
+            Err("sherpa-onnx TTS generate returned null".into())
+        } else {
+            Ok(out)
+        }
     }
 }
 

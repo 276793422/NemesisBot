@@ -40,10 +40,7 @@ async fn test_bluesky_channel_lifecycle() {
 
 #[test]
 fn test_build_post_uri() {
-    let uri = BlueskyChannel::build_post_uri(
-        "did:plc:abc123",
-        "3k2la7bfx2x2y",
-    );
+    let uri = BlueskyChannel::build_post_uri("did:plc:abc123", "3k2la7bfx2x2y");
     assert_eq!(uri, "at://did:plc:abc123/app.bsky.feed.post/3k2la7bfx2x2y");
 }
 

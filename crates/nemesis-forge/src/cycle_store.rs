@@ -57,9 +57,8 @@ impl CycleStore {
             .open(&file_path)
             .await?;
 
-        let mut line = serde_json::to_string(cycle).map_err(|e| {
-            std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string())
-        })?;
+        let mut line = serde_json::to_string(cycle)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()))?;
         line.push('\n');
         file.write_all(line.as_bytes()).await?;
         Ok(())
@@ -69,7 +68,10 @@ impl CycleStore {
     ///
     /// If `since` is `None`, returns all records. The filtering is done by
     /// checking the filename date (YYYYMMDD.jsonl) against the `since` date.
-    pub async fn read_cycles(&self, since: Option<chrono::DateTime<chrono::Local>>) -> std::io::Result<Vec<LearningCycle>> {
+    pub async fn read_cycles(
+        &self,
+        since: Option<chrono::DateTime<chrono::Local>>,
+    ) -> std::io::Result<Vec<LearningCycle>> {
         let mut results = Vec::new();
 
         if !self.base_dir.exists() {

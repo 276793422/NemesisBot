@@ -9,8 +9,8 @@
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
-use serde::{Deserialize, Serialize};
 use parking_lot::RwLock;
+use serde::{Deserialize, Serialize};
 
 use crate::types::RegistrySearchResult;
 
@@ -105,7 +105,10 @@ impl SearchCache {
 
         // 1. Try exact match first.
         let exact_match = inner.cache.get(query).map(|entry| {
-            (entry.created_at.elapsed() > inner.ttl, entry.results.clone())
+            (
+                entry.created_at.elapsed() > inner.ttl,
+                entry.results.clone(),
+            )
         });
 
         if let Some((expired, results)) = exact_match {
@@ -285,9 +288,7 @@ pub fn build_trigrams(s: &str) -> Vec<u32> {
     }
 
     let mut features: Vec<u32> = (0..=bytes.len() - 3)
-        .map(|i| {
-            (bytes[i] as u32) << 16 | (bytes[i + 1] as u32) << 8 | (bytes[i + 2] as u32)
-        })
+        .map(|i| (bytes[i] as u32) << 16 | (bytes[i + 1] as u32) << 8 | (bytes[i + 2] as u32))
         .collect();
 
     features.sort();
@@ -311,8 +312,12 @@ pub fn build_trigrams(s: &str) -> Vec<u32> {
 
         // Word bigrams.
         for i in 0..words.len().saturating_sub(1) {
-            let h1 = words[i].chars().fold(0u32, |acc, c| acc.wrapping_mul(31).wrapping_add(c as u32));
-            let h2 = words[i + 1].chars().fold(0u32, |acc, c| acc.wrapping_mul(31).wrapping_add(c as u32));
+            let h1 = words[i]
+                .chars()
+                .fold(0u32, |acc, c| acc.wrapping_mul(31).wrapping_add(c as u32));
+            let h2 = words[i + 1]
+                .chars()
+                .fold(0u32, |acc, c| acc.wrapping_mul(31).wrapping_add(c as u32));
             features.push(0x03000000u32 | (h1.wrapping_mul(31).wrapping_add(h2) & 0x00FFFFFF));
         }
 
@@ -367,7 +372,13 @@ pub fn jaccard_similarity(a: &[u32], b: &[u32]) -> f64 {
 /// Unicode case-folding overhead.
 pub fn to_lower(s: &str) -> String {
     s.bytes()
-        .map(|c| if c.is_ascii_uppercase() { c.to_ascii_lowercase() as char } else { c as char })
+        .map(|c| {
+            if c.is_ascii_uppercase() {
+                c.to_ascii_lowercase() as char
+            } else {
+                c as char
+            }
+        })
         .collect()
 }
 

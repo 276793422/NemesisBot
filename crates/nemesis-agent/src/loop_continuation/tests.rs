@@ -22,7 +22,14 @@ async fn test_save_and_load_continuation() {
     ];
 
     manager
-        .save_continuation("task-1", messages.clone(), "tc_1", "web", "chat1", "test_session")
+        .save_continuation(
+            "task-1",
+            messages.clone(),
+            "tc_1",
+            "web",
+            "chat1",
+            "test_session",
+        )
         .await;
 
     let loaded = manager.load_continuation("task-1").await;
@@ -46,7 +53,14 @@ async fn test_remove_continuation() {
     let manager = ContinuationManager::new();
 
     manager
-        .save_continuation("task-2", vec![make_message("user", "test")], "tc_2", "web", "chat1", "test_session")
+        .save_continuation(
+            "task-2",
+            vec![make_message("user", "test")],
+            "tc_2",
+            "web",
+            "chat1",
+            "test_session",
+        )
         .await;
 
     assert!(manager.has_continuation("task-2").await);
@@ -65,7 +79,14 @@ async fn test_disk_persistence_and_recovery() {
     ];
 
     manager
-        .save_continuation("task-disk", messages.clone(), "tc_d", "rpc", "chat2", "test_session")
+        .save_continuation(
+            "task-disk",
+            messages.clone(),
+            "tc_d",
+            "rpc",
+            "chat2",
+            "test_session",
+        )
         .await;
 
     // Verify it can be loaded while still in memory.
@@ -175,9 +196,7 @@ async fn test_save_barrier_pattern() {
     });
 
     // The load should wait for the save to complete.
-    let load_handle = tokio::spawn(async move {
-        mgr.load_continuation("task-barrier").await
-    });
+    let load_handle = tokio::spawn(async move { mgr.load_continuation("task-barrier").await });
 
     save_handle.await.unwrap();
     let loaded = load_handle.await.unwrap();
@@ -311,7 +330,9 @@ async fn test_manager_multiple_continuations() {
 
     for i in 0..5 {
         assert!(manager.has_continuation(&format!("task-multi-{}", i)).await);
-        let loaded = manager.load_continuation(&format!("task-multi-{}", i)).await;
+        let loaded = manager
+            .load_continuation(&format!("task-multi-{}", i))
+            .await;
         assert!(loaded.is_some());
         assert_eq!(loaded.unwrap().tool_call_id, format!("tc_{}", i));
     }
@@ -410,7 +431,8 @@ async fn test_concurrent_save_and_load() {
                 "web",
                 &format!("chat_{}", i),
                 "test_session",
-            ).await;
+            )
+            .await;
         }));
     }
 
@@ -421,7 +443,9 @@ async fn test_concurrent_save_and_load() {
 
     // Verify all can be loaded
     for i in 0..10 {
-        let loaded = manager.load_continuation(&format!("task-concurrent-{}", i)).await;
+        let loaded = manager
+            .load_continuation(&format!("task-concurrent-{}", i))
+            .await;
         assert!(loaded.is_some());
         assert_eq!(loaded.unwrap().tool_call_id, format!("tc_{}", i));
     }
@@ -707,7 +731,14 @@ async fn test_handle_cluster_continuation_failed_task() {
 
     let messages = vec![make_message("user", "Hello")];
     manager
-        .save_continuation("task-fail", messages, "tc_1", "web", "chat1", "test_session")
+        .save_continuation(
+            "task-fail",
+            messages,
+            "tc_1",
+            "web",
+            "chat1",
+            "test_session",
+        )
         .await;
 
     let provider = MockContinuationProvider::new(vec![LlmResponse {
@@ -747,7 +778,14 @@ async fn test_handle_cluster_continuation_with_tool_calls() {
 
     let messages = vec![make_message("user", "Hello")];
     manager
-        .save_continuation("task-tool", messages, "tc_1", "web", "chat1", "test_session")
+        .save_continuation(
+            "task-tool",
+            messages,
+            "tc_1",
+            "web",
+            "chat1",
+            "test_session",
+        )
         .await;
 
     // First response has tool call, second response is final
@@ -846,7 +884,14 @@ async fn test_handle_cluster_continuation_unknown_tool() {
 
     let messages = vec![make_message("user", "Hello")];
     manager
-        .save_continuation("task-unknown", messages, "tc_1", "web", "chat1", "test_session")
+        .save_continuation(
+            "task-unknown",
+            messages,
+            "tc_1",
+            "web",
+            "chat1",
+            "test_session",
+        )
         .await;
 
     let provider = MockContinuationProvider::new(vec![
@@ -1137,7 +1182,14 @@ async fn test_handle_cluster_continuation_failed_task_no_error_msg() {
 
     let messages = vec![make_message("user", "Hello")];
     manager
-        .save_continuation("task-fail-no-err", messages, "tc_1", "web", "chat1", "test_session")
+        .save_continuation(
+            "task-fail-no-err",
+            messages,
+            "tc_1",
+            "web",
+            "chat1",
+            "test_session",
+        )
         .await;
 
     let provider = MockContinuationProvider::new(vec![LlmResponse {
@@ -1248,7 +1300,11 @@ async fn test_handle_cluster_continuation_writes_session_log() {
     let log_path = nemesis_path::default_path_manager()
         .sessions_log_dir()
         .join(format!("{}.jsonl", safe_key));
-    assert!(log_path.exists(), "session log file should exist at {:?}", log_path);
+    assert!(
+        log_path.exists(),
+        "session log file should exist at {:?}",
+        log_path
+    );
 
     let content = std::fs::read_to_string(&log_path).unwrap();
     assert!(
@@ -1316,13 +1372,16 @@ async fn test_handle_cluster_continuation_writes_session_store_when_provided() {
 
     // session_store should have the assistant message in memory.
     let messages = store.get_history(&session_key);
-    let found = messages.iter().any(|m| {
-        m.role == "assistant" && m.content.contains("Mirrored into session_store")
-    });
+    let found = messages
+        .iter()
+        .any(|m| m.role == "assistant" && m.content.contains("Mirrored into session_store"));
     assert!(
         found,
         "session_store messages should contain the assistant reply, got: {:?}",
-        messages.iter().map(|m| (&m.role, &m.content)).collect::<Vec<_>>()
+        messages
+            .iter()
+            .map(|m| (&m.role, &m.content))
+            .collect::<Vec<_>>()
     );
 
     cleanup_cont_session_log(&session_key);
@@ -1483,11 +1542,10 @@ async fn test_disk_recovery_preserves_session_key_for_handle() {
     }
 
     // Phase 2: new manager boots, recovers from disk, handles the callback.
-    let recovered_mgr = tokio::task::spawn_blocking(move || {
-        ContinuationManager::with_disk_store(&workspace)
-    })
-    .await
-    .unwrap();
+    let recovered_mgr =
+        tokio::task::spawn_blocking(move || ContinuationManager::with_disk_store(&workspace))
+            .await
+            .unwrap();
     assert!(
         recovered_mgr.has_continuation("task-recover-handle").await,
         "snapshot should be recovered from disk on startup"

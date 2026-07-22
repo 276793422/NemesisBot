@@ -183,9 +183,7 @@ impl SlackChannel {
         if bot_id.is_empty() {
             return text.to_string();
         }
-        text.replace(&format!("<@{bot_id}>"), "")
-            .trim()
-            .to_string()
+        text.replace(&format!("<@{bot_id}>"), "").trim().to_string()
     }
 
     /// Validates the bot token by calling auth.test.
@@ -203,13 +201,12 @@ impl SlackChannel {
 
         if resp["ok"].as_bool() != Some(true) {
             let err = resp["error"].as_str().unwrap_or("unknown error");
-            return Err(NemesisError::Channel(format!("slack auth.test failed: {err}")));
+            return Err(NemesisError::Channel(format!(
+                "slack auth.test failed: {err}"
+            )));
         }
 
-        let user_id = resp["user_id"]
-            .as_str()
-            .unwrap_or("unknown")
-            .to_string();
+        let user_id = resp["user_id"].as_str().unwrap_or("unknown").to_string();
         Ok(user_id)
     }
 
@@ -218,22 +215,15 @@ impl SlackChannel {
         let resp: serde_json::Value = self
             .http
             .post(format!("{SLACK_API_BASE}/apps.connections.open"))
-            .header(
-                "Authorization",
-                format!("Bearer {}", self.config.app_token),
-            )
+            .header("Authorization", format!("Bearer {}", self.config.app_token))
             .header("Content-Type", "application/x-www-form-urlencoded")
             .send()
             .await
-            .map_err(|e| {
-                NemesisError::Channel(format!("slack apps.connections.open failed: {e}"))
-            })?
+            .map_err(|e| NemesisError::Channel(format!("slack apps.connections.open failed: {e}")))?
             .json()
             .await
             .map_err(|e| {
-                NemesisError::Channel(format!(
-                    "slack apps.connections.open parse failed: {e}"
-                ))
+                NemesisError::Channel(format!("slack apps.connections.open parse failed: {e}"))
             })?;
 
         if resp["ok"].as_bool() != Some(true) {
@@ -243,10 +233,9 @@ impl SlackChannel {
             )));
         }
 
-        resp["url"]
-            .as_str()
-            .map(String::from)
-            .ok_or_else(|| NemesisError::Channel("missing 'url' in connections.open response".to_string()))
+        resp["url"].as_str().map(String::from).ok_or_else(|| {
+            NemesisError::Channel("missing 'url' in connections.open response".to_string())
+        })
     }
 
     /// Starts the Socket Mode WebSocket receive loop.
@@ -278,14 +267,18 @@ impl SlackChannel {
                         Ok(resp) => match resp.json().await {
                             Ok(v) => v,
                             Err(e) => {
-                                warn!("[SlackChannel] failed to parse connections.open response: {e}");
+                                warn!(
+                                    "[SlackChannel] failed to parse connections.open response: {e}"
+                                );
                                 tokio::time::sleep(backoff).await;
                                 backoff = (backoff * 2).min(MAX_BACKOFF);
                                 continue;
                             }
                         },
                         Err(e) => {
-                            warn!("[SlackChannel] failed to get WebSocket URL: {e}, retrying in {backoff:?}");
+                            warn!(
+                                "[SlackChannel] failed to get WebSocket URL: {e}, retrying in {backoff:?}"
+                            );
                             tokio::time::sleep(backoff).await;
                             backoff = (backoff * 2).min(MAX_BACKOFF);
                             continue;
@@ -294,7 +287,9 @@ impl SlackChannel {
 
                     if body["ok"].as_bool() != Some(true) {
                         let err = body["error"].as_str().unwrap_or("unknown");
-                        warn!("[SlackChannel] connections.open error: {err}, retrying in {backoff:?}");
+                        warn!(
+                            "[SlackChannel] connections.open error: {err}, retrying in {backoff:?}"
+                        );
                         tokio::time::sleep(backoff).await;
                         backoff = (backoff * 2).min(MAX_BACKOFF);
                         continue;
@@ -317,7 +312,9 @@ impl SlackChannel {
                 let ws_stream = match ws_result {
                     Ok((stream, _)) => stream,
                     Err(e) => {
-                        warn!("[SlackChannel] WebSocket connection failed: {e}, retrying in {backoff:?}");
+                        warn!(
+                            "[SlackChannel] WebSocket connection failed: {e}, retrying in {backoff:?}"
+                        );
                         tokio::time::sleep(backoff).await;
                         backoff = (backoff * 2).min(MAX_BACKOFF);
                         continue;
@@ -384,17 +381,17 @@ impl SlackChannel {
 
                             // Extract the event
                             let event = &payload["payload"]["event"];
-                            if let Some(inbound) = Self::parse_slack_event(
-                                event,
-                                &bot_user_id,
-                                &allow_from,
-                            ) {
+                            if let Some(inbound) =
+                                Self::parse_slack_event(event, &bot_user_id, &allow_from)
+                            {
                                 debug!(
                                     "[SlackChannel] message from {} in channel {}",
                                     inbound.sender_id, inbound.chat_id
                                 );
                                 if bus_sender.send(inbound).is_err() {
-                                    warn!("[SlackChannel] failed to publish inbound message (no receivers)");
+                                    warn!(
+                                        "[SlackChannel] failed to publish inbound message (no receivers)"
+                                    );
                                 }
                             }
                         }
@@ -519,12 +516,7 @@ impl SlackChannel {
     }
 
     /// Adds a reaction to a message.
-    pub async fn add_reaction(
-        &self,
-        channel: &str,
-        timestamp: &str,
-        emoji: &str,
-    ) -> Result<()> {
+    pub async fn add_reaction(&self, channel: &str, timestamp: &str, emoji: &str) -> Result<()> {
         let params = serde_json::json!({
             "channel": channel,
             "timestamp": timestamp,
@@ -608,7 +600,9 @@ impl Channel for SlackChannel {
 
         // Add checkmark reaction for pending acks
         if let Some((_, msg_ref)) = self.pending_acks.remove(&msg.chat_id) {
-            let _ = self.add_reaction(&msg_ref.channel_id, &msg_ref.timestamp, "white_check_mark").await;
+            let _ = self
+                .add_reaction(&msg_ref.channel_id, &msg_ref.timestamp, "white_check_mark")
+                .await;
         }
 
         Ok(())

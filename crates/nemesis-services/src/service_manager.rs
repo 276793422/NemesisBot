@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 use parking_lot::Mutex;
 use tokio::sync::{broadcast, watch};
-use tracing::{info, warn, error};
+use tracing::{error, info, warn};
 
 use crate::bot_service::{BotService, BotServiceConfig};
 use crate::state::BotState;
@@ -401,10 +401,7 @@ impl ServiceManager {
     ///
     /// * `desktop_closed` - A `watch::Receiver<bool>` that changes to `true`
     ///   when the desktop UI is closed.
-    pub async fn wait_for_shutdown_with_desktop(
-        &self,
-        mut desktop_closed: watch::Receiver<bool>,
-    ) {
+    pub async fn wait_for_shutdown_with_desktop(&self, mut desktop_closed: watch::Receiver<bool>) {
         let mut shutdown_rx = self.subscribe_shutdown();
 
         tokio::select! {
@@ -444,10 +441,7 @@ impl ServiceManager {
     /// # Returns
     ///
     /// `true` if a shutdown signal was received, `false` if the timeout elapsed.
-    pub async fn wait_for_shutdown_with_timeout(
-        &self,
-        timeout: std::time::Duration,
-    ) -> bool {
+    pub async fn wait_for_shutdown_with_timeout(&self, timeout: std::time::Duration) -> bool {
         let mut rx = self.subscribe_shutdown();
 
         tokio::select! {

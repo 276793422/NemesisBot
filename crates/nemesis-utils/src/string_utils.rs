@@ -83,7 +83,8 @@ pub fn is_blank(s: &str) -> bool {
 
 /// Coalesce an Option<String> with a default.
 pub fn deref_str(opt: Option<&String>, default: &str) -> String {
-    opt.map(|s| s.clone()).unwrap_or_else(|| default.to_string())
+    opt.map(|s| s.clone())
+        .unwrap_or_else(|| default.to_string())
 }
 
 /// Validate a skill identifier (slug or registry name).
@@ -95,7 +96,9 @@ pub fn validate_skill_identifier(identifier: &str) -> Result<(), String> {
         return Err("identifier is required and must be a non-empty string".to_string());
     }
     if trimmed.contains('\\') {
-        return Err("identifier must not contain backslashes to prevent directory traversal".to_string());
+        return Err(
+            "identifier must not contain backslashes to prevent directory traversal".to_string(),
+        );
     }
     if trimmed.contains("..") {
         return Err("identifier must not contain '..' to prevent directory traversal".to_string());

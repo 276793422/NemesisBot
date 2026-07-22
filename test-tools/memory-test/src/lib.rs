@@ -5,7 +5,7 @@
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use test_harness::*;
 
 /// Resolve the plugin DLL path (relative to project root).
@@ -32,11 +32,17 @@ pub fn resolve_model_dir() -> Result<PathBuf> {
         return Ok(alt);
     }
     // Also check: crates/nemesis-memory/models/all-MiniLM-L6-v2/
-    let model_dir = root.join("crates").join("nemesis-memory").join("models").join("all-MiniLM-L6-v2");
+    let model_dir = root
+        .join("crates")
+        .join("nemesis-memory")
+        .join("models")
+        .join("all-MiniLM-L6-v2");
     if model_dir.join("model.onnx").exists() && model_dir.join("tokenizer.json").exists() {
         return Ok(model_dir);
     }
-    bail!("model.onnx + tokenizer.json not found in test-data/memory-e2e/ or crates/nemesis-memory/models/all-MiniLM-L6-v2/")
+    bail!(
+        "model.onnx + tokenizer.json not found in test-data/memory-e2e/ or crates/nemesis-memory/models/all-MiniLM-L6-v2/"
+    )
 }
 
 /// Copy embedding model files to workspace config dir so the plugin can find them.
@@ -49,8 +55,11 @@ pub fn copy_model_files_to_workspace(workspace: &TestWorkspace) -> Result<()> {
     // Copy model.onnx and tokenizer.json
     std::fs::copy(model_src.join("model.onnx"), config_dir.join("model.onnx"))
         .context("copying model.onnx")?;
-    std::fs::copy(model_src.join("tokenizer.json"), config_dir.join("tokenizer.json"))
-        .context("copying tokenizer.json")?;
+    std::fs::copy(
+        model_src.join("tokenizer.json"),
+        config_dir.join("tokenizer.json"),
+    )
+    .context("copying tokenizer.json")?;
     Ok(())
 }
 
@@ -67,8 +76,7 @@ pub fn write_enhanced_memory_config(workspace: &TestWorkspace, json: &str) -> Re
 /// The gateway checks config.json: memory.enabled before creating MemoryManager.
 pub fn enable_main_memory_switch(workspace: &TestWorkspace) -> Result<()> {
     let cfg_path = workspace.config_path();
-    let content = std::fs::read_to_string(&cfg_path)
-        .context("reading config.json")?;
+    let content = std::fs::read_to_string(&cfg_path).context("reading config.json")?;
     let mut cfg: serde_json::Value = serde_json::from_str(&content)?;
     if let Some(mem) = cfg.get_mut("memory") {
         if let Some(obj) = mem.as_object_mut() {
@@ -124,10 +132,7 @@ pub async fn start_ai_server(ai_bin: &Path, cwd: &Path) -> Result<ManagedProcess
 }
 
 /// Start the Gateway and wait for it to become healthy.
-pub async fn start_gateway_and_wait(
-    nemesisbot_bin: &Path,
-    cwd: &Path,
-) -> Result<ManagedProcess> {
+pub async fn start_gateway_and_wait(nemesisbot_bin: &Path, cwd: &Path) -> Result<ManagedProcess> {
     cleanup_ports(&[WEB_PORT, HEALTH_PORT]);
     let gw = ManagedProcess::spawn("Gateway", nemesisbot_bin, &["gateway"], cwd)?;
     wait_for_http(

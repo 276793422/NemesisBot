@@ -2,10 +2,22 @@ use super::*;
 
 #[test]
 fn test_normalize_model_strips_known_prefix() {
-    assert_eq!(normalize_model("deepseek/chat", "https://api.deepseek.com"), "chat");
-    assert_eq!(normalize_model("groq/llama3", "https://api.groq.com"), "llama3");
-    assert_eq!(normalize_model("zhipu/glm-4", "https://open.bigmodel.cn"), "glm-4");
-    assert_eq!(normalize_model("ollama/llama3", "http://localhost:11434"), "llama3");
+    assert_eq!(
+        normalize_model("deepseek/chat", "https://api.deepseek.com"),
+        "chat"
+    );
+    assert_eq!(
+        normalize_model("groq/llama3", "https://api.groq.com"),
+        "llama3"
+    );
+    assert_eq!(
+        normalize_model("zhipu/glm-4", "https://open.bigmodel.cn"),
+        "glm-4"
+    );
+    assert_eq!(
+        normalize_model("ollama/llama3", "http://localhost:11434"),
+        "llama3"
+    );
 }
 
 #[test]
@@ -23,7 +35,10 @@ fn test_normalize_model_no_prefix() {
 
 #[test]
 fn test_normalize_model_unknown_prefix() {
-    assert_eq!(normalize_model("myprovider/model", "https://example.com"), "myprovider/model");
+    assert_eq!(
+        normalize_model("myprovider/model", "https://example.com"),
+        "myprovider/model"
+    );
 }
 
 #[test]
@@ -32,7 +47,9 @@ fn test_uses_completion_tokens() {
     assert!(OpenAICompatProvider::uses_completion_tokens("o1-preview"));
     assert!(OpenAICompatProvider::uses_completion_tokens("gpt-5"));
     assert!(!OpenAICompatProvider::uses_completion_tokens("gpt-4"));
-    assert!(!OpenAICompatProvider::uses_completion_tokens("deepseek-chat"));
+    assert!(!OpenAICompatProvider::uses_completion_tokens(
+        "deepseek-chat"
+    ));
 }
 
 #[test]
@@ -122,7 +139,7 @@ fn test_build_request_body_basic() {
         tool_call_id: None,
         timestamp: None,
         reasoning_content: None,
-extra: HashMap::new(),
+        extra: HashMap::new(),
     }];
 
     let body = provider.build_request_body(&messages, &[], "gpt-4", &ChatOptions::default());
@@ -184,15 +201,30 @@ fn test_config_default() {
 
 #[test]
 fn test_normalize_model_with_base() {
-    assert_eq!(normalize_model("nvidia/llama3", "https://api.nvidia.com"), "llama3");
-    assert_eq!(normalize_model("ollama/llama3", "http://localhost:11434"), "llama3");
-    assert_eq!(normalize_model("google/gemini", "https://generativelanguage.googleapis.com"), "gemini");
-    assert_eq!(normalize_model("moonshot/kimi", "https://api.moonshot.cn"), "kimi");
+    assert_eq!(
+        normalize_model("nvidia/llama3", "https://api.nvidia.com"),
+        "llama3"
+    );
+    assert_eq!(
+        normalize_model("ollama/llama3", "http://localhost:11434"),
+        "llama3"
+    );
+    assert_eq!(
+        normalize_model("google/gemini", "https://generativelanguage.googleapis.com"),
+        "gemini"
+    );
+    assert_eq!(
+        normalize_model("moonshot/kimi", "https://api.moonshot.cn"),
+        "kimi"
+    );
 }
 
 #[test]
 fn test_normalize_model_unknown_provider_prefix() {
-    assert_eq!(normalize_model("myco/model", "https://example.com"), "myco/model");
+    assert_eq!(
+        normalize_model("myco/model", "https://example.com"),
+        "myco/model"
+    );
 }
 
 #[test]
@@ -306,7 +338,13 @@ fn test_parse_response_tool_call_with_invalid_args() {
     assert_eq!(resp.tool_calls.len(), 1);
     // Arguments should be parsed as raw fallback
     assert!(resp.tool_calls[0].arguments.is_some());
-    assert!(resp.tool_calls[0].arguments.as_ref().unwrap().contains_key("raw"));
+    assert!(
+        resp.tool_calls[0]
+            .arguments
+            .as_ref()
+            .unwrap()
+            .contains_key("raw")
+    );
 }
 
 #[test]
@@ -333,13 +371,19 @@ fn test_uses_completion_tokens_additional_models() {
     assert!(OpenAICompatProvider::uses_completion_tokens("glm-4-flash"));
     assert!(OpenAICompatProvider::uses_completion_tokens("o1"));
     assert!(!OpenAICompatProvider::uses_completion_tokens("gpt-4-turbo"));
-    assert!(!OpenAICompatProvider::uses_completion_tokens("claude-3-opus"));
+    assert!(!OpenAICompatProvider::uses_completion_tokens(
+        "claude-3-opus"
+    ));
 }
 
 #[test]
 fn test_requires_fixed_temperature_additional() {
-    assert!(OpenAICompatProvider::requires_fixed_temperature("kimi-k2-latest"));
-    assert!(OpenAICompatProvider::requires_fixed_temperature("Kimi-K2-Pro"));
+    assert!(OpenAICompatProvider::requires_fixed_temperature(
+        "kimi-k2-latest"
+    ));
+    assert!(OpenAICompatProvider::requires_fixed_temperature(
+        "Kimi-K2-Pro"
+    ));
     assert!(!OpenAICompatProvider::requires_fixed_temperature("kimi-v1"));
     assert!(!OpenAICompatProvider::requires_fixed_temperature("gpt-4"));
 }
@@ -357,8 +401,13 @@ fn test_build_request_body_completion_tokens() {
     let provider = OpenAICompatProvider::new(config);
 
     let body = provider.build_request_body(
-        &[], &[], "glm-4",
-        &ChatOptions { max_tokens: Some(2048), ..Default::default() }
+        &[],
+        &[],
+        "glm-4",
+        &ChatOptions {
+            max_tokens: Some(2048),
+            ..Default::default()
+        },
     );
     assert_eq!(body["max_completion_tokens"], 2048);
     assert!(body.get("max_tokens").is_none());
@@ -378,8 +427,13 @@ fn test_build_request_body_kimi_fixed_temperature() {
 
     // Kimi K2 should force temperature=1.0
     let body = provider.build_request_body(
-        &[], &[], "kimi-k2",
-        &ChatOptions { temperature: Some(0.5), ..Default::default() }
+        &[],
+        &[],
+        "kimi-k2",
+        &ChatOptions {
+            temperature: Some(0.5),
+            ..Default::default()
+        },
     );
     assert_eq!(body["temperature"], 1.0);
 }
@@ -414,12 +468,14 @@ fn test_build_request_body_with_stop_and_top_p() {
     let provider = OpenAICompatProvider::new(config);
 
     let body = provider.build_request_body(
-        &[], &[], "gpt-4",
+        &[],
+        &[],
+        "gpt-4",
         &ChatOptions {
             top_p: Some(0.95),
             stop: Some(vec!["END".to_string()]),
             ..Default::default()
-        }
+        },
     );
     assert_eq!(body["top_p"], 0.95);
     assert!(body.get("stop").is_some());

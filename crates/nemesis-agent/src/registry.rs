@@ -108,10 +108,7 @@ impl AgentRegistry {
     /// The allow list can contain specific agent IDs or "*" to allow all.
     pub fn set_subagent_allow(&self, parent_id: &str, allowed: Vec<String>) {
         let id = normalize_agent_id(parent_id);
-        self.subagent_allow
-            .write()
-            .unwrap()
-            .insert(id, allowed);
+        self.subagent_allow.write().unwrap().insert(id, allowed);
     }
 
     /// Check if a parent agent is allowed to spawn a target agent.

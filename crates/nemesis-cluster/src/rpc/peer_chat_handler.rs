@@ -199,11 +199,7 @@ impl PeerChatHandler {
     ///
     /// Validates the payload, extracts task/source info, returns an immediate
     /// ACK, and spawns an async task for LLM processing.
-    pub fn handle(
-        &self,
-        payload: serde_json::Value,
-        rpc_meta: Option<RpcMeta>,
-    ) -> PeerChatAck {
+    pub fn handle(&self, payload: serde_json::Value, rpc_meta: Option<RpcMeta>) -> PeerChatAck {
         // 1. Parse payload
         let req: PeerChatRequest = match serde_json::from_value(payload.clone()) {
             Ok(r) => r,
@@ -289,8 +285,7 @@ impl PeerChatHandler {
         // 7. Enqueue to cluster agent or fall back to legacy LLM channel
         let cluster_task_list = self.cluster_task_list.clone();
         let cluster_work_queue = self.cluster_work_queue.clone();
-        if let (Some(ref task_list), Some(ref work_queue)) =
-            (cluster_task_list, cluster_work_queue)
+        if let (Some(ref task_list), Some(ref work_queue)) = (cluster_task_list, cluster_work_queue)
         {
             // Create a cluster task and enqueue to the work queue.
             let cluster_task = ClusterTask {
@@ -377,7 +372,9 @@ impl PeerChatHandler {
     ) {
         if let Some(ref persister) = self.result_persister {
             if !source_node_id.is_empty() {
-                if let Err(e) = persister.set_result(task_id, status, response, error, source_node_id) {
+                if let Err(e) =
+                    persister.set_result(task_id, status, response, error, source_node_id)
+                {
                     tracing::error!(task_id = %task_id, error = %e, "[PeerChat] Failed to persist task result");
                 } else {
                     tracing::info!(task_id = %task_id, "[PeerChat] Task result persisted for recovery");
@@ -574,7 +571,9 @@ async fn send_callback_or_persist(
         // Persist locally for later recovery
         if let Some(persister) = result_persister {
             if !source_node_id.is_empty() {
-                if let Err(e) = persister.set_result(task_id, status, response, error, source_node_id) {
+                if let Err(e) =
+                    persister.set_result(task_id, status, response, error, source_node_id)
+                {
                     tracing::error!(task_id = %task_id, error = %e, "[PeerChat] Failed to persist task result");
                 } else {
                     tracing::info!(task_id = %task_id, "[PeerChat] Task result persisted for recovery");
@@ -611,13 +610,18 @@ pub async fn send_callback(
         let timeout = Duration::from_secs(30);
         let request = crate::rpc_types::RPCRequest {
             id: uuid::Uuid::new_v4().to_string(),
-            action: crate::rpc_types::ActionType::Known(crate::rpc_types::KnownAction::PeerChatCallback),
+            action: crate::rpc_types::ActionType::Known(
+                crate::rpc_types::KnownAction::PeerChatCallback,
+            ),
             payload: payload.clone(),
             source: String::new(), // filled by client
             target: Some(source_node_id.into()),
         };
 
-        match client.call_with_timeout(source_node_id, request, timeout).await {
+        match client
+            .call_with_timeout(source_node_id, request, timeout)
+            .await
+        {
             Ok(_) => {
                 tracing::info!(
                     task_id = %task_id,

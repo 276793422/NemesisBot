@@ -17,26 +17,41 @@ pub async fn test_cli_migrate(ws: &TestWorkspace, bin: &Path) -> Vec<TestResult>
     if help.success() {
         results.push(pass(&format!("{}/help", suite), "Migrate help works"));
     } else {
-        results.push(fail(&format!("{}/help", suite),
-            &format!("exit={}", help.exit_code)));
+        results.push(fail(
+            &format!("{}/help", suite),
+            &format!("exit={}", help.exit_code),
+        ));
     }
 
     // Verify all flags present in help
-    let flags = ["--dry-run", "--config-only", "--workspace-only", "--force", "--openclaw-home", "--refresh"];
+    let flags = [
+        "--dry-run",
+        "--config-only",
+        "--workspace-only",
+        "--force",
+        "--openclaw-home",
+        "--refresh",
+    ];
     for flag in &flags {
         if help.stdout_contains(flag) {
-            results.push(pass(&format!("{}/flag_{}", suite, flag.trim_start_matches("--")),
-                &format!("{} present", flag)));
+            results.push(pass(
+                &format!("{}/flag_{}", suite, flag.trim_start_matches("--")),
+                &format!("{} present", flag),
+            ));
         } else {
-            results.push(fail(&format!("{}/flag_{}", suite, flag.trim_start_matches("--")),
-                &format!("{} missing from help", flag)));
+            results.push(fail(
+                &format!("{}/flag_{}", suite, flag.trim_start_matches("--")),
+                &format!("{} missing from help", flag),
+            ));
         }
     }
 
     // migrate --dry-run (won't actually do anything without openclaw-home)
     let dry_run = ws.run_cli(bin, &["migrate", "--dry-run"]).await;
-    results.push(pass(&format!("{}/dry_run", suite),
-        &format!("exit={}", dry_run.exit_code)));
+    results.push(pass(
+        &format!("{}/dry_run", suite),
+        &format!("exit={}", dry_run.exit_code),
+    ));
 
     results
 }
@@ -54,19 +69,25 @@ pub async fn test_cli_gateway_flags(ws: &TestWorkspace, bin: &Path) -> Vec<TestR
     if help.success() {
         results.push(pass(&format!("{}/help", suite), "Gateway help works"));
     } else {
-        results.push(fail(&format!("{}/help", suite),
-            &format!("exit={}", help.exit_code)));
+        results.push(fail(
+            &format!("{}/help", suite),
+            &format!("exit={}", help.exit_code),
+        ));
     }
 
     // Check all gateway flags
     let flags = ["--debug", "-d", "--quiet", "-q", "--no-console"];
     for flag in &flags {
         if help.stdout_contains(flag) {
-            results.push(pass(&format!("{}/flag_{}", suite, flag.trim_start_matches("-")),
-                &format!("{} present", flag)));
+            results.push(pass(
+                &format!("{}/flag_{}", suite, flag.trim_start_matches("-")),
+                &format!("{} present", flag),
+            ));
         } else {
-            results.push(fail(&format!("{}/flag_{}", suite, flag.trim_start_matches("-")),
-                &format!("{} missing from help", flag)));
+            results.push(fail(
+                &format!("{}/flag_{}", suite, flag.trim_start_matches("-")),
+                &format!("{} missing from help", flag),
+            ));
         }
     }
 

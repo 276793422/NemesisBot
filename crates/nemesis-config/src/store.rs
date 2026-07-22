@@ -18,7 +18,7 @@ use std::sync::Arc;
 
 use parking_lot::RwLock;
 
-use crate::{load_config, save_config, Config, Result};
+use crate::{Config, Result, load_config, save_config};
 
 /// Runtime cache of the live configuration. Wrap once at startup, share to
 /// any consumer via [`ConfigStore::handle`].

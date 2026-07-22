@@ -140,7 +140,11 @@ impl PathManager {
 
     /// Get the audit log directory.
     pub fn audit_log_dir(&self) -> PathBuf {
-        self.home_dir.read().join("workspace").join("logs").join("security_logs")
+        self.home_dir
+            .read()
+            .join("workspace")
+            .join("logs")
+            .join("security_logs")
     }
 
     /// Get the sessions log directory.
@@ -247,7 +251,9 @@ pub fn detect_local() -> bool {
 
 /// Set the local mode flag.
 pub fn set_local_mode(enabled: bool) {
-    unsafe { LOCAL_MODE = enabled; }
+    unsafe {
+        LOCAL_MODE = enabled;
+    }
 }
 
 /// Check if local mode is enabled.

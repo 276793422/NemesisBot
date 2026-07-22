@@ -9,8 +9,8 @@
 
 use std::io::{Read, Write};
 use std::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command, Stdio};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::SystemTime;
 
 use serde::{Deserialize, Serialize};
@@ -197,9 +197,7 @@ pub struct ExecutorConfig {
 
 impl Default for ExecutorConfig {
     fn default() -> Self {
-        Self {
-            hide_window: true,
-        }
+        Self { hide_window: true }
     }
 }
 
@@ -210,11 +208,7 @@ impl Default for ExecutorConfig {
 pub trait PlatformExecutor: Send + Sync {
     /// Spawn a child process with the given executable path and arguments.
     /// Returns a ChildProcess with piped stdin/stdout/stderr.
-    fn spawn_child(
-        &self,
-        exe_path: &str,
-        args: &[String],
-    ) -> Result<ChildProcess, String>;
+    fn spawn_child(&self, exe_path: &str, args: &[String]) -> Result<ChildProcess, String>;
 
     /// Terminate a child process gracefully, then forcefully after timeout.
     fn terminate_child(&self, child: &mut ChildProcess) -> Result<(), String>;
@@ -267,10 +261,7 @@ impl DefaultPlatformExecutor {
                         pid
                     );
                 } else {
-                    debug!(
-                        "[ProcessManager] Sent CTRL_C_EVENT to PID {}",
-                        pid
-                    );
+                    debug!("[ProcessManager] Sent CTRL_C_EVENT to PID {}", pid);
                 }
             }
         }
@@ -289,10 +280,7 @@ impl DefaultPlatformExecutor {
                         child.pid
                     );
                 } else {
-                    debug!(
-                        "[ProcessManager] Sent SIGTERM to PID {}",
-                        child.pid
-                    );
+                    debug!("[ProcessManager] Sent SIGTERM to PID {}", child.pid);
                 }
             }
         }
@@ -300,9 +288,7 @@ impl DefaultPlatformExecutor {
         #[cfg(not(any(target_os = "windows", unix)))]
         {
             let _ = child;
-            debug!(
-                "[ProcessManager] No graceful signal support on this platform"
-            );
+            debug!("[ProcessManager] No graceful signal support on this platform");
         }
     }
 }
@@ -323,11 +309,7 @@ unsafe extern "C" {
 }
 
 impl PlatformExecutor for DefaultPlatformExecutor {
-    fn spawn_child(
-        &self,
-        exe_path: &str,
-        args: &[String],
-    ) -> Result<ChildProcess, String> {
+    fn spawn_child(&self, exe_path: &str, args: &[String]) -> Result<ChildProcess, String> {
         let mut cmd = Command::new(exe_path);
         cmd.args(args);
 
@@ -355,10 +337,7 @@ impl PlatformExecutor for DefaultPlatformExecutor {
             cmd.creation_flags(flags);
         }
 
-        debug!(
-            "[ProcessManager] Spawning {} {:?}",
-            exe_path, args
-        );
+        debug!("[ProcessManager] Spawning {} {:?}", exe_path, args);
 
         let mut child = cmd
             .spawn()

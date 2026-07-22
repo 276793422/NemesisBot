@@ -50,7 +50,9 @@ impl TriggerSource {
     /// 获取递归深度(CLI/Cron/Webhook/Chat/Event 都是 0)
     fn recursion_depth(&self) -> u32 {
         match self {
-            TriggerSource::AgentTool { recursion_depth, .. } => *recursion_depth,
+            TriggerSource::AgentTool {
+                recursion_depth, ..
+            } => *recursion_depth,
             _ => 0,
         }
     }
@@ -352,7 +354,10 @@ fn test_checkpoint_store_isolation() {
     let latest_b = store.latest("exec-B").unwrap();
     assert_eq!(latest_a.id, "cp_a2"); // A 的最新
     assert_eq!(latest_b.id, "cp_b1"); // B 的最新
-    println!("→ exec-A latest: {}, exec-B latest: {}", latest_a.id, latest_b.id);
+    println!(
+        "→ exec-A latest: {}, exec-B latest: {}",
+        latest_a.id, latest_b.id
+    );
 
     println!("\n✓ CheckpointStore 按 execution_id 强制隔离验证通过");
     println!("  设计要点:接口签名强制传 execution_id,无 'list_all_checkpoints' 方法");
@@ -393,7 +398,10 @@ fn test_recursion_depth_limit() {
         started_at: Utc::now(),
     });
     assert!(result.is_ok());
-    println!("→ 第 2 层(AgentTool depth=1)推入成功,栈深度={}", stack.len());
+    println!(
+        "→ 第 2 层(AgentTool depth=1)推入成功,栈深度={}",
+        stack.len()
+    );
 
     // 第 3 层(AgentTool depth=2)
     let result = stack.push(WorkflowFrame {
@@ -407,7 +415,10 @@ fn test_recursion_depth_limit() {
         started_at: Utc::now(),
     });
     assert!(result.is_ok());
-    println!("→ 第 3 层(AgentTool depth=2)推入成功,栈深度={}", stack.len());
+    println!(
+        "→ 第 3 层(AgentTool depth=2)推入成功,栈深度={}",
+        stack.len()
+    );
 
     // 第 4 层(AgentTool depth=3,应该被拒绝)
     let result = stack.push(WorkflowFrame {
@@ -487,12 +498,15 @@ fn test_nested_waiting_data_model() {
         .iter()
         .find(|eid| {
             // 没有 execution 把它作为 parent(它是最内层)
-            !all_execs
-                .iter()
-                .any(|other| store.latest(other).unwrap().parent_execution_id.as_deref() == Some(eid.as_str()))
+            !all_execs.iter().any(|other| {
+                store.latest(other).unwrap().parent_execution_id.as_deref() == Some(eid.as_str())
+            })
         })
         .unwrap();
-    println!("→ 最内层 Waiting execution: {} (用户应该先 resume 这个)", innermost_waiting);
+    println!(
+        "→ 最内层 Waiting execution: {} (用户应该先 resume 这个)",
+        innermost_waiting
+    );
     assert_eq!(innermost_waiting, "exec-B");
 
     // resume 内层后,外层是否自动续行?

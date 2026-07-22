@@ -4,7 +4,11 @@ use tempfile::TempDir;
 
 fn make_tools(dir: &TempDir) -> (ReadFileTool, WriteFileTool, ListDirTool) {
     let ws = dir.path().to_string_lossy().to_string();
-    (ReadFileTool::new(&ws, false), WriteFileTool::new(&ws, false), ListDirTool::new(&ws, false))
+    (
+        ReadFileTool::new(&ws, false),
+        WriteFileTool::new(&ws, false),
+        ListDirTool::new(&ws, false),
+    )
 }
 
 #[tokio::test]
@@ -54,8 +58,12 @@ async fn test_list_directory() {
     let dir = TempDir::new().unwrap();
     let (_, _, list_tool) = make_tools(&dir);
 
-    tokio::fs::write(dir.path().join("a.txt"), "a").await.unwrap();
-    tokio::fs::create_dir(dir.path().join("subdir")).await.unwrap();
+    tokio::fs::write(dir.path().join("a.txt"), "a")
+        .await
+        .unwrap();
+    tokio::fs::create_dir(dir.path().join("subdir"))
+        .await
+        .unwrap();
 
     let result = list_tool
         .execute(&serde_json::json!({"path": dir.path().to_string_lossy()}))
@@ -92,7 +100,9 @@ async fn test_file_exists() {
     assert!(result.for_llm.contains("false"));
 
     // Create file and check again.
-    tokio::fs::write(dir.path().join("exists.txt"), "data").await.unwrap();
+    tokio::fs::write(dir.path().join("exists.txt"), "data")
+        .await
+        .unwrap();
     let result = tool
         .execute(&serde_json::json!({"path": dir.path().join("exists.txt").to_string_lossy()}))
         .await;
@@ -262,7 +272,11 @@ async fn test_read_file_relative_path() {
     let result = tool
         .execute(&serde_json::json!({"path": "relative.txt"}))
         .await;
-    assert!(!result.is_error, "Expected success, got: {}", result.for_llm);
+    assert!(
+        !result.is_error,
+        "Expected success, got: {}",
+        result.for_llm
+    );
     assert_eq!(result.for_llm, "relative content");
 }
 
@@ -297,7 +311,11 @@ async fn test_write_file_creates_subdirs() {
             "content": "nested content"
         }))
         .await;
-    assert!(!result.is_error, "Expected success, got: {}", result.for_llm);
+    assert!(
+        !result.is_error,
+        "Expected success, got: {}",
+        result.for_llm
+    );
     assert!(nested_path.exists());
 
     let content = tokio::fs::read_to_string(&nested_path).await.unwrap();
@@ -310,9 +328,7 @@ async fn test_write_file_missing_path() {
     let ws = dir.path().to_string_lossy().to_string();
     let tool = WriteFileTool::new(&ws, false);
 
-    let result = tool
-        .execute(&serde_json::json!({"content": "test"}))
-        .await;
+    let result = tool.execute(&serde_json::json!({"content": "test"})).await;
     assert!(result.is_error);
     assert!(result.for_llm.contains("missing"));
 }
@@ -323,9 +339,7 @@ async fn test_write_file_missing_content() {
     let ws = dir.path().to_string_lossy().to_string();
     let tool = WriteFileTool::new(&ws, false);
 
-    let result = tool
-        .execute(&serde_json::json!({"path": "test.txt"}))
-        .await;
+    let result = tool.execute(&serde_json::json!({"path": "test.txt"})).await;
     assert!(result.is_error);
     assert!(result.for_llm.contains("missing"));
 }
@@ -357,12 +371,20 @@ async fn test_list_directory_default_path() {
     let ws = dir.path().to_string_lossy().to_string();
     let tool = ListDirTool::new(&ws, false);
 
-    tokio::fs::write(dir.path().join("file1.txt"), "a").await.unwrap();
-    tokio::fs::write(dir.path().join("file2.txt"), "b").await.unwrap();
+    tokio::fs::write(dir.path().join("file1.txt"), "a")
+        .await
+        .unwrap();
+    tokio::fs::write(dir.path().join("file2.txt"), "b")
+        .await
+        .unwrap();
 
     // No path provided - should default to "." relative to workspace
     let result = tool.execute(&serde_json::json!({})).await;
-    assert!(!result.is_error, "Expected success, got: {}", result.for_llm);
+    assert!(
+        !result.is_error,
+        "Expected success, got: {}",
+        result.for_llm
+    );
 }
 
 #[tokio::test]
@@ -384,7 +406,9 @@ async fn test_file_exists_directory() {
     let ws = dir.path().to_string_lossy().to_string();
     let tool = FileExistsTool::new(&ws, false);
 
-    tokio::fs::create_dir(dir.path().join("subdir")).await.unwrap();
+    tokio::fs::create_dir(dir.path().join("subdir"))
+        .await
+        .unwrap();
 
     let result = tool
         .execute(&serde_json::json!({"path": dir.path().join("subdir").to_string_lossy()}))
@@ -525,7 +549,11 @@ async fn test_write_file_restricted_outside_workspace() {
             "content": "should fail"
         }))
         .await;
-    assert!(result.is_error, "Expected error for write outside workspace, got: {}", result.for_llm);
+    assert!(
+        result.is_error,
+        "Expected error for write outside workspace, got: {}",
+        result.for_llm
+    );
     assert!(
         result.for_llm.contains("outside") || result.for_llm.contains("denied"),
         "Expected 'outside' or 'denied' error, got: {}",
@@ -542,7 +570,11 @@ async fn test_create_directory_restricted_outside_workspace() {
     let result = tool
         .execute(&serde_json::json!({"path": "/tmp/outside_workspace_dir"}))
         .await;
-    assert!(result.is_error, "Expected error for create_dir outside workspace, got: {}", result.for_llm);
+    assert!(
+        result.is_error,
+        "Expected error for create_dir outside workspace, got: {}",
+        result.for_llm
+    );
     assert!(
         result.for_llm.contains("outside") || result.for_llm.contains("denied"),
         "Expected 'outside' or 'denied' error, got: {}",
@@ -563,7 +595,11 @@ async fn test_delete_file_restricted_outside_workspace() {
     let result = tool
         .execute(&serde_json::json!({"path": outside.to_string_lossy()}))
         .await;
-    assert!(result.is_error, "Expected error for delete outside workspace, got: {}", result.for_llm);
+    assert!(
+        result.is_error,
+        "Expected error for delete outside workspace, got: {}",
+        result.for_llm
+    );
 
     // Cleanup
     std::fs::remove_file(&outside).ok();
@@ -582,7 +618,11 @@ async fn test_write_file_restricted_within_workspace() {
             "content": "allowed"
         }))
         .await;
-    assert!(!result.is_error, "Expected success for write within workspace, got: {}", result.for_llm);
+    assert!(
+        !result.is_error,
+        "Expected success for write within workspace, got: {}",
+        result.for_llm
+    );
 }
 
 #[tokio::test]
@@ -595,7 +635,11 @@ async fn test_create_directory_restricted_within_workspace() {
     let result = tool
         .execute(&serde_json::json!({"path": new_dir.to_string_lossy()}))
         .await;
-    assert!(!result.is_error, "Expected success for create_dir within workspace, got: {}", result.for_llm);
+    assert!(
+        !result.is_error,
+        "Expected success for create_dir within workspace, got: {}",
+        result.for_llm
+    );
     assert!(new_dir.exists());
 }
 
@@ -648,9 +692,15 @@ async fn test_list_directory_with_mixed_types() {
     let tool = ListDirTool::new(&ws, false);
 
     // Create files and subdirs
-    tokio::fs::write(dir.path().join("file.txt"), "a").await.unwrap();
-    tokio::fs::create_dir(dir.path().join("subdir")).await.unwrap();
-    tokio::fs::write(dir.path().join("subdir").join("nested.txt"), "b").await.unwrap();
+    tokio::fs::write(dir.path().join("file.txt"), "a")
+        .await
+        .unwrap();
+    tokio::fs::create_dir(dir.path().join("subdir"))
+        .await
+        .unwrap();
+    tokio::fs::write(dir.path().join("subdir").join("nested.txt"), "b")
+        .await
+        .unwrap();
 
     let result = tool
         .execute(&serde_json::json!({"path": dir.path().to_string_lossy()}))
@@ -729,7 +779,11 @@ async fn test_list_directory_empty_dir() {
         .execute(&serde_json::json!({"path": empty_subdir.to_string_lossy()}))
         .await;
     // Should succeed but show empty or no entries
-    assert!(!result.is_error || result.for_llm.contains("empty") || result.for_llm.contains("no entries"));
+    assert!(
+        !result.is_error
+            || result.for_llm.contains("empty")
+            || result.for_llm.contains("no entries")
+    );
 }
 
 #[tokio::test]
@@ -803,7 +857,9 @@ async fn test_read_file_nonexistent_file() {
     let tool = ReadFileTool::new(&ws, false);
 
     let result = tool
-        .execute(&serde_json::json!({"path": dir.path().join("nonexistent_file.txt").to_string_lossy()}))
+        .execute(
+            &serde_json::json!({"path": dir.path().join("nonexistent_file.txt").to_string_lossy()}),
+        )
         .await;
     assert!(result.is_error);
     assert!(result.for_llm.contains("failed to read"));
@@ -831,9 +887,15 @@ async fn test_list_dir_with_files() {
     let ws = dir.path().to_string_lossy().to_string();
     let tool = ListDirTool::new(&ws, false);
 
-    tokio::fs::write(dir.path().join("a.txt"), "a").await.unwrap();
-    tokio::fs::write(dir.path().join("b.txt"), "b").await.unwrap();
-    tokio::fs::create_dir(dir.path().join("subdir")).await.unwrap();
+    tokio::fs::write(dir.path().join("a.txt"), "a")
+        .await
+        .unwrap();
+    tokio::fs::write(dir.path().join("b.txt"), "b")
+        .await
+        .unwrap();
+    tokio::fs::create_dir(dir.path().join("subdir"))
+        .await
+        .unwrap();
 
     let result = tool
         .execute(&serde_json::json!({"path": dir.path().to_string_lossy()}))
@@ -850,7 +912,9 @@ async fn test_file_exists_with_relative_path() {
     let ws = dir.path().to_string_lossy().to_string();
     let tool = FileExistsTool::new(&ws, false);
 
-    tokio::fs::write(dir.path().join("exists.txt"), "yes").await.unwrap();
+    tokio::fs::write(dir.path().join("exists.txt"), "yes")
+        .await
+        .unwrap();
 
     let result = tool
         .execute(&serde_json::json!({"path": "exists.txt"}))
@@ -894,7 +958,9 @@ async fn test_delete_dir_with_contents() {
 
     let sub = dir.path().join("to_delete");
     tokio::fs::create_dir_all(&sub).await.unwrap();
-    tokio::fs::write(sub.join("file.txt"), "content").await.unwrap();
+    tokio::fs::write(sub.join("file.txt"), "content")
+        .await
+        .unwrap();
 
     let result = tool
         .execute(&serde_json::json!({"path": sub.to_string_lossy()}))

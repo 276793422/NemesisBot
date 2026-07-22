@@ -6,7 +6,22 @@ fn test_add_job() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("cron.json").to_string_lossy().to_string();
     let svc = CronService::new(&path);
-    let job = svc.add_job("test", CronSchedule { kind: "every".to_string(), at_ms: None, every_ms: Some(60000), expr: None, tz: None }, "hello", false, None, None).unwrap();
+    let job = svc
+        .add_job(
+            "test",
+            CronSchedule {
+                kind: "every".to_string(),
+                at_ms: None,
+                every_ms: Some(60000),
+                expr: None,
+                tz: None,
+            },
+            "hello",
+            false,
+            None,
+            None,
+        )
+        .unwrap();
     assert_eq!(job.name, "test");
     assert!(job.enabled);
 }
@@ -16,7 +31,22 @@ fn test_remove_job() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("cron.json").to_string_lossy().to_string();
     let svc = CronService::new(&path);
-    let job = svc.add_job("test", CronSchedule { kind: "every".to_string(), at_ms: None, every_ms: Some(60000), expr: None, tz: None }, "hello", false, None, None).unwrap();
+    let job = svc
+        .add_job(
+            "test",
+            CronSchedule {
+                kind: "every".to_string(),
+                at_ms: None,
+                every_ms: Some(60000),
+                expr: None,
+                tz: None,
+            },
+            "hello",
+            false,
+            None,
+            None,
+        )
+        .unwrap();
     assert!(svc.remove_job(&job.id));
 }
 
@@ -25,7 +55,21 @@ fn test_list_jobs() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("cron.json").to_string_lossy().to_string();
     let svc = CronService::new(&path);
-    svc.add_job("a", CronSchedule { kind: "every".to_string(), at_ms: None, every_ms: Some(60000), expr: None, tz: None }, "a", false, None, None).unwrap();
+    svc.add_job(
+        "a",
+        CronSchedule {
+            kind: "every".to_string(),
+            at_ms: None,
+            every_ms: Some(60000),
+            expr: None,
+            tz: None,
+        },
+        "a",
+        false,
+        None,
+        None,
+    )
+    .unwrap();
     assert_eq!(svc.list_jobs(false).len(), 1);
 }
 
@@ -34,7 +78,22 @@ fn test_get_job() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("cron.json").to_string_lossy().to_string();
     let svc = CronService::new(&path);
-    let job = svc.add_job("findme", CronSchedule { kind: "every".to_string(), at_ms: None, every_ms: Some(60000), expr: None, tz: None }, "x", false, None, None).unwrap();
+    let job = svc
+        .add_job(
+            "findme",
+            CronSchedule {
+                kind: "every".to_string(),
+                at_ms: None,
+                every_ms: Some(60000),
+                expr: None,
+                tz: None,
+            },
+            "x",
+            false,
+            None,
+            None,
+        )
+        .unwrap();
     let found = svc.get_job(&job.id).unwrap();
     assert_eq!(found.name, "findme");
     assert!(svc.get_job("nonexistent").is_none());
@@ -45,7 +104,22 @@ fn test_update_job() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("cron.json").to_string_lossy().to_string();
     let svc = CronService::new(&path);
-    let job = svc.add_job("orig", CronSchedule { kind: "every".to_string(), at_ms: None, every_ms: Some(60000), expr: None, tz: None }, "x", false, None, None).unwrap();
+    let job = svc
+        .add_job(
+            "orig",
+            CronSchedule {
+                kind: "every".to_string(),
+                at_ms: None,
+                every_ms: Some(60000),
+                expr: None,
+                tz: None,
+            },
+            "x",
+            false,
+            None,
+            None,
+        )
+        .unwrap();
     svc.update_job(&job.id, Some("updated"), None).unwrap();
     assert_eq!(svc.get_job(&job.id).unwrap().name, "updated");
 }
@@ -55,7 +129,22 @@ fn test_toggle_job() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("cron.json").to_string_lossy().to_string();
     let svc = CronService::new(&path);
-    let job = svc.add_job("toggle", CronSchedule { kind: "every".to_string(), at_ms: None, every_ms: Some(60000), expr: None, tz: None }, "x", false, None, None).unwrap();
+    let job = svc
+        .add_job(
+            "toggle",
+            CronSchedule {
+                kind: "every".to_string(),
+                at_ms: None,
+                every_ms: Some(60000),
+                expr: None,
+                tz: None,
+            },
+            "x",
+            false,
+            None,
+            None,
+        )
+        .unwrap();
     let new_state = svc.toggle_job(&job.id).unwrap();
     assert!(!new_state);
     let new_state2 = svc.toggle_job(&job.id).unwrap();
@@ -67,7 +156,22 @@ fn test_execute_job() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("cron.json").to_string_lossy().to_string();
     let svc = CronService::new(&path);
-    let job = svc.add_job("exec", CronSchedule { kind: "every".to_string(), at_ms: None, every_ms: Some(60000), expr: None, tz: None }, "x", false, None, None).unwrap();
+    let job = svc
+        .add_job(
+            "exec",
+            CronSchedule {
+                kind: "every".to_string(),
+                at_ms: None,
+                every_ms: Some(60000),
+                expr: None,
+                tz: None,
+            },
+            "x",
+            false,
+            None,
+            None,
+        )
+        .unwrap();
     svc.execute_job(&job.id).unwrap();
     let found = svc.get_job(&job.id).unwrap();
     assert!(found.state.last_run_at_ms.is_some());
@@ -93,9 +197,18 @@ fn test_validate_schedule_invalid() {
 
 #[test]
 fn test_describe_schedule() {
-    assert_eq!(CronService::describe_schedule("0 * * * * *"), "Every minute");
-    assert_eq!(CronService::describe_schedule("0 */5 * * * *"), "Every 5 minutes");
-    assert_eq!(CronService::describe_schedule("0 30 9 * * *"), "Daily at 9:30");
+    assert_eq!(
+        CronService::describe_schedule("0 * * * * *"),
+        "Every minute"
+    );
+    assert_eq!(
+        CronService::describe_schedule("0 */5 * * * *"),
+        "Every 5 minutes"
+    );
+    assert_eq!(
+        CronService::describe_schedule("0 30 9 * * *"),
+        "Daily at 9:30"
+    );
 }
 
 // ========================================================================
@@ -104,7 +217,9 @@ fn test_describe_schedule() {
 
 #[test]
 fn test_compute_next_run_cron_kind() {
-    let now_ms = chrono::DateTime::parse_from_rfc3339("2026-01-15T10:00:00Z").unwrap().timestamp_millis();
+    let now_ms = chrono::DateTime::parse_from_rfc3339("2026-01-15T10:00:00Z")
+        .unwrap()
+        .timestamp_millis();
     let schedule = CronSchedule {
         kind: "cron".to_string(),
         at_ms: None,
@@ -138,22 +253,25 @@ fn test_cron_job_with_cron_schedule() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("cron.json").to_string_lossy().to_string();
     let svc = CronService::new(&path);
-    let job = svc.add_job(
-        "cron_test",
-        CronSchedule {
-            kind: "cron".to_string(),
-            at_ms: None,
-            every_ms: None,
-            expr: Some("0 0 12 * * *".to_string()),
-            tz: Some("UTC".to_string()),
-        },
-        "daily at noon",
-        false,
-        None,
-        None,
-    ).unwrap();
+    let job = svc
+        .add_job(
+            "cron_test",
+            CronSchedule {
+                kind: "cron".to_string(),
+                at_ms: None,
+                every_ms: None,
+                expr: Some("0 0 12 * * *".to_string()),
+                tz: Some("UTC".to_string()),
+            },
+            "daily at noon",
+            false,
+            None,
+            None,
+        )
+        .unwrap();
     assert!(job.state.next_run_at_ms.is_some());
-    let next_dt = chrono::DateTime::from_timestamp_millis(job.state.next_run_at_ms.unwrap()).unwrap();
+    let next_dt =
+        chrono::DateTime::from_timestamp_millis(job.state.next_run_at_ms.unwrap()).unwrap();
     assert_eq!(next_dt.hour(), 12);
 }
 
@@ -173,8 +291,36 @@ fn test_cron_service_status_with_jobs() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("cron.json").to_string_lossy().to_string();
     let svc = CronService::new(&path);
-    svc.add_job("j1", CronSchedule { kind: "every".to_string(), at_ms: None, every_ms: Some(60000), expr: None, tz: None }, "m1", false, None, None).unwrap();
-    svc.add_job("j2", CronSchedule { kind: "every".to_string(), at_ms: None, every_ms: Some(120000), expr: None, tz: None }, "m2", false, None, None).unwrap();
+    svc.add_job(
+        "j1",
+        CronSchedule {
+            kind: "every".to_string(),
+            at_ms: None,
+            every_ms: Some(60000),
+            expr: None,
+            tz: None,
+        },
+        "m1",
+        false,
+        None,
+        None,
+    )
+    .unwrap();
+    svc.add_job(
+        "j2",
+        CronSchedule {
+            kind: "every".to_string(),
+            at_ms: None,
+            every_ms: Some(120000),
+            expr: None,
+            tz: None,
+        },
+        "m2",
+        false,
+        None,
+        None,
+    )
+    .unwrap();
     let status = svc.status();
     assert_eq!(status["jobs"], 2);
 }
@@ -185,7 +331,21 @@ fn test_cron_service_status_next_wake() {
     let path = dir.path().join("cron.json").to_string_lossy().to_string();
     let svc = CronService::new(&path);
     let future_ms = Local::now().timestamp_millis() + 300_000; // 5 min from now
-    svc.add_job("future", CronSchedule { kind: "at".to_string(), at_ms: Some(future_ms), every_ms: None, expr: None, tz: None }, "m", false, None, None).unwrap();
+    svc.add_job(
+        "future",
+        CronSchedule {
+            kind: "at".to_string(),
+            at_ms: Some(future_ms),
+            every_ms: None,
+            expr: None,
+            tz: None,
+        },
+        "m",
+        false,
+        None,
+        None,
+    )
+    .unwrap();
     let status = svc.status();
     assert!(status["nextWakeAtMS"].is_number());
 }
@@ -195,7 +355,22 @@ fn test_cron_service_enable_job() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("cron.json").to_string_lossy().to_string();
     let svc = CronService::new(&path);
-    let job = svc.add_job("enable_test", CronSchedule { kind: "every".to_string(), at_ms: None, every_ms: Some(60000), expr: None, tz: None }, "m", false, None, None).unwrap();
+    let job = svc
+        .add_job(
+            "enable_test",
+            CronSchedule {
+                kind: "every".to_string(),
+                at_ms: None,
+                every_ms: Some(60000),
+                expr: None,
+                tz: None,
+            },
+            "m",
+            false,
+            None,
+            None,
+        )
+        .unwrap();
     assert!(job.enabled);
 
     // Disable
@@ -240,7 +415,21 @@ fn test_cron_service_reload() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("cron.json").to_string_lossy().to_string();
     let svc = CronService::new(&path);
-    svc.add_job("reload_test", CronSchedule { kind: "every".to_string(), at_ms: None, every_ms: Some(60000), expr: None, tz: None }, "m", false, None, None).unwrap();
+    svc.add_job(
+        "reload_test",
+        CronSchedule {
+            kind: "every".to_string(),
+            at_ms: None,
+            every_ms: Some(60000),
+            expr: None,
+            tz: None,
+        },
+        "m",
+        false,
+        None,
+        None,
+    )
+    .unwrap();
     assert_eq!(svc.list_jobs(false).len(), 1);
 
     // Reload from disk - should load the same data
@@ -251,7 +440,12 @@ fn test_cron_service_reload() {
 #[test]
 fn test_cron_service_reload_no_file() {
     let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("nonexistent").join("cron.json").to_string_lossy().to_string();
+    let path = dir
+        .path()
+        .join("nonexistent")
+        .join("cron.json")
+        .to_string_lossy()
+        .to_string();
     let svc = CronService::new(&path);
     // Should succeed even when file doesn't exist
     assert!(svc.reload().is_ok());
@@ -262,8 +456,37 @@ fn test_list_jobs_include_disabled() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("cron.json").to_string_lossy().to_string();
     let svc = CronService::new(&path);
-    let job1 = svc.add_job("enabled", CronSchedule { kind: "every".to_string(), at_ms: None, every_ms: Some(60000), expr: None, tz: None }, "m1", false, None, None).unwrap();
-    svc.add_job("enabled2", CronSchedule { kind: "every".to_string(), at_ms: None, every_ms: Some(60000), expr: None, tz: None }, "m2", false, None, None).unwrap();
+    let job1 = svc
+        .add_job(
+            "enabled",
+            CronSchedule {
+                kind: "every".to_string(),
+                at_ms: None,
+                every_ms: Some(60000),
+                expr: None,
+                tz: None,
+            },
+            "m1",
+            false,
+            None,
+            None,
+        )
+        .unwrap();
+    svc.add_job(
+        "enabled2",
+        CronSchedule {
+            kind: "every".to_string(),
+            at_ms: None,
+            every_ms: Some(60000),
+            expr: None,
+            tz: None,
+        },
+        "m2",
+        false,
+        None,
+        None,
+    )
+    .unwrap();
 
     // Disable one
     svc.toggle_job(&job1.id).unwrap();
@@ -484,20 +707,22 @@ fn test_add_job_at_schedule_delete_after_run() {
     let path = dir.path().join("cron.json").to_string_lossy().to_string();
     let svc = CronService::new(&path);
     let future_ms = Local::now().timestamp_millis() + 300000; // 5 min from now
-    let job = svc.add_job(
-        "one_time",
-        CronSchedule {
-            kind: "at".to_string(),
-            at_ms: Some(future_ms),
-            every_ms: None,
-            expr: None,
-            tz: None,
-        },
-        "one time message",
-        false,
-        None,
-        None,
-    ).unwrap();
+    let job = svc
+        .add_job(
+            "one_time",
+            CronSchedule {
+                kind: "at".to_string(),
+                at_ms: Some(future_ms),
+                every_ms: None,
+                expr: None,
+                tz: None,
+            },
+            "one time message",
+            false,
+            None,
+            None,
+        )
+        .unwrap();
     assert!(job.delete_after_run);
     assert!(job.enabled);
     assert_eq!(job.state.next_run_at_ms, Some(future_ms));
@@ -509,20 +734,22 @@ fn test_add_job_at_schedule_past_time() {
     let path = dir.path().join("cron.json").to_string_lossy().to_string();
     let svc = CronService::new(&path);
     let past_ms = Local::now().timestamp_millis() - 60000; // 1 min ago
-    let job = svc.add_job(
-        "past_one_time",
-        CronSchedule {
-            kind: "at".to_string(),
-            at_ms: Some(past_ms),
-            every_ms: None,
-            expr: None,
-            tz: None,
-        },
-        "past message",
-        false,
-        None,
-        None,
-    ).unwrap();
+    let job = svc
+        .add_job(
+            "past_one_time",
+            CronSchedule {
+                kind: "at".to_string(),
+                at_ms: Some(past_ms),
+                every_ms: None,
+                expr: None,
+                tz: None,
+            },
+            "past message",
+            false,
+            None,
+            None,
+        )
+        .unwrap();
     // Past time means compute_next_run returns None
     assert!(job.state.next_run_at_ms.is_none());
     assert!(job.delete_after_run);
@@ -533,14 +760,22 @@ fn test_add_job_with_channel_and_to() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("cron.json").to_string_lossy().to_string();
     let svc = CronService::new(&path);
-    let job = svc.add_job(
-        "routed",
-        CronSchedule { kind: "every".to_string(), at_ms: None, every_ms: Some(60000), expr: None, tz: None },
-        "routed message",
-        true,
-        Some("web"),
-        Some("user123"),
-    ).unwrap();
+    let job = svc
+        .add_job(
+            "routed",
+            CronSchedule {
+                kind: "every".to_string(),
+                at_ms: None,
+                every_ms: Some(60000),
+                expr: None,
+                tz: None,
+            },
+            "routed message",
+            true,
+            Some("web"),
+            Some("user123"),
+        )
+        .unwrap();
     assert!(job.payload.deliver);
     assert_eq!(job.payload.channel, Some("web".to_string()));
     assert_eq!(job.payload.to, Some("user123".to_string()));
@@ -567,7 +802,21 @@ fn test_cron_service_start_and_stop() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("cron.json").to_string_lossy().to_string();
     let svc = CronService::new(&path);
-    svc.add_job("test", CronSchedule { kind: "every".to_string(), at_ms: None, every_ms: Some(60000), expr: None, tz: None }, "m", false, None, None).unwrap();
+    svc.add_job(
+        "test",
+        CronSchedule {
+            kind: "every".to_string(),
+            at_ms: None,
+            every_ms: Some(60000),
+            expr: None,
+            tz: None,
+        },
+        "m",
+        false,
+        None,
+        None,
+    )
+    .unwrap();
 
     let rt = tokio::runtime::Runtime::new().unwrap();
     rt.block_on(async {
@@ -647,10 +896,32 @@ fn test_update_job_with_schedule() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("cron.json").to_string_lossy().to_string();
     let svc = CronService::new(&path);
-    let job = svc.add_job("orig", CronSchedule { kind: "every".to_string(), at_ms: None, every_ms: Some(60000), expr: None, tz: None }, "x", false, None, None).unwrap();
+    let job = svc
+        .add_job(
+            "orig",
+            CronSchedule {
+                kind: "every".to_string(),
+                at_ms: None,
+                every_ms: Some(60000),
+                expr: None,
+                tz: None,
+            },
+            "x",
+            false,
+            None,
+            None,
+        )
+        .unwrap();
 
-    let new_schedule = CronSchedule { kind: "every".to_string(), at_ms: None, every_ms: Some(120000), expr: None, tz: None };
-    svc.update_job(&job.id, Some("new name"), Some(new_schedule)).unwrap();
+    let new_schedule = CronSchedule {
+        kind: "every".to_string(),
+        at_ms: None,
+        every_ms: Some(120000),
+        expr: None,
+        tz: None,
+    };
+    svc.update_job(&job.id, Some("new name"), Some(new_schedule))
+        .unwrap();
 
     let updated = svc.get_job(&job.id).unwrap();
     assert_eq!(updated.name, "new name");
@@ -664,7 +935,21 @@ fn test_cron_job_persistence() {
 
     // Create service and add a job
     let svc = CronService::new(&path);
-    svc.add_job("persist_test", CronSchedule { kind: "every".to_string(), at_ms: None, every_ms: Some(60000), expr: None, tz: None }, "m", false, None, None).unwrap();
+    svc.add_job(
+        "persist_test",
+        CronSchedule {
+            kind: "every".to_string(),
+            at_ms: None,
+            every_ms: Some(60000),
+            expr: None,
+            tz: None,
+        },
+        "m",
+        false,
+        None,
+        None,
+    )
+    .unwrap();
     assert_eq!(svc.list_jobs(false).len(), 1);
 
     // Create a new service with the same path - should load from disk
@@ -679,7 +964,22 @@ fn test_enable_job() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("cron.json").to_string_lossy().to_string();
     let svc = CronService::new(&path);
-    let job = svc.add_job("toggle_test", CronSchedule { kind: "every".to_string(), at_ms: None, every_ms: Some(60000), expr: None, tz: None }, "m", false, None, None).unwrap();
+    let job = svc
+        .add_job(
+            "toggle_test",
+            CronSchedule {
+                kind: "every".to_string(),
+                at_ms: None,
+                every_ms: Some(60000),
+                expr: None,
+                tz: None,
+            },
+            "m",
+            false,
+            None,
+            None,
+        )
+        .unwrap();
 
     // Disable
     let updated = svc.enable_job(&job.id, false).unwrap();
@@ -706,7 +1006,22 @@ fn test_toggle_job_enable_disable() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("cron.json").to_string_lossy().to_string();
     let svc = CronService::new(&path);
-    let job = svc.add_job("toggle", CronSchedule { kind: "every".to_string(), at_ms: None, every_ms: Some(60000), expr: None, tz: None }, "m", false, None, None).unwrap();
+    let job = svc
+        .add_job(
+            "toggle",
+            CronSchedule {
+                kind: "every".to_string(),
+                at_ms: None,
+                every_ms: Some(60000),
+                expr: None,
+                tz: None,
+            },
+            "m",
+            false,
+            None,
+            None,
+        )
+        .unwrap();
 
     let state1 = svc.toggle_job(&job.id).unwrap();
     assert!(!state1);
@@ -720,7 +1035,22 @@ fn test_execute_job_updates_state() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("cron.json").to_string_lossy().to_string();
     let svc = CronService::new(&path);
-    let job = svc.add_job("exec_test", CronSchedule { kind: "every".to_string(), at_ms: None, every_ms: Some(60000), expr: None, tz: None }, "m", false, None, None).unwrap();
+    let job = svc
+        .add_job(
+            "exec_test",
+            CronSchedule {
+                kind: "every".to_string(),
+                at_ms: None,
+                every_ms: Some(60000),
+                expr: None,
+                tz: None,
+            },
+            "m",
+            false,
+            None,
+            None,
+        )
+        .unwrap();
 
     svc.execute_job(&job.id).unwrap();
     let updated = svc.get_job(&job.id).unwrap();
@@ -736,7 +1066,20 @@ fn test_execute_job_fires_on_job_handler() {
     let path = dir.path().join("cron.json").to_string_lossy().to_string();
     let svc = CronService::new(&path);
     let job = svc
-        .add_job("fire_test", CronSchedule { kind: "every".to_string(), at_ms: None, every_ms: Some(60000), expr: None, tz: None }, "msg", false, None, None)
+        .add_job(
+            "fire_test",
+            CronSchedule {
+                kind: "every".to_string(),
+                at_ms: None,
+                every_ms: Some(60000),
+                expr: None,
+                tz: None,
+            },
+            "msg",
+            false,
+            None,
+            None,
+        )
         .unwrap();
 
     let fired = std::sync::Arc::new(AtomicBool::new(false));
@@ -749,7 +1092,10 @@ fn test_execute_job_fires_on_job_handler() {
     // Regression: execute_job used to only update state and never invoke the
     // handler, so "run now" was a no-op for the agent.
     svc.execute_job(&job.id).unwrap();
-    assert!(fired.load(Ordering::SeqCst), "execute_job should fire the on_job handler");
+    assert!(
+        fired.load(Ordering::SeqCst),
+        "execute_job should fire the on_job handler"
+    );
 
     let updated = svc.get_job(&job.id).unwrap();
     assert_eq!(updated.state.last_status, Some("executed".to_string()));
@@ -790,8 +1136,36 @@ fn test_list_jobs_exclude_disabled() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("cron.json").to_string_lossy().to_string();
     let svc = CronService::new(&path);
-    svc.add_job("enabled1", CronSchedule { kind: "every".to_string(), at_ms: None, every_ms: Some(60000), expr: None, tz: None }, "m", false, None, None).unwrap();
-    svc.add_job("enabled2", CronSchedule { kind: "every".to_string(), at_ms: None, every_ms: Some(60000), expr: None, tz: None }, "m", false, None, None).unwrap();
+    svc.add_job(
+        "enabled1",
+        CronSchedule {
+            kind: "every".to_string(),
+            at_ms: None,
+            every_ms: Some(60000),
+            expr: None,
+            tz: None,
+        },
+        "m",
+        false,
+        None,
+        None,
+    )
+    .unwrap();
+    svc.add_job(
+        "enabled2",
+        CronSchedule {
+            kind: "every".to_string(),
+            at_ms: None,
+            every_ms: Some(60000),
+            expr: None,
+            tz: None,
+        },
+        "m",
+        false,
+        None,
+        None,
+    )
+    .unwrap();
 
     let all = svc.list_jobs(true);
     assert_eq!(all.len(), 2);
@@ -810,7 +1184,21 @@ fn test_status_with_jobs() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("cron.json").to_string_lossy().to_string();
     let svc = CronService::new(&path);
-    svc.add_job("status_test", CronSchedule { kind: "every".to_string(), at_ms: None, every_ms: Some(60000), expr: None, tz: None }, "m", false, None, None).unwrap();
+    svc.add_job(
+        "status_test",
+        CronSchedule {
+            kind: "every".to_string(),
+            at_ms: None,
+            every_ms: Some(60000),
+            expr: None,
+            tz: None,
+        },
+        "m",
+        false,
+        None,
+        None,
+    )
+    .unwrap();
 
     let status = svc.status();
     assert_eq!(status["jobs"], 1);
@@ -822,7 +1210,21 @@ fn test_reload_from_disk() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("cron.json").to_string_lossy().to_string();
     let svc = CronService::new(&path);
-    svc.add_job("reload_test", CronSchedule { kind: "every".to_string(), at_ms: None, every_ms: Some(60000), expr: None, tz: None }, "m", false, None, None).unwrap();
+    svc.add_job(
+        "reload_test",
+        CronSchedule {
+            kind: "every".to_string(),
+            at_ms: None,
+            every_ms: Some(60000),
+            expr: None,
+            tz: None,
+        },
+        "m",
+        false,
+        None,
+        None,
+    )
+    .unwrap();
 
     // Create new service and reload
     let svc2 = CronService::new(&path);
@@ -844,13 +1246,32 @@ fn test_set_on_job_handler() {
     });
 
     // Trigger via execute_job indirectly tests that handler is set
-    svc.add_job("handler_test", CronSchedule { kind: "every".to_string(), at_ms: None, every_ms: Some(60000), expr: None, tz: None }, "m", false, None, None).unwrap();
+    svc.add_job(
+        "handler_test",
+        CronSchedule {
+            kind: "every".to_string(),
+            at_ms: None,
+            every_ms: Some(60000),
+            expr: None,
+            tz: None,
+        },
+        "m",
+        false,
+        None,
+        None,
+    )
+    .unwrap();
 }
-
 
 #[test]
 fn test_compute_next_run_every_v2() {
-    let schedule = CronSchedule { kind: "every".to_string(), at_ms: None, every_ms: Some(300000), expr: None, tz: None };
+    let schedule = CronSchedule {
+        kind: "every".to_string(),
+        at_ms: None,
+        every_ms: Some(300000),
+        expr: None,
+        tz: None,
+    };
     let now = Local::now().timestamp_millis();
     let result = compute_next_run(&schedule, now);
     assert_eq!(result, Some(now + 300000));
@@ -858,21 +1279,39 @@ fn test_compute_next_run_every_v2() {
 
 #[test]
 fn test_compute_next_run_every_zero() {
-    let schedule = CronSchedule { kind: "every".to_string(), at_ms: None, every_ms: Some(0), expr: None, tz: None };
+    let schedule = CronSchedule {
+        kind: "every".to_string(),
+        at_ms: None,
+        every_ms: Some(0),
+        expr: None,
+        tz: None,
+    };
     let result = compute_next_run(&schedule, Local::now().timestamp_millis());
     assert!(result.is_none());
 }
 
 #[test]
 fn test_compute_next_run_cron_valid() {
-    let schedule = CronSchedule { kind: "cron".to_string(), at_ms: None, every_ms: None, expr: Some("0 0 * * * *".to_string()), tz: None };
+    let schedule = CronSchedule {
+        kind: "cron".to_string(),
+        at_ms: None,
+        every_ms: None,
+        expr: Some("0 0 * * * *".to_string()),
+        tz: None,
+    };
     let result = compute_next_run(&schedule, Local::now().timestamp_millis());
     assert!(result.is_some());
 }
 
 #[test]
 fn test_compute_next_run_unknown_kind_v2() {
-    let schedule = CronSchedule { kind: "unknown".to_string(), at_ms: None, every_ms: None, expr: None, tz: None };
+    let schedule = CronSchedule {
+        kind: "unknown".to_string(),
+        at_ms: None,
+        every_ms: None,
+        expr: None,
+        tz: None,
+    };
     let result = compute_next_run(&schedule, Local::now().timestamp_millis());
     assert!(result.is_none());
 }
@@ -880,9 +1319,27 @@ fn test_compute_next_run_unknown_kind_v2() {
 #[test]
 fn test_cron_service_new_creates_dir() {
     let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("subdir/cron.json").to_string_lossy().to_string();
+    let path = dir
+        .path()
+        .join("subdir/cron.json")
+        .to_string_lossy()
+        .to_string();
     let svc = CronService::new(&path);
-    svc.add_job("test", CronSchedule { kind: "every".to_string(), at_ms: None, every_ms: Some(60000), expr: None, tz: None }, "m", false, None, None).unwrap();
+    svc.add_job(
+        "test",
+        CronSchedule {
+            kind: "every".to_string(),
+            at_ms: None,
+            every_ms: Some(60000),
+            expr: None,
+            tz: None,
+        },
+        "m",
+        false,
+        None,
+        None,
+    )
+    .unwrap();
     assert!(std::path::Path::new(&path).exists());
 }
 
@@ -891,7 +1348,22 @@ fn test_update_job_name_only() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("cron.json").to_string_lossy().to_string();
     let svc = CronService::new(&path);
-    let job = svc.add_job("orig", CronSchedule { kind: "every".to_string(), at_ms: None, every_ms: Some(60000), expr: None, tz: None }, "m", false, None, None).unwrap();
+    let job = svc
+        .add_job(
+            "orig",
+            CronSchedule {
+                kind: "every".to_string(),
+                at_ms: None,
+                every_ms: Some(60000),
+                expr: None,
+                tz: None,
+            },
+            "m",
+            false,
+            None,
+            None,
+        )
+        .unwrap();
     svc.update_job(&job.id, Some("renamed"), None).unwrap();
     let updated = svc.get_job(&job.id).unwrap();
     assert_eq!(updated.name, "renamed");
@@ -1003,7 +1475,21 @@ fn test_cron_service_reload_corrupt_json() {
     let path = dir.path().join("cron.json").to_string_lossy().to_string();
 
     let svc = CronService::new(&path);
-    svc.add_job("test", CronSchedule { kind: "every".to_string(), at_ms: None, every_ms: Some(60000), expr: None, tz: None }, "m", false, None, None).unwrap();
+    svc.add_job(
+        "test",
+        CronSchedule {
+            kind: "every".to_string(),
+            at_ms: None,
+            every_ms: Some(60000),
+            expr: None,
+            tz: None,
+        },
+        "m",
+        false,
+        None,
+        None,
+    )
+    .unwrap();
 
     // Corrupt the file
     std::fs::write(&path, "not json").unwrap();
@@ -1020,8 +1506,36 @@ fn test_cron_service_save_and_load_cycle() {
 
     // Create service, add two jobs
     let svc = CronService::new(&path);
-    svc.add_job("job1", CronSchedule { kind: "every".to_string(), at_ms: None, every_ms: Some(60000), expr: None, tz: None }, "m1", false, None, None).unwrap();
-    svc.add_job("job2", CronSchedule { kind: "every".to_string(), at_ms: None, every_ms: Some(120000), expr: None, tz: None }, "m2", false, None, None).unwrap();
+    svc.add_job(
+        "job1",
+        CronSchedule {
+            kind: "every".to_string(),
+            at_ms: None,
+            every_ms: Some(60000),
+            expr: None,
+            tz: None,
+        },
+        "m1",
+        false,
+        None,
+        None,
+    )
+    .unwrap();
+    svc.add_job(
+        "job2",
+        CronSchedule {
+            kind: "every".to_string(),
+            at_ms: None,
+            every_ms: Some(120000),
+            expr: None,
+            tz: None,
+        },
+        "m2",
+        false,
+        None,
+        None,
+    )
+    .unwrap();
 
     // Verify file exists and contains valid JSON
     let data = std::fs::read_to_string(&path).unwrap();
@@ -1037,11 +1551,19 @@ fn test_cron_service_save_and_load_cycle() {
 #[test]
 fn test_save_store_to_path_creates_parent_dirs() {
     let dir = tempfile::tempdir().unwrap();
-    let nested_path = dir.path().join("a/b/c/cron.json").to_string_lossy().to_string();
-    let data = CronStoreData { version: 1, jobs: vec![] };
+    let nested_path = dir
+        .path()
+        .join("a/b/c/cron.json")
+        .to_string_lossy()
+        .to_string();
+    let data = CronStoreData {
+        version: 1,
+        jobs: vec![],
+    };
     save_store_to_path(&nested_path, &data).unwrap();
     assert!(std::path::Path::new(&nested_path).exists());
-    let loaded: CronStoreData = serde_json::from_str(&std::fs::read_to_string(&nested_path).unwrap()).unwrap();
+    let loaded: CronStoreData =
+        serde_json::from_str(&std::fs::read_to_string(&nested_path).unwrap()).unwrap();
     assert_eq!(loaded.version, 1);
 }
 
@@ -1050,7 +1572,21 @@ fn test_cron_service_start_idempotent() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("cron.json").to_string_lossy().to_string();
     let svc = CronService::new(&path);
-    svc.add_job("test", CronSchedule { kind: "every".to_string(), at_ms: None, every_ms: Some(60000), expr: None, tz: None }, "m", false, None, None).unwrap();
+    svc.add_job(
+        "test",
+        CronSchedule {
+            kind: "every".to_string(),
+            at_ms: None,
+            every_ms: Some(60000),
+            expr: None,
+            tz: None,
+        },
+        "m",
+        false,
+        None,
+        None,
+    )
+    .unwrap();
 
     let rt = tokio::runtime::Runtime::new().unwrap();
     rt.block_on(async {
@@ -1087,7 +1623,21 @@ fn test_get_next_wake_ms_with_job() {
     let path = dir.path().join("cron.json").to_string_lossy().to_string();
     let svc = CronService::new(&path);
     let future_ms = Local::now().timestamp_millis() + 60000;
-    svc.add_job("wake", CronSchedule { kind: "at".to_string(), at_ms: Some(future_ms), every_ms: None, expr: None, tz: None }, "m", false, None, None).unwrap();
+    svc.add_job(
+        "wake",
+        CronSchedule {
+            kind: "at".to_string(),
+            at_ms: Some(future_ms),
+            every_ms: None,
+            expr: None,
+            tz: None,
+        },
+        "m",
+        false,
+        None,
+        None,
+    )
+    .unwrap();
     let wake = svc.get_next_wake_ms();
     assert!(wake.is_some());
     assert_eq!(wake.unwrap(), future_ms);
@@ -1099,7 +1649,22 @@ fn test_get_next_wake_ms_disabled_job_ignored() {
     let path = dir.path().join("cron.json").to_string_lossy().to_string();
     let svc = CronService::new(&path);
     let future_ms = Local::now().timestamp_millis() + 60000;
-    let job = svc.add_job("disabled_wake", CronSchedule { kind: "at".to_string(), at_ms: Some(future_ms), every_ms: None, expr: None, tz: None }, "m", false, None, None).unwrap();
+    let job = svc
+        .add_job(
+            "disabled_wake",
+            CronSchedule {
+                kind: "at".to_string(),
+                at_ms: Some(future_ms),
+                every_ms: None,
+                expr: None,
+                tz: None,
+            },
+            "m",
+            false,
+            None,
+            None,
+        )
+        .unwrap();
     svc.toggle_job(&job.id).unwrap(); // disable
     let wake = svc.get_next_wake_ms();
     assert!(wake.is_none());
@@ -1110,14 +1675,31 @@ fn test_recompute_next_runs_skips_disabled() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("cron.json").to_string_lossy().to_string();
     let svc = CronService::new(&path);
-    let job = svc.add_job("test", CronSchedule { kind: "every".to_string(), at_ms: None, every_ms: Some(60000), expr: None, tz: None }, "m", false, None, None).unwrap();
+    let job = svc
+        .add_job(
+            "test",
+            CronSchedule {
+                kind: "every".to_string(),
+                at_ms: None,
+                every_ms: Some(60000),
+                expr: None,
+                tz: None,
+            },
+            "m",
+            false,
+            None,
+            None,
+        )
+        .unwrap();
 
     // Disable the job
     svc.toggle_job(&job.id).unwrap();
 
     // recompute_next_runs is private, but start() calls it
     let rt = tokio::runtime::Runtime::new().unwrap();
-    rt.block_on(async { svc.start().await.unwrap(); });
+    rt.block_on(async {
+        svc.start().await.unwrap();
+    });
     svc.stop();
 
     // Disabled job should still have None for next_run (toggle sets it to None)
@@ -1132,7 +1714,22 @@ fn test_cron_service_execute_job_persists() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("cron.json").to_string_lossy().to_string();
     let svc = CronService::new(&path);
-    let job = svc.add_job("exec_persist", CronSchedule { kind: "every".to_string(), at_ms: None, every_ms: Some(60000), expr: None, tz: None }, "m", false, None, None).unwrap();
+    let job = svc
+        .add_job(
+            "exec_persist",
+            CronSchedule {
+                kind: "every".to_string(),
+                at_ms: None,
+                every_ms: Some(60000),
+                expr: None,
+                tz: None,
+            },
+            "m",
+            false,
+            None,
+            None,
+        )
+        .unwrap();
 
     svc.execute_job(&job.id).unwrap();
 
@@ -1148,7 +1745,22 @@ fn test_cron_service_enable_then_disable_clears_next_run() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("cron.json").to_string_lossy().to_string();
     let svc = CronService::new(&path);
-    let job = svc.add_job("test", CronSchedule { kind: "every".to_string(), at_ms: None, every_ms: Some(60000), expr: None, tz: None }, "m", false, None, None).unwrap();
+    let job = svc
+        .add_job(
+            "test",
+            CronSchedule {
+                kind: "every".to_string(),
+                at_ms: None,
+                every_ms: Some(60000),
+                expr: None,
+                tz: None,
+            },
+            "m",
+            false,
+            None,
+            None,
+        )
+        .unwrap();
     assert!(job.state.next_run_at_ms.is_some());
 
     // Disable → next_run cleared
@@ -1167,7 +1779,22 @@ fn test_toggle_job_recomputes_next_run_on_enable() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("cron.json").to_string_lossy().to_string();
     let svc = CronService::new(&path);
-    let job = svc.add_job("test", CronSchedule { kind: "every".to_string(), at_ms: None, every_ms: Some(60000), expr: None, tz: None }, "m", false, None, None).unwrap();
+    let job = svc
+        .add_job(
+            "test",
+            CronSchedule {
+                kind: "every".to_string(),
+                at_ms: None,
+                every_ms: Some(60000),
+                expr: None,
+                tz: None,
+            },
+            "m",
+            false,
+            None,
+            None,
+        )
+        .unwrap();
 
     // Toggle off
     let state = svc.toggle_job(&job.id).unwrap();
@@ -1191,7 +1818,22 @@ fn test_update_job_with_cron_schedule() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("cron.json").to_string_lossy().to_string();
     let svc = CronService::new(&path);
-    let job = svc.add_job("orig", CronSchedule { kind: "every".to_string(), at_ms: None, every_ms: Some(60000), expr: None, tz: None }, "x", false, None, None).unwrap();
+    let job = svc
+        .add_job(
+            "orig",
+            CronSchedule {
+                kind: "every".to_string(),
+                at_ms: None,
+                every_ms: Some(60000),
+                expr: None,
+                tz: None,
+            },
+            "x",
+            false,
+            None,
+            None,
+        )
+        .unwrap();
 
     let new_schedule = CronSchedule {
         kind: "cron".to_string(),
@@ -1253,7 +1895,11 @@ fn test_generate_id_unique() {
 #[test]
 fn test_cron_service_new_no_existing_file() {
     let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("does_not_exist.json").to_string_lossy().to_string();
+    let path = dir
+        .path()
+        .join("does_not_exist.json")
+        .to_string_lossy()
+        .to_string();
     let svc = CronService::new(&path);
     // Should initialize empty, no panic
     assert_eq!(svc.list_jobs(true).len(), 0);
@@ -1266,7 +1912,9 @@ fn test_cron_service_status_running_with_no_jobs() {
     let svc = CronService::new(&path);
 
     let rt = tokio::runtime::Runtime::new().unwrap();
-    rt.block_on(async { svc.start().await.unwrap(); });
+    rt.block_on(async {
+        svc.start().await.unwrap();
+    });
 
     let status = svc.status();
     assert_eq!(status["enabled"], true);
@@ -1286,8 +1934,36 @@ fn test_cron_service_status_next_wake_multiple_jobs() {
     let near_future = now_ms + 30000; // 30s
     let far_future = now_ms + 300000; // 5min
 
-    svc.add_job("near", CronSchedule { kind: "at".to_string(), at_ms: Some(near_future), every_ms: None, expr: None, tz: None }, "m", false, None, None).unwrap();
-    svc.add_job("far", CronSchedule { kind: "at".to_string(), at_ms: Some(far_future), every_ms: None, expr: None, tz: None }, "m", false, None, None).unwrap();
+    svc.add_job(
+        "near",
+        CronSchedule {
+            kind: "at".to_string(),
+            at_ms: Some(near_future),
+            every_ms: None,
+            expr: None,
+            tz: None,
+        },
+        "m",
+        false,
+        None,
+        None,
+    )
+    .unwrap();
+    svc.add_job(
+        "far",
+        CronSchedule {
+            kind: "at".to_string(),
+            at_ms: Some(far_future),
+            every_ms: None,
+            expr: None,
+            tz: None,
+        },
+        "m",
+        false,
+        None,
+        None,
+    )
+    .unwrap();
 
     let status = svc.status();
     let next_wake = status["nextWakeAtMS"].as_i64().unwrap();
@@ -1308,7 +1984,21 @@ async fn test_cron_service_start_stop_with_handler() {
     });
 
     // Add a "every" job that fires every 1 second
-    svc.add_job("frequent", CronSchedule { kind: "every".to_string(), at_ms: None, every_ms: Some(1000), expr: None, tz: None }, "m", false, None, None).unwrap();
+    svc.add_job(
+        "frequent",
+        CronSchedule {
+            kind: "every".to_string(),
+            at_ms: None,
+            every_ms: Some(1000),
+            expr: None,
+            tz: None,
+        },
+        "m",
+        false,
+        None,
+        None,
+    )
+    .unwrap();
 
     svc.start().await.unwrap();
 
@@ -1337,7 +2027,22 @@ async fn test_cron_service_start_deletes_after_run() {
 
     // Add an "at" job due in 1 second → delete_after_run=true
     let near_future_ms = Local::now().timestamp_millis() + 1000;
-    let job = svc.add_job("one_shot", CronSchedule { kind: "at".to_string(), at_ms: Some(near_future_ms), every_ms: None, expr: None, tz: None }, "m", false, None, None).unwrap();
+    let job = svc
+        .add_job(
+            "one_shot",
+            CronSchedule {
+                kind: "at".to_string(),
+                at_ms: Some(near_future_ms),
+                every_ms: None,
+                expr: None,
+                tz: None,
+            },
+            "m",
+            false,
+            None,
+            None,
+        )
+        .unwrap();
     assert!(job.delete_after_run);
 
     svc.start().await.unwrap();
@@ -1346,7 +2051,10 @@ async fn test_cron_service_start_deletes_after_run() {
 
     // Job should have been deleted after execution
     let found = svc.get_job(&job.id);
-    assert!(found.is_none(), "delete_after_run job should be removed after execution");
+    assert!(
+        found.is_none(),
+        "delete_after_run job should be removed after execution"
+    );
 }
 
 #[tokio::test]
@@ -1355,12 +2063,25 @@ async fn test_cron_service_handler_error() {
     let path = dir.path().join("cron.json").to_string_lossy().to_string();
     let svc = CronService::new(&path);
 
-    svc.set_on_job(move |_job| {
-        Err("something went wrong".to_string())
-    });
+    svc.set_on_job(move |_job| Err("something went wrong".to_string()));
 
     // Use "every" with 1s interval, wait for one execution
-    let job = svc.add_job("error_job", CronSchedule { kind: "every".to_string(), at_ms: None, every_ms: Some(1000), expr: None, tz: None }, "m", false, None, None).unwrap();
+    let job = svc
+        .add_job(
+            "error_job",
+            CronSchedule {
+                kind: "every".to_string(),
+                at_ms: None,
+                every_ms: Some(1000),
+                expr: None,
+                tz: None,
+            },
+            "m",
+            false,
+            None,
+            None,
+        )
+        .unwrap();
 
     svc.start().await.unwrap();
     tokio::time::sleep(Duration::from_secs(3)).await;
@@ -1369,7 +2090,10 @@ async fn test_cron_service_handler_error() {
     // Job should have error status
     let found = svc.get_job(&job.id).unwrap();
     assert_eq!(found.state.last_status, Some("error".to_string()));
-    assert_eq!(found.state.last_error, Some("something went wrong".to_string()));
+    assert_eq!(
+        found.state.last_error,
+        Some("something went wrong".to_string())
+    );
 }
 
 #[tokio::test]
@@ -1379,7 +2103,22 @@ async fn test_cron_service_no_handler_sets_ok() {
     let svc = CronService::new(&path);
     // No handler set
 
-    let job = svc.add_job("no_handler", CronSchedule { kind: "every".to_string(), at_ms: None, every_ms: Some(1000), expr: None, tz: None }, "m", false, None, None).unwrap();
+    let job = svc
+        .add_job(
+            "no_handler",
+            CronSchedule {
+                kind: "every".to_string(),
+                at_ms: None,
+                every_ms: Some(1000),
+                expr: None,
+                tz: None,
+            },
+            "m",
+            false,
+            None,
+            None,
+        )
+        .unwrap();
 
     svc.start().await.unwrap();
     tokio::time::sleep(Duration::from_secs(3)).await;
@@ -1405,7 +2144,21 @@ async fn test_cron_service_every_job_recomputes_next_run() {
     });
 
     // Add an "every" job that fires every 1 second
-    svc.add_job("fast", CronSchedule { kind: "every".to_string(), at_ms: None, every_ms: Some(1000), expr: None, tz: None }, "m", false, None, None).unwrap();
+    svc.add_job(
+        "fast",
+        CronSchedule {
+            kind: "every".to_string(),
+            at_ms: None,
+            every_ms: Some(1000),
+            expr: None,
+            tz: None,
+        },
+        "m",
+        false,
+        None,
+        None,
+    )
+    .unwrap();
 
     svc.start().await.unwrap();
     tokio::time::sleep(Duration::from_secs(5)).await;
@@ -1413,7 +2166,11 @@ async fn test_cron_service_every_job_recomputes_next_run() {
 
     // Should have been called multiple times
     let count = counter.load(std::sync::atomic::Ordering::SeqCst);
-    assert!(count >= 2, "every job should fire multiple times, got {}", count);
+    assert!(
+        count >= 2,
+        "every job should fire multiple times, got {}",
+        count
+    );
 }
 
 #[test]
@@ -1463,14 +2220,22 @@ fn test_cron_job_default_fields() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("cron.json").to_string_lossy().to_string();
     let svc = CronService::new(&path);
-    let job = svc.add_job(
-        "test_defaults",
-        CronSchedule { kind: "every".to_string(), at_ms: None, every_ms: Some(60000), expr: None, tz: None },
-        "test msg",
-        true,
-        Some("channel1"),
-        Some("user1"),
-    ).unwrap();
+    let job = svc
+        .add_job(
+            "test_defaults",
+            CronSchedule {
+                kind: "every".to_string(),
+                at_ms: None,
+                every_ms: Some(60000),
+                expr: None,
+                tz: None,
+            },
+            "test msg",
+            true,
+            Some("channel1"),
+            Some("user1"),
+        )
+        .unwrap();
 
     assert_eq!(job.payload.kind, "agent_turn");
     assert_eq!(job.payload.message, "test msg");
@@ -1499,8 +2264,38 @@ fn test_multiple_jobs_independent_toggle() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("cron.json").to_string_lossy().to_string();
     let svc = CronService::new(&path);
-    let job1 = svc.add_job("j1", CronSchedule { kind: "every".to_string(), at_ms: None, every_ms: Some(60000), expr: None, tz: None }, "m1", false, None, None).unwrap();
-    let job2 = svc.add_job("j2", CronSchedule { kind: "every".to_string(), at_ms: None, every_ms: Some(60000), expr: None, tz: None }, "m2", false, None, None).unwrap();
+    let job1 = svc
+        .add_job(
+            "j1",
+            CronSchedule {
+                kind: "every".to_string(),
+                at_ms: None,
+                every_ms: Some(60000),
+                expr: None,
+                tz: None,
+            },
+            "m1",
+            false,
+            None,
+            None,
+        )
+        .unwrap();
+    let job2 = svc
+        .add_job(
+            "j2",
+            CronSchedule {
+                kind: "every".to_string(),
+                at_ms: None,
+                every_ms: Some(60000),
+                expr: None,
+                tz: None,
+            },
+            "m2",
+            false,
+            None,
+            None,
+        )
+        .unwrap();
 
     // Toggle job1 off
     svc.toggle_job(&job1.id).unwrap();
@@ -1569,7 +2364,9 @@ fn test_validate_l_w_hash() {
 #[test]
 fn test_compute_next_run_5_field() {
     // 5-field "30 9 * * *" → daily at 9:30
-    let after = chrono::DateTime::parse_from_rfc3339("2026-01-15T08:00:00Z").unwrap().timestamp_millis();
+    let after = chrono::DateTime::parse_from_rfc3339("2026-01-15T08:00:00Z")
+        .unwrap()
+        .timestamp_millis();
     let schedule = CronSchedule {
         kind: "cron".to_string(),
         at_ms: None,
@@ -1587,7 +2384,9 @@ fn test_compute_next_run_5_field() {
 fn test_compute_next_run_5_field_weekdays() {
     // "0 9 * * 1-5" → weekdays at 9:00
     // 2026-01-17 is Saturday → next should be Monday 2026-01-19
-    let after = chrono::DateTime::parse_from_rfc3339("2026-01-17T10:00:00Z").unwrap().timestamp_millis();
+    let after = chrono::DateTime::parse_from_rfc3339("2026-01-17T10:00:00Z")
+        .unwrap()
+        .timestamp_millis();
     let schedule = CronSchedule {
         kind: "cron".to_string(),
         at_ms: None,
@@ -1604,7 +2403,9 @@ fn test_compute_next_run_5_field_weekdays() {
 #[test]
 fn test_compute_next_run_month_names() {
     // "0 0 1 JAN *" → January 1st at midnight
-    let after = chrono::DateTime::parse_from_rfc3339("2026-06-15T00:00:00Z").unwrap().timestamp_millis();
+    let after = chrono::DateTime::parse_from_rfc3339("2026-06-15T00:00:00Z")
+        .unwrap()
+        .timestamp_millis();
     let schedule = CronSchedule {
         kind: "cron".to_string(),
         at_ms: None,
@@ -1623,7 +2424,9 @@ fn test_compute_next_run_month_names() {
 fn test_compute_next_run_day_names() {
     // "0 9 * * FRI" → every Friday at 9:00
     // 2026-01-14 is Wednesday → next Friday is 2026-01-16
-    let after = chrono::DateTime::parse_from_rfc3339("2026-01-14T10:00:00Z").unwrap().timestamp_millis();
+    let after = chrono::DateTime::parse_from_rfc3339("2026-01-14T10:00:00Z")
+        .unwrap()
+        .timestamp_millis();
     let schedule = CronSchedule {
         kind: "cron".to_string(),
         at_ms: None,
@@ -1663,7 +2466,9 @@ fn test_compute_next_run_defaults_to_local() {
 fn test_compute_next_run_with_timezone() {
     // "0 9 * * *" at Asia/Shanghai (UTC+8)
     // 9:00 Shanghai = 1:00 UTC
-    let after = chrono::DateTime::parse_from_rfc3339("2026-01-15T00:00:00Z").unwrap().timestamp_millis();
+    let after = chrono::DateTime::parse_from_rfc3339("2026-01-15T00:00:00Z")
+        .unwrap()
+        .timestamp_millis();
     let schedule = CronSchedule {
         kind: "cron".to_string(),
         at_ms: None,
@@ -1680,7 +2485,9 @@ fn test_compute_next_run_with_timezone() {
 #[test]
 fn test_compute_next_run_5_field_every_5_minutes() {
     // "*/5 * * * *" → every 5 minutes
-    let after = chrono::DateTime::parse_from_rfc3339("2026-01-15T10:03:00Z").unwrap().timestamp_millis();
+    let after = chrono::DateTime::parse_from_rfc3339("2026-01-15T10:03:00Z")
+        .unwrap()
+        .timestamp_millis();
     let schedule = CronSchedule {
         kind: "cron".to_string(),
         at_ms: None,
@@ -1700,17 +2507,26 @@ fn test_describe_5_field_every_minute() {
 
 #[test]
 fn test_describe_5_field_every_n_minutes() {
-    assert_eq!(CronService::describe_schedule("*/10 * * * *"), "Every 10 minutes");
+    assert_eq!(
+        CronService::describe_schedule("*/10 * * * *"),
+        "Every 10 minutes"
+    );
 }
 
 #[test]
 fn test_describe_5_field_daily() {
-    assert_eq!(CronService::describe_schedule("30 14 * * *"), "Daily at 14:30");
+    assert_eq!(
+        CronService::describe_schedule("30 14 * * *"),
+        "Daily at 14:30"
+    );
 }
 
 #[test]
 fn test_describe_6_field_every_minute() {
-    assert_eq!(CronService::describe_schedule("0 * * * * *"), "Every minute");
+    assert_eq!(
+        CronService::describe_schedule("0 * * * * *"),
+        "Every minute"
+    );
 }
 
 #[test]
@@ -1718,22 +2534,25 @@ fn test_add_cron_job_with_5_field_expr() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("cron.json").to_string_lossy().to_string();
     let svc = CronService::new(&path);
-    let job = svc.add_job(
-        "5field_test",
-        CronSchedule {
-            kind: "cron".to_string(),
-            at_ms: None,
-            every_ms: None,
-            expr: Some("30 9 * * *".to_string()),
-            tz: Some("UTC".to_string()),
-        },
-        "daily at 9:30",
-        false,
-        None,
-        None,
-    ).unwrap();
+    let job = svc
+        .add_job(
+            "5field_test",
+            CronSchedule {
+                kind: "cron".to_string(),
+                at_ms: None,
+                every_ms: None,
+                expr: Some("30 9 * * *".to_string()),
+                tz: Some("UTC".to_string()),
+            },
+            "daily at 9:30",
+            false,
+            None,
+            None,
+        )
+        .unwrap();
     assert!(job.state.next_run_at_ms.is_some());
-    let next_dt = chrono::DateTime::from_timestamp_millis(job.state.next_run_at_ms.unwrap()).unwrap();
+    let next_dt =
+        chrono::DateTime::from_timestamp_millis(job.state.next_run_at_ms.unwrap()).unwrap();
     assert_eq!(next_dt.hour(), 9);
     assert_eq!(next_dt.minute(), 30);
 }
@@ -1743,20 +2562,22 @@ fn test_add_cron_job_with_month_name() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("cron.json").to_string_lossy().to_string();
     let svc = CronService::new(&path);
-    let job = svc.add_job(
-        "monthly_named",
-        CronSchedule {
-            kind: "cron".to_string(),
-            at_ms: None,
-            every_ms: None,
-            expr: Some("0 0 1 JAN *".to_string()),
-            tz: None,
-        },
-        "January 1st",
-        false,
-        None,
-        None,
-    ).unwrap();
+    let job = svc
+        .add_job(
+            "monthly_named",
+            CronSchedule {
+                kind: "cron".to_string(),
+                at_ms: None,
+                every_ms: None,
+                expr: Some("0 0 1 JAN *".to_string()),
+                tz: None,
+            },
+            "January 1st",
+            false,
+            None,
+            None,
+        )
+        .unwrap();
     assert!(job.state.next_run_at_ms.is_some());
 }
 

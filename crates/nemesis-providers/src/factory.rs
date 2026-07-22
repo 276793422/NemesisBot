@@ -69,8 +69,8 @@ impl Default for FactoryConfig {
 
 /// Resolve a provider selection from factory config.
 pub fn resolve_provider_selection(cfg: &FactoryConfig) -> Result<ProviderSelection, String> {
-    let model_ref = parse_model_ref(&cfg.llm_ref, "openai")
-        .ok_or_else(|| "empty LLM reference".to_string())?;
+    let model_ref =
+        parse_model_ref(&cfg.llm_ref, "openai").ok_or_else(|| "empty LLM reference".to_string())?;
 
     let provider_name = normalize_provider(&model_ref.provider);
 

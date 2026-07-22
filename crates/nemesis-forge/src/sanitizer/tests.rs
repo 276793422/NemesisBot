@@ -50,10 +50,7 @@ fn test_detect_sensitive() {
         sanitizer.detect_sensitive("api_key=sk-1234567890abcdefghijklmnop"),
         Some("api_key")
     );
-    assert_eq!(
-        sanitizer.detect_sensitive("hello world"),
-        None
-    );
+    assert_eq!(sanitizer.detect_sensitive("hello world"), None);
 }
 
 // --- Path sanitization tests ---
@@ -228,7 +225,11 @@ fn test_clean_paths_workspace_backslash() {
 #[test]
 fn test_detect_sensitive_various() {
     let sanitizer = Sanitizer::new();
-    assert!(sanitizer.detect_sensitive("api_key=sk-1234567890abcdefghijklmnop").is_some());
+    assert!(
+        sanitizer
+            .detect_sensitive("api_key=sk-1234567890abcdefghijklmnop")
+            .is_some()
+    );
     assert!(sanitizer.detect_sensitive("user@email.com").is_some());
     assert!(sanitizer.detect_sensitive("hello world").is_none());
 }
@@ -361,9 +362,8 @@ fn test_clean_paths_no_workspace() {
 #[test]
 fn test_clean_paths_multiple_workspace_refs() {
     let sanitizer = Sanitizer::with_workspace("/home/user/ws");
-    let result = sanitizer.clean_paths(
-        "Read /home/user/ws/a.txt and /home/user/ws/b.txt and /home/user/ws/c.txt"
-    );
+    let result = sanitizer
+        .clean_paths("Read /home/user/ws/a.txt and /home/user/ws/b.txt and /home/user/ws/c.txt");
     assert!(result.contains("[WORKSPACE]"));
     assert!(!result.contains("/home/user/ws/"));
 }
@@ -385,7 +385,11 @@ fn test_clean_public_ips_empty_string() {
 #[test]
 fn test_detect_sensitive_none_for_plain_text() {
     let sanitizer = Sanitizer::new();
-    assert!(sanitizer.detect_sensitive("just some normal text").is_none());
+    assert!(
+        sanitizer
+            .detect_sensitive("just some normal text")
+            .is_none()
+    );
     assert!(sanitizer.detect_sensitive("").is_none());
     assert!(sanitizer.detect_sensitive("12345").is_none());
 }
@@ -393,9 +397,17 @@ fn test_detect_sensitive_none_for_plain_text() {
 #[test]
 fn test_detect_sensitive_api_key_patterns() {
     let sanitizer = Sanitizer::new();
-    assert!(sanitizer.detect_sensitive("api_key=ABCDEFGHIJKLMNOPQRSTUVWXYZ012345").is_some());
+    assert!(
+        sanitizer
+            .detect_sensitive("api_key=ABCDEFGHIJKLMNOPQRSTUVWXYZ012345")
+            .is_some()
+    );
     // Use "secret=" which matches the regex pattern (secret\s*[:=])
-    assert!(sanitizer.detect_sensitive("secret=abc123def456ghi789jkl012mno345pqr678").is_some());
+    assert!(
+        sanitizer
+            .detect_sensitive("secret=abc123def456ghi789jkl012mno345pqr678")
+            .is_some()
+    );
 }
 
 #[test]

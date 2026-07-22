@@ -41,13 +41,17 @@ pub(crate) struct PeLayout {
 
 /// 读 little-endian u16。
 fn u16le(b: &[u8], off: usize, name: &'static str) -> Result<u16, CodecError> {
-    let s = b.get(off..off + 2).ok_or(CodecError::FieldOutOfBounds(name))?;
+    let s = b
+        .get(off..off + 2)
+        .ok_or(CodecError::FieldOutOfBounds(name))?;
     Ok(u16::from_le_bytes([s[0], s[1]]))
 }
 
 /// 读 little-endian u32。
 fn u32le(b: &[u8], off: usize, name: &'static str) -> Result<u32, CodecError> {
-    let s = b.get(off..off + 4).ok_or(CodecError::FieldOutOfBounds(name))?;
+    let s = b
+        .get(off..off + 4)
+        .ok_or(CodecError::FieldOutOfBounds(name))?;
     Ok(u32::from_le_bytes([s[0], s[1], s[2], s[3]]))
 }
 

@@ -5,11 +5,11 @@
 //! (Windows tray, Linux AppIndicator, macOS NSStatusItem) requires
 //! platform-specific backend code that hooks into the types defined here.
 
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::sync::{Arc, RwLock};
 #[cfg(all(not(target_os = "windows"), not(target_os = "linux")))]
 use std::sync::atomic::Ordering;
-use serde::{Deserialize, Serialize};
+use std::sync::{Arc, RwLock};
 
 // ---------------------------------------------------------------------------
 // Configuration types
@@ -140,17 +140,28 @@ impl SystemTray {
 
     /// Returns a snapshot of the current tray configuration.
     pub fn config(&self) -> TrayConfig {
-        self.config.read().expect("tray config lock poisoned").clone()
+        self.config
+            .read()
+            .expect("tray config lock poisoned")
+            .clone()
     }
 
     /// Returns the current number of menu items.
     pub fn menu_count(&self) -> usize {
-        self.config.read().expect("tray config lock poisoned").menu_items.len()
+        self.config
+            .read()
+            .expect("tray config lock poisoned")
+            .menu_items
+            .len()
     }
 
     /// Adds a menu item to the end of the menu.
     pub fn add_menu_item(&self, item: MenuItem) {
-        self.config.write().expect("tray config lock poisoned").menu_items.push(item);
+        self.config
+            .write()
+            .expect("tray config lock poisoned")
+            .menu_items
+            .push(item);
     }
 
     /// Registers a callback for the given menu item id.
@@ -160,7 +171,10 @@ impl SystemTray {
     pub fn on_click(&self, menu_id: impl Into<String>, callback: TrayCallback) {
         let id = menu_id.into();
         tracing::debug!(menu_id = %id, "[Desktop] Callback registered for menu item");
-        self.callbacks.write().expect("callbacks lock poisoned").insert(id, callback);
+        self.callbacks
+            .write()
+            .expect("callbacks lock poisoned")
+            .insert(id, callback);
     }
 
     /// Programmatically triggers an action by menu item id.
@@ -177,7 +191,12 @@ impl SystemTray {
             }
         };
 
-        let cb = self.callbacks.read().expect("callbacks lock poisoned").get(menu_id).cloned();
+        let cb = self
+            .callbacks
+            .read()
+            .expect("callbacks lock poisoned")
+            .get(menu_id)
+            .cloned();
         match cb {
             Some(callback) => {
                 tracing::info!(menu_id = menu_id, action = ?action, "[Desktop] Tray action triggered");
@@ -185,7 +204,10 @@ impl SystemTray {
                 true
             }
             None => {
-                tracing::debug!(menu_id = menu_id, "[Desktop] No callback registered for menu item");
+                tracing::debug!(
+                    menu_id = menu_id,
+                    "[Desktop] No callback registered for menu item"
+                );
                 false
             }
         }
@@ -193,7 +215,10 @@ impl SystemTray {
 
     /// Updates the tooltip text.
     pub fn set_tooltip(&self, tooltip: impl Into<String>) {
-        self.config.write().expect("tray config lock poisoned").tooltip = tooltip.into();
+        self.config
+            .write()
+            .expect("tray config lock poisoned")
+            .tooltip = tooltip.into();
     }
 
     /// Enables or disables a menu item by id.
@@ -394,10 +419,7 @@ mod linux_tray {
     }
 
     /// extern "C" 回调桥接：plugin-ui 调用此函数通知菜单点击。
-    extern "C" fn on_menu_click(
-        user_data: *mut std::os::raw::c_void,
-        menu_id: *const c_char,
-    ) {
+    extern "C" fn on_menu_click(user_data: *mut std::os::raw::c_void, menu_id: *const c_char) {
         if user_data.is_null() || menu_id.is_null() {
             return;
         }
@@ -407,15 +429,51 @@ mod linux_tray {
             .into_owned();
 
         match id.as_str() {
-            "start" => { if let Some(ref cb) = cbs.on_start { cb(); } }
-            "stop" => { if let Some(ref cb) = cbs.on_stop { cb(); } }
-            "cluster_start" => { if let Some(ref cb) = cbs.on_cluster_start { cb(); } }
-            "cluster_stop" => { if let Some(ref cb) = cbs.on_cluster_stop { cb(); } }
-            "dashboard" => { if let Some(ref cb) = cbs.on_open_dashboard { cb(); } }
-            "chat" => { if let Some(ref cb) = cbs.on_open_chat { cb(); } }
-            "estop" => { if let Some(ref cb) = cbs.on_estop { cb(); } }
-            "release" => { if let Some(ref cb) = cbs.on_release { cb(); } }
-            "quit" => { if let Some(ref cb) = cbs.on_quit { cb(); } }
+            "start" => {
+                if let Some(ref cb) = cbs.on_start {
+                    cb();
+                }
+            }
+            "stop" => {
+                if let Some(ref cb) = cbs.on_stop {
+                    cb();
+                }
+            }
+            "cluster_start" => {
+                if let Some(ref cb) = cbs.on_cluster_start {
+                    cb();
+                }
+            }
+            "cluster_stop" => {
+                if let Some(ref cb) = cbs.on_cluster_stop {
+                    cb();
+                }
+            }
+            "dashboard" => {
+                if let Some(ref cb) = cbs.on_open_dashboard {
+                    cb();
+                }
+            }
+            "chat" => {
+                if let Some(ref cb) = cbs.on_open_chat {
+                    cb();
+                }
+            }
+            "estop" => {
+                if let Some(ref cb) = cbs.on_estop {
+                    cb();
+                }
+            }
+            "release" => {
+                if let Some(ref cb) = cbs.on_release {
+                    cb();
+                }
+            }
+            "quit" => {
+                if let Some(ref cb) = cbs.on_quit {
+                    cb();
+                }
+            }
             _ => {}
         }
     }
@@ -436,7 +494,10 @@ mod linux_tray {
             Some(p) => p,
             None => {
                 let filename = nemesis_utils::plugin_library_filename("plugin_ui");
-                eprintln!("[tray:linux] plugin-ui {} not found, tray disabled", filename);
+                eprintln!(
+                    "[tray:linux] plugin-ui {} not found, tray disabled",
+                    filename
+                );
                 return;
             }
         };
@@ -453,12 +514,18 @@ mod linux_tray {
         };
 
         let tray_create: libloading::Symbol<
-            unsafe extern "C" fn(*const c_char, *const nemesis_plugin::host_services::TrayCallbacks) -> i32
+            unsafe extern "C" fn(
+                *const c_char,
+                *const nemesis_plugin::host_services::TrayCallbacks,
+            ) -> i32,
         > = unsafe {
             match lib.get(b"plugin_tray_create_indicator\0") {
                 Ok(s) => s,
                 Err(e) => {
-                    eprintln!("[tray:linux] symbol plugin_tray_create_indicator not found: {}", e);
+                    eprintln!(
+                        "[tray:linux] symbol plugin_tray_create_indicator not found: {}",
+                        e
+                    );
                     return;
                 }
             }
@@ -528,7 +595,9 @@ mod linux_tray {
         std::mem::forget(lib); // 防止 dlclose（tray 线程需要 so 持续加载）
         if rc != 0 {
             eprintln!("[tray:linux] plugin_tray_create_indicator failed: {}", rc);
-            unsafe { let _ = Box::from_raw(cbs_ptr); }
+            unsafe {
+                let _ = Box::from_raw(cbs_ptr);
+            }
         }
     }
 }
@@ -684,19 +753,19 @@ impl PlatformTray {
     #[cfg(not(target_os = "linux"))]
     fn run_event_loop_native(self) {
         #[cfg(not(target_os = "windows"))]
-        use std::sync::atomic::AtomicU64;
-        #[cfg(not(target_os = "windows"))]
         use std::sync::Arc;
+        #[cfg(not(target_os = "windows"))]
+        use std::sync::atomic::AtomicU64;
         use winit::event::{Event, StartCause};
         use winit::event_loop::EventLoop;
 
         // Create winit event loop with user event support.
         // On Windows and Linux, allow creation on a non-main thread (tray runs
         // on a dedicated "nemesisbot-tray" thread).
-        #[cfg(target_os = "windows")]
-        use winit::platform::windows::EventLoopBuilderExtWindows;
         #[cfg(target_os = "linux")]
         use winit::platform::wayland::EventLoopBuilderExtWayland;
+        #[cfg(target_os = "windows")]
+        use winit::platform::windows::EventLoopBuilderExtWindows;
 
         let event_loop = {
             #[cfg(target_os = "windows")]
@@ -749,7 +818,10 @@ impl PlatformTray {
         #[cfg(target_os = "linux")]
         if let Err(e) = try_init_gtk() {
             tracing::warn!("[Desktop] GTK init failed: {}, system tray disabled", e);
-            eprintln!("[tray] WARNING: GTK init failed ({}) — tray icon disabled", e);
+            eprintln!(
+                "[tray] WARNING: GTK init failed ({}) — tray icon disabled",
+                e
+            );
             return;
         }
 
@@ -767,16 +839,22 @@ impl PlatformTray {
         let menu = tray_icon::menu::Menu::new();
         let start_item = tray_icon::menu::MenuItem::with_id("start", "启动服务", true, None);
         let stop_item = tray_icon::menu::MenuItem::with_id("stop", "停止服务", true, None);
-        let cluster_start_menu = tray_icon::menu::MenuItem::with_id("cluster_start", "集群启动", true, None);
-        let cluster_stop_menu = tray_icon::menu::MenuItem::with_id("cluster_stop", "集群停止", true, None);
+        let cluster_start_menu =
+            tray_icon::menu::MenuItem::with_id("cluster_start", "集群启动", true, None);
+        let cluster_stop_menu =
+            tray_icon::menu::MenuItem::with_id("cluster_stop", "集群停止", true, None);
         let sep1 = tray_icon::menu::PredefinedMenuItem::separator();
-        let dashboard_item = tray_icon::menu::MenuItem::with_id("dashboard", "打开 Dashboard", true, None);
+        let dashboard_item =
+            tray_icon::menu::MenuItem::with_id("dashboard", "打开 Dashboard", true, None);
         let chat_item = tray_icon::menu::MenuItem::with_id("chat", "打开聊天", true, None);
         let sep_estop = tray_icon::menu::PredefinedMenuItem::separator();
-        let estop_item = tray_icon::menu::MenuItem::with_id("estop", "⛔ 急停 (E-Stop)", true, None);
-        let release_item = tray_icon::menu::MenuItem::with_id("release", "✓ 释放急停 (Release)", true, None);
+        let estop_item =
+            tray_icon::menu::MenuItem::with_id("estop", "⛔ 急停 (E-Stop)", true, None);
+        let release_item =
+            tray_icon::menu::MenuItem::with_id("release", "✓ 释放急停 (Release)", true, None);
         let sep2 = tray_icon::menu::PredefinedMenuItem::separator();
-        let version_item = tray_icon::menu::MenuItem::with_id("version", "NemesisBot (windows)", false, None);
+        let version_item =
+            tray_icon::menu::MenuItem::with_id("version", "NemesisBot (windows)", false, None);
         let sep3 = tray_icon::menu::PredefinedMenuItem::separator();
         let quit_item = tray_icon::menu::MenuItem::with_id("quit", "退出", true, None);
 
@@ -838,92 +916,119 @@ impl PlatformTray {
         let on_release = self.on_release;
 
         #[allow(deprecated)]
-        event_loop.run(|event, el| {
-            match event {
-                Event::NewEvents(StartCause::Init) => {
-                    // Event loop started
-                }
-                Event::UserEvent(TrayUserEvent::Menu(menu_event)) => {
-                    let id = menu_event.id().as_ref();
-                    tracing::debug!(menu_id = id, "[Desktop] Tray menu item selected");
-                    match id {
-                        "start" => {
-                            tracing::info!("[Desktop] Start Service clicked");
-                            if let Some(ref cb) = on_start { cb(); }
-                        }
-                        "stop" => {
-                            tracing::info!("[Desktop] Stop Service clicked");
-                            if let Some(ref cb) = on_stop { cb(); }
-                        }
-                        "cluster_start" => {
-                            tracing::info!("[Desktop] Cluster Start clicked");
-                            if let Some(ref cb) = on_cluster_start { cb(); }
-                        }
-                        "cluster_stop" => {
-                            tracing::info!("[Desktop] Cluster Stop clicked");
-                            if let Some(ref cb) = on_cluster_stop { cb(); }
-                        }
-                        "dashboard" => {
-                            tracing::info!("[Desktop] Open Dashboard clicked");
-                            if let Some(ref cb) = on_open_dashboard { cb(); }
-                        }
-                        "chat" => {
-                            tracing::info!("[Desktop] Open Chat clicked");
-                            if let Some(ref cb) = on_open_chat { cb(); }
-                        }
-                        "estop" => {
-                            tracing::info!("[Desktop] E-Stop clicked");
-                            if let Some(ref cb) = on_estop { cb(); }
-                        }
-                        "release" => {
-                            tracing::info!("[Desktop] Release e-stop clicked");
-                            if let Some(ref cb) = on_release { cb(); }
-                        }
-                        "quit" => {
-                            tracing::info!("[Desktop] Quit clicked, exiting tray event loop");
-                            if let Some(ref cb) = on_quit { cb(); }
-                            el.exit();
-                        }
-                        _ => {}
+        event_loop
+            .run(|event, el| {
+                match event {
+                    Event::NewEvents(StartCause::Init) => {
+                        // Event loop started
                     }
-                }
-                Event::UserEvent(TrayUserEvent::Icon(icon_event)) => {
-                    match &icon_event {
-                        tray_icon::TrayIconEvent::DoubleClick { .. } => {
-                            tracing::debug!("[Desktop] Tray icon double-clicked, opening Dashboard");
-                            if let Some(ref cb) = on_open_dashboard { cb(); }
-                        }
-                        tray_icon::TrayIconEvent::Click { button, .. } => {
-                            // On non-Windows platforms, use 400ms double-click detection
-                            // for left-click to open Dashboard.
-                            #[cfg(not(target_os = "windows"))]
-                            if *button == tray_icon::MouseButton::Left {
-                                let now = std::time::SystemTime::now()
-                                    .duration_since(std::time::UNIX_EPOCH)
-                                    .unwrap_or_default()
-                                    .as_millis() as u64;
-                                let prev = last_click_time_clone.load(Ordering::SeqCst);
-                                if prev > 0 && now.saturating_sub(prev) < 400 {
-                                    if let Some(ref cb) = on_open_dashboard { cb(); }
-                                    last_click_time_clone.store(0, Ordering::SeqCst);
-                                } else {
-                                    last_click_time_clone.store(now, Ordering::SeqCst);
+                    Event::UserEvent(TrayUserEvent::Menu(menu_event)) => {
+                        let id = menu_event.id().as_ref();
+                        tracing::debug!(menu_id = id, "[Desktop] Tray menu item selected");
+                        match id {
+                            "start" => {
+                                tracing::info!("[Desktop] Start Service clicked");
+                                if let Some(ref cb) = on_start {
+                                    cb();
                                 }
                             }
-                            #[cfg(target_os = "windows")]
-                            let _ = button;
+                            "stop" => {
+                                tracing::info!("[Desktop] Stop Service clicked");
+                                if let Some(ref cb) = on_stop {
+                                    cb();
+                                }
+                            }
+                            "cluster_start" => {
+                                tracing::info!("[Desktop] Cluster Start clicked");
+                                if let Some(ref cb) = on_cluster_start {
+                                    cb();
+                                }
+                            }
+                            "cluster_stop" => {
+                                tracing::info!("[Desktop] Cluster Stop clicked");
+                                if let Some(ref cb) = on_cluster_stop {
+                                    cb();
+                                }
+                            }
+                            "dashboard" => {
+                                tracing::info!("[Desktop] Open Dashboard clicked");
+                                if let Some(ref cb) = on_open_dashboard {
+                                    cb();
+                                }
+                            }
+                            "chat" => {
+                                tracing::info!("[Desktop] Open Chat clicked");
+                                if let Some(ref cb) = on_open_chat {
+                                    cb();
+                                }
+                            }
+                            "estop" => {
+                                tracing::info!("[Desktop] E-Stop clicked");
+                                if let Some(ref cb) = on_estop {
+                                    cb();
+                                }
+                            }
+                            "release" => {
+                                tracing::info!("[Desktop] Release e-stop clicked");
+                                if let Some(ref cb) = on_release {
+                                    cb();
+                                }
+                            }
+                            "quit" => {
+                                tracing::info!("[Desktop] Quit clicked, exiting tray event loop");
+                                if let Some(ref cb) = on_quit {
+                                    cb();
+                                }
+                                el.exit();
+                            }
+                            _ => {}
                         }
-                        _ => {}
                     }
+                    Event::UserEvent(TrayUserEvent::Icon(icon_event)) => {
+                        match &icon_event {
+                            tray_icon::TrayIconEvent::DoubleClick { .. } => {
+                                tracing::debug!(
+                                    "[Desktop] Tray icon double-clicked, opening Dashboard"
+                                );
+                                if let Some(ref cb) = on_open_dashboard {
+                                    cb();
+                                }
+                            }
+                            tray_icon::TrayIconEvent::Click { button, .. } => {
+                                // On non-Windows platforms, use 400ms double-click detection
+                                // for left-click to open Dashboard.
+                                #[cfg(not(target_os = "windows"))]
+                                if *button == tray_icon::MouseButton::Left {
+                                    let now = std::time::SystemTime::now()
+                                        .duration_since(std::time::UNIX_EPOCH)
+                                        .unwrap_or_default()
+                                        .as_millis()
+                                        as u64;
+                                    let prev = last_click_time_clone.load(Ordering::SeqCst);
+                                    if prev > 0 && now.saturating_sub(prev) < 400 {
+                                        if let Some(ref cb) = on_open_dashboard {
+                                            cb();
+                                        }
+                                        last_click_time_clone.store(0, Ordering::SeqCst);
+                                    } else {
+                                        last_click_time_clone.store(now, Ordering::SeqCst);
+                                    }
+                                }
+                                #[cfg(target_os = "windows")]
+                                let _ = button;
+                            }
+                            _ => {}
+                        }
+                    }
+                    #[cfg(target_os = "macos")]
+                    Event::UserEvent(TrayUserEvent::Exit) => {
+                        tracing::info!("[Desktop] Tray exit requested, exiting event loop");
+                        el.exit();
+                    }
+                    _ => {}
                 }
-                #[cfg(target_os = "macos")]
-                Event::UserEvent(TrayUserEvent::Exit) => {
-                    tracing::info!("[Desktop] Tray exit requested, exiting event loop");
-                    el.exit();
-                }
-                _ => {}
-            }
-        }).expect("tray event loop error");
+            })
+            .expect("tray event loop error");
     }
 }
 

@@ -143,12 +143,11 @@ impl ClaudeCliProvider {
 
     /// Parse the JSON output from the claude CLI.
     fn parse_response(&self, output: &str) -> Result<LLMResponse, FailoverError> {
-        let resp: ClaudeCliResponse = serde_json::from_str(output).map_err(|e| {
-            FailoverError::Format {
+        let resp: ClaudeCliResponse =
+            serde_json::from_str(output).map_err(|e| FailoverError::Format {
                 provider: "claude-cli".to_string(),
                 message: format!("failed to parse claude cli response: {}", e),
-            }
-        })?;
+            })?;
 
         if resp.is_error {
             return Err(FailoverError::Unknown {
@@ -193,9 +192,9 @@ impl ClaudeCliProvider {
             finish_reason: finish_reason.to_string(),
             usage,
             reasoning_content: None,
-    extra: std::collections::HashMap::new(),
-    raw_request_body: None,
-    raw_response_body: None,
+            extra: std::collections::HashMap::new(),
+            raw_request_body: None,
+            raw_response_body: None,
         })
     }
 }

@@ -10,10 +10,10 @@
 use std::fmt;
 
 use tracing::Event;
-use tracing_subscriber::fmt::format::Writer;
-use tracing_subscriber::fmt::{FormatEvent, FormatFields, FmtContext};
-use tracing_subscriber::registry::LookupSpan;
 use tracing::Subscriber;
+use tracing_subscriber::fmt::format::Writer;
+use tracing_subscriber::fmt::{FmtContext, FormatEvent, FormatFields};
+use tracing_subscriber::registry::LookupSpan;
 
 /// Tracing event formatter that serializes each event as a single-line JSON object
 /// (JSONL / NDJSON), matching the SSE EventHub payload format.
@@ -35,8 +35,7 @@ where
         // ctx.format_fields because that would re-serialize via tracing-subscriber's
         // FormatFields machinery, producing a different shape.
         let sse_event = crate::sse_layer::build_sse_log_event(event);
-        let json = serde_json::to_string(&sse_event)
-            .map_err(|_| fmt::Error)?;
+        let json = serde_json::to_string(&sse_event).map_err(|_| fmt::Error)?;
         writeln!(writer, "{}", json)
     }
 }

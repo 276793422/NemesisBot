@@ -10,7 +10,7 @@ fn make_node(id: &str, node_type: &str, config: HashMap<String, serde_json::Valu
         depends_on: vec![],
         retry_count: 0,
         timeout: None,
-    is_terminal: false,
+        is_terminal: false,
     }
 }
 
@@ -54,7 +54,10 @@ async fn test_delay_node_executor() {
     let mut config = HashMap::new();
     config.insert("seconds".to_string(), serde_json::json!(10));
     let node = make_node("n1", "delay", config);
-    let result = exec.execute(&node, &HashMap::new(), &empty_wf_ctx()).await.unwrap();
+    let result = exec
+        .execute(&node, &HashMap::new(), &empty_wf_ctx())
+        .await
+        .unwrap();
     assert_eq!(result.state, ExecutionState::Completed);
 }
 
@@ -72,7 +75,10 @@ async fn test_parallel_node_executor_with_registry() {
         ]),
     );
     let node = make_node("n1", "parallel", config);
-    let result = exec.execute(&node, &HashMap::new(), &empty_wf_ctx()).await.unwrap();
+    let result = exec
+        .execute(&node, &HashMap::new(), &empty_wf_ctx())
+        .await
+        .unwrap();
     assert_eq!(result.state, ExecutionState::Completed);
     let obj = result.output.as_object().unwrap();
     // Should have branch_0 and branch_1
@@ -93,7 +99,10 @@ async fn test_parallel_node_stub() {
         ]),
     );
     let node = make_node("n1", "parallel", config);
-    let result = exec.execute(&node, &HashMap::new(), &empty_wf_ctx()).await.unwrap();
+    let result = exec
+        .execute(&node, &HashMap::new(), &empty_wf_ctx())
+        .await
+        .unwrap();
     assert_eq!(result.state, ExecutionState::Completed);
     let obj = result.output.as_object().unwrap();
     // Should have results for each child node
@@ -116,7 +125,10 @@ async fn test_loop_node_executor_with_registry() {
         ]),
     );
     let node = make_node("n1", "loop", config);
-    let result = exec.execute(&node, &HashMap::new(), &empty_wf_ctx()).await.unwrap();
+    let result = exec
+        .execute(&node, &HashMap::new(), &empty_wf_ctx())
+        .await
+        .unwrap();
     assert_eq!(result.state, ExecutionState::Completed);
     assert_eq!(result.output["iterations"].as_u64().unwrap(), 3);
 }
@@ -133,7 +145,10 @@ async fn test_loop_node_stub() {
         ]),
     );
     let node = make_node("n1", "loop", config);
-    let result = exec.execute(&node, &HashMap::new(), &empty_wf_ctx()).await.unwrap();
+    let result = exec
+        .execute(&node, &HashMap::new(), &empty_wf_ctx())
+        .await
+        .unwrap();
     assert_eq!(result.state, ExecutionState::Completed);
     assert_eq!(result.output["iterations"].as_u64().unwrap(), 5);
 }
@@ -144,21 +159,24 @@ async fn test_sub_workflow_node_stub() {
     let mut config = HashMap::new();
     config.insert("workflow".to_string(), serde_json::json!("child_wf"));
     let node = make_node("n1", "sub_workflow", config);
-    let result = exec.execute(&node, &HashMap::new(), &empty_wf_ctx()).await.unwrap();
+    let result = exec
+        .execute(&node, &HashMap::new(), &empty_wf_ctx())
+        .await
+        .unwrap();
     // Without an engine, the stub returns Failed with a descriptive error
     assert_eq!(result.state, ExecutionState::Failed);
     assert!(result.error.unwrap().contains("engine configured"));
-    assert_eq!(
-        result.output["sub_workflow"].as_str().unwrap(),
-        "child_wf"
-    );
+    assert_eq!(result.output["sub_workflow"].as_str().unwrap(), "child_wf");
 }
 
 #[tokio::test]
 async fn test_sub_workflow_missing_config() {
     let exec = SubWorkflowNodeStub;
     let node = make_node("n1", "sub_workflow", HashMap::new());
-    let result = exec.execute(&node, &HashMap::new(), &empty_wf_ctx()).await.unwrap();
+    let result = exec
+        .execute(&node, &HashMap::new(), &empty_wf_ctx())
+        .await
+        .unwrap();
     assert_eq!(result.state, ExecutionState::Failed);
     assert!(result.error.unwrap().contains("workflow"));
 }
@@ -167,7 +185,10 @@ async fn test_sub_workflow_missing_config() {
 async fn test_http_node_executor() {
     let exec = HTTPNodeExecutor;
     let mut config = HashMap::new();
-    config.insert("url".to_string(), serde_json::json!("http://example.com/api"));
+    config.insert(
+        "url".to_string(),
+        serde_json::json!("http://example.com/api"),
+    );
     config.insert("method".to_string(), serde_json::json!("POST"));
     let node = make_node("n1", "http", config);
     // This will attempt a real HTTP request - in tests it may fail if no server.
@@ -189,7 +210,10 @@ async fn test_http_node_executor() {
 async fn test_http_node_missing_url() {
     let exec = HTTPNodeExecutor;
     let node = make_node("n1", "http", HashMap::new());
-    let result = exec.execute(&node, &HashMap::new(), &empty_wf_ctx()).await.unwrap();
+    let result = exec
+        .execute(&node, &HashMap::new(), &empty_wf_ctx())
+        .await
+        .unwrap();
     assert_eq!(result.state, ExecutionState::Failed);
 }
 
@@ -200,7 +224,10 @@ async fn test_script_node_executor() {
     config.insert("script".to_string(), serde_json::json!("echo hello"));
     config.insert("language".to_string(), serde_json::json!("bash"));
     let node = make_node("n1", "script", config);
-    let result = exec.execute(&node, &HashMap::new(), &empty_wf_ctx()).await.unwrap();
+    let result = exec
+        .execute(&node, &HashMap::new(), &empty_wf_ctx())
+        .await
+        .unwrap();
     assert_eq!(result.state, ExecutionState::Completed);
     // New implementation returns stdout, stderr, exit_code
     assert_eq!(result.output["exit_code"].as_i64().unwrap(), 0);
@@ -213,7 +240,10 @@ async fn test_human_review_node_executor() {
     let mut config = HashMap::new();
     config.insert("message".to_string(), serde_json::json!("Please review"));
     let node = make_node("n1", "human_review", config);
-    let result = exec.execute(&node, &HashMap::new(), &empty_wf_ctx()).await.unwrap();
+    let result = exec
+        .execute(&node, &HashMap::new(), &empty_wf_ctx())
+        .await
+        .unwrap();
     assert_eq!(result.state, ExecutionState::Waiting);
     assert_eq!(
         result.output["status"].as_str().unwrap(),
@@ -361,7 +391,11 @@ fn test_registry_concurrent_access() {
 
     // After concurrent writes complete, all custom types should be present.
     for i in 0..50 {
-        assert!(registry.get(&format!("custom_{}", i)).is_some(), "custom_{} missing", i);
+        assert!(
+            registry.get(&format!("custom_{}", i)).is_some(),
+            "custom_{} missing",
+            i
+        );
     }
 }
 
@@ -384,7 +418,10 @@ async fn test_condition_node_false() {
 async fn test_delay_node_default_seconds() {
     let exec = DelayNodeExecutor;
     let node = make_node("n1", "delay", HashMap::new());
-    let result = exec.execute(&node, &HashMap::new(), &empty_wf_ctx()).await.unwrap();
+    let result = exec
+        .execute(&node, &HashMap::new(), &empty_wf_ctx())
+        .await
+        .unwrap();
     assert_eq!(result.state, ExecutionState::Completed);
 }
 
@@ -392,7 +429,10 @@ async fn test_delay_node_default_seconds() {
 async fn test_human_review_default_message() {
     let exec = HumanReviewNodeExecutor;
     let node = make_node("n1", "human_review", HashMap::new());
-    let result = exec.execute(&node, &HashMap::new(), &empty_wf_ctx()).await.unwrap();
+    let result = exec
+        .execute(&node, &HashMap::new(), &empty_wf_ctx())
+        .await
+        .unwrap();
     assert_eq!(result.state, ExecutionState::Waiting);
     assert_eq!(
         result.output["message"].as_str().unwrap(),
@@ -404,7 +444,10 @@ async fn test_human_review_default_message() {
 async fn test_script_node_missing_script() {
     let exec = ScriptNodeExecutor::new();
     let node = make_node("n1", "script", HashMap::new());
-    let result = exec.execute(&node, &HashMap::new(), &empty_wf_ctx()).await.unwrap();
+    let result = exec
+        .execute(&node, &HashMap::new(), &empty_wf_ctx())
+        .await
+        .unwrap();
     assert_eq!(result.state, ExecutionState::Failed);
 }
 
@@ -452,7 +495,10 @@ async fn test_parallel_stub_empty_children() {
     let exec = ParallelNodeStub;
     let config = HashMap::new();
     let node = make_node("n1", "parallel", config);
-    let result = exec.execute(&node, &HashMap::new(), &empty_wf_ctx()).await.unwrap();
+    let result = exec
+        .execute(&node, &HashMap::new(), &empty_wf_ctx())
+        .await
+        .unwrap();
     assert_eq!(result.state, ExecutionState::Completed);
     assert!(result.output["results"].as_array().unwrap().is_empty());
 }
@@ -466,7 +512,10 @@ async fn test_loop_stub_default_iterations() {
         serde_json::json!([{ "id": "inner", "node_type": "delay", "config": { "seconds": 0 } }]),
     );
     let node = make_node("n1", "loop", config);
-    let result = exec.execute(&node, &HashMap::new(), &empty_wf_ctx()).await.unwrap();
+    let result = exec
+        .execute(&node, &HashMap::new(), &empty_wf_ctx())
+        .await
+        .unwrap();
     assert_eq!(result.state, ExecutionState::Completed);
     // Default max_iterations should be 1
     assert!(result.output["iterations"].as_u64().unwrap() >= 1);
@@ -480,7 +529,10 @@ async fn test_loop_stub_default_iterations() {
 async fn test_tool_node_executor_default() {
     let exec = ToolNodeExecutor;
     let node = make_node("n1", "tool", HashMap::new());
-    let result = exec.execute(&node, &HashMap::new(), &empty_wf_ctx()).await.unwrap();
+    let result = exec
+        .execute(&node, &HashMap::new(), &empty_wf_ctx())
+        .await
+        .unwrap();
     assert_eq!(result.state, ExecutionState::Completed);
     assert_eq!(result.output["tool"].as_str().unwrap(), "unknown");
     assert_eq!(result.output["status"].as_str().unwrap(), "success");
@@ -492,7 +544,10 @@ async fn test_tool_node_executor_with_name() {
     let mut config = HashMap::new();
     config.insert("tool".to_string(), serde_json::json!("grep"));
     let node = make_node("n1", "tool", config);
-    let result = exec.execute(&node, &HashMap::new(), &empty_wf_ctx()).await.unwrap();
+    let result = exec
+        .execute(&node, &HashMap::new(), &empty_wf_ctx())
+        .await
+        .unwrap();
     assert_eq!(result.output["tool"].as_str().unwrap(), "grep");
 }
 
@@ -500,10 +555,23 @@ async fn test_tool_node_executor_with_name() {
 async fn test_llm_node_executor_default_prompt() {
     let exec = LLMNodeExecutor;
     let node = make_node("n1", "llm", HashMap::new());
-    let result = exec.execute(&node, &HashMap::new(), &empty_wf_ctx()).await.unwrap();
+    let result = exec
+        .execute(&node, &HashMap::new(), &empty_wf_ctx())
+        .await
+        .unwrap();
     assert_eq!(result.state, ExecutionState::Completed);
-    assert!(result.output["text"].as_str().unwrap().contains("default prompt"));
-    assert!(result.output["text"].as_str().unwrap().contains("model=default"));
+    assert!(
+        result.output["text"]
+            .as_str()
+            .unwrap()
+            .contains("default prompt")
+    );
+    assert!(
+        result.output["text"]
+            .as_str()
+            .unwrap()
+            .contains("model=default")
+    );
 }
 
 #[tokio::test]
@@ -513,7 +581,10 @@ async fn test_llm_node_executor_with_model() {
     config.insert("prompt".to_string(), serde_json::json!("Summarize this"));
     config.insert("model".to_string(), serde_json::json!("gpt-4"));
     let node = make_node("n1", "llm", config);
-    let result = exec.execute(&node, &HashMap::new(), &empty_wf_ctx()).await.unwrap();
+    let result = exec
+        .execute(&node, &HashMap::new(), &empty_wf_ctx())
+        .await
+        .unwrap();
     let text = result.output["text"].as_str().unwrap();
     assert!(text.contains("gpt-4"));
     assert!(text.contains("Summarize this"));
@@ -523,7 +594,10 @@ async fn test_llm_node_executor_with_model() {
 async fn test_condition_node_default_false() {
     let exec = ConditionNodeExecutor;
     let node = make_node("n1", "condition", HashMap::new());
-    let result = exec.execute(&node, &HashMap::new(), &empty_wf_ctx()).await.unwrap();
+    let result = exec
+        .execute(&node, &HashMap::new(), &empty_wf_ctx())
+        .await
+        .unwrap();
     assert_eq!(result.state, ExecutionState::Completed);
     assert!(!result.output["condition_result"].as_bool().unwrap());
 }
@@ -534,7 +608,10 @@ async fn test_condition_node_true_literal() {
     let mut config = HashMap::new();
     config.insert("condition".to_string(), serde_json::json!("true"));
     let node = make_node("n1", "condition", config);
-    let result = exec.execute(&node, &HashMap::new(), &empty_wf_ctx()).await.unwrap();
+    let result = exec
+        .execute(&node, &HashMap::new(), &empty_wf_ctx())
+        .await
+        .unwrap();
     assert!(result.output["condition_result"].as_bool().unwrap());
 }
 
@@ -574,7 +651,10 @@ async fn test_transform_node_identity() {
     config.insert("input".to_string(), serde_json::json!("hello world"));
     let node = make_node("n1", "transform", config);
 
-    let result = exec.execute(&node, &HashMap::new(), &empty_wf_ctx()).await.unwrap();
+    let result = exec
+        .execute(&node, &HashMap::new(), &empty_wf_ctx())
+        .await
+        .unwrap();
     assert_eq!(result.state, ExecutionState::Completed);
     assert_eq!(result.output["text"].as_str().unwrap(), "hello world");
 }
@@ -587,7 +667,10 @@ async fn test_transform_node_passthrough() {
     config.insert("expression".to_string(), serde_json::json!("passthrough"));
     config.insert("input".to_string(), serde_json::json!("raw text"));
     let node = make_node("n1", "transform", config);
-    let result = exec.execute(&node, &HashMap::new(), &empty_wf_ctx()).await.unwrap();
+    let result = exec
+        .execute(&node, &HashMap::new(), &empty_wf_ctx())
+        .await
+        .unwrap();
     assert_eq!(result.state, ExecutionState::Completed);
     assert_eq!(result.output["text"].as_str().unwrap(), "raw text");
 }
@@ -597,7 +680,10 @@ async fn test_transform_node_default_identity() {
     // No expression → default is identity; empty input → empty text.
     let exec = TransformNodeExecutor;
     let node = make_node("n1", "transform", HashMap::new());
-    let result = exec.execute(&node, &HashMap::new(), &empty_wf_ctx()).await.unwrap();
+    let result = exec
+        .execute(&node, &HashMap::new(), &empty_wf_ctx())
+        .await
+        .unwrap();
     assert_eq!(result.state, ExecutionState::Completed);
     assert_eq!(result.output["text"].as_str().unwrap(), "");
 }
@@ -606,9 +692,15 @@ async fn test_transform_node_default_identity() {
 async fn test_transform_node_unknown_expression_fails() {
     let exec = TransformNodeExecutor;
     let mut config = HashMap::new();
-    config.insert("expression".to_string(), serde_json::json!("uppercase(data)"));
+    config.insert(
+        "expression".to_string(),
+        serde_json::json!("uppercase(data)"),
+    );
     let node = make_node("n1", "transform", config);
-    let result = exec.execute(&node, &HashMap::new(), &empty_wf_ctx()).await.unwrap();
+    let result = exec
+        .execute(&node, &HashMap::new(), &empty_wf_ctx())
+        .await
+        .unwrap();
     assert_eq!(result.state, ExecutionState::Failed);
     assert!(result.error.unwrap().contains("unknown expression"));
 }
@@ -622,23 +714,38 @@ async fn test_transform_node_trim_first_last_split() {
     config.insert("expression".to_string(), serde_json::json!("trim"));
     config.insert("input".to_string(), serde_json::json!("  hi  \n"));
     let node = make_node("n1", "transform", config);
-    let r = exec.execute(&node, &HashMap::new(), &empty_wf_ctx()).await.unwrap();
+    let r = exec
+        .execute(&node, &HashMap::new(), &empty_wf_ctx())
+        .await
+        .unwrap();
     assert_eq!(r.output["text"].as_str().unwrap(), "hi");
 
     // first_line
     let mut config = HashMap::new();
     config.insert("expression".to_string(), serde_json::json!("first_line"));
-    config.insert("input".to_string(), serde_json::json!("\n\nfirst\nsecond\nthird"));
+    config.insert(
+        "input".to_string(),
+        serde_json::json!("\n\nfirst\nsecond\nthird"),
+    );
     let node = make_node("n1", "transform", config);
-    let r = exec.execute(&node, &HashMap::new(), &empty_wf_ctx()).await.unwrap();
+    let r = exec
+        .execute(&node, &HashMap::new(), &empty_wf_ctx())
+        .await
+        .unwrap();
     assert_eq!(r.output["text"].as_str().unwrap(), "first");
 
     // last_line
     let mut config = HashMap::new();
     config.insert("expression".to_string(), serde_json::json!("last_line"));
-    config.insert("input".to_string(), serde_json::json!("first\nsecond\nthird\n"));
+    config.insert(
+        "input".to_string(),
+        serde_json::json!("first\nsecond\nthird\n"),
+    );
     let node = make_node("n1", "transform", config);
-    let r = exec.execute(&node, &HashMap::new(), &empty_wf_ctx()).await.unwrap();
+    let r = exec
+        .execute(&node, &HashMap::new(), &empty_wf_ctx())
+        .await
+        .unwrap();
     assert_eq!(r.output["text"].as_str().unwrap(), "third");
 
     // split_lines
@@ -646,9 +753,16 @@ async fn test_transform_node_trim_first_last_split() {
     config.insert("expression".to_string(), serde_json::json!("split_lines"));
     config.insert("input".to_string(), serde_json::json!("a\n\nb\nc"));
     let node = make_node("n1", "transform", config);
-    let r = exec.execute(&node, &HashMap::new(), &empty_wf_ctx()).await.unwrap();
-    let lines: Vec<&str> = r.output["lines"].as_array().unwrap()
-        .iter().map(|v| v.as_str().unwrap()).collect();
+    let r = exec
+        .execute(&node, &HashMap::new(), &empty_wf_ctx())
+        .await
+        .unwrap();
+    let lines: Vec<&str> = r.output["lines"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_str().unwrap())
+        .collect();
     assert_eq!(lines, vec!["a", "b", "c"]);
 }
 
@@ -665,7 +779,10 @@ async fn test_transform_node_json_extract() {
         serde_json::json!(r#"{"data": {"user": {"name": "alice", "age": 30}}}"#),
     );
     let node = make_node("n1", "transform", config);
-    let r = exec.execute(&node, &HashMap::new(), &empty_wf_ctx()).await.unwrap();
+    let r = exec
+        .execute(&node, &HashMap::new(), &empty_wf_ctx())
+        .await
+        .unwrap();
     assert_eq!(r.state, ExecutionState::Completed);
     assert_eq!(r.output["text"].as_str().unwrap(), "alice");
 
@@ -678,7 +795,10 @@ async fn test_transform_node_json_extract() {
         serde_json::json!(r#"{"data": {"user": {"name": "alice", "age": 30}}}"#),
     );
     let node = make_node("n1", "transform", config);
-    let r = exec.execute(&node, &HashMap::new(), &empty_wf_ctx()).await.unwrap();
+    let r = exec
+        .execute(&node, &HashMap::new(), &empty_wf_ctx())
+        .await
+        .unwrap();
     assert_eq!(r.output["value"].as_u64().unwrap(), 30);
 
     // Array indexing (incl. negative).
@@ -690,7 +810,10 @@ async fn test_transform_node_json_extract() {
         serde_json::json!(r#"{"items": [{"id": "a"}, {"id": "b"}, {"id": "c"}]}"#),
     );
     let node = make_node("n1", "transform", config);
-    let r = exec.execute(&node, &HashMap::new(), &empty_wf_ctx()).await.unwrap();
+    let r = exec
+        .execute(&node, &HashMap::new(), &empty_wf_ctx())
+        .await
+        .unwrap();
     assert_eq!(r.output["text"].as_str().unwrap(), "c");
 }
 
@@ -704,7 +827,10 @@ async fn test_transform_node_regex_match() {
     config.insert("arg".to_string(), serde_json::json!(r#"\d+"#));
     config.insert("input".to_string(), serde_json::json!("order 42 ready"));
     let node = make_node("n1", "transform", config);
-    let r = exec.execute(&node, &HashMap::new(), &empty_wf_ctx()).await.unwrap();
+    let r = exec
+        .execute(&node, &HashMap::new(), &empty_wf_ctx())
+        .await
+        .unwrap();
     assert_eq!(r.output["text"].as_str().unwrap(), "42");
 
     // Capture group → first capture.
@@ -713,7 +839,10 @@ async fn test_transform_node_regex_match() {
     config.insert("arg".to_string(), serde_json::json!(r#"key=(\w+)"#));
     config.insert("input".to_string(), serde_json::json!("key=hello world"));
     let node = make_node("n1", "transform", config);
-    let r = exec.execute(&node, &HashMap::new(), &empty_wf_ctx()).await.unwrap();
+    let r = exec
+        .execute(&node, &HashMap::new(), &empty_wf_ctx())
+        .await
+        .unwrap();
     assert_eq!(r.output["text"].as_str().unwrap(), "hello");
 
     // No match → empty string.
@@ -722,7 +851,10 @@ async fn test_transform_node_regex_match() {
     config.insert("arg".to_string(), serde_json::json!(r#"zzz"#));
     config.insert("input".to_string(), serde_json::json!("no match here"));
     let node = make_node("n1", "transform", config);
-    let r = exec.execute(&node, &HashMap::new(), &empty_wf_ctx()).await.unwrap();
+    let r = exec
+        .execute(&node, &HashMap::new(), &empty_wf_ctx())
+        .await
+        .unwrap();
     assert_eq!(r.output["text"].as_str().unwrap(), "");
 }
 
@@ -768,10 +900,7 @@ async fn test_transform_output_type_markdown_unwraps_bare_string() {
     let exec = TransformNodeExecutor;
     let mut config = HashMap::new();
     config.insert("expression".to_string(), serde_json::json!("identity"));
-    config.insert(
-        "input".to_string(),
-        serde_json::json!("**bold** reply"),
-    );
+    config.insert("input".to_string(), serde_json::json!("**bold** reply"));
     config.insert("output_type".to_string(), serde_json::json!("markdown"));
     let node = make_node("n1", "transform", config);
 
@@ -788,10 +917,7 @@ async fn test_transform_output_type_xml_unwraps_bare_string() {
     let exec = TransformNodeExecutor;
     let mut config = HashMap::new();
     config.insert("expression".to_string(), serde_json::json!("identity"));
-    config.insert(
-        "input".to_string(),
-        serde_json::json!("<root>value</root>"),
-    );
+    config.insert("input".to_string(), serde_json::json!("<root>value</root>"));
     config.insert("output_type".to_string(), serde_json::json!("xml"));
     let node = make_node("n1", "transform", config);
 
@@ -882,7 +1008,10 @@ async fn test_delay_node_with_seconds() {
     let mut config = HashMap::new();
     config.insert("seconds".to_string(), serde_json::json!(0));
     let node = make_node("n1", "delay", config);
-    let result = exec.execute(&node, &HashMap::new(), &empty_wf_ctx()).await.unwrap();
+    let result = exec
+        .execute(&node, &HashMap::new(), &empty_wf_ctx())
+        .await
+        .unwrap();
     assert_eq!(result.state, ExecutionState::Completed);
     // Field is named `delayed_seconds` (was `delayed_ms` before BUG #2 fix).
     // Value is f64 since the executor now supports fractional seconds.
@@ -903,7 +1032,10 @@ async fn test_parallel_node_with_branches_key() {
         ]),
     );
     let node = make_node("n1", "parallel", config);
-    let result = exec.execute(&node, &HashMap::new(), &empty_wf_ctx()).await.unwrap();
+    let result = exec
+        .execute(&node, &HashMap::new(), &empty_wf_ctx())
+        .await
+        .unwrap();
     assert_eq!(result.state, ExecutionState::Completed);
     assert!(result.output.as_object().unwrap().contains_key("branch_0"));
 }
@@ -914,7 +1046,10 @@ async fn test_parallel_node_empty_children() {
     let exec = registry.get("parallel").unwrap();
 
     let node = make_node("n1", "parallel", HashMap::new());
-    let result = exec.execute(&node, &HashMap::new(), &empty_wf_ctx()).await.unwrap();
+    let result = exec
+        .execute(&node, &HashMap::new(), &empty_wf_ctx())
+        .await
+        .unwrap();
     assert_eq!(result.state, ExecutionState::Completed);
     assert!(result.output["results"].as_array().unwrap().is_empty());
 }
@@ -932,7 +1067,10 @@ async fn test_parallel_node_with_unknown_child_type() {
         ]),
     );
     let node = make_node("n1", "parallel", config);
-    let result = exec.execute(&node, &HashMap::new(), &empty_wf_ctx()).await.unwrap();
+    let result = exec
+        .execute(&node, &HashMap::new(), &empty_wf_ctx())
+        .await
+        .unwrap();
     // Should fail because child type is unknown
     assert_eq!(result.state, ExecutionState::Failed);
     assert!(result.error.is_some());
@@ -944,7 +1082,10 @@ async fn test_loop_node_empty_children() {
     let exec = registry.get("loop").unwrap();
 
     let node = make_node("n1", "loop", HashMap::new());
-    let result = exec.execute(&node, &HashMap::new(), &empty_wf_ctx()).await.unwrap();
+    let result = exec
+        .execute(&node, &HashMap::new(), &empty_wf_ctx())
+        .await
+        .unwrap();
     assert_eq!(result.state, ExecutionState::Completed);
     assert_eq!(result.output["iterations"].as_u64().unwrap(), 0);
     assert!(result.output["last_output"].is_null());
@@ -965,7 +1106,10 @@ async fn test_loop_node_with_condition_stops_early() {
         ]),
     );
     let node = make_node("n1", "loop", config);
-    let result = exec.execute(&node, &HashMap::new(), &empty_wf_ctx()).await.unwrap();
+    let result = exec
+        .execute(&node, &HashMap::new(), &empty_wf_ctx())
+        .await
+        .unwrap();
     assert_eq!(result.state, ExecutionState::Completed);
     // condition is "false", so after first iteration it should stop
     assert_eq!(result.output["iterations"].as_u64().unwrap(), 1);
@@ -975,7 +1119,10 @@ async fn test_loop_node_with_condition_stops_early() {
 async fn test_loop_stub_empty_children() {
     let exec = LoopNodeStub;
     let node = make_node("n1", "loop", HashMap::new());
-    let result = exec.execute(&node, &HashMap::new(), &empty_wf_ctx()).await.unwrap();
+    let result = exec
+        .execute(&node, &HashMap::new(), &empty_wf_ctx())
+        .await
+        .unwrap();
     assert_eq!(result.state, ExecutionState::Completed);
     assert_eq!(result.output["iterations"].as_u64().unwrap(), 0);
 }
@@ -993,7 +1140,10 @@ async fn test_loop_stub_with_condition_stops() {
         ]),
     );
     let node = make_node("n1", "loop", config);
-    let result = exec.execute(&node, &HashMap::new(), &empty_wf_ctx()).await.unwrap();
+    let result = exec
+        .execute(&node, &HashMap::new(), &empty_wf_ctx())
+        .await
+        .unwrap();
     assert_eq!(result.state, ExecutionState::Completed);
     assert_eq!(result.output["iterations"].as_u64().unwrap(), 1);
 }
@@ -1012,7 +1162,10 @@ async fn test_loop_node_with_unknown_child_type() {
         ]),
     );
     let node = make_node("n1", "loop", config);
-    let result = exec.execute(&node, &HashMap::new(), &empty_wf_ctx()).await.unwrap();
+    let result = exec
+        .execute(&node, &HashMap::new(), &empty_wf_ctx())
+        .await
+        .unwrap();
     assert!(result.error.is_some());
     assert!(result.error.unwrap().contains("unknown node type"));
 }
@@ -1034,30 +1187,35 @@ async fn test_sub_workflow_node_with_engine() {
 async fn test_sub_workflow_node_with_engine_success() {
     let engine = WorkflowEngine::new_arc();
     // Register a child workflow
-    engine.register_workflow(Workflow {
-        name: "child_wf".to_string(),
-        description: String::new(),
-        version: "1.0.0".to_string(),
-        triggers: vec![],
-        nodes: vec![NodeDef {
-            id: "cn1".to_string(),
-            node_type: "llm".to_string(),
-            config: HashMap::new(),
-            depends_on: vec![],
-            retry_count: 0,
-            timeout: None,
-        is_terminal: false,
-        }],
-        edges: vec![],
-        variables: HashMap::new(),
-        metadata: HashMap::new(),
-    }).unwrap();
+    engine
+        .register_workflow(Workflow {
+            name: "child_wf".to_string(),
+            description: String::new(),
+            version: "1.0.0".to_string(),
+            triggers: vec![],
+            nodes: vec![NodeDef {
+                id: "cn1".to_string(),
+                node_type: "llm".to_string(),
+                config: HashMap::new(),
+                depends_on: vec![],
+                retry_count: 0,
+                timeout: None,
+                is_terminal: false,
+            }],
+            edges: vec![],
+            variables: HashMap::new(),
+            metadata: HashMap::new(),
+        })
+        .unwrap();
 
     let exec = SubWorkflowNodeExecutor::new(engine);
     let mut config = HashMap::new();
     config.insert("workflow".to_string(), serde_json::json!("child_wf"));
     let node = make_node("n1", "sub_workflow", config);
-    let result = exec.execute(&node, &HashMap::new(), &empty_wf_ctx()).await.unwrap();
+    let result = exec
+        .execute(&node, &HashMap::new(), &empty_wf_ctx())
+        .await
+        .unwrap();
     assert_eq!(result.state, ExecutionState::Completed);
     assert!(result.metadata.contains_key("execution_id"));
 }
@@ -1067,7 +1225,10 @@ async fn test_sub_workflow_node_missing_workflow_config() {
     let engine = WorkflowEngine::new_arc();
     let exec = SubWorkflowNodeExecutor::new(engine);
     let node = make_node("n1", "sub_workflow", HashMap::new());
-    let result = exec.execute(&node, &HashMap::new(), &empty_wf_ctx()).await.unwrap();
+    let result = exec
+        .execute(&node, &HashMap::new(), &empty_wf_ctx())
+        .await
+        .unwrap();
     assert_eq!(result.state, ExecutionState::Failed);
     assert!(result.error.unwrap().contains("workflow"));
 }
@@ -1077,14 +1238,20 @@ async fn test_sub_workflow_stub_with_input_config() {
     let exec = SubWorkflowNodeStub;
     let mut config = HashMap::new();
     config.insert("workflow".to_string(), serde_json::json!("child_wf"));
-    config.insert("input".to_string(), serde_json::json!({
-        "query": "search_term",
-        "limit": 10,
-    }));
+    config.insert(
+        "input".to_string(),
+        serde_json::json!({
+            "query": "search_term",
+            "limit": 10,
+        }),
+    );
     let node = make_node("n1", "sub_workflow", config);
 
     let mut ctx = HashMap::new();
-    ctx.insert("search_term".to_string(), serde_json::json!("resolved_value"));
+    ctx.insert(
+        "search_term".to_string(),
+        serde_json::json!("resolved_value"),
+    );
 
     let result = exec.execute(&node, &ctx, &empty_wf_ctx()).await.unwrap();
     assert_eq!(result.state, ExecutionState::Failed);
@@ -1098,7 +1265,10 @@ async fn test_sub_workflow_stub_with_input_config() {
 async fn test_http_node_post_method() {
     let exec = HTTPNodeExecutor;
     let mut config = HashMap::new();
-    config.insert("url".to_string(), serde_json::json!("http://127.0.0.1:1/nonexistent"));
+    config.insert(
+        "url".to_string(),
+        serde_json::json!("http://127.0.0.1:1/nonexistent"),
+    );
     config.insert("method".to_string(), serde_json::json!("POST"));
     config.insert("body".to_string(), serde_json::json!("test_body"));
     let node = make_node("n1", "http", config);
@@ -1118,12 +1288,18 @@ async fn test_http_node_post_method() {
 async fn test_http_node_with_headers() {
     let exec = HTTPNodeExecutor;
     let mut config = HashMap::new();
-    config.insert("url".to_string(), serde_json::json!("http://127.0.0.1:1/test"));
+    config.insert(
+        "url".to_string(),
+        serde_json::json!("http://127.0.0.1:1/test"),
+    );
     config.insert("method".to_string(), serde_json::json!("GET"));
-    config.insert("headers".to_string(), serde_json::json!({
-        "Content-Type": "application/json",
-        "X-Custom": "value",
-    }));
+    config.insert(
+        "headers".to_string(),
+        serde_json::json!({
+            "Content-Type": "application/json",
+            "X-Custom": "value",
+        }),
+    );
     let node = make_node("n1", "http", config);
     // Should attempt the request with headers
     let _ = exec.execute(&node, &HashMap::new(), &empty_wf_ctx()).await;
@@ -1135,7 +1311,10 @@ async fn test_http_node_various_methods() {
 
     for method in &["PUT", "PATCH", "DELETE", "HEAD"] {
         let mut config = HashMap::new();
-        config.insert("url".to_string(), serde_json::json!("http://127.0.0.1:1/test"));
+        config.insert(
+            "url".to_string(),
+            serde_json::json!("http://127.0.0.1:1/test"),
+        );
         config.insert("method".to_string(), serde_json::json!(*method));
         let node = make_node("n1", "http", config);
         // Should not panic for any method
@@ -1166,7 +1345,10 @@ async fn test_script_node_failing_script() {
     config.insert("script".to_string(), serde_json::json!("exit 1"));
     config.insert("language".to_string(), serde_json::json!("bash"));
     let node = make_node("n1", "script", config);
-    let result = exec.execute(&node, &HashMap::new(), &empty_wf_ctx()).await.unwrap();
+    let result = exec
+        .execute(&node, &HashMap::new(), &empty_wf_ctx())
+        .await
+        .unwrap();
     assert_eq!(result.state, ExecutionState::Failed);
     assert_eq!(result.output["exit_code"].as_i64().unwrap(), 1);
 }
@@ -1178,18 +1360,32 @@ async fn test_script_node_sh_language() {
     config.insert("script".to_string(), serde_json::json!("echo sh_test"));
     config.insert("language".to_string(), serde_json::json!("sh"));
     let node = make_node("n1", "script", config);
-    let result = exec.execute(&node, &HashMap::new(), &empty_wf_ctx()).await.unwrap();
+    let result = exec
+        .execute(&node, &HashMap::new(), &empty_wf_ctx())
+        .await
+        .unwrap();
     assert_eq!(result.state, ExecutionState::Completed);
-    assert!(result.output["stdout"].as_str().unwrap().contains("sh_test"));
+    assert!(
+        result.output["stdout"]
+            .as_str()
+            .unwrap()
+            .contains("sh_test")
+    );
 }
 
 #[tokio::test]
 async fn test_human_review_with_message() {
     let exec = HumanReviewNodeExecutor;
     let mut config = HashMap::new();
-    config.insert("message".to_string(), serde_json::json!("Please approve deployment"));
+    config.insert(
+        "message".to_string(),
+        serde_json::json!("Please approve deployment"),
+    );
     let node = make_node("n1", "human_review", config);
-    let result = exec.execute(&node, &HashMap::new(), &empty_wf_ctx()).await.unwrap();
+    let result = exec
+        .execute(&node, &HashMap::new(), &empty_wf_ctx())
+        .await
+        .unwrap();
     assert_eq!(result.state, ExecutionState::Waiting);
     assert_eq!(
         result.output["message"].as_str().unwrap(),
@@ -1213,12 +1409,15 @@ async fn test_inline_node_execution_for_unknown_type() {
         depends_on: vec![],
         retry_count: 0,
         timeout: None,
-    is_terminal: false,
+        is_terminal: false,
     };
     let result = execute_inline_node(&node, &HashMap::new()).await.unwrap();
     assert_eq!(result.state, ExecutionState::Failed);
     assert!(
-        result.error.expect("Failed state must carry error").contains("custom_unknown"),
+        result
+            .error
+            .expect("Failed state must carry error")
+            .contains("custom_unknown"),
         "error should mention the unknown node type"
     );
 }
@@ -1232,7 +1431,7 @@ async fn test_inline_node_execution_transform() {
         depends_on: vec![],
         retry_count: 0,
         timeout: None,
-    is_terminal: false,
+        is_terminal: false,
     };
     let result = execute_inline_node(&node, &HashMap::new()).await.unwrap();
     assert_eq!(result.state, ExecutionState::Completed);
@@ -1249,7 +1448,7 @@ async fn test_inline_node_execution_condition() {
         depends_on: vec![],
         retry_count: 0,
         timeout: None,
-    is_terminal: false,
+        is_terminal: false,
     };
     let result = execute_inline_node(&node, &HashMap::new()).await.unwrap();
     assert_eq!(result.state, ExecutionState::Completed);
@@ -1262,7 +1461,10 @@ fn test_evaluate_condition_truthy_values() {
     ctx.insert("number_nonzero".to_string(), serde_json::json!(42));
     ctx.insert("string_nonempty".to_string(), serde_json::json!("hello"));
     ctx.insert("array_nonempty".to_string(), serde_json::json!([1, 2, 3]));
-    ctx.insert("object_nonempty".to_string(), serde_json::json!({"key": "val"}));
+    ctx.insert(
+        "object_nonempty".to_string(),
+        serde_json::json!({"key": "val"}),
+    );
     ctx.insert("null_val".to_string(), serde_json::Value::Null);
     ctx.insert("bool_false".to_string(), serde_json::json!(false));
     ctx.insert("number_zero".to_string(), serde_json::json!(0));
@@ -1395,7 +1597,10 @@ async fn test_parallel_stub_with_named_children() {
         ]),
     );
     let node = make_node("n1", "parallel", config);
-    let result = exec.execute(&node, &HashMap::new(), &empty_wf_ctx()).await.unwrap();
+    let result = exec
+        .execute(&node, &HashMap::new(), &empty_wf_ctx())
+        .await
+        .unwrap();
     let obj = result.output.as_object().unwrap();
     assert!(obj.contains_key("alpha"));
     // Empty-id child should use branch_0 style key
@@ -1585,12 +1790,7 @@ async fn test_real_llm_executor_falls_back_to_default_model() {
         .await
         .unwrap();
 
-    let captured = provider
-        .last_model
-        .lock()
-        .unwrap()
-        .clone()
-        .unwrap();
+    let captured = provider.last_model.lock().unwrap().clone().unwrap();
     assert_eq!(captured, "stub-default");
 }
 
@@ -1678,7 +1878,9 @@ async fn test_real_llm_executor_can_be_registered_as_llm_node() {
         Arc::new(RealLLMNodeExecutor::new(provider as Arc<dyn LLMProvider>)),
     );
 
-    let executor = registry.get("llm").expect("llm executor should be registered");
+    let executor = registry
+        .get("llm")
+        .expect("llm executor should be registered");
     let node = make_node("n1", "llm", llm_config_prompt_only("Hi"));
     let result = executor
         .execute(&node, &HashMap::new(), &empty_wf_ctx())
@@ -1759,7 +1961,10 @@ fn tool_config_name_only(name: &str) -> HashMap<String, serde_json::Value> {
     c
 }
 
-fn tool_config_with_args(name: &str, args: serde_json::Value) -> HashMap<String, serde_json::Value> {
+fn tool_config_with_args(
+    name: &str,
+    args: serde_json::Value,
+) -> HashMap<String, serde_json::Value> {
     let mut c = HashMap::new();
     c.insert("name".to_string(), serde_json::json!(name));
     c.insert("args".to_string(), args);
@@ -1825,7 +2030,10 @@ async fn test_script_node_delegates_to_run_script_tool() {
 
     let exec = ScriptNodeExecutor::with_tools(Arc::clone(&registry));
     let mut config = HashMap::new();
-    config.insert("script".to_string(), serde_json::json!("echo delegated-out"));
+    config.insert(
+        "script".to_string(),
+        serde_json::json!("echo delegated-out"),
+    );
     config.insert("language".to_string(), serde_json::json!("bash"));
     let node = make_node("n1", "script", config);
 
@@ -1845,8 +2053,15 @@ async fn test_script_node_delegates_to_run_script_tool() {
 
     // (3) structured output mapped back, Completed state, no error.
     assert_eq!(result.state, ExecutionState::Completed);
-    assert!(result.error.is_none(), "unexpected error: {:?}", result.error);
-    assert_eq!(result.output["stdout"].as_str().unwrap().trim(), "delegated-out");
+    assert!(
+        result.error.is_none(),
+        "unexpected error: {:?}",
+        result.error
+    );
+    assert_eq!(
+        result.output["stdout"].as_str().unwrap().trim(),
+        "delegated-out"
+    );
     assert_eq!(result.output["stderr"].as_str(), Some(""));
     assert_eq!(result.output["exit_code"].as_i64(), Some(0));
     assert_eq!(result.output["language"].as_str(), Some("bash"));
@@ -1991,7 +2206,10 @@ async fn test_real_tool_executor_can_be_registered_as_tool_node() {
     registry.register(stub as Arc<dyn Tool>);
 
     let node_registry = NodeExecutorRegistry::new();
-    node_registry.register("tool", Arc::new(RealToolNodeExecutor::new(Arc::clone(&registry))));
+    node_registry.register(
+        "tool",
+        Arc::new(RealToolNodeExecutor::new(Arc::clone(&registry))),
+    );
 
     let executor = node_registry
         .get("tool")
@@ -2027,16 +2245,20 @@ async fn test_real_tool_executor_defaults_args_to_null() {
 // QuestionClassifierNodeExecutor tests (1b-D3)
 // ---------------------------------------------------------------------------
 
-fn classifier_config(question: &str, classes: &[(&str, &str)]) -> HashMap<String, serde_json::Value> {
+fn classifier_config(
+    question: &str,
+    classes: &[(&str, &str)],
+) -> HashMap<String, serde_json::Value> {
     let classes_json: Vec<serde_json::Value> = classes
         .iter()
-        .map(|(id, desc)| {
-            serde_json::json!({"id": id, "description": desc})
-        })
+        .map(|(id, desc)| serde_json::json!({"id": id, "description": desc}))
         .collect();
     HashMap::from([
         ("question".to_string(), serde_json::json!(question)),
-        ("classes".to_string(), serde_json::Value::Array(classes_json)),
+        (
+            "classes".to_string(),
+            serde_json::Value::Array(classes_json),
+        ),
     ])
 }
 
@@ -2047,11 +2269,14 @@ async fn test_question_classifier_success_first_attempt() {
     let node = make_node(
         "classify",
         "question_classifier",
-        classifier_config("I want a refund", &[
-            ("billing", "questions about invoices, refunds, payments"),
-            ("support", "technical issues"),
-            ("sales", "purchase inquiries"),
-        ]),
+        classifier_config(
+            "I want a refund",
+            &[
+                ("billing", "questions about invoices, refunds, payments"),
+                ("support", "technical issues"),
+                ("sales", "purchase inquiries"),
+            ],
+        ),
     );
 
     let result = exec
@@ -2065,7 +2290,11 @@ async fn test_question_classifier_success_first_attempt() {
     assert_eq!(out.get("attempts").unwrap(), 1);
     // First-attempt confidence is 1.0.
     let confidence = out.get("confidence").unwrap().as_f64().unwrap();
-    assert!(confidence > 0.99, "expected confidence 1.0, got {}", confidence);
+    assert!(
+        confidence > 0.99,
+        "expected confidence 1.0, got {}",
+        confidence
+    );
 }
 
 #[tokio::test]
@@ -2076,13 +2305,16 @@ async fn test_question_classifier_strips_wrapper_punctuation() {
     let node = make_node(
         "classify",
         "question_classifier",
-        classifier_config("How much is the pro plan?", &[
-            ("billing", "..."),
-            ("sales", "..."),
-        ]),
+        classifier_config(
+            "How much is the pro plan?",
+            &[("billing", "..."), ("sales", "...")],
+        ),
     );
 
-    let result = exec.execute(&node, &HashMap::new(), &empty_wf_ctx()).await.unwrap();
+    let result = exec
+        .execute(&node, &HashMap::new(), &empty_wf_ctx())
+        .await
+        .unwrap();
     assert_eq!(result.state, ExecutionState::Completed);
     assert_eq!(result.output["class_id"], "sales");
 }
@@ -2090,19 +2322,22 @@ async fn test_question_classifier_strips_wrapper_punctuation() {
 #[tokio::test]
 async fn test_question_classifier_takes_first_token_when_prose_follows() {
     // Defensive parse: "billing\n(because invoice)" → "billing"
-    let provider = Arc::new(StubProvider::success("stub", "stub-model",
-        "billing\n(because the user mentioned invoices)"));
+    let provider = Arc::new(StubProvider::success(
+        "stub",
+        "stub-model",
+        "billing\n(because the user mentioned invoices)",
+    ));
     let exec = QuestionClassifierNodeExecutor::new(Arc::clone(&provider) as Arc<dyn LLMProvider>);
     let node = make_node(
         "classify",
         "question_classifier",
-        classifier_config("refund please", &[
-            ("billing", "..."),
-            ("support", "..."),
-        ]),
+        classifier_config("refund please", &[("billing", "..."), ("support", "...")]),
     );
 
-    let result = exec.execute(&node, &HashMap::new(), &empty_wf_ctx()).await.unwrap();
+    let result = exec
+        .execute(&node, &HashMap::new(), &empty_wf_ctx())
+        .await
+        .unwrap();
     assert_eq!(result.state, ExecutionState::Completed);
     assert_eq!(result.output["class_id"], "billing");
 }
@@ -2112,16 +2347,22 @@ async fn test_question_classifier_fails_on_unknown_class() {
     // Stub returns "hr" but only ["billing","support"] are valid.
     let provider = Arc::new(StubProvider::success("stub", "stub-model", "hr"));
     let exec = QuestionClassifierNodeExecutor::new(Arc::clone(&provider) as Arc<dyn LLMProvider>);
-    let mut config = classifier_config("help", &[
-        ("billing", "..."),
-        ("support", "..."),
-    ]);
+    let mut config = classifier_config("help", &[("billing", "..."), ("support", "...")]);
     config.insert("max_attempts".to_string(), serde_json::json!(2));
     let node = make_node("classify", "question_classifier", config);
 
-    let result = exec.execute(&node, &HashMap::new(), &empty_wf_ctx()).await.unwrap();
+    let result = exec
+        .execute(&node, &HashMap::new(), &empty_wf_ctx())
+        .await
+        .unwrap();
     assert_eq!(result.state, ExecutionState::Failed);
-    assert!(result.error.as_ref().unwrap().contains("failed after 2 attempts"));
+    assert!(
+        result
+            .error
+            .as_ref()
+            .unwrap()
+            .contains("failed after 2 attempts")
+    );
 }
 
 #[tokio::test]
@@ -2135,9 +2376,18 @@ async fn test_question_classifier_missing_question_fails() {
     );
     let node = make_node("classify", "question_classifier", config);
 
-    let result = exec.execute(&node, &HashMap::new(), &empty_wf_ctx()).await.unwrap();
+    let result = exec
+        .execute(&node, &HashMap::new(), &empty_wf_ctx())
+        .await
+        .unwrap();
     assert_eq!(result.state, ExecutionState::Failed);
-    assert!(result.error.as_ref().unwrap().contains("missing required 'question'"));
+    assert!(
+        result
+            .error
+            .as_ref()
+            .unwrap()
+            .contains("missing required 'question'")
+    );
 }
 
 #[tokio::test]
@@ -2148,9 +2398,18 @@ async fn test_question_classifier_missing_classes_fails() {
     config.insert("question".to_string(), serde_json::json!("hello"));
     let node = make_node("classify", "question_classifier", config);
 
-    let result = exec.execute(&node, &HashMap::new(), &empty_wf_ctx()).await.unwrap();
+    let result = exec
+        .execute(&node, &HashMap::new(), &empty_wf_ctx())
+        .await
+        .unwrap();
     assert_eq!(result.state, ExecutionState::Failed);
-    assert!(result.error.as_ref().unwrap().contains("missing required 'classes'"));
+    assert!(
+        result
+            .error
+            .as_ref()
+            .unwrap()
+            .contains("missing required 'classes'")
+    );
 }
 
 #[tokio::test]
@@ -2163,7 +2422,10 @@ async fn test_question_classifier_empty_classes_fails() {
         classifier_config("hello", &[]),
     );
 
-    let result = exec.execute(&node, &HashMap::new(), &empty_wf_ctx()).await.unwrap();
+    let result = exec
+        .execute(&node, &HashMap::new(), &empty_wf_ctx())
+        .await
+        .unwrap();
     assert_eq!(result.state, ExecutionState::Failed);
     assert!(result.error.as_ref().unwrap().contains("empty 'classes'"));
 }
@@ -2177,10 +2439,7 @@ async fn test_question_classifier_resolves_template_in_question() {
         "question_classifier",
         classifier_config("{{user_msg}}", &[("support", "...")]),
     );
-    let ctx = HashMap::from([(
-        "user_msg".to_string(),
-        serde_json::json!("the app crashed"),
-    )]);
+    let ctx = HashMap::from([("user_msg".to_string(), serde_json::json!("the app crashed"))]);
 
     let result = exec.execute(&node, &ctx, &empty_wf_ctx()).await.unwrap();
     assert_eq!(result.state, ExecutionState::Completed);
@@ -2195,7 +2454,10 @@ async fn test_question_classifier_provider_error_retries_then_fails() {
     config.insert("max_attempts".to_string(), serde_json::json!(2));
     let node = make_node("classify", "question_classifier", config);
 
-    let result = exec.execute(&node, &HashMap::new(), &empty_wf_ctx()).await.unwrap();
+    let result = exec
+        .execute(&node, &HashMap::new(), &empty_wf_ctx())
+        .await
+        .unwrap();
     assert_eq!(result.state, ExecutionState::Failed);
     let err = result.error.as_ref().unwrap();
     assert!(err.contains("failed after 2 attempts"));
@@ -2212,20 +2474,32 @@ async fn test_question_classifier_uses_default_temperature_zero() {
         classifier_config("hi", &[("billing", "...")]),
     );
 
-    let _ = exec.execute(&node, &HashMap::new(), &empty_wf_ctx()).await.unwrap();
+    let _ = exec
+        .execute(&node, &HashMap::new(), &empty_wf_ctx())
+        .await
+        .unwrap();
     let last_options = provider.last_options.lock().unwrap().clone().unwrap();
     assert_eq!(last_options.temperature, Some(0.0));
 }
 
 #[test]
 fn parse_classifier_output_handles_bare_id() {
-    assert_eq!(parse_classifier_output("billing"), Some("billing".to_string()));
+    assert_eq!(
+        parse_classifier_output("billing"),
+        Some("billing".to_string())
+    );
 }
 
 #[test]
 fn parse_classifier_output_trims_punctuation() {
-    assert_eq!(parse_classifier_output("  \"billing.\"  "), Some("billing".to_string()));
-    assert_eq!(parse_classifier_output("'sales',"), Some("sales".to_string()));
+    assert_eq!(
+        parse_classifier_output("  \"billing.\"  "),
+        Some("billing".to_string())
+    );
+    assert_eq!(
+        parse_classifier_output("'sales',"),
+        Some("sales".to_string())
+    );
 }
 
 #[test]
@@ -2265,7 +2539,10 @@ fn extractor_config(
         .collect();
     HashMap::from([
         ("text".to_string(), serde_json::json!(text)),
-        ("parameters".to_string(), serde_json::Value::Array(params_json)),
+        (
+            "parameters".to_string(),
+            serde_json::Value::Array(params_json),
+        ),
     ])
 }
 
@@ -2324,7 +2601,10 @@ async fn test_extractor_handles_partial_data() {
         ),
     );
 
-    let result = exec.execute(&node, &HashMap::new(), &empty_wf_ctx()).await.unwrap();
+    let result = exec
+        .execute(&node, &HashMap::new(), &empty_wf_ctx())
+        .await
+        .unwrap();
     assert_eq!(result.state, ExecutionState::Completed);
     let params = result.output["parameters"].as_object().unwrap();
     assert_eq!(params.get("name").unwrap(), "Bob");
@@ -2353,7 +2633,10 @@ async fn test_extractor_fills_missing_optional_with_null() {
         ),
     );
 
-    let result = exec.execute(&node, &HashMap::new(), &empty_wf_ctx()).await.unwrap();
+    let result = exec
+        .execute(&node, &HashMap::new(), &empty_wf_ctx())
+        .await
+        .unwrap();
     let params = result.output["parameters"].as_object().unwrap();
     assert_eq!(params.len(), 3, "all declared fields should appear");
     assert_eq!(params.get("city").unwrap(), "NYC");
@@ -2375,7 +2658,10 @@ async fn test_extractor_strips_markdown_fence() {
         extractor_config("Carol", &[("name", "string", "name", true)]),
     );
 
-    let result = exec.execute(&node, &HashMap::new(), &empty_wf_ctx()).await.unwrap();
+    let result = exec
+        .execute(&node, &HashMap::new(), &empty_wf_ctx())
+        .await
+        .unwrap();
     assert_eq!(result.state, ExecutionState::Completed);
     assert_eq!(result.output["parameters"]["name"], "Carol");
 }
@@ -2395,7 +2681,10 @@ async fn test_extractor_extracts_json_from_prose() {
         extractor_config("Dave", &[("name", "string", "name", true)]),
     );
 
-    let result = exec.execute(&node, &HashMap::new(), &empty_wf_ctx()).await.unwrap();
+    let result = exec
+        .execute(&node, &HashMap::new(), &empty_wf_ctx())
+        .await
+        .unwrap();
     assert_eq!(result.state, ExecutionState::Completed);
     assert_eq!(result.output["parameters"]["name"], "Dave");
 }
@@ -2412,8 +2701,12 @@ async fn test_extractor_retry_on_invalid_json() {
     }
     #[async_trait]
     impl LLMProvider for TwoPhase {
-        fn name(&self) -> &str { "two-phase" }
-        fn default_model(&self) -> &str { "stub-model" }
+        fn name(&self) -> &str {
+            "two-phase"
+        }
+        fn default_model(&self) -> &str {
+            "stub-model"
+        }
         async fn chat(
             &self,
             _messages: &[Message],
@@ -2421,8 +2714,14 @@ async fn test_extractor_retry_on_invalid_json() {
             _model: &str,
             _options: &ChatOptions,
         ) -> Result<LLMResponse, FailoverError> {
-            let n = self.attempts.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-            let content = if n == 0 { self.first.clone() } else { self.second.clone() };
+            let n = self
+                .attempts
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            let content = if n == 0 {
+                self.first.clone()
+            } else {
+                self.second.clone()
+            };
             Ok(LLMResponse {
                 content,
                 tool_calls: Vec::new(),
@@ -2448,7 +2747,10 @@ async fn test_extractor_retry_on_invalid_json() {
         extractor_config("Eve", &[("name", "string", "name", true)]),
     );
 
-    let result = exec.execute(&node, &HashMap::new(), &empty_wf_ctx()).await.unwrap();
+    let result = exec
+        .execute(&node, &HashMap::new(), &empty_wf_ctx())
+        .await
+        .unwrap();
     assert_eq!(result.state, ExecutionState::Completed);
     assert_eq!(result.output["parameters"]["name"], "Eve");
     assert_eq!(result.output["attempts"], 2);
@@ -2473,7 +2775,10 @@ async fn test_extractor_fails_when_required_missing_after_retries() {
     cfg.insert("max_attempts".to_string(), serde_json::json!(2));
     let node = make_node("extract", "parameter_extractor", cfg);
 
-    let result = exec.execute(&node, &HashMap::new(), &empty_wf_ctx()).await.unwrap();
+    let result = exec
+        .execute(&node, &HashMap::new(), &empty_wf_ctx())
+        .await
+        .unwrap();
     assert_eq!(result.state, ExecutionState::Failed);
     let err = result.error.as_ref().unwrap();
     assert!(err.contains("failed after 2 attempts"), "got: {}", err);
@@ -2492,9 +2797,18 @@ async fn test_extractor_missing_text_fails() {
     );
     let node = make_node("extract", "parameter_extractor", cfg);
 
-    let result = exec.execute(&node, &HashMap::new(), &empty_wf_ctx()).await.unwrap();
+    let result = exec
+        .execute(&node, &HashMap::new(), &empty_wf_ctx())
+        .await
+        .unwrap();
     assert_eq!(result.state, ExecutionState::Failed);
-    assert!(result.error.as_ref().unwrap().contains("missing required 'text'"));
+    assert!(
+        result
+            .error
+            .as_ref()
+            .unwrap()
+            .contains("missing required 'text'")
+    );
 }
 
 #[tokio::test]
@@ -2505,9 +2819,18 @@ async fn test_extractor_missing_parameters_fails() {
     cfg.insert("text".to_string(), serde_json::json!("hello"));
     let node = make_node("extract", "parameter_extractor", cfg);
 
-    let result = exec.execute(&node, &HashMap::new(), &empty_wf_ctx()).await.unwrap();
+    let result = exec
+        .execute(&node, &HashMap::new(), &empty_wf_ctx())
+        .await
+        .unwrap();
     assert_eq!(result.state, ExecutionState::Failed);
-    assert!(result.error.as_ref().unwrap().contains("missing required 'parameters'"));
+    assert!(
+        result
+            .error
+            .as_ref()
+            .unwrap()
+            .contains("missing required 'parameters'")
+    );
 }
 
 #[tokio::test]
@@ -2520,9 +2843,18 @@ async fn test_extractor_empty_parameters_fails() {
         extractor_config("hello", &[]),
     );
 
-    let result = exec.execute(&node, &HashMap::new(), &empty_wf_ctx()).await.unwrap();
+    let result = exec
+        .execute(&node, &HashMap::new(), &empty_wf_ctx())
+        .await
+        .unwrap();
     assert_eq!(result.state, ExecutionState::Failed);
-    assert!(result.error.as_ref().unwrap().contains("empty 'parameters'"));
+    assert!(
+        result
+            .error
+            .as_ref()
+            .unwrap()
+            .contains("empty 'parameters'")
+    );
 }
 
 #[tokio::test]
@@ -2562,7 +2894,10 @@ async fn test_extractor_default_temperature_zero() {
         extractor_config("hi", &[("x", "string", "", false)]),
     );
 
-    let _ = exec.execute(&node, &HashMap::new(), &empty_wf_ctx()).await.unwrap();
+    let _ = exec
+        .execute(&node, &HashMap::new(), &empty_wf_ctx())
+        .await
+        .unwrap();
     let last_options = provider.last_options.lock().unwrap().clone().unwrap();
     assert_eq!(last_options.temperature, Some(0.0));
 }
@@ -2575,7 +2910,10 @@ async fn test_extractor_provider_error_retries_then_fails() {
     cfg.insert("max_attempts".to_string(), serde_json::json!(2));
     let node = make_node("extract", "parameter_extractor", cfg);
 
-    let result = exec.execute(&node, &HashMap::new(), &empty_wf_ctx()).await.unwrap();
+    let result = exec
+        .execute(&node, &HashMap::new(), &empty_wf_ctx())
+        .await
+        .unwrap();
     assert_eq!(result.state, ExecutionState::Failed);
     let err = result.error.as_ref().unwrap();
     assert!(err.contains("failed after 2 attempts"));
@@ -2668,7 +3006,8 @@ impl AgentRunner for StubAgentRunner {
         max_turns: u32,
         model: Option<&str>,
     ) -> Result<AgentRunResult, String> {
-        self.call_count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        self.call_count
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         *self.last_call.lock().unwrap() = Some(CapturedCall {
             prompt: prompt.to_string(),
             agent_id: agent_id.to_string(),
@@ -2728,7 +3067,10 @@ async fn test_agent_node_respects_max_turns() {
     cfg.insert("agent_id".to_string(), serde_json::json!("custom_agent"));
     let node = make_node("agent", "agent", cfg);
 
-    let result = exec.execute(&node, &HashMap::new(), &empty_wf_ctx()).await.unwrap();
+    let result = exec
+        .execute(&node, &HashMap::new(), &empty_wf_ctx())
+        .await
+        .unwrap();
     assert_eq!(result.state, ExecutionState::Completed);
 
     let captured = runner.last_call.lock().unwrap().clone().unwrap();
@@ -2742,7 +3084,10 @@ async fn test_agent_node_error_propagation() {
     let exec = AgentNodeExecutor::new(Arc::clone(&runner) as Arc<dyn AgentRunner>);
     let node = make_node("agent", "agent", agent_config("hello"));
 
-    let result = exec.execute(&node, &HashMap::new(), &empty_wf_ctx()).await.unwrap();
+    let result = exec
+        .execute(&node, &HashMap::new(), &empty_wf_ctx())
+        .await
+        .unwrap();
     assert_eq!(result.state, ExecutionState::Failed);
     let err = result.error.as_ref().unwrap();
     assert!(err.contains("agent error"), "got: {}", err);
@@ -2755,9 +3100,18 @@ async fn test_agent_node_missing_prompt_fails() {
     let exec = AgentNodeExecutor::new(Arc::clone(&runner) as Arc<dyn AgentRunner>);
     let node = make_node("agent", "agent", HashMap::new());
 
-    let result = exec.execute(&node, &HashMap::new(), &empty_wf_ctx()).await.unwrap();
+    let result = exec
+        .execute(&node, &HashMap::new(), &empty_wf_ctx())
+        .await
+        .unwrap();
     assert_eq!(result.state, ExecutionState::Failed);
-    assert!(result.error.as_ref().unwrap().contains("missing required 'prompt'"));
+    assert!(
+        result
+            .error
+            .as_ref()
+            .unwrap()
+            .contains("missing required 'prompt'")
+    );
     // The runner should NOT have been called.
     assert_eq!(runner.calls(), 0);
 }
@@ -2796,7 +3150,10 @@ async fn test_delay_uses_seconds_unit_for_output_field() {
     let mut config = HashMap::new();
     config.insert("seconds".to_string(), serde_json::json!(3));
     let node = make_node("delay", "delay", config);
-    let result = exec.execute(&node, &HashMap::new(), &empty_wf_ctx()).await.unwrap();
+    let result = exec
+        .execute(&node, &HashMap::new(), &empty_wf_ctx())
+        .await
+        .unwrap();
 
     // Field name + value both reflect "seconds" semantics (f64 — fractional ok).
     assert_eq!(result.output["delayed_seconds"].as_f64().unwrap(), 3.0);
@@ -2910,12 +3267,20 @@ async fn test_sub_workflow_resolves_template_in_input_values() {
     let node = make_node("call", "sub_workflow", config);
     let parent_ctx = HashMap::from([("user_input".to_string(), serde_json::json!("alice"))]);
 
-    let result = sub_exec.execute(&node, &parent_ctx, &empty_wf_ctx()).await.unwrap();
+    let result = sub_exec
+        .execute(&node, &parent_ctx, &empty_wf_ctx())
+        .await
+        .unwrap();
     assert_eq!(result.state, ExecutionState::Completed);
 
     // Verify the child execution received the resolved value in its input
     // map (sub_input → engine.run → Execution.input).
-    let exec_id = result.metadata.get("execution_id").unwrap().as_str().unwrap();
+    let exec_id = result
+        .metadata
+        .get("execution_id")
+        .unwrap()
+        .as_str()
+        .unwrap();
     let child_exec = engine_arc.get_execution(exec_id).await.unwrap();
     assert_eq!(
         child_exec.input.get("topic"),
@@ -2936,7 +3301,10 @@ async fn test_agent_node_passes_model_to_runner() {
     config.insert("model".to_string(), serde_json::json!("zhipu/glm-4.7"));
     let node = make_node("agent", "agent", config);
 
-    let result = exec.execute(&node, &HashMap::new(), &empty_wf_ctx()).await.unwrap();
+    let result = exec
+        .execute(&node, &HashMap::new(), &empty_wf_ctx())
+        .await
+        .unwrap();
     assert_eq!(result.state, ExecutionState::Completed);
 
     let captured = runner.last_call.lock().unwrap().clone().unwrap();
@@ -2953,7 +3321,10 @@ async fn test_agent_node_omits_empty_model() {
     config.insert("model".to_string(), serde_json::json!(""));
     let node = make_node("agent", "agent", config);
 
-    let _ = exec.execute(&node, &HashMap::new(), &empty_wf_ctx()).await.unwrap();
+    let _ = exec
+        .execute(&node, &HashMap::new(), &empty_wf_ctx())
+        .await
+        .unwrap();
     let captured = runner.last_call.lock().unwrap().clone().unwrap();
     assert!(captured.model.is_none());
 }
@@ -2969,10 +3340,7 @@ async fn test_loop_resolves_i_template_in_condition() {
 
     let mut config = HashMap::new();
     // No max_iterations → rely solely on condition; safety cap is 100.
-    config.insert(
-        "condition".to_string(),
-        serde_json::json!("{{i}} < 3"),
-    );
+    config.insert("condition".to_string(), serde_json::json!("{{i}} < 3"));
     config.insert(
         "nodes".to_string(),
         serde_json::json!([
@@ -2981,7 +3349,10 @@ async fn test_loop_resolves_i_template_in_condition() {
     );
     let node = make_node("loop1", "loop", config);
 
-    let result = exec.execute(&node, &HashMap::new(), &empty_wf_ctx()).await.unwrap();
+    let result = exec
+        .execute(&node, &HashMap::new(), &empty_wf_ctx())
+        .await
+        .unwrap();
     assert_eq!(result.state, ExecutionState::Completed);
     // iter 0 runs unconditionally (i=0, condition skipped on i==0).
     // iter 1: i=1, cond `1 < 3` true → run.
@@ -3006,7 +3377,10 @@ async fn test_loop_stub_resolves_i_template_in_condition() {
     );
     let node = make_node("loop1", "loop", config);
 
-    let result = exec.execute(&node, &HashMap::new(), &empty_wf_ctx()).await.unwrap();
+    let result = exec
+        .execute(&node, &HashMap::new(), &empty_wf_ctx())
+        .await
+        .unwrap();
     assert_eq!(result.state, ExecutionState::Completed);
     assert_eq!(result.output["iterations"].as_u64().unwrap(), 2);
 }
@@ -3050,14 +3424,17 @@ async fn test_new_integrated_wires_real_parallel_executor() {
         }
     }
 
-    let provider = Arc::new(StubProvider::success("stub", "stub-model", "ok")) as Arc<dyn LLMProvider>;
+    let provider =
+        Arc::new(StubProvider::success("stub", "stub-model", "ok")) as Arc<dyn LLMProvider>;
     let tools = Arc::new(nemesis_tools::registry::ToolRegistry::new());
     let engine = WorkflowEngine::new_integrated(provider, tools, None);
 
     // Register our marker node type on the engine's registry.
     engine.node_executors.register(
         "marker",
-        Arc::new(MarkerExec { calls: marker_calls_clone }),
+        Arc::new(MarkerExec {
+            calls: marker_calls_clone,
+        }),
     );
 
     // Get the parallel executor the engine actually uses.
@@ -3072,7 +3449,10 @@ async fn test_new_integrated_wires_real_parallel_executor() {
     );
     let node = make_node("par", "parallel", config);
 
-    let result = parallel_exec.execute(&node, &HashMap::new(), &empty_wf_ctx()).await.unwrap();
+    let result = parallel_exec
+        .execute(&node, &HashMap::new(), &empty_wf_ctx())
+        .await
+        .unwrap();
     assert_eq!(result.state, ExecutionState::Completed);
 
     // Real executor dispatched via registry → marker was called.
@@ -3116,12 +3496,15 @@ async fn test_new_integrated_wires_real_loop_executor() {
         }
     }
 
-    let provider = Arc::new(StubProvider::success("stub", "stub-model", "ok")) as Arc<dyn LLMProvider>;
+    let provider =
+        Arc::new(StubProvider::success("stub", "stub-model", "ok")) as Arc<dyn LLMProvider>;
     let tools = Arc::new(nemesis_tools::registry::ToolRegistry::new());
     let engine = WorkflowEngine::new_integrated(provider, tools, None);
     engine.node_executors.register(
         "marker",
-        Arc::new(MarkerExec { calls: marker_calls_clone }),
+        Arc::new(MarkerExec {
+            calls: marker_calls_clone,
+        }),
     );
 
     let loop_exec = engine.node_executors.get("loop").unwrap();
@@ -3136,7 +3519,10 @@ async fn test_new_integrated_wires_real_loop_executor() {
     );
     let node = make_node("loop1", "loop", config);
 
-    let result = loop_exec.execute(&node, &HashMap::new(), &empty_wf_ctx()).await.unwrap();
+    let result = loop_exec
+        .execute(&node, &HashMap::new(), &empty_wf_ctx())
+        .await
+        .unwrap();
     assert_eq!(result.state, ExecutionState::Completed);
     // 2 iterations × 1 marker child = 2 calls.
     assert_eq!(marker_calls.load(Ordering::SeqCst), 2);
@@ -3155,10 +3541,7 @@ async fn test_question_classifier_resolves_template_in_system_prompt() {
         serde_json::json!("Classify for tenant {{tenant_id}}"),
     );
     let node = make_node("classify", "question_classifier", config);
-    let ctx = HashMap::from([(
-        "tenant_id".to_string(),
-        serde_json::json!("acme-corp"),
-    )]);
+    let ctx = HashMap::from([("tenant_id".to_string(), serde_json::json!("acme-corp"))]);
 
     let result = exec.execute(&node, &ctx, &empty_wf_ctx()).await.unwrap();
     assert_eq!(result.state, ExecutionState::Completed);
@@ -3179,10 +3562,7 @@ async fn test_parameter_extractor_resolves_template_in_system_prompt() {
         r#"{"name":"Alice"}"#,
     ));
     let exec = ParameterExtractorNodeExecutor::new(Arc::clone(&provider) as Arc<dyn LLMProvider>);
-    let mut config = extractor_config(
-        "Hi, I'm Alice",
-        &[("name", "string", "user's name", true)],
-    );
+    let mut config = extractor_config("Hi, I'm Alice", &[("name", "string", "user's name", true)]);
     config.insert(
         "system_prompt".to_string(),
         serde_json::json!("Extract for locale {{locale}}"),
@@ -3217,9 +3597,7 @@ async fn test_http_executor_accepts_timeout_secs_config() {
     let node = make_node("http", "http", config);
 
     let started = std::time::Instant::now();
-    let _ = exec
-        .execute(&node, &HashMap::new(), &empty_wf_ctx())
-        .await;
+    let _ = exec.execute(&node, &HashMap::new(), &empty_wf_ctx()).await;
     let elapsed = started.elapsed();
 
     // timeout_secs=1 should fire well under the OS-default ~75s. We allow
@@ -3290,10 +3668,8 @@ async fn llm_node_records_usage_when_store_set() {
         let mut g = slot.write();
         *g = Some(Arc::clone(&store));
     }
-    let exec = RealLLMNodeExecutor::with_usage_store(
-        Arc::clone(&provider) as Arc<dyn LLMProvider>,
-        slot,
-    );
+    let exec =
+        RealLLMNodeExecutor::with_usage_store(Arc::clone(&provider) as Arc<dyn LLMProvider>, slot);
 
     let before = chrono::Local::now().timestamp();
     roll_to_next_second(before);
@@ -3387,7 +3763,10 @@ async fn parameter_extractor_records_usage_when_store_set() {
         "parameter_extractor",
         extractor_config(
             "Alice is 30",
-            &[("name", "string", "user name", true), ("age", "number", "user age", false)],
+            &[
+                ("name", "string", "user name", true),
+                ("age", "number", "user age", false),
+            ],
         ),
     );
     let result = exec
@@ -3559,7 +3938,10 @@ async fn parameter_extractor_records_each_retry_attempt_separately() {
         "parameter_extractor",
         extractor_config(
             "Alice is 30",
-            &[("name", "string", "user name", true), ("age", "number", "user age", false)],
+            &[
+                ("name", "string", "user name", true),
+                ("age", "number", "user age", false),
+            ],
         ),
     );
     let result = exec
@@ -3630,10 +4012,7 @@ fn test_resolve_items_list_single_ref_to_array() {
     // A `{{node.field}}` key stored in context holds the raw array; the single
     // ref must extract it without stringifying.
     let mut ctx = HashMap::new();
-    ctx.insert(
-        "node.output".to_string(),
-        serde_json::json!(["x", "y"]),
-    );
+    ctx.insert("node.output".to_string(), serde_json::json!(["x", "y"]));
     let raw = serde_json::json!("{{node.output}}");
     let list = resolve_items_list(&raw, &ctx).unwrap();
     assert_eq!(list.len(), 2);
@@ -3661,9 +4040,11 @@ fn test_resolve_items_list_line_split() {
 #[test]
 fn test_resolve_items_list_empty() {
     let ctx = HashMap::new();
-    assert!(resolve_items_list(&serde_json::json!(""), &ctx)
-        .unwrap()
-        .is_empty());
+    assert!(
+        resolve_items_list(&serde_json::json!(""), &ctx)
+            .unwrap()
+            .is_empty()
+    );
     assert!(
         resolve_items_list(&serde_json::json!([]), &ctx)
             .unwrap()
@@ -3724,7 +4105,9 @@ async fn test_loop_foreach_object_array_item_field() {
         .unwrap();
     assert_eq!(result.output["items_iterated"].as_u64().unwrap(), 2);
     assert_eq!(
-        result.output["last_output"]["item"]["url"].as_str().unwrap(),
+        result.output["last_output"]["item"]["url"]
+            .as_str()
+            .unwrap(),
         "https://2"
     );
 }
@@ -3800,7 +4183,10 @@ async fn test_loop_foreach_items_via_ref() {
         serde_json::json!([{ "id": "echo", "node_type": "echo_item", "config": {} }]),
     );
     let node = make_node("loop1", "loop", config);
-    let result = exec.execute(&node, &context, &empty_wf_ctx()).await.unwrap();
+    let result = exec
+        .execute(&node, &context, &empty_wf_ctx())
+        .await
+        .unwrap();
     assert_eq!(result.output["items_iterated"].as_u64().unwrap(), 3);
 }
 

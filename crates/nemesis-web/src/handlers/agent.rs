@@ -42,8 +42,14 @@ impl AgentHandler {
             .unwrap_or(false);
         let model_name = ctx.state.model_name.lock().clone();
         let model_base = ctx.state.model_base.lock().clone();
-        let model_has_key = ctx.state.model_has_key.load(std::sync::atomic::Ordering::SeqCst);
-        let session_count = ctx.state.session_count.load(std::sync::atomic::Ordering::SeqCst);
+        let model_has_key = ctx
+            .state
+            .model_has_key
+            .load(std::sync::atomic::Ordering::SeqCst);
+        let session_count = ctx
+            .state
+            .session_count
+            .load(std::sync::atomic::Ordering::SeqCst);
 
         Ok(Some(serde_json::json!({
             "running": running,
@@ -77,7 +83,11 @@ impl AgentHandler {
         }
     }
 
-    fn cancel(&self, _data: Option<serde_json::Value>, ctx: &RequestContext) -> Result<Option<serde_json::Value>, String> {
+    fn cancel(
+        &self,
+        _data: Option<serde_json::Value>,
+        ctx: &RequestContext,
+    ) -> Result<Option<serde_json::Value>, String> {
         let agent_loop = ctx.state.agent_loop.read().clone();
         match agent_loop {
             Some(al) => {

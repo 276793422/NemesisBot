@@ -17,7 +17,7 @@ use axum::{
 };
 use clap::Parser;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
@@ -127,7 +127,10 @@ async fn handle_oauth_callback(
     State(state): State<Arc<AppState>>,
     Query(params): Query<CallbackParams>,
 ) -> Html<String> {
-    info!("GET /oauth/callback code={:?} state={:?}", params.code, params.state);
+    info!(
+        "GET /oauth/callback code={:?} state={:?}",
+        params.code, params.state
+    );
 
     if let Some(_error) = &params.error {
         return Html("<html><body><h2>Error</h2></body></html>".to_string());
@@ -235,7 +238,10 @@ async fn handle_file_download(Query(params): Query<FileParams>) -> impl IntoResp
         StatusCode::OK,
         [
             ("content-type", "application/octet-stream".to_string()),
-            ("content-disposition", format!("attachment; filename={}", filename)),
+            (
+                "content-disposition",
+                format!("attachment; filename={}", filename),
+            ),
         ],
         "Mock file content".to_string(),
     )

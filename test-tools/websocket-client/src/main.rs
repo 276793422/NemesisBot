@@ -10,8 +10,8 @@ use clap::Parser;
 use colored::Colorize;
 use std::io::{self, Write};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use tokio::sync::mpsc;
 
@@ -73,7 +73,11 @@ impl CliState {
         }
     }
 
-    fn new_with_output_and_lock(running: Arc<AtomicBool>, output: Arc<ExternalOutput>, lock: Arc<RequestLock>) -> Self {
+    fn new_with_output_and_lock(
+        running: Arc<AtomicBool>,
+        output: Arc<ExternalOutput>,
+        lock: Arc<RequestLock>,
+    ) -> Self {
         Self {
             running,
             input_buffer: String::new(),
@@ -138,8 +142,10 @@ async fn main() -> Result<()> {
 
     // Initialize logger
     if config.logging.enabled {
-        env_logger::Builder::from_env(env_logger::Env::default().default_filter_or(&config.logging.level))
-            .init();
+        env_logger::Builder::from_env(
+            env_logger::Env::default().default_filter_or(&config.logging.level),
+        )
+        .init();
     }
 
     // Print banner
@@ -148,12 +154,41 @@ async fn main() -> Result<()> {
     let config_header = "📁 Configuration:";
     println!("{}", config_header.dimmed());
     println!("   Server URL: {}", config.server.url.bright_white());
-    let reconnect_status = if config.reconnect.enabled { "✅" } else { "❌" };
-    println!("   Auto-reconnect: {}", if config.reconnect.enabled { reconnect_status.green() } else { reconnect_status.red() });
-    let heartbeat_status = if config.heartbeat.enabled { "✅" } else { "❌" };
-    println!("   Heartbeat: {}", if config.heartbeat.enabled { heartbeat_status.green() } else { heartbeat_status.red() });
+    let reconnect_status = if config.reconnect.enabled {
+        "✅"
+    } else {
+        "❌"
+    };
+    println!(
+        "   Auto-reconnect: {}",
+        if config.reconnect.enabled {
+            reconnect_status.green()
+        } else {
+            reconnect_status.red()
+        }
+    );
+    let heartbeat_status = if config.heartbeat.enabled {
+        "✅"
+    } else {
+        "❌"
+    };
+    println!(
+        "   Heartbeat: {}",
+        if config.heartbeat.enabled {
+            heartbeat_status.green()
+        } else {
+            heartbeat_status.red()
+        }
+    );
     let logging_status = if config.logging.enabled { "✅" } else { "❌" };
-    println!("   Logging: {}", if config.logging.enabled { logging_status.green() } else { logging_status.red() });
+    println!(
+        "   Logging: {}",
+        if config.logging.enabled {
+            logging_status.green()
+        } else {
+            logging_status.red()
+        }
+    );
 
     // Display external programs info
     if args.input_program.is_some() || args.output_program.is_some() {
@@ -162,13 +197,19 @@ async fn main() -> Result<()> {
         println!("{}", programs_header.dimmed());
 
         if let Some(ref input_path) = args.input_program {
-            println!("   Input Program: {}", input_path.display().to_string().bright_white());
+            println!(
+                "   Input Program: {}",
+                input_path.display().to_string().bright_white()
+            );
         } else {
             println!("   Input Program: {}", "CLI (none)".dimmed());
         }
 
         if let Some(ref output_path) = args.output_program {
-            println!("   Output Program: {}", output_path.display().to_string().bright_white());
+            println!(
+                "   Output Program: {}",
+                output_path.display().to_string().bright_white()
+            );
         } else {
             println!("   Output Program: {}", "CLI (none)".dimmed());
         }
@@ -185,11 +226,21 @@ async fn main() -> Result<()> {
 
         match output.start().await {
             Ok(_) => {
-                println!("{}", format!("✅ Output program started successfully").green());
+                println!(
+                    "{}",
+                    format!("✅ Output program started successfully").green()
+                );
                 Some(output)
             }
             Err(e) => {
-                eprintln!("{}", format!("⚠️  Failed to start output program: {}, using CLI output", e).yellow());
+                eprintln!(
+                    "{}",
+                    format!(
+                        "⚠️  Failed to start output program: {}, using CLI output",
+                        e
+                    )
+                    .yellow()
+                );
                 None
             }
         }
@@ -199,8 +250,7 @@ async fn main() -> Result<()> {
 
     // Create WebSocket client with external receiver and optional output/lock
     let config_for_client = config.clone();
-    let mut ws_client = WebSocketClient::new(config_for_client)
-        .with_external_receiver(cli_rx);
+    let mut ws_client = WebSocketClient::new(config_for_client).with_external_receiver(cli_rx);
 
     // Add output program if specified
     if let Some(ref output) = output_program {
@@ -223,7 +273,10 @@ async fn main() -> Result<()> {
         tokio::spawn(async move {
             let input_manager = external_input::ExternalInput::new(config_clone, input_path_str);
             if let Err(e) = input_manager.start(input_tx).await {
-                eprintln!("{}", format!("⚠️  Input program manager failed: {}", e).yellow());
+                eprintln!(
+                    "{}",
+                    format!("⚠️  Input program manager failed: {}", e).yellow()
+                );
             }
         });
     }
@@ -273,7 +326,11 @@ async fn main() -> Result<()> {
 }
 
 /// Run CLI input loop using a separate thread to avoid blocking async runtime
-fn run_cli_loop_thread(state: Arc<CliState>, config: Config, cli_tx: mpsc::UnboundedSender<String>) {
+fn run_cli_loop_thread(
+    state: Arc<CliState>,
+    config: Config,
+    cli_tx: mpsc::UnboundedSender<String>,
+) {
     thread::spawn(move || {
         let stdin = io::stdin();
 
@@ -315,7 +372,12 @@ fn run_cli_loop_thread(state: Arc<CliState>, config: Config, cli_tx: mpsc::Unbou
 
 /// Handle CLI commands (synchronous version for thread)
 /// Returns true if should exit
-fn handle_command_sync(state: &CliState, _config: &Config, input: &str, cli_tx: &mpsc::UnboundedSender<String>) -> bool {
+fn handle_command_sync(
+    state: &CliState,
+    _config: &Config,
+    input: &str,
+    cli_tx: &mpsc::UnboundedSender<String>,
+) -> bool {
     if input == CMD_QUIT || input == CMD_EXIT || input == CMD_Q {
         state.running.store(false, Ordering::Relaxed);
         return true;

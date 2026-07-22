@@ -26,14 +26,14 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
-use tracing::{debug, info, warn, error};
+use tracing::{debug, error, info, warn};
 
 use crate::context::RequestContext;
 use crate::instance::AgentInstance;
 use crate::registry::AgentRegistry;
 use crate::session::{SessionStore, estimate_tokens_for_turns};
 use crate::types::{AgentConfig, AgentEvent, ToolCallInfo, ToolCallResult};
-use nemesis_routing::{RouteResolver, RouteInput as RoutingRouteInput, RouteConfig, AgentDef};
+use nemesis_routing::{AgentDef, RouteConfig, RouteInput as RoutingRouteInput, RouteResolver};
 
 /// Grace-round nudge injected when the tool-call budget is exhausted (②).
 /// The model gets one extra round to synthesize a final answer from the work
@@ -222,7 +222,8 @@ pub fn is_internal_channel(channel: &str) -> bool {
 // ---------------------------------------------------------------------------
 
 /// Busy message returned when session is busy.
-pub const BUSY_MESSAGE: &str = "\u{23f3} AI is processing a previous request, please try again later";
+pub const BUSY_MESSAGE: &str =
+    "\u{23f3} AI is processing a previous request, please try again later";
 
 /// Concurrent request handling mode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -312,8 +313,7 @@ impl Default for ProcessOptions {
             channel: String::new(),
             chat_id: String::new(),
             user_message: String::new(),
-            default_response: "I've completed processing but have no response to give."
-                .to_string(),
+            default_response: "I've completed processing but have no response to give.".to_string(),
             enable_summary: true,
             send_response: false,
             no_history: false,
@@ -495,7 +495,8 @@ pub struct AgentLoop {
     /// Memory tool executor reference, so the gateway can attach an approval
     /// gate post-construction (memory_store/forget require interactive approval).
     #[cfg(feature = "memory")]
-    memory_executor: parking_lot::RwLock<Option<Arc<nemesis_memory::memory_tools::MemoryToolExecutor>>>,
+    memory_executor:
+        parking_lot::RwLock<Option<Arc<nemesis_memory::memory_tools::MemoryToolExecutor>>>,
     #[cfg(not(feature = "memory"))]
     #[allow(dead_code)] // placeholder when memory feature is off
     memory_executor: parking_lot::RwLock<Option<()>>,
@@ -554,7 +555,8 @@ impl AgentLoop {
         Self {
             provider: parking_lot::RwLock::new(Arc::from(provider)),
             active_model: parking_lot::RwLock::new(config.model.clone()),
-            tools: parking_lot::RwLock::new(HashMap::new()),            config,
+            tools: parking_lot::RwLock::new(HashMap::new()),
+            config,
             outbound_tx: None,
             registry: None,
             state_manager: None,
@@ -628,10 +630,7 @@ impl AgentLoop {
     /// net). Returns `(written, deleted)` paths. Errors if no checkpoint store is
     /// attached. Conversation rewinding (truncating session history) is handled
     /// by the caller — this only restores code.
-    pub async fn rewind(
-        &self,
-        from_turn: usize,
-    ) -> Result<(Vec<String>, Vec<String>), String> {
+    pub async fn rewind(&self, from_turn: usize) -> Result<(Vec<String>, Vec<String>), String> {
         let cp = self
             .checkpoint_store
             .read()
@@ -680,7 +679,9 @@ impl AgentLoop {
         };
 
         let continuation_semaphore = if max_continuation_permits > 0 {
-            Some(Arc::new(tokio::sync::Semaphore::new(max_continuation_permits)))
+            Some(Arc::new(tokio::sync::Semaphore::new(
+                max_continuation_permits,
+            )))
         } else {
             None
         };
@@ -694,7 +695,8 @@ impl AgentLoop {
         Self {
             provider: parking_lot::RwLock::new(Arc::from(provider)),
             active_model: parking_lot::RwLock::new(config.model.clone()),
-            tools: parking_lot::RwLock::new(HashMap::new()),            config,
+            tools: parking_lot::RwLock::new(HashMap::new()),
+            config,
             outbound_tx: Some(outbound_tx),
             registry: Some(registry),
             state_manager: None,
@@ -743,7 +745,10 @@ impl AgentLoop {
     ) {
         let task_response = msg.content.clone();
         let task_metadata = msg.metadata.clone();
-        let task_failed = task_metadata.get("status").map(|s| s == "error").unwrap_or(false);
+        let task_failed = task_metadata
+            .get("status")
+            .map(|s| s == "error")
+            .unwrap_or(false);
 
         if self.max_continuation_permits == 0 {
             // Inline: process directly in the main loop (no spawn).
@@ -870,12 +875,21 @@ impl AgentLoop {
                         for tool in tools {
                             let def = tool.definition();
                             let name = def.name.clone();
-                            self.register_tool(name, Box::new(crate::mcp_bridge::McpToolBridge::new(tool)));
+                            self.register_tool(
+                                name,
+                                Box::new(crate::mcp_bridge::McpToolBridge::new(tool)),
+                            );
                         }
-                        info!("[AgentLoop] MCP: registered {} tools from '{}'", count, server_name);
+                        info!(
+                            "[AgentLoop] MCP: registered {} tools from '{}'",
+                            count, server_name
+                        );
                     }
                     Err(e) => {
-                        warn!("[AgentLoop] MCP: server '{}' discovery failed: {}", server_name, e);
+                        warn!(
+                            "[AgentLoop] MCP: server '{}' discovery failed: {}",
+                            server_name, e
+                        );
                     }
                 }
             }
@@ -909,12 +923,17 @@ impl AgentLoop {
         }
 
         // Collect existing MCP tool prefixes to detect what's new
-        let registered: Vec<String> = self.tools.read().keys()
+        let registered: Vec<String> = self
+            .tools
+            .read()
+            .keys()
             .filter(|k| k.starts_with("mcp_"))
             .map(|k| {
                 // "mcp_<srv>_<tool>" → "mcp_<srv>_"
                 let chars: Vec<char> = k.chars().collect();
-                let underscores: Vec<usize> = chars.iter().enumerate()
+                let underscores: Vec<usize> = chars
+                    .iter()
+                    .enumerate()
                     .filter(|&(_, &c)| c == '_')
                     .map(|(i, _)| i)
                     .collect();
@@ -928,7 +947,11 @@ impl AgentLoop {
 
         let new_servers: Vec<_> = {
             match mgr.lock() {
-                Ok(m) => m.find_new_servers(&registered).into_iter().cloned().collect(),
+                Ok(m) => m
+                    .find_new_servers(&registered)
+                    .into_iter()
+                    .cloned()
+                    .collect(),
                 Err(_) => return,
             }
         };
@@ -949,12 +972,22 @@ impl AgentLoop {
                         let name = tool.definition().name.clone();
                         // tools is behind Arc, need interior mutability for self.tools
                         // Use the atomic swap pattern via tools_mut
-                        self.tools.write().insert(name, Arc::from(Box::new(crate::mcp_bridge::McpToolBridge::new(tool)) as Box<dyn Tool>));
+                        self.tools.write().insert(
+                            name,
+                            Arc::from(Box::new(crate::mcp_bridge::McpToolBridge::new(tool))
+                                as Box<dyn Tool>),
+                        );
                     }
-                    info!("[AgentLoop] MCP reload: registered {} tools from '{}'", count, server_name);
+                    info!(
+                        "[AgentLoop] MCP reload: registered {} tools from '{}'",
+                        count, server_name
+                    );
                 }
                 Err(e) => {
-                    warn!("[AgentLoop] MCP reload: server '{}' failed: {}", server_name, e);
+                    warn!(
+                        "[AgentLoop] MCP reload: server '{}' failed: {}",
+                        server_name, e
+                    );
                 }
             }
         }
@@ -963,7 +996,10 @@ impl AgentLoop {
 
     /// Refresh the MCP tool snapshot from the tool registry.
     fn refresh_mcp_snapshot(&self) {
-        let snapshot: Vec<(String, String)> = self.tools.read().iter()
+        let snapshot: Vec<(String, String)> = self
+            .tools
+            .read()
+            .iter()
             .filter(|(name, _)| name.starts_with("mcp_"))
             .map(|(name, tool)| (name.clone(), tool.description()))
             .collect();
@@ -984,14 +1020,20 @@ impl AgentLoop {
 
     /// Set the state manager for recording last channel/chat ID.
     /// Mirrors Go's `state.NewManager(workspace)`.
-    pub fn set_state_manager(&mut self, mgr: Arc<nemesis_state::workspace_state::WorkspaceStateManager>) {
+    pub fn set_state_manager(
+        &mut self,
+        mgr: Arc<nemesis_state::workspace_state::WorkspaceStateManager>,
+    ) {
         self.state_manager = Some(mgr);
         debug!("[AgentLoop] State manager configured");
     }
 
     /// Set the observer callback for event emission.
     /// Mirrors Go's `SetObserverManager()`.
-    pub fn set_observer_callback(&mut self, cb: Arc<dyn Fn(&str, &serde_json::Value) + Send + Sync>) {
+    pub fn set_observer_callback(
+        &mut self,
+        cb: Arc<dyn Fn(&str, &serde_json::Value) + Send + Sync>,
+    ) {
         self.observer_callback = Some(cb);
         debug!("[AgentLoop] Observer callback configured");
     }
@@ -1146,12 +1188,7 @@ impl AgentLoop {
                             // text (the user sees a short "Error: ..."; this
                             // keeps the full source string for root-causing).
                             if let Some(sink) = crate::capture_sink::CaptureSink::global() {
-                                sink.flush(
-                                    &msg.session_key,
-                                    "agent_error",
-                                    None,
-                                    Some(e.as_str()),
-                                );
+                                sink.flush(&msg.session_key, "agent_error", None, Some(e.as_str()));
                             }
                             format!("Error processing message: {}", e)
                         }
@@ -1176,10 +1213,7 @@ impl AgentLoop {
                             // For RPC channel, add correlation ID prefix if not already present.
                             let final_content = if msg.channel == "rpc"
                                 && !msg.correlation_id.is_empty()
-                                && !response.starts_with(&format!(
-                                    "[rpc:{}]",
-                                    msg.correlation_id
-                                ))
+                                && !response.starts_with(&format!("[rpc:{}]", msg.correlation_id))
                             {
                                 format!("[rpc:{}] {}", msg.correlation_id, response)
                             } else {
@@ -1188,7 +1222,9 @@ impl AgentLoop {
 
                             info!(
                                 "[AgentLoop] Response message     to {}:{}: {}",
-                                msg.channel, msg.chat_id, truncate(&final_content, 80)
+                                msg.channel,
+                                msg.chat_id,
+                                truncate(&final_content, 80)
                             );
 
                             let outbound = nemesis_types::channel::OutboundMessage {
@@ -1250,12 +1286,7 @@ impl AgentLoop {
                             // text (the user sees a short "Error: ..."; this
                             // keeps the full source string for root-causing).
                             if let Some(sink) = crate::capture_sink::CaptureSink::global() {
-                                sink.flush(
-                                    &msg.session_key,
-                                    "agent_error",
-                                    None,
-                                    Some(e.as_str()),
-                                );
+                                sink.flush(&msg.session_key, "agent_error", None, Some(e.as_str()));
                             }
                             format!("Error processing message: {}", e)
                         }
@@ -1274,10 +1305,7 @@ impl AgentLoop {
                         } else if let Some(ref tx) = self.outbound_tx {
                             let final_content = if msg.channel == "rpc"
                                 && !msg.correlation_id.is_empty()
-                                && !response.starts_with(&format!(
-                                    "[rpc:{}]",
-                                    msg.correlation_id
-                                ))
+                                && !response.starts_with(&format!("[rpc:{}]", msg.correlation_id))
                             {
                                 format!("[rpc:{}] {}", msg.correlation_id, response)
                             } else {
@@ -1286,7 +1314,9 @@ impl AgentLoop {
 
                             info!(
                                 "[AgentLoop] Response message     to {}:{}: {}",
-                                msg.channel, msg.chat_id, truncate(&final_content, 80)
+                                msg.channel,
+                                msg.chat_id,
+                                truncate(&final_content, 80)
                             );
 
                             let outbound = nemesis_types::channel::OutboundMessage {
@@ -1384,11 +1414,12 @@ impl AgentLoop {
     ) {
         if let Some(ref mgr) = self.continuation_manager {
             let task_response = &original_msg.content;
-            let task_failed = original_msg.metadata.get("status")
+            let task_failed = original_msg
+                .metadata
+                .get("status")
                 .map(|s| s == "error")
                 .unwrap_or(false);
-            let task_error = original_msg.metadata.get("error")
-                .map(|s| s.as_str());
+            let task_error = original_msg.metadata.get("error").map(|s| s.as_str());
 
             // Clone provider and model before .await (RwLock guards are not Send).
             let cont_provider = self.provider.read().clone();
@@ -1423,11 +1454,7 @@ impl AgentLoop {
 
     /// Process a direct message without the bus.
     /// Mirrors Go's `ProcessDirect()`.
-    pub async fn process_direct(
-        &self,
-        content: &str,
-        session_key: &str,
-    ) -> Result<String, String> {
+    pub async fn process_direct(&self, content: &str, session_key: &str) -> Result<String, String> {
         self.process_direct_with_channel(content, session_key, "cli", "direct")
             .await
     }
@@ -1441,7 +1468,11 @@ impl AgentLoop {
         channel: &str,
         chat_id: &str,
     ) -> Result<String, String> {
-        let trace_id = format!("direct-{}-{}", session_key, chrono::Local::now().timestamp_nanos_opt().unwrap_or(0));
+        let trace_id = format!(
+            "direct-{}-{}",
+            session_key,
+            chrono::Local::now().timestamp_nanos_opt().unwrap_or(0)
+        );
         let start_time = std::time::Instant::now();
 
         // Emit conversation_start observer event.
@@ -1452,22 +1483,37 @@ impl AgentLoop {
             chat_id: chat_id.to_string(),
             sender_id: "direct".to_string(),
             content: content.to_string(),
-        }).await;
+        })
+        .await;
 
         let instance = self.get_or_create_instance(session_key);
         let context = RequestContext::new(channel, chat_id, "cron", session_key);
 
         let token = tokio_util::sync::CancellationToken::new();
-        let events = self.run_with_trace(&instance, content, &context, &trace_id, false, &token).await;
+        let events = self
+            .run_with_trace(&instance, content, &context, &trace_id, false, &token)
+            .await;
 
         // Extract final response for the conversation end event.
-        let final_response = events.iter().rev()
-            .find_map(|e| if let AgentEvent::Done(msg) = e { Some(msg.clone()) } else { None })
+        let final_response = events
+            .iter()
+            .rev()
+            .find_map(|e| {
+                if let AgentEvent::Done(msg) = e {
+                    Some(msg.clone())
+                } else {
+                    None
+                }
+            })
             .unwrap_or_default();
 
         // Emit conversation_end observer event.
         let duration_ms = start_time.elapsed().as_millis() as u64;
-        let rounds = events.iter().filter(|e| matches!(e, AgentEvent::ToolCall(_))).count() as u32 + 1;
+        let rounds = events
+            .iter()
+            .filter(|e| matches!(e, AgentEvent::ToolCall(_)))
+            .count() as u32
+            + 1;
         self.emit_observer_sync(crate::loop_executor::ObserverEvent::ConversationEnd {
             trace_id: trace_id.clone(),
             session_key: session_key.to_string(),
@@ -1476,7 +1522,8 @@ impl AgentLoop {
             content: final_response,
             channel: channel.to_string(),
             chat_id: chat_id.to_string(),
-        }).await;
+        })
+        .await;
 
         // Extract final response from events.
         for event in events.iter().rev() {
@@ -1501,7 +1548,11 @@ impl AgentLoop {
         channel: &str,
         chat_id: &str,
     ) -> Result<String, String> {
-        let trace_id = format!("heartbeat-{}-{}", chat_id, chrono::Local::now().timestamp_nanos_opt().unwrap_or(0));
+        let trace_id = format!(
+            "heartbeat-{}-{}",
+            chat_id,
+            chrono::Local::now().timestamp_nanos_opt().unwrap_or(0)
+        );
         let start_time = std::time::Instant::now();
 
         // Emit conversation_start observer event.
@@ -1512,7 +1563,8 @@ impl AgentLoop {
             chat_id: chat_id.to_string(),
             sender_id: "heartbeat".to_string(),
             content: content.to_string(),
-        }).await;
+        })
+        .await;
 
         // Heartbeat uses a fresh temporary instance, no history.
         let config = AgentConfig {
@@ -1526,16 +1578,30 @@ impl AgentLoop {
         let context = RequestContext::new(channel, chat_id, "heartbeat", "heartbeat");
 
         let token = tokio_util::sync::CancellationToken::new();
-        let events = self.run_with_trace(&instance, content, &context, &trace_id, false, &token).await;
+        let events = self
+            .run_with_trace(&instance, content, &context, &trace_id, false, &token)
+            .await;
 
         // Extract final response for the conversation end event.
-        let final_response = events.iter().rev()
-            .find_map(|e| if let AgentEvent::Done(msg) = e { Some(msg.clone()) } else { None })
+        let final_response = events
+            .iter()
+            .rev()
+            .find_map(|e| {
+                if let AgentEvent::Done(msg) = e {
+                    Some(msg.clone())
+                } else {
+                    None
+                }
+            })
             .unwrap_or_default();
 
         // Emit conversation_end observer event.
         let duration_ms = start_time.elapsed().as_millis() as u64;
-        let rounds = events.iter().filter(|e| matches!(e, AgentEvent::ToolCall(_))).count() as u32 + 1;
+        let rounds = events
+            .iter()
+            .filter(|e| matches!(e, AgentEvent::ToolCall(_)))
+            .count() as u32
+            + 1;
         self.emit_observer_sync(crate::loop_executor::ObserverEvent::ConversationEnd {
             trace_id: trace_id.clone(),
             session_key: "heartbeat".to_string(),
@@ -1544,7 +1610,8 @@ impl AgentLoop {
             content: final_response,
             channel: channel.to_string(),
             chat_id: chat_id.to_string(),
-        }).await;
+        })
+        .await;
 
         for event in events.iter().rev() {
             if let AgentEvent::Done(msg) = event {
@@ -1570,7 +1637,9 @@ impl AgentLoop {
 
         // Open a checkpoint turn for the edit safety net (so writer-tool changes
         // during this message can be rewound). No-op when no store is attached.
-        let cp_turn = self.turn_counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let cp_turn = self
+            .turn_counter
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         {
             let cp = self.checkpoint_store.read().as_ref().cloned();
             if let Some(cp) = cp {
@@ -1586,11 +1655,16 @@ impl AgentLoop {
         // Route system messages.
         if msg.channel == "system" {
             // Cluster continuation — return special marker for the bus loop to handle.
-            if msg.sender_id
+            if msg
+                .sender_id
                 .starts_with(nemesis_types::constants::CLUSTER_CONTINUATION_PREFIX)
             {
-                let task_id = &msg.sender_id[nemesis_types::constants::CLUSTER_CONTINUATION_PREFIX.len()..];
-                debug!("[AgentLoop] Cluster continuation message intercepted, task_id={}", task_id);
+                let task_id =
+                    &msg.sender_id[nemesis_types::constants::CLUSTER_CONTINUATION_PREFIX.len()..];
+                debug!(
+                    "[AgentLoop] Cluster continuation message intercepted, task_id={}",
+                    task_id
+                );
                 return ("__continuation__".to_string(), task_id.to_string(), None);
             }
             let (resp, err) = self.process_system_message(msg).await;
@@ -1645,13 +1719,12 @@ impl AgentLoop {
 
             // Use routed session key, but honor pre-set agent-scoped keys
             // (mirrors Go's logic for ProcessDirect/cron).
-            let session_key = if !msg.session_key.is_empty()
-                && msg.session_key.starts_with("agent:")
-            {
-                msg.session_key.clone()
-            } else {
-                route.session_key.clone()
-            };
+            let session_key =
+                if !msg.session_key.is_empty() && msg.session_key.starts_with("agent:") {
+                    msg.session_key.clone()
+                } else {
+                    route.session_key.clone()
+                };
 
             info!(
                 "[AgentLoop] Routed message: agent_id={}, session_key={}, matched_by={}",
@@ -1668,13 +1741,12 @@ impl AgentLoop {
                 .unwrap_or_else(|| "main".to_string());
 
             let peer = extract_peer(msg);
-            let session_key = if !msg.session_key.is_empty()
-                && msg.session_key.starts_with("agent:")
-            {
-                msg.session_key.clone()
-            } else {
-                format!("{}:{}", msg.channel, peer)
-            };
+            let session_key =
+                if !msg.session_key.is_empty() && msg.session_key.starts_with("agent:") {
+                    msg.session_key.clone()
+                } else {
+                    format!("{}:{}", msg.channel, peer)
+                };
 
             info!(
                 "[AgentLoop] Routed message (no resolver): agent_id={}, session_key={}",
@@ -1706,7 +1778,16 @@ impl AgentLoop {
         let cron_job_id = msg.metadata.get("cron_job_id").map(|s| s.as_str());
         let cron_job_name = msg.metadata.get("cron_job_name").map(|s| s.as_str());
         let result = self
-            .run_agent_loop_internal(&session_key, &processed_content, &msg.channel, &msg.chat_id, voice_playback, &cancel_token, cron_job_id, cron_job_name)
+            .run_agent_loop_internal(
+                &session_key,
+                &processed_content,
+                &msg.channel,
+                &msg.chat_id,
+                voice_playback,
+                &cancel_token,
+                cron_job_id,
+                cron_job_name,
+            )
             .await;
 
         // Clean up cancellation token and release session.
@@ -1746,10 +1827,7 @@ impl AgentLoop {
 
         // Parse origin channel from chat_id (format: "channel:chat_id").
         let (origin_channel, origin_chat_id) = if let Some(idx) = msg.chat_id.find(':') {
-            (
-                &msg.chat_id[..idx],
-                msg.chat_id[idx + 1..].to_string(),
-            )
+            (&msg.chat_id[..idx], msg.chat_id[idx + 1..].to_string())
         } else {
             ("cli", msg.chat_id.clone())
         };
@@ -1824,7 +1902,8 @@ impl AgentLoop {
                     false,
                     0,
                     0,
-                ).await;
+                )
+                .await;
                 return;
             }
         };
@@ -1850,9 +1929,8 @@ impl AgentLoop {
         };
 
         // Read history from chat log (separate from session store).
-        let (page, total_count, has_more, oldest_index) = crate::chat_log::read_chat_log(
-            &session_key, limit, req.before_index,
-        );
+        let (page, total_count, has_more, oldest_index) =
+            crate::chat_log::read_chat_log(&session_key, limit, req.before_index);
 
         self.publish_history_response(
             &msg.chat_id,
@@ -1861,7 +1939,8 @@ impl AgentLoop {
             has_more,
             oldest_index,
             total_count,
-        ).await;
+        )
+        .await;
     }
 
     /// Publish a history response via the outbound channel.
@@ -2015,7 +2094,10 @@ impl AgentLoop {
     pub fn cancel_session(&self, session_key: &str) -> bool {
         if let Some(token) = self.cancel_tokens.get(session_key) {
             token.cancel();
-            info!("[AgentLoop] Session cancellation requested: {}", session_key);
+            info!(
+                "[AgentLoop] Session cancellation requested: {}",
+                session_key
+            );
             true
         } else {
             debug!("[AgentLoop] No active session to cancel: {}", session_key);
@@ -2042,7 +2124,8 @@ impl AgentLoop {
     /// Returns the token for the caller to pass into the processing pipeline.
     fn create_cancel_token(&self, session_key: &str) -> tokio_util::sync::CancellationToken {
         let token = tokio_util::sync::CancellationToken::new();
-        self.cancel_tokens.insert(session_key.to_string(), token.clone());
+        self.cancel_tokens
+            .insert(session_key.to_string(), token.clone());
         token
     }
 
@@ -2061,7 +2144,13 @@ impl AgentLoop {
     /// In Go this runs in a goroutine (`go func()`) so it doesn't block the
     /// response. We mirror this by spawning a tokio task when summarization
     /// is needed.
-    async fn maybe_summarize(&self, instance: &AgentInstance, session_key: &str, channel: &str, chat_id: &str) {
+    async fn maybe_summarize(
+        &self,
+        instance: &AgentInstance,
+        session_key: &str,
+        channel: &str,
+        chat_id: &str,
+    ) {
         let history = instance.get_history();
         let context_window = instance.context_window();
         let token_estimate = estimate_tokens_for_turns(&history);
@@ -2086,7 +2175,9 @@ impl AgentLoop {
                 info!(
                     "[AgentLoop] context at ~{}% of window ({} / {}); summarization will trigger at {}%",
                     token_estimate * 100 / context_window.max(1),
-                    token_estimate, context_window, COMPACT_SUMMARIZE_RATIO
+                    token_estimate,
+                    context_window,
+                    COMPACT_SUMMARIZE_RATIO
                 );
             }
 
@@ -2138,9 +2229,9 @@ impl AgentLoop {
         }
 
         // Clone all data needed by the spawned task.
-        let provider = self.provider.read().clone();         // Arc clone
+        let provider = self.provider.read().clone(); // Arc clone
         let model = self.active_model.read().clone();
-        let outbound_tx = self.outbound_tx.clone();   // Option<Sender> clone
+        let outbound_tx = self.outbound_tx.clone(); // Option<Sender> clone
         let session_store = self.session_store.clone(); // Option<Arc<SessionStore>> clone
         let summarizing_flag = self.summarizing.clone(); // Arc clone for clearing after completion
         let observer_mgr = self.observer_manager.clone(); // Option<Arc<Manager>> clone
@@ -2409,7 +2500,11 @@ impl AgentLoop {
     /// Mirrors Go's `summarizeBatch()`.
     /// NOTE: See `summarize_batch_owned` for the standalone version used by the main loop.
     #[allow(dead_code)]
-    fn summarize_batch(&self, batch: &[&crate::types::ConversationTurn], existing_summary: &str) -> String {
+    fn summarize_batch(
+        &self,
+        batch: &[&crate::types::ConversationTurn],
+        existing_summary: &str,
+    ) -> String {
         let mut prompt = String::from(
             "Provide a concise summary of this conversation segment, preserving core context and key points.\n",
         );
@@ -2464,10 +2559,8 @@ impl AgentLoop {
             let stored = store.get_or_create(session_key);
             let existing_summary = store.get_summary(session_key);
             if !stored.messages.is_empty() {
-                let history: Vec<crate::types::ConversationTurn> = stored.messages
-                    .into_iter()
-                    .map(|m| m.into())
-                    .collect();
+                let history: Vec<crate::types::ConversationTurn> =
+                    stored.messages.into_iter().map(|m| m.into()).collect();
                 instance.set_history(history);
             }
             if !existing_summary.is_empty() {
@@ -2492,7 +2585,11 @@ impl AgentLoop {
         cron_job_name: Option<&str>,
     ) -> Result<String, String> {
         // Generate trace ID and emit conversation_start event.
-        let trace_id = format!("{}-{}", session_key, chrono::Local::now().timestamp_nanos_opt().unwrap_or(0));
+        let trace_id = format!(
+            "{}-{}",
+            session_key,
+            chrono::Local::now().timestamp_nanos_opt().unwrap_or(0)
+        );
         let start_time = std::time::Instant::now();
 
         // Emit conversation_start observer event.
@@ -2503,7 +2600,8 @@ impl AgentLoop {
             chat_id: chat_id.to_string(),
             sender_id: "agent".to_string(),
             content: user_message.to_string(),
-        }).await;
+        })
+        .await;
 
         // Record last channel (skip internal channels).
         if !channel.is_empty() && !chat_id.is_empty() && !is_internal_channel(channel) {
@@ -2514,10 +2612,20 @@ impl AgentLoop {
         let instance = self.get_or_create_instance(session_key);
         let context = RequestContext::new(channel, chat_id, "agent", session_key);
 
-        let events = self.run_with_trace(&instance, user_message, &context, &trace_id, voice_playback, cancel_token).await;
+        let events = self
+            .run_with_trace(
+                &instance,
+                user_message,
+                &context,
+                &trace_id,
+                voice_playback,
+                cancel_token,
+            )
+            .await;
 
         // Maybe trigger summarization.
-        self.maybe_summarize(&instance, session_key, channel, chat_id).await;
+        self.maybe_summarize(&instance, session_key, channel, chat_id)
+            .await;
 
         // Persist to session store — mirrors Go's runAgentLoop exactly:
         //   Line 104: agent.Sessions.AddMessage(sessionKey, "user", userMessage)
@@ -2529,10 +2637,18 @@ impl AgentLoop {
         // These are intentionally separate, matching Go's architecture.
 
         // Extract final response once (shared by session store, chat log, and observer).
-        let final_response = events.iter().rev()
-            .find_map(|e| if let AgentEvent::Done(msg) = e { Some(msg.clone()) }
-                          else if let AgentEvent::Error(msg) = e { Some(msg.clone()) }
-                          else { None })
+        let final_response = events
+            .iter()
+            .rev()
+            .find_map(|e| {
+                if let AgentEvent::Done(msg) = e {
+                    Some(msg.clone())
+                } else if let AgentEvent::Error(msg) = e {
+                    Some(msg.clone())
+                } else {
+                    None
+                }
+            })
             .unwrap_or_default();
 
         if let Some(ref store) = self.session_store {
@@ -2552,7 +2668,10 @@ impl AgentLoop {
             }
 
             if let Err(e) = store.save(session_key) {
-                warn!("[AgentLoop] Failed to persist session history for {}: {}", session_key, e);
+                warn!(
+                    "[AgentLoop] Failed to persist session history for {}: {}",
+                    session_key, e
+                );
             }
         }
 
@@ -2576,7 +2695,11 @@ impl AgentLoop {
 
         // Emit conversation_end observer event.
         let duration_ms = start_time.elapsed().as_millis() as u64;
-        let rounds = events.iter().filter(|e| matches!(e, AgentEvent::ToolCall(_))).count() as u32 + 1;
+        let rounds = events
+            .iter()
+            .filter(|e| matches!(e, AgentEvent::ToolCall(_)))
+            .count() as u32
+            + 1;
         self.emit_observer_sync(crate::loop_executor::ObserverEvent::ConversationEnd {
             trace_id: trace_id.clone(),
             session_key: session_key.to_string(),
@@ -2585,7 +2708,8 @@ impl AgentLoop {
             content: final_response,
             channel: channel.to_string(),
             chat_id: chat_id.to_string(),
-        }).await;
+        })
+        .await;
 
         // Extract final response.
         for event in events.iter().rev() {
@@ -2615,9 +2739,13 @@ impl AgentLoop {
         user_message: &str,
         context: &RequestContext,
     ) -> Vec<AgentEvent> {
-        let trace_id = format!("run-{}", chrono::Local::now().timestamp_nanos_opt().unwrap_or(0));
+        let trace_id = format!(
+            "run-{}",
+            chrono::Local::now().timestamp_nanos_opt().unwrap_or(0)
+        );
         let token = tokio_util::sync::CancellationToken::new();
-        self.run_with_trace(instance, user_message, context, &trace_id, false, &token).await
+        self.run_with_trace(instance, user_message, context, &trace_id, false, &token)
+            .await
     }
 
     /// Run the agent loop with a specific trace ID for observer event correlation.
@@ -2639,7 +2767,8 @@ impl AgentLoop {
         instance.add_user_message(user_message);
         instance.set_state(crate::types::AgentState::Thinking);
 
-        self.run_llm_loop(instance, context, trace_id, voice_playback, cancel_token).await
+        self.run_llm_loop(instance, context, trace_id, voice_playback, cancel_token)
+            .await
     }
 
     /// Resume execution from a previously saved conversation state.
@@ -2655,7 +2784,8 @@ impl AgentLoop {
     ) -> Vec<AgentEvent> {
         instance.set_state(crate::types::AgentState::Thinking);
         let token = tokio_util::sync::CancellationToken::new();
-        self.run_llm_loop(instance, context, trace_id, false, &token).await
+        self.run_llm_loop(instance, context, trace_id, false, &token)
+            .await
     }
 
     /// Core LLM loop shared by `run_with_trace()` and `resume_execution()`.
@@ -2708,7 +2838,10 @@ impl AgentLoop {
 
             // Check cancellation at the top of each iteration.
             if cancel_token.is_cancelled() {
-                info!("[AgentLoop] LLM loop cancelled at top of iteration, turns_used={}", turns_used);
+                info!(
+                    "[AgentLoop] LLM loop cancelled at top of iteration, turns_used={}",
+                    turns_used
+                );
                 events.push(AgentEvent::Done("已取消".to_string()));
                 break;
             }
@@ -2817,28 +2950,32 @@ impl AgentLoop {
                 let allowed = nemesis_types::capability::tier_allowed_tools(*self.tier.read());
                 let mut names: Vec<&String> = tools_guard.keys().collect();
                 names.sort();
-                names.into_iter()
+                names
+                    .into_iter()
                     .filter(|name| allowed.is_empty() || allowed.contains(&name.as_str()))
                     .filter_map(|name| tools_guard.get(name).map(|tool| (name, tool)))
-                    .map(|(name, tool)| {
-                        crate::types::ToolDefinition {
-                            tool_type: "function".to_string(),
-                            function: crate::types::ToolFunctionDef {
-                                name: name.clone(),
-                                description: tool.description(),
-                                parameters: tool.parameters(),
-                            },
-                        }
+                    .map(|(name, tool)| crate::types::ToolDefinition {
+                        tool_type: "function".to_string(),
+                        function: crate::types::ToolFunctionDef {
+                            name: name.clone(),
+                            description: tool.description(),
+                            parameters: tool.parameters(),
+                        },
                     })
                     .collect()
             };
-            debug!("[AgentLoop] Sending {} tool definitions to LLM", tool_defs.len());
+            debug!(
+                "[AgentLoop] Sending {} tool definitions to LLM",
+                tool_defs.len()
+            );
 
             // Emit LLM request observer event.
-            let msg_values: Vec<serde_json::Value> = messages.iter()
+            let msg_values: Vec<serde_json::Value> = messages
+                .iter()
                 .filter_map(|m| serde_json::to_value(m).ok())
                 .collect();
-            let tool_values: Vec<serde_json::Value> = tool_defs.iter()
+            let tool_values: Vec<serde_json::Value> = tool_defs
+                .iter()
                 .filter_map(|t| serde_json::to_value(t).ok())
                 .collect();
             // Extract model string before emit so RwLockReadGuard doesn't span the await.
@@ -2854,7 +2991,8 @@ impl AgentLoop {
                 provider_name: String::new(),
                 api_key: String::new(),
                 api_base: String::new(),
-            }).await;
+            })
+            .await;
 
             // Call LLM.
             instance.set_state(crate::types::AgentState::Thinking);
@@ -2867,11 +3005,7 @@ impl AgentLoop {
             // `None`（未接线）时该 arm 永不 resolve（pending），等价于没这条 arm。
             // 注意：subscribe() 返回的是 owned Receiver（不借用 guard），所以这里
             // 拿完就能放掉 estop 的读锁。
-            let mut estop_rx = self
-                .estop
-                .read()
-                .as_ref()
-                .map(|e| e.subscribe());
+            let mut estop_rx = self.estop.read().as_ref().map(|e| e.subscribe());
 
             // Use tokio::select! to allow cancellation / e-stop during the LLM call.
             let chat_result = tokio::select! {
@@ -2946,7 +3080,11 @@ impl AgentLoop {
 
                             // Re-apply voice playback prompt after compression.
                             if voice_playback {
-                                if let Some(last_user) = compressed_messages.iter_mut().rev().find(|m| m.role == "user") {
+                                if let Some(last_user) = compressed_messages
+                                    .iter_mut()
+                                    .rev()
+                                    .find(|m| m.role == "user")
+                                {
                                     last_user.content.push_str("（语音播报模式已开启，请用简洁、便于口语播报的方式回复，避免使用代码块、表格等不适合语音的内容。）");
                                 }
                             }
@@ -2956,27 +3094,39 @@ impl AgentLoop {
                                 compressed_messages.len()
                             );
 
-                            let retry_tool_defs: Vec<crate::types::ToolDefinition> = self.tools.read().iter()
-                                .map(|(name, tool)| {
-                                    crate::types::ToolDefinition {
-                                        tool_type: "function".to_string(),
-                                        function: crate::types::ToolFunctionDef {
-                                            name: name.clone(),
-                                            description: tool.description(),
-                                            parameters: tool.parameters(),
-                                        },
-                                    }
+                            let retry_tool_defs: Vec<crate::types::ToolDefinition> = self
+                                .tools
+                                .read()
+                                .iter()
+                                .map(|(name, tool)| crate::types::ToolDefinition {
+                                    tool_type: "function".to_string(),
+                                    function: crate::types::ToolFunctionDef {
+                                        name: name.clone(),
+                                        description: tool.description(),
+                                        parameters: tool.parameters(),
+                                    },
                                 })
                                 .collect();
 
-                            match active_provider.chat(&active_model, compressed_messages, Some(chat_opts.clone()), retry_tool_defs).await {
+                            match active_provider
+                                .chat(
+                                    &active_model,
+                                    compressed_messages,
+                                    Some(chat_opts.clone()),
+                                    retry_tool_defs,
+                                )
+                                .await
+                            {
                                 Ok(resp) => {
                                     got_response = Some(resp);
                                     break;
                                 }
                                 Err(e) => {
                                     retry_err = e;
-                                    warn!("[AgentLoop] LLM retry {} failed: {}", retry_count, retry_err);
+                                    warn!(
+                                        "[AgentLoop] LLM retry {} failed: {}",
+                                        retry_count, retry_err
+                                    );
                                 }
                             }
                         }
@@ -2987,19 +3137,22 @@ impl AgentLoop {
                                 warn!("[AgentLoop] All LLM retries exhausted: {}", retry_err);
                                 let error_round = turns_used + 1;
                                 let error_duration = round_start.elapsed();
-                                self.emit_observer_sync(crate::loop_executor::ObserverEvent::LlmResponse {
-                                    trace_id: trace_id.to_string(),
-                                    round: error_round,
-                                    duration_ms: error_duration.as_millis() as u64,
-                                    has_tool_calls: false,
-                                    content: format!("Error: {}", retry_err),
-                                    tool_calls: vec![],
-                                    tool_calls_count: 0,
-                                    finish_reason: Some("error".to_string()),
-                                    usage: None,
-                                    raw_request_body: None,
-                                    raw_response_body: None,
-                                }).await;
+                                self.emit_observer_sync(
+                                    crate::loop_executor::ObserverEvent::LlmResponse {
+                                        trace_id: trace_id.to_string(),
+                                        round: error_round,
+                                        duration_ms: error_duration.as_millis() as u64,
+                                        has_tool_calls: false,
+                                        content: format!("Error: {}", retry_err),
+                                        tool_calls: vec![],
+                                        tool_calls_count: 0,
+                                        finish_reason: Some("error".to_string()),
+                                        usage: None,
+                                        raw_request_body: None,
+                                        raw_response_body: None,
+                                    },
+                                )
+                                .await;
                                 instance.add_assistant_message(
                                     &format!("Error: {}", retry_err),
                                     Vec::new(),
@@ -3018,7 +3171,8 @@ impl AgentLoop {
                                         Some(retry_err.as_str()),
                                     );
                                 }
-                                let formatted = context.format_rpc_message(&format!("Error: {}", retry_err));
+                                let formatted =
+                                    context.format_rpc_message(&format!("Error: {}", retry_err));
                                 events.push(AgentEvent::Error(formatted));
                                 break;
                             }
@@ -3031,11 +3185,21 @@ impl AgentLoop {
                         // rebuilt fresh because the first-attempt values were moved
                         // into the failed call.
                         let is_transient_error = [
-                            "timeout", "timed out", "connection reset",
-                            "broken pipe", "connect error", "connection refused",
-                            "temporarily unavailable", "reset by peer",
-                            "502", "503", "504", "service unavailable",
-                        ].iter().any(|k| err_lower.contains(k));
+                            "timeout",
+                            "timed out",
+                            "connection reset",
+                            "broken pipe",
+                            "connect error",
+                            "connection refused",
+                            "temporarily unavailable",
+                            "reset by peer",
+                            "502",
+                            "503",
+                            "504",
+                            "service unavailable",
+                        ]
+                        .iter()
+                        .any(|k| err_lower.contains(k));
 
                         let mut last_err = err.clone();
                         let mut maybe_resp: Option<LlmResponse> = None;
@@ -3049,7 +3213,10 @@ impl AgentLoop {
                             while retries < MAX_TRANSIENT_RETRIES {
                                 retries += 1;
                                 let r_msgs = self.build_messages(instance);
-                                let r_tools: Vec<crate::types::ToolDefinition> = self.tools.read().iter()
+                                let r_tools: Vec<crate::types::ToolDefinition> = self
+                                    .tools
+                                    .read()
+                                    .iter()
                                     .map(|(name, tool)| crate::types::ToolDefinition {
                                         tool_type: "function".to_string(),
                                         function: crate::types::ToolFunctionDef {
@@ -3059,7 +3226,10 @@ impl AgentLoop {
                                         },
                                     })
                                     .collect();
-                                match active_provider.chat(&active_model, r_msgs, Some(chat_opts.clone()), r_tools).await {
+                                match active_provider
+                                    .chat(&active_model, r_msgs, Some(chat_opts.clone()), r_tools)
+                                    .await
+                                {
                                     Ok(resp) => {
                                         maybe_resp = Some(resp);
                                         break;
@@ -3082,20 +3252,27 @@ impl AgentLoop {
                             warn!("[AgentLoop] LLM call failed: {}", last_err);
                             let error_round = turns_used + 1;
                             let error_duration = round_start.elapsed();
-                            self.emit_observer_sync(crate::loop_executor::ObserverEvent::LlmResponse {
-                                trace_id: trace_id.to_string(),
-                                round: error_round,
-                                duration_ms: error_duration.as_millis() as u64,
-                                has_tool_calls: false,
-                                content: format!("Error: {}", last_err),
-                                tool_calls: vec![],
-                                tool_calls_count: 0,
-                                finish_reason: Some("error".to_string()),
-                                usage: None,
-                                raw_request_body: None,
-                                raw_response_body: None,
-                            }).await;
-                            instance.add_assistant_message(&format!("Error: {}", last_err), Vec::new(), None);
+                            self.emit_observer_sync(
+                                crate::loop_executor::ObserverEvent::LlmResponse {
+                                    trace_id: trace_id.to_string(),
+                                    round: error_round,
+                                    duration_ms: error_duration.as_millis() as u64,
+                                    has_tool_calls: false,
+                                    content: format!("Error: {}", last_err),
+                                    tool_calls: vec![],
+                                    tool_calls_count: 0,
+                                    finish_reason: Some("error".to_string()),
+                                    usage: None,
+                                    raw_request_body: None,
+                                    raw_response_body: None,
+                                },
+                            )
+                            .await;
+                            instance.add_assistant_message(
+                                &format!("Error: {}", last_err),
+                                Vec::new(),
+                                None,
+                            );
                             // [capture] Non-transient error or transient retries
                             // exhausted. Flush full last_err + trace_id.
                             if let Some(sink) = crate::capture_sink::CaptureSink::global() {
@@ -3106,7 +3283,8 @@ impl AgentLoop {
                                     Some(last_err.as_str()),
                                 );
                             }
-                            let formatted = context.format_rpc_message(&format!("Error: {}", last_err));
+                            let formatted =
+                                context.format_rpc_message(&format!("Error: {}", last_err));
                             events.push(AgentEvent::Error(formatted));
                             break;
                         }
@@ -3117,7 +3295,9 @@ impl AgentLoop {
 
             // Emit LLM response observer event.
             let round_duration = round_start.elapsed();
-            let tc_values: Vec<serde_json::Value> = response.tool_calls.iter()
+            let tc_values: Vec<serde_json::Value> = response
+                .tool_calls
+                .iter()
                 .filter_map(|tc| serde_json::to_value(tc).ok())
                 .collect();
             let tc_count = response.tool_calls.len();
@@ -3129,11 +3309,16 @@ impl AgentLoop {
                 content: response.content.clone(),
                 tool_calls: tc_values,
                 tool_calls_count: tc_count,
-                finish_reason: if response.finished { Some("stop".to_string()) } else { None },
+                finish_reason: if response.finished {
+                    Some("stop".to_string())
+                } else {
+                    None
+                },
                 usage: response.usage.clone(),
                 raw_request_body: response.raw_request_body.take(),
                 raw_response_body: response.raw_response_body.take(),
-            }).await;
+            })
+            .await;
 
             // Record usage statistics if data store is available.
             if let Some(ref ds) = self.data_store {
@@ -3146,10 +3331,17 @@ impl AgentLoop {
                         input_tokens: usage.prompt_tokens,
                         output_tokens: usage.completion_tokens,
                         cache_creation_tokens: usage.cache_creation_tokens.unwrap_or(0),
-                        cache_read_tokens: usage.cache_read_tokens.or(usage.cached_tokens).unwrap_or(0),
+                        cache_read_tokens: usage
+                            .cache_read_tokens
+                            .or(usage.cached_tokens)
+                            .unwrap_or(0),
                         total_cost_usd: 0.0,
                         latency_ms: round_duration.as_millis() as i64,
-                        status_code: if response.content.starts_with("Error:") { 500 } else { 200 },
+                        status_code: if response.content.starts_with("Error:") {
+                            500
+                        } else {
+                            200
+                        },
                         error_message: None,
                         is_streaming: false,
                         created_at: chrono::Local::now().timestamp(),
@@ -3179,14 +3371,22 @@ impl AgentLoop {
                 // outcome, not a broken answer.
                 let content = response.content.clone();
                 if context.user == "heartbeat" {
-                    instance.add_assistant_message(&content, Vec::new(), response.reasoning_content.clone());
+                    instance.add_assistant_message(
+                        &content,
+                        Vec::new(),
+                        response.reasoning_content.clone(),
+                    );
                     let formatted = context.format_rpc_message(&content);
                     events.push(AgentEvent::Done(formatted));
                     break;
                 }
                 match turn_guard.check_final_answer(&content) {
                     crate::turn_guard::FinalAnswerVerdict::Accept => {
-                        instance.add_assistant_message(&content, Vec::new(), response.reasoning_content.clone());
+                        instance.add_assistant_message(
+                            &content,
+                            Vec::new(),
+                            response.reasoning_content.clone(),
+                        );
                         let formatted = context.format_rpc_message(&content);
                         events.push(AgentEvent::Done(formatted));
                         break;
@@ -3197,12 +3397,18 @@ impl AgentLoop {
                         );
                         // Record the empty attempt in history, then queue the
                         // nudge for transient re-injection on the next build.
-                        instance.add_assistant_message(&content, Vec::new(), response.reasoning_content.clone());
+                        instance.add_assistant_message(
+                            &content,
+                            Vec::new(),
+                            response.reasoning_content.clone(),
+                        );
                         degenerate_nudge_pending = Some(nudge);
                         continue;
                     }
                     crate::turn_guard::FinalAnswerVerdict::GiveUp(notice) => {
-                        warn!("[AgentLoop] degenerate final answer retry budget exhausted; giving up");
+                        warn!(
+                            "[AgentLoop] degenerate final answer retry budget exhausted; giving up"
+                        );
                         instance.add_assistant_message(&notice, Vec::new(), None);
                         let formatted = context.format_rpc_message(&notice);
                         events.push(AgentEvent::Done(formatted));
@@ -3220,7 +3426,11 @@ impl AgentLoop {
             // Record the assistant's response with tool calls.
             let tool_calls = response.tool_calls.clone();
             let assistant_content = response.content.clone();
-            instance.add_assistant_message(&assistant_content, tool_calls.clone(), response.reasoning_content.clone());
+            instance.add_assistant_message(
+                &assistant_content,
+                tool_calls.clone(),
+                response.reasoning_content.clone(),
+            );
             events.push(AgentEvent::ToolCall(tool_calls.clone()));
 
             // Execute each tool call.
@@ -3237,7 +3447,10 @@ impl AgentLoop {
             for tc in &tool_calls {
                 // Check cancellation before each tool execution.
                 if cancel_token.is_cancelled() {
-                    info!("[AgentLoop] LLM loop cancelled before tool execution: {}, turns_used={}", tc.name, turns_used);
+                    info!(
+                        "[AgentLoop] LLM loop cancelled before tool execution: {}, turns_used={}",
+                        tc.name, turns_used
+                    );
                     events.push(AgentEvent::Done("已取消".to_string()));
                     break;
                 }
@@ -3292,7 +3505,8 @@ impl AgentLoop {
                     }
                 };
                 let tool_duration = tool_start.elapsed();
-                let tool_success = !result.starts_with("Error:") && !result.starts_with("Tool error:");
+                let tool_success =
+                    !result.starts_with("Error:") && !result.starts_with("Tool error:");
 
                 // Emit tool call observer event.
                 self.emit_observer_sync(crate::loop_executor::ObserverEvent::ToolCall {
@@ -3303,7 +3517,8 @@ impl AgentLoop {
                     round: turns_used,
                     arguments: tc.arguments.clone(),
                     result: result.clone(),
-                }).await;
+                })
+                .await;
 
                 // [capture] Record the full pre-truncation tool result. loop.rs
                 // does NOT truncate tool results before they enter the context,
@@ -3319,7 +3534,11 @@ impl AgentLoop {
                             result: result.clone(),
                             success: tool_success,
                             duration_ms: tool_duration.as_millis() as u64,
-                            error: if tool_success { String::new() } else { result.clone() },
+                            error: if tool_success {
+                                String::new()
+                            } else {
+                                result.clone()
+                            },
                             llm_round: turns_used as usize,
                             ts: String::new(),
                         },
@@ -3341,13 +3560,12 @@ impl AgentLoop {
                 // Older senders may omit the name part (3-segment format),
                 // in which case we fall back to the bare target_id.
                 if result.starts_with("__ASYNC__:") {
-                    let parts: Vec<String> = result.splitn(4, ':')
-                        .map(|s| s.to_string())
-                        .collect();
+                    let parts: Vec<String> = result.splitn(4, ':').map(|s| s.to_string()).collect();
                     if parts.len() >= 3 {
                         let task_id = parts[1].clone();
                         let target_id = parts[2].clone();
-                        let target_name = parts.get(3)
+                        let target_name = parts
+                            .get(3)
                             .cloned()
                             .filter(|s| !s.is_empty())
                             .unwrap_or_else(|| target_id.clone());
@@ -3372,7 +3590,8 @@ impl AgentLoop {
                                     &channel,
                                     &chat_id,
                                     &session_key,
-                                ).await;
+                                )
+                                .await;
                             });
 
                             info!(
@@ -3395,10 +3614,7 @@ impl AgentLoop {
                         // belong in the persona file, not in hardcoded system messages.
                         // The task_id is omitted from user-visible copy — it's an internal
                         // correlation ID with no meaning to the user.
-                        let intermediate = format!(
-                            "已经联系 {} 了，稍等~",
-                            target_name
-                        );
+                        let intermediate = format!("已经联系 {} 了，稍等~", target_name);
                         instance.add_tool_result(&tc.id, &format!(
                             "Request accepted by {}. Task ID: {} | __CLUSTER_ASYNC__{{\"task_id\":\"{}\",\"target\":\"{}\"}}",
                             target_id, task_id, task_id, target_id
@@ -3451,7 +3667,8 @@ impl AgentLoop {
                 // frequency, NOT reset by intervening successes (also handles ④
                 // storm — consecutive identical — internally). On a repeated
                 // failure, append a nudge so the model sees it in the error.
-                let error_for_guard: Option<&str> = if tool_succeeded { None } else { Some(&result) };
+                let error_for_guard: Option<&str> =
+                    if tool_succeeded { None } else { Some(&result) };
                 let fed_result = match turn_guard.record_tool_outcome(&tc.name, error_for_guard) {
                     Some(nudge) => {
                         info!(
@@ -3525,7 +3742,10 @@ impl AgentLoop {
         tool_call: &ToolCallInfo,
         context: &RequestContext,
     ) -> String {
-        info!("[AgentLoop] Executing tool: {} (id={})", tool_call.name, tool_call.id);
+        info!(
+            "[AgentLoop] Executing tool: {} (id={})",
+            tool_call.name, tool_call.id
+        );
 
         // 全局急停：触发时拒绝所有工具分发。这是 handle_tool_call 公开入口级
         // 的防御深度——与 run_llm_loop 里的批次检查点互补，任何调用方都吃到。
@@ -3547,54 +3767,58 @@ impl AgentLoop {
         // Pre-execution security check (mirrors Go's PluginableTool.Execute → PluginManager → SecurityPlugin).
         #[cfg(feature = "security")]
         {
-        if let Some(ref security) = self.security_plugin {
-            let args_value = serde_json::from_str::<serde_json::Value>(&tool_call.arguments)
-                .unwrap_or(serde_json::Value::Null);
-            let invocation = nemesis_security::types::ToolInvocation {
-                tool_name: tool_call.name.clone(),
-                args: args_value,
-                user: String::new(),
-                source: context.channel.clone(),
-                metadata: std::collections::HashMap::new(),
-            };
-            let (allowed, reason) = security.execute(&invocation);
-            if !allowed {
-                let reason_str = reason.unwrap_or_else(|| "operation denied by security policy".to_string());
-                warn!("[AgentLoop] Security blocked tool {}: {}", tool_call.name, reason_str);
-                // Use a very explicit prefix so the LLM cannot misinterpret this
-                // as a generic error (e.g. "file not found"). The LLM must
-                // understand that the USER or SECURITY POLICY blocked the action.
-                return format!(
-                    "⛔ SECURITY BLOCKED: {} — The user or security policy denied this operation. Do NOT retry. Inform the user that the operation was rejected.",
-                    reason_str
-                );
-            }
-            // P5: guardian (LLM safety judge) review for CRITICAL tools. Runs only
-            // after the rule layers allow, and only for CRITICAL operations (cost
-            // bounded). A Deny verdict blocks; errors/Allow proceed (the guardian
-            // only escalates — rules already denied cases returned above).
-            if security.is_critical_tool(&tool_call.name) {
-                if let Some(judge) = security.judge() {
-                    let req = nemesis_security::guardian::JudgeRequest {
-                        action: tool_call.name.clone(),
-                        risk_level: "critical".to_string(),
-                        transcript: tool_call.arguments.clone(),
-                    };
-                    if let Ok(v) = judge.judge(&req).await {
-                        if v.outcome == nemesis_security::guardian::JudgeOutcome::Deny {
-                            warn!(
-                                "[AgentLoop] Guardian denied critical tool {}: {}",
-                                tool_call.name, v.rationale
-                            );
-                            return format!(
-                                "⛔ GUARDIAN DENIED: {} — The safety judge flagged this critical operation as unsafe. Do NOT retry. Inform the user.",
-                                v.rationale
-                            );
+            if let Some(ref security) = self.security_plugin {
+                let args_value = serde_json::from_str::<serde_json::Value>(&tool_call.arguments)
+                    .unwrap_or(serde_json::Value::Null);
+                let invocation = nemesis_security::types::ToolInvocation {
+                    tool_name: tool_call.name.clone(),
+                    args: args_value,
+                    user: String::new(),
+                    source: context.channel.clone(),
+                    metadata: std::collections::HashMap::new(),
+                };
+                let (allowed, reason) = security.execute(&invocation);
+                if !allowed {
+                    let reason_str =
+                        reason.unwrap_or_else(|| "operation denied by security policy".to_string());
+                    warn!(
+                        "[AgentLoop] Security blocked tool {}: {}",
+                        tool_call.name, reason_str
+                    );
+                    // Use a very explicit prefix so the LLM cannot misinterpret this
+                    // as a generic error (e.g. "file not found"). The LLM must
+                    // understand that the USER or SECURITY POLICY blocked the action.
+                    return format!(
+                        "⛔ SECURITY BLOCKED: {} — The user or security policy denied this operation. Do NOT retry. Inform the user that the operation was rejected.",
+                        reason_str
+                    );
+                }
+                // P5: guardian (LLM safety judge) review for CRITICAL tools. Runs only
+                // after the rule layers allow, and only for CRITICAL operations (cost
+                // bounded). A Deny verdict blocks; errors/Allow proceed (the guardian
+                // only escalates — rules already denied cases returned above).
+                if security.is_critical_tool(&tool_call.name) {
+                    if let Some(judge) = security.judge() {
+                        let req = nemesis_security::guardian::JudgeRequest {
+                            action: tool_call.name.clone(),
+                            risk_level: "critical".to_string(),
+                            transcript: tool_call.arguments.clone(),
+                        };
+                        if let Ok(v) = judge.judge(&req).await {
+                            if v.outcome == nemesis_security::guardian::JudgeOutcome::Deny {
+                                warn!(
+                                    "[AgentLoop] Guardian denied critical tool {}: {}",
+                                    tool_call.name, v.rationale
+                                );
+                                return format!(
+                                    "⛔ GUARDIAN DENIED: {} — The safety judge flagged this critical operation as unsafe. Do NOT retry. Inform the user.",
+                                    v.rationale
+                                );
+                            }
                         }
                     }
                 }
             }
-        }
         }
 
         // Inject channel/chat_id into context-aware tools before execution.
@@ -3628,7 +3852,11 @@ impl AgentLoop {
         let result = match tool_opt {
             Some(tool) => match tool.execute(&tool_call.arguments, context).await {
                 Ok(result) => {
-                    debug!("[AgentLoop] Tool {} returned: {} bytes", tool_call.name, result.len());
+                    debug!(
+                        "[AgentLoop] Tool {} returned: {} bytes",
+                        tool_call.name,
+                        result.len()
+                    );
                     result
                 }
                 Err(err) => {
@@ -3660,7 +3888,8 @@ impl AgentLoop {
                         tool_name: tool_call.name.clone(),
                         input_summary: trunc(&tool_call.arguments),
                         output_summary: trunc(&result),
-                        success: !result.contains("SECURITY BLOCKED") && !result.contains("Tool error:"),
+                        success: !result.contains("SECURITY BLOCKED")
+                            && !result.contains("Tool error:"),
                         duration_ms: tool_start.elapsed().as_millis() as u64,
                         timestamp: chrono::Local::now().to_rfc3339(),
                         session_key: format!("{}:{}", context.channel, context.chat_id),
@@ -3680,7 +3909,11 @@ impl AgentLoop {
     /// the existing unknown-tool path in `handle_tool_call` reports them
     /// (class C, not a schema failure).
     fn check_tool_args(&self, tool_call: &ToolCallInfo) -> crate::args_validator::Outcome {
-        let schema_opt = self.tools.read().get(&tool_call.name).map(|t| t.parameters());
+        let schema_opt = self
+            .tools
+            .read()
+            .get(&tool_call.name)
+            .map(|t| t.parameters());
         match schema_opt {
             Some(schema) => crate::args_validator::check(&schema, &tool_call.arguments),
             None => crate::args_validator::Outcome::Valid,
@@ -3729,13 +3962,11 @@ impl AgentLoop {
             .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
             .map(|v| nemesis_types::capability::resolve_active_tier(&v, &active))
             .unwrap_or_else(|| {
-                nemesis_types::capability::detect_tier(
-                    &nemesis_types::capability::TierHint {
-                        full_model: Some(active.clone()),
-                        real_name: None,
-                        size_b: None,
-                    },
-                )
+                nemesis_types::capability::detect_tier(&nemesis_types::capability::TierHint {
+                    full_model: Some(active.clone()),
+                    real_name: None,
+                    size_b: None,
+                })
             });
         if *self.tier.read() != tier {
             info!(
@@ -3774,9 +4005,7 @@ impl AgentLoop {
             Some(p) => p,
             None => return,
         };
-        let mtime = std::fs::metadata(&path)
-            .and_then(|m| m.modified())
-            .ok();
+        let mtime = std::fs::metadata(&path).and_then(|m| m.modified()).ok();
         {
             let mut last = self.config_mtime.write();
             if mtime == *last {
@@ -3800,7 +4029,9 @@ impl AgentLoop {
     pub fn build_messages(&self, instance: &AgentInstance) -> Vec<LlmMessage> {
         let history = instance.get_history();
 
-        let now = chrono::Local::now().format("%Y-%m-%d %H:%M (%A)").to_string();
+        let now = chrono::Local::now()
+            .format("%Y-%m-%d %H:%M (%A)")
+            .to_string();
         #[cfg(target_os = "windows")]
         let env_hint = "platform: windows\ndefault_shell: cmd\ntime_cmd: use `date /t` or `echo %date% %time%` or PowerShell `Get-Date`";
         #[cfg(not(target_os = "windows"))]
@@ -3862,7 +4093,10 @@ impl AgentLoop {
         if context.channel == "system"
             && content.starts_with(nemesis_types::constants::CLUSTER_CONTINUATION_PREFIX)
         {
-            debug!("[AgentLoop] Cluster continuation message intercepted: {}", content);
+            debug!(
+                "[AgentLoop] Cluster continuation message intercepted: {}",
+                content
+            );
             return (String::new(), String::new(), true);
         }
 
@@ -4108,10 +4342,16 @@ fn truncate_with_tool_pairs(
         let n = retained.len();
         for i in 0..n {
             if retained[i].role == "assistant" && !retained[i].tool_calls.is_empty() {
-                let call_ids: Vec<&str> = retained[i].tool_calls.iter().map(|tc| tc.id.as_str()).collect();
+                let call_ids: Vec<&str> = retained[i]
+                    .tool_calls
+                    .iter()
+                    .map(|tc| tc.id.as_str())
+                    .collect();
                 let has_responses = retained[i + 1..].iter().any(|m| {
                     m.role == "tool"
-                        && m.tool_call_id.as_ref().map_or(false, |id| call_ids.contains(&id.as_str()))
+                        && m.tool_call_id
+                            .as_ref()
+                            .map_or(false, |id| call_ids.contains(&id.as_str()))
                 });
                 if !has_responses {
                     retained[i].tool_calls.clear();
@@ -4166,7 +4406,14 @@ async fn summarize_history_owned(
     let final_summary = if valid_messages.len() > 10 {
         summarize_multipart_owned(&valid_messages, provider, model, observer_manager).await
     } else {
-        summarize_batch_owned(&valid_messages, existing_summary, provider, model, observer_manager).await
+        summarize_batch_owned(
+            &valid_messages,
+            existing_summary,
+            provider,
+            model,
+            observer_manager,
+        )
+        .await
     };
 
     let final_summary = if omitted && !final_summary.is_empty() {
@@ -4284,11 +4531,9 @@ fn block_on_llm_chat(
     messages: Vec<LlmMessage>,
 ) -> Option<Result<LlmResponse, String>> {
     match tokio::runtime::Handle::try_current() {
-        Ok(handle) => {
-            Some(tokio::task::block_in_place(|| {
-                handle.block_on(provider.chat(model, messages, None, vec![]))
-            }))
-        }
+        Ok(handle) => Some(tokio::task::block_in_place(|| {
+            handle.block_on(provider.chat(model, messages, None, vec![]))
+        })),
         Err(_) => {
             let rt = match tokio::runtime::Runtime::new() {
                 Ok(r) => r,
@@ -4405,8 +4650,7 @@ where
 /// The format is `cluster_continuation:{taskID}`.
 #[cfg(test)]
 pub fn extract_continuation_task_id(sender_id: &str) -> Option<&str> {
-    sender_id
-        .strip_prefix(nemesis_types::constants::CLUSTER_CONTINUATION_PREFIX)
+    sender_id.strip_prefix(nemesis_types::constants::CLUSTER_CONTINUATION_PREFIX)
 }
 
 /// Extract a peer identifier from an inbound message.
@@ -4490,13 +4734,20 @@ pub fn resolve_route(input: &RouteInput) -> RouteOutput {
     };
 
     // Parse parent_peer from "kind:id" format.
-    let (parent_peer_kind, parent_peer_id) = input.parent_peer.as_ref().and_then(|pp| {
-        if let Some(colon_pos) = pp.find(':') {
-            Some((Some(pp[..colon_pos].to_string()), Some(pp[colon_pos + 1..].to_string())))
-        } else {
-            None
-        }
-    }).unwrap_or((None, None));
+    let (parent_peer_kind, parent_peer_id) = input
+        .parent_peer
+        .as_ref()
+        .and_then(|pp| {
+            if let Some(colon_pos) = pp.find(':') {
+                Some((
+                    Some(pp[..colon_pos].to_string()),
+                    Some(pp[colon_pos + 1..].to_string()),
+                ))
+            } else {
+                None
+            }
+        })
+        .unwrap_or((None, None));
 
     let route_input = RoutingRouteInput {
         channel: input.channel.clone(),
@@ -4558,10 +4809,7 @@ pub fn format_messages_for_log(messages: &[LlmMessage]) -> String {
             result.push_str("  ToolCalls:\n");
             for tc in tool_calls {
                 let args_preview = truncate(&tc.arguments, 200);
-                result.push_str(&format!(
-                    "    - ID: {}, Name: {}\n",
-                    tc.id, tc.name
-                ));
+                result.push_str(&format!("    - ID: {}, Name: {}\n", tc.id, tc.name));
                 result.push_str(&format!("      Arguments: {}\n", args_preview));
             }
         }

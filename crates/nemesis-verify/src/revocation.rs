@@ -11,7 +11,9 @@
 //!
 //! **soft-fail 默认**：未配置 URL / 拉取失败 → 用旧缓存；无缓存 → `Unknown`（调用方按 soft-fail 放行）。
 
-use crate::{crl_match, hex_util::hex_encode, verify_response, Crl, CrlEntry, RevDim, SignedResponse};
+use crate::{
+    Crl, CrlEntry, RevDim, SignedResponse, crl_match, hex_util::hex_encode, verify_response,
+};
 use anyhow::Result;
 use ed25519_dalek::VerifyingKey;
 use std::sync::{Mutex, OnceLock};

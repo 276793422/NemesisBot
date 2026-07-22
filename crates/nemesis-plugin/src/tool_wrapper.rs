@@ -4,15 +4,18 @@
 //! three-phase plugin interception (pre-check, execute, post-check).
 
 use crate::plugin::{PluginManager, ToolInvocation};
-use std::sync::Arc;
 use parking_lot::Mutex;
+use std::sync::Arc;
 
 /// Trait for executing tools.
 ///
 /// Mirrors Go `ToolExecutor` interface.
 pub trait ToolExecutor: Send + Sync {
     /// Execute the tool with the given arguments.
-    fn execute(&self, args: &serde_json::Map<String, serde_json::Value>) -> Result<serde_json::Value, String>;
+    fn execute(
+        &self,
+        args: &serde_json::Map<String, serde_json::Value>,
+    ) -> Result<serde_json::Value, String>;
 }
 
 /// Wraps a tool with plugin support.
@@ -52,7 +55,10 @@ impl ToolWrapper {
 }
 
 impl ToolExecutor for ToolWrapper {
-    fn execute(&self, args: &serde_json::Map<String, serde_json::Value>) -> Result<serde_json::Value, String> {
+    fn execute(
+        &self,
+        args: &serde_json::Map<String, serde_json::Value>,
+    ) -> Result<serde_json::Value, String> {
         // Create tool invocation for plugin inspection
         let mut invocation = ToolInvocation {
             tool_name: self.tool_name.clone(),
@@ -139,7 +145,10 @@ impl PluginableTool {
 }
 
 impl ToolExecutor for PluginableTool {
-    fn execute(&self, args: &serde_json::Map<String, serde_json::Value>) -> Result<serde_json::Value, String> {
+    fn execute(
+        &self,
+        args: &serde_json::Map<String, serde_json::Value>,
+    ) -> Result<serde_json::Value, String> {
         let wrapper = ToolWrapper::new(
             &self.name,
             self.plugin_mgr.clone(),

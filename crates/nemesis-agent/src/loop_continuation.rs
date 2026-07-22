@@ -153,8 +153,7 @@ impl ContinuationStore {
     pub fn load(&self, task_id: &str) -> std::io::Result<ContinuationSnapshot> {
         let path = self.snapshot_path(task_id);
         let json = std::fs::read_to_string(&path)?;
-        serde_json::from_str(&json)
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))
+        serde_json::from_str(&json).map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))
     }
 
     /// Delete a continuation snapshot from disk.
@@ -162,7 +161,10 @@ impl ContinuationStore {
         let path = self.snapshot_path(task_id);
         if path.exists() {
             if let Err(e) = std::fs::remove_file(&path) {
-                warn!("[Continuation] Failed to delete continuation snapshot {}: {}", task_id, e);
+                warn!(
+                    "[Continuation] Failed to delete continuation snapshot {}: {}",
+                    task_id, e
+                );
             }
         }
     }
@@ -232,7 +234,10 @@ impl ContinuationStore {
 
                     manager.insert_continuation_sync(task_id.clone(), cont_data);
                     recovered += 1;
-                    info!("[Continuation] Recovered continuation snapshot from disk: task_id={}", task_id);
+                    info!(
+                        "[Continuation] Recovered continuation snapshot from disk: task_id={}",
+                        task_id
+                    );
                 }
                 Err(e) => {
                     warn!(
@@ -244,7 +249,10 @@ impl ContinuationStore {
         }
 
         if recovered > 0 {
-            info!("[Continuation] Recovered {} continuation snapshots from disk", recovered);
+            info!(
+                "[Continuation] Recovered {} continuation snapshots from disk",
+                recovered
+            );
         }
 
         recovered
@@ -344,11 +352,13 @@ impl ContinuationManager {
 
         // Step 2: Persist to disk.
         if let Some(ref store) = self.disk_store {
-            let messages_json = serde_json::to_string(&messages)
-                .unwrap_or_else(|e| {
-                    warn!("[Continuation] Failed to serialize messages for continuation: {}", e);
-                    "[]".to_string()
-                });
+            let messages_json = serde_json::to_string(&messages).unwrap_or_else(|e| {
+                warn!(
+                    "[Continuation] Failed to serialize messages for continuation: {}",
+                    e
+                );
+                "[]".to_string()
+            });
             let snapshot = ContinuationSnapshot {
                 task_id: task_id.to_string(),
                 messages: messages_json,
@@ -359,7 +369,10 @@ impl ContinuationManager {
                 created_at: chrono::Local::now().to_rfc3339(),
             };
             if let Err(e) = store.save(&snapshot) {
-                warn!("[Continuation] Failed to persist continuation snapshot to disk: {}", e);
+                warn!(
+                    "[Continuation] Failed to persist continuation snapshot to disk: {}",
+                    e
+                );
             }
         }
 
@@ -418,16 +431,14 @@ impl ContinuationManager {
                     // Double-check after releasing lock (save might have completed).
                     if ready_flag.load(Ordering::Acquire) {
                         let conts = self.continuations.lock().await;
-                        return conts.get(task_id).map(|arc| {
-                            ContinuationData {
-                                messages: arc.messages.clone(),
-                                tool_call_id: arc.tool_call_id.clone(),
-                                channel: arc.channel.clone(),
-                                chat_id: arc.chat_id.clone(),
-                                session_key: arc.session_key.clone(),
-                                ready: arc.ready.clone(),
-                                ready_flag: arc.ready_flag.clone(),
-                            }
+                        return conts.get(task_id).map(|arc| ContinuationData {
+                            messages: arc.messages.clone(),
+                            tool_call_id: arc.tool_call_id.clone(),
+                            channel: arc.channel.clone(),
+                            chat_id: arc.chat_id.clone(),
+                            session_key: arc.session_key.clone(),
+                            ready: arc.ready.clone(),
+                            ready_flag: arc.ready_flag.clone(),
                         });
                     }
 
@@ -450,16 +461,14 @@ impl ContinuationManager {
                     if notified || ready_flag.load(Ordering::Acquire) {
                         // Data is ready. Read it.
                         let conts = self.continuations.lock().await;
-                        return conts.get(task_id).map(|arc| {
-                            ContinuationData {
-                                messages: arc.messages.clone(),
-                                tool_call_id: arc.tool_call_id.clone(),
-                                channel: arc.channel.clone(),
-                                chat_id: arc.chat_id.clone(),
-                                session_key: arc.session_key.clone(),
-                                ready: arc.ready.clone(),
-                                ready_flag: arc.ready_flag.clone(),
-                            }
+                        return conts.get(task_id).map(|arc| ContinuationData {
+                            messages: arc.messages.clone(),
+                            tool_call_id: arc.tool_call_id.clone(),
+                            channel: arc.channel.clone(),
+                            chat_id: arc.chat_id.clone(),
+                            session_key: arc.session_key.clone(),
+                            ready: arc.ready.clone(),
+                            ready_flag: arc.ready_flag.clone(),
                         });
                     } else {
                         warn!(
@@ -534,11 +543,7 @@ impl ContinuationManager {
     ///
     /// Used during disk recovery at startup. Uses `blocking_lock` — safe
     /// during initialisation before any async tasks are competing for the lock.
-    pub fn insert_continuation_sync(
-        &self,
-        task_id: String,
-        data: Arc<ContinuationData>,
-    ) {
+    pub fn insert_continuation_sync(&self, task_id: String, data: Arc<ContinuationData>) {
         self.continuations.blocking_lock().insert(task_id, data);
     }
 }
@@ -575,7 +580,11 @@ pub async fn handle_cluster_continuation<T: ToolLookup>(
     session_store: Option<&SessionStore>,
 ) {
     // Generate trace_id for observer event correlation.
-    let trace_id = format!("continuation-{}-{}", task_id, chrono::Local::now().timestamp_nanos_opt().unwrap_or(0));
+    let trace_id = format!(
+        "continuation-{}-{}",
+        task_id,
+        chrono::Local::now().timestamp_nanos_opt().unwrap_or(0)
+    );
     let start_time = std::time::Instant::now();
 
     // Emit conversation_start observer event.
@@ -587,7 +596,8 @@ pub async fn handle_cluster_continuation<T: ToolLookup>(
             chat_id: String::new(),
             sender_id: "continuation".to_string(),
             content: format!("cluster_continuation:{}", task_id),
-        }.to_conversation_event();
+        }
+        .to_conversation_event();
         mgr.emit_sync(event).await;
     }
     // 1. Load continuation snapshot.
@@ -645,7 +655,8 @@ pub async fn handle_cluster_continuation<T: ToolLookup>(
 
         // Emit LLM request observer event.
         if let Some(ref mgr) = observer_manager {
-            let msg_values: Vec<serde_json::Value> = messages.iter()
+            let msg_values: Vec<serde_json::Value> = messages
+                .iter()
                 .filter_map(|m| serde_json::to_value(m).ok())
                 .collect();
             let event = crate::loop_executor::ObserverEvent::LlmRequest {
@@ -659,7 +670,8 @@ pub async fn handle_cluster_continuation<T: ToolLookup>(
                 provider_name: String::new(),
                 api_key: String::new(),
                 api_base: String::new(),
-            }.to_conversation_event();
+            }
+            .to_conversation_event();
             let mgr = Arc::clone(mgr);
             tokio::spawn(async move { mgr.emit(event).await });
         }
@@ -677,7 +689,9 @@ pub async fn handle_cluster_continuation<T: ToolLookup>(
         // Emit LLM response observer event.
         let round_duration = round_start.elapsed();
         if let Some(ref mgr) = observer_manager {
-            let tc_values: Vec<serde_json::Value> = response.tool_calls.iter()
+            let tc_values: Vec<serde_json::Value> = response
+                .tool_calls
+                .iter()
                 .filter_map(|tc| serde_json::to_value(tc).ok())
                 .collect();
             let tc_count = response.tool_calls.len();
@@ -689,11 +703,16 @@ pub async fn handle_cluster_continuation<T: ToolLookup>(
                 content: response.content.clone(),
                 tool_calls: tc_values,
                 tool_calls_count: tc_count,
-                finish_reason: if response.finished { Some("stop".to_string()) } else { None },
+                finish_reason: if response.finished {
+                    Some("stop".to_string())
+                } else {
+                    None
+                },
                 usage: response.usage.clone(),
                 raw_request_body: response.raw_request_body.take(),
                 raw_response_body: response.raw_response_body.take(),
-            }.to_conversation_event();
+            }
+            .to_conversation_event();
             let mgr = Arc::clone(mgr);
             tokio::spawn(async move { mgr.emit(event).await });
         }
@@ -716,18 +735,16 @@ pub async fn handle_cluster_continuation<T: ToolLookup>(
         // Execute tool calls.
         for tc in &response.tool_calls {
             let tool_start = std::time::Instant::now();
-            let tool_result = execute_tool_for_continuation(
-                tools,
-                tc,
-                &cont_data.channel,
-                &cont_data.chat_id,
-            )
-            .await;
+            let tool_result =
+                execute_tool_for_continuation(tools, tc, &cont_data.channel, &cont_data.chat_id)
+                    .await;
             let tool_duration = tool_start.elapsed();
 
             // Emit tool call observer event.
             if let Some(ref mgr) = observer_manager {
-                let result_str = tool_result.error.clone()
+                let result_str = tool_result
+                    .error
+                    .clone()
                     .unwrap_or_else(|| tool_result.for_llm.clone());
                 let event = crate::loop_executor::ObserverEvent::ToolCall {
                     trace_id: trace_id.clone(),
@@ -737,7 +754,8 @@ pub async fn handle_cluster_continuation<T: ToolLookup>(
                     round: iteration as u32,
                     arguments: tc.arguments.clone(),
                     result: result_str,
-                }.to_conversation_event();
+                }
+                .to_conversation_event();
                 let mgr = Arc::clone(mgr);
                 tokio::spawn(async move { mgr.emit(event).await });
             }
@@ -752,7 +770,10 @@ pub async fn handle_cluster_continuation<T: ToolLookup>(
                     meta: Default::default(),
                 };
                 if let Err(e) = outbound_tx.send(outbound).await {
-                    warn!("[Continuation] Failed to send continuation tool output: {}", e);
+                    warn!(
+                        "[Continuation] Failed to send continuation tool output: {}",
+                        e
+                    );
                 }
             }
 
@@ -825,7 +846,10 @@ pub async fn handle_cluster_continuation<T: ToolLookup>(
             },
         };
         if let Err(e) = outbound_tx.send(outbound).await {
-            warn!("[Continuation] Failed to send continuation final response: {}", e);
+            warn!(
+                "[Continuation] Failed to send continuation final response: {}",
+                e
+            );
         }
 
         info!(
@@ -847,7 +871,8 @@ pub async fn handle_cluster_continuation<T: ToolLookup>(
             content: final_content.clone(),
             channel: cont_data.channel.clone(),
             chat_id: cont_data.chat_id.clone(),
-        }.to_conversation_event();
+        }
+        .to_conversation_event();
         mgr.emit_sync(event).await;
     }
 }

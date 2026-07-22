@@ -62,7 +62,10 @@ fn list_agent_ids() {
 #[test]
 fn default_agent_id_falls_back_to_first() {
     let registry = AgentRegistry::new();
-    registry.register("other".to_string(), AgentInstance::new(test_config("other")));
+    registry.register(
+        "other".to_string(),
+        AgentInstance::new(test_config("other")),
+    );
 
     // "main" doesn't exist, so it falls back to the first agent.
     let default = registry.default_agent_id();
@@ -81,9 +84,7 @@ fn with_agent_executes_closure() {
     let registry = AgentRegistry::new();
     registry.register("test".to_string(), AgentInstance::new(test_config("test")));
 
-    let result = registry.with_agent("test", |instance| {
-        instance.state()
-    });
+    let result = registry.with_agent("test", |instance| instance.state());
     assert_eq!(result, Some(crate::types::AgentState::Idle));
 }
 
@@ -122,7 +123,10 @@ fn can_spawn_subagent_no_allow_list() {
 #[test]
 fn remove_agent() {
     let registry = AgentRegistry::new();
-    registry.register("to_remove".to_string(), AgentInstance::new(test_config("rm")));
+    registry.register(
+        "to_remove".to_string(),
+        AgentInstance::new(test_config("rm")),
+    );
     assert!(registry.contains_agent("to_remove"));
 
     assert!(registry.remove("to_remove"));
@@ -143,9 +147,7 @@ fn with_agent_mut_executes_closure() {
     let registry = AgentRegistry::new();
     registry.register("test".to_string(), AgentInstance::new(test_config("test")));
 
-    let result = registry.with_agent_mut("test", |instance| {
-        instance.state()
-    });
+    let result = registry.with_agent_mut("test", |instance| instance.state());
     assert_eq!(result, Some(crate::types::AgentState::Idle));
 }
 
@@ -179,7 +181,10 @@ fn case_insensitive_subagent_check() {
 #[test]
 fn multiple_agents_default_is_main() {
     let registry = AgentRegistry::new();
-    registry.register("worker".to_string(), AgentInstance::new(test_config("worker")));
+    registry.register(
+        "worker".to_string(),
+        AgentInstance::new(test_config("worker")),
+    );
     registry.register("main".to_string(), AgentInstance::new(test_config("main")));
 
     assert_eq!(registry.default_agent_id(), Some("main".to_string()));
@@ -202,7 +207,10 @@ fn concurrent_access() {
     for i in 0..10 {
         let reg = registry.clone();
         handles.push(thread::spawn(move || {
-            reg.register(format!("agent_{}", i), AgentInstance::new(test_config(&format!("t{}", i))));
+            reg.register(
+                format!("agent_{}", i),
+                AgentInstance::new(test_config(&format!("t{}", i))),
+            );
         }));
     }
 

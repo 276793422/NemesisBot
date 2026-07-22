@@ -144,11 +144,7 @@ impl EmailChannel {
         }
 
         // No angle brackets, check if it looks like an email
-        if from.contains('@') {
-            from
-        } else {
-            ""
-        }
+        if from.contains('@') { from } else { "" }
     }
 
     /// Parses IMAP SEARCH results into sequence numbers.
@@ -330,20 +326,22 @@ impl EmailChannel {
         // For simplicity, we support direct TLS via separate connection
 
         // AUTH LOGIN
-        self.smtp_command(
-            &mut writer,
-            &mut reader,
-            &format!("AUTH LOGIN"),
-        )
-        .await?;
+        self.smtp_command(&mut writer, &mut reader, &format!("AUTH LOGIN"))
+            .await?;
 
         // Send username (base64)
-        let user_b64 = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, self.smtp_username().as_bytes());
+        let user_b64 = base64::Engine::encode(
+            &base64::engine::general_purpose::STANDARD,
+            self.smtp_username().as_bytes(),
+        );
         self.smtp_command(&mut writer, &mut reader, &user_b64)
             .await?;
 
         // Send password (base64)
-        let pass_b64 = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, self.smtp_password().as_bytes());
+        let pass_b64 = base64::Engine::encode(
+            &base64::engine::general_purpose::STANDARD,
+            self.smtp_password().as_bytes(),
+        );
         self.smtp_command(&mut writer, &mut reader, &pass_b64)
             .await?;
 
@@ -356,12 +354,8 @@ impl EmailChannel {
         .await?;
 
         // RCPT TO
-        self.smtp_command(
-            &mut writer,
-            &mut reader,
-            &format!("RCPT TO:<{to}>"),
-        )
-        .await?;
+        self.smtp_command(&mut writer, &mut reader, &format!("RCPT TO:<{to}>"))
+            .await?;
 
         // DATA
         self.smtp_command(&mut writer, &mut reader, "DATA").await?;
@@ -387,27 +381,18 @@ impl EmailChannel {
             .map_err(|e| NemesisError::Channel(format!("SMTP read DATA response failed: {e}")))?;
 
         if !buf.starts_with("250") {
-            return Err(NemesisError::Channel(format!(
-                "SMTP DATA rejected: {buf}"
-            )));
+            return Err(NemesisError::Channel(format!("SMTP DATA rejected: {buf}")));
         }
 
         // QUIT
-        let _ = self
-            .smtp_command(&mut writer, &mut reader, "QUIT")
-            .await;
+        let _ = self.smtp_command(&mut writer, &mut reader, "QUIT").await;
 
         debug!(to = %to, "[EmailChannel] SMTP email sent successfully");
         Ok(())
     }
 
     /// Sends an SMTP command and reads the response.
-    async fn smtp_command<W, R>(
-        &self,
-        writer: &mut W,
-        reader: &mut R,
-        command: &str,
-    ) -> Result<()>
+    async fn smtp_command<W, R>(&self, writer: &mut W, reader: &mut R, command: &str) -> Result<()>
     where
         W: AsyncWriteExt + Unpin,
         R: AsyncBufReadExt + Unpin,
@@ -505,9 +490,8 @@ impl EmailChannel {
         let sender_map = self.sender_map.clone();
 
         tokio::spawn(async move {
-            let mut interval = tokio::time::interval(std::time::Duration::from_secs(
-                config.poll_interval,
-            ));
+            let mut interval =
+                tokio::time::interval(std::time::Duration::from_secs(config.poll_interval));
             let mut rx = rx;
 
             loop {
@@ -679,9 +663,7 @@ impl ImapConnection {
                 if line.contains("OK") {
                     return Ok(responses);
                 }
-                return Err(NemesisError::Channel(format!(
-                    "IMAP error: {line}"
-                )));
+                return Err(NemesisError::Channel(format!("IMAP error: {line}")));
             }
             responses.push(line);
         }

@@ -26,7 +26,11 @@ fn test_extract_ip_from_addr_bare() {
 
 #[test]
 fn test_is_same_subnet_match() {
-    assert!(is_same_subnet("192.168.1.10", "192.168.1.20", "255.255.255.0"));
+    assert!(is_same_subnet(
+        "192.168.1.10",
+        "192.168.1.20",
+        "255.255.255.0"
+    ));
 }
 
 #[test]
@@ -64,7 +68,10 @@ fn test_rate_limiter_release() {
 #[test]
 fn test_select_best_address_single() {
     let client = RpcClient::new();
-    assert_eq!(client.select_best_address(&["10.0.0.1:9000".into()]), "10.0.0.1:9000");
+    assert_eq!(
+        client.select_best_address(&["10.0.0.1:9000".into()]),
+        "10.0.0.1:9000"
+    );
 }
 
 #[test]
@@ -217,7 +224,9 @@ async fn test_call_with_timeout_peer_not_found() {
         target: Some("node-b".into()),
     };
 
-    let result = client.call_with_timeout("node-b", request, Duration::from_secs(5)).await;
+    let result = client
+        .call_with_timeout("node-b", request, Duration::from_secs(5))
+        .await;
     assert!(result.is_err());
 }
 
@@ -252,7 +261,9 @@ async fn test_call_online_peer_connection_refused() {
     };
 
     // Port 9999 is unlikely to be in use, should get connection refused
-    let result = client.call_with_timeout("node-b", request, Duration::from_secs(3)).await;
+    let result = client
+        .call_with_timeout("node-b", request, Duration::from_secs(3))
+        .await;
     assert!(result.is_err());
 }
 
@@ -349,10 +360,7 @@ fn test_extract_ip_from_addr_invalid() {
 #[test]
 fn test_select_best_address_all_loopback() {
     let client = RpcClient::new();
-    let addrs = vec![
-        "127.0.0.1:9000".into(),
-        "127.0.0.1:9001".into(),
-    ];
+    let addrs = vec!["127.0.0.1:9000".into(), "127.0.0.1:9001".into()];
     let best = client.select_best_address(&addrs);
     // Should pick one of them (first loopback when all are loopback)
     assert!(!best.is_empty());
@@ -360,14 +368,9 @@ fn test_select_best_address_all_loopback() {
 
 #[test]
 fn test_select_best_address_with_resolver_no_interfaces() {
-    let resolver = Arc::new(MockResolver {
-        interfaces: vec![],
-    });
+    let resolver = Arc::new(MockResolver { interfaces: vec![] });
     let client = RpcClient::with_resolver(resolver);
-    let addrs = vec![
-        "10.0.0.1:9000".into(),
-        "192.168.1.1:9000".into(),
-    ];
+    let addrs = vec!["10.0.0.1:9000".into(), "192.168.1.1:9000".into()];
     let best = client.select_best_address(&addrs);
     // Without interfaces, should pick first non-loopback
     assert_eq!(best, "10.0.0.1:9000");
@@ -375,7 +378,11 @@ fn test_select_best_address_with_resolver_no_interfaces() {
 
 #[test]
 fn test_is_same_subnet_same_ip() {
-    assert!(is_same_subnet("192.168.1.10", "192.168.1.10", "255.255.255.0"));
+    assert!(is_same_subnet(
+        "192.168.1.10",
+        "192.168.1.10",
+        "255.255.255.0"
+    ));
 }
 
 #[test]
@@ -385,7 +392,11 @@ fn test_is_same_subnet_wide_mask() {
 
 #[test]
 fn test_is_same_subnet_narrow_mask() {
-    assert!(!is_same_subnet("192.168.1.1", "192.168.2.1", "255.255.255.255"));
+    assert!(!is_same_subnet(
+        "192.168.1.1",
+        "192.168.2.1",
+        "255.255.255.255"
+    ));
 }
 
 #[test]
@@ -523,10 +534,7 @@ async fn test_call_with_timeout_connection_refused() {
 #[test]
 fn test_select_best_address_two_addresses() {
     let client = RpcClient::new();
-    let addrs = vec![
-        "10.0.0.1:9000".into(),
-        "192.168.1.1:9000".into(),
-    ];
+    let addrs = vec!["10.0.0.1:9000".into(), "192.168.1.1:9000".into()];
     // With no resolver, should return first address
     let best = client.select_best_address(&addrs);
     assert_eq!(best, "10.0.0.1:9000");

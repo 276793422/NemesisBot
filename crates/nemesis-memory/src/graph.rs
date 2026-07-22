@@ -120,7 +120,12 @@ pub trait GraphStore: Send + Sync {
     async fn upsert_entity(&self, entity: GraphEntity) -> Result<(), String>;
 
     /// Remove a specific triple.
-    async fn remove_triple(&self, subject: &str, predicate: &str, object: &str) -> Result<bool, String>;
+    async fn remove_triple(
+        &self,
+        subject: &str,
+        predicate: &str,
+        object: &str,
+    ) -> Result<bool, String>;
 
     /// Look up an entity by name.
     async fn get_entity(&self, name: &str) -> Result<Option<GraphEntity>, String>;
@@ -603,9 +608,7 @@ impl GraphStore for InMemoryGraphStore {
         for entry in self.triples_by_subject.iter() {
             for t in entry.value().iter() {
                 if seen.insert((t.subject.clone(), t.predicate.clone(), t.object.clone())) {
-                    if !subject.is_empty()
-                        && t.subject.to_lowercase() != subject.to_lowercase()
-                    {
+                    if !subject.is_empty() && t.subject.to_lowercase() != subject.to_lowercase() {
                         continue;
                     }
                     if !predicate.is_empty()
@@ -613,9 +616,7 @@ impl GraphStore for InMemoryGraphStore {
                     {
                         continue;
                     }
-                    if !object.is_empty()
-                        && t.object.to_lowercase() != object.to_lowercase()
-                    {
+                    if !object.is_empty() && t.object.to_lowercase() != object.to_lowercase() {
                         continue;
                     }
                     results.push(t.clone());

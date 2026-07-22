@@ -61,7 +61,10 @@ impl MessageBus {
         let channel_name = msg.channel.clone();
         if let Err(err) = self.inbound_tx.send(msg) {
             self.inbound_dropped.fetch_add(1, Ordering::Relaxed);
-            warn!("[Bus] publish_inbound: failed to send inbound message: {}", err);
+            warn!(
+                "[Bus] publish_inbound: failed to send inbound message: {}",
+                err
+            );
         } else {
             debug!("[Bus] Published inbound message, channel={}", channel_name);
         }
@@ -89,7 +92,10 @@ impl MessageBus {
         let channel_name = msg.channel.clone();
         if let Err(err) = self.outbound_tx.send(msg) {
             self.outbound_dropped.fetch_add(1, Ordering::Relaxed);
-            warn!("[Bus] publish_outbound: failed to send outbound message: {}", err);
+            warn!(
+                "[Bus] publish_outbound: failed to send outbound message: {}",
+                err
+            );
         } else {
             debug!("[Bus] Published outbound message, channel={}", channel_name);
         }
@@ -121,7 +127,10 @@ impl MessageBus {
     /// fan-out concern as `subscribe_inbound`.
     pub fn subscribe_outbound(&self) -> broadcast::Receiver<OutboundMessage> {
         let existing = self.outbound_tx.receiver_count();
-        info!("[Bus] New outbound subscriber, total receivers={}", existing);
+        info!(
+            "[Bus] New outbound subscriber, total receivers={}",
+            existing
+        );
         if existing > 0 {
             warn!(
                 existing_receivers = existing,

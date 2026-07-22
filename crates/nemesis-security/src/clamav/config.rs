@@ -37,9 +37,7 @@ pub fn generate_clamd_config(cfg: &DaemonConfig) -> Result<(), String> {
         fs::create_dir_all(parent).map_err(|e| format!("create config dir: {}", e))?;
     }
 
-    let mut lines = vec![
-        "# Auto-generated clamd.conf for NemesisBot".to_string(),
-    ];
+    let mut lines = vec!["# Auto-generated clamd.conf for NemesisBot".to_string()];
 
     // Parse listen address
     let (host, port) = if cfg.listen_addr.is_empty() {
@@ -58,11 +56,17 @@ pub fn generate_clamd_config(cfg: &DaemonConfig) -> Result<(), String> {
     lines.push(String::new());
 
     if !cfg.database_dir.is_empty() {
-        lines.push(format!("DatabaseDirectory {}", cfg.database_dir.replace('\\', "/")));
+        lines.push(format!(
+            "DatabaseDirectory {}",
+            cfg.database_dir.replace('\\', "/")
+        ));
     }
 
     if !cfg.temp_dir.is_empty() {
-        lines.push(format!("TemporaryDirectory {}", cfg.temp_dir.replace('\\', "/")));
+        lines.push(format!(
+            "TemporaryDirectory {}",
+            cfg.temp_dir.replace('\\', "/")
+        ));
     }
 
     lines.extend([
@@ -111,9 +115,7 @@ pub fn generate_freshclam_config(db_dir: &str, config_file: &str) -> Result<(), 
         fs::create_dir_all(parent).map_err(|e| format!("create config dir: {}", e))?;
     }
 
-    let mut lines = vec![
-        "# Auto-generated freshclam.conf for NemesisBot".to_string(),
-    ];
+    let mut lines = vec!["# Auto-generated freshclam.conf for NemesisBot".to_string()];
 
     if !db_dir.is_empty() {
         lines.push(format!("DatabaseDirectory {}", db_dir.replace('\\', "/")));

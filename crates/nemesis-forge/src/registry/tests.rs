@@ -110,7 +110,12 @@ fn test_list_with_status_filter() {
     // Filter by status only
     assert_eq!(registry.list(None, Some(ArtifactStatus::Active)).len(), 1);
     // Filter by both
-    assert_eq!(registry.list(Some(ArtifactKind::Skill), Some(ArtifactStatus::Active)).len(), 1);
+    assert_eq!(
+        registry
+            .list(Some(ArtifactKind::Skill), Some(ArtifactStatus::Active))
+            .len(),
+        1
+    );
     // No filter
     assert_eq!(registry.list(None, None).len(), 3);
 }
@@ -175,7 +180,11 @@ fn test_find_by_name_wrong_kind() {
 #[test]
 fn test_find_by_name_nonexistent() {
     let registry = Registry::new(RegistryConfig::default());
-    assert!(registry.find_by_name("ghost", ArtifactKind::Skill).is_none());
+    assert!(
+        registry
+            .find_by_name("ghost", ArtifactKind::Skill)
+            .is_none()
+    );
 }
 
 #[test]
@@ -229,8 +238,16 @@ fn test_add_same_name_different_kind() {
     registry.add(a1);
     registry.add(a2);
     assert_eq!(registry.len(), 2);
-    assert!(registry.find_by_name("shared-name", ArtifactKind::Skill).is_some());
-    assert!(registry.find_by_name("shared-name", ArtifactKind::Script).is_some());
+    assert!(
+        registry
+            .find_by_name("shared-name", ArtifactKind::Skill)
+            .is_some()
+    );
+    assert!(
+        registry
+            .find_by_name("shared-name", ArtifactKind::Script)
+            .is_some()
+    );
 }
 
 #[test]
@@ -331,20 +348,33 @@ async fn test_fd3_registry_load_restores_artifacts() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("registry.json");
     let artifact = Artifact {
-        id: "skill-persisted".into(), name: "persisted".into(),
-        kind: ArtifactKind::Skill, version: "1.0".into(),
-        status: ArtifactStatus::Active, content: "...".into(), tool_signature: vec![],
+        id: "skill-persisted".into(),
+        name: "persisted".into(),
+        kind: ArtifactKind::Skill,
+        version: "1.0".into(),
+        status: ArtifactStatus::Active,
+        content: "...".into(),
+        tool_signature: vec![],
         created_at: "2026-01-01T00:00:00+08:00".into(),
         updated_at: "2026-01-01T00:00:00+08:00".into(),
-        usage_count: 0, last_degraded_at: None, success_rate: 0.0,
+        usage_count: 0,
+        last_degraded_at: None,
+        success_rate: 0.0,
         consecutive_observing_rounds: 0,
     };
-    std::fs::write(&path, serde_json::to_string_pretty(&vec![artifact]).unwrap()).unwrap();
+    std::fs::write(
+        &path,
+        serde_json::to_string_pretty(&vec![artifact]).unwrap(),
+    )
+    .unwrap();
     let registry = Registry::new(RegistryConfig {
         index_path: path.to_string_lossy().to_string(),
     });
     registry.load().await.unwrap();
-    assert!(registry.get("skill-persisted").is_some(), "load() should restore prior artifacts (F-D3)");
+    assert!(
+        registry.get("skill-persisted").is_some(),
+        "load() should restore prior artifacts (F-D3)"
+    );
 }
 
 #[tokio::test]
@@ -459,7 +489,10 @@ fn test_list_all_statuses() {
 
     assert_eq!(registry.list(None, Some(ArtifactStatus::Draft)).len(), 1);
     assert_eq!(registry.list(None, Some(ArtifactStatus::Active)).len(), 1);
-    assert_eq!(registry.list(None, Some(ArtifactStatus::Observing)).len(), 1);
+    assert_eq!(
+        registry.list(None, Some(ArtifactStatus::Observing)).len(),
+        1
+    );
     assert_eq!(registry.list(None, Some(ArtifactStatus::Degraded)).len(), 1);
 }
 

@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use tracing::debug;
 
 use nemesis_security::signature::{
-    generate_key_pair, SignatureVerifier, SkillVerification, TrustLevel, TrustStore,
+    SignatureVerifier, SkillVerification, TrustLevel, TrustStore, generate_key_pair,
 };
 
 use nemesis_types::error::{NemesisError, Result};
@@ -89,8 +89,8 @@ impl SkillSigner {
             "signature": signature_hex,
             "files": manifest.files,
         });
-        let sig_json = serde_json::to_string_pretty(&sig_data)
-            .map_err(|e| NemesisError::Serialization(e))?;
+        let sig_json =
+            serde_json::to_string_pretty(&sig_data).map_err(|e| NemesisError::Serialization(e))?;
         std::fs::write(&sig_path, sig_json).map_err(|e| NemesisError::Io(e))?;
 
         debug!("Signed skill at {}", skill_path);
@@ -125,19 +125,15 @@ impl SkillSigner {
             .map_err(|e| NemesisError::Io(e))
             .and_then(|s| serde_json::from_str(&s).map_err(|e| NemesisError::Serialization(e)))?;
 
-        let public_key = sig_data["public_key"]
-            .as_str()
-            .unwrap_or("")
-            .to_string();
-        let signature = sig_data["signature"]
-            .as_str()
-            .unwrap_or("")
-            .to_string();
+        let public_key = sig_data["public_key"].as_str().unwrap_or("").to_string();
+        let signature = sig_data["signature"].as_str().unwrap_or("").to_string();
 
         // Rebuild manifest content for verification (same method as sign_skill).
         let manifest = self.build_manifest(skill_dir)?;
 
-        Ok(self.verifier.verify_skill(&manifest.content, &signature, &public_key))
+        Ok(self
+            .verifier
+            .verify_skill(&manifest.content, &signature, &public_key))
     }
 
     /// Generate a new Ed25519 key pair and save to output directory.
@@ -168,8 +164,8 @@ impl SkillSigner {
             algorithm: "ed25519".to_string(),
         };
         let meta_path = out_path.join("skill_sign.meta.json");
-        let meta_json = serde_json::to_string_pretty(&metadata)
-            .map_err(|e| NemesisError::Serialization(e))?;
+        let meta_json =
+            serde_json::to_string_pretty(&metadata).map_err(|e| NemesisError::Serialization(e))?;
         std::fs::write(&meta_path, meta_json).map_err(|e| NemesisError::Io(e))?;
 
         debug!("Generated key pair in {}", output_dir);
@@ -211,7 +207,7 @@ impl SkillSigner {
         files: &mut Vec<FileEntry>,
         combined: &mut String,
     ) -> std::result::Result<(), NemesisError> {
-        use sha2::{Sha256, Digest};
+        use sha2::{Digest, Sha256};
         let entries = std::fs::read_dir(current).map_err(|e| NemesisError::Io(e))?;
         for entry in entries {
             let entry = entry.map_err(|e| NemesisError::Io(e))?;
@@ -275,7 +271,7 @@ struct SkillManifest {
 
 /// Compute a SHA-256 fingerprint of the public key.
 fn compute_public_key_fingerprint(public_key: &str) -> String {
-    use sha2::{Sha256, Digest};
+    use sha2::{Digest, Sha256};
     let mut hasher = Sha256::new();
     hasher.update(public_key.as_bytes());
     format!("{:x}", hasher.finalize())

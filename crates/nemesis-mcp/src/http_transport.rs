@@ -68,9 +68,14 @@ impl Transport for HttpTransport {
             return Err(TransportError::not_connected());
         }
 
-        let effective_timeout = if timeout_ms == 0 { 30_000u64 } else { timeout_ms };
+        let effective_timeout = if timeout_ms == 0 {
+            30_000u64
+        } else {
+            timeout_ms
+        };
 
-        let mut req = self.client
+        let mut req = self
+            .client
             .post(&self.url)
             .timeout(Duration::from_millis(effective_timeout))
             .header("Content-Type", "application/json")
@@ -124,10 +129,9 @@ impl Transport for HttpTransport {
         if content_type.contains("text/event-stream") {
             parse_sse_response(response).await
         } else {
-            let body = response
-                .text()
-                .await
-                .map_err(|e| TransportError::send_failed(format!("Failed to read response: {}", e)))?;
+            let body = response.text().await.map_err(|e| {
+                TransportError::send_failed(format!("Failed to read response: {}", e))
+            })?;
             let trimmed = body.trim();
             if trimmed.is_empty() {
                 let id = request.id.clone().unwrap_or(serde_json::Value::Null);
@@ -185,9 +189,7 @@ async fn parse_sse_response(
                 if !trimmed.is_empty() {
                     return extract_sse_data(trimmed);
                 }
-                return Err(TransportError::send_failed(
-                    "SSE stream ended without data",
-                ));
+                return Err(TransportError::send_failed("SSE stream ended without data"));
             }
         }
     }
@@ -218,9 +220,8 @@ fn extract_sse_data(event_text: &str) -> Result<TransportResponse, TransportErro
     }
 
     let json_str = data_lines.join("\n");
-    serde_json::from_str(&json_str).map_err(|e| {
-        TransportError::send_failed(format!("Failed to parse SSE data: {}", e))
-    })
+    serde_json::from_str(&json_str)
+        .map_err(|e| TransportError::send_failed(format!("Failed to parse SSE data: {}", e)))
 }
 
 // ===========================================================================

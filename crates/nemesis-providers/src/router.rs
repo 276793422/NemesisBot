@@ -7,8 +7,8 @@ use dashmap::DashMap;
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 /// Selection policy.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -47,12 +47,21 @@ pub struct PolicyConfig {
 /// reference models by simple names like "fast" or "smart".
 pub fn default_aliases() -> HashMap<String, String> {
     let mut map = HashMap::new();
-    map.insert("fast".to_string(), "groq/llama-3.3-70b-versatile".to_string());
-    map.insert("smart".to_string(), "anthropic/claude-sonnet-4-20250514".to_string());
+    map.insert(
+        "fast".to_string(),
+        "groq/llama-3.3-70b-versatile".to_string(),
+    );
+    map.insert(
+        "smart".to_string(),
+        "anthropic/claude-sonnet-4-20250514".to_string(),
+    );
     map.insert("cheap".to_string(), "deepseek/deepseek-chat".to_string());
     map.insert("local".to_string(), "ollama/llama3.3".to_string());
     map.insert("reasoning".to_string(), "openai/o3-mini".to_string());
-    map.insert("code".to_string(), "anthropic/claude-sonnet-4-20250514".to_string());
+    map.insert(
+        "code".to_string(),
+        "anthropic/claude-sonnet-4-20250514".to_string(),
+    );
     map
 }
 
@@ -94,12 +103,21 @@ fn predefined_policies() -> HashMap<String, PolicyConfig> {
         policy: Policy::Quality,
         weights: PolicyWeights { cost: 0.33, quality: 0.34, latency: 0.33 },
     });
-    map.insert("cheap".to_string(), PolicyConfig {
-        name: "cheap".to_string(),
-        description: "Optimize for lowest cost. Always selects the cheapest provider per 1K tokens.".to_string(),
-        policy: Policy::Cost,
-        weights: PolicyWeights { cost: 1.0, quality: 0.0, latency: 0.0 },
-    });
+    map.insert(
+        "cheap".to_string(),
+        PolicyConfig {
+            name: "cheap".to_string(),
+            description:
+                "Optimize for lowest cost. Always selects the cheapest provider per 1K tokens."
+                    .to_string(),
+            policy: Policy::Cost,
+            weights: PolicyWeights {
+                cost: 1.0,
+                quality: 0.0,
+                latency: 0.0,
+            },
+        },
+    );
     map.insert("best".to_string(), PolicyConfig {
         name: "best".to_string(),
         description: "Optimize for highest quality. Always selects the provider with the highest quality score.".to_string(),
@@ -116,7 +134,10 @@ pub fn get_policy(name: &str) -> PolicyConfig {
     let policies = predefined_policies();
     match policies.get(name) {
         Some(p) => p.clone(),
-        None => policies.get("balanced").expect("balanced always exists").clone(),
+        None => policies
+            .get("balanced")
+            .expect("balanced always exists")
+            .clone(),
     }
 }
 
@@ -143,7 +164,10 @@ impl Default for RouterConfig {
     fn default() -> Self {
         let mut aliases = HashMap::new();
         aliases.insert("fast".to_string(), "groq/llama-3".to_string());
-        aliases.insert("smart".to_string(), "anthropic/claude-sonnet-4-6".to_string());
+        aliases.insert(
+            "smart".to_string(),
+            "anthropic/claude-sonnet-4-6".to_string(),
+        );
         aliases.insert("cheap".to_string(), "deepseek/deepseek-chat".to_string());
         aliases.insert("local".to_string(), "ollama/llama3".to_string());
         Self {
@@ -233,7 +257,10 @@ impl MetricsCollector {
 
     /// Record a metric sample.
     pub fn record(&self, metric: Metric) {
-        let mut entry = self.samples.entry(metric.provider.clone()).or_insert_with(Vec::new);
+        let mut entry = self
+            .samples
+            .entry(metric.provider.clone())
+            .or_insert_with(Vec::new);
         if entry.len() >= self.max_per_provider {
             entry.remove(0);
         }
@@ -245,10 +272,12 @@ impl MetricsCollector {
         let entry = self.samples.get(provider);
         let samples = match entry {
             Some(s) => s,
-            None => return ProviderMetrics {
-                provider: provider.to_string(),
-                ..Default::default()
-            },
+            None => {
+                return ProviderMetrics {
+                    provider: provider.to_string(),
+                    ..Default::default()
+                };
+            }
         };
 
         if samples.is_empty() {
@@ -270,7 +299,11 @@ impl MetricsCollector {
             success_rate: successes as f64 / total as f64,
             total_requests: total,
             total_failures: total - successes as i64,
-            avg_cost_per_1k: if total_tokens > 0 { total_cost / (total_tokens as f64 / 1000.0) } else { 0.0 },
+            avg_cost_per_1k: if total_tokens > 0 {
+                total_cost / (total_tokens as f64 / 1000.0)
+            } else {
+                0.0
+            },
         }
     }
 
@@ -290,7 +323,8 @@ impl MetricsCollector {
 
     /// Prune (remove) samples older than the given duration from all providers.
     pub fn prune(&self, older_than: std::time::Duration) {
-        let cutoff = chrono::Local::now() - chrono::Duration::from_std(older_than).unwrap_or(chrono::Duration::seconds(0));
+        let cutoff = chrono::Local::now()
+            - chrono::Duration::from_std(older_than).unwrap_or(chrono::Duration::seconds(0));
         let providers: Vec<String> = self.samples.iter().map(|e| e.key().clone()).collect();
         for provider in providers {
             if let Some(mut entry) = self.samples.get_mut(&provider) {
@@ -425,26 +459,45 @@ impl Router {
     /// Internal selection by policy applied to a slice of matching candidates.
     fn select_by_policy(&self, policy: &Policy, matching: &[&Candidate]) -> Option<Candidate> {
         match policy {
-            Policy::Cost => matching.iter().min_by(|a, b| a.cost_per_1k.partial_cmp(&b.cost_per_1k).unwrap()).cloned().cloned(),
-            Policy::Quality => matching.iter().max_by(|a, b| a.quality_score.partial_cmp(&b.quality_score).unwrap()).cloned().cloned(),
+            Policy::Cost => matching
+                .iter()
+                .min_by(|a, b| a.cost_per_1k.partial_cmp(&b.cost_per_1k).unwrap())
+                .cloned()
+                .cloned(),
+            Policy::Quality => matching
+                .iter()
+                .max_by(|a, b| a.quality_score.partial_cmp(&b.quality_score).unwrap())
+                .cloned()
+                .cloned(),
             Policy::Latency => {
                 let metrics = self.metrics.clone();
-                matching.iter().min_by(|a, b| {
-                    let ma = metrics.get_metrics(&a.provider);
-                    let mb = metrics.get_metrics(&b.provider);
-                    ma.avg_latency_ms.partial_cmp(&mb.avg_latency_ms).unwrap()
-                }).cloned().cloned()
+                matching
+                    .iter()
+                    .min_by(|a, b| {
+                        let ma = metrics.get_metrics(&a.provider);
+                        let mb = metrics.get_metrics(&b.provider);
+                        ma.avg_latency_ms.partial_cmp(&mb.avg_latency_ms).unwrap()
+                    })
+                    .cloned()
+                    .cloned()
             }
             Policy::RoundRobin => {
                 if let Some(first) = matching.first() {
-                    let counter = self.rr_counters.entry(first.provider.clone()).or_insert_with(|| AtomicU64::new(0));
+                    let counter = self
+                        .rr_counters
+                        .entry(first.provider.clone())
+                        .or_insert_with(|| AtomicU64::new(0));
                     let idx = counter.fetch_add(1, Ordering::Relaxed) as usize % matching.len();
                     Some(matching[idx].clone())
                 } else {
                     None
                 }
             }
-            Policy::Fallback => matching.iter().max_by(|a, b| a.priority.cmp(&b.priority)).cloned().cloned(),
+            Policy::Fallback => matching
+                .iter()
+                .max_by(|a, b| a.priority.cmp(&b.priority))
+                .cloned()
+                .cloned(),
         }
     }
 
@@ -483,14 +536,19 @@ impl Router {
         if let Some(candidate) = self.select(&resolved) {
             if let Some(provider) = self.providers.get(&candidate.provider) {
                 let start = std::time::Instant::now();
-                match provider.chat(messages, tools, &candidate.model, options).await {
+                match provider
+                    .chat(messages, tools, &candidate.model, options)
+                    .await
+                {
                     Ok(resp) => {
                         self.metrics.record(Metric {
                             provider: candidate.provider.clone(),
                             latency_ms: start.elapsed().as_millis() as u64,
                             success: true,
                             tokens_used: resp.usage.as_ref().map(|u| u.total_tokens).unwrap_or(0),
-                            cost: candidate.cost_per_1k * resp.usage.as_ref().map(|u| u.total_tokens).unwrap_or(0) as f64 / 1000.0,
+                            cost: candidate.cost_per_1k
+                                * resp.usage.as_ref().map(|u| u.total_tokens).unwrap_or(0) as f64
+                                / 1000.0,
                             timestamp: chrono::Local::now(),
                         });
                         return Ok(resp);
@@ -513,7 +571,10 @@ impl Router {
                         if e.is_retriable() {
                             // Try fallback candidates
                             let candidates = self.candidates.read();
-                            for alt in candidates.iter().filter(|c| c.model == resolved && c.provider != candidate.provider) {
+                            for alt in candidates
+                                .iter()
+                                .filter(|c| c.model == resolved && c.provider != candidate.provider)
+                            {
                                 if let Some(alt_provider) = self.providers.get(&alt.provider) {
                                     tracing::warn!(
                                         from_provider = %candidate.provider,
@@ -521,7 +582,10 @@ impl Router {
                                         model = %alt.model,
                                         "[Provider] Fallback triggered"
                                     );
-                                    match alt_provider.chat(messages, tools, &alt.model, options).await {
+                                    match alt_provider
+                                        .chat(messages, tools, &alt.model, options)
+                                        .await
+                                    {
                                         Ok(resp) => return Ok(resp),
                                         Err(_) => continue,
                                     }

@@ -24,10 +24,13 @@ fn test_add_menu_item_and_trigger() {
 
     let invoked = Arc::new(AtomicUsize::new(0));
     let invoked_clone = invoked.clone();
-    tray.on_click("quit", Arc::new(move |action| {
-        assert_eq!(action, TrayAction::Quit);
-        invoked_clone.fetch_add(1, Ordering::SeqCst);
-    }));
+    tray.on_click(
+        "quit",
+        Arc::new(move |action| {
+            assert_eq!(action, TrayAction::Quit);
+            invoked_clone.fetch_add(1, Ordering::SeqCst);
+        }),
+    );
 
     assert!(tray.trigger_action("quit"));
     assert_eq!(invoked.load(Ordering::SeqCst), 1);
@@ -60,10 +63,13 @@ fn test_trigger_known_actions_with_callbacks() {
     let quit_count = Arc::new(AtomicUsize::new(0));
     let quit_clone = quit_count.clone();
 
-    tray.on_click("quit", Arc::new(move |action| {
-        assert_eq!(action, TrayAction::Quit);
-        quit_clone.fetch_add(1, Ordering::SeqCst);
-    }));
+    tray.on_click(
+        "quit",
+        Arc::new(move |action| {
+            assert_eq!(action, TrayAction::Quit);
+            quit_clone.fetch_add(1, Ordering::SeqCst);
+        }),
+    );
 
     assert!(tray.trigger_action("quit"));
     assert_eq!(quit_count.load(Ordering::SeqCst), 1);
@@ -90,10 +96,22 @@ fn test_menu_item_disabled() {
 
 #[test]
 fn test_tray_action_from_menu_id_all() {
-    assert_eq!(TrayAction::from_menu_id("start"), Some(TrayAction::StartService));
-    assert_eq!(TrayAction::from_menu_id("stop"), Some(TrayAction::StopService));
-    assert_eq!(TrayAction::from_menu_id("webui"), Some(TrayAction::OpenWebUI));
-    assert_eq!(TrayAction::from_menu_id("version"), Some(TrayAction::Version));
+    assert_eq!(
+        TrayAction::from_menu_id("start"),
+        Some(TrayAction::StartService)
+    );
+    assert_eq!(
+        TrayAction::from_menu_id("stop"),
+        Some(TrayAction::StopService)
+    );
+    assert_eq!(
+        TrayAction::from_menu_id("webui"),
+        Some(TrayAction::OpenWebUI)
+    );
+    assert_eq!(
+        TrayAction::from_menu_id("version"),
+        Some(TrayAction::Version)
+    );
     assert_eq!(TrayAction::from_menu_id("quit"), Some(TrayAction::Quit));
 }
 
@@ -120,7 +138,13 @@ fn test_tray_action_serialization() {
 
 #[test]
 fn test_tray_action_all_variants_serde() {
-    for action in [TrayAction::StartService, TrayAction::StopService, TrayAction::OpenWebUI, TrayAction::Version, TrayAction::Quit] {
+    for action in [
+        TrayAction::StartService,
+        TrayAction::StopService,
+        TrayAction::OpenWebUI,
+        TrayAction::Version,
+        TrayAction::Quit,
+    ] {
         let json = serde_json::to_string(&action).unwrap();
         let parsed: TrayAction = serde_json::from_str(&json).unwrap();
         assert_eq!(action, parsed);
@@ -181,9 +205,19 @@ fn test_trigger_action_multiple_callbacks() {
     let count = Arc::new(AtomicUsize::new(0));
 
     let c1 = count.clone();
-    tray.on_click("start", Arc::new(move |_| { c1.fetch_add(1, Ordering::SeqCst); }));
+    tray.on_click(
+        "start",
+        Arc::new(move |_| {
+            c1.fetch_add(1, Ordering::SeqCst);
+        }),
+    );
     let c2 = count.clone();
-    tray.on_click("stop", Arc::new(move |_| { c2.fetch_add(10, Ordering::SeqCst); }));
+    tray.on_click(
+        "stop",
+        Arc::new(move |_| {
+            c2.fetch_add(10, Ordering::SeqCst);
+        }),
+    );
 
     assert!(tray.trigger_action("start"));
     assert_eq!(count.load(Ordering::SeqCst), 1);
@@ -267,9 +301,19 @@ fn test_on_click_overwrites_existing_callback() {
     let second = Arc::new(AtomicUsize::new(0));
 
     let f1 = first.clone();
-    tray.on_click("quit", Arc::new(move |_| { f1.fetch_add(1, Ordering::SeqCst); }));
+    tray.on_click(
+        "quit",
+        Arc::new(move |_| {
+            f1.fetch_add(1, Ordering::SeqCst);
+        }),
+    );
     let f2 = second.clone();
-    tray.on_click("quit", Arc::new(move |_| { f2.fetch_add(100, Ordering::SeqCst); }));
+    tray.on_click(
+        "quit",
+        Arc::new(move |_| {
+            f2.fetch_add(100, Ordering::SeqCst);
+        }),
+    );
 
     assert!(tray.trigger_action("quit"));
     // Only the second (overwriting) callback should fire.
@@ -283,9 +327,17 @@ fn test_trigger_action_invokes_callback_with_correct_action() {
     let tray = SystemTray::default_tray();
     let captured = Arc::new(std::sync::Mutex::new(Vec::new()));
 
-    let check = |id: &'static str, expected: TrayAction, tray: &SystemTray, captured: &Arc<std::sync::Mutex<Vec<TrayAction>>>| {
+    let check = |id: &'static str,
+                 expected: TrayAction,
+                 tray: &SystemTray,
+                 captured: &Arc<std::sync::Mutex<Vec<TrayAction>>>| {
         let c = captured.clone();
-        tray.on_click(id, Arc::new(move |a| { c.lock().unwrap().push(a); }));
+        tray.on_click(
+            id,
+            Arc::new(move |a| {
+                c.lock().unwrap().push(a);
+            }),
+        );
         assert!(tray.trigger_action(id));
         let got = captured.lock().unwrap().pop().unwrap();
         assert_eq!(got, expected, "mismatch for id {}", id);
@@ -346,7 +398,13 @@ fn test_set_tooltip_and_menu_together() {
 
     let cfg = tray.config();
     assert_eq!(cfg.tooltip, "Running...");
-    assert!(!cfg.menu_items.iter().find(|m| m.id == "start").unwrap().enabled);
+    assert!(
+        !cfg.menu_items
+            .iter()
+            .find(|m| m.id == "start")
+            .unwrap()
+            .enabled
+    );
 }
 
 // ============================================================
@@ -373,7 +431,6 @@ fn test_enable_then_disable_cluster_menu_items_no_panic() {
     disable_cluster_menu_items();
     enable_cluster_menu_items();
 }
-
 
 // ============================================================
 // PlatformTray tests (desktop only — requires tray-icon)
@@ -459,15 +516,25 @@ mod platform_tray_tests {
         let counter = Arc::new(AtomicUsize::new(0));
 
         let c = counter.clone();
-        tray.set_on_start(Box::new(move || { c.fetch_add(1, Ordering::SeqCst); }));
+        tray.set_on_start(Box::new(move || {
+            c.fetch_add(1, Ordering::SeqCst);
+        }));
         let c = counter.clone();
-        tray.set_on_stop(Box::new(move || { c.fetch_add(10, Ordering::SeqCst); }));
+        tray.set_on_stop(Box::new(move || {
+            c.fetch_add(10, Ordering::SeqCst);
+        }));
         let c = counter.clone();
-        tray.set_on_open_dashboard(Box::new(move || { c.fetch_add(100, Ordering::SeqCst); }));
+        tray.set_on_open_dashboard(Box::new(move || {
+            c.fetch_add(100, Ordering::SeqCst);
+        }));
         let c = counter.clone();
-        tray.set_on_open_chat(Box::new(move || { c.fetch_add(1000, Ordering::SeqCst); }));
+        tray.set_on_open_chat(Box::new(move || {
+            c.fetch_add(1000, Ordering::SeqCst);
+        }));
         let c = counter.clone();
-        tray.set_on_quit(Box::new(move || { c.fetch_add(10000, Ordering::SeqCst); }));
+        tray.set_on_quit(Box::new(move || {
+            c.fetch_add(10000, Ordering::SeqCst);
+        }));
 
         let _ = tray;
         // Callbacks are set but not invoked (requires event loop).

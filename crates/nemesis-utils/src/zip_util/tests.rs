@@ -86,15 +86,23 @@ fn test_extract_zip_with_deep_nesting() {
     create_zip(
         source_dir.to_string_lossy().as_ref(),
         zip_path.to_string_lossy().as_ref(),
-    ).unwrap();
+    )
+    .unwrap();
 
     extract_zip(
         zip_path.to_string_lossy().as_ref(),
         dest_dir.to_string_lossy().as_ref(),
-    ).unwrap();
+    )
+    .unwrap();
 
-    assert_eq!(fs::read_to_string(dest_dir.join("a/b/c/d/deep.txt")).unwrap(), "deep content");
-    assert_eq!(fs::read_to_string(dest_dir.join("top.txt")).unwrap(), "top content");
+    assert_eq!(
+        fs::read_to_string(dest_dir.join("a/b/c/d/deep.txt")).unwrap(),
+        "deep content"
+    );
+    assert_eq!(
+        fs::read_to_string(dest_dir.join("top.txt")).unwrap(),
+        "top content"
+    );
 }
 
 #[test]
@@ -141,12 +149,14 @@ fn test_create_zip_with_binary_content() {
     create_zip(
         source_dir.to_string_lossy().as_ref(),
         zip_path.to_string_lossy().as_ref(),
-    ).unwrap();
+    )
+    .unwrap();
 
     extract_zip(
         zip_path.to_string_lossy().as_ref(),
         dest_dir.to_string_lossy().as_ref(),
-    ).unwrap();
+    )
+    .unwrap();
 
     let extracted = fs::read(dest_dir.join("binary.dat")).unwrap();
     assert_eq!(extracted, binary_data);
@@ -167,16 +177,27 @@ fn test_create_zip_preserves_multiple_files() {
     create_zip(
         source_dir.to_string_lossy().as_ref(),
         zip_path.to_string_lossy().as_ref(),
-    ).unwrap();
+    )
+    .unwrap();
 
     extract_zip(
         zip_path.to_string_lossy().as_ref(),
         dest_dir.to_string_lossy().as_ref(),
-    ).unwrap();
+    )
+    .unwrap();
 
-    assert_eq!(fs::read_to_string(dest_dir.join("file1.txt")).unwrap(), "content1");
-    assert_eq!(fs::read_to_string(dest_dir.join("file2.txt")).unwrap(), "content2");
-    assert_eq!(fs::read_to_string(dest_dir.join("file3.txt")).unwrap(), "content3");
+    assert_eq!(
+        fs::read_to_string(dest_dir.join("file1.txt")).unwrap(),
+        "content1"
+    );
+    assert_eq!(
+        fs::read_to_string(dest_dir.join("file2.txt")).unwrap(),
+        "content2"
+    );
+    assert_eq!(
+        fs::read_to_string(dest_dir.join("file3.txt")).unwrap(),
+        "content3"
+    );
 }
 
 #[test]
@@ -236,7 +257,9 @@ fn test_extract_zip_path_traversal_rejected() {
     let options = zip::write::SimpleFileOptions::default();
 
     // Try to add a file with path traversal
-    zip_writer.start_file("../../../etc/evil.txt", options).unwrap();
+    zip_writer
+        .start_file("../../../etc/evil.txt", options)
+        .unwrap();
     zip_writer.write_all(b"evil content").unwrap();
     zip_writer.finish().unwrap();
 
@@ -262,10 +285,7 @@ fn test_is_path_within_dir_relative_paths() {
 
 #[test]
 fn test_is_path_within_dir_outside_relative() {
-    let result = is_path_within_dir(
-        Path::new("../outside/file.txt"),
-        Path::new("subdir"),
-    );
+    let result = is_path_within_dir(Path::new("../outside/file.txt"), Path::new("subdir"));
     assert!(!result);
 }
 
@@ -289,15 +309,20 @@ fn test_extract_zip_with_directory_entries() {
     create_zip(
         source_dir.to_string_lossy().as_ref(),
         zip_path.to_string_lossy().as_ref(),
-    ).unwrap();
+    )
+    .unwrap();
 
     extract_zip(
         zip_path.to_string_lossy().as_ref(),
         dest_dir.to_string_lossy().as_ref(),
-    ).unwrap();
+    )
+    .unwrap();
 
     assert!(dest_dir.join("empty_dir").is_dir());
-    assert_eq!(fs::read_to_string(dest_dir.join("file.txt")).unwrap(), "content");
+    assert_eq!(
+        fs::read_to_string(dest_dir.join("file.txt")).unwrap(),
+        "content"
+    );
 }
 
 #[test]
@@ -315,12 +340,14 @@ fn test_create_zip_large_file() {
     create_zip(
         source_dir.to_string_lossy().as_ref(),
         zip_path.to_string_lossy().as_ref(),
-    ).unwrap();
+    )
+    .unwrap();
 
     extract_zip(
         zip_path.to_string_lossy().as_ref(),
         dest_dir.to_string_lossy().as_ref(),
-    ).unwrap();
+    )
+    .unwrap();
 
     let extracted = fs::read(dest_dir.join("large.bin")).unwrap();
     assert_eq!(extracted.len(), 20000);
@@ -362,16 +389,27 @@ fn test_create_zip_nested_directories() {
     create_zip(
         source_dir.to_string_lossy().as_ref(),
         zip_path.to_string_lossy().as_ref(),
-    ).unwrap();
+    )
+    .unwrap();
 
     extract_zip(
         zip_path.to_string_lossy().as_ref(),
         dest_dir.to_string_lossy().as_ref(),
-    ).unwrap();
+    )
+    .unwrap();
 
-    assert_eq!(fs::read_to_string(dest_dir.join("a/b/file1.txt")).unwrap(), "file1");
-    assert_eq!(fs::read_to_string(dest_dir.join("c/file2.txt")).unwrap(), "file2");
-    assert_eq!(fs::read_to_string(dest_dir.join("root.txt")).unwrap(), "root");
+    assert_eq!(
+        fs::read_to_string(dest_dir.join("a/b/file1.txt")).unwrap(),
+        "file1"
+    );
+    assert_eq!(
+        fs::read_to_string(dest_dir.join("c/file2.txt")).unwrap(),
+        "file2"
+    );
+    assert_eq!(
+        fs::read_to_string(dest_dir.join("root.txt")).unwrap(),
+        "root"
+    );
 }
 
 #[test]
@@ -411,9 +449,13 @@ fn test_extract_zip_single_file() {
     extract_zip(
         zip_path.to_string_lossy().as_ref(),
         dest_dir.to_string_lossy().as_ref(),
-    ).unwrap();
+    )
+    .unwrap();
 
-    assert_eq!(fs::read_to_string(dest_dir.join("single.txt")).unwrap(), "single file content");
+    assert_eq!(
+        fs::read_to_string(dest_dir.join("single.txt")).unwrap(),
+        "single file content"
+    );
 }
 
 #[test]
@@ -429,15 +471,20 @@ fn test_extract_zip_preserves_empty_dirs() {
     create_zip(
         source_dir.to_string_lossy().as_ref(),
         zip_path.to_string_lossy().as_ref(),
-    ).unwrap();
+    )
+    .unwrap();
 
     extract_zip(
         zip_path.to_string_lossy().as_ref(),
         dest_dir.to_string_lossy().as_ref(),
-    ).unwrap();
+    )
+    .unwrap();
 
     assert!(dest_dir.join("empty_subdir").is_dir());
-    assert_eq!(fs::read_to_string(dest_dir.join("file.txt")).unwrap(), "has file");
+    assert_eq!(
+        fs::read_to_string(dest_dir.join("file.txt")).unwrap(),
+        "has file"
+    );
 }
 
 #[test]
@@ -490,7 +537,9 @@ fn test_extract_zip_path_traversal_backslash_dots() {
     let writer = std::io::BufWriter::new(file);
     let mut zip_writer = zip::ZipWriter::new(writer);
     let options = zip::write::SimpleFileOptions::default();
-    zip_writer.start_file("foo\\..\\..\\bar.txt", options).unwrap();
+    zip_writer
+        .start_file("foo\\..\\..\\bar.txt", options)
+        .unwrap();
     zip_writer.write_all(b"evil").unwrap();
     zip_writer.finish().unwrap();
 
@@ -515,12 +564,14 @@ fn test_extract_zip_with_unicode_filenames() {
     create_zip(
         source_dir.to_string_lossy().as_ref(),
         zip_path.to_string_lossy().as_ref(),
-    ).unwrap();
+    )
+    .unwrap();
 
     extract_zip(
         zip_path.to_string_lossy().as_ref(),
         dest_dir.to_string_lossy().as_ref(),
-    ).unwrap();
+    )
+    .unwrap();
 
     assert!(dest_dir.join("t.txt").exists());
 }
@@ -538,16 +589,21 @@ fn test_extract_zip_to_nested_dest() {
     create_zip(
         source_dir.to_string_lossy().as_ref(),
         zip_path.to_string_lossy().as_ref(),
-    ).unwrap();
+    )
+    .unwrap();
 
     // dest_dir doesn't exist yet, should be created
     extract_zip(
         zip_path.to_string_lossy().as_ref(),
         dest_dir.to_string_lossy().as_ref(),
-    ).unwrap();
+    )
+    .unwrap();
 
     assert!(dest_dir.join("hello.txt").exists());
-    assert_eq!(fs::read_to_string(dest_dir.join("hello.txt")).unwrap(), "hello world");
+    assert_eq!(
+        fs::read_to_string(dest_dir.join("hello.txt")).unwrap(),
+        "hello world"
+    );
 }
 
 #[test]
@@ -565,18 +621,26 @@ fn test_create_zip_multiple_files_and_extract() {
     create_zip(
         source_dir.to_string_lossy().as_ref(),
         zip_path.to_string_lossy().as_ref(),
-    ).unwrap();
+    )
+    .unwrap();
 
     extract_zip(
         zip_path.to_string_lossy().as_ref(),
         dest_dir.to_string_lossy().as_ref(),
-    ).unwrap();
+    )
+    .unwrap();
 
     assert!(dest_dir.join("a.txt").exists());
     assert!(dest_dir.join("b.txt").exists());
     assert!(dest_dir.join("c.dat").exists());
-    assert_eq!(fs::read_to_string(dest_dir.join("a.txt")).unwrap(), "content a");
-    assert_eq!(fs::read_to_string(dest_dir.join("b.txt")).unwrap(), "content b");
+    assert_eq!(
+        fs::read_to_string(dest_dir.join("a.txt")).unwrap(),
+        "content a"
+    );
+    assert_eq!(
+        fs::read_to_string(dest_dir.join("b.txt")).unwrap(),
+        "content b"
+    );
 }
 
 #[test]

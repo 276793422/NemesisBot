@@ -79,7 +79,10 @@ async fn memory_gate_approves_when_user_approves() {
 async fn memory_gate_denies_when_user_denies() {
     let g = mock_memory_gate(Ok(false));
     assert!(!g.approve_store("x").await, "denied store must be blocked");
-    assert!(!g.approve_forget("y").await, "denied forget must be blocked");
+    assert!(
+        !g.approve_forget("y").await,
+        "denied forget must be blocked"
+    );
 }
 
 #[cfg(all(feature = "desktop", feature = "memory"))]
@@ -174,7 +177,14 @@ fn test_print_gateway_banner_empty_token() {
 
 #[test]
 fn test_print_gateway_banner_long_token() {
-    print_gateway_banner("0.0.0.0", 8080, "a-very-long-authentication-token-value", 2, "127.0.0.1", 49000);
+    print_gateway_banner(
+        "0.0.0.0",
+        8080,
+        "a-very-long-authentication-token-value",
+        2,
+        "127.0.0.1",
+        49000,
+    );
 }
 
 // -------------------------------------------------------------------------
@@ -189,15 +199,22 @@ fn test_parse_security_rules_from_json() {
         {"pattern": "*.exe", "action": "deny", "comment": "block executables"},
         {"pattern": "/tmp/**", "action": "allow", "comment": ""}
     ]);
-    let rules: Vec<SecurityRule> = rules_json.as_array()
+    let rules: Vec<SecurityRule> = rules_json
+        .as_array()
         .map(|arr| {
-            arr.iter().filter_map(|item| {
-                Some(SecurityRule {
-                    pattern: item.get("pattern")?.as_str()?.to_string(),
-                    action: item.get("action")?.as_str()?.to_string(),
-                    comment: item.get("comment").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+            arr.iter()
+                .filter_map(|item| {
+                    Some(SecurityRule {
+                        pattern: item.get("pattern")?.as_str()?.to_string(),
+                        action: item.get("action")?.as_str()?.to_string(),
+                        comment: item
+                            .get("comment")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string(),
+                    })
                 })
-            }).collect()
+                .collect()
         })
         .unwrap_or_default();
     assert_eq!(rules.len(), 2);
@@ -213,15 +230,22 @@ fn test_parse_security_rules_empty_array() {
     use nemesis_security::types::SecurityRule;
 
     let rules_json = serde_json::json!([]);
-    let rules: Vec<SecurityRule> = rules_json.as_array()
+    let rules: Vec<SecurityRule> = rules_json
+        .as_array()
         .map(|arr| {
-            arr.iter().filter_map(|item| {
-                Some(SecurityRule {
-                    pattern: item.get("pattern")?.as_str()?.to_string(),
-                    action: item.get("action")?.as_str()?.to_string(),
-                    comment: item.get("comment").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+            arr.iter()
+                .filter_map(|item| {
+                    Some(SecurityRule {
+                        pattern: item.get("pattern")?.as_str()?.to_string(),
+                        action: item.get("action")?.as_str()?.to_string(),
+                        comment: item
+                            .get("comment")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string(),
+                    })
                 })
-            }).collect()
+                .collect()
         })
         .unwrap_or_default();
     assert!(rules.is_empty());
@@ -236,15 +260,22 @@ fn test_parse_security_rules_missing_fields() {
         {"action": "allow"},
         {}
     ]);
-    let rules: Vec<SecurityRule> = rules_json.as_array()
+    let rules: Vec<SecurityRule> = rules_json
+        .as_array()
         .map(|arr| {
-            arr.iter().filter_map(|item| {
-                Some(SecurityRule {
-                    pattern: item.get("pattern")?.as_str()?.to_string(),
-                    action: item.get("action")?.as_str()?.to_string(),
-                    comment: item.get("comment").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+            arr.iter()
+                .filter_map(|item| {
+                    Some(SecurityRule {
+                        pattern: item.get("pattern")?.as_str()?.to_string(),
+                        action: item.get("action")?.as_str()?.to_string(),
+                        comment: item
+                            .get("comment")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string(),
+                    })
                 })
-            }).collect()
+                .collect()
         })
         .unwrap_or_default();
     assert!(rules.is_empty()); // Both fields required
@@ -482,14 +513,22 @@ fn test_unknown_window_data_is_empty() {
 #[test]
 fn test_backend_url_port_extraction() {
     let url = "http://192.168.1.1:8080";
-    let port = url.split(':').last().and_then(|p| p.parse::<u16>().ok()).unwrap_or(49000);
+    let port = url
+        .split(':')
+        .last()
+        .and_then(|p| p.parse::<u16>().ok())
+        .unwrap_or(49000);
     assert_eq!(port, 8080);
 }
 
 #[test]
 fn test_backend_url_host_extraction() {
     let url = "http://192.168.1.1:8080";
-    let host = url.split("://").nth(1).and_then(|s| s.split(':').next()).unwrap_or("127.0.0.1");
+    let host = url
+        .split("://")
+        .nth(1)
+        .and_then(|s| s.split(':').next())
+        .unwrap_or("127.0.0.1");
     assert_eq!(host, "192.168.1.1");
 }
 
@@ -715,7 +754,8 @@ fn test_direct_llm_channel_response_parsing() {
         }]
     });
     let content = response["choices"][0]["message"]["content"]
-        .as_str().unwrap_or("");
+        .as_str()
+        .unwrap_or("");
     assert_eq!(content, "Hi there!");
 }
 
@@ -747,7 +787,10 @@ fn test_cluster_result_persister_save_format() {
 #[test]
 fn test_peer_toml_key_sanitization() {
     let peer_id = "node-1.example.com:11949";
-    let key_safe = peer_id.replace('.', "_").replace(':', "_").replace('-', "_");
+    let key_safe = peer_id
+        .replace('.', "_")
+        .replace(':', "_")
+        .replace('-', "_");
     assert_eq!(key_safe, "node_1_example_com_11949");
 }
 
@@ -773,21 +816,33 @@ fn test_peer_rpc_port_zero_base() {
 #[test]
 fn test_web_host_resolution_0000() {
     let h = "0.0.0.0";
-    let resolved = if h == "0.0.0.0" || h.is_empty() { "127.0.0.1".to_string() } else { h.to_string() };
+    let resolved = if h == "0.0.0.0" || h.is_empty() {
+        "127.0.0.1".to_string()
+    } else {
+        h.to_string()
+    };
     assert_eq!(resolved, "127.0.0.1");
 }
 
 #[test]
 fn test_web_host_resolution_empty() {
     let h = "";
-    let resolved = if h == "0.0.0.0" || h.is_empty() { "127.0.0.1".to_string() } else { h.to_string() };
+    let resolved = if h == "0.0.0.0" || h.is_empty() {
+        "127.0.0.1".to_string()
+    } else {
+        h.to_string()
+    };
     assert_eq!(resolved, "127.0.0.1");
 }
 
 #[test]
 fn test_web_host_resolution_custom() {
     let h = "192.168.1.1";
-    let resolved = if h == "0.0.0.0" || h.is_empty() { "127.0.0.1".to_string() } else { h.to_string() };
+    let resolved = if h == "0.0.0.0" || h.is_empty() {
+        "127.0.0.1".to_string()
+    } else {
+        h.to_string()
+    };
     assert_eq!(resolved, "192.168.1.1");
 }
 
@@ -798,21 +853,33 @@ fn test_web_host_resolution_custom() {
 #[test]
 fn test_heartbeat_interval_zero() {
     let interval: i64 = 0;
-    let secs = if interval > 0 { (interval * 60) as u64 } else { 300 };
+    let secs = if interval > 0 {
+        (interval * 60) as u64
+    } else {
+        300
+    };
     assert_eq!(secs, 300);
 }
 
 #[test]
 fn test_heartbeat_interval_positive() {
     let interval: i64 = 5;
-    let secs = if interval > 0 { (interval * 60) as u64 } else { 300 };
+    let secs = if interval > 0 {
+        (interval * 60) as u64
+    } else {
+        300
+    };
     assert_eq!(secs, 300);
 }
 
 #[test]
 fn test_heartbeat_interval_thirty() {
     let interval: i64 = 30;
-    let secs = if interval > 0 { (interval * 60) as u64 } else { 300 };
+    let secs = if interval > 0 {
+        (interval * 60) as u64
+    } else {
+        300
+    };
     assert_eq!(secs, 1800);
 }
 
@@ -914,7 +981,14 @@ fn test_print_gateway_banner_zero_ports() {
 
 #[test]
 fn test_print_gateway_banner_max_values() {
-    print_gateway_banner("255.255.255.255", 65535, "a-very-long-token-that-goes-on", 1000, "255.255.255.255", 65535);
+    print_gateway_banner(
+        "255.255.255.255",
+        65535,
+        "a-very-long-token-that-goes-on",
+        1000,
+        "255.255.255.255",
+        65535,
+    );
 }
 
 // -------------------------------------------------------------------------
@@ -940,7 +1014,10 @@ fn test_forge_provider_bridge_construction() {
 async fn test_cluster_forge_bridge_adapter_share_reflection() {
     let bridge = ClusterForgeBridgeAdapter::new("node-1".to_string());
     let bridge_ref: &dyn nemesis_forge::bridge::ClusterForgeBridge = &bridge;
-    let count = bridge_ref.share_reflection(serde_json::json!({"test": true})).await.unwrap();
+    let count = bridge_ref
+        .share_reflection(serde_json::json!({"test": true}))
+        .await
+        .unwrap();
     assert_eq!(count, 0);
 }
 
@@ -1002,19 +1079,42 @@ fn test_enabled_channels_construction_logic() {
     let cfg = ChannelsConfig::default();
 
     let mut channels = Vec::new();
-    if cfg.web.enabled { channels.push("web"); }
-    if cfg.telegram.enabled { channels.push("telegram"); }
-    if cfg.discord.enabled { channels.push("discord"); }
-    if cfg.feishu.enabled { channels.push("feishu"); }
-    if cfg.slack.enabled { channels.push("slack"); }
-    if cfg.whatsapp.enabled { channels.push("whatsapp"); }
-    if cfg.dingtalk.enabled { channels.push("dingtalk"); }
-    if cfg.qq.enabled { channels.push("qq"); }
-    if cfg.line.enabled { channels.push("line"); }
-    if cfg.onebot.enabled { channels.push("onebot"); }
+    if cfg.web.enabled {
+        channels.push("web");
+    }
+    if cfg.telegram.enabled {
+        channels.push("telegram");
+    }
+    if cfg.discord.enabled {
+        channels.push("discord");
+    }
+    if cfg.feishu.enabled {
+        channels.push("feishu");
+    }
+    if cfg.slack.enabled {
+        channels.push("slack");
+    }
+    if cfg.whatsapp.enabled {
+        channels.push("whatsapp");
+    }
+    if cfg.dingtalk.enabled {
+        channels.push("dingtalk");
+    }
+    if cfg.qq.enabled {
+        channels.push("qq");
+    }
+    if cfg.line.enabled {
+        channels.push("line");
+    }
+    if cfg.onebot.enabled {
+        channels.push("onebot");
+    }
 
     // Default config has all channels disabled
-    assert!(channels.is_empty(), "Default config should have no enabled channels");
+    assert!(
+        channels.is_empty(),
+        "Default config should have no enabled channels"
+    );
 }
 
 #[test]
@@ -1023,8 +1123,12 @@ fn test_enabled_channels_with_web_enabled() {
     cfg.web.enabled = true;
 
     let mut channels = Vec::new();
-    if cfg.web.enabled { channels.push("web"); }
-    if cfg.telegram.enabled { channels.push("telegram"); }
+    if cfg.web.enabled {
+        channels.push("web");
+    }
+    if cfg.telegram.enabled {
+        channels.push("telegram");
+    }
 
     assert_eq!(channels, vec!["web"]);
 }
@@ -1105,7 +1209,11 @@ fn test_cron_job_message_construction() {
     assert!(!job.payload.message.is_empty());
 
     // Simulate building an InboundMessage (what the handler does)
-    let channel = job.payload.channel.clone().unwrap_or_else(|| "web".to_string());
+    let channel = job
+        .payload
+        .channel
+        .clone()
+        .unwrap_or_else(|| "web".to_string());
     let to = job.payload.to.clone().unwrap_or_default();
     assert_eq!(channel, "web");
     assert_eq!(to, "user1");
@@ -1144,9 +1252,8 @@ fn test_forge_cycle_store_creation() {
 #[cfg(feature = "forge")]
 #[test]
 fn test_forge_registry_creation() {
-    let registry = nemesis_forge::registry::Registry::new(
-        nemesis_forge::types::RegistryConfig::default(),
-    );
+    let registry =
+        nemesis_forge::registry::Registry::new(nemesis_forge::types::RegistryConfig::default());
     let artifacts = registry.list(None, None);
     assert!(artifacts.is_empty());
 }
@@ -1202,7 +1309,10 @@ fn test_web_search_config_all_disabled() {
     let cfg = nemesis_config::Config::default();
     let web = &cfg.tools.web;
     let any_enabled = web.brave.enabled || web.duckduckgo.enabled || web.perplexity.enabled;
-    assert!(!any_enabled, "All web search providers should be disabled by default");
+    assert!(
+        !any_enabled,
+        "All web search providers should be disabled by default"
+    );
 }
 
 #[test]
@@ -1238,12 +1348,20 @@ fn test_web_search_config_mapping_to_agent_config() {
     let web = &cfg.tools.web;
 
     let config = nemesis_agent::loop_tools::WebSearchConfig {
-        brave_api_key: if web.brave.api_key.is_empty() { None } else { Some(web.brave.api_key.clone()) },
+        brave_api_key: if web.brave.api_key.is_empty() {
+            None
+        } else {
+            Some(web.brave.api_key.clone())
+        },
         brave_max_results: web.brave.max_results.max(1) as usize,
         brave_enabled: web.brave.enabled,
         duckduckgo_max_results: web.duckduckgo.max_results.max(1) as usize,
         duckduckgo_enabled: web.duckduckgo.enabled,
-        perplexity_api_key: if web.perplexity.api_key.is_empty() { None } else { Some(web.perplexity.api_key.clone()) },
+        perplexity_api_key: if web.perplexity.api_key.is_empty() {
+            None
+        } else {
+            Some(web.perplexity.api_key.clone())
+        },
         perplexity_max_results: web.perplexity.max_results.max(1) as usize,
         perplexity_enabled: web.perplexity.enabled,
     };
@@ -1261,7 +1379,11 @@ fn test_web_search_config_empty_api_key_becomes_none() {
     let cfg: nemesis_config::Config = serde_json::from_str(json).unwrap();
     let web = &cfg.tools.web;
 
-    let api_key = if web.brave.api_key.is_empty() { None } else { Some(web.brave.api_key.clone()) };
+    let api_key = if web.brave.api_key.is_empty() {
+        None
+    } else {
+        Some(web.brave.api_key.clone())
+    };
     assert_eq!(api_key, None);
 }
 
@@ -1272,7 +1394,10 @@ fn test_web_search_config_empty_api_key_becomes_none() {
 #[test]
 fn test_devices_config_default_disabled() {
     let cfg = nemesis_config::Config::default();
-    assert!(!cfg.devices.enabled, "devices should be disabled by default");
+    assert!(
+        !cfg.devices.enabled,
+        "devices should be disabled by default"
+    );
 }
 
 #[test]
@@ -1289,11 +1414,8 @@ fn test_devices_config_enabled() {
 
 #[test]
 fn test_skills_loader_creation() {
-    let loader = nemesis_skills::loader::SkillsLoader::new(
-        "/tmp/workspace",
-        "/tmp/workspace/skills",
-        "",
-    );
+    let loader =
+        nemesis_skills::loader::SkillsLoader::new("/tmp/workspace", "/tmp/workspace/skills", "");
     // List should work even with non-existent directories
     let skills = loader.list_skills();
     // No skills found in non-existent directories
@@ -1305,17 +1427,21 @@ fn test_skills_loader_with_real_dirs() {
     let dir = std::env::temp_dir().join("nemesis_test_skills_loader");
     let skills_dir = dir.join("skills").join("test-skill");
     std::fs::create_dir_all(&skills_dir).unwrap();
-    std::fs::write(skills_dir.join("SKILL.md"), "---\ndescription: A test skill for unit testing\n---\n\n# Test Skill\n\nA test.").unwrap();
+    std::fs::write(
+        skills_dir.join("SKILL.md"),
+        "---\ndescription: A test skill for unit testing\n---\n\n# Test Skill\n\nA test.",
+    )
+    .unwrap();
 
     let workspace_str = dir.to_string_lossy().to_string();
     let global_str = dir.join("skills").to_string_lossy().to_string();
-    let loader = nemesis_skills::loader::SkillsLoader::new(
-        &workspace_str,
-        &global_str,
-        "",
-    );
+    let loader = nemesis_skills::loader::SkillsLoader::new(&workspace_str, &global_str, "");
     let skills = loader.list_skills();
-    assert!(!skills.is_empty(), "Should find at least one skill in {}", skills_dir.display());
+    assert!(
+        !skills.is_empty(),
+        "Should find at least one skill in {}",
+        skills_dir.display()
+    );
     assert_eq!(skills[0].name, "test-skill");
 
     // Cleanup
@@ -1372,8 +1498,14 @@ fn test_register_shared_tools_with_web_search() {
         ..Default::default()
     };
     let tools = nemesis_agent::register_shared_tools(&config);
-    assert!(tools.contains_key("web_search"), "web_search should be registered when config is set");
-    assert!(tools.contains_key("web_fetch"), "web_fetch should always be registered");
+    assert!(
+        tools.contains_key("web_search"),
+        "web_search should be registered when config is set"
+    );
+    assert!(
+        tools.contains_key("web_fetch"),
+        "web_fetch should always be registered"
+    );
 }
 
 #[test]
@@ -1384,8 +1516,14 @@ fn test_register_shared_tools_without_web_search() {
         ..Default::default()
     };
     let tools = nemesis_agent::register_shared_tools(&config);
-    assert!(!tools.contains_key("web_search"), "web_search should NOT be registered when config is None");
-    assert!(tools.contains_key("web_fetch"), "web_fetch should always be registered");
+    assert!(
+        !tools.contains_key("web_search"),
+        "web_search should NOT be registered when config is None"
+    );
+    assert!(
+        tools.contains_key("web_fetch"),
+        "web_fetch should always be registered"
+    );
 }
 
 #[test]
@@ -1397,8 +1535,14 @@ fn test_register_shared_tools_with_skills_loader() {
         ..Default::default()
     };
     let tools = nemesis_agent::register_shared_tools(&config);
-    assert!(tools.contains_key("skills_list"), "skills_list should be registered");
-    assert!(tools.contains_key("skills_info"), "skills_info should be registered");
+    assert!(
+        tools.contains_key("skills_list"),
+        "skills_list should be registered"
+    );
+    assert!(
+        tools.contains_key("skills_info"),
+        "skills_info should be registered"
+    );
 }
 
 #[test]
@@ -1411,8 +1555,14 @@ fn test_register_shared_tools_with_skills_registry() {
         ..Default::default()
     };
     let tools = nemesis_agent::register_shared_tools(&config);
-    assert!(tools.contains_key("find_skills"), "find_skills should be registered");
-    assert!(tools.contains_key("install_skill"), "install_skill should be registered");
+    assert!(
+        tools.contains_key("find_skills"),
+        "find_skills should be registered"
+    );
+    assert!(
+        tools.contains_key("install_skill"),
+        "install_skill should be registered"
+    );
 }
 
 // -------------------------------------------------------------------------
@@ -1447,13 +1597,11 @@ fn test_provider_adapter_tool_call_conversion() {
 #[test]
 fn test_provider_adapter_finished_logic_tool_calls_present() {
     // When tool_calls are present and finish_reason != "stop", finished = false
-    let tool_calls = vec![
-        nemesis_agent::types::ToolCallInfo {
-            id: "call_1".to_string(),
-            name: "test".to_string(),
-            arguments: "{}".to_string(),
-        },
-    ];
+    let tool_calls = vec![nemesis_agent::types::ToolCallInfo {
+        id: "call_1".to_string(),
+        name: "test".to_string(),
+        arguments: "{}".to_string(),
+    }];
     let finish_reason = "tool_calls";
     let finished = tool_calls.is_empty() || finish_reason == "stop";
     assert!(!finished);
@@ -1481,7 +1629,11 @@ fn test_provider_adapter_model_fallback_empty() {
     // Empty model string should use default
     let default_model = "gpt-4".to_string();
     let model = "";
-    let model_to_use = if model.is_empty() { &default_model } else { model };
+    let model_to_use = if model.is_empty() {
+        &default_model
+    } else {
+        model
+    };
     assert_eq!(model_to_use, "gpt-4");
 }
 
@@ -1489,7 +1641,11 @@ fn test_provider_adapter_model_fallback_empty() {
 fn test_provider_adapter_model_fallback_nonempty() {
     let default_model = "gpt-4".to_string();
     let model = "claude-3";
-    let model_to_use = if model.is_empty() { &default_model } else { model };
+    let model_to_use = if model.is_empty() {
+        &default_model
+    } else {
+        model
+    };
     assert_eq!(model_to_use, "claude-3");
 }
 
@@ -1528,7 +1684,8 @@ fn test_direct_llm_channel_response_parsing_logic() {
             "finish_reason": "stop"
         }]
     });
-    let content = response.get("choices")
+    let content = response
+        .get("choices")
         .and_then(|c| c.get(0))
         .and_then(|c| c.get("message"))
         .and_then(|m| m.get("content"))
@@ -1621,7 +1778,10 @@ fn test_bus_to_cluster_message_conversion() {
 #[test]
 fn test_approval_action_approved() {
     let value = serde_json::json!({"action": "approved"});
-    let action = value.get("action").and_then(|v| v.as_str()).unwrap_or("rejected");
+    let action = value
+        .get("action")
+        .and_then(|v| v.as_str())
+        .unwrap_or("rejected");
     assert_eq!(action, "approved");
     let is_approved = action == "approved";
     assert!(is_approved);
@@ -1630,7 +1790,10 @@ fn test_approval_action_approved() {
 #[test]
 fn test_approval_action_rejected() {
     let value = serde_json::json!({"action": "rejected"});
-    let action = value.get("action").and_then(|v| v.as_str()).unwrap_or("rejected");
+    let action = value
+        .get("action")
+        .and_then(|v| v.as_str())
+        .unwrap_or("rejected");
     assert_eq!(action, "rejected");
     let is_approved = action == "approved";
     assert!(!is_approved);
@@ -1639,7 +1802,10 @@ fn test_approval_action_rejected() {
 #[test]
 fn test_approval_action_missing_defaults_rejected() {
     let value = serde_json::json!({});
-    let action = value.get("action").and_then(|v| v.as_str()).unwrap_or("rejected");
+    let action = value
+        .get("action")
+        .and_then(|v| v.as_str())
+        .unwrap_or("rejected");
     assert_eq!(action, "rejected");
     let is_approved = action == "approved";
     assert!(!is_approved);
@@ -1825,7 +1991,11 @@ fn test_context_builder_with_workspace() {
     std::fs::create_dir_all(&workspace).unwrap();
 
     // Create IDENTITY.md
-    std::fs::write(workspace.join("IDENTITY.md"), "# Identity\nI am a test bot.").unwrap();
+    std::fs::write(
+        workspace.join("IDENTITY.md"),
+        "# Identity\nI am a test bot.",
+    )
+    .unwrap();
 
     let _builder = nemesis_agent::context::ContextBuilder::new(&workspace);
     // Just verify construction doesn't panic
@@ -1973,7 +2143,11 @@ fn test_pid_file_write() {
 fn test_web_server_url_construction() {
     let host = "0.0.0.0";
     let port: i64 = 49000;
-    let resolved = if host == "0.0.0.0" || host.is_empty() { "127.0.0.1" } else { host };
+    let resolved = if host == "0.0.0.0" || host.is_empty() {
+        "127.0.0.1"
+    } else {
+        host
+    };
     let url = format!("http://{}:{}", resolved, port);
     assert_eq!(url, "http://127.0.0.1:49000");
 }
@@ -1982,7 +2156,11 @@ fn test_web_server_url_construction() {
 fn test_web_server_url_custom_host() {
     let host = "192.168.1.5";
     let port: i64 = 8080;
-    let resolved = if host == "0.0.0.0" || host.is_empty() { "127.0.0.1" } else { host };
+    let resolved = if host == "0.0.0.0" || host.is_empty() {
+        "127.0.0.1"
+    } else {
+        host
+    };
     let url = format!("http://{}:{}", resolved, port);
     assert_eq!(url, "http://192.168.1.5:8080");
 }

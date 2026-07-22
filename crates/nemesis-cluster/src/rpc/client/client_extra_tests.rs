@@ -82,7 +82,11 @@ async fn spawn_response_server(response: RPCResponse) -> EchoServer {
         }
     });
 
-    EchoServer { addr, _handle: handle, requests }
+    EchoServer {
+        addr,
+        _handle: handle,
+        requests,
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -572,7 +576,11 @@ async fn spawn_encrypted_echo_server(auth_token: String, response: RPCResponse) 
         }
     });
 
-    EchoServer { addr, _handle: handle, requests }
+    EchoServer {
+        addr,
+        _handle: handle,
+        requests,
+    }
 }
 
 #[tokio::test]
@@ -663,7 +671,11 @@ async fn spawn_garbage_server(payload: Vec<u8>) -> EchoServer {
         }
     });
 
-    EchoServer { addr, _handle: handle, requests }
+    EchoServer {
+        addr,
+        _handle: handle,
+        requests,
+    }
 }
 
 #[tokio::test]
@@ -732,7 +744,12 @@ async fn test_acquire_async_succeeds_when_tokens_available() {
 #[tokio::test]
 async fn test_acquire_async_blocks_until_release() {
     // Only 1 token. First acquire consumes it; second waits, then succeeds once released.
-    let limiter = Arc::new(RateLimiter::new(1, Duration::from_secs(60), 10, Duration::from_secs(60)));
+    let limiter = Arc::new(RateLimiter::new(
+        1,
+        Duration::from_secs(60),
+        10,
+        Duration::from_secs(60),
+    ));
     assert!(limiter.acquire("peer-y").is_ok());
 
     let lim_clone = Arc::clone(&limiter);
@@ -750,12 +767,7 @@ async fn test_acquire_async_blocks_until_release() {
 #[tokio::test]
 async fn test_rate_limiter_refill_after_interval() {
     // Refill interval is super short so we can observe refill.
-    let limiter = RateLimiter::new(
-        1,
-        Duration::from_millis(50),
-        10,
-        Duration::from_secs(60),
-    );
+    let limiter = RateLimiter::new(1, Duration::from_millis(50), 10, Duration::from_secs(60));
     assert!(limiter.acquire("peer-r").is_ok());
     // Second acquire: out of tokens, but window still has room.
     assert!(limiter.acquire("peer-r").is_err());
@@ -832,10 +844,7 @@ fn test_select_best_address_no_subnet_match_returns_first() {
         }],
     });
     let client = RpcClient::with_resolver(resolver);
-    let addrs = vec![
-        "192.168.1.1:9000".into(),
-        "172.16.0.1:9000".into(),
-    ];
+    let addrs = vec!["192.168.1.1:9000".into(), "172.16.0.1:9000".into()];
     let best = client.select_best_address(&addrs);
     // No match → first address returned.
     assert_eq!(best, "192.168.1.1:9000");
@@ -867,10 +876,7 @@ fn test_select_best_address_ipv6_does_not_match_ipv4_subnet() {
         }],
     });
     let client = RpcClient::with_resolver(resolver);
-    let addrs = vec![
-        "[::1]:9000".into(),
-        "10.0.0.5:9000".into(),
-    ];
+    let addrs = vec!["[::1]:9000".into(), "10.0.0.5:9000".into()];
     let best = client.select_best_address(&addrs);
     // No IPv4 match → first address.
     assert_eq!(best, "[::1]:9000");
@@ -935,8 +941,16 @@ fn test_is_same_subnet_full_mask_same_ip() {
 #[test]
 fn test_is_same_subnet_partial_byte_mask() {
     // /24 boundary: 192.168.1.0/24
-    assert!(is_same_subnet("192.168.1.10", "192.168.1.250", "255.255.255.0"));
-    assert!(!is_same_subnet("192.168.1.10", "192.168.2.10", "255.255.255.0"));
+    assert!(is_same_subnet(
+        "192.168.1.10",
+        "192.168.1.250",
+        "255.255.255.0"
+    ));
+    assert!(!is_same_subnet(
+        "192.168.1.10",
+        "192.168.2.10",
+        "255.255.255.0"
+    ));
 }
 
 // ===========================================================================
@@ -1107,18 +1121,21 @@ fn test_wire_message_new_error_swaps_from_to() {
 #[test]
 fn test_action_type_as_str_all_known_variants() {
     use crate::rpc_types::ActionType;
-    assert_eq!(ActionType::Known(KnownAction::PeerChat).as_str(), "PeerChat");
+    assert_eq!(
+        ActionType::Known(KnownAction::PeerChat).as_str(),
+        "PeerChat"
+    );
     assert_eq!(
         ActionType::Known(KnownAction::PeerChatCallback).as_str(),
         "PeerChatCallback"
     );
-    assert_eq!(ActionType::Known(KnownAction::ForgeShare).as_str(), "ForgeShare");
+    assert_eq!(
+        ActionType::Known(KnownAction::ForgeShare).as_str(),
+        "ForgeShare"
+    );
     assert_eq!(ActionType::Known(KnownAction::Ping).as_str(), "Ping");
     assert_eq!(ActionType::Known(KnownAction::Status).as_str(), "Status");
-    assert_eq!(
-        ActionType::Custom("foo".into()).as_str(),
-        "foo"
-    );
+    assert_eq!(ActionType::Custom("foo".into()).as_str(), "foo");
 }
 
 #[test]

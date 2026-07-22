@@ -5,7 +5,11 @@ fn make_store(tmp: &TempDir, jobs: &[serde_json::Value]) -> std::path::PathBuf {
     let dir = tmp.path().join("cron");
     std::fs::create_dir_all(&dir).unwrap();
     let store = dir.join("jobs.json");
-    std::fs::write(&store, serde_json::to_string_pretty(&serde_json::Value::Array(jobs.to_vec())).unwrap()).unwrap();
+    std::fs::write(
+        &store,
+        serde_json::to_string_pretty(&serde_json::Value::Array(jobs.to_vec())).unwrap(),
+    )
+    .unwrap();
     store
 }
 
@@ -25,9 +29,7 @@ fn sample_job(id: &str, name: &str, enabled: bool) -> serde_json::Value {
 #[test]
 fn test_toggle_job_enable() {
     let tmp = TempDir::new().unwrap();
-    let store = make_store(&tmp, &[
-        sample_job("abc123", "test_job", false),
-    ]);
+    let store = make_store(&tmp, &[sample_job("abc123", "test_job", false)]);
 
     toggle_job(&store, "abc123", true);
 
@@ -39,9 +41,7 @@ fn test_toggle_job_enable() {
 #[test]
 fn test_toggle_job_disable() {
     let tmp = TempDir::new().unwrap();
-    let store = make_store(&tmp, &[
-        sample_job("def456", "another_job", true),
-    ]);
+    let store = make_store(&tmp, &[sample_job("def456", "another_job", true)]);
 
     toggle_job(&store, "def456", false);
 
@@ -53,9 +53,7 @@ fn test_toggle_job_disable() {
 #[test]
 fn test_toggle_job_not_found() {
     let tmp = TempDir::new().unwrap();
-    let store = make_store(&tmp, &[
-        sample_job("abc123", "test_job", true),
-    ]);
+    let store = make_store(&tmp, &[sample_job("abc123", "test_job", true)]);
 
     toggle_job(&store, "nonexistent", false);
 
@@ -77,17 +75,20 @@ fn test_toggle_job_no_file() {
 #[test]
 fn test_toggle_job_multiple_jobs() {
     let tmp = TempDir::new().unwrap();
-    let store = make_store(&tmp, &[
-        sample_job("job1", "first", true),
-        sample_job("job2", "second", true),
-        sample_job("job3", "third", false),
-    ]);
+    let store = make_store(
+        &tmp,
+        &[
+            sample_job("job1", "first", true),
+            sample_job("job2", "second", true),
+            sample_job("job3", "third", false),
+        ],
+    );
 
     toggle_job(&store, "job2", false);
 
     let data = std::fs::read_to_string(&store).unwrap();
     let jobs: Vec<serde_json::Value> = serde_json::from_str(&data).unwrap();
-    assert_eq!(jobs[0]["enabled"], true);  // unchanged
+    assert_eq!(jobs[0]["enabled"], true); // unchanged
     assert_eq!(jobs[1]["enabled"], false); // changed
     assert_eq!(jobs[2]["enabled"], false); // unchanged
 }
@@ -132,10 +133,13 @@ fn test_add_cron_expr_job() {
 #[test]
 fn test_remove_job_from_store() {
     let tmp = TempDir::new().unwrap();
-    let store = make_store(&tmp, &[
-        sample_job("j1", "job1", true),
-        sample_job("j2", "job2", true),
-    ]);
+    let store = make_store(
+        &tmp,
+        &[
+            sample_job("j1", "job1", true),
+            sample_job("j2", "job2", true),
+        ],
+    );
 
     let data = std::fs::read_to_string(&store).unwrap();
     let mut jobs: Vec<serde_json::Value> = serde_json::from_str(&data).unwrap();
@@ -148,9 +152,7 @@ fn test_remove_job_from_store() {
 #[test]
 fn test_remove_nonexistent_job() {
     let tmp = TempDir::new().unwrap();
-    let store = make_store(&tmp, &[
-        sample_job("j1", "job1", true),
-    ]);
+    let store = make_store(&tmp, &[sample_job("j1", "job1", true)]);
 
     let data = std::fs::read_to_string(&store).unwrap();
     let mut jobs: Vec<serde_json::Value> = serde_json::from_str(&data).unwrap();
@@ -241,7 +243,8 @@ fn test_job_json_structure() {
     let id = "test1234".to_string();
     let name = "test_job".to_string();
     let message = "do something".to_string();
-    let schedule = serde_json::json!({"kind": "interval", "every_ms": 60000, "display": "every 60s"});
+    let schedule =
+        serde_json::json!({"kind": "interval", "every_ms": 60000, "display": "every 60s"});
     let deliver = true;
     let to: Option<String> = Some("user1".to_string());
     let channel: Option<String> = Some("web".to_string());
@@ -280,7 +283,8 @@ fn test_job_list_display_schedule_object() {
     });
 
     // Test the schedule display extraction logic from CronAction::List
-    let schedule_display = job.get("schedule")
+    let schedule_display = job
+        .get("schedule")
         .and_then(|s| {
             if s.is_object() {
                 s.get("display").and_then(|v| v.as_str())
@@ -293,7 +297,8 @@ fn test_job_list_display_schedule_object() {
     assert_eq!(schedule_display, "every 120s");
 
     // Test next run extraction
-    let next_run = job.get("schedule")
+    let next_run = job
+        .get("schedule")
         .and_then(|s| s.get("every_ms").and_then(|v| v.as_u64()))
         .map(|ms| {
             let secs = ms / 1000;
@@ -313,7 +318,8 @@ fn test_job_list_display_schedule_string() {
         "schedule": "every 5 minutes"
     });
 
-    let schedule_display = job.get("schedule")
+    let schedule_display = job
+        .get("schedule")
         .and_then(|s| {
             if s.is_object() {
                 s.get("display").and_then(|v| v.as_str())
@@ -351,15 +357,16 @@ fn test_remove_job_from_empty_store() {
 #[test]
 fn test_toggle_job_preserves_other_fields() {
     let tmp = TempDir::new().unwrap();
-    let store = make_store(&tmp, &[
-        serde_json::json!({
+    let store = make_store(
+        &tmp,
+        &[serde_json::json!({
             "id": "j1",
             "name": "myjob",
             "enabled": true,
             "message": "hello",
             "schedule": {"kind": "interval", "every_ms": 60000}
-        }),
-    ]);
+        })],
+    );
 
     toggle_job(&store, "j1", false);
 

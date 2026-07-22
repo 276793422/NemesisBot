@@ -110,7 +110,10 @@ async fn test_delete_archives_to_sidecar() {
 
     // Archive sidecar must exist and contain the deleted entry.
     let archive_path = dir.path().join("store.archive.jsonl");
-    assert!(archive_path.exists(), "archive sidecar must exist after delete");
+    assert!(
+        archive_path.exists(),
+        "archive sidecar must exist after delete"
+    );
     let archived = tokio::fs::read_to_string(&archive_path).await.unwrap();
     assert!(
         archived.contains(&id),
@@ -147,17 +150,28 @@ async fn test_query_finds_relevant() {
     let path = dir.path().join("store.jsonl");
     let store = TfIdfLocalStore::new(&path).await.unwrap();
 
-    store.store(make_entry(MemoryType::LongTerm, "The cat sat on the mat")).await.unwrap();
-    store.store(make_entry(MemoryType::LongTerm, "Dogs love to play fetch")).await.unwrap();
-    store.store(make_entry(MemoryType::ShortTerm, "Cat food is expensive")).await.unwrap();
+    store
+        .store(make_entry(MemoryType::LongTerm, "The cat sat on the mat"))
+        .await
+        .unwrap();
+    store
+        .store(make_entry(MemoryType::LongTerm, "Dogs love to play fetch"))
+        .await
+        .unwrap();
+    store
+        .store(make_entry(MemoryType::ShortTerm, "Cat food is expensive"))
+        .await
+        .unwrap();
 
     let result = store.query("cat", None, 10).await.unwrap();
     assert_eq!(result.total, 2);
     // Both cat entries should be present.
-    assert!(result
-        .entries
-        .iter()
-        .all(|e| e.entry.content.contains("Cat") || e.entry.content.contains("cat")));
+    assert!(
+        result
+            .entries
+            .iter()
+            .all(|e| e.entry.content.contains("Cat") || e.entry.content.contains("cat"))
+    );
 }
 
 #[tokio::test]
@@ -166,10 +180,19 @@ async fn test_query_with_type_filter() {
     let path = dir.path().join("store.jsonl");
     let store = TfIdfLocalStore::new(&path).await.unwrap();
 
-    store.store(make_entry(MemoryType::LongTerm, "cat info long")).await.unwrap();
-    store.store(make_entry(MemoryType::ShortTerm, "cat info short")).await.unwrap();
+    store
+        .store(make_entry(MemoryType::LongTerm, "cat info long"))
+        .await
+        .unwrap();
+    store
+        .store(make_entry(MemoryType::ShortTerm, "cat info short"))
+        .await
+        .unwrap();
 
-    let result = store.query("cat", Some(MemoryType::ShortTerm), 10).await.unwrap();
+    let result = store
+        .query("cat", Some(MemoryType::ShortTerm), 10)
+        .await
+        .unwrap();
     assert_eq!(result.total, 1);
     assert_eq!(result.entries[0].entry.typ, MemoryType::ShortTerm);
 }
@@ -180,7 +203,10 @@ async fn test_query_empty_tokens_returns_empty() {
     let path = dir.path().join("store.jsonl");
     let store = TfIdfLocalStore::new(&path).await.unwrap();
 
-    store.store(make_entry(MemoryType::LongTerm, "some content")).await.unwrap();
+    store
+        .store(make_entry(MemoryType::LongTerm, "some content"))
+        .await
+        .unwrap();
 
     let result = store.query("!!!", None, 10).await.unwrap();
     assert_eq!(result.total, 0);
@@ -193,7 +219,10 @@ async fn test_list_with_pagination() {
     let store = TfIdfLocalStore::new(&path).await.unwrap();
 
     for i in 0..5 {
-        store.store(make_entry(MemoryType::LongTerm, &format!("entry {i}"))).await.unwrap();
+        store
+            .store(make_entry(MemoryType::LongTerm, &format!("entry {i}")))
+            .await
+            .unwrap();
     }
 
     let page1 = store.list(None, 2, 0).await.unwrap();
@@ -215,9 +244,18 @@ async fn test_list_with_type_filter() {
     let path = dir.path().join("store.jsonl");
     let store = TfIdfLocalStore::new(&path).await.unwrap();
 
-    store.store(make_entry(MemoryType::LongTerm, "long term entry")).await.unwrap();
-    store.store(make_entry(MemoryType::ShortTerm, "short term entry")).await.unwrap();
-    store.store(make_entry(MemoryType::LongTerm, "another long term")).await.unwrap();
+    store
+        .store(make_entry(MemoryType::LongTerm, "long term entry"))
+        .await
+        .unwrap();
+    store
+        .store(make_entry(MemoryType::ShortTerm, "short term entry"))
+        .await
+        .unwrap();
+    store
+        .store(make_entry(MemoryType::LongTerm, "another long term"))
+        .await
+        .unwrap();
 
     let result = store.list(Some(MemoryType::LongTerm), 10, 0).await.unwrap();
     assert_eq!(result.len(), 2);

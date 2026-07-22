@@ -8,7 +8,8 @@ use std::sync::Arc;
 use parking_lot::Mutex;
 
 /// A custom action handler function.
-pub type CustomActionFn = Arc<dyn Fn(&str, serde_json::Value) -> Result<serde_json::Value, String> + Send + Sync>;
+pub type CustomActionFn =
+    Arc<dyn Fn(&str, serde_json::Value) -> Result<serde_json::Value, String> + Send + Sync>;
 
 /// Handler for custom (user-defined) cluster actions.
 pub struct CustomHandler {
@@ -39,7 +40,11 @@ impl CustomHandler {
     }
 
     /// Execute a custom action.
-    pub fn execute(&self, action: &str, payload: serde_json::Value) -> Result<serde_json::Value, String> {
+    pub fn execute(
+        &self,
+        action: &str,
+        payload: serde_json::Value,
+    ) -> Result<serde_json::Value, String> {
         let handlers = self.handlers.lock();
         match handlers.get(action) {
             Some(handler) => handler(action, payload),

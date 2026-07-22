@@ -74,16 +74,18 @@ async fn test_cron_tool_add_success() {
         .await;
     // Give a small delay for the mutex to be released from set_context
     tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-    assert!(!result.is_error, "Expected success, got: {}", result.for_llm);
+    assert!(
+        !result.is_error,
+        "Expected success, got: {}",
+        result.for_llm
+    );
     assert!(result.for_llm.contains("Cron job added"));
 }
 
 #[tokio::test]
 async fn test_cron_tool_list_empty() {
     let (_, tool) = make_tool();
-    let result = tool
-        .execute(&serde_json::json!({"action": "list"}))
-        .await;
+    let result = tool.execute(&serde_json::json!({"action": "list"})).await;
     assert!(!result.is_error);
     assert!(result.for_llm.contains("No scheduled jobs"));
 }
@@ -128,7 +130,11 @@ async fn test_cron_tool_add_recurring() {
         }))
         .await;
     tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-    assert!(!result.is_error, "Expected success, got: {}", result.for_llm);
+    assert!(
+        !result.is_error,
+        "Expected success, got: {}",
+        result.for_llm
+    );
 }
 
 #[tokio::test]
@@ -150,7 +156,11 @@ async fn test_cron_tool_add_with_command() {
         }))
         .await;
     tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-    assert!(!result.is_error, "Expected success, got: {}", result.for_llm);
+    assert!(
+        !result.is_error,
+        "Expected success, got: {}",
+        result.for_llm
+    );
 }
 
 // ============================================================
@@ -167,9 +177,18 @@ fn test_cron_service_default() {
 #[test]
 fn test_cron_service_incremental_ids() {
     let mut service = CronService::new();
-    let j1_id = service.add_job("j1", CronSchedule::At { at_ms: 0 }, "m", true, "web", "c1").id.clone();
-    let j2_id = service.add_job("j2", CronSchedule::At { at_ms: 0 }, "m", true, "web", "c2").id.clone();
-    let j3_id = service.add_job("j3", CronSchedule::At { at_ms: 0 }, "m", true, "web", "c3").id.clone();
+    let j1_id = service
+        .add_job("j1", CronSchedule::At { at_ms: 0 }, "m", true, "web", "c1")
+        .id
+        .clone();
+    let j2_id = service
+        .add_job("j2", CronSchedule::At { at_ms: 0 }, "m", true, "web", "c2")
+        .id
+        .clone();
+    let j3_id = service
+        .add_job("j3", CronSchedule::At { at_ms: 0 }, "m", true, "web", "c3")
+        .id
+        .clone();
     assert_eq!(j1_id, "cron-1");
     assert_eq!(j2_id, "cron-2");
     assert_eq!(j3_id, "cron-3");
@@ -178,7 +197,14 @@ fn test_cron_service_incremental_ids() {
 #[test]
 fn test_cron_service_get_job() {
     let mut service = CronService::new();
-    service.add_job("findable", CronSchedule::Every { every_ms: 1000 }, "msg", true, "ch", "cid");
+    service.add_job(
+        "findable",
+        CronSchedule::Every { every_ms: 1000 },
+        "msg",
+        true,
+        "ch",
+        "cid",
+    );
     let found = service.get_job("cron-1");
     assert!(found.is_some());
     assert_eq!(found.unwrap().name, "findable");
@@ -190,7 +216,14 @@ fn test_cron_service_get_job() {
 #[test]
 fn test_cron_service_update_job() {
     let mut service = CronService::new();
-    service.add_job("original", CronSchedule::At { at_ms: 0 }, "msg", true, "ch", "cid");
+    service.add_job(
+        "original",
+        CronSchedule::At { at_ms: 0 },
+        "msg",
+        true,
+        "ch",
+        "cid",
+    );
 
     let mut updated = service.get_job("cron-1").unwrap().clone();
     updated.name = "updated".to_string();
@@ -253,7 +286,9 @@ fn test_cron_schedule_serialization() {
     assert!(json.contains("every_ms"));
     assert!(json.contains("60000"));
 
-    let cron = CronSchedule::Cron { expr: "0 * * * *".to_string() };
+    let cron = CronSchedule::Cron {
+        expr: "0 * * * *".to_string(),
+    };
     let json = serde_json::to_string(&cron).unwrap();
     assert!(json.contains("0 * * * *"));
 }
@@ -307,7 +342,11 @@ async fn test_cron_tool_add_cron_expression() {
         }))
         .await;
     tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-    assert!(!result.is_error, "Expected success, got: {}", result.for_llm);
+    assert!(
+        !result.is_error,
+        "Expected success, got: {}",
+        result.for_llm
+    );
 }
 
 #[tokio::test]
@@ -380,9 +419,7 @@ async fn test_cron_tool_add_remove_lifecycle() {
     let job_id = &for_llm[job_id_start..job_id_end];
 
     // List should contain the job
-    let result = tool
-        .execute(&serde_json::json!({"action": "list"}))
-        .await;
+    let result = tool.execute(&serde_json::json!({"action": "list"})).await;
     assert!(!result.is_error);
     assert!(result.for_llm.contains("temporary job"));
 
@@ -396,9 +433,7 @@ async fn test_cron_tool_add_remove_lifecycle() {
     assert!(!result.is_error);
 
     // List should be empty
-    let result = tool
-        .execute(&serde_json::json!({"action": "list"}))
-        .await;
+    let result = tool.execute(&serde_json::json!({"action": "list"})).await;
     assert!(result.for_llm.contains("No scheduled jobs"));
 }
 
@@ -460,9 +495,7 @@ async fn test_cron_tool_missing_action() {
 #[tokio::test]
 async fn test_cron_tool_remove_missing_job_id() {
     let (_, tool) = make_tool();
-    let result = tool
-        .execute(&serde_json::json!({"action": "remove"}))
-        .await;
+    let result = tool.execute(&serde_json::json!({"action": "remove"})).await;
     assert!(result.is_error);
     assert!(result.for_llm.contains("job_id"));
 }
@@ -470,9 +503,7 @@ async fn test_cron_tool_remove_missing_job_id() {
 #[tokio::test]
 async fn test_cron_tool_enable_missing_job_id() {
     let (_, tool) = make_tool();
-    let result = tool
-        .execute(&serde_json::json!({"action": "enable"}))
-        .await;
+    let result = tool.execute(&serde_json::json!({"action": "enable"})).await;
     assert!(result.is_error);
     assert!(result.for_llm.contains("job_id"));
 }
@@ -492,12 +523,21 @@ async fn test_cron_tool_execute_job_deliver_true() {
         }
     }
 
-    tool.set_output(Arc::new(MockOutput { called: output_called_clone }));
+    tool.set_output(Arc::new(MockOutput {
+        called: output_called_clone,
+    }));
 
     // Add a job with deliver=true
     {
         let mut svc = service.lock().await;
-        svc.add_job("deliver test", CronSchedule::Every { every_ms: 1000 }, "msg", true, "web", "chat-1");
+        svc.add_job(
+            "deliver test",
+            CronSchedule::Every { every_ms: 1000 },
+            "msg",
+            true,
+            "web",
+            "chat-1",
+        );
     }
 
     let job = service.lock().await.get_job("cron-1").unwrap().clone();
@@ -521,12 +561,21 @@ async fn test_cron_tool_execute_job_deliver_false_no_executor() {
         }
     }
 
-    tool.set_output(Arc::new(MockOutput { called: output_called_clone }));
+    tool.set_output(Arc::new(MockOutput {
+        called: output_called_clone,
+    }));
 
     // Add a job with deliver=false (no executor configured)
     {
         let mut svc = service.lock().await;
-        svc.add_job("no executor", CronSchedule::Every { every_ms: 1000 }, "msg", false, "web", "chat-1");
+        svc.add_job(
+            "no executor",
+            CronSchedule::Every { every_ms: 1000 },
+            "msg",
+            false,
+            "web",
+            "chat-1",
+        );
     }
 
     let job = service.lock().await.get_job("cron-1").unwrap().clone();
@@ -543,7 +592,14 @@ async fn test_cron_tool_execute_job_no_shell_for_command() {
     // Add a job with a command but no shell tool configured
     {
         let mut svc = service.lock().await;
-        let job = svc.add_job("cmd test", CronSchedule::Every { every_ms: 1000 }, "msg", false, "web", "chat-1");
+        let job = svc.add_job(
+            "cmd test",
+            CronSchedule::Every { every_ms: 1000 },
+            "msg",
+            false,
+            "web",
+            "chat-1",
+        );
         let updated = CronJob {
             command: Some("echo hello".to_string()),
             ..job.clone()
@@ -574,11 +630,20 @@ async fn test_cron_tool_execute_job_empty_channel_defaults_to_cli() {
         }
     }
 
-    tool.set_output(Arc::new(MockOutput { captured: captured_clone }));
+    tool.set_output(Arc::new(MockOutput {
+        captured: captured_clone,
+    }));
 
     {
         let mut svc = service.lock().await;
-        svc.add_job("default channel", CronSchedule::Every { every_ms: 1000 }, "msg", true, "", "");
+        svc.add_job(
+            "default channel",
+            CronSchedule::Every { every_ms: 1000 },
+            "msg",
+            true,
+            "",
+            "",
+        );
     }
 
     let job = service.lock().await.get_job("cron-1").unwrap().clone();

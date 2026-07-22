@@ -205,11 +205,7 @@ impl Pool {
     ///
     /// Uses a semaphore to limit total connections and per-node limits.
     /// Returns the connection key for later removal.
-    pub async fn get(
-        &self,
-        node_id: &str,
-        address: &str,
-    ) -> Result<(String, TcpConn), String> {
+    pub async fn get(&self, node_id: &str, address: &str) -> Result<(String, TcpConn), String> {
         self.get_inner(node_id, address, false).await
     }
 

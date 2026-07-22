@@ -29,7 +29,8 @@ fn test_handle_heartbeat_ping() {
 
 #[test]
 fn test_handle_error_notify() {
-    let raw = br#"{"type":"system","module":"error","cmd":"notify","data":{"content":"test error"}}"#;
+    let raw =
+        br#"{"type":"system","module":"error","cmd":"notify","data":{"content":"test error"}}"#;
     let result = handle_text_message("s1", "web:s1", "web:s1", raw).unwrap();
     assert!(result.is_none());
 }
@@ -40,7 +41,10 @@ fn test_handle_history_request() {
     let result = handle_text_message("s1", "web:s1", "web:s1", raw).unwrap();
     assert!(result.is_some());
     let msg = result.unwrap();
-    assert_eq!(msg.metadata.get("request_type"), Some(&"history".to_string()));
+    assert_eq!(
+        msg.metadata.get("request_type"),
+        Some(&"history".to_string())
+    );
 }
 
 #[test]
@@ -136,7 +140,9 @@ fn test_build_broadcast_message_content() {
 #[test]
 fn test_handle_chat_send_with_metadata() {
     let raw = br#"{"type":"message","module":"chat","cmd":"send","data":{"content":"hello"}}"#;
-    let result = handle_text_message("s1", "web:s1", "web:s1", raw).unwrap().unwrap();
+    let result = handle_text_message("s1", "web:s1", "web:s1", raw)
+        .unwrap()
+        .unwrap();
     assert!(result.metadata.is_empty());
 }
 
@@ -158,7 +164,8 @@ fn test_handle_history_request_invalid_data() {
 fn test_handle_text_message_preserves_session_info() {
     let raw = br#"{"type":"message","module":"chat","cmd":"send","data":{"content":"test"}}"#;
     let msg = handle_text_message("my-session", "my-sender", "my-chat", raw)
-        .unwrap().unwrap();
+        .unwrap()
+        .unwrap();
     assert_eq!(msg.session_id, "my-session");
     assert_eq!(msg.sender_id, "my-sender");
     assert_eq!(msg.chat_id, "my-chat");
@@ -223,8 +230,13 @@ fn test_handle_text_message_empty_data_chat_send() {
 #[test]
 fn test_handle_history_request_with_all_fields() {
     let raw = br#"{"type":"message","module":"chat","cmd":"history_request","data":{"request_id":"req-123","limit":50,"before_index":100}}"#;
-    let result = handle_text_message("s1", "w:s1", "w:s1", raw).unwrap().unwrap();
-    assert_eq!(result.metadata.get("request_type"), Some(&"history".to_string()));
+    let result = handle_text_message("s1", "w:s1", "w:s1", raw)
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        result.metadata.get("request_type"),
+        Some(&"history".to_string())
+    );
     // Content should contain the request data as JSON
     let content: serde_json::Value = serde_json::from_str(&result.content).unwrap();
     assert_eq!(content["request_id"], "req-123");
@@ -234,7 +246,8 @@ fn test_handle_history_request_with_all_fields() {
 
 #[test]
 fn test_handle_history_request_minimal_fields() {
-    let raw = br#"{"type":"message","module":"chat","cmd":"history_request","data":{"request_id":"r1"}}"#;
+    let raw =
+        br#"{"type":"message","module":"chat","cmd":"history_request","data":{"request_id":"r1"}}"#;
     let result = handle_text_message("s1", "w:s1", "w:s1", raw);
     assert!(result.is_ok());
     let msg = result.unwrap().unwrap();
@@ -278,7 +291,12 @@ fn test_broadcast_to_session_no_queue() {
     let rt = tokio::runtime::Runtime::new().unwrap();
     let mgr = SessionManager::with_default_timeout();
     let session = mgr.create_session();
-    let result = rt.block_on(broadcast_to_session(&mgr, &session.id, "assistant", "hello"));
+    let result = rt.block_on(broadcast_to_session(
+        &mgr,
+        &session.id,
+        "assistant",
+        "hello",
+    ));
     assert!(result.is_err());
 }
 
@@ -297,7 +315,10 @@ fn test_ws_query_deserialize_no_token() {
 #[test]
 fn test_handle_text_message_chat_send_long_content() {
     let content = "a".repeat(10000);
-    let raw = format!(r#"{{"type":"message","module":"chat","cmd":"send","data":{{"content":"{}"}}}}"#, content);
+    let raw = format!(
+        r#"{{"type":"message","module":"chat","cmd":"send","data":{{"content":"{}"}}}}"#,
+        content
+    );
     let result = handle_text_message("s1", "w:s1", "w:s1", raw.as_bytes());
     assert!(result.is_ok());
     let msg = result.unwrap().unwrap();
@@ -384,7 +405,12 @@ fn test_build_broadcast_message_empty_content() {
 fn test_build_error_message_with_special_chars() {
     let bytes = build_error_message("error: <tag> & \"quotes\"");
     let parsed = ProtocolMessage::parse(&bytes).unwrap();
-    assert!(parsed.data.unwrap()["content"].as_str().unwrap().contains("<tag>"));
+    assert!(
+        parsed.data.unwrap()["content"]
+            .as_str()
+            .unwrap()
+            .contains("<tag>")
+    );
 }
 
 #[test]
@@ -419,7 +445,8 @@ fn test_handle_chat_send_whitespace_content() {
 
 #[test]
 fn test_handle_history_request_no_data() {
-    let raw = br#"{"type":"message","module":"chat","cmd":"history_request","data":"string not object"}"#;
+    let raw =
+        br#"{"type":"message","module":"chat","cmd":"history_request","data":"string not object"}"#;
     let result = handle_text_message("s1", "w:s1", "w:s1", raw);
     assert!(result.is_err());
 }
@@ -428,7 +455,12 @@ fn test_handle_history_request_no_data() {
 fn test_broadcast_to_session_nonexistent() {
     let rt = tokio::runtime::Runtime::new().unwrap();
     let mgr = SessionManager::with_default_timeout();
-    let result = rt.block_on(broadcast_to_session(&mgr, "fake-session", "assistant", "hello"));
+    let result = rt.block_on(broadcast_to_session(
+        &mgr,
+        "fake-session",
+        "assistant",
+        "hello",
+    ));
     assert!(result.is_err());
 }
 
@@ -553,7 +585,8 @@ fn test_build_error_message_with_long_error() {
 
 #[test]
 fn test_handle_chat_send_with_numbers_in_content() {
-    let raw = br#"{"type":"message","module":"chat","cmd":"send","data":{"content":"123 + 456 = 579"}}"#;
+    let raw =
+        br#"{"type":"message","module":"chat","cmd":"send","data":{"content":"123 + 456 = 579"}}"#;
     let result = handle_text_message("s1", "w:s1", "w:s1", raw);
     assert!(result.is_ok());
     assert_eq!(result.unwrap().unwrap().content, "123 + 456 = 579");
@@ -682,7 +715,10 @@ fn test_incoming_message_clone_equality() {
 #[test]
 fn test_handle_text_message_chat_send_long_content_2() {
     let content = "x".repeat(10000);
-    let raw = format!(r#"{{"type":"message","module":"chat","cmd":"send","data":{{"content":"{}"}}}}"#, content);
+    let raw = format!(
+        r#"{{"type":"message","module":"chat","cmd":"send","data":{{"content":"{}"}}}}"#,
+        content
+    );
     let result = handle_text_message("s1", "w:s1", "w:s1", raw.as_bytes());
     assert!(result.is_ok());
     let msg = result.unwrap().unwrap();
@@ -691,7 +727,8 @@ fn test_handle_text_message_chat_send_long_content_2() {
 
 #[test]
 fn test_handle_text_message_history_request_no_limit() {
-    let raw = br#"{"type":"message","module":"chat","cmd":"history_request","data":{"request_id":"r2"}}"#;
+    let raw =
+        br#"{"type":"message","module":"chat","cmd":"history_request","data":{"request_id":"r2"}}"#;
     let result = handle_text_message("s1", "w:s1", "w:s1", raw);
     assert!(result.is_ok());
     let msg = result.unwrap().unwrap();

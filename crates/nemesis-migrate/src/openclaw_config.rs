@@ -8,7 +8,13 @@ use std::path::Path;
 
 /// Supported providers for OpenClaw -> NemesisBot migration.
 const SUPPORTED_PROVIDERS: &[&str] = &[
-    "anthropic", "openai", "openrouter", "groq", "zhipu", "vllm", "gemini",
+    "anthropic",
+    "openai",
+    "openrouter",
+    "groq",
+    "zhipu",
+    "vllm",
+    "gemini",
 ];
 
 /// Supported channels for migration.
@@ -37,10 +43,11 @@ pub fn find_openclaw_config(openclaw_home: &Path) -> Result<String, String> {
 pub fn load_openclaw_config(config_path: &Path) -> Result<HashMap<String, Value>, String> {
     let data = std::fs::read_to_string(config_path)
         .map_err(|e| format!("reading OpenClaw config: {}", e))?;
-    let raw: Value = serde_json::from_str(&data)
-        .map_err(|e| format!("parsing OpenClaw config: {}", e))?;
+    let raw: Value =
+        serde_json::from_str(&data).map_err(|e| format!("parsing OpenClaw config: {}", e))?;
     let converted = convert_keys_to_snake(&raw);
-    let result = converted.as_object()
+    let result = converted
+        .as_object()
         .ok_or_else(|| "unexpected config format".to_string())?
         .clone()
         .into_iter()
@@ -101,8 +108,11 @@ pub fn convert_config(data: &HashMap<String, Value>) -> (Value, Vec<String>) {
             if let Some(temperature) = defaults.get("temperature").and_then(|v| v.as_f64()) {
                 config["agents"]["defaults"]["temperature"] = serde_json::json!(temperature);
             }
-            if let Some(max_tool_iter) = defaults.get("max_tool_iterations").and_then(|v| v.as_i64()) {
-                config["agents"]["defaults"]["max_tool_iterations"] = Value::Number(max_tool_iter.into());
+            if let Some(max_tool_iter) =
+                defaults.get("max_tool_iterations").and_then(|v| v.as_i64())
+            {
+                config["agents"]["defaults"]["max_tool_iterations"] =
+                    Value::Number(max_tool_iter.into());
             }
             if let Some(workspace) = defaults.get("workspace").and_then(|v| v.as_str()) {
                 let rewritten = workspace.replace(".openclaw", ".nemesisbot");
@@ -123,7 +133,10 @@ pub fn convert_config(data: &HashMap<String, Value>) -> (Value, Vec<String>) {
 
             if !SUPPORTED_PROVIDERS.contains(&name.as_str()) {
                 if !api_key.is_empty() || !api_base.is_empty() {
-                    warnings.push(format!("Provider '{}' not supported in NemesisBot, skipping", name));
+                    warnings.push(format!(
+                        "Provider '{}' not supported in NemesisBot, skipping",
+                        name
+                    ));
                 }
                 continue;
             }
@@ -148,9 +161,9 @@ pub fn convert_config(data: &HashMap<String, Value>) -> (Value, Vec<String>) {
                 });
 
                 if let Some(model_list) = config["model_list"].as_array_mut() {
-                    let exists = model_list.iter().any(|m| {
-                        m.get("model_name").and_then(|v| v.as_str()) == Some(model_name)
-                    });
+                    let exists = model_list
+                        .iter()
+                        .any(|m| m.get("model_name").and_then(|v| v.as_str()) == Some(model_name));
                     if !exists {
                         model_list.push(mc);
                     }
@@ -167,11 +180,17 @@ pub fn convert_config(data: &HashMap<String, Value>) -> (Value, Vec<String>) {
                 None => continue,
             };
             if !SUPPORTED_CHANNELS.contains(&name.as_str()) {
-                warnings.push(format!("Channel '{}' not supported in NemesisBot, skipping", name));
+                warnings.push(format!(
+                    "Channel '{}' not supported in NemesisBot, skipping",
+                    name
+                ));
                 continue;
             }
 
-            let enabled = c_map.get("enabled").and_then(|v| v.as_bool()).unwrap_or(false);
+            let enabled = c_map
+                .get("enabled")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
 
             match name.as_str() {
                 "telegram" | "discord" | "whatsapp" | "feishu" | "qq" | "dingtalk" | "maixcam" => {
@@ -222,12 +241,14 @@ pub fn convert_config(data: &HashMap<String, Value>) -> (Value, Vec<String>) {
                     }
                 }
                 if let Some(max_results) = search.get("max_results").and_then(|v| v.as_i64()) {
-                    config["tools"]["web"]["brave"]["max_results"] = Value::Number(max_results.into());
+                    config["tools"]["web"]["brave"]["max_results"] =
+                        Value::Number(max_results.into());
                     // Also set DuckDuckGo max_results, matching Go behavior
                     if config["tools"]["web"]["duck_duck_go"].is_null() {
                         config["tools"]["web"]["duck_duck_go"] = serde_json::json!({});
                     }
-                    config["tools"]["web"]["duck_duck_go"]["max_results"] = Value::Number(max_results.into());
+                    config["tools"]["web"]["duck_duck_go"]["max_results"] =
+                        Value::Number(max_results.into());
                 }
             }
         }
@@ -241,14 +262,16 @@ pub fn convert_config(data: &HashMap<String, Value>) -> (Value, Vec<String>) {
 pub fn merge_config(existing: &mut Value, incoming: &Value) {
     // Merge model_list
     if let (Some(existing_models), Some(incoming_models)) = (
-        existing.get_mut("model_list").and_then(|v| v.as_array_mut()),
+        existing
+            .get_mut("model_list")
+            .and_then(|v| v.as_array_mut()),
         incoming.get("model_list").and_then(|v| v.as_array()),
     ) {
         for model in incoming_models {
             let model_name = model.get("model_name").and_then(|v| v.as_str());
-            let exists = existing_models.iter().any(|m| {
-                m.get("model_name").and_then(|v| v.as_str()) == model_name
-            });
+            let exists = existing_models
+                .iter()
+                .any(|m| m.get("model_name").and_then(|v| v.as_str()) == model_name);
             if !exists {
                 existing_models.push(model.clone());
             }
@@ -262,7 +285,10 @@ pub fn merge_config(existing: &mut Value, incoming: &Value) {
     ) {
         for (name, incoming_ch) in incoming_channels {
             if let Some(existing_ch) = existing_channels.get(name) {
-                let existing_enabled = existing_ch.get("enabled").and_then(|v| v.as_bool()).unwrap_or(false);
+                let existing_enabled = existing_ch
+                    .get("enabled")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
                 if !existing_enabled {
                     existing_channels.insert(name.clone(), incoming_ch.clone());
                 }
@@ -274,11 +300,21 @@ pub fn merge_config(existing: &mut Value, incoming: &Value) {
 /// Infer provider name from model name.
 fn infer_provider_from_model(model: &str) -> String {
     let m = model.to_lowercase();
-    if m.contains("claude") { return "anthropic".to_string(); }
-    if m.contains("gpt") { return "openai".to_string(); }
-    if m.contains("llama") { return "groq".to_string(); }
-    if m.contains("gemini") { return "gemini".to_string(); }
-    if m.contains("glm") { return "zhipu".to_string(); }
+    if m.contains("claude") {
+        return "anthropic".to_string();
+    }
+    if m.contains("gpt") {
+        return "openai".to_string();
+    }
+    if m.contains("llama") {
+        return "groq".to_string();
+    }
+    if m.contains("gemini") {
+        return "gemini".to_string();
+    }
+    if m.contains("glm") {
+        return "zhipu".to_string();
+    }
     String::new()
 }
 
@@ -292,9 +328,7 @@ fn convert_keys_to_snake(value: &Value) -> Value {
                 .collect();
             Value::Object(converted)
         }
-        Value::Array(arr) => {
-            Value::Array(arr.iter().map(convert_keys_to_snake).collect())
-        }
+        Value::Array(arr) => Value::Array(arr.iter().map(convert_keys_to_snake).collect()),
         other => other.clone(),
     }
 }

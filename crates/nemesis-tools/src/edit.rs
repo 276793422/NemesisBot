@@ -94,9 +94,7 @@ impl Tool for EditFileTool {
 
         // Check old_text exists
         if !content.contains(old_text) {
-            return ToolResult::error(
-                "old_text not found in file. Make sure it matches exactly",
-            );
+            return ToolResult::error("old_text not found in file. Make sure it matches exactly");
         }
 
         // Check uniqueness

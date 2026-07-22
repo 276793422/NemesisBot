@@ -83,7 +83,10 @@ impl WebSocketClient {
     /// 2. Sends an authentication message containing the key
     /// 3. Starts background read and write tasks
     pub async fn connect(&self) -> Result<(), String> {
-        info!("[WebSocketClient] {}: Connecting to {}", self.id, self.server_url);
+        info!(
+            "[WebSocketClient] {}: Connecting to {}",
+            self.id, self.server_url
+        );
 
         // Establish WebSocket connection
         let (ws_stream, _response) = tokio_tungstenite::connect_async(&self.server_url)
@@ -97,12 +100,14 @@ impl WebSocketClient {
             "type": "auth",
             "key": self.key,
         });
-        let auth_str = serde_json::to_string(&auth_msg)
-            .map_err(|e| format!("serialize auth: {}", e))?;
+        let auth_str =
+            serde_json::to_string(&auth_msg).map_err(|e| format!("serialize auth: {}", e))?;
 
         let (mut ws_write, ws_read) = ws_stream.split();
         ws_write
-            .send(tokio_tungstenite::tungstenite::Message::Text(auth_str.into()))
+            .send(tokio_tungstenite::tungstenite::Message::Text(
+                auth_str.into(),
+            ))
             .await
             .map_err(|e| format!("send auth: {}", e))?;
 
@@ -272,10 +277,7 @@ impl WebSocketClient {
         };
 
         if msg.jsonrpc != crate::websocket::protocol::VERSION {
-            debug!(
-                "[WebSocketClient] {}: Non-protocol message ignored",
-                id
-            );
+            debug!("[WebSocketClient] {}: Non-protocol message ignored", id);
             return;
         }
 
@@ -305,8 +307,7 @@ impl WebSocketClient {
             match dispatcher.dispatch(&msg) {
                 Ok(Some(resp_msg)) => {
                     if let Some(tx) = send_tx {
-                        let resp_str =
-                            serde_json::to_string(&resp_msg).unwrap_or_default();
+                        let resp_str = serde_json::to_string(&resp_msg).unwrap_or_default();
                         if let Err(e) = tx.try_send(resp_str) {
                             warn!(
                                 "[WebSocketClient] {}: Failed to send dispatch response: {}",
@@ -379,11 +380,7 @@ impl WebSocketClient {
     ///
     /// Creates a pending channel keyed by message ID, sends the request,
     /// and awaits the response with a 30-second timeout.
-    pub async fn call(
-        &self,
-        method: &str,
-        params: serde_json::Value,
-    ) -> Result<Message, String> {
+    pub async fn call(&self, method: &str, params: serde_json::Value) -> Result<Message, String> {
         {
             let state = self.state.lock();
             if !state.connected {
@@ -488,6 +485,6 @@ impl WebSocketClient {
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
-mod tests;
-#[cfg(test)]
 mod extra_tests;
+#[cfg(test)]
+mod tests;

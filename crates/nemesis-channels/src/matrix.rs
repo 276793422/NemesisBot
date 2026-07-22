@@ -96,7 +96,10 @@ pub struct MatrixChannel {
 
 impl MatrixChannel {
     /// Creates a new `MatrixChannel`.
-    pub fn new(config: MatrixConfig, bus_sender: broadcast::Sender<InboundMessage>) -> Result<Self> {
+    pub fn new(
+        config: MatrixConfig,
+        bus_sender: broadcast::Sender<InboundMessage>,
+    ) -> Result<Self> {
         if config.homeserver.is_empty() || config.access_token.is_empty() {
             return Err(NemesisError::Channel(
                 "matrix homeserver and access_token are required".to_string(),
@@ -107,7 +110,10 @@ impl MatrixChannel {
 
         Ok(Self {
             base: BaseChannel::new("matrix"),
-            config: MatrixConfig { homeserver, ..config },
+            config: MatrixConfig {
+                homeserver,
+                ..config
+            },
             http: reqwest::Client::builder()
                 .timeout(std::time::Duration::from_secs(120))
                 .build()
@@ -133,7 +139,10 @@ impl MatrixChannel {
         let resp = self
             .http
             .get(&url)
-            .header("Authorization", format!("Bearer {}", self.config.access_token))
+            .header(
+                "Authorization",
+                format!("Bearer {}", self.config.access_token),
+            )
             .send()
             .await
             .map_err(|e| NemesisError::Channel(format!("matrix whoami failed: {e}")))?;
@@ -163,7 +172,10 @@ impl MatrixChannel {
         let resp = self
             .http
             .get(&url)
-            .header("Authorization", format!("Bearer {}", self.config.access_token))
+            .header(
+                "Authorization",
+                format!("Bearer {}", self.config.access_token),
+            )
             .send()
             .await
             .map_err(|e| NemesisError::Channel(format!("matrix initial sync failed: {e}")))?;
@@ -199,16 +211,17 @@ impl MatrixChannel {
         let resp = self
             .http
             .get(&url)
-            .header("Authorization", format!("Bearer {}", self.config.access_token))
+            .header(
+                "Authorization",
+                format!("Bearer {}", self.config.access_token),
+            )
             .send()
             .await
             .map_err(|e| NemesisError::Channel(format!("matrix sync failed: {e}")))?;
 
         if !resp.status().is_success() {
             let body = resp.text().await.unwrap_or_default();
-            return Err(NemesisError::Channel(format!(
-                "matrix sync error: {body}"
-            )));
+            return Err(NemesisError::Channel(format!("matrix sync error: {body}")));
         }
 
         let sync_resp: MatrixSyncResponse = resp
@@ -222,7 +235,10 @@ impl MatrixChannel {
 
     /// Sends a text message to a room.
     pub async fn send_room_message(&self, room_id: &str, content: &str) -> Result<String> {
-        let txn_id = format!("nb_{}", chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0));
+        let txn_id = format!(
+            "nb_{}",
+            chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0)
+        );
         let url = format!(
             "{}/_matrix/client/v3/rooms/{}/send/m.room.message/{}",
             self.config.homeserver, room_id, txn_id
@@ -236,7 +252,10 @@ impl MatrixChannel {
         let resp = self
             .http
             .put(&url)
-            .header("Authorization", format!("Bearer {}", self.config.access_token))
+            .header(
+                "Authorization",
+                format!("Bearer {}", self.config.access_token),
+            )
             .header("Content-Type", "application/json")
             .json(&payload)
             .send()
@@ -245,9 +264,7 @@ impl MatrixChannel {
 
         if !resp.status().is_success() {
             let body = resp.text().await.unwrap_or_default();
-            return Err(NemesisError::Channel(format!(
-                "matrix send error: {body}"
-            )));
+            return Err(NemesisError::Channel(format!("matrix send error: {body}")));
         }
 
         let result: MatrixSendResponse = resp
@@ -314,11 +331,7 @@ impl MatrixChannel {
                                 continue;
                             }
 
-                            messages.push((
-                                sender.clone(),
-                                room_id.clone(),
-                                content.to_string(),
-                            ));
+                            messages.push((sender.clone(), room_id.clone(), content.to_string()));
                         }
                     }
                 }
@@ -438,9 +451,7 @@ impl Channel for MatrixChannel {
                                     continue;
                                 }
 
-                                let content = event["content"]["body"]
-                                    .as_str()
-                                    .unwrap_or("");
+                                let content = event["content"]["body"].as_str().unwrap_or("");
                                 if content.is_empty() {
                                     continue;
                                 }
@@ -488,9 +499,10 @@ impl Channel for MatrixChannel {
         self.base.record_sent();
 
         let room_id = if msg.chat_id.is_empty() {
-            self.config.room_id.as_deref().ok_or_else(|| {
-                NemesisError::Channel("no room ID specified".to_string())
-            })?
+            self.config
+                .room_id
+                .as_deref()
+                .ok_or_else(|| NemesisError::Channel("no room ID specified".to_string()))?
         } else {
             &msg.chat_id
         };

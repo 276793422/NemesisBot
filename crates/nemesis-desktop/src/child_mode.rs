@@ -13,9 +13,7 @@ use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 
-use crate::process::handshake::{
-    PipeMessage, HandshakeResult,
-};
+use crate::process::handshake::{HandshakeResult, PipeMessage};
 
 // ---------------------------------------------------------------------------
 // CLI argument helpers
@@ -67,7 +65,8 @@ impl<R: Read> PipeReader<R> {
     /// Read a single JSON PipeMessage. Blocks until a complete message is available.
     pub fn read_message(&mut self) -> Result<PipeMessage, String> {
         let mut line = String::new();
-        self.reader.read_line(&mut line)
+        self.reader
+            .read_line(&mut line)
             .map_err(|e| format!("pipe read: {}", e))?;
         // serde_json can handle both line-delimited and pretty-printed
         // We read a full line and parse
@@ -92,13 +91,15 @@ impl<W: Write> PipeWriter<W> {
 
     /// Write a single JSON PipeMessage.
     pub fn write_message(&mut self, msg: &PipeMessage) -> Result<(), String> {
-        let json = serde_json::to_string(msg)
-            .map_err(|e| format!("pipe serialize: {}", e))?;
-        self.writer.write_all(json.as_bytes())
+        let json = serde_json::to_string(msg).map_err(|e| format!("pipe serialize: {}", e))?;
+        self.writer
+            .write_all(json.as_bytes())
             .map_err(|e| format!("pipe write: {}", e))?;
-        self.writer.write_all(b"\n")
+        self.writer
+            .write_all(b"\n")
             .map_err(|e| format!("pipe newline: {}", e))?;
-        self.writer.flush()
+        self.writer
+            .flush()
             .map_err(|e| format!("pipe flush: {}", e))
     }
 }
@@ -113,7 +114,10 @@ impl<W: Write> PipeWriter<W> {
 /// 2. Send ACK back
 ///
 /// Mirrors Go ChildHandshake.
-pub fn child_handshake(reader: &mut impl Read, writer: &mut impl Write) -> Result<HandshakeResult, String> {
+pub fn child_handshake(
+    reader: &mut impl Read,
+    writer: &mut impl Write,
+) -> Result<HandshakeResult, String> {
     let mut pipe_in = PipeReader::new(reader);
     let mut pipe_out = PipeWriter::new(writer);
 
@@ -141,7 +145,10 @@ pub fn child_handshake(reader: &mut impl Read, writer: &mut impl Write) -> Resul
 /// 2. Wait for ACK from child (with timeout)
 ///
 /// Mirrors Go ParentHandshake.
-pub fn parent_handshake(writer: &mut impl Write, reader: &mut impl Read) -> Result<HandshakeResult, String> {
+pub fn parent_handshake(
+    writer: &mut impl Write,
+    reader: &mut impl Read,
+) -> Result<HandshakeResult, String> {
     let mut pipe_out = PipeWriter::new(writer);
     let mut pipe_in = PipeReader::new(reader);
 
@@ -168,7 +175,10 @@ pub fn parent_handshake(writer: &mut impl Write, reader: &mut impl Read) -> Resu
 /// 2. Send ACK back
 ///
 /// Mirrors Go ReceiveWSKey.
-pub fn receive_ws_key(reader: &mut impl Read, writer: &mut impl Write) -> Result<(String, u16, String), String> {
+pub fn receive_ws_key(
+    reader: &mut impl Read,
+    writer: &mut impl Write,
+) -> Result<(String, u16, String), String> {
     let mut pipe_in = PipeReader::new(reader);
     let mut pipe_out = PipeWriter::new(writer);
 
@@ -178,14 +188,16 @@ pub fn receive_ws_key(reader: &mut impl Read, writer: &mut impl Write) -> Result
         return Err(format!("expected ws_key, got {}", msg.msg_type));
     }
 
-    let key = msg.data.get("key")
+    let key = msg
+        .data
+        .get("key")
         .and_then(|v| v.as_str())
         .unwrap_or("")
         .to_string();
-    let port = msg.data.get("port")
-        .and_then(|v| v.as_u64())
-        .unwrap_or(0) as u16;
-    let path = msg.data.get("path")
+    let port = msg.data.get("port").and_then(|v| v.as_u64()).unwrap_or(0) as u16;
+    let path = msg
+        .data
+        .get("path")
         .and_then(|v| v.as_str())
         .unwrap_or("")
         .to_string();
@@ -203,7 +215,13 @@ pub fn receive_ws_key(reader: &mut impl Read, writer: &mut impl Write) -> Result
 /// 2. Wait for ACK
 ///
 /// Mirrors Go SendWSKey.
-pub fn send_ws_key(writer: &mut impl Write, reader: &mut impl Read, key: &str, port: u16, path: &str) -> Result<(), String> {
+pub fn send_ws_key(
+    writer: &mut impl Write,
+    reader: &mut impl Read,
+    key: &str,
+    port: u16,
+    path: &str,
+) -> Result<(), String> {
     let mut pipe_out = PipeWriter::new(writer);
     let mut pipe_in = PipeReader::new(reader);
 
@@ -225,7 +243,10 @@ pub fn send_ws_key(writer: &mut impl Write, reader: &mut impl Read, key: &str, p
 /// 2. Send ACK back
 ///
 /// Mirrors Go ReceiveWindowData.
-pub fn receive_window_data(reader: &mut impl Read, writer: &mut impl Write) -> Result<serde_json::Value, String> {
+pub fn receive_window_data(
+    reader: &mut impl Read,
+    writer: &mut impl Write,
+) -> Result<serde_json::Value, String> {
     let mut pipe_in = PipeReader::new(reader);
     let mut pipe_out = PipeWriter::new(writer);
 
@@ -240,7 +261,8 @@ pub fn receive_window_data(reader: &mut impl Read, writer: &mut impl Write) -> R
     pipe_out.write_message(&ack)?;
 
     // Extract data
-    msg.data.get("data")
+    msg.data
+        .get("data")
         .cloned()
         .ok_or_else(|| "missing data field in window_data message".to_string())
 }
@@ -251,7 +273,11 @@ pub fn receive_window_data(reader: &mut impl Read, writer: &mut impl Write) -> R
 /// 2. Wait for ACK
 ///
 /// Mirrors Go SendWindowData.
-pub fn send_window_data(writer: &mut impl Write, reader: &mut impl Read, data: &serde_json::Value) -> Result<(), String> {
+pub fn send_window_data(
+    writer: &mut impl Write,
+    reader: &mut impl Read,
+    data: &serde_json::Value,
+) -> Result<(), String> {
     let mut pipe_out = PipeWriter::new(writer);
     let mut pipe_in = PipeReader::new(reader);
 
@@ -307,20 +333,23 @@ pub async fn run_child_mode() -> Result<(), String> {
         return Err("not in child mode".to_string());
     }
 
-    let child_id = get_child_id()
-        .ok_or("child-id not specified")?;
-    let window_type = get_window_type()
-        .ok_or("window-type not specified")?;
+    let child_id = get_child_id().ok_or("child-id not specified")?;
+    let window_type = get_window_type().ok_or("window-type not specified")?;
 
     // Allow forcing headless mode via environment variable (for testing)
-    let window_type = if env::var("NEMESISBOT_FORCE_HEADLESS").as_deref() == Ok("1") && window_type == "approval" {
+    let window_type = if env::var("NEMESISBOT_FORCE_HEADLESS").as_deref() == Ok("1")
+        && window_type == "approval"
+    {
         eprintln!("[Child] Forced headless mode via NEMESISBOT_FORCE_HEADLESS=1");
         "headless".to_string()
     } else {
         window_type
     };
 
-    eprintln!("[Child] Child ID: {}, Window Type: {}", child_id, window_type);
+    eprintln!(
+        "[Child] Child ID: {}, Window Type: {}",
+        child_id, window_type
+    );
 
     // 2. Create stdin/stdout pipe wrappers
     let stdin = std::io::stdin();
@@ -339,7 +368,10 @@ pub async fn run_child_mode() -> Result<(), String> {
     // 4. Receive WebSocket key
     eprintln!("[Child] Waiting for WebSocket key...");
     let (key, port, path) = receive_ws_key(&mut stdin_lock, &mut stdout_lock)?;
-    eprintln!("[Child] WS key received: key={}, port={}, path={}", key, port, path);
+    eprintln!(
+        "[Child] WS key received: key={}, port={}, path={}",
+        key, port, path
+    );
 
     // 5. Receive window data
     eprintln!("[Child] Waiting for window data...");
@@ -374,19 +406,28 @@ fn run_window(
         "approval" => {
             let data: ApprovalWindowData = serde_json::from_value(window_data.clone())
                 .map_err(|e| format!("invalid approval window data: {}", e))?;
-            eprintln!("[Child] Starting approval window for request {}", data.request_id);
+            eprintln!(
+                "[Child] Starting approval window for request {}",
+                data.request_id
+            );
             load_and_run_plugin_window(window_type, window_data, &ws_key, ws_port, &ws_path)
         }
         "headless" => {
             let data: ApprovalWindowData = serde_json::from_value(window_data.clone())
                 .map_err(|e| format!("invalid headless window data: {}", e))?;
-            eprintln!("[Child] Starting headless window (auto-approve) for request {}", data.request_id);
+            eprintln!(
+                "[Child] Starting headless window (auto-approve) for request {}",
+                data.request_id
+            );
             run_headless_auto_approve(child_id, &data, &ws_key, ws_port, &ws_path)
         }
         "dashboard" => {
             let data: DashboardWindowData = serde_json::from_value(window_data.clone())
                 .map_err(|e| format!("invalid dashboard window data: {}", e))?;
-            eprintln!("[Child] Starting dashboard window (web={}:{})", data.web_host, data.web_port);
+            eprintln!(
+                "[Child] Starting dashboard window (web={}:{})",
+                data.web_host, data.web_port
+            );
             load_and_run_plugin_window(window_type, window_data, &ws_key, ws_port, &ws_path)
         }
         _ => Err(format!("unknown window type: {}", window_type)),
@@ -415,16 +456,16 @@ fn load_and_run_plugin_window(
     ws_port: u16,
     ws_path: &str,
 ) -> Result<(), String> {
-    let exe = std::env::current_exe()
-        .map_err(|e| format!("get exe path: {}", e))?;
+    let exe = std::env::current_exe().map_err(|e| format!("get exe path: {}", e))?;
     let exe_dir = exe.parent().ok_or("no parent dir for exe")?;
 
-    let lib_path = nemesis_utils::find_plugin_library_in(exe_dir, "plugin_ui")
-        .ok_or_else(|| {
+    let lib_path =
+        nemesis_utils::find_plugin_library_in(exe_dir, "plugin_ui").ok_or_else(|| {
             let filename = nemesis_utils::plugin_library_filename("plugin_ui");
             format!(
                 "plugin-ui library not found in {}/plugins/ (expected: {})",
-                exe_dir.display(), filename
+                exe_dir.display(),
+                filename
             )
         })?;
 
@@ -445,14 +486,23 @@ fn load_and_run_plugin_window(
 
     // Try to call plugin_init if the library exports it (unified interface)
     let _init_result: i32 = unsafe {
-        if let Ok(plugin_init_fn) = lib.get::<libloading::Symbol<unsafe extern "C" fn(*const std::ffi::c_char, *const nemesis_plugin::HostServices) -> i32>>(b"plugin_init\0") {
+        if let Ok(plugin_init_fn) = lib.get::<libloading::Symbol<
+            unsafe extern "C" fn(
+                *const std::ffi::c_char,
+                *const nemesis_plugin::HostServices,
+            ) -> i32,
+        >>(b"plugin_init\0")
+        {
             let c_config_dir = std::ffi::CString::new(".").unwrap_or_default();
 
             // Build HostServices with decode_png support
             #[allow(unused_mut)]
-            let mut host = nemesis_plugin::build_host_services(&std::env::current_dir().unwrap_or_default());
+            let mut host =
+                nemesis_plugin::build_host_services(&std::env::current_dir().unwrap_or_default());
             #[cfg(not(target_os = "android"))]
-            { host.decode_png = Some(host_decode_png); }
+            {
+                host.decode_png = Some(host_decode_png);
+            }
             // Leak the HostServices so it lives for the DLL's lifetime
             let host_box = Box::new(host);
             let host_ptr = Box::into_raw(host_box);
@@ -472,14 +522,13 @@ fn load_and_run_plugin_window(
     };
 
     // Try to get the plugin_request_bring_to_front symbol (optional)
-    let bring_to_front_fn: Option<libloading::Symbol<unsafe extern "C" fn()>> = unsafe {
-        lib.get(b"plugin_request_bring_to_front\0").ok()
-    };
+    let bring_to_front_fn: Option<libloading::Symbol<unsafe extern "C" fn()>> =
+        unsafe { lib.get(b"plugin_request_bring_to_front\0").ok() };
 
     // Try to get the plugin_get_approval_result symbol (optional, for approval windows)
-    let get_approval_result_fn: Option<libloading::Symbol<unsafe extern "C" fn() -> *const std::ffi::c_char>> = unsafe {
-        lib.get(b"plugin_get_approval_result\0").ok()
-    };
+    let get_approval_result_fn: Option<
+        libloading::Symbol<unsafe extern "C" fn() -> *const std::ffi::c_char>,
+    > = unsafe { lib.get(b"plugin_get_approval_result\0").ok() };
 
     // Store the function pointer globally so the WS handler can call it
     if let Some(ref f) = bring_to_front_fn {
@@ -492,8 +541,8 @@ fn load_and_run_plugin_window(
 
     // Build config JSON for the DLL
     let config = build_plugin_config(window_type, window_data);
-    let c_config = std::ffi::CString::new(config)
-        .map_err(|e| format!("CString conversion: {}", e))?;
+    let c_config =
+        std::ffi::CString::new(config).map_err(|e| format!("CString conversion: {}", e))?;
 
     eprintln!("[Child] Calling plugin_create_window (blocking)...");
 
@@ -516,7 +565,8 @@ fn load_and_run_plugin_window(
                 action
             };
 
-            let request_id = window_data.get("request_id")
+            let request_id = window_data
+                .get("request_id")
                 .and_then(|v| v.as_str())
                 .unwrap_or("")
                 .to_string();
@@ -531,7 +581,10 @@ fn load_and_run_plugin_window(
                 for attempt in 0..10 {
                     match handle.client.notify("approval.submit", params.clone()) {
                         Ok(()) => {
-                            eprintln!("[Child] Sent approval.submit notification (action={})", action);
+                            eprintln!(
+                                "[Child] Sent approval.submit notification (action={})",
+                                action
+                            );
                             break;
                         }
                         Err(e) => {
@@ -558,7 +611,9 @@ fn load_and_run_plugin_window(
 
     // Call plugin_free if available (unified interface)
     unsafe {
-        if let Ok(plugin_free_fn) = lib.get::<libloading::Symbol<unsafe extern "C" fn()>>(b"plugin_free\0") {
+        if let Ok(plugin_free_fn) =
+            lib.get::<libloading::Symbol<unsafe extern "C" fn()>>(b"plugin_free\0")
+        {
             plugin_free_fn();
             eprintln!("[Child] plugin_free called");
         }
@@ -566,7 +621,10 @@ fn load_and_run_plugin_window(
 
     // lib is dropped here, unloading the DLL
     if result != 0 {
-        return Err(format!("plugin_create_window returned error code: {}", result));
+        return Err(format!(
+            "plugin_create_window returned error code: {}",
+            result
+        ));
     }
 
     Ok(())
@@ -622,7 +680,8 @@ struct WsHandle {
 impl WsHandle {
     fn close(&self) {
         self.client.close();
-        self.shutdown.store(true, std::sync::atomic::Ordering::SeqCst);
+        self.shutdown
+            .store(true, std::sync::atomic::Ordering::SeqCst);
     }
 }
 
@@ -649,7 +708,11 @@ fn connect_ws_with_handler(
     let ws_key_data = crate::websocket::client::WebSocketKey {
         key: ws_key.to_string(),
         port: ws_port,
-        path: if ws_path.is_empty() { "/ws".to_string() } else { ws_path.to_string() },
+        path: if ws_path.is_empty() {
+            "/ws".to_string()
+        } else {
+            ws_path.to_string()
+        },
     };
 
     let client = Arc::new(crate::websocket::client::WebSocketClient::new(&ws_key_data));
@@ -708,7 +771,8 @@ impl BringToFrontFn {
     }
 
     fn set(&self, f: unsafe extern "C" fn()) {
-        self.ptr.store(f as *mut (), std::sync::atomic::Ordering::SeqCst);
+        self.ptr
+            .store(f as *mut (), std::sync::atomic::Ordering::SeqCst);
     }
 
     fn call(&self) {
@@ -753,14 +817,20 @@ fn run_headless_auto_approve(
         for attempt in 0..10 {
             match handle.client.notify("approval.submit", result.clone()) {
                 Ok(()) => {
-                    eprintln!("[Child:headless] Sent approval.submit (auto-approve) for request {}", data.request_id);
+                    eprintln!(
+                        "[Child:headless] Sent approval.submit (auto-approve) for request {}",
+                        data.request_id
+                    );
                     break;
                 }
                 Err(_) if attempt < 9 => {
                     std::thread::sleep(std::time::Duration::from_millis(200));
                 }
                 Err(e) => {
-                    eprintln!("[Child:headless] Failed to send approval.submit after retries: {}", e);
+                    eprintln!(
+                        "[Child:headless] Failed to send approval.submit after retries: {}",
+                        e
+                    );
                 }
             }
         }
@@ -948,12 +1018,14 @@ fn build_plugin_config(window_type: &str, window_data: &serde_json::Value) -> St
                         "height": 800.0,
                         "url": url,
                         "init_script": init_script,
-                    }).to_string()
+                    })
+                    .to_string()
                 }
                 Err(_) => serde_json::json!({
                     "window_type": "dashboard",
                     "title": "NemesisBot Dashboard",
-                }).to_string(),
+                })
+                .to_string(),
             }
         }
         "approval" => {
@@ -969,17 +1041,20 @@ fn build_plugin_config(window_type: &str, window_data: &serde_json::Value) -> St
                         "height": 700.0,
                         "html": html,
                         "timeout_seconds": timeout_secs,
-                    }).to_string()
+                    })
+                    .to_string()
                 }
                 Err(_) => serde_json::json!({
                     "window_type": "approval",
                     "title": "Security Approval - NemesisBot",
-                }).to_string(),
+                })
+                .to_string(),
             }
         }
         _ => serde_json::json!({
             "window_type": window_type,
-        }).to_string(),
+        })
+        .to_string(),
     }
 }
 

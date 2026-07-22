@@ -70,7 +70,8 @@ pub fn decode_all(buf: &[u8]) -> (Vec<Frame>, usize) {
 
 /// Write a single frame synchronously to a writer.
 pub fn write_frame<W: std::io::Write>(writer: &mut W, data: &[u8]) -> std::io::Result<()> {
-    validate_frame_size(data).map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+    validate_frame_size(data)
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
     let len = data.len() as u32;
     writer.write_all(&len.to_be_bytes())?;
     writer.write_all(data)?;
@@ -132,7 +133,10 @@ impl<R: AsyncRead + Unpin> AsyncFrameReader<R> {
         if len > MAX_FRAME_SIZE {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
-                format!("Frame too large: {} bytes (max {} bytes)", len, MAX_FRAME_SIZE),
+                format!(
+                    "Frame too large: {} bytes (max {} bytes)",
+                    len, MAX_FRAME_SIZE
+                ),
             ));
         }
         let mut data = vec![0u8; len];
@@ -153,7 +157,8 @@ pub async fn write_frame_async<W: AsyncWrite + Unpin>(
     writer: &mut W,
     data: &[u8],
 ) -> std::io::Result<()> {
-    validate_frame_size(data).map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+    validate_frame_size(data)
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
     let len = data.len() as u32;
     writer.write_all(&len.to_be_bytes()).await?;
     writer.write_all(data).await?;

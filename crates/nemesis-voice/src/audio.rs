@@ -6,9 +6,9 @@
 use anyhow::{Context, Result};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use std::collections::VecDeque;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::mpsc::{self, Receiver, SyncSender};
 use std::sync::{Arc, Mutex, OnceLock};
-use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{Duration, Instant};
 
 /// Target sample rate for all voice processing (STT, VAD, TTS output)
@@ -29,12 +29,20 @@ pub fn list_devices() -> Result<Vec<AudioDeviceInfo>> {
     let host = cpal::default_host();
     let mut devices = Vec::new();
     let default_input = host.default_input_device().map(|d| d.name().ok()).flatten();
-    let default_output = host.default_output_device().map(|d| d.name().ok()).flatten();
+    let default_output = host
+        .default_output_device()
+        .map(|d| d.name().ok())
+        .flatten();
 
     for (i, dev) in host.input_devices()?.enumerate() {
         let name = dev.name().unwrap_or_else(|_| "Unknown".into());
         let is_default = default_input.as_deref() == Some(&name);
-        devices.push(AudioDeviceInfo { index: i, name, is_input: true, is_default });
+        devices.push(AudioDeviceInfo {
+            index: i,
+            name,
+            is_input: true,
+            is_default,
+        });
     }
 
     let input_count = devices.len();
@@ -75,11 +83,10 @@ impl AudioCapture {
                 .context(format!("Input device '{}' not found", device_name))?
         };
 
-        let supported = device.supported_input_configs()?
+        let supported = device
+            .supported_input_configs()?
             .find(|c| c.channels() <= 2 && c.sample_format() == cpal::SampleFormat::F32)
-            .or_else(|| {
-                device.supported_input_configs().ok()?.next()
-            })
+            .or_else(|| device.supported_input_configs().ok()?.next())
             .context("No supported input config found")?;
 
         let config = supported.with_max_sample_rate();
@@ -179,7 +186,8 @@ impl AudioPlayback {
                 .context(format!("Output device '{}' not found", device_name))?
         };
 
-        let supported = device.supported_output_configs()?
+        let supported = device
+            .supported_output_configs()?
             .find(|c| c.sample_format() == cpal::SampleFormat::F32)
             .or_else(|| device.supported_output_configs().ok()?.next())
             .context("No supported output config found")?;
@@ -221,7 +229,8 @@ impl AudioPlayback {
     /// Send samples to the playback queue. Blocks until playback completes.
     pub fn play_blocking(&self, samples: &[f32], input_sample_rate: u32) -> Result<()> {
         // Apply gain
-        let amplified: Vec<f32> = samples.iter()
+        let amplified: Vec<f32> = samples
+            .iter()
             .map(|&s| (s * self.gain).clamp(-1.0, 1.0))
             .collect();
 

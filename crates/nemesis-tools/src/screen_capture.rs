@@ -15,8 +15,8 @@ use crate::registry::Tool;
 use crate::types::ToolResult;
 use async_trait::async_trait;
 use std::path::PathBuf;
-use std::sync::Arc;
 use std::str::FromStr;
+use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::Mutex;
 
@@ -116,11 +116,7 @@ impl ScreenCaptureTool {
     }
 
     /// Execute a PowerShell capture script and return the result.
-    async fn execute_capture(
-        &self,
-        script: &str,
-        output_path: &std::path::Path,
-    ) -> ToolResult {
+    async fn execute_capture(&self, script: &str, output_path: &std::path::Path) -> ToolResult {
         let timeout = *self.timeout.lock().await;
 
         tracing::debug!(
@@ -163,7 +159,7 @@ impl ScreenCaptureTool {
                 return ToolResult::error(&format!(
                     "screenshot file not found after capture: {}",
                     e
-                ))
+                ));
             }
         };
 
@@ -203,7 +199,7 @@ impl ScreenCaptureTool {
                             "Screenshot saved to {}\n{}",
                             output_path.display(),
                             result
-                        ))
+                        ));
                     }
                     Err(e) => {
                         tracing::warn!(
@@ -232,7 +228,7 @@ impl ScreenCaptureTool {
             None => {
                 return ToolResult::error(
                     "parameters 'x', 'y', 'width', and 'height' are required for region mode",
-                )
+                );
             }
         };
         let y = match args["y"].as_i64() {
@@ -240,7 +236,7 @@ impl ScreenCaptureTool {
             None => {
                 return ToolResult::error(
                     "parameters 'x', 'y', 'width', and 'height' are required for region mode",
-                )
+                );
             }
         };
         let w = match args["width"].as_i64() {
@@ -248,7 +244,7 @@ impl ScreenCaptureTool {
             None => {
                 return ToolResult::error(
                     "parameters 'x', 'y', 'width', and 'height' are required for region mode",
-                )
+                );
             }
         };
         let h = match args["height"].as_i64() {
@@ -256,7 +252,7 @@ impl ScreenCaptureTool {
             None => {
                 return ToolResult::error(
                     "parameters 'x', 'y', 'width', and 'height' are required for region mode",
-                )
+                );
             }
         };
 
@@ -283,7 +279,7 @@ impl ScreenCaptureTool {
                             x,
                             y,
                             result
-                        ))
+                        ));
                     }
                     Err(e) => {
                         tracing::warn!(
@@ -331,31 +327,24 @@ impl ScreenCaptureTool {
                     let find_args = serde_json::json!({
                         "title_contains": window_title
                     });
-                    match caller
-                        .call_tool("find_window_by_title", &find_args)
-                        .await
-                    {
+                    match caller.call_tool("find_window_by_title", &find_args).await {
                         Ok(find_result) => {
                             resolved_hwnd = if let Ok(parsed) =
                                 serde_json::from_str::<serde_json::Value>(&find_result)
                             {
-                                parsed["hwnd"]
-                                    .as_str()
-                                    .unwrap_or("")
-                                    .to_string()
+                                parsed["hwnd"].as_str().unwrap_or("").to_string()
                             } else {
                                 String::new()
                             };
                             if !resolved_hwnd.is_empty() {
-                                mcp_args["hwnd"] =
-                                    serde_json::Value::String(resolved_hwnd.clone());
+                                mcp_args["hwnd"] = serde_json::Value::String(resolved_hwnd.clone());
                             }
                         }
                         Err(e) => {
                             return ToolResult::error(&format!(
                                 "failed to find window '{}': {}",
                                 window_title, e
-                            ))
+                            ));
                         }
                     }
                 }
@@ -369,7 +358,7 @@ impl ScreenCaptureTool {
                             "Window screenshot saved to {}\n{}",
                             output_path.display(),
                             result
-                        ))
+                        ));
                     }
                     Err(e) => return ToolResult::error(&format!("window capture failed: {}", e)),
                 }
@@ -384,12 +373,11 @@ impl ScreenCaptureTool {
     // --------------- PowerShell script builders ---------------
 
     /// Build the full-screen capture PowerShell script.
-    fn build_full_screen_script(
-        &self,
-        output_path: &std::path::Path,
-        format: &str,
-    ) -> String {
-        let escaped_path = output_path.to_string_lossy().to_string().replace('\'', "''");
+    fn build_full_screen_script(&self, output_path: &std::path::Path, format: &str) -> String {
+        let escaped_path = output_path
+            .to_string_lossy()
+            .to_string()
+            .replace('\'', "''");
         let fmt_enum = Self::image_format_enum(format);
         format!(
             r#"
@@ -418,7 +406,10 @@ Write-Output "OK"
         output_path: &std::path::Path,
         format: &str,
     ) -> String {
-        let escaped_path = output_path.to_string_lossy().to_string().replace('\'', "''");
+        let escaped_path = output_path
+            .to_string_lossy()
+            .to_string()
+            .replace('\'', "''");
         let fmt_enum = Self::image_format_enum(format);
         format!(
             r#"
@@ -446,14 +437,15 @@ Write-Output "OK"
         output_path: &std::path::Path,
         format: &str,
     ) -> ToolResult {
-        let escaped_path = output_path.to_string_lossy().to_string().replace('\'', "''");
+        let escaped_path = output_path
+            .to_string_lossy()
+            .to_string()
+            .replace('\'', "''");
         let fmt_enum = Self::image_format_enum(format);
 
         let find_part = if !hwnd.is_empty() {
             // Parse hwnd from "HWND(0x...)" format or plain hex
-            let hwnd_clean = hwnd
-                .trim_start_matches("HWND(")
-                .trim_end_matches(')');
+            let hwnd_clean = hwnd.trim_start_matches("HWND(").trim_end_matches(')');
             format!("$handle = [IntPtr]0x{}", hwnd_clean)
         } else {
             let escaped_title = window_title.replace('\'', "''");
@@ -586,12 +578,8 @@ impl Tool for ScreenCaptureTool {
 
         match mode {
             CaptureMode::FullScreen => self.capture_full_screen(&output_path, &format).await,
-            CaptureMode::Region => {
-                self.capture_region(args, &output_path, &format).await
-            }
-            CaptureMode::Window => {
-                self.capture_window(args, &output_path, &format).await
-            }
+            CaptureMode::Region => self.capture_region(args, &output_path, &format).await,
+            CaptureMode::Window => self.capture_window(args, &output_path, &format).await,
         }
     }
 }

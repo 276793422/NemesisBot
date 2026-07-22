@@ -31,7 +31,9 @@ const PT_LOAD: u32 = 1;
 
 /// 读 u16（按字节序）。
 fn u16(b: &[u8], off: usize, le: bool, name: &'static str) -> Result<u16, CodecError> {
-    let s = b.get(off..off + 2).ok_or(CodecError::FieldOutOfBounds(name))?;
+    let s = b
+        .get(off..off + 2)
+        .ok_or(CodecError::FieldOutOfBounds(name))?;
     Ok(if le {
         u16::from_le_bytes([s[0], s[1]])
     } else {
@@ -41,7 +43,9 @@ fn u16(b: &[u8], off: usize, le: bool, name: &'static str) -> Result<u16, CodecE
 
 /// 读 u32（按字节序）。
 fn u32(b: &[u8], off: usize, le: bool, name: &'static str) -> Result<u32, CodecError> {
-    let s = b.get(off..off + 4).ok_or(CodecError::FieldOutOfBounds(name))?;
+    let s = b
+        .get(off..off + 4)
+        .ok_or(CodecError::FieldOutOfBounds(name))?;
     Ok(if le {
         u32::from_le_bytes([s[0], s[1], s[2], s[3]])
     } else {
@@ -51,7 +55,9 @@ fn u32(b: &[u8], off: usize, le: bool, name: &'static str) -> Result<u32, CodecE
 
 /// 读 u64（按字节序）。
 fn u64(b: &[u8], off: usize, le: bool, name: &'static str) -> Result<u64, CodecError> {
-    let s = b.get(off..off + 8).ok_or(CodecError::FieldOutOfBounds(name))?;
+    let s = b
+        .get(off..off + 8)
+        .ok_or(CodecError::FieldOutOfBounds(name))?;
     let arr: [u8; 8] = s
         .try_into()
         .map_err(|_| CodecError::FieldOutOfBounds(name))?;

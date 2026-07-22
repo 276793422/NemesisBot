@@ -20,13 +20,13 @@ use std::sync::Arc;
 
 use parking_lot::Mutex;
 
-use nemesis_types::forge::LearningCycle;
 use crate::config::ForgeConfig;
 use crate::cycle_store::CycleStore;
 use crate::monitor::DeploymentMonitor;
 use crate::pipeline::{ArtifactValidation, Pipeline};
 use crate::registry::Registry;
 use crate::types::CollectedExperience;
+use nemesis_types::forge::LearningCycle;
 
 /// Skill creation delegate. Mirrors Go's `le.forge.CreateSkill()`.
 /// The Forge struct implements this trait and injects it via `set_skill_creator()`.
@@ -91,7 +91,14 @@ impl LearningAction {
     /// Create a new pending action.
     pub fn new(action_type: &str, priority: &str, description: &str) -> Self {
         Self {
-            id: format!("la-{}", uuid::Uuid::new_v4().to_string().split('-').next().unwrap_or("0")),
+            id: format!(
+                "la-{}",
+                uuid::Uuid::new_v4()
+                    .to_string()
+                    .split('-')
+                    .next()
+                    .unwrap_or("0")
+            ),
             action_type: action_type.to_string(),
             priority: priority.to_string(),
             description: description.to_string(),
@@ -221,9 +228,7 @@ impl LearningEngine {
     ) -> Result<String, String> {
         let future = caller.chat(system, user, Some(max_tokens as i64));
         match tokio::runtime::Handle::try_current() {
-            Ok(handle) => {
-                tokio::task::block_in_place(|| handle.block_on(future))
-            }
+            Ok(handle) => tokio::task::block_in_place(|| handle.block_on(future)),
             Err(_) => {
                 let rt = tokio::runtime::Runtime::new()
                     .map_err(|e| format!("failed to create runtime: {}", e))?;
@@ -423,37 +428,34 @@ impl LearningEngine {
         };
 
         for pattern in patterns {
-            let pattern_id = format!("p-{}", uuid::Uuid::new_v4().to_string().split('-').next().unwrap_or("0"));
+            let pattern_id = format!(
+                "p-{}",
+                uuid::Uuid::new_v4()
+                    .to_string()
+                    .split('-')
+                    .next()
+                    .unwrap_or("0")
+            );
 
             match pattern.pattern_type.as_str() {
                 "tool_chain" => {
                     if pattern.confidence >= high_conf && pattern.frequency >= 10 {
-                        let mut action = LearningAction::new(
-                            "create_skill",
-                            "high",
-                            &pattern.description,
-                        );
+                        let mut action =
+                            LearningAction::new("create_skill", "high", &pattern.description);
                         action.confidence = pattern.confidence;
                         action.pattern_id = Some(pattern_id.clone());
-                        action.draft_name = Some(generate_skill_name(
-                            &pattern.tools.join("->"),
-                        ));
+                        action.draft_name = Some(generate_skill_name(&pattern.tools.join("->")));
                         action.rationale = Some(format!(
                             "High-confidence tool chain ({:.2}) with frequency {}",
                             pattern.confidence, pattern.frequency
                         ));
                         actions.push(action);
                     } else {
-                        let mut action = LearningAction::new(
-                            "suggest_prompt",
-                            "medium",
-                            &pattern.description,
-                        );
+                        let mut action =
+                            LearningAction::new("suggest_prompt", "medium", &pattern.description);
                         action.confidence = pattern.confidence;
                         action.pattern_id = Some(pattern_id.clone());
-                        action.draft_name = Some(generate_skill_name(
-                            &pattern.tools.join("->"),
-                        ));
+                        action.draft_name = Some(generate_skill_name(&pattern.tools.join("->")));
                         action.rationale = Some(format!(
                             "Tool chain below threshold ({:.2} < {:.2}), suggest prompt",
                             pattern.confidence, high_conf
@@ -464,11 +466,8 @@ impl LearningEngine {
 
                 "error_recovery" => {
                     if pattern.confidence >= high_conf {
-                        let mut action = LearningAction::new(
-                            "create_skill",
-                            "high",
-                            &pattern.description,
-                        );
+                        let mut action =
+                            LearningAction::new("create_skill", "high", &pattern.description);
                         action.confidence = pattern.confidence;
                         action.pattern_id = Some(pattern_id.clone());
                         action.draft_name = Some(format!(
@@ -477,24 +476,18 @@ impl LearningEngine {
                         ));
                         action.rationale = Some(format!(
                             "High-confidence error recovery ({:.2}): {}",
-                            pattern.confidence,
-                            pattern.description
+                            pattern.confidence, pattern.description
                         ));
                         actions.push(action);
                     }
                 }
 
                 "efficiency_issue" => {
-                    let mut action = LearningAction::new(
-                        "suggest_prompt",
-                        "medium",
-                        &pattern.description,
-                    );
+                    let mut action =
+                        LearningAction::new("suggest_prompt", "medium", &pattern.description);
                     action.confidence = pattern.confidence;
                     action.pattern_id = Some(pattern_id.clone());
-                    action.draft_name = Some(generate_skill_name(
-                        &pattern.tools.join("->"),
-                    ));
+                    action.draft_name = Some(generate_skill_name(&pattern.tools.join("->")));
                     action.rationale = Some(format!(
                         "Efficiency issue ({:.2} confidence), suggest optimization",
                         pattern.confidence
@@ -504,16 +497,11 @@ impl LearningEngine {
 
                 "success_template" => {
                     if pattern.confidence >= high_conf {
-                        let mut action = LearningAction::new(
-                            "create_skill",
-                            "high",
-                            &pattern.description,
-                        );
+                        let mut action =
+                            LearningAction::new("create_skill", "high", &pattern.description);
                         action.confidence = pattern.confidence;
                         action.pattern_id = Some(pattern_id.clone());
-                        action.draft_name = Some(generate_skill_name(
-                            &pattern.tools.join("->"),
-                        ));
+                        action.draft_name = Some(generate_skill_name(&pattern.tools.join("->")));
                         action.rationale = Some(format!(
                             "Success template ({:.2} confidence), automate as Skill",
                             pattern.confidence
@@ -706,7 +694,9 @@ impl LearningEngine {
 
                     // Copy to workspace/skills/ with -forge suffix
                     if let Some(workspace) = self.forge_dir.parent() {
-                        let ws_skill_dir = workspace.join("skills").join(format!("{}-forge", draft_name));
+                        let ws_skill_dir = workspace
+                            .join("skills")
+                            .join(format!("{}-forge", draft_name));
                         if std::fs::create_dir_all(&ws_skill_dir).is_ok() {
                             let _ = std::fs::write(ws_skill_dir.join("SKILL.md"), &content);
                         }
@@ -724,7 +714,10 @@ impl LearningEngine {
                     let diagnosis = build_diagnosis(&validation);
                     match self.refine_skill_draft(&*provider_arc, action, &content, &diagnosis) {
                         Ok(refined) => {
-                            tracing::debug!(attempt, "[LearningEngine] Refined skill draft, re-validating");
+                            tracing::debug!(
+                                attempt,
+                                "[LearningEngine] Refined skill draft, re-validating"
+                            );
                             content = refined;
                             continue;
                         }
@@ -767,7 +760,10 @@ impl LearningEngine {
         let workspace_dir = if self.forge_dir.as_os_str().is_empty() {
             return;
         } else {
-            self.forge_dir.parent().unwrap_or(&self.forge_dir).join("prompts")
+            self.forge_dir
+                .parent()
+                .unwrap_or(&self.forge_dir)
+                .join("prompts")
         };
 
         if let Err(e) = std::fs::create_dir_all(&workspace_dir) {
@@ -828,7 +824,10 @@ impl LearningEngine {
         let prompts_dir = if self.forge_dir.as_os_str().is_empty() {
             return;
         } else {
-            self.forge_dir.parent().unwrap_or(&self.forge_dir).join("prompts")
+            self.forge_dir
+                .parent()
+                .unwrap_or(&self.forge_dir)
+                .join("prompts")
         };
 
         // F-M1: only retire prompt suggestions once at least one skill has
@@ -836,15 +835,11 @@ impl LearningEngine {
         // *_suggestion.md on each cycle, so suggestions never survived long
         // enough to be adopted. No precise adoption signal exists, so gate on
         // deployed-skill existence.
-        let has_deployed_skill = self
-            .registry
-            .list(None, None)
-            .iter()
-            .any(|a| {
-                use nemesis_types::forge::{ArtifactKind, ArtifactStatus};
-                matches!(a.kind, ArtifactKind::Skill)
-                    && matches!(a.status, ArtifactStatus::Active | ArtifactStatus::Observing)
-            });
+        let has_deployed_skill = self.registry.list(None, None).iter().any(|a| {
+            use nemesis_types::forge::{ArtifactKind, ArtifactStatus};
+            matches!(a.kind, ArtifactKind::Skill)
+                && matches!(a.status, ArtifactStatus::Active | ArtifactStatus::Observing)
+        });
         if !has_deployed_skill {
             return;
         }
@@ -917,10 +912,7 @@ impl LearningEngine {
              Previous Content:\n{}\n\n\
              Validation Diagnosis:\n{}\n\n\
              Please generate a corrected, complete SKILL.md with YAML frontmatter (--- markers). Fix ALL issues identified in the diagnosis.",
-            draft_name,
-            action.description,
-            previous_content,
-            diagnosis
+            draft_name, action.description, previous_content, diagnosis
         );
 
         let budget = 500u32;
@@ -1066,9 +1058,11 @@ impl LearningEngine {
         }
 
         // Calculate average duration
-        let avg_duration: f64 =
-            experiences.iter().map(|e| e.experience.duration_ms as f64).sum::<f64>()
-                / experiences.len() as f64;
+        let avg_duration: f64 = experiences
+            .iter()
+            .map(|e| e.experience.duration_ms as f64)
+            .sum::<f64>()
+            / experiences.len() as f64;
 
         // Group durations by tool
         let mut tool_durations: std::collections::HashMap<String, Vec<u64>> =
@@ -1465,11 +1459,7 @@ impl IterativeRefiner {
     ///
     /// Returns the refined content if it passes validation, or the last
     /// attempt if all rounds are exhausted.
-    pub fn refine<F>(
-        &self,
-        initial_content: &str,
-        validate: F,
-    ) -> (String, bool)
+    pub fn refine<F>(&self, initial_content: &str, validate: F) -> (String, bool)
     where
         F: Fn(&str) -> bool,
     {
@@ -1506,7 +1496,10 @@ impl IterativeRefiner {
 
         // Round 1: Add structure if content is flat
         if round >= 1 && !content.contains("## ") {
-            refined = format!("{}\n\n## Steps\n\n1. Execute the identified pattern\n2. Validate results\n3. Report outcome", refined);
+            refined = format!(
+                "{}\n\n## Steps\n\n1. Execute the identified pattern\n2. Validate results\n3. Report outcome",
+                refined
+            );
         }
 
         // Round 2: Add error handling section

@@ -36,17 +36,11 @@ pub enum FailoverError {
     #[error("timeout calling provider {provider}/{model}")]
     Timeout { provider: String, model: String },
     #[error("format error from provider {provider}: {message}")]
-    Format {
-        provider: String,
-        message: String,
-    },
+    Format { provider: String, message: String },
     #[error("provider {provider} is overloaded")]
     Overloaded { provider: String },
     #[error("unknown error from provider {provider}: {message}")]
-    Unknown {
-        provider: String,
-        message: String,
-    },
+    Unknown { provider: String, message: String },
 }
 
 impl FailoverError {
@@ -94,7 +88,11 @@ impl FailoverError {
             },
             _ => FailoverError::Unknown {
                 provider: provider.to_string(),
-                message: format!("status {}: {}", status, body.chars().take(200).collect::<String>()),
+                message: format!(
+                    "status {}: {}",
+                    status,
+                    body.chars().take(200).collect::<String>()
+                ),
             },
         }
     }

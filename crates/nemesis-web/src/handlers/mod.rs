@@ -10,8 +10,8 @@ pub mod channels;
 pub mod cluster;
 #[cfg(feature = "cluster")]
 pub mod cluster_persona_gen;
-pub mod estop;
 pub mod config;
+pub mod estop;
 #[cfg(feature = "forge")]
 pub mod forge;
 pub mod identity;
@@ -20,20 +20,20 @@ pub mod mcp;
 #[cfg(feature = "memory")]
 pub mod memory;
 pub mod models;
+pub mod persona;
+#[cfg(feature = "sandbox")]
+pub mod sandbox;
 #[cfg(feature = "security")]
 pub mod scanner;
 #[cfg(feature = "security")]
 pub mod security;
-#[cfg(feature = "sandbox")]
-pub mod sandbox;
+pub mod sessions;
 pub mod skills;
 pub mod system;
 pub mod tasks;
 pub mod tools;
 #[cfg(feature = "voice")]
 pub mod voice;
-pub mod persona;
-pub mod sessions;
 #[cfg(feature = "workflow")]
 pub mod workflow;
 
@@ -174,7 +174,9 @@ pub fn get_str(data: &serde_json::Value, field: &str) -> Result<String, String> 
 
 /// Extract an optional string field from a JSON value.
 pub fn get_opt_str(data: &serde_json::Value, field: &str) -> Option<String> {
-    data.get(field).and_then(|v| v.as_str()).map(|s| s.to_string())
+    data.get(field)
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string())
 }
 
 /// Read a text file from the workspace.

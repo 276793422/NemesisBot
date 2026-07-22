@@ -248,7 +248,11 @@ fn test_validate_messages_second_message_missing_role() {
         ]
     });
     let err = handler.validate(&payload).unwrap_err();
-    assert!(err.contains("message 1 missing 'role'"), "unexpected: {}", err);
+    assert!(
+        err.contains("message 1 missing 'role'"),
+        "unexpected: {}",
+        err
+    );
 }
 
 #[test]
@@ -261,5 +265,9 @@ fn test_validate_messages_second_message_missing_content() {
         ]
     });
     let err = handler.validate(&payload).unwrap_err();
-    assert!(err.contains("message 1 missing 'content'"), "unexpected: {}", err);
+    assert!(
+        err.contains("message 1 missing 'content'"),
+        "unexpected: {}",
+        err
+    );
 }

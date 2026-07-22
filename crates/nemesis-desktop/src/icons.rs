@@ -153,8 +153,7 @@ pub fn load_tray_icon() -> tray_icon::Icon {
 #[cfg(all(not(target_os = "android"), not(target_os = "linux")))]
 pub fn load_tray_icon_checked() -> Result<tray_icon::Icon, String> {
     let png_data = include_bytes!("../icons/icon.png");
-    let img = image::load_from_memory(png_data)
-        .map_err(|e| format!("decode icon.png: {}", e))?;
+    let img = image::load_from_memory(png_data).map_err(|e| format!("decode icon.png: {}", e))?;
     let rgba = img.to_rgba8();
     let (w, h) = rgba.dimensions();
     tray_icon::Icon::from_rgba(rgba.into_raw(), w, h)
@@ -191,11 +190,11 @@ pub fn png_to_ico(png_data: &[u8]) -> Vec<u8> {
     ico.extend_from_slice(&[0x01, 0x00]); // Count: 1 icon
 
     // Icon Directory Entry (16 bytes)
-    ico.push(w_byte);                // Width
-    ico.push(h_byte);                // Height
-    ico.push(0);                     // Color count: 0 for PNG
-    ico.push(0);                     // Reserved
-    ico.extend_from_slice(&[1, 0]);  // Color planes: 1
+    ico.push(w_byte); // Width
+    ico.push(h_byte); // Height
+    ico.push(0); // Color count: 0 for PNG
+    ico.push(0); // Reserved
+    ico.extend_from_slice(&[1, 0]); // Color planes: 1
     ico.extend_from_slice(&[32, 0]); // Bits per pixel: 32
 
     // Size of image data (4 bytes, little-endian)

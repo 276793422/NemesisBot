@@ -3,7 +3,10 @@ use super::*;
 #[test]
 fn test_skill_dir_prefix_two_layer() {
     let registry = GitHubRegistry::new("", 0, 0);
-    assert_eq!(registry.skill_dir_prefix("pdf"), Some("skills/pdf".to_string()));
+    assert_eq!(
+        registry.skill_dir_prefix("pdf"),
+        Some("skills/pdf".to_string())
+    );
 }
 
 #[test]
@@ -452,7 +455,10 @@ fn test_github_skill_full_deserialization() {
     }]"#;
     let skills: Vec<GithubSkill> = serde_json::from_str(json).unwrap();
     assert_eq!(skills[0].name, "pdf");
-    assert_eq!(skills[0].repository.as_deref(), Some("https://github.com/org/pdf"));
+    assert_eq!(
+        skills[0].repository.as_deref(),
+        Some("https://github.com/org/pdf")
+    );
     assert_eq!(skills[0].author.as_deref(), Some("alice"));
     assert_eq!(skills[0].tags.as_ref().unwrap().len(), 2);
 }
@@ -863,7 +869,10 @@ fn test_from_source_sets_all_fields() {
     assert_eq!(registry.branch, "v3");
     assert_eq!(registry.index_type, "github_api");
     assert_eq!(registry.index_path, "custom_index.json");
-    assert_eq!(registry.skill_path_pattern, "skills/{author}/{slug}/SKILL.md");
+    assert_eq!(
+        registry.skill_path_pattern,
+        "skills/{author}/{slug}/SKILL.md"
+    );
     assert_eq!(registry.github_api_url, "https://api.github.com");
     assert!(registry.is_three_layer_pattern());
 }
@@ -1087,7 +1096,9 @@ async fn test_get_skill_meta_empty_slug() {
 #[tokio::test]
 async fn test_download_and_install_invalid_slug() {
     let registry = GitHubRegistry::new("", 0, 0);
-    let result = registry.download_and_install("bad/slug", "1.0", "/tmp").await;
+    let result = registry
+        .download_and_install("bad/slug", "1.0", "/tmp")
+        .await;
     assert!(result.is_err());
     assert!(result.unwrap_err().to_string().contains("invalid"));
 }
@@ -1117,7 +1128,9 @@ async fn test_get_skill_meta_github_api_returns_basic() {
 #[tokio::test]
 async fn test_download_skill_tree_connection_error() {
     let registry = GitHubRegistry::new("http://127.0.0.1:1", 1, 1024);
-    let result = registry.download_skill_tree("skills/pdf", "/tmp/nonexistent").await;
+    let result = registry
+        .download_skill_tree("skills/pdf", "/tmp/nonexistent")
+        .await;
     assert!(result.is_err());
 }
 
@@ -1303,9 +1316,15 @@ fn test_github_content_entry_type_file() {
 fn test_github_tree_response_large_tree() {
     let mut entries = Vec::new();
     for i in 0..50 {
-        entries.push(format!(r#"{{"path": "skills/skill{}/SKILL.md", "type": "blob"}}"#, i));
+        entries.push(format!(
+            r#"{{"path": "skills/skill{}/SKILL.md", "type": "blob"}}"#,
+            i
+        ));
     }
-    let json = format!(r#"{{"sha": "bigsha", "tree": [{}], "truncated": true}}"#, entries.join(","));
+    let json = format!(
+        r#"{{"sha": "bigsha", "tree": [{}], "truncated": true}}"#,
+        entries.join(",")
+    );
     let response: GithubTreeResponse = serde_json::from_str(&json).unwrap();
     assert_eq!(response.tree.len(), 50);
     assert_eq!(response.truncated, Some(true));
@@ -1344,7 +1363,9 @@ async fn test_download_and_install_connection_error() {
         max_size: 1024,
     };
     let registry = GitHubRegistry::from_source(&config);
-    let result = registry.download_and_install("pdf", "1.0", "/tmp/nonexistent_install_target").await;
+    let result = registry
+        .download_and_install("pdf", "1.0", "/tmp/nonexistent_install_target")
+        .await;
     assert!(result.is_err());
 }
 

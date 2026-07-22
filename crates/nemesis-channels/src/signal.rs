@@ -78,7 +78,10 @@ pub struct SignalChannel {
 
 impl SignalChannel {
     /// Creates a new `SignalChannel`.
-    pub fn new(config: SignalConfig, bus_sender: broadcast::Sender<InboundMessage>) -> Result<Self> {
+    pub fn new(
+        config: SignalConfig,
+        bus_sender: broadcast::Sender<InboundMessage>,
+    ) -> Result<Self> {
         if config.api_url.is_empty() || config.phone_number.is_empty() {
             return Err(NemesisError::Channel(
                 "signal api_url and phone_number are required".to_string(),
@@ -107,7 +110,10 @@ impl SignalChannel {
     }
 
     /// Processes a received envelope.
-    pub fn process_envelope(&self, envelope: &SignalEnvelopeInner) -> Option<(String, String, String)> {
+    pub fn process_envelope(
+        &self,
+        envelope: &SignalEnvelopeInner,
+    ) -> Option<(String, String, String)> {
         let data_msg = envelope.data_message.as_ref()?;
         let content = data_msg.message.as_deref().unwrap_or("");
         if content.is_empty() {
@@ -122,7 +128,11 @@ impl SignalChannel {
             sender_id
         };
 
-        Some((sender_id.to_string(), chat_id.to_string(), content.to_string()))
+        Some((
+            sender_id.to_string(),
+            chat_id.to_string(),
+            content.to_string(),
+        ))
     }
 
     /// Checks if a timestamp has already been processed.
@@ -142,12 +152,7 @@ impl SignalChannel {
     }
 
     /// Sends a message to a number or group.
-    pub async fn send_signal_message(
-        &self,
-        to: &str,
-        content: &str,
-        is_group: bool,
-    ) -> Result<()> {
+    pub async fn send_signal_message(&self, to: &str, content: &str, is_group: bool) -> Result<()> {
         let url = if is_group {
             format!(
                 "{}/v2/send/{}",
@@ -182,9 +187,7 @@ impl SignalChannel {
 
         if !resp.status().is_success() {
             let body = resp.text().await.unwrap_or_default();
-            return Err(NemesisError::Channel(format!(
-                "signal send error: {body}"
-            )));
+            return Err(NemesisError::Channel(format!("signal send error: {body}")));
         }
 
         Ok(())

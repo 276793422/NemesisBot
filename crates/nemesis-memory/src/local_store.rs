@@ -13,7 +13,7 @@ use parking_lot::RwLock;
 use tokio::io::AsyncWriteExt;
 
 use crate::store::MemoryStore;
-use crate::types::{Entry, MemoryType, SearchResult, ScoredEntry};
+use crate::types::{Entry, MemoryType, ScoredEntry, SearchResult};
 
 // ---------------------------------------------------------------------------
 // TfIdfLocalStore
@@ -180,10 +180,7 @@ impl MemoryStore for TfIdfLocalStore {
                 let doc_tokens = entry_tokens(&entry);
                 let score = tfidf_score(&query_tokens, &doc_tokens, total_docs, &doc_freq);
                 if score > 0.0 {
-                    Some(ScoredEntry {
-                        entry,
-                        score,
-                    })
+                    Some(ScoredEntry { entry, score })
                 } else {
                     None
                 }
@@ -191,7 +188,11 @@ impl MemoryStore for TfIdfLocalStore {
             .collect();
 
         // Sort descending by score.
-        scored.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+        scored.sort_by(|a, b| {
+            b.score
+                .partial_cmp(&a.score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
 
         let total = scored.len();
         let entries = scored.into_iter().take(limit).collect();
@@ -274,10 +275,7 @@ fn tokenize(text: &str) -> Vec<String> {
     text.to_lowercase()
         .chars()
         .map(|c| {
-            if c.is_ascii_punctuation()
-                || c.is_whitespace()
-                || (!c.is_alphanumeric() && c != '_')
-            {
+            if c.is_ascii_punctuation() || c.is_whitespace() || (!c.is_alphanumeric() && c != '_') {
                 ' '
             } else {
                 c

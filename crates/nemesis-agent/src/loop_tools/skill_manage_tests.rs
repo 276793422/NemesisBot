@@ -70,7 +70,8 @@ fn slot_with(approve: bool) -> (ApprovalManagerSlot, Arc<MockApproval>) {
 async fn test_skill_manage_create() {
     let tmp = TempDir::new().unwrap();
     let tool = tool_in(&tmp);
-    let args = json_args(serde_json::json!({"action":"create","name":"my-skill","content":SAMPLE_SKILL}));
+    let args =
+        json_args(serde_json::json!({"action":"create","name":"my-skill","content":SAMPLE_SKILL}));
     let res = tool.execute(&args, &ctx()).await.unwrap();
     assert!(res.contains("created"), "{}", res);
 
@@ -84,7 +85,8 @@ async fn test_skill_manage_create() {
 async fn test_skill_manage_create_no_overwrite() {
     let tmp = TempDir::new().unwrap();
     let tool = tool_in(&tmp);
-    let args = json_args(serde_json::json!({"action":"create","name":"my-skill","content":SAMPLE_SKILL}));
+    let args =
+        json_args(serde_json::json!({"action":"create","name":"my-skill","content":SAMPLE_SKILL}));
     tool.execute(&args, &ctx()).await.unwrap();
 
     // Second create without overwrite -> error.
@@ -92,7 +94,9 @@ async fn test_skill_manage_create_no_overwrite() {
     assert!(err.contains("already exists"), "{}", err);
 
     // With overwrite -> ok.
-    let args2 = json_args(serde_json::json!({"action":"create","name":"my-skill","content":SAMPLE_SKILL,"overwrite":true}));
+    let args2 = json_args(
+        serde_json::json!({"action":"create","name":"my-skill","content":SAMPLE_SKILL,"overwrite":true}),
+    );
     assert!(tool.execute(&args2, &ctx()).await.is_ok());
 }
 
@@ -100,7 +104,8 @@ async fn test_skill_manage_create_no_overwrite() {
 async fn test_skill_manage_invalid_name_rejected() {
     let tmp = TempDir::new().unwrap();
     let tool = tool_in(&tmp);
-    let args = json_args(serde_json::json!({"action":"create","name":"../evil","content":SAMPLE_SKILL}));
+    let args =
+        json_args(serde_json::json!({"action":"create","name":"../evil","content":SAMPLE_SKILL}));
     let err = tool.execute(&args, &ctx()).await.unwrap_err();
     assert!(err.contains("invalid skill name"), "{}", err);
     // Nothing escaped the workspace.
@@ -118,14 +123,14 @@ async fn test_skill_manage_patch() {
     .await
     .unwrap();
 
-    let patch = json_args(serde_json::json!({"action":"patch","name":"my-skill","old":"Step one","new":"Step ONE (patched)"}));
+    let patch = json_args(
+        serde_json::json!({"action":"patch","name":"my-skill","old":"Step one","new":"Step ONE (patched)"}),
+    );
     let res = tool.execute(&patch, &ctx()).await.unwrap();
     assert!(res.contains("updated"), "{}", res);
 
-    let body = std::fs::read_to_string(
-        tmp.path().join("skills").join("my-skill").join("SKILL.md"),
-    )
-    .unwrap();
+    let body = std::fs::read_to_string(tmp.path().join("skills").join("my-skill").join("SKILL.md"))
+        .unwrap();
     assert!(body.contains("Step ONE (patched)"));
     assert!(body.contains("Step two")); // untouched line still present
 }
@@ -141,7 +146,9 @@ async fn test_skill_manage_patch_old_not_found() {
     .await
     .unwrap();
 
-    let patch = json_args(serde_json::json!({"action":"patch","name":"my-skill","old":"NONEXISTENT","new":"x"}));
+    let patch = json_args(
+        serde_json::json!({"action":"patch","name":"my-skill","old":"NONEXISTENT","new":"x"}),
+    );
     let err = tool.execute(&patch, &ctx()).await.unwrap_err();
     assert!(err.contains("not found"), "{}", err);
 }
@@ -157,7 +164,9 @@ async fn test_skill_manage_write_file() {
     .await
     .unwrap();
 
-    let wf = json_args(serde_json::json!({"action":"write_file","name":"my-skill","path":"references/api.md","content":"# API"}));
+    let wf = json_args(
+        serde_json::json!({"action":"write_file","name":"my-skill","path":"references/api.md","content":"# API"}),
+    );
     let res = tool.execute(&wf, &ctx()).await.unwrap();
     assert!(res.contains("Wrote"), "{}", res);
     assert!(
@@ -181,7 +190,9 @@ async fn test_skill_manage_write_file_traversal_blocked() {
     .await
     .unwrap();
 
-    let wf = json_args(serde_json::json!({"action":"write_file","name":"my-skill","path":"../escape.md","content":"evil"}));
+    let wf = json_args(
+        serde_json::json!({"action":"write_file","name":"my-skill","path":"../escape.md","content":"evil"}),
+    );
     let err = tool.execute(&wf, &ctx()).await.unwrap_err();
     assert!(err.contains("path"), "{}", err);
     // The escaped file must NOT exist next to the skills dir.
@@ -205,15 +216,24 @@ async fn test_skill_manage_remove_file() {
     .await
     .unwrap();
 
-    let rf = json_args(serde_json::json!({"action":"remove_file","name":"my-skill","path":"refs.md"}));
+    let rf =
+        json_args(serde_json::json!({"action":"remove_file","name":"my-skill","path":"refs.md"}));
     tool.execute(&rf, &ctx()).await.unwrap();
     assert!(
-        !tmp.path().join("skills").join("my-skill").join("refs.md").exists(),
+        !tmp.path()
+            .join("skills")
+            .join("my-skill")
+            .join("refs.md")
+            .exists(),
         "file should be removed"
     );
     // SKILL.md must be untouched.
     assert!(
-        tmp.path().join("skills").join("my-skill").join("SKILL.md").exists(),
+        tmp.path()
+            .join("skills")
+            .join("my-skill")
+            .join("SKILL.md")
+            .exists(),
         "SKILL.md must remain"
     );
 }
@@ -271,7 +291,8 @@ async fn test_skill_manage_approval_approved_writes() {
     let tmp = TempDir::new().unwrap();
     let (slot, mock) = slot_with(true);
     let tool = SkillManageTool::new(tmp.path().to_string_lossy().to_string(), Some(slot), true);
-    let args = json_args(serde_json::json!({"action":"create","name":"my-skill","content":SAMPLE_SKILL}));
+    let args =
+        json_args(serde_json::json!({"action":"create","name":"my-skill","content":SAMPLE_SKILL}));
     let res = tool.execute(&args, &ctx()).await.unwrap();
     assert!(res.contains("created"), "{}", res);
     assert_eq!(
@@ -280,7 +301,11 @@ async fn test_skill_manage_approval_approved_writes() {
         "approval should have been requested once"
     );
     assert!(
-        tmp.path().join("skills").join("my-skill").join("SKILL.md").exists(),
+        tmp.path()
+            .join("skills")
+            .join("my-skill")
+            .join("SKILL.md")
+            .exists(),
         "skill should be written after approval"
     );
 }
@@ -290,12 +315,17 @@ async fn test_skill_manage_approval_denied_blocks_write() {
     let tmp = TempDir::new().unwrap();
     let (slot, _mock) = slot_with(false);
     let tool = SkillManageTool::new(tmp.path().to_string_lossy().to_string(), Some(slot), true);
-    let args = json_args(serde_json::json!({"action":"create","name":"my-skill","content":SAMPLE_SKILL}));
+    let args =
+        json_args(serde_json::json!({"action":"create","name":"my-skill","content":SAMPLE_SKILL}));
     let err = tool.execute(&args, &ctx()).await.unwrap_err();
     assert!(err.contains("denied"), "{}", err);
     // Skill must NOT be written.
     assert!(
-        !tmp.path().join("skills").join("my-skill").join("SKILL.md").exists(),
+        !tmp.path()
+            .join("skills")
+            .join("my-skill")
+            .join("SKILL.md")
+            .exists(),
         "denied write must not create the skill"
     );
 }
@@ -305,11 +335,16 @@ async fn test_skill_manage_approval_required_but_no_manager() {
     let tmp = TempDir::new().unwrap();
     // require_approval=true but no manager slot -> refused (safe default).
     let tool = SkillManageTool::new(tmp.path().to_string_lossy().to_string(), None, true);
-    let args = json_args(serde_json::json!({"action":"create","name":"my-skill","content":SAMPLE_SKILL}));
+    let args =
+        json_args(serde_json::json!({"action":"create","name":"my-skill","content":SAMPLE_SKILL}));
     let err = tool.execute(&args, &ctx()).await.unwrap_err();
     assert!(err.contains("no approval manager"), "{}", err);
     assert!(
-        !tmp.path().join("skills").join("my-skill").join("SKILL.md").exists(),
+        !tmp.path()
+            .join("skills")
+            .join("my-skill")
+            .join("SKILL.md")
+            .exists(),
         "must not write without an approval manager"
     );
 }
@@ -340,7 +375,11 @@ async fn test_grep_tool_glob_filter() {
     let args = json_args(serde_json::json!({"pattern":"matchme","glob":"*.rs"}));
     let res = tool.execute(&args, &ctx()).await.unwrap();
     assert!(res.contains("a.rs"), "{}", res);
-    assert!(!res.contains("b.txt"), "glob *.rs must filter out .txt — {}", res);
+    assert!(
+        !res.contains("b.txt"),
+        "glob *.rs must filter out .txt — {}",
+        res
+    );
 }
 
 #[tokio::test]
@@ -391,14 +430,23 @@ async fn test_grep_tool_skips_target_dir() {
     let args = json_args(serde_json::json!({"pattern":"findme"}));
     let res = tool.execute(&args, &ctx()).await.unwrap();
     assert!(res.contains("root.rs"), "should find root.rs — {}", res);
-    assert!(!res.contains("hidden.rs"), "should skip target dir — {}", res);
+    assert!(
+        !res.contains("hidden.rs"),
+        "should skip target dir — {}",
+        res
+    );
 }
 
 // ---- GitTool ----
 
 #[tokio::test]
 async fn test_git_tool_unknown_action() {
-    let tool = GitTool::new(std::env::current_dir().unwrap().to_string_lossy().to_string());
+    let tool = GitTool::new(
+        std::env::current_dir()
+            .unwrap()
+            .to_string_lossy()
+            .to_string(),
+    );
     let args = json_args(serde_json::json!({"action":"push"}));
     let err = tool.execute(&args, &ctx()).await.unwrap_err();
     assert!(err.contains("unknown git action"), "{}", err);
@@ -406,7 +454,12 @@ async fn test_git_tool_unknown_action() {
 
 #[tokio::test]
 async fn test_git_tool_unknown_action_empty() {
-    let tool = GitTool::new(std::env::current_dir().unwrap().to_string_lossy().to_string());
+    let tool = GitTool::new(
+        std::env::current_dir()
+            .unwrap()
+            .to_string_lossy()
+            .to_string(),
+    );
     let args = json_args(serde_json::json!({"action":"bogus_xyz"}));
     let err = tool.execute(&args, &ctx()).await.unwrap_err();
     assert!(err.contains("unknown git action 'bogus_xyz'"), "{}", err);

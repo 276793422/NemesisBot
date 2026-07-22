@@ -85,7 +85,9 @@ fn redact_api_keys(content: &str) -> String {
     // Redact AWS access keys
     if let Some(pos) = result.find("AKIA") {
         if pos + 20 <= result.len() {
-            let is_valid = result[pos..pos + 20].chars().all(|c| c.is_ascii_alphanumeric());
+            let is_valid = result[pos..pos + 20]
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric());
             if is_valid {
                 result = result.replace(&result[pos..pos + 20], "[REDACTED_AWS_KEY]");
             }
@@ -100,7 +102,9 @@ fn redact_private_ips(content: &str) -> String {
     let mut result = content.to_string();
 
     // Replace common private IP prefixes
-    for prefix in &["192.168.", "10.", "172.16.", "172.17.", "172.18.", "172.19."] {
+    for prefix in &[
+        "192.168.", "10.", "172.16.", "172.17.", "172.18.", "172.19.",
+    ] {
         let mut start = 0;
         while let Some(pos) = result[start..].find(prefix) {
             let actual_pos = start + pos;
@@ -144,11 +148,7 @@ fn redact_file_paths(content: &str) -> String {
             let end = result[pos..]
                 .find(|c: char| c.is_whitespace() || c == '"' || c == '\'' || c == ',')
                 .unwrap_or(result.len() - pos);
-            result = format!(
-                "{}[REDACTED_PATH]{}",
-                &result[..pos],
-                &result[pos + end..]
-            );
+            result = format!("{}[REDACTED_PATH]{}", &result[..pos], &result[pos + end..]);
         }
     }
 
@@ -371,9 +371,8 @@ impl ForgeHandler {
                 if let Some(ref provider) = self.provider {
                     match provider.read_reflection_content(filename) {
                         Ok(content) => {
-                            result["content"] = serde_json::Value::String(
-                                provider.sanitize_content(&content),
-                            );
+                            result["content"] =
+                                serde_json::Value::String(provider.sanitize_content(&content));
                             result["filename"] = serde_json::Value::String(filename.into());
                         }
                         Err(e) => {

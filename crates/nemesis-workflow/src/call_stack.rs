@@ -17,7 +17,7 @@
 
 use parking_lot::Mutex;
 
-use crate::types::{TriggerSource, MAX_RECURSION_DEPTH};
+use crate::types::{MAX_RECURSION_DEPTH, TriggerSource};
 
 /// A single frame on the workflow call stack.
 ///
@@ -50,7 +50,9 @@ impl CallFrame {
     /// depth 0 and bypass the recursion limit entirely.
     pub fn depth_from_trigger(trigger: &Option<TriggerSource>) -> u32 {
         match trigger {
-            Some(TriggerSource::AgentTool { recursion_depth, .. }) => *recursion_depth,
+            Some(TriggerSource::AgentTool {
+                recursion_depth, ..
+            }) => *recursion_depth,
             _ => 0,
         }
     }

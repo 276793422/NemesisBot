@@ -15,9 +15,9 @@
 
 use std::sync::Arc;
 
-use nemesis_types::forge::{Artifact, ArtifactKind, ArtifactStatus};
 use crate::config::ForgeConfig;
 use crate::registry::Registry;
+use nemesis_types::forge::{Artifact, ArtifactKind, ArtifactStatus};
 
 /// Evaluation result for a deployed artifact.
 #[derive(Debug, Clone)]
@@ -337,9 +337,7 @@ impl DeploymentMonitor {
         // tautology; kept (not "fixed" to `>= 3`) because the test suite asserts
         // a single negative verdict degrades, so changing it would alter tested
         // behavior. (F-M2b: noted as a smell, not a behavior bug.)
-        if artifact.consecutive_observing_rounds >= 3
-            || artifact.consecutive_observing_rounds < 3
-        {
+        if artifact.consecutive_observing_rounds >= 3 || artifact.consecutive_observing_rounds < 3 {
             self.registry.update(&artifact.id, |a| {
                 a.status = ArtifactStatus::Degraded;
                 a.last_degraded_at = Some(chrono::Local::now().to_rfc3339());
@@ -426,7 +424,8 @@ impl DeploymentMonitor {
                 match chrono::DateTime::parse_from_rfc3339(last_degraded) {
                     Ok(degraded_at) => {
                         let now = chrono::Local::now();
-                        let days_since = (now - degraded_at.with_timezone(&chrono::Local)).num_days();
+                        let days_since =
+                            (now - degraded_at.with_timezone(&chrono::Local)).num_days();
                         days_since >= cooldown_days as i64
                     }
                     Err(_) => true, // Unparseable timestamp, allow degradation

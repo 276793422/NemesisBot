@@ -103,8 +103,7 @@ fn format_size(n: u64) -> String {
 fn pending(paths: &nemesis_sandbox::SandboxPaths, local: bool) -> Result<()> {
     let ws = workspace_dir(local);
     let up = user_profile();
-    let pending =
-        nemesis_sandbox::pending::pending_workspace(&paths.box_root, &ws, &up)?;
+    let pending = nemesis_sandbox::pending::pending_workspace(&paths.box_root, &ws, &up)?;
     if pending.is_empty() {
         println!(
             "No pending workspace files in box {}.",
@@ -129,8 +128,7 @@ fn commit(
 ) -> Result<()> {
     let ws = workspace_dir(local);
     let up = user_profile();
-    let pending =
-        nemesis_sandbox::pending::pending_workspace(&paths.box_root, &ws, &up)?;
+    let pending = nemesis_sandbox::pending::pending_workspace(&paths.box_root, &ws, &up)?;
     if pending.is_empty() {
         println!("No pending workspace files to commit.");
         return Ok(());
@@ -163,7 +161,11 @@ fn commit(
             }
         }
     }
-    println!("Committed {ok}/{} file(s), {} bytes.", to_commit.len(), total);
+    println!(
+        "Committed {ok}/{} file(s), {} bytes.",
+        to_commit.len(),
+        total
+    );
     Ok(())
 }
 
@@ -172,8 +174,7 @@ fn clear(paths: &nemesis_sandbox::SandboxPaths, local: bool, force: bool) -> Res
 
     let ws = workspace_dir(local);
     let up = user_profile();
-    let pending =
-        nemesis_sandbox::pending::pending_workspace(&paths.box_root, &ws, &up)?;
+    let pending = nemesis_sandbox::pending::pending_workspace(&paths.box_root, &ws, &up)?;
     if !pending.is_empty() && !force {
         println!(
             "{} pending workspace file(s) will be LOST when the box is cleared.",
@@ -246,7 +247,11 @@ fn start(paths: &nemesis_sandbox::SandboxPaths, local: bool, internal: bool) -> 
 
 /// Build the argv for the elevated self-relaunch (`sandbox <subcmd> --internal [--local]`).
 fn relaunch_args(subcmd: &str, local: bool) -> Vec<String> {
-    let mut v = vec!["sandbox".to_string(), subcmd.to_string(), "--internal".to_string()];
+    let mut v = vec![
+        "sandbox".to_string(),
+        subcmd.to_string(),
+        "--internal".to_string(),
+    ];
     if local {
         v.push("--local".to_string());
     }
@@ -289,7 +294,9 @@ fn stop(
             args.push("--purge".to_string());
         }
         nemesis_sandbox::elevation::relaunch_elevated(&exe, &args)?;
-        println!("[sandbox] elevated deactivator launched; waiting for SbieSvc to disappear (up to 60s)...");
+        println!(
+            "[sandbox] elevated deactivator launched; waiting for SbieSvc to disappear (up to 60s)..."
+        );
         let state = nemesis_sandbox::install::wait_for_state(
             nemesis_sandbox::USERMODE_SERVICE,
             ServiceState::NotFound,
@@ -316,7 +323,11 @@ pub async fn stop_for_shutdown(home: &std::path::Path) -> Result<()> {
         println!("[sandbox] engine deactivated on gateway shutdown.");
     } else {
         let exe = std::env::current_exe()?;
-        let args = vec!["sandbox".to_string(), "stop".to_string(), "--internal".to_string()];
+        let args = vec![
+            "sandbox".to_string(),
+            "stop".to_string(),
+            "--internal".to_string(),
+        ];
         nemesis_sandbox::elevation::relaunch_elevated(&exe, &args)?;
         println!("[sandbox] elevated deactivator launched on shutdown (UAC prompt).");
     }
@@ -335,17 +346,29 @@ fn status(paths: &nemesis_sandbox::SandboxPaths) -> Result<()> {
     println!(
         "  Start.exe:         {} [{}]",
         start_exe.display(),
-        if start_exe.exists() { "present" } else { "MISSING" }
+        if start_exe.exists() {
+            "present"
+        } else {
+            "MISSING"
+        }
     );
     println!(
         "  Sandboxie.ini:     {} [{}]",
         paths.ini_path.display(),
-        if paths.ini_path.exists() { "present" } else { "absent" }
+        if paths.ini_path.exists() {
+            "present"
+        } else {
+            "absent"
+        }
     );
     println!(
         "  runtime dir:       {} [{}]",
         paths.runtime_dir.display(),
-        if paths.runtime_dir.exists() { "present" } else { "absent" }
+        if paths.runtime_dir.exists() {
+            "present"
+        } else {
+            "absent"
+        }
     );
     println!("  sandbox ready:     {ready}");
     Ok(())

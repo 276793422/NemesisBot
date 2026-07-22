@@ -5,7 +5,7 @@
 //! **Ed25519 是真正的认证锚点**。
 
 use crate::hex_util::{hex_decode_32, hex_encode};
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
 use rand::rngs::OsRng;
 

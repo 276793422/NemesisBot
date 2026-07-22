@@ -66,8 +66,7 @@ fn dsml_invoke_re() -> &'static Regex {
         // an explicit \u{ff5c} so the regex receives the right Unicode scalar
         // regardless of how the bar renders in the source file.
         let b = "\u{ff5c}\u{ff5c}";
-        let pattern =
-            format!(r#"(?s)<{b}DSML{b}invoke\s+name="([^"]+)">(.*?)</{b}DSML{b}invoke>"#);
+        let pattern = format!(r#"(?s)<{b}DSML{b}invoke\s+name="([^"]+)">(.*?)</{b}DSML{b}invoke>"#);
         Regex::new(&pattern).expect("dsml invoke regex")
     })
 }
@@ -124,10 +123,11 @@ fn parse_json_text(content: &str) -> Vec<(String, String)> {
 }
 
 fn json_value_to_call(v: &serde_json::Value) -> Option<(String, String)> {
-    let name = v
-        .get("name")
-        .and_then(|n| n.as_str())
-        .or_else(|| v.get("function").and_then(|f| f.get("name")).and_then(|n| n.as_str()))?;
+    let name = v.get("name").and_then(|n| n.as_str()).or_else(|| {
+        v.get("function")
+            .and_then(|f| f.get("name"))
+            .and_then(|n| n.as_str())
+    })?;
     let arguments = match v.get("arguments") {
         Some(serde_json::Value::String(s)) => s.clone(),
         Some(other) => serde_json::to_string(other).unwrap_or_else(|_| "{}".to_string()),
@@ -255,8 +255,8 @@ fn collect_params(body: &str, param_re: &Regex) -> String {
         let pname = pcaps.get(1).map(|m| m.as_str().trim()).unwrap_or("");
         let pval = pcaps.get(2).map(|m| m.as_str().trim()).unwrap_or("");
         // Try to parse the value as JSON (number/bool/null/object), else string.
-        let val: serde_json::Value =
-            serde_json::from_str(pval).unwrap_or_else(|_| serde_json::Value::String(pval.to_string()));
+        let val: serde_json::Value = serde_json::from_str(pval)
+            .unwrap_or_else(|_| serde_json::Value::String(pval.to_string()));
         args.insert(pname.to_string(), val);
     }
     serde_json::to_string(&serde_json::Value::Object(args)).unwrap_or_else(|_| "{}".to_string())

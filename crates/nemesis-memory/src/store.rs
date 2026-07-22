@@ -9,7 +9,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use parking_lot::RwLock;
 
-use crate::types::{Entry, MemoryType, SearchResult, ScoredEntry};
+use crate::types::{Entry, MemoryType, ScoredEntry, SearchResult};
 
 /// Async interface for a memory storage backend.
 #[async_trait]
@@ -87,8 +87,7 @@ fn compute_score(query_tokens: &[String], doc_tokens: &[String]) -> f64 {
     if query_tokens.is_empty() {
         return 0.0;
     }
-    let doc_set: std::collections::HashSet<&str> =
-        doc_tokens.iter().map(|s| s.as_str()).collect();
+    let doc_set: std::collections::HashSet<&str> = doc_tokens.iter().map(|s| s.as_str()).collect();
     let query_set: std::collections::HashSet<&str> =
         query_tokens.iter().map(|s| s.as_str()).collect();
 
@@ -125,8 +124,7 @@ impl MemoryStore for LocalStore {
                 let doc_tokens = tokenize(&e.content);
                 let sc = compute_score(&query_tokens, &doc_tokens);
                 // Also check tags for matches.
-                let tag_tokens: Vec<String> =
-                    e.tags.iter().flat_map(|t| tokenize(t)).collect();
+                let tag_tokens: Vec<String> = e.tags.iter().flat_map(|t| tokenize(t)).collect();
                 let tag_sc = compute_score(&query_tokens, &tag_tokens);
                 let final_sc = sc.max(tag_sc);
                 if final_sc > 0.0 {
@@ -141,7 +139,11 @@ impl MemoryStore for LocalStore {
             .collect();
 
         // Sort descending by score.
-        scored.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+        scored.sort_by(|a, b| {
+            b.score
+                .partial_cmp(&a.score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
 
         let total = scored.len();
         let entries = scored.into_iter().take(limit).collect();

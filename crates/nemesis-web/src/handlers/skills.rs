@@ -79,7 +79,10 @@ impl ModuleHandler for SkillsHandler {
             "source.toggle" => {
                 let data = data.ok_or("missing data")?;
                 let name = crate::handlers::get_str(&data, "name")?;
-                let enabled = data.get("enabled").and_then(|v| v.as_bool()).unwrap_or(true);
+                let enabled = data
+                    .get("enabled")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(true);
                 self.source_toggle(workspace, &name, enabled)
             }
             "shop_detail" => {
@@ -158,13 +161,15 @@ fn skills_config_path(workspace: &str) -> PathBuf {
 
 fn load_config(workspace: &str) -> Result<nemesis_config::SkillsFullConfig, String> {
     let path = skills_config_path(workspace);
-    nemesis_config::load_skills_config(&path).map_err(|e| format!("failed to load skills config: {}", e))
+    nemesis_config::load_skills_config(&path)
+        .map_err(|e| format!("failed to load skills config: {}", e))
 }
 
 fn load_registry_config(path: &std::path::Path) -> nemesis_skills::types::RegistryConfig {
     if path.exists() {
         if let Ok(data) = std::fs::read_to_string(path) {
-            if let Ok(config) = serde_json::from_str::<nemesis_skills::types::RegistryConfig>(&data) {
+            if let Ok(config) = serde_json::from_str::<nemesis_skills::types::RegistryConfig>(&data)
+            {
                 return config;
             }
         }
@@ -174,7 +179,8 @@ fn load_registry_config(path: &std::path::Path) -> nemesis_skills::types::Regist
 
 fn save_config(workspace: &str, cfg: &nemesis_config::SkillsFullConfig) -> Result<(), String> {
     let path = skills_config_path(workspace);
-    nemesis_config::save_skills_config(&path, cfg).map_err(|e| format!("failed to save skills config: {}", e))
+    nemesis_config::save_skills_config(&path, cfg)
+        .map_err(|e| format!("failed to save skills config: {}", e))
 }
 
 impl SkillsHandler {
@@ -228,15 +234,25 @@ impl SkillsHandler {
     fn open_dir(&self, workspace: &str, name: &str) -> Result<Option<serde_json::Value>, String> {
         let skill_dir = PathBuf::from(workspace).join("skills").join(name);
         if !skill_dir.exists() {
-            return Err(format!("skill '{}' directory not found: {}", name, skill_dir.display()));
+            return Err(format!(
+                "skill '{}' directory not found: {}",
+                name,
+                skill_dir.display()
+            ));
         }
         let path = skill_dir.to_string_lossy().to_string();
         #[cfg(target_os = "windows")]
-        std::process::Command::new("explorer").arg(&path).spawn().ok();
+        std::process::Command::new("explorer")
+            .arg(&path)
+            .spawn()
+            .ok();
         #[cfg(target_os = "macos")]
         std::process::Command::new("open").arg(&path).spawn().ok();
         #[cfg(target_os = "linux")]
-        std::process::Command::new("xdg-open").arg(&path).spawn().ok();
+        std::process::Command::new("xdg-open")
+            .arg(&path)
+            .spawn()
+            .ok();
         Ok(Some(serde_json::json!({ "opened": true, "path": path })))
     }
 
@@ -247,10 +263,16 @@ impl SkillsHandler {
         }
         std::fs::remove_dir_all(&skill_dir)
             .map_err(|e| format!("failed to remove skill '{}': {}", name, e))?;
-        Ok(Some(serde_json::json!({ "uninstalled": true, "name": name })))
+        Ok(Some(
+            serde_json::json!({ "uninstalled": true, "name": name }),
+        ))
     }
 
-    async fn search(&self, query: &str, workspace: &str) -> Result<Option<serde_json::Value>, String> {
+    async fn search(
+        &self,
+        query: &str,
+        workspace: &str,
+    ) -> Result<Option<serde_json::Value>, String> {
         let config_path = skills_config_path(workspace);
         let config = load_registry_config(&config_path);
         let manager = nemesis_skills::registry::RegistryManager::from_config(config);
@@ -283,7 +305,9 @@ impl SkillsHandler {
             .map(|c| c.search_limit.max(1) as usize)
             .unwrap_or(50);
 
-        let grouped = manager.search_all(query, limit).await
+        let grouped = manager
+            .search_all(query, limit)
+            .await
             .map_err(|e| format!("搜索失败: {}", e))?;
 
         let mut results = Vec::new();
@@ -308,7 +332,11 @@ impl SkillsHandler {
         })))
     }
 
-    async fn install(&self, data: &serde_json::Value, workspace: &str) -> Result<Option<serde_json::Value>, String> {
+    async fn install(
+        &self,
+        data: &serde_json::Value,
+        workspace: &str,
+    ) -> Result<Option<serde_json::Value>, String> {
         let registry = crate::handlers::get_str(data, "registry")?;
         let slug = crate::handlers::get_str(data, "slug")?;
         let force = data.get("force").and_then(|v| v.as_bool()).unwrap_or(false);
@@ -328,13 +356,16 @@ impl SkillsHandler {
         let config = load_registry_config(&config_path);
         let manager = nemesis_skills::registry::RegistryManager::from_config(config);
 
-        let reg = manager.get_registry(&registry)
+        let reg = manager
+            .get_registry(&registry)
             .ok_or_else(|| format!("源 '{}' 不存在", registry))?;
 
         let _ = std::fs::create_dir_all(&skills_dir);
         let target_str = target_dir.to_string_lossy().to_string();
 
-        let result = reg.download_and_install(&slug, "latest", &target_str).await
+        let result = reg
+            .download_and_install(&slug, "latest", &target_str)
+            .await
             .map_err(|e| format!("安装失败: {}", e))?;
 
         Ok(Some(serde_json::json!({
@@ -347,14 +378,22 @@ impl SkillsHandler {
         })))
     }
 
-    async fn shop_detail(&self, registry: &str, slug: &str, workspace: &str) -> Result<Option<serde_json::Value>, String> {
+    async fn shop_detail(
+        &self,
+        registry: &str,
+        slug: &str,
+        workspace: &str,
+    ) -> Result<Option<serde_json::Value>, String> {
         let config_path = skills_config_path(workspace);
         let config = load_registry_config(&config_path);
         let manager = nemesis_skills::registry::RegistryManager::from_config(config);
 
-        let reg = manager.get_registry(registry)
+        let reg = manager
+            .get_registry(registry)
             .ok_or_else(|| format!("源 '{}' 不存在", registry))?;
-        let meta = reg.get_skill_meta(slug).await
+        let meta = reg
+            .get_skill_meta(slug)
+            .await
             .map_err(|e| format!("获取详情失败: {}", e))?;
 
         let skills_dir = PathBuf::from(workspace).join("skills");
@@ -374,12 +413,19 @@ impl SkillsHandler {
         })))
     }
 
-    async fn shop_code(&self, registry: &str, slug: &str, workspace: &str) -> Result<Option<serde_json::Value>, String> {
+    async fn shop_code(
+        &self,
+        registry: &str,
+        slug: &str,
+        workspace: &str,
+    ) -> Result<Option<serde_json::Value>, String> {
         let config_path = skills_config_path(workspace);
         let config = load_registry_config(&config_path);
         let manager = nemesis_skills::registry::RegistryManager::from_config(config);
 
-        let content = manager.get_skill_content(registry, slug).await
+        let content = manager
+            .get_skill_content(registry, slug)
+            .await
             .map_err(|e| format!("获取源码失败: {}", e))?;
 
         Ok(Some(serde_json::json!({
@@ -389,26 +435,30 @@ impl SkillsHandler {
         })))
     }
 
-    async fn browse(&self, data: &serde_json::Value, workspace: &str) -> Result<Option<serde_json::Value>, String> {
-        let registry = data.get("registry")
+    async fn browse(
+        &self,
+        data: &serde_json::Value,
+        workspace: &str,
+    ) -> Result<Option<serde_json::Value>, String> {
+        let registry = data
+            .get("registry")
             .and_then(|v| v.as_str())
             .unwrap_or("clawhub");
-        let sort = data.get("sort")
+        let sort = data
+            .get("sort")
             .and_then(|v| v.as_str())
             .unwrap_or("trending");
-        let limit = data.get("limit")
-            .and_then(|v| v.as_u64())
-            .unwrap_or(20) as usize;
-        let cursor = data.get("cursor")
-            .and_then(|v| v.as_str())
-            .unwrap_or("");
+        let limit = data.get("limit").and_then(|v| v.as_u64()).unwrap_or(20) as usize;
+        let cursor = data.get("cursor").and_then(|v| v.as_str()).unwrap_or("");
 
         let config_path = skills_config_path(workspace);
         let config = load_registry_config(&config_path);
         let manager = nemesis_skills::registry::RegistryManager::from_config(config);
 
         let sort = nemesis_skills::types::BrowseSort::from_str(sort);
-        let result = manager.browse(registry, &sort, limit, cursor).await
+        let result = manager
+            .browse(registry, &sort, limit, cursor)
+            .await
             .map_err(|e| format!("浏览失败: {}", e))?;
 
         // Build installed set.
@@ -426,17 +476,21 @@ impl SkillsHandler {
             }
         }
 
-        let items: Vec<_> = result.items.into_iter().map(|skill| {
-            serde_json::json!({
-                "name": skill.display_name,
-                "slug": skill.slug,
-                "description": skill.summary,
-                "source": skill.registry_name,
-                "version": skill.version,
-                "downloads": skill.downloads,
-                "installed": installed_slugs.contains(&skill.slug),
+        let items: Vec<_> = result
+            .items
+            .into_iter()
+            .map(|skill| {
+                serde_json::json!({
+                    "name": skill.display_name,
+                    "slug": skill.slug,
+                    "description": skill.summary,
+                    "source": skill.registry_name,
+                    "version": skill.version,
+                    "downloads": skill.downloads,
+                    "installed": installed_slugs.contains(&skill.slug),
+                })
             })
-        }).collect();
+            .collect();
 
         Ok(Some(serde_json::json!({
             "items": items,
@@ -446,8 +500,7 @@ impl SkillsHandler {
 
     fn config_get(&self, workspace: &str) -> Result<Option<serde_json::Value>, String> {
         let cfg = load_config(workspace)?;
-        let json = serde_json::to_value(&cfg)
-            .map_err(|e| format!("failed to serialize: {}", e))?;
+        let json = serde_json::to_value(&cfg).map_err(|e| format!("failed to serialize: {}", e))?;
         Ok(Some(json))
     }
 
@@ -544,8 +597,7 @@ impl SkillsHandler {
         data: &serde_json::Value,
     ) -> Result<Option<serde_json::Value>, String> {
         let url = crate::handlers::get_str(data, "url")?;
-        let (owner, repo) = parse_github_url(&url)
-            .map_err(|e| e.to_string())?;
+        let (owner, repo) = parse_github_url(&url).map_err(|e| e.to_string())?;
         let full_repo = format!("{}/{}", owner, repo);
         let name = repo.clone();
 
@@ -558,10 +610,10 @@ impl SkillsHandler {
         // Auto-detect structure in a blocking thread
         let owner_clone = owner.clone();
         let repo_clone = repo.clone();
-        let detected = tokio::task::spawn_blocking(move || {
-            detect_skill_structure(&owner_clone, &repo_clone)
-        }).await
-            .map_err(|e| format!("探测任务失败: {}", e))?;
+        let detected =
+            tokio::task::spawn_blocking(move || detect_skill_structure(&owner_clone, &repo_clone))
+                .await
+                .map_err(|e| format!("探测任务失败: {}", e))?;
 
         match detected {
             Ok((index_type, skill_path_pattern, branch)) => {
@@ -582,13 +634,11 @@ impl SkillsHandler {
                     "source": { "type": "github", "name": name, "repo": full_repo }
                 })))
             }
-            Err(reason) => {
-                Ok(Some(serde_json::json!({
-                    "success": false,
-                    "partial": { "name": name, "repo": full_repo },
-                    "error": reason,
-                })))
-            }
+            Err(reason) => Ok(Some(serde_json::json!({
+                "success": false,
+                "partial": { "name": name, "repo": full_repo },
+                "error": reason,
+            }))),
         }
     }
 
@@ -599,9 +649,21 @@ impl SkillsHandler {
     ) -> Result<Option<serde_json::Value>, String> {
         let name = crate::handlers::get_str(data, "name")?;
         let repo = crate::handlers::get_str(data, "repo")?;
-        let branch = data.get("branch").and_then(|v| v.as_str()).unwrap_or("main").to_string();
-        let index_type = data.get("index_type").and_then(|v| v.as_str()).unwrap_or("github_api").to_string();
-        let skill_path_pattern = data.get("skill_path_pattern").and_then(|v| v.as_str()).unwrap_or("skills/{slug}/SKILL.md").to_string();
+        let branch = data
+            .get("branch")
+            .and_then(|v| v.as_str())
+            .unwrap_or("main")
+            .to_string();
+        let index_type = data
+            .get("index_type")
+            .and_then(|v| v.as_str())
+            .unwrap_or("github_api")
+            .to_string();
+        let skill_path_pattern = data
+            .get("skill_path_pattern")
+            .and_then(|v| v.as_str())
+            .unwrap_or("skills/{slug}/SKILL.md")
+            .to_string();
 
         let mut cfg = load_config(workspace)?;
         if cfg.github_sources.iter().any(|s| s.name == name) {
@@ -626,7 +688,11 @@ impl SkillsHandler {
         })))
     }
 
-    fn source_remove(&self, workspace: &str, name: &str) -> Result<Option<serde_json::Value>, String> {
+    fn source_remove(
+        &self,
+        workspace: &str,
+        name: &str,
+    ) -> Result<Option<serde_json::Value>, String> {
         let mut cfg = load_config(workspace)?;
         let before = cfg.github_sources.len();
         cfg.github_sources.retain(|s| s.name != name);
@@ -649,21 +715,27 @@ impl SkillsHandler {
         if let Some(source) = cfg.github_sources.iter_mut().find(|s| s.name == name) {
             source.enabled = enabled;
             save_config(workspace, &cfg)?;
-            return Ok(Some(serde_json::json!({ "toggled": true, "name": name, "enabled": enabled })));
+            return Ok(Some(
+                serde_json::json!({ "toggled": true, "name": name, "enabled": enabled }),
+            ));
         }
 
         // Check ClawHub
         if name == "ClawHub" || name == "clawhub" {
             cfg.clawhub.enabled = enabled;
             save_config(workspace, &cfg)?;
-            return Ok(Some(serde_json::json!({ "toggled": true, "name": name, "enabled": enabled })));
+            return Ok(Some(
+                serde_json::json!({ "toggled": true, "name": name, "enabled": enabled }),
+            ));
         }
 
         // Check ModelScope
         if name == "ModelScope" || name == "modelscope" {
             cfg.modelscope.enabled = enabled;
             save_config(workspace, &cfg)?;
-            return Ok(Some(serde_json::json!({ "toggled": true, "name": name, "enabled": enabled })));
+            return Ok(Some(
+                serde_json::json!({ "toggled": true, "name": name, "enabled": enabled }),
+            ));
         }
 
         Err(format!("源 '{}' 不存在", name))
@@ -731,7 +803,8 @@ fn detect_skill_structure(owner: &str, repo: &str) -> Result<(String, String, St
         {
             if resp.status().is_success() {
                 if let Ok(entries) = resp.json::<Vec<serde_json::Value>>() {
-                    let skill_dirs: Vec<&str> = entries.iter()
+                    let skill_dirs: Vec<&str> = entries
+                        .iter()
                         .filter_map(|e| {
                             if e.get("type").and_then(|v| v.as_str()) == Some("dir") {
                                 e.get("name").and_then(|v| v.as_str())
@@ -744,8 +817,13 @@ fn detect_skill_structure(owner: &str, repo: &str) -> Result<(String, String, St
 
                     let mut has_skill_md = false;
                     for dir in &skill_dirs {
-                        let check_url = format!("{}/skills/{}/SKILL.md?ref={}", base_url, dir, branch);
-                        if let Ok(r) = client.get(&check_url).header("User-Agent", "nemesisbot").send() {
+                        let check_url =
+                            format!("{}/skills/{}/SKILL.md?ref={}", base_url, dir, branch);
+                        if let Ok(r) = client
+                            .get(&check_url)
+                            .header("User-Agent", "nemesisbot")
+                            .send()
+                        {
                             if r.status().is_success() {
                                 has_skill_md = true;
                                 break;
@@ -769,7 +847,11 @@ fn detect_skill_structure(owner: &str, repo: &str) -> Result<(String, String, St
             "https://raw.githubusercontent.com/{}/{}/{}/skills.json",
             owner, repo, branch
         );
-        if let Ok(resp) = client.get(&index_url).header("User-Agent", "nemesisbot").send() {
+        if let Ok(resp) = client
+            .get(&index_url)
+            .header("User-Agent", "nemesisbot")
+            .send()
+        {
             if resp.status().is_success() {
                 if let Ok(data) = resp.text() {
                     if serde_json::from_str::<Vec<serde_json::Value>>(&data).is_ok() {
@@ -785,14 +867,19 @@ fn detect_skill_structure(owner: &str, repo: &str) -> Result<(String, String, St
 
         // Mode D: root-level {slug}/SKILL.md
         let root_url = format!("{}?ref={}", base_url, branch);
-        if let Ok(resp) = client.get(&root_url).header("User-Agent", "nemesisbot").send() {
+        if let Ok(resp) = client
+            .get(&root_url)
+            .header("User-Agent", "nemesisbot")
+            .send()
+        {
             if resp.status().is_success() {
                 if let Ok(entries) = resp.json::<Vec<serde_json::Value>>() {
                     let skip_dirs = [
-                        "src", "pkg", "cmd", "internal", "docs", ".github",
-                        "test", "tests", "examples", "scripts", "config",
+                        "src", "pkg", "cmd", "internal", "docs", ".github", "test", "tests",
+                        "examples", "scripts", "config",
                     ];
-                    let root_dirs: Vec<&str> = entries.iter()
+                    let root_dirs: Vec<&str> = entries
+                        .iter()
                         .filter_map(|e| {
                             if e.get("type").and_then(|v| v.as_str()) == Some("dir") {
                                 let name = e.get("name").and_then(|v| v.as_str()).unwrap_or("");
@@ -810,12 +897,17 @@ fn detect_skill_structure(owner: &str, repo: &str) -> Result<(String, String, St
 
                     for dir in &root_dirs {
                         let check_url = format!("{}/{}?ref={}", base_url, dir, branch);
-                        if let Ok(r) = client.get(&check_url).header("User-Agent", "nemesisbot").send() {
+                        if let Ok(r) = client
+                            .get(&check_url)
+                            .header("User-Agent", "nemesisbot")
+                            .send()
+                        {
                             if r.status().is_success() {
                                 if let Ok(sub) = r.json::<Vec<serde_json::Value>>() {
                                     if sub.iter().any(|e| {
                                         e.get("name").and_then(|v| v.as_str()) == Some("SKILL.md")
-                                            && e.get("type").and_then(|v| v.as_str()) == Some("file")
+                                            && e.get("type").and_then(|v| v.as_str())
+                                                == Some("file")
                                     }) {
                                         return Ok((
                                             "github_api".to_string(),

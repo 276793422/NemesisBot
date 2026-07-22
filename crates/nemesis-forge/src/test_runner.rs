@@ -18,14 +18,11 @@ static FRONTMATTER_RE: LazyLock<Regex> =
 static SKILL_NAME_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^[a-zA-Z0-9]+(-[a-zA-Z0-9]+)*$").unwrap());
 
-static HEADING_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"(?m)^#{1,6}\s").unwrap());
+static HEADING_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?m)^#{1,6}\s").unwrap());
 
-static UNORDERED_LIST_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"(?m)^[\-\*]\s").unwrap());
+static UNORDERED_LIST_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?m)^[\-\*]\s").unwrap());
 
-static ORDERED_LIST_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"(?m)^\d+\.\s").unwrap());
+static ORDERED_LIST_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?m)^\d+\.\s").unwrap());
 
 static PYTHON_DEF_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(?m)^(?:async\s+)?def\s+\w+.*:\s*$").unwrap());
@@ -66,11 +63,7 @@ impl TestRunner {
 
     // ---- Skill Validation (5 checks) ----
 
-    fn validate_skill_content(
-        &self,
-        content: &str,
-        result: &mut FunctionalValidationResult,
-    ) {
+    fn validate_skill_content(&self, content: &str, result: &mut FunctionalValidationResult) {
         result.tests_run = 5;
 
         // Extract frontmatter
@@ -98,10 +91,7 @@ impl TestRunner {
                 ));
             }
         } else {
-            result
-                .stage
-                .errors
-                .push("Skill lacks name field".into());
+            result.stage.errors.push("Skill lacks name field".into());
         }
 
         // Check 3: Description length (non-empty, max 1024)
@@ -148,19 +138,12 @@ impl TestRunner {
 
     // ---- Script Validation (2 checks) ----
 
-    fn validate_script_tests(
-        &self,
-        content: &str,
-        result: &mut FunctionalValidationResult,
-    ) {
+    fn validate_script_tests(&self, content: &str, result: &mut FunctionalValidationResult) {
         result.tests_run = 2;
 
         // Check 1: Non-empty content
         if content.trim().is_empty() {
-            result
-                .stage
-                .errors
-                .push("Script content is empty".into());
+            result.stage.errors.push("Script content is empty".into());
             return;
         }
         result.tests_passed += 1;
@@ -168,7 +151,8 @@ impl TestRunner {
         // Check 2: Has some test case structure (name/input fields)
         // For content-based validation, we check that the script has
         // recognizable structure (shebang, echo/test statements)
-        let has_structure = content.contains("#!/bin/") || content.contains("#!/usr/bin/")
+        let has_structure = content.contains("#!/bin/")
+            || content.contains("#!/usr/bin/")
             || content.contains("echo ")
             || content.contains("test ")
             || content.contains("assert");
@@ -188,10 +172,7 @@ impl TestRunner {
         result.tests_run = 5;
 
         if content.trim().is_empty() {
-            result
-                .stage
-                .errors
-                .push("MCP content is empty".into());
+            result.stage.errors.push("MCP content is empty".into());
             return;
         }
 
@@ -429,9 +410,8 @@ fn check_mcp_server_structure(code: &str, lang: &str) -> Result<(), String> {
                 return Err("Python MCP lacks tool registration".into());
             }
 
-            let has_run = code.contains(".run(")
-                || code.contains(".serve(")
-                || code.contains("__main__");
+            let has_run =
+                code.contains(".run(") || code.contains(".serve(") || code.contains("__main__");
             if !has_run {
                 return Err("Python MCP lacks run entry (.run() / .serve() / __main__)".into());
             }

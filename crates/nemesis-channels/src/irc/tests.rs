@@ -115,8 +115,7 @@ fn test_handle_ping_not_ping() {
 
 #[test]
 fn test_parse_privmsg() {
-    let (target, content) =
-        IRCChannel::parse_privmsg("#channel :hello world").unwrap();
+    let (target, content) = IRCChannel::parse_privmsg("#channel :hello world").unwrap();
     assert_eq!(target, "#channel");
     assert_eq!(content, "hello world");
 }

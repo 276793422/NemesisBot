@@ -240,16 +240,22 @@ async fn extra_server_read_loop_response_routes_to_pending() {
     let child_id = "child-rd5".to_string();
     let call_handle = tokio::spawn(async move {
         // Will wait up to 30s for a response - we'll send one
-        server_clone.call_child(&child_id, "noop", serde_json::Value::Null).await
+        server_clone
+            .call_child(&child_id, "noop", serde_json::Value::Null)
+            .await
     });
     tokio::time::sleep(Duration::from_millis(150)).await;
 
     // Read the request from server
-    if let Some(Ok(ws_msg)) = tokio::time::timeout(Duration::from_secs(2), ws.next()).await.unwrap_or(None) {
+    if let Some(Ok(ws_msg)) = tokio::time::timeout(Duration::from_secs(2), ws.next())
+        .await
+        .unwrap_or(None)
+    {
         if let WsMessage::Text(text) = ws_msg {
             let req: Message = serde_json::from_str(&text).unwrap();
             assert!(req.is_request());
-            let resp = Message::new_response(req.id.as_deref().unwrap_or(""), serde_json::json!("ok"));
+            let resp =
+                Message::new_response(req.id.as_deref().unwrap_or(""), serde_json::json!("ok"));
             let resp_str = serde_json::to_string(&resp).unwrap();
             ws.send(WsMessage::Text(resp_str.into())).await.unwrap();
         }
@@ -346,7 +352,9 @@ async fn extra_server_call_child_send_failure_after_pending() {
     tokio::time::sleep(Duration::from_millis(150)).await;
 
     // call_child may or may not fail depending on connection removal timing
-    let _ = server.call_child("child-fail", "noop", serde_json::Value::Null).await;
+    let _ = server
+        .call_child("child-fail", "noop", serde_json::Value::Null)
+        .await;
     server.stop();
 }
 
@@ -361,9 +369,12 @@ async fn extra_server_send_notification_dropped_rx() {
     let (tx, rx) = tokio::sync::mpsc::channel::<String>(64);
     drop(rx);
 
-    let conn = Arc::new(tokio::sync::Mutex::new(
-        ChildConnection::new("k".to_string(), "k".to_string(), 99, tx),
-    ));
+    let conn = Arc::new(tokio::sync::Mutex::new(ChildConnection::new(
+        "k".to_string(),
+        "k".to_string(),
+        99,
+        tx,
+    )));
     {
         let mut state = server.state.lock();
         state.connections.insert("target".to_string(), conn.clone());
@@ -381,9 +392,12 @@ async fn extra_server_send_notification_full_channel() {
     // Fill it
     tx.try_send("x".to_string()).unwrap();
 
-    let conn = Arc::new(tokio::sync::Mutex::new(
-        ChildConnection::new("k".to_string(), "k".to_string(), 99, tx),
-    ));
+    let conn = Arc::new(tokio::sync::Mutex::new(ChildConnection::new(
+        "k".to_string(),
+        "k".to_string(),
+        99,
+        tx,
+    )));
     {
         let mut state = server.state.lock();
         state.connections.insert("target".to_string(), conn.clone());
@@ -573,9 +587,12 @@ async fn extra_send_notification_with_complex_params() {
     let key_gen = Arc::new(KeyGenerator::new());
     let server = WebSocketServer::new(key_gen);
     let (tx, mut rx) = tokio::sync::mpsc::channel::<String>(64);
-    let conn = Arc::new(tokio::sync::Mutex::new(
-        ChildConnection::new("k".into(), "k".into(), 1, tx),
-    ));
+    let conn = Arc::new(tokio::sync::Mutex::new(ChildConnection::new(
+        "k".into(),
+        "k".into(),
+        1,
+        tx,
+    )));
     {
         let mut s = server.state.lock();
         s.connections.insert("cid".to_string(), conn.clone());
@@ -650,7 +667,10 @@ async fn extra_server_request_unknown_method_returns_error_response() {
     ws.send(WsMessage::Text(text.into())).await.unwrap();
 
     // We should get back an error response (method_not_found)
-    if let Some(Ok(ws_msg)) = tokio::time::timeout(Duration::from_secs(2), ws.next()).await.unwrap_or(None) {
+    if let Some(Ok(ws_msg)) = tokio::time::timeout(Duration::from_secs(2), ws.next())
+        .await
+        .unwrap_or(None)
+    {
         if let WsMessage::Text(text) = ws_msg {
             let resp: Message = serde_json::from_str(&text).unwrap();
             assert!(resp.is_error_response());

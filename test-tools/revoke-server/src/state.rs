@@ -4,7 +4,7 @@
 //! 取代 v1/v2 的 crkey + signing_key + sym_key（v3 去 AEAD，无 sym_key）。
 
 use crate::store::{RevocationStore, SqliteStore};
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use nemesis_verify::keygen::KeyHierarchy;
 use std::sync::Arc;
 

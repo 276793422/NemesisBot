@@ -33,10 +33,12 @@ async fn query_finds_relevant_entries() {
     let result = store.query("cat", None, 10).await.unwrap();
     assert_eq!(result.total, 2);
     // Both "cat" entries should appear; the dog entry should not.
-    assert!(result
-        .entries
-        .iter()
-        .all(|e| e.entry.content.contains("Cat") || e.entry.content.contains("cat")));
+    assert!(
+        result
+            .entries
+            .iter()
+            .all(|e| e.entry.content.contains("Cat") || e.entry.content.contains("cat"))
+    );
 }
 
 #[tokio::test]
@@ -199,15 +201,27 @@ async fn list_empty_store() {
 #[tokio::test]
 async fn list_with_type_filter() {
     let store = LocalStore::new();
-    store.store(make_entry(MemoryType::LongTerm, "long term")).await.unwrap();
-    store.store(make_entry(MemoryType::ShortTerm, "short term")).await.unwrap();
-    store.store(make_entry(MemoryType::Daily, "daily")).await.unwrap();
+    store
+        .store(make_entry(MemoryType::LongTerm, "long term"))
+        .await
+        .unwrap();
+    store
+        .store(make_entry(MemoryType::ShortTerm, "short term"))
+        .await
+        .unwrap();
+    store
+        .store(make_entry(MemoryType::Daily, "daily"))
+        .await
+        .unwrap();
 
     let long_only = store.list(Some(MemoryType::LongTerm), 10, 0).await.unwrap();
     assert_eq!(long_only.len(), 1);
     assert_eq!(long_only[0].typ, MemoryType::LongTerm);
 
-    let short_only = store.list(Some(MemoryType::ShortTerm), 10, 0).await.unwrap();
+    let short_only = store
+        .list(Some(MemoryType::ShortTerm), 10, 0)
+        .await
+        .unwrap();
     assert_eq!(short_only.len(), 1);
     assert_eq!(short_only[0].typ, MemoryType::ShortTerm);
 }
@@ -215,7 +229,10 @@ async fn list_with_type_filter() {
 #[tokio::test]
 async fn query_no_results() {
     let store = LocalStore::new();
-    store.store(make_entry(MemoryType::LongTerm, "hello world")).await.unwrap();
+    store
+        .store(make_entry(MemoryType::LongTerm, "hello world"))
+        .await
+        .unwrap();
     let result = store.query("nonexistent", None, 10).await.unwrap();
     assert_eq!(result.total, 0);
     assert!(result.entries.is_empty());
@@ -236,7 +253,13 @@ async fn query_with_tags() {
 async fn query_respects_limit() {
     let store = LocalStore::new();
     for i in 0..10 {
-        store.store(make_entry(MemoryType::LongTerm, &format!("cat entry number {}", i))).await.unwrap();
+        store
+            .store(make_entry(
+                MemoryType::LongTerm,
+                &format!("cat entry number {}", i),
+            ))
+            .await
+            .unwrap();
     }
     let result = store.query("cat", None, 3).await.unwrap();
     assert_eq!(result.entries.len(), 3);
@@ -253,7 +276,10 @@ async fn close_is_ok() {
 async fn store_multiple_and_list() {
     let store = LocalStore::new();
     for i in 0..20 {
-        store.store(make_entry(MemoryType::LongTerm, &format!("entry {}", i))).await.unwrap();
+        store
+            .store(make_entry(MemoryType::LongTerm, &format!("entry {}", i)))
+            .await
+            .unwrap();
     }
     let all = store.list(None, 100, 0).await.unwrap();
     assert_eq!(all.len(), 20);
@@ -262,9 +288,18 @@ async fn store_multiple_and_list() {
 #[tokio::test]
 async fn query_scoring_order() {
     let store = LocalStore::new();
-    store.store(make_entry(MemoryType::LongTerm, "cat cat cat")).await.unwrap();
-    store.store(make_entry(MemoryType::LongTerm, "cat dog")).await.unwrap();
-    store.store(make_entry(MemoryType::LongTerm, "dog dog dog")).await.unwrap();
+    store
+        .store(make_entry(MemoryType::LongTerm, "cat cat cat"))
+        .await
+        .unwrap();
+    store
+        .store(make_entry(MemoryType::LongTerm, "cat dog"))
+        .await
+        .unwrap();
+    store
+        .store(make_entry(MemoryType::LongTerm, "dog dog dog"))
+        .await
+        .unwrap();
 
     let result = store.query("cat", None, 10).await.unwrap();
     assert_eq!(result.total, 2);
@@ -275,7 +310,10 @@ async fn query_scoring_order() {
 #[tokio::test]
 async fn list_with_offset_beyond_entries() {
     let store = LocalStore::new();
-    store.store(make_entry(MemoryType::LongTerm, "only entry")).await.unwrap();
+    store
+        .store(make_entry(MemoryType::LongTerm, "only entry"))
+        .await
+        .unwrap();
     let result = store.list(None, 10, 100).await.unwrap();
     assert!(result.is_empty());
 }
@@ -340,13 +378,22 @@ async fn test_local_store_query_empty() {
 #[tokio::test]
 async fn test_local_store_list_by_type() {
     let store = LocalStore::new();
-    store.store(Entry::new(MemoryType::LongTerm, "long term".to_string())).await.unwrap();
-    store.store(Entry::new(MemoryType::ShortTerm, "short term".to_string())).await.unwrap();
+    store
+        .store(Entry::new(MemoryType::LongTerm, "long term".to_string()))
+        .await
+        .unwrap();
+    store
+        .store(Entry::new(MemoryType::ShortTerm, "short term".to_string()))
+        .await
+        .unwrap();
 
     let long_only = store.list(Some(MemoryType::LongTerm), 10, 0).await.unwrap();
     assert_eq!(long_only.len(), 1);
 
-    let short_only = store.list(Some(MemoryType::ShortTerm), 10, 0).await.unwrap();
+    let short_only = store
+        .list(Some(MemoryType::ShortTerm), 10, 0)
+        .await
+        .unwrap();
     assert_eq!(short_only.len(), 1);
 }
 

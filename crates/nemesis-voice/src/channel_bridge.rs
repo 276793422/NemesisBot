@@ -62,7 +62,9 @@ impl nemesis_channels::base::VoiceTranscriber for LocalVoiceTranscriber {
     fn transcribe(
         &self,
         file_path: &str,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = std::result::Result<String, String>> + Send + '_>> {
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = std::result::Result<String, String>> + Send + '_>,
+    > {
         let stt = self.stt_engine.clone();
         let punct = self.punct_engine.clone();
         let sr = self.sample_rate;
@@ -90,8 +92,7 @@ impl nemesis_channels::base::VoiceTranscriber for LocalVoiceTranscriber {
 
             let use_sr = if file_sr > 0 { file_sr } else { sr };
 
-            let text = stt.recognize(&samples, use_sr)
-                .map_err(|e| e.to_string())?;
+            let text = stt.recognize(&samples, use_sr).map_err(|e| e.to_string())?;
 
             if text.is_empty() {
                 return Ok(String::new());

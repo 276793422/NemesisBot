@@ -43,9 +43,18 @@ fn test_config_serialization_roundtrip() {
     let config = ForgeConfig::default();
     let json = serde_json::to_string(&config).unwrap();
     let back: ForgeConfig = serde_json::from_str(&json).unwrap();
-    assert_eq!(back.collection.interval_secs, config.collection.interval_secs);
-    assert_eq!(back.learning.degrade_threshold, config.learning.degrade_threshold);
-    assert_eq!(back.trace.max_trace_age_days, config.trace.max_trace_age_days);
+    assert_eq!(
+        back.collection.interval_secs,
+        config.collection.interval_secs
+    );
+    assert_eq!(
+        back.learning.degrade_threshold,
+        config.learning.degrade_threshold
+    );
+    assert_eq!(
+        back.trace.max_trace_age_days,
+        config.trace.max_trace_age_days
+    );
 }
 
 #[test]
@@ -57,8 +66,14 @@ fn test_load_save_config() {
     save_forge_config(&path, &config).unwrap();
 
     let loaded = load_forge_config(&path);
-    assert_eq!(loaded.collection.interval_secs, config.collection.interval_secs);
-    assert_eq!(loaded.learning.degradation_cooldown_days, config.learning.degradation_cooldown_days);
+    assert_eq!(
+        loaded.collection.interval_secs,
+        config.collection.interval_secs
+    );
+    assert_eq!(
+        loaded.learning.degradation_cooldown_days,
+        config.learning.degradation_cooldown_days
+    );
 }
 
 #[test]
@@ -83,8 +98,18 @@ fn test_load_partial_json_uses_defaults() {
 #[test]
 fn test_sanitize_fields_default() {
     let config = ForgeConfig::default();
-    assert!(config.collection.sanitize_fields.contains(&"api_key".to_string()));
-    assert!(config.collection.sanitize_fields.contains(&"password".to_string()));
+    assert!(
+        config
+            .collection
+            .sanitize_fields
+            .contains(&"api_key".to_string())
+    );
+    assert!(
+        config
+            .collection
+            .sanitize_fields
+            .contains(&"password".to_string())
+    );
     assert_eq!(config.collection.sanitize_fields.len(), 6);
 }
 

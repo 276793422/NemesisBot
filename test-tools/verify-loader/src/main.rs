@@ -12,7 +12,7 @@ use anyhow::Result;
 use clap::{Parser, Subcommand};
 use nemesis_verify::{
     hex_util::hex_encode,
-    keygen::{generate_hierarchy, KeyHierarchy},
+    keygen::{KeyHierarchy, generate_hierarchy},
     verify,
 };
 
@@ -28,7 +28,11 @@ enum Cmd {
     /// 生成密钥体系（root/CA/issuer 私钥 + 证书链）到 JSON
     GenKeys { out: String },
     /// 用发行方私钥签目标文件（带证书链），输出签名后的文件
-    Sign { keys: String, target: String, out: String },
+    Sign {
+        keys: String,
+        target: String,
+        out: String,
+    },
     /// 加载 DLL 调 nv_verify_target 验证目标文件
     Verify {
         dll: String,
@@ -137,9 +141,20 @@ fn verify_via_dll(dll_path: &str, target: &str) -> Result<()> {
     let c_path = std::ffi::CString::new(target)?;
     let mut out = NvOutcome::default();
     let rc = unsafe { nv(c_path.as_ptr(), &mut out) };
-    println!("nv_verify_target({}): rc={}, status={} ({})", target, rc, out.status, status_name(out.status));
+    println!(
+        "nv_verify_target({}): rc={}, status={} ({})",
+        target,
+        rc,
+        out.status,
+        status_name(out.status)
+    );
     if out.status == 0 {
-        println!("  signed_at={} key_fp={} pubkey={}", out.signed_at, hex_encode(&out.key_fp), hex_encode(&out.pubkey));
+        println!(
+            "  signed_at={} key_fp={} pubkey={}",
+            out.signed_at,
+            hex_encode(&out.key_fp),
+            hex_encode(&out.pubkey)
+        );
     }
     Ok(())
 }
@@ -151,8 +166,16 @@ fn verify_self_via_dll(dll_path: &str) -> Result<()> {
         unsafe { lib.get(b"nv_verify_current_exe\0") }?;
     let mut out = NvOutcome::default();
     let rc = unsafe { nv(&mut out) };
-    let exe = std::env::current_exe().map(|p| p.display().to_string()).unwrap_or_else(|_| "?".into());
-    println!("nv_verify_current_exe({}): rc={}, status={} ({})", exe, rc, out.status, status_name(out.status));
+    let exe = std::env::current_exe()
+        .map(|p| p.display().to_string())
+        .unwrap_or_else(|_| "?".into());
+    println!(
+        "nv_verify_current_exe({}): rc={}, status={} ({})",
+        exe,
+        rc,
+        out.status,
+        status_name(out.status)
+    );
     Ok(())
 }
 
@@ -220,10 +243,18 @@ impl Default for NvSigDetail {
 fn view_via_dll(dll_path: &str, target: &str) -> Result<()> {
     let lib = unsafe { libloading::Library::new(dll_path) }?;
     let nv_list: libloading::Symbol<
-        unsafe extern "C" fn(*const std::os::raw::c_char, *mut NvSigInfo, *mut u32) -> std::os::raw::c_int,
+        unsafe extern "C" fn(
+            *const std::os::raw::c_char,
+            *mut NvSigInfo,
+            *mut u32,
+        ) -> std::os::raw::c_int,
     > = unsafe { lib.get(b"nv_list_signatures\0") }?;
     let nv_get: libloading::Symbol<
-        unsafe extern "C" fn(*const std::os::raw::c_char, u32, *mut NvSigDetail) -> std::os::raw::c_int,
+        unsafe extern "C" fn(
+            *const std::os::raw::c_char,
+            u32,
+            *mut NvSigDetail,
+        ) -> std::os::raw::c_int,
     > = unsafe { lib.get(b"nv_get_signature\0") }?;
 
     let c_path = std::ffi::CString::new(target)?;
@@ -244,22 +275,35 @@ fn view_via_dll(dll_path: &str, target: &str) -> Result<()> {
             continue;
         }
         let signer = if detail.cert_count > 0 {
-            meta_str(&detail.certs[0].subject_meta, detail.certs[0].subject_meta_len)
+            meta_str(
+                &detail.certs[0].subject_meta,
+                detail.certs[0].subject_meta_len,
+            )
         } else {
             "(无证书链)".to_string()
         };
         let publisher = meta_str(&detail.publisher, detail.publisher_len);
         println!("\n═══ 签名 #{} ═══", idx);
-        println!("  签名者 : {}  (公钥 {}…)", signer, hex_short(&detail.pubkey));
+        println!(
+            "  签名者 : {}  (公钥 {}…)",
+            signer,
+            hex_short(&detail.pubkey)
+        );
         if !publisher.is_empty() {
             println!("  发布者 : {}  (签给谁)", publisher);
         }
         println!("  签名时间: {}", detail.signed_at);
         println!("  信任链:");
         for c in 0..detail.cert_count as usize {
-            let name = meta_str(&detail.certs[c].subject_meta, detail.certs[c].subject_meta_len);
+            let name = meta_str(
+                &detail.certs[c].subject_meta,
+                detail.certs[c].subject_meta_len,
+            );
             let issuer_name = if c + 1 < detail.cert_count as usize {
-                meta_str(&detail.certs[c + 1].subject_meta, detail.certs[c + 1].subject_meta_len)
+                meta_str(
+                    &detail.certs[c + 1].subject_meta,
+                    detail.certs[c + 1].subject_meta_len,
+                )
             } else {
                 "root（内置根，验证时确认链到根）".to_string()
             };
@@ -291,8 +335,9 @@ fn hex_short(b: &[u8]) -> String {
 /// R7 A2/A3：加载 DLL 后调 nv_self_verify 验 DLL 自身签名（防替换）。
 fn verify_dll_self(dll_path: &str) -> Result<()> {
     let lib = unsafe { libloading::Library::new(dll_path) }?;
-    let nv_self: libloading::Symbol<unsafe extern "C" fn(*const std::os::raw::c_char) -> std::os::raw::c_int> =
-        unsafe { lib.get(b"nv_self_verify\0") }?;
+    let nv_self: libloading::Symbol<
+        unsafe extern "C" fn(*const std::os::raw::c_char) -> std::os::raw::c_int,
+    > = unsafe { lib.get(b"nv_self_verify\0") }?;
     let c_path = std::ffi::CString::new(dll_path)?;
     let rc = unsafe { nv_self(c_path.as_ptr()) };
     println!(

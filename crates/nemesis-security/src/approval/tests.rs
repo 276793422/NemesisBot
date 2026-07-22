@@ -198,7 +198,11 @@ fn test_multi_approval_request_validate_all_risk_levels() {
             timeout_seconds: 30,
             timestamp: 0,
         };
-        assert!(req.validate().is_ok(), "risk_level {} should be valid", level);
+        assert!(
+            req.validate().is_ok(),
+            "risk_level {} should be valid",
+            level
+        );
     }
 }
 
@@ -470,7 +474,11 @@ async fn test_multi_process_safe_ops_various() {
             timestamp: chrono::Local::now().timestamp(),
         };
         let resp = mgr.request_approval(&req).await.unwrap();
-        assert_eq!(resp.approved, expected, "op {} should be approved={}", op, expected);
+        assert_eq!(
+            resp.approved, expected,
+            "op {} should be approved={}",
+            op, expected
+        );
     }
 }
 
@@ -479,7 +487,12 @@ async fn test_multi_process_dangerous_ops_various() {
     let mgr = MultiProcessApprovalManager::new(30);
     mgr.start().unwrap();
 
-    for op in ["process_exec", "file_delete", "registry_write", "system_shutdown"] {
+    for op in [
+        "process_exec",
+        "file_delete",
+        "registry_write",
+        "system_shutdown",
+    ] {
         let req = MultiApprovalRequest {
             request_id: format!("test-{}", op),
             operation: op.to_string(),
@@ -527,7 +540,10 @@ fn test_multi_approval_request_context() {
         timestamp: 0,
     };
     assert_eq!(req.context.len(), 2);
-    assert_eq!(req.context.get("source_ip"), Some(&"192.168.1.1".to_string()));
+    assert_eq!(
+        req.context.get("source_ip"),
+        Some(&"192.168.1.1".to_string())
+    );
 }
 
 // ============================================================
@@ -595,7 +611,11 @@ async fn test_multi_process_with_child_factory_spawn_error() {
     };
     let result = mgr.request_approval(&req).await;
     assert!(result.is_err());
-    assert!(result.unwrap_err().contains("failed to create approval window"));
+    assert!(
+        result
+            .unwrap_err()
+            .contains("failed to create approval window")
+    );
 }
 
 #[tokio::test]
@@ -724,7 +744,9 @@ async fn test_multi_process_with_child_factory_timeout() {
     }
 
     let mgr = MultiProcessApprovalManager::new(1);
-    mgr.set_child_factory(Arc::new(TimeoutFactory { sender: sender_clone }));
+    mgr.set_child_factory(Arc::new(TimeoutFactory {
+        sender: sender_clone,
+    }));
     mgr.start().unwrap();
 
     let req = MultiApprovalRequest {
@@ -756,7 +778,8 @@ async fn test_multi_process_with_child_factory_data_field_approved() {
         ) -> Result<(String, oneshot::Receiver<serde_json::Value>), String> {
             let (tx, rx) = oneshot::channel();
             // Use data.approved format instead of top-level approved
-            tx.send(serde_json::json!({"data": {"approved": true}})).unwrap();
+            tx.send(serde_json::json!({"data": {"approved": true}}))
+                .unwrap();
             Ok(("child-1".to_string(), rx))
         }
     }
@@ -932,7 +955,9 @@ async fn test_multi_process_uses_request_timeout_when_set() {
     }
 
     let mgr = MultiProcessApprovalManager::new(600); // 10 min default timeout
-    mgr.set_child_factory(Arc::new(TimeoutFactory { sender: sender_clone }));
+    mgr.set_child_factory(Arc::new(TimeoutFactory {
+        sender: sender_clone,
+    }));
     mgr.start().unwrap();
 
     let req = MultiApprovalRequest {
@@ -949,6 +974,10 @@ async fn test_multi_process_uses_request_timeout_when_set() {
     let resp = mgr.request_approval(&req).await.unwrap();
     let elapsed = start.elapsed();
     assert!(resp.timed_out);
-    assert!(elapsed.as_secs() < 5, "Should timeout in ~1s, not 600s (elapsed: {:?}", elapsed);
+    assert!(
+        elapsed.as_secs() < 5,
+        "Should timeout in ~1s, not 600s (elapsed: {:?}",
+        elapsed
+    );
     let _ = sender;
 }

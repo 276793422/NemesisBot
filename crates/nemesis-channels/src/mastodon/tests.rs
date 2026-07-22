@@ -9,10 +9,7 @@ fn test_bus() -> broadcast::Sender<InboundMessage> {
 fn test_strip_html_tags() {
     assert_eq!(strip_html_tags("<p>Hello</p>"), "Hello");
     assert_eq!(strip_html_tags("<b>bold</b> text"), "bold text");
-    assert_eq!(
-        strip_html_tags("<a href=\"url\">link</a>"),
-        "link"
-    );
+    assert_eq!(strip_html_tags("<a href=\"url\">link</a>"), "link");
 }
 
 #[test]
@@ -80,7 +77,10 @@ fn test_notifications_url() {
 
 #[test]
 fn test_strip_html_complex() {
-    assert_eq!(strip_html_tags("<div><p>para1</p><p>para2</p></div>"), "para1para2");
+    assert_eq!(
+        strip_html_tags("<div><p>para1</p><p>para2</p></div>"),
+        "para1para2"
+    );
     assert_eq!(strip_html_tags("no html here"), "no html here");
     assert_eq!(strip_html_tags(""), "");
     // &nbsp; is an HTML entity, not a tag; strip_html_tags leaves entities as-is

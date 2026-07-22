@@ -116,7 +116,10 @@ async fn test_load_from_file() {
     let exp = make_experience("tool_x", "load_test", true);
     let ce = CollectedExperience {
         experience: exp,
-        dedup_hash: Collector::dedup_hash("tool_x", &serde_json::json!({"input_summary": "load_test"})),
+        dedup_hash: Collector::dedup_hash(
+            "tool_x",
+            &serde_json::json!({"input_summary": "load_test"}),
+        ),
     };
     let line = serde_json::to_string(&ce).unwrap();
     tokio::fs::write(&path, format!("{}\n", line))
@@ -127,10 +130,7 @@ async fn test_load_from_file() {
     collector.load_from_file(&path).await.unwrap();
 
     assert_eq!(collector.len(), 1);
-    assert_eq!(
-        collector.experiences()[0].experience.tool_name,
-        "tool_x"
-    );
+    assert_eq!(collector.experiences()[0].experience.tool_name, "tool_x");
 }
 
 #[test]
@@ -353,7 +353,10 @@ fn test_forge_plugin_execute() {
     let plugin = ForgePlugin::new(CollectorConfig::default());
     let mut invocation = nemesis_plugin::ToolInvocation::new(
         "file_read",
-        serde_json::json!({"path": "/tmp/file.txt"}).as_object().unwrap().clone(),
+        serde_json::json!({"path": "/tmp/file.txt"})
+            .as_object()
+            .unwrap()
+            .clone(),
     );
     invocation.result = Some(serde_json::json!({"ok": true}));
     invocation.source = "test-session".to_string();
@@ -459,7 +462,9 @@ async fn test_flush_no_persistence_path() {
 #[tokio::test]
 async fn test_load_from_nonexistent_file() {
     let collector = Collector::new(CollectorConfig::default());
-    let result = collector.load_from_file(PathBuf::from("/nonexistent/file.jsonl")).await;
+    let result = collector
+        .load_from_file(PathBuf::from("/nonexistent/file.jsonl"))
+        .await;
     assert!(result.is_err());
 }
 
@@ -598,7 +603,10 @@ fn test_forge_plugin_execute_no_result() {
     let plugin = ForgePlugin::new(CollectorConfig::default());
     let mut invocation = nemesis_plugin::ToolInvocation::new(
         "file_read",
-        serde_json::json!({"path": "/tmp/file.txt"}).as_object().unwrap().clone(),
+        serde_json::json!({"path": "/tmp/file.txt"})
+            .as_object()
+            .unwrap()
+            .clone(),
     );
     // No result set - should still pass through
     let (allowed, err, modified) = plugin.execute(&mut invocation);

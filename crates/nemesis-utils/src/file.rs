@@ -23,7 +23,9 @@ pub fn write_file_atomic(path: &str, data: &[u8], _perm: u32) -> Result<(), Stri
 
     let mut tmp_file = fs::File::create(&tmp_path).map_err(|e| format!("create temp: {}", e))?;
 
-    tmp_file.write_all(data).map_err(|e| format!("write temp: {}", e))?;
+    tmp_file
+        .write_all(data)
+        .map_err(|e| format!("write temp: {}", e))?;
     tmp_file.flush().map_err(|e| format!("flush: {}", e))?;
     drop(tmp_file);
 

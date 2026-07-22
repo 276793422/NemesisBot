@@ -5,9 +5,9 @@
 //!
 //! 持久化为单个 JSON（hex 编码私钥 + 证书），revoke-server 启动加载 / 首次生成。
 
-use crate::cert::{issue_certificate, serialize_chain, Certificate};
+use crate::cert::{Certificate, issue_certificate, serialize_chain};
 use crate::hex_util::{hex_decode_32, hex_decode_vec, hex_encode};
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use ed25519_dalek::{SigningKey, VerifyingKey};
 use rand::rngs::OsRng;
 use serde::{Deserialize, Serialize};
@@ -46,9 +46,20 @@ pub fn generate_hierarchy(valid_not_before: u64, valid_not_after: u64) -> KeyHie
     let issuer_sk = SigningKey::generate(&mut rng);
     let issuer_vk = issuer_sk.verifying_key();
 
-    let ca_cert = issue_certificate(&root_sk, &ca_vk.to_bytes(), b"CA", valid_not_before, valid_not_after);
-    let issuer_cert =
-        issue_certificate(&ca_sk, &issuer_vk.to_bytes(), b"issuer", valid_not_before, valid_not_after);
+    let ca_cert = issue_certificate(
+        &root_sk,
+        &ca_vk.to_bytes(),
+        b"CA",
+        valid_not_before,
+        valid_not_after,
+    );
+    let issuer_cert = issue_certificate(
+        &ca_sk,
+        &issuer_vk.to_bytes(),
+        b"issuer",
+        valid_not_before,
+        valid_not_after,
+    );
     let issuer_chain_bytes = serialize_chain(&[issuer_cert.clone(), ca_cert.clone()]);
 
     KeyHierarchy {
@@ -76,16 +87,24 @@ impl KeyHierarchy {
     }
 
     pub fn from_json(j: &KeyHierarchyJson) -> Result<Self> {
-        let root_sk = SigningKey::from_bytes(&hex_decode_32(&j.root_sk).map_err(|e| anyhow!("root_sk: {}", e))?);
-        let ca_sk = SigningKey::from_bytes(&hex_decode_32(&j.ca_sk).map_err(|e| anyhow!("ca_sk: {}", e))?);
-        let issuer_sk = SigningKey::from_bytes(&hex_decode_32(&j.issuer_sk).map_err(|e| anyhow!("issuer_sk: {}", e))?);
+        let root_sk = SigningKey::from_bytes(
+            &hex_decode_32(&j.root_sk).map_err(|e| anyhow!("root_sk: {}", e))?,
+        );
+        let ca_sk =
+            SigningKey::from_bytes(&hex_decode_32(&j.ca_sk).map_err(|e| anyhow!("ca_sk: {}", e))?);
+        let issuer_sk = SigningKey::from_bytes(
+            &hex_decode_32(&j.issuer_sk).map_err(|e| anyhow!("issuer_sk: {}", e))?,
+        );
         let root_vk = root_sk.verifying_key();
         let ca_vk = ca_sk.verifying_key();
         let issuer_vk = issuer_sk.verifying_key();
 
-        let ca_cert = Certificate::from_bytes(&hex_decode_vec(&j.ca_cert).map_err(|e| anyhow!("ca_cert: {}", e))?)?;
-        let issuer_cert =
-            Certificate::from_bytes(&hex_decode_vec(&j.issuer_cert).map_err(|e| anyhow!("issuer_cert: {}", e))?)?;
+        let ca_cert = Certificate::from_bytes(
+            &hex_decode_vec(&j.ca_cert).map_err(|e| anyhow!("ca_cert: {}", e))?,
+        )?;
+        let issuer_cert = Certificate::from_bytes(
+            &hex_decode_vec(&j.issuer_cert).map_err(|e| anyhow!("issuer_cert: {}", e))?,
+        )?;
         let issuer_chain_bytes = serialize_chain(&[issuer_cert.clone(), ca_cert.clone()]);
 
         Ok(KeyHierarchy {
@@ -142,9 +161,16 @@ mod tests {
     fn issuer_signs_content_verifies_via_root() {
         // 完整闭环：issuer 签 content（带链），用 root_vk 验 → Valid
         let h = generate_hierarchy(0, u64::MAX);
-        let signed =
-            crate::verify::sign_content(b"payload", &h.issuer_sk, 1000, Some(&h.issuer_chain_bytes), None, None, None)
-                .unwrap();
+        let signed = crate::verify::sign_content(
+            b"payload",
+            &h.issuer_sk,
+            1000,
+            Some(&h.issuer_chain_bytes),
+            None,
+            None,
+            None,
+        )
+        .unwrap();
         match crate::verify::verify_bytes(&signed, &[h.root_vk], 1000) {
             crate::verify::VerifyOutcome::Valid { pubkey, .. } => {
                 assert_eq!(pubkey, h.issuer_vk.to_bytes());

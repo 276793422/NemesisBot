@@ -11,7 +11,7 @@ use std::process::Command;
 
 use anyhow::{Context, Result};
 
-use crate::{FILTER_ALTITUDE, DRIVER_SERVICE, USERMODE_SERVICE};
+use crate::{DRIVER_SERVICE, FILTER_ALTITUDE, USERMODE_SERVICE};
 
 /// Build the `KmdUtil install SbieDrv ...` command (kernel mini-filter driver).
 pub fn install_driver(kmdutil: &Path, sbiedrv_sys: &Path, sbiemsg_dll: &Path) -> Command {
@@ -80,7 +80,10 @@ pub fn run(mut cmd: Command, tolerant: bool) -> Result<()> {
         }
         anyhow::bail!("{msg}");
     }
-    tracing::debug!("[sandbox] kmdutil ok: {} | stdout={stdout}", format_command(&cmd));
+    tracing::debug!(
+        "[sandbox] kmdutil ok: {} | stdout={stdout}",
+        format_command(&cmd)
+    );
     Ok(())
 }
 

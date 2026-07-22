@@ -119,7 +119,15 @@ fn test_cmd_add_creates_new_config() {
     std::fs::create_dir_all(&dir).unwrap();
     let cfg = dir.join("config.mcp.json");
 
-    cmd_add(&cfg, "fresh-server", "npx", Some("some,mcp"), &["KEY=val".to_string()], 60).unwrap();
+    cmd_add(
+        &cfg,
+        "fresh-server",
+        "npx",
+        Some("some,mcp"),
+        &["KEY=val".to_string()],
+        60,
+    )
+    .unwrap();
 
     let data: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(&cfg).unwrap()).unwrap();
@@ -446,7 +454,15 @@ fn test_mcp_cmd_add_with_env_vars() {
     let tmp = TempDir::new().unwrap();
     let cfg = make_empty_mcp_config(&tmp);
 
-    cmd_add(&cfg, "env-server", "cmd", None, &["KEY=VALUE".to_string()], 30).unwrap();
+    cmd_add(
+        &cfg,
+        "env-server",
+        "cmd",
+        None,
+        &["KEY=VALUE".to_string()],
+        30,
+    )
+    .unwrap();
 
     let data: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(&cfg).unwrap()).unwrap();
@@ -460,7 +476,15 @@ fn test_mcp_cmd_add_with_args_and_env() {
     let tmp = TempDir::new().unwrap();
     let cfg = make_empty_mcp_config(&tmp);
 
-    cmd_add(&cfg, "full-server", "cmd", Some("a,b"), &["K=V".to_string()], 60).unwrap();
+    cmd_add(
+        &cfg,
+        "full-server",
+        "cmd",
+        Some("a,b"),
+        &["K=V".to_string()],
+        60,
+    )
+    .unwrap();
 
     let data: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(&cfg).unwrap()).unwrap();

@@ -1,6 +1,6 @@
 //! Identity handler — list/get/save identity documents (IDENTITY.md, SOUL.md, USER.md, AGENT.md).
 
-use crate::handlers::{require_workspace, read_workspace_file, write_workspace_file};
+use crate::handlers::{read_workspace_file, require_workspace, write_workspace_file};
 use crate::ws_router::{ModuleHandler, RequestContext};
 
 /// Known identity document filenames.

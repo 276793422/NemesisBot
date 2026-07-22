@@ -229,15 +229,18 @@ impl std::fmt::Debug for TelegramChannel {
 
 impl TelegramChannel {
     /// Creates a new `TelegramChannel`.
-    pub fn new(config: TelegramConfig, bus_sender: broadcast::Sender<InboundMessage>) -> Result<Self> {
+    pub fn new(
+        config: TelegramConfig,
+        bus_sender: broadcast::Sender<InboundMessage>,
+    ) -> Result<Self> {
         if config.token.is_empty() {
             return Err(NemesisError::Channel(
                 "telegram bot token is required".to_string(),
             ));
         }
 
-        let mut client_builder = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(35));
+        let mut client_builder =
+            reqwest::Client::builder().timeout(std::time::Duration::from_secs(35));
 
         // Apply proxy if configured
         if let Some(ref proxy_url) = config.proxy {
@@ -341,7 +344,10 @@ impl TelegramChannel {
     ///
     /// Returns the oneshot receiver that will be signaled when thinking is canceled
     /// (either by a response being sent or by timeout).
-    pub async fn start_thinking_animation(&self, chat_id: &str) -> std::result::Result<tokio::sync::oneshot::Receiver<()>, String> {
+    pub async fn start_thinking_animation(
+        &self,
+        chat_id: &str,
+    ) -> std::result::Result<tokio::sync::oneshot::Receiver<()>, String> {
         // Cancel any previous thinking animation for this chat
         self.stop_thinking_animation(chat_id);
 
@@ -359,7 +365,9 @@ impl TelegramChannel {
                 ..Default::default()
             };
             if let Ok(msg) = self.send_message(params).await {
-                self.placeholders.write().insert(chat_id.to_string(), msg.message_id);
+                self.placeholders
+                    .write()
+                    .insert(chat_id.to_string(), msg.message_id);
             }
         }
 
@@ -393,7 +401,9 @@ impl TelegramChannel {
             .map_err(|e| NemesisError::Channel(format!("getUpdates parse failed: {e}")))?;
 
         if !body.ok {
-            return Err(NemesisError::Channel("getUpdates returned not ok".to_string()));
+            return Err(NemesisError::Channel(
+                "getUpdates returned not ok".to_string(),
+            ));
         }
 
         Ok(body.result)
@@ -582,17 +592,12 @@ impl TelegramChannel {
                 content.push('\n');
             }
 
-            let voice_text = match Self::transcribe_voice(
-                transcriber,
-                http,
-                api_url_base,
-                &voice.file_id,
-            )
-            .await
-            {
-                Some(text) => text,
-                None => "[voice]".to_string(),
-            };
+            let voice_text =
+                match Self::transcribe_voice(transcriber, http, api_url_base, &voice.file_id).await
+                {
+                    Some(text) => text,
+                    None => "[voice]".to_string(),
+                };
             content.push_str(&voice_text);
         }
 
@@ -666,7 +671,10 @@ impl TelegramChannel {
             metadata.insert("username".to_string(), username.clone());
         }
         metadata.insert("first_name".to_string(), user.first_name.clone());
-        metadata.insert("is_group".to_string(), format!("{}", msg.chat.chat_type != "private"));
+        metadata.insert(
+            "is_group".to_string(),
+            format!("{}", msg.chat.chat_type != "private"),
+        );
         metadata.insert("peer_kind".to_string(), peer_kind.to_string());
         metadata.insert("peer_id".to_string(), peer_id);
 
@@ -755,7 +763,10 @@ impl TelegramChannel {
                     }
                 };
                 if body["ok"].as_bool() != Some(true) {
-                    warn!("[TelegramChannel] voice: getFile returned not ok: {:?}", body);
+                    warn!(
+                        "[TelegramChannel] voice: getFile returned not ok: {:?}",
+                        body
+                    );
                     return Some("[voice (transcription failed)]".to_string());
                 }
                 match body["result"]["file_path"].as_str() {
@@ -848,7 +859,9 @@ impl TelegramChannel {
             .map_err(|e| NemesisError::Channel(format!("sendMessage parse failed: {e}")))?;
 
         if !body.ok {
-            return Err(NemesisError::Channel("sendMessage returned not ok".to_string()));
+            return Err(NemesisError::Channel(
+                "sendMessage returned not ok".to_string(),
+            ));
         }
 
         body.result
@@ -967,7 +980,10 @@ impl TelegramChannel {
                     quote_lines.push(render_inline(content));
                     i += 1;
                 }
-                blocks.push(format!("<blockquote>{}</blockquote>", quote_lines.join("\n")));
+                blocks.push(format!(
+                    "<blockquote>{}</blockquote>",
+                    quote_lines.join("\n")
+                ));
                 continue;
             }
 
@@ -1071,8 +1087,7 @@ fn parse_ordered_item(line: &str) -> Option<&str> {
         return None;
     }
     let rest = &line[digits..];
-    rest.strip_prefix(". ")
-        .or_else(|| rest.strip_prefix(") "))
+    rest.strip_prefix(". ").or_else(|| rest.strip_prefix(") "))
 }
 
 /// Render inline markdown (bold, italic, code, links, strikethrough).
@@ -1138,7 +1153,12 @@ fn render_inline(text: &str) -> String {
         if let Some(end_rel) = result[start + 1..].find('`') {
             let end = start + 1 + end_rel;
             let inner = result[start + 1..end].to_string();
-            result = format!("{}<code>{}</code>{}", &result[..start], inner, &result[end + 1..]);
+            result = format!(
+                "{}<code>{}</code>{}",
+                &result[..start],
+                inner,
+                &result[end + 1..]
+            );
         } else {
             break;
         }
@@ -1156,11 +1176,14 @@ fn render_inline(text: &str) -> String {
     while idx < chars.len() {
         let c = chars[idx];
         let prev = if idx == 0 { None } else { Some(chars[idx - 1]) };
-        let next = if idx + 1 >= chars.len() { None } else { Some(chars[idx + 1]) };
+        let next = if idx + 1 >= chars.len() {
+            None
+        } else {
+            Some(chars[idx + 1])
+        };
 
-        let star_marker = c == '*'
-            && prev.map_or(true, |p| p != '*')
-            && next.map_or(true, |n| n != '*');
+        let star_marker =
+            c == '*' && prev.map_or(true, |p| p != '*') && next.map_or(true, |n| n != '*');
         let underscore_marker = c == '_'
             && prev.map_or(true, |p| p != '_')
             && next.map_or(true, |n| n != '_')
@@ -1227,15 +1250,14 @@ impl Channel for TelegramChannel {
 
     async fn send(&self, msg: OutboundMessage) -> Result<()> {
         if !*self.running.read() {
-            return Err(NemesisError::Channel("telegram bot not running".to_string()));
+            return Err(NemesisError::Channel(
+                "telegram bot not running".to_string(),
+            ));
         }
 
-        let chat_id: i64 = msg
-            .chat_id
-            .parse()
-            .map_err(|e: std::num::ParseIntError| {
-                NemesisError::Channel(format!("invalid chat ID: {e}"))
-            })?;
+        let chat_id: i64 = msg.chat_id.parse().map_err(|e: std::num::ParseIntError| {
+            NemesisError::Channel(format!("invalid chat ID: {e}"))
+        })?;
 
         self.base.record_sent();
 

@@ -30,8 +30,11 @@ async fn test_fm10_load_latest_cycle_returns_newest_by_started_at() {
 
     let latest = store.load_latest_cycle().await.unwrap();
     assert!(latest.is_some());
-    assert_eq!(latest.unwrap().id, "new-cycle",
-        "should return the newest by started_at (F-M10)");
+    assert_eq!(
+        latest.unwrap().id,
+        "new-cycle",
+        "should return the newest by started_at (F-M10)"
+    );
 }
 
 #[tokio::test]
@@ -125,7 +128,11 @@ async fn test_read_cycles_with_since_filter() {
         status: CycleStatus::Completed,
     };
     let old_file = old_month.join(format!("{}.jsonl", old_date.format("%Y%m%d")));
-    std::fs::write(&old_file, format!("{}\n", serde_json::to_string(&old_cycle).unwrap())).unwrap();
+    std::fs::write(
+        &old_file,
+        format!("{}\n", serde_json::to_string(&old_cycle).unwrap()),
+    )
+    .unwrap();
 
     // Create a recent cycle via append
     store.append(&make_cycle("recent-cycle")).await.unwrap();
@@ -251,7 +258,10 @@ async fn test_read_cycles_ignores_malformed_jsonl() {
     let month_dir = dir.path().join(now.format("%Y%m").to_string());
     let file_path = month_dir.join(format!("{}.jsonl", now.format("%Y%m%d")));
     use std::io::Write;
-    let mut f = std::fs::OpenOptions::new().append(true).open(&file_path).unwrap();
+    let mut f = std::fs::OpenOptions::new()
+        .append(true)
+        .open(&file_path)
+        .unwrap();
     writeln!(f, "not valid json").unwrap();
     writeln!(f, "").unwrap();
 
@@ -267,7 +277,10 @@ async fn test_append_multiple_cycles_same_day() {
     let store = CycleStore::from_base(dir.path());
 
     for i in 0..5 {
-        store.append(&make_cycle(&format!("cycle-{}", i))).await.unwrap();
+        store
+            .append(&make_cycle(&format!("cycle-{}", i)))
+            .await
+            .unwrap();
     }
 
     let cycles = store.read_all().await.unwrap();
@@ -355,7 +368,10 @@ async fn test_count_after_multiple_appends() {
     let dir = tempfile::tempdir().unwrap();
     let store = CycleStore::from_base(dir.path());
     for i in 0..10 {
-        store.append(&make_cycle(&format!("c-{}", i))).await.unwrap();
+        store
+            .append(&make_cycle(&format!("c-{}", i)))
+            .await
+            .unwrap();
     }
     assert_eq!(store.count().await.unwrap(), 10);
 }
@@ -421,7 +437,10 @@ async fn test_cleanup_does_not_remove_recent() {
     let dir = tempfile::tempdir().unwrap();
     let store = CycleStore::from_base(dir.path());
     for i in 0..3 {
-        store.append(&make_cycle(&format!("keep-{}", i))).await.unwrap();
+        store
+            .append(&make_cycle(&format!("keep-{}", i)))
+            .await
+            .unwrap();
     }
     let removed = store.cleanup(1).await.unwrap();
     assert_eq!(removed, 0);

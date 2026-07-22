@@ -89,13 +89,11 @@ fn prompt_types_roundtrip() {
     let prompt = Prompt {
         name: "greet".into(),
         description: Some("Greet a person".into()),
-        arguments: vec![
-            PromptArgument {
-                name: "name".into(),
-                description: Some("Person's name".into()),
-                required: Some(true),
-            },
-        ],
+        arguments: vec![PromptArgument {
+            name: "name".into(),
+            description: Some("Person's name".into()),
+            required: Some(true),
+        }],
     };
     let json = serde_json::to_string(&prompt).unwrap();
     let rt: Prompt = serde_json::from_str(&json).unwrap();
@@ -176,7 +174,10 @@ fn jsonrpc_request_with_string_id() {
         method: "tools/list".to_string(),
         params: None,
     };
-    assert_eq!(req.id, Some(serde_json::Value::String("test-id-123".to_string())));
+    assert_eq!(
+        req.id,
+        Some(serde_json::Value::String("test-id-123".to_string()))
+    );
     assert_eq!(req.method, "tools/list");
 }
 
@@ -417,7 +418,10 @@ fn resource_content_roundtrip() {
 
 #[test]
 fn server_info_serialization() {
-    let si = ServerInfo { name: "srv".into(), version: "0.1".into() };
+    let si = ServerInfo {
+        name: "srv".into(),
+        version: "0.1".into(),
+    };
     let json = serde_json::to_string(&si).unwrap();
     let rt: ServerInfo = serde_json::from_str(&json).unwrap();
     assert_eq!(rt.name, "srv");
@@ -426,7 +430,10 @@ fn server_info_serialization() {
 
 #[test]
 fn client_info_serialization() {
-    let ci = ClientInfo { name: "cli".into(), version: "2.0".into() };
+    let ci = ClientInfo {
+        name: "cli".into(),
+        version: "2.0".into(),
+    };
     let json = serde_json::to_string(&ci).unwrap();
     let rt: ClientInfo = serde_json::from_str(&json).unwrap();
     assert_eq!(rt.name, "cli");
@@ -437,11 +444,16 @@ fn initialize_result_roundtrip() {
     let ir = InitializeResult {
         protocol_version: "2025-06-18".into(),
         capabilities: ServerCapabilities {
-            tools: Some(ToolCapabilities { list_changed: Some(true) }),
+            tools: Some(ToolCapabilities {
+                list_changed: Some(true),
+            }),
             resources: None,
             prompts: None,
         },
-        server_info: ServerInfo { name: "s".into(), version: "1".into() },
+        server_info: ServerInfo {
+            name: "s".into(),
+            version: "1".into(),
+        },
     };
     let json = serde_json::to_string(&ir).unwrap();
     let rt: InitializeResult = serde_json::from_str(&json).unwrap();

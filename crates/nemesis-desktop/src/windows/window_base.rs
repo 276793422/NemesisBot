@@ -5,7 +5,6 @@
 
 use std::sync::Arc;
 
-
 use crate::websocket::client::WebSocketClient;
 
 /// Trait for window-specific data.

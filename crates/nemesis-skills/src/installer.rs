@@ -16,9 +16,7 @@ use tracing::{debug, warn};
 use nemesis_types::error::{NemesisError, Result};
 
 use crate::security_check::check_skill_security;
-use crate::types::{
-    AvailableSkill, InstallResult, SecurityCheckResult, SkillOrigin,
-};
+use crate::types::{AvailableSkill, InstallResult, SecurityCheckResult, SkillOrigin};
 
 /// Skill installer that manages downloading and installing skills from registries.
 pub struct SkillInstaller {
@@ -64,10 +62,7 @@ impl SkillInstaller {
 
     /// Get the result from the most recent security check.
     pub fn last_security_check(&self) -> Option<SecurityCheckResult> {
-        self.last_security_check
-            .lock()
-            .unwrap()
-            .clone()
+        self.last_security_check.lock().unwrap().clone()
     }
 
     /// Store the result from the most recent security check.
@@ -127,10 +122,7 @@ impl SkillInstaller {
     pub fn flatten_search_results(
         grouped: &[crate::types::RegistrySearchResult],
     ) -> Vec<crate::types::SkillSearchResult> {
-        grouped
-            .iter()
-            .flat_map(|g| g.results.clone())
-            .collect()
+        grouped.iter().flat_map(|g| g.results.clone()).collect()
     }
 
     /// Install a skill from a named registry.
@@ -205,10 +197,7 @@ impl SkillInstaller {
                 }
 
                 if let Some(ref quality) = check_result.quality_score {
-                    debug!(
-                        "Quality score for '{}': {:.0}/100",
-                        slug, quality.overall
-                    );
+                    debug!("Quality score for '{}': {:.0}/100", slug, quality.overall);
                 }
             }
         }
@@ -262,9 +251,11 @@ impl SkillInstaller {
             .build()
             .map_err(|e| NemesisError::Other(format!("failed to create HTTP client: {}", e)))?;
 
-        let response = client.get(&url).send().await.map_err(|e| {
-            NemesisError::Other(format!("failed to fetch skill: {}", e))
-        })?;
+        let response = client
+            .get(&url)
+            .send()
+            .await
+            .map_err(|e| NemesisError::Other(format!("failed to fetch skill: {}", e)))?;
 
         if response.status() != reqwest::StatusCode::OK {
             return Err(NemesisError::Other(format!(
@@ -273,9 +264,10 @@ impl SkillInstaller {
             )));
         }
 
-        let body = response.text().await.map_err(|e| {
-            NemesisError::Other(format!("failed to read response: {}", e))
-        })?;
+        let body = response
+            .text()
+            .await
+            .map_err(|e| NemesisError::Other(format!("failed to read response: {}", e)))?;
 
         // Create skill directory.
         std::fs::create_dir_all(&skill_dir).map_err(|e| NemesisError::Io(e))?;
@@ -399,9 +391,11 @@ impl SkillInstaller {
             .build()
             .map_err(|e| NemesisError::Other(format!("failed to create HTTP client: {}", e)))?;
 
-        let response = client.get(url).send().await.map_err(|e| {
-            NemesisError::Other(format!("failed to fetch skills list: {}", e))
-        })?;
+        let response = client
+            .get(url)
+            .send()
+            .await
+            .map_err(|e| NemesisError::Other(format!("failed to fetch skills list: {}", e)))?;
 
         if response.status() != reqwest::StatusCode::OK {
             return Err(NemesisError::Other(format!(
@@ -410,14 +404,13 @@ impl SkillInstaller {
             )));
         }
 
-        let body = response.text().await.map_err(|e| {
-            NemesisError::Other(format!("failed to read response: {}", e))
-        })?;
+        let body = response
+            .text()
+            .await
+            .map_err(|e| NemesisError::Other(format!("failed to read response: {}", e)))?;
 
-        let skills: Vec<AvailableSkill> =
-            serde_json::from_str(&body).map_err(|e| {
-                NemesisError::Other(format!("failed to parse skills list: {}", e))
-            })?;
+        let skills: Vec<AvailableSkill> = serde_json::from_str(&body)
+            .map_err(|e| NemesisError::Other(format!("failed to parse skills list: {}", e)))?;
 
         Ok(skills)
     }
@@ -438,8 +431,8 @@ impl SkillInstaller {
             installed_at: chrono::Local::now().timestamp(),
         };
 
-        let data = serde_json::to_string_pretty(&origin)
-            .map_err(|e| NemesisError::Serialization(e))?;
+        let data =
+            serde_json::to_string_pretty(&origin).map_err(|e| NemesisError::Serialization(e))?;
 
         let origin_path = Path::new(skill_dir).join(".skill-origin.json");
         std::fs::write(&origin_path, data).map_err(|e| NemesisError::Io(e))?;

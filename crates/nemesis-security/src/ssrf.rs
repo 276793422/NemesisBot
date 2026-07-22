@@ -135,8 +135,11 @@ impl Guard {
             blocked_nets.push(net);
         }
 
-        let allowed_set: HashSet<String> =
-            config.allowed_hosts.iter().map(|h| h.to_lowercase()).collect();
+        let allowed_set: HashSet<String> = config
+            .allowed_hosts
+            .iter()
+            .map(|h| h.to_lowercase())
+            .collect();
 
         Ok(Self {
             config,
@@ -190,8 +193,7 @@ impl Guard {
         let guard = self.inner.read();
 
         // Parse URL ----------------------------------------------------------
-        let parsed = resolver::parse_url(url)
-            .map_err(|e| SsrfError::InvalidUrl(e.to_string()))?;
+        let parsed = resolver::parse_url(url).map_err(|e| SsrfError::InvalidUrl(e.to_string()))?;
 
         // Whitelist check ----------------------------------------------------
         let host_lower = parsed.host.to_lowercase();
@@ -221,8 +223,8 @@ impl Guard {
 
         let guard = self.inner.read();
 
-        let parsed = resolver::parse_url(raw_url)
-            .map_err(|e| SsrfError::InvalidUrl(e.to_string()))?;
+        let parsed =
+            resolver::parse_url(raw_url).map_err(|e| SsrfError::InvalidUrl(e.to_string()))?;
 
         let host_lower = parsed.host.to_lowercase();
         if guard.allowed_set.contains(&host_lower) {

@@ -7,8 +7,8 @@
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicI32, Ordering};
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicI32, Ordering};
 
 use chrono::{DateTime, Local};
 use nemesis_types::utils;
@@ -408,11 +408,12 @@ impl RequestLogger {
         if !info.http_headers.is_empty() {
             content.push_str("\n## HTTP Headers\n\n```\n");
             for (key, value) in &info.http_headers {
-                let masked_val = if key.to_lowercase().contains("auth") || key.to_lowercase().contains("key") {
-                    mask_api_key(value)
-                } else {
-                    value.clone()
-                };
+                let masked_val =
+                    if key.to_lowercase().contains("auth") || key.to_lowercase().contains("key") {
+                        mask_api_key(value)
+                    } else {
+                        value.clone()
+                    };
                 content.push_str(&format!("{}: {}\n", key, masked_val));
             }
             content.push_str("```\n");
@@ -428,7 +429,10 @@ impl RequestLogger {
 
         // Fallback Attempts section (mirrors Go's FallbackAttempts).
         if !info.fallback_attempts.is_empty() {
-            content.push_str(&format!("\n## Fallback Attempts ({} total)\n\n", info.fallback_attempts.len()));
+            content.push_str(&format!(
+                "\n## Fallback Attempts ({} total)\n\n",
+                info.fallback_attempts.len()
+            ));
             for (i, attempt) in info.fallback_attempts.iter().enumerate() {
                 content.push_str(&format!(
                     "### Attempt {}\n\n\
@@ -450,7 +454,10 @@ impl RequestLogger {
         }
 
         // Tools count — part of the request metadata.
-        content.push_str(&format!("\n## Tools\n\n{} tools available\n", info.tools_count));
+        content.push_str(&format!(
+            "\n## Tools\n\n{} tools available\n",
+            info.tools_count
+        ));
 
         // Messages section — placed as a separate h1 section at the end of the file.
         // This prevents markdown headers inside system prompts from polluting
@@ -468,7 +475,10 @@ impl RequestLogger {
                 } else {
                     msg.content.clone()
                 };
-                content.push_str(&format!("\n## [{}] {}\n\n```text\n{}\n```\n", i, msg.role, msg_preview));
+                content.push_str(&format!(
+                    "\n## [{}] {}\n\n```text\n{}\n```\n",
+                    i, msg.role, msg_preview
+                ));
                 if let Some(ref tool_calls) = msg.tool_calls {
                     for tc in tool_calls {
                         let args_preview = if tc.arguments.len() > TRUNCATE_ARGS_LIMIT {
@@ -501,10 +511,7 @@ impl RequestLogger {
             && info.content.len() > TRUNCATE_RESPONSE_LIMIT
         {
             let end = utils::floor_char_boundary(&info.content, TRUNCATE_RESPONSE_LIMIT);
-            format!(
-                "{}\n\n... [truncated]",
-                &info.content[..end]
-            )
+            format!("{}\n\n... [truncated]", &info.content[..end])
         } else {
             info.content.clone()
         };
@@ -522,11 +529,16 @@ impl RequestLogger {
         );
 
         // Tool Calls section with full details (mirrors Go's formatArguments).
-        content.push_str(&format!("## Tool Calls\n\n{} tool call(s)\n", info.tool_calls_count));
+        content.push_str(&format!(
+            "## Tool Calls\n\n{} tool call(s)\n",
+            info.tool_calls_count
+        ));
         if !info.tool_calls.is_empty() {
             content.push_str("\n### Tool Call Details\n\n");
             for tc in &info.tool_calls {
-                let args_preview = if self.config.detail_level == DetailLevel::Truncated && tc.arguments.len() > TRUNCATE_ARGS_LIMIT {
+                let args_preview = if self.config.detail_level == DetailLevel::Truncated
+                    && tc.arguments.len() > TRUNCATE_ARGS_LIMIT
+                {
                     utils::truncate(&tc.arguments, TRUNCATE_ARGS_LIMIT)
                 } else {
                     tc.arguments.clone()
@@ -545,9 +557,7 @@ impl RequestLogger {
                  - **Prompt Tokens**: {}\n\
                  - **Completion Tokens**: {}\n\
                  - **Total Tokens**: {}\n",
-                info.usage.prompt_tokens,
-                info.usage.completion_tokens,
-                info.usage.total_tokens,
+                info.usage.prompt_tokens, info.usage.completion_tokens, info.usage.total_tokens,
             ));
             if info.usage.cached_tokens > 0 {
                 let cache_pct = if info.usage.prompt_tokens > 0 {
@@ -568,8 +578,15 @@ impl RequestLogger {
     }
 
     /// Log raw LLM request in JSON envelope format.
-    pub fn log_raw_request(&self, body: &serde_json::Value, timestamp: chrono::DateTime<chrono::Local>, round: usize) {
-        if !self.enabled { return; }
+    pub fn log_raw_request(
+        &self,
+        body: &serde_json::Value,
+        timestamp: chrono::DateTime<chrono::Local>,
+        round: usize,
+    ) {
+        if !self.enabled {
+            return;
+        }
         let index = self.next_index();
         let filename = format!("{}.AI.Request.raw.json", index);
         let envelope = serde_json::json!({
@@ -577,36 +594,46 @@ impl RequestLogger {
             "round": round,
             "body": body,
         });
-        let content = serde_json::to_string_pretty(&envelope)
-            .unwrap_or_else(|_| envelope.to_string());
+        let content =
+            serde_json::to_string_pretty(&envelope).unwrap_or_else(|_| envelope.to_string());
         let _ = self.write_file(&filename, &content);
     }
 
     /// Log raw LLM request using a pre-built envelope (written immediately at request time).
     pub fn log_raw_request_envelope(&self, envelope: &serde_json::Value) {
-        if !self.enabled { return; }
+        if !self.enabled {
+            return;
+        }
         let index = self.next_index();
         let filename = format!("{}.AI.Request.raw.json", index);
-        let content = serde_json::to_string_pretty(envelope)
-            .unwrap_or_else(|_| envelope.to_string());
+        let content =
+            serde_json::to_string_pretty(envelope).unwrap_or_else(|_| envelope.to_string());
         let _ = self.write_file(&filename, &content);
     }
 
     /// Log raw LLM response in JSON envelope format.
-    pub fn log_raw_response(&self, body: &str, timestamp: chrono::DateTime<chrono::Local>, round: usize, duration_ms: u64) {
-        if !self.enabled { return; }
+    pub fn log_raw_response(
+        &self,
+        body: &str,
+        timestamp: chrono::DateTime<chrono::Local>,
+        round: usize,
+        duration_ms: u64,
+    ) {
+        if !self.enabled {
+            return;
+        }
         let index = self.next_index();
         let filename = format!("{}.AI.Response.raw.json", index);
-        let body_value: serde_json::Value = serde_json::from_str(body)
-            .unwrap_or(serde_json::Value::String(body.to_string()));
+        let body_value: serde_json::Value =
+            serde_json::from_str(body).unwrap_or(serde_json::Value::String(body.to_string()));
         let envelope = serde_json::json!({
             "timestamp": timestamp.to_rfc3339(),
             "round": round,
             "duration_ms": duration_ms,
             "body": body_value,
         });
-        let content = serde_json::to_string_pretty(&envelope)
-            .unwrap_or_else(|_| envelope.to_string());
+        let content =
+            serde_json::to_string_pretty(&envelope).unwrap_or_else(|_| envelope.to_string());
         let _ = self.write_file(&filename, &content);
     }
 
@@ -642,17 +669,24 @@ impl RequestLogger {
 
             // Arguments section (mirrors Go's formatArguments).
             if !op.arguments.is_empty() {
-                let args_preview = if self.config.detail_level == DetailLevel::Truncated && op.arguments.len() > TRUNCATE_ARGS_LIMIT {
+                let args_preview = if self.config.detail_level == DetailLevel::Truncated
+                    && op.arguments.len() > TRUNCATE_ARGS_LIMIT
+                {
                     utils::truncate(&op.arguments, TRUNCATE_ARGS_LIMIT)
                 } else {
                     op.arguments.clone()
                 };
-                content.push_str(&format!("### Arguments\n```json\n{}\n```\n\n", args_preview));
+                content.push_str(&format!(
+                    "### Arguments\n```json\n{}\n```\n\n",
+                    args_preview
+                ));
             }
 
             // Result section (mirrors Go's Result field).
             if !op.result.is_empty() {
-                let result_preview = if self.config.detail_level == DetailLevel::Truncated && op.result.len() > TRUNCATE_RESPONSE_LIMIT {
+                let result_preview = if self.config.detail_level == DetailLevel::Truncated
+                    && op.result.len() > TRUNCATE_RESPONSE_LIMIT
+                {
                     utils::truncate(&op.result, TRUNCATE_RESPONSE_LIMIT)
                 } else {
                     op.result.clone()
@@ -665,7 +699,10 @@ impl RequestLogger {
             }
 
             if op.duration_ms > 0 {
-                content.push_str(&format!("### Duration\n{:.3}s\n\n", op.duration_ms as f64 / 1000.0));
+                content.push_str(&format!(
+                    "### Duration\n{:.3}s\n\n",
+                    op.duration_ms as f64 / 1000.0
+                ));
             }
 
             content.push_str("---\n\n");

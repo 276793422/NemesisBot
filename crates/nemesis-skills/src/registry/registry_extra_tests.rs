@@ -3,8 +3,8 @@
 
 use super::*;
 use crate::types::{
-    GitHubSourceConfig as TypesGitHubSourceConfig, InstallResult, RegistryConfig,
-    SkillContent, SkillSearchResult,
+    GitHubSourceConfig as TypesGitHubSourceConfig, InstallResult, RegistryConfig, SkillContent,
+    SkillSearchResult,
 };
 use async_trait::async_trait;
 use std::sync::Arc;
@@ -115,7 +115,12 @@ impl SkillRegistry for CountingRegistry {
             content: "# content".to_string(),
         })
     }
-    async fn browse(&self, _sort: &BrowseSort, limit: usize, _cursor: &str) -> Result<BrowseResult> {
+    async fn browse(
+        &self,
+        _sort: &BrowseSort,
+        limit: usize,
+        _cursor: &str,
+    ) -> Result<BrowseResult> {
         Ok(BrowseResult {
             items: vec![SkillSearchResult {
                 score: 0.9,
@@ -129,7 +134,11 @@ impl SkillRegistry for CountingRegistry {
                 downloads: 0,
                 truncated: false,
             }],
-            next_cursor: if limit > 0 { Some("next".to_string()) } else { None },
+            next_cursor: if limit > 0 {
+                Some("next".to_string())
+            } else {
+                None
+            },
         })
     }
 }
@@ -422,14 +431,20 @@ async fn test_get_skill_content_missing_registry() {
 async fn test_browse_routes_to_registry() {
     let manager = RegistryManager::new_empty();
     manager.add_registry(Arc::new(CountingRegistry::new("a")));
-    let result = manager.browse("a", &BrowseSort::Trending, 10, "").await.unwrap();
+    let result = manager
+        .browse("a", &BrowseSort::Trending, 10, "")
+        .await
+        .unwrap();
     assert_eq!(result.items.len(), 1);
 }
 
 #[tokio::test]
 async fn test_browse_missing_registry() {
     let manager = RegistryManager::new_empty();
-    let err = manager.browse("nope", &BrowseSort::Trending, 10, "").await.unwrap_err();
+    let err = manager
+        .browse("nope", &BrowseSort::Trending, 10, "")
+        .await
+        .unwrap_err();
     assert!(err.to_string().contains("not found"));
 }
 
@@ -547,7 +562,9 @@ fn test_from_config_custom_max_concurrent() {
 #[test]
 fn test_add_source_branch_defaults_to_main() {
     let manager = RegistryManager::new_empty();
-    manager.add_source("s".to_string(), "r".to_string(), None).unwrap();
+    manager
+        .add_source("s".to_string(), "r".to_string(), None)
+        .unwrap();
     let cfg = manager.config.read();
     assert_eq!(cfg.github_sources[0].branch, "main");
 }
@@ -555,7 +572,9 @@ fn test_add_source_branch_defaults_to_main() {
 #[test]
 fn test_add_source_creates_default_index_settings() {
     let manager = RegistryManager::new_empty();
-    manager.add_source("s".to_string(), "r".to_string(), None).unwrap();
+    manager
+        .add_source("s".to_string(), "r".to_string(), None)
+        .unwrap();
     let cfg = manager.config.read();
     let s = &cfg.github_sources[0];
     assert_eq!(s.index_type, "github_api");
@@ -567,9 +586,15 @@ fn test_add_source_creates_default_index_settings() {
 #[test]
 fn test_add_source_multiple_distinct_names() {
     let manager = RegistryManager::new_empty();
-    manager.add_source("a".to_string(), "r1".to_string(), None).unwrap();
-    manager.add_source("b".to_string(), "r2".to_string(), None).unwrap();
-    manager.add_source("c".to_string(), "r3".to_string(), None).unwrap();
+    manager
+        .add_source("a".to_string(), "r1".to_string(), None)
+        .unwrap();
+    manager
+        .add_source("b".to_string(), "r2".to_string(), None)
+        .unwrap();
+    manager
+        .add_source("c".to_string(), "r3".to_string(), None)
+        .unwrap();
     let cfg = manager.config.read();
     assert_eq!(cfg.github_sources.len(), 3);
 }
@@ -577,8 +602,12 @@ fn test_add_source_multiple_distinct_names() {
 #[test]
 fn test_add_source_same_name_different_repo_fails() {
     let manager = RegistryManager::new_empty();
-    manager.add_source("dup".to_string(), "r1".to_string(), None).unwrap();
-    let err = manager.add_source("dup".to_string(), "r2".to_string(), None).unwrap_err();
+    manager
+        .add_source("dup".to_string(), "r1".to_string(), None)
+        .unwrap();
+    let err = manager
+        .add_source("dup".to_string(), "r2".to_string(), None)
+        .unwrap_err();
     assert!(err.to_string().contains("already exists"));
 }
 

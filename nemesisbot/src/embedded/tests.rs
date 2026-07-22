@@ -34,13 +34,20 @@ fn test_extract_dir() {
 
     // Verify assets contain JS and CSS bundles
     let assets_dir = temp.path().join("assets");
-    let js_files: Vec<_> = std::fs::read_dir(&assets_dir).unwrap()
+    let js_files: Vec<_> = std::fs::read_dir(&assets_dir)
+        .unwrap()
         .filter_map(|e| e.ok())
         .filter(|e| e.path().extension().map(|ext| ext == "js").unwrap_or(false))
         .collect();
-    let css_files: Vec<_> = std::fs::read_dir(&assets_dir).unwrap()
+    let css_files: Vec<_> = std::fs::read_dir(&assets_dir)
+        .unwrap()
         .filter_map(|e| e.ok())
-        .filter(|e| e.path().extension().map(|ext| ext == "css").unwrap_or(false))
+        .filter(|e| {
+            e.path()
+                .extension()
+                .map(|ext| ext == "css")
+                .unwrap_or(false)
+        })
         .collect();
     assert!(!js_files.is_empty(), "assets/ should contain JS bundles");
     assert!(!css_files.is_empty(), "assets/ should contain CSS bundles");
@@ -60,20 +67,32 @@ fn test_get_embedded_file_nonexistent() {
 fn test_get_embedded_file_css() {
     // Vue build puts CSS into assets/ directory
     let files = list_embedded_files();
-    assert!(files.iter().any(|f| f.contains("assets/") && f.ends_with(".css")));
+    assert!(
+        files
+            .iter()
+            .any(|f| f.contains("assets/") && f.ends_with(".css"))
+    );
 }
 
 #[test]
 fn test_get_embedded_file_js() {
     // Vue build puts JS into assets/ directory
     let files = list_embedded_files();
-    assert!(files.iter().any(|f| f.contains("assets/") && f.ends_with(".js")));
+    assert!(
+        files
+            .iter()
+            .any(|f| f.contains("assets/") && f.ends_with(".js"))
+    );
 }
 
 #[test]
 fn test_list_embedded_files_contains_known_paths() {
     let files = list_embedded_files();
-    assert!(files.iter().any(|f| f == "index.html" || f.contains("index.html")));
+    assert!(
+        files
+            .iter()
+            .any(|f| f == "index.html" || f.contains("index.html"))
+    );
     assert!(files.iter().any(|f| f.contains("assets/")));
     assert!(files.iter().any(|f| f.contains("fonts/")));
 }

@@ -108,15 +108,27 @@ fn test_parse_model_with_slashes() {
 
 #[test]
 fn test_model_ref_equality() {
-    let r1 = ModelRef { provider: "openai".to_string(), model: "gpt-4".to_string() };
-    let r2 = ModelRef { provider: "openai".to_string(), model: "gpt-4".to_string() };
+    let r1 = ModelRef {
+        provider: "openai".to_string(),
+        model: "gpt-4".to_string(),
+    };
+    let r2 = ModelRef {
+        provider: "openai".to_string(),
+        model: "gpt-4".to_string(),
+    };
     assert_eq!(r1, r2);
 }
 
 #[test]
 fn test_model_ref_inequality() {
-    let r1 = ModelRef { provider: "openai".to_string(), model: "gpt-4".to_string() };
-    let r2 = ModelRef { provider: "anthropic".to_string(), model: "gpt-4".to_string() };
+    let r1 = ModelRef {
+        provider: "openai".to_string(),
+        model: "gpt-4".to_string(),
+    };
+    let r2 = ModelRef {
+        provider: "anthropic".to_string(),
+        model: "gpt-4".to_string(),
+    };
     assert_ne!(r1, r2);
 }
 
@@ -169,7 +181,10 @@ fn test_model_key_case_insensitive() {
 
 #[test]
 fn test_model_ref_serialization() {
-    let r = ModelRef { provider: "openai".to_string(), model: "gpt-4".to_string() };
+    let r = ModelRef {
+        provider: "openai".to_string(),
+        model: "gpt-4".to_string(),
+    };
     let json = serde_json::to_string(&r).unwrap();
     assert!(json.contains("openai"));
     assert!(json.contains("gpt-4"));

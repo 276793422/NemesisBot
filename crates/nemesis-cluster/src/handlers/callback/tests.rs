@@ -113,14 +113,17 @@ fn test_with_completer_constructor() {
 
     struct MockCompleter;
     impl TaskCompleter for MockCompleter {
-        fn complete_task(&self, _task_id: &str, _response: &str, _success: bool, _error: Option<&str>) {
+        fn complete_task(
+            &self,
+            _task_id: &str,
+            _response: &str,
+            _success: bool,
+            _error: Option<&str>,
+        ) {
         }
     }
 
-    let handler = CallbackHandler::with_completer(
-        "node-b".into(),
-        Box::new(MockCompleter),
-    );
+    let handler = CallbackHandler::with_completer("node-b".into(), Box::new(MockCompleter));
     // Just ensure it was constructed without panicking
     let payload = CallbackPayload {
         task_id: "task-1".into(),
@@ -155,7 +158,9 @@ fn test_handle_failure_without_error_message() {
     let calls = Arc::new(Mutex::new(Vec::new()));
     let handler = CallbackHandler::with_completer(
         "node-c".into(),
-        Box::new(MockCompleter { calls: calls.clone() }),
+        Box::new(MockCompleter {
+            calls: calls.clone(),
+        }),
     );
 
     // Failure with error: None triggers the unwrap_or("unknown error") path
@@ -201,7 +206,9 @@ fn test_handle_success_with_completer() {
     let calls = Arc::new(Mutex::new(Vec::new()));
     let handler = CallbackHandler::with_completer(
         "node-d".into(),
-        Box::new(MockCompleter { calls: calls.clone() }),
+        Box::new(MockCompleter {
+            calls: calls.clone(),
+        }),
     );
 
     let payload = CallbackPayload {
@@ -244,7 +251,9 @@ fn test_handle_failure_with_completer() {
     let calls = Arc::new(Mutex::new(Vec::new()));
     let handler = CallbackHandler::with_completer(
         "node-e".into(),
-        Box::new(MockCompleter { calls: calls.clone() }),
+        Box::new(MockCompleter {
+            calls: calls.clone(),
+        }),
     );
 
     let payload = CallbackPayload {

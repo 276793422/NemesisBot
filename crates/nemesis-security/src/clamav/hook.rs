@@ -22,15 +22,9 @@ impl ScanHook {
         args: &serde_json::Value,
     ) -> Result<bool, String> {
         match tool_name {
-            "write_file" | "edit_file" | "append_file" => {
-                self.scan_write_args(args).await
-            }
-            "download" => {
-                self.scan_download_args(args).await
-            }
-            "exec" | "execute_command" => {
-                self.scan_exec_args(args).await
-            }
+            "write_file" | "edit_file" | "append_file" => self.scan_write_args(args).await,
+            "download" => self.scan_download_args(args).await,
+            "exec" | "execute_command" => self.scan_exec_args(args).await,
             _ => Ok(true),
         }
     }
@@ -46,7 +40,10 @@ impl ScanHook {
     }
 
     /// Scan a specific file path and return whether it is clean.
-    pub async fn scan_file_path(&self, file_path: &Path) -> Result<(bool, Option<ClamavScanResult>), String> {
+    pub async fn scan_file_path(
+        &self,
+        file_path: &Path,
+    ) -> Result<(bool, Option<ClamavScanResult>), String> {
         if !file_path.exists() {
             return Ok((true, None));
         }
@@ -64,7 +61,10 @@ impl ScanHook {
     }
 
     /// Scan a downloaded file after it has been saved.
-    pub async fn scan_downloaded_file(&self, save_path: &Path) -> Result<(bool, Option<ClamavScanResult>), String> {
+    pub async fn scan_downloaded_file(
+        &self,
+        save_path: &Path,
+    ) -> Result<(bool, Option<ClamavScanResult>), String> {
         if !save_path.exists() {
             return Ok((true, None));
         }

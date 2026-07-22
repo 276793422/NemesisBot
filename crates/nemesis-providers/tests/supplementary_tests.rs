@@ -21,7 +21,7 @@ mod types_extra {
             tool_call_id: None,
             timestamp: None,
             reasoning_content: None,
-    extra: std::collections::HashMap::new(),
+            extra: std::collections::HashMap::new(),
         };
         let json = serde_json::to_string(&msg).unwrap();
         assert!(json.contains("\"role\":\"system\""));
@@ -38,7 +38,7 @@ mod types_extra {
             tool_call_id: None,
             timestamp: None,
             reasoning_content: None,
-    extra: std::collections::HashMap::new(),
+            extra: std::collections::HashMap::new(),
         };
         let json = serde_json::to_string(&msg).unwrap();
         let back: Message = serde_json::from_str(&json).unwrap();
@@ -54,7 +54,7 @@ mod types_extra {
             tool_call_id: None,
             timestamp: None,
             reasoning_content: None,
-    extra: std::collections::HashMap::new(),
+            extra: std::collections::HashMap::new(),
         };
         let json = serde_json::to_string(&msg).unwrap();
         let back: Message = serde_json::from_str(&json).unwrap();
@@ -70,7 +70,7 @@ mod types_extra {
             tool_call_id: Some("call_1".to_string()),
             timestamp: None,
             reasoning_content: None,
-    extra: std::collections::HashMap::new(),
+            extra: std::collections::HashMap::new(),
         };
         let json = serde_json::to_string(&msg).unwrap();
         let back: Message = serde_json::from_str(&json).unwrap();
@@ -114,9 +114,9 @@ mod types_extra {
             finish_reason: "stop".to_string(),
             usage: None,
             reasoning_content: None,
-    extra: std::collections::HashMap::new(),
-    raw_request_body: None,
-    raw_response_body: None,
+            extra: std::collections::HashMap::new(),
+            raw_request_body: None,
+            raw_response_body: None,
         };
         assert_eq!(resp.finish_reason, "stop");
     }
@@ -138,9 +138,9 @@ mod types_extra {
             finish_reason: "tool_calls".to_string(),
             usage: None,
             reasoning_content: None,
-    extra: std::collections::HashMap::new(),
-    raw_request_body: None,
-    raw_response_body: None,
+            extra: std::collections::HashMap::new(),
+            raw_request_body: None,
+            raw_response_body: None,
         };
         assert_eq!(resp.finish_reason, "tool_calls");
         assert_eq!(resp.tool_calls.len(), 1);
@@ -156,7 +156,10 @@ mod types_extra {
             cache_creation_tokens: None,
             cache_read_tokens: None,
         };
-        assert_eq!(usage.prompt_tokens + usage.completion_tokens, usage.total_tokens);
+        assert_eq!(
+            usage.prompt_tokens + usage.completion_tokens,
+            usage.total_tokens
+        );
     }
 
     #[test]
@@ -257,9 +260,9 @@ mod types_extra {
             finish_reason: "stop".to_string(),
             usage: None,
             reasoning_content: None,
-    extra: std::collections::HashMap::new(),
-    raw_request_body: None,
-    raw_response_body: None,
+            extra: std::collections::HashMap::new(),
+            raw_request_body: None,
+            raw_response_body: None,
         };
         let json = serde_json::to_string(&resp).unwrap();
         assert!(!json.contains("tool_calls"));
@@ -280,9 +283,9 @@ mod types_extra {
                 cache_read_tokens: None,
             }),
             reasoning_content: None,
-    extra: std::collections::HashMap::new(),
-    raw_request_body: None,
-    raw_response_body: None,
+            extra: std::collections::HashMap::new(),
+            raw_request_body: None,
+            raw_response_body: None,
         };
         let json = serde_json::to_string(&resp).unwrap();
         assert!(json.contains("usage"));
@@ -423,14 +426,20 @@ mod model_ref_extra {
 
     #[test]
     fn test_model_ref_clone() {
-        let r1 = ModelRef { provider: "openai".to_string(), model: "gpt-4".to_string() };
+        let r1 = ModelRef {
+            provider: "openai".to_string(),
+            model: "gpt-4".to_string(),
+        };
         let r2 = r1.clone();
         assert_eq!(r1, r2);
     }
 
     #[test]
     fn test_model_ref_serde_roundtrip() {
-        let r = ModelRef { provider: "anthropic".to_string(), model: "claude-3-opus".to_string() };
+        let r = ModelRef {
+            provider: "anthropic".to_string(),
+            model: "claude-3-opus".to_string(),
+        };
         let json = serde_json::to_string(&r).unwrap();
         let back: ModelRef = serde_json::from_str(&json).unwrap();
         assert_eq!(r, back);
@@ -482,7 +491,9 @@ mod failover_extra {
 
     #[test]
     fn test_billing_error_display() {
-        let err = FailoverError::Billing { provider: "openai".to_string() };
+        let err = FailoverError::Billing {
+            provider: "openai".to_string(),
+        };
         let msg = format!("{}", err);
         assert!(msg.contains("openai"));
     }
@@ -511,7 +522,9 @@ mod failover_extra {
 
     #[test]
     fn test_overloaded_error_display() {
-        let err = FailoverError::Overloaded { provider: "anthropic".to_string() };
+        let err = FailoverError::Overloaded {
+            provider: "anthropic".to_string(),
+        };
         let msg = format!("{}", err);
         assert!(msg.contains("anthropic"));
     }
@@ -569,24 +582,115 @@ mod failover_extra {
 
     #[test]
     fn test_is_retriable_all_variants() {
-        assert!(FailoverError::RateLimit { provider: "p".into(), model: "m".into(), retry_after: None }.is_retriable());
-        assert!(FailoverError::Timeout { provider: "p".into(), model: "m".into() }.is_retriable());
-        assert!(FailoverError::Overloaded { provider: "p".into() }.is_retriable());
-        assert!(!FailoverError::Auth { provider: "p".into(), model: "m".into(), status: 401 }.is_retriable());
-        assert!(!FailoverError::Billing { provider: "p".into() }.is_retriable());
-        assert!(!FailoverError::Format { provider: "p".into(), message: "m".into() }.is_retriable());
-        assert!(!FailoverError::Unknown { provider: "p".into(), message: "m".into() }.is_retriable());
+        assert!(
+            FailoverError::RateLimit {
+                provider: "p".into(),
+                model: "m".into(),
+                retry_after: None
+            }
+            .is_retriable()
+        );
+        assert!(
+            FailoverError::Timeout {
+                provider: "p".into(),
+                model: "m".into()
+            }
+            .is_retriable()
+        );
+        assert!(
+            FailoverError::Overloaded {
+                provider: "p".into()
+            }
+            .is_retriable()
+        );
+        assert!(
+            !FailoverError::Auth {
+                provider: "p".into(),
+                model: "m".into(),
+                status: 401
+            }
+            .is_retriable()
+        );
+        assert!(
+            !FailoverError::Billing {
+                provider: "p".into()
+            }
+            .is_retriable()
+        );
+        assert!(
+            !FailoverError::Format {
+                provider: "p".into(),
+                message: "m".into()
+            }
+            .is_retriable()
+        );
+        assert!(
+            !FailoverError::Unknown {
+                provider: "p".into(),
+                message: "m".into()
+            }
+            .is_retriable()
+        );
     }
 
     #[test]
     fn test_reason_all_variants() {
-        assert_eq!(FailoverError::Auth { provider: "p".into(), model: "m".into(), status: 0 }.reason(), FailoverReason::Auth);
-        assert_eq!(FailoverError::RateLimit { provider: "p".into(), model: "m".into(), retry_after: None }.reason(), FailoverReason::RateLimit);
-        assert_eq!(FailoverError::Billing { provider: "p".into() }.reason(), FailoverReason::Billing);
-        assert_eq!(FailoverError::Timeout { provider: "p".into(), model: "m".into() }.reason(), FailoverReason::Timeout);
-        assert_eq!(FailoverError::Format { provider: "p".into(), message: "m".into() }.reason(), FailoverReason::Format);
-        assert_eq!(FailoverError::Overloaded { provider: "p".into() }.reason(), FailoverReason::Overloaded);
-        assert_eq!(FailoverError::Unknown { provider: "p".into(), message: "m".into() }.reason(), FailoverReason::Unknown);
+        assert_eq!(
+            FailoverError::Auth {
+                provider: "p".into(),
+                model: "m".into(),
+                status: 0
+            }
+            .reason(),
+            FailoverReason::Auth
+        );
+        assert_eq!(
+            FailoverError::RateLimit {
+                provider: "p".into(),
+                model: "m".into(),
+                retry_after: None
+            }
+            .reason(),
+            FailoverReason::RateLimit
+        );
+        assert_eq!(
+            FailoverError::Billing {
+                provider: "p".into()
+            }
+            .reason(),
+            FailoverReason::Billing
+        );
+        assert_eq!(
+            FailoverError::Timeout {
+                provider: "p".into(),
+                model: "m".into()
+            }
+            .reason(),
+            FailoverReason::Timeout
+        );
+        assert_eq!(
+            FailoverError::Format {
+                provider: "p".into(),
+                message: "m".into()
+            }
+            .reason(),
+            FailoverReason::Format
+        );
+        assert_eq!(
+            FailoverError::Overloaded {
+                provider: "p".into()
+            }
+            .reason(),
+            FailoverReason::Overloaded
+        );
+        assert_eq!(
+            FailoverError::Unknown {
+                provider: "p".into(),
+                message: "m".into()
+            }
+            .reason(),
+            FailoverReason::Unknown
+        );
     }
 
     #[test]
@@ -624,8 +728,14 @@ mod cooldown_extra {
     #[test]
     fn test_calculate_billing_cooldown_values() {
         assert_eq!(calculate_billing_cooldown(1), Duration::from_secs(5 * 3600));
-        assert_eq!(calculate_billing_cooldown(2), Duration::from_secs(10 * 3600));
-        assert_eq!(calculate_billing_cooldown(3), Duration::from_secs(20 * 3600));
+        assert_eq!(
+            calculate_billing_cooldown(2),
+            Duration::from_secs(10 * 3600)
+        );
+        assert_eq!(
+            calculate_billing_cooldown(3),
+            Duration::from_secs(20 * 3600)
+        );
     }
 
     #[test]
@@ -728,7 +838,10 @@ mod cooldown_extra {
 
     #[test]
     fn test_calculate_billing_cooldown_cap() {
-        assert_eq!(calculate_billing_cooldown(100), Duration::from_secs(24 * 3600));
+        assert_eq!(
+            calculate_billing_cooldown(100),
+            Duration::from_secs(24 * 3600)
+        );
     }
 
     #[test]
@@ -856,7 +969,10 @@ mod error_classifier_extra {
 
     #[test]
     fn test_classify_reason_rate_limit() {
-        assert_eq!(classify_reason("rate limit"), Some(FailoverReason::RateLimit));
+        assert_eq!(
+            classify_reason("rate limit"),
+            Some(FailoverReason::RateLimit)
+        );
     }
 
     #[test]
@@ -866,7 +982,10 @@ mod error_classifier_extra {
 
     #[test]
     fn test_classify_reason_billing() {
-        assert_eq!(classify_reason("insufficient credits"), Some(FailoverReason::Billing));
+        assert_eq!(
+            classify_reason("insufficient credits"),
+            Some(FailoverReason::Billing)
+        );
     }
 
     #[test]
@@ -876,12 +995,18 @@ mod error_classifier_extra {
 
     #[test]
     fn test_classify_reason_format() {
-        assert_eq!(classify_reason("invalid request format"), Some(FailoverReason::Format));
+        assert_eq!(
+            classify_reason("invalid request format"),
+            Some(FailoverReason::Format)
+        );
     }
 
     #[test]
     fn test_classify_reason_overloaded_as_rate_limit() {
-        assert_eq!(classify_reason("overloaded"), Some(FailoverReason::RateLimit));
+        assert_eq!(
+            classify_reason("overloaded"),
+            Some(FailoverReason::RateLimit)
+        );
     }
 
     #[test]
@@ -927,7 +1052,9 @@ mod error_classifier_extra {
 
     #[test]
     fn test_is_image_dimension_error_true() {
-        assert!(is_image_dimension_error("image dimensions exceed max 8000px"));
+        assert!(is_image_dimension_error(
+            "image dimensions exceed max 8000px"
+        ));
     }
 
     #[test]
@@ -1181,17 +1308,26 @@ mod router_extra {
     fn test_default_aliases_contents() {
         let aliases = default_aliases();
         assert_eq!(aliases.get("fast").unwrap(), "groq/llama-3.3-70b-versatile");
-        assert_eq!(aliases.get("smart").unwrap(), "anthropic/claude-sonnet-4-20250514");
+        assert_eq!(
+            aliases.get("smart").unwrap(),
+            "anthropic/claude-sonnet-4-20250514"
+        );
         assert_eq!(aliases.get("cheap").unwrap(), "deepseek/deepseek-chat");
         assert_eq!(aliases.get("local").unwrap(), "ollama/llama3.3");
         assert_eq!(aliases.get("reasoning").unwrap(), "openai/o3-mini");
-        assert_eq!(aliases.get("code").unwrap(), "anthropic/claude-sonnet-4-20250514");
+        assert_eq!(
+            aliases.get("code").unwrap(),
+            "anthropic/claude-sonnet-4-20250514"
+        );
     }
 
     #[test]
     fn test_resolve_alias_found() {
         let aliases = default_aliases();
-        assert_eq!(resolve_alias(&aliases, "fast"), Some("groq/llama-3.3-70b-versatile".to_string()));
+        assert_eq!(
+            resolve_alias(&aliases, "fast"),
+            Some("groq/llama-3.3-70b-versatile".to_string())
+        );
     }
 
     #[test]
@@ -1236,19 +1372,46 @@ mod router_extra {
     #[test]
     fn test_policy_serialization_all() {
         assert_eq!(serde_json::to_string(&Policy::Cost).unwrap(), "\"cost\"");
-        assert_eq!(serde_json::to_string(&Policy::Quality).unwrap(), "\"quality\"");
-        assert_eq!(serde_json::to_string(&Policy::Latency).unwrap(), "\"latency\"");
-        assert_eq!(serde_json::to_string(&Policy::RoundRobin).unwrap(), "\"round_robin\"");
-        assert_eq!(serde_json::to_string(&Policy::Fallback).unwrap(), "\"fallback\"");
+        assert_eq!(
+            serde_json::to_string(&Policy::Quality).unwrap(),
+            "\"quality\""
+        );
+        assert_eq!(
+            serde_json::to_string(&Policy::Latency).unwrap(),
+            "\"latency\""
+        );
+        assert_eq!(
+            serde_json::to_string(&Policy::RoundRobin).unwrap(),
+            "\"round_robin\""
+        );
+        assert_eq!(
+            serde_json::to_string(&Policy::Fallback).unwrap(),
+            "\"fallback\""
+        );
     }
 
     #[test]
     fn test_policy_deserialization_all() {
-        assert_eq!(serde_json::from_str::<Policy>("\"cost\"").unwrap(), Policy::Cost);
-        assert_eq!(serde_json::from_str::<Policy>("\"quality\"").unwrap(), Policy::Quality);
-        assert_eq!(serde_json::from_str::<Policy>("\"latency\"").unwrap(), Policy::Latency);
-        assert_eq!(serde_json::from_str::<Policy>("\"round_robin\"").unwrap(), Policy::RoundRobin);
-        assert_eq!(serde_json::from_str::<Policy>("\"fallback\"").unwrap(), Policy::Fallback);
+        assert_eq!(
+            serde_json::from_str::<Policy>("\"cost\"").unwrap(),
+            Policy::Cost
+        );
+        assert_eq!(
+            serde_json::from_str::<Policy>("\"quality\"").unwrap(),
+            Policy::Quality
+        );
+        assert_eq!(
+            serde_json::from_str::<Policy>("\"latency\"").unwrap(),
+            Policy::Latency
+        );
+        assert_eq!(
+            serde_json::from_str::<Policy>("\"round_robin\"").unwrap(),
+            Policy::RoundRobin
+        );
+        assert_eq!(
+            serde_json::from_str::<Policy>("\"fallback\"").unwrap(),
+            Policy::Fallback
+        );
     }
 
     #[test]
@@ -1614,11 +1777,11 @@ mod router_extra {
 
 #[cfg(test)]
 mod fallback_provider_extra {
-    use nemesis_providers::fallback_provider::*;
+    use async_trait::async_trait;
     use nemesis_providers::failover::FailoverError;
+    use nemesis_providers::fallback_provider::*;
     use nemesis_providers::router::LLMProvider;
     use nemesis_providers::types::*;
-    use async_trait::async_trait;
     use std::sync::Arc;
 
     struct MockSuccessProvider {
@@ -1641,9 +1804,9 @@ mod fallback_provider_extra {
                 finish_reason: "stop".to_string(),
                 usage: None,
                 reasoning_content: None,
-    extra: std::collections::HashMap::new(),
-    raw_request_body: None,
-    raw_response_body: None,
+                extra: std::collections::HashMap::new(),
+                raw_request_body: None,
+                raw_response_body: None,
             })
         }
 
@@ -1748,9 +1911,9 @@ mod fallback_provider_extra {
                 finish_reason: "stop".to_string(),
                 usage: None,
                 reasoning_content: None,
-    extra: std::collections::HashMap::new(),
-    raw_request_body: None,
-    raw_response_body: None,
+                extra: std::collections::HashMap::new(),
+                raw_request_body: None,
+                raw_response_body: None,
             }),
             attempts: vec![FallbackAttempt {
                 provider: "p1".to_string(),
@@ -1789,16 +1952,25 @@ mod fallback_provider_extra {
 
     #[test]
     fn test_fallback_provider_chain_len() {
-        let provider = FallbackProvider::new("test", vec![
-            FallbackEntry {
-                provider: Arc::new(MockSuccessProvider { name: "p1".to_string(), model: "m1".to_string() }),
-                model: "m1".to_string(),
-            },
-            FallbackEntry {
-                provider: Arc::new(MockSuccessProvider { name: "p2".to_string(), model: "m2".to_string() }),
-                model: "m2".to_string(),
-            },
-        ]);
+        let provider = FallbackProvider::new(
+            "test",
+            vec![
+                FallbackEntry {
+                    provider: Arc::new(MockSuccessProvider {
+                        name: "p1".to_string(),
+                        model: "m1".to_string(),
+                    }),
+                    model: "m1".to_string(),
+                },
+                FallbackEntry {
+                    provider: Arc::new(MockSuccessProvider {
+                        name: "p2".to_string(),
+                        model: "m2".to_string(),
+                    }),
+                    model: "m2".to_string(),
+                },
+            ],
+        );
         assert_eq!(provider.chain_len(), 2);
     }
 
@@ -1817,11 +1989,26 @@ mod fallback_provider_extra {
 
     #[test]
     fn test_resolve_candidates_dedup() {
-        let p1 = Arc::new(MockSuccessProvider { name: "p1".to_string(), model: "m1".to_string() });
+        let p1 = Arc::new(MockSuccessProvider {
+            name: "p1".to_string(),
+            model: "m1".to_string(),
+        });
         let chain = vec![
-            FallbackEntry { provider: p1.clone(), model: "m1".to_string() },
-            FallbackEntry { provider: p1.clone(), model: "m1".to_string() },
-            FallbackEntry { provider: Arc::new(MockSuccessProvider { name: "p2".to_string(), model: "m2".to_string() }), model: "m2".to_string() },
+            FallbackEntry {
+                provider: p1.clone(),
+                model: "m1".to_string(),
+            },
+            FallbackEntry {
+                provider: p1.clone(),
+                model: "m1".to_string(),
+            },
+            FallbackEntry {
+                provider: Arc::new(MockSuccessProvider {
+                    name: "p2".to_string(),
+                    model: "m2".to_string(),
+                }),
+                model: "m2".to_string(),
+            },
         ];
         let candidates = FallbackProvider::resolve_candidates(&chain, "");
         assert_eq!(candidates.len(), 2);
@@ -1830,8 +2017,20 @@ mod fallback_provider_extra {
     #[test]
     fn test_resolve_candidates_all_unique() {
         let chain = vec![
-            FallbackEntry { provider: Arc::new(MockSuccessProvider { name: "p1".to_string(), model: "m1".to_string() }), model: "m1".to_string() },
-            FallbackEntry { provider: Arc::new(MockSuccessProvider { name: "p2".to_string(), model: "m2".to_string() }), model: "m2".to_string() },
+            FallbackEntry {
+                provider: Arc::new(MockSuccessProvider {
+                    name: "p1".to_string(),
+                    model: "m1".to_string(),
+                }),
+                model: "m1".to_string(),
+            },
+            FallbackEntry {
+                provider: Arc::new(MockSuccessProvider {
+                    name: "p2".to_string(),
+                    model: "m2".to_string(),
+                }),
+                model: "m2".to_string(),
+            },
         ];
         let candidates = FallbackProvider::resolve_candidates(&chain, "");
         assert_eq!(candidates.len(), 2);
@@ -1847,7 +2046,7 @@ mod fallback_provider_extra {
             tool_call_id: None,
             timestamp: None,
             reasoning_content: None,
-    extra: std::collections::HashMap::new(),
+            extra: std::collections::HashMap::new(),
         }];
         let result = provider.chat(&msgs, &[], "", &ChatOptions::default()).await;
         assert!(result.is_err());
@@ -1855,12 +2054,16 @@ mod fallback_provider_extra {
 
     #[tokio::test]
     async fn test_fallback_first_provider_succeeds() {
-        let provider = FallbackProvider::new("test", vec![
-            FallbackEntry {
-                provider: Arc::new(MockSuccessProvider { name: "p1".to_string(), model: "m1".to_string() }),
+        let provider = FallbackProvider::new(
+            "test",
+            vec![FallbackEntry {
+                provider: Arc::new(MockSuccessProvider {
+                    name: "p1".to_string(),
+                    model: "m1".to_string(),
+                }),
                 model: "m1".to_string(),
-            },
-        ]);
+            }],
+        );
         let msgs = vec![Message {
             role: "user".to_string(),
             content: "hello".to_string(),
@@ -1868,24 +2071,37 @@ mod fallback_provider_extra {
             tool_call_id: None,
             timestamp: None,
             reasoning_content: None,
-    extra: std::collections::HashMap::new(),
+            extra: std::collections::HashMap::new(),
         }];
-        let resp = provider.chat(&msgs, &[], "", &ChatOptions::default()).await.unwrap();
+        let resp = provider
+            .chat(&msgs, &[], "", &ChatOptions::default())
+            .await
+            .unwrap();
         assert_eq!(resp.content, "response from p1");
     }
 
     #[tokio::test]
     async fn test_fallback_fail_then_succeed() {
-        let provider = FallbackProvider::new("test", vec![
-            FallbackEntry {
-                provider: Arc::new(MockFailProvider { name: "p1".to_string(), model: "m1".to_string(), retriable: true }),
-                model: "m1".to_string(),
-            },
-            FallbackEntry {
-                provider: Arc::new(MockSuccessProvider { name: "p2".to_string(), model: "m2".to_string() }),
-                model: "m2".to_string(),
-            },
-        ]);
+        let provider = FallbackProvider::new(
+            "test",
+            vec![
+                FallbackEntry {
+                    provider: Arc::new(MockFailProvider {
+                        name: "p1".to_string(),
+                        model: "m1".to_string(),
+                        retriable: true,
+                    }),
+                    model: "m1".to_string(),
+                },
+                FallbackEntry {
+                    provider: Arc::new(MockSuccessProvider {
+                        name: "p2".to_string(),
+                        model: "m2".to_string(),
+                    }),
+                    model: "m2".to_string(),
+                },
+            ],
+        );
         let msgs = vec![Message {
             role: "user".to_string(),
             content: "hello".to_string(),
@@ -1893,24 +2109,37 @@ mod fallback_provider_extra {
             tool_call_id: None,
             timestamp: None,
             reasoning_content: None,
-    extra: std::collections::HashMap::new(),
+            extra: std::collections::HashMap::new(),
         }];
-        let resp = provider.chat(&msgs, &[], "", &ChatOptions::default()).await.unwrap();
+        let resp = provider
+            .chat(&msgs, &[], "", &ChatOptions::default())
+            .await
+            .unwrap();
         assert_eq!(resp.content, "response from p2");
     }
 
     #[tokio::test]
     async fn test_fallback_non_retriable_stops_chain() {
-        let provider = FallbackProvider::new("test", vec![
-            FallbackEntry {
-                provider: Arc::new(MockFailProvider { name: "p1".to_string(), model: "m1".to_string(), retriable: false }),
-                model: "m1".to_string(),
-            },
-            FallbackEntry {
-                provider: Arc::new(MockSuccessProvider { name: "p2".to_string(), model: "m2".to_string() }),
-                model: "m2".to_string(),
-            },
-        ]);
+        let provider = FallbackProvider::new(
+            "test",
+            vec![
+                FallbackEntry {
+                    provider: Arc::new(MockFailProvider {
+                        name: "p1".to_string(),
+                        model: "m1".to_string(),
+                        retriable: false,
+                    }),
+                    model: "m1".to_string(),
+                },
+                FallbackEntry {
+                    provider: Arc::new(MockSuccessProvider {
+                        name: "p2".to_string(),
+                        model: "m2".to_string(),
+                    }),
+                    model: "m2".to_string(),
+                },
+            ],
+        );
         let msgs = vec![Message {
             role: "user".to_string(),
             content: "hello".to_string(),
@@ -1918,7 +2147,7 @@ mod fallback_provider_extra {
             tool_call_id: None,
             timestamp: None,
             reasoning_content: None,
-    extra: std::collections::HashMap::new(),
+            extra: std::collections::HashMap::new(),
         }];
         let result = provider.chat(&msgs, &[], "", &ChatOptions::default()).await;
         assert!(result.is_err());
@@ -1927,12 +2156,16 @@ mod fallback_provider_extra {
 
     #[tokio::test]
     async fn test_execute_detailed_success_tracking() {
-        let provider = FallbackProvider::new("test", vec![
-            FallbackEntry {
-                provider: Arc::new(MockSuccessProvider { name: "p1".to_string(), model: "m1".to_string() }),
+        let provider = FallbackProvider::new(
+            "test",
+            vec![FallbackEntry {
+                provider: Arc::new(MockSuccessProvider {
+                    name: "p1".to_string(),
+                    model: "m1".to_string(),
+                }),
                 model: "m1".to_string(),
-            },
-        ]);
+            }],
+        );
         let msgs = vec![Message {
             role: "user".to_string(),
             content: "hello".to_string(),
@@ -1940,9 +2173,11 @@ mod fallback_provider_extra {
             tool_call_id: None,
             timestamp: None,
             reasoning_content: None,
-    extra: std::collections::HashMap::new(),
+            extra: std::collections::HashMap::new(),
         }];
-        let result = provider.execute_detailed(&msgs, &[], "", &ChatOptions::default()).await;
+        let result = provider
+            .execute_detailed(&msgs, &[], "", &ChatOptions::default())
+            .await;
         assert!(result.response.is_some());
         assert!(result.exhausted_error.is_none());
         assert_eq!(result.attempts.len(), 1);
@@ -1952,16 +2187,27 @@ mod fallback_provider_extra {
 
     #[tokio::test]
     async fn test_execute_detailed_all_fail() {
-        let provider = FallbackProvider::new("test", vec![
-            FallbackEntry {
-                provider: Arc::new(MockFailProvider { name: "p1".to_string(), model: "m1".to_string(), retriable: true }),
-                model: "m1".to_string(),
-            },
-            FallbackEntry {
-                provider: Arc::new(MockFailProvider { name: "p2".to_string(), model: "m2".to_string(), retriable: true }),
-                model: "m2".to_string(),
-            },
-        ]);
+        let provider = FallbackProvider::new(
+            "test",
+            vec![
+                FallbackEntry {
+                    provider: Arc::new(MockFailProvider {
+                        name: "p1".to_string(),
+                        model: "m1".to_string(),
+                        retriable: true,
+                    }),
+                    model: "m1".to_string(),
+                },
+                FallbackEntry {
+                    provider: Arc::new(MockFailProvider {
+                        name: "p2".to_string(),
+                        model: "m2".to_string(),
+                        retriable: true,
+                    }),
+                    model: "m2".to_string(),
+                },
+            ],
+        );
         let msgs = vec![Message {
             role: "user".to_string(),
             content: "hello".to_string(),
@@ -1969,9 +2215,11 @@ mod fallback_provider_extra {
             tool_call_id: None,
             timestamp: None,
             reasoning_content: None,
-    extra: std::collections::HashMap::new(),
+            extra: std::collections::HashMap::new(),
         }];
-        let result = provider.execute_detailed(&msgs, &[], "", &ChatOptions::default()).await;
+        let result = provider
+            .execute_detailed(&msgs, &[], "", &ChatOptions::default())
+            .await;
         assert!(result.response.is_none());
         let err = result.exhausted_error.unwrap();
         assert_eq!(err.providers_attempted, 2);
@@ -1983,12 +2231,16 @@ mod fallback_provider_extra {
 
     #[tokio::test]
     async fn test_execute_image_success() {
-        let provider = FallbackProvider::new("test", vec![
-            FallbackEntry {
-                provider: Arc::new(MockSuccessProvider { name: "p1".to_string(), model: "m1".to_string() }),
+        let provider = FallbackProvider::new(
+            "test",
+            vec![FallbackEntry {
+                provider: Arc::new(MockSuccessProvider {
+                    name: "p1".to_string(),
+                    model: "m1".to_string(),
+                }),
                 model: "m1".to_string(),
-            },
-        ]);
+            }],
+        );
         let msgs = vec![Message {
             role: "user".to_string(),
             content: "describe this image".to_string(),
@@ -1996,9 +2248,11 @@ mod fallback_provider_extra {
             tool_call_id: None,
             timestamp: None,
             reasoning_content: None,
-    extra: std::collections::HashMap::new(),
+            extra: std::collections::HashMap::new(),
         }];
-        let result = provider.execute_image(&msgs, &[], "m1", &ChatOptions::default()).await;
+        let result = provider
+            .execute_image(&msgs, &[], "m1", &ChatOptions::default())
+            .await;
         assert!(result.response.is_some());
     }
 
@@ -2012,9 +2266,11 @@ mod fallback_provider_extra {
             tool_call_id: None,
             timestamp: None,
             reasoning_content: None,
-    extra: std::collections::HashMap::new(),
+            extra: std::collections::HashMap::new(),
         }];
-        let result = provider.execute_image(&msgs, &[], "", &ChatOptions::default()).await;
+        let result = provider
+            .execute_image(&msgs, &[], "", &ChatOptions::default())
+            .await;
         assert!(result.response.is_none());
         let err = result.exhausted_error.unwrap();
         assert_eq!(err.providers_attempted, 0);
@@ -2023,12 +2279,16 @@ mod fallback_provider_extra {
 
     #[test]
     fn test_fallback_default_model() {
-        let provider = FallbackProvider::new("test", vec![
-            FallbackEntry {
-                provider: Arc::new(MockSuccessProvider { name: "p1".to_string(), model: "default-model".to_string() }),
+        let provider = FallbackProvider::new(
+            "test",
+            vec![FallbackEntry {
+                provider: Arc::new(MockSuccessProvider {
+                    name: "p1".to_string(),
+                    model: "default-model".to_string(),
+                }),
                 model: "default-model".to_string(),
-            },
-        ]);
+            }],
+        );
         assert_eq!(provider.default_model(), "default-model");
     }
 
@@ -2121,7 +2381,10 @@ mod tool_call_extract_extra {
         let calls = extract_tool_calls_from_text(text);
         assert_eq!(calls.len(), 1);
         assert!(calls[0].arguments.is_some());
-        assert_eq!(calls[0].arguments.as_ref().unwrap().get("cmd").unwrap(), "ls");
+        assert_eq!(
+            calls[0].arguments.as_ref().unwrap().get("cmd").unwrap(),
+            "ls"
+        );
     }
 
     #[test]
@@ -2187,42 +2450,69 @@ mod openai_compat_extra {
 
     #[test]
     fn test_normalize_deepseek() {
-        assert_eq!(normalize_model("deepseek/deepseek-chat", "https://api.deepseek.com"), "deepseek-chat");
+        assert_eq!(
+            normalize_model("deepseek/deepseek-chat", "https://api.deepseek.com"),
+            "deepseek-chat"
+        );
     }
 
     #[test]
     fn test_normalize_groq() {
-        assert_eq!(normalize_model("groq/llama3", "https://api.groq.com"), "llama3");
+        assert_eq!(
+            normalize_model("groq/llama3", "https://api.groq.com"),
+            "llama3"
+        );
     }
 
     #[test]
     fn test_normalize_ollama() {
-        assert_eq!(normalize_model("ollama/llama3", "http://localhost:11434"), "llama3");
+        assert_eq!(
+            normalize_model("ollama/llama3", "http://localhost:11434"),
+            "llama3"
+        );
     }
 
     #[test]
     fn test_normalize_zhipu() {
-        assert_eq!(normalize_model("zhipu/glm-4", "https://open.bigmodel.cn"), "glm-4");
+        assert_eq!(
+            normalize_model("zhipu/glm-4", "https://open.bigmodel.cn"),
+            "glm-4"
+        );
     }
 
     #[test]
     fn test_normalize_nvidia() {
-        assert_eq!(normalize_model("nvidia/nemotron", "https://api.nvidia.com"), "nemotron");
+        assert_eq!(
+            normalize_model("nvidia/nemotron", "https://api.nvidia.com"),
+            "nemotron"
+        );
     }
 
     #[test]
     fn test_normalize_moonshot() {
-        assert_eq!(normalize_model("moonshot/moonshot-v1", "https://api.moonshot.cn"), "moonshot-v1");
+        assert_eq!(
+            normalize_model("moonshot/moonshot-v1", "https://api.moonshot.cn"),
+            "moonshot-v1"
+        );
     }
 
     #[test]
     fn test_normalize_google() {
-        assert_eq!(normalize_model("google/gemini-pro", "https://generativelanguage.googleapis.com"), "gemini-pro");
+        assert_eq!(
+            normalize_model(
+                "google/gemini-pro",
+                "https://generativelanguage.googleapis.com"
+            ),
+            "gemini-pro"
+        );
     }
 
     #[test]
     fn test_normalize_openrouter_preserved() {
-        assert_eq!(normalize_model("openai/gpt-4", "https://openrouter.ai/api/v1"), "openai/gpt-4");
+        assert_eq!(
+            normalize_model("openai/gpt-4", "https://openrouter.ai/api/v1"),
+            "openai/gpt-4"
+        );
     }
 
     #[test]
@@ -2232,17 +2522,29 @@ mod openai_compat_extra {
 
     #[test]
     fn test_normalize_unknown_prefix() {
-        assert_eq!(normalize_model("myprovider/model-v1", "https://example.com"), "myprovider/model-v1");
+        assert_eq!(
+            normalize_model("myprovider/model-v1", "https://example.com"),
+            "myprovider/model-v1"
+        );
     }
 
     #[test]
     fn test_normalize_case_insensitive_prefix() {
-        assert_eq!(normalize_model("DeepSeek/chat", "https://api.deepseek.com"), "chat");
-        assert_eq!(normalize_model("GROQ/llama3", "https://api.groq.com"), "llama3");
+        assert_eq!(
+            normalize_model("DeepSeek/chat", "https://api.deepseek.com"),
+            "chat"
+        );
+        assert_eq!(
+            normalize_model("GROQ/llama3", "https://api.groq.com"),
+            "llama3"
+        );
     }
 
     #[test]
     fn test_normalize_case_insensitive_api_base_openrouter() {
-        assert_eq!(normalize_model("openai/gpt-4", "https://OPENROUTER.AI/api/v1"), "openai/gpt-4");
+        assert_eq!(
+            normalize_model("openai/gpt-4", "https://OPENROUTER.AI/api/v1"),
+            "openai/gpt-4"
+        );
     }
 }

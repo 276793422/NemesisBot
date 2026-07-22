@@ -86,10 +86,7 @@ impl LLMProvider for GitHubCopilotProvider {
         let url = if self.config.uri.is_empty() {
             "http://localhost:8080/copilot/chat".to_string()
         } else {
-            format!(
-                "{}/copilot/chat",
-                self.config.uri.trim_end_matches('/')
-            )
+            format!("{}/copilot/chat", self.config.uri.trim_end_matches('/'))
         };
 
         let body = serde_json::json!({
@@ -127,9 +124,9 @@ impl LLMProvider for GitHubCopilotProvider {
             finish_reason: "stop".to_string(),
             usage: None,
             reasoning_content: None,
-    extra: std::collections::HashMap::new(),
-    raw_request_body: None,
-    raw_response_body: None,
+            extra: std::collections::HashMap::new(),
+            raw_request_body: None,
+            raw_response_body: None,
         })
     }
 

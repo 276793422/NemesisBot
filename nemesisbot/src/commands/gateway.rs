@@ -17,12 +17,12 @@
 //! 14. Wait for shutdown signal
 //! 15. Graceful shutdown
 
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use anyhow::Result;
 use nemesis_services::LifecycleService;
-use tracing::{info, warn, error};
+use tracing::{error, info, warn};
 
 use crate::adapters;
 use crate::common;
@@ -171,7 +171,9 @@ struct ApprovalPopupAdapter {
 #[cfg(all(feature = "desktop", feature = "security"))]
 impl ApprovalPopupAdapter {
     fn new(pm: Arc<nemesis_desktop::process::ProcessManager>) -> Self {
-        Self { process_manager: pm }
+        Self {
+            process_manager: pm,
+        }
     }
 }
 
@@ -220,7 +222,9 @@ impl nemesis_security::auditor::ApprovalManager for ApprovalPopupAdapter {
             operation, target, risk_level
         );
 
-        let (_child_id, result_rx) = self.process_manager.spawn_child("approval", &data)
+        let (_child_id, result_rx) = self
+            .process_manager
+            .spawn_child("approval", &data)
             .map_err(|e| format!("spawn_child failed: {}", e))?;
 
         let result_rx = result_rx.ok_or("no result channel")?;
@@ -232,25 +236,32 @@ impl nemesis_security::auditor::ApprovalManager for ApprovalPopupAdapter {
         std::thread::spawn(move || {
             let rt = tokio::runtime::Runtime::new().unwrap();
             let result = rt.block_on(async {
-                tokio::time::timeout(
-                    std::time::Duration::from_secs(wait_secs),
-                    result_rx,
-                ).await
+                tokio::time::timeout(std::time::Duration::from_secs(wait_secs), result_rx).await
             });
             match result {
-                Ok(Ok(value)) => { let _ = tx.send(Ok(value)); }
-                Ok(Err(_)) => { let _ = tx.send(Err("channel closed".to_string())); }
-                Err(_) => { let _ = tx.send(Err("timeout".to_string())); }
+                Ok(Ok(value)) => {
+                    let _ = tx.send(Ok(value));
+                }
+                Ok(Err(_)) => {
+                    let _ = tx.send(Err("channel closed".to_string()));
+                }
+                Err(_) => {
+                    let _ = tx.send(Err("timeout".to_string()));
+                }
             }
         });
 
         // Block until the user responds or timeout
         match rx.recv_timeout(std::time::Duration::from_secs(timeout_secs + 15)) {
             Ok(Ok(value)) => {
-                let action = value.get("action")
+                let action = value
+                    .get("action")
                     .and_then(|v| v.as_str())
                     .unwrap_or("rejected");
-                info!("[Gateway] Approval result: action={} for request_id={}", action, request_id);
+                info!(
+                    "[Gateway] Approval result: action={} for request_id={}",
+                    action, request_id
+                );
                 Ok(action == "approved")
             }
             Ok(Err(e)) => {
@@ -284,10 +295,7 @@ impl ClusterForgeBridgeAdapter {
 #[cfg(all(feature = "cluster", feature = "forge"))]
 #[async_trait::async_trait]
 impl nemesis_forge::bridge::ClusterForgeBridge for ClusterForgeBridgeAdapter {
-    async fn share_reflection(
-        &self,
-        report_json: serde_json::Value,
-    ) -> Result<usize, String> {
+    async fn share_reflection(&self, report_json: serde_json::Value) -> Result<usize, String> {
         // TODO: When cluster has a share_reflection method, call it here.
         // For now, store locally only (matches Go's early implementation).
         let _ = report_json;
@@ -325,7 +333,10 @@ fn load_security_rules(
     use nemesis_security::types::{OperationType, SecurityRule};
 
     if !config_path.exists() {
-        info!("[Gateway] Security config file not found: {}, using defaults", config_path.display());
+        info!(
+            "[Gateway] Security config file not found: {}, using defaults",
+            config_path.display()
+        );
         return;
     }
 
@@ -353,15 +364,22 @@ fn load_security_rules(
 
     // Helper: parse rules from JSON array of {pattern, action}
     fn parse_rules(value: &serde_json::Value) -> Vec<SecurityRule> {
-        value.as_array()
+        value
+            .as_array()
             .map(|arr| {
-                arr.iter().filter_map(|item| {
-                    Some(SecurityRule {
-                        pattern: item.get("pattern")?.as_str()?.to_string(),
-                        action: item.get("action")?.as_str()?.to_string(),
-                        comment: item.get("comment").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+                arr.iter()
+                    .filter_map(|item| {
+                        Some(SecurityRule {
+                            pattern: item.get("pattern")?.as_str()?.to_string(),
+                            action: item.get("action")?.as_str()?.to_string(),
+                            comment: item
+                                .get("comment")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("")
+                                .to_string(),
+                        })
                     })
-                }).collect()
+                    .collect()
             })
             .unwrap_or_default()
     }
@@ -370,8 +388,10 @@ fn load_security_rules(
     if let Some(file_rules) = config.get("file_rules") {
         let read_rules = parse_rules(file_rules.get("read").unwrap_or(&serde_json::Value::Null));
         let write_rules = parse_rules(file_rules.get("write").unwrap_or(&serde_json::Value::Null));
-        let delete_rules = parse_rules(file_rules.get("delete").unwrap_or(&serde_json::Value::Null));
-        let append_rules = parse_rules(file_rules.get("append").unwrap_or(&serde_json::Value::Null));
+        let delete_rules =
+            parse_rules(file_rules.get("delete").unwrap_or(&serde_json::Value::Null));
+        let append_rules =
+            parse_rules(file_rules.get("append").unwrap_or(&serde_json::Value::Null));
 
         plugin.set_rules(OperationType::FileRead, read_rules);
         plugin.set_rules(OperationType::FileWrite, write_rules.clone());
@@ -402,7 +422,11 @@ fn load_security_rules(
         let exec_rules = parse_rules(proc_rules.get("exec").unwrap_or(&serde_json::Value::Null));
         let spawn_rules = parse_rules(proc_rules.get("spawn").unwrap_or(&serde_json::Value::Null));
         let kill_rules = parse_rules(proc_rules.get("kill").unwrap_or(&serde_json::Value::Null));
-        let suspend_rules = parse_rules(proc_rules.get("suspend").unwrap_or(&serde_json::Value::Null));
+        let suspend_rules = parse_rules(
+            proc_rules
+                .get("suspend")
+                .unwrap_or(&serde_json::Value::Null),
+        );
 
         plugin.set_rules(OperationType::ProcessExec, exec_rules);
         plugin.set_rules(OperationType::ProcessSpawn, spawn_rules);
@@ -413,8 +437,13 @@ fn load_security_rules(
 
     // Network rules
     if let Some(net_rules) = config.get("network_rules") {
-        let request_rules = parse_rules(net_rules.get("request").unwrap_or(&serde_json::Value::Null));
-        let download_rules = parse_rules(net_rules.get("download").unwrap_or(&serde_json::Value::Null));
+        let request_rules =
+            parse_rules(net_rules.get("request").unwrap_or(&serde_json::Value::Null));
+        let download_rules = parse_rules(
+            net_rules
+                .get("download")
+                .unwrap_or(&serde_json::Value::Null),
+        );
         let upload_rules = parse_rules(net_rules.get("upload").unwrap_or(&serde_json::Value::Null));
 
         plugin.set_rules(OperationType::NetworkRequest, request_rules);
@@ -447,7 +476,10 @@ fn load_security_rules(
         info!("[Gateway] Security registry_rules loaded");
     }
 
-    info!("[Gateway] Security config loaded from {}", config_path.display());
+    info!(
+        "[Gateway] Security config loaded from {}",
+        config_path.display()
+    );
 }
 
 /// Load scanner full config from `config.scanner.json`.
@@ -554,7 +586,10 @@ fn open_plugin_window(
             serde_json::json!({}),
         ) {
             Ok(()) => {
-                info!("[Gateway] Sent bring_to_front notification to child {}", child_id);
+                info!(
+                    "[Gateway] Sent bring_to_front notification to child {}",
+                    child_id
+                );
                 return Ok(());
             }
             Err(e) => {
@@ -583,11 +618,17 @@ fn open_plugin_window(
     // Spawn new child via ProcessManager (handles pipe handshake + WS key + window data)
     match process_manager.spawn_child(window_type, &window_data) {
         Ok((child_id, _result_rx)) => {
-            info!("[Gateway] Plugin window '{}' spawned (child_id: {})", window_type, child_id);
+            info!(
+                "[Gateway] Plugin window '{}' spawned (child_id: {})",
+                window_type, child_id
+            );
             Ok(())
         }
         Err(e) => {
-            warn!("[Gateway] Failed to spawn plugin window '{}': {}", window_type, e);
+            warn!(
+                "[Gateway] Failed to spawn plugin window '{}': {}",
+                window_type, e
+            );
             Err(format!("spawn failed: {}", e))
         }
     }
@@ -644,19 +685,45 @@ fn parse_host_port(addr: &str) -> (String, u16) {
 /// Count enabled channels.
 fn count_enabled_channels(cfg: &nemesis_config::Config) -> usize {
     let mut count = 0;
-    if cfg.channels.web.enabled { count += 1; }
-    if cfg.channels.websocket.enabled { count += 1; }
-    if cfg.channels.telegram.enabled { count += 1; }
-    if cfg.channels.discord.enabled { count += 1; }
-    if cfg.channels.feishu.enabled { count += 1; }
-    if cfg.channels.slack.enabled { count += 1; }
-    if cfg.channels.external.enabled { count += 1; }
-    if cfg.channels.whatsapp.enabled { count += 1; }
-    if cfg.channels.dingtalk.enabled { count += 1; }
-    if cfg.channels.qq.enabled { count += 1; }
-    if cfg.channels.line.enabled { count += 1; }
-    if cfg.channels.onebot.enabled { count += 1; }
-    if cfg.channels.maixcam.enabled { count += 1; }
+    if cfg.channels.web.enabled {
+        count += 1;
+    }
+    if cfg.channels.websocket.enabled {
+        count += 1;
+    }
+    if cfg.channels.telegram.enabled {
+        count += 1;
+    }
+    if cfg.channels.discord.enabled {
+        count += 1;
+    }
+    if cfg.channels.feishu.enabled {
+        count += 1;
+    }
+    if cfg.channels.slack.enabled {
+        count += 1;
+    }
+    if cfg.channels.external.enabled {
+        count += 1;
+    }
+    if cfg.channels.whatsapp.enabled {
+        count += 1;
+    }
+    if cfg.channels.dingtalk.enabled {
+        count += 1;
+    }
+    if cfg.channels.qq.enabled {
+        count += 1;
+    }
+    if cfg.channels.line.enabled {
+        count += 1;
+    }
+    if cfg.channels.onebot.enabled {
+        count += 1;
+    }
+    if cfg.channels.maixcam.enabled {
+        count += 1;
+    }
     count
 }
 
@@ -668,14 +735,26 @@ fn print_agent_startup_info(home: &std::path::Path, total_tools: usize) {
 
     let skills_dir = home.join("workspace").join("skills");
     let skill_count = std::fs::read_dir(&skills_dir)
-        .map(|d| d.filter_map(|e| e.ok()).filter(|e| e.path().is_dir()).count())
+        .map(|d| {
+            d.filter_map(|e| e.ok())
+                .filter(|e| e.path().is_dir())
+                .count()
+        })
         .unwrap_or(0);
 
     println!();
     println!("  Agent Status:");
-    println!("    Tools: {} loaded ({} default + {} extended)", total_tools, default_count, total_tools - default_count);
+    println!(
+        "    Tools: {} loaded ({} default + {} extended)",
+        total_tools,
+        default_count,
+        total_tools - default_count
+    );
     println!("    Skills: {} available", skill_count);
-    info!("[Gateway] Agent initialized ({} tools, {} skills)", total_tools, skill_count);
+    info!(
+        "[Gateway] Agent initialized ({} tools, {} skills)",
+        total_tools, skill_count
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -693,13 +772,19 @@ struct ClusterResultPersisterAdapter {
 }
 
 #[cfg(feature = "cluster")]
-impl nemesis_cluster::rpc::peer_chat_handler::TaskResultPersister for ClusterResultPersisterAdapter {
+impl nemesis_cluster::rpc::peer_chat_handler::TaskResultPersister
+    for ClusterResultPersisterAdapter
+{
     fn set_running(&self, task_id: &str, _source_node: &str) {
         // Mark as running with a placeholder result
-        self.result_store.store_success(task_id, "peer_chat", serde_json::json!({
-            "status": "running",
-            "from": self.node_id,
-        }));
+        self.result_store.store_success(
+            task_id,
+            "peer_chat",
+            serde_json::json!({
+                "status": "running",
+                "from": self.node_id,
+            }),
+        );
     }
 
     fn set_result(
@@ -713,10 +798,14 @@ impl nemesis_cluster::rpc::peer_chat_handler::TaskResultPersister for ClusterRes
         if status == "error" {
             self.result_store.store_failure(task_id, "peer_chat", error);
         } else {
-            self.result_store.store_success(task_id, "peer_chat", serde_json::json!({
-                "content": response,
-                "from": self.node_id,
-            }));
+            self.result_store.store_success(
+                task_id,
+                "peer_chat",
+                serde_json::json!({
+                    "content": response,
+                    "from": self.node_id,
+                }),
+            );
         }
         Ok(())
     }
@@ -788,7 +877,10 @@ fn migrate_legacy_workflow_dir(
     info!(
         "[Gateway] Migrating legacy workflow dir: {} -> {}",
         legacy_root.display(),
-        new_executions_dir.parent().unwrap_or(new_executions_dir).display()
+        new_executions_dir
+            .parent()
+            .unwrap_or(new_executions_dir)
+            .display()
     );
 
     // Move *.jsonl execution logs.
@@ -826,7 +918,11 @@ fn migrate_legacy_workflow_dir(
                 if !path.is_dir() {
                     continue;
                 }
-                let name = path.file_name().unwrap_or_default().to_string_lossy().to_string();
+                let name = path
+                    .file_name()
+                    .unwrap_or_default()
+                    .to_string_lossy()
+                    .to_string();
                 let dest = new_checkpoints_dir.join(&name);
                 if dest.exists() {
                     continue;
@@ -876,7 +972,10 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
     // Step 2: Check configuration file exists
     let config_path = common::config_path(&home);
     if !config_path.exists() {
-        eprintln!("Error: Configuration file not found: {}", config_path.display());
+        eprintln!(
+            "Error: Configuration file not found: {}",
+            config_path.display()
+        );
         eprintln!();
         eprintln!("  Gateway mode requires a configuration file.");
         eprintln!("  Run 'nemesisbot onboard default' to create one.");
@@ -885,7 +984,10 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
 
     // Step 3: Check home directory exists
     if !home.exists() {
-        eprintln!("Error: Configuration directory not found: {}", home.display());
+        eprintln!(
+            "Error: Configuration directory not found: {}",
+            home.display()
+        );
         eprintln!("  Run 'nemesisbot onboard default' to create configuration.");
         std::process::exit(1);
     }
@@ -919,10 +1021,7 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
     // control flow or business logic.
     {
         let capture_enabled = cfg.debug.as_ref().map_or(true, |d| d.capture.enabled);
-        nemesis_agent::capture_sink::CaptureSink::init(
-            home.join("workspace"),
-            capture_enabled,
-        );
+        nemesis_agent::capture_sink::CaptureSink::init(home.join("workspace"), capture_enabled);
         if capture_enabled {
             info!("[Gateway] Diagnostic capture armed (failure-triggered → logs/capture/)");
         }
@@ -949,7 +1048,11 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
         if let Err(e) = std::fs::write(&state_path, state_json.to_string()) {
             warn!("[Gateway] Failed to write gateway state: {}", e);
         } else {
-            info!("[Gateway] Gateway state written: {} (PID: {})", state_path.display(), pid);
+            info!(
+                "[Gateway] Gateway state written: {} (PID: {})",
+                state_path.display(),
+                pid
+            );
         }
     }
 
@@ -974,8 +1077,9 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
         headers: std::collections::HashMap::new(),
     };
     #[cfg(any(feature = "workflow", feature = "security"))]
-    let llm_provider: Arc<dyn nemesis_providers::router::LLMProvider> = nemesis_providers::factory::create_provider(&factory_cfg)
-        .map_err(|e| anyhow::anyhow!("Failed to create provider: {}", e))?;
+    let llm_provider: Arc<dyn nemesis_providers::router::LLMProvider> =
+        nemesis_providers::factory::create_provider(&factory_cfg)
+            .map_err(|e| anyhow::anyhow!("Failed to create provider: {}", e))?;
     #[cfg(any(feature = "workflow", feature = "security"))]
     {
         info!("[Gateway] Provider config validated for {}", llm_ref);
@@ -1010,9 +1114,17 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
         let workflow_executions_dir = workflow_root.join("executions");
         let workflow_checkpoints_dir = workflow_root.join("checkpoints");
         let workflow_defs_dir = workflow_root.join("definitions");
-        for d in [&workflow_executions_dir, &workflow_checkpoints_dir, &workflow_defs_dir] {
+        for d in [
+            &workflow_executions_dir,
+            &workflow_checkpoints_dir,
+            &workflow_defs_dir,
+        ] {
             if let Err(e) = std::fs::create_dir_all(d) {
-                warn!("[Gateway] Failed to create workflow subdir {}: {}", d.display(), e);
+                warn!(
+                    "[Gateway] Failed to create workflow subdir {}: {}",
+                    d.display(),
+                    e
+                );
             }
         }
         migrate_legacy_workflow_dir(&home, &workflow_executions_dir, &workflow_checkpoints_dir);
@@ -1079,9 +1191,9 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
         // first set_password call. Lives outside the workflow engine because
         // secrets shouldn't ride along with workflow YAML (which is shareable).
         let chat_secrets_path = workflow_root.join("chat_secrets.json");
-        chat_secret_store = Arc::new(
-            nemesis_workflow::chat_secrets::ChatSecretStore::open(chat_secrets_path),
-        );
+        chat_secret_store = Arc::new(nemesis_workflow::chat_secrets::ChatSecretStore::open(
+            chat_secrets_path,
+        ));
     }
 
     // Step 8: Create MessageBus
@@ -1095,7 +1207,8 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
     //
     // Capacity is 1024 (up from 256) to reduce message loss under load.
     // The inbound bridge is created inside AgentLoopServiceAdapter::start().
-    let (agent_outbound_tx, mut agent_outbound_rx) = tokio::sync::mpsc::channel::<nemesis_types::channel::OutboundMessage>(1024);
+    let (agent_outbound_tx, mut agent_outbound_rx) =
+        tokio::sync::mpsc::channel::<nemesis_types::channel::OutboundMessage>(1024);
 
     // Bridge: agent outbound mpsc → bus outbound broadcast
     let bus_out = bus.clone();
@@ -1119,9 +1232,7 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
     //   default tools + web + cluster + spawn + memory + skills + hardware + exec + cron
     let cron_store_path = common::cron_store_path(&home);
     let cron_service = std::sync::Arc::new(std::sync::Mutex::new(
-        nemesis_cron::service::CronService::new(
-            &cron_store_path.to_string_lossy(),
-        ),
+        nemesis_cron::service::CronService::new(&cron_store_path.to_string_lossy()),
     ));
 
     // Opt 2: conversation→WS router, shared between the cron fire handler
@@ -1136,45 +1247,52 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
     {
         let bus_for_cron = bus.clone();
         let router_for_cron = conv_router.clone();
-        cron_service.lock().unwrap().set_on_job(move |job: &nemesis_cron::service::CronJob| {
-            if !job.payload.message.is_empty() {
-                let channel = job.payload.channel.clone().unwrap_or_else(|| "web".to_string());
-                // Phase 2: target the named conversation so the exchange is
-                // persisted into its history (loop.rs adopts `agent:`-prefixed
-                // session_key verbatim). Opt 2: if a live WS tab is bound for
-                // this conversation, set chat_id = web:<ws_id> so the reply
-                // also live-pushes; otherwise chat_id falls back to `to`
-                // (delivery may fail-soft, but history is still saved).
-                let session_key = job.payload.session_key.clone().unwrap_or_default();
-                let chat_id = if !session_key.is_empty() {
-                    router_for_cron
-                        .target(&session_key)
-                        .unwrap_or_else(|| job.payload.to.clone().unwrap_or_default())
+        cron_service
+            .lock()
+            .unwrap()
+            .set_on_job(move |job: &nemesis_cron::service::CronJob| {
+                if !job.payload.message.is_empty() {
+                    let channel = job
+                        .payload
+                        .channel
+                        .clone()
+                        .unwrap_or_else(|| "web".to_string());
+                    // Phase 2: target the named conversation so the exchange is
+                    // persisted into its history (loop.rs adopts `agent:`-prefixed
+                    // session_key verbatim). Opt 2: if a live WS tab is bound for
+                    // this conversation, set chat_id = web:<ws_id> so the reply
+                    // also live-pushes; otherwise chat_id falls back to `to`
+                    // (delivery may fail-soft, but history is still saved).
+                    let session_key = job.payload.session_key.clone().unwrap_or_default();
+                    let chat_id = if !session_key.is_empty() {
+                        router_for_cron
+                            .target(&session_key)
+                            .unwrap_or_else(|| job.payload.to.clone().unwrap_or_default())
+                    } else {
+                        job.payload.to.clone().unwrap_or_default()
+                    };
+                    let inbound = nemesis_types::channel::InboundMessage {
+                        channel,
+                        sender_id: format!("cron:{}", job.id),
+                        chat_id,
+                        content: job.payload.message.clone(),
+                        media: vec![],
+                        session_key,
+                        correlation_id: String::new(),
+                        metadata: {
+                            let mut m = std::collections::HashMap::new();
+                            m.insert("cron_job_id".to_string(), job.id.clone());
+                            m.insert("cron_job_name".to_string(), job.name.clone());
+                            m
+                        },
+                        voice_playback: None,
+                    };
+                    bus_for_cron.publish_inbound(inbound);
+                    Ok(format!("Cron job '{}' triggered", job.name))
                 } else {
-                    job.payload.to.clone().unwrap_or_default()
-                };
-                let inbound = nemesis_types::channel::InboundMessage {
-                    channel,
-                    sender_id: format!("cron:{}", job.id),
-                    chat_id,
-                    content: job.payload.message.clone(),
-                    media: vec![],
-                    session_key,
-                    correlation_id: String::new(),
-                    metadata: {
-                        let mut m = std::collections::HashMap::new();
-                        m.insert("cron_job_id".to_string(), job.id.clone());
-                        m.insert("cron_job_name".to_string(), job.name.clone());
-                        m
-                    },
-                    voice_playback: None,
-                };
-                bus_for_cron.publish_inbound(inbound);
-                Ok(format!("Cron job '{}' triggered", job.name))
-            } else {
-                Ok("No message to deliver".to_string())
-            }
-        });
+                    Ok("No message to deliver".to_string())
+                }
+            });
         info!("[Gateway] Cron service handler wired (publishes to bus; Opt2 conv_router attached)");
     }
 
@@ -1185,11 +1303,16 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
     #[cfg(feature = "forge")]
     let forge_for_web: Option<std::sync::Arc<nemesis_forge::forge::Forge>>;
     #[cfg(feature = "forge")]
-    let forge_executor_for_tools: Option<std::sync::Arc<nemesis_forge::forge_tools::ForgeToolExecutor>>;
+    let forge_executor_for_tools: Option<
+        std::sync::Arc<nemesis_forge::forge_tools::ForgeToolExecutor>,
+    >;
     #[cfg(feature = "forge")]
     {
         // Load forge config from file, fall back to defaults if missing.
-        let forge_config_path = home.join("workspace").join("config").join("config.forge.json");
+        let forge_config_path = home
+            .join("workspace")
+            .join("config")
+            .join("config.forge.json");
         let mut forge_config = if forge_config_path.exists() {
             nemesis_forge::config::load_forge_config(&forge_config_path)
         } else {
@@ -1204,17 +1327,12 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
         forge_config.enabled = forge_enabled;
         let forge_workspace = home.join("workspace");
         let forge_dir = forge_workspace.join("forge");
-        let mut forge = nemesis_forge::forge::Forge::new(
-            forge_config.clone(),
-            forge_workspace,
-        );
+        let mut forge = nemesis_forge::forge::Forge::new(forge_config.clone(), forge_workspace);
 
         // Initialize Reflector (statistical analysis + report writing).
-        forge.init_reflector(
-            nemesis_forge::reflector::Reflector::with_reflections_dir(
-                forge_dir.join("reflections"),
-            ),
-        );
+        forge.init_reflector(nemesis_forge::reflector::Reflector::with_reflections_dir(
+            forge_dir.join("reflections"),
+        ));
         info!("[Gateway] Forge reflector initialized");
 
         // ONE shared registry for the Phase 6 closed loop (pipeline + monitor +
@@ -1224,7 +1342,10 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
         // Forge's manual-create registry.json to avoid a two-instance collision.
         let forge_shared_registry = std::sync::Arc::new(nemesis_forge::registry::Registry::new(
             nemesis_forge::types::RegistryConfig {
-                index_path: forge_dir.join("learning_registry.json").to_string_lossy().to_string(),
+                index_path: forge_dir
+                    .join("learning_registry.json")
+                    .to_string_lossy()
+                    .to_string(),
             },
         ));
         // F-D3: reload prior learned artifacts so they survive restart.
@@ -1242,9 +1363,7 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
         // Initialize trace collection (TraceCollector + TraceStore).
         {
             let trace_collector = nemesis_forge::trace::TraceCollector::new();
-            let trace_store = nemesis_forge::trace_store::TraceStore::new(
-                forge_dir.join("traces"),
-            );
+            let trace_store = nemesis_forge::trace_store::TraceStore::new(forge_dir.join("traces"));
             forge.init_trace(trace_collector, trace_store);
             info!("[Gateway] Forge trace collection initialized");
         }
@@ -1268,7 +1387,9 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
         info!("[Gateway] Forge learning engine initialized (Phase 6; pipeline+monitor injected)");
 
         // Set bridge → init syncer.
-        forge.set_bridge(std::sync::Arc::new(nemesis_forge::bridge::NoOpBridge::new("local".to_string())));
+        forge.set_bridge(std::sync::Arc::new(nemesis_forge::bridge::NoOpBridge::new(
+            "local".to_string(),
+        )));
         forge.init_syncer();
         info!("[Gateway] Forge syncer initialized");
 
@@ -1288,9 +1409,9 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
 
         // LearningEngine dependency injection is now handled by the factory function.
 
-        let executor = std::sync::Arc::new(
-            nemesis_forge::forge_tools::ForgeToolExecutor::new(forge.clone()),
-        );
+        let executor = std::sync::Arc::new(nemesis_forge::forge_tools::ForgeToolExecutor::new(
+            forge.clone(),
+        ));
         info!("[Gateway] Forge executor created (8 tools will be registered)");
 
         // Forge injection into agent_loop is now handled by the factory function.
@@ -1314,44 +1435,66 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
     let mcp_enabled = cfg.mcp.as_ref().map(|m| m.enabled).unwrap_or(false);
 
     #[cfg(feature = "memory")]
-    let mut memory_manager_for_web: Option<std::sync::Arc<nemesis_memory::manager::MemoryManager>> = None;
+    let mut memory_manager_for_web: Option<
+        std::sync::Arc<nemesis_memory::manager::MemoryManager>,
+    > = None;
 
     let skills_loader_arc: Option<std::sync::Arc<nemesis_skills::loader::SkillsLoader>> = {
         let workspace_str = home.join("workspace").to_string_lossy().to_string();
-        let global_skills_str = home.join("workspace").join("skills").to_string_lossy().to_string();
-        let loader = nemesis_skills::loader::SkillsLoader::new(
-            &workspace_str,
-            &global_skills_str,
-            "",
+        let global_skills_str = home
+            .join("workspace")
+            .join("skills")
+            .to_string_lossy()
+            .to_string();
+        let loader =
+            nemesis_skills::loader::SkillsLoader::new(&workspace_str, &global_skills_str, "");
+        info!(
+            "[Gateway] Skills loader created (workspace={}, global_skills={})",
+            workspace_str, global_skills_str
         );
-        info!("[Gateway] Skills loader created (workspace={}, global_skills={})", workspace_str, global_skills_str);
         Some(std::sync::Arc::new(loader))
     };
 
     let skills_registry_arc: Option<std::sync::Arc<nemesis_skills::registry::RegistryManager>> = {
-        let skills_config_path = home.join("workspace").join("config").join("config.skills.json");
+        let skills_config_path = home
+            .join("workspace")
+            .join("config")
+            .join("config.skills.json");
         if skills_config_path.exists() {
             match std::fs::read_to_string(&skills_config_path) {
                 Ok(content) => {
                     match serde_json::from_str::<nemesis_skills::types::RegistryConfig>(&content) {
                         Ok(reg_config) => {
-                            let rm = nemesis_skills::registry::RegistryManager::from_config(reg_config);
-                            info!("[Gateway] Skills registry loaded from {}", skills_config_path.display());
+                            let rm =
+                                nemesis_skills::registry::RegistryManager::from_config(reg_config);
+                            info!(
+                                "[Gateway] Skills registry loaded from {}",
+                                skills_config_path.display()
+                            );
                             Some(std::sync::Arc::new(rm))
                         }
                         Err(e) => {
-                            warn!("[Gateway] Failed to parse skills config: {} — skills search/install disabled", e);
+                            warn!(
+                                "[Gateway] Failed to parse skills config: {} — skills search/install disabled",
+                                e
+                            );
                             None
                         }
                     }
                 }
                 Err(e) => {
-                    warn!("[Gateway] Failed to read skills config: {} — skills search/install disabled", e);
+                    warn!(
+                        "[Gateway] Failed to read skills config: {} — skills search/install disabled",
+                        e
+                    );
                     None
                 }
             }
         } else {
-            info!("[Gateway] No skills config found at {} — skills search/install disabled", skills_config_path.display());
+            info!(
+                "[Gateway] No skills config found at {} — skills search/install disabled",
+                skills_config_path.display()
+            );
             None
         }
     };
@@ -1363,12 +1506,14 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
         if cfg.memory.as_ref().map(|m| m.enabled).unwrap_or(false) {
             let memory_data_dir = home.join("workspace").join("memory_vector");
             let config_dir = home.join("workspace").join("config");
-            let mgr = std::sync::Arc::new(
-                nemesis_memory::manager::MemoryManager::with_config_dir(
-                    &memory_data_dir, &config_dir,
-                )
+            let mgr = std::sync::Arc::new(nemesis_memory::manager::MemoryManager::with_config_dir(
+                &memory_data_dir,
+                &config_dir,
+            ));
+            info!(
+                "[Gateway] Memory manager created (data_dir={})",
+                memory_data_dir.display()
             );
-            info!("[Gateway] Memory manager created (data_dir={})", memory_data_dir.display());
             memory_manager_for_web = Some(mgr);
         } else {
             info!("[Gateway] Enhanced memory disabled (config.json: memory.enabled = false)");
@@ -1378,12 +1523,12 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
     // Web search config: compute for reference, but tool registration is handled by factory.
     {
         let web = &cfg.tools.web;
-        let any_enabled = web.brave.enabled
-            || web.duckduckgo.enabled
-            || web.perplexity.enabled;
+        let any_enabled = web.brave.enabled || web.duckduckgo.enabled || web.perplexity.enabled;
         if any_enabled {
-            info!("[Gateway] Web search enabled (brave={}, duckduckgo={}, perplexity={})",
-                  web.brave.enabled, web.duckduckgo.enabled, web.perplexity.enabled);
+            info!(
+                "[Gateway] Web search enabled (brave={}, duckduckgo={}, perplexity={})",
+                web.brave.enabled, web.duckduckgo.enabled, web.perplexity.enabled
+            );
         } else {
             info!("[Gateway] Web search disabled (no provider enabled in config.json: tools.web)");
         }
@@ -1395,8 +1540,10 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
     if !mcp_enabled {
         info!("[Gateway] MCP disabled in config.json (mcp.enabled = false), skipping");
     }
-    info!("[Gateway] Agent loop tools configured (default + memory + skills + hardware + exec + cron{})",
-          if mcp_enabled { " + MCP" } else { "" });
+    info!(
+        "[Gateway] Agent loop tools configured (default + memory + skills + hardware + exec + cron{})",
+        if mcp_enabled { " + MCP" } else { "" }
+    );
 
     // Step 9a: Set up cluster.
     // Mirrors Go's bot_service.go initComponents → startCluster.
@@ -1413,13 +1560,12 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
     #[allow(unused_mut)] // mut only needed when feature="cluster" assigns these in the init block
     let mut cluster_rpc_call_fn: Option<
         Arc<
-            dyn Fn(&str, &str, serde_json::Value)
-                -> std::pin::Pin<
-                    Box<
-                        dyn std::future::Future<
-                            Output = Result<serde_json::Value, String>,
-                        > + Send,
-                    >,
+            dyn Fn(
+                    &str,
+                    &str,
+                    serde_json::Value,
+                ) -> std::pin::Pin<
+                    Box<dyn std::future::Future<Output = Result<serde_json::Value, String>> + Send>,
                 > + Send
                 + Sync,
         >,
@@ -1427,7 +1573,9 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
     #[allow(unused_mut)]
     let mut cluster_rpc_config: Option<nemesis_agent::ClusterRpcConfig> = None;
     #[allow(unused_mut)]
-    let mut cluster_peers_fn: Option<Arc<dyn Fn() -> Vec<(String, String, Vec<String>)> + Send + Sync>> = None;
+    let mut cluster_peers_fn: Option<
+        Arc<dyn Fn() -> Vec<(String, String, Vec<String>)> + Send + Sync>,
+    > = None;
     // Cluster adapter — manages dynamic start/stop of all cluster components.
     #[cfg(feature = "cluster")]
     let mut cluster_adapter: Option<Arc<crate::cluster_service::ClusterServiceAdapter>> = None;
@@ -1479,14 +1627,22 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
                             let addr = val.get("address").and_then(|v| v.as_str()).unwrap_or("");
                             let name = val.get("name").and_then(|v| v.as_str()).unwrap_or(&peer_id);
                             let role = val.get("role").and_then(|v| v.as_str()).unwrap_or("worker");
-                            let cat = val.get("category").and_then(|v| v.as_str()).unwrap_or("general");
-                            if addr.is_empty() { continue; }
+                            let cat = val
+                                .get("category")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("general");
+                            if addr.is_empty() {
+                                continue;
+                            }
                             // The address field contains UDP host:port (e.g., "127.0.0.1:11950").
                             // Derive RPC port by convention: UDP port + 10000 (11949→21949).
                             let (host, udp_port) = parse_host_port(addr);
                             let rpc_port = if udp_port > 0 { udp_port + 10000 } else { 0 };
                             let addresses = if host.is_empty() { vec![] } else { vec![host] };
-                            info!("[Gateway] Loading static peer: {} ({}) addr={} rpc_port={}", name, peer_id, addr, rpc_port);
+                            info!(
+                                "[Gateway] Loading static peer: {} ({}) addr={} rpc_port={}",
+                                name, peer_id, addr, rpc_port
+                            );
                             cluster.handle_discovered_node(
                                 &peer_id,
                                 name,
@@ -1515,7 +1671,9 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
             bind_address: format!("0.0.0.0:{}", cluster_app_cfg.rpc_port),
             ..Default::default()
         };
-        cluster.set_rpc_server(Arc::new(nemesis_cluster::rpc::server::RpcServer::new(rpc_server_config)));
+        cluster.set_rpc_server(Arc::new(nemesis_cluster::rpc::server::RpcServer::new(
+            rpc_server_config,
+        )));
 
         // Start cluster (registers local node, creates RPC client, starts sync/recovery loops)
         cluster.start();
@@ -1524,35 +1682,47 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
         // 这里直接从 cluster 拿真值供下游消费（ClusterRpcConfig.local_node_id、Forge 桥、日志）。
         let node_id = cluster.node_id().to_string();
         let node_name = cluster.node_name();
-        info!("[Gateway] Cluster started (node_id: {}, name: {}, udp: {}, rpc: {})",
-            node_id, node_name, cluster_app_cfg.port, cluster_app_cfg.rpc_port);
+        info!(
+            "[Gateway] Cluster started (node_id: {}, name: {}, udp: {}, rpc: {})",
+            node_id, node_name, cluster_app_cfg.port, cluster_app_cfg.rpc_port
+        );
 
         // Diagnostic: list registry contents after start
         {
             let all_nodes = cluster.list_nodes();
             for n in &all_nodes {
-                info!("[Gateway] Registry node: {} (id={}) status={:?} addr={}",
-                    n.base.name, n.base.id, n.status, n.base.address);
+                info!(
+                    "[Gateway] Registry node: {} (id={}) status={:?} addr={}",
+                    n.base.name, n.base.id, n.status, n.base.address
+                );
             }
         }
 
         // Register RPC handlers on the server
         if let Err(e) = cluster.register_basic_handlers() {
-            warn!("[Gateway] Failed to register basic RPC handlers: {}", e);        }
+            warn!("[Gateway] Failed to register basic RPC handlers: {}", e);
+        }
 
         // Start RPC server (network operation — only when cluster is fully enabled).
         if cluster_should_start {
-            let rpc_server_ref = cluster.rpc_server()
-                .expect("rpc_server just set")
-                .clone();
-            info!("[Gateway] Starting RPC server on 0.0.0.0:{}", cluster_app_cfg.rpc_port);
+            let rpc_server_ref = cluster.rpc_server().expect("rpc_server just set").clone();
+            info!(
+                "[Gateway] Starting RPC server on 0.0.0.0:{}",
+                cluster_app_cfg.rpc_port
+            );
             // Await start() synchronously — it binds the TCP listener and spawns the
             // accept loop, then returns. This ensures default handlers are registered
             // before we overwrite them below.
             if let Err(e) = rpc_server_ref.start().await {
-                error!("[Gateway] RPC server error on port {}: {}", cluster_app_cfg.rpc_port, e);
+                error!(
+                    "[Gateway] RPC server error on port {}: {}",
+                    cluster_app_cfg.rpc_port, e
+                );
             }
-            info!("[Gateway] RPC server started on port {}", cluster_app_cfg.rpc_port);
+            info!(
+                "[Gateway] RPC server started on port {}",
+                cluster_app_cfg.rpc_port
+            );
         }
 
         // Now register custom peer_chat handler using PeerChatHandler.
@@ -1596,13 +1766,16 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
         // Register callback handler (placeholder — will be replaced after Arc::new below).
         // This placeholder just acknowledges receipt.
         {
-            let _ = cluster.register_rpc_handler("peer_chat_callback", Box::new(move |payload| {
-                let task_id = payload
-                    .get("task_id")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("");
-                Ok(serde_json::json!({"status": "placeholder", "task_id": task_id}))
-            }));
+            let _ = cluster.register_rpc_handler(
+                "peer_chat_callback",
+                Box::new(move |payload| {
+                    let task_id = payload
+                        .get("task_id")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("");
+                    Ok(serde_json::json!({"status": "placeholder", "task_id": task_id}))
+                }),
+            );
         }
 
         let cluster = Arc::new(cluster);
@@ -1614,57 +1787,61 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
         {
             let handler_ref = handler_arc.clone();
             let cluster_ref = cluster.clone();
-            let _ = cluster.register_rpc_handler("peer_chat", Box::new(move |payload| {
-                // Extract source node ID from RPC metadata injected by the server.
-                let source_node_id = payload
-                    .get("_rpc")
-                    .and_then(|r| r.get("from"))
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .to_string();
+            let _ = cluster.register_rpc_handler(
+                "peer_chat",
+                Box::new(move |payload| {
+                    // Extract source node ID from RPC metadata injected by the server.
+                    let source_node_id = payload
+                        .get("_rpc")
+                        .and_then(|r| r.get("from"))
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
 
-                if !source_node_id.is_empty() {
-                    // Register the remote node in our registry so we can callback later.
-                    // The remote node may not be known via UDP discovery yet (static peers
-                    // use peer names, not node_ids). We use the RPC port from the payload
-                    // (sent by the remote node's ClusterRpcTool).
-                    if cluster_ref.get_peer(&source_node_id).is_none() {
-                        let remote_rpc_port = payload
-                            .get("_source_rpc_port")
-                            .and_then(|v| v.as_u64())
-                            .unwrap_or(21949) as u16;
+                    if !source_node_id.is_empty() {
+                        // Register the remote node in our registry so we can callback later.
+                        // The remote node may not be known via UDP discovery yet (static peers
+                        // use peer names, not node_ids). We use the RPC port from the payload
+                        // (sent by the remote node's ClusterRpcTool).
+                        if cluster_ref.get_peer(&source_node_id).is_none() {
+                            let remote_rpc_port = payload
+                                .get("_source_rpc_port")
+                                .and_then(|v| v.as_u64())
+                                .unwrap_or(21949)
+                                as u16;
 
-                        cluster_ref.handle_discovered_node(
-                            &source_node_id,
-                            &source_node_id,
-                            vec!["127.0.0.1".to_string()],
-                            remote_rpc_port,
-                            "worker",
-                            "general",
-                            vec![],
-                            vec![],
-                            "unknown",
-                        );
+                            cluster_ref.handle_discovered_node(
+                                &source_node_id,
+                                &source_node_id,
+                                vec!["127.0.0.1".to_string()],
+                                remote_rpc_port,
+                                "worker",
+                                "general",
+                                vec![],
+                                vec![],
+                                "unknown",
+                            );
+                        }
                     }
-                }
 
-                // Pass RpcMeta to PeerChatHandler so it can read source_node_id from
-                // `rpc_meta.from` (authoritative wire-level sender ID) and chat_id from
-                // `payload._source.chat_id` (filled by the originating node's tasks_submit).
-                // Together these form the composite session_key `cluster_rpc:{node_id}/{chat_id}`
-                // for LLM conversation isolation.
-                let rpc_meta = nemesis_cluster::rpc::peer_chat_handler::RpcMeta {
-                    from: if source_node_id.is_empty() {
-                        None
-                    } else {
-                        Some(source_node_id.clone())
-                    },
-                };
-                let h = handler_ref.clone();
-                let ack = h.handle(payload, Some(rpc_meta));
-                Ok(serde_json::to_value(&ack)
-                    .unwrap_or_else(|_| serde_json::json!({"status": "error"})))
-            }));
+                    // Pass RpcMeta to PeerChatHandler so it can read source_node_id from
+                    // `rpc_meta.from` (authoritative wire-level sender ID) and chat_id from
+                    // `payload._source.chat_id` (filled by the originating node's tasks_submit).
+                    // Together these form the composite session_key `cluster_rpc:{node_id}/{chat_id}`
+                    // for LLM conversation isolation.
+                    let rpc_meta = nemesis_cluster::rpc::peer_chat_handler::RpcMeta {
+                        from: if source_node_id.is_empty() {
+                            None
+                        } else {
+                            Some(source_node_id.clone())
+                        },
+                    };
+                    let h = handler_ref.clone();
+                    let ack = h.handle(payload, Some(rpc_meta));
+                    Ok(serde_json::to_value(&ack)
+                        .unwrap_or_else(|_| serde_json::json!({"status": "error"})))
+                }),
+            );
             info!("[Gateway] Registered PeerChatHandler (async LLM + callback) for peer_chat");
         }
 
@@ -1763,9 +1940,7 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
         // Cluster.handle_task_complete() publishes cluster_continuation messages
         // on the bus, which AgentLoop intercepts to resume from snapshots.
         {
-            let bus_adapter = Arc::new(BusToClusterAdapter {
-                bus: bus.clone(),
-            });
+            let bus_adapter = Arc::new(BusToClusterAdapter { bus: bus.clone() });
             cluster.set_message_bus(bus_adapter);
             info!("[Gateway] Cluster: message bus injected for continuation flow");
         }
@@ -1784,7 +1959,10 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
 
             // Start UDP Discovery Service (managed by Cluster)
             cluster.start_discovery(cluster.clone());
-            info!("[Gateway] UDP discovery started on port {}", cluster_app_cfg.port);
+            info!(
+                "[Gateway] UDP discovery started on port {}",
+                cluster_app_cfg.port
+            );
 
             // RPC server was already created and set above before start().
             // RPC client was already created by Cluster::start().
@@ -1806,19 +1984,38 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
                         None => {
                             return Box::pin(async move {
                                 Err("Cluster已关闭，RPC调用不可用".to_string())
-                            }) as std::pin::Pin<Box<dyn std::future::Future<Output = Result<serde_json::Value, String>> + Send>>;
+                            })
+                                as std::pin::Pin<
+                                    Box<
+                                        dyn std::future::Future<
+                                                Output = Result<serde_json::Value, String>,
+                                            > + Send,
+                                    >,
+                                >;
                         }
                     };
                     let t = target.to_string();
                     let a = action.to_string();
                     Box::pin(async move {
-                        let bytes = c.call_with_context_async(&t, &a, payload, std::time::Duration::from_secs(3600))
+                        let bytes = c
+                            .call_with_context_async(
+                                &t,
+                                &a,
+                                payload,
+                                std::time::Duration::from_secs(3600),
+                            )
                             .await
                             .map_err(|e| e.to_string())?;
                         // Deserialize the response bytes to JSON Value
                         serde_json::from_slice::<serde_json::Value>(&bytes)
                             .map_err(|e| format!("Failed to parse RPC response: {}", e))
-                    }) as std::pin::Pin<Box<dyn std::future::Future<Output = Result<serde_json::Value, String>> + Send>>
+                    })
+                        as std::pin::Pin<
+                            Box<
+                                dyn std::future::Future<Output = Result<serde_json::Value, String>>
+                                    + Send,
+                            >,
+                        >
                 },
             );
 
@@ -1828,7 +2025,10 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
 
             // cluster_rpc tool registration is now handled by the factory function.
             // The rpc_call_fn is stored here for SharedResources consumption.
-            info!("[Gateway] cluster_rpc tool created (node: {}, peers loaded from peers.toml)", node_name);
+            info!(
+                "[Gateway] cluster_rpc tool created (node: {}, peers loaded from peers.toml)",
+                node_name
+            );
 
             // Build peers_fn: closure that returns online peers with capabilities
             // from the Cluster registry, EXCLUDING the local node. Used by
@@ -1836,18 +2036,19 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
             // itself as a valid cluster_rpc target (prevents self-invocation loops).
             {
                 let cluster_weak_for_peers = Arc::downgrade(&cluster);
-                cluster_peers_fn = Some(Arc::new(move || {
-                    match cluster_weak_for_peers.upgrade() {
-                        Some(c) => c.get_online_peers_excluding_self()
-                            .into_iter()
-                            .map(|p| (p.base.id, p.base.name, p.capabilities))
-                            .collect(),
-                        None => Vec::new(),
-                    }
+                cluster_peers_fn = Some(Arc::new(move || match cluster_weak_for_peers.upgrade() {
+                    Some(c) => c
+                        .get_online_peers_excluding_self()
+                        .into_iter()
+                        .map(|p| (p.base.id, p.base.name, p.capabilities))
+                        .collect(),
+                    None => Vec::new(),
                 }));
             }
         } else {
-            info!("[Gateway] Cluster initialized (inactive) — start via Dashboard or enable in config");
+            info!(
+                "[Gateway] Cluster initialized (inactive) — start via Dashboard or enable in config"
+            );
         }
 
         // ContinuationManager injection into agent_loop is now handled by the factory function.
@@ -1855,8 +2056,11 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
         // Save references for ClusterServiceAdapter creation (after SharedResources is built).
         // The adapter will be created later in the code where SharedResources is available.
         // For now, save the cluster-related Arc refs needed.
-        cluster_adapter_refs = Some((cluster.clone(), cluster_task_list.clone(), cluster_work_queue.clone()));
-
+        cluster_adapter_refs = Some((
+            cluster.clone(),
+            cluster_task_list.clone(),
+            cluster_work_queue.clone(),
+        ));
     }
 
     // C1: Create ChannelManager and wire it.
@@ -1866,7 +2070,11 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
     // Create WebServer early so we can inject SessionManager into WebChannel.
     let web_host = {
         let h = &cfg.channels.web.host;
-        if h == "0.0.0.0" || h.is_empty() { "127.0.0.1".to_string() } else { h.clone() }
+        if h == "0.0.0.0" || h.is_empty() {
+            "127.0.0.1".to_string()
+        } else {
+            h.clone()
+        }
     };
     let web_port = cfg.channels.web.port;
     let cors_origins = {
@@ -1880,12 +2088,19 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
                         vec![]
                     } else {
                         let origins = mgr.list_origins();
-                        info!("[Gateway] CORS: loaded {} allowed origins from {}", origins.len(), cors_path.display());
+                        info!(
+                            "[Gateway] CORS: loaded {} allowed origins from {}",
+                            origins.len(),
+                            cors_path.display()
+                        );
                         origins
                     }
                 }
                 Err(e) => {
-                    warn!("[Gateway] Failed to load CORS config: {}, using permissive defaults", e);
+                    warn!(
+                        "[Gateway] Failed to load CORS config: {}, using permissive defaults",
+                        e
+                    );
                     vec![]
                 }
             }
@@ -1913,24 +2128,52 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
 
     // Build list of enabled channels from config (needed by SharedResources + ChannelManager).
     let mut enabled_channels = Vec::new();
-    if cfg.channels.web.enabled { enabled_channels.push("web".to_string()); }
-    if cfg.channels.websocket.enabled { enabled_channels.push("websocket".to_string()); }
-    if cfg.channels.telegram.enabled { enabled_channels.push("telegram".to_string()); }
-    if cfg.channels.discord.enabled { enabled_channels.push("discord".to_string()); }
-    if cfg.channels.feishu.enabled { enabled_channels.push("feishu".to_string()); }
-    if cfg.channels.slack.enabled { enabled_channels.push("slack".to_string()); }
-    if cfg.channels.whatsapp.enabled { enabled_channels.push("whatsapp".to_string()); }
-    if cfg.channels.dingtalk.enabled { enabled_channels.push("dingtalk".to_string()); }
-    if cfg.channels.qq.enabled { enabled_channels.push("qq".to_string()); }
-    if cfg.channels.line.enabled { enabled_channels.push("line".to_string()); }
-    if cfg.channels.onebot.enabled { enabled_channels.push("onebot".to_string()); }
-    if cfg.channels.maixcam.enabled { enabled_channels.push("maixcam".to_string()); }
-    if cfg.channels.external.enabled { enabled_channels.push("external".to_string()); }
+    if cfg.channels.web.enabled {
+        enabled_channels.push("web".to_string());
+    }
+    if cfg.channels.websocket.enabled {
+        enabled_channels.push("websocket".to_string());
+    }
+    if cfg.channels.telegram.enabled {
+        enabled_channels.push("telegram".to_string());
+    }
+    if cfg.channels.discord.enabled {
+        enabled_channels.push("discord".to_string());
+    }
+    if cfg.channels.feishu.enabled {
+        enabled_channels.push("feishu".to_string());
+    }
+    if cfg.channels.slack.enabled {
+        enabled_channels.push("slack".to_string());
+    }
+    if cfg.channels.whatsapp.enabled {
+        enabled_channels.push("whatsapp".to_string());
+    }
+    if cfg.channels.dingtalk.enabled {
+        enabled_channels.push("dingtalk".to_string());
+    }
+    if cfg.channels.qq.enabled {
+        enabled_channels.push("qq".to_string());
+    }
+    if cfg.channels.line.enabled {
+        enabled_channels.push("line".to_string());
+    }
+    if cfg.channels.onebot.enabled {
+        enabled_channels.push("onebot".to_string());
+    }
+    if cfg.channels.maixcam.enabled {
+        enabled_channels.push("maixcam".to_string());
+    }
+    if cfg.channels.external.enabled {
+        enabled_channels.push("external".to_string());
+    }
 
     {
-        let channel_manager = Arc::new(nemesis_channels::manager::ChannelManager::with_allowed_channels(
-            enabled_channels.clone(),
-        ));
+        let channel_manager = Arc::new(
+            nemesis_channels::manager::ChannelManager::with_allowed_channels(
+                enabled_channels.clone(),
+            ),
+        );
 
         // Build ChannelInitConfig from gateway config (web channel is always available).
         let init_config = nemesis_channels::manager::ChannelInitConfig {
@@ -1997,8 +2240,14 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
 
         // Initialize channels from config (registers them in the manager).
         let bus_inbound_sender = bus.inbound_sender();
-        if let Err(e) = channel_manager.init_channels(&init_config, bus_inbound_sender).await {
-            warn!("[Gateway] ChannelManager init_channels note: {} (non-fatal)", e);
+        if let Err(e) = channel_manager
+            .init_channels(&init_config, bus_inbound_sender)
+            .await
+        {
+            warn!(
+                "[Gateway] ChannelManager init_channels note: {} (non-fatal)",
+                e
+            );
         }
 
         // Setup sync targets — reads each channel's sync_to config and calls add_sync_target().
@@ -2045,7 +2294,10 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
                         }
                     }
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
-                        tracing::warn!("[Gateway] ChannelManager outbound bridge lagged {} messages", n);
+                        tracing::warn!(
+                            "[Gateway] ChannelManager outbound bridge lagged {} messages",
+                            n
+                        );
                     }
                     Err(tokio::sync::broadcast::error::RecvError::Closed) => {
                         break;
@@ -2057,7 +2309,10 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
 
         // Start the outbound dispatch loop (reads from internal mpsc, dispatches to channels).
         if let Err(e) = channel_manager.start_dispatch_loop() {
-            warn!("[Gateway] ChannelManager start_dispatch_loop note: {} (non-fatal)", e);
+            warn!(
+                "[Gateway] ChannelManager start_dispatch_loop note: {} (non-fatal)",
+                e
+            );
         }
 
         // Start all registered channels.
@@ -2067,7 +2322,10 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
 
         // Keep the ChannelManager alive.
         std::mem::forget(channel_manager);
-        info!("[Gateway] ChannelManager created with {} enabled channel(s)", enabled_channels.len());
+        info!(
+            "[Gateway] ChannelManager created with {} enabled channel(s)",
+            enabled_channels.len()
+        );
         // Channel manager injection into agent_loop is now handled by the factory function.
     }
 
@@ -2078,94 +2336,109 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
     let security_plugin: Option<std::sync::Arc<nemesis_security::pipeline::SecurityPlugin>>;
     #[cfg(feature = "security")]
     {
-    let security_enabled = cfg.security.as_ref().map(|s| s.enabled).unwrap_or(true);
-    security_plugin = if security_enabled {
-        // Read audit_chain_enabled from `config.security.json`. The file is read raw (since the
-        // gateway already loads rules from it dynamically in `load_security_rules`); we read it
-        // once more here to avoid reordering init (the SecurityPlugin must be constructed before
-        // rules can be loaded onto it).
-        let mut security_config = nemesis_security::pipeline::SecurityPluginConfig::default();
-        let sec_config_path = common::security_config_path(&home);
-        // Read config.security.json once; pull both audit_chain and the DLP
-        // layer config from it. Previously the plugin was built from default()
-        // and the DLP layer config (`layers.dlp`) was never read anywhere — so
-        // the engine always ran every rule with action=block, with no way to
-        // configure a rule whitelist or low-confidence / inbound actions.
-        let sec_json: Option<serde_json::Value> = if sec_config_path.exists() {
-            std::fs::read_to_string(&sec_config_path)
-                .ok()
-                .and_then(|s| serde_json::from_str(&s).ok())
+        let security_enabled = cfg.security.as_ref().map(|s| s.enabled).unwrap_or(true);
+        security_plugin = if security_enabled {
+            // Read audit_chain_enabled from `config.security.json`. The file is read raw (since the
+            // gateway already loads rules from it dynamically in `load_security_rules`); we read it
+            // once more here to avoid reordering init (the SecurityPlugin must be constructed before
+            // rules can be loaded onto it).
+            let mut security_config = nemesis_security::pipeline::SecurityPluginConfig::default();
+            let sec_config_path = common::security_config_path(&home);
+            // Read config.security.json once; pull both audit_chain and the DLP
+            // layer config from it. Previously the plugin was built from default()
+            // and the DLP layer config (`layers.dlp`) was never read anywhere — so
+            // the engine always ran every rule with action=block, with no way to
+            // configure a rule whitelist or low-confidence / inbound actions.
+            let sec_json: Option<serde_json::Value> = if sec_config_path.exists() {
+                std::fs::read_to_string(&sec_config_path)
+                    .ok()
+                    .and_then(|s| serde_json::from_str(&s).ok())
+            } else {
+                None
+            };
+            if let Some(ref v) = sec_json {
+                if let Some(dlp) = v
+                    .get("layers")
+                    .and_then(|l| l.get("dlp"))
+                    .and_then(|d| d.as_object())
+                {
+                    if let Some(b) = dlp.get("enabled").and_then(|x| x.as_bool()) {
+                        security_config.dlp_enabled = b;
+                    }
+                    if let Some(s) = dlp.get("action").and_then(|x| x.as_str()) {
+                        security_config.dlp_action = s.to_string();
+                    }
+                    if let Some(arr) = dlp.get("rules").and_then(|x| x.as_array()) {
+                        security_config.dlp_enabled_rules = arr
+                            .iter()
+                            .filter_map(|x| x.as_str().map(String::from))
+                            .collect();
+                    }
+                    if let Some(s) = dlp.get("low_confidence_action").and_then(|x| x.as_str()) {
+                        security_config.dlp_low_confidence_action = s.to_string();
+                    }
+                    if let Some(s) = dlp.get("inbound_action").and_then(|x| x.as_str()) {
+                        security_config.dlp_inbound_action = s.to_string();
+                    }
+                }
+            }
+            let audit_chain_enabled = sec_json
+                .as_ref()
+                .and_then(|v| v.get("audit_chain_enabled"))
+                .and_then(|f| f.as_bool())
+                .unwrap_or(false);
+            if audit_chain_enabled {
+                security_config.audit_chain_enabled = true;
+                let chain_path = format!(
+                    "{}/workspace/logs/security_logs/audit_chain.jsonl",
+                    home.display()
+                );
+                security_config.audit_chain_path = Some(chain_path.clone());
+                info!("[Gateway] Audit chain enabled at {}", chain_path);
+            }
+            let plugin = Arc::new(nemesis_security::pipeline::SecurityPlugin::new(
+                security_config,
+            ));
+
+            // Load security rules from config.security.json (mirrors Go's config loading)
+            let sec_config_path = common::security_config_path(&home);
+            load_security_rules(&plugin, &sec_config_path);
+
+            // Initialize audit log file.
+            // The JSON config field is "audit_log_file_enabled"; default is true.
+            // Log directory is always `{home}/workspace/logs/security_logs/`.
+            let audit_dir = format!("{}/workspace/logs/security_logs", home.display());
+            if let Err(e) = plugin.init_audit_log_file(&audit_dir) {
+                warn!("[Gateway] Failed to initialize security audit log: {}", e);
+            } else {
+                info!("[Gateway] Security audit log initialized: {}", audit_dir);
+            }
+
+            // Security plugin injection into agent_loop is now handled by the factory function.
+            info!("[Gateway] Security plugin enabled (injection handled by factory)");
+
+            // Step 9c: Initialize scanner chain from config.scanner.json
+            // Mirrors Go's initScannerChain() which calls LoadFromConfig() + chain.Start()
+            let scanner_config_path = common::scanner_config_path(&home);
+            if scanner_config_path.exists() {
+                if let Some(full_config) = load_scanner_full_config(&scanner_config_path) {
+                    if !full_config.enabled.is_empty() {
+                        info!("[Gateway] Initializing scanner chain from config...");
+                        plugin.init_scanner_from_config(&full_config).await;
+                    }
+                }
+            } else {
+                info!(
+                    "[Gateway] Scanner config file not found: {}, scanner chain not initialized",
+                    scanner_config_path.display()
+                );
+            }
+
+            Some(plugin)
         } else {
+            info!("[Gateway] Security plugin disabled by configuration");
             None
         };
-        if let Some(ref v) = sec_json {
-            if let Some(dlp) = v.get("layers").and_then(|l| l.get("dlp")).and_then(|d| d.as_object()) {
-                if let Some(b) = dlp.get("enabled").and_then(|x| x.as_bool()) {
-                    security_config.dlp_enabled = b;
-                }
-                if let Some(s) = dlp.get("action").and_then(|x| x.as_str()) {
-                    security_config.dlp_action = s.to_string();
-                }
-                if let Some(arr) = dlp.get("rules").and_then(|x| x.as_array()) {
-                    security_config.dlp_enabled_rules = arr.iter()
-                        .filter_map(|x| x.as_str().map(String::from)).collect();
-                }
-                if let Some(s) = dlp.get("low_confidence_action").and_then(|x| x.as_str()) {
-                    security_config.dlp_low_confidence_action = s.to_string();
-                }
-                if let Some(s) = dlp.get("inbound_action").and_then(|x| x.as_str()) {
-                    security_config.dlp_inbound_action = s.to_string();
-                }
-            }
-        }
-        let audit_chain_enabled = sec_json.as_ref()
-            .and_then(|v| v.get("audit_chain_enabled"))
-            .and_then(|f| f.as_bool())
-            .unwrap_or(false);
-        if audit_chain_enabled {
-            security_config.audit_chain_enabled = true;
-            let chain_path = format!("{}/workspace/logs/security_logs/audit_chain.jsonl", home.display());
-            security_config.audit_chain_path = Some(chain_path.clone());
-            info!("[Gateway] Audit chain enabled at {}", chain_path);
-        }
-        let plugin = Arc::new(nemesis_security::pipeline::SecurityPlugin::new(security_config));
-
-        // Load security rules from config.security.json (mirrors Go's config loading)
-        let sec_config_path = common::security_config_path(&home);
-        load_security_rules(&plugin, &sec_config_path);
-
-        // Initialize audit log file.
-        // The JSON config field is "audit_log_file_enabled"; default is true.
-        // Log directory is always `{home}/workspace/logs/security_logs/`.
-        let audit_dir = format!("{}/workspace/logs/security_logs", home.display());
-        if let Err(e) = plugin.init_audit_log_file(&audit_dir) {
-            warn!("[Gateway] Failed to initialize security audit log: {}", e);
-        } else {
-            info!("[Gateway] Security audit log initialized: {}", audit_dir);
-        }
-
-        // Security plugin injection into agent_loop is now handled by the factory function.
-        info!("[Gateway] Security plugin enabled (injection handled by factory)");
-
-        // Step 9c: Initialize scanner chain from config.scanner.json
-        // Mirrors Go's initScannerChain() which calls LoadFromConfig() + chain.Start()
-        let scanner_config_path = common::scanner_config_path(&home);
-        if scanner_config_path.exists() {
-            if let Some(full_config) = load_scanner_full_config(&scanner_config_path) {
-                if !full_config.enabled.is_empty() {
-                    info!("[Gateway] Initializing scanner chain from config...");
-                    plugin.init_scanner_from_config(&full_config).await;
-                }
-            }
-        } else {
-            info!("[Gateway] Scanner config file not found: {}, scanner chain not initialized", scanner_config_path.display());
-        }
-
-        Some(plugin)
-    } else {
-        info!("[Gateway] Security plugin disabled by configuration");
-        None
-    };
     }
 
     #[cfg(not(feature = "security"))]
@@ -2209,7 +2482,9 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
                             mgr.register(rl_observer).await;
                         })
                     });
-                    info!("[Gateway] RequestLoggerObserver registered (logging.llm.enabled = true)");
+                    info!(
+                        "[Gateway] RequestLoggerObserver registered (logging.llm.enabled = true)"
+                    );
                 }
             }
         }
@@ -2217,9 +2492,7 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
         // Check if any observers were registered.
         let mgr_check = observer_mgr.clone();
         let has_observers = tokio::task::block_in_place(|| {
-            tokio::runtime::Handle::current().block_on(async {
-                mgr_check.has_observers().await
-            })
+            tokio::runtime::Handle::current().block_on(async { mgr_check.has_observers().await })
         });
         if has_observers {
             info!("[Gateway] Observer manager initialized (injection handled by factory)");
@@ -2299,7 +2572,10 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
     let agent_loop = crate::agent_factory::build_agent_loop(&shared_resources)
         .map_err(|e| anyhow::anyhow!("Failed to build agent loop: {}", e))?;
     let initial_tool_count = agent_loop.tool_count();
-    info!("[Gateway] AgentLoop built via factory ({} tools)", initial_tool_count);
+    info!(
+        "[Gateway] AgentLoop built via factory ({} tools)",
+        initial_tool_count
+    );
 
     // Bridge the agent's tools into the workflow engine's tool registry so the
     // workflow `tool` node can invoke them. The registry was created empty
@@ -2321,10 +2597,8 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
                 security_plugin.clone(),
             );
             #[cfg(not(feature = "security"))]
-            let adapted = nemesis_agent::tool_adapter::AgentToolAdapter::new(
-                name.clone(),
-                Arc::clone(tool),
-            );
+            let adapted =
+                nemesis_agent::tool_adapter::AgentToolAdapter::new(name.clone(), Arc::clone(tool));
             workflow_tool_registry.register(adapted);
             bridged += 1;
         }
@@ -2340,7 +2614,8 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
     // sessions don't collide with human user sessions.
     #[cfg(feature = "workflow")]
     {
-        workflow_engine.register_agent_runner(Arc::new(GatewayAgentRunner::new(agent_loop.clone())));
+        workflow_engine
+            .register_agent_runner(Arc::new(GatewayAgentRunner::new(agent_loop.clone())));
         info!("[Gateway] Workflow agent runner registered");
 
         // Wire DataStore into workflow engine so llm/question_classifier/parameter_extractor
@@ -2406,7 +2681,11 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
 
     // Step 10: Wire up WebServer (created early for WebChannel injection)
     web_server.set_message_bus(bus.clone());
-    web_server.set_model_info(&model_name, &resolution.api_base, !resolution.api_key.is_empty());
+    web_server.set_model_info(
+        &model_name,
+        &resolution.api_base,
+        !resolution.api_key.is_empty(),
+    );
 
     // Wire streaming provider for SSE chat endpoint.
     // Create an HttpProvider from the same config used for the main provider.
@@ -2422,7 +2701,9 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
             proxy: None,
             preserve_prefix: false,
         };
-        web_server.set_streaming_provider(Arc::new(nemesis_providers::http_provider::HttpProvider::new(streaming_cfg)));
+        web_server.set_streaming_provider(Arc::new(
+            nemesis_providers::http_provider::HttpProvider::new(streaming_cfg),
+        ));
         info!("[Gateway] SSE streaming provider configured for /api/chat/stream");
     }
 
@@ -2483,7 +2764,9 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
             nemesis_cluster::cluster_log::init_cluster_log(&cluster_log_dir);
 
             // Inject cluster lifecycle service for start/stop control
-            web_server.set_cluster_service(adapter.clone() as Arc<dyn nemesis_services::bot_service::LifecycleService>);
+            web_server.set_cluster_service(
+                adapter.clone() as Arc<dyn nemesis_services::bot_service::LifecycleService>
+            );
             // Inject cluster log directory for JSONL log reader
             web_server.set_cluster_log_dir(cluster_log_dir.to_string_lossy().to_string());
             info!("[Gateway] Cluster service and log dir injected into web server");
@@ -2493,10 +2776,13 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
             // to connected SSE clients via the EVENT_CLUSTER_EVENT channel.
             let event_hub = web_server.event_hub().clone();
             nemesis_cluster::cluster_log::set_cluster_log_hook(Arc::new(move |event, data| {
-                event_hub.publish(nemesis_web::events::EVENT_CLUSTER_EVENT, serde_json::json!({
-                    "event": event,
-                    "data": data,
-                }));
+                event_hub.publish(
+                    nemesis_web::events::EVENT_CLUSTER_EVENT,
+                    serde_json::json!({
+                        "event": event,
+                        "data": data,
+                    }),
+                );
             }));
             info!("[Gateway] Cluster log → SSE EventHub bridge connected");
         }
@@ -2516,199 +2802,197 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
 
     #[cfg(feature = "workflow")]
     {
-    // --- Workflow trigger drivers (event + message) ---
-    // Two subscription tasks wire trigger configs to their data sources:
-    //
-    // 1. Inbound bus → message triggers:
-    //    Every InboundMessage published by any channel (web, telegram, discord,
-    //    etc.) is matched against each workflow's `message` trigger configs
-    //    (channel/content/sender_id/chat_id glob match). Matches start a
-    //    background execution.
-    //
-    // 2. EventDispatcher → event triggers:
-    //    TriggerEvents (workflow.completed/failed, forge.pattern_created, or
-    //    manual fire_event via WSAPI) match each workflow's `event` trigger
-    //    configs (event_type glob + data field matchers). Matches start a
-    //    background execution.
-    //
-    // Without these, `message` and `event` triggers never fire — the warning
-    // "trigger type X has no runtime driver" no longer applies as of P3.
-    let msg_engine = workflow_engine.clone();
-    let mut inbound_rx_for_wf = bus.subscribe_inbound();
-    let inbound_wf_handle = tokio::spawn(async move {
-        loop {
-            match inbound_rx_for_wf.recv().await {
-                Ok(msg) => {
-                    let channel = msg.channel.clone();
-                    let sender = msg.sender_id.clone();
-                    let chat = msg.chat_id.clone();
-                    let content = msg.content.clone();
-                    let session_key = msg.session_key.clone();
-                    let matched = msg_engine.workflows_matching_message(
-                        &channel,
-                        &sender,
-                        &chat,
-                        &content,
-                    );
-                    if matched.is_empty() {
-                        continue;
-                    }
-                    for wf_name in matched {
-                        let engine = msg_engine.clone();
-                        let ch = channel.clone();
-                        let sd = sender.clone();
-                        let ct = chat.clone();
-                        let cn = content.clone();
-                        let sk = session_key.clone();
-                        tokio::spawn(async move {
-                            let trigger = nemesis_workflow::types::TriggerSource::Message {
-                                channel: ch.clone(),
-                                chat_id: ct.clone(),
-                                sender_id: sd.clone(),
-                                content: cn.clone(),
-                            };
-                            let mut input = std::collections::HashMap::new();
-                            input.insert("channel".to_string(), serde_json::json!(ch));
-                            input.insert("sender_id".to_string(), serde_json::json!(sd));
-                            input.insert("chat_id".to_string(), serde_json::json!(ct));
-                            input.insert("content".to_string(), serde_json::json!(cn));
-                            // Unified `input` field: the message content is
-                            // the natural main input for `message` triggers.
-                            input.insert("input".to_string(), serde_json::json!(cn));
-                            input.insert("session_key".to_string(), serde_json::json!(sk));
-                            match engine.start_async(&wf_name, input, Some(trigger)).await {
-                                Ok(id) => {
-                                    info!(
-                                        workflow = %wf_name,
-                                        execution_id = %id,
-                                        channel = %ch,
-                                        "[Workflow] message-triggered execution started"
-                                    );
-                                }
-                                Err(e) => {
-                                    warn!(
-                                        workflow = %wf_name,
-                                        error = %e,
-                                        "[Workflow] message-triggered execution failed to start"
-                                    );
-                                }
-                            }
-                        });
-                    }
-                }
-                Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
-                    warn!(
-                        n,
-                        "[Workflow] message-trigger subscriber lagged (some triggerable messages dropped)"
-                    );
-                }
-                Err(tokio::sync::broadcast::error::RecvError::Closed) => {
-                    info!("[Workflow] inbound bus closed, message-trigger task exiting");
-                    break;
-                }
-            }
-        }
-    });
-
-    let evt_engine = workflow_engine.clone();
-    let mut event_rx = evt_engine.event_dispatcher().subscribe();
-    let event_wf_handle = tokio::spawn(async move {
-        loop {
-            match event_rx.recv().await {
-                Ok(event) => {
-                    let matched = evt_engine.workflows_matching_event(&event);
-                    if matched.is_empty() {
-                        continue;
-                    }
-                    for wf_name in matched {
-                        let engine = evt_engine.clone();
-                        let ev = event.clone();
-                        tokio::spawn(async move {
-                            let trigger =
-                                nemesis_workflow::types::TriggerSource::Event {
-                                    event_type: ev.event_type.clone(),
-                                    data: serde_json::Value::Object(ev.data.clone().into_iter().collect()),
+        // --- Workflow trigger drivers (event + message) ---
+        // Two subscription tasks wire trigger configs to their data sources:
+        //
+        // 1. Inbound bus → message triggers:
+        //    Every InboundMessage published by any channel (web, telegram, discord,
+        //    etc.) is matched against each workflow's `message` trigger configs
+        //    (channel/content/sender_id/chat_id glob match). Matches start a
+        //    background execution.
+        //
+        // 2. EventDispatcher → event triggers:
+        //    TriggerEvents (workflow.completed/failed, forge.pattern_created, or
+        //    manual fire_event via WSAPI) match each workflow's `event` trigger
+        //    configs (event_type glob + data field matchers). Matches start a
+        //    background execution.
+        //
+        // Without these, `message` and `event` triggers never fire — the warning
+        // "trigger type X has no runtime driver" no longer applies as of P3.
+        let msg_engine = workflow_engine.clone();
+        let mut inbound_rx_for_wf = bus.subscribe_inbound();
+        let inbound_wf_handle = tokio::spawn(async move {
+            loop {
+                match inbound_rx_for_wf.recv().await {
+                    Ok(msg) => {
+                        let channel = msg.channel.clone();
+                        let sender = msg.sender_id.clone();
+                        let chat = msg.chat_id.clone();
+                        let content = msg.content.clone();
+                        let session_key = msg.session_key.clone();
+                        let matched = msg_engine
+                            .workflows_matching_message(&channel, &sender, &chat, &content);
+                        if matched.is_empty() {
+                            continue;
+                        }
+                        for wf_name in matched {
+                            let engine = msg_engine.clone();
+                            let ch = channel.clone();
+                            let sd = sender.clone();
+                            let ct = chat.clone();
+                            let cn = content.clone();
+                            let sk = session_key.clone();
+                            tokio::spawn(async move {
+                                let trigger = nemesis_workflow::types::TriggerSource::Message {
+                                    channel: ch.clone(),
+                                    chat_id: ct.clone(),
+                                    sender_id: sd.clone(),
+                                    content: cn.clone(),
                                 };
-                            let mut input = std::collections::HashMap::new();
-                            input.insert("event_type".to_string(), serde_json::json!(ev.event_type));
-                            for (k, v) in &ev.data {
-                                input.insert(k.clone(), v.clone());
-                            }
-                            // Unified `input` field: prefer `ev.data.input`
-                            // if present (caller can set it explicitly);
-                            // otherwise JSON-serialise the whole data object.
-                            if !input.contains_key("input") {
-                                let serialized = serde_json::Value::Object(
-                                    ev.data.clone().into_iter().collect(),
-                                )
-                                .to_string();
-                                input.insert(
-                                    "input".to_string(),
-                                    serde_json::json!(serialized),
-                                );
-                            }
-                            if let Some(src) = &ev.source_execution_id {
-                                input.insert(
-                                    "source_execution_id".to_string(),
-                                    serde_json::json!(src),
-                                );
-                            }
-                            match engine.start_async(&wf_name, input, Some(trigger)).await {
-                                Ok(id) => {
-                                    info!(
-                                        workflow = %wf_name,
-                                        execution_id = %id,
-                                        event_type = %ev.event_type,
-                                        "[Workflow] event-triggered execution started"
-                                    );
+                                let mut input = std::collections::HashMap::new();
+                                input.insert("channel".to_string(), serde_json::json!(ch));
+                                input.insert("sender_id".to_string(), serde_json::json!(sd));
+                                input.insert("chat_id".to_string(), serde_json::json!(ct));
+                                input.insert("content".to_string(), serde_json::json!(cn));
+                                // Unified `input` field: the message content is
+                                // the natural main input for `message` triggers.
+                                input.insert("input".to_string(), serde_json::json!(cn));
+                                input.insert("session_key".to_string(), serde_json::json!(sk));
+                                match engine.start_async(&wf_name, input, Some(trigger)).await {
+                                    Ok(id) => {
+                                        info!(
+                                            workflow = %wf_name,
+                                            execution_id = %id,
+                                            channel = %ch,
+                                            "[Workflow] message-triggered execution started"
+                                        );
+                                    }
+                                    Err(e) => {
+                                        warn!(
+                                            workflow = %wf_name,
+                                            error = %e,
+                                            "[Workflow] message-triggered execution failed to start"
+                                        );
+                                    }
                                 }
-                                Err(e) => {
-                                    warn!(
-                                        workflow = %wf_name,
-                                        event_type = %ev.event_type,
-                                        error = %e,
-                                        "[Workflow] event-triggered execution failed to start"
-                                    );
-                                }
-                            }
-                        });
+                            });
+                        }
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                        warn!(
+                            n,
+                            "[Workflow] message-trigger subscriber lagged (some triggerable messages dropped)"
+                        );
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                        info!("[Workflow] inbound bus closed, message-trigger task exiting");
+                        break;
                     }
                 }
-                Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
-                    warn!(
-                        n,
-                        "[Workflow] event-trigger subscriber lagged (some triggerable events dropped)"
-                    );
-                }
-                Err(tokio::sync::broadcast::error::RecvError::Closed) => {
-                    info!("[Workflow] event dispatcher closed, event-trigger task exiting");
-                    break;
+            }
+        });
+
+        let evt_engine = workflow_engine.clone();
+        let mut event_rx = evt_engine.event_dispatcher().subscribe();
+        let event_wf_handle = tokio::spawn(async move {
+            loop {
+                match event_rx.recv().await {
+                    Ok(event) => {
+                        let matched = evt_engine.workflows_matching_event(&event);
+                        if matched.is_empty() {
+                            continue;
+                        }
+                        for wf_name in matched {
+                            let engine = evt_engine.clone();
+                            let ev = event.clone();
+                            tokio::spawn(async move {
+                                let trigger = nemesis_workflow::types::TriggerSource::Event {
+                                    event_type: ev.event_type.clone(),
+                                    data: serde_json::Value::Object(
+                                        ev.data.clone().into_iter().collect(),
+                                    ),
+                                };
+                                let mut input = std::collections::HashMap::new();
+                                input.insert(
+                                    "event_type".to_string(),
+                                    serde_json::json!(ev.event_type),
+                                );
+                                for (k, v) in &ev.data {
+                                    input.insert(k.clone(), v.clone());
+                                }
+                                // Unified `input` field: prefer `ev.data.input`
+                                // if present (caller can set it explicitly);
+                                // otherwise JSON-serialise the whole data object.
+                                if !input.contains_key("input") {
+                                    let serialized = serde_json::Value::Object(
+                                        ev.data.clone().into_iter().collect(),
+                                    )
+                                    .to_string();
+                                    input
+                                        .insert("input".to_string(), serde_json::json!(serialized));
+                                }
+                                if let Some(src) = &ev.source_execution_id {
+                                    input.insert(
+                                        "source_execution_id".to_string(),
+                                        serde_json::json!(src),
+                                    );
+                                }
+                                match engine.start_async(&wf_name, input, Some(trigger)).await {
+                                    Ok(id) => {
+                                        info!(
+                                            workflow = %wf_name,
+                                            execution_id = %id,
+                                            event_type = %ev.event_type,
+                                            "[Workflow] event-triggered execution started"
+                                        );
+                                    }
+                                    Err(e) => {
+                                        warn!(
+                                            workflow = %wf_name,
+                                            event_type = %ev.event_type,
+                                            error = %e,
+                                            "[Workflow] event-triggered execution failed to start"
+                                        );
+                                    }
+                                }
+                            });
+                        }
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                        warn!(
+                            n,
+                            "[Workflow] event-trigger subscriber lagged (some triggerable events dropped)"
+                        );
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                        info!("[Workflow] event dispatcher closed, event-trigger task exiting");
+                        break;
+                    }
                 }
             }
+        });
+
+        let _ = inbound_wf_handle;
+        let _ = event_wf_handle;
+        info!("[Gateway] Workflow trigger drivers spawned (event + message)");
+
+        // Register the WorkflowChatReplyObserver so `/workflow/chat/<index>`
+        // pages get a reply broadcast when their execution finishes. The observer
+        // filters by `TriggerSource::WorkflowChat` so non-chat executions are
+        // ignored. Per-workflow serialization guards are released here too.
+        {
+            let observer = Arc::new(
+                nemesis_web::workflow_chat_reply_observer::WorkflowChatReplyObserver::new(
+                    web_server.session_manager().clone(),
+                    workflow_engine.clone(),
+                ),
+            );
+            workflow_engine
+                .event_manager()
+                .register(observer as Arc<dyn nemesis_workflow::events::WorkflowObserver>)
+                .await;
+            info!("[Gateway] WorkflowChatReplyObserver registered");
         }
-    });
-
-    let _ = inbound_wf_handle;
-    let _ = event_wf_handle;
-    info!("[Gateway] Workflow trigger drivers spawned (event + message)");
-
-    // Register the WorkflowChatReplyObserver so `/workflow/chat/<index>`
-    // pages get a reply broadcast when their execution finishes. The observer
-    // filters by `TriggerSource::WorkflowChat` so non-chat executions are
-    // ignored. Per-workflow serialization guards are released here too.
-    {
-        let observer = Arc::new(
-            nemesis_web::workflow_chat_reply_observer::WorkflowChatReplyObserver::new(
-                web_server.session_manager().clone(),
-                workflow_engine.clone(),
-            ),
-        );
-        workflow_engine
-            .event_manager()
-            .register(observer as Arc<dyn nemesis_workflow::events::WorkflowObserver>)
-            .await;
-        info!("[Gateway] WorkflowChatReplyObserver registered");
-    }
     }
 
     info!("[Gateway] Web server components injected");
@@ -2724,7 +3008,10 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
         Arc::new(nemesis_health::server::HealthServer::new(health_config))
     };
     #[cfg(feature = "health")]
-    info!("[Gateway] Health server created for {}:{}", &cfg.gateway.host, cfg.gateway.port);
+    info!(
+        "[Gateway] Health server created for {}:{}",
+        &cfg.gateway.host, cfg.gateway.port
+    );
 
     // Step 12: Create HeartbeatService
     let heartbeat_interval_secs = if cfg.heartbeat.interval > 0 {
@@ -2741,10 +3028,15 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
             min_interval_minutes: 5,
             default_interval_minutes: 30,
         };
-        Arc::new(nemesis_heartbeat::service::HeartbeatService::new(heartbeat_config))
+        Arc::new(nemesis_heartbeat::service::HeartbeatService::new(
+            heartbeat_config,
+        ))
     };
     #[cfg(feature = "heartbeat")]
-    info!("[Gateway] Heartbeat service created (enabled: {})", cfg.heartbeat.enabled);
+    info!(
+        "[Gateway] Heartbeat service created (enabled: {})",
+        cfg.heartbeat.enabled
+    );
 
     // C2: Wire HeartbeatService — bus + handler + skip file.
     // Mirrors Go's bot_service.go:403-406:
@@ -2778,24 +3070,11 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
         //   4. Always return SilentResult (agent sends messages via tools, not via handler)
         let bootstrap_path = common::workspace_path(&home).join("BOOTSTRAP.md");
         let adapter_for_hb = agent_adapter.clone();
-        heartbeat_service.set_handler(Box::new(move |prompt: String, mut channel: String, mut chat_id: String| {
-            // Check BOOTSTRAP.md — if exists, skip heartbeat entirely.
-            if bootstrap_path.exists() {
-                tracing::info!("[Gateway] BOOTSTRAP.md exists, skipping heartbeat LLM call");
-                return Some(nemesis_heartbeat::service::HeartbeatResult {
-                    is_error: false,
-                    is_async: false,
-                    silent: true,
-                    for_user: String::new(),
-                    for_llm: "HEARTBEAT_OK".to_string(),
-                });
-            }
-
-            // Get the current AgentLoop via adapter (may be None if stopped).
-            let agent_loop_for_hb = match adapter_for_hb.current() {
-                Some(al) => al,
-                None => {
-                    tracing::debug!("[Gateway] Agent not running, skipping heartbeat");
+        heartbeat_service.set_handler(Box::new(
+            move |prompt: String, mut channel: String, mut chat_id: String| {
+                // Check BOOTSTRAP.md — if exists, skip heartbeat entirely.
+                if bootstrap_path.exists() {
+                    tracing::info!("[Gateway] BOOTSTRAP.md exists, skipping heartbeat LLM call");
                     return Some(nemesis_heartbeat::service::HeartbeatResult {
                         is_error: false,
                         is_async: false,
@@ -2804,38 +3083,59 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
                         for_llm: "HEARTBEAT_OK".to_string(),
                     });
                 }
-            };
 
-            // Use cli:direct as fallback (matching Go).
-            if channel.is_empty() || chat_id.is_empty() {
-                channel = "cli".to_string();
-                chat_id = "direct".to_string();
-            }
-
-            tokio::task::block_in_place(|| {
-                let rt = tokio::runtime::Handle::current();
-                match rt.block_on(agent_loop_for_hb.process_heartbeat(&prompt, &channel, &chat_id)) {
-                    Ok(response) if response.is_empty() => None,
-                    Ok(response) => {
-                        let is_heartbeat_ok = response.trim() == "HEARTBEAT_OK";
-                        Some(nemesis_heartbeat::service::HeartbeatResult {
+                // Get the current AgentLoop via adapter (may be None if stopped).
+                let agent_loop_for_hb = match adapter_for_hb.current() {
+                    Some(al) => al,
+                    None => {
+                        tracing::debug!("[Gateway] Agent not running, skipping heartbeat");
+                        return Some(nemesis_heartbeat::service::HeartbeatResult {
                             is_error: false,
                             is_async: false,
-                            silent: true, // Go always returns SilentResult
+                            silent: true,
                             for_user: String::new(),
-                            for_llm: if is_heartbeat_ok { "HEARTBEAT_OK".to_string() } else { response },
-                        })
+                            for_llm: "HEARTBEAT_OK".to_string(),
+                        });
                     }
-                    Err(e) => Some(nemesis_heartbeat::service::HeartbeatResult {
-                        is_error: true,
-                        is_async: false,
-                        silent: false,
-                        for_user: String::new(),
-                        for_llm: format!("Heartbeat error: {}", e),
-                    }),
+                };
+
+                // Use cli:direct as fallback (matching Go).
+                if channel.is_empty() || chat_id.is_empty() {
+                    channel = "cli".to_string();
+                    chat_id = "direct".to_string();
                 }
-            })
-        }));
+
+                tokio::task::block_in_place(|| {
+                    let rt = tokio::runtime::Handle::current();
+                    match rt
+                        .block_on(agent_loop_for_hb.process_heartbeat(&prompt, &channel, &chat_id))
+                    {
+                        Ok(response) if response.is_empty() => None,
+                        Ok(response) => {
+                            let is_heartbeat_ok = response.trim() == "HEARTBEAT_OK";
+                            Some(nemesis_heartbeat::service::HeartbeatResult {
+                                is_error: false,
+                                is_async: false,
+                                silent: true, // Go always returns SilentResult
+                                for_user: String::new(),
+                                for_llm: if is_heartbeat_ok {
+                                    "HEARTBEAT_OK".to_string()
+                                } else {
+                                    response
+                                },
+                            })
+                        }
+                        Err(e) => Some(nemesis_heartbeat::service::HeartbeatResult {
+                            is_error: true,
+                            is_async: false,
+                            silent: false,
+                            for_user: String::new(),
+                            for_llm: format!("Heartbeat error: {}", e),
+                        }),
+                    }
+                })
+            },
+        ));
 
         // Set skip file (BOOTSTRAP.md) — if present, heartbeat is deferred.
         let skip_file = common::workspace_path(&home).join("BOOTSTRAP.md");
@@ -2850,34 +3150,37 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
     // Mirrors Go's bot_service.go:409-413: devices.NewService(Config{Enabled, MonitorUSB}).
     #[cfg(feature = "devices")]
     {
-    if cfg.devices.enabled {
-        let device_config = nemesis_devices::service::DeviceServiceConfig {
-            enabled: true,
-            poll_interval_secs: 30,
-            monitor_usb: cfg.devices.monitor_usb,
-        };
-        let device_service = nemesis_devices::service::DeviceService::with_config(device_config);
-        // Wire bus sender: device events → outbound messages via bus
-        let bus_for_devices = bus.clone();
-        device_service.set_bus_sender(Box::new(move |channel: &str, chat_id: &str, content: &str| {
-            let msg = nemesis_types::channel::OutboundMessage {
-                channel: channel.to_string(),
-                chat_id: chat_id.to_string(),
-                content: content.to_string(),
-                message_type: String::new(),
-                meta: Default::default(),
+        if cfg.devices.enabled {
+            let device_config = nemesis_devices::service::DeviceServiceConfig {
+                enabled: true,
+                poll_interval_secs: 30,
+                monitor_usb: cfg.devices.monitor_usb,
             };
-            bus_for_devices.publish_outbound(msg);
-        }));
-        // Start monitoring (USB hotplug, etc.) — async, fire-and-forget
-        if let Err(e) = device_service.start().await {
-            warn!("[Gateway] Device service start note: {} (non-fatal)", e);
+            let device_service =
+                nemesis_devices::service::DeviceService::with_config(device_config);
+            // Wire bus sender: device events → outbound messages via bus
+            let bus_for_devices = bus.clone();
+            device_service.set_bus_sender(Box::new(
+                move |channel: &str, chat_id: &str, content: &str| {
+                    let msg = nemesis_types::channel::OutboundMessage {
+                        channel: channel.to_string(),
+                        chat_id: chat_id.to_string(),
+                        content: content.to_string(),
+                        message_type: String::new(),
+                        meta: Default::default(),
+                    };
+                    bus_for_devices.publish_outbound(msg);
+                },
+            ));
+            // Start monitoring (USB hotplug, etc.) — async, fire-and-forget
+            if let Err(e) = device_service.start().await {
+                warn!("[Gateway] Device service start note: {} (non-fatal)", e);
+            } else {
+                info!("[Gateway] Device service started (USB hotplug monitoring)");
+            }
         } else {
-            info!("[Gateway] Device service started (USB hotplug monitoring)");
+            info!("[Gateway] Device service disabled (config.json: devices.enabled = false)");
         }
-    } else {
-        info!("[Gateway] Device service disabled (config.json: devices.enabled = false)");
-    }
     } // #[cfg(feature = "devices")]
 
     // Step 13: Create ServiceManager with config
@@ -2889,7 +3192,9 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
         heartbeat_enabled: cfg.heartbeat.enabled,
         gateway_host: cfg.gateway.host.clone(),
         gateway_port: cfg.gateway.port as u16,
-        llm_logging_enabled: cfg.logging.as_ref()
+        llm_logging_enabled: cfg
+            .logging
+            .as_ref()
             .and_then(|l| l.llm.as_ref())
             .map(|l| l.enabled)
             .unwrap_or(false),
@@ -2902,11 +3207,15 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
         let bot = svc_mgr.get_bot_service();
         #[cfg(feature = "health")]
         {
-            bot.inject_health(Arc::new(adapters::HealthServerAdapter::new(health_server.clone())));
+            bot.inject_health(Arc::new(adapters::HealthServerAdapter::new(
+                health_server.clone(),
+            )));
         }
         #[cfg(feature = "heartbeat")]
         {
-            bot.inject_heartbeat(Arc::new(adapters::HeartbeatServiceAdapter::new(heartbeat_service.clone())));
+            bot.inject_heartbeat(Arc::new(adapters::HeartbeatServiceAdapter::new(
+                heartbeat_service.clone(),
+            )));
         }
         #[cfg(not(any(feature = "health", feature = "heartbeat")))]
         let _ = bot;
@@ -2915,9 +3224,9 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
     }
 
     // Step 14: Start basic services
-    svc_mgr.start_basic_services().map_err(|e| {
-        anyhow::anyhow!("Error starting basic services: {}", e)
-    })?;
+    svc_mgr
+        .start_basic_services()
+        .map_err(|e| anyhow::anyhow!("Error starting basic services: {}", e))?;
 
     // Start cron scheduler (after on_job handler is wired).
     // Mirrors Go's bot_service.go:571-579 cronSvc.Start().
@@ -2989,7 +3298,8 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
     let (bound_tx, bound_rx) = tokio::sync::oneshot::channel::<std::net::SocketAddr>();
 
     // Create internal command channel (web handler → gateway logic)
-    let (internal_cmd_tx, internal_cmd_rx) = tokio::sync::mpsc::channel::<nemesis_web::internal::InternalCommand>(16);
+    let (internal_cmd_tx, internal_cmd_rx) =
+        tokio::sync::mpsc::channel::<nemesis_web::internal::InternalCommand>(16);
     web_server.set_internal_cmd_tx(internal_cmd_tx);
 
     // 在 web server 接受请求之前，按 config.voice.json 自动初始化已启用的语音引擎
@@ -3001,7 +3311,10 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
     }
 
     let web_handle = tokio::spawn(async move {
-        if let Err(e) = web_server.start_with_shutdown(web_shutdown_rx, Some(bound_tx)).await {
+        if let Err(e) = web_server
+            .start_with_shutdown(web_shutdown_rx, Some(bound_tx))
+            .await
+        {
             error!("[Gateway] Web server error: {}", e);
         }
     });
@@ -3036,7 +3349,10 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
 
     // Step 17: HealthServer is started by BotService (svc_mgr.start_bot() below)
     // via start_services() → services.health.start(). No separate spawn needed here.
-    info!("[Gateway] Health server will be started by bot service on {}:{}", &cfg.gateway.host, cfg.gateway.port);
+    info!(
+        "[Gateway] Health server will be started by bot service on {}:{}",
+        &cfg.gateway.host, cfg.gateway.port
+    );
 
     // Step 18: Start AgentLoop's bus processing via adapter
     if let Err(e) = agent_adapter.start() {
@@ -3085,9 +3401,15 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
     #[cfg(feature = "desktop")]
     {
         if let Err(e) = process_manager.start().await {
-            warn!("[Gateway] ProcessManager start note: {} (non-fatal, plugin windows will use fallback)", e);
+            warn!(
+                "[Gateway] ProcessManager start note: {} (non-fatal, plugin windows will use fallback)",
+                e
+            );
         } else {
-            info!("[Gateway] ProcessManager started (WS server on port {})", process_manager.ws_port());
+            info!(
+                "[Gateway] ProcessManager started (WS server on port {})",
+                process_manager.ws_port()
+            );
         }
     }
 
@@ -3096,39 +3418,41 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
     // request_approval_sync() which spawns an approval popup child process.
     #[cfg(feature = "security")]
     {
-    if let Some(ref plugin) = security_plugin {
-        let auditor = plugin.auditor();
-        #[cfg(feature = "desktop")]
-        {
-            // Approval popup via ProcessManager (desktop only). When a tool
-            // call triggers an "ask" rule, the auditor spawns an approval popup
-            // child process and blocks until the user responds.
-            let adapter: Arc<dyn nemesis_security::auditor::ApprovalManager> =
-                Arc::new(ApprovalPopupAdapter::new(process_manager.clone()));
-            auditor.set_approval_manager(adapter.clone());
-            // Bridge the same approval manager to `skill_manage` write approval.
-            *shared_resources.approval_slot.write() = Some(adapter.clone());
-            // P2: bridge the same approval manager to the agent's memory write/forget
-            // gate — agent memory_store/forget now pop up for approval, never
-            // bypassed by YOLO/auto. No-op if no memory executor was stashed.
-            #[cfg(feature = "memory")]
+        if let Some(ref plugin) = security_plugin {
+            let auditor = plugin.auditor();
+            #[cfg(feature = "desktop")]
             {
-                agent_loop.set_memory_approval_gate(Arc::new(GatewayMemoryGate::new(adapter)));
+                // Approval popup via ProcessManager (desktop only). When a tool
+                // call triggers an "ask" rule, the auditor spawns an approval popup
+                // child process and blocks until the user responds.
+                let adapter: Arc<dyn nemesis_security::auditor::ApprovalManager> =
+                    Arc::new(ApprovalPopupAdapter::new(process_manager.clone()));
+                auditor.set_approval_manager(adapter.clone());
+                // Bridge the same approval manager to `skill_manage` write approval.
+                *shared_resources.approval_slot.write() = Some(adapter.clone());
+                // P2: bridge the same approval manager to the agent's memory write/forget
+                // gate — agent memory_store/forget now pop up for approval, never
+                // bypassed by YOLO/auto. No-op if no memory executor was stashed.
+                #[cfg(feature = "memory")]
+                {
+                    agent_loop.set_memory_approval_gate(Arc::new(GatewayMemoryGate::new(adapter)));
+                }
+                info!("[Gateway] Approval manager wired (popup via ProcessManager)");
             }
-            info!("[Gateway] Approval manager wired (popup via ProcessManager)");
+            #[cfg(not(feature = "desktop"))]
+            {
+                let _ = auditor;
+                info!(
+                    "[Gateway] Approval popup disabled (desktop feature off; no interactive approval)"
+                );
+            }
+            // P5: attach the LLM guardian judge for CRITICAL-op semantic review.
+            plugin.set_judge(Arc::new(GatewayLlmJudge {
+                provider: llm_provider.clone(),
+                model: model_name.clone(),
+            }));
+            info!("[Gateway] Guardian LLM judge attached (CRITICAL-op review)");
         }
-        #[cfg(not(feature = "desktop"))]
-        {
-            let _ = auditor;
-            info!("[Gateway] Approval popup disabled (desktop feature off; no interactive approval)");
-        }
-        // P5: attach the LLM guardian judge for CRITICAL-op semantic review.
-        plugin.set_judge(Arc::new(GatewayLlmJudge {
-            provider: llm_provider.clone(),
-            model: model_name.clone(),
-        }));
-        info!("[Gateway] Guardian LLM judge attached (CRITICAL-op review)");
-    }
     }
 
     // Internal command loop: /api/internal → open_plugin_window / open_browser
@@ -3150,7 +3474,9 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
                         #[cfg(not(all(feature = "desktop", not(target_os = "android"))))]
                         {
                             let _ = (&url, &token);
-                            info!("[Gateway] Internal command: open_dashboard (no desktop / android)");
+                            info!(
+                                "[Gateway] Internal command: open_dashboard (no desktop / android)"
+                            );
                         }
                     }
                 }
@@ -3169,74 +3495,80 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
         // Set cluster callbacks — tray controls both config files + runtime
         #[cfg(feature = "cluster")]
         {
-        if let Some(ref ca) = cluster_adapter {
-            let home_for_start = home.clone();
-            let ca_start = ca.clone();
-            tray.set_on_cluster_start(Box::new(move || {
-                // Write config.json cluster.enabled = true
-                let cfg_path = home_for_start.join("config.json");
-                if let Ok(content) = std::fs::read_to_string(&cfg_path) {
-                    if let Ok(mut cfg) = serde_json::from_str::<serde_json::Value>(&content) {
-                        if cfg.get("cluster").is_none() {
-                            cfg["cluster"] = serde_json::json!({});
-                        }
-                        if let Some(obj) = cfg.get_mut("cluster").and_then(|c| c.as_object_mut()) {
-                            obj.insert("enabled".to_string(), serde_json::json!(true));
-                            if let Ok(updated) = serde_json::to_string_pretty(&cfg) {
-                                let _ = std::fs::write(&cfg_path, updated);
+            if let Some(ref ca) = cluster_adapter {
+                let home_for_start = home.clone();
+                let ca_start = ca.clone();
+                tray.set_on_cluster_start(Box::new(move || {
+                    // Write config.json cluster.enabled = true
+                    let cfg_path = home_for_start.join("config.json");
+                    if let Ok(content) = std::fs::read_to_string(&cfg_path) {
+                        if let Ok(mut cfg) = serde_json::from_str::<serde_json::Value>(&content) {
+                            if cfg.get("cluster").is_none() {
+                                cfg["cluster"] = serde_json::json!({});
+                            }
+                            if let Some(obj) =
+                                cfg.get_mut("cluster").and_then(|c| c.as_object_mut())
+                            {
+                                obj.insert("enabled".to_string(), serde_json::json!(true));
+                                if let Ok(updated) = serde_json::to_string_pretty(&cfg) {
+                                    let _ = std::fs::write(&cfg_path, updated);
+                                }
                             }
                         }
                     }
-                }
-                // Write config.cluster.json enabled = true
-                let cluster_cfg_path = home_for_start.join("workspace/config/config.cluster.json");
-                if let Ok(content) = std::fs::read_to_string(&cluster_cfg_path) {
-                    if let Ok(mut cfg) = serde_json::from_str::<serde_json::Value>(&content) {
-                        if let Some(obj) = cfg.as_object_mut() {
-                            obj.insert("enabled".to_string(), serde_json::json!(true));
-                            if let Ok(updated) = serde_json::to_string_pretty(&cfg) {
-                                let _ = std::fs::write(&cluster_cfg_path, updated);
+                    // Write config.cluster.json enabled = true
+                    let cluster_cfg_path =
+                        home_for_start.join("workspace/config/config.cluster.json");
+                    if let Ok(content) = std::fs::read_to_string(&cluster_cfg_path) {
+                        if let Ok(mut cfg) = serde_json::from_str::<serde_json::Value>(&content) {
+                            if let Some(obj) = cfg.as_object_mut() {
+                                obj.insert("enabled".to_string(), serde_json::json!(true));
+                                if let Ok(updated) = serde_json::to_string_pretty(&cfg) {
+                                    let _ = std::fs::write(&cluster_cfg_path, updated);
+                                }
                             }
                         }
                     }
-                }
-                if let Err(e) = ca_start.start() {
-                    tracing::warn!("[Gateway] Tray: failed to start cluster: {}", e);
-                }
-            }));
+                    if let Err(e) = ca_start.start() {
+                        tracing::warn!("[Gateway] Tray: failed to start cluster: {}", e);
+                    }
+                }));
 
-            let home_for_stop = home.clone();
-            let ca_stop = ca.clone();
-            tray.set_on_cluster_stop(Box::new(move || {
-                if let Err(e) = ca_stop.stop() {
-                    tracing::warn!("[Gateway] Tray: failed to stop cluster: {}", e);
-                }
-                // Write config.cluster.json enabled = false
-                let cluster_cfg_path = home_for_stop.join("workspace/config/config.cluster.json");
-                if let Ok(content) = std::fs::read_to_string(&cluster_cfg_path) {
-                    if let Ok(mut cfg) = serde_json::from_str::<serde_json::Value>(&content) {
-                        if let Some(obj) = cfg.as_object_mut() {
-                            obj.insert("enabled".to_string(), serde_json::json!(false));
-                            if let Ok(updated) = serde_json::to_string_pretty(&cfg) {
-                                let _ = std::fs::write(&cluster_cfg_path, updated);
+                let home_for_stop = home.clone();
+                let ca_stop = ca.clone();
+                tray.set_on_cluster_stop(Box::new(move || {
+                    if let Err(e) = ca_stop.stop() {
+                        tracing::warn!("[Gateway] Tray: failed to stop cluster: {}", e);
+                    }
+                    // Write config.cluster.json enabled = false
+                    let cluster_cfg_path =
+                        home_for_stop.join("workspace/config/config.cluster.json");
+                    if let Ok(content) = std::fs::read_to_string(&cluster_cfg_path) {
+                        if let Ok(mut cfg) = serde_json::from_str::<serde_json::Value>(&content) {
+                            if let Some(obj) = cfg.as_object_mut() {
+                                obj.insert("enabled".to_string(), serde_json::json!(false));
+                                if let Ok(updated) = serde_json::to_string_pretty(&cfg) {
+                                    let _ = std::fs::write(&cluster_cfg_path, updated);
+                                }
                             }
                         }
                     }
-                }
-                // Write config.json cluster.enabled = false
-                let cfg_path = home_for_stop.join("config.json");
-                if let Ok(content) = std::fs::read_to_string(&cfg_path) {
-                    if let Ok(mut cfg) = serde_json::from_str::<serde_json::Value>(&content) {
-                        if let Some(obj) = cfg.get_mut("cluster").and_then(|c| c.as_object_mut()) {
-                            obj.insert("enabled".to_string(), serde_json::json!(false));
-                            if let Ok(updated) = serde_json::to_string_pretty(&cfg) {
-                                let _ = std::fs::write(&cfg_path, updated);
+                    // Write config.json cluster.enabled = false
+                    let cfg_path = home_for_stop.join("config.json");
+                    if let Ok(content) = std::fs::read_to_string(&cfg_path) {
+                        if let Ok(mut cfg) = serde_json::from_str::<serde_json::Value>(&content) {
+                            if let Some(obj) =
+                                cfg.get_mut("cluster").and_then(|c| c.as_object_mut())
+                            {
+                                obj.insert("enabled".to_string(), serde_json::json!(false));
+                                if let Ok(updated) = serde_json::to_string_pretty(&cfg) {
+                                    let _ = std::fs::write(&cfg_path, updated);
+                                }
                             }
                         }
                     }
-                }
-            }));
-        }
+                }));
+            }
         }
 
         let start_adapter = Arc::clone(&agent_adapter);
@@ -3357,7 +3689,10 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
     #[cfg(feature = "sandbox")]
     {
         if let Err(e) = crate::commands::sandbox::stop_for_shutdown(&home).await {
-            warn!("[Gateway] sandbox shutdown cleanup failed: {} (driver/service may remain)", e);
+            warn!(
+                "[Gateway] sandbox shutdown cleanup failed: {} (driver/service may remain)",
+                e
+            );
         }
     }
 
@@ -3449,10 +3784,7 @@ impl nemesis_workflow::nodes::AgentRunner for GatewayAgentRunner {
         }
 
         let session_key = format!("workflow:{}", agent_id);
-        let response = self
-            .agent_loop
-            .process_direct(prompt, &session_key)
-            .await?;
+        let response = self.agent_loop.process_direct(prompt, &session_key).await?;
 
         Ok(nemesis_workflow::nodes::AgentRunResult {
             response,
@@ -3460,4 +3792,3 @@ impl nemesis_workflow::nodes::AgentRunner for GatewayAgentRunner {
         })
     }
 }
-

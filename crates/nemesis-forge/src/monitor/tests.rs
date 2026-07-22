@@ -18,13 +18,27 @@ fn make_artifact(id: &str, usage: u64, status: ArtifactStatus) -> Artifact {
     }
 }
 
-fn make_trace(rounds: u32, duration_ms: i64, tools: &[&str], has_signals: bool) -> ConversationTrace {
+fn make_trace(
+    rounds: u32,
+    duration_ms: i64,
+    tools: &[&str],
+    has_signals: bool,
+) -> ConversationTrace {
     ConversationTrace {
         start_time: chrono::Local::now().to_rfc3339(),
         total_rounds: rounds,
         duration_ms,
-        tool_steps: tools.iter().map(|t| ToolStep { tool_name: t.to_string() }).collect(),
-        signals: if has_signals { vec!["retry".to_string()] } else { vec![] },
+        tool_steps: tools
+            .iter()
+            .map(|t| ToolStep {
+                tool_name: t.to_string(),
+            })
+            .collect(),
+        signals: if has_signals {
+            vec!["retry".to_string()]
+        } else {
+            vec![]
+        },
     }
 }
 
@@ -188,13 +202,19 @@ fn test_run_evaluation_cycle_respects_cooldown() {
 #[test]
 fn test_matches_tool_signature_exact() {
     let trace = make_trace(3, 100, &["tool_a", "tool_b", "tool_c"], false);
-    assert!(matches_tool_signature(&trace, &["tool_a".to_string(), "tool_b".to_string()]));
+    assert!(matches_tool_signature(
+        &trace,
+        &["tool_a".to_string(), "tool_b".to_string()]
+    ));
 }
 
 #[test]
 fn test_matches_tool_signature_subsequence() {
     let trace = make_trace(3, 100, &["tool_a", "tool_x", "tool_b"], false);
-    assert!(matches_tool_signature(&trace, &["tool_a".to_string(), "tool_b".to_string()]));
+    assert!(matches_tool_signature(
+        &trace,
+        &["tool_a".to_string(), "tool_b".to_string()]
+    ));
 }
 
 #[test]
@@ -472,16 +492,31 @@ fn test_matches_tool_signature_single_tool() {
 #[test]
 fn test_matches_tool_signature_long_chain() {
     let trace = make_trace(5, 100, &["a", "b", "c", "d", "e"], false);
-    assert!(matches_tool_signature(&trace, &["a".to_string(), "c".to_string(), "e".to_string()]));
-    assert!(!matches_tool_signature(&trace, &["a".to_string(), "e".to_string(), "c".to_string()]));
+    assert!(matches_tool_signature(
+        &trace,
+        &["a".to_string(), "c".to_string(), "e".to_string()]
+    ));
+    assert!(!matches_tool_signature(
+        &trace,
+        &["a".to_string(), "e".to_string(), "c".to_string()]
+    ));
 }
 
 #[test]
 fn test_matches_tool_signature_partial_match() {
     let trace = make_trace(3, 100, &["a", "b", "c"], false);
-    assert!(matches_tool_signature(&trace, &["a".to_string(), "b".to_string()]));
-    assert!(matches_tool_signature(&trace, &["b".to_string(), "c".to_string()]));
-    assert!(!matches_tool_signature(&trace, &["a".to_string(), "c".to_string(), "d".to_string()]));
+    assert!(matches_tool_signature(
+        &trace,
+        &["a".to_string(), "b".to_string()]
+    ));
+    assert!(matches_tool_signature(
+        &trace,
+        &["b".to_string(), "c".to_string()]
+    ));
+    assert!(!matches_tool_signature(
+        &trace,
+        &["a".to_string(), "c".to_string(), "d".to_string()]
+    ));
 }
 
 #[test]
@@ -554,7 +589,10 @@ fn test_evaluate_all_filters_draft_artifacts() {
     let monitor = DeploymentMonitor::new(ForgeConfig::default(), registry.clone());
     let results = monitor.evaluate_all();
     assert_eq!(results.len(), 1);
-    assert_eq!(results[0].artifact_id, registry.list(None, Some(ArtifactStatus::Active))[0].id);
+    assert_eq!(
+        results[0].artifact_id,
+        registry.list(None, Some(ArtifactStatus::Active))[0].id
+    );
 }
 
 #[test]

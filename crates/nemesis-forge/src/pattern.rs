@@ -263,7 +263,10 @@ pub fn detect_conversation_tool_chains(
         if exps.len() < 2 {
             continue;
         }
-        let chain: Vec<&str> = exps.iter().map(|e| e.experience.tool_name.as_str()).collect();
+        let chain: Vec<&str> = exps
+            .iter()
+            .map(|e| e.experience.tool_name.as_str())
+            .collect();
         let chain_str = chain.join("\u{2192}");
         let fp = pattern_fingerprint("tool_chain", &chain_str);
 
@@ -318,7 +321,9 @@ pub fn detect_conversation_tool_chains(
             p.success_rate = Some(success_rate);
             p.description = format!(
                 "Tool chain: {} (seen {} times, {:.0}% success)",
-                a.chain, a.count, success_rate * 100.0
+                a.chain,
+                a.count,
+                success_rate * 100.0
             );
             p
         })
@@ -351,7 +356,10 @@ pub fn detect_conversation_error_recovery(
             continue;
         }
 
-        let key = format!("{}:{}", prev.experience.tool_name, next.experience.tool_name);
+        let key = format!(
+            "{}:{}",
+            prev.experience.tool_name, next.experience.tool_name
+        );
         let fp = pattern_fingerprint("error_recovery", &key);
 
         let timestamp = prev.experience.timestamp.clone();
@@ -413,9 +421,11 @@ pub fn detect_conversation_efficiency_issues(
     }
 
     // Calculate global average duration
-    let global_avg_dur: f64 =
-        experiences.iter().map(|e| e.experience.duration_ms as f64).sum::<f64>()
-            / experiences.len() as f64;
+    let global_avg_dur: f64 = experiences
+        .iter()
+        .map(|e| e.experience.duration_ms as f64)
+        .sum::<f64>()
+        / experiences.len() as f64;
 
     if global_avg_dur == 0.0 {
         return Vec::new();
@@ -441,7 +451,10 @@ pub fn detect_conversation_efficiency_issues(
             continue;
         }
 
-        let chain: Vec<&str> = exps.iter().map(|e| e.experience.tool_name.as_str()).collect();
+        let chain: Vec<&str> = exps
+            .iter()
+            .map(|e| e.experience.tool_name.as_str())
+            .collect();
         if chain.len() > 3 {
             continue; // Only simple chains
         }
@@ -478,7 +491,8 @@ pub fn detect_conversation_efficiency_issues(
         .filter(|(_, a)| a.count >= min_freq)
         .map(|(fp, a)| {
             let actual_rounds = a.total_rounds / a.count as f64;
-            let eff_score = (1.0 - actual_rounds / (2.0 * global_avg_dur / global_avg_dur)).max(0.0);
+            let eff_score =
+                (1.0 - actual_rounds / (2.0 * global_avg_dur / global_avg_dur)).max(0.0);
             let mut p = ConversationPattern::new(ConversationPatternType::EfficiencyIssue, &fp);
             p.frequency = a.count;
             p.confidence = eff_score;
@@ -523,7 +537,10 @@ pub fn detect_conversation_success_templates(
             continue;
         }
 
-        let chain: Vec<&str> = exps.iter().map(|e| e.experience.tool_name.as_str()).collect();
+        let chain: Vec<&str> = exps
+            .iter()
+            .map(|e| e.experience.tool_name.as_str())
+            .collect();
         let chain_str = chain.join("\u{2192}");
         let fp = pattern_fingerprint("success", &chain_str);
         let total_dur: i64 = exps.iter().map(|e| e.experience.duration_ms as i64).sum();
@@ -574,7 +591,9 @@ pub fn detect_conversation_success_templates(
             p.success_rate = Some(success_rate);
             p.description = format!(
                 "Success template: {} ({:.1} avg rounds, {:.0}% success)",
-                a.chain, actual_rounds, success_rate * 100.0
+                a.chain,
+                actual_rounds,
+                success_rate * 100.0
             );
             p
         })
@@ -599,7 +618,11 @@ pub fn extract_conversation_patterns(
     patterns.extend(detect_conversation_success_templates(experiences, min_freq));
 
     // Sort by confidence descending
-    patterns.sort_by(|a, b| b.confidence.partial_cmp(&a.confidence).unwrap_or(std::cmp::Ordering::Equal));
+    patterns.sort_by(|a, b| {
+        b.confidence
+            .partial_cmp(&a.confidence)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
 
     patterns
 }
@@ -711,10 +734,7 @@ fn detect_efficiency_issues(
                 confidence: (ratio - 1.0).min(1.0),
                 description: format!(
                     "Slow operation: {} took {}ms (avg: {:.0}ms, {:.1}x slower)",
-                    e.experience.tool_name,
-                    e.experience.duration_ms,
-                    avg_duration,
-                    ratio
+                    e.experience.tool_name, e.experience.duration_ms, avg_duration, ratio
                 ),
                 tools: vec![e.experience.tool_name.clone()],
                 data: serde_json::json!({
@@ -750,18 +770,16 @@ fn detect_success_templates(experiences: &[CollectedExperience]) -> Vec<Pattern>
     tool_success
         .into_iter()
         .filter(|(_, (successes, total))| *total >= 3 && *successes == *total)
-        .map(|(tool, (successes, total))| {
-            Pattern {
-                pattern_type: PatternType::SuccessTemplate,
-                frequency: successes,
-                confidence: 1.0,
-                description: format!(
-                    "Perfect success: {} succeeded {}/{} times",
-                    tool, successes, total
-                ),
-                tools: vec![tool],
-                data: serde_json::json!({"success_rate": 1.0}),
-            }
+        .map(|(tool, (successes, total))| Pattern {
+            pattern_type: PatternType::SuccessTemplate,
+            frequency: successes,
+            confidence: 1.0,
+            description: format!(
+                "Perfect success: {} succeeded {}/{} times",
+                tool, successes, total
+            ),
+            tools: vec![tool],
+            data: serde_json::json!({"success_rate": 1.0}),
         })
         .collect()
 }

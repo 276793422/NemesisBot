@@ -105,7 +105,11 @@ fn test_start_stopping_from_stopped_fails() {
 
     let result = state.start_stopping();
     assert!(result.is_err());
-    assert!(result.unwrap_err().contains("cannot stop from state stopped"));
+    assert!(
+        result
+            .unwrap_err()
+            .contains("cannot stop from state stopped")
+    );
 }
 
 #[test]
@@ -115,7 +119,11 @@ fn test_start_stopping_from_created_fails() {
 
     let result = state.start_stopping();
     assert!(result.is_err());
-    assert!(result.unwrap_err().contains("cannot stop from state created"));
+    assert!(
+        result
+            .unwrap_err()
+            .contains("cannot stop from state created")
+    );
 }
 
 #[test]
@@ -138,7 +146,11 @@ fn test_start_initializing_from_non_created_fails() {
     // Second call should fail
     let result = state.start_initializing();
     assert!(result.is_err());
-    assert!(result.unwrap_err().contains("expected state created but was initializing"));
+    assert!(
+        result
+            .unwrap_err()
+            .contains("expected state created but was initializing")
+    );
 }
 
 #[test]
@@ -150,7 +162,11 @@ fn test_start_initializing_from_running_fails() {
 
     let result = state.start_initializing();
     assert!(result.is_err());
-    assert!(result.unwrap_err().contains("expected state created but was running"));
+    assert!(
+        result
+            .unwrap_err()
+            .contains("expected state created but was running")
+    );
 }
 
 #[test]
@@ -269,7 +285,11 @@ fn test_start_running_from_created_fails() {
     let state = BotState::new();
     let result = state.start_running();
     assert!(result.is_err());
-    assert!(result.unwrap_err().contains("expected state initializing but was created"));
+    assert!(
+        result
+            .unwrap_err()
+            .contains("expected state initializing but was created")
+    );
     // State should remain unchanged
     assert_eq!(state.current(), State::Created);
 }
@@ -281,7 +301,11 @@ fn test_start_running_from_running_fails() {
     state.start_running().unwrap();
     let result = state.start_running();
     assert!(result.is_err());
-    assert!(result.unwrap_err().contains("expected state initializing but was running"));
+    assert!(
+        result
+            .unwrap_err()
+            .contains("expected state initializing but was running")
+    );
     // State should remain unchanged
     assert_eq!(state.current(), State::Running);
 }
@@ -292,7 +316,11 @@ fn test_start_running_from_stopped_fails() {
     state.set_stopped();
     let result = state.start_running();
     assert!(result.is_err());
-    assert!(result.unwrap_err().contains("expected state initializing but was stopped"));
+    assert!(
+        result
+            .unwrap_err()
+            .contains("expected state initializing but was stopped")
+    );
 }
 
 #[test]
@@ -301,7 +329,11 @@ fn test_start_running_from_error_fails() {
     state.set_error("err");
     let result = state.start_running();
     assert!(result.is_err());
-    assert!(result.unwrap_err().contains("expected state initializing but was error"));
+    assert!(
+        result
+            .unwrap_err()
+            .contains("expected state initializing but was error")
+    );
 }
 
 #[test]
@@ -310,7 +342,11 @@ fn test_start_initializing_from_stopped_fails() {
     state.set_stopped();
     let result = state.start_initializing();
     assert!(result.is_err());
-    assert!(result.unwrap_err().contains("expected state created but was stopped"));
+    assert!(
+        result
+            .unwrap_err()
+            .contains("expected state created but was stopped")
+    );
 }
 
 #[test]
@@ -319,7 +355,11 @@ fn test_start_initializing_from_error_fails() {
     state.set_error("err");
     let result = state.start_initializing();
     assert!(result.is_err());
-    assert!(result.unwrap_err().contains("expected state created but was error"));
+    assert!(
+        result
+            .unwrap_err()
+            .contains("expected state created but was error")
+    );
 }
 
 #[test]

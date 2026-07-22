@@ -86,10 +86,7 @@ async fn test_close_bus() {
 
     // Receiver should not get the message (timeout)
     let mut rx = bus.subscribe_inbound();
-    let result = tokio::time::timeout(
-        std::time::Duration::from_millis(100),
-        rx.recv(),
-    ).await;
+    let result = tokio::time::timeout(std::time::Duration::from_millis(100), rx.recv()).await;
     assert!(result.is_err() || result.unwrap().is_err());
 }
 
@@ -165,17 +162,19 @@ async fn test_inbound_sender() {
     let mut rx = bus.subscribe_inbound();
     let sender = bus.inbound_sender();
 
-    sender.send(InboundMessage {
-        channel: "test".to_string(),
-        sender_id: "u1".to_string(),
-        chat_id: "c1".to_string(),
-        content: "via sender".to_string(),
-        media: vec![],
-        session_key: "t:c".to_string(),
-        correlation_id: String::new(),
-        metadata: std::collections::HashMap::new(),
-        voice_playback: None,
-    }).unwrap();
+    sender
+        .send(InboundMessage {
+            channel: "test".to_string(),
+            sender_id: "u1".to_string(),
+            chat_id: "c1".to_string(),
+            content: "via sender".to_string(),
+            media: vec![],
+            session_key: "t:c".to_string(),
+            correlation_id: String::new(),
+            metadata: std::collections::HashMap::new(),
+            voice_playback: None,
+        })
+        .unwrap();
 
     let msg = rx.recv().await.unwrap();
     assert_eq!(msg.content, "via sender");
@@ -187,13 +186,15 @@ async fn test_outbound_sender() {
     let mut rx = bus.subscribe_outbound();
     let sender = bus.outbound_sender();
 
-    sender.send(OutboundMessage {
-        channel: "test".to_string(),
-        chat_id: "c1".to_string(),
-        content: "via outbound sender".to_string(),
-        message_type: String::new(),
-        meta: Default::default(),
-    }).unwrap();
+    sender
+        .send(OutboundMessage {
+            channel: "test".to_string(),
+            chat_id: "c1".to_string(),
+            content: "via outbound sender".to_string(),
+            message_type: String::new(),
+            meta: Default::default(),
+        })
+        .unwrap();
 
     let msg = rx.recv().await.unwrap();
     assert_eq!(msg.content, "via outbound sender");
@@ -217,10 +218,7 @@ async fn test_late_subscriber_misses_messages() {
 
     // Subscribe after publishing - late subscriber should not get the message
     let mut rx = bus.subscribe_inbound();
-    let result = tokio::time::timeout(
-        std::time::Duration::from_millis(50),
-        rx.recv(),
-    ).await;
+    let result = tokio::time::timeout(std::time::Duration::from_millis(50), rx.recv()).await;
     assert!(result.is_err() || result.unwrap().is_err());
 }
 
@@ -358,7 +356,11 @@ fn test_bus_publish_throughput() {
         }
         let elapsed = start.elapsed();
         // Should publish 1k messages in under 1 second
-        assert!(elapsed < std::time::Duration::from_secs(1), "Bus publish too slow: {:?}", elapsed);
+        assert!(
+            elapsed < std::time::Duration::from_secs(1),
+            "Bus publish too slow: {:?}",
+            elapsed
+        );
     });
 }
 
@@ -582,16 +584,9 @@ async fn test_close_prevents_both_inbound_and_outbound() {
     });
 
     // Neither receiver should get anything.
-    let in_result = tokio::time::timeout(
-        std::time::Duration::from_millis(50),
-        in_rx.recv(),
-    )
-    .await;
-    let out_result = tokio::time::timeout(
-        std::time::Duration::from_millis(50),
-        out_rx.recv(),
-    )
-    .await;
+    let in_result = tokio::time::timeout(std::time::Duration::from_millis(50), in_rx.recv()).await;
+    let out_result =
+        tokio::time::timeout(std::time::Duration::from_millis(50), out_rx.recv()).await;
     assert!(in_result.is_err() || in_result.unwrap().is_err());
     assert!(out_result.is_err() || out_result.unwrap().is_err());
 
@@ -610,7 +605,10 @@ fn test_is_closed_reflects_state_transitions() {
 
     // Calling close again should not change anything.
     bus.close();
-    assert!(bus.is_closed(), "bus should still be closed after second close()");
+    assert!(
+        bus.is_closed(),
+        "bus should still be closed after second close()"
+    );
 }
 
 // =========================================================================
@@ -693,13 +691,10 @@ async fn test_publish_inbound_some_receivers_dropped() {
     });
 
     // rx1 should still receive the message.
-    let msg = tokio::time::timeout(
-        std::time::Duration::from_millis(100),
-        rx1.recv(),
-    )
-    .await
-    .expect("timeout waiting for message on surviving receiver")
-    .expect("recv error on surviving receiver");
+    let msg = tokio::time::timeout(std::time::Duration::from_millis(100), rx1.recv())
+        .await
+        .expect("timeout waiting for message on surviving receiver")
+        .expect("recv error on surviving receiver");
     assert_eq!(msg.content, "partial");
     assert_eq!(bus.dropped_inbound(), 0);
 }
@@ -730,18 +725,11 @@ async fn test_publish_outbound_after_close_with_subscriber() {
     });
 
     // The pre-close message should be receivable.
-    let msg = rx
-        .recv()
-        .await
-        .expect("should receive pre-close message");
+    let msg = rx.recv().await.expect("should receive pre-close message");
     assert_eq!(msg.content, "before close");
 
     // The post-close message was never sent to the channel.
-    let result = tokio::time::timeout(
-        std::time::Duration::from_millis(50),
-        rx.recv(),
-    )
-    .await;
+    let result = tokio::time::timeout(std::time::Duration::from_millis(50), rx.recv()).await;
     assert!(
         result.is_err() || result.unwrap().is_err(),
         "should not receive post-close message"
@@ -825,7 +813,10 @@ async fn test_inbound_sender_works_even_after_bus_closed() {
 
     // broadcast::Sender::send should succeed because the underlying
     // channel is still open (close only sets the AtomicBool).
-    assert!(result.is_ok(), "direct send should succeed even after bus.close()");
+    assert!(
+        result.is_ok(),
+        "direct send should succeed even after bus.close()"
+    );
 
     let msg = rx.recv().await.expect("receiver should get message");
     assert_eq!(msg.content, "direct after close");
@@ -978,9 +969,16 @@ async fn test_publish_no_receivers_then_subscribe_delivers_new_messages() {
         voice_playback: None,
     });
 
-    let msg = rx.recv().await.expect("should receive message after subscribing");
+    let msg = rx
+        .recv()
+        .await
+        .expect("should receive message after subscribing");
     assert_eq!(msg.content, "delivered");
-    assert_eq!(bus.dropped_inbound(), 1, "only the first message should be dropped");
+    assert_eq!(
+        bus.dropped_inbound(),
+        1,
+        "only the first message should be dropped"
+    );
 }
 
 #[tokio::test]
@@ -1005,7 +1003,10 @@ async fn test_publish_outbound_no_receivers_then_subscribe_delivers_new_messages
         meta: Default::default(),
     });
 
-    let msg = rx.recv().await.expect("should receive message after subscribing");
+    let msg = rx
+        .recv()
+        .await
+        .expect("should receive message after subscribing");
     assert_eq!(msg.content, "delivered");
     assert_eq!(bus.dropped_outbound(), 1);
 }
@@ -1058,12 +1059,7 @@ async fn test_concurrent_multiple_publishers_multiple_subscribers_inbound() {
         sub_handles.push(tokio::spawn(async move {
             let mut received = Vec::new();
             for _ in 0..expected {
-                match tokio::time::timeout(
-                    std::time::Duration::from_secs(5),
-                    rx.recv(),
-                )
-                .await
-                {
+                match tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv()).await {
                     Ok(Ok(msg)) => received.push(msg.content),
                     _ => break,
                 }
@@ -1319,7 +1315,10 @@ async fn test_with_capacity_overflow_drops_oldest() {
     // may have been overwritten. recv() should return messages but
     // may start from a later one or return a RecvError::Lagged.
     let result = rx.recv().await;
-    assert!(result.is_ok() || result.is_err(), "recv should complete without panic");
+    assert!(
+        result.is_ok() || result.is_err(),
+        "recv should complete without panic"
+    );
 }
 
 // =========================================================================
@@ -1448,13 +1447,10 @@ async fn test_broadcast_send_failure_with_active_but_slow_receiver() {
     // The receiver should be able to receive but may have missed messages
     // This exercises the send error path in the broadcast channel
     let _msg_count = loop {
-        match tokio::time::timeout(
-            std::time::Duration::from_millis(50),
-            rx.recv()
-        ).await {
+        match tokio::time::timeout(std::time::Duration::from_millis(50), rx.recv()).await {
             Ok(Ok(_)) => continue,
             Ok(Err(_)) => break, // Lagged error
-            Err(_) => break, // Timeout
+            Err(_) => break,     // Timeout
         }
     };
 
@@ -1565,7 +1561,10 @@ async fn test_publish_inbound_race_condition_receiver_drop_during_send() {
     let _ = publisher_task.await;
 
     // The test completed without panic, which means the error paths were exercised
-    assert!(*publish_done.lock().await, "publisher should have completed");
+    assert!(
+        *publish_done.lock().await,
+        "publisher should have completed"
+    );
 }
 
 #[tokio::test]
@@ -1609,7 +1608,10 @@ async fn test_publish_outbound_race_condition_receiver_drop_during_send() {
     let _ = receiver_task.await;
     let _ = publisher_task.await;
 
-    assert!(*publish_done.lock().await, "publisher should have completed");
+    assert!(
+        *publish_done.lock().await,
+        "publisher should have completed"
+    );
 }
 
 #[tokio::test]
@@ -1663,7 +1665,11 @@ async fn test_publish_inbound_drops_message_when_all_receivers_dropped_concurren
 
     // Verify some messages were dropped due to no receivers
     let dropped = bus.dropped_inbound();
-    assert!(dropped > 0, "Expected some messages to be dropped due to receiver contention, got {}", dropped);
+    assert!(
+        dropped > 0,
+        "Expected some messages to be dropped due to receiver contention, got {}",
+        dropped
+    );
 }
 
 #[tokio::test]
@@ -1706,5 +1712,9 @@ async fn test_publish_outbound_drops_message_when_all_receivers_dropped_concurre
     publisher_handle.await.unwrap();
 
     let dropped = bus.dropped_outbound();
-    assert!(dropped > 0, "Expected some outbound messages to be dropped, got {}", dropped);
+    assert!(
+        dropped > 0,
+        "Expected some outbound messages to be dropped, got {}",
+        dropped
+    );
 }

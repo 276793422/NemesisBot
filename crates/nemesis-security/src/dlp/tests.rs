@@ -38,22 +38,34 @@ fn test_disabled() {
 #[test]
 fn test_add_remove_rule() {
     let engine = DlpEngine::new(true, "block");
-    engine.add_rule(DlpRule {
-        name: "custom_secret".to_string(),
-        category: "custom".to_string(),
-        pattern: r"CUSTOM_SECRET_\d+".to_string(),
-        enabled: true,
-        action: "block".to_string(),
-        confidence: DlpConfidence::Medium,
-    }).unwrap();
+    engine
+        .add_rule(DlpRule {
+            name: "custom_secret".to_string(),
+            category: "custom".to_string(),
+            pattern: r"CUSTOM_SECRET_\d+".to_string(),
+            enabled: true,
+            action: "block".to_string(),
+            confidence: DlpConfidence::Medium,
+        })
+        .unwrap();
 
     let result = engine.scan_text("Found CUSTOM_SECRET_12345 in text");
     assert!(result.has_matches);
-    assert!(result.matches.iter().any(|m| m.rule_name == "custom_secret"));
+    assert!(
+        result
+            .matches
+            .iter()
+            .any(|m| m.rule_name == "custom_secret")
+    );
 
     assert!(engine.remove_rule("custom_secret"));
     let result = engine.scan_text("Found CUSTOM_SECRET_12345 in text");
-    assert!(!result.matches.iter().any(|m| m.rule_name == "custom_secret"));
+    assert!(
+        !result
+            .matches
+            .iter()
+            .any(|m| m.rule_name == "custom_secret")
+    );
 }
 
 #[test]
@@ -151,17 +163,24 @@ fn test_remove_nonexistent_rule() {
 #[test]
 fn test_disabled_rule_not_matched() {
     let engine = DlpEngine::new(true, "block");
-    engine.add_rule(DlpRule {
-        name: "disabled_test".to_string(),
-        category: "custom".to_string(),
-        pattern: r"DISABLED_PATTERN_\d+".to_string(),
-        enabled: false,
-        action: "block".to_string(),
-        confidence: DlpConfidence::Medium,
-    }).unwrap();
+    engine
+        .add_rule(DlpRule {
+            name: "disabled_test".to_string(),
+            category: "custom".to_string(),
+            pattern: r"DISABLED_PATTERN_\d+".to_string(),
+            enabled: false,
+            action: "block".to_string(),
+            confidence: DlpConfidence::Medium,
+        })
+        .unwrap();
 
     let result = engine.scan_text("Found DISABLED_PATTERN_12345");
-    assert!(!result.matches.iter().any(|m| m.rule_name == "disabled_test"));
+    assert!(
+        !result
+            .matches
+            .iter()
+            .any(|m| m.rule_name == "disabled_test")
+    );
 }
 
 #[test]
@@ -225,7 +244,8 @@ fn test_pkcs8_encrypted_key_detected() {
 #[test]
 fn test_jwt_token_detected() {
     let engine = DlpEngine::new(true, "block");
-    let result = engine.scan_text("token=eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.abc123def456");
+    let result =
+        engine.scan_text("token=eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.abc123def456");
     assert!(result.has_matches);
 }
 
@@ -274,7 +294,8 @@ fn test_password_assignment_detected() {
 #[test]
 fn test_authorization_header_detected() {
     let engine = DlpEngine::new(true, "block");
-    let result = engine.scan_text("Authorization: Bearer eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0In0.sig");
+    let result =
+        engine.scan_text("Authorization: Bearer eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0In0.sig");
     assert!(result.has_matches);
 }
 
@@ -311,10 +332,17 @@ fn test_dlp_match_severity_mapping() {
 #[test]
 fn test_dlp_credential_severity() {
     let engine = DlpEngine::new(true, "block");
-    let result = engine.scan_text("aws_secret_access_key = ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789012");
+    let result = engine.scan_text(
+        "aws_secret_access_key = ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789012",
+    );
     if result.has_matches {
         // Credential matches should be Critical
-        assert!(result.matches.iter().any(|m| m.severity == DlpSeverity::Critical));
+        assert!(
+            result
+                .matches
+                .iter()
+                .any(|m| m.severity == DlpSeverity::Critical)
+        );
     }
 }
 
@@ -372,7 +400,12 @@ fn test_scan_tool_output_reduces_severity() {
     let result = engine.scan_tool_output("exec", "Card: 4111111111111111");
     if result.has_matches {
         // Critical should be downgraded to High in tool output
-        assert!(result.matches.iter().all(|m| m.severity != DlpSeverity::Critical));
+        assert!(
+            result
+                .matches
+                .iter()
+                .all(|m| m.severity != DlpSeverity::Critical)
+        );
     }
 }
 
@@ -413,7 +446,8 @@ fn test_dlp_max_content_length() {
     };
     let engine = DlpEngine::with_config(config);
     // Content longer than max_content_length should be truncated
-    let long_text = format!("SSN: 123-45-6789 and then more padding text here that goes beyond limit");
+    let long_text =
+        format!("SSN: 123-45-6789 and then more padding text here that goes beyond limit");
     let result = engine.scan_text(&long_text);
     // The SSN pattern is in the first 20 chars so should still be detected
     assert!(result.has_matches);
@@ -467,26 +501,37 @@ fn test_enabled_rule_count_with_filter() {
 #[test]
 fn test_add_duplicate_dynamic_rule() {
     let engine = DlpEngine::new(true, "block");
-    engine.add_rule(DlpRule {
-        name: "dup_rule".to_string(),
-        category: "custom".to_string(),
-        pattern: r"PATTERN_\d+".to_string(),
-        enabled: true,
-        action: "block".to_string(),
-        confidence: DlpConfidence::Medium,
-    }).unwrap();
+    engine
+        .add_rule(DlpRule {
+            name: "dup_rule".to_string(),
+            category: "custom".to_string(),
+            pattern: r"PATTERN_\d+".to_string(),
+            enabled: true,
+            action: "block".to_string(),
+            confidence: DlpConfidence::Medium,
+        })
+        .unwrap();
     // Adding again should succeed (appended, not replaced)
-    engine.add_rule(DlpRule {
-        name: "dup_rule".to_string(),
-        category: "custom".to_string(),
-        pattern: r"OTHER_\d+".to_string(),
-        enabled: true,
-        action: "block".to_string(),
-        confidence: DlpConfidence::Medium,
-    }).unwrap();
+    engine
+        .add_rule(DlpRule {
+            name: "dup_rule".to_string(),
+            category: "custom".to_string(),
+            pattern: r"OTHER_\d+".to_string(),
+            enabled: true,
+            action: "block".to_string(),
+            confidence: DlpConfidence::Medium,
+        })
+        .unwrap();
     // Both patterns should match
     let result = engine.scan_text("PATTERN_123 and OTHER_456");
-    assert!(result.matches.iter().filter(|m| m.rule_name == "dup_rule").count() >= 2);
+    assert!(
+        result
+            .matches
+            .iter()
+            .filter(|m| m.rule_name == "dup_rule")
+            .count()
+            >= 2
+    );
 }
 
 #[test]
@@ -541,7 +586,11 @@ fn test_high_confidence_private_key_blocks() {
     let engine = DlpEngine::new(true, "block");
     let r = engine.scan_text("-----BEGIN RSA PRIVATE KEY-----\nMIIEpAIBAAKCAQEA");
     assert!(r.should_block);
-    assert!(r.matches.iter().any(|m| m.confidence == DlpConfidence::High));
+    assert!(
+        r.matches
+            .iter()
+            .any(|m| m.confidence == DlpConfidence::High)
+    );
 }
 
 #[test]
@@ -549,7 +598,11 @@ fn test_medium_confidence_ssn_blocks() {
     let engine = DlpEngine::new(true, "block");
     let r = engine.scan_text("SSN: 123-45-6789");
     assert!(r.should_block);
-    assert!(r.matches.iter().any(|m| m.confidence == DlpConfidence::Medium));
+    assert!(
+        r.matches
+            .iter()
+            .any(|m| m.confidence == DlpConfidence::Medium)
+    );
 }
 
 // === L2: checksum validation (demote fakes to Low) ===
@@ -561,7 +614,11 @@ fn test_credit_card_luhn_demotes_fake_card() {
     let r = engine.scan_text("Card: 4111111111111112");
     let visa = r.matches.iter().find(|m| m.rule_name == "visa");
     assert!(visa.is_some(), "visa pattern should match");
-    assert_eq!(visa.unwrap().confidence, DlpConfidence::Low, "Luhn-invalid → demoted");
+    assert_eq!(
+        visa.unwrap().confidence,
+        DlpConfidence::Low,
+        "Luhn-invalid → demoted"
+    );
     assert!(!r.should_block);
 }
 
@@ -610,7 +667,10 @@ fn test_low_confidence_action_config_block_makes_low_block() {
         low_confidence_action: "block".to_string(),
     });
     let r = engine.scan_text("京公网安备11010802047360号");
-    assert!(r.should_block, "low_confidence_action=block must block Low matches");
+    assert!(
+        r.should_block,
+        "low_confidence_action=block must block Low matches"
+    );
 }
 
 #[test]
@@ -629,5 +689,8 @@ fn test_scan_text_max_length_multibyte_no_panic() {
     };
     let engine = DlpEngine::with_config(config);
     let result = engine.scan_text("京京京AKIAIOSFODNN7EXAMPLE"); // must not panic
-    assert!(!result.has_matches, "content truncated before the key → no match");
+    assert!(
+        !result.has_matches,
+        "content truncated before the key → no match"
+    );
 }

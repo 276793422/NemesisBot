@@ -24,10 +24,7 @@ fn make_mock_client() -> McpClient {
 
     // notifications/initialized — we don't care about the response, so
     // add a generic one that the mock can match.
-    mock.add_success(
-        "notifications/initialized",
-        serde_json::json!({}),
-    );
+    mock.add_success("notifications/initialized", serde_json::json!({}));
 
     McpClient::new(Box::new(mock))
 }
@@ -81,7 +78,10 @@ fn id_generation_monotonic() {
     }
     // Ids must be strictly increasing.
     for window in ids.windows(2) {
-        assert!(window[0] < window[1], "ids must be monotonically increasing");
+        assert!(
+            window[0] < window[1],
+            "ids must be monotonically increasing"
+        );
     }
 }
 
@@ -432,7 +432,10 @@ async fn call_tool_error_response() {
         .unwrap();
 
     assert!(result.is_error);
-    assert_eq!(result.content[0].text.as_deref(), Some("Error: tool not found"));
+    assert_eq!(
+        result.content[0].text.as_deref(),
+        Some("Error: tool not found")
+    );
 }
 
 #[tokio::test]
@@ -447,10 +450,7 @@ async fn list_tools_empty() {
         }),
     );
     mock.add_success("notifications/initialized", serde_json::json!({}));
-    mock.add_success(
-        "tools/list",
-        serde_json::json!({ "tools": [] }),
-    );
+    mock.add_success("tools/list", serde_json::json!({ "tools": [] }));
 
     let mut client = McpClient::new(Box::new(mock));
     client.initialize().await.unwrap();
@@ -471,10 +471,7 @@ async fn list_resources_empty() {
         }),
     );
     mock.add_success("notifications/initialized", serde_json::json!({}));
-    mock.add_success(
-        "resources/list",
-        serde_json::json!({ "resources": [] }),
-    );
+    mock.add_success("resources/list", serde_json::json!({ "resources": [] }));
 
     let mut client = McpClient::new(Box::new(mock));
     client.initialize().await.unwrap();
@@ -495,10 +492,7 @@ async fn list_prompts_empty() {
         }),
     );
     mock.add_success("notifications/initialized", serde_json::json!({}));
-    mock.add_success(
-        "prompts/list",
-        serde_json::json!({ "prompts": [] }),
-    );
+    mock.add_success("prompts/list", serde_json::json!({ "prompts": [] }));
 
     let mut client = McpClient::new(Box::new(mock));
     client.initialize().await.unwrap();
@@ -603,7 +597,9 @@ fn default_client_is_not_connected() {
 
 #[test]
 fn from_config_with_valid_command() {
-    let config = ServerConfig::new("my-server", "node").arg("index.js").timeout(60);
+    let config = ServerConfig::new("my-server", "node")
+        .arg("index.js")
+        .timeout(60);
     let result = McpClient::from_config(&config);
     assert!(result.is_ok());
 }
@@ -626,10 +622,12 @@ async fn send_request_when_closed_fails() {
 #[test]
 fn build_request_ids_increment() {
     let client = McpClient::default();
-    let ids: Vec<u64> = (0..5).map(|_| {
-        let req = client.build_request("test", None);
-        req.id.unwrap().as_u64().unwrap()
-    }).collect();
+    let ids: Vec<u64> = (0..5)
+        .map(|_| {
+            let req = client.build_request("test", None);
+            req.id.unwrap().as_u64().unwrap()
+        })
+        .collect();
     for w in ids.windows(2) {
         assert!(w[0] < w[1]);
     }
@@ -722,7 +720,10 @@ async fn call_tool_with_empty_result() {
 
     let mut client = McpClient::new(Box::new(mock));
     client.initialize().await.unwrap();
-    let result = client.call_tool("noop", serde_json::json!({})).await.unwrap();
+    let result = client
+        .call_tool("noop", serde_json::json!({}))
+        .await
+        .unwrap();
     assert!(result.content.is_empty());
     assert!(!result.is_error);
 }

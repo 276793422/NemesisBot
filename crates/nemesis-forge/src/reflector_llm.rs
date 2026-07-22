@@ -24,14 +24,14 @@ pub trait LLMCaller: Send + Sync {
 }
 
 /// Build an LLM prompt from reflection statistics for semantic analysis.
-pub fn build_analysis_prompt(
-    stats: &ExperienceStats,
-    total_tools: usize,
-) -> String {
+pub fn build_analysis_prompt(stats: &ExperienceStats, total_tools: usize) -> String {
     let mut sb = String::new();
     sb.push_str("Analyze the following tool usage data from an AI agent system:\n\n");
 
-    sb.push_str(&format!("- Total tool invocations: {}\n", stats.total_count));
+    sb.push_str(&format!(
+        "- Total tool invocations: {}\n",
+        stats.total_count
+    ));
     sb.push_str(&format!("- Unique patterns: {}\n", total_tools));
     sb.push_str(&format!(
         "- Average success rate: {:.1}%\n\n",
@@ -80,10 +80,7 @@ pub fn build_full_analysis_prompt(
         "- Total tool invocations: {}\n",
         stats.total_records
     ));
-    sb.push_str(&format!(
-        "- Unique patterns: {}\n",
-        stats.unique_patterns
-    ));
+    sb.push_str(&format!("- Unique patterns: {}\n", stats.unique_patterns));
     sb.push_str(&format!(
         "- Average success rate: {:.1}%\n\n",
         stats.avg_success_rate * 100.0
@@ -103,7 +100,10 @@ pub fn build_full_analysis_prompt(
         }
         sb.push_str(&format!(
             "- {}: {} uses, {:.0}% success, avg {}ms\n",
-            p.tool_name, p.count, p.success_rate * 100.0, p.avg_duration_ms
+            p.tool_name,
+            p.count,
+            p.success_rate * 100.0,
+            p.avg_duration_ms
         ));
     }
 
@@ -113,7 +113,9 @@ pub fn build_full_analysis_prompt(
         for p in &stats.low_success {
             sb.push_str(&format!(
                 "- {}: {} uses, {:.0}% success\n",
-                p.tool_name, p.count, p.success_rate * 100.0
+                p.tool_name,
+                p.count,
+                p.success_rate * 100.0
             ));
         }
     }
@@ -145,7 +147,10 @@ pub fn build_full_analysis_prompt(
             for p in &ts.tool_chain_patterns {
                 sb.push_str(&format!(
                     "- {}: {} uses, {:.1} avg rounds, {:.0}% success\n",
-                    p.chain, p.count, p.avg_rounds, p.success_rate * 100.0
+                    p.chain,
+                    p.count,
+                    p.avg_rounds,
+                    p.success_rate * 100.0
                 ));
             }
         }
@@ -155,7 +160,9 @@ pub fn build_full_analysis_prompt(
             for p in &ts.retry_patterns {
                 sb.push_str(&format!(
                     "- {}: {} calls, {:.0}% success rate\n",
-                    p.tool_name, p.retry_count, p.success_rate * 100.0
+                    p.tool_name,
+                    p.retry_count,
+                    p.success_rate * 100.0
                 ));
             }
         }
@@ -172,10 +179,7 @@ pub fn build_full_analysis_prompt(
     if let Some(cycle) = cycle {
         sb.push_str("\n## Closed-Loop Learning State (Phase 6)\n");
         sb.push_str(&format!("- Patterns detected: {}\n", cycle.patterns_found));
-        sb.push_str(&format!(
-            "- Actions taken: {}\n",
-            cycle.actions_taken
-        ));
+        sb.push_str(&format!("- Actions taken: {}\n", cycle.actions_taken));
     }
 
     sb.push_str("\nPlease provide:\n");

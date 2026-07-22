@@ -11,8 +11,8 @@
 //! the response. For full agent capabilities, use the WebSocket channel.
 
 use crate::api_handlers::AppState;
-use axum::response::sse::{Event as SseEvent, KeepAlive, Sse};
 use axum::Json;
+use axum::response::sse::{Event as SseEvent, KeepAlive, Sse};
 use futures::stream::Stream;
 use nemesis_providers::types::{ChatOptions, Message};
 use std::convert::Infallible;

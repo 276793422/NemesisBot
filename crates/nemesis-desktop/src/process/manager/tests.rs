@@ -197,8 +197,14 @@ fn test_multiple_children() {
     assert_eq!(mgr.active_count(), 2);
 
     // Find by type
-    assert_eq!(mgr.get_child_by_type("dashboard"), Some("child-0".to_string()));
-    assert_eq!(mgr.get_child_by_type("approval"), Some("child-1".to_string()));
+    assert_eq!(
+        mgr.get_child_by_type("dashboard"),
+        Some("child-0".to_string())
+    );
+    assert_eq!(
+        mgr.get_child_by_type("approval"),
+        Some("child-1".to_string())
+    );
 
     // Terminate one
     mgr.terminate_child("child-0").unwrap();
@@ -243,7 +249,9 @@ async fn test_call_child_existing_child() {
     }
 
     // Child exists but has no WS connection, so call_child should fail
-    let result = mgr.call_child("child-0", "test.method", serde_json::json!({})).await;
+    let result = mgr
+        .call_child("child-0", "test.method", serde_json::json!({}))
+        .await;
     assert!(result.is_err());
 }
 
@@ -402,10 +410,13 @@ fn test_spawn_child_approval_temporary() {
     let mgr = ProcessManager::new();
     // Approval type would result in a result receiver if spawn succeeds
     // Since spawn will fail (handshake), test that it handles the failure
-    let result = mgr.spawn_child("approval", &serde_json::json!({
-        "request_id": "r1",
-        "operation": "test"
-    }));
+    let result = mgr.spawn_child(
+        "approval",
+        &serde_json::json!({
+            "request_id": "r1",
+            "operation": "test"
+        }),
+    );
     let _ = result;
 }
 
@@ -439,9 +450,8 @@ fn test_submit_result_with_actual_channel_receive() {
 
     // Verify the data is received
     let rt = tokio::runtime::Runtime::new().unwrap();
-    let received = rt.block_on(async {
-        tokio::time::timeout(std::time::Duration::from_secs(1), rx).await
-    });
+    let received =
+        rt.block_on(async { tokio::time::timeout(std::time::Duration::from_secs(1), rx).await });
     assert!(received.is_ok());
     let response = received.unwrap().unwrap();
     assert_eq!(response["approved"], true);
@@ -526,7 +536,8 @@ fn test_active_count_after_multiple_operations() {
     {
         let mut state = mgr.state.lock();
         for i in 0..5 {
-            let child = ChildProcess::new(format!("child-{}", i), 100 + i as u32, "test".to_string());
+            let child =
+                ChildProcess::new(format!("child-{}", i), 100 + i as u32, "test".to_string());
             state.children.insert(format!("child-{}", i), child);
         }
     }
@@ -570,7 +581,10 @@ fn test_get_child_by_type_no_match() {
     assert!(mgr.get_child_by_type("approval").is_none());
     assert!(mgr.get_child_by_type("headless").is_none());
     // Search for type that exists
-    assert_eq!(mgr.get_child_by_type("dashboard"), Some("child-0".to_string()));
+    assert_eq!(
+        mgr.get_child_by_type("dashboard"),
+        Some("child-0".to_string())
+    );
 }
 
 // ============================================================
@@ -710,7 +724,9 @@ async fn test_call_child_with_ws_server_started() {
     }
 
     // Child exists, WS server is running, but no WS connection
-    let result = mgr.call_child("child-0", "test.method", serde_json::json!({})).await;
+    let result = mgr
+        .call_child("child-0", "test.method", serde_json::json!({}))
+        .await;
     assert!(result.is_err());
 
     mgr.stop().unwrap();
@@ -729,7 +745,9 @@ fn test_notify_child_checks_children_map_first() {
 async fn test_call_child_checks_children_map_first() {
     let mgr = ProcessManager::new();
     // No children registered - should fail with "child not found"
-    let result = mgr.call_child("nonexistent", "test", serde_json::Value::Null).await;
+    let result = mgr
+        .call_child("nonexistent", "test", serde_json::Value::Null)
+        .await;
     assert!(result.is_err());
     assert!(result.unwrap_err().contains("child not found"));
 }
@@ -1059,7 +1077,10 @@ fn test_terminate_all_variants_in_one_manager() {
     let mgr = ProcessManager::new();
     {
         let mut state = mgr.state.lock();
-        for (i, wt) in ["dashboard", "approval", "headless", "unknown"].iter().enumerate() {
+        for (i, wt) in ["dashboard", "approval", "headless", "unknown"]
+            .iter()
+            .enumerate()
+        {
             let child = ChildProcess::new(format!("c{}", i), 100 + i as u32, wt.to_string());
             state.children.insert(format!("c{}", i), child);
         }
@@ -1083,7 +1104,10 @@ fn test_active_count_reflects_direct_inserts_and_removals() {
     assert_eq!(mgr.active_count(), 0);
     {
         let mut state = mgr.state.lock();
-        state.children.insert("x".to_string(), ChildProcess::new("x".to_string(), 1, "t".to_string()));
+        state.children.insert(
+            "x".to_string(),
+            ChildProcess::new("x".to_string(), 1, "t".to_string()),
+        );
     }
     assert_eq!(mgr.active_count(), 1);
     {

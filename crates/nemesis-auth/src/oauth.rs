@@ -180,7 +180,11 @@ impl OAuthProviderConfig {
         let mut refreshed = parse_token_response_impl(&body, &cred.provider)?;
 
         // Preserve refresh token if not returned
-        if refreshed.refresh_token.as_ref().map_or(true, |t| t.is_empty()) {
+        if refreshed
+            .refresh_token
+            .as_ref()
+            .map_or(true, |t| t.is_empty())
+        {
             refreshed.refresh_token = Some(refresh_token.clone());
         }
         // Preserve account_id if not returned
@@ -401,7 +405,8 @@ pub async fn poll_device_code(
     user_code: &str,
 ) -> Result<Option<AuthCredential>, String> {
     let client = reqwest::Client::new();
-    cfg.poll_device_code_impl(&client, device_auth_id, user_code).await
+    cfg.poll_device_code_impl(&client, device_auth_id, user_code)
+        .await
 }
 
 /// Refresh an access token using a refresh token.
@@ -459,7 +464,8 @@ pub async fn exchange_code_for_tokens(
     code_verifier: &str,
     redirect_uri: &str,
 ) -> Result<AuthCredential, String> {
-    cfg.exchange_code_for_tokens_impl(code, code_verifier, redirect_uri).await
+    cfg.exchange_code_for_tokens_impl(code, code_verifier, redirect_uri)
+        .await
 }
 
 /// Parse a token response body into an AuthCredential.
@@ -540,10 +546,7 @@ fn parse_device_code_response(body: &str) -> Result<ParsedDeviceCode, String> {
     let raw: serde_json::Value =
         serde_json::from_str(body).map_err(|e| format!("parsing device code response: {}", e))?;
 
-    let device_auth_id = raw["device_auth_id"]
-        .as_str()
-        .unwrap_or("")
-        .to_string();
+    let device_auth_id = raw["device_auth_id"].as_str().unwrap_or("").to_string();
     let user_code = raw["user_code"].as_str().unwrap_or("").to_string();
     let interval = parse_flexible_int(&raw["interval"]);
 
@@ -568,10 +571,7 @@ fn parse_token_response_impl(body: &[u8], provider: &str) -> Result<AuthCredenti
     let resp: serde_json::Value =
         serde_json::from_slice(body).map_err(|e| format!("parsing token response: {}", e))?;
 
-    let access_token = resp["access_token"]
-        .as_str()
-        .unwrap_or("")
-        .to_string();
+    let access_token = resp["access_token"].as_str().unwrap_or("").to_string();
 
     if access_token.is_empty() {
         return Err("no access token in response".to_string());
@@ -588,8 +588,8 @@ fn parse_token_response_impl(body: &[u8], provider: &str) -> Result<AuthCredenti
     };
 
     // Extract account ID from tokens
-    let account_id = extract_account_id_impl(&id_token)
-        .or_else(|| extract_account_id_impl(&access_token));
+    let account_id =
+        extract_account_id_impl(&id_token).or_else(|| extract_account_id_impl(&access_token));
 
     Ok(AuthCredential {
         access_token,
@@ -637,7 +637,11 @@ fn extract_account_id_impl(token: &str) -> Option<String> {
     // Organizations array
     if let Some(orgs) = claims.get("organizations").and_then(|v| v.as_array()) {
         for org in orgs {
-            if let Some(id) = org.as_object().and_then(|o| o.get("id")).and_then(|v| v.as_str()) {
+            if let Some(id) = org
+                .as_object()
+                .and_then(|o| o.get("id"))
+                .and_then(|v| v.as_str())
+            {
                 if !id.is_empty() {
                     return Some(id.to_string());
                 }
@@ -696,10 +700,7 @@ fn parse_query_params(query: &str) -> HashMap<String, String> {
     for pair in query.split('&') {
         let mut kv = pair.splitn(2, '=');
         if let (Some(k), Some(v)) = (kv.next(), kv.next()) {
-            params.insert(
-                url_decode(k),
-                url_decode(v),
-            );
+            params.insert(url_decode(k), url_decode(v));
         }
     }
     params

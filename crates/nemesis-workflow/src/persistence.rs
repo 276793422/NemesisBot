@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::io::{BufRead, Write};
 use std::path::{Path, PathBuf};
 
-use chrono::{TimeDelta, Local};
+use chrono::{Local, TimeDelta};
 
 use crate::types::Execution;
 
@@ -123,10 +123,7 @@ impl WorkflowPersistence {
     /// Compares each execution's `started_at` timestamp against the current
     /// time. Executions started more than `max_age_days` ago are removed.
     /// Returns the number of executions that were cleaned up.
-    pub fn cleanup_old_executions(
-        &self,
-        max_age_days: u64,
-    ) -> Result<usize, PersistenceError> {
+    pub fn cleanup_old_executions(&self, max_age_days: u64) -> Result<usize, PersistenceError> {
         if !self.file_path.exists() {
             return Ok(0);
         }
@@ -134,10 +131,7 @@ impl WorkflowPersistence {
         let all = self.list_executions()?;
         let cutoff = Local::now() - TimeDelta::days(max_age_days as i64);
 
-        let remaining: Vec<&Execution> = all
-            .iter()
-            .filter(|e| e.started_at > cutoff)
-            .collect();
+        let remaining: Vec<&Execution> = all.iter().filter(|e| e.started_at > cutoff).collect();
 
         let removed = all.len() - remaining.len();
         if removed > 0 {

@@ -3,7 +3,7 @@
 //! Binary Merkle tree using SHA256. Supports leaf insertion,
 //! root hash computation, proof generation, and verification.
 
-use sha2::{Sha256, Digest};
+use sha2::{Digest, Sha256};
 
 /// Hex-encoded SHA256 digest.
 pub type Hash = String;
@@ -83,7 +83,11 @@ impl MerkleTree {
     /// the root, each with a direction flag.
     pub fn proof(&self, leaf_index: usize) -> Result<Vec<ProofStep>, String> {
         if leaf_index >= self.leaves.len() {
-            return Err(format!("index {} out of range (0..{})", leaf_index, self.leaves.len()));
+            return Err(format!(
+                "index {} out of range (0..{})",
+                leaf_index,
+                self.leaves.len()
+            ));
         }
         if self.leaves.len() == 1 {
             return Ok(vec![]);

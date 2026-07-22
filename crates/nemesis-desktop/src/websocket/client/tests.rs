@@ -206,7 +206,13 @@ fn test_handle_message_invalid_json() {
     let send_tx_opt: Option<tokio::sync::mpsc::Sender<String>> = None;
 
     // Invalid JSON should be silently ignored (logged but no panic)
-    WebSocketClient::handle_message("not json at all", "test", &pending, &dispatcher, &send_tx_opt);
+    WebSocketClient::handle_message(
+        "not json at all",
+        "test",
+        &pending,
+        &dispatcher,
+        &send_tx_opt,
+    );
     // Should not panic
 }
 
@@ -266,7 +272,10 @@ fn test_handle_message_request_no_send_channel() {
     let send_tx_opt: Option<tokio::sync::mpsc::Sender<String>> = None;
 
     dispatcher.register("test", |msg| {
-        Ok(Message::new_response(msg.id.as_deref().unwrap_or(""), serde_json::json!("ok")))
+        Ok(Message::new_response(
+            msg.id.as_deref().unwrap_or(""),
+            serde_json::json!("ok"),
+        ))
     });
 
     let request = Message::new_request("test", serde_json::Value::Null);
@@ -283,9 +292,7 @@ fn test_handle_message_request_handler_error() {
     let (send_tx, _send_rx) = tokio::sync::mpsc::channel::<String>(64);
     let send_tx_opt = Some(send_tx);
 
-    dispatcher.register("fail", |_msg| {
-        Err("handler error".to_string())
-    });
+    dispatcher.register("fail", |_msg| Err("handler error".to_string()));
 
     let request = Message::new_request("fail", serde_json::Value::Null);
     let text = serde_json::to_string(&request).unwrap();
@@ -340,15 +347,24 @@ fn test_client_register_multiple_handlers() {
     let ws_key = make_ws_key();
     let client = WebSocketClient::new(&ws_key);
     client.register_handler("method1", |msg| {
-        Ok(Message::new_response(msg.id.as_deref().unwrap_or(""), serde_json::json!("r1")))
+        Ok(Message::new_response(
+            msg.id.as_deref().unwrap_or(""),
+            serde_json::json!("r1"),
+        ))
     });
     client.register_handler("method2", |msg| {
-        Ok(Message::new_response(msg.id.as_deref().unwrap_or(""), serde_json::json!("r2")))
+        Ok(Message::new_response(
+            msg.id.as_deref().unwrap_or(""),
+            serde_json::json!("r2"),
+        ))
     });
     client.register_notification_handler("event1", |_| {});
     client.register_notification_handler("event2", |_| {});
     client.set_fallback(|msg| {
-        Ok(Message::new_response(msg.id.as_deref().unwrap_or(""), serde_json::json!("fallback")))
+        Ok(Message::new_response(
+            msg.id.as_deref().unwrap_or(""),
+            serde_json::json!("fallback"),
+        ))
     });
 }
 
@@ -402,7 +418,10 @@ fn test_client_dispatcher_is_shared() {
     let ws_key = make_ws_key();
     let client = WebSocketClient::new(&ws_key);
     client.register_handler("test", |msg| {
-        Ok(Message::new_response(msg.id.as_deref().unwrap_or(""), serde_json::json!("ok")))
+        Ok(Message::new_response(
+            msg.id.as_deref().unwrap_or(""),
+            serde_json::json!("ok"),
+        ))
     });
 
     // dispatcher() returns reference
@@ -422,7 +441,10 @@ fn test_handle_message_request_send_channel_full() {
     let send_tx_opt = Some(send_tx);
 
     dispatcher.register("test", |msg| {
-        Ok(Message::new_response(msg.id.as_deref().unwrap_or(""), serde_json::json!("ok")))
+        Ok(Message::new_response(
+            msg.id.as_deref().unwrap_or(""),
+            serde_json::json!("ok"),
+        ))
     });
 
     let request = Message::new_request("test", serde_json::Value::Null);
@@ -453,7 +475,7 @@ fn test_handle_message_request_handler_returns_ok_none() {
 
 #[tokio::test]
 async fn test_client_connect_to_real_server() {
-    use crate::websocket::server::{WebSocketServer, KeyGenerator};
+    use crate::websocket::server::{KeyGenerator, WebSocketServer};
     use std::sync::Arc;
 
     let key_gen = Arc::new(KeyGenerator::new());
@@ -475,7 +497,10 @@ async fn test_client_connect_to_real_server() {
 
         // Register a handler
         client.register_handler("ping", |msg| {
-            Ok(Message::new_response(msg.id.as_deref().unwrap_or(""), serde_json::json!("pong")))
+            Ok(Message::new_response(
+                msg.id.as_deref().unwrap_or(""),
+                serde_json::json!("pong"),
+            ))
         });
 
         // Send a notification to the server
@@ -529,7 +554,10 @@ fn test_handle_message_request_with_send_channel_and_params() {
 
     dispatcher.register("echo", |msg| {
         let params = msg.params.clone().unwrap_or_default();
-        Ok(Message::new_response(msg.id.as_deref().unwrap_or(""), params))
+        Ok(Message::new_response(
+            msg.id.as_deref().unwrap_or(""),
+            params,
+        ))
     });
 
     let request = Message::new_request("echo", serde_json::json!({"hello": "world"}));
@@ -540,7 +568,10 @@ fn test_handle_message_request_with_send_channel_and_params() {
     let resp_str = send_rx.try_recv().unwrap();
     let resp: Message = serde_json::from_str(&resp_str).unwrap();
     assert!(resp.is_success_response());
-    assert_eq!(resp.result.as_ref().unwrap()["hello"], serde_json::json!("world"));
+    assert_eq!(
+        resp.result.as_ref().unwrap()["hello"],
+        serde_json::json!("world")
+    );
 }
 
 #[test]
@@ -551,9 +582,7 @@ fn test_handle_message_request_dispatch_error_with_send_channel() {
     let send_tx_opt = Some(send_tx);
 
     // Register a handler that returns an error
-    dispatcher.register("fail", |_msg| {
-        Err("intentional failure".to_string())
-    });
+    dispatcher.register("fail", |_msg| Err("intentional failure".to_string()));
 
     let request = Message::new_request("fail", serde_json::Value::Null);
     let text = serde_json::to_string(&request).unwrap();
@@ -817,9 +846,18 @@ fn test_handle_message_request_with_object_params() {
 
     dispatcher.register("compute", |msg| {
         let params = msg.params.as_ref();
-        let a = params.and_then(|p| p.get("a")).and_then(|v| v.as_i64()).unwrap_or(0);
-        let b = params.and_then(|p| p.get("b")).and_then(|v| v.as_i64()).unwrap_or(0);
-        Ok(Message::new_response(msg.id.as_deref().unwrap_or(""), serde_json::json!(a + b)))
+        let a = params
+            .and_then(|p| p.get("a"))
+            .and_then(|v| v.as_i64())
+            .unwrap_or(0);
+        let b = params
+            .and_then(|p| p.get("b"))
+            .and_then(|v| v.as_i64())
+            .unwrap_or(0);
+        Ok(Message::new_response(
+            msg.id.as_deref().unwrap_or(""),
+            serde_json::json!(a + b),
+        ))
     });
 
     let request = Message::new_request("compute", serde_json::json!({"a": 3, "b": 4}));
@@ -837,7 +875,10 @@ fn test_client_dispatcher_is_arc_shared() {
     let ws_key = make_ws_key();
     let client = WebSocketClient::new(&ws_key);
     client.register_handler("test", |msg| {
-        Ok(Message::new_response(msg.id.as_deref().unwrap_or(""), serde_json::json!("ok")))
+        Ok(Message::new_response(
+            msg.id.as_deref().unwrap_or(""),
+            serde_json::json!("ok"),
+        ))
     });
 
     // dispatcher() returns a reference to the same Arc<Dispatcher>
@@ -851,7 +892,10 @@ fn test_client_register_then_close() {
     let ws_key = make_ws_key();
     let client = WebSocketClient::new(&ws_key);
     client.register_handler("test", |msg| {
-        Ok(Message::new_response(msg.id.as_deref().unwrap_or(""), serde_json::json!("ok")))
+        Ok(Message::new_response(
+            msg.id.as_deref().unwrap_or(""),
+            serde_json::json!("ok"),
+        ))
     });
     client.close();
     // Dispatcher should still work after close

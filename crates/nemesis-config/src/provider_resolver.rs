@@ -305,7 +305,8 @@ pub fn get_model_by_name(cfg: &Config, model_ref: &str) -> Result<ModelConfig> {
     }
 
     static RR_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-    let idx = RR_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed) % (matches.len() as u64);
+    let idx =
+        RR_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed) % (matches.len() as u64);
     Ok(matches[idx as usize].clone())
 }
 

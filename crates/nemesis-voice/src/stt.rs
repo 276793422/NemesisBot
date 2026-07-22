@@ -43,7 +43,8 @@ impl SttEngine {
             match lang_restriction::default_remedy_for_model(model_name) {
                 Some(remedy) => {
                     // 拿到补救方式 → 建 fallback 识别器。
-                    match Self::build_recognizer(model_dir, &remedy.fallback, use_itn, num_threads) {
+                    match Self::build_recognizer(model_dir, &remedy.fallback, use_itn, num_threads)
+                    {
                         Ok(fb) => {
                             tracing::info!(
                                 model = model_name,
@@ -258,7 +259,11 @@ impl SttEngine {
     ///
     /// 当补救触发重解时，返回的文本是 fallback 引擎结果，`lang` 返回 fallback 语言
     /// （即"返回值始终描述最终文本的语言"）；原始 auto 检测结果记到 debug 日志。
-    pub fn recognize_detail(&self, samples: &[f32], sample_rate: u32) -> Result<(String, Option<String>)> {
+    pub fn recognize_detail(
+        &self,
+        samples: &[f32],
+        sample_rate: u32,
+    ) -> Result<(String, Option<String>)> {
         let (text, lang) = decode_recognizer(self.recognizer, samples, sample_rate)?;
 
         if let Some(r) = &self.restriction {

@@ -12,8 +12,8 @@
 use chrono::Local;
 use parking_lot::Mutex;
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
 use tokio::task::JoinHandle;
 
@@ -34,7 +34,8 @@ pub struct HeartbeatResult {
 
 /// Heartbeat callback type: called on each tick with prompt, channel, and chatID.
 /// Returns `None` to skip (matching Go's nil result), or a `HeartbeatResult`.
-pub type HeartbeatHandler = Box<dyn Fn(String, String, String) -> Option<HeartbeatResult> + Send + Sync>;
+pub type HeartbeatHandler =
+    Box<dyn Fn(String, String, String) -> Option<HeartbeatResult> + Send + Sync>;
 
 /// Message bus trait for sending outbound heartbeat responses.
 pub trait MessageBus: Send + Sync {
@@ -266,11 +267,26 @@ impl HeartbeatService {
     /// Get status info.
     pub fn status(&self) -> HashMap<String, serde_json::Value> {
         let mut map = HashMap::new();
-        map.insert("running".to_string(), serde_json::json!(self.running.load(Ordering::SeqCst)));
-        map.insert("enabled".to_string(), serde_json::json!(self.config.enabled));
-        map.insert("beat_count".to_string(), serde_json::json!(self.beat_count.load(Ordering::SeqCst)));
-        map.insert("last_beat".to_string(), serde_json::json!(self.last_beat.lock().to_rfc3339()));
-        map.insert("interval_secs".to_string(), serde_json::json!(self.config.interval.as_secs()));
+        map.insert(
+            "running".to_string(),
+            serde_json::json!(self.running.load(Ordering::SeqCst)),
+        );
+        map.insert(
+            "enabled".to_string(),
+            serde_json::json!(self.config.enabled),
+        );
+        map.insert(
+            "beat_count".to_string(),
+            serde_json::json!(self.beat_count.load(Ordering::SeqCst)),
+        );
+        map.insert(
+            "last_beat".to_string(),
+            serde_json::json!(self.last_beat.lock().to_rfc3339()),
+        );
+        map.insert(
+            "interval_secs".to_string(),
+            serde_json::json!(self.config.interval.as_secs()),
+        );
         map
     }
 
@@ -298,7 +314,9 @@ impl HeartbeatService {
             Ok(data) => {
                 // Check if file is empty (only comments or blank lines)
                 if self.is_heartbeat_file_empty(&data) {
-                    tracing::info!("[Heartbeat] HEARTBEAT.md is empty (only comments/blank lines) - skipping LLM");
+                    tracing::info!(
+                        "[Heartbeat] HEARTBEAT.md is empty (only comments/blank lines) - skipping LLM"
+                    );
                     return String::new();
                 }
 
@@ -505,7 +523,10 @@ Add your heartbeat tasks below this line:
 
         if result.is_async {
             self.log_info(&format!("Async task started: {}", result.for_llm));
-            tracing::info!(message = result.for_llm.as_str(), "[Heartbeat] Async heartbeat task started");
+            tracing::info!(
+                message = result.for_llm.as_str(),
+                "[Heartbeat] Async heartbeat task started"
+            );
             return;
         }
 
@@ -618,7 +639,11 @@ fn execute_heartbeat_tick(
         }
     };
 
-    tracing::debug!("[Heartbeat] Resolved channel: {}, chatID: {}", channel, chat_id);
+    tracing::debug!(
+        "[Heartbeat] Resolved channel: {}, chatID: {}",
+        channel,
+        chat_id
+    );
 
     // Update beat tracking.
     let count = beat_count.fetch_add(1, Ordering::SeqCst) + 1;
@@ -649,7 +674,10 @@ fn execute_heartbeat_tick(
     }
 
     if result.is_async {
-        tracing::info!(message = result.for_llm.as_str(), "[Heartbeat] Async heartbeat task started");
+        tracing::info!(
+            message = result.for_llm.as_str(),
+            "[Heartbeat] Async heartbeat task started"
+        );
         return;
     }
 
@@ -684,7 +712,9 @@ fn build_prompt_from_workspace(workspace: &Option<String>) -> String {
     match std::fs::read(&heartbeat_path) {
         Ok(data) => {
             if is_heartbeat_file_empty_static(&data) {
-                tracing::info!("[Heartbeat] HEARTBEAT.md is empty (only comments/blank lines) - skipping LLM");
+                tracing::info!(
+                    "[Heartbeat] HEARTBEAT.md is empty (only comments/blank lines) - skipping LLM"
+                );
                 return String::new();
             }
 

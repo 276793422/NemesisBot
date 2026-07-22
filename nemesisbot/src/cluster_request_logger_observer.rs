@@ -26,8 +26,8 @@ use nemesis_agent::request_logger::{
     OperationInfo, RequestLogger,
 };
 use nemesis_agent::request_logger_observer::{
-    convert_event, ConversationEndData, ConversationEvent, ConversationStartData, EventData,
-    EventType, LLMRequestEventData, LLMResponseEventData, ToolCallEventData,
+    ConversationEndData, ConversationEvent, ConversationStartData, EventData, EventType,
+    LLMRequestEventData, LLMResponseEventData, ToolCallEventData, convert_event,
 };
 
 /// Fallback device_id directory name when source node is unknown.
@@ -293,7 +293,11 @@ impl ClusterRequestLoggerObserver {
                     .tool_calls
                     .iter()
                     .filter_map(|v| {
-                        let id = v.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                        let id = v
+                            .get("id")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string();
                         let name = v
                             .get("name")
                             .or_else(|| v.get("function").and_then(|f| f.get("name")))

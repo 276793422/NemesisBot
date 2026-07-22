@@ -148,11 +148,60 @@ fn test_rate_limit_display() {
 
 #[test]
 fn test_reason_all_variants() {
-    assert_eq!(FailoverError::Auth { provider: "p".to_string(), model: "m".to_string(), status: 0 }.reason(), FailoverReason::Auth);
-    assert_eq!(FailoverError::RateLimit { provider: "p".to_string(), model: "m".to_string(), retry_after: None }.reason(), FailoverReason::RateLimit);
-    assert_eq!(FailoverError::Billing { provider: "p".to_string() }.reason(), FailoverReason::Billing);
-    assert_eq!(FailoverError::Timeout { provider: "p".to_string(), model: "m".to_string() }.reason(), FailoverReason::Timeout);
-    assert_eq!(FailoverError::Format { provider: "p".to_string(), message: "m".to_string() }.reason(), FailoverReason::Format);
-    assert_eq!(FailoverError::Overloaded { provider: "p".to_string() }.reason(), FailoverReason::Overloaded);
-    assert_eq!(FailoverError::Unknown { provider: "p".to_string(), message: "m".to_string() }.reason(), FailoverReason::Unknown);
+    assert_eq!(
+        FailoverError::Auth {
+            provider: "p".to_string(),
+            model: "m".to_string(),
+            status: 0
+        }
+        .reason(),
+        FailoverReason::Auth
+    );
+    assert_eq!(
+        FailoverError::RateLimit {
+            provider: "p".to_string(),
+            model: "m".to_string(),
+            retry_after: None
+        }
+        .reason(),
+        FailoverReason::RateLimit
+    );
+    assert_eq!(
+        FailoverError::Billing {
+            provider: "p".to_string()
+        }
+        .reason(),
+        FailoverReason::Billing
+    );
+    assert_eq!(
+        FailoverError::Timeout {
+            provider: "p".to_string(),
+            model: "m".to_string()
+        }
+        .reason(),
+        FailoverReason::Timeout
+    );
+    assert_eq!(
+        FailoverError::Format {
+            provider: "p".to_string(),
+            message: "m".to_string()
+        }
+        .reason(),
+        FailoverReason::Format
+    );
+    assert_eq!(
+        FailoverError::Overloaded {
+            provider: "p".to_string()
+        }
+        .reason(),
+        FailoverReason::Overloaded
+    );
+    assert_eq!(
+        FailoverError::Unknown {
+            provider: "p".to_string(),
+            message: "m".to_string()
+        }
+        .reason(),
+        FailoverReason::Unknown
+    );
 }

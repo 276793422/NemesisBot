@@ -1,17 +1,17 @@
 //! axum 路由 handler（吊销 + 签发 + 用户管理）。
 
-use crate::state::{now_secs, AppState};
-use crate::store::{dim_str, status_str, AuditRecord, IssuerRecord, SignatureRecord, UserRecord};
+use crate::state::{AppState, now_secs};
+use crate::store::{AuditRecord, IssuerRecord, SignatureRecord, UserRecord, dim_str, status_str};
+use axum::Json;
 use axum::body::Body;
 use axum::extract::{Multipart, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::Response;
-use axum::Json;
-use rand::rngs::OsRng;
-use rand::RngCore;
 use nemesis_verify::{
-    crl_match, sign_response, Crl, CrlEntry, KeyStatus, RevDim, SignedResponse, TrustedKeyList,
+    Crl, CrlEntry, KeyStatus, RevDim, SignedResponse, TrustedKeyList, crl_match, sign_response,
 };
+use rand::RngCore;
+use rand::rngs::OsRng;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::sync::Arc;
@@ -95,9 +95,21 @@ fn compute_status(
         .key_fp
         .as_deref()
         .and_then(|v| crl_match(crl, RevDim::KeyFp, v))
-        .or_else(|| req.sig_hash.as_deref().and_then(|v| crl_match(crl, RevDim::SigHash, v)))
-        .or_else(|| req.content_hash.as_deref().and_then(|v| crl_match(crl, RevDim::FileHash, v)))
-        .or_else(|| req.publisher.as_deref().and_then(|v| crl_match(crl, RevDim::Publisher, v)));
+        .or_else(|| {
+            req.sig_hash
+                .as_deref()
+                .and_then(|v| crl_match(crl, RevDim::SigHash, v))
+        })
+        .or_else(|| {
+            req.content_hash
+                .as_deref()
+                .and_then(|v| crl_match(crl, RevDim::FileHash, v))
+        })
+        .or_else(|| {
+            req.publisher
+                .as_deref()
+                .and_then(|v| crl_match(crl, RevDim::Publisher, v))
+        });
     if let Some(e) = hit {
         return ("revoked".into(), Some(e.revoked_at), Some(e.reason.clone()));
     }
@@ -114,7 +126,10 @@ pub async fn get_crl(
         .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
         .unwrap_or(false)
     {
-        return Err((StatusCode::INTERNAL_SERVER_ERROR, "debug: CRL forced 500".into()));
+        return Err((
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "debug: CRL forced 500".into(),
+        ));
     }
     let crl = state.store.list_crl().map_err(internal)?;
     let signed = sign_response(&crl, &state.hierarchy.root_sk).map_err(internal)?;
@@ -142,9 +157,21 @@ pub async fn crl_query(
         .key_fp
         .as_deref()
         .and_then(|v| crl_match(&crl, RevDim::KeyFp, v))
-        .or_else(|| req.sig_hash.as_deref().and_then(|v| crl_match(&crl, RevDim::SigHash, v)))
-        .or_else(|| req.content_hash.as_deref().and_then(|v| crl_match(&crl, RevDim::FileHash, v)))
-        .or_else(|| req.publisher.as_deref().and_then(|v| crl_match(&crl, RevDim::Publisher, v)));
+        .or_else(|| {
+            req.sig_hash
+                .as_deref()
+                .and_then(|v| crl_match(&crl, RevDim::SigHash, v))
+        })
+        .or_else(|| {
+            req.content_hash
+                .as_deref()
+                .and_then(|v| crl_match(&crl, RevDim::FileHash, v))
+        })
+        .or_else(|| {
+            req.publisher
+                .as_deref()
+                .and_then(|v| crl_match(&crl, RevDim::Publisher, v))
+        });
     let resp = match hit {
         Some(e) => nemesis_verify::revocation::OcspResp {
             code: "revoked".into(),
@@ -211,7 +238,10 @@ pub async fn admin_trusted_key(
     Json(req): Json<nemesis_verify::TrustedKey>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
     check_admin(&state, &headers)?;
-    let ver = state.store.upsert_trusted_key(req.clone()).map_err(internal)?;
+    let ver = state
+        .store
+        .upsert_trusted_key(req.clone())
+        .map_err(internal)?;
     state
         .store
         .add_audit(AuditRecord {
@@ -304,10 +334,15 @@ pub async fn sign_upload(
             .store
             .get_issuer_by_name(&user.issuer_name)
             .map_err(internal)?
-            .ok_or((StatusCode::BAD_REQUEST, format!("issuer '{}' not found", user.issuer_name)))?;
-        let sk = nemesis_verify::crypto::signing_key_from_hex(&issuer.issuer_sk).map_err(internal)?;
+            .ok_or((
+                StatusCode::BAD_REQUEST,
+                format!("issuer '{}' not found", user.issuer_name),
+            ))?;
+        let sk =
+            nemesis_verify::crypto::signing_key_from_hex(&issuer.issuer_sk).map_err(internal)?;
         let chain = nemesis_verify::hex_util::hex_decode_vec(&issuer.chain).map_err(internal)?;
-        let vk = nemesis_verify::crypto::verifying_key_from_hex(&issuer.issuer_pub).map_err(internal)?;
+        let vk =
+            nemesis_verify::crypto::verifying_key_from_hex(&issuer.issuer_pub).map_err(internal)?;
         (sk, chain, vk)
     };
 
@@ -329,7 +364,9 @@ pub async fn sign_upload(
         Some(l) => l,
         None => file_bytes.len(),
     };
-    let content_hash: [u8; 32] = codec.content_hash(&file_bytes, content_len).map_err(internal)?;
+    let content_hash: [u8; 32] = codec
+        .content_hash(&file_bytes, content_len)
+        .map_err(internal)?;
     let key_fp: [u8; 32] = Sha256::digest(issuer_pub.to_bytes()).into();
     // sig_hash = SHA-256(signature)，从签名文件 envelope 解析（CRL 单签名吊销维度）。
     // sign_content 刚签完 envelope 必在，失败兜底 content_hash（理论上不触发）。
@@ -353,7 +390,10 @@ pub async fn sign_upload(
     // 返签名文件 binary（浏览器下载）
     Ok(Response::builder()
         .header("content-type", "application/octet-stream")
-        .header("content-disposition", "attachment; filename=\"signed-file\"")
+        .header(
+            "content-disposition",
+            "attachment; filename=\"signed-file\"",
+        )
         .body(Body::from(signed_file))
         .map_err(|e| internal(e))?)
 }
@@ -374,12 +414,21 @@ pub async fn admin_create_user(
     Json(req): Json<CreateUserReq>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
     check_admin(&state, &headers)?;
-    let issuer_name = req.issuer_name.clone().unwrap_or_else(|| "default".to_string());
+    let issuer_name = req
+        .issuer_name
+        .clone()
+        .unwrap_or_else(|| "default".to_string());
     // 校验发行方存在（default 跳过；动态发行方要在 issuers 表）
     if issuer_name != "default" {
-        let exists = state.store.get_issuer_by_name(&issuer_name).map_err(internal)?;
+        let exists = state
+            .store
+            .get_issuer_by_name(&issuer_name)
+            .map_err(internal)?;
         if exists.is_none() {
-            return Err((StatusCode::BAD_REQUEST, format!("issuer '{}' not found", issuer_name)));
+            return Err((
+                StatusCode::BAD_REQUEST,
+                format!("issuer '{}' not found", issuer_name),
+            ));
         }
     }
     let mut token_bytes = [0u8; 32];
@@ -387,9 +436,17 @@ pub async fn admin_create_user(
     let token = hex_str(&token_bytes);
     state
         .store
-        .add_user(&token, &req.name, req.publisher.as_deref(), &issuer_name, now_secs())
+        .add_user(
+            &token,
+            &req.name,
+            req.publisher.as_deref(),
+            &issuer_name,
+            now_secs(),
+        )
         .map_err(internal)?;
-    Ok(Json(serde_json::json!({ "token": token, "name": req.name, "issuer_name": issuer_name })))
+    Ok(Json(
+        serde_json::json!({ "token": token, "name": req.name, "issuer_name": issuer_name }),
+    ))
 }
 
 // ===================== /v1/admin/issuer（创建动态发行方证书）=====================
@@ -411,7 +468,8 @@ pub async fn admin_create_issuer(
         return Err((StatusCode::BAD_REQUEST, "name 'default' is reserved".into()));
     }
     let kp = nemesis_verify::crypto::generate_key_pair();
-    let issuer_vk = nemesis_verify::crypto::verifying_key_from_hex(&kp.public_key).map_err(internal)?;
+    let issuer_vk =
+        nemesis_verify::crypto::verifying_key_from_hex(&kp.public_key).map_err(internal)?;
     // CA 签 issuer 证书（有效期 [0, MAX]）
     let issuer_cert = nemesis_verify::cert::issue_certificate(
         &state.hierarchy.ca_sk,
@@ -421,7 +479,10 @@ pub async fn admin_create_issuer(
         u64::MAX,
     );
     // chain = [issuer_cert, ca_cert]（leaf 在前，不含根证书）
-    let chain = nemesis_verify::cert::serialize_chain(&[issuer_cert.clone(), state.hierarchy.ca_cert.clone()]);
+    let chain = nemesis_verify::cert::serialize_chain(&[
+        issuer_cert.clone(),
+        state.hierarchy.ca_cert.clone(),
+    ]);
     let rec = IssuerRecord {
         name: req.name.clone(),
         issuer_sk: kp.private_key,
@@ -444,7 +505,9 @@ pub async fn admin_create_issuer(
             detail: Some(rec.issuer_pub.clone()),
         })
         .map_err(internal)?;
-    Ok(Json(serde_json::json!({ "name": req.name, "issuer_pub": rec.issuer_pub })))
+    Ok(Json(
+        serde_json::json!({ "name": req.name, "issuer_pub": rec.issuer_pub }),
+    ))
 }
 
 /// 列发行方（不返私钥）。

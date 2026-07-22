@@ -96,5 +96,9 @@ fn test_evaluate_artifact() {
 
     assert!(eval.quality_score > 0.0);
     // Template content should have "description", "usage", "example"
-    assert!(eval.quality_score >= 0.6, "score was {}", eval.quality_score);
+    assert!(
+        eval.quality_score >= 0.6,
+        "score was {}",
+        eval.quality_score
+    );
 }

@@ -1,6 +1,5 @@
 use super::*;
 
-
 // --- Session tests ---
 
 #[test]
@@ -162,16 +161,17 @@ fn test_session_store_disk_persistence() {
 
     store.get_or_create("disk:key1");
     store.set_summary("disk:key1", "Test summary");
-    store.set_history("disk:key1", vec![
-        StoredMessage {
+    store.set_history(
+        "disk:key1",
+        vec![StoredMessage {
             role: "user".to_string(),
             content: "Hello from disk".to_string(),
             tool_calls: Vec::new(),
             tool_call_id: None,
             timestamp: "2026-01-01T00:00:00Z".to_string(),
             reasoning_content: None,
-        },
-    ]);
+        }],
+    );
     store.save("disk:key1").unwrap();
 
     // Create a new store from the same directory.
@@ -394,14 +394,17 @@ fn test_session_manager_set_last_channel_nonexistent() {
 fn test_session_store_set_history_nonexistent() {
     let store = SessionStore::new_in_memory();
     // Setting history on nonexistent session should do nothing
-    store.set_history("nonexistent", vec![StoredMessage {
-        role: "user".to_string(),
-        content: "test".to_string(),
-        tool_calls: Vec::new(),
-        tool_call_id: None,
-        timestamp: String::new(),
-        reasoning_content: None,
-    }]);
+    store.set_history(
+        "nonexistent",
+        vec![StoredMessage {
+            role: "user".to_string(),
+            content: "test".to_string(),
+            tool_calls: Vec::new(),
+            tool_call_id: None,
+            timestamp: String::new(),
+            reasoning_content: None,
+        }],
+    );
     assert!(store.get_history("nonexistent").is_empty());
 }
 
@@ -416,14 +419,17 @@ fn test_session_store_set_summary_nonexistent() {
 fn test_session_store_truncate_fewer_than_keep() {
     let store = SessionStore::new_in_memory();
     store.get_or_create("test:trunc");
-    store.set_history("test:trunc", vec![StoredMessage {
-        role: "user".to_string(),
-        content: "msg".to_string(),
-        tool_calls: Vec::new(),
-        tool_call_id: None,
-        timestamp: String::new(),
-        reasoning_content: None,
-    }]);
+    store.set_history(
+        "test:trunc",
+        vec![StoredMessage {
+            role: "user".to_string(),
+            content: "msg".to_string(),
+            tool_calls: Vec::new(),
+            tool_call_id: None,
+            timestamp: String::new(),
+            reasoning_content: None,
+        }],
+    );
     store.truncate_history("test:trunc", 10);
     let history = store.get_history("test:trunc");
     assert_eq!(history.len(), 1); // not truncated
@@ -496,16 +502,14 @@ fn test_stored_session_serialization() {
 
 #[test]
 fn test_estimate_tokens_for_messages() {
-    let messages = vec![
-        StoredMessage {
-            role: "user".to_string(),
-            content: "Hello world".to_string(),
-            tool_calls: Vec::new(),
-            tool_call_id: None,
-            timestamp: String::new(),
-            reasoning_content: None,
-        },
-    ];
+    let messages = vec![StoredMessage {
+        role: "user".to_string(),
+        content: "Hello world".to_string(),
+        tool_calls: Vec::new(),
+        tool_call_id: None,
+        timestamp: String::new(),
+        reasoning_content: None,
+    }];
     let tokens = estimate_tokens_for_messages(&messages);
     assert!(tokens > 0);
 }
@@ -660,16 +664,14 @@ fn test_estimate_tokens_basic() {
 
 #[test]
 fn test_estimate_tokens_for_turns_basic() {
-    let turns = vec![
-        ConversationTurn {
-            role: "user".to_string(),
-            content: "Hello world".to_string(),
-            tool_calls: Vec::new(),
-            tool_call_id: None,
-            timestamp: String::new(),
-            reasoning_content: None,
-        },
-    ];
+    let turns = vec![ConversationTurn {
+        role: "user".to_string(),
+        content: "Hello world".to_string(),
+        tool_calls: Vec::new(),
+        tool_call_id: None,
+        timestamp: String::new(),
+        reasoning_content: None,
+    }];
     let tokens = estimate_tokens_for_turns(&turns);
     assert!(tokens > 0);
 }
@@ -703,14 +705,16 @@ fn test_stored_message_from_conversation_turn() {
 fn test_session_store_truncate_history() {
     let store = SessionStore::new_in_memory();
     store.get_or_create("test-key");
-    let msgs: Vec<StoredMessage> = (0..10).map(|i| StoredMessage {
-        role: "user".to_string(),
-        content: format!("msg {}", i),
-        tool_calls: Vec::new(),
-        tool_call_id: None,
-        timestamp: String::new(),
-        reasoning_content: None,
-    }).collect();
+    let msgs: Vec<StoredMessage> = (0..10)
+        .map(|i| StoredMessage {
+            role: "user".to_string(),
+            content: format!("msg {}", i),
+            tool_calls: Vec::new(),
+            tool_call_id: None,
+            timestamp: String::new(),
+            reasoning_content: None,
+        })
+        .collect();
     store.set_history("test-key", msgs);
     store.truncate_history("test-key", 3);
     let data = store.get_or_create("test-key");
@@ -731,14 +735,16 @@ fn test_session_store_truncate_empty() {
 fn test_session_store_truncate_to_zero() {
     let store = SessionStore::new_in_memory();
     store.get_or_create("test-key");
-    let msgs: Vec<StoredMessage> = (0..5).map(|i| StoredMessage {
-        role: "user".to_string(),
-        content: format!("msg {}", i),
-        tool_calls: Vec::new(),
-        tool_call_id: None,
-        timestamp: String::new(),
-        reasoning_content: None,
-    }).collect();
+    let msgs: Vec<StoredMessage> = (0..5)
+        .map(|i| StoredMessage {
+            role: "user".to_string(),
+            content: format!("msg {}", i),
+            tool_calls: Vec::new(),
+            tool_call_id: None,
+            timestamp: String::new(),
+            reasoning_content: None,
+        })
+        .collect();
     store.set_history("test-key", msgs);
     store.truncate_history("test-key", 0);
     let data = store.get_or_create("test-key");
@@ -755,16 +761,14 @@ fn test_session_manager_get_or_create_default() {
 
 #[test]
 fn test_force_compress_with_many_messages() {
-    let mut history: Vec<ConversationTurn> = vec![
-        ConversationTurn {
-            role: "system".to_string(),
-            content: "You are helpful".to_string(),
-            tool_calls: Vec::new(),
-            tool_call_id: None,
-            timestamp: String::new(),
-            reasoning_content: None,
-        },
-    ];
+    let mut history: Vec<ConversationTurn> = vec![ConversationTurn {
+        role: "system".to_string(),
+        content: "You are helpful".to_string(),
+        tool_calls: Vec::new(),
+        tool_call_id: None,
+        timestamp: String::new(),
+        reasoning_content: None,
+    }];
     for i in 0..20 {
         history.push(ConversationTurn {
             role: if i % 2 == 0 { "user" } else { "assistant" }.to_string(),
@@ -856,7 +860,10 @@ fn test_session_store_disk_roundtrip() {
     let store2 = SessionStore::new_with_storage(tmp.path());
     let loaded = store2.get_history("web:chat1");
     assert_eq!(loaded.len(), 5);
-    assert_eq!(store2.get_summary("web:chat1"), "A summary of the conversation");
+    assert_eq!(
+        store2.get_summary("web:chat1"),
+        "A summary of the conversation"
+    );
 }
 
 #[test]
@@ -897,8 +904,8 @@ fn test_session_store_remove_with_disk() {
 
 #[test]
 fn test_cleanup_old_sessions_keeps_recent_deletes_old() {
-    use std::fs;
     use chrono::Duration;
+    use std::fs;
 
     let tmp = tempfile::tempdir().unwrap();
     let dir = tmp.path().to_path_buf();
@@ -1197,7 +1204,10 @@ fn test_summarizer_should_summarize_long_history() {
     let history: Vec<ConversationTurn> = (0..30)
         .map(|i| ConversationTurn {
             role: "user".to_string(),
-            content: format!("A longer message with more content to increase token estimation significantly {}", i),
+            content: format!(
+                "A longer message with more content to increase token estimation significantly {}",
+                i
+            ),
             tool_calls: Vec::new(),
             tool_call_id: None,
             timestamp: String::new(),
@@ -1230,7 +1240,10 @@ fn test_summarizer_should_summarize_by_token_threshold() {
     let history: Vec<ConversationTurn> = (0..5)
         .map(|i| ConversationTurn {
             role: "user".to_string(),
-            content: format!("A reasonably long message with enough text to exceed token threshold {}", i),
+            content: format!(
+                "A reasonably long message with enough text to exceed token threshold {}",
+                i
+            ),
             tool_calls: Vec::new(),
             tool_call_id: None,
             timestamp: String::new(),
@@ -1421,16 +1434,14 @@ fn test_force_compress_three_messages() {
 
 #[test]
 fn test_force_compress_preserves_system_and_last() {
-    let mut history: Vec<ConversationTurn> = vec![
-        ConversationTurn {
-            role: "system".to_string(),
-            content: "System prompt".to_string(),
-            tool_calls: Vec::new(),
-            tool_call_id: None,
-            timestamp: String::new(),
-            reasoning_content: None,
-        },
-    ];
+    let mut history: Vec<ConversationTurn> = vec![ConversationTurn {
+        role: "system".to_string(),
+        content: "System prompt".to_string(),
+        tool_calls: Vec::new(),
+        tool_call_id: None,
+        timestamp: String::new(),
+        reasoning_content: None,
+    }];
     for i in 0..10 {
         history.push(ConversationTurn {
             role: "user".to_string(),

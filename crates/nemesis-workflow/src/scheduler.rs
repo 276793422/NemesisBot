@@ -27,7 +27,8 @@ use crate::types::{Edge, ExecutionState, NodeDef};
 #[async_trait]
 pub trait ProgressHook: Send + Sync {
     async fn on_level_completed(&self, wf_ctx: &WorkflowContext);
-}/// Performs a topological sort on the workflow graph.
+}
+/// Performs a topological sort on the workflow graph.
 ///
 /// Returns execution levels where each level contains node IDs that can be
 /// executed in parallel. Returns an error if a cycle is detected.
@@ -52,10 +53,7 @@ pub fn topological_sort(nodes: &[NodeDef], edges: &[Edge]) -> Result<Vec<Vec<Str
     // Account for DependsOn
     for n in nodes {
         for dep in &n.depends_on {
-            adjacency
-                .entry(dep.clone())
-                .or_default()
-                .push(n.id.clone());
+            adjacency.entry(dep.clone()).or_default().push(n.id.clone());
             *in_degree.entry(n.id.clone()).or_insert(0) += 1;
         }
     }
@@ -220,7 +218,16 @@ pub async fn schedule_resume(
     completed_nodes: &HashSet<String>,
     cancel: CancellationToken,
 ) -> Result<ScheduleOutcome, String> {
-    schedule_inner(nodes, edges, executors, wf_ctx, completed_nodes, cancel, None).await
+    schedule_inner(
+        nodes,
+        edges,
+        executors,
+        wf_ctx,
+        completed_nodes,
+        cancel,
+        None,
+    )
+    .await
 }
 
 /// Like [`schedule_resume`] but with a per-level progress hook.
@@ -234,7 +241,16 @@ pub async fn schedule_resume_with_hook(
     cancel: CancellationToken,
     hook: &dyn ProgressHook,
 ) -> Result<ScheduleOutcome, String> {
-    schedule_inner(nodes, edges, executors, wf_ctx, completed_nodes, cancel, Some(hook)).await
+    schedule_inner(
+        nodes,
+        edges,
+        executors,
+        wf_ctx,
+        completed_nodes,
+        cancel,
+        Some(hook),
+    )
+    .await
 }
 
 /// Shared body for [`schedule`] and [`schedule_resume`].
@@ -306,7 +322,7 @@ async fn schedule_inner(
                     return Err(format!(
                         "no executor for node type {:?} (node {})",
                         node.node_type, node_id
-                    ))
+                    ));
                 }
             };
 
@@ -393,10 +409,7 @@ async fn schedule_inner(
                         for (field, val) in obj {
                             // Store as JSON value (1b-B3) — preserves structure
                             // for downstream nodes instead of stringifying.
-                            wf_ctx.set_var(
-                                &format!("{}.{}", node_id, field),
-                                val.clone(),
-                            );
+                            wf_ctx.set_var(&format!("{}.{}", node_id, field), val.clone());
                         }
                     }
                     wf_ctx.set_node_result(&node_id, result);

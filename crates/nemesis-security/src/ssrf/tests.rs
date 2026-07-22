@@ -119,15 +119,19 @@ fn test_private_ip_blocked() {
 #[test]
 fn test_metadata_blocked() {
     let guard = Guard::new(SsrfConfig::default()).unwrap();
-    assert!(guard
-        .validate_url("http://169.254.169.254/latest/meta-data/")
-        .is_err());
-    assert!(guard
-        .validate_url("http://metadata.google.internal/computeMetadata/v1/")
-        .is_err()
-        || guard
+    assert!(
+        guard
+            .validate_url("http://169.254.169.254/latest/meta-data/")
+            .is_err()
+    );
+    assert!(
+        guard
             .validate_url("http://metadata.google.internal/computeMetadata/v1/")
-            .is_ok());
+            .is_err()
+            || guard
+                .validate_url("http://metadata.google.internal/computeMetadata/v1/")
+                .is_ok()
+    );
     // The metadata.google.internal hostname may or may not resolve in test
     // environments; the IP-based check is the important one.
 }
@@ -482,22 +486,20 @@ fn test_concurrent_access() {
 
     for i in 0..4 {
         let g = Arc::clone(&guard);
-        handles.push(thread::spawn(move || {
-            match i % 4 {
-                0 => {
-                    let _ = g.validate_url("http://127.0.0.1/");
-                }
-                1 => {
-                    let _ = g.check_ip("192.168.1.1");
-                }
-                2 => {
-                    g.add_allowed_host(&format!("host{}.example.com", i));
-                }
-                3 => {
-                    let _ = g.add_blocked_cidr("198.51.100.0/24");
-                }
-                _ => {}
+        handles.push(thread::spawn(move || match i % 4 {
+            0 => {
+                let _ = g.validate_url("http://127.0.0.1/");
             }
+            1 => {
+                let _ = g.check_ip("192.168.1.1");
+            }
+            2 => {
+                g.add_allowed_host(&format!("host{}.example.com", i));
+            }
+            3 => {
+                let _ = g.add_blocked_cidr("198.51.100.0/24");
+            }
+            _ => {}
         }));
     }
 
@@ -528,7 +530,11 @@ fn test_check_ip_disabled_allows_all() {
 #[test]
 fn test_resolve_and_validate_disabled() {
     let guard = Guard::from_enabled(false);
-    assert!(guard.resolve_and_validate("http://192.168.1.1/secret").is_ok());
+    assert!(
+        guard
+            .resolve_and_validate("http://192.168.1.1/secret")
+            .is_ok()
+    );
 }
 
 #[test]
@@ -542,8 +548,13 @@ fn test_validate_url_localhost_localdomain_blocked() {
     let guard = Guard::new(SsrfConfig {
         block_localhost: true,
         ..SsrfConfig::default()
-    }).unwrap();
-    assert!(guard.validate_url("http://localhost.localdomain/test").is_err());
+    })
+    .unwrap();
+    assert!(
+        guard
+            .validate_url("http://localhost.localdomain/test")
+            .is_err()
+    );
 }
 
 #[test]
@@ -551,7 +562,8 @@ fn test_validate_url_subdomain_localhost_blocked() {
     let guard = Guard::new(SsrfConfig {
         block_localhost: true,
         ..SsrfConfig::default()
-    }).unwrap();
+    })
+    .unwrap();
     assert!(guard.validate_url("http://sub.localhost/test").is_err());
 }
 
@@ -599,7 +611,10 @@ fn test_ssrf_error_variants() {
     let err = SsrfError::ReservedIp("0.0.0.0".to_string());
     assert!(err.to_string().contains("reserved"));
 
-    let err = SsrfError::BlockedCidr { ip: "1.2.3.4".to_string(), cidr: "1.2.3.0/24".to_string() };
+    let err = SsrfError::BlockedCidr {
+        ip: "1.2.3.4".to_string(),
+        cidr: "1.2.3.0/24".to_string(),
+    };
     assert!(err.to_string().contains("1.2.3.0/24"));
 
     let err = SsrfError::InvalidUrl("bad url".to_string());
@@ -611,7 +626,10 @@ fn test_ssrf_error_variants() {
     let err = SsrfError::InvalidIp("abc".to_string());
     assert!(err.to_string().contains("invalid IP"));
 
-    let err = SsrfError::DnsFailed { host: "test".to_string(), reason: "timeout".to_string() };
+    let err = SsrfError::DnsFailed {
+        host: "test".to_string(),
+        reason: "timeout".to_string(),
+    };
     assert!(err.to_string().contains("DNS resolution failed"));
 
     let err = SsrfError::NoAddresses("empty.host".to_string());

@@ -23,21 +23,13 @@ impl ModuleHandler for EstopHandler {
     ) -> Result<Option<serde_json::Value>, String> {
         match cmd {
             "trigger" => {
-                let estop = ctx
-                    .state
-                    .estop
-                    .as_ref()
-                    .ok_or("e-stop not available")?;
+                let estop = ctx.state.estop.as_ref().ok_or("e-stop not available")?;
                 estop.trigger();
                 tracing::info!("[Web/WSAPI] E-stop engaged");
                 Ok(Some(serde_json::json!({ "engaged": true })))
             }
             "release" => {
-                let estop = ctx
-                    .state
-                    .estop
-                    .as_ref()
-                    .ok_or("e-stop not available")?;
+                let estop = ctx.state.estop.as_ref().ok_or("e-stop not available")?;
                 estop.release();
                 tracing::info!("[Web/WSAPI] E-stop released");
                 Ok(Some(serde_json::json!({ "engaged": false })))

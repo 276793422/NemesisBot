@@ -82,7 +82,11 @@ fn test_jaccard_similar() {
     let a = build_trigrams("pdf converter");
     let b = build_trigrams("pdf viewer");
     let sim = jaccard_similarity(&a, &b);
-    assert!(sim > 0.3, "Similar strings should have > 0.3 similarity, got {}", sim);
+    assert!(
+        sim > 0.3,
+        "Similar strings should have > 0.3 similarity, got {}",
+        sim
+    );
     assert!(sim < 1.0);
 }
 
@@ -426,9 +430,42 @@ fn test_clamp_registry_results_truncates() {
     let results = vec![RegistrySearchResult {
         registry_name: "r".to_string(),
         results: vec![
-            SkillSearchResult { score: 1.0, slug: "a".to_string(), display_name: "A".to_string(), summary: "A".to_string(), version: "1.0".to_string(), registry_name: "r".to_string(), source_repo: String::new(), download_path: String::new(), downloads: 0, truncated: false },
-            SkillSearchResult { score: 0.9, slug: "b".to_string(), display_name: "B".to_string(), summary: "B".to_string(), version: "1.0".to_string(), registry_name: "r".to_string(), source_repo: String::new(), download_path: String::new(), downloads: 0, truncated: false },
-            SkillSearchResult { score: 0.8, slug: "c".to_string(), display_name: "C".to_string(), summary: "C".to_string(), version: "1.0".to_string(), registry_name: "r".to_string(), source_repo: String::new(), download_path: String::new(), downloads: 0, truncated: false },
+            SkillSearchResult {
+                score: 1.0,
+                slug: "a".to_string(),
+                display_name: "A".to_string(),
+                summary: "A".to_string(),
+                version: "1.0".to_string(),
+                registry_name: "r".to_string(),
+                source_repo: String::new(),
+                download_path: String::new(),
+                downloads: 0,
+                truncated: false,
+            },
+            SkillSearchResult {
+                score: 0.9,
+                slug: "b".to_string(),
+                display_name: "B".to_string(),
+                summary: "B".to_string(),
+                version: "1.0".to_string(),
+                registry_name: "r".to_string(),
+                source_repo: String::new(),
+                download_path: String::new(),
+                downloads: 0,
+                truncated: false,
+            },
+            SkillSearchResult {
+                score: 0.8,
+                slug: "c".to_string(),
+                display_name: "C".to_string(),
+                summary: "C".to_string(),
+                version: "1.0".to_string(),
+                registry_name: "r".to_string(),
+                source_repo: String::new(),
+                download_path: String::new(),
+                downloads: 0,
+                truncated: false,
+            },
         ],
         truncated: false,
     }];
@@ -443,8 +480,30 @@ fn test_clamp_registry_results_zero_returns_all() {
     let results = vec![RegistrySearchResult {
         registry_name: "r".to_string(),
         results: vec![
-            SkillSearchResult { score: 1.0, slug: "a".to_string(), display_name: "A".to_string(), summary: "A".to_string(), version: "1.0".to_string(), registry_name: "r".to_string(), source_repo: String::new(), download_path: String::new(), downloads: 0, truncated: false },
-            SkillSearchResult { score: 0.9, slug: "b".to_string(), display_name: "B".to_string(), summary: "B".to_string(), version: "1.0".to_string(), registry_name: "r".to_string(), source_repo: String::new(), download_path: String::new(), downloads: 0, truncated: false },
+            SkillSearchResult {
+                score: 1.0,
+                slug: "a".to_string(),
+                display_name: "A".to_string(),
+                summary: "A".to_string(),
+                version: "1.0".to_string(),
+                registry_name: "r".to_string(),
+                source_repo: String::new(),
+                download_path: String::new(),
+                downloads: 0,
+                truncated: false,
+            },
+            SkillSearchResult {
+                score: 0.9,
+                slug: "b".to_string(),
+                display_name: "B".to_string(),
+                summary: "B".to_string(),
+                version: "1.0".to_string(),
+                registry_name: "r".to_string(),
+                source_repo: String::new(),
+                download_path: String::new(),
+                downloads: 0,
+                truncated: false,
+            },
         ],
         truncated: false,
     }];

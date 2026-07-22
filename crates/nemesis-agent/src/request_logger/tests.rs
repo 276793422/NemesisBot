@@ -56,7 +56,12 @@ fn create_session_and_log_user_request() {
         .filter_map(|e| e.ok())
         .collect();
     assert_eq!(entries.len(), 1);
-    assert!(entries[0].file_name().to_string_lossy().ends_with(".request.md"));
+    assert!(
+        entries[0]
+            .file_name()
+            .to_string_lossy()
+            .ends_with(".request.md")
+    );
 
     let content = fs::read_to_string(entries[0].path()).unwrap();
     assert!(content.contains("# User Request"));
@@ -105,7 +110,11 @@ fn log_llm_request_and_response() {
 
     // Check request file
     let req_content = fs::read_to_string(
-        entries.iter().find(|e| e.file_name().to_string_lossy().contains("Request")).unwrap().path(),
+        entries
+            .iter()
+            .find(|e| e.file_name().to_string_lossy().contains("Request"))
+            .unwrap()
+            .path(),
     )
     .unwrap();
     assert!(req_content.contains("gpt-4"));
@@ -113,7 +122,11 @@ fn log_llm_request_and_response() {
 
     // Check response file
     let resp_content = fs::read_to_string(
-        entries.iter().find(|e| e.file_name().to_string_lossy().contains("Response")).unwrap().path(),
+        entries
+            .iter()
+            .find(|e| e.file_name().to_string_lossy().contains("Response"))
+            .unwrap()
+            .path(),
     )
     .unwrap();
     assert!(resp_content.contains("The answer is 42."));
@@ -344,23 +357,24 @@ fn log_llm_request_with_fallback_attempts() {
         messages: Vec::new(),
         http_headers: vec![
             ("Content-Type".to_string(), "application/json".to_string()),
-            ("Authorization".to_string(), "Bearer sk-test123456789".to_string()),
+            (
+                "Authorization".to_string(),
+                "Bearer sk-test123456789".to_string(),
+            ),
         ],
         config: {
             let mut m = std::collections::HashMap::new();
             m.insert("temperature".to_string(), "0.7".to_string());
             m
         },
-        fallback_attempts: vec![
-            FallbackAttemptInfo {
-                provider: "openai".to_string(),
-                model: "gpt-4".to_string(),
-                api_key: "sk-test123456789".to_string(),
-                api_base: "https://api.openai.com".to_string(),
-                error: "rate limited".to_string(),
-                duration_ms: 5000,
-            },
-        ],
+        fallback_attempts: vec![FallbackAttemptInfo {
+            provider: "openai".to_string(),
+            model: "gpt-4".to_string(),
+            api_key: "sk-test123456789".to_string(),
+            api_base: "https://api.openai.com".to_string(),
+            error: "rate limited".to_string(),
+            duration_ms: 5000,
+        }],
     });
 
     let session_dir = logger.session_dir().unwrap();
@@ -563,7 +577,10 @@ fn new_with_paths_without_session_name_uses_timestamp_scheme() {
 #[test]
 fn sanitize_filename_replaces_all_unsafe_chars() {
     // Path separators, shell metacharacters and null are replaced with '_'.
-    assert_eq!(RequestLogger::sanitize_filename("safe_name-1"), "safe_name-1");
+    assert_eq!(
+        RequestLogger::sanitize_filename("safe_name-1"),
+        "safe_name-1"
+    );
     assert_eq!(
         RequestLogger::sanitize_filename("a/b\\c:d*e?f\"g<h>i|j"),
         "a_b_c_d_e_f_g_h_i_j"
@@ -577,7 +594,8 @@ fn log_raw_request_writes_json_envelope() {
     let logger = RequestLogger::new(test_config(), tmp.path());
     logger.create_session().unwrap();
 
-    let body = serde_json::json!({"model": "gpt-4", "messages": [{"role": "user", "content": "hi"}]});
+    let body =
+        serde_json::json!({"model": "gpt-4", "messages": [{"role": "user", "content": "hi"}]});
     logger.log_raw_request(&body, Local::now(), 2);
 
     let dir = logger.session_dir().unwrap();

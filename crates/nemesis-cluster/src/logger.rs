@@ -31,7 +31,13 @@ pub fn log_lifecycle(event: &str, node_id: &str, details: &str) {
 }
 
 /// Log an RPC event (request sent, response received).
-pub fn log_rpc(direction: &str, action: &str, request_id: &str, source: &str, target: Option<&str>) {
+pub fn log_rpc(
+    direction: &str,
+    action: &str,
+    request_id: &str,
+    source: &str,
+    target: Option<&str>,
+) {
     tracing::debug!(
         direction = direction,
         action = action,

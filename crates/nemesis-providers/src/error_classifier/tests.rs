@@ -62,7 +62,10 @@ fn test_classify_image_size() {
 
 #[test]
 fn test_classify_reason() {
-    assert_eq!(classify_reason("rate limit"), Some(FailoverReason::RateLimit));
+    assert_eq!(
+        classify_reason("rate limit"),
+        Some(FailoverReason::RateLimit)
+    );
     assert_eq!(classify_reason("timeout"), Some(FailoverReason::Timeout));
     assert_eq!(classify_reason("unknown thing"), None);
 }
@@ -230,12 +233,18 @@ fn test_classify_format_string_pattern() {
 
 #[test]
 fn test_classify_reason_rate_limit() {
-    assert_eq!(classify_reason("rate limit exceeded"), Some(FailoverReason::RateLimit));
+    assert_eq!(
+        classify_reason("rate limit exceeded"),
+        Some(FailoverReason::RateLimit)
+    );
 }
 
 #[test]
 fn test_classify_reason_billing() {
-    assert_eq!(classify_reason("insufficient credits"), Some(FailoverReason::Billing));
+    assert_eq!(
+        classify_reason("insufficient credits"),
+        Some(FailoverReason::Billing)
+    );
 }
 
 #[test]
@@ -245,7 +254,10 @@ fn test_classify_reason_auth() {
 
 #[test]
 fn test_classify_reason_format() {
-    assert_eq!(classify_reason("invalid request format"), Some(FailoverReason::Format));
+    assert_eq!(
+        classify_reason("invalid request format"),
+        Some(FailoverReason::Format)
+    );
 }
 
 #[test]
@@ -255,7 +267,10 @@ fn test_classify_reason_timeout() {
 
 #[test]
 fn test_classify_reason_overloaded_treated_as_rate_limit() {
-    assert_eq!(classify_reason("overloaded"), Some(FailoverReason::RateLimit));
+    assert_eq!(
+        classify_reason("overloaded"),
+        Some(FailoverReason::RateLimit)
+    );
 }
 
 #[test]
@@ -270,7 +285,9 @@ fn test_extract_http_status_various() {
 
 #[test]
 fn test_is_image_dimension_error() {
-    assert!(is_image_dimension_error("image dimensions exceed max 8000px"));
+    assert!(is_image_dimension_error(
+        "image dimensions exceed max 8000px"
+    ));
     assert!(!is_image_dimension_error("file not found"));
 }
 
@@ -293,13 +310,21 @@ fn test_classify_rate_limit_resource_exhausted_regex() {
 #[test]
 fn test_classify_overloaded_json_type() {
     // Go tests verify overloaded_error with JSON type field
-    let err = classify_error(r#"overloaded_error: "type":"overloaded_error""#, "anthropic", "claude");
+    let err = classify_error(
+        r#"overloaded_error: "type":"overloaded_error""#,
+        "anthropic",
+        "claude",
+    );
     assert!(matches!(err, Some(FailoverError::RateLimit { .. })));
 }
 
 #[test]
 fn test_classify_auth_expired_token() {
-    let err = classify_error("The token has expired and needs to be refreshed", "openai", "gpt-4");
+    let err = classify_error(
+        "The token has expired and needs to be refreshed",
+        "openai",
+        "gpt-4",
+    );
     assert!(matches!(err, Some(FailoverError::Auth { .. })));
 }
 
@@ -336,13 +361,21 @@ fn test_classify_timeout_deadline_exceeded() {
 
 #[test]
 fn test_classify_format_tool_use_id_path() {
-    let err = classify_error("messages.1.content.1.tool_use.id is invalid", "anthropic", "claude-3");
+    let err = classify_error(
+        "messages.1.content.1.tool_use.id is invalid",
+        "anthropic",
+        "claude-3",
+    );
     assert!(matches!(err, Some(FailoverError::Format { .. })));
 }
 
 #[test]
 fn test_classify_format_tool_use_id_variant() {
-    let err = classify_error("tool_use_id must be a valid string", "anthropic", "claude-3");
+    let err = classify_error(
+        "tool_use_id must be a valid string",
+        "anthropic",
+        "claude-3",
+    );
     assert!(matches!(err, Some(FailoverError::Format { .. })));
 }
 
@@ -400,7 +433,10 @@ fn test_extract_http_status_http2() {
 
 #[test]
 fn test_extract_http_status_http11() {
-    assert_eq!(extract_http_status("HTTP/1.1 429 Too Many Requests"), Some(429));
+    assert_eq!(
+        extract_http_status("HTTP/1.1 429 Too Many Requests"),
+        Some(429)
+    );
 }
 
 #[test]
@@ -412,5 +448,8 @@ fn test_classify_reason_all_unknown() {
 #[test]
 fn test_classify_reason_combined_rate_limit() {
     // Overloaded should also return RateLimit reason
-    assert_eq!(classify_reason("server is overloaded"), Some(FailoverReason::RateLimit));
+    assert_eq!(
+        classify_reason("server is overloaded"),
+        Some(FailoverReason::RateLimit)
+    );
 }

@@ -120,9 +120,13 @@ fn test_resolve_home_env_var() {
     let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
     let tmp = tempfile::TempDir::new().unwrap();
     let custom_path = tmp.path().to_string_lossy().to_string();
-    unsafe { std::env::set_var("NEMESISBOT_HOME", &custom_path); }
+    unsafe {
+        std::env::set_var("NEMESISBOT_HOME", &custom_path);
+    }
     let home = resolve_home(false);
-    unsafe { std::env::remove_var("NEMESISBOT_HOME"); }
+    unsafe {
+        std::env::remove_var("NEMESISBOT_HOME");
+    }
     assert!(home.to_string_lossy().contains(".nemesisbot"));
     // Check the parent directory matches
     assert_eq!(home.parent().unwrap(), tmp.path());
@@ -347,8 +351,14 @@ fn test_copy_directory_with_nested_files() {
     copy_directory(&src, &dst).unwrap();
 
     assert_eq!(fs::read_to_string(dst.join("root.txt")).unwrap(), "root");
-    assert_eq!(fs::read_to_string(dst.join("a").join("level1.txt")).unwrap(), "l1");
-    assert_eq!(fs::read_to_string(dst.join("a").join("b").join("level2.txt")).unwrap(), "l2");
+    assert_eq!(
+        fs::read_to_string(dst.join("a").join("level1.txt")).unwrap(),
+        "l1"
+    );
+    assert_eq!(
+        fs::read_to_string(dst.join("a").join("b").join("level2.txt")).unwrap(),
+        "l2"
+    );
 }
 
 // ============================================================
@@ -367,9 +377,13 @@ fn test_resolve_home_env_var_custom_path() {
     let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
     let tmp = tempfile::TempDir::new().unwrap();
     let custom_path = tmp.path().to_string_lossy().to_string();
-    unsafe { std::env::set_var("NEMESISBOT_HOME", &custom_path); }
+    unsafe {
+        std::env::set_var("NEMESISBOT_HOME", &custom_path);
+    }
     let home = resolve_home(false);
-    unsafe { std::env::remove_var("NEMESISBOT_HOME"); }
+    unsafe {
+        std::env::remove_var("NEMESISBOT_HOME");
+    }
     assert_eq!(home, tmp.path().join(".nemesisbot"));
 }
 
@@ -590,7 +604,10 @@ fn test_copy_directory_overwrites_existing() {
     fs::write(dst.join("file.txt"), "old content").unwrap();
 
     copy_directory(&src, &dst).unwrap();
-    assert_eq!(fs::read_to_string(dst.join("file.txt")).unwrap(), "new content");
+    assert_eq!(
+        fs::read_to_string(dst.join("file.txt")).unwrap(),
+        "new content"
+    );
 }
 
 #[test]

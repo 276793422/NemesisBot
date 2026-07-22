@@ -15,9 +15,9 @@
 use crate::events::EventHub;
 use crate::session::SessionManager;
 use crate::websocket_handler::IncomingMessage;
+use axum::Json;
 use axum::extract::{Query, State};
 use axum::http::StatusCode;
-use axum::Json;
 
 use nemesis_services::bot_service::AgentLoopService;
 use nemesis_types::utils;
@@ -25,8 +25,8 @@ use parking_lot::Mutex;
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, AtomicUsize};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicUsize};
 use std::time::Instant;
 use tokio::sync::mpsc;
 
@@ -138,11 +138,11 @@ impl AppState {
 /// `GET /api/status` — returns system status as JSON.
 ///
 /// Returns version, uptime, session count, scanner status, cluster status, model name.
-pub async fn handle_api_status(
-    State(state): State<Arc<AppState>>,
-) -> Json<serde_json::Value> {
+pub async fn handle_api_status(State(state): State<Arc<AppState>>) -> Json<serde_json::Value> {
     let uptime = state.start_time.elapsed().as_secs();
-    let session_count = state.session_count.load(std::sync::atomic::Ordering::SeqCst);
+    let session_count = state
+        .session_count
+        .load(std::sync::atomic::Ordering::SeqCst);
     let running = state.running.load(std::sync::atomic::Ordering::SeqCst);
     let model_name = state.model_name.lock().clone();
 
@@ -154,10 +154,10 @@ pub async fn handle_api_status(
     });
 
     if let Some(ref workspace) = state.workspace {
-        response.as_object_mut().unwrap().insert(
-            "scanner_status".to_string(),
-            load_scanner_status(workspace),
-        );
+        response
+            .as_object_mut()
+            .unwrap()
+            .insert("scanner_status".to_string(), load_scanner_status(workspace));
         response.as_object_mut().unwrap().insert(
             "cluster_status".to_string(),
             serde_json::json!({
@@ -165,17 +165,21 @@ pub async fn handle_api_status(
                 "node_count": 0,
             }),
         );
-        response.as_object_mut().unwrap().insert(
-            "model".to_string(),
-            serde_json::Value::String(model_name),
-        );
+        response
+            .as_object_mut()
+            .unwrap()
+            .insert("model".to_string(), serde_json::Value::String(model_name));
         response.as_object_mut().unwrap().insert(
             "model_base".to_string(),
             serde_json::Value::String(state.model_base.lock().clone()),
         );
         response.as_object_mut().unwrap().insert(
             "model_has_key".to_string(),
-            serde_json::Value::Bool(state.model_has_key.load(std::sync::atomic::Ordering::SeqCst)),
+            serde_json::Value::Bool(
+                state
+                    .model_has_key
+                    .load(std::sync::atomic::Ordering::SeqCst),
+            ),
         );
     }
 
@@ -304,9 +308,7 @@ pub async fn handle_api_config(
 // ---------------------------------------------------------------------------
 
 /// `GET /api/version` — returns version and build information.
-pub async fn handle_api_version(
-    State(state): State<Arc<AppState>>,
-) -> Json<serde_json::Value> {
+pub async fn handle_api_version(State(state): State<Arc<AppState>>) -> Json<serde_json::Value> {
     let uptime = state.start_time.elapsed().as_secs();
     Json(serde_json::json!({
         "version": state.version,
@@ -404,10 +406,10 @@ pub async fn handle_api_models(
 // ---------------------------------------------------------------------------
 
 /// `GET /api/sessions` — returns information about active WebSocket sessions.
-pub async fn handle_api_sessions(
-    State(state): State<Arc<AppState>>,
-) -> Json<serde_json::Value> {
-    let session_count = state.session_count.load(std::sync::atomic::Ordering::SeqCst);
+pub async fn handle_api_sessions(State(state): State<Arc<AppState>>) -> Json<serde_json::Value> {
+    let session_count = state
+        .session_count
+        .load(std::sync::atomic::Ordering::SeqCst);
     let active_count = state.session_manager.active_count();
 
     Json(serde_json::json!({
@@ -421,9 +423,7 @@ pub async fn handle_api_sessions(
 // ---------------------------------------------------------------------------
 
 /// `GET /api/events` — returns recent events from the event hub (snapshot).
-pub async fn handle_api_events(
-    State(state): State<Arc<AppState>>,
-) -> Json<serde_json::Value> {
+pub async fn handle_api_events(State(state): State<Arc<AppState>>) -> Json<serde_json::Value> {
     let subscriber_count = state.event_hub.subscriber_count();
     Json(serde_json::json!({
         "stream_url": "/api/events/stream",
@@ -767,8 +767,7 @@ fn sanitize_map(map: &mut serde_json::Map<String, serde_json::Value>) {
                             *value = serde_json::Value::String("****".to_string());
                         } else {
                             let end = utils::floor_char_boundary(s, 4);
-                            *value =
-                                serde_json::Value::String(format!("{}****", &s[..end]));
+                            *value = serde_json::Value::String(format!("{}****", &s[..end]));
                         }
                     }
                 }

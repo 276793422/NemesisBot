@@ -225,7 +225,9 @@ impl Tool for MessageTool {
             );
             format_rpc_prefix(&correlation_id, content)
         } else if channel == "rpc" {
-            warn!("[Tools] No correlation ID in context for RPC channel - response will not be delivered!");
+            warn!(
+                "[Tools] No correlation ID in context for RPC channel - response will not be delivered!"
+            );
             content.to_string()
         } else {
             content.to_string()

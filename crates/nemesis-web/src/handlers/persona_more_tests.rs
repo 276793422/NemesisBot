@@ -16,8 +16,8 @@ use crate::handlers::persona::PersonaHandler;
 use crate::ws_router::ModuleHandler;
 
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, AtomicUsize};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicUsize};
 use std::time::Instant;
 
 use crate::api_handlers::AppState;
@@ -84,7 +84,9 @@ fn make_ctx_inner(ws: &str, agent: Option<Arc<dyn AgentLoopService>>) -> Request
         cluster_service: None,
         cluster_log_dir: None,
         workflow_engine: None,
-        chat_secret_store: std::sync::Arc::new(nemesis_workflow::chat_secrets::ChatSecretStore::in_memory()),
+        chat_secret_store: std::sync::Arc::new(
+            nemesis_workflow::chat_secrets::ChatSecretStore::in_memory(),
+        ),
         webhook_rate_limiter: Arc::new(crate::handlers::workflow::WebhookRateLimiter::new()),
         internal_cmd_tx: None,
         estop: None,
@@ -175,7 +177,11 @@ async fn test_file_save_non_active_no_root_sync() {
         "file": "IDENTITY.md",
         "content": "# Alt Modified",
     });
-    let r = h.handle_cmd("file.save", Some(data), &ctx).await.unwrap().unwrap();
+    let r = h
+        .handle_cmd("file.save", Some(data), &ctx)
+        .await
+        .unwrap()
+        .unwrap();
     assert!(r["saved"].as_bool().unwrap());
 
     // alt is not active → root should be unchanged.
@@ -205,7 +211,11 @@ async fn test_file_save_creates_persona_dir_parent() {
         "file": "IDENTITY.md",
         "content": "fresh content",
     });
-    let r = h.handle_cmd("file.save", Some(data), &ctx).await.unwrap().unwrap();
+    let r = h
+        .handle_cmd("file.save", Some(data), &ctx)
+        .await
+        .unwrap()
+        .unwrap();
     assert!(r["saved"].as_bool().unwrap());
 
     // The persona dir and file should exist.
@@ -225,7 +235,11 @@ async fn test_file_get_unknown_persona_returns_empty() {
 
     let h = PersonaHandler::new();
     let data = serde_json::json!({ "name": "ghost", "file": "IDENTITY.md" });
-    let r = h.handle_cmd("file.get", Some(data), &ctx).await.unwrap().unwrap();
+    let r = h
+        .handle_cmd("file.get", Some(data), &ctx)
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(r["content"], "");
     assert_eq!(r["name"], "IDENTITY.md");
 }
@@ -357,7 +371,11 @@ async fn test_activate_with_heartbeat_archived() {
     let ctx = make_ctx_with_agent(&dir);
     let h = PersonaHandler::new();
     let data = serde_json::json!({ "name": "hb" });
-    let r = h.handle_cmd("activate", Some(data), &ctx).await.unwrap().unwrap();
+    let r = h
+        .handle_cmd("activate", Some(data), &ctx)
+        .await
+        .unwrap()
+        .unwrap();
     assert!(r["activated"].as_bool().unwrap());
 
     // HEARTBEAT.md should be archived into default/ (current was default).
@@ -382,7 +400,8 @@ async fn test_activate_archives_and_restores_memory_dir() {
     let target_dir = ws.join("personas/dev");
     std::fs::create_dir_all(target_dir.join("memory")).unwrap();
     std::fs::write(target_dir.join("memory/dev_note.md"), "# Dev Memory").unwrap();
-    std::fs::write(target_dir.join("PERSONA.json"),
+    std::fs::write(
+        target_dir.join("PERSONA.json"),
         serde_json::to_string_pretty(&serde_json::json!({
             "name": "Dev", "emoji": "🛠", "description": "dev"
         }))
@@ -394,7 +413,11 @@ async fn test_activate_archives_and_restores_memory_dir() {
     let ctx = make_ctx_with_agent(&dir);
     let h = PersonaHandler::new();
     let data = serde_json::json!({ "name": "dev" });
-    let r = h.handle_cmd("activate", Some(data), &ctx).await.unwrap().unwrap();
+    let r = h
+        .handle_cmd("activate", Some(data), &ctx)
+        .await
+        .unwrap()
+        .unwrap();
     assert!(r["activated"].as_bool().unwrap());
 
     // Original memory/ archived into default/.
@@ -419,7 +442,11 @@ async fn test_activate_creates_default_memory_md() {
     let ctx = make_ctx_with_agent(&dir);
     let h = PersonaHandler::new();
     let data = serde_json::json!({ "name": "fresh" });
-    let r = h.handle_cmd("activate", Some(data), &ctx).await.unwrap().unwrap();
+    let r = h
+        .handle_cmd("activate", Some(data), &ctx)
+        .await
+        .unwrap()
+        .unwrap();
     assert!(r["activated"].as_bool().unwrap());
 
     // memory/MEMORY.md should be auto-created.
@@ -443,10 +470,17 @@ async fn test_restore_switches_back_to_default() {
     let ctx_agent = make_ctx_with_agent(&dir);
     let h = PersonaHandler::new();
     let data = serde_json::json!({ "name": "temp" });
-    let _ = h.handle_cmd("activate", Some(data), &ctx_agent).await.unwrap();
+    let _ = h
+        .handle_cmd("activate", Some(data), &ctx_agent)
+        .await
+        .unwrap();
 
     // Now restore to default.
-    let r = h.handle_cmd("restore", None, &ctx_agent).await.unwrap().unwrap();
+    let r = h
+        .handle_cmd("restore", None, &ctx_agent)
+        .await
+        .unwrap()
+        .unwrap();
     assert!(r["activated"].as_bool().unwrap());
     assert_eq!(r["name"], "default");
 
@@ -473,7 +507,10 @@ async fn test_remove_active_switches_to_default() {
         let ctx_agent = make_ctx_with_agent(&dir);
         let h = PersonaHandler::new();
         let data = serde_json::json!({ "name": "go" });
-        let _ = h.handle_cmd("activate", Some(data), &ctx_agent).await.unwrap();
+        let _ = h
+            .handle_cmd("activate", Some(data), &ctx_agent)
+            .await
+            .unwrap();
     }
 
     // Now remove "go" while it's active. cmd_remove internally calls cmd_activate("default").
@@ -481,7 +518,11 @@ async fn test_remove_active_switches_to_default() {
     let ctx = make_ctx(&dir);
     let h = PersonaHandler::new();
     let data = serde_json::json!({ "name": "go" });
-    let r = h.handle_cmd("remove", Some(data), &ctx).await.unwrap().unwrap();
+    let r = h
+        .handle_cmd("remove", Some(data), &ctx)
+        .await
+        .unwrap()
+        .unwrap();
     assert!(r["removed"].as_bool().unwrap());
 
     // Active should be default now.
@@ -508,7 +549,11 @@ async fn test_remove_non_active_persona() {
 
     let h = PersonaHandler::new();
     let data = serde_json::json!({ "name": "extra" });
-    let r = h.handle_cmd("remove", Some(data), &ctx).await.unwrap().unwrap();
+    let r = h
+        .handle_cmd("remove", Some(data), &ctx)
+        .await
+        .unwrap()
+        .unwrap();
     assert!(r["removed"].as_bool().unwrap());
 
     // Active should still be default.
@@ -532,7 +577,11 @@ async fn test_file_get_returns_existing_content() {
 
     let h = PersonaHandler::new();
     let data = serde_json::json!({ "name": "default", "file": "AGENT.md" });
-    let r = h.handle_cmd("file.get", Some(data), &ctx).await.unwrap().unwrap();
+    let r = h
+        .handle_cmd("file.get", Some(data), &ctx)
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(r["content"], "# Custom Agent");
 }
 
@@ -616,7 +665,9 @@ fn make_ctx_no_workspace() -> RequestContext {
         cluster_service: None,
         cluster_log_dir: None,
         workflow_engine: None,
-        chat_secret_store: std::sync::Arc::new(nemesis_workflow::chat_secrets::ChatSecretStore::in_memory()),
+        chat_secret_store: std::sync::Arc::new(
+            nemesis_workflow::chat_secrets::ChatSecretStore::in_memory(),
+        ),
         webhook_rate_limiter: Arc::new(crate::handlers::workflow::WebhookRateLimiter::new()),
         internal_cmd_tx: None,
         estop: None,
@@ -718,10 +769,18 @@ async fn test_persona_shop_refresh_clears_caches() {
     let dir = tempfile::tempdir().unwrap();
     let ctx = make_ctx(&dir);
     let h = PersonaHandler::new();
-    let r = h.handle_cmd("shop.refresh", None, &ctx).await.unwrap().unwrap();
+    let r = h
+        .handle_cmd("shop.refresh", None, &ctx)
+        .await
+        .unwrap()
+        .unwrap();
     assert!(r["refreshed"].as_bool().unwrap());
 
     // Calling again should still succeed (idempotent).
-    let r = h.handle_cmd("shop.refresh", None, &ctx).await.unwrap().unwrap();
+    let r = h
+        .handle_cmd("shop.refresh", None, &ctx)
+        .await
+        .unwrap()
+        .unwrap();
     assert!(r["refreshed"].as_bool().unwrap());
 }

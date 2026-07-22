@@ -11,7 +11,10 @@ async fn unified_store_and_search() {
     let mgr = MemoryManager::new(&config);
 
     // Store an entry.
-    let entry = Entry::new(MemoryType::LongTerm, "Paris is the capital of France".to_string());
+    let entry = Entry::new(
+        MemoryType::LongTerm,
+        "Paris is the capital of France".to_string(),
+    );
     let id = mgr.store_entry(entry).await.unwrap();
 
     // Search for it.
@@ -157,20 +160,12 @@ async fn unified_graph_get_related() {
     let config = Config::new(dir.path());
     let mgr = MemoryManager::new(&config);
 
-    mgr.add_triple(GraphTriple::new(
-        "a".into(),
-        "rel".into(),
-        "b".into(),
-    ))
-    .await
-    .unwrap();
-    mgr.add_triple(GraphTriple::new(
-        "b".into(),
-        "rel".into(),
-        "c".into(),
-    ))
-    .await
-    .unwrap();
+    mgr.add_triple(GraphTriple::new("a".into(), "rel".into(), "b".into()))
+        .await
+        .unwrap();
+    mgr.add_triple(GraphTriple::new("b".into(), "rel".into(), "c".into()))
+        .await
+        .unwrap();
 
     let related = mgr.get_related_triples("a", 2).await.unwrap();
     assert!(related.len() >= 2);
@@ -185,13 +180,9 @@ async fn unified_graph_stats() {
     mgr.upsert_entity(GraphEntity::new("x".into(), "thing".into()))
         .await
         .unwrap();
-    mgr.add_triple(GraphTriple::new(
-        "x".into(),
-        "has".into(),
-        "y".into(),
-    ))
-    .await
-    .unwrap();
+    mgr.add_triple(GraphTriple::new("x".into(), "has".into(), "y".into()))
+        .await
+        .unwrap();
 
     let (entities, triples) = mgr.graph_stats().await.unwrap();
     assert_eq!(entities, 1);
@@ -272,9 +263,12 @@ async fn test_query_alias() {
     let config = Config::new(dir.path());
     let mgr = MemoryManager::new(&config);
 
-    mgr.store_entry(Entry::new(MemoryType::LongTerm, "query alias test".to_string()))
-        .await
-        .unwrap();
+    mgr.store_entry(Entry::new(
+        MemoryType::LongTerm,
+        "query alias test".to_string(),
+    ))
+    .await
+    .unwrap();
 
     let result = mgr.query("alias", None, 10).await.unwrap();
     assert_eq!(result.total, 1);
@@ -287,7 +281,10 @@ async fn test_delete_alias() {
     let mgr = MemoryManager::new(&config);
 
     let id = mgr
-        .store_entry(Entry::new(MemoryType::LongTerm, "delete alias test".to_string()))
+        .store_entry(Entry::new(
+            MemoryType::LongTerm,
+            "delete alias test".to_string(),
+        ))
         .await
         .unwrap();
 
@@ -312,18 +309,17 @@ async fn test_init_vector_store() {
     let mgr = MemoryManager::new(&config);
 
     // Before init, query_semantic falls back to keyword search.
-    mgr.store_fact("Rust is memory safe", vec![])
-        .await
-        .unwrap();
+    mgr.store_fact("Rust is memory safe", vec![]).await.unwrap();
     let results = mgr.query_semantic("Rust", 5).await.unwrap();
     assert_eq!(results.total, 1);
 
     // Init vector store with shared plugin fixture
-    let embed = crate::vector::test_fixture::shared_embed_func()
-        .expect("shared plugin not available");
+    let embed =
+        crate::vector::test_fixture::shared_embed_func().expect("shared plugin not available");
     let vs_config = crate::vector::test_fixture::plugin_store_config(
-        &dir.path().join("vector").join("vs.jsonl").to_string_lossy()
-    ).expect("plugin DLL + model files required");
+        &dir.path().join("vector").join("vs.jsonl").to_string_lossy(),
+    )
+    .expect("plugin DLL + model files required");
     mgr.init_vector_store_with_embed(embed, vs_config).unwrap();
 
     // query_semantic now uses vector store. The previously stored entry
@@ -343,7 +339,10 @@ async fn test_new_with_jsonl() {
     assert!(mgr.is_enabled());
 
     let id = mgr
-        .store_entry(Entry::new(MemoryType::LongTerm, "jsonl persisted".to_string()))
+        .store_entry(Entry::new(
+            MemoryType::LongTerm,
+            "jsonl persisted".to_string(),
+        ))
         .await
         .unwrap();
 
@@ -385,16 +384,20 @@ async fn test_vector_store_adapter_stores_and_queries() {
     let mgr = MemoryManager::new(&config);
 
     // Init vector store with shared plugin fixture
-    let embed = crate::vector::test_fixture::shared_embed_func()
-        .expect("shared plugin not available");
+    let embed =
+        crate::vector::test_fixture::shared_embed_func().expect("shared plugin not available");
     let vs_config = crate::vector::test_fixture::plugin_store_config(
-        &dir.path().join("vector").join("vs.jsonl").to_string_lossy()
-    ).expect("plugin DLL + model files required");
+        &dir.path().join("vector").join("vs.jsonl").to_string_lossy(),
+    )
+    .expect("plugin DLL + model files required");
     mgr.init_vector_store_with_embed(embed, vs_config).unwrap();
 
     // Store an entry - should go to both keyword and vector stores
     let id = mgr
-        .store_fact("Berlin is the capital of Germany", vec!["geography".to_string()])
+        .store_fact(
+            "Berlin is the capital of Germany",
+            vec!["geography".to_string()],
+        )
         .await
         .unwrap();
     assert!(!id.is_empty());
@@ -402,7 +405,10 @@ async fn test_vector_store_adapter_stores_and_queries() {
     // Query via search should find it through the vector store path
     let results = mgr.search("Berlin", None, 10).await.unwrap();
     assert_eq!(results.total, 1);
-    assert_eq!(results.entries[0].entry.content, "Berlin is the capital of Germany");
+    assert_eq!(
+        results.entries[0].entry.content,
+        "Berlin is the capital of Germany"
+    );
 
     // Get should find it in vector store
     let got = mgr.get(&id).await.unwrap();
@@ -432,11 +438,12 @@ async fn test_vector_store_adapter_query_fallback() {
         .unwrap();
 
     // Init vector store with shared plugin fixture
-    let embed = crate::vector::test_fixture::shared_embed_func()
-        .expect("shared plugin not available");
+    let embed =
+        crate::vector::test_fixture::shared_embed_func().expect("shared plugin not available");
     let vs_config = crate::vector::test_fixture::plugin_store_config(
-        &dir.path().join("vector").join("vs.jsonl").to_string_lossy()
-    ).expect("plugin DLL + model files required");
+        &dir.path().join("vector").join("vs.jsonl").to_string_lossy(),
+    )
+    .expect("plugin DLL + model files required");
     mgr.init_vector_store_with_embed(embed, vs_config).unwrap();
 
     // Store entry AFTER vector store init (in both stores)
@@ -465,8 +472,14 @@ fn test_config_new() {
 
 #[test]
 fn test_parse_memory_type_from_str_all_variants() {
-    assert_eq!(parse_memory_type_from_str("short_term"), MemoryType::ShortTerm);
-    assert_eq!(parse_memory_type_from_str("long_term"), MemoryType::LongTerm);
+    assert_eq!(
+        parse_memory_type_from_str("short_term"),
+        MemoryType::ShortTerm
+    );
+    assert_eq!(
+        parse_memory_type_from_str("long_term"),
+        MemoryType::LongTerm
+    );
     assert_eq!(parse_memory_type_from_str(""), MemoryType::LongTerm);
     assert_eq!(parse_memory_type_from_str("episodic"), MemoryType::Episodic);
     assert_eq!(parse_memory_type_from_str("graph"), MemoryType::Graph);
@@ -511,8 +524,12 @@ async fn test_list_with_type_filter() {
     let config = Config::new(dir.path());
     let mgr = MemoryManager::new(&config);
 
-    mgr.store_entry(Entry::new(MemoryType::LongTerm, "long term".to_string())).await.unwrap();
-    mgr.store_entry(Entry::new(MemoryType::ShortTerm, "short term".to_string())).await.unwrap();
+    mgr.store_entry(Entry::new(MemoryType::LongTerm, "long term".to_string()))
+        .await
+        .unwrap();
+    mgr.store_entry(Entry::new(MemoryType::ShortTerm, "short term".to_string()))
+        .await
+        .unwrap();
 
     let long = mgr.list(Some(MemoryType::LongTerm), 10, 0).await.unwrap();
     assert_eq!(long.len(), 1);
@@ -526,7 +543,9 @@ async fn test_list_with_pagination() {
     let mgr = MemoryManager::new(&config);
 
     for i in 0..10 {
-        mgr.store_entry(Entry::new(MemoryType::LongTerm, format!("entry {}", i))).await.unwrap();
+        mgr.store_entry(Entry::new(MemoryType::LongTerm, format!("entry {}", i)))
+            .await
+            .unwrap();
     }
 
     let page1 = mgr.list(None, 3, 0).await.unwrap();
@@ -588,7 +607,13 @@ async fn test_episodic_cleanup() {
     mgr.append_episode(old).await.unwrap();
 
     // Recent episode
-    mgr.append_episode(Episode::new("new-sess".into(), "user".into(), "new content".into())).await.unwrap();
+    mgr.append_episode(Episode::new(
+        "new-sess".into(),
+        "user".into(),
+        "new content".into(),
+    ))
+    .await
+    .unwrap();
 
     let removed = mgr.cleanup_episodic(5).await.unwrap();
     assert_eq!(removed, 1);
@@ -600,8 +625,12 @@ async fn test_graph_query_triples() {
     let config = Config::new(dir.path());
     let mgr = MemoryManager::new(&config);
 
-    mgr.add_triple(GraphTriple::new("a".into(), "knows".into(), "b".into())).await.unwrap();
-    mgr.add_triple(GraphTriple::new("c".into(), "knows".into(), "d".into())).await.unwrap();
+    mgr.add_triple(GraphTriple::new("a".into(), "knows".into(), "b".into()))
+        .await
+        .unwrap();
+    mgr.add_triple(GraphTriple::new("c".into(), "knows".into(), "d".into()))
+        .await
+        .unwrap();
 
     let triples = mgr.query_graph_triples("a", "", "").await.unwrap();
     assert_eq!(triples.len(), 1);
@@ -637,7 +666,9 @@ async fn test_search_disabled_returns_empty() {
     let config = Config::new(dir.path());
     let mgr = MemoryManager::new(&config);
 
-    mgr.store_fact("should be searchable", vec![]).await.unwrap();
+    mgr.store_fact("should be searchable", vec![])
+        .await
+        .unwrap();
     let results = mgr.search("searchable", None, 10).await.unwrap();
     assert_eq!(results.total, 1);
 
@@ -667,10 +698,16 @@ async fn test_store_disabled_returns_empty_id() {
 
     mgr.close().await.unwrap();
 
-    let id = mgr.store_entry(Entry::new(MemoryType::LongTerm, "disabled".to_string())).await.unwrap();
+    let id = mgr
+        .store_entry(Entry::new(MemoryType::LongTerm, "disabled".to_string()))
+        .await
+        .unwrap();
     assert!(id.is_empty());
 
-    let id2 = mgr.store(Entry::new(MemoryType::LongTerm, "disabled".to_string())).await.unwrap();
+    let id2 = mgr
+        .store(Entry::new(MemoryType::LongTerm, "disabled".to_string()))
+        .await
+        .unwrap();
     assert!(id2.is_empty());
 }
 
@@ -680,7 +717,9 @@ async fn test_list_disabled_returns_empty() {
     let config = Config::new(dir.path());
     let mgr = MemoryManager::new(&config);
 
-    mgr.store_entry(Entry::new(MemoryType::LongTerm, "test".to_string())).await.unwrap();
+    mgr.store_entry(Entry::new(MemoryType::LongTerm, "test".to_string()))
+        .await
+        .unwrap();
 
     mgr.close().await.unwrap();
 
@@ -701,26 +740,34 @@ async fn test_append_episode_writes_to_vector_store() {
     let config = Config::new(dir.path());
     let mgr = MemoryManager::new(&config);
 
-    let embed = crate::vector::test_fixture::shared_embed_func()
-        .expect("shared plugin not available");
+    let embed =
+        crate::vector::test_fixture::shared_embed_func().expect("shared plugin not available");
     // Use low threshold so the query always matches
     let vs_config = StoreConfig {
         similarity_threshold: 0.3,
         ..crate::vector::test_fixture::plugin_store_config(
-            &dir.path().join("vector").join("vs.jsonl").to_string_lossy()
-        ).expect("plugin DLL + model files required")
+            &dir.path().join("vector").join("vs.jsonl").to_string_lossy(),
+        )
+        .expect("plugin DLL + model files required")
     };
     mgr.init_vector_store_with_embed(embed, vs_config).unwrap();
 
     // Store an episode — should write to both episodic store AND vector store
-    let episode = Episode::new("vs-ep-test".into(), "user".into(), "episodic vector store write test".into());
+    let episode = Episode::new(
+        "vs-ep-test".into(),
+        "user".into(),
+        "episodic vector store write test".into(),
+    );
     let id = mgr.append_episode(episode).await.unwrap();
     assert!(!id.is_empty());
 
     // Verify: semantic search finds the episodic content via vector store
     let results = mgr.search("episodic vector store", None, 10).await.unwrap();
     assert!(
-        results.entries.iter().any(|se| se.entry.content.contains("episodic vector store write test")),
+        results.entries.iter().any(|se| se
+            .entry
+            .content
+            .contains("episodic vector store write test")),
         "vector store should contain the episodic entry, got: {:?}",
         results.entries
     );
@@ -741,21 +788,32 @@ async fn test_init_vector_store_with_custom_config() {
     let config = Config::new(dir.path());
     let mgr = MemoryManager::new(&config);
 
-    let embed = crate::vector::test_fixture::shared_embed_func()
-        .expect("shared plugin not available");
+    let embed =
+        crate::vector::test_fixture::shared_embed_func().expect("shared plugin not available");
     let custom_vs_config = StoreConfig {
         similarity_threshold: 0.5,
         max_results: 5,
-        storage_path: dir.path().join("custom_vectors.jsonl").to_string_lossy().to_string(),
+        storage_path: dir
+            .path()
+            .join("custom_vectors.jsonl")
+            .to_string_lossy()
+            .to_string(),
         ..crate::vector::test_fixture::plugin_store_config(
-            &dir.path().join("vector").join("vs.jsonl").to_string_lossy()
-        ).expect("plugin DLL + model files required")
+            &dir.path().join("vector").join("vs.jsonl").to_string_lossy(),
+        )
+        .expect("plugin DLL + model files required")
     };
 
-    mgr.init_vector_store_with_embed(embed, custom_vs_config).unwrap();
+    mgr.init_vector_store_with_embed(embed, custom_vs_config)
+        .unwrap();
 
     // Store and query - use store_entry which also stores in vector store
-    mgr.store_entry(Entry::new(MemoryType::LongTerm, "custom vector test".to_string())).await.unwrap();
+    mgr.store_entry(Entry::new(
+        MemoryType::LongTerm,
+        "custom vector test".to_string(),
+    ))
+    .await
+    .unwrap();
     let results = mgr.query_semantic("vector", 3).await.unwrap();
     assert!(results.total >= 1);
 
@@ -785,8 +843,7 @@ async fn test_store_entry_with_metadata() {
 
     let mut meta = HashMap::new();
     meta.insert("source".to_string(), "test".to_string());
-    let entry = Entry::new(MemoryType::LongTerm, "metadata test".to_string())
-        .with_metadata(meta);
+    let entry = Entry::new(MemoryType::LongTerm, "metadata test".to_string()).with_metadata(meta);
 
     let id = mgr.store_entry(entry).await.unwrap();
     let got = mgr.get(&id).await.unwrap().unwrap();
@@ -799,13 +856,29 @@ async fn test_search_with_memory_type_filter() {
     let config = Config::new(dir.path());
     let mgr = MemoryManager::new(&config);
 
-    mgr.store_entry(Entry::new(MemoryType::LongTerm, "long term memory".to_string())).await.unwrap();
-    mgr.store_entry(Entry::new(MemoryType::ShortTerm, "short term memory".to_string())).await.unwrap();
+    mgr.store_entry(Entry::new(
+        MemoryType::LongTerm,
+        "long term memory".to_string(),
+    ))
+    .await
+    .unwrap();
+    mgr.store_entry(Entry::new(
+        MemoryType::ShortTerm,
+        "short term memory".to_string(),
+    ))
+    .await
+    .unwrap();
 
-    let long = mgr.search("memory", Some(MemoryType::LongTerm), 10).await.unwrap();
+    let long = mgr
+        .search("memory", Some(MemoryType::LongTerm), 10)
+        .await
+        .unwrap();
     assert_eq!(long.total, 1);
 
-    let short = mgr.search("memory", Some(MemoryType::ShortTerm), 10).await.unwrap();
+    let short = mgr
+        .search("memory", Some(MemoryType::ShortTerm), 10)
+        .await
+        .unwrap();
     assert_eq!(short.total, 1);
 }
 
@@ -815,7 +888,13 @@ async fn test_store_fact_with_tags() {
     let config = Config::new(dir.path());
     let mgr = MemoryManager::new(&config);
 
-    let id = mgr.store_fact("Python is interpreted", vec!["python".to_string(), "programming".to_string()]).await.unwrap();
+    let id = mgr
+        .store_fact(
+            "Python is interpreted",
+            vec!["python".to_string(), "programming".to_string()],
+        )
+        .await
+        .unwrap();
     let got = mgr.get(&id).await.unwrap().unwrap();
     assert!(got.tags.contains(&"python".to_string()));
     assert!(got.tags.contains(&"programming".to_string()));
@@ -832,7 +911,9 @@ async fn test_query_semantic_zero_limit_defaults_to_five() {
     let mgr = MemoryManager::new(&config);
 
     for i in 0..10 {
-        mgr.store_fact(&format!("fact number {} about testing", i), vec![]).await.unwrap();
+        mgr.store_fact(&format!("fact number {} about testing", i), vec![])
+            .await
+            .unwrap();
     }
 
     // limit=0 should default to 5
@@ -848,7 +929,10 @@ async fn test_store_method_delegates_to_store_entry() {
     let mgr = MemoryManager::new(&config);
 
     // Use store() (Go-style alias) instead of store_entry()
-    let entry = Entry::new(MemoryType::LongTerm, "stored via store() method".to_string());
+    let entry = Entry::new(
+        MemoryType::LongTerm,
+        "stored via store() method".to_string(),
+    );
     let id = mgr.store(entry).await.unwrap();
     assert!(!id.is_empty());
 
@@ -870,16 +954,22 @@ async fn test_store_and_get_via_vector_store() {
     let mgr = MemoryManager::new(&config);
 
     // Init vector store with shared plugin fixture
-    let embed = crate::vector::test_fixture::shared_embed_func()
-        .expect("shared plugin not available");
+    let embed =
+        crate::vector::test_fixture::shared_embed_func().expect("shared plugin not available");
     let vs_config = crate::vector::test_fixture::plugin_store_config(
-        &dir.path().join("vector").join("vs.jsonl").to_string_lossy()
-    ).expect("plugin DLL + model files required");
+        &dir.path().join("vector").join("vs.jsonl").to_string_lossy(),
+    )
+    .expect("plugin DLL + model files required");
     mgr.init_vector_store_with_embed(embed, vs_config).unwrap();
 
     // Store via store_entry (which also stores to vector)
-    let id = mgr.store_entry(Entry::new(MemoryType::LongTerm, "vector store entry".to_string()))
-        .await.unwrap();
+    let id = mgr
+        .store_entry(Entry::new(
+            MemoryType::LongTerm,
+            "vector store entry".to_string(),
+        ))
+        .await
+        .unwrap();
 
     // Get should find it in the keyword store first
     let got = mgr.get(&id).await.unwrap();
@@ -902,16 +992,22 @@ async fn test_get_falls_back_to_vector_store() {
     let config = Config::new(dir.path());
     let mgr = MemoryManager::new(&config);
 
-    let embed = crate::vector::test_fixture::shared_embed_func()
-        .expect("shared plugin not available");
+    let embed =
+        crate::vector::test_fixture::shared_embed_func().expect("shared plugin not available");
     let vs_config = crate::vector::test_fixture::plugin_store_config(
-        &dir.path().join("vector").join("vs.jsonl").to_string_lossy()
-    ).expect("plugin DLL + model files required");
+        &dir.path().join("vector").join("vs.jsonl").to_string_lossy(),
+    )
+    .expect("plugin DLL + model files required");
     mgr.init_vector_store_with_embed(embed, vs_config).unwrap();
 
     // Store an entry (goes to both keyword and vector stores)
-    let id = mgr.store_entry(Entry::new(MemoryType::LongTerm, "fallback test".to_string()))
-        .await.unwrap();
+    let id = mgr
+        .store_entry(Entry::new(
+            MemoryType::LongTerm,
+            "fallback test".to_string(),
+        ))
+        .await
+        .unwrap();
 
     // Delete from keyword store only, so get must fall back to vector store
     mgr.store.delete(&id).await.unwrap();
@@ -937,20 +1033,39 @@ async fn test_search_with_vector_store_and_type_filter() {
     let config = Config::new(dir.path());
     let mgr = MemoryManager::new(&config);
 
-    let embed = crate::vector::test_fixture::shared_embed_func()
-        .expect("shared plugin not available");
+    let embed =
+        crate::vector::test_fixture::shared_embed_func().expect("shared plugin not available");
     let vs_config = crate::vector::test_fixture::plugin_store_config(
-        &dir.path().join("vector").join("vs.jsonl").to_string_lossy()
-    ).expect("plugin DLL + model files required");
+        &dir.path().join("vector").join("vs.jsonl").to_string_lossy(),
+    )
+    .expect("plugin DLL + model files required");
     mgr.init_vector_store_with_embed(embed, vs_config).unwrap();
 
     // Store entries of different types
-    mgr.store_entry(Entry::new(MemoryType::LongTerm, "long term vector content".to_string())).await.unwrap();
-    mgr.store_entry(Entry::new(MemoryType::ShortTerm, "short term vector content".to_string())).await.unwrap();
+    mgr.store_entry(Entry::new(
+        MemoryType::LongTerm,
+        "long term vector content".to_string(),
+    ))
+    .await
+    .unwrap();
+    mgr.store_entry(Entry::new(
+        MemoryType::ShortTerm,
+        "short term vector content".to_string(),
+    ))
+    .await
+    .unwrap();
 
     // Search with type filter should only return matching type
-    let results = mgr.search("vector", Some(MemoryType::LongTerm), 10).await.unwrap();
-    assert!(results.entries.iter().all(|e| e.entry.typ == MemoryType::LongTerm));
+    let results = mgr
+        .search("vector", Some(MemoryType::LongTerm), 10)
+        .await
+        .unwrap();
+    assert!(
+        results
+            .entries
+            .iter()
+            .all(|e| e.entry.typ == MemoryType::LongTerm)
+    );
 
     // Do NOT call mgr.close() — shared fixture must not be released
 }
@@ -969,14 +1084,17 @@ async fn test_search_vector_store_falls_back_to_keyword() {
     let mgr = MemoryManager::new(&config);
 
     // Store before vector init (only keyword store)
-    mgr.store_fact("pre-vector fact about Rust", vec![]).await.unwrap();
+    mgr.store_fact("pre-vector fact about Rust", vec![])
+        .await
+        .unwrap();
 
     // Init vector store with shared plugin fixture (empty, no entries yet)
-    let embed = crate::vector::test_fixture::shared_embed_func()
-        .expect("shared plugin not available");
+    let embed =
+        crate::vector::test_fixture::shared_embed_func().expect("shared plugin not available");
     let vs_config = crate::vector::test_fixture::plugin_store_config(
-        &dir.path().join("vector").join("vs.jsonl").to_string_lossy()
-    ).expect("plugin DLL + model files required");
+        &dir.path().join("vector").join("vs.jsonl").to_string_lossy(),
+    )
+    .expect("plugin DLL + model files required");
     mgr.init_vector_store_with_embed(embed, vs_config).unwrap();
 
     // Search should fall back to keyword store since vector is empty
@@ -1000,17 +1118,21 @@ async fn test_store_to_vector_adapter_path() {
     let mgr = MemoryManager::new(&config);
 
     // Init vector store with shared plugin fixture
-    let embed = crate::vector::test_fixture::shared_embed_func()
-        .expect("shared plugin not available");
+    let embed =
+        crate::vector::test_fixture::shared_embed_func().expect("shared plugin not available");
     let vs_config = crate::vector::test_fixture::plugin_store_config(
-        &dir.path().join("vector").join("vs.jsonl").to_string_lossy()
-    ).expect("plugin DLL + model files required");
+        &dir.path().join("vector").join("vs.jsonl").to_string_lossy(),
+    )
+    .expect("plugin DLL + model files required");
     mgr.init_vector_store_with_embed(embed, vs_config).unwrap();
 
     // Use store() method which also goes through vector adapter
-    let entry = Entry::new(MemoryType::Episodic, "episodic via store method".to_string())
-        .with_tags(vec!["test".to_string()])
-        .with_score(0.8);
+    let entry = Entry::new(
+        MemoryType::Episodic,
+        "episodic via store method".to_string(),
+    )
+    .with_tags(vec!["test".to_string()])
+    .with_score(0.8);
     let id = mgr.store(entry).await.unwrap();
     assert!(!id.is_empty());
 
@@ -1029,7 +1151,10 @@ async fn test_store_disabled_store_method() {
 
     mgr.close().await.unwrap();
 
-    let id = mgr.store(Entry::new(MemoryType::LongTerm, "disabled".to_string())).await.unwrap();
+    let id = mgr
+        .store(Entry::new(MemoryType::LongTerm, "disabled".to_string()))
+        .await
+        .unwrap();
     assert!(id.is_empty());
 }
 
@@ -1109,8 +1234,12 @@ async fn test_graph_query_triples_all_wildcards() {
     let config = Config::new(dir.path());
     let mgr = MemoryManager::new(&config);
 
-    mgr.add_triple(GraphTriple::new("a".into(), "rel".into(), "b".into())).await.unwrap();
-    mgr.add_triple(GraphTriple::new("c".into(), "rel".into(), "d".into())).await.unwrap();
+    mgr.add_triple(GraphTriple::new("a".into(), "rel".into(), "b".into()))
+        .await
+        .unwrap();
+    mgr.add_triple(GraphTriple::new("c".into(), "rel".into(), "d".into()))
+        .await
+        .unwrap();
 
     let triples = mgr.query_graph_triples("", "", "").await.unwrap();
     assert_eq!(triples.len(), 2);
@@ -1123,9 +1252,15 @@ async fn test_get_related_triples_deep() {
     let mgr = MemoryManager::new(&config);
 
     // a -> b -> c -> d
-    mgr.add_triple(GraphTriple::new("a".into(), "next".into(), "b".into())).await.unwrap();
-    mgr.add_triple(GraphTriple::new("b".into(), "next".into(), "c".into())).await.unwrap();
-    mgr.add_triple(GraphTriple::new("c".into(), "next".into(), "d".into())).await.unwrap();
+    mgr.add_triple(GraphTriple::new("a".into(), "next".into(), "b".into()))
+        .await
+        .unwrap();
+    mgr.add_triple(GraphTriple::new("b".into(), "next".into(), "c".into()))
+        .await
+        .unwrap();
+    mgr.add_triple(GraphTriple::new("c".into(), "next".into(), "d".into()))
+        .await
+        .unwrap();
 
     // Depth 3 should find all 3 hops
     let related = mgr.get_related_triples("a", 3).await.unwrap();
@@ -1162,7 +1297,9 @@ async fn test_cleanup_episodic_nothing_old() {
     let config = Config::new(dir.path());
     let mgr = MemoryManager::new(&config);
 
-    mgr.append_episode(Episode::new("s1".into(), "user".into(), "fresh".into())).await.unwrap();
+    mgr.append_episode(Episode::new("s1".into(), "user".into(), "fresh".into()))
+        .await
+        .unwrap();
     let removed = mgr.cleanup_episodic(365).await.unwrap();
     assert_eq!(removed, 0);
 }
@@ -1211,7 +1348,9 @@ async fn test_list_with_offset() {
     let mgr = MemoryManager::new(&config);
 
     for i in 0..5 {
-        mgr.store_fact(&format!("fact {}", i), vec![]).await.unwrap();
+        mgr.store_fact(&format!("fact {}", i), vec![])
+            .await
+            .unwrap();
     }
 
     let page = mgr.list(None, 2, 3).await.unwrap();
@@ -1251,9 +1390,27 @@ async fn test_graph_query_with_filter() {
     let config = Config::new(dir.path());
     let mgr = MemoryManager::new(&config);
 
-    mgr.add_triple(GraphTriple::new("Go".into(), "is_a".into(), "language".into())).await.unwrap();
-    mgr.add_triple(GraphTriple::new("Rust".into(), "is_a".into(), "language".into())).await.unwrap();
-    mgr.add_triple(GraphTriple::new("Go".into(), "created_by".into(), "Google".into())).await.unwrap();
+    mgr.add_triple(GraphTriple::new(
+        "Go".into(),
+        "is_a".into(),
+        "language".into(),
+    ))
+    .await
+    .unwrap();
+    mgr.add_triple(GraphTriple::new(
+        "Rust".into(),
+        "is_a".into(),
+        "language".into(),
+    ))
+    .await
+    .unwrap();
+    mgr.add_triple(GraphTriple::new(
+        "Go".into(),
+        "created_by".into(),
+        "Google".into(),
+    ))
+    .await
+    .unwrap();
 
     // Filter by subject
     let go_triples = mgr.query_graph_triples("Go", "", "").await.unwrap();
@@ -1321,8 +1478,20 @@ async fn test_search_episodic_with_content() {
     let config = Config::new(dir.path());
     let mgr = MemoryManager::new(&config);
 
-    mgr.append_episode(Episode::new("s1".into(), "user".into(), "Rust memory safety".into())).await.unwrap();
-    mgr.append_episode(Episode::new("s1".into(), "assistant".into(), "Rust is safe".into())).await.unwrap();
+    mgr.append_episode(Episode::new(
+        "s1".into(),
+        "user".into(),
+        "Rust memory safety".into(),
+    ))
+    .await
+    .unwrap();
+    mgr.append_episode(Episode::new(
+        "s1".into(),
+        "assistant".into(),
+        "Rust is safe".into(),
+    ))
+    .await
+    .unwrap();
 
     let results = mgr.search_episodic("Rust", 10).await.unwrap();
     assert!(results.len() >= 2);
@@ -1481,7 +1650,10 @@ fn test_with_config_dir_enabled_but_no_plugin_disables_config() {
     assert!(mgr.is_enabled());
     // enabled=true, but no plugin DLL in test env → config written as {enabled: false}
     let updated = std::fs::read_to_string(&path).unwrap();
-    assert!(updated.contains("false"), "Config should be disabled after failed init");
+    assert!(
+        updated.contains("false"),
+        "Config should be disabled after failed init"
+    );
 }
 
 #[test]
@@ -1548,5 +1720,8 @@ fn test_vector_adapter_requires_plugin() {
     let config = Config::new(dir.path());
     let mgr = MemoryManager::new(&config);
     let result = mgr.init_vector_store(None);
-    assert!(result.is_err(), "init_vector_store without plugin should fail");
+    assert!(
+        result.is_err(),
+        "init_vector_store without plugin should fail"
+    );
 }

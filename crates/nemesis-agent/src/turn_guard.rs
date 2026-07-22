@@ -50,7 +50,12 @@ pub const MAX_EMPTY_FINAL_RETRIES: u32 = 3;
 /// ⑤ Tools whose success is "write-like" — repeating an identical successful
 /// call is almost always a no-op loop. Conservative list; extend as needed.
 const WRITE_LIKE_TOOLS: &[&str] = &[
-    "edit_file", "write_file", "create_file", "save_file", "patch_file", "multi_edit",
+    "edit_file",
+    "write_file",
+    "create_file",
+    "save_file",
+    "patch_file",
+    "multi_edit",
 ];
 
 /// ⑦ Verdict from checking a candidate final answer.

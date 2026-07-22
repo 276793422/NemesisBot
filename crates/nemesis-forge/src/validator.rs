@@ -28,7 +28,12 @@ impl StaticValidator {
     }
 
     /// Validate artifact content.
-    pub fn validate(&self, kind: ArtifactKind, _name: &str, content: &str) -> StaticValidationResult {
+    pub fn validate(
+        &self,
+        kind: ArtifactKind,
+        _name: &str,
+        content: &str,
+    ) -> StaticValidationResult {
         let mut result = StaticValidationResult {
             stage: ValidationStage {
                 passed: false,
@@ -56,13 +61,20 @@ impl StaticValidator {
 
     fn validate_skill(&self, content: &str, result: &mut StaticValidationResult) {
         if content.len() < 50 {
-            result.stage.errors.push("Skill content too short (less than 50 chars)".into());
+            result
+                .stage
+                .errors
+                .push("Skill content too short (less than 50 chars)".into());
         } else if content.len() > 5000 {
-            result.warnings.push("Skill content is long (over 5000 chars)".into());
+            result
+                .warnings
+                .push("Skill content is long (over 5000 chars)".into());
         }
 
         if !content.contains("---") {
-            result.warnings.push("Skill missing frontmatter separator".into());
+            result
+                .warnings
+                .push("Skill missing frontmatter separator".into());
         }
     }
 
@@ -81,19 +93,28 @@ impl StaticValidator {
             return;
         }
 
-        let has_python = content.contains("import ") && (content.contains("def ") || content.contains("class "));
+        let has_python =
+            content.contains("import ") && (content.contains("def ") || content.contains("class "));
         let has_go = content.contains("package ") && content.contains("func ");
 
         if !has_python && !has_go {
-            result.warnings.push("MCP content lacks basic code structure".into());
+            result
+                .warnings
+                .push("MCP content lacks basic code structure".into());
         }
     }
 
     fn check_security(&self, content: &str, result: &mut StaticValidationResult) {
         // Check for hardcoded secrets
         let patterns: [(Regex, &str); 2] = [
-            (Regex::new("(?i)api[_-]?key\\s*[:=]\\s*[\"'][^\"']{8,}").unwrap(), "Contains potential API key"),
-            (Regex::new("(?i)secret[_-]?key\\s*[:=]\\s*[\"'][^\"']{8,}").unwrap(), "Contains potential secret key"),
+            (
+                Regex::new("(?i)api[_-]?key\\s*[:=]\\s*[\"'][^\"']{8,}").unwrap(),
+                "Contains potential API key",
+            ),
+            (
+                Regex::new("(?i)secret[_-]?key\\s*[:=]\\s*[\"'][^\"']{8,}").unwrap(),
+                "Contains potential secret key",
+            ),
         ];
 
         for (re, desc) in &patterns {
@@ -109,8 +130,14 @@ impl StaticValidator {
     fn check_dangerous_commands(&self, content: &str, result: &mut StaticValidationResult) {
         static DANGEROUS: LazyLock<Vec<(Regex, &str)>> = LazyLock::new(|| {
             vec![
-                (Regex::new(r"rm\s+-rf\s+/").unwrap(), "Dangerous command: rm -rf /"),
-                (Regex::new(r"curl.*\|.*bash").unwrap(), "Dangerous pattern: curl | bash"),
+                (
+                    Regex::new(r"rm\s+-rf\s+/").unwrap(),
+                    "Dangerous command: rm -rf /",
+                ),
+                (
+                    Regex::new(r"curl.*\|.*bash").unwrap(),
+                    "Dangerous pattern: curl | bash",
+                ),
             ]
         });
         for (pattern, desc) in DANGEROUS.iter() {
@@ -211,7 +238,10 @@ impl QualityEvaluator {
         content: &str,
     ) -> QualityValidationResult {
         match self.caller {
-            Some(ref caller) => self.evaluate_with_llm(caller.as_ref(), kind, name, version, content).await,
+            Some(ref caller) => {
+                self.evaluate_with_llm(caller.as_ref(), kind, name, version, content)
+                    .await
+            }
             None => self.evaluate_heuristic(kind, name, content),
         }
     }
@@ -259,7 +289,10 @@ Respond with ONLY a JSON object:
             dimensions: HashMap::new(),
         };
 
-        match caller.chat(system_prompt, &prompt, Some(self.max_tokens)).await {
+        match caller
+            .chat(system_prompt, &prompt, Some(self.max_tokens))
+            .await
+        {
             Ok(response) => {
                 // Parse JSON from LLM response
                 if let Some(json) = super::reflector_llm::extract_json(&response) {
@@ -288,10 +321,7 @@ Respond with ONLY a JSON object:
                 }
             }
             Err(e) => {
-                result
-                    .stage
-                    .errors
-                    .push(format!("LLM call failed: {}", e));
+                result.stage.errors.push(format!("LLM call failed: {}", e));
                 result.stage.passed = false;
             }
         }

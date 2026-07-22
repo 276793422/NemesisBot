@@ -76,10 +76,7 @@ fn default_deny_patterns() -> Vec<Regex> {
         r"\bsource\s+.*\.sh\b",
     ];
 
-    patterns
-        .iter()
-        .filter_map(|p| Regex::new(p).ok())
-        .collect()
+    patterns.iter().filter_map(|p| Regex::new(p).ok()).collect()
 }
 
 /// Shell command execution tool with safety validation.
@@ -141,7 +138,11 @@ impl ShellTool {
                             match &re {
                                 Ok(_) => re.ok(),
                                 Err(e) => {
-                                    tracing::warn!("[Shell] Invalid custom deny pattern {:?}: {}", p, e);
+                                    tracing::warn!(
+                                        "[Shell] Invalid custom deny pattern {:?}: {}",
+                                        p,
+                                        e
+                                    );
                                     None
                                 }
                             }
@@ -151,7 +152,9 @@ impl ShellTool {
                 _ => default_deny_patterns(),
             }
         } else {
-            tracing::warn!("[Shell] Warning: deny patterns are disabled. All commands will be allowed.");
+            tracing::warn!(
+                "[Shell] Warning: deny patterns are disabled. All commands will be allowed."
+            );
             Vec::new()
         };
 
@@ -239,7 +242,7 @@ impl ShellTool {
         for pattern in &self.deny_patterns {
             if pattern.is_match(&lower) {
                 return Err(
-                    "command blocked by safety guard (dangerous pattern detected)".to_string()
+                    "command blocked by safety guard (dangerous pattern detected)".to_string(),
                 );
             }
         }
@@ -256,14 +259,11 @@ impl ShellTool {
         if self.restrict {
             // Path traversal detection
             if cmd.contains("..\\") || cmd.contains("../") {
-                return Err(
-                    "command blocked by safety guard (path traversal detected)".to_string()
-                );
+                return Err("command blocked by safety guard (path traversal detected)".to_string());
             }
 
             // Extract paths from the command and validate they are within workspace
-            let path_pattern =
-                Regex::new(r#"[A-Za-z]:[\\/][^\s"'<>]+|/[^\s"'<>]+"#).unwrap();
+            let path_pattern = Regex::new(r#"[A-Za-z]:[\\/][^\s"'<>]+|/[^\s"'<>]+"#).unwrap();
             let cwd_abs = std::path::Path::new(cwd)
                 .canonicalize()
                 .unwrap_or_else(|_| cwd.to_path_buf());
@@ -284,10 +284,8 @@ impl ShellTool {
                 if let Ok(rel) = abs_canonical.strip_prefix(&cwd_abs) {
                     let rel_str = rel.to_string_lossy();
                     if rel_str.starts_with("..") {
-                        return Err(
-                            "command blocked by safety guard (path outside working dir)"
-                                .to_string(),
-                        );
+                        return Err("command blocked by safety guard (path outside working dir)"
+                            .to_string());
                     }
                 }
             }
@@ -341,7 +339,10 @@ impl ShellTool {
         let mut placeholder_index = 0;
 
         let mut extract_and_protect = |re: &Regex, input: &str| -> String {
-            let matches: Vec<String> = re.find_iter(input).map(|m| m.as_str().to_string()).collect();
+            let matches: Vec<String> = re
+                .find_iter(input)
+                .map(|m| m.as_str().to_string())
+                .collect();
             let mut result = input.to_string();
             for m in matches {
                 let placeholder = format!("___URL_PLACEHOLDER_{}___", placeholder_index);
@@ -481,10 +482,7 @@ impl Tool for ShellTool {
                     };
                     let target_str = target.to_string_lossy();
                     if !target_str.starts_with(ws.as_ref()) {
-                        return ToolResult::error(&format!(
-                            "cwd '{}' is outside workspace",
-                            dir
-                        ));
+                        return ToolResult::error(&format!("cwd '{}' is outside workspace", dir));
                     }
                     target
                 } else if p.is_absolute() {
@@ -512,7 +510,9 @@ impl Tool for ShellTool {
         }
 
         // Parse timeout
-        let timeout_secs = args["timeout"].as_u64().unwrap_or(self.default_timeout.as_secs());
+        let timeout_secs = args["timeout"]
+            .as_u64()
+            .unwrap_or(self.default_timeout.as_secs());
         let timeout = Duration::from_secs(timeout_secs.min(600)); // Cap at 10 minutes
 
         // Determine shell based on platform
@@ -562,10 +562,7 @@ impl Tool for ShellTool {
                 }
             }
             Ok(Err(e)) => ToolResult::error(&format!("failed to execute command: {}", e)),
-            Err(_) => ToolResult::error(&format!(
-                "command timed out after {}s",
-                timeout.as_secs()
-            )),
+            Err(_) => ToolResult::error(&format!("command timed out after {}s", timeout.as_secs())),
         }
     }
 }

@@ -8,8 +8,8 @@ use std::time::Duration;
 
 use tracing::info;
 
-use crate::websocket::client::WebSocketClient;
 use super::approval::ApprovalWindowData;
+use crate::websocket::client::WebSocketClient;
 
 /// Run a headless window that auto-approves after a delay.
 ///
@@ -32,7 +32,10 @@ pub async fn run_headless_window(
         "timestamp": chrono::Local::now().timestamp(),
     });
 
-    info!("[HeadlessWindow] {}: Sending auto-approve result", window_id);
+    info!(
+        "[HeadlessWindow] {}: Sending auto-approve result",
+        window_id
+    );
 
     // Send result via WebSocket
     if let Some(ref client) = ws_client {

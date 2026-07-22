@@ -19,9 +19,7 @@ fn make_exp(tool: &str, success: bool, duration: u64) -> CollectedExperience {
 
 #[test]
 fn test_extract_tool_chain() {
-    let exps: Vec<CollectedExperience> = (0..5)
-        .map(|_| make_exp("file_read", true, 100))
-        .collect();
+    let exps: Vec<CollectedExperience> = (0..5).map(|_| make_exp("file_read", true, 100)).collect();
 
     let stats = ExperienceStats {
         total_count: 5,
@@ -32,8 +30,16 @@ fn test_extract_tool_chain() {
     };
 
     let patterns = extract_patterns(&exps, &stats);
-    assert!(patterns.iter().any(|p| p.pattern_type == PatternType::ToolChain));
-    assert!(patterns.iter().any(|p| p.pattern_type == PatternType::SuccessTemplate));
+    assert!(
+        patterns
+            .iter()
+            .any(|p| p.pattern_type == PatternType::ToolChain)
+    );
+    assert!(
+        patterns
+            .iter()
+            .any(|p| p.pattern_type == PatternType::SuccessTemplate)
+    );
 }
 
 #[test]
@@ -54,7 +60,11 @@ fn test_extract_error_recovery() {
     };
 
     let patterns = extract_patterns(&exps, &stats);
-    assert!(patterns.iter().any(|p| p.pattern_type == PatternType::ErrorRecovery));
+    assert!(
+        patterns
+            .iter()
+            .any(|p| p.pattern_type == PatternType::ErrorRecovery)
+    );
 }
 
 #[test]
@@ -74,18 +84,25 @@ fn test_efficiency_issue() {
     };
 
     let patterns = extract_patterns(&exps, &stats);
-    assert!(patterns.iter().any(|p| p.pattern_type == PatternType::EfficiencyIssue));
+    assert!(
+        patterns
+            .iter()
+            .any(|p| p.pattern_type == PatternType::EfficiencyIssue)
+    );
 }
 
 #[test]
 fn test_empty_experiences() {
-    let patterns = extract_patterns(&[], &ExperienceStats {
-        total_count: 0,
-        success_count: 0,
-        failure_count: 0,
-        avg_duration_ms: 0.0,
-        tool_counts: Default::default(),
-    });
+    let patterns = extract_patterns(
+        &[],
+        &ExperienceStats {
+            total_count: 0,
+            success_count: 0,
+            failure_count: 0,
+            avg_duration_ms: 0.0,
+            tool_counts: Default::default(),
+        },
+    );
     assert!(patterns.is_empty());
 }
 
@@ -150,7 +167,12 @@ fn test_dedup_chain_string() {
     assert!(chain.contains("exec"));
 }
 
-fn make_exp_session(tool: &str, success: bool, duration: u64, session: &str) -> CollectedExperience {
+fn make_exp_session(
+    tool: &str,
+    success: bool,
+    duration: u64,
+    session: &str,
+) -> CollectedExperience {
     CollectedExperience {
         experience: Experience {
             id: uuid::Uuid::new_v4().to_string(),
@@ -169,9 +191,18 @@ fn make_exp_session(tool: &str, success: bool, duration: u64, session: &str) -> 
 #[test]
 fn test_conversation_pattern_type_as_str() {
     assert_eq!(ConversationPatternType::ToolChain.as_str(), "tool_chain");
-    assert_eq!(ConversationPatternType::ErrorRecovery.as_str(), "error_recovery");
-    assert_eq!(ConversationPatternType::EfficiencyIssue.as_str(), "efficiency_issue");
-    assert_eq!(ConversationPatternType::SuccessTemplate.as_str(), "success_template");
+    assert_eq!(
+        ConversationPatternType::ErrorRecovery.as_str(),
+        "error_recovery"
+    );
+    assert_eq!(
+        ConversationPatternType::EfficiencyIssue.as_str(),
+        "efficiency_issue"
+    );
+    assert_eq!(
+        ConversationPatternType::SuccessTemplate.as_str(),
+        "success_template"
+    );
 }
 
 #[test]
@@ -300,7 +331,12 @@ fn test_extract_patterns_tool_chain_threshold() {
         tool_counts: Default::default(),
     };
     let patterns = extract_patterns(&exps, &stats);
-    assert!(!patterns.iter().any(|p| p.pattern_type == PatternType::ToolChain && p.tools.contains(&"rare_tool".to_string())));
+    assert!(
+        !patterns
+            .iter()
+            .any(|p| p.pattern_type == PatternType::ToolChain
+                && p.tools.contains(&"rare_tool".to_string()))
+    );
 }
 
 #[test]
@@ -315,7 +351,7 @@ fn test_pattern_sorted_by_confidence() {
         .collect();
     let patterns = extract_conversation_patterns(&exps, 2);
     for i in 1..patterns.len() {
-        assert!(patterns[i-1].confidence >= patterns[i].confidence);
+        assert!(patterns[i - 1].confidence >= patterns[i].confidence);
     }
 }
 
@@ -339,7 +375,7 @@ fn test_conversation_pattern_type_ordering() {
     // Verify all produce distinct strings
     let strs: Vec<&str> = types.iter().map(|t| t.as_str()).collect();
     for i in 0..strs.len() {
-        for j in (i+1)..strs.len() {
+        for j in (i + 1)..strs.len() {
             assert_ne!(strs[i], strs[j], "Pattern type strings should be unique");
         }
     }
@@ -603,7 +639,10 @@ fn test_extract_patterns_efficiency_with_high_duration() {
         tool_counts: Default::default(),
     };
     let patterns = extract_patterns(&exps, &stats);
-    let eff_patterns: Vec<_> = patterns.iter().filter(|p| p.pattern_type == PatternType::EfficiencyIssue).collect();
+    let eff_patterns: Vec<_> = patterns
+        .iter()
+        .filter(|p| p.pattern_type == PatternType::EfficiencyIssue)
+        .collect();
     assert!(!eff_patterns.is_empty());
 }
 
@@ -624,7 +663,12 @@ fn test_extract_patterns_success_template_requires_perfect() {
         tool_counts: Default::default(),
     };
     let patterns = extract_patterns(&exps, &stats);
-    assert!(!patterns.iter().any(|p| p.pattern_type == PatternType::SuccessTemplate && p.tools.contains(&"tool_a".to_string())));
+    assert!(
+        !patterns
+            .iter()
+            .any(|p| p.pattern_type == PatternType::SuccessTemplate
+                && p.tools.contains(&"tool_a".to_string()))
+    );
 }
 
 #[test]
@@ -642,7 +686,11 @@ fn test_extract_patterns_error_recovery_mixed() {
         tool_counts: Default::default(),
     };
     let patterns = extract_patterns(&exps, &stats);
-    assert!(patterns.iter().any(|p| p.pattern_type == PatternType::ErrorRecovery));
+    assert!(
+        patterns
+            .iter()
+            .any(|p| p.pattern_type == PatternType::ErrorRecovery)
+    );
 }
 
 #[test]
@@ -684,8 +732,7 @@ fn test_extract_conversation_patterns_returns_combined() {
     let patterns = extract_conversation_patterns(&exps, 2);
     assert!(!patterns.is_empty());
     // Should contain at least tool_chain and error_recovery patterns
-    let types: std::collections::HashSet<&str> = patterns.iter()
-        .map(|p| p.pattern_type.as_str())
-        .collect();
+    let types: std::collections::HashSet<&str> =
+        patterns.iter().map(|p| p.pattern_type.as_str()).collect();
     assert!(types.contains("tool_chain"));
 }

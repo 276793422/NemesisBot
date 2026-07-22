@@ -7,9 +7,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use async_trait::async_trait;
 
-use crate::transport::{
-    self, Transport, TransportError, TransportRequest,
-};
+use crate::transport::{self, Transport, TransportError, TransportRequest};
 use crate::types::*;
 
 // ---------------------------------------------------------------------------
@@ -367,9 +365,7 @@ impl Client for McpClient {
 
         let params = serde_json::json!({ "uri": uri });
 
-        let resp = self
-            .send_request("resources/read", Some(params))
-            .await?;
+        let resp = self.send_request("resources/read", Some(params)).await?;
 
         if let Some(err) = &resp.error {
             return Err(ClientError::Server(err.clone()));

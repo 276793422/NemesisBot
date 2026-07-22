@@ -17,9 +17,7 @@ fn test_install_skill_tool_metadata() {
 #[tokio::test]
 async fn test_find_skills_no_registry() {
     let tool = FindSkillsTool::new();
-    let result = tool
-        .execute(&serde_json::json!({"query": "docker"}))
-        .await;
+    let result = tool.execute(&serde_json::json!({"query": "docker"})).await;
     assert!(result.is_error);
     assert!(result.for_llm.contains("registry manager not configured"));
 }
@@ -34,9 +32,7 @@ async fn test_find_skills_missing_query() {
 #[tokio::test]
 async fn test_install_skill_no_backends() {
     let tool = InstallSkillTool::new();
-    let result = tool
-        .execute(&serde_json::json!({"slug": "weather"}))
-        .await;
+    let result = tool.execute(&serde_json::json!({"slug": "weather"})).await;
     assert!(result.is_error);
     assert!(result.for_llm.contains("not configured"));
 }
@@ -51,9 +47,7 @@ async fn test_install_skill_missing_slug() {
 #[tokio::test]
 async fn test_install_skill_empty_slug() {
     let tool = InstallSkillTool::new();
-    let result = tool
-        .execute(&serde_json::json!({"slug": ""}))
-        .await;
+    let result = tool.execute(&serde_json::json!({"slug": ""})).await;
     assert!(result.is_error);
 }
 
@@ -85,9 +79,7 @@ async fn test_find_skills_with_limit() {
 #[tokio::test]
 async fn test_find_skills_empty_query() {
     let tool = FindSkillsTool::new();
-    let result = tool
-        .execute(&serde_json::json!({"query": ""}))
-        .await;
+    let result = tool.execute(&serde_json::json!({"query": ""})).await;
     assert!(result.is_error); // no registry
 }
 
@@ -106,18 +98,14 @@ fn test_install_skill_new_default() {
 #[tokio::test]
 async fn test_install_skill_whitespace_slug() {
     let tool = InstallSkillTool::new();
-    let result = tool
-        .execute(&serde_json::json!({"slug": "   "}))
-        .await;
+    let result = tool.execute(&serde_json::json!({"slug": "   "})).await;
     assert!(result.is_error);
 }
 
 #[tokio::test]
 async fn test_find_skills_null_query() {
     let tool = FindSkillsTool::new();
-    let result = tool
-        .execute(&serde_json::json!({"query": null}))
-        .await;
+    let result = tool.execute(&serde_json::json!({"query": null})).await;
     assert!(result.is_error);
 }
 
@@ -140,9 +128,7 @@ async fn test_find_skills_set_registry_manager() {
     let manager = nemesis_skills::registry::RegistryManager::new(config);
     tool.set_registry_manager(manager).await;
     // Registry is now set, search should work but return empty results
-    let result = tool
-        .execute(&serde_json::json!({"query": "test"}))
-        .await;
+    let result = tool.execute(&serde_json::json!({"query": "test"})).await;
     // Should either succeed with empty results or fail gracefully
     let _ = result;
 }
@@ -200,9 +186,7 @@ fn test_install_skill_default() {
 #[tokio::test]
 async fn test_find_skills_number_query() {
     let tool = FindSkillsTool::new();
-    let result = tool
-        .execute(&serde_json::json!({"query": 123}))
-        .await;
+    let result = tool.execute(&serde_json::json!({"query": 123})).await;
     assert!(result.is_error);
 }
 

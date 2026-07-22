@@ -7,9 +7,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
+use parking_lot::RwLock;
 use tokio::sync::Semaphore;
 use tracing::{debug, info, warn};
-use parking_lot::RwLock;
 
 use nemesis_types::error::{NemesisError, Result};
 
@@ -42,7 +42,9 @@ pub trait SkillRegistry: Send + Sync {
     ) -> Result<crate::types::InstallResult>;
     /// Fetch the SKILL.md content for a skill without installing it.
     async fn get_skill_content(&self, _slug: &str) -> Result<crate::types::SkillContent> {
-        Err(NemesisError::Other("get_skill_content not implemented".to_string()))
+        Err(NemesisError::Other(
+            "get_skill_content not implemented".to_string(),
+        ))
     }
     /// Browse skills with sort and cursor-based pagination.
     async fn browse(
@@ -237,11 +239,7 @@ impl RegistryManager {
     ///
     /// Returns results grouped by registry, not merged.
     /// Uses search cache if enabled.
-    pub async fn search_all(
-        &self,
-        query: &str,
-        limit: usize,
-    ) -> Result<Vec<RegistrySearchResult>> {
+    pub async fn search_all(&self, query: &str, limit: usize) -> Result<Vec<RegistrySearchResult>> {
         // 1. Check cache first if enabled.
         {
             let cache = self.search_cache.read();
@@ -287,10 +285,7 @@ impl RegistryManager {
                 Ok((name, Ok(results))) => {
                     any_success = true;
                     // Check if last result indicates truncation.
-                    let truncated = results
-                        .last()
-                        .map(|r| r.truncated)
-                        .unwrap_or(false);
+                    let truncated = results.last().map(|r| r.truncated).unwrap_or(false);
                     let mut results = results;
                     if truncated && !results.is_empty() {
                         results.last_mut().unwrap().truncated = false;
@@ -344,10 +339,8 @@ impl RegistryManager {
     pub async fn search(&self, query: &str, limit: usize) -> Result<Vec<SkillSearchResult>> {
         let grouped = self.search_all(query, limit).await?;
 
-        let mut all_results: Vec<SkillSearchResult> = grouped
-            .into_iter()
-            .flat_map(|g| g.results)
-            .collect();
+        let mut all_results: Vec<SkillSearchResult> =
+            grouped.into_iter().flat_map(|g| g.results).collect();
 
         // Sort by score descending.
         all_results.sort_by(|a, b| {
@@ -376,7 +369,9 @@ impl RegistryManager {
             slug, registry_name, target_dir
         );
 
-        let result = registry.download_and_install(slug, "latest", target_dir).await?;
+        let result = registry
+            .download_and_install(slug, "latest", target_dir)
+            .await?;
 
         Ok(result.version)
     }
@@ -535,12 +530,7 @@ impl SkillRegistry for GitHubRegistry {
         self.get_skill_content(slug).await
     }
 
-    async fn browse(
-        &self,
-        sort: &BrowseSort,
-        limit: usize,
-        cursor: &str,
-    ) -> Result<BrowseResult> {
+    async fn browse(&self, sort: &BrowseSort, limit: usize, cursor: &str) -> Result<BrowseResult> {
         self.browse(sort, limit, cursor).await
     }
 }
@@ -573,12 +563,7 @@ impl SkillRegistry for ClawHubRegistry {
         self.get_skill_content(slug).await
     }
 
-    async fn browse(
-        &self,
-        sort: &BrowseSort,
-        limit: usize,
-        cursor: &str,
-    ) -> Result<BrowseResult> {
+    async fn browse(&self, sort: &BrowseSort, limit: usize, cursor: &str) -> Result<BrowseResult> {
         self.browse(sort, limit, cursor).await
     }
 }
@@ -611,12 +596,7 @@ impl SkillRegistry for ModelScopeRegistry {
         self.get_skill_content(slug).await
     }
 
-    async fn browse(
-        &self,
-        sort: &BrowseSort,
-        limit: usize,
-        cursor: &str,
-    ) -> Result<BrowseResult> {
+    async fn browse(&self, sort: &BrowseSort, limit: usize, cursor: &str) -> Result<BrowseResult> {
         self.browse(sort, limit, cursor).await
     }
 }

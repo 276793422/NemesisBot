@@ -224,14 +224,29 @@ async fn test_allowed_channels_filter() {
         meta: Default::default(),
     };
     mgr.dispatch_outbound(msg2).await.unwrap(); // no error
-    assert_eq!(mgr.metrics().dropped_filtered.load(std::sync::atomic::Ordering::Relaxed), 1);
+    assert_eq!(
+        mgr.metrics()
+            .dropped_filtered
+            .load(std::sync::atomic::Ordering::Relaxed),
+        1
+    );
 }
 
 #[tokio::test]
 async fn test_metrics() {
     let mgr = ChannelManager::new();
-    assert_eq!(mgr.metrics().dispatched.load(std::sync::atomic::Ordering::Relaxed), 0);
-    assert_eq!(mgr.metrics().dropped_not_found.load(std::sync::atomic::Ordering::Relaxed), 0);
+    assert_eq!(
+        mgr.metrics()
+            .dispatched
+            .load(std::sync::atomic::Ordering::Relaxed),
+        0
+    );
+    assert_eq!(
+        mgr.metrics()
+            .dropped_not_found
+            .load(std::sync::atomic::Ordering::Relaxed),
+        0
+    );
 
     // Dispatch to missing channel increments dropped_not_found
     let msg = OutboundMessage {
@@ -242,7 +257,12 @@ async fn test_metrics() {
         meta: Default::default(),
     };
     let _ = mgr.dispatch_outbound(msg).await;
-    assert_eq!(mgr.metrics().dropped_not_found.load(std::sync::atomic::Ordering::Relaxed), 1);
+    assert_eq!(
+        mgr.metrics()
+            .dropped_not_found
+            .load(std::sync::atomic::Ordering::Relaxed),
+        1
+    );
 }
 
 #[tokio::test]
@@ -259,7 +279,9 @@ async fn test_channel_names() {
 #[tokio::test]
 async fn test_get_status() {
     let mgr = ChannelManager::new();
-    mgr.register(Arc::new(StubChannel::new("web"))).await.unwrap();
+    mgr.register(Arc::new(StubChannel::new("web")))
+        .await
+        .unwrap();
 
     let status = mgr.get_status().await;
     assert!(status.contains_key("web"));
@@ -337,9 +359,15 @@ async fn test_get_status_empty() {
 #[tokio::test]
 async fn test_get_status_multiple_channels() {
     let mgr = ChannelManager::new();
-    mgr.register(Arc::new(StubChannel::new("ch1"))).await.unwrap();
-    mgr.register(Arc::new(StubChannel::new("ch2"))).await.unwrap();
-    mgr.register(Arc::new(StubChannel::new("ch3"))).await.unwrap();
+    mgr.register(Arc::new(StubChannel::new("ch1")))
+        .await
+        .unwrap();
+    mgr.register(Arc::new(StubChannel::new("ch2")))
+        .await
+        .unwrap();
+    mgr.register(Arc::new(StubChannel::new("ch3")))
+        .await
+        .unwrap();
 
     let status = mgr.get_status().await;
     assert_eq!(status.len(), 3);
@@ -431,7 +459,9 @@ async fn test_concurrent_access() {
     // Register channels
     for i in 0..5 {
         let name = format!("ch{}", i);
-        mgr.register(Arc::new(StubChannel::new(&name))).await.unwrap();
+        mgr.register(Arc::new(StubChannel::new(&name)))
+            .await
+            .unwrap();
     }
 
     let mgr1 = Arc::clone(&mgr);
@@ -489,7 +519,9 @@ async fn test_metrics_dispatched_increment() {
     }
 
     assert_eq!(
-        mgr.metrics().dispatched.load(std::sync::atomic::Ordering::Relaxed),
+        mgr.metrics()
+            .dispatched
+            .load(std::sync::atomic::Ordering::Relaxed),
         5
     );
     assert_eq!(ch.sent_messages().len(), 5);
@@ -594,7 +626,9 @@ async fn test_setup_sync_targets_valid() {
     mgr.register(ch_b).await.unwrap();
 
     let mut config = ChannelSyncConfig::default();
-    config.targets.insert("a".to_string(), vec!["b".to_string()]);
+    config
+        .targets
+        .insert("a".to_string(), vec!["b".to_string()]);
 
     mgr.setup_sync_targets(&config).await;
 
@@ -609,7 +643,9 @@ async fn test_setup_sync_targets_self_sync_prevented() {
     mgr.register(ch).await.unwrap();
 
     let mut config = ChannelSyncConfig::default();
-    config.targets.insert("self".to_string(), vec!["self".to_string()]);
+    config
+        .targets
+        .insert("self".to_string(), vec!["self".to_string()]);
 
     mgr.setup_sync_targets(&config).await;
 
@@ -622,7 +658,9 @@ async fn test_setup_sync_targets_nonexistent_source() {
     let mgr = ChannelManager::new();
 
     let mut config = ChannelSyncConfig::default();
-    config.targets.insert("missing".to_string(), vec!["target".to_string()]);
+    config
+        .targets
+        .insert("missing".to_string(), vec!["target".to_string()]);
 
     mgr.setup_sync_targets(&config).await;
     // Should not panic, just skip
@@ -635,7 +673,9 @@ async fn test_setup_sync_targets_nonexistent_target() {
     mgr.register(ch).await.unwrap();
 
     let mut config = ChannelSyncConfig::default();
-    config.targets.insert("source".to_string(), vec!["nonexistent".to_string()]);
+    config
+        .targets
+        .insert("source".to_string(), vec!["nonexistent".to_string()]);
 
     mgr.setup_sync_targets(&config).await;
 
@@ -651,7 +691,9 @@ async fn test_setup_sync_targets_multiple() {
     mgr.register(Arc::new(StubChannel::new("c"))).await.unwrap();
 
     let mut config = ChannelSyncConfig::default();
-    config.targets.insert("a".to_string(), vec!["b".to_string(), "c".to_string()]);
+    config
+        .targets
+        .insert("a".to_string(), vec!["b".to_string(), "c".to_string()]);
 
     mgr.setup_sync_targets(&config).await;
 
@@ -668,8 +710,12 @@ async fn test_setup_sync_targets_circular() {
     mgr.register(Arc::new(StubChannel::new("b"))).await.unwrap();
 
     let mut config = ChannelSyncConfig::default();
-    config.targets.insert("a".to_string(), vec!["b".to_string()]);
-    config.targets.insert("b".to_string(), vec!["a".to_string()]);
+    config
+        .targets
+        .insert("a".to_string(), vec!["b".to_string()]);
+    config
+        .targets
+        .insert("b".to_string(), vec!["a".to_string()]);
 
     mgr.setup_sync_targets(&config).await;
 
@@ -744,7 +790,9 @@ async fn test_dispatch_loop_skips_cli_channel() {
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
     assert_eq!(
-        mgr.metrics().dropped_internal.load(std::sync::atomic::Ordering::Relaxed),
+        mgr.metrics()
+            .dropped_internal
+            .load(std::sync::atomic::Ordering::Relaxed),
         1
     );
     drop(tx);
@@ -768,7 +816,9 @@ async fn test_dispatch_loop_skips_subagent_channel() {
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
     assert_eq!(
-        mgr.metrics().dropped_internal.load(std::sync::atomic::Ordering::Relaxed),
+        mgr.metrics()
+            .dropped_internal
+            .load(std::sync::atomic::Ordering::Relaxed),
         1
     );
     drop(tx);
@@ -804,10 +854,7 @@ async fn test_dispatch_loop_multiple_messages() {
 
 #[tokio::test]
 async fn test_allowed_channels_multiple_allowed() {
-    let mgr = ChannelManager::with_allowed_channels(vec![
-        "web".to_string(),
-        "rpc".to_string(),
-    ]);
+    let mgr = ChannelManager::with_allowed_channels(vec!["web".to_string(), "rpc".to_string()]);
 
     let ch_web = Arc::new(StubChannel::new("web"));
     let ch_rpc = Arc::new(StubChannel::new("rpc"));
@@ -850,7 +897,9 @@ async fn test_allowed_channels_multiple_allowed() {
     mgr.dispatch_outbound(msg3).await.unwrap(); // no error, just dropped
     assert_eq!(ch_other.sent_messages().len(), 0);
     assert_eq!(
-        mgr.metrics().dropped_filtered.load(std::sync::atomic::Ordering::Relaxed),
+        mgr.metrics()
+            .dropped_filtered
+            .load(std::sync::atomic::Ordering::Relaxed),
         1
     );
 }
@@ -873,7 +922,9 @@ async fn test_metrics_send_errors() {
     let result = mgr.dispatch_outbound(msg).await;
     assert!(result.is_err());
     assert_eq!(
-        mgr.metrics().send_errors.load(std::sync::atomic::Ordering::Relaxed),
+        mgr.metrics()
+            .send_errors
+            .load(std::sync::atomic::Ordering::Relaxed),
         1
     );
 }
@@ -894,7 +945,9 @@ async fn test_metrics_multiple_not_found() {
     }
 
     assert_eq!(
-        mgr.metrics().dropped_not_found.load(std::sync::atomic::Ordering::Relaxed),
+        mgr.metrics()
+            .dropped_not_found
+            .load(std::sync::atomic::Ordering::Relaxed),
         5
     );
 }
@@ -925,7 +978,9 @@ async fn test_register_or_replace_multiple_times() {
 async fn test_unregister_all_channels() {
     let mgr = ChannelManager::new();
     for i in 0..10 {
-        mgr.register(Arc::new(StubChannel::new(&format!("ch-{}", i)))).await.unwrap();
+        mgr.register(Arc::new(StubChannel::new(&format!("ch-{}", i))))
+            .await
+            .unwrap();
     }
     assert_eq!(mgr.channel_count().await, 10);
 
@@ -943,7 +998,9 @@ async fn test_send_to_channel_unicode_content() {
     let ch = Arc::new(StubChannel::new("web"));
     mgr.register(ch.clone()).await.unwrap();
 
-    mgr.send_to_channel("web", "chat-1", "你好世界 🌍").await.unwrap();
+    mgr.send_to_channel("web", "chat-1", "你好世界 🌍")
+        .await
+        .unwrap();
     assert_eq!(ch.sent_messages()[0], "你好世界 🌍");
 }
 
@@ -979,9 +1036,15 @@ async fn test_channel_status_after_start() {
 #[tokio::test]
 async fn test_channel_names_ordering() {
     let mgr = ChannelManager::new();
-    mgr.register(Arc::new(StubChannel::new("z-channel"))).await.unwrap();
-    mgr.register(Arc::new(StubChannel::new("a-channel"))).await.unwrap();
-    mgr.register(Arc::new(StubChannel::new("m-channel"))).await.unwrap();
+    mgr.register(Arc::new(StubChannel::new("z-channel")))
+        .await
+        .unwrap();
+    mgr.register(Arc::new(StubChannel::new("a-channel")))
+        .await
+        .unwrap();
+    mgr.register(Arc::new(StubChannel::new("m-channel")))
+        .await
+        .unwrap();
 
     let mut names = mgr.channel_names().await;
     names.sort();
@@ -1048,15 +1111,23 @@ struct FailingStubChannel {
 
 impl FailingStubChannel {
     fn new(name: &str) -> Self {
-        Self { name: name.to_string() }
+        Self {
+            name: name.to_string(),
+        }
     }
 }
 
 #[async_trait]
 impl Channel for FailingStubChannel {
-    fn name(&self) -> &str { &self.name }
-    async fn start(&self) -> Result<()> { Ok(()) }
-    async fn stop(&self) -> Result<()> { Ok(()) }
+    fn name(&self) -> &str {
+        &self.name
+    }
+    async fn start(&self) -> Result<()> {
+        Ok(())
+    }
+    async fn stop(&self) -> Result<()> {
+        Ok(())
+    }
     async fn send(&self, _msg: OutboundMessage) -> Result<()> {
         Err(NemesisError::Channel("send always fails".to_string()))
     }
@@ -1070,19 +1141,29 @@ struct FailStartChannel {
 
 impl FailStartChannel {
     fn new(name: &str) -> Self {
-        Self { name: name.to_string() }
+        Self {
+            name: name.to_string(),
+        }
     }
 }
 
 #[async_trait]
 impl Channel for FailStartChannel {
-    fn name(&self) -> &str { &self.name }
-    fn is_running(&self) -> bool { false }
+    fn name(&self) -> &str {
+        &self.name
+    }
+    fn is_running(&self) -> bool {
+        false
+    }
     async fn start(&self) -> Result<()> {
         Err(NemesisError::Channel("start failed".to_string()))
     }
-    async fn stop(&self) -> Result<()> { Ok(()) }
-    async fn send(&self, _msg: OutboundMessage) -> Result<()> { Ok(()) }
+    async fn stop(&self) -> Result<()> {
+        Ok(())
+    }
+    async fn send(&self, _msg: OutboundMessage) -> Result<()> {
+        Ok(())
+    }
 }
 
 // === Slow channel for timeout tests ===
@@ -1109,9 +1190,15 @@ impl SlowChannel {
 
 #[async_trait]
 impl Channel for SlowChannel {
-    fn name(&self) -> &str { &self.name }
-    async fn start(&self) -> Result<()> { Ok(()) }
-    async fn stop(&self) -> Result<()> { Ok(()) }
+    fn name(&self) -> &str {
+        &self.name
+    }
+    async fn start(&self) -> Result<()> {
+        Ok(())
+    }
+    async fn stop(&self) -> Result<()> {
+        Ok(())
+    }
     async fn send(&self, msg: OutboundMessage) -> Result<()> {
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
         self.sent.write().push(msg.content);
@@ -1128,7 +1215,9 @@ async fn test_start_all_with_failing_channel_continues() {
     let _fail_ch = Arc::new(FailStartChannel::new("fail"));
 
     mgr.register(good_ch.clone()).await.unwrap();
-    mgr.register(Arc::new(FailStartChannel::new("fail"))).await.unwrap();
+    mgr.register(Arc::new(FailStartChannel::new("fail")))
+        .await
+        .unwrap();
 
     // start_all should continue even if one channel fails
     mgr.start_all().await.unwrap();
@@ -1223,7 +1312,9 @@ fn test_channel_sync_config_default() {
 #[test]
 fn test_channel_sync_config_with_targets() {
     let mut config = ChannelSyncConfig::default();
-    config.targets.insert("a".to_string(), vec!["b".to_string(), "c".to_string()]);
+    config
+        .targets
+        .insert("a".to_string(), vec!["b".to_string(), "c".to_string()]);
     assert_eq!(config.targets.len(), 1);
     assert_eq!(config.targets["a"].len(), 2);
 }
@@ -1266,18 +1357,45 @@ fn test_channel_status_roundtrip() {
 #[test]
 fn test_manager_metrics_default() {
     let metrics = ManagerMetrics::default();
-    assert_eq!(metrics.dispatched.load(std::sync::atomic::Ordering::Relaxed), 0);
-    assert_eq!(metrics.dropped_not_found.load(std::sync::atomic::Ordering::Relaxed), 0);
-    assert_eq!(metrics.dropped_filtered.load(std::sync::atomic::Ordering::Relaxed), 0);
-    assert_eq!(metrics.dropped_internal.load(std::sync::atomic::Ordering::Relaxed), 0);
-    assert_eq!(metrics.send_errors.load(std::sync::atomic::Ordering::Relaxed), 0);
+    assert_eq!(
+        metrics
+            .dispatched
+            .load(std::sync::atomic::Ordering::Relaxed),
+        0
+    );
+    assert_eq!(
+        metrics
+            .dropped_not_found
+            .load(std::sync::atomic::Ordering::Relaxed),
+        0
+    );
+    assert_eq!(
+        metrics
+            .dropped_filtered
+            .load(std::sync::atomic::Ordering::Relaxed),
+        0
+    );
+    assert_eq!(
+        metrics
+            .dropped_internal
+            .load(std::sync::atomic::Ordering::Relaxed),
+        0
+    );
+    assert_eq!(
+        metrics
+            .send_errors
+            .load(std::sync::atomic::Ordering::Relaxed),
+        0
+    );
 }
 
 // === Dispatch loop with allowed channels ===
 
 #[tokio::test]
 async fn test_dispatch_loop_with_allowed_filter() {
-    let mgr = Arc::new(ChannelManager::with_allowed_channels(vec!["ok".to_string()]));
+    let mgr = Arc::new(ChannelManager::with_allowed_channels(vec![
+        "ok".to_string(),
+    ]));
     let ch = Arc::new(StubChannel::new("ok"));
     mgr.register(ch.clone()).await.unwrap();
 
@@ -1309,7 +1427,9 @@ async fn test_dispatch_loop_with_allowed_filter() {
     assert_eq!(ch.sent_messages().len(), 1);
     assert_eq!(ch.sent_messages()[0], "allowed");
     assert_eq!(
-        mgr.metrics().dropped_filtered.load(std::sync::atomic::Ordering::Relaxed),
+        mgr.metrics()
+            .dropped_filtered
+            .load(std::sync::atomic::Ordering::Relaxed),
         1
     );
     drop(tx);
@@ -1338,7 +1458,9 @@ async fn test_dispatch_loop_with_send_error() {
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
     assert_eq!(
-        mgr.metrics().send_errors.load(std::sync::atomic::Ordering::Relaxed),
+        mgr.metrics()
+            .send_errors
+            .load(std::sync::atomic::Ordering::Relaxed),
         1
     );
     drop(tx);
@@ -1364,7 +1486,9 @@ async fn test_dispatch_loop_missing_channel() {
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
     assert_eq!(
-        mgr.metrics().dropped_not_found.load(std::sync::atomic::Ordering::Relaxed),
+        mgr.metrics()
+            .dropped_not_found
+            .load(std::sync::atomic::Ordering::Relaxed),
         1
     );
     drop(tx);
@@ -1380,7 +1504,9 @@ async fn test_setup_sync_targets_mixed_valid_invalid() {
     // "c" NOT registered
 
     let mut config = ChannelSyncConfig::default();
-    config.targets.insert("a".to_string(), vec!["b".to_string(), "c".to_string()]);
+    config
+        .targets
+        .insert("a".to_string(), vec!["b".to_string(), "c".to_string()]);
 
     mgr.setup_sync_targets(&config).await;
 
@@ -1427,7 +1553,9 @@ async fn test_dispatch_loop_routes_to_correct_channel() {
         content: "for A".to_string(),
         message_type: String::new(),
         meta: Default::default(),
-    }).await.unwrap();
+    })
+    .await
+    .unwrap();
 
     tx.send(OutboundMessage {
         channel: "b".to_string(),
@@ -1435,7 +1563,9 @@ async fn test_dispatch_loop_routes_to_correct_channel() {
         content: "for B".to_string(),
         message_type: String::new(),
         meta: Default::default(),
-    }).await.unwrap();
+    })
+    .await
+    .unwrap();
 
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
@@ -1504,19 +1634,33 @@ async fn test_metrics_comprehensive() {
         content: "ok".to_string(),
         message_type: String::new(),
         meta: Default::default(),
-    }).await.unwrap();
+    })
+    .await
+    .unwrap();
 
     // Dispatch to missing channel
-    let _ = mgr.dispatch_outbound(OutboundMessage {
-        channel: "missing".to_string(),
-        chat_id: "c1".to_string(),
-        content: "lost".to_string(),
-        message_type: String::new(),
-        meta: Default::default(),
-    }).await;
+    let _ = mgr
+        .dispatch_outbound(OutboundMessage {
+            channel: "missing".to_string(),
+            chat_id: "c1".to_string(),
+            content: "lost".to_string(),
+            message_type: String::new(),
+            meta: Default::default(),
+        })
+        .await;
 
-    assert_eq!(mgr.metrics().dispatched.load(std::sync::atomic::Ordering::Relaxed), 1);
-    assert_eq!(mgr.metrics().dropped_not_found.load(std::sync::atomic::Ordering::Relaxed), 1);
+    assert_eq!(
+        mgr.metrics()
+            .dispatched
+            .load(std::sync::atomic::Ordering::Relaxed),
+        1
+    );
+    assert_eq!(
+        mgr.metrics()
+            .dropped_not_found
+            .load(std::sync::atomic::Ordering::Relaxed),
+        1
+    );
 }
 
 // === Setup sync targets replaces existing config ===
@@ -1530,13 +1674,17 @@ async fn test_setup_sync_targets_replaces() {
 
     // First config: a -> b
     let mut config1 = ChannelSyncConfig::default();
-    config1.targets.insert("a".to_string(), vec!["b".to_string()]);
+    config1
+        .targets
+        .insert("a".to_string(), vec!["b".to_string()]);
     mgr.setup_sync_targets(&config1).await;
     assert_eq!(mgr.get_sync_targets("a").await, vec!["b"]);
 
     // Replace with: a -> c
     let mut config2 = ChannelSyncConfig::default();
-    config2.targets.insert("a".to_string(), vec!["c".to_string()]);
+    config2
+        .targets
+        .insert("a".to_string(), vec!["c".to_string()]);
     mgr.setup_sync_targets(&config2).await;
     assert_eq!(mgr.get_sync_targets("a").await, vec!["c"]);
 }

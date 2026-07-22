@@ -47,7 +47,12 @@ fn test_list_providers() {
 #[test]
 fn test_new_with_nonexistent_path() {
     let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("nonexistent").join("auth.json").to_string_lossy().to_string();
+    let path = dir
+        .path()
+        .join("nonexistent")
+        .join("auth.json")
+        .to_string_lossy()
+        .to_string();
     // Should succeed even when path doesn't exist
     let store = AuthStore::new(&path);
     assert!(store.list_providers().is_empty());
@@ -190,7 +195,13 @@ fn test_list_providers_after_partial_remove() {
 #[test]
 fn test_save_creates_parent_directory() {
     let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("subdir").join("nested").join("auth.json").to_string_lossy().to_string();
+    let path = dir
+        .path()
+        .join("subdir")
+        .join("nested")
+        .join("auth.json")
+        .to_string_lossy()
+        .to_string();
     let store = AuthStore::new(&path);
     store.save("test", test_cred()).unwrap();
     assert!(store.get("test").is_some());

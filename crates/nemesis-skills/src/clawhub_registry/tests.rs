@@ -34,10 +34,7 @@ fn test_find_common_prefix() {
 
 #[test]
 fn test_find_common_prefix_no_common() {
-    let entries = vec![
-        "SKILL.md".to_string(),
-        "scripts/run.sh".to_string(),
-    ];
+    let entries = vec!["SKILL.md".to_string(), "scripts/run.sh".to_string()];
     assert_eq!(find_common_prefix(&entries), None);
 }
 
@@ -101,9 +98,7 @@ fn test_extract_zip_to_dir() {
     {
         let mut writer = zip::ZipWriter::new(std::io::Cursor::new(&mut buf));
         let options = zip::write::SimpleFileOptions::default();
-        writer
-            .start_file("test-skill/SKILL.md", options)
-            .unwrap();
+        writer.start_file("test-skill/SKILL.md", options).unwrap();
         writer.write_all(b"# Test Skill\nHello").unwrap();
         writer.finish().unwrap();
     }
@@ -196,7 +191,8 @@ fn test_clawhub_search_response_empty() {
 
 #[test]
 fn test_clawhub_search_item_missing_optional_fields() {
-    let json = r#"{"results":[{"score":1.0,"slug":"test","displayName":"Test","summary":"A test"}]}"#;
+    let json =
+        r#"{"results":[{"score":1.0,"slug":"test","displayName":"Test","summary":"A test"}]}"#;
     let resp: ClawhubSearchResponse = serde_json::from_str(json).unwrap();
     assert_eq!(resp.results.len(), 1);
     assert!(resp.results[0].version.is_none());
@@ -238,10 +234,7 @@ fn test_find_common_prefix_single_entry_with_dir() {
 
 #[test]
 fn test_find_common_prefix_mixed_dirs() {
-    let entries = vec![
-        "dir1/file1.txt".to_string(),
-        "dir2/file2.txt".to_string(),
-    ];
+    let entries = vec!["dir1/file1.txt".to_string(), "dir2/file2.txt".to_string()];
     // Different top-level dirs, no common prefix
     assert_eq!(find_common_prefix(&entries), None);
 }
@@ -303,11 +296,8 @@ fn test_with_urls_custom() {
 
 #[test]
 fn test_site_url_from_convex_cloud() {
-    let registry = ClawHubRegistry::with_urls(
-        "https://clawhub.ai",
-        "https://my-app.convex.cloud",
-        "",
-    );
+    let registry =
+        ClawHubRegistry::with_urls("https://clawhub.ai", "https://my-app.convex.cloud", "");
     assert_eq!(registry.site_url(), "https://my-app.convex.site");
 }
 
@@ -498,7 +488,8 @@ fn test_convex_response_error_with_message() {
 #[test]
 fn test_clawhub_search_item_score_normalization_high() {
     // Score > 1.0 should be normalized by dividing by 5.0
-    let json = r#"{"results":[{"score":4.5,"slug":"pdf","displayName":"PDF","summary":"PDF tool"}]}"#;
+    let json =
+        r#"{"results":[{"score":4.5,"slug":"pdf","displayName":"PDF","summary":"PDF tool"}]}"#;
     let resp: ClawhubSearchResponse = serde_json::from_str(json).unwrap();
     assert_eq!(resp.results[0].score, 4.5);
 }
@@ -506,7 +497,8 @@ fn test_clawhub_search_item_score_normalization_high() {
 #[test]
 fn test_clawhub_search_item_score_normalization_low() {
     // Score <= 1.0 should be kept as-is
-    let json = r#"{"results":[{"score":0.8,"slug":"csv","displayName":"CSV","summary":"CSV tool"}]}"#;
+    let json =
+        r#"{"results":[{"score":0.8,"slug":"csv","displayName":"CSV","summary":"CSV tool"}]}"#;
     let resp: ClawhubSearchResponse = serde_json::from_str(json).unwrap();
     assert_eq!(resp.results[0].score, 0.8);
 }
@@ -536,7 +528,10 @@ fn test_find_common_prefix_single_entry_no_slash() {
 
 #[test]
 fn test_urlencoding_unreserved_chars() {
-    assert_eq!(urlencoding::encode("hello-world_test.txt"), "hello-world_test.txt");
+    assert_eq!(
+        urlencoding::encode("hello-world_test.txt"),
+        "hello-world_test.txt"
+    );
     assert_eq!(urlencoding::encode("path/to/file"), "path%2Fto%2Ffile");
 }
 
@@ -642,7 +637,8 @@ fn test_search_item_score_boundary_at_one() {
 #[test]
 fn test_search_item_score_boundary_just_above_one() {
     // Score 1.1 should be normalized by dividing by 5.0
-    let json = r#"{"results":[{"score":1.1,"slug":"above","displayName":"Above","summary":"Above one"}]}"#;
+    let json =
+        r#"{"results":[{"score":1.1,"slug":"above","displayName":"Above","summary":"Above one"}]}"#;
     let resp: ClawhubSearchResponse = serde_json::from_str(json).unwrap();
     assert_eq!(resp.results[0].score, 1.1);
 }
@@ -658,7 +654,8 @@ fn test_convex_response_missing_all_optional() {
 #[test]
 fn test_convex_skill_list_item_no_stats() {
     // Stats is required in the struct but test edge case
-    let json = r#"{"slug":"pdf","displayName":"PDF","summary":"PDF tool","stats":{"downloads":0.0}}"#;
+    let json =
+        r#"{"slug":"pdf","displayName":"PDF","summary":"PDF tool","stats":{"downloads":0.0}}"#;
     let item: ConvexSkillListItem = serde_json::from_str(json).unwrap();
     assert_eq!(item.stats.downloads, 0.0);
 }
@@ -825,10 +822,7 @@ fn test_clawhub_search_response_empty_results() {
 
 #[test]
 fn test_find_common_prefix_no_common_v2() {
-    let entries = vec![
-        "dirA/file1.txt".to_string(),
-        "dirB/file2.txt".to_string(),
-    ];
+    let entries = vec!["dirA/file1.txt".to_string(), "dirB/file2.txt".to_string()];
     let result = find_common_prefix(&entries);
     assert_eq!(result, None);
 }
@@ -1114,22 +1108,14 @@ fn test_clawhub_search_response_with_results() {
 
 #[tokio::test]
 async fn test_search_connection_error() {
-    let registry = ClawHubRegistry::with_urls(
-        "http://127.0.0.1:1",
-        "http://127.0.0.1:1",
-        "",
-    );
+    let registry = ClawHubRegistry::with_urls("http://127.0.0.1:1", "http://127.0.0.1:1", "");
     let result = registry.search("pdf", 10).await;
     assert!(result.is_err());
 }
 
 #[tokio::test]
 async fn test_search_empty_query_connection_error() {
-    let registry = ClawHubRegistry::with_urls(
-        "http://127.0.0.1:1",
-        "http://127.0.0.1:1",
-        "",
-    );
+    let registry = ClawHubRegistry::with_urls("http://127.0.0.1:1", "http://127.0.0.1:1", "");
     let result = registry.search("", 10).await;
     assert!(result.is_err());
 }
@@ -1145,11 +1131,7 @@ async fn test_get_skill_meta_invalid_slug() {
 
 #[tokio::test]
 async fn test_get_skill_meta_connection_error() {
-    let registry = ClawHubRegistry::with_urls(
-        "http://127.0.0.1:1",
-        "http://127.0.0.1:1",
-        "",
-    );
+    let registry = ClawHubRegistry::with_urls("http://127.0.0.1:1", "http://127.0.0.1:1", "");
     let result = registry.get_skill_meta("pdf").await;
     assert!(result.is_err());
 }
@@ -1157,18 +1139,16 @@ async fn test_get_skill_meta_connection_error() {
 #[tokio::test]
 async fn test_download_and_install_invalid_slug() {
     let registry = ClawHubRegistry::new();
-    let result = registry.download_and_install("bad/slug", "1.0", "/tmp").await;
+    let result = registry
+        .download_and_install("bad/slug", "1.0", "/tmp")
+        .await;
     assert!(result.is_err());
     assert!(result.unwrap_err().to_string().contains("invalid"));
 }
 
 #[tokio::test]
 async fn test_download_and_install_connection_error() {
-    let registry = ClawHubRegistry::with_urls(
-        "http://127.0.0.1:1",
-        "http://127.0.0.1:1",
-        "",
-    );
+    let registry = ClawHubRegistry::with_urls("http://127.0.0.1:1", "http://127.0.0.1:1", "");
     let result = registry.download_and_install("pdf", "1.0", "/tmp").await;
     assert!(result.is_err());
 }
@@ -1201,7 +1181,10 @@ fn test_move_dir_contents_nonexistent_source() {
 fn test_flatten_single_top_dir_nonexistent_dir() {
     let result = flatten_single_top_dir(std::path::Path::new("/tmp/nonexistent_flat_dir_xyz"));
     // Should return the path as-is since read_dir fails
-    assert_eq!(result, std::path::PathBuf::from("/tmp/nonexistent_flat_dir_xyz"));
+    assert_eq!(
+        result,
+        std::path::PathBuf::from("/tmp/nonexistent_flat_dir_xyz")
+    );
 }
 
 // ============================================================
@@ -1246,7 +1229,10 @@ async fn test_search_query_success_parses_results() {
         .mount(&server)
         .await;
 
-    let results = registry.search("pdf", 10).await.expect("search should succeed");
+    let results = registry
+        .search("pdf", 10)
+        .await
+        .expect("search should succeed");
     assert_eq!(results.len(), 2);
     // score 4.5 > 1.0 -> normalized to 4.5 / 5.0 = 0.9
     assert!((results[0].score - 0.9).abs() < 1e-9);
@@ -1298,7 +1284,11 @@ async fn test_search_query_http_error_returns_err() {
 
     let err = registry.search("pdf", 10).await.unwrap_err();
     let msg = err.to_string();
-    assert!(msg.contains("status 500") || msg.contains("500"), "msg: {}", msg);
+    assert!(
+        msg.contains("status 500") || msg.contains("500"),
+        "msg: {}",
+        msg
+    );
 }
 
 #[tokio::test]
@@ -1372,7 +1362,10 @@ async fn test_search_list_malformed_value_returns_err() {
     // value is a string, not an array -> deserialization of Vec fails.
     Mock::given(method("POST"))
         .and(path("/api/query"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(convex_body("success", serde_json::json!("not-an-array"))))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(convex_body("success", serde_json::json!("not-an-array"))),
+        )
         .mount(&server)
         .await;
 
@@ -1400,7 +1393,10 @@ async fn test_get_skill_meta_success() {
         .mount(&server)
         .await;
 
-    let meta = registry.get_skill_meta("pdf").await.expect("meta should succeed");
+    let meta = registry
+        .get_skill_meta("pdf")
+        .await
+        .expect("meta should succeed");
     assert_eq!(meta.slug, "pdf");
     assert_eq!(meta.display_name, "PDF Tool");
     assert_eq!(meta.summary, "Converts PDFs");
@@ -1458,7 +1454,11 @@ async fn test_get_skill_meta_both_slugs_empty_returns_not_found() {
 
     let err = registry.get_skill_meta("missing").await.unwrap_err();
     let msg = err.to_string();
-    assert!(msg.contains("not found") || msg.contains("missing"), "msg: {}", msg);
+    assert!(
+        msg.contains("not found") || msg.contains("missing"),
+        "msg: {}",
+        msg
+    );
 }
 
 #[tokio::test]
@@ -1492,7 +1492,10 @@ async fn test_get_skill_content_file_api_success() {
         .mount(&server)
         .await;
 
-    let content = registry.get_skill_content("pdf").await.expect("content should succeed");
+    let content = registry
+        .get_skill_content("pdf")
+        .await
+        .expect("content should succeed");
     assert_eq!(content.slug, "pdf");
     assert_eq!(content.filename, "SKILL.md");
     assert!(content.content.contains("PDF Skill"));
@@ -1634,7 +1637,10 @@ async fn test_browse_includes_cursor_param_when_provided() {
         .mount(&server)
         .await;
 
-    let result = registry.browse(&BrowseSort::Downloads, 5, "page2").await.unwrap();
+    let result = registry
+        .browse(&BrowseSort::Downloads, 5, "page2")
+        .await
+        .unwrap();
     assert!(result.items.is_empty());
     assert!(result.next_cursor.is_none());
 }
@@ -1650,9 +1656,16 @@ async fn test_browse_http_error_returns_err_with_status() {
         .mount(&server)
         .await;
 
-    let err = registry.browse(&BrowseSort::Stars, 10, "").await.unwrap_err();
+    let err = registry
+        .browse(&BrowseSort::Stars, 10, "")
+        .await
+        .unwrap_err();
     let msg = err.to_string();
-    assert!(msg.contains("browse failed") && msg.contains("403"), "msg: {}", msg);
+    assert!(
+        msg.contains("browse failed") && msg.contains("403"),
+        "msg: {}",
+        msg
+    );
 }
 
 #[tokio::test]
@@ -1666,7 +1679,10 @@ async fn test_browse_malformed_json_returns_err() {
         .mount(&server)
         .await;
 
-    let err = registry.browse(&BrowseSort::Updated, 10, "").await.unwrap_err();
+    let err = registry
+        .browse(&BrowseSort::Updated, 10, "")
+        .await
+        .unwrap_err();
     assert!(err.to_string().contains("parse browse response"));
 }
 
@@ -1822,5 +1838,8 @@ async fn test_download_and_install_zip_wrong_content_type_falls_back_to_github()
     let result = registry
         .download_and_install("pdf", "1.0", "/tmp/nemesis_test_install")
         .await;
-    assert!(result.is_err(), "expected github fallback to fail without network");
+    assert!(
+        result.is_err(),
+        "expected github fallback to fail without network"
+    );
 }

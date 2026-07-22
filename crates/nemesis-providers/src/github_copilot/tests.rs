@@ -11,7 +11,7 @@ fn test_messages_to_prompt() {
             tool_call_id: None,
             timestamp: None,
             reasoning_content: None,
-extra: std::collections::HashMap::new(),
+            extra: std::collections::HashMap::new(),
         },
         Message {
             role: "assistant".to_string(),
@@ -20,7 +20,7 @@ extra: std::collections::HashMap::new(),
             tool_call_id: None,
             timestamp: None,
             reasoning_content: None,
-extra: std::collections::HashMap::new(),
+            extra: std::collections::HashMap::new(),
         },
     ];
     let prompt = provider.messages_to_prompt(&messages);
@@ -88,7 +88,7 @@ fn test_messages_to_prompt_single_message() {
         tool_call_id: None,
         timestamp: None,
         reasoning_content: None,
-extra: std::collections::HashMap::new(),
+        extra: std::collections::HashMap::new(),
     }];
     let prompt = provider.messages_to_prompt(&messages);
     let parsed: Vec<serde_json::Value> = serde_json::from_str(&prompt).unwrap();

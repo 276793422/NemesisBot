@@ -160,7 +160,8 @@ impl KeyGenerator {
     /// Returns the number of keys removed. Keys are considered expired
     /// based on their `created_at` timestamp.
     pub fn cleanup(&self, max_age: Duration) -> usize {
-        let cutoff = chrono::Local::now() - chrono::Duration::from_std(max_age).unwrap_or(chrono::Duration::MAX);
+        let cutoff = chrono::Local::now()
+            - chrono::Duration::from_std(max_age).unwrap_or(chrono::Duration::MAX);
         let mut map = self.keys.lock();
         let before = map.len();
         map.retain(|_, v| v.created_at > cutoff);
@@ -226,8 +227,7 @@ impl WebSocketServer {
             .map(|a| a.port())
             .map_err(|e| format!("get port: {}", e))?;
 
-        self.port
-            .store(port, std::sync::atomic::Ordering::SeqCst);
+        self.port.store(port, std::sync::atomic::Ordering::SeqCst);
 
         info!("[WebSocketServer] Listening on 127.0.0.1:{}", port);
 
@@ -409,7 +409,8 @@ impl WebSocketServer {
 
                                 if msg.is_request() {
                                     if let Ok(Some(resp_msg)) = dispatch_result {
-                                        let resp_str = serde_json::to_string(&resp_msg).unwrap_or_default();
+                                        let resp_str =
+                                            serde_json::to_string(&resp_msg).unwrap_or_default();
                                         let guard = conn_arc.lock().await;
                                         let _ = guard.send(resp_str).await;
                                     }
@@ -517,20 +518,16 @@ impl WebSocketServer {
             s.pending.insert(msg_id.clone(), tx);
         }
 
-        let data =
-            serde_json::to_string(&msg).map_err(|e| WsServerError::Other(e.to_string()))?;
+        let data = serde_json::to_string(&msg).map_err(|e| WsServerError::Other(e.to_string()))?;
 
         // Send via connection
         {
             let guard = conn.lock().await;
-            guard
-                .send(data)
-                .await
-                .map_err(|e| {
-                    let mut s = self.state.lock();
-                    s.pending.remove(&msg_id);
-                    WsServerError::Other(e)
-                })?;
+            guard.send(data).await.map_err(|e| {
+                let mut s = self.state.lock();
+                s.pending.remove(&msg_id);
+                WsServerError::Other(e)
+            })?;
         }
 
         // Wait for response with timeout
@@ -566,7 +563,10 @@ impl WebSocketServer {
     }
 
     /// Get a connection by child ID.
-    pub fn get_connection(&self, child_id: &str) -> Option<Arc<tokio::sync::Mutex<ChildConnection>>> {
+    pub fn get_connection(
+        &self,
+        child_id: &str,
+    ) -> Option<Arc<tokio::sync::Mutex<ChildConnection>>> {
         self.state.lock().connections.get(child_id).cloned()
     }
 
@@ -574,9 +574,9 @@ impl WebSocketServer {
     pub fn remove_connection(&self, child_id: &str) {
         let key = {
             let s = self.state.lock();
-            s.connections.get(child_id).and_then(|c| {
-                c.try_lock().map(|g| g.key.clone()).ok()
-            })
+            s.connections
+                .get(child_id)
+                .and_then(|c| c.try_lock().map(|g| g.key.clone()).ok())
         };
 
         let mut s = self.state.lock();
@@ -599,6 +599,6 @@ impl WebSocketServer {
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
-mod tests;
-#[cfg(test)]
 mod extra_tests;
+#[cfg(test)]
+mod tests;

@@ -95,17 +95,19 @@ impl Tool for FindSkillsTool {
         };
 
         // Flatten grouped results into a single sorted list
-        let mut results: Vec<nemesis_skills::types::SkillSearchResult> = grouped
-            .iter()
-            .flat_map(|g| g.results.clone())
-            .collect();
+        let mut results: Vec<nemesis_skills::types::SkillSearchResult> =
+            grouped.iter().flat_map(|g| g.results.clone()).collect();
 
         if results.is_empty() {
             return ToolResult::success(&format!("No skills found for query '{}'", query));
         }
 
         // Sort by score descending
-        results.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+        results.sort_by(|a, b| {
+            b.score
+                .partial_cmp(&a.score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
         results.truncate(limit);
 
         let mut output = format!("Found {} skill(s) for \"{}\":\n", results.len(), query);
@@ -215,7 +217,11 @@ impl Tool for InstallSkillTool {
     async fn execute(&self, args: &serde_json::Value) -> ToolResult {
         let slug = match args["slug"].as_str() {
             Some(s) if !s.is_empty() => s,
-            _ => return ToolResult::error("slug parameter is required and must be a non-empty string"),
+            _ => {
+                return ToolResult::error(
+                    "slug parameter is required and must be a non-empty string",
+                );
+            }
         };
 
         let registry_name = args["registry"].as_str().unwrap_or("");

@@ -1,10 +1,10 @@
 //! DLP Engine - Layer 5
 //! Data Loss Prevention with 30+ configurable rules for PII and sensitive data.
 
+use parking_lot::RwLock;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::sync::OnceLock;
-use parking_lot::RwLock;
 
 use nemesis_types::utils;
 
@@ -233,7 +233,9 @@ impl DlpEngine {
         // Check dynamic rules
         let dynamic = self.dynamic_rules.read();
         for rule in dynamic.iter() {
-            if !rule.enabled { continue; }
+            if !rule.enabled {
+                continue;
+            }
             if !self.is_rule_enabled(&rule.name) {
                 continue;
             }
@@ -270,10 +272,15 @@ impl DlpEngine {
         let should_block = matches.iter().any(|m| m.effective_action == "block");
         let summary = if has_matches {
             let total: usize = matches.iter().map(|m| m.count).sum();
-            let blocking = matches.iter().filter(|m| m.effective_action == "block").count();
+            let blocking = matches
+                .iter()
+                .filter(|m| m.effective_action == "block")
+                .count();
             format!(
                 "{} sensitive data pattern(s) detected across {} rule(s) ({} blocking)",
-                total, matches.len(), blocking
+                total,
+                matches.len(),
+                blocking
             )
         } else {
             String::new()
@@ -311,7 +318,9 @@ impl DlpEngine {
         // Dynamic rules
         let dynamic = self.dynamic_rules.read();
         for rule in dynamic.iter() {
-            if !rule.enabled { continue; }
+            if !rule.enabled {
+                continue;
+            }
             if let Ok(re) = Regex::new(&rule.pattern) {
                 for m in re.find_iter(text) {
                     spans.push((m.start(), m.end()));
@@ -324,9 +333,7 @@ impl DlpEngine {
         }
 
         // Sort by start position, then by length descending (prefer longer matches)
-        spans.sort_by(|a, b| {
-            a.0.cmp(&b.0).then_with(|| b.1.cmp(&a.1))
-        });
+        spans.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| b.1.cmp(&a.1)));
 
         // Resolve overlaps: keep non-overlapping spans
         let mut resolved: Vec<(usize, usize)> = Vec::new();
@@ -461,9 +468,7 @@ fn extract_text(value: &serde_json::Value) -> String {
         serde_json::Value::Object(map) => {
             map.values().map(extract_text).collect::<Vec<_>>().join(" ")
         }
-        serde_json::Value::Array(arr) => {
-            arr.iter().map(extract_text).collect::<Vec<_>>().join(" ")
-        }
+        serde_json::Value::Array(arr) => arr.iter().map(extract_text).collect::<Vec<_>>().join(" "),
         _ => String::new(),
     }
 }
@@ -523,7 +528,11 @@ fn luhn_valid(text: &str, start: usize, end: usize) -> bool {
         Some(s) => s,
         None => return false,
     };
-    let digits: Vec<u8> = s.chars().filter_map(|c| c.to_digit(10)).map(|d| d as u8).collect();
+    let digits: Vec<u8> = s
+        .chars()
+        .filter_map(|c| c.to_digit(10))
+        .map(|d| d as u8)
+        .collect();
     if digits.len() < 2 {
         return false;
     }

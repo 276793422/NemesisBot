@@ -173,9 +173,8 @@ impl Exporter {
             files,
         };
 
-        let manifest_data = serde_json::to_string_pretty(&manifest).map_err(|e| {
-            std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string())
-        })?;
+        let manifest_data = serde_json::to_string_pretty(&manifest)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()))?;
         let manifest_path = export_dir.join("forge-manifest.json");
         tokio::fs::write(&manifest_path, manifest_data).await?;
 
@@ -220,7 +219,11 @@ impl Exporter {
         name: &str,
         content: &str,
     ) -> std::io::Result<PathBuf> {
-        let dir = self.config.workspace.join("skills").join(format!("{}-forge", name));
+        let dir = self
+            .config
+            .workspace
+            .join("skills")
+            .join(format!("{}-forge", name));
         tokio::fs::create_dir_all(&dir).await?;
         let path = dir.join("SKILL.md");
         tokio::fs::write(&path, content).await?;

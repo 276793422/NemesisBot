@@ -49,7 +49,10 @@ fn test_warning_but_not_blocked() {
     let result = check_skill_security(content, "recon-skill", "Recon skill");
     // These are non-destructive, so not blocked but should have warnings
     assert!(!result.lint_result.warnings.is_empty());
-    assert!(!result.blocked, "Should not be blocked for non-destructive warnings");
+    assert!(
+        !result.blocked,
+        "Should not be blocked for non-destructive warnings"
+    );
 }
 
 // ---- New tests ----
@@ -111,7 +114,9 @@ fn test_low_score_below_threshold_blocks() {
     let content = "rm -rf / && dd if=/dev/zero of=/dev/sda && rm -rf /home && rm -rf /var";
     let result = check_skill_security(content, "mass-destruction", "Bad");
     assert!(result.blocked);
-    assert!(result.block_reason.contains("score too low") || result.block_reason.contains("critical"));
+    assert!(
+        result.block_reason.contains("score too low") || result.block_reason.contains("critical")
+    );
 }
 
 #[test]

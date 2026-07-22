@@ -174,7 +174,13 @@ impl NemesisLogger {
     }
 
     /// Log a message.
-    pub fn log(&self, level: LogLevel, component: &str, message: &str, fields: Option<serde_json::Map<String, serde_json::Value>>) {
+    pub fn log(
+        &self,
+        level: LogLevel,
+        component: &str,
+        message: &str,
+        fields: Option<serde_json::Map<String, serde_json::Value>>,
+    ) {
         let mut state = self.state.lock();
 
         if !state.logging_enabled {
@@ -187,9 +193,17 @@ impl NemesisLogger {
         let entry = LogEntry {
             level: level.name().to_string(),
             timestamp: Local::now().to_rfc3339(),
-            component: if component.is_empty() { None } else { Some(component.to_string()) },
+            component: if component.is_empty() {
+                None
+            } else {
+                Some(component.to_string())
+            },
             message: message.to_string(),
-            fields: if fields.is_some() && !fields.as_ref().unwrap().is_empty() { fields } else { None },
+            fields: if fields.is_some() && !fields.as_ref().unwrap().is_empty() {
+                fields
+            } else {
+                None
+            },
             caller: None,
         };
 
@@ -206,14 +220,30 @@ impl NemesisLogger {
         drop(state); // Release lock before console output and hook
 
         if console_enabled {
-            let field_str = entry.fields.as_ref().map(|f| {
-                let pairs: Vec<String> = f.iter().map(|(k, v)| format!("{}={}", k, v)).collect();
-                format!(" {{{}}}", pairs.join(", "))
-            }).unwrap_or_default();
+            let field_str = entry
+                .fields
+                .as_ref()
+                .map(|f| {
+                    let pairs: Vec<String> =
+                        f.iter().map(|(k, v)| format!("{}={}", k, v)).collect();
+                    format!(" {{{}}}", pairs.join(", "))
+                })
+                .unwrap_or_default();
 
-            let comp_str = entry.component.as_ref().map(|c| format!(" {}:", c)).unwrap_or_default();
+            let comp_str = entry
+                .component
+                .as_ref()
+                .map(|c| format!(" {}:", c))
+                .unwrap_or_default();
 
-            tracing::info!("[{}] [{}]{} {}{}", entry.timestamp, entry.level, comp_str, entry.message, field_str);
+            tracing::info!(
+                "[{}] [{}]{} {}{}",
+                entry.timestamp,
+                entry.level,
+                comp_str,
+                entry.message,
+                field_str
+            );
         }
 
         // SSE hook (non-blocking, fire and forget)
@@ -274,7 +304,12 @@ impl NemesisLogger {
     }
 
     /// Log debug with component and structured fields.
-    pub fn debug_cf(&self, component: &str, msg: &str, fields: serde_json::Map<String, serde_json::Value>) {
+    pub fn debug_cf(
+        &self,
+        component: &str,
+        msg: &str,
+        fields: serde_json::Map<String, serde_json::Value>,
+    ) {
         self.log(LogLevel::Debug, component, msg, Some(fields));
     }
 
@@ -284,7 +319,12 @@ impl NemesisLogger {
     }
 
     /// Log info with component and structured fields.
-    pub fn info_cf(&self, component: &str, msg: &str, fields: serde_json::Map<String, serde_json::Value>) {
+    pub fn info_cf(
+        &self,
+        component: &str,
+        msg: &str,
+        fields: serde_json::Map<String, serde_json::Value>,
+    ) {
         self.log(LogLevel::Info, component, msg, Some(fields));
     }
 
@@ -294,7 +334,12 @@ impl NemesisLogger {
     }
 
     /// Log warn with component and structured fields.
-    pub fn warn_cf(&self, component: &str, msg: &str, fields: serde_json::Map<String, serde_json::Value>) {
+    pub fn warn_cf(
+        &self,
+        component: &str,
+        msg: &str,
+        fields: serde_json::Map<String, serde_json::Value>,
+    ) {
         self.log(LogLevel::Warn, component, msg, Some(fields));
     }
 
@@ -304,7 +349,12 @@ impl NemesisLogger {
     }
 
     /// Log error with component and structured fields.
-    pub fn error_cf(&self, component: &str, msg: &str, fields: serde_json::Map<String, serde_json::Value>) {
+    pub fn error_cf(
+        &self,
+        component: &str,
+        msg: &str,
+        fields: serde_json::Map<String, serde_json::Value>,
+    ) {
         self.log(LogLevel::Error, component, msg, Some(fields));
     }
 
@@ -314,15 +364,20 @@ impl NemesisLogger {
     }
 
     /// Log fatal with component and structured fields.
-    pub fn fatal_cf(&self, component: &str, msg: &str, fields: serde_json::Map<String, serde_json::Value>) {
+    pub fn fatal_cf(
+        &self,
+        component: &str,
+        msg: &str,
+        fields: serde_json::Map<String, serde_json::Value>,
+    ) {
         self.log(LogLevel::Fatal, component, msg, Some(fields));
     }
 }
 
 /// Initialize the logger with the given configuration.
 pub fn init_logger(config: &LoggerConfig) -> Result<(), String> {
-    let filter = EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| EnvFilter::new(&config.level));
+    let filter =
+        EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(&config.level));
 
     if config.json_format {
         tracing_subscriber::fmt()
@@ -330,9 +385,7 @@ pub fn init_logger(config: &LoggerConfig) -> Result<(), String> {
             .with_env_filter(filter)
             .init();
     } else {
-        tracing_subscriber::fmt()
-            .with_env_filter(filter)
-            .init();
+        tracing_subscriber::fmt().with_env_filter(filter).init();
     }
 
     // Set up global logger

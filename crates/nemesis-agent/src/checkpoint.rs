@@ -185,7 +185,9 @@ impl CheckpointStore {
         let mut written = Vec::new();
         let mut deleted = Vec::new();
         for (path, content) in earliest {
-            let Some(abs) = self.safe_path(&path) else { continue };
+            let Some(abs) = self.safe_path(&path) else {
+                continue;
+            };
             match content {
                 None => {
                     if tokio::fs::remove_file(&abs).await.is_ok() {

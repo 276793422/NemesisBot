@@ -52,10 +52,7 @@ impl PermissionPreset {
     /// Check if an operation type is allowed under this preset.
     pub fn allows(&self, op: OperationType) -> bool {
         match self {
-            Self::ReadOnly => matches!(
-                op,
-                OperationType::FileRead | OperationType::DirRead
-            ),
+            Self::ReadOnly => matches!(op, OperationType::FileRead | OperationType::DirRead),
             Self::Standard => matches!(
                 op,
                 OperationType::FileRead
@@ -690,7 +687,9 @@ impl<'a> SecureFileWrapper<'a> {
     /// Append content to a file with security check.
     pub async fn append_file(&self, path: &str, content: &str) -> Result<(), String> {
         let validated = self.check_file_write(path)?;
-        let existing = tokio::fs::read_to_string(&validated).await.unwrap_or_default();
+        let existing = tokio::fs::read_to_string(&validated)
+            .await
+            .unwrap_or_default();
         let new_content = if existing.is_empty() {
             content.to_string()
         } else if existing.ends_with('\n') {
@@ -927,7 +926,11 @@ impl<'a> SecureProcessWrapper<'a> {
     }
 
     /// Execute a command with security check and return output.
-    pub async fn execute_command(&self, command: &str, timeout_secs: u64) -> Result<String, String> {
+    pub async fn execute_command(
+        &self,
+        command: &str,
+        timeout_secs: u64,
+    ) -> Result<String, String> {
         self.check_process_exec(command)?;
 
         info!(
@@ -940,11 +943,7 @@ impl<'a> SecureProcessWrapper<'a> {
         );
 
         let timeout = std::time::Duration::from_secs(timeout_secs.min(600));
-        let result = tokio::time::timeout(
-            timeout,
-            shell_command(command).output(),
-        )
-        .await;
+        let result = tokio::time::timeout(timeout, shell_command(command).output()).await;
 
         match result {
             Ok(Ok(output)) => {
@@ -1029,11 +1028,7 @@ impl<'a> SecureProcessWrapper<'a> {
             if stderr.contains("no such process") || stderr.contains("not found") {
                 Ok(())
             } else {
-                Err(format!(
-                    "failed to kill process {}: {}",
-                    pid,
-                    stderr.trim()
-                ))
+                Err(format!("failed to kill process {}: {}", pid, stderr.trim()))
             }
         }
     }
@@ -1122,7 +1117,10 @@ impl<'a> SecureProcessWrapper<'a> {
             }
 
             if tokio::time::Instant::now() >= deadline {
-                return Err(format!("timeout waiting for process {} after {}s", pid, timeout_secs));
+                return Err(format!(
+                    "timeout waiting for process {} after {}s",
+                    pid, timeout_secs
+                ));
             }
 
             tokio::time::sleep(std::time::Duration::from_millis(200)).await;
@@ -1134,11 +1132,15 @@ impl<'a> SecureProcessWrapper<'a> {
     /// On Windows, this returns an error since Windows does not support
     /// POSIX signals. Use `kill()` or `terminate()` instead.
     pub async fn signal(&self, pid: u32, signal: i32) -> Result<(), String> {
-        self.middleware
-            .check_operation(OperationType::ProcessExec, &format!("signal:{}:{}", pid, signal))?;
+        self.middleware.check_operation(
+            OperationType::ProcessExec,
+            &format!("signal:{}:{}", pid, signal),
+        )?;
 
         if cfg!(target_os = "windows") {
-            return Err("POSIX signals are not supported on Windows; use kill() or terminate()".to_string());
+            return Err(
+                "POSIX signals are not supported on Windows; use kill() or terminate()".to_string(),
+            );
         }
 
         let kill_cmd = format!("kill -{} {}", signal, pid);
@@ -1155,7 +1157,9 @@ impl<'a> SecureProcessWrapper<'a> {
             let stderr = String::from_utf8_lossy(&output.stderr);
             Err(format!(
                 "failed to send signal {} to process {}: {}",
-                signal, pid, stderr.trim()
+                signal,
+                pid,
+                stderr.trim()
             ))
         }
     }
@@ -1173,11 +1177,7 @@ impl<'a> SecureProcessWrapper<'a> {
         self.check_process_exec(command)?;
 
         let timeout = std::time::Duration::from_secs(timeout_secs.min(600));
-        let result = tokio::time::timeout(
-            timeout,
-            shell_command(command).output(),
-        )
-        .await;
+        let result = tokio::time::timeout(timeout, shell_command(command).output()).await;
 
         match result {
             Ok(Ok(output)) => Ok(ProcessOutput {
@@ -1253,16 +1253,29 @@ impl<'a> SecureNetworkWrapper<'a> {
             max_size,
         );
 
-        let response = reqwest::get(&validated).await.map_err(|e| format!("request failed: {}", e))?;
+        let response = reqwest::get(&validated)
+            .await
+            .map_err(|e| format!("request failed: {}", e))?;
 
         let status = response.status();
         if !status.is_success() {
-            return Err(format!("HTTP {} {}", status.as_u16(), status.canonical_reason().unwrap_or("Unknown")));
+            return Err(format!(
+                "HTTP {} {}",
+                status.as_u16(),
+                status.canonical_reason().unwrap_or("Unknown")
+            ));
         }
 
-        let bytes = response.bytes().await.map_err(|e| format!("failed to read response: {}", e))?;
+        let bytes = response
+            .bytes()
+            .await
+            .map_err(|e| format!("failed to read response: {}", e))?;
         if bytes.len() > max_size {
-            return Err(format!("response too large: {} bytes (limit: {})", bytes.len(), max_size));
+            return Err(format!(
+                "response too large: {} bytes (limit: {})",
+                bytes.len(),
+                max_size
+            ));
         }
 
         Ok(bytes.to_vec())

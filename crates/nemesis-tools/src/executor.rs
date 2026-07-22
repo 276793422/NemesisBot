@@ -86,10 +86,7 @@ impl ToolExecutor {
     }
 
     /// Execute multiple tool calls concurrently.
-    pub async fn execute_batch(
-        &self,
-        calls: Vec<(String, serde_json::Value)>,
-    ) -> Vec<ToolResult> {
+    pub async fn execute_batch(&self, calls: Vec<(String, serde_json::Value)>) -> Vec<ToolResult> {
         let futures: Vec<_> = calls
             .into_iter()
             .map(|(name, args)| {

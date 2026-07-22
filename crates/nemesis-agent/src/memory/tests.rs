@@ -42,8 +42,12 @@ fn summarize_removes_old_turns() {
     // Add many turns directly to the internal vector, bypassing auto-truncation.
     // Each "a".repeat(200) + " N" is 202 chars → 80 tokens. Several turns will push us well over 100.
     for i in 0..6 {
-        memory.turns.push(make_turn("user", "a".repeat(200) + &format!(" {}", i)));
-        memory.turns.push(make_turn("assistant", "b".repeat(200) + &format!(" {}", i)));
+        memory
+            .turns
+            .push(make_turn("user", "a".repeat(200) + &format!(" {}", i)));
+        memory
+            .turns
+            .push(make_turn("assistant", "b".repeat(200) + &format!(" {}", i)));
     }
 
     // Before summarization: we should have 13 turns (1 system + 12 user/assistant).
@@ -51,11 +55,19 @@ fn summarize_removes_old_turns() {
 
     // Trigger summarization.
     let removed = memory.summarize();
-    assert!(removed > 0, "Expected some turns to be removed, but removed={}", removed);
+    assert!(
+        removed > 0,
+        "Expected some turns to be removed, but removed={}",
+        removed
+    );
     // System prompt should still be there.
     assert_eq!(memory.get_context()[0].role, "system");
     // Some turns should have been removed.
-    assert!(memory.len() < 13, "Expected fewer turns after summarization, got {}", memory.len());
+    assert!(
+        memory.len() < 13,
+        "Expected fewer turns after summarization, got {}",
+        memory.len()
+    );
 }
 
 #[test]
@@ -128,7 +140,10 @@ fn summarize_keeps_system_prompt() {
     let mut memory = ConversationMemory::new(config);
     memory.add(make_turn("system", "You are helpful."));
     for i in 0..10 {
-        memory.turns.push(make_turn("user", format!("Long message {} with padding content to exceed limits", i)));
+        memory.turns.push(make_turn(
+            "user",
+            format!("Long message {} with padding content to exceed limits", i),
+        ));
     }
 
     let removed = memory.summarize();

@@ -19,7 +19,11 @@ fn test_generate_clamd_config() {
 #[test]
 fn test_generate_freshclam_config() {
     let dir = tempfile::tempdir().unwrap();
-    let config_file = dir.path().join("freshclam.conf").to_string_lossy().to_string();
+    let config_file = dir
+        .path()
+        .join("freshclam.conf")
+        .to_string_lossy()
+        .to_string();
     let db_dir = dir.path().join("db").to_string_lossy().to_string();
     generate_freshclam_config(&db_dir, &config_file).unwrap();
     let content = fs::read_to_string(&config_file).unwrap();
@@ -78,7 +82,11 @@ fn test_generate_clamd_config_includes_scan_options() {
 fn test_generate_freshclam_config_creates_db_dir() {
     let dir = tempfile::tempdir().unwrap();
     let db_dir = dir.path().join("database");
-    let config_file = dir.path().join("freshclam.conf").to_string_lossy().to_string();
+    let config_file = dir
+        .path()
+        .join("freshclam.conf")
+        .to_string_lossy()
+        .to_string();
     generate_freshclam_config(&db_dir.to_string_lossy(), &config_file).unwrap();
     assert!(db_dir.exists());
     let content = fs::read_to_string(&config_file).unwrap();
@@ -162,7 +170,11 @@ fn test_generate_clamd_config_empty_db_and_temp() {
 #[test]
 fn test_generate_freshclam_config_empty_db_dir() {
     let dir = tempfile::tempdir().unwrap();
-    let config_file = dir.path().join("freshclam.conf").to_string_lossy().to_string();
+    let config_file = dir
+        .path()
+        .join("freshclam.conf")
+        .to_string_lossy()
+        .to_string();
     generate_freshclam_config("", &config_file).unwrap();
     let content = fs::read_to_string(&config_file).unwrap();
     assert!(content.contains("DatabaseMirror"));

@@ -32,9 +32,8 @@ impl TraceStore {
             .open(&self.path)
             .await?;
 
-        let mut line = serde_json::to_string(event).map_err(|e| {
-            std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string())
-        })?;
+        let mut line = serde_json::to_string(event)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()))?;
         line.push('\n');
         file.write_all(line.as_bytes()).await?;
         file.flush().await?;

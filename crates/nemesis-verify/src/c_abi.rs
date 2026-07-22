@@ -90,13 +90,20 @@ fn run_verify(bytes: &[u8]) -> NvOutcome {
         verify::VerifyOutcome::Malformed(_) => NV_MALFORMED,
     };
     match outcome {
-        verify::VerifyOutcome::Valid { signed_at, key_fp, pubkey } => NvOutcome {
+        verify::VerifyOutcome::Valid {
+            signed_at,
+            key_fp,
+            pubkey,
+        } => NvOutcome {
             status,
             signed_at,
             key_fp,
             pubkey,
         },
-        _ => NvOutcome { status, ..Default::default() },
+        _ => NvOutcome {
+            status,
+            ..Default::default()
+        },
     }
 }
 
@@ -264,13 +271,19 @@ pub extern "C" fn nv_list_signatures(
             };
         }
     }
-    unsafe { *count = total; }
+    unsafe {
+        *count = total;
+    }
     0
 }
 
 /// 单签名详情（含 cert chain，最多 4 级）。`index` = list_signatures 返回的索引（0=最近）。
 #[unsafe(no_mangle)]
-pub extern "C" fn nv_get_signature(path: *const c_char, index: u32, out: *mut NvSigDetail) -> c_int {
+pub extern "C" fn nv_get_signature(
+    path: *const c_char,
+    index: u32,
+    out: *mut NvSigDetail,
+) -> c_int {
     if path.is_null() || out.is_null() {
         return -1;
     }

@@ -61,7 +61,9 @@ impl ModuleHandler for SessionsHandler {
                     nemesis_agent::session::SessionStore::sanitize_session_id(&session_id)
                 );
                 nemesis_agent::chat_log::write_session_meta(&session_key, &title);
-                Ok(Some(serde_json::json!({ "session_id": session_id, "title": title })))
+                Ok(Some(
+                    serde_json::json!({ "session_id": session_id, "title": title }),
+                ))
             }
             "rename" => {
                 let session_id = data
@@ -81,7 +83,9 @@ impl ModuleHandler for SessionsHandler {
                     nemesis_agent::session::SessionStore::sanitize_session_id(&session_id)
                 );
                 nemesis_agent::chat_log::write_session_meta(&session_key, &title);
-                Ok(Some(serde_json::json!({ "session_id": session_id, "title": title })))
+                Ok(Some(
+                    serde_json::json!({ "session_id": session_id, "title": title }),
+                ))
             }
             "delete" => {
                 let session_id = data

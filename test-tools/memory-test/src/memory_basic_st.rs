@@ -56,10 +56,7 @@ async fn st_bot_enhanced_memory_local_tier() -> Result<()> {
     // enhanced memory config present but memory disabled in main config.
     // Plugin DLL exists at target/release/plugins/ so enabling would trigger
     // model download (reqwest::blocking in async context → panic).
-    write_enhanced_memory_config(
-        &ws,
-        r#"{"enabled": true}"#,
-    )?;
+    write_enhanced_memory_config(&ws, r#"{"enabled": true}"#)?;
 
     let _ai = start_ai_server(&ai_bin, ws.path()).await?;
     let _gw = start_gateway_and_wait(&nemesisbot_bin, ws.path()).await?;
@@ -98,9 +95,15 @@ async fn st_bot_memory_store_via_ws() -> Result<()> {
     let response = ws_send_and_recv(&mut stream, "记住：测试数据存储", 30).await?;
 
     // The bot should respond (either with tool result or confirmation)
-    assert!(!response.is_empty(), "Bot should respond to memory store command");
+    assert!(
+        !response.is_empty(),
+        "Bot should respond to memory store command"
+    );
 
-    println!("[ST] Memory store via WS — PASS (response: {})", &response[..response.len().min(100)]);
+    println!(
+        "[ST] Memory store via WS — PASS (response: {})",
+        &response[..response.len().min(100)]
+    );
     Ok(())
 }
 
@@ -127,7 +130,10 @@ async fn st_bot_memory_search_via_ws() -> Result<()> {
     // Then search for it
     let search_resp = ws_send_and_recv(&mut stream, "关于 猫 你知道什么", 30).await?;
 
-    assert!(!search_resp.is_empty(), "Bot should respond to memory search command");
+    assert!(
+        !search_resp.is_empty(),
+        "Bot should respond to memory search command"
+    );
     assert!(
         search_resp.contains("猫"),
         "Search response should contain the stored keyword '猫', got: {}",

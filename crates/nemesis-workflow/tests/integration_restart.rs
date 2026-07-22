@@ -21,9 +21,7 @@ use nemesis_providers::router::LLMProvider;
 use nemesis_providers::types::{ChatOptions, LLMResponse, Message, ToolDefinition};
 use nemesis_workflow::checkpoint::{CheckpointStore, FileCheckpointStore};
 use nemesis_workflow::engine::WorkflowEngine;
-use nemesis_workflow::types::{
-    Edge, ExecutionState, NodeDef, TriggerSource, Workflow,
-};
+use nemesis_workflow::types::{Edge, ExecutionState, NodeDef, TriggerSource, Workflow};
 
 // ---------------------------------------------------------------------------
 // Test scaffolding
@@ -85,13 +83,11 @@ fn workflow_with_nodes(name: &str, nodes: Vec<NodeDef>) -> Workflow {
     let edges: Vec<Edge> = nodes
         .iter()
         .flat_map(|n| {
-            n.depends_on
-                .iter()
-                .map(move |dep| Edge {
-                    from_node: dep.clone(),
-                    to_node: n.id.clone(),
-                    condition: None,
-                })
+            n.depends_on.iter().map(move |dep| Edge {
+                from_node: dep.clone(),
+                to_node: n.id.clone(),
+                condition: None,
+            })
         })
         .collect();
 
@@ -139,8 +135,7 @@ fn register_pause_workflow(engine: &Arc<WorkflowEngine>, name: &str) {
 #[tokio::test]
 async fn crash_after_review_then_restore_and_resume_completes() {
     let tmp = tempfile::TempDir::new().unwrap();
-    let store: Arc<dyn CheckpointStore> =
-        Arc::new(FileCheckpointStore::new(tmp.path()).unwrap());
+    let store: Arc<dyn CheckpointStore> = Arc::new(FileCheckpointStore::new(tmp.path()).unwrap());
 
     // --- Engine 1: run to Waiting, then "crash" (drop) ---
     let engine1 = build_engine("ignored", store.clone());
@@ -173,8 +168,7 @@ async fn crash_after_review_then_restore_and_resume_completes() {
 #[tokio::test]
 async fn restored_execution_preserves_original_execution_id() {
     let tmp = tempfile::TempDir::new().unwrap();
-    let store: Arc<dyn CheckpointStore> =
-        Arc::new(FileCheckpointStore::new(tmp.path()).unwrap());
+    let store: Arc<dyn CheckpointStore> = Arc::new(FileCheckpointStore::new(tmp.path()).unwrap());
 
     let engine1 = build_engine("ignored", store.clone());
     register_pause_workflow(&engine1, "wf");
@@ -201,8 +195,7 @@ async fn completed_nodes_are_not_rerun_after_restore() {
     // `before` runs first; after restore+resume, `before` should NOT run
     // again (its checkpointed result should be reused).
     let tmp = tempfile::TempDir::new().unwrap();
-    let store: Arc<dyn CheckpointStore> =
-        Arc::new(FileCheckpointStore::new(tmp.path()).unwrap());
+    let store: Arc<dyn CheckpointStore> = Arc::new(FileCheckpointStore::new(tmp.path()).unwrap());
 
     let engine1 = build_engine("ignored", store.clone());
     engine1
@@ -276,8 +269,7 @@ async fn restore_with_no_checkpoint_store_returns_zero() {
 #[tokio::test]
 async fn restore_with_empty_store_returns_zero() {
     let tmp = tempfile::TempDir::new().unwrap();
-    let store: Arc<dyn CheckpointStore> =
-        Arc::new(FileCheckpointStore::new(tmp.path()).unwrap());
+    let store: Arc<dyn CheckpointStore> = Arc::new(FileCheckpointStore::new(tmp.path()).unwrap());
 
     let engine = build_engine("ignored", store);
     let n = engine.restore_incomplete_executions().await.unwrap();
@@ -287,8 +279,7 @@ async fn restore_with_empty_store_returns_zero() {
 #[tokio::test]
 async fn restore_multiple_waiting_executions() {
     let tmp = tempfile::TempDir::new().unwrap();
-    let store: Arc<dyn CheckpointStore> =
-        Arc::new(FileCheckpointStore::new(tmp.path()).unwrap());
+    let store: Arc<dyn CheckpointStore> = Arc::new(FileCheckpointStore::new(tmp.path()).unwrap());
 
     // Run two independent workflows to Waiting, then drop the engine.
     let engine1 = build_engine("ignored", store.clone());
@@ -315,7 +306,10 @@ async fn restore_multiple_waiting_executions() {
     // Both should be resumable.
     let mut review = HashMap::new();
     review.insert("approved".to_string(), serde_json::json!(true));
-    let ra = engine2.resume_execution(&exec_a.id, review.clone()).await.unwrap();
+    let ra = engine2
+        .resume_execution(&exec_a.id, review.clone())
+        .await
+        .unwrap();
     let rb = engine2.resume_execution(&exec_b.id, review).await.unwrap();
     assert_eq!(ra.state, ExecutionState::Completed);
     assert_eq!(rb.state, ExecutionState::Completed);
@@ -330,8 +324,7 @@ async fn resume_without_restore_fails_with_execution_not_found() {
     // The execution only exists on disk; without restore, the in-memory
     // engine has no execution to resume.
     let tmp = tempfile::TempDir::new().unwrap();
-    let store: Arc<dyn CheckpointStore> =
-        Arc::new(FileCheckpointStore::new(tmp.path()).unwrap());
+    let store: Arc<dyn CheckpointStore> = Arc::new(FileCheckpointStore::new(tmp.path()).unwrap());
 
     let engine1 = build_engine("ignored", store.clone());
     register_pause_workflow(&engine1, "wf");
@@ -353,7 +346,10 @@ async fn resume_without_restore_fails_with_execution_not_found() {
         .await
         .expect_err("resume without restore should fail");
     assert!(
-        matches!(err, nemesis_workflow::engine::EngineError::ExecutionNotFound(_)),
+        matches!(
+            err,
+            nemesis_workflow::engine::EngineError::ExecutionNotFound(_)
+        ),
         "expected ExecutionNotFound, got {:?}",
         err
     );
@@ -365,8 +361,7 @@ async fn resume_rejected_review_still_completes_workflow() {
     // engine doesn't interpret the bool; downstream nodes just receive it
     // as context. The workflow should still complete.
     let tmp = tempfile::TempDir::new().unwrap();
-    let store: Arc<dyn CheckpointStore> =
-        Arc::new(FileCheckpointStore::new(tmp.path()).unwrap());
+    let store: Arc<dyn CheckpointStore> = Arc::new(FileCheckpointStore::new(tmp.path()).unwrap());
 
     let engine1 = build_engine("ignored", store.clone());
     register_pause_workflow(&engine1, "wf");
@@ -401,8 +396,7 @@ async fn checkpoint_files_persist_on_disk_after_pause() {
     // at least one checkpoint file under {tmp}/checkpoints/{exec_id}/.
     let tmp = tempfile::TempDir::new().unwrap();
     let store_root = tmp.path().to_path_buf();
-    let store: Arc<dyn CheckpointStore> =
-        Arc::new(FileCheckpointStore::new(&store_root).unwrap());
+    let store: Arc<dyn CheckpointStore> = Arc::new(FileCheckpointStore::new(&store_root).unwrap());
 
     let engine = build_engine("ignored", store);
     register_pause_workflow(&engine, "wf");
@@ -443,11 +437,7 @@ async fn checkpoint_files_persist_on_disk_after_pause() {
 
 /// Build the same review workflow used by the G4 suite so tests share a
 /// common shape: pre_review → review (human_review) → post_review.
-fn build_review_wf_with_ids(
-    pre_id: &str,
-    review_id: &str,
-    post_id: &str,
-) -> Workflow {
+fn build_review_wf_with_ids(pre_id: &str, review_id: &str, post_id: &str) -> Workflow {
     wf_with_name(
         "review_wf",
         vec![
@@ -469,13 +459,11 @@ fn wf_with_name(name: &str, nodes: Vec<NodeDef>) -> Workflow {
     let edges: Vec<Edge> = nodes
         .iter()
         .flat_map(|n| {
-            n.depends_on
-                .iter()
-                .map(move |dep| Edge {
-                    from_node: dep.clone(),
-                    to_node: n.id.clone(),
-                    condition: None,
-                })
+            n.depends_on.iter().map(move |dep| Edge {
+                from_node: dep.clone(),
+                to_node: n.id.clone(),
+                condition: None,
+            })
         })
         .collect();
     Workflow {
@@ -495,8 +483,7 @@ async fn restored_execution_keeps_already_completed_node_results() {
     // After crash + restore, node_results from completed nodes must still
     // be on the execution so the scheduler knows not to rerun them.
     let tmp = tempfile::tempdir().unwrap();
-    let store: Arc<dyn CheckpointStore> =
-        Arc::new(FileCheckpointStore::new(tmp.path()).unwrap());
+    let store: Arc<dyn CheckpointStore> = Arc::new(FileCheckpointStore::new(tmp.path()).unwrap());
 
     let engine_a = build_engine("ok", store.clone());
     engine_a
@@ -534,8 +521,7 @@ async fn restore_is_idempotent_running_twice_does_not_duplicate_executions() {
     // Calling restore_incomplete_executions() multiple times on the same
     // store should not double-import executions.
     let tmp = tempfile::tempdir().unwrap();
-    let store: Arc<dyn CheckpointStore> =
-        Arc::new(FileCheckpointStore::new(tmp.path()).unwrap());
+    let store: Arc<dyn CheckpointStore> = Arc::new(FileCheckpointStore::new(tmp.path()).unwrap());
 
     let engine_a = build_engine("ok", store.clone());
     engine_a
@@ -588,8 +574,7 @@ async fn restored_execution_preserves_trigger_source() {
     // Gap 1: a webhook-triggered workflow crashes mid-flight; after restore,
     // the in-memory execution must still report TriggerSource::Webhook.
     let tmp = tempfile::tempdir().unwrap();
-    let store: Arc<dyn CheckpointStore> =
-        Arc::new(FileCheckpointStore::new(tmp.path()).unwrap());
+    let store: Arc<dyn CheckpointStore> = Arc::new(FileCheckpointStore::new(tmp.path()).unwrap());
 
     let engine_a = build_engine("ok", store.clone());
     engine_a
@@ -599,11 +584,7 @@ async fn restored_execution_preserves_trigger_source() {
         payload: serde_json::json!({"event": "push", "ref": "main"}),
     };
     let _ = engine_a
-        .run(
-            "review_wf",
-            HashMap::new(),
-            Some(original_trigger.clone()),
-        )
+        .run("review_wf", HashMap::new(), Some(original_trigger.clone()))
         .await
         .unwrap();
     drop(engine_a);
@@ -670,29 +651,17 @@ async fn restored_execution_preserves_each_trigger_source_variant() {
 
         let engine_a = build_engine("ok", store_one.clone());
         engine_a
-            .register_workflow(build_review_wf_with_ids(
-                "pre",
-                "review",
-                "post",
-            ))
+            .register_workflow(build_review_wf_with_ids("pre", "review", "post"))
             .unwrap();
         let _ = engine_a
-            .run(
-                "review_wf",
-                HashMap::new(),
-                Some(trigger.clone()),
-            )
+            .run("review_wf", HashMap::new(), Some(trigger.clone()))
             .await
             .unwrap();
         drop(engine_a);
 
         let engine_b = build_engine("ok", store_one.clone());
         engine_b
-            .register_workflow(build_review_wf_with_ids(
-                "pre",
-                "review",
-                "post",
-            ))
+            .register_workflow(build_review_wf_with_ids("pre", "review", "post"))
             .unwrap();
         let restored = engine_b.restore_incomplete_executions().await.unwrap();
         assert_eq!(restored, 1);
@@ -712,18 +681,14 @@ async fn completed_workflow_writes_terminal_checkpoint() {
     // disk must be marked terminal so the next restore skips it.
     let tmp = tempfile::tempdir().unwrap();
     let store_root = tmp.path().to_path_buf();
-    let store: Arc<dyn CheckpointStore> =
-        Arc::new(FileCheckpointStore::new(&store_root).unwrap());
+    let store: Arc<dyn CheckpointStore> = Arc::new(FileCheckpointStore::new(&store_root).unwrap());
 
     let engine = build_engine("ok", store.clone());
     // A workflow with only delay nodes (no human_review) runs to Completed.
     engine
         .register_workflow(workflow_with_nodes(
             "no_review_wf",
-            vec![
-                node("a", "delay", &[]),
-                node("b", "delay", &["a"]),
-            ],
+            vec![node("a", "delay", &[]), node("b", "delay", &["a"])],
         ))
         .unwrap();
     let exec = engine
@@ -755,17 +720,13 @@ async fn restore_after_completion_finds_no_incomplete_executions() {
     // Gap 2 main scenario: workflow runs to completion in engine A; engine B
     // starts up and restores — it must NOT see this execution as incomplete.
     let tmp = tempfile::tempdir().unwrap();
-    let store: Arc<dyn CheckpointStore> =
-        Arc::new(FileCheckpointStore::new(tmp.path()).unwrap());
+    let store: Arc<dyn CheckpointStore> = Arc::new(FileCheckpointStore::new(tmp.path()).unwrap());
 
     let engine_a = build_engine("ok", store.clone());
     engine_a
         .register_workflow(workflow_with_nodes(
             "no_review_wf",
-            vec![
-                node("a", "delay", &[]),
-                node("b", "delay", &["a"]),
-            ],
+            vec![node("a", "delay", &[]), node("b", "delay", &["a"])],
         ))
         .unwrap();
     let exec_a = engine_a
@@ -779,10 +740,7 @@ async fn restore_after_completion_finds_no_incomplete_executions() {
     engine_b
         .register_workflow(workflow_with_nodes(
             "no_review_wf",
-            vec![
-                node("a", "delay", &[]),
-                node("b", "delay", &["a"]),
-            ],
+            vec![node("a", "delay", &[]), node("b", "delay", &["a"])],
         ))
         .unwrap();
     let restored = engine_b.restore_incomplete_executions().await.unwrap();
@@ -805,8 +763,7 @@ async fn restore_after_resume_finds_no_incomplete_executions() {
     // Gap 2 resume path: crash mid-review → restore → resume to completion →
     // crash again → restore must find zero incomplete executions.
     let tmp = tempfile::tempdir().unwrap();
-    let store: Arc<dyn CheckpointStore> =
-        Arc::new(FileCheckpointStore::new(tmp.path()).unwrap());
+    let store: Arc<dyn CheckpointStore> = Arc::new(FileCheckpointStore::new(tmp.path()).unwrap());
 
     // Engine A: run to Waiting, then "crash".
     let engine_a = build_engine("ok", store.clone());
@@ -852,8 +809,7 @@ async fn cancelled_workflow_writes_terminal_checkpoint() {
     // checkpoint so they don't get resurrected.
     let tmp = tempfile::tempdir().unwrap();
     let store_root = tmp.path().to_path_buf();
-    let store: Arc<dyn CheckpointStore> =
-        Arc::new(FileCheckpointStore::new(&store_root).unwrap());
+    let store: Arc<dyn CheckpointStore> = Arc::new(FileCheckpointStore::new(&store_root).unwrap());
 
     let engine = build_engine("ok", store.clone());
     // Use a delay node we can cancel mid-flight. The default executor's

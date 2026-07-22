@@ -6,9 +6,7 @@ use serde::{Deserialize, Serialize};
 
 // Re-export the canonical types from nemesis-types so consumers can use
 // `nemesis_forge::types::Experience` etc.
-pub use nemesis_types::forge::{
-    Artifact, ArtifactKind, ArtifactStatus, Experience, Reflection,
-};
+pub use nemesis_types::forge::{Artifact, ArtifactKind, ArtifactStatus, Experience, Reflection};
 
 /// Simple wrapper used by the collector for deduplication and storage.
 #[derive(Debug, Clone, Serialize, Deserialize)]

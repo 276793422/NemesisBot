@@ -78,7 +78,9 @@ pub fn ensure_exe_in_path() -> bool {
 pub fn resolve_home(local: bool) -> PathBuf {
     // Priority 1: --local flag
     if local {
-        return std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")).join(".nemesisbot");
+        return std::env::current_dir()
+            .unwrap_or_else(|_| PathBuf::from("."))
+            .join(".nemesisbot");
     }
     // Priority 2: NEMESISBOT_HOME env var
     if let Ok(home) = std::env::var("NEMESISBOT_HOME") {
@@ -115,42 +117,58 @@ pub fn workspace_path(home: &Path) -> PathBuf {
 
 /// Get the MCP config file path.
 pub fn mcp_config_path(home: &Path) -> PathBuf {
-    home.join("workspace").join("config").join("config.mcp.json")
+    home.join("workspace")
+        .join("config")
+        .join("config.mcp.json")
 }
 
 /// Get the scanner config file path.
 pub fn scanner_config_path(home: &Path) -> PathBuf {
-    home.join("workspace").join("config").join("config.scanner.json")
+    home.join("workspace")
+        .join("config")
+        .join("config.scanner.json")
 }
 
 /// Get the security config file path.
 pub fn security_config_path(home: &Path) -> PathBuf {
-    home.join("workspace").join("config").join("config.security.json")
+    home.join("workspace")
+        .join("config")
+        .join("config.security.json")
 }
 
 /// Get the skills config file path.
 pub fn skills_config_path(home: &Path) -> PathBuf {
-    home.join("workspace").join("config").join("config.skills.json")
+    home.join("workspace")
+        .join("config")
+        .join("config.skills.json")
 }
 
 /// Get the cluster config file path.
 pub fn cluster_config_path(home: &Path) -> PathBuf {
-    home.join("workspace").join("config").join("config.cluster.json")
+    home.join("workspace")
+        .join("config")
+        .join("config.cluster.json")
 }
 
 /// Get the enhanced memory config file path.
 pub fn enhanced_memory_config_path(home: &Path) -> PathBuf {
-    home.join("workspace").join("config").join("config.enhanced_memory.json")
+    home.join("workspace")
+        .join("config")
+        .join("config.enhanced_memory.json")
 }
 
 /// Get the chat config file path.
 pub fn chat_config_path(home: &Path) -> PathBuf {
-    home.join("workspace").join("config").join("config.chat.json")
+    home.join("workspace")
+        .join("config")
+        .join("config.chat.json")
 }
 
 /// Get the Forge self-learning config file path.
 pub fn forge_config_path(home: &Path) -> PathBuf {
-    home.join("workspace").join("config").join("config.forge.json")
+    home.join("workspace")
+        .join("config")
+        .join("config.forge.json")
 }
 
 /// Get the CORS config file path.
@@ -264,7 +282,10 @@ pub fn print_version_info() {
 /// Mirrors Go's `PrintHelp()` with detailed descriptions and sections.
 #[allow(dead_code)]
 pub fn print_help() {
-    println!("nemesisbot - Personal AI Assistant v{}", VERSION_INFO.version);
+    println!(
+        "nemesisbot - Personal AI Assistant v{}",
+        VERSION_INFO.version
+    );
     println!();
     println!("Usage: nemesisbot [OPTIONS] <COMMAND>");
     println!();
@@ -351,10 +372,7 @@ pub const LOG_NO_CONSOLE: u32 = 4;
 /// - bit 0 (`LOG_DEBUG`): `--debug` was used
 /// - bit 1 (`LOG_QUIET`): `--quiet` was used
 /// - bit 2 (`LOG_NO_CONSOLE`): `--no-console` was used
-pub fn init_logger_from_config(
-    config_path: &Path,
-    check_args: &[String],
-) -> u32 {
+pub fn init_logger_from_config(config_path: &Path, check_args: &[String]) -> u32 {
     let mut level = tracing::Level::INFO;
     let mut enable_console = true;
     let mut file_path: Option<String> = None;
@@ -482,11 +500,8 @@ pub fn init_logger_from_config(
             );
         }
 
-        let appender = nemesis_logger::RollingFileAppender::new(
-            nemesis_logger::Rotation::DAILY,
-            dir,
-            prefix,
-        );
+        let appender =
+            nemesis_logger::RollingFileAppender::new(nemesis_logger::Rotation::DAILY, dir, prefix);
 
         layers.push(Box::new(
             tracing_subscriber::fmt::layer()

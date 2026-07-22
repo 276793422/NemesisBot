@@ -1,13 +1,13 @@
 //! Health check server with /health, /ready, /live endpoints and uptime tracking.
 
-use axum::{Router, routing::get, Json, extract::State};
-use serde_json::{json, Value};
+use axum::{Json, Router, extract::State, routing::get};
+use parking_lot::Mutex;
+use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Instant;
-use parking_lot::Mutex;
 use tokio::sync::oneshot;
 
 /// A named health check function.
@@ -45,10 +45,13 @@ async fn ready(State(state): State<Arc<HealthState>>) -> Json<Value> {
         if !healthy {
             all_healthy = false;
         }
-        check_results.insert(name.clone(), json!({
-            "healthy": healthy,
-            "message": message,
-        }));
+        check_results.insert(
+            name.clone(),
+            json!({
+                "healthy": healthy,
+                "message": message,
+            }),
+        );
     }
     drop(checks);
 
@@ -115,20 +118,28 @@ impl HealthServer {
 
     /// Start the health check server (blocking).
     pub async fn start(&self) -> Result<(), String> {
-        let addr: SocketAddr = self.config.listen_addr.parse()
+        let addr: SocketAddr = self
+            .config
+            .listen_addr
+            .parse()
             .map_err(|e| format!("invalid address: {}", e))?;
         let app = self.build_router();
         let listener = tokio::net::TcpListener::bind(addr)
             .await
             .map_err(|e| format!("bind failed: {}", e))?;
         tracing::info!("[Health] Server listening on {}", addr);
-        axum::serve(listener, app).await.map_err(|e| format!("server error: {}", e))
+        axum::serve(listener, app)
+            .await
+            .map_err(|e| format!("server error: {}", e))
     }
 
     /// Start the health check server with graceful shutdown support.
     /// Mirrors Go's `Server.StartContext(ctx)`.
     pub async fn start_with_shutdown(&self) -> Result<(), String> {
-        let addr: SocketAddr = self.config.listen_addr.parse()
+        let addr: SocketAddr = self
+            .config
+            .listen_addr
+            .parse()
             .map_err(|e| format!("invalid address: {}", e))?;
         let app = self.build_router();
         let listener = tokio::net::TcpListener::bind(addr)

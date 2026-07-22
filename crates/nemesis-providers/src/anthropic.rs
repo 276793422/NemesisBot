@@ -152,11 +152,19 @@ impl AnthropicProvider {
                             }));
                         }
                         for tc in &msg.tool_calls {
-                            let name = tc.name.as_deref()
+                            let name = tc
+                                .name
+                                .as_deref()
                                 .or_else(|| tc.function.as_ref().map(|f| f.name.as_str()))
                                 .unwrap_or("");
-                            let input = tc.arguments.as_ref()
-                                .map(|args| serde_json::Value::Object(args.iter().map(|(k, v)| (k.clone(), v.clone())).collect()))
+                            let input = tc
+                                .arguments
+                                .as_ref()
+                                .map(|args| {
+                                    serde_json::Value::Object(
+                                        args.iter().map(|(k, v)| (k.clone(), v.clone())).collect(),
+                                    )
+                                })
                                 .unwrap_or(serde_json::json!({}));
                             content.push(serde_json::json!({
                                 "type": "tool_use",
@@ -255,8 +263,16 @@ fn parse_response(data: &serde_json::Value) -> LLMResponse {
                     }
                 }
                 "tool_use" => {
-                    let id = block.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                    let name = block.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                    let id = block
+                        .get("id")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    let name = block
+                        .get("name")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
                     let input = block.get("input").cloned().unwrap_or(serde_json::json!({}));
 
                     let arguments: HashMap<String, serde_json::Value> =
@@ -295,7 +311,9 @@ fn parse_response(data: &serde_json::Value) -> LLMResponse {
     let usage = if let Some(u) = data.get("usage") {
         let prompt = u.get("input_tokens").and_then(|v| v.as_i64()).unwrap_or(0);
         let completion = u.get("output_tokens").and_then(|v| v.as_i64()).unwrap_or(0);
-        let cache_creation = u.get("cache_creation_input_tokens").and_then(|v| v.as_i64());
+        let cache_creation = u
+            .get("cache_creation_input_tokens")
+            .and_then(|v| v.as_i64());
         let cache_read = u.get("cache_read_input_tokens").and_then(|v| v.as_i64());
         Some(UsageInfo {
             prompt_tokens: prompt,
@@ -354,10 +372,7 @@ impl LLMProvider for AnthropicProvider {
 
         let api_key = self.get_api_key()?;
 
-        let url = format!(
-            "{}/v1/messages",
-            self.config.base_url.trim_end_matches('/')
-        );
+        let url = format!("{}/v1/messages", self.config.base_url.trim_end_matches('/'));
         let body = self.build_request_body(messages, tools, model, options);
 
         let resp = self
@@ -378,7 +393,12 @@ impl LLMProvider for AnthropicProvider {
 
         if status >= 400 {
             let text = resp.text().await.unwrap_or_default();
-            return Err(FailoverError::from_status("anthropic", model, status, &text));
+            return Err(FailoverError::from_status(
+                "anthropic",
+                model,
+                status,
+                &text,
+            ));
         }
 
         let data: serde_json::Value = resp.json().await.map_err(|e| FailoverError::Format {

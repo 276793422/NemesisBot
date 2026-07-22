@@ -51,7 +51,8 @@ pub fn parse_url(raw_url: &str) -> Result<ParsedUrl, ResolverError> {
         raw_url.to_string()
     };
 
-    let parsed = url::Url::parse(&to_parse).map_err(|e| ResolverError::ParseError(e.to_string()))?;
+    let parsed =
+        url::Url::parse(&to_parse).map_err(|e| ResolverError::ParseError(e.to_string()))?;
 
     let host = parsed.host_str().unwrap_or("");
     if host.is_empty() {
@@ -104,26 +105,46 @@ fn is_private_ipv4(ip: &Ipv4Addr) -> bool {
     let octets = ip.octets();
 
     // RFC 1918
-    if octets[0] == 10 { return true; }
-    if octets[0] == 172 && octets[1] >= 16 && octets[1] <= 31 { return true; }
-    if octets[0] == 192 && octets[1] == 168 { return true; }
+    if octets[0] == 10 {
+        return true;
+    }
+    if octets[0] == 172 && octets[1] >= 16 && octets[1] <= 31 {
+        return true;
+    }
+    if octets[0] == 192 && octets[1] == 168 {
+        return true;
+    }
 
     // RFC 5735 TEST-NET
-    if octets[0] == 192 && octets[1] == 0 && octets[2] == 2 { return true; }
-    if octets[0] == 198 && octets[1] == 51 && octets[2] == 100 { return true; }
-    if octets[0] == 203 && octets[1] == 0 && octets[2] == 113 { return true; }
+    if octets[0] == 192 && octets[1] == 0 && octets[2] == 2 {
+        return true;
+    }
+    if octets[0] == 198 && octets[1] == 51 && octets[2] == 100 {
+        return true;
+    }
+    if octets[0] == 203 && octets[1] == 0 && octets[2] == 113 {
+        return true;
+    }
 
     // RFC 6598 Carrier-grade NAT
-    if octets[0] == 100 && octets[1] >= 64 && octets[1] <= 127 { return true; }
+    if octets[0] == 100 && octets[1] >= 64 && octets[1] <= 127 {
+        return true;
+    }
 
     // RFC 6890 IETF Protocol Assignments
-    if octets[0] == 192 && octets[1] == 0 && octets[2] == 0 { return true; }
+    if octets[0] == 192 && octets[1] == 0 && octets[2] == 0 {
+        return true;
+    }
 
     // RFC 3068 6to4 Relay
-    if octets[0] == 192 && octets[1] == 88 && octets[2] == 99 { return true; }
+    if octets[0] == 192 && octets[1] == 88 && octets[2] == 99 {
+        return true;
+    }
 
     // RFC 2544 Benchmarking
-    if octets[0] == 198 && (octets[1] == 18 || octets[1] == 19) { return true; }
+    if octets[0] == 198 && (octets[1] == 18 || octets[1] == 19) {
+        return true;
+    }
 
     false
 }
@@ -131,10 +152,14 @@ fn is_private_ipv4(ip: &Ipv4Addr) -> bool {
 fn is_private_ipv6(_ip: &Ipv6Addr) -> bool {
     // RFC 4193 Unique Local: fc00::/7
     let segments = _ip.segments();
-    if (segments[0] & 0xfe00) == 0xfc00 { return true; }
+    if (segments[0] & 0xfe00) == 0xfc00 {
+        return true;
+    }
 
     // RFC 6052 IPv4/IPv6 Translation: 64:ff9b::/96
-    if segments[0] == 0x0064 && segments[1] == 0xff9b { return true; }
+    if segments[0] == 0x0064 && segments[1] == 0xff9b {
+        return true;
+    }
 
     false
 }
@@ -185,9 +210,13 @@ pub fn is_reserved_ip(ip: &IpAddr) -> bool {
         IpAddr::V4(v4) => {
             let octets = v4.octets();
             // 0.0.0.0/8 Current network
-            if octets[0] == 0 { return true; }
+            if octets[0] == 0 {
+                return true;
+            }
             // 224.0.0.0/4 Multicast
-            if octets[0] >= 224 { return true; }
+            if octets[0] >= 224 {
+                return true;
+            }
             // 255.255.255.255/32 Broadcast
             if octets[0] == 255 && octets[1] == 255 && octets[2] == 255 && octets[3] == 255 {
                 return true;

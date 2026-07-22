@@ -28,9 +28,12 @@ fn test_infer_provider() {
 #[test]
 fn test_convert_config_basic() {
     let mut data = HashMap::new();
-    data.insert("agents".to_string(), serde_json::json!({
-        "defaults": {"llm": "zhipu/glm-4.7-flash", "max_tokens": 4096}
-    }));
+    data.insert(
+        "agents".to_string(),
+        serde_json::json!({
+            "defaults": {"llm": "zhipu/glm-4.7-flash", "max_tokens": 4096}
+        }),
+    );
     let (config, warnings) = convert_config(&data);
     assert!(warnings.is_empty());
     assert_eq!(config["agents"]["defaults"]["max_tokens"], 4096);
@@ -88,10 +91,13 @@ fn test_find_openclaw_config_found() {
 #[test]
 fn test_convert_config_with_providers() {
     let mut data = HashMap::new();
-    data.insert("providers".to_string(), serde_json::json!({
-        "anthropic": {"api_key": "sk-test", "api_base": "https://api.anthropic.com"},
-        "openai": {"api_key": "sk-openai", "api_base": ""}
-    }));
+    data.insert(
+        "providers".to_string(),
+        serde_json::json!({
+            "anthropic": {"api_key": "sk-test", "api_base": "https://api.anthropic.com"},
+            "openai": {"api_key": "sk-openai", "api_base": ""}
+        }),
+    );
     let (config, warnings) = convert_config(&data);
     assert!(warnings.is_empty());
     let models = config["model_list"].as_array().unwrap();
@@ -104,9 +110,12 @@ fn test_convert_config_with_providers() {
 #[test]
 fn test_convert_config_unsupported_provider_warning() {
     let mut data = HashMap::new();
-    data.insert("providers".to_string(), serde_json::json!({
-        "unknown_provider": {"api_key": "sk-test", "api_base": "https://example.com"}
-    }));
+    data.insert(
+        "providers".to_string(),
+        serde_json::json!({
+            "unknown_provider": {"api_key": "sk-test", "api_base": "https://example.com"}
+        }),
+    );
     let (_, warnings) = convert_config(&data);
     assert_eq!(warnings.len(), 1);
     assert!(warnings[0].contains("not supported"));
@@ -115,9 +124,12 @@ fn test_convert_config_unsupported_provider_warning() {
 #[test]
 fn test_convert_config_unsupported_provider_no_creds_no_warning() {
     let mut data = HashMap::new();
-    data.insert("providers".to_string(), serde_json::json!({
-        "unknown_provider": {"api_key": "", "api_base": ""}
-    }));
+    data.insert(
+        "providers".to_string(),
+        serde_json::json!({
+            "unknown_provider": {"api_key": "", "api_base": ""}
+        }),
+    );
     let (_, warnings) = convert_config(&data);
     assert!(warnings.is_empty());
 }
@@ -125,10 +137,13 @@ fn test_convert_config_unsupported_provider_no_creds_no_warning() {
 #[test]
 fn test_convert_config_with_channels() {
     let mut data = HashMap::new();
-    data.insert("channels".to_string(), serde_json::json!({
-        "telegram": {"enabled": true, "token": "12345"},
-        "discord": {"enabled": false}
-    }));
+    data.insert(
+        "channels".to_string(),
+        serde_json::json!({
+            "telegram": {"enabled": true, "token": "12345"},
+            "discord": {"enabled": false}
+        }),
+    );
     let (config, warnings) = convert_config(&data);
     assert!(warnings.is_empty());
     assert_eq!(config["channels"]["telegram"]["enabled"], true);
@@ -138,9 +153,12 @@ fn test_convert_config_with_channels() {
 #[test]
 fn test_convert_config_unsupported_channel_warning() {
     let mut data = HashMap::new();
-    data.insert("channels".to_string(), serde_json::json!({
-        "slack": {"enabled": true}
-    }));
+    data.insert(
+        "channels".to_string(),
+        serde_json::json!({
+            "slack": {"enabled": true}
+        }),
+    );
     let (_, warnings) = convert_config(&data);
     assert_eq!(warnings.len(), 1);
     assert!(warnings[0].contains("not supported"));
@@ -149,10 +167,13 @@ fn test_convert_config_unsupported_channel_warning() {
 #[test]
 fn test_convert_config_with_gateway() {
     let mut data = HashMap::new();
-    data.insert("gateway".to_string(), serde_json::json!({
-        "host": "127.0.0.1",
-        "port": 9090
-    }));
+    data.insert(
+        "gateway".to_string(),
+        serde_json::json!({
+            "host": "127.0.0.1",
+            "port": 9090
+        }),
+    );
     let (config, _) = convert_config(&data);
     assert_eq!(config["gateway"]["host"], "127.0.0.1");
     assert_eq!(config["gateway"]["port"], 9090);
@@ -161,14 +182,17 @@ fn test_convert_config_with_gateway() {
 #[test]
 fn test_convert_config_tools_web_search_brave_migration() {
     let mut data = HashMap::new();
-    data.insert("tools".to_string(), serde_json::json!({
-        "web": {
-            "search": {
-                "api_key": "brave-key-123",
-                "max_results": 10
+    data.insert(
+        "tools".to_string(),
+        serde_json::json!({
+            "web": {
+                "search": {
+                    "api_key": "brave-key-123",
+                    "max_results": 10
+                }
             }
-        }
-    }));
+        }),
+    );
     let (config, _) = convert_config(&data);
     assert_eq!(config["tools"]["web"]["brave"]["api_key"], "brave-key-123");
     assert_eq!(config["tools"]["web"]["brave"]["enabled"], true);
@@ -178,14 +202,17 @@ fn test_convert_config_tools_web_search_brave_migration() {
 #[test]
 fn test_convert_config_tools_web_search_empty_key() {
     let mut data = HashMap::new();
-    data.insert("tools".to_string(), serde_json::json!({
-        "web": {
-            "search": {
-                "api_key": "",
-                "max_results": 5
+    data.insert(
+        "tools".to_string(),
+        serde_json::json!({
+            "web": {
+                "search": {
+                    "api_key": "",
+                    "max_results": 5
+                }
             }
-        }
-    }));
+        }),
+    );
     let (config, _) = convert_config(&data);
     assert_eq!(config["tools"]["web"]["brave"]["api_key"], "");
     // Empty key should NOT set enabled=true
@@ -195,9 +222,12 @@ fn test_convert_config_tools_web_search_empty_key() {
 #[test]
 fn test_convert_config_model_field_in_agents() {
     let mut data = HashMap::new();
-    data.insert("agents".to_string(), serde_json::json!({
-        "defaults": {"model": "gpt-4o-mini"}
-    }));
+    data.insert(
+        "agents".to_string(),
+        serde_json::json!({
+            "defaults": {"model": "gpt-4o-mini"}
+        }),
+    );
     let (config, _) = convert_config(&data);
     let llm = config["agents"]["defaults"]["llm"].as_str().unwrap();
     assert!(llm.contains("openai/gpt-4o-mini"));
@@ -206,9 +236,12 @@ fn test_convert_config_model_field_in_agents() {
 #[test]
 fn test_convert_config_model_field_unknown() {
     let mut data = HashMap::new();
-    data.insert("agents".to_string(), serde_json::json!({
-        "defaults": {"model": "custom-model"}
-    }));
+    data.insert(
+        "agents".to_string(),
+        serde_json::json!({
+            "defaults": {"model": "custom-model"}
+        }),
+    );
     let (config, _) = convert_config(&data);
     let llm = config["agents"]["defaults"]["llm"].as_str().unwrap();
     assert_eq!(llm, "zhipu/custom-model");
@@ -217,9 +250,12 @@ fn test_convert_config_model_field_unknown() {
 #[test]
 fn test_convert_config_workspace_rewrite() {
     let mut data = HashMap::new();
-    data.insert("agents".to_string(), serde_json::json!({
-        "defaults": {"workspace": "/home/user/.openclaw/workspace"}
-    }));
+    data.insert(
+        "agents".to_string(),
+        serde_json::json!({
+            "defaults": {"workspace": "/home/user/.openclaw/workspace"}
+        }),
+    );
     let (config, _) = convert_config(&data);
     let ws = config["agents"]["defaults"]["workspace"].as_str().unwrap();
     assert!(ws.contains(".nemesisbot"));
@@ -346,15 +382,18 @@ fn test_infer_provider_additional_models() {
 #[test]
 fn test_convert_config_all_supported_providers() {
     let mut data = HashMap::new();
-    data.insert("providers".to_string(), serde_json::json!({
-        "anthropic": {"api_key": "k1", "api_base": ""},
-        "openai": {"api_key": "k2", "api_base": ""},
-        "openrouter": {"api_key": "k3", "api_base": ""},
-        "groq": {"api_key": "k4", "api_base": ""},
-        "zhipu": {"api_key": "k5", "api_base": ""},
-        "vllm": {"api_key": "", "api_base": "http://localhost:8000"},
-        "gemini": {"api_key": "k7", "api_base": ""}
-    }));
+    data.insert(
+        "providers".to_string(),
+        serde_json::json!({
+            "anthropic": {"api_key": "k1", "api_base": ""},
+            "openai": {"api_key": "k2", "api_base": ""},
+            "openrouter": {"api_key": "k3", "api_base": ""},
+            "groq": {"api_key": "k4", "api_base": ""},
+            "zhipu": {"api_key": "k5", "api_base": ""},
+            "vllm": {"api_key": "", "api_base": "http://localhost:8000"},
+            "gemini": {"api_key": "k7", "api_base": ""}
+        }),
+    );
     let (config, warnings) = convert_config(&data);
     assert!(warnings.is_empty());
     let models = config["model_list"].as_array().unwrap();
@@ -364,9 +403,12 @@ fn test_convert_config_all_supported_providers() {
 #[test]
 fn test_convert_config_duplicate_provider_not_added() {
     let mut data = HashMap::new();
-    data.insert("providers".to_string(), serde_json::json!({
-        "anthropic": {"api_key": "k1", "api_base": ""}
-    }));
+    data.insert(
+        "providers".to_string(),
+        serde_json::json!({
+            "anthropic": {"api_key": "k1", "api_base": ""}
+        }),
+    );
     // Convert twice with same provider
     let (config1, _) = convert_config(&data);
     let (config2, _) = convert_config(&data);
@@ -400,10 +442,13 @@ fn test_convert_keys_to_snake_array() {
 #[test]
 fn test_convert_config_with_channels_v2() {
     let mut data = HashMap::new();
-    data.insert("channels".to_string(), serde_json::json!({
-        "web": {"enabled": true, "host": "0.0.0.0", "port": 8080},
-        "telegram": {"enabled": false, "token": ""}
-    }));
+    data.insert(
+        "channels".to_string(),
+        serde_json::json!({
+            "web": {"enabled": true, "host": "0.0.0.0", "port": 8080},
+            "telegram": {"enabled": false, "token": ""}
+        }),
+    );
     let (config, _warnings) = convert_config(&data);
     assert!(config["channels"].is_object());
 }
@@ -411,10 +456,13 @@ fn test_convert_config_with_channels_v2() {
 #[test]
 fn test_convert_config_with_security() {
     let mut data = HashMap::new();
-    data.insert("security".to_string(), serde_json::json!({
-        "enabled": true,
-        "restrict_to_workspace": true
-    }));
+    data.insert(
+        "security".to_string(),
+        serde_json::json!({
+            "enabled": true,
+            "restrict_to_workspace": true
+        }),
+    );
     let (config, _warnings) = convert_config(&data);
     // convert_config may or may not pass through security key
     // just verify it doesn't panic and returns valid output

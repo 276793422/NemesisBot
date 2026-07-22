@@ -4,15 +4,19 @@
 //! session management, request context, token estimation, force compression,
 //! ring buffer, agent registry, request logger, conversation memory, and more.
 
-use nemesis_agent::*;
-use nemesis_agent::context::{RequestContext, ContextBuilder, SkillInfo};
-use nemesis_agent::session::{StoredToolCall, Session, SessionManager, SessionStore, StoredSession, StoredMessage};
-use nemesis_agent::session::{estimate_tokens, estimate_tokens_for_turns, force_compress_turns, is_internal_channel};
+use nemesis_agent::context::{ContextBuilder, RequestContext, SkillInfo};
+use nemesis_agent::r#loop::{ConcurrentMode, LlmMessage, SessionBusyTracker};
 use nemesis_agent::memory::*;
-use nemesis_agent::ringbuffer::RingBuffer;
 use nemesis_agent::registry::AgentRegistry;
 use nemesis_agent::request_logger::*;
-use nemesis_agent::r#loop::{LlmMessage, ConcurrentMode, SessionBusyTracker};
+use nemesis_agent::ringbuffer::RingBuffer;
+use nemesis_agent::session::{
+    Session, SessionManager, SessionStore, StoredMessage, StoredSession, StoredToolCall,
+};
+use nemesis_agent::session::{
+    estimate_tokens, estimate_tokens_for_turns, force_compress_turns, is_internal_channel,
+};
+use nemesis_agent::*;
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -40,7 +44,10 @@ fn test_agent_config_custom() {
         ..Default::default()
     };
     assert_eq!(config.model, "claude-sonnet-4-6");
-    assert_eq!(config.system_prompt.as_deref(), Some("You are a helpful assistant"));
+    assert_eq!(
+        config.system_prompt.as_deref(),
+        Some("You are a helpful assistant")
+    );
     assert_eq!(config.max_turns, 5);
     assert_eq!(config.tools.len(), 2);
 }
@@ -186,7 +193,12 @@ fn test_agent_state_default() {
 
 #[test]
 fn test_agent_state_serialization() {
-    for state in &[AgentState::Idle, AgentState::Thinking, AgentState::ExecutingTool, AgentState::Responding] {
+    for state in &[
+        AgentState::Idle,
+        AgentState::Thinking,
+        AgentState::ExecutingTool,
+        AgentState::Responding,
+    ] {
         let json = serde_json::to_string(state).unwrap();
         let back: AgentState = serde_json::from_str(&json).unwrap();
         assert_eq!(back, *state);
@@ -216,13 +228,11 @@ fn test_agent_event_message() {
 
 #[test]
 fn test_agent_event_tool_call() {
-    let event = AgentEvent::ToolCall(vec![
-        ToolCallInfo {
-            id: "tc-1".to_string(),
-            name: "search".to_string(),
-            arguments: "{}".to_string(),
-        },
-    ]);
+    let event = AgentEvent::ToolCall(vec![ToolCallInfo {
+        id: "tc-1".to_string(),
+        name: "search".to_string(),
+        arguments: "{}".to_string(),
+    }]);
     let json = serde_json::to_string(&event).unwrap();
     let back: AgentEvent = serde_json::from_str(&json).unwrap();
     let json2 = serde_json::to_string(&back).unwrap();
@@ -464,16 +474,14 @@ fn test_agent_instance_clear_history() {
 #[test]
 fn test_agent_instance_set_history() {
     let instance = AgentInstance::new(test_config());
-    let history = vec![
-        ConversationTurn {
-            role: "user".to_string(),
-            content: "Test".to_string(),
-            tool_calls: vec![],
-            tool_call_id: None,
-            timestamp: "2026-01-01T00:00:00Z".to_string(),
-            reasoning_content: None,
-        },
-    ];
+    let history = vec![ConversationTurn {
+        role: "user".to_string(),
+        content: "Test".to_string(),
+        tool_calls: vec![],
+        tool_call_id: None,
+        timestamp: "2026-01-01T00:00:00Z".to_string(),
+        reasoning_content: None,
+    }];
     instance.set_history(history);
     assert_eq!(instance.message_count(), 1);
 }
@@ -574,13 +582,15 @@ fn test_agent_instance_id_unique() {
 #[test]
 fn test_agent_instance_add_assistant_with_tool_calls() {
     let instance = AgentInstance::new(test_config());
-    instance.add_assistant_message("Using tools", vec![
-        ToolCallInfo {
+    instance.add_assistant_message(
+        "Using tools",
+        vec![ToolCallInfo {
             id: "tc-1".to_string(),
             name: "search".to_string(),
             arguments: r#"{"q":"test"}"#.to_string(),
-        },
-    ], None);
+        }],
+        None,
+    );
     let history = instance.get_history();
     // history[0] is system prompt, history[1] is the assistant message
     assert_eq!(history[1].tool_calls.len(), 1);
@@ -730,16 +740,14 @@ fn test_context_builder_tool_summaries() {
 fn test_context_builder_tools_registry() {
     let tmp = tempfile::tempdir().unwrap();
     let mut builder = ContextBuilder::new(tmp.path());
-    let defs = vec![
-        serde_json::json!({
-            "type": "function",
-            "function": {
-                "name": "calculator",
-                "description": "Performs arithmetic",
-                "parameters": {}
-            }
-        }),
-    ];
+    let defs = vec![serde_json::json!({
+        "type": "function",
+        "function": {
+            "name": "calculator",
+            "description": "Performs arithmetic",
+            "parameters": {}
+        }
+    })];
     builder.set_tools_registry(defs);
     assert_eq!(builder.tool_definitions().len(), 1);
     let prompt = builder.build_system_prompt(false);
@@ -751,13 +759,11 @@ fn test_context_builder_tools_registry() {
 fn test_context_builder_skills_info() {
     let tmp = tempfile::tempdir().unwrap();
     let mut builder = ContextBuilder::new(tmp.path());
-    builder.set_skills_info(vec![
-        SkillInfo {
-            name: "coding".to_string(),
-            description: "Helps with coding".to_string(),
-            active: true,
-        },
-    ]);
+    builder.set_skills_info(vec![SkillInfo {
+        name: "coding".to_string(),
+        description: "Helps with coding".to_string(),
+        active: true,
+    }]);
     let prompt = builder.build_system_prompt(false);
     assert!(prompt.contains("Loaded Skills"));
     assert!(prompt.contains("coding"));
@@ -779,7 +785,11 @@ fn test_context_builder_load_skills_from_dir() {
     let skills_dir = tmp.path().join("Skills");
     let skill_a = skills_dir.join("my-skill");
     std::fs::create_dir_all(&skill_a).unwrap();
-    std::fs::write(skill_a.join("SKILL.md"), "# My Cool Skill\nDoes cool things.").unwrap();
+    std::fs::write(
+        skill_a.join("SKILL.md"),
+        "# My Cool Skill\nDoes cool things.",
+    )
+    .unwrap();
 
     let mut builder = ContextBuilder::new(tmp.path());
     builder.load_skills(&skills_dir);
@@ -1033,16 +1043,14 @@ fn test_session_store_in_memory() {
 fn test_session_store_history() {
     let store = SessionStore::new_in_memory();
     store.get_or_create("key1");
-    let msgs = vec![
-        StoredMessage {
-            role: "user".to_string(),
-            content: "Hello".to_string(),
-            tool_calls: vec![],
-            tool_call_id: None,
-            timestamp: String::new(),
-            reasoning_content: None,
-        },
-    ];
+    let msgs = vec![StoredMessage {
+        role: "user".to_string(),
+        content: "Hello".to_string(),
+        tool_calls: vec![],
+        tool_call_id: None,
+        timestamp: String::new(),
+        reasoning_content: None,
+    }];
     store.set_history("key1", msgs);
     let history = store.get_history("key1");
     assert_eq!(history.len(), 1);
@@ -1062,14 +1070,16 @@ fn test_session_store_summary() {
 fn test_session_store_truncate() {
     let store = SessionStore::new_in_memory();
     store.get_or_create("key1");
-    let msgs: Vec<StoredMessage> = (0..10).map(|i| StoredMessage {
-        role: "user".to_string(),
-        content: format!("msg_{}", i),
-        tool_calls: vec![],
-        tool_call_id: None,
-        timestamp: String::new(),
-        reasoning_content: None,
-    }).collect();
+    let msgs: Vec<StoredMessage> = (0..10)
+        .map(|i| StoredMessage {
+            role: "user".to_string(),
+            content: format!("msg_{}", i),
+            tool_calls: vec![],
+            tool_call_id: None,
+            timestamp: String::new(),
+            reasoning_content: None,
+        })
+        .collect();
     store.set_history("key1", msgs);
     store.truncate_history("key1", 3);
     let history = store.get_history("key1");
@@ -1236,14 +1246,16 @@ fn test_estimate_tokens_for_turns() {
 
 #[test]
 fn test_force_compress_short() {
-    let history: Vec<ConversationTurn> = (0..4).map(|i| ConversationTurn {
-        role: if i == 0 { "system" } else { "user" }.to_string(),
-        content: format!("msg_{}", i),
-        tool_calls: vec![],
-        tool_call_id: None,
-        timestamp: String::new(),
-        reasoning_content: None,
-    }).collect();
+    let history: Vec<ConversationTurn> = (0..4)
+        .map(|i| ConversationTurn {
+            role: if i == 0 { "system" } else { "user" }.to_string(),
+            content: format!("msg_{}", i),
+            tool_calls: vec![],
+            tool_call_id: None,
+            timestamp: String::new(),
+            reasoning_content: None,
+        })
+        .collect();
 
     let result = force_compress_turns(&history);
     assert_eq!(result.len(), 4);
@@ -1251,14 +1263,16 @@ fn test_force_compress_short() {
 
 #[test]
 fn test_force_compress_long() {
-    let history: Vec<ConversationTurn> = (0..10).map(|i| ConversationTurn {
-        role: if i == 0 { "system" } else { "user" }.to_string(),
-        content: format!("msg_{}", i),
-        tool_calls: vec![],
-        tool_call_id: None,
-        timestamp: String::new(),
-        reasoning_content: None,
-    }).collect();
+    let history: Vec<ConversationTurn> = (0..10)
+        .map(|i| ConversationTurn {
+            role: if i == 0 { "system" } else { "user" }.to_string(),
+            content: format!("msg_{}", i),
+            tool_calls: vec![],
+            tool_call_id: None,
+            timestamp: String::new(),
+            reasoning_content: None,
+        })
+        .collect();
 
     let result = force_compress_turns(&history);
     assert!(result.len() < history.len());
@@ -1270,14 +1284,16 @@ fn test_force_compress_long() {
 #[test]
 fn test_force_compress_exact_boundary() {
     // 6 messages (1 system + 5 user) should trigger compression (len > 4)
-    let history: Vec<ConversationTurn> = (0..6).map(|i| ConversationTurn {
-        role: if i == 0 { "system" } else { "user" }.to_string(),
-        content: format!("msg_{}", i),
-        tool_calls: vec![],
-        tool_call_id: None,
-        timestamp: String::new(),
-        reasoning_content: None,
-    }).collect();
+    let history: Vec<ConversationTurn> = (0..6)
+        .map(|i| ConversationTurn {
+            role: if i == 0 { "system" } else { "user" }.to_string(),
+            content: format!("msg_{}", i),
+            tool_calls: vec![],
+            tool_call_id: None,
+            timestamp: String::new(),
+            reasoning_content: None,
+        })
+        .collect();
 
     let result = force_compress_turns(&history);
     assert!(result.len() < history.len());
@@ -1709,16 +1725,14 @@ fn test_memory_store_memory_file_path() {
 fn test_stored_session_serialization() {
     let session = StoredSession {
         key: "web:chat1".to_string(),
-        messages: vec![
-            StoredMessage {
-                role: "user".to_string(),
-                content: "Hello".to_string(),
-                tool_calls: vec![],
-                tool_call_id: None,
-                timestamp: "2026-01-01T00:00:00Z".to_string(),
-                reasoning_content: None,
-            },
-        ],
+        messages: vec![StoredMessage {
+            role: "user".to_string(),
+            content: "Hello".to_string(),
+            tool_calls: vec![],
+            tool_call_id: None,
+            timestamp: "2026-01-01T00:00:00Z".to_string(),
+            reasoning_content: None,
+        }],
         summary: "A greeting".to_string(),
         created: chrono::Local::now(),
         updated: chrono::Local::now(),
@@ -1816,13 +1830,15 @@ fn test_agent_instance_many_messages() {
 fn test_agent_instance_tool_call_and_result() {
     let instance = AgentInstance::new(test_config());
     instance.add_user_message("Calculate 2+2");
-    instance.add_assistant_message("Let me calculate", vec![
-        ToolCallInfo {
+    instance.add_assistant_message(
+        "Let me calculate",
+        vec![ToolCallInfo {
             id: "tc-calc".to_string(),
             name: "calculator".to_string(),
             arguments: r#"{"expr": "2+2"}"#.to_string(),
-        },
-    ], None);
+        }],
+        None,
+    );
     instance.add_tool_result("tc-calc", "4");
     instance.add_assistant_message("The answer is 4", vec![], None);
 
@@ -1860,23 +1876,27 @@ fn test_agent_instance_truncate_to_more_than_count() {
 #[test]
 fn test_agent_instance_multiple_tool_calls() {
     let instance = AgentInstance::new(test_config());
-    instance.add_assistant_message("Searching", vec![
-        ToolCallInfo {
-            id: "tc-1".to_string(),
-            name: "search".to_string(),
-            arguments: r#"{"q": "rust"}"#.to_string(),
-        },
-        ToolCallInfo {
-            id: "tc-2".to_string(),
-            name: "search".to_string(),
-            arguments: r#"{"q": "golang"}"#.to_string(),
-        },
-        ToolCallInfo {
-            id: "tc-3".to_string(),
-            name: "file_read".to_string(),
-            arguments: r#"{"path": "/tmp/test"}"#.to_string(),
-        },
-    ], None);
+    instance.add_assistant_message(
+        "Searching",
+        vec![
+            ToolCallInfo {
+                id: "tc-1".to_string(),
+                name: "search".to_string(),
+                arguments: r#"{"q": "rust"}"#.to_string(),
+            },
+            ToolCallInfo {
+                id: "tc-2".to_string(),
+                name: "search".to_string(),
+                arguments: r#"{"q": "golang"}"#.to_string(),
+            },
+            ToolCallInfo {
+                id: "tc-3".to_string(),
+                name: "file_read".to_string(),
+                arguments: r#"{"path": "/tmp/test"}"#.to_string(),
+            },
+        ],
+        None,
+    );
     instance.add_tool_result("tc-1", "Rust results");
     instance.add_tool_result("tc-2", "Go results");
     instance.add_tool_result("tc-3", "File contents");
@@ -2161,14 +2181,16 @@ fn test_session_store_truncate_nonexistent() {
 fn test_session_store_truncate_fewer_than_keep() {
     let store = SessionStore::new_in_memory();
     store.get_or_create("key1");
-    let msgs: Vec<StoredMessage> = (0..3).map(|i| StoredMessage {
-        role: "user".to_string(),
-        content: format!("msg_{}", i),
-        tool_calls: vec![],
-        tool_call_id: None,
-        timestamp: String::new(),
-        reasoning_content: None,
-    }).collect();
+    let msgs: Vec<StoredMessage> = (0..3)
+        .map(|i| StoredMessage {
+            role: "user".to_string(),
+            content: format!("msg_{}", i),
+            tool_calls: vec![],
+            tool_call_id: None,
+            timestamp: String::new(),
+            reasoning_content: None,
+        })
+        .collect();
     store.set_history("key1", msgs);
     store.truncate_history("key1", 10);
     let history = store.get_history("key1");
@@ -2387,14 +2409,16 @@ fn test_ring_buffer_capacity_one() {
 
 #[test]
 fn test_force_compress_preserves_system() {
-    let history: Vec<ConversationTurn> = (0..8).map(|i| ConversationTurn {
-        role: if i == 0 { "system" } else { "user" }.to_string(),
-        content: format!("msg_{}", i),
-        tool_calls: vec![],
-        tool_call_id: None,
-        timestamp: String::new(),
-        reasoning_content: None,
-    }).collect();
+    let history: Vec<ConversationTurn> = (0..8)
+        .map(|i| ConversationTurn {
+            role: if i == 0 { "system" } else { "user" }.to_string(),
+            content: format!("msg_{}", i),
+            tool_calls: vec![],
+            tool_call_id: None,
+            timestamp: String::new(),
+            reasoning_content: None,
+        })
+        .collect();
     let result = force_compress_turns(&history);
     assert_eq!(result[0].content, "msg_0");
     assert_eq!(result[0].role, "system");
@@ -2402,14 +2426,16 @@ fn test_force_compress_preserves_system() {
 
 #[test]
 fn test_force_compress_preserves_last() {
-    let history: Vec<ConversationTurn> = (0..8).map(|i| ConversationTurn {
-        role: if i == 0 { "system" } else { "user" }.to_string(),
-        content: format!("msg_{}", i),
-        tool_calls: vec![],
-        tool_call_id: None,
-        timestamp: String::new(),
-        reasoning_content: None,
-    }).collect();
+    let history: Vec<ConversationTurn> = (0..8)
+        .map(|i| ConversationTurn {
+            role: if i == 0 { "system" } else { "user" }.to_string(),
+            content: format!("msg_{}", i),
+            tool_calls: vec![],
+            tool_call_id: None,
+            timestamp: String::new(),
+            reasoning_content: None,
+        })
+        .collect();
     let result = force_compress_turns(&history);
     assert_eq!(result.last().unwrap().content, "msg_7");
 }

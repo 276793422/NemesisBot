@@ -2,7 +2,10 @@ use super::*;
 
 #[tokio::test]
 async fn test_heartbeat_disabled() {
-    let svc = HeartbeatService::new(HeartbeatConfig { enabled: false, ..Default::default() });
+    let svc = HeartbeatService::new(HeartbeatConfig {
+        enabled: false,
+        ..Default::default()
+    });
     assert!(svc.start().await.is_ok());
     assert!(!svc.is_running());
 }
@@ -785,7 +788,11 @@ async fn test_start_stop_with_active_heartbeat() {
     let workspace = tmp.path().to_string_lossy().to_string();
 
     // Create HEARTBEAT.md with actual content
-    std::fs::write(tmp.path().join("HEARTBEAT.md"), "# Tasks\n\n- Check email\n- Review calendar").unwrap();
+    std::fs::write(
+        tmp.path().join("HEARTBEAT.md"),
+        "# Tasks\n\n- Check email\n- Review calendar",
+    )
+    .unwrap();
 
     let heartbeat_executed = Arc::new(AtomicU64::new(0));
     let heartbeat_clone = heartbeat_executed.clone();
@@ -1096,7 +1103,10 @@ async fn test_heartbeat_multiple_intervals_and_stop() {
 
     // Verify multiple heartbeats occurred
     let count_before_stop = heartbeat_count.load(Ordering::SeqCst);
-    assert!(count_before_stop >= 2, "Should have executed at least 2 heartbeats");
+    assert!(
+        count_before_stop >= 2,
+        "Should have executed at least 2 heartbeats"
+    );
 
     // Stop the service
     svc.stop();
@@ -1107,14 +1117,21 @@ async fn test_heartbeat_multiple_intervals_and_stop() {
 
     // Count should not have increased after stop
     let count_after_stop = heartbeat_count.load(Ordering::SeqCst);
-    assert_eq!(count_before_stop, count_after_stop, "Count should not increase after stop");
+    assert_eq!(
+        count_before_stop, count_after_stop,
+        "Count should not increase after stop"
+    );
 }
 
 #[test]
 fn test_build_prompt_with_unicode_content() {
     let dir = tempfile::tempdir().unwrap();
     let heartbeat_path = dir.path().join("HEARTBEAT.md");
-    std::fs::write(&heartbeat_path, "- 检查系统状态\n- 查看日志\n- 检查磁盘空间\n").unwrap();
+    std::fs::write(
+        &heartbeat_path,
+        "- 检查系统状态\n- 查看日志\n- 检查磁盘空间\n",
+    )
+    .unwrap();
 
     let svc = HeartbeatService::new(HeartbeatConfig {
         workspace: Some(dir.path().to_string_lossy().to_string()),

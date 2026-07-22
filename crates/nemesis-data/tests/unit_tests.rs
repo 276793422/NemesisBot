@@ -25,7 +25,9 @@ fn test_empty_database_summary() {
     let store = DataStore::open(&db_path).expect("Failed to open database");
 
     // Query summary on empty database should return zero values
-    let summary = store.query_summary(0, 2000000000).expect("Failed to query summary from empty database");
+    let summary = store
+        .query_summary(0, 2000000000)
+        .expect("Failed to query summary from empty database");
 
     assert_eq!(summary.total_requests, 0);
     assert_eq!(summary.success_count, 0);
@@ -63,13 +65,17 @@ fn test_database_reuse() {
             is_streaming: false,
             created_at: 1700000000,
         };
-        store.insert_request_log(&log).expect("Failed to insert log");
+        store
+            .insert_request_log(&log)
+            .expect("Failed to insert log");
     }
 
     // Reopen database and verify data persists
     {
         let store = DataStore::open(&db_path).expect("Failed to reopen database");
-        let summary = store.query_summary(0, 2000000000).expect("Failed to query summary");
+        let summary = store
+            .query_summary(0, 2000000000)
+            .expect("Failed to query summary");
         assert_eq!(summary.total_requests, 1);
     }
 
@@ -98,9 +104,13 @@ fn test_zero_values_in_log() {
         is_streaming: false,
         created_at: 1700000000,
     };
-    store.insert_request_log(&log).expect("Failed to insert zero-value log");
+    store
+        .insert_request_log(&log)
+        .expect("Failed to insert zero-value log");
 
-    let summary = store.query_summary(0, 2000000000).expect("Failed to query summary");
+    let summary = store
+        .query_summary(0, 2000000000)
+        .expect("Failed to query summary");
     assert_eq!(summary.total_requests, 1);
     assert_eq!(summary.total_input_tokens, 0);
     assert_eq!(summary.total_output_tokens, 0);
@@ -131,10 +141,14 @@ fn test_negative_timestamps() {
         is_streaming: false,
         created_at: -1000000, // Negative timestamp
     };
-    store.insert_request_log(&log).expect("Failed to insert log with negative timestamp");
+    store
+        .insert_request_log(&log)
+        .expect("Failed to insert log with negative timestamp");
 
     // Query with negative time range
-    let summary = store.query_summary(-2000000, 0).expect("Failed to query with negative timestamps");
+    let summary = store
+        .query_summary(-2000000, 0)
+        .expect("Failed to query with negative timestamps");
     assert_eq!(summary.total_requests, 1);
 
     let _ = fs::remove_file(&db_path);
@@ -162,9 +176,13 @@ fn test_large_request_log() {
         is_streaming: false,
         created_at: 1700000000,
     };
-    store.insert_request_log(&log).expect("Failed to insert large-value log");
+    store
+        .insert_request_log(&log)
+        .expect("Failed to insert large-value log");
 
-    let summary = store.query_summary(0, 2000000000).expect("Failed to query summary with large values");
+    let summary = store
+        .query_summary(0, 2000000000)
+        .expect("Failed to query summary with large values");
     assert_eq!(summary.total_requests, 1);
     assert!(summary.total_input_tokens > 0);
     assert!(summary.total_cost_usd > 0.0);
@@ -194,9 +212,13 @@ fn test_special_characters_in_strings() {
         is_streaming: false,
         created_at: 1700000000,
     };
-    store.insert_request_log(&log).expect("Failed to insert log with special characters");
+    store
+        .insert_request_log(&log)
+        .expect("Failed to insert log with special characters");
 
-    let (logs, _) = store.query_logs(0, 2000000000, 1, 10).expect("Failed to query logs");
+    let (logs, _) = store
+        .query_logs(0, 2000000000, 1, 10)
+        .expect("Failed to query logs");
     assert_eq!(logs.len(), 1);
     assert!(logs[0].trace_id.contains("'quotes'"));
     assert!(logs[0].model.contains("emoji"));
@@ -229,9 +251,13 @@ fn test_very_long_strings() {
         is_streaming: false,
         created_at: 1700000000,
     };
-    store.insert_request_log(&log).expect("Failed to insert log with long strings");
+    store
+        .insert_request_log(&log)
+        .expect("Failed to insert log with long strings");
 
-    let (logs, _) = store.query_logs(0, 2000000000, 1, 10).expect("Failed to query logs");
+    let (logs, _) = store
+        .query_logs(0, 2000000000, 1, 10)
+        .expect("Failed to query logs");
     assert_eq!(logs.len(), 1);
     assert!(logs[0].trace_id.len() > 9000);
     assert!(logs[0].error_message.as_ref().unwrap().len() > 4000);
@@ -262,18 +288,26 @@ fn test_multiple_page_sizes() {
             is_streaming: false,
             created_at: 1700000000 + i,
         };
-        store.insert_request_log(&log).expect("Failed to insert log");
+        store
+            .insert_request_log(&log)
+            .expect("Failed to insert log");
     }
 
     // Test different page sizes
-    let (page1, total) = store.query_logs(0, 2000000000, 1, 7).expect("Failed to query with page_size=7");
+    let (page1, total) = store
+        .query_logs(0, 2000000000, 1, 7)
+        .expect("Failed to query with page_size=7");
     assert_eq!(page1.len(), 7);
     assert_eq!(total, 50);
 
-    let (page2, _) = store.query_logs(0, 2000000000, 1, 13).expect("Failed to query with page_size=13");
+    let (page2, _) = store
+        .query_logs(0, 2000000000, 1, 13)
+        .expect("Failed to query with page_size=13");
     assert_eq!(page2.len(), 13);
 
-    let (page3, _) = store.query_logs(0, 2000000000, 1, 100).expect("Failed to query with page_size=100");
+    let (page3, _) = store
+        .query_logs(0, 2000000000, 1, 100)
+        .expect("Failed to query with page_size=100");
     assert_eq!(page3.len(), 50); // All logs
 
     let _ = fs::remove_file(&db_path);
@@ -303,7 +337,9 @@ fn test_exact_boundary_rollup() {
         is_streaming: false,
         created_at: now - 31 * 86400, // 31 days ago
     };
-    store.insert_request_log(&old_log).expect("Failed to insert old log");
+    store
+        .insert_request_log(&old_log)
+        .expect("Failed to insert old log");
 
     // Insert recent log (should not be rolled up)
     let mut recent_log = RequestLog {
@@ -322,12 +358,16 @@ fn test_exact_boundary_rollup() {
         is_streaming: false,
         created_at: now - 10 * 86400, // 10 days ago
     };
-    store.insert_request_log(&recent_log).expect("Failed to insert recent log");
+    store
+        .insert_request_log(&recent_log)
+        .expect("Failed to insert recent log");
 
     let deleted = store.rollup_old_logs().expect("Failed to rollup");
     assert_eq!(deleted, 1); // Only the old log should be deleted
 
-    let (remaining, _) = store.query_logs(0, now + 86400, 1, 100).expect("Failed to query remaining logs");
+    let (remaining, _) = store
+        .query_logs(0, now + 86400, 1, 100)
+        .expect("Failed to query remaining logs");
     assert_eq!(remaining.len(), 1); // Only the recent log should remain
     assert_eq!(remaining[0].trace_id, "recent");
 

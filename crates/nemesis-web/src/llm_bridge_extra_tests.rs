@@ -11,8 +11,8 @@ mod llm_bridge_extra_tests {
     use nemesis_providers::failover::FailoverError;
     use nemesis_providers::router::LLMProvider;
     use nemesis_providers::types::{
-        ChatOptions as ProviderChatOptions, FunctionCall, LLMResponse as ProviderResponse,
-        Message, ToolCall, ToolDefinition as ProviderToolDef, UsageInfo,
+        ChatOptions as ProviderChatOptions, FunctionCall, LLMResponse as ProviderResponse, Message,
+        ToolCall, ToolDefinition as ProviderToolDef, UsageInfo,
     };
     use std::collections::HashMap;
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -193,7 +193,12 @@ mod llm_bridge_extra_tests {
         let adapter = ProviderAdapter::new(mock.clone(), "gpt-4o".to_string());
 
         let _ = adapter
-            .chat("claude-3", one_user_message(), None, empty_messages_to_tools())
+            .chat(
+                "claude-3",
+                one_user_message(),
+                None,
+                empty_messages_to_tools(),
+            )
             .await
             .unwrap();
         assert_eq!(mock.last_model_seen().as_deref(), Some("claude-3"));
@@ -423,10 +428,7 @@ mod llm_bridge_extra_tests {
         });
         let bridge = ForgeProviderBridge::new(mock, "m".to_string());
 
-        let err = bridge
-            .chat("s", "u", None)
-            .await
-            .unwrap_err();
+        let err = bridge.chat("s", "u", None).await.unwrap_err();
         assert_eq!(err, "LLM returned no content");
     }
 

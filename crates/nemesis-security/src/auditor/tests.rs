@@ -150,7 +150,11 @@ fn test_approve_nonexistent_fails() {
 fn test_deny_nonexistent_fails() {
     let config = AuditorConfig::default();
     let auditor = SecurityAuditor::new(config);
-    assert!(auditor.deny_request("nonexistent", "admin", "reason").is_err());
+    assert!(
+        auditor
+            .deny_request("nonexistent", "admin", "reason")
+            .is_err()
+    );
 }
 
 #[test]
@@ -253,11 +257,7 @@ fn test_validate_path_workspace_isolation() {
 
 #[test]
 fn test_validate_path_dangerous_system_path() {
-    let result = SecurityAuditor::validate_path(
-        "/etc/passwd",
-        "",
-        OperationType::FileRead,
-    );
+    let result = SecurityAuditor::validate_path("/etc/passwd", "", OperationType::FileRead);
     assert!(result.is_err());
     assert!(result.unwrap_err().contains("protected system path"));
 }
@@ -266,11 +266,7 @@ fn test_validate_path_dangerous_system_path() {
 fn test_validate_path_normal() {
     // With no workspace restriction, a normal path should be OK
     // (as long as it's not a dangerous system path)
-    let result = SecurityAuditor::validate_path(
-        "/tmp/test.txt",
-        "",
-        OperationType::FileRead,
-    );
+    let result = SecurityAuditor::validate_path("/tmp/test.txt", "", OperationType::FileRead);
     assert!(result.is_ok());
 }
 
@@ -964,8 +960,14 @@ fn test_auditor_deny_then_approve_fails() {
         ..Default::default()
     };
     auditor.request_permission(&req);
-    auditor.deny_request("deny-then-approve", "admin", "reason").unwrap();
-    assert!(auditor.approve_request("deny-then-approve", "admin").is_err());
+    auditor
+        .deny_request("deny-then-approve", "admin", "reason")
+        .unwrap();
+    assert!(
+        auditor
+            .approve_request("deny-then-approve", "admin")
+            .is_err()
+    );
 }
 
 #[test]
@@ -976,22 +978,14 @@ fn test_auditor_validate_path_empty_path() {
 
 #[test]
 fn test_auditor_validate_path_multiple_dangerous_paths() {
-    let dangerous_paths = [
-        "/etc/passwd",
-        "/etc/shadow",
-        "/etc/sudoers",
-    ];
+    let dangerous_paths = ["/etc/passwd", "/etc/shadow", "/etc/sudoers"];
     for path in &dangerous_paths {
         let result = SecurityAuditor::validate_path(path, "", OperationType::FileRead);
         assert!(result.is_err(), "Expected {} to be rejected", path);
     }
 
     // Paths not in the dangerous list should be allowed (when no workspace restriction)
-    let safe_paths = [
-        "/etc/ssh/sshd_config",
-        "/boot/grub/grub.cfg",
-        "/tmp/test",
-    ];
+    let safe_paths = ["/etc/ssh/sshd_config", "/boot/grub/grub.cfg", "/tmp/test"];
     for path in &safe_paths {
         let result = SecurityAuditor::validate_path(path, "", OperationType::FileRead);
         assert!(result.is_ok(), "Expected {} to be allowed", path);
@@ -1047,13 +1041,34 @@ fn test_global_auditor_init() {
 
 #[test]
 fn test_normalize_decision_all_variants() {
-    assert!(matches!(normalize_decision("allow"), SecurityDecision::Allowed));
-    assert!(matches!(normalize_decision("allowed"), SecurityDecision::Allowed));
-    assert!(matches!(normalize_decision("deny"), SecurityDecision::Denied));
-    assert!(matches!(normalize_decision("denied"), SecurityDecision::Denied));
-    assert!(matches!(normalize_decision("ask"), SecurityDecision::RequireApproval));
-    assert!(matches!(normalize_decision("require_approval"), SecurityDecision::RequireApproval));
-    assert!(matches!(normalize_decision("unknown"), SecurityDecision::Denied));
+    assert!(matches!(
+        normalize_decision("allow"),
+        SecurityDecision::Allowed
+    ));
+    assert!(matches!(
+        normalize_decision("allowed"),
+        SecurityDecision::Allowed
+    ));
+    assert!(matches!(
+        normalize_decision("deny"),
+        SecurityDecision::Denied
+    ));
+    assert!(matches!(
+        normalize_decision("denied"),
+        SecurityDecision::Denied
+    ));
+    assert!(matches!(
+        normalize_decision("ask"),
+        SecurityDecision::RequireApproval
+    ));
+    assert!(matches!(
+        normalize_decision("require_approval"),
+        SecurityDecision::RequireApproval
+    ));
+    assert!(matches!(
+        normalize_decision("unknown"),
+        SecurityDecision::Denied
+    ));
     assert!(matches!(normalize_decision(""), SecurityDecision::Denied));
 }
 
@@ -1063,7 +1078,10 @@ fn test_auditor_set_log_file() {
     let auditor = SecurityAuditor::new(config);
     assert!(auditor.get_log_file_path().is_none());
     auditor.set_log_file("/tmp/test_audit.log");
-    assert_eq!(auditor.get_log_file_path().unwrap().to_str().unwrap(), "/tmp/test_audit.log");
+    assert_eq!(
+        auditor.get_log_file_path().unwrap().to_str().unwrap(),
+        "/tmp/test_audit.log"
+    );
 }
 
 #[test]
@@ -1284,7 +1302,9 @@ fn test_auditor_with_approval_manager() {
     struct MockApprovalManager;
 
     impl ApprovalManager for MockApprovalManager {
-        fn is_running(&self) -> bool { true }
+        fn is_running(&self) -> bool {
+            true
+        }
         fn request_approval_sync(
             &self,
             _request_id: &str,
@@ -1327,7 +1347,9 @@ fn test_auditor_with_approval_manager_deny() {
     struct MockDenyManager;
 
     impl ApprovalManager for MockDenyManager {
-        fn is_running(&self) -> bool { true }
+        fn is_running(&self) -> bool {
+            true
+        }
         fn request_approval_sync(
             &self,
             _request_id: &str,
@@ -1370,7 +1392,9 @@ fn test_auditor_with_approval_manager_error() {
     struct MockErrorManager;
 
     impl ApprovalManager for MockErrorManager {
-        fn is_running(&self) -> bool { true }
+        fn is_running(&self) -> bool {
+            true
+        }
         fn request_approval_sync(
             &self,
             _request_id: &str,
@@ -1414,10 +1438,17 @@ fn test_auditor_with_approval_manager_not_running() {
     struct MockNotRunningManager;
 
     impl ApprovalManager for MockNotRunningManager {
-        fn is_running(&self) -> bool { false }
+        fn is_running(&self) -> bool {
+            false
+        }
         fn request_approval_sync(
             &self,
-            _: &str, _: &str, _: &str, _: &str, _: &str, _: u64,
+            _: &str,
+            _: &str,
+            _: &str,
+            _: &str,
+            _: &str,
+            _: u64,
         ) -> Result<bool, String> {
             Ok(true)
         }

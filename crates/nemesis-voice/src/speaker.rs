@@ -23,7 +23,8 @@ unsafe impl Sync for SpeakerManager {}
 
 impl SpeakerEngine {
     pub fn new(model_dir: &Path, num_threads: u32) -> Result<Self> {
-        let model_path = model_dir.join("3dspeaker_speech_campplus_sv_zh_en_16k-common_advanced.onnx");
+        let model_path =
+            model_dir.join("3dspeaker_speech_campplus_sv_zh_en_16k-common_advanced.onnx");
         if !model_path.exists() {
             anyhow::bail!("Speaker model not found: {}", model_path.display());
         }
@@ -38,9 +39,7 @@ impl SpeakerEngine {
             provider: provider_c.as_ptr(),
         };
 
-        let extractor = unsafe {
-            sherpa::SherpaOnnxCreateSpeakerEmbeddingExtractor(&config)
-        };
+        let extractor = unsafe { sherpa::SherpaOnnxCreateSpeakerEmbeddingExtractor(&config) };
 
         if extractor.is_null() {
             anyhow::bail!("Failed to create SpeakerEmbedding extractor");
@@ -52,9 +51,8 @@ impl SpeakerEngine {
     }
 
     pub fn embed(&self, samples: &[f32], sample_rate: u32) -> Result<Vec<f32>> {
-        let stream = unsafe {
-            sherpa::SherpaOnnxSpeakerEmbeddingExtractorCreateStream(self.extractor)
-        };
+        let stream =
+            unsafe { sherpa::SherpaOnnxSpeakerEmbeddingExtractorCreateStream(self.extractor) };
         if stream.is_null() {
             anyhow::bail!("Failed to create speaker embedding stream");
         }
@@ -69,9 +67,8 @@ impl SpeakerEngine {
             sherpa::SherpaOnnxOnlineStreamInputFinished(stream);
         }
 
-        let ready = unsafe {
-            sherpa::SherpaOnnxSpeakerEmbeddingExtractorIsReady(self.extractor, stream)
-        };
+        let ready =
+            unsafe { sherpa::SherpaOnnxSpeakerEmbeddingExtractorIsReady(self.extractor, stream) };
         if ready == 0 {
             unsafe { sherpa::SherpaOnnxDestroyOnlineStream(stream) };
             anyhow::bail!("Speaker embedding extractor not ready");
@@ -84,7 +81,11 @@ impl SpeakerEngine {
         let mut embedding = Vec::with_capacity(self.dim as usize);
         if !embedding_ptr.is_null() {
             unsafe {
-                std::ptr::copy_nonoverlapping(embedding_ptr, embedding.as_mut_ptr(), self.dim as usize);
+                std::ptr::copy_nonoverlapping(
+                    embedding_ptr,
+                    embedding.as_mut_ptr(),
+                    self.dim as usize,
+                );
                 embedding.set_len(self.dim as usize);
             }
             unsafe { sherpa::SherpaOnnxSpeakerEmbeddingExtractorDestroyEmbedding(embedding_ptr) };
@@ -183,9 +184,8 @@ impl SpeakerManager {
     }
 
     pub fn list_speakers(&self) -> Vec<String> {
-        let names_ptr = unsafe {
-            sherpa::SherpaOnnxSpeakerEmbeddingManagerGetAllSpeakers(self.manager)
-        };
+        let names_ptr =
+            unsafe { sherpa::SherpaOnnxSpeakerEmbeddingManagerGetAllSpeakers(self.manager) };
         let mut speakers = Vec::new();
         if names_ptr.is_null() {
             return speakers;

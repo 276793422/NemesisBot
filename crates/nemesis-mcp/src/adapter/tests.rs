@@ -132,7 +132,11 @@ fn sanitize_name_long_string() {
 #[test]
 fn sanitize_name_mixed_chars() {
     let result = sanitize_name("My Tool Name!@#$%");
-    assert!(result.chars().all(|c| c.is_ascii_alphanumeric() || c == '_'));
+    assert!(
+        result
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_')
+    );
     assert_eq!(result, "my_tool_name_____");
 }
 
@@ -529,10 +533,7 @@ async fn test_mcp_adapter_execute_unknown_content_type() {
 async fn test_mcp_adapter_execute_multiple_content() {
     let mock = MockClient::new("test", vec![]);
     mock.with_call_result(ToolCallResult {
-        content: vec![
-            ToolContent::text("part1"),
-            ToolContent::text("part2"),
-        ],
+        content: vec![ToolContent::text("part1"), ToolContent::text("part2")],
         is_error: false,
     });
 
@@ -621,20 +622,47 @@ fn test_mcp_adapter_no_server_info() {
             Ok(InitializeResult {
                 protocol_version: PROTOCOL_VERSION.to_string(),
                 capabilities: ServerCapabilities::default(),
-                server_info: ServerInfo { name: "n".into(), version: "1".into() },
+                server_info: ServerInfo {
+                    name: "n".into(),
+                    version: "1".into(),
+                },
             })
         }
-        async fn list_tools(&mut self) -> ClientResult<Vec<McpTool>> { Ok(vec![]) }
-        async fn call_tool(&mut self, _name: &str, _args: serde_json::Value) -> ClientResult<ToolCallResult> {
+        async fn list_tools(&mut self) -> ClientResult<Vec<McpTool>> {
+            Ok(vec![])
+        }
+        async fn call_tool(
+            &mut self,
+            _name: &str,
+            _args: serde_json::Value,
+        ) -> ClientResult<ToolCallResult> {
             Ok(ToolCallResult::ok(""))
         }
-        async fn list_resources(&mut self) -> ClientResult<Vec<Resource>> { Ok(vec![]) }
-        async fn read_resource(&mut self, _uri: &str) -> ClientResult<ResourceContent> { Ok(ResourceContent::default()) }
-        async fn list_prompts(&mut self) -> ClientResult<Vec<Prompt>> { Ok(vec![]) }
-        async fn get_prompt(&mut self, _name: &str, _args: serde_json::Value) -> ClientResult<PromptResult> { Ok(PromptResult::default()) }
-        async fn close(&mut self) -> ClientResult<()> { Ok(()) }
-        fn server_info(&self) -> Option<&ServerInfo> { None }
-        fn is_connected(&self) -> bool { false }
+        async fn list_resources(&mut self) -> ClientResult<Vec<Resource>> {
+            Ok(vec![])
+        }
+        async fn read_resource(&mut self, _uri: &str) -> ClientResult<ResourceContent> {
+            Ok(ResourceContent::default())
+        }
+        async fn list_prompts(&mut self) -> ClientResult<Vec<Prompt>> {
+            Ok(vec![])
+        }
+        async fn get_prompt(
+            &mut self,
+            _name: &str,
+            _args: serde_json::Value,
+        ) -> ClientResult<PromptResult> {
+            Ok(PromptResult::default())
+        }
+        async fn close(&mut self) -> ClientResult<()> {
+            Ok(())
+        }
+        fn server_info(&self) -> Option<&ServerInfo> {
+            None
+        }
+        fn is_connected(&self) -> bool {
+            false
+        }
     }
 
     let mcp_tool = McpTool {

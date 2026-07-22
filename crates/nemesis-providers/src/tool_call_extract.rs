@@ -76,7 +76,9 @@ pub fn strip_tool_calls_from_text(text: &str) -> String {
         None => return text.to_string(),
     };
 
-    format!("{}{}", &text[..start], &text[end..]).trim().to_string()
+    format!("{}{}", &text[..start], &text[end..])
+        .trim()
+        .to_string()
 }
 
 /// Find the index after the closing brace matching the opening brace at `pos`.

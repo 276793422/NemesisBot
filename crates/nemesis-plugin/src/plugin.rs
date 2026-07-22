@@ -49,10 +49,14 @@ pub trait Plugin: Send + Sync {
     fn name(&self) -> &str;
 
     /// Plugin version.
-    fn version(&self) -> &str { "0.1.0" }
+    fn version(&self) -> &str {
+        "0.1.0"
+    }
 
     /// Initialize the plugin with configuration.
-    fn init(&mut self, _config: &serde_json::Value) -> Result<(), String> { Ok(()) }
+    fn init(&mut self, _config: &serde_json::Value) -> Result<(), String> {
+        Ok(())
+    }
 
     /// Execute intercepts a tool execution.
     /// Returns (allowed, error_message, modified).
@@ -62,13 +66,17 @@ pub trait Plugin: Send + Sync {
     }
 
     /// Check if plugin is running.
-    fn is_running(&self) -> bool { false }
+    fn is_running(&self) -> bool {
+        false
+    }
 
     /// Cast to Any for downcasting.
     fn as_any(&self) -> &dyn Any;
 
     /// Cleanup when unloading.
-    fn cleanup(&self) -> Result<(), String> { Ok(()) }
+    fn cleanup(&self) -> Result<(), String> {
+        Ok(())
+    }
 }
 
 /// Base plugin with default implementations.
@@ -79,14 +87,23 @@ pub struct BasePlugin {
 
 impl BasePlugin {
     pub fn new(name: &str, version: &str) -> Self {
-        Self { name: name.to_string(), version: version.to_string() }
+        Self {
+            name: name.to_string(),
+            version: version.to_string(),
+        }
     }
 }
 
 impl Plugin for BasePlugin {
-    fn name(&self) -> &str { &self.name }
-    fn version(&self) -> &str { &self.version }
-    fn as_any(&self) -> &dyn Any { self }
+    fn name(&self) -> &str {
+        &self.name
+    }
+    fn version(&self) -> &str {
+        &self.version
+    }
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
 }
 
 /// Plugin manager: register, enable/disable, execute lifecycle.
@@ -116,7 +133,10 @@ impl PluginManager {
 
     /// Unregister a plugin by name.
     pub fn unregister(&mut self, name: &str) -> Result<(), String> {
-        let idx = self.plugins.iter().position(|p| p.name() == name)
+        let idx = self
+            .plugins
+            .iter()
+            .position(|p| p.name() == name)
             .ok_or_else(|| format!("plugin {} not found", name))?;
         self.plugins[idx].cleanup()?;
         self.plugins.remove(idx);
@@ -143,14 +163,16 @@ impl PluginManager {
 
     /// Get a plugin by name.
     pub fn get_plugin(&self, name: &str) -> Option<&dyn Plugin> {
-        self.plugins.iter()
+        self.plugins
+            .iter()
             .find(|p| p.name() == name && self.is_enabled(name))
             .map(|p| p.as_ref())
     }
 
     /// List all enabled plugins.
     pub fn list_plugins(&self) -> Vec<&dyn Plugin> {
-        self.plugins.iter()
+        self.plugins
+            .iter()
             .filter(|p| self.is_enabled(p.name()))
             .map(|p| p.as_ref())
             .collect()
@@ -193,7 +215,9 @@ impl PluginManager {
 }
 
 impl Default for PluginManager {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 #[cfg(test)]

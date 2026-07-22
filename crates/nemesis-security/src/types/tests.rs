@@ -3,13 +3,22 @@ use super::*;
 #[test]
 fn test_danger_levels() {
     assert_eq!(get_danger_level(OperationType::FileRead), DangerLevel::Low);
-    assert_eq!(get_danger_level(OperationType::ProcessExec), DangerLevel::Critical);
-    assert_eq!(get_danger_level(OperationType::FileWrite), DangerLevel::High);
+    assert_eq!(
+        get_danger_level(OperationType::ProcessExec),
+        DangerLevel::Critical
+    );
+    assert_eq!(
+        get_danger_level(OperationType::FileWrite),
+        DangerLevel::High
+    );
 }
 
 #[test]
 fn test_tool_to_operation() {
-    assert_eq!(tool_to_operation("read_file"), Some(OperationType::FileRead));
+    assert_eq!(
+        tool_to_operation("read_file"),
+        Some(OperationType::FileRead)
+    );
     assert_eq!(tool_to_operation("exec"), Some(OperationType::ProcessExec));
     assert_eq!(tool_to_operation("unknown"), None);
 }
@@ -54,7 +63,10 @@ fn test_all_operation_types_display() {
     assert_eq!(OperationType::ProcessSpawn.to_string(), "process_spawn");
     assert_eq!(OperationType::ProcessKill.to_string(), "process_kill");
     assert_eq!(OperationType::ProcessSuspend.to_string(), "process_suspend");
-    assert_eq!(OperationType::NetworkDownload.to_string(), "network_download");
+    assert_eq!(
+        OperationType::NetworkDownload.to_string(),
+        "network_download"
+    );
     assert_eq!(OperationType::NetworkUpload.to_string(), "network_upload");
     assert_eq!(OperationType::HardwareI2C.to_string(), "hardware_i2c");
     assert_eq!(OperationType::HardwareSPI.to_string(), "hardware_spi");
@@ -78,28 +90,76 @@ fn test_danger_level_display() {
 fn test_security_decision_display() {
     assert_eq!(format!("{}", SecurityDecision::Allowed), "allowed");
     assert_eq!(format!("{}", SecurityDecision::Denied), "denied");
-    assert_eq!(format!("{}", SecurityDecision::RequireApproval), "require_approval");
+    assert_eq!(
+        format!("{}", SecurityDecision::RequireApproval),
+        "require_approval"
+    );
 }
 
 #[test]
 fn test_tool_to_operation_all_mappings() {
-    assert_eq!(tool_to_operation("write_file"), Some(OperationType::FileWrite));
-    assert_eq!(tool_to_operation("edit_file"), Some(OperationType::FileWrite));
-    assert_eq!(tool_to_operation("append_file"), Some(OperationType::FileWrite));
-    assert_eq!(tool_to_operation("delete_file"), Some(OperationType::FileDelete));
-    assert_eq!(tool_to_operation("list_directory"), Some(OperationType::DirRead));
+    assert_eq!(
+        tool_to_operation("write_file"),
+        Some(OperationType::FileWrite)
+    );
+    assert_eq!(
+        tool_to_operation("edit_file"),
+        Some(OperationType::FileWrite)
+    );
+    assert_eq!(
+        tool_to_operation("append_file"),
+        Some(OperationType::FileWrite)
+    );
+    assert_eq!(
+        tool_to_operation("delete_file"),
+        Some(OperationType::FileDelete)
+    );
+    assert_eq!(
+        tool_to_operation("list_directory"),
+        Some(OperationType::DirRead)
+    );
     assert_eq!(tool_to_operation("list_dir"), Some(OperationType::DirRead));
-    assert_eq!(tool_to_operation("create_directory"), Some(OperationType::DirCreate));
-    assert_eq!(tool_to_operation("create_dir"), Some(OperationType::DirCreate));
-    assert_eq!(tool_to_operation("delete_directory"), Some(OperationType::DirDelete));
-    assert_eq!(tool_to_operation("delete_dir"), Some(OperationType::DirDelete));
-    assert_eq!(tool_to_operation("spawn"), Some(OperationType::ProcessSpawn));
+    assert_eq!(
+        tool_to_operation("create_directory"),
+        Some(OperationType::DirCreate)
+    );
+    assert_eq!(
+        tool_to_operation("create_dir"),
+        Some(OperationType::DirCreate)
+    );
+    assert_eq!(
+        tool_to_operation("delete_directory"),
+        Some(OperationType::DirDelete)
+    );
+    assert_eq!(
+        tool_to_operation("delete_dir"),
+        Some(OperationType::DirDelete)
+    );
+    assert_eq!(
+        tool_to_operation("spawn"),
+        Some(OperationType::ProcessSpawn)
+    );
     assert_eq!(tool_to_operation("kill"), Some(OperationType::ProcessKill));
-    assert_eq!(tool_to_operation("kill_process"), Some(OperationType::ProcessKill));
-    assert_eq!(tool_to_operation("download"), Some(OperationType::NetworkDownload));
-    assert_eq!(tool_to_operation("upload"), Some(OperationType::NetworkUpload));
-    assert_eq!(tool_to_operation("http_request"), Some(OperationType::NetworkRequest));
-    assert_eq!(tool_to_operation("web_request"), Some(OperationType::NetworkRequest));
+    assert_eq!(
+        tool_to_operation("kill_process"),
+        Some(OperationType::ProcessKill)
+    );
+    assert_eq!(
+        tool_to_operation("download"),
+        Some(OperationType::NetworkDownload)
+    );
+    assert_eq!(
+        tool_to_operation("upload"),
+        Some(OperationType::NetworkUpload)
+    );
+    assert_eq!(
+        tool_to_operation("http_request"),
+        Some(OperationType::NetworkRequest)
+    );
+    assert_eq!(
+        tool_to_operation("web_request"),
+        Some(OperationType::NetworkRequest)
+    );
 }
 
 #[test]
@@ -135,7 +195,10 @@ fn test_extract_target_missing_field() {
 fn test_extract_url() {
     let args = serde_json::json!({"url": "https://example.com/api"});
     assert_eq!(extract_url("download", &args), "https://example.com/api");
-    assert_eq!(extract_url("http_request", &args), "https://example.com/api");
+    assert_eq!(
+        extract_url("http_request", &args),
+        "https://example.com/api"
+    );
     assert_eq!(extract_url("exec", &args), "");
 }
 
@@ -170,19 +233,58 @@ fn test_is_safe_command_case_insensitive() {
 fn test_get_danger_level_all_types() {
     assert_eq!(get_danger_level(OperationType::FileRead), DangerLevel::Low);
     assert_eq!(get_danger_level(OperationType::DirRead), DangerLevel::Low);
-    assert_eq!(get_danger_level(OperationType::NetworkRequest), DangerLevel::Medium);
-    assert_eq!(get_danger_level(OperationType::NetworkDownload), DangerLevel::Medium);
-    assert_eq!(get_danger_level(OperationType::HardwareI2C), DangerLevel::Medium);
-    assert_eq!(get_danger_level(OperationType::FileWrite), DangerLevel::High);
-    assert_eq!(get_danger_level(OperationType::FileDelete), DangerLevel::High);
-    assert_eq!(get_danger_level(OperationType::DirCreate), DangerLevel::High);
-    assert_eq!(get_danger_level(OperationType::DirDelete), DangerLevel::High);
-    assert_eq!(get_danger_level(OperationType::ProcessSpawn), DangerLevel::High);
-    assert_eq!(get_danger_level(OperationType::ProcessExec), DangerLevel::Critical);
-    assert_eq!(get_danger_level(OperationType::ProcessKill), DangerLevel::Critical);
-    assert_eq!(get_danger_level(OperationType::SystemShutdown), DangerLevel::Critical);
-    assert_eq!(get_danger_level(OperationType::RegistryWrite), DangerLevel::Critical);
-    assert_eq!(get_danger_level(OperationType::RegistryDelete), DangerLevel::Critical);
+    assert_eq!(
+        get_danger_level(OperationType::NetworkRequest),
+        DangerLevel::Medium
+    );
+    assert_eq!(
+        get_danger_level(OperationType::NetworkDownload),
+        DangerLevel::Medium
+    );
+    assert_eq!(
+        get_danger_level(OperationType::HardwareI2C),
+        DangerLevel::Medium
+    );
+    assert_eq!(
+        get_danger_level(OperationType::FileWrite),
+        DangerLevel::High
+    );
+    assert_eq!(
+        get_danger_level(OperationType::FileDelete),
+        DangerLevel::High
+    );
+    assert_eq!(
+        get_danger_level(OperationType::DirCreate),
+        DangerLevel::High
+    );
+    assert_eq!(
+        get_danger_level(OperationType::DirDelete),
+        DangerLevel::High
+    );
+    assert_eq!(
+        get_danger_level(OperationType::ProcessSpawn),
+        DangerLevel::High
+    );
+    assert_eq!(
+        get_danger_level(OperationType::ProcessExec),
+        DangerLevel::Critical
+    );
+    assert_eq!(
+        get_danger_level(OperationType::ProcessKill),
+        DangerLevel::Critical
+    );
+    assert_eq!(
+        get_danger_level(OperationType::SystemShutdown),
+        DangerLevel::Critical
+    );
+    assert_eq!(
+        get_danger_level(OperationType::RegistryWrite),
+        DangerLevel::Critical
+    );
+    assert_eq!(
+        get_danger_level(OperationType::RegistryDelete),
+        DangerLevel::Critical
+    );
 }
 
 // ---- Permission tests ----
@@ -216,7 +318,8 @@ fn test_permission_explicit_false() {
 #[test]
 fn test_permission_require_approval() {
     let mut perm = Permission::new();
-    perm.require_approval.insert(OperationType::ProcessExec, true);
+    perm.require_approval
+        .insert(OperationType::ProcessExec, true);
     assert!(perm.requires_approval(&OperationType::ProcessExec));
     assert!(!perm.requires_approval(&OperationType::FileRead));
 }
@@ -379,8 +482,14 @@ fn test_extract_url_all_tools() {
     let args = serde_json::json!({"url": "https://api.example.com/v1"});
     assert_eq!(extract_url("download", &args), "https://api.example.com/v1");
     assert_eq!(extract_url("upload", &args), "https://api.example.com/v1");
-    assert_eq!(extract_url("http_request", &args), "https://api.example.com/v1");
-    assert_eq!(extract_url("web_request", &args), "https://api.example.com/v1");
+    assert_eq!(
+        extract_url("http_request", &args),
+        "https://api.example.com/v1"
+    );
+    assert_eq!(
+        extract_url("web_request", &args),
+        "https://api.example.com/v1"
+    );
 }
 
 #[test]
@@ -435,9 +544,12 @@ fn test_danger_level_ord_total() {
 #[test]
 fn test_operation_type_serde_roundtrip() {
     for op in [
-        OperationType::FileRead, OperationType::FileWrite,
-        OperationType::ProcessExec, OperationType::NetworkRequest,
-        OperationType::RegistryWrite, OperationType::SystemShutdown,
+        OperationType::FileRead,
+        OperationType::FileWrite,
+        OperationType::ProcessExec,
+        OperationType::NetworkRequest,
+        OperationType::RegistryWrite,
+        OperationType::SystemShutdown,
     ] {
         let json = serde_json::to_string(&op).unwrap();
         let de: OperationType = serde_json::from_str(&json).unwrap();
@@ -449,7 +561,12 @@ fn test_operation_type_serde_roundtrip() {
 
 #[test]
 fn test_danger_level_serde_roundtrip() {
-    for dl in [DangerLevel::Low, DangerLevel::Medium, DangerLevel::High, DangerLevel::Critical] {
+    for dl in [
+        DangerLevel::Low,
+        DangerLevel::Medium,
+        DangerLevel::High,
+        DangerLevel::Critical,
+    ] {
         let json = serde_json::to_string(&dl).unwrap();
         let de: DangerLevel = serde_json::from_str(&json).unwrap();
         assert_eq!(dl, de);
@@ -460,31 +577,58 @@ fn test_danger_level_serde_roundtrip() {
 
 #[test]
 fn test_network_upload_danger_level() {
-    assert_eq!(get_danger_level(OperationType::NetworkUpload), DangerLevel::Medium);
+    assert_eq!(
+        get_danger_level(OperationType::NetworkUpload),
+        DangerLevel::Medium
+    );
 }
 
 #[test]
 fn test_hardware_operations_danger_level() {
-    assert_eq!(get_danger_level(OperationType::HardwareSPI), DangerLevel::Medium);
-    assert_eq!(get_danger_level(OperationType::HardwareGPIO), DangerLevel::Medium);
+    assert_eq!(
+        get_danger_level(OperationType::HardwareSPI),
+        DangerLevel::Medium
+    );
+    assert_eq!(
+        get_danger_level(OperationType::HardwareGPIO),
+        DangerLevel::Medium
+    );
 }
 
 #[test]
 fn test_system_operations_danger_level() {
-    assert_eq!(get_danger_level(OperationType::SystemReboot), DangerLevel::Critical);
-    assert_eq!(get_danger_level(OperationType::SystemConfig), DangerLevel::Critical);
-    assert_eq!(get_danger_level(OperationType::SystemService), DangerLevel::Critical);
-    assert_eq!(get_danger_level(OperationType::SystemInstall), DangerLevel::Critical);
+    assert_eq!(
+        get_danger_level(OperationType::SystemReboot),
+        DangerLevel::Critical
+    );
+    assert_eq!(
+        get_danger_level(OperationType::SystemConfig),
+        DangerLevel::Critical
+    );
+    assert_eq!(
+        get_danger_level(OperationType::SystemService),
+        DangerLevel::Critical
+    );
+    assert_eq!(
+        get_danger_level(OperationType::SystemInstall),
+        DangerLevel::Critical
+    );
 }
 
 #[test]
 fn test_registry_read_danger_level() {
-    assert_eq!(get_danger_level(OperationType::RegistryRead), DangerLevel::Medium);
+    assert_eq!(
+        get_danger_level(OperationType::RegistryRead),
+        DangerLevel::Medium
+    );
 }
 
 #[test]
 fn test_process_suspend_danger_level() {
-    assert_eq!(get_danger_level(OperationType::ProcessSuspend), DangerLevel::Medium);
+    assert_eq!(
+        get_danger_level(OperationType::ProcessSuspend),
+        DangerLevel::Medium
+    );
 }
 
 // ---- New tool mappings (shell, exec_async, web_fetch, etc.) ----
@@ -492,23 +636,38 @@ fn test_process_suspend_danger_level() {
 #[test]
 fn test_tool_to_operation_shell_and_async() {
     assert_eq!(tool_to_operation("shell"), Some(OperationType::ProcessExec));
-    assert_eq!(tool_to_operation("exec_async"), Some(OperationType::ProcessExec));
+    assert_eq!(
+        tool_to_operation("exec_async"),
+        Some(OperationType::ProcessExec)
+    );
 }
 
 #[test]
 fn test_tool_to_operation_web_tools() {
-    assert_eq!(tool_to_operation("web_fetch"), Some(OperationType::NetworkRequest));
-    assert_eq!(tool_to_operation("web_search"), Some(OperationType::NetworkRequest));
+    assert_eq!(
+        tool_to_operation("web_fetch"),
+        Some(OperationType::NetworkRequest)
+    );
+    assert_eq!(
+        tool_to_operation("web_search"),
+        Some(OperationType::NetworkRequest)
+    );
 }
 
 #[test]
 fn test_tool_to_operation_screen_capture() {
-    assert_eq!(tool_to_operation("screen_capture"), Some(OperationType::FileWrite));
+    assert_eq!(
+        tool_to_operation("screen_capture"),
+        Some(OperationType::FileWrite)
+    );
 }
 
 #[test]
 fn test_tool_to_operation_install_skill() {
-    assert_eq!(tool_to_operation("install_skill"), Some(OperationType::NetworkDownload));
+    assert_eq!(
+        tool_to_operation("install_skill"),
+        Some(OperationType::NetworkDownload)
+    );
 }
 
 #[test]
@@ -526,13 +685,19 @@ fn test_extract_target_exec_async() {
 #[test]
 fn test_extract_target_web_fetch() {
     let args = serde_json::json!({"url": "http://example.com/payload"});
-    assert_eq!(extract_target("web_fetch", &args), "http://example.com/payload");
+    assert_eq!(
+        extract_target("web_fetch", &args),
+        "http://example.com/payload"
+    );
 }
 
 #[test]
 fn test_extract_target_web_search() {
     let args = serde_json::json!({"url": "http://search.example.com"});
-    assert_eq!(extract_target("web_search", &args), "http://search.example.com");
+    assert_eq!(
+        extract_target("web_search", &args),
+        "http://search.example.com"
+    );
 }
 
 #[test]
@@ -547,32 +712,53 @@ fn test_extract_target_screen_capture() {
 #[test]
 fn test_extract_target_install_skill() {
     let args = serde_json::json!({"url": "https://github.com/user/skill"});
-    assert_eq!(extract_target("install_skill", &args), "https://github.com/user/skill");
+    assert_eq!(
+        extract_target("install_skill", &args),
+        "https://github.com/user/skill"
+    );
 
     let args2 = serde_json::json!({"source": "https://github.com/user/skill2"});
-    assert_eq!(extract_target("install_skill", &args2), "https://github.com/user/skill2");
+    assert_eq!(
+        extract_target("install_skill", &args2),
+        "https://github.com/user/skill2"
+    );
 }
 
 #[test]
 fn test_extract_url_web_tools() {
     let args = serde_json::json!({"url": "https://api.example.com/v1"});
-    assert_eq!(extract_url("web_fetch", &args), "https://api.example.com/v1");
-    assert_eq!(extract_url("web_search", &args), "https://api.example.com/v1");
+    assert_eq!(
+        extract_url("web_fetch", &args),
+        "https://api.example.com/v1"
+    );
+    assert_eq!(
+        extract_url("web_search", &args),
+        "https://api.example.com/v1"
+    );
 
     let args2 = serde_json::json!({"source": "https://github.com/skill"});
-    assert_eq!(extract_url("install_skill", &args2), "https://github.com/skill");
+    assert_eq!(
+        extract_url("install_skill", &args2),
+        "https://github.com/skill"
+    );
 }
 
 // ---- cluster_rpc, find_skills, cron mappings ----
 
 #[test]
 fn test_tool_to_operation_cluster_rpc() {
-    assert_eq!(tool_to_operation("cluster_rpc"), Some(OperationType::NetworkRequest));
+    assert_eq!(
+        tool_to_operation("cluster_rpc"),
+        Some(OperationType::NetworkRequest)
+    );
 }
 
 #[test]
 fn test_tool_to_operation_find_skills() {
-    assert_eq!(tool_to_operation("find_skills"), Some(OperationType::NetworkRequest));
+    assert_eq!(
+        tool_to_operation("find_skills"),
+        Some(OperationType::NetworkRequest)
+    );
 }
 
 #[test]

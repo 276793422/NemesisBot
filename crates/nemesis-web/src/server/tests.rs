@@ -187,7 +187,8 @@ async fn test_process_messages_publishes_to_bus() {
         content: "hello".to_string(),
         metadata: HashMap::new(),
         voice_playback: None,
-    }).unwrap();
+    })
+    .unwrap();
     drop(tx); // Close the sender so process_messages exits
 
     process_messages(proc_rx, bus.clone()).await;
@@ -393,14 +394,18 @@ async fn test_process_messages_preserves_metadata() {
         content: "test".to_string(),
         metadata,
         voice_playback: None,
-    }).unwrap();
+    })
+    .unwrap();
     drop(tx);
 
     process_messages(proc_rx, bus).await;
 
     let msg = tokio::time::timeout(Duration::from_millis(500), rx.recv()).await;
     let inbound = msg.unwrap().unwrap();
-    assert_eq!(inbound.metadata.get("request_type"), Some(&"history".to_string()));
+    assert_eq!(
+        inbound.metadata.get("request_type"),
+        Some(&"history".to_string())
+    );
 }
 
 #[test]
@@ -548,7 +553,9 @@ async fn test_handle_health_endpoint() {
         cluster_service: None,
         cluster_log_dir: None,
         workflow_engine: None,
-        chat_secret_store: std::sync::Arc::new(nemesis_workflow::chat_secrets::ChatSecretStore::in_memory()),
+        chat_secret_store: std::sync::Arc::new(
+            nemesis_workflow::chat_secrets::ChatSecretStore::in_memory(),
+        ),
         webhook_rate_limiter: Arc::new(crate::handlers::workflow::WebhookRateLimiter::new()),
         internal_cmd_tx: None,
         estop: None,
@@ -588,7 +595,9 @@ async fn test_handle_health_not_running() {
         cluster_service: None,
         cluster_log_dir: None,
         workflow_engine: None,
-        chat_secret_store: std::sync::Arc::new(nemesis_workflow::chat_secrets::ChatSecretStore::in_memory()),
+        chat_secret_store: std::sync::Arc::new(
+            nemesis_workflow::chat_secrets::ChatSecretStore::in_memory(),
+        ),
         webhook_rate_limiter: Arc::new(crate::handlers::workflow::WebhookRateLimiter::new()),
         internal_cmd_tx: None,
         estop: None,
@@ -607,7 +616,11 @@ async fn test_send_to_session_no_queue() {
     let session = mgr.create_session();
     let result = send_to_session(&mgr, &session.id, "assistant", "hello", None).await;
     assert!(result.is_err());
-    assert!(result.unwrap_err().contains("session not found or no send queue"));
+    assert!(
+        result
+            .unwrap_err()
+            .contains("session not found or no send queue")
+    );
 }
 
 #[tokio::test]
@@ -631,7 +644,11 @@ async fn test_send_history_to_session_invalid_json() {
     let mgr = Arc::new(SessionManager::with_default_timeout());
     let result = send_history_to_session(&mgr, "any-session", "not json").await;
     assert!(result.is_err());
-    assert!(result.unwrap_err().contains("failed to unmarshal history data"));
+    assert!(
+        result
+            .unwrap_err()
+            .contains("failed to unmarshal history data")
+    );
 }
 
 #[tokio::test]
@@ -684,7 +701,8 @@ async fn test_process_messages_multiple_messages() {
             content: format!("message {}", i),
             metadata: HashMap::new(),
             voice_playback: None,
-        }).unwrap();
+        })
+        .unwrap();
     }
     drop(tx);
 
@@ -875,7 +893,9 @@ fn test_web_server_set_model_name_multiple() {
 fn test_web_server_stop_sets_running_false() {
     let config = WebServerConfig::default();
     let server = WebServer::new(config);
-    server.running.store(true, std::sync::atomic::Ordering::SeqCst);
+    server
+        .running
+        .store(true, std::sync::atomic::Ordering::SeqCst);
     assert!(server.is_running());
     server.stop();
     assert!(!server.is_running());
@@ -923,7 +943,10 @@ async fn test_web_server_build_router_with_bus() {
 #[tokio::test]
 async fn test_build_router_with_cors_origins() {
     let config = WebServerConfig {
-        cors_origins: vec!["http://localhost:3000".to_string(), "http://localhost:4000".to_string()],
+        cors_origins: vec![
+            "http://localhost:3000".to_string(),
+            "http://localhost:4000".to_string(),
+        ],
         ..Default::default()
     };
     let server = WebServer::new(config);
@@ -1089,7 +1112,9 @@ async fn test_handle_health_with_model_state() {
         cluster_service: None,
         cluster_log_dir: None,
         workflow_engine: None,
-        chat_secret_store: std::sync::Arc::new(nemesis_workflow::chat_secrets::ChatSecretStore::in_memory()),
+        chat_secret_store: std::sync::Arc::new(
+            nemesis_workflow::chat_secrets::ChatSecretStore::in_memory(),
+        ),
         webhook_rate_limiter: Arc::new(crate::handlers::workflow::WebhookRateLimiter::new()),
         internal_cmd_tx: None,
         estop: None,
@@ -1120,7 +1145,8 @@ async fn test_process_messages_with_bus_and_metadata() {
         content: "What is the weather?".to_string(),
         metadata,
         voice_playback: None,
-    }).unwrap();
+    })
+    .unwrap();
     drop(tx);
 
     process_messages(proc_rx, bus).await;
@@ -1131,7 +1157,10 @@ async fn test_process_messages_with_bus_and_metadata() {
     assert_eq!(inbound.channel, "web");
     assert_eq!(inbound.sender_id, "web:sess-123");
     assert_eq!(inbound.content, "What is the weather?");
-    assert_eq!(inbound.metadata.get("request_type").unwrap(), "history_request");
+    assert_eq!(
+        inbound.metadata.get("request_type").unwrap(),
+        "history_request"
+    );
     assert_eq!(inbound.metadata.get("request_id").unwrap(), "req-001");
 }
 

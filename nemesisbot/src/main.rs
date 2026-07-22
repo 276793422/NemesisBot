@@ -2,21 +2,21 @@
 //!
 //! Routes all commands to their respective handler modules.
 
-mod commands;
-mod common;
-mod embedded;
 mod adapters;
 mod agent_factory;
-mod exec_worker;
 #[cfg(feature = "cluster")]
 mod cluster_agent;
 #[cfg(feature = "cluster")]
-mod cluster_service;
-#[cfg(feature = "cluster")]
 mod cluster_request_logger_observer;
+#[cfg(feature = "cluster")]
+mod cluster_service;
+mod commands;
+mod common;
+mod embedded;
+mod exec_worker;
 
-use clap::{Parser, Subcommand};
 use anyhow::Result;
+use clap::{Parser, Subcommand};
 
 // Embed all config templates at compile time (mirrors Go's //go:embed config)
 const CONFIG_DEFAULT: &str = include_str!("../config/config.default.json");
@@ -24,7 +24,8 @@ const CONFIG_MCP_DEFAULT: &str = include_str!("../config/config.mcp.default.json
 const CONFIG_CLUSTER_DEFAULT: &str = include_str!("../config/config.cluster.default.json");
 const CONFIG_SKILLS_DEFAULT: &str = include_str!("../config/config.skills.default.json");
 const CONFIG_SCANNER_DEFAULT: &str = include_str!("../config/config.scanner.default.json");
-const CONFIG_ENHANCED_MEMORY_DEFAULT: &str = include_str!("../config/config.enhanced_memory.default.json");
+const CONFIG_ENHANCED_MEMORY_DEFAULT: &str =
+    include_str!("../config/config.enhanced_memory.default.json");
 const CONFIG_CHAT_DEFAULT: &str = include_str!("../config/config.chat.default.json");
 const CONFIG_FORGE_DEFAULT: &str = include_str!("../config/config.forge.default.json");
 const CONFIG_SECURITY_WINDOWS: &str = include_str!("../config/config.security.windows.json");
@@ -41,7 +42,11 @@ const DEFAULT_IDENTITY_CLUSTER: &str = include_str!("../default/IDENTITY_Cluster
 const CLUSTER_IDENTITY_TEMPLATE: &str = include_str!("../config/IDENTITY.cluster.template.md");
 
 #[derive(Parser)]
-#[command(name = "nemesisbot", version, about = "NemesisBot - Personal AI Agent System")]
+#[command(
+    name = "nemesisbot",
+    version,
+    about = "NemesisBot - Personal AI Agent System"
+)]
 struct Cli {
     /// Use local directory for config (.nemesisbot in current dir)
     #[arg(long)]
@@ -405,10 +410,15 @@ async fn run_command(cli: Cli) -> Result<()> {
             }
 
             // Platform detection
-            let platform = if cfg!(target_os = "windows") { "Windows" }
-                else if cfg!(target_os = "macos") { "macOS" }
-                else if cfg!(target_os = "linux") { "Linux" }
-                else { "Unknown" };
+            let platform = if cfg!(target_os = "windows") {
+                "Windows"
+            } else if cfg!(target_os = "macos") {
+                "macOS"
+            } else if cfg!(target_os = "linux") {
+                "Linux"
+            } else {
+                "Unknown"
+            };
             println!("  Detected platform: {}", platform);
             println!("  Applying platform-specific security rules...");
 
@@ -425,7 +435,10 @@ async fn run_command(cli: Cli) -> Result<()> {
             // Determine whether to write main config (with overwrite confirmation)
             let mut write_main_config = true;
             if cfg_path.exists() {
-                print!("  Config already exists at {}, overwrite? (y/N): ", cfg_path.display());
+                print!(
+                    "  Config already exists at {}, overwrite? (y/N): ",
+                    cfg_path.display()
+                );
                 use std::io::{self as std_io, Write as StdWrite};
                 std_io::stdout().flush().ok();
                 let mut answer = String::new();
@@ -441,11 +454,18 @@ async fn run_command(cli: Cli) -> Result<()> {
                 match serde_json::from_str::<serde_json::Value>(CONFIG_DEFAULT) {
                     Ok(mut cfg) => {
                         // Enable LLM logging
-                        if let Some(logging) = cfg.get_mut("logging").and_then(|v| v.get_mut("llm")) {
+                        if let Some(logging) = cfg.get_mut("logging").and_then(|v| v.get_mut("llm"))
+                        {
                             if let Some(obj) = logging.as_object_mut() {
                                 obj.insert("enabled".to_string(), serde_json::Value::Bool(true));
-                                obj.insert("log_dir".to_string(), serde_json::Value::String("logs/request_logs".to_string()));
-                                obj.insert("detail_level".to_string(), serde_json::Value::String("full".to_string()));
+                                obj.insert(
+                                    "log_dir".to_string(),
+                                    serde_json::Value::String("logs/request_logs".to_string()),
+                                );
+                                obj.insert(
+                                    "detail_level".to_string(),
+                                    serde_json::Value::String("full".to_string()),
+                                );
                             }
                         }
                         println!("  LLM logging enabled");
@@ -457,17 +477,30 @@ async fn run_command(cli: Cli) -> Result<()> {
                             }
                         } else {
                             if let Some(obj) = cfg.as_object_mut() {
-                                obj.insert("security".to_string(), serde_json::json!({"enabled": true}));
+                                obj.insert(
+                                    "security".to_string(),
+                                    serde_json::json!({"enabled": true}),
+                                );
                             }
                         }
                         println!("  Security module enabled");
 
                         // Disable workspace restriction (security module enforces rules)
-                        if let Some(agents) = cfg.get_mut("agents").and_then(|v| v.get_mut("defaults")) {
+                        if let Some(agents) =
+                            cfg.get_mut("agents").and_then(|v| v.get_mut("defaults"))
+                        {
                             if let Some(obj) = agents.as_object_mut() {
-                                obj.insert("restrict_to_workspace".to_string(), serde_json::Value::Bool(false));
+                                obj.insert(
+                                    "restrict_to_workspace".to_string(),
+                                    serde_json::Value::Bool(false),
+                                );
                                 if cli.local {
-                                    obj.insert("workspace".to_string(), serde_json::Value::String(".nemesisbot/workspace".to_string()));
+                                    obj.insert(
+                                        "workspace".to_string(),
+                                        serde_json::Value::String(
+                                            ".nemesisbot/workspace".to_string(),
+                                        ),
+                                    );
                                 }
                             }
                         }
@@ -475,9 +508,18 @@ async fn run_command(cli: Cli) -> Result<()> {
                         // Set web auth token, port, websocket
                         if let Some(web) = cfg.pointer_mut("/channels/web") {
                             if let Some(obj) = web.as_object_mut() {
-                                obj.insert("auth_token".to_string(), serde_json::Value::String("276793422".to_string()));
-                                obj.insert("host".to_string(), serde_json::Value::String("127.0.0.1".to_string()));
-                                obj.insert("port".to_string(), serde_json::Value::Number(49000.into()));
+                                obj.insert(
+                                    "auth_token".to_string(),
+                                    serde_json::Value::String("276793422".to_string()),
+                                );
+                                obj.insert(
+                                    "host".to_string(),
+                                    serde_json::Value::String("127.0.0.1".to_string()),
+                                );
+                                obj.insert(
+                                    "port".to_string(),
+                                    serde_json::Value::Number(49000.into()),
+                                );
                             }
                         }
                         if let Some(ws) = cfg.pointer_mut("/channels/websocket") {
@@ -486,7 +528,10 @@ async fn run_command(cli: Cli) -> Result<()> {
                             }
                         }
 
-                        std::fs::write(&cfg_path, serde_json::to_string_pretty(&cfg).unwrap_or_default())?;
+                        std::fs::write(
+                            &cfg_path,
+                            serde_json::to_string_pretty(&cfg).unwrap_or_default(),
+                        )?;
                         println!("  Main config saved to .nemesisbot/config.json");
                     }
                     Err(_) => {
@@ -522,9 +567,15 @@ async fn run_command(cli: Cli) -> Result<()> {
             match serde_json::from_str::<serde_json::Value>(CONFIG_CLUSTER_DEFAULT) {
                 Ok(mut cluster_cfg) => {
                     if let Some(obj) = cluster_cfg.as_object_mut() {
-                        obj.insert("token".to_string(), serde_json::Value::String(uuid::Uuid::new_v4().to_string()));
+                        obj.insert(
+                            "token".to_string(),
+                            serde_json::Value::String(uuid::Uuid::new_v4().to_string()),
+                        );
                     }
-                    let _ = std::fs::write(&cluster_cfg_path, serde_json::to_string_pretty(&cluster_cfg).unwrap_or_default());
+                    let _ = std::fs::write(
+                        &cluster_cfg_path,
+                        serde_json::to_string_pretty(&cluster_cfg).unwrap_or_default(),
+                    );
                 }
                 Err(_) => {
                     let _ = std::fs::write(&cluster_cfg_path, CONFIG_CLUSTER_DEFAULT);
@@ -581,7 +632,10 @@ async fn run_command(cli: Cli) -> Result<()> {
             // Uses overwrite mode so re-onboarding restores corrupted templates.
             match embedded::extract_workspace_templates_overwrite(&workspace_dir) {
                 Ok(()) => println!("  Workspace templates extracted"),
-                Err(e) => println!("  Warning: failed to extract some workspace templates: {}", e),
+                Err(e) => println!(
+                    "  Warning: failed to extract some workspace templates: {}",
+                    e
+                ),
             }
 
             // --- Step 9: Override personality files from default/ (embedded) ---
@@ -594,7 +648,9 @@ async fn run_command(cli: Cli) -> Result<()> {
             let cluster_dir = workspace_dir.join("cluster");
             let _ = std::fs::create_dir_all(&cluster_dir);
             let _ = std::fs::write(cluster_dir.join("IDENTITY.md"), DEFAULT_IDENTITY_CLUSTER);
-            println!("  Default personality files installed (IDENTITY.md, SOUL.md, USER.md, cluster/IDENTITY.md)");
+            println!(
+                "  Default personality files installed (IDENTITY.md, SOUL.md, USER.md, cluster/IDENTITY.md)"
+            );
 
             // --- Step 10: Create additional directories ---
             let _ = std::fs::create_dir_all(workspace_dir.join("logs"));
@@ -627,23 +683,45 @@ async fn run_command(cli: Cli) -> Result<()> {
             println!("    WebSocket: ws://127.0.0.1:49001/ws");
             println!();
             println!("  Next steps:");
-            println!("    1. Add your API key: nemesisbot model add --model <vendor/model> --key <key> --default");
+            println!(
+                "    1. Add your API key: nemesisbot model add --model <vendor/model> --key <key> --default"
+            );
             println!("    2. Start gateway:     nemesisbot gateway");
             println!();
             println!("  MCP servers:");
             println!("    Add MCP servers: nemesisbot mcp add -n <name> -c <command>");
             println!("    List MCP servers: nemesisbot mcp list");
         }
-        Commands::Gateway { debug, quiet, no_console } => {
+        Commands::Gateway {
+            debug,
+            quiet,
+            no_console,
+        } => {
             // Build extra args for logger from flags
             let mut gateway_args: Vec<String> = Vec::new();
-            if debug { gateway_args.push("--debug".to_string()); }
-            if quiet { gateway_args.push("--quiet".to_string()); }
-            if no_console { gateway_args.push("--no-console".to_string()); }
+            if debug {
+                gateway_args.push("--debug".to_string());
+            }
+            if quiet {
+                gateway_args.push("--quiet".to_string());
+            }
+            if no_console {
+                gateway_args.push("--no-console".to_string());
+            }
             commands::gateway::run(cli.local, &gateway_args).await?;
         }
-        Commands::Agent { subcommand, message, session, debug, quiet, no_console } => {
-            commands::agent::run(subcommand, message, session, debug, quiet, no_console, cli.local).await?;
+        Commands::Agent {
+            subcommand,
+            message,
+            session,
+            debug,
+            quiet,
+            no_console,
+        } => {
+            commands::agent::run(
+                subcommand, message, session, debug, quiet, no_console, cli.local,
+            )
+            .await?;
         }
         Commands::Status => {
             common::ensure_default_logger();
@@ -726,7 +804,12 @@ async fn run_command(cli: Cli) -> Result<()> {
             common::ensure_default_logger();
             let home = common::resolve_home(cli.local);
             let workspace = common::workspace_path(&home);
-            commands::persona::run(action, &home.to_string_lossy(), &workspace.to_string_lossy()).await?;
+            commands::persona::run(
+                action,
+                &home.to_string_lossy(),
+                &workspace.to_string_lossy(),
+            )
+            .await?;
         }
         Commands::Shutdown => {
             common::ensure_default_logger();
@@ -781,7 +864,10 @@ fn write_fallback_config(cfg_path: &std::path::Path) -> anyhow::Result<()> {
         "forge": {"enabled": false},
         "logging": {"llm": {"enabled": true, "log_dir": "logs/request_logs", "detail_level": "full"}},
     });
-    std::fs::write(cfg_path, serde_json::to_string_pretty(&default_cfg).unwrap_or_default())?;
+    std::fs::write(
+        cfg_path,
+        serde_json::to_string_pretty(&default_cfg).unwrap_or_default(),
+    )?;
     println!("  Main config saved to {}", cfg_path.display());
     Ok(())
 }

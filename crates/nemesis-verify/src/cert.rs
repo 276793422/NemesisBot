@@ -30,7 +30,7 @@
 //! ```
 
 use crate::crypto;
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use ed25519_dalek::{SigningKey, Verifier, VerifyingKey};
 
 /// 证书。
@@ -73,7 +73,14 @@ fn rd_u32(b: &[u8], off: usize) -> u32 {
 }
 fn rd_u64(b: &[u8], off: usize) -> u64 {
     u64::from_le_bytes([
-        b[off], b[off + 1], b[off + 2], b[off + 3], b[off + 4], b[off + 5], b[off + 6], b[off + 7],
+        b[off],
+        b[off + 1],
+        b[off + 2],
+        b[off + 3],
+        b[off + 4],
+        b[off + 5],
+        b[off + 6],
+        b[off + 7],
     ])
 }
 
@@ -254,7 +261,8 @@ pub fn verify_chain(
         }
 
         // 验签
-        let issuer_vk = VerifyingKey::from_bytes(&issuer_pubkey).map_err(|_| ChainError::InvalidKey)?;
+        let issuer_vk =
+            VerifyingKey::from_bytes(&issuer_pubkey).map_err(|_| ChainError::InvalidKey)?;
         let tbs = cert.tbs();
         let sig = ed25519_dalek::Signature::from_bytes(&cert.signature);
         if issuer_vk.verify(&tbs, &sig).is_err() {
@@ -292,10 +300,24 @@ mod tests {
         // 根直接签发行方(leaf)
         let (root_sk, root_vk) = keypair(1);
         let (leaf_sk, leaf_vk) = keypair(2);
-        let leaf_cert = issue_certificate(&root_sk, &leaf_vk.to_bytes(), b"issuer-A", VALID_FROM, VALID_TO);
+        let leaf_cert = issue_certificate(
+            &root_sk,
+            &leaf_vk.to_bytes(),
+            b"issuer-A",
+            VALID_FROM,
+            VALID_TO,
+        );
         let chain = serialize_chain(&[leaf_cert]);
         // verify_chain: leaf_pubkey = leaf_vk, chain, root_pubs = [root_vk]
-        assert!(verify_chain(&leaf_vk.to_bytes(), &parse_chain(&chain).unwrap(), &[root_vk], NOW).is_ok());
+        assert!(
+            verify_chain(
+                &leaf_vk.to_bytes(),
+                &parse_chain(&chain).unwrap(),
+                &[root_vk],
+                NOW
+            )
+            .is_ok()
+        );
         // leaf_sk 能签 exe，envelope.pubkey = leaf_vk，链到 root_vk
         let _ = leaf_sk;
     }
@@ -306,11 +328,31 @@ mod tests {
         let (root_sk, root_vk) = keypair(1);
         let (inter_sk, inter_vk) = keypair(2);
         let (leaf_sk, leaf_vk) = keypair(3);
-        let inter_cert = issue_certificate(&root_sk, &inter_vk.to_bytes(), b"intermediate", VALID_FROM, VALID_TO);
-        let leaf_cert = issue_certificate(&inter_sk, &leaf_vk.to_bytes(), b"issuer-A", VALID_FROM, VALID_TO);
+        let inter_cert = issue_certificate(
+            &root_sk,
+            &inter_vk.to_bytes(),
+            b"intermediate",
+            VALID_FROM,
+            VALID_TO,
+        );
+        let leaf_cert = issue_certificate(
+            &inter_sk,
+            &leaf_vk.to_bytes(),
+            b"issuer-A",
+            VALID_FROM,
+            VALID_TO,
+        );
         // chain = [leaf_cert, inter_cert]（leaf 在前，不含 root_cert）
         let chain = serialize_chain(&[leaf_cert, inter_cert]);
-        assert!(verify_chain(&leaf_vk.to_bytes(), &parse_chain(&chain).unwrap(), &[root_vk], NOW).is_ok());
+        assert!(
+            verify_chain(
+                &leaf_vk.to_bytes(),
+                &parse_chain(&chain).unwrap(),
+                &[root_vk],
+                NOW
+            )
+            .is_ok()
+        );
         let _ = leaf_sk;
     }
 
@@ -321,9 +363,21 @@ mod tests {
         let (root_sk, root_vk) = keypair(1);
         let (inter_sk, _inter_vk) = keypair(2); // inter_sk 签 leaf；inter_vk 此处不用
         let (_, leaf_vk) = keypair(3);
-        let leaf_cert = issue_certificate(&inter_sk, &leaf_vk.to_bytes(), b"issuer-A", VALID_FROM, VALID_TO);
+        let leaf_cert = issue_certificate(
+            &inter_sk,
+            &leaf_vk.to_bytes(),
+            b"issuer-A",
+            VALID_FROM,
+            VALID_TO,
+        );
         let chain = serialize_chain(&[leaf_cert]);
-        let err = verify_chain(&leaf_vk.to_bytes(), &parse_chain(&chain).unwrap(), &[root_vk], NOW).unwrap_err();
+        let err = verify_chain(
+            &leaf_vk.to_bytes(),
+            &parse_chain(&chain).unwrap(),
+            &[root_vk],
+            NOW,
+        )
+        .unwrap_err();
         assert_eq!(err, ChainError::NoRootForIssuer);
     }
 
@@ -332,10 +386,22 @@ mod tests {
         let (root_sk, _root_vk) = keypair(1);
         let (_, other_root_vk) = keypair(9);
         let (_, leaf_vk) = keypair(2);
-        let leaf_cert = issue_certificate(&root_sk, &leaf_vk.to_bytes(), b"issuer-A", VALID_FROM, VALID_TO);
+        let leaf_cert = issue_certificate(
+            &root_sk,
+            &leaf_vk.to_bytes(),
+            b"issuer-A",
+            VALID_FROM,
+            VALID_TO,
+        );
         let chain = serialize_chain(&[leaf_cert]);
         // 用另一把 root 验 → NoRootForIssuer
-        let err = verify_chain(&leaf_vk.to_bytes(), &parse_chain(&chain).unwrap(), &[other_root_vk], NOW).unwrap_err();
+        let err = verify_chain(
+            &leaf_vk.to_bytes(),
+            &parse_chain(&chain).unwrap(),
+            &[other_root_vk],
+            NOW,
+        )
+        .unwrap_err();
         assert_eq!(err, ChainError::NoRootForIssuer);
     }
 
@@ -344,10 +410,22 @@ mod tests {
         let (root_sk, root_vk) = keypair(1);
         let (_, leaf_vk) = keypair(2);
         let (_, other_vk) = keypair(5);
-        let leaf_cert = issue_certificate(&root_sk, &leaf_vk.to_bytes(), b"issuer-A", VALID_FROM, VALID_TO);
+        let leaf_cert = issue_certificate(
+            &root_sk,
+            &leaf_vk.to_bytes(),
+            b"issuer-A",
+            VALID_FROM,
+            VALID_TO,
+        );
         let chain = serialize_chain(&[leaf_cert]);
         // envelope.pubkey = other_vk，但 leaf_cert.subject = leaf_vk → LeafMismatch
-        let err = verify_chain(&other_vk.to_bytes(), &parse_chain(&chain).unwrap(), &[root_vk], NOW).unwrap_err();
+        let err = verify_chain(
+            &other_vk.to_bytes(),
+            &parse_chain(&chain).unwrap(),
+            &[root_vk],
+            NOW,
+        )
+        .unwrap_err();
         assert_eq!(err, ChainError::LeafMismatch);
     }
 
@@ -358,7 +436,13 @@ mod tests {
         // 有效期 [100, 200]，now = 500 → Expired
         let leaf_cert = issue_certificate(&root_sk, &leaf_vk.to_bytes(), b"issuer-A", 100, 200);
         let chain = serialize_chain(&[leaf_cert]);
-        let err = verify_chain(&leaf_vk.to_bytes(), &parse_chain(&chain).unwrap(), &[root_vk], 500).unwrap_err();
+        let err = verify_chain(
+            &leaf_vk.to_bytes(),
+            &parse_chain(&chain).unwrap(),
+            &[root_vk],
+            500,
+        )
+        .unwrap_err();
         assert_eq!(err, ChainError::Expired);
     }
 }

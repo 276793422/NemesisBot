@@ -142,7 +142,13 @@ fn add_and_remove_origin() {
 
     // Duplicate add is a no-op.
     mgr.add_origin("https://foo.com").unwrap();
-    assert_eq!(mgr.list_origins().iter().filter(|o| **o == "https://foo.com").count(), 1);
+    assert_eq!(
+        mgr.list_origins()
+            .iter()
+            .filter(|o| **o == "https://foo.com")
+            .count(),
+        1
+    );
 
     mgr.remove_origin("https://foo.com").unwrap();
     assert!(!mgr.list_origins().contains(&"https://foo.com".to_string()));
@@ -314,7 +320,11 @@ fn test_add_origin_creates_file() {
     mgr.add_origin("https://new.com").unwrap();
     assert!(path.exists());
     let loaded = CORSManager::new(&path).unwrap();
-    assert!(loaded.list_origins().contains(&"https://new.com".to_string()));
+    assert!(
+        loaded
+            .list_origins()
+            .contains(&"https://new.com".to_string())
+    );
 }
 
 #[test]

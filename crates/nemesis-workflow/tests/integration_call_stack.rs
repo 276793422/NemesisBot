@@ -17,7 +17,7 @@ use nemesis_providers::router::LLMProvider;
 use nemesis_providers::types::{ChatOptions, LLMResponse, Message, ToolDefinition};
 use nemesis_workflow::engine::WorkflowEngine;
 use nemesis_workflow::types::{
-    Edge, ExecutionState, NodeDef, TriggerSource, Workflow, MAX_RECURSION_DEPTH,
+    Edge, ExecutionState, MAX_RECURSION_DEPTH, NodeDef, TriggerSource, Workflow,
 };
 
 struct StubProvider;
@@ -65,13 +65,11 @@ fn wf(name: &str, nodes: Vec<NodeDef>) -> Workflow {
     let edges: Vec<Edge> = nodes
         .iter()
         .flat_map(|n| {
-            n.depends_on
-                .iter()
-                .map(move |dep| Edge {
-                    from_node: dep.clone(),
-                    to_node: n.id.clone(),
-                    condition: None,
-                })
+            n.depends_on.iter().map(move |dep| Edge {
+                from_node: dep.clone(),
+                to_node: n.id.clone(),
+                condition: None,
+            })
         })
         .collect();
     Workflow {
@@ -96,10 +94,7 @@ fn build_engine() -> Arc<WorkflowEngine> {
 async fn stack_is_empty_after_run_completes() {
     let engine = build_engine();
     engine
-        .register_workflow(wf(
-            "single",
-            vec![node("n1", "delay", &[])],
-        ))
+        .register_workflow(wf("single", vec![node("n1", "delay", &[])]))
         .unwrap();
     let exec = engine
         .run("single", HashMap::new(), Some(TriggerSource::Cli))
@@ -135,20 +130,10 @@ async fn nested_sub_workflow_runs_push_and_pop_frames() {
     // Two-level chain: outer → inner via sub_workflow node.
     let engine = build_engine();
     engine
-        .register_workflow(wf(
-            "inner",
-            vec![node("inner_n", "delay", &[])],
-        ))
+        .register_workflow(wf("inner", vec![node("inner_n", "delay", &[])]))
         .unwrap();
     engine
-        .register_workflow(wf(
-            "outer",
-            vec![node(
-                "call_inner",
-                "sub_workflow",
-                &[],
-            )],
-        ))
+        .register_workflow(wf("outer", vec![node("call_inner", "sub_workflow", &[])]))
         .unwrap();
     // Mark the sub_workflow config on the outer node.
     {
@@ -183,10 +168,7 @@ async fn agent_tool_trigger_records_depth_in_call_stack_frame() {
     // above MAX is rejected by the engine itself (defense-in-depth).
     let engine = build_engine();
     engine
-        .register_workflow(wf(
-            "wf",
-            vec![node("n", "delay", &[])],
-        ))
+        .register_workflow(wf("wf", vec![node("n", "delay", &[])]))
         .unwrap();
 
     // At-max depth should be accepted.

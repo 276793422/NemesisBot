@@ -146,8 +146,7 @@ impl WorkspaceStateManager {
             .map_err(|e| format!("create temp file {:?}: {}", temp_file, e))?;
         f.write_all(data.as_bytes())
             .map_err(|e| format!("write temp file: {}", e))?;
-        f.sync_all()
-            .map_err(|e| format!("sync temp file: {}", e))?;
+        f.sync_all().map_err(|e| format!("sync temp file: {}", e))?;
         drop(f);
 
         // Atomic rename from temp to target

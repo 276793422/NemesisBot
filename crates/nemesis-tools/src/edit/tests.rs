@@ -24,7 +24,11 @@ async fn test_edit_file_success() {
             "new_text": "rust"
         }))
         .await;
-    assert!(!result.is_error, "Expected success, got: {}", result.for_llm);
+    assert!(
+        !result.is_error,
+        "Expected success, got: {}",
+        result.for_llm
+    );
 
     let content = tokio::fs::read_to_string(&file_path).await.unwrap();
     assert_eq!(content, "hello rust");
@@ -193,7 +197,9 @@ async fn test_edit_file_exact_replacement() {
     let ws = dir.path().to_string_lossy().to_string();
     let tool = EditFileTool::new(&ws, false);
     let file_path = dir.path().join("exact.txt");
-    tokio::fs::write(&file_path, "line1\nline2\nline3").await.unwrap();
+    tokio::fs::write(&file_path, "line1\nline2\nline3")
+        .await
+        .unwrap();
 
     let result = tool
         .execute(&serde_json::json!({
@@ -202,7 +208,11 @@ async fn test_edit_file_exact_replacement() {
             "new_text": "replaced"
         }))
         .await;
-    assert!(!result.is_error, "Expected success, got: {}", result.for_llm);
+    assert!(
+        !result.is_error,
+        "Expected success, got: {}",
+        result.for_llm
+    );
 
     let content = tokio::fs::read_to_string(&file_path).await.unwrap();
     assert_eq!(content, "line1\nreplaced\nline3");
@@ -214,7 +224,9 @@ async fn test_edit_file_multiline_replacement() {
     let ws = dir.path().to_string_lossy().to_string();
     let tool = EditFileTool::new(&ws, false);
     let file_path = dir.path().join("multi.txt");
-    tokio::fs::write(&file_path, "start\nmiddle\nend").await.unwrap();
+    tokio::fs::write(&file_path, "start\nmiddle\nend")
+        .await
+        .unwrap();
 
     let result = tool
         .execute(&serde_json::json!({
@@ -257,9 +269,7 @@ async fn test_append_file_missing_path() {
     let ws = dir.path().to_string_lossy().to_string();
     let tool = AppendFileTool::new(&ws, false);
 
-    let result = tool
-        .execute(&serde_json::json!({"content": "test"}))
-        .await;
+    let result = tool.execute(&serde_json::json!({"content": "test"})).await;
     assert!(result.is_error);
     assert!(result.for_llm.contains("path is required"));
 }
@@ -270,9 +280,7 @@ async fn test_append_file_missing_content() {
     let ws = dir.path().to_string_lossy().to_string();
     let tool = AppendFileTool::new(&ws, false);
 
-    let result = tool
-        .execute(&serde_json::json!({"path": "test.txt"}))
-        .await;
+    let result = tool.execute(&serde_json::json!({"path": "test.txt"})).await;
     assert!(result.is_error);
     assert!(result.for_llm.contains("content is required"));
 }
@@ -290,7 +298,11 @@ async fn test_append_file_creates_subdirs() {
             "content": "deep content"
         }))
         .await;
-    assert!(!result.is_error, "Expected success, got: {}", result.for_llm);
+    assert!(
+        !result.is_error,
+        "Expected success, got: {}",
+        result.for_llm
+    );
     assert!(nested_path.exists());
 
     let content = tokio::fs::read_to_string(&nested_path).await.unwrap();
@@ -422,7 +434,9 @@ async fn test_edit_file_replace_with_empty() {
     let ws = dir.path().to_string_lossy().to_string();
     let tool = EditFileTool::new(&ws, false);
     let file_path = dir.path().join("del.txt");
-    tokio::fs::write(&file_path, "remove this text").await.unwrap();
+    tokio::fs::write(&file_path, "remove this text")
+        .await
+        .unwrap();
 
     let result = tool
         .execute(&serde_json::json!({
@@ -431,7 +445,11 @@ async fn test_edit_file_replace_with_empty() {
             "new_text": ""
         }))
         .await;
-    assert!(!result.is_error, "Expected success, got: {}", result.for_llm);
+    assert!(
+        !result.is_error,
+        "Expected success, got: {}",
+        result.for_llm
+    );
 
     let content = tokio::fs::read_to_string(&file_path).await.unwrap();
     assert_eq!(content, "remove");
@@ -520,7 +538,9 @@ async fn test_edit_file_replace_entire_content() {
     let ws = dir.path().to_string_lossy().to_string();
     let tool = EditFileTool::new(&ws, false);
     let file_path = dir.path().join("full.txt");
-    tokio::fs::write(&file_path, "entire content").await.unwrap();
+    tokio::fs::write(&file_path, "entire content")
+        .await
+        .unwrap();
 
     let result = tool
         .execute(&serde_json::json!({

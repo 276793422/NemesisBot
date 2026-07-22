@@ -195,11 +195,7 @@ impl DingTalkChannel {
     }
 
     /// Sends a markdown reply via session webhook.
-    pub async fn send_direct_reply(
-        &self,
-        session_webhook: &str,
-        content: &str,
-    ) -> Result<()> {
+    pub async fn send_direct_reply(&self, session_webhook: &str, content: &str) -> Result<()> {
         let reply = MarkdownReplyRequest {
             msgtype: "markdown".to_string(),
             markdown: MarkdownContent {
@@ -227,11 +223,7 @@ impl DingTalkChannel {
     }
 
     /// Sends a text reply via session webhook.
-    pub async fn send_text_reply(
-        &self,
-        session_webhook: &str,
-        content: &str,
-    ) -> Result<()> {
+    pub async fn send_text_reply(&self, session_webhook: &str, content: &str) -> Result<()> {
         let reply = TextReplyRequest {
             msgtype: "text".to_string(),
             text: TextContent {
@@ -321,11 +313,7 @@ impl DingTalkChannel {
             return;
         }
 
-        let conversation_id = msg
-            .conversation_id
-            .as_deref()
-            .unwrap_or("")
-            .to_string();
+        let conversation_id = msg.conversation_id.as_deref().unwrap_or("").to_string();
 
         let chat_id = if conversation_id.is_empty() {
             sender_id.clone()
@@ -340,10 +328,7 @@ impl DingTalkChannel {
             }
         }
 
-        let is_group = msg
-            .conversation_type
-            .as_deref()
-            .map_or(false, |t| t == "2");
+        let is_group = msg.conversation_type.as_deref().map_or(false, |t| t == "2");
 
         let mut metadata = std::collections::HashMap::new();
         if let Some(ref nick) = msg.sender_nick {
@@ -540,7 +525,10 @@ impl DingTalkChannel {
                                         }
                                     }
                                 } else {
-                                    debug!("[DingTalkChannel] stream connection response: {:?}", body);
+                                    debug!(
+                                        "[DingTalkChannel] stream connection response: {:?}",
+                                        body
+                                    );
                                     backoff = INITIAL_BACKOFF;
                                 }
                             }
@@ -629,10 +617,7 @@ impl Channel for DingTalkChannel {
             .get(&msg.chat_id)
             .map(|w| w.value().clone())
             .ok_or_else(|| {
-                NemesisError::Channel(format!(
-                    "no session_webhook found for chat {}",
-                    msg.chat_id
-                ))
+                NemesisError::Channel(format!("no session_webhook found for chat {}", msg.chat_id))
             })?;
 
         debug!(chat_id = %msg.chat_id, "[DingTalkChannel] sending message");

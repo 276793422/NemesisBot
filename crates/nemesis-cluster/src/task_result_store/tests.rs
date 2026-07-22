@@ -143,11 +143,7 @@ fn test_load_from_disk_respects_max_size() {
     {
         let store = TaskResultStore::with_disk_persistence(100, tmp.path());
         for i in 0..5 {
-            store.store_success(
-                &format!("task-max-{i}"),
-                "action",
-                serde_json::json!(i),
-            );
+            store.store_success(&format!("task-max-{i}"), "action", serde_json::json!(i));
         }
     }
 
@@ -330,10 +326,7 @@ async fn test_async_store_and_get() {
 
     let r2 = store.get_async("async-2").unwrap();
     assert!(!r2.success);
-    assert_eq!(
-        r2.result.get("error").unwrap().as_str().unwrap(),
-        "boom"
-    );
+    assert_eq!(r2.result.get("error").unwrap().as_str().unwrap(), "boom");
 }
 
 #[tokio::test]
@@ -363,9 +356,7 @@ async fn test_async_load_from_disk() {
         store
             .store_success_async("async-load-1", "a", serde_json::json!(1))
             .await;
-        store
-            .store_failure_async("async-load-2", "b", "err")
-            .await;
+        store.store_failure_async("async-load-2", "b", "err").await;
     }
 
     // Load with another
@@ -611,7 +602,11 @@ fn test_task_result_store_new() {
 #[test]
 fn test_task_result_store_store_and_get() {
     let store = TaskResultStore::new(10);
-    store.store_success("task-1", "peer_chat", serde_json::json!({"response": "hello"}));
+    store.store_success(
+        "task-1",
+        "peer_chat",
+        serde_json::json!({"response": "hello"}),
+    );
 
     let result = store.get("task-1").unwrap();
     assert_eq!(result.task_id, "task-1");
@@ -931,16 +926,19 @@ fn test_go_task_result_index_default() {
 #[test]
 fn test_go_task_result_index_serialization() {
     let mut index = GoTaskResultIndex::default();
-    index.tasks.insert("t1".into(), GoTaskResultEntry {
-        task_id: "t1".into(),
-        status: "running".into(),
-        result_status: None,
-        response: None,
-        error: None,
-        source_node: "n1".into(),
-        created_at: "2026-01-01".into(),
-        updated_at: "2026-01-01".into(),
-    });
+    index.tasks.insert(
+        "t1".into(),
+        GoTaskResultEntry {
+            task_id: "t1".into(),
+            status: "running".into(),
+            result_status: None,
+            response: None,
+            error: None,
+            source_node: "n1".into(),
+            created_at: "2026-01-01".into(),
+            updated_at: "2026-01-01".into(),
+        },
+    );
     let json = serde_json::to_string(&index).unwrap();
     let parsed: GoTaskResultIndex = serde_json::from_str(&json).unwrap();
     assert_eq!(parsed.tasks.len(), 1);
@@ -953,7 +951,9 @@ async fn test_async_store_success_and_get() {
     let dir = tempfile::tempdir().unwrap();
     let store = AsyncTaskResultStore::with_disk_persistence(10, dir.path());
 
-    store.store_success_async("async-1", "action", serde_json::json!({"ok": true})).await;
+    store
+        .store_success_async("async-1", "action", serde_json::json!({"ok": true}))
+        .await;
     let result = store.get_async("async-1").unwrap();
     assert!(result.success);
     assert_eq!(result.result["ok"], true);
@@ -964,7 +964,9 @@ async fn test_async_store_failure_and_get() {
     let dir = tempfile::tempdir().unwrap();
     let store = AsyncTaskResultStore::with_disk_persistence(10, dir.path());
 
-    store.store_failure_async("async-fail", "action", "error msg").await;
+    store
+        .store_failure_async("async-fail", "action", "error msg")
+        .await;
     let result = store.get_async("async-fail").unwrap();
     assert!(!result.success);
 }
@@ -974,7 +976,9 @@ async fn test_async_store_cleanup_delivered() {
     let dir = tempfile::tempdir().unwrap();
     let store = AsyncTaskResultStore::with_disk_persistence(10, dir.path());
 
-    store.store_success_async("async-del", "action", serde_json::json!({})).await;
+    store
+        .store_success_async("async-del", "action", serde_json::json!({}))
+        .await;
     let existed = store.cleanup_delivered_async("async-del").await;
     assert!(existed);
     assert!(store.get_async("async-del").is_none());
@@ -985,7 +989,9 @@ async fn test_async_store_load_from_disk() {
     let dir = tempfile::tempdir().unwrap();
     let store = AsyncTaskResultStore::with_disk_persistence(10, dir.path());
 
-    store.store_success_async("async-load", "action", serde_json::json!({})).await;
+    store
+        .store_success_async("async-load", "action", serde_json::json!({}))
+        .await;
     // Give disk write time to complete
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 

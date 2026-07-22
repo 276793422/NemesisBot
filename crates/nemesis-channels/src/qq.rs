@@ -131,10 +131,7 @@ pub struct QQChannel {
 
 impl QQChannel {
     /// Creates a new `QQChannel`.
-    pub fn new(
-        config: QQConfig,
-        bus_sender: broadcast::Sender<InboundMessage>,
-    ) -> Result<Self> {
+    pub fn new(config: QQConfig, bus_sender: broadcast::Sender<InboundMessage>) -> Result<Self> {
         if config.app_id.is_empty() || config.app_secret.is_empty() {
             return Err(NemesisError::Channel(
                 "QQ app_id and app_secret are required".to_string(),
@@ -212,10 +209,7 @@ impl QQChannel {
             msg_id: None,
         };
 
-        let url = format!(
-            "{}/v2/users/{}/messages",
-            self.config.api_base, openid
-        );
+        let url = format!("{}/v2/users/{}/messages", self.config.api_base, openid);
 
         let resp = self
             .http
@@ -228,9 +222,7 @@ impl QQChannel {
 
         if !resp.status().is_success() {
             let body = resp.text().await.unwrap_or_default();
-            return Err(NemesisError::Channel(format!(
-                "QQ C2C send error: {body}"
-            )));
+            return Err(NemesisError::Channel(format!("QQ C2C send error: {body}")));
         }
 
         Ok(())

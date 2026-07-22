@@ -37,8 +37,10 @@ fn test_validate_api_key_with_auth() {
 
 #[test]
 fn test_extract_routing() {
-    let (channel, chat_id) =
-        WebhookInboundChannel::extract_routing("/webhook/incoming/telegram/123", "/webhook/incoming");
+    let (channel, chat_id) = WebhookInboundChannel::extract_routing(
+        "/webhook/incoming/telegram/123",
+        "/webhook/incoming",
+    );
     assert_eq!(channel, Some("telegram"));
     assert_eq!(chat_id, Some("123"));
 }
@@ -208,30 +210,24 @@ fn test_extract_routing_with_trailing_slash() {
 
 #[test]
 fn test_extract_routing_channel_only() {
-    let (ch, chat) = WebhookInboundChannel::extract_routing(
-        "/webhook/incoming/telegram",
-        "/webhook/incoming",
-    );
+    let (ch, chat) =
+        WebhookInboundChannel::extract_routing("/webhook/incoming/telegram", "/webhook/incoming");
     assert_eq!(ch, Some("telegram"));
     assert_eq!(chat, None);
 }
 
 #[test]
 fn test_extract_routing_wrong_base() {
-    let (ch, chat) = WebhookInboundChannel::extract_routing(
-        "/other/path/telegram/123",
-        "/webhook/incoming",
-    );
+    let (ch, chat) =
+        WebhookInboundChannel::extract_routing("/other/path/telegram/123", "/webhook/incoming");
     assert_eq!(ch, None);
     assert_eq!(chat, None);
 }
 
 #[test]
 fn test_extract_routing_empty_path() {
-    let (ch, chat) = WebhookInboundChannel::extract_routing(
-        "/webhook/incoming",
-        "/webhook/incoming",
-    );
+    let (ch, chat) =
+        WebhookInboundChannel::extract_routing("/webhook/incoming", "/webhook/incoming");
     assert_eq!(ch, None);
     assert_eq!(chat, None);
 }
@@ -248,10 +244,8 @@ fn test_extract_routing_with_base_trailing_slash() {
 
 #[test]
 fn test_extract_routing_nested_path() {
-    let (ch, chat) = WebhookInboundChannel::extract_routing(
-        "/webhook/incoming/a/b",
-        "/webhook/incoming",
-    );
+    let (ch, chat) =
+        WebhookInboundChannel::extract_routing("/webhook/incoming/a/b", "/webhook/incoming");
     assert_eq!(ch, Some("a"));
     assert_eq!(chat, Some("b"));
 }

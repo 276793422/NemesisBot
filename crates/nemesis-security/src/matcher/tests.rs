@@ -78,7 +78,10 @@ fn test_match_domain_exact() {
 #[test]
 fn test_match_domain_wildcard() {
     assert!(match_domain_pattern("*.github.com", "api.github.com"));
-    assert!(!match_domain_pattern("*.github.com", "raw.githubusercontent.com"));
+    assert!(!match_domain_pattern(
+        "*.github.com",
+        "raw.githubusercontent.com"
+    ));
     assert!(!match_domain_pattern("*.github.com", "github.com"));
 }
 
@@ -140,13 +143,7 @@ fn test_match_pattern_throughput() {
 
 #[test]
 fn test_match_command_pattern_throughput() {
-    let patterns = [
-        "git *",
-        "rm -rf *",
-        "*sudo*",
-        "cat *.txt",
-        "ls",
-    ];
+    let patterns = ["git *", "rm -rf *", "*sudo*", "cat *.txt", "ls"];
     let commands = [
         "git status",
         "rm -rf /tmp/test",

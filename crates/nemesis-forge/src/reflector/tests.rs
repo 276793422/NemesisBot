@@ -75,11 +75,22 @@ fn test_generate_reflection_with_low_success_tool() {
 
     assert!(!reflection.insights.is_empty());
     // Check patterns embedded in statistics JSON
-    let patterns = reflection.statistics.get("patterns")
+    let patterns = reflection
+        .statistics
+        .get("patterns")
         .and_then(|v| v.as_array())
         .unwrap();
-    assert!(patterns.iter().any(|p| p.as_str().unwrap().contains("flaky_tool")));
-    assert!(reflection.recommendations.iter().any(|r| r.contains("flaky_tool")));
+    assert!(
+        patterns
+            .iter()
+            .any(|p| p.as_str().unwrap().contains("flaky_tool"))
+    );
+    assert!(
+        reflection
+            .recommendations
+            .iter()
+            .any(|r| r.contains("flaky_tool"))
+    );
 }
 
 #[test]
@@ -138,8 +149,14 @@ fn test_analyze_traces_with_learning_cycle() {
     };
 
     let trace_stats = reflector.analyze_traces(&experiences, Some(&cycle));
-    assert_eq!(trace_stats.signal_summary.get("learning_patterns_found"), Some(&3));
-    assert_eq!(trace_stats.signal_summary.get("learning_actions_taken"), Some(&1));
+    assert_eq!(
+        trace_stats.signal_summary.get("learning_patterns_found"),
+        Some(&3)
+    );
+    assert_eq!(
+        trace_stats.signal_summary.get("learning_actions_taken"),
+        Some(&1)
+    );
 }
 
 #[test]
@@ -168,14 +185,34 @@ fn test_reflect_empty() {
 #[test]
 fn test_generate_suggestion() {
     let reflector = Reflector::new();
-    assert!(reflector.generate_suggestion(10, 0.95).contains("High frequency"));
-    assert!(reflector.generate_suggestion(3, 0.8).contains("Stable pattern"));
-    assert!(reflector.generate_suggestion(5, 0.5).contains("failure modes"));
+    assert!(
+        reflector
+            .generate_suggestion(10, 0.95)
+            .contains("High frequency")
+    );
+    assert!(
+        reflector
+            .generate_suggestion(3, 0.8)
+            .contains("Stable pattern")
+    );
+    assert!(
+        reflector
+            .generate_suggestion(5, 0.5)
+            .contains("failure modes")
+    );
     // count < 5, success_rate >= 0.9 but count check comes first and fails
     // So it falls through to success_rate >= 0.7 => "Stable pattern"
-    assert!(reflector.generate_suggestion(2, 0.85).contains("Stable pattern"));
+    assert!(
+        reflector
+            .generate_suggestion(2, 0.85)
+            .contains("Stable pattern")
+    );
     // count < 5, success_rate < 0.7 => "Review failure modes"
-    assert!(reflector.generate_suggestion(2, 0.5).contains("failure modes"));
+    assert!(
+        reflector
+            .generate_suggestion(2, 0.5)
+            .contains("failure modes")
+    );
 }
 
 // ----- Disk operation tests -----
@@ -210,7 +247,12 @@ fn test_write_report() {
 
     let path = reflector.write_report(&report).unwrap();
     assert!(path.exists());
-    assert!(path.file_name().unwrap().to_string_lossy().starts_with("reflection_2026-05-01"));
+    assert!(
+        path.file_name()
+            .unwrap()
+            .to_string_lossy()
+            .starts_with("reflection_2026-05-01")
+    );
 
     // Verify content
     let content = std::fs::read_to_string(&path).unwrap();
@@ -247,8 +289,7 @@ fn test_cleanup_reports() {
     std::fs::write(&old_path, "old report").unwrap();
 
     // Set modification time to 31 days ago
-    let old_time = std::time::SystemTime::now()
-        - std::time::Duration::from_secs(31 * 24 * 3600);
+    let old_time = std::time::SystemTime::now() - std::time::Duration::from_secs(31 * 24 * 3600);
     let ft = filetime::FileTime::from_system_time(old_time);
     filetime::set_file_mtime(&old_path, ft).unwrap();
 
@@ -438,7 +479,12 @@ fn test_statistical_analysis_low_success_detection() {
     let mut experiences = Vec::new();
     // 3 failures, 1 success = 25% success rate for flaky_tool
     for i in 0..3 {
-        experiences.push(make_collected("flaky_tool", &format!("f-{}", i), false, 100));
+        experiences.push(make_collected(
+            "flaky_tool",
+            &format!("f-{}", i),
+            false,
+            100,
+        ));
     }
     experiences.push(make_collected("flaky_tool", "s-1", true, 100));
     let stats = reflector.statistical_analysis(&experiences);
@@ -468,9 +514,7 @@ fn test_statistical_analysis_top_patterns_sorted_by_count() {
 #[test]
 fn test_reflect_with_learning_cycle() {
     let reflector = Reflector::with_cluster();
-    let experiences = vec![
-        make_collected("tool_a", "input1", true, 100),
-    ];
+    let experiences = vec![make_collected("tool_a", "input1", true, 100)];
     let cycle = nemesis_types::forge::LearningCycle {
         id: "lc-test".into(),
         started_at: chrono::Local::now().to_rfc3339(),
@@ -500,9 +544,7 @@ fn test_reflect_with_trace_stats() {
 #[test]
 fn test_reflect_report_structure() {
     let reflector = Reflector::new();
-    let experiences = vec![
-        make_collected("tool", "input", true, 100),
-    ];
+    let experiences = vec![make_collected("tool", "input", true, 100)];
     let report = reflector.reflect(&experiences, None, "today", "all");
     assert!(!report.date.is_empty());
     assert_eq!(report.period, "today");
@@ -535,12 +577,13 @@ fn test_analyze_traces_multiple_sessions() {
             session_key: format!("session-{}", i),
         });
     }
-    let ces: Vec<CollectedExperience> = experiences.into_iter().map(|e| {
-        CollectedExperience {
+    let ces: Vec<CollectedExperience> = experiences
+        .into_iter()
+        .map(|e| CollectedExperience {
             dedup_hash: Collector::dedup_hash(&e.tool_name, &serde_json::json!({})),
             experience: e,
-        }
-    }).collect();
+        })
+        .collect();
     let trace_stats = reflector.analyze_traces(&ces, None);
     assert_eq!(trace_stats.total_traces, 3);
 }
@@ -549,7 +592,11 @@ fn test_analyze_traces_multiple_sessions() {
 fn test_generate_suggestion_boundary_values() {
     let reflector = Reflector::new();
     // count=5, rate=0.9 -> High frequency
-    assert!(reflector.generate_suggestion(5, 0.9).contains("High frequency"));
+    assert!(
+        reflector
+            .generate_suggestion(5, 0.9)
+            .contains("High frequency")
+    );
     // count=4, rate=0.9 -> Stable (count < 5)
     assert!(reflector.generate_suggestion(4, 0.9).contains("Stable"));
     // count=10, rate=0.7 -> Stable
@@ -656,9 +703,7 @@ fn test_merge_remote_reflections_empty() {
 #[test]
 fn test_merge_remote_reflections_local_only() {
     let reflector = Reflector::new();
-    let experiences = vec![
-        make_collected("local_tool", "input", true, 100),
-    ];
+    let experiences = vec![make_collected("local_tool", "input", true, 100)];
     let result = reflector.merge_remote_reflections(&[], &experiences);
     assert!(!result.local_patterns.is_empty());
     assert!(result.remote_patterns.is_empty());
@@ -674,8 +719,14 @@ fn test_merge_remote_reflections_from_file() {
     let reflector = Reflector::new();
     let result = reflector.merge_remote_reflections(&[report_path], &[]);
     assert!(!result.remote_patterns.is_empty());
-    assert!(result.unique_remote_tools.contains(&"read_file".to_string())
-        || result.unique_remote_tools.contains(&"write_file".to_string()));
+    assert!(
+        result
+            .unique_remote_tools
+            .contains(&"read_file".to_string())
+            || result
+                .unique_remote_tools
+                .contains(&"write_file".to_string())
+    );
 }
 
 #[test]
@@ -712,9 +763,7 @@ fn test_trace_stats_default() {
 #[test]
 fn test_filter_by_focus_nonexistent_tool() {
     let reflector = Reflector::new();
-    let experiences = vec![
-        make_collected("tool_a", "input", true, 100),
-    ];
+    let experiences = vec![make_collected("tool_a", "input", true, 100)];
     let filtered = reflector.filter_by_focus(&experiences, "nonexistent");
     assert!(filtered.is_empty());
 }
@@ -738,8 +787,16 @@ fn test_get_latest_report_from_dir() {
     let dir = tempfile::tempdir().unwrap();
     let ref_dir = dir.path().join("reflections");
     std::fs::create_dir_all(&ref_dir).unwrap();
-    std::fs::write(ref_dir.join("reflection_2026-05-01_120000.md"), "# Report 1").unwrap();
-    std::fs::write(ref_dir.join("reflection_2026-05-02_120000.md"), "# Report 2").unwrap();
+    std::fs::write(
+        ref_dir.join("reflection_2026-05-01_120000.md"),
+        "# Report 1",
+    )
+    .unwrap();
+    std::fs::write(
+        ref_dir.join("reflection_2026-05-02_120000.md"),
+        "# Report 2",
+    )
+    .unwrap();
     let reflector = Reflector::with_reflections_dir(ref_dir);
     let latest = reflector.get_latest_report();
     assert!(latest.is_some());
@@ -750,7 +807,11 @@ fn test_get_latest_report_content_from_dir() {
     let dir = tempfile::tempdir().unwrap();
     let ref_dir = dir.path().join("reflections");
     std::fs::create_dir_all(&ref_dir).unwrap();
-    std::fs::write(ref_dir.join("reflection_2026-05-01_120000.md"), "# Report content here").unwrap();
+    std::fs::write(
+        ref_dir.join("reflection_2026-05-01_120000.md"),
+        "# Report content here",
+    )
+    .unwrap();
     let reflector = Reflector::with_reflections_dir(ref_dir);
     let content = reflector.get_latest_report_content();
     assert!(content.is_ok());
@@ -817,9 +878,7 @@ fn test_filter_by_focus_all() {
 #[test]
 fn test_filter_by_focus_empty() {
     let reflector = Reflector::new();
-    let experiences = vec![
-        make_collected("tool_a", "a", true, 100),
-    ];
+    let experiences = vec![make_collected("tool_a", "a", true, 100)];
     let filtered = reflector.filter_by_focus(&experiences, "");
     assert_eq!(filtered.len(), 1);
 }
@@ -900,7 +959,10 @@ fn test_generate_reflection_below_80_percent() {
         experiences.push(make_collected("tool", &format!("s-{}", i), true, 100));
     }
     let reflection = reflector.generate_reflection(&experiences);
-    let recs = reflection.recommendations.iter().any(|r| r.contains("80%") || r.contains("below"));
+    let recs = reflection
+        .recommendations
+        .iter()
+        .any(|r| r.contains("80%") || r.contains("below"));
     assert!(recs);
 }
 
@@ -921,12 +983,13 @@ fn test_analyze_traces_with_tool_chains() {
             session_key: "same-session".into(),
         });
     }
-    let ces: Vec<CollectedExperience> = experiences.into_iter().map(|e| {
-        CollectedExperience {
+    let ces: Vec<CollectedExperience> = experiences
+        .into_iter()
+        .map(|e| CollectedExperience {
             dedup_hash: Collector::dedup_hash(&e.tool_name, &serde_json::json!({})),
             experience: e,
-        }
-    }).collect();
+        })
+        .collect();
     let trace_stats = reflector.analyze_traces(&ces, None);
     assert_eq!(trace_stats.total_traces, 1); // all same session
 }
@@ -956,12 +1019,13 @@ fn test_analyze_traces_with_retry_patterns() {
         timestamp: "2026-04-29T00:00:00Z".into(),
         session_key: "session-1".into(),
     });
-    let ces: Vec<CollectedExperience> = experiences.into_iter().map(|e| {
-        CollectedExperience {
+    let ces: Vec<CollectedExperience> = experiences
+        .into_iter()
+        .map(|e| CollectedExperience {
             dedup_hash: Collector::dedup_hash(&e.tool_name, &serde_json::json!({})),
             experience: e,
-        }
-    }).collect();
+        })
+        .collect();
     let trace_stats = reflector.analyze_traces(&ces, None);
     assert_eq!(trace_stats.retry_patterns.len(), 1);
     assert_eq!(trace_stats.retry_patterns[0].tool_name, "retry_tool");
@@ -1065,8 +1129,10 @@ fn test_merge_remote_reflections_with_report_file() {
     let experiences = vec![make_collected("read_file", "x", true, 100)];
     let merged = reflector.merge_remote_reflections(&[report_path], &experiences);
     // read_file should be in common_tools (present in both local and remote)
-    assert!(merged.common_tools.contains_key("read_file")
-        || merged.unique_remote_tools.iter().any(|t| t == "write_file"));
+    assert!(
+        merged.common_tools.contains_key("read_file")
+            || merged.unique_remote_tools.iter().any(|t| t == "write_file")
+    );
 }
 
 #[test]
@@ -1207,10 +1273,8 @@ fn test_merge_remote_reflections_unreadable_file() {
     let reflector = Reflector::new();
     let experiences = vec![make_collected("tool_a", "x", true, 100)];
     // Non-existent file path should be handled gracefully
-    let merged = reflector.merge_remote_reflections(
-        &[PathBuf::from("/nonexistent/report.md")],
-        &experiences,
-    );
+    let merged = reflector
+        .merge_remote_reflections(&[PathBuf::from("/nonexistent/report.md")], &experiences);
     // Should not panic, just skip the file
     assert!(merged.remote_patterns.is_empty() || merged.merged_patterns.is_empty());
 }

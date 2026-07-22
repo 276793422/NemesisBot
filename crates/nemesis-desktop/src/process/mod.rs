@@ -4,9 +4,9 @@
 //! for managing child processes in desktop mode.
 
 pub mod executor;
-pub mod manager;
 pub mod handshake;
+pub mod manager;
 
-pub use executor::{PlatformExecutor, ExecutorConfig, ChildProcess, ProcessStatus};
+pub use executor::{ChildProcess, ExecutorConfig, PlatformExecutor, ProcessStatus};
+pub use handshake::{HandshakeResult, PROTOCOL_VERSION, PipeMessage};
 pub use manager::ProcessManager;
-pub use handshake::{HandshakeResult, PipeMessage, PROTOCOL_VERSION};

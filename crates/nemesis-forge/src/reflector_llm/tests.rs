@@ -241,15 +241,8 @@ async fn test_semantic_analysis_with_all_contexts() {
         actions_taken: 1,
         status: nemesis_types::forge::CycleStatus::Running,
     };
-    let result = semantic_analysis(
-        &caller,
-        &stats,
-        &[],
-        Some(&trace),
-        Some(&cycle),
-        Some(1000),
-    )
-    .await;
+    let result =
+        semantic_analysis(&caller, &stats, &[], Some(&trace), Some(&cycle), Some(1000)).await;
     assert!(result.is_ok());
 }
 
@@ -334,9 +327,30 @@ fn test_extract_json_array_not_supported() {
 #[test]
 fn test_build_analysis_prompt_multiple_tools() {
     let mut tool_counts = HashMap::new();
-    tool_counts.insert("file_read".into(), crate::types::ToolStats { count: 30, success_count: 28, avg_duration_ms: 50.0 });
-    tool_counts.insert("file_write".into(), crate::types::ToolStats { count: 20, success_count: 18, avg_duration_ms: 80.0 });
-    tool_counts.insert("exec".into(), crate::types::ToolStats { count: 10, success_count: 5, avg_duration_ms: 200.0 });
+    tool_counts.insert(
+        "file_read".into(),
+        crate::types::ToolStats {
+            count: 30,
+            success_count: 28,
+            avg_duration_ms: 50.0,
+        },
+    );
+    tool_counts.insert(
+        "file_write".into(),
+        crate::types::ToolStats {
+            count: 20,
+            success_count: 18,
+            avg_duration_ms: 80.0,
+        },
+    );
+    tool_counts.insert(
+        "exec".into(),
+        crate::types::ToolStats {
+            count: 10,
+            success_count: 5,
+            avg_duration_ms: 200.0,
+        },
+    );
     let stats = ExperienceStats {
         total_count: 60,
         success_count: 51,

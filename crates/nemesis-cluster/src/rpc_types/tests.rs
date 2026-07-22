@@ -65,11 +65,20 @@ fn test_encode_decode_rpc_request() {
 
 #[test]
 fn test_action_type_display() {
-    assert_eq!(ActionType::Known(KnownAction::PeerChat).to_string(), "PeerChat");
+    assert_eq!(
+        ActionType::Known(KnownAction::PeerChat).to_string(),
+        "PeerChat"
+    );
     assert_eq!(ActionType::Known(KnownAction::Ping).to_string(), "Ping");
     assert_eq!(ActionType::Known(KnownAction::Status).to_string(), "Status");
-    assert_eq!(ActionType::Known(KnownAction::PeerChatCallback).to_string(), "PeerChatCallback");
-    assert_eq!(ActionType::Custom("my_action".into()).to_string(), "my_action");
+    assert_eq!(
+        ActionType::Known(KnownAction::PeerChatCallback).to_string(),
+        "PeerChatCallback"
+    );
+    assert_eq!(
+        ActionType::Custom("my_action".into()).to_string(),
+        "my_action"
+    );
 }
 
 #[test]
@@ -196,7 +205,11 @@ fn test_decode_response_fallback_both_fail() {
     // Completely invalid bytes should fail both WireMessage and direct parsing
     let invalid_bytes = b"this is not valid json at all".to_vec();
     let result = Frame::decode_response(&invalid_bytes);
-    assert!(result.is_err(), "expected error for invalid bytes, got {:?}", result);
+    assert!(
+        result.is_err(),
+        "expected error for invalid bytes, got {:?}",
+        result
+    );
 }
 
 #[test]

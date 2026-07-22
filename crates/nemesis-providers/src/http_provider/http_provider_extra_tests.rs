@@ -271,7 +271,12 @@ async fn test_chat_success_with_tool_calls() {
         .await;
 
     let result = provider
-        .chat(&[user_message("weather?")], &[], "gpt-4", &ChatOptions::default())
+        .chat(
+            &[user_message("weather?")],
+            &[],
+            "gpt-4",
+            &ChatOptions::default(),
+        )
         .await
         .unwrap();
 
@@ -362,8 +367,7 @@ async fn test_chat_no_usage_when_field_absent() {
     let server = MockServer::start().await;
     let provider = HttpProvider::new(basic_config(server.uri()));
 
-    let response_body =
-        serde_json::json!({"choices": [{"message": {"role": "assistant", "content": "x"}, "finish_reason": "stop"}]});
+    let response_body = serde_json::json!({"choices": [{"message": {"role": "assistant", "content": "x"}, "finish_reason": "stop"}]});
 
     Mock::given(method("POST"))
         .and(path("/chat/completions"))
@@ -383,8 +387,7 @@ async fn test_chat_content_defaults_to_empty_when_missing() {
     let server = MockServer::start().await;
     let provider = HttpProvider::new(basic_config(server.uri()));
 
-    let response_body =
-        serde_json::json!({"choices": [{"message": {"role": "assistant"}, "finish_reason": "stop"}]});
+    let response_body = serde_json::json!({"choices": [{"message": {"role": "assistant"}, "finish_reason": "stop"}]});
 
     Mock::given(method("POST"))
         .and(path("/chat/completions"))
@@ -434,7 +437,10 @@ async fn test_chat_error_403_auth() {
     let result = provider
         .chat(&[user_message("hi")], &[], "gpt-4", &ChatOptions::default())
         .await;
-    assert!(matches!(result, Err(FailoverError::Auth { status: 403, .. })));
+    assert!(matches!(
+        result,
+        Err(FailoverError::Auth { status: 403, .. })
+    ));
 }
 
 #[tokio::test]
@@ -586,7 +592,9 @@ async fn test_chat_sends_bearer_auth_header() {
 async fn test_chat_sends_custom_headers() {
     let server = MockServer::start().await;
     let mut config = basic_config(server.uri());
-    config.headers.insert("X-Trace-Id".to_string(), "abc-123".to_string());
+    config
+        .headers
+        .insert("X-Trace-Id".to_string(), "abc-123".to_string());
     let provider = HttpProvider::new(config);
 
     Mock::given(method("POST"))
@@ -676,12 +684,7 @@ async fn test_chat_stream_success_content_done() {
         .mount(&server)
         .await;
 
-    let mut rx = provider.chat_stream(
-        &[user_message("hi")],
-        &[],
-        "gpt-4",
-        &ChatOptions::default(),
-    );
+    let mut rx = provider.chat_stream(&[user_message("hi")], &[], "gpt-4", &ChatOptions::default());
 
     let mut received_content = String::new();
     let mut got_usage = false;
@@ -724,12 +727,7 @@ async fn test_chat_stream_done_without_prior_content() {
         .mount(&server)
         .await;
 
-    let mut rx = provider.chat_stream(
-        &[user_message("hi")],
-        &[],
-        "gpt-4",
-        &ChatOptions::default(),
-    );
+    let mut rx = provider.chat_stream(&[user_message("hi")], &[], "gpt-4", &ChatOptions::default());
 
     let mut count = 0;
     while let Some(Ok(chunk)) = rx.recv().await {
@@ -737,7 +735,10 @@ async fn test_chat_stream_done_without_prior_content() {
         assert_eq!(chunk.finish_reason.as_deref(), Some("stop"));
         count += 1;
     }
-    assert_eq!(count, 1, "[DONE] alone should produce exactly one stop chunk");
+    assert_eq!(
+        count, 1,
+        "[DONE] alone should produce exactly one stop chunk"
+    );
 }
 
 #[tokio::test]
@@ -762,12 +763,7 @@ async fn test_chat_stream_with_reasoning_content() {
         .mount(&server)
         .await;
 
-    let mut rx = provider.chat_stream(
-        &[user_message("hi")],
-        &[],
-        "gpt-4",
-        &ChatOptions::default(),
-    );
+    let mut rx = provider.chat_stream(&[user_message("hi")], &[], "gpt-4", &ChatOptions::default());
 
     let mut final_chunk: Option<StreamChunk> = None;
     while let Some(Ok(chunk)) = rx.recv().await {
@@ -822,10 +818,7 @@ async fn test_chat_stream_accumulates_tool_calls() {
             let tc = &chunk.tool_calls[0];
             assert_eq!(tc.id, "call_1");
             assert_eq!(tc.function.as_ref().unwrap().name, "get_weather");
-            assert_eq!(
-                tc.function.as_ref().unwrap().arguments,
-                "{\"loc\":\"SF\"}"
-            );
+            assert_eq!(tc.function.as_ref().unwrap().arguments, "{\"loc\":\"SF\"}");
             got_tool_call_chunk = true;
         }
     }
@@ -888,12 +881,7 @@ async fn test_chat_stream_http_error_returns_error_chunk() {
         .mount(&server)
         .await;
 
-    let mut rx = provider.chat_stream(
-        &[user_message("hi")],
-        &[],
-        "gpt-4",
-        &ChatOptions::default(),
-    );
+    let mut rx = provider.chat_stream(&[user_message("hi")], &[], "gpt-4", &ChatOptions::default());
 
     let result = rx.recv().await.expect("should get a message");
     match result {
@@ -923,12 +911,7 @@ async fn test_chat_stream_skips_malformed_sse_lines() {
         .mount(&server)
         .await;
 
-    let mut rx = provider.chat_stream(
-        &[user_message("hi")],
-        &[],
-        "gpt-4",
-        &ChatOptions::default(),
-    );
+    let mut rx = provider.chat_stream(&[user_message("hi")], &[], "gpt-4", &ChatOptions::default());
 
     let mut received = String::new();
     while let Some(Ok(chunk)) = rx.recv().await {
@@ -959,12 +942,7 @@ async fn test_chat_stream_skips_empty_delta_chunks() {
         .mount(&server)
         .await;
 
-    let mut rx = provider.chat_stream(
-        &[user_message("hi")],
-        &[],
-        "gpt-4",
-        &ChatOptions::default(),
-    );
+    let mut rx = provider.chat_stream(&[user_message("hi")], &[], "gpt-4", &ChatOptions::default());
 
     let mut count = 0;
     while let Some(Ok(_)) = rx.recv().await {
@@ -996,12 +974,7 @@ async fn test_chat_stream_ignores_non_data_lines() {
         .mount(&server)
         .await;
 
-    let mut rx = provider.chat_stream(
-        &[user_message("hi")],
-        &[],
-        "gpt-4",
-        &ChatOptions::default(),
-    );
+    let mut rx = provider.chat_stream(&[user_message("hi")], &[], "gpt-4", &ChatOptions::default());
 
     let mut content = String::new();
     while let Some(Ok(chunk)) = rx.recv().await {
@@ -1025,15 +998,14 @@ async fn test_chat_stream_empty_model_uses_default() {
         .mount(&server)
         .await;
 
-    let mut rx = provider.chat_stream(
-        &[user_message("hi")],
-        &[],
-        "",
-        &ChatOptions::default(),
-    );
+    let mut rx = provider.chat_stream(&[user_message("hi")], &[], "", &ChatOptions::default());
 
     // Should produce a single stop chunk
-    let chunk = rx.recv().await.expect("should get a chunk").expect("should be ok");
+    let chunk = rx
+        .recv()
+        .await
+        .expect("should get a chunk")
+        .expect("should be ok");
     assert_eq!(chunk.finish_reason.as_deref(), Some("stop"));
 }
 
@@ -1270,10 +1242,7 @@ fn test_stream_chunk_full_roundtrip() {
     assert_eq!(deserialized.delta, original.delta);
     assert_eq!(deserialized.tool_calls.len(), 1);
     assert_eq!(deserialized.finish_reason, original.finish_reason);
-    assert_eq!(
-        deserialized.usage.as_ref().unwrap().total_tokens,
-        3
-    );
+    assert_eq!(deserialized.usage.as_ref().unwrap().total_tokens, 3);
     assert_eq!(deserialized.reasoning_content, original.reasoning_content);
 }
 
@@ -1320,17 +1289,28 @@ async fn test_repair_dsml_in_chat_response() {
         .await;
 
     let result = provider
-        .chat(&[user_message("read the file")], &[tool_def("read_file")], "deepseek-v4-flash", &ChatOptions::default())
+        .chat(
+            &[user_message("read the file")],
+            &[tool_def("read_file")],
+            "deepseek-v4-flash",
+            &ChatOptions::default(),
+        )
         .await
         .expect("chat should succeed");
 
     // Repair should have recovered the tool call from DSML content.
     assert_eq!(result.finish_reason, "tool_calls");
-    assert_eq!(result.tool_calls.len(), 1, "should have 1 repaired tool call");
-    assert_eq!(result.tool_calls[0].function.as_ref().unwrap().name, "read_file");
-    let args: serde_json::Value = serde_json::from_str(
-        &result.tool_calls[0].function.as_ref().unwrap().arguments
-    ).unwrap();
+    assert_eq!(
+        result.tool_calls.len(),
+        1,
+        "should have 1 repaired tool call"
+    );
+    assert_eq!(
+        result.tool_calls[0].function.as_ref().unwrap().name,
+        "read_file"
+    );
+    let args: serde_json::Value =
+        serde_json::from_str(&result.tool_calls[0].function.as_ref().unwrap().arguments).unwrap();
     assert_eq!(args["path"], "/tmp/test.rs");
 }
 
@@ -1356,16 +1336,20 @@ async fn test_repair_json_text_in_chat_response() {
         .await;
 
     let result = provider
-        .chat(&[user_message("search")], &[tool_def("grep")], "deepseek-v4-flash", &ChatOptions::default())
+        .chat(
+            &[user_message("search")],
+            &[tool_def("grep")],
+            "deepseek-v4-flash",
+            &ChatOptions::default(),
+        )
         .await
         .expect("chat should succeed");
 
     assert_eq!(result.finish_reason, "tool_calls");
     assert_eq!(result.tool_calls.len(), 1);
     assert_eq!(result.tool_calls[0].function.as_ref().unwrap().name, "grep");
-    let args: serde_json::Value = serde_json::from_str(
-        &result.tool_calls[0].function.as_ref().unwrap().arguments
-    ).unwrap();
+    let args: serde_json::Value =
+        serde_json::from_str(&result.tool_calls[0].function.as_ref().unwrap().arguments).unwrap();
     assert_eq!(args["pattern"], "TODO");
 }
 
@@ -1400,14 +1384,22 @@ async fn test_no_repair_when_standard_tool_calls_present() {
         .await;
 
     let result = provider
-        .chat(&[user_message("read")], &[tool_def("read_file")], "deepseek-v4-flash", &ChatOptions::default())
+        .chat(
+            &[user_message("read")],
+            &[tool_def("read_file")],
+            "deepseek-v4-flash",
+            &ChatOptions::default(),
+        )
         .await
         .unwrap();
 
     // Standard tool_calls preserved as-is (not repaired).
     assert_eq!(result.tool_calls.len(), 1);
     assert_eq!(result.tool_calls[0].id, "call_abc");
-    assert_eq!(result.tool_calls[0].function.as_ref().unwrap().name, "read_file");
+    assert_eq!(
+        result.tool_calls[0].function.as_ref().unwrap().name,
+        "read_file"
+    );
 }
 
 #[tokio::test]
@@ -1429,7 +1421,12 @@ async fn test_no_repair_when_content_is_plain_text() {
         .await;
 
     let result = provider
-        .chat(&[user_message("hi")], &[tool_def("test")], "gpt-4", &ChatOptions::default())
+        .chat(
+            &[user_message("hi")],
+            &[tool_def("test")],
+            "gpt-4",
+            &ChatOptions::default(),
+        )
         .await
         .unwrap();
 

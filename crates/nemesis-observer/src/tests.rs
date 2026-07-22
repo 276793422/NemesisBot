@@ -112,7 +112,10 @@ async fn test_multiple_observers() {
 
 #[tokio::test]
 async fn test_event_types_display() {
-    assert_eq!(EventType::ConversationStart.to_string(), "conversation_start");
+    assert_eq!(
+        EventType::ConversationStart.to_string(),
+        "conversation_start"
+    );
     assert_eq!(EventType::ConversationEnd.to_string(), "conversation_end");
     assert_eq!(EventType::LlmRequest.to_string(), "llm_request");
     assert_eq!(EventType::LlmResponse.to_string(), "llm_response");
@@ -268,12 +271,8 @@ fn test_llm_request_data_construction() {
     headers.insert("Authorization".to_string(), "Bearer token".to_string());
     headers.insert("Content-Type".to_string(), "application/json".to_string());
 
-    let messages = vec![
-        serde_json::json!({"role": "user", "content": "hello"}),
-    ];
-    let tools = vec![
-        serde_json::json!({"type": "function", "function": {"name": "test"}}),
-    ];
+    let messages = vec![serde_json::json!({"role": "user", "content": "hello"})];
+    let tools = vec![serde_json::json!({"type": "function", "function": {"name": "test"}})];
 
     let data = LlmRequestData {
         round: 1,
@@ -335,9 +334,7 @@ fn test_llm_response_data_construction() {
         cache_read_tokens: None,
     };
 
-    let tool_calls = vec![
-        serde_json::json!({"id": "call_1", "function": {"name": "test"}}),
-    ];
+    let tool_calls = vec![serde_json::json!({"id": "call_1", "function": {"name": "test"}})];
 
     let data = LlmResponseData {
         round: 2,
@@ -812,7 +809,9 @@ async fn test_emit_sync_error_handling_comprehensive() {
             should_panic: true,
         });
 
-        manager.register(Arc::clone(&panic_obs) as Arc<dyn Observer>).await;
+        manager
+            .register(Arc::clone(&panic_obs) as Arc<dyn Observer>)
+            .await;
         manager.register(obs1).await;
         manager.register(obs2).await;
 
@@ -857,7 +856,9 @@ async fn test_emit_sync_error_handling_comprehensive() {
         let (obs2, c2) = TestObserver::new("normal_last");
 
         manager.register(obs1).await;
-        manager.register(Arc::clone(&panic_obs) as Arc<dyn Observer>).await;
+        manager
+            .register(Arc::clone(&panic_obs) as Arc<dyn Observer>)
+            .await;
         manager.register(obs2).await;
 
         let event = make_event(EventType::ToolCall);

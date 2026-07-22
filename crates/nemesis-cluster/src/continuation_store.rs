@@ -115,7 +115,9 @@ impl ContinuationStore {
             match self.load_from_disk_inner(task_id).await {
                 Ok(snap) => {
                     // Re-populate in memory
-                    self.snapshots.lock().insert(task_id.to_string(), snap.clone());
+                    self.snapshots
+                        .lock()
+                        .insert(task_id.to_string(), snap.clone());
                     return Ok(snap);
                 }
                 Err(ContinuationError::NotFound(_)) => {
@@ -184,7 +186,10 @@ impl ContinuationStore {
     ///
     /// Deletes snapshot files from disk whose modification time exceeds
     /// the specified duration. Also removes them from memory.
-    pub async fn cleanup_old(&self, max_age: std::time::Duration) -> Result<usize, ContinuationError> {
+    pub async fn cleanup_old(
+        &self,
+        max_age: std::time::Duration,
+    ) -> Result<usize, ContinuationError> {
         let cutoff = std::time::SystemTime::now() - max_age;
         let mut removed = 0;
 
@@ -212,7 +217,10 @@ impl ContinuationStore {
         }
 
         if removed > 0 {
-            tracing::info!(removed, "[ContinuationStore] Cleaned up old continuation snapshots");
+            tracing::info!(
+                removed,
+                "[ContinuationStore] Cleaned up old continuation snapshots"
+            );
         }
 
         Ok(removed)
@@ -305,7 +313,10 @@ impl ContinuationStore {
         }
 
         if recovered > 0 {
-            tracing::info!(recovered, "[ContinuationStore] Recovered continuation snapshots from disk");
+            tracing::info!(
+                recovered,
+                "[ContinuationStore] Recovered continuation snapshots from disk"
+            );
         }
 
         Ok(recovered)
@@ -317,24 +328,31 @@ impl ContinuationStore {
         tokio::fs::create_dir_all(&self.cache_dir).await?;
         let final_path = self.snapshot_path(&snapshot.task_id);
         let tmp_path = final_path.with_extension("json.tmp");
-        let json = serde_json::to_string_pretty(snapshot).map_err(|e| {
-            std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string())
-        })?;
+        let json = serde_json::to_string_pretty(snapshot)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()))?;
         // Write to temporary file first, then rename for atomicity.
         tokio::fs::write(&tmp_path, &json).await?;
         std::fs::rename(&tmp_path, &final_path)?;
         Ok(())
     }
 
-    async fn load_from_disk(&self, task_id: &str) -> Result<ContinuationSnapshot, ContinuationError> {
+    async fn load_from_disk(
+        &self,
+        task_id: &str,
+    ) -> Result<ContinuationSnapshot, ContinuationError> {
         let snap = self.load_from_disk_inner(task_id).await?;
         // Re-populate in memory
-        self.snapshots.lock().insert(task_id.to_string(), snap.clone());
+        self.snapshots
+            .lock()
+            .insert(task_id.to_string(), snap.clone());
         Ok(snap)
     }
 
     /// Inner disk load without modifying memory (used by retry loop).
-    async fn load_from_disk_inner(&self, task_id: &str) -> Result<ContinuationSnapshot, ContinuationError> {
+    async fn load_from_disk_inner(
+        &self,
+        task_id: &str,
+    ) -> Result<ContinuationSnapshot, ContinuationError> {
         let path = self.snapshot_path(task_id);
         if !path.exists() {
             return Err(ContinuationError::NotFound(task_id.into()));

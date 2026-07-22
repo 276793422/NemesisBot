@@ -30,8 +30,12 @@ pub fn new_embedding_func(config: &VectorConfig) -> Result<EmbeddingFunc, String
     if !Path::new(plugin_path).exists() {
         return Err(format!("Plugin DLL not found: {}", plugin_path));
     }
-    try_load_plugin(plugin_path, config)
-        .map_err(|e| format!("Failed to load ONNX plugin: {}. Enhanced memory is unavailable.", e))
+    try_load_plugin(plugin_path, config).map_err(|e| {
+        format!(
+            "Failed to load ONNX plugin: {}. Enhanced memory is unavailable.",
+            e
+        )
+    })
 }
 
 /// Attempt to load a native embedding plugin and wrap it as an EmbeddingFunc.
@@ -46,8 +50,9 @@ fn try_load_plugin(
     let config_dir = config.config_dir.as_deref().unwrap_or(".");
     let emb_config = embedding_config::load_embedding_config(Path::new(config_dir));
 
-    let (model_dir, dim) = embedding_config::resolve_model_files(&emb_config, Path::new(config_dir))
-        .map_err(|_| crate::vector::plugin_loader::PluginError::InitFailed { code: -6 })?;
+    let (model_dir, dim) =
+        embedding_config::resolve_model_files(&emb_config, Path::new(config_dir))
+            .map_err(|_| crate::vector::plugin_loader::PluginError::InitFailed { code: -6 })?;
 
     // 2. Load plugin DLL
     let mut plugin = NativePlugin::load(plugin_path)?;
@@ -64,7 +69,8 @@ fn try_load_plugin(
     //    The thread runs for the lifetime of the returned EmbeddingFunc.
     //    When the closure (EmbeddingFunc) is dropped, it sends a shutdown
     //    signal; the thread then drops the plugin outside any async runtime.
-    let (tx, rx) = std::sync::mpsc::channel::<(String, std::sync::mpsc::Sender<Result<Vec<f32>, String>>)>();
+    let (tx, rx) =
+        std::sync::mpsc::channel::<(String, std::sync::mpsc::Sender<Result<Vec<f32>, String>>)>();
     let shutdown = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
 
     let shutdown_clone = shutdown.clone();
@@ -85,9 +91,7 @@ fn try_load_plugin(
             // inside a tokio runtime.
             drop(plugin);
         })
-        .map_err(|_e| crate::vector::plugin_loader::PluginError::InitFailed {
-            code: -99,
-        })?;
+        .map_err(|_e| crate::vector::plugin_loader::PluginError::InitFailed { code: -99 })?;
 
     Ok(Box::new(move |text: &str| {
         if shutdown_clone.load(std::sync::atomic::Ordering::Relaxed) {

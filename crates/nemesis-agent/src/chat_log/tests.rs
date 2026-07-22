@@ -23,7 +23,12 @@ fn test_append_with_model_round_trip() {
 
     // user row: no model. assistant row: with model badge.
     append_chat_log_with_model(key, "user", "hi", None);
-    append_chat_log_with_model(key, "assistant", "hello back", Some("deepseek/deepseek-v4-flash"));
+    append_chat_log_with_model(
+        key,
+        "assistant",
+        "hello back",
+        Some("deepseek/deepseek-v4-flash"),
+    );
 
     let (msgs, total, _, _) = read_chat_log(key, 10, None);
     assert_eq!(total, 2);
@@ -33,7 +38,10 @@ fn test_append_with_model_round_trip() {
     assert!(msgs[0].get("model").is_none());
     // assistant row carries the model badge.
     assert_eq!(msgs[1]["role"].as_str(), Some("assistant"));
-    assert_eq!(msgs[1]["model"].as_str(), Some("deepseek/deepseek-v4-flash"));
+    assert_eq!(
+        msgs[1]["model"].as_str(),
+        Some("deepseek/deepseek-v4-flash")
+    );
 
     // Legacy append_chat_log (model=None) writes no model field → backward compat.
     append_chat_log(key, "assistant", "legacy-no-model");

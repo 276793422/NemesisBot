@@ -14,8 +14,8 @@ use crate::session::SessionManager;
 use crate::ws_router::{ModuleHandler, RequestContext};
 
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, AtomicUsize};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicUsize};
 use std::time::Instant;
 
 use nemesis_services::bot_service::{AgentLoopService, LifecycleService};
@@ -50,7 +50,10 @@ fn make_ctx(dir: &tempfile::TempDir) -> RequestContext {
 
 fn make_ctx_with_agent(dir: &tempfile::TempDir) -> RequestContext {
     let ws = dir.path().to_string_lossy().to_string();
-    make_ctx_inner(&ws, Some(Arc::new(MockAgentService) as Arc<dyn AgentLoopService>))
+    make_ctx_inner(
+        &ws,
+        Some(Arc::new(MockAgentService) as Arc<dyn AgentLoopService>),
+    )
 }
 
 fn make_ctx_inner(ws: &str, agent: Option<Arc<dyn AgentLoopService>>) -> RequestContext {
@@ -79,7 +82,9 @@ fn make_ctx_inner(ws: &str, agent: Option<Arc<dyn AgentLoopService>>) -> Request
         cluster_service: None,
         cluster_log_dir: None,
         workflow_engine: None,
-        chat_secret_store: std::sync::Arc::new(nemesis_workflow::chat_secrets::ChatSecretStore::in_memory()),
+        chat_secret_store: std::sync::Arc::new(
+            nemesis_workflow::chat_secrets::ChatSecretStore::in_memory(),
+        ),
         webhook_rate_limiter: Arc::new(crate::handlers::workflow::WebhookRateLimiter::new()),
         internal_cmd_tx: None,
         estop: None,
@@ -121,7 +126,9 @@ fn make_ctx_no_workspace() -> RequestContext {
         cluster_service: None,
         cluster_log_dir: None,
         workflow_engine: None,
-        chat_secret_store: std::sync::Arc::new(nemesis_workflow::chat_secrets::ChatSecretStore::in_memory()),
+        chat_secret_store: std::sync::Arc::new(
+            nemesis_workflow::chat_secrets::ChatSecretStore::in_memory(),
+        ),
         webhook_rate_limiter: Arc::new(crate::handlers::workflow::WebhookRateLimiter::new()),
         internal_cmd_tx: None,
         estop: None,
@@ -304,7 +311,11 @@ async fn test_file_get_returns_content() {
     let ctx = make_ctx(&dir);
     let h = PersonaHandler::new();
     let data = serde_json::json!({ "name": "default", "file": "IDENTITY.md" });
-    let r = h.handle_cmd("file.get", Some(data), &ctx).await.unwrap().unwrap();
+    let r = h
+        .handle_cmd("file.get", Some(data), &ctx)
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(r["name"], "IDENTITY.md");
     let content = r["content"].as_str().unwrap();
     assert!(content.contains("Alice"));
@@ -323,7 +334,11 @@ async fn test_file_get_missing_returns_empty() {
     let ctx = make_ctx(&dir);
     let h = PersonaHandler::new();
     let data = serde_json::json!({ "name": "default", "file": "NONEXISTENT.md" });
-    let r = h.handle_cmd("file.get", Some(data), &ctx).await.unwrap().unwrap();
+    let r = h
+        .handle_cmd("file.get", Some(data), &ctx)
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(r["content"], "");
 }
 
@@ -342,7 +357,10 @@ async fn test_file_get_missing_field_name() {
     let ctx = make_ctx(&dir);
     let h = PersonaHandler::new();
     let data = serde_json::json!({ "file": "IDENTITY.md" });
-    let err = h.handle_cmd("file.get", Some(data), &ctx).await.unwrap_err();
+    let err = h
+        .handle_cmd("file.get", Some(data), &ctx)
+        .await
+        .unwrap_err();
     assert_eq!(err, "missing field: name");
 }
 
@@ -352,7 +370,10 @@ async fn test_file_get_missing_field_file() {
     let ctx = make_ctx(&dir);
     let h = PersonaHandler::new();
     let data = serde_json::json!({ "name": "default" });
-    let err = h.handle_cmd("file.get", Some(data), &ctx).await.unwrap_err();
+    let err = h
+        .handle_cmd("file.get", Some(data), &ctx)
+        .await
+        .unwrap_err();
     assert_eq!(err, "missing field: file");
 }
 
@@ -365,7 +386,10 @@ async fn test_file_get_path_traversal() {
         "name": "default",
         "file": "../../etc/passwd",
     });
-    let err = h.handle_cmd("file.get", Some(data), &ctx).await.unwrap_err();
+    let err = h
+        .handle_cmd("file.get", Some(data), &ctx)
+        .await
+        .unwrap_err();
     assert!(err.contains("path traversal denied"), "got: {}", err);
 }
 
@@ -374,7 +398,10 @@ async fn test_file_get_missing_workspace() {
     let ctx = make_ctx_no_workspace();
     let h = PersonaHandler::new();
     let data = serde_json::json!({ "name": "default", "file": "IDENTITY.md" });
-    let err = h.handle_cmd("file.get", Some(data), &ctx).await.unwrap_err();
+    let err = h
+        .handle_cmd("file.get", Some(data), &ctx)
+        .await
+        .unwrap_err();
     assert!(err.contains("workspace not configured"));
 }
 
@@ -399,7 +426,11 @@ async fn test_file_save_writes_and_reads_back() {
         "file": "IDENTITY.md",
         "content": "# Updated by test",
     });
-    let r = h.handle_cmd("file.save", Some(data), &ctx).await.unwrap().unwrap();
+    let r = h
+        .handle_cmd("file.save", Some(data), &ctx)
+        .await
+        .unwrap()
+        .unwrap();
     assert!(r["saved"].as_bool().unwrap());
 
     // The active persona is `default`, so the file should be synced to root.
@@ -422,7 +453,10 @@ async fn test_file_save_missing_field_content() {
     let ctx = make_ctx(&dir);
     let h = PersonaHandler::new();
     let data = serde_json::json!({ "name": "default", "file": "IDENTITY.md" });
-    let err = h.handle_cmd("file.save", Some(data), &ctx).await.unwrap_err();
+    let err = h
+        .handle_cmd("file.save", Some(data), &ctx)
+        .await
+        .unwrap_err();
     assert_eq!(err, "missing field: content");
 }
 
@@ -436,7 +470,10 @@ async fn test_file_save_path_traversal() {
         "file": "IDENTITY.md",
         "content": "evil",
     });
-    let err = h.handle_cmd("file.save", Some(data), &ctx).await.unwrap_err();
+    let err = h
+        .handle_cmd("file.save", Some(data), &ctx)
+        .await
+        .unwrap_err();
     assert!(err.contains("path traversal denied"), "got: {}", err);
 }
 
@@ -449,7 +486,10 @@ async fn test_file_save_missing_workspace() {
         "file": "IDENTITY.md",
         "content": "x",
     });
-    let err = h.handle_cmd("file.save", Some(data), &ctx).await.unwrap_err();
+    let err = h
+        .handle_cmd("file.save", Some(data), &ctx)
+        .await
+        .unwrap_err();
     assert!(err.contains("workspace not configured"));
 }
 
@@ -472,7 +512,11 @@ async fn test_remove_persona() {
     let ctx = make_ctx(&dir);
     let h = PersonaHandler::new();
     let data = serde_json::json!({ "name": "dev" });
-    let r = h.handle_cmd("remove", Some(data), &ctx).await.unwrap().unwrap();
+    let r = h
+        .handle_cmd("remove", Some(data), &ctx)
+        .await
+        .unwrap()
+        .unwrap();
     assert!(r["removed"].as_bool().unwrap());
     assert!(!ws.join("personas").join("dev").exists());
 }
@@ -550,7 +594,11 @@ async fn test_activate_switches_persona() {
     let ctx = make_ctx_with_agent(&dir);
     let h = PersonaHandler::new();
     let data = serde_json::json!({ "name": "dev" });
-    let r = h.handle_cmd("activate", Some(data), &ctx).await.unwrap().unwrap();
+    let r = h
+        .handle_cmd("activate", Some(data), &ctx)
+        .await
+        .unwrap()
+        .unwrap();
     assert!(r["activated"].as_bool().unwrap());
     assert_eq!(r["name"], "dev");
 
@@ -579,7 +627,11 @@ async fn test_activate_same_persona_noop_archive() {
     let h = PersonaHandler::new();
     // activating current persona is a valid no-op for the archive step
     let data = serde_json::json!({ "name": "default" });
-    let r = h.handle_cmd("activate", Some(data), &ctx).await.unwrap().unwrap();
+    let r = h
+        .handle_cmd("activate", Some(data), &ctx)
+        .await
+        .unwrap()
+        .unwrap();
     assert!(r["activated"].as_bool().unwrap());
 }
 
@@ -596,7 +648,10 @@ async fn test_activate_unknown_persona() {
     let ctx = make_ctx_with_agent(&dir);
     let h = PersonaHandler::new();
     let data = serde_json::json!({ "name": "ghost" });
-    let err = h.handle_cmd("activate", Some(data), &ctx).await.unwrap_err();
+    let err = h
+        .handle_cmd("activate", Some(data), &ctx)
+        .await
+        .unwrap_err();
     assert!(err.contains("persona 'ghost' not found"), "got: {}", err);
 }
 
@@ -615,7 +670,10 @@ async fn test_activate_missing_field_name() {
     let ctx = make_ctx(&dir);
     let h = PersonaHandler::new();
     let data = serde_json::json!({});
-    let err = h.handle_cmd("activate", Some(data), &ctx).await.unwrap_err();
+    let err = h
+        .handle_cmd("activate", Some(data), &ctx)
+        .await
+        .unwrap_err();
     assert_eq!(err, "missing field: name");
 }
 
@@ -634,7 +692,10 @@ async fn test_activate_without_agent_service_errors_after_switch() {
     let ctx = make_ctx(&dir); // No agent_service injected
     let h = PersonaHandler::new();
     let data = serde_json::json!({ "name": "dev" });
-    let err = h.handle_cmd("activate", Some(data), &ctx).await.unwrap_err();
+    let err = h
+        .handle_cmd("activate", Some(data), &ctx)
+        .await
+        .unwrap_err();
     assert!(err.contains("Agent not available"), "got: {}", err);
     // But the file switch still happened (restart_agent is the last step).
     let root = std::fs::read_to_string(ws.join("IDENTITY.md")).unwrap();
@@ -646,7 +707,10 @@ async fn test_activate_missing_workspace() {
     let ctx = make_ctx_no_workspace();
     let h = PersonaHandler::new();
     let data = serde_json::json!({ "name": "dev" });
-    let err = h.handle_cmd("activate", Some(data), &ctx).await.unwrap_err();
+    let err = h
+        .handle_cmd("activate", Some(data), &ctx)
+        .await
+        .unwrap_err();
     assert!(err.contains("workspace not configured"));
 }
 
@@ -709,7 +773,11 @@ async fn test_shop_refresh_no_network() {
     let dir = tempfile::tempdir().unwrap();
     let ctx = make_ctx(&dir);
     let h = PersonaHandler::new();
-    let r = h.handle_cmd("shop.refresh", None, &ctx).await.unwrap().unwrap();
+    let r = h
+        .handle_cmd("shop.refresh", None, &ctx)
+        .await
+        .unwrap()
+        .unwrap();
     assert!(r["refreshed"].as_bool().unwrap());
 }
 
@@ -740,7 +808,10 @@ async fn test_shop_preview_missing_field_id() {
     let ctx = make_ctx(&dir);
     let h = PersonaHandler::new();
     let data = serde_json::json!({});
-    let err = h.handle_cmd("shop.preview", Some(data), &ctx).await.unwrap_err();
+    let err = h
+        .handle_cmd("shop.preview", Some(data), &ctx)
+        .await
+        .unwrap_err();
     assert_eq!(err, "missing field: id");
 }
 
@@ -759,7 +830,10 @@ async fn test_shop_download_missing_field_id() {
     let ctx = make_ctx(&dir);
     let h = PersonaHandler::new();
     let data = serde_json::json!({});
-    let err = h.handle_cmd("shop.download", Some(data), &ctx).await.unwrap_err();
+    let err = h
+        .handle_cmd("shop.download", Some(data), &ctx)
+        .await
+        .unwrap_err();
     assert_eq!(err, "missing field: id");
 }
 

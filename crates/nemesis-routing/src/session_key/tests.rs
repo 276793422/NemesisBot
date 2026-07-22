@@ -188,8 +188,14 @@ fn test_identity_links_resolution() {
 fn test_dm_scope_from_str() {
     assert_eq!(DMScope::from_str("main"), DMScope::Main);
     assert_eq!(DMScope::from_str("per-peer"), DMScope::PerPeer);
-    assert_eq!(DMScope::from_str("per-channel-peer"), DMScope::PerChannelPeer);
-    assert_eq!(DMScope::from_str("per-account-channel-peer"), DMScope::PerAccountChannelPeer);
+    assert_eq!(
+        DMScope::from_str("per-channel-peer"),
+        DMScope::PerChannelPeer
+    );
+    assert_eq!(
+        DMScope::from_str("per-account-channel-peer"),
+        DMScope::PerAccountChannelPeer
+    );
     assert_eq!(DMScope::from_str(""), DMScope::Main);
     assert_eq!(DMScope::from_str("unknown"), DMScope::Main);
 }
@@ -200,7 +206,10 @@ fn test_dm_scope_from_str() {
 fn test_dm_scope_from_str_with_whitespace() {
     assert_eq!(DMScope::from_str("  main  "), DMScope::Main);
     assert_eq!(DMScope::from_str("  PER-PEER  "), DMScope::PerPeer);
-    assert_eq!(DMScope::from_str("  Per-Channel-Peer  "), DMScope::PerChannelPeer);
+    assert_eq!(
+        DMScope::from_str("  Per-Channel-Peer  "),
+        DMScope::PerChannelPeer
+    );
 }
 
 #[test]
@@ -211,7 +220,7 @@ fn test_peer_session_key_channel_peer_empty_peer_id() {
         account_id: "default".into(),
         peer: Some(RoutePeer {
             kind: "group".into(),
-            id: String::new(),  // empty peer ID
+            id: String::new(), // empty peer ID
         }),
         dm_scope: DMScope::Main,
         identity_links: HashMap::new(),
@@ -229,7 +238,7 @@ fn test_peer_session_key_with_whitespace_in_peer_id() {
         account_id: "default".into(),
         peer: Some(RoutePeer {
             kind: "direct".into(),
-            id: "  user42  ".to_string(),  // with whitespace
+            id: "  user42  ".to_string(), // with whitespace
         }),
         dm_scope: DMScope::PerPeer,
         identity_links: HashMap::new(),
@@ -260,7 +269,7 @@ fn test_peer_session_key_case_insensitive() {
 #[test]
 fn test_peer_session_key_empty_agent_id() {
     let params = SessionKeyParams {
-        agent_id: String::new(),  // empty agent ID
+        agent_id: String::new(), // empty agent ID
         channel: "web".into(),
         account_id: "default".into(),
         peer: Some(RoutePeer {
@@ -279,7 +288,7 @@ fn test_peer_session_key_empty_agent_id() {
 fn test_peer_session_key_empty_channel() {
     let params = SessionKeyParams {
         agent_id: "main".into(),
-        channel: String::new(),  // empty channel
+        channel: String::new(), // empty channel
         account_id: "default".into(),
         peer: Some(RoutePeer {
             kind: "group".into(),
@@ -307,7 +316,7 @@ fn test_identity_links_with_empty_peer_id() {
         account_id: "default".into(),
         peer: Some(RoutePeer {
             kind: "direct".into(),
-            id: String::new(),  // empty peer ID
+            id: String::new(), // empty peer ID
         }),
         dm_scope: DMScope::PerChannelPeer,
         identity_links: links,
@@ -321,7 +330,7 @@ fn test_identity_links_with_empty_peer_id() {
 fn test_identity_links_with_empty_canonical_name() {
     let mut links = HashMap::new();
     links.insert(
-        String::new(),  // empty canonical name
+        String::new(), // empty canonical name
         vec!["discord:alice_d".to_string()],
     );
 
@@ -346,7 +355,7 @@ fn test_identity_links_with_empty_link_entry() {
     let mut links = HashMap::new();
     links.insert(
         "alice".to_string(),
-        vec![String::new()],  // empty link entry
+        vec![String::new()], // empty link entry
     );
 
     let params = SessionKeyParams {
@@ -368,10 +377,7 @@ fn test_identity_links_with_empty_link_entry() {
 #[test]
 fn test_identity_links_channel_peer_format() {
     let mut links = HashMap::new();
-    links.insert(
-        "alice".to_string(),
-        vec!["discord:alice_d".to_string()],
-    );
+    links.insert("alice".to_string(), vec!["discord:alice_d".to_string()]);
 
     let params = SessionKeyParams {
         agent_id: "main".into(),
@@ -394,7 +400,7 @@ fn test_identity_links_bare_peer_id() {
     let mut links = HashMap::new();
     links.insert(
         "alice".to_string(),
-        vec!["alice_d".to_string()],  // bare peer ID without channel prefix
+        vec!["alice_d".to_string()], // bare peer ID without channel prefix
     );
 
     let params = SessionKeyParams {
@@ -416,10 +422,7 @@ fn test_identity_links_bare_peer_id() {
 #[test]
 fn test_identity_links_case_insensitive() {
     let mut links = HashMap::new();
-    links.insert(
-        "Alice".to_string(),
-        vec!["DISCORD:ALICE_D".to_string()],
-    );
+    links.insert("Alice".to_string(), vec!["DISCORD:ALICE_D".to_string()]);
 
     let params = SessionKeyParams {
         agent_id: "main".into(),
@@ -440,10 +443,7 @@ fn test_identity_links_case_insensitive() {
 #[test]
 fn test_identity_links_with_whitespace() {
     let mut links = HashMap::new();
-    links.insert(
-        "alice".to_string(),
-        vec!["  discord:alice_d  ".to_string()],
-    );
+    links.insert("alice".to_string(), vec!["  discord:alice_d  ".to_string()]);
 
     let params = SessionKeyParams {
         agent_id: "main".into(),
@@ -483,10 +483,7 @@ fn test_resolve_linked_peer_id_empty_identity_links() {
 #[test]
 fn test_resolve_linked_peer_id_empty_peer_id_with_links() {
     let mut links = HashMap::new();
-    links.insert(
-        "alice".to_string(),
-        vec!["discord:alice_d".to_string()],
-    );
+    links.insert("alice".to_string(), vec!["discord:alice_d".to_string()]);
 
     let params = SessionKeyParams {
         agent_id: "main".into(),
@@ -494,7 +491,7 @@ fn test_resolve_linked_peer_id_empty_peer_id_with_links() {
         account_id: "default".into(),
         peer: Some(RoutePeer {
             kind: "direct".into(),
-            id: String::new(),  // empty peer ID
+            id: String::new(), // empty peer ID
         }),
         dm_scope: DMScope::PerPeer,
         identity_links: links,
@@ -507,14 +504,11 @@ fn test_resolve_linked_peer_id_empty_peer_id_with_links() {
 #[test]
 fn test_resolve_linked_peer_id_empty_channel() {
     let mut links = HashMap::new();
-    links.insert(
-        "alice".to_string(),
-        vec!["discord:alice_d".to_string()],
-    );
+    links.insert("alice".to_string(), vec!["discord:alice_d".to_string()]);
 
     let params = SessionKeyParams {
         agent_id: "main".into(),
-        channel: String::new(),  // empty channel
+        channel: String::new(), // empty channel
         account_id: "default".into(),
         peer: Some(RoutePeer {
             kind: "direct".into(),
@@ -535,12 +529,12 @@ fn test_resolve_linked_peer_id_empty_channel_bare_match() {
     let mut links = HashMap::new();
     links.insert(
         "alice".to_string(),
-        vec!["alice_d".to_string()],  // bare peer ID (no channel prefix)
+        vec!["alice_d".to_string()], // bare peer ID (no channel prefix)
     );
 
     let params = SessionKeyParams {
         agent_id: "main".into(),
-        channel: String::new(),  // empty channel
+        channel: String::new(), // empty channel
         account_id: "default".into(),
         peer: Some(RoutePeer {
             kind: "direct".into(),
@@ -557,18 +551,15 @@ fn test_resolve_linked_peer_id_empty_channel_bare_match() {
 #[test]
 fn test_resolve_linked_peer_id_no_match_found() {
     let mut links = HashMap::new();
-    links.insert(
-        "alice".to_string(),
-        vec!["discord:alice_d".to_string()],
-    );
+    links.insert("alice".to_string(), vec!["discord:alice_d".to_string()]);
 
     let params = SessionKeyParams {
         agent_id: "main".into(),
-        channel: "slack".into(),  // different channel
+        channel: "slack".into(), // different channel
         account_id: "default".into(),
         peer: Some(RoutePeer {
             kind: "direct".into(),
-            id: "alice_s".to_string(),  // different peer ID
+            id: "alice_s".to_string(), // different peer ID
         }),
         dm_scope: DMScope::PerChannelPeer,
         identity_links: links,
@@ -624,14 +615,11 @@ fn test_resolve_linked_peer_id_multiple_links() {
 #[test]
 fn test_resolve_linked_peer_id_whitespace_in_channel() {
     let mut links = HashMap::new();
-    links.insert(
-        "alice".to_string(),
-        vec!["discord:alice_d".to_string()],
-    );
+    links.insert("alice".to_string(), vec!["discord:alice_d".to_string()]);
 
     let params = SessionKeyParams {
         agent_id: "main".into(),
-        channel: "  discord  ".to_string(),  // with whitespace
+        channel: "  discord  ".to_string(), // with whitespace
         account_id: "default".into(),
         peer: Some(RoutePeer {
             kind: "direct".into(),
@@ -648,10 +636,7 @@ fn test_resolve_linked_peer_id_whitespace_in_channel() {
 #[test]
 fn test_resolve_linked_peer_id_whitespace_in_peer_id() {
     let mut links = HashMap::new();
-    links.insert(
-        "alice".to_string(),
-        vec!["discord:alice_d".to_string()],
-    );
+    links.insert("alice".to_string(), vec!["discord:alice_d".to_string()]);
 
     let params = SessionKeyParams {
         agent_id: "main".into(),
@@ -659,7 +644,7 @@ fn test_resolve_linked_peer_id_whitespace_in_peer_id() {
         account_id: "default".into(),
         peer: Some(RoutePeer {
             kind: "direct".into(),
-            id: "  alice_d  ".to_string(),  // with whitespace
+            id: "  alice_d  ".to_string(), // with whitespace
         }),
         dm_scope: DMScope::PerPeer,
         identity_links: links,
@@ -676,7 +661,7 @@ fn test_peer_session_kind_empty_string() {
         channel: "web".into(),
         account_id: "default".into(),
         peer: Some(RoutePeer {
-            kind: String::new(),  // empty kind
+            kind: String::new(), // empty kind
             id: "user42".to_string(),
         }),
         dm_scope: DMScope::Main,
@@ -694,7 +679,7 @@ fn test_peer_session_whitespace_kind() {
         channel: "web".into(),
         account_id: "default".into(),
         peer: Some(RoutePeer {
-            kind: "  ".to_string(),  // whitespace only
+            kind: "  ".to_string(), // whitespace only
             id: "user42".to_string(),
         }),
         dm_scope: DMScope::Main,

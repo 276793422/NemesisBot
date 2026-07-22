@@ -146,7 +146,10 @@ pub struct DiscordChannel {
 
 impl DiscordChannel {
     /// Creates a new `DiscordChannel`.
-    pub fn new(config: DiscordConfig, bus_sender: broadcast::Sender<InboundMessage>) -> Result<Self> {
+    pub fn new(
+        config: DiscordConfig,
+        bus_sender: broadcast::Sender<InboundMessage>,
+    ) -> Result<Self> {
         if config.token.is_empty() {
             return Err(NemesisError::Channel(
                 "discord bot token is required".to_string(),
@@ -205,10 +208,7 @@ impl DiscordChannel {
 
     /// Sends a message to a Discord channel via REST API.
     async fn send_discord_message(&self, channel_id: &str, content: &str) -> Result<()> {
-        let url = format!(
-            "{}/channels/{}/messages",
-            self.config.api_base, channel_id
-        );
+        let url = format!("{}/channels/{}/messages", self.config.api_base, channel_id);
 
         let params = CreateMessageParams {
             content: content.to_string(),
@@ -237,10 +237,7 @@ impl DiscordChannel {
 
     /// Triggers typing indicator in a channel.
     pub async fn trigger_typing(&self, channel_id: &str) -> Result<()> {
-        let url = format!(
-            "{}/channels/{}/typing",
-            self.config.api_base, channel_id
-        );
+        let url = format!("{}/channels/{}/typing", self.config.api_base, channel_id);
 
         let resp = self
             .http
@@ -313,9 +310,9 @@ impl DiscordChannel {
             .await
             .map_err(|e| NemesisError::Channel(format!("discord gateway parse failed: {e}")))?;
 
-        let ws_url = resp["url"]
-            .as_str()
-            .ok_or_else(|| NemesisError::Channel("missing 'url' in gateway response".to_string()))?;
+        let ws_url = resp["url"].as_str().ok_or_else(|| {
+            NemesisError::Channel("missing 'url' in gateway response".to_string())
+        })?;
 
         Ok(format!("{ws_url}/?v=10&encoding=json"))
     }
@@ -383,7 +380,9 @@ impl DiscordChannel {
                 let ws_stream = match ws_result {
                     Ok((stream, _)) => stream,
                     Err(e) => {
-                        warn!("[DiscordChannel] gateway connection failed: {e}, retrying in {backoff:?}");
+                        warn!(
+                            "[DiscordChannel] gateway connection failed: {e}, retrying in {backoff:?}"
+                        );
                         tokio::time::sleep(backoff).await;
                         backoff = (backoff * 2).min(MAX_BACKOFF);
                         continue;
@@ -452,8 +451,9 @@ impl DiscordChannel {
                             let hb_acked = heartbeat_acked.clone();
                             let hb_running = running.clone();
                             heartbeat_handle = Some(tokio::spawn(async move {
-                                let mut ticker =
-                                    tokio::time::interval(std::time::Duration::from_millis(interval));
+                                let mut ticker = tokio::time::interval(
+                                    std::time::Duration::from_millis(interval),
+                                );
                                 ticker.tick().await; // skip first tick
                                 loop {
                                     if !*hb_running.read() {
@@ -462,7 +462,9 @@ impl DiscordChannel {
                                     ticker.tick().await;
 
                                     if !hb_acked.swap(false, Ordering::Relaxed) {
-                                        warn!("[DiscordChannel] heartbeat not ACKed, forcing reconnect");
+                                        warn!(
+                                            "[DiscordChannel] heartbeat not ACKed, forcing reconnect"
+                                        );
                                         let _ = hb_sink.lock().await.close().await;
                                         return;
                                     }
@@ -472,14 +474,18 @@ impl DiscordChannel {
                                     let text = match serde_json::to_string(&hb_payload) {
                                         Ok(s) => s,
                                         Err(e) => {
-                                            error!("[DiscordChannel] heartbeat serialize failed: {e}");
+                                            error!(
+                                                "[DiscordChannel] heartbeat serialize failed: {e}"
+                                            );
                                             return;
                                         }
                                     };
                                     if hb_sink
                                         .lock()
                                         .await
-                                        .send(tokio_tungstenite::tungstenite::Message::Text(text.into()))
+                                        .send(tokio_tungstenite::tungstenite::Message::Text(
+                                            text.into(),
+                                        ))
                                         .await
                                         .is_err()
                                     {
@@ -526,8 +532,7 @@ impl DiscordChannel {
                                         d["user"]["id"].as_str().unwrap_or("").to_string();
                                     let username =
                                         d["user"]["username"].as_str().unwrap_or("unknown");
-                                    let sid =
-                                        d["session_id"].as_str().unwrap_or("").to_string();
+                                    let sid = d["session_id"].as_str().unwrap_or("").to_string();
                                     let resume_url =
                                         d["resume_gateway_url"].as_str().unwrap_or("").to_string();
 
@@ -541,21 +546,18 @@ impl DiscordChannel {
                                 }
 
                                 "MESSAGE_CREATE" | "MESSAGE_UPDATE" => {
-                                    if let Some(inbound) = Self::parse_gateway_message(
-                                        d,
-                                        &bot_user_id,
-                                        &allow_from,
-                                    )
-                                    .await
+                                    if let Some(inbound) =
+                                        Self::parse_gateway_message(d, &bot_user_id, &allow_from)
+                                            .await
                                     {
                                         debug!(
                                             "[DiscordChannel] {} from {} in channel {}",
-                                            event_name,
-                                            inbound.sender_id,
-                                            inbound.chat_id
+                                            event_name, inbound.sender_id, inbound.chat_id
                                         );
                                         if bus_sender.send(inbound).is_err() {
-                                            warn!("[DiscordChannel] failed to publish inbound message (no receivers)");
+                                            warn!(
+                                                "[DiscordChannel] failed to publish inbound message (no receivers)"
+                                            );
                                         }
                                     }
                                 }
@@ -746,9 +748,7 @@ impl Channel for DiscordChannel {
 
     async fn send(&self, msg: OutboundMessage) -> Result<()> {
         if !*self.running.read() {
-            return Err(NemesisError::Channel(
-                "discord bot not running".to_string(),
-            ));
+            return Err(NemesisError::Channel("discord bot not running".to_string()));
         }
 
         if msg.chat_id.is_empty() {

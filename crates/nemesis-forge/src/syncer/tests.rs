@@ -12,8 +12,10 @@ fn test_fm8_sanitize_report_never_leaks_secrets() {
     let report = serde_json::json!({"content": "token: abcdefghijklmnopqrst1234567890"});
     let result = syncer.sanitize_report_for_test(&report);
     let result_str = serde_json::to_string(&result).unwrap_or_default();
-    assert!(!result_str.contains("abcdefghijklmnopqrst1234567890"),
-        "must never leak the secret, even on parse failure (F-M8)");
+    assert!(
+        !result_str.contains("abcdefghijklmnopqrst1234567890"),
+        "must never leak the secret, even on parse failure (F-M8)"
+    );
 }
 
 #[tokio::test]
@@ -88,7 +90,11 @@ fn test_receive_reflection() {
     let name = entries[0].file_name().to_string_lossy().to_string();
     // The filename should contain the sanitized node ID prefix
     assert!(name.ends_with(".md"), "Expected .md file, got: {}", name);
-    assert!(name.contains("node"), "Expected 'node' in filename, got: {}", name);
+    assert!(
+        name.contains("node"),
+        "Expected 'node' in filename, got: {}",
+        name
+    );
 }
 
 #[test]
@@ -170,7 +176,10 @@ async fn test_set_bridge() {
     assert_eq!(syncer.bridge.local_node_id(), "node-2");
 
     // Verify the syncer still works with the new bridge
-    let count = syncer.share_reflection(serde_json::json!({})).await.unwrap();
+    let count = syncer
+        .share_reflection(serde_json::json!({}))
+        .await
+        .unwrap();
     assert_eq!(count, 0);
 }
 
@@ -202,7 +211,10 @@ fn test_receive_reflection_auto_filename() {
 
     let remote_dir = dir.path().join("reflections").join("remote");
     assert!(remote_dir.exists());
-    let entries: Vec<_> = std::fs::read_dir(&remote_dir).unwrap().filter_map(|e| e.ok()).collect();
+    let entries: Vec<_> = std::fs::read_dir(&remote_dir)
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .collect();
     assert_eq!(entries.len(), 1);
 }
 
@@ -221,7 +233,10 @@ fn test_receive_reflection_with_metadata_header() {
     syncer.receive_reflection(&payload).unwrap();
 
     let remote_dir = dir.path().join("reflections").join("remote");
-    let entries: Vec<_> = std::fs::read_dir(&remote_dir).unwrap().filter_map(|e| e.ok()).collect();
+    let entries: Vec<_> = std::fs::read_dir(&remote_dir)
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .collect();
     assert_eq!(entries.len(), 1);
     let content = std::fs::read_to_string(entries[0].path()).unwrap();
     assert!(content.contains("Remote reflection from"));
@@ -344,7 +359,10 @@ fn test_receive_reflection_from_empty() {
     syncer.receive_reflection(&payload).unwrap();
 
     let remote_dir = dir.path().join("reflections").join("remote");
-    let entries: Vec<_> = std::fs::read_dir(&remote_dir).unwrap().filter_map(|e| e.ok()).collect();
+    let entries: Vec<_> = std::fs::read_dir(&remote_dir)
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .collect();
     assert_eq!(entries.len(), 1);
 }
 

@@ -49,7 +49,10 @@ impl std::fmt::Debug for RequestContext {
             .field("user", &self.user)
             .field("session_key", &self.session_key)
             .field("correlation_id", &self.correlation_id)
-            .field("async_callback", &self.async_callback.as_ref().map(|_| "..."))
+            .field(
+                "async_callback",
+                &self.async_callback.as_ref().map(|_| "..."),
+            )
             .finish()
     }
 }
@@ -213,7 +216,10 @@ impl ContextBuilder {
             .filter_map(|def| {
                 let func = def.get("function")?;
                 let name = func.get("name")?.as_str()?;
-                let desc = func.get("description").and_then(|d| d.as_str()).unwrap_or("");
+                let desc = func
+                    .get("description")
+                    .and_then(|d| d.as_str())
+                    .unwrap_or("");
                 Some(format!("- **{}**: {}", name, desc))
             })
             .collect();
@@ -287,7 +293,10 @@ impl ContextBuilder {
     /// 4. Memory context — may change
     /// 5. Core identity section (time, environment, workspace) — dynamic, at end for caching
     pub fn build_system_prompt(&self, skip_bootstrap: bool) -> String {
-        info!("[ContextBuilder] Building system prompt from workspace: {:?}", self.workspace);
+        info!(
+            "[ContextBuilder] Building system prompt from workspace: {:?}",
+            self.workspace
+        );
         let mut parts = Vec::new();
 
         // Bootstrap content (IDENTITY.md, SOUL.md, AGENT.md, TOOLS.md, USER.md, etc.)
@@ -320,7 +329,10 @@ impl ContextBuilder {
 
         // Join with "---" separator
         let result = parts.join("\n\n---\n\n");
-        debug!("[ContextBuilder] System prompt built, total length={}", result.len());
+        debug!(
+            "[ContextBuilder] System prompt built, total length={}",
+            result.len()
+        );
         result
     }
 

@@ -279,10 +279,7 @@ impl ApprovalManager {
             .get_mut(request_id)
             .ok_or_else(|| format!("request not found: {}", request_id))?;
         if req.status != ApprovalStatus::Pending {
-            return Err(format!(
-                "request is not pending (current: {})",
-                req.status
-            ));
+            return Err(format!("request is not pending (current: {})", req.status));
         }
         req.status = ApprovalStatus::Approved;
         Ok(())
@@ -295,10 +292,7 @@ impl ApprovalManager {
             .get_mut(request_id)
             .ok_or_else(|| format!("request not found: {}", request_id))?;
         if req.status != ApprovalStatus::Pending {
-            return Err(format!(
-                "request is not pending (current: {})",
-                req.status
-            ));
+            return Err(format!("request is not pending (current: {})", req.status));
         }
         req.status = ApprovalStatus::Denied;
         req.deny_reason = Some(reason.to_string());
@@ -462,7 +456,10 @@ impl MultiProcessApprovalManager {
 
         tracing::info!(
             "[approval] Requesting approval (multi-process): request_id={}, operation={}, target={}, risk_level={}",
-            req.request_id, req.operation, req.target, req.risk_level
+            req.request_id,
+            req.operation,
+            req.target,
+            req.risk_level
         );
 
         let start = Instant::now();
@@ -473,9 +470,7 @@ impl MultiProcessApprovalManager {
         match factory {
             None => {
                 // No child process factory - fallback behavior
-                tracing::info!(
-                    "[approval] No ChildProcessFactory set, using default behavior"
-                );
+                tracing::info!("[approval] No ChildProcessFactory set, using default behavior");
 
                 if is_safe_operation(&req.operation, &req.risk_level) {
                     tracing::info!(
@@ -562,10 +557,7 @@ impl MultiProcessApprovalManager {
                     }
                 };
 
-                tracing::info!(
-                    "[approval] Child process created: child_id={}",
-                    child_id
-                );
+                tracing::info!("[approval] Child process created: child_id={}", child_id);
 
                 // Wait for result with timeout
                 let timeout_duration = if req.timeout_seconds > 0 {
@@ -593,7 +585,9 @@ impl MultiProcessApprovalManager {
 
                         tracing::info!(
                             "[approval] Approval received: request_id={}, approved={}, duration={:.3}",
-                            resp.request_id, resp.approved, resp.duration_seconds
+                            resp.request_id,
+                            resp.approved,
+                            resp.duration_seconds
                         );
 
                         Ok(resp)

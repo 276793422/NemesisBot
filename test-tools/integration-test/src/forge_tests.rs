@@ -23,44 +23,73 @@ pub async fn test_forge_enable_disable(ws: &TestWorkspace, bin: &Path) -> Vec<Te
     if output.success() || output.stdout_contains("enabled") {
         results.push(pass(&format!("{}/enable", suite), "Forge enabled"));
     } else {
-        results.push(fail(&format!("{}/enable", suite), &format!(
-            "exit={}, stdout='{}'", output.exit_code, output.stdout.trim()
-        )));
+        results.push(fail(
+            &format!("{}/enable", suite),
+            &format!(
+                "exit={}, stdout='{}'",
+                output.exit_code,
+                output.stdout.trim()
+            ),
+        ));
     }
 
     // Verify config
     if let Ok(data) = std::fs::read_to_string(ws.config_path()) {
         if let Ok(cfg) = serde_json::from_str::<Value>(&data) {
-            let enabled = cfg.get("forge")
+            let enabled = cfg
+                .get("forge")
                 .and_then(|f| f.get("enabled"))
                 .and_then(|v| v.as_bool())
                 .unwrap_or(false);
             if enabled {
-                results.push(pass(&format!("{}/config_enabled", suite), "forge.enabled=true"));
+                results.push(pass(
+                    &format!("{}/config_enabled", suite),
+                    "forge.enabled=true",
+                ));
             } else {
-                results.push(fail(&format!("{}/config_enabled", suite), "forge.enabled not true"));
+                results.push(fail(
+                    &format!("{}/config_enabled", suite),
+                    "forge.enabled not true",
+                ));
             }
         }
     }
 
     // Check forge directories were created
     let forge_dir = ws.forge_dir();
-    let required_dirs = ["experiences", "reflections", "skills", "scripts", "mcp", "traces", "learning"];
+    let required_dirs = [
+        "experiences",
+        "reflections",
+        "skills",
+        "scripts",
+        "mcp",
+        "traces",
+        "learning",
+    ];
     let mut created = 0;
     for d in &required_dirs {
         if forge_dir.join(d).exists() {
             created += 1;
         }
     }
-    results.push(pass(&format!("{}/directories", suite),
-        &format!("{}/{} forge directories created", created, required_dirs.len())));
+    results.push(pass(
+        &format!("{}/directories", suite),
+        &format!(
+            "{}/{} forge directories created",
+            created,
+            required_dirs.len()
+        ),
+    ));
 
     // Check forge.json
     let forge_config = forge_dir.join("forge.json");
     if forge_config.exists() {
         results.push(pass(&format!("{}/forge_json", suite), "forge.json created"));
     } else {
-        results.push(skip(&format!("{}/forge_json", suite), "forge.json not found"));
+        results.push(skip(
+            &format!("{}/forge_json", suite),
+            "forge.json not found",
+        ));
     }
 
     // Disable forge
@@ -68,22 +97,34 @@ pub async fn test_forge_enable_disable(ws: &TestWorkspace, bin: &Path) -> Vec<Te
     if output.success() || output.stdout_contains("disabled") {
         results.push(pass(&format!("{}/disable", suite), "Forge disabled"));
     } else {
-        results.push(fail(&format!("{}/disable", suite), &format!(
-            "exit={}, stdout='{}'", output.exit_code, output.stdout.trim()
-        )));
+        results.push(fail(
+            &format!("{}/disable", suite),
+            &format!(
+                "exit={}, stdout='{}'",
+                output.exit_code,
+                output.stdout.trim()
+            ),
+        ));
     }
 
     // Verify disabled in config
     if let Ok(data) = std::fs::read_to_string(ws.config_path()) {
         if let Ok(cfg) = serde_json::from_str::<Value>(&data) {
-            let enabled = cfg.get("forge")
+            let enabled = cfg
+                .get("forge")
                 .and_then(|f| f.get("enabled"))
                 .and_then(|v| v.as_bool())
                 .unwrap_or(true);
             if !enabled {
-                results.push(pass(&format!("{}/config_disabled", suite), "forge.enabled=false"));
+                results.push(pass(
+                    &format!("{}/config_disabled", suite),
+                    "forge.enabled=false",
+                ));
             } else {
-                results.push(fail(&format!("{}/config_disabled", suite), "forge.enabled still true"));
+                results.push(fail(
+                    &format!("{}/config_disabled", suite),
+                    "forge.enabled still true",
+                ));
             }
         }
     }
@@ -141,10 +182,15 @@ pub async fn test_forge_reflect_manual(ws: &TestWorkspace, bin: &Path) -> Vec<Te
     if output.success() {
         results.push(pass(&format!("{}/exit", suite), "Forge reflect succeeded"));
     } else if output.stdout_contains("No experiences") {
-        results.push(pass(&format!("{}/no_data", suite), "No experiences to reflect on (expected)"));
+        results.push(pass(
+            &format!("{}/no_data", suite),
+            "No experiences to reflect on (expected)",
+        ));
     } else {
-        results.push(pass(&format!("{}/attempted", suite),
-            &format!("exit={}, partial success", output.exit_code)));
+        results.push(pass(
+            &format!("{}/attempted", suite),
+            &format!("exit={}, partial success", output.exit_code),
+        ));
     }
 
     // Check if reflections directory has any files
@@ -153,7 +199,10 @@ pub async fn test_forge_reflect_manual(ws: &TestWorkspace, bin: &Path) -> Vec<Te
         let count = std::fs::read_dir(&reflect_dir)
             .map(|r| r.count())
             .unwrap_or(0);
-        results.push(pass(&format!("{}/dir", suite), &format!("{} reflection files", count)));
+        results.push(pass(
+            &format!("{}/dir", suite),
+            &format!("{} reflection files", count),
+        ));
     }
 
     results
@@ -190,17 +239,32 @@ pub async fn test_forge_create_skill(ws: &TestWorkspace, bin: &Path) -> Vec<Test
         vec![]
     };
     registry.push(artifact);
-    std::fs::write(&registry_path, serde_json::to_string_pretty(&registry).unwrap()).unwrap();
+    std::fs::write(
+        &registry_path,
+        serde_json::to_string_pretty(&registry).unwrap(),
+    )
+    .unwrap();
 
-    results.push(pass(&format!("{}/registry", suite), "Test artifact added to registry"));
+    results.push(pass(
+        &format!("{}/registry", suite),
+        "Test artifact added to registry",
+    ));
 
     // List and verify
     let output = ws.run_cli(bin, &["forge", "list"]).await;
     if output.stdout_contains("test-skill-001") || output.stdout_contains("test_skill") {
-        results.push(pass(&format!("{}/list", suite), "Artifact visible in forge list"));
+        results.push(pass(
+            &format!("{}/list", suite),
+            "Artifact visible in forge list",
+        ));
     } else {
-        results.push(pass(&format!("{}/list", suite),
-            &format!("List completed (artifact may not show: '{}')", output.stdout.trim())));
+        results.push(pass(
+            &format!("{}/list", suite),
+            &format!(
+                "List completed (artifact may not show: '{}')",
+                output.stdout.trim()
+            ),
+        ));
     }
 
     results
@@ -215,13 +279,21 @@ pub async fn test_forge_evaluate_artifact(ws: &TestWorkspace, bin: &Path) -> Vec
     let mut results = Vec::new();
     print_suite_header(suite);
 
-    let output = ws.run_cli(bin, &["forge", "evaluate", "test-skill-001"]).await;
+    let output = ws
+        .run_cli(bin, &["forge", "evaluate", "test-skill-001"])
+        .await;
 
     if output.success() || output.stdout_contains("test-skill-001") {
         results.push(pass(&format!("{}/evaluated", suite), "Artifact evaluated"));
     } else {
-        results.push(pass(&format!("{}/attempted", suite),
-            &format!("exit={}, output='{}'", output.exit_code, output.stdout.trim())));
+        results.push(pass(
+            &format!("{}/attempted", suite),
+            &format!(
+                "exit={}, output='{}'",
+                output.exit_code,
+                output.stdout.trim()
+            ),
+        ));
     }
 
     results
@@ -241,7 +313,10 @@ pub async fn test_forge_list_artifacts(ws: &TestWorkspace, bin: &Path) -> Vec<Te
     if output.success() {
         results.push(pass(&format!("{}/exit", suite), "Forge list succeeded"));
     } else {
-        results.push(fail(&format!("{}/exit", suite), &format!("exit={}", output.exit_code)));
+        results.push(fail(
+            &format!("{}/exit", suite),
+            &format!("exit={}", output.exit_code),
+        ));
     }
 
     // Verify registry exists
@@ -249,8 +324,10 @@ pub async fn test_forge_list_artifacts(ws: &TestWorkspace, bin: &Path) -> Vec<Te
     if registry_path.exists() {
         if let Ok(data) = std::fs::read_to_string(&registry_path) {
             if let Ok(arr) = serde_json::from_str::<Vec<Value>>(&data) {
-                results.push(pass(&format!("{}/count", suite),
-                    &format!("{} artifact(s) in registry", arr.len())));
+                results.push(pass(
+                    &format!("{}/count", suite),
+                    &format!("{} artifact(s) in registry", arr.len()),
+                ));
             }
         }
     }
@@ -270,11 +347,15 @@ pub async fn test_forge_learning_status(ws: &TestWorkspace, bin: &Path) -> Vec<T
     let output = ws.run_cli(bin, &["forge", "learning", "status"]).await;
 
     if output.stdout_contains("Learning") || output.stdout_contains("learning") {
-        results.push(pass(&format!("{}/output", suite), "Learning status output received"));
+        results.push(pass(
+            &format!("{}/output", suite),
+            "Learning status output received",
+        ));
     } else {
-        results.push(fail(&format!("{}/output", suite), &format!(
-            "No learning info: '{}'", output.stdout.trim()
-        )));
+        results.push(fail(
+            &format!("{}/output", suite),
+            &format!("No learning info: '{}'", output.stdout.trim()),
+        ));
     }
 
     // Check forge.json for learning_enabled field
@@ -282,11 +363,14 @@ pub async fn test_forge_learning_status(ws: &TestWorkspace, bin: &Path) -> Vec<T
     if forge_config.exists() {
         if let Ok(data) = std::fs::read_to_string(&forge_config) {
             if let Ok(cfg) = serde_json::from_str::<Value>(&data) {
-                let learning_enabled = cfg.get("learning_enabled")
+                let learning_enabled = cfg
+                    .get("learning_enabled")
                     .and_then(|v| v.as_bool())
                     .unwrap_or(false);
-                results.push(pass(&format!("{}/config", suite),
-                    &format!("learning_enabled: {}", learning_enabled)));
+                results.push(pass(
+                    &format!("{}/config", suite),
+                    &format!("learning_enabled: {}", learning_enabled),
+                ));
             }
         }
     }
@@ -327,13 +411,18 @@ pub async fn test_forge_sanitizer(ws: &TestWorkspace) -> Vec<TestResult> {
 
     // Verify the report was written
     if report_path.exists() {
-        results.push(pass(&format!("{}/write", suite), "Reflection report written"));
+        results.push(pass(
+            &format!("{}/write", suite),
+            "Reflection report written",
+        ));
     }
 
     // The sanitizer would be tested via the forge share command
     // which is only available in cluster mode
-    results.push(pass(&format!("{}/sanitizer_note", suite),
-        "Sanitizer tested via unit tests; integration requires cluster mode"));
+    results.push(pass(
+        &format!("{}/sanitizer_note", suite),
+        "Sanitizer tested via unit tests; integration requires cluster mode",
+    ));
 
     results
 }

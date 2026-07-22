@@ -5,9 +5,7 @@
 use serde::{Deserialize, Serialize};
 
 // Re-export the canonical types from nemesis-types.
-pub use nemesis_types::cluster::{
-    NodeInfo, NodeRole, RpcMessage, Task, TaskStatus,
-};
+pub use nemesis_types::cluster::{NodeInfo, NodeRole, RpcMessage, Task, TaskStatus};
 
 /// Cluster configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -199,7 +197,9 @@ impl ExtendedNodeInfo {
             let now = chrono::Local::now();
             let last_seen_local = last_seen.with_timezone(&chrono::Local);
             if now > last_seen_local {
-                (now - last_seen_local).to_std().unwrap_or(std::time::Duration::ZERO)
+                (now - last_seen_local)
+                    .to_std()
+                    .unwrap_or(std::time::Duration::ZERO)
             } else {
                 std::time::Duration::ZERO
             }

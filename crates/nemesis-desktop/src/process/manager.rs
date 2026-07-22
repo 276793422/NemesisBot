@@ -10,8 +10,8 @@
 //! - `spawn_child()` — create a child process, perform pipe handshake, send WS key
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicI64, Ordering};
 use std::time::Duration;
 
 use parking_lot::Mutex;
@@ -19,7 +19,7 @@ use tokio::sync::broadcast;
 use tracing::{debug, info, warn};
 
 use super::executor::{ChildProcess, DefaultPlatformExecutor, PlatformExecutor, ProcessStatus};
-use super::handshake::{PipeMessage, ACK_TIMEOUT};
+use super::handshake::{ACK_TIMEOUT, PipeMessage};
 use crate::websocket::protocol::Message;
 use crate::websocket::server::WebSocketServer;
 
@@ -147,7 +147,13 @@ impl ProcessManager {
         &self,
         window_type: &str,
         data: &serde_json::Value,
-    ) -> Result<(String, Option<tokio::sync::oneshot::Receiver<serde_json::Value>>), String> {
+    ) -> Result<
+        (
+            String,
+            Option<tokio::sync::oneshot::Receiver<serde_json::Value>>,
+        ),
+        String,
+    > {
         let child_id = format!("child-{}", self.next_id.fetch_add(1, Ordering::SeqCst));
         info!(
             "[ProcessManager] Spawning child {} (type: {})",
@@ -155,8 +161,8 @@ impl ProcessManager {
         );
 
         // Get current executable path
-        let exe_path = std::env::current_exe()
-            .map_err(|e| format!("failed to get executable path: {}", e))?;
+        let exe_path =
+            std::env::current_exe().map_err(|e| format!("failed to get executable path: {}", e))?;
 
         let args = vec![
             "--multiple".to_string(),
@@ -166,10 +172,9 @@ impl ProcessManager {
             window_type.to_string(),
         ];
 
-        let mut child = self.executor.spawn_child(
-            exe_path.to_string_lossy().as_ref(),
-            &args,
-        )?;
+        let mut child = self
+            .executor
+            .spawn_child(exe_path.to_string_lossy().as_ref(), &args)?;
 
         child.id = child_id.clone();
         child.window_type = window_type.to_string();
@@ -191,7 +196,10 @@ impl ProcessManager {
             return Err("handshake failed".to_string());
         }
 
-        info!("[ProcessManager] Handshake completed with child {}", child_id);
+        info!(
+            "[ProcessManager] Handshake completed with child {}",
+            child_id
+        );
 
         // Generate WebSocket key
         let ws_port = self.ws_server.get_port();
@@ -244,7 +252,10 @@ impl ProcessManager {
     /// Perform the parent-side handshake with a child process.
     ///
     /// Sends a handshake message via stdin pipe and waits for ACK on stdout pipe.
-    fn perform_handshake(&self, child_id: &str) -> Result<super::handshake::HandshakeResult, String> {
+    fn perform_handshake(
+        &self,
+        child_id: &str,
+    ) -> Result<super::handshake::HandshakeResult, String> {
         let mut state = self.state.lock();
         let child = state
             .children
@@ -389,7 +400,10 @@ impl ProcessManager {
             }
 
             if conn_attempts > 100 {
-                eprintln!("[PM] WARNING: WS connection for {} not found after 10s", child_id);
+                eprintln!(
+                    "[PM] WARNING: WS connection for {} not found after 10s",
+                    child_id
+                );
             }
 
             // Register approval.submit handler on the connection's dispatcher
@@ -402,34 +416,43 @@ impl ProcessManager {
                 let guard = conn.lock().await;
                 let cid = handler_child_id.clone();
                 let hs = handler_state.clone();
-                guard.dispatcher.register_notification("approval.submit", move |msg| {
-                    let action = msg.params.as_ref()
-                        .and_then(|p| p.get("action"))
-                        .and_then(|a| a.as_str())
-                        .unwrap_or("rejected")
-                        .to_string();
-                    let request_id = msg.params.as_ref()
-                        .and_then(|p| p.get("request_id"))
-                        .and_then(|a| a.as_str())
-                        .unwrap_or("")
-                        .to_string();
+                guard
+                    .dispatcher
+                    .register_notification("approval.submit", move |msg| {
+                        let action = msg
+                            .params
+                            .as_ref()
+                            .and_then(|p| p.get("action"))
+                            .and_then(|a| a.as_str())
+                            .unwrap_or("rejected")
+                            .to_string();
+                        let request_id = msg
+                            .params
+                            .as_ref()
+                            .and_then(|p| p.get("request_id"))
+                            .and_then(|a| a.as_str())
+                            .unwrap_or("")
+                            .to_string();
 
-                    let result = serde_json::json!({
-                        "action": action,
-                        "request_id": request_id,
+                        let result = serde_json::json!({
+                            "action": action,
+                            "request_id": request_id,
+                        });
+
+                        eprintln!(
+                            "[PM] approval.submit handler fired: action={}, request_id={}",
+                            action, request_id
+                        );
+
+                        // Submit via result channel
+                        let mut s = hs.lock();
+                        if let Some(tx) = s.result_channels.remove(&cid) {
+                            eprintln!("[PM] Sending result to test channel");
+                            let _ = tx.send(result);
+                        } else {
+                            eprintln!("[PM] WARNING: no result channel for {}", cid);
+                        }
                     });
-
-                    eprintln!("[PM] approval.submit handler fired: action={}, request_id={}", action, request_id);
-
-                    // Submit via result channel
-                    let mut s = hs.lock();
-                    if let Some(tx) = s.result_channels.remove(&cid) {
-                        eprintln!("[PM] Sending result to test channel");
-                        let _ = tx.send(result);
-                    } else {
-                        eprintln!("[PM] WARNING: no result channel for {}", cid);
-                    }
-                });
                 drop(guard);
             }
 
@@ -475,8 +498,7 @@ impl ProcessManager {
         }
 
         // Send notification via WebSocket server
-        self.ws_server
-            .send_notification(child_id, method, params)?;
+        self.ws_server.send_notification(child_id, method, params)?;
 
         debug!(
             "[ProcessManager] Notification sent to child {}: {}",

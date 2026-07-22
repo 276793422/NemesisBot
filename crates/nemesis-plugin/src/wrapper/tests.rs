@@ -1,14 +1,27 @@
 use super::*;
 use std::any::Any;
 
-struct TestPlugin { running: bool }
+struct TestPlugin {
+    running: bool,
+}
 
 impl Plugin for TestPlugin {
-    fn name(&self) -> &str { "test" }
-    fn init(&mut self, _config: &serde_json::Value) -> Result<(), String> { self.running = true; Ok(()) }
-    fn is_running(&self) -> bool { self.running }
-    fn as_any(&self) -> &dyn Any { self }
-    fn cleanup(&self) -> Result<(), String> { Ok(()) }
+    fn name(&self) -> &str {
+        "test"
+    }
+    fn init(&mut self, _config: &serde_json::Value) -> Result<(), String> {
+        self.running = true;
+        Ok(())
+    }
+    fn is_running(&self) -> bool {
+        self.running
+    }
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+    fn cleanup(&self) -> Result<(), String> {
+        Ok(())
+    }
 }
 
 #[test]
@@ -98,11 +111,15 @@ fn test_wrapper_not_initialized_shutdown() {
 fn test_init_fails_propagates_error() {
     struct FailInitPlugin;
     impl Plugin for FailInitPlugin {
-        fn name(&self) -> &str { "fail_init" }
+        fn name(&self) -> &str {
+            "fail_init"
+        }
         fn init(&mut self, _config: &serde_json::Value) -> Result<(), String> {
             Err("init failed".to_string())
         }
-        fn as_any(&self) -> &dyn Any { self }
+        fn as_any(&self) -> &dyn Any {
+            self
+        }
     }
 
     let wrapper = PluginWrapper::new(Box::new(FailInitPlugin));
@@ -116,10 +133,18 @@ fn test_init_fails_propagates_error() {
 fn test_shutdown_fails_propagates_error() {
     struct FailCleanupPlugin;
     impl Plugin for FailCleanupPlugin {
-        fn name(&self) -> &str { "fail_cleanup" }
-        fn init(&mut self, _config: &serde_json::Value) -> Result<(), String> { Ok(()) }
-        fn as_any(&self) -> &dyn Any { self }
-        fn cleanup(&self) -> Result<(), String> { Err("cleanup failed".to_string()) }
+        fn name(&self) -> &str {
+            "fail_cleanup"
+        }
+        fn init(&mut self, _config: &serde_json::Value) -> Result<(), String> {
+            Ok(())
+        }
+        fn as_any(&self) -> &dyn Any {
+            self
+        }
+        fn cleanup(&self) -> Result<(), String> {
+            Err("cleanup failed".to_string())
+        }
     }
 
     let wrapper = PluginWrapper::new(Box::new(FailCleanupPlugin));
@@ -147,9 +172,15 @@ fn test_with_config_null() {
 fn test_version_custom() {
     struct VersionedPlugin;
     impl Plugin for VersionedPlugin {
-        fn name(&self) -> &str { "versioned" }
-        fn version(&self) -> &str { "2.5.0" }
-        fn as_any(&self) -> &dyn Any { self }
+        fn name(&self) -> &str {
+            "versioned"
+        }
+        fn version(&self) -> &str {
+            "2.5.0"
+        }
+        fn as_any(&self) -> &dyn Any {
+            self
+        }
     }
 
     let wrapper = PluginWrapper::new(Box::new(VersionedPlugin));

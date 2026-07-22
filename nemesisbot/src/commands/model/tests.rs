@@ -19,17 +19,30 @@ fn test_model_add_and_list() {
                 arr.push(entry);
             }
         }
-        obj.insert("default_model".to_string(), serde_json::Value::String("test/model-1".to_string()));
+        obj.insert(
+            "default_model".to_string(),
+            serde_json::Value::String("test/model-1".to_string()),
+        );
     }
     fs::write(&cfg_path, serde_json::to_string_pretty(&config).unwrap()).unwrap();
 
     // Verify
-    let loaded: serde_json::Value = serde_json::from_str(&fs::read_to_string(&cfg_path).unwrap()).unwrap();
-    assert_eq!(loaded.get("default_model").and_then(|v| v.as_str()), Some("test/model-1"));
+    let loaded: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&cfg_path).unwrap()).unwrap();
+    assert_eq!(
+        loaded.get("default_model").and_then(|v| v.as_str()),
+        Some("test/model-1")
+    );
     let models = loaded.get("model_list").unwrap().as_array().unwrap();
     assert_eq!(models.len(), 1);
-    assert_eq!(models[0].get("proxy").and_then(|v| v.as_str()), Some("http://proxy:8080"));
-    assert_eq!(models[0].get("auth_method").and_then(|v| v.as_str()), Some("token"));
+    assert_eq!(
+        models[0].get("proxy").and_then(|v| v.as_str()),
+        Some("http://proxy:8080")
+    );
+    assert_eq!(
+        models[0].get("auth_method").and_then(|v| v.as_str()),
+        Some("token")
+    );
 }
 
 #[test]
@@ -39,8 +52,12 @@ fn test_model_remove_default_protection() {
     let cfg_path = tmp.path().join("config.json");
     fs::write(&cfg_path, serde_json::to_string(&cfg).unwrap()).unwrap();
 
-    let loaded: serde_json::Value = serde_json::from_str(&fs::read_to_string(&cfg_path).unwrap()).unwrap();
-    let default = loaded.get("default_model").and_then(|v| v.as_str()).unwrap_or("");
+    let loaded: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&cfg_path).unwrap()).unwrap();
+    let default = loaded
+        .get("default_model")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
     assert_eq!(default, "test/model-1");
     // Default model should be protected (not removed without --force)
 }
@@ -106,7 +123,8 @@ fn test_model_list_default_from_agents() {
         "default_model": "legacy-model"
     });
     // agents.defaults.llm takes priority
-    let default = cfg.get("agents")
+    let default = cfg
+        .get("agents")
         .and_then(|a| a.get("defaults"))
         .and_then(|d| d.get("llm"))
         .and_then(|v| v.as_str())
@@ -121,7 +139,8 @@ fn test_model_list_default_fallback() {
         "default_model": "legacy-model"
     });
     // Falls back to default_model when agents.defaults.llm is absent
-    let default = cfg.get("agents")
+    let default = cfg
+        .get("agents")
         .and_then(|a| a.get("defaults"))
         .and_then(|d| d.get("llm"))
         .and_then(|v| v.as_str())
@@ -133,7 +152,8 @@ fn test_model_list_default_fallback() {
 #[test]
 fn test_model_list_no_default() {
     let cfg = serde_json::json!({});
-    let default = cfg.get("agents")
+    let default = cfg
+        .get("agents")
         .and_then(|a| a.get("defaults"))
         .and_then(|d| d.get("llm"))
         .and_then(|v| v.as_str())
@@ -148,21 +168,23 @@ fn test_model_list_no_default() {
 
 #[test]
 fn test_model_entry_duplicate_detection() {
-    let arr: Vec<serde_json::Value> = vec![
-        serde_json::json!({"model": "openai/gpt-4o", "model_name": "gpt-4o"}),
-    ];
+    let arr: Vec<serde_json::Value> =
+        vec![serde_json::json!({"model": "openai/gpt-4o", "model_name": "gpt-4o"})];
     let model = "openai/gpt-4o";
-    let existing = arr.iter().find(|m| m.get("model").and_then(|v| v.as_str()) == Some(model));
+    let existing = arr
+        .iter()
+        .find(|m| m.get("model").and_then(|v| v.as_str()) == Some(model));
     assert!(existing.is_some());
 }
 
 #[test]
 fn test_model_entry_no_duplicate() {
-    let arr: Vec<serde_json::Value> = vec![
-        serde_json::json!({"model": "openai/gpt-4o", "model_name": "gpt-4o"}),
-    ];
+    let arr: Vec<serde_json::Value> =
+        vec![serde_json::json!({"model": "openai/gpt-4o", "model_name": "gpt-4o"})];
     let model = "anthropic/claude";
-    let existing = arr.iter().find(|m| m.get("model").and_then(|v| v.as_str()) == Some(model));
+    let existing = arr
+        .iter()
+        .find(|m| m.get("model").and_then(|v| v.as_str()) == Some(model));
     assert!(existing.is_none());
 }
 
@@ -175,7 +197,10 @@ fn test_model_entry_removal_by_model() {
     let name = "openai/gpt-4o";
     arr.retain(|m| m.get("model").and_then(|v| v.as_str()) != Some(name));
     assert_eq!(arr.len(), 1);
-    assert_eq!(arr[0].get("model").and_then(|v| v.as_str()), Some("anthropic/claude"));
+    assert_eq!(
+        arr[0].get("model").and_then(|v| v.as_str()),
+        Some("anthropic/claude")
+    );
 }
 
 #[test]
@@ -190,7 +215,10 @@ fn test_model_entry_removal_by_suffix() {
         model != name && !model.ends_with(&format!("/{}", name))
     });
     assert_eq!(arr.len(), 1);
-    assert_eq!(arr[0].get("model").and_then(|v| v.as_str()), Some("anthropic/claude"));
+    assert_eq!(
+        arr[0].get("model").and_then(|v| v.as_str()),
+        Some("anthropic/claude")
+    );
 }
 
 // -------------------------------------------------------------------------
@@ -201,20 +229,24 @@ fn test_model_entry_removal_by_suffix() {
 fn test_set_default_model_in_config() {
     let mut cfg = serde_json::json!({});
     if let Some(obj) = cfg.as_object_mut() {
-        let agents = obj
-            .entry("agents")
-            .or_insert_with(|| serde_json::json!({}));
+        let agents = obj.entry("agents").or_insert_with(|| serde_json::json!({}));
         if let Some(agents_obj) = agents.as_object_mut() {
             let defaults = agents_obj
                 .entry("defaults")
                 .or_insert_with(|| serde_json::json!({}));
             if let Some(defaults_obj) = defaults.as_object_mut() {
-                defaults_obj.insert("llm".to_string(), serde_json::Value::String("gpt-4o".to_string()));
+                defaults_obj.insert(
+                    "llm".to_string(),
+                    serde_json::Value::String("gpt-4o".to_string()),
+                );
             }
         }
     }
     assert_eq!(
-        cfg.get("agents").and_then(|a| a.get("defaults")).and_then(|d| d.get("llm")).and_then(|v| v.as_str()),
+        cfg.get("agents")
+            .and_then(|a| a.get("defaults"))
+            .and_then(|d| d.get("llm"))
+            .and_then(|v| v.as_str()),
         Some("gpt-4o")
     );
 }
@@ -224,11 +256,13 @@ fn test_auto_default_single_model() {
     let cfg = serde_json::json!({
         "model_list": [{"model": "openai/gpt-4o"}],
     });
-    let model_count = cfg.get("model_list")
+    let model_count = cfg
+        .get("model_list")
         .and_then(|v| v.as_array())
         .map(|a| a.len())
         .unwrap_or(0);
-    let current_default = cfg.get("agents")
+    let current_default = cfg
+        .get("agents")
         .and_then(|a| a.get("defaults"))
         .and_then(|d| d.get("llm"))
         .and_then(|v| v.as_str())
@@ -255,8 +289,14 @@ fn test_build_model_entry_basic() {
         "model_name": model_name_alias,
         "model": model,
     });
-    assert_eq!(entry.get("model_name").and_then(|v| v.as_str()), Some("gpt-4o"));
-    assert_eq!(entry.get("model").and_then(|v| v.as_str()), Some("openai/gpt-4o"));
+    assert_eq!(
+        entry.get("model_name").and_then(|v| v.as_str()),
+        Some("gpt-4o")
+    );
+    assert_eq!(
+        entry.get("model").and_then(|v| v.as_str()),
+        Some("openai/gpt-4o")
+    );
 }
 
 #[test]
@@ -284,10 +324,22 @@ fn test_build_model_entry_with_all_fields() {
         entry["auth_method"] = serde_json::Value::String(a.to_string());
     }
 
-    assert_eq!(entry.get("api_key").and_then(|v| v.as_str()), Some("test-api-key"));
-    assert_eq!(entry.get("api_base").and_then(|v| v.as_str()), Some("https://api.example.com/v1"));
-    assert_eq!(entry.get("proxy").and_then(|v| v.as_str()), Some("http://proxy:8080"));
-    assert_eq!(entry.get("auth_method").and_then(|v| v.as_str()), Some("oauth"));
+    assert_eq!(
+        entry.get("api_key").and_then(|v| v.as_str()),
+        Some("test-api-key")
+    );
+    assert_eq!(
+        entry.get("api_base").and_then(|v| v.as_str()),
+        Some("https://api.example.com/v1")
+    );
+    assert_eq!(
+        entry.get("proxy").and_then(|v| v.as_str()),
+        Some("http://proxy:8080")
+    );
+    assert_eq!(
+        entry.get("auth_method").and_then(|v| v.as_str()),
+        Some("oauth")
+    );
 }
 
 #[test]
@@ -316,8 +368,14 @@ fn test_build_model_entry_optional_fields_absent() {
 fn test_model_is_default_check_by_model_name() {
     let default_model = "gpt-4o";
     let model_entry = serde_json::json!({"model": "openai/gpt-4o", "model_name": "gpt-4o"});
-    let model = model_entry.get("model").and_then(|v| v.as_str()).unwrap_or("?");
-    let model_name = model_entry.get("model_name").and_then(|v| v.as_str()).unwrap_or("");
+    let model = model_entry
+        .get("model")
+        .and_then(|v| v.as_str())
+        .unwrap_or("?");
+    let model_name = model_entry
+        .get("model_name")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
     let is_default = model == default_model || model_name == default_model;
     assert!(is_default);
 }
@@ -326,8 +384,14 @@ fn test_model_is_default_check_by_model_name() {
 fn test_model_is_default_check_by_full_identifier() {
     let default_model = "openai/gpt-4o";
     let model_entry = serde_json::json!({"model": "openai/gpt-4o", "model_name": "gpt-4o"});
-    let model = model_entry.get("model").and_then(|v| v.as_str()).unwrap_or("?");
-    let model_name = model_entry.get("model_name").and_then(|v| v.as_str()).unwrap_or("");
+    let model = model_entry
+        .get("model")
+        .and_then(|v| v.as_str())
+        .unwrap_or("?");
+    let model_name = model_entry
+        .get("model_name")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
     let is_default = model == default_model || model_name == default_model;
     assert!(is_default);
 }
@@ -336,8 +400,14 @@ fn test_model_is_default_check_by_full_identifier() {
 fn test_model_is_not_default() {
     let default_model = "claude";
     let model_entry = serde_json::json!({"model": "openai/gpt-4o", "model_name": "gpt-4o"});
-    let model = model_entry.get("model").and_then(|v| v.as_str()).unwrap_or("?");
-    let model_name = model_entry.get("model_name").and_then(|v| v.as_str()).unwrap_or("");
+    let model = model_entry
+        .get("model")
+        .and_then(|v| v.as_str())
+        .unwrap_or("?");
+    let model_name = model_entry
+        .get("model_name")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
     let is_default = model == default_model || model_name == default_model;
     assert!(!is_default);
 }
@@ -349,21 +419,33 @@ fn test_model_is_not_default() {
 #[test]
 fn test_model_has_api_key() {
     let m = serde_json::json!({"model": "openai/gpt-4o", "api_key": "sk-12345"});
-    let has_key = m.get("api_key").and_then(|v| v.as_str()).map(|k| !k.is_empty()).unwrap_or(false);
+    let has_key = m
+        .get("api_key")
+        .and_then(|v| v.as_str())
+        .map(|k| !k.is_empty())
+        .unwrap_or(false);
     assert!(has_key);
 }
 
 #[test]
 fn test_model_empty_api_key() {
     let m = serde_json::json!({"model": "openai/gpt-4o", "api_key": ""});
-    let has_key = m.get("api_key").and_then(|v| v.as_str()).map(|k| !k.is_empty()).unwrap_or(false);
+    let has_key = m
+        .get("api_key")
+        .and_then(|v| v.as_str())
+        .map(|k| !k.is_empty())
+        .unwrap_or(false);
     assert!(!has_key);
 }
 
 #[test]
 fn test_model_no_api_key() {
     let m = serde_json::json!({"model": "openai/gpt-4o"});
-    let has_key = m.get("api_key").and_then(|v| v.as_str()).map(|k| !k.is_empty()).unwrap_or(false);
+    let has_key = m
+        .get("api_key")
+        .and_then(|v| v.as_str())
+        .map(|k| !k.is_empty())
+        .unwrap_or(false);
     assert!(!has_key);
 }
 
@@ -383,10 +465,18 @@ fn test_model_entry_construction_full() {
         "model_name": model.splitn(2, '/').nth(1).unwrap_or(model),
         "model": model,
     });
-    if let Some(k) = &key { entry["api_key"] = serde_json::Value::String(k.clone()); }
-    if let Some(b) = &base { entry["api_base"] = serde_json::Value::String(b.clone()); }
-    if let Some(p) = &proxy { entry["proxy"] = serde_json::Value::String(p.clone()); }
-    if let Some(a) = &auth { entry["auth_method"] = serde_json::Value::String(a.clone()); }
+    if let Some(k) = &key {
+        entry["api_key"] = serde_json::Value::String(k.clone());
+    }
+    if let Some(b) = &base {
+        entry["api_base"] = serde_json::Value::String(b.clone());
+    }
+    if let Some(p) = &proxy {
+        entry["proxy"] = serde_json::Value::String(p.clone());
+    }
+    if let Some(a) = &auth {
+        entry["auth_method"] = serde_json::Value::String(a.clone());
+    }
 
     assert_eq!(entry["model_name"], "gpt-4o");
     assert_eq!(entry["model"], "openai/gpt-4o");
@@ -426,7 +516,8 @@ fn test_default_model_from_agents_defaults() {
         "default_model": "old-model"
     });
 
-    let default_model = cfg.get("agents")
+    let default_model = cfg
+        .get("agents")
         .and_then(|a| a.get("defaults"))
         .and_then(|d| d.get("llm"))
         .and_then(|v| v.as_str())
@@ -442,7 +533,8 @@ fn test_default_model_fallback_to_top_level() {
         "default_model": "fallback-model"
     });
 
-    let default_model = cfg.get("agents")
+    let default_model = cfg
+        .get("agents")
         .and_then(|a| a.get("defaults"))
         .and_then(|d| d.get("llm"))
         .and_then(|v| v.as_str())
@@ -456,7 +548,8 @@ fn test_default_model_fallback_to_top_level() {
 fn test_default_model_none() {
     let cfg = serde_json::json!({});
 
-    let default_model = cfg.get("agents")
+    let default_model = cfg
+        .get("agents")
         .and_then(|a| a.get("defaults"))
         .and_then(|d| d.get("llm"))
         .and_then(|v| v.as_str())
@@ -530,7 +623,9 @@ fn test_model_duplicate_detection_found() {
         {"model": "anthropic/claude"}
     ]);
     let arr = models.as_array().unwrap();
-    let existing = arr.iter().find(|m| m.get("model").and_then(|v| v.as_str()) == Some(model));
+    let existing = arr
+        .iter()
+        .find(|m| m.get("model").and_then(|v| v.as_str()) == Some(model));
     assert!(existing.is_some());
 }
 
@@ -542,7 +637,9 @@ fn test_model_duplicate_detection_not_found() {
         {"model": "anthropic/claude"}
     ]);
     let arr = models.as_array().unwrap();
-    let existing = arr.iter().find(|m| m.get("model").and_then(|v| v.as_str()) == Some(model));
+    let existing = arr
+        .iter()
+        .find(|m| m.get("model").and_then(|v| v.as_str()) == Some(model));
     assert!(existing.is_none());
 }
 
@@ -556,11 +653,13 @@ fn test_auto_default_single_model_v2() {
         "model_list": [{"model": "openai/gpt-4o"}],
         "agents": {"defaults": {}}
     });
-    let model_count = config.get("model_list")
+    let model_count = config
+        .get("model_list")
         .and_then(|v| v.as_array())
         .map(|a| a.len())
         .unwrap_or(0);
-    let current_default = config.get("agents")
+    let current_default = config
+        .get("agents")
         .and_then(|a| a.get("defaults"))
         .and_then(|d| d.get("llm"))
         .and_then(|v| v.as_str())
@@ -575,11 +674,13 @@ fn test_no_auto_default_multiple_models() {
         "model_list": [{"model": "openai/gpt-4o"}, {"model": "anthropic/claude"}],
         "agents": {"defaults": {}}
     });
-    let model_count = cfg.get("model_list")
+    let model_count = cfg
+        .get("model_list")
         .and_then(|v| v.as_array())
         .map(|a| a.len())
         .unwrap_or(0);
-    let current_default = cfg.get("agents")
+    let current_default = cfg
+        .get("agents")
         .and_then(|a| a.get("defaults"))
         .and_then(|d| d.get("llm"))
         .and_then(|v| v.as_str())
@@ -594,11 +695,13 @@ fn test_no_auto_default_already_set() {
         "model_list": [{"model": "openai/gpt-4o"}],
         "agents": {"defaults": {"llm": "gpt-4o"}}
     });
-    let model_count = cfg.get("model_list")
+    let model_count = cfg
+        .get("model_list")
         .and_then(|v| v.as_array())
         .map(|a| a.len())
         .unwrap_or(0);
-    let current_default = cfg.get("agents")
+    let current_default = cfg
+        .get("agents")
         .and_then(|a| a.get("defaults"))
         .and_then(|d| d.get("llm"))
         .and_then(|v| v.as_str())
@@ -617,7 +720,8 @@ fn test_is_default_by_agents_llm() {
         "model_list": [{"model": "openai/gpt-4o", "model_name": "gpt-4o"}],
         "agents": {"defaults": {"llm": "gpt-4o"}}
     });
-    let default_model = cfg.get("agents")
+    let default_model = cfg
+        .get("agents")
         .and_then(|a| a.get("defaults"))
         .and_then(|d| d.get("llm"))
         .and_then(|v| v.as_str())
@@ -629,8 +733,8 @@ fn test_is_default_by_agents_llm() {
     let is_default = model_list.iter().any(|m| {
         let full_model = m.get("model").and_then(|v| v.as_str()).unwrap_or("");
         let alias = m.get("model_name").and_then(|v| v.as_str()).unwrap_or("");
-        (full_model == name || full_model.ends_with(&format!("/{}", name))) &&
-            (full_model == default_model || alias == default_model)
+        (full_model == name || full_model.ends_with(&format!("/{}", name)))
+            && (full_model == default_model || alias == default_model)
     });
     assert!(is_default);
 }
@@ -644,9 +748,7 @@ fn test_model_entry_with_custom_name() {
     let model = "openai/gpt-4o";
     let custom_name = Some("my-gpt4");
     let parts: Vec<&str> = model.splitn(2, '/').collect();
-    let model_name = custom_name.unwrap_or_else(|| {
-        if parts.len() == 2 { parts[1] } else { model }
-    });
+    let model_name = custom_name.unwrap_or_else(|| if parts.len() == 2 { parts[1] } else { model });
     assert_eq!(model_name, "my-gpt4");
 }
 
@@ -655,9 +757,7 @@ fn test_model_entry_default_name_from_provider() {
     let model = "openai/gpt-4o";
     let custom_name: Option<&str> = None;
     let parts: Vec<&str> = model.splitn(2, '/').collect();
-    let model_name = custom_name.unwrap_or_else(|| {
-        if parts.len() == 2 { parts[1] } else { model }
-    });
+    let model_name = custom_name.unwrap_or_else(|| if parts.len() == 2 { parts[1] } else { model });
     assert_eq!(model_name, "gpt-4o");
 }
 
@@ -741,7 +841,7 @@ fn test_model_name_parsing_no_slash() {
 fn test_mask_api_key_short() {
     let key = "abc";
     let masked = if key.len() > 8 {
-        format!("{}...{}", &key[..4], &key[key.len()-4..])
+        format!("{}...{}", &key[..4], &key[key.len() - 4..])
     } else {
         "****".to_string()
     };
@@ -752,7 +852,7 @@ fn test_mask_api_key_short() {
 fn test_mask_api_key_long() {
     let key = "sk-1234567890abcdefghijklmnop";
     let masked = if key.len() > 8 {
-        format!("{}...{}", &key[..4], &key[key.len()-4..])
+        format!("{}...{}", &key[..4], &key[key.len() - 4..])
     } else {
         "****".to_string()
     };
@@ -763,7 +863,7 @@ fn test_mask_api_key_long() {
 fn test_mask_api_key_empty() {
     let key = "";
     let masked = if key.len() > 8 {
-        format!("{}...{}", &key[..4], &key[key.len()-4..])
+        format!("{}...{}", &key[..4], &key[key.len() - 4..])
     } else {
         "****".to_string()
     };
@@ -814,7 +914,8 @@ fn test_default_model_in_config() {
         "model_list": [{"model": "openai/gpt-4o", "model_name": "gpt-4o"}],
         "agents": {"defaults": {"llm": "gpt-4o"}}
     });
-    let default_model = cfg.get("agents")
+    let default_model = cfg
+        .get("agents")
         .and_then(|a| a.get("defaults"))
         .and_then(|d| d.get("llm"))
         .and_then(|v| v.as_str())
@@ -825,7 +926,8 @@ fn test_default_model_in_config() {
 #[test]
 fn test_no_default_model_in_config() {
     let cfg = serde_json::json!({"model_list": []});
-    let default_model = cfg.get("agents")
+    let default_model = cfg
+        .get("agents")
         .and_then(|a| a.get("defaults"))
         .and_then(|d| d.get("llm"))
         .and_then(|v| v.as_str())

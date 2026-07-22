@@ -138,17 +138,19 @@ fn test_save_and_load_registry_config_roundtrip() {
     let tmp = TempDir::new().unwrap();
     let path = tmp.path().join("config.skills.json");
     let mut config = nemesis_skills::types::RegistryConfig::default();
-    config.github_sources.push(nemesis_skills::types::GitHubSourceConfig {
-        name: "mysource".to_string(),
-        repo: "org/repo".to_string(),
-        enabled: true,
-        branch: "main".to_string(),
-        index_type: "github_api".to_string(),
-        index_path: String::new(),
-        skill_path_pattern: "skills/{slug}/SKILL.md".to_string(),
-        timeout_secs: 0,
-        max_size: 0,
-    });
+    config
+        .github_sources
+        .push(nemesis_skills::types::GitHubSourceConfig {
+            name: "mysource".to_string(),
+            repo: "org/repo".to_string(),
+            enabled: true,
+            branch: "main".to_string(),
+            index_type: "github_api".to_string(),
+            index_path: String::new(),
+            skill_path_pattern: "skills/{slug}/SKILL.md".to_string(),
+            timeout_secs: 0,
+            max_size: 0,
+        });
 
     save_registry_config(&path, &config).unwrap();
     let loaded = load_registry_config(&path);
@@ -277,7 +279,11 @@ fn test_cmd_validate_with_skill_md() {
     let tmp = TempDir::new().unwrap();
     let skill_dir = tmp.path().join("test-skill");
     std::fs::create_dir_all(&skill_dir).unwrap();
-    std::fs::write(skill_dir.join("SKILL.md"), "# Test\nname: test\ndescription: A test skill\nsteps:\n- step1").unwrap();
+    std::fs::write(
+        skill_dir.join("SKILL.md"),
+        "# Test\nname: test\ndescription: A test skill\nsteps:\n- step1",
+    )
+    .unwrap();
 
     cmd_validate(&skill_dir.to_string_lossy()).unwrap();
 }
@@ -369,7 +375,11 @@ fn test_get_builtin_skills_all_unique_names() {
 #[test]
 fn test_save_registry_config_creates_parent_dir() {
     let tmp = TempDir::new().unwrap();
-    let nested_path = tmp.path().join("nested").join("dir").join("config.skills.json");
+    let nested_path = tmp
+        .path()
+        .join("nested")
+        .join("dir")
+        .join("config.skills.json");
     let config = nemesis_skills::types::RegistryConfig::default();
     save_registry_config(&nested_path, &config).unwrap();
     assert!(nested_path.exists());
@@ -402,17 +412,19 @@ fn test_cmd_source_remove_existing() {
     let tmp = TempDir::new().unwrap();
     let path = tmp.path().join("config.skills.json");
     let mut config = nemesis_skills::types::RegistryConfig::default();
-    config.github_sources.push(nemesis_skills::types::GitHubSourceConfig {
-        name: "test-source".to_string(),
-        repo: "org/repo".to_string(),
-        enabled: true,
-        branch: "main".to_string(),
-        index_type: "github_api".to_string(),
-        index_path: String::new(),
-        skill_path_pattern: "skills/{slug}/SKILL.md".to_string(),
-        timeout_secs: 0,
-        max_size: 0,
-    });
+    config
+        .github_sources
+        .push(nemesis_skills::types::GitHubSourceConfig {
+            name: "test-source".to_string(),
+            repo: "org/repo".to_string(),
+            enabled: true,
+            branch: "main".to_string(),
+            index_type: "github_api".to_string(),
+            index_path: String::new(),
+            skill_path_pattern: "skills/{slug}/SKILL.md".to_string(),
+            timeout_secs: 0,
+            max_size: 0,
+        });
     save_registry_config(&path, &config).unwrap();
 
     cmd_source_remove(&path, "test-source").unwrap();
@@ -451,7 +463,11 @@ fn test_cmd_list_with_description_in_skill_md() {
     let skills_dir = tmp.path().join("skills");
     let skill_path = skills_dir.join("calculator");
     std::fs::create_dir_all(&skill_path).unwrap();
-    std::fs::write(skill_path.join("SKILL.md"), "description: A calculator skill\n# Calculator").unwrap();
+    std::fs::write(
+        skill_path.join("SKILL.md"),
+        "description: A calculator skill\n# Calculator",
+    )
+    .unwrap();
     cmd_list(&skills_dir).unwrap();
 }
 
@@ -481,7 +497,11 @@ fn test_cmd_install_builtin_all() {
 
     let skills = get_builtin_skills();
     for (name, _) in &skills {
-        assert!(skills_dir.join(name).join("SKILL.md").exists(), "Skill '{}' should be installed", name);
+        assert!(
+            skills_dir.join(name).join("SKILL.md").exists(),
+            "Skill '{}' should be installed",
+            name
+        );
     }
 }
 
@@ -521,14 +541,18 @@ fn test_cmd_validate_no_skill_md_in_dir() {
 #[test]
 fn test_skill_description_from_header() {
     let content = "# My Cool Skill\nSome content here";
-    let desc = content.lines()
+    let desc = content
+        .lines()
         .find(|l| l.trim().starts_with("description:") || l.trim().starts_with("# "))
         .map(|l| {
             let l = l.trim();
             if l.starts_with('#') {
                 l.trim_start_matches('#').trim().to_string()
             } else {
-                l.trim_start_matches("description:").trim().trim_matches('"').to_string()
+                l.trim_start_matches("description:")
+                    .trim()
+                    .trim_matches('"')
+                    .to_string()
             }
         })
         .unwrap_or_default();
@@ -538,14 +562,18 @@ fn test_skill_description_from_header() {
 #[test]
 fn test_skill_description_from_yaml() {
     let content = "description: This is a test skill\n# Header";
-    let desc = content.lines()
+    let desc = content
+        .lines()
         .find(|l| l.trim().starts_with("description:") || l.trim().starts_with("# "))
         .map(|l| {
             let l = l.trim();
             if l.starts_with('#') {
                 l.trim_start_matches('#').trim().to_string()
             } else {
-                l.trim_start_matches("description:").trim().trim_matches('"').to_string()
+                l.trim_start_matches("description:")
+                    .trim()
+                    .trim_matches('"')
+                    .to_string()
             }
         })
         .unwrap_or_default();
@@ -601,14 +629,18 @@ fn test_skill_source_type_local() {
 #[test]
 fn test_skill_md_description_parsing_with_header() {
     let content = "# My Skill\nSome description text";
-    let desc = content.lines()
+    let desc = content
+        .lines()
         .find(|l| l.trim().starts_with("description:") || l.trim().starts_with("# "))
         .map(|l| {
             let l = l.trim();
             if l.starts_with('#') {
                 l.trim_start_matches('#').trim().to_string()
             } else {
-                l.trim_start_matches("description:").trim().trim_matches('"').to_string()
+                l.trim_start_matches("description:")
+                    .trim()
+                    .trim_matches('"')
+                    .to_string()
             }
         })
         .unwrap_or_default();
@@ -618,10 +650,14 @@ fn test_skill_md_description_parsing_with_header() {
 #[test]
 fn test_skill_md_description_parsing_with_yaml() {
     let content = "name: test\ndescription: \"A test skill\"\nsteps:\n- step1";
-    let desc = content.lines()
+    let desc = content
+        .lines()
         .find(|l| l.trim().starts_with("description:"))
         .map(|l| {
-            l.trim_start_matches("description:").trim().trim_matches('"').to_string()
+            l.trim_start_matches("description:")
+                .trim()
+                .trim_matches('"')
+                .to_string()
         })
         .unwrap_or_default();
     assert_eq!(desc, "A test skill");
@@ -630,10 +666,14 @@ fn test_skill_md_description_parsing_with_yaml() {
 #[test]
 fn test_skill_md_description_parsing_no_description() {
     let content = "# Just a heading\nSome other text";
-    let desc = content.lines()
+    let desc = content
+        .lines()
         .find(|l| l.trim().starts_with("description:"))
         .map(|l| {
-            l.trim_start_matches("description:").trim().trim_matches('"').to_string()
+            l.trim_start_matches("description:")
+                .trim()
+                .trim_matches('"')
+                .to_string()
         })
         .unwrap_or_default();
     assert!(desc.is_empty());
@@ -649,7 +689,11 @@ fn test_cmd_list_with_skill_md_v2() {
     let skills_dir = tmp.path().join("skills");
     let skill = skills_dir.join("test-skill-v2");
     std::fs::create_dir_all(&skill).unwrap();
-    std::fs::write(skill.join("SKILL.md"), "# Test Skill\nA test skill for testing").unwrap();
+    std::fs::write(
+        skill.join("SKILL.md"),
+        "# Test Skill\nA test skill for testing",
+    )
+    .unwrap();
     cmd_list(&skills_dir).unwrap();
 }
 
@@ -700,7 +744,8 @@ fn test_cmd_install_builtin_all_v2() {
 
     cmd_install_builtin(&skills_dir, None).unwrap();
 
-    let entries: Vec<_> = std::fs::read_dir(&skills_dir).unwrap()
+    let entries: Vec<_> = std::fs::read_dir(&skills_dir)
+        .unwrap()
         .filter_map(|e| e.ok())
         .collect();
     assert_eq!(entries.len(), 10);
@@ -743,30 +788,34 @@ fn test_save_registry_config_overwrite() {
     let path = tmp.path().join("config.skills.json");
 
     let mut config = nemesis_skills::types::RegistryConfig::default();
-    config.github_sources.push(nemesis_skills::types::GitHubSourceConfig {
-        name: "first".to_string(),
-        repo: "org/first".to_string(),
-        enabled: true,
-        branch: "main".to_string(),
-        index_type: "github_api".to_string(),
-        index_path: String::new(),
-        skill_path_pattern: "skills/{slug}/SKILL.md".to_string(),
-        timeout_secs: 0,
-        max_size: 0,
-    });
+    config
+        .github_sources
+        .push(nemesis_skills::types::GitHubSourceConfig {
+            name: "first".to_string(),
+            repo: "org/first".to_string(),
+            enabled: true,
+            branch: "main".to_string(),
+            index_type: "github_api".to_string(),
+            index_path: String::new(),
+            skill_path_pattern: "skills/{slug}/SKILL.md".to_string(),
+            timeout_secs: 0,
+            max_size: 0,
+        });
     save_registry_config(&path, &config).unwrap();
 
-    config.github_sources.push(nemesis_skills::types::GitHubSourceConfig {
-        name: "second".to_string(),
-        repo: "org/second".to_string(),
-        enabled: true,
-        branch: "main".to_string(),
-        index_type: "github_api".to_string(),
-        index_path: String::new(),
-        skill_path_pattern: "skills/{slug}/SKILL.md".to_string(),
-        timeout_secs: 0,
-        max_size: 0,
-    });
+    config
+        .github_sources
+        .push(nemesis_skills::types::GitHubSourceConfig {
+            name: "second".to_string(),
+            repo: "org/second".to_string(),
+            enabled: true,
+            branch: "main".to_string(),
+            index_type: "github_api".to_string(),
+            index_path: String::new(),
+            skill_path_pattern: "skills/{slug}/SKILL.md".to_string(),
+            timeout_secs: 0,
+            max_size: 0,
+        });
     save_registry_config(&path, &config).unwrap();
 
     let loaded = load_registry_config(&path);
@@ -783,17 +832,19 @@ fn test_cmd_source_remove_existing_v2() {
     let path = tmp.path().join("config.skills.json");
 
     let mut config = nemesis_skills::types::RegistryConfig::default();
-    config.github_sources.push(nemesis_skills::types::GitHubSourceConfig {
-        name: "test-source".to_string(),
-        repo: "org/test".to_string(),
-        enabled: true,
-        branch: "main".to_string(),
-        index_type: "github_api".to_string(),
-        index_path: String::new(),
-        skill_path_pattern: "skills/{slug}/SKILL.md".to_string(),
-        timeout_secs: 0,
-        max_size: 0,
-    });
+    config
+        .github_sources
+        .push(nemesis_skills::types::GitHubSourceConfig {
+            name: "test-source".to_string(),
+            repo: "org/test".to_string(),
+            enabled: true,
+            branch: "main".to_string(),
+            index_type: "github_api".to_string(),
+            index_path: String::new(),
+            skill_path_pattern: "skills/{slug}/SKILL.md".to_string(),
+            timeout_secs: 0,
+            max_size: 0,
+        });
     save_registry_config(&path, &config).unwrap();
 
     cmd_source_remove(&path, "test-source").unwrap();
@@ -867,7 +918,11 @@ fn test_load_registry_config_empty_obj() {
 #[test]
 fn test_save_registry_config_creates_parent_dirs() {
     let tmp = TempDir::new().unwrap();
-    let path = tmp.path().join("nested").join("dir").join("config.skills.json");
+    let path = tmp
+        .path()
+        .join("nested")
+        .join("dir")
+        .join("config.skills.json");
     let config = nemesis_skills::types::RegistryConfig::default();
     save_registry_config(&path, &config).unwrap();
     assert!(path.exists());
@@ -921,7 +976,11 @@ fn test_cmd_validate_directory_with_skill_md() {
     let tmp = TempDir::new().unwrap();
     let dir = tmp.path().join("test-skill");
     std::fs::create_dir_all(&dir).unwrap();
-    std::fs::write(dir.join("SKILL.md"), "# Test Skill\nname: test\ndescription: test\nsteps:\n- step1").unwrap();
+    std::fs::write(
+        dir.join("SKILL.md"),
+        "# Test Skill\nname: test\ndescription: test\nsteps:\n- step1",
+    )
+    .unwrap();
     cmd_validate(&dir.to_string_lossy()).unwrap();
 }
 

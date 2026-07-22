@@ -17,12 +17,8 @@ fn test_create_and_sign_announce() {
     let disc_cfg = DiscoveryConfig::default();
     let registry = PeerRegistry::new(HealthConfig::default());
 
-    let _service = DiscoveryService::with_registry(
-        &cluster_cfg.node_id,
-        9000,
-        registry,
-        disc_cfg,
-    ).unwrap();
+    let _service =
+        DiscoveryService::with_registry(&cluster_cfg.node_id, 9000, registry, disc_cfg).unwrap();
 
     let announce = DiscoveryMessage::new_announce(
         "test-node-001",
@@ -49,12 +45,8 @@ fn test_start_stop_lifecycle() {
         enc_key: None,
     };
 
-    let service = DiscoveryService::with_registry(
-        "lifecycle-test-node",
-        9000,
-        registry,
-        config,
-    ).unwrap();
+    let service =
+        DiscoveryService::with_registry("lifecycle-test-node", 9000, registry, config).unwrap();
 
     assert!(!service.is_running());
 
@@ -79,12 +71,8 @@ fn test_double_start_fails() {
         enc_key: None,
     };
 
-    let service = DiscoveryService::with_registry(
-        "double-start-node",
-        9000,
-        registry,
-        config,
-    ).unwrap();
+    let service =
+        DiscoveryService::with_registry("double-start-node", 9000, registry, config).unwrap();
 
     service.start().unwrap();
     let result = service.start();
@@ -99,12 +87,8 @@ fn test_stop_when_not_started_fails() {
         port: 0, // OS assigns port to avoid conflicts
         ..Default::default()
     };
-    let service = DiscoveryService::with_registry(
-        "not-started-node",
-        9000,
-        registry,
-        config,
-    ).unwrap();
+    let service =
+        DiscoveryService::with_registry("not-started-node", 9000, registry, config).unwrap();
 
     let result = service.stop();
     assert!(result.is_err());
@@ -121,11 +105,8 @@ fn test_discovery_config_default() {
 
 #[test]
 fn test_discovery_config_with_encryption() {
-    let config = DiscoveryConfig::with_encryption(
-        11949,
-        Duration::from_secs(10),
-        "my-secret-token",
-    );
+    let config =
+        DiscoveryConfig::with_encryption(11949, Duration::from_secs(10), "my-secret-token");
     assert_eq!(config.port, 11949);
     assert_eq!(config.interval, Duration::from_secs(10));
     assert_eq!(config.secret, "my-secret-token");
@@ -155,14 +136,24 @@ fn test_null_callbacks() {
 fn test_registry_callbacks() {
     let registry = PeerRegistry::new(HealthConfig::default());
     let cb = RegistryCallbacks::new(
-        "local-node", "0.0.0.0:9000", 9000, "worker", "dev", registry,
+        "local-node",
+        "0.0.0.0:9000",
+        9000,
+        "worker",
+        "dev",
+        registry,
     );
     assert_eq!(cb.node_id(), "local-node");
 
     cb.handle_discovered_node(
-        "remote-1", "RemoteNode",
-        &["10.0.0.5".to_string()], 9000,
-        "worker", "dev", &[], &["llm".to_string()],
+        "remote-1",
+        "RemoteNode",
+        &["10.0.0.5".to_string()],
+        9000,
+        "worker",
+        "dev",
+        &[],
+        &["llm".to_string()],
         "agent",
     );
 
@@ -191,21 +182,22 @@ fn test_two_discovery_nodes_communicate() {
         enc_key: None,
     };
 
-    let service_a = DiscoveryService::with_registry(
-        "node-a", 9000, registry_a, config_a,
-    ).unwrap();
-    let service_b = DiscoveryService::with_registry(
-        "node-b", 9001, registry_b, config_b,
-    ).unwrap();
+    let service_a = DiscoveryService::with_registry("node-a", 9000, registry_a, config_a).unwrap();
+    let service_b = DiscoveryService::with_registry("node-b", 9001, registry_b, config_b).unwrap();
 
     service_a.start().unwrap();
     service_b.start().unwrap();
 
     // Manually send a message from A to B's port
     let msg = DiscoveryMessage::new_announce(
-        "node-a", "node-a",
-        vec!["127.0.0.1".into()], 9000,
-        "worker", "dev", vec![], vec![],
+        "node-a",
+        "node-a",
+        vec!["127.0.0.1".into()],
+        9000,
+        "worker",
+        "dev",
+        vec![],
+        vec![],
         "agent",
     );
     service_a.listener.broadcast(&msg).unwrap();
@@ -258,15 +250,24 @@ fn test_registry_callbacks_with_state_path() {
     let dir = tempfile::tempdir().unwrap();
     let registry = PeerRegistry::new(HealthConfig::default());
     let cb = RegistryCallbacks::with_state_path(
-        "local-node", "0.0.0.0:9000", 9000, "worker", "dev",
+        "local-node",
+        "0.0.0.0:9000",
+        9000,
+        "worker",
+        "dev",
         registry,
         dir.path().join("state.toml"),
     );
 
     cb.handle_discovered_node(
-        "remote-1", "RemoteNode",
-        &["10.0.0.5".to_string()], 9000,
-        "worker", "dev", &[], &["llm".to_string()],
+        "remote-1",
+        "RemoteNode",
+        &["10.0.0.5".to_string()],
+        9000,
+        "worker",
+        "dev",
+        &[],
+        &["llm".to_string()],
         "agent",
     );
 
@@ -278,7 +279,12 @@ fn test_registry_callbacks_with_state_path() {
 fn test_registry_callbacks_sync_without_state_path() {
     let registry = PeerRegistry::new(HealthConfig::default());
     let cb = RegistryCallbacks::new(
-        "local-node", "0.0.0.0:9000", 9000, "worker", "dev", registry,
+        "local-node",
+        "0.0.0.0:9000",
+        9000,
+        "worker",
+        "dev",
+        registry,
     );
     // No state path configured, sync should be a no-op
     cb.sync_to_disk().unwrap();
@@ -288,13 +294,23 @@ fn test_registry_callbacks_sync_without_state_path() {
 fn test_registry_callbacks_manager_role() {
     let registry = PeerRegistry::new(HealthConfig::default());
     let cb = RegistryCallbacks::new(
-        "local-node", "0.0.0.0:9000", 9000, "worker", "dev", registry,
+        "local-node",
+        "0.0.0.0:9000",
+        9000,
+        "worker",
+        "dev",
+        registry,
     );
     // "master" role should be recognized
     cb.handle_discovered_node(
-        "master-node", "MasterNode",
-        &["10.0.0.1".to_string()], 9000,
-        "master", "dev", &[], &["cluster".to_string()],
+        "master-node",
+        "MasterNode",
+        &["10.0.0.1".to_string()],
+        9000,
+        "master",
+        "dev",
+        &[],
+        &["cluster".to_string()],
         "agent",
     );
 }
@@ -320,9 +336,8 @@ fn test_set_broadcast_interval() {
         secret: String::new(),
         enc_key: None,
     };
-    let mut service = DiscoveryService::with_registry(
-        "interval-node", 9000, registry, config,
-    ).unwrap();
+    let mut service =
+        DiscoveryService::with_registry("interval-node", 9000, registry, config).unwrap();
 
     service.set_broadcast_interval(Duration::from_secs(60));
     // Verify interval was updated (no panic)

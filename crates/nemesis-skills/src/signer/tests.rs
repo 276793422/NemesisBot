@@ -13,8 +13,10 @@ fn test_generate_key_pair() {
     assert!(dir.path().join("skill_sign.meta.json").exists());
 
     // Check metadata is valid JSON.
-    let meta: serde_json::Value =
-        serde_json::from_str(&std::fs::read_to_string(dir.path().join("skill_sign.meta.json")).unwrap()).unwrap();
+    let meta: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(dir.path().join("skill_sign.meta.json")).unwrap(),
+    )
+    .unwrap();
     assert_eq!(meta["algorithm"], "ed25519");
     assert!(meta["public_key"].as_str().unwrap().len() == 64);
 }
@@ -42,7 +44,9 @@ fn test_sign_and_verify_skill() {
     // Sign.
     let signer = SkillSigner::new();
     let public_key = std::fs::read_to_string(key_dir.join("skill_sign.pub")).unwrap();
-    signer.trust_store().add_key(&public_key, "test-author", TrustLevel::Verified);
+    signer
+        .trust_store()
+        .add_key(&public_key, "test-author", TrustLevel::Verified);
 
     let result = signer.sign_skill(
         &skill_dir.to_string_lossy(),
@@ -136,10 +140,7 @@ fn test_sign_skill_missing_key() {
     std::fs::write(skill_dir.join("SKILL.md"), "# Test").unwrap();
 
     let signer = SkillSigner::new();
-    let result = signer.sign_skill(
-        &skill_dir.to_string_lossy(),
-        "/nonexistent/key",
-    );
+    let result = signer.sign_skill(&skill_dir.to_string_lossy(), "/nonexistent/key");
     assert!(result.is_err());
 }
 
@@ -243,10 +244,7 @@ fn test_sign_skill_with_invalid_key_content() {
     std::fs::write(&key_path, "not-valid-hex").unwrap();
 
     let signer = SkillSigner::new();
-    let result = signer.sign_skill(
-        &skill_dir.to_string_lossy(),
-        &key_path.to_string_lossy(),
-    );
+    let result = signer.sign_skill(&skill_dir.to_string_lossy(), &key_path.to_string_lossy());
     assert!(result.is_err());
 }
 
@@ -345,18 +343,25 @@ fn test_sign_and_verify_tampered_content() {
 
     let signer = SkillSigner::new();
     let public_key = std::fs::read_to_string(key_dir.join("skill_sign.pub")).unwrap();
-    signer.trust_store().add_key(&public_key, "test", TrustLevel::Verified);
+    signer
+        .trust_store()
+        .add_key(&public_key, "test", TrustLevel::Verified);
 
-    signer.sign_skill(
-        &skill_dir.to_string_lossy(),
-        &key_dir.join("skill_sign.key").to_string_lossy(),
-    ).unwrap();
+    signer
+        .sign_skill(
+            &skill_dir.to_string_lossy(),
+            &key_dir.join("skill_sign.key").to_string_lossy(),
+        )
+        .unwrap();
 
     // Tamper with content after signing
     std::fs::write(skill_dir.join("SKILL.md"), "# Tampered!").unwrap();
 
     let verification = signer.verify_skill(&skill_dir.to_string_lossy()).unwrap();
-    assert!(!verification.valid, "Tampered content should fail verification");
+    assert!(
+        !verification.valid,
+        "Tampered content should fail verification"
+    );
 }
 
 #[test]
@@ -365,7 +370,11 @@ fn test_verify_skill_invalid_signature_format() {
     let skill_dir = dir.path().join("bad-sig");
     std::fs::create_dir_all(&skill_dir).unwrap();
     std::fs::write(skill_dir.join("SKILL.md"), "# Test").unwrap();
-    std::fs::write(skill_dir.join(".signature"), r#"{"public_key":"abc","signature":"def","files":[]}"#).unwrap();
+    std::fs::write(
+        skill_dir.join(".signature"),
+        r#"{"public_key":"abc","signature":"def","files":[]}"#,
+    )
+    .unwrap();
 
     let signer = SkillSigner::new();
     let result = signer.verify_skill(&skill_dir.to_string_lossy()).unwrap();
@@ -391,9 +400,9 @@ fn test_sign_skill_with_binary_key() {
 
     // Verify the .signature file was created
     assert!(skill_dir.join(".signature").exists());
-    let sig: serde_json::Value = serde_json::from_str(
-        &std::fs::read_to_string(skill_dir.join(".signature")).unwrap()
-    ).unwrap();
+    let sig: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(skill_dir.join(".signature")).unwrap())
+            .unwrap();
     assert_eq!(sig["algorithm"], "ed25519");
     assert!(sig["public_key"].as_str().unwrap().len() == 64);
     assert!(sig["signature"].as_str().unwrap().len() == 128);
@@ -410,16 +419,18 @@ fn test_generate_key_pair_overwrite() {
     SkillSigner::generate_key_pair(&output).unwrap();
     let key2 = std::fs::read_to_string(dir.path().join("skill_sign.key")).unwrap();
 
-    assert_ne!(key1, key2, "Regenerating keys should produce different keys");
+    assert_ne!(
+        key1, key2,
+        "Regenerating keys should produce different keys"
+    );
 }
 
 #[test]
 fn test_hex_decode_roundtrip() {
     let bytes: [u8; 32] = [
-        0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef,
-        0xfe, 0xdc, 0xba, 0x98, 0x76, 0x54, 0x32, 0x10,
-        0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77,
-        0x88, 0x99, 0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff,
+        0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef, 0xfe, 0xdc, 0xba, 0x98, 0x76, 0x54, 0x32,
+        0x10, 0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0xaa, 0xbb, 0xcc, 0xdd,
+        0xee, 0xff,
     ];
     let encoded = hex_encode(&bytes);
     let decoded = hex_decode(&encoded).unwrap();

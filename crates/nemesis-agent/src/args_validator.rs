@@ -68,11 +68,9 @@ impl Violation {
                 expected,
                 got,
             } => format!("field '{}' should be {}, got {}", field, expected, got),
-            Violation::NotInEnum { field, allowed } => format!(
-                "field '{}' must be one of: {}",
-                field,
-                allowed.join(" | ")
-            ),
+            Violation::NotInEnum { field, allowed } => {
+                format!("field '{}' must be one of: {}", field, allowed.join(" | "))
+            }
         }
     }
 }
@@ -90,7 +88,7 @@ pub fn check(schema: &Value, args_json: &str) -> Outcome {
                     e
                 ),
                 class: "A",
-            }
+            };
         }
     };
 
@@ -178,8 +176,10 @@ pub fn validate(schema: &Value, args: &Value) -> Vec<Violation> {
                 }
                 if let Some(allowed) = prop_schema.get("enum").and_then(|e| e.as_array()) {
                     if !allowed.iter().any(|a| a == val) {
-                        let allowed_str: Vec<String> =
-                            allowed.iter().filter_map(|a| a.as_str().map(String::from)).collect();
+                        let allowed_str: Vec<String> = allowed
+                            .iter()
+                            .filter_map(|a| a.as_str().map(String::from))
+                            .collect();
                         out.push(Violation::NotInEnum {
                             field: key.clone(),
                             allowed: allowed_str,
@@ -323,13 +323,13 @@ fn type_name(val: &Value) -> &'static str {
 fn format_violations(schema: &Value, vs: &[Violation]) -> String {
     let mut parts: Vec<String> = vs.iter().map(|v| v.message()).collect();
     parts.sort();
-    let mut msg = format!(
-        "Tool argument validation failed: {}. ",
-        parts.join("; ")
-    );
+    let mut msg = format!("Tool argument validation failed: {}. ", parts.join("; "));
     // Append the legal field list once if there's at least one UnknownField, so
     // the model can see exactly what keys are accepted.
-    if vs.iter().any(|v| matches!(v, Violation::UnknownField { .. })) {
+    if vs
+        .iter()
+        .any(|v| matches!(v, Violation::UnknownField { .. }))
+    {
         if let Some(props) = schema.get("properties").and_then(|p| p.as_object()) {
             let names: Vec<&str> = props.keys().map(|s| s.as_str()).collect();
             if !names.is_empty() {

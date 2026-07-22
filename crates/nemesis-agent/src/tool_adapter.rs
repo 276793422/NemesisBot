@@ -120,8 +120,8 @@ impl nemesis_tools::registry::Tool for AgentToolAdapter {
                 };
                 let (allowed, reason) = security.execute(&invocation);
                 if !allowed {
-                    let reason_str = reason
-                        .unwrap_or_else(|| "operation denied by security policy".to_string());
+                    let reason_str =
+                        reason.unwrap_or_else(|| "operation denied by security policy".to_string());
                     tracing::warn!(
                         tool = %self.name,
                         reason = %reason_str,

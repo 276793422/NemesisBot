@@ -76,10 +76,7 @@ async fn test_scan_engine_build() {
 
 #[test]
 fn test_extension_rules_whitelist() {
-    let rules = ExtensionRules::new(
-        vec!["exe".to_string(), "dll".to_string()],
-        vec![],
-    );
+    let rules = ExtensionRules::new(vec!["exe".to_string(), "dll".to_string()], vec![]);
     assert!(rules.should_scan_file(Path::new("program.exe")));
     assert!(rules.should_scan_file(Path::new("lib.dll")));
     assert!(!rules.should_scan_file(Path::new("test.txt")));
@@ -87,10 +84,7 @@ fn test_extension_rules_whitelist() {
 
 #[test]
 fn test_extension_rules_blacklist() {
-    let rules = ExtensionRules::new(
-        vec![],
-        vec!["txt".to_string(), "md".to_string()],
-    );
+    let rules = ExtensionRules::new(vec![], vec!["txt".to_string(), "md".to_string()]);
     assert!(!rules.should_scan_file(Path::new("test.txt")));
     assert!(!rules.should_scan_file(Path::new("README.md")));
     assert!(rules.should_scan_file(Path::new("program.exe")));
@@ -148,10 +142,9 @@ fn test_scan_chain_raw_config() {
     let mut chain = ScanChain::with_defaults();
     let mut full_config = ScannerFullConfig::default();
     full_config.enabled.push("stub".to_string());
-    full_config.engines.insert(
-        "stub".to_string(),
-        serde_json::json!({"key": "value"}),
-    );
+    full_config
+        .engines
+        .insert("stub".to_string(), serde_json::json!({"key": "value"}));
     chain.load_from_full_config(&full_config);
 
     let raw = chain.raw_config("stub");
@@ -403,10 +396,7 @@ fn test_scan_chain_result_blocked_fields() {
 
 #[test]
 fn test_extension_rules_case_insensitive() {
-    let rules = ExtensionRules::new(
-        vec!["EXE".to_string(), "DLL".to_string()],
-        vec![],
-    );
+    let rules = ExtensionRules::new(vec!["EXE".to_string(), "DLL".to_string()], vec![]);
     assert!(rules.should_scan_file(Path::new("program.exe")));
     assert!(rules.should_scan_file(Path::new("PROGRAM.EXE")));
     assert!(rules.should_scan_file(Path::new("lib.Dll")));
@@ -414,49 +404,34 @@ fn test_extension_rules_case_insensitive() {
 
 #[test]
 fn test_extension_rules_skip_case_insensitive() {
-    let rules = ExtensionRules::new(
-        vec![],
-        vec!["TXT".to_string(), "MD".to_string()],
-    );
+    let rules = ExtensionRules::new(vec![], vec!["TXT".to_string(), "MD".to_string()]);
     assert!(!rules.should_scan_file(Path::new("readme.txt")));
     assert!(!rules.should_scan_file(Path::new("README.MD")));
 }
 
 #[test]
 fn test_extension_rules_no_extension() {
-    let rules = ExtensionRules::new(
-        vec!["exe".to_string()],
-        vec![],
-    );
+    let rules = ExtensionRules::new(vec!["exe".to_string()], vec![]);
     assert!(!rules.should_scan_file(Path::new("Makefile")));
     assert!(!rules.should_scan_file(Path::new("noext")));
 }
 
 #[test]
 fn test_extension_rules_skip_no_extension() {
-    let rules = ExtensionRules::new(
-        vec![],
-        vec!["txt".to_string()],
-    );
+    let rules = ExtensionRules::new(vec![], vec!["txt".to_string()]);
     // File without extension should pass (not in skip list)
     assert!(rules.should_scan_file(Path::new("Makefile")));
 }
 
 #[test]
 fn test_extension_rules_hidden_file() {
-    let rules = ExtensionRules::new(
-        vec!["exe".to_string()],
-        vec![],
-    );
+    let rules = ExtensionRules::new(vec!["exe".to_string()], vec![]);
     assert!(!rules.should_scan_file(Path::new(".hidden")));
 }
 
 #[test]
 fn test_extension_rules_path_with_dirs() {
-    let rules = ExtensionRules::new(
-        vec!["exe".to_string()],
-        vec![],
-    );
+    let rules = ExtensionRules::new(vec!["exe".to_string()], vec![]);
     assert!(rules.should_scan_file(Path::new("/some/deep/path/program.exe")));
     assert!(!rules.should_scan_file(Path::new("/some/deep/path/document.txt")));
 }
@@ -527,7 +502,8 @@ async fn test_create_engine_stub_with_null() {
 #[test]
 fn test_extract_paths_from_args_download() {
     let chain = ScanChain::with_defaults();
-    let args = serde_json::json!({"save_path": "/tmp/download.zip", "url": "https://example.com/file"});
+    let args =
+        serde_json::json!({"save_path": "/tmp/download.zip", "url": "https://example.com/file"});
     let paths = chain.extract_paths_from_args("download", &args);
     assert!(paths.contains(&"/tmp/download.zip".to_string()));
 }
@@ -746,10 +722,9 @@ fn test_get_extension_rules_no_rules_in_config() {
     let mut chain = ScanChain::with_defaults();
     let mut full_config = ScannerFullConfig::default();
     full_config.enabled.push("stub".to_string());
-    full_config.engines.insert(
-        "stub".to_string(),
-        serde_json::json!({"key": "value"}),
-    );
+    full_config
+        .engines
+        .insert("stub".to_string(), serde_json::json!({"key": "value"}));
     chain.load_from_full_config(&full_config);
     let rules = chain.get_extension_rules();
     assert!(rules.scan_extensions.is_empty());
@@ -982,7 +957,9 @@ async fn test_scan_chain_default_trait() {
 #[tokio::test]
 async fn test_stub_scan_file_with_path() {
     let scanner = StubScanner;
-    let result = scanner.scan_file(Path::new("/some/deep/path/file.exe")).await;
+    let result = scanner
+        .scan_file(Path::new("/some/deep/path/file.exe"))
+        .await;
     assert!(!result.infected);
     assert_eq!(result.path, "/some/deep/path/file.exe");
     assert_eq!(result.engine, "stub");
@@ -1218,7 +1195,13 @@ async fn test_clamav_engine_download_no_url() {
         ..Default::default()
     };
     let engine = ClamAVEngine::new(config);
-    let result = engine.download("/tmp/test", tokio_util::sync::CancellationToken::new(), None).await;
+    let result = engine
+        .download(
+            "/tmp/test",
+            tokio_util::sync::CancellationToken::new(),
+            None,
+        )
+        .await;
     assert!(result.is_err());
     assert!(result.unwrap_err().contains("no download URL"));
 }

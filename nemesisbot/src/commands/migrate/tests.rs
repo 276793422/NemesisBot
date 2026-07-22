@@ -29,9 +29,13 @@ fn test_detect_openclaw_home_env_var() {
     let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
     let tmp = TempDir::new().unwrap();
     let path = tmp.path().to_string_lossy().to_string();
-    unsafe { std::env::set_var("OPENCLAW_HOME", &path); }
+    unsafe {
+        std::env::set_var("OPENCLAW_HOME", &path);
+    }
     let _result = detect_openclaw_home(&None);
-    unsafe { std::env::remove_var("OPENCLAW_HOME"); }
+    unsafe {
+        std::env::remove_var("OPENCLAW_HOME");
+    }
     // In parallel tests, another test might overwrite the env var
     // Just verify the function doesn't panic and returns a PathBuf
     // The actual value might differ if env var was overridden by parallel tests
@@ -42,10 +46,14 @@ fn test_detect_openclaw_home_env_var_takes_precedence() {
     let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
     let tmp = TempDir::new().unwrap();
     let path = tmp.path().to_string_lossy().to_string();
-    unsafe { std::env::set_var("OPENCLAW_HOME", &path); }
+    unsafe {
+        std::env::set_var("OPENCLAW_HOME", &path);
+    }
     // Even with None override, env var should work
     let _result = detect_openclaw_home(&None);
-    unsafe { std::env::remove_var("OPENCLAW_HOME"); }
+    unsafe {
+        std::env::remove_var("OPENCLAW_HOME");
+    }
     // In parallel tests, env var might be overwritten, so just verify no panic
 }
 
@@ -102,7 +110,10 @@ fn test_copy_dir_recursive_no_overwrite() {
 
     let count = copy_dir_recursive(&src, &dst, false).unwrap();
     assert_eq!(count, 0); // Skipped because file exists
-    assert_eq!(std::fs::read_to_string(dst.join("file.txt")).unwrap(), "old");
+    assert_eq!(
+        std::fs::read_to_string(dst.join("file.txt")).unwrap(),
+        "old"
+    );
 }
 
 #[test]
@@ -119,7 +130,10 @@ fn test_copy_dir_recursive_with_refresh() {
 
     let count = copy_dir_recursive(&src, &dst, true).unwrap();
     assert_eq!(count, 1); // Overwritten
-    assert_eq!(std::fs::read_to_string(dst.join("file.txt")).unwrap(), "new");
+    assert_eq!(
+        std::fs::read_to_string(dst.join("file.txt")).unwrap(),
+        "new"
+    );
 }
 
 #[test]
@@ -153,18 +167,26 @@ fn test_copy_dir_recursive_creates_dst() {
 #[test]
 fn test_atty_isnt_with_prompt() {
     let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
-    unsafe { std::env::set_var("PROMPT", "1"); }
+    unsafe {
+        std::env::set_var("PROMPT", "1");
+    }
     let result = atty_isnt();
-    unsafe { std::env::remove_var("PROMPT"); }
+    unsafe {
+        std::env::remove_var("PROMPT");
+    }
     assert!(!result);
 }
 
 #[test]
 fn test_atty_isnt_with_term() {
     let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
-    unsafe { std::env::set_var("TERM", "xterm"); }
+    unsafe {
+        std::env::set_var("TERM", "xterm");
+    }
     let result = atty_isnt();
-    unsafe { std::env::remove_var("TERM"); }
+    unsafe {
+        std::env::remove_var("TERM");
+    }
     assert!(!result);
 }
 
@@ -186,7 +208,8 @@ fn test_convert_config_fallback_with_yaml() {
     std::fs::write(
         tmp.path().join("config.yaml"),
         "default_model: \"test/model\"\nport: 9090\n",
-    ).unwrap();
+    )
+    .unwrap();
 
     let (config, _warnings) = convert_config_fallback(tmp.path()).unwrap();
     assert_eq!(config["default_model"], "test/model");
@@ -199,7 +222,8 @@ fn test_convert_config_fallback_with_models_yaml() {
     std::fs::write(
         tmp.path().join("models.yaml"),
         "- name: \"provider/model-1\"\n- model: \"provider/model-2\"\n",
-    ).unwrap();
+    )
+    .unwrap();
 
     let (config, _warnings) = convert_config_fallback(tmp.path()).unwrap();
     let models = config["model_list"].as_array().unwrap();
@@ -214,7 +238,8 @@ fn test_convert_config_fallback_empty_model_name_skipped() {
     std::fs::write(
         tmp.path().join("models.yaml"),
         "- name: \"\"\n- model: \"valid/model\"\n",
-    ).unwrap();
+    )
+    .unwrap();
 
     let (config, _warnings) = convert_config_fallback(tmp.path()).unwrap();
     let models = config["model_list"].as_array().unwrap();
@@ -227,7 +252,8 @@ fn test_convert_config_fallback_yml_extension() {
     std::fs::write(
         tmp.path().join("openclaw.yml"),
         "default_model: 'yml-model'\n",
-    ).unwrap();
+    )
+    .unwrap();
 
     let (config, _warnings) = convert_config_fallback(tmp.path()).unwrap();
     assert_eq!(config["default_model"], "yml-model");
@@ -361,7 +387,8 @@ fn test_convert_config_fallback_with_all_yaml_variants() {
         std::fs::write(
             tmp.path().join(name),
             "default_model: 'test-model'\nport: 3000\n",
-        ).unwrap();
+        )
+        .unwrap();
         let (config, _) = convert_config_fallback(tmp.path()).unwrap();
         assert_eq!(config["default_model"], "test-model");
         assert_eq!(config["channels"]["web"]["port"], 3000);
@@ -372,8 +399,16 @@ fn test_convert_config_fallback_with_all_yaml_variants() {
 fn test_convert_config_fallback_yaml_priority() {
     let tmp = TempDir::new().unwrap();
     // config.yaml should take priority over openclaw.yml
-    std::fs::write(tmp.path().join("config.yaml"), "default_model: 'from-config-yaml'\n").unwrap();
-    std::fs::write(tmp.path().join("openclaw.yml"), "default_model: 'from-openclaw-yml'\n").unwrap();
+    std::fs::write(
+        tmp.path().join("config.yaml"),
+        "default_model: 'from-config-yaml'\n",
+    )
+    .unwrap();
+    std::fs::write(
+        tmp.path().join("openclaw.yml"),
+        "default_model: 'from-openclaw-yml'\n",
+    )
+    .unwrap();
     let (config, _) = convert_config_fallback(tmp.path()).unwrap();
     assert_eq!(config["default_model"], "from-config-yaml");
 }
@@ -384,7 +419,8 @@ fn test_convert_config_fallback_models_yaml_various_formats() {
     std::fs::write(
         tmp.path().join("models.yaml"),
         "- name: \"model-a\"\n- model: 'model-b'\n- name: ''\n- name: \"model-c\"\n",
-    ).unwrap();
+    )
+    .unwrap();
     let (config, _) = convert_config_fallback(tmp.path()).unwrap();
     let models = config["model_list"].as_array().unwrap();
     assert_eq!(models.len(), 3); // Empty name skipped
@@ -399,7 +435,8 @@ fn test_convert_config_fallback_port_invalid() {
     std::fs::write(
         tmp.path().join("config.yaml"),
         "default_model: 'test'\nport: not-a-number\n",
-    ).unwrap();
+    )
+    .unwrap();
     let (config, _) = convert_config_fallback(tmp.path()).unwrap();
     assert_eq!(config["default_model"], "test");
     // Port should remain default (8080) since parse fails

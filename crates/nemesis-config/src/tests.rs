@@ -171,7 +171,11 @@ fn test_load_mcp_config_default() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("config.mcp.json");
     // Write default MCP config to file to avoid dependency on embedded defaults state
-    let default_cfg = McpConfig { enabled: false, servers: vec![], timeout: 30 };
+    let default_cfg = McpConfig {
+        enabled: false,
+        servers: vec![],
+        timeout: 30,
+    };
     std::fs::write(&path, serde_json::to_string(&default_cfg).unwrap()).unwrap();
     let cfg = load_mcp_config(&path).unwrap();
     assert!(!cfg.enabled);
@@ -258,7 +262,10 @@ fn test_save_and_load_scanner_config() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("config.scanner.json");
     let mut engines = std::collections::HashMap::new();
-    engines.insert("clamav".to_string(), serde_json::json!({"url": "tcp://localhost:3310"}));
+    engines.insert(
+        "clamav".to_string(),
+        serde_json::json!({"url": "tcp://localhost:3310"}),
+    );
     let cfg = ScannerFullConfig {
         enabled: vec!["clamav".to_string()],
         engines,
@@ -439,7 +446,10 @@ fn test_get_effective_llm() {
         },
         ..Default::default()
     };
-    assert_eq!(get_effective_llm(Some(&config_with_llm)), "anthropic/claude-3");
+    assert_eq!(
+        get_effective_llm(Some(&config_with_llm)),
+        "anthropic/claude-3"
+    );
 }
 
 #[test]
@@ -1361,11 +1371,15 @@ fn test_apply_env_overrides_gateway_host() {
     let mut config = Config::default();
 
     // SAFETY: single-threaded test, no concurrent access to this env var
-    unsafe { std::env::set_var("NEMESISBOT_GATEWAY_HOST", "192.168.1.1"); }
+    unsafe {
+        std::env::set_var("NEMESISBOT_GATEWAY_HOST", "192.168.1.1");
+    }
     apply_env_overrides(&mut config);
     assert_eq!(config.gateway.host, "192.168.1.1");
 
-    unsafe { std::env::remove_var("NEMESISBOT_GATEWAY_HOST"); }
+    unsafe {
+        std::env::remove_var("NEMESISBOT_GATEWAY_HOST");
+    }
 }
 
 #[test]
@@ -1373,11 +1387,15 @@ fn test_apply_env_overrides_gateway_port() {
     let _guard = GLOBAL_STATE_LOCK.lock().unwrap();
     let mut config = Config::default();
 
-    unsafe { std::env::set_var("NEMESISBOT_GATEWAY_PORT", "9999"); }
+    unsafe {
+        std::env::set_var("NEMESISBOT_GATEWAY_PORT", "9999");
+    }
     apply_env_overrides(&mut config);
     assert_eq!(config.gateway.port, 9999);
 
-    unsafe { std::env::remove_var("NEMESISBOT_GATEWAY_PORT"); }
+    unsafe {
+        std::env::remove_var("NEMESISBOT_GATEWAY_PORT");
+    }
 }
 
 #[test]
@@ -1385,12 +1403,16 @@ fn test_apply_env_overrides_security_enabled() {
     let _guard = GLOBAL_STATE_LOCK.lock().unwrap();
     let mut config = Config::default();
 
-    unsafe { std::env::set_var("NEMESISBOT_SECURITY_ENABLED", "true"); }
+    unsafe {
+        std::env::set_var("NEMESISBOT_SECURITY_ENABLED", "true");
+    }
     apply_env_overrides(&mut config);
     assert!(config.security.is_some());
     assert!(config.security.as_ref().unwrap().enabled);
 
-    unsafe { std::env::remove_var("NEMESISBOT_SECURITY_ENABLED"); }
+    unsafe {
+        std::env::remove_var("NEMESISBOT_SECURITY_ENABLED");
+    }
 }
 
 #[test]
@@ -1398,12 +1420,16 @@ fn test_apply_env_overrides_forge_enabled() {
     let _guard = GLOBAL_STATE_LOCK.lock().unwrap();
     let mut config = Config::default();
 
-    unsafe { std::env::set_var("NEMESISBOT_FORGE_ENABLED", "true"); }
+    unsafe {
+        std::env::set_var("NEMESISBOT_FORGE_ENABLED", "true");
+    }
     apply_env_overrides(&mut config);
     assert!(config.forge.is_some());
     assert!(config.forge.as_ref().unwrap().enabled);
 
-    unsafe { std::env::remove_var("NEMESISBOT_FORGE_ENABLED"); }
+    unsafe {
+        std::env::remove_var("NEMESISBOT_FORGE_ENABLED");
+    }
 }
 
 #[test]
@@ -1411,11 +1437,15 @@ fn test_apply_env_overrides_workspace() {
     let _guard = GLOBAL_STATE_LOCK.lock().unwrap();
     let mut config = Config::default();
 
-    unsafe { std::env::set_var("NEMESISBOT_AGENTS_DEFAULTS_WORKSPACE", "/custom/ws"); }
+    unsafe {
+        std::env::set_var("NEMESISBOT_AGENTS_DEFAULTS_WORKSPACE", "/custom/ws");
+    }
     apply_env_overrides(&mut config);
     assert_eq!(config.agents.defaults.workspace, "/custom/ws");
 
-    unsafe { std::env::remove_var("NEMESISBOT_AGENTS_DEFAULTS_WORKSPACE"); }
+    unsafe {
+        std::env::remove_var("NEMESISBOT_AGENTS_DEFAULTS_WORKSPACE");
+    }
 }
 
 #[test]
@@ -1423,11 +1453,15 @@ fn test_apply_env_overrides_max_tokens() {
     let _guard = GLOBAL_STATE_LOCK.lock().unwrap();
     let mut config = Config::default();
 
-    unsafe { std::env::set_var("NEMESISBOT_AGENTS_DEFAULTS_MAX_TOKENS", "16000"); }
+    unsafe {
+        std::env::set_var("NEMESISBOT_AGENTS_DEFAULTS_MAX_TOKENS", "16000");
+    }
     apply_env_overrides(&mut config);
     assert_eq!(config.agents.defaults.max_tokens, 16000);
 
-    unsafe { std::env::remove_var("NEMESISBOT_AGENTS_DEFAULTS_MAX_TOKENS"); }
+    unsafe {
+        std::env::remove_var("NEMESISBOT_AGENTS_DEFAULTS_MAX_TOKENS");
+    }
 }
 
 #[test]
@@ -1435,11 +1469,15 @@ fn test_apply_env_overrides_temperature() {
     let _guard = GLOBAL_STATE_LOCK.lock().unwrap();
     let mut config = Config::default();
 
-    unsafe { std::env::set_var("NEMESISBOT_AGENTS_DEFAULTS_TEMPERATURE", "0.3"); }
+    unsafe {
+        std::env::set_var("NEMESISBOT_AGENTS_DEFAULTS_TEMPERATURE", "0.3");
+    }
     apply_env_overrides(&mut config);
     assert!((config.agents.defaults.temperature - 0.3).abs() < f64::EPSILON);
 
-    unsafe { std::env::remove_var("NEMESISBOT_AGENTS_DEFAULTS_TEMPERATURE"); }
+    unsafe {
+        std::env::remove_var("NEMESISBOT_AGENTS_DEFAULTS_TEMPERATURE");
+    }
 }
 
 #[test]
@@ -1447,14 +1485,22 @@ fn test_apply_env_overrides_heartbeat() {
     let _guard = GLOBAL_STATE_LOCK.lock().unwrap();
     let mut config = Config::default();
 
-    unsafe { std::env::set_var("NEMESISBOT_HEARTBEAT_ENABLED", "false"); }
-    unsafe { std::env::set_var("NEMESISBOT_HEARTBEAT_INTERVAL", "60"); }
+    unsafe {
+        std::env::set_var("NEMESISBOT_HEARTBEAT_ENABLED", "false");
+    }
+    unsafe {
+        std::env::set_var("NEMESISBOT_HEARTBEAT_INTERVAL", "60");
+    }
     apply_env_overrides(&mut config);
     assert!(!config.heartbeat.enabled);
     assert_eq!(config.heartbeat.interval, 60);
 
-    unsafe { std::env::remove_var("NEMESISBOT_HEARTBEAT_ENABLED"); }
-    unsafe { std::env::remove_var("NEMESISBOT_HEARTBEAT_INTERVAL"); }
+    unsafe {
+        std::env::remove_var("NEMESISBOT_HEARTBEAT_ENABLED");
+    }
+    unsafe {
+        std::env::remove_var("NEMESISBOT_HEARTBEAT_INTERVAL");
+    }
 }
 
 #[test]
@@ -1462,11 +1508,15 @@ fn test_apply_env_overrides_session_dm_scope() {
     let _guard = GLOBAL_STATE_LOCK.lock().unwrap();
     let mut config = Config::default();
 
-    unsafe { std::env::set_var("NEMESISBOT_SESSION_DM_SCOPE", "per-peer"); }
+    unsafe {
+        std::env::set_var("NEMESISBOT_SESSION_DM_SCOPE", "per-peer");
+    }
     apply_env_overrides(&mut config);
     assert_eq!(config.session.dm_scope, "per-peer");
 
-    unsafe { std::env::remove_var("NEMESISBOT_SESSION_DM_SCOPE"); }
+    unsafe {
+        std::env::remove_var("NEMESISBOT_SESSION_DM_SCOPE");
+    }
 }
 
 #[test]
@@ -1523,19 +1573,30 @@ fn test_apply_env_overrides_web_channel() {
     let _guard = GLOBAL_STATE_LOCK.lock().unwrap();
     let mut config = Config::default();
 
-    unsafe { std::env::set_var("NEMESISBOT_CHANNELS_WEB_ENABLED", "false"); }
-    unsafe { std::env::set_var("NEMESISBOT_CHANNELS_WEB_HOST", "127.0.0.1"); }
-    unsafe { std::env::set_var("NEMESISBOT_CHANNELS_WEB_PORT", "9999"); }
+    unsafe {
+        std::env::set_var("NEMESISBOT_CHANNELS_WEB_ENABLED", "false");
+    }
+    unsafe {
+        std::env::set_var("NEMESISBOT_CHANNELS_WEB_HOST", "127.0.0.1");
+    }
+    unsafe {
+        std::env::set_var("NEMESISBOT_CHANNELS_WEB_PORT", "9999");
+    }
     apply_env_overrides(&mut config);
     assert!(!config.channels.web.enabled);
     assert_eq!(config.channels.web.host, "127.0.0.1");
     assert_eq!(config.channels.web.port, 9999);
 
-    unsafe { std::env::remove_var("NEMESISBOT_CHANNELS_WEB_ENABLED"); }
-    unsafe { std::env::remove_var("NEMESISBOT_CHANNELS_WEB_HOST"); }
-    unsafe { std::env::remove_var("NEMESISBOT_CHANNELS_WEB_PORT"); }
+    unsafe {
+        std::env::remove_var("NEMESISBOT_CHANNELS_WEB_ENABLED");
+    }
+    unsafe {
+        std::env::remove_var("NEMESISBOT_CHANNELS_WEB_HOST");
+    }
+    unsafe {
+        std::env::remove_var("NEMESISBOT_CHANNELS_WEB_PORT");
+    }
 }
-
 
 #[test]
 fn test_apply_env_overrides_invalid_bool() {
@@ -1543,11 +1604,18 @@ fn test_apply_env_overrides_invalid_bool() {
     let mut config = Config::default();
 
     // Invalid bool for restrict_to_workspace defaults to true
-    unsafe { std::env::set_var("NEMESISBOT_AGENTS_DEFAULTS_RESTRICT_TO_WORKSPACE", "notabool"); }
+    unsafe {
+        std::env::set_var(
+            "NEMESISBOT_AGENTS_DEFAULTS_RESTRICT_TO_WORKSPACE",
+            "notabool",
+        );
+    }
     apply_env_overrides(&mut config);
     assert!(config.agents.defaults.restrict_to_workspace);
 
-    unsafe { std::env::remove_var("NEMESISBOT_AGENTS_DEFAULTS_RESTRICT_TO_WORKSPACE"); }
+    unsafe {
+        std::env::remove_var("NEMESISBOT_AGENTS_DEFAULTS_RESTRICT_TO_WORKSPACE");
+    }
 }
 
 #[test]
@@ -1555,11 +1623,15 @@ fn test_apply_env_overrides_llm() {
     let _guard = GLOBAL_STATE_LOCK.lock().unwrap();
     let mut config = Config::default();
 
-    unsafe { std::env::set_var("NEMESISBOT_AGENTS_DEFAULTS_LLM", "anthropic/claude-3"); }
+    unsafe {
+        std::env::set_var("NEMESISBOT_AGENTS_DEFAULTS_LLM", "anthropic/claude-3");
+    }
     apply_env_overrides(&mut config);
     assert_eq!(config.agents.defaults.llm, "anthropic/claude-3");
 
-    unsafe { std::env::remove_var("NEMESISBOT_AGENTS_DEFAULTS_LLM"); }
+    unsafe {
+        std::env::remove_var("NEMESISBOT_AGENTS_DEFAULTS_LLM");
+    }
 }
 
 #[test]
@@ -1567,11 +1639,15 @@ fn test_apply_env_overrides_image_model() {
     let _guard = GLOBAL_STATE_LOCK.lock().unwrap();
     let mut config = Config::default();
 
-    unsafe { std::env::set_var("NEMESISBOT_AGENTS_DEFAULTS_IMAGE_MODEL", "openai/dall-e-3"); }
+    unsafe {
+        std::env::set_var("NEMESISBOT_AGENTS_DEFAULTS_IMAGE_MODEL", "openai/dall-e-3");
+    }
     apply_env_overrides(&mut config);
     assert_eq!(config.agents.defaults.image_model, "openai/dall-e-3");
 
-    unsafe { std::env::remove_var("NEMESISBOT_AGENTS_DEFAULTS_IMAGE_MODEL"); }
+    unsafe {
+        std::env::remove_var("NEMESISBOT_AGENTS_DEFAULTS_IMAGE_MODEL");
+    }
 }
 
 #[test]
@@ -1579,11 +1655,15 @@ fn test_apply_env_overrides_max_tool_iterations() {
     let _guard = GLOBAL_STATE_LOCK.lock().unwrap();
     let mut config = Config::default();
 
-    unsafe { std::env::set_var("NEMESISBOT_AGENTS_DEFAULTS_MAX_TOOL_ITERATIONS", "50"); }
+    unsafe {
+        std::env::set_var("NEMESISBOT_AGENTS_DEFAULTS_MAX_TOOL_ITERATIONS", "50");
+    }
     apply_env_overrides(&mut config);
     assert_eq!(config.agents.defaults.max_tool_iterations, 50);
 
-    unsafe { std::env::remove_var("NEMESISBOT_AGENTS_DEFAULTS_MAX_TOOL_ITERATIONS"); }
+    unsafe {
+        std::env::remove_var("NEMESISBOT_AGENTS_DEFAULTS_MAX_TOOL_ITERATIONS");
+    }
 }
 
 #[test]
@@ -1591,11 +1671,18 @@ fn test_apply_env_overrides_concurrent_request_mode() {
     let _guard = GLOBAL_STATE_LOCK.lock().unwrap();
     let mut config = Config::default();
 
-    unsafe { std::env::set_var("NEMESISBOT_AGENTS_DEFAULTS_CONCURRENT_REQUEST_MODE", "queue"); }
+    unsafe {
+        std::env::set_var(
+            "NEMESISBOT_AGENTS_DEFAULTS_CONCURRENT_REQUEST_MODE",
+            "queue",
+        );
+    }
     apply_env_overrides(&mut config);
     assert_eq!(config.agents.defaults.concurrent_request_mode, "queue");
 
-    unsafe { std::env::remove_var("NEMESISBOT_AGENTS_DEFAULTS_CONCURRENT_REQUEST_MODE"); }
+    unsafe {
+        std::env::remove_var("NEMESISBOT_AGENTS_DEFAULTS_CONCURRENT_REQUEST_MODE");
+    }
 }
 
 #[test]
@@ -1603,11 +1690,15 @@ fn test_apply_env_overrides_queue_size() {
     let _guard = GLOBAL_STATE_LOCK.lock().unwrap();
     let mut config = Config::default();
 
-    unsafe { std::env::set_var("NEMESISBOT_AGENTS_DEFAULTS_QUEUE_SIZE", "16"); }
+    unsafe {
+        std::env::set_var("NEMESISBOT_AGENTS_DEFAULTS_QUEUE_SIZE", "16");
+    }
     apply_env_overrides(&mut config);
     assert_eq!(config.agents.defaults.queue_size, 16);
 
-    unsafe { std::env::remove_var("NEMESISBOT_AGENTS_DEFAULTS_QUEUE_SIZE"); }
+    unsafe {
+        std::env::remove_var("NEMESISBOT_AGENTS_DEFAULTS_QUEUE_SIZE");
+    }
 }
 
 #[test]
@@ -1638,17 +1729,30 @@ fn test_embedded_defaults_end_to_end() {
     // Write all required files with distinctive values
     let main_config = r#"{"gateway":{"host":"e2e-test","port":9999}}"#;
     let mcp_config = r#"{"enabled":true,"servers":[],"timeout":42}"#;
-    let security_config = r#"{"default_action":"allow","log_all_operations":false,"approval_timeout_seconds":123}"#;
+    let security_config =
+        r#"{"default_action":"allow","log_all_operations":false,"approval_timeout_seconds":123}"#;
     let cluster_config = r#"{"enabled":true,"port":11111}"#;
     let skills_config = r#"{"enabled":false,"github_sources":[],"search_cache":{"enabled":false},"max_concurrent_searches":5}"#;
     let scanner_config = r#"{"enabled":["clamav"],"engines":{}}"#;
 
     std::fs::write(config_dir.join("config.default.json"), main_config).unwrap();
     std::fs::write(config_dir.join("config.mcp.default.json"), mcp_config).unwrap();
-    std::fs::write(config_dir.join(get_platform_security_config_filename()), security_config).unwrap();
-    std::fs::write(config_dir.join("config.cluster.default.json"), cluster_config).unwrap();
+    std::fs::write(
+        config_dir.join(get_platform_security_config_filename()),
+        security_config,
+    )
+    .unwrap();
+    std::fs::write(
+        config_dir.join("config.cluster.default.json"),
+        cluster_config,
+    )
+    .unwrap();
     std::fs::write(config_dir.join("config.skills.default.json"), skills_config).unwrap();
-    std::fs::write(config_dir.join("config.scanner.default.json"), scanner_config).unwrap();
+    std::fs::write(
+        config_dir.join("config.scanner.default.json"),
+        scanner_config,
+    )
+    .unwrap();
 
     let result = set_embedded_defaults_from_fs(config_dir);
     assert!(result.is_ok());
@@ -1704,7 +1808,11 @@ fn test_save_config_local_mode() {
     let mut config = Config::default();
     // Set workspace to default home path so local mode adjusts it
     let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("~"));
-    config.agents.defaults.workspace = home.join(".nemesisbot").join("workspace").to_string_lossy().to_string();
+    config.agents.defaults.workspace = home
+        .join(".nemesisbot")
+        .join("workspace")
+        .to_string_lossy()
+        .to_string();
 
     // This should succeed even if local mode detection doesn't fully trigger
     let result = save_config(&config_path, &mut config);
@@ -1798,7 +1906,17 @@ fn test_adjust_paths_for_environment_log_dir() {
         general: None,
     });
     config.adjust_paths_for_environment();
-    assert_eq!(config.logging.as_ref().unwrap().llm.as_ref().unwrap().log_dir, "logs/request_logs");
+    assert_eq!(
+        config
+            .logging
+            .as_ref()
+            .unwrap()
+            .llm
+            .as_ref()
+            .unwrap()
+            .log_dir,
+        "logs/request_logs"
+    );
 }
 
 #[test]
@@ -1814,7 +1932,17 @@ fn test_adjust_paths_for_environment_existing_log_dir() {
         general: None,
     });
     config.adjust_paths_for_environment();
-    assert_eq!(config.logging.as_ref().unwrap().llm.as_ref().unwrap().log_dir, "custom/logs");
+    assert_eq!(
+        config
+            .logging
+            .as_ref()
+            .unwrap()
+            .llm
+            .as_ref()
+            .unwrap()
+            .log_dir,
+        "custom/logs"
+    );
 }
 
 #[test]
@@ -1995,7 +2123,6 @@ fn test_mcp_server_config_normalize_existing_transport() {
 // that actually use the deserialization behavior
 
 #[test]
-
 #[test]
 fn test_agent_model_config_visit_map() {
     // This tests the map visitor path
@@ -2023,13 +2150,27 @@ fn test_save_config_invalid_json_error() {
 fn test_load_embedded_config_unavailable() {
     let _guard = GLOBAL_STATE_LOCK.lock().unwrap();
     // Clear embedded defaults first
-    set_embedded_defaults(Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new());
+    set_embedded_defaults(
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+    );
 
     let result = load_embedded_config();
     assert!(result.is_err());
 
     // Restore defaults for other tests
-    set_embedded_defaults(Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new());
+    set_embedded_defaults(
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+    );
 }
 
 #[test]
@@ -2039,7 +2180,11 @@ fn test_set_embedded_defaults_from_fs_missing_config_file() {
     let config_dir = dir.path();
 
     // Create directory but not all required files
-    std::fs::write(config_dir.join("config.default.json"), r#"{"gateway":{"port":9999}}"#).unwrap();
+    std::fs::write(
+        config_dir.join("config.default.json"),
+        r#"{"gateway":{"port":9999}}"#,
+    )
+    .unwrap();
     // Missing config.mcp.default.json - should error
 
     let result = set_embedded_defaults_from_fs(config_dir);
@@ -2062,26 +2207,34 @@ fn test_set_embedded_defaults_from_fs_invalid_json() {
 #[test]
 fn test_workspace_resolver_env_var_with_tilde() {
     let _guard = GLOBAL_STATE_LOCK.lock().unwrap();
-    unsafe { std::env::set_var("NEMESISBOT_HOME", "~/custom/path"); }
+    unsafe {
+        std::env::set_var("NEMESISBOT_HOME", "~/custom/path");
+    }
 
     let path = WorkspaceResolver::resolve(false);
     // Should expand ~ and append .nemesisbot
     assert!(path.to_string_lossy().contains("custom"));
     assert!(path.to_string_lossy().contains(".nemesisbot"));
 
-    unsafe { std::env::remove_var("NEMESISBOT_HOME"); }
+    unsafe {
+        std::env::remove_var("NEMESISBOT_HOME");
+    }
 }
 
 #[test]
 fn test_workspace_resolver_env_var_absolute() {
     let _guard = GLOBAL_STATE_LOCK.lock().unwrap();
-    unsafe { std::env::set_var("NEMESISBOT_HOME", "/absolute/path"); }
+    unsafe {
+        std::env::set_var("NEMESISBOT_HOME", "/absolute/path");
+    }
 
     let path = WorkspaceResolver::resolve(false);
     assert!(path.starts_with("/absolute/path"));
     assert!(path.to_string_lossy().contains(".nemesisbot"));
 
-    unsafe { std::env::remove_var("NEMESISBOT_HOME"); }
+    unsafe {
+        std::env::remove_var("NEMESISBOT_HOME");
+    }
 }
 
 #[test]
@@ -2106,7 +2259,9 @@ fn test_workspace_resolver_auto_detect() {
 fn test_workspace_resolver_default_fallback() {
     let _guard = GLOBAL_STATE_LOCK.lock().unwrap();
     // Clear env var, ensure no local .nemesisbot
-    unsafe { std::env::remove_var("NEMESISBOT_HOME"); }
+    unsafe {
+        std::env::remove_var("NEMESISBOT_HOME");
+    }
 
     let dir = tempfile::tempdir().unwrap();
     let original = std::env::current_dir().unwrap();
@@ -2150,7 +2305,14 @@ fn test_load_config_nonexistent_uses_embedded() {
     assert_eq!(config.gateway.port, 8888);
 
     // Clear for other tests
-    set_embedded_defaults(Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new());
+    set_embedded_defaults(
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+    );
 }
 
 #[test]
@@ -2178,7 +2340,11 @@ fn test_save_config_local_mode_detection() {
 
     let mut config = Config::default();
     let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("~"));
-    config.agents.defaults.workspace = home.join(".nemesisbot").join("workspace").to_string_lossy().to_string();
+    config.agents.defaults.workspace = home
+        .join(".nemesisbot")
+        .join("workspace")
+        .to_string_lossy()
+        .to_string();
 
     let result = save_config(&config_path, &mut config);
     assert!(result.is_ok());

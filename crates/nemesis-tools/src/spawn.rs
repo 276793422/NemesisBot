@@ -9,7 +9,7 @@
 //! LLM + tool-call loop (`run_tool_loop`). Without a callback they fall back
 //! to a placeholder result so that unit tests remain deterministic.
 
-use crate::registry::{ContextualTool, Tool, AsyncCallback, ToolRegistry};
+use crate::registry::{AsyncCallback, ContextualTool, Tool, ToolRegistry};
 use crate::toolloop::{LLMCallback, ToolLoopConfig, run_tool_loop};
 use crate::types::ToolResult;
 use async_trait::async_trait;
@@ -19,8 +19,7 @@ use std::sync::Arc;
 use tokio::sync::Mutex;
 
 /// System prompt injected into every subagent conversation.
-const SUBAGENT_SYSTEM_PROMPT: &str =
-    "You are a subagent. Complete the given task independently and report the result.\n\
+const SUBAGENT_SYSTEM_PROMPT: &str = "You are a subagent. Complete the given task independently and report the result.\n\
      You have access to tools - use them as needed to complete your task.\n\
      After completing the task, provide a clear summary of what was done.";
 
@@ -96,10 +95,7 @@ impl SubagentManager {
     ///
     /// Returns the LLM's final text content and the number of iterations.
     /// If no LLM callback is configured, returns `None`.
-    pub async fn run_task_llm(
-        &self,
-        task: &str,
-    ) -> Option<crate::toolloop::ToolLoopResult> {
+    pub async fn run_task_llm(&self, task: &str) -> Option<crate::toolloop::ToolLoopResult> {
         let callback = match self.llm_callback.read().clone() {
             Some(cb) => cb,
             None => return None,

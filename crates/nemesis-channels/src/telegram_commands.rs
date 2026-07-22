@@ -31,11 +31,7 @@ pub trait TelegramCommander: Send + Sync {
 /// Extracts command arguments from a message text.
 pub fn command_args(text: &str) -> &str {
     let parts: Vec<&str> = text.splitn(2, ' ').collect();
-    if parts.len() < 2 {
-        ""
-    } else {
-        parts[1].trim()
-    }
+    if parts.len() < 2 { "" } else { parts[1].trim() }
 }
 
 /// Default help text.
@@ -64,9 +60,9 @@ pub fn show_response(args: &str, default_model: &str) -> String {
 /// Builds a list response.
 pub fn list_response(args: &str, default_model: &str, channels: &[&str]) -> String {
     match args {
-        "models" => format!(
-            "Configured Model: {default_model}\n\nTo change models, update config.yaml"
-        ),
+        "models" => {
+            format!("Configured Model: {default_model}\n\nTo change models, update config.yaml")
+        }
         "channels" => {
             let list = channels
                 .iter()

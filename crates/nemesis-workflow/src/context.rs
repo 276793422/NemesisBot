@@ -97,11 +97,7 @@ impl WorkflowContext {
 
     /// Retrieve the result of a previously executed node.
     pub fn get_node_result(&self, node_id: &str) -> Option<NodeResult> {
-        self.node_results
-            .read()
-            .unwrap()
-            .get(node_id)
-            .cloned()
+        self.node_results.read().unwrap().get(node_id).cloned()
     }
 
     /// Return a copy of all workflow variables as JSON values.

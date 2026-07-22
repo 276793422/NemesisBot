@@ -1,7 +1,7 @@
 //! CORS command - manage Cross-Origin Resource Sharing configuration.
 
-use anyhow::Result;
 use crate::common;
+use anyhow::Result;
 
 #[derive(clap::Subcommand)]
 pub enum CorsAction {
@@ -68,14 +68,20 @@ fn load_or_create_cors(cors_path: &std::path::Path) -> Result<serde_json::Value>
         let dir = cors_path.parent().unwrap();
         let _ = std::fs::create_dir_all(dir);
         let cfg = default_cors_config();
-        std::fs::write(cors_path, serde_json::to_string_pretty(&cfg).unwrap_or_default())?;
+        std::fs::write(
+            cors_path,
+            serde_json::to_string_pretty(&cfg).unwrap_or_default(),
+        )?;
         Ok(cfg)
     }
 }
 
 /// Save CORS configuration to disk.
 fn save_cors(cors_path: &std::path::Path, cfg: &serde_json::Value) -> Result<()> {
-    std::fs::write(cors_path, serde_json::to_string_pretty(cfg).unwrap_or_default())?;
+    std::fs::write(
+        cors_path,
+        serde_json::to_string_pretty(cfg).unwrap_or_default(),
+    )?;
     Ok(())
 }
 
@@ -130,14 +136,20 @@ pub fn run(action: CorsAction, local: bool) -> Result<()> {
                 .get("allow_credentials")
                 .and_then(|v| v.as_bool())
                 .unwrap_or(true);
-            let max_age = cfg
-                .get("max_age")
-                .and_then(|v| v.as_i64())
-                .unwrap_or(3600);
+            let max_age = cfg.get("max_age").and_then(|v| v.as_i64()).unwrap_or(3600);
 
-            println!("  Development mode: {}", if dev_mode { "ENABLED" } else { "disabled" });
-            println!("  Allow localhost:  {}", if allow_localhost { "yes" } else { "no" });
-            println!("  Allow credentials: {}", if allow_credentials { "yes" } else { "no" });
+            println!(
+                "  Development mode: {}",
+                if dev_mode { "ENABLED" } else { "disabled" }
+            );
+            println!(
+                "  Allow localhost:  {}",
+                if allow_localhost { "yes" } else { "no" }
+            );
+            println!(
+                "  Allow credentials: {}",
+                if allow_credentials { "yes" } else { "no" }
+            );
             println!("  Max age:          {}s", max_age);
         }
 
@@ -163,7 +175,11 @@ pub fn run(action: CorsAction, local: bool) -> Result<()> {
                     println!(
                         "Origin '{}' already exists in {}.",
                         origin,
-                        if cdn { "CDN domains" } else { "allowed origins" }
+                        if cdn {
+                            "CDN domains"
+                        } else {
+                            "allowed origins"
+                        }
                     );
                     return Ok(());
                 }
@@ -174,7 +190,11 @@ pub fn run(action: CorsAction, local: bool) -> Result<()> {
             println!(
                 "Added '{}' to {}.",
                 origin,
-                if cdn { "CDN domains" } else { "allowed origins" }
+                if cdn {
+                    "CDN domains"
+                } else {
+                    "allowed origins"
+                }
             );
             println!("Changes will be automatically reloaded within 30 seconds.");
         }
@@ -207,13 +227,21 @@ pub fn run(action: CorsAction, local: bool) -> Result<()> {
                 println!(
                     "Removed '{}' from {}.",
                     origin,
-                    if cdn { "CDN domains" } else { "allowed origins" }
+                    if cdn {
+                        "CDN domains"
+                    } else {
+                        "allowed origins"
+                    }
                 );
             } else {
                 println!(
                     "'{}' not found in {}.",
                     origin,
-                    if cdn { "CDN domains" } else { "allowed origins" }
+                    if cdn {
+                        "CDN domains"
+                    } else {
+                        "allowed origins"
+                    }
                 );
             }
         }
@@ -257,7 +285,10 @@ pub fn run(action: CorsAction, local: bool) -> Result<()> {
                 } else {
                     false
                 };
-                println!("Development mode: {}", if enabled { "ENABLED" } else { "DISABLED" });
+                println!(
+                    "Development mode: {}",
+                    if enabled { "ENABLED" } else { "DISABLED" }
+                );
                 if enabled {
                     println!("  All localhost origins are accepted.");
                 } else {

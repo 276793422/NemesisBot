@@ -79,9 +79,18 @@ async fn test_read_traces_since() {
     let two_hours_ago = now - chrono::Duration::hours(2);
     let one_hour_ago = now - chrono::Duration::hours(1);
 
-    store.append(&make_event_at("old_event", two_hours_ago)).await.unwrap();
-    store.append(&make_event_at("recent_event", one_hour_ago)).await.unwrap();
-    store.append(&make_event_at("new_event", now)).await.unwrap();
+    store
+        .append(&make_event_at("old_event", two_hours_ago))
+        .await
+        .unwrap();
+    store
+        .append(&make_event_at("recent_event", one_hour_ago))
+        .await
+        .unwrap();
+    store
+        .append(&make_event_at("new_event", now))
+        .await
+        .unwrap();
 
     // Read only events from the last 90 minutes
     let cutoff = now - chrono::Duration::minutes(90);
@@ -131,9 +140,18 @@ async fn test_cleanup_removes_old() {
     let two_days_ago = now - chrono::Duration::days(2);
     let one_hour_ago = now - chrono::Duration::hours(1);
 
-    store.append(&make_event_at("old_event", two_days_ago)).await.unwrap();
-    store.append(&make_event_at("recent_event", one_hour_ago)).await.unwrap();
-    store.append(&make_event_at("new_event", now)).await.unwrap();
+    store
+        .append(&make_event_at("old_event", two_days_ago))
+        .await
+        .unwrap();
+    store
+        .append(&make_event_at("recent_event", one_hour_ago))
+        .await
+        .unwrap();
+    store
+        .append(&make_event_at("new_event", now))
+        .await
+        .unwrap();
 
     let removed = store.cleanup(1).await.unwrap();
     assert_eq!(removed, 1);
@@ -216,7 +234,10 @@ async fn test_read_all_ignores_malformed() {
     store.append(&make_event("valid")).await.unwrap();
     // Append malformed data
     use std::io::Write;
-    let mut f = std::fs::OpenOptions::new().append(true).open(&path).unwrap();
+    let mut f = std::fs::OpenOptions::new()
+        .append(true)
+        .open(&path)
+        .unwrap();
     writeln!(f, "not json").unwrap();
     writeln!(f, "").unwrap();
     let events = store.read_all().await.unwrap();
@@ -230,7 +251,10 @@ async fn test_count_after_multiple_appends() {
     let path = dir.path().join("traces.jsonl");
     let store = TraceStore::new(&path);
     for i in 0..5 {
-        store.append(&make_event(&format!("evt-{}", i))).await.unwrap();
+        store
+            .append(&make_event(&format!("evt-{}", i)))
+            .await
+            .unwrap();
     }
     assert_eq!(store.count().await.unwrap(), 5);
 }
@@ -258,7 +282,10 @@ async fn test_append_many_events() {
     let path = dir.path().join("many.jsonl");
     let store = TraceStore::new(&path);
     for i in 0..20 {
-        store.append(&make_event(&format!("type-{}", i))).await.unwrap();
+        store
+            .append(&make_event(&format!("type-{}", i)))
+            .await
+            .unwrap();
     }
     assert_eq!(store.count().await.unwrap(), 20);
 }
@@ -270,7 +297,10 @@ async fn test_cleanup_partial() {
     let store = TraceStore::new(&path);
     let now = chrono::Local::now();
     let three_days_ago = now - chrono::Duration::days(3);
-    store.append(&make_event_at("old", three_days_ago)).await.unwrap();
+    store
+        .append(&make_event_at("old", three_days_ago))
+        .await
+        .unwrap();
     store.append(&make_event("new")).await.unwrap();
     let removed = store.cleanup(2).await.unwrap();
     assert_eq!(removed, 1);

@@ -47,11 +47,7 @@ impl Factory {
     ///
     /// When an LLM provider is available, calls the LLM to generate
     /// the skill content. Otherwise falls back to template generation.
-    pub async fn create_skill(
-        &self,
-        name: &str,
-        experiences: &[CollectedExperience],
-    ) -> Artifact {
+    pub async fn create_skill(&self, name: &str, experiences: &[CollectedExperience]) -> Artifact {
         tracing::info!(
             name = name,
             experience_count = experiences.len(),
@@ -64,7 +60,10 @@ impl Factory {
             .collect();
 
         let content = if let Some(ref caller) = self.llm_caller {
-            tracing::debug!(name = name, "[Forge/Factory] Generating skill content via LLM");
+            tracing::debug!(
+                name = name,
+                "[Forge/Factory] Generating skill content via LLM"
+            );
             self.generate_skill_llm(caller.as_ref(), name, &tool_names, experiences)
                 .await
                 .unwrap_or_else(|e| {
@@ -72,7 +71,10 @@ impl Factory {
                     self.generate_skill_template(name, &tool_names, experiences)
                 })
         } else {
-            tracing::debug!(name = name, "[Forge/Factory] Generating skill content from template");
+            tracing::debug!(
+                name = name,
+                "[Forge/Factory] Generating skill content from template"
+            );
             self.generate_skill_template(name, &tool_names, experiences)
         };
 
@@ -97,11 +99,7 @@ impl Factory {
     ///
     /// When an LLM provider is available, calls the LLM to generate
     /// the script content. Otherwise falls back to template generation.
-    pub async fn create_script(
-        &self,
-        name: &str,
-        experiences: &[CollectedExperience],
-    ) -> Artifact {
+    pub async fn create_script(&self, name: &str, experiences: &[CollectedExperience]) -> Artifact {
         tracing::info!(
             name = name,
             experience_count = experiences.len(),
@@ -114,7 +112,10 @@ impl Factory {
             .collect();
 
         let content = if let Some(ref caller) = self.llm_caller {
-            tracing::debug!(name = name, "[Forge/Factory] Generating script content via LLM");
+            tracing::debug!(
+                name = name,
+                "[Forge/Factory] Generating script content via LLM"
+            );
             self.generate_script_llm(caller.as_ref(), name, &tool_names, experiences)
                 .await
                 .unwrap_or_else(|e| {
@@ -122,7 +123,10 @@ impl Factory {
                     self.generate_script_template(name, &tool_names)
                 })
         } else {
-            tracing::debug!(name = name, "[Forge/Factory] Generating script content from template");
+            tracing::debug!(
+                name = name,
+                "[Forge/Factory] Generating script content from template"
+            );
             self.generate_script_template(name, &tool_names)
         };
 
@@ -285,9 +289,7 @@ impl Factory {
             .map(|e| {
                 format!(
                     "- Tool: {}, Input: {}, Output: {}",
-                    e.experience.tool_name,
-                    e.experience.input_summary,
-                    e.experience.output_summary
+                    e.experience.tool_name, e.experience.input_summary, e.experience.output_summary
                 )
             })
             .collect::<Vec<_>>()

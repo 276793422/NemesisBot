@@ -22,9 +22,9 @@ impl LLMProvider for MockSuccessProvider {
             finish_reason: "stop".to_string(),
             usage: None,
             reasoning_content: None,
-extra: std::collections::HashMap::new(),
-raw_request_body: None,
-raw_response_body: None,
+            extra: std::collections::HashMap::new(),
+            raw_request_body: None,
+            raw_response_body: None,
         })
     }
 
@@ -97,7 +97,7 @@ async fn test_fallback_first_succeeds() {
         tool_call_id: None,
         timestamp: None,
         reasoning_content: None,
-extra: std::collections::HashMap::new(),
+        extra: std::collections::HashMap::new(),
     }];
 
     let resp = provider
@@ -137,7 +137,7 @@ async fn test_fallback_second_succeeds() {
         tool_call_id: None,
         timestamp: None,
         reasoning_content: None,
-extra: std::collections::HashMap::new(),
+        extra: std::collections::HashMap::new(),
     }];
 
     let resp = provider
@@ -177,7 +177,7 @@ async fn test_fallback_non_retriable_stops() {
         tool_call_id: None,
         timestamp: None,
         reasoning_content: None,
-extra: std::collections::HashMap::new(),
+        extra: std::collections::HashMap::new(),
     }];
 
     let result = provider
@@ -198,7 +198,7 @@ async fn test_fallback_empty_chain() {
         tool_call_id: None,
         timestamp: None,
         reasoning_content: None,
-extra: std::collections::HashMap::new(),
+        extra: std::collections::HashMap::new(),
     }];
 
     let result = provider
@@ -240,7 +240,7 @@ async fn test_fallback_cooldown_skips() {
         tool_call_id: None,
         timestamp: None,
         reasoning_content: None,
-extra: std::collections::HashMap::new(),
+        extra: std::collections::HashMap::new(),
     }];
 
     let resp = provider
@@ -301,7 +301,7 @@ async fn test_execute_detailed_success() {
         tool_call_id: None,
         timestamp: None,
         reasoning_content: None,
-extra: std::collections::HashMap::new(),
+        extra: std::collections::HashMap::new(),
     }];
 
     let result = provider
@@ -344,7 +344,7 @@ async fn test_execute_detailed_exhausted() {
         tool_call_id: None,
         timestamp: None,
         reasoning_content: None,
-extra: std::collections::HashMap::new(),
+        extra: std::collections::HashMap::new(),
     }];
 
     let result = provider
@@ -381,9 +381,21 @@ fn test_resolve_candidates_dedup() {
         model: "m1".to_string(),
     });
     let chain = vec![
-        FallbackEntry { provider: p1.clone(), model: "m1".to_string() },
-        FallbackEntry { provider: p1.clone(), model: "m1".to_string() },
-        FallbackEntry { provider: Arc::new(MockSuccessProvider { name: "p2".to_string(), model: "m2".to_string() }), model: "m2".to_string() },
+        FallbackEntry {
+            provider: p1.clone(),
+            model: "m1".to_string(),
+        },
+        FallbackEntry {
+            provider: p1.clone(),
+            model: "m1".to_string(),
+        },
+        FallbackEntry {
+            provider: Arc::new(MockSuccessProvider {
+                name: "p2".to_string(),
+                model: "m2".to_string(),
+            }),
+            model: "m2".to_string(),
+        },
     ];
     let candidates = FallbackProvider::resolve_candidates(&chain, "");
     assert_eq!(candidates.len(), 2);
@@ -449,7 +461,7 @@ async fn test_execute_detailed_non_retriable_stops_immediately() {
         tool_call_id: None,
         timestamp: None,
         reasoning_content: None,
-extra: std::collections::HashMap::new(),
+        extra: std::collections::HashMap::new(),
     }];
 
     let result = provider
@@ -473,7 +485,7 @@ async fn test_execute_detailed_empty_chain_returns_exhausted() {
         tool_call_id: None,
         timestamp: None,
         reasoning_content: None,
-extra: std::collections::HashMap::new(),
+        extra: std::collections::HashMap::new(),
     }];
 
     let result = provider
@@ -505,7 +517,7 @@ async fn test_execute_image_success() {
         tool_call_id: None,
         timestamp: None,
         reasoning_content: None,
-extra: std::collections::HashMap::new(),
+        extra: std::collections::HashMap::new(),
     }];
 
     let result = provider
@@ -528,7 +540,7 @@ async fn test_execute_image_empty_chain() {
         tool_call_id: None,
         timestamp: None,
         reasoning_content: None,
-extra: std::collections::HashMap::new(),
+        extra: std::collections::HashMap::new(),
     }];
 
     let result = provider
@@ -562,8 +574,12 @@ async fn test_execute_image_dimension_error_aborts() {
                 message: "image dimensions exceed max 8000px".to_string(),
             })
         }
-        fn default_model(&self) -> &str { &self.model }
-        fn name(&self) -> &str { &self.name }
+        fn default_model(&self) -> &str {
+            &self.model
+        }
+        fn name(&self) -> &str {
+            &self.name
+        }
     }
 
     let provider = FallbackProvider::new(
@@ -593,7 +609,7 @@ async fn test_execute_image_dimension_error_aborts() {
         tool_call_id: None,
         timestamp: None,
         reasoning_content: None,
-extra: std::collections::HashMap::new(),
+        extra: std::collections::HashMap::new(),
     }];
 
     let result = provider
@@ -626,8 +642,12 @@ async fn test_execute_image_size_error_aborts() {
                 message: "image exceeds 20MB".to_string(),
             })
         }
-        fn default_model(&self) -> &str { &self.model }
-        fn name(&self) -> &str { &self.name }
+        fn default_model(&self) -> &str {
+            &self.model
+        }
+        fn name(&self) -> &str {
+            &self.name
+        }
     }
 
     let provider = FallbackProvider::new(
@@ -657,7 +677,7 @@ async fn test_execute_image_size_error_aborts() {
         tool_call_id: None,
         timestamp: None,
         reasoning_content: None,
-extra: std::collections::HashMap::new(),
+        extra: std::collections::HashMap::new(),
     }];
 
     let result = provider
@@ -700,7 +720,7 @@ async fn test_execute_detailed_cooldown_skips() {
         tool_call_id: None,
         timestamp: None,
         reasoning_content: None,
-extra: std::collections::HashMap::new(),
+        extra: std::collections::HashMap::new(),
     }];
 
     let result = provider
@@ -708,7 +728,12 @@ extra: std::collections::HashMap::new(),
         .await;
     // p1 should be skipped (in cooldown), p2 should succeed
     assert!(result.response.is_some());
-    assert!(result.attempts.iter().any(|a| a.provider == "p1" && a.error.as_ref().unwrap().contains("cooldown")));
+    assert!(
+        result
+            .attempts
+            .iter()
+            .any(|a| a.provider == "p1" && a.error.as_ref().unwrap().contains("cooldown"))
+    );
 }
 
 #[test]
@@ -745,15 +770,15 @@ fn test_cooldown_accessor() {
 
 #[test]
 fn test_resolve_candidates_preserves_order() {
-    let chain: Vec<FallbackEntry> = (1..=5).map(|i| {
-        FallbackEntry {
+    let chain: Vec<FallbackEntry> = (1..=5)
+        .map(|i| FallbackEntry {
             provider: Arc::new(MockSuccessProvider {
                 name: format!("p{}", i),
                 model: format!("m{}", i),
             }),
             model: format!("m{}", i),
-        }
-    }).collect();
+        })
+        .collect();
 
     let candidates = FallbackProvider::resolve_candidates(&chain, "");
     assert_eq!(candidates.len(), 5);

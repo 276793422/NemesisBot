@@ -342,7 +342,9 @@ fn test_set_send_queue_for_existing_session() {
 
     let (tx, _rx) = tokio::sync::mpsc::channel::<Vec<u8>>(16);
     let (_done_tx, done_rx) = tokio::sync::watch::channel(false);
-    let queue = Arc::new(crate::websocket_handler::SendQueue::from_channels(tx, done_rx));
+    let queue = Arc::new(crate::websocket_handler::SendQueue::from_channels(
+        tx, done_rx,
+    ));
 
     mgr.set_send_queue(&session.id, queue);
     assert!(mgr.send_queues.contains_key(&session.id));
@@ -355,7 +357,9 @@ async fn test_broadcast_with_send_queue() {
 
     let (tx, mut rx) = tokio::sync::mpsc::channel::<Vec<u8>>(16);
     let (_done_tx, done_rx) = tokio::sync::watch::channel(false);
-    let queue = Arc::new(crate::websocket_handler::SendQueue::from_channels(tx, done_rx));
+    let queue = Arc::new(crate::websocket_handler::SendQueue::from_channels(
+        tx, done_rx,
+    ));
 
     mgr.set_send_queue(&session.id, queue);
 
@@ -373,7 +377,9 @@ async fn test_broadcast_after_session_removed() {
 
     let (tx, _rx) = tokio::sync::mpsc::channel::<Vec<u8>>(16);
     let (_done_tx, done_rx) = tokio::sync::watch::channel(false);
-    let queue = Arc::new(crate::websocket_handler::SendQueue::from_channels(tx, done_rx));
+    let queue = Arc::new(crate::websocket_handler::SendQueue::from_channels(
+        tx, done_rx,
+    ));
 
     mgr.set_send_queue(&session.id, queue);
     mgr.remove_session(&session.id);
@@ -417,12 +423,16 @@ fn test_set_send_queue_replaces_existing() {
 
     let (tx1, _rx1) = tokio::sync::mpsc::channel::<Vec<u8>>(16);
     let (_done_tx1, done_rx1) = tokio::sync::watch::channel(false);
-    let queue1 = Arc::new(crate::websocket_handler::SendQueue::from_channels(tx1, done_rx1));
+    let queue1 = Arc::new(crate::websocket_handler::SendQueue::from_channels(
+        tx1, done_rx1,
+    ));
     mgr.set_send_queue(&session.id, queue1);
 
     let (tx2, _rx2) = tokio::sync::mpsc::channel::<Vec<u8>>(16);
     let (_done_tx2, done_rx2) = tokio::sync::watch::channel(false);
-    let queue2 = Arc::new(crate::websocket_handler::SendQueue::from_channels(tx2, done_rx2));
+    let queue2 = Arc::new(crate::websocket_handler::SendQueue::from_channels(
+        tx2, done_rx2,
+    ));
     mgr.set_send_queue(&session.id, queue2);
 
     assert!(mgr.send_queues.contains_key(&session.id));

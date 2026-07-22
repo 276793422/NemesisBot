@@ -15,8 +15,8 @@ use std::time::Duration;
 use anyhow::{Context, Result, bail};
 
 use crate::kmdutil;
-use crate::status::{service_state, ServiceState};
-use crate::{download, extract, ini, SandboxPaths, DRIVER_SERVICE, USERMODE_SERVICE};
+use crate::status::{ServiceState, service_state};
+use crate::{DRIVER_SERVICE, SandboxPaths, USERMODE_SERVICE, download, extract, ini};
 
 /// Poll `service_state(name)` until it reaches `target` or `timeout` elapses.
 pub fn wait_for_state(name: &str, target: ServiceState, timeout: Duration) -> ServiceState {

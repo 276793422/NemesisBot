@@ -13,8 +13,8 @@ use crate::events::EventHub;
 use crate::session::SessionManager;
 use crate::ws_router::{ModuleHandler, RequestContext};
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, AtomicUsize};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicUsize};
 use std::time::Instant;
 
 // -----------------------------------------------------------------------
@@ -48,7 +48,9 @@ fn make_ctx(dir: &tempfile::TempDir) -> RequestContext {
         cluster_service: None,
         cluster_log_dir: None,
         workflow_engine: None,
-        chat_secret_store: std::sync::Arc::new(nemesis_workflow::chat_secrets::ChatSecretStore::in_memory()),
+        chat_secret_store: std::sync::Arc::new(
+            nemesis_workflow::chat_secrets::ChatSecretStore::in_memory(),
+        ),
         webhook_rate_limiter: Arc::new(crate::handlers::workflow::WebhookRateLimiter::new()),
         internal_cmd_tx: None,
         estop: None,
@@ -95,7 +97,9 @@ fn make_ctx_with_log_dir(dir: &tempfile::TempDir) -> RequestContext {
         cluster_service: None,
         cluster_log_dir: Some(log_dir.to_string_lossy().to_string()),
         workflow_engine: None,
-        chat_secret_store: std::sync::Arc::new(nemesis_workflow::chat_secrets::ChatSecretStore::in_memory()),
+        chat_secret_store: std::sync::Arc::new(
+            nemesis_workflow::chat_secrets::ChatSecretStore::in_memory(),
+        ),
         webhook_rate_limiter: Arc::new(crate::handlers::workflow::WebhookRateLimiter::new()),
         internal_cmd_tx: None,
         estop: None,
@@ -137,7 +141,9 @@ fn make_ctx_no_workspace() -> RequestContext {
         cluster_service: None,
         cluster_log_dir: None,
         workflow_engine: None,
-        chat_secret_store: std::sync::Arc::new(nemesis_workflow::chat_secrets::ChatSecretStore::in_memory()),
+        chat_secret_store: std::sync::Arc::new(
+            nemesis_workflow::chat_secrets::ChatSecretStore::in_memory(),
+        ),
         webhook_rate_limiter: Arc::new(crate::handlers::workflow::WebhookRateLimiter::new()),
         internal_cmd_tx: None,
         estop: None,
@@ -181,7 +187,9 @@ fn make_ctx_no_home(dir: &tempfile::TempDir) -> RequestContext {
         cluster_service: None,
         cluster_log_dir: None,
         workflow_engine: None,
-        chat_secret_store: std::sync::Arc::new(nemesis_workflow::chat_secrets::ChatSecretStore::in_memory()),
+        chat_secret_store: std::sync::Arc::new(
+            nemesis_workflow::chat_secrets::ChatSecretStore::in_memory(),
+        ),
         webhook_rate_limiter: Arc::new(crate::handlers::workflow::WebhookRateLimiter::new()),
         internal_cmd_tx: None,
         estop: None,
@@ -219,7 +227,11 @@ async fn test_status_no_cluster_no_config_returns_fallback() {
     let dir = tempfile::tempdir().unwrap();
     let ctx = make_ctx(&dir);
 
-    let result = handler.handle_cmd("status", None, &ctx).await.unwrap().unwrap();
+    let result = handler
+        .handle_cmd("status", None, &ctx)
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(result["running"], false);
     assert_eq!(result["config_exists"], false);
     assert_eq!(result["online_nodes"], 0);
@@ -234,7 +246,11 @@ async fn test_legacy_status_alias_matches_runtime_status() {
     let dir = tempfile::tempdir().unwrap();
     let ctx = make_ctx(&dir);
 
-    let legacy = handler.handle_cmd("status", None, &ctx).await.unwrap().unwrap();
+    let legacy = handler
+        .handle_cmd("status", None, &ctx)
+        .await
+        .unwrap()
+        .unwrap();
     let direct = handler
         .handle_cmd("runtime.status", None, &ctx)
         .await
@@ -268,7 +284,11 @@ role = "worker"
     .unwrap();
 
     let ctx = make_ctx(&dir);
-    let result = handler.handle_cmd("status", None, &ctx).await.unwrap().unwrap();
+    let result = handler
+        .handle_cmd("status", None, &ctx)
+        .await
+        .unwrap()
+        .unwrap();
     // 2 peers under [peers.X]
     assert_eq!(result["total_nodes"], 2);
     assert_eq!(result["role"], "manager");
@@ -528,7 +548,11 @@ async fn test_set_master_enabled_true() {
     let ctx = make_ctx(&dir);
 
     let result = handler
-        .handle_cmd("config.set_master_enabled", Some(serde_json::json!({"enabled": true})), &ctx)
+        .handle_cmd(
+            "config.set_master_enabled",
+            Some(serde_json::json!({"enabled": true})),
+            &ctx,
+        )
         .await
         .unwrap()
         .unwrap();
@@ -591,7 +615,11 @@ async fn test_set_master_enabled_missing_field_errors() {
     let ctx = make_ctx(&dir);
 
     let err = handler
-        .handle_cmd("config.set_master_enabled", Some(serde_json::json!({})), &ctx)
+        .handle_cmd(
+            "config.set_master_enabled",
+            Some(serde_json::json!({})),
+            &ctx,
+        )
         .await
         .unwrap_err();
     assert!(err.contains("missing or invalid 'enabled'"));
@@ -818,7 +846,11 @@ async fn test_peers_missing_file_returns_empty_array() {
     let dir = tempfile::tempdir().unwrap();
     let ctx = make_ctx(&dir);
 
-    let result = handler.handle_cmd("peers", None, &ctx).await.unwrap().unwrap();
+    let result = handler
+        .handle_cmd("peers", None, &ctx)
+        .await
+        .unwrap()
+        .unwrap();
     assert!(result["peers"].as_array().unwrap().is_empty());
 }
 
@@ -831,7 +863,11 @@ async fn test_peers_returns_file_content_as_string() {
     std::fs::write(dir.path().join("cluster/peers.toml"), raw).unwrap();
     let ctx = make_ctx(&dir);
 
-    let result = handler.handle_cmd("peers", None, &ctx).await.unwrap().unwrap();
+    let result = handler
+        .handle_cmd("peers", None, &ctx)
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(result["format"], "toml");
     assert_eq!(result["peers"], raw);
 }
@@ -865,10 +901,7 @@ async fn test_firewall_check_returns_test_array() {
     let tests = result["tests"].as_array().unwrap();
     // 5 test entries: udp_bind, broadcast_flag, broadcast_loopback, tcp_bind, firewall_status
     assert_eq!(tests.len(), 5);
-    let names: Vec<&str> = tests
-        .iter()
-        .map(|t| t["name"].as_str().unwrap())
-        .collect();
+    let names: Vec<&str> = tests.iter().map(|t| t["name"].as_str().unwrap()).collect();
     assert!(names.contains(&"udp_bind"));
     assert!(names.contains(&"tcp_bind"));
     assert!(names.contains(&"firewall_status"));
@@ -1141,11 +1174,7 @@ async fn test_events_recent_honors_limit() {
     let ctx = make_ctx_with_log_dir(&dir);
 
     let result = handler
-        .handle_cmd(
-            "events.recent",
-            Some(serde_json::json!({"limit": 5})),
-            &ctx,
-        )
+        .handle_cmd("events.recent", Some(serde_json::json!({"limit": 5})), &ctx)
         .await
         .unwrap()
         .unwrap();
@@ -1158,7 +1187,11 @@ async fn test_traces_with_log_dir_returns_traces() {
     let dir = tempfile::tempdir().unwrap();
     let ctx = make_ctx_with_log_dir(&dir);
 
-    let result = handler.handle_cmd("traces", None, &ctx).await.unwrap().unwrap();
+    let result = handler
+        .handle_cmd("traces", None, &ctx)
+        .await
+        .unwrap()
+        .unwrap();
     assert!(result["traces"].as_array().is_some());
 }
 

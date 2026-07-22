@@ -12,7 +12,10 @@ use futures::{SinkExt, StreamExt};
 use std::sync::Arc;
 use std::time::SystemTime;
 use tokio::net::TcpListener;
-use tokio_tungstenite::tungstenite::{handshake::server::{Request, Response}, Message};
+use tokio_tungstenite::tungstenite::{
+    Message,
+    handshake::server::{Request, Response},
+};
 use tracing::{debug, info, warn};
 
 use nemesis_types::channel::{InboundMessage, OutboundMessage};
@@ -164,7 +167,10 @@ impl Channel for WebSocketChannel {
             .await
             .map_err(|e| NemesisError::Channel(format!("WebSocket bind failed: {e}")))?;
 
-        let local_addr = listener.local_addr().unwrap_or_else(|_| addr.parse().unwrap_or_else(|_| "0.0.0.0:0".parse().unwrap()));
+        let local_addr = listener.local_addr().unwrap_or_else(|_| {
+            addr.parse()
+                .unwrap_or_else(|_| "0.0.0.0:0".parse().unwrap())
+        });
         info!(
             host = %self.config.host,
             port = %self.config.port,
@@ -263,11 +269,15 @@ impl Channel for WebSocketChannel {
                         let (sink, stream) = ws_stream.split();
 
                         // Create send-queue
-                        let (send_tx, mut send_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
-                        let client_id = format!("client_{}", SystemTime::now()
-                            .duration_since(std::time::UNIX_EPOCH)
-                            .unwrap_or_default()
-                            .as_secs());
+                        let (send_tx, mut send_rx) =
+                            tokio::sync::mpsc::unbounded_channel::<String>();
+                        let client_id = format!(
+                            "client_{}",
+                            SystemTime::now()
+                                .duration_since(std::time::UNIX_EPOCH)
+                                .unwrap_or_default()
+                                .as_secs()
+                        );
 
                         // Store active connection
                         {
@@ -283,7 +293,9 @@ impl Channel for WebSocketChannel {
                         // Send welcome message
                         let welcome = ServerMessage::message(
                             "system",
-                            format!("Connected to NemesisBot WebSocket channel. Client ID: {client_id}"),
+                            format!(
+                                "Connected to NemesisBot WebSocket channel. Client ID: {client_id}"
+                            ),
                         );
                         if let Ok(json) = serde_json::to_string(&welcome) {
                             let _ = send_tx.send(json);
@@ -424,7 +436,9 @@ impl Channel for WebSocketChannel {
 
     async fn send(&self, msg: OutboundMessage) -> Result<()> {
         if !self.base.is_running() {
-            return Err(NemesisError::Channel("websocket channel not running".to_string()));
+            return Err(NemesisError::Channel(
+                "websocket channel not running".to_string(),
+            ));
         }
 
         let json = {
@@ -434,13 +448,18 @@ impl Channel for WebSocketChannel {
                     let server_msg = ServerMessage::message("assistant", msg.content.clone());
                     let json = serde_json::to_string(&server_msg)
                         .map_err(|e| NemesisError::Channel(format!("serialize failed: {e}")))?;
-                    conn.send_tx.send(json.clone())
-                        .map_err(|_| NemesisError::Channel("websocket send failed: client disconnected".to_string()))?;
+                    conn.send_tx.send(json.clone()).map_err(|_| {
+                        NemesisError::Channel(
+                            "websocket send failed: client disconnected".to_string(),
+                        )
+                    })?;
                     self.base.record_sent();
                     json
                 }
                 None => {
-                    return Err(NemesisError::Channel("no websocket client connected".to_string()));
+                    return Err(NemesisError::Channel(
+                        "no websocket client connected".to_string(),
+                    ));
                 }
             }
         };

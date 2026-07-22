@@ -86,7 +86,11 @@ impl AsyncExecTool {
                             match &re {
                                 Ok(_) => re.ok(),
                                 Err(e) => {
-                                    tracing::warn!("[Shell] Invalid custom deny pattern {:?}: {}", p, e);
+                                    tracing::warn!(
+                                        "[Shell] Invalid custom deny pattern {:?}: {}",
+                                        p,
+                                        e
+                                    );
                                     None
                                 }
                             }
@@ -127,9 +131,7 @@ impl AsyncExecTool {
 
     /// Check if a command contains dangerous patterns.
     fn is_dangerous(&self, command: &str) -> bool {
-        self.deny_patterns
-            .iter()
-            .any(|p| p.is_match(command))
+        self.deny_patterns.iter().any(|p| p.is_match(command))
     }
 
     /// Guard command against security policies.
@@ -144,9 +146,7 @@ impl AsyncExecTool {
         if self.restrict {
             let lower = trimmed.to_lowercase();
             if lower.contains("..\\") || lower.contains("../") {
-                return Err(
-                    "Command blocked by safety guard (path traversal detected)".to_string(),
-                );
+                return Err("Command blocked by safety guard (path traversal detected)".to_string());
             }
         }
         Ok(())

@@ -12,8 +12,8 @@ use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 
-use crate::reflector_llm::LLMCaller;
 use crate::config::ForgeConfig;
+use crate::reflector_llm::LLMCaller;
 
 /// Configuration for the quality evaluator.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -97,7 +97,8 @@ impl QualityEvaluator {
     ) -> QualityEvaluationResult {
         match self.provider.as_ref() {
             Some(provider) => {
-                let max_tokens = self.forge_config
+                let max_tokens = self
+                    .forge_config
                     .as_ref()
                     .map(|c| c.validation.llm_max_tokens as i64)
                     .unwrap_or(2000);
@@ -122,9 +123,13 @@ impl QualityEvaluator {
                     kind, name, version, content
                 );
 
-                let system_prompt = "You are a code quality evaluator. Respond only with valid JSON.";
+                let system_prompt =
+                    "You are a code quality evaluator. Respond only with valid JSON.";
 
-                match provider.chat(system_prompt, &prompt, Some(max_tokens)).await {
+                match provider
+                    .chat(system_prompt, &prompt, Some(max_tokens))
+                    .await
+                {
                     Ok(response) => {
                         match crate::reflector_llm::extract_json(&response) {
                             Some(parsed) => {
@@ -184,14 +189,12 @@ impl QualityEvaluator {
                             }
                         }
                     }
-                    Err(e) => {
-                        QualityEvaluationResult {
-                            passed: false,
-                            score: 0,
-                            details: format!("LLM call failed: {}", e),
-                            dimensions: HashMap::new(),
-                        }
-                    }
+                    Err(e) => QualityEvaluationResult {
+                        passed: false,
+                        score: 0,
+                        details: format!("LLM call failed: {}", e),
+                        dimensions: HashMap::new(),
+                    },
                 }
             }
             None => {
@@ -222,9 +225,7 @@ impl QualityEvaluator {
     ) -> QualityEvaluationResult {
         let future = self.evaluate(kind, name, version, content);
         match tokio::runtime::Handle::try_current() {
-            Ok(handle) => {
-                tokio::task::block_in_place(|| handle.block_on(future))
-            }
+            Ok(handle) => tokio::task::block_in_place(|| handle.block_on(future)),
             Err(_) => {
                 let rt = tokio::runtime::Runtime::new()
                     .expect("Failed to create tokio runtime for quality evaluation");

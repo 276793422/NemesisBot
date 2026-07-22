@@ -9,7 +9,17 @@ fn test_append_event() {
     };
     let chain = AuditChain::new(config);
 
-    let event = chain.append("file_read", "read_file", "user1", "cli", "/tmp/test.txt", "allowed", "rule match").unwrap();
+    let event = chain
+        .append(
+            "file_read",
+            "read_file",
+            "user1",
+            "cli",
+            "/tmp/test.txt",
+            "allowed",
+            "rule match",
+        )
+        .unwrap();
     assert_eq!(event.decision, "allowed");
     assert_ne!(event.hash, event.prev_hash);
     assert_eq!(chain.event_count(), 1);
@@ -25,7 +35,18 @@ fn test_append_with_sign() {
     };
     let chain = AuditChain::new(config);
 
-    let event = chain.append_with_sign("file_read", "read_file", "u", "c", "/tmp", "allowed", "", Some("sig123".to_string())).unwrap();
+    let event = chain
+        .append_with_sign(
+            "file_read",
+            "read_file",
+            "u",
+            "c",
+            "/tmp",
+            "allowed",
+            "",
+            Some("sig123".to_string()),
+        )
+        .unwrap();
     assert_eq!(event.sign, Some("sig123".to_string()));
 }
 
@@ -38,9 +59,39 @@ fn test_chain_hash_progression() {
     };
     let chain = AuditChain::new(config);
 
-    let e1 = chain.append("file_read", "read_file", "user1", "cli", "/tmp/a", "allowed", "ok").unwrap();
-    let e2 = chain.append("file_write", "write_file", "user1", "cli", "/tmp/b", "denied", "blocked").unwrap();
-    let e3 = chain.append("process_exec", "exec", "user1", "cli", "ls", "allowed", "ok").unwrap();
+    let e1 = chain
+        .append(
+            "file_read",
+            "read_file",
+            "user1",
+            "cli",
+            "/tmp/a",
+            "allowed",
+            "ok",
+        )
+        .unwrap();
+    let e2 = chain
+        .append(
+            "file_write",
+            "write_file",
+            "user1",
+            "cli",
+            "/tmp/b",
+            "denied",
+            "blocked",
+        )
+        .unwrap();
+    let e3 = chain
+        .append(
+            "process_exec",
+            "exec",
+            "user1",
+            "cli",
+            "ls",
+            "allowed",
+            "ok",
+        )
+        .unwrap();
 
     assert_eq!(e2.prev_hash, e1.hash);
     assert_eq!(e3.prev_hash, e2.hash);
@@ -56,8 +107,12 @@ fn test_verify_chain() {
     };
     let chain = AuditChain::new(config);
 
-    let e1 = chain.append("file_read", "read_file", "u", "c", "/tmp", "allowed", "").unwrap();
-    let e2 = chain.append("file_write", "write_file", "u", "c", "/tmp", "denied", "").unwrap();
+    let e1 = chain
+        .append("file_read", "read_file", "u", "c", "/tmp", "allowed", "")
+        .unwrap();
+    let e2 = chain
+        .append("file_write", "write_file", "u", "c", "/tmp", "denied", "")
+        .unwrap();
 
     assert!(AuditChain::verify_chain(&[e1.clone(), e2.clone()]));
 
@@ -76,8 +131,12 @@ fn test_jsonl_persistence() {
         ..Default::default()
     };
     let chain = AuditChain::new(config);
-    chain.append("file_read", "read_file", "u", "c", "/tmp", "allowed", "").unwrap();
-    chain.append("file_write", "write_file", "u", "c", "/tmp", "denied", "").unwrap();
+    chain
+        .append("file_read", "read_file", "u", "c", "/tmp", "allowed", "")
+        .unwrap();
+    chain
+        .append("file_write", "write_file", "u", "c", "/tmp", "denied", "")
+        .unwrap();
 
     let content = std::fs::read_to_string(&path).unwrap();
     let lines: Vec<&str> = content.trim().lines().collect();
@@ -99,7 +158,9 @@ fn test_segment_rotation() {
     let chain = AuditChain::new(config);
 
     for i in 0..12 {
-        chain.append("test", "tool", "u", "c", &format!("{}", i), "allowed", "").unwrap();
+        chain
+            .append("test", "tool", "u", "c", &format!("{}", i), "allowed", "")
+            .unwrap();
     }
 
     // Should have rotated at least once
@@ -116,8 +177,12 @@ fn test_export_load_chain() {
     };
     let chain = AuditChain::new(config);
 
-    chain.append("file_read", "read_file", "u", "c", "/tmp/a", "allowed", "").unwrap();
-    chain.append("file_write", "write_file", "u", "c", "/tmp/b", "denied", "").unwrap();
+    chain
+        .append("file_read", "read_file", "u", "c", "/tmp/a", "allowed", "")
+        .unwrap();
+    chain
+        .append("file_write", "write_file", "u", "c", "/tmp/b", "denied", "")
+        .unwrap();
 
     let export_path = dir.path().join("export.json");
     chain.export_chain(&export_path).unwrap();
@@ -147,7 +212,9 @@ fn test_single_event_chain_verify() {
         ..Default::default()
     };
     let chain = AuditChain::new(config);
-    let e = chain.append("file_read", "read_file", "u", "c", "/tmp", "allowed", "").unwrap();
+    let e = chain
+        .append("file_read", "read_file", "u", "c", "/tmp", "allowed", "")
+        .unwrap();
     assert!(AuditChain::verify_chain(&[e]));
 }
 
@@ -159,7 +226,17 @@ fn test_event_has_timestamp() {
         ..Default::default()
     };
     let chain = AuditChain::new(config);
-    let event = chain.append("file_read", "read_file", "user1", "cli", "/tmp/test", "allowed", "").unwrap();
+    let event = chain
+        .append(
+            "file_read",
+            "read_file",
+            "user1",
+            "cli",
+            "/tmp/test",
+            "allowed",
+            "",
+        )
+        .unwrap();
     assert!(!event.timestamp.is_empty());
 }
 
@@ -257,7 +334,9 @@ fn test_close_prevents_append() {
         ..Default::default()
     };
     let chain = AuditChain::new(config);
-    chain.append("op1", "tool1", "u", "c", "/tmp", "allowed", "").unwrap();
+    chain
+        .append("op1", "tool1", "u", "c", "/tmp", "allowed", "")
+        .unwrap();
     chain.close().unwrap();
     assert!(chain.is_closed());
 
@@ -288,7 +367,10 @@ fn test_current_hash_initial() {
     };
     let chain = AuditChain::new(config);
     let hash = chain.current_hash();
-    assert_eq!(hash, "0000000000000000000000000000000000000000000000000000000000000000");
+    assert_eq!(
+        hash,
+        "0000000000000000000000000000000000000000000000000000000000000000"
+    );
 }
 
 #[test]
@@ -300,7 +382,9 @@ fn test_current_hash_updates() {
     };
     let chain = AuditChain::new(config);
     let initial = chain.current_hash().clone();
-    chain.append("file_read", "read_file", "u", "c", "/tmp", "allowed", "").unwrap();
+    chain
+        .append("file_read", "read_file", "u", "c", "/tmp", "allowed", "")
+        .unwrap();
     let after = chain.current_hash();
     assert_ne!(initial, after);
     assert_eq!(after.len(), 64); // SHA256 hex
@@ -352,9 +436,15 @@ fn test_get_event_by_index() {
         ..Default::default()
     };
     let chain = AuditChain::new(config);
-    chain.append("file_read", "read_file", "u", "c", "/tmp/a", "allowed", "").unwrap();
-    chain.append("file_write", "write_file", "u", "c", "/tmp/b", "denied", "").unwrap();
-    chain.append("process_exec", "exec", "u", "c", "ls", "allowed", "").unwrap();
+    chain
+        .append("file_read", "read_file", "u", "c", "/tmp/a", "allowed", "")
+        .unwrap();
+    chain
+        .append("file_write", "write_file", "u", "c", "/tmp/b", "denied", "")
+        .unwrap();
+    chain
+        .append("process_exec", "exec", "u", "c", "ls", "allowed", "")
+        .unwrap();
 
     let e0 = chain.get_event(0).unwrap();
     assert_eq!(e0.operation, "file_read");

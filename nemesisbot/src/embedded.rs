@@ -6,7 +6,7 @@
 //!
 //! Static files are served directly from memory — zero disk IO.
 
-use include_dir::{include_dir, Dir};
+use include_dir::{Dir, include_dir};
 use std::sync::Arc;
 
 /// Embedded static files from `crates/nemesis-web/static/`.

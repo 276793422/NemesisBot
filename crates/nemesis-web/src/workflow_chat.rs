@@ -101,10 +101,7 @@ async fn handle_send(
 
     // Acquire per-workflow mutex. Held across the workflow's lifetime — the
     // reply observer releases it when the workflow reaches a terminal state.
-    let guard = engine
-        .workflow_chat_state()
-        .acquire(&workflow_name)
-        .await;
+    let guard = engine.workflow_chat_state().acquire(&workflow_name).await;
 
     let trigger_source = TriggerSource::WorkflowChat {
         chat_id: chat_id.clone(),
@@ -140,7 +137,11 @@ async fn handle_send(
         serde_json::Value::String(workflow_name.clone()),
     );
 
-    let exec_id = match engine.clone().start_async(&workflow_name, input, Some(trigger_source)).await {
+    let exec_id = match engine
+        .clone()
+        .start_async(&workflow_name, input, Some(trigger_source))
+        .await
+    {
         Ok(id) => id,
         Err(e) => {
             // Release the mutex immediately — no observer will fire for this.
@@ -155,9 +156,7 @@ async fn handle_send(
     // with no matching assistant reply, leaving a confusing gap on reload.
     nemesis_agent::chat_log::append_chat_log(&session_key, "user", &data.content);
 
-    engine
-        .workflow_chat_state()
-        .store_guard(&exec_id, guard);
+    engine.workflow_chat_state().store_guard(&exec_id, guard);
 
     tracing::info!(
         session_id = %session_id,
@@ -237,11 +236,7 @@ async fn handle_history_request(
 /// Emit a `workflow_chat.error` message to the client so the UI can surface
 /// it (e.g., "工作流未找到"). Returns the broadcast result so callers can
 /// log failures.
-async fn send_error(
-    state: &AppState,
-    session_id: &str,
-    error: &str,
-) -> Result<(), String> {
+async fn send_error(state: &AppState, session_id: &str, error: &str) -> Result<(), String> {
     let msg = ProtocolMessage::new(
         "message",
         "workflow_chat",

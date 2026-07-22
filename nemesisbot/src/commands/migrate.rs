@@ -2,9 +2,9 @@
 //!
 //! Uses nemesis_migrate crate for config conversion and workspace migration.
 
+use crate::common;
 use anyhow::Result;
 use std::path::{Path, PathBuf};
-use crate::common;
 
 #[derive(clap::Parser)]
 pub struct MigrateOptions {
@@ -73,7 +73,13 @@ fn detect_openclaw_home(override_path: &Option<String>) -> Option<PathBuf> {
 /// Backup a file by copying to .bak
 fn backup_file(path: &Path) -> Result<()> {
     if path.exists() {
-        let bak = path.with_extension(path.extension().unwrap_or_default().to_string_lossy().to_string() + ".bak");
+        let bak = path.with_extension(
+            path.extension()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .to_string()
+                + ".bak",
+        );
         std::fs::copy(path, &bak)?;
     }
     Ok(())
@@ -190,7 +196,10 @@ fn convert_config_fallback(openclaw_home: &Path) -> Result<(serde_json::Value, V
                         let model = model.trim().trim_matches('"').trim_matches('\'');
                         if !model.is_empty() {
                             if let Some(obj) = config.as_object_mut() {
-                                obj.insert("default_model".to_string(), serde_json::Value::String(model.to_string()));
+                                obj.insert(
+                                    "default_model".to_string(),
+                                    serde_json::Value::String(model.to_string()),
+                                );
                             }
                         }
                     }
@@ -198,7 +207,10 @@ fn convert_config_fallback(openclaw_home: &Path) -> Result<(serde_json::Value, V
                         if let Ok(port) = port_str.trim().parse::<u64>() {
                             if let Some(web) = config.pointer_mut("/channels/web") {
                                 if let Some(obj) = web.as_object_mut() {
-                                    obj.insert("port".to_string(), serde_json::Value::Number(port.into()));
+                                    obj.insert(
+                                        "port".to_string(),
+                                        serde_json::Value::Number(port.into()),
+                                    );
                                 }
                             }
                         }
@@ -231,7 +243,10 @@ fn convert_config_fallback(openclaw_home: &Path) -> Result<(serde_json::Value, V
             }
             if !model_list.is_empty() {
                 if let Some(obj) = config.as_object_mut() {
-                    obj.insert("model_list".to_string(), serde_json::Value::Array(model_list));
+                    obj.insert(
+                        "model_list".to_string(),
+                        serde_json::Value::Array(model_list),
+                    );
                 }
             }
         }
@@ -358,7 +373,10 @@ pub fn run(options: MigrateOptions, local: bool) -> Result<()> {
             match convert_config_with_crate(&openclaw_home) {
                 Ok((config, warnings)) => {
                     println!("Config preview:");
-                    println!("{}", serde_json::to_string_pretty(&config).unwrap_or_default());
+                    println!(
+                        "{}",
+                        serde_json::to_string_pretty(&config).unwrap_or_default()
+                    );
                     for w in &warnings {
                         println!("  Warning: {}", w);
                     }
@@ -469,20 +487,16 @@ pub fn run(options: MigrateOptions, local: bool) -> Result<()> {
     // Step 7: Print summary.
     println!();
     println!("Migration complete.");
-    println!(
-        "  Files migrated: {}",
-        migrated_files
-    );
+    println!("  Files migrated: {}", migrated_files);
     if migrated_dirs > 0 {
-        println!(
-            "  Directories migrated: {}",
-            migrated_dirs
-        );
+        println!("  Directories migrated: {}", migrated_dirs);
     }
     println!();
     println!("Next steps:");
     println!("  1. Review configuration: nemesisbot log config");
-    println!("  2. Set your model key: nemesisbot model add --model <vendor/model> --key <key> --default");
+    println!(
+        "  2. Set your model key: nemesisbot model add --model <vendor/model> --key <key> --default"
+    );
     println!("  3. Start the gateway: nemesisbot gateway");
 
     Ok(())

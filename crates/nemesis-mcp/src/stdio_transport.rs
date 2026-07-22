@@ -56,7 +56,11 @@ impl StdioTransport {
 
     /// Create from a `ServerConfig`.
     pub fn from_config(config: &crate::types::ServerConfig) -> Self {
-        Self::new(&config.command, config.args.clone(), config.env.clone().unwrap_or_default())
+        Self::new(
+            &config.command,
+            config.args.clone(),
+            config.env.clone().unwrap_or_default(),
+        )
     }
 }
 
@@ -80,16 +84,18 @@ impl Transport for StdioTransport {
             }
         }
 
-        let mut child = cmd.spawn().map_err(|e| {
-            TransportError::send_failed(format!("failed to spawn MCP server: {e}"))
-        })?;
+        let mut child = cmd
+            .spawn()
+            .map_err(|e| TransportError::send_failed(format!("failed to spawn MCP server: {e}")))?;
 
-        let stdin = child.stdin.take().ok_or_else(|| {
-            TransportError::send_failed("failed to get stdin pipe")
-        })?;
-        let stdout = child.stdout.take().ok_or_else(|| {
-            TransportError::send_failed("failed to get stdout pipe")
-        })?;
+        let stdin = child
+            .stdin
+            .take()
+            .ok_or_else(|| TransportError::send_failed("failed to get stdin pipe"))?;
+        let stdout = child
+            .stdout
+            .take()
+            .ok_or_else(|| TransportError::send_failed("failed to get stdout pipe"))?;
 
         self.child = Some(child);
         self.stdin = Some(Mutex::new(stdin));
@@ -141,13 +147,17 @@ impl Transport for StdioTransport {
             writer.write_all(line.as_bytes()).await.map_err(|e| {
                 TransportError::send_failed(format!("failed to write to stdin: {e}"))
             })?;
-            writer.flush().await.map_err(|e| {
-                TransportError::send_failed(format!("failed to flush stdin: {e}"))
-            })?;
+            writer
+                .flush()
+                .await
+                .map_err(|e| TransportError::send_failed(format!("failed to flush stdin: {e}")))?;
         }
 
         // Read response from stdout with timeout.
-        let stdout = self.stdout.as_ref().ok_or(TransportError::not_connected())?;
+        let stdout = self
+            .stdout
+            .as_ref()
+            .ok_or(TransportError::not_connected())?;
         let effective_timeout = if timeout_ms == 0 {
             Duration::from_secs(30)
         } else {
@@ -176,9 +186,8 @@ impl Transport for StdioTransport {
         };
 
         // Parse the response.
-        let response: TransportResponse = serde_json::from_str(response_line.trim()).map_err(
-            |e| TransportError::send_failed(format!("failed to parse response: {e}")),
-        )?;
+        let response: TransportResponse = serde_json::from_str(response_line.trim())
+            .map_err(|e| TransportError::send_failed(format!("failed to parse response: {e}")))?;
 
         Ok(response)
     }

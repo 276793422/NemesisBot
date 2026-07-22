@@ -102,17 +102,13 @@ fn test_process_status_copy() {
 
 #[test]
 fn test_executor_config_custom() {
-    let config = ExecutorConfig {
-        hide_window: false,
-    };
+    let config = ExecutorConfig { hide_window: false };
     assert!(!config.hide_window);
 }
 
 #[test]
 fn test_default_platform_executor_new_custom() {
-    let executor = DefaultPlatformExecutor::new(ExecutorConfig {
-        hide_window: false,
-    });
+    let executor = DefaultPlatformExecutor::new(ExecutorConfig { hide_window: false });
     // Should be able to create with custom config
     assert!(true);
     let _ = executor;

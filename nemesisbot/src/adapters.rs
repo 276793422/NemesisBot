@@ -9,15 +9,14 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use nemesis_services::{
-    LifecycleService,
-    ChannelManager as ChannelManagerTrait,
-    AgentLoopService as AgentLoopServiceTrait,
-};
 #[cfg(feature = "health")]
 use nemesis_services::HealthServer as HealthServerTrait;
 #[cfg(feature = "heartbeat")]
 use nemesis_services::HeartbeatService as HeartbeatServiceTrait;
+use nemesis_services::{
+    AgentLoopService as AgentLoopServiceTrait, ChannelManager as ChannelManagerTrait,
+    LifecycleService,
+};
 
 // ---------------------------------------------------------------------------
 // HealthServer adapter
@@ -415,32 +414,49 @@ impl WebServerOpsAdapter {
 }
 
 impl WebServerOps for WebServerOpsAdapter {
-    fn send_to_session(&self, session_id: &str, role: &str, content: &str, model: Option<&str>) -> std::result::Result<(), String> {
+    fn send_to_session(
+        &self,
+        session_id: &str,
+        role: &str,
+        content: &str,
+        model: Option<&str>,
+    ) -> std::result::Result<(), String> {
         let sm = self.session_manager.clone();
         let sid = session_id.to_string();
         let content = content.to_string();
         let model = model.map(|s| s.to_string());
         tokio::task::block_in_place(|| {
             self.rt.block_on(nemesis_web::server::send_to_session(
-                &sm, &sid, role, &content, model.as_deref(),
+                &sm,
+                &sid,
+                role,
+                &content,
+                model.as_deref(),
             ))
         })
     }
 
-    fn send_history_to_session(&self, session_id: &str, content: &str) -> std::result::Result<(), String> {
+    fn send_history_to_session(
+        &self,
+        session_id: &str,
+        content: &str,
+    ) -> std::result::Result<(), String> {
         let sm = self.session_manager.clone();
         let sid = session_id.to_string();
         let content = content.to_string();
         tokio::task::block_in_place(|| {
-            self.rt.block_on(nemesis_web::server::send_history_to_session(
-                &sm, &sid, &content,
-            ))
+            self.rt
+                .block_on(nemesis_web::server::send_history_to_session(
+                    &sm, &sid, &content,
+                ))
         })
     }
 
     fn broadcast(&self, content: &str) -> std::result::Result<(), String> {
         let msg = nemesis_web::protocol::ProtocolMessage::new(
-            "message", "chat", "receive",
+            "message",
+            "chat",
+            "receive",
             Some(serde_json::json!({
                 "role": "assistant",
                 "content": content,
@@ -450,15 +466,17 @@ impl WebServerOps for WebServerOpsAdapter {
         let sm = self.session_manager.clone();
         for sid in self.active_session_ids() {
             let data_clone = data.clone();
-            tokio::task::block_in_place(|| {
-                self.rt.block_on(sm.broadcast(&sid, &data_clone))
-            })?;
+            tokio::task::block_in_place(|| self.rt.block_on(sm.broadcast(&sid, &data_clone)))?;
         }
         Ok(())
     }
 
     fn active_session_ids(&self) -> Vec<String> {
-        self.session_manager.all_sessions().into_iter().map(|s| s.id).collect()
+        self.session_manager
+            .all_sessions()
+            .into_iter()
+            .map(|s| s.id)
+            .collect()
     }
 
     fn start_server(&self) -> std::result::Result<(), String> {

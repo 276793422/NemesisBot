@@ -18,8 +18,8 @@ use crate::handlers::skills::SkillsHandler;
 use crate::ws_router::ModuleHandler;
 
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, AtomicUsize};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicUsize};
 use std::time::Instant;
 
 use crate::api_handlers::AppState;
@@ -58,7 +58,9 @@ fn make_ctx(dir: &tempfile::TempDir) -> RequestContext {
         cluster_service: None,
         cluster_log_dir: None,
         workflow_engine: None,
-        chat_secret_store: std::sync::Arc::new(nemesis_workflow::chat_secrets::ChatSecretStore::in_memory()),
+        chat_secret_store: std::sync::Arc::new(
+            nemesis_workflow::chat_secrets::ChatSecretStore::in_memory(),
+        ),
         webhook_rate_limiter: Arc::new(crate::handlers::workflow::WebhookRateLimiter::new()),
         internal_cmd_tx: None,
         estop: None,
@@ -119,7 +121,11 @@ async fn test_skills_installed_handles_skill_md_no_frontmatter() {
     let dir = tempfile::tempdir().unwrap();
     let ws = dir.path();
     std::fs::create_dir_all(ws.join("skills/plain-md")).unwrap();
-    std::fs::write(ws.join("skills/plain-md/SKILL.md"), "# Just a body\nNo frontmatter").unwrap();
+    std::fs::write(
+        ws.join("skills/plain-md/SKILL.md"),
+        "# Just a body\nNo frontmatter",
+    )
+    .unwrap();
     let ctx = make_ctx(&dir);
 
     let result = handler
@@ -180,7 +186,11 @@ async fn test_skills_detail_path_traversal_name() {
     let result = handler.handle_cmd("detail", Some(data), &ctx).await;
     assert!(result.is_err());
     let err = result.unwrap_err();
-    assert!(err.contains("path traversal denied") || err.contains("absolute paths not allowed"), "got: {}", err);
+    assert!(
+        err.contains("path traversal denied") || err.contains("absolute paths not allowed"),
+        "got: {}",
+        err
+    );
 }
 
 #[tokio::test]
@@ -310,7 +320,11 @@ async fn test_skills_config_save_round_trip_full() {
     assert!(r["saved"].as_bool().unwrap());
 
     // Verify all values persist via config.get.
-    let r = handler.handle_cmd("config.get", None, &ctx).await.unwrap().unwrap();
+    let r = handler
+        .handle_cmd("config.get", None, &ctx)
+        .await
+        .unwrap()
+        .unwrap();
     assert!(!r["enabled"].as_bool().unwrap());
     assert_eq!(r["search_limit"].as_i64().unwrap(), 7);
     assert_eq!(r["max_concurrent_searches"].as_i64().unwrap(), 3);
@@ -350,10 +364,7 @@ async fn test_skills_source_add_manual_multiple() {
     let sources = list["sources"].as_array().unwrap();
     // 3 github + 1 clawhub + 1 modelscope
     assert_eq!(sources.len(), 5);
-    let gh_count = sources
-        .iter()
-        .filter(|s| s["type"] == "github")
-        .count();
+    let gh_count = sources.iter().filter(|s| s["type"] == "github").count();
     assert_eq!(gh_count, 3);
 }
 
@@ -640,7 +651,11 @@ async fn test_skills_config_update_search_cache_only_enabled() {
         .unwrap();
     assert!(r["updated"].as_bool().unwrap());
 
-    let r = handler.handle_cmd("config.get", None, &ctx).await.unwrap().unwrap();
+    let r = handler
+        .handle_cmd("config.get", None, &ctx)
+        .await
+        .unwrap()
+        .unwrap();
     assert!(!r["search_cache"]["enabled"].as_bool().unwrap());
 }
 
@@ -659,7 +674,11 @@ async fn test_skills_config_update_search_cache_only_max_size() {
         .unwrap();
     assert!(r["updated"].as_bool().unwrap());
 
-    let r = handler.handle_cmd("config.get", None, &ctx).await.unwrap().unwrap();
+    let r = handler
+        .handle_cmd("config.get", None, &ctx)
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(r["search_cache"]["max_size"].as_i64().unwrap(), 5050);
 }
 
@@ -678,7 +697,11 @@ async fn test_skills_config_update_clawhub_only_base_url() {
         .unwrap();
     assert!(r["updated"].as_bool().unwrap());
 
-    let r = handler.handle_cmd("config.get", None, &ctx).await.unwrap().unwrap();
+    let r = handler
+        .handle_cmd("config.get", None, &ctx)
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(r["clawhub"]["base_url"], "https://new.example.com");
 }
 
@@ -704,7 +727,11 @@ async fn test_skills_config_update_null_fields_ignored() {
     assert!(r["updated"].as_bool().unwrap());
 
     // Defaults preserved.
-    let r = handler.handle_cmd("config.get", None, &ctx).await.unwrap().unwrap();
+    let r = handler
+        .handle_cmd("config.get", None, &ctx)
+        .await
+        .unwrap()
+        .unwrap();
     assert!(r["enabled"].as_bool().unwrap());
 }
 
@@ -730,7 +757,11 @@ async fn test_skills_config_update_wrong_types_ignored() {
     assert!(r["updated"].as_bool().unwrap());
 
     // Defaults preserved.
-    let r = handler.handle_cmd("config.get", None, &ctx).await.unwrap().unwrap();
+    let r = handler
+        .handle_cmd("config.get", None, &ctx)
+        .await
+        .unwrap()
+        .unwrap();
     assert!(r["enabled"].as_bool().unwrap());
 }
 

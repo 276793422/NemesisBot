@@ -183,11 +183,17 @@ fn test_value_to_string() {
 #[test]
 fn test_register_multiple_triggers_same_workflow() {
     let mgr = TriggerManager::new();
-    mgr.register_trigger("wf1", make_trigger("cron", HashMap::from([("schedule", "0 * * * *")])))
-        .unwrap();
+    mgr.register_trigger(
+        "wf1",
+        make_trigger("cron", HashMap::from([("schedule", "0 * * * *")])),
+    )
+    .unwrap();
     // Re-registering should update
-    mgr.register_trigger("wf1", make_trigger("cron", HashMap::from([("schedule", "0 0 * * *")])))
-        .unwrap();
+    mgr.register_trigger(
+        "wf1",
+        make_trigger("cron", HashMap::from([("schedule", "0 0 * * *")])),
+    )
+    .unwrap();
     let cron = mgr.get_cron_workflows();
     assert!(cron.contains_key("wf1"));
 }
@@ -273,10 +279,7 @@ fn match_trigger_event_matches_when_event_type_filter_matches() {
 #[test]
 fn match_trigger_event_supports_glob_event_type() {
     let mgr = TriggerManager::new();
-    let trigger = make_trigger(
-        "event",
-        HashMap::from([("event_type", "workflow.*")]),
-    );
+    let trigger = make_trigger("event", HashMap::from([("event_type", "workflow.*")]));
     mgr.register_trigger("any_workflow_event", trigger).unwrap();
 
     let ev = make_typed_event("workflow.failed", &[]);
@@ -291,10 +294,7 @@ fn match_trigger_event_supports_additional_data_matchers() {
     let mgr = TriggerManager::new();
     let trigger = make_trigger(
         "event",
-        HashMap::from([
-            ("event_type", "workflow.completed"),
-            ("status", "success"),
-        ]),
+        HashMap::from([("event_type", "workflow.completed"), ("status", "success")]),
     );
     mgr.register_trigger("on_success", trigger).unwrap();
 
@@ -389,10 +389,7 @@ fn match_message_filters_by_sender_id() {
     let mgr = TriggerManager::new();
     let trigger = make_trigger(
         "message",
-        HashMap::from([
-            ("channel", "web"),
-            ("sender_id", "admin"),
-        ]),
+        HashMap::from([("channel", "web"), ("sender_id", "admin")]),
     );
     mgr.register_trigger("admin_only_wf", trigger).unwrap();
 

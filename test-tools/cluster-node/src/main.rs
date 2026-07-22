@@ -2,7 +2,7 @@ use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
 use rand::seq::SliceRandom;
 
@@ -83,7 +83,14 @@ fn main() -> Result<()> {
             category,
             port,
             rpc_port,
-        } => cmd_path(&dir, name.as_deref(), role.as_deref(), category.as_deref(), port, rpc_port),
+        } => cmd_path(
+            &dir,
+            name.as_deref(),
+            role.as_deref(),
+            category.as_deref(),
+            port,
+            rpc_port,
+        ),
         Cmd::Run { dir } => cmd_run(&dir),
     }
 }
@@ -149,7 +156,10 @@ fn cmd_path(
             cluster["rpc_port"] = serde_json::json!(rpc_port);
         }
         fs::write(&config_path, serde_json::to_string_pretty(&config)?)?;
-        println!("  OK config.json cluster enabled (port={}, rpc_port={})", port, rpc_port);
+        println!(
+            "  OK config.json cluster enabled (port={}, rpc_port={})",
+            port, rpc_port
+        );
     }
 
     // 5. Generate random cluster parameters
@@ -300,13 +310,15 @@ fn find_nemesisbot() -> Result<PathBuf> {
         }
     }
 
-    bail!(
-        "nemesisbot binary not found. Build it first: cargo build --release -p nemesisbot"
-    );
+    bail!("nemesisbot binary not found. Build it first: cargo build --release -p nemesisbot");
 }
 
 /// Pick `n` random items from `pool` where n is in `range`.
-fn pick_random(pool: &[&str], range: std::ops::RangeInclusive<usize>, rng: &mut impl rand::Rng) -> Vec<String> {
+fn pick_random(
+    pool: &[&str],
+    range: std::ops::RangeInclusive<usize>,
+    rng: &mut impl rand::Rng,
+) -> Vec<String> {
     let count = rng.gen_range(range);
     let mut shuffled: Vec<&str> = pool.to_vec();
     shuffled.shuffle(rng);

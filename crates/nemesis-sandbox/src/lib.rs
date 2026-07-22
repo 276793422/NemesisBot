@@ -36,8 +36,7 @@ pub const CLASSIC_VERSION: &str = "5.72.9";
 pub const INSTALLER_FILENAME: &str = "Sandboxie-Classic-x64-v5.72.9.exe";
 
 /// Download URL (tag = Plus version, file = Classic version).
-pub const INSTALLER_URL: &str =
-    "https://github.com/sandboxie-plus/Sandboxie/releases/download/v1.17.9/Sandboxie-Classic-x64-v5.72.9.exe";
+pub const INSTALLER_URL: &str = "https://github.com/sandboxie-plus/Sandboxie/releases/download/v1.17.9/Sandboxie-Classic-x64-v5.72.9.exe";
 /// SHA-256 checksums file attached to the same release (`.github/workflows/hash.yml`).
 pub const CHECKSUMS_URL: &str =
     "https://github.com/sandboxie-plus/Sandboxie/releases/download/v1.17.9/sha256-checksums.txt";
@@ -109,7 +108,10 @@ impl SandboxPaths {
             ("Start.exe", self.start_exe()),
         ] {
             if !path.exists() {
-                anyhow::bail!("expected runtime file missing after extract: {name} at {}", path.display());
+                anyhow::bail!(
+                    "expected runtime file missing after extract: {name} at {}",
+                    path.display()
+                );
             }
         }
         Ok(())

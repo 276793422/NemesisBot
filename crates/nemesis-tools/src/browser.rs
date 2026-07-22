@@ -132,7 +132,7 @@ impl Tool for BrowserTool {
                 return ToolResult::error(&format!(
                     "unknown browser action: {} (supported: navigate, screenshot, click, type, extract_text, fill_form, wait_for_element)",
                     action_raw
-                ))
+                ));
             }
         };
 
@@ -157,9 +157,7 @@ impl Tool for BrowserTool {
                     .call_tool("browser_navigate", &mcp_args)
                     .await
                 {
-                    Ok(result) => {
-                        ToolResult::silent(&format!("Navigated to {}\n{}", url, result))
-                    }
+                    Ok(result) => ToolResult::silent(&format!("Navigated to {}\n{}", url, result)),
                     Err(e) => ToolResult::error(&format!("browser navigate failed: {}", e)),
                 }
             }
@@ -196,10 +194,7 @@ impl Tool for BrowserTool {
                 }
 
                 let (tool_name, mcp_args) = if !selector.is_empty() {
-                    (
-                        "browser_click",
-                        serde_json::json!({"selector": selector}),
-                    )
+                    ("browser_click", serde_json::json!({"selector": selector}))
                 } else {
                     ("browser_click_text", serde_json::json!({"text": text}))
                 };
@@ -261,15 +256,15 @@ impl Tool for BrowserTool {
                     .await
                 {
                     Ok(result) => ToolResult::success(&result),
-                    Err(e) => {
-                        ToolResult::error(&format!("browser extract_text failed: {}", e))
-                    }
+                    Err(e) => ToolResult::error(&format!("browser extract_text failed: {}", e)),
                 }
             }
             BrowserAction::FillForm => {
                 let selector = match args["selector"].as_str() {
                     Some(s) if !s.is_empty() => s,
-                    _ => return ToolResult::error("parameter 'selector' is required for fill_form"),
+                    _ => {
+                        return ToolResult::error("parameter 'selector' is required for fill_form");
+                    }
                 };
                 let value = match args["value"].as_str() {
                     Some(v) if !v.is_empty() => v,
@@ -288,9 +283,7 @@ impl Tool for BrowserTool {
                     .call_tool("browser_fill", &mcp_args)
                     .await
                 {
-                    Ok(result) => {
-                        ToolResult::silent(&format!("Filled form field.\n{}", result))
-                    }
+                    Ok(result) => ToolResult::silent(&format!("Filled form field.\n{}", result)),
                     Err(e) => ToolResult::error(&format!("browser fill_form failed: {}", e)),
                 }
             }
@@ -300,7 +293,7 @@ impl Tool for BrowserTool {
                     _ => {
                         return ToolResult::error(
                             "parameter 'selector' is required for wait_for_element",
-                        )
+                        );
                     }
                 };
 
@@ -309,8 +302,7 @@ impl Tool for BrowserTool {
                 }
 
                 let timeout_ms = args["timeout_ms"].as_u64().unwrap_or(5000);
-                let mcp_args =
-                    serde_json::json!({"selector": selector, "timeout": timeout_ms});
+                let mcp_args = serde_json::json!({"selector": selector, "timeout": timeout_ms});
                 match self
                     .mcp_caller
                     .as_ref()
@@ -318,15 +310,8 @@ impl Tool for BrowserTool {
                     .call_tool("browser_wait_for_selector", &mcp_args)
                     .await
                 {
-                    Ok(result) => {
-                        ToolResult::silent(&format!("Element appeared.\n{}", result))
-                    }
-                    Err(e) => {
-                        ToolResult::error(&format!(
-                            "browser wait_for_element failed: {}",
-                            e
-                        ))
-                    }
+                    Ok(result) => ToolResult::silent(&format!("Element appeared.\n{}", result)),
+                    Err(e) => ToolResult::error(&format!("browser wait_for_element failed: {}", e)),
                 }
             }
         }
@@ -411,7 +396,7 @@ impl Tool for ScreenCaptureTool {
                 return ToolResult::error(&format!(
                     "unknown capture mode: {} (supported: full_screen, region, window)",
                     mode_raw
-                ))
+                ));
             }
         };
 
@@ -443,7 +428,7 @@ impl Tool for ScreenCaptureTool {
                                     "Screenshot saved to {}\n{}",
                                     output_path.display(),
                                     result
-                                ))
+                                ));
                             }
                             Err(_) => { /* Fall through to PowerShell */ }
                         }
@@ -457,7 +442,9 @@ impl Tool for ScreenCaptureTool {
                         output_path.display()
                     ))
                 } else {
-                    ToolResult::error("screen capture requires a window-mcp server on non-Windows platforms")
+                    ToolResult::error(
+                        "screen capture requires a window-mcp server on non-Windows platforms",
+                    )
                 }
             }
             CaptureMode::Region => {
@@ -490,7 +477,7 @@ impl Tool for ScreenCaptureTool {
                                     "Region screenshot saved to {}\n{}",
                                     output_path.display(),
                                     result
-                                ))
+                                ));
                             }
                             Err(_) => { /* Fall through */ }
                         }
@@ -529,13 +516,10 @@ impl Tool for ScreenCaptureTool {
                                     "Window screenshot saved to {}\n{}",
                                     output_path.display(),
                                     result
-                                ))
+                                ));
                             }
                             Err(e) => {
-                                return ToolResult::error(&format!(
-                                    "window capture failed: {}",
-                                    e
-                                ))
+                                return ToolResult::error(&format!("window capture failed: {}", e));
                             }
                         }
                     }
@@ -649,9 +633,7 @@ impl Tool for DesktopTool {
             DesktopAction::FindWindow => {
                 let title = args["title"].as_str().unwrap_or("");
                 if title.is_empty() {
-                    return ToolResult::error(
-                        "parameter 'title' is required for find_window",
-                    );
+                    return ToolResult::error("parameter 'title' is required for find_window");
                 }
 
                 if self.has_mcp() {
@@ -665,10 +647,7 @@ impl Tool for DesktopTool {
                     {
                         Ok(result) => return ToolResult::success(&result),
                         Err(e) => {
-                            return ToolResult::error(&format!(
-                                "MCP find_window failed: {}",
-                                e
-                            ))
+                            return ToolResult::error(&format!("MCP find_window failed: {}", e));
                         }
                     }
                 }
@@ -683,8 +662,7 @@ impl Tool for DesktopTool {
                 if self.has_mcp() {
                     let mut mcp_args = serde_json::json!({"filter_visible": true});
                     if let Some(title) = args["title"].as_str() {
-                        mcp_args["title_contains"] =
-                            serde_json::Value::String(title.to_string());
+                        mcp_args["title_contains"] = serde_json::Value::String(title.to_string());
                     }
                     match self
                         .mcp_caller
@@ -695,10 +673,7 @@ impl Tool for DesktopTool {
                     {
                         Ok(result) => return ToolResult::success(&result),
                         Err(e) => {
-                            return ToolResult::error(&format!(
-                                "MCP list_windows failed: {}",
-                                e
-                            ))
+                            return ToolResult::error(&format!("MCP list_windows failed: {}", e));
                         }
                     }
                 }
@@ -709,9 +684,7 @@ impl Tool for DesktopTool {
                 let x = args["x"].as_u64();
                 let y = args["y"].as_u64();
                 if x.is_none() || y.is_none() {
-                    return ToolResult::error(
-                        "parameters 'x' and 'y' are required for click_at",
-                    );
+                    return ToolResult::error("parameters 'x' and 'y' are required for click_at");
                 }
 
                 let button = args["button"].as_str().unwrap_or("left");
@@ -719,8 +692,7 @@ impl Tool for DesktopTool {
                 let y = y.unwrap();
 
                 if self.has_mcp() {
-                    let mut mcp_args =
-                        serde_json::json!({"x": x, "y": y, "button": button});
+                    let mut mcp_args = serde_json::json!({"x": x, "y": y, "button": button});
                     if let Some(hwnd) = args["hwnd"].as_str() {
                         mcp_args["hwnd"] = serde_json::Value::String(hwnd.to_string());
                     }
@@ -735,29 +707,18 @@ impl Tool for DesktopTool {
                             return ToolResult::silent(&format!(
                                 "Clicked at ({}, {}) with {} button.\n{}",
                                 x, y, button, result
-                            ))
+                            ));
                         }
-                        Err(e) => {
-                            return ToolResult::error(&format!(
-                                "MCP click_at failed: {}",
-                                e
-                            ))
-                        }
+                        Err(e) => return ToolResult::error(&format!("MCP click_at failed: {}", e)),
                     }
                 }
 
-                ToolResult::error(
-                    "click_at requires a window-mcp server (no standalone fallback)",
-                )
+                ToolResult::error("click_at requires a window-mcp server (no standalone fallback)")
             }
             DesktopAction::TypeText => {
                 let text = match args["text"].as_str() {
                     Some(t) if !t.is_empty() => t,
-                    _ => {
-                        return ToolResult::error(
-                            "parameter 'text' is required for type_text",
-                        )
-                    }
+                    _ => return ToolResult::error("parameter 'text' is required for type_text"),
                 };
 
                 if self.has_mcp() {
@@ -773,23 +734,15 @@ impl Tool for DesktopTool {
                         .await
                     {
                         Ok(result) => {
-                            return ToolResult::silent(&format!(
-                                "Typed text.\n{}",
-                                result
-                            ))
+                            return ToolResult::silent(&format!("Typed text.\n{}", result));
                         }
                         Err(e) => {
-                            return ToolResult::error(&format!(
-                                "MCP type_text failed: {}",
-                                e
-                            ))
+                            return ToolResult::error(&format!("MCP type_text failed: {}", e));
                         }
                     }
                 }
 
-                ToolResult::error(
-                    "type_text requires a window-mcp server (no standalone fallback)",
-                )
+                ToolResult::error("type_text requires a window-mcp server (no standalone fallback)")
             }
             DesktopAction::TakeScreenshot => {
                 if self.has_mcp() {
@@ -820,13 +773,10 @@ impl Tool for DesktopTool {
                             return ToolResult::silent(&format!(
                                 "Screenshot captured.\n{}",
                                 result
-                            ))
+                            ));
                         }
                         Err(e) => {
-                            return ToolResult::error(&format!(
-                                "MCP screenshot failed: {}",
-                                e
-                            ))
+                            return ToolResult::error(&format!("MCP screenshot failed: {}", e));
                         }
                     }
                 }
@@ -865,10 +815,7 @@ impl Tool for DesktopTool {
                                 if let Ok(parsed) =
                                     serde_json::from_str::<serde_json::Value>(&find_result)
                                 {
-                                    parsed["hwnd"]
-                                        .as_str()
-                                        .unwrap_or("")
-                                        .to_string()
+                                    parsed["hwnd"].as_str().unwrap_or("").to_string()
                                 } else {
                                     String::new()
                                 }
@@ -894,17 +841,10 @@ impl Tool for DesktopTool {
                         .await
                     {
                         Ok(result) => ToolResult::success(&result),
-                        Err(e) => {
-                            ToolResult::error(&format!(
-                                "MCP get_window_text failed: {}",
-                                e
-                            ))
-                        }
+                        Err(e) => ToolResult::error(&format!("MCP get_window_text failed: {}", e)),
                     }
                 } else {
-                    ToolResult::error(
-                        "get_window_text requires a window-mcp server",
-                    )
+                    ToolResult::error("get_window_text requires a window-mcp server")
                 }
             }
         }

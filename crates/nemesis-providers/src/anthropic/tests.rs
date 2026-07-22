@@ -3,9 +3,18 @@ use super::*;
 #[test]
 fn test_normalize_base_url() {
     assert_eq!(normalize_base_url(""), DEFAULT_BASE_URL);
-    assert_eq!(normalize_base_url("https://api.anthropic.com/v1"), "https://api.anthropic.com");
-    assert_eq!(normalize_base_url("https://custom.api.com/"), "https://custom.api.com");
-    assert_eq!(normalize_base_url("  https://api.anthropic.com/v1/  "), "https://api.anthropic.com");
+    assert_eq!(
+        normalize_base_url("https://api.anthropic.com/v1"),
+        "https://api.anthropic.com"
+    );
+    assert_eq!(
+        normalize_base_url("https://custom.api.com/"),
+        "https://custom.api.com"
+    );
+    assert_eq!(
+        normalize_base_url("  https://api.anthropic.com/v1/  "),
+        "https://api.anthropic.com"
+    );
 }
 
 #[test]
@@ -18,7 +27,7 @@ fn test_build_request_body_simple() {
         tool_call_id: None,
         timestamp: None,
         reasoning_content: None,
-extra: HashMap::new(),
+        extra: HashMap::new(),
     }];
     let body = provider.build_request_body(&messages, &[], "claude-3", &ChatOptions::default());
     assert_eq!(body["model"], "claude-3");
@@ -37,7 +46,7 @@ fn test_build_request_body_with_system() {
             tool_call_id: None,
             timestamp: None,
             reasoning_content: None,
-extra: HashMap::new(),
+            extra: HashMap::new(),
         },
         Message {
             role: "user".to_string(),
@@ -46,7 +55,7 @@ extra: HashMap::new(),
             tool_call_id: None,
             timestamp: None,
             reasoning_content: None,
-extra: HashMap::new(),
+            extra: HashMap::new(),
         },
     ];
     let body = provider.build_request_body(&messages, &[], "claude-3", &ChatOptions::default());
@@ -133,11 +142,8 @@ fn test_with_token_source_and_base_url() {
     let config = AnthropicConfig::default();
     let ts: Box<dyn Fn() -> Result<String, String> + Send + Sync> =
         Box::new(|| Ok("refreshed-token".to_string()));
-    let provider = AnthropicProvider::with_token_source_and_base_url(
-        config,
-        ts,
-        "https://custom.api.com/v1/",
-    );
+    let provider =
+        AnthropicProvider::with_token_source_and_base_url(config, ts, "https://custom.api.com/v1/");
     assert_eq!(provider.base_url(), "https://custom.api.com");
     assert!(provider.token_source.is_some());
 }
@@ -188,15 +194,27 @@ fn test_anthropic_config_deserialization_partial() {
 
 #[test]
 fn test_normalize_base_url_trailing_slash() {
-    assert_eq!(normalize_base_url("https://api.anthropic.com/"), "https://api.anthropic.com");
+    assert_eq!(
+        normalize_base_url("https://api.anthropic.com/"),
+        "https://api.anthropic.com"
+    );
     // /v1 gets stripped too
-    assert_eq!(normalize_base_url("https://api.anthropic.com/v1/"), "https://api.anthropic.com");
-    assert_eq!(normalize_base_url("https://api.anthropic.com/v1"), "https://api.anthropic.com");
+    assert_eq!(
+        normalize_base_url("https://api.anthropic.com/v1/"),
+        "https://api.anthropic.com"
+    );
+    assert_eq!(
+        normalize_base_url("https://api.anthropic.com/v1"),
+        "https://api.anthropic.com"
+    );
 }
 
 #[test]
 fn test_normalize_base_url_no_trailing_slash() {
-    assert_eq!(normalize_base_url("https://api.anthropic.com"), "https://api.anthropic.com");
+    assert_eq!(
+        normalize_base_url("https://api.anthropic.com"),
+        "https://api.anthropic.com"
+    );
 }
 
 #[test]
@@ -281,7 +299,7 @@ fn test_build_request_body_user_with_tool_call_id() {
         tool_call_id: Some("tu_123".to_string()),
         timestamp: None,
         reasoning_content: None,
-extra: HashMap::new(),
+        extra: HashMap::new(),
     }];
     let body = provider.build_request_body(&messages, &[], "claude-3", &ChatOptions::default());
     let msgs = body["messages"].as_array().unwrap();
@@ -301,7 +319,7 @@ fn test_build_request_body_tool_with_call_id() {
         tool_call_id: Some("tu_456".to_string()),
         timestamp: None,
         reasoning_content: None,
-extra: HashMap::new(),
+        extra: HashMap::new(),
     }];
     let body = provider.build_request_body(&messages, &[], "claude-3", &ChatOptions::default());
     let msgs = body["messages"].as_array().unwrap();
@@ -321,7 +339,7 @@ fn test_build_request_body_tool_without_call_id() {
         tool_call_id: None,
         timestamp: None,
         reasoning_content: None,
-extra: HashMap::new(),
+        extra: HashMap::new(),
     }];
     let body = provider.build_request_body(&messages, &[], "claude-3", &ChatOptions::default());
     let msgs = body["messages"].as_array().unwrap();
@@ -338,7 +356,7 @@ fn test_build_request_body_unknown_role() {
         tool_call_id: None,
         timestamp: None,
         reasoning_content: None,
-extra: HashMap::new(),
+        extra: HashMap::new(),
     }];
     let body = provider.build_request_body(&messages, &[], "claude-3", &ChatOptions::default());
     let msgs = body["messages"].as_array().unwrap();
@@ -348,10 +366,15 @@ extra: HashMap::new(),
 #[test]
 fn test_build_request_body_with_temperature() {
     let provider = AnthropicProvider::new(AnthropicConfig::default());
-    let body = provider.build_request_body(&[], &[], "claude-3", &ChatOptions {
-        temperature: Some(0.5),
-        ..Default::default()
-    });
+    let body = provider.build_request_body(
+        &[],
+        &[],
+        "claude-3",
+        &ChatOptions {
+            temperature: Some(0.5),
+            ..Default::default()
+        },
+    );
     assert_eq!(body["temperature"], 0.5);
 }
 
@@ -430,7 +453,13 @@ fn test_parse_response_tool_use_with_invalid_input() {
     assert_eq!(resp.tool_calls.len(), 1);
     // Invalid input should get raw fallback
     assert!(resp.tool_calls[0].arguments.is_some());
-    assert!(resp.tool_calls[0].arguments.as_ref().unwrap().contains_key("raw"));
+    assert!(
+        resp.tool_calls[0]
+            .arguments
+            .as_ref()
+            .unwrap()
+            .contains_key("raw")
+    );
 }
 
 #[test]
@@ -488,10 +517,7 @@ fn test_get_api_key_no_token_source() {
 fn test_get_api_key_with_token_source() {
     let ts: Box<dyn Fn() -> Result<String, String> + Send + Sync> =
         Box::new(|| Ok("dynamic-key".to_string()));
-    let provider = AnthropicProvider::with_token_source(
-        AnthropicConfig::default(),
-        ts,
-    );
+    let provider = AnthropicProvider::with_token_source(AnthropicConfig::default(), ts);
     assert_eq!(provider.get_api_key().unwrap(), "dynamic-key");
 }
 
@@ -499,10 +525,7 @@ fn test_get_api_key_with_token_source() {
 fn test_get_api_key_with_failing_token_source() {
     let ts: Box<dyn Fn() -> Result<String, String> + Send + Sync> =
         Box::new(|| Err("token refresh failed".to_string()));
-    let provider = AnthropicProvider::with_token_source(
-        AnthropicConfig::default(),
-        ts,
-    );
+    let provider = AnthropicProvider::with_token_source(AnthropicConfig::default(), ts);
     assert!(provider.get_api_key().is_err());
 }
 
@@ -526,13 +549,13 @@ fn test_assistant_with_tool_calls_and_function_fallback() {
                 name: "search".to_string(),
                 arguments: r#"{"q":"test"}"#.to_string(),
             }),
-            name: None, // name is None, should fallback to function.name
+            name: None,      // name is None, should fallback to function.name
             arguments: None, // arguments is None, should produce empty json
         }],
         tool_call_id: None,
         timestamp: None,
         reasoning_content: None,
-extra: HashMap::new(),
+        extra: HashMap::new(),
     }];
     let body = provider.build_request_body(&messages, &[], "claude-3", &ChatOptions::default());
     let msgs = body["messages"].as_array().unwrap();

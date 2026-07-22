@@ -32,7 +32,7 @@ pub enum OperationType {
     SystemShutdown,
     SystemReboot,
     SystemConfig,
-   SystemService,
+    SystemService,
     SystemInstall,
     // Registry operations
     RegistryRead,
@@ -97,13 +97,20 @@ pub fn get_danger_level(op: OperationType) -> DangerLevel {
     match op {
         OperationType::FileRead | OperationType::DirRead => DangerLevel::Low,
         OperationType::NetworkDownload | OperationType::NetworkRequest => DangerLevel::Medium,
-        OperationType::FileWrite | OperationType::FileDelete
-        | OperationType::DirCreate | OperationType::DirDelete
+        OperationType::FileWrite
+        | OperationType::FileDelete
+        | OperationType::DirCreate
+        | OperationType::DirDelete
         | OperationType::ProcessSpawn => DangerLevel::High,
-        OperationType::ProcessExec | OperationType::ProcessKill
-        | OperationType::SystemShutdown | OperationType::SystemReboot
-        | OperationType::SystemConfig | OperationType::SystemService | OperationType::SystemInstall
-        | OperationType::RegistryWrite | OperationType::RegistryDelete => DangerLevel::Critical,
+        OperationType::ProcessExec
+        | OperationType::ProcessKill
+        | OperationType::SystemShutdown
+        | OperationType::SystemReboot
+        | OperationType::SystemConfig
+        | OperationType::SystemService
+        | OperationType::SystemInstall
+        | OperationType::RegistryWrite
+        | OperationType::RegistryDelete => DangerLevel::Critical,
         _ => DangerLevel::Medium,
     }
 }
@@ -185,16 +192,16 @@ impl Permission {
 
     /// Check whether a target string matches any denied pattern.
     pub fn is_target_denied(&self, target: &str) -> bool {
-        self.denied_targets.iter().any(|pattern| {
-            target.contains(pattern) || matches_pattern(target, pattern)
-        })
+        self.denied_targets
+            .iter()
+            .any(|pattern| target.contains(pattern) || matches_pattern(target, pattern))
     }
 
     /// Check whether a target string matches any allowed pattern.
     pub fn is_target_allowed(&self, target: &str) -> bool {
-        self.allowed_targets.iter().any(|pattern| {
-            target.contains(pattern) || matches_pattern(target, pattern)
-        })
+        self.allowed_targets
+            .iter()
+            .any(|pattern| target.contains(pattern) || matches_pattern(target, pattern))
     }
 }
 
@@ -279,13 +286,15 @@ pub fn tool_to_operation(tool_name: &str) -> Option<OperationType> {
         "list_directory" | "list_dir" => Some(OperationType::DirRead),
         "create_directory" | "create_dir" => Some(OperationType::DirCreate),
         "delete_directory" | "delete_dir" => Some(OperationType::DirDelete),
-        "exec" | "execute_command" | "shell" | "exec_async" | "cron" => Some(OperationType::ProcessExec),
+        "exec" | "execute_command" | "shell" | "exec_async" | "cron" => {
+            Some(OperationType::ProcessExec)
+        }
         "spawn" => Some(OperationType::ProcessSpawn),
         "kill" | "kill_process" => Some(OperationType::ProcessKill),
         "download" | "install_skill" => Some(OperationType::NetworkDownload),
         "upload" => Some(OperationType::NetworkUpload),
-        "http_request" | "web_request" | "web_fetch" | "web_search"
-        | "cluster_rpc" | "find_skills" => Some(OperationType::NetworkRequest),
+        "http_request" | "web_request" | "web_fetch" | "web_search" | "cluster_rpc"
+        | "find_skills" => Some(OperationType::NetworkRequest),
         "screen_capture" => Some(OperationType::FileWrite),
         _ => None,
     }
@@ -294,34 +303,51 @@ pub fn tool_to_operation(tool_name: &str) -> Option<OperationType> {
 /// Extract target from tool arguments.
 pub fn extract_target(tool_name: &str, args: &serde_json::Value) -> String {
     match tool_name {
-        "read_file" | "write_file" | "edit_file" | "append_file" | "delete_file" => {
-            args.get("path").and_then(|v| v.as_str()).unwrap_or("").to_string()
-        }
-        "list_directory" | "list_dir" | "create_directory" | "create_dir" | "delete_directory" | "delete_dir" => {
-            args.get("path").and_then(|v| v.as_str()).unwrap_or("").to_string()
-        }
-        "exec" | "execute_command" | "spawn" | "shell" | "exec_async" => {
-            args.get("command").and_then(|v| v.as_str()).unwrap_or("").to_string()
-        }
+        "read_file" | "write_file" | "edit_file" | "append_file" | "delete_file" => args
+            .get("path")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string(),
+        "list_directory" | "list_dir" | "create_directory" | "create_dir" | "delete_directory"
+        | "delete_dir" => args
+            .get("path")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string(),
+        "exec" | "execute_command" | "spawn" | "shell" | "exec_async" => args
+            .get("command")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string(),
         "download" | "upload" | "http_request" | "web_request" | "web_fetch" | "web_search"
-        | "find_skills" => {
-            args.get("url").and_then(|v| v.as_str()).unwrap_or("").to_string()
-        }
-        "cluster_rpc" => {
-            args.get("peer_id").and_then(|v| v.as_str()).unwrap_or("").to_string()
-        }
-        "cron" => {
-            args.get("command").or_else(|| args.get("message"))
-                .and_then(|v| v.as_str()).unwrap_or("").to_string()
-        }
-        "screen_capture" => {
-            args.get("save_path").or_else(|| args.get("path"))
-                .and_then(|v| v.as_str()).unwrap_or("").to_string()
-        }
-        "install_skill" => {
-            args.get("url").or_else(|| args.get("source"))
-                .and_then(|v| v.as_str()).unwrap_or("").to_string()
-        }
+        | "find_skills" => args
+            .get("url")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string(),
+        "cluster_rpc" => args
+            .get("peer_id")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string(),
+        "cron" => args
+            .get("command")
+            .or_else(|| args.get("message"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string(),
+        "screen_capture" => args
+            .get("save_path")
+            .or_else(|| args.get("path"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string(),
+        "install_skill" => args
+            .get("url")
+            .or_else(|| args.get("source"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string(),
         _ => String::new(),
     }
 }
@@ -330,10 +356,12 @@ pub fn extract_target(tool_name: &str, args: &serde_json::Value) -> String {
 pub fn extract_url(tool_name: &str, args: &serde_json::Value) -> String {
     match tool_name {
         "download" | "upload" | "http_request" | "web_request" | "web_fetch" | "web_search"
-        | "install_skill" | "find_skills" => {
-            args.get("url").or_else(|| args.get("source"))
-                .and_then(|v| v.as_str()).unwrap_or("").to_string()
-        }
+        | "install_skill" | "find_skills" => args
+            .get("url")
+            .or_else(|| args.get("source"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string(),
         // cluster_rpc's peer_id is resolved by the internal cluster peer registry,
         // not through DNS. SSRF protection does not apply to internal cluster routing.
         "cluster_rpc" => String::new(),
@@ -356,7 +384,9 @@ pub fn is_safe_command(command: &str) -> (bool, String) {
             r"(?i)\bchmod\s+[0-7]{3,4}\b",
             r"(?i)\bchown\b",
         ];
-        raw.iter().filter_map(|p| regex::Regex::new(p).ok()).collect()
+        raw.iter()
+            .filter_map(|p| regex::Regex::new(p).ok())
+            .collect()
     });
 
     for re in patterns {
@@ -396,7 +426,9 @@ pub fn validate_path(path: &str, workspace: &str) -> Result<String, String> {
     // Check dangerous system paths
     let path_str = abs_path.to_string_lossy();
     let dangerous = [
-        "/etc/passwd", "/etc/shadow", "/etc/sudoers",
+        "/etc/passwd",
+        "/etc/shadow",
+        "/etc/sudoers",
         "C:\\Windows\\System32\\drivers\\etc\\hosts",
     ];
     for d in &dangerous {

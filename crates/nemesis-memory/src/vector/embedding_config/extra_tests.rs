@@ -158,7 +158,10 @@ fn test_embedding_data_dir_with_parent() {
     // config_dir = workspace/config → parent = workspace.
     let cd = Path::new("/workspace/config");
     let dd = embedding_data_dir(cd);
-    assert_eq!(dd, std::path::PathBuf::from("/workspace/tools/memory/data/embedding"));
+    assert_eq!(
+        dd,
+        std::path::PathBuf::from("/workspace/tools/memory/data/embedding")
+    );
 }
 
 #[test]
@@ -515,8 +518,14 @@ fn test_save_then_load_preserves_local_paths() {
     cfg.models.medium.local_tokenizer_path = "/some/path/tok.json".into();
     save_embedding_config(&cfg, dir.path());
     let loaded = load_embedding_config(dir.path());
-    assert_eq!(loaded.models.medium.local_model_path, "/some/path/model.onnx");
-    assert_eq!(loaded.models.medium.local_tokenizer_path, "/some/path/tok.json");
+    assert_eq!(
+        loaded.models.medium.local_model_path,
+        "/some/path/model.onnx"
+    );
+    assert_eq!(
+        loaded.models.medium.local_tokenizer_path,
+        "/some/path/tok.json"
+    );
 }
 
 #[test]

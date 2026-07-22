@@ -46,10 +46,7 @@ pub fn driver_status_for(trigger_type: &str) -> TriggerDriverStatus {
         "webhook" => TriggerDriverStatus::driven("webhook"),
         "event" => TriggerDriverStatus::driven("event"),
         "message" => TriggerDriverStatus::driven("message"),
-        other => TriggerDriverStatus::undriven(
-            other,
-            format!("unknown trigger type: {}", other),
-        ),
+        other => TriggerDriverStatus::undriven(other, format!("unknown trigger type: {}", other)),
     }
 }
 

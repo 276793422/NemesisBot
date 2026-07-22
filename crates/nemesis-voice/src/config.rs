@@ -70,8 +70,12 @@ pub struct PunctConfig {
     pub num_threads: u32,
 }
 
-fn default_punct_model() -> String { "ct-transformer-zh-en".into() }
-fn default_punct_threads() -> u32 { 1 }
+fn default_punct_model() -> String {
+    "ct-transformer-zh-en".into()
+}
+fn default_punct_threads() -> u32 {
+    1
+}
 
 impl Default for PunctConfig {
     fn default() -> Self {
@@ -82,7 +86,9 @@ impl Default for PunctConfig {
     }
 }
 
-fn default_speaker_model() -> String { "3dspeaker_speech_campplus_sv_zh_en_16k-common_advanced".into() }
+fn default_speaker_model() -> String {
+    "3dspeaker_speech_campplus_sv_zh_en_16k-common_advanced".into()
+}
 
 #[derive(Debug, Deserialize, Clone, Default)]
 pub struct SpeakerConfig {
@@ -103,8 +109,12 @@ pub struct AudioConfig {
     pub energy_threshold: f32,
 }
 
-fn default_gain() -> f32 { 3.0 }
-fn default_energy_threshold() -> f32 { 0.015 }
+fn default_gain() -> f32 {
+    3.0
+}
+fn default_energy_threshold() -> f32 {
+    0.015
+}
 
 #[derive(Debug, Deserialize, Clone)]
 pub struct ModelsConfig {
@@ -156,8 +166,8 @@ impl AppConfig {
     pub fn load(path: &Path) -> Result<Self> {
         let content = std::fs::read_to_string(path)
             .with_context(|| format!("Failed to read config: {}", path.display()))?;
-        let mut config: AppConfig = toml::from_str(&content)
-            .with_context(|| "Failed to parse config.toml")?;
+        let mut config: AppConfig =
+            toml::from_str(&content).with_context(|| "Failed to parse config.toml")?;
         config.base_dir = path.parent().unwrap_or(Path::new(".")).to_path_buf();
         Ok(config)
     }

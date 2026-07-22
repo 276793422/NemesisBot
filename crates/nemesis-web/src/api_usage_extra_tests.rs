@@ -5,17 +5,17 @@
 mod api_usage_extra_tests {
     use crate::api_handlers::AppState;
     use crate::api_usage::{
-        handle_api_usage_logs, handle_api_usage_summary, handle_api_usage_trends, LogsQuery,
-        TrendsQuery, UsageQuery,
+        LogsQuery, TrendsQuery, UsageQuery, handle_api_usage_logs, handle_api_usage_summary,
+        handle_api_usage_trends,
     };
     use crate::events::EventHub;
     use crate::session::SessionManager;
-    use axum::extract::{Query, State};
     use axum::Json;
+    use axum::extract::{Query, State};
     use nemesis_data::DataStore;
     use nemesis_data::RequestLog;
-    use std::sync::atomic::{AtomicBool, AtomicUsize};
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, AtomicUsize};
     use std::time::Instant;
 
     // -----------------------------------------------------------------------
@@ -48,7 +48,9 @@ mod api_usage_extra_tests {
             cluster_service: None,
             cluster_log_dir: None,
             workflow_engine: None,
-            chat_secret_store: std::sync::Arc::new(nemesis_workflow::chat_secrets::ChatSecretStore::in_memory()),
+            chat_secret_store: std::sync::Arc::new(
+                nemesis_workflow::chat_secrets::ChatSecretStore::in_memory(),
+            ),
             webhook_rate_limiter: Arc::new(crate::handlers::workflow::WebhookRateLimiter::new()),
             internal_cmd_tx: None,
             estop: None,
@@ -82,7 +84,9 @@ mod api_usage_extra_tests {
             cluster_service: None,
             cluster_log_dir: None,
             workflow_engine: None,
-            chat_secret_store: std::sync::Arc::new(nemesis_workflow::chat_secrets::ChatSecretStore::in_memory()),
+            chat_secret_store: std::sync::Arc::new(
+                nemesis_workflow::chat_secrets::ChatSecretStore::in_memory(),
+            ),
             webhook_rate_limiter: Arc::new(crate::handlers::workflow::WebhookRateLimiter::new()),
             internal_cmd_tx: None,
             estop: None,
@@ -128,7 +132,10 @@ mod api_usage_extra_tests {
     #[tokio::test]
     async fn summary_no_data_store_returns_error() {
         let state = make_state_no_data_store();
-        let q = Query(UsageQuery { start: None, end: None });
+        let q = Query(UsageQuery {
+            start: None,
+            end: None,
+        });
         let Json(v) = handle_api_usage_summary(State(state), q).await;
         assert_eq!(v["error"], "DataStore not configured");
     }
@@ -187,7 +194,10 @@ mod api_usage_extra_tests {
     async fn summary_default_range_no_panic() {
         let (_dir, ds) = open_store();
         let state = make_state_with_store(ds);
-        let q = Query(UsageQuery { start: None, end: None });
+        let q = Query(UsageQuery {
+            start: None,
+            end: None,
+        });
         let Json(v) = handle_api_usage_summary(State(state), q).await;
         assert_eq!(v["status"], "success");
     }
@@ -352,7 +362,10 @@ mod api_usage_extra_tests {
         let logs = v["data"]["logs"].as_array().unwrap();
         assert_eq!(logs.len(), 2);
         // First row should have a model field
-        assert!(logs[0]["model"].as_str().unwrap() == "gpt-4" || logs[0]["model"].as_str().unwrap() == "claude");
+        assert!(
+            logs[0]["model"].as_str().unwrap() == "gpt-4"
+                || logs[0]["model"].as_str().unwrap() == "claude"
+        );
     }
 
     #[tokio::test]
@@ -405,32 +418,29 @@ mod api_usage_extra_tests {
 
     #[test]
     fn usage_query_deserialize() {
-    let q: UsageQuery =
-        serde_json::from_str(r#"{"start": 100, "end": 200}"#).unwrap();
-    assert_eq!(q.start, Some(100));
-    assert_eq!(q.end, Some(200));
-}
+        let q: UsageQuery = serde_json::from_str(r#"{"start": 100, "end": 200}"#).unwrap();
+        assert_eq!(q.start, Some(100));
+        assert_eq!(q.end, Some(200));
+    }
 
     #[test]
     fn trends_query_deserialize_with_group_by() {
-    let q: TrendsQuery =
-        serde_json::from_str(r#"{"group_by": "day"}"#).unwrap();
-    assert_eq!(q.group_by.as_deref(), Some("day"));
-}
+        let q: TrendsQuery = serde_json::from_str(r#"{"group_by": "day"}"#).unwrap();
+        assert_eq!(q.group_by.as_deref(), Some("day"));
+    }
 
     #[test]
     fn logs_query_deserialize_all_fields() {
-    let q: LogsQuery =
-        serde_json::from_str(r#"{"start": 1, "end": 2, "page": 3, "page_size": 4}"#)
-            .unwrap();
-    assert_eq!(q.page, Some(3));
-    assert_eq!(q.page_size, Some(4));
-}
+        let q: LogsQuery =
+            serde_json::from_str(r#"{"start": 1, "end": 2, "page": 3, "page_size": 4}"#).unwrap();
+        assert_eq!(q.page, Some(3));
+        assert_eq!(q.page_size, Some(4));
+    }
 
     #[test]
     fn usage_query_empty_json_ok() {
-    let q: UsageQuery = serde_json::from_str("{}").unwrap();
-    assert!(q.start.is_none());
-    assert!(q.end.is_none());
-}
+        let q: UsageQuery = serde_json::from_str("{}").unwrap();
+        assert!(q.start.is_none());
+        assert!(q.end.is_none());
+    }
 }

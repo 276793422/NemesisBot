@@ -42,7 +42,7 @@
 //!  pubkey | cert_chain_hash | has_key_not_after | key_not_after | publisher_len | publisher`
 //! 签名消息 = `DOMAIN ++ signed_meta`。覆盖 pubkey + cert_chain_hash 防 metadata 篡改/降级。
 
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 
 /// domain 前缀（41 ASCII + 0x01 = 42 字节）。签名消息以此开头做 domain separation。
 pub const DOMAIN: &[u8] = b"NEMESIS-BOT-276793422-ZHAO-SAN-KE-BIN-SIG\x01";
@@ -126,7 +126,14 @@ fn rd_u32(b: &[u8], off: usize) -> u32 {
 }
 fn rd_u64(b: &[u8], off: usize) -> u64 {
     u64::from_le_bytes([
-        b[off], b[off + 1], b[off + 2], b[off + 3], b[off + 4], b[off + 5], b[off + 6], b[off + 7],
+        b[off],
+        b[off + 1],
+        b[off + 2],
+        b[off + 3],
+        b[off + 4],
+        b[off + 5],
+        b[off + 6],
+        b[off + 7],
     ])
 }
 
@@ -284,7 +291,8 @@ pub fn parse_body(plaintext: &[u8]) -> Result<ParsedBody> {
             }
             TLV_CERT_CHAIN => cert_chain = Some(v),
             TLV_PUBLISHER => {
-                publisher = Some(String::from_utf8(v).map_err(|e| anyhow!("publisher utf8: {}", e))?);
+                publisher =
+                    Some(String::from_utf8(v).map_err(|e| anyhow!("publisher utf8: {}", e))?);
             }
             TLV_KEY_NOT_AFTER if v.len() == 9 => {
                 if v[0] == 1 {
@@ -373,7 +381,8 @@ pub fn build_signed_meta(
 ///
 /// `total_len` 从 footer 读取（调用方须先按 `align_up(body_len + FOOTER_LEN, 4096)` 算好并传入 footer）。
 pub fn assemble_envelope(body: &[u8], footer: &[u8; FOOTER_LEN]) -> Vec<u8> {
-    let parsed = parse_footer(footer).expect("assemble_envelope: footer must be pre-built and valid");
+    let parsed =
+        parse_footer(footer).expect("assemble_envelope: footer must be pre-built and valid");
     let total_len = parsed.total_len;
     let padding = total_len - body.len() - FOOTER_LEN;
     let mut env = Vec::with_capacity(total_len);

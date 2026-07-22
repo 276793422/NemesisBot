@@ -112,7 +112,10 @@ impl SessionMgr {
 
     /// Create a new connection session.
     pub fn create_session(&self, channel: &str, sender_id: &str, chat_id: &str) -> Session {
-        let id = format!("sess_{}", self.session_counter.fetch_add(1, Ordering::SeqCst));
+        let id = format!(
+            "sess_{}",
+            self.session_counter.fetch_add(1, Ordering::SeqCst)
+        );
         let now = Local::now();
         let session = Session {
             id,
@@ -152,8 +155,10 @@ impl SessionMgr {
     /// Cleanup expired connection sessions.
     pub fn cleanup_expired(&self) -> usize {
         let now = Local::now();
-        let timeout = chrono::Duration::from_std(self.timeout).unwrap_or(chrono::Duration::hours(1));
-        let expired: Vec<String> = self.sessions
+        let timeout =
+            chrono::Duration::from_std(self.timeout).unwrap_or(chrono::Duration::hours(1));
+        let expired: Vec<String> = self
+            .sessions
             .iter()
             .filter(|r| now.signed_duration_since(r.last_active) > timeout)
             .map(|r| r.id.clone())
@@ -323,23 +328,21 @@ impl SessionMgr {
         };
         // Lock is released here; all I/O below is lock-free.
 
-        let data = serde_json::to_string_pretty(&snapshot)
-            .map_err(|e| format!("serialize: {}", e))?;
+        let data =
+            serde_json::to_string_pretty(&snapshot).map_err(|e| format!("serialize: {}", e))?;
 
         // Write to a temporary file first.
         let temp_path = session_path.with_extension("json.tmp");
         {
-            let mut file = std::fs::File::create(&temp_path)
-                .map_err(|e| format!("create temp: {}", e))?;
+            let mut file =
+                std::fs::File::create(&temp_path).map_err(|e| format!("create temp: {}", e))?;
             file.write_all(data.as_bytes())
                 .map_err(|e| format!("write temp: {}", e))?;
-            file.sync_all()
-                .map_err(|e| format!("fsync temp: {}", e))?;
+            file.sync_all().map_err(|e| format!("fsync temp: {}", e))?;
         }
 
         // Atomic rename (on Windows this replaces the destination).
-        std::fs::rename(&temp_path, &session_path)
-            .map_err(|e| format!("rename: {}", e))?;
+        std::fs::rename(&temp_path, &session_path).map_err(|e| format!("rename: {}", e))?;
 
         Ok(())
     }
@@ -351,8 +354,7 @@ impl SessionMgr {
             None => return Ok(()),
         };
 
-        let entries = fs::read_dir(storage)
-            .map_err(|e| format!("read dir: {}", e))?;
+        let entries = fs::read_dir(storage).map_err(|e| format!("read dir: {}", e))?;
 
         let mut sessions = self.chat_sessions.lock();
         for entry in entries {

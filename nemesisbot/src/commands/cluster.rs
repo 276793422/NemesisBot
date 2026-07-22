@@ -247,7 +247,9 @@ pub async fn run(action: ClusterAction, local: bool) -> Result<()> {
                         if let Some(rpc_port) = cfg.get("rpc_port").and_then(|v| v.as_u64()) {
                             println!("  RPC Port: {}", rpc_port);
                         }
-                        if let Some(interval) = cfg.get("broadcast_interval").and_then(|v| v.as_u64()) {
+                        if let Some(interval) =
+                            cfg.get("broadcast_interval").and_then(|v| v.as_u64())
+                        {
                             println!("  Broadcast Interval: {}s", interval);
                         }
                     }
@@ -257,7 +259,8 @@ pub async fn run(action: ClusterAction, local: bool) -> Result<()> {
                 let peers_path = common::cluster_dir(&home).join("peers.toml");
                 if peers_path.exists() {
                     println!("  Peers config: {} [found]", peers_path.display());
-                    if let Ok(sc) = nemesis_cluster::cluster_config::load_static_config(&peers_path) {
+                    if let Ok(sc) = nemesis_cluster::cluster_config::load_static_config(&peers_path)
+                    {
                         if !sc.node.id.is_empty() {
                             println!("  Node ID: {}", sc.node.id);
                         }
@@ -279,7 +282,11 @@ pub async fn run(action: ClusterAction, local: bool) -> Result<()> {
                 println!("  Cluster is not initialized. Run: nemesisbot cluster init");
             }
         }
-        ClusterAction::Config { udp_port, rpc_port, broadcast_interval } => {
+        ClusterAction::Config {
+            udp_port,
+            rpc_port,
+            broadcast_interval,
+        } => {
             let cfg_path = common::cluster_config_path(&home);
             println!("Cluster Configuration");
             println!("======================");
@@ -287,9 +294,16 @@ pub async fn run(action: ClusterAction, local: bool) -> Result<()> {
                 if let Ok(data) = std::fs::read_to_string(&cfg_path) {
                     if let Ok(mut cfg) = serde_json::from_str::<serde_json::Value>(&data) {
                         // Read current values for display
-                        let cur_udp = cfg.get("port").and_then(|v| v.as_u64()).unwrap_or(11949) as u16;
-                        let cur_rpc = cfg.get("rpc_port").and_then(|v| v.as_u64()).unwrap_or(21949) as u16;
-                        let cur_interval = cfg.get("broadcast_interval").and_then(|v| v.as_u64()).unwrap_or(30);
+                        let cur_udp =
+                            cfg.get("port").and_then(|v| v.as_u64()).unwrap_or(11949) as u16;
+                        let cur_rpc = cfg
+                            .get("rpc_port")
+                            .and_then(|v| v.as_u64())
+                            .unwrap_or(21949) as u16;
+                        let cur_interval = cfg
+                            .get("broadcast_interval")
+                            .and_then(|v| v.as_u64())
+                            .unwrap_or(30);
 
                         // Display current values
                         println!("  UDP Port: {}", cur_udp);
@@ -297,12 +311,27 @@ pub async fn run(action: ClusterAction, local: bool) -> Result<()> {
                         println!("  Broadcast Interval: {}s", cur_interval);
 
                         // Only update and save if values differ from what's currently stored
-                        if udp_port != cur_udp || rpc_port != cur_rpc || broadcast_interval != cur_interval {
+                        if udp_port != cur_udp
+                            || rpc_port != cur_rpc
+                            || broadcast_interval != cur_interval
+                        {
                             if let Some(obj) = cfg.as_object_mut() {
-                                obj.insert("port".to_string(), serde_json::Value::Number(udp_port.into()));
-                                obj.insert("rpc_port".to_string(), serde_json::Value::Number(rpc_port.into()));
-                                obj.insert("broadcast_interval".to_string(), serde_json::Value::Number(broadcast_interval.into()));
-                                let _ = std::fs::write(&cfg_path, serde_json::to_string_pretty(&cfg).unwrap_or_default());
+                                obj.insert(
+                                    "port".to_string(),
+                                    serde_json::Value::Number(udp_port.into()),
+                                );
+                                obj.insert(
+                                    "rpc_port".to_string(),
+                                    serde_json::Value::Number(rpc_port.into()),
+                                );
+                                obj.insert(
+                                    "broadcast_interval".to_string(),
+                                    serde_json::Value::Number(broadcast_interval.into()),
+                                );
+                                let _ = std::fs::write(
+                                    &cfg_path,
+                                    serde_json::to_string_pretty(&cfg).unwrap_or_default(),
+                                );
                                 println!("Configuration updated.");
                             }
                         }
@@ -312,32 +341,89 @@ pub async fn run(action: ClusterAction, local: bool) -> Result<()> {
                 println!("Config file not found. Run 'nemesisbot cluster init' first.");
             }
         }
-        ClusterAction::Info { name, role, category, tags, address } => {
+        ClusterAction::Info {
+            name,
+            role,
+            category,
+            tags,
+            address,
+        } => {
             let peers_path = common::cluster_dir(&home).join("peers.toml");
             if peers_path.exists() {
-                if let Ok(mut sc) = nemesis_cluster::cluster_config::load_static_config(&peers_path) {
+                if let Ok(mut sc) = nemesis_cluster::cluster_config::load_static_config(&peers_path)
+                {
                     let mut changed = false;
-                    if let Some(n) = name { sc.node.name = n; changed = true; }
-                    if let Some(r) = role { sc.node.role = r; changed = true; }
-                    if let Some(c) = category { sc.node.category = c; changed = true; }
-                    if let Some(t) = tags {
-                        sc.node.tags = t.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
+                    if let Some(n) = name {
+                        sc.node.name = n;
                         changed = true;
                     }
-                    if let Some(a) = address { sc.node.address = a; changed = true; }
+                    if let Some(r) = role {
+                        sc.node.role = r;
+                        changed = true;
+                    }
+                    if let Some(c) = category {
+                        sc.node.category = c;
+                        changed = true;
+                    }
+                    if let Some(t) = tags {
+                        sc.node.tags = t
+                            .split(',')
+                            .map(|s| s.trim().to_string())
+                            .filter(|s| !s.is_empty())
+                            .collect();
+                        changed = true;
+                    }
+                    if let Some(a) = address {
+                        sc.node.address = a;
+                        changed = true;
+                    }
                     if changed {
-                        if let Err(e) = nemesis_cluster::cluster_config::save_static_config(&peers_path, &sc) {
+                        if let Err(e) =
+                            nemesis_cluster::cluster_config::save_static_config(&peers_path, &sc)
+                        {
                             println!("  Failed to save peers.toml: {}", e);
                         }
                     }
                     println!("Node Information");
                     println!("================");
-                    println!("  Name: {}", if sc.node.name.is_empty() { "(not set)" } else { &sc.node.name });
-                    println!("  Role: {}", if sc.node.role.is_empty() { "(not set)" } else { &sc.node.role });
-                    println!("  Category: {}", if sc.node.category.is_empty() { "(not set)" } else { &sc.node.category });
-                    let tags_str = if sc.node.tags.is_empty() { "(not set)".to_string() } else { sc.node.tags.join(",") };
+                    println!(
+                        "  Name: {}",
+                        if sc.node.name.is_empty() {
+                            "(not set)"
+                        } else {
+                            &sc.node.name
+                        }
+                    );
+                    println!(
+                        "  Role: {}",
+                        if sc.node.role.is_empty() {
+                            "(not set)"
+                        } else {
+                            &sc.node.role
+                        }
+                    );
+                    println!(
+                        "  Category: {}",
+                        if sc.node.category.is_empty() {
+                            "(not set)"
+                        } else {
+                            &sc.node.category
+                        }
+                    );
+                    let tags_str = if sc.node.tags.is_empty() {
+                        "(not set)".to_string()
+                    } else {
+                        sc.node.tags.join(",")
+                    };
                     println!("  Tags: {}", tags_str);
-                    println!("  Address: {}", if sc.node.address.is_empty() { "(not set)" } else { &sc.node.address });
+                    println!(
+                        "  Address: {}",
+                        if sc.node.address.is_empty() {
+                            "(not set)"
+                        } else {
+                            &sc.node.address
+                        }
+                    );
                     if changed {
                         println!("Configuration updated (peers.toml).");
                     }
@@ -348,207 +434,255 @@ pub async fn run(action: ClusterAction, local: bool) -> Result<()> {
                 println!("  Not configured. Run 'nemesisbot cluster init' first.");
             }
         }
-        ClusterAction::Peers { action } => {
-            match action {
-                Some(PeerAction::List) => {
-                    println!("Configured Peers");
-                    println!("=================");
-                    let peers_path = common::cluster_dir(&home).join("peers.toml");
-                    if peers_path.exists() {
-                        if let Ok(data) = std::fs::read_to_string(&peers_path) {
-                            println!("{}", data);
-                        }
-                    } else {
-                        println!("  No peers configured.");
+        ClusterAction::Peers { action } => match action {
+            Some(PeerAction::List) => {
+                println!("Configured Peers");
+                println!("=================");
+                let peers_path = common::cluster_dir(&home).join("peers.toml");
+                if peers_path.exists() {
+                    if let Ok(data) = std::fs::read_to_string(&peers_path) {
+                        println!("{}", data);
                     }
-                }
-                Some(PeerAction::Add { id, name, address, role, category, priority: _ }) => {
-                    let display_name = name.as_deref().unwrap_or(&id);
-                    let peer_addr = address.as_deref().unwrap_or("127.0.0.1:11949");
-                    let peer_role = role.as_deref().unwrap_or("worker");
-                    let peer_cat = category.as_deref().unwrap_or("general");
-                    println!("Adding peer: {} ({}, addr: {}, role: {}, category: {})", display_name, id, peer_addr, peer_role, peer_cat);
-                    let peers_path = common::cluster_dir(&home).join("peers.toml");
-                    match nemesis_cluster::cluster_config::append_peer_to_file(
-                        &peers_path, &id, peer_addr, peer_role, peer_cat,
-                    ) {
-                        Ok(()) => println!("Peer added: {} ({})", display_name, id),
-                        Err(e) => println!("  Failed to add peer: {}", e),
-                    }
-                }
-                Some(PeerAction::Remove { id }) => {
-                    println!("Removing peer: {}", id);
-                    let key_safe = id.replace('.', "_").replace(':', "_").replace('-', "_");
-                    let peers_path = common::cluster_dir(&home).join("peers.toml");
-                    if peers_path.exists() {
-                        if let Ok(data) = std::fs::read_to_string(&peers_path) {
-                            if let Ok(mut doc) = data.parse::<toml::Value>() {
-                                if let Some(peers) = doc.as_table_mut().and_then(|t| t.get_mut("peers")).and_then(|v| v.as_table_mut()) {
-                                    if peers.remove(&key_safe).is_some() {
-                                        let _ = std::fs::write(&peers_path, toml::to_string_pretty(&doc).unwrap_or_default());
-                                        println!("  Peer {} removed.", id);
-                                    } else {
-                                        println!("  Peer {} not found.", id);
-                                    }
-                                }
-                            }
-                        }
-                    } else {
-                        println!("  No peers file found.");
-                    }
-                }
-                Some(PeerAction::Enable { id }) => {
-                    println!("Enabling peer: {}", id);
-                    let peers_path = common::cluster_dir(&home).join("peers.toml");
-                    if peers_path.exists() {
-                        if let Ok(data) = std::fs::read_to_string(&peers_path) {
-                            match enable_peer_in_toml(&data, &id, true) {
-                                Ok(new_data) => {
-                                    let _ = std::fs::write(&peers_path, &new_data);
-                                    println!("  Peer {} enabled.", id);
-                                }
-                                Err(msg) => println!("  {}", msg),
-                            }
-                        }
-                    } else {
-                        println!("  No peers file found.");
-                    }
-                }
-                Some(PeerAction::Disable { id }) => {
-                    println!("Disabling peer: {}", id);
-                    let peers_path = common::cluster_dir(&home).join("peers.toml");
-                    if peers_path.exists() {
-                        if let Ok(data) = std::fs::read_to_string(&peers_path) {
-                            match enable_peer_in_toml(&data, &id, false) {
-                                Ok(new_data) => {
-                                    let _ = std::fs::write(&peers_path, &new_data);
-                                    println!("  Peer {} disabled.", id);
-                                }
-                                Err(msg) => println!("  {}", msg),
-                            }
-                        }
-                    } else {
-                        println!("  No peers file found.");
-                    }
-                }
-                None => {
-                    println!("Usage: nemesisbot cluster peers <list|add|remove>");
+                } else {
+                    println!("  No peers configured.");
                 }
             }
-        }
-        ClusterAction::Token { action } => {
-            match action {
-                TokenAction::Generate { length, save } => {
+            Some(PeerAction::Add {
+                id,
+                name,
+                address,
+                role,
+                category,
+                priority: _,
+            }) => {
+                let display_name = name.as_deref().unwrap_or(&id);
+                let peer_addr = address.as_deref().unwrap_or("127.0.0.1:11949");
+                let peer_role = role.as_deref().unwrap_or("worker");
+                let peer_cat = category.as_deref().unwrap_or("general");
+                println!(
+                    "Adding peer: {} ({}, addr: {}, role: {}, category: {})",
+                    display_name, id, peer_addr, peer_role, peer_cat
+                );
+                let peers_path = common::cluster_dir(&home).join("peers.toml");
+                match nemesis_cluster::cluster_config::append_peer_to_file(
+                    &peers_path,
+                    &id,
+                    peer_addr,
+                    peer_role,
+                    peer_cat,
+                ) {
+                    Ok(()) => println!("Peer added: {} ({})", display_name, id),
+                    Err(e) => println!("  Failed to add peer: {}", e),
+                }
+            }
+            Some(PeerAction::Remove { id }) => {
+                println!("Removing peer: {}", id);
+                let key_safe = id.replace('.', "_").replace(':', "_").replace('-', "_");
+                let peers_path = common::cluster_dir(&home).join("peers.toml");
+                if peers_path.exists() {
+                    if let Ok(data) = std::fs::read_to_string(&peers_path) {
+                        if let Ok(mut doc) = data.parse::<toml::Value>() {
+                            if let Some(peers) = doc
+                                .as_table_mut()
+                                .and_then(|t| t.get_mut("peers"))
+                                .and_then(|v| v.as_table_mut())
+                            {
+                                if peers.remove(&key_safe).is_some() {
+                                    let _ = std::fs::write(
+                                        &peers_path,
+                                        toml::to_string_pretty(&doc).unwrap_or_default(),
+                                    );
+                                    println!("  Peer {} removed.", id);
+                                } else {
+                                    println!("  Peer {} not found.", id);
+                                }
+                            }
+                        }
+                    }
+                } else {
+                    println!("  No peers file found.");
+                }
+            }
+            Some(PeerAction::Enable { id }) => {
+                println!("Enabling peer: {}", id);
+                let peers_path = common::cluster_dir(&home).join("peers.toml");
+                if peers_path.exists() {
+                    if let Ok(data) = std::fs::read_to_string(&peers_path) {
+                        match enable_peer_in_toml(&data, &id, true) {
+                            Ok(new_data) => {
+                                let _ = std::fs::write(&peers_path, &new_data);
+                                println!("  Peer {} enabled.", id);
+                            }
+                            Err(msg) => println!("  {}", msg),
+                        }
+                    }
+                } else {
+                    println!("  No peers file found.");
+                }
+            }
+            Some(PeerAction::Disable { id }) => {
+                println!("Disabling peer: {}", id);
+                let peers_path = common::cluster_dir(&home).join("peers.toml");
+                if peers_path.exists() {
+                    if let Ok(data) = std::fs::read_to_string(&peers_path) {
+                        match enable_peer_in_toml(&data, &id, false) {
+                            Ok(new_data) => {
+                                let _ = std::fs::write(&peers_path, &new_data);
+                                println!("  Peer {} disabled.", id);
+                            }
+                            Err(msg) => println!("  {}", msg),
+                        }
+                    }
+                } else {
+                    println!("  No peers file found.");
+                }
+            }
+            None => {
+                println!("Usage: nemesisbot cluster peers <list|add|remove>");
+            }
+        },
+        ClusterAction::Token { action } => match action {
+            TokenAction::Generate { length, save } => {
+                if length < 16 || length > 128 {
+                    anyhow::bail!("Token length must be between 16 and 128 bytes");
+                }
+                let token = generate_token(length);
+                println!("Generated token: {}", token);
+                if save {
+                    let cfg_path = common::cluster_config_path(&home);
+                    if cfg_path.exists() {
+                        let data = std::fs::read_to_string(&cfg_path)?;
+                        let mut cfg: serde_json::Value = serde_json::from_str(&data)?;
+                        if let Some(obj) = cfg.as_object_mut() {
+                            obj.insert(
+                                "token".to_string(),
+                                serde_json::Value::String(token.clone()),
+                            );
+                            std::fs::write(
+                                &cfg_path,
+                                serde_json::to_string_pretty(&cfg).unwrap_or_default(),
+                            )?;
+                            println!("Token saved to cluster config.");
+                        }
+                    } else {
+                        println!(
+                            "Config file not found. Run 'nemesisbot cluster init' first, or use without --save."
+                        );
+                    }
+                } else {
+                    println!("(Not saved. Use --save to persist to config.)");
+                }
+            }
+            TokenAction::Show { full } => {
+                let cfg_path = common::cluster_config_path(&home);
+                if cfg_path.exists() {
+                    let data = std::fs::read_to_string(&cfg_path)?;
+                    let cfg: serde_json::Value = serde_json::from_str(&data)?;
+                    match cfg.get("token").and_then(|v| v.as_str()) {
+                        Some(t) => {
+                            if full {
+                                println!("Current token: {}", t);
+                            } else {
+                                println!("Current token: {}", mask_token(t));
+                            }
+                            println!("  RPC authentication is enabled.");
+                        }
+                        None => {
+                            println!("  No RPC token configured.");
+                            println!(
+                                "  RPC authentication is disabled (any token will be accepted)."
+                            );
+                            println!("  To generate: nemesisbot cluster token generate --save");
+                        }
+                    }
+                } else {
+                    println!("No cluster config found.");
+                }
+            }
+            TokenAction::Set {
+                token,
+                generate,
+                length,
+            } => {
+                let value = if let Some(t) = token {
+                    if t.len() < 16 || t.len() > 128 {
+                        anyhow::bail!("Token must be between 16 and 128 characters");
+                    }
+                    t
+                } else if generate {
                     if length < 16 || length > 128 {
                         anyhow::bail!("Token length must be between 16 and 128 bytes");
                     }
-                    let token = generate_token(length);
-                    println!("Generated token: {}", token);
-                    if save {
-                        let cfg_path = common::cluster_config_path(&home);
-                        if cfg_path.exists() {
-                            let data = std::fs::read_to_string(&cfg_path)?;
-                            let mut cfg: serde_json::Value = serde_json::from_str(&data)?;
-                            if let Some(obj) = cfg.as_object_mut() {
-                                obj.insert("token".to_string(), serde_json::Value::String(token.clone()));
-                                std::fs::write(&cfg_path, serde_json::to_string_pretty(&cfg).unwrap_or_default())?;
-                                println!("Token saved to cluster config.");
-                            }
-                        } else {
-                            println!("Config file not found. Run 'nemesisbot cluster init' first, or use without --save.");
-                        }
-                    } else {
-                        println!("(Not saved. Use --save to persist to config.)");
+                    generate_token(length)
+                } else {
+                    println!("Error: provide a token value or use --generate.");
+                    return Ok(());
+                };
+                let cfg_path = common::cluster_config_path(&home);
+                if cfg_path.exists() {
+                    let data = std::fs::read_to_string(&cfg_path)?;
+                    let mut cfg: serde_json::Value = serde_json::from_str(&data)?;
+                    if let Some(obj) = cfg.as_object_mut() {
+                        obj.insert(
+                            "token".to_string(),
+                            serde_json::Value::String(value.clone()),
+                        );
+                        std::fs::write(
+                            &cfg_path,
+                            serde_json::to_string_pretty(&cfg).unwrap_or_default(),
+                        )?;
+                        println!("Token set: {}", mask_token(&value));
                     }
-                }
-                TokenAction::Show { full } => {
-                    let cfg_path = common::cluster_config_path(&home);
-                    if cfg_path.exists() {
-                        let data = std::fs::read_to_string(&cfg_path)?;
-                        let cfg: serde_json::Value = serde_json::from_str(&data)?;
-                        match cfg.get("token").and_then(|v| v.as_str()) {
-                            Some(t) => {
-                                if full {
-                                    println!("Current token: {}", t);
-                                } else {
-                                    println!("Current token: {}", mask_token(t));
-                                }
-                                println!("  RPC authentication is enabled.");
-                            }
-                            None => {
-                                println!("  No RPC token configured.");
-                                println!("  RPC authentication is disabled (any token will be accepted).");
-                                println!("  To generate: nemesisbot cluster token generate --save");
-                            }
-                        }
-                    } else {
-                        println!("No cluster config found.");
-                    }
-                }
-                TokenAction::Set { token, generate, length } => {
-                    let value = if let Some(t) = token {
-                        if t.len() < 16 || t.len() > 128 {
-                            anyhow::bail!("Token must be between 16 and 128 characters");
-                        }
-                        t
-                    } else if generate {
-                        if length < 16 || length > 128 {
-                            anyhow::bail!("Token length must be between 16 and 128 bytes");
-                        }
-                        generate_token(length)
-                    } else {
-                        println!("Error: provide a token value or use --generate.");
-                        return Ok(());
-                    };
-                    let cfg_path = common::cluster_config_path(&home);
-                    if cfg_path.exists() {
-                        let data = std::fs::read_to_string(&cfg_path)?;
-                        let mut cfg: serde_json::Value = serde_json::from_str(&data)?;
-                        if let Some(obj) = cfg.as_object_mut() {
-                            obj.insert("token".to_string(), serde_json::Value::String(value.clone()));
-                            std::fs::write(&cfg_path, serde_json::to_string_pretty(&cfg).unwrap_or_default())?;
-                            println!("Token set: {}", mask_token(&value));
-                        }
-                    } else {
-                        println!("Config file not found. Run 'nemesisbot cluster init' first.");
-                    }
-                }
-                TokenAction::Verify { token } => {
-                    let cfg_path = common::cluster_config_path(&home);
-                    if cfg_path.exists() {
-                        let data = std::fs::read_to_string(&cfg_path)?;
-                        let cfg: serde_json::Value = serde_json::from_str(&data)?;
-                        match cfg.get("token").and_then(|v| v.as_str()) {
-                            Some(saved) => {
-                                if crate::common::constant_time_eq(saved.as_bytes(), token.as_bytes()) {
-                                    println!("Token matches.");
-                                } else {
-                                    println!("Token does NOT match.");
-                                }
-                            }
-                            None => println!("No token configured to verify against."),
-                        }
-                    } else {
-                        println!("No cluster config found.");
-                    }
-                }
-                TokenAction::Revoke => {
-                    let cfg_path = common::cluster_config_path(&home);
-                    if cfg_path.exists() {
-                        let data = std::fs::read_to_string(&cfg_path)?;
-                        let mut cfg: serde_json::Value = serde_json::from_str(&data)?;
-                        if let Some(obj) = cfg.as_object_mut() {
-                            obj.remove("token");
-                            std::fs::write(&cfg_path, serde_json::to_string_pretty(&cfg).unwrap_or_default())?;
-                            println!("Token revoked. Generate a new one with 'nemesisbot cluster token generate'.");
-                        }
-                    } else {
-                        println!("No cluster config found.");
-                    }
+                } else {
+                    println!("Config file not found. Run 'nemesisbot cluster init' first.");
                 }
             }
-        }
-        ClusterAction::Init { name, role, category, tags, address } => {
+            TokenAction::Verify { token } => {
+                let cfg_path = common::cluster_config_path(&home);
+                if cfg_path.exists() {
+                    let data = std::fs::read_to_string(&cfg_path)?;
+                    let cfg: serde_json::Value = serde_json::from_str(&data)?;
+                    match cfg.get("token").and_then(|v| v.as_str()) {
+                        Some(saved) => {
+                            if crate::common::constant_time_eq(saved.as_bytes(), token.as_bytes()) {
+                                println!("Token matches.");
+                            } else {
+                                println!("Token does NOT match.");
+                            }
+                        }
+                        None => println!("No token configured to verify against."),
+                    }
+                } else {
+                    println!("No cluster config found.");
+                }
+            }
+            TokenAction::Revoke => {
+                let cfg_path = common::cluster_config_path(&home);
+                if cfg_path.exists() {
+                    let data = std::fs::read_to_string(&cfg_path)?;
+                    let mut cfg: serde_json::Value = serde_json::from_str(&data)?;
+                    if let Some(obj) = cfg.as_object_mut() {
+                        obj.remove("token");
+                        std::fs::write(
+                            &cfg_path,
+                            serde_json::to_string_pretty(&cfg).unwrap_or_default(),
+                        )?;
+                        println!(
+                            "Token revoked. Generate a new one with 'nemesisbot cluster token generate'."
+                        );
+                    }
+                } else {
+                    println!("No cluster config found.");
+                }
+            }
+        },
+        ClusterAction::Init {
+            name,
+            role,
+            category,
+            tags,
+            address,
+        } => {
             println!("Initializing cluster configuration...");
             let cfg_path = common::cluster_config_path(&home);
             let dir = cfg_path.parent().unwrap();
@@ -556,9 +690,11 @@ pub async fn run(action: ClusterAction, local: bool) -> Result<()> {
 
             // Check if config already exists and prompt for confirmation
             if cfg_path.exists() {
-                use std::io::{self, Write, IsTerminal};
+                use std::io::{self, IsTerminal, Write};
                 if io::stdin().is_terminal() {
-                    print!("  Cluster config already exists. Reinitialize? This will overwrite existing configuration. (y/N): ");
+                    print!(
+                        "  Cluster config already exists. Reinitialize? This will overwrite existing configuration. (y/N): "
+                    );
                     io::stdout().flush().ok();
                     let mut answer = String::new();
                     io::stdin().read_line(&mut answer).ok();
@@ -578,19 +714,31 @@ pub async fn run(action: ClusterAction, local: bool) -> Result<()> {
 
             // --- 写 config.cluster.json（系统参数 + token）---
             // config.cluster.json 不再含身份字段，只含 5 个系统参数 + token
-            let mut cluster_cfg = serde_json::from_str::<serde_json::Value>(crate::CONFIG_CLUSTER_DEFAULT)
-                .unwrap_or_else(|_| serde_json::json!({}));
+            let mut cluster_cfg =
+                serde_json::from_str::<serde_json::Value>(crate::CONFIG_CLUSTER_DEFAULT)
+                    .unwrap_or_else(|_| serde_json::json!({}));
             if let Some(obj) = cluster_cfg.as_object_mut() {
-                obj.insert("token".to_string(), serde_json::Value::String(uuid::Uuid::new_v4().to_string()));
+                obj.insert(
+                    "token".to_string(),
+                    serde_json::Value::String(uuid::Uuid::new_v4().to_string()),
+                );
             }
-            let _ = std::fs::write(&cfg_path, serde_json::to_string_pretty(&cluster_cfg).unwrap_or_default());
+            let _ = std::fs::write(
+                &cfg_path,
+                serde_json::to_string_pretty(&cluster_cfg).unwrap_or_default(),
+            );
 
             // --- 写 peers.toml [node] 段（完整身份）---
             let cluster_dir = common::cluster_dir(&home);
             let _ = std::fs::create_dir_all(&cluster_dir);
             let peers_path = cluster_dir.join("peers.toml");
             let tags_vec: Vec<String> = tags
-                .map(|t| t.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect())
+                .map(|t| {
+                    t.split(',')
+                        .map(|s| s.trim().to_string())
+                        .filter(|s| !s.is_empty())
+                        .collect()
+                })
                 .unwrap_or_default();
             let sc = nemesis_cluster::cluster_config::StaticConfig {
                 node: nemesis_cluster::cluster_config::NodeInfo {
@@ -617,7 +765,11 @@ pub async fn run(action: ClusterAction, local: bool) -> Result<()> {
             if cfg_path.exists() {
                 if let Ok(data) = std::fs::read_to_string(&cfg_path) {
                     if let Ok(cfg) = serde_json::from_str::<serde_json::Value>(&data) {
-                        if cfg.get("enabled").and_then(|v| v.as_bool()).unwrap_or(false) {
+                        if cfg
+                            .get("enabled")
+                            .and_then(|v| v.as_bool())
+                            .unwrap_or(false)
+                        {
                             println!("Cluster is already enabled.");
                             return Ok(());
                         }
@@ -633,7 +785,11 @@ pub async fn run(action: ClusterAction, local: bool) -> Result<()> {
             if cfg_path.exists() {
                 if let Ok(data) = std::fs::read_to_string(&cfg_path) {
                     if let Ok(cfg) = serde_json::from_str::<serde_json::Value>(&data) {
-                        if !cfg.get("enabled").and_then(|v| v.as_bool()).unwrap_or(false) {
+                        if !cfg
+                            .get("enabled")
+                            .and_then(|v| v.as_bool())
+                            .unwrap_or(false)
+                        {
                             println!("Cluster is already disabled.");
                             return Ok(());
                         }
@@ -649,7 +805,11 @@ pub async fn run(action: ClusterAction, local: bool) -> Result<()> {
             if cfg_path.exists() {
                 if let Ok(data) = std::fs::read_to_string(&cfg_path) {
                     if let Ok(cfg) = serde_json::from_str::<serde_json::Value>(&data) {
-                        if cfg.get("enabled").and_then(|v| v.as_bool()).unwrap_or(false) {
+                        if cfg
+                            .get("enabled")
+                            .and_then(|v| v.as_bool())
+                            .unwrap_or(false)
+                        {
                             println!("Cluster is already enabled.");
                             return Ok(());
                         }
@@ -664,7 +824,11 @@ pub async fn run(action: ClusterAction, local: bool) -> Result<()> {
             if cfg_path.exists() {
                 if let Ok(data) = std::fs::read_to_string(&cfg_path) {
                     if let Ok(cfg) = serde_json::from_str::<serde_json::Value>(&data) {
-                        if !cfg.get("enabled").and_then(|v| v.as_bool()).unwrap_or(false) {
+                        if !cfg
+                            .get("enabled")
+                            .and_then(|v| v.as_bool())
+                            .unwrap_or(false)
+                        {
                             println!("Cluster is already disabled.");
                             return Ok(());
                         }
@@ -690,7 +854,9 @@ pub async fn run(action: ClusterAction, local: bool) -> Result<()> {
             }
             // Hard reset: clear everything
             println!("WARNING: Hard reset - clearing all cluster configuration.");
-            print!("  WARNING: This will remove all cluster data including peers. Continue? (y/N): ");
+            print!(
+                "  WARNING: This will remove all cluster data including peers. Continue? (y/N): "
+            );
             use std::io::{self, Write};
             io::stdout().flush().ok();
             let mut answer = String::new();
@@ -723,8 +889,12 @@ pub async fn run(action: ClusterAction, local: bool) -> Result<()> {
                         println!("{}", content);
                     } else {
                         println!("Cluster identity not found.");
-                        println!("  Use 'nemesisbot cluster identity edit' to create one from template.");
-                        println!("  Or run 'nemesisbot onboard default' to install default identity (贾维斯).");
+                        println!(
+                            "  Use 'nemesisbot cluster identity edit' to create one from template."
+                        );
+                        println!(
+                            "  Or run 'nemesisbot onboard default' to install default identity (贾维斯)."
+                        );
                     }
                 }
                 IdentityAction::Edit => {
@@ -762,7 +932,12 @@ pub async fn run(action: ClusterAction, local: bool) -> Result<()> {
                 }
             }
         }
-        ClusterAction::Node { udp_port, rpc_port, name, broadcast_interval } => {
+        ClusterAction::Node {
+            udp_port,
+            rpc_port,
+            name,
+            broadcast_interval,
+        } => {
             run_node(&home, udp_port, rpc_port, name, broadcast_interval).await?;
         }
         ClusterAction::Firewall { action } => {
@@ -799,29 +974,45 @@ fn run_firewall(action: FirewallAction) -> Result<()> {
 fn firewall_add_rules(udp_port: u16, tcp_port: u16) -> Result<()> {
     let udp_result = std::process::Command::new("netsh")
         .args(&[
-            "advfirewall", "firewall", "add", "rule",
+            "advfirewall",
+            "firewall",
+            "add",
+            "rule",
             "name=NemesisBot Discovery",
-            "dir=in", "action=allow", "protocol=UDP",
+            "dir=in",
+            "action=allow",
+            "protocol=UDP",
             &format!("localport={}", udp_port),
             "profile=any",
         ])
         .output()?;
     if !udp_result.status.success() {
-        anyhow::bail!("UDP rule failed: {}", String::from_utf8_lossy(&udp_result.stderr));
+        anyhow::bail!(
+            "UDP rule failed: {}",
+            String::from_utf8_lossy(&udp_result.stderr)
+        );
     }
     println!("  UDP rule added: NemesisBot Discovery (port {})", udp_port);
 
     let tcp_result = std::process::Command::new("netsh")
         .args(&[
-            "advfirewall", "firewall", "add", "rule",
+            "advfirewall",
+            "firewall",
+            "add",
+            "rule",
             "name=NemesisBot RPC",
-            "dir=in", "action=allow", "protocol=TCP",
+            "dir=in",
+            "action=allow",
+            "protocol=TCP",
             &format!("localport={}", tcp_port),
             "profile=any",
         ])
         .output()?;
     if !tcp_result.status.success() {
-        anyhow::bail!("TCP rule failed: {}", String::from_utf8_lossy(&tcp_result.stderr));
+        anyhow::bail!(
+            "TCP rule failed: {}",
+            String::from_utf8_lossy(&tcp_result.stderr)
+        );
     }
     println!("  TCP rule added: NemesisBot RPC (port {})", tcp_port);
     Ok(())
@@ -831,7 +1022,10 @@ fn firewall_add_rules(udp_port: u16, tcp_port: u16) -> Result<()> {
 fn firewall_remove_rules(_udp_port: u16, _tcp_port: u16) -> Result<()> {
     let udp_result = std::process::Command::new("netsh")
         .args(&[
-            "advfirewall", "firewall", "delete", "rule",
+            "advfirewall",
+            "firewall",
+            "delete",
+            "rule",
             "name=NemesisBot Discovery",
         ])
         .output()?;
@@ -843,7 +1037,10 @@ fn firewall_remove_rules(_udp_port: u16, _tcp_port: u16) -> Result<()> {
 
     let tcp_result = std::process::Command::new("netsh")
         .args(&[
-            "advfirewall", "firewall", "delete", "rule",
+            "advfirewall",
+            "firewall",
+            "delete",
+            "rule",
             "name=NemesisBot RPC",
         ])
         .output()?;
@@ -870,7 +1067,10 @@ fn firewall_add_rules(udp_port: u16, tcp_port: u16) -> Result<()> {
         if udp_result.status.success() {
             println!("  UFW UDP rule added: port {}", udp_port);
         } else {
-            anyhow::bail!("UFW UDP failed: {}", String::from_utf8_lossy(&udp_result.stderr));
+            anyhow::bail!(
+                "UFW UDP failed: {}",
+                String::from_utf8_lossy(&udp_result.stderr)
+            );
         }
         let tcp_result = std::process::Command::new("ufw")
             .args(&["allow", &format!("{}/tcp", tcp_port)])
@@ -878,22 +1078,49 @@ fn firewall_add_rules(udp_port: u16, tcp_port: u16) -> Result<()> {
         if tcp_result.status.success() {
             println!("  UFW TCP rule added: port {}", tcp_port);
         } else {
-            anyhow::bail!("UFW TCP failed: {}", String::from_utf8_lossy(&tcp_result.stderr));
+            anyhow::bail!(
+                "UFW TCP failed: {}",
+                String::from_utf8_lossy(&tcp_result.stderr)
+            );
         }
     } else {
         let udp_result = std::process::Command::new("iptables")
-            .args(&["-I", "INPUT", "-p", "udp", "--dport", &udp_port.to_string(), "-j", "ACCEPT"])
+            .args(&[
+                "-I",
+                "INPUT",
+                "-p",
+                "udp",
+                "--dport",
+                &udp_port.to_string(),
+                "-j",
+                "ACCEPT",
+            ])
             .output()?;
         if !udp_result.status.success() {
-            anyhow::bail!("iptables UDP failed: {}", String::from_utf8_lossy(&udp_result.stderr));
+            anyhow::bail!(
+                "iptables UDP failed: {}",
+                String::from_utf8_lossy(&udp_result.stderr)
+            );
         }
         println!("  iptables UDP rule added: port {}", udp_port);
 
         let tcp_result = std::process::Command::new("iptables")
-            .args(&["-I", "INPUT", "-p", "tcp", "--dport", &tcp_port.to_string(), "-j", "ACCEPT"])
+            .args(&[
+                "-I",
+                "INPUT",
+                "-p",
+                "tcp",
+                "--dport",
+                &tcp_port.to_string(),
+                "-j",
+                "ACCEPT",
+            ])
             .output()?;
         if !tcp_result.status.success() {
-            anyhow::bail!("iptables TCP failed: {}", String::from_utf8_lossy(&tcp_result.stderr));
+            anyhow::bail!(
+                "iptables TCP failed: {}",
+                String::from_utf8_lossy(&tcp_result.stderr)
+            );
         }
         println!("  iptables TCP rule added: port {}", tcp_port);
     }
@@ -919,11 +1146,29 @@ fn firewall_remove_rules(udp_port: u16, tcp_port: u16) -> Result<()> {
         println!("  UFW TCP rule removed: port {}", tcp_port);
     } else {
         let _ = std::process::Command::new("iptables")
-            .args(&["-D", "INPUT", "-p", "udp", "--dport", &udp_port.to_string(), "-j", "ACCEPT"])
+            .args(&[
+                "-D",
+                "INPUT",
+                "-p",
+                "udp",
+                "--dport",
+                &udp_port.to_string(),
+                "-j",
+                "ACCEPT",
+            ])
             .output();
         println!("  iptables UDP rule removed: port {}", udp_port);
         let _ = std::process::Command::new("iptables")
-            .args(&["-D", "INPUT", "-p", "tcp", "--dport", &tcp_port.to_string(), "-j", "ACCEPT"])
+            .args(&[
+                "-D",
+                "INPUT",
+                "-p",
+                "tcp",
+                "--dport",
+                &tcp_port.to_string(),
+                "-j",
+                "ACCEPT",
+            ])
             .output();
         println!("  iptables TCP rule removed: port {}", tcp_port);
     }
@@ -991,10 +1236,8 @@ async fn run_node(
         bind_address: format!("0.0.0.0:{}", rpc_port),
         peers: vec![],
     };
-    let mut cluster = nemesis_cluster::cluster::Cluster::with_workspace(
-        cluster_config,
-        home.join("workspace"),
-    );
+    let mut cluster =
+        nemesis_cluster::cluster::Cluster::with_workspace(cluster_config, home.join("workspace"));
     cluster.set_ports(udp_port, rpc_port);
     if let Some(name) = name_override {
         cluster.set_node_name(&name);
@@ -1012,13 +1255,31 @@ async fn run_node(
                         let addr = val.get("address").and_then(|v| v.as_str()).unwrap_or("");
                         let name = val.get("name").and_then(|v| v.as_str()).unwrap_or(&peer_id);
                         let role = val.get("role").and_then(|v| v.as_str()).unwrap_or("worker");
-                        let cat = val.get("category").and_then(|v| v.as_str()).unwrap_or("general");
-                        if addr.is_empty() { continue; }
+                        let cat = val
+                            .get("category")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("general");
+                        if addr.is_empty() {
+                            continue;
+                        }
                         let (host, up) = parse_host_port(addr);
                         let rp = if up > 0 { up + 10000 } else { 0 };
                         let addresses = if host.is_empty() { vec![] } else { vec![host] };
-                        info!("[Node] Loading static peer: {} ({}) addr={} rpc_port={}", name, peer_id, addr, rp);
-                        cluster.handle_discovered_node(&peer_id, name, addresses, rp, role, cat, vec![], vec![], "unknown");
+                        info!(
+                            "[Node] Loading static peer: {} ({}) addr={} rpc_port={}",
+                            name, peer_id, addr, rp
+                        );
+                        cluster.handle_discovered_node(
+                            &peer_id,
+                            name,
+                            addresses,
+                            rp,
+                            role,
+                            cat,
+                            vec![],
+                            vec![],
+                            "unknown",
+                        );
                     }
                 }
             }
@@ -1030,7 +1291,9 @@ async fn run_node(
         bind_address: format!("0.0.0.0:{}", rpc_port),
         ..Default::default()
     };
-    cluster.set_rpc_server(Arc::new(nemesis_cluster::rpc::server::RpcServer::new(rpc_server_config)));
+    cluster.set_rpc_server(Arc::new(nemesis_cluster::rpc::server::RpcServer::new(
+        rpc_server_config,
+    )));
 
     // Start cluster (registers local node, creates RPC client, starts sync/recovery loops)
     cluster.start();
@@ -1040,7 +1303,10 @@ async fn run_node(
     let node_name = cluster.node_name();
     println!("  Node ID:    {}", node_id);
     println!("  Name:       {}", node_name);
-    info!("[Node] Cluster started (node_id={}, name={}, udp={}, rpc={})", node_id, node_name, udp_port, rpc_port);
+    info!(
+        "[Node] Cluster started (node_id={}, name={}, udp={}, rpc={})",
+        node_id, node_name, udp_port, rpc_port
+    );
 
     // Register basic RPC handlers (ping, get_info, get_capabilities)
     if let Err(e) = cluster.register_basic_handlers() {
@@ -1048,9 +1314,7 @@ async fn run_node(
     }
 
     // Start RPC server
-    let rpc_server_ref = cluster.rpc_server()
-        .expect("rpc_server just set")
-        .clone();
+    let rpc_server_ref = cluster.rpc_server().expect("rpc_server just set").clone();
     if let Err(e) = rpc_server_ref.start().await {
         anyhow::bail!("RPC server error on port {}: {}", rpc_port, e);
     }
@@ -1115,7 +1379,11 @@ fn parse_host_port(addr: &str) -> (String, u16) {
     }
 }
 
-fn update_cluster_config(home: &std::path::Path, key: &str, value: impl Into<serde_json::Value>) -> Result<()> {
+fn update_cluster_config(
+    home: &std::path::Path,
+    key: &str,
+    value: impl Into<serde_json::Value>,
+) -> Result<()> {
     let cfg_path = common::cluster_config_path(home);
     if !cfg_path.exists() {
         anyhow::bail!("Cluster not initialized. Run 'nemesisbot cluster init' first.");
@@ -1124,7 +1392,10 @@ fn update_cluster_config(home: &std::path::Path, key: &str, value: impl Into<ser
     let mut cfg: serde_json::Value = serde_json::from_str(&data)?;
     if let Some(obj) = cfg.as_object_mut() {
         obj.insert(key.to_string(), value.into());
-        std::fs::write(&cfg_path, serde_json::to_string_pretty(&cfg).unwrap_or_default())?;
+        std::fs::write(
+            &cfg_path,
+            serde_json::to_string_pretty(&cfg).unwrap_or_default(),
+        )?;
     }
     Ok(())
 }
@@ -1143,7 +1414,10 @@ fn update_main_config_cluster(home: &std::path::Path, enabled: bool) -> Result<(
             "cluster".to_string(),
             serde_json::json!({ "enabled": enabled }),
         );
-        std::fs::write(&cfg_path, serde_json::to_string_pretty(&cfg).unwrap_or_default())?;
+        std::fs::write(
+            &cfg_path,
+            serde_json::to_string_pretty(&cfg).unwrap_or_default(),
+        )?;
     }
     Ok(())
 }
@@ -1217,11 +1491,13 @@ fn mask_token(token: &str) -> String {
 /// # Returns
 /// The modified TOML content, or an error message string.
 fn enable_peer_in_toml(toml_content: &str, addr: &str, enabled: bool) -> Result<String, String> {
-    let mut doc: toml::Value = toml_content.parse::<toml::Value>()
+    let mut doc: toml::Value = toml_content
+        .parse::<toml::Value>()
         .map_err(|e| format!("Failed to parse peers.toml: {}", e))?;
 
     // Navigate to [peers] section
-    let peers = doc.as_table_mut()
+    let peers = doc
+        .as_table_mut()
         .and_then(|t| t.get_mut("peers"))
         .and_then(|v| v.as_table_mut())
         .ok_or_else(|| "No [peers] section found in peers.toml".to_string())?;
@@ -1255,8 +1531,7 @@ fn enable_peer_in_toml(toml_content: &str, addr: &str, enabled: bool) -> Result<
     }
 
     // Serialize back to TOML, preserving human-readable formatting
-    toml::to_string_pretty(&doc)
-        .map_err(|e| format!("Failed to serialize peers.toml: {}", e))
+    toml::to_string_pretty(&doc).map_err(|e| format!("Failed to serialize peers.toml: {}", e))
 }
 
 #[cfg(test)]

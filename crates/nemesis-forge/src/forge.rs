@@ -232,7 +232,10 @@ impl Forge {
             _ => return,
         };
 
-        tracing::info!(count = experiences.len(), "[Forge] Running reflection cycle");
+        tracing::info!(
+            count = experiences.len(),
+            "[Forge] Running reflection cycle"
+        );
 
         // Step 1: Reflect (statistical analysis)
         let report = if let Some(ref reflector) = self.reflector {
@@ -368,13 +371,15 @@ impl Forge {
     /// Set the learning enabled flag at runtime.
     /// Takes effect on the next reflection cycle — no restart needed.
     pub fn set_learning_enabled(&self, enabled: bool) {
-        self.learning_enabled.store(enabled, std::sync::atomic::Ordering::SeqCst);
+        self.learning_enabled
+            .store(enabled, std::sync::atomic::Ordering::SeqCst);
         tracing::info!(enabled, "[Forge] Learning flag updated at runtime");
     }
 
     /// Check whether learning is currently enabled.
     pub fn is_learning_enabled(&self) -> bool {
-        self.learning_enabled.load(std::sync::atomic::Ordering::SeqCst)
+        self.learning_enabled
+            .load(std::sync::atomic::Ordering::SeqCst)
     }
 
     /// Get a reference to the collector.
@@ -520,7 +525,10 @@ impl Forge {
     // ----- High-level methods -----
 
     /// Trigger a manual reflection cycle.
-    pub fn reflect_now(&self, experiences: &[crate::types::CollectedExperience]) -> Result<nemesis_types::forge::Reflection, String> {
+    pub fn reflect_now(
+        &self,
+        experiences: &[crate::types::CollectedExperience],
+    ) -> Result<nemesis_types::forge::Reflection, String> {
         tracing::info!(
             experience_count = experiences.len(),
             "[Forge] Manual reflection triggered"
@@ -593,8 +601,7 @@ impl Forge {
         // was written first with only a weak post-write check, so such content
         // became an active agent instruction. Length/frontmatter are quality,
         // not security, so they don't block here.
-        let sec_errors = crate::validator::StaticValidator::new()
-            .security_errors(&skill_content);
+        let sec_errors = crate::validator::StaticValidator::new().security_errors(&skill_content);
         if !sec_errors.is_empty() {
             return Err(format!(
                 "Skill content failed security validation: {}",
@@ -605,8 +612,7 @@ impl Forge {
         // 1. Write content to forge skills directory
         let artifact_dir = self.forge_dir.join("skills").join(name);
         let artifact_path = artifact_dir.join("SKILL.md");
-        std::fs::create_dir_all(&artifact_dir)
-            .map_err(|e| format!("create dir failed: {}", e))?;
+        std::fs::create_dir_all(&artifact_dir).map_err(|e| format!("create dir failed: {}", e))?;
         std::fs::write(&artifact_path, &skill_content)
             .map_err(|e| format!("write file failed: {}", e))?;
 
@@ -635,23 +641,19 @@ impl Forge {
         self.registry.add(artifact.clone());
 
         // 3. Copy to workspace/skills/ with -forge suffix
-        let workspace_skill_dir = self.workspace.join("skills").join(format!("{}-forge", name));
+        let workspace_skill_dir = self
+            .workspace
+            .join("skills")
+            .join(format!("{}-forge", name));
         if std::fs::create_dir_all(&workspace_skill_dir).is_ok() {
-            let _ = std::fs::write(
-                workspace_skill_dir.join("SKILL.md"),
-                &skill_content,
-            );
+            let _ = std::fs::write(workspace_skill_dir.join("SKILL.md"), &skill_content);
         }
 
         // 4. Auto-validate if configured
         let mut final_artifact = artifact;
         if self.config.validation.auto_validate {
             if let Some(ref pipeline) = self.pipeline {
-                let validation = pipeline.validate(
-                    ArtifactKind::Skill,
-                    name,
-                    &skill_content,
-                );
+                let validation = pipeline.validate(ArtifactKind::Skill, name, &skill_content);
                 let new_status = pipeline.determine_status(&validation);
                 self.registry.update(&artifact_id, |a| {
                     a.status = new_status;

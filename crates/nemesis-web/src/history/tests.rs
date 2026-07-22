@@ -4,8 +4,14 @@ use super::*;
 fn test_serialize_history_page() {
     let page = HistoryPage {
         messages: vec![
-            HistoryMessage { role: "user".to_string(), content: "hello".to_string() },
-            HistoryMessage { role: "assistant".to_string(), content: "hi".to_string() },
+            HistoryMessage {
+                role: "user".to_string(),
+                content: "hello".to_string(),
+            },
+            HistoryMessage {
+                role: "assistant".to_string(),
+                content: "hi".to_string(),
+            },
         ],
         has_more: false,
         oldest_index: 0,
@@ -56,7 +62,11 @@ fn test_history_page_empty_messages() {
 fn test_history_page_many_messages() {
     let messages: Vec<HistoryMessage> = (0..100)
         .map(|i| HistoryMessage {
-            role: if i % 2 == 0 { "user".to_string() } else { "assistant".to_string() },
+            role: if i % 2 == 0 {
+                "user".to_string()
+            } else {
+                "assistant".to_string()
+            },
             content: format!("message {}", i),
         })
         .collect();
@@ -126,9 +136,10 @@ fn test_history_message_with_special_chars() {
 #[test]
 fn test_history_page_roundtrip() {
     let page = HistoryPage {
-        messages: vec![
-            HistoryMessage { role: "user".to_string(), content: "test".to_string() },
-        ],
+        messages: vec![HistoryMessage {
+            role: "user".to_string(),
+            content: "test".to_string(),
+        }],
         has_more: true,
         oldest_index: 42,
         total_count: 999,
@@ -158,7 +169,10 @@ fn test_history_page_negative_oldest_index() {
 
 #[test]
 fn test_history_message_clone() {
-    let msg = HistoryMessage { role: "user".into(), content: "test".into() };
+    let msg = HistoryMessage {
+        role: "user".into(),
+        content: "test".into(),
+    };
     let cloned = msg.clone();
     assert_eq!(cloned.role, "user");
     assert_eq!(cloned.content, "test");
@@ -167,7 +181,10 @@ fn test_history_message_clone() {
 #[test]
 fn test_history_page_clone() {
     let page = HistoryPage {
-        messages: vec![HistoryMessage { role: "user".into(), content: "hi".into() }],
+        messages: vec![HistoryMessage {
+            role: "user".into(),
+            content: "hi".into(),
+        }],
         has_more: true,
         oldest_index: 5,
         total_count: 10,
@@ -193,7 +210,10 @@ fn test_history_request_data_clone() {
 
 #[test]
 fn test_history_message_debug() {
-    let msg = HistoryMessage { role: "user".into(), content: "hello".into() };
+    let msg = HistoryMessage {
+        role: "user".into(),
+        content: "hello".into(),
+    };
     let debug_str = format!("{:?}", msg);
     assert!(debug_str.contains("user"));
     assert!(debug_str.contains("hello"));
@@ -248,7 +268,10 @@ fn test_history_page_with_large_total_count() {
 
 #[test]
 fn test_history_message_empty_content() {
-    let msg = HistoryMessage { role: "system".into(), content: String::new() };
+    let msg = HistoryMessage {
+        role: "system".into(),
+        content: String::new(),
+    };
     let json = serde_json::to_string(&msg).unwrap();
     let parsed: HistoryMessage = serde_json::from_str(&json).unwrap();
     assert!(parsed.content.is_empty());
@@ -266,10 +289,22 @@ fn test_history_request_data_with_only_request_id() {
 #[test]
 fn test_history_page_alternating_roles() {
     let messages: Vec<HistoryMessage> = vec![
-        HistoryMessage { role: "user".into(), content: "q1".into() },
-        HistoryMessage { role: "assistant".into(), content: "a1".into() },
-        HistoryMessage { role: "user".into(), content: "q2".into() },
-        HistoryMessage { role: "assistant".into(), content: "a2".into() },
+        HistoryMessage {
+            role: "user".into(),
+            content: "q1".into(),
+        },
+        HistoryMessage {
+            role: "assistant".into(),
+            content: "a1".into(),
+        },
+        HistoryMessage {
+            role: "user".into(),
+            content: "q2".into(),
+        },
+        HistoryMessage {
+            role: "assistant".into(),
+            content: "a2".into(),
+        },
     ];
     let page = HistoryPage {
         messages,
@@ -309,7 +344,10 @@ fn test_history_request_data_with_before_index_only() {
 #[test]
 fn test_history_page_serialization_format() {
     let page = HistoryPage {
-        messages: vec![HistoryMessage { role: "user".into(), content: "hi".into() }],
+        messages: vec![HistoryMessage {
+            role: "user".into(),
+            content: "hi".into(),
+        }],
         has_more: false,
         oldest_index: 0,
         total_count: 1,
@@ -324,7 +362,10 @@ fn test_history_page_serialization_format() {
 #[test]
 fn test_history_message_long_content() {
     let long_content = "x".repeat(10000);
-    let msg = HistoryMessage { role: "user".into(), content: long_content.clone() };
+    let msg = HistoryMessage {
+        role: "user".into(),
+        content: long_content.clone(),
+    };
     let json = serde_json::to_string(&msg).unwrap();
     let parsed: HistoryMessage = serde_json::from_str(&json).unwrap();
     assert_eq!(parsed.content.len(), 10000);

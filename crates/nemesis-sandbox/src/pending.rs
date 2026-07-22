@@ -63,7 +63,12 @@ pub fn enumerate_box(box_root: &Path, user_profile: &Path) -> Result<Vec<Pending
 /// via explorer (the 打开沙箱 button).
 const MAX_BOX_FILES: usize = 5000;
 
-fn walk(dir: &Path, box_root: &Path, user_profile: &Path, out: &mut Vec<PendingFile>) -> Result<()> {
+fn walk(
+    dir: &Path,
+    box_root: &Path,
+    user_profile: &Path,
+    out: &mut Vec<PendingFile>,
+) -> Result<()> {
     if out.len() >= MAX_BOX_FILES {
         return Ok(());
     }
@@ -121,8 +126,13 @@ pub fn commit_file(pending: &PendingFile) -> Result<u64> {
         std::fs::create_dir_all(parent)
             .with_context(|| format!("create real dir {}", parent.display()))?;
     }
-    let n = std::fs::copy(&pending.box_path, &pending.real_path)
-        .with_context(|| format!("commit {} -> {}", pending.box_path.display(), pending.real_path.display()))?;
+    let n = std::fs::copy(&pending.box_path, &pending.real_path).with_context(|| {
+        format!(
+            "commit {} -> {}",
+            pending.box_path.display(),
+            pending.real_path.display()
+        )
+    })?;
     Ok(n)
 }
 
@@ -138,8 +148,7 @@ pub fn delete_file(pending: &PendingFile) -> Result<bool> {
     match std::fs::remove_file(&pending.box_path) {
         Ok(()) => Ok(true),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
-        Err(e) => Err(e)
-            .with_context(|| format!("delete box file {}", pending.box_path.display())),
+        Err(e) => Err(e).with_context(|| format!("delete box file {}", pending.box_path.display())),
     }
 }
 

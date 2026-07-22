@@ -50,9 +50,7 @@ async fn test_version_snapshot() {
 
     version::save_snapshot(&artifact_path, "1.0").await.unwrap();
 
-    let loaded = version::load_snapshot(&artifact_path, "1.0")
-        .await
-        .unwrap();
+    let loaded = version::load_snapshot(&artifact_path, "1.0").await.unwrap();
     assert_eq!(loaded, "original content");
 }
 
@@ -139,7 +137,12 @@ async fn test_execute_create_mcp_generates_project_files() {
     assert!(result.success);
 
     // Check requirements.txt was created
-    let req_path = dir.path().join("forge").join("mcp").join("py-mcp").join("requirements.txt");
+    let req_path = dir
+        .path()
+        .join("forge")
+        .join("mcp")
+        .join("py-mcp")
+        .join("requirements.txt");
     assert!(req_path.exists(), "requirements.txt should be created");
     let req_content = tokio::fs::read_to_string(&req_path).await.unwrap();
     assert!(req_content.contains("mcp"));
@@ -169,9 +172,7 @@ async fn test_execute_list_empty() {
     let forge = Arc::new(Forge::new(ForgeConfig::default(), dir.path().to_path_buf()));
     let executor = ForgeToolExecutor::new(forge);
 
-    let result = executor
-        .execute("forge_list", &serde_json::json!({}))
-        .await;
+    let result = executor.execute("forge_list", &serde_json::json!({})).await;
     assert!(result.success);
     assert!(result.content.contains("No Forge artifacts"));
 }
@@ -271,9 +272,7 @@ async fn test_execute_update_and_list() {
     assert!(update_result.content.contains("1.1"));
 
     // List should show the artifact
-    let list_result = executor
-        .execute("forge_list", &serde_json::json!({}))
-        .await;
+    let list_result = executor.execute("forge_list", &serde_json::json!({})).await;
     assert!(list_result.success);
     assert!(list_result.content.contains("my-skill"));
 }
@@ -307,7 +306,10 @@ fn test_resolve_artifact_path_skill() {
         consecutive_observing_rounds: 0,
     };
     let path = resolve_artifact_path(forge_dir, &artifact);
-    assert_eq!(path, std::path::PathBuf::from("/tmp/forge/skills/my-skill/SKILL.md"));
+    assert_eq!(
+        path,
+        std::path::PathBuf::from("/tmp/forge/skills/my-skill/SKILL.md")
+    );
 }
 
 // -- Edge case tests matching Go's forge_coverage2_test.go and forge_coverage3_test.go --------
@@ -335,7 +337,12 @@ async fn test_execute_create_mcp_go_language() {
     assert!(result.success, "Error: {}", result.content);
 
     // Check go.mod was created
-    let go_mod_path = dir.path().join("forge").join("mcp").join("go-mcp").join("go.mod");
+    let go_mod_path = dir
+        .path()
+        .join("forge")
+        .join("mcp")
+        .join("go-mcp")
+        .join("go.mod");
     assert!(go_mod_path.exists(), "go.mod should be created for Go MCP");
     let go_mod_content = tokio::fs::read_to_string(&go_mod_path).await.unwrap();
     assert!(go_mod_content.contains("module forge-mcp-go-mcp"));
@@ -363,7 +370,11 @@ async fn test_execute_build_mcp_install_action() {
             }),
         )
         .await;
-    assert!(create_result.success, "Create failed: {}", create_result.content);
+    assert!(
+        create_result.success,
+        "Create failed: {}",
+        create_result.content
+    );
 
     // Extract the ID
     let id_line = create_result
@@ -465,7 +476,11 @@ async fn test_execute_update_rollback() {
             }),
         )
         .await;
-    assert!(rollback_result.success, "Rollback failed: {}", rollback_result.content);
+    assert!(
+        rollback_result.success,
+        "Rollback failed: {}",
+        rollback_result.content
+    );
     assert!(rollback_result.content.contains("rolled back from 1.0"));
 }
 
@@ -584,9 +599,7 @@ async fn test_execute_list_with_type_filter() {
         .await;
 
     // List all — should contain all 3
-    let list_all = executor
-        .execute("forge_list", &serde_json::json!({}))
-        .await;
+    let list_all = executor.execute("forge_list", &serde_json::json!({})).await;
     assert!(list_all.success);
     assert!(list_all.content.contains("list-skill"));
     assert!(list_all.content.contains("list-script"));
@@ -682,7 +695,11 @@ fn test_forge_tool_definitions_names() {
 fn test_forge_tool_definitions_have_descriptions() {
     let defs = forge_tool_definitions();
     for def in &defs {
-        assert!(!def.description.is_empty(), "Tool {} missing description", def.name);
+        assert!(
+            !def.description.is_empty(),
+            "Tool {} missing description",
+            def.name
+        );
     }
 }
 
@@ -690,7 +707,11 @@ fn test_forge_tool_definitions_have_descriptions() {
 fn test_forge_tool_definitions_have_parameters() {
     let defs = forge_tool_definitions();
     for def in &defs {
-        assert!(def.parameters.is_object(), "Tool {} missing parameters", def.name);
+        assert!(
+            def.parameters.is_object(),
+            "Tool {} missing parameters",
+            def.name
+        );
     }
 }
 
@@ -721,7 +742,11 @@ fn test_static_validation_empty_content() {
 fn test_static_validation_skill_valid() {
     let content = "# Test Skill\n\n## Overview\nA good skill.\n\n## Steps\n- Step 1\n- Step 2\n- Step 3\nSome more content to reach 50 chars minimum threshold";
     let result = static_validation(content, &ArtifactKind::Skill);
-    assert!(result.passed, "Valid skill should pass: {:?}", result.checks);
+    assert!(
+        result.passed,
+        "Valid skill should pass: {:?}",
+        result.checks
+    );
 }
 
 #[test]
@@ -740,16 +765,26 @@ fn test_static_validation_skill_no_headings() {
 
 #[test]
 fn test_static_validation_script_valid() {
-    let content = "#!/bin/bash\n# A script that does useful work\necho hello world\nexit 0\n# End of script";
+    let content =
+        "#!/bin/bash\n# A script that does useful work\necho hello world\nexit 0\n# End of script";
     let result = static_validation(content, &ArtifactKind::Script);
-    assert!(result.passed, "Valid script should pass: {:?}", result.checks);
+    assert!(
+        result.passed,
+        "Valid script should pass: {:?}",
+        result.checks
+    );
 }
 
 #[test]
 fn test_static_validation_script_main_function() {
-    let content = "# My Script\n\ndef main():\n    print('hello world')\n    print('goodbye')\n    return 0";
+    let content =
+        "# My Script\n\ndef main():\n    print('hello world')\n    print('goodbye')\n    return 0";
     let result = static_validation(content, &ArtifactKind::Script);
-    assert!(result.passed, "Script with main function should pass: {:?}", result.checks);
+    assert!(
+        result.passed,
+        "Script with main function should pass: {:?}",
+        result.checks
+    );
 }
 
 #[test]
@@ -761,7 +796,8 @@ fn test_static_validation_script_no_entry() {
 
 #[test]
 fn test_static_validation_mcp_valid() {
-    let content = "from mcp.server import Server\n\nclass MyServer:\n    def handle(self):\n        pass";
+    let content =
+        "from mcp.server import Server\n\nclass MyServer:\n    def handle(self):\n        pass";
     let result = static_validation(content, &ArtifactKind::Mcp);
     assert!(result.passed, "Valid MCP should pass: {:?}", result.checks);
 }
@@ -786,13 +822,20 @@ fn test_quality_assessment_short_content() {
     let content = "Hi";
     let result = quality_assessment(content, &ArtifactKind::Skill);
     // Short content should have a low score
-    assert!(result.score < 60, "Short content should have low score, got {}", result.score);
+    assert!(
+        result.score < 60,
+        "Short content should have low score, got {}",
+        result.score
+    );
 }
 
 #[test]
 fn test_quality_assessment_empty_content() {
     let result = quality_assessment("", &ArtifactKind::Skill);
-    assert!(result.score < 50, "Empty content should have very low score");
+    assert!(
+        result.score < 50,
+        "Empty content should have very low score"
+    );
 }
 
 #[test]
@@ -814,7 +857,9 @@ async fn test_execute_unknown_tool_name() {
     let dir = tempfile::tempdir().unwrap();
     let forge = Arc::new(Forge::new(ForgeConfig::default(), dir.path().to_path_buf()));
     let executor = ForgeToolExecutor::new(forge);
-    let result = executor.execute("nonexistent_tool", &serde_json::json!({})).await;
+    let result = executor
+        .execute("nonexistent_tool", &serde_json::json!({}))
+        .await;
     assert!(!result.success);
     assert!(result.content.contains("unknown") || result.content.contains("Unknown"));
 }
@@ -841,7 +886,9 @@ async fn test_execute_learning_status_no_engine() {
         .execute("forge_learning_status", &serde_json::json!({}))
         .await;
     // Without a learning engine configured, should return status indicating not available
-    assert!(!result.success || result.content.contains("disabled") || result.content.contains("not"));
+    assert!(
+        !result.success || result.content.contains("disabled") || result.content.contains("not")
+    );
 }
 
 #[tokio::test]
@@ -861,7 +908,10 @@ async fn test_execute_evaluate_nonexistent() {
     let forge = Arc::new(Forge::new(ForgeConfig::default(), dir.path().to_path_buf()));
     let executor = ForgeToolExecutor::new(forge);
     let result = executor
-        .execute("forge_evaluate", &serde_json::json!({"id": "nonexistent-id"}))
+        .execute(
+            "forge_evaluate",
+            &serde_json::json!({"id": "nonexistent-id"}),
+        )
         .await;
     assert!(!result.success);
 }
@@ -872,7 +922,10 @@ async fn test_execute_update_nonexistent() {
     let forge = Arc::new(Forge::new(ForgeConfig::default(), dir.path().to_path_buf()));
     let executor = ForgeToolExecutor::new(forge);
     let result = executor
-        .execute("forge_update", &serde_json::json!({"id": "nonexistent-id", "content": "new"}))
+        .execute(
+            "forge_update",
+            &serde_json::json!({"id": "nonexistent-id", "content": "new"}),
+        )
         .await;
     assert!(!result.success);
 }
@@ -883,7 +936,10 @@ async fn test_execute_build_mcp_nonexistent() {
     let forge = Arc::new(Forge::new(ForgeConfig::default(), dir.path().to_path_buf()));
     let executor = ForgeToolExecutor::new(forge);
     let result = executor
-        .execute("forge_build_mcp", &serde_json::json!({"id": "nonexistent-id"}))
+        .execute(
+            "forge_build_mcp",
+            &serde_json::json!({"id": "nonexistent-id"}),
+        )
         .await;
     assert!(!result.success);
 }
@@ -929,7 +985,11 @@ async fn test_execute_create_with_description() {
             }),
         )
         .await;
-    assert!(result.success, "Create with description failed: {}", result.content);
+    assert!(
+        result.success,
+        "Create with description failed: {}",
+        result.content
+    );
 }
 
 #[tokio::test]
@@ -950,11 +1010,23 @@ async fn test_execute_create_mcp_python_language() {
             }),
         )
         .await;
-    assert!(result.success, "MCP python create failed: {}", result.content);
+    assert!(
+        result.success,
+        "MCP python create failed: {}",
+        result.content
+    );
 
     // Check requirements.txt was created
-    let req_path = dir.path().join("forge").join("mcp").join("py-mcp").join("requirements.txt");
-    assert!(req_path.exists(), "requirements.txt should be created for Python MCP");
+    let req_path = dir
+        .path()
+        .join("forge")
+        .join("mcp")
+        .join("py-mcp")
+        .join("requirements.txt");
+    assert!(
+        req_path.exists(),
+        "requirements.txt should be created for Python MCP"
+    );
 }
 
 #[tokio::test]
@@ -995,7 +1067,11 @@ async fn test_execute_update_rollback_nonexistent_version() {
         .await;
     assert!(create_result.success);
 
-    let id_line = create_result.content.lines().find(|l| l.contains("ID:")).unwrap();
+    let id_line = create_result
+        .content
+        .lines()
+        .find(|l| l.contains("ID:"))
+        .unwrap();
     let id = id_line.split("ID:").nth(1).unwrap().trim();
 
     // Try to rollback to a nonexistent version
@@ -1045,7 +1121,11 @@ async fn test_execute_build_mcp_uninstall_action() {
         .await;
     assert!(create_result.success);
 
-    let id_line = create_result.content.lines().find(|l| l.contains("ID:")).unwrap();
+    let id_line = create_result
+        .content
+        .lines()
+        .find(|l| l.contains("ID:"))
+        .unwrap();
     let id = id_line.split("ID:").nth(1).unwrap().trim();
 
     // Create config.mcp.json so uninstall can remove the entry
@@ -1054,7 +1134,8 @@ async fn test_execute_build_mcp_uninstall_action() {
     std::fs::write(
         config_dir.join("config.mcp.json"),
         r#"{"mcpServers":{"forge-uninstall-test":{"command":"python","args":["server.py"]}}}"#,
-    ).unwrap();
+    )
+    .unwrap();
 
     let result = executor
         .execute(
@@ -1072,7 +1153,12 @@ async fn test_execute_build_mcp_uninstall_action() {
 fn test_compute_quality_score_high_score() {
     let content = "---\nname: my-skill\n---\n\n# My Skill\n\n## Overview\nThis is a great skill with enough content to pass the 500 byte threshold for maximum length score.\n\n## Steps\n1. Do step one with care and attention to detail\n2. Do step two with precision and thoroughness\n3. Verify all works well before proceeding\n4. Document your findings carefully\n\n## Error Handling\nHandle error cases gracefully and log all failures for debugging purposes.\n\nAdditional content line 1 here\nAdditional content line 2 here\nAdditional content line 3 here\nAdditional content line 4 here\nAdditional content line 5 here\n";
     let (score, notes) = compute_quality_score(content, &ArtifactKind::Skill);
-    assert!(score > 50, "Score should be high: {}, notes: {}", score, notes);
+    assert!(
+        score > 50,
+        "Score should be high: {}, notes: {}",
+        score,
+        notes
+    );
     assert!(!notes.is_empty());
 }
 
@@ -1096,14 +1182,22 @@ fn test_compute_quality_score_mcp() {
 fn test_static_validation_skill_with_lists() {
     let content = "# Skill\n\n## Overview\nA skill.\n\n- Item 1\n- Item 2\n- Item 3\nExtra padding content to pass 50 char minimum requirement";
     let result = static_validation(content, &ArtifactKind::Skill);
-    assert!(result.passed, "Skill with lists should pass: {:?}", result.checks);
+    assert!(
+        result.passed,
+        "Skill with lists should pass: {:?}",
+        result.checks
+    );
 }
 
 #[test]
 fn test_static_validation_script_shebang() {
     let content = "#!/usr/bin/env python3\nimport sys\nprint('hello')\nsys.exit(0)\n# End";
     let result = static_validation(content, &ArtifactKind::Script);
-    assert!(result.passed, "Script with shebang should pass: {:?}", result.checks);
+    assert!(
+        result.passed,
+        "Script with shebang should pass: {:?}",
+        result.checks
+    );
 }
 
 #[test]
@@ -1156,7 +1250,10 @@ fn test_resolve_artifact_path_mcp() {
         consecutive_observing_rounds: 0,
     };
     let path = resolve_artifact_path(forge_dir, &artifact);
-    assert_eq!(path, std::path::PathBuf::from("/tmp/forge/mcp/my-mcp/server.py"));
+    assert_eq!(
+        path,
+        std::path::PathBuf::from("/tmp/forge/mcp/my-mcp/server.py")
+    );
 }
 
 #[tokio::test]
@@ -1178,15 +1275,27 @@ async fn test_execute_evaluate_existing_artifact() {
         .await;
     assert!(create_result.success);
 
-    let id_line = create_result.content.lines().find(|l| l.contains("ID:")).unwrap();
+    let id_line = create_result
+        .content
+        .lines()
+        .find(|l| l.contains("ID:"))
+        .unwrap();
     let id = id_line.split("ID:").nth(1).unwrap().trim();
 
     // Evaluate the artifact
     let eval_result = executor
         .execute("forge_evaluate", &serde_json::json!({"id": id}))
         .await;
-    assert!(eval_result.success, "Evaluate failed: {}", eval_result.content);
-    assert!(eval_result.content.contains("score") || eval_result.content.contains("validation") || eval_result.content.contains("passed"));
+    assert!(
+        eval_result.success,
+        "Evaluate failed: {}",
+        eval_result.content
+    );
+    assert!(
+        eval_result.content.contains("score")
+            || eval_result.content.contains("validation")
+            || eval_result.content.contains("passed")
+    );
 }
 
 #[tokio::test]
@@ -1210,7 +1319,11 @@ async fn test_execute_build_mcp_build_action() {
         .await;
     assert!(create_result.success);
 
-    let id_line = create_result.content.lines().find(|l| l.contains("ID:")).unwrap();
+    let id_line = create_result
+        .content
+        .lines()
+        .find(|l| l.contains("ID:"))
+        .unwrap();
     let id = id_line.split("ID:").nth(1).unwrap().trim();
 
     let result = executor
@@ -1304,7 +1417,10 @@ async fn test_execute_list_unknown_status_filter() {
     let forge = Arc::new(Forge::new(ForgeConfig::default(), dir.path().to_path_buf()));
     let executor = ForgeToolExecutor::new(forge);
     let result = executor
-        .execute("forge_list", &serde_json::json!({"status": "invalid_status"}))
+        .execute(
+            "forge_list",
+            &serde_json::json!({"status": "invalid_status"}),
+        )
         .await;
     assert!(!result.success);
     assert!(result.content.contains("Unknown status"));
@@ -1329,15 +1445,16 @@ async fn test_execute_update_no_content_no_rollback() {
         .await;
     assert!(create_result.success);
 
-    let id_line = create_result.content.lines().find(|l| l.contains("ID:")).unwrap();
+    let id_line = create_result
+        .content
+        .lines()
+        .find(|l| l.contains("ID:"))
+        .unwrap();
     let id = id_line.split("ID:").nth(1).unwrap().trim();
 
     // Update without content or rollback
     let result = executor
-        .execute(
-            "forge_update",
-            &serde_json::json!({"id": id}),
-        )
+        .execute("forge_update", &serde_json::json!({"id": id}))
         .await;
     assert!(!result.success);
     assert!(result.content.contains("required"));
@@ -1378,7 +1495,11 @@ async fn test_execute_evaluate_with_artifact() {
         .await;
     assert!(create_result.success);
 
-    let id_line = create_result.content.lines().find(|l| l.contains("ID:")).unwrap();
+    let id_line = create_result
+        .content
+        .lines()
+        .find(|l| l.contains("ID:"))
+        .unwrap();
     let id = id_line.split("ID:").nth(1).unwrap().trim();
 
     let result = executor
@@ -1389,7 +1510,6 @@ async fn test_execute_evaluate_with_artifact() {
     assert!(result.content.contains("Stage 2"));
     assert!(result.content.contains("Stage 3"));
 }
-
 
 #[tokio::test]
 async fn test_execute_create_script_with_category() {
@@ -1409,10 +1529,22 @@ async fn test_execute_create_script_with_category() {
             }),
         )
         .await;
-    assert!(result.success, "Script with category failed: {}", result.content);
+    assert!(
+        result.success,
+        "Script with category failed: {}",
+        result.content
+    );
     // Check script is in the deploy category directory
-    let script_path = dir.path().join("forge").join("scripts").join("deploy").join("my-script");
-    assert!(script_path.exists(), "Script should be in deploy category dir");
+    let script_path = dir
+        .path()
+        .join("forge")
+        .join("scripts")
+        .join("deploy")
+        .join("my-script");
+    assert!(
+        script_path.exists(),
+        "Script should be in deploy category dir"
+    );
 }
 
 #[test]
@@ -1474,7 +1606,10 @@ fn test_quality_assessment_with_error_handling() {
     let content = "def process():\n    try:\n        handle_error()\n        return None\n    except:\n        return 'error'\n";
     let result = quality_assessment(content, &ArtifactKind::Script);
     // Should detect error handling patterns
-    let error_dim = result.dimensions.iter().find(|d| d.name == "Error handling");
+    let error_dim = result
+        .dimensions
+        .iter()
+        .find(|d| d.name == "Error handling");
     assert!(error_dim.is_some());
     assert!(error_dim.unwrap().score > 0);
 }
@@ -1504,7 +1639,10 @@ async fn test_execute_reflect_with_focus() {
     let executor = ForgeToolExecutor::new(forge);
 
     let result = executor
-        .execute("forge_reflect", &serde_json::json!({"period": "week", "focus": "skill"}))
+        .execute(
+            "forge_reflect",
+            &serde_json::json!({"period": "week", "focus": "skill"}),
+        )
         .await;
     assert!(result.success);
     assert!(result.content.contains("week"));
@@ -1530,7 +1668,11 @@ async fn test_execute_create_mcp_other_language() {
             }),
         )
         .await;
-    assert!(result.success, "MCP with other language failed: {}", result.content);
+    assert!(
+        result.success,
+        "MCP with other language failed: {}",
+        result.content
+    );
 }
 
 #[tokio::test]
@@ -1551,7 +1693,11 @@ async fn test_execute_update_with_change_description() {
         .await;
     assert!(create_result.success);
 
-    let id_line = create_result.content.lines().find(|l| l.contains("ID:")).unwrap();
+    let id_line = create_result
+        .content
+        .lines()
+        .find(|l| l.contains("ID:"))
+        .unwrap();
     let id = id_line.split("ID:").nth(1).unwrap().trim();
 
     let result = executor

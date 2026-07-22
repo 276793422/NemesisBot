@@ -100,13 +100,18 @@ impl ClusterServiceAdapter {
             }
         }
         if !recovered.is_empty() {
-            tracing::info!(count = recovered.len(), "[ClusterAdapter] Recovered {} tasks", recovered.len());
+            tracing::info!(
+                count = recovered.len(),
+                "[ClusterAdapter] Recovered {} tasks",
+                recovered.len()
+            );
         }
 
         // Build and spawn cluster agent loop
         let rpc_client = self.cluster.rpc_client_arc();
         let cluster_arc = self.cluster.clone();
-        let handle = match crate::agent_factory::build_cluster_agent_loop(&self.shared, cluster_arc) {
+        let handle = match crate::agent_factory::build_cluster_agent_loop(&self.shared, cluster_arc)
+        {
             Ok((cluster_agent, cluster_config, cluster_observer)) => {
                 let shutdown_rx = self.shutdown_tx.subscribe();
                 let work_queue = self.cluster_work_queue.clone();
@@ -235,7 +240,10 @@ async fn start_cluster_components(
     // 2. Start RPC server (bind TCP listener + accept loop)
     if let Some(server) = cluster.rpc_server() {
         let server = server.clone();
-        server.start().await.map_err(|e| format!("RPC server start: {}", e))?;
+        server
+            .start()
+            .await
+            .map_err(|e| format!("RPC server start: {}", e))?;
         tracing::info!("[ClusterComponents] RPC server started");
     }
 

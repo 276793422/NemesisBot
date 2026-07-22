@@ -12,13 +12,13 @@ use std::sync::Arc;
 
 use parking_lot::RwLock;
 
-use crate::episodic::{EpisodicStore, Episode, FileEpisodicStore};
+use crate::episodic::{Episode, EpisodicStore, FileEpisodicStore};
 use crate::graph::{GraphEntity, GraphQueryResult, GraphStore, GraphTriple, InMemoryGraphStore};
 use crate::local_store::TfIdfLocalStore;
 use crate::store::{LocalStore, MemoryStore};
-use crate::types::{Entry, MemoryType, SearchResult, ScoredEntry, VectorConfig};
-use crate::vector::{VectorStore, StoreConfig};
+use crate::types::{Entry, MemoryType, ScoredEntry, SearchResult, VectorConfig};
 use crate::vector::embedding_config;
+use crate::vector::{StoreConfig, VectorStore};
 
 // ---------------------------------------------------------------------------
 // Config
@@ -211,8 +211,7 @@ impl MemoryManager {
     ///
     /// Checks `{exe_dir}/plugins/` for the platform-appropriate library name.
     pub fn detect_plugin_path() -> Option<String> {
-        nemesis_utils::find_plugin_library("plugin_onnx")
-            .map(|p| p.to_string_lossy().to_string())
+        nemesis_utils::find_plugin_library("plugin_onnx").map(|p| p.to_string_lossy().to_string())
     }
 
     /// Enable or disable vector search at runtime without dropping the store.
@@ -221,7 +220,10 @@ impl MemoryManager {
     /// store entirely. The ONNX plugin stays alive in memory for instant re-enable.
     pub fn set_vector_enabled(&self, enabled: bool) {
         *self.vector_enabled.write() = enabled;
-        tracing::info!("[Memory] Vector search {}", if enabled { "enabled" } else { "disabled" });
+        tracing::info!(
+            "[Memory] Vector search {}",
+            if enabled { "enabled" } else { "disabled" }
+        );
     }
 
     /// Initialize the vector store at runtime (e.g. from a Dashboard toggle).
@@ -239,8 +241,8 @@ impl MemoryManager {
 
         // Detect plugin
         let filename = nemesis_utils::plugin_library_filename("plugin_onnx");
-        let plugin_path = Self::detect_plugin_path()
-            .ok_or_else(|| format!("{} not found", filename))?;
+        let plugin_path =
+            Self::detect_plugin_path().ok_or_else(|| format!("{} not found", filename))?;
 
         let storage_path = self.data_dir.join("vector").join("vector_store.jsonl");
         let store_config = StoreConfig {
@@ -292,7 +294,8 @@ impl MemoryManager {
     /// saved entries are loaded into memory so they are available for search.
     pub fn init_vector_store(&self, config: Option<StoreConfig>) -> Result<(), String> {
         let store_cfg = config.unwrap_or_else(|| {
-            let default_path = self.data_dir
+            let default_path = self
+                .data_dir
                 .join("memory")
                 .join("vector")
                 .join("vector_store.jsonl");
@@ -346,7 +349,9 @@ impl MemoryManager {
         {
             let vs = self.vector_store.write().take();
             if vs.is_some() {
-                tokio::task::spawn_blocking(move || drop(vs)).await.map_err(|e| e.to_string())?;
+                tokio::task::spawn_blocking(move || drop(vs))
+                    .await
+                    .map_err(|e| e.to_string())?;
             }
         }
 
@@ -455,7 +460,8 @@ impl MemoryManager {
                     .map(|mt| format!("{:?}", mt).to_lowercase())
                     .into_iter()
                     .collect();
-                let result = vs.query(query, limit, &type_filter)
+                let result = vs
+                    .query(query, limit, &type_filter)
                     .map_err(|e| e.to_string())?;
 
                 if !result.entries.is_empty() {
@@ -514,11 +520,7 @@ impl MemoryManager {
     /// When the vector store is initialised, the query text is embedded and
     /// compared against stored vectors using cosine similarity. Without a
     /// vector store the general keyword store is used instead.
-    pub async fn query_semantic(
-        &self,
-        query: &str,
-        limit: usize,
-    ) -> Result<SearchResult, String> {
+    pub async fn query_semantic(&self, query: &str, limit: usize) -> Result<SearchResult, String> {
         if !self.is_enabled() {
             return Ok(SearchResult {
                 entries: Vec::new(),
@@ -531,8 +533,7 @@ impl MemoryManager {
         // Try the vector store first.
         let vs_guard = self.vector_store.read();
         if let Some(ref vs) = *vs_guard {
-            let result = vs.query(query, limit, &[])
-                .map_err(|e| e.to_string())?;
+            let result = vs.query(query, limit, &[]).map_err(|e| e.to_string())?;
 
             // Convert VectorEntry results to SearchResult.
             let entries: Vec<ScoredEntry> = result
@@ -661,13 +662,8 @@ impl MemoryManager {
     ///
     /// Routes through the vector store adapter so data is available for
     /// semantic search when the ONNX plugin is loaded.
-    pub async fn store_fact(
-        &self,
-        content: &str,
-        tags: Vec<String>,
-    ) -> Result<String, String> {
-        let entry = Entry::new(MemoryType::LongTerm, content.to_string())
-            .with_tags(tags);
+    pub async fn store_fact(&self, content: &str, tags: Vec<String>) -> Result<String, String> {
+        let entry = Entry::new(MemoryType::LongTerm, content.to_string()).with_tags(tags);
         self.store_entry(entry).await
     }
 
@@ -708,20 +704,13 @@ impl MemoryManager {
     }
 
     /// Search episodic memories by text query.
-    pub async fn search_episodic(
-        &self,
-        query: &str,
-        limit: usize,
-    ) -> Result<Vec<Episode>, String> {
+    pub async fn search_episodic(&self, query: &str, limit: usize) -> Result<Vec<Episode>, String> {
         self.episodic.search(query, limit).await
     }
 
     /// Delete all episodes for a session. Also removes corresponding
     /// entries from the vector store.
-    pub async fn delete_episode_session(
-        &self,
-        session_key: &str,
-    ) -> Result<usize, String> {
+    pub async fn delete_episode_session(&self, session_key: &str) -> Result<usize, String> {
         // Collect episode IDs before deleting the session.
         let episodes = self.episodic.get_session(session_key).await?;
         let ids: Vec<String> = episodes.iter().map(|e| e.id.clone()).collect();
@@ -745,8 +734,7 @@ impl MemoryManager {
     /// corresponding entries from the vector store.
     pub async fn cleanup_episodic(&self, older_than_days: usize) -> Result<usize, String> {
         // Collect IDs that will be removed so we can also clean vector store.
-        let cutoff = chrono::Local::now()
-            - chrono::Duration::days(older_than_days as i64);
+        let cutoff = chrono::Local::now() - chrono::Duration::days(older_than_days as i64);
         let sessions = self.episodic.list_sessions().await?;
         let mut ids_to_remove = Vec::new();
         for session_key in &sessions {
@@ -840,10 +828,7 @@ impl MemoryManager {
     }
 
     /// Get a graph entity by name.
-    pub async fn get_graph_entity(
-        &self,
-        name: &str,
-    ) -> Result<Option<GraphEntity>, String> {
+    pub async fn get_graph_entity(&self, name: &str) -> Result<Option<GraphEntity>, String> {
         self.graph.get_entity(name).await
     }
 

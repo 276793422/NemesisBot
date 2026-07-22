@@ -26,7 +26,7 @@ pub mod revocation; // P2a：DLL 联网查 CRL（数据模式 + 根验签 + 缓�
 pub mod verify; // 验证流程（用 envelope pubkey 验签 + 可信公钥确认 + 吊销检查）
 pub mod view; // 查看接口（离线展示签名 + 证书链，不下结论）
 
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
 use serde::{Deserialize, Serialize};
 
@@ -161,7 +161,8 @@ pub fn verify_response<T: Serialize>(
     signed: &SignedResponse<T>,
     root_pub: &VerifyingKey,
 ) -> Result<bool> {
-    let bytes = serde_json::to_vec(&signed.payload).map_err(|e| anyhow!("serialize payload: {}", e))?;
+    let bytes =
+        serde_json::to_vec(&signed.payload).map_err(|e| anyhow!("serialize payload: {}", e))?;
     let sig_bytes = hex_decode_64(&signed.sig)?;
     let sig = Signature::from_bytes(&sig_bytes);
     Ok(root_pub.verify(&bytes, &sig).is_ok())
@@ -184,8 +185,18 @@ mod tests {
             version: 1,
             valid_until: u64::MAX,
             entries: vec![
-                CrlEntry { dim: RevDim::KeyFp, value: "abc".into(), revoked_at: 1, reason: "leak".into() },
-                CrlEntry { dim: RevDim::Publisher, value: "evil".into(), revoked_at: 2, reason: "bad".into() },
+                CrlEntry {
+                    dim: RevDim::KeyFp,
+                    value: "abc".into(),
+                    revoked_at: 1,
+                    reason: "leak".into(),
+                },
+                CrlEntry {
+                    dim: RevDim::Publisher,
+                    value: "evil".into(),
+                    revoked_at: 2,
+                    reason: "bad".into(),
+                },
             ],
         };
         assert!(crl_match(&crl, RevDim::KeyFp, "abc").is_some());
@@ -196,7 +207,11 @@ mod tests {
     #[test]
     fn sign_verify_roundtrip() {
         let (sk, vk) = root_key(1);
-        let payload = Crl { version: 3, valid_until: 99, entries: vec![] };
+        let payload = Crl {
+            version: 3,
+            valid_until: 99,
+            entries: vec![],
+        };
         let signed = sign_response(&payload, &sk).unwrap();
         assert!(verify_response(&signed, &vk).unwrap());
     }
@@ -204,7 +219,15 @@ mod tests {
     #[test]
     fn verify_rejects_tampered_payload() {
         let (sk, vk) = root_key(1);
-        let mut signed = sign_response(&Crl { version: 1, valid_until: 1, entries: vec![] }, &sk).unwrap();
+        let mut signed = sign_response(
+            &Crl {
+                version: 1,
+                valid_until: 1,
+                entries: vec![],
+            },
+            &sk,
+        )
+        .unwrap();
         signed.payload.version = 999; // 篡改 payload
         assert!(!verify_response(&signed, &vk).unwrap());
     }
@@ -213,7 +236,15 @@ mod tests {
     fn verify_rejects_wrong_key() {
         let (sk, _) = root_key(1);
         let (_, vk2) = root_key(2); // 不同种子 → 不同公钥
-        let signed = sign_response(&Crl { version: 1, valid_until: 1, entries: vec![] }, &sk).unwrap();
+        let signed = sign_response(
+            &Crl {
+                version: 1,
+                valid_until: 1,
+                entries: vec![],
+            },
+            &sk,
+        )
+        .unwrap();
         assert!(!verify_response(&signed, &vk2).unwrap());
     }
 }

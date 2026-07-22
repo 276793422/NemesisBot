@@ -12,7 +12,10 @@ fn test_dangerous_detection() {
 
 #[test]
 fn test_extract_process_name() {
-    assert_eq!(AsyncExecTool::extract_process_name("notepad.exe"), "notepad");
+    assert_eq!(
+        AsyncExecTool::extract_process_name("notepad.exe"),
+        "notepad"
+    );
     assert_eq!(
         AsyncExecTool::extract_process_name("notepad.exe README.md"),
         "notepad"
@@ -24,9 +27,7 @@ fn test_extract_process_name() {
 #[tokio::test]
 async fn test_empty_command_rejected() {
     let tool = AsyncExecTool::new(".", false);
-    let result = tool
-        .execute(&serde_json::json!({"command": "  "}))
-        .await;
+    let result = tool.execute(&serde_json::json!({"command": "  "})).await;
     assert!(result.is_error);
 }
 
@@ -43,9 +44,7 @@ async fn test_dangerous_command_rejected() {
 #[tokio::test]
 async fn test_missing_command() {
     let tool = AsyncExecTool::new(".", false);
-    let result = tool
-        .execute(&serde_json::json!({}))
-        .await;
+    let result = tool.execute(&serde_json::json!({})).await;
     assert!(result.is_error);
     assert!(result.for_llm.contains("required"));
 }
@@ -120,15 +119,27 @@ fn test_is_dangerous_case_insensitive() {
 
 #[test]
 fn test_extract_process_name_various() {
-    assert_eq!(AsyncExecTool::extract_process_name("notepad.exe"), "notepad");
-    assert_eq!(AsyncExecTool::extract_process_name("notepad.exe file.txt"), "notepad");
+    assert_eq!(
+        AsyncExecTool::extract_process_name("notepad.exe"),
+        "notepad"
+    );
+    assert_eq!(
+        AsyncExecTool::extract_process_name("notepad.exe file.txt"),
+        "notepad"
+    );
     assert_eq!(AsyncExecTool::extract_process_name("  calc.exe  "), "calc");
     assert_eq!(AsyncExecTool::extract_process_name(""), "");
     assert_eq!(AsyncExecTool::extract_process_name("python"), "python");
-    assert_eq!(AsyncExecTool::extract_process_name("python script.py --arg"), "python");
+    assert_eq!(
+        AsyncExecTool::extract_process_name("python script.py --arg"),
+        "python"
+    );
     assert_eq!(AsyncExecTool::extract_process_name("code ."), "code");
     // Quoted path with spaces: first token after quote stripping is "C:\Program" (split by space)
-    assert_eq!(AsyncExecTool::extract_process_name("\"C:\\Program Files\\app.exe\""), "Program");
+    assert_eq!(
+        AsyncExecTool::extract_process_name("\"C:\\Program Files\\app.exe\""),
+        "Program"
+    );
 }
 
 #[test]
@@ -204,7 +215,11 @@ async fn test_custom_working_dir() {
             "wait_seconds": 1
         }))
         .await;
-    assert!(!result.for_llm.contains("blocked"), "Should not block: {}", result.for_llm);
+    assert!(
+        !result.for_llm.contains("blocked"),
+        "Should not block: {}",
+        result.for_llm
+    );
 }
 
 #[test]
@@ -226,11 +241,7 @@ fn test_new_with_config_default_patterns() {
 
 #[test]
 fn test_new_with_config_custom_patterns() {
-    let tool = AsyncExecTool::new_with_config(
-        ".", false,
-        Some(&[r"shutdown", r"reboot"]),
-        true,
-    );
+    let tool = AsyncExecTool::new_with_config(".", false, Some(&[r"shutdown", r"reboot"]), true);
     // Custom patterns: should match the custom regex patterns
     assert!(tool.is_dangerous("shutdown"));
     assert!(tool.is_dangerous("reboot"));

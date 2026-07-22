@@ -36,7 +36,10 @@ impl ModuleHandler for ConfigHandler {
             "set_field" => {
                 let data = data.ok_or("missing data")?;
                 let path = crate::handlers::get_str(&data, "path")?;
-                let value = data.get("value").cloned().unwrap_or(serde_json::Value::Null);
+                let value = data
+                    .get("value")
+                    .cloned()
+                    .unwrap_or(serde_json::Value::Null);
                 self.set_field(home, &path, &value)
             }
             "cors.list" => self.cors_list(),
@@ -71,14 +74,16 @@ fn load_config(home: &str) -> Result<nemesis_config::Config, String> {
     if let Some(cfg) = nemesis_config::load_live() {
         return Ok(cfg);
     }
-    nemesis_config::load_config(&config_path(home)).map_err(|e| format!("failed to load config: {}", e))
+    nemesis_config::load_config(&config_path(home))
+        .map_err(|e| format!("failed to load config: {}", e))
 }
 
 fn save_config_to_disk(home: &str, config: &mut nemesis_config::Config) -> Result<(), String> {
     if let Some(r) = nemesis_config::save_live(config.clone()) {
         return r.map_err(|e| format!("failed to save config: {}", e));
     }
-    nemesis_config::save_config(&config_path(home), config).map_err(|e| format!("failed to save config: {}", e))
+    nemesis_config::save_config(&config_path(home), config)
+        .map_err(|e| format!("failed to save config: {}", e))
 }
 
 impl ConfigHandler {
@@ -91,7 +96,11 @@ impl ConfigHandler {
         Ok(Some(json))
     }
 
-    fn save(&self, home: &str, data: &serde_json::Value) -> Result<Option<serde_json::Value>, String> {
+    fn save(
+        &self,
+        home: &str,
+        data: &serde_json::Value,
+    ) -> Result<Option<serde_json::Value>, String> {
         let mut config: nemesis_config::Config = serde_json::from_value(data.clone())
             .map_err(|e| format!("invalid config data: {}", e))?;
         save_config_to_disk(home, &mut config)?;
@@ -119,19 +128,27 @@ impl ConfigHandler {
     fn cors_list(&self) -> Result<Option<serde_json::Value>, String> {
         // CORSManager access would need to go through AppState
         // For now, read from cors.json directly
-        Ok(Some(serde_json::json!({ "origins": [], "message": "CORS manager not connected" })))
+        Ok(Some(
+            serde_json::json!({ "origins": [], "message": "CORS manager not connected" }),
+        ))
     }
 
     fn cors_add(&self, _origin: &str) -> Result<Option<serde_json::Value>, String> {
-        Ok(Some(serde_json::json!({ "added": false, "message": "CORS manager not connected" })))
+        Ok(Some(
+            serde_json::json!({ "added": false, "message": "CORS manager not connected" }),
+        ))
     }
 
     fn cors_remove(&self, _origin: &str) -> Result<Option<serde_json::Value>, String> {
-        Ok(Some(serde_json::json!({ "removed": false, "message": "CORS manager not connected" })))
+        Ok(Some(
+            serde_json::json!({ "removed": false, "message": "CORS manager not connected" }),
+        ))
     }
 
     fn cors_toggle(&self, _enabled: bool) -> Result<Option<serde_json::Value>, String> {
-        Ok(Some(serde_json::json!({ "toggled": false, "message": "CORS manager not connected" })))
+        Ok(Some(
+            serde_json::json!({ "toggled": false, "message": "CORS manager not connected" }),
+        ))
     }
 }
 

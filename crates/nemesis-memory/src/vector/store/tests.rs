@@ -132,8 +132,8 @@ fn test_cosine_similarity_zero_vectors() {
 #[ignore]
 fn st_plugin_system_test_all_scenarios() {
     // Use shared plugin fixture — creates VectorStore without loading a new plugin
-    let embed = crate::vector::test_fixture::shared_embed_func()
-        .expect("shared plugin not available");
+    let embed =
+        crate::vector::test_fixture::shared_embed_func().expect("shared plugin not available");
     let store_config = crate::vector::test_fixture::plugin_store_config("")
         .expect("plugin DLL + model files required");
     let store = VectorStore::new_from_embed(embed, store_config);
@@ -147,7 +147,12 @@ fn st_plugin_system_test_all_scenarios() {
 
     // === Scenario 2: Single entry store ===
     {
-        store.store_entry(&make_entry("s2-1", "The quick brown fox jumps over the lazy dog")).unwrap();
+        store
+            .store_entry(&make_entry(
+                "s2-1",
+                "The quick brown fox jumps over the lazy dog",
+            ))
+            .unwrap();
         assert_eq!(store.len(), 1);
         println!("[P2] Scenario 2: Single entry store — PASS");
     }
@@ -158,61 +163,133 @@ fn st_plugin_system_test_all_scenarios() {
 
     // === Scenario 3: Basic store + query with semantic ranking ===
     {
-        store.store_entry(&make_entry("s3-1", "Cats are independent animals that like to explore")).unwrap();
-        store.store_entry(&make_entry("s3-2", "Dogs are loyal companions that love to play fetch")).unwrap();
-        store.store_entry(&make_entry("s3-3", "The stock market showed mixed results today")).unwrap();
+        store
+            .store_entry(&make_entry(
+                "s3-1",
+                "Cats are independent animals that like to explore",
+            ))
+            .unwrap();
+        store
+            .store_entry(&make_entry(
+                "s3-2",
+                "Dogs are loyal companions that love to play fetch",
+            ))
+            .unwrap();
+        store
+            .store_entry(&make_entry(
+                "s3-3",
+                "The stock market showed mixed results today",
+            ))
+            .unwrap();
 
         let result = store.query("feline pets", 10, &[]).unwrap();
-        assert!(result.total >= 1, "Expected at least 1 result, got {}", result.total);
-        assert_eq!(result.entries[0].id, "s3-1",
-            "Cat entry should be top result for 'feline pets'");
+        assert!(
+            result.total >= 1,
+            "Expected at least 1 result, got {}",
+            result.total
+        );
+        assert_eq!(
+            result.entries[0].id, "s3-1",
+            "Cat entry should be top result for 'feline pets'"
+        );
         println!("[P2] Scenario 3: Basic query with semantic ranking — PASS");
     }
 
     // Clear
-    for id in &["s3-1", "s3-2", "s3-3"] { store.delete_entry(id); }
+    for id in &["s3-1", "s3-2", "s3-3"] {
+        store.delete_entry(id);
+    }
 
     // === Scenario 4: Semantic ranking of diverse topics ===
     {
-        store.store_entry(&make_entry("s4-1", "Python is a popular programming language for data science")).unwrap();
-        store.store_entry(&make_entry("s4-2", "Java is widely used for enterprise applications")).unwrap();
-        store.store_entry(&make_entry("s4-3", "Bananas are a good source of potassium")).unwrap();
-        store.store_entry(&make_entry("s4-4", "Machine learning models require training data")).unwrap();
+        store
+            .store_entry(&make_entry(
+                "s4-1",
+                "Python is a popular programming language for data science",
+            ))
+            .unwrap();
+        store
+            .store_entry(&make_entry(
+                "s4-2",
+                "Java is widely used for enterprise applications",
+            ))
+            .unwrap();
+        store
+            .store_entry(&make_entry(
+                "s4-3",
+                "Bananas are a good source of potassium",
+            ))
+            .unwrap();
+        store
+            .store_entry(&make_entry(
+                "s4-4",
+                "Machine learning models require training data",
+            ))
+            .unwrap();
 
-        let result = store.query("software development and coding", 10, &[]).unwrap();
-        assert!(result.total >= 2, "Expected at least 2 results, got {}", result.total);
+        let result = store
+            .query("software development and coding", 10, &[])
+            .unwrap();
+        assert!(
+            result.total >= 2,
+            "Expected at least 2 results, got {}",
+            result.total
+        );
 
         let ids: Vec<&str> = result.entries.iter().map(|e| e.id.as_str()).collect();
         let python_pos = ids.iter().position(|&id| id == "s4-1");
         let banana_pos = ids.iter().position(|&id| id == "s4-3");
         // If both are present, python should rank higher
         if let (Some(pp), Some(bp)) = (python_pos, banana_pos) {
-            assert!(pp < bp,
-                "Python entry should rank higher than banana for 'software development'");
+            assert!(
+                pp < bp,
+                "Python entry should rank higher than banana for 'software development'"
+            );
         }
         // Python should always be in results
-        assert!(python_pos.is_some(), "Python entry should be in results for 'software development'");
+        assert!(
+            python_pos.is_some(),
+            "Python entry should be in results for 'software development'"
+        );
         println!("[P2] Scenario 4: Semantic ranking — PASS");
     }
 
     // Clear
-    for id in &["s4-1", "s4-2", "s4-3", "s4-4"] { store.delete_entry(id); }
+    for id in &["s4-1", "s4-2", "s4-3", "s4-4"] {
+        store.delete_entry(id);
+    }
 
     // === Scenario 5: Similarity scores are valid ===
     {
-        store.store_entry(&make_entry("s5-1", "Machine learning is a subset of artificial intelligence")).unwrap();
-        store.store_entry(&make_entry("s5-2", "Neural networks are inspired by the human brain")).unwrap();
+        store
+            .store_entry(&make_entry(
+                "s5-1",
+                "Machine learning is a subset of artificial intelligence",
+            ))
+            .unwrap();
+        store
+            .store_entry(&make_entry(
+                "s5-2",
+                "Neural networks are inspired by the human brain",
+            ))
+            .unwrap();
 
         let result = store.query("AI and deep learning", 10, &[]).unwrap();
         assert!(result.total >= 1);
         for entry in &result.entries {
             assert!(entry.score > 0.0, "Score should be positive");
-            assert!(entry.score <= 1.0, "Score should not exceed 1.0, got {}", entry.score);
+            assert!(
+                entry.score <= 1.0,
+                "Score should not exceed 1.0, got {}",
+                entry.score
+            );
         }
         println!("[P2] Scenario 5: Similarity scores valid — PASS");
     }
 
-    for id in &["s5-1", "s5-2"] { store.delete_entry(id); }
+    for id in &["s5-1", "s5-2"] {
+        store.delete_entry(id);
+    }
 
     // === Scenario 6: Query with type filter ===
     {
@@ -227,18 +304,28 @@ fn st_plugin_system_test_all_scenarios() {
         store.store_entry(&e2).unwrap();
         store.store_entry(&e3).unwrap();
 
-        let result = store.query("project meeting", 10, &["long_term".to_string()]).unwrap();
-        assert!(result.entries.iter().all(|e| e.entry_type == "long_term"),
-            "All results should be long_term type");
+        let result = store
+            .query("project meeting", 10, &["long_term".to_string()])
+            .unwrap();
+        assert!(
+            result.entries.iter().all(|e| e.entry_type == "long_term"),
+            "All results should be long_term type"
+        );
         println!("[P2] Scenario 6: Type filter — PASS");
     }
 
-    for id in &["s6-1", "s6-2", "s6-3"] { store.delete_entry(id); }
+    for id in &["s6-1", "s6-2", "s6-3"] {
+        store.delete_entry(id);
+    }
 
     // === Scenario 7: Query consistency (deterministic results) ===
     {
-        store.store_entry(&make_entry("s7-1", "The weather is sunny and warm today")).unwrap();
-        store.store_entry(&make_entry("s7-2", "Programming in Rust is fun and safe")).unwrap();
+        store
+            .store_entry(&make_entry("s7-1", "The weather is sunny and warm today"))
+            .unwrap();
+        store
+            .store_entry(&make_entry("s7-2", "Programming in Rust is fun and safe"))
+            .unwrap();
 
         let r1 = store.query("climate and sunshine", 10, &[]).unwrap();
         let r2 = store.query("climate and sunshine", 10, &[]).unwrap();
@@ -246,17 +333,26 @@ fn st_plugin_system_test_all_scenarios() {
         assert_eq!(r1.total, r2.total, "Same query should return same count");
         for (a, b) in r1.entries.iter().zip(r2.entries.iter()) {
             assert_eq!(a.id, b.id, "Same query should return same entries");
-            assert!((a.score - b.score).abs() < 1e-6, "Same query should return same scores");
+            assert!(
+                (a.score - b.score).abs() < 1e-6,
+                "Same query should return same scores"
+            );
         }
         println!("[P2] Scenario 7: Query consistency — PASS");
     }
 
-    for id in &["s7-1", "s7-2"] { store.delete_entry(id); }
+    for id in &["s7-1", "s7-2"] {
+        store.delete_entry(id);
+    }
 
     // === Scenario 8: CRUD lifecycle ===
     {
-        store.store_entry(&make_entry("s8-1", "First entry to test CRUD")).unwrap();
-        store.store_entry(&make_entry("s8-2", "Second entry for CRUD test")).unwrap();
+        store
+            .store_entry(&make_entry("s8-1", "First entry to test CRUD"))
+            .unwrap();
+        store
+            .store_entry(&make_entry("s8-2", "Second entry for CRUD test"))
+            .unwrap();
         assert_eq!(store.len(), 2);
 
         let entry = store.get_by_id("s8-1").unwrap();
@@ -276,9 +372,14 @@ fn st_plugin_system_test_all_scenarios() {
 
     // === Scenario 9: Plugin produces valid embeddings ===
     {
-        store.store_entry(&make_entry("s9-1", "The cat sat on the mat")).unwrap();
+        store
+            .store_entry(&make_entry("s9-1", "The cat sat on the mat"))
+            .unwrap();
         let result = store.query("cat", 10, &[]).unwrap();
-        assert!(result.total >= 1, "Plugin store should find results for 'cat'");
+        assert!(
+            result.total >= 1,
+            "Plugin store should find results for 'cat'"
+        );
 
         // Verify scores are valid
         for entry in &result.entries {
@@ -293,9 +394,18 @@ fn st_plugin_system_test_all_scenarios() {
 
     // === Scenario 10: Semantic similarity with lexical variation ===
     {
-        store.store_entry(&make_entry("s10-1", "The automobile was traveling at high speed")).unwrap();
-        store.store_entry(&make_entry("s10-2", "The vehicle was moving very fast")).unwrap();
-        store.store_entry(&make_entry("s10-3", "I enjoy cooking pasta for dinner")).unwrap();
+        store
+            .store_entry(&make_entry(
+                "s10-1",
+                "The automobile was traveling at high speed",
+            ))
+            .unwrap();
+        store
+            .store_entry(&make_entry("s10-2", "The vehicle was moving very fast"))
+            .unwrap();
+        store
+            .store_entry(&make_entry("s10-3", "I enjoy cooking pasta for dinner"))
+            .unwrap();
 
         let result = store.query("a car going quickly", 10, &[]).unwrap();
 
@@ -305,25 +415,44 @@ fn st_plugin_system_test_all_scenarios() {
         if let Some(pos) = s3_pos {
             let s1_pos = ids.iter().position(|&id| id == "s10-1").unwrap_or(99);
             let s2_pos = ids.iter().position(|&id| id == "s10-2").unwrap_or(99);
-            assert!(s1_pos < pos && s2_pos < pos,
-                "Car/speed entries should rank above cooking");
+            assert!(
+                s1_pos < pos && s2_pos < pos,
+                "Car/speed entries should rank above cooking"
+            );
         }
 
         // Both car entries should have meaningful similarity
-        let p_s1 = result.entries.iter().find(|e| e.id == "s10-1").map(|e| e.score).unwrap_or(0.0);
-        let p_s2 = result.entries.iter().find(|e| e.id == "s10-2").map(|e| e.score).unwrap_or(0.0);
+        let p_s1 = result
+            .entries
+            .iter()
+            .find(|e| e.id == "s10-1")
+            .map(|e| e.score)
+            .unwrap_or(0.0);
+        let p_s2 = result
+            .entries
+            .iter()
+            .find(|e| e.id == "s10-2")
+            .map(|e| e.score)
+            .unwrap_or(0.0);
         assert!(p_s1 > 0.3, "s1 should have meaningful similarity: {}", p_s1);
         assert!(p_s2 > 0.3, "s2 should have meaningful similarity: {}", p_s2);
         println!("[P2] Scenario 10: Semantic similarity with lexical variation — PASS");
     }
 
-    for i in 1..=3 { store.delete_entry(&format!("s10-{}", i)); }
+    for i in 1..=3 {
+        store.delete_entry(&format!("s10-{}", i));
+    }
 
     // === Scenario 11: Embed dimension matches config ===
     {
-        store.store_entry(&make_entry("s11-1", "Dimension verification test")).unwrap();
+        store
+            .store_entry(&make_entry("s11-1", "Dimension verification test"))
+            .unwrap();
         let result = store.query("test", 10, &[]).unwrap();
-        assert!(result.total >= 1, "Query should work with correct dimensions");
+        assert!(
+            result.total >= 1,
+            "Query should work with correct dimensions"
+        );
         println!("[P2] Scenario 11: Embed dimension matches — PASS");
     }
 
@@ -332,16 +461,23 @@ fn st_plugin_system_test_all_scenarios() {
     // === Scenario 12: Large batch entries ===
     {
         for i in 0..20 {
-            store.store_entry(&make_entry(
-                &format!("s12-{}", i),
-                &format!("Entry number {} about topic {}", i, i % 5),
-            )).unwrap();
+            store
+                .store_entry(&make_entry(
+                    &format!("s12-{}", i),
+                    &format!("Entry number {} about topic {}", i, i % 5),
+                ))
+                .unwrap();
         }
         assert_eq!(store.len(), 20);
 
         let result = store.query("topic 0", 10, &[]).unwrap();
         assert!(result.total >= 1, "Should find entries about topic 0");
-        let top_ids: Vec<&str> = result.entries.iter().take(4).map(|e| e.id.as_str()).collect();
+        let top_ids: Vec<&str> = result
+            .entries
+            .iter()
+            .take(4)
+            .map(|e| e.id.as_str())
+            .collect();
         assert!(
             top_ids.iter().any(|id| *id == "s12-0" || *id == "s12-5"),
             "Topic 0 entries should appear in top results"
@@ -349,20 +485,39 @@ fn st_plugin_system_test_all_scenarios() {
         println!("[P2] Scenario 12: Large batch (20 entries) — PASS");
     }
 
-    for i in 0..20 { store.delete_entry(&format!("s12-{}", i)); }
+    for i in 0..20 {
+        store.delete_entry(&format!("s12-{}", i));
+    }
 
     // === Scenario 13: Multiple sequential queries produce stable results ===
     {
-        store.store_entry(&make_entry("s13-1", "Artificial intelligence is transforming technology")).unwrap();
-        store.store_entry(&make_entry("s13-2", "Cooking recipes from around the world")).unwrap();
-        store.store_entry(&make_entry("s13-3", "Space exploration and Mars colonization")).unwrap();
+        store
+            .store_entry(&make_entry(
+                "s13-1",
+                "Artificial intelligence is transforming technology",
+            ))
+            .unwrap();
+        store
+            .store_entry(&make_entry(
+                "s13-2",
+                "Cooking recipes from around the world",
+            ))
+            .unwrap();
+        store
+            .store_entry(&make_entry(
+                "s13-3",
+                "Space exploration and Mars colonization",
+            ))
+            .unwrap();
 
         // Run 5 queries in sequence
         for _ in 0..5 {
             let r = store.query("AI and computers", 10, &[]).unwrap();
             assert!(r.total >= 1);
-            assert_eq!(r.entries[0].id, "s13-1",
-                "AI entry should consistently rank first");
+            assert_eq!(
+                r.entries[0].id, "s13-1",
+                "AI entry should consistently rank first"
+            );
         }
         println!("[P2] Scenario 13: Sequential query stability — PASS");
     }
@@ -390,11 +545,14 @@ async fn st_plugin_persistence_roundtrip() {
     };
 
     // Phase 1: Store and persist (using shared plugin fixture)
-    let embed1 = crate::vector::test_fixture::shared_embed_func()
-        .expect("shared plugin not available");
+    let embed1 =
+        crate::vector::test_fixture::shared_embed_func().expect("shared plugin not available");
     let store = VectorStore::new_from_embed(embed1, config.clone());
     let e1 = make_entry("st-persist-1", "Persistent entry about machine learning");
-    let e2 = make_entry("st-persist-2", "Another entry about natural language processing");
+    let e2 = make_entry(
+        "st-persist-2",
+        "Another entry about natural language processing",
+    );
     store.store_entry(&e1).unwrap();
     store.store_entry(&e2).unwrap();
     store.persist_entry(&e1).await.unwrap();
@@ -403,8 +561,8 @@ async fn st_plugin_persistence_roundtrip() {
     drop(store); // Drop VectorStore, shared plugin keeps running
 
     // Phase 2: Load into new store (using same shared plugin)
-    let embed2 = crate::vector::test_fixture::shared_embed_func()
-        .expect("shared plugin not available");
+    let embed2 =
+        crate::vector::test_fixture::shared_embed_func().expect("shared plugin not available");
     let store2 = VectorStore::new_from_embed(embed2, config);
     store2.load_persisted().await.unwrap();
     assert_eq!(store2.len(), 2, "Should load 2 persisted entries");

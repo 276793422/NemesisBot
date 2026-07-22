@@ -20,9 +20,7 @@ use nemesis_providers::router::LLMProvider;
 use nemesis_providers::types::{ChatOptions, LLMResponse, Message, ToolDefinition};
 use nemesis_workflow::checkpoint::{CheckpointStore, InMemoryCheckpointStore};
 use nemesis_workflow::engine::WorkflowEngine;
-use nemesis_workflow::types::{
-    Edge, ExecutionState, NodeDef, TriggerSource, Workflow,
-};
+use nemesis_workflow::types::{Edge, ExecutionState, NodeDef, TriggerSource, Workflow};
 
 // ---------------------------------------------------------------------------
 // Test scaffolding (mirrors integration_matrix.rs but kept self-contained)
@@ -95,13 +93,11 @@ fn workflow_with_nodes(name: &str, nodes: Vec<NodeDef>) -> Workflow {
     let edges: Vec<Edge> = nodes
         .iter()
         .flat_map(|n| {
-            n.depends_on
-                .iter()
-                .map(move |dep| Edge {
-                    from_node: dep.clone(),
-                    to_node: n.id.clone(),
-                    condition: None,
-                })
+            n.depends_on.iter().map(move |dep| Edge {
+                from_node: dep.clone(),
+                to_node: n.id.clone(),
+                condition: None,
+            })
         })
         .collect();
 
@@ -173,7 +169,9 @@ async fn sub_workflow_node_triggers_child_execution() {
 
     // The sub_workflow node's output should carry the child's execution_id.
     let sub_node = &parent_exec.node_results["call_child"];
-    let child_exec_id = sub_node.metadata.get("execution_id")
+    let child_exec_id = sub_node
+        .metadata
+        .get("execution_id")
         .and_then(|v| v.as_str())
         .or_else(|| sub_node.output.get("execution_id").and_then(|v| v.as_str()))
         .expect("sub_workflow node should expose child execution_id");
@@ -302,10 +300,7 @@ async fn sub_workflow_with_human_review_propagates_waiting() {
 async fn parent_and_child_have_independent_execution_ids() {
     let engine = build_engine("ignored", None);
     engine
-        .register_workflow(workflow_with_nodes(
-            "leaf",
-            vec![node("n", "delay", &[])],
-        ))
+        .register_workflow(workflow_with_nodes("leaf", vec![node("n", "delay", &[])]))
         .unwrap();
     engine
         .register_workflow(workflow_with_nodes(
@@ -340,10 +335,7 @@ async fn each_sub_workflow_call_creates_fresh_execution() {
     // should spawn its own execution_id (no caching).
     let engine = build_engine("ignored", None);
     engine
-        .register_workflow(workflow_with_nodes(
-            "callee",
-            vec![node("n", "delay", &[])],
-        ))
+        .register_workflow(workflow_with_nodes("callee", vec![node("n", "delay", &[])]))
         .unwrap();
     engine
         .register_workflow(workflow_with_nodes(
@@ -360,11 +352,13 @@ async fn each_sub_workflow_call_creates_fresh_execution() {
         .await
         .unwrap();
 
-    let call1_id = parent.node_results["call1"].metadata
+    let call1_id = parent.node_results["call1"]
+        .metadata
         .get("execution_id")
         .and_then(|v| v.as_str())
         .map(|s| s.to_string());
-    let call2_id = parent.node_results["call2"].metadata
+    let call2_id = parent.node_results["call2"]
+        .metadata
         .get("execution_id")
         .and_then(|v| v.as_str())
         .map(|s| s.to_string());
@@ -373,7 +367,10 @@ async fn each_sub_workflow_call_creates_fresh_execution() {
         (Some(a), Some(b)) => (a, b),
         _ => panic!("both sub_workflow nodes should record child execution_id"),
     };
-    assert_ne!(id1, id2, "the two sub_workflow calls must spawn separate executions");
+    assert_ne!(
+        id1, id2,
+        "the two sub_workflow calls must spawn separate executions"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -387,16 +384,10 @@ async fn checkpoints_are_isolated_per_execution_id() {
     let store: Arc<dyn CheckpointStore> = Arc::new(InMemoryCheckpointStore::new());
     let engine = build_engine("ignored", Some(store.clone()));
     engine
-        .register_workflow(workflow_with_nodes(
-            "wf_one",
-            vec![node("a", "delay", &[])],
-        ))
+        .register_workflow(workflow_with_nodes("wf_one", vec![node("a", "delay", &[])]))
         .unwrap();
     engine
-        .register_workflow(workflow_with_nodes(
-            "wf_two",
-            vec![node("b", "delay", &[])],
-        ))
+        .register_workflow(workflow_with_nodes("wf_two", vec![node("b", "delay", &[])]))
         .unwrap();
 
     let exec1 = engine

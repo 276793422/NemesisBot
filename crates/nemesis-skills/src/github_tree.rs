@@ -6,9 +6,9 @@
 
 use std::path::Path;
 
+use reqwest::Client;
 use serde::Deserialize;
 use tracing::debug;
-use reqwest::Client;
 
 use nemesis_types::error::{NemesisError, Result};
 
@@ -126,10 +126,7 @@ pub async fn download_skill_tree_from_github(
             std::fs::create_dir_all(parent).map_err(|e| NemesisError::Io(e))?;
         }
 
-        let raw_url = format!(
-            "{}/{}/{}/{}",
-            raw_base_url, repo, branch, blob_path
-        );
+        let raw_url = format!("{}/{}/{}/{}", raw_base_url, repo, branch, blob_path);
 
         let data = download_file(client, &raw_url, max_file_size).await?;
         std::fs::write(&dest_path, &data).map_err(|e| NemesisError::Io(e))?;
@@ -170,22 +167,17 @@ pub fn decode_tree_blob_paths(body: &[u8], dir_prefix: &str) -> Result<Vec<Strin
 
     // The response is {"sha": ..., "tree": [...], "truncated": ...}
     // We need to find the "tree" array and iterate its entries.
-    let root = stream.next().ok_or_else(|| {
-        NemesisError::Other("empty tree response".to_string())
-    })?.map_err(|e| {
-        NemesisError::Other(format!("failed to parse tree response: {}", e))
-    })?;
+    let root = stream
+        .next()
+        .ok_or_else(|| NemesisError::Other("empty tree response".to_string()))?
+        .map_err(|e| NemesisError::Other(format!("failed to parse tree response: {}", e)))?;
 
     if let serde_json::Value::Object(map) = root {
         if let Some(serde_json::Value::Array(tree)) = map.get("tree") {
             for entry in tree {
                 if let serde_json::Value::Object(entry_map) = entry {
-                    let entry_type = entry_map.get("type")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("");
-                    let path = entry_map.get("path")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("");
+                    let entry_type = entry_map.get("type").and_then(|v| v.as_str()).unwrap_or("");
+                    let path = entry_map.get("path").and_then(|v| v.as_str()).unwrap_or("");
 
                     if entry_type == "blob" && path.starts_with(&dir_prefix) {
                         blob_paths.push(path.to_string());

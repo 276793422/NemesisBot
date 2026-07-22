@@ -94,7 +94,9 @@ pub async fn download_release(
     let expected = fetch_expected_sha256(checksums_url, filename)
         .await
         .map_err(|e| {
-            tracing::warn!("[sandbox] could not fetch/parse checksums ({e}); proceeding WITHOUT verification");
+            tracing::warn!(
+                "[sandbox] could not fetch/parse checksums ({e}); proceeding WITHOUT verification"
+            );
             e
         })
         .ok();

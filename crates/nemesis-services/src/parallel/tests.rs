@@ -1,6 +1,6 @@
 use super::*;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 #[tokio::test]
 async fn test_parallel_init_all_succeed() {
@@ -25,7 +25,9 @@ async fn test_parallel_init_all_succeed() {
 #[tokio::test]
 async fn test_parallel_init_first_error_returned() {
     // Use boxed closures to allow different async block types
-    let _inits: Vec<Box<dyn FnOnce() -> futures::future::BoxFuture<'static, Result<(), String>> + Send>> = vec![
+    let _inits: Vec<
+        Box<dyn FnOnce() -> futures::future::BoxFuture<'static, Result<(), String>> + Send>,
+    > = vec![
         Box::new(|| Box::pin(async { Ok(()) })),
         Box::new(|| Box::pin(async { Err("init failed".to_string()) })),
         Box::new(|| Box::pin(async { Ok(()) })),
@@ -40,7 +42,9 @@ async fn test_parallel_init_first_error_returned() {
 #[tokio::test]
 async fn test_parallel_init_empty() {
     // Test with an empty vector
-    let _inits: Vec<Box<dyn FnOnce() -> futures::future::BoxFuture<'static, Result<(), String>> + Send>> = vec![];
+    let _inits: Vec<
+        Box<dyn FnOnce() -> futures::future::BoxFuture<'static, Result<(), String>> + Send>,
+    > = vec![];
     // Just test the function accepts empty vecs - use a type-erased approach
     let result: Result<(), InitError> = Ok(());
     assert!(result.is_ok());
@@ -152,8 +156,8 @@ async fn test_parallel_init_all_succeed_many() {
 #[tokio::test]
 async fn test_parallel_init_with_error() {
     let inits: Vec<_> = (0..3)
-        .map(|i| move || {
-            async move {
+        .map(|i| {
+            move || async move {
                 if i == 1 {
                     Err(format!("init {} failed", i))
                 } else {
@@ -197,11 +201,17 @@ async fn test_parallel_init_blocking_with_error() {
     let inits: Vec<Box<dyn FnOnce() -> Result<(), String> + Send>> = vec![
         {
             let c = counter.clone();
-            Box::new(move || { c.fetch_add(1, Ordering::SeqCst); Ok(()) })
+            Box::new(move || {
+                c.fetch_add(1, Ordering::SeqCst);
+                Ok(())
+            })
         },
         {
             let c = counter.clone();
-            Box::new(move || { c.fetch_add(1, Ordering::SeqCst); Err("blocking fail".into()) })
+            Box::new(move || {
+                c.fetch_add(1, Ordering::SeqCst);
+                Err("blocking fail".into())
+            })
         },
     ];
 
@@ -219,12 +229,13 @@ fn test_sequential_init_empty() {
 #[test]
 fn test_sequential_init_single() {
     let counter = Arc::new(AtomicUsize::new(0));
-    let inits: Vec<Box<dyn FnOnce() -> Result<(), String>>> = vec![
-        {
-            let c = counter.clone();
-            Box::new(move || { c.fetch_add(1, Ordering::SeqCst); Ok(()) })
-        },
-    ];
+    let inits: Vec<Box<dyn FnOnce() -> Result<(), String>>> = vec![{
+        let c = counter.clone();
+        Box::new(move || {
+            c.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        })
+    }];
     sequential_init(inits).unwrap();
     assert_eq!(counter.load(Ordering::SeqCst), 1);
 }
@@ -261,13 +272,15 @@ async fn test_bounded_parallel_many_tasks() {
         let c = counter.clone();
         let r = runner.clone();
         handles.push(tokio::spawn(async move {
-            let result = r.run(|| {
-                let c = c.clone();
-                async move {
-                    c.fetch_add(1, Ordering::SeqCst);
-                    Ok(())
-                }
-            }).await;
+            let result = r
+                .run(|| {
+                    let c = c.clone();
+                    async move {
+                        c.fetch_add(1, Ordering::SeqCst);
+                        Ok(())
+                    }
+                })
+                .await;
             result
         }));
     }

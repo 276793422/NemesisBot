@@ -294,7 +294,9 @@ async fn test_scan_file_nonexistent_when_enabled() {
     let scanner = Scanner::new(test_config());
     // scan_file calls client.scan_file which connects to clamd
     // When clamd is not running, this should return an error
-    let result = scanner.scan_file(Path::new("/tmp/nonexistent_file_for_test.txt")).await;
+    let result = scanner
+        .scan_file(Path::new("/tmp/nonexistent_file_for_test.txt"))
+        .await;
     // Will fail because no clamd daemon
     assert!(result.is_err());
 }

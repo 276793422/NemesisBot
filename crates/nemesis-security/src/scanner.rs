@@ -13,8 +13,8 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::sync::RwLock;
 use tracing::{debug, warn};
 
@@ -419,10 +419,7 @@ impl ClamAVEngine {
     /// Get extension rules from the engine config.
     pub fn get_extension_rules(&self) -> ExtensionRules {
         let cfg = self.config.read();
-        ExtensionRules::new(
-            cfg.scan_extensions.clone(),
-            cfg.skip_extensions.clone(),
-        )
+        ExtensionRules::new(cfg.scan_extensions.clone(), cfg.skip_extensions.clone())
     }
 }
 
@@ -589,7 +586,10 @@ impl VirusScanner for ClamAVEngine {
 
     fn get_stats(&self) -> HashMap<String, serde_json::Value> {
         let mut stats = HashMap::new();
-        stats.insert("started".to_string(), serde_json::json!(self.started.load(Ordering::SeqCst)));
+        stats.insert(
+            "started".to_string(),
+            serde_json::json!(self.started.load(Ordering::SeqCst)),
+        );
         stats
     }
 }
@@ -612,7 +612,12 @@ impl InstallableEngine for ClamAVEngine {
             for path in entries {
                 if let Some(name) = path.file_name() {
                     if targets.iter().any(|t| name == t.as_str()) {
-                        found_path = Some(path.parent().unwrap_or(Path::new(".")).to_string_lossy().to_string());
+                        found_path = Some(
+                            path.parent()
+                                .unwrap_or(Path::new("."))
+                                .to_string_lossy()
+                                .to_string(),
+                        );
                         break;
                     }
                 }
@@ -652,8 +657,7 @@ impl InstallableEngine for ClamAVEngine {
         };
 
         // Create target directory
-        std::fs::create_dir_all(dir)
-            .map_err(|e| format!("failed to create directory: {}", e))?;
+        std::fs::create_dir_all(dir).map_err(|e| format!("failed to create directory: {}", e))?;
 
         // Download the archive with streaming (matching Go's progressive download)
         let response = reqwest::get(&url)
@@ -661,7 +665,10 @@ impl InstallableEngine for ClamAVEngine {
             .map_err(|e| format!("download failed: {}", e))?;
 
         if !response.status().is_success() {
-            return Err(format!("download failed with status: {}", response.status()));
+            return Err(format!(
+                "download failed with status: {}",
+                response.status()
+            ));
         }
 
         let total_size = response.content_length();
@@ -739,7 +746,10 @@ impl InstallableEngine for ClamAVEngine {
             cb(written, total_size.unwrap_or(written));
         }
 
-        tmp_file.flush().await.map_err(|e| format!("flush failed: {}", e))?;
+        tmp_file
+            .flush()
+            .await
+            .map_err(|e| format!("flush failed: {}", e))?;
         drop(tmp_file);
 
         if let Some(total) = total_size {
@@ -758,7 +768,10 @@ impl InstallableEngine for ClamAVEngine {
         let install_path = self.detect_install_path(dir_path)?;
         self.config.write().clamav_path = install_path.clone();
 
-        debug!("ClamAV downloaded and detected: url={}, dir={}, install_path={}", url, dir, install_path);
+        debug!(
+            "ClamAV downloaded and detected: url={}, dir={}, install_path={}",
+            url, dir, install_path
+        );
         Ok(())
     }
 
@@ -766,7 +779,10 @@ impl InstallableEngine for ClamAVEngine {
         let exe_name = if cfg!(windows) { "clamd.exe" } else { "clamd" };
         let exe_path = Path::new(dir).join(exe_name);
         if !exe_path.exists() {
-            return Err(format!("clamd executable not found at {}", exe_path.display()));
+            return Err(format!(
+                "clamd executable not found at {}",
+                exe_path.display()
+            ));
         }
         Ok(())
     }
@@ -818,13 +834,14 @@ fn walkdir_recursive(dir: &Path, paths: &mut Vec<std::path::PathBuf>) -> Result<
 
 /// Extract a zip archive to the given directory.
 fn extract_zip_archive(zip_path: &Path, dest_dir: &Path) -> Result<(), String> {
-    let file = std::fs::File::open(zip_path)
-        .map_err(|e| format!("failed to open zip file: {}", e))?;
-    let mut archive = zip::ZipArchive::new(file)
-        .map_err(|e| format!("failed to read zip archive: {}", e))?;
+    let file =
+        std::fs::File::open(zip_path).map_err(|e| format!("failed to open zip file: {}", e))?;
+    let mut archive =
+        zip::ZipArchive::new(file).map_err(|e| format!("failed to read zip archive: {}", e))?;
 
     for i in 0..archive.len() {
-        let mut entry = archive.by_index(i)
+        let mut entry = archive
+            .by_index(i)
             .map_err(|e| format!("failed to read zip entry {}: {}", i, e))?;
 
         let outpath = match entry.enclosed_name() {
@@ -1059,14 +1076,20 @@ impl VirusScanner for ClamavScannerWrapper {
                     return Ok(());
                 }
                 Err(e) => {
-                    tracing::warn!("[Scanner] Manager start failed ({}), falling back to ping-only mode", e);
+                    tracing::warn!(
+                        "[Scanner] Manager start failed ({}), falling back to ping-only mode",
+                        e
+                    );
                     // Fall through to ping-only mode
                 }
             }
         }
 
         // Fallback: just verify connectivity to an already-running daemon
-        self.scanner.ping().await.map_err(|e| format!("ClamAV ping failed: {}", e))?;
+        self.scanner
+            .ping()
+            .await
+            .map_err(|e| format!("ClamAV ping failed: {}", e))?;
         self.started.store(true, Ordering::SeqCst);
         Ok(())
     }
@@ -1177,7 +1200,10 @@ impl VirusScanner for ClamavScannerWrapper {
 /// Instantiate a `VirusScanner` by engine name.
 ///
 /// Currently only "clamav" and "stub" are recognized.
-pub fn create_engine(name: &str, config: &serde_json::Value) -> Result<Box<dyn VirusScanner>, String> {
+pub fn create_engine(
+    name: &str,
+    config: &serde_json::Value,
+) -> Result<Box<dyn VirusScanner>, String> {
     match name {
         "clamav" => {
             let mut scanner_config = crate::clamav::scanner::ScannerConfig::default();
@@ -1341,7 +1367,8 @@ impl ScanChain {
 
     /// Enable or disable the scan chain.
     pub fn set_enabled(&self, enabled: bool) {
-        self.enabled.store(enabled, std::sync::atomic::Ordering::Relaxed);
+        self.enabled
+            .store(enabled, std::sync::atomic::Ordering::Relaxed);
     }
 
     /// Check if the chain is enabled.
@@ -1456,12 +1483,7 @@ impl ScanChain {
             let result = engine.scan_content(content).await;
             results.push(result.clone());
             if result.infected {
-                return ScanChainResult::blocked(
-                    engine.name(),
-                    &result.virus,
-                    "",
-                    results,
-                );
+                return ScanChainResult::blocked(engine.name(), &result.virus, "", results);
             }
         }
 
@@ -1491,12 +1513,7 @@ impl ScanChain {
             for r in results {
                 all_results.push(r.clone());
                 if r.infected {
-                    return ScanChainResult::blocked(
-                        engine.name(),
-                        &r.virus,
-                        &r.path,
-                        all_results,
-                    );
+                    return ScanChainResult::blocked(engine.name(), &r.virus, &r.path, all_results);
                 }
             }
         }
@@ -1651,11 +1668,16 @@ impl ScanChain {
     }
 
     /// Extract file paths from tool arguments based on tool name.
-    pub fn extract_paths_from_args(&self, tool_name: &str, args: &serde_json::Value) -> Vec<String> {
+    pub fn extract_paths_from_args(
+        &self,
+        tool_name: &str,
+        args: &serde_json::Value,
+    ) -> Vec<String> {
         let mut paths = Vec::new();
 
         match tool_name {
-            "file_write" | "file_edit" | "file_append" | "write_file" | "edit_file" | "append_file" => {
+            "file_write" | "file_edit" | "file_append" | "write_file" | "edit_file"
+            | "append_file" => {
                 if let Some(path) = args.get("path").and_then(|v| v.as_str()) {
                     paths.push(path.to_string());
                 }
@@ -1719,7 +1741,10 @@ impl ScanChain {
                 debug!("Loading scanner engine: {} ({})", cfg.name, cfg.engine_type);
                 self.add_engine(Box::new(StubScanner));
             } else {
-                debug!("Skipping non-installed engine: {} ({})", cfg.name, cfg.install_status);
+                debug!(
+                    "Skipping non-installed engine: {} ({})",
+                    cfg.name, cfg.install_status
+                );
             }
         }
     }

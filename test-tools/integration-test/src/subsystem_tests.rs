@@ -36,7 +36,11 @@ pub async fn test_memory_save_recall(ws: &TestWorkspace) -> Vec<TestResult> {
         "timestamp": chrono::Local::now().to_rfc3339(),
         "tags": ["test"]
     });
-    std::fs::write(&mem_file, serde_json::to_string_pretty(&mem_content).unwrap()).unwrap();
+    std::fs::write(
+        &mem_file,
+        serde_json::to_string_pretty(&mem_content).unwrap(),
+    )
+    .unwrap();
 
     if mem_file.exists() {
         results.push(pass(&format!("{}/save", suite), "Memory saved to file"));
@@ -47,7 +51,10 @@ pub async fn test_memory_save_recall(ws: &TestWorkspace) -> Vec<TestResult> {
         if let Ok(loaded) = serde_json::from_str::<Value>(&data) {
             let value = loaded.get("value").and_then(|v| v.as_str()).unwrap_or("");
             if value == "test value for recall" {
-                results.push(pass(&format!("{}/recall", suite), "Memory recalled correctly"));
+                results.push(pass(
+                    &format!("{}/recall", suite),
+                    "Memory recalled correctly",
+                ));
             } else {
                 results.push(fail(&format!("{}/recall", suite), "Value mismatch"));
             }
@@ -94,11 +101,15 @@ pub async fn test_memory_search(ws: &TestWorkspace) -> Vec<TestResult> {
     }
 
     if found >= 3 {
-        results.push(pass(&format!("{}/results", suite), &format!("Found {} entries", found)));
+        results.push(pass(
+            &format!("{}/results", suite),
+            &format!("Found {} entries", found),
+        ));
     } else {
-        results.push(fail(&format!("{}/results", suite), &format!(
-            "Expected 3, found {}", found
-        )));
+        results.push(fail(
+            &format!("{}/results", suite),
+            &format!("Expected 3, found {}", found),
+        ));
     }
 
     results
@@ -118,31 +129,48 @@ pub async fn test_cron_crud(ws: &TestWorkspace, bin: &Path) -> Vec<TestResult> {
     if output.success() {
         results.push(pass(&format!("{}/list", suite), "Cron list succeeded"));
     } else {
-        results.push(pass(&format!("{}/list", suite),
-            &format!("exit={}", output.exit_code)));
+        results.push(pass(
+            &format!("{}/list", suite),
+            &format!("exit={}", output.exit_code),
+        ));
     }
 
     // Add a cron job (if supported)
-    let output = ws.run_cli(bin, &[
-        "cron", "add",
-        "--name", "test-cron",
-        "--schedule", "*/5 * * * *",
-        "--command", "echo test",
-    ]).await;
+    let output = ws
+        .run_cli(
+            bin,
+            &[
+                "cron",
+                "add",
+                "--name",
+                "test-cron",
+                "--schedule",
+                "*/5 * * * *",
+                "--command",
+                "echo test",
+            ],
+        )
+        .await;
     if output.success() || output.stdout_contains("added") || output.stdout_contains("Created") {
         results.push(pass(&format!("{}/add", suite), "Cron job added"));
     } else {
-        results.push(pass(&format!("{}/add", suite),
-            &format!("exit={} (cron add may be partial)", output.exit_code)));
+        results.push(pass(
+            &format!("{}/add", suite),
+            &format!("exit={} (cron add may be partial)", output.exit_code),
+        ));
     }
 
     // Remove cron job
-    let output = ws.run_cli(bin, &["cron", "remove", "test-cron", "--force"]).await;
+    let output = ws
+        .run_cli(bin, &["cron", "remove", "test-cron", "--force"])
+        .await;
     if output.success() || output.stdout_contains("removed") || output.stdout_contains("Removed") {
         results.push(pass(&format!("{}/remove", suite), "Cron job removed"));
     } else {
-        results.push(pass(&format!("{}/remove", suite),
-            &format!("exit={}", output.exit_code)));
+        results.push(pass(
+            &format!("{}/remove", suite),
+            &format!("exit={}", output.exit_code),
+        ));
     }
 
     results
@@ -162,13 +190,21 @@ pub async fn test_cron_scheduled_execution(ws: &TestWorkspace, _bin: &Path) -> V
     if let Ok(data) = std::fs::read_to_string(ws.config_path()) {
         if let Ok(cfg) = serde_json::from_str::<Value>(&data) {
             let has_cron = cfg.get("cron").is_some();
-            results.push(pass(&format!("{}/config", suite),
-                if has_cron { "Cron config present" } else { "No cron section (uses defaults)" }));
+            results.push(pass(
+                &format!("{}/config", suite),
+                if has_cron {
+                    "Cron config present"
+                } else {
+                    "No cron section (uses defaults)"
+                },
+            ));
         }
     }
 
-    results.push(pass(&format!("{}/note", suite),
-        "Scheduled execution requires running gateway"));
+    results.push(pass(
+        &format!("{}/note", suite),
+        "Scheduled execution requires running gateway",
+    ));
 
     results
 }
@@ -183,16 +219,26 @@ pub async fn test_mcp_crud(ws: &TestWorkspace, bin: &Path) -> Vec<TestResult> {
     print_suite_header(suite);
 
     // Add MCP server
-    let output = ws.run_cli(bin, &[
-        "mcp", "add",
-        "-n", "integration-test-mcp",
-        "-c", "echo mcp test",
-    ]).await;
+    let output = ws
+        .run_cli(
+            bin,
+            &[
+                "mcp",
+                "add",
+                "-n",
+                "integration-test-mcp",
+                "-c",
+                "echo mcp test",
+            ],
+        )
+        .await;
     if output.success() || output.stdout_contains("added") {
         results.push(pass(&format!("{}/add", suite), "MCP server added"));
     } else {
-        results.push(pass(&format!("{}/add", suite),
-            &format!("exit={}", output.exit_code)));
+        results.push(pass(
+            &format!("{}/add", suite),
+            &format!("exit={}", output.exit_code),
+        ));
     }
 
     // List
@@ -200,16 +246,23 @@ pub async fn test_mcp_crud(ws: &TestWorkspace, bin: &Path) -> Vec<TestResult> {
     if output.success() {
         results.push(pass(&format!("{}/list", suite), "MCP list succeeded"));
     } else {
-        results.push(fail(&format!("{}/list", suite), &format!("exit={}", output.exit_code)));
+        results.push(fail(
+            &format!("{}/list", suite),
+            &format!("exit={}", output.exit_code),
+        ));
     }
 
     // Remove
-    let output = ws.run_cli(bin, &["mcp", "remove", "integration-test-mcp"]).await;
+    let output = ws
+        .run_cli(bin, &["mcp", "remove", "integration-test-mcp"])
+        .await;
     if output.success() || output.stdout_contains("removed") || output.stdout_contains("Removed") {
         results.push(pass(&format!("{}/remove", suite), "MCP server removed"));
     } else {
-        results.push(pass(&format!("{}/remove", suite),
-            &format!("exit={}", output.exit_code)));
+        results.push(pass(
+            &format!("{}/remove", suite),
+            &format!("exit={}", output.exit_code),
+        ));
     }
 
     results
@@ -226,8 +279,10 @@ pub async fn test_mcp_tool_call() -> Vec<TestResult> {
 
     // MCP tool calls require a running gateway with MCP server configured.
     // Test the MCP server directly via stdin/stdout protocol.
-    results.push(pass(&format!("{}/note", suite),
-        "MCP tool calls tested via mcp-server unit tests; integration requires gateway"));
+    results.push(pass(
+        &format!("{}/note", suite),
+        "MCP tool calls tested via mcp-server unit tests; integration requires gateway",
+    ));
 
     results
 }
@@ -245,11 +300,11 @@ pub async fn test_observer_events(ws: &TestWorkspace) -> Vec<TestResult> {
     // Observer events are logged during gateway operation
     let logs_dir = ws.workspace().join("logs");
     if logs_dir.exists() {
-        let count = std::fs::read_dir(&logs_dir)
-            .map(|r| r.count())
-            .unwrap_or(0);
-        results.push(pass(&format!("{}/logs_dir", suite),
-            &format!("{} log files found", count)));
+        let count = std::fs::read_dir(&logs_dir).map(|r| r.count()).unwrap_or(0);
+        results.push(pass(
+            &format!("{}/logs_dir", suite),
+            &format!("{} log files found", count),
+        ));
     } else {
         results.push(skip(suite, "No logs directory (needs gateway running)"));
     }

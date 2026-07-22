@@ -79,8 +79,11 @@ impl Classifier {
             desc: instr_desc,
         });
 
-        let total: f64 = (0.30 * kw_score + 0.15 * ent_score + 0.20 * struct_score
-            + 0.15 * rep_score + 0.20 * instr_score)
+        let total: f64 = (0.30 * kw_score
+            + 0.15 * ent_score
+            + 0.20 * struct_score
+            + 0.15 * rep_score
+            + 0.20 * instr_score)
             .min(1.0_f64);
 
         let level = if total >= 0.7 {
@@ -269,8 +272,12 @@ fn structural_score(input: &str) -> (f64, String) {
             *script_types.entry(script).or_insert(0usize) += 1;
         }
 
-        if ch == '\u{2018}' || ch == '\u{2019}' || ch == '\u{201C}' || ch == '\u{201D}'
-            || ch == '`' || ch == '\u{00B4}'
+        if ch == '\u{2018}'
+            || ch == '\u{2019}'
+            || ch == '\u{201C}'
+            || ch == '\u{201D}'
+            || ch == '`'
+            || ch == '\u{00B4}'
         {
             has_unusual_quote = true;
         }
@@ -375,7 +382,9 @@ fn repetition_score(input: &str) -> (f64, String) {
             round_score(score),
             format!(
                 "most common word {:?} appears {}/{} times",
-                most_common, max_freq, words.len()
+                most_common,
+                max_freq,
+                words.len()
             ),
         )
     }
@@ -387,9 +396,23 @@ fn instruction_structure_score(input: &str) -> (f64, String) {
     }
 
     let imperative_starters = [
-        "do ", "don't ", "never ", "always ", "must ", "should ", "shall ",
-        "ensure ", "make sure ", "remember ", "note ", "important ",
-        "warning ", "caution ", "requirement ", "rule ", "policy ",
+        "do ",
+        "don't ",
+        "never ",
+        "always ",
+        "must ",
+        "should ",
+        "shall ",
+        "ensure ",
+        "make sure ",
+        "remember ",
+        "note ",
+        "important ",
+        "warning ",
+        "caution ",
+        "requirement ",
+        "rule ",
+        "policy ",
     ];
 
     let lines: Vec<&str> = input.lines().collect();

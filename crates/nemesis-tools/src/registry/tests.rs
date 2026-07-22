@@ -4,8 +4,12 @@ struct EchoTool;
 
 #[async_trait]
 impl Tool for EchoTool {
-    fn name(&self) -> &str { "echo" }
-    fn description(&self) -> &str { "Echo back the input" }
+    fn name(&self) -> &str {
+        "echo"
+    }
+    fn description(&self) -> &str {
+        "Echo back the input"
+    }
     fn parameters(&self) -> serde_json::Value {
         serde_json::json!({
             "type": "object",
@@ -25,8 +29,12 @@ struct ReadFileTool;
 
 #[async_trait]
 impl Tool for ReadFileTool {
-    fn name(&self) -> &str { "read_file" }
-    fn description(&self) -> &str { "Read a file" }
+    fn name(&self) -> &str {
+        "read_file"
+    }
+    fn description(&self) -> &str {
+        "Read a file"
+    }
     fn parameters(&self) -> serde_json::Value {
         serde_json::json!({"type": "object", "properties": {"path": {"type": "string"}}})
     }
@@ -90,7 +98,9 @@ async fn test_execute_existing_tool() {
     let registry = ToolRegistry::new();
     registry.register(Arc::new(EchoTool));
 
-    let result = registry.execute("echo", &serde_json::json!({"text": "hello"})).await;
+    let result = registry
+        .execute("echo", &serde_json::json!({"text": "hello"}))
+        .await;
     assert!(!result.is_error);
     assert_eq!(result.for_llm, "hello");
 }
@@ -99,7 +109,9 @@ async fn test_execute_existing_tool() {
 async fn test_execute_missing_tool() {
     let registry = ToolRegistry::new();
 
-    let result = registry.execute("nonexistent", &serde_json::json!({})).await;
+    let result = registry
+        .execute("nonexistent", &serde_json::json!({}))
+        .await;
     assert!(result.is_error);
 }
 
@@ -109,7 +121,12 @@ async fn test_execute_with_context() {
     registry.register(Arc::new(EchoTool));
 
     let result = registry
-        .execute_with_context("echo", &serde_json::json!({"text": "test"}), "rpc", "chat123")
+        .execute_with_context(
+            "echo",
+            &serde_json::json!({"text": "test"}),
+            "rpc",
+            "chat123",
+        )
         .await;
     assert!(!result.is_error);
     assert_eq!(result.for_llm, "test");
@@ -156,7 +173,11 @@ struct AuditingPlugin {
     called: std::sync::Mutex<bool>,
 }
 impl AuditingPlugin {
-    fn new() -> Self { Self { called: std::sync::Mutex::new(false) } }
+    fn new() -> Self {
+        Self {
+            called: std::sync::Mutex::new(false),
+        }
+    }
 }
 impl PluginHook for AuditingPlugin {
     fn post_execute(&self, _tool_name: &str, _args: &serde_json::Value, _result: &ToolResult) {
@@ -169,7 +190,9 @@ async fn test_pluginable_tool_allows_execution() {
     let registry = ToolRegistry::new();
     registry.register_with_plugin_simple(Arc::new(EchoTool), Arc::new(AllowAllPlugin));
 
-    let result = registry.execute("echo", &serde_json::json!({"text": "hello"})).await;
+    let result = registry
+        .execute("echo", &serde_json::json!({"text": "hello"}))
+        .await;
     assert!(!result.is_error);
     assert_eq!(result.for_llm, "hello");
 }
@@ -179,7 +202,9 @@ async fn test_pluginable_tool_blocks_execution() {
     let registry = ToolRegistry::new();
     registry.register_with_plugin_simple(Arc::new(EchoTool), Arc::new(BlockAllPlugin));
 
-    let result = registry.execute("echo", &serde_json::json!({"text": "hello"})).await;
+    let result = registry
+        .execute("echo", &serde_json::json!({"text": "hello"}))
+        .await;
     assert!(result.is_error);
     assert!(result.for_llm.contains("blocked"));
 }
@@ -197,7 +222,9 @@ async fn test_pluginable_tool_post_hook_called() {
     let registry = ToolRegistry::new();
     registry.register_with_plugin_simple(Arc::new(EchoTool), plugin);
 
-    let _ = registry.execute("echo", &serde_json::json!({"text": "hello"})).await;
+    let _ = registry
+        .execute("echo", &serde_json::json!({"text": "hello"}))
+        .await;
     assert!(called_flag());
 }
 
@@ -294,7 +321,9 @@ async fn test_pluginable_tool_error_message_contains_name() {
     let registry = ToolRegistry::new();
     registry.register_with_plugin_simple(Arc::new(EchoTool), Arc::new(BlockAllPlugin));
 
-    let result = registry.execute("echo", &serde_json::json!({"text": "hello"})).await;
+    let result = registry
+        .execute("echo", &serde_json::json!({"text": "hello"}))
+        .await;
     assert!(result.is_error);
     assert!(result.for_llm.contains("echo"));
     assert!(result.for_llm.contains("blocked"));
@@ -322,7 +351,9 @@ async fn test_execute_returns_result_on_success() {
     let registry = ToolRegistry::new();
     registry.register(Arc::new(EchoTool));
 
-    let result = registry.execute("echo", &serde_json::json!({"text": "test_result"})).await;
+    let result = registry
+        .execute("echo", &serde_json::json!({"text": "test_result"}))
+        .await;
     assert!(!result.is_error);
     assert_eq!(result.for_llm, "test_result");
 }
@@ -353,7 +384,10 @@ fn test_tool_to_schema_matches_definitions() {
         let schema = tool_to_schema(tool.as_ref());
         assert_eq!(def["type"], schema["type"]);
         assert_eq!(def["function"]["name"], schema["function"]["name"]);
-        assert_eq!(def["function"]["description"], schema["function"]["description"]);
+        assert_eq!(
+            def["function"]["description"],
+            schema["function"]["description"]
+        );
     }
 }
 
@@ -370,7 +404,11 @@ async fn test_concurrent_register_and_execute() {
     for i in 0..10 {
         let reg = Arc::clone(&registry);
         handles.push(tokio::spawn(async move {
-            reg.execute("echo", &serde_json::json!({"text": format!("concurrent-{}", i)})).await
+            reg.execute(
+                "echo",
+                &serde_json::json!({"text": format!("concurrent-{}", i)}),
+            )
+            .await
         }));
     }
 
@@ -385,12 +423,20 @@ async fn test_concurrent_register_and_execute() {
 async fn test_register_same_tool_twice_overwrites() {
     let registry = ToolRegistry::new();
 
-    struct VersionedTool { version: usize }
+    struct VersionedTool {
+        version: usize,
+    }
     #[async_trait]
     impl Tool for VersionedTool {
-        fn name(&self) -> &str { "versioned" }
-        fn description(&self) -> &str { "Versioned tool" }
-        fn parameters(&self) -> serde_json::Value { serde_json::json!({"type": "object"}) }
+        fn name(&self) -> &str {
+            "versioned"
+        }
+        fn description(&self) -> &str {
+            "Versioned tool"
+        }
+        fn parameters(&self) -> serde_json::Value {
+            serde_json::json!({"type": "object"})
+        }
         async fn execute(&self, _args: &serde_json::Value) -> ToolResult {
             ToolResult::success(&format!("v{}", self.version))
         }
@@ -413,9 +459,15 @@ async fn test_execute_with_context_propagates_to_contextual_tool() {
     }
     #[async_trait]
     impl Tool for CapturingTool {
-        fn name(&self) -> &str { "capture" }
-        fn description(&self) -> &str { "Captures context" }
-        fn parameters(&self) -> serde_json::Value { serde_json::json!({"type": "object"}) }
+        fn name(&self) -> &str {
+            "capture"
+        }
+        fn description(&self) -> &str {
+            "Captures context"
+        }
+        fn parameters(&self) -> serde_json::Value {
+            serde_json::json!({"type": "object"})
+        }
         async fn execute(&self, _args: &serde_json::Value) -> ToolResult {
             let ch = self.channel.lock().unwrap().clone();
             let cid = self.chat_id.lock().unwrap().clone();
@@ -424,8 +476,12 @@ async fn test_execute_with_context_propagates_to_contextual_tool() {
     }
     impl ContextualTool for CapturingTool {
         fn set_context(&mut self, ctx: &crate::registry::ToolExecutionContext) {
-            if let Ok(mut ch) = self.channel.try_lock() { *ch = ctx.channel.clone(); }
-            if let Ok(mut cid) = self.chat_id.try_lock() { *cid = ctx.chat_id.clone(); }
+            if let Ok(mut ch) = self.channel.try_lock() {
+                *ch = ctx.channel.clone();
+            }
+            if let Ok(mut cid) = self.chat_id.try_lock() {
+                *cid = ctx.chat_id.clone();
+            }
         }
     }
 
@@ -483,7 +539,9 @@ async fn test_unregister_then_re_register() {
 
     registry.register(Arc::new(EchoTool));
     assert!(registry.has("echo"));
-    let result = registry.execute("echo", &serde_json::json!({"text": "back"})).await;
+    let result = registry
+        .execute("echo", &serde_json::json!({"text": "back"}))
+        .await;
     assert_eq!(result.for_llm, "back");
 }
 
@@ -492,9 +550,15 @@ fn test_tool_to_schema_empty_properties() {
     struct MinimalTool;
     #[async_trait]
     impl Tool for MinimalTool {
-        fn name(&self) -> &str { "minimal" }
-        fn description(&self) -> &str { "Minimal" }
-        fn parameters(&self) -> serde_json::Value { serde_json::json!({"type": "object"}) }
+        fn name(&self) -> &str {
+            "minimal"
+        }
+        fn description(&self) -> &str {
+            "Minimal"
+        }
+        fn parameters(&self) -> serde_json::Value {
+            serde_json::json!({"type": "object"})
+        }
         async fn execute(&self, _args: &serde_json::Value) -> ToolResult {
             ToolResult::success("ok")
         }
@@ -510,7 +574,11 @@ async fn test_pluginable_tool_pre_hook_receives_args() {
         last_args: std::sync::Mutex<Option<serde_json::Value>>,
     }
     impl InspectPlugin {
-        fn new() -> Self { Self { last_args: std::sync::Mutex::new(None) } }
+        fn new() -> Self {
+            Self {
+                last_args: std::sync::Mutex::new(None),
+            }
+        }
     }
     impl PluginHook for InspectPlugin {
         fn pre_execute(&self, _tool_name: &str, args: &serde_json::Value) -> bool {
@@ -523,9 +591,14 @@ async fn test_pluginable_tool_pre_hook_receives_args() {
 
     let plugin = Arc::new(InspectPlugin::new());
     let registry = ToolRegistry::new();
-    registry.register_with_plugin_simple(Arc::new(EchoTool), Arc::clone(&plugin) as Arc<dyn PluginHook>);
+    registry.register_with_plugin_simple(
+        Arc::new(EchoTool),
+        Arc::clone(&plugin) as Arc<dyn PluginHook>,
+    );
 
-    let _ = registry.execute("echo", &serde_json::json!({"text": "inspected"})).await;
+    let _ = registry
+        .execute("echo", &serde_json::json!({"text": "inspected"}))
+        .await;
     let args = plugin.last_args.lock().unwrap().clone().unwrap();
     assert_eq!(args["text"], "inspected");
 }
@@ -537,9 +610,15 @@ async fn test_many_tools_registered() {
     struct NumTool(usize);
     #[async_trait]
     impl Tool for NumTool {
-        fn name(&self) -> &str { Box::leak(format!("tool_{}", self.0).into_boxed_str()) }
-        fn description(&self) -> &str { "Numbered tool" }
-        fn parameters(&self) -> serde_json::Value { serde_json::json!({"type": "object"}) }
+        fn name(&self) -> &str {
+            Box::leak(format!("tool_{}", self.0).into_boxed_str())
+        }
+        fn description(&self) -> &str {
+            "Numbered tool"
+        }
+        fn parameters(&self) -> serde_json::Value {
+            serde_json::json!({"type": "object"})
+        }
         async fn execute(&self, _args: &serde_json::Value) -> ToolResult {
             ToolResult::success(&format!("tool_{}", self.0))
         }
@@ -564,9 +643,15 @@ async fn test_concurrent_execute_different_tools() {
     struct ToolA;
     #[async_trait]
     impl Tool for ToolA {
-        fn name(&self) -> &str { "tool_a" }
-        fn description(&self) -> &str { "Tool A" }
-        fn parameters(&self) -> serde_json::Value { serde_json::json!({"type": "object"}) }
+        fn name(&self) -> &str {
+            "tool_a"
+        }
+        fn description(&self) -> &str {
+            "Tool A"
+        }
+        fn parameters(&self) -> serde_json::Value {
+            serde_json::json!({"type": "object"})
+        }
         async fn execute(&self, args: &serde_json::Value) -> ToolResult {
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
             ToolResult::success(&format!("A: {}", args["input"].as_str().unwrap_or("")))
@@ -576,9 +661,15 @@ async fn test_concurrent_execute_different_tools() {
     struct ToolB;
     #[async_trait]
     impl Tool for ToolB {
-        fn name(&self) -> &str { "tool_b" }
-        fn description(&self) -> &str { "Tool B" }
-        fn parameters(&self) -> serde_json::Value { serde_json::json!({"type": "object"}) }
+        fn name(&self) -> &str {
+            "tool_b"
+        }
+        fn description(&self) -> &str {
+            "Tool B"
+        }
+        fn parameters(&self) -> serde_json::Value {
+            serde_json::json!({"type": "object"})
+        }
         async fn execute(&self, args: &serde_json::Value) -> ToolResult {
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
             ToolResult::success(&format!("B: {}", args["input"].as_str().unwrap_or("")))
@@ -592,13 +683,15 @@ async fn test_concurrent_execute_different_tools() {
     for i in 0..5 {
         let reg = Arc::clone(&registry);
         handles.push(tokio::spawn(async move {
-            reg.execute("tool_a", &serde_json::json!({"input": format!("a-{}", i)})).await
+            reg.execute("tool_a", &serde_json::json!({"input": format!("a-{}", i)}))
+                .await
         }));
     }
     for i in 0..5 {
         let reg = Arc::clone(&registry);
         handles.push(tokio::spawn(async move {
-            reg.execute("tool_b", &serde_json::json!({"input": format!("b-{}", i)})).await
+            reg.execute("tool_b", &serde_json::json!({"input": format!("b-{}", i)}))
+                .await
         }));
     }
 
@@ -608,8 +701,11 @@ async fn test_concurrent_execute_different_tools() {
     for r in results {
         let result = r.unwrap();
         assert!(!result.is_error);
-        if result.for_llm.starts_with("A:") { a_count += 1; }
-        else if result.for_llm.starts_with("B:") { b_count += 1; }
+        if result.for_llm.starts_with("A:") {
+            a_count += 1;
+        } else if result.for_llm.starts_with("B:") {
+            b_count += 1;
+        }
     }
     assert_eq!(a_count, 5);
     assert_eq!(b_count, 5);
@@ -649,7 +745,9 @@ async fn test_register_with_plugin_full_context() {
         "/workspace",
     );
 
-    let result = registry.execute("echo", &serde_json::json!({"text": "hello"})).await;
+    let result = registry
+        .execute("echo", &serde_json::json!({"text": "hello"}))
+        .await;
     assert!(!result.is_error);
     assert_eq!(result.for_llm, "hello");
 }
@@ -665,7 +763,9 @@ async fn test_register_with_plugin_blocks_execution_full_context() {
         "/workspace",
     );
 
-    let result = registry.execute("echo", &serde_json::json!({"text": "hello"})).await;
+    let result = registry
+        .execute("echo", &serde_json::json!({"text": "hello"}))
+        .await;
     assert!(result.is_error);
     assert!(result.for_llm.contains("blocked"));
 }
@@ -725,7 +825,9 @@ async fn test_get_tool_context_returns_value_after_set() {
     };
 
     // Simulate what execute_with_context does
-    registry.tool_contexts.insert("echo".to_string(), ctx.clone());
+    registry
+        .tool_contexts
+        .insert("echo".to_string(), ctx.clone());
     let retrieved = registry.get_tool_context("echo");
     assert!(retrieved.is_some());
     assert_eq!(retrieved.unwrap().channel, "rpc");
@@ -740,7 +842,12 @@ async fn test_execute_with_context_cleans_up_on_success() {
     registry.register(Arc::new(EchoTool));
 
     let _ = registry
-        .execute_with_context("echo", &serde_json::json!({"text": "test"}), "rpc", "chat-123")
+        .execute_with_context(
+            "echo",
+            &serde_json::json!({"text": "test"}),
+            "rpc",
+            "chat-123",
+        )
         .await;
 
     // Context should be cleaned up
@@ -797,7 +904,9 @@ async fn test_pluginable_tool_new_simple() {
     let registry = ToolRegistry::new();
     registry.register_with_plugin_simple(Arc::new(EchoTool), Arc::new(AllowAllPlugin));
 
-    let result = registry.execute("echo", &serde_json::json!({"text": "simple"})).await;
+    let result = registry
+        .execute("echo", &serde_json::json!({"text": "simple"}))
+        .await;
     assert!(!result.is_error);
     assert_eq!(result.for_llm, "simple");
 }
@@ -811,15 +920,11 @@ async fn test_pluginable_tool_post_hook_with_full_context() {
     };
 
     let registry = ToolRegistry::new();
-    registry.register_with_plugin(
-        Arc::new(EchoTool),
-        plugin,
-        "user1",
-        "web",
-        "/home",
-    );
+    registry.register_with_plugin(Arc::new(EchoTool), plugin, "user1", "web", "/home");
 
-    let _ = registry.execute("echo", &serde_json::json!({"text": "test"})).await;
+    let _ = registry
+        .execute("echo", &serde_json::json!({"text": "test"}))
+        .await;
     assert!(called_flag());
 }
 
@@ -828,7 +933,9 @@ async fn test_execute_records_timing_on_success() {
     let registry = ToolRegistry::new();
     registry.register(Arc::new(EchoTool));
 
-    let result = registry.execute("echo", &serde_json::json!({"text": "timing"})).await;
+    let result = registry
+        .execute("echo", &serde_json::json!({"text": "timing"}))
+        .await;
     assert!(!result.is_error);
 }
 
@@ -838,7 +945,9 @@ async fn test_execute_records_timing_on_error() {
     registry.register(Arc::new(EchoTool));
 
     // This should not panic even if tool is not found
-    let result = registry.execute("nonexistent", &serde_json::json!({})).await;
+    let result = registry
+        .execute("nonexistent", &serde_json::json!({}))
+        .await;
     assert!(result.is_error);
 }
 
@@ -868,7 +977,10 @@ async fn test_definitions_multiple_tools_sorted() {
     let defs = registry.definitions();
     assert_eq!(defs.len(), 2);
     // Both should be present
-    let names: Vec<&str> = defs.iter().map(|d| d["function"]["name"].as_str().unwrap()).collect();
+    let names: Vec<&str> = defs
+        .iter()
+        .map(|d| d["function"]["name"].as_str().unwrap())
+        .collect();
     assert!(names.contains(&"echo"));
     assert!(names.contains(&"read_file"));
 }

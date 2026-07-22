@@ -49,7 +49,11 @@ pub fn run(action: VoiceAction, _local: bool) -> Result<()> {
             VoiceAction::Status => cmd_status(&voice_dir),
             VoiceAction::Setup => cmd_setup(&voice_dir),
             VoiceAction::Download => cmd_download(&voice_dir),
-            VoiceAction::Tts { text, speaker, speed } => cmd_tts(&voice_dir, &text, speaker, speed),
+            VoiceAction::Tts {
+                text,
+                speaker,
+                speed,
+            } => cmd_tts(&voice_dir, &text, speaker, speed),
             VoiceAction::Stt => cmd_stt(&voice_dir),
             VoiceAction::Chat => cmd_chat(&voice_dir),
             VoiceAction::Devices => cmd_devices(),
@@ -203,7 +207,12 @@ fn cmd_download(voice_dir: &std::path::Path) -> Result<()> {
 }
 
 #[cfg(target_os = "windows")]
-fn cmd_tts(voice_dir: &std::path::Path, text: &str, speaker: Option<u32>, speed: f32) -> Result<()> {
+fn cmd_tts(
+    voice_dir: &std::path::Path,
+    text: &str,
+    speaker: Option<u32>,
+    speed: f32,
+) -> Result<()> {
     println!("=== TTS Test ===\n");
 
     let cfg = require_config(voice_dir)?;
@@ -224,7 +233,9 @@ fn cmd_tts(voice_dir: &std::path::Path, text: &str, speaker: Option<u32>, speed:
     let audio_duration = samples.len() as f64 / sample_rate as f64;
     println!(
         "Generated {} samples at {} Hz ({:.1}s audio)",
-        samples.len(), sample_rate, audio_duration
+        samples.len(),
+        sample_rate,
+        audio_duration
     );
 
     // Save to WAV
@@ -262,7 +273,12 @@ fn cmd_stt(voice_dir: &std::path::Path) -> Result<()> {
     // Load engines
     let stt_dir = nemesis_voice::model::ensure_stt_model(&cfg)?;
     let stt_engine = Arc::new(nemesis_voice::SttEngine::new(
-        &stt_dir, &cfg.stt.model_name, &cfg.stt.language, cfg.stt.lang_remedy, cfg.stt.use_itn, cfg.stt.num_threads,
+        &stt_dir,
+        &cfg.stt.model_name,
+        &cfg.stt.language,
+        cfg.stt.lang_remedy,
+        cfg.stt.use_itn,
+        cfg.stt.num_threads,
     )?);
     println!("  [STT] Engine loaded.");
 
@@ -319,7 +335,12 @@ fn cmd_chat(voice_dir: &std::path::Path) -> Result<()> {
     // Load STT
     let stt_dir = nemesis_voice::model::ensure_stt_model(&cfg)?;
     let stt_engine = Arc::new(nemesis_voice::SttEngine::new(
-        &stt_dir, &cfg.stt.model_name, &cfg.stt.language, cfg.stt.lang_remedy, cfg.stt.use_itn, cfg.stt.num_threads,
+        &stt_dir,
+        &cfg.stt.model_name,
+        &cfg.stt.language,
+        cfg.stt.lang_remedy,
+        cfg.stt.use_itn,
+        cfg.stt.num_threads,
     )?);
     println!("  [STT] Engine loaded.");
 
@@ -336,7 +357,10 @@ fn cmd_chat(voice_dir: &std::path::Path) -> Result<()> {
 
     // Load TTS
     let tts_dir = nemesis_voice::model::ensure_tts_model(&cfg)?;
-    let tts_engine = Arc::new(nemesis_voice::TtsEngine::new(&tts_dir, cfg.tts.num_threads)?);
+    let tts_engine = Arc::new(nemesis_voice::TtsEngine::new(
+        &tts_dir,
+        cfg.tts.num_threads,
+    )?);
     println!("  [TTS] Engine loaded.");
 
     let mut detector = nemesis_voice::create_detector(&cfg);
@@ -346,9 +370,14 @@ fn cmd_chat(voice_dir: &std::path::Path) -> Result<()> {
     let capture = nemesis_voice::AudioCapture::new(&cfg.audio.capture_device)?;
     let capture_sr = capture.sample_rate;
     let playback = nemesis_voice::AudioPlayback::new(
-        &cfg.audio.playback_device, cfg.audio.target_sample_rate, cfg.audio.gain,
+        &cfg.audio.playback_device,
+        cfg.audio.target_sample_rate,
+        cfg.audio.gain,
     )?;
-    println!("  [Audio] Capture {} Hz → Playback {} Hz\n", capture_sr, playback.sample_rate);
+    println!(
+        "  [Audio] Capture {} Hz → Playback {} Hz\n",
+        capture_sr, playback.sample_rate
+    );
 
     let mut resampler = nemesis_voice::Resampler::new(capture_sr, cfg.audio.target_sample_rate)?;
     let target_sr = cfg.audio.target_sample_rate;

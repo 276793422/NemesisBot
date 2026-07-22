@@ -81,7 +81,8 @@ impl WsRouter {
 
     /// Register a module handler.
     pub fn register(&mut self, handler: Arc<dyn ModuleHandler>) {
-        self.handlers.insert(handler.module_name().to_string(), handler);
+        self.handlers
+            .insert(handler.module_name().to_string(), handler);
     }
 
     /// Dispatch a request message to the appropriate handler and send the response.

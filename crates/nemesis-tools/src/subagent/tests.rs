@@ -21,8 +21,22 @@ fn test_subagent_manager_spawn() {
 #[test]
 fn test_subagent_manager_list_tasks() {
     let manager = SubagentManager::new();
-    manager.spawn("Task 1".to_string(), "a".to_string(), String::new(), "web".to_string(), "c".to_string(), None);
-    manager.spawn("Task 2".to_string(), "b".to_string(), String::new(), "web".to_string(), "c".to_string(), None);
+    manager.spawn(
+        "Task 1".to_string(),
+        "a".to_string(),
+        String::new(),
+        "web".to_string(),
+        "c".to_string(),
+        None,
+    );
+    manager.spawn(
+        "Task 2".to_string(),
+        "b".to_string(),
+        String::new(),
+        "web".to_string(),
+        "c".to_string(),
+        None,
+    );
 
     let tasks = manager.list_tasks();
     assert_eq!(tasks.len(), 2);
@@ -31,7 +45,14 @@ fn test_subagent_manager_list_tasks() {
 #[test]
 fn test_subagent_manager_update() {
     let manager = SubagentManager::new();
-    let id = manager.spawn("Task".to_string(), "test".to_string(), String::new(), "web".to_string(), "c".to_string(), None);
+    let id = manager.spawn(
+        "Task".to_string(),
+        "test".to_string(),
+        String::new(),
+        "web".to_string(),
+        "c".to_string(),
+        None,
+    );
 
     manager.update_task(&id, "completed", "Done!");
     let task = manager.get_task(&id).unwrap();
@@ -42,7 +63,14 @@ fn test_subagent_manager_update() {
 #[test]
 fn test_subagent_manager_remove() {
     let manager = SubagentManager::new();
-    let id = manager.spawn("Task".to_string(), "test".to_string(), String::new(), "web".to_string(), "c".to_string(), None);
+    let id = manager.spawn(
+        "Task".to_string(),
+        "test".to_string(),
+        String::new(),
+        "web".to_string(),
+        "c".to_string(),
+        None,
+    );
 
     assert!(manager.remove_task(&id));
     assert!(manager.get_task(&id).is_none());
@@ -132,7 +160,14 @@ fn test_subagent_manager_spawn_multiple() {
 #[test]
 fn test_subagent_manager_update_status_variants() {
     let manager = SubagentManager::new();
-    let id = manager.spawn("Task".to_string(), "test".to_string(), String::new(), "web".to_string(), "c".to_string(), None);
+    let id = manager.spawn(
+        "Task".to_string(),
+        "test".to_string(),
+        String::new(),
+        "web".to_string(),
+        "c".to_string(),
+        None,
+    );
 
     for status in &["running", "completed", "failed", "cancelled"] {
         manager.update_task(&id, status, &format!("result for {}", status));
@@ -180,13 +215,14 @@ fn test_subagent_manager_has_llm_callback() {
     let manager = SubagentManager::new();
     assert!(!manager.has_llm_callback(), "Should start without callback");
 
-    manager.set_llm_callback(Arc::new(|_msgs| {
-        crate::toolloop::LLMResponse {
-            content: "test".to_string(),
-            tool_calls: vec![],
-        }
+    manager.set_llm_callback(Arc::new(|_msgs| crate::toolloop::LLMResponse {
+        content: "test".to_string(),
+        tool_calls: vec![],
     }));
-    assert!(manager.has_llm_callback(), "Should have callback after setting");
+    assert!(
+        manager.has_llm_callback(),
+        "Should have callback after setting"
+    );
 }
 
 #[tokio::test]
@@ -194,11 +230,9 @@ async fn test_subagent_tool_with_llm_callback() {
     let manager = Arc::new(SubagentManager::new());
 
     // Set up a mock LLM callback that returns a fixed response
-    manager.set_llm_callback(Arc::new(|_msgs| {
-        crate::toolloop::LLMResponse {
-            content: "Analysis complete: data processed".to_string(),
-            tool_calls: vec![],
-        }
+    manager.set_llm_callback(Arc::new(|_msgs| crate::toolloop::LLMResponse {
+        content: "Analysis complete: data processed".to_string(),
+        tool_calls: vec![],
     }));
 
     let tool = SubagentTool::new(manager);
@@ -210,7 +244,10 @@ async fn test_subagent_tool_with_llm_callback() {
         .await;
 
     assert!(!result.is_error, "Should not error: {}", result.for_llm);
-    assert!(result.for_llm.contains("data-analysis"), "Should contain label");
+    assert!(
+        result.for_llm.contains("data-analysis"),
+        "Should contain label"
+    );
     assert!(
         result.for_llm.contains("Iterations: 1"),
         "Should report 1 iteration, got: {}",
@@ -247,11 +284,9 @@ async fn test_subagent_tool_llm_long_content_truncation() {
 
     // LLM returns very long content
     let long_content = "y".repeat(1000);
-    manager.set_llm_callback(Arc::new(move |_msgs| {
-        crate::toolloop::LLMResponse {
-            content: long_content.clone(),
-            tool_calls: vec![],
-        }
+    manager.set_llm_callback(Arc::new(move |_msgs| crate::toolloop::LLMResponse {
+        content: long_content.clone(),
+        tool_calls: vec![],
     }));
 
     let tool = SubagentTool::new(manager);
@@ -282,9 +317,7 @@ fn test_subagent_manager_default() {
 async fn test_subagent_tool_empty_task() {
     let manager = Arc::new(SubagentManager::new());
     let tool = SubagentTool::new(manager);
-    let result = tool
-        .execute(&serde_json::json!({"task": ""}))
-        .await;
+    let result = tool.execute(&serde_json::json!({"task": ""})).await;
     assert!(result.is_error);
     assert!(result.for_llm.contains("task"));
 }
@@ -342,16 +375,19 @@ async fn test_subagent_tool_parameters() {
     let params = tool.parameters();
     assert!(params["properties"]["task"].is_object());
     assert!(params["properties"]["label"].is_object());
-    assert!(params["required"].as_array().unwrap().contains(&serde_json::json!("task")));
+    assert!(
+        params["required"]
+            .as_array()
+            .unwrap()
+            .contains(&serde_json::json!("task"))
+    );
 }
 
 #[tokio::test]
 async fn test_subagent_tool_with_task_null() {
     let manager = Arc::new(SubagentManager::new());
     let tool = SubagentTool::new(manager);
-    let result = tool
-        .execute(&serde_json::json!({"task": null}))
-        .await;
+    let result = tool.execute(&serde_json::json!({"task": null})).await;
     assert!(result.is_error);
 }
 
@@ -389,8 +425,22 @@ fn test_subagent_manager_spawn_and_get() {
 #[test]
 fn test_subagent_manager_list_tasks_after_remove() {
     let manager = SubagentManager::new();
-    let id1 = manager.spawn("T1".to_string(), String::new(), String::new(), "web".to_string(), "c1".to_string(), None);
-    let id2 = manager.spawn("T2".to_string(), String::new(), String::new(), "web".to_string(), "c2".to_string(), None);
+    let id1 = manager.spawn(
+        "T1".to_string(),
+        String::new(),
+        String::new(),
+        "web".to_string(),
+        "c1".to_string(),
+        None,
+    );
+    let id2 = manager.spawn(
+        "T2".to_string(),
+        String::new(),
+        String::new(),
+        "web".to_string(),
+        "c2".to_string(),
+        None,
+    );
     assert_eq!(manager.list_tasks().len(), 2);
 
     manager.remove_task(&id1);
@@ -402,7 +452,14 @@ fn test_subagent_manager_list_tasks_after_remove() {
 #[test]
 fn test_subagent_manager_update_sets_result() {
     let manager = SubagentManager::new();
-    let id = manager.spawn("Task".to_string(), String::new(), String::new(), "web".to_string(), "c".to_string(), None);
+    let id = manager.spawn(
+        "Task".to_string(),
+        String::new(),
+        String::new(),
+        "web".to_string(),
+        "c".to_string(),
+        None,
+    );
 
     manager.update_task(&id, "completed", "task done successfully");
     let task = manager.get_task(&id).unwrap();
@@ -473,9 +530,7 @@ fn test_subagent_task_all_fields() {
 async fn test_subagent_tool_execute_non_string_task() {
     let manager = Arc::new(SubagentManager::new());
     let tool = SubagentTool::new(manager);
-    let result = tool
-        .execute(&serde_json::json!({"task": 123}))
-        .await;
+    let result = tool.execute(&serde_json::json!({"task": 123})).await;
     assert!(result.is_error);
 }
 

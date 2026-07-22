@@ -15,12 +15,15 @@ fn extract_usage(u: &serde_json::Value) -> UsageInfo {
     let ds_miss = u.get("prompt_cache_miss_tokens").and_then(|v| v.as_i64());
 
     // OpenAI: usage.prompt_tokens_details.cached_tokens
-    let oai_cached = u.get("prompt_tokens_details")
+    let oai_cached = u
+        .get("prompt_tokens_details")
         .and_then(|d| d.get("cached_tokens"))
         .and_then(|v| v.as_i64());
 
     // Anthropic: cache_creation_input_tokens + cache_read_input_tokens
-    let ant_creation = u.get("cache_creation_input_tokens").and_then(|v| v.as_i64());
+    let ant_creation = u
+        .get("cache_creation_input_tokens")
+        .and_then(|v| v.as_i64());
     let ant_read = u.get("cache_read_input_tokens").and_then(|v| v.as_i64());
 
     let (cached, creation, read) = if let (Some(hit), Some(miss)) = (ds_hit, ds_miss) {
@@ -91,8 +94,8 @@ impl HttpProvider {
             timeout_secs = config.timeout_secs,
             "[Provider] Initialized HTTP provider"
         );
-        let mut builder = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(config.timeout_secs));
+        let mut builder =
+            reqwest::Client::builder().timeout(std::time::Duration::from_secs(config.timeout_secs));
 
         // Configure HTTP proxy if specified.
         if let Some(ref proxy_url) = config.proxy {
@@ -243,7 +246,10 @@ impl HttpProvider {
             model.to_string()
         };
 
-        let url = format!("{}/chat/completions", self.config.base_url.trim_end_matches('/'));
+        let url = format!(
+            "{}/chat/completions",
+            self.config.base_url.trim_end_matches('/')
+        );
         let mut body = self.build_request_body(messages, tools, &model, options);
         body["stream"] = serde_json::json!(true);
 
@@ -352,13 +358,19 @@ impl HttpProvider {
                                 model = %model,
                                 "[Provider] SSE stream completed ([DONE])"
                             );
-                            let _ = tx.send(Ok(StreamChunk {
-                                delta: String::new(),
-                                tool_calls: vec![],
-                                finish_reason: Some("stop".to_string()),
-                                usage: None,
-                                reasoning_content: if accumulated_reasoning.is_empty() { None } else { Some(accumulated_reasoning.clone()) },
-                            })).await;
+                            let _ = tx
+                                .send(Ok(StreamChunk {
+                                    delta: String::new(),
+                                    tool_calls: vec![],
+                                    finish_reason: Some("stop".to_string()),
+                                    usage: None,
+                                    reasoning_content: if accumulated_reasoning.is_empty() {
+                                        None
+                                    } else {
+                                        Some(accumulated_reasoning.clone())
+                                    },
+                                }))
+                                .await;
                             return;
                         }
 
@@ -373,7 +385,9 @@ impl HttpProvider {
                             .to_string();
 
                         // Accumulate reasoning_content from thinking-mode models.
-                        if let Some(rc) = parsed["choices"][0]["delta"]["reasoning_content"].as_str() {
+                        if let Some(rc) =
+                            parsed["choices"][0]["delta"]["reasoning_content"].as_str()
+                        {
                             accumulated_reasoning.push_str(rc);
                         }
 
@@ -394,14 +408,10 @@ impl HttpProvider {
                                 if let Some(id) = tc["id"].as_str() {
                                     entry.0 = id.to_string();
                                 }
-                                if let Some(name) =
-                                    tc["function"]["name"].as_str()
-                                {
+                                if let Some(name) = tc["function"]["name"].as_str() {
                                     entry.1 = name.to_string();
                                 }
-                                if let Some(args) =
-                                    tc["function"]["arguments"].as_str()
-                                {
+                                if let Some(args) = tc["function"]["arguments"].as_str() {
                                     entry.2.push_str(args);
                                 }
                             }
@@ -444,7 +454,9 @@ impl HttpProvider {
                             tool_calls,
                             finish_reason: finish_reason.clone(),
                             usage,
-                            reasoning_content: if finish_reason.is_some() && !accumulated_reasoning.is_empty() {
+                            reasoning_content: if finish_reason.is_some()
+                                && !accumulated_reasoning.is_empty()
+                            {
                                 Some(accumulated_reasoning.clone())
                             } else {
                                 None
@@ -515,7 +527,10 @@ impl LLMProvider for HttpProvider {
             model
         };
 
-        let url = format!("{}/chat/completions", self.config.base_url.trim_end_matches('/'));
+        let url = format!(
+            "{}/chat/completions",
+            self.config.base_url.trim_end_matches('/')
+        );
         let body = self.build_request_body(messages, tools, model, options);
 
         tracing::debug!(
@@ -526,7 +541,8 @@ impl LLMProvider for HttpProvider {
             "[Provider] Sending non-streaming request"
         );
 
-        let mut req = self.client
+        let mut req = self
+            .client
             .post(&url)
             .header("Authorization", format!("Bearer {}", self.config.api_key))
             .header("Content-Type", "application/json");
@@ -563,15 +579,12 @@ impl LLMProvider for HttpProvider {
             ));
         }
 
-        let raw_response_text = resp
-            .text()
-            .await
-            .map_err(|e| FailoverError::Format {
-                provider: self.config.name.clone(),
-                message: e.to_string(),
-            })?;
-        let data: serde_json::Value = serde_json::from_str(&raw_response_text)
-            .map_err(|e| FailoverError::Format {
+        let raw_response_text = resp.text().await.map_err(|e| FailoverError::Format {
+            provider: self.config.name.clone(),
+            message: e.to_string(),
+        })?;
+        let data: serde_json::Value =
+            serde_json::from_str(&raw_response_text).map_err(|e| FailoverError::Format {
                 provider: self.config.name.clone(),
                 message: e.to_string(),
             })?;
@@ -589,25 +602,26 @@ impl LLMProvider for HttpProvider {
 
         let usage = data.get("usage").map(|u| extract_usage(u));
 
-        let mut tool_calls = if let Some(tc_array) = data["choices"][0]["message"]["tool_calls"].as_array() {
-            tc_array
-                .iter()
-                .filter_map(|tc| {
-                    let id = tc["id"].as_str()?.to_string();
-                    let name = tc["function"]["name"].as_str()?.to_string();
-                    let arguments = tc["function"]["arguments"].as_str()?.to_string();
-                    Some(ToolCall {
-                        id,
-                        call_type: Some("function".to_string()),
-                        function: Some(FunctionCall { name, arguments }),
-                        name: None,
-                        arguments: None,
+        let mut tool_calls =
+            if let Some(tc_array) = data["choices"][0]["message"]["tool_calls"].as_array() {
+                tc_array
+                    .iter()
+                    .filter_map(|tc| {
+                        let id = tc["id"].as_str()?.to_string();
+                        let name = tc["function"]["name"].as_str()?.to_string();
+                        let arguments = tc["function"]["arguments"].as_str()?.to_string();
+                        Some(ToolCall {
+                            id,
+                            call_type: Some("function".to_string()),
+                            function: Some(FunctionCall { name, arguments }),
+                            name: None,
+                            arguments: None,
+                        })
                     })
-                })
-                .collect()
-        } else {
-            vec![]
-        };
+                    .collect()
+            } else {
+                vec![]
+            };
 
         // Tool-call repair: some models (especially smaller local models) emit
         // tool calls as plain text in `content` (DSML / JSON / XML) instead of the

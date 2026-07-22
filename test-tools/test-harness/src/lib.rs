@@ -12,9 +12,9 @@ use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::Duration;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use futures::{SinkExt, StreamExt};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use tokio_tungstenite::tungstenite::Message;
 
 // ---------------------------------------------------------------------------
@@ -39,12 +39,7 @@ pub struct ManagedProcess {
 
 impl ManagedProcess {
     /// Spawn a new managed process. stderr is inherited so error messages are visible.
-    pub fn spawn(
-        name: &'static str,
-        program: &Path,
-        args: &[&str],
-        cwd: &Path,
-    ) -> Result<Self> {
+    pub fn spawn(name: &'static str, program: &Path, args: &[&str], cwd: &Path) -> Result<Self> {
         println!("  Starting {}...", name);
         let child = tokio::process::Command::new(program)
             .args(args)
@@ -146,11 +141,7 @@ impl TestWorkspace {
     /// Run a nemesisbot CLI command in this workspace (--local mode).
     /// Returns CliOutput with exit_code=-1 if the process fails to start.
     /// Includes a 15-second timeout to prevent hanging on interactive commands.
-    pub async fn run_cli(
-        &self,
-        nemesisbot_bin: &Path,
-        args: &[&str],
-    ) -> CliOutput {
+    pub async fn run_cli(&self, nemesisbot_bin: &Path, args: &[&str]) -> CliOutput {
         let mut full_args = vec!["--local"];
         full_args.extend(args);
 
@@ -162,7 +153,8 @@ impl TestWorkspace {
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped())
                 .output(),
-        ).await;
+        )
+        .await;
 
         match result {
             Ok(Ok(output)) => CliOutput {
@@ -264,8 +256,9 @@ pub async fn wait_for_http(url: &str, timeout: Duration) -> Result<()> {
 pub async fn ws_connect(
     port: u16,
     token: &str,
-) -> Result<tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>>
-{
+) -> Result<
+    tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>,
+> {
     let url = format!("ws://127.0.0.1:{}/ws?token={}", port, token);
     let (stream, _) = tokio_tungstenite::connect_async(&url)
         .await
@@ -304,10 +297,7 @@ pub async fn ws_send_and_recv(
                     let cmd = v.get("cmd").and_then(|c| c.as_str()).unwrap_or("");
 
                     if msg_type == "message" && module == "chat" && cmd == "receive" {
-                        let content = v["data"]["content"]
-                            .as_str()
-                            .unwrap_or("")
-                            .to_string();
+                        let content = v["data"]["content"].as_str().unwrap_or("").to_string();
                         return Ok(content);
                     }
                     if msg_type == "system" && module == "error" {
@@ -326,10 +316,7 @@ pub async fn ws_send_and_recv(
             Ok(Some(Ok(other))) => return Ok(other.to_string()),
             Ok(Some(Err(e))) => bail!("WebSocket error: {}", e),
             Ok(None) => bail!("WebSocket closed"),
-            Err(_) => bail!(
-                "Timeout waiting for response ({}s)",
-                timeout_secs
-            ),
+            Err(_) => bail!("Timeout waiting for response ({}s)", timeout_secs),
         }
     }
 }
@@ -404,17 +391,13 @@ pub fn skip(name: &str, msg: impl Into<String>) -> TestResult {
 
 /// Resolve the project root directory from the current executable location.
 pub fn resolve_project_root() -> Result<PathBuf> {
-    let exe_dir = std::env::current_exe()?
-        .parent()
-        .unwrap()
-        .to_path_buf();
+    let exe_dir = std::env::current_exe()?.parent().unwrap().to_path_buf();
 
     // Try going up from test-tools/integration-test/target/release/
     let mut dir = exe_dir.clone();
     for _ in 0..5 {
         if dir.join("Cargo.toml").exists()
-            && std::fs::read_to_string(dir.join("Cargo.toml"))?
-                .contains("[workspace]")
+            && std::fs::read_to_string(dir.join("Cargo.toml"))?.contains("[workspace]")
         {
             return Ok(dir);
         }
@@ -456,7 +439,9 @@ pub fn resolve_ai_server_bin() -> Result<PathBuf> {
     if bin.exists() {
         return Ok(bin);
     }
-    bail!("AI server binary not found (checked test-tools/TestAIServer/testaiserver.exe and target/)");
+    bail!(
+        "AI server binary not found (checked test-tools/TestAIServer/testaiserver.exe and target/)"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -468,10 +453,10 @@ pub fn cleanup_ports(ports: &[u16]) {
     for port in ports {
         // Use netstat to find PIDs, then taskkill
         let output = std::process::Command::new("cmd")
-            .args(&["/c", &format!(
-                "netstat -ano | findstr :{} | findstr LISTENING",
-                port
-            )])
+            .args(&[
+                "/c",
+                &format!("netstat -ano | findstr :{} | findstr LISTENING", port),
+            ])
             .output();
         if let Ok(out) = output {
             let stdout = String::from_utf8_lossy(&out.stdout);
@@ -550,10 +535,11 @@ mod tests {
         assert!(ws.config_path().to_string_lossy().ends_with("config.json"));
         assert!(ws.workspace().to_string_lossy().contains("workspace"));
         assert!(ws.forge_dir().to_string_lossy().ends_with("forge"));
-        assert!(ws
-            .security_config_path()
-            .to_string_lossy()
-            .ends_with("config.security.json"));
+        assert!(
+            ws.security_config_path()
+                .to_string_lossy()
+                .ends_with("config.security.json")
+        );
     }
 
     #[test]
@@ -571,7 +557,11 @@ mod tests {
 
     #[test]
     fn cli_output_nonzero_is_failure() {
-        let out = CliOutput { exit_code: 1, stdout: String::new(), stderr: "e".into() };
+        let out = CliOutput {
+            exit_code: 1,
+            stdout: String::new(),
+            stderr: "e".into(),
+        };
         assert!(!out.success());
     }
 
@@ -586,11 +576,19 @@ mod tests {
 
         // truncation at 120 chars
         let long = "x".repeat(200);
-        let out = CliOutput { exit_code: 0, stdout: long, stderr: String::new() };
+        let out = CliOutput {
+            exit_code: 0,
+            stdout: long,
+            stderr: String::new(),
+        };
         assert_eq!(out.stdout_first_line().len(), 120);
 
         // empty stdout → ""
-        let out = CliOutput { exit_code: 0, stdout: String::new(), stderr: String::new() };
+        let out = CliOutput {
+            exit_code: 0,
+            stdout: String::new(),
+            stderr: String::new(),
+        };
         assert_eq!(out.stdout_first_line(), "");
     }
 
@@ -656,9 +654,11 @@ mod tests {
         assert!(root.is_ok(), "expected to resolve workspace root");
         let root = root.unwrap();
         assert!(root.join("Cargo.toml").exists());
-        assert!(std::fs::read_to_string(root.join("Cargo.toml"))
-            .unwrap()
-            .contains("[workspace]"));
+        assert!(
+            std::fs::read_to_string(root.join("Cargo.toml"))
+                .unwrap()
+                .contains("[workspace]")
+        );
     }
 
     #[test]

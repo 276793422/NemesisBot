@@ -18,19 +18,13 @@ impl MockMCPCaller {
             "browser_screenshot".to_string(),
             "Screenshot data".to_string(),
         );
-        responses.insert(
-            "browser_click".to_string(),
-            "Clicked".to_string(),
-        );
+        responses.insert("browser_click".to_string(), "Clicked".to_string());
         responses.insert("browser_type".to_string(), "Typed".to_string());
         responses.insert(
             "browser_get_text".to_string(),
             "Page text content".to_string(),
         );
-        responses.insert(
-            "browser_fill".to_string(),
-            "Filled".to_string(),
-        );
+        responses.insert("browser_fill".to_string(), "Filled".to_string());
         responses.insert(
             "browser_wait_for_selector".to_string(),
             "Element found".to_string(),
@@ -47,14 +41,8 @@ impl MockMCPCaller {
             "capture_screenshot_to_file".to_string(),
             "Screenshot saved".to_string(),
         );
-        responses.insert(
-            "click_window".to_string(),
-            "Clicked".to_string(),
-        );
-        responses.insert(
-            "send_key_to_window".to_string(),
-            "Keys sent".to_string(),
-        );
+        responses.insert("click_window".to_string(), "Clicked".to_string());
+        responses.insert("send_key_to_window".to_string(), "Keys sent".to_string());
         responses.insert(
             "get_window_text".to_string(),
             "Window text content".to_string(),
@@ -107,7 +95,11 @@ async fn test_browser_navigate_with_mcp() {
     let result = tool
         .execute(&serde_json::json!({"action": "navigate", "url": "https://example.com"}))
         .await;
-    assert!(!result.is_error, "Expected success, got: {}", result.for_llm);
+    assert!(
+        !result.is_error,
+        "Expected success, got: {}",
+        result.for_llm
+    );
     assert!(result.for_llm.contains("Navigated"));
 }
 
@@ -132,9 +124,7 @@ async fn test_browser_click_with_selector() {
 #[tokio::test]
 async fn test_browser_click_no_selector_or_text() {
     let tool = BrowserTool::new(".", Some(Box::new(MockMCPCaller::new(true))));
-    let result = tool
-        .execute(&serde_json::json!({"action": "click"}))
-        .await;
+    let result = tool.execute(&serde_json::json!({"action": "click"})).await;
     assert!(result.is_error);
 }
 
@@ -214,9 +204,7 @@ async fn test_screen_capture_full_screen_no_mcp() {
 #[tokio::test]
 async fn test_screen_capture_region_missing_coords() {
     let tool = ScreenCaptureTool::new(".", None);
-    let result = tool
-        .execute(&serde_json::json!({"mode": "region"}))
-        .await;
+    let result = tool.execute(&serde_json::json!({"mode": "region"})).await;
     assert!(result.is_error);
     assert!(result.for_llm.contains("required"));
 }
@@ -224,18 +212,14 @@ async fn test_screen_capture_region_missing_coords() {
 #[tokio::test]
 async fn test_screen_capture_window_no_params() {
     let tool = ScreenCaptureTool::new(".", None);
-    let result = tool
-        .execute(&serde_json::json!({"mode": "window"}))
-        .await;
+    let result = tool.execute(&serde_json::json!({"mode": "window"})).await;
     assert!(result.is_error);
 }
 
 #[tokio::test]
 async fn test_screen_capture_unknown_mode() {
     let tool = ScreenCaptureTool::new(".", None);
-    let result = tool
-        .execute(&serde_json::json!({"mode": "invalid"}))
-        .await;
+    let result = tool.execute(&serde_json::json!({"mode": "invalid"})).await;
     assert!(result.is_error);
 }
 
@@ -337,7 +321,10 @@ fn test_browser_action_display() {
     assert_eq!(BrowserAction::Type.to_string(), "type");
     assert_eq!(BrowserAction::ExtractText.to_string(), "extract_text");
     assert_eq!(BrowserAction::FillForm.to_string(), "fill_form");
-    assert_eq!(BrowserAction::WaitForElement.to_string(), "wait_for_element");
+    assert_eq!(
+        BrowserAction::WaitForElement.to_string(),
+        "wait_for_element"
+    );
 }
 
 #[tokio::test]
@@ -363,9 +350,7 @@ async fn test_browser_navigate_missing_url() {
 #[tokio::test]
 async fn test_browser_type_missing_text() {
     let tool = BrowserTool::new(".", Some(Box::new(MockMCPCaller::new(true))));
-    let result = tool
-        .execute(&serde_json::json!({"action": "type"}))
-        .await;
+    let result = tool.execute(&serde_json::json!({"action": "type"})).await;
     assert!(result.is_error);
     assert!(result.for_llm.contains("text"));
 }
@@ -396,7 +381,9 @@ async fn test_browser_click_with_text_fallback() {
         .execute(&serde_json::json!({"action": "click", "selector": "#submit-btn"}))
         .await;
     // Click uses MCP which succeeds with mock
-    assert!(!result.is_error || result.for_llm.contains("click") || result.for_llm.contains("selector"));
+    assert!(
+        !result.is_error || result.for_llm.contains("click") || result.for_llm.contains("selector")
+    );
 }
 
 #[tokio::test]
@@ -435,7 +422,9 @@ async fn test_screen_capture_region_with_coords() {
         }))
         .await;
     // On non-Windows without MCP, may error
-    assert!(!result.is_error || result.for_llm.contains("MCP") || result.for_llm.contains("screenshot"));
+    assert!(
+        !result.is_error || result.for_llm.contains("MCP") || result.for_llm.contains("screenshot")
+    );
 }
 
 #[tokio::test]
@@ -465,10 +454,13 @@ async fn test_screen_capture_with_mcp() {
             &self,
             _tool_name: &str,
             _args: &serde_json::Value,
-        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send + '_>> {
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send + '_>>
+        {
             Box::pin(async { Ok("captured".to_string()) })
         }
-        fn is_connected(&self) -> bool { true }
+        fn is_connected(&self) -> bool {
+            true
+        }
     }
     let tool = ScreenCaptureTool::new(".", Some(Box::new(MockMCPCaller)));
     let _result = tool
@@ -487,12 +479,15 @@ impl MCPToolCaller for SimpleMockMCP {
         &self,
         tool_name: &str,
         _args: &serde_json::Value,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send + '_>> {
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send + '_>>
+    {
         let name = tool_name.to_string();
         Box::pin(async move {
             match name.as_str() {
                 "find_window_by_title" => Ok(r#"{"hwnd":"HWND(0xAAAA)"}"#.to_string()),
-                "enumerate_windows" => Ok("[{\"hwnd\":\"HWND(0xAAAA)\",\"title\":\"Test\"}]".to_string()),
+                "enumerate_windows" => {
+                    Ok("[{\"hwnd\":\"HWND(0xAAAA)\",\"title\":\"Test\"}]".to_string())
+                }
                 "click_window" => Ok("Clicked".to_string()),
                 "send_key_to_window" => Ok("Keys sent".to_string()),
                 "capture_screenshot_to_file" => Ok("Screenshot saved".to_string()),
@@ -501,7 +496,9 @@ impl MCPToolCaller for SimpleMockMCP {
             }
         })
     }
-    fn is_connected(&self) -> bool { true }
+    fn is_connected(&self) -> bool {
+        true
+    }
 }
 
 #[tokio::test]
@@ -607,9 +604,7 @@ fn test_desktop_action_equality() {
 #[tokio::test]
 async fn test_browser_click_missing_all_params() {
     let tool = BrowserTool::new("test", None);
-    let result = tool
-        .execute(&serde_json::json!({"action": "click"}))
-        .await;
+    let result = tool.execute(&serde_json::json!({"action": "click"})).await;
     assert!(result.is_error);
 }
 

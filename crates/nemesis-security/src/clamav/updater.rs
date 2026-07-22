@@ -1,8 +1,8 @@
 //! ClamAV virus database updater.
 
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, SystemTime};
 use tokio::process::Command;
 
@@ -67,7 +67,9 @@ impl Updater {
             cb(0, 0);
         }
 
-        let mut child = cmd.spawn().map_err(|e| format!("freshclam failed: {}", e))?;
+        let mut child = cmd
+            .spawn()
+            .map_err(|e| format!("freshclam failed: {}", e))?;
 
         let status = tokio::select! {
             _ = cancel_token.cancelled() => {
@@ -148,7 +150,9 @@ impl Updater {
             match tokio::time::timeout(
                 Duration::from_secs(300),
                 self.update(tokio_util::sync::CancellationToken::new(), None),
-            ).await {
+            )
+            .await
+            {
                 Ok(Ok(())) => {}
                 Ok(Err(e)) => {
                     tracing::error!(error = %e, "[Scanner] Auto-update failed");
@@ -166,7 +170,6 @@ impl Updater {
     pub fn stop(&self) {
         self.running.store(false, Ordering::SeqCst);
     }
-
 }
 
 #[cfg(test)]

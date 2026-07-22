@@ -4,8 +4,8 @@
 //! llm, tool, condition, parallel, loop, sub_workflow, transform, http, script, delay, human_review.
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use async_trait::async_trait;
 use chrono::Local;
@@ -44,10 +44,7 @@ pub trait NodeExecutor: Send + Sync {
 ///
 /// Looks for either "nodes" or "branches" key. Each child is expected to be
 /// a JSON object with at least "id" and "node_type" fields.
-fn get_config_node_list(
-    config: &HashMap<String, serde_json::Value>,
-    key: &str,
-) -> Vec<NodeDef> {
+fn get_config_node_list(config: &HashMap<String, serde_json::Value>, key: &str) -> Vec<NodeDef> {
     let arr = match config.get(key).and_then(|v| v.as_array()) {
         Some(a) => a,
         None => return Vec::new(),
@@ -88,10 +85,7 @@ fn get_config_node_list(
             })
             .unwrap_or_default();
 
-        let retry_count = obj
-            .get("retry_count")
-            .and_then(|v| v.as_u64())
-            .unwrap_or(0) as usize;
+        let retry_count = obj.get("retry_count").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
 
         let timeout = obj
             .get("timeout")
@@ -325,14 +319,8 @@ impl NodeExecutor for RealLLMNodeExecutor {
             .map(|s| s.to_string())
             .unwrap_or_else(|| self.provider.default_model().to_string());
 
-        let temperature = node
-            .config
-            .get("temperature")
-            .and_then(|v| v.as_f64());
-        let max_tokens = node
-            .config
-            .get("max_tokens")
-            .and_then(|v| v.as_i64());
+        let temperature = node.config.get("temperature").and_then(|v| v.as_f64());
+        let max_tokens = node.config.get("max_tokens").and_then(|v| v.as_i64());
 
         let system_prompt = node
             .config
@@ -372,11 +360,7 @@ impl NodeExecutor for RealLLMNodeExecutor {
         };
 
         // ---- Invoke provider ----
-        match self
-            .provider
-            .chat(&messages, &[], &model, &options)
-            .await
-        {
+        match self.provider.chat(&messages, &[], &model, &options).await {
             Ok(resp) => {
                 if let Some(ref u) = resp.usage {
                     record_llm_usage(&self.usage_store, &node.id, &model, u, started);
@@ -426,11 +410,7 @@ fn success_node_result(
 }
 
 /// Build a Failed NodeResult with the given error message.
-fn failed_node_result(
-    node_id: &str,
-    started: chrono::DateTime<Local>,
-    error: &str,
-) -> NodeResult {
+fn failed_node_result(node_id: &str, started: chrono::DateTime<Local>, error: &str) -> NodeResult {
     NodeResult {
         node_id: node_id.to_string(),
         output: serde_json::Value::Null,
@@ -547,12 +527,21 @@ impl NodeExecutor for RealToolNodeExecutor {
             }
         };
 
-        let raw_args = node.config.get("args").cloned().unwrap_or(serde_json::Value::Null);
+        let raw_args = node
+            .config
+            .get("args")
+            .cloned()
+            .unwrap_or(serde_json::Value::Null);
         let resolved_args = resolve_template_value(&raw_args, context);
 
         let tool_result = self.tools.execute(tool_name, &resolved_args).await;
 
-        Ok(tool_result_to_node_result(&node.id, started, tool_name, tool_result))
+        Ok(tool_result_to_node_result(
+            &node.id,
+            started,
+            tool_name,
+            tool_result,
+        ))
     }
 }
 
@@ -568,9 +557,11 @@ fn resolve_template_value(
         serde_json::Value::String(s) => {
             serde_json::Value::String(resolve_prompt_template(s, context))
         }
-        serde_json::Value::Array(arr) => {
-            serde_json::Value::Array(arr.iter().map(|v| resolve_template_value(v, context)).collect())
-        }
+        serde_json::Value::Array(arr) => serde_json::Value::Array(
+            arr.iter()
+                .map(|v| resolve_template_value(v, context))
+                .collect(),
+        ),
         serde_json::Value::Object(obj) => {
             let resolved: serde_json::Map<String, serde_json::Value> = obj
                 .iter()
@@ -697,7 +688,6 @@ fn tool_failed_node_result(
         metadata: HashMap::new(),
     }
 }
-
 
 // ---------------------------------------------------------------------------
 // Condition Node
@@ -1084,10 +1074,7 @@ impl NodeExecutor for TransformNodeExecutor {
 /// the original output is returned as-is. The workflow_chat reply observer
 /// will then JSON-dump it via the existing fallback path — same behavior
 /// as if output_type had not been set.
-fn unwrap_text_output_if_requested(
-    output: serde_json::Value,
-    node: &NodeDef,
-) -> serde_json::Value {
+fn unwrap_text_output_if_requested(output: serde_json::Value, node: &NodeDef) -> serde_json::Value {
     let output_type = match node.config.get("output_type").and_then(|v| v.as_str()) {
         Some(t) => t,
         None => return output,
@@ -1124,17 +1111,13 @@ fn json_path_lookup(root: &serde_json::Value, path: &str) -> serde_json::Value {
     for raw in path.split('.') {
         // Extract a leading key (may be empty if path starts with [0]).
         let bytes = raw.as_bytes();
-        let key_end = bytes
-            .iter()
-            .position(|&b| b == b'[')
-            .unwrap_or(raw.len());
+        let key_end = bytes.iter().position(|&b| b == b'[').unwrap_or(raw.len());
         if key_end > 0 {
             let key = &raw[..key_end];
             current = match &current {
-                serde_json::Value::Object(obj) => obj
-                    .get(key)
-                    .cloned()
-                    .unwrap_or(serde_json::Value::Null),
+                serde_json::Value::Object(obj) => {
+                    obj.get(key).cloned().unwrap_or(serde_json::Value::Null)
+                }
                 _ => serde_json::Value::Null,
             };
         }
@@ -1163,7 +1146,9 @@ fn json_path_lookup(root: &serde_json::Value, path: &str) -> serde_json::Value {
                     } else {
                         i as usize
                     };
-                    arr.get(real_idx).cloned().unwrap_or(serde_json::Value::Null)
+                    arr.get(real_idx)
+                        .cloned()
+                        .unwrap_or(serde_json::Value::Null)
                 }
                 _ => serde_json::Value::Null,
             };
@@ -1356,18 +1341,13 @@ impl NodeExecutor for LoopNodeExecutor {
                         if let Some(obj) = result.output.as_object() {
                             for (k, v) in obj {
                                 local_ctx.insert(k.clone(), v.clone());
-                                local_ctx.insert(
-                                    format!("{}.{}", child_def.id, k),
-                                    v.clone(),
-                                );
+                                local_ctx.insert(format!("{}.{}", child_def.id, k), v.clone());
                             }
                         }
                     }
                     Err(e) => {
-                        loop_error = Some(format!(
-                            "loop iteration {} node {}: {}",
-                            i, child_def.id, e
-                        ));
+                        loop_error =
+                            Some(format!("loop iteration {} node {}: {}", i, child_def.id, e));
                         iteration_failed = true;
                         break;
                     }
@@ -1506,9 +1486,12 @@ impl NodeExecutor for SubWorkflowNodeExecutor {
         // because the scheduler treats `Ok(result) where error.is_none()` as
         // success regardless of `result.state`.
         let error = if exec_result.state == ExecutionState::Failed {
-            Some(exec_result.error.clone().unwrap_or_else(|| {
-                "sub_workflow child execution failed".to_string()
-            }))
+            Some(
+                exec_result
+                    .error
+                    .clone()
+                    .unwrap_or_else(|| "sub_workflow child execution failed".to_string()),
+            )
         } else {
             None
         };
@@ -1609,10 +1592,8 @@ impl NodeExecutor for HTTPNodeExecutor {
             .and_then(|v| v.as_object())
             .cloned()
             .unwrap_or_default();
-        let resolved_headers = resolve_template_value(
-            &serde_json::Value::Object(headers_raw),
-            context,
-        );
+        let resolved_headers =
+            resolve_template_value(&serde_json::Value::Object(headers_raw), context);
 
         let mut req_builder = req_builder;
         if let Some(obj) = resolved_headers.as_object() {
@@ -1640,10 +1621,7 @@ impl NodeExecutor for HTTPNodeExecutor {
         let mut resp_headers = serde_json::Map::new();
         for (key, value) in resp.headers() {
             if let Ok(v) = value.to_str() {
-                resp_headers.insert(
-                    key.as_str().to_string(),
-                    serde_json::json!(v),
-                );
+                resp_headers.insert(key.as_str().to_string(), serde_json::json!(v));
             }
         }
 
@@ -1821,12 +1799,7 @@ impl NodeExecutor for ScriptNodeExecutor {
         let exit_code = output.status.code().unwrap_or(-1) as i64;
 
         Ok(script_output_node_result(
-            &node.id,
-            now,
-            language,
-            stdout,
-            stderr,
-            exit_code,
+            &node.id, now, language, stdout, stderr, exit_code,
         ))
     }
 }
@@ -2411,10 +2384,7 @@ impl NodeExecutor for ParameterExtractorNodeExecutor {
                     .iter()
                     .map(|p| {
                         let req = if p.required { " (required)" } else { "" };
-                        format!(
-                            "- {} [{}]{}: {}",
-                            p.name, p.r#type, req, p.description
-                        )
+                        format!("- {} [{}]{}: {}", p.name, p.r#type, req, p.description)
                     })
                     .collect::<Vec<_>>()
                     .join("\n");
@@ -2464,9 +2434,7 @@ impl NodeExecutor for ParameterExtractorNodeExecutor {
                     match parse_json_object(&content) {
                         Ok(obj) => {
                             let normalized = normalize_object(&obj, &params);
-                            if let Err(missing) =
-                                validate_required_params(&normalized, &params)
-                            {
+                            if let Err(missing) = validate_required_params(&normalized, &params) {
                                 last_error = Some(format!(
                                     "attempt {}: missing required parameters: {}",
                                     attempt, missing
@@ -2567,18 +2535,12 @@ fn parse_json_object(content: &str) -> Result<serde_json::Value, String> {
 
 /// Ensure every declared parameter appears in the output object. Missing
 /// keys are filled in with null so downstream consumers see a stable shape.
-fn normalize_object(
-    parsed: &serde_json::Value,
-    params: &[ParamDef],
-) -> serde_json::Value {
+fn normalize_object(parsed: &serde_json::Value, params: &[ParamDef]) -> serde_json::Value {
     let mut obj = match parsed.as_object() {
         Some(o) => o.clone(),
         None => {
             let mut m = serde_json::Map::new();
-            m.insert(
-                "_value".to_string(),
-                parsed.clone(),
-            );
+            m.insert("_value".to_string(), parsed.clone());
             m
         }
     };
@@ -2744,7 +2706,11 @@ impl NodeExecutor for AgentNodeExecutor {
             .and_then(|v| v.as_str())
             .filter(|s| !s.is_empty());
 
-        match self.runner.run_direct(&prompt, &agent_id, max_turns, model).await {
+        match self
+            .runner
+            .run_direct(&prompt, &agent_id, max_turns, model)
+            .await
+        {
             Ok(result) => Ok(NodeResult {
                 node_id: node.id.clone(),
                 output: serde_json::json!({
@@ -2814,7 +2780,10 @@ impl NodeExecutorRegistry {
         executors.insert("transform".to_string(), Arc::new(TransformNodeExecutor));
         executors.insert("http".to_string(), Arc::new(HTTPNodeExecutor));
         executors.insert("script".to_string(), Arc::new(ScriptNodeExecutor::new()));
-        executors.insert("human_review".to_string(), Arc::new(HumanReviewNodeExecutor));
+        executors.insert(
+            "human_review".to_string(),
+            Arc::new(HumanReviewNodeExecutor),
+        );
         executors
     }
 
@@ -2837,9 +2806,10 @@ impl NodeExecutorRegistry {
         let reg = Arc::new(Self::new());
         let _ = reg.self_weak.set(Arc::downgrade(&reg));
         reg.setup_composite_executors();
-        reg.executors
-            .write()
-            .insert("sub_workflow".to_string(), Arc::new(SubWorkflowNodeExecutor::new(engine)));
+        reg.executors.write().insert(
+            "sub_workflow".to_string(),
+            Arc::new(SubWorkflowNodeExecutor::new(engine)),
+        );
         reg
     }
 
@@ -3100,18 +3070,13 @@ impl NodeExecutor for LoopNodeStub {
                         if let Some(obj) = result.output.as_object() {
                             for (k, v) in obj {
                                 local_ctx.insert(k.clone(), v.clone());
-                                local_ctx.insert(
-                                    format!("{}.{}", child_def.id, k),
-                                    v.clone(),
-                                );
+                                local_ctx.insert(format!("{}.{}", child_def.id, k), v.clone());
                             }
                         }
                     }
                     Err(e) => {
-                        loop_error = Some(format!(
-                            "loop iteration {} node {}: {}",
-                            i, child_def.id, e
-                        ));
+                        loop_error =
+                            Some(format!("loop iteration {} node {}: {}", i, child_def.id, e));
                         iteration_failed = true;
                         break;
                     }
@@ -3234,12 +3199,36 @@ async fn execute_inline_node(
     // Create a local workflow context for inline execution
     let local_wf_ctx = WorkflowContext::new(context.clone());
     match node_def.node_type.as_str() {
-        "delay" => DelayNodeExecutor.execute(node_def, context, &local_wf_ctx).await,
-        "transform" => TransformNodeExecutor.execute(node_def, context, &local_wf_ctx).await,
-        "condition" => ConditionNodeExecutor.execute(node_def, context, &local_wf_ctx).await,
-        "http" => HTTPNodeExecutor.execute(node_def, context, &local_wf_ctx).await,
-        "script" => ScriptNodeExecutor::new().execute(node_def, context, &local_wf_ctx).await,
-        "human_review" => HumanReviewNodeExecutor.execute(node_def, context, &local_wf_ctx).await,
+        "delay" => {
+            DelayNodeExecutor
+                .execute(node_def, context, &local_wf_ctx)
+                .await
+        }
+        "transform" => {
+            TransformNodeExecutor
+                .execute(node_def, context, &local_wf_ctx)
+                .await
+        }
+        "condition" => {
+            ConditionNodeExecutor
+                .execute(node_def, context, &local_wf_ctx)
+                .await
+        }
+        "http" => {
+            HTTPNodeExecutor
+                .execute(node_def, context, &local_wf_ctx)
+                .await
+        }
+        "script" => {
+            ScriptNodeExecutor::new()
+                .execute(node_def, context, &local_wf_ctx)
+                .await
+        }
+        "human_review" => {
+            HumanReviewNodeExecutor
+                .execute(node_def, context, &local_wf_ctx)
+                .await
+        }
         // For complex types (llm, tool, parallel, loop, sub_workflow),
         // surface a Failed result so tests built on the stub executors
         // blow up loudly instead of silently producing a "skipped"
@@ -3281,10 +3270,7 @@ async fn execute_inline_node(
 /// - Bare variable name — truthy check against the context value
 ///   (numbers: non-zero; strings: non-empty; etc.)
 /// - Literal `"true"` / `"false"` — boolean
-pub fn evaluate_condition(
-    condition: &str,
-    context: &HashMap<String, serde_json::Value>,
-) -> bool {
+pub fn evaluate_condition(condition: &str, context: &HashMap<String, serde_json::Value>) -> bool {
     let condition = condition.trim();
     if condition.is_empty() {
         return false;
@@ -3338,22 +3324,28 @@ fn compare_values(
             "<=" => a <= b,
             "==" => a == b,
             "!=" => a != b,
-            ">"  => a > b,
-            "<"  => a < b,
+            ">" => a > b,
+            "<" => a < b,
             _ => false,
         };
     }
 
     // Fall back to string comparison.
-    let ls = match &lv { serde_json::Value::String(s) => s.clone(), o => o.to_string() };
-    let rs = match &rv { serde_json::Value::String(s) => s.clone(), o => o.to_string() };
+    let ls = match &lv {
+        serde_json::Value::String(s) => s.clone(),
+        o => o.to_string(),
+    };
+    let rs = match &rv {
+        serde_json::Value::String(s) => s.clone(),
+        o => o.to_string(),
+    };
     match op {
         ">=" => ls >= rs,
         "<=" => ls <= rs,
         "==" => ls == rs,
         "!=" => ls != rs,
-        ">"  => ls > rs,
-        "<"  => ls < rs,
+        ">" => ls > rs,
+        "<" => ls < rs,
         _ => false,
     }
 }
@@ -3370,8 +3362,9 @@ fn resolve_operand(s: &str, context: &HashMap<String, serde_json::Value>) -> ser
         return serde_json::Value::Null;
     }
     let bytes = trimmed.as_bytes();
-    if bytes.len() >= 2 && ((bytes[0] == b'"' && bytes[bytes.len() - 1] == b'"')
-        || (bytes[0] == b'\'' && bytes[bytes.len() - 1] == b'\''))
+    if bytes.len() >= 2
+        && ((bytes[0] == b'"' && bytes[bytes.len() - 1] == b'"')
+            || (bytes[0] == b'\'' && bytes[bytes.len() - 1] == b'\''))
     {
         return serde_json::Value::String(trimmed[1..trimmed.len() - 1].to_string());
     }
@@ -3383,9 +3376,15 @@ fn resolve_operand(s: &str, context: &HashMap<String, serde_json::Value>) -> ser
             return serde_json::Value::Number(num);
         }
     }
-    if trimmed == "true" { return serde_json::Value::Bool(true); }
-    if trimmed == "false" { return serde_json::Value::Bool(false); }
-    if trimmed == "null" { return serde_json::Value::Null; }
+    if trimmed == "true" {
+        return serde_json::Value::Bool(true);
+    }
+    if trimmed == "false" {
+        return serde_json::Value::Bool(false);
+    }
+    if trimmed == "null" {
+        return serde_json::Value::Null;
+    }
     serde_json::Value::String(trimmed.to_string())
 }
 

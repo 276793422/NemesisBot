@@ -59,7 +59,10 @@ fn test_parse_json_int64() {
         OneBotChannel::parse_json_int64(&serde_json::json!("12345")),
         Some(12345)
     );
-    assert_eq!(OneBotChannel::parse_json_int64(&serde_json::json!(null)), None);
+    assert_eq!(
+        OneBotChannel::parse_json_int64(&serde_json::json!(null)),
+        None
+    );
 }
 
 #[test]

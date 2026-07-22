@@ -13,8 +13,8 @@ use crate::events::EventHub;
 use crate::session::SessionManager;
 use crate::ws_router::{ModuleHandler, RequestContext};
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, AtomicUsize};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicUsize};
 use std::time::Instant;
 
 // -----------------------------------------------------------------------
@@ -48,7 +48,9 @@ fn make_ctx(dir: &tempfile::TempDir) -> RequestContext {
         cluster_service: None,
         cluster_log_dir: None,
         workflow_engine: None,
-        chat_secret_store: std::sync::Arc::new(nemesis_workflow::chat_secrets::ChatSecretStore::in_memory()),
+        chat_secret_store: std::sync::Arc::new(
+            nemesis_workflow::chat_secrets::ChatSecretStore::in_memory(),
+        ),
         webhook_rate_limiter: Arc::new(crate::handlers::workflow::WebhookRateLimiter::new()),
         internal_cmd_tx: None,
         estop: None,
@@ -90,7 +92,9 @@ fn make_ctx_no_workspace() -> RequestContext {
         cluster_service: None,
         cluster_log_dir: None,
         workflow_engine: None,
-        chat_secret_store: std::sync::Arc::new(nemesis_workflow::chat_secrets::ChatSecretStore::in_memory()),
+        chat_secret_store: std::sync::Arc::new(
+            nemesis_workflow::chat_secrets::ChatSecretStore::in_memory(),
+        ),
         webhook_rate_limiter: Arc::new(crate::handlers::workflow::WebhookRateLimiter::new()),
         internal_cmd_tx: None,
         estop: None,
@@ -246,10 +250,7 @@ async fn test_config_get_with_engines() {
         .unwrap()
         .unwrap();
     assert_eq!(result["enabled"][0], "clamav");
-    assert_eq!(
-        result["engines"]["clamav"]["address"],
-        "127.0.0.1:3310"
-    );
+    assert_eq!(result["engines"]["clamav"]["address"], "127.0.0.1:3310");
 }
 
 // -----------------------------------------------------------------------
@@ -323,7 +324,11 @@ async fn test_status_empty() {
     write_scanner_config(dir.path(), &cfg);
     let ctx = make_ctx(&dir);
 
-    let result = handler.handle_cmd("status", None, &ctx).await.unwrap().unwrap();
+    let result = handler
+        .handle_cmd("status", None, &ctx)
+        .await
+        .unwrap()
+        .unwrap();
     assert!(result["engines"].is_array());
     assert_eq!(result["engines"].as_array().unwrap().len(), 0);
 }
@@ -338,7 +343,11 @@ async fn test_status_reports_enabled_flag() {
     write_scanner_config(dir.path(), &cfg);
     let ctx = make_ctx(&dir);
 
-    let result = handler.handle_cmd("status", None, &ctx).await.unwrap().unwrap();
+    let result = handler
+        .handle_cmd("status", None, &ctx)
+        .await
+        .unwrap()
+        .unwrap();
     let engines = result["engines"].as_array().unwrap();
     assert_eq!(engines.len(), 1);
     assert_eq!(engines[0]["name"], "clamav");
@@ -438,7 +447,11 @@ async fn test_check_marks_installed_when_executables_exist() {
     // Pretend an install dir contains clam executables.
     let fake_install = dir.path().join("fake_install");
     std::fs::create_dir_all(&fake_install).unwrap();
-    let exe_name = if cfg!(windows) { "clamscan.exe" } else { "clamscan" };
+    let exe_name = if cfg!(windows) {
+        "clamscan.exe"
+    } else {
+        "clamscan"
+    };
     std::fs::write(fake_install.join(exe_name), b"fake").unwrap();
 
     let engine = nemesis_config::ClamAVEngineConfig {
@@ -480,10 +493,12 @@ async fn test_check_marks_failed_when_path_missing_executables() {
         .unwrap()
         .unwrap();
     assert_eq!(result["state"]["install_status"], "failed");
-    assert!(result["state"]["install_error"]
-        .as_str()
-        .unwrap()
-        .contains("executable not found"));
+    assert!(
+        result["state"]["install_error"]
+            .as_str()
+            .unwrap()
+            .contains("executable not found")
+    );
 }
 
 #[tokio::test]
@@ -522,10 +537,7 @@ async fn test_enable_missing_data() {
     let handler = scanner::ScannerHandler::new();
     let dir = tempfile::tempdir().unwrap();
     let ctx = make_ctx(&dir);
-    let err = handler
-        .handle_cmd("enable", None, &ctx)
-        .await
-        .unwrap_err();
+    let err = handler.handle_cmd("enable", None, &ctx).await.unwrap_err();
     assert_eq!(err, "missing data");
 }
 
@@ -615,10 +627,7 @@ async fn test_disable_missing_data() {
     let handler = scanner::ScannerHandler::new();
     let dir = tempfile::tempdir().unwrap();
     let ctx = make_ctx(&dir);
-    let err = handler
-        .handle_cmd("disable", None, &ctx)
-        .await
-        .unwrap_err();
+    let err = handler.handle_cmd("disable", None, &ctx).await.unwrap_err();
     assert_eq!(err, "missing data");
 }
 
@@ -1001,10 +1010,7 @@ async fn test_install_missing_data() {
     let handler = scanner::ScannerHandler::new();
     let dir = tempfile::tempdir().unwrap();
     let ctx = make_ctx(&dir);
-    let err = handler
-        .handle_cmd("install", None, &ctx)
-        .await
-        .unwrap_err();
+    let err = handler.handle_cmd("install", None, &ctx).await.unwrap_err();
     assert_eq!(err, "missing data");
 }
 
@@ -1098,10 +1104,7 @@ async fn test_update_db_starts_then_blocks_duplicate() {
             Err(e) if e.contains("already in progress") => {
                 attempt += 1;
                 if attempt > 50 {
-                    panic!(
-                        "update_db op never cleared after 5s; last error: {}",
-                        e
-                    );
+                    panic!("update_db op never cleared after 5s; last error: {}", e);
                 }
             }
             Err(e) => panic!("unexpected error: {}", e),
@@ -1135,10 +1138,7 @@ async fn test_cancel_update_db_op_by_suffix_key() {
     // don't get "no active operation" while the op is in flight.
     let mut cancelled = false;
     for _ in 0..50 {
-        match handler
-            .handle_cmd("cancel", Some(data.clone()), &ctx)
-            .await
-        {
+        match handler.handle_cmd("cancel", Some(data.clone()), &ctx).await {
             Ok(r) => {
                 assert!(r.unwrap()["cancelled"].as_bool().unwrap());
                 cancelled = true;
@@ -1175,7 +1175,11 @@ async fn test_engine_response_preserves_custom_engine_fields() {
     write_scanner_config(dir.path(), &cfg);
     let ctx = make_ctx(&dir);
 
-    let result = handler.handle_cmd("status", None, &ctx).await.unwrap().unwrap();
+    let result = handler
+        .handle_cmd("status", None, &ctx)
+        .await
+        .unwrap()
+        .unwrap();
     let engines = result["engines"].as_array().unwrap();
     assert_eq!(engines[0]["custom_field"], "custom_value");
     assert_eq!(engines[0]["address"], "127.0.0.1:3310");
@@ -1202,7 +1206,11 @@ async fn test_status_sorts_engines_alphabetically() {
     write_scanner_config(dir.path(), &cfg);
     let ctx = make_ctx(&dir);
 
-    let result = handler.handle_cmd("status", None, &ctx).await.unwrap().unwrap();
+    let result = handler
+        .handle_cmd("status", None, &ctx)
+        .await
+        .unwrap()
+        .unwrap();
     let names: Vec<&str> = result["engines"]
         .as_array()
         .unwrap()

@@ -6,9 +6,9 @@
 //! - Phase 5 trace insights (tool chains, retries, signals)
 //! - Phase 6 learning cycle insights (patterns, actions, deployment feedback)
 
-use crate::reflector::{ReflectionReport, TraceStats};
 #[cfg(test)]
 use crate::reflector::{PatternInsight, ReflectionStats, RetryPattern, ToolChainPattern};
+use crate::reflector::{ReflectionReport, TraceStats};
 use crate::types::ExperienceStats;
 
 use nemesis_types::forge::{Artifact, LearningCycle};
@@ -144,11 +144,17 @@ pub fn format_report(
     let mut report = String::new();
 
     report.push_str("# Forge Reflection Report\n\n");
-    report.push_str(&format!("**Period**: {} to {}\n\n", period_start, period_end));
+    report.push_str(&format!(
+        "**Period**: {} to {}\n\n",
+        period_start, period_end
+    ));
 
     // Statistics section
     report.push_str("## Statistics\n\n");
-    report.push_str(&format!("- Total tool invocations: {}\n", stats.total_count));
+    report.push_str(&format!(
+        "- Total tool invocations: {}\n",
+        stats.total_count
+    ));
     report.push_str(&format!("- Successful: {}\n", stats.success_count));
     report.push_str(&format!("- Failed: {}\n", stats.failure_count));
     report.push_str(&format!(
@@ -159,7 +165,10 @@ pub fn format_report(
             0.0
         }
     ));
-    report.push_str(&format!("- Average duration: {:.0}ms\n\n", stats.avg_duration_ms));
+    report.push_str(&format!(
+        "- Average duration: {:.0}ms\n\n",
+        stats.avg_duration_ms
+    ));
 
     // Tool breakdown
     if !stats.tool_counts.is_empty() {
@@ -215,7 +224,10 @@ pub fn format_existing_artifacts(artifacts: &[Artifact]) -> String {
     for a in artifacts {
         let sr = if a.usage_count > 0 {
             let total = a.usage_count + a.consecutive_observing_rounds as u64;
-            format!("{:.0}%", (a.usage_count as f64 / total.max(1) as f64) * 100.0)
+            format!(
+                "{:.0}%",
+                (a.usage_count as f64 / total.max(1) as f64) * 100.0
+            )
         } else {
             "N/A".to_string()
         };
@@ -245,10 +257,7 @@ pub fn format_trace_insights(stats: &TraceStats) -> String {
     let mut sb = String::new();
     sb.push_str("## Trace Insights\n\n");
     sb.push_str(&format!("- Total traces: {}\n", stats.total_traces));
-    sb.push_str(&format!(
-        "- Average rounds: {:.1}\n",
-        stats.avg_rounds
-    ));
+    sb.push_str(&format!("- Average rounds: {:.1}\n", stats.avg_rounds));
     sb.push_str(&format!(
         "- Average duration: {}ms\n",
         stats.avg_duration_ms
@@ -363,18 +372,9 @@ pub fn format_learning_insights_full(
     if let Some(ref completed) = cycle.completed_at {
         sb.push_str(&format!("- Completed: {}\n", completed));
     }
-    sb.push_str(&format!(
-        "- Status: {:?}\n",
-        cycle.status
-    ));
-    sb.push_str(&format!(
-        "- Patterns found: {}\n",
-        cycle.patterns_found
-    ));
-    sb.push_str(&format!(
-        "- Actions taken: {}\n\n",
-        cycle.actions_taken
-    ));
+    sb.push_str(&format!("- Status: {:?}\n", cycle.status));
+    sb.push_str(&format!("- Patterns found: {}\n", cycle.patterns_found));
+    sb.push_str(&format!("- Actions taken: {}\n\n", cycle.actions_taken));
 
     // Learning actions table
     if !actions.is_empty() {
@@ -382,10 +382,7 @@ pub fn format_learning_insights_full(
         sb.push_str("| Type | Priority | Status | Artifact ID |\n");
         sb.push_str("|------|----------|--------|------------|\n");
         for action in actions {
-            let artifact_id = action
-                .artifact_id
-                .as_deref()
-                .unwrap_or("-");
+            let artifact_id = action.artifact_id.as_deref().unwrap_or("-");
             sb.push_str(&format!(
                 "| {} | {} | {} | {} |\n",
                 truncate(&action.action_type, 15),

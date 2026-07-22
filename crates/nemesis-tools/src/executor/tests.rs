@@ -6,9 +6,15 @@ struct SlowTool;
 
 #[async_trait]
 impl Tool for SlowTool {
-    fn name(&self) -> &str { "slow" }
-    fn description(&self) -> &str { "A slow tool" }
-    fn parameters(&self) -> serde_json::Value { serde_json::json!({"type": "object"}) }
+    fn name(&self) -> &str {
+        "slow"
+    }
+    fn description(&self) -> &str {
+        "A slow tool"
+    }
+    fn parameters(&self) -> serde_json::Value {
+        serde_json::json!({"type": "object"})
+    }
     async fn execute(&self, _args: &serde_json::Value) -> ToolResult {
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
         ToolResult::success("done")
@@ -19,9 +25,15 @@ struct EchoTool;
 
 #[async_trait]
 impl Tool for EchoTool {
-    fn name(&self) -> &str { "echo" }
-    fn description(&self) -> &str { "Echo" }
-    fn parameters(&self) -> serde_json::Value { serde_json::json!({"type": "object"}) }
+    fn name(&self) -> &str {
+        "echo"
+    }
+    fn description(&self) -> &str {
+        "Echo"
+    }
+    fn parameters(&self) -> serde_json::Value {
+        serde_json::json!({"type": "object"})
+    }
     async fn execute(&self, args: &serde_json::Value) -> ToolResult {
         ToolResult::success(args["text"].as_str().unwrap_or(""))
     }
@@ -40,7 +52,9 @@ async fn test_execute_tool() {
     let registry = Arc::new(ToolRegistry::new());
     registry.register(Arc::new(EchoTool));
     let executor = ToolExecutor::new(registry, ExecutorConfig::default());
-    let result = executor.execute("echo", &serde_json::json!({"text": "hello"})).await;
+    let result = executor
+        .execute("echo", &serde_json::json!({"text": "hello"}))
+        .await;
     assert_eq!(result.for_llm, "hello");
 }
 
@@ -62,10 +76,13 @@ async fn test_execute_batch() {
 async fn test_timeout() {
     let registry = Arc::new(ToolRegistry::new());
     registry.register(Arc::new(SlowTool));
-    let executor = ToolExecutor::new(registry, ExecutorConfig {
-        timeout_secs: 0, // Immediate timeout
-        ..Default::default()
-    });
+    let executor = ToolExecutor::new(
+        registry,
+        ExecutorConfig {
+            timeout_secs: 0, // Immediate timeout
+            ..Default::default()
+        },
+    );
     let _result = executor.execute("slow", &serde_json::json!({})).await;
     // With 0 timeout, it should timeout
     // Note: 0s timeout is very aggressive, the slow tool sleeps 100ms
@@ -153,9 +170,15 @@ async fn test_execute_multiple_different_tools() {
     struct ReverseTool;
     #[async_trait]
     impl Tool for ReverseTool {
-        fn name(&self) -> &str { "reverse" }
-        fn description(&self) -> &str { "Reverse text" }
-        fn parameters(&self) -> serde_json::Value { serde_json::json!({"type": "object"}) }
+        fn name(&self) -> &str {
+            "reverse"
+        }
+        fn description(&self) -> &str {
+            "Reverse text"
+        }
+        fn parameters(&self) -> serde_json::Value {
+            serde_json::json!({"type": "object"})
+        }
         async fn execute(&self, args: &serde_json::Value) -> ToolResult {
             let text = args["text"].as_str().unwrap_or("");
             ToolResult::success(&text.chars().rev().collect::<String>())
@@ -181,9 +204,15 @@ async fn test_execute_tool_that_errors() {
     struct ErrorTool;
     #[async_trait]
     impl Tool for ErrorTool {
-        fn name(&self) -> &str { "error_tool" }
-        fn description(&self) -> &str { "Always errors" }
-        fn parameters(&self) -> serde_json::Value { serde_json::json!({"type": "object"}) }
+        fn name(&self) -> &str {
+            "error_tool"
+        }
+        fn description(&self) -> &str {
+            "Always errors"
+        }
+        fn parameters(&self) -> serde_json::Value {
+            serde_json::json!({"type": "object"})
+        }
         async fn execute(&self, _args: &serde_json::Value) -> ToolResult {
             ToolResult::error("deliberate error")
         }
@@ -206,13 +235,22 @@ async fn test_execute_concurrent_batch() {
 
     // Run 5 concurrent slow tools - they should all complete
     let calls: Vec<(String, serde_json::Value)> = (0..5)
-        .map(|i| ("slow".to_string(), serde_json::json!({"text": format!("task-{}", i)})))
+        .map(|i| {
+            (
+                "slow".to_string(),
+                serde_json::json!({"text": format!("task-{}", i)}),
+            )
+        })
         .collect();
 
     let results = executor.execute_batch(calls).await;
     assert_eq!(results.len(), 5);
     for result in &results {
-        assert!(!result.is_error, "Expected success, got: {}", result.for_llm);
+        assert!(
+            !result.is_error,
+            "Expected success, got: {}",
+            result.for_llm
+        );
     }
 }
 
@@ -222,15 +260,16 @@ async fn test_execute_concurrent_batch() {
 async fn test_execute_batch_timeout() {
     let registry = Arc::new(ToolRegistry::new());
     registry.register(Arc::new(SlowTool));
-    let executor = ToolExecutor::new(registry, ExecutorConfig {
-        timeout_secs: 0, // Immediate timeout
-        max_concurrent: 10,
-    });
+    let executor = ToolExecutor::new(
+        registry,
+        ExecutorConfig {
+            timeout_secs: 0, // Immediate timeout
+            max_concurrent: 10,
+        },
+    );
 
     let results = executor
-        .execute_batch(vec![
-            ("slow".to_string(), serde_json::json!({})),
-        ])
+        .execute_batch(vec![("slow".to_string(), serde_json::json!({}))])
         .await;
     assert_eq!(results.len(), 1);
     assert!(results[0].is_error);
@@ -260,12 +299,17 @@ async fn test_execute_batch_mixed_success_and_unknown() {
 async fn test_execute_with_custom_timeout() {
     let registry = Arc::new(ToolRegistry::new());
     registry.register(Arc::new(EchoTool));
-    let executor = ToolExecutor::new(registry, ExecutorConfig {
-        timeout_secs: 1,
-        max_concurrent: 5,
-    });
+    let executor = ToolExecutor::new(
+        registry,
+        ExecutorConfig {
+            timeout_secs: 1,
+            max_concurrent: 5,
+        },
+    );
 
-    let result = executor.execute("echo", &serde_json::json!({"text": "fast"})).await;
+    let result = executor
+        .execute("echo", &serde_json::json!({"text": "fast"}))
+        .await;
     assert!(!result.is_error);
     assert_eq!(result.for_llm, "fast");
 }

@@ -10,7 +10,7 @@
 use std::path::Path;
 
 use serde::{Deserialize, Serialize};
-use tracing::{info, warn, error};
+use tracing::{error, info, warn};
 
 // ---------------------------------------------------------------------------
 // Configuration types
@@ -33,7 +33,9 @@ pub struct EmbeddingConfig {
     pub models: ModelsConfig,
 }
 
-fn default_active() -> String { "medium".to_string() }
+fn default_active() -> String {
+    "medium".to_string()
+}
 
 impl Default for EmbeddingConfig {
     fn default() -> Self {
@@ -70,9 +72,11 @@ fn default_large() -> ModelConfig {
     ModelConfig {
         name: "bge-base-en-v1.5".into(),
         dimension: 768,
-        model_url: "https://hf-mirror.com/BAAI/bge-base-en-v1.5/resolve/main/onnx/model.onnx".into(),
+        model_url: "https://hf-mirror.com/BAAI/bge-base-en-v1.5/resolve/main/onnx/model.onnx"
+            .into(),
         model_size: 430000000,
-        tokenizer_url: "https://hf-mirror.com/BAAI/bge-base-en-v1.5/resolve/main/tokenizer.json".into(),
+        tokenizer_url: "https://hf-mirror.com/BAAI/bge-base-en-v1.5/resolve/main/tokenizer.json"
+            .into(),
         tokenizer_size: 700000,
         local_model_path: String::new(),
         local_tokenizer_path: String::new(),
@@ -214,14 +218,24 @@ pub fn load_embedding_config(config_dir: &Path) -> EmbeddingConfig {
 
     if !path.exists() {
         if let Err(e) = std::fs::create_dir_all(config_dir) {
-            warn!("[EmbeddingConfig] Failed to create config dir '{}': {}", config_dir.display(), e);
+            warn!(
+                "[EmbeddingConfig] Failed to create config dir '{}': {}",
+                config_dir.display(),
+                e
+            );
         } else {
             match std::fs::write(&path, default_config_json()) {
                 Ok(()) => {
-                    info!("[EmbeddingConfig] Default embedding config saved to {}", path.display());
+                    info!(
+                        "[EmbeddingConfig] Default embedding config saved to {}",
+                        path.display()
+                    );
                 }
                 Err(e) => {
-                    warn!("[EmbeddingConfig] Failed to save default embedding config: {}", e);
+                    warn!(
+                        "[EmbeddingConfig] Failed to save default embedding config: {}",
+                        e
+                    );
                 }
             }
         }
@@ -230,16 +244,27 @@ pub fn load_embedding_config(config_dir: &Path) -> EmbeddingConfig {
     match std::fs::read_to_string(&path) {
         Ok(content) => match serde_json::from_str::<EmbeddingConfig>(&content) {
             Ok(config) => {
-                info!("[EmbeddingConfig] Embedding config loaded from {}", path.display());
+                info!(
+                    "[EmbeddingConfig] Embedding config loaded from {}",
+                    path.display()
+                );
                 config
             }
             Err(e) => {
-                error!("[EmbeddingConfig] Failed to parse embedding config '{}': {}", path.display(), e);
+                error!(
+                    "[EmbeddingConfig] Failed to parse embedding config '{}': {}",
+                    path.display(),
+                    e
+                );
                 EmbeddingConfig::default()
             }
         },
         Err(e) => {
-            warn!("[EmbeddingConfig] Failed to read embedding config '{}': {}, using defaults", path.display(), e);
+            warn!(
+                "[EmbeddingConfig] Failed to read embedding config '{}': {}, using defaults",
+                path.display(),
+                e
+            );
             EmbeddingConfig::default()
         }
     }
@@ -251,13 +276,23 @@ pub fn save_embedding_config(config: &EmbeddingConfig, config_dir: &Path) {
     match serde_json::to_string_pretty(config) {
         Ok(content) => {
             if let Err(e) = std::fs::write(&path, content) {
-                warn!("[EmbeddingConfig] Failed to save embedding config to {}: {}", path.display(), e);
+                warn!(
+                    "[EmbeddingConfig] Failed to save embedding config to {}: {}",
+                    path.display(),
+                    e
+                );
             } else {
-                info!("[EmbeddingConfig] Embedding config saved to {}", path.display());
+                info!(
+                    "[EmbeddingConfig] Embedding config saved to {}",
+                    path.display()
+                );
             }
         }
         Err(e) => {
-            warn!("[EmbeddingConfig] Failed to serialize embedding config: {}", e);
+            warn!(
+                "[EmbeddingConfig] Failed to serialize embedding config: {}",
+                e
+            );
         }
     }
 }
@@ -271,7 +306,8 @@ pub fn save_embedding_config(config: &EmbeddingConfig, config_dir: &Path) {
 /// `config_dir` is `{workspace}/config`, so the data directory is
 /// `{workspace}/tools/memory/data/embedding`.
 pub fn embedding_data_dir(config_dir: &Path) -> std::path::PathBuf {
-    config_dir.parent()
+    config_dir
+        .parent()
         .unwrap_or(config_dir)
         .join("tools")
         .join("memory")
@@ -295,7 +331,10 @@ pub fn resolve_model_files(
     config_dir: &Path,
 ) -> Result<(String, i32), String> {
     let active = &config.active;
-    let model_conf = config.models.get(active).cloned()
+    let model_conf = config
+        .models
+        .get(active)
+        .cloned()
         .ok_or_else(|| format!("unknown active model tier: '{}'", active))?;
 
     let dim = model_conf.dimension;
@@ -312,16 +351,25 @@ pub fn resolve_model_files(
     let model_path = if !model_conf.local_model_path.is_empty()
         && Path::new(&model_conf.local_model_path).exists()
     {
-        info!("[EmbeddingConfig] Model found at {}", model_conf.local_model_path);
+        info!(
+            "[EmbeddingConfig] Model found at {}",
+            model_conf.local_model_path
+        );
         Path::new(&model_conf.local_model_path)
             .parent()
             .map(|p| p.to_path_buf())
             .unwrap_or_else(|| data_dir.clone())
     } else if data_dir.join("model.onnx").exists() {
-        info!("[EmbeddingConfig] Model found at {}", data_dir.join("model.onnx").display());
+        info!(
+            "[EmbeddingConfig] Model found at {}",
+            data_dir.join("model.onnx").display()
+        );
         data_dir.clone()
     } else if config_dir.join("model.onnx").exists() {
-        info!("[EmbeddingConfig] Model found at {}", config_dir.join("model.onnx").display());
+        info!(
+            "[EmbeddingConfig] Model found at {}",
+            config_dir.join("model.onnx").display()
+        );
         config_dir.to_path_buf()
     } else {
         return Err(format!(
@@ -345,7 +393,10 @@ pub fn download_model_files(
     config_dir: &Path,
 ) -> Result<(String, i32), String> {
     let active = config.active.clone();
-    let model_conf = config.models.get(&active).cloned()
+    let model_conf = config
+        .models
+        .get(&active)
+        .cloned()
         .ok_or_else(|| format!("unknown active model tier: '{}'", active))?;
 
     let dim = model_conf.dimension;
@@ -358,8 +409,7 @@ pub fn download_model_files(
 
     // Determine model data directory: {workspace}/tools/memory/data/embedding/{model_name}
     let data_dir = embedding_data_dir(config_dir).join(&model_conf.name);
-    std::fs::create_dir_all(&data_dir)
-        .map_err(|e| format!("failed to create model dir: {}", e))?;
+    std::fs::create_dir_all(&data_dir).map_err(|e| format!("failed to create model dir: {}", e))?;
 
     let model_dest = data_dir.join("model.onnx");
     let mut model_updated = false;
@@ -369,7 +419,10 @@ pub fn download_model_files(
     let model_path = if !model_conf.local_model_path.is_empty()
         && Path::new(&model_conf.local_model_path).exists()
     {
-        info!("[EmbeddingConfig] Model found at {}", model_conf.local_model_path);
+        info!(
+            "[EmbeddingConfig] Model found at {}",
+            model_conf.local_model_path
+        );
         Path::new(&model_conf.local_model_path)
             .parent()
             .map(|p| p.to_path_buf())
@@ -378,15 +431,27 @@ pub fn download_model_files(
         info!("[EmbeddingConfig] Model found at {}", model_dest.display());
         data_dir.clone()
     } else if config_dir.join("model.onnx").exists() {
-        info!("[EmbeddingConfig] Model found at {}", config_dir.join("model.onnx").display());
+        info!(
+            "[EmbeddingConfig] Model found at {}",
+            config_dir.join("model.onnx").display()
+        );
         config_dir.to_path_buf()
     } else if model_conf.model_url.is_empty() {
-        return Err(format!("model file not found and no URL configured for tier '{}'", active));
+        return Err(format!(
+            "model file not found and no URL configured for tier '{}'",
+            active
+        ));
     } else {
-        info!("[EmbeddingConfig] Downloading model from {}...", model_conf.model_url);
+        info!(
+            "[EmbeddingConfig] Downloading model from {}...",
+            model_conf.model_url
+        );
         download_file(&model_conf.model_url, &model_dest)?;
         model_updated = true;
-        info!("[EmbeddingConfig] Model downloaded to {}", model_dest.display());
+        info!(
+            "[EmbeddingConfig] Model downloaded to {}",
+            model_dest.display()
+        );
         data_dir.clone()
     };
 
@@ -398,13 +463,22 @@ pub fn download_model_files(
         {
             let src = Path::new(&model_conf.local_tokenizer_path);
             if let Err(e) = std::fs::copy(src, &tokenizer_path) {
-                warn!("[EmbeddingConfig] Failed to copy tokenizer to model dir: {}", e);
+                warn!(
+                    "[EmbeddingConfig] Failed to copy tokenizer to model dir: {}",
+                    e
+                );
             }
         } else if !model_conf.tokenizer_url.is_empty() {
-            info!("[EmbeddingConfig] Downloading tokenizer from {}...", model_conf.tokenizer_url);
+            info!(
+                "[EmbeddingConfig] Downloading tokenizer from {}...",
+                model_conf.tokenizer_url
+            );
             download_file(&model_conf.tokenizer_url, &tokenizer_path)?;
             tokenizer_updated = true;
-            info!("[EmbeddingConfig] Tokenizer downloaded to {}", tokenizer_path.display());
+            info!(
+                "[EmbeddingConfig] Tokenizer downloaded to {}",
+                tokenizer_path.display()
+            );
         }
     }
 
@@ -415,7 +489,10 @@ pub fn download_model_files(
                 mc.local_model_path = model_path.join("model.onnx").to_string_lossy().to_string();
             }
             if tokenizer_updated {
-                mc.local_tokenizer_path = model_path.join("tokenizer.json").to_string_lossy().to_string();
+                mc.local_tokenizer_path = model_path
+                    .join("tokenizer.json")
+                    .to_string_lossy()
+                    .to_string();
             }
         }
         save_embedding_config(config, config_dir);
@@ -434,10 +511,15 @@ fn download_file(url: &str, dest: &Path) -> Result<(), String> {
         .map_err(|e| format!("download request failed for {}: {}", url, e))?;
 
     if !response.status().is_success() {
-        return Err(format!("download failed for {}: HTTP {}", url, response.status()));
+        return Err(format!(
+            "download failed for {}: HTTP {}",
+            url,
+            response.status()
+        ));
     }
 
-    let bytes = response.bytes()
+    let bytes = response
+        .bytes()
         .map_err(|e| format!("failed to read download response: {}", e))?;
 
     if let Some(parent) = dest.parent() {

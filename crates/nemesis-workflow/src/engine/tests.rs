@@ -24,7 +24,7 @@ fn make_node(id: &str, node_type: &str, depends_on: Vec<&str>) -> NodeDef {
         depends_on: depends_on.into_iter().map(|s| s.to_string()).collect(),
         retry_count: 0,
         timeout: None,
-    is_terminal: false,
+        is_terminal: false,
     }
 }
 
@@ -119,7 +119,7 @@ async fn test_condition_evaluation_in_execution() {
             depends_on: vec!["n1".to_string()],
             retry_count: 0,
             timeout: None,
-        is_terminal: false,
+            is_terminal: false,
         },
     ];
     engine
@@ -157,7 +157,12 @@ async fn test_dependency_ordering_respected() {
     // All three nodes should have completed.
     assert_eq!(execution.node_results.len(), 3);
     for (id, result) in &execution.node_results {
-        assert_eq!(result.state, ExecutionState::Completed, "node {} failed", id);
+        assert_eq!(
+            result.state,
+            ExecutionState::Completed,
+            "node {} failed",
+            id
+        );
     }
 }
 
@@ -172,10 +177,7 @@ async fn test_get_execution_found() {
         .register_workflow(make_workflow("wf", vec![make_node("n1", "llm", vec![])]))
         .unwrap();
 
-    let execution = engine
-        .start_execution("wf", HashMap::new())
-        .await
-        .unwrap();
+    let execution = engine.start_execution("wf", HashMap::new()).await.unwrap();
     let id = execution.id.clone();
 
     let retrieved = engine.get_execution(&id).await;
@@ -210,10 +212,7 @@ async fn test_cancel_running_execution() {
         .register_workflow(make_workflow("wf", vec![make_node("n1", "llm", vec![])]))
         .unwrap();
 
-    let execution = engine
-        .start_execution("wf", HashMap::new())
-        .await
-        .unwrap();
+    let execution = engine.start_execution("wf", HashMap::new()).await.unwrap();
     // Execution is already completed since start_execution is synchronous.
     // Let's manually set up a running execution for testing cancel.
     let id = execution.id.clone();
@@ -254,7 +253,7 @@ async fn test_resume_waiting_execution() {
         depends_on: vec![],
         retry_count: 0,
         timeout: None,
-    is_terminal: false,
+        is_terminal: false,
     }];
     engine
         .register_workflow(make_workflow("hr_wf", nodes))
@@ -285,10 +284,7 @@ async fn test_resume_non_waiting_execution() {
         .register_workflow(make_workflow("wf", vec![make_node("n1", "llm", vec![])]))
         .unwrap();
 
-    let execution = engine
-        .start_execution("wf", HashMap::new())
-        .await
-        .unwrap();
+    let execution = engine.start_execution("wf", HashMap::new()).await.unwrap();
     // Execution completed normally
     assert_eq!(execution.state, ExecutionState::Completed);
 
@@ -301,9 +297,7 @@ async fn test_resume_non_waiting_execution() {
 #[tokio::test]
 async fn test_resume_nonexistent_execution() {
     let engine = WorkflowEngine::new();
-    let result = engine
-        .resume_execution("nonexistent", HashMap::new())
-        .await;
+    let result = engine.resume_execution("nonexistent", HashMap::new()).await;
     assert!(result.is_err());
     assert!(matches!(
         result.unwrap_err(),
@@ -324,10 +318,7 @@ async fn test_resume_runs_downstream_nodes() {
         NodeDef {
             id: "review".to_string(),
             node_type: "human_review".to_string(),
-            config: HashMap::from([(
-                "message".to_string(),
-                serde_json::json!("Please review"),
-            )]),
+            config: HashMap::from([("message".to_string(), serde_json::json!("Please review"))]),
             depends_on: vec![],
             retry_count: 0,
             timeout: None,
@@ -336,17 +327,16 @@ async fn test_resume_runs_downstream_nodes() {
         NodeDef {
             id: "after".to_string(),
             node_type: "llm".to_string(),
-            config: HashMap::from([(
-                "prompt".to_string(),
-                serde_json::json!("post-review"),
-            )]),
+            config: HashMap::from([("prompt".to_string(), serde_json::json!("post-review"))]),
             depends_on: vec!["review".to_string()],
             retry_count: 0,
             timeout: None,
             is_terminal: false,
         },
     ];
-    engine.register_workflow(make_workflow("resume_chain", nodes)).unwrap();
+    engine
+        .register_workflow(make_workflow("resume_chain", nodes))
+        .unwrap();
 
     let execution = engine
         .start_execution("resume_chain", HashMap::new())
@@ -363,7 +353,10 @@ async fn test_resume_runs_downstream_nodes() {
     assert_eq!(resumed.state, ExecutionState::Completed);
 
     // `after` must have run during resume and its output must be present.
-    let after = resumed.node_results.get("after").expect("downstream `after` should have run");
+    let after = resumed
+        .node_results
+        .get("after")
+        .expect("downstream `after` should have run");
     assert_eq!(after.state, ExecutionState::Completed);
     assert!(
         after.output.get("text").is_some(),
@@ -458,7 +451,10 @@ async fn test_persistence_save_and_load() {
     let dir = tempfile::tempdir().unwrap();
     let engine = WorkflowEngine::with_persistence(dir.path().to_path_buf());
     engine
-        .register_workflow(make_workflow("persist_wf", vec![make_node("n1", "llm", vec![])]))
+        .register_workflow(make_workflow(
+            "persist_wf",
+            vec![make_node("n1", "llm", vec![])],
+        ))
         .unwrap();
 
     let execution = engine
@@ -478,7 +474,10 @@ async fn test_get_execution_loads_from_disk() {
     let dir = tempfile::tempdir().unwrap();
     let engine = WorkflowEngine::with_persistence(dir.path().to_path_buf());
     engine
-        .register_workflow(make_workflow("disk_wf", vec![make_node("n1", "llm", vec![])]))
+        .register_workflow(make_workflow(
+            "disk_wf",
+            vec![make_node("n1", "llm", vec![])],
+        ))
         .unwrap();
 
     let execution = engine
@@ -550,7 +549,10 @@ async fn test_start_execution_workflow_not_found() {
     let engine = WorkflowEngine::new();
     let result = engine.start_execution("nonexistent", HashMap::new()).await;
     assert!(result.is_err());
-    assert!(matches!(result.unwrap_err(), EngineError::WorkflowNotFound(_)));
+    assert!(matches!(
+        result.unwrap_err(),
+        EngineError::WorkflowNotFound(_)
+    ));
 }
 
 #[tokio::test]
@@ -563,7 +565,7 @@ async fn test_start_execution_unknown_node_type() {
         depends_on: vec![],
         retry_count: 0,
         timeout: None,
-    is_terminal: false,
+        is_terminal: false,
     }];
     engine
         .register_workflow(make_workflow("bad_type_wf", nodes))
@@ -571,7 +573,10 @@ async fn test_start_execution_unknown_node_type() {
 
     let result = engine.start_execution("bad_type_wf", HashMap::new()).await;
     assert!(result.is_err());
-    assert!(matches!(result.unwrap_err(), EngineError::UnknownNodeType(_)));
+    assert!(matches!(
+        result.unwrap_err(),
+        EngineError::UnknownNodeType(_)
+    ));
 }
 
 #[tokio::test]
@@ -822,7 +827,9 @@ fn test_run_blocking_completes() {
         .register_workflow(make_workflow("blocking_wf", nodes))
         .unwrap();
 
-    let execution = engine.run_blocking("blocking_wf", HashMap::new(), None).unwrap();
+    let execution = engine
+        .run_blocking("blocking_wf", HashMap::new(), None)
+        .unwrap();
 
     assert_eq!(execution.state, ExecutionState::Completed);
     assert_eq!(execution.node_results.len(), 2);
@@ -860,14 +867,10 @@ async fn test_start_async_returns_id_quickly() {
         .unwrap();
 
     let start = std::time::Instant::now();
-    let execution_id = WorkflowEngine::start_async(
-        Arc::clone(&engine),
-        "async_wf",
-        HashMap::new(),
-        None,
-    )
-    .await
-    .expect("start_async should return execution id");
+    let execution_id =
+        WorkflowEngine::start_async(Arc::clone(&engine), "async_wf", HashMap::new(), None)
+            .await
+            .expect("start_async should return execution id");
     let elapsed = start.elapsed();
 
     // ID format check (UUID v4: 8-4-4-4-12)
@@ -899,7 +902,8 @@ async fn test_start_async_unknown_workflow() {
     use std::sync::Arc;
 
     let engine = Arc::new(WorkflowEngine::new_arc());
-    let result = WorkflowEngine::start_async(Arc::clone(&engine), "nope", HashMap::new(), None).await;
+    let result =
+        WorkflowEngine::start_async(Arc::clone(&engine), "nope", HashMap::new(), None).await;
     assert!(result.is_err());
     let err = result.unwrap_err();
     assert!(matches!(err, EngineError::WorkflowNotFound(_)));
@@ -923,23 +927,17 @@ async fn test_start_async_eventually_completes() {
         .register_workflow(make_workflow("poll_wf", nodes))
         .unwrap();
 
-    let execution_id = WorkflowEngine::start_async(
-        Arc::clone(&engine),
-        "poll_wf",
-        HashMap::new(),
-        None,
-    )
-    .await
-    .unwrap();
+    let execution_id =
+        WorkflowEngine::start_async(Arc::clone(&engine), "poll_wf", HashMap::new(), None)
+            .await
+            .unwrap();
 
     // Poll up to 2 seconds for completion.
     let mut final_state: Option<ExecutionState> = None;
     for _ in 0..200 {
         if let Some(execution) = engine.get_execution(&execution_id).await {
             match execution.state {
-                ExecutionState::Completed
-                | ExecutionState::Failed
-                | ExecutionState::Cancelled => {
+                ExecutionState::Completed | ExecutionState::Failed | ExecutionState::Cancelled => {
                     final_state = Some(execution.state);
                     break;
                 }
@@ -963,7 +961,10 @@ async fn test_create_execution_then_run_async_separately() {
     // workflow starts (e.g., to register a progress channel).
     let engine = WorkflowEngine::new();
     engine
-        .register_workflow(make_workflow("two_step_wf", vec![make_node("n1", "llm", vec![])]))
+        .register_workflow(make_workflow(
+            "two_step_wf",
+            vec![make_node("n1", "llm", vec![])],
+        ))
         .unwrap();
 
     let execution = engine
@@ -992,7 +993,10 @@ async fn test_trigger_source_cli_recorded_on_execution() {
     // TriggerSource::Cli is stamped onto the execution by run().
     let engine = WorkflowEngine::new();
     engine
-        .register_workflow(make_workflow("cli_wf", vec![make_node("n1", "llm", vec![])]))
+        .register_workflow(make_workflow(
+            "cli_wf",
+            vec![make_node("n1", "llm", vec![])],
+        ))
         .unwrap();
 
     let execution = engine
@@ -1006,7 +1010,10 @@ async fn test_trigger_source_cli_recorded_on_execution() {
 async fn test_trigger_source_cron_recorded_on_execution() {
     let engine = WorkflowEngine::new();
     engine
-        .register_workflow(make_workflow("cron_wf", vec![make_node("n1", "llm", vec![])]))
+        .register_workflow(make_workflow(
+            "cron_wf",
+            vec![make_node("n1", "llm", vec![])],
+        ))
         .unwrap();
 
     let execution = engine
@@ -1021,7 +1028,10 @@ async fn test_trigger_source_webhook_recorded_with_payload() {
     // Webhook variant carries its payload through the trigger_source field.
     let engine = WorkflowEngine::new();
     engine
-        .register_workflow(make_workflow("webhook_wf", vec![make_node("n1", "llm", vec![])]))
+        .register_workflow(make_workflow(
+            "webhook_wf",
+            vec![make_node("n1", "llm", vec![])],
+        ))
         .unwrap();
 
     let payload = serde_json::json!({"event": "push", "ref": "main"});
@@ -1046,7 +1056,10 @@ async fn test_trigger_source_agent_tool_carries_recursion_depth() {
     // MAX_RECURSION_DEPTH.
     let engine = WorkflowEngine::new();
     engine
-        .register_workflow(make_workflow("agent_wf", vec![make_node("n1", "llm", vec![])]))
+        .register_workflow(make_workflow(
+            "agent_wf",
+            vec![make_node("n1", "llm", vec![])],
+        ))
         .unwrap();
 
     let trigger = TriggerSource::AgentTool {
@@ -1075,13 +1088,13 @@ async fn test_trigger_source_none_default() {
     // Passing None leaves trigger_source unset (legacy behavior).
     let engine = WorkflowEngine::new();
     engine
-        .register_workflow(make_workflow("plain_wf", vec![make_node("n1", "llm", vec![])]))
+        .register_workflow(make_workflow(
+            "plain_wf",
+            vec![make_node("n1", "llm", vec![])],
+        ))
         .unwrap();
 
-    let execution = engine
-        .run("plain_wf", HashMap::new(), None)
-        .await
-        .unwrap();
+    let execution = engine.run("plain_wf", HashMap::new(), None).await.unwrap();
     assert!(execution.trigger_source.is_none());
 }
 
@@ -1095,7 +1108,10 @@ async fn test_trigger_source_preserved_through_start_async() {
 
     let engine = Arc::new(WorkflowEngine::new_arc());
     engine
-        .register_workflow(make_workflow("async_trig_wf", vec![make_node("n1", "llm", vec![])]))
+        .register_workflow(make_workflow(
+            "async_trig_wf",
+            vec![make_node("n1", "llm", vec![])],
+        ))
         .unwrap();
 
     let execution_id = WorkflowEngine::start_async(
@@ -1134,7 +1150,10 @@ fn test_trigger_source_via_run_blocking() {
     // run_blocking also propagates trigger_source correctly.
     let engine = WorkflowEngine::new();
     engine
-        .register_workflow(make_workflow("blocking_trig_wf", vec![make_node("n1", "llm", vec![])]))
+        .register_workflow(make_workflow(
+            "blocking_trig_wf",
+            vec![make_node("n1", "llm", vec![])],
+        ))
         .unwrap();
 
     let execution = engine
@@ -1282,15 +1301,14 @@ async fn test_started_event_carries_trigger_source() {
         .await;
 
     engine
-        .register_workflow(make_workflow("ev_trig_wf", vec![make_node("n1", "llm", vec![])]))
+        .register_workflow(make_workflow(
+            "ev_trig_wf",
+            vec![make_node("n1", "llm", vec![])],
+        ))
         .unwrap();
 
     let _ = engine
-        .run(
-            "ev_trig_wf",
-            HashMap::new(),
-            Some(TriggerSource::Cli),
-        )
+        .run("ev_trig_wf", HashMap::new(), Some(TriggerSource::Cli))
         .await
         .unwrap();
     tokio::time::sleep(Duration::from_millis(30)).await;
@@ -1301,9 +1319,9 @@ async fn test_started_event_carries_trigger_source() {
         .find(|e| matches!(e, WorkflowEvent::Started { .. }))
         .expect("Started event should have been emitted");
     match started {
-        WorkflowEvent::Started {
-            trigger_source, ..
-        } => assert_eq!(*trigger_source, Some(TriggerSource::Cli)),
+        WorkflowEvent::Started { trigger_source, .. } => {
+            assert_eq!(*trigger_source, Some(TriggerSource::Cli))
+        }
         _ => unreachable!(),
     }
 }
@@ -1314,7 +1332,10 @@ async fn test_no_events_without_observers() {
     // must not error or interfere with execution.
     let engine = WorkflowEngine::new();
     engine
-        .register_workflow(make_workflow("ev_no_obs", vec![make_node("n1", "llm", vec![])]))
+        .register_workflow(make_workflow(
+            "ev_no_obs",
+            vec![make_node("n1", "llm", vec![])],
+        ))
         .unwrap();
     assert!(!engine.event_manager().has_observers().await);
 
@@ -1432,7 +1453,8 @@ async fn test_new_integrated_wires_real_llm_and_tool_executors() {
     }
 
     let tools = Arc::new(nemesis_tools::registry::ToolRegistry::new());
-    let engine = WorkflowEngine::new_integrated(Arc::new(NullProvider) as Arc<dyn LLMProvider>, tools, None);
+    let engine =
+        WorkflowEngine::new_integrated(Arc::new(NullProvider) as Arc<dyn LLMProvider>, tools, None);
 
     // Real executors must be registered for "llm" and "tool".
     assert!(engine.node_executors.get("llm").is_some());
@@ -1450,10 +1472,7 @@ async fn test_list_cron_workflows_returns_cron_triggers() {
         trigger_type: "cron".to_string(),
         config: HashMap::from([
             ("schedule".to_string(), json!("*/5 * * * *")),
-            (
-                "input".to_string(),
-                json!({"topic": "news", "limit": 10}),
-            ),
+            ("input".to_string(), json!({"topic": "news", "limit": 10})),
         ]),
     }];
 
@@ -1511,7 +1530,10 @@ async fn test_list_cron_workflows_skips_non_cron_and_missing_schedule() {
 async fn test_list_cron_workflows_empty_when_no_triggers() {
     let engine = WorkflowEngine::new();
     engine
-        .register_workflow(make_workflow("no_trigger", vec![make_node("n1", "delay", vec![])]))
+        .register_workflow(make_workflow(
+            "no_trigger",
+            vec![make_node("n1", "delay", vec![])],
+        ))
         .unwrap();
     let crons = engine.list_cron_workflows();
     assert!(crons.is_empty());
@@ -1602,11 +1624,26 @@ async fn test_list_cron_workflows_unknown_timezone_falls_back_to_local() {
 
 #[test]
 fn cron_timezone_parses_known_strings() {
-    assert_eq!(CronTimezone::from_config_str("local"), Some(CronTimezone::Local));
-    assert_eq!(CronTimezone::from_config_str("LOCAL"), Some(CronTimezone::Local));
-    assert_eq!(CronTimezone::from_config_str("utc"), Some(CronTimezone::Utc));
-    assert_eq!(CronTimezone::from_config_str("UTC"), Some(CronTimezone::Utc));
-    assert_eq!(CronTimezone::from_config_str("  utc  "), Some(CronTimezone::Utc));
+    assert_eq!(
+        CronTimezone::from_config_str("local"),
+        Some(CronTimezone::Local)
+    );
+    assert_eq!(
+        CronTimezone::from_config_str("LOCAL"),
+        Some(CronTimezone::Local)
+    );
+    assert_eq!(
+        CronTimezone::from_config_str("utc"),
+        Some(CronTimezone::Utc)
+    );
+    assert_eq!(
+        CronTimezone::from_config_str("UTC"),
+        Some(CronTimezone::Utc)
+    );
+    assert_eq!(
+        CronTimezone::from_config_str("  utc  "),
+        Some(CronTimezone::Utc)
+    );
     assert_eq!(CronTimezone::from_config_str("Mars"), None);
     assert_eq!(CronTimezone::from_config_str(""), None);
 }
@@ -1618,10 +1655,7 @@ fn cron_timezone_parses_known_strings() {
 #[test]
 fn register_accepts_event_trigger_without_error() {
     use crate::types::TriggerConfig;
-    let mut wf = make_workflow(
-        "event_undriven",
-        vec![make_node("n1", "delay", vec![])],
-    );
+    let mut wf = make_workflow("event_undriven", vec![make_node("n1", "delay", vec![])]);
     wf.triggers = vec![TriggerConfig {
         trigger_type: "event".to_string(),
         config: HashMap::from([(
@@ -1631,23 +1665,24 @@ fn register_accepts_event_trigger_without_error() {
     }];
 
     let engine = WorkflowEngine::new();
-    engine.register_workflow(wf).expect("event trigger should still register (with warning)");
+    engine
+        .register_workflow(wf)
+        .expect("event trigger should still register (with warning)");
 }
 
 #[test]
 fn register_accepts_message_trigger_without_error() {
     use crate::types::TriggerConfig;
-    let mut wf = make_workflow(
-        "message_undriven",
-        vec![make_node("n1", "delay", vec![])],
-    );
+    let mut wf = make_workflow("message_undriven", vec![make_node("n1", "delay", vec![])]);
     wf.triggers = vec![TriggerConfig {
         trigger_type: "message".to_string(),
         config: HashMap::new(),
     }];
 
     let engine = WorkflowEngine::new();
-    engine.register_workflow(wf).expect("message trigger should still register (with warning)");
+    engine
+        .register_workflow(wf)
+        .expect("message trigger should still register (with warning)");
 }
 
 // ---------------------------------------------------------------------------
@@ -1687,7 +1722,11 @@ fn workflows_matching_event_fires_for_matching_type() {
         event_type: "other.thing".to_string(),
         ..event
     };
-    assert!(!engine.workflows_matching_event(&other).contains(&"evt_wf".to_string()));
+    assert!(
+        !engine
+            .workflows_matching_event(&other)
+            .contains(&"evt_wf".to_string())
+    );
 }
 
 #[test]
@@ -1786,7 +1825,9 @@ async fn auto_checkpoint_captures_waiting_node() {
         timeout: None,
         is_terminal: false,
     }];
-    engine.register_workflow(make_workflow("hr_wf", nodes)).unwrap();
+    engine
+        .register_workflow(make_workflow("hr_wf", nodes))
+        .unwrap();
 
     let exec = engine.run("hr_wf", HashMap::new(), None).await.unwrap();
     assert_eq!(exec.state, ExecutionState::Waiting);
@@ -1841,7 +1882,10 @@ async fn restore_incomplete_executions_revives_waiting_workflow() {
 
     // Resume should now work and drive the workflow to completion.
     let resumed = engine_b
-        .resume_execution(&exec_id, HashMap::from([("approved".to_string(), serde_json::json!(true))]))
+        .resume_execution(
+            &exec_id,
+            HashMap::from([("approved".to_string(), serde_json::json!(true))]),
+        )
         .await
         .unwrap();
     assert_eq!(resumed.state, ExecutionState::Completed);
@@ -1900,7 +1944,10 @@ async fn restore_skips_executions_with_config_drift() {
 fn chat_index_is_stable_and_lowercase_hex_8chars() {
     let idx = WorkflowEngine::chat_index("hello-bot");
     assert_eq!(idx.len(), 8);
-    assert!(idx.chars().all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()));
+    assert!(
+        idx.chars()
+            .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase())
+    );
     // Stable
     assert_eq!(idx, WorkflowEngine::chat_index("hello-bot"));
 }
@@ -1908,7 +1955,10 @@ fn chat_index_is_stable_and_lowercase_hex_8chars() {
 #[test]
 fn chat_index_is_case_insensitive_on_input() {
     // Lowercasing the input first means "MyWorkflow" and "myworkflow" resolve to the same index.
-    assert_eq!(WorkflowEngine::chat_index("MyWorkflow"), WorkflowEngine::chat_index("myworkflow"));
+    assert_eq!(
+        WorkflowEngine::chat_index("MyWorkflow"),
+        WorkflowEngine::chat_index("myworkflow")
+    );
 }
 
 #[test]
@@ -1951,7 +2001,10 @@ async fn workflow_summary_includes_chat_index() {
 
     let summaries = engine.list_workflows_detailed();
     assert_eq!(summaries.len(), 1);
-    assert_eq!(summaries[0].chat_index, WorkflowEngine::chat_index("summary-test"));
+    assert_eq!(
+        summaries[0].chat_index,
+        WorkflowEngine::chat_index("summary-test")
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -1977,9 +2030,7 @@ mod e2e_input_pipeline {
     use async_trait::async_trait;
     use nemesis_providers::failover::FailoverError;
     use nemesis_providers::router::LLMProvider;
-    use nemesis_providers::types::{
-        ChatOptions, LLMResponse, Message, ToolDefinition,
-    };
+    use nemesis_providers::types::{ChatOptions, LLMResponse, Message, ToolDefinition};
     use std::sync::Mutex;
 
     /// Provider that returns a fixed response and captures the most recent
@@ -2032,10 +2083,7 @@ mod e2e_input_pipeline {
         NodeDef {
             id: "llm1".to_string(),
             node_type: "llm".to_string(),
-            config: HashMap::from([(
-                "prompt".to_string(),
-                serde_json::json!(prompt),
-            )]),
+            config: HashMap::from([("prompt".to_string(), serde_json::json!(prompt))]),
             depends_on: vec![],
             retry_count: 0,
             timeout: None,
@@ -2051,11 +2099,8 @@ mod e2e_input_pipeline {
     async fn trigger_input_field_reaches_llm_prompt() {
         let provider = Arc::new(CaptureProvider::new());
         let tools = Arc::new(nemesis_tools::registry::ToolRegistry::new());
-        let engine = WorkflowEngine::new_integrated(
-            provider.clone() as Arc<dyn LLMProvider>,
-            tools,
-            None,
-        );
+        let engine =
+            WorkflowEngine::new_integrated(provider.clone() as Arc<dyn LLMProvider>, tools, None);
 
         let wf = make_workflow(
             "echo_input_wf",
@@ -2065,18 +2110,12 @@ mod e2e_input_pipeline {
 
         // Mimic what workflow_chat injects (workflow_chat.rs:117-141).
         let mut input = HashMap::new();
-        input.insert(
-            "input".to_string(),
-            serde_json::json!("hello from trigger"),
-        );
+        input.insert("input".to_string(), serde_json::json!("hello from trigger"));
         input.insert(
             "content".to_string(),
             serde_json::json!("hello from trigger"),
         );
-        input.insert(
-            "chat_id".to_string(),
-            serde_json::json!("web:sess-1"),
-        );
+        input.insert("chat_id".to_string(), serde_json::json!("web:sess-1"));
         input.insert(
             "session_key".to_string(),
             serde_json::json!("wf_chat:echo_input_wf"),
@@ -2100,8 +2139,7 @@ mod e2e_input_pipeline {
             .find(|m| m.role == "user")
             .expect("LLM provider should have received a user message");
         assert_eq!(
-            user_msg.content,
-            "Echo back: hello from trigger",
+            user_msg.content, "Echo back: hello from trigger",
             "prompt must contain resolved input value, not literal {{{{input}}}}"
         );
         assert!(
@@ -2118,11 +2156,8 @@ mod e2e_input_pipeline {
     async fn trigger_content_field_also_reaches_llm_prompt() {
         let provider = Arc::new(CaptureProvider::new());
         let tools = Arc::new(nemesis_tools::registry::ToolRegistry::new());
-        let engine = WorkflowEngine::new_integrated(
-            provider.clone() as Arc<dyn LLMProvider>,
-            tools,
-            None,
-        );
+        let engine =
+            WorkflowEngine::new_integrated(provider.clone() as Arc<dyn LLMProvider>, tools, None);
 
         let wf = make_workflow(
             "echo_content_wf",
@@ -2148,8 +2183,7 @@ mod e2e_input_pipeline {
             .find(|m| m.role == "user")
             .expect("LLM provider should have received a user message");
         assert_eq!(
-            user_msg.content,
-            "Channel telegram:42 said: payload text",
+            user_msg.content, "Channel telegram:42 said: payload text",
             "all trigger-time fields must resolve, not just {{input}}"
         );
     }
@@ -2161,11 +2195,8 @@ mod e2e_input_pipeline {
     async fn node_output_overrides_input_field_with_same_name() {
         let provider = Arc::new(CaptureProvider::new());
         let tools = Arc::new(nemesis_tools::registry::ToolRegistry::new());
-        let engine = WorkflowEngine::new_integrated(
-            provider.clone() as Arc<dyn LLMProvider>,
-            tools,
-            None,
-        );
+        let engine =
+            WorkflowEngine::new_integrated(provider.clone() as Arc<dyn LLMProvider>, tools, None);
 
         // Two LLM nodes: the first produces an output whose field name
         // ("content") collides with the trigger-time input field. The
@@ -2174,10 +2205,7 @@ mod e2e_input_pipeline {
         let upstream = NodeDef {
             id: "upstream".to_string(),
             node_type: "llm".to_string(),
-            config: HashMap::from([(
-                "prompt".to_string(),
-                serde_json::json!("produce something"),
-            )]),
+            config: HashMap::from([("prompt".to_string(), serde_json::json!("produce something"))]),
             depends_on: vec![],
             retry_count: 0,
             timeout: None,
@@ -2202,10 +2230,7 @@ mod e2e_input_pipeline {
             timeout: None,
             is_terminal: false,
         };
-        let wf = make_workflow(
-            "chain_wf",
-            vec![upstream, downstream],
-        );
+        let wf = make_workflow("chain_wf", vec![upstream, downstream]);
         engine.register_workflow(wf).unwrap();
 
         let mut input = HashMap::new();
@@ -2237,15 +2262,11 @@ mod e2e_input_pipeline {
             user_msg.content
         );
         assert!(
-            !user_msg
-                .content
-                .contains("{{upstream.text}}"),
+            !user_msg.content.contains("{{upstream.text}}"),
             "namespaced reference {{upstream.text}} should have been resolved"
         );
         assert!(
-            !user_msg
-                .content
-                .contains("trigger-text-should-not-leak"),
+            !user_msg.content.contains("trigger-text-should-not-leak"),
             "trigger input must not leak into namespaced node reference"
         );
     }
@@ -2266,11 +2287,8 @@ mod e2e_input_pipeline {
     async fn transform_node_sees_trigger_input_field() {
         let provider = Arc::new(CaptureProvider::new());
         let tools = Arc::new(nemesis_tools::registry::ToolRegistry::new());
-        let engine = WorkflowEngine::new_integrated(
-            provider.clone() as Arc<dyn LLMProvider>,
-            tools,
-            None,
-        );
+        let engine =
+            WorkflowEngine::new_integrated(provider.clone() as Arc<dyn LLMProvider>, tools, None);
 
         let transform = NodeDef {
             id: "t1".to_string(),
@@ -2319,11 +2337,8 @@ mod e2e_input_pipeline {
     async fn condition_node_sees_trigger_input_field() {
         let provider = Arc::new(CaptureProvider::new());
         let tools = Arc::new(nemesis_tools::registry::ToolRegistry::new());
-        let engine = WorkflowEngine::new_integrated(
-            provider.clone() as Arc<dyn LLMProvider>,
-            tools,
-            None,
-        );
+        let engine =
+            WorkflowEngine::new_integrated(provider.clone() as Arc<dyn LLMProvider>, tools, None);
 
         let condition = NodeDef {
             id: "c1".to_string(),
@@ -2341,10 +2356,7 @@ mod e2e_input_pipeline {
         engine.register_workflow(wf).unwrap();
 
         let mut input = HashMap::new();
-        input.insert(
-            "input".to_string(),
-            serde_json::json!("expected-value"),
-        );
+        input.insert("input".to_string(), serde_json::json!("expected-value"));
 
         let exec = engine
             .run("cond_wf", input, None)
@@ -2371,11 +2383,8 @@ mod e2e_input_pipeline {
     async fn script_node_sees_trigger_input_field() {
         let provider = Arc::new(CaptureProvider::new());
         let tools = Arc::new(nemesis_tools::registry::ToolRegistry::new());
-        let engine = WorkflowEngine::new_integrated(
-            provider.clone() as Arc<dyn LLMProvider>,
-            tools,
-            None,
-        );
+        let engine =
+            WorkflowEngine::new_integrated(provider.clone() as Arc<dyn LLMProvider>, tools, None);
 
         let script = NodeDef {
             id: "s1".to_string(),
@@ -2396,10 +2405,7 @@ mod e2e_input_pipeline {
         engine.register_workflow(wf).unwrap();
 
         let mut input = HashMap::new();
-        input.insert(
-            "input".to_string(),
-            serde_json::json!("payload-for-script"),
-        );
+        input.insert("input".to_string(), serde_json::json!("payload-for-script"));
 
         let exec = engine
             .run("script_wf", input, None)

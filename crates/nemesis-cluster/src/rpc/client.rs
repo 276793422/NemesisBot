@@ -97,8 +97,14 @@ impl RateLimiter {
         }
 
         // Initialise peer state
-        state.tokens.entry(peer_id.to_string()).or_insert(self.max_tokens);
-        state.requests.entry(peer_id.to_string()).or_insert_with(Vec::new);
+        state
+            .tokens
+            .entry(peer_id.to_string())
+            .or_insert(self.max_tokens);
+        state
+            .requests
+            .entry(peer_id.to_string())
+            .or_insert_with(Vec::new);
 
         // Prune old timestamps in the sliding window
         let now = std::time::Instant::now();
@@ -232,10 +238,10 @@ impl RpcClient {
         Self {
             pool: Arc::new(ConnectionPool::default()),
             rate_limiter: RateLimiter::new(
-                10,                            // max_tokens
-                Duration::from_secs(1),        // refill_interval
-                30,                            // max_requests_per_window
-                Duration::from_secs(10),       // window
+                10,                      // max_tokens
+                Duration::from_secs(1),  // refill_interval
+                30,                      // max_requests_per_window
+                Duration::from_secs(10), // window
             ),
             timeout: DEFAULT_RPC_TIMEOUT,
             auth_token: Mutex::new(None),
@@ -305,64 +311,63 @@ impl RpcClient {
         let needs_release = true;
 
         let result = async {
-        // 2. Resolve peer addresses
-        let (addresses, rpc_port, is_online) = self
-            .resolver
-            .as_ref()
-            .and_then(|r| r.get_peer_info(peer_id))
-            .ok_or_else(|| {
-                RpcClientError::Connection(format!("peer not found: {}", peer_id))
-            })?;
+            // 2. Resolve peer addresses
+            let (addresses, rpc_port, is_online) = self
+                .resolver
+                .as_ref()
+                .and_then(|r| r.get_peer_info(peer_id))
+                .ok_or_else(|| {
+                    RpcClientError::Connection(format!("peer not found: {}", peer_id))
+                })?;
 
-        if !is_online {
-            tracing::warn!(
+            if !is_online {
+                tracing::warn!(peer_id = peer_id, "[RpcClient] Peer is offline",);
+                return Err(RpcClientError::Connection(format!(
+                    "peer is offline: {}",
+                    peer_id
+                )));
+            }
+
+            // 3. Build full addresses (IP:Port)
+            let full_addresses: Vec<String> = addresses
+                .iter()
+                .map(|addr| {
+                    if addr.contains(':') {
+                        addr.clone()
+                    } else {
+                        format!("{}:{}", addr, rpc_port)
+                    }
+                })
+                .collect();
+
+            // 4. Select best address and connect
+            let best_addr = self.select_best_address(&full_addresses);
+
+            tracing::debug!(
                 peer_id = peer_id,
-                "[RpcClient] Peer is offline",
-            );
-            return Err(RpcClientError::Connection(format!(
-                "peer is offline: {}",
-                peer_id
-            )));
-        }
-
-        // 3. Build full addresses (IP:Port)
-        let full_addresses: Vec<String> = addresses
-            .iter()
-            .map(|addr| {
-                if addr.contains(':') {
-                    addr.clone()
-                } else {
-                    format!("{}:{}", addr, rpc_port)
-                }
-            })
-            .collect();
-
-        // 4. Select best address and connect
-        let best_addr = self.select_best_address(&full_addresses);
-
-        tracing::debug!(
-            peer_id = peer_id,
-            addr = %best_addr,
-            action = ?request.action,
-            request_id = %request.id,
-            "[RpcClient] Connecting to peer",
-        );
-
-        // 5. Execute with timeout
-        time::timeout(timeout, async {
-            self.send_and_receive(&best_addr, &full_addresses, &request).await
-        })
-        .await
-        .map_err(|_| {
-            tracing::error!(
-                peer_id = peer_id,
+                addr = %best_addr,
                 action = ?request.action,
-                timeout_secs = timeout.as_secs(),
-                "[RpcClient] Call timed out",
+                request_id = %request.id,
+                "[RpcClient] Connecting to peer",
             );
-            RpcClientError::Timeout
-        })?
-        }.await;
+
+            // 5. Execute with timeout
+            time::timeout(timeout, async {
+                self.send_and_receive(&best_addr, &full_addresses, &request)
+                    .await
+            })
+            .await
+            .map_err(|_| {
+                tracing::error!(
+                    peer_id = peer_id,
+                    action = ?request.action,
+                    timeout_secs = timeout.as_secs(),
+                    "[RpcClient] Call timed out",
+                );
+                RpcClientError::Timeout
+            })?
+        }
+        .await;
 
         if needs_release {
             self.rate_limiter.release(peer_id);
@@ -473,27 +478,20 @@ impl RpcClient {
         request: &RPCRequest,
     ) -> Result<RPCResponse, RpcClientError> {
         // Dial TCP with 10-second timeout (matching Go's net.DialTimeout)
-        let stream = time::timeout(
-            Duration::from_secs(10),
-            TcpStream::connect(addr),
-        )
-        .await
-        .map_err(|_| RpcClientError::Connection(format!("dial timeout to {}", addr)))?
-        .map_err(|e| RpcClientError::Connection(format!("connect to {}: {}", addr, e)))?;
+        let stream = time::timeout(Duration::from_secs(10), TcpStream::connect(addr))
+            .await
+            .map_err(|_| RpcClientError::Connection(format!("dial timeout to {}", addr)))?
+            .map_err(|e| RpcClientError::Connection(format!("connect to {}: {}", addr, e)))?;
 
         // Convert to std::net::TcpStream for sync frame I/O
-        let std_stream = stream.into_std().map_err(|e| {
-            RpcClientError::Connection(format!("stream conversion: {}", e))
-        })?;
-        std_stream.set_nonblocking(false).map_err(|e| {
-            RpcClientError::Connection(format!("set blocking: {}", e))
-        })?;
+        let std_stream = stream
+            .into_std()
+            .map_err(|e| RpcClientError::Connection(format!("stream conversion: {}", e)))?;
+        std_stream
+            .set_nonblocking(false)
+            .map_err(|e| RpcClientError::Connection(format!("set blocking: {}", e)))?;
 
-        tracing::debug!(
-            addr = addr,
-            "[RpcClient] Connected to {}",
-            addr,
-        );
+        tracing::debug!(addr = addr, "[RpcClient] Connected to {}", addr,);
 
         // Derive AES-256 key from auth_token if set. Both sides of the
         // connection derive the same key from the shared token; the server's
@@ -552,24 +550,22 @@ impl RpcClient {
                     crate::rpc_types::KnownAction::Status => "status",
                 },
                 crate::rpc_types::ActionType::Custom(s) => s.as_str(),
-            }.into(),
+            }
+            .into(),
             payload: request.payload.clone(),
             timestamp: chrono::Local::now().timestamp(),
             error: String::new(),
         };
-        let json_bytes = serde_json::to_vec(&wire).map_err(|e| {
-            RpcClientError::Serialization(e.to_string())
-        })?;
+        let json_bytes =
+            serde_json::to_vec(&wire).map_err(|e| RpcClientError::Serialization(e.to_string()))?;
         let wire_bytes = if let Some(ref key) = cipher_key {
-            encrypt_frame(&json_bytes, key).map_err(|e| {
-                RpcClientError::Serialization(format!("encrypt request: {}", e))
-            })?
+            encrypt_frame(&json_bytes, key)
+                .map_err(|e| RpcClientError::Serialization(format!("encrypt request: {}", e)))?
         } else {
             json_bytes
         };
-        conn.send(&wire_bytes).map_err(|e| {
-            RpcClientError::Connection(format!("send to {}: {}", addr, e))
-        })?;
+        conn.send(&wire_bytes)
+            .map_err(|e| RpcClientError::Connection(format!("send to {}: {}", addr, e)))?;
 
         tracing::debug!(
             addr = addr,
@@ -578,9 +574,9 @@ impl RpcClient {
         );
 
         // Receive response frame: [4-byte length][payload]
-        let resp_data = conn.recv().map_err(|e| {
-            RpcClientError::Connection(format!("recv from {}: {}", addr, e))
-        })?;
+        let resp_data = conn
+            .recv()
+            .map_err(|e| RpcClientError::Connection(format!("recv from {}: {}", addr, e)))?;
         let resp_plaintext = if let Some(ref key) = cipher_key {
             decrypt_frame(&resp_data, key).map_err(|e| {
                 RpcClientError::Connection(format!("decrypt response from {}: {}", addr, e))
@@ -589,9 +585,8 @@ impl RpcClient {
             resp_data
         };
 
-        let response: RPCResponse = Frame::decode_response(&resp_plaintext).map_err(|e| {
-            RpcClientError::Serialization(format!("decode response: {}", e))
-        })?;
+        let response: RPCResponse = Frame::decode_response(&resp_plaintext)
+            .map_err(|e| RpcClientError::Serialization(format!("decode response: {}", e)))?;
 
         // Check for remote error
         if let Some(ref err) = response.error {

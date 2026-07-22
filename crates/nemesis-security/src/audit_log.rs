@@ -71,7 +71,9 @@ impl AuditLogger {
             .map_err(|e| format!("failed to open audit log file: {}", e))?;
 
         // Write header if file is empty
-        let metadata = file.metadata().map_err(|e| format!("failed to stat file: {}", e))?;
+        let metadata = file
+            .metadata()
+            .map_err(|e| format!("failed to stat file: {}", e))?;
         if metadata.len() == 0 {
             let header = "# NemesisBot Security Audit Log\n\
                  # Format: TIMESTAMP | EVENT_ID | DECISION | OPERATION | USER | SOURCE | TARGET | DANGER | REASON | POLICY\n\
@@ -179,11 +181,8 @@ impl AuditLogger {
                 .map_err(|e| format!("failed to write exported audit log: {}", e))?;
         } else {
             // No log file available, create empty export with header
-            std::fs::write(
-                destination,
-                "# NemesisBot Security Audit Log (empty)\n",
-            )
-            .map_err(|e| format!("failed to write empty export: {}", e))?;
+            std::fs::write(destination, "# NemesisBot Security Audit Log (empty)\n")
+                .map_err(|e| format!("failed to write empty export: {}", e))?;
         }
 
         Ok(())

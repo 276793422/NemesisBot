@@ -14,15 +14,13 @@ use std::sync::{Arc, RwLock};
 
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use tokio;
 
 use nemesis_workflow::context::WorkflowContext;
 use nemesis_workflow::nodes::NodeExecutorRegistry;
 use nemesis_workflow::scheduler::topological_sort;
-use nemesis_workflow::types::{
-    Edge, ExecutionState, NodeDef, NodeResult, Workflow,
-};
+use nemesis_workflow::types::{Edge, ExecutionState, NodeDef, NodeResult, Workflow};
 
 // ============================================================================
 // 中间结构(来自 Spike 1)
@@ -200,7 +198,7 @@ async fn schedule_resume(
                     return Err(format!(
                         "no executor for node type {:?} (node {})",
                         node.node_type, node_id
-                    ))
+                    ));
                 }
             };
 
@@ -292,7 +290,7 @@ fn make_test_workflow() -> Workflow {
                 depends_on: vec![],
                 retry_count: 0,
                 timeout: None,
-            is_terminal: false,
+                is_terminal: false,
             },
             NodeDef {
                 id: "review".to_string(),
@@ -301,7 +299,7 @@ fn make_test_workflow() -> Workflow {
                 depends_on: vec!["A".to_string()],
                 retry_count: 0,
                 timeout: None,
-            is_terminal: false,
+                is_terminal: false,
             },
             NodeDef {
                 id: "B".to_string(),
@@ -310,7 +308,7 @@ fn make_test_workflow() -> Workflow {
                 depends_on: vec!["review".to_string()],
                 retry_count: 0,
                 timeout: None,
-            is_terminal: false,
+                is_terminal: false,
             },
             NodeDef {
                 id: "C".to_string(),
@@ -319,7 +317,7 @@ fn make_test_workflow() -> Workflow {
                 depends_on: vec!["B".to_string()],
                 retry_count: 0,
                 timeout: None,
-            is_terminal: false,
+                is_terminal: false,
             },
         ],
         edges: vec![],
@@ -358,7 +356,15 @@ async fn test_spike2_full_resume_flow() {
     let mut ctx1 = WorkflowContext::new(HashMap::new());
 
     // 手动跑 A
-    let outcome1 = schedule_resume(&workflow.nodes, &workflow.edges, &registry, &mut ctx1, &HashSet::new()).await.unwrap();
+    let outcome1 = schedule_resume(
+        &workflow.nodes,
+        &workflow.edges,
+        &registry,
+        &mut ctx1,
+        &HashSet::new(),
+    )
+    .await
+    .unwrap();
     match outcome1 {
         ScheduleOutcome::Waiting(node_id) => {
             println!("→ 首次执行停在 review 节点: {}", node_id);
@@ -447,12 +453,17 @@ async fn test_spike2_full_resume_flow() {
     let mut new_completed = checkpoint.completed_nodes.clone();
     new_completed.insert(waiting_node_id.clone());
 
-    println!(
-        "→ 调用 schedule_resume,跳过 completed: {:?}",
-        new_completed
-    );
+    println!("→ 调用 schedule_resume,跳过 completed: {:?}", new_completed);
 
-    let outcome2 = schedule_resume(&workflow.nodes, &workflow.edges, &registry, &mut ctx2, &new_completed).await.unwrap();
+    let outcome2 = schedule_resume(
+        &workflow.nodes,
+        &workflow.edges,
+        &registry,
+        &mut ctx2,
+        &new_completed,
+    )
+    .await
+    .unwrap();
 
     match outcome2 {
         ScheduleOutcome::Completed => println!("→ workflow 完成"),
@@ -463,7 +474,10 @@ async fn test_spike2_full_resume_flow() {
     println!("\n--- 阶段 4:验证结果 ---\n");
 
     let results = ctx2.get_all_node_results();
-    println!("→ 最终 node_results keys: {:?}", results.keys().collect::<Vec<_>>());
+    println!(
+        "→ 最终 node_results keys: {:?}",
+        results.keys().collect::<Vec<_>>()
+    );
 
     // A 节点:来自首次执行,不应该重跑(只看到一次执行日志)
     assert!(results.contains_key("A"));
@@ -511,7 +525,12 @@ async fn test_spike2_skip_completed_efficiency() {
             _wf_ctx: &WorkflowContext,
         ) -> Result<NodeResult, String> {
             self.counter.fetch_add(1, Ordering::SeqCst);
-            println!("    [executor:{}] 节点 {} 执行(count={})", self.label, node.id, self.counter.load(Ordering::SeqCst));
+            println!(
+                "    [executor:{}] 节点 {} 执行(count={})",
+                self.label,
+                node.id,
+                self.counter.load(Ordering::SeqCst)
+            );
             Ok(NodeResult {
                 node_id: node.id.clone(),
                 output: json!(self.label),
@@ -552,14 +571,28 @@ async fn test_spike2_skip_completed_efficiency() {
     let mut ctx = WorkflowContext::new(HashMap::new());
 
     // 跑 schedule_resume
-    let outcome = schedule_resume(&workflow.nodes, &workflow.edges, &registry, &mut ctx, &completed_nodes).await.unwrap();
+    let outcome = schedule_resume(
+        &workflow.nodes,
+        &workflow.edges,
+        &registry,
+        &mut ctx,
+        &completed_nodes,
+    )
+    .await
+    .unwrap();
 
     assert!(matches!(outcome, ScheduleOutcome::Completed));
 
     // 验证:A 和 review 都没被调用(executor count 应该只是 B 和 C 各一次)
     let final_count = counter.load(Ordering::SeqCst);
-    println!("\n→ executor 总调用次数: {} (预期 2:只调 B 和 C)", final_count);
-    assert_eq!(final_count, 2, "应该只调用 B 和 C 的 executor,A 和 review 应被跳过");
+    println!(
+        "\n→ executor 总调用次数: {} (预期 2:只调 B 和 C)",
+        final_count
+    );
+    assert_eq!(
+        final_count, 2,
+        "应该只调用 B 和 C 的 executor,A 和 review 应被跳过"
+    );
 
     println!("✓ 跳过 completed 节点正确:已完成的 executor 不会重复执行");
 }
@@ -595,12 +628,18 @@ async fn test_spike2_workflow_hash_drift_detection() {
 async fn test_spike2_summary() {
     println!("\n========== Spike 2 总结 ==========\n");
     println!("验证点 1: scheduler 跳过 completed 节点 → 可行(schedule_resume 函数)");
-    println!("验证点 2: Checkpoint 数据结构 → 可行(包含 completed_nodes + waiting_node + context_snapshot)");
-    println!("验证点 3: resume 重调度协议 → 可行(注入 review_result → 标记 Completed → schedule_resume)");
+    println!(
+        "验证点 2: Checkpoint 数据结构 → 可行(包含 completed_nodes + waiting_node + context_snapshot)"
+    );
+    println!(
+        "验证点 3: resume 重调度协议 → 可行(注入 review_result → 标记 Completed → schedule_resume)"
+    );
     println!("验证点 4: gateway 重启恢复 → 可行(InMemoryCheckpointStore 模拟)");
     println!("\n关键设计决策:");
     println!("  1. schedule_resume 函数签名:");
-    println!("     schedule_resume(nodes, edges, executors, ctx, completed_nodes) -> ScheduleOutcome");
+    println!(
+        "     schedule_resume(nodes, edges, executors, ctx, completed_nodes) -> ScheduleOutcome"
+    );
     println!("     返回 ScheduleOutcome::Completed 或 ScheduleOutcome::Waiting(node_id)");
     println!("  2. Checkpoint 结构:");
     println!("     {{ id, execution_id, saved_at: DateTime<Utc>,");

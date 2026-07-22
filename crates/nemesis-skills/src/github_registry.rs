@@ -11,15 +11,16 @@
 
 use std::time::Duration;
 
+use reqwest::Client;
 use serde::Deserialize;
 use tracing::{debug, warn};
-use reqwest::Client;
 
 use nemesis_types::error::{NemesisError, Result};
 
 use crate::github_tree::download_skill_tree_from_github;
 use crate::types::{
-    contains_ci, validate_skill_identifier, BrowseResult, BrowseSort, InstallResult, SkillMeta, SkillSearchResult,
+    BrowseResult, BrowseSort, InstallResult, SkillMeta, SkillSearchResult, contains_ci,
+    validate_skill_identifier,
 };
 
 /// Default GitHub API timeout.
@@ -60,7 +61,11 @@ impl GitHubRegistry {
             DEFAULT_TIMEOUT
         };
 
-        let max_size = if max_size > 0 { max_size } else { DEFAULT_MAX_SIZE };
+        let max_size = if max_size > 0 {
+            max_size
+        } else {
+            DEFAULT_MAX_SIZE
+        };
 
         Self {
             base_url,
@@ -207,17 +212,20 @@ impl GitHubRegistry {
             .map_err(|e| NemesisError::Validation(format!("invalid slug '{}': {}", slug, e)))?;
 
         // Fetch metadata.
-        let meta = self.get_skill_meta(slug).await.unwrap_or_else(|_| SkillMeta {
-            slug: slug.to_string(),
-            display_name: slug.to_string(),
-            summary: String::new(),
-            latest_version: version.to_string(),
-            is_malware_blocked: false,
-            is_suspicious: false,
-            registry_name: self.name().to_string(),
-            author: String::new(),
-            downloads: 0,
-        });
+        let meta = self
+            .get_skill_meta(slug)
+            .await
+            .unwrap_or_else(|_| SkillMeta {
+                slug: slug.to_string(),
+                display_name: slug.to_string(),
+                summary: String::new(),
+                latest_version: version.to_string(),
+                is_malware_blocked: false,
+                is_suspicious: false,
+                registry_name: self.name().to_string(),
+                author: String::new(),
+                downloads: 0,
+            });
 
         let install_version = if version.is_empty() {
             if meta.latest_version.is_empty() {
@@ -304,11 +312,7 @@ impl GitHubRegistry {
             0
         };
 
-        let items: Vec<SkillSearchResult> = all
-            .into_iter()
-            .skip(offset)
-            .take(limit)
-            .collect();
+        let items: Vec<SkillSearchResult> = all.into_iter().skip(offset).take(limit).collect();
 
         let next_offset = offset + items.len();
         let next_cursor = if items.len() == limit {
@@ -363,14 +367,11 @@ impl GitHubRegistry {
     }
 
     /// Search using GitHub Contents API (two-layer).
-    async fn search_two_layer(
-        &self,
-        query: &str,
-        limit: usize,
-    ) -> Result<Vec<SkillSearchResult>> {
+    async fn search_two_layer(&self, query: &str, limit: usize) -> Result<Vec<SkillSearchResult>> {
         let api_url = format!(
             "{}/repos/{}/contents/skills",
-            self.api_base_url(), self.repo
+            self.api_base_url(),
+            self.repo
         );
 
         let response = self
@@ -391,10 +392,9 @@ impl GitHubRegistry {
             )));
         }
 
-        let entries: Vec<GitHubContentEntry> = response
-            .json()
-            .await
-            .map_err(|e| NemesisError::Other(format!("failed to parse directory listing: {}", e)))?;
+        let entries: Vec<GitHubContentEntry> = response.json().await.map_err(|e| {
+            NemesisError::Other(format!("failed to parse directory listing: {}", e))
+        })?;
 
         let mut results = Vec::new();
         for entry in &entries {
@@ -434,7 +434,9 @@ impl GitHubRegistry {
     ) -> Result<Vec<SkillSearchResult>> {
         let api_url = format!(
             "{}/repos/{}/git/trees/{}?recursive=1",
-            self.api_base_url(), self.repo, self.branch
+            self.api_base_url(),
+            self.repo,
+            self.branch
         );
 
         let response = self
@@ -520,18 +522,17 @@ impl GitHubRegistry {
         }
 
         if tree_response.truncated == Some(true) {
-            warn!("GitHub tree truncated, results may be incomplete for {}", self.repo);
+            warn!(
+                "GitHub tree truncated, results may be incomplete for {}",
+                self.repo
+            );
         }
 
         Ok(results)
     }
 
     /// Search using GitHub API (dispatches to two-layer or three-layer).
-    async fn search_github_api(
-        &self,
-        query: &str,
-        limit: usize,
-    ) -> Result<Vec<SkillSearchResult>> {
+    async fn search_github_api(&self, query: &str, limit: usize) -> Result<Vec<SkillSearchResult>> {
         if self.is_three_layer_pattern() {
             self.search_three_layer(query, limit).await
         } else {
@@ -582,10 +583,7 @@ impl GitHubRegistry {
             self.skill_path_pattern.replace("{slug}", slug)
         };
 
-        format!(
-            "{}/{}/{}/{}",
-            self.base_url, self.repo, self.branch, path
-        )
+        format!("{}/{}/{}/{}", self.base_url, self.repo, self.branch, path)
     }
 
     /// Perform an HTTP GET request with error handling.
@@ -630,11 +628,7 @@ impl GitHubRegistry {
     ///
     /// Mirrors Go's `downloadSkillTree()` method that delegates to the shared
     /// `DownloadSkillTreeFromGitHub` function.
-    pub async fn download_skill_tree(
-        &self,
-        dir_prefix: &str,
-        target_dir: &str,
-    ) -> Result<()> {
+    pub async fn download_skill_tree(&self, dir_prefix: &str, target_dir: &str) -> Result<()> {
         download_skill_tree_from_github(
             &self.client,
             self.api_base_url(),

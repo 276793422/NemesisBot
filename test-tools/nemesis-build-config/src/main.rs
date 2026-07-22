@@ -19,7 +19,10 @@ use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 
 use nemesis_build_config::{
-    cargo_scan, config::BuildConfig, export, manifest::{DefaultVal, FeatureManifest, FeatureSpec},
+    cargo_scan,
+    config::BuildConfig,
+    export,
+    manifest::{DefaultVal, FeatureManifest, FeatureSpec},
 };
 
 #[derive(Parser)]
@@ -90,7 +93,9 @@ fn category_for(id: &str) -> &'static str {
 fn scaffold(scan: &cargo_scan::ScanResult, existing: Option<&FeatureManifest>) -> FeatureManifest {
     let mut features: Vec<FeatureSpec> = Vec::new();
     for name in scan.names() {
-        let prev = existing.and_then(|m| m.features.iter().find(|f| f.id == name)).cloned();
+        let prev = existing
+            .and_then(|m| m.features.iter().find(|f| f.id == name))
+            .cloned();
         let spec = if let Some(p) = prev {
             // keep curated fields; refresh default from reality
             FeatureSpec {
@@ -114,7 +119,9 @@ fn scaffold(scan: &cargo_scan::ScanResult, existing: Option<&FeatureManifest>) -
     }
     // always (re)ensure the build-profile enum entry
     if !features.iter().any(|f| f.id == "build-profile") {
-        let prev = existing.and_then(|m| m.features.iter().find(|f| f.id == "build-profile")).cloned();
+        let prev = existing
+            .and_then(|m| m.features.iter().find(|f| f.id == "build-profile"))
+            .cloned();
         features.push(prev.unwrap_or(FeatureSpec {
             id: "build-profile".to_string(),
             label: "构建 profile".to_string(),
@@ -144,8 +151,14 @@ fn run_init(root: &Path) -> Result<()> {
         std::fs::create_dir_all(parent)?;
     }
     fresh.save(&mpath)?;
-    println!("✓ wrote {} ({} features)", mpath.display(), fresh.features.len());
-    println!("  hand-edit descriptions/categories there, then run `nemesis-build-config` to configure.");
+    println!(
+        "✓ wrote {} ({} features)",
+        mpath.display(),
+        fresh.features.len()
+    );
+    println!(
+        "  hand-edit descriptions/categories there, then run `nemesis-build-config` to configure."
+    );
     Ok(())
 }
 
@@ -169,12 +182,17 @@ fn run_check(root: &Path) -> Result<()> {
     }
     for id in cargo_names.iter() {
         if !manifest_bool_ids.contains(id) {
-            println!("MISSING: nemesisbot/Cargo.toml has `{id}` but manifest does not (run `init`)");
+            println!(
+                "MISSING: nemesisbot/Cargo.toml has `{id}` but manifest does not (run `init`)"
+            );
             problems += 1;
         }
     }
     if problems == 0 {
-        println!("✓ manifest in sync with nemesisbot/Cargo.toml ({} features)", cargo_names.len());
+        println!(
+            "✓ manifest in sync with nemesisbot/Cargo.toml ({} features)",
+            cargo_names.len()
+        );
         Ok(())
     } else {
         std::process::exit(1);
@@ -214,11 +232,20 @@ fn run_list(root: &Path) -> Result<()> {
     Ok(())
 }
 
-fn run_export(root: &Path, feats: bool, profile: bool, cmd: bool, frontend_env: bool) -> Result<()> {
+fn run_export(
+    root: &Path,
+    feats: bool,
+    profile: bool,
+    cmd: bool,
+    frontend_env: bool,
+) -> Result<()> {
     let cpath = config_path(root);
     if !cpath.exists() {
         // No customization => signal to the bridge script to do a default build.
-        anyhow::bail!("no .config at {} (run `nemesis-config` to create one)", cpath.display());
+        anyhow::bail!(
+            "no .config at {} (run `nemesis-config` to create one)",
+            cpath.display()
+        );
     }
     let cfg = BuildConfig::load(&cpath)?;
     if frontend_env {
@@ -266,7 +293,10 @@ fn run_load(root: &Path, name: &str) -> Result<()> {
 fn run_tui(root: &Path) -> Result<()> {
     let mpath = manifest_path(root);
     if !mpath.exists() {
-        println!("manifest not found at {} — running `init` first...", mpath.display());
+        println!(
+            "manifest not found at {} — running `init` first...",
+            mpath.display()
+        );
         run_init(root)?;
     }
     let manifest = FeatureManifest::load(&mpath)?;
@@ -283,7 +313,12 @@ fn main() -> Result<()> {
         Some(Cmd::Init) => run_init(&root),
         Some(Cmd::Check) => run_check(&root),
         Some(Cmd::List) => run_list(&root),
-        Some(Cmd::Export { features, profile, cmd, frontend_env }) => run_export(&root, features, profile, cmd, frontend_env),
+        Some(Cmd::Export {
+            features,
+            profile,
+            cmd,
+            frontend_env,
+        }) => run_export(&root, features, profile, cmd, frontend_env),
         Some(Cmd::HasConfig) => run_has_config(&root),
         Some(Cmd::Load { name }) => run_load(&root, &name),
     }

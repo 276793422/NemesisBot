@@ -4,7 +4,10 @@ use super::*;
 fn test_default_aliases() {
     let config = RouterConfig::default();
     assert_eq!(config.aliases.get("fast").unwrap(), "groq/llama-3");
-    assert_eq!(config.aliases.get("smart").unwrap(), "anthropic/claude-sonnet-4-6");
+    assert_eq!(
+        config.aliases.get("smart").unwrap(),
+        "anthropic/claude-sonnet-4-6"
+    );
 }
 
 #[test]
@@ -111,7 +114,10 @@ fn test_metrics_ring_buffer() {
 fn test_default_aliases_function() {
     let aliases = default_aliases();
     assert_eq!(aliases.get("fast").unwrap(), "groq/llama-3.3-70b-versatile");
-    assert_eq!(aliases.get("smart").unwrap(), "anthropic/claude-sonnet-4-20250514");
+    assert_eq!(
+        aliases.get("smart").unwrap(),
+        "anthropic/claude-sonnet-4-20250514"
+    );
     assert_eq!(aliases.get("cheap").unwrap(), "deepseek/deepseek-chat");
     assert_eq!(aliases.get("local").unwrap(), "ollama/llama3.3");
 }
@@ -119,7 +125,10 @@ fn test_default_aliases_function() {
 #[test]
 fn test_resolve_alias_function() {
     let aliases = default_aliases();
-    assert_eq!(resolve_alias(&aliases, "fast"), Some("groq/llama-3.3-70b-versatile".to_string()));
+    assert_eq!(
+        resolve_alias(&aliases, "fast"),
+        Some("groq/llama-3.3-70b-versatile".to_string())
+    );
     assert_eq!(resolve_alias(&aliases, "gpt-4"), None);
 }
 
@@ -134,7 +143,10 @@ fn test_merge_aliases_custom_overrides() {
     assert_eq!(merged.get("fast").unwrap(), "custom/fast-model");
     assert_eq!(merged.get("my-custom").unwrap(), "custom/model");
     // Default still present
-    assert_eq!(merged.get("smart").unwrap(), "anthropic/claude-sonnet-4-20250514");
+    assert_eq!(
+        merged.get("smart").unwrap(),
+        "anthropic/claude-sonnet-4-20250514"
+    );
 }
 
 #[test]
@@ -578,10 +590,22 @@ fn test_candidate_serialization() {
 #[test]
 fn test_policy_serialization() {
     assert_eq!(serde_json::to_string(&Policy::Cost).unwrap(), "\"cost\"");
-    assert_eq!(serde_json::to_string(&Policy::Quality).unwrap(), "\"quality\"");
-    assert_eq!(serde_json::to_string(&Policy::Latency).unwrap(), "\"latency\"");
-    assert_eq!(serde_json::to_string(&Policy::RoundRobin).unwrap(), "\"round_robin\"");
-    assert_eq!(serde_json::to_string(&Policy::Fallback).unwrap(), "\"fallback\"");
+    assert_eq!(
+        serde_json::to_string(&Policy::Quality).unwrap(),
+        "\"quality\""
+    );
+    assert_eq!(
+        serde_json::to_string(&Policy::Latency).unwrap(),
+        "\"latency\""
+    );
+    assert_eq!(
+        serde_json::to_string(&Policy::RoundRobin).unwrap(),
+        "\"round_robin\""
+    );
+    assert_eq!(
+        serde_json::to_string(&Policy::Fallback).unwrap(),
+        "\"fallback\""
+    );
 }
 
 #[test]
@@ -598,11 +622,30 @@ fn test_router_register_and_use_provider() {
     struct MockProvider;
     #[async_trait::async_trait]
     impl LLMProvider for MockProvider {
-        async fn chat(&self, _: &[Message], _: &[ToolDefinition], _: &str, _: &ChatOptions) -> Result<LLMResponse, FailoverError> {
-            Ok(LLMResponse { content: "mock".into(), tool_calls: vec![], finish_reason: "stop".into(), usage: None, reasoning_content: None, extra: HashMap::new(), raw_request_body: None, raw_response_body: None })
+        async fn chat(
+            &self,
+            _: &[Message],
+            _: &[ToolDefinition],
+            _: &str,
+            _: &ChatOptions,
+        ) -> Result<LLMResponse, FailoverError> {
+            Ok(LLMResponse {
+                content: "mock".into(),
+                tool_calls: vec![],
+                finish_reason: "stop".into(),
+                usage: None,
+                reasoning_content: None,
+                extra: HashMap::new(),
+                raw_request_body: None,
+                raw_response_body: None,
+            })
         }
-        fn default_model(&self) -> &str { "mock-model" }
-        fn name(&self) -> &str { "mock" }
+        fn default_model(&self) -> &str {
+            "mock-model"
+        }
+        fn name(&self) -> &str {
+            "mock"
+        }
     }
 
     let router = Router::new(RouterConfig::default());

@@ -170,8 +170,8 @@ fn test_cli_detail_unknown_command() {
 fn test_cli_overview_contains_all_commands() {
     let s = cli_overview();
     for keyword in [
-        "model", "mcp", "channel", "cluster", "skills", "forge", "cron", "security",
-        "scanner", "log", "auth", "memory", "workflow", "cors", "status", "version",
+        "model", "mcp", "channel", "cluster", "skills", "forge", "cron", "security", "scanner",
+        "log", "auth", "memory", "workflow", "cors", "status", "version",
     ] {
         assert!(s.contains(keyword), "overview missing '{}'", keyword);
     }
@@ -181,7 +181,11 @@ fn test_cli_overview_contains_all_commands() {
 // format_discovery_result: branches for non-empty tools/resources/prompts
 // ===========================================================================
 
-fn make_tool(name: &str, desc: Option<&str>, schema: serde_json::Value) -> nemesis_mcp::types::McpTool {
+fn make_tool(
+    name: &str,
+    desc: Option<&str>,
+    schema: serde_json::Value,
+) -> nemesis_mcp::types::McpTool {
     nemesis_mcp::types::McpTool {
         name: name.to_string(),
         description: desc.map(String::from),
@@ -362,11 +366,15 @@ fn test_format_discovery_result_full() {
             version: "9.9".to_string(),
         }),
         tools: vec![
-            make_tool("tool_a", Some("A tool"), serde_json::json!({
-                "type": "object",
-                "properties": {"x": {"type": "string"}},
-                "required": ["x"]
-            })),
+            make_tool(
+                "tool_a",
+                Some("A tool"),
+                serde_json::json!({
+                    "type": "object",
+                    "properties": {"x": {"type": "string"}},
+                    "required": ["x"]
+                }),
+            ),
             make_tool("tool_b", None, serde_json::json!({"type": "object"})),
         ],
         resources: vec![nemesis_mcp::types::Resource {
@@ -398,7 +406,10 @@ fn test_format_discovery_result_full() {
 
 #[test]
 fn test_extract_name_arg_with_json() {
-    assert_eq!(extract_name_arg(r#"{"name": "skill-1"}"#).unwrap(), "skill-1");
+    assert_eq!(
+        extract_name_arg(r#"{"name": "skill-1"}"#).unwrap(),
+        "skill-1"
+    );
 }
 
 #[test]
@@ -438,7 +449,9 @@ fn make_forge_executor() -> Arc<nemesis_forge::forge_tools::ForgeToolExecutor> {
     // Leak the tempdir so it lives for the test's lifetime.
     // (Forge holds no open handles that require cleanup within the test.)
     std::mem::forget(tmp);
-    Arc::new(nemesis_forge::forge_tools::ForgeToolExecutor::new(Arc::new(forge)))
+    Arc::new(nemesis_forge::forge_tools::ForgeToolExecutor::new(
+        Arc::new(forge),
+    ))
 }
 
 #[cfg(feature = "forge")]
@@ -449,7 +462,9 @@ async fn test_forge_bridge_tool_execute_list_success() {
         forge_executor: Some(executor),
         ..Default::default()
     });
-    let forge_list = tools.get("forge_list").expect("forge_list should be registered");
+    let forge_list = tools
+        .get("forge_list")
+        .expect("forge_list should be registered");
     let ctx = RequestContext::new("web", "c1", "u1", "s1");
     let result = forge_list.execute("{}", &ctx).await;
     assert!(result.is_ok(), "expected Ok, got: {:?}", result);
@@ -481,8 +496,16 @@ async fn test_forge_bridge_tool_description_and_parameters() {
         ..Default::default()
     });
     // Every forge bridge must expose a non-empty description and an object parameters.
-    let forge_names: Vec<&str> = tools.keys().map(|s| s.as_str()).filter(|s| s.starts_with("forge_")).collect();
-    assert!(forge_names.len() >= 5, "expected multiple forge tools, got {:?}", forge_names);
+    let forge_names: Vec<&str> = tools
+        .keys()
+        .map(|s| s.as_str())
+        .filter(|s| s.starts_with("forge_"))
+        .collect();
+    assert!(
+        forge_names.len() >= 5,
+        "expected multiple forge tools, got {:?}",
+        forge_names
+    );
     for name in forge_names {
         let t = tools.get(name).unwrap();
         let d = t.description();
@@ -766,9 +789,7 @@ async fn test_skills_info_tool_with_loader_unknown_skill() {
     ));
     let tool = SkillsInfoTool::new(Some(loader));
     let ctx = RequestContext::new("web", "c1", "u1", "s1");
-    let r = tool
-        .execute(r#"{"name": "nope"}"#, &ctx)
-        .await;
+    let r = tool.execute(r#"{"name": "nope"}"#, &ctx).await;
     assert!(r.is_err());
     assert!(r.unwrap_err().contains("not found"));
 }
@@ -865,9 +886,7 @@ async fn test_find_skills_tool_with_limit_zero_clamped_to_one() {
     let registry = Arc::new(nemesis_skills::registry::RegistryManager::new_empty());
     let tool = FindSkillsTool::new(registry);
     let ctx = RequestContext::new("web", "c1", "u1", "s1");
-    let r = tool
-        .execute(r#"{"query": "x", "limit": 0}"#, &ctx)
-        .await;
+    let r = tool.execute(r#"{"query": "x", "limit": 0}"#, &ctx).await;
     // Empty registry -> search returns Ok(empty vec) -> "No skills found"
     // OR error from search failure. Either way, no panic.
     assert!(r.is_ok() || r.is_err());
@@ -1295,7 +1314,10 @@ async fn test_i2c_tool_with_confirm_write() {
     let t = I2CTool;
     let ctx = RequestContext::new("web", "c1", "u1", "s1");
     let r = t
-        .execute(r#"{"action": "write", "address": 5, "confirm": true}"#, &ctx)
+        .execute(
+            r#"{"action": "write", "address": 5, "confirm": true}"#,
+            &ctx,
+        )
         .await;
     if cfg!(target_os = "linux") {
         assert!(r.is_ok());
@@ -1369,7 +1391,10 @@ async fn test_spi_tool_transfer_without_confirm() {
     let t = SPITool;
     let ctx = RequestContext::new("web", "c1", "u1", "s1");
     let r = t
-        .execute(r#"{"action": "transfer", "device": "/dev/spidev0.0"}"#, &ctx)
+        .execute(
+            r#"{"action": "transfer", "device": "/dev/spidev0.0"}"#,
+            &ctx,
+        )
         .await;
     if cfg!(target_os = "linux") {
         assert!(r.is_err());
@@ -1407,7 +1432,9 @@ fn test_register_extended_tools_all_three_provided() {
 async fn test_message_tool_callback_called_with_non_rpc_channel() {
     let tool = MessageTool::new();
     let received = Arc::new(std::sync::Mutex::new((
-        String::new(), String::new(), String::new(),
+        String::new(),
+        String::new(),
+        String::new(),
     )));
     let received_clone = received.clone();
     tool.set_send_callback(Box::new(move |ch, cid, content| {
@@ -1523,7 +1550,9 @@ async fn test_forge_bridge_unknown_tool_name_returns_err() {
     // Manually wire a ForgeBridgeTool for an unknown name via register_shared_tools
     // and then call it (no such tool will be in the result, so we use a different approach).
     let executor = make_forge_executor();
-    let result = executor.execute("forge_nonexistent", &serde_json::Value::Null).await;
+    let result = executor
+        .execute("forge_nonexistent", &serde_json::Value::Null)
+        .await;
     assert!(!result.success);
     assert!(result.content.contains("Unknown forge tool"));
 }

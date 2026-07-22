@@ -5,7 +5,9 @@
 //!           stats, entries.list, entries.search, entries.store,
 //!           model.install
 
-use crate::handlers::{read_workspace_file, require_home, require_workspace, resolve_path, write_workspace_file};
+use crate::handlers::{
+    read_workspace_file, require_home, require_workspace, resolve_path, write_workspace_file,
+};
 use crate::ws_router::{ModuleHandler, RequestContext};
 use std::collections::HashSet;
 use std::io::Write;
@@ -98,8 +100,7 @@ impl ModuleHandler for MemoryHandler {
 
 /// Auto-detect plugin library path next to the current executable.
 fn detect_plugin_path() -> Option<String> {
-    nemesis_utils::find_plugin_library("plugin_onnx")
-        .map(|p| p.to_string_lossy().to_string())
+    nemesis_utils::find_plugin_library("plugin_onnx").map(|p| p.to_string_lossy().to_string())
 }
 
 /// Read the `memory.enabled` field from the main config.json.
@@ -108,9 +109,14 @@ fn read_main_switch(home: &str) -> bool {
     if !cfg_path.exists() {
         return false;
     }
-    std::fs::read_to_string(&cfg_path).ok()
+    std::fs::read_to_string(&cfg_path)
+        .ok()
         .and_then(|c| serde_json::from_str::<serde_json::Value>(&c).ok())
-        .and_then(|v| v.get("memory").and_then(|m| m.get("enabled")).and_then(|e| e.as_bool()))
+        .and_then(|v| {
+            v.get("memory")
+                .and_then(|m| m.get("enabled"))
+                .and_then(|e| e.as_bool())
+        })
         .unwrap_or(false)
 }
 
@@ -120,20 +126,20 @@ fn set_main_switch(home: &str, enabled: bool) -> Result<(), String> {
     if !cfg_path.exists() {
         return Err(format!("config.json not found at {}", cfg_path.display()));
     }
-    let content = std::fs::read_to_string(&cfg_path)
-        .map_err(|e| format!("failed to read config: {}", e))?;
-    let mut cfg: serde_json::Value = serde_json::from_str(&content)
-        .map_err(|e| format!("failed to parse config: {}", e))?;
+    let content =
+        std::fs::read_to_string(&cfg_path).map_err(|e| format!("failed to read config: {}", e))?;
+    let mut cfg: serde_json::Value =
+        serde_json::from_str(&content).map_err(|e| format!("failed to parse config: {}", e))?;
     if cfg.get("memory").is_none() {
-        cfg.as_object_mut().map(|o| o.insert("memory".to_string(), serde_json::json!({})));
+        cfg.as_object_mut()
+            .map(|o| o.insert("memory".to_string(), serde_json::json!({})));
     }
     if let Some(mem) = cfg.get_mut("memory").and_then(|m| m.as_object_mut()) {
         mem.insert("enabled".to_string(), serde_json::Value::Bool(enabled));
     }
     let updated = serde_json::to_string_pretty(&cfg)
         .map_err(|e| format!("failed to serialize config: {}", e))?;
-    std::fs::write(&cfg_path, updated)
-        .map_err(|e| format!("failed to write config: {}", e))?;
+    std::fs::write(&cfg_path, updated).map_err(|e| format!("failed to write config: {}", e))?;
     Ok(())
 }
 
@@ -166,7 +172,8 @@ impl MemoryHandler {
         let vector_enabled = if em_config_path.exists() {
             nemesis_memory::vector::embedding_config::load_embedding_config(
                 &PathBuf::from(workspace).join("config"),
-            ).enabled
+            )
+            .enabled
         } else {
             false
         };
@@ -197,7 +204,11 @@ impl MemoryHandler {
         Ok(Some(serde_json::json!({ "documents": docs })))
     }
 
-    fn document_get(&self, workspace: &str, path: &str) -> Result<Option<serde_json::Value>, String> {
+    fn document_get(
+        &self,
+        workspace: &str,
+        path: &str,
+    ) -> Result<Option<serde_json::Value>, String> {
         let content = read_workspace_file(workspace, path)?;
         Ok(Some(serde_json::json!({
             "path": path,
@@ -227,7 +238,11 @@ impl MemoryHandler {
 // ---------------------------------------------------------------------------
 
 impl MemoryHandler {
-    fn env_check(&self, config_dir: &PathBuf, home: &str) -> Result<Option<serde_json::Value>, String> {
+    fn env_check(
+        &self,
+        config_dir: &PathBuf,
+        home: &str,
+    ) -> Result<Option<serde_json::Value>, String> {
         let plugin = detect_plugin_path();
         let main_switch = read_main_switch(home);
 
@@ -245,31 +260,42 @@ impl MemoryHandler {
                 let tokenizer_file = model_dir.join("tokenizer.json");
 
                 // Also check local_model_path if set
-                let model_ready = if !mc.local_model_path.is_empty() && std::path::Path::new(&mc.local_model_path).exists() {
+                let model_ready = if !mc.local_model_path.is_empty()
+                    && std::path::Path::new(&mc.local_model_path).exists()
+                {
                     true
                 } else {
                     model_file.exists()
                 };
-                let tokenizer_ready = if !mc.local_tokenizer_path.is_empty() && std::path::Path::new(&mc.local_tokenizer_path).exists() {
+                let tokenizer_ready = if !mc.local_tokenizer_path.is_empty()
+                    && std::path::Path::new(&mc.local_tokenizer_path).exists()
+                {
                     true
                 } else {
                     tokenizer_file.exists()
                 };
 
-                models.insert(tier.to_string(), serde_json::json!({
-                    "name": mc.name,
-                    "dimension": mc.dimension,
-                    "model_ready": model_ready,
-                    "tokenizer_ready": tokenizer_ready,
-                    "model_size": mc.model_size,
-                }));
+                models.insert(
+                    tier.to_string(),
+                    serde_json::json!({
+                        "name": mc.name,
+                        "dimension": mc.dimension,
+                        "model_ready": model_ready,
+                        "tokenizer_ready": tokenizer_ready,
+                        "model_size": mc.model_size,
+                    }),
+                );
             }
         }
 
         // Overall status
-        let active_model_ready = emb_cfg.models.get(&active_tier)
+        let active_model_ready = emb_cfg
+            .models
+            .get(&active_tier)
             .map(|mc| {
-                let model_ready = if !mc.local_model_path.is_empty() && std::path::Path::new(&mc.local_model_path).exists() {
+                let model_ready = if !mc.local_model_path.is_empty()
+                    && std::path::Path::new(&mc.local_model_path).exists()
+                {
                     true
                 } else {
                     emb_data_dir.join(&mc.name).join("model.onnx").exists()
@@ -312,41 +338,65 @@ impl MemoryHandler {
         let result = tokio::task::spawn_blocking(move || {
             // 1. Check plugin
             let _plugin_path = detect_plugin_path().ok_or_else(|| {
-                hub.publish("memory-setup", serde_json::json!({
-                    "status": "error", "message": "Plugin not found"
-                }));
+                hub.publish(
+                    "memory-setup",
+                    serde_json::json!({
+                        "status": "error", "message": "Plugin not found"
+                    }),
+                );
                 let filename = nemesis_utils::plugin_library_filename("plugin_onnx");
                 format!("Plugin not found at {{exe_dir}}/plugins/{}", filename)
             })?;
 
-            hub.publish("memory-setup", serde_json::json!({
-                "status": "starting", "message": "正在准备模型文件..."
-            }));
+            hub.publish(
+                "memory-setup",
+                serde_json::json!({
+                    "status": "starting", "message": "正在准备模型文件..."
+                }),
+            );
 
             // 2. Download model files
-            let mut emb_cfg = nemesis_memory::vector::embedding_config::load_embedding_config(&config_dir_clone);
-            let (_model_dir, _dim) = nemesis_memory::vector::embedding_config::download_model_files(
-                &mut emb_cfg, &config_dir_clone,
-            ).map_err(|e| {
-                hub.publish("memory-setup", serde_json::json!({
-                    "status": "error", "message": format!("模型下载失败: {}", e)
-                }));
-                e
-            })?;
-            nemesis_memory::vector::embedding_config::save_embedding_config(&emb_cfg, &config_dir_clone);
+            let mut emb_cfg =
+                nemesis_memory::vector::embedding_config::load_embedding_config(&config_dir_clone);
+            let (_model_dir, _dim) =
+                nemesis_memory::vector::embedding_config::download_model_files(
+                    &mut emb_cfg,
+                    &config_dir_clone,
+                )
+                .map_err(|e| {
+                    hub.publish(
+                        "memory-setup",
+                        serde_json::json!({
+                            "status": "error", "message": format!("模型下载失败: {}", e)
+                        }),
+                    );
+                    e
+                })?;
+            nemesis_memory::vector::embedding_config::save_embedding_config(
+                &emb_cfg,
+                &config_dir_clone,
+            );
 
             // 3. Write enabled=true to unified config
-            let mut emb_cfg = nemesis_memory::vector::embedding_config::load_embedding_config(&config_dir_clone);
+            let mut emb_cfg =
+                nemesis_memory::vector::embedding_config::load_embedding_config(&config_dir_clone);
             emb_cfg.enabled = true;
-            nemesis_memory::vector::embedding_config::save_embedding_config(&emb_cfg, &config_dir_clone);
+            nemesis_memory::vector::embedding_config::save_embedding_config(
+                &emb_cfg,
+                &config_dir_clone,
+            );
 
-            hub.publish("memory-setup", serde_json::json!({
-                "status": "complete", "message": "一键安装完成"
-            }));
+            hub.publish(
+                "memory-setup",
+                serde_json::json!({
+                    "status": "complete", "message": "一键安装完成"
+                }),
+            );
 
             Ok::<(), String>(())
-        }).await
-            .map_err(|e| format!("setup task panicked: {}", e))?;
+        })
+        .await
+        .map_err(|e| format!("setup task panicked: {}", e))?;
 
         result?;
 
@@ -362,7 +412,11 @@ impl MemoryHandler {
 // ---------------------------------------------------------------------------
 
 impl MemoryHandler {
-    fn config_get(&self, config_dir: &PathBuf, home: &str) -> Result<Option<serde_json::Value>, String> {
+    fn config_get(
+        &self,
+        config_dir: &PathBuf,
+        home: &str,
+    ) -> Result<Option<serde_json::Value>, String> {
         let main_enabled = read_main_switch(home);
 
         // Load unified config (contains enabled + models + active tier)
@@ -384,7 +438,13 @@ impl MemoryHandler {
         })))
     }
 
-    fn config_set(&self, config_dir: &PathBuf, home: &str, data: &serde_json::Value, ctx: &crate::ws_router::RequestContext) -> Result<Option<serde_json::Value>, String> {
+    fn config_set(
+        &self,
+        config_dir: &PathBuf,
+        home: &str,
+        data: &serde_json::Value,
+        ctx: &crate::ws_router::RequestContext,
+    ) -> Result<Option<serde_json::Value>, String> {
         // Main switch
         if let Some(enabled) = data.get("main_enabled").and_then(|v| v.as_bool()) {
             set_main_switch(home, enabled)?;
@@ -399,11 +459,17 @@ impl MemoryHandler {
         if let Some(enabled) = data.get("sub_enabled").and_then(|v| v.as_bool()) {
             if enabled {
                 // Check model files before enabling
-                let emb_cfg = nemesis_memory::vector::embedding_config::load_embedding_config(config_dir);
-                let emb_data_dir = nemesis_memory::vector::embedding_config::embedding_data_dir(config_dir);
-                let model_ready = emb_cfg.models.get(&emb_cfg.active)
+                let emb_cfg =
+                    nemesis_memory::vector::embedding_config::load_embedding_config(config_dir);
+                let emb_data_dir =
+                    nemesis_memory::vector::embedding_config::embedding_data_dir(config_dir);
+                let model_ready = emb_cfg
+                    .models
+                    .get(&emb_cfg.active)
                     .map(|mc| {
-                        if !mc.local_model_path.is_empty() && std::path::Path::new(&mc.local_model_path).exists() {
+                        if !mc.local_model_path.is_empty()
+                            && std::path::Path::new(&mc.local_model_path).exists()
+                        {
                             true
                         } else {
                             emb_data_dir.join(&mc.name).join("model.onnx").exists()
@@ -414,7 +480,8 @@ impl MemoryHandler {
                     return Err("当前激活的模型尚未下载，请先安装模型后再启用强化记忆".to_string());
                 }
             }
-            let mut emb_cfg = nemesis_memory::vector::embedding_config::load_embedding_config(config_dir);
+            let mut emb_cfg =
+                nemesis_memory::vector::embedding_config::load_embedding_config(config_dir);
             emb_cfg.enabled = enabled;
             nemesis_memory::vector::embedding_config::save_embedding_config(&emb_cfg, config_dir);
             // Runtime control
@@ -422,9 +489,14 @@ impl MemoryHandler {
                 if enabled {
                     if let Err(e) = mgr.init_vector_store_from_config(config_dir) {
                         // Init failed → rollback config
-                        let mut emb_cfg = nemesis_memory::vector::embedding_config::load_embedding_config(config_dir);
+                        let mut emb_cfg =
+                            nemesis_memory::vector::embedding_config::load_embedding_config(
+                                config_dir,
+                            );
                         emb_cfg.enabled = false;
-                        nemesis_memory::vector::embedding_config::save_embedding_config(&emb_cfg, config_dir);
+                        nemesis_memory::vector::embedding_config::save_embedding_config(
+                            &emb_cfg, config_dir,
+                        );
                         return Err(format!("向量存储初始化失败: {}", e));
                     }
                 } else {
@@ -435,13 +507,17 @@ impl MemoryHandler {
 
         // Active tier
         if let Some(tier) = data.get("active_tier").and_then(|v| v.as_str()) {
-            let mut emb_cfg = nemesis_memory::vector::embedding_config::load_embedding_config(config_dir);
+            let mut emb_cfg =
+                nemesis_memory::vector::embedding_config::load_embedding_config(config_dir);
             emb_cfg.active = tier.to_string();
             nemesis_memory::vector::embedding_config::save_embedding_config(&emb_cfg, config_dir);
         }
 
         // Embedding config content (full overwrite of config.enhanced_memory.json)
-        if let Some(content) = data.get("embedding_config_content").and_then(|v| v.as_str()) {
+        if let Some(content) = data
+            .get("embedding_config_content")
+            .and_then(|v| v.as_str())
+        {
             let emb_path = config_dir.join("config.enhanced_memory.json");
             std::fs::write(&emb_path, content)
                 .map_err(|e| format!("write embedding config error: {}", e))?;
@@ -456,7 +532,11 @@ impl MemoryHandler {
 // ---------------------------------------------------------------------------
 
 impl MemoryHandler {
-    fn stats(&self, config_dir: &PathBuf, workspace: &str) -> Result<Option<serde_json::Value>, String> {
+    fn stats(
+        &self,
+        config_dir: &PathBuf,
+        workspace: &str,
+    ) -> Result<Option<serde_json::Value>, String> {
         let memory_dir = PathBuf::from(workspace).join("memory");
 
         // Vector entries: count lines in vector_store.jsonl
@@ -482,7 +562,9 @@ impl MemoryHandler {
         // Active tier and dimension from embedding config
         let emb_cfg = nemesis_memory::vector::embedding_config::load_embedding_config(config_dir);
         let active_tier = emb_cfg.active.clone();
-        let vector_dimension = emb_cfg.models.get(&active_tier)
+        let vector_dimension = emb_cfg
+            .models
+            .get(&active_tier)
             .map(|mc| mc.dimension)
             .unwrap_or(0);
 
@@ -499,7 +581,10 @@ impl MemoryHandler {
     }
 
     fn entries_list(&self, workspace: &str) -> Result<Option<serde_json::Value>, String> {
-        let jsonl_path = PathBuf::from(workspace).join("memory").join("vector").join("vector_store.jsonl");
+        let jsonl_path = PathBuf::from(workspace)
+            .join("memory")
+            .join("vector")
+            .join("vector_store.jsonl");
         if !jsonl_path.exists() {
             return Ok(Some(serde_json::json!({ "entries": [], "total": 0 })));
         }
@@ -510,7 +595,9 @@ impl MemoryHandler {
         let mut entries = Vec::new();
         for line in content.lines() {
             let line = line.trim();
-            if line.is_empty() { continue; }
+            if line.is_empty() {
+                continue;
+            }
             if let Ok(entry) = serde_json::from_str::<serde_json::Value>(line) {
                 entries.push(truncate_entry_content(entry));
             }
@@ -521,11 +608,21 @@ impl MemoryHandler {
         entries.reverse();
         entries.truncate(100);
 
-        Ok(Some(serde_json::json!({ "entries": entries, "total": total })))
+        Ok(Some(
+            serde_json::json!({ "entries": entries, "total": total }),
+        ))
     }
 
-    fn entries_search(&self, workspace: &str, query: &str, limit: usize) -> Result<Option<serde_json::Value>, String> {
-        let jsonl_path = PathBuf::from(workspace).join("memory").join("vector").join("vector_store.jsonl");
+    fn entries_search(
+        &self,
+        workspace: &str,
+        query: &str,
+        limit: usize,
+    ) -> Result<Option<serde_json::Value>, String> {
+        let jsonl_path = PathBuf::from(workspace)
+            .join("memory")
+            .join("vector")
+            .join("vector_store.jsonl");
         if !jsonl_path.exists() {
             return Ok(Some(serde_json::json!({
                 "query": query, "results": [], "total": 0, "search_type": "keyword"
@@ -540,9 +637,12 @@ impl MemoryHandler {
 
         for line in content.lines() {
             let line = line.trim();
-            if line.is_empty() { continue; }
+            if line.is_empty() {
+                continue;
+            }
             if let Ok(entry) = serde_json::from_str::<serde_json::Value>(line) {
-                let text = entry.get("content")
+                let text = entry
+                    .get("content")
                     .and_then(|v| v.as_str())
                     .unwrap_or("")
                     .to_lowercase();
@@ -561,13 +661,19 @@ impl MemoryHandler {
         })))
     }
 
-    fn entries_store(&self, workspace: &str, content: &str) -> Result<Option<serde_json::Value>, String> {
-        let jsonl_path = PathBuf::from(workspace).join("memory").join("vector").join("vector_store.jsonl");
+    fn entries_store(
+        &self,
+        workspace: &str,
+        content: &str,
+    ) -> Result<Option<serde_json::Value>, String> {
+        let jsonl_path = PathBuf::from(workspace)
+            .join("memory")
+            .join("vector")
+            .join("vector_store.jsonl");
 
         // Ensure directory exists
         if let Some(parent) = jsonl_path.parent() {
-            std::fs::create_dir_all(parent)
-                .map_err(|e| format!("failed to create dir: {}", e))?;
+            std::fs::create_dir_all(parent).map_err(|e| format!("failed to create dir: {}", e))?;
         }
 
         let id = uuid::Uuid::new_v4().to_string();
@@ -584,8 +690,8 @@ impl MemoryHandler {
             "updated_at": now,
         });
 
-        let mut line = serde_json::to_string(&entry)
-            .map_err(|e| format!("serialize error: {}", e))?;
+        let mut line =
+            serde_json::to_string(&entry).map_err(|e| format!("serialize error: {}", e))?;
         line.push('\n');
 
         // Lock to prevent concurrent appends
@@ -615,7 +721,10 @@ impl MemoryHandler {
     ) -> Result<Option<serde_json::Value>, String> {
         // Validate tier
         if !["large", "medium", "small"].contains(&tier) {
-            return Err(format!("unknown tier: '{}'. Must be large, medium, or small.", tier));
+            return Err(format!(
+                "unknown tier: '{}'. Must be large, medium, or small.",
+                tier
+            ));
         }
 
         // Acquire per-tier install lock
@@ -632,44 +741,64 @@ impl MemoryHandler {
         let tier_owned = tier.to_string();
 
         let result = tokio::task::spawn_blocking(move || {
-            hub.publish("memory-setup", serde_json::json!({
-                "status": "starting",
-                "message": format!("正在下载{}模型...", tier_owned)
-            }));
+            hub.publish(
+                "memory-setup",
+                serde_json::json!({
+                    "status": "starting",
+                    "message": format!("正在下载{}模型...", tier_owned)
+                }),
+            );
 
-            let mut emb_cfg = nemesis_memory::vector::embedding_config::load_embedding_config(&config_dir_clone);
+            let mut emb_cfg =
+                nemesis_memory::vector::embedding_config::load_embedding_config(&config_dir_clone);
 
             // Temporarily set active to the requested tier
             let original_active = emb_cfg.active.clone();
             emb_cfg.active = tier_owned.clone();
 
-            match nemesis_memory::vector::embedding_config::download_model_files(&mut emb_cfg, &config_dir_clone) {
+            match nemesis_memory::vector::embedding_config::download_model_files(
+                &mut emb_cfg,
+                &config_dir_clone,
+            ) {
                 Ok((_model_dir, dim)) => {
                     // Restore original active and save
                     emb_cfg.active = original_active;
-                    nemesis_memory::vector::embedding_config::save_embedding_config(&emb_cfg, &config_dir_clone);
+                    nemesis_memory::vector::embedding_config::save_embedding_config(
+                        &emb_cfg,
+                        &config_dir_clone,
+                    );
 
-                    hub.publish("memory-setup", serde_json::json!({
-                        "status": "complete",
-                        "message": format!("{}模型安装完成 (dim={})", tier_owned, dim)
-                    }));
+                    hub.publish(
+                        "memory-setup",
+                        serde_json::json!({
+                            "status": "complete",
+                            "message": format!("{}模型安装完成 (dim={})", tier_owned, dim)
+                        }),
+                    );
 
                     Ok(serde_json::json!({ "success": true, "tier": tier_owned, "dimension": dim }))
                 }
                 Err(e) => {
                     // Restore and save even on failure
                     emb_cfg.active = original_active;
-                    nemesis_memory::vector::embedding_config::save_embedding_config(&emb_cfg, &config_dir_clone);
+                    nemesis_memory::vector::embedding_config::save_embedding_config(
+                        &emb_cfg,
+                        &config_dir_clone,
+                    );
 
-                    hub.publish("memory-setup", serde_json::json!({
-                        "status": "error",
-                        "message": format!("{}模型安装失败: {}", tier_owned, e)
-                    }));
+                    hub.publish(
+                        "memory-setup",
+                        serde_json::json!({
+                            "status": "error",
+                            "message": format!("{}模型安装失败: {}", tier_owned, e)
+                        }),
+                    );
                     Err(format!("model install failed: {}", e))
                 }
             }
-        }).await
-            .map_err(|e| format!("install task panicked: {}", e))?;
+        })
+        .await
+        .map_err(|e| format!("install task panicked: {}", e))?;
 
         // Release lock
         {
@@ -699,7 +828,11 @@ fn collect_files(
     for entry in read_dir {
         let entry = entry.map_err(|e| format!("failed to read entry: {}", e))?;
         let path = entry.path();
-        let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("").to_string();
+        let name = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("")
+            .to_string();
         let relative = if base_relative.is_empty() {
             name.clone()
         } else {
@@ -747,7 +880,10 @@ fn count_jsonl_lines(path: &std::path::Path) -> usize {
 
 /// Truncate the content field of an entry to 200 chars for listing.
 fn truncate_entry_content(mut entry: serde_json::Value) -> serde_json::Value {
-    let content = entry.get("content").and_then(|v| v.as_str()).map(|s| s.to_string());
+    let content = entry
+        .get("content")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
     if let Some(c) = content {
         if c.len() > 200 {
             // Truncate at the nearest char boundary ≤ 200 bytes. Slicing at a
@@ -757,10 +893,12 @@ fn truncate_entry_content(mut entry: serde_json::Value) -> serde_json::Value {
             while !c.is_char_boundary(end) {
                 end -= 1;
             }
-            entry.as_object_mut().map(|o| o.insert(
-                "content".to_string(),
-                serde_json::Value::String(format!("{}...", &c[..end])),
-            ));
+            entry.as_object_mut().map(|o| {
+                o.insert(
+                    "content".to_string(),
+                    serde_json::Value::String(format!("{}...", &c[..end])),
+                )
+            });
         }
     }
     entry

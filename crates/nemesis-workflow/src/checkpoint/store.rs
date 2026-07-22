@@ -23,7 +23,10 @@ pub enum StoreError {
     Serialization(#[from] serde_json::Error),
 
     #[error("checkpoint not found: execution={execution_id} id={checkpoint_id}")]
-    NotFound { execution_id: String, checkpoint_id: String },
+    NotFound {
+        execution_id: String,
+        checkpoint_id: String,
+    },
 
     #[error("corrupt checkpoint file: {0}")]
     Corrupt(String),
@@ -41,26 +44,18 @@ pub trait CheckpointStore: Send + Sync {
     async fn save(&self, checkpoint: Checkpoint) -> Result<String, StoreError>;
 
     /// Load a specific checkpoint by ID.
-    async fn load(
-        &self,
-        execution_id: &str,
-        checkpoint_id: &str,
-    ) -> Result<Checkpoint, StoreError>;
+    async fn load(&self, execution_id: &str, checkpoint_id: &str)
+    -> Result<Checkpoint, StoreError>;
 
     /// Return the most recently saved checkpoint for the given execution.
     /// `Ok(None)` if the execution has no checkpoints.
-    async fn latest(&self, execution_id: &str)
-        -> Result<Option<Checkpoint>, StoreError>;
+    async fn latest(&self, execution_id: &str) -> Result<Option<Checkpoint>, StoreError>;
 
     /// List checkpoints for an execution, oldest first. Returns only metadata.
     async fn list(&self, execution_id: &str) -> Result<Vec<CheckpointMeta>, StoreError>;
 
     /// Delete a single checkpoint.
-    async fn delete(
-        &self,
-        execution_id: &str,
-        checkpoint_id: &str,
-    ) -> Result<(), StoreError>;
+    async fn delete(&self, execution_id: &str, checkpoint_id: &str) -> Result<(), StoreError>;
 
     /// List all execution IDs that have at least one checkpoint.
     /// Used by gateway restart-recovery to find in-flight executions.
@@ -133,8 +128,7 @@ impl CheckpointStore for InMemoryCheckpointStore {
             })
     }
 
-    async fn latest(&self, execution_id: &str)
-        -> Result<Option<Checkpoint>, StoreError> {
+    async fn latest(&self, execution_id: &str) -> Result<Option<Checkpoint>, StoreError> {
         let entry = match self.data.get(execution_id) {
             Some(e) => e,
             None => return Ok(None),
@@ -152,11 +146,7 @@ impl CheckpointStore for InMemoryCheckpointStore {
         Ok(guard.iter().map(CheckpointMeta::from).collect())
     }
 
-    async fn delete(
-        &self,
-        execution_id: &str,
-        checkpoint_id: &str,
-    ) -> Result<(), StoreError> {
+    async fn delete(&self, execution_id: &str, checkpoint_id: &str) -> Result<(), StoreError> {
         // Drop the entry guard before remove to avoid dead-lock.
         let existed = {
             let entry = match self.data.get(execution_id) {

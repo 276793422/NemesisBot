@@ -57,21 +57,17 @@ pub enum TestAction {
 /// Run a test subcommand.
 pub async fn run(action: TestAction) -> Result<()> {
     match action {
-        TestAction::ApprovalHeadless { expected } => {
-            run_approval_headless(&expected).await
-        }
+        TestAction::ApprovalHeadless { expected } => run_approval_headless(&expected).await,
         #[cfg(feature = "desktop")]
-        TestAction::ApprovalUi { risk_level, operation, target } => {
-            run_approval_ui(&risk_level, &operation, &target).await
-        }
+        TestAction::ApprovalUi {
+            risk_level,
+            operation,
+            target,
+        } => run_approval_ui(&risk_level, &operation, &target).await,
         #[cfg(feature = "desktop")]
-        TestAction::Dashboard { host, port, token } => {
-            run_dashboard(&host, port, &token).await
-        }
+        TestAction::Dashboard { host, port, token } => run_dashboard(&host, port, &token).await,
         #[cfg(feature = "desktop")]
-        TestAction::Ws => {
-            run_ws_test().await
-        }
+        TestAction::Ws => run_ws_test().await,
     }
 }
 
@@ -83,12 +79,19 @@ pub async fn run(action: TestAction) -> Result<()> {
 #[cfg(feature = "desktop")]
 async fn create_process_manager() -> Result<Arc<nemesis_desktop::process::ProcessManager>> {
     let pm = Arc::new(nemesis_desktop::process::ProcessManager::new());
-    pm.start().await.map_err(|e| anyhow::anyhow!("ProcessManager start failed: {}", e))?;
+    pm.start()
+        .await
+        .map_err(|e| anyhow::anyhow!("ProcessManager start failed: {}", e))?;
     Ok(pm)
 }
 
 /// Build approval window data JSON.
-fn make_approval_data(request_id: &str, operation: &str, risk_level: &str, target: &str) -> serde_json::Value {
+fn make_approval_data(
+    request_id: &str,
+    operation: &str,
+    risk_level: &str,
+    target: &str,
+) -> serde_json::Value {
     serde_json::json!({
         "request_id": request_id,
         "operation": operation,
@@ -104,14 +107,13 @@ fn make_approval_data(request_id: &str, operation: &str, risk_level: &str, targe
 
 /// Check if plugin-ui library exists next to the executable.
 fn check_plugin_library_exists() -> Result<std::path::PathBuf> {
-    nemesis_utils::find_plugin_library("plugin_ui")
-        .ok_or_else(|| {
-            let label = nemesis_utils::plugin_library_label();
-            anyhow::anyhow!(
-                "plugin-ui {} not found (searched: {{exe_dir}}/plugins/)",
-                label
-            )
-        })
+    nemesis_utils::find_plugin_library("plugin_ui").ok_or_else(|| {
+        let label = nemesis_utils::plugin_library_label();
+        anyhow::anyhow!(
+            "plugin-ui {} not found (searched: {{exe_dir}}/plugins/)",
+            label
+        )
+    })
 }
 
 /// Print a test result banner.
@@ -142,29 +144,35 @@ async fn run_approval_headless(expected: &str) -> Result<()> {
 
     // 2. Set headless env var so child process skips DLL/UI
     // SAFETY: This is a test command. Setting env vars is safe in this context.
-    unsafe { std::env::set_var("NEMESISBOT_FORCE_HEADLESS", "1"); }
+    unsafe {
+        std::env::set_var("NEMESISBOT_FORCE_HEADLESS", "1");
+    }
     println!("  [2/5] NEMESISBOT_FORCE_HEADLESS=1 set");
 
     // 3. Build approval data
     let request_id = format!("headless-{}", chrono::Local::now().timestamp_millis());
     let data = make_approval_data(&request_id, "file_write", "HIGH", "C:\\Temp\\test.txt");
-    println!("  [3/5] Approval data prepared (request_id: {})", request_id);
+    println!(
+        "  [3/5] Approval data prepared (request_id: {})",
+        request_id
+    );
 
     // 4. Spawn child process
-    let (child_id, result_rx) = pm.spawn_child("approval", &data)
+    let (child_id, result_rx) = pm
+        .spawn_child("approval", &data)
         .map_err(|e| anyhow::anyhow!("spawn_child failed: {}", e))?;
     println!("  [4/5] Child spawned: {}", child_id);
 
     // 5. Wait for result
     println!("  [5/5] Waiting for result (timeout: 15s)...");
     let result = match result_rx {
-        Some(rx) => {
-            tokio::time::timeout(Duration::from_secs(15), rx).await
-        }
+        Some(rx) => tokio::time::timeout(Duration::from_secs(15), rx).await,
         None => {
             print_result(false, "No result channel returned from spawn_child");
             let _ = pm.stop();
-            unsafe { std::env::remove_var("NEMESISBOT_FORCE_HEADLESS"); }
+            unsafe {
+                std::env::remove_var("NEMESISBOT_FORCE_HEADLESS");
+            }
             return Err(anyhow::anyhow!("no result channel"));
         }
     };
@@ -174,8 +182,14 @@ async fn run_approval_headless(expected: &str) -> Result<()> {
 
     match result {
         Ok(Ok(value)) => {
-            let action = value.get("action").and_then(|v| v.as_str()).unwrap_or("unknown");
-            let req_id = value.get("request_id").and_then(|v| v.as_str()).unwrap_or("?");
+            let action = value
+                .get("action")
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown");
+            let req_id = value
+                .get("request_id")
+                .and_then(|v| v.as_str())
+                .unwrap_or("?");
             println!();
             println!("  Result received:");
             println!("    action:      {}", action);
@@ -183,12 +197,21 @@ async fn run_approval_headless(expected: &str) -> Result<()> {
             println!("    raw:         {}", value);
 
             let pass = action == expected && req_id == request_id;
-            print_result(pass, &format!(
-                "Headless approval test (action={}, expected={}, request_id match={})",
-                action, expected, req_id == request_id
-            ));
+            print_result(
+                pass,
+                &format!(
+                    "Headless approval test (action={}, expected={}, request_id match={})",
+                    action,
+                    expected,
+                    req_id == request_id
+                ),
+            );
 
-            if pass { Ok(()) } else { Err(anyhow::anyhow!("test assertion failed")) }
+            if pass {
+                Ok(())
+            } else {
+                Err(anyhow::anyhow!("test assertion failed"))
+            }
         }
         Ok(Err(_)) => {
             print_result(false, "Result channel closed without value");
@@ -232,15 +255,14 @@ async fn run_approval_ui(risk_level: &str, operation: &str, target: &str) -> Res
     println!();
 
     // Spawn child (real UI)
-    let (child_id, result_rx) = pm.spawn_child("approval", &data)
+    let (child_id, result_rx) = pm
+        .spawn_child("approval", &data)
         .map_err(|e| anyhow::anyhow!("spawn_child failed: {}", e))?;
     println!("  Child spawned: {}", child_id);
 
     // Wait for result (longer timeout — user needs to interact)
     let result = match result_rx {
-        Some(rx) => {
-            tokio::time::timeout(Duration::from_secs(120), rx).await
-        }
+        Some(rx) => tokio::time::timeout(Duration::from_secs(120), rx).await,
         None => {
             print_result(false, "No result channel returned");
             let _ = pm.stop();
@@ -250,8 +272,14 @@ async fn run_approval_ui(risk_level: &str, operation: &str, target: &str) -> Res
 
     match result {
         Ok(Ok(value)) => {
-            let action = value.get("action").and_then(|v| v.as_str()).unwrap_or("unknown");
-            let req_id = value.get("request_id").and_then(|v| v.as_str()).unwrap_or("?");
+            let action = value
+                .get("action")
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown");
+            let req_id = value
+                .get("request_id")
+                .and_then(|v| v.as_str())
+                .unwrap_or("?");
             println!();
             println!("  Result received:");
             println!("    action:      {}", action);
@@ -259,13 +287,20 @@ async fn run_approval_ui(risk_level: &str, operation: &str, target: &str) -> Res
             println!("    raw:         {}", value);
 
             let pass = !action.is_empty();
-            print_result(pass, &format!("UI approval test completed (action={})", action));
+            print_result(
+                pass,
+                &format!("UI approval test completed (action={})", action),
+            );
 
             // Stop PM after printing result — child process cleanup may send
             // console signals (Ctrl+C) that could kill this process.
             let _ = pm.stop();
 
-            if pass { Ok(()) } else { Err(anyhow::anyhow!("empty action")) }
+            if pass {
+                Ok(())
+            } else {
+                Err(anyhow::anyhow!("empty action"))
+            }
         }
         Ok(Err(_)) => {
             print_result(false, "Result channel closed without value");
@@ -310,7 +345,8 @@ async fn run_dashboard(host: &str, port: u16, token: &str) -> Result<()> {
     });
 
     // Spawn child (dashboard is persistent — no result_rx)
-    let (child_id, result_rx) = pm.spawn_child("dashboard", &data)
+    let (child_id, result_rx) = pm
+        .spawn_child("dashboard", &data)
         .map_err(|e| anyhow::anyhow!("spawn_child failed: {}", e))?;
 
     println!("  Dashboard child spawned: {}", child_id);
@@ -354,7 +390,9 @@ async fn run_ws_test() -> Result<()> {
         path: format!("/child/{}", test_key),
     };
 
-    let client = Arc::new(nemesis_desktop::websocket::client::WebSocketClient::new(&ws_key_data));
+    let client = Arc::new(nemesis_desktop::websocket::client::WebSocketClient::new(
+        &ws_key_data,
+    ));
 
     // Track notification receipt
     let received = Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -365,7 +403,10 @@ async fn run_ws_test() -> Result<()> {
     });
 
     println!("  [3/4] Connecting client...");
-    client.connect().await.map_err(|e| anyhow::anyhow!("WS connect failed: {}", e))?;
+    client
+        .connect()
+        .await
+        .map_err(|e| anyhow::anyhow!("WS connect failed: {}", e))?;
     println!("  [3/4] Client connected");
 
     // 4. Give the server a moment to register the connection, then send notification
@@ -389,8 +430,19 @@ async fn run_ws_test() -> Result<()> {
     }
 
     // Send notification from server to client
-    pm.ws_server().send_notification("test-child", "test.ping", serde_json::json!({"msg": "hello"}))
-        .or_else(|_| pm.ws_server().send_notification(&test_key, "test.ping", serde_json::json!({"msg": "hello"})))
+    pm.ws_server()
+        .send_notification(
+            "test-child",
+            "test.ping",
+            serde_json::json!({"msg": "hello"}),
+        )
+        .or_else(|_| {
+            pm.ws_server().send_notification(
+                &test_key,
+                "test.ping",
+                serde_json::json!({"msg": "hello"}),
+            )
+        })
         .map_err(|e| anyhow::anyhow!("send_notification failed: {}", e))?;
 
     println!("  [4/4] Sent test.ping notification");
@@ -403,9 +455,16 @@ async fn run_ws_test() -> Result<()> {
     client.close();
     let _ = pm.stop();
 
-    print_result(got_it, &format!("WS notification test (received={})", got_it));
+    print_result(
+        got_it,
+        &format!("WS notification test (received={})", got_it),
+    );
 
-    if got_it { Ok(()) } else { Err(anyhow::anyhow!("notification not received")) }
+    if got_it {
+        Ok(())
+    } else {
+        Err(anyhow::anyhow!("notification not received"))
+    }
 }
 
 #[cfg(test)]

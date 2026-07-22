@@ -176,7 +176,9 @@ pub fn read_session_meta(session_key: &str) -> Option<String> {
     let path = meta_path(session_key);
     let data = fs::read_to_string(&path).ok()?;
     let v: serde_json::Value = serde_json::from_str(&data).ok()?;
-    v.get("title").and_then(|t| t.as_str()).map(|s| s.to_string())
+    v.get("title")
+        .and_then(|t| t.as_str())
+        .map(|s| s.to_string())
 }
 
 #[cfg(test)]

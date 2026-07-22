@@ -183,7 +183,15 @@ fn test_in_memory_store_crud() {
     assert!(store.get("test-1").is_ok());
     assert!(store.get("nonexistent").is_err());
 
-    assert!(store.update_result("test-1", TaskStatus::Completed, Some(serde_json::json!("done"))).is_ok());
+    assert!(
+        store
+            .update_result(
+                "test-1",
+                TaskStatus::Completed,
+                Some(serde_json::json!("done"))
+            )
+            .is_ok()
+    );
     let t = store.get("test-1").unwrap();
     assert_eq!(t.status, TaskStatus::Completed);
 
@@ -214,7 +222,9 @@ fn test_in_memory_store_list_by_status() {
     let pending = store.list_by_status(TaskStatus::Pending);
     assert_eq!(pending.len(), 3);
 
-    store.update_result("task-0", TaskStatus::Completed, None).unwrap();
+    store
+        .update_result("task-0", TaskStatus::Completed, None)
+        .unwrap();
     let pending = store.list_by_status(TaskStatus::Pending);
     assert_eq!(pending.len(), 2);
     let completed = store.list_by_status(TaskStatus::Completed);
@@ -242,7 +252,11 @@ fn test_cleanup_completed_removes_old_tasks() {
 
     // Complete it with an old timestamp (simulate)
     store
-        .update_result("old-completed", TaskStatus::Completed, Some(serde_json::json!("done")))
+        .update_result(
+            "old-completed",
+            TaskStatus::Completed,
+            Some(serde_json::json!("done")),
+        )
         .unwrap();
 
     // Manually set the completed_at to 3 hours ago (can't easily do this through
@@ -261,9 +275,10 @@ fn test_cleanup_pending_timeout() {
     let callback_count = Arc::new(AtomicUsize::new(0));
     let callback_count_clone = callback_count.clone();
 
-    let on_complete: Option<Arc<OnCompleteCallback>> = Some(Arc::new(Box::new(move |_task: &Task| {
-        callback_count_clone.fetch_add(1, Ordering::SeqCst);
-    })));
+    let on_complete: Option<Arc<OnCompleteCallback>> =
+        Some(Arc::new(Box::new(move |_task: &Task| {
+            callback_count_clone.fetch_add(1, Ordering::SeqCst);
+        })));
 
     // Create a pending task with a very old created_at
     let old_time = (chrono::Local::now() - chrono::Duration::hours(25)).to_rfc3339();
@@ -634,7 +649,9 @@ fn test_cleanup_completed_removes_cancelled_tasks() {
         completed_at: None,
     };
     store.create(task).unwrap();
-    store.update_result("cancelled-task", TaskStatus::Cancelled, None).unwrap();
+    store
+        .update_result("cancelled-task", TaskStatus::Cancelled, None)
+        .unwrap();
 
     // Since just created, should not be cleaned up
     cleanup_completed(&store, &None);
@@ -682,7 +699,13 @@ fn test_cleanup_completed_with_invalid_completed_at() {
         completed_at: None,
     };
     store.create(task).unwrap();
-    store.update_result("bad-completed-date", TaskStatus::Completed, Some(serde_json::json!("done"))).unwrap();
+    store
+        .update_result(
+            "bad-completed-date",
+            TaskStatus::Completed,
+            Some(serde_json::json!("done")),
+        )
+        .unwrap();
 
     // Should not panic
     cleanup_completed(&store, &None);
@@ -691,10 +714,7 @@ fn test_cleanup_completed_with_invalid_completed_at() {
 #[test]
 fn test_with_store_and_interval_custom() {
     let store = Arc::new(InMemoryTaskStore::new());
-    let tm = TaskManager::with_store_and_interval(
-        store,
-        std::time::Duration::from_secs(60),
-    );
+    let tm = TaskManager::with_store_and_interval(store, std::time::Duration::from_secs(60));
     assert_eq!(tm.cleanup_interval, std::time::Duration::from_secs(60));
 }
 
@@ -891,7 +911,10 @@ async fn test_start_idempotent_v2() {
 
     // Second start should be a no-op (stop_tx still Some, not replaced)
     tm.start();
-    assert!(tm.stop_tx.is_some(), "stop_tx should still be Some after second start()");
+    assert!(
+        tm.stop_tx.is_some(),
+        "stop_tx should still be Some after second start()"
+    );
 
     // Stop should work correctly (only one background task was spawned)
     tm.stop();
@@ -926,12 +949,24 @@ fn test_set_callback_replaces_existing_v2() {
     // Complete task 2 - only callback2 fires
     let task2 = tm.create_task("action-b", serde_json::json!({}), "rpc", "ch");
     tm.complete_task(&task2.id, serde_json::json!("done-b"));
-    assert_eq!(call_count1.load(Ordering::SeqCst), 1, "callback1 should NOT fire again");
-    assert_eq!(call_count2.load(Ordering::SeqCst), 1, "callback2 should fire once");
+    assert_eq!(
+        call_count1.load(Ordering::SeqCst),
+        1,
+        "callback1 should NOT fire again"
+    );
+    assert_eq!(
+        call_count2.load(Ordering::SeqCst),
+        1,
+        "callback2 should fire once"
+    );
 
     // Fail task 3 - only callback2 fires
     let task3 = tm.create_task("action-c", serde_json::json!({}), "rpc", "ch");
     tm.fail_task(&task3.id, "some error");
     assert_eq!(call_count1.load(Ordering::SeqCst), 1);
-    assert_eq!(call_count2.load(Ordering::SeqCst), 2, "callback2 should fire on fail too");
+    assert_eq!(
+        call_count2.load(Ordering::SeqCst),
+        2,
+        "callback2 should fire on fail too"
+    );
 }

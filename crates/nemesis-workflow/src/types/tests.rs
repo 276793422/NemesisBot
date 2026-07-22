@@ -47,7 +47,7 @@ fn workflow_serialization_roundtrip() {
             depends_on: vec![],
             retry_count: 0,
             timeout: None,
-        is_terminal: false,
+            is_terminal: false,
         }],
         edges: vec![Edge {
             from_node: "n1".to_string(),
@@ -94,7 +94,7 @@ fn node_def_with_config() {
         depends_on: vec!["n0".to_string()],
         retry_count: 3,
         timeout: Some("60".to_string()),
-    is_terminal: false,
+        is_terminal: false,
     };
     let json = serde_json::to_string(&node).unwrap();
     let back: NodeDef = serde_json::from_str(&json).unwrap();
@@ -216,7 +216,7 @@ fn node_def_timeout_duration() {
         depends_on: vec![],
         retry_count: 0,
         timeout: Some("5m".to_string()),
-    is_terminal: false,
+        is_terminal: false,
     };
     assert_eq!(node.timeout_duration(), Some(Duration::from_secs(300)));
 
@@ -227,7 +227,7 @@ fn node_def_timeout_duration() {
         depends_on: vec![],
         retry_count: 0,
         timeout: None,
-    is_terminal: false,
+        is_terminal: false,
     };
     assert_eq!(node_no_timeout.timeout_duration(), None);
 }
@@ -306,7 +306,7 @@ fn node_def_with_all_defaults() {
         depends_on: vec![],
         retry_count: 0,
         timeout: None,
-    is_terminal: false,
+        is_terminal: false,
     };
     assert!(node.config.is_empty());
     assert!(node.depends_on.is_empty());
@@ -324,7 +324,7 @@ fn node_def_with_multiple_dependencies() {
         depends_on: vec!["n1".to_string(), "n2".to_string()],
         retry_count: 5,
         timeout: Some("10s".to_string()),
-    is_terminal: false,
+        is_terminal: false,
     };
     assert_eq!(node.depends_on.len(), 2);
     assert_eq!(node.retry_count, 5);
@@ -340,7 +340,7 @@ fn node_def_invalid_timeout() {
         depends_on: vec![],
         retry_count: 0,
         timeout: Some("invalid".to_string()),
-    is_terminal: false,
+        is_terminal: false,
     };
     assert!(node.timeout_duration().is_none());
 }
@@ -381,7 +381,10 @@ fn execution_with_variables() {
     let mut exec = Execution::new("test_wf".to_string(), HashMap::new());
     exec.variables
         .insert("key".to_string(), serde_json::json!("value"));
-    assert_eq!(exec.variables.get("key").unwrap(), &serde_json::json!("value"));
+    assert_eq!(
+        exec.variables.get("key").unwrap(),
+        &serde_json::json!("value")
+    );
 }
 
 #[test]
@@ -410,7 +413,7 @@ fn workflow_serialization_with_all_fields() {
                 depends_on: vec![],
                 retry_count: 3,
                 timeout: Some("30s".to_string()),
-            is_terminal: false,
+                is_terminal: false,
             },
             NodeDef {
                 id: "n2".to_string(),
@@ -419,7 +422,7 @@ fn workflow_serialization_with_all_fields() {
                 depends_on: vec!["n1".to_string()],
                 retry_count: 0,
                 timeout: None,
-            is_terminal: false,
+                is_terminal: false,
             },
         ],
         edges: vec![Edge {
@@ -511,7 +514,10 @@ fn trigger_source_agent_tool_with_recursion_depth() {
     let json = serde_json::to_string(&source).unwrap();
     let back: TriggerSource = serde_json::from_str(&json).unwrap();
     assert_eq!(source, back);
-    if let TriggerSource::AgentTool { recursion_depth, .. } = &back {
+    if let TriggerSource::AgentTool {
+        recursion_depth, ..
+    } = &back
+    {
         assert_eq!(*recursion_depth, 2);
     } else {
         panic!("expected AgentTool variant");
@@ -573,7 +579,10 @@ fn execution_old_jsonl_loads_with_default_fields() {
     }"#;
     let exec: Execution = serde_json::from_str(old_json).unwrap();
     assert_eq!(exec.id, "exec-legacy");
-    assert!(exec.trigger_source.is_none(), "trigger_source should default to None");
+    assert!(
+        exec.trigger_source.is_none(),
+        "trigger_source should default to None"
+    );
     assert!(exec.chat_id.is_none());
     assert!(exec.tags.is_empty());
     assert!(exec.workflow_hash.is_none());
@@ -833,11 +842,17 @@ fn workflow_compute_output_multiple_terminals_merge() {
     let mut node_results = HashMap::new();
     node_results.insert(
         "t1".to_string(),
-        make_node_result("t1", serde_json::json!({"shared": "from_t1", "only_t1": "x"})),
+        make_node_result(
+            "t1",
+            serde_json::json!({"shared": "from_t1", "only_t1": "x"}),
+        ),
     );
     node_results.insert(
         "t2".to_string(),
-        make_node_result("t2", serde_json::json!({"shared": "from_t2", "only_t2": "y"})),
+        make_node_result(
+            "t2",
+            serde_json::json!({"shared": "from_t2", "only_t2": "y"}),
+        ),
     );
 
     let output = wf.compute_output(&node_results);

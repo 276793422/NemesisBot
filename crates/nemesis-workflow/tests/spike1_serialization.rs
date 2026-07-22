@@ -274,17 +274,17 @@ fn test_full_workflow_context_round_trip() {
     };
 
     let json_str = serde_json::to_string_pretty(&serializable).unwrap();
-    println!("序列化结果(片段):\n{}", &json_str[..200.min(json_str.len())]);
+    println!(
+        "序列化结果(片段):\n{}",
+        &json_str[..200.min(json_str.len())]
+    );
 
     // 反序列化
     let restored: SerializableContext = serde_json::from_str(&json_str).unwrap();
 
     // 验证 round-trip
     assert_eq!(serializable.variables, restored.variables);
-    assert_eq!(
-        serializable.node_results.len(),
-        restored.node_results.len()
-    );
+    assert_eq!(serializable.node_results.len(), restored.node_results.len());
 
     // 验证 node_result 内容
     let restored_nr = restored.node_results.get("node1").unwrap();
@@ -337,7 +337,7 @@ fn test_workflow_definition_serialization() {
             depends_on: vec![],
             retry_count: 0,
             timeout: None,
-        is_terminal: false,
+            is_terminal: false,
         }],
         edges: vec![Edge {
             from_node: "start".to_string(),

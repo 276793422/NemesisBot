@@ -12,10 +12,7 @@ use async_trait::async_trait;
 #[async_trait]
 pub trait ClusterForgeBridge: Send + Sync {
     /// Share a reflection report with all online peers.
-    async fn share_reflection(
-        &self,
-        report_json: serde_json::Value,
-    ) -> Result<usize, String>;
+    async fn share_reflection(&self, report_json: serde_json::Value) -> Result<usize, String>;
 
     /// Request reflection reports from all online peers.
     async fn get_remote_reflections(&self) -> Result<Vec<serde_json::Value>, String>;
@@ -44,10 +41,7 @@ impl NoOpBridge {
 
 #[async_trait]
 impl ClusterForgeBridge for NoOpBridge {
-    async fn share_reflection(
-        &self,
-        _report_json: serde_json::Value,
-    ) -> Result<usize, String> {
+    async fn share_reflection(&self, _report_json: serde_json::Value) -> Result<usize, String> {
         Ok(0)
     }
 

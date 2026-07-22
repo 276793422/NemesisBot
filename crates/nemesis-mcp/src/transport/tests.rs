@@ -438,10 +438,7 @@ fn test_create_mock_read_resource_response() {
 
 #[test]
 fn test_create_mock_get_prompt_response() {
-    let resp = create_mock_get_prompt_response(vec![
-        ("user", "Hello"),
-        ("assistant", "Hi there"),
-    ]);
+    let resp = create_mock_get_prompt_response(vec![("user", "Hello"), ("assistant", "Hi there")]);
     let result = resp.result.unwrap();
     let msgs = result["messages"].as_array().unwrap();
     assert_eq!(msgs.len(), 2);

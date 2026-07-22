@@ -24,7 +24,10 @@ fn test_ensure_initialized_self_heals_when_active_json_missing() {
         "_active.json should be created even when personas/ already exists"
     );
     // The downloaded persona dir must be preserved.
-    assert!(downloaded.exists(), "existing persona dir must not be removed");
+    assert!(
+        downloaded.exists(),
+        "existing persona dir must not be removed"
+    );
 }
 
 #[test]

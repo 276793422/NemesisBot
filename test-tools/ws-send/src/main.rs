@@ -17,7 +17,10 @@ use futures_util::{SinkExt, StreamExt};
 use tokio_tungstenite::tungstenite::Message;
 
 #[derive(Parser)]
-#[command(name = "ws-send", about = "One-shot WebSocket message sender for NemesisBot E2E testing")]
+#[command(
+    name = "ws-send",
+    about = "One-shot WebSocket message sender for NemesisBot E2E testing"
+)]
 struct Args {
     /// WebSocket URL (e.g. ws://127.0.0.1:49000/ws)
     #[arg(short, long)]
@@ -97,7 +100,10 @@ async fn main() -> Result<()> {
         .context("Failed to send message")?;
 
     if args.verbose {
-        eprintln!("Message sent. Waiting for response ({}s timeout)...", args.timeout);
+        eprintln!(
+            "Message sent. Waiting for response ({}s timeout)...",
+            args.timeout
+        );
     }
 
     // Wait for bot response

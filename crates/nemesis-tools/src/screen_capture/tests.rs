@@ -51,9 +51,7 @@ async fn test_screen_capture_tool_missing_mode() {
 #[tokio::test]
 async fn test_screen_capture_tool_unknown_mode() {
     let tool = ScreenCaptureTool::new(PathBuf::from("/tmp"), None);
-    let result = tool
-        .execute(&serde_json::json!({"mode": "unknown"}))
-        .await;
+    let result = tool.execute(&serde_json::json!({"mode": "unknown"})).await;
     assert!(result.is_error);
     assert!(result.for_llm.contains("unknown capture mode"));
 }
@@ -61,21 +59,25 @@ async fn test_screen_capture_tool_unknown_mode() {
 #[tokio::test]
 async fn test_screen_capture_tool_region_missing_params() {
     let tool = ScreenCaptureTool::new(PathBuf::from("/tmp"), None);
-    let result = tool
-        .execute(&serde_json::json!({"mode": "region"}))
-        .await;
+    let result = tool.execute(&serde_json::json!({"mode": "region"})).await;
     assert!(result.is_error);
-    assert!(result.for_llm.contains("'x', 'y', 'width', and 'height' are required"));
+    assert!(
+        result
+            .for_llm
+            .contains("'x', 'y', 'width', and 'height' are required")
+    );
 }
 
 #[tokio::test]
 async fn test_screen_capture_tool_window_missing_params() {
     let tool = ScreenCaptureTool::new(PathBuf::from("/tmp"), None);
-    let result = tool
-        .execute(&serde_json::json!({"mode": "window"}))
-        .await;
+    let result = tool.execute(&serde_json::json!({"mode": "window"})).await;
     assert!(result.is_error);
-    assert!(result.for_llm.contains("'hwnd' or 'window_title' is required"));
+    assert!(
+        result
+            .for_llm
+            .contains("'hwnd' or 'window_title' is required")
+    );
 }
 
 #[tokio::test]
@@ -88,20 +90,14 @@ async fn test_screen_capture_tool_parameters_schema() {
     assert!(required.iter().any(|r| r.as_str() == Some("mode")));
 
     // Verify mode enum values
-    let mode_enum = params["properties"]["mode"]["enum"]
-        .as_array()
-        .unwrap();
+    let mode_enum = params["properties"]["mode"]["enum"].as_array().unwrap();
     assert_eq!(mode_enum.len(), 3);
-    assert!(mode_enum
-        .iter()
-        .any(|v| v.as_str() == Some("full_screen")));
+    assert!(mode_enum.iter().any(|v| v.as_str() == Some("full_screen")));
     assert!(mode_enum.iter().any(|v| v.as_str() == Some("region")));
     assert!(mode_enum.iter().any(|v| v.as_str() == Some("window")));
 
     // Verify format enum
-    let format_enum = params["properties"]["format"]["enum"]
-        .as_array()
-        .unwrap();
+    let format_enum = params["properties"]["format"]["enum"].as_array().unwrap();
     assert_eq!(format_enum.len(), 2);
 }
 
@@ -152,7 +148,11 @@ fn test_prepare_output_path() {
 
 #[test]
 fn test_capture_mode_roundtrip() {
-    let modes = [CaptureMode::FullScreen, CaptureMode::Region, CaptureMode::Window];
+    let modes = [
+        CaptureMode::FullScreen,
+        CaptureMode::Region,
+        CaptureMode::Window,
+    ];
     for mode in &modes {
         let s = mode.to_string();
         let parsed = CaptureMode::from_str(&s);
@@ -261,7 +261,10 @@ async fn test_screen_capture_window_with_title() {
 fn test_build_region_script_png() {
     let tool = ScreenCaptureTool::new(PathBuf::from("/tmp"), None);
     let script = tool.build_region_script(
-        0, 0, 1920, 1080,
+        0,
+        0,
+        1920,
+        1080,
         std::path::Path::new("/tmp/region.png"),
         "png",
     );
@@ -315,17 +318,17 @@ async fn test_screen_capture_full_screen_mcp_success() {
             &self,
             _tool_name: &str,
             _args: &serde_json::Value,
-        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send + '_>> {
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send + '_>>
+        {
             Box::pin(async { Ok("screenshot saved".to_string()) })
         }
-        fn is_connected(&self) -> bool { true }
+        fn is_connected(&self) -> bool {
+            true
+        }
     }
 
     let temp = tempfile::tempdir().unwrap();
-    let tool = ScreenCaptureTool::new(
-        PathBuf::from(temp.path()),
-        Some(Arc::new(MockMCP)),
-    );
+    let tool = ScreenCaptureTool::new(PathBuf::from(temp.path()), Some(Arc::new(MockMCP)));
     let result = tool
         .execute(&serde_json::json!({"mode": "full_screen"}))
         .await;
@@ -341,17 +344,17 @@ async fn test_screen_capture_full_screen_mcp_fails_fallback() {
             &self,
             _tool_name: &str,
             _args: &serde_json::Value,
-        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send + '_>> {
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send + '_>>
+        {
             Box::pin(async { Err("MCP unavailable".to_string()) })
         }
-        fn is_connected(&self) -> bool { true }
+        fn is_connected(&self) -> bool {
+            true
+        }
     }
 
     let temp = tempfile::tempdir().unwrap();
-    let tool = ScreenCaptureTool::new(
-        PathBuf::from(temp.path()),
-        Some(Arc::new(FailMCP)),
-    );
+    let tool = ScreenCaptureTool::new(PathBuf::from(temp.path()), Some(Arc::new(FailMCP)));
     // MCP fails, falls back to PowerShell which may or may not work
     let _result = tool
         .execute(&serde_json::json!({"mode": "full_screen"}))
@@ -367,17 +370,17 @@ async fn test_screen_capture_full_screen_mcp_disconnected() {
             &self,
             _tool_name: &str,
             _args: &serde_json::Value,
-        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send + '_>> {
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send + '_>>
+        {
             Box::pin(async { Ok("should not be called".to_string()) })
         }
-        fn is_connected(&self) -> bool { false }
+        fn is_connected(&self) -> bool {
+            false
+        }
     }
 
     let temp = tempfile::tempdir().unwrap();
-    let tool = ScreenCaptureTool::new(
-        PathBuf::from(temp.path()),
-        Some(Arc::new(DisconnectedMCP)),
-    );
+    let tool = ScreenCaptureTool::new(PathBuf::from(temp.path()), Some(Arc::new(DisconnectedMCP)));
     // Disconnected MCP, falls back to PowerShell
     let _result = tool
         .execute(&serde_json::json!({"mode": "full_screen"}))
@@ -392,17 +395,17 @@ async fn test_screen_capture_region_mcp_success() {
             &self,
             _tool_name: &str,
             _args: &serde_json::Value,
-        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send + '_>> {
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send + '_>>
+        {
             Box::pin(async { Ok("region saved".to_string()) })
         }
-        fn is_connected(&self) -> bool { true }
+        fn is_connected(&self) -> bool {
+            true
+        }
     }
 
     let temp = tempfile::tempdir().unwrap();
-    let tool = ScreenCaptureTool::new(
-        PathBuf::from(temp.path()),
-        Some(Arc::new(MockMCP)),
-    );
+    let tool = ScreenCaptureTool::new(PathBuf::from(temp.path()), Some(Arc::new(MockMCP)));
     let result = tool
         .execute(&serde_json::json!({
             "mode": "region", "x": 0, "y": 0, "width": 100, "height": 100
@@ -447,7 +450,8 @@ async fn test_screen_capture_window_mcp_with_hwnd() {
             &self,
             tool_name: &str,
             _args: &serde_json::Value,
-        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send + '_>> {
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send + '_>>
+        {
             let name = tool_name.to_string();
             Box::pin(async move {
                 match name.as_str() {
@@ -456,14 +460,13 @@ async fn test_screen_capture_window_mcp_with_hwnd() {
                 }
             })
         }
-        fn is_connected(&self) -> bool { true }
+        fn is_connected(&self) -> bool {
+            true
+        }
     }
 
     let temp = tempfile::tempdir().unwrap();
-    let tool = ScreenCaptureTool::new(
-        PathBuf::from(temp.path()),
-        Some(Arc::new(MockMCP)),
-    );
+    let tool = ScreenCaptureTool::new(PathBuf::from(temp.path()), Some(Arc::new(MockMCP)));
     let result = tool
         .execute(&serde_json::json!({"mode": "window", "hwnd": "HWND(0x123)"}))
         .await;
@@ -479,7 +482,8 @@ async fn test_screen_capture_window_mcp_with_title() {
             &self,
             tool_name: &str,
             _args: &serde_json::Value,
-        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send + '_>> {
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send + '_>>
+        {
             let name = tool_name.to_string();
             Box::pin(async move {
                 match name.as_str() {
@@ -489,14 +493,13 @@ async fn test_screen_capture_window_mcp_with_title() {
                 }
             })
         }
-        fn is_connected(&self) -> bool { true }
+        fn is_connected(&self) -> bool {
+            true
+        }
     }
 
     let temp = tempfile::tempdir().unwrap();
-    let tool = ScreenCaptureTool::new(
-        PathBuf::from(temp.path()),
-        Some(Arc::new(MockMCP)),
-    );
+    let tool = ScreenCaptureTool::new(PathBuf::from(temp.path()), Some(Arc::new(MockMCP)));
     let result = tool
         .execute(&serde_json::json!({"mode": "window", "window_title": "Calculator"}))
         .await;
@@ -512,17 +515,17 @@ async fn test_screen_capture_window_mcp_find_fails() {
             &self,
             _tool_name: &str,
             _args: &serde_json::Value,
-        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send + '_>> {
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send + '_>>
+        {
             Box::pin(async { Err("find failed".to_string()) })
         }
-        fn is_connected(&self) -> bool { true }
+        fn is_connected(&self) -> bool {
+            true
+        }
     }
 
     let temp = tempfile::tempdir().unwrap();
-    let tool = ScreenCaptureTool::new(
-        PathBuf::from(temp.path()),
-        Some(Arc::new(FailMCP)),
-    );
+    let tool = ScreenCaptureTool::new(PathBuf::from(temp.path()), Some(Arc::new(FailMCP)));
     let result = tool
         .execute(&serde_json::json!({"mode": "window", "window_title": "Nonexistent"}))
         .await;
@@ -538,7 +541,8 @@ async fn test_screen_capture_window_mcp_capture_fails() {
             &self,
             tool_name: &str,
             _args: &serde_json::Value,
-        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send + '_>> {
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send + '_>>
+        {
             let name = tool_name.to_string();
             Box::pin(async move {
                 match name.as_str() {
@@ -547,14 +551,13 @@ async fn test_screen_capture_window_mcp_capture_fails() {
                 }
             })
         }
-        fn is_connected(&self) -> bool { true }
+        fn is_connected(&self) -> bool {
+            true
+        }
     }
 
     let temp = tempfile::tempdir().unwrap();
-    let tool = ScreenCaptureTool::new(
-        PathBuf::from(temp.path()),
-        Some(Arc::new(FailCaptureMCP)),
-    );
+    let tool = ScreenCaptureTool::new(PathBuf::from(temp.path()), Some(Arc::new(FailCaptureMCP)));
     let result = tool
         .execute(&serde_json::json!({"mode": "window", "hwnd": "HWND(0x123)"}))
         .await;
@@ -579,7 +582,10 @@ fn test_capture_mode_debug() {
 
 #[test]
 fn test_capture_mode_from_str_all() {
-    assert_eq!("full_screen".parse::<CaptureMode>(), Ok(CaptureMode::FullScreen));
+    assert_eq!(
+        "full_screen".parse::<CaptureMode>(),
+        Ok(CaptureMode::FullScreen)
+    );
     assert_eq!("region".parse::<CaptureMode>(), Ok(CaptureMode::Region));
     assert_eq!("window".parse::<CaptureMode>(), Ok(CaptureMode::Window));
 }
@@ -592,7 +598,11 @@ fn test_capture_mode_from_str_invalid() {
 
 #[test]
 fn test_capture_mode_roundtrip_all_variants() {
-    for mode in &[CaptureMode::FullScreen, CaptureMode::Region, CaptureMode::Window] {
+    for mode in &[
+        CaptureMode::FullScreen,
+        CaptureMode::Region,
+        CaptureMode::Window,
+    ] {
         let s = mode.to_string();
         let parsed: CaptureMode = s.parse().unwrap();
         assert_eq!(*mode, parsed);
@@ -638,7 +648,14 @@ fn test_build_full_screen_script_jpg_format() {
 #[test]
 fn test_build_region_script_bmp_format() {
     let tool = ScreenCaptureTool::new(PathBuf::from("/tmp"), None);
-    let script = tool.build_region_script(0, 0, 1920, 1080, std::path::Path::new("/tmp/region.bmp"), "bmp");
+    let script = tool.build_region_script(
+        0,
+        0,
+        1920,
+        1080,
+        std::path::Path::new("/tmp/region.bmp"),
+        "bmp",
+    );
     assert!(script.contains("ImageFormat]::Bmp"));
     assert!(script.contains("0, 0, 1920, 1080"));
 }
@@ -657,11 +674,13 @@ async fn test_screen_capture_region_only_x_and_y() {
 #[tokio::test]
 async fn test_screen_capture_window_no_params() {
     let tool = ScreenCaptureTool::new(PathBuf::from("/tmp"), None);
-    let result = tool
-        .execute(&serde_json::json!({"mode": "window"}))
-        .await;
+    let result = tool.execute(&serde_json::json!({"mode": "window"})).await;
     assert!(result.is_error);
-    assert!(result.for_llm.contains("'hwnd' or 'window_title' is required"));
+    assert!(
+        result
+            .for_llm
+            .contains("'hwnd' or 'window_title' is required")
+    );
 }
 
 #[tokio::test]

@@ -1,9 +1,9 @@
 //! Models handler — list/add/delete/set_default/test model configurations.
 
 use crate::handlers::{mask_sensitive, require_home};
-use crate::llm_bridge::ProviderAdapter;
 #[cfg(feature = "forge")]
 use crate::llm_bridge::ForgeProviderBridge;
+use crate::llm_bridge::ProviderAdapter;
 use crate::ws_router::{ModuleHandler, RequestContext};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -116,7 +116,11 @@ impl ModelsHandler {
         Ok(Some(serde_json::json!({ "models": models })))
     }
 
-    fn add(&self, home: &str, data: &serde_json::Value) -> Result<Option<serde_json::Value>, String> {
+    fn add(
+        &self,
+        home: &str,
+        data: &serde_json::Value,
+    ) -> Result<Option<serde_json::Value>, String> {
         let model_name = crate::handlers::get_str(data, "name")?;
         let model = crate::handlers::get_str(data, "model")?;
         let api_key = crate::handlers::get_str(data, "key")?;
@@ -139,7 +143,9 @@ impl ModelsHandler {
             workspace: String::new(),
         });
         save_config(home, &mut config)?;
-        Ok(Some(serde_json::json!({ "added": true, "name": model_name })))
+        Ok(Some(
+            serde_json::json!({ "added": true, "name": model_name }),
+        ))
     }
 
     fn delete(&self, home: &str, name: &str) -> Result<Option<serde_json::Value>, String> {
@@ -179,7 +185,12 @@ impl ModelsHandler {
         Ok(Some(serde_json::json!({ "deleted": true, "name": name })))
     }
 
-    fn set_default(&self, home: &str, name: &str, ctx: &RequestContext) -> Result<Option<serde_json::Value>, String> {
+    fn set_default(
+        &self,
+        home: &str,
+        name: &str,
+        ctx: &RequestContext,
+    ) -> Result<Option<serde_json::Value>, String> {
         let mut config = load_config(home)?;
         let idx = config
             .model_list
@@ -197,9 +208,10 @@ impl ModelsHandler {
         // Swap the runtime provider so the change takes effect immediately.
         if let Some(ref agent_loop) = ctx.state.agent_loop.read().as_ref() {
             let api_base = if model_cfg.api_base.is_empty() {
-                nemesis_config::get_default_api_base(
-                    &nemesis_config::infer_provider_from_model(&model_cfg.model)
-                ).to_string()
+                nemesis_config::get_default_api_base(&nemesis_config::infer_provider_from_model(
+                    &model_cfg.model,
+                ))
+                .to_string()
             } else {
                 model_cfg.api_base.clone()
             };
@@ -215,7 +227,10 @@ impl ModelsHandler {
             };
             match nemesis_providers::factory::create_provider(&factory_cfg) {
                 Ok(provider) => {
-                    let adapter = Arc::new(ProviderAdapter::new(provider.clone(), model_cfg.model.clone()));
+                    let adapter = Arc::new(ProviderAdapter::new(
+                        provider.clone(),
+                        model_cfg.model.clone(),
+                    ));
                     agent_loop.set_provider_and_model(adapter, model_cfg.model.clone());
                     tracing::info!(model = %model_cfg.model, "[Models] Runtime provider swapped");
 
@@ -223,7 +238,8 @@ impl ModelsHandler {
                     #[cfg(feature = "forge")]
                     {
                         if let Some(ref forge) = ctx.state.forge {
-                            let bridge = ForgeProviderBridge::new(provider.clone(), model_cfg.model.clone());
+                            let bridge =
+                                ForgeProviderBridge::new(provider.clone(), model_cfg.model.clone());
                             forge.set_provider(Arc::new(bridge));
                             tracing::info!(model = %model_cfg.model, "[Models] Forge provider updated");
                         }
@@ -235,7 +251,9 @@ impl ModelsHandler {
             }
         }
 
-        Ok(Some(serde_json::json!({ "set_default": true, "name": name })))
+        Ok(Some(
+            serde_json::json!({ "set_default": true, "name": name }),
+        ))
     }
 
     fn test(&self, _home: &str, name: &str) -> Result<Option<serde_json::Value>, String> {

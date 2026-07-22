@@ -15,10 +15,10 @@ mod state;
 mod store;
 
 use anyhow::Result;
+use axum::Router;
 use axum::extract::DefaultBodyLimit;
 use axum::response::Html;
 use axum::routing::{get, post};
-use axum::Router;
 use clap::Parser;
 use nemesis_verify::hex_util::hex_encode;
 
@@ -35,7 +35,11 @@ async fn admin_page() -> Html<&'static str> {
 }
 
 #[derive(Parser)]
-#[command(name = "revoke-server", version, about = "签名吊销服务端（v3 DLL 架构 + 证书链签发）")]
+#[command(
+    name = "revoke-server",
+    version,
+    about = "签名吊销服务端（v3 DLL 架构 + 证书链签发）"
+)]
 struct Cli {
     /// 监听地址
     #[arg(long, default_value = "127.0.0.1:7878")]
@@ -62,7 +66,10 @@ async fn main() -> Result<()> {
         let h = nemesis_verify::keygen::generate_hierarchy(0, u64::MAX);
         h.save(&cli.keys_file)?;
         println!("✓ generated key hierarchy → {}", cli.keys_file);
-        println!("  root pubkey (内置客户端/DLL): {}", hex_encode(&h.root_vk.to_bytes()));
+        println!(
+            "  root pubkey (内置客户端/DLL): {}",
+            hex_encode(&h.root_vk.to_bytes())
+        );
         println!("  issuer pubkey: {}", hex_encode(&h.issuer_vk.to_bytes()));
     }
 

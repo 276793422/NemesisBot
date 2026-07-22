@@ -16,30 +16,47 @@ impl CodexEnvGuard {
     fn set(key: &str, val: &str) -> Self {
         let lock = CODEX_HOME_LOCK.lock().unwrap();
         let orig = std::env::var(key).ok();
-        unsafe { std::env::set_var(key, val); }
-        Self { _lock: lock, key: key.to_string(), orig }
+        unsafe {
+            std::env::set_var(key, val);
+        }
+        Self {
+            _lock: lock,
+            key: key.to_string(),
+            orig,
+        }
     }
 
     fn remove(key: &str) -> Self {
         let lock = CODEX_HOME_LOCK.lock().unwrap();
         let orig = std::env::var(key).ok();
-        unsafe { std::env::remove_var(key); }
-        Self { _lock: lock, key: key.to_string(), orig }
+        unsafe {
+            std::env::remove_var(key);
+        }
+        Self {
+            _lock: lock,
+            key: key.to_string(),
+            orig,
+        }
     }
 }
 
 impl Drop for CodexEnvGuard {
     fn drop(&mut self) {
         match &self.orig {
-            Some(val) => unsafe { std::env::set_var(&self.key, val); },
-            None => unsafe { std::env::remove_var(&self.key); },
+            Some(val) => unsafe {
+                std::env::set_var(&self.key, val);
+            },
+            None => unsafe {
+                std::env::remove_var(&self.key);
+            },
         }
     }
 }
 
 #[test]
 fn test_parse_auth_json() {
-    let json = r#"{"tokens":{"access_token":"tok123","refresh_token":"ref456","account_id":"acc789"}}"#;
+    let json =
+        r#"{"tokens":{"access_token":"tok123","refresh_token":"ref456","account_id":"acc789"}}"#;
     let auth: CodexCliAuth = serde_json::from_str(json).unwrap();
     assert_eq!(auth.tokens.access_token, "tok123");
     assert_eq!(auth.tokens.refresh_token, "ref456");
@@ -154,7 +171,11 @@ fn test_read_codex_cli_credentials_with_temp_file() {
     // Create a temp auth.json with empty access_token
     let dir = tempfile::tempdir().unwrap();
     let auth_path = dir.path().join("auth.json");
-    std::fs::write(&auth_path, r#"{"tokens":{"access_token":"","refresh_token":"ref"}}"#).unwrap();
+    std::fs::write(
+        &auth_path,
+        r#"{"tokens":{"access_token":"","refresh_token":"ref"}}"#,
+    )
+    .unwrap();
 
     // We can't easily redirect resolve_codex_auth_path, but we can test the
     // parsing logic directly. The empty access_token should produce an error.
@@ -246,7 +267,11 @@ fn test_read_codex_cli_credentials_with_empty_token() {
     let codex_dir = dir.path().join(".codex");
     std::fs::create_dir_all(&codex_dir).unwrap();
     let auth_path = codex_dir.join("auth.json");
-    std::fs::write(&auth_path, r#"{"tokens":{"access_token":"","refresh_token":"ref"}}"#).unwrap();
+    std::fs::write(
+        &auth_path,
+        r#"{"tokens":{"access_token":"","refresh_token":"ref"}}"#,
+    )
+    .unwrap();
 
     let _g = CodexEnvGuard::set("CODEX_HOME", &codex_dir.to_string_lossy().to_string());
     let result = read_codex_cli_credentials();

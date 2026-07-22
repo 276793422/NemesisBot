@@ -52,7 +52,10 @@ impl ExternalInput {
                         if retries >= max_retries {
                             log_message(
                                 &config,
-                                &format!("❌ Input program failed after {} retries: {}, switching to CLI input", max_retries, e),
+                                &format!(
+                                    "❌ Input program failed after {} retries: {}, switching to CLI input",
+                                    max_retries, e
+                                ),
                             );
                             // eprintln!(
                             //     "{}",
@@ -63,7 +66,10 @@ impl ExternalInput {
 
                         log_message(
                             &config,
-                            &format!("⚠️  Input program failed (attempt {}/{}): {}, retrying in {} seconds...", retries, max_retries, e, retry_delay),
+                            &format!(
+                                "⚠️  Input program failed (attempt {}/{}): {}, retrying in {} seconds...",
+                                retries, max_retries, e, retry_delay
+                            ),
                         );
                         // eprintln!(
                         //     "{}",
@@ -85,7 +91,10 @@ impl ExternalInput {
         config: &Config,
         tx: mpsc::UnboundedSender<String>,
     ) -> Result<()> {
-        log_message(config, &format!("🚀 Starting input program: {}", program_path));
+        log_message(
+            config,
+            &format!("🚀 Starting input program: {}", program_path),
+        );
 
         let mut child = Command::new(program_path)
             .stdout(Stdio::piped())
@@ -147,7 +156,11 @@ fn log_message(config: &Config, message: &str) {
     if !config.logging.enabled || config.logging.file.is_empty() {
         return;
     }
-    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&config.logging.file) {
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&config.logging.file)
+    {
         use std::io::Write;
         let _ = writeln!(f, "[{}] {}", Local::now().to_rfc3339(), message);
     }

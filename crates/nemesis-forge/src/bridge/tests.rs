@@ -3,7 +3,10 @@ use super::*;
 #[tokio::test]
 async fn test_noop_bridge_share() {
     let bridge = NoOpBridge::new("node-1".into());
-    let count = bridge.share_reflection(serde_json::json!({})).await.unwrap();
+    let count = bridge
+        .share_reflection(serde_json::json!({}))
+        .await
+        .unwrap();
     assert_eq!(count, 0);
 }
 

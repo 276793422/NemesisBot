@@ -1,13 +1,19 @@
 //! ClamAV scanner - high-level virus scanning operations.
 
-use super::client::{Client, ClamavScanResult};
+use super::client::{ClamavScanResult, Client};
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::Mutex;
 
-const SAFE_EXTENSIONS: &[&str] = &["txt", "md", "json", "yaml", "yml", "xml", "csv", "log", "ini", "toml", "html", "css", "js", "ts"];
-const EXEC_EXTENSIONS: &[&str] = &["exe", "dll", "bat", "cmd", "ps1", "sh", "so", "dylib", "msi", "vbs", "com", "scr", "pif", "jar", "py"];
+const SAFE_EXTENSIONS: &[&str] = &[
+    "txt", "md", "json", "yaml", "yml", "xml", "csv", "log", "ini", "toml", "html", "css", "js",
+    "ts",
+];
+const EXEC_EXTENSIONS: &[&str] = &[
+    "exe", "dll", "bat", "cmd", "ps1", "sh", "so", "dylib", "msi", "vbs", "com", "scr", "pif",
+    "jar", "py",
+];
 
 /// Scanner configuration.
 #[derive(Debug, Clone)]
@@ -136,7 +142,8 @@ impl Scanner {
         }
 
         let result = self.client.scan_stream(data).await?;
-        self.record_scan(data.len() as u64, result.infected, false).await;
+        self.record_scan(data.len() as u64, result.infected, false)
+            .await;
         Ok(result)
     }
 

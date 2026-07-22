@@ -2,8 +2,8 @@
 
 use std::collections::HashMap;
 
-use crate::agent_id::normalize_agent_id;
 use crate::agent_id::normalize_account_id;
+use crate::agent_id::normalize_agent_id;
 
 // ---------------------------------------------------------------------------
 // DM scope constants
@@ -83,11 +83,24 @@ pub fn build_agent_main_session_key(agent_id: &str) -> String {
 ///
 /// This is a convenience shorthand used by tests and simple callers.
 /// For full DM-scope awareness use [`build_agent_peer_session_key`] instead.
-pub fn build_agent_session_key(agent_id: &str, channel: &str, peer_kind: &str, peer_id: &str) -> String {
+pub fn build_agent_session_key(
+    agent_id: &str,
+    channel: &str,
+    peer_kind: &str,
+    peer_id: &str,
+) -> String {
     let agent = normalize_agent_id(agent_id);
     let ch = normalize_channel(channel);
-    let kind = if peer_kind.trim().is_empty() { "direct" } else { peer_kind.trim() };
-    let pid = if peer_id.trim().is_empty() { "unknown" } else { peer_id.trim() };
+    let kind = if peer_kind.trim().is_empty() {
+        "direct"
+    } else {
+        peer_kind.trim()
+    };
+    let pid = if peer_id.trim().is_empty() {
+        "unknown"
+    } else {
+        peer_id.trim()
+    };
     format!("agent:{}:{}:{}:{}", agent, ch, kind, pid).to_lowercase()
 }
 
@@ -122,11 +135,9 @@ pub fn build_agent_peer_session_key(params: SessionKeyParams) -> String {
 
         // Resolve identity links (cross-platform collapse)
         if *dm_scope != DMScope::Main && !peer_id.is_empty() {
-            if let Some(linked) = resolve_linked_peer_id(
-                &params.identity_links,
-                &params.channel,
-                &peer_id,
-            ) {
+            if let Some(linked) =
+                resolve_linked_peer_id(&params.identity_links, &params.channel, &peer_id)
+            {
                 peer_id = linked;
             }
         }
@@ -212,7 +223,11 @@ pub fn is_subagent_session_key(session_key: &str) -> bool {
 /// Normalize a channel name (empty => "unknown").
 fn normalize_channel(channel: &str) -> String {
     let c = channel.trim().to_lowercase();
-    if c.is_empty() { "unknown".to_string() } else { c }
+    if c.is_empty() {
+        "unknown".to_string()
+    } else {
+        c
+    }
 }
 
 /// Resolve a peer ID through identity links.

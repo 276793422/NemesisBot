@@ -1,12 +1,12 @@
 //! Device service: Config, SetBus, Start/Stop, USB monitoring, event notifications.
 
+use crate::source::{DeviceEvent, EventSource, UsbEventSource};
 use chrono::{DateTime, Local};
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use crate::source::{DeviceEvent, EventSource, UsbEventSource};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 /// Callback for sending outbound messages via the message bus.
 /// Receives (channel, chat_id, content).
@@ -37,9 +37,17 @@ pub struct Device {
 /// Internal service-level device event types.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum ServiceDeviceEvent {
-    Added { device_id: String, device_type: String },
-    Removed { device_id: String },
-    Changed { device_id: String, changes: HashMap<String, String> },
+    Added {
+        device_id: String,
+        device_type: String,
+    },
+    Removed {
+        device_id: String,
+    },
+    Changed {
+        device_id: String,
+        changes: HashMap<String, String>,
+    },
 }
 
 /// Device event callback.
@@ -56,7 +64,9 @@ pub struct DeviceServiceConfig {
     pub monitor_usb: bool,
 }
 
-fn default_poll_interval() -> u64 { 5 }
+fn default_poll_interval() -> u64 {
+    5
+}
 
 impl Default for DeviceServiceConfig {
     fn default() -> Self {
@@ -200,7 +210,9 @@ impl DeviceService {
     pub fn unregister(&self, id: &str) -> Option<Device> {
         let removed = self.devices.lock().remove(id);
         if removed.is_some() {
-            self.emit_event(ServiceDeviceEvent::Removed { device_id: id.to_string() });
+            self.emit_event(ServiceDeviceEvent::Removed {
+                device_id: id.to_string(),
+            });
         }
         removed
     }
@@ -243,12 +255,7 @@ impl DeviceService {
                         let s = self.state.lock();
                         s.is_some()
                     };
-                    tokio::spawn(Self::handle_events_task(
-                        rx,
-                        stop,
-                        bus,
-                        state_present,
-                    ));
+                    tokio::spawn(Self::handle_events_task(rx, stop, bus, state_present));
                     tracing::info!("Device source started: {}", kind);
                 }
                 Err(e) => {
@@ -259,7 +266,10 @@ impl DeviceService {
 
         self.running.store(true, Ordering::SeqCst);
         self.scan_devices();
-        tracing::info!("Device service started (USB monitoring: {})", self.config.monitor_usb);
+        tracing::info!(
+            "Device service started (USB monitoring: {})",
+            self.config.monitor_usb
+        );
         Ok(())
     }
 
@@ -336,7 +346,9 @@ impl DeviceService {
             sender(&platform, &user_id, &msg);
             tracing::info!(
                 "Device notification sent: kind={:?} action={:?} to={}",
-                ev.kind, ev.action, platform
+                ev.kind,
+                ev.action,
+                platform
             );
         }
     }

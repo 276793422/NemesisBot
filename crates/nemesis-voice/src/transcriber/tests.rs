@@ -225,7 +225,9 @@ fn test_transcription_response_unicode() {
 #[tokio::test]
 async fn test_transcribe_file_nonexistent() {
     let t = Transcriber::new("key");
-    let result = t.transcribe_file(Path::new("/definitely/does/not/exist.wav")).await;
+    let result = t
+        .transcribe_file(Path::new("/definitely/does/not/exist.wav"))
+        .await;
     assert!(result.is_err());
     assert!(result.unwrap_err().to_string().contains("not found"));
 }
@@ -484,8 +486,8 @@ async fn test_transcribe_bytes_large_data_no_key() {
 
 // -- Mock server tests for actual HTTP paths --
 
-use wiremock::{MockServer, Mock, ResponseTemplate};
 use wiremock::matchers::{method, path};
+use wiremock::{Mock, MockServer, ResponseTemplate};
 
 #[tokio::test]
 async fn test_transcribe_file_success_with_mock() {
@@ -607,7 +609,10 @@ async fn test_transcribe_bytes_wav_success_with_mock() {
         .await;
 
     let t = Transcriber::with_url(&mock_server.uri(), Some("key"));
-    let result = t.transcribe_bytes(&[1, 2, 3, 4, 5], AudioFormat::Wav).await.unwrap();
+    let result = t
+        .transcribe_bytes(&[1, 2, 3, 4, 5], AudioFormat::Wav)
+        .await
+        .unwrap();
     assert_eq!(result.text, "wav transcription");
     assert_eq!(result.language.as_deref(), Some("en"));
     assert_eq!(result.duration, Some(2.0));
@@ -625,7 +630,10 @@ async fn test_transcribe_bytes_mp3_success_with_mock() {
         .await;
 
     let t = Transcriber::with_url(&mock_server.uri(), Some("key"));
-    let result = t.transcribe_bytes(&[1, 2, 3], AudioFormat::Mp3).await.unwrap();
+    let result = t
+        .transcribe_bytes(&[1, 2, 3], AudioFormat::Mp3)
+        .await
+        .unwrap();
     assert_eq!(result.text, "mp3 transcription");
 }
 
@@ -641,7 +649,10 @@ async fn test_transcribe_bytes_ogg_success_with_mock() {
         .await;
 
     let t = Transcriber::with_url(&mock_server.uri(), Some("key"));
-    let result = t.transcribe_bytes(&[1, 2, 3], AudioFormat::Ogg).await.unwrap();
+    let result = t
+        .transcribe_bytes(&[1, 2, 3], AudioFormat::Ogg)
+        .await
+        .unwrap();
     assert_eq!(result.text, "ogg transcription");
 }
 
@@ -657,7 +668,10 @@ async fn test_transcribe_bytes_webm_success_with_mock() {
         .await;
 
     let t = Transcriber::with_url(&mock_server.uri(), Some("key"));
-    let result = t.transcribe_bytes(&[1, 2, 3], AudioFormat::Webm).await.unwrap();
+    let result = t
+        .transcribe_bytes(&[1, 2, 3], AudioFormat::Webm)
+        .await
+        .unwrap();
     assert_eq!(result.text, "webm transcription");
 }
 
@@ -673,7 +687,10 @@ async fn test_transcribe_bytes_flac_success_with_mock() {
         .await;
 
     let t = Transcriber::with_url(&mock_server.uri(), Some("key"));
-    let result = t.transcribe_bytes(&[1, 2, 3], AudioFormat::Flac).await.unwrap();
+    let result = t
+        .transcribe_bytes(&[1, 2, 3], AudioFormat::Flac)
+        .await
+        .unwrap();
     assert_eq!(result.text, "flac transcription");
 }
 

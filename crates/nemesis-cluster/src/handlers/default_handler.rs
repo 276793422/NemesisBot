@@ -69,7 +69,8 @@ impl DefaultHandler {
 
         match action {
             Action::PeerChatCallback => {
-                match serde_json::from_value::<crate::handlers::callback::CallbackPayload>(payload) {
+                match serde_json::from_value::<crate::handlers::callback::CallbackPayload>(payload)
+                {
                     Ok(cb_payload) => {
                         if let Err(e) = self.callback.validate(&cb_payload) {
                             return HandleResult {
@@ -100,9 +101,7 @@ impl DefaultHandler {
                 self.forge.handle(action_str, payload)
             }
 
-            Action::LlmProxy => {
-                self.llm.handle(payload)
-            }
+            Action::LlmProxy => self.llm.handle(payload),
 
             Action::Ping => HandleResult {
                 success: true,
@@ -129,7 +128,11 @@ impl DefaultHandler {
                 let caps = if let Some(ref info) = self.node_info {
                     info.get_capabilities()
                 } else {
-                    vec!["peer_chat".to_string(), "forge_share".to_string(), "forge_get_reflections".to_string()]
+                    vec![
+                        "peer_chat".to_string(),
+                        "forge_share".to_string(),
+                        "forge_get_reflections".to_string(),
+                    ]
                 };
                 HandleResult {
                     success: true,
@@ -159,12 +162,15 @@ impl DefaultHandler {
 
             Action::ListActions => {
                 let schemas = actions_schema::builtin_schemas();
-                let actions: Vec<serde_json::Value> = schemas.iter().map(|s| {
-                    serde_json::json!({
-                        "action": s.action.to_string(),
-                        "description": s.description,
+                let actions: Vec<serde_json::Value> = schemas
+                    .iter()
+                    .map(|s| {
+                        serde_json::json!({
+                            "action": s.action.to_string(),
+                            "description": s.description,
+                        })
                     })
-                }).collect();
+                    .collect();
                 HandleResult {
                     success: true,
                     response: serde_json::json!({
@@ -178,7 +184,10 @@ impl DefaultHandler {
             Action::QueryTaskResult => {
                 // Return basic acknowledgment. Actual task result lookup
                 // would be wired through TaskResultStore at the application layer.
-                let task_id = payload.get("task_id").and_then(|v| v.as_str()).unwrap_or("");
+                let task_id = payload
+                    .get("task_id")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
                 HandleResult {
                     success: true,
                     response: serde_json::json!({
@@ -190,8 +199,14 @@ impl DefaultHandler {
             }
 
             Action::ConfirmTaskDelivery => {
-                let task_id = payload.get("task_id").and_then(|v| v.as_str()).unwrap_or("");
-                tracing::info!(task_id = task_id, "[DefaultHandler] Task delivery confirmed");
+                let task_id = payload
+                    .get("task_id")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                tracing::info!(
+                    task_id = task_id,
+                    "[DefaultHandler] Task delivery confirmed"
+                );
                 HandleResult {
                     success: true,
                     response: serde_json::json!({

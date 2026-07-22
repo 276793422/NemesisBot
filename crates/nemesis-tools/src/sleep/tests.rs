@@ -3,9 +3,7 @@ use super::*;
 #[tokio::test]
 async fn test_sleep_success() {
     let tool = SleepTool::new();
-    let result = tool
-        .execute(&serde_json::json!({"duration": 1}))
-        .await;
+    let result = tool.execute(&serde_json::json!({"duration": 1})).await;
     assert!(!result.is_error);
     assert!(result.silent);
     assert!(result.for_llm.contains("Slept for 1 seconds"));
@@ -14,9 +12,7 @@ async fn test_sleep_success() {
 #[tokio::test]
 async fn test_sleep_zero_rejected() {
     let tool = SleepTool::new();
-    let result = tool
-        .execute(&serde_json::json!({"duration": 0}))
-        .await;
+    let result = tool.execute(&serde_json::json!({"duration": 0})).await;
     assert!(result.is_error);
     assert!(result.for_llm.contains("at least 1"));
 }
@@ -24,9 +20,7 @@ async fn test_sleep_zero_rejected() {
 #[tokio::test]
 async fn test_sleep_too_large() {
     let tool = SleepTool::new();
-    let result = tool
-        .execute(&serde_json::json!({"duration": 5000}))
-        .await;
+    let result = tool.execute(&serde_json::json!({"duration": 5000})).await;
     assert!(result.is_error);
     assert!(result.for_llm.contains("3600"));
 }
@@ -34,9 +28,7 @@ async fn test_sleep_too_large() {
 #[tokio::test]
 async fn test_sleep_missing_duration() {
     let tool = SleepTool::new();
-    let result = tool
-        .execute(&serde_json::json!({}))
-        .await;
+    let result = tool.execute(&serde_json::json!({})).await;
     assert!(result.is_error);
     assert!(result.for_llm.contains("must be an integer"));
 }
@@ -44,9 +36,7 @@ async fn test_sleep_missing_duration() {
 #[tokio::test]
 async fn test_sleep_non_integer() {
     let tool = SleepTool::new();
-    let result = tool
-        .execute(&serde_json::json!({"duration": "abc"}))
-        .await;
+    let result = tool.execute(&serde_json::json!({"duration": "abc"})).await;
     assert!(result.is_error);
 }
 
@@ -65,11 +55,13 @@ fn test_sleep_tool_metadata() {
 async fn test_sleep_exactly_one_second() {
     let tool = SleepTool::new();
     let start = std::time::Instant::now();
-    let result = tool
-        .execute(&serde_json::json!({"duration": 1}))
-        .await;
+    let result = tool.execute(&serde_json::json!({"duration": 1})).await;
     let elapsed = start.elapsed();
-    assert!(!result.is_error, "Expected success, got: {}", result.for_llm);
+    assert!(
+        !result.is_error,
+        "Expected success, got: {}",
+        result.for_llm
+    );
     assert!(result.silent, "Sleep result should be silent");
     assert!(elapsed >= std::time::Duration::from_millis(900));
 }
@@ -89,9 +81,7 @@ async fn test_sleep_tool_parameters() {
 async fn test_sleep_boundary_values() {
     let tool = SleepTool::new();
     // 3601 should fail (exceeds max)
-    let result = tool
-        .execute(&serde_json::json!({"duration": 3601}))
-        .await;
+    let result = tool.execute(&serde_json::json!({"duration": 3601})).await;
     assert!(result.is_error);
     assert!(result.for_llm.contains("3600"));
 }
@@ -99,9 +89,7 @@ async fn test_sleep_boundary_values() {
 #[tokio::test]
 async fn test_sleep_float_duration() {
     let tool = SleepTool::new();
-    let _result = tool
-        .execute(&serde_json::json!({"duration": 1.5}))
-        .await;
+    let _result = tool.execute(&serde_json::json!({"duration": 1.5})).await;
     // Floats may or may not be accepted depending on implementation
     // Just verify it doesn't panic
 }
@@ -109,9 +97,7 @@ async fn test_sleep_float_duration() {
 #[tokio::test]
 async fn test_sleep_negative_duration() {
     let tool = SleepTool::new();
-    let result = tool
-        .execute(&serde_json::json!({"duration": -10}))
-        .await;
+    let result = tool.execute(&serde_json::json!({"duration": -10})).await;
     assert!(result.is_error);
 }
 
@@ -132,12 +118,14 @@ async fn test_sleep_cancellation() {
 #[tokio::test]
 async fn test_sleep_success_result_content() {
     let tool = SleepTool::new();
-    let result = tool
-        .execute(&serde_json::json!({"duration": 1}))
-        .await;
+    let result = tool.execute(&serde_json::json!({"duration": 1})).await;
     assert!(!result.is_error);
     assert!(result.silent);
-    assert!(result.for_llm.contains("Slept") || result.for_llm.contains("slept") || !result.for_llm.is_empty());
+    assert!(
+        result.for_llm.contains("Slept")
+            || result.for_llm.contains("slept")
+            || !result.for_llm.is_empty()
+    );
 }
 
 #[test]

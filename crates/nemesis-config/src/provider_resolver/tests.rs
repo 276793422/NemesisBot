@@ -4,14 +4,12 @@ use crate::Config;
 #[test]
 fn test_resolve_model_config_by_model_name() {
     let cfg = Config {
-        model_list: vec![
-            ModelConfig {
-                model_name: "default".to_string(),
-                model: "openai/gpt-4".to_string(),
-                api_key: "key1".to_string(),
-                ..Default::default()
-            },
-        ],
+        model_list: vec![ModelConfig {
+            model_name: "default".to_string(),
+            model: "openai/gpt-4".to_string(),
+            api_key: "key1".to_string(),
+            ..Default::default()
+        }],
         ..Default::default()
     };
 
@@ -24,14 +22,12 @@ fn test_resolve_model_config_by_model_name() {
 #[test]
 fn test_resolve_model_config_by_vendor_model() {
     let cfg = Config {
-        model_list: vec![
-            ModelConfig {
-                model_name: "primary".to_string(),
-                model: "anthropic/claude-3".to_string(),
-                api_key: "key2".to_string(),
-                ..Default::default()
-            },
-        ],
+        model_list: vec![ModelConfig {
+            model_name: "primary".to_string(),
+            model: "anthropic/claude-3".to_string(),
+            api_key: "key2".to_string(),
+            ..Default::default()
+        }],
         ..Default::default()
     };
 
@@ -65,13 +61,11 @@ fn test_resolve_model_config_empty_ref() {
 #[test]
 fn test_get_model_by_name_single() {
     let cfg = Config {
-        model_list: vec![
-            ModelConfig {
-                model_name: "fast".to_string(),
-                model: "groq/llama3".to_string(),
-                ..Default::default()
-            },
-        ],
+        model_list: vec![ModelConfig {
+            model_name: "fast".to_string(),
+            model: "groq/llama3".to_string(),
+            ..Default::default()
+        }],
         ..Default::default()
     };
 
@@ -158,9 +152,15 @@ fn test_infer_default_model() {
 
 #[test]
 fn test_get_default_api_base() {
-    assert_eq!(get_default_api_base("anthropic"), "https://api.anthropic.com/v1");
+    assert_eq!(
+        get_default_api_base("anthropic"),
+        "https://api.anthropic.com/v1"
+    );
     assert_eq!(get_default_api_base("openai"), "https://api.openai.com/v1");
-    assert_eq!(get_default_api_base("zhipu"), "https://open.bigmodel.cn/api/paas/v4");
+    assert_eq!(
+        get_default_api_base("zhipu"),
+        "https://open.bigmodel.cn/api/paas/v4"
+    );
     assert_eq!(get_default_api_base("ollama"), "http://localhost:11434/v1");
     assert_eq!(get_default_api_base("unknown"), "");
 }
@@ -223,13 +223,11 @@ fn test_resolve_model_resolution() {
 #[test]
 fn test_find_model_by_name() {
     let cfg = Config {
-        model_list: vec![
-            ModelConfig {
-                model_name: "primary".to_string(),
-                model: "openai/gpt-4".to_string(),
-                ..Default::default()
-            },
-        ],
+        model_list: vec![ModelConfig {
+            model_name: "primary".to_string(),
+            model: "openai/gpt-4".to_string(),
+            ..Default::default()
+        }],
         ..Default::default()
     };
 
@@ -276,45 +274,108 @@ fn test_infer_default_model_all_providers() {
     assert_eq!(infer_default_model("ollama"), "llama3.3");
     assert_eq!(infer_default_model("gemini"), "gemini-2.0-flash-exp");
     assert_eq!(infer_default_model("google"), "gemini-2.0-flash-exp");
-    assert_eq!(infer_default_model("nvidia"), "nvidia/llama-3.1-nemotron-70b-instruct");
+    assert_eq!(
+        infer_default_model("nvidia"),
+        "nvidia/llama-3.1-nemotron-70b-instruct"
+    );
     assert_eq!(infer_default_model("moonshot"), "moonshot-v1-8k");
     assert_eq!(infer_default_model("kimi"), "moonshot-v1-8k");
     assert_eq!(infer_default_model("deepseek"), "deepseek-chat");
     assert_eq!(infer_default_model("mistral"), "mistral-large-latest");
     assert_eq!(infer_default_model("cohere"), "command-r-plus");
     assert_eq!(infer_default_model("perplexity"), "sonar");
-    assert_eq!(infer_default_model("together"), "meta-llama/Llama-3.3-70B-Instruct-Turbo");
-    assert_eq!(infer_default_model("fireworks"), "accounts/fireworks/models/llama-v3p3-70b-instruct");
+    assert_eq!(
+        infer_default_model("together"),
+        "meta-llama/Llama-3.3-70B-Instruct-Turbo"
+    );
+    assert_eq!(
+        infer_default_model("fireworks"),
+        "accounts/fireworks/models/llama-v3p3-70b-instruct"
+    );
     assert_eq!(infer_default_model("cerebras"), "llama-3.3-70b");
-    assert_eq!(infer_default_model("sambanova"), "Meta-Llama-3.3-70B-Instruct");
+    assert_eq!(
+        infer_default_model("sambanova"),
+        "Meta-Llama-3.3-70B-Instruct"
+    );
     assert_eq!(infer_default_model("unknown_provider"), "");
 }
 
 #[test]
 fn test_get_default_api_base_all_providers() {
-    assert_eq!(get_default_api_base("anthropic"), "https://api.anthropic.com/v1");
-    assert_eq!(get_default_api_base("claude"), "https://api.anthropic.com/v1");
+    assert_eq!(
+        get_default_api_base("anthropic"),
+        "https://api.anthropic.com/v1"
+    );
+    assert_eq!(
+        get_default_api_base("claude"),
+        "https://api.anthropic.com/v1"
+    );
     assert_eq!(get_default_api_base("openai"), "https://api.openai.com/v1");
     assert_eq!(get_default_api_base("gpt"), "https://api.openai.com/v1");
-    assert_eq!(get_default_api_base("openrouter"), "https://openrouter.ai/api/v1");
-    assert_eq!(get_default_api_base("groq"), "https://api.groq.com/openai/v1");
-    assert_eq!(get_default_api_base("zhipu"), "https://open.bigmodel.cn/api/paas/v4");
-    assert_eq!(get_default_api_base("glm"), "https://open.bigmodel.cn/api/paas/v4");
-    assert_eq!(get_default_api_base("gemini"), "https://generativelanguage.googleapis.com/v1beta");
-    assert_eq!(get_default_api_base("google"), "https://generativelanguage.googleapis.com/v1beta");
-    assert_eq!(get_default_api_base("nvidia"), "https://integrate.api.nvidia.com/v1");
+    assert_eq!(
+        get_default_api_base("openrouter"),
+        "https://openrouter.ai/api/v1"
+    );
+    assert_eq!(
+        get_default_api_base("groq"),
+        "https://api.groq.com/openai/v1"
+    );
+    assert_eq!(
+        get_default_api_base("zhipu"),
+        "https://open.bigmodel.cn/api/paas/v4"
+    );
+    assert_eq!(
+        get_default_api_base("glm"),
+        "https://open.bigmodel.cn/api/paas/v4"
+    );
+    assert_eq!(
+        get_default_api_base("gemini"),
+        "https://generativelanguage.googleapis.com/v1beta"
+    );
+    assert_eq!(
+        get_default_api_base("google"),
+        "https://generativelanguage.googleapis.com/v1beta"
+    );
+    assert_eq!(
+        get_default_api_base("nvidia"),
+        "https://integrate.api.nvidia.com/v1"
+    );
     assert_eq!(get_default_api_base("ollama"), "http://localhost:11434/v1");
-    assert_eq!(get_default_api_base("moonshot"), "https://api.moonshot.cn/v1");
+    assert_eq!(
+        get_default_api_base("moonshot"),
+        "https://api.moonshot.cn/v1"
+    );
     assert_eq!(get_default_api_base("kimi"), "https://api.moonshot.cn/v1");
-    assert_eq!(get_default_api_base("deepseek"), "https://api.deepseek.com/v1");
+    assert_eq!(
+        get_default_api_base("deepseek"),
+        "https://api.deepseek.com/v1"
+    );
     assert_eq!(get_default_api_base("mistral"), "https://api.mistral.ai/v1");
     assert_eq!(get_default_api_base("cohere"), "https://api.cohere.ai/v2");
-    assert_eq!(get_default_api_base("perplexity"), "https://api.perplexity.ai/v1");
-    assert_eq!(get_default_api_base("together"), "https://api.together.xyz/v1");
-    assert_eq!(get_default_api_base("fireworks"), "https://api.fireworks.ai/inference/v1");
-    assert_eq!(get_default_api_base("cerebras"), "https://api.cerebras.ai/v1");
-    assert_eq!(get_default_api_base("sambanova"), "https://api.sambanova.ai/v1");
-    assert_eq!(get_default_api_base("shengsuanyun"), "https://router.shengsuanyun.com/api/v1");
+    assert_eq!(
+        get_default_api_base("perplexity"),
+        "https://api.perplexity.ai/v1"
+    );
+    assert_eq!(
+        get_default_api_base("together"),
+        "https://api.together.xyz/v1"
+    );
+    assert_eq!(
+        get_default_api_base("fireworks"),
+        "https://api.fireworks.ai/inference/v1"
+    );
+    assert_eq!(
+        get_default_api_base("cerebras"),
+        "https://api.cerebras.ai/v1"
+    );
+    assert_eq!(
+        get_default_api_base("sambanova"),
+        "https://api.sambanova.ai/v1"
+    );
+    assert_eq!(
+        get_default_api_base("shengsuanyun"),
+        "https://router.shengsuanyun.com/api/v1"
+    );
     assert_eq!(get_default_api_base("github_copilot"), "localhost:4321");
     assert_eq!(get_default_api_base("unknown"), "");
 }
@@ -368,15 +429,13 @@ fn test_model_resolution_serialization() {
 #[test]
 fn test_resolve_model_config_with_custom_api_base() {
     let cfg = Config {
-        model_list: vec![
-            ModelConfig {
-                model_name: "custom".to_string(),
-                model: "openai/gpt-4".to_string(),
-                api_key: "key1".to_string(),
-                api_base: "https://custom.api.com/v1".to_string(),
-                ..Default::default()
-            },
-        ],
+        model_list: vec![ModelConfig {
+            model_name: "custom".to_string(),
+            model: "openai/gpt-4".to_string(),
+            api_key: "key1".to_string(),
+            api_base: "https://custom.api.com/v1".to_string(),
+            ..Default::default()
+        }],
         ..Default::default()
     };
 
@@ -387,14 +446,12 @@ fn test_resolve_model_config_with_custom_api_base() {
 #[test]
 fn test_resolve_model_config_model_without_slash() {
     let cfg = Config {
-        model_list: vec![
-            ModelConfig {
-                model_name: "test".to_string(),
-                model: "local-model".to_string(),
-                api_key: "key".to_string(),
-                ..Default::default()
-            },
-        ],
+        model_list: vec![ModelConfig {
+            model_name: "test".to_string(),
+            model: "local-model".to_string(),
+            api_key: "key".to_string(),
+            ..Default::default()
+        }],
         ..Default::default()
     };
 
@@ -445,14 +502,12 @@ fn test_find_model_by_name_not_found() {
 #[test]
 fn test_get_model_by_name_by_model_field() {
     let cfg = Config {
-        model_list: vec![
-            ModelConfig {
-                model_name: "primary".to_string(),
-                model: "anthropic/claude-3".to_string(),
-                api_key: "key".to_string(),
-                ..Default::default()
-            },
-        ],
+        model_list: vec![ModelConfig {
+            model_name: "primary".to_string(),
+            model: "anthropic/claude-3".to_string(),
+            api_key: "key".to_string(),
+            ..Default::default()
+        }],
         ..Default::default()
     };
 

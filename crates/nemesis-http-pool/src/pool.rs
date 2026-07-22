@@ -71,21 +71,36 @@ impl ConnectionPool {
     }
 
     /// Execute a POST request with JSON body.
-    pub async fn post_json(&self, url: &str, body: &serde_json::Value) -> Result<reqwest::Response, reqwest::Error> {
+    pub async fn post_json(
+        &self,
+        url: &str,
+        body: &serde_json::Value,
+    ) -> Result<reqwest::Response, reqwest::Error> {
         self.client.post(url).json(body).send().await
     }
 
     /// Execute a POST request with JSON body and retry.
-    pub async fn post_json_with_retry(&self, url: &str, body: serde_json::Value) -> Result<reqwest::Response, reqwest::Error> {
+    pub async fn post_json_with_retry(
+        &self,
+        url: &str,
+        body: serde_json::Value,
+    ) -> Result<reqwest::Response, reqwest::Error> {
         retry_request(|| {
             let body = body.clone();
             async move { self.client.post(url).json(&body).send().await }
-        }).await
+        })
+        .await
     }
 
     /// Execute a POST request with raw body.
-    pub async fn post(&self, url: &str, content_type: &str, body: &[u8]) -> Result<reqwest::Response, reqwest::Error> {
-        self.client.post(url)
+    pub async fn post(
+        &self,
+        url: &str,
+        content_type: &str,
+        body: &[u8],
+    ) -> Result<reqwest::Response, reqwest::Error> {
+        self.client
+            .post(url)
             .header("Content-Type", content_type)
             .body(body.to_vec())
             .send()
@@ -94,7 +109,9 @@ impl ConnectionPool {
 
     /// Download a file from a URL, writing to the specified path.
     pub async fn download_file(&self, url: &str, dest_path: &str) -> Result<(), String> {
-        let resp = self.client.get(url)
+        let resp = self
+            .client
+            .get(url)
             .send()
             .await
             .map_err(|e| format!("download request: {}", e))?;
@@ -103,17 +120,16 @@ impl ConnectionPool {
             return Err(format!("HTTP {}", resp.status()));
         }
 
-        let bytes = resp.bytes()
+        let bytes = resp
+            .bytes()
             .await
             .map_err(|e| format!("read body: {}", e))?;
 
         if let Some(parent) = std::path::Path::new(dest_path).parent() {
-            std::fs::create_dir_all(parent)
-                .map_err(|e| format!("mkdir: {}", e))?;
+            std::fs::create_dir_all(parent).map_err(|e| format!("mkdir: {}", e))?;
         }
 
-        std::fs::write(dest_path, &bytes)
-            .map_err(|e| format!("write: {}", e))?;
+        std::fs::write(dest_path, &bytes).map_err(|e| format!("write: {}", e))?;
 
         Ok(())
     }
@@ -129,7 +145,9 @@ static GLOBAL_POOL: std::sync::OnceLock<Arc<ConnectionPool>> = std::sync::OnceLo
 
 /// Get or create the global shared connection pool.
 pub fn shared_pool() -> Arc<ConnectionPool> {
-    GLOBAL_POOL.get_or_init(|| Arc::new(ConnectionPool::with_defaults())).clone()
+    GLOBAL_POOL
+        .get_or_init(|| Arc::new(ConnectionPool::with_defaults()))
+        .clone()
 }
 
 /// Execute a request with retry logic.

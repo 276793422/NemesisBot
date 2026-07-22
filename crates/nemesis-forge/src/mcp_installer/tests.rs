@@ -76,8 +76,14 @@ async fn test_save_and_load_config() {
 async fn test_install_multiple_servers() {
     let dir = tempfile::tempdir().unwrap();
     let installer = MCPInstaller::new(dir.path());
-    installer.install("server-a", "go", vec!["run".into()]).await.unwrap();
-    installer.install("server-b", "python", vec!["main.py".into()]).await.unwrap();
+    installer
+        .install("server-a", "go", vec!["run".into()])
+        .await
+        .unwrap();
+    installer
+        .install("server-b", "python", vec!["main.py".into()])
+        .await
+        .unwrap();
     assert!(installer.is_installed("server-a").await);
     assert!(installer.is_installed("server-b").await);
 }
@@ -94,8 +100,14 @@ async fn test_uninstall_nonexistent() {
 async fn test_reinstall_overwrites() {
     let dir = tempfile::tempdir().unwrap();
     let installer = MCPInstaller::new(dir.path());
-    installer.install("server", "go", vec!["v1".into()]).await.unwrap();
-    installer.install("server", "python", vec!["v2".into()]).await.unwrap();
+    installer
+        .install("server", "go", vec!["v1".into()])
+        .await
+        .unwrap();
+    installer
+        .install("server", "python", vec!["v2".into()])
+        .await
+        .unwrap();
     let config = installer.load_config().await.unwrap();
     assert_eq!(config.servers[0].command, "python");
 }

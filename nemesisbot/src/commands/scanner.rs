@@ -60,12 +60,22 @@ pub struct ClamAVEngineConfig {
     pub state: EngineState,
 }
 
-fn default_address() -> String { "127.0.0.1:3310".to_string() }
-fn default_max_file_size() -> u64 { 52428800 }
-fn default_update_interval() -> String { "24h".to_string() }
+fn default_address() -> String {
+    "127.0.0.1:3310".to_string()
+}
+fn default_max_file_size() -> u64 {
+    52428800
+}
+fn default_update_interval() -> String {
+    "24h".to_string()
+}
 fn default_skip_extensions() -> Vec<String> {
-    vec![".txt", ".md", ".json", ".yaml", ".yml", ".toml", ".log", ".css", ".html"]
-        .into_iter().map(String::from).collect()
+    vec![
+        ".txt", ".md", ".json", ".yaml", ".yml", ".toml", ".log", ".css", ".html",
+    ]
+    .into_iter()
+    .map(String::from)
+    .collect()
 }
 
 impl Default for ClamAVEngineConfig {
@@ -291,9 +301,18 @@ pub async fn run(action: ScannerAction, local: bool) -> Result<()> {
 
     match action {
         ScannerAction::List => cmd_list(&security_cfg),
-        ScannerAction::Add { name, url, path, address } => {
-            cmd_add(&security_cfg, &name, url.as_deref(), path.as_deref(), address.as_deref())
-        }
+        ScannerAction::Add {
+            name,
+            url,
+            path,
+            address,
+        } => cmd_add(
+            &security_cfg,
+            &name,
+            url.as_deref(),
+            path.as_deref(),
+            address.as_deref(),
+        ),
         ScannerAction::Remove { name } => cmd_remove(&security_cfg, &name),
         ScannerAction::Enable { name } => cmd_enable(&security_cfg, &name),
         ScannerAction::Disable { name } => cmd_disable(&security_cfg, &name),
@@ -361,7 +380,10 @@ fn cmd_add(
 ) -> Result<()> {
     if !is_valid_engine(name) {
         eprintln!("Unknown engine: {}", name);
-        eprintln!("Available: {:?}", nemesis_security::scanner::available_engines());
+        eprintln!(
+            "Available: {:?}",
+            nemesis_security::scanner::available_engines()
+        );
         std::process::exit(1);
     }
 
@@ -575,9 +597,21 @@ fn cmd_check(security_cfg: &std::path::Path) -> Result<()> {
         }
 
         let status_str = if is_enabled { "enabled" } else { "disabled" };
-        let install_str = if state.install_status.is_empty() { "-" } else { &state.install_status };
-        let db_str = if state.db_status.is_empty() { "-" } else { &state.db_status };
-        let addr_str = if engine_cfg.address.is_empty() { "-" } else { &engine_cfg.address };
+        let install_str = if state.install_status.is_empty() {
+            "-"
+        } else {
+            &state.install_status
+        };
+        let db_str = if state.db_status.is_empty() {
+            "-"
+        } else {
+            &state.db_status
+        };
+        let addr_str = if engine_cfg.address.is_empty() {
+            "-"
+        } else {
+            &engine_cfg.address
+        };
         let url_display = if engine_cfg.url.is_empty() {
             "-".to_string()
         } else if engine_cfg.url.len() > 40 {
@@ -624,10 +658,16 @@ fn cmd_check(security_cfg: &std::path::Path) -> Result<()> {
             let engine_cfg = parse_engine_config(raw);
             match engine_cfg.state.install_status.as_str() {
                 "pending" => {
-                    recommendations.push(format!("  - Run 'scanner {} install' to install {}", name, name));
+                    recommendations.push(format!(
+                        "  - Run 'scanner {} install' to install {}",
+                        name, name
+                    ));
                 }
                 "failed" => {
-                    recommendations.push(format!("  - Re-run 'scanner {} install' to fix {} installation", name, name));
+                    recommendations.push(format!(
+                        "  - Re-run 'scanner {} install' to fix {} installation",
+                        name, name
+                    ));
                 }
                 "installed" => {
                     if engine_cfg.state.db_status == "missing" {
@@ -663,9 +703,7 @@ fn download_engine(url: &str, target_dir: &std::path::Path) -> Result<String> {
         .timeout(Duration::from_secs(300))
         .build()?;
 
-    let mut response = client.get(url)
-        .header("User-Agent", "nemesisbot")
-        .send()?;
+    let mut response = client.get(url).header("User-Agent", "nemesisbot").send()?;
 
     if !response.status().is_success() {
         anyhow::bail!("HTTP {}", response.status());
@@ -678,7 +716,9 @@ fn download_engine(url: &str, target_dir: &std::path::Path) -> Result<String> {
         let mut total_bytes: u64 = 0;
         loop {
             let n = response.read(&mut buffer)?;
-            if n == 0 { break; }
+            if n == 0 {
+                break;
+            }
             use std::io::Write;
             file.write_all(&buffer[..n])?;
             total_bytes += n as u64;
@@ -708,7 +748,8 @@ fn download_engine(url: &str, target_dir: &std::path::Path) -> Result<String> {
                     use std::os::windows::process::CommandExt;
                     let ps_cmd = format!(
                         "Expand-Archive -Path '{}' -DestinationPath '{}' -Force",
-                        archive_path.display(), target_dir.display()
+                        archive_path.display(),
+                        target_dir.display()
                     );
                     let ps_output = std::process::Command::new("powershell")
                         .raw_arg(format!("-NoProfile -Command {}", ps_cmd))
@@ -720,21 +761,32 @@ fn download_engine(url: &str, target_dir: &std::path::Path) -> Result<String> {
                         }
                         _ => {
                             // Leave as-is, user can extract manually
-                            println!("    Could not auto-extract. Archive at: {}", archive_path.display());
+                            println!(
+                                "    Could not auto-extract. Archive at: {}",
+                                archive_path.display()
+                            );
                             target_dir.to_string_lossy().to_string()
                         }
                     }
                 }
                 #[cfg(not(target_os = "windows"))]
                 {
-                    println!("    Could not auto-extract. Archive at: {}", archive_path.display());
+                    println!(
+                        "    Could not auto-extract. Archive at: {}",
+                        archive_path.display()
+                    );
                     target_dir.to_string_lossy().to_string()
                 }
             }
         }
     } else if file_name.ends_with(".tar.gz") || file_name.ends_with(".tgz") {
         let output = std::process::Command::new("tar")
-            .args(["xzf", &archive_path.to_string_lossy(), "-C", &target_dir.to_string_lossy()])
+            .args([
+                "xzf",
+                &archive_path.to_string_lossy(),
+                "-C",
+                &target_dir.to_string_lossy(),
+            ])
             .output();
         if output.is_ok_and(|o| o.status.success()) {
             let _ = std::fs::remove_file(&archive_path);
@@ -814,15 +866,20 @@ async fn cmd_clamav(action: ClamavAction, security_cfg: &std::path::Path) -> Res
 /// Enable ClamAV engine with install check (via `scanner clamav enable`).
 fn cmd_clamav_enable(security_cfg: &std::path::Path) -> Result<()> {
     let cfg = load_scanner_config(security_cfg)?;
-    let raw = cfg.engines.get("clamav").ok_or_else(|| {
-        anyhow::anyhow!("ClamAV not configured. Run 'scanner add clamav' first.")
-    })?;
+    let raw = cfg
+        .engines
+        .get("clamav")
+        .ok_or_else(|| anyhow::anyhow!("ClamAV not configured. Run 'scanner add clamav' first."))?;
     let engine_cfg = parse_engine_config(raw);
 
     if engine_cfg.state.install_status != "installed" {
         anyhow::bail!(
             "ClamAV is not installed (status: {}). Run 'scanner clamav install' first.",
-            if engine_cfg.state.install_status.is_empty() { "none" } else { &engine_cfg.state.install_status }
+            if engine_cfg.state.install_status.is_empty() {
+                "none"
+            } else {
+                &engine_cfg.state.install_status
+            }
         );
     }
 
@@ -856,7 +913,10 @@ async fn cmd_clamav_install_inner(
 
     // Check if already installed
     if engine_cfg.state.install_status == "installed" && !force {
-        println!("ClamAV already installed (path: {}). Use --force to reinstall.", engine_cfg.clamav_path);
+        println!(
+            "ClamAV already installed (path: {}). Use --force to reinstall.",
+            engine_cfg.clamav_path
+        );
         return Ok(());
     }
 
@@ -868,9 +928,11 @@ async fn cmd_clamav_install_inner(
         state.install_status = String::new();
     }
 
-    let install_dir = dir
-        .map(String::from)
-        .unwrap_or_else(|| resolve_tools_dir(security_cfg).to_string_lossy().to_string());
+    let install_dir = dir.map(String::from).unwrap_or_else(|| {
+        resolve_tools_dir(security_cfg)
+            .to_string_lossy()
+            .to_string()
+    });
 
     println!("Install directory: {}\n", install_dir);
 
@@ -892,9 +954,13 @@ async fn cmd_clamav_install_inner(
     // Step 3: Download if still not found
     // URL priority: --url override > config url > error
     if detected_path.is_empty() {
-        let download_url = url_override
-            .map(String::from)
-            .or_else(|| if !engine_cfg.url.is_empty() { Some(engine_cfg.url.clone()) } else { None });
+        let download_url = url_override.map(String::from).or_else(|| {
+            if !engine_cfg.url.is_empty() {
+                Some(engine_cfg.url.clone())
+            } else {
+                None
+            }
+        });
 
         match download_url {
             Some(ref url) => {
@@ -968,7 +1034,10 @@ async fn cmd_clamav_install_inner(
             &freshclam_conf.to_string_lossy(),
         ) {
             Ok(()) => println!("  clamav           generated freshclam.conf"),
-            Err(e) => println!("  clamav           failed to generate freshclam.conf: {}", e),
+            Err(e) => println!(
+                "  clamav           failed to generate freshclam.conf: {}",
+                e
+            ),
         }
 
         // Generate clamd.conf
@@ -1006,7 +1075,12 @@ async fn cmd_clamav_install_inner(
                 },
             );
 
-            match tokio::time::timeout(Duration::from_secs(120), updater.update(tokio_util::sync::CancellationToken::new(), None)).await {
+            match tokio::time::timeout(
+                Duration::from_secs(120),
+                updater.update(tokio_util::sync::CancellationToken::new(), None),
+            )
+            .await
+            {
                 Ok(Ok(())) => {
                     state.db_status = "ready".to_string();
                     state.last_db_update = chrono::Local::now().to_rfc3339();
@@ -1076,7 +1150,8 @@ async fn cmd_clamav_update(security_cfg: &std::path::Path) -> Result<()> {
         nemesis_security::clamav::config::generate_freshclam_config(
             &db_dir.to_string_lossy(),
             &freshclam_conf.to_string_lossy(),
-        ).map_err(|e| anyhow::anyhow!(e))?;
+        )
+        .map_err(|e| anyhow::anyhow!(e))?;
     }
 
     // Create Updater and run freshclam
@@ -1091,7 +1166,10 @@ async fn cmd_clamav_update(security_cfg: &std::path::Path) -> Result<()> {
     );
 
     println!("  Running freshclam to update virus database...");
-    updater.update(tokio_util::sync::CancellationToken::new(), None).await.map_err(|e| anyhow::anyhow!("freshclam failed: {}", e))?;
+    updater
+        .update(tokio_util::sync::CancellationToken::new(), None)
+        .await
+        .map_err(|e| anyhow::anyhow!("freshclam failed: {}", e))?;
     println!("  Virus database updated.");
 
     // Update config.scanner.json

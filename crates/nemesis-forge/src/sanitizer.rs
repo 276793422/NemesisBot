@@ -101,10 +101,7 @@ impl Sanitizer {
     }
 
     /// Sanitize an experience's input and output summaries in-place.
-    pub fn sanitize_experience(
-        &self,
-        experience: &mut nemesis_types::forge::Experience,
-    ) {
+    pub fn sanitize_experience(&self, experience: &mut nemesis_types::forge::Experience) {
         experience.input_summary = self.sanitize(&experience.input_summary);
         experience.output_summary = self.sanitize(&experience.output_summary);
         experience.session_key = self.sanitize(&experience.session_key);
@@ -162,7 +159,8 @@ impl Sanitizer {
         }
 
         // Windows user paths: C:\Users\username\... -> ~/...
-        let win_user_re = Regex::new(r"(?i)[A-Za-z]:\\Users\\[^\\]+\\").expect("invalid win user regex");
+        let win_user_re =
+            Regex::new(r"(?i)[A-Za-z]:\\Users\\[^\\]+\\").expect("invalid win user regex");
         result = win_user_re.replace_all(&result, "~/").to_string();
 
         // Unix user paths: /home/username/... -> ~/...
@@ -181,8 +179,8 @@ impl Sanitizer {
     /// Private/internal IPs (10.x, 172.16-31.x, 192.168.x, 127.x) are preserved.
     /// This follows Go's `cleanPublicIPs` logic.
     pub fn clean_public_ips(&self, content: &str) -> String {
-        let ip_re = Regex::new(r"\b(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})\b")
-            .expect("invalid ip regex");
+        let ip_re =
+            Regex::new(r"\b(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})\b").expect("invalid ip regex");
         ip_re
             .replace_all(content, |caps: &regex::Captures| {
                 let ip = &caps[1];

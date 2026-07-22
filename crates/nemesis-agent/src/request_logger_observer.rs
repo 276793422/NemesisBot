@@ -233,7 +233,9 @@ impl RequestLoggerObserver {
                 state.logger.log_raw_request_envelope(&envelope);
             } else {
                 // Convert serde_json::Value messages to LlmMessage structs.
-                let messages: Vec<crate::r#loop::LlmMessage> = data.messages.iter()
+                let messages: Vec<crate::r#loop::LlmMessage> = data
+                    .messages
+                    .iter()
                     .filter_map(|v| serde_json::from_value(v.clone()).ok())
                     .collect();
 
@@ -262,10 +264,13 @@ impl RequestLoggerObserver {
                 // Raw mode: write response file only (request already written in handle_llm_request)
                 let response_time = chrono::Local::now();
                 if let Some(ref resp_body) = data.raw_response_body {
-                    state.logger.log_raw_response(resp_body, response_time, data.round, data.duration_ms);
-                } else if data.finish_reason == "error"
-                    || data.content.starts_with("Error:")
-                {
+                    state.logger.log_raw_response(
+                        resp_body,
+                        response_time,
+                        data.round,
+                        data.duration_ms,
+                    );
+                } else if data.finish_reason == "error" || data.content.starts_with("Error:") {
                     // Failure fallback. Raw mode only writes when
                     // `raw_response_body` is `Some`, which is hardcoded `None`
                     // on LLM failure/cancel (loop.rs:~2828). Without this, the
@@ -289,12 +294,36 @@ impl RequestLoggerObserver {
                 }
             } else {
                 // Markdown mode: existing logic
-                let tool_calls: Vec<crate::request_logger::ToolCallDetail> = data.tool_calls.iter()
+                let tool_calls: Vec<crate::request_logger::ToolCallDetail> = data
+                    .tool_calls
+                    .iter()
                     .filter_map(|v| {
-                        let id = v.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                        let name = v.get("name").or_else(|| v.get("function").and_then(|f| f.get("name"))).and_then(|v| v.as_str()).unwrap_or("").to_string();
-                        let arguments = v.get("arguments").or_else(|| v.get("function").and_then(|f| f.get("arguments"))).and_then(|v| v.as_str()).unwrap_or("").to_string();
-                        if name.is_empty() { None } else { Some(crate::request_logger::ToolCallDetail { id, name, arguments }) }
+                        let id = v
+                            .get("id")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string();
+                        let name = v
+                            .get("name")
+                            .or_else(|| v.get("function").and_then(|f| f.get("name")))
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string();
+                        let arguments = v
+                            .get("arguments")
+                            .or_else(|| v.get("function").and_then(|f| f.get("arguments")))
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string();
+                        if name.is_empty() {
+                            None
+                        } else {
+                            Some(crate::request_logger::ToolCallDetail {
+                                id,
+                                name,
+                                arguments,
+                            })
+                        }
                     })
                     .collect();
 

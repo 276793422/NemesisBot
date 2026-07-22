@@ -453,7 +453,10 @@ fn test_verify_signature_non_hex_chars() {
     };
     let ch = LineChannel::new(config, test_bus()).unwrap();
     // Contains non-hex characters
-    assert!(!ch.verify_signature(b"hello", "zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz"));
+    assert!(!ch.verify_signature(
+        b"hello",
+        "zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz"
+    ));
 }
 
 #[test]
@@ -684,7 +687,10 @@ fn test_deserialize_event_empty_message_text() {
         }]
     }"#;
     let req: LineWebhookRequest = serde_json::from_str(json).unwrap();
-    assert_eq!(req.events[0].message.as_ref().unwrap().text.as_deref(), Some(""));
+    assert_eq!(
+        req.events[0].message.as_ref().unwrap().text.as_deref(),
+        Some("")
+    );
 }
 
 #[tokio::test]

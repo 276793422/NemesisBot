@@ -71,7 +71,7 @@ fn test_compute_challenge_known_input() {
     let verifier = "test-verifier-value";
     let challenge = compute_challenge(verifier);
     // Manually compute expected
-    use sha2::{Sha256, Digest};
+    use sha2::{Digest, Sha256};
     let mut hasher = Sha256::new();
     hasher.update(verifier.as_bytes());
     let hash = hasher.finalize();

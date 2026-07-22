@@ -8,7 +8,12 @@ fn test_web_fetch_tool_metadata() {
 
     let params = tool.parameters();
     assert!(params["properties"]["url"].is_object());
-    assert!(params["required"].as_array().unwrap().contains(&serde_json::json!("url")));
+    assert!(
+        params["required"]
+            .as_array()
+            .unwrap()
+            .contains(&serde_json::json!("url"))
+    );
 }
 
 #[tokio::test]
@@ -47,9 +52,7 @@ async fn test_web_search_missing_query() {
 #[tokio::test]
 async fn test_web_search_empty_query() {
     let tool = WebSearchTool::with_duckduckgo();
-    let result = tool
-        .execute(&serde_json::json!({"query": ""}))
-        .await;
+    let result = tool.execute(&serde_json::json!({"query": ""})).await;
     assert!(result.is_error);
     assert!(result.for_llm.contains("empty"));
 }
@@ -90,7 +93,10 @@ fn test_web_search_options_brave_no_key() {
         ..Default::default()
     };
     let tool = WebSearchTool::new(&opts);
-    assert!(tool.is_none(), "Brave without key should not produce a tool");
+    assert!(
+        tool.is_none(),
+        "Brave without key should not produce a tool"
+    );
 }
 
 #[test]
@@ -242,7 +248,10 @@ fn test_web_search_options_perplexity_no_key() {
         ..Default::default()
     };
     let tool = WebSearchTool::new(&opts);
-    assert!(tool.is_none(), "Perplexity without key should not produce a tool");
+    assert!(
+        tool.is_none(),
+        "Perplexity without key should not produce a tool"
+    );
 }
 
 #[test]
@@ -253,7 +262,10 @@ fn test_web_search_options_perplexity_empty_key() {
         ..Default::default()
     };
     let tool = WebSearchTool::new(&opts);
-    assert!(tool.is_none(), "Perplexity with empty key should not produce a tool");
+    assert!(
+        tool.is_none(),
+        "Perplexity with empty key should not produce a tool"
+    );
 }
 
 #[test]
@@ -264,7 +276,10 @@ fn test_web_search_options_brave_empty_key() {
         ..Default::default()
     };
     let tool = WebSearchTool::new(&opts);
-    assert!(tool.is_none(), "Brave with empty key should not produce a tool");
+    assert!(
+        tool.is_none(),
+        "Brave with empty key should not produce a tool"
+    );
 }
 
 #[test]
@@ -346,9 +361,7 @@ async fn test_web_search_with_mock_provider_error() {
     }
     let tool = WebSearchTool::with_provider(Box::new(FailProvider), 5);
 
-    let result = tool
-        .execute(&serde_json::json!({"query": "test"}))
-        .await;
+    let result = tool.execute(&serde_json::json!({"query": "test"})).await;
     assert!(result.is_error);
     assert!(result.for_llm.contains("search failed"));
     assert!(result.for_llm.contains("network error"));
@@ -357,9 +370,7 @@ async fn test_web_search_with_mock_provider_error() {
 #[tokio::test]
 async fn test_web_search_whitespace_query() {
     let tool = WebSearchTool::with_duckduckgo();
-    let result = tool
-        .execute(&serde_json::json!({"query": "   "}))
-        .await;
+    let result = tool.execute(&serde_json::json!({"query": "   "})).await;
     assert!(result.is_error);
     assert!(result.for_llm.contains("empty"));
 }
@@ -377,13 +388,19 @@ async fn test_web_search_count_clamping() {
         }
     }
 
-    let provider = CountCaptureProvider { captured_count: std::sync::Mutex::new(0) };
+    let provider = CountCaptureProvider {
+        captured_count: std::sync::Mutex::new(0),
+    };
     let tool = WebSearchTool::with_provider(Box::new(provider), 5);
 
     // Count 0 should be clamped to 1
-    let _ = tool.execute(&serde_json::json!({"query": "test", "count": 0})).await;
+    let _ = tool
+        .execute(&serde_json::json!({"query": "test", "count": 0}))
+        .await;
     // Count 100 should be clamped to 10
-    let _ = tool.execute(&serde_json::json!({"query": "test", "count": 100})).await;
+    let _ = tool
+        .execute(&serde_json::json!({"query": "test", "count": 100}))
+        .await;
 }
 
 #[test]
@@ -549,7 +566,12 @@ fn test_web_search_tool_parameters() {
     let params = tool.parameters();
     assert!(params["properties"]["query"].is_object());
     assert!(params["properties"]["count"].is_object());
-    assert!(params["required"].as_array().unwrap().contains(&serde_json::json!("query")));
+    assert!(
+        params["required"]
+            .as_array()
+            .unwrap()
+            .contains(&serde_json::json!("query"))
+    );
 }
 
 #[tokio::test]

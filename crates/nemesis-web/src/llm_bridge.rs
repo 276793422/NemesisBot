@@ -30,7 +30,10 @@ impl ProviderAdapter {
         inner: Arc<dyn nemesis_providers::router::LLMProvider>,
         default_model: String,
     ) -> Self {
-        Self { inner, default_model }
+        Self {
+            inner,
+            default_model,
+        }
     }
 }
 
@@ -136,16 +139,16 @@ impl nemesis_agent::r#loop::LlmProvider for ProviderAdapter {
                     tool_calls,
                     finished,
                     reasoning_content: resp.reasoning_content,
-                    usage: resp.usage.map(|u| {
-                        nemesis_agent::loop_executor::ObserverUsageInfo {
+                    usage: resp
+                        .usage
+                        .map(|u| nemesis_agent::loop_executor::ObserverUsageInfo {
                             prompt_tokens: u.prompt_tokens,
                             completion_tokens: u.completion_tokens,
                             total_tokens: u.total_tokens,
                             cached_tokens: u.cached_tokens,
                             cache_creation_tokens: u.cache_creation_tokens,
                             cache_read_tokens: u.cache_read_tokens,
-                        }
-                    }),
+                        }),
                     raw_request_body: resp.raw_request_body,
                     raw_response_body: resp.raw_response_body,
                 })

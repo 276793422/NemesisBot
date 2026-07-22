@@ -11,9 +11,7 @@
 pub fn get_hostname() -> String {
     std::fs::read_to_string("/proc/sys/kernel/hostname")
         .map(|s| s.trim().to_string())
-        .unwrap_or_else(|_| {
-            std::env::var("HOSTNAME").unwrap_or_else(|_| "unknown".into())
-        })
+        .unwrap_or_else(|_| std::env::var("HOSTNAME").unwrap_or_else(|_| "unknown".into()))
 }
 
 #[cfg(target_os = "windows")]

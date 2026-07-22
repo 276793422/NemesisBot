@@ -94,7 +94,11 @@ impl TtsEngine {
     }
 
     /// Build a fresh TTS engine from stored params.
-    fn create_engine(model_dir: &Path, num_threads: u32, is_kokoro: bool) -> Result<*const sherpa::SherpaOnnxOfflineTts> {
+    fn create_engine(
+        model_dir: &Path,
+        num_threads: u32,
+        is_kokoro: bool,
+    ) -> Result<*const sherpa::SherpaOnnxOfflineTts> {
         if is_kokoro {
             Self::build_kokoro_config(model_dir, num_threads)
         } else {
@@ -102,7 +106,10 @@ impl TtsEngine {
         }
     }
 
-    fn build_vits_config(model_dir: &Path, num_threads: u32) -> Result<*const sherpa::SherpaOnnxOfflineTts> {
+    fn build_vits_config(
+        model_dir: &Path,
+        num_threads: u32,
+    ) -> Result<*const sherpa::SherpaOnnxOfflineTts> {
         let model_path = model_dir.join("model.onnx");
         let lexicon_path = model_dir.join("lexicon.txt");
         let tokens_path = model_dir.join("tokens.txt");
@@ -122,7 +129,10 @@ impl TtsEngine {
         let lexicon_c = if lexicon_path.exists() {
             sherpa::to_cstr(lexicon_path.to_str().unwrap_or(""))
         } else {
-            return Err(anyhow::anyhow!("TTS lexicon not found: {}", lexicon_path.display()));
+            return Err(anyhow::anyhow!(
+                "TTS lexicon not found: {}",
+                lexicon_path.display()
+            ));
         };
 
         let data_dir = model_dir.join("espeak-ng-data");
@@ -166,7 +176,10 @@ impl TtsEngine {
         Ok(tts)
     }
 
-    fn build_kokoro_config(model_dir: &Path, num_threads: u32) -> Result<*const sherpa::SherpaOnnxOfflineTts> {
+    fn build_kokoro_config(
+        model_dir: &Path,
+        num_threads: u32,
+    ) -> Result<*const sherpa::SherpaOnnxOfflineTts> {
         let model_path = model_dir.join("model.onnx");
         let voices_path = model_dir.join("voices.bin");
         let tokens_path = model_dir.join("tokens.txt");
@@ -204,7 +217,11 @@ impl TtsEngine {
         let lexicon_en = model_dir.join("lexicon-us-en.txt");
         let lexicon_zh = model_dir.join("lexicon-zh.txt");
         let lexicon_str = if lexicon_en.exists() && lexicon_zh.exists() {
-            format!("{},{}", lexicon_en.to_str().unwrap_or(""), lexicon_zh.to_str().unwrap_or(""))
+            format!(
+                "{},{}",
+                lexicon_en.to_str().unwrap_or(""),
+                lexicon_zh.to_str().unwrap_or("")
+            )
         } else if lexicon_en.exists() {
             lexicon_en.to_str().unwrap_or("").to_string()
         } else if lexicon_zh.exists() {
@@ -226,11 +243,17 @@ impl TtsEngine {
         };
 
         let vits = sherpa::SherpaOnnxOfflineTtsVitsModelConfig {
-            model: empty, lexicon: empty, tokens: empty,
-            data_dir: empty, noise_scale: 0.0, noise_scale_w: 0.0,
-            length_scale: 1.0, dict_dir: empty,
+            model: empty,
+            lexicon: empty,
+            tokens: empty,
+            data_dir: empty,
+            noise_scale: 0.0,
+            noise_scale_w: 0.0,
+            length_scale: 1.0,
+            dict_dir: empty,
         };
-        let model_config = build_model_config_with_kokoro(vits, kokoro, num_threads, provider_c.as_ptr(), empty);
+        let model_config =
+            build_model_config_with_kokoro(vits, kokoro, num_threads, provider_c.as_ptr(), empty);
 
         let rule_fsts = {
             let mut fsts = Vec::new();
@@ -303,11 +326,18 @@ impl TtsEngine {
                 tracing::error!(
                     "[TTS] Generate failed (normalized_text={:?}, codepoints=[{}]): {} — recreating engine",
                     normalized,
-                    normalized.chars().map(|c| format!("U+{:04X}", c as u32)).collect::<Vec<_>>().join(" "),
+                    normalized
+                        .chars()
+                        .map(|c| format!("U+{:04X}", c as u32))
+                        .collect::<Vec<_>>()
+                        .join(" "),
                     e
                 );
                 self.recreate_engine()?;
-                Err(anyhow::anyhow!("TTS generation failed (engine recreated): {}", e))
+                Err(anyhow::anyhow!(
+                    "TTS generation failed (engine recreated): {}",
+                    e
+                ))
             }
         }
     }
@@ -326,34 +356,62 @@ fn build_model_config(
         debug: 0,
         provider,
         matcha: sherpa::SherpaOnnxOfflineTtsMatchaModelConfig {
-            acoustic_model: empty, vocoder: empty, lexicon: empty,
-            tokens: empty, data_dir: empty, noise_scale: 0.0,
-            length_scale: 1.0, dict_dir: empty,
+            acoustic_model: empty,
+            vocoder: empty,
+            lexicon: empty,
+            tokens: empty,
+            data_dir: empty,
+            noise_scale: 0.0,
+            length_scale: 1.0,
+            dict_dir: empty,
         },
         kokoro: sherpa::SherpaOnnxOfflineTtsKokoroModelConfig {
-            model: empty, voices: empty, tokens: empty,
-            data_dir: empty, length_scale: 1.0, dict_dir: empty,
-            lexicon: empty, lang: empty,
+            model: empty,
+            voices: empty,
+            tokens: empty,
+            data_dir: empty,
+            length_scale: 1.0,
+            dict_dir: empty,
+            lexicon: empty,
+            lang: empty,
         },
         kitten: sherpa::SherpaOnnxOfflineTtsKittenModelConfig {
-            model: empty, voices: empty, tokens: empty,
-            data_dir: empty, length_scale: 1.0,
+            model: empty,
+            voices: empty,
+            tokens: empty,
+            data_dir: empty,
+            length_scale: 1.0,
         },
         zipvoice: sherpa::SherpaOnnxOfflineTtsZipvoiceModelConfig {
-            tokens: empty, encoder: empty, decoder: empty,
-            vocoder: empty, data_dir: empty, lexicon: empty,
-            feat_scale: 0.0, t_shift: 0.0, target_rms: 0.0,
+            tokens: empty,
+            encoder: empty,
+            decoder: empty,
+            vocoder: empty,
+            data_dir: empty,
+            lexicon: empty,
+            feat_scale: 0.0,
+            t_shift: 0.0,
+            target_rms: 0.0,
             guidance_scale: 0.0,
         },
         pocket: sherpa::SherpaOnnxOfflineTtsPocketModelConfig {
-            lm_flow: empty, lm_main: empty, encoder: empty,
-            decoder: empty, text_conditioner: empty, vocab_json: empty,
-            token_scores_json: empty, voice_embedding_cache_capacity: 0,
+            lm_flow: empty,
+            lm_main: empty,
+            encoder: empty,
+            decoder: empty,
+            text_conditioner: empty,
+            vocab_json: empty,
+            token_scores_json: empty,
+            voice_embedding_cache_capacity: 0,
         },
         supertonic: sherpa::SherpaOnnxOfflineTtsSupertonicModelConfig {
-            duration_predictor: empty, text_encoder: empty,
-            vector_estimator: empty, vocoder: empty, tts_json: empty,
-            unicode_indexer: empty, voice_style: empty,
+            duration_predictor: empty,
+            text_encoder: empty,
+            vector_estimator: empty,
+            vocoder: empty,
+            tts_json: empty,
+            unicode_indexer: empty,
+            voice_style: empty,
         },
     }
 }
@@ -372,30 +430,53 @@ fn build_model_config_with_kokoro(
         debug: 0,
         provider,
         matcha: sherpa::SherpaOnnxOfflineTtsMatchaModelConfig {
-            acoustic_model: empty, vocoder: empty, lexicon: empty,
-            tokens: empty, data_dir: empty, noise_scale: 0.0,
-            length_scale: 1.0, dict_dir: empty,
+            acoustic_model: empty,
+            vocoder: empty,
+            lexicon: empty,
+            tokens: empty,
+            data_dir: empty,
+            noise_scale: 0.0,
+            length_scale: 1.0,
+            dict_dir: empty,
         },
         kokoro,
         kitten: sherpa::SherpaOnnxOfflineTtsKittenModelConfig {
-            model: empty, voices: empty, tokens: empty,
-            data_dir: empty, length_scale: 1.0,
+            model: empty,
+            voices: empty,
+            tokens: empty,
+            data_dir: empty,
+            length_scale: 1.0,
         },
         zipvoice: sherpa::SherpaOnnxOfflineTtsZipvoiceModelConfig {
-            tokens: empty, encoder: empty, decoder: empty,
-            vocoder: empty, data_dir: empty, lexicon: empty,
-            feat_scale: 0.0, t_shift: 0.0, target_rms: 0.0,
+            tokens: empty,
+            encoder: empty,
+            decoder: empty,
+            vocoder: empty,
+            data_dir: empty,
+            lexicon: empty,
+            feat_scale: 0.0,
+            t_shift: 0.0,
+            target_rms: 0.0,
             guidance_scale: 0.0,
         },
         pocket: sherpa::SherpaOnnxOfflineTtsPocketModelConfig {
-            lm_flow: empty, lm_main: empty, encoder: empty,
-            decoder: empty, text_conditioner: empty, vocab_json: empty,
-            token_scores_json: empty, voice_embedding_cache_capacity: 0,
+            lm_flow: empty,
+            lm_main: empty,
+            encoder: empty,
+            decoder: empty,
+            text_conditioner: empty,
+            vocab_json: empty,
+            token_scores_json: empty,
+            voice_embedding_cache_capacity: 0,
         },
         supertonic: sherpa::SherpaOnnxOfflineTtsSupertonicModelConfig {
-            duration_predictor: empty, text_encoder: empty,
-            vector_estimator: empty, vocoder: empty, tts_json: empty,
-            unicode_indexer: empty, voice_style: empty,
+            duration_predictor: empty,
+            text_encoder: empty,
+            vector_estimator: empty,
+            vocoder: empty,
+            tts_json: empty,
+            unicode_indexer: empty,
+            voice_style: empty,
         },
     }
 }

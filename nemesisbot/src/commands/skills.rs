@@ -2,8 +2,8 @@
 //!
 //! Uses nemesis_skills crate for registry management and search.
 
-use anyhow::Result;
 use crate::common;
+use anyhow::Result;
 
 #[derive(clap::Subcommand)]
 pub enum SkillsAction {
@@ -144,14 +144,18 @@ fn parse_github_url(url: &str) -> Result<(String, String)> {
         }
     }
 
-    Err(anyhow::anyhow!("Invalid GitHub URL: {}. Supported formats: https://github.com/user/repo, git@github.com:user/repo.git, user/repo", url))
+    Err(anyhow::anyhow!(
+        "Invalid GitHub URL: {}. Supported formats: https://github.com/user/repo, git@github.com:user/repo.git, user/repo",
+        url
+    ))
 }
 
 /// Load or create registry config from skills config file.
 fn load_registry_config(skills_cfg: &std::path::Path) -> nemesis_skills::types::RegistryConfig {
     if skills_cfg.exists() {
         if let Ok(data) = std::fs::read_to_string(skills_cfg) {
-            if let Ok(config) = serde_json::from_str::<nemesis_skills::types::RegistryConfig>(&data) {
+            if let Ok(config) = serde_json::from_str::<nemesis_skills::types::RegistryConfig>(&data)
+            {
                 return config;
             }
         }
@@ -160,10 +164,16 @@ fn load_registry_config(skills_cfg: &std::path::Path) -> nemesis_skills::types::
 }
 
 /// Save registry config to skills config file.
-fn save_registry_config(skills_cfg: &std::path::Path, config: &nemesis_skills::types::RegistryConfig) -> Result<()> {
+fn save_registry_config(
+    skills_cfg: &std::path::Path,
+    config: &nemesis_skills::types::RegistryConfig,
+) -> Result<()> {
     let dir = skills_cfg.parent().unwrap();
     let _ = std::fs::create_dir_all(dir);
-    std::fs::write(skills_cfg, serde_json::to_string_pretty(config).unwrap_or_default())?;
+    std::fs::write(
+        skills_cfg,
+        serde_json::to_string_pretty(config).unwrap_or_default(),
+    )?;
     Ok(())
 }
 
@@ -174,11 +184,26 @@ fn get_builtin_skills() -> Vec<(&'static str, &'static str)> {
         ("news", "News headlines and summaries"),
         ("stock", "Stock price queries"),
         ("calculator", "Mathematical calculations"),
-        ("structured-development", "Structured development workflow with phases (plan -> develop -> test -> review)"),
-        ("build-project", "Project build workflow with version injection"),
-        ("automated-testing", "Automated testing workflow with TestAIServer"),
-        ("desktop-automation", "Windows desktop window operations (window-mcp)"),
-        ("wsl-operations", "WSL environment operations and management"),
+        (
+            "structured-development",
+            "Structured development workflow with phases (plan -> develop -> test -> review)",
+        ),
+        (
+            "build-project",
+            "Project build workflow with version injection",
+        ),
+        (
+            "automated-testing",
+            "Automated testing workflow with TestAIServer",
+        ),
+        (
+            "desktop-automation",
+            "Windows desktop window operations (window-mcp)",
+        ),
+        (
+            "wsl-operations",
+            "WSL environment operations and management",
+        ),
         ("dump-analyze", "Dump file analysis and debugging"),
     ]
 }
@@ -200,7 +225,8 @@ fn detect_skill_structure(owner: &str, repo: &str) -> (String, String, String) {
         {
             if resp.status().is_success() {
                 if let Ok(entries) = resp.json::<Vec<serde_json::Value>>() {
-                    let skill_dirs: Vec<&str> = entries.iter()
+                    let skill_dirs: Vec<&str> = entries
+                        .iter()
                         .filter_map(|e| {
                             if e.get("type").and_then(|v| v.as_str()) == Some("dir") {
                                 e.get("name").and_then(|v| v.as_str())
@@ -213,7 +239,10 @@ fn detect_skill_structure(owner: &str, repo: &str) -> (String, String, String) {
 
                     let mut has_skill_md = false;
                     for dir in &skill_dirs {
-                        let check_url = format!("{}{}{}{}/SKILL.md?ref={}", base_url, "/skills/", dir, "", branch);
+                        let check_url = format!(
+                            "{}{}{}{}/SKILL.md?ref={}",
+                            base_url, "/skills/", dir, "", branch
+                        );
                         if let Ok(r) = reqwest::blocking::Client::new()
                             .get(&check_url)
                             .header("User-Agent", "nemesisbot")
@@ -227,7 +256,11 @@ fn detect_skill_structure(owner: &str, repo: &str) -> (String, String, String) {
                     }
 
                     if has_skill_md {
-                        return ("github_api".to_string(), "skills/{slug}/SKILL.md".to_string(), branch.to_string());
+                        return (
+                            "github_api".to_string(),
+                            "skills/{slug}/SKILL.md".to_string(),
+                            branch.to_string(),
+                        );
                     }
                 }
             }
@@ -238,7 +271,10 @@ fn detect_skill_structure(owner: &str, repo: &str) -> (String, String, String) {
         // This is handled by Mode A pattern already for most cases
 
         // Mode C: skills.json index
-        let index_url = format!("https://raw.githubusercontent.com/{}/{}/{}/skills.json", owner, repo, branch);
+        let index_url = format!(
+            "https://raw.githubusercontent.com/{}/{}/{}/skills.json",
+            owner, repo, branch
+        );
         if let Ok(resp) = reqwest::blocking::Client::new()
             .get(&index_url)
             .header("User-Agent", "nemesisbot")
@@ -247,7 +283,11 @@ fn detect_skill_structure(owner: &str, repo: &str) -> (String, String, String) {
             if resp.status().is_success() {
                 if let Ok(data) = resp.text() {
                     if serde_json::from_str::<Vec<serde_json::Value>>(&data).is_ok() {
-                        return ("skills_json".to_string(), "skills.json".to_string(), branch.to_string());
+                        return (
+                            "skills_json".to_string(),
+                            "skills.json".to_string(),
+                            branch.to_string(),
+                        );
                     }
                 }
             }
@@ -262,8 +302,12 @@ fn detect_skill_structure(owner: &str, repo: &str) -> (String, String, String) {
         {
             if resp.status().is_success() {
                 if let Ok(entries) = resp.json::<Vec<serde_json::Value>>() {
-                    let skip_dirs = ["src", "pkg", "cmd", "internal", "docs", ".github", "test", "tests", "examples", "scripts", "config"];
-                    let root_dirs: Vec<&str> = entries.iter()
+                    let skip_dirs = [
+                        "src", "pkg", "cmd", "internal", "docs", ".github", "test", "tests",
+                        "examples", "scripts", "config",
+                    ];
+                    let root_dirs: Vec<&str> = entries
+                        .iter()
                         .filter_map(|e| {
                             if e.get("type").and_then(|v| v.as_str()) == Some("dir") {
                                 let name = e.get("name").and_then(|v| v.as_str()).unwrap_or("");
@@ -290,9 +334,14 @@ fn detect_skill_structure(owner: &str, repo: &str) -> (String, String, String) {
                                 if let Ok(sub_entries) = r.json::<Vec<serde_json::Value>>() {
                                     if sub_entries.iter().any(|e| {
                                         e.get("name").and_then(|v| v.as_str()) == Some("SKILL.md")
-                                            && e.get("type").and_then(|v| v.as_str()) == Some("file")
+                                            && e.get("type").and_then(|v| v.as_str())
+                                                == Some("file")
                                     }) {
-                                        return ("github_api".to_string(), format!("{}/SKILL.md", dir), branch.to_string());
+                                        return (
+                                            "github_api".to_string(),
+                                            format!("{}/SKILL.md", dir),
+                                            branch.to_string(),
+                                        );
                                     }
                                 }
                             }
@@ -304,7 +353,11 @@ fn detect_skill_structure(owner: &str, repo: &str) -> (String, String, String) {
     }
 
     // Default fallback
-    ("github_api".to_string(), "skills/{slug}/SKILL.md".to_string(), "main".to_string())
+    (
+        "github_api".to_string(),
+        "skills/{slug}/SKILL.md".to_string(),
+        "main".to_string(),
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -346,14 +399,21 @@ fn cmd_list(skills_dir: &std::path::Path) -> Result<()> {
                     std::fs::read_to_string(entry.path().join("SKILL.md"))
                         .ok()
                         .and_then(|content| {
-                            content.lines()
-                                .find(|l| l.trim().starts_with("description:") || l.trim().starts_with("# "))
+                            content
+                                .lines()
+                                .find(|l| {
+                                    l.trim().starts_with("description:")
+                                        || l.trim().starts_with("# ")
+                                })
                                 .map(|l| {
                                     let l = l.trim();
                                     if l.starts_with('#') {
                                         l.trim_start_matches('#').trim().to_string()
                                     } else {
-                                        l.trim_start_matches("description:").trim().trim_matches('"').to_string()
+                                        l.trim_start_matches("description:")
+                                            .trim()
+                                            .trim_matches('"')
+                                            .to_string()
                                     }
                                 })
                         })
@@ -362,7 +422,13 @@ fn cmd_list(skills_dir: &std::path::Path) -> Result<()> {
                     String::new()
                 };
 
-                let badge = if is_forge { " (forge)" } else if !has_skill_md { " (no SKILL.md)" } else { "" };
+                let badge = if is_forge {
+                    " (forge)"
+                } else if !has_skill_md {
+                    " (no SKILL.md)"
+                } else {
+                    ""
+                };
                 if desc.is_empty() {
                     println!("  {}{} [{}]", name, badge, source_type);
                 } else {
@@ -393,7 +459,11 @@ async fn cmd_search(skills_cfg: &std::path::Path, query: &str, limit: usize) -> 
         return Ok(());
     }
 
-    println!("  Searching {} registry/ies: {}...", registry_names.len(), registry_names.join(", "));
+    println!(
+        "  Searching {} registry/ies: {}...",
+        registry_names.len(),
+        registry_names.join(", ")
+    );
 
     match manager.search_all(query, limit).await {
         Ok(grouped_results) => {
@@ -403,8 +473,12 @@ async fn cmd_search(skills_cfg: &std::path::Path, query: &str, limit: usize) -> 
                     continue;
                 }
                 println!();
-                println!("  {} ({} result(s){})", group.registry_name, group.results.len(),
-                    if group.truncated { ", truncated" } else { "" });
+                println!(
+                    "  {} ({} result(s){})",
+                    group.registry_name,
+                    group.results.len(),
+                    if group.truncated { ", truncated" } else { "" }
+                );
                 println!("  {}", "-".repeat(50));
                 for (i, result) in group.results.iter().enumerate() {
                     let score = format!("{:.0}%", result.score * 100.0);
@@ -420,12 +494,19 @@ async fn cmd_search(skills_cfg: &std::path::Path, query: &str, limit: usize) -> 
                         };
                         println!("     Description: {}", truncated_summary);
                     }
-                    println!("     Install: nemesisbot skills install {}/{}", group.registry_name, result.slug);
+                    println!(
+                        "     Install: nemesisbot skills install {}/{}",
+                        group.registry_name, result.slug
+                    );
                 }
                 total += group.results.len();
             }
             println!();
-            println!("  Total: {} result(s) from {} registry/ies", total, grouped_results.len());
+            println!(
+                "  Total: {} result(s) from {} registry/ies",
+                total,
+                grouped_results.len()
+            );
         }
         Err(e) => {
             println!("  Search failed: {}", e);
@@ -437,7 +518,11 @@ async fn cmd_search(skills_cfg: &std::path::Path, query: &str, limit: usize) -> 
     Ok(())
 }
 
-async fn cmd_install(skills_dir: &std::path::Path, skills_cfg: &std::path::Path, skill_ref: &str) -> Result<()> {
+async fn cmd_install(
+    skills_dir: &std::path::Path,
+    skills_cfg: &std::path::Path,
+    skill_ref: &str,
+) -> Result<()> {
     // Parse registry/slug format
     let (registry_name, slug) = if skill_ref.contains('/') {
         let parts: Vec<&str> = skill_ref.splitn(2, '/').collect();
@@ -504,7 +589,10 @@ async fn cmd_install_github(skills_dir: &std::path::Path, repo_path: &str) -> Re
 
     for branch in &branches {
         for path in &paths {
-            let url = format!("https://raw.githubusercontent.com/{}/{}/{}/{}", owner, repo, branch, path);
+            let url = format!(
+                "https://raw.githubusercontent.com/{}/{}/{}/{}",
+                owner, repo, branch, path
+            );
             if let Ok(resp) = reqwest::Client::new()
                 .get(&url)
                 .header("User-Agent", "nemesisbot")
@@ -582,7 +670,10 @@ async fn cmd_cache_stats(skills_cfg: &std::path::Path) -> Result<()> {
 
     if !config.search_cache.enabled {
         println!("  Cache: disabled");
-        println!("  Enable in {} with search_cache.enabled = true", skills_cfg.display());
+        println!(
+            "  Enable in {} with search_cache.enabled = true",
+            skills_cfg.display()
+        );
         return Ok(());
     }
 
@@ -590,9 +681,14 @@ async fn cmd_cache_stats(skills_cfg: &std::path::Path) -> Result<()> {
     println!("  TTL: {} seconds", config.search_cache.ttl_secs);
 
     // Show runtime cache stats from the file-based cache
-    let cache_dir = skills_cfg.parent().unwrap()
-        .parent().unwrap()
-        .join("workspace").join("skills").join(".cache");
+    let cache_dir = skills_cfg
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .join("workspace")
+        .join("skills")
+        .join(".cache");
 
     // Cache stats file for hit/miss tracking
     let stats_file = cache_dir.join(".stats.json");
@@ -603,7 +699,8 @@ async fn cmd_cache_stats(skills_cfg: &std::path::Path) -> Result<()> {
             .filter(|e| e.file_name() != ".stats.json")
             .collect();
         let count = entries.len();
-        let total_size: u64 = entries.iter()
+        let total_size: u64 = entries
+            .iter()
             .filter_map(|e| e.metadata().ok().map(|m| m.len()))
             .sum();
 
@@ -628,7 +725,10 @@ async fn cmd_cache_stats(skills_cfg: &std::path::Path) -> Result<()> {
             "N/A".to_string()
         };
 
-        println!("  Entries:      {} / {}", count, config.search_cache.max_size);
+        println!(
+            "  Entries:      {} / {}",
+            count, config.search_cache.max_size
+        );
         println!("  Memory Usage: ~{} bytes", total_size);
         println!("  Cache Hits:   {}", hits);
         println!("  Cache Misses: {}", misses);
@@ -660,9 +760,14 @@ async fn cmd_cache_stats(skills_cfg: &std::path::Path) -> Result<()> {
 }
 
 async fn cmd_cache_clear(skills_cfg: &std::path::Path) -> Result<()> {
-    let cache_dir = skills_cfg.parent().unwrap()
-        .parent().unwrap()
-        .join("workspace").join("skills").join(".cache");
+    let cache_dir = skills_cfg
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .join("workspace")
+        .join("skills")
+        .join(".cache");
 
     if cache_dir.exists() {
         let count = std::fs::read_dir(&cache_dir)?
@@ -698,14 +803,19 @@ fn cmd_source_list(skills_cfg: &std::path::Path) -> Result<()> {
     // Show GitHub sources (new format)
     for source in &config.github_sources {
         found_any = true;
-        println!("  {} - {} (branch: {}, type: {}, enabled: {})",
-            source.name, source.repo, source.branch, source.index_type, source.enabled);
+        println!(
+            "  {} - {} (branch: {}, type: {}, enabled: {})",
+            source.name, source.repo, source.branch, source.index_type, source.enabled
+        );
     }
 
     // Show legacy sources
     for source in &config.github_sources_legacy {
         found_any = true;
-        println!("  {} - {} (branch: {})", source.name, source.url, source.branch);
+        println!(
+            "  {} - {} (branch: {})",
+            source.name, source.url, source.branch
+        );
     }
 
     // Show ClawHub
@@ -742,16 +852,25 @@ fn cmd_source_add(skills_cfg: &std::path::Path, url: &str) -> Result<()> {
                     println!("Error: Repository '{}' not found (404).", full_repo);
                     return Ok(());
                 } else if resp.status() == reqwest::StatusCode::FORBIDDEN {
-                    println!("Warning: GitHub API rate limit hit. Proceeding without verification.");
+                    println!(
+                        "Warning: GitHub API rate limit hit. Proceeding without verification."
+                    );
                     verified = true;
                     break;
                 } else if resp.status().is_success() {
                     verified = true;
                     break;
                 } else {
-                    println!("Warning: Could not verify repository (status: {}).", resp.status());
+                    println!(
+                        "Warning: Could not verify repository (status: {}).",
+                        resp.status()
+                    );
                     if attempt < max_retries {
-                        println!("  Retrying in 2s... (attempt {}/{})", attempt + 1, max_retries);
+                        println!(
+                            "  Retrying in 2s... (attempt {}/{})",
+                            attempt + 1,
+                            max_retries
+                        );
                         std::thread::sleep(std::time::Duration::from_secs(2));
                         continue;
                     }
@@ -760,7 +879,11 @@ fn cmd_source_add(skills_cfg: &std::path::Path, url: &str) -> Result<()> {
             Err(e) => {
                 println!("Warning: Could not verify repository: {}.", e);
                 if attempt < max_retries {
-                    println!("  Retrying in 2s... (attempt {}/{})", attempt + 1, max_retries);
+                    println!(
+                        "  Retrying in 2s... (attempt {}/{})",
+                        attempt + 1,
+                        max_retries
+                    );
                     std::thread::sleep(std::time::Duration::from_secs(2));
                     continue;
                 }
@@ -774,7 +897,10 @@ fn cmd_source_add(skills_cfg: &std::path::Path, url: &str) -> Result<()> {
 
     // Auto-detect skill structure
     let (index_type, skill_path_pattern, branch) = detect_skill_structure(&owner, &repo);
-    println!("  Detected structure: {} (pattern: {}, branch: {})", index_type, skill_path_pattern, branch);
+    println!(
+        "  Detected structure: {} (pattern: {}, branch: {})",
+        index_type, skill_path_pattern, branch
+    );
 
     // Generate unique name
     let name = repo.clone();
@@ -788,27 +914,38 @@ fn cmd_source_add(skills_cfg: &std::path::Path, url: &str) -> Result<()> {
     }
 
     // Add new GitHub source with detected settings
-    config.github_sources.push(nemesis_skills::types::GitHubSourceConfig {
-        name: name.clone(),
-        repo: full_repo.clone(),
-        enabled: true,
-        branch: branch.clone(),
-        index_type: index_type.clone(),
-        index_path: if index_type == "skills_json" { "skills.json".to_string() } else { String::new() },
-        skill_path_pattern: skill_path_pattern.clone(),
-        timeout_secs: 0,
-        max_size: 0,
-    });
+    config
+        .github_sources
+        .push(nemesis_skills::types::GitHubSourceConfig {
+            name: name.clone(),
+            repo: full_repo.clone(),
+            enabled: true,
+            branch: branch.clone(),
+            index_type: index_type.clone(),
+            index_path: if index_type == "skills_json" {
+                "skills.json".to_string()
+            } else {
+                String::new()
+            },
+            skill_path_pattern: skill_path_pattern.clone(),
+            timeout_secs: 0,
+            max_size: 0,
+        });
 
     // Also add to legacy sources for backward compat
-    config.github_sources_legacy.push(nemesis_skills::types::GithubSource {
-        name: name.clone(),
-        url: url.to_string(),
-        branch: branch.clone(),
-    });
+    config
+        .github_sources_legacy
+        .push(nemesis_skills::types::GithubSource {
+            name: name.clone(),
+            url: url.to_string(),
+            branch: branch.clone(),
+        });
 
     save_registry_config(skills_cfg, &config)?;
-    println!("✅ Registry '{}' added: {} (type: {}, pattern: {})", name, full_repo, index_type, skill_path_pattern);
+    println!(
+        "✅ Registry '{}' added: {} (type: {}, pattern: {})",
+        name, full_repo, index_type, skill_path_pattern
+    );
     Ok(())
 }
 
@@ -847,8 +984,12 @@ fn cmd_validate(path: &str) -> Result<()> {
     if skill_md.exists() {
         println!("  SKILL.md: found");
         if let Ok(content) = std::fs::read_to_string(&skill_md) {
-            let has_name = content.lines().any(|l| l.trim().starts_with("name:") || l.trim().starts_with("# "));
-            let has_description = content.lines().any(|l| l.trim().starts_with("description:"));
+            let has_name = content
+                .lines()
+                .any(|l| l.trim().starts_with("name:") || l.trim().starts_with("# "));
+            let has_description = content
+                .lines()
+                .any(|l| l.trim().starts_with("description:"));
             let has_steps = content.lines().any(|l| l.trim().starts_with("steps:"));
             println!("  Has name: {}", has_name);
             println!("  Has description: {}", has_description);
@@ -856,13 +997,15 @@ fn cmd_validate(path: &str) -> Result<()> {
 
             // Run security check
             let skill_name = skill_path.file_name().unwrap_or_default().to_string_lossy();
-            let check = nemesis_skills::security_check::check_skill_security(
-                &content, &skill_name, "",
-            );
+            let check =
+                nemesis_skills::security_check::check_skill_security(&content, &skill_name, "");
             if check.blocked {
                 println!("  Security: BLOCKED ({})", check.block_reason);
             } else if !check.lint_result.warnings.is_empty() {
-                println!("  Security: warnings found ({} issues)", check.lint_result.warnings.len());
+                println!(
+                    "  Security: warnings found ({} issues)",
+                    check.lint_result.warnings.len()
+                );
             } else {
                 println!("  Security: OK");
             }
@@ -923,10 +1066,18 @@ fn cmd_list_builtin() -> Result<()> {
     Ok(())
 }
 
-fn cmd_install_clawhub(skills_dir: &std::path::Path, author: &str, skill_name: &str, output_name: Option<&str>) -> Result<()> {
+fn cmd_install_clawhub(
+    skills_dir: &std::path::Path,
+    author: &str,
+    skill_name: &str,
+    output_name: Option<&str>,
+) -> Result<()> {
     let out_name = output_name.unwrap_or(skill_name);
     println!("Installing from ClawHub: {}/{}", author, skill_name);
-    println!("  Note: This is a legacy command. Use 'nemesisbot skills install clawhub/{}' instead.", skill_name);
+    println!(
+        "  Note: This is a legacy command. Use 'nemesisbot skills install clawhub/{}' instead.",
+        skill_name
+    );
 
     // Download SKILL.md from GitHub raw URL
     let url = format!(
@@ -953,7 +1104,10 @@ fn cmd_install_clawhub(skills_dir: &std::path::Path, author: &str, skill_name: &
             } else {
                 println!("  Failed to download: HTTP {}", resp.status());
                 println!("  Troubleshooting:");
-                println!("    - Check that {}/{} exists in openclaw/skills", author, skill_name);
+                println!(
+                    "    - Check that {}/{} exists in openclaw/skills",
+                    author, skill_name
+                );
                 println!("    - Try: nemesisbot skills search {}", skill_name);
             }
         }
@@ -986,46 +1140,51 @@ pub fn run(action: SkillsAction, local: bool) -> Result<()> {
         }
         SkillsAction::Install { skill } => {
             let result = tokio::task::block_in_place(|| {
-                tokio::runtime::Handle::current().block_on(cmd_install(&skills_dir, &skills_cfg, &skill))
+                tokio::runtime::Handle::current().block_on(cmd_install(
+                    &skills_dir,
+                    &skills_cfg,
+                    &skill,
+                ))
             })?;
             result
         }
         SkillsAction::Remove { name } => cmd_remove(&skills_dir, &name)?,
-        SkillsAction::Source { action } => {
-            match action {
-                SourceAction::List => cmd_source_list(&skills_cfg)?,
-                SourceAction::Add { url } => cmd_source_add(&skills_cfg, &url)?,
-                SourceAction::Remove { name } => cmd_source_remove(&skills_cfg, &name)?,
-            }
-        }
+        SkillsAction::Source { action } => match action {
+            SourceAction::List => cmd_source_list(&skills_cfg)?,
+            SourceAction::Add { url } => cmd_source_add(&skills_cfg, &url)?,
+            SourceAction::Remove { name } => cmd_source_remove(&skills_cfg, &name)?,
+        },
         SkillsAction::AddSource { url } => cmd_source_add(&skills_cfg, &url)?,
         SkillsAction::Validate { path } => cmd_validate(&path)?,
         SkillsAction::Show { name } => cmd_show(&skills_dir, &name)?,
-        SkillsAction::Cache { action } => {
-            match action {
-                CacheAction::Stats => {
-                    let result = tokio::task::block_in_place(|| {
-                        tokio::runtime::Handle::current().block_on(cmd_cache_stats(&skills_cfg))
-                    })?;
-                    result
-                }
-                CacheAction::Clear => {
-                    let result = tokio::task::block_in_place(|| {
-                        tokio::runtime::Handle::current().block_on(cmd_cache_clear(&skills_cfg))
-                    })?;
-                    result
-                }
+        SkillsAction::Cache { action } => match action {
+            CacheAction::Stats => {
+                let result = tokio::task::block_in_place(|| {
+                    tokio::runtime::Handle::current().block_on(cmd_cache_stats(&skills_cfg))
+                })?;
+                result
             }
-        }
+            CacheAction::Clear => {
+                let result = tokio::task::block_in_place(|| {
+                    tokio::runtime::Handle::current().block_on(cmd_cache_clear(&skills_cfg))
+                })?;
+                result
+            }
+        },
         SkillsAction::InstallBuiltin { name } => cmd_install_builtin(&skills_dir, name.as_deref())?,
         SkillsAction::ListBuiltin => cmd_list_builtin()?,
-        SkillsAction::InstallClawhub { author, skill_name, output_name } => {
-            cmd_install_clawhub(&skills_dir, &author, &skill_name, output_name.as_deref())?
-        }
+        SkillsAction::InstallClawhub {
+            author,
+            skill_name,
+            output_name,
+        } => cmd_install_clawhub(&skills_dir, &author, &skill_name, output_name.as_deref())?,
         SkillsAction::Learn { source, name } => {
             let result = tokio::task::block_in_place(|| {
-                tokio::runtime::Handle::current()
-                    .block_on(cmd_learn(&home, &source, name.as_deref()))
+                tokio::runtime::Handle::current().block_on(cmd_learn(
+                    &home,
+                    &source,
+                    name.as_deref(),
+                ))
             })?;
             result
         }

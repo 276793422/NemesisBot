@@ -51,7 +51,10 @@ fn test_save_cors_and_reload() {
     let path = dir.join("cors.json");
 
     let mut cfg = default_cors_config();
-    if let Some(arr) = cfg.get_mut("allowed_origins").and_then(|v| v.as_array_mut()) {
+    if let Some(arr) = cfg
+        .get_mut("allowed_origins")
+        .and_then(|v| v.as_array_mut())
+    {
         arr.push(serde_json::Value::String("https://example.com".to_string()));
     }
     save_cors(&path, &cfg).unwrap();
@@ -70,8 +73,13 @@ fn test_add_origin_to_empty_config() {
     let path = dir.join("cors.json");
 
     let mut cfg = default_cors_config();
-    if let Some(arr) = cfg.get_mut("allowed_origins").and_then(|v| v.as_array_mut()) {
-        arr.push(serde_json::Value::String("https://app.example.com".to_string()));
+    if let Some(arr) = cfg
+        .get_mut("allowed_origins")
+        .and_then(|v| v.as_array_mut())
+    {
+        arr.push(serde_json::Value::String(
+            "https://app.example.com".to_string(),
+        ));
     }
     save_cors(&path, &cfg).unwrap();
 
@@ -88,7 +96,10 @@ fn test_add_cdn_domain() {
     let path = dir.join("cors.json");
 
     let mut cfg = default_cors_config();
-    if let Some(arr) = cfg.get_mut("allowed_cdn_domains").and_then(|v| v.as_array_mut()) {
+    if let Some(arr) = cfg
+        .get_mut("allowed_cdn_domains")
+        .and_then(|v| v.as_array_mut())
+    {
         arr.push(serde_json::Value::String("cdn.example.com".to_string()));
     }
     save_cors(&path, &cfg).unwrap();
@@ -107,7 +118,10 @@ fn test_remove_origin() {
     let path = dir.join("cors.json");
 
     let mut cfg = default_cors_config();
-    if let Some(arr) = cfg.get_mut("allowed_origins").and_then(|v| v.as_array_mut()) {
+    if let Some(arr) = cfg
+        .get_mut("allowed_origins")
+        .and_then(|v| v.as_array_mut())
+    {
         arr.push(serde_json::Value::String("https://a.com".to_string()));
         arr.push(serde_json::Value::String("https://b.com".to_string()));
     }
@@ -115,7 +129,10 @@ fn test_remove_origin() {
 
     // Remove one
     let mut loaded = load_or_create_cors(&path).unwrap();
-    if let Some(arr) = loaded.get_mut("allowed_origins").and_then(|v| v.as_array_mut()) {
+    if let Some(arr) = loaded
+        .get_mut("allowed_origins")
+        .and_then(|v| v.as_array_mut())
+    {
         arr.retain(|v| v.as_str() != Some("https://a.com"));
     }
     save_cors(&path, &loaded).unwrap();
@@ -139,7 +156,10 @@ fn test_dev_mode_toggle() {
     // Enable dev mode
     let mut loaded = load_or_create_cors(&path).unwrap();
     if let Some(obj) = loaded.as_object_mut() {
-        obj.insert("development_mode".to_string(), serde_json::Value::Bool(true));
+        obj.insert(
+            "development_mode".to_string(),
+            serde_json::Value::Bool(true),
+        );
     }
     save_cors(&path, &loaded).unwrap();
 
@@ -149,7 +169,10 @@ fn test_dev_mode_toggle() {
     // Disable dev mode
     let mut loaded2 = load_or_create_cors(&path).unwrap();
     if let Some(obj) = loaded2.as_object_mut() {
-        obj.insert("development_mode".to_string(), serde_json::Value::Bool(false));
+        obj.insert(
+            "development_mode".to_string(),
+            serde_json::Value::Bool(false),
+        );
     }
     save_cors(&path, &loaded2).unwrap();
 
@@ -165,15 +188,24 @@ fn test_cors_validate_allowed_origin() {
     let path = dir.join("cors.json");
 
     let mut cfg = default_cors_config();
-    if let Some(arr) = cfg.get_mut("allowed_origins").and_then(|v| v.as_array_mut()) {
-        arr.push(serde_json::Value::String("https://app.example.com".to_string()));
+    if let Some(arr) = cfg
+        .get_mut("allowed_origins")
+        .and_then(|v| v.as_array_mut())
+    {
+        arr.push(serde_json::Value::String(
+            "https://app.example.com".to_string(),
+        ));
     }
     save_cors(&path, &cfg).unwrap();
 
     // Check if origin is in allowed list
     let loaded = load_or_create_cors(&path).unwrap();
     let origins = loaded["allowed_origins"].as_array().unwrap();
-    assert!(origins.iter().any(|o| o.as_str() == Some("https://app.example.com")));
+    assert!(
+        origins
+            .iter()
+            .any(|o| o.as_str() == Some("https://app.example.com"))
+    );
 }
 
 #[test]
@@ -222,7 +254,10 @@ fn test_cors_validate_cdn_no_match() {
 #[test]
 fn test_duplicate_origin_detection() {
     let mut cfg = default_cors_config();
-    if let Some(arr) = cfg.get_mut("allowed_origins").and_then(|v| v.as_array_mut()) {
+    if let Some(arr) = cfg
+        .get_mut("allowed_origins")
+        .and_then(|v| v.as_array_mut())
+    {
         arr.push(serde_json::Value::String("https://example.com".to_string()));
     }
 
@@ -236,7 +271,10 @@ fn test_duplicate_origin_detection() {
 #[test]
 fn test_no_duplicate_when_different() {
     let mut cfg = default_cors_config();
-    if let Some(arr) = cfg.get_mut("allowed_origins").and_then(|v| v.as_array_mut()) {
+    if let Some(arr) = cfg
+        .get_mut("allowed_origins")
+        .and_then(|v| v.as_array_mut())
+    {
         arr.push(serde_json::Value::String("https://example.com".to_string()));
     }
 
@@ -295,7 +333,11 @@ fn test_localhost_detection_various() {
         let is_localhost = lower.starts_with("http://localhost")
             || lower.starts_with("http://127.0.0.1")
             || lower.contains("localhost:");
-        assert!(is_localhost, "Expected '{}' to be detected as localhost", origin);
+        assert!(
+            is_localhost,
+            "Expected '{}' to be detected as localhost",
+            origin
+        );
     }
 }
 
@@ -311,7 +353,11 @@ fn test_non_localhost_not_detected() {
         let is_localhost = lower.starts_with("http://localhost")
             || lower.starts_with("http://127.0.0.1")
             || lower.contains("localhost:");
-        assert!(!is_localhost, "Expected '{}' to NOT be detected as localhost", origin);
+        assert!(
+            !is_localhost,
+            "Expected '{}' to NOT be detected as localhost",
+            origin
+        );
     }
 }
 
@@ -365,7 +411,10 @@ fn test_add_multiple_origins() {
     let path = dir.join("cors.json");
 
     let mut cfg = default_cors_config();
-    let origins = cfg.get_mut("allowed_origins").and_then(|v| v.as_array_mut()).unwrap();
+    let origins = cfg
+        .get_mut("allowed_origins")
+        .and_then(|v| v.as_array_mut())
+        .unwrap();
     origins.push(serde_json::Value::String("https://a.com".to_string()));
     origins.push(serde_json::Value::String("https://b.com".to_string()));
     origins.push(serde_json::Value::String("https://c.com".to_string()));
@@ -384,13 +433,19 @@ fn test_remove_all_origins() {
     let path = dir.join("cors.json");
 
     let mut cfg = default_cors_config();
-    let origins = cfg.get_mut("allowed_origins").and_then(|v| v.as_array_mut()).unwrap();
+    let origins = cfg
+        .get_mut("allowed_origins")
+        .and_then(|v| v.as_array_mut())
+        .unwrap();
     origins.push(serde_json::Value::String("https://a.com".to_string()));
     save_cors(&path, &cfg).unwrap();
 
     // Remove all
     let mut loaded = load_or_create_cors(&path).unwrap();
-    if let Some(arr) = loaded.get_mut("allowed_origins").and_then(|v| v.as_array_mut()) {
+    if let Some(arr) = loaded
+        .get_mut("allowed_origins")
+        .and_then(|v| v.as_array_mut())
+    {
         arr.retain(|v| v.as_str() != Some("https://a.com"));
     }
     save_cors(&path, &loaded).unwrap();
@@ -407,7 +462,10 @@ fn test_cors_config_max_age_field() {
     // Modify max_age
     let mut modified = cfg.clone();
     if let Some(obj) = modified.as_object_mut() {
-        obj.insert("max_age".to_string(), serde_json::Value::Number(7200.into()));
+        obj.insert(
+            "max_age".to_string(),
+            serde_json::Value::Number(7200.into()),
+        );
     }
     assert_eq!(modified["max_age"], 7200);
 }
@@ -419,7 +477,10 @@ fn test_cors_config_allow_credentials_field() {
 
     let mut modified = cfg;
     if let Some(obj) = modified.as_object_mut() {
-        obj.insert("allow_credentials".to_string(), serde_json::Value::Bool(false));
+        obj.insert(
+            "allow_credentials".to_string(),
+            serde_json::Value::Bool(false),
+        );
     }
     assert_eq!(modified["allow_credentials"], false);
 }
@@ -443,7 +504,12 @@ fn test_load_or_create_cors_invalid_json() {
 #[test]
 fn test_load_or_create_cors_nested_dir_creation() {
     let tmp = TempDir::new().unwrap();
-    let path = tmp.path().join("deep").join("nested").join("config").join("cors.json");
+    let path = tmp
+        .path()
+        .join("deep")
+        .join("nested")
+        .join("config")
+        .join("cors.json");
     // Parent dir doesn't exist yet, but load_or_create_cors creates it
     let result = load_or_create_cors(&path);
     assert!(result.is_ok());
@@ -567,7 +633,21 @@ fn test_cors_default_config_values() {
     let config = default_cors_config();
     assert!(config["allowed_origins"].is_array());
     assert!(config["allowed_cdn_domains"].is_array());
-    assert!(config.get("allowed_origins").unwrap().as_array().unwrap().is_empty());
-    assert!(config.get("allowed_cdn_domains").unwrap().as_array().unwrap().is_empty());
+    assert!(
+        config
+            .get("allowed_origins")
+            .unwrap()
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+    assert!(
+        config
+            .get("allowed_cdn_domains")
+            .unwrap()
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
     assert_eq!(config["max_age"], 3600);
 }

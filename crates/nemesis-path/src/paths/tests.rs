@@ -24,7 +24,10 @@ fn test_agent_workspace_default() {
 #[test]
 fn test_agent_workspace_custom() {
     let pm = PathManager::with_home(PathBuf::from("/tmp/test"));
-    assert_eq!(pm.agent_workspace("custom"), PathBuf::from("/tmp/test/workspace-custom"));
+    assert_eq!(
+        pm.agent_workspace("custom"),
+        PathBuf::from("/tmp/test/workspace-custom")
+    );
 }
 
 #[test]
@@ -56,7 +59,10 @@ fn test_expand_home_relative() {
 fn test_path_manager_config_path_default() {
     let _g = EnvGuard::remove(ENV_CONFIG);
     let pm = PathManager::with_home(PathBuf::from("/tmp/test_home"));
-    assert_eq!(pm.config_path(), PathBuf::from("/tmp/test_home/config.json"));
+    assert_eq!(
+        pm.config_path(),
+        PathBuf::from("/tmp/test_home/config.json")
+    );
 }
 
 #[test]
@@ -70,7 +76,10 @@ fn test_path_manager_config_path_override() {
 fn test_path_manager_mcp_config_default() {
     let _g = EnvGuard::remove(ENV_MCP_CONFIG);
     let pm = PathManager::with_home(PathBuf::from("/tmp/test_home"));
-    assert_eq!(pm.mcp_config_path(), PathBuf::from("/tmp/test_home/workspace/config/config.mcp.json"));
+    assert_eq!(
+        pm.mcp_config_path(),
+        PathBuf::from("/tmp/test_home/workspace/config/config.mcp.json")
+    );
 }
 
 #[test]
@@ -84,46 +93,67 @@ fn test_path_manager_mcp_config_override() {
 fn test_path_manager_security_config_default() {
     let _g = EnvGuard::remove(ENV_SECURITY_CONFIG);
     let pm = PathManager::with_home(PathBuf::from("/tmp/test_home"));
-    assert_eq!(pm.security_config_path(), PathBuf::from("/tmp/test_home/workspace/config/config.security.json"));
+    assert_eq!(
+        pm.security_config_path(),
+        PathBuf::from("/tmp/test_home/workspace/config/config.security.json")
+    );
 }
 
 #[test]
 fn test_path_manager_security_config_override() {
     let pm = PathManager::with_home(PathBuf::from("/tmp/test_home"));
     pm.set_security_config_path(PathBuf::from("/custom/security.json"));
-    assert_eq!(pm.security_config_path(), PathBuf::from("/custom/security.json"));
+    assert_eq!(
+        pm.security_config_path(),
+        PathBuf::from("/custom/security.json")
+    );
 }
 
 #[test]
 fn test_path_manager_skills_config_default() {
     let _g = EnvGuard::remove(ENV_SKILLS_CONFIG);
     let pm = PathManager::with_home(PathBuf::from("/tmp/test_home"));
-    assert_eq!(pm.skills_config_path(), PathBuf::from("/tmp/test_home/workspace/config/config.skills.json"));
+    assert_eq!(
+        pm.skills_config_path(),
+        PathBuf::from("/tmp/test_home/workspace/config/config.skills.json")
+    );
 }
 
 #[test]
 fn test_path_manager_skills_config_override() {
     let pm = PathManager::with_home(PathBuf::from("/tmp/test_home"));
     pm.set_skills_config_path(PathBuf::from("/custom/skills.json"));
-    assert_eq!(pm.skills_config_path(), PathBuf::from("/custom/skills.json"));
+    assert_eq!(
+        pm.skills_config_path(),
+        PathBuf::from("/custom/skills.json")
+    );
 }
 
 #[test]
 fn test_path_manager_auth_path() {
     let pm = PathManager::with_home(PathBuf::from("/tmp/test_home"));
-    assert_eq!(pm.auth_path(), PathBuf::from("/tmp/test_home/workspace/config/auth.json"));
+    assert_eq!(
+        pm.auth_path(),
+        PathBuf::from("/tmp/test_home/workspace/config/auth.json")
+    );
 }
 
 #[test]
 fn test_path_manager_audit_log_dir() {
     let pm = PathManager::with_home(PathBuf::from("/tmp/test_home"));
-    assert_eq!(pm.audit_log_dir(), PathBuf::from("/tmp/test_home/workspace/logs/security_logs"));
+    assert_eq!(
+        pm.audit_log_dir(),
+        PathBuf::from("/tmp/test_home/workspace/logs/security_logs")
+    );
 }
 
 #[test]
 fn test_path_manager_temp_dir() {
     let pm = PathManager::with_home(PathBuf::from("/tmp/test_home"));
-    assert_eq!(pm.temp_dir(), PathBuf::from("/tmp/test_home/workspace/temp"));
+    assert_eq!(
+        pm.temp_dir(),
+        PathBuf::from("/tmp/test_home/workspace/temp")
+    );
 }
 
 #[test]
@@ -135,7 +165,10 @@ fn test_path_manager_agent_workspace_default_agent() {
 #[test]
 fn test_path_manager_agent_workspace_named() {
     let pm = PathManager::with_home(PathBuf::from("/tmp/test_home"));
-    assert_eq!(pm.agent_workspace("worker1"), PathBuf::from("/tmp/test_home/workspace-worker1"));
+    assert_eq!(
+        pm.agent_workspace("worker1"),
+        PathBuf::from("/tmp/test_home/workspace-worker1")
+    );
 }
 
 #[test]
@@ -147,37 +180,55 @@ fn test_path_manager_workspace() {
 #[test]
 fn test_resolve_config_path_in_workspace() {
     let ws = Path::new("/data/workspace");
-    assert_eq!(resolve_config_path_in_workspace(ws), PathBuf::from("/data/workspace/config.json"));
+    assert_eq!(
+        resolve_config_path_in_workspace(ws),
+        PathBuf::from("/data/workspace/config.json")
+    );
 }
 
 #[test]
 fn test_resolve_mcp_config_path_in_workspace() {
     let ws = Path::new("/data/workspace");
-    assert_eq!(resolve_mcp_config_path_in_workspace(ws), PathBuf::from("/data/workspace/config/config.mcp.json"));
+    assert_eq!(
+        resolve_mcp_config_path_in_workspace(ws),
+        PathBuf::from("/data/workspace/config/config.mcp.json")
+    );
 }
 
 #[test]
 fn test_resolve_security_config_path_in_workspace() {
     let ws = Path::new("/data/workspace");
-    assert_eq!(resolve_security_config_path_in_workspace(ws), PathBuf::from("/data/workspace/config/config.security.json"));
+    assert_eq!(
+        resolve_security_config_path_in_workspace(ws),
+        PathBuf::from("/data/workspace/config/config.security.json")
+    );
 }
 
 #[test]
 fn test_resolve_cluster_config_path_in_workspace() {
     let ws = Path::new("/data/workspace");
-    assert_eq!(resolve_cluster_config_path_in_workspace(ws), PathBuf::from("/data/workspace/config/config.cluster.json"));
+    assert_eq!(
+        resolve_cluster_config_path_in_workspace(ws),
+        PathBuf::from("/data/workspace/config/config.cluster.json")
+    );
 }
 
 #[test]
 fn test_resolve_skills_config_path_in_workspace() {
     let ws = Path::new("/data/workspace");
-    assert_eq!(resolve_skills_config_path_in_workspace(ws), PathBuf::from("/data/workspace/config/config.skills.json"));
+    assert_eq!(
+        resolve_skills_config_path_in_workspace(ws),
+        PathBuf::from("/data/workspace/config/config.skills.json")
+    );
 }
 
 #[test]
 fn test_resolve_scanner_config_path_in_workspace() {
     let ws = Path::new("/data/workspace");
-    assert_eq!(resolve_scanner_config_path_in_workspace(ws), PathBuf::from("/data/workspace/config/config.scanner.json"));
+    assert_eq!(
+        resolve_scanner_config_path_in_workspace(ws),
+        PathBuf::from("/data/workspace/config/config.scanner.json")
+    );
 }
 
 #[test]
@@ -212,12 +263,16 @@ static ENV_LOCK: parking_lot::ReentrantMutex<()> = parking_lot::ReentrantMutex::
 
 /// Helper to safely set env var (set_var/remove_var became unsafe in Rust 2024 edition).
 fn env_set(key: &str, val: &str) {
-    unsafe { std::env::set_var(key, val); }
+    unsafe {
+        std::env::set_var(key, val);
+    }
 }
 
 /// Helper to safely remove env var.
 fn env_remove(key: &str) {
-    unsafe { std::env::remove_var(key); }
+    unsafe {
+        std::env::remove_var(key);
+    }
 }
 
 /// Helper to save, set, and get a restore guard for an env var.
@@ -232,13 +287,21 @@ impl EnvGuard {
         let lock = ENV_LOCK.lock();
         let orig = std::env::var(key).ok();
         env_set(key, val);
-        Self { key: key.to_string(), orig, _lock: lock }
+        Self {
+            key: key.to_string(),
+            orig,
+            _lock: lock,
+        }
     }
     fn remove(key: &str) -> Self {
         let lock = ENV_LOCK.lock();
         let orig = std::env::var(key).ok();
         env_remove(key);
-        Self { key: key.to_string(), orig, _lock: lock }
+        Self {
+            key: key.to_string(),
+            orig,
+            _lock: lock,
+        }
     }
 }
 impl Drop for EnvGuard {
@@ -479,39 +542,57 @@ fn test_path_manager_setters_clear() {
 #[test]
 fn test_path_manager_agent_workspace_main() {
     let pm = PathManager::with_home(PathBuf::from("/tmp/test_home"));
-    assert_eq!(pm.agent_workspace("main"), PathBuf::from("/tmp/test_home/workspace"));
+    assert_eq!(
+        pm.agent_workspace("main"),
+        PathBuf::from("/tmp/test_home/workspace")
+    );
 }
 
 #[test]
 fn test_path_manager_agent_workspace_default() {
     let pm = PathManager::with_home(PathBuf::from("/tmp/test_home"));
-    assert_eq!(pm.agent_workspace("default"), PathBuf::from("/tmp/test_home/workspace"));
+    assert_eq!(
+        pm.agent_workspace("default"),
+        PathBuf::from("/tmp/test_home/workspace")
+    );
 }
 
 #[test]
 fn test_path_manager_agent_workspace_empty() {
     let pm = PathManager::with_home(PathBuf::from("/tmp/test_home"));
-    assert_eq!(pm.agent_workspace(""), PathBuf::from("/tmp/test_home/workspace"));
+    assert_eq!(
+        pm.agent_workspace(""),
+        PathBuf::from("/tmp/test_home/workspace")
+    );
 }
 
 #[test]
 fn test_path_manager_agent_workspace_custom() {
     let pm = PathManager::with_home(PathBuf::from("/tmp/test_home"));
-    assert_eq!(pm.agent_workspace("sub1"), PathBuf::from("/tmp/test_home/workspace-sub1"));
+    assert_eq!(
+        pm.agent_workspace("sub1"),
+        PathBuf::from("/tmp/test_home/workspace-sub1")
+    );
 }
 
 #[test]
 fn test_path_manager_security_config_path_setter() {
     let pm = PathManager::with_home(PathBuf::from("/tmp/test_home"));
     pm.set_security_config_path(PathBuf::from("/custom/security.json"));
-    assert_eq!(pm.security_config_path(), PathBuf::from("/custom/security.json"));
+    assert_eq!(
+        pm.security_config_path(),
+        PathBuf::from("/custom/security.json")
+    );
 }
 
 #[test]
 fn test_path_manager_skills_config_path_setter() {
     let pm = PathManager::with_home(PathBuf::from("/tmp/test_home"));
     pm.set_skills_config_path(PathBuf::from("/custom/skills.json"));
-    assert_eq!(pm.skills_config_path(), PathBuf::from("/custom/skills.json"));
+    assert_eq!(
+        pm.skills_config_path(),
+        PathBuf::from("/custom/skills.json")
+    );
 }
 
 #[test]
@@ -541,21 +622,30 @@ fn test_path_manager_skills_config_path_with_env_v2() {
 fn test_path_manager_mcp_config_path_default_v2() {
     let _g1 = EnvGuard::remove(ENV_MCP_CONFIG);
     let pm = PathManager::with_home(PathBuf::from("/tmp/test_home2"));
-    assert_eq!(pm.mcp_config_path(), PathBuf::from("/tmp/test_home2/workspace/config/config.mcp.json"));
+    assert_eq!(
+        pm.mcp_config_path(),
+        PathBuf::from("/tmp/test_home2/workspace/config/config.mcp.json")
+    );
 }
 
 #[test]
 fn test_path_manager_security_config_path_default_v2() {
     let _g1 = EnvGuard::remove(ENV_SECURITY_CONFIG);
     let pm = PathManager::with_home(PathBuf::from("/tmp/test_home2"));
-    assert_eq!(pm.security_config_path(), PathBuf::from("/tmp/test_home2/workspace/config/config.security.json"));
+    assert_eq!(
+        pm.security_config_path(),
+        PathBuf::from("/tmp/test_home2/workspace/config/config.security.json")
+    );
 }
 
 #[test]
 fn test_path_manager_skills_config_path_default_v2() {
     let _g1 = EnvGuard::remove(ENV_SKILLS_CONFIG);
     let pm = PathManager::with_home(PathBuf::from("/tmp/test_home2"));
-    assert_eq!(pm.skills_config_path(), PathBuf::from("/tmp/test_home2/workspace/config/config.skills.json"));
+    assert_eq!(
+        pm.skills_config_path(),
+        PathBuf::from("/tmp/test_home2/workspace/config/config.skills.json")
+    );
 }
 
 // ============================================================
@@ -593,7 +683,10 @@ fn test_resolve_mcp_config_path_with_workspace() {
     std::fs::create_dir_all(&home).unwrap();
     let config_content = format!(
         r#"{{"agents":{{"defaults":{{"workspace":"{}"}}}}}}"#,
-        ws_dir.to_string_lossy().replace('\\', "\\\\").replace('/', "\\/")
+        ws_dir
+            .to_string_lossy()
+            .replace('\\', "\\\\")
+            .replace('/', "\\/")
     );
     std::fs::write(home.join("config.json"), &config_content).unwrap();
 
@@ -604,7 +697,9 @@ fn test_resolve_mcp_config_path_with_workspace() {
     let result = resolve_mcp_config_path();
     assert!(result.to_string_lossy().contains("config.mcp.json"));
     // Should contain the workspace config subdirectory
-    assert!(result.to_string_lossy().contains("config") || result.to_string_lossy().contains("mcp"));
+    assert!(
+        result.to_string_lossy().contains("config") || result.to_string_lossy().contains("mcp")
+    );
 }
 
 #[test]
@@ -616,7 +711,10 @@ fn test_resolve_security_config_path_with_workspace() {
     std::fs::create_dir_all(&home).unwrap();
     let config_content = format!(
         r#"{{"agents":{{"defaults":{{"workspace":"{}"}}}}}}"#,
-        ws_dir.to_string_lossy().replace('\\', "\\\\").replace('/', "\\/")
+        ws_dir
+            .to_string_lossy()
+            .replace('\\', "\\\\")
+            .replace('/', "\\/")
     );
     std::fs::write(home.join("config.json"), &config_content).unwrap();
 
@@ -637,7 +735,10 @@ fn test_resolve_skills_config_path_with_workspace() {
     std::fs::create_dir_all(&home).unwrap();
     let config_content = format!(
         r#"{{"agents":{{"defaults":{{"workspace":"{}"}}}}}}"#,
-        ws_dir.to_string_lossy().replace('\\', "\\\\").replace('/', "\\/")
+        ws_dir
+            .to_string_lossy()
+            .replace('\\', "\\\\")
+            .replace('/', "\\/")
     );
     std::fs::write(home.join("config.json"), &config_content).unwrap();
 
@@ -658,7 +759,10 @@ fn test_resolve_scanner_config_path_with_workspace() {
     std::fs::create_dir_all(&home).unwrap();
     let config_content = format!(
         r#"{{"agents":{{"defaults":{{"workspace":"{}"}}}}}}"#,
-        ws_dir.to_string_lossy().replace('\\', "\\\\").replace('/', "\\/")
+        ws_dir
+            .to_string_lossy()
+            .replace('\\', "\\\\")
+            .replace('/', "\\/")
     );
     std::fs::write(home.join("config.json"), &config_content).unwrap();
 
@@ -746,7 +850,10 @@ fn test_path_manager_mcp_config_env_overrides() {
 fn test_path_manager_config_path_no_env_no_setter() {
     let _g = EnvGuard::remove(ENV_CONFIG);
     let pm = PathManager::with_home(PathBuf::from("/tmp/test_home"));
-    assert_eq!(pm.config_path(), PathBuf::from("/tmp/test_home/config.json"));
+    assert_eq!(
+        pm.config_path(),
+        PathBuf::from("/tmp/test_home/config.json")
+    );
 }
 
 #[test]
@@ -808,14 +915,35 @@ fn test_resolve_home_dir_auto_detect_with_dir() {
 #[test]
 fn test_path_manager_all_config_paths() {
     let pm = PathManager::with_home(PathBuf::from("/tmp/all_paths"));
-    assert_eq!(pm.config_path(), PathBuf::from("/tmp/all_paths/config.json"));
-    assert_eq!(pm.mcp_config_path(), PathBuf::from("/tmp/all_paths/workspace/config/config.mcp.json"));
-    assert_eq!(pm.security_config_path(), PathBuf::from("/tmp/all_paths/workspace/config/config.security.json"));
-    assert_eq!(pm.skills_config_path(), PathBuf::from("/tmp/all_paths/workspace/config/config.skills.json"));
+    assert_eq!(
+        pm.config_path(),
+        PathBuf::from("/tmp/all_paths/config.json")
+    );
+    assert_eq!(
+        pm.mcp_config_path(),
+        PathBuf::from("/tmp/all_paths/workspace/config/config.mcp.json")
+    );
+    assert_eq!(
+        pm.security_config_path(),
+        PathBuf::from("/tmp/all_paths/workspace/config/config.security.json")
+    );
+    assert_eq!(
+        pm.skills_config_path(),
+        PathBuf::from("/tmp/all_paths/workspace/config/config.skills.json")
+    );
     assert_eq!(pm.workspace(), PathBuf::from("/tmp/all_paths/workspace"));
-    assert_eq!(pm.auth_path(), PathBuf::from("/tmp/all_paths/workspace/config/auth.json"));
-    assert_eq!(pm.audit_log_dir(), PathBuf::from("/tmp/all_paths/workspace/logs/security_logs"));
-    assert_eq!(pm.temp_dir(), PathBuf::from("/tmp/all_paths/workspace/temp"));
+    assert_eq!(
+        pm.auth_path(),
+        PathBuf::from("/tmp/all_paths/workspace/config/auth.json")
+    );
+    assert_eq!(
+        pm.audit_log_dir(),
+        PathBuf::from("/tmp/all_paths/workspace/logs/security_logs")
+    );
+    assert_eq!(
+        pm.temp_dir(),
+        PathBuf::from("/tmp/all_paths/workspace/temp")
+    );
 }
 
 #[test]
@@ -866,7 +994,10 @@ fn test_resolve_mcp_config_path_loads_workspace_from_config() {
     // Write config with workspace pointing to our temp workspace
     let config_content = format!(
         r#"{{"agents":{{"defaults":{{"workspace":"{}"}}}}}}"#,
-        ws_dir.to_string_lossy().replace('\\', "\\\\").replace('/', "\\/")
+        ws_dir
+            .to_string_lossy()
+            .replace('\\', "\\\\")
+            .replace('/', "\\/")
     );
     std::fs::write(home.join("config.json"), &config_content).unwrap();
 
@@ -878,8 +1009,10 @@ fn test_resolve_mcp_config_path_loads_workspace_from_config() {
     // Should resolve to workspace/config/config.mcp.json since workspace is set
     assert!(result.to_string_lossy().contains("config.mcp.json"));
     assert!(
-        result.to_string_lossy().contains("custom_ws") || result.to_string_lossy().contains("config"),
-        "Expected workspace path in result, got: {:?}", result
+        result.to_string_lossy().contains("custom_ws")
+            || result.to_string_lossy().contains("config"),
+        "Expected workspace path in result, got: {:?}",
+        result
     );
 }
 
@@ -893,7 +1026,10 @@ fn test_resolve_security_config_path_loads_workspace_from_config() {
 
     let config_content = format!(
         r#"{{"agents":{{"defaults":{{"workspace":"{}"}}}}}}"#,
-        ws_dir.to_string_lossy().replace('\\', "\\\\").replace('/', "\\/")
+        ws_dir
+            .to_string_lossy()
+            .replace('\\', "\\\\")
+            .replace('/', "\\/")
     );
     std::fs::write(home.join("config.json"), &config_content).unwrap();
 
@@ -915,7 +1051,10 @@ fn test_resolve_skills_config_path_loads_workspace_from_config() {
 
     let config_content = format!(
         r#"{{"agents":{{"defaults":{{"workspace":"{}"}}}}}}"#,
-        ws_dir.to_string_lossy().replace('\\', "\\\\").replace('/', "\\/")
+        ws_dir
+            .to_string_lossy()
+            .replace('\\', "\\\\")
+            .replace('/', "\\/")
     );
     std::fs::write(home.join("config.json"), &config_content).unwrap();
 
@@ -937,7 +1076,10 @@ fn test_resolve_scanner_config_path_loads_workspace_from_config() {
 
     let config_content = format!(
         r#"{{"agents":{{"defaults":{{"workspace":"{}"}}}}}}"#,
-        ws_dir.to_string_lossy().replace('\\', "\\\\").replace('/', "\\/")
+        ws_dir
+            .to_string_lossy()
+            .replace('\\', "\\\\")
+            .replace('/', "\\/")
     );
     std::fs::write(home.join("config.json"), &config_content).unwrap();
 
@@ -962,7 +1104,11 @@ fn test_resolve_config_path_no_env_no_local() {
 fn test_load_config_for_workspace_valid() {
     let dir = tempfile::tempdir().unwrap();
     let config_path = dir.path().join("config.json");
-    std::fs::write(&config_path, r#"{"agents":{"defaults":{"workspace":"/test/ws"}}}"#).unwrap();
+    std::fs::write(
+        &config_path,
+        r#"{"agents":{"defaults":{"workspace":"/test/ws"}}}"#,
+    )
+    .unwrap();
     let result = load_config_for_workspace(&config_path);
     assert!(result.is_some());
     let cfg = result.unwrap();
@@ -1034,7 +1180,10 @@ fn test_path_manager_config_path_env_priority() {
     let _g0 = EnvGuard::remove(ENV_CONFIG);
     let pm = PathManager::with_home(PathBuf::from("/tmp/test_home"));
     // First verify default
-    assert_eq!(pm.config_path(), PathBuf::from("/tmp/test_home/config.json"));
+    assert_eq!(
+        pm.config_path(),
+        PathBuf::from("/tmp/test_home/config.json")
+    );
     // Set env override
     let _g = EnvGuard::set(ENV_CONFIG, "/env/config.json");
     assert_eq!(pm.config_path(), PathBuf::from("/env/config.json"));
@@ -1147,21 +1296,30 @@ fn test_path_manager_config_path_env_override() {
 fn test_path_manager_mcp_path_no_env_no_setter() {
     let _g = EnvGuard::remove(ENV_MCP_CONFIG);
     let pm = PathManager::with_home(PathBuf::from("/tmp/test_home"));
-    assert_eq!(pm.mcp_config_path(), PathBuf::from("/tmp/test_home/workspace/config/config.mcp.json"));
+    assert_eq!(
+        pm.mcp_config_path(),
+        PathBuf::from("/tmp/test_home/workspace/config/config.mcp.json")
+    );
 }
 
 #[test]
 fn test_path_manager_security_path_no_env_no_setter() {
     let _g = EnvGuard::remove(ENV_SECURITY_CONFIG);
     let pm = PathManager::with_home(PathBuf::from("/tmp/test_home"));
-    assert_eq!(pm.security_config_path(), PathBuf::from("/tmp/test_home/workspace/config/config.security.json"));
+    assert_eq!(
+        pm.security_config_path(),
+        PathBuf::from("/tmp/test_home/workspace/config/config.security.json")
+    );
 }
 
 #[test]
 fn test_path_manager_skills_path_no_env_no_setter() {
     let _g = EnvGuard::remove(ENV_SKILLS_CONFIG);
     let pm = PathManager::with_home(PathBuf::from("/tmp/test_home"));
-    assert_eq!(pm.skills_config_path(), PathBuf::from("/tmp/test_home/workspace/config/config.skills.json"));
+    assert_eq!(
+        pm.skills_config_path(),
+        PathBuf::from("/tmp/test_home/workspace/config/config.skills.json")
+    );
 }
 
 #[test]
@@ -1181,7 +1339,10 @@ fn test_resolve_skills_config_path_with_workspace_config() {
     std::fs::create_dir_all(&home).unwrap();
     let config_content = format!(
         r#"{{"agents":{{"defaults":{{"workspace":"{}"}}}}}}"#,
-        ws_dir.to_string_lossy().replace('\\', "\\\\").replace('/', "\\/")
+        ws_dir
+            .to_string_lossy()
+            .replace('\\', "\\\\")
+            .replace('/', "\\/")
     );
     std::fs::write(home.join("config.json"), &config_content).unwrap();
 
@@ -1213,13 +1374,19 @@ fn test_is_local_mode_enabled() {
 #[test]
 fn test_path_manager_sessions_log_dir() {
     let pm = PathManager::with_home(PathBuf::from("/tmp/test_home"));
-    assert_eq!(pm.sessions_log_dir(), PathBuf::from("/tmp/test_home/workspace/logs/session_logs"));
+    assert_eq!(
+        pm.sessions_log_dir(),
+        PathBuf::from("/tmp/test_home/workspace/logs/session_logs")
+    );
 }
 
 #[test]
 fn test_path_manager_memory_vector_dir() {
     let pm = PathManager::with_home(PathBuf::from("/tmp/test_home"));
-    assert_eq!(pm.memory_vector_dir(), PathBuf::from("/tmp/test_home/workspace/memory_vector"));
+    assert_eq!(
+        pm.memory_vector_dir(),
+        PathBuf::from("/tmp/test_home/workspace/memory_vector")
+    );
 }
 
 #[test]
@@ -1275,12 +1442,30 @@ fn test_path_manager_all_directory_methods() {
     let pm = PathManager::with_home(PathBuf::from("/tmp/comprehensive_test"));
 
     // Test all directory methods
-    assert_eq!(pm.workspace(), PathBuf::from("/tmp/comprehensive_test/workspace"));
-    assert_eq!(pm.sessions_log_dir(), PathBuf::from("/tmp/comprehensive_test/workspace/logs/session_logs"));
-    assert_eq!(pm.temp_dir(), PathBuf::from("/tmp/comprehensive_test/workspace/temp"));
-    assert_eq!(pm.memory_vector_dir(), PathBuf::from("/tmp/comprehensive_test/workspace/memory_vector"));
-    assert_eq!(pm.audit_log_dir(), PathBuf::from("/tmp/comprehensive_test/workspace/logs/security_logs"));
-    assert_eq!(pm.auth_path(), PathBuf::from("/tmp/comprehensive_test/workspace/config/auth.json"));
+    assert_eq!(
+        pm.workspace(),
+        PathBuf::from("/tmp/comprehensive_test/workspace")
+    );
+    assert_eq!(
+        pm.sessions_log_dir(),
+        PathBuf::from("/tmp/comprehensive_test/workspace/logs/session_logs")
+    );
+    assert_eq!(
+        pm.temp_dir(),
+        PathBuf::from("/tmp/comprehensive_test/workspace/temp")
+    );
+    assert_eq!(
+        pm.memory_vector_dir(),
+        PathBuf::from("/tmp/comprehensive_test/workspace/memory_vector")
+    );
+    assert_eq!(
+        pm.audit_log_dir(),
+        PathBuf::from("/tmp/comprehensive_test/workspace/logs/security_logs")
+    );
+    assert_eq!(
+        pm.auth_path(),
+        PathBuf::from("/tmp/comprehensive_test/workspace/config/auth.json")
+    );
 }
 
 #[test]
@@ -1290,7 +1475,10 @@ fn test_path_manager_config_path_priority_chain() {
     // Test the full priority chain: setter > env > default
     // 1. Default (no setter, no env)
     let _g = EnvGuard::remove(ENV_CONFIG);
-    assert_eq!(pm.config_path(), PathBuf::from("/tmp/priority_test/config.json"));
+    assert_eq!(
+        pm.config_path(),
+        PathBuf::from("/tmp/priority_test/config.json")
+    );
 
     // 2. Environment variable
     let _g = EnvGuard::set(ENV_CONFIG, "/env/config.json");
@@ -1307,7 +1495,10 @@ fn test_path_manager_mcp_config_path_priority_chain() {
 
     // Test priority chain
     let _g = EnvGuard::remove(ENV_MCP_CONFIG);
-    assert_eq!(pm.mcp_config_path(), PathBuf::from("/tmp/mcp_priority/workspace/config/config.mcp.json"));
+    assert_eq!(
+        pm.mcp_config_path(),
+        PathBuf::from("/tmp/mcp_priority/workspace/config/config.mcp.json")
+    );
 
     let _g = EnvGuard::set(ENV_MCP_CONFIG, "/env/mcp.json");
     assert_eq!(pm.mcp_config_path(), PathBuf::from("/env/mcp.json"));
@@ -1321,7 +1512,10 @@ fn test_path_manager_security_config_path_priority_chain() {
     let pm = PathManager::with_home(PathBuf::from("/tmp/sec_priority"));
 
     let _g = EnvGuard::remove(ENV_SECURITY_CONFIG);
-    assert_eq!(pm.security_config_path(), PathBuf::from("/tmp/sec_priority/workspace/config/config.security.json"));
+    assert_eq!(
+        pm.security_config_path(),
+        PathBuf::from("/tmp/sec_priority/workspace/config/config.security.json")
+    );
 
     let _g = EnvGuard::set(ENV_SECURITY_CONFIG, "/env/sec.json");
     assert_eq!(pm.security_config_path(), PathBuf::from("/env/sec.json"));
@@ -1335,13 +1529,19 @@ fn test_path_manager_skills_config_path_priority_chain() {
     let pm = PathManager::with_home(PathBuf::from("/tmp/skills_priority"));
 
     let _g = EnvGuard::remove(ENV_SKILLS_CONFIG);
-    assert_eq!(pm.skills_config_path(), PathBuf::from("/tmp/skills_priority/workspace/config/config.skills.json"));
+    assert_eq!(
+        pm.skills_config_path(),
+        PathBuf::from("/tmp/skills_priority/workspace/config/config.skills.json")
+    );
 
     let _g = EnvGuard::set(ENV_SKILLS_CONFIG, "/env/skills.json");
     assert_eq!(pm.skills_config_path(), PathBuf::from("/env/skills.json"));
 
     pm.set_skills_config_path(PathBuf::from("/setter/skills.json"));
-    assert_eq!(pm.skills_config_path(), PathBuf::from("/setter/skills.json"));
+    assert_eq!(
+        pm.skills_config_path(),
+        PathBuf::from("/setter/skills.json")
+    );
 }
 
 #[test]
@@ -1409,7 +1609,11 @@ fn test_resolve_mcp_config_path_workspace_resolution() {
     std::fs::create_dir_all(&home).unwrap();
 
     // Create a config.json with no workspace specified
-    std::fs::write(home.join("config.json"), r#"{"agents":{"defaults":{"workspace":""}}}"#).unwrap();
+    std::fs::write(
+        home.join("config.json"),
+        r#"{"agents":{"defaults":{"workspace":""}}}"#,
+    )
+    .unwrap();
 
     let _g1 = EnvGuard::set(ENV_HOME, &dir.path().to_string_lossy().to_string());
     let _g2 = EnvGuard::remove(ENV_MCP_CONFIG);
@@ -1425,7 +1629,11 @@ fn test_resolve_security_config_path_workspace_resolution() {
     let dir = tempfile::tempdir().unwrap();
     let home = dir.path().join(DEFAULT_HOME_DIR);
     std::fs::create_dir_all(&home).unwrap();
-    std::fs::write(home.join("config.json"), r#"{"agents":{"defaults":{"workspace":""}}}"#).unwrap();
+    std::fs::write(
+        home.join("config.json"),
+        r#"{"agents":{"defaults":{"workspace":""}}}"#,
+    )
+    .unwrap();
 
     let _g1 = EnvGuard::set(ENV_HOME, &dir.path().to_string_lossy().to_string());
     let _g2 = EnvGuard::remove(ENV_SECURITY_CONFIG);
@@ -1440,7 +1648,11 @@ fn test_resolve_skills_config_path_workspace_resolution() {
     let dir = tempfile::tempdir().unwrap();
     let home = dir.path().join(DEFAULT_HOME_DIR);
     std::fs::create_dir_all(&home).unwrap();
-    std::fs::write(home.join("config.json"), r#"{"agents":{"defaults":{"workspace":""}}}"#).unwrap();
+    std::fs::write(
+        home.join("config.json"),
+        r#"{"agents":{"defaults":{"workspace":""}}}"#,
+    )
+    .unwrap();
 
     let _g1 = EnvGuard::set(ENV_HOME, &dir.path().to_string_lossy().to_string());
     let _g2 = EnvGuard::remove(ENV_SKILLS_CONFIG);
@@ -1455,7 +1667,11 @@ fn test_resolve_scanner_config_path_workspace_resolution() {
     let dir = tempfile::tempdir().unwrap();
     let home = dir.path().join(DEFAULT_HOME_DIR);
     std::fs::create_dir_all(&home).unwrap();
-    std::fs::write(home.join("config.json"), r#"{"agents":{"defaults":{"workspace":""}}}"#).unwrap();
+    std::fs::write(
+        home.join("config.json"),
+        r#"{"agents":{"defaults":{"workspace":""}}}"#,
+    )
+    .unwrap();
 
     let _g1 = EnvGuard::set(ENV_HOME, &dir.path().to_string_lossy().to_string());
     let _g2 = EnvGuard::remove(ENV_SCANNER_CONFIG);
@@ -1634,7 +1850,10 @@ fn test_resolve_home_dir_env_over_exe_dir() {
     assert!(result.is_ok());
     let home = result.unwrap();
     // Should contain the env path
-    assert!(home.to_string_lossy().contains(&dir.path().to_string_lossy().to_string()));
+    assert!(
+        home.to_string_lossy()
+            .contains(&dir.path().to_string_lossy().to_string())
+    );
 }
 
 #[test]
@@ -1810,10 +2029,19 @@ fn test_path_manager_agent_workspace_special_ids() {
     let pm = PathManager::with_home(PathBuf::from("/test"));
     // Test various special agent IDs
     assert_eq!(pm.agent_workspace("main"), PathBuf::from("/test/workspace"));
-    assert_eq!(pm.agent_workspace("default"), PathBuf::from("/test/workspace"));
+    assert_eq!(
+        pm.agent_workspace("default"),
+        PathBuf::from("/test/workspace")
+    );
     assert_eq!(pm.agent_workspace(""), PathBuf::from("/test/workspace"));
-    assert_eq!(pm.agent_workspace("worker1"), PathBuf::from("/test/workspace-worker1"));
-    assert_eq!(pm.agent_workspace("agent-99"), PathBuf::from("/test/workspace-agent-99"));
+    assert_eq!(
+        pm.agent_workspace("worker1"),
+        PathBuf::from("/test/workspace-worker1")
+    );
+    assert_eq!(
+        pm.agent_workspace("agent-99"),
+        PathBuf::from("/test/workspace-agent-99")
+    );
 }
 
 #[test]
@@ -1826,19 +2054,28 @@ fn test_path_manager_agent_workspace_with_underscore() {
 #[test]
 fn test_path_manager_auth_path_method() {
     let pm = PathManager::with_home(PathBuf::from("/test"));
-    assert_eq!(pm.auth_path(), PathBuf::from("/test/workspace/config/auth.json"));
+    assert_eq!(
+        pm.auth_path(),
+        PathBuf::from("/test/workspace/config/auth.json")
+    );
 }
 
 #[test]
 fn test_path_manager_audit_log_dir_method() {
     let pm = PathManager::with_home(PathBuf::from("/test"));
-    assert_eq!(pm.audit_log_dir(), PathBuf::from("/test/workspace/logs/security_logs"));
+    assert_eq!(
+        pm.audit_log_dir(),
+        PathBuf::from("/test/workspace/logs/security_logs")
+    );
 }
 
 #[test]
 fn test_path_manager_sessions_log_dir_method() {
     let pm = PathManager::with_home(PathBuf::from("/test"));
-    assert_eq!(pm.sessions_log_dir(), PathBuf::from("/test/workspace/logs/session_logs"));
+    assert_eq!(
+        pm.sessions_log_dir(),
+        PathBuf::from("/test/workspace/logs/session_logs")
+    );
 }
 
 #[test]
@@ -1850,7 +2087,10 @@ fn test_path_manager_temp_dir_method() {
 #[test]
 fn test_path_manager_memory_vector_dir_method() {
     let pm = PathManager::with_home(PathBuf::from("/test"));
-    assert_eq!(pm.memory_vector_dir(), PathBuf::from("/test/workspace/memory_vector"));
+    assert_eq!(
+        pm.memory_vector_dir(),
+        PathBuf::from("/test/workspace/memory_vector")
+    );
 }
 
 #[test]

@@ -134,20 +134,25 @@ impl NativePlugin {
         // Verify unified interface symbols exist
         unsafe {
             let _: Symbol<unsafe extern "C" fn(*const c_char, *const HostServices) -> i32> =
-                library.get(b"plugin_init").map_err(|e| PluginError::SymbolNotFound {
-                    name: "plugin_init".to_string(),
-                    error: e.to_string(),
-                })?;
-            let _: Symbol<unsafe extern "C" fn(*const c_char, *mut f32, i32) -> i32> =
-                library.get(b"plugin_embed").map_err(|e| PluginError::SymbolNotFound {
+                library
+                    .get(b"plugin_init")
+                    .map_err(|e| PluginError::SymbolNotFound {
+                        name: "plugin_init".to_string(),
+                        error: e.to_string(),
+                    })?;
+            let _: Symbol<unsafe extern "C" fn(*const c_char, *mut f32, i32) -> i32> = library
+                .get(b"plugin_embed")
+                .map_err(|e| PluginError::SymbolNotFound {
                     name: "plugin_embed".to_string(),
                     error: e.to_string(),
                 })?;
             let _: Symbol<unsafe extern "C" fn()> =
-                library.get(b"plugin_free").map_err(|e| PluginError::SymbolNotFound {
-                    name: "plugin_free".to_string(),
-                    error: e.to_string(),
-                })?;
+                library
+                    .get(b"plugin_free")
+                    .map_err(|e| PluginError::SymbolNotFound {
+                        name: "plugin_free".to_string(),
+                        error: e.to_string(),
+                    })?;
         }
 
         info!(
@@ -179,20 +184,20 @@ impl EmbeddingPlugin for NativePlugin {
             return Err(PluginError::Closed);
         }
 
-        let library = inner
-            .library
-            .as_ref()
-            .ok_or(PluginError::Closed)?;
+        let library = inner.library.as_ref().ok_or(PluginError::Closed)?;
 
         // Pass model_dir directly to plugin_init
-        let c_model_dir = CString::new(model_dir)
-            .map_err(|_| PluginError::InitFailed { code: -1 })?;
+        let c_model_dir =
+            CString::new(model_dir).map_err(|_| PluginError::InitFailed { code: -1 })?;
 
         let host_ptr = inner.host_services.unwrap_or(std::ptr::null());
 
         unsafe {
-            let plugin_init: Symbol<unsafe extern "C" fn(*const c_char, *const HostServices) -> i32> =
-                library.get(b"plugin_init").map_err(|e| PluginError::SymbolNotFound {
+            let plugin_init: Symbol<
+                unsafe extern "C" fn(*const c_char, *const HostServices) -> i32,
+            > = library
+                .get(b"plugin_init")
+                .map_err(|e| PluginError::SymbolNotFound {
                     name: "plugin_init".to_string(),
                     error: e.to_string(),
                 })?;
@@ -222,23 +227,21 @@ impl EmbeddingPlugin for NativePlugin {
             return Err(PluginError::NotInitialized { dim: inner.dim });
         }
 
-        let library = inner
-            .library
-            .as_ref()
-            .ok_or(PluginError::Closed)?;
+        let library = inner.library.as_ref().ok_or(PluginError::Closed)?;
 
-        let c_text = CString::new(text)
-            .map_err(|_| PluginError::EmbedFailed { code: -1 })?;
+        let c_text = CString::new(text).map_err(|_| PluginError::EmbedFailed { code: -1 })?;
 
         let dim = inner.dim as usize;
         let mut buf = vec![0.0f32; dim];
 
         unsafe {
             let embed_fn: Symbol<unsafe extern "C" fn(*const c_char, *mut f32, i32) -> i32> =
-                library.get(b"plugin_embed").map_err(|e| PluginError::SymbolNotFound {
-                    name: "plugin_embed".to_string(),
-                    error: e.to_string(),
-                })?;
+                library
+                    .get(b"plugin_embed")
+                    .map_err(|e| PluginError::SymbolNotFound {
+                        name: "plugin_embed".to_string(),
+                        error: e.to_string(),
+                    })?;
 
             let ret = embed_fn(c_text.as_ptr(), buf.as_mut_ptr(), inner.dim);
             if ret != 0 {
@@ -261,8 +264,7 @@ impl EmbeddingPlugin for NativePlugin {
 
         if let Some(ref library) = inner.library {
             unsafe {
-                if let Ok(free_fn) = library.get::<Symbol<unsafe extern "C" fn()>>(b"plugin_free")
-                {
+                if let Ok(free_fn) = library.get::<Symbol<unsafe extern "C" fn()>>(b"plugin_free") {
                     free_fn();
                 }
             }

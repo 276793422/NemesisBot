@@ -141,7 +141,12 @@ impl MaixCamChannel {
 
                 let content = format!(
                     "Person detected!\nClass: {}\nConfidence: {:.2}%\nPosition: ({:.0}, {:.0})\nSize: {:.0}x{:.0}",
-                    class_name, score * 100.0, x, y, w, h
+                    class_name,
+                    score * 100.0,
+                    x,
+                    y,
+                    w,
+                    h
                 );
 
                 let mut metadata = HashMap::new();
@@ -160,7 +165,11 @@ impl MaixCamChannel {
             }
             "heartbeat" => MaixCamEvent::Heartbeat,
             "status" => {
-                let data = msg.data.as_ref().map(|d| format!("{d:?}")).unwrap_or_default();
+                let data = msg
+                    .data
+                    .as_ref()
+                    .map(|d| format!("{d:?}"))
+                    .unwrap_or_default();
                 MaixCamEvent::StatusUpdate(data)
             }
             _ => MaixCamEvent::Unknown(msg_type.to_string()),
@@ -349,9 +358,7 @@ impl Channel for MaixCamChannel {
 
             // Broadcast to all
             for mut entry in self.client_writers.iter_mut() {
-                let _ = entry
-                    .write_all(format!("{json}\n").as_bytes())
-                    .await;
+                let _ = entry.write_all(format!("{json}\n").as_bytes()).await;
             }
             return Ok(());
         }

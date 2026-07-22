@@ -33,8 +33,14 @@ async fn call_llm(messages: Vec<Value>, tools: Vec<Value>) -> Value {
         .await
         .expect("Failed to call LLM");
 
-    assert!(resp.status().is_success(), "LLM request failed: {}", resp.status());
-    resp.json::<Value>().await.expect("Failed to parse LLM response")
+    assert!(
+        resp.status().is_success(),
+        "LLM request failed: {}",
+        resp.status()
+    );
+    resp.json::<Value>()
+        .await
+        .expect("Failed to parse LLM response")
 }
 
 /// Extract tool calls from LLM response.
@@ -47,7 +53,10 @@ fn extract_tool_calls(response: &Value) -> Vec<(String, String, String)> {
                 for call in calls {
                     let id = call["id"].as_str().unwrap_or("unknown").to_string();
                     let name = call["function"]["name"].as_str().unwrap_or("").to_string();
-                    let args = call["function"]["arguments"].as_str().unwrap_or("{}").to_string();
+                    let args = call["function"]["arguments"]
+                        .as_str()
+                        .unwrap_or("{}")
+                        .to_string();
                     result.push((id, name, args));
                 }
             }
@@ -71,13 +80,16 @@ fn extract_content(response: &Value) -> String {
 #[ignore]
 async fn test_it_provider_http_flow() {
     // IT: Test that the HTTP provider pattern works with real AI server
-    let messages = vec![serde_json::json!({
-        "role": "system",
-        "content": "You are a helpful assistant."
-    }), serde_json::json!({
-        "role": "user",
-        "content": "Say hello"
-    })];
+    let messages = vec![
+        serde_json::json!({
+            "role": "system",
+            "content": "You are a helpful assistant."
+        }),
+        serde_json::json!({
+            "role": "user",
+            "content": "Say hello"
+        }),
+    ];
 
     let response = call_llm(messages, vec![]).await;
     let content = extract_content(&response);
@@ -159,7 +171,11 @@ async fn test_it_tool_execution_loop() {
     let tool_calls = extract_tool_calls(&response);
     let content = extract_content(&response);
 
-    println!("[IT-ToolLoop] Step 1: tool_calls={}, content={}", tool_calls.len(), content);
+    println!(
+        "[IT-ToolLoop] Step 1: tool_calls={}, content={}",
+        tool_calls.len(),
+        content
+    );
 
     if !tool_calls.is_empty() {
         let (call_id, tool_name, args) = &tool_calls[0];
@@ -195,7 +211,10 @@ async fn test_it_tool_execution_loop() {
         let final_response = call_llm(full_messages, vec![]).await;
         let final_content = extract_content(&final_response);
         println!("[IT-ToolLoop] Step 3: Final response: {}", final_content);
-        assert!(!final_content.is_empty(), "Should get final response after tool execution");
+        assert!(
+            !final_content.is_empty(),
+            "Should get final response after tool execution"
+        );
     } else {
         // AI server may return text instead of tool calls
         println!("[IT-ToolLoop] LLM responded with text: {}", content);
@@ -245,9 +264,16 @@ async fn test_it_multi_tool_workflow() {
     let tool_calls = extract_tool_calls(&response);
     let content = extract_content(&response);
 
-    println!("[IT-MultiTool] tool_calls={}, content={}", tool_calls.len(), content);
+    println!(
+        "[IT-MultiTool] tool_calls={}, content={}",
+        tool_calls.len(),
+        content
+    );
     // Either tool calls or text response is valid
-    assert!(!tool_calls.is_empty() || !content.is_empty(), "Should get some response");
+    assert!(
+        !tool_calls.is_empty() || !content.is_empty(),
+        "Should get some response"
+    );
 }
 
 #[tokio::test]
@@ -266,7 +292,10 @@ async fn test_it_error_recovery() {
 
     let response = call_llm(messages, vec![]).await;
     let content = extract_content(&response);
-    assert!(!content.is_empty(), "LLM should respond even after tool error");
+    assert!(
+        !content.is_empty(),
+        "LLM should respond even after tool error"
+    );
     println!("[IT-ErrorRecovery] Response after error: {}", content);
 }
 
@@ -288,7 +317,10 @@ async fn test_it_rpc_correlation_flow() {
         assert_eq!(actual, "This is the actual response");
     }
 
-    println!("[IT-RPC] Correlation ID format verified: {}", message_content);
+    println!(
+        "[IT-RPC] Correlation ID format verified: {}",
+        message_content
+    );
 }
 
 #[tokio::test]

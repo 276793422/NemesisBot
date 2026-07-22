@@ -129,12 +129,15 @@ async fn it_tools_with_vector_store() {
     let mgr = Arc::new(MemoryManager::new(&config));
 
     // Use shared plugin fixture
-    let embed = __test_fixture::shared_embed_func()
-        .expect("shared plugin not available");
+    let embed = __test_fixture::shared_embed_func().expect("shared plugin not available");
     let vs_config = nemesis_memory::vector::StoreConfig {
-        storage_path: dir.path().join("vector").join("vector_store.jsonl").to_string_lossy().to_string(),
-        ..__test_fixture::plugin_store_config("")
-            .expect("plugin DLL + model files required")
+        storage_path: dir
+            .path()
+            .join("vector")
+            .join("vector_store.jsonl")
+            .to_string_lossy()
+            .to_string(),
+        ..__test_fixture::plugin_store_config("").expect("plugin DLL + model files required")
     };
 
     // Initialize vector store with shared plugin fixture

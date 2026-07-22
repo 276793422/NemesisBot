@@ -133,7 +133,11 @@ fn extra_set_embedded_defaults_missing_cluster() {
     // Missing cluster
     let res = set_embedded_defaults_from_fs(cdir);
     assert!(res.is_err());
-    assert!(res.unwrap_err().to_string().contains("config.cluster.default.json"));
+    assert!(
+        res.unwrap_err()
+            .to_string()
+            .contains("config.cluster.default.json")
+    );
 }
 
 #[test]
@@ -148,7 +152,11 @@ fn extra_set_embedded_defaults_missing_skills() {
     // Missing skills
     let res = set_embedded_defaults_from_fs(cdir);
     assert!(res.is_err());
-    assert!(res.unwrap_err().to_string().contains("config.skills.default.json"));
+    assert!(
+        res.unwrap_err()
+            .to_string()
+            .contains("config.skills.default.json")
+    );
 }
 
 #[test]
@@ -192,7 +200,14 @@ fn extra_load_config_embedded_invalid_json_falls_through() {
     let cfg = load_config(&path).unwrap();
     assert!(cfg.gateway.port > 0);
 
-    set_embedded_defaults(Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new());
+    set_embedded_defaults(
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+    );
 }
 
 #[test]
@@ -213,7 +228,14 @@ fn extra_load_config_valid_embedded_is_used() {
     assert_eq!(cfg.gateway.host, "embedded-host");
     assert_eq!(cfg.gateway.port, 7654);
 
-    set_embedded_defaults(Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new());
+    set_embedded_defaults(
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+    );
 }
 
 #[test]
@@ -224,11 +246,15 @@ fn extra_load_config_reads_existing_file_with_env_override() {
     std::fs::write(&path, r#"{"gateway":{"host":"from-file","port":1111}}"#).unwrap();
 
     // SAFETY: test runs single-threaded via --test-threads=1.
-    unsafe { std::env::set_var("NEMESISBOT_GATEWAY_PORT", "2222"); }
+    unsafe {
+        std::env::set_var("NEMESISBOT_GATEWAY_PORT", "2222");
+    }
     let cfg = load_config(&path).unwrap();
     assert_eq!(cfg.gateway.host, "from-file");
     assert_eq!(cfg.gateway.port, 2222);
-    unsafe { std::env::remove_var("NEMESISBOT_GATEWAY_PORT"); }
+    unsafe {
+        std::env::remove_var("NEMESISBOT_GATEWAY_PORT");
+    }
 }
 
 // ============================================================================
@@ -286,7 +312,14 @@ fn extra_save_config_local_mode_empty_llm_log_dir() {
     let res = save_config(&config_path, &mut config);
     assert!(res.is_ok());
     assert_eq!(
-        config.logging.as_ref().unwrap().llm.as_ref().unwrap().log_dir,
+        config
+            .logging
+            .as_ref()
+            .unwrap()
+            .llm
+            .as_ref()
+            .unwrap()
+            .log_dir,
         "logs/request_logs"
     );
 
@@ -316,10 +349,21 @@ fn extra_save_config_non_local_mode_writes_directly() {
 #[test]
 fn extra_load_embedded_config_unavailable_error() {
     let _guard = GLOBAL_STATE_LOCK.lock().unwrap();
-    set_embedded_defaults(Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new());
+    set_embedded_defaults(
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+    );
     let res = load_embedded_config();
     assert!(res.is_err());
-    assert!(res.unwrap_err().to_string().contains("embedded default config not available"));
+    assert!(
+        res.unwrap_err()
+            .to_string()
+            .contains("embedded default config not available")
+    );
 }
 
 #[test]
@@ -336,7 +380,14 @@ fn extra_load_embedded_config_invalid_json_error() {
     let res = load_embedded_config();
     assert!(res.is_err());
 
-    set_embedded_defaults(Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new());
+    set_embedded_defaults(
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+    );
 }
 
 // ============================================================================
@@ -360,7 +411,14 @@ fn extra_load_mcp_config_embedded_used_when_file_missing() {
     assert!(cfg.enabled);
     assert_eq!(cfg.timeout, 99);
 
-    set_embedded_defaults(Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new());
+    set_embedded_defaults(
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+    );
 }
 
 #[test]
@@ -380,7 +438,14 @@ fn extra_load_mcp_config_embedded_invalid_falls_to_hardcoded() {
     assert!(!cfg.enabled);
     assert_eq!(cfg.timeout, 30);
 
-    set_embedded_defaults(Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new());
+    set_embedded_defaults(
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+    );
 }
 
 #[test]
@@ -399,7 +464,14 @@ fn extra_load_security_config_embedded_used_when_file_missing() {
     let cfg = load_security_config(&path).unwrap();
     assert_eq!(cfg.default_action, "custom-action");
 
-    set_embedded_defaults(Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new());
+    set_embedded_defaults(
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+    );
 }
 
 #[test]
@@ -418,7 +490,14 @@ fn extra_load_security_config_embedded_invalid_falls_to_hardcoded() {
     let cfg = load_security_config(&path).unwrap();
     assert_eq!(cfg.default_action, "deny");
 
-    set_embedded_defaults(Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new());
+    set_embedded_defaults(
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+    );
 }
 
 #[test]
@@ -437,7 +516,14 @@ fn extra_load_scanner_config_embedded_used_when_file_missing() {
     let cfg = load_scanner_config(&path).unwrap();
     assert_eq!(cfg.enabled, vec!["clamav".to_string()]);
 
-    set_embedded_defaults(Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new());
+    set_embedded_defaults(
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+    );
 }
 
 #[test]
@@ -456,7 +542,14 @@ fn extra_load_scanner_config_embedded_invalid_falls_to_hardcoded() {
     let cfg = load_scanner_config(&path).unwrap();
     assert!(cfg.enabled.is_empty());
 
-    set_embedded_defaults(Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new());
+    set_embedded_defaults(
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+    );
 }
 
 #[test]
@@ -475,7 +568,14 @@ fn extra_load_skills_config_embedded_used_when_file_missing() {
     let cfg = load_skills_config(&path).unwrap();
     assert_eq!(cfg.max_concurrent_searches, 7);
 
-    set_embedded_defaults(Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new());
+    set_embedded_defaults(
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+    );
 }
 
 #[test]
@@ -495,7 +595,14 @@ fn extra_load_skills_config_embedded_invalid_falls_to_hardcoded() {
     // Default SkillsFullConfig has max_concurrent_searches = 2
     assert_eq!(cfg.max_concurrent_searches, 2);
 
-    set_embedded_defaults(Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new());
+    set_embedded_defaults(
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+    );
 }
 
 // ============================================================================
@@ -506,7 +613,11 @@ fn extra_load_skills_config_embedded_invalid_falls_to_hardcoded() {
 fn extra_save_mcp_config_writes_valid_file() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("config.mcp.json");
-    let cfg = McpConfig { enabled: true, servers: vec![], timeout: 42 };
+    let cfg = McpConfig {
+        enabled: true,
+        servers: vec![],
+        timeout: 42,
+    };
     save_mcp_config(&path, &cfg).unwrap();
 
     let content = std::fs::read_to_string(&path).unwrap();
@@ -518,7 +629,10 @@ fn extra_save_mcp_config_writes_valid_file() {
 fn extra_save_security_config_writes_valid_file() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("config.security.json");
-    let cfg = SecurityConfig { default_action: "warn".into(), ..Default::default() };
+    let cfg = SecurityConfig {
+        default_action: "warn".into(),
+        ..Default::default()
+    };
     save_security_config(&path, &cfg).unwrap();
 
     let content = std::fs::read_to_string(&path).unwrap();
@@ -723,23 +837,31 @@ fn extra_workspace_resolver_local_flag_true_returns_relative() {
 fn extra_workspace_resolver_env_var_with_absolute_no_tilde() {
     let _guard = GLOBAL_STATE_LOCK.lock().unwrap();
     // SAFETY: serialized via GLOBAL_STATE_LOCK.
-    unsafe { std::env::set_var("NEMESISBOT_HOME", "/opt/nemesis"); }
+    unsafe {
+        std::env::set_var("NEMESISBOT_HOME", "/opt/nemesis");
+    }
     let p = WorkspaceResolver::resolve(false);
     // No tilde; expansion returns the path as-is, joined with .nemesisbot.
     assert!(p.starts_with("/opt/nemesis") || p.to_string_lossy().contains("opt"));
     assert!(p.to_string_lossy().ends_with(".nemesisbot"));
-    unsafe { std::env::remove_var("NEMESISBOT_HOME"); }
+    unsafe {
+        std::env::remove_var("NEMESISBOT_HOME");
+    }
 }
 
 #[test]
 fn extra_workspace_resolver_env_var_with_relative() {
     let _guard = GLOBAL_STATE_LOCK.lock().unwrap();
     // A relative path is not expanded by expand_tilde — passed through as-is.
-    unsafe { std::env::set_var("NEMESISBOT_HOME", "relative/path"); }
+    unsafe {
+        std::env::set_var("NEMESISBOT_HOME", "relative/path");
+    }
     let p = WorkspaceResolver::resolve(false);
     assert!(p.to_string_lossy().contains("relative"));
     assert!(p.to_string_lossy().ends_with(".nemesisbot"));
-    unsafe { std::env::remove_var("NEMESISBOT_HOME"); }
+    unsafe {
+        std::env::remove_var("NEMESISBOT_HOME");
+    }
 }
 
 #[test]
@@ -820,7 +942,10 @@ fn extra_default_config_has_expected_defaults() {
 fn extra_config_workspace_path_no_tilde_prefix() {
     let cfg = Config {
         agents: AgentsConfig {
-            defaults: AgentDefaults { workspace: "/plain/path".into(), ..Default::default() },
+            defaults: AgentDefaults {
+                workspace: "/plain/path".into(),
+                ..Default::default()
+            },
             ..Default::default()
         },
         ..Default::default()
@@ -905,7 +1030,10 @@ fn extra_model_config_validate_full() {
 
 #[test]
 fn extra_model_config_parse_first_slash() {
-    let m = ModelConfig { model: "a/b/c".into(), ..Default::default() };
+    let m = ModelConfig {
+        model: "a/b/c".into(),
+        ..Default::default()
+    };
     let (p, n) = m.parse_model();
     assert_eq!(p, "a");
     assert_eq!(n, "b/c");
@@ -917,7 +1045,10 @@ fn extra_model_config_parse_first_slash() {
 
 #[test]
 fn extra_config_error_display_io_variant() {
-    let e = ConfigError::Io(std::io::Error::new(std::io::ErrorKind::PermissionDenied, "x"));
+    let e = ConfigError::Io(std::io::Error::new(
+        std::io::ErrorKind::PermissionDenied,
+        "x",
+    ));
     assert!(e.to_string().contains("IO error"));
 }
 
@@ -974,7 +1105,14 @@ fn extra_set_embedded_defaults_roundtrip_all_fields() {
     assert_eq!(d.skills, b"sk".to_vec());
     assert_eq!(d.scanner, b"sc".to_vec());
 
-    set_embedded_defaults(Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new());
+    set_embedded_defaults(
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+    );
 }
 
 // ============================================================================
@@ -1080,7 +1218,10 @@ fn extra_adjust_paths_ends_with_nemesisbot_workspace() {
 #[test]
 fn extra_adjust_paths_log_dir_with_general_only() {
     let mut cfg = Config::default();
-    cfg.logging = Some(LoggingConfig { llm: None, general: Some(GeneralLogConfig::default()) });
+    cfg.logging = Some(LoggingConfig {
+        llm: None,
+        general: Some(GeneralLogConfig::default()),
+    });
     cfg.adjust_paths_for_environment();
     // No LLM logging — no change to log_dir.
     assert!(cfg.logging.as_ref().unwrap().llm.is_none());
@@ -1113,7 +1254,10 @@ fn extra_agent_binding_roundtrip_with_peer() {
         r#match: BindingMatch {
             channel: "telegram".into(),
             account_id: "123".into(),
-            peer: Some(PeerMatch { kind: "user".into(), id: "u1".into() }),
+            peer: Some(PeerMatch {
+                kind: "user".into(),
+                id: "u1".into(),
+            }),
             guild_id: String::new(),
             team_id: String::new(),
         },
@@ -1134,7 +1278,10 @@ fn extra_agent_binding_roundtrip_with_peer() {
 fn extra_session_config_with_identity_links() {
     let mut links = std::collections::HashMap::new();
     links.insert("k".to_string(), vec!["v1".to_string(), "v2".to_string()]);
-    let cfg = SessionConfig { dm_scope: "scope".into(), identity_links: links };
+    let cfg = SessionConfig {
+        dm_scope: "scope".into(),
+        identity_links: links,
+    };
     let json = serde_json::to_string(&cfg).unwrap();
     let parsed: SessionConfig = serde_json::from_str(&json).unwrap();
     assert_eq!(parsed.dm_scope, "scope");
@@ -1334,7 +1481,11 @@ fn extra_save_config_local_mode_default_workspace_path() {
     std::env::set_current_dir(dir.path()).unwrap();
 
     let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/home/u"));
-    let default_workspace = home.join(".nemesisbot").join("workspace").to_string_lossy().to_string();
+    let default_workspace = home
+        .join(".nemesisbot")
+        .join("workspace")
+        .to_string_lossy()
+        .to_string();
 
     let mut config = Config::default();
     config.agents.defaults.workspace = default_workspace;
@@ -1343,7 +1494,13 @@ fn extra_save_config_local_mode_default_workspace_path() {
     assert!(res.is_ok());
     assert!(config.agents.defaults.workspace.contains(".nemesisbot"));
     // Should now be relative to current dir (.nemesisbot/workspace).
-    assert!(!config.agents.defaults.workspace.starts_with(&home.to_string_lossy().to_string()));
+    assert!(
+        !config
+            .agents
+            .defaults
+            .workspace
+            .starts_with(&home.to_string_lossy().to_string())
+    );
 
     std::env::set_current_dir(original).unwrap();
 }

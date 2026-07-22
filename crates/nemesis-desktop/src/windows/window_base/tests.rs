@@ -85,7 +85,12 @@ fn test_window_base_new_with_client() {
     };
     let client = Arc::new(WebSocketClient::new(&ws_key));
     let data = Arc::new(TestWindowData { valid: true });
-    let base = WindowBase::new("w1".to_string(), "test".to_string(), data, Some(client.clone()));
+    let base = WindowBase::new(
+        "w1".to_string(),
+        "test".to_string(),
+        data,
+        Some(client.clone()),
+    );
     assert_eq!(base.get_id(), "w1");
     assert_eq!(base.get_type(), "test");
     assert!(base.ws_client.is_some());

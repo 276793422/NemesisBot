@@ -4,8 +4,8 @@ use chrono::Local;
 use colored::Colorize;
 use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
 use tokio::sync::mpsc;
 use tokio::time::sleep;
@@ -28,11 +28,19 @@ pub struct ClientMessage {
 #[serde(tag = "type")]
 pub enum ServerMessage {
     #[serde(rename = "message")]
-    Message { role: String, content: String, #[serde(default)] timestamp: String },
+    Message {
+        role: String,
+        content: String,
+        #[serde(default)]
+        timestamp: String,
+    },
     #[serde(rename = "pong")]
     Pong {},
     #[serde(rename = "error")]
-    Error { #[serde(default)] error: String },
+    Error {
+        #[serde(default)]
+        error: String,
+    },
 }
 
 #[derive(Debug)]
@@ -59,13 +67,22 @@ impl Statistics {
 
     #[allow(dead_code)]
     pub fn print(&self, config: &Config) {
-        if !config.statistics.enabled { return; }
+        if !config.statistics.enabled {
+            return;
+        }
         let sent = self.messages_sent.load(Ordering::Relaxed);
         let received = self.messages_received.load(Ordering::Relaxed);
         let _bytes_sent = self.bytes_sent.load(Ordering::Relaxed);
         let _bytes_received = self.bytes_received.load(Ordering::Relaxed);
         let reconnects = self.reconnect_count.load(Ordering::Relaxed);
-        println!("\n{}", format!("📊 Sent: {} msgs | Received: {} msgs | Reconnects: {}", sent, received, reconnects).dimmed());
+        println!(
+            "\n{}",
+            format!(
+                "📊 Sent: {} msgs | Received: {} msgs | Reconnects: {}",
+                sent, received, reconnects
+            )
+            .dimmed()
+        );
     }
 }
 
@@ -115,10 +132,15 @@ impl WebSocketClient {
         let mut reconnect_delay = self.config.reconnect.initial_delay;
 
         // Take external receiver once - it will be reused across reconnections
-        let mut external_rx = self.external_rx.take().ok_or_else(|| anyhow::anyhow!("No receiver"))?;
+        let mut external_rx = self
+            .external_rx
+            .take()
+            .ok_or_else(|| anyhow::anyhow!("No receiver"))?;
 
         while self.running.load(Ordering::Relaxed) {
-            if self.config.reconnect.max_attempts > 0 && reconnect_attempts >= self.config.reconnect.max_attempts {
+            if self.config.reconnect.max_attempts > 0
+                && reconnect_attempts >= self.config.reconnect.max_attempts
+            {
                 return Err(anyhow::anyhow!("Max reconnect attempts"));
             }
 
@@ -131,21 +153,37 @@ impl WebSocketClient {
                     }
                     reconnect_attempts += 1;
                     self.stats.reconnect_count.fetch_add(1, Ordering::Relaxed);
-                    eprintln!("{}", format!("🔄 Reconnecting in {} seconds... (attempt {})", reconnect_delay, reconnect_attempts).yellow());
+                    eprintln!(
+                        "{}",
+                        format!(
+                            "🔄 Reconnecting in {} seconds... (attempt {})",
+                            reconnect_delay, reconnect_attempts
+                        )
+                        .yellow()
+                    );
                     sleep(Duration::from_secs(reconnect_delay)).await;
-                    reconnect_delay = std::cmp::min((reconnect_delay as f64 * self.config.reconnect.delay_multiplier) as u64, self.config.reconnect.max_delay);
+                    reconnect_delay = std::cmp::min(
+                        (reconnect_delay as f64 * self.config.reconnect.delay_multiplier) as u64,
+                        self.config.reconnect.max_delay,
+                    );
                 }
             }
         }
         Ok(())
     }
 
-    async fn connect_and_run(&mut self, external_rx: &mut mpsc::UnboundedReceiver<String>) -> Result<()> {
+    async fn connect_and_run(
+        &mut self,
+        external_rx: &mut mpsc::UnboundedReceiver<String>,
+    ) -> Result<()> {
         println!("🔄 Connecting...");
         let url = if self.config.server.token.is_empty() {
             self.config.server.url.clone()
         } else {
-            format!("{}?token={}", self.config.server.url, self.config.server.token)
+            format!(
+                "{}?token={}",
+                self.config.server.url, self.config.server.token
+            )
         };
 
         let (ws_stream, _) = connect_async(&url).await.context("Failed to connect")?;
@@ -305,7 +343,10 @@ impl WebSocketClient {
 
             // Exit conditions:
             // 1. If CLI is closed AND running is false AND no activity for timeout period
-            if cli_rx_closed && !running.load(Ordering::Relaxed) && last_activity.elapsed() > idle_timeout {
+            if cli_rx_closed
+                && !running.load(Ordering::Relaxed)
+                && last_activity.elapsed() > idle_timeout
+            {
                 println!("⏱️  Idle timeout after CLI closed, exiting");
                 break;
             }
@@ -316,15 +357,25 @@ impl WebSocketClient {
     }
 
     #[allow(dead_code)]
-    pub fn stop(&self) { self.running.store(false, Ordering::Relaxed); }
+    pub fn stop(&self) {
+        self.running.store(false, Ordering::Relaxed);
+    }
     #[allow(dead_code)]
-    pub fn get_stats(&self) -> &Statistics { &self.stats }
+    pub fn get_stats(&self) -> &Statistics {
+        &self.stats
+    }
     #[allow(dead_code)]
-    pub fn is_connected(&self) -> bool { self.running.load(Ordering::Relaxed) }
+    pub fn is_connected(&self) -> bool {
+        self.running.load(Ordering::Relaxed)
+    }
 }
 
 fn print_received_message(config: &Config, role: &str, content: &str, _timestamp: &str) {
-    let ts = if config.ui.show_timestamp { format!("[{}] ", Local::now().format("%H:%M:%S")) } else { String::new() };
+    let ts = if config.ui.show_timestamp {
+        format!("[{}] ", Local::now().format("%H:%M:%S"))
+    } else {
+        String::new()
+    };
     let (role_str, color) = match role {
         "assistant" => ("🤖 Assistant", "bright cyan"),
         "user" => ("👤 User", "bright green"),
@@ -332,7 +383,13 @@ fn print_received_message(config: &Config, role: &str, content: &str, _timestamp
         _ => ("📨 Unknown", "white"),
     };
     let msg = if config.ui.color {
-        format!("{}{}{}: {}", ts.dimmed(), role_str.color(color), ":".color(color), content)
+        format!(
+            "{}{}{}: {}",
+            ts.dimmed(),
+            role_str.color(color),
+            ":".color(color),
+            content
+        )
     } else {
         format!("{}{}: {}", ts, role_str, content)
     };
@@ -340,8 +397,14 @@ fn print_received_message(config: &Config, role: &str, content: &str, _timestamp
 }
 
 fn log_message(config: &Config, message: &str) {
-    if !config.logging.enabled || config.logging.file.is_empty() { return; }
-    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&config.logging.file) {
+    if !config.logging.enabled || config.logging.file.is_empty() {
+        return;
+    }
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&config.logging.file)
+    {
         use std::io::Write;
         let _ = writeln!(f, "[{}] {}", Local::now().to_rfc3339(), message);
     }
@@ -362,11 +425,16 @@ fn apply_message_rules(config: &Config, content: &str) -> (String, Option<String
         let matches = if rule.case_sensitive {
             content.contains(&rule.pattern)
         } else {
-            content.to_lowercase().contains(&rule.pattern.to_lowercase())
+            content
+                .to_lowercase()
+                .contains(&rule.pattern.to_lowercase())
         };
 
         if matches {
-            log_message(config, &format!("🔄 Rule '{}' applied: {}", rule.name, rule.description));
+            log_message(
+                config,
+                &format!("🔄 Rule '{}' applied: {}", rule.name, rule.description),
+            );
 
             if rule.skip {
                 // Skip this message entirely

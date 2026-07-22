@@ -7,8 +7,8 @@
 //! Use `create_detector()` to get the best available.
 //! Every 3 seconds, Silero prints diagnostics to stderr for debugging.
 
-use std::time::Instant;
 use anyhow::Result;
+use std::time::Instant;
 
 // =============================================================================
 // Trait
@@ -78,8 +78,14 @@ impl VoiceDetector for RmsVoiceDetector {
 
         let min_samples = (sample_rate as f64 * 0.3) as usize;
         let buffer_ms = self.buffer.len() as f64 / sample_rate as f64 * 1000.0;
-        let silence_elapsed = self.silence_start.map(|t| t.elapsed().as_millis() as u64).unwrap_or(0);
-        let speech_elapsed = self.speech_start.map(|t| t.elapsed().as_millis() as u64).unwrap_or(0);
+        let silence_elapsed = self
+            .silence_start
+            .map(|t| t.elapsed().as_millis() as u64)
+            .unwrap_or(0);
+        let speech_elapsed = self
+            .speech_start
+            .map(|t| t.elapsed().as_millis() as u64)
+            .unwrap_or(0);
 
         let ready = self.is_speaking
             && ((silence_elapsed >= self.silence_ms && buffer_ms >= 300.0)
@@ -216,9 +222,13 @@ impl VoiceDetector for SileroVoiceDetector {
             };
             tracing::debug!(
                 "[Silero] feeds={} windows={} detects={} speaking={} pending={} chunk_buf={} rms={:.4}",
-                self.feed_count, self.window_count, self.detect_count,
-                self.is_speaking, self.pending_segments.len(),
-                self.chunk_buffer.len(), rms,
+                self.feed_count,
+                self.window_count,
+                self.detect_count,
+                self.is_speaking,
+                self.pending_segments.len(),
+                self.chunk_buffer.len(),
+                rms,
             );
             self.last_diag = Instant::now();
         }
@@ -305,7 +315,11 @@ pub fn create_detector(cfg: &crate::config::AppConfig) -> Box<dyn VoiceDetector>
         }
         Err(e) => {
             tracing::warn!("[Voice] Silero unavailable ({}) — using RMS energy", e);
-            Box::new(RmsVoiceDetector::new(cfg.audio.energy_threshold, 800, 15_000))
+            Box::new(RmsVoiceDetector::new(
+                cfg.audio.energy_threshold,
+                800,
+                15_000,
+            ))
         }
     }
 }

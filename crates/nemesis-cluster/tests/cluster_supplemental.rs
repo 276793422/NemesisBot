@@ -3,19 +3,24 @@
 //! Covers: task manager lifecycle, continuation store, wire message edge cases,
 //! connection pool, frame encoding/decoding, cluster state, and more.
 
-use nemesis_cluster::task_manager::{TaskManager, InMemoryTaskStore, TaskStore};
-use nemesis_cluster::continuation_store::{ContinuationStore, ContinuationSnapshot};
-use nemesis_cluster::rpc_types::{Frame, RPCRequest, RPCResponse, ActionType, KnownAction};
-use nemesis_cluster::transport::conn::{Connection, WireMessage, TcpConnConfig};
-use nemesis_cluster::transport::pool::{PoolConfig, ConnectionPool, AsyncPoolConfig, Pool, PoolStats};
-use nemesis_cluster::transport::frame::{MAX_FRAME_SIZE, FRAME_HEADER_SIZE, validate_frame_size, encode_batch, decode_all, write_frame, read_frame, AsyncFrameReader, write_frame_async};
-use nemesis_cluster::types::{ClusterConfig, NodeStatus, ExtendedNodeInfo};
+use nemesis_cluster::continuation_store::{ContinuationSnapshot, ContinuationStore};
+use nemesis_cluster::rpc_types::{ActionType, Frame, KnownAction, RPCRequest, RPCResponse};
+use nemesis_cluster::task_manager::{InMemoryTaskStore, TaskManager, TaskStore};
+use nemesis_cluster::transport::conn::{Connection, TcpConnConfig, WireMessage};
+use nemesis_cluster::transport::frame::{
+    AsyncFrameReader, FRAME_HEADER_SIZE, MAX_FRAME_SIZE, decode_all, encode_batch, read_frame,
+    validate_frame_size, write_frame, write_frame_async,
+};
+use nemesis_cluster::transport::pool::{
+    AsyncPoolConfig, ConnectionPool, Pool, PoolConfig, PoolStats,
+};
+use nemesis_cluster::types::{ClusterConfig, ExtendedNodeInfo, NodeStatus};
 
-use nemesis_types::cluster::{Task, TaskStatus, NodeInfo, NodeRole};
+use nemesis_types::cluster::{NodeInfo, NodeRole, Task, TaskStatus};
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 // ===========================================================================
 // TaskManager extended tests
@@ -63,12 +68,7 @@ fn test_create_task_with_peer() {
 #[test]
 fn test_create_task_with_empty_peer() {
     let tm = TaskManager::new();
-    let task = tm.create_task(
-        "ping",
-        serde_json::json!({}),
-        "rpc",
-        "ch",
-    );
+    let task = tm.create_task("ping", serde_json::json!({}), "rpc", "ch");
     assert_eq!(task.peer_id, "");
 }
 
@@ -399,7 +399,13 @@ fn test_store_update_result_sets_completed_at() {
         completed_at: None,
     };
     store.create(task).unwrap();
-    store.update_result("u-1", TaskStatus::Completed, Some(serde_json::json!("done"))).unwrap();
+    store
+        .update_result(
+            "u-1",
+            TaskStatus::Completed,
+            Some(serde_json::json!("done")),
+        )
+        .unwrap();
     let t = store.get("u-1").unwrap();
     assert_eq!(t.status, TaskStatus::Completed);
     assert!(t.completed_at.is_some());
@@ -408,7 +414,11 @@ fn test_store_update_result_sets_completed_at() {
 #[test]
 fn test_store_update_nonexistent() {
     let store = InMemoryTaskStore::new();
-    assert!(store.update_result("nope", TaskStatus::Completed, None).is_err());
+    assert!(
+        store
+            .update_result("nope", TaskStatus::Completed, None)
+            .is_err()
+    );
 }
 
 #[test]
@@ -451,9 +461,21 @@ fn test_store_list_by_status_mixed() {
         store.create(task).unwrap();
     }
     for i in (0..6).step_by(2) {
-        store.update_result(&format!("t-{}", i), TaskStatus::Completed, Some(serde_json::json!("ok"))).unwrap();
+        store
+            .update_result(
+                &format!("t-{}", i),
+                TaskStatus::Completed,
+                Some(serde_json::json!("ok")),
+            )
+            .unwrap();
     }
-    store.update_result("t-1", TaskStatus::Failed, Some(serde_json::json!({"error": "fail"}))).unwrap();
+    store
+        .update_result(
+            "t-1",
+            TaskStatus::Failed,
+            Some(serde_json::json!({"error": "fail"})),
+        )
+        .unwrap();
 
     assert_eq!(store.list_by_status(TaskStatus::Pending).len(), 2);
     assert_eq!(store.list_by_status(TaskStatus::Completed).len(), 3);
@@ -594,7 +616,10 @@ async fn test_continuation_multiple_snapshots() {
     let store = ContinuationStore::new(dir.path());
 
     for i in 0..10 {
-        store.save(make_snapshot(&format!("multi-{}", i))).await.unwrap();
+        store
+            .save(make_snapshot(&format!("multi-{}", i)))
+            .await
+            .unwrap();
     }
     assert_eq!(store.len(), 10);
 
@@ -634,7 +659,10 @@ async fn test_continuation_disk_recovery_preserves_data() {
 async fn test_continuation_cleanup_with_no_files() {
     let dir = tempfile::tempdir().unwrap();
     let store = ContinuationStore::new(dir.path());
-    let removed = store.cleanup_old(std::time::Duration::from_secs(0)).await.unwrap();
+    let removed = store
+        .cleanup_old(std::time::Duration::from_secs(0))
+        .await
+        .unwrap();
     assert_eq!(removed, 0);
 }
 
@@ -660,7 +688,12 @@ async fn test_continuation_load_nonexistent() {
 
 #[test]
 fn test_wire_message_new_request_fields() {
-    let msg = WireMessage::new_request("from-node", "to-node", "test_action", serde_json::json!({"k": "v"}));
+    let msg = WireMessage::new_request(
+        "from-node",
+        "to-node",
+        "test_action",
+        serde_json::json!({"k": "v"}),
+    );
     assert_eq!(msg.version, "1.0");
     assert_eq!(msg.msg_type, "request");
     assert_eq!(msg.from, "from-node");
@@ -777,10 +810,7 @@ fn test_wire_message_from_bytes_invalid_json() {
 #[test]
 fn test_wire_message_serialization_large_payload() {
     let large_data: Vec<String> = (0..1000).map(|i| format!("item_{}", i)).collect();
-    let msg = WireMessage::new_request(
-        "a", "b", "bulk",
-        serde_json::json!({"items": large_data}),
-    );
+    let msg = WireMessage::new_request("a", "b", "bulk", serde_json::json!({"items": large_data}));
     let bytes = msg.to_bytes().unwrap();
     let back = WireMessage::from_bytes(&bytes).unwrap();
     assert_eq!(back.payload["items"].as_array().unwrap().len(), 1000);
@@ -926,7 +956,13 @@ fn test_encode_decode_rpc_response_roundtrip() {
     let (frame, _) = Frame::decode(&encoded).unwrap();
     let decoded = Frame::decode_response(&frame.data).unwrap();
     assert_eq!(decoded.id, "test-resp-001");
-    assert_eq!(decoded.result.as_ref().unwrap()["data"].as_array().unwrap().len(), 3);
+    assert_eq!(
+        decoded.result.as_ref().unwrap()["data"]
+            .as_array()
+            .unwrap()
+            .len(),
+        3
+    );
     assert!(decoded.error.is_none());
 }
 
@@ -950,18 +986,33 @@ fn test_encode_decode_rpc_error_response() {
 
 #[test]
 fn test_action_type_as_str() {
-    assert_eq!(ActionType::Known(KnownAction::PeerChat).as_str(), "PeerChat");
-    assert_eq!(ActionType::Known(KnownAction::PeerChatCallback).as_str(), "PeerChatCallback");
-    assert_eq!(ActionType::Known(KnownAction::ForgeShare).as_str(), "ForgeShare");
+    assert_eq!(
+        ActionType::Known(KnownAction::PeerChat).as_str(),
+        "PeerChat"
+    );
+    assert_eq!(
+        ActionType::Known(KnownAction::PeerChatCallback).as_str(),
+        "PeerChatCallback"
+    );
+    assert_eq!(
+        ActionType::Known(KnownAction::ForgeShare).as_str(),
+        "ForgeShare"
+    );
     assert_eq!(ActionType::Known(KnownAction::Ping).as_str(), "Ping");
     assert_eq!(ActionType::Known(KnownAction::Status).as_str(), "Status");
-    assert_eq!(ActionType::Custom("custom_action".to_string()).as_str(), "custom_action");
+    assert_eq!(
+        ActionType::Custom("custom_action".to_string()).as_str(),
+        "custom_action"
+    );
 }
 
 #[test]
 fn test_action_type_display() {
     assert_eq!(format!("{}", ActionType::Known(KnownAction::Ping)), "Ping");
-    assert_eq!(format!("{}", ActionType::Custom("my_action".to_string())), "my_action");
+    assert_eq!(
+        format!("{}", ActionType::Custom("my_action".to_string())),
+        "my_action"
+    );
 }
 
 #[test]
@@ -990,9 +1041,18 @@ fn test_action_type_deserialize_unknown() {
 
 #[test]
 fn test_action_type_equality() {
-    assert_eq!(ActionType::Known(KnownAction::Ping), ActionType::Known(KnownAction::Ping));
-    assert_ne!(ActionType::Known(KnownAction::Ping), ActionType::Known(KnownAction::Status));
-    assert_ne!(ActionType::Known(KnownAction::Ping), ActionType::Custom("Ping".to_string()));
+    assert_eq!(
+        ActionType::Known(KnownAction::Ping),
+        ActionType::Known(KnownAction::Ping)
+    );
+    assert_ne!(
+        ActionType::Known(KnownAction::Ping),
+        ActionType::Known(KnownAction::Status)
+    );
+    assert_ne!(
+        ActionType::Known(KnownAction::Ping),
+        ActionType::Custom("Ping".to_string())
+    );
 }
 
 // ===========================================================================
@@ -1135,7 +1195,12 @@ fn test_node_status_serialization() {
     assert_eq!(back, NodeStatus::Connecting);
 }
 
-fn make_test_extended_node(id: &str, status: NodeStatus, caps: Vec<&str>, last_seen: &str) -> ExtendedNodeInfo {
+fn make_test_extended_node(
+    id: &str,
+    status: NodeStatus,
+    caps: Vec<&str>,
+    last_seen: &str,
+) -> ExtendedNodeInfo {
     ExtendedNodeInfo {
         base: NodeInfo {
             id: id.to_string(),
@@ -1241,7 +1306,10 @@ fn test_tcp_conn_config_fields() {
         auth_token: Some("secret".to_string()),
     };
     assert_eq!(config.read_buffer_size, 50);
-    assert_eq!(config.heartbeat_interval, Some(std::time::Duration::from_secs(10)));
+    assert_eq!(
+        config.heartbeat_interval,
+        Some(std::time::Duration::from_secs(10))
+    );
     assert_eq!(config.auth_token, Some("secret".to_string()));
 }
 
@@ -1271,7 +1339,9 @@ fn test_sync_pool_config_custom() {
 fn test_sync_pool_return_closed_connection() {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let addr = listener.local_addr().unwrap().to_string();
-    let _handle = std::thread::spawn(move || { let _ = listener.accept().unwrap(); });
+    let _handle = std::thread::spawn(move || {
+        let _ = listener.accept().unwrap();
+    });
 
     let pool = ConnectionPool::new(PoolConfig::default());
     let mut conn = pool.get_or_connect(&addr).unwrap();
@@ -1397,7 +1467,9 @@ fn test_connection_connect_failure() {
 fn test_connection_new_and_is_connected() {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let addr = listener.local_addr().unwrap().to_string();
-    let _handle = std::thread::spawn(move || { let _ = listener.accept().unwrap(); });
+    let _handle = std::thread::spawn(move || {
+        let _ = listener.accept().unwrap();
+    });
 
     let conn = Connection::connect(&addr).unwrap();
     assert!(conn.is_connected());
@@ -1407,7 +1479,9 @@ fn test_connection_new_and_is_connected() {
 fn test_connection_close_idempotent() {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let addr = listener.local_addr().unwrap().to_string();
-    let _handle = std::thread::spawn(move || { let _ = listener.accept().unwrap(); });
+    let _handle = std::thread::spawn(move || {
+        let _ = listener.accept().unwrap();
+    });
 
     let mut conn = Connection::connect(&addr).unwrap();
     conn.close();
@@ -1419,7 +1493,9 @@ fn test_connection_close_idempotent() {
 fn test_connection_send_after_close() {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let addr = listener.local_addr().unwrap().to_string();
-    let _handle = std::thread::spawn(move || { let _ = listener.accept().unwrap(); });
+    let _handle = std::thread::spawn(move || {
+        let _ = listener.accept().unwrap();
+    });
 
     let mut conn = Connection::connect(&addr).unwrap();
     conn.close();
@@ -1431,7 +1507,9 @@ fn test_connection_send_after_close() {
 fn test_connection_recv_after_close() {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let addr = listener.local_addr().unwrap().to_string();
-    let _handle = std::thread::spawn(move || { let _ = listener.accept().unwrap(); });
+    let _handle = std::thread::spawn(move || {
+        let _ = listener.accept().unwrap();
+    });
 
     let mut conn = Connection::connect(&addr).unwrap();
     conn.close();
@@ -1443,7 +1521,9 @@ fn test_connection_recv_after_close() {
 fn test_connection_remote_addr_populated() {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let addr = listener.local_addr().unwrap().to_string();
-    let _handle = std::thread::spawn(move || { let _ = listener.accept().unwrap(); });
+    let _handle = std::thread::spawn(move || {
+        let _ = listener.accept().unwrap();
+    });
 
     let conn = Connection::connect(&addr).unwrap();
     let remote = conn.remote_addr().to_string();
@@ -1608,7 +1688,13 @@ fn test_rpc_request_with_complex_payload() {
     // encode_request produces WireMessage format; decode_response handles it
     let decoded = Frame::decode_response(&frame.data).unwrap();
     assert_eq!(decoded.id, "complex-1");
-    assert!(decoded.result.unwrap()["messages"].as_array().unwrap().len() == 2);
+    assert!(
+        decoded.result.unwrap()["messages"]
+            .as_array()
+            .unwrap()
+            .len()
+            == 2
+    );
 }
 
 #[test]
@@ -1696,7 +1782,13 @@ fn test_frame_decode_returns_none_on_empty() {
 
 #[test]
 fn test_task_status_serialization() {
-    let statuses = vec![TaskStatus::Pending, TaskStatus::Running, TaskStatus::Completed, TaskStatus::Failed, TaskStatus::Cancelled];
+    let statuses = vec![
+        TaskStatus::Pending,
+        TaskStatus::Running,
+        TaskStatus::Completed,
+        TaskStatus::Failed,
+        TaskStatus::Cancelled,
+    ];
     for status in &statuses {
         let json = serde_json::to_string(status).unwrap();
         let back: TaskStatus = serde_json::from_str(&json).unwrap();
@@ -1969,7 +2061,10 @@ async fn test_continuation_cleanup_old_snapshots() {
     store.save(make_snapshot("old-snap")).await.unwrap();
     // Make the file appear old by modifying the timestamp
     // Cleanup with 0 age should remove everything
-    let removed = store.cleanup_old(std::time::Duration::from_secs(0)).await.unwrap();
+    let removed = store
+        .cleanup_old(std::time::Duration::from_secs(0))
+        .await
+        .unwrap();
     assert_eq!(removed, 1);
     assert!(store.is_empty());
 }
@@ -1980,7 +2075,12 @@ async fn test_continuation_cleanup_old_snapshots() {
 
 #[test]
 fn test_wire_message_roundtrip_with_all_fields() {
-    let msg = WireMessage::new_request("source-node", "dest-node", "PeerChat", serde_json::json!({"msg": "test"}));
+    let msg = WireMessage::new_request(
+        "source-node",
+        "dest-node",
+        "PeerChat",
+        serde_json::json!({"msg": "test"}),
+    );
     let bytes = msg.to_bytes().unwrap();
     let decoded = WireMessage::from_bytes(&bytes).unwrap();
 
@@ -2093,13 +2193,17 @@ fn test_task_manager_set_callback_replaces() {
     let c1 = count1.clone();
     let c2 = count2.clone();
     let tm = TaskManager::new();
-    tm.set_callback(Box::new(move |_: &Task| { c1.fetch_add(1, Ordering::SeqCst); }));
+    tm.set_callback(Box::new(move |_: &Task| {
+        c1.fetch_add(1, Ordering::SeqCst);
+    }));
     let task = tm.create_task("a", serde_json::json!({}), "rpc", "ch");
     tm.complete_task(&task.id, serde_json::json!("done"));
     assert_eq!(count1.load(Ordering::SeqCst), 1);
     assert_eq!(count2.load(Ordering::SeqCst), 0);
 
-    tm.set_callback(Box::new(move |_: &Task| { c2.fetch_add(1, Ordering::SeqCst); }));
+    tm.set_callback(Box::new(move |_: &Task| {
+        c2.fetch_add(1, Ordering::SeqCst);
+    }));
     let task2 = tm.create_task("b", serde_json::json!({}), "rpc", "ch");
     tm.fail_task(&task2.id, "err");
     // First callback should NOT have been called again
@@ -2209,7 +2313,9 @@ fn test_store_update_to_running() {
         completed_at: None,
     };
     store.create(task).unwrap();
-    store.update_result("r-1", TaskStatus::Running, None).unwrap();
+    store
+        .update_result("r-1", TaskStatus::Running, None)
+        .unwrap();
     let t = store.get("r-1").unwrap();
     assert_eq!(t.status, TaskStatus::Running);
 }
@@ -2230,7 +2336,13 @@ fn test_store_update_with_result_value() {
         completed_at: None,
     };
     store.create(task).unwrap();
-    store.update_result("rv-1", TaskStatus::Completed, Some(serde_json::json!({"output": "done"}))).unwrap();
+    store
+        .update_result(
+            "rv-1",
+            TaskStatus::Completed,
+            Some(serde_json::json!({"output": "done"})),
+        )
+        .unwrap();
     let t = store.get("rv-1").unwrap();
     assert_eq!(t.result.as_ref().unwrap()["output"], "done");
 }
@@ -2310,7 +2422,9 @@ fn test_connection_connect_localhost_refused() {
 fn test_connection_is_connected_after_connect() {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let addr = listener.local_addr().unwrap().to_string();
-    let _handle = std::thread::spawn(move || { let _ = listener.accept().unwrap(); });
+    let _handle = std::thread::spawn(move || {
+        let _ = listener.accept().unwrap();
+    });
 
     let conn = Connection::connect(&addr).unwrap();
     assert!(conn.is_connected());
@@ -2320,7 +2434,9 @@ fn test_connection_is_connected_after_connect() {
 fn test_connection_not_connected_after_close() {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let addr = listener.local_addr().unwrap().to_string();
-    let _handle = std::thread::spawn(move || { let _ = listener.accept().unwrap(); });
+    let _handle = std::thread::spawn(move || {
+        let _ = listener.accept().unwrap();
+    });
 
     let mut conn = Connection::connect(&addr).unwrap();
     conn.close();
@@ -2426,7 +2542,12 @@ fn test_cluster_config_empty_node_id() {
 
 #[test]
 fn test_extended_node_info_get_uptime_recent() {
-    let node = make_test_extended_node("n1", NodeStatus::Online, vec![], &chrono::Local::now().to_rfc3339());
+    let node = make_test_extended_node(
+        "n1",
+        NodeStatus::Online,
+        vec![],
+        &chrono::Local::now().to_rfc3339(),
+    );
     let uptime = node.get_uptime();
     assert!(uptime.as_secs() < 10);
 }
@@ -2460,9 +2581,18 @@ fn test_extended_node_info_addresses_default_empty() {
 
 #[test]
 fn test_action_type_known_variants() {
-    assert_eq!(ActionType::Known(KnownAction::PeerChat).as_str(), "PeerChat");
-    assert_eq!(ActionType::Known(KnownAction::PeerChatCallback).as_str(), "PeerChatCallback");
-    assert_eq!(ActionType::Known(KnownAction::ForgeShare).as_str(), "ForgeShare");
+    assert_eq!(
+        ActionType::Known(KnownAction::PeerChat).as_str(),
+        "PeerChat"
+    );
+    assert_eq!(
+        ActionType::Known(KnownAction::PeerChatCallback).as_str(),
+        "PeerChatCallback"
+    );
+    assert_eq!(
+        ActionType::Known(KnownAction::ForgeShare).as_str(),
+        "ForgeShare"
+    );
     assert_eq!(ActionType::Known(KnownAction::Ping).as_str(), "Ping");
     assert_eq!(ActionType::Known(KnownAction::Status).as_str(), "Status");
 }
@@ -2517,7 +2647,13 @@ fn test_task_serialization_with_all_fields() {
 
 #[test]
 fn test_task_status_all_variants() {
-    let statuses = vec![TaskStatus::Pending, TaskStatus::Running, TaskStatus::Completed, TaskStatus::Failed, TaskStatus::Cancelled];
+    let statuses = vec![
+        TaskStatus::Pending,
+        TaskStatus::Running,
+        TaskStatus::Completed,
+        TaskStatus::Failed,
+        TaskStatus::Cancelled,
+    ];
     assert_eq!(statuses.len(), 5);
     for s in &statuses {
         let json = serde_json::to_string(s).unwrap();

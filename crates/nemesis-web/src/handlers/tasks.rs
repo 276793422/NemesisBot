@@ -100,7 +100,9 @@ impl TasksHandler {
         filename: &str,
     ) -> Result<Option<serde_json::Value>, String> {
         let content = read_workspace_file(workspace, filename)?;
-        Ok(Some(serde_json::json!({ "filename": filename, "content": content })))
+        Ok(Some(
+            serde_json::json!({ "filename": filename, "content": content }),
+        ))
     }
 
     fn save_file(
@@ -110,7 +112,9 @@ impl TasksHandler {
         content: &str,
     ) -> Result<Option<serde_json::Value>, String> {
         write_workspace_file(workspace, filename, content)?;
-        Ok(Some(serde_json::json!({ "saved": true, "filename": filename })))
+        Ok(Some(
+            serde_json::json!({ "saved": true, "filename": filename }),
+        ))
     }
 
     fn cron_list(
@@ -136,7 +140,10 @@ impl TasksHandler {
         let to = get_opt_str(data, "to");
         let session_key = get_opt_str(data, "session_key");
         let prompt = get_opt_str(data, "prompt").unwrap_or_default();
-        let enabled = data.get("enabled").and_then(|v| v.as_bool()).unwrap_or(true);
+        let enabled = data
+            .get("enabled")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(true);
         let schedule = cron_expr_to_schedule(&cron);
         let job = svc.lock().unwrap().add_job_ext(
             &name,
@@ -148,7 +155,9 @@ impl TasksHandler {
             session_key.as_deref(),
             enabled,
         )?;
-        Ok(Some(serde_json::json!({ "added": true, "job": job_to_view(&job) })))
+        Ok(Some(
+            serde_json::json!({ "added": true, "job": job_to_view(&job) }),
+        ))
     }
 
     fn cron_update(
@@ -163,8 +172,14 @@ impl TasksHandler {
                 .get("cron")
                 .and_then(|v| v.as_str())
                 .map(|c| cron_expr_to_schedule(c)),
-            message: data.get("prompt").and_then(|v| v.as_str()).map(String::from),
-            channel: data.get("channel").and_then(|v| v.as_str()).map(String::from),
+            message: data
+                .get("prompt")
+                .and_then(|v| v.as_str())
+                .map(String::from),
+            channel: data
+                .get("channel")
+                .and_then(|v| v.as_str())
+                .map(String::from),
             to: data.get("to").and_then(|v| v.as_str()).map(String::from),
             session_key: data
                 .get("session_key")
@@ -179,7 +194,9 @@ impl TasksHandler {
             }
         }
         let job = svc.lock().unwrap().patch_job(&id, &patch)?;
-        Ok(Some(serde_json::json!({ "updated": true, "job": job_to_view(&job) })))
+        Ok(Some(
+            serde_json::json!({ "updated": true, "job": job_to_view(&job) }),
+        ))
     }
 
     fn cron_delete(

@@ -617,7 +617,10 @@ fn test_wire_message_validate_valid() {
 
 #[test]
 fn test_connection_error_io_variant() {
-    let err = ConnectionError::Io(std::io::Error::new(std::io::ErrorKind::BrokenPipe, "io error"));
+    let err = ConnectionError::Io(std::io::Error::new(
+        std::io::ErrorKind::BrokenPipe,
+        "io error",
+    ));
     assert!(format!("{}", err).contains("io error"));
 }
 

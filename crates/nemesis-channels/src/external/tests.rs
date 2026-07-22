@@ -476,7 +476,10 @@ fn test_format_output_multi_line() {
     };
     let ch = ExternalChannel::new(config).unwrap();
 
-    assert_eq!(ch.format_output("line1\nline2\nline3"), "line1\nline2\nline3\n");
+    assert_eq!(
+        ch.format_output("line1\nline2\nline3"),
+        "line1\nline2\nline3\n"
+    );
 }
 
 #[test]

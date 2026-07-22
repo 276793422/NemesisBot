@@ -8,9 +8,7 @@ fn test_evaluator_config_default() {
 
 #[test]
 fn test_evaluator_config_serialization() {
-    let config = EvaluatorConfig {
-        pass_threshold: 80,
-    };
+    let config = EvaluatorConfig { pass_threshold: 80 };
     let json = serde_json::to_string(&config).unwrap();
     let back: EvaluatorConfig = serde_json::from_str(&json).unwrap();
     assert_eq!(back.pass_threshold, 80);
@@ -31,9 +29,7 @@ async fn test_evaluate_no_provider() {
 
 #[tokio::test]
 async fn test_evaluate_no_provider_high_threshold() {
-    let config = EvaluatorConfig {
-        pass_threshold: 80,
-    };
+    let config = EvaluatorConfig { pass_threshold: 80 };
     let evaluator = QualityEvaluator::new(config);
     let result = evaluator.evaluate("skill", "test", "1.0", "content").await;
 
@@ -63,7 +59,9 @@ async fn test_evaluate_with_provider() {
     let mut evaluator = QualityEvaluator::new(EvaluatorConfig::default());
     evaluator.set_provider(Box::new(MockLLM));
 
-    let result = evaluator.evaluate("skill", "test", "1.0", "skill content").await;
+    let result = evaluator
+        .evaluate("skill", "test", "1.0", "skill content")
+        .await;
 
     assert!(result.passed);
     assert!(result.score > 0);
@@ -248,7 +246,10 @@ async fn test_evaluate_with_provider_no_notes() {
             _user_prompt: &str,
             _max_tokens: Option<i64>,
         ) -> Result<String, String> {
-            Ok(r#"{"correctness": 100, "quality": 100, "security": 100, "reusability": 100}"#.to_string())
+            Ok(
+                r#"{"correctness": 100, "quality": 100, "security": 100, "reusability": 100}"#
+                    .to_string(),
+            )
         }
     }
 

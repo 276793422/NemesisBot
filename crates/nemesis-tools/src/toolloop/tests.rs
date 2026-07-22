@@ -6,8 +6,12 @@ struct EchoTool;
 
 #[async_trait]
 impl Tool for EchoTool {
-    fn name(&self) -> &str { "echo" }
-    fn description(&self) -> &str { "Echo back the input" }
+    fn name(&self) -> &str {
+        "echo"
+    }
+    fn description(&self) -> &str {
+        "Echo back the input"
+    }
     fn parameters(&self) -> serde_json::Value {
         serde_json::json!({"type": "object", "properties": {"text": {"type": "string"}}})
     }
@@ -388,9 +392,21 @@ fn test_llm_response_with_multiple_tool_calls() {
     let resp = LLMResponse {
         content: String::new(),
         tool_calls: vec![
-            LLMToolCall { id: "1".into(), name: "a".into(), arguments: serde_json::json!({}) },
-            LLMToolCall { id: "2".into(), name: "b".into(), arguments: serde_json::json!({}) },
-            LLMToolCall { id: "3".into(), name: "c".into(), arguments: serde_json::json!({}) },
+            LLMToolCall {
+                id: "1".into(),
+                name: "a".into(),
+                arguments: serde_json::json!({}),
+            },
+            LLMToolCall {
+                id: "2".into(),
+                name: "b".into(),
+                arguments: serde_json::json!({}),
+            },
+            LLMToolCall {
+                id: "3".into(),
+                name: "c".into(),
+                arguments: serde_json::json!({}),
+            },
         ],
     };
     assert_eq!(resp.tool_calls.len(), 3);

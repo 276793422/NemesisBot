@@ -5,7 +5,7 @@
 use std::collections::HashMap;
 
 use nemesis_memory::__test_fixture;
-use nemesis_memory::vector::{VectorStore, VectorEntry};
+use nemesis_memory::vector::{VectorEntry, VectorStore};
 
 fn make_entry(id: &str, content: &str) -> VectorEntry {
     VectorEntry {
@@ -35,8 +35,7 @@ async fn it_vector_store_jsonl_roundtrip() {
         .expect("plugin DLL + model files required");
 
     // Phase 1: Store and persist (using shared plugin fixture)
-    let embed1 = __test_fixture::shared_embed_func()
-        .expect("shared plugin not available");
+    let embed1 = __test_fixture::shared_embed_func().expect("shared plugin not available");
     let store = VectorStore::new_from_embed(embed1, config.clone());
     let e1 = make_entry("rt-1", "machine learning artificial intelligence");
     let e2 = make_entry("rt-2", "neural networks deep learning");
@@ -48,8 +47,7 @@ async fn it_vector_store_jsonl_roundtrip() {
     drop(store);
 
     // Phase 2: Load into new store and query (using same shared plugin)
-    let embed2 = __test_fixture::shared_embed_func()
-        .expect("shared plugin not available");
+    let embed2 = __test_fixture::shared_embed_func().expect("shared plugin not available");
     let store2 = VectorStore::new_from_embed(embed2, config);
     store2.load_persisted_sync().unwrap();
     assert_eq!(store2.len(), 2);
@@ -60,7 +58,10 @@ async fn it_vector_store_jsonl_roundtrip() {
 
     // Query with similar text to stored content
     let result = store2.query("machine learning", 10, &[]).unwrap();
-    assert!(result.total >= 1, "Should find at least 1 result after roundtrip");
+    assert!(
+        result.total >= 1,
+        "Should find at least 1 result after roundtrip"
+    );
 }
 
 #[tokio::test]
@@ -115,8 +116,7 @@ async fn it_persistence_mixed_valid_corrupted() {
     let config = __test_fixture::plugin_store_config(&path.to_string_lossy())
         .expect("plugin DLL + model files required");
 
-    let embed = __test_fixture::shared_embed_func()
-        .expect("shared plugin not available");
+    let embed = __test_fixture::shared_embed_func().expect("shared plugin not available");
     let store = VectorStore::new_from_embed(embed, config);
     store.load_persisted_sync().unwrap();
 

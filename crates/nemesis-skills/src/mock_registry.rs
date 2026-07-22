@@ -62,20 +62,17 @@ impl MockRegistry {
 
     /// Get skill metadata by slug.
     pub fn get_skill_meta(&self, slug: &str) -> SkillMeta {
-        self.skill_meta
-            .get(slug)
-            .cloned()
-            .unwrap_or(SkillMeta {
-                slug: slug.to_string(),
-                display_name: slug.to_string(),
-                summary: "Mock skill".to_string(),
-                latest_version: "latest".to_string(),
-                is_malware_blocked: false,
-                is_suspicious: false,
-                registry_name: self.name.clone(),
-                author: String::new(),
-                downloads: 0,
-            })
+        self.skill_meta.get(slug).cloned().unwrap_or(SkillMeta {
+            slug: slug.to_string(),
+            display_name: slug.to_string(),
+            summary: "Mock skill".to_string(),
+            latest_version: "latest".to_string(),
+            is_malware_blocked: false,
+            is_suspicious: false,
+            registry_name: self.name.clone(),
+            author: String::new(),
+            downloads: 0,
+        })
     }
 
     /// Simulate downloading and installing a skill.
@@ -105,12 +102,7 @@ impl MockRegistry {
     }
 
     /// Browse mock skills with client-side pagination.
-    pub fn browse(
-        &self,
-        _sort: &BrowseSort,
-        limit: usize,
-        cursor: &str,
-    ) -> BrowseResult {
+    pub fn browse(&self, _sort: &BrowseSort, limit: usize, cursor: &str) -> BrowseResult {
         let offset = if let Some(rest) = cursor.strip_prefix("offset:") {
             rest.parse::<usize>().unwrap_or(0)
         } else {
@@ -118,11 +110,7 @@ impl MockRegistry {
         };
 
         let all: Vec<SkillSearchResult> = self.search_results.clone();
-        let items: Vec<SkillSearchResult> = all
-            .into_iter()
-            .skip(offset)
-            .take(limit)
-            .collect();
+        let items: Vec<SkillSearchResult> = all.into_iter().skip(offset).take(limit).collect();
 
         let next_offset = offset + items.len();
         let next_cursor = if items.len() == limit {

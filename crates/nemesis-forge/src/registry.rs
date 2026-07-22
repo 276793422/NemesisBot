@@ -111,7 +111,11 @@ impl Registry {
 
     /// List all artifacts, optionally filtered by kind and status.
     /// Mirrors Go's `List(artifactType, status)`.
-    pub fn list(&self, kind_filter: Option<ArtifactKind>, status_filter: Option<ArtifactStatus>) -> Vec<Artifact> {
+    pub fn list(
+        &self,
+        kind_filter: Option<ArtifactKind>,
+        status_filter: Option<ArtifactStatus>,
+    ) -> Vec<Artifact> {
         let arts = self.artifacts.lock();
         arts.iter()
             .filter(|a| {
@@ -168,9 +172,8 @@ impl Registry {
             return Ok(());
         }
         let arts = self.artifacts.lock();
-        let json = serde_json::to_string_pretty(&*arts).map_err(|e| {
-            std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string())
-        })?;
+        let json = serde_json::to_string_pretty(&*arts)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()))?;
         drop(arts);
         // F-D4: atomic write (unique temp + rename).
         let tmp = atomic_tmp_path(&self.config.index_path);
@@ -185,9 +188,8 @@ impl Registry {
             return Ok(());
         }
         let content = tokio::fs::read_to_string(&self.config.index_path).await?;
-        let loaded: Vec<Artifact> = serde_json::from_str(&content).map_err(|e| {
-            std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string())
-        })?;
+        let loaded: Vec<Artifact> = serde_json::from_str(&content)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()))?;
         *self.artifacts.lock() = loaded;
         Ok(())
     }

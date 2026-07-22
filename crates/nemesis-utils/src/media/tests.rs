@@ -195,7 +195,10 @@ fn test_sanitize_filename_with_dots() {
 #[test]
 fn test_sanitize_filename_complex() {
     assert_eq!(sanitize_filename("../../../shell.php"), "shell.php");
-    assert_eq!(sanitize_filename("normal-file_v2.txt"), "normal-file_v2.txt");
+    assert_eq!(
+        sanitize_filename("normal-file_v2.txt"),
+        "normal-file_v2.txt"
+    );
 }
 
 #[test]
@@ -284,13 +287,19 @@ fn test_download_options_with_headers() {
         logger_prefix: "media".to_string(),
     };
     assert_eq!(opts.extra_headers.len(), 2);
-    assert_eq!(opts.extra_headers.get("Authorization").unwrap(), "Bearer token123");
+    assert_eq!(
+        opts.extra_headers.get("Authorization").unwrap(),
+        "Bearer token123"
+    );
 }
 
 #[test]
 fn test_detect_media_type_dot_in_name() {
     assert_eq!(detect_media_type("my.file.name.jpg"), "image/jpeg");
-    assert_eq!(detect_media_type("archive.tar.gz"), "application/octet-stream");
+    assert_eq!(
+        detect_media_type("archive.tar.gz"),
+        "application/octet-stream"
+    );
 }
 
 #[test]
@@ -328,7 +337,12 @@ fn test_all_video_types() {
 
 #[tokio::test]
 async fn test_download_file_bad_url() {
-    let result = download_file("http://127.0.0.1:1/nonexistent.txt", "test.txt", Duration::from_millis(100)).await;
+    let result = download_file(
+        "http://127.0.0.1:1/nonexistent.txt",
+        "test.txt",
+        Duration::from_millis(100),
+    )
+    .await;
     assert!(result.is_err());
 }
 
@@ -338,7 +352,8 @@ async fn test_download_file_with_opts_bad_url() {
         "http://127.0.0.1:1/file.txt",
         "test.txt",
         DownloadOptions::default(),
-    ).await;
+    )
+    .await;
     assert!(result.is_empty());
 }
 
@@ -356,11 +371,7 @@ async fn test_download_file_with_opts_zero_timeout() {
         logger_prefix: "test".to_string(),
     };
     // Zero timeout should be replaced with 60s default, but bad port will fail
-    let result = download_file_with_opts(
-        "http://127.0.0.1:1/file.txt",
-        "test.txt",
-        opts,
-    ).await;
+    let result = download_file_with_opts("http://127.0.0.1:1/file.txt", "test.txt", opts).await;
     assert!(result.is_empty());
 }
 
@@ -371,11 +382,7 @@ async fn test_download_file_with_opts_empty_logger_prefix() {
         extra_headers: HashMap::new(),
         logger_prefix: String::new(),
     };
-    let result = download_file_with_opts(
-        "http://127.0.0.1:1/file.txt",
-        "test.txt",
-        opts,
-    ).await;
+    let result = download_file_with_opts("http://127.0.0.1:1/file.txt", "test.txt", opts).await;
     assert!(result.is_empty());
 }
 
@@ -388,11 +395,7 @@ async fn test_download_file_with_opts_extra_headers() {
         extra_headers: headers,
         logger_prefix: "test".to_string(),
     };
-    let result = download_file_with_opts(
-        "http://127.0.0.1:1/file.txt",
-        "test.txt",
-        opts,
-    ).await;
+    let result = download_file_with_opts("http://127.0.0.1:1/file.txt", "test.txt", opts).await;
     assert!(result.is_empty());
 }
 
@@ -498,12 +501,7 @@ async fn test_download_file_with_connection_refused() {
 async fn test_download_file_with_opts_default_timeout() {
     // Test with default options but unreachable URL
     let opts = DownloadOptions::default();
-    let result = download_file_with_opts(
-        "http://127.0.0.1:1/file.txt",
-        "test.txt",
-        opts,
-    )
-    .await;
+    let result = download_file_with_opts("http://127.0.0.1:1/file.txt", "test.txt", opts).await;
     assert!(result.is_empty());
 }
 

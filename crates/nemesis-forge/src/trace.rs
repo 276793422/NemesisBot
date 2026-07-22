@@ -133,7 +133,8 @@ impl TraceCollector {
         let total_traces = events.len();
 
         // Count unique sessions and rounds
-        let mut session_rounds: std::collections::HashMap<String, u32> = std::collections::HashMap::new();
+        let mut session_rounds: std::collections::HashMap<String, u32> =
+            std::collections::HashMap::new();
         for event in events.iter() {
             if event.event_type == "llm_response" {
                 *session_rounds.entry(event.session_key.clone()).or_insert(0) += 1;
@@ -146,7 +147,10 @@ impl TraceCollector {
             0.0
         };
 
-        let tool_calls = events.iter().filter(|e| e.event_type == "tool_call").count() as f64;
+        let tool_calls = events
+            .iter()
+            .filter(|e| e.event_type == "tool_call")
+            .count() as f64;
         let efficiency_score = if total_traces > 0 {
             tool_calls / total_traces as f64
         } else {
@@ -156,7 +160,9 @@ impl TraceCollector {
         // Signal summary
         let mut signal_summary = std::collections::HashMap::new();
         for signal in signals.iter() {
-            *signal_summary.entry(signal.signal_type.clone()).or_insert(0u32) += 1;
+            *signal_summary
+                .entry(signal.signal_type.clone())
+                .or_insert(0u32) += 1;
         }
 
         TraceStats {

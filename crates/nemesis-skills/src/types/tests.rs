@@ -694,7 +694,8 @@ fn test_github_source_config_default_fields() {
 
 #[test]
 fn test_github_source_legacy_parse() {
-    let json = r#"{"name": "mysource", "url": "https://github.com/org/skills", "branch": "develop"}"#;
+    let json =
+        r#"{"name": "mysource", "url": "https://github.com/org/skills", "branch": "develop"}"#;
     let source: GithubSource = serde_json::from_str(json).unwrap();
     assert_eq!(source.name, "mysource");
     assert_eq!(source.url, "https://github.com/org/skills");

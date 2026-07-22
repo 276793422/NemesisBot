@@ -162,7 +162,11 @@ fn test_load_static_config_invalid_toml() {
     std::fs::write(&path, "this is [not valid {{{{toml").unwrap();
 
     let result = load_static_config(&path);
-    assert!(result.is_err(), "expected error for invalid TOML, got {:?}", result);
+    assert!(
+        result.is_err(),
+        "expected error for invalid TOML, got {:?}",
+        result
+    );
 }
 
 #[test]
@@ -172,7 +176,11 @@ fn test_load_dynamic_state_invalid_toml() {
     std::fs::write(&path, "broken [toml {{ }} ][").unwrap();
 
     let result = load_dynamic_state(&path);
-    assert!(result.is_err(), "expected error for invalid TOML, got {:?}", result);
+    assert!(
+        result.is_err(),
+        "expected error for invalid TOML, got {:?}",
+        result
+    );
 }
 
 #[test]
@@ -210,7 +218,11 @@ fn test_atomic_write_rename_failure() {
     let invalid_path = dir.path().join("bad\0file.toml");
     let config = create_static_config("node-fail", "FailTest", "0.0.0.0:9000");
     let result = save_static_config(&invalid_path, &config);
-    assert!(result.is_err(), "expected error for invalid path, got {:?}", result);
+    assert!(
+        result.is_err(),
+        "expected error for invalid path, got {:?}",
+        result
+    );
 }
 
 #[test]
@@ -241,7 +253,11 @@ fn test_append_peer_to_file_creates_new() {
 
     assert!(path.exists());
     let content = std::fs::read_to_string(&path).unwrap();
-    assert!(content.contains("[peers.Node-B]"), "content was: {}", content);
+    assert!(
+        content.contains("[peers.Node-B]"),
+        "content was: {}",
+        content
+    );
     assert!(content.contains("address = \"127.0.0.1:11950\""));
 }
 
@@ -301,7 +317,11 @@ fn test_append_peer_to_file_corrupt_fallback() {
     append_peer_to_file(&path, "Node-X", "10.0.0.5:11950", "worker", "general").unwrap();
 
     let content = std::fs::read_to_string(&path).unwrap();
-    assert!(content.contains("[peers.Node-X]"), "content was: {}", content);
+    assert!(
+        content.contains("[peers.Node-X]"),
+        "content was: {}",
+        content
+    );
 }
 
 #[test]
@@ -336,14 +356,11 @@ fn test_append_peer_to_file_duplicate_warns_and_overwrites() {
 fn test_sanitize_peer_key() {
     // Only `.` and `:` are replaced. `-` and `_` are preserved (TOML v1.0.0
     // allows A-Za-z0-9_- in bare keys).
-    assert_eq!(sanitize_peer_key("Node-A"), "Node-A");        // dash preserved
-    assert_eq!(sanitize_peer_key("Node_A"), "Node_A");        // underscore preserved
+    assert_eq!(sanitize_peer_key("Node-A"), "Node-A"); // dash preserved
+    assert_eq!(sanitize_peer_key("Node_A"), "Node_A"); // underscore preserved
     assert_eq!(sanitize_peer_key("node.example.com"), "node_example_com"); // dots replaced
-    assert_eq!(sanitize_peer_key("host:1234"), "host_1234");  // colon replaced
-    assert_eq!(
-        sanitize_peer_key("Mixed-Case.Host:9"),
-        "Mixed-Case_Host_9"
-    ); // mixed: dash preserved, dot/colon replaced
+    assert_eq!(sanitize_peer_key("host:1234"), "host_1234"); // colon replaced
+    assert_eq!(sanitize_peer_key("Mixed-Case.Host:9"), "Mixed-Case_Host_9"); // mixed: dash preserved, dot/colon replaced
 }
 
 #[test]

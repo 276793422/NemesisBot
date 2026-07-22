@@ -84,7 +84,11 @@ pub fn resolve_plugin_dll() -> Option<String> {
     let root = manifest.parent().unwrap().parent().unwrap();
 
     for profile in &["release", "debug"] {
-        let dll = root.join("target").join(profile).join("plugins").join("plugin_onnx.dll");
+        let dll = root
+            .join("target")
+            .join(profile)
+            .join("plugins")
+            .join("plugin_onnx.dll");
         if dll.exists() {
             return Some(dll.to_string_lossy().to_string());
         }
@@ -119,10 +123,14 @@ pub fn resolve_config_dir() -> Option<String> {
 // ---------------------------------------------------------------------------
 
 fn init_shared() -> Result<SharedEmbedState, String> {
-    let plugin_path = match resolve_plugin_dll() {
-        Some(p) => p,
-        None => return Err("plugin_onnx.dll not found. Build: cd plugins/plugin-onnx && cargo build --release".into()),
-    };
+    let plugin_path =
+        match resolve_plugin_dll() {
+            Some(p) => p,
+            None => return Err(
+                "plugin_onnx.dll not found. Build: cd plugins/plugin-onnx && cargo build --release"
+                    .into(),
+            ),
+        };
 
     let config_dir = match resolve_config_dir() {
         Some(c) => c,
@@ -130,9 +138,8 @@ fn init_shared() -> Result<SharedEmbedState, String> {
     };
 
     // Load embedding config and resolve model file paths
-    let emb_config = crate::vector::embedding_config::load_embedding_config(
-        std::path::Path::new(&config_dir),
-    );
+    let emb_config =
+        crate::vector::embedding_config::load_embedding_config(std::path::Path::new(&config_dir));
     let (model_dir, dim) = crate::vector::embedding_config::resolve_model_files(
         &emb_config,
         std::path::Path::new(&config_dir),
@@ -149,7 +156,8 @@ fn init_shared() -> Result<SharedEmbedState, String> {
         .map_err(|e| format!("Failed to init plugin: {}", e))?;
 
     // Spawn background thread that owns the plugin forever
-    let (tx, rx) = std::sync::mpsc::channel::<(String, std::sync::mpsc::Sender<Result<Vec<f32>, String>>)>();
+    let (tx, rx) =
+        std::sync::mpsc::channel::<(String, std::sync::mpsc::Sender<Result<Vec<f32>, String>>)>();
 
     std::thread::Builder::new()
         .name("onnx-shared-test-embed".into())

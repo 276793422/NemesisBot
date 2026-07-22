@@ -155,9 +155,7 @@ impl CORSManager {
 
         // Development mode / localhost ------------------------------------
         if cfg.development_mode || cfg.allow_localhost {
-            if origin.starts_with("http://localhost:")
-                || origin.starts_with("http://127.0.0.1:")
-            {
+            if origin.starts_with("http://localhost:") || origin.starts_with("http://127.0.0.1:") {
                 return true;
             }
         }
@@ -251,9 +249,8 @@ impl CORSManager {
 
     fn load_from_file(path: &Path) -> std::io::Result<CORSConfig> {
         let data = std::fs::read_to_string(path)?;
-        let cfg: CORSConfig = serde_json::from_str(&data).map_err(|e| {
-            std::io::Error::new(std::io::ErrorKind::InvalidData, e)
-        })?;
+        let cfg: CORSConfig = serde_json::from_str(&data)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
         Ok(cfg)
     }
 
@@ -264,9 +261,8 @@ impl CORSManager {
             std::fs::create_dir_all(parent)?;
         }
 
-        let json = serde_json::to_string_pretty(cfg).map_err(|e| {
-            std::io::Error::new(std::io::ErrorKind::InvalidData, e)
-        })?;
+        let json = serde_json::to_string_pretty(cfg)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
 
         let tmp_path = path.with_extension("json.tmp");
         std::fs::write(&tmp_path, &json)?;

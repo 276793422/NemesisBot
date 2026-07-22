@@ -47,8 +47,28 @@ fn test_audit_logger_file() {
     let mut logger = AuditLogger::new(config).unwrap();
     assert!(logger.is_enabled());
 
-    logger.log_event("evt-1", "allowed", "file_read", "user1", "cli", "/tmp/test.txt", "LOW", "ok", "default");
-    logger.log_event("evt-2", "denied", "process_exec", "user1", "cli", "rm -rf /", "CRITICAL", "blocked", "deny_all");
+    logger.log_event(
+        "evt-1",
+        "allowed",
+        "file_read",
+        "user1",
+        "cli",
+        "/tmp/test.txt",
+        "LOW",
+        "ok",
+        "default",
+    );
+    logger.log_event(
+        "evt-2",
+        "denied",
+        "process_exec",
+        "user1",
+        "cli",
+        "rm -rf /",
+        "CRITICAL",
+        "blocked",
+        "deny_all",
+    );
 
     let path = logger.log_file_path().unwrap();
     let content = std::fs::read_to_string(path).unwrap();
@@ -93,7 +113,17 @@ fn test_export_log() {
     };
     let mut logger = AuditLogger::new(config).unwrap();
 
-    logger.log_event("evt-export", "allowed", "file_read", "user1", "cli", "/tmp/test", "LOW", "ok", "default");
+    logger.log_event(
+        "evt-export",
+        "allowed",
+        "file_read",
+        "user1",
+        "cli",
+        "/tmp/test",
+        "LOW",
+        "ok",
+        "default",
+    );
 
     let export_path = export_dir.path().join("export.log");
     logger.export_log(&export_path).unwrap();
@@ -122,6 +152,16 @@ fn test_flush() {
         enabled: true,
     };
     let mut logger = AuditLogger::new(config).unwrap();
-    logger.log_event("evt-flush", "allowed", "file_read", "u", "s", "t", "LOW", "ok", "p");
+    logger.log_event(
+        "evt-flush",
+        "allowed",
+        "file_read",
+        "u",
+        "s",
+        "t",
+        "LOW",
+        "ok",
+        "p",
+    );
     assert!(logger.flush().is_ok());
 }

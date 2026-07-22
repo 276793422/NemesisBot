@@ -86,24 +86,48 @@ pub fn builtin_schemas() -> Vec<ActionSchema> {
             action: Action::PeerChat,
             description: "Send a chat message to a remote peer for LLM processing".into(),
             fields: vec![
-                ActionField { name: "message".into(), required: true, field_type: "string".into() },
-                ActionField { name: "correlation_id".into(), required: true, field_type: "string".into() },
+                ActionField {
+                    name: "message".into(),
+                    required: true,
+                    field_type: "string".into(),
+                },
+                ActionField {
+                    name: "correlation_id".into(),
+                    required: true,
+                    field_type: "string".into(),
+                },
             ],
         },
         ActionSchema {
             action: Action::PeerChatCallback,
             description: "Callback with the result of a peer_chat".into(),
             fields: vec![
-                ActionField { name: "task_id".into(), required: true, field_type: "string".into() },
-                ActionField { name: "response".into(), required: true, field_type: "string".into() },
+                ActionField {
+                    name: "task_id".into(),
+                    required: true,
+                    field_type: "string".into(),
+                },
+                ActionField {
+                    name: "response".into(),
+                    required: true,
+                    field_type: "string".into(),
+                },
             ],
         },
         ActionSchema {
             action: Action::ForgeShare,
             description: "Share a forge reflection report".into(),
             fields: vec![
-                ActionField { name: "report".into(), required: true, field_type: "object".into() },
-                ActionField { name: "source_node".into(), required: true, field_type: "string".into() },
+                ActionField {
+                    name: "report".into(),
+                    required: true,
+                    field_type: "object".into(),
+                },
+                ActionField {
+                    name: "source_node".into(),
+                    required: true,
+                    field_type: "string".into(),
+                },
             ],
         },
         ActionSchema {
@@ -120,8 +144,16 @@ pub fn builtin_schemas() -> Vec<ActionSchema> {
             action: Action::LlmProxy,
             description: "Proxy LLM chat completion to remote node".into(),
             fields: vec![
-                ActionField { name: "messages".into(), required: true, field_type: "array".into() },
-                ActionField { name: "model".into(), required: false, field_type: "string".into() },
+                ActionField {
+                    name: "messages".into(),
+                    required: true,
+                    field_type: "array".into(),
+                },
+                ActionField {
+                    name: "model".into(),
+                    required: false,
+                    field_type: "string".into(),
+                },
             ],
         },
     ]

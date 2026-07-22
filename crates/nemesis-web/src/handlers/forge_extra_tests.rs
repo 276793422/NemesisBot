@@ -11,8 +11,8 @@ use crate::events::EventHub;
 use crate::session::SessionManager;
 use crate::ws_router::{ModuleHandler, RequestContext};
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, AtomicUsize};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicUsize};
 use std::time::Instant;
 
 // -----------------------------------------------------------------------
@@ -46,7 +46,9 @@ fn make_ctx(dir: &tempfile::TempDir) -> RequestContext {
         cluster_service: None,
         cluster_log_dir: None,
         workflow_engine: None,
-        chat_secret_store: std::sync::Arc::new(nemesis_workflow::chat_secrets::ChatSecretStore::in_memory()),
+        chat_secret_store: std::sync::Arc::new(
+            nemesis_workflow::chat_secrets::ChatSecretStore::in_memory(),
+        ),
         webhook_rate_limiter: Arc::new(crate::handlers::workflow::WebhookRateLimiter::new()),
         internal_cmd_tx: None,
         estop: None,
@@ -88,7 +90,9 @@ fn make_ctx_no_workspace() -> RequestContext {
         cluster_service: None,
         cluster_log_dir: None,
         workflow_engine: None,
-        chat_secret_store: std::sync::Arc::new(nemesis_workflow::chat_secrets::ChatSecretStore::in_memory()),
+        chat_secret_store: std::sync::Arc::new(
+            nemesis_workflow::chat_secrets::ChatSecretStore::in_memory(),
+        ),
         webhook_rate_limiter: Arc::new(crate::handlers::workflow::WebhookRateLimiter::new()),
         internal_cmd_tx: None,
         estop: None,
@@ -221,7 +225,11 @@ async fn test_status_no_forge_dir_returns_zeros() {
     write_config(dir.path());
     let ctx = make_ctx(&dir);
 
-    let result = handler.handle_cmd("status", None, &ctx).await.unwrap().unwrap();
+    let result = handler
+        .handle_cmd("status", None, &ctx)
+        .await
+        .unwrap()
+        .unwrap();
     assert!(!result["enabled"].as_bool().unwrap());
     assert!(!result["running"].as_bool().unwrap());
     assert!(result["started_at"].is_null());
@@ -250,7 +258,11 @@ async fn test_status_reads_forge_config_file() {
     );
     let ctx = make_ctx(&dir);
 
-    let result = handler.handle_cmd("status", None, &ctx).await.unwrap().unwrap();
+    let result = handler
+        .handle_cmd("status", None, &ctx)
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(result["reflection_interval_secs"], 1234);
     assert_eq!(result["cleanup_interval_secs"], 9876);
 }
@@ -295,7 +307,11 @@ async fn test_status_counts_files_in_forge_dir() {
     .unwrap();
 
     let ctx = make_ctx(&dir);
-    let result = handler.handle_cmd("status", None, &ctx).await.unwrap().unwrap();
+    let result = handler
+        .handle_cmd("status", None, &ctx)
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(result["experience_count"], 2);
     assert_eq!(result["reflection_count"], 1);
     assert_eq!(result["artifact_count"], 1);
@@ -325,7 +341,11 @@ async fn test_stats_default_values() {
     write_config(dir.path());
     let ctx = make_ctx(&dir);
 
-    let result = handler.handle_cmd("stats", None, &ctx).await.unwrap().unwrap();
+    let result = handler
+        .handle_cmd("stats", None, &ctx)
+        .await
+        .unwrap()
+        .unwrap();
     assert!(!result["enabled"].as_bool().unwrap());
     assert_eq!(result["experiences"]["total"], 0);
     assert_eq!(result["experiences"]["success"], 0);
@@ -371,7 +391,11 @@ async fn test_stats_with_experience_and_artifacts() {
     .unwrap();
 
     let ctx = make_ctx(&dir);
-    let result = handler.handle_cmd("stats", None, &ctx).await.unwrap().unwrap();
+    let result = handler
+        .handle_cmd("stats", None, &ctx)
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(result["experiences"]["total"], 4);
     assert_eq!(result["experiences"]["success"], 3);
     assert_eq!(result["experiences"]["failure"], 1);
@@ -406,10 +430,17 @@ async fn test_stats_finds_latest_reflection() {
     std::fs::write(&later_path, "# Newer").unwrap();
 
     let ctx = make_ctx(&dir);
-    let result = handler.handle_cmd("stats", None, &ctx).await.unwrap().unwrap();
+    let result = handler
+        .handle_cmd("stats", None, &ctx)
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(result["reflections"]["total"], 2);
     let latest = &result["reflections"]["latest"];
-    assert_eq!(latest["name"].as_str().unwrap(), "reflection_2026-06-16_100001.md");
+    assert_eq!(
+        latest["name"].as_str().unwrap(),
+        "reflection_2026-06-16_100001.md"
+    );
 }
 
 // -----------------------------------------------------------------------
@@ -501,7 +532,10 @@ async fn test_reflections_list_with_files() {
     let reports = result["reports"].as_array().unwrap();
     assert_eq!(reports.len(), 2);
     // Sorted desc by modified time, so 06-16 should come first.
-    assert_eq!(reports[0]["name"].as_str().unwrap(), "reflection_2026-06-16_100000.md");
+    assert_eq!(
+        reports[0]["name"].as_str().unwrap(),
+        "reflection_2026-06-16_100000.md"
+    );
     assert_eq!(reports[0]["date"].as_str().unwrap(), "2026-06-16");
     assert!(reports[0]["modified"].as_str().unwrap().contains("T"));
     assert_eq!(reports[0]["size"], 3_u64);
@@ -540,7 +574,10 @@ async fn test_reflections_latest_with_file() {
         .unwrap()
         .unwrap();
     assert!(result["found"].as_bool().unwrap());
-    assert_eq!(result["name"].as_str().unwrap(), "reflection_2026-06-16_100000.md");
+    assert_eq!(
+        result["name"].as_str().unwrap(),
+        "reflection_2026-06-16_100000.md"
+    );
     assert_eq!(result["content"].as_str().unwrap(), "# hello world");
 }
 
@@ -697,12 +734,7 @@ async fn test_registry_list_with_artifacts_and_skills() {
     assert_eq!(artifacts[0]["id"].as_str().unwrap(), "a-1");
 
     let mut skill_dirs = result["skill_directories"].as_array().unwrap().clone();
-    skill_dirs.sort_by(|a, b| {
-        a["name"]
-            .as_str()
-            .unwrap()
-            .cmp(b["name"].as_str().unwrap())
-    });
+    skill_dirs.sort_by(|a, b| a["name"].as_str().unwrap().cmp(b["name"].as_str().unwrap()));
     assert_eq!(skill_dirs.len(), 2);
     assert_eq!(skill_dirs[0]["name"].as_str().unwrap(), "alpha");
     assert!(skill_dirs[0]["has_skill_md"].as_bool().unwrap());
@@ -883,8 +915,7 @@ async fn test_config_save_disabled_when_was_disabled_no_runtime() {
     assert!(!result["enabled"].as_bool().unwrap());
 
     // Persisted in config.json.
-    let cfg =
-        nemesis_config::load_config(&dir.path().join("config.json")).expect("load ok");
+    let cfg = nemesis_config::load_config(&dir.path().join("config.json")).expect("load ok");
     assert!(!cfg.forge.as_ref().unwrap().enabled);
 
     // config.forge.json auto-created with enabled=false.
@@ -1132,7 +1163,9 @@ async fn test_reflect_empty_experiences_file_returns_not_triggered() {
     write_config(dir.path());
 
     // Create file but with only whitespace/blank lines.
-    let exp_path = forge_dir(dir.path()).join("experiences").join("experiences.jsonl");
+    let exp_path = forge_dir(dir.path())
+        .join("experiences")
+        .join("experiences.jsonl");
     std::fs::create_dir_all(exp_path.parent().unwrap()).unwrap();
     std::fs::write(&exp_path, "\n   \n").unwrap();
 

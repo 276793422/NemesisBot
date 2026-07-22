@@ -141,7 +141,9 @@ impl EpisodicStore for FileEpisodicStore {
             .await
             .map_err(|e| format!("Failed to write episode: {e}"))?;
 
-        file.flush().await.map_err(|e| format!("Flush failed: {e}"))?;
+        file.flush()
+            .await
+            .map_err(|e| format!("Flush failed: {e}"))?;
 
         Ok(episode.id)
     }
@@ -275,8 +277,7 @@ impl EpisodicStore for FileEpisodicStore {
     }
 
     async fn cleanup(&self, older_than_days: usize) -> Result<usize, String> {
-        let cutoff = chrono::Local::now()
-            - chrono::Duration::days(older_than_days as i64);
+        let cutoff = chrono::Local::now() - chrono::Duration::days(older_than_days as i64);
 
         let sessions = self.list_sessions().await?;
         let mut total_removed = 0;

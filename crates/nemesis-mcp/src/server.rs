@@ -76,11 +76,7 @@ impl McpServer {
     }
 
     /// Register a tool with a handler function.
-    pub fn register_tool(
-        &mut self,
-        tool: McpTool,
-        handler: ToolHandler,
-    ) -> ServerResult<()> {
+    pub fn register_tool(&mut self, tool: McpTool, handler: ToolHandler) -> ServerResult<()> {
         let name = tool.name.clone();
         if self.tools.contains_key(&name) {
             return Err(ServerError::InvalidRequest(format!(
@@ -173,14 +169,18 @@ impl McpServer {
             None => {
                 return JSONRPCResponse::error(
                     id,
-                    JSONRPCError::new(JSONRPCError::INTERNAL_ERROR, format!(
-                        "Tool not found: {tool_name}"
-                    )),
+                    JSONRPCError::new(
+                        JSONRPCError::INTERNAL_ERROR,
+                        format!("Tool not found: {tool_name}"),
+                    ),
                 );
             }
         };
 
-        let arguments = params.get("arguments").cloned().unwrap_or(serde_json::json!({}));
+        let arguments = params
+            .get("arguments")
+            .cloned()
+            .unwrap_or(serde_json::json!({}));
         let result = handler(arguments);
 
         match serde_json::to_value(&result) {
@@ -205,21 +205,20 @@ impl McpServer {
 
         match uri {
             Some(uri) => match self.resource_content.get(uri) {
-                Some(content) => JSONRPCResponse::success(
-                    id,
-                    serde_json::json!({ "contents": [content] }),
-                ),
+                Some(content) => {
+                    JSONRPCResponse::success(id, serde_json::json!({ "contents": [content] }))
+                }
                 None => JSONRPCResponse::error(
                     id,
-                    JSONRPCError::new(JSONRPCError::INTERNAL_ERROR, format!(
-                        "Resource not found: {uri}"
-                    )),
+                    JSONRPCError::new(
+                        JSONRPCError::INTERNAL_ERROR,
+                        format!("Resource not found: {uri}"),
+                    ),
                 ),
             },
-            None => JSONRPCResponse::error(
-                id,
-                JSONRPCError::invalid_params("Missing uri parameter"),
-            ),
+            None => {
+                JSONRPCResponse::error(id, JSONRPCError::invalid_params("Missing uri parameter"))
+            }
         }
     }
 
@@ -248,11 +247,7 @@ impl SharedMcpServer {
     }
 
     /// Register a tool.
-    pub async fn register_tool(
-        &self,
-        tool: McpTool,
-        handler: ToolHandler,
-    ) -> ServerResult<()> {
+    pub async fn register_tool(&self, tool: McpTool, handler: ToolHandler) -> ServerResult<()> {
         self.inner.write().await.register_tool(tool, handler)
     }
 

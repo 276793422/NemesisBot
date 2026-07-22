@@ -24,8 +24,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use tracing::field::{Field, Visit};
 use tracing::{Event, Subscriber};
-use tracing_subscriber::layer::Context;
 use tracing_subscriber::Layer;
+use tracing_subscriber::layer::Context;
 
 /// Process boot time in unix milliseconds. Captured once on first access; used to
 /// build globally-unique `seq` values so events from different process runs can never
@@ -119,11 +119,7 @@ pub fn build_sse_log_event(event: &Event<'_>) -> SseLogEvent {
         level: meta.level().to_string(),
         timestamp: Local::now().to_rfc3339(),
         source: SseLogEvent::classify_source(&target),
-        component: target
-            .split("::")
-            .next()
-            .unwrap_or(&target)
-            .to_string(),
+        component: target.split("::").next().unwrap_or(&target).to_string(),
         target,
         file: meta.file().unwrap_or("").to_string(),
         line: meta.line().unwrap_or(0),
@@ -173,7 +169,10 @@ impl SseFieldVisitor {
         if field.name() == "message" {
             self.message = rendered;
         } else {
-            self.fields.insert(field.name().to_string(), serde_json::Value::String(rendered));
+            self.fields.insert(
+                field.name().to_string(),
+                serde_json::Value::String(rendered),
+            );
         }
     }
 }

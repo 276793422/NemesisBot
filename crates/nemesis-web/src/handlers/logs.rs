@@ -90,7 +90,8 @@ impl ModuleHandler for LogsHandler {
                     .and_then(|d| d.get("query"))
                     .and_then(|v| v.as_str())
                     .map(|s| s.to_string());
-                self.session_list(ctx, workspace, query, limit, offset).await
+                self.session_list(ctx, workspace, query, limit, offset)
+                    .await
             }
             "session_detail" => {
                 let data = data.ok_or("missing data")?;
@@ -221,7 +222,9 @@ fn read_meta_title(jsonl_path: &Path) -> Option<String> {
     let meta = jsonl_path.with_extension("meta.json");
     let data = std::fs::read_to_string(&meta).ok()?;
     let v: serde_json::Value = serde_json::from_str(&data).ok()?;
-    v.get("title").and_then(|t| t.as_str()).map(|s| s.to_string())
+    v.get("title")
+        .and_then(|t| t.as_str())
+        .map(|s| s.to_string())
 }
 
 #[cfg(feature = "security")]
@@ -292,11 +295,7 @@ pub(crate) fn read_md_section(content: &str, header: &str) -> Option<String> {
             in_section = true;
         }
     }
-    if out.is_empty() {
-        None
-    } else {
-        Some(out)
-    }
+    if out.is_empty() { None } else { Some(out) }
 }
 
 /// Pull the first user message under `## Message` (truncated to 200 chars).
@@ -589,7 +588,9 @@ impl LogsHandler {
         let mut entry = build_request_entry(&dir, &name, &ts, &suffix);
 
         let iterations = parse_request_iterations(&dir);
-        entry.as_object_mut().map(|m| m.insert("iterations".into(), iterations));
+        entry
+            .as_object_mut()
+            .map(|m| m.insert("iterations".into(), iterations));
         Ok(Some(entry))
     }
 
@@ -651,7 +652,9 @@ impl LogsHandler {
         let page = rows.into_iter().skip(offset).take(limit);
         let mut entries = Vec::new();
         for (_, dir, device, task_id, ts_str) in page {
-            entries.push(build_cluster_task_entry(&dir, &device, &task_id, &ts_str, &local));
+            entries.push(build_cluster_task_entry(
+                &dir, &device, &task_id, &ts_str, &local,
+            ));
         }
 
         Ok(Some(serde_json::json!({
@@ -773,17 +776,17 @@ impl LogsHandler {
             }
             for mut ev in parse_security_audit_file(&path) {
                 if let Some(filter) = risk_level {
-                    let level = ev
-                        .get("risk_level")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("");
+                    let level = ev.get("risk_level").and_then(|v| v.as_str()).unwrap_or("");
                     if !level.eq_ignore_ascii_case(filter) {
                         continue;
                     }
                 }
                 // Attach the source file for the detail panel.
                 if let Some(obj) = ev.as_object_mut() {
-                    obj.insert("_source_file".into(), serde_json::Value::String(fname.clone()));
+                    obj.insert(
+                        "_source_file".into(),
+                        serde_json::Value::String(fname.clone()),
+                    );
                 }
                 entries.push(ev);
             }
@@ -963,7 +966,9 @@ impl LogsHandler {
                                 s["firstMessage"].as_str().unwrap_or(""),
                                 s["channel"].as_str().unwrap_or("")
                             );
-                            nemesis_memory::retrieval::term_counts(&nemesis_memory::retrieval::tokens(&text))
+                            nemesis_memory::retrieval::term_counts(
+                                &nemesis_memory::retrieval::tokens(&text),
+                            )
                         })
                         .collect();
                     let df = nemesis_memory::retrieval::document_frequency(&docs);
@@ -971,19 +976,25 @@ impl LogsHandler {
                     let avg_len = if total == 0 {
                         0.0
                     } else {
-                        docs.iter().map(|d| d.values().sum::<usize>() as f64).sum::<f64>() / total as f64
+                        docs.iter()
+                            .map(|d| d.values().sum::<usize>() as f64)
+                            .sum::<f64>()
+                            / total as f64
                     };
                     let mut scored: Vec<_> = sessions
                         .into_iter()
                         .zip(docs.into_iter())
                         .map(|(s, dc)| {
                             let len: usize = dc.values().sum();
-                            let sc = nemesis_memory::retrieval::bm25_score(&dc, len, &qterms, &df, total, avg_len);
+                            let sc = nemesis_memory::retrieval::bm25_score(
+                                &dc, len, &qterms, &df, total, avg_len,
+                            );
                             (s, sc)
                         })
                         .filter(|(_, sc)| *sc > 0.0)
                         .collect();
-                    scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+                    scored
+                        .sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
                     sessions = scored.into_iter().map(|(s, _)| s).collect();
                 }
             }
@@ -1387,7 +1398,10 @@ fn parse_request_iterations(dir: &Path) -> serde_json::Value {
 fn read_json_round(path: &Path) -> Option<usize> {
     let content = std::fs::read_to_string(path).ok()?;
     let envelope: serde_json::Value = serde_json::from_str(&content).ok()?;
-    envelope.get("round").and_then(|v| v.as_u64()).map(|v| v as usize)
+    envelope
+        .get("round")
+        .and_then(|v| v.as_u64())
+        .map(|v| v as usize)
 }
 
 /// Build a single LlmIteration JSON from a grouped set of files.
@@ -1434,14 +1448,9 @@ fn build_iteration_json(group: &IterationFiles, index: usize) -> serde_json::Val
         .and_then(|p| std::fs::read_to_string(p).ok())
         .and_then(|c| serde_json::from_str::<serde_json::Value>(&c).ok())
         .map(|env| {
-            let dur = env
-                .get("duration_ms")
-                .and_then(|v| v.as_u64())
-                .unwrap_or(0);
+            let dur = env.get("duration_ms").and_then(|v| v.as_u64()).unwrap_or(0);
             let body = env.get("body");
-            let choice = body
-                .and_then(|b| b.get("choices"))
-                .and_then(|c| c.get(0));
+            let choice = body.and_then(|b| b.get("choices")).and_then(|c| c.get(0));
             let message = choice.and_then(|c| c.get("message"));
             let content = stringify_message_content(message.and_then(|m| m.get("content")));
             let finish = choice
@@ -1471,10 +1480,8 @@ fn build_iteration_json(group: &IterationFiles, index: usize) -> serde_json::Val
                                 .and_then(|v| v.as_str())
                                 .unwrap_or("")
                                 .to_string();
-                            let args_val: serde_json::Value =
-                                serde_json::from_str(&args_str).unwrap_or_else(|_| {
-                                    serde_json::Value::String(args_str.clone())
-                                });
+                            let args_val: serde_json::Value = serde_json::from_str(&args_str)
+                                .unwrap_or_else(|_| serde_json::Value::String(args_str.clone()));
                             serde_json::json!({
                                 "id": id,
                                 "name": name,
@@ -1508,9 +1515,12 @@ fn build_iteration_json(group: &IterationFiles, index: usize) -> serde_json::Val
         "duration_ms": duration_ms,
     });
     if !finish_reason.is_empty() {
-        response
-            .as_object_mut()
-            .map(|m| m.insert("finish_reason".into(), serde_json::Value::String(finish_reason)));
+        response.as_object_mut().map(|m| {
+            m.insert(
+                "finish_reason".into(),
+                serde_json::Value::String(finish_reason),
+            )
+        });
     }
     if !usage.is_null() {
         response
@@ -1588,14 +1598,15 @@ fn parse_local_tool_results(content: &str) -> Vec<serde_json::Value> {
         });
         if let Some(o) = obj.as_object_mut() {
             if !args.is_empty() {
-                let parsed: serde_json::Value =
-                    serde_json::from_str(args.trim()).unwrap_or_else(|_| {
-                        serde_json::Value::String(args.trim().to_string())
-                    });
+                let parsed: serde_json::Value = serde_json::from_str(args.trim())
+                    .unwrap_or_else(|_| serde_json::Value::String(args.trim().to_string()));
                 o.insert("args".into(), parsed);
             }
             if *duration_ms > 0 {
-                o.insert("duration_ms".into(), serde_json::Value::Number((*duration_ms).into()));
+                o.insert(
+                    "duration_ms".into(),
+                    serde_json::Value::Number((*duration_ms).into()),
+                );
             }
         }
         out.push(obj);

@@ -6,21 +6,30 @@
 /// Calculate the display width of a string.
 /// ASCII characters = 1 width, non-ASCII (CJK, etc.) = 2 width.
 pub fn get_display_width(s: &str) -> usize {
-    s.chars().map(|c| {
-        if c.is_ascii() { 1 } else { 2 }
-    }).sum()
+    s.chars().map(|c| if c.is_ascii() { 1 } else { 2 }).sum()
 }
 
 /// Format a centered title inside a box.
 /// Returns a String with box drawing characters.
 pub fn format_box_title(title: &str, box_width: usize) -> String {
-    let top = format!("\u{2554}{}\u{2557}\n", "\u{2550}".repeat(box_width.saturating_sub(2)));
+    let top = format!(
+        "\u{2554}{}\u{2557}\n",
+        "\u{2550}".repeat(box_width.saturating_sub(2))
+    );
     let title_width = get_display_width(title);
     let inner = box_width.saturating_sub(2);
     let left_pad = inner.saturating_sub(title_width) / 2;
     let right_pad = inner.saturating_sub(title_width).saturating_sub(left_pad);
-    let middle = format!("\u{2551}{}{}{}\u{2551}\n", " ".repeat(left_pad), title, " ".repeat(right_pad));
-    let bottom = format!("\u{255A}{}\u{255D}\n", "\u{2550}".repeat(box_width.saturating_sub(2)));
+    let middle = format!(
+        "\u{2551}{}{}{}\u{2551}\n",
+        " ".repeat(left_pad),
+        title,
+        " ".repeat(right_pad)
+    );
+    let bottom = format!(
+        "\u{255A}{}\u{255D}\n",
+        "\u{2550}".repeat(box_width.saturating_sub(2))
+    );
     format!("{}{}{}", top, middle, bottom)
 }
 
@@ -28,9 +37,18 @@ pub fn format_box_title(title: &str, box_width: usize) -> String {
 pub fn format_section_title(title: &str, line_width: usize) -> String {
     let title_width = get_display_width(title);
     let left_pad = line_width.saturating_sub(title_width) / 2;
-    let right_pad = line_width.saturating_sub(title_width).saturating_sub(left_pad);
+    let right_pad = line_width
+        .saturating_sub(title_width)
+        .saturating_sub(left_pad);
     let line = "\u{2550}".repeat(line_width);
-    format!("{}\n{}{}{}\n{}\n", line, " ".repeat(left_pad), title, " ".repeat(right_pad), line)
+    format!(
+        "{}\n{}{}{}\n{}\n",
+        line,
+        " ".repeat(left_pad),
+        title,
+        " ".repeat(right_pad),
+        line
+    )
 }
 
 /// Format a separator line.
@@ -45,21 +63,41 @@ pub fn format_box(title: &str, content: &str, box_width: usize) -> String {
     // Top border with title
     if !title.is_empty() {
         let title_width = get_display_width(title);
-        let padding = box_width.saturating_sub(3).saturating_sub(title_width).saturating_sub(1);
-        result.push_str(&format!("\u{250C}\u{2500} {}{}\u{2510}\n", title, "\u{2500}".repeat(padding)));
+        let padding = box_width
+            .saturating_sub(3)
+            .saturating_sub(title_width)
+            .saturating_sub(1);
+        result.push_str(&format!(
+            "\u{250C}\u{2500} {}{}\u{2510}\n",
+            title,
+            "\u{2500}".repeat(padding)
+        ));
     } else {
-        result.push_str(&format!("\u{250C}{}\u{2510}\n", "\u{2500}".repeat(box_width.saturating_sub(2))));
+        result.push_str(&format!(
+            "\u{250C}{}\u{2510}\n",
+            "\u{2500}".repeat(box_width.saturating_sub(2))
+        ));
     }
 
     // Content
     if !content.is_empty() {
         let content_width = get_display_width(content);
-        let padding = box_width.saturating_sub(2).saturating_sub(content_width).saturating_sub(1);
-        result.push_str(&format!("\u{2502} {}{}\u{2502}\n", content, " ".repeat(padding)));
+        let padding = box_width
+            .saturating_sub(2)
+            .saturating_sub(content_width)
+            .saturating_sub(1);
+        result.push_str(&format!(
+            "\u{2502} {}{}\u{2502}\n",
+            content,
+            " ".repeat(padding)
+        ));
     }
 
     // Bottom border
-    result.push_str(&format!("\u{2514}{}\u{2518}\n", "\u{2500}".repeat(box_width.saturating_sub(2))));
+    result.push_str(&format!(
+        "\u{2514}{}\u{2518}\n",
+        "\u{2500}".repeat(box_width.saturating_sub(2))
+    ));
 
     result
 }

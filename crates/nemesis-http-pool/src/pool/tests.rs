@@ -24,9 +24,7 @@ async fn start_http_server(
 
 /// Start an HTTP server with a custom handler function.
 /// The handler receives (method, path, headers_string, body) and returns (status_code, response_body).
-async fn start_http_server_fn<F>(
-    handler: F,
-) -> (String, tokio::task::JoinHandle<()>)
+async fn start_http_server_fn<F>(handler: F) -> (String, tokio::task::JoinHandle<()>)
 where
     F: Fn(String, String, String, Vec<u8>) -> (u16, Vec<u8>) + Send + Sync + 'static,
 {
@@ -65,7 +63,9 @@ where
                         break;
                     }
                     if line.to_lowercase().starts_with("content-length:") {
-                        content_length = line.split(':').nth(1)
+                        content_length = line
+                            .split(':')
+                            .nth(1)
                             .and_then(|v| v.trim().parse::<usize>().ok())
                             .unwrap_or(0);
                     }
@@ -259,7 +259,10 @@ fn test_pool_config_debug() {
 fn test_pool_config_clone() {
     let config = PoolConfig::default();
     let cloned = config.clone();
-    assert_eq!(config.max_connections_per_host, cloned.max_connections_per_host);
+    assert_eq!(
+        config.max_connections_per_host,
+        cloned.max_connections_per_host
+    );
     assert_eq!(config.user_agent, cloned.user_agent);
     assert_eq!(config.connect_timeout, cloned.connect_timeout);
     assert_eq!(config.request_timeout, cloned.request_timeout);
@@ -369,10 +372,14 @@ async fn test_get_sends_correct_method() {
         } else {
             (400, format!("wrong method: {}", method).into_bytes())
         }
-    }).await;
+    })
+    .await;
 
     let pool = ConnectionPool::with_defaults();
-    let resp = pool.get(&format!("{}/method-check", base_url)).await.unwrap();
+    let resp = pool
+        .get(&format!("{}/method-check", base_url))
+        .await
+        .unwrap();
     assert_eq!(resp.status(), reqwest::StatusCode::OK);
     let body = resp.text().await.unwrap();
     assert_eq!(body, "method_ok");
@@ -380,12 +387,14 @@ async fn test_get_sends_correct_method() {
 
 #[tokio::test]
 async fn test_get_sends_path() {
-    let (base_url, _handle) = start_http_server_fn(|_method, path, _headers, _body| {
-        (200, path.into_bytes())
-    }).await;
+    let (base_url, _handle) =
+        start_http_server_fn(|_method, path, _headers, _body| (200, path.into_bytes())).await;
 
     let pool = ConnectionPool::with_defaults();
-    let resp = pool.get(&format!("{}/my/special/path?q=1", base_url)).await.unwrap();
+    let resp = pool
+        .get(&format!("{}/my/special/path?q=1", base_url))
+        .await
+        .unwrap();
     let body = resp.text().await.unwrap();
     assert_eq!(body, "/my/special/path?q=1");
 }
@@ -398,7 +407,8 @@ async fn test_get_sends_user_agent() {
         } else {
             (200, headers.into_bytes())
         }
-    }).await;
+    })
+    .await;
 
     let pool = ConnectionPool::with_defaults();
     let resp = pool.get(&base_url).await.unwrap();
@@ -414,7 +424,8 @@ async fn test_get_custom_user_agent() {
         } else {
             (200, headers.into_bytes())
         }
-    }).await;
+    })
+    .await;
 
     let pool = ConnectionPool::new(PoolConfig {
         user_agent: "CustomAgent/9.9".to_string(),
@@ -458,11 +469,15 @@ async fn test_post_json_success() {
         } else {
             (400, format!("wrong method: {}", method).into_bytes())
         }
-    }).await;
+    })
+    .await;
 
     let pool = ConnectionPool::with_defaults();
     let json = serde_json::json!({"key": "value", "num": 42});
-    let resp = pool.post_json(&format!("{}/api", base_url), &json).await.unwrap();
+    let resp = pool
+        .post_json(&format!("{}/api", base_url), &json)
+        .await
+        .unwrap();
 
     assert_eq!(resp.status(), reqwest::StatusCode::OK);
     let body: serde_json::Value = resp.json().await.unwrap();
@@ -472,9 +487,8 @@ async fn test_post_json_success() {
 
 #[tokio::test]
 async fn test_post_json_empty_object() {
-    let (base_url, _handle) = start_http_server_fn(|_method, _path, _headers, body| {
-        (200, body)
-    }).await;
+    let (base_url, _handle) =
+        start_http_server_fn(|_method, _path, _headers, body| (200, body)).await;
 
     let pool = ConnectionPool::with_defaults();
     let json = serde_json::json!({});
@@ -485,9 +499,8 @@ async fn test_post_json_empty_object() {
 
 #[tokio::test]
 async fn test_post_json_nested() {
-    let (base_url, _handle) = start_http_server_fn(|_method, _path, _headers, body| {
-        (200, body)
-    }).await;
+    let (base_url, _handle) =
+        start_http_server_fn(|_method, _path, _headers, body| (200, body)).await;
 
     let pool = ConnectionPool::with_defaults();
     let json = serde_json::json!({
@@ -510,7 +523,8 @@ async fn test_post_json_sends_content_type() {
         } else {
             (200, headers.into_bytes())
         }
-    }).await;
+    })
+    .await;
 
     let pool = ConnectionPool::with_defaults();
     let json = serde_json::json!({"test": true});
@@ -540,12 +554,23 @@ async fn test_post_json_connection_refused() {
 async fn test_post_raw_body() {
     let (base_url, _handle) = start_http_server_fn(|method, _path, headers, body| {
         let has_ct = headers.contains("application/octet-stream");
-        (200, format!("method={} ct={} body_len={}", method, has_ct, body.len()).into_bytes())
-    }).await;
+        (
+            200,
+            format!("method={} ct={} body_len={}", method, has_ct, body.len()).into_bytes(),
+        )
+    })
+    .await;
 
     let pool = ConnectionPool::with_defaults();
     let body_data = b"raw binary data here";
-    let resp = pool.post(&format!("{}/upload", base_url), "application/octet-stream", body_data).await.unwrap();
+    let resp = pool
+        .post(
+            &format!("{}/upload", base_url),
+            "application/octet-stream",
+            body_data,
+        )
+        .await
+        .unwrap();
 
     assert_eq!(resp.status(), reqwest::StatusCode::OK);
     let text = resp.text().await.unwrap();
@@ -558,7 +583,8 @@ async fn test_post_raw_body() {
 async fn test_post_raw_empty_body() {
     let (base_url, _handle) = start_http_server_fn(|_method, _path, _headers, body| {
         (200, format!("len={}", body.len()).into_bytes())
-    }).await;
+    })
+    .await;
 
     let pool = ConnectionPool::with_defaults();
     let resp = pool.post(&base_url, "text/plain", b"").await.unwrap();
@@ -574,7 +600,8 @@ async fn test_post_raw_custom_content_type() {
         } else {
             (200, headers.into_bytes())
         }
-    }).await;
+    })
+    .await;
 
     let pool = ConnectionPool::with_defaults();
     let resp = pool.post(&base_url, "text/xml", b"<root/>").await.unwrap();
@@ -586,11 +613,15 @@ async fn test_post_raw_custom_content_type() {
 async fn test_post_raw_binary_body() {
     let (base_url, _handle) = start_http_server_fn(|_method, _path, _headers, body| {
         (200, format!("len={}", body.len()).into_bytes())
-    }).await;
+    })
+    .await;
 
     let pool = ConnectionPool::with_defaults();
     let binary_data: Vec<u8> = (0u8..=255).collect();
-    let resp = pool.post(&base_url, "application/octet-stream", &binary_data).await.unwrap();
+    let resp = pool
+        .post(&base_url, "application/octet-stream", &binary_data)
+        .await
+        .unwrap();
     let text = resp.text().await.unwrap();
     assert_eq!(text, "len=256");
 }
@@ -602,7 +633,9 @@ async fn test_post_raw_connection_refused() {
         ..Default::default()
     });
 
-    let resp = pool.post("http://127.0.0.1:1/test", "text/plain", b"data").await;
+    let resp = pool
+        .post("http://127.0.0.1:1/test", "text/plain", b"data")
+        .await;
     assert!(resp.is_err());
     assert!(resp.unwrap_err().is_connect());
 }
@@ -621,7 +654,9 @@ async fn test_download_file_success() {
     let file_path_str = file_path.to_str().unwrap().to_string();
 
     let pool = ConnectionPool::with_defaults();
-    let result = pool.download_file(&format!("{}/file.bin", base_url), &file_path_str).await;
+    let result = pool
+        .download_file(&format!("{}/file.bin", base_url), &file_path_str)
+        .await;
     assert!(result.is_ok());
 
     let written = std::fs::read(&file_path).unwrap();
@@ -638,7 +673,9 @@ async fn test_download_file_creates_parent_dirs() {
     let file_path_str = file_path.to_str().unwrap().to_string();
 
     let pool = ConnectionPool::with_defaults();
-    let result = pool.download_file(&format!("{}/deep", base_url), &file_path_str).await;
+    let result = pool
+        .download_file(&format!("{}/deep", base_url), &file_path_str)
+        .await;
     assert!(result.is_ok());
 
     let written = std::fs::read(&file_path).unwrap();
@@ -654,7 +691,9 @@ async fn test_download_file_http_error() {
     let file_path_str = file_path.to_str().unwrap().to_string();
 
     let pool = ConnectionPool::with_defaults();
-    let result = pool.download_file(&format!("{}/missing", base_url), &file_path_str).await;
+    let result = pool
+        .download_file(&format!("{}/missing", base_url), &file_path_str)
+        .await;
     assert!(result.is_err());
     let err = result.unwrap_err();
     assert!(err.contains("HTTP 404"));
@@ -669,7 +708,9 @@ async fn test_download_file_500_error() {
     let file_path_str = file_path.to_str().unwrap().to_string();
 
     let pool = ConnectionPool::with_defaults();
-    let result = pool.download_file(&format!("{}/error", base_url), &file_path_str).await;
+    let result = pool
+        .download_file(&format!("{}/error", base_url), &file_path_str)
+        .await;
     assert!(result.is_err());
     assert!(result.unwrap_err().contains("HTTP 500"));
 }
@@ -685,7 +726,9 @@ async fn test_download_file_connection_refused() {
     let file_path = dir.path().join("fail.txt");
     let file_path_str = file_path.to_str().unwrap().to_string();
 
-    let result = pool.download_file("http://127.0.0.1:1/fail", &file_path_str).await;
+    let result = pool
+        .download_file("http://127.0.0.1:1/fail", &file_path_str)
+        .await;
     assert!(result.is_err());
     assert!(result.unwrap_err().contains("download request"));
 }
@@ -800,9 +843,8 @@ async fn test_get_with_retry_connection_refused() {
 
 #[tokio::test]
 async fn test_post_json_with_retry_success_first_try() {
-    let (base_url, _handle) = start_http_server_fn(|_method, _path, _headers, body| {
-        (200, body)
-    }).await;
+    let (base_url, _handle) =
+        start_http_server_fn(|_method, _path, _headers, body| (200, body)).await;
 
     let pool = ConnectionPool::with_defaults();
     let json = serde_json::json!({"retry": "test"});
@@ -820,7 +862,9 @@ async fn test_post_json_with_retry_connection_refused() {
     });
 
     let json = serde_json::json!({"test": 1});
-    let result = pool.post_json_with_retry("http://127.0.0.1:1/test", json).await;
+    let result = pool
+        .post_json_with_retry("http://127.0.0.1:1/test", json)
+        .await;
     assert!(result.is_err());
     assert!(result.unwrap_err().is_connect());
 }
@@ -843,7 +887,8 @@ async fn test_retry_request_succeeds_immediately() {
             let client = reqwest::Client::new();
             client.get("http://127.0.0.1:1").send().await
         }
-    }).await;
+    })
+    .await;
 
     // Should have been called once and failed (no server)
     assert!(result.is_err());
@@ -871,7 +916,8 @@ async fn test_retry_request_non_retryable_error_returns_immediately() {
             // Actually, let's use a URL that fails during request building
             client.get("http://127.0.0.1:1/test").send().await
         }
-    }).await;
+    })
+    .await;
 
     // This will be a connect error, so it WILL retry. We need a different approach.
     // Let's just verify the function signature works correctly.
@@ -922,9 +968,8 @@ async fn test_concurrent_gets() {
 
 #[tokio::test]
 async fn test_concurrent_posts() {
-    let (base_url, _handle) = start_http_server_fn(|_method, _path, _headers, body| {
-        (200, body)
-    }).await;
+    let (base_url, _handle) =
+        start_http_server_fn(|_method, _path, _headers, body| (200, body)).await;
     let pool = Arc::new(ConnectionPool::with_defaults());
 
     let mut handles = Vec::new();
@@ -978,10 +1023,12 @@ async fn test_post_json_with_retry_exhausts_retries() {
     });
 
     let start = std::time::Instant::now();
-    let result = pool.post_json_with_retry(
-        "http://127.0.0.1:1/retry-post",
-        serde_json::json!({"key": "val"}),
-    ).await;
+    let result = pool
+        .post_json_with_retry(
+            "http://127.0.0.1:1/retry-post",
+            serde_json::json!({"key": "val"}),
+        )
+        .await;
     let elapsed = start.elapsed();
 
     assert!(result.is_err());
@@ -1064,9 +1111,7 @@ async fn test_shared_arc_pool_async_usage() {
     let pool_clone = pool.clone();
 
     // Verify the Arc clone works in a spawned task
-    let handle = tokio::spawn(async move {
-        pool_clone.config().user_agent.clone()
-    });
+    let handle = tokio::spawn(async move { pool_clone.config().user_agent.clone() });
     let ua = handle.await.unwrap();
     assert_eq!(ua, "NemesisBot/1.0");
 }
@@ -1095,7 +1140,10 @@ async fn test_status_code_500() {
 async fn test_status_code_201() {
     let (base_url, _handle) = start_http_server(201, b"created".to_vec()).await;
     let pool = ConnectionPool::with_defaults();
-    let resp = pool.post_json(&base_url, &serde_json::json!({})).await.unwrap();
+    let resp = pool
+        .post_json(&base_url, &serde_json::json!({}))
+        .await
+        .unwrap();
     assert_eq!(resp.status(), reqwest::StatusCode::CREATED);
 }
 
@@ -1172,7 +1220,8 @@ async fn test_retry_request_succeeds_after_transient_failure() {
                 client.get(&url).send().await
             }
         }
-    }).await;
+    })
+    .await;
 
     assert!(result.is_ok());
     let resp = result.unwrap();
@@ -1209,7 +1258,8 @@ async fn test_retry_request_succeeds_on_last_attempt() {
                 client.get(&url).send().await
             }
         }
-    }).await;
+    })
+    .await;
 
     assert!(result.is_ok());
     let body = result.unwrap().text().await.unwrap();
@@ -1240,7 +1290,8 @@ async fn test_retry_request_timeout_error_retries() {
             // Both connect and timeout errors are retried by retry_request.
             client.get("http://127.0.0.1:1/timeout-test").send().await
         }
-    }).await;
+    })
+    .await;
 
     assert!(result.is_err());
     // Should have retried multiple times (4 total: 0..=3)
@@ -1269,9 +1320,13 @@ async fn test_retry_request_non_connect_non_timeout_returns_immediately() {
                 .unwrap();
             // This URL is valid but will cause a decode/redirect error, not connect or timeout
             // Using hxxp:// (bad scheme) causes a builder error that is neither connect nor timeout
-            client.get("hxxp://invalid.scheme.example.com/").send().await
+            client
+                .get("hxxp://invalid.scheme.example.com/")
+                .send()
+                .await
         }
-    }).await;
+    })
+    .await;
 
     assert!(result.is_err());
     // Non-connect/timeout errors should return immediately without retry
@@ -1291,7 +1346,9 @@ async fn test_download_file_503_error() {
     let file_path_str = file_path.to_str().unwrap().to_string();
 
     let pool = ConnectionPool::with_defaults();
-    let result = pool.download_file(&format!("{}/svc", base_url), &file_path_str).await;
+    let result = pool
+        .download_file(&format!("{}/svc", base_url), &file_path_str)
+        .await;
     assert!(result.is_err());
     assert!(result.unwrap_err().contains("HTTP 503"));
 }
@@ -1386,14 +1443,20 @@ async fn test_download_file_with_query_string() {
         } else {
             (200, b"no_query".to_vec())
         }
-    }).await;
+    })
+    .await;
 
     let dir = tempfile::tempdir().unwrap();
     let file_path = dir.path().join("query.txt");
     let file_path_str = file_path.to_str().unwrap().to_string();
 
     let pool = ConnectionPool::with_defaults();
-    let result = pool.download_file(&format!("{}/dl?key=value&foo=bar", base_url), &file_path_str).await;
+    let result = pool
+        .download_file(
+            &format!("{}/dl?key=value&foo=bar", base_url),
+            &file_path_str,
+        )
+        .await;
     assert!(result.is_ok());
 
     let written = std::fs::read(&file_path).unwrap();
@@ -1406,9 +1469,8 @@ async fn test_download_file_with_query_string() {
 
 #[tokio::test]
 async fn test_post_sends_correct_method() {
-    let (base_url, _handle) = start_http_server_fn(|method, _path, _headers, _body| {
-        (200, method.into_bytes())
-    }).await;
+    let (base_url, _handle) =
+        start_http_server_fn(|method, _path, _headers, _body| (200, method.into_bytes())).await;
 
     let pool = ConnectionPool::with_defaults();
     let json = serde_json::json!({"check": "method"});
@@ -1419,9 +1481,8 @@ async fn test_post_sends_correct_method() {
 
 #[tokio::test]
 async fn test_post_raw_sends_correct_method() {
-    let (base_url, _handle) = start_http_server_fn(|method, _path, _headers, _body| {
-        (200, method.into_bytes())
-    }).await;
+    let (base_url, _handle) =
+        start_http_server_fn(|method, _path, _headers, _body| (200, method.into_bytes())).await;
 
     let pool = ConnectionPool::with_defaults();
     let resp = pool.post(&base_url, "text/plain", b"test").await.unwrap();
@@ -1438,7 +1499,8 @@ async fn test_concurrent_downloads() {
     let (base_url, _handle) = start_http_server_fn(|_method, path, _headers, _body| {
         let num = path.trim_start_matches('/').parse::<u32>().unwrap_or(0);
         (200, format!("file_{}", num).into_bytes())
-    }).await;
+    })
+    .await;
 
     let pool = Arc::new(ConnectionPool::with_defaults());
     let dir = tempfile::tempdir().unwrap();
@@ -1557,9 +1619,8 @@ async fn test_get_binary_response_as_bytes() {
 
 #[tokio::test]
 async fn test_post_json_array_payload() {
-    let (base_url, _handle) = start_http_server_fn(|_method, _path, _headers, body| {
-        (200, body)
-    }).await;
+    let (base_url, _handle) =
+        start_http_server_fn(|_method, _path, _headers, body| (200, body)).await;
 
     let pool = ConnectionPool::with_defaults();
     let json = serde_json::json!([1, 2, 3, "four", true, null]);
@@ -1573,9 +1634,8 @@ async fn test_post_json_array_payload() {
 
 #[tokio::test]
 async fn test_post_json_string_payload() {
-    let (base_url, _handle) = start_http_server_fn(|_method, _path, _headers, body| {
-        (200, body)
-    }).await;
+    let (base_url, _handle) =
+        start_http_server_fn(|_method, _path, _headers, body| (200, body)).await;
 
     let pool = ConnectionPool::with_defaults();
     let json = serde_json::json!("just a string");
@@ -1586,9 +1646,8 @@ async fn test_post_json_string_payload() {
 
 #[tokio::test]
 async fn test_post_json_number_payload() {
-    let (base_url, _handle) = start_http_server_fn(|_method, _path, _headers, body| {
-        (200, body)
-    }).await;
+    let (base_url, _handle) =
+        start_http_server_fn(|_method, _path, _headers, body| (200, body)).await;
 
     let pool = ConnectionPool::with_defaults();
     let json = serde_json::json!(42);
@@ -1599,9 +1658,8 @@ async fn test_post_json_number_payload() {
 
 #[tokio::test]
 async fn test_post_json_null_payload() {
-    let (base_url, _handle) = start_http_server_fn(|_method, _path, _headers, body| {
-        (200, body)
-    }).await;
+    let (base_url, _handle) =
+        start_http_server_fn(|_method, _path, _headers, body| (200, body)).await;
 
     let pool = ConnectionPool::with_defaults();
     let json = serde_json::json!(null);
@@ -1614,7 +1672,8 @@ async fn test_post_json_null_payload() {
 async fn test_post_json_large_payload() {
     let (base_url, _handle) = start_http_server_fn(|_method, _path, _headers, body| {
         (200, format!("len={}", body.len()).into_bytes())
-    }).await;
+    })
+    .await;
 
     let pool = ConnectionPool::with_defaults();
     // Create a large JSON payload
@@ -1638,11 +1697,15 @@ async fn test_post_raw_form_urlencoded() {
         let has_ct = headers.contains("application/x-www-form-urlencoded");
         let body_str = String::from_utf8_lossy(&body).to_string();
         (200, format!("ct={} body={}", has_ct, body_str).into_bytes())
-    }).await;
+    })
+    .await;
 
     let pool = ConnectionPool::with_defaults();
     let form_body = b"key=value&foo=bar";
-    let resp = pool.post(&base_url, "application/x-www-form-urlencoded", form_body).await.unwrap();
+    let resp = pool
+        .post(&base_url, "application/x-www-form-urlencoded", form_body)
+        .await
+        .unwrap();
     let text = resp.text().await.unwrap();
     assert!(text.contains("ct=true"));
     assert!(text.contains("key=value&foo=bar"));
@@ -1653,12 +1716,19 @@ async fn test_post_raw_json_content_type() {
     let (base_url, _handle) = start_http_server_fn(|_method, _path, headers, body| {
         let has_json = headers.contains("application/json");
         let body_str = String::from_utf8_lossy(&body).to_string();
-        (200, format!("json={} body={}", has_json, body_str).into_bytes())
-    }).await;
+        (
+            200,
+            format!("json={} body={}", has_json, body_str).into_bytes(),
+        )
+    })
+    .await;
 
     let pool = ConnectionPool::with_defaults();
     let json_body = br#"{"manual":"json"}"#;
-    let resp = pool.post(&base_url, "application/json", json_body).await.unwrap();
+    let resp = pool
+        .post(&base_url, "application/json", json_body)
+        .await
+        .unwrap();
     let text = resp.text().await.unwrap();
     assert!(text.contains("json=true"));
     assert!(text.contains("manual"));
@@ -1668,11 +1738,15 @@ async fn test_post_raw_json_content_type() {
 async fn test_post_raw_large_binary() {
     let (base_url, _handle) = start_http_server_fn(|_method, _path, _headers, body| {
         (200, format!("len={}", body.len()).into_bytes())
-    }).await;
+    })
+    .await;
 
     let pool = ConnectionPool::with_defaults();
     let large_data: Vec<u8> = (0u8..=255).cycle().take(100_000).collect();
-    let resp = pool.post(&base_url, "application/octet-stream", &large_data).await.unwrap();
+    let resp = pool
+        .post(&base_url, "application/octet-stream", &large_data)
+        .await
+        .unwrap();
     let text = resp.text().await.unwrap();
     assert_eq!(text, "len=100000");
 }
@@ -1683,13 +1757,13 @@ async fn test_post_raw_large_binary() {
 
 #[tokio::test]
 async fn test_mixed_get_post_on_same_pool() {
-    let (base_url, _handle) = start_http_server_fn(|method, _path, _headers, body| {
-        match method.as_str() {
+    let (base_url, _handle) =
+        start_http_server_fn(|method, _path, _headers, body| match method.as_str() {
             "GET" => (200, b"get_response".to_vec()),
             "POST" => (200, format!("post_{}", body.len()).into_bytes()),
             _ => (400, b"unknown".to_vec()),
-        }
-    }).await;
+        })
+        .await;
 
     let pool = ConnectionPool::with_defaults();
 
@@ -1716,12 +1790,8 @@ async fn test_shared_pool_concurrent_access() {
     let pool1 = shared_pool();
     let pool2 = shared_pool();
 
-    let handle1 = tokio::spawn(async move {
-        pool1.config().user_agent.clone()
-    });
-    let handle2 = tokio::spawn(async move {
-        pool2.config().max_connections_per_host
-    });
+    let handle1 = tokio::spawn(async move { pool1.config().user_agent.clone() });
+    let handle2 = tokio::spawn(async move { pool2.config().max_connections_per_host });
 
     let ua = handle1.await.unwrap();
     let max_conn = handle2.await.unwrap();
@@ -1785,9 +1855,8 @@ async fn test_sequential_requests_all_succeed() {
 
 #[tokio::test]
 async fn test_post_json_with_retry_body_cloned() {
-    let (base_url, _handle) = start_http_server_fn(|_method, _path, _headers, body| {
-        (200, body)
-    }).await;
+    let (base_url, _handle) =
+        start_http_server_fn(|_method, _path, _headers, body| (200, body)).await;
 
     let pool = ConnectionPool::with_defaults();
     let json = serde_json::json!({"important": "data", "count": 99});
@@ -1828,10 +1897,12 @@ async fn test_post_json_with_retry_backoff_timing() {
     });
 
     let start = std::time::Instant::now();
-    let result = pool.post_json_with_retry(
-        "http://127.0.0.1:1/backoff",
-        serde_json::json!({"timing": "test"}),
-    ).await;
+    let result = pool
+        .post_json_with_retry(
+            "http://127.0.0.1:1/backoff",
+            serde_json::json!({"timing": "test"}),
+        )
+        .await;
     let elapsed = start.elapsed();
 
     assert!(result.is_err());
@@ -1859,14 +1930,14 @@ async fn test_get_with_retry_succeeds_on_server() {
 
 #[tokio::test]
 async fn test_server_returns_path_specific_content() {
-    let (base_url, _handle) = start_http_server_fn(|_method, path, _headers, _body| {
-        match path.as_str() {
+    let (base_url, _handle) =
+        start_http_server_fn(|_method, path, _headers, _body| match path.as_str() {
             "/a" => (200, b"response_a".to_vec()),
             "/b" => (200, b"response_b".to_vec()),
             "/c" => (200, b"response_c".to_vec()),
             _ => (404, b"unknown".to_vec()),
-        }
-    }).await;
+        })
+        .await;
 
     let pool = ConnectionPool::with_defaults();
 
@@ -1918,7 +1989,8 @@ async fn test_pool_arc_concurrent_requests() {
     let (base_url, _handle) = start_http_server_fn(|_method, path, _headers, _body| {
         let num = path.trim_start_matches('/').parse::<u32>().unwrap_or(0);
         (200, format!("resp_{}", num).into_bytes())
-    }).await;
+    })
+    .await;
 
     let pool = Arc::new(ConnectionPool::with_defaults());
     let mut handles = Vec::new();
@@ -1948,8 +2020,13 @@ async fn test_download_file_deeply_nested_dirs() {
     let (base_url, _handle) = start_http_server(200, content.clone()).await;
 
     let dir = tempfile::tempdir().unwrap();
-    let file_path = dir.path()
-        .join("a").join("b").join("c").join("d").join("e")
+    let file_path = dir
+        .path()
+        .join("a")
+        .join("b")
+        .join("c")
+        .join("d")
+        .join("e")
         .join("deep.txt");
     let file_path_str = file_path.to_str().unwrap().to_string();
 
@@ -1965,9 +2042,8 @@ async fn test_download_file_deeply_nested_dirs() {
 
 #[tokio::test]
 async fn test_post_json_special_characters() {
-    let (base_url, _handle) = start_http_server_fn(|_method, _path, _headers, body| {
-        (200, body)
-    }).await;
+    let (base_url, _handle) =
+        start_http_server_fn(|_method, _path, _headers, body| (200, body)).await;
 
     let pool = ConnectionPool::with_defaults();
     let json = serde_json::json!({
@@ -1992,13 +2068,15 @@ async fn test_post_json_special_characters() {
 async fn test_client_for_custom_request() {
     let (base_url, _handle) = start_http_server_fn(|method, _path, _headers, _body| {
         (200, format!("method={}", method).into_bytes())
-    }).await;
+    })
+    .await;
 
     let pool = ConnectionPool::with_defaults();
     let client = pool.client();
 
     // Use the raw client for a PUT request
-    let resp = client.put(&format!("{}/custom", base_url))
+    let resp = client
+        .put(&format!("{}/custom", base_url))
         .body("custom body")
         .send()
         .await
@@ -2012,12 +2090,14 @@ async fn test_client_for_custom_request() {
 async fn test_client_for_delete_request() {
     let (base_url, _handle) = start_http_server_fn(|method, _path, _headers, _body| {
         (200, format!("method={}", method).into_bytes())
-    }).await;
+    })
+    .await;
 
     let pool = ConnectionPool::with_defaults();
     let client = pool.client();
 
-    let resp = client.delete(&format!("{}/resource", base_url))
+    let resp = client
+        .delete(&format!("{}/resource", base_url))
         .send()
         .await
         .unwrap();
@@ -2029,15 +2109,13 @@ async fn test_client_for_delete_request() {
 async fn test_client_for_head_request() {
     let (base_url, _handle) = start_http_server_fn(|method, _path, _headers, _body| {
         (200, format!("method={}", method).into_bytes())
-    }).await;
+    })
+    .await;
 
     let pool = ConnectionPool::with_defaults();
     let client = pool.client();
 
-    let resp = client.head(&base_url)
-        .send()
-        .await
-        .unwrap();
+    let resp = client.head(&base_url).send().await.unwrap();
     assert_eq!(resp.status(), reqwest::StatusCode::OK);
 }
 
@@ -2073,12 +2151,16 @@ async fn test_download_file_multiple_times_same_path() {
 
     // First download
     let (base_url1, _h1) = start_http_server(200, b"first".to_vec()).await;
-    pool.download_file(&base_url1, &file_path_str).await.unwrap();
+    pool.download_file(&base_url1, &file_path_str)
+        .await
+        .unwrap();
     assert_eq!(std::fs::read(&file_path).unwrap(), b"first");
 
     // Second download overwrites
     let (base_url2, _h2) = start_http_server(200, b"second".to_vec()).await;
-    pool.download_file(&base_url2, &file_path_str).await.unwrap();
+    pool.download_file(&base_url2, &file_path_str)
+        .await
+        .unwrap();
     assert_eq!(std::fs::read(&file_path).unwrap(), b"second");
 }
 
@@ -2103,7 +2185,8 @@ async fn test_retry_request_all_four_attempts() {
                 .unwrap();
             client.get("http://127.0.0.1:1").send().await
         }
-    }).await;
+    })
+    .await;
 
     // 0..=3 is 4 total attempts
     assert_eq!(call_count.load(Ordering::SeqCst), 4);
@@ -2118,7 +2201,8 @@ async fn test_response_status_helpers() {
     let (base_url, _handle) = start_http_server_fn(|_method, path, _headers, _body| {
         let code: u16 = path.trim_start_matches('/').parse().unwrap_or(200);
         (code, format!("status_{}", code).into_bytes())
-    }).await;
+    })
+    .await;
 
     let pool = ConnectionPool::with_defaults();
 
@@ -2186,7 +2270,8 @@ async fn test_pool_client_uses_configured_user_agent() {
         } else {
             (200, format!("got: {}", headers).into_bytes())
         }
-    }).await;
+    })
+    .await;
 
     let pool = ConnectionPool::new(PoolConfig {
         user_agent: "TestUA/5.0".to_string(),
@@ -2212,17 +2297,20 @@ async fn test_download_file_with_auth_params() {
         } else {
             (403, b"forbidden".to_vec())
         }
-    }).await;
+    })
+    .await;
 
     let dir = tempfile::tempdir().unwrap();
     let file_path = dir.path().join("auth_dl.txt");
     let file_path_str = file_path.to_str().unwrap().to_string();
 
     let pool = ConnectionPool::with_defaults();
-    let result = pool.download_file(
-        &format!("{}/download?token=secret&type=file", base_url),
-        &file_path_str,
-    ).await;
+    let result = pool
+        .download_file(
+            &format!("{}/download?token=secret&type=file", base_url),
+            &file_path_str,
+        )
+        .await;
 
     assert!(result.is_ok());
     assert_eq!(std::fs::read(&file_path).unwrap(), b"authorized_download");

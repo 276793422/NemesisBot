@@ -72,9 +72,13 @@ fn test_chat_session_truncate() {
 fn test_chat_session_set_history() {
     let mgr = SessionMgr::new(Duration::from_secs(3600));
     mgr.add_message("web:user1", "user", "old");
-    let new_messages = vec![
-        Message { role: "system".to_string(), content: "new".to_string(), tool_calls: Vec::new(), tool_call_id: None, timestamp: None },
-    ];
+    let new_messages = vec![Message {
+        role: "system".to_string(),
+        content: "new".to_string(),
+        tool_calls: Vec::new(),
+        tool_call_id: None,
+        timestamp: None,
+    }];
     mgr.set_history("web:user1", new_messages);
     let history = mgr.get_history("web:user1");
     assert_eq!(history.len(), 1);
@@ -354,7 +358,10 @@ fn test_message_serialization_deserialization() {
     let deserialized: Message = serde_json::from_str(&json).unwrap();
     assert_eq!(deserialized.role, "assistant");
     assert_eq!(deserialized.content, "hello world");
-    assert_eq!(deserialized.timestamp, Some("2026-01-01T00:00:00Z".to_string()));
+    assert_eq!(
+        deserialized.timestamp,
+        Some("2026-01-01T00:00:00Z".to_string())
+    );
 }
 
 #[test]
@@ -462,7 +469,10 @@ fn test_chat_session_serialization_roundtrip() {
     let deserialized: ChatSession = serde_json::from_str(&json).unwrap();
     assert_eq!(deserialized.key, "web:user1");
     assert_eq!(deserialized.messages.len(), 2);
-    assert_eq!(deserialized.summary, Some("A greeting exchange".to_string()));
+    assert_eq!(
+        deserialized.summary,
+        Some("A greeting exchange".to_string())
+    );
     assert_eq!(deserialized.created, "2026-01-01T12:00:00Z");
     assert_eq!(deserialized.messages[0].role, "user");
     assert_eq!(deserialized.messages[1].tool_calls.len(), 1);
@@ -802,8 +812,12 @@ fn test_session_metadata_manipulation() {
 
     // Get the session and manipulate metadata
     let mut session_mut = mgr.get(&session.id).unwrap();
-    session_mut.metadata.insert("user_agent".to_string(), "Mozilla".to_string());
-    session_mut.metadata.insert("ip".to_string(), "127.0.0.1".to_string());
+    session_mut
+        .metadata
+        .insert("user_agent".to_string(), "Mozilla".to_string());
+    session_mut
+        .metadata
+        .insert("ip".to_string(), "127.0.0.1".to_string());
 
     // The modified session won't affect the stored one since we work with clones
     // This test demonstrates the clone behavior
@@ -817,16 +831,25 @@ fn test_multiple_summaries_for_same_session() {
     mgr.add_message("web:user1", "user", "hello");
 
     mgr.set_summary("web:user1", "First summary");
-    assert_eq!(mgr.get_summary("web:user1"), Some("First summary".to_string()));
+    assert_eq!(
+        mgr.get_summary("web:user1"),
+        Some("First summary".to_string())
+    );
 
     mgr.set_summary("web:user1", "Updated summary");
-    assert_eq!(mgr.get_summary("web:user1"), Some("Updated summary".to_string()));
+    assert_eq!(
+        mgr.get_summary("web:user1"),
+        Some("Updated summary".to_string())
+    );
 }
 
 #[test]
 fn test_save_chat_session_invalid_directory_permission() {
     // This test verifies graceful handling of filesystem errors
-    let mgr = SessionMgr::with_storage(Duration::from_secs(3600), "/root/nonexistent/path/that/likely/fails");
+    let mgr = SessionMgr::with_storage(
+        Duration::from_secs(3600),
+        "/root/nonexistent/path/that/likely/fails",
+    );
 
     // Should not panic, just fail silently
     mgr.add_message("web:user_failing", "user", "test");
@@ -891,7 +914,10 @@ fn test_save_chat_session_with_complex_serialization() {
     assert_eq!(history.len(), 2);
     assert_eq!(history[0].tool_calls.len(), 2);
     assert_eq!(history[1].tool_call_id, Some("call_1".to_string()));
-    assert_eq!(mgr2.get_summary("web:complex"), Some("Complex tool interaction".to_string()));
+    assert_eq!(
+        mgr2.get_summary("web:complex"),
+        Some("Complex tool interaction".to_string())
+    );
 }
 
 #[test]
@@ -908,8 +934,15 @@ fn test_concurrent_chat_session_operations() {
         let barrier_clone = Arc::clone(&barrier);
         let handle = std::thread::spawn(move || {
             barrier_clone.wait();
-            mgr_clone.add_message(&format!("web:user{}", i), "user", &format!("message from thread {}", i));
-            mgr_clone.set_summary(&format!("web:user{}", i), &format!("Summary from thread {}", i));
+            mgr_clone.add_message(
+                &format!("web:user{}", i),
+                "user",
+                &format!("message from thread {}", i),
+            );
+            mgr_clone.set_summary(
+                &format!("web:user{}", i),
+                &format!("Summary from thread {}", i),
+            );
             mgr_clone.get_history(&format!("web:user{}", i));
         });
         handles.push(handle);
@@ -925,7 +958,10 @@ fn test_concurrent_chat_session_operations() {
         let history = mgr.get_history(&format!("web:user{}", i));
         assert_eq!(history.len(), 1);
         assert_eq!(history[0].content, format!("message from thread {}", i));
-        assert_eq!(mgr.get_summary(&format!("web:user{}", i)), Some(format!("Summary from thread {}", i)));
+        assert_eq!(
+            mgr.get_summary(&format!("web:user{}", i)),
+            Some(format!("Summary from thread {}", i))
+        );
     }
 }
 

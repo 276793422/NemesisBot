@@ -152,7 +152,8 @@ fn test_approval_window_startup_invalid_data() {
 
 #[test]
 fn test_approval_data_deserialization_minimal() {
-    let json = r#"{"request_id":"r1","operation":"file_write","target":"test.txt","risk_level":"HIGH"}"#;
+    let json =
+        r#"{"request_id":"r1","operation":"file_write","target":"test.txt","risk_level":"HIGH"}"#;
     let data: ApprovalWindowData = serde_json::from_str(json).unwrap();
     assert_eq!(data.request_id, "r1");
     assert_eq!(data.operation_name, "");

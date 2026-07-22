@@ -9,13 +9,13 @@
 use crate::handlers::require_workspace;
 use crate::ws_router::{ModuleHandler, RequestContext};
 #[cfg(target_os = "windows")]
+use nemesis_voice::EchoCanceller; // trait needed to call SpeexAec::process
+#[cfg(target_os = "windows")]
 use std::path::PathBuf;
 #[cfg(target_os = "windows")]
 use std::sync::Arc;
 #[cfg(target_os = "windows")]
 use std::sync::OnceLock;
-#[cfg(target_os = "windows")]
-use nemesis_voice::EchoCanceller; // trait needed to call SpeexAec::process
 #[cfg(target_os = "windows")]
 use tokio::sync::Mutex;
 #[cfg(target_os = "windows")]
@@ -39,9 +39,11 @@ const VOICE_CONFIG_FILENAME: &str = "config.voice.json";
 #[cfg(target_os = "windows")]
 const CHAT_CONFIG_FILENAME: &str = "config.chat.json";
 #[cfg(target_os = "windows")]
-const DEFAULT_VOICE_CONFIG: &str = include_str!("../../../../nemesisbot/config/config.voice.default.json");
+const DEFAULT_VOICE_CONFIG: &str =
+    include_str!("../../../../nemesisbot/config/config.voice.default.json");
 #[cfg(target_os = "windows")]
-const DEFAULT_CHAT_CONFIG: &str = include_str!("../../../../nemesisbot/config/config.chat.default.json");
+const DEFAULT_CHAT_CONFIG: &str =
+    include_str!("../../../../nemesisbot/config/config.chat.default.json");
 
 // Global setup cancellation token
 #[cfg(target_os = "windows")]
@@ -54,7 +56,8 @@ fn setup_cancel() -> &'static std::sync::Mutex<Option<CancellationToken>> {
 // Simple HashSet: insert on start, remove on finish. No nesting, no deadlock.
 #[cfg(target_os = "windows")]
 fn install_locks() -> &'static std::sync::Mutex<std::collections::HashSet<String>> {
-    static INSTANCE: OnceLock<std::sync::Mutex<std::collections::HashSet<String>>> = OnceLock::new();
+    static INSTANCE: OnceLock<std::sync::Mutex<std::collections::HashSet<String>>> =
+        OnceLock::new();
     INSTANCE.get_or_init(|| std::sync::Mutex::new(std::collections::HashSet::new()))
 }
 
@@ -74,8 +77,7 @@ fn model_label(model: &str) -> &str {
 #[cfg(target_os = "windows")]
 fn stt_state() -> &'static Arc<Mutex<Option<SttSession>>> {
     static INSTANCE: OnceLock<Arc<Mutex<Option<SttSession>>>> = OnceLock::new();
-    INSTANCE.get_or_init(|| Arc::new(Mutex::new(Option::None))
-)
+    INSTANCE.get_or_init(|| Arc::new(Mutex::new(Option::None)))
 }
 
 #[cfg(target_os = "windows")]
@@ -135,7 +137,8 @@ fn aec_state() -> &'static std::sync::Mutex<Option<nemesis_voice::SpeexAec>> {
 /// run_stt_pipeline 在 recognize 后调 add_punctuation 给文本加标点。
 #[cfg(target_os = "windows")]
 fn punct_engine_state() -> &'static std::sync::Mutex<Option<nemesis_voice::PunctEngine>> {
-    static INSTANCE: OnceLock<std::sync::Mutex<Option<nemesis_voice::PunctEngine>>> = OnceLock::new();
+    static INSTANCE: OnceLock<std::sync::Mutex<Option<nemesis_voice::PunctEngine>>> =
+        OnceLock::new();
     INSTANCE.get_or_init(|| std::sync::Mutex::new(None))
 }
 
@@ -147,13 +150,15 @@ fn tts_engine_state() -> &'static std::sync::Mutex<Option<nemesis_voice::TtsEngi
 
 #[cfg(target_os = "windows")]
 fn speaker_engine_state() -> &'static std::sync::Mutex<Option<nemesis_voice::SpeakerEngine>> {
-    static INSTANCE: OnceLock<std::sync::Mutex<Option<nemesis_voice::SpeakerEngine>>> = OnceLock::new();
+    static INSTANCE: OnceLock<std::sync::Mutex<Option<nemesis_voice::SpeakerEngine>>> =
+        OnceLock::new();
     INSTANCE.get_or_init(|| std::sync::Mutex::new(None))
 }
 
 #[cfg(target_os = "windows")]
 fn speaker_manager_state() -> &'static std::sync::Mutex<Option<nemesis_voice::SpeakerManager>> {
-    static INSTANCE: OnceLock<std::sync::Mutex<Option<nemesis_voice::SpeakerManager>>> = OnceLock::new();
+    static INSTANCE: OnceLock<std::sync::Mutex<Option<nemesis_voice::SpeakerManager>>> =
+        OnceLock::new();
     INSTANCE.get_or_init(|| std::sync::Mutex::new(None))
 }
 
@@ -380,13 +385,19 @@ impl ModuleHandler for VoiceHandler {
                 "install_aec" => self.cmd_install_aec(&voice_dir, ctx).await,
                 "install_model" => {
                     let d = data.ok_or("missing data")?;
-                    let model = d.get("model").and_then(|v| v.as_str()).ok_or("missing field: model")?;
+                    let model = d
+                        .get("model")
+                        .and_then(|v| v.as_str())
+                        .ok_or("missing field: model")?;
                     self.cmd_install_model(&voice_dir, model, ctx).await
                 }
                 "config_get" => self.cmd_config_get(&voice_dir),
                 "config_set" => {
                     let d = data.ok_or("missing data")?;
-                    let content = d.get("content").and_then(|v| v.as_str()).ok_or("missing field: content")?;
+                    let content = d
+                        .get("content")
+                        .and_then(|v| v.as_str())
+                        .ok_or("missing field: content")?;
                     self.cmd_config_set(&voice_dir, content)
                 }
                 "voice_config_get" => self.cmd_voice_config_get(&config_dir),
@@ -410,28 +421,44 @@ impl ModuleHandler for VoiceHandler {
                 }
                 "engine_start" => {
                     let d = data.ok_or("missing data")?;
-                    let model = d.get("model").and_then(|v| v.as_str()).ok_or("missing field: model")?;
+                    let model = d
+                        .get("model")
+                        .and_then(|v| v.as_str())
+                        .ok_or("missing field: model")?;
                     self.cmd_engine_start(&voice_dir, &config_dir, model).await
                 }
                 "engine_stop" => {
                     let d = data.ok_or("missing data")?;
-                    let model = d.get("model").and_then(|v| v.as_str()).ok_or("missing field: model")?;
+                    let model = d
+                        .get("model")
+                        .and_then(|v| v.as_str())
+                        .ok_or("missing field: model")?;
                     self.cmd_engine_stop(model)
                 }
                 "pipeline_start" => {
                     let d = data.ok_or("missing data")?;
-                    let model = d.get("model").and_then(|v| v.as_str()).ok_or("missing field: model")?;
+                    let model = d
+                        .get("model")
+                        .and_then(|v| v.as_str())
+                        .ok_or("missing field: model")?;
                     self.cmd_pipeline_start(&voice_dir, model, ctx).await
                 }
                 "pipeline_stop" => {
                     let d = data.ok_or("missing data")?;
-                    let model = d.get("model").and_then(|v| v.as_str()).ok_or("missing field: model")?;
+                    let model = d
+                        .get("model")
+                        .and_then(|v| v.as_str())
+                        .ok_or("missing field: model")?;
                     self.cmd_pipeline_stop(model).await
                 }
                 "stt_to_input_start" => self.cmd_stt_to_input_start(&voice_dir, ctx).await,
                 "stt_to_input_stop" => self.cmd_stt_to_input_stop().await,
                 "stt_dialogue_start" => {
-                    let timeout = data.as_ref().and_then(|d| d.get("silence_timeout")).and_then(|v| v.as_f64()).unwrap_or(3.0);
+                    let timeout = data
+                        .as_ref()
+                        .and_then(|d| d.get("silence_timeout"))
+                        .and_then(|v| v.as_f64())
+                        .unwrap_or(3.0);
                     self.cmd_stt_dialogue_start(&voice_dir, ctx, timeout).await
                 }
                 "stt_dialogue_stop" => self.cmd_stt_dialogue_stop().await,
@@ -453,18 +480,25 @@ impl ModuleHandler for VoiceHandler {
                 "speaker_register_cancel" => self.cmd_speaker_register_cancel(),
                 "speaker_remove" => {
                     let d = data.ok_or("missing data")?;
-                    let name = d.get("name").and_then(|v| v.as_str()).ok_or("missing field: name")?;
+                    let name = d
+                        .get("name")
+                        .and_then(|v| v.as_str())
+                        .ok_or("missing field: name")?;
                     self.cmd_speaker_remove(&config_dir, name)
                 }
                 "speaker_list" => self.cmd_speaker_list(&config_dir),
                 "speaker_test_start" => {
                     self.ensure_speaker_engine(&voice_dir, &config_dir).await?;
-                    self.cmd_speaker_test_start(&voice_dir, &config_dir, ctx).await
+                    self.cmd_speaker_test_start(&voice_dir, &config_dir, ctx)
+                        .await
                 }
                 "speaker_test_stop" => self.cmd_speaker_test_stop().await,
                 "speaker_set_threshold" => {
                     let d = data.ok_or("missing data")?;
-                    let threshold = d.get("threshold").and_then(|v| v.as_f64()).ok_or("missing field: threshold")?;
+                    let threshold = d
+                        .get("threshold")
+                        .and_then(|v| v.as_f64())
+                        .ok_or("missing field: threshold")?;
                     self.cmd_speaker_set_threshold(&config_dir, threshold as f32)
                 }
                 _ => Err(format!("unknown command: voice.{}", cmd)),
@@ -534,19 +568,23 @@ fn read_voiceprint_config(config_dir: &std::path::Path) -> serde_json::Value {
     std::fs::read_to_string(&path)
         .ok()
         .and_then(|s| serde_json::from_str(&s).ok())
-        .unwrap_or_else(|| serde_json::json!({
-            "threshold": DEFAULT_SPEAKER_THRESHOLD,
-            "speakers": {}
-        }))
+        .unwrap_or_else(|| {
+            serde_json::json!({
+                "threshold": DEFAULT_SPEAKER_THRESHOLD,
+                "speakers": {}
+            })
+        })
 }
 
 #[cfg(target_os = "windows")]
-fn write_voiceprint_config(config_dir: &std::path::Path, data: &serde_json::Value) -> Result<(), String> {
+fn write_voiceprint_config(
+    config_dir: &std::path::Path,
+    data: &serde_json::Value,
+) -> Result<(), String> {
     let path = voiceprint_path(config_dir);
     let content = serde_json::to_string_pretty(data)
         .map_err(|e| format!("failed to serialize voiceprint config: {}", e))?;
-    std::fs::write(&path, content)
-        .map_err(|e| format!("failed to write voiceprint config: {}", e))
+    std::fs::write(&path, content).map_err(|e| format!("failed to write voiceprint config: {}", e))
 }
 
 /// Push speaker verification rejected notification to frontend.
@@ -701,7 +739,10 @@ pub async fn init_engines_from_config(workspace: &std::path::Path) {
             }
         }
         if speaker_enabled {
-            match handler.cmd_speaker_engine_start(&voice_dir, &config_dir).await {
+            match handler
+                .cmd_speaker_engine_start(&voice_dir, &config_dir)
+                .await
+            {
                 Ok(_) => tracing::info!("[Voice] auto-init: speaker engine ready"),
                 Err(e) => tracing::warn!("[Voice] auto-init: speaker engine failed: {}", e),
             }
@@ -785,7 +826,11 @@ impl VoiceHandler {
         })))
     }
 
-    async fn cmd_setup(&self, voice_dir: &std::path::Path, ctx: &RequestContext) -> Result<Option<serde_json::Value>, String> {
+    async fn cmd_setup(
+        &self,
+        voice_dir: &std::path::Path,
+        ctx: &RequestContext,
+    ) -> Result<Option<serde_json::Value>, String> {
         let cancel = CancellationToken::new();
         {
             let mut guard = setup_cancel().lock().unwrap();
@@ -800,37 +845,50 @@ impl VoiceHandler {
                 .map_err(|e| format!("failed to create voice dir: {}", e))?;
 
             let config_path = dir.join("config.toml");
-            hub.publish("voice-setup", serde_json::json!({
-                "phase": "setup", "status": "starting",
-                "message": "开始安装语音环境..."
-            }));
+            hub.publish(
+                "voice-setup",
+                serde_json::json!({
+                    "phase": "setup", "status": "starting",
+                    "message": "开始安装语音环境..."
+                }),
+            );
 
             if cancel.is_cancelled() {
-                hub.publish("voice-setup", serde_json::json!({
-                    "phase": "setup", "status": "cancelled",
-                    "message": "安装已取消"
-                }));
+                hub.publish(
+                    "voice-setup",
+                    serde_json::json!({
+                        "phase": "setup", "status": "cancelled",
+                        "message": "安装已取消"
+                    }),
+                );
                 return Err("setup cancelled".to_string());
             }
 
             match nemesis_voice::bootstrap_run_in_dir(&config_path, &dir) {
                 Ok(_) => {
-                    hub.publish("voice-setup", serde_json::json!({
-                        "phase": "setup", "status": "complete",
-                        "message": "语音环境安装完成"
-                    }));
+                    hub.publish(
+                        "voice-setup",
+                        serde_json::json!({
+                            "phase": "setup", "status": "complete",
+                            "message": "语音环境安装完成"
+                        }),
+                    );
                     Ok(Some(serde_json::json!({ "success": true })))
                 }
                 Err(e) => {
-                    hub.publish("voice-setup", serde_json::json!({
-                        "phase": "setup", "status": "error",
-                        "message": format!("安装失败: {}", e)
-                    }));
+                    hub.publish(
+                        "voice-setup",
+                        serde_json::json!({
+                            "phase": "setup", "status": "error",
+                            "message": format!("安装失败: {}", e)
+                        }),
+                    );
                     Err(format!("setup failed: {}", e))
                 }
             }
-        }).await
-            .map_err(|e| format!("setup task panicked: {}", e))?;
+        })
+        .await
+        .map_err(|e| format!("setup task panicked: {}", e))?;
 
         // Clear cancel token
         {
@@ -852,7 +910,11 @@ impl VoiceHandler {
         }
     }
 
-    async fn cmd_install_runtime(&self, voice_dir: &std::path::Path, ctx: &RequestContext) -> Result<Option<serde_json::Value>, String> {
+    async fn cmd_install_runtime(
+        &self,
+        voice_dir: &std::path::Path,
+        ctx: &RequestContext,
+    ) -> Result<Option<serde_json::Value>, String> {
         let cancel = CancellationToken::new();
         {
             let mut guard = setup_cancel().lock().unwrap();
@@ -873,37 +935,50 @@ impl VoiceHandler {
                     .map_err(|e| format!("failed to write config: {}", e))?;
             }
 
-            hub.publish("voice-setup", serde_json::json!({
-                "phase": "runtime", "status": "starting",
-                "message": "正在安装运行库..."
-            }));
+            hub.publish(
+                "voice-setup",
+                serde_json::json!({
+                    "phase": "runtime", "status": "starting",
+                    "message": "正在安装运行库..."
+                }),
+            );
 
             if cancel.is_cancelled() {
-                hub.publish("voice-setup", serde_json::json!({
-                    "phase": "runtime", "status": "cancelled",
-                    "message": "安装已取消"
-                }));
+                hub.publish(
+                    "voice-setup",
+                    serde_json::json!({
+                        "phase": "runtime", "status": "cancelled",
+                        "message": "安装已取消"
+                    }),
+                );
                 return Err("cancelled".to_string());
             }
 
             match nemesis_voice::bootstrap_run_in_dir(&config_path, &dir) {
                 Ok(_) => {
-                    hub.publish("voice-setup", serde_json::json!({
-                        "phase": "runtime", "status": "complete",
-                        "message": "运行库安装完成"
-                    }));
+                    hub.publish(
+                        "voice-setup",
+                        serde_json::json!({
+                            "phase": "runtime", "status": "complete",
+                            "message": "运行库安装完成"
+                        }),
+                    );
                     Ok(Some(serde_json::json!({ "success": true })))
                 }
                 Err(e) => {
-                    hub.publish("voice-setup", serde_json::json!({
-                        "phase": "runtime", "status": "error",
-                        "message": format!("运行库安装失败: {}", e)
-                    }));
+                    hub.publish(
+                        "voice-setup",
+                        serde_json::json!({
+                            "phase": "runtime", "status": "error",
+                            "message": format!("运行库安装失败: {}", e)
+                        }),
+                    );
                     Err(format!("runtime install failed: {}", e))
                 }
             }
-        }).await
-            .map_err(|e| format!("install task panicked: {}", e))?;
+        })
+        .await
+        .map_err(|e| format!("install task panicked: {}", e))?;
 
         {
             let mut guard = setup_cancel().lock().unwrap();
@@ -913,43 +988,64 @@ impl VoiceHandler {
         result
     }
 
-    async fn cmd_install_aec(&self, voice_dir: &std::path::Path, ctx: &RequestContext) -> Result<Option<serde_json::Value>, String> {
+    async fn cmd_install_aec(
+        &self,
+        voice_dir: &std::path::Path,
+        ctx: &RequestContext,
+    ) -> Result<Option<serde_json::Value>, String> {
         let aec_dir = voice_dir.join("aec");
         let config_path = voice_dir.join("config.toml");
         let proxy_url = nemesis_voice::AppConfig::load_or_default(&config_path)
-            .models.proxy.url.clone();
+            .models
+            .proxy
+            .url
+            .clone();
         let dir = aec_dir.clone();
         let hub = ctx.state.event_hub.clone();
 
-        let result = tokio::task::spawn_blocking(move || {
-            std::fs::create_dir_all(&dir)
-                .map_err(|e| format!("failed to create aec dir: {}", e))?;
-            hub.publish("voice-setup", serde_json::json!({
-                "phase": "aec", "status": "starting", "message": "正在安装回声消除库..."
-            }));
-            match nemesis_voice::download_aec_lib(&dir, &proxy_url) {
-                Ok(p) => {
-                    hub.publish("voice-setup", serde_json::json!({
+        let result =
+            tokio::task::spawn_blocking(move || {
+                std::fs::create_dir_all(&dir)
+                    .map_err(|e| format!("failed to create aec dir: {}", e))?;
+                hub.publish(
+                    "voice-setup",
+                    serde_json::json!({
+                        "phase": "aec", "status": "starting", "message": "正在安装回声消除库..."
+                    }),
+                );
+                match nemesis_voice::download_aec_lib(&dir, &proxy_url) {
+                    Ok(p) => {
+                        hub.publish("voice-setup", serde_json::json!({
                         "phase": "aec", "status": "complete", "message": "回声消除库安装完成"
                     }));
-                    Ok(Some(serde_json::json!({ "success": true, "path": p.to_string_lossy() })))
+                        Ok(Some(
+                            serde_json::json!({ "success": true, "path": p.to_string_lossy() }),
+                        ))
+                    }
+                    Err(e) => {
+                        hub.publish(
+                            "voice-setup",
+                            serde_json::json!({
+                                "phase": "aec", "status": "error",
+                                "message": format!("回声消除库安装失败: {}", e)
+                            }),
+                        );
+                        Err(format!("aec install failed: {}", e))
+                    }
                 }
-                Err(e) => {
-                    hub.publish("voice-setup", serde_json::json!({
-                        "phase": "aec", "status": "error",
-                        "message": format!("回声消除库安装失败: {}", e)
-                    }));
-                    Err(format!("aec install failed: {}", e))
-                }
-            }
-        })
-        .await
-        .map_err(|e| format!("install task panicked: {}", e))?;
+            })
+            .await
+            .map_err(|e| format!("install task panicked: {}", e))?;
 
         result
     }
 
-    async fn cmd_install_model(&self, voice_dir: &std::path::Path, model: &str, ctx: &RequestContext) -> Result<Option<serde_json::Value>, String> {
+    async fn cmd_install_model(
+        &self,
+        voice_dir: &std::path::Path,
+        model: &str,
+        ctx: &RequestContext,
+    ) -> Result<Option<serde_json::Value>, String> {
         // Acquire per-model install lock
         {
             let mut locks = install_locks().lock().unwrap();
@@ -982,25 +1078,34 @@ impl VoiceHandler {
                 let hub_progress = hub.clone();
                 let mt = model_type.clone();
                 nemesis_voice::set_progress(Some(Box::new(move |msg: &str| {
-                    hub_progress.publish("voice-setup", serde_json::json!({
-                        "phase": "model", "status": "progress",
-                        "model": &mt,
-                        "message": msg,
-                    }));
+                    hub_progress.publish(
+                        "voice-setup",
+                        serde_json::json!({
+                            "phase": "model", "status": "progress",
+                            "model": &mt,
+                            "message": msg,
+                        }),
+                    );
                 })));
             }
 
-            hub.publish("voice-setup", serde_json::json!({
-                "phase": "model", "status": "starting",
-                "model": &model_type,
-                "message": format!("正在安装{}模型...", model_type)
-            }));
+            hub.publish(
+                "voice-setup",
+                serde_json::json!({
+                    "phase": "model", "status": "starting",
+                    "model": &model_type,
+                    "message": format!("正在安装{}模型...", model_type)
+                }),
+            );
 
             if cancel.is_cancelled() {
-                hub.publish("voice-setup", serde_json::json!({
-                    "phase": "model", "status": "cancelled",
-                    "message": "安装已取消"
-                }));
+                hub.publish(
+                    "voice-setup",
+                    serde_json::json!({
+                        "phase": "model", "status": "cancelled",
+                        "message": "安装已取消"
+                    }),
+                );
                 nemesis_voice::set_progress(None);
                 return Err("cancelled".to_string());
             }
@@ -1009,8 +1114,12 @@ impl VoiceHandler {
                 "stt" => nemesis_voice::model::ensure_stt_model(&cfg).map_err(|e| e.to_string()),
                 "vad" => nemesis_voice::model::ensure_vad_model(&cfg).map_err(|e| e.to_string()),
                 "tts" => nemesis_voice::model::ensure_tts_model(&cfg).map_err(|e| e.to_string()),
-                "punct" => nemesis_voice::model::ensure_punct_model(&cfg).map_err(|e| e.to_string()),
-                "speaker" => nemesis_voice::model::ensure_speaker_model(&cfg).map_err(|e| e.to_string()),
+                "punct" => {
+                    nemesis_voice::model::ensure_punct_model(&cfg).map_err(|e| e.to_string())
+                }
+                "speaker" => {
+                    nemesis_voice::model::ensure_speaker_model(&cfg).map_err(|e| e.to_string())
+                }
                 _ => Err(format!("unknown model type: {}", model_type)),
             };
 
@@ -1020,24 +1129,33 @@ impl VoiceHandler {
 
             match result {
                 Ok(()) => {
-                    hub.publish("voice-setup", serde_json::json!({
-                        "phase": "model", "status": "complete",
-                        "model": &model_type,
-                        "message": format!("{}模型安装完成", model_type)
-                    }));
-                    Ok(Some(serde_json::json!({ "success": true, "model": model_type })))
+                    hub.publish(
+                        "voice-setup",
+                        serde_json::json!({
+                            "phase": "model", "status": "complete",
+                            "model": &model_type,
+                            "message": format!("{}模型安装完成", model_type)
+                        }),
+                    );
+                    Ok(Some(
+                        serde_json::json!({ "success": true, "model": model_type }),
+                    ))
                 }
                 Err(e) => {
-                    hub.publish("voice-setup", serde_json::json!({
-                        "phase": "model", "status": "error",
-                        "model": &model_type,
-                        "message": format!("{}模型安装失败: {}", model_type, e)
-                    }));
+                    hub.publish(
+                        "voice-setup",
+                        serde_json::json!({
+                            "phase": "model", "status": "error",
+                            "model": &model_type,
+                            "message": format!("{}模型安装失败: {}", model_type, e)
+                        }),
+                    );
                     Err(format!("model install failed: {}", e))
                 }
             }
-        }).await
-            .map_err(|e| format!("install task panicked: {}", e))?;
+        })
+        .await
+        .map_err(|e| format!("install task panicked: {}", e))?;
 
         // Release install lock
         {
@@ -1054,7 +1172,10 @@ impl VoiceHandler {
         result
     }
 
-    fn cmd_config_get(&self, voice_dir: &std::path::Path) -> Result<Option<serde_json::Value>, String> {
+    fn cmd_config_get(
+        &self,
+        voice_dir: &std::path::Path,
+    ) -> Result<Option<serde_json::Value>, String> {
         let config_path = voice_dir.join("config.toml");
         if !config_path.exists() {
             return Ok(Some(serde_json::json!({
@@ -1070,7 +1191,11 @@ impl VoiceHandler {
         })))
     }
 
-    fn cmd_config_set(&self, voice_dir: &std::path::Path, content: &str) -> Result<Option<serde_json::Value>, String> {
+    fn cmd_config_set(
+        &self,
+        voice_dir: &std::path::Path,
+        content: &str,
+    ) -> Result<Option<serde_json::Value>, String> {
         std::fs::create_dir_all(voice_dir)
             .map_err(|e| format!("failed to create voice dir: {}", e))?;
         let config_path = voice_dir.join("config.toml");
@@ -1079,11 +1204,18 @@ impl VoiceHandler {
         Ok(Some(serde_json::json!({ "success": true })))
     }
 
-    fn cmd_voice_config_get(&self, config_dir: &std::path::Path) -> Result<Option<serde_json::Value>, String> {
+    fn cmd_voice_config_get(
+        &self,
+        config_dir: &std::path::Path,
+    ) -> Result<Option<serde_json::Value>, String> {
         Ok(Some(read_voice_config(config_dir)))
     }
 
-    fn cmd_voice_config_set(&self, config_dir: &std::path::Path, data: &serde_json::Value) -> Result<Option<serde_json::Value>, String> {
+    fn cmd_voice_config_set(
+        &self,
+        config_dir: &std::path::Path,
+        data: &serde_json::Value,
+    ) -> Result<Option<serde_json::Value>, String> {
         let path = ensure_voice_config(config_dir);
         let mut current = read_voice_config(config_dir);
 
@@ -1131,8 +1263,17 @@ impl VoiceHandler {
         Ok(Some(serde_json::json!({ "success": true })))
     }
 
-    async fn cmd_tts(&self, voice_dir: &std::path::Path, config_dir: &std::path::Path, data: &serde_json::Value) -> Result<Option<serde_json::Value>, String> {
-        let text = data.get("text").and_then(|v| v.as_str()).ok_or("missing field: text")?.to_string();
+    async fn cmd_tts(
+        &self,
+        voice_dir: &std::path::Path,
+        config_dir: &std::path::Path,
+        data: &serde_json::Value,
+    ) -> Result<Option<serde_json::Value>, String> {
+        let text = data
+            .get("text")
+            .and_then(|v| v.as_str())
+            .ok_or("missing field: text")?
+            .to_string();
 
         if text.trim().is_empty() {
             return Err("text cannot be empty".to_string());
@@ -1142,13 +1283,31 @@ impl VoiceHandler {
         }
 
         let voice_cfg = read_voice_config(config_dir);
-        let default_speaker = voice_cfg.get("speaker_id").and_then(|v| v.as_u64()).unwrap_or(45) as u32;
-        let default_speed = voice_cfg.get("speed").and_then(|v| v.as_f64()).unwrap_or(1.0) as f32;
-        let default_volume = voice_cfg.get("volume").and_then(|v| v.as_u64()).unwrap_or(50);
+        let default_speaker = voice_cfg
+            .get("speaker_id")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(45) as u32;
+        let default_speed = voice_cfg
+            .get("speed")
+            .and_then(|v| v.as_f64())
+            .unwrap_or(1.0) as f32;
+        let default_volume = voice_cfg
+            .get("volume")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(50);
 
-        let speaker_id = data.get("speaker").and_then(|v| v.as_u64()).unwrap_or(default_speaker as u64) as u32;
-        let speed = data.get("speed").and_then(|v| v.as_f64()).unwrap_or(default_speed as f64) as f32;
-        let volume = data.get("volume").and_then(|v| v.as_u64()).unwrap_or(default_volume);
+        let speaker_id = data
+            .get("speaker")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(default_speaker as u64) as u32;
+        let speed = data
+            .get("speed")
+            .and_then(|v| v.as_f64())
+            .unwrap_or(default_speed as f64) as f32;
+        let volume = data
+            .get("volume")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(default_volume);
 
         let dir = voice_dir.to_path_buf();
 
@@ -1169,7 +1328,8 @@ impl VoiceHandler {
             let (samples, sample_rate) = {
                 let guard = tts_engine_state().lock().unwrap();
                 if let Some(ref engine) = *guard {
-                    engine.generate(&text, speaker_id, speed)
+                    engine
+                        .generate(&text, speaker_id, speed)
                         .map_err(|e| format!("TTS generation failed: {}", e))?
                 } else {
                     drop(guard);
@@ -1177,7 +1337,8 @@ impl VoiceHandler {
                         .map_err(|e| format!("TTS model not ready: {}", e))?;
                     let tts_engine = nemesis_voice::TtsEngine::new(&tts_dir, cfg.tts.num_threads)
                         .map_err(|e| format!("TTS engine init failed: {}", e))?;
-                    tts_engine.generate(&text, speaker_id, speed)
+                    tts_engine
+                        .generate(&text, speaker_id, speed)
                         .map_err(|e| format!("TTS generation failed: {}", e))?
                 }
             };
@@ -1189,21 +1350,29 @@ impl VoiceHandler {
             let duration = samples.len() as f64 / sample_rate as f64;
             let gain = volume as f32 / 50.0 * cfg.audio.gain;
 
-            let playback = nemesis_voice::AudioPlayback::new(&cfg.audio.playback_device, sample_rate, gain)
-                .map_err(|e| format!("audio playback init failed: {}", e))?;
+            let playback =
+                nemesis_voice::AudioPlayback::new(&cfg.audio.playback_device, sample_rate, gain)
+                    .map_err(|e| format!("audio playback init failed: {}", e))?;
 
-            playback.play_blocking(&samples, sample_rate)
+            playback
+                .play_blocking(&samples, sample_rate)
                 .map_err(|e| format!("audio playback failed: {}", e))?;
 
             Ok(Some(serde_json::json!({
                 "duration": (duration * 10.0).round() / 10.0,
                 "sample_rate": sample_rate,
             })))
-        }).await
-            .map_err(|e| format!("TTS task panicked: {}", e))?
+        })
+        .await
+        .map_err(|e| format!("TTS task panicked: {}", e))?
     }
 
-    async fn cmd_stt_start(&self, voice_dir: &std::path::Path, config_dir: &std::path::Path, ctx: &RequestContext) -> Result<Option<serde_json::Value>, String> {
+    async fn cmd_stt_start(
+        &self,
+        voice_dir: &std::path::Path,
+        config_dir: &std::path::Path,
+        ctx: &RequestContext,
+    ) -> Result<Option<serde_json::Value>, String> {
         {
             let state = stt_state().lock().await;
             if state.is_some() {
@@ -1229,7 +1398,10 @@ impl VoiceHandler {
 
         {
             let mut state = stt_state().lock().await;
-            *state = Some(SttSession { cancel: cancel.clone(), dialogue_output: None });
+            *state = Some(SttSession {
+                cancel: cancel.clone(),
+                dialogue_output: None,
+            });
         }
 
         let output: Box<dyn SttOutput> = Box::new(WsSttOutput {
@@ -1306,7 +1478,9 @@ impl VoiceHandler {
             let speaker_ready = speaker_engine_state().lock().unwrap().is_some();
             let stt_dialogue_active = {
                 let state = stt_state().lock().await;
-                state.as_ref().map_or(false, |s| s.dialogue_output.is_some())
+                state
+                    .as_ref()
+                    .map_or(false, |s| s.dialogue_output.is_some())
             };
             Ok(Some(serde_json::json!({
                 "stt_ready": stt_ready,
@@ -1325,11 +1499,18 @@ impl VoiceHandler {
         }
     }
 
-    fn cmd_chat_config_get(&self, config_dir: &std::path::Path) -> Result<Option<serde_json::Value>, String> {
+    fn cmd_chat_config_get(
+        &self,
+        config_dir: &std::path::Path,
+    ) -> Result<Option<serde_json::Value>, String> {
         Ok(Some(read_chat_config(config_dir)))
     }
 
-    fn cmd_chat_config_set(&self, config_dir: &std::path::Path, data: &serde_json::Value) -> Result<Option<serde_json::Value>, String> {
+    fn cmd_chat_config_set(
+        &self,
+        config_dir: &std::path::Path,
+        data: &serde_json::Value,
+    ) -> Result<Option<serde_json::Value>, String> {
         let path = ensure_chat_config(config_dir);
         let content = serde_json::to_string_pretty(data)
             .map_err(|e| format!("failed to serialize chat config: {}", e))?;
@@ -1342,7 +1523,12 @@ impl VoiceHandler {
     // Phase 1: Engine start / stop
     // -----------------------------------------------------------------------
 
-    async fn cmd_engine_start(&self, voice_dir: &std::path::Path, config_dir: &std::path::Path, model: &str) -> Result<Option<serde_json::Value>, String> {
+    async fn cmd_engine_start(
+        &self,
+        voice_dir: &std::path::Path,
+        config_dir: &std::path::Path,
+        model: &str,
+    ) -> Result<Option<serde_json::Value>, String> {
         match model {
             "stt" => self.cmd_stt_engine_start(voice_dir, config_dir).await,
             "tts" => self.cmd_tts_engine_start(voice_dir).await,
@@ -1351,17 +1537,29 @@ impl VoiceHandler {
         }
     }
 
-    async fn cmd_stt_engine_start(&self, voice_dir: &std::path::Path, config_dir: &std::path::Path) -> Result<Option<serde_json::Value>, String> {
+    async fn cmd_stt_engine_start(
+        &self,
+        voice_dir: &std::path::Path,
+        config_dir: &std::path::Path,
+    ) -> Result<Option<serde_json::Value>, String> {
         {
             let guard = stt_engine_state().lock().unwrap();
             if guard.is_some() {
-                return Ok(Some(serde_json::json!({ "started": true, "model": "stt", "already_loaded": true })));
+                return Ok(Some(
+                    serde_json::json!({ "started": true, "model": "stt", "already_loaded": true }),
+                ));
             }
         }
 
         let voice_cfg = read_voice_config(config_dir);
-        let punct_enabled = voice_cfg.get("punct_enabled").and_then(|v| v.as_bool()).unwrap_or(false);
-        let aec_enabled = voice_cfg.get("aec_enabled").and_then(|v| v.as_bool()).unwrap_or(false);
+        let punct_enabled = voice_cfg
+            .get("punct_enabled")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        let aec_enabled = voice_cfg
+            .get("aec_enabled")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
         // AEC 进阶参数：房间预设映射到 filter_length（16kHz 下采样数）。
         // 越界/缺省回退默认值；非法值会让 AecNew 返回 null，由下方 match 降级为关闭。
         let aec_filter_length = voice_cfg
@@ -1370,7 +1568,10 @@ impl VoiceHandler {
             .map(|v| v as i32)
             .filter(|&v| (160..=65536).contains(&v))
             .unwrap_or(nemesis_voice::DEFAULT_FILTER_LENGTH);
-        let aec_preprocess = voice_cfg.get("aec_preprocess").and_then(|v| v.as_bool()).unwrap_or(true);
+        let aec_preprocess = voice_cfg
+            .get("aec_preprocess")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(true);
         let dir = voice_dir.to_path_buf();
 
         let result = tokio::task::spawn_blocking(move || {
@@ -1474,11 +1675,16 @@ impl VoiceHandler {
         }
     }
 
-    async fn cmd_tts_engine_start(&self, voice_dir: &std::path::Path) -> Result<Option<serde_json::Value>, String> {
+    async fn cmd_tts_engine_start(
+        &self,
+        voice_dir: &std::path::Path,
+    ) -> Result<Option<serde_json::Value>, String> {
         {
             let guard = tts_engine_state().lock().unwrap();
             if guard.is_some() {
-                return Ok(Some(serde_json::json!({ "started": true, "model": "tts", "already_loaded": true })));
+                return Ok(Some(
+                    serde_json::json!({ "started": true, "model": "tts", "already_loaded": true }),
+                ));
             }
         }
 
@@ -1504,8 +1710,9 @@ impl VoiceHandler {
                 .map_err(|e| format!("TTS engine init failed: {}", e))?;
 
             Ok(engine)
-        }).await
-            .map_err(|e| format!("engine init panicked: {}", e))?;
+        })
+        .await
+        .map_err(|e| format!("engine init panicked: {}", e))?;
 
         match result {
             Ok(engine) => {
@@ -1519,7 +1726,11 @@ impl VoiceHandler {
     }
 
     /// Auto-load speaker engine if not already loaded. Called before register/test operations.
-    async fn ensure_speaker_engine(&self, voice_dir: &std::path::Path, config_dir: &std::path::Path) -> Result<(), String> {
+    async fn ensure_speaker_engine(
+        &self,
+        voice_dir: &std::path::Path,
+        config_dir: &std::path::Path,
+    ) -> Result<(), String> {
         {
             let guard = speaker_engine_state().lock().unwrap();
             if guard.is_some() {
@@ -1530,11 +1741,17 @@ impl VoiceHandler {
         Ok(())
     }
 
-    async fn cmd_speaker_engine_start(&self, voice_dir: &std::path::Path, config_dir: &std::path::Path) -> Result<Option<serde_json::Value>, String> {
+    async fn cmd_speaker_engine_start(
+        &self,
+        voice_dir: &std::path::Path,
+        config_dir: &std::path::Path,
+    ) -> Result<Option<serde_json::Value>, String> {
         {
             let guard = speaker_engine_state().lock().unwrap();
             if guard.is_some() {
-                return Ok(Some(serde_json::json!({ "started": true, "model": "speaker", "already_loaded": true })));
+                return Ok(Some(
+                    serde_json::json!({ "started": true, "model": "speaker", "already_loaded": true }),
+                ));
             }
         }
 
@@ -1561,8 +1778,9 @@ impl VoiceHandler {
                 .map_err(|e| format!("Speaker engine init failed: {}", e))?;
 
             Ok((engine, cfg_dir))
-        }).await
-            .map_err(|e| format!("engine init panicked: {}", e))?;
+        })
+        .await
+        .map_err(|e| format!("engine init panicked: {}", e))?;
 
         match result {
             Ok((engine, cfg_dir)) => {
@@ -1580,7 +1798,8 @@ impl VoiceHandler {
                 if let Some(speakers) = vp_cfg.get("speakers").and_then(|v| v.as_object()) {
                     for (name, data) in speakers {
                         if let Some(arr) = data.get("embedding").and_then(|v| v.as_array()) {
-                            let embedding: Vec<f32> = arr.iter()
+                            let embedding: Vec<f32> = arr
+                                .iter()
                                 .filter_map(|v| v.as_f64().map(|f| f as f32))
                                 .collect();
                             if embedding.len() == dim as usize {
@@ -1600,7 +1819,9 @@ impl VoiceHandler {
                 }
                 *speaker_enabled_state().lock().unwrap() = true;
                 tracing::info!("[Voice] Speaker engine loaded (dim={})", dim);
-                Ok(Some(serde_json::json!({ "started": true, "model": "speaker" })))
+                Ok(Some(
+                    serde_json::json!({ "started": true, "model": "speaker" }),
+                ))
             }
             Err(e) => Err(e),
         }
@@ -1610,7 +1831,10 @@ impl VoiceHandler {
     // Speaker verification commands
     // -----------------------------------------------------------------------
 
-    async fn cmd_speaker_status(&self, config_dir: &std::path::Path) -> Result<Option<serde_json::Value>, String> {
+    async fn cmd_speaker_status(
+        &self,
+        config_dir: &std::path::Path,
+    ) -> Result<Option<serde_json::Value>, String> {
         let enabled = *speaker_enabled_state().lock().unwrap();
         #[cfg(target_os = "windows")]
         let ready = speaker_engine_state().lock().unwrap().is_some();
@@ -1619,19 +1843,25 @@ impl VoiceHandler {
         // Read threshold from file for accurate persisted value
         let threshold = {
             let vp_cfg = read_voiceprint_config(config_dir);
-            vp_cfg.get("threshold").and_then(|v| v.as_f64()).unwrap_or(DEFAULT_SPEAKER_THRESHOLD as f64) as f32
+            vp_cfg
+                .get("threshold")
+                .and_then(|v| v.as_f64())
+                .unwrap_or(DEFAULT_SPEAKER_THRESHOLD as f64) as f32
         };
         #[cfg(target_os = "windows")]
         let stt_dialogue_active = {
             let state = stt_state().lock().await;
-            state.as_ref().map_or(false, |s| s.dialogue_output.is_some())
+            state
+                .as_ref()
+                .map_or(false, |s| s.dialogue_output.is_some())
         };
         #[cfg(not(target_os = "windows"))]
         let stt_dialogue_active = false;
         #[cfg(target_os = "windows")]
         let speakers: Vec<String> = {
             let vp_cfg = read_voiceprint_config(config_dir);
-            vp_cfg.get("speakers")
+            vp_cfg
+                .get("speakers")
                 .and_then(|v| v.as_object())
                 .map(|obj| obj.keys().cloned().collect())
                 .unwrap_or_default()
@@ -1647,7 +1877,11 @@ impl VoiceHandler {
         })))
     }
 
-    fn cmd_speaker_register_start(&self, config_dir: &std::path::Path, name: &str) -> Result<Option<serde_json::Value>, String> {
+    fn cmd_speaker_register_start(
+        &self,
+        config_dir: &std::path::Path,
+        name: &str,
+    ) -> Result<Option<serde_json::Value>, String> {
         #[cfg(target_os = "windows")]
         {
             {
@@ -1660,7 +1894,8 @@ impl VoiceHandler {
                 let cancel_clone = cancel.clone();
 
                 // Read audio config for sample rate and device
-                let voice_dir = config_dir.parent()
+                let voice_dir = config_dir
+                    .parent()
                     .map(|p| p.join("tools").join("voice"))
                     .unwrap_or_else(|| std::path::PathBuf::from("."));
                 let config_path = voice_dir.join("config.toml");
@@ -1678,9 +1913,11 @@ impl VoiceHandler {
 
                 // Spawn background capture
                 tokio::task::spawn_blocking(move || {
-                    let capture = match nemesis_voice::AudioCapture::new(
-                        if device.is_empty() { "" } else { &device },
-                    ) {
+                    let capture = match nemesis_voice::AudioCapture::new(if device.is_empty() {
+                        ""
+                    } else {
+                        &device
+                    }) {
                         Ok(c) => c,
                         Err(e) => {
                             tracing::error!("[Speaker] Capture init failed: {}", e);
@@ -1691,15 +1928,16 @@ impl VoiceHandler {
                         }
                     };
 
-                    let mut resampler = match nemesis_voice::Resampler::new(capture.sample_rate, target_sr) {
-                        Ok(r) => r,
-                        Err(e) => {
-                            tracing::error!("[Speaker] Resampler init failed: {}", e);
-                            let mut reg = speaker_register_state().lock().unwrap();
-                            *reg = None;
-                            return;
-                        }
-                    };
+                    let mut resampler =
+                        match nemesis_voice::Resampler::new(capture.sample_rate, target_sr) {
+                            Ok(r) => r,
+                            Err(e) => {
+                                tracing::error!("[Speaker] Resampler init failed: {}", e);
+                                let mut reg = speaker_register_state().lock().unwrap();
+                                *reg = None;
+                                return;
+                            }
+                        };
 
                     while !cancel_clone.is_cancelled() {
                         if let Some(samples) = capture.try_receive() {
@@ -1736,13 +1974,22 @@ impl VoiceHandler {
             Ok(Some(serde_json::json!({ "recording": true, "name": name })))
         }
         #[cfg(not(target_os = "windows"))]
-        { let _ = (config_dir, name); Err("Not supported on this platform".to_string()) }
+        {
+            let _ = (config_dir, name);
+            Err("Not supported on this platform".to_string())
+        }
     }
 
-    fn cmd_speaker_register_stop(&self, config_dir: &std::path::Path) -> Result<Option<serde_json::Value>, String> {
+    fn cmd_speaker_register_stop(
+        &self,
+        config_dir: &std::path::Path,
+    ) -> Result<Option<serde_json::Value>, String> {
         #[cfg(target_os = "windows")]
         {
-            let reg = speaker_register_state().lock().unwrap().take()
+            let reg = speaker_register_state()
+                .lock()
+                .unwrap()
+                .take()
                 .ok_or("No registration in progress")?;
 
             let elapsed = reg.start_time.elapsed().as_secs_f32();
@@ -1761,7 +2008,8 @@ impl VoiceHandler {
             // Extract embedding
             let engine_guard = speaker_engine_state().lock().unwrap();
             let engine = engine_guard.as_ref().ok_or("Speaker engine not loaded")?;
-            let embedding = engine.embed(&samples, sample_rate)
+            let embedding = engine
+                .embed(&samples, sample_rate)
                 .map_err(|e| format!("Embedding extraction failed: {}", e))?;
 
             // Register in manager
@@ -1776,14 +2024,22 @@ impl VoiceHandler {
                 vp_cfg["speakers"] = serde_json::json!({});
             }
             if let Some(obj) = vp_cfg.get_mut("speakers").and_then(|v| v.as_object_mut()) {
-                obj.insert(name.clone(), serde_json::json!({
-                    "embedding": embedding,
-                    "created_at": chrono::Local::now().to_rfc3339(),
-                }));
+                obj.insert(
+                    name.clone(),
+                    serde_json::json!({
+                        "embedding": embedding,
+                        "created_at": chrono::Local::now().to_rfc3339(),
+                    }),
+                );
             }
             write_voiceprint_config(config_dir, &vp_cfg)?;
 
-            tracing::info!("[Speaker] Registered '{}' ({} samples, {:.1}s)", name, samples.len(), elapsed);
+            tracing::info!(
+                "[Speaker] Registered '{}' ({} samples, {:.1}s)",
+                name,
+                samples.len(),
+                elapsed
+            );
             Ok(Some(serde_json::json!({
                 "registered": true,
                 "name": name,
@@ -1792,7 +2048,10 @@ impl VoiceHandler {
             })))
         }
         #[cfg(not(target_os = "windows"))]
-        { let _ = config_dir; Err("Not supported on this platform".to_string()) }
+        {
+            let _ = config_dir;
+            Err("Not supported on this platform".to_string())
+        }
     }
 
     fn cmd_speaker_register_cancel(&self) -> Result<Option<serde_json::Value>, String> {
@@ -1803,7 +2062,11 @@ impl VoiceHandler {
         Ok(Some(serde_json::json!({ "cancelled": true })))
     }
 
-    fn cmd_speaker_remove(&self, config_dir: &std::path::Path, name: &str) -> Result<Option<serde_json::Value>, String> {
+    fn cmd_speaker_remove(
+        &self,
+        config_dir: &std::path::Path,
+        name: &str,
+    ) -> Result<Option<serde_json::Value>, String> {
         #[cfg(target_os = "windows")]
         {
             let mut manager_guard = speaker_manager_state().lock().unwrap();
@@ -1820,21 +2083,32 @@ impl VoiceHandler {
         Ok(Some(serde_json::json!({ "removed": true, "name": name })))
     }
 
-    fn cmd_speaker_list(&self, config_dir: &std::path::Path) -> Result<Option<serde_json::Value>, String> {
+    fn cmd_speaker_list(
+        &self,
+        config_dir: &std::path::Path,
+    ) -> Result<Option<serde_json::Value>, String> {
         #[cfg(target_os = "windows")]
         {
             let vp_cfg = read_voiceprint_config(config_dir);
-            let speakers: Vec<String> = vp_cfg.get("speakers")
+            let speakers: Vec<String> = vp_cfg
+                .get("speakers")
                 .and_then(|v| v.as_object())
                 .map(|obj| obj.keys().cloned().collect())
                 .unwrap_or_default();
             Ok(Some(serde_json::json!({ "speakers": speakers })))
         }
         #[cfg(not(target_os = "windows"))]
-        { let _ = config_dir; Ok(Some(serde_json::json!({ "speakers": [] as Vec<String> }))) }
+        {
+            let _ = config_dir;
+            Ok(Some(serde_json::json!({ "speakers": [] as Vec<String> })))
+        }
     }
 
-    fn cmd_speaker_set_threshold(&self, config_dir: &std::path::Path, threshold: f32) -> Result<Option<serde_json::Value>, String> {
+    fn cmd_speaker_set_threshold(
+        &self,
+        config_dir: &std::path::Path,
+        threshold: f32,
+    ) -> Result<Option<serde_json::Value>, String> {
         if threshold < 0.0 || threshold > 1.0 {
             return Err("Threshold must be between 0.0 and 1.0".to_string());
         }
@@ -1845,7 +2119,12 @@ impl VoiceHandler {
         Ok(Some(serde_json::json!({ "threshold": threshold })))
     }
 
-    async fn cmd_speaker_test_start(&self, voice_dir: &std::path::Path, config_dir: &std::path::Path, ctx: &RequestContext) -> Result<Option<serde_json::Value>, String> {
+    async fn cmd_speaker_test_start(
+        &self,
+        voice_dir: &std::path::Path,
+        config_dir: &std::path::Path,
+        ctx: &RequestContext,
+    ) -> Result<Option<serde_json::Value>, String> {
         #[cfg(target_os = "windows")]
         {
             // Auto-load STT engine if not already loaded
@@ -1854,7 +2133,8 @@ impl VoiceHandler {
                 guard.is_none()
             };
             if auto_loaded_stt {
-                self.cmd_stt_engine_start(voice_dir, config_dir).await
+                self.cmd_stt_engine_start(voice_dir, config_dir)
+                    .await
                     .map_err(|e| format!("STT engine auto-load failed: {}", e))?;
             }
 
@@ -1881,7 +2161,10 @@ impl VoiceHandler {
             let cancel = CancellationToken::new();
             {
                 let mut state = speaker_test_state().lock().await;
-                *state = Some(SpeakerTestSession { cancel: cancel.clone(), auto_loaded_stt });
+                *state = Some(SpeakerTestSession {
+                    cancel: cancel.clone(),
+                    auto_loaded_stt,
+                });
             }
 
             let session_id = ctx.session_id.to_string();
@@ -1894,7 +2177,11 @@ impl VoiceHandler {
                 let config_path = dir.join("config.toml");
                 let cfg = nemesis_voice::AppConfig::load_or_default(&config_path);
                 let target_sr = cfg.audio.target_sample_rate as u32;
-                let capture_device = if cfg.audio.capture_device.is_empty() { "" } else { &cfg.audio.capture_device };
+                let capture_device = if cfg.audio.capture_device.is_empty() {
+                    ""
+                } else {
+                    &cfg.audio.capture_device
+                };
 
                 let mut detector = nemesis_voice::create_detector(&cfg);
 
@@ -1906,13 +2193,14 @@ impl VoiceHandler {
                     }
                 };
 
-                let mut resampler = match nemesis_voice::Resampler::new(capture.sample_rate, target_sr) {
-                    Ok(r) => r,
-                    Err(e) => {
-                        tracing::error!("[Speaker Test] Resampler failed: {}", e);
-                        return;
-                    }
-                };
+                let mut resampler =
+                    match nemesis_voice::Resampler::new(capture.sample_rate, target_sr) {
+                        Ok(r) => r,
+                        Err(e) => {
+                            tracing::error!("[Speaker Test] Resampler failed: {}", e);
+                            return;
+                        }
+                    };
 
                 tracing::info!("[Speaker Test] Started");
 
@@ -1928,7 +2216,9 @@ impl VoiceHandler {
                                         let engine_guard = speaker_engine_state().lock().unwrap();
                                         if let Some(ref engine) = *engine_guard {
                                             match engine.embed(&speech, target_sr) {
-                                                Ok(emb) => nemesis_voice::cosine_similarity(&emb, &owner_emb),
+                                                Ok(emb) => nemesis_voice::cosine_similarity(
+                                                    &emb, &owner_emb,
+                                                ),
                                                 Err(_) => -1.0,
                                             }
                                         } else {
@@ -1948,7 +2238,11 @@ impl VoiceHandler {
 
                                     let trimmed = text.trim();
                                     if similarity >= 0.0 {
-                                        let display_text = if trimmed.is_empty() { "(无文字识别)" } else { trimmed };
+                                        let display_text = if trimmed.is_empty() {
+                                            "(无文字识别)"
+                                        } else {
+                                            trimmed
+                                        };
                                         let matched = similarity >= threshold;
                                         let msg = crate::protocol::ProtocolMessage::push(
                                             "voice",
@@ -1986,21 +2280,32 @@ impl VoiceHandler {
                                     Ok(emb) => nemesis_voice::cosine_similarity(&emb, &owner_emb),
                                     Err(_) => -1.0,
                                 }
-                            } else { -1.0 }
+                            } else {
+                                -1.0
+                            }
                         };
                         let text = {
                             let stt_guard = stt_engine_state().lock().unwrap();
                             if let Some(ref engine) = *stt_guard {
                                 engine.recognize(&speech, target_sr).unwrap_or_default()
-                            } else { String::new() }
+                            } else {
+                                String::new()
+                            }
                         };
                         let trimmed = text.trim();
                         if similarity >= 0.0 {
-                            let display_text = if trimmed.is_empty() { "(无文字识别)" } else { trimmed };
+                            let display_text = if trimmed.is_empty() {
+                                "(无文字识别)"
+                            } else {
+                                trimmed
+                            };
                             let matched = similarity >= threshold;
                             let msg = crate::protocol::ProtocolMessage::push(
-                                "voice", "speaker_test_result",
-                                Some(serde_json::json!({ "text": display_text, "similarity": similarity, "matched": matched })),
+                                "voice",
+                                "speaker_test_result",
+                                Some(
+                                    serde_json::json!({ "text": display_text, "similarity": similarity, "matched": matched }),
+                                ),
                             );
                             if let Ok(bytes) = msg.to_json() {
                                 let sid = session_id.clone();
@@ -2019,7 +2324,10 @@ impl VoiceHandler {
             Ok(Some(serde_json::json!({ "started": true })))
         }
         #[cfg(not(target_os = "windows"))]
-        { let _ = (voice_dir, config_dir, ctx); Err("Not supported on this platform".to_string()) }
+        {
+            let _ = (voice_dir, config_dir, ctx);
+            Err("Not supported on this platform".to_string())
+        }
     }
 
     async fn cmd_speaker_test_stop(&self) -> Result<Option<serde_json::Value>, String> {
@@ -2048,7 +2356,9 @@ impl VoiceHandler {
                     tracing::info!("[Voice] STT engine released");
                     Ok(Some(serde_json::json!({ "stopped": true, "model": "stt" })))
                 } else {
-                    Ok(Some(serde_json::json!({ "stopped": true, "model": "stt", "was_loaded": false })))
+                    Ok(Some(
+                        serde_json::json!({ "stopped": true, "model": "stt", "was_loaded": false }),
+                    ))
                 }
             }
             "tts" => {
@@ -2057,7 +2367,9 @@ impl VoiceHandler {
                     tracing::info!("[Voice] TTS engine released");
                     Ok(Some(serde_json::json!({ "stopped": true, "model": "tts" })))
                 } else {
-                    Ok(Some(serde_json::json!({ "stopped": true, "model": "tts", "was_loaded": false })))
+                    Ok(Some(
+                        serde_json::json!({ "stopped": true, "model": "tts", "was_loaded": false }),
+                    ))
                 }
             }
             "speaker" => {
@@ -2071,7 +2383,9 @@ impl VoiceHandler {
                 }
                 *speaker_enabled_state().lock().unwrap() = false;
                 tracing::info!("[Voice] Speaker engine and manager released");
-                Ok(Some(serde_json::json!({ "stopped": true, "model": "speaker" })))
+                Ok(Some(
+                    serde_json::json!({ "stopped": true, "model": "speaker" }),
+                ))
             }
             _ => Err(format!("unknown model: {}", model)),
         }
@@ -2081,14 +2395,23 @@ impl VoiceHandler {
     // Phase 2: Pipeline start / stop (uses persistent engine)
     // -----------------------------------------------------------------------
 
-    async fn cmd_pipeline_start(&self, voice_dir: &std::path::Path, model: &str, ctx: &RequestContext) -> Result<Option<serde_json::Value>, String> {
+    async fn cmd_pipeline_start(
+        &self,
+        voice_dir: &std::path::Path,
+        model: &str,
+        ctx: &RequestContext,
+    ) -> Result<Option<serde_json::Value>, String> {
         match model {
             "stt" => self.cmd_stt_pipeline_start(voice_dir, ctx).await,
             _ => Err(format!("pipeline not supported for model: {}", model)),
         }
     }
 
-    async fn cmd_stt_pipeline_start(&self, voice_dir: &std::path::Path, ctx: &RequestContext) -> Result<Option<serde_json::Value>, String> {
+    async fn cmd_stt_pipeline_start(
+        &self,
+        voice_dir: &std::path::Path,
+        ctx: &RequestContext,
+    ) -> Result<Option<serde_json::Value>, String> {
         // Check engine is loaded
         {
             let guard = stt_engine_state().lock().unwrap();
@@ -2117,7 +2440,10 @@ impl VoiceHandler {
 
         {
             let mut state = stt_state().lock().await;
-            *state = Some(SttSession { cancel: cancel.clone(), dialogue_output: None });
+            *state = Some(SttSession {
+                cancel: cancel.clone(),
+                dialogue_output: None,
+            });
         }
 
         let output: Box<dyn SttOutput> = Box::new(WsSttOutput {
@@ -2158,7 +2484,11 @@ impl VoiceHandler {
     // Dictation mode: STT → input box
     // -------------------------------------------------------------------
 
-    async fn cmd_stt_to_input_start(&self, voice_dir: &std::path::Path, ctx: &RequestContext) -> Result<Option<serde_json::Value>, String> {
+    async fn cmd_stt_to_input_start(
+        &self,
+        voice_dir: &std::path::Path,
+        ctx: &RequestContext,
+    ) -> Result<Option<serde_json::Value>, String> {
         // Ensure no existing pipeline
         {
             let state = stt_state().lock().await;
@@ -2171,7 +2501,9 @@ impl VoiceHandler {
         {
             let guard = stt_engine_state().lock().unwrap();
             if guard.is_none() {
-                return Err("STT engine not loaded. Enable STT in voice settings first.".to_string());
+                return Err(
+                    "STT engine not loaded. Enable STT in voice settings first.".to_string()
+                );
             }
         }
 
@@ -2187,7 +2519,10 @@ impl VoiceHandler {
 
         {
             let mut state = stt_state().lock().await;
-            *state = Some(SttSession { cancel: cancel.clone(), dialogue_output: None });
+            *state = Some(SttSession {
+                cancel: cancel.clone(),
+                dialogue_output: None,
+            });
         }
 
         let sid_clone = session_id.clone();
@@ -2226,7 +2561,12 @@ impl VoiceHandler {
     // Dialogue mode: STT → accumulate → auto-send on silence
     // -------------------------------------------------------------------
 
-    async fn cmd_stt_dialogue_start(&self, voice_dir: &std::path::Path, ctx: &RequestContext, silence_timeout: f64) -> Result<Option<serde_json::Value>, String> {
+    async fn cmd_stt_dialogue_start(
+        &self,
+        voice_dir: &std::path::Path,
+        ctx: &RequestContext,
+        silence_timeout: f64,
+    ) -> Result<Option<serde_json::Value>, String> {
         // Ensure no existing pipeline
         {
             let state = stt_state().lock().await;
@@ -2239,7 +2579,9 @@ impl VoiceHandler {
         {
             let guard = stt_engine_state().lock().unwrap();
             if guard.is_none() {
-                return Err("STT engine not loaded. Enable STT in voice settings first.".to_string());
+                return Err(
+                    "STT engine not loaded. Enable STT in voice settings first.".to_string()
+                );
             }
         }
 
@@ -2307,9 +2649,13 @@ impl VoiceHandler {
 
             loop {
                 tokio::time::sleep(check_interval).await;
-                if cancel_clone.is_cancelled() { break; }
+                if cancel_clone.is_cancelled() {
+                    break;
+                }
 
-                let Some(ref dlg) = dialogue_for_timer else { break; };
+                let Some(ref dlg) = dialogue_for_timer else {
+                    break;
+                };
                 let state = dlg.state.lock().unwrap();
                 let current_len = state.buffer.len();
                 let reset = state.reset_flag;
@@ -2334,7 +2680,12 @@ impl VoiceHandler {
                             if let Some(text) = text {
                                 last_text_len = 0;
                                 silence_start = None;
-                                push_stt_dialogue(&sid_timer, smgr_timer.clone(), "stt_auto_send", &text);
+                                push_stt_dialogue(
+                                    &sid_timer,
+                                    smgr_timer.clone(),
+                                    "stt_auto_send",
+                                    &text,
+                                );
                             }
                         }
                     }
@@ -2387,20 +2738,47 @@ impl VoiceHandler {
     // TTS playback: frontend-driven queue
     // -------------------------------------------------------------------
 
-    async fn cmd_tts_playback(&self, voice_dir: &std::path::Path, config_dir: &std::path::Path, data: &serde_json::Value) -> Result<Option<serde_json::Value>, String> {
-        let text = data.get("text").and_then(|v| v.as_str()).ok_or("missing field: text")?.to_string();
+    async fn cmd_tts_playback(
+        &self,
+        voice_dir: &std::path::Path,
+        config_dir: &std::path::Path,
+        data: &serde_json::Value,
+    ) -> Result<Option<serde_json::Value>, String> {
+        let text = data
+            .get("text")
+            .and_then(|v| v.as_str())
+            .ok_or("missing field: text")?
+            .to_string();
         if text.trim().is_empty() {
             return Err("text cannot be empty".to_string());
         }
 
         let voice_cfg = read_voice_config(config_dir);
-        let default_speaker = voice_cfg.get("speaker_id").and_then(|v| v.as_u64()).unwrap_or(45) as u32;
-        let default_speed = voice_cfg.get("speed").and_then(|v| v.as_f64()).unwrap_or(1.0) as f32;
-        let default_volume = voice_cfg.get("volume").and_then(|v| v.as_u64()).unwrap_or(50);
+        let default_speaker = voice_cfg
+            .get("speaker_id")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(45) as u32;
+        let default_speed = voice_cfg
+            .get("speed")
+            .and_then(|v| v.as_f64())
+            .unwrap_or(1.0) as f32;
+        let default_volume = voice_cfg
+            .get("volume")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(50);
 
-        let speaker_id = data.get("speaker").and_then(|v| v.as_u64()).unwrap_or(default_speaker as u64) as u32;
-        let speed = data.get("speed").and_then(|v| v.as_f64()).unwrap_or(default_speed as f64) as f32;
-        let volume = data.get("volume").and_then(|v| v.as_u64()).unwrap_or(default_volume);
+        let speaker_id = data
+            .get("speaker")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(default_speaker as u64) as u32;
+        let speed = data
+            .get("speed")
+            .and_then(|v| v.as_f64())
+            .unwrap_or(default_speed as f64) as f32;
+        let volume = data
+            .get("volume")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(default_volume);
 
         // Ensure playback manager is running
         let mut mgr = tts_playback_state().lock().await;
@@ -2419,7 +2797,14 @@ impl VoiceHandler {
         }
 
         let mgr_ref = mgr.as_ref().unwrap();
-        mgr_ref.tx.send(TtsPlaybackItem { text, speaker_id, speed, volume })
+        mgr_ref
+            .tx
+            .send(TtsPlaybackItem {
+                text,
+                speaker_id,
+                speed,
+                volume,
+            })
             .map_err(|_| "TTS playback channel closed".to_string())?;
 
         Ok(Some(serde_json::json!({ "queued": true })))
@@ -2433,7 +2818,9 @@ impl VoiceHandler {
                 // Drop tx to signal the playback loop to exit
                 Ok(Some(serde_json::json!({ "stopped": true })))
             }
-            None => Ok(Some(serde_json::json!({ "stopped": true, "was_running": false }))),
+            None => Ok(Some(
+                serde_json::json!({ "stopped": true, "was_running": false }),
+            )),
         }
     }
 }
@@ -2475,7 +2862,9 @@ fn tts_playback_loop(
             Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
         };
 
-        if cancel.is_cancelled() { break; }
+        if cancel.is_cancelled() {
+            break;
+        }
 
         // Get or create TTS engine
         let (samples, sample_rate) = {
@@ -2487,7 +2876,12 @@ fn tts_playback_loop(
                         tracing::warn!("[TTS Playback] Generation failed: {}", e);
                         consecutive_failures += 1;
                         drop(guard);
-                        handle_tts_failure(consecutive_failures, max_consecutive, &mut restart_attempts, max_restarts);
+                        handle_tts_failure(
+                            consecutive_failures,
+                            max_consecutive,
+                            &mut restart_attempts,
+                            max_restarts,
+                        );
                         continue;
                     }
                 }
@@ -2508,7 +2902,11 @@ fn tts_playback_loop(
 
         // Play the audio
         let gain = item.volume as f32 / 50.0 * cfg.audio.gain;
-        let playback = match nemesis_voice::AudioPlayback::new(&cfg.audio.playback_device, sample_rate, gain) {
+        let playback = match nemesis_voice::AudioPlayback::new(
+            &cfg.audio.playback_device,
+            sample_rate,
+            gain,
+        ) {
             Ok(p) => p,
             Err(e) => {
                 tracing::error!("[TTS Playback] Playback init failed: {}", e);
@@ -2525,7 +2923,12 @@ fn tts_playback_loop(
 }
 
 #[cfg(target_os = "windows")]
-fn handle_tts_failure(consecutive_failures: u32, max: u32, restart_attempts: &mut u32, max_restarts: u32) {
+fn handle_tts_failure(
+    consecutive_failures: u32,
+    max: u32,
+    restart_attempts: &mut u32,
+    max_restarts: u32,
+) {
     if consecutive_failures >= max {
         if *restart_attempts >= max_restarts {
             tracing::error!("[TTS Playback] Max restart attempts reached, marking engine dead");
@@ -2534,7 +2937,10 @@ fn handle_tts_failure(consecutive_failures: u32, max: u32, restart_attempts: &mu
             // Note: push engine_fault to frontend is complex from this sync context
             // The frontend will detect engine unavailable on next request
         } else {
-            tracing::warn!("[TTS Playback] Restarting TTS engine (attempt {})", *restart_attempts + 1);
+            tracing::warn!(
+                "[TTS Playback] Restarting TTS engine (attempt {})",
+                *restart_attempts + 1
+            );
             {
                 let mut guard = tts_engine_state().lock().unwrap();
                 *guard = None;
@@ -2562,11 +2968,22 @@ fn run_stt_loop(
     session_id: &str,
     session_mgr: Arc<crate::session::SessionManager>,
 ) {
-    let stt_engine = match nemesis_voice::SttEngine::new(stt_dir, &cfg.stt.model_name, language, cfg.stt.lang_remedy, use_itn, num_threads) {
+    let stt_engine = match nemesis_voice::SttEngine::new(
+        stt_dir,
+        &cfg.stt.model_name,
+        language,
+        cfg.stt.lang_remedy,
+        use_itn,
+        num_threads,
+    ) {
         Ok(e) => e,
         Err(e) => {
             tracing::error!("[STT] Engine init failed: {}", e);
-            push_stt_result(session_id, session_mgr.clone(), &format!("[错误] STT引擎初始化失败: {}", e));
+            push_stt_result(
+                session_id,
+                session_mgr.clone(),
+                &format!("[错误] STT引擎初始化失败: {}", e),
+            );
             return;
         }
     };
@@ -2577,21 +2994,34 @@ fn run_stt_loop(
         Ok(c) => c,
         Err(e) => {
             tracing::error!("[STT] Audio capture failed: {}", e);
-            push_stt_result(session_id, session_mgr.clone(), &format!("[错误] 麦克风初始化失败: {}", e));
+            push_stt_result(
+                session_id,
+                session_mgr.clone(),
+                &format!("[错误] 麦克风初始化失败: {}", e),
+            );
             return;
         }
     };
 
-    let mut resampler = match nemesis_voice::Resampler::new(capture.sample_rate, target_sample_rate) {
+    let mut resampler = match nemesis_voice::Resampler::new(capture.sample_rate, target_sample_rate)
+    {
         Ok(r) => r,
         Err(e) => {
             tracing::error!("[STT] Resampler init failed: {}", e);
-            push_stt_result(session_id, session_mgr.clone(), &format!("[错误] 重采样器初始化失败: {}", e));
+            push_stt_result(
+                session_id,
+                session_mgr.clone(),
+                &format!("[错误] 重采样器初始化失败: {}", e),
+            );
             return;
         }
     };
 
-    tracing::info!("[STT] Dictation started (session={}, detector={})", session_id, detector.name());
+    tracing::info!(
+        "[STT] Dictation started (session={}, detector={})",
+        session_id,
+        detector.name()
+    );
 
     let mut chunk_count: u64 = 0;
     let mut speech_count: u64 = 0;
@@ -2639,7 +3069,12 @@ fn run_stt_loop(
         }
     }
 
-    tracing::info!("[STT] Dictation stopped (session={}, chunks={}, speech_segments={})", session_id, chunk_count, speech_count);
+    tracing::info!(
+        "[STT] Dictation stopped (session={}, chunks={}, speech_segments={})",
+        session_id,
+        chunk_count,
+        speech_count
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -2734,12 +3169,18 @@ fn run_stt_pipeline(
                                     match engine.embed(&speech, target_sr) {
                                         Ok(embedding) => {
                                             if !manager.verify("owner", &embedding, threshold) {
-                                                tracing::info!("[STT Pipeline] Speaker rejected (segment #{})", speech_count);
+                                                tracing::info!(
+                                                    "[STT Pipeline] Speaker rejected (segment #{})",
+                                                    speech_count
+                                                );
                                                 continue;
                                             }
                                         }
                                         Err(e) => {
-                                            tracing::warn!("[STT Pipeline] Speaker embedding error: {}", e);
+                                            tracing::warn!(
+                                                "[STT Pipeline] Speaker embedding error: {}",
+                                                e
+                                            );
                                             continue;
                                         }
                                     }
@@ -2794,7 +3235,11 @@ fn run_stt_pipeline(
         }
     }
 
-    tracing::info!("[STT Pipeline] Stopped (chunks={}, speech_segments={})", chunk_count, speech_count);
+    tracing::info!(
+        "[STT Pipeline] Stopped (chunks={}, speech_segments={})",
+        chunk_count,
+        speech_count
+    );
 }
 
 #[cfg(target_os = "windows")]
@@ -2834,7 +3279,11 @@ fn push_stt_result(session_id: &str, session_mgr: Arc<crate::session::SessionMan
 }
 
 #[cfg(target_os = "windows")]
-fn push_stt_to_input(session_id: &str, session_mgr: Arc<crate::session::SessionManager>, text: &str) {
+fn push_stt_to_input(
+    session_id: &str,
+    session_mgr: Arc<crate::session::SessionManager>,
+    text: &str,
+) {
     let msg = crate::protocol::ProtocolMessage::push(
         "voice",
         "stt_to_input",
@@ -2852,7 +3301,12 @@ fn push_stt_to_input(session_id: &str, session_mgr: Arc<crate::session::SessionM
 }
 
 #[cfg(target_os = "windows")]
-fn push_stt_dialogue(session_id: &str, session_mgr: Arc<crate::session::SessionManager>, cmd: &str, text: &str) {
+fn push_stt_dialogue(
+    session_id: &str,
+    session_mgr: Arc<crate::session::SessionManager>,
+    cmd: &str,
+    text: &str,
+) {
     let msg = crate::protocol::ProtocolMessage::push(
         "voice",
         cmd,

@@ -7,7 +7,7 @@ use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::task::JoinHandle;
-use tracing::{debug, info, warn, error};
+use tracing::{debug, error, info, warn};
 
 /// Cron schedule definition.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -78,7 +78,11 @@ const MAX_HISTORY: usize = 50;
 impl CronJobState {
     /// Append a run record (newest last), trimming to `MAX_HISTORY`.
     pub fn push_history(&mut self, at_ms: i64, status: String, error: Option<String>) {
-        self.history.push(CronRunRecord { at_ms, status, error });
+        self.history.push(CronRunRecord {
+            at_ms,
+            status,
+            error,
+        });
         if self.history.len() > MAX_HISTORY {
             let drop_n = self.history.len() - MAX_HISTORY;
             self.history.drain(..drop_n);
@@ -126,7 +130,10 @@ impl CronService {
         info!("[Cron] Service created, store_path={}", store_path);
         let svc = Self {
             store_path: store_path.to_string(),
-            store: Arc::new(Mutex::new(CronStoreData { version: 1, jobs: vec![] })),
+            store: Arc::new(Mutex::new(CronStoreData {
+                version: 1,
+                jobs: vec![],
+            })),
             running: Arc::new(Mutex::new(false)),
             stop_handle: Arc::new(Mutex::new(None)),
             on_job: Arc::new(Mutex::new(None)),
@@ -165,8 +172,11 @@ impl CronService {
                 let now_ms = Local::now().timestamp_millis();
                 let due: Vec<String> = {
                     let s = store.lock();
-                    s.jobs.iter()
-                        .filter(|j| j.enabled && j.state.next_run_at_ms.map_or(false, |t| t <= now_ms))
+                    s.jobs
+                        .iter()
+                        .filter(|j| {
+                            j.enabled && j.state.next_run_at_ms.map_or(false, |t| t <= now_ms)
+                        })
                         .map(|j| j.id.clone())
                         .collect()
                 };
@@ -194,9 +204,14 @@ impl CronService {
                         let s = store.lock();
                         s.jobs.iter().find(|j| j.id == *job_id).cloned()
                     };
-                    let Some(callback_job) = callback_job else { continue };
+                    let Some(callback_job) = callback_job else {
+                        continue;
+                    };
 
-                    info!("[Cron] Executing scheduled job: name={}, id={}", callback_job.name, callback_job.id);
+                    info!(
+                        "[Cron] Executing scheduled job: name={}, id={}",
+                        callback_job.name, callback_job.id
+                    );
 
                     // Call on_job handler (outside lock)
                     let handler_result = {
@@ -219,18 +234,27 @@ impl CronService {
                                 Some(Ok(_)) => {
                                     job.state.last_status = Some("ok".to_string());
                                     job.state.last_error = None;
-                                    info!("[Cron] Scheduled job completed: name={}, id={}, status=ok", job.name, job.id);
+                                    info!(
+                                        "[Cron] Scheduled job completed: name={}, id={}, status=ok",
+                                        job.name, job.id
+                                    );
                                 }
                                 Some(Err(e)) => {
                                     job.state.last_status = Some("error".to_string());
                                     job.state.last_error = Some(e.clone());
-                                    error!("[Cron] Scheduled job failed: name={}, id={}, error={}", job.name, job.id, e);
+                                    error!(
+                                        "[Cron] Scheduled job failed: name={}, id={}, error={}",
+                                        job.name, job.id, e
+                                    );
                                 }
                                 None => {
                                     // No handler configured
                                     job.state.last_status = Some("ok".to_string());
                                     job.state.last_error = None;
-                                    debug!("[Cron] Scheduled job executed (no handler): name={}, id={}", job.name, job.id);
+                                    debug!(
+                                        "[Cron] Scheduled job executed (no handler): name={}, id={}",
+                                        job.name, job.id
+                                    );
                                 }
                             }
 
@@ -250,11 +274,18 @@ impl CronService {
                                     job.state.next_run_at_ms = None;
                                 }
                             } else {
-                                job.state.next_run_at_ms = compute_next_run(&job.schedule, Local::now().timestamp_millis());
+                                job.state.next_run_at_ms = compute_next_run(
+                                    &job.schedule,
+                                    Local::now().timestamp_millis(),
+                                );
                             }
                         }
                         // Remove delete_after_run jobs that have completed
-                        s.jobs.retain(|j| j.id != *job_id || !j.delete_after_run || j.state.last_status.as_deref() != Some("ok"));
+                        s.jobs.retain(|j| {
+                            j.id != *job_id
+                                || !j.delete_after_run
+                                || j.state.last_status.as_deref() != Some("ok")
+                        });
                         let _ = save_store_to_path(&store_path, &s);
                     }
                 }
@@ -278,7 +309,15 @@ impl CronService {
 
     /// Add a new job (legacy 6-param signature — kept for existing callers and
     /// tests). Delegates to [`add_job_ext`] with `session_key=None, enabled=true`.
-    pub fn add_job(&self, name: &str, schedule: CronSchedule, message: &str, deliver: bool, channel: Option<&str>, to: Option<&str>) -> Result<CronJob, String> {
+    pub fn add_job(
+        &self,
+        name: &str,
+        schedule: CronSchedule,
+        message: &str,
+        deliver: bool,
+        channel: Option<&str>,
+        to: Option<&str>,
+    ) -> Result<CronJob, String> {
         self.add_job_ext(name, schedule, message, deliver, channel, to, None, true)
     }
 
@@ -296,7 +335,10 @@ impl CronService {
         enabled: bool,
     ) -> Result<CronJob, String> {
         let cron_expr = schedule.expr.as_deref().unwrap_or(schedule.kind.as_str());
-        info!("[Cron] Job added: name={}, schedule_kind={}, cron={}, enabled={}", name, schedule.kind, cron_expr, enabled);
+        info!(
+            "[Cron] Job added: name={}, schedule_kind={}, cron={}, enabled={}",
+            name, schedule.kind, cron_expr, enabled
+        );
         let now_ms = Local::now().timestamp_millis();
         let delete_after_run = schedule.kind == "at";
         let job = CronJob {
@@ -314,7 +356,11 @@ impl CronService {
                 session_key: session_key.map(|s| s.to_string()),
             },
             state: CronJobState {
-                next_run_at_ms: if enabled { compute_next_run(&schedule, now_ms) } else { None },
+                next_run_at_ms: if enabled {
+                    compute_next_run(&schedule, now_ms)
+                } else {
+                    None
+                },
                 last_run_at_ms: None,
                 last_status: None,
                 last_error: None,
@@ -338,15 +384,25 @@ impl CronService {
             store.jobs.retain(|j| j.id != job_id);
             store.jobs.len() < before
         };
-        if removed { let _ = self.save_store(); }
+        if removed {
+            let _ = self.save_store();
+        }
         removed
     }
 
     /// List jobs.
     pub fn list_jobs(&self, include_disabled: bool) -> Vec<CronJob> {
         let store = self.store.lock();
-        let jobs: Vec<CronJob> = if include_disabled { store.jobs.clone() } else { store.jobs.iter().filter(|j| j.enabled).cloned().collect() };
-        debug!("[Cron] Listing jobs, count={}, include_disabled={}", jobs.len(), include_disabled);
+        let jobs: Vec<CronJob> = if include_disabled {
+            store.jobs.clone()
+        } else {
+            store.jobs.iter().filter(|j| j.enabled).cloned().collect()
+        };
+        debug!(
+            "[Cron] Listing jobs, count={}, include_disabled={}",
+            jobs.len(),
+            include_disabled
+        );
         jobs
     }
 
@@ -354,7 +410,9 @@ impl CronService {
     /// `{"enabled": bool, "jobs": int, "nextWakeAtMS": Option<i64>}`
     pub fn status(&self) -> serde_json::Value {
         let store = self.store.lock();
-        let next_wake = store.jobs.iter()
+        let next_wake = store
+            .jobs
+            .iter()
             .filter(|j| j.enabled)
             .filter_map(|j| j.state.next_run_at_ms)
             .min();
@@ -367,17 +425,32 @@ impl CronService {
 
     /// Get a job by ID.
     pub fn get_job(&self, job_id: &str) -> Option<CronJob> {
-        self.store.lock().jobs.iter().find(|j| j.id == job_id).cloned()
+        self.store
+            .lock()
+            .jobs
+            .iter()
+            .find(|j| j.id == job_id)
+            .cloned()
     }
 
     /// Update a job's name and/or schedule.
-    pub fn update_job(&self, job_id: &str, name: Option<&str>, schedule: Option<CronSchedule>) -> Result<(), String> {
+    pub fn update_job(
+        &self,
+        job_id: &str,
+        name: Option<&str>,
+        schedule: Option<CronSchedule>,
+    ) -> Result<(), String> {
         info!("[Cron] Job updated: id={}", job_id);
         let now_ms = Local::now().timestamp_millis();
         let mut store = self.store.lock();
-        let job = store.jobs.iter_mut().find(|j| j.id == job_id)
+        let job = store
+            .jobs
+            .iter_mut()
+            .find(|j| j.id == job_id)
             .ok_or_else(|| format!("job not found: {}", job_id))?;
-        if let Some(n) = name { job.name = n.to_string(); }
+        if let Some(n) = name {
+            job.name = n.to_string();
+        }
         if let Some(s) = schedule {
             job.schedule = s;
             job.state.next_run_at_ms = compute_next_run(&job.schedule, now_ms);
@@ -395,16 +468,23 @@ impl CronService {
         info!("[Cron] Job patched: id={}", job_id);
         let now_ms = Local::now().timestamp_millis();
         let mut store = self.store.lock();
-        let job = store.jobs.iter_mut().find(|j| j.id == job_id)
+        let job = store
+            .jobs
+            .iter_mut()
+            .find(|j| j.id == job_id)
             .ok_or_else(|| format!("job not found: {}", job_id))?;
-        if let Some(n) = &patch.name { job.name = n.clone(); }
+        if let Some(n) = &patch.name {
+            job.name = n.clone();
+        }
         if let Some(sched) = &patch.schedule {
             job.schedule = sched.clone();
             if job.enabled {
                 job.state.next_run_at_ms = compute_next_run(&job.schedule, now_ms);
             }
         }
-        if let Some(m) = &patch.message { job.payload.message = m.clone(); }
+        if let Some(m) = &patch.message {
+            job.payload.message = m.clone();
+        }
         if let Some(c) = patch.channel.as_ref() {
             job.payload.channel = if c.is_empty() { None } else { Some(c.clone()) };
         }
@@ -412,11 +492,19 @@ impl CronService {
             job.payload.to = if t.is_empty() { None } else { Some(t.clone()) };
         }
         if let Some(sk) = patch.session_key.as_ref() {
-            job.payload.session_key = if sk.is_empty() { None } else { Some(sk.clone()) };
+            job.payload.session_key = if sk.is_empty() {
+                None
+            } else {
+                Some(sk.clone())
+            };
         }
         if let Some(en) = patch.enabled {
             job.enabled = en;
-            job.state.next_run_at_ms = if en { compute_next_run(&job.schedule, now_ms) } else { None };
+            job.state.next_run_at_ms = if en {
+                compute_next_run(&job.schedule, now_ms)
+            } else {
+                None
+            };
         }
         job.updated_at_ms = now_ms;
         let updated = job.clone();
@@ -429,7 +517,10 @@ impl CronService {
     pub fn toggle_job(&self, job_id: &str) -> Result<bool, String> {
         let now_ms = Local::now().timestamp_millis();
         let mut store = self.store.lock();
-        let job = store.jobs.iter_mut().find(|j| j.id == job_id)
+        let job = store
+            .jobs
+            .iter_mut()
+            .find(|j| j.id == job_id)
             .ok_or_else(|| format!("job not found: {}", job_id))?;
         job.enabled = !job.enabled;
         if job.enabled {
@@ -446,10 +537,16 @@ impl CronService {
     /// Enable or disable a specific job. Mirrors Go's `EnableJob(jobID, enabled)`.
     /// Returns the updated job if found.
     pub fn enable_job(&self, job_id: &str, enabled: bool) -> Result<CronJob, String> {
-        info!("[Cron] Job enable/disable: id={}, enabled={}", job_id, enabled);
+        info!(
+            "[Cron] Job enable/disable: id={}, enabled={}",
+            job_id, enabled
+        );
         let now_ms = Local::now().timestamp_millis();
         let mut store = self.store.lock();
-        let job = store.jobs.iter_mut().find(|j| j.id == job_id)
+        let job = store
+            .jobs
+            .iter_mut()
+            .find(|j| j.id == job_id)
             .ok_or_else(|| format!("job not found: {}", job_id))?;
         job.enabled = enabled;
         if enabled {
@@ -471,7 +568,10 @@ impl CronService {
 
     /// Set the job handler callback. Mirrors Go's `SetOnJob(handler)`.
     /// When set, the handler is called when a cron job fires.
-    pub fn set_on_job(&self, handler: impl Fn(&CronJob) -> Result<String, String> + Send + Sync + 'static) {
+    pub fn set_on_job(
+        &self,
+        handler: impl Fn(&CronJob) -> Result<String, String> + Send + Sync + 'static,
+    ) {
         *self.on_job.lock() = Some(Box::new(handler));
     }
 
@@ -519,7 +619,10 @@ impl CronService {
                     Some(Err(e)) => {
                         job.state.last_status = Some("error".to_string());
                         job.state.last_error = Some(e.clone());
-                        error!("[Cron] Manual execute failed: name={}, id={}, error={}", job.name, job.id, e);
+                        error!(
+                            "[Cron] Manual execute failed: name={}, id={}, error={}",
+                            job.name, job.id, e
+                        );
                     }
                 }
                 // Append to run history (capped).
@@ -533,7 +636,10 @@ impl CronService {
             self.save_store()?;
         }
         let elapsed = start.elapsed().as_millis();
-        info!("[Cron] Job executed: name={}, id={}, duration_ms={}", callback_job.name, job_id, elapsed);
+        info!(
+            "[Cron] Job executed: name={}, id={}, duration_ms={}",
+            callback_job.name, job_id, elapsed
+        );
         Ok(())
     }
 
@@ -590,9 +696,12 @@ impl CronService {
     }
 
     fn load_store(&self) -> Result<(), String> {
-        if !std::path::Path::new(&self.store_path).exists() { return Ok(()); }
+        if !std::path::Path::new(&self.store_path).exists() {
+            return Ok(());
+        }
         let data = std::fs::read_to_string(&self.store_path).map_err(|e| format!("read: {}", e))?;
-        let store: CronStoreData = serde_json::from_str(&data).map_err(|e| format!("parse: {}", e))?;
+        let store: CronStoreData =
+            serde_json::from_str(&data).map_err(|e| format!("parse: {}", e))?;
         *self.store.lock() = store;
         Ok(())
     }
@@ -619,7 +728,8 @@ impl CronService {
     #[allow(dead_code)]
     fn get_next_wake_ms(&self) -> Option<i64> {
         let s = self.store.lock();
-        s.jobs.iter()
+        s.jobs
+            .iter()
             .filter(|j| j.enabled)
             .filter_map(|j| j.state.next_run_at_ms)
             .min()
@@ -684,7 +794,11 @@ pub fn compute_next_run(schedule: &CronSchedule, now_ms: i64) -> Option<i64> {
             match next_ms {
                 Ok(ms) => Some(ms),
                 Err(e) => {
-                    tracing::warn!("[cron] failed to compute next run for expr '{}': {}", expr, e);
+                    tracing::warn!(
+                        "[cron] failed to compute next run for expr '{}': {}",
+                        expr,
+                        e
+                    );
                     None
                 }
             }
@@ -692,7 +806,6 @@ pub fn compute_next_run(schedule: &CronSchedule, now_ms: i64) -> Option<i64> {
         _ => None,
     }
 }
-
 
 fn generate_id() -> String {
     use rand::Rng;

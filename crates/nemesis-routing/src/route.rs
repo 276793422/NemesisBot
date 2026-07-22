@@ -1,7 +1,12 @@
 //! Route resolver for agent dispatch.
 
-use crate::agent_id::{normalize_account_id, normalize_agent_id, DEFAULT_ACCOUNT_ID, DEFAULT_AGENT_ID};
-use crate::session_key::{build_agent_main_session_key, build_agent_peer_session_key, DMScope, RoutePeer, SessionKeyParams};
+use crate::agent_id::{
+    DEFAULT_ACCOUNT_ID, DEFAULT_AGENT_ID, normalize_account_id, normalize_agent_id,
+};
+use crate::session_key::{
+    DMScope, RoutePeer, SessionKeyParams, build_agent_main_session_key,
+    build_agent_peer_session_key,
+};
 use std::collections::HashMap;
 
 /// Route input from an inbound message.
@@ -90,7 +95,13 @@ impl RouteResolver {
             let id_trimmed = id.trim();
             if !kind_trimmed.is_empty() && !id_trimmed.is_empty() {
                 if let Some(b) = self.find_peer_match(&bindings, kind_trimmed, id_trimmed) {
-                    return self.build_route(&b.agent_id, &channel, &account_id, input, "binding.peer");
+                    return self.build_route(
+                        &b.agent_id,
+                        &channel,
+                        &account_id,
+                        input,
+                        "binding.peer",
+                    );
                 }
             }
         }
@@ -101,7 +112,13 @@ impl RouteResolver {
             let id_trimmed = id.trim();
             if !kind_trimmed.is_empty() && !id_trimmed.is_empty() {
                 if let Some(b) = self.find_peer_match(&bindings, kind_trimmed, id_trimmed) {
-                    return self.build_route(&b.agent_id, &channel, &account_id, input, "binding.peer.parent");
+                    return self.build_route(
+                        &b.agent_id,
+                        &channel,
+                        &account_id,
+                        input,
+                        "binding.peer.parent",
+                    );
                 }
             }
         }
@@ -111,7 +128,13 @@ impl RouteResolver {
             let guild_trimmed = guild_id.trim();
             if !guild_trimmed.is_empty() {
                 if let Some(b) = self.find_guild_match(&bindings, guild_trimmed) {
-                    return self.build_route(&b.agent_id, &channel, &account_id, input, "binding.guild");
+                    return self.build_route(
+                        &b.agent_id,
+                        &channel,
+                        &account_id,
+                        input,
+                        "binding.guild",
+                    );
                 }
             }
         }
@@ -121,7 +144,13 @@ impl RouteResolver {
             let team_trimmed = team_id.trim();
             if !team_trimmed.is_empty() {
                 if let Some(b) = self.find_team_match(&bindings, team_trimmed) {
-                    return self.build_route(&b.agent_id, &channel, &account_id, input, "binding.team");
+                    return self.build_route(
+                        &b.agent_id,
+                        &channel,
+                        &account_id,
+                        input,
+                        "binding.team",
+                    );
                 }
             }
         }
@@ -146,11 +175,7 @@ impl RouteResolver {
     // -----------------------------------------------------------------------
 
     /// Filter bindings to those matching the given channel and account ID.
-    fn filter_bindings<'a>(
-        &'a self,
-        channel: &str,
-        account_id: &str,
-    ) -> Vec<&'a AgentBinding> {
+    fn filter_bindings<'a>(&'a self, channel: &str, account_id: &str) -> Vec<&'a AgentBinding> {
         self.config
             .bindings
             .iter()
@@ -231,10 +256,7 @@ impl RouteResolver {
     }
 
     /// Find a binding that matches by account only (no peer/guild/team, account != "*").
-    fn find_account_match<'a>(
-        &self,
-        bindings: &[&'a AgentBinding],
-    ) -> Option<&'a AgentBinding> {
+    fn find_account_match<'a>(&self, bindings: &[&'a AgentBinding]) -> Option<&'a AgentBinding> {
         for b in bindings {
             let acc = b.match_account_id.trim();
             if acc == "*" {

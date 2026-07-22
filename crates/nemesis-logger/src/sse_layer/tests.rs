@@ -5,7 +5,7 @@
 
 use std::sync::{Arc, Mutex};
 use tracing_subscriber::layer::SubscriberExt;
-use tracing_subscriber::{fmt, Registry};
+use tracing_subscriber::{Registry, fmt};
 
 use super::{SseLogEvent, SseLogLayer};
 use crate::sse_layer::{boot_unix_ms, next_seq};
@@ -33,11 +33,26 @@ where
 
 #[test]
 fn classifies_source_by_target_prefix() {
-    assert_eq!(SseLogEvent::classify_source("nemesis_providers::openai"), "llm");
-    assert_eq!(SseLogEvent::classify_source("nemesis_cluster::rpc::client"), "cluster");
-    assert_eq!(SseLogEvent::classify_source("nemesis_security::middleware"), "security");
-    assert_eq!(SseLogEvent::classify_source("nemesis_agent::loop"), "general");
-    assert_eq!(SseLogEvent::classify_source("nemesis_web::server"), "general");
+    assert_eq!(
+        SseLogEvent::classify_source("nemesis_providers::openai"),
+        "llm"
+    );
+    assert_eq!(
+        SseLogEvent::classify_source("nemesis_cluster::rpc::client"),
+        "cluster"
+    );
+    assert_eq!(
+        SseLogEvent::classify_source("nemesis_security::middleware"),
+        "security"
+    );
+    assert_eq!(
+        SseLogEvent::classify_source("nemesis_agent::loop"),
+        "general"
+    );
+    assert_eq!(
+        SseLogEvent::classify_source("nemesis_web::server"),
+        "general"
+    );
     // Unknown crates fall back to general
     assert_eq!(SseLogEvent::classify_source("reqwest::blocking"), "general");
     assert_eq!(SseLogEvent::classify_source(""), "general");
@@ -118,7 +133,10 @@ fn layer_captures_bool_field() {
         tracing::info!(success = true, "operation done");
     });
     assert_eq!(events.len(), 1);
-    assert_eq!(events[0].fields.get("success").and_then(|v| v.as_bool()), Some(true));
+    assert_eq!(
+        events[0].fields.get("success").and_then(|v| v.as_bool()),
+        Some(true)
+    );
 }
 
 #[test]
@@ -139,7 +157,11 @@ fn layer_captures_nan_float_as_string() {
     assert_eq!(events.len(), 1);
     // NaN cannot become a JSON number, so the visitor falls back to string rendering.
     let v = events[0].fields.get("value").cloned().unwrap();
-    assert!(v.is_string(), "expected string fallback for NaN, got {:?}", v);
+    assert!(
+        v.is_string(),
+        "expected string fallback for NaN, got {:?}",
+        v
+    );
 }
 
 #[test]
@@ -159,9 +181,18 @@ fn layer_populates_timestamp_and_target() {
 fn layer_distinguishes_sources_in_different_modules() {
     // We can't easily emit events from crates that aren't compiled in here,
     // so instead test the classifier directly with realistic target strings.
-    assert_eq!(SseLogEvent::classify_source("nemesis_providers::sse"), "llm");
-    assert_eq!(SseLogEvent::classify_source("nemesis_cluster::rpc::server"), "cluster");
-    assert_eq!(SseLogEvent::classify_source("nemesis_security::scanner::clamav"), "security");
+    assert_eq!(
+        SseLogEvent::classify_source("nemesis_providers::sse"),
+        "llm"
+    );
+    assert_eq!(
+        SseLogEvent::classify_source("nemesis_cluster::rpc::server"),
+        "cluster"
+    );
+    assert_eq!(
+        SseLogEvent::classify_source("nemesis_security::scanner::clamav"),
+        "security"
+    );
     assert_eq!(SseLogEvent::classify_source("hyper::proto::h1"), "general");
 }
 
@@ -184,9 +215,9 @@ fn callback_does_not_block_subscriber_when_panicking() {
     let layer = SseLogLayer::new(|_ev| {
         panic!("boom");
     });
-    let subscriber = Registry::default().with(layer).with(
-        fmt::layer().with_writer(std::io::sink),
-    );
+    let subscriber = Registry::default()
+        .with(layer)
+        .with(fmt::layer().with_writer(std::io::sink));
 
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         tracing::subscriber::with_default(subscriber, || {
@@ -205,7 +236,7 @@ fn callback_does_not_block_subscriber_when_panicking() {
 // ===========================================================================
 
 use crate::sse_layer::{
-    clear_global_log_callback, global_log_callback_slot, set_global_log_callback, GlobalSseLogLayer,
+    GlobalSseLogLayer, clear_global_log_callback, global_log_callback_slot, set_global_log_callback,
 };
 
 /// Mutex guard that serializes the global-state tests. Without this, parallel test runs
@@ -295,7 +326,10 @@ fn global_layer_forwards_events_to_installed_callback() {
     assert_eq!(events.len(), 2, "expected both events to be captured");
     assert_eq!(events[0].level, "WARN");
     assert_eq!(events[0].message, "test warning");
-    assert_eq!(events[0].fields.get("user_id").and_then(|v| v.as_i64()), Some(7));
+    assert_eq!(
+        events[0].fields.get("user_id").and_then(|v| v.as_i64()),
+        Some(7)
+    );
     assert_eq!(events[1].level, "INFO");
     assert_eq!(events[1].message, "test info");
 }

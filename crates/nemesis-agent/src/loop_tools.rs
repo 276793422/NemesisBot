@@ -76,12 +76,14 @@ impl MessageTool {
 
     /// Check whether a message was already sent in this round.
     pub fn has_sent_in_round(&self) -> bool {
-        self.sent_in_round.load(std::sync::atomic::Ordering::Relaxed)
+        self.sent_in_round
+            .load(std::sync::atomic::Ordering::Relaxed)
     }
 
     /// Reset the sent-in-round flag (called at the start of each LLM iteration).
     pub fn reset_sent_in_round(&self) {
-        self.sent_in_round.store(false, std::sync::atomic::Ordering::Relaxed);
+        self.sent_in_round
+            .store(false, std::sync::atomic::Ordering::Relaxed);
     }
 }
 
@@ -94,7 +96,8 @@ impl Default for MessageTool {
 #[async_trait]
 impl Tool for MessageTool {
     fn description(&self) -> String {
-        "Send a message to user on a chat channel. Use this when you want to communicate something.".to_string()
+        "Send a message to user on a chat channel. Use this when you want to communicate something."
+            .to_string()
     }
 
     fn parameters(&self) -> serde_json::Value {
@@ -133,12 +136,18 @@ impl Tool for MessageTool {
 
         // Use context from RequestContext, falling back to stored context if needed.
         let channel = if context.channel.is_empty() {
-            self.stored_channel.lock().unwrap_or_else(|e| e.into_inner()).clone()
+            self.stored_channel
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .clone()
         } else {
             context.channel.clone()
         };
         let chat_id = if context.chat_id.is_empty() {
-            self.stored_chat_id.lock().unwrap_or_else(|e| e.into_inner()).clone()
+            self.stored_chat_id
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .clone()
         } else {
             context.chat_id.clone()
         };
@@ -149,7 +158,8 @@ impl Tool for MessageTool {
             // Format with RPC prefix if applicable.
             let formatted = context.format_rpc_message(&content);
             callback(&channel, &chat_id, &formatted);
-            self.sent_in_round.store(true, std::sync::atomic::Ordering::Relaxed);
+            self.sent_in_round
+                .store(true, std::sync::atomic::Ordering::Relaxed);
         }
 
         Ok(content)
@@ -233,7 +243,11 @@ impl Tool for WriteFileTool {
             .await
             .map_err(|e| format!("Failed to write file: {}", e))?;
 
-        Ok(format!("Successfully wrote {} bytes to {}", content.len(), path.display()))
+        Ok(format!(
+            "Successfully wrote {} bytes to {}",
+            content.len(),
+            path.display()
+        ))
     }
 
     fn preview(&self, args: &str) -> Option<FileChange> {
@@ -286,9 +300,16 @@ impl Tool for ListDirectoryTool {
             .map_err(|e| format!("Failed to read directory: {}", e))?;
 
         let mut listing = Vec::new();
-        while let Some(entry) = entries.next_entry().await.map_err(|e| format!("Entry error: {}", e))? {
+        while let Some(entry) = entries
+            .next_entry()
+            .await
+            .map_err(|e| format!("Entry error: {}", e))?
+        {
             let name = entry.file_name().to_string_lossy().to_string();
-            let metadata = entry.metadata().await.map_err(|e| format!("Metadata error: {}", e))?;
+            let metadata = entry
+                .metadata()
+                .await
+                .map_err(|e| format!("Metadata error: {}", e))?;
             let type_tag = if metadata.is_dir() { "dir" } else { "file" };
             let size = metadata.len();
             listing.push(format!("{} [{}] ({} bytes)", name, type_tag, size));
@@ -321,8 +342,8 @@ fn extract_path(args: &str) -> Result<String, String> {
 ///
 /// Expects a JSON object with "path" and "content" fields.
 fn extract_path_and_content(args: &str) -> Result<(String, String), String> {
-    let val: serde_json::Value = serde_json::from_str(args)
-        .map_err(|e| format!("Invalid JSON arguments: {}", e))?;
+    let val: serde_json::Value =
+        serde_json::from_str(args).map_err(|e| format!("Invalid JSON arguments: {}", e))?;
 
     let path = val
         .get("path")
@@ -343,8 +364,8 @@ fn extract_path_and_content(args: &str) -> Result<(String, String), String> {
 ///
 /// Expects a JSON object with "path", "old_text", and "new_text" fields.
 fn extract_edit_args(args: &str) -> Result<(String, String, String), String> {
-    let val: serde_json::Value = serde_json::from_str(args)
-        .map_err(|e| format!("Invalid JSON arguments: {}", e))?;
+    let val: serde_json::Value =
+        serde_json::from_str(args).map_err(|e| format!("Invalid JSON arguments: {}", e))?;
 
     let path = val
         .get("path")
@@ -426,7 +447,10 @@ impl Tool for EditFileTool {
     fn preview(&self, args: &str) -> Option<FileChange> {
         let (path, _old_text, _new_text) = extract_edit_args(args).ok()?;
         // edit_file requires the file to exist (execute errors otherwise).
-        Some(FileChange { path, kind: FileChangeKind::Modify })
+        Some(FileChange {
+            path,
+            kind: FileChangeKind::Modify,
+        })
     }
 }
 
@@ -467,7 +491,11 @@ impl Tool for AppendFileTool {
             .await
             .map_err(|e| format!("Failed to append to file: {}", e))?;
 
-        Ok(format!("Appended {} bytes to {}", content.len(), path.display()))
+        Ok(format!(
+            "Appended {} bytes to {}",
+            content.len(),
+            path.display()
+        ))
     }
 
     fn preview(&self, args: &str) -> Option<FileChange> {
@@ -503,7 +531,10 @@ impl Tool for DeleteFileTool {
         }
 
         if path.is_dir() {
-            return Err(format!("Path is a directory, not a file: {}", path.display()));
+            return Err(format!(
+                "Path is a directory, not a file: {}",
+                path.display()
+            ));
         }
 
         tokio::fs::remove_file(path)
@@ -515,7 +546,10 @@ impl Tool for DeleteFileTool {
 
     fn preview(&self, args: &str) -> Option<FileChange> {
         let path = extract_path(args).ok()?;
-        Some(FileChange { path, kind: FileChangeKind::Delete })
+        Some(FileChange {
+            path,
+            kind: FileChangeKind::Delete,
+        })
     }
 }
 
@@ -614,18 +648,18 @@ impl Tool for ExecTool {
     }
 
     async fn execute(&self, args: &str, _context: &RequestContext) -> Result<String, String> {
-        let val: serde_json::Value = serde_json::from_str(args)
-            .map_err(|e| format!("Invalid arguments: {}", e))?;
+        let val: serde_json::Value =
+            serde_json::from_str(args).map_err(|e| format!("Invalid arguments: {}", e))?;
 
-        let command = val.get("command")
+        let command = val
+            .get("command")
             .and_then(|v| v.as_str())
             .ok_or("Missing 'command' argument")?;
 
-        let timeout_secs = val.get("timeout")
-            .and_then(|v| v.as_u64())
-            .unwrap_or(30);
+        let timeout_secs = val.get("timeout").and_then(|v| v.as_u64()).unwrap_or(30);
 
-        let cwd = val.get("cwd")
+        let cwd = val
+            .get("cwd")
             .and_then(|v| v.as_str())
             .unwrap_or(&self.workspace);
 
@@ -634,7 +668,10 @@ impl Tool for ExecTool {
             let cwd_path = std::path::Path::new(cwd);
             let ws_path = std::path::Path::new(&self.workspace);
             if !cwd_path.starts_with(ws_path) {
-                return Err(format!("Access denied: path '{}' is outside workspace", cwd));
+                return Err(format!(
+                    "Access denied: path '{}' is outside workspace",
+                    cwd
+                ));
             }
         }
 
@@ -671,7 +708,8 @@ impl Tool for ExecTool {
             tokio::time::timeout(
                 std::time::Duration::from_secs(timeout_secs),
                 cmd.current_dir(cwd).output(),
-            ).await
+            )
+            .await
         };
 
         match output {
@@ -679,10 +717,18 @@ impl Tool for ExecTool {
                 let stdout = String::from_utf8_lossy(&out.stdout).to_string();
                 let stderr = String::from_utf8_lossy(&out.stderr).to_string();
                 if out.status.success() {
-                    Ok(if stdout.is_empty() { "(no output)".to_string() } else { stdout })
+                    Ok(if stdout.is_empty() {
+                        "(no output)".to_string()
+                    } else {
+                        stdout
+                    })
                 } else {
-                    Ok(format!("Exit code: {}\nstdout: {}\nstderr: {}",
-                        out.status.code().unwrap_or(-1), stdout, stderr))
+                    Ok(format!(
+                        "Exit code: {}\nstdout: {}\nstderr: {}",
+                        out.status.code().unwrap_or(-1),
+                        stdout,
+                        stderr
+                    ))
                 }
             }
             Ok(Err(e)) => Err(format!("Failed to execute command: {}", e)),
@@ -768,8 +814,8 @@ impl Tool for RunScriptTool {
     }
 
     async fn execute(&self, args: &str, _context: &RequestContext) -> Result<String, String> {
-        let val: serde_json::Value = serde_json::from_str(args)
-            .map_err(|e| format!("Invalid arguments: {}", e))?;
+        let val: serde_json::Value =
+            serde_json::from_str(args).map_err(|e| format!("Invalid arguments: {}", e))?;
 
         let interpreter = val
             .get("interpreter")
@@ -791,7 +837,10 @@ impl Tool for RunScriptTool {
             let cwd_path = std::path::Path::new(cwd);
             let ws_path = std::path::Path::new(&self.workspace);
             if !cwd_path.starts_with(ws_path) {
-                return Err(format!("Access denied: path '{}' is outside workspace", cwd));
+                return Err(format!(
+                    "Access denied: path '{}' is outside workspace",
+                    cwd
+                ));
             }
         }
 
@@ -865,18 +914,21 @@ impl Tool for AsyncExecTool {
     }
 
     async fn execute(&self, args: &str, _context: &RequestContext) -> Result<String, String> {
-        let val: serde_json::Value = serde_json::from_str(args)
-            .map_err(|e| format!("Invalid arguments: {}", e))?;
+        let val: serde_json::Value =
+            serde_json::from_str(args).map_err(|e| format!("Invalid arguments: {}", e))?;
 
-        let command = val.get("command")
+        let command = val
+            .get("command")
             .and_then(|v| v.as_str())
             .ok_or("Missing 'command' argument")?;
 
-        let cwd = val.get("working_dir")
+        let cwd = val
+            .get("working_dir")
             .and_then(|v| v.as_str())
             .unwrap_or(&self.workspace);
 
-        let wait_secs = val.get("wait_seconds")
+        let wait_secs = val
+            .get("wait_seconds")
             .and_then(|v| v.as_u64())
             .unwrap_or(3)
             .clamp(1, 10);
@@ -886,7 +938,10 @@ impl Tool for AsyncExecTool {
             let cwd_path = std::path::Path::new(cwd);
             let ws_path = std::path::Path::new(&self.workspace);
             if !cwd_path.starts_with(ws_path) {
-                return Err(format!("Access denied: path '{}' is outside workspace", cwd));
+                return Err(format!(
+                    "Access denied: path '{}' is outside workspace",
+                    cwd
+                ));
             }
         }
 
@@ -914,24 +969,31 @@ impl Tool for AsyncExecTool {
         };
 
         // Wait briefly to confirm startup
-        let result = tokio::time::timeout(
-            std::time::Duration::from_secs(wait_secs),
-            child.wait(),
-        ).await;
+        let result =
+            tokio::time::timeout(std::time::Duration::from_secs(wait_secs), child.wait()).await;
 
         match result {
             Ok(Ok(status)) => {
                 if status.success() || status.code().is_none() {
                     // Still running (no exit code) or exited cleanly
-                    Ok(format!("Command '{}' started and confirmed running", command))
+                    Ok(format!(
+                        "Command '{}' started and confirmed running",
+                        command
+                    ))
                 } else {
-                    Err(format!("Command '{}' exited prematurely with status: {}", command, status))
+                    Err(format!(
+                        "Command '{}' exited prematurely with status: {}",
+                        command, status
+                    ))
                 }
             }
             Ok(Err(e)) => Err(format!("Failed to wait for command: {}", e)),
             Err(_) => {
                 // Timeout — process still running, which is the expected async case
-                Ok(format!("Command '{}' started successfully (still running)", command))
+                Ok(format!(
+                    "Command '{}' started successfully (still running)",
+                    command
+                ))
             }
         }
     }
@@ -981,21 +1043,27 @@ impl Tool for BootstrapTool {
     }
 
     async fn execute(&self, args: &str, _context: &RequestContext) -> Result<String, String> {
-        let val: serde_json::Value = serde_json::from_str(args)
-            .map_err(|e| format!("Invalid arguments: {}", e))?;
+        let val: serde_json::Value =
+            serde_json::from_str(args).map_err(|e| format!("Invalid arguments: {}", e))?;
 
-        let confirmed = val.get("confirmed")
+        let confirmed = val
+            .get("confirmed")
             .and_then(|v| v.as_bool())
             .ok_or("Missing or invalid 'confirmed' parameter (must be a boolean)")?;
 
         if !confirmed {
-            return Err("Must confirm initialization is complete before deleting bootstrap file.".to_string());
+            return Err(
+                "Must confirm initialization is complete before deleting bootstrap file."
+                    .to_string(),
+            );
         }
 
         let bootstrap_path = Path::new(&self.workspace).join("BOOTSTRAP.md");
 
         if !bootstrap_path.exists() {
-            return Ok("BOOTSTRAP.md has already been removed. Initialization is complete.".to_string());
+            return Ok(
+                "BOOTSTRAP.md has already been removed. Initialization is complete.".to_string(),
+            );
         }
 
         match tokio::fs::remove_file(&bootstrap_path).await {
@@ -1040,31 +1108,37 @@ impl Tool for CronTool {
     }
 
     async fn execute(&self, args: &str, context: &RequestContext) -> Result<String, String> {
-        let val: serde_json::Value = serde_json::from_str(args)
-            .map_err(|e| format!("Invalid arguments: {}", e))?;
+        let val: serde_json::Value =
+            serde_json::from_str(args).map_err(|e| format!("Invalid arguments: {}", e))?;
 
-        let action = val.get("action")
-            .and_then(|v| v.as_str())
-            .unwrap_or("");
+        let action = val.get("action").and_then(|v| v.as_str()).unwrap_or("");
 
-        let svc = self.service.lock()
+        let svc = self
+            .service
+            .lock()
             .map_err(|e| format!("Lock error: {}", e))?;
 
         match action {
             "list" => {
                 let jobs = svc.list_jobs(true);
-                let result: Vec<serde_json::Value> = jobs.iter().map(|j| {
-                    serde_json::json!({
-                        "id": j.id,
-                        "name": j.name,
-                        "schedule": j.schedule,
-                        "enabled": j.enabled,
+                let result: Vec<serde_json::Value> = jobs
+                    .iter()
+                    .map(|j| {
+                        serde_json::json!({
+                            "id": j.id,
+                            "name": j.name,
+                            "schedule": j.schedule,
+                            "enabled": j.enabled,
+                        })
                     })
-                }).collect();
+                    .collect();
                 Ok(serde_json::to_string_pretty(&result).unwrap_or_else(|_| "[]".to_string()))
             }
             "create" => {
-                let name = val.get("name").and_then(|v| v.as_str()).unwrap_or("unnamed");
+                let name = val
+                    .get("name")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("unnamed");
                 let schedule_str = val.get("schedule").and_then(|v| v.as_str()).unwrap_or("");
                 let content = val.get("content").and_then(|v| v.as_str()).unwrap_or("");
                 let deliver = val.get("deliver").and_then(|v| v.as_bool()).unwrap_or(true);
@@ -1075,7 +1149,9 @@ impl Tool for CronTool {
 
                 // Parse schedule: support "every:Ns", "at:TIMESTAMP", "cron:EXPR"
                 let schedule = if schedule_str.starts_with("every:") {
-                    let secs_str = schedule_str.trim_start_matches("every:").trim_end_matches('s');
+                    let secs_str = schedule_str
+                        .trim_start_matches("every:")
+                        .trim_end_matches('s');
                     let secs: i64 = secs_str.parse().map_err(|_| "Invalid interval")?;
                     nemesis_cron::service::CronSchedule {
                         kind: "every".to_string(),
@@ -1107,24 +1183,40 @@ impl Tool for CronTool {
 
                 // Use context first, fallback to stored values (mirrors MessageTool pattern).
                 let channel = if context.channel.is_empty() {
-                    self.channel.lock().unwrap_or_else(|e| e.into_inner()).clone()
+                    self.channel
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .clone()
                 } else {
                     context.channel.clone()
                 };
                 let chat_id = if context.chat_id.is_empty() {
-                    self.chat_id.lock().unwrap_or_else(|e| e.into_inner()).clone()
+                    self.chat_id
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .clone()
                 } else {
                     context.chat_id.clone()
                 };
 
-                let job = svc.add_job(
-                    name,
-                    schedule,
-                    content,
-                    deliver,
-                    if channel.is_empty() { None } else { Some(&channel) },
-                    if chat_id.is_empty() { None } else { Some(&chat_id) },
-                ).map_err(|e| e.to_string())?;
+                let job = svc
+                    .add_job(
+                        name,
+                        schedule,
+                        content,
+                        deliver,
+                        if channel.is_empty() {
+                            None
+                        } else {
+                            Some(&channel)
+                        },
+                        if chat_id.is_empty() {
+                            None
+                        } else {
+                            Some(&chat_id)
+                        },
+                    )
+                    .map_err(|e| e.to_string())?;
                 Ok(format!("Created cron job: {} (ID: {})", job.name, job.id))
             }
             "delete" => {
@@ -1137,7 +1229,10 @@ impl Tool for CronTool {
                     false => Err(format!("Job not found: {}", id)),
                 }
             }
-            _ => Err(format!("Unknown cron action: '{}'. Use: list, create, delete", action)),
+            _ => Err(format!(
+                "Unknown cron action: '{}'. Use: list, create, delete",
+                action
+            )),
         }
     }
 
@@ -1360,10 +1455,7 @@ impl WebSearchTool {
     async fn search_duckduckgo(&self, query: &str) -> Result<String, String> {
         let count = self.config.duckduckgo_max_results;
 
-        let url = format!(
-            "https://html.duckduckgo.com/html/?q={}",
-            urlencoding(query)
-        );
+        let url = format!("https://html.duckduckgo.com/html/?q={}", urlencoding(query));
 
         let client = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(10))
@@ -1396,16 +1488,13 @@ impl WebSearchTool {
             ));
         }
 
-        let snippet_re = regex::Regex::new(
-            r#"<a class="result__snippet[^"]*".*?>([\s\S]*?)</a>"#,
-        )
-        .map_err(|e| format!("regex error: {}", e))?;
+        let snippet_re = regex::Regex::new(r#"<a class="result__snippet[^"]*".*?>([\s\S]*?)</a>"#)
+            .map_err(|e| format!("regex error: {}", e))?;
 
         let snippet_captures: Vec<_> = snippet_re.captures_iter(&html).take(count + 5).collect();
         let tag_re = regex::Regex::new(r"<[^>]+>").map_err(|e| format!("regex error: {}", e))?;
-        let strip_tags = |content: &str| -> String {
-            tag_re.replace_all(content, "").trim().to_string()
-        };
+        let strip_tags =
+            |content: &str| -> String { tag_re.replace_all(content, "").trim().to_string() };
 
         let mut lines = vec![format!("Results for: {} (via DuckDuckGo)", query)];
         let max_items = link_captures.len().min(count);
@@ -1425,7 +1514,8 @@ impl WebSearchTool {
             lines.push(format!("{}. {}\n   {}", i + 1, title, url_clean));
 
             if i < snippet_captures.len() {
-                let snippet = strip_tags(snippet_captures[i].get(1).map(|m| m.as_str()).unwrap_or(""));
+                let snippet =
+                    strip_tags(snippet_captures[i].get(1).map(|m| m.as_str()).unwrap_or(""));
                 if !snippet.is_empty() {
                     lines.push(format!("   {}", snippet));
                 }
@@ -1556,7 +1646,10 @@ fn urlencoding(s: &str) -> String {
 fn url_decode_query_param(url: &str, param: &str) -> Option<String> {
     let prefix = format!("{}=", param);
     // Find the parameter in the URL
-    for part in url.split('&').chain(url.split('?').skip(1).flat_map(|s| s.split('&'))) {
+    for part in url
+        .split('&')
+        .chain(url.split('?').skip(1).flat_map(|s| s.split('&')))
+    {
         if let Some(val) = part.strip_prefix(&prefix) {
             return Some(percent_decode(val));
         }
@@ -1664,8 +1757,7 @@ impl Tool for WebFetchTool {
                 regex::Regex::new(r"(?is)<script[^>]*>.*?</script>").map_err(|e| e.to_string())?;
             let style_re =
                 regex::Regex::new(r"(?is)<style[^>]*>.*?</style>").map_err(|e| e.to_string())?;
-            let tag_re =
-                regex::Regex::new(r"<[^>]+>").map_err(|e| e.to_string())?;
+            let tag_re = regex::Regex::new(r"<[^>]+>").map_err(|e| e.to_string())?;
 
             let text = script_re.replace_all(&html, "");
             let text = style_re.replace_all(&text, "");
@@ -1700,12 +1792,17 @@ impl Tool for WebFetchTool {
             Ok(if truncated {
                 format!(
                     "Content from {} ({} bytes, extracted text truncated to {} bytes):\n{}",
-                    url, body.len(), self.max_size, extracted
+                    url,
+                    body.len(),
+                    self.max_size,
+                    extracted
                 )
             } else {
                 format!(
                     "Content from {} ({} bytes, extracted text):\n{}",
-                    url, body.len(), extracted
+                    url,
+                    body.len(),
+                    extracted
                 )
             })
         } else {
@@ -1715,12 +1812,19 @@ impl Tool for WebFetchTool {
             Ok(if truncated {
                 format!(
                     "Content from {} ({} bytes, {} truncated to {} bytes):\n{}",
-                    url, body.len(), content_type, self.max_size, text
+                    url,
+                    body.len(),
+                    content_type,
+                    self.max_size,
+                    text
                 )
             } else {
                 format!(
                     "Content from {} ({} bytes, {}):\n{}",
-                    url, body.len(), content_type, text
+                    url,
+                    body.len(),
+                    content_type,
+                    text
                 )
             })
         }
@@ -1817,7 +1921,10 @@ pub fn setup_cluster_rpc_channel_with_config(
 /// This function takes an RPC server and registers the peer_chat handler
 /// that will invoke the LLM provider.
 pub fn register_peer_chat_handler<F>(
-    handlers: &mut std::collections::HashMap<String, Box<dyn Fn(serde_json::Value) -> Result<serde_json::Value, String> + Send + Sync>>,
+    handlers: &mut std::collections::HashMap<
+        String,
+        Box<dyn Fn(serde_json::Value) -> Result<serde_json::Value, String> + Send + Sync>,
+    >,
     llm_handler: F,
 ) where
     F: Fn(serde_json::Value) -> Result<serde_json::Value, String> + Send + Sync + 'static,
@@ -1868,7 +1975,18 @@ pub struct ClusterRpcTool {
     /// This guard preserves LLM prompt cache hit rates (tool definition stays in prompt).
     enabled: Arc<std::sync::atomic::AtomicBool>,
     /// Optional RPC call function: (target_node, action, payload) -> Result<serde_json::Value, String>
-    rpc_call_fn: Option<Arc<dyn Fn(&str, &str, serde_json::Value) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<serde_json::Value, String>> + Send>> + Send + Sync>>,
+    rpc_call_fn: Option<
+        Arc<
+            dyn Fn(
+                    &str,
+                    &str,
+                    serde_json::Value,
+                ) -> std::pin::Pin<
+                    Box<dyn std::future::Future<Output = Result<serde_json::Value, String>> + Send>,
+                > + Send
+                + Sync,
+        >,
+    >,
     /// Returns online peer nodes with their capabilities for dynamic tool description.
     /// Each tuple: (node_id, node_name, capabilities).
     peers_fn: Option<Arc<dyn Fn() -> Vec<(String, String, Vec<String>)> + Send + Sync>>,
@@ -1890,7 +2008,8 @@ impl ClusterRpcTool {
     /// Set whether the cluster module is enabled.
     /// When disabled, execute() returns immediately without attempting RPC calls.
     pub fn set_enabled(&self, enabled: bool) {
-        self.enabled.store(enabled, std::sync::atomic::Ordering::Relaxed);
+        self.enabled
+            .store(enabled, std::sync::atomic::Ordering::Relaxed);
     }
 
     /// Check if the cluster module is enabled.
@@ -1911,10 +2030,14 @@ impl ClusterRpcTool {
     pub fn set_rpc_call_fn(
         &mut self,
         f: Arc<
-            dyn Fn(&str, &str, serde_json::Value)
-                -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<serde_json::Value, String>> + Send>>
-            + Send
-            + Sync,
+            dyn Fn(
+                    &str,
+                    &str,
+                    serde_json::Value,
+                ) -> std::pin::Pin<
+                    Box<dyn std::future::Future<Output = Result<serde_json::Value, String>> + Send>,
+                > + Send
+                + Sync,
         >,
     ) {
         self.rpc_call_fn = Some(f);
@@ -2015,8 +2138,8 @@ impl Tool for ClusterRpcTool {
             return Err("集群功能未启用，无法调用远程节点。请勿重试。".to_string());
         }
 
-        let val: serde_json::Value = serde_json::from_str(args)
-            .map_err(|e| format!("Invalid JSON arguments: {}", e))?;
+        let val: serde_json::Value =
+            serde_json::from_str(args).map_err(|e| format!("Invalid JSON arguments: {}", e))?;
 
         let target_node = val
             .get("target_node")
@@ -2044,7 +2167,11 @@ impl Tool for ClusterRpcTool {
         let message = val
             .get("message")
             .and_then(|v| v.as_str())
-            .or_else(|| val.get("data").and_then(|d| d.get("content")).and_then(|v| v.as_str()))
+            .or_else(|| {
+                val.get("data")
+                    .and_then(|d| d.get("content"))
+                    .and_then(|v| v.as_str())
+            })
             .unwrap_or("");
 
         let rpc_call = match &self.rpc_call_fn {
@@ -2136,14 +2263,14 @@ impl Tool for ClusterRpcTool {
                 .map(|n| n.replace(':', ""))
                 .unwrap_or_else(|| target_node.to_string());
 
-            return Ok(format!("__ASYNC__:{}:{}:{}", task_id, target_node, target_name));
+            return Ok(format!(
+                "__ASYNC__:{}:{}:{}",
+                task_id, target_node, target_name
+            ));
         }
 
         // Synchronous response — extract content field
-        let content = result
-            .get("content")
-            .and_then(|v| v.as_str())
-            .unwrap_or("");
+        let content = result.get("content").and_then(|v| v.as_str()).unwrap_or("");
 
         Ok(content.to_string())
     }
@@ -2176,7 +2303,20 @@ pub struct SpawnTool {
     /// Stored chat_id from set_context.
     stored_chat_id: Arc<std::sync::Mutex<String>>,
     /// Optional spawn function: (agent_id, task, model, channel, chat_id) -> Future<Output = Result<String, String>>
-    spawn_fn: Option<Arc<dyn Fn(&str, &str, &str, &str, &str) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send>> + Send + Sync>>,
+    spawn_fn: Option<
+        Arc<
+            dyn Fn(
+                    &str,
+                    &str,
+                    &str,
+                    &str,
+                    &str,
+                ) -> std::pin::Pin<
+                    Box<dyn std::future::Future<Output = Result<String, String>> + Send>,
+                > + Send
+                + Sync,
+        >,
+    >,
 }
 
 impl SpawnTool {
@@ -2202,10 +2342,16 @@ impl SpawnTool {
     pub fn set_spawn_fn(
         &mut self,
         f: Arc<
-            dyn Fn(&str, &str, &str, &str, &str)
-                -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send>>
-            + Send
-            + Sync,
+            dyn Fn(
+                    &str,
+                    &str,
+                    &str,
+                    &str,
+                    &str,
+                ) -> std::pin::Pin<
+                    Box<dyn std::future::Future<Output = Result<String, String>> + Send>,
+                > + Send
+                + Sync,
         >,
     ) {
         self.spawn_fn = Some(f);
@@ -2239,18 +2385,15 @@ impl Tool for SpawnTool {
     }
 
     async fn execute(&self, args: &str, context: &RequestContext) -> Result<String, String> {
-        let val: serde_json::Value = serde_json::from_str(args)
-            .map_err(|e| format!("Invalid JSON arguments: {}", e))?;
+        let val: serde_json::Value =
+            serde_json::from_str(args).map_err(|e| format!("Invalid JSON arguments: {}", e))?;
 
         let agent_id = val
             .get("agent_id")
             .and_then(|v| v.as_str())
             .ok_or("Missing 'agent_id' field")?;
 
-        let task = val
-            .get("task")
-            .and_then(|v| v.as_str())
-            .unwrap_or("");
+        let task = val.get("task").and_then(|v| v.as_str()).unwrap_or("");
 
         // Check allowlist.
         if let Some(ref checker) = self.allowlist_checker {
@@ -2291,7 +2434,14 @@ impl Tool for SpawnTool {
             }
         };
 
-        spawn_fn(agent_id, task, &self.config.default_model, &channel, &chat_id).await
+        spawn_fn(
+            agent_id,
+            task,
+            &self.config.default_model,
+            &channel,
+            &chat_id,
+        )
+        .await
     }
 }
 
@@ -2333,8 +2483,8 @@ impl Tool for MemorySearchTool {
             None => return Err("Memory store is not available".to_string()),
         };
 
-        let val: serde_json::Value = serde_json::from_str(args)
-            .map_err(|e| format!("Invalid JSON arguments: {}", e))?;
+        let val: serde_json::Value =
+            serde_json::from_str(args).map_err(|e| format!("Invalid JSON arguments: {}", e))?;
 
         let result = executor.execute("memory_search", &val).await;
         if result.success {
@@ -2378,8 +2528,8 @@ impl Tool for MemoryStoreTool {
             None => return Err("Memory store is not available".to_string()),
         };
 
-        let val: serde_json::Value = serde_json::from_str(args)
-            .map_err(|e| format!("Invalid JSON arguments: {}", e))?;
+        let val: serde_json::Value =
+            serde_json::from_str(args).map_err(|e| format!("Invalid JSON arguments: {}", e))?;
 
         let result = executor.execute("memory_store", &val).await;
         if result.success {
@@ -2423,8 +2573,8 @@ impl Tool for MemoryForgetTool {
             None => return Err("Memory store is not available".to_string()),
         };
 
-        let val: serde_json::Value = serde_json::from_str(args)
-            .map_err(|e| format!("Invalid JSON arguments: {}", e))?;
+        let val: serde_json::Value =
+            serde_json::from_str(args).map_err(|e| format!("Invalid JSON arguments: {}", e))?;
 
         let result = executor.execute("memory_forget", &val).await;
         if result.success {
@@ -2468,8 +2618,8 @@ impl Tool for MemoryListTool {
             None => return Err("Memory store is not available".to_string()),
         };
 
-        let val: serde_json::Value = serde_json::from_str(args)
-            .unwrap_or_else(|_| serde_json::json!({}));
+        let val: serde_json::Value =
+            serde_json::from_str(args).unwrap_or_else(|_| serde_json::json!({}));
 
         let result = executor.execute("memory_list", &val).await;
         if result.success {
@@ -2515,7 +2665,10 @@ impl Tool for SkillsListTool {
             Some(loader) => {
                 let skills = loader.list_skills();
                 if skills.is_empty() {
-                    return Ok("No skills installed. Use find_skills to search for available skills.".to_string());
+                    return Ok(
+                        "No skills installed. Use find_skills to search for available skills."
+                            .to_string(),
+                    );
                 }
 
                 let mut output = format!("Installed skills ({}):\n", skills.len());
@@ -2575,18 +2728,18 @@ impl Tool for SkillsInfoTool {
                 let skill = skills.iter().find(|s| s.name == skill_name);
                 match skill {
                     Some(info) => {
-                        let content = loader.load_skill(&skill_name)
+                        let content = loader
+                            .load_skill(&skill_name)
                             .unwrap_or_else(|| "(no content available)".to_string());
                         Ok(format!(
                             "Skill: **{}**\nSource: {}\nPath: {}\nDescription: {}\n\n{}",
-                            info.name,
-                            info.source,
-                            info.path,
-                            info.description,
-                            content
+                            info.name, info.source, info.path, info.description, content
                         ))
                     }
-                    None => Err(format!("Skill '{}' not found. Use skills_list to see installed skills.", skill_name)),
+                    None => Err(format!(
+                        "Skill '{}' not found. Use skills_list to see installed skills.",
+                        skill_name
+                    )),
                 }
             }
             None => Ok(format!(
@@ -2623,8 +2776,8 @@ impl Tool for FindSkillsTool {
     }
 
     async fn execute(&self, args: &str, _context: &RequestContext) -> Result<String, String> {
-        let val: serde_json::Value = serde_json::from_str(args)
-            .map_err(|e| format!("Invalid JSON arguments: {}", e))?;
+        let val: serde_json::Value =
+            serde_json::from_str(args).map_err(|e| format!("Invalid JSON arguments: {}", e))?;
 
         let query = val["query"].as_str().unwrap_or("");
         if query.trim().is_empty() {
@@ -2633,7 +2786,10 @@ impl Tool for FindSkillsTool {
 
         let limit = val["limit"].as_u64().unwrap_or(5).clamp(1, 50) as usize;
 
-        let results = self.registry.search(query, limit).await
+        let results = self
+            .registry
+            .search(query, limit)
+            .await
             .map_err(|e| format!("failed to search registries: {}", e))?;
 
         if results.is_empty() {
@@ -2676,8 +2832,14 @@ pub struct InstallSkillTool {
 
 impl InstallSkillTool {
     /// Create a new install skill tool.
-    pub fn new(registry: Arc<nemesis_skills::registry::RegistryManager>, workspace: String) -> Self {
-        Self { registry, workspace }
+    pub fn new(
+        registry: Arc<nemesis_skills::registry::RegistryManager>,
+        workspace: String,
+    ) -> Self {
+        Self {
+            registry,
+            workspace,
+        }
     }
 }
 
@@ -2692,12 +2854,14 @@ impl Tool for InstallSkillTool {
     }
 
     async fn execute(&self, args: &str, _context: &RequestContext) -> Result<String, String> {
-        let val: serde_json::Value = serde_json::from_str(args)
-            .map_err(|e| format!("Invalid JSON arguments: {}", e))?;
+        let val: serde_json::Value =
+            serde_json::from_str(args).map_err(|e| format!("Invalid JSON arguments: {}", e))?;
 
         let slug = match val["name"].as_str().or_else(|| val["slug"].as_str()) {
             Some(s) if !s.is_empty() => s,
-            _ => return Err("slug parameter is required and must be a non-empty string".to_string()),
+            _ => {
+                return Err("slug parameter is required and must be a non-empty string".to_string());
+            }
         };
 
         // Validate skill identifier (path traversal protection)
@@ -2728,10 +2892,15 @@ impl Tool for InstallSkillTool {
             .to_string_lossy()
             .to_string();
 
-        self.registry.install(registry_name, slug, &target_dir).await
+        self.registry
+            .install(registry_name, slug, &target_dir)
+            .await
             .map_err(|e| format!("failed to install skill '{}': {}", slug, e))?;
 
-        Ok(format!("Skill '{}' installed successfully from registry '{}'", slug, registry_name))
+        Ok(format!(
+            "Skill '{}' installed successfully from registry '{}'",
+            slug, registry_name
+        ))
     }
 }
 
@@ -2814,7 +2983,7 @@ impl SkillManageTool {
                     return Err(
                         "skill write requires approval but no approval manager is configured"
                             .to_string(),
-                    )
+                    );
                 }
             };
             let am = {
@@ -2825,7 +2994,7 @@ impl SkillManageTool {
                         return Err(
                             "skill write requires approval but no approval manager is running"
                                 .to_string(),
-                        )
+                        );
                     }
                 }
             };
@@ -2846,7 +3015,12 @@ impl SkillManageTool {
         }
     }
 
-    fn do_create(&self, skill_dir: &Path, name: &str, v: &serde_json::Value) -> Result<String, String> {
+    fn do_create(
+        &self,
+        skill_dir: &Path,
+        name: &str,
+        v: &serde_json::Value,
+    ) -> Result<String, String> {
         let content = v["content"]
             .as_str()
             .ok_or_else(|| "'content' is required for create".to_string())?;
@@ -2885,7 +3059,12 @@ impl SkillManageTool {
         ))
     }
 
-    fn do_patch(&self, skill_dir: &Path, name: &str, v: &serde_json::Value) -> Result<String, String> {
+    fn do_patch(
+        &self,
+        skill_dir: &Path,
+        name: &str,
+        v: &serde_json::Value,
+    ) -> Result<String, String> {
         let old = v["old"].as_str().unwrap_or("");
         let new = v["new"]
             .as_str()
@@ -2898,18 +3077,33 @@ impl SkillManageTool {
         } else if let Some(idx) = content.find(old) {
             content.replace_range(idx..idx + old.len(), new);
         } else {
-            return Err(format!("'old' text not found in SKILL.md for skill '{}'", name));
+            return Err(format!(
+                "'old' text not found in SKILL.md for skill '{}'",
+                name
+            ));
         }
         let check = nemesis_skills::security_check::check_skill_security(&content, name, "");
         if check.blocked {
-            return Err(format!("edited content blocked by security check: {}", check.block_reason));
+            return Err(format!(
+                "edited content blocked by security check: {}",
+                check.block_reason
+            ));
         }
         std::fs::write(&skill_md, &content)
             .map_err(|e| format!("failed to write SKILL.md: {}", e))?;
-        Ok(format!("Skill '{}' updated (lint {:.0}/100).", name, check.lint_result.score * 100.0))
+        Ok(format!(
+            "Skill '{}' updated (lint {:.0}/100).",
+            name,
+            check.lint_result.score * 100.0
+        ))
     }
 
-    fn do_write_file(&self, skill_dir: &Path, name: &str, v: &serde_json::Value) -> Result<String, String> {
+    fn do_write_file(
+        &self,
+        skill_dir: &Path,
+        name: &str,
+        v: &serde_json::Value,
+    ) -> Result<String, String> {
         if !skill_dir.exists() {
             return Err(format!(
                 "skill '{}' has no directory yet; create it first",
@@ -2925,16 +3119,29 @@ impl SkillManageTool {
         let overwrite = v["overwrite"].as_bool().unwrap_or(false);
         let target = resolve_within(skill_dir, path)?;
         if target.exists() && !overwrite {
-            return Err(format!("file already exists at {}. Set overwrite=true.", target.display()));
+            return Err(format!(
+                "file already exists at {}. Set overwrite=true.",
+                target.display()
+            ));
         }
         if let Some(parent) = target.parent() {
             std::fs::create_dir_all(parent).map_err(|e| format!("failed to create dir: {}", e))?;
         }
         std::fs::write(&target, content).map_err(|e| format!("failed to write file: {}", e))?;
-        Ok(format!("Wrote {} ({} bytes) in skill '{}'.", target.display(), content.len(), name))
+        Ok(format!(
+            "Wrote {} ({} bytes) in skill '{}'.",
+            target.display(),
+            content.len(),
+            name
+        ))
     }
 
-    fn do_remove_file(&self, skill_dir: &Path, name: &str, v: &serde_json::Value) -> Result<String, String> {
+    fn do_remove_file(
+        &self,
+        skill_dir: &Path,
+        name: &str,
+        v: &serde_json::Value,
+    ) -> Result<String, String> {
         if !skill_dir.exists() {
             return Err(format!("skill '{}' has no directory yet", name));
         }
@@ -2946,12 +3153,20 @@ impl SkillManageTool {
             return Err(format!("file not found: {}", target.display()));
         }
         std::fs::remove_file(&target).map_err(|e| format!("failed to remove file: {}", e))?;
-        Ok(format!("Removed {} from skill '{}'.", target.display(), name))
+        Ok(format!(
+            "Removed {} from skill '{}'.",
+            target.display(),
+            name
+        ))
     }
 
     fn do_delete(&self, skill_dir: &Path, name: &str) -> Result<String, String> {
         if !skill_dir.exists() {
-            return Err(format!("skill '{}' not found at {}", name, skill_dir.display()));
+            return Err(format!(
+                "skill '{}' not found at {}",
+                name,
+                skill_dir.display()
+            ));
         }
         std::fs::remove_dir_all(skill_dir).map_err(|e| format!("failed to delete skill: {}", e))?;
         Ok(format!("Skill '{}' deleted.", name))
@@ -2990,8 +3205,8 @@ impl Tool for SkillManageTool {
     }
 
     async fn execute(&self, args: &str, _context: &RequestContext) -> Result<String, String> {
-        let v: serde_json::Value = serde_json::from_str(args)
-            .map_err(|e| format!("Invalid JSON arguments: {}", e))?;
+        let v: serde_json::Value =
+            serde_json::from_str(args).map_err(|e| format!("Invalid JSON arguments: {}", e))?;
 
         let action = v["action"]
             .as_str()
@@ -3074,7 +3289,8 @@ impl Tool for GrepTool {
     fn description(&self) -> String {
         "Search file contents with a regex pattern across the workspace. Returns matching \
          lines as file:line: content. Use to find code, symbols, or text. Faster and more \
-         structured than exec grep.".to_string()
+         structured than exec grep."
+            .to_string()
     }
     fn parameters(&self) -> serde_json::Value {
         serde_json::json!({
@@ -3104,7 +3320,11 @@ impl Tool for GrepTool {
         if out.is_empty() {
             Ok(format!("No matches for pattern /{}/", pattern))
         } else {
-            Ok(format!("Found {} match(es):\n{}", out.len(), out.join("\n")))
+            Ok(format!(
+                "Found {} match(es):\n{}",
+                out.len(),
+                out.join("\n")
+            ))
         }
     }
 }
@@ -3124,7 +3344,8 @@ impl GitTool {
 impl Tool for GitTool {
     fn description(&self) -> String {
         "Run read-only git queries in the workspace: status, diff, log, show, branch. For \
-         writes (commit/push) or other git ops, use the exec tool.".to_string()
+         writes (commit/push) or other git ops, use the exec tool."
+            .to_string()
     }
     fn parameters(&self) -> serde_json::Value {
         serde_json::json!({
@@ -3147,14 +3368,21 @@ impl Tool for GitTool {
             "log" => vec!["log", "--oneline", "-20"],
             "show" => vec!["show"],
             "branch" => vec!["branch", "-vv"],
-            other => return Err(format!("unknown git action '{}' (use exec for others)", other)),
+            other => {
+                return Err(format!(
+                    "unknown git action '{}' (use exec for others)",
+                    other
+                ));
+            }
         };
         let mut cmd = std::process::Command::new("git");
         cmd.current_dir(&self.workspace).args(&base);
         if !extra.is_empty() {
             cmd.args(extra.split_whitespace());
         }
-        let out = cmd.output().map_err(|e| format!("failed to run git: {}", e))?;
+        let out = cmd
+            .output()
+            .map_err(|e| format!("failed to run git: {}", e))?;
         let stdout = String::from_utf8_lossy(&out.stdout).to_string();
         let stderr = String::from_utf8_lossy(&out.stderr).to_string();
         if !out.status.success() && stdout.trim().is_empty() {
@@ -3225,7 +3453,12 @@ fn grep_recursive(
                             while !display.is_char_boundary(end) {
                                 end -= 1;
                             }
-                            out.push(format!("{}:{}: {}…", path.display(), i + 1, &display[..end]));
+                            out.push(format!(
+                                "{}:{}: {}…",
+                                path.display(),
+                                i + 1,
+                                &display[..end]
+                            ));
                         } else {
                             out.push(format!("{}:{}: {}", path.display(), i + 1, display));
                         }
@@ -3255,23 +3488,38 @@ impl Tool for I2CTool {
 
     async fn execute(&self, args: &str, _context: &RequestContext) -> Result<String, String> {
         if !cfg!(target_os = "linux") {
-            return Err("I2C is only supported on Linux. This tool requires /dev/i2c-* device files.".to_string());
+            return Err(
+                "I2C is only supported on Linux. This tool requires /dev/i2c-* device files."
+                    .to_string(),
+            );
         }
-        let val: serde_json::Value = serde_json::from_str(args)
-            .map_err(|_| "Invalid JSON arguments".to_string())?;
+        let val: serde_json::Value =
+            serde_json::from_str(args).map_err(|_| "Invalid JSON arguments".to_string())?;
         let action = val["action"].as_str().unwrap_or("");
         match action {
             "detect" => Ok("[I2C] Detect: scanning for I2C buses...".to_string()),
-            "scan" => Ok(format!("[I2C] Scan on bus {}", val["bus"].as_str().unwrap_or("?"))),
-            "read" => Ok(format!("[I2C] Read from device at address {}", val["address"].as_u64().unwrap_or(0))),
+            "scan" => Ok(format!(
+                "[I2C] Scan on bus {}",
+                val["bus"].as_str().unwrap_or("?")
+            )),
+            "read" => Ok(format!(
+                "[I2C] Read from device at address {}",
+                val["address"].as_u64().unwrap_or(0)
+            )),
             "write" => {
                 if val["confirm"].as_bool().unwrap_or(false) {
-                    Ok(format!("[I2C] Write to device at address {}", val["address"].as_u64().unwrap_or(0)))
+                    Ok(format!(
+                        "[I2C] Write to device at address {}",
+                        val["address"].as_u64().unwrap_or(0)
+                    ))
                 } else {
                     Err("confirm must be true for write operations (safety guard)".to_string())
                 }
             }
-            _ => Err(format!("Unknown I2C action: {} (valid: detect, scan, read, write)", action)),
+            _ => Err(format!(
+                "Unknown I2C action: {} (valid: detect, scan, read, write)",
+                action
+            )),
         }
     }
 }
@@ -3291,22 +3539,35 @@ impl Tool for SPITool {
 
     async fn execute(&self, args: &str, _context: &RequestContext) -> Result<String, String> {
         if !cfg!(target_os = "linux") {
-            return Err("SPI is only supported on Linux. This tool requires /dev/spidev* device files.".to_string());
+            return Err(
+                "SPI is only supported on Linux. This tool requires /dev/spidev* device files."
+                    .to_string(),
+            );
         }
-        let val: serde_json::Value = serde_json::from_str(args)
-            .map_err(|_| "Invalid JSON arguments".to_string())?;
+        let val: serde_json::Value =
+            serde_json::from_str(args).map_err(|_| "Invalid JSON arguments".to_string())?;
         let action = val["action"].as_str().unwrap_or("");
         match action {
             "list" => Ok("[SPI] Listing SPI devices...".to_string()),
             "transfer" => {
                 if val["confirm"].as_bool().unwrap_or(false) {
-                    Ok(format!("[SPI] Transfer on device {}", val["device"].as_str().unwrap_or("?")))
+                    Ok(format!(
+                        "[SPI] Transfer on device {}",
+                        val["device"].as_str().unwrap_or("?")
+                    ))
                 } else {
                     Err("confirm must be true for transfer operations (safety guard)".to_string())
                 }
             }
-            "read" => Ok(format!("[SPI] Read {} bytes from device {}", val["length"].as_u64().unwrap_or(1), val["device"].as_str().unwrap_or("?"))),
-            _ => Err(format!("Unknown SPI action: {} (valid: list, transfer, read)", action)),
+            "read" => Ok(format!(
+                "[SPI] Read {} bytes from device {}",
+                val["length"].as_u64().unwrap_or(1),
+                val["device"].as_str().unwrap_or("?")
+            )),
+            _ => Err(format!(
+                "Unknown SPI action: {} (valid: list, transfer, read)",
+                action
+            )),
         }
     }
 }
@@ -3363,7 +3624,9 @@ pub struct ClusterRpcChannelConfig {
 impl Default for ClusterRpcChannelConfig {
     fn default() -> Self {
         Self {
-            request_timeout: Duration::from_secs(nemesis_types::constants::RPC_CHANNEL_TIMEOUT_SECS),
+            request_timeout: Duration::from_secs(
+                nemesis_types::constants::RPC_CHANNEL_TIMEOUT_SECS,
+            ),
             cleanup_interval: Duration::from_secs(nemesis_types::constants::CLEANUP_INTERVAL_SECS),
         }
     }
@@ -3447,7 +3710,12 @@ impl ForgeBridgeTool {
         parameters: serde_json::Value,
         executor: Arc<nemesis_forge::forge_tools::ForgeToolExecutor>,
     ) -> Self {
-        Self { name, description, parameters, executor }
+        Self {
+            name,
+            description,
+            parameters,
+            executor,
+        }
     }
 }
 
@@ -3463,8 +3731,8 @@ impl Tool for ForgeBridgeTool {
     }
 
     async fn execute(&self, args: &str, _context: &RequestContext) -> Result<String, String> {
-        let args_value = serde_json::from_str::<serde_json::Value>(args)
-            .unwrap_or(serde_json::Value::Null);
+        let args_value =
+            serde_json::from_str::<serde_json::Value>(args).unwrap_or(serde_json::Value::Null);
         let result = self.executor.execute(&self.name, &args_value).await;
         if result.success {
             Ok(result.content)
@@ -3485,7 +3753,9 @@ impl Tool for ForgeBridgeTool {
 pub struct McpDiscoverTool;
 
 impl McpDiscoverTool {
-    pub fn new() -> Self { Self }
+    pub fn new() -> Self {
+        Self
+    }
 }
 
 #[async_trait]
@@ -3494,7 +3764,8 @@ impl Tool for McpDiscoverTool {
         "Discover what tools, resources, and prompts an MCP server provides. \
          For stdio-based servers provide the 'command' (executable path); \
          for HTTP-based servers provide the 'url' (e.g. 'http://localhost:8080/mcp'). \
-         This tool will connect, query capabilities, and return a formatted summary.".to_string()
+         This tool will connect, query capabilities, and return a formatted summary."
+            .to_string()
     }
 
     fn parameters(&self) -> serde_json::Value {
@@ -3523,8 +3794,8 @@ impl Tool for McpDiscoverTool {
     }
 
     async fn execute(&self, args: &str, _context: &RequestContext) -> Result<String, String> {
-        let parsed = serde_json::from_str::<serde_json::Value>(args)
-            .unwrap_or(serde_json::Value::Null);
+        let parsed =
+            serde_json::from_str::<serde_json::Value>(args).unwrap_or(serde_json::Value::Null);
 
         let url = parsed["url"].as_str();
         let command = parsed["command"].as_str();
@@ -3535,12 +3806,21 @@ impl Tool for McpDiscoverTool {
                 nemesis_mcp::manager::discover_server_metadata_http(url, timeout_secs).await
             }
             (None, Some(command)) => {
-                let tool_args: Vec<String> = parsed["args"].as_array()
-                    .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+                let tool_args: Vec<String> = parsed["args"]
+                    .as_array()
+                    .map(|a| {
+                        a.iter()
+                            .filter_map(|v| v.as_str().map(String::from))
+                            .collect()
+                    })
                     .unwrap_or_default();
                 nemesis_mcp::manager::discover_server_metadata(
-                    command, tool_args, vec![], timeout_secs,
-                ).await
+                    command,
+                    tool_args,
+                    vec![],
+                    timeout_secs,
+                )
+                .await
             }
             (None, None) => {
                 return Err("missing required 'command' or 'url' parameter".to_string());
@@ -3566,14 +3846,17 @@ impl Tool for McpDiscoverTool {
 pub struct CliReferenceTool;
 
 impl CliReferenceTool {
-    pub fn new() -> Self { Self }
+    pub fn new() -> Self {
+        Self
+    }
 }
 
 #[async_trait]
 impl Tool for CliReferenceTool {
     fn description(&self) -> String {
         "Look up NemesisBot CLI commands. Without parameters returns an overview of all commands. \
-         Pass a command name for detailed help (e.g. 'model', 'mcp', 'cluster', 'scanner').".to_string()
+         Pass a command name for detailed help (e.g. 'model', 'mcp', 'cluster', 'scanner')."
+            .to_string()
     }
 
     fn parameters(&self) -> serde_json::Value {
@@ -3589,8 +3872,8 @@ impl Tool for CliReferenceTool {
     }
 
     async fn execute(&self, args: &str, _context: &RequestContext) -> Result<String, String> {
-        let parsed = serde_json::from_str::<serde_json::Value>(args)
-            .unwrap_or(serde_json::Value::Null);
+        let parsed =
+            serde_json::from_str::<serde_json::Value>(args).unwrap_or(serde_json::Value::Null);
         let command = parsed["command"].as_str().unwrap_or("").trim();
 
         if command.is_empty() {
@@ -3653,7 +3936,8 @@ fn cli_detail(command: &str) -> Result<String, String> {
 示例:
   nemesisbot model add --model openai/gpt-4o --key sk-xxx --default
   nemesisbot model list --verbose
-  nemesisbot model remove gpt-4o --force"#.to_string()),
+  nemesisbot model remove gpt-4o --force"#
+            .to_string()),
 
         "mcp" => Ok(r#"## mcp — 管理 MCP 服务器
 
@@ -3679,7 +3963,8 @@ fn cli_detail(command: &str) -> Result<String, String> {
 示例:
   nemesisbot mcp add -n desktop -c C:\AI\MCP\desktop-mcp.exe
   nemesisbot mcp tools desktop
-  nemesisbot mcp discover --command C:\AI\MCP\server.exe"#.to_string()),
+  nemesisbot mcp discover --command C:\AI\MCP\server.exe"#
+            .to_string()),
 
         "channel" => Ok(r#"## channel — 管理通信通道
 
@@ -3712,7 +3997,8 @@ fn cli_detail(command: &str) -> Result<String, String> {
 示例:
   nemesisbot channel list
   nemesisbot channel enable discord
-  nemesisbot channel web port 49000"#.to_string()),
+  nemesisbot channel web port 49000"#
+            .to_string()),
 
         "cluster" => Ok(r#"## cluster — 管理集群
 
@@ -3742,7 +4028,8 @@ fn cli_detail(command: &str) -> Result<String, String> {
 示例:
   nemesisbot cluster init --name bot1 --role worker
   nemesisbot cluster peers list
-  nemesisbot cluster token generate --save"#.to_string()),
+  nemesisbot cluster token generate --save"#
+            .to_string()),
 
         "skills" => Ok(r#"## skills — 管理技能
 
@@ -3768,7 +4055,8 @@ fn cli_detail(command: &str) -> Result<String, String> {
 示例:
   nemesisbot skills search weather
   nemesisbot skills install clawhub/author/weather
-  nemesisbot skills list"#.to_string()),
+  nemesisbot skills list"#
+            .to_string()),
 
         "forge" => Ok(r#"## forge — 管理自学习模块
 
@@ -3789,7 +4077,8 @@ fn cli_detail(command: &str) -> Result<String, String> {
 示例:
   nemesisbot forge status
   nemesisbot forge reflect
-  nemesisbot forge list"#.to_string()),
+  nemesisbot forge list"#
+            .to_string()),
 
         "cron" => Ok(r#"## cron — 管理定时任务
 
@@ -3810,7 +4099,8 @@ fn cli_detail(command: &str) -> Result<String, String> {
 示例:
   nemesisbot cron add -n "每日问候" -m "早上好" --cron "0 9 * * *"
   nemesisbot cron list
-  nemesisbot cron remove abc123"#.to_string()),
+  nemesisbot cron remove abc123"#
+            .to_string()),
 
         "security" => Ok(r#"## security — 管理安全设置
 
@@ -3845,7 +4135,8 @@ fn cli_detail(command: &str) -> Result<String, String> {
 示例:
   nemesisbot security status
   nemesisbot security rules list
-  nemesisbot security approve 123"#.to_string()),
+  nemesisbot security approve 123"#
+            .to_string()),
 
         "scanner" => Ok(r#"## scanner — 管理病毒扫描引擎
 
@@ -3869,7 +4160,8 @@ fn cli_detail(command: &str) -> Result<String, String> {
   nemesisbot scanner list
   nemesisbot scanner check
   nemesisbot scanner clamav install
-  nemesisbot scanner clamav test /path/to/file"#.to_string()),
+  nemesisbot scanner clamav test /path/to/file"#
+            .to_string()),
 
         "log" => Ok(r#"## log — 管理日志配置
 
@@ -3895,7 +4187,8 @@ LLM 日志:
 示例:
   nemesisbot log llm enable
   nemesisbot log llm type raw
-  nemesisbot log general level debug"#.to_string()),
+  nemesisbot log general level debug"#
+            .to_string()),
 
         "auth" => Ok(r#"## auth — 管理认证
 
@@ -3909,7 +4202,8 @@ LLM 日志:
 
 示例:
   nemesisbot auth login --provider openai
-  nemesisbot auth status"#.to_string()),
+  nemesisbot auth status"#
+            .to_string()),
 
         "memory" => Ok(r#"## memory — 管理增强内存
 
@@ -3922,7 +4216,8 @@ LLM 日志:
 
 示例:
   nemesisbot memory status
-  nemesisbot memory enable"#.to_string()),
+  nemesisbot memory enable"#
+            .to_string()),
 
         "workflow" => Ok(r#"## workflow — 管理工作流
 
@@ -3942,7 +4237,8 @@ LLM 日志:
 示例:
   nemesisbot workflow list
   nemesisbot workflow run my-flow input=hello
-  nemesisbot workflow template list"#.to_string()),
+  nemesisbot workflow template list"#
+            .to_string()),
 
         "cors" => Ok(r#"## cors — 管理 CORS 配置
 
@@ -3960,19 +4256,22 @@ LLM 日志:
 
 示例:
   nemesisbot cors add https://example.com
-  nemesisbot cors dev-mode enable"#.to_string()),
+  nemesisbot cors dev-mode enable"#
+            .to_string()),
 
         "status" => Ok(r#"## status — 显示系统状态
 
 用法: `nemesisbot status`
 
-显示当前系统配置和运行状态。"#.to_string()),
+显示当前系统配置和运行状态。"#
+            .to_string()),
 
         "version" => Ok(r#"## version — 显示版本信息
 
 用法: `nemesisbot version`
 
-显示 NemesisBot 版本号和构建信息。"#.to_string()),
+显示 NemesisBot 版本号和构建信息。"#
+            .to_string()),
 
         _ => Err(format!(
             "Unknown command '{}'. Call cli_reference without parameters to see all commands.",
@@ -4001,22 +4300,29 @@ fn format_discovery_result(result: &nemesis_mcp::manager::DiscoveryResult) -> St
             lines.push(format!("- **{}**: {}", tool.name, desc));
 
             // Parameter summary
-            if let Some(props) = tool.input_schema.get("properties").and_then(|p| p.as_object()) {
-                let required: Vec<&str> = tool.input_schema.get("required")
+            if let Some(props) = tool
+                .input_schema
+                .get("properties")
+                .and_then(|p| p.as_object())
+            {
+                let required: Vec<&str> = tool
+                    .input_schema
+                    .get("required")
                     .and_then(|r| r.as_array())
                     .map(|a| a.iter().filter_map(|v| v.as_str()).collect())
                     .unwrap_or_default();
 
-                let param_summary: Vec<String> = props.iter().map(|(name, schema)| {
-                    let type_str = schema.get("type")
-                        .and_then(|t| t.as_str())
-                        .unwrap_or("any");
-                    if required.contains(&name.as_str()) {
-                        format!("{}* ({})", name, type_str)
-                    } else {
-                        format!("{} ({})", name, type_str)
-                    }
-                }).collect();
+                let param_summary: Vec<String> = props
+                    .iter()
+                    .map(|(name, schema)| {
+                        let type_str = schema.get("type").and_then(|t| t.as_str()).unwrap_or("any");
+                        if required.contains(&name.as_str()) {
+                            format!("{}* ({})", name, type_str)
+                        } else {
+                            format!("{} ({})", name, type_str)
+                        }
+                    })
+                    .collect();
 
                 if !param_summary.is_empty() {
                     lines.push(format!("  - Parameters: {}", param_summary.join(", ")));
@@ -4051,15 +4357,19 @@ fn format_discovery_result(result: &nemesis_mcp::manager::DiscoveryResult) -> St
             let desc = prompt.description.as_deref().unwrap_or("no description");
             lines.push(format!("- **{}**: {}", prompt.name, desc));
             if !prompt.arguments.is_empty() {
-                let args: Vec<String> = prompt.arguments.iter().map(|a| {
-                    let req = if a.required.unwrap_or(false) { "*" } else { "" };
-                    let desc = a.description.as_deref().unwrap_or("");
-                    if desc.is_empty() {
-                        format!("{}{}", a.name, req)
-                    } else {
-                        format!("{}{} ({})", a.name, req, desc)
-                    }
-                }).collect();
+                let args: Vec<String> = prompt
+                    .arguments
+                    .iter()
+                    .map(|a| {
+                        let req = if a.required.unwrap_or(false) { "*" } else { "" };
+                        let desc = a.description.as_deref().unwrap_or("");
+                        if desc.is_empty() {
+                            format!("{}{}", a.name, req)
+                        } else {
+                            format!("{}{} ({})", a.name, req, desc)
+                        }
+                    })
+                    .collect();
                 lines.push(format!("  - Arguments: {} (* = required)", args.join(", ")));
             }
         }
@@ -4085,7 +4395,8 @@ impl McpListTool {
 impl Tool for McpListTool {
     fn description(&self) -> String {
         "List all currently registered MCP tools and their descriptions. \
-         Use this to see what MCP tools are available in the current session.".to_string()
+         Use this to see what MCP tools are available in the current session."
+            .to_string()
     }
 
     fn parameters(&self) -> serde_json::Value {
@@ -4183,13 +4494,34 @@ impl std::fmt::Debug for SharedToolConfig {
             .field("web_search", &self.web_search)
             .field("cluster_rpc", &self.cluster_rpc)
             .field("spawn", &self.spawn)
-            .field("skills_registry", &self.skills_registry.as_ref().map(|_| "RegistryManager"))
-            .field("skills_loader", &self.skills_loader.as_ref().map(|_| "SkillsLoader"))
+            .field(
+                "skills_registry",
+                &self.skills_registry.as_ref().map(|_| "RegistryManager"),
+            )
+            .field(
+                "skills_loader",
+                &self.skills_loader.as_ref().map(|_| "SkillsLoader"),
+            )
             .field("workspace", &self.workspace)
-            .field("memory_executor", &self.memory_executor.as_ref().map(|_| "MemoryToolExecutor"))
-            .field("mcp_tool_snapshot", &self.mcp_tool_snapshot.as_ref().map(|_| "McpToolSnapshot"))
-            .field("workflow_engine", &self.workflow_engine.as_ref().map(|_| "WorkflowEngine"))
-            .field("approval_manager", &self.approval_manager.as_ref().map(|_| "ApprovalManagerSlot"))
+            .field(
+                "memory_executor",
+                &self.memory_executor.as_ref().map(|_| "MemoryToolExecutor"),
+            )
+            .field(
+                "mcp_tool_snapshot",
+                &self.mcp_tool_snapshot.as_ref().map(|_| "McpToolSnapshot"),
+            )
+            .field(
+                "workflow_engine",
+                &self.workflow_engine.as_ref().map(|_| "WorkflowEngine"),
+            )
+            .field(
+                "approval_manager",
+                &self
+                    .approval_manager
+                    .as_ref()
+                    .map(|_| "ApprovalManagerSlot"),
+            )
             .field("skills_manage_approval", &self.skills_manage_approval)
             .finish()
     }
@@ -4218,10 +4550,7 @@ pub fn register_shared_tools(config: &SharedToolConfig) -> HashMap<String, Box<d
     }
 
     // Web fetch tool (always available).
-    tools.insert(
-        "web_fetch".to_string(),
-        Box::new(WebFetchTool::new(50000)),
-    );
+    tools.insert("web_fetch".to_string(), Box::new(WebFetchTool::new(50000)));
 
     // Cluster RPC tool (bot-to-bot communication).
     if let Some(ref cluster_config) = config.cluster_rpc {
@@ -4298,7 +4627,10 @@ pub fn register_shared_tools(config: &SharedToolConfig) -> HashMap<String, Box<d
 
     // Coding tools (grep / git) — read-only code search & git queries.
     if let Some(ref workspace) = config.workspace {
-        tools.insert("grep".to_string(), Box::new(GrepTool::new(workspace.clone())));
+        tools.insert(
+            "grep".to_string(),
+            Box::new(GrepTool::new(workspace.clone())),
+        );
         tools.insert("git".to_string(), Box::new(GitTool::new(workspace.clone())));
     }
 
@@ -4364,21 +4696,17 @@ pub fn register_shared_tools(config: &SharedToolConfig) -> HashMap<String, Box<d
     }
 
     // MCP discovery and listing tools.
-    tools.insert(
-        "mcp_discover".to_string(),
-        Box::new(McpDiscoverTool::new()),
-    );
+    tools.insert("mcp_discover".to_string(), Box::new(McpDiscoverTool::new()));
     tools.insert(
         "cli_reference".to_string(),
         Box::new(CliReferenceTool::new()),
     );
     {
-        let snapshot = config.mcp_tool_snapshot.clone()
+        let snapshot = config
+            .mcp_tool_snapshot
+            .clone()
             .unwrap_or_else(|| Arc::new(parking_lot::RwLock::new(Vec::new())));
-        tools.insert(
-            "mcp_list".to_string(),
-            Box::new(McpListTool::new(snapshot)),
-        );
+        tools.insert("mcp_list".to_string(), Box::new(McpListTool::new(snapshot)));
     }
 
     // Workflow tool — lets the agent trigger registered workflows.
@@ -4479,13 +4807,9 @@ impl Tool for WorkflowRunTool {
         })
     }
 
-    async fn execute(
-        &self,
-        args: &str,
-        _context: &RequestContext,
-    ) -> Result<String, String> {
-        let args_value: serde_json::Value = serde_json::from_str(args)
-            .map_err(|e| format!("invalid JSON args: {}", e))?;
+    async fn execute(&self, args: &str, _context: &RequestContext) -> Result<String, String> {
+        let args_value: serde_json::Value =
+            serde_json::from_str(args).map_err(|e| format!("invalid JSON args: {}", e))?;
 
         let workflow_name = args_value
             .get("workflow")
@@ -4494,20 +4818,19 @@ impl Tool for WorkflowRunTool {
             .ok_or_else(|| "parameter 'workflow' (non-empty string) is required".to_string())?
             .to_string();
 
-        let input: std::collections::HashMap<String, serde_json::Value> = match args_value
-            .get("input")
-        {
-            Some(serde_json::Value::Object(map)) => {
-                map.iter().map(|(k, v)| (k.clone(), v.clone())).collect()
-            }
-            Some(serde_json::Value::Null) | None => std::collections::HashMap::new(),
-            Some(other) => {
-                return Err(format!(
-                    "parameter 'input' must be an object, got {}",
-                    other
-                ));
-            }
-        };
+        let input: std::collections::HashMap<String, serde_json::Value> =
+            match args_value.get("input") {
+                Some(serde_json::Value::Object(map)) => {
+                    map.iter().map(|(k, v)| (k.clone(), v.clone())).collect()
+                }
+                Some(serde_json::Value::Null) | None => std::collections::HashMap::new(),
+                Some(other) => {
+                    return Err(format!(
+                        "parameter 'input' must be an object, got {}",
+                        other
+                    ));
+                }
+            };
 
         let new_depth = self.starting_depth.saturating_add(1);
         if new_depth > nemesis_workflow::MAX_RECURSION_DEPTH {
@@ -4575,10 +4898,10 @@ pub fn register_extended_tools(
 }
 
 #[cfg(test)]
-mod tests;
-#[cfg(test)]
 mod coverage_boost_tests;
 #[cfg(test)]
 mod loop_tools_extra_tests;
 #[cfg(test)]
 mod skill_manage_tests;
+#[cfg(test)]
+mod tests;

@@ -1,13 +1,17 @@
 use super::*;
-use std::any::Any;
 use crate::plugin::Plugin;
+use std::any::Any;
 
 /// A simple test tool that echoes back the "input" argument.
 struct EchoTool;
 
 impl ToolExecutor for EchoTool {
-    fn execute(&self, args: &serde_json::Map<String, serde_json::Value>) -> Result<serde_json::Value, String> {
-        let input = args.get("input")
+    fn execute(
+        &self,
+        args: &serde_json::Map<String, serde_json::Value>,
+    ) -> Result<serde_json::Value, String> {
+        let input = args
+            .get("input")
             .and_then(|v| v.as_str())
             .unwrap_or("no input");
         Ok(serde_json::json!({"echo": input}))
@@ -18,23 +22,33 @@ impl ToolExecutor for EchoTool {
 struct DenyPlugin;
 
 impl Plugin for DenyPlugin {
-    fn name(&self) -> &str { "deny_plugin" }
-    fn as_any(&self) -> &dyn Any { self }
+    fn name(&self) -> &str {
+        "deny_plugin"
+    }
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
     fn execute(&self, invocation: &mut ToolInvocation) -> (bool, Option<String>, bool) {
         if invocation.tool_name == "blocked_tool" {
             return (false, Some("tool is blocked".to_string()), false);
         }
         (true, None, false)
     }
-    fn cleanup(&self) -> Result<(), String> { Ok(()) }
+    fn cleanup(&self) -> Result<(), String> {
+        Ok(())
+    }
 }
 
 /// A plugin that modifies the result by wrapping it.
 struct ModifyPlugin;
 
 impl Plugin for ModifyPlugin {
-    fn name(&self) -> &str { "modify_plugin" }
-    fn as_any(&self) -> &dyn Any { self }
+    fn name(&self) -> &str {
+        "modify_plugin"
+    }
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
     fn execute(&self, invocation: &mut ToolInvocation) -> (bool, Option<String>, bool) {
         if invocation.result.is_some() {
             invocation.result = Some(serde_json::json!({
@@ -44,7 +58,9 @@ impl Plugin for ModifyPlugin {
         }
         (true, None, true)
     }
-    fn cleanup(&self) -> Result<(), String> { Ok(()) }
+    fn cleanup(&self) -> Result<(), String> {
+        Ok(())
+    }
 }
 
 fn make_mgr() -> Arc<Mutex<PluginManager>> {
@@ -58,14 +74,7 @@ fn make_echo() -> Arc<dyn ToolExecutor> {
 #[test]
 fn test_tool_wrapper_passthrough() {
     let mgr = make_mgr();
-    let wrapper = ToolWrapper::new(
-        "echo",
-        mgr,
-        "user1",
-        "web",
-        "/workspace",
-        make_echo(),
-    );
+    let wrapper = ToolWrapper::new("echo", mgr, "user1", "web", "/workspace", make_echo());
     let mut args = serde_json::Map::new();
     args.insert("input".to_string(), serde_json::json!("hello"));
     let result = wrapper.execute(&args).unwrap();
@@ -100,14 +109,7 @@ fn test_tool_wrapper_modified() {
         let mut m = mgr.lock();
         m.register(Box::new(ModifyPlugin)).unwrap();
     }
-    let wrapper = ToolWrapper::new(
-        "echo",
-        mgr,
-        "user1",
-        "web",
-        "/workspace",
-        make_echo(),
-    );
+    let wrapper = ToolWrapper::new("echo", mgr, "user1", "web", "/workspace", make_echo());
     let mut args = serde_json::Map::new();
     args.insert("input".to_string(), serde_json::json!("test"));
     let result = wrapper.execute(&args).unwrap();
@@ -118,14 +120,7 @@ fn test_tool_wrapper_modified() {
 #[test]
 fn test_pluginable_tool() {
     let mgr = make_mgr();
-    let tool = PluginableTool::new(
-        "echo",
-        mgr,
-        make_echo(),
-        "user1",
-        "web",
-        "/workspace",
-    );
+    let tool = PluginableTool::new("echo", mgr, make_echo(), "user1", "web", "/workspace");
     let mut args = serde_json::Map::new();
     args.insert("input".to_string(), serde_json::json!("pluginable"));
     let result = tool.execute(&args).unwrap();
@@ -158,7 +153,10 @@ fn test_pluginable_tool_blocked() {
 fn test_tool_wrapper_failing_tool() {
     struct FailTool;
     impl ToolExecutor for FailTool {
-        fn execute(&self, _args: &serde_json::Map<String, serde_json::Value>) -> Result<serde_json::Value, String> {
+        fn execute(
+            &self,
+            _args: &serde_json::Map<String, serde_json::Value>,
+        ) -> Result<serde_json::Value, String> {
             Err("tool execution failed".to_string())
         }
     }
@@ -182,7 +180,10 @@ fn test_tool_wrapper_failing_tool() {
 fn test_pluginable_tool_with_failing_tool() {
     struct FailTool;
     impl ToolExecutor for FailTool {
-        fn execute(&self, _args: &serde_json::Map<String, serde_json::Value>) -> Result<serde_json::Value, String> {
+        fn execute(
+            &self,
+            _args: &serde_json::Map<String, serde_json::Value>,
+        ) -> Result<serde_json::Value, String> {
             Err("fail".to_string())
         }
     }
@@ -205,7 +206,10 @@ fn test_tool_wrapper_with_modify_plugin_on_error() {
     // ModifyPlugin should still be able to inspect even when tool fails
     struct FailTool;
     impl ToolExecutor for FailTool {
-        fn execute(&self, _args: &serde_json::Map<String, serde_json::Value>) -> Result<serde_json::Value, String> {
+        fn execute(
+            &self,
+            _args: &serde_json::Map<String, serde_json::Value>,
+        ) -> Result<serde_json::Value, String> {
             Err("fail".to_string())
         }
     }
@@ -236,12 +240,18 @@ fn test_tool_wrapper_with_modify_plugin_on_error() {
 fn test_tool_wrapper_pre_check_denies_no_message() {
     struct DenyNoMsgPlugin;
     impl Plugin for DenyNoMsgPlugin {
-        fn name(&self) -> &str { "deny_nomsg" }
-        fn as_any(&self) -> &dyn Any { self }
+        fn name(&self) -> &str {
+            "deny_nomsg"
+        }
+        fn as_any(&self) -> &dyn Any {
+            self
+        }
         fn execute(&self, _inv: &mut ToolInvocation) -> (bool, Option<String>, bool) {
             (false, None, false)
         }
-        fn cleanup(&self) -> Result<(), String> { Ok(()) }
+        fn cleanup(&self) -> Result<(), String> {
+            Ok(())
+        }
     }
 
     let mgr = make_mgr();
@@ -261,15 +271,21 @@ fn test_tool_wrapper_pre_check_denies_no_message() {
 fn test_tool_wrapper_post_check_denies_no_message() {
     struct PostDenyPlugin;
     impl Plugin for PostDenyPlugin {
-        fn name(&self) -> &str { "post_deny" }
-        fn as_any(&self) -> &dyn Any { self }
+        fn name(&self) -> &str {
+            "post_deny"
+        }
+        fn as_any(&self) -> &dyn Any {
+            self
+        }
         fn execute(&self, inv: &mut ToolInvocation) -> (bool, Option<String>, bool) {
             if inv.result.is_some() {
                 return (false, None, false);
             }
             (true, None, false)
         }
-        fn cleanup(&self) -> Result<(), String> { Ok(()) }
+        fn cleanup(&self) -> Result<(), String> {
+            Ok(())
+        }
     }
 
     let mgr = make_mgr();
@@ -291,15 +307,21 @@ fn test_tool_wrapper_post_check_denies_no_message() {
 fn test_tool_wrapper_post_check_denies_with_message() {
     struct PostDenyMsgPlugin;
     impl Plugin for PostDenyMsgPlugin {
-        fn name(&self) -> &str { "post_deny_msg" }
-        fn as_any(&self) -> &dyn Any { self }
+        fn name(&self) -> &str {
+            "post_deny_msg"
+        }
+        fn as_any(&self) -> &dyn Any {
+            self
+        }
         fn execute(&self, inv: &mut ToolInvocation) -> (bool, Option<String>, bool) {
             if inv.result.is_some() {
                 return (false, Some("post-check blocked".to_string()), false);
             }
             (true, None, false)
         }
-        fn cleanup(&self) -> Result<(), String> { Ok(()) }
+        fn cleanup(&self) -> Result<(), String> {
+            Ok(())
+        }
     }
 
     let mgr = make_mgr();
@@ -319,15 +341,21 @@ fn test_tool_wrapper_post_check_denies_with_message() {
 fn test_tool_wrapper_result_replaced_by_plugin() {
     struct ReplacePlugin;
     impl Plugin for ReplacePlugin {
-        fn name(&self) -> &str { "replace" }
-        fn as_any(&self) -> &dyn Any { self }
+        fn name(&self) -> &str {
+            "replace"
+        }
+        fn as_any(&self) -> &dyn Any {
+            self
+        }
         fn execute(&self, inv: &mut ToolInvocation) -> (bool, Option<String>, bool) {
             if inv.result.is_some() {
                 inv.result = Some(serde_json::json!({"replaced": true}));
             }
             (true, None, true)
         }
-        fn cleanup(&self) -> Result<(), String> { Ok(()) }
+        fn cleanup(&self) -> Result<(), String> {
+            Ok(())
+        }
     }
 
     let mgr = make_mgr();
@@ -390,15 +418,21 @@ fn test_tool_wrapper_fields_are_set() {
 fn test_tool_wrapper_post_check_denies_with_error_message() {
     struct PostBlockPlugin;
     impl Plugin for PostBlockPlugin {
-        fn name(&self) -> &str { "post_block" }
-        fn as_any(&self) -> &dyn Any { self }
+        fn name(&self) -> &str {
+            "post_block"
+        }
+        fn as_any(&self) -> &dyn Any {
+            self
+        }
         fn execute(&self, inv: &mut ToolInvocation) -> (bool, Option<String>, bool) {
             if inv.result.is_some() {
                 return (false, Some("post-blocked".to_string()), false);
             }
             (true, None, false)
         }
-        fn cleanup(&self) -> Result<(), String> { Ok(()) }
+        fn cleanup(&self) -> Result<(), String> {
+            Ok(())
+        }
     }
 
     let mgr = make_mgr();
@@ -418,8 +452,12 @@ fn test_tool_wrapper_post_check_denies_with_error_message() {
 fn test_tool_wrapper_plugin_sets_result_on_failed_tool() {
     struct FixPlugin;
     impl Plugin for FixPlugin {
-        fn name(&self) -> &str { "fixer" }
-        fn as_any(&self) -> &dyn Any { self }
+        fn name(&self) -> &str {
+            "fixer"
+        }
+        fn as_any(&self) -> &dyn Any {
+            self
+        }
         fn execute(&self, inv: &mut ToolInvocation) -> (bool, Option<String>, bool) {
             // If tool failed, replace with success
             if inv.blocking_error.is_some() {
@@ -428,12 +466,17 @@ fn test_tool_wrapper_plugin_sets_result_on_failed_tool() {
             }
             (true, None, true)
         }
-        fn cleanup(&self) -> Result<(), String> { Ok(()) }
+        fn cleanup(&self) -> Result<(), String> {
+            Ok(())
+        }
     }
 
     struct FailTool;
     impl ToolExecutor for FailTool {
-        fn execute(&self, _args: &serde_json::Map<String, serde_json::Value>) -> Result<serde_json::Value, String> {
+        fn execute(
+            &self,
+            _args: &serde_json::Map<String, serde_json::Value>,
+        ) -> Result<serde_json::Value, String> {
             Err("original error".to_string())
         }
     }
@@ -462,8 +505,12 @@ fn test_tool_wrapper_plugin_sets_result_on_failed_tool() {
 fn test_pluginable_tool_with_fix_plugin() {
     struct FixPlugin;
     impl Plugin for FixPlugin {
-        fn name(&self) -> &str { "fixer" }
-        fn as_any(&self) -> &dyn Any { self }
+        fn name(&self) -> &str {
+            "fixer"
+        }
+        fn as_any(&self) -> &dyn Any {
+            self
+        }
         fn execute(&self, inv: &mut ToolInvocation) -> (bool, Option<String>, bool) {
             if inv.blocking_error.is_some() {
                 inv.blocking_error = None;
@@ -471,12 +518,17 @@ fn test_pluginable_tool_with_fix_plugin() {
             }
             (true, None, true)
         }
-        fn cleanup(&self) -> Result<(), String> { Ok(()) }
+        fn cleanup(&self) -> Result<(), String> {
+            Ok(())
+        }
     }
 
     struct FailTool;
     impl ToolExecutor for FailTool {
-        fn execute(&self, _args: &serde_json::Map<String, serde_json::Value>) -> Result<serde_json::Value, String> {
+        fn execute(
+            &self,
+            _args: &serde_json::Map<String, serde_json::Value>,
+        ) -> Result<serde_json::Value, String> {
             Err("fail".to_string())
         }
     }

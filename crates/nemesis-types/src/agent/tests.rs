@@ -150,7 +150,12 @@ fn test_message_role_inequality() {
 
 #[test]
 fn test_message_role_serialize_deserialize() {
-    let roles = vec![MessageRole::System, MessageRole::User, MessageRole::Assistant, MessageRole::Tool];
+    let roles = vec![
+        MessageRole::System,
+        MessageRole::User,
+        MessageRole::Assistant,
+        MessageRole::Tool,
+    ];
     let json = serde_json::to_string(&roles).unwrap();
     let roles2: Vec<MessageRole> = serde_json::from_str(&json).unwrap();
     assert_eq!(roles, roles2);
@@ -158,10 +163,22 @@ fn test_message_role_serialize_deserialize() {
 
 #[test]
 fn test_message_role_json_values() {
-    assert_eq!(serde_json::to_string(&MessageRole::System).unwrap(), "\"System\"");
-    assert_eq!(serde_json::to_string(&MessageRole::User).unwrap(), "\"User\"");
-    assert_eq!(serde_json::to_string(&MessageRole::Assistant).unwrap(), "\"Assistant\"");
-    assert_eq!(serde_json::to_string(&MessageRole::Tool).unwrap(), "\"Tool\"");
+    assert_eq!(
+        serde_json::to_string(&MessageRole::System).unwrap(),
+        "\"System\""
+    );
+    assert_eq!(
+        serde_json::to_string(&MessageRole::User).unwrap(),
+        "\"User\""
+    );
+    assert_eq!(
+        serde_json::to_string(&MessageRole::Assistant).unwrap(),
+        "\"Assistant\""
+    );
+    assert_eq!(
+        serde_json::to_string(&MessageRole::Tool).unwrap(),
+        "\"Tool\""
+    );
 }
 
 // --- AgentMessage ---

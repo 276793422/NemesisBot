@@ -103,7 +103,13 @@ impl BotState {
         let target_u8 = target as u8;
         self.state
             .compare_exchange(expected_u8, target_u8, Ordering::SeqCst, Ordering::SeqCst)
-            .map_err(|actual| format!("expected state {} but was {}", expected, State::from_u8(actual)))?;
+            .map_err(|actual| {
+                format!(
+                    "expected state {} but was {}",
+                    expected,
+                    State::from_u8(actual)
+                )
+            })?;
         Ok(())
     }
 }

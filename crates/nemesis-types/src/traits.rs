@@ -23,7 +23,10 @@ pub trait ChannelAdapter: Send + Sync {
 pub trait LlmProvider: Send + Sync {
     fn name(&self) -> &str;
     async fn complete(&self, request: LlmRequest) -> Result<LlmResponse>;
-    async fn stream(&self, request: LlmRequest) -> Result<Pin<Box<dyn futures::Stream<Item = Result<StreamChunk>> + Send>>>;
+    async fn stream(
+        &self,
+        request: LlmRequest,
+    ) -> Result<Pin<Box<dyn futures::Stream<Item = Result<StreamChunk>> + Send>>>;
 }
 
 /// Security checker trait.
@@ -36,7 +39,11 @@ pub trait SecurityChecker: Send + Sync {
 #[async_trait]
 pub trait Tool: Send + Sync {
     fn definition(&self) -> ToolDefinition;
-    async fn execute(&self, args: serde_json::Value, context: crate::tools::ToolContext) -> Result<String>;
+    async fn execute(
+        &self,
+        args: serde_json::Value,
+        context: crate::tools::ToolContext,
+    ) -> Result<String>;
 }
 
 /// Contextual tool with channel/chat context injection.

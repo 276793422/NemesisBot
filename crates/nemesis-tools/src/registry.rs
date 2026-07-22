@@ -195,7 +195,10 @@ impl Tool for PluginableTool {
             .plugin
             .pre_execute_with_context(self.inner.name(), args, &context)
         {
-            tracing::warn!(tool = self.inner.name(), "[Tools] Tool execution blocked by plugin");
+            tracing::warn!(
+                tool = self.inner.name(),
+                "[Tools] Tool execution blocked by plugin"
+            );
             return ToolResult::error(&format!(
                 "Tool {} execution blocked by security plugin",
                 self.inner.name()
@@ -309,7 +312,10 @@ impl ToolRegistry {
     /// Convenience wrapper for backward compatibility where no security
     /// context is available.
     pub fn register_with_plugin_simple(&self, tool: Arc<dyn Tool>, plugin: Arc<dyn PluginHook>) {
-        tracing::debug!(tool = tool.name(), "[Tools] Registered tool with plugin hook (simple)");
+        tracing::debug!(
+            tool = tool.name(),
+            "[Tools] Registered tool with plugin hook (simple)"
+        );
         let wrapped = Arc::new(PluginableTool::new_simple(tool, plugin));
         self.tools.insert(wrapped.name().to_string(), wrapped);
     }
@@ -420,7 +426,8 @@ impl ToolRegistry {
         };
 
         // Store context in side-channel for tools that read it during execution
-        self.tool_contexts.insert(name.to_string(), exec_ctx.clone());
+        self.tool_contexts
+            .insert(name.to_string(), exec_ctx.clone());
 
         // Try to inject context via get_mut if the tool implements ContextualTool.
         // We need to temporarily remove the Arc to get a mutable reference.
@@ -491,8 +498,7 @@ impl ToolRegistry {
         context: ToolExecutionContext,
     ) -> ToolResult {
         // Store context in side-channel
-        self.tool_contexts
-            .insert(name.to_string(), context.clone());
+        self.tool_contexts.insert(name.to_string(), context.clone());
 
         match self.tools.get(name) {
             Some(tool) => {

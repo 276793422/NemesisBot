@@ -32,10 +32,7 @@ impl ScanResult {
 
     /// Names that `default = [...]` enables. Empty if there is no default.
     pub fn default_enabled(&self) -> Vec<String> {
-        self.features
-            .get("default")
-            .cloned()
-            .unwrap_or_default()
+        self.features.get("default").cloned().unwrap_or_default()
     }
 
     /// Is `name` turned on by default?
@@ -47,7 +44,9 @@ impl ScanResult {
 /// Parse a Cargo.toml's text and extract its `[features]`.
 pub fn scan_text(text: &str) -> Result<ScanResult, toml::de::Error> {
     let m: CargoManifest = toml::from_str(text)?;
-    Ok(ScanResult { features: m.features })
+    Ok(ScanResult {
+        features: m.features,
+    })
 }
 
 /// Read a Cargo.toml file and extract its `[features]`.

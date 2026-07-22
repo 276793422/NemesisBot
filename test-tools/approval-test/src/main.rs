@@ -13,8 +13,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use nemesis_security::approval::{
-    is_safe_operation, operation_display_name, ApprovalConfig, ApprovalManager, ApprovalStatus,
-    ChildProcessFactory, MultiApprovalRequest, MultiProcessApprovalManager,
+    ApprovalConfig, ApprovalManager, ApprovalStatus, ChildProcessFactory, MultiApprovalRequest,
+    MultiProcessApprovalManager, is_safe_operation, operation_display_name,
 };
 use parking_lot::Mutex;
 use tokio::sync::oneshot;
@@ -23,7 +23,13 @@ use tokio::sync::oneshot;
 // Helpers
 // ---------------------------------------------------------------------------
 
-fn make_request(id: &str, operation: &str, target: &str, risk_level: &str, timeout_secs: u64) -> MultiApprovalRequest {
+fn make_request(
+    id: &str,
+    operation: &str,
+    target: &str,
+    risk_level: &str,
+    timeout_secs: u64,
+) -> MultiApprovalRequest {
     MultiApprovalRequest {
         request_id: id.to_string(),
         operation: operation.to_string(),
@@ -169,7 +175,11 @@ async fn test_dangerous_operation_auto_reject(runner: &mut TestRunner) {
         ("file_delete", "/system32/config", "HIGH"),
         ("process_exec", "rm -rf /", "CRITICAL"),
         ("process_kill", "systemd", "CRITICAL"),
-        ("registry_write", "HKLM\\SYSTEM\\CurrentControlSet", "CRITICAL"),
+        (
+            "registry_write",
+            "HKLM\\SYSTEM\\CurrentControlSet",
+            "CRITICAL",
+        ),
         ("system_shutdown", "now", "CRITICAL"),
     ];
 
@@ -281,10 +291,7 @@ async fn test_dangerous_operation_with_handler_approves(runner: &mut TestRunner)
             runner.assert_ok(
                 "handler-based approval: duration_seconds > 0",
                 r.duration_seconds > 0.0,
-                &format!(
-                    "expected duration_seconds > 0, got {}",
-                    r.duration_seconds
-                ),
+                &format!("expected duration_seconds > 0, got {}", r.duration_seconds),
             );
         }
         Err(e) => {
@@ -412,10 +419,7 @@ async fn test_timeout_scenario(runner: &mut TestRunner) {
             runner.assert_ok(
                 "timeout: duration_seconds is positive",
                 r.duration_seconds > 0.0,
-                &format!(
-                    "expected duration_seconds > 0, got {}",
-                    r.duration_seconds
-                ),
+                &format!("expected duration_seconds > 0, got {}", r.duration_seconds),
             );
         }
         Err(e) => {
@@ -585,18 +589,12 @@ fn test_config_management(runner: &mut TestRunner) {
     runner.assert_ok(
         "default config: timeout=30s",
         default_config.timeout == Duration::from_secs(30),
-        &format!(
-            "expected 30s, got {:?}",
-            default_config.timeout
-        ),
+        &format!("expected 30s, got {:?}", default_config.timeout),
     );
     runner.assert_ok(
         "default config: min_risk_level=MEDIUM",
         default_config.min_risk_level == "MEDIUM",
-        &format!(
-            "expected MEDIUM, got {}",
-            default_config.min_risk_level
-        ),
+        &format!("expected MEDIUM, got {}", default_config.min_risk_level),
     );
 
     // Custom config

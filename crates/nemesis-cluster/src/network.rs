@@ -39,9 +39,9 @@ pub fn get_local_ip() -> IpAddr {
 
 /// Parse a socket address string. Returns a default if parsing fails.
 pub fn parse_socket_addr(addr_str: &str) -> SocketAddr {
-    addr_str.parse().unwrap_or_else(|_| {
-        SocketAddr::new(IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)), 9000)
-    })
+    addr_str
+        .parse()
+        .unwrap_or_else(|_| SocketAddr::new(IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)), 9000))
 }
 
 /// Check whether an address is a loopback address.
@@ -310,8 +310,7 @@ pub fn is_virtual_interface(name: &str) -> bool {
 
     // Patterns safe for substring matching (long enough to avoid false positives)
     let contains_patterns = [
-        "docker", "br-", "virbr", "vbox", "vmnet",
-        "awdl", "anpi", "ipsec", "loopback",
+        "docker", "br-", "virbr", "vbox", "vmnet", "awdl", "anpi", "ipsec", "loopback",
     ];
     if contains_patterns.iter().any(|p| lower.contains(p)) {
         return true;

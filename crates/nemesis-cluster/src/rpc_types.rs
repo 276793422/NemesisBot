@@ -161,32 +161,33 @@ impl Frame {
             timestamp: chrono::Local::now().timestamp(),
             error: String::new(),
         };
-        let payload = serde_json::to_vec(&wire).map_err(|e| {
-            std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string())
-        })?;
+        let payload = serde_json::to_vec(&wire)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()))?;
         Ok(Frame::new(payload).encode())
     }
 
     /// Encode an RPC response as a framed binary message.
     pub fn encode_response(resp: &RPCResponse) -> std::io::Result<Vec<u8>> {
-        let payload = serde_json::to_vec(resp).map_err(|e| {
-            std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string())
-        })?;
+        let payload = serde_json::to_vec(resp)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()))?;
         Ok(Frame::new(payload).encode())
     }
 
     /// Decode an RPC request from a framed binary message.
     pub fn decode_request(data: &[u8]) -> std::io::Result<RPCRequest> {
-        serde_json::from_slice(data).map_err(|e| {
-            std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string())
-        })
+        serde_json::from_slice(data)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()))
     }
 
     /// Decode an RPC response from a framed binary message (WireMessage format).
     pub fn decode_response(data: &[u8]) -> std::io::Result<RPCResponse> {
         // Try WireMessage format first (from TcpConn server)
         if let Ok(wire) = serde_json::from_slice::<crate::transport::conn::WireMessage>(data) {
-            let err = if wire.error.is_empty() { None } else { Some(wire.error) };
+            let err = if wire.error.is_empty() {
+                None
+            } else {
+                Some(wire.error)
+            };
             return Ok(RPCResponse {
                 id: wire.id,
                 result: Some(wire.payload),
@@ -194,9 +195,8 @@ impl Frame {
             });
         }
         // Fallback: try direct RPCResponse format
-        serde_json::from_slice(data).map_err(|e| {
-            std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string())
-        })
+        serde_json::from_slice(data)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()))
     }
 }
 

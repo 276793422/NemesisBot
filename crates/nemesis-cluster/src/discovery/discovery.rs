@@ -4,15 +4,14 @@
 //! messages from other nodes. Uses `UdpListener` for actual UDP I/O and
 //! optional AES-256-GCM encryption for secure LAN discovery.
 
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use crate::discovery::crypto::derive_key;
 use crate::discovery::listener::{UdpListener, get_all_local_ips};
 use crate::discovery::message::DiscoveryMessage;
 use crate::registry::PeerRegistry;
-
 
 /// Default multicast port for cluster discovery.
 pub const DEFAULT_PORT: u16 = 11949;
@@ -48,7 +47,9 @@ pub trait ClusterCallbacks: Send + Sync {
     /// Get the dynamic capabilities (tool names from the AgentLoop).
     fn capabilities(&self) -> Vec<String>;
     /// Get the node type: "agent" (with LLM) or "node" (lightweight).
-    fn node_type(&self) -> String { "agent".into() }
+    fn node_type(&self) -> String {
+        "agent".into()
+    }
     /// Handle a newly discovered or updated node.
     /// Returns `true` if the peer was added or its content actually changed.
     fn handle_discovered_node(
@@ -97,19 +98,54 @@ impl NullCallbacks {
 }
 
 impl ClusterCallbacks for NullCallbacks {
-    fn node_id(&self) -> String { self.node_id.clone() }
-    fn name(&self) -> String { self.node_id.clone() }
-    fn address(&self) -> String { self.address.clone() }
-    fn rpc_port(&self) -> u16 { self.rpc_port }
-    fn all_local_ips(&self) -> Vec<String> { get_all_local_ips() }
-    fn role(&self) -> String { self.role.clone() }
-    fn category(&self) -> String { self.category.clone() }
-    fn tags(&self) -> Vec<String> { Vec::new() }
-    fn capabilities(&self) -> Vec<String> { Vec::new() }
-    fn node_type(&self) -> String { "node".into() }
-    fn handle_discovered_node(&self, _node_id: &str, _name: &str, _addresses: &[String], _rpc_port: u16, _role: &str, _category: &str, _tags: &[String], _capabilities: &[String], _node_type: &str) -> bool { false }
+    fn node_id(&self) -> String {
+        self.node_id.clone()
+    }
+    fn name(&self) -> String {
+        self.node_id.clone()
+    }
+    fn address(&self) -> String {
+        self.address.clone()
+    }
+    fn rpc_port(&self) -> u16 {
+        self.rpc_port
+    }
+    fn all_local_ips(&self) -> Vec<String> {
+        get_all_local_ips()
+    }
+    fn role(&self) -> String {
+        self.role.clone()
+    }
+    fn category(&self) -> String {
+        self.category.clone()
+    }
+    fn tags(&self) -> Vec<String> {
+        Vec::new()
+    }
+    fn capabilities(&self) -> Vec<String> {
+        Vec::new()
+    }
+    fn node_type(&self) -> String {
+        "node".into()
+    }
+    fn handle_discovered_node(
+        &self,
+        _node_id: &str,
+        _name: &str,
+        _addresses: &[String],
+        _rpc_port: u16,
+        _role: &str,
+        _category: &str,
+        _tags: &[String],
+        _capabilities: &[String],
+        _node_type: &str,
+    ) -> bool {
+        false
+    }
     fn handle_node_offline(&self, _node_id: &str, _reason: &str) {}
-    fn sync_to_disk(&self) -> Result<(), String> { Ok(()) }
+    fn sync_to_disk(&self) -> Result<(), String> {
+        Ok(())
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -173,15 +209,33 @@ impl RegistryCallbacks {
 }
 
 impl ClusterCallbacks for RegistryCallbacks {
-    fn node_id(&self) -> String { self.node_id.clone() }
-    fn name(&self) -> String { self.node_id.clone() }
-    fn address(&self) -> String { self.address.clone() }
-    fn rpc_port(&self) -> u16 { self.rpc_port }
-    fn all_local_ips(&self) -> Vec<String> { get_all_local_ips() }
-    fn role(&self) -> String { self.role.clone() }
-    fn category(&self) -> String { self.category.clone() }
-    fn tags(&self) -> Vec<String> { Vec::new() }
-    fn capabilities(&self) -> Vec<String> { Vec::new() }
+    fn node_id(&self) -> String {
+        self.node_id.clone()
+    }
+    fn name(&self) -> String {
+        self.node_id.clone()
+    }
+    fn address(&self) -> String {
+        self.address.clone()
+    }
+    fn rpc_port(&self) -> u16 {
+        self.rpc_port
+    }
+    fn all_local_ips(&self) -> Vec<String> {
+        get_all_local_ips()
+    }
+    fn role(&self) -> String {
+        self.role.clone()
+    }
+    fn category(&self) -> String {
+        self.category.clone()
+    }
+    fn tags(&self) -> Vec<String> {
+        Vec::new()
+    }
+    fn capabilities(&self) -> Vec<String> {
+        Vec::new()
+    }
 
     fn handle_discovered_node(
         &self,
@@ -451,10 +505,11 @@ impl DiscoveryService {
         // We need a second UdpSocket for the broadcast loop since the listener
         // already holds the bound socket. We create a separate broadcast sender.
         let broadcast_socket = Arc::new(
-            std::net::UdpSocket::bind("0.0.0.0:0")
-                .expect("failed to bind broadcast socket")
+            std::net::UdpSocket::bind("0.0.0.0:0").expect("failed to bind broadcast socket"),
         );
-        broadcast_socket.set_broadcast(true).expect("failed to set broadcast");
+        broadcast_socket
+            .set_broadcast(true)
+            .expect("failed to set broadcast");
 
         let bcast_handle = std::thread::Builder::new()
             .name("discovery-broadcast".into())

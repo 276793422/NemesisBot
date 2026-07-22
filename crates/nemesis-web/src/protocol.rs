@@ -71,7 +71,12 @@ impl ProtocolMessage {
     }
 
     /// Build a successful API response message (type="response").
-    pub fn response_ok(module: &str, cmd: &str, req_id: &str, data: Option<serde_json::Value>) -> Self {
+    pub fn response_ok(
+        module: &str,
+        cmd: &str,
+        req_id: &str,
+        data: Option<serde_json::Value>,
+    ) -> Self {
         Self {
             msg_type: "response".to_string(),
             module: module.to_string(),

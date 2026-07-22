@@ -1,9 +1,9 @@
 //! Auth credential storage.
 
 use crate::token::AuthCredential;
+use std::collections::HashMap;
 use std::path::Path;
 use std::sync::RwLock;
-use std::collections::HashMap;
 
 /// On-disk auth credential store.
 pub struct AuthStore {
@@ -24,7 +24,10 @@ impl AuthStore {
 
     /// Save a credential.
     pub fn save(&self, provider: &str, cred: AuthCredential) -> Result<(), String> {
-        self.creds.write().unwrap().insert(provider.to_string(), cred);
+        self.creds
+            .write()
+            .unwrap()
+            .insert(provider.to_string(), cred);
         self.persist()
     }
 
@@ -59,10 +62,10 @@ impl AuthStore {
         if !Path::new(&self.path).exists() {
             return Ok(());
         }
-        let data = std::fs::read_to_string(&self.path)
-            .map_err(|e| format!("read auth store: {}", e))?;
-        let creds: HashMap<String, AuthCredential> = serde_json::from_str(&data)
-            .map_err(|e| format!("parse auth store: {}", e))?;
+        let data =
+            std::fs::read_to_string(&self.path).map_err(|e| format!("read auth store: {}", e))?;
+        let creds: HashMap<String, AuthCredential> =
+            serde_json::from_str(&data).map_err(|e| format!("parse auth store: {}", e))?;
         *self.creds.write().unwrap() = creds;
         Ok(())
     }

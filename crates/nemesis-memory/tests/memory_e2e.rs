@@ -44,15 +44,14 @@ async fn e2e_gateway_memory_pipeline() {
 
     // Step 2: Initialize vector store with shared plugin fixture
     let storage_path = memory_data_dir.join("vector").join("vector_store.jsonl");
-    let embed = __test_fixture::shared_embed_func()
-        .expect("shared plugin not available");
+    let embed = __test_fixture::shared_embed_func().expect("shared plugin not available");
     let store_config = StoreConfig {
         similarity_threshold: 0.7,
         storage_path: storage_path.to_string_lossy().to_string(),
-        ..__test_fixture::plugin_store_config("")
-            .expect("plugin DLL + model files required")
+        ..__test_fixture::plugin_store_config("").expect("plugin DLL + model files required")
     };
-    mgr.init_vector_store_with_embed(embed, store_config).expect("Vector store init should succeed");
+    mgr.init_vector_store_with_embed(embed, store_config)
+        .expect("Vector store init should succeed");
     println!("[Step 2] Vector store initialized");
 
     // Step 3: Create tool executor (same as gateway.rs)
@@ -70,7 +69,11 @@ async fn e2e_gateway_memory_pipeline() {
             }),
         )
         .await;
-    assert!(store_result.success, "Store should succeed: {}", store_result.content);
+    assert!(
+        store_result.success,
+        "Store should succeed: {}",
+        store_result.content
+    );
     println!("[Step 4] Memory stored: {}", store_result.content);
 
     let store_result2 = executor
@@ -96,10 +99,16 @@ async fn e2e_gateway_memory_pipeline() {
             }),
         )
         .await;
-    assert!(search_result.success, "Search should succeed: {}", search_result.content);
+    assert!(
+        search_result.success,
+        "Search should succeed: {}",
+        search_result.content
+    );
     println!("[Step 5] Search result:\n{}", search_result.content);
-    assert!(search_result.content.to_lowercase().contains("alice"),
-        "Search should find content containing 'Alice'");
+    assert!(
+        search_result.content.to_lowercase().contains("alice"),
+        "Search should find content containing 'Alice'"
+    );
 
     // Step 6: Store a knowledge graph entry
     let graph_store = executor
@@ -114,7 +123,11 @@ async fn e2e_gateway_memory_pipeline() {
             }),
         )
         .await;
-    assert!(graph_store.success, "Graph store should succeed: {}", graph_store.content);
+    assert!(
+        graph_store.success,
+        "Graph store should succeed: {}",
+        graph_store.content
+    );
     println!("[Step 6] Graph stored: {}", graph_store.content);
 
     // Step 7: Search knowledge graph
@@ -130,8 +143,10 @@ async fn e2e_gateway_memory_pipeline() {
         .await;
     assert!(graph_search.success, "Graph search should succeed");
     println!("[Step 7] Graph search result:\n{}", graph_search.content);
-    assert!(graph_search.content.contains("Alice") && graph_search.content.contains("programming"),
-        "Graph search should find Alice -> loves -> programming");
+    assert!(
+        graph_search.content.contains("Alice") && graph_search.content.contains("programming"),
+        "Graph search should find Alice -> loves -> programming"
+    );
 
     // Step 8: Search by Rust keyword across all memory types
     let search_rust = executor
@@ -145,15 +160,20 @@ async fn e2e_gateway_memory_pipeline() {
         .await;
     assert!(search_rust.success, "Rust search should succeed");
     println!("[Step 8] Rust search:\n{}", search_rust.content);
-    assert!(search_rust.content.to_lowercase().contains("rust"),
-        "Should find Rust-related memories");
+    assert!(
+        search_rust.content.to_lowercase().contains("rust"),
+        "Should find Rust-related memories"
+    );
 
     // Step 9: List memory status
     let list_result = executor
         .execute("memory_list", &serde_json::json!({"list_type": "status"}))
         .await;
     assert!(list_result.success, "List should succeed");
-    assert!(list_result.content.contains("Episodic"), "Should show episodic store status");
+    assert!(
+        list_result.content.contains("Episodic"),
+        "Should show episodic store status"
+    );
     println!("[Step 9] Memory status:\n{}", list_result.content);
 
     // Do NOT call mgr.close() — shared fixture must not be released
@@ -179,6 +199,9 @@ async fn e2e_enabled_via_nemesis_config() {
     let json = r#"{"memory": {"enabled": true}}"#;
     let cfg: Config = serde_json::from_str(json).unwrap();
     let memory_enabled = cfg.memory.as_ref().map(|m| m.enabled).unwrap_or(false);
-    assert!(memory_enabled, "memory.enabled should be true via nemesis-config");
+    assert!(
+        memory_enabled,
+        "memory.enabled should be true via nemesis-config"
+    );
     println!("[Enabled test] memory.enabled = true via nemesis-config");
 }

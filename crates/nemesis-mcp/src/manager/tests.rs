@@ -18,13 +18,14 @@ fn write_config(path: &PathBuf, config: &McpFileConfig) {
 fn test_new_with_existing_config() {
     let tmp = TempDir::new().unwrap();
     let path = make_config_path(&tmp);
-    write_config(&path, &McpFileConfig {
-        enabled: true,
-        servers: vec![
-            ServerConfig::new("test-srv", "/usr/bin/test"),
-        ],
-        timeout: 60,
-    });
+    write_config(
+        &path,
+        &McpFileConfig {
+            enabled: true,
+            servers: vec![ServerConfig::new("test-srv", "/usr/bin/test")],
+            timeout: 60,
+        },
+    );
 
     let mgr = McpManager::new(path);
     assert!(mgr.is_enabled());
@@ -48,7 +49,8 @@ fn test_save_and_reload() {
 
     let mut mgr = McpManager::new(path);
     mgr.add_server(ServerConfig::new("srv1", "cmd1")).unwrap();
-    mgr.add_server(ServerConfig::new("srv2", "cmd2").arg("--flag")).unwrap();
+    mgr.add_server(ServerConfig::new("srv2", "cmd2").arg("--flag"))
+        .unwrap();
 
     // Reload from disk
     let mgr2 = McpManager::new(mgr.config_path().to_path_buf());
@@ -176,11 +178,14 @@ fn test_check_config_changed_detects_write() {
 
     // Write a config file externally
     std::thread::sleep(std::time::Duration::from_millis(50));
-    write_config(&path, &McpFileConfig {
-        enabled: true,
-        servers: vec![ServerConfig::new("new", "cmd")],
-        timeout: 30,
-    });
+    write_config(
+        &path,
+        &McpFileConfig {
+            enabled: true,
+            servers: vec![ServerConfig::new("new", "cmd")],
+            timeout: 30,
+        },
+    );
 
     assert!(mgr.check_config_changed());
     assert!(mgr.is_enabled());
@@ -216,11 +221,14 @@ fn test_mtime_detects_new_server_after_add() {
     let path = make_config_path(&tmp);
 
     // Start with one server
-    write_config(&path, &McpFileConfig {
-        enabled: true,
-        servers: vec![ServerConfig::new("srv-a", "cmd_a")],
-        timeout: 30,
-    });
+    write_config(
+        &path,
+        &McpFileConfig {
+            enabled: true,
+            servers: vec![ServerConfig::new("srv-a", "cmd_a")],
+            timeout: 30,
+        },
+    );
     let mut mgr = McpManager::new(path);
 
     // Consume initial mtime
@@ -253,11 +261,14 @@ fn test_find_new_servers_after_mtime_reload() {
     let tmp = TempDir::new().unwrap();
     let path = make_config_path(&tmp);
 
-    write_config(&path, &McpFileConfig {
-        enabled: true,
-        servers: vec![ServerConfig::new("srv-a", "cmd_a")],
-        timeout: 30,
-    });
+    write_config(
+        &path,
+        &McpFileConfig {
+            enabled: true,
+            servers: vec![ServerConfig::new("srv-a", "cmd_a")],
+            timeout: 30,
+        },
+    );
     let mut mgr = McpManager::new(path);
 
     // Simulate registering tools from srv-a (prefix-based)
@@ -291,14 +302,17 @@ fn test_remove_server_updates_config() {
     let tmp = TempDir::new().unwrap();
     let path = make_config_path(&tmp);
 
-    write_config(&path, &McpFileConfig {
-        enabled: true,
-        servers: vec![
-            ServerConfig::new("srv-a", "cmd_a"),
-            ServerConfig::new("srv-b", "cmd_b"),
-        ],
-        timeout: 30,
-    });
+    write_config(
+        &path,
+        &McpFileConfig {
+            enabled: true,
+            servers: vec![
+                ServerConfig::new("srv-a", "cmd_a"),
+                ServerConfig::new("srv-b", "cmd_b"),
+            ],
+            timeout: 30,
+        },
+    );
     let mut mgr = McpManager::new(path);
 
     // Remove one server
@@ -377,7 +391,8 @@ fn test_save_config_round_trips_enabled_and_timeout() {
     let path = make_config_path(&tmp);
 
     let mut mgr = McpManager::new(path.clone());
-    mgr.add_server(ServerConfig::new("srv", "cmd").timeout(99)).unwrap();
+    mgr.add_server(ServerConfig::new("srv", "cmd").timeout(99))
+        .unwrap();
     assert!(mgr.is_enabled());
 
     // Reload from the same path and confirm enabled flag + server preserved.
@@ -393,11 +408,14 @@ fn test_check_config_changed_reload_failure_keeps_mtime() {
     let path = make_config_path(&tmp);
 
     // Start with a valid config and consume the initial mtime.
-    write_config(&path, &McpFileConfig {
-        enabled: true,
-        servers: vec![ServerConfig::new("srv-a", "cmd_a")],
-        timeout: 30,
-    });
+    write_config(
+        &path,
+        &McpFileConfig {
+            enabled: true,
+            servers: vec![ServerConfig::new("srv-a", "cmd_a")],
+            timeout: 30,
+        },
+    );
     let mut mgr = McpManager::new(path.clone());
     assert!(!mgr.check_config_changed());
 
@@ -412,14 +430,17 @@ fn test_check_config_changed_reload_failure_keeps_mtime() {
     // Because mtime was not updated, fixing the file makes the next round
     // detect and reload successfully.
     std::thread::sleep(std::time::Duration::from_millis(50));
-    write_config(&path, &McpFileConfig {
-        enabled: true,
-        servers: vec![
-            ServerConfig::new("srv-a", "cmd_a"),
-            ServerConfig::new("srv-b", "cmd_b"),
-        ],
-        timeout: 30,
-    });
+    write_config(
+        &path,
+        &McpFileConfig {
+            enabled: true,
+            servers: vec![
+                ServerConfig::new("srv-a", "cmd_a"),
+                ServerConfig::new("srv-b", "cmd_b"),
+            ],
+            timeout: 30,
+        },
+    );
     assert!(mgr.check_config_changed());
     assert_eq!(mgr.list_servers().len(), 2);
 }
@@ -463,7 +484,8 @@ fn test_get_server_returns_command_and_args() {
         ServerConfig::new("worker", "/usr/bin/node")
             .arg("index.js")
             .arg("--verbose"),
-    ).unwrap();
+    )
+    .unwrap();
 
     let srv = mgr.get_server("worker").expect("server should exist");
     assert_eq!(srv.command, "/usr/bin/node");

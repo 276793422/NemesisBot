@@ -1,7 +1,7 @@
 //! Status command - show nemesisbot system status.
 
-use anyhow::Result;
 use crate::common;
+use anyhow::Result;
 
 pub fn run(local: bool) -> Result<()> {
     let home = common::resolve_home(local);
@@ -47,32 +47,60 @@ pub fn run(local: bool) -> Result<()> {
                 if !models.is_empty() {
                     println!();
                     println!("  Configured Models:");
-                    let mut provider_counts: std::collections::HashMap<String, (usize, bool)> = std::collections::HashMap::new();
+                    let mut provider_counts: std::collections::HashMap<String, (usize, bool)> =
+                        std::collections::HashMap::new();
                     for m in models {
                         let model = m.get("model").and_then(|v| v.as_str()).unwrap_or("");
                         let parts: Vec<&str> = model.splitn(2, '/').collect();
                         if parts.len() == 2 {
                             let provider = parts[0].to_lowercase();
-                            let has_key = m.get("api_key").and_then(|v| v.as_str()).map(|k| !k.is_empty()).unwrap_or(false);
+                            let has_key = m
+                                .get("api_key")
+                                .and_then(|v| v.as_str())
+                                .map(|k| !k.is_empty())
+                                .unwrap_or(false);
                             let entry = provider_counts.entry(provider).or_insert((0, false));
                             entry.0 += 1;
                             entry.1 = entry.1 || has_key;
                         }
                     }
                     for (provider, (count, has_key)) in &provider_counts {
-                        println!("    {}: {} model(s), API key: {}", provider, count, if *has_key { "configured" } else { "not set" });
+                        println!(
+                            "    {}: {} model(s), API key: {}",
+                            provider,
+                            count,
+                            if *has_key { "configured" } else { "not set" }
+                        );
                     }
                 }
             }
 
             // Security
-            let security_enabled = cfg.get("security").and_then(|s| s.get("enabled")).and_then(|v| v.as_bool()).unwrap_or(true);
+            let security_enabled = cfg
+                .get("security")
+                .and_then(|s| s.get("enabled"))
+                .and_then(|v| v.as_bool())
+                .unwrap_or(true);
             println!();
-            println!("  Security: {}", if security_enabled { "enabled" } else { "disabled" });
+            println!(
+                "  Security: {}",
+                if security_enabled {
+                    "enabled"
+                } else {
+                    "disabled"
+                }
+            );
 
             // Forge
-            let forge_enabled = cfg.get("forge").and_then(|f| f.get("enabled")).and_then(|v| v.as_bool()).unwrap_or(false);
-            println!("  Forge: {}", if forge_enabled { "enabled" } else { "disabled" });
+            let forge_enabled = cfg
+                .get("forge")
+                .and_then(|f| f.get("enabled"))
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            println!(
+                "  Forge: {}",
+                if forge_enabled { "enabled" } else { "disabled" }
+            );
         }
     }
 

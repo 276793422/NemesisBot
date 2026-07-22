@@ -24,7 +24,11 @@ fn test_ensure_dir() {
 #[test]
 fn test_write_file_atomic_overwrites_existing() {
     let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("overwrite.txt").to_string_lossy().to_string();
+    let path = dir
+        .path()
+        .join("overwrite.txt")
+        .to_string_lossy()
+        .to_string();
 
     write_file_atomic(&path, b"first", 0o644).unwrap();
     assert_eq!(fs::read_to_string(&path).unwrap(), "first");
@@ -56,7 +60,11 @@ fn test_write_file_atomic_large_data() {
 #[test]
 fn test_write_file_atomic_creates_parent_dirs() {
     let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("deep/nested/dir/file.txt").to_string_lossy().to_string();
+    let path = dir
+        .path()
+        .join("deep/nested/dir/file.txt")
+        .to_string_lossy()
+        .to_string();
 
     write_file_atomic(&path, b"nested content", 0o644).unwrap();
     assert_eq!(fs::read_to_string(&path).unwrap(), "nested content");
@@ -70,7 +78,8 @@ fn test_write_file_atomic_no_temp_file_left() {
     write_file_atomic(&path, b"content", 0o644).unwrap();
 
     // No .tmp files should remain
-    let entries: Vec<_> = fs::read_dir(dir.path()).unwrap()
+    let entries: Vec<_> = fs::read_dir(dir.path())
+        .unwrap()
         .filter_map(|e| e.ok())
         .collect();
     assert_eq!(entries.len(), 1);
@@ -107,7 +116,11 @@ fn test_ensure_dir_already_exists() {
 #[test]
 fn test_ensure_dir_nested() {
     let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("level1/level2/level3").to_string_lossy().to_string();
+    let path = dir
+        .path()
+        .join("level1/level2/level3")
+        .to_string_lossy()
+        .to_string();
 
     ensure_dir(&path).unwrap();
     assert!(Path::new(&path).is_dir());
@@ -135,7 +148,11 @@ fn test_write_file_atomic_root_file() {
     // Writing a file in current directory (no parent subpath needed)
     let dir = tempfile::tempdir().unwrap();
     // Use the tempdir itself as the parent; file directly inside
-    let path = dir.path().join("root_file.txt").to_string_lossy().to_string();
+    let path = dir
+        .path()
+        .join("root_file.txt")
+        .to_string_lossy()
+        .to_string();
     write_file_atomic(&path, b"root content", 0o644).unwrap();
     assert_eq!(fs::read_to_string(&path).unwrap(), "root content");
 }
@@ -172,7 +189,11 @@ fn test_read_file_string_binary_fails() {
 fn test_write_file_atomic_concurrent() {
     // Verify that two sequential atomic writes to same file work correctly
     let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("concurrent.txt").to_string_lossy().to_string();
+    let path = dir
+        .path()
+        .join("concurrent.txt")
+        .to_string_lossy()
+        .to_string();
 
     let threads: Vec<_> = (0..5)
         .map(|i| {

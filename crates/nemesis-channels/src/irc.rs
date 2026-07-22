@@ -78,17 +78,13 @@ impl IRCChannel {
     /// Creates a new `IRCChannel`.
     pub fn new(config: IRCConfig) -> Result<Self> {
         if config.server.is_empty() {
-            return Err(NemesisError::Channel(
-                "irc server is required".to_string(),
-            ));
+            return Err(NemesisError::Channel("irc server is required".to_string()));
         }
         if config.nick.is_empty() {
             return Err(NemesisError::Channel("irc nick is required".to_string()));
         }
         if config.channel.is_empty() {
-            return Err(NemesisError::Channel(
-                "irc channel is required".to_string(),
-            ));
+            return Err(NemesisError::Channel("irc channel is required".to_string()));
         }
 
         let channel = ensure_hash_prefix(&config.channel);
@@ -236,17 +232,15 @@ impl IRCChannel {
             *self.writer.lock() = Some(w);
             Ok(())
         } else {
-            Err(NemesisError::Channel(
-                "IRC not connected".to_string(),
-            ))
+            Err(NemesisError::Channel("IRC not connected".to_string()))
         }
     }
 
     /// Connects to the IRC server, registers, and spawns the read loop.
     async fn connect_and_run(&self) -> Result<()> {
-        let stream = TcpStream::connect(&self.config.server)
-            .await
-            .map_err(|e| NemesisError::Channel(format!("IRC connect to {} failed: {e}", self.config.server)))?;
+        let stream = TcpStream::connect(&self.config.server).await.map_err(|e| {
+            NemesisError::Channel(format!("IRC connect to {} failed: {e}", self.config.server))
+        })?;
 
         let (reader, writer) = tokio::io::split(stream);
         *self.writer.lock() = Some(IRCWriter { writer });
@@ -367,10 +361,18 @@ impl IRCChannel {
 
                         // Send registration commands
                         if let Some(ref pass) = config.password {
-                            let _ = writer.write_all(format!("PASS {pass}\r\n").as_bytes()).await;
+                            let _ = writer
+                                .write_all(format!("PASS {pass}\r\n").as_bytes())
+                                .await;
                         }
-                        let _ = writer.write_all(format!("NICK {}\r\n", config.nick).as_bytes()).await;
-                        let _ = writer.write_all(format!("USER {} 0 * :NemesisBot\r\n", config.nick).as_bytes()).await;
+                        let _ = writer
+                            .write_all(format!("NICK {}\r\n", config.nick).as_bytes())
+                            .await;
+                        let _ = writer
+                            .write_all(
+                                format!("USER {} 0 * :NemesisBot\r\n", config.nick).as_bytes(),
+                            )
+                            .await;
                         let _ = writer.flush().await;
 
                         // Read loop
@@ -512,9 +514,7 @@ impl Channel for IRCChannel {
 
     async fn send(&self, msg: OutboundMessage) -> Result<()> {
         if !*self.running.read() {
-            return Err(NemesisError::Channel(
-                "irc channel not running".to_string(),
-            ));
+            return Err(NemesisError::Channel("irc channel not running".to_string()));
         }
 
         self.base.record_sent();

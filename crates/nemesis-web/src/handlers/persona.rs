@@ -32,13 +32,7 @@ const DEFAULT_AGENT_MD: &str = include_str!("../../../../nemesisbot/workspace/AG
 const DEFAULT_TOOLS_MD: &str = include_str!("../../../../nemesisbot/workspace/TOOLS.md");
 
 /// Directories in agency-agents that are NOT agent categories (skip entirely).
-const SKIP_DIRS: &[&str] = &[
-    "scripts",
-    "examples",
-    "integrations",
-    "strategy",
-    ".github",
-];
+const SKIP_DIRS: &[&str] = &["scripts", "examples", "integrations", "strategy", ".github"];
 
 /// Filenames to skip even inside valid category directories.
 const SKIP_FILENAMES: &[&str] = &[
@@ -182,8 +176,16 @@ fn extract_identity_info(content: &str) -> (String, String) {
         let line = line.trim();
         // Match "**姓名：** xxx" or "**姓名:** xxx"
         if line.contains("姓名") && (line.contains("：") || line.contains(":")) {
-            if let Some(idx) = line.find("：").or_else(|| line.find(": **")).or_else(|| line.find(":**")) {
-                let rest = &line[idx + "：".len()..].trim_start_matches('*').trim_start_matches(' ').trim_start_matches('*').trim();
+            if let Some(idx) = line
+                .find("：")
+                .or_else(|| line.find(": **"))
+                .or_else(|| line.find(":**"))
+            {
+                let rest = &line[idx + "：".len()..]
+                    .trim_start_matches('*')
+                    .trim_start_matches(' ')
+                    .trim_start_matches('*')
+                    .trim();
                 if !rest.is_empty() {
                     name = rest.to_string();
                 }
@@ -205,7 +207,6 @@ fn extract_identity_info(content: &str) -> (String, String) {
     }
     (name, emoji)
 }
-
 
 // ---------------------------------------------------------------------------
 // GitHub API helpers
@@ -559,13 +560,11 @@ fn convert_agent_md(content: &str) -> PersonaFiles {
     let name = fm.as_ref().map(|f| f.name.as_str()).unwrap_or("Unknown");
     let emoji = fm.as_ref().map(|f| f.emoji.as_str()).unwrap_or("🤖");
     let vibe = fm.as_ref().map(|f| f.vibe.as_str()).unwrap_or("");
-    let description = fm
-        .as_ref()
-        .map(|f| f.description.as_str())
-        .unwrap_or("");
+    let description = fm.as_ref().map(|f| f.description.as_str()).unwrap_or("");
 
     // Build IDENTITY.md (full replacement)
-    let identity_sections: Vec<&Section> = parsed.sections
+    let identity_sections: Vec<&Section> = parsed
+        .sections
         .iter()
         .filter(|s| matches!(classify_section(&s.title), SectionTarget::Identity))
         .collect();
@@ -597,7 +596,8 @@ fn convert_agent_md(content: &str) -> PersonaFiles {
     }
 
     // Build SOUL.md (full replacement)
-    let soul_sections: Vec<&Section> = parsed.sections
+    let soul_sections: Vec<&Section> = parsed
+        .sections
         .iter()
         .filter(|s| matches!(classify_section(&s.title), SectionTarget::Soul))
         .collect();
@@ -608,7 +608,8 @@ fn convert_agent_md(content: &str) -> PersonaFiles {
     }
 
     // Build AGENT.md extra (to be appended to system default)
-    let agent_sections: Vec<&Section> = parsed.sections
+    let agent_sections: Vec<&Section> = parsed
+        .sections
         .iter()
         .filter(|s| matches!(classify_section(&s.title), SectionTarget::Agent))
         .collect();
@@ -619,7 +620,8 @@ fn convert_agent_md(content: &str) -> PersonaFiles {
     }
 
     // Build TOOLS.md extra (to be appended to system default)
-    let tools_sections: Vec<&Section> = parsed.sections
+    let tools_sections: Vec<&Section> = parsed
+        .sections
         .iter()
         .filter(|s| matches!(classify_section(&s.title), SectionTarget::Tools))
         .collect();
@@ -716,7 +718,10 @@ impl ModuleHandler for PersonaHandler {
 }
 
 fn restart_agent(ctx: &crate::ws_router::RequestContext) -> Result<(), String> {
-    let svc = ctx.state.agent_service.as_ref()
+    let svc = ctx
+        .state
+        .agent_service
+        .as_ref()
         .ok_or("Agent not available")?;
     svc.stop()?;
     tracing::info!("[Persona] Agent stopped for persona switch");
@@ -774,8 +779,7 @@ impl PersonaHandler {
         // Build PERSONA.json from actual workspace files
         let identity_path = resolve_path(workspace, "IDENTITY.md")?;
         let (name, emoji) = if identity_path.exists() {
-            let content = std::fs::read_to_string(&identity_path)
-                .unwrap_or_default();
+            let content = std::fs::read_to_string(&identity_path).unwrap_or_default();
             extract_identity_info(&content)
         } else {
             ("default".to_string(), "🤖".to_string())
@@ -814,10 +818,8 @@ impl PersonaHandler {
     fn write_active(&self, workspace: &str, name: &str) -> Result<(), String> {
         let path = resolve_path(workspace, "personas/_active.json")?;
         let v = serde_json::json!({"name": name});
-        let s = serde_json::to_string_pretty(&v)
-            .map_err(|e| format!("serialize error: {}", e))?;
-        std::fs::write(&path, s)
-            .map_err(|e| format!("failed to write _active.json: {}", e))
+        let s = serde_json::to_string_pretty(&v).map_err(|e| format!("serialize error: {}", e))?;
+        std::fs::write(&path, s).map_err(|e| format!("failed to write _active.json: {}", e))
     }
 
     fn read_persona_json(
@@ -937,7 +939,8 @@ impl PersonaHandler {
             let archive_dir = resolve_path(workspace, &format!("personas/{}", current))?;
             std::fs::create_dir_all(&archive_dir)
                 .map_err(|e| format!("failed to create archive dir: {}", e))?;
-            let all_files: Vec<&&str> = PERSONA_FILES.iter()
+            let all_files: Vec<&&str> = PERSONA_FILES
+                .iter()
                 .chain(PERSONA_ARCHIVE_FILES.iter())
                 .collect();
             for &file in &all_files {
@@ -965,7 +968,8 @@ impl PersonaHandler {
         }
 
         // Step 2: Clean workspace root of all persona-managed files/dirs
-        let all_files: Vec<&&str> = PERSONA_FILES.iter()
+        let all_files: Vec<&&str> = PERSONA_FILES
+            .iter()
             .chain(PERSONA_ARCHIVE_FILES.iter())
             .collect();
         for &file in &all_files {
@@ -1025,11 +1029,7 @@ impl PersonaHandler {
         })))
     }
 
-    fn cmd_remove(
-        &self,
-        workspace: &str,
-        name: &str,
-    ) -> Result<Option<serde_json::Value>, String> {
+    fn cmd_remove(&self, workspace: &str, name: &str) -> Result<Option<serde_json::Value>, String> {
         if name == "default" {
             return Err("cannot remove default persona".to_string());
         }
@@ -1076,8 +1076,7 @@ impl PersonaHandler {
         if let Some(parent) = path.parent() {
             let _ = std::fs::create_dir_all(parent);
         }
-        std::fs::write(&path, content)
-            .map_err(|e| format!("failed to write {}: {}", file, e))?;
+        std::fs::write(&path, content).map_err(|e| format!("failed to write {}: {}", file, e))?;
 
         let active = self.read_active(workspace).unwrap_or_default();
         if active == name {
@@ -1236,8 +1235,7 @@ impl PersonaHandler {
         let fm = parse_frontmatter(&content);
         let files = convert_agent_md(&content);
 
-        std::fs::create_dir_all(&dir)
-            .map_err(|e| format!("failed to create dir: {}", e))?;
+        std::fs::create_dir_all(&dir).map_err(|e| format!("failed to create dir: {}", e))?;
 
         // Write PERSONA.json
         let persona_json = build_persona_json(fm.as_ref());

@@ -46,25 +46,27 @@ pub async fn test_gateway_full_lifecycle(
         Ok(_) => results.push(pass(&format!("{}/ai_server", suite), "AI Server ready")),
         Err(e) => {
             ai_server.kill().await;
-            results.push(fail(&format!("{}/ai_server", suite), &format!("Timeout: {}", e)));
+            results.push(fail(
+                &format!("{}/ai_server", suite),
+                &format!("Timeout: {}", e),
+            ));
             return results;
         }
     }
 
     // Start Gateway
-    let mut gateway = match ManagedProcess::spawn(
-        "Gateway",
-        bin,
-        &["--local", "gateway"],
-        ws.path(),
-    ) {
-        Ok(p) => p,
-        Err(e) => {
-            ai_server.kill().await;
-            results.push(fail(&format!("{}/gateway_start", suite), &format!("Failed: {}", e)));
-            return results;
-        }
-    };
+    let mut gateway =
+        match ManagedProcess::spawn("Gateway", bin, &["--local", "gateway"], ws.path()) {
+            Ok(p) => p,
+            Err(e) => {
+                ai_server.kill().await;
+                results.push(fail(
+                    &format!("{}/gateway_start", suite),
+                    &format!("Failed: {}", e),
+                ));
+                return results;
+            }
+        };
 
     // Wait for gateway health
     match wait_for_http(
@@ -73,9 +75,15 @@ pub async fn test_gateway_full_lifecycle(
     )
     .await
     {
-        Ok(_) => results.push(pass(&format!("{}/gateway_ready", suite), "Gateway health OK")),
+        Ok(_) => results.push(pass(
+            &format!("{}/gateway_ready", suite),
+            "Gateway health OK",
+        )),
         Err(e) => {
-            results.push(fail(&format!("{}/gateway_ready", suite), &format!("Timeout: {}", e)));
+            results.push(fail(
+                &format!("{}/gateway_ready", suite),
+                &format!("Timeout: {}", e),
+            ));
             gateway.kill().await;
             ai_server.kill().await;
             return results;
@@ -113,7 +121,10 @@ pub async fn test_gateway_health_endpoints() -> Vec<TestResult> {
             results.push(pass(&format!("{}/health", suite), "200 OK"));
         }
         Ok(resp) => {
-            results.push(fail(&format!("{}/health", suite), &format!("Status: {}", resp.status())));
+            results.push(fail(
+                &format!("{}/health", suite),
+                &format!("Status: {}", resp.status()),
+            ));
         }
         Err(e) => {
             results.push(fail(&format!("{}/health", suite), &format!("Error: {}", e)));
@@ -129,7 +140,10 @@ pub async fn test_gateway_health_endpoints() -> Vec<TestResult> {
             results.push(pass(&format!("{}/ready", suite), "200 OK"));
         }
         Ok(resp) => {
-            results.push(fail(&format!("{}/ready", suite), &format!("Status: {}", resp.status())));
+            results.push(fail(
+                &format!("{}/ready", suite),
+                &format!("Status: {}", resp.status()),
+            ));
         }
         Err(e) => {
             results.push(fail(&format!("{}/ready", suite), &format!("Error: {}", e)));
@@ -173,13 +187,19 @@ pub async fn test_gateway_ws_auth() -> Vec<TestResult> {
 
     // Wrong token
     match ws_connect(WS_PORT, "wrong-token-99999").await {
-        Ok(_) => results.push(pass(&format!("{}/wrong", suite), "Connected (server validates later)")),
+        Ok(_) => results.push(pass(
+            &format!("{}/wrong", suite),
+            "Connected (server validates later)",
+        )),
         Err(_) => results.push(pass(&format!("{}/wrong", suite), "Rejected as expected")),
     }
 
     // Empty token
     match ws_connect(WS_PORT, "").await {
-        Ok(_) => results.push(pass(&format!("{}/empty", suite), "Connected (server accepts empty)")),
+        Ok(_) => results.push(pass(
+            &format!("{}/empty", suite),
+            "Connected (server accepts empty)",
+        )),
         Err(_) => results.push(pass(&format!("{}/empty", suite), "Rejected as expected")),
     }
 
@@ -206,14 +226,19 @@ pub async fn test_gateway_ws_send_message() -> Vec<TestResult> {
     match ws_send_and_recv(&mut stream, "hello gateway test", 30).await {
         Ok(content) => {
             if !content.is_empty() {
-                results.push(pass(&format!("{}/response", suite),
-                    &format!("Response received ({} bytes)", content.len())));
+                results.push(pass(
+                    &format!("{}/response", suite),
+                    &format!("Response received ({} bytes)", content.len()),
+                ));
             } else {
                 results.push(fail(&format!("{}/response", suite), "Empty response"));
             }
         }
         Err(e) => {
-            results.push(fail(&format!("{}/response", suite), &format!("Failed: {}", e)));
+            results.push(fail(
+                &format!("{}/response", suite),
+                &format!("Failed: {}", e),
+            ));
         }
     }
 
@@ -240,11 +265,16 @@ pub async fn test_gateway_ws_multiturn() -> Vec<TestResult> {
     for i in 0..3 {
         match ws_send_and_recv(&mut stream, &format!("turn {} message", i + 1), 30).await {
             Ok(content) => {
-                results.push(pass(&format!("{}/turn{}", suite, i + 1),
-                    &format!("Response received ({} bytes)", content.len())));
+                results.push(pass(
+                    &format!("{}/turn{}", suite, i + 1),
+                    &format!("Response received ({} bytes)", content.len()),
+                ));
             }
             Err(e) => {
-                results.push(fail(&format!("{}/turn{}", suite, i + 1), &format!("Failed: {}", e)));
+                results.push(fail(
+                    &format!("{}/turn{}", suite, i + 1),
+                    &format!("Failed: {}", e),
+                ));
                 break;
             }
         }
@@ -284,12 +314,18 @@ pub async fn test_gateway_concurrent_sessions() -> Vec<TestResult> {
     }
 
     if success == num_sessions {
-        results.push(pass(suite, &format!("All {} sessions got responses", success)));
+        results.push(pass(
+            suite,
+            &format!("All {} sessions got responses", success),
+        ));
     } else {
-        results.push(fail(suite, &format!(
-            "{}/{} succeeded. Errors: {:?}",
-            success, num_sessions, errors
-        )));
+        results.push(fail(
+            suite,
+            &format!(
+                "{}/{} succeeded. Errors: {:?}",
+                success, num_sessions, errors
+            ),
+        ));
     }
 
     results
@@ -315,14 +351,23 @@ pub async fn test_gateway_restart_recovery(
         let mut stream = match ws_connect(WS_PORT, AUTH_TOKEN).await {
             Ok(s) => s,
             Err(e) => {
-                results.push(fail(&format!("{}/pre_restart", suite), &format!("Connect: {}", e)));
+                results.push(fail(
+                    &format!("{}/pre_restart", suite),
+                    &format!("Connect: {}", e),
+                ));
                 return results;
             }
         };
         match ws_send_and_recv(&mut stream, "pre-restart message", 30).await {
-            Ok(_) => results.push(pass(&format!("{}/pre_restart", suite), "Message sent before restart")),
+            Ok(_) => results.push(pass(
+                &format!("{}/pre_restart", suite),
+                "Message sent before restart",
+            )),
             Err(e) => {
-                results.push(fail(&format!("{}/pre_restart", suite), &format!("Failed: {}", e)));
+                results.push(fail(
+                    &format!("{}/pre_restart", suite),
+                    &format!("Failed: {}", e),
+                ));
                 return results;
             }
         }
@@ -331,8 +376,10 @@ pub async fn test_gateway_restart_recovery(
     // Note: Actually restarting gateway requires killing and respawning,
     // which is handled by the test runner's lifecycle management.
     // Here we just verify the current connection is healthy.
-    results.push(pass(&format!("{}/post_restart", suite),
-        "Restart recovery test completed (gateway still running)"));
+    results.push(pass(
+        &format!("{}/post_restart", suite),
+        "Restart recovery test completed (gateway still running)",
+    ));
 
     results
 }
@@ -360,13 +407,17 @@ pub async fn test_gateway_tool_execution() -> Vec<TestResult> {
         Ok(content) => {
             // The mock AI server will call the first registered tool,
             // which will execute and return a result
-            results.push(pass(&format!("{}/response", suite),
-                &format!("Tool execution flow completed ({} bytes)", content.len())));
+            results.push(pass(
+                &format!("{}/response", suite),
+                &format!("Tool execution flow completed ({} bytes)", content.len()),
+            ));
         }
         Err(e) => {
             // Tool execution might fail in test env, but the flow should work
-            results.push(pass(&format!("{}/response", suite),
-                &format!("Tool flow attempted: {}", e)));
+            results.push(pass(
+                &format!("{}/response", suite),
+                &format!("Tool flow attempted: {}", e),
+            ));
         }
     }
 
@@ -395,13 +446,17 @@ pub async fn test_gateway_security_blocks() -> Vec<TestResult> {
     match ws_send_and_recv(&mut stream, "delete all files in system directory", 30).await {
         Ok(content) => {
             // The response should be handled (either blocked or responded)
-            results.push(pass(&format!("{}/handled", suite),
-                &format!("Dangerous request handled ({} bytes)", content.len())));
+            results.push(pass(
+                &format!("{}/handled", suite),
+                &format!("Dangerous request handled ({} bytes)", content.len()),
+            ));
         }
         Err(e) => {
             // Security may block it, which is expected
-            results.push(pass(&format!("{}/blocked", suite),
-                &format!("Request blocked by security: {}", e)));
+            results.push(pass(
+                &format!("{}/blocked", suite),
+                &format!("Request blocked by security: {}", e),
+            ));
         }
     }
 

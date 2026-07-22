@@ -82,38 +82,34 @@ fn test_flatten_search_results_multiple() {
     let grouped = vec![
         RegistrySearchResult {
             registry_name: "source1".to_string(),
-            results: vec![
-                SkillSearchResult {
-                    score: 0.9,
-                    slug: "skill-a".to_string(),
-                    display_name: "Skill A".to_string(),
-                    summary: "A".to_string(),
-                    version: "1.0".to_string(),
-                    registry_name: "source1".to_string(),
-                    source_repo: String::new(),
-                    download_path: String::new(),
-                    downloads: 0,
-                    truncated: false,
-                },
-            ],
+            results: vec![SkillSearchResult {
+                score: 0.9,
+                slug: "skill-a".to_string(),
+                display_name: "Skill A".to_string(),
+                summary: "A".to_string(),
+                version: "1.0".to_string(),
+                registry_name: "source1".to_string(),
+                source_repo: String::new(),
+                download_path: String::new(),
+                downloads: 0,
+                truncated: false,
+            }],
             truncated: false,
         },
         RegistrySearchResult {
             registry_name: "source2".to_string(),
-            results: vec![
-                SkillSearchResult {
-                    score: 0.8,
-                    slug: "skill-b".to_string(),
-                    display_name: "Skill B".to_string(),
-                    summary: "B".to_string(),
-                    version: "2.0".to_string(),
-                    registry_name: "source2".to_string(),
-                    source_repo: String::new(),
-                    download_path: String::new(),
-                    downloads: 0,
-                    truncated: false,
-                },
-            ],
+            results: vec![SkillSearchResult {
+                score: 0.8,
+                slug: "skill-b".to_string(),
+                display_name: "Skill B".to_string(),
+                summary: "B".to_string(),
+                version: "2.0".to_string(),
+                registry_name: "source2".to_string(),
+                source_repo: String::new(),
+                download_path: String::new(),
+                downloads: 0,
+                truncated: false,
+            }],
             truncated: false,
         },
     ];
@@ -223,12 +219,7 @@ fn test_write_origin_tracking_creates_file() {
 
     let installer = SkillInstaller::new(&dir.path().to_string_lossy());
     installer
-        .write_origin_tracking(
-            &skill_dir.to_string_lossy(),
-            "clawhub",
-            "my-skill",
-            "2.0.0",
-        )
+        .write_origin_tracking(&skill_dir.to_string_lossy(), "clawhub", "my-skill", "2.0.0")
         .unwrap();
 
     let origin_path = skill_dir.join(".skill-origin.json");
@@ -276,12 +267,7 @@ fn test_skill_origin_deserialization() {
 fn test_write_origin_tracking_nonexistent_dir() {
     let dir = tempfile::tempdir().unwrap();
     let installer = SkillInstaller::new(&dir.path().to_string_lossy());
-    let result = installer.write_origin_tracking(
-        "/nonexistent/path/skill",
-        "test",
-        "skill",
-        "1.0",
-    );
+    let result = installer.write_origin_tracking("/nonexistent/path/skill", "test", "skill", "1.0");
     assert!(result.is_err());
 }
 
@@ -289,7 +275,9 @@ fn test_write_origin_tracking_nonexistent_dir() {
 async fn test_install_from_registry_no_registry() {
     let dir = tempfile::tempdir().unwrap();
     let installer = SkillInstaller::new(&dir.path().to_string_lossy());
-    let result = installer.install_from_registry("github", "test", "1.0").await;
+    let result = installer
+        .install_from_registry("github", "test", "1.0")
+        .await;
     assert!(result.is_err());
 }
 
@@ -299,38 +287,34 @@ fn test_flatten_search_results_multiple_registries() {
     let grouped = vec![
         RegistrySearchResult {
             registry_name: "reg-a".to_string(),
-            results: vec![
-                SkillSearchResult {
-                    score: 1.0,
-                    slug: "skill-1".to_string(),
-                    display_name: "Skill 1".to_string(),
-                    summary: "First skill".to_string(),
-                    version: "1.0".to_string(),
-                    registry_name: "reg-a".to_string(),
-                    source_repo: String::new(),
-                    download_path: String::new(),
-                    downloads: 0,
-                    truncated: false,
-                },
-            ],
+            results: vec![SkillSearchResult {
+                score: 1.0,
+                slug: "skill-1".to_string(),
+                display_name: "Skill 1".to_string(),
+                summary: "First skill".to_string(),
+                version: "1.0".to_string(),
+                registry_name: "reg-a".to_string(),
+                source_repo: String::new(),
+                download_path: String::new(),
+                downloads: 0,
+                truncated: false,
+            }],
             truncated: false,
         },
         RegistrySearchResult {
             registry_name: "reg-b".to_string(),
-            results: vec![
-                SkillSearchResult {
-                    score: 0.9,
-                    slug: "skill-2".to_string(),
-                    display_name: "Skill 2".to_string(),
-                    summary: "Second skill".to_string(),
-                    version: "1.0".to_string(),
-                    registry_name: "reg-b".to_string(),
-                    source_repo: String::new(),
-                    download_path: String::new(),
-                    downloads: 0,
-                    truncated: false,
-                },
-            ],
+            results: vec![SkillSearchResult {
+                score: 0.9,
+                slug: "skill-2".to_string(),
+                display_name: "Skill 2".to_string(),
+                summary: "Second skill".to_string(),
+                version: "1.0".to_string(),
+                registry_name: "reg-b".to_string(),
+                source_repo: String::new(),
+                download_path: String::new(),
+                downloads: 0,
+                truncated: false,
+            }],
             truncated: false,
         },
     ];
@@ -373,20 +357,18 @@ async fn test_install_registry_not_found() {
 fn test_available_skill_from_search_result() {
     let grouped = vec![crate::types::RegistrySearchResult {
         registry_name: "test".to_string(),
-        results: vec![
-            crate::types::SkillSearchResult {
-                score: 1.0,
-                slug: "pdf".to_string(),
-                display_name: "PDF".to_string(),
-                summary: "Converts PDFs".to_string(),
-                version: "1.0".to_string(),
-                registry_name: "test".to_string(),
-                source_repo: String::new(),
-                download_path: String::new(),
-                downloads: 5,
-                truncated: false,
-            },
-        ],
+        results: vec![crate::types::SkillSearchResult {
+            score: 1.0,
+            slug: "pdf".to_string(),
+            display_name: "PDF".to_string(),
+            summary: "Converts PDFs".to_string(),
+            version: "1.0".to_string(),
+            registry_name: "test".to_string(),
+            source_repo: String::new(),
+            download_path: String::new(),
+            downloads: 5,
+            truncated: false,
+        }],
         truncated: false,
     }];
     let flat = SkillInstaller::flatten_search_results(&grouped);
@@ -402,12 +384,7 @@ fn test_origin_tracking_json_format() {
 
     let installer = SkillInstaller::new(&dir.path().to_string_lossy());
     installer
-        .write_origin_tracking(
-            &skill_dir.to_string_lossy(),
-            "github",
-            "json-check",
-            "3.0",
-        )
+        .write_origin_tracking(&skill_dir.to_string_lossy(), "github", "json-check", "3.0")
         .unwrap();
 
     let content = std::fs::read_to_string(skill_dir.join(".skill-origin.json")).unwrap();
@@ -549,38 +526,34 @@ fn test_flatten_search_results_preserves_order() {
     let grouped = vec![
         RegistrySearchResult {
             registry_name: "reg-a".to_string(),
-            results: vec![
-                SkillSearchResult {
-                    score: 1.0,
-                    slug: "first".to_string(),
-                    display_name: "First".to_string(),
-                    summary: "First skill".to_string(),
-                    version: "1.0".to_string(),
-                    registry_name: "reg-a".to_string(),
-                    source_repo: String::new(),
-                    download_path: String::new(),
-                    downloads: 0,
-                    truncated: false,
-                },
-            ],
+            results: vec![SkillSearchResult {
+                score: 1.0,
+                slug: "first".to_string(),
+                display_name: "First".to_string(),
+                summary: "First skill".to_string(),
+                version: "1.0".to_string(),
+                registry_name: "reg-a".to_string(),
+                source_repo: String::new(),
+                download_path: String::new(),
+                downloads: 0,
+                truncated: false,
+            }],
             truncated: false,
         },
         RegistrySearchResult {
             registry_name: "reg-b".to_string(),
-            results: vec![
-                SkillSearchResult {
-                    score: 0.9,
-                    slug: "second".to_string(),
-                    display_name: "Second".to_string(),
-                    summary: "Second skill".to_string(),
-                    version: "2.0".to_string(),
-                    registry_name: "reg-b".to_string(),
-                    source_repo: String::new(),
-                    download_path: String::new(),
-                    downloads: 0,
-                    truncated: false,
-                },
-            ],
+            results: vec![SkillSearchResult {
+                score: 0.9,
+                slug: "second".to_string(),
+                display_name: "Second".to_string(),
+                summary: "Second skill".to_string(),
+                version: "2.0".to_string(),
+                registry_name: "reg-b".to_string(),
+                source_repo: String::new(),
+                download_path: String::new(),
+                downloads: 0,
+                truncated: false,
+            }],
             truncated: false,
         },
     ];
@@ -688,7 +661,9 @@ async fn test_install_from_registry_registry_not_found_v2() {
     manager.add_registry(Arc::new(crate::registry::StubRegistryProvider));
     installer.set_registry_manager(manager);
 
-    let result = installer.install_from_registry("nonexistent", "test", "1.0").await;
+    let result = installer
+        .install_from_registry("nonexistent", "test", "1.0")
+        .await;
     assert!(result.is_err());
 }
 
@@ -703,7 +678,9 @@ async fn test_install_from_registry_skill_already_exists_v2() {
     manager.add_registry(Arc::new(crate::registry::StubRegistryProvider));
     installer.set_registry_manager(manager);
 
-    let result = installer.install_from_registry("stub", "test-skill-v2", "1.0").await;
+    let result = installer
+        .install_from_registry("stub", "test-skill-v2", "1.0")
+        .await;
     assert!(result.is_err());
     assert!(result.unwrap_err().to_string().contains("already exists"));
 }
@@ -716,7 +693,9 @@ async fn test_install_from_registry_success_v2() {
     manager.add_registry(Arc::new(crate::registry::StubRegistryProvider));
     installer.set_registry_manager(manager);
 
-    let result = installer.install_from_registry("stub", "new-skill-v2", "1.0").await;
+    let result = installer
+        .install_from_registry("stub", "new-skill-v2", "1.0")
+        .await;
     assert!(result.is_ok());
     // install_from_registry returns Result<()>
     // Note: StubRegistryProvider doesn't create actual files,
@@ -861,7 +840,10 @@ fn test_skill_origin_serialization_roundtrip() {
 #[test]
 fn test_skill_installer_new_with_path() {
     let installer = SkillInstaller::new("/tmp/test-workspace");
-    assert_eq!(installer.workspace().to_string_lossy(), "/tmp/test-workspace");
+    assert_eq!(
+        installer.workspace().to_string_lossy(),
+        "/tmp/test-workspace"
+    );
     assert!(!installer.has_registry_manager());
     assert!(installer.get_registry_manager().is_none());
 }
@@ -876,7 +858,10 @@ fn test_skill_installer_set_github_base_url() {
 #[test]
 fn test_skill_installer_default_github_url() {
     let installer = SkillInstaller::new("/tmp/test");
-    assert_eq!(installer.github_base_url, "https://raw.githubusercontent.com");
+    assert_eq!(
+        installer.github_base_url,
+        "https://raw.githubusercontent.com"
+    );
 }
 
 #[test]
@@ -921,38 +906,34 @@ fn test_flatten_search_results_merges_registries_v2() {
     let grouped = vec![
         crate::types::RegistrySearchResult {
             registry_name: "github".to_string(),
-            results: vec![
-                crate::types::SkillSearchResult {
-                    score: 1.0,
-                    slug: "pdf".to_string(),
-                    display_name: "PDF".to_string(),
-                    summary: "PDF tool".to_string(),
-                    version: "1.0".to_string(),
-                    registry_name: "github".to_string(),
-                    source_repo: "test/repo".to_string(),
-                    download_path: String::new(),
-                    downloads: 0,
-                    truncated: false,
-                },
-            ],
+            results: vec![crate::types::SkillSearchResult {
+                score: 1.0,
+                slug: "pdf".to_string(),
+                display_name: "PDF".to_string(),
+                summary: "PDF tool".to_string(),
+                version: "1.0".to_string(),
+                registry_name: "github".to_string(),
+                source_repo: "test/repo".to_string(),
+                download_path: String::new(),
+                downloads: 0,
+                truncated: false,
+            }],
             truncated: false,
         },
         crate::types::RegistrySearchResult {
             registry_name: "clawhub".to_string(),
-            results: vec![
-                crate::types::SkillSearchResult {
-                    score: 0.9,
-                    slug: "csv".to_string(),
-                    display_name: "CSV".to_string(),
-                    summary: "CSV tool".to_string(),
-                    version: "2.0".to_string(),
-                    registry_name: "clawhub".to_string(),
-                    source_repo: String::new(),
-                    download_path: String::new(),
-                    downloads: 5,
-                    truncated: false,
-                },
-            ],
+            results: vec![crate::types::SkillSearchResult {
+                score: 0.9,
+                slug: "csv".to_string(),
+                display_name: "CSV".to_string(),
+                summary: "CSV tool".to_string(),
+                version: "2.0".to_string(),
+                registry_name: "clawhub".to_string(),
+                source_repo: String::new(),
+                download_path: String::new(),
+                downloads: 5,
+                truncated: false,
+            }],
             truncated: false,
         },
     ];
@@ -1042,7 +1023,9 @@ async fn test_install_no_registry_manager() {
 async fn test_install_from_registry_no_registry_manager() {
     let temp = tempfile::tempdir().unwrap();
     let installer = SkillInstaller::new(temp.path().to_str().unwrap());
-    let result = installer.install_from_registry("github", "pdf", "1.0").await;
+    let result = installer
+        .install_from_registry("github", "pdf", "1.0")
+        .await;
     assert!(result.is_err());
 }
 
@@ -1120,12 +1103,7 @@ fn test_write_origin_tracking_creates_file_v2() {
 
     let installer = SkillInstaller::new(dir.path().to_str().unwrap());
     installer
-        .write_origin_tracking(
-            &skill_dir.to_string_lossy(),
-            "clawhub",
-            "my-skill",
-            "2.0.0",
-        )
+        .write_origin_tracking(&skill_dir.to_string_lossy(), "clawhub", "my-skill", "2.0.0")
         .unwrap();
 
     let origin_path = skill_dir.join(".skill-origin.json");
@@ -1169,38 +1147,36 @@ fn test_flatten_search_results_empty_v3() {
 
 #[test]
 fn test_flatten_search_results_multiple_registries_v2() {
-    let grouped = vec![
-        crate::types::RegistrySearchResult {
-            registry_name: "github".to_string(),
-            results: vec![
-                crate::types::SkillSearchResult {
-                    score: 1.0,
-                    slug: "pdf".to_string(),
-                    display_name: "PDF".to_string(),
-                    summary: "PDF tool".to_string(),
-                    version: "1.0".to_string(),
-                    registry_name: "github".to_string(),
-                    source_repo: "test/repo".to_string(),
-                    download_path: String::new(),
-                    downloads: 0,
-                    truncated: false,
-                },
-                crate::types::SkillSearchResult {
-                    score: 0.8,
-                    slug: "csv".to_string(),
-                    display_name: "CSV".to_string(),
-                    summary: "CSV tool".to_string(),
-                    version: "2.0".to_string(),
-                    registry_name: "github".to_string(),
-                    source_repo: "test/repo".to_string(),
-                    download_path: String::new(),
-                    downloads: 5,
-                    truncated: false,
-                },
-            ],
-            truncated: false,
-        },
-    ];
+    let grouped = vec![crate::types::RegistrySearchResult {
+        registry_name: "github".to_string(),
+        results: vec![
+            crate::types::SkillSearchResult {
+                score: 1.0,
+                slug: "pdf".to_string(),
+                display_name: "PDF".to_string(),
+                summary: "PDF tool".to_string(),
+                version: "1.0".to_string(),
+                registry_name: "github".to_string(),
+                source_repo: "test/repo".to_string(),
+                download_path: String::new(),
+                downloads: 0,
+                truncated: false,
+            },
+            crate::types::SkillSearchResult {
+                score: 0.8,
+                slug: "csv".to_string(),
+                display_name: "CSV".to_string(),
+                summary: "CSV tool".to_string(),
+                version: "2.0".to_string(),
+                registry_name: "github".to_string(),
+                source_repo: "test/repo".to_string(),
+                download_path: String::new(),
+                downloads: 5,
+                truncated: false,
+            },
+        ],
+        truncated: false,
+    }];
     let flat = SkillInstaller::flatten_search_results(&grouped);
     assert_eq!(flat.len(), 2);
 }

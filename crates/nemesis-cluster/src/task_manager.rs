@@ -454,10 +454,7 @@ impl Default for TaskManager {
 /// tasks older than 24 hours.
 ///
 /// Mirrors Go's `TaskManager.cleanupCompleted()`.
-fn cleanup_completed(
-    store: &Arc<dyn TaskStore>,
-    on_complete: &Option<Arc<OnCompleteCallback>>,
-) {
+fn cleanup_completed(store: &Arc<dyn TaskStore>, on_complete: &Option<Arc<OnCompleteCallback>>) {
     // Clean up completed, failed, and cancelled tasks older than 2 hours
     let finished_statuses = [
         TaskStatus::Completed,
@@ -500,7 +497,10 @@ fn cleanup_completed(
                 crate::logger::log_task(
                     "timeout",
                     &task.id,
-                    &format!("age={}s", (chrono::Local::now() - created_utc).num_seconds()),
+                    &format!(
+                        "age={}s",
+                        (chrono::Local::now() - created_utc).num_seconds()
+                    ),
                 );
 
                 // Fire callback if set

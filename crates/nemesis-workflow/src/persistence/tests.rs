@@ -88,7 +88,9 @@ fn test_delete_execution_not_found() {
     let e1 = Execution::new("wf1".to_string(), HashMap::new());
     persistence.save_execution(&e1).unwrap();
 
-    let deleted = persistence.delete_execution("wf1", "nonexistent_id").unwrap();
+    let deleted = persistence
+        .delete_execution("wf1", "nonexistent_id")
+        .unwrap();
     assert!(!deleted);
 
     // Original should still be there
@@ -144,7 +146,10 @@ fn test_persistence_error_display() {
     let e1 = PersistenceError::NotFound("id-123".into());
     assert!(e1.to_string().contains("id-123"));
 
-    let e2 = PersistenceError::Io(std::io::Error::new(std::io::ErrorKind::NotFound, "file gone"));
+    let e2 = PersistenceError::Io(std::io::Error::new(
+        std::io::ErrorKind::NotFound,
+        "file gone",
+    ));
     assert!(e2.to_string().contains("file gone"));
 }
 

@@ -7,7 +7,7 @@ use crate::forge::{
 };
 use crate::provider::{
     FunctionCall, LlmChoice, LlmMessage, LlmRequest, LlmResponse, LlmToolCall, LlmUsage,
-    ProviderConfig, StreamChunk, StreamChoice, StreamDelta, ToolDef,
+    ProviderConfig, StreamChoice, StreamChunk, StreamDelta, ToolDef,
 };
 use crate::security::{AuditEvent, Operation, RiskLevel, SecurityVerdict};
 use crate::tools::{ToolContext, ToolDefinition};

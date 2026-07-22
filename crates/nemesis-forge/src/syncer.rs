@@ -63,10 +63,7 @@ impl Syncer {
     }
 
     /// Share a reflection report with all online peers.
-    pub async fn share_reflection(
-        &self,
-        report_json: serde_json::Value,
-    ) -> Result<usize, String> {
+    pub async fn share_reflection(&self, report_json: serde_json::Value) -> Result<usize, String> {
         if !self.enabled {
             return Err("Syncer is disabled".into());
         }
@@ -119,7 +116,12 @@ impl Syncer {
         filename = Path::new(&filename)
             .file_name()
             .map(|n| n.to_string_lossy().to_string())
-            .unwrap_or_else(|| format!("remote_{}.md", chrono::Local::now().format("%Y-%m-%d_%H%M%S")));
+            .unwrap_or_else(|| {
+                format!(
+                    "remote_{}.md",
+                    chrono::Local::now().format("%Y-%m-%d_%H%M%S")
+                )
+            });
 
         let from = payload
             .get("from")
@@ -146,7 +148,10 @@ impl Syncer {
         };
 
         // Add metadata header
-        let header = format!("<!-- Remote reflection from {} at {} -->\n", from, timestamp);
+        let header = format!(
+            "<!-- Remote reflection from {} at {} -->\n",
+            from, timestamp
+        );
         let full_content = format!("{}{}", header, content);
 
         let dest_path = remote_dir.join(&final_filename);
@@ -221,8 +226,7 @@ impl Syncer {
             return Err(format!("invalid path: {}", filename));
         }
 
-        std::fs::read_to_string(&abs_path)
-            .map_err(|e| format!("failed to read reflection: {}", e))
+        std::fs::read_to_string(&abs_path).map_err(|e| format!("failed to read reflection: {}", e))
     }
 
     /// Sanitize reflection content before sharing with remote peers.

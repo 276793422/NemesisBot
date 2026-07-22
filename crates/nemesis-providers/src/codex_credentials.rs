@@ -47,8 +47,8 @@ pub fn read_codex_cli_credentials() -> Result<CodexCredentials, String> {
     let data = std::fs::read_to_string(&auth_path)
         .map_err(|e| format!("reading {}: {}", auth_path.display(), e))?;
 
-    let auth: CodexCliAuth =
-        serde_json::from_str(&data).map_err(|e| format!("parsing {}: {}", auth_path.display(), e))?;
+    let auth: CodexCliAuth = serde_json::from_str(&data)
+        .map_err(|e| format!("parsing {}: {}", auth_path.display(), e))?;
 
     if auth.tokens.access_token.is_empty() {
         return Err(format!("no access_token in {}", auth_path.display()));
@@ -56,10 +56,10 @@ pub fn read_codex_cli_credentials() -> Result<CodexCredentials, String> {
 
     let metadata = std::fs::metadata(&auth_path);
     let expires_at = match metadata {
-        Ok(meta) => meta
-            .modified()
-            .unwrap_or_else(|_| SystemTime::now())
-            + std::time::Duration::from_secs(3600),
+        Ok(meta) => {
+            meta.modified().unwrap_or_else(|_| SystemTime::now())
+                + std::time::Duration::from_secs(3600)
+        }
         Err(_) => SystemTime::now() + std::time::Duration::from_secs(3600),
     };
 
@@ -72,8 +72,8 @@ pub fn read_codex_cli_credentials() -> Result<CodexCredentials, String> {
 
 /// Create a token source function that reads from ~/.codex/auth.json.
 /// This allows the CodexProvider to reuse Codex CLI credentials.
-pub fn create_codex_cli_token_source(
-) -> Box<dyn Fn() -> Result<(String, String), String> + Send + Sync> {
+pub fn create_codex_cli_token_source()
+-> Box<dyn Fn() -> Result<(String, String), String> + Send + Sync> {
     Box::new(|| {
         let creds = read_codex_cli_credentials()?;
         if SystemTime::now() > creds.expires_at {

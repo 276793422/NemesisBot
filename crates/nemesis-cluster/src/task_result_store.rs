@@ -64,7 +64,11 @@ impl TaskResultStore {
         // Create directory synchronously during construction so it's ready
         // for subsequent operations.
         if let Err(e) = std::fs::create_dir_all(&dir) {
-            tracing::warn!("[TaskResultStore] failed to create cache_dir {:?}: {}", dir, e);
+            tracing::warn!(
+                "[TaskResultStore] failed to create cache_dir {:?}: {}",
+                dir,
+                e
+            );
         }
         Self {
             results: Mutex::new(HashMap::new()),
@@ -147,7 +151,11 @@ impl TaskResultStore {
         let entries = match std::fs::read_dir(dir) {
             Ok(rd) => rd,
             Err(e) => {
-                tracing::warn!("[TaskResultStore] failed to read cache_dir {:?}: {}", dir, e);
+                tracing::warn!(
+                    "[TaskResultStore] failed to read cache_dir {:?}: {}",
+                    dir,
+                    e
+                );
                 return 0;
             }
         };
@@ -170,11 +178,19 @@ impl TaskResultStore {
                         loaded += 1;
                     }
                     Err(e) => {
-                        tracing::warn!("[TaskResultStore] skipping invalid result file {:?}: {}", path, e);
+                        tracing::warn!(
+                            "[TaskResultStore] skipping invalid result file {:?}: {}",
+                            path,
+                            e
+                        );
                     }
                 },
                 Err(e) => {
-                    tracing::warn!("[TaskResultStore] failed to read result file {:?}: {}", path, e);
+                    tracing::warn!(
+                        "[TaskResultStore] failed to read result file {:?}: {}",
+                        path,
+                        e
+                    );
                 }
             }
         }
@@ -243,7 +259,11 @@ impl TaskResultStore {
             let path = dir.join(format!("{}.json", task_id));
             if path.exists() {
                 if let Err(e) = std::fs::remove_file(&path) {
-                    tracing::warn!("[TaskResultStore] failed to delete result file {:?}: {}", path, e);
+                    tracing::warn!(
+                        "[TaskResultStore] failed to delete result file {:?}: {}",
+                        path,
+                        e
+                    );
                 }
             }
         }
@@ -337,7 +357,11 @@ impl AsyncTaskResultStore {
         let mut read_dir = match fs::read_dir(&dir).await {
             Ok(rd) => rd,
             Err(e) => {
-                tracing::warn!("[TaskResultStore] failed to read cache_dir {:?}: {}", dir, e);
+                tracing::warn!(
+                    "[TaskResultStore] failed to read cache_dir {:?}: {}",
+                    dir,
+                    e
+                );
                 return 0;
             }
         };
@@ -359,11 +383,19 @@ impl AsyncTaskResultStore {
                         loaded += 1;
                     }
                     Err(e) => {
-                        tracing::warn!("[TaskResultStore] skipping invalid result file {:?}: {}", path, e);
+                        tracing::warn!(
+                            "[TaskResultStore] skipping invalid result file {:?}: {}",
+                            path,
+                            e
+                        );
                     }
                 },
                 Err(e) => {
-                    tracing::warn!("[TaskResultStore] failed to read result file {:?}: {}", path, e);
+                    tracing::warn!(
+                        "[TaskResultStore] failed to read result file {:?}: {}",
+                        path,
+                        e
+                    );
                 }
             }
         }
@@ -441,7 +473,11 @@ impl AsyncTaskResultStore {
             let path = dir.join(format!("{}.json", task_id));
             if Path::new(&path).exists() {
                 if let Err(e) = fs::remove_file(&path).await {
-                    tracing::warn!("[TaskResultStore] failed to delete async result file {:?}: {}", path, e);
+                    tracing::warn!(
+                        "[TaskResultStore] failed to delete async result file {:?}: {}",
+                        path,
+                        e
+                    );
                 }
             }
         }
@@ -539,7 +575,9 @@ impl GoTaskResultStore {
 
         // Load index from disk; failure is non-fatal
         if let Err(e) = store.load_index() {
-            tracing::warn!("[TaskResultStore] failed to load task result index (starting fresh): {e}");
+            tracing::warn!(
+                "[TaskResultStore] failed to load task result index (starting fresh): {e}"
+            );
             *store.index.lock() = GoTaskResultIndex::default();
         }
 
@@ -593,8 +631,7 @@ impl GoTaskResultStore {
             .map_err(|e| format!("failed to marshal task result: {e}"))?;
         let file_path = self.data_dir.join(format!("{task_id}.json"));
         let tmp_path = self.data_dir.join(format!("{task_id}.json.tmp"));
-        std::fs::write(&tmp_path, &json)
-            .map_err(|e| format!("failed to write tmp file: {e}"))?;
+        std::fs::write(&tmp_path, &json).map_err(|e| format!("failed to write tmp file: {e}"))?;
         std::fs::rename(&tmp_path, &file_path)
             .map_err(|e| format!("failed to rename tmp file: {e}"))?;
 
@@ -666,8 +703,8 @@ impl GoTaskResultStore {
         let data = std::fs::read_to_string(&self.index_path)
             .map_err(|e| format!("failed to read index: {e}"))?;
 
-        let idx: GoTaskResultIndex = serde_json::from_str(&data)
-            .map_err(|e| format!("failed to parse index: {e}"))?;
+        let idx: GoTaskResultIndex =
+            serde_json::from_str(&data).map_err(|e| format!("failed to parse index: {e}"))?;
 
         *self.index.lock() = idx;
         Ok(())
@@ -677,8 +714,7 @@ impl GoTaskResultStore {
         let json = serde_json::to_string_pretty(&*self.index.lock())
             .map_err(|e| format!("failed to marshal index: {e}"))?;
         let tmp_path = self.index_path.with_extension("json.tmp");
-        std::fs::write(&tmp_path, &json)
-            .map_err(|e| format!("failed to write index tmp: {e}"))?;
+        std::fs::write(&tmp_path, &json).map_err(|e| format!("failed to write index tmp: {e}"))?;
         std::fs::rename(&tmp_path, &self.index_path)
             .map_err(|e| format!("failed to rename index tmp: {e}"))?;
         Ok(())

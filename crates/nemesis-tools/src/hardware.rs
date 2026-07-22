@@ -202,7 +202,11 @@ impl I2CTool {
 
         let data_array = match args["data"].as_array() {
             Some(d) if !d.is_empty() => d,
-            _ => return ToolResult::error("data is required for write (array of byte values 0-255)"),
+            _ => {
+                return ToolResult::error(
+                    "data is required for write (array of byte values 0-255)",
+                );
+            }
         };
 
         if data_array.len() > 256 {
@@ -241,7 +245,8 @@ impl I2CTool {
             let _ = device_path;
             ToolResult::silent(&format!(
                 "I2C write {} bytes to 0x{:02x} (platform not supported - requires Linux ioctl)",
-                data_bytes.len(), addr
+                data_bytes.len(),
+                addr
             ))
         }
     }
@@ -251,7 +256,9 @@ impl I2CTool {
         match args["bus"].as_str() {
             Some(b) if !b.is_empty() => {
                 if !b.chars().all(|c| c.is_ascii_digit()) {
-                    Err(ToolResult::error("invalid bus identifier: must be a number"))
+                    Err(ToolResult::error(
+                        "invalid bus identifier: must be a number",
+                    ))
                 } else {
                     Ok(())
                 }
@@ -397,7 +404,8 @@ impl SPITool {
         let device = match args["device"].as_str() {
             Some(d) if !d.is_empty() => {
                 let parts: Vec<&str> = d.split('.').collect();
-                if parts.len() != 2 || !parts[0].chars().all(|c| c.is_ascii_digit())
+                if parts.len() != 2
+                    || !parts[0].chars().all(|c| c.is_ascii_digit())
                     || !parts[1].chars().all(|c| c.is_ascii_digit())
                 {
                     return ToolResult::error(
@@ -415,7 +423,11 @@ impl SPITool {
 
         let data_array = match args["data"].as_array() {
             Some(d) if !d.is_empty() => d,
-            _ => return ToolResult::error("data is required for transfer (array of byte values 0-255)"),
+            _ => {
+                return ToolResult::error(
+                    "data is required for transfer (array of byte values 0-255)",
+                );
+            }
         };
         if data_array.len() > 4096 {
             return ToolResult::error("data too long: maximum 4096 bytes per SPI transfer");
@@ -457,7 +469,8 @@ impl SPITool {
         let device = match args["device"].as_str() {
             Some(d) if !d.is_empty() => {
                 let parts: Vec<&str> = d.split('.').collect();
-                if parts.len() != 2 || !parts[0].chars().all(|c| c.is_ascii_digit())
+                if parts.len() != 2
+                    || !parts[0].chars().all(|c| c.is_ascii_digit())
                     || !parts[1].chars().all(|c| c.is_ascii_digit())
                 {
                     return ToolResult::error(
@@ -507,7 +520,8 @@ impl SPITool {
             Some(d) if !d.is_empty() => {
                 // Validate format X.Y
                 let parts: Vec<&str> = d.split('.').collect();
-                if parts.len() != 2 || !parts[0].chars().all(|c| c.is_ascii_digit())
+                if parts.len() != 2
+                    || !parts[0].chars().all(|c| c.is_ascii_digit())
                     || !parts[1].chars().all(|c| c.is_ascii_digit())
                 {
                     Err(ToolResult::error(
@@ -526,9 +540,7 @@ impl SPITool {
     fn validate_spi_params(&self, args: &serde_json::Value) -> Result<(), ToolResult> {
         if let Some(speed) = args["speed"].as_u64() {
             if speed == 0 || speed > 125_000_000 {
-                return Err(ToolResult::error(
-                    "speed must be between 1 Hz and 125 MHz",
-                ));
+                return Err(ToolResult::error("speed must be between 1 Hz and 125 MHz"));
             }
         }
         if let Some(mode) = args["mode"].as_u64() {
@@ -611,7 +623,12 @@ mod linux_impl {
             .read(true)
             .write(true)
             .open(dev_path)
-            .map_err(|e| format!("failed to open {}: {} (check permissions and i2c-dev module)", dev_path, e))
+            .map_err(|e| {
+                format!(
+                    "failed to open {}: {} (check permissions and i2c-dev module)",
+                    dev_path, e
+                )
+            })
     }
 
     /// Probe a single I2C address using SMBus.
@@ -628,13 +645,8 @@ mod linux_impl {
                 size: I2C_SMBUS_QUICK,
                 data: std::ptr::null(),
             };
-            let ret = unsafe {
-                libc::ioctl(
-                    fd.as_raw_fd(),
-                    I2C_SMBUS as _,
-                    &args as *const _ as usize,
-                )
-            };
+            let ret =
+                unsafe { libc::ioctl(fd.as_raw_fd(), I2C_SMBUS as _, &args as *const _ as usize) };
             return ret >= 0;
         }
 
@@ -647,13 +659,8 @@ mod linux_impl {
             size: I2C_SMBUS_BYTE,
             data: &_data as *const _,
         };
-        let ret = unsafe {
-            libc::ioctl(
-                fd.as_raw_fd(),
-                I2C_SMBUS as _,
-                &args as *const _ as usize,
-            )
-        };
+        let ret =
+            unsafe { libc::ioctl(fd.as_raw_fd(), I2C_SMBUS as _, &args as *const _ as usize) };
         ret >= 0
     }
 
@@ -664,7 +671,11 @@ mod linux_impl {
         // Query adapter capabilities
         let mut funcs: usize = 0;
         let ret = unsafe {
-            libc::ioctl(fd.as_raw_fd(), I2C_FUNCS as _, &mut funcs as *mut _ as usize)
+            libc::ioctl(
+                fd.as_raw_fd(),
+                I2C_FUNCS as _,
+                &mut funcs as *mut _ as usize,
+            )
         };
         if ret < 0 {
             return Err(format!(
@@ -688,9 +699,7 @@ mod linux_impl {
         // Scan 0x08-0x77, skipping I2C reserved addresses 0x00-0x07
         for addr in 0x08..=0x77u16 {
             // Set slave address
-            let ret = unsafe {
-                libc::ioctl(fd.as_raw_fd(), I2C_SLAVE as _, addr as usize)
-            };
+            let ret = unsafe { libc::ioctl(fd.as_raw_fd(), I2C_SLAVE as _, addr as usize) };
             if ret < 0 {
                 let err = std::io::Error::last_os_error();
                 if err.raw_os_error() == Some(libc::EBUSY) {
@@ -722,7 +731,10 @@ mod linux_impl {
             "count": found.len(),
         });
         let output = serde_json::to_string_pretty(&result).unwrap_or_default();
-        Ok(ToolResult::silent(&format!("Scan of {}:\n{}", dev_path, output)))
+        Ok(ToolResult::silent(&format!(
+            "Scan of {}:\n{}",
+            dev_path, output
+        )))
     }
 
     /// I2C read using ioctl.
@@ -784,37 +796,79 @@ mod linux_impl {
 
         Ok(ToolResult::silent(&format!(
             "Wrote {} byte(s) to device 0x{:02x} on {}",
-            data.len(), addr, dev_path
+            data.len(),
+            addr,
+            dev_path
         )))
     }
 
     /// Configure SPI device (open + set mode, bits, speed).
-    fn configure_spi(dev_path: &str, mode: u8, bits: u8, speed: u32) -> Result<std::fs::File, String> {
+    fn configure_spi(
+        dev_path: &str,
+        mode: u8,
+        bits: u8,
+        speed: u32,
+    ) -> Result<std::fs::File, String> {
         let fd = std::fs::OpenOptions::new()
             .read(true)
             .write(true)
             .open(dev_path)
-            .map_err(|e| format!("failed to open {}: {} (check permissions and spidev module)", dev_path, e))?;
+            .map_err(|e| {
+                format!(
+                    "failed to open {}: {} (check permissions and spidev module)",
+                    dev_path, e
+                )
+            })?;
 
         // Set SPI mode
         let mut m = mode;
-        let ret = unsafe { libc::ioctl(fd.as_raw_fd(), SPI_IOC_WR_MODE as _, &mut m as *mut _ as usize) };
+        let ret = unsafe {
+            libc::ioctl(
+                fd.as_raw_fd(),
+                SPI_IOC_WR_MODE as _,
+                &mut m as *mut _ as usize,
+            )
+        };
         if ret < 0 {
-            return Err(format!("failed to set SPI mode {}: {}", mode, std::io::Error::last_os_error()));
+            return Err(format!(
+                "failed to set SPI mode {}: {}",
+                mode,
+                std::io::Error::last_os_error()
+            ));
         }
 
         // Set bits per word
         let mut b = bits;
-        let ret = unsafe { libc::ioctl(fd.as_raw_fd(), SPI_IOC_WR_BITS_PER_WORD as _, &mut b as *mut _ as usize) };
+        let ret = unsafe {
+            libc::ioctl(
+                fd.as_raw_fd(),
+                SPI_IOC_WR_BITS_PER_WORD as _,
+                &mut b as *mut _ as usize,
+            )
+        };
         if ret < 0 {
-            return Err(format!("failed to set bits per word {}: {}", bits, std::io::Error::last_os_error()));
+            return Err(format!(
+                "failed to set bits per word {}: {}",
+                bits,
+                std::io::Error::last_os_error()
+            ));
         }
 
         // Set max speed
         let mut s = speed;
-        let ret = unsafe { libc::ioctl(fd.as_raw_fd(), SPI_IOC_WR_MAX_SPEED_HZ as _, &mut s as *mut _ as usize) };
+        let ret = unsafe {
+            libc::ioctl(
+                fd.as_raw_fd(),
+                SPI_IOC_WR_MAX_SPEED_HZ as _,
+                &mut s as *mut _ as usize,
+            )
+        };
         if ret < 0 {
-            return Err(format!("failed to set SPI speed {} Hz: {}", speed, std::io::Error::last_os_error()));
+            return Err(format!(
+                "failed to set SPI speed {} Hz: {}",
+                speed,
+                std::io::Error::last_os_error()
+            ));
         }
 
         Ok(fd)
@@ -847,14 +901,21 @@ mod linux_impl {
         };
 
         let ret = unsafe {
-            libc::ioctl(fd.as_raw_fd(), SPI_IOC_MESSAGE_1 as _, &xfer as *const _ as usize)
+            libc::ioctl(
+                fd.as_raw_fd(),
+                SPI_IOC_MESSAGE_1 as _,
+                &xfer as *const _ as usize,
+            )
         };
 
         let _ = tx_buf;
         let _ = &rx_buf;
 
         if ret < 0 {
-            return Err(format!("SPI transfer failed: {}", std::io::Error::last_os_error()));
+            return Err(format!(
+                "SPI transfer failed: {}",
+                std::io::Error::last_os_error()
+            ));
         }
 
         let hex_bytes: Vec<String> = rx_buf.iter().map(|b| format!("0x{:02x}", b)).collect();
@@ -898,14 +959,21 @@ mod linux_impl {
         };
 
         let ret = unsafe {
-            libc::ioctl(fd.as_raw_fd(), SPI_IOC_MESSAGE_1 as _, &xfer as *const _ as usize)
+            libc::ioctl(
+                fd.as_raw_fd(),
+                SPI_IOC_MESSAGE_1 as _,
+                &xfer as *const _ as usize,
+            )
         };
 
         let _ = tx_buf;
         let _ = &rx_buf;
 
         if ret < 0 {
-            return Err(format!("SPI read failed: {}", std::io::Error::last_os_error()));
+            return Err(format!(
+                "SPI read failed: {}",
+                std::io::Error::last_os_error()
+            ));
         }
 
         let hex_bytes: Vec<String> = rx_buf.iter().map(|b| format!("0x{:02x}", b)).collect();
@@ -923,7 +991,9 @@ mod linux_impl {
 }
 
 #[cfg(target_os = "linux")]
-use linux_impl::{linux_i2c_scan, linux_i2c_read, linux_i2c_write, linux_spi_transfer, linux_spi_read};
+use linux_impl::{
+    linux_i2c_read, linux_i2c_scan, linux_i2c_write, linux_spi_read, linux_spi_transfer,
+};
 
 #[cfg(test)]
 mod tests;

@@ -66,7 +66,13 @@ impl WorkflowObserver for WorkflowChatReplyObserver {
         };
 
         let ts = match &exec.trigger_source {
-            Some(TriggerSource::WorkflowChat { chat_id: _, session_id, workflow_name, index: _, session_key: _ }) => {
+            Some(TriggerSource::WorkflowChat {
+                chat_id: _,
+                session_id,
+                workflow_name,
+                index: _,
+                session_key: _,
+            }) => {
                 // Borrow fields by cloning so we can use them after the
                 // trigger_source borrow ends.
                 let session_id = session_id.clone();
@@ -78,10 +84,7 @@ impl WorkflowObserver for WorkflowChatReplyObserver {
 
         // Release the per-workflow serialization mutex. The guard is dropped
         // at the end of this scope; take_guard removes it from the map.
-        let _guard = self
-            .engine
-            .workflow_chat_state()
-            .take_guard(&execution_id);
+        let _guard = self.engine.workflow_chat_state().take_guard(&execution_id);
 
         let reply = match terminal_state {
             "completed" => build_completed_reply(&self.engine, &exec).await,
@@ -218,7 +221,11 @@ fn terminal_node_ids(workflow: &nemesis_workflow::types::Workflow) -> Vec<String
     if !explicit.is_empty() {
         return explicit;
     }
-    let downstream: Vec<&str> = workflow.edges.iter().map(|e| e.from_node.as_str()).collect();
+    let downstream: Vec<&str> = workflow
+        .edges
+        .iter()
+        .map(|e| e.from_node.as_str())
+        .collect();
     workflow
         .nodes
         .iter()

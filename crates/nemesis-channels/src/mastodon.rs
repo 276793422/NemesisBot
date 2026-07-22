@@ -78,7 +78,10 @@ pub struct MastodonChannel {
 
 impl MastodonChannel {
     /// Creates a new `MastodonChannel`.
-    pub fn new(config: MastodonConfig, bus_sender: broadcast::Sender<InboundMessage>) -> Result<Self> {
+    pub fn new(
+        config: MastodonConfig,
+        bus_sender: broadcast::Sender<InboundMessage>,
+    ) -> Result<Self> {
         if config.server.is_empty() || config.access_token.is_empty() {
             return Err(NemesisError::Channel(
                 "mastodon server and access_token are required".to_string(),
@@ -114,7 +117,10 @@ impl MastodonChannel {
         let resp = self
             .http
             .get(&url)
-            .header("Authorization", format!("Bearer {}", self.config.access_token))
+            .header(
+                "Authorization",
+                format!("Bearer {}", self.config.access_token),
+            )
             .send()
             .await
             .map_err(|e| NemesisError::Channel(format!("mastodon verify failed: {e}")))?;
@@ -163,7 +169,10 @@ impl MastodonChannel {
         let resp = self
             .http
             .post(&url)
-            .header("Authorization", format!("Bearer {}", self.config.access_token))
+            .header(
+                "Authorization",
+                format!("Bearer {}", self.config.access_token),
+            )
             .json(&request)
             .send()
             .await
@@ -267,10 +276,7 @@ impl Channel for MastodonChannel {
                 }
 
                 // Build notifications URL
-                let mut url = format!(
-                    "{}/api/v1/notifications?types[]=mention&limit=30",
-                    server
-                );
+                let mut url = format!("{}/api/v1/notifications?types[]=mention&limit=30", server);
                 if let Some(ref sid) = last_notification_id {
                     url.push_str(&format!("&since_id={}", sid));
                 }
@@ -291,7 +297,10 @@ impl Channel for MastodonChannel {
                 };
 
                 if !resp.status().is_success() {
-                    warn!("[MastodonChannel] notification poll returned {}", resp.status());
+                    warn!(
+                        "[MastodonChannel] notification poll returned {}",
+                        resp.status()
+                    );
                     tokio::time::sleep(backoff).await;
                     backoff = (backoff * 2).min(max_backoff);
                     continue;

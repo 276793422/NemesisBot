@@ -17,9 +17,7 @@ use nemesis_providers::types::{ChatOptions, LLMResponse, Message, ToolDefinition
 use nemesis_workflow::checkpoint::{CheckpointStore, InMemoryCheckpointStore};
 use nemesis_workflow::engine::WorkflowEngine;
 use nemesis_workflow::nodes::{AgentRunResult, AgentRunner};
-use nemesis_workflow::types::{
-    Edge, ExecutionState, NodeDef, TriggerSource, Workflow,
-};
+use nemesis_workflow::types::{Edge, ExecutionState, NodeDef, TriggerSource, Workflow};
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -73,13 +71,11 @@ fn workflow_with_nodes(name: &str, nodes: Vec<NodeDef>) -> Workflow {
     let edges: Vec<Edge> = nodes
         .iter()
         .flat_map(|n| {
-            n.depends_on
-                .iter()
-                .map(move |dep| Edge {
-                    from_node: dep.clone(),
-                    to_node: n.id.clone(),
-                    condition: None,
-                })
+            n.depends_on.iter().map(move |dep| Edge {
+                from_node: dep.clone(),
+                to_node: n.id.clone(),
+                condition: None,
+            })
         })
         .collect();
 
@@ -201,8 +197,12 @@ async fn tool_node_completes_via_cli_trigger() {
     struct EchoTool;
     #[async_trait]
     impl Tool for EchoTool {
-        fn name(&self) -> &str { "echo" }
-        fn description(&self) -> &str { "echo back" }
+        fn name(&self) -> &str {
+            "echo"
+        }
+        fn description(&self) -> &str {
+            "echo back"
+        }
         fn parameters(&self) -> serde_json::Value {
             serde_json::json!({"type": "object", "properties": {}})
         }
@@ -290,7 +290,11 @@ async fn delay_node_completes() {
 
     assert_eq!(exec.state, ExecutionState::Completed);
     // Should have actually delayed at least a few ms (not 0).
-    assert!(elapsed.as_millis() >= 5, "delay was too fast: {:?}", elapsed);
+    assert!(
+        elapsed.as_millis() >= 5,
+        "delay was too fast: {:?}",
+        elapsed
+    );
 }
 
 #[tokio::test]
@@ -349,7 +353,10 @@ async fn webhook_trigger_runs_workflow() {
         .unwrap();
 
     assert_eq!(exec.state, ExecutionState::Completed);
-    assert_eq!(exec.trigger_source, Some(TriggerSource::Webhook { payload }));
+    assert_eq!(
+        exec.trigger_source,
+        Some(TriggerSource::Webhook { payload })
+    );
 }
 
 #[tokio::test]
@@ -390,10 +397,7 @@ async fn chat_trigger_carries_session_key() {
 #[tokio::test]
 async fn event_trigger_carries_event_type() {
     let engine = build_engine("ok", None);
-    let wf = workflow_with_nodes(
-        "evt_wf",
-        vec![node("n1", "delay", &[])],
-    );
+    let wf = workflow_with_nodes("evt_wf", vec![node("n1", "delay", &[])]);
     engine.register_workflow(wf).unwrap();
 
     let exec = engine
@@ -420,10 +424,7 @@ async fn event_trigger_carries_event_type() {
 #[tokio::test]
 async fn agent_tool_trigger_sets_recursion_depth() {
     let engine = build_engine("ok", None);
-    let wf = workflow_with_nodes(
-        "agent_wf",
-        vec![node("n1", "delay", &[])],
-    );
+    let wf = workflow_with_nodes("agent_wf", vec![node("n1", "delay", &[])]);
     engine.register_workflow(wf).unwrap();
 
     let exec = engine
@@ -440,7 +441,9 @@ async fn agent_tool_trigger_sets_recursion_depth() {
 
     assert_eq!(exec.state, ExecutionState::Completed);
     match exec.trigger_source.as_ref().unwrap() {
-        TriggerSource::AgentTool { recursion_depth, .. } => {
+        TriggerSource::AgentTool {
+            recursion_depth, ..
+        } => {
             assert_eq!(*recursion_depth, 1)
         }
         other => panic!("expected AgentTool trigger, got {:?}", other),
@@ -450,10 +453,7 @@ async fn agent_tool_trigger_sets_recursion_depth() {
 #[tokio::test]
 async fn cron_trigger_tagged_on_execution() {
     let engine = build_engine("ok", None);
-    let wf = workflow_with_nodes(
-        "cron_wf",
-        vec![node("n1", "delay", &[])],
-    );
+    let wf = workflow_with_nodes("cron_wf", vec![node("n1", "delay", &[])]);
     engine.register_workflow(wf).unwrap();
 
     let exec = engine
@@ -533,16 +533,19 @@ async fn parameter_extractor_node_returns_structured_output() {
         .unwrap();
 
     assert_eq!(exec.state, ExecutionState::Completed);
-    assert_eq!(exec.node_results["n1"].output["parameters"]["name"], "Alice");
+    assert_eq!(
+        exec.node_results["n1"].output["parameters"]["name"],
+        "Alice"
+    );
     assert_eq!(exec.node_results["n1"].output["parameters"]["age"], 30);
 }
 
 #[tokio::test]
 async fn agent_node_runs_via_registered_runner() {
     let engine = build_engine("ignored", None);
-    engine.register_agent_runner(Arc::new(StubAgentRunner::new(
-        "agent reply",
-    )) as Arc<dyn AgentRunner>);
+    engine.register_agent_runner(
+        Arc::new(StubAgentRunner::new("agent reply")) as Arc<dyn AgentRunner>
+    );
 
     let wf = workflow_with_nodes(
         "agent_wf",
@@ -606,34 +609,26 @@ async fn human_review_pauses_until_resume_with_approved() {
     .unwrap();
 
     // Give the scheduler a moment to reach the Waiting state.
-    let exec = tokio::time::timeout(
-        std::time::Duration::from_secs(2),
-        async {
-            loop {
-                let e = engine.get_execution(&exec_id).await.unwrap();
-                if e.state == ExecutionState::Waiting
-                    || matches!(
-                        e.state,
-                        ExecutionState::Completed
-                            | ExecutionState::Failed
-                            | ExecutionState::Cancelled
-                    )
-                {
-                    return e;
-                }
-                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    let exec = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        loop {
+            let e = engine.get_execution(&exec_id).await.unwrap();
+            if e.state == ExecutionState::Waiting
+                || matches!(
+                    e.state,
+                    ExecutionState::Completed | ExecutionState::Failed | ExecutionState::Cancelled
+                )
+            {
+                return e;
             }
-        },
-    )
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+    })
     .await
     .expect("execution did not reach Waiting in time");
 
     assert_eq!(exec.state, ExecutionState::Waiting);
     // The review node should be in Waiting state.
-    assert_eq!(
-        exec.node_results["review"].state,
-        ExecutionState::Waiting
-    );
+    assert_eq!(exec.node_results["review"].state, ExecutionState::Waiting);
 
     // Resume with approved=true — execution should reach Completed.
     let resumed = engine
@@ -794,19 +789,24 @@ async fn checkpoint_resume_skips_completed_nodes() {
     // Engine 2: simulate restart by creating a fresh engine with the
     // same checkpoint store. (In production this would be a new process.)
     let engine2 = build_engine("ignored", Some(store.clone()));
-    engine2.register_workflow(workflow_with_nodes(
-        "ckpt_resume",
-        vec![
-            node("a", "delay", &[]),
-            node("review", "human_review", &["a"]),
-            node("b", "delay", &["review"]),
-        ],
-    )).unwrap();
+    engine2
+        .register_workflow(workflow_with_nodes(
+            "ckpt_resume",
+            vec![
+                node("a", "delay", &[]),
+                node("review", "human_review", &["a"]),
+                node("b", "delay", &["review"]),
+            ],
+        ))
+        .unwrap();
 
     // Restore the execution from the checkpoint store — this is the
     // equivalent of what gateway.rs does at startup.
     let restored_count = engine2.restore_incomplete_executions().await.unwrap();
-    assert!(restored_count >= 1, "checkpoint restore should find 1 execution");
+    assert!(
+        restored_count >= 1,
+        "checkpoint restore should find 1 execution"
+    );
 
     let resumed = engine2
         .resume_execution(
@@ -830,21 +830,16 @@ async fn checkpoint_workflow_hash_detects_drift() {
     // the workflow_hash field warns about config drift. We just verify the
     // hash is stable for an unchanged workflow so the drift check has a
     // deterministic baseline.
-    let wf1 = workflow_with_nodes(
-        "hash_check",
-        vec![node("a", "delay", &[])],
+    let wf1 = workflow_with_nodes("hash_check", vec![node("a", "delay", &[])]);
+    let wf2 = workflow_with_nodes("hash_check", vec![node("a", "delay", &[])]);
+    assert_eq!(
+        wf1.hash(),
+        wf2.hash(),
+        "identical workflows must hash equal"
     );
-    let wf2 = workflow_with_nodes(
-        "hash_check",
-        vec![node("a", "delay", &[])],
-    );
-    assert_eq!(wf1.hash(), wf2.hash(), "identical workflows must hash equal");
 
     // A different node id → different hash.
-    let wf3 = workflow_with_nodes(
-        "hash_check",
-        vec![node("DIFFERENT", "delay", &[])],
-    );
+    let wf3 = workflow_with_nodes("hash_check", vec![node("DIFFERENT", "delay", &[])]);
     assert_ne!(
         wf1.hash(),
         wf3.hash(),
@@ -878,10 +873,7 @@ async fn node_failure_propagates_to_execution_state() {
 #[tokio::test]
 async fn unknown_node_type_fails_execution() {
     let engine = build_engine("ignored", None);
-    let wf = workflow_with_nodes(
-        "unknown_wf",
-        vec![node("n1", "nonexistent_node_type", &[])],
-    );
+    let wf = workflow_with_nodes("unknown_wf", vec![node("n1", "nonexistent_node_type", &[])]);
     engine.register_workflow(wf).unwrap();
 
     let exec = engine
@@ -911,10 +903,7 @@ async fn start_async_returns_immediately_with_execution_id() {
     engine
         .register_workflow(workflow_with_nodes(
             "long_wf",
-            vec![
-                node("a", "delay", &[]),
-                node("b", "delay", &["a"]),
-            ],
+            vec![node("a", "delay", &[]), node("b", "delay", &["a"])],
         ))
         .unwrap();
 
@@ -937,16 +926,10 @@ async fn start_async_returns_immediately_with_execution_id() {
 async fn list_executions_filters_by_workflow_name() {
     let engine = build_engine("ignored", None);
     engine
-        .register_workflow(workflow_with_nodes(
-            "wf_a",
-            vec![node("n1", "delay", &[])],
-        ))
+        .register_workflow(workflow_with_nodes("wf_a", vec![node("n1", "delay", &[])]))
         .unwrap();
     engine
-        .register_workflow(workflow_with_nodes(
-            "wf_b",
-            vec![node("n1", "delay", &[])],
-        ))
+        .register_workflow(workflow_with_nodes("wf_b", vec![node("n1", "delay", &[])]))
         .unwrap();
 
     // Run two of A, one of B.

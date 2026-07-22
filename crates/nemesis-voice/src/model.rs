@@ -39,12 +39,19 @@ fn check_model_files(dir: &Path, expected_files: &[(&str, &str)]) -> bool {
     if !dir.exists() {
         return false;
     }
-    expected_files.iter().all(|(local, _)| dir.join(local).exists())
+    expected_files
+        .iter()
+        .all(|(local, _)| dir.join(local).exists())
 }
 
 /// Build download URL from mirror base + repo + filename
 fn build_url(mirror_base: &str, repo: &str, filename: &str) -> String {
-    format!("{}/{}/resolve/main/{}", mirror_base.trim_end_matches('/'), repo, filename)
+    format!(
+        "{}/{}/resolve/main/{}",
+        mirror_base.trim_end_matches('/'),
+        repo,
+        filename
+    )
 }
 
 /// Ensure STT model is ready. Returns the model directory path.
@@ -54,7 +61,12 @@ pub fn ensure_stt_model(cfg: &AppConfig) -> Result<PathBuf> {
 
     let source = cfg.find_model_source(model_name);
     let files: Vec<(&str, &str)> = source
-        .map(|s| s.files.iter().map(|f| (f.local.as_str(), f.remote.as_str())).collect())
+        .map(|s| {
+            s.files
+                .iter()
+                .map(|f| (f.local.as_str(), f.remote.as_str()))
+                .collect()
+        })
         .unwrap_or_default();
 
     if !files.is_empty() && check_model_files(&dir, &files) {
@@ -63,7 +75,11 @@ pub fn ensure_stt_model(cfg: &AppConfig) -> Result<PathBuf> {
     }
 
     if !cfg.models.auto_download {
-        anyhow::bail!("STT model '{}' not found at {} and auto_download is disabled", model_name, dir.display());
+        anyhow::bail!(
+            "STT model '{}' not found at {} and auto_download is disabled",
+            model_name,
+            dir.display()
+        );
     }
 
     let source = source.context(format!(
@@ -90,17 +106,29 @@ pub fn ensure_vad_model(cfg: &AppConfig) -> Result<PathBuf> {
 
     let source = cfg.find_model_source(model_name);
     let files: Vec<(&str, &str)> = source
-        .map(|s| s.files.iter().map(|f| (f.local.as_str(), f.remote.as_str())).collect())
+        .map(|s| {
+            s.files
+                .iter()
+                .map(|f| (f.local.as_str(), f.remote.as_str()))
+                .collect()
+        })
         .unwrap_or_default();
 
     if !files.is_empty() && check_model_files(&dir, &files) {
         let model_file = dir.join(files[0].0);
-        tracing::info!("[VAD] Model '{}' found at {}", model_name, model_file.display());
+        tracing::info!(
+            "[VAD] Model '{}' found at {}",
+            model_name,
+            model_file.display()
+        );
         return Ok(model_file);
     }
 
     if !cfg.models.auto_download {
-        anyhow::bail!("VAD model '{}' not found and auto_download is disabled", model_name);
+        anyhow::bail!(
+            "VAD model '{}' not found and auto_download is disabled",
+            model_name
+        );
     }
 
     let source = source.context(format!(
@@ -128,7 +156,12 @@ pub fn ensure_tts_model(cfg: &AppConfig) -> Result<PathBuf> {
 
     let source = cfg.find_model_source(model_name);
     let files: Vec<(&str, &str)> = source
-        .map(|s| s.files.iter().map(|f| (f.local.as_str(), f.remote.as_str())).collect())
+        .map(|s| {
+            s.files
+                .iter()
+                .map(|f| (f.local.as_str(), f.remote.as_str()))
+                .collect()
+        })
         .unwrap_or_default();
 
     if !files.is_empty() && check_model_files(&dir, &files) {
@@ -137,7 +170,10 @@ pub fn ensure_tts_model(cfg: &AppConfig) -> Result<PathBuf> {
     }
 
     if !cfg.models.auto_download {
-        anyhow::bail!("TTS model '{}' not found and auto_download is disabled", model_name);
+        anyhow::bail!(
+            "TTS model '{}' not found and auto_download is disabled",
+            model_name
+        );
     }
 
     let source = source.context(format!(
@@ -164,7 +200,12 @@ pub fn ensure_punct_model(cfg: &AppConfig) -> Result<PathBuf> {
 
     let source = cfg.find_model_source(model_name);
     let files: Vec<(&str, &str)> = source
-        .map(|s| s.files.iter().map(|f| (f.local.as_str(), f.remote.as_str())).collect())
+        .map(|s| {
+            s.files
+                .iter()
+                .map(|f| (f.local.as_str(), f.remote.as_str()))
+                .collect()
+        })
         .unwrap_or_default();
 
     if !files.is_empty() && check_model_files(&dir, &files) {
@@ -173,7 +214,10 @@ pub fn ensure_punct_model(cfg: &AppConfig) -> Result<PathBuf> {
     }
 
     if !cfg.models.auto_download {
-        anyhow::bail!("Punctuation model '{}' not found and auto_download is disabled", model_name);
+        anyhow::bail!(
+            "Punctuation model '{}' not found and auto_download is disabled",
+            model_name
+        );
     }
 
     let source = source.context(format!(
@@ -200,16 +244,28 @@ pub fn ensure_speaker_model(cfg: &AppConfig) -> Result<PathBuf> {
 
     let source = cfg.find_model_source(model_name);
     let files: Vec<(&str, &str)> = source
-        .map(|s| s.files.iter().map(|f| (f.local.as_str(), f.remote.as_str())).collect())
+        .map(|s| {
+            s.files
+                .iter()
+                .map(|f| (f.local.as_str(), f.remote.as_str()))
+                .collect()
+        })
         .unwrap_or_default();
 
     if !files.is_empty() && check_model_files(&dir, &files) {
-        tracing::info!("[Speaker] Model '{}' found at {}", model_name, dir.display());
+        tracing::info!(
+            "[Speaker] Model '{}' found at {}",
+            model_name,
+            dir.display()
+        );
         return Ok(dir);
     }
 
     if !cfg.models.auto_download {
-        anyhow::bail!("Speaker model '{}' not found and auto_download is disabled", model_name);
+        anyhow::bail!(
+            "Speaker model '{}' not found and auto_download is disabled",
+            model_name
+        );
     }
 
     let source = source.context(format!(
@@ -259,7 +315,8 @@ fn download_model_files(
         client_builder = client_builder.proxy(proxy);
     }
 
-    let client = client_builder.build()
+    let client = client_builder
+        .build()
         .context("Failed to create HTTP client")?;
 
     for file in files {
@@ -273,7 +330,11 @@ fn download_model_files(
         if target_file.exists() {
             let size = fs::metadata(&target_file)?.len();
             if size > 0 {
-                let msg = format!("{} (已存在, {:.1} MB)", file.local, size as f64 / (1024.0 * 1024.0));
+                let msg = format!(
+                    "{} (已存在, {:.1} MB)",
+                    file.local,
+                    size as f64 / (1024.0 * 1024.0)
+                );
                 tracing::info!("{}", msg);
                 report_progress(&msg);
                 continue;
@@ -338,7 +399,11 @@ fn download_file_resume(
         if total_size.map_or(false, |t| existing_size >= t) {
             fs::rename(part_file, target_file)
                 .with_context(|| format!("Failed to rename {}", display_name))?;
-            let msg = format!("{} (完整, {:.1} MB)", display_name, existing_size as f64 / (1024.0 * 1024.0));
+            let msg = format!(
+                "{} (完整, {:.1} MB)",
+                display_name,
+                existing_size as f64 / (1024.0 * 1024.0)
+            );
             tracing::info!("{}", msg);
             report_progress(&msg);
             return Ok(());
@@ -361,8 +426,10 @@ fn download_file_resume(
                 existing_size as f64 / (1024.0 * 1024.0),
                 remaining
             );
-            tracing::info!("{} <- {} (resuming from {:.1} MB, {} remaining)",
-                display_name, url,
+            tracing::info!(
+                "{} <- {} (resuming from {:.1} MB, {} remaining)",
+                display_name,
+                url,
                 existing_size as f64 / (1024.0 * 1024.0),
                 remaining
             );
@@ -445,7 +512,8 @@ fn stream_to_file(
                         let pct = downloaded as f64 / total as f64 * 100.0;
                         let msg = format!(
                             "{} ... {:.0}% ({:.1}/{:.1} MB, {:.0} KB/s)",
-                            display_name, pct,
+                            display_name,
+                            pct,
                             downloaded as f64 / (1024.0 * 1024.0),
                             total as f64 / (1024.0 * 1024.0),
                             speed_kbs
@@ -467,7 +535,11 @@ fn stream_to_file(
             }
             Err(e) => {
                 let _ = file.sync_data();
-                anyhow::bail!("Download interrupted for {}: {}. Re-run to resume.", display_name, e);
+                anyhow::bail!(
+                    "Download interrupted for {}: {}. Re-run to resume.",
+                    display_name,
+                    e
+                );
             }
         }
     }
@@ -476,7 +548,11 @@ fn stream_to_file(
 
     let elapsed = start.elapsed().as_secs_f64();
     let total_downloaded = start_offset + written;
-    let speed_kbs = if elapsed > 0.0 { written as f64 / elapsed / 1024.0 } else { 0.0 };
+    let speed_kbs = if elapsed > 0.0 {
+        written as f64 / elapsed / 1024.0
+    } else {
+        0.0
+    };
     let msg = format!(
         "{} 下载完成 ({:.1} MB, {:.0} KB/s)",
         display_name,

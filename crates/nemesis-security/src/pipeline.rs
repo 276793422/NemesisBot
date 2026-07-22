@@ -268,45 +268,90 @@ impl SecurityPlugin {
     fn register_rules(&self) {
         // File rules
         if !self.config.file_rules.is_empty() {
-            self.auditor.set_rules(OperationType::FileRead, self.config.file_rules.clone());
-            self.auditor.set_rules(OperationType::FileWrite, self.config.file_rules.clone());
-            self.auditor.set_rules(OperationType::FileDelete, self.config.file_rules.clone());
+            self.auditor
+                .set_rules(OperationType::FileRead, self.config.file_rules.clone());
+            self.auditor
+                .set_rules(OperationType::FileWrite, self.config.file_rules.clone());
+            self.auditor
+                .set_rules(OperationType::FileDelete, self.config.file_rules.clone());
         }
 
         // Directory rules
         if !self.config.dir_rules.is_empty() {
-            self.auditor.set_rules(OperationType::DirRead, self.config.dir_rules.clone());
-            self.auditor.set_rules(OperationType::DirCreate, self.config.dir_rules.clone());
-            self.auditor.set_rules(OperationType::DirDelete, self.config.dir_rules.clone());
+            self.auditor
+                .set_rules(OperationType::DirRead, self.config.dir_rules.clone());
+            self.auditor
+                .set_rules(OperationType::DirCreate, self.config.dir_rules.clone());
+            self.auditor
+                .set_rules(OperationType::DirDelete, self.config.dir_rules.clone());
         }
 
         // Process rules
         if !self.config.process_rules.is_empty() {
-            self.auditor.set_rules(OperationType::ProcessExec, self.config.process_rules.clone());
-            self.auditor.set_rules(OperationType::ProcessSpawn, self.config.process_rules.clone());
-            self.auditor.set_rules(OperationType::ProcessKill, self.config.process_rules.clone());
-            self.auditor.set_rules(OperationType::ProcessSuspend, self.config.process_rules.clone());
+            self.auditor.set_rules(
+                OperationType::ProcessExec,
+                self.config.process_rules.clone(),
+            );
+            self.auditor.set_rules(
+                OperationType::ProcessSpawn,
+                self.config.process_rules.clone(),
+            );
+            self.auditor.set_rules(
+                OperationType::ProcessKill,
+                self.config.process_rules.clone(),
+            );
+            self.auditor.set_rules(
+                OperationType::ProcessSuspend,
+                self.config.process_rules.clone(),
+            );
         }
 
         // Network rules
         if !self.config.network_rules.is_empty() {
-            self.auditor.set_rules(OperationType::NetworkRequest, self.config.network_rules.clone());
-            self.auditor.set_rules(OperationType::NetworkDownload, self.config.network_rules.clone());
-            self.auditor.set_rules(OperationType::NetworkUpload, self.config.network_rules.clone());
+            self.auditor.set_rules(
+                OperationType::NetworkRequest,
+                self.config.network_rules.clone(),
+            );
+            self.auditor.set_rules(
+                OperationType::NetworkDownload,
+                self.config.network_rules.clone(),
+            );
+            self.auditor.set_rules(
+                OperationType::NetworkUpload,
+                self.config.network_rules.clone(),
+            );
         }
 
         // Hardware rules
         if !self.config.hardware_rules.is_empty() {
-            self.auditor.set_rules(OperationType::HardwareI2C, self.config.hardware_rules.clone());
-            self.auditor.set_rules(OperationType::HardwareSPI, self.config.hardware_rules.clone());
-            self.auditor.set_rules(OperationType::HardwareGPIO, self.config.hardware_rules.clone());
+            self.auditor.set_rules(
+                OperationType::HardwareI2C,
+                self.config.hardware_rules.clone(),
+            );
+            self.auditor.set_rules(
+                OperationType::HardwareSPI,
+                self.config.hardware_rules.clone(),
+            );
+            self.auditor.set_rules(
+                OperationType::HardwareGPIO,
+                self.config.hardware_rules.clone(),
+            );
         }
 
         // Registry rules
         if !self.config.registry_rules.is_empty() {
-            self.auditor.set_rules(OperationType::RegistryRead, self.config.registry_rules.clone());
-            self.auditor.set_rules(OperationType::RegistryWrite, self.config.registry_rules.clone());
-            self.auditor.set_rules(OperationType::RegistryDelete, self.config.registry_rules.clone());
+            self.auditor.set_rules(
+                OperationType::RegistryRead,
+                self.config.registry_rules.clone(),
+            );
+            self.auditor.set_rules(
+                OperationType::RegistryWrite,
+                self.config.registry_rules.clone(),
+            );
+            self.auditor.set_rules(
+                OperationType::RegistryDelete,
+                self.config.registry_rules.clone(),
+            );
         }
     }
 
@@ -363,9 +408,9 @@ impl SecurityPlugin {
 
                 // Extract updated configuration from the parsed JSON.
                 // This mirrors Go's ReloadConfig which calls Init() with the new config.
-                let security_obj = new_config.as_object().ok_or_else(|| {
-                    "config root is not a JSON object".to_string()
-                })?;
+                let security_obj = new_config
+                    .as_object()
+                    .ok_or_else(|| "config root is not a JSON object".to_string())?;
 
                 // Extract security.enabled
                 let enabled = security_obj
@@ -491,28 +536,47 @@ impl SecurityPlugin {
             if result.is_injection {
                 // Log to audit file
                 self.log_audit_event(
-                    "denied", &op_type.to_string(), &invocation.user,
-                    &invocation.source, &target, &result.level.to_string(),
+                    "denied",
+                    &op_type.to_string(),
+                    &invocation.user,
+                    &invocation.source,
+                    &target,
+                    &result.level.to_string(),
                     &format!("injection detected (score: {:.2})", result.score),
                     "injection_detector",
                 );
-                return (false, Some(format!(
-                    "operation blocked: potential prompt injection detected (score: {:.2}, level: {})",
-                    result.score, result.level
-                )));
+                return (
+                    false,
+                    Some(format!(
+                        "operation blocked: potential prompt injection detected (score: {:.2}, level: {})",
+                        result.score, result.level
+                    )),
+                );
             }
         }
 
         // Layer 2: Command Guard
         if let Some(ref guard) = self.command_guard {
-            if matches!(op_type, OperationType::ProcessExec | OperationType::ProcessSpawn) && !target.is_empty() {
+            if matches!(
+                op_type,
+                OperationType::ProcessExec | OperationType::ProcessSpawn
+            ) && !target.is_empty()
+            {
                 if let Err(e) = guard.check(&target) {
                     self.log_audit_event(
-                        "denied", &op_type.to_string(), &invocation.user,
-                        &invocation.source, &target, "HIGH",
-                        &format!("command guard: {}", e), "command_guard",
+                        "denied",
+                        &op_type.to_string(),
+                        &invocation.user,
+                        &invocation.source,
+                        &target,
+                        "HIGH",
+                        &format!("command guard: {}", e),
+                        "command_guard",
                     );
-                    return (false, Some(format!("operation blocked by command guard: {}", e)));
+                    return (
+                        false,
+                        Some(format!("operation blocked by command guard: {}", e)),
+                    );
                 }
             }
         }
@@ -533,9 +597,14 @@ impl SecurityPlugin {
         let (allowed, err, _) = self.auditor.request_permission(&req);
         if !allowed {
             self.log_audit_event(
-                "denied", &op_type.to_string(), &invocation.user,
-                &invocation.source, &target, &get_danger_level(op_type).to_string(),
-                err.as_deref().unwrap_or("denied by policy"), "abac",
+                "denied",
+                &op_type.to_string(),
+                &invocation.user,
+                &invocation.source,
+                &target,
+                &get_danger_level(op_type).to_string(),
+                err.as_deref().unwrap_or("denied by policy"),
+                "abac",
             );
             return (false, err);
         }
@@ -549,14 +618,22 @@ impl SecurityPlugin {
                             let result = scanner.scan_content(s);
                             if result.has_matches && result.action == "block" {
                                 self.log_audit_event(
-                                    "denied", &op_type.to_string(), &invocation.user,
-                                    &invocation.source, &target, "CRITICAL",
-                                    &format!("credential leak: {}", result.summary), "credential_scanner",
+                                    "denied",
+                                    &op_type.to_string(),
+                                    &invocation.user,
+                                    &invocation.source,
+                                    &target,
+                                    "CRITICAL",
+                                    &format!("credential leak: {}", result.summary),
+                                    "credential_scanner",
                                 );
-                                return (false, Some(format!(
-                                    "operation blocked: potential credential leak detected ({})",
-                                    result.summary
-                                )));
+                                return (
+                                    false,
+                                    Some(format!(
+                                        "operation blocked: potential credential leak detected ({})",
+                                        result.summary
+                                    )),
+                                );
                             }
                         }
                     }
@@ -574,10 +651,8 @@ impl SecurityPlugin {
         if let Some(ref engine) = self.dlp_engine {
             let result = engine.scan_tool_input(&invocation.tool_name, &invocation.args);
             if result.has_matches {
-                let inbound_storage = matches!(
-                    op_type,
-                    OperationType::FileWrite | OperationType::DirCreate
-                );
+                let inbound_storage =
+                    matches!(op_type, OperationType::FileWrite | OperationType::DirCreate);
                 // `result.should_block` is true for High/Medium-confidence matches,
                 // and also Low when low_confidence_action="block".
                 //
@@ -595,20 +670,33 @@ impl SecurityPlugin {
                 }
                 if block {
                     self.log_audit_event(
-                        "denied", &op_type.to_string(), &invocation.user,
-                        &invocation.source, &target, "HIGH",
-                        &format!("DLP: {}", result.summary), "dlp_engine",
+                        "denied",
+                        &op_type.to_string(),
+                        &invocation.user,
+                        &invocation.source,
+                        &target,
+                        "HIGH",
+                        &format!("DLP: {}", result.summary),
+                        "dlp_engine",
                     );
-                    return (false, Some(format!(
-                        "operation blocked by DLP: sensitive data detected ({})",
-                        result.summary
-                    )));
+                    return (
+                        false,
+                        Some(format!(
+                            "operation blocked by DLP: sensitive data detected ({})",
+                            result.summary
+                        )),
+                    );
                 }
                 // Non-blocking match (low-confidence or inbound write): audit as warning.
                 self.log_audit_event(
-                    "allowed", &op_type.to_string(), &invocation.user,
-                    &invocation.source, &target, "MEDIUM",
-                    &format!("DLP (non-blocking): {}", result.summary), "dlp_engine",
+                    "allowed",
+                    &op_type.to_string(),
+                    &invocation.user,
+                    &invocation.source,
+                    &target,
+                    "MEDIUM",
+                    &format!("DLP (non-blocking): {}", result.summary),
+                    "dlp_engine",
                 );
             }
         }
@@ -619,11 +707,19 @@ impl SecurityPlugin {
             if !url.is_empty() {
                 if let Err(e) = guard.validate_url(&url) {
                     self.log_audit_event(
-                        "denied", &op_type.to_string(), &invocation.user,
-                        &invocation.source, &url, "HIGH",
-                        &format!("SSRF: {}", e), "ssrf_guard",
+                        "denied",
+                        &op_type.to_string(),
+                        &invocation.user,
+                        &invocation.source,
+                        &url,
+                        "HIGH",
+                        &format!("SSRF: {}", e),
+                        "ssrf_guard",
                     );
-                    return (false, Some(format!("operation blocked by SSRF guard: {}", e)));
+                    return (
+                        false,
+                        Some(format!("operation blocked by SSRF guard: {}", e)),
+                    );
                 }
             }
         }
@@ -661,10 +757,13 @@ impl SecurityPlugin {
                         let path = std::path::Path::new(file_path);
                         let result = rt.block_on(chain.scan_file(path));
                         if result.blocked {
-                            return Some((false, Some(format!(
-                                "operation blocked by virus scanner: threat detected in {} (engine: {})",
-                                file_path, result.engine
-                            ))));
+                            return Some((
+                                false,
+                                Some(format!(
+                                    "operation blocked by virus scanner: threat detected in {} (engine: {})",
+                                    file_path, result.engine
+                                )),
+                            ));
                         }
                     }
                 }
@@ -675,10 +774,13 @@ impl SecurityPlugin {
                         if !content.is_empty() {
                             let result = rt.block_on(chain.scan_content(content.as_bytes()));
                             if result.blocked {
-                                return Some((false, Some(format!(
-                                    "operation blocked by virus scanner: threat detected in {} (engine: {})",
-                                    content_key, result.engine
-                                ))));
+                                return Some((
+                                    false,
+                                    Some(format!(
+                                        "operation blocked by virus scanner: threat detected in {} (engine: {})",
+                                        content_key, result.engine
+                                    )),
+                                ));
                             }
                         }
                     }
@@ -693,9 +795,14 @@ impl SecurityPlugin {
                     let target = extract_target(&tool_name, &args);
                     if let Some(reason_str) = &reason {
                         self.log_audit_event(
-                            "denied", &op_type.to_string(), &user,
-                            &source, &target, "CRITICAL",
-                            reason_str, "virus_scanner",
+                            "denied",
+                            &op_type.to_string(),
+                            &user,
+                            &source,
+                            &target,
+                            "CRITICAL",
+                            reason_str,
+                            "virus_scanner",
                         );
                     }
                     return (false, reason);
@@ -718,9 +825,14 @@ impl SecurityPlugin {
 
         // Log allowed event
         self.log_audit_event(
-            "allowed", &op_type.to_string(), &invocation.user,
-            &invocation.source, &target, &get_danger_level(op_type).to_string(),
-            "passed all security layers", "pipeline",
+            "allowed",
+            &op_type.to_string(),
+            &invocation.user,
+            &invocation.source,
+            &target,
+            &get_danger_level(op_type).to_string(),
+            "passed all security layers",
+            "pipeline",
         );
 
         (true, None)
@@ -741,7 +853,9 @@ impl SecurityPlugin {
         let mut guard = self.audit_logger.write();
         if let Some(ref mut logger) = *guard {
             let event_id = format!("evt-{}", uuid::Uuid::new_v4());
-            logger.log_event(&event_id, decision, operation, user, source, target, danger, reason, policy);
+            logger.log_event(
+                &event_id, decision, operation, user, source, target, danger, reason, policy,
+            );
         }
     }
 
@@ -824,7 +938,9 @@ impl SecurityPlugin {
         chain.load_from_full_config(full_config);
 
         if chain.engine_count() == 0 {
-            tracing::warn!("[Scanner] No scanner engines loaded from config, scanner chain remains disabled");
+            tracing::warn!(
+                "[Scanner] No scanner engines loaded from config, scanner chain remains disabled"
+            );
             return;
         }
 

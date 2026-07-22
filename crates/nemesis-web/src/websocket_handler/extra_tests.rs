@@ -11,10 +11,10 @@ use super::*;
 use crate::api_handlers::AppState;
 use crate::events::EventHub;
 use crate::session::SessionManager;
-use axum::routing::get;
 use axum::Router;
-use std::sync::atomic::{AtomicBool, AtomicUsize};
+use axum::routing::get;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicUsize};
 use std::time::{Duration, Instant};
 use tokio::net::TcpListener;
 use tokio_tungstenite::tungstenite::Message as WsMessage;
@@ -53,7 +53,9 @@ fn make_state(
         cluster_service: None,
         cluster_log_dir: None,
         workflow_engine: None,
-        chat_secret_store: std::sync::Arc::new(nemesis_workflow::chat_secrets::ChatSecretStore::in_memory()),
+        chat_secret_store: std::sync::Arc::new(
+            nemesis_workflow::chat_secrets::ChatSecretStore::in_memory(),
+        ),
         webhook_rate_limiter: Arc::new(crate::handlers::workflow::WebhookRateLimiter::new()),
         internal_cmd_tx: None,
         estop: None,
@@ -159,7 +161,11 @@ async fn test_upgrade_correct_token_succeeds_handshake() {
     stream.write_all(req).await.unwrap();
     let n = stream.read(&mut buf).await.unwrap();
     let resp = String::from_utf8_lossy(&buf[..n]);
-    assert!(!resp.starts_with("HTTP/1.1 401"), "correct token must not return 401: {}", resp);
+    assert!(
+        !resp.starts_with("HTTP/1.1 401"),
+        "correct token must not return 401: {}",
+        resp
+    );
 }
 
 #[tokio::test]
@@ -235,7 +241,9 @@ async fn test_websocket_invalid_json_sends_error_message() {
 
     let mut ws = ws_connect(&addr, None).await;
 
-    ws.send(WsMessage::Text("not valid json".into())).await.unwrap();
+    ws.send(WsMessage::Text("not valid json".into()))
+        .await
+        .unwrap();
 
     let msg = tokio::time::timeout(Duration::from_secs(2), ws.next())
         .await
@@ -249,7 +257,12 @@ async fn test_websocket_invalid_json_sends_error_message() {
             assert_eq!(parsed["type"], "system");
             assert_eq!(parsed["module"], "error");
             assert_eq!(parsed["cmd"], "notify");
-            assert!(parsed["data"]["content"].as_str().unwrap().contains("invalid"));
+            assert!(
+                parsed["data"]["content"]
+                    .as_str()
+                    .unwrap()
+                    .contains("invalid")
+            );
         }
         other => panic!("expected text error, got {:?}", other),
     }
@@ -274,7 +287,12 @@ async fn test_websocket_unknown_protocol_type_sends_error() {
     match msg {
         WsMessage::Text(t) => {
             let parsed: serde_json::Value = serde_json::from_str(&t).unwrap();
-            assert!(parsed["data"]["content"].as_str().unwrap().contains("unknown"));
+            assert!(
+                parsed["data"]["content"]
+                    .as_str()
+                    .unwrap()
+                    .contains("unknown")
+            );
         }
         other => panic!("got {:?}", other),
     }
@@ -302,7 +320,9 @@ async fn test_websocket_binary_message_ignored() {
     let mut ws = ws_connect(&addr, None).await;
 
     // Send binary — should be ignored (no response)
-    ws.send(WsMessage::Binary(vec![1, 2, 3].into())).await.unwrap();
+    ws.send(WsMessage::Binary(vec![1, 2, 3].into()))
+        .await
+        .unwrap();
 
     // Send a follow-up text message — should work normally
     let raw = r#"{"type":"system","module":"heartbeat","cmd":"ping","data":null}"#;
@@ -335,7 +355,10 @@ async fn test_websocket_history_request_forwarded_to_bus() {
         .await
         .expect("timeout")
         .expect("closed");
-    assert_eq!(incoming.metadata.get("request_type"), Some(&"history".to_string()));
+    assert_eq!(
+        incoming.metadata.get("request_type"),
+        Some(&"history".to_string())
+    );
 }
 
 #[tokio::test]
@@ -368,7 +391,9 @@ async fn test_websocket_error_notify_triggers_pong_response() {
 #[tokio::test]
 async fn test_websocket_session_count_increments_and_decrements() {
     let state = make_state("", None, None);
-    let initial_count = state.session_count.load(std::sync::atomic::Ordering::SeqCst);
+    let initial_count = state
+        .session_count
+        .load(std::sync::atomic::Ordering::SeqCst);
     let (addr, listener) = bind_ephemeral().await;
     let _server = start_test_server(listener, state.clone()).await;
 
@@ -376,7 +401,9 @@ async fn test_websocket_session_count_increments_and_decrements() {
         let mut ws = ws_connect(&addr, None).await;
         // Give the server time to increment
         tokio::time::sleep(Duration::from_millis(100)).await;
-        let mid_count = state.session_count.load(std::sync::atomic::Ordering::SeqCst);
+        let mid_count = state
+            .session_count
+            .load(std::sync::atomic::Ordering::SeqCst);
         assert_eq!(mid_count, initial_count + 1);
 
         // Disconnect
@@ -385,7 +412,9 @@ async fn test_websocket_session_count_increments_and_decrements() {
 
     // Wait for cleanup
     tokio::time::sleep(Duration::from_millis(200)).await;
-    let final_count = state.session_count.load(std::sync::atomic::Ordering::SeqCst);
+    let final_count = state
+        .session_count
+        .load(std::sync::atomic::Ordering::SeqCst);
     assert_eq!(final_count, initial_count);
 }
 
@@ -408,7 +437,12 @@ async fn test_websocket_chat_send_empty_content_sends_error() {
     if let WsMessage::Text(t) = msg {
         let parsed: serde_json::Value = serde_json::from_str(&t).unwrap();
         assert_eq!(parsed["module"], "error");
-        assert!(parsed["data"]["content"].as_str().unwrap().contains("empty"));
+        assert!(
+            parsed["data"]["content"]
+                .as_str()
+                .unwrap()
+                .contains("empty")
+        );
     }
 }
 
@@ -430,7 +464,12 @@ async fn test_websocket_unknown_chat_cmd_sends_error() {
         .expect("err");
     if let WsMessage::Text(t) = msg {
         let parsed: serde_json::Value = serde_json::from_str(&t).unwrap();
-        assert!(parsed["data"]["content"].as_str().unwrap().contains("unknown"));
+        assert!(
+            parsed["data"]["content"]
+                .as_str()
+                .unwrap()
+                .contains("unknown")
+        );
     }
 }
 
@@ -452,7 +491,12 @@ async fn test_websocket_unknown_message_module_sends_error() {
         .expect("err");
     if let WsMessage::Text(t) = msg {
         let parsed: serde_json::Value = serde_json::from_str(&t).unwrap();
-        assert!(parsed["data"]["content"].as_str().unwrap().contains("unknown message module"));
+        assert!(
+            parsed["data"]["content"]
+                .as_str()
+                .unwrap()
+                .contains("unknown message module")
+        );
     }
 }
 
@@ -474,7 +518,12 @@ async fn test_websocket_unknown_system_module_sends_error() {
         .expect("err");
     if let WsMessage::Text(t) = msg {
         let parsed: serde_json::Value = serde_json::from_str(&t).unwrap();
-        assert!(parsed["data"]["content"].as_str().unwrap().contains("unknown system module"));
+        assert!(
+            parsed["data"]["content"]
+                .as_str()
+                .unwrap()
+                .contains("unknown system module")
+        );
     }
 }
 
@@ -644,7 +693,9 @@ fn test_handle_request_type_returns_none() {
 #[test]
 fn test_handle_chat_send_with_voice_playback_true() {
     let raw = br#"{"type":"message","module":"chat","cmd":"send","data":{"content":"speak this","voice_playback":true}}"#;
-    let result = handle_text_message("s1", "w:s1", "w:s1", raw).unwrap().unwrap();
+    let result = handle_text_message("s1", "w:s1", "w:s1", raw)
+        .unwrap()
+        .unwrap();
     assert_eq!(result.voice_playback, Some(true));
     assert_eq!(result.content, "speak this");
 }
@@ -652,14 +703,18 @@ fn test_handle_chat_send_with_voice_playback_true() {
 #[test]
 fn test_handle_chat_send_with_voice_playback_false() {
     let raw = br#"{"type":"message","module":"chat","cmd":"send","data":{"content":"don't speak","voice_playback":false}}"#;
-    let result = handle_text_message("s1", "w:s1", "w:s1", raw).unwrap().unwrap();
+    let result = handle_text_message("s1", "w:s1", "w:s1", raw)
+        .unwrap()
+        .unwrap();
     assert_eq!(result.voice_playback, Some(false));
 }
 
 #[test]
 fn test_handle_chat_send_with_voice_playback_null() {
     let raw = br#"{"type":"message","module":"chat","cmd":"send","data":{"content":"hi","voice_playback":null}}"#;
-    let result = handle_text_message("s1", "w:s1", "w:s1", raw).unwrap().unwrap();
+    let result = handle_text_message("s1", "w:s1", "w:s1", raw)
+        .unwrap()
+        .unwrap();
     assert_eq!(result.voice_playback, None);
 }
 
@@ -724,7 +779,9 @@ fn test_handle_history_request_with_negative_limit() {
 #[test]
 fn test_handle_history_request_with_huge_limit() {
     let raw = br#"{"type":"message","module":"chat","cmd":"history_request","data":{"request_id":"r1","limit":99999}}"#;
-    let result = handle_text_message("s1", "w:s1", "w:s1", raw).unwrap().unwrap();
+    let result = handle_text_message("s1", "w:s1", "w:s1", raw)
+        .unwrap()
+        .unwrap();
     let content: serde_json::Value = serde_json::from_str(&result.content).unwrap();
     assert_eq!(content["limit"], 99999);
 }
@@ -732,7 +789,9 @@ fn test_handle_history_request_with_huge_limit() {
 #[test]
 fn test_handle_history_request_with_null_optional_fields() {
     let raw = br#"{"type":"message","module":"chat","cmd":"history_request","data":{"request_id":"r1","limit":null,"before_index":null}}"#;
-    let result = handle_text_message("s1", "w:s1", "w:s1", raw).unwrap().unwrap();
+    let result = handle_text_message("s1", "w:s1", "w:s1", raw)
+        .unwrap()
+        .unwrap();
     let content: serde_json::Value = serde_json::from_str(&result.content).unwrap();
     assert!(content["limit"].is_null());
     assert!(content["before_index"].is_null());
@@ -766,7 +825,8 @@ fn test_handle_text_message_with_bom() {
 
 #[test]
 fn test_handle_text_message_with_trailing_whitespace() {
-    let raw = b"{\"type\":\"system\",\"module\":\"heartbeat\",\"cmd\":\"ping\",\"data\":null}   \n  ";
+    let raw =
+        b"{\"type\":\"system\",\"module\":\"heartbeat\",\"cmd\":\"ping\",\"data\":null}   \n  ";
     let result = handle_text_message("s1", "w:s1", "w:s1", raw);
     // Trailing whitespace should be tolerated by serde_json
     assert!(result.is_ok());
@@ -862,7 +922,9 @@ async fn test_multiple_concurrent_websocket_sessions() {
     }
 
     tokio::time::sleep(Duration::from_millis(200)).await;
-    let count = state.session_count.load(std::sync::atomic::Ordering::SeqCst);
+    let count = state
+        .session_count
+        .load(std::sync::atomic::Ordering::SeqCst);
     assert_eq!(count, 5);
 
     // Close all
@@ -871,7 +933,9 @@ async fn test_multiple_concurrent_websocket_sessions() {
     }
 
     tokio::time::sleep(Duration::from_millis(300)).await;
-    let final_count = state.session_count.load(std::sync::atomic::Ordering::SeqCst);
+    let final_count = state
+        .session_count
+        .load(std::sync::atomic::Ordering::SeqCst);
     assert_eq!(final_count, 0);
 }
 
@@ -927,7 +991,12 @@ async fn test_websocket_request_type_without_router_sends_error() {
         assert_eq!(parsed["type"], "response");
         assert!(parsed.get("error").is_some());
         assert_eq!(parsed["reqId"], "r-1");
-        assert!(parsed["error"].as_str().unwrap().contains("router not configured"));
+        assert!(
+            parsed["error"]
+                .as_str()
+                .unwrap()
+                .contains("router not configured")
+        );
     }
 }
 
@@ -962,7 +1031,8 @@ async fn test_websocket_request_type_with_router_dispatches() {
 
     let mut ws = ws_connect(&addr, None).await;
 
-    let raw = r#"{"type":"request","module":"echo","cmd":"ping","reqId":"r-2","data":{"hello":"world"}}"#;
+    let raw =
+        r#"{"type":"request","module":"echo","cmd":"ping","reqId":"r-2","data":{"hello":"world"}}"#;
     ws.send(WsMessage::Text(raw.into())).await.unwrap();
 
     let msg = tokio::time::timeout(Duration::from_secs(2), ws.next())

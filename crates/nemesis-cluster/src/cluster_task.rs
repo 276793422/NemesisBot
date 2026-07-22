@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 
 use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
-use tokio::sync::{mpsc, Mutex};
+use tokio::sync::{Mutex, mpsc};
 
 // ---------------------------------------------------------------------------
 // Data types
@@ -92,7 +92,9 @@ impl ClusterWorkQueue {
 
     /// Submit a task ID to the queue (non-blocking).
     pub fn submit(&self, task_id: String) -> Result<(), String> {
-        self.tx.try_send(task_id).map_err(|e| format!("work queue full: {}", e))
+        self.tx
+            .try_send(task_id)
+            .map_err(|e| format!("work queue full: {}", e))
     }
 
     /// Get the sender handle for cloning.
@@ -188,7 +190,8 @@ impl ClusterTaskList {
         // the requesting node would never receive a callback.
         if let Err(e) = self.persist_to_disk() {
             tracing::warn!(
-                "[ClusterTaskList] Failed to persist task index after save_async_state: {}", e
+                "[ClusterTaskList] Failed to persist task index after save_async_state: {}",
+                e
             );
         }
     }
@@ -254,7 +257,8 @@ impl ClusterTaskList {
         // but noisy. Keeping the index clean avoids this.
         if let Err(e) = self.persist_to_disk() {
             tracing::warn!(
-                "[ClusterTaskList] Failed to persist task index after complete_task: {}", e
+                "[ClusterTaskList] Failed to persist task index after complete_task: {}",
+                e
             );
         }
     }
@@ -262,7 +266,9 @@ impl ClusterTaskList {
     // -- Persistence helpers ------------------------------------------------
 
     fn conversation_path(&self, task_id: &str) -> PathBuf {
-        self.data_dir.join("cluster").join(format!("{}.json", task_id))
+        self.data_dir
+            .join("cluster")
+            .join(format!("{}.json", task_id))
     }
 
     fn persist_conversation(&self, task_id: &str, conversation: &serde_json::Value) {
@@ -374,9 +380,7 @@ impl ClusterTaskList {
         // Persist the status changes (WaitingRemote → Pending) to disk.
         if !task_ids.is_empty() {
             if let Err(e) = self.persist_to_disk() {
-                tracing::warn!(
-                    "[ClusterTaskList] Failed to persist after recovery: {}", e
-                );
+                tracing::warn!("[ClusterTaskList] Failed to persist after recovery: {}", e);
             }
         }
 
@@ -394,7 +398,9 @@ impl ClusterTaskList {
         std::fs::create_dir_all(&dir)
             .map_err(|e| format!("Failed to create cluster dir: {}", e))?;
 
-        let active_tasks: Vec<ClusterTask> = self.tasks.iter()
+        let active_tasks: Vec<ClusterTask> = self
+            .tasks
+            .iter()
             .filter(|e| !matches!(e.value().status, TaskStatus::Completed | TaskStatus::Failed))
             .map(|e| e.value().clone())
             .collect();
@@ -403,8 +409,7 @@ impl ClusterTaskList {
             .map_err(|e| format!("Failed to serialize tasks: {}", e))?;
 
         let path = dir.join("tasks.json");
-        std::fs::write(&path, json)
-            .map_err(|e| format!("Failed to write tasks.json: {}", e))?;
+        std::fs::write(&path, json).map_err(|e| format!("Failed to write tasks.json: {}", e))?;
 
         tracing::info!(
             count = active_tasks.len(),

@@ -29,7 +29,10 @@ impl ExternalOutput {
     pub async fn start(&self) -> Result<()> {
         let program_path = self.program_path.clone();
 
-        log_message(&self.config, &format!("🚀 Starting output program: {}", program_path));
+        log_message(
+            &self.config,
+            &format!("🚀 Starting output program: {}", program_path),
+        );
 
         let mut child = Command::new(&program_path)
             .stdin(Stdio::piped())
@@ -105,7 +108,11 @@ fn log_message(config: &Config, message: &str) {
     if !config.logging.enabled || config.logging.file.is_empty() {
         return;
     }
-    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&config.logging.file) {
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&config.logging.file)
+    {
         use std::io::Write;
         let _ = writeln!(f, "[{}] {}", Local::now().to_rfc3339(), message);
     }

@@ -14,12 +14,16 @@ use anyhow::Result;
 use clap::{Parser, Subcommand};
 use nemesis_verify::{
     hex_util::hex_encode,
-    keygen::{generate_hierarchy, KeyHierarchy},
+    keygen::{KeyHierarchy, generate_hierarchy},
     verify,
 };
 
 #[derive(Parser)]
-#[command(name = "exe-sign-tool", version, about = "可执行文件签名/验证（v3：公钥随签名走 + 证书链）")]
+#[command(
+    name = "exe-sign-tool",
+    version,
+    about = "可执行文件签名/验证（v3：公钥随签名走 + 证书链）"
+)]
 struct Cli {
     #[command(subcommand)]
     cmd: Cmd,
@@ -76,7 +80,11 @@ fn main() -> Result<()> {
             std::fs::write(&out, signed)?;
             println!("✓ signed → {}", out);
         }
-        Cmd::Verify { keys, target, revocation_url } => {
+        Cmd::Verify {
+            keys,
+            target,
+            revocation_url,
+        } => {
             if let Some(url) = revocation_url {
                 // edition 2024: set_var unsafe
                 unsafe {
@@ -99,7 +107,11 @@ fn main() -> Result<()> {
 fn outcome_name(o: &verify::VerifyOutcome) -> String {
     use verify::VerifyOutcome;
     match o {
-        VerifyOutcome::Valid { signed_at, key_fp, pubkey } => format!(
+        VerifyOutcome::Valid {
+            signed_at,
+            key_fp,
+            pubkey,
+        } => format!(
             "Valid (signed_at={}, key_fp={}, pubkey={})",
             signed_at,
             hex_encode(key_fp),
@@ -109,7 +121,9 @@ fn outcome_name(o: &verify::VerifyOutcome) -> String {
         VerifyOutcome::Tampered(s) => format!("Tampered({})", s),
         VerifyOutcome::SignatureInvalid => "SignatureInvalid".into(),
         VerifyOutcome::Untrusted => "Untrusted".into(),
-        VerifyOutcome::Revoked { dim, value, reason, .. } => {
+        VerifyOutcome::Revoked {
+            dim, value, reason, ..
+        } => {
             format!("Revoked({:?}={}:{})", dim, value, reason)
         }
         VerifyOutcome::Expired(s) => format!("Expired({})", s),

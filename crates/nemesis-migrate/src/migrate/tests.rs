@@ -63,7 +63,10 @@ fn test_resolve_workspace() {
 
 #[test]
 fn test_rel_path() {
-    let rel = rel_path("/home/user/.openclaw/workspace/SOUL.md", "/home/user/.openclaw");
+    let rel = rel_path(
+        "/home/user/.openclaw/workspace/SOUL.md",
+        "/home/user/.openclaw",
+    );
     assert_eq!(rel, "workspace/SOUL.md");
 }
 
@@ -81,14 +84,12 @@ fn test_run_full_migration_mutually_exclusive() {
 
 #[test]
 fn test_execute_skip_actions() {
-    let actions = vec![
-        FullMigrationAction {
-            action_type: FullMigrationActionType::Skip,
-            source: Some("/tmp/nonexistent".to_string()),
-            destination: "/tmp/dest".to_string(),
-            description: "test skip".to_string(),
-        },
-    ];
+    let actions = vec![FullMigrationAction {
+        action_type: FullMigrationActionType::Skip,
+        source: Some("/tmp/nonexistent".to_string()),
+        destination: "/tmp/dest".to_string(),
+        description: "test skip".to_string(),
+    }];
     let result = execute(&actions, "/tmp/openclaw", "/tmp/nemesisbot");
     assert_eq!(result.files_skipped, 1);
 }
@@ -235,9 +236,11 @@ fn test_plan_config_only() {
     )
     .unwrap();
 
-    assert!(actions
-        .iter()
-        .any(|a| a.action_type == FullMigrationActionType::ConvertConfig));
+    assert!(
+        actions
+            .iter()
+            .any(|a| a.action_type == FullMigrationActionType::ConvertConfig)
+    );
     assert!(warnings.is_empty());
 }
 
@@ -252,7 +255,11 @@ fn test_execute_config_migration() {
         "channels": {}
     });
     let src_path = dir.path().join("openclaw.json");
-    fs::write(&src_path, serde_json::to_string_pretty(&src_config).unwrap()).unwrap();
+    fs::write(
+        &src_path,
+        serde_json::to_string_pretty(&src_config).unwrap(),
+    )
+    .unwrap();
 
     let dst_path = dir.path().join("config.json");
 
@@ -316,13 +323,19 @@ fn test_migrator_dry_run() {
         target_version: 1,
     };
     let migrator = Migrator::new(config);
-    let plan = migrator.dry_run(
-        src.to_string_lossy().as_ref(),
-        dst.to_string_lossy().as_ref(),
-        false,
-    ).unwrap();
+    let plan = migrator
+        .dry_run(
+            src.to_string_lossy().as_ref(),
+            dst.to_string_lossy().as_ref(),
+            false,
+        )
+        .unwrap();
     // No files to migrate
-    assert!(plan.actions.iter().all(|a| a.action_type == crate::workspace::ActionType::Skip));
+    assert!(
+        plan.actions
+            .iter()
+            .all(|a| a.action_type == crate::workspace::ActionType::Skip)
+    );
 }
 
 #[test]
@@ -365,7 +378,11 @@ fn test_run_full_migration_refresh_flag() {
     let dir = tempfile::tempdir().unwrap();
     let openclaw_home = dir.path().join(".openclaw");
     fs::create_dir_all(&openclaw_home).unwrap();
-    fs::write(openclaw_home.join("openclaw.json"), r#"{"agents":{"defaults":{}}}"#).unwrap();
+    fs::write(
+        openclaw_home.join("openclaw.json"),
+        r#"{"agents":{"defaults":{}}}"#,
+    )
+    .unwrap();
 
     let opts = MigrateOptions {
         refresh: true,
@@ -475,7 +492,11 @@ fn test_plan_workspace_migration() {
     )
     .unwrap();
     assert!(!actions.is_empty());
-    assert!(actions.iter().any(|a| a.action_type == FullMigrationActionType::Copy));
+    assert!(
+        actions
+            .iter()
+            .any(|a| a.action_type == FullMigrationActionType::Copy)
+    );
 }
 
 #[test]
@@ -489,7 +510,11 @@ fn test_execute_config_migration_with_merge() {
         "channels": {}
     });
     let src_path = dir.path().join("openclaw.json");
-    fs::write(&src_path, serde_json::to_string_pretty(&src_config).unwrap()).unwrap();
+    fs::write(
+        &src_path,
+        serde_json::to_string_pretty(&src_config).unwrap(),
+    )
+    .unwrap();
 
     // Existing NemesisBot config to merge into
     let dst_path = dir.path().join("config.json");
@@ -531,7 +556,11 @@ fn test_plan_config_not_found_warning() {
         nemesisbot_home.to_string_lossy().as_ref(),
     )
     .unwrap();
-    assert!(warnings.iter().any(|w| w.contains("Config migration skipped")));
+    assert!(
+        warnings
+            .iter()
+            .any(|w| w.contains("Config migration skipped"))
+    );
 }
 
 #[test]
@@ -559,7 +588,11 @@ fn test_copy_file_success() {
     let src = dir.path().join("src.txt");
     let dst = dir.path().join("dst.txt");
     fs::write(&src, "content").unwrap();
-    copy_file(src.to_string_lossy().as_ref(), dst.to_string_lossy().as_ref()).unwrap();
+    copy_file(
+        src.to_string_lossy().as_ref(),
+        dst.to_string_lossy().as_ref(),
+    )
+    .unwrap();
     assert_eq!(fs::read_to_string(&dst).unwrap(), "content");
 }
 
@@ -641,7 +674,11 @@ fn test_plan_workspace_only_no_workspace() {
         nemesisbot_home.to_string_lossy().as_ref(),
     )
     .unwrap();
-    assert!(warnings.iter().any(|w| w.contains("workspace directory not found")));
+    assert!(
+        warnings
+            .iter()
+            .any(|w| w.contains("workspace directory not found"))
+    );
 }
 
 #[test]
@@ -666,7 +703,11 @@ fn test_plan_with_workspace_files() {
     )
     .unwrap();
     // Should have workspace-related actions (Copy for SOUL.md etc.)
-    assert!(actions.iter().any(|a| a.action_type == FullMigrationActionType::Copy));
+    assert!(
+        actions
+            .iter()
+            .any(|a| a.action_type == FullMigrationActionType::Copy)
+    );
 }
 
 #[test]
@@ -956,7 +997,11 @@ fn test_execute_config_migration_prints_ok_message() {
         "channels": {}
     });
     let src_path = dir.path().join("openclaw.json");
-    std::fs::write(&src_path, serde_json::to_string_pretty(&src_config).unwrap()).unwrap();
+    std::fs::write(
+        &src_path,
+        serde_json::to_string_pretty(&src_config).unwrap(),
+    )
+    .unwrap();
     let dst_path = dir.path().join("config.json");
 
     let actions = vec![FullMigrationAction {
@@ -965,7 +1010,11 @@ fn test_execute_config_migration_prints_ok_message() {
         destination: dst_path.to_string_lossy().to_string(),
         description: "convert".to_string(),
     }];
-    let result = execute(&actions, dir.path().to_string_lossy().as_ref(), dir.path().to_string_lossy().as_ref());
+    let result = execute(
+        &actions,
+        dir.path().to_string_lossy().as_ref(),
+        dir.path().to_string_lossy().as_ref(),
+    );
     assert!(result.config_migrated);
     assert!(result.errors.is_empty());
     assert!(dst_path.exists());
@@ -983,7 +1032,11 @@ fn test_execute_config_migration_failed_writes_error() {
         destination: dst_path.to_string_lossy().to_string(),
         description: "convert".to_string(),
     }];
-    let result = execute(&actions, dir.path().to_string_lossy().as_ref(), dir.path().to_string_lossy().as_ref());
+    let result = execute(
+        &actions,
+        dir.path().to_string_lossy().as_ref(),
+        dir.path().to_string_lossy().as_ref(),
+    );
     assert!(!result.config_migrated);
     assert!(!result.errors.is_empty());
 }
@@ -1024,7 +1077,11 @@ fn test_execute_copy_action_with_mkdir() {
         destination: dst.to_string_lossy().to_string(),
         description: "copy".to_string(),
     }];
-    let result = execute(&actions, dir.path().to_string_lossy().as_ref(), "/nemesisbot");
+    let result = execute(
+        &actions,
+        dir.path().to_string_lossy().as_ref(),
+        "/nemesisbot",
+    );
     assert_eq!(result.files_copied, 1);
     assert!(dst.exists());
     assert_eq!(std::fs::read_to_string(&dst).unwrap(), "content");
@@ -1066,7 +1123,11 @@ fn test_execute_backup_action_full_flow() {
         destination: dst.to_string_lossy().to_string(),
         description: "backup".to_string(),
     }];
-    let _ = execute(&actions, dir.path().to_string_lossy().as_ref(), "/nemesisbot");
+    let _ = execute(
+        &actions,
+        dir.path().to_string_lossy().as_ref(),
+        "/nemesisbot",
+    );
 }
 
 #[test]
@@ -1104,7 +1165,11 @@ fn test_execute_backup_action_copy_failure() {
         destination: dst.to_string_lossy().to_string(),
         description: "backup".to_string(),
     }];
-    let result = execute(&actions, dir.path().to_string_lossy().as_ref(), "/nemesisbot");
+    let result = execute(
+        &actions,
+        dir.path().to_string_lossy().as_ref(),
+        "/nemesisbot",
+    );
     // Backup of dst succeeds, but copy of src fails
     assert_eq!(result.backups_created, 1);
     assert!(!result.errors.is_empty());
@@ -1127,8 +1192,16 @@ fn test_plan_workspace_migration_with_force_creates_copy() {
         true,
     )
     .unwrap();
-    assert!(actions.iter().any(|a| a.action_type == FullMigrationActionType::Copy));
-    assert!(!actions.iter().any(|a| a.action_type == FullMigrationActionType::Backup));
+    assert!(
+        actions
+            .iter()
+            .any(|a| a.action_type == FullMigrationActionType::Copy)
+    );
+    assert!(
+        !actions
+            .iter()
+            .any(|a| a.action_type == FullMigrationActionType::Backup)
+    );
 }
 
 #[test]
@@ -1147,7 +1220,11 @@ fn test_plan_workspace_migration_with_existing_creates_backup() {
         false,
     )
     .unwrap();
-    assert!(actions.iter().any(|a| a.action_type == FullMigrationActionType::Backup));
+    assert!(
+        actions
+            .iter()
+            .any(|a| a.action_type == FullMigrationActionType::Backup)
+    );
 }
 
 #[test]
@@ -1187,20 +1264,28 @@ fn test_plan_workspace_migration_no_dirs() {
         false,
     )
     .unwrap();
-    assert!(!actions
-        .iter()
-        .any(|a| a.action_type == FullMigrationActionType::CreateDir));
+    assert!(
+        !actions
+            .iter()
+            .any(|a| a.action_type == FullMigrationActionType::CreateDir)
+    );
 }
 
 #[test]
 fn test_resolve_openclaw_home_with_env() {
     let _guard = GLOBAL_STATE_LOCK.lock().unwrap();
     let orig = std::env::var("OPENCLAW_HOME").ok();
-    unsafe { std::env::set_var("OPENCLAW_HOME", "/env/openclaw"); }
+    unsafe {
+        std::env::set_var("OPENCLAW_HOME", "/env/openclaw");
+    }
     let result = resolve_openclaw_home("");
     match orig {
-        Some(v) => unsafe { std::env::set_var("OPENCLAW_HOME", v); },
-        None => unsafe { std::env::remove_var("OPENCLAW_HOME"); },
+        Some(v) => unsafe {
+            std::env::set_var("OPENCLAW_HOME", v);
+        },
+        None => unsafe {
+            std::env::remove_var("OPENCLAW_HOME");
+        },
     }
     assert!(result.is_ok());
     assert_eq!(result.unwrap(), "/env/openclaw");
@@ -1210,11 +1295,17 @@ fn test_resolve_openclaw_home_with_env() {
 fn test_resolve_nemesisbot_home_with_env() {
     let _guard = GLOBAL_STATE_LOCK.lock().unwrap();
     let orig = std::env::var("NEMESISBOT_HOME").ok();
-    unsafe { std::env::set_var("NEMESISBOT_HOME", "/env/nemesisbot"); }
+    unsafe {
+        std::env::set_var("NEMESISBOT_HOME", "/env/nemesisbot");
+    }
     let result = resolve_nemesisbot_home("");
     match orig {
-        Some(v) => unsafe { std::env::set_var("NEMESISBOT_HOME", v); },
-        None => unsafe { std::env::remove_var("NEMESISBOT_HOME"); },
+        Some(v) => unsafe {
+            std::env::set_var("NEMESISBOT_HOME", v);
+        },
+        None => unsafe {
+            std::env::remove_var("NEMESISBOT_HOME");
+        },
     }
     assert!(result.is_ok());
     assert_eq!(result.unwrap(), "/env/nemesisbot");
@@ -1224,11 +1315,17 @@ fn test_resolve_nemesisbot_home_with_env() {
 fn test_resolve_openclaw_home_override_takes_priority_over_env() {
     let _guard = GLOBAL_STATE_LOCK.lock().unwrap();
     let orig = std::env::var("OPENCLAW_HOME").ok();
-    unsafe { std::env::set_var("OPENCLAW_HOME", "/env/openclaw"); }
+    unsafe {
+        std::env::set_var("OPENCLAW_HOME", "/env/openclaw");
+    }
     let result = resolve_openclaw_home("/override/path");
     match orig {
-        Some(v) => unsafe { std::env::set_var("OPENCLAW_HOME", v); },
-        None => unsafe { std::env::remove_var("OPENCLAW_HOME"); },
+        Some(v) => unsafe {
+            std::env::set_var("OPENCLAW_HOME", v);
+        },
+        None => unsafe {
+            std::env::remove_var("OPENCLAW_HOME");
+        },
     }
     assert_eq!(result.unwrap(), "/override/path");
 }
@@ -1237,11 +1334,17 @@ fn test_resolve_openclaw_home_override_takes_priority_over_env() {
 fn test_resolve_nemesisbot_home_override_takes_priority_over_env() {
     let _guard = GLOBAL_STATE_LOCK.lock().unwrap();
     let orig = std::env::var("NEMESISBOT_HOME").ok();
-    unsafe { std::env::set_var("NEMESISBOT_HOME", "/env/nemesisbot"); }
+    unsafe {
+        std::env::set_var("NEMESISBOT_HOME", "/env/nemesisbot");
+    }
     let result = resolve_nemesisbot_home("/override/path");
     match orig {
-        Some(v) => unsafe { std::env::set_var("NEMESISBOT_HOME", v); },
-        None => unsafe { std::env::remove_var("NEMESISBOT_HOME"); },
+        Some(v) => unsafe {
+            std::env::set_var("NEMESISBOT_HOME", v);
+        },
+        None => unsafe {
+            std::env::remove_var("NEMESISBOT_HOME");
+        },
     }
     assert_eq!(result.unwrap(), "/override/path");
 }
@@ -1274,15 +1377,25 @@ fn test_dirs_home_uses_home_env_first() {
     let _guard = GLOBAL_STATE_LOCK.lock().unwrap();
     let orig_home = std::env::var("HOME").ok();
     let orig_userprofile = std::env::var("USERPROFILE").ok();
-    unsafe { std::env::set_var("HOME", "/test/home/dir"); }
+    unsafe {
+        std::env::set_var("HOME", "/test/home/dir");
+    }
     let result = dirs_home();
     match orig_home {
-        Some(v) => unsafe { std::env::set_var("HOME", v); },
-        None => unsafe { std::env::remove_var("HOME"); },
+        Some(v) => unsafe {
+            std::env::set_var("HOME", v);
+        },
+        None => unsafe {
+            std::env::remove_var("HOME");
+        },
     }
     match orig_userprofile {
-        Some(v) => unsafe { std::env::set_var("USERPROFILE", v); },
-        None => unsafe { std::env::remove_var("USERPROFILE"); },
+        Some(v) => unsafe {
+            std::env::set_var("USERPROFILE", v);
+        },
+        None => unsafe {
+            std::env::remove_var("USERPROFILE");
+        },
     }
     assert_eq!(result.unwrap(), "/test/home/dir");
 }
@@ -1298,12 +1411,18 @@ fn test_dirs_home_uses_userprofile_fallback() {
     }
     let result = dirs_home();
     match orig_home {
-        Some(v) => unsafe { std::env::set_var("HOME", v); },
+        Some(v) => unsafe {
+            std::env::set_var("HOME", v);
+        },
         None => { /* leave unset */ }
     }
     match orig_userprofile {
-        Some(v) => unsafe { std::env::set_var("USERPROFILE", v); },
-        None => unsafe { std::env::remove_var("USERPROFILE"); },
+        Some(v) => unsafe {
+            std::env::set_var("USERPROFILE", v);
+        },
+        None => unsafe {
+            std::env::remove_var("USERPROFILE");
+        },
     }
     assert_eq!(result.unwrap(), "/test/userprofile/dir");
 }
@@ -1389,7 +1508,11 @@ fn test_execute_mixed_actions() {
             description: "merge".to_string(),
         },
     ];
-    let result = execute(&actions, dir.path().to_string_lossy().as_ref(), "/nemesisbot");
+    let result = execute(
+        &actions,
+        dir.path().to_string_lossy().as_ref(),
+        "/nemesisbot",
+    );
     assert_eq!(result.files_copied, 1);
     assert_eq!(result.files_skipped, 2);
 }
@@ -1470,7 +1593,11 @@ fn test_copy_file_to_subdir() {
     let src = dir.path().join("src.txt");
     let dst = dir.path().join("dst.txt");
     std::fs::write(&src, "data").unwrap();
-    copy_file(src.to_string_lossy().as_ref(), dst.to_string_lossy().as_ref()).unwrap();
+    copy_file(
+        src.to_string_lossy().as_ref(),
+        dst.to_string_lossy().as_ref(),
+    )
+    .unwrap();
     assert!(dst.exists());
 }
 
@@ -1590,13 +1717,14 @@ fn test_plan_with_force_overrides_existing() {
         nemesisbot_home.to_string_lossy().as_ref(),
     )
     .unwrap();
-    assert!(actions
-        .iter()
-        .any(|a| a.action_type == FullMigrationActionType::Copy
-            && a.destination.contains("SOUL.md")));
-    assert!(!actions
-        .iter()
-        .any(|a| a.action_type == FullMigrationActionType::Backup));
+    assert!(actions.iter().any(
+        |a| a.action_type == FullMigrationActionType::Copy && a.destination.contains("SOUL.md")
+    ));
+    assert!(
+        !actions
+            .iter()
+            .any(|a| a.action_type == FullMigrationActionType::Backup)
+    );
 }
 
 #[test]
@@ -1621,10 +1749,12 @@ fn test_plan_without_force_creates_backup_for_existing() {
         nemesisbot_home.to_string_lossy().as_ref(),
     )
     .unwrap();
-    assert!(actions
-        .iter()
-        .any(|a| a.action_type == FullMigrationActionType::Backup
-            && a.destination.contains("SOUL.md")));
+    assert!(
+        actions
+            .iter()
+            .any(|a| a.action_type == FullMigrationActionType::Backup
+                && a.destination.contains("SOUL.md"))
+    );
 }
 
 #[test]

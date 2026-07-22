@@ -409,9 +409,7 @@ pub fn create_mock_initialize_response(
 }
 
 /// Create a mock tools/list response.
-pub fn create_mock_tools_list_response(
-    tools: Vec<(&str, &str)>,
-) -> TransportResponse {
+pub fn create_mock_tools_list_response(tools: Vec<(&str, &str)>) -> TransportResponse {
     let tool_list: Vec<serde_json::Value> = tools
         .into_iter()
         .map(|(name, desc)| {
@@ -445,9 +443,7 @@ pub fn create_mock_tool_call_response(content: &str) -> TransportResponse {
 }
 
 /// Create a mock resources/list response.
-pub fn create_mock_resources_list_response(
-    resources: Vec<(&str, &str)>,
-) -> TransportResponse {
+pub fn create_mock_resources_list_response(resources: Vec<(&str, &str)>) -> TransportResponse {
     let resource_list: Vec<serde_json::Value> = resources
         .into_iter()
         .map(|(uri, name)| {
@@ -478,9 +474,7 @@ pub fn create_mock_error_response(id: i64, message: &str) -> TransportResponse {
 
 /// Create a mock prompts/list response.
 /// Mirrors Go's `CreateMockPromptsListResponse(prompts)`.
-pub fn create_mock_prompts_list_response(
-    prompts: Vec<(&str, &str)>,
-) -> TransportResponse {
+pub fn create_mock_prompts_list_response(prompts: Vec<(&str, &str)>) -> TransportResponse {
     let prompt_list: Vec<serde_json::Value> = prompts
         .into_iter()
         .map(|(name, description)| {
@@ -501,10 +495,7 @@ pub fn create_mock_prompts_list_response(
 
 /// Create a mock resources/read response.
 /// Mirrors Go's `CreateMockReadResourceResponse(contents)`.
-pub fn create_mock_read_resource_response(
-    uri: &str,
-    contents: &str,
-) -> TransportResponse {
+pub fn create_mock_read_resource_response(uri: &str, contents: &str) -> TransportResponse {
     TransportResponse {
         jsonrpc: JSONRPC_VERSION.to_string(),
         id: serde_json::Value::Number(6.into()),
@@ -521,9 +512,7 @@ pub fn create_mock_read_resource_response(
 
 /// Create a mock prompts/get response.
 /// Mirrors Go's `CreateMockGetPromptResponse(messages)`.
-pub fn create_mock_get_prompt_response(
-    messages: Vec<(&str, &str)>,
-) -> TransportResponse {
+pub fn create_mock_get_prompt_response(messages: Vec<(&str, &str)>) -> TransportResponse {
     let msg_list: Vec<serde_json::Value> = messages
         .into_iter()
         .map(|(role, content)| {

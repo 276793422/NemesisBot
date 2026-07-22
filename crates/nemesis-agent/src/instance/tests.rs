@@ -540,8 +540,16 @@ fn replace_tool_result_falls_back_to_push_when_no_match() {
     assert_eq!(history.len(), 5, "should append when no match");
     let tool_msgs: Vec<_> = history.iter().filter(|t| t.role == "tool").collect();
     assert_eq!(tool_msgs.len(), 2);
-    assert!(tool_msgs.iter().any(|t| t.tool_call_id.as_deref() == Some("tc_X")));
-    assert!(tool_msgs.iter().any(|t| t.tool_call_id.as_deref() == Some("tc_OTHER")));
+    assert!(
+        tool_msgs
+            .iter()
+            .any(|t| t.tool_call_id.as_deref() == Some("tc_X"))
+    );
+    assert!(
+        tool_msgs
+            .iter()
+            .any(|t| t.tool_call_id.as_deref() == Some("tc_OTHER"))
+    );
 }
 
 #[test]

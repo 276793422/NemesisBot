@@ -328,18 +328,12 @@ fn test_set_get_complex_value_number_bool_null() {
 #[test]
 fn test_template_renders_object_as_json() {
     let ctx = WorkflowContext::new(HashMap::new());
-    ctx.set_var(
-        "data",
-        json!({"name": "alice", "age": 30}),
-    );
+    ctx.set_var("data", json!({"name": "alice", "age": 30}));
     // Object should render as compact JSON (no whitespace).
     // Note: serde_json::Map stores keys sorted (BTreeMap), so the rendered
     // output is canonical, not insertion-order.
     let resolved = ctx.resolve("payload={{data}}");
-    assert_eq!(
-        resolved,
-        r#"payload={"age":30,"name":"alice"}"#
-    );
+    assert_eq!(resolved, r#"payload={"age":30,"name":"alice"}"#);
 }
 
 #[test]

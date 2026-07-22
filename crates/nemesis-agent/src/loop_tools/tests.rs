@@ -401,12 +401,16 @@ async fn test_cluster_rpc_tool_with_fn() {
         local_rpc_port: 21949,
     };
     let mut tool = ClusterRpcTool::new(config);
-    tool.set_rpc_call_fn(Arc::new(|_node: &str, _action: &str, payload: serde_json::Value| {
-        let msg = payload.get("content").and_then(|v| v.as_str()).unwrap_or("").to_string();
-        Box::pin(async move {
-            Ok(serde_json::json!({"content": format!("Echo: {}", msg)}))
-        })
-    }));
+    tool.set_rpc_call_fn(Arc::new(
+        |_node: &str, _action: &str, payload: serde_json::Value| {
+            let msg = payload
+                .get("content")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            Box::pin(async move { Ok(serde_json::json!({"content": format!("Echo: {}", msg)})) })
+        },
+    ));
 
     let ctx = RequestContext::new("web", "chat1", "user1", "sess1");
     let result = tool
@@ -430,10 +434,7 @@ async fn test_spawn_tool() {
 
     // Without a spawn function, should return error
     let result = tool
-        .execute(
-            r#"{"agent_id": "worker-1", "task": "Analyze data"}"#,
-            &ctx,
-        )
+        .execute(r#"{"agent_id": "worker-1", "task": "Analyze data"}"#, &ctx)
         .await;
     assert!(result.is_err());
     assert!(result.unwrap_err().contains("not available"));
@@ -462,10 +463,7 @@ async fn test_spawn_tool_with_fn() {
 
     let ctx = RequestContext::new("web", "chat1", "user1", "sess1");
     let result = tool
-        .execute(
-            r#"{"agent_id": "worker-1", "task": "Analyze data"}"#,
-            &ctx,
-        )
+        .execute(r#"{"agent_id": "worker-1", "task": "Analyze data"}"#, &ctx)
         .await
         .unwrap();
     assert!(result.contains("worker-1"));
@@ -501,9 +499,7 @@ async fn test_memory_tools_no_executor() {
 
     // Without a memory executor, tools should return errors
     let search = MemorySearchTool::new(None);
-    let result = search
-        .execute(r#"{"query": "test memory"}"#, &ctx)
-        .await;
+    let result = search.execute(r#"{"query": "test memory"}"#, &ctx).await;
     assert!(result.is_err());
     assert!(result.unwrap_err().contains("not available"));
 
@@ -515,7 +511,12 @@ async fn test_memory_tools_no_executor() {
     assert!(result.unwrap_err().contains("not available"));
 
     let forget = MemoryForgetTool::new(None);
-    let result = forget.execute(r#"{"action": "delete_session", "session_key": "test"}"#, &ctx).await;
+    let result = forget
+        .execute(
+            r#"{"action": "delete_session", "session_key": "test"}"#,
+            &ctx,
+        )
+        .await;
     assert!(result.is_err());
     assert!(result.unwrap_err().contains("not available"));
 
@@ -561,7 +562,10 @@ async fn test_memory_tools_with_executor() {
     // Forget (cleanup)
     let forget = MemoryForgetTool::new(Some(executor.clone()));
     let result = forget
-        .execute(r#"{"action": "delete_session", "session_key": "test-session"}"#, &ctx)
+        .execute(
+            r#"{"action": "delete_session", "session_key": "test-session"}"#,
+            &ctx,
+        )
         .await
         .unwrap();
     assert!(result.contains("deleted"));
@@ -594,12 +598,11 @@ async fn test_skills_tools_with_loader() {
     std::fs::write(
         skill_dir.join("SKILL.md"),
         "---\nname: test-skill\ndescription: A test skill\n---\n# Test Skill\n\nDoes test things.",
-    ).unwrap();
+    )
+    .unwrap();
 
     let loader = Arc::new(nemesis_skills::loader::SkillsLoader::new(
-        &workspace,
-        &global,
-        &builtin,
+        &workspace, &global, &builtin,
     ));
 
     let ctx = RequestContext::new("web", "chat1", "user1", "sess1");
@@ -613,7 +616,10 @@ async fn test_skills_tools_with_loader() {
     // SkillsInfoTool with loader
     let info = SkillsInfoTool::new(Some(loader));
     // Test with JSON format (how LLM actually calls the tool)
-    let result = info.execute(r#"{"name": "test-skill"}"#, &ctx).await.unwrap();
+    let result = info
+        .execute(r#"{"name": "test-skill"}"#, &ctx)
+        .await
+        .unwrap();
     assert!(result.contains("test-skill"));
     assert!(result.contains("Does test things"));
 
@@ -717,10 +723,7 @@ async fn test_message_tool_with_rpc_context() {
 
     let mut ctx = RequestContext::new("rpc", "chat1", "user1", "sess1");
     ctx.correlation_id = Some("corr-123".to_string());
-    let result = tool
-        .execute(r#"{"content": "hello"}"#, &ctx)
-        .await
-        .unwrap();
+    let result = tool.execute(r#"{"content": "hello"}"#, &ctx).await.unwrap();
     assert_eq!(result, "hello");
     // The sent content should have RPC prefix
     let sent_val = sent.lock().unwrap().clone();
@@ -780,7 +783,8 @@ fn test_extract_path_raw_string() {
 
 #[test]
 fn test_extract_path_and_content_valid() {
-    let (path, content) = extract_path_and_content(r#"{"path": "/a/b", "content": "hello"}"#).unwrap();
+    let (path, content) =
+        extract_path_and_content(r#"{"path": "/a/b", "content": "hello"}"#).unwrap();
     assert_eq!(path, "/a/b");
     assert_eq!(content, "hello");
 }
@@ -807,10 +811,8 @@ fn test_extract_path_and_content_missing_path() {
 
 #[test]
 fn test_extract_edit_args_valid() {
-    let (path, old, new) = extract_edit_args(
-        r#"{"path": "/a.txt", "old_text": "foo", "new_text": "bar"}"#,
-    )
-    .unwrap();
+    let (path, old, new) =
+        extract_edit_args(r#"{"path": "/a.txt", "old_text": "foo", "new_text": "bar"}"#).unwrap();
     assert_eq!(path, "/a.txt");
     assert_eq!(old, "foo");
     assert_eq!(new, "bar");
@@ -851,10 +853,11 @@ async fn test_read_file_not_found() {
 async fn test_list_dir_not_found() {
     let tool = ListDirectoryTool;
     let ctx = RequestContext::new("web", "chat1", "user1", "sess1");
-    let nonexistent = format!(r#"{{"path": "C:/__nonexistent_test_dir_{}"}}"#, std::process::id());
-    let result = tool
-        .execute(&nonexistent, &ctx)
-        .await;
+    let nonexistent = format!(
+        r#"{{"path": "C:/__nonexistent_test_dir_{}"}}"#,
+        std::process::id()
+    );
+    let result = tool.execute(&nonexistent, &ctx).await;
     assert!(result.is_err());
     assert!(result.unwrap_err().contains("not found"));
 }
@@ -868,7 +871,10 @@ async fn test_list_dir_is_file_not_dir() {
     let tool = ListDirectoryTool;
     let ctx = RequestContext::new("web", "chat1", "user1", "sess1");
     let result = tool
-        .execute(&serde_json::json!({"path": file_path.to_string_lossy()}).to_string(), &ctx)
+        .execute(
+            &serde_json::json!({"path": file_path.to_string_lossy()}).to_string(),
+            &ctx,
+        )
         .await;
     assert!(result.is_err());
     assert!(result.unwrap_err().contains("not a directory"));
@@ -883,7 +889,10 @@ async fn test_list_dir_empty_directory() {
     let tool = ListDirectoryTool;
     let ctx = RequestContext::new("web", "chat1", "user1", "sess1");
     let result = tool
-        .execute(&serde_json::json!({"path": empty_dir.to_string_lossy()}).to_string(), &ctx)
+        .execute(
+            &serde_json::json!({"path": empty_dir.to_string_lossy()}).to_string(),
+            &ctx,
+        )
         .await
         .unwrap();
     assert!(result.contains("empty directory"));
@@ -894,7 +903,10 @@ async fn test_edit_file_not_found() {
     let tool = EditFileTool;
     let ctx = RequestContext::new("web", "chat1", "user1", "sess1");
     let result = tool
-        .execute(r#"{"path": "/nonexistent.txt", "old_text": "a", "new_text": "b"}"#, &ctx)
+        .execute(
+            r#"{"path": "/nonexistent.txt", "old_text": "a", "new_text": "b"}"#,
+            &ctx,
+        )
         .await;
     assert!(result.is_err());
     assert!(result.unwrap_err().contains("not found"));
@@ -909,7 +921,10 @@ async fn test_delete_file_is_directory() {
     let tool = DeleteFileTool;
     let ctx = RequestContext::new("web", "chat1", "user1", "sess1");
     let result = tool
-        .execute(&serde_json::json!({"path": dir_path.to_string_lossy()}).to_string(), &ctx)
+        .execute(
+            &serde_json::json!({"path": dir_path.to_string_lossy()}).to_string(),
+            &ctx,
+        )
         .await;
     assert!(result.is_err());
     assert!(result.unwrap_err().contains("directory"));
@@ -935,7 +950,10 @@ async fn test_delete_dir_is_file() {
     let tool = DeleteDirTool;
     let ctx = RequestContext::new("web", "chat1", "user1", "sess1");
     let result = tool
-        .execute(&serde_json::json!({"path": file_path.to_string_lossy()}).to_string(), &ctx)
+        .execute(
+            &serde_json::json!({"path": file_path.to_string_lossy()}).to_string(),
+            &ctx,
+        )
         .await;
     assert!(result.is_err());
     assert!(result.unwrap_err().contains("not a directory"));
@@ -974,7 +992,10 @@ async fn test_append_to_new_file() {
 
     let result = tool.execute(&args, &ctx).await.unwrap();
     assert!(result.contains("Appended"));
-    assert_eq!(tokio::fs::read_to_string(&file_path).await.unwrap(), "first line");
+    assert_eq!(
+        tokio::fs::read_to_string(&file_path).await.unwrap(),
+        "first line"
+    );
 }
 
 // --- SleepTool edge cases ---
@@ -1013,7 +1034,11 @@ async fn test_exec_tool_basic() {
     let tool = ExecTool::new(&tmp.path().to_string_lossy(), false);
     let ctx = RequestContext::new("web", "chat1", "user1", "sess1");
 
-    let cmd = if cfg!(target_os = "windows") { "echo hello" } else { "echo hello" };
+    let cmd = if cfg!(target_os = "windows") {
+        "echo hello"
+    } else {
+        "echo hello"
+    };
     let args = serde_json::json!({"command": cmd}).to_string();
     let result = tool.execute(&args, &ctx).await.unwrap();
     assert!(result.contains("hello"));
@@ -1041,7 +1066,11 @@ async fn test_exec_tool_custom_timeout() {
     let tmp = TempDir::new().unwrap();
     let tool = ExecTool::new(&tmp.path().to_string_lossy(), false);
     let ctx = RequestContext::new("web", "chat1", "user1", "sess1");
-    let cmd = if cfg!(target_os = "windows") { "echo test" } else { "echo test" };
+    let cmd = if cfg!(target_os = "windows") {
+        "echo test"
+    } else {
+        "echo test"
+    };
     let args = serde_json::json!({"command": cmd, "timeout": 30}).to_string();
     let result = tool.execute(&args, &ctx).await.unwrap();
     assert!(result.contains("test"));
@@ -1066,7 +1095,11 @@ async fn test_exec_tool_failing_command() {
     let tmp = TempDir::new().unwrap();
     let tool = ExecTool::new(&tmp.path().to_string_lossy(), false);
     let ctx = RequestContext::new("web", "chat1", "user1", "sess1");
-    let cmd = if cfg!(target_os = "windows") { "exit /b 1" } else { "exit 1" };
+    let cmd = if cfg!(target_os = "windows") {
+        "exit /b 1"
+    } else {
+        "exit 1"
+    };
     let args = serde_json::json!({"command": cmd}).to_string();
     let result = tool.execute(&args, &ctx).await.unwrap();
     assert!(result.contains("Exit code"));
@@ -1079,7 +1112,11 @@ async fn test_async_exec_tool_basic() {
     let tmp = TempDir::new().unwrap();
     let tool = AsyncExecTool::new(&tmp.path().to_string_lossy(), false);
     let ctx = RequestContext::new("web", "chat1", "user1", "sess1");
-    let cmd = if cfg!(target_os = "windows") { "timeout /t 10 /nobreak >nul 2>&1 || ping -n 10 127.0.0.1 >nul" } else { "sleep 10" };
+    let cmd = if cfg!(target_os = "windows") {
+        "timeout /t 10 /nobreak >nul 2>&1 || ping -n 10 127.0.0.1 >nul"
+    } else {
+        "sleep 10"
+    };
     let args = serde_json::json!({"command": cmd, "wait_seconds": 1}).to_string();
     let result = tool.execute(&args, &ctx).await;
     // Should succeed — process is still running after 1s wait
@@ -1120,7 +1157,11 @@ async fn test_async_exec_tool_fast_exit() {
     let tmp = TempDir::new().unwrap();
     let tool = AsyncExecTool::new(&tmp.path().to_string_lossy(), false);
     let ctx = RequestContext::new("web", "chat1", "user1", "sess1");
-    let cmd = if cfg!(target_os = "windows") { "echo hello" } else { "echo hello" };
+    let cmd = if cfg!(target_os = "windows") {
+        "echo hello"
+    } else {
+        "echo hello"
+    };
     let args = serde_json::json!({"command": cmd, "wait_seconds": 5}).to_string();
     let result = tool.execute(&args, &ctx).await;
     // Fast-exit command completes within wait period, should return ok
@@ -1276,9 +1317,7 @@ async fn test_spawn_tool_allowlist_allowed() {
             let agent_id = agent_id.to_string();
             let task = task.to_string();
             let model = model.to_string();
-            Box::pin(async move {
-                Ok(format!("spawned {} for {} with {}", agent_id, task, model))
-            })
+            Box::pin(async move { Ok(format!("spawned {} for {} with {}", agent_id, task, model)) })
         },
     ));
 
@@ -1383,7 +1422,11 @@ fn test_tool_parameters_are_valid_json() {
     let tools = register_default_tools();
     for (name, tool) in &tools {
         let params = tool.parameters();
-        assert!(params.is_object(), "Tool '{}' parameters is not an object", name);
+        assert!(
+            params.is_object(),
+            "Tool '{}' parameters is not an object",
+            name
+        );
     }
 }
 
@@ -1488,22 +1531,34 @@ fn test_url_decode_query_param() {
 
 #[test]
 fn test_extract_search_query_json() {
-    assert_eq!(extract_search_query(r#"{"query": "test search"}"#).unwrap(), "test search");
+    assert_eq!(
+        extract_search_query(r#"{"query": "test search"}"#).unwrap(),
+        "test search"
+    );
 }
 
 #[test]
 fn test_extract_search_query_fallback() {
-    assert_eq!(extract_search_query("plain text query").unwrap(), "plain text query");
+    assert_eq!(
+        extract_search_query("plain text query").unwrap(),
+        "plain text query"
+    );
 }
 
 #[test]
 fn test_extract_url_json() {
-    assert_eq!(extract_url(r#"{"url": "https://example.com"}"#).unwrap(), "https://example.com");
+    assert_eq!(
+        extract_url(r#"{"url": "https://example.com"}"#).unwrap(),
+        "https://example.com"
+    );
 }
 
 #[test]
 fn test_extract_url_fallback() {
-    assert_eq!(extract_url("https://example.com").unwrap(), "https://example.com");
+    assert_eq!(
+        extract_url("https://example.com").unwrap(),
+        "https://example.com"
+    );
 }
 
 #[test]
@@ -1534,7 +1589,10 @@ fn test_setup_cluster_rpc_channel_with_config() {
         local_rpc_port: 21949,
     };
     let config = setup_cluster_rpc_channel_with_config(&cluster_config);
-    assert_eq!(config.request_timeout, std::time::Duration::from_secs(24 * 3600));
+    assert_eq!(
+        config.request_timeout,
+        std::time::Duration::from_secs(24 * 3600)
+    );
 }
 
 #[tokio::test]
@@ -1546,8 +1604,20 @@ async fn test_cluster_rpc_tool_set_context() {
     };
     let tool = ClusterRpcTool::new(config);
     tool.set_context("rpc", "chat-123");
-    assert_eq!(*tool.stored_channel.lock().unwrap_or_else(|e| e.into_inner()), "rpc");
-    assert_eq!(*tool.stored_chat_id.lock().unwrap_or_else(|e| e.into_inner()), "chat-123");
+    assert_eq!(
+        *tool
+            .stored_channel
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()),
+        "rpc"
+    );
+    assert_eq!(
+        *tool
+            .stored_chat_id
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()),
+        "chat-123"
+    );
 }
 
 #[tokio::test]
@@ -1586,7 +1656,10 @@ async fn test_web_search_tool_no_provider_configured() {
 
 #[test]
 fn test_register_peer_chat_handler() {
-    let mut handlers: std::collections::HashMap<String, Box<dyn Fn(serde_json::Value) -> Result<serde_json::Value, String> + Send + Sync>> = std::collections::HashMap::new();
+    let mut handlers: std::collections::HashMap<
+        String,
+        Box<dyn Fn(serde_json::Value) -> Result<serde_json::Value, String> + Send + Sync>,
+    > = std::collections::HashMap::new();
     register_peer_chat_handler(&mut handlers, |_payload| {
         Ok(serde_json::json!({"status": "ok"}))
     });
@@ -1608,7 +1681,8 @@ async fn test_exec_tool_with_cwd() {
     let args = serde_json::json!({
         "command": "echo hello",
         "cwd": tmp.path().to_string_lossy().to_string()
-    }).to_string();
+    })
+    .to_string();
     let result = tool.execute(&args, &ctx).await;
     assert!(result.is_ok());
     assert!(result.unwrap().contains("hello"));
@@ -1621,7 +1695,8 @@ async fn test_exec_tool_workspace_restriction_denied() {
     let args = serde_json::json!({
         "command": "echo hello",
         "cwd": "/outside/workspace"
-    }).to_string();
+    })
+    .to_string();
     let result = tool.execute(&args, &ctx).await;
     assert!(result.is_err());
     assert!(result.unwrap_err().contains("outside workspace"));
@@ -1903,10 +1978,9 @@ async fn test_cluster_rpc_tool_no_rpc_fn_other_node() {
     };
     let tool = ClusterRpcTool::new(config);
     let ctx = RequestContext::new("web", "chat1", "user1", "sess1");
-    let result = tool.execute(
-        r#"{"target_node": "node-2", "message": "hello"}"#,
-        &ctx,
-    ).await;
+    let result = tool
+        .execute(r#"{"target_node": "node-2", "message": "hello"}"#, &ctx)
+        .await;
     assert!(result.is_err());
     assert!(result.err().unwrap().contains("not available"));
 }
@@ -1922,10 +1996,9 @@ async fn test_cluster_rpc_tool_rejects_self_invocation() {
     };
     let tool = ClusterRpcTool::new(config);
     let ctx = RequestContext::new("web", "chat1", "user1", "sess1");
-    let result = tool.execute(
-        r#"{"target_node": "node-1", "message": "hello"}"#,
-        &ctx,
-    ).await;
+    let result = tool
+        .execute(r#"{"target_node": "node-1", "message": "hello"}"#, &ctx)
+        .await;
     assert!(result.is_err());
     let err = result.err().unwrap();
     assert!(
@@ -2024,7 +2097,11 @@ async fn test_bootstrap_tool_missing_confirmed_field() {
     let args = serde_json::json!({"other": true}).to_string();
     let result = tool.execute(&args, &ctx).await;
     assert!(result.is_err());
-    assert!(result.unwrap_err().contains("Missing or invalid 'confirmed'"));
+    assert!(
+        result
+            .unwrap_err()
+            .contains("Missing or invalid 'confirmed'")
+    );
 }
 
 #[tokio::test]
@@ -2043,7 +2120,9 @@ async fn test_bootstrap_tool_already_removed() {
 async fn test_bootstrap_tool_success() {
     let tmp = TempDir::new().unwrap();
     let bootstrap_path = tmp.path().join("BOOTSTRAP.md");
-    tokio::fs::write(&bootstrap_path, "# Bootstrap").await.unwrap();
+    tokio::fs::write(&bootstrap_path, "# Bootstrap")
+        .await
+        .unwrap();
     assert!(bootstrap_path.exists());
 
     let tool = BootstrapTool::new(&tmp.path().to_string_lossy());
@@ -2077,11 +2156,11 @@ async fn test_cluster_rpc_tool_with_async_ack() {
         local_rpc_port: 21949,
     };
     let mut tool = ClusterRpcTool::new(config);
-    tool.set_rpc_call_fn(Arc::new(|_node: &str, _action: &str, _payload: serde_json::Value| {
-        Box::pin(async {
-            Ok(serde_json::json!({"status": "accepted", "task_id": "auto-123"}))
-        })
-    }));
+    tool.set_rpc_call_fn(Arc::new(
+        |_node: &str, _action: &str, _payload: serde_json::Value| {
+            Box::pin(async { Ok(serde_json::json!({"status": "accepted", "task_id": "auto-123"})) })
+        },
+    ));
 
     let ctx = RequestContext::new("web", "chat1", "user1", "sess1");
     let result = tool
@@ -2102,21 +2181,33 @@ async fn test_cluster_rpc_tool_target_aliases() {
 
     // Test with "target" alias
     let mut tool = ClusterRpcTool::new(config.clone());
-    tool.set_rpc_call_fn(Arc::new(|node: &str, _action: &str, _payload: serde_json::Value| {
-        let node = node.to_string();
-        Box::pin(async move { Ok(serde_json::json!({"content": format!("Response to {}", node)})) })
-    }));
+    tool.set_rpc_call_fn(Arc::new(
+        |node: &str, _action: &str, _payload: serde_json::Value| {
+            let node = node.to_string();
+            Box::pin(
+                async move { Ok(serde_json::json!({"content": format!("Response to {}", node)})) },
+            )
+        },
+    ));
     let ctx = RequestContext::new("web", "chat1", "user1", "sess1");
-    let result = tool.execute(r#"{"target": "node-3", "message": "hi"}"#, &ctx).await;
+    let result = tool
+        .execute(r#"{"target": "node-3", "message": "hi"}"#, &ctx)
+        .await;
     assert!(result.is_ok());
 
     // Test with "peer_id" alias
     let mut tool2 = ClusterRpcTool::new(config);
-    tool2.set_rpc_call_fn(Arc::new(|node: &str, _action: &str, _payload: serde_json::Value| {
-        let node = node.to_string();
-        Box::pin(async move { Ok(serde_json::json!({"content": format!("Response to {}", node)})) })
-    }));
-    let result2 = tool2.execute(r#"{"peer_id": "node-4", "message": "hi"}"#, &ctx).await;
+    tool2.set_rpc_call_fn(Arc::new(
+        |node: &str, _action: &str, _payload: serde_json::Value| {
+            let node = node.to_string();
+            Box::pin(
+                async move { Ok(serde_json::json!({"content": format!("Response to {}", node)})) },
+            )
+        },
+    ));
+    let result2 = tool2
+        .execute(r#"{"peer_id": "node-4", "message": "hi"}"#, &ctx)
+        .await;
     assert!(result2.is_ok());
 }
 
@@ -2128,15 +2219,24 @@ async fn test_cluster_rpc_tool_data_content_fallback() {
         local_rpc_port: 21949,
     };
     let mut tool = ClusterRpcTool::new(config);
-    tool.set_rpc_call_fn(Arc::new(|_node: &str, _action: &str, payload: serde_json::Value| {
-        let content = payload.get("content").and_then(|v| v.as_str()).unwrap_or("").to_string();
-        Box::pin(async move { Ok(serde_json::json!({"content": format!("Got: {}", content)})) })
-    }));
+    tool.set_rpc_call_fn(Arc::new(
+        |_node: &str, _action: &str, payload: serde_json::Value| {
+            let content = payload
+                .get("content")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            Box::pin(async move { Ok(serde_json::json!({"content": format!("Got: {}", content)})) })
+        },
+    ));
 
     let ctx = RequestContext::new("web", "chat1", "user1", "sess1");
     // Use data.content format instead of message
     let result = tool
-        .execute(r#"{"target_node": "node-2", "data": {"content": "via data"}} "#, &ctx)
+        .execute(
+            r#"{"target_node": "node-2", "data": {"content": "via data"}} "#,
+            &ctx,
+        )
         .await
         .unwrap();
     assert!(result.contains("Got: via data"));
@@ -2151,11 +2251,23 @@ async fn test_cluster_rpc_tool_stored_context_fallback() {
     };
     let mut tool = ClusterRpcTool::new(config);
     tool.set_context("stored-ch", "stored-cid");
-    tool.set_rpc_call_fn(Arc::new(|_node: &str, _action: &str, payload: serde_json::Value| {
-        let ch = payload.get("channel").and_then(|v| v.as_str()).unwrap_or("").to_string();
-        let cid = payload.get("chat_id").and_then(|v| v.as_str()).unwrap_or("").to_string();
-        Box::pin(async move { Ok(serde_json::json!({"content": format!("ch={}, cid={}", ch, cid)})) })
-    }));
+    tool.set_rpc_call_fn(Arc::new(
+        |_node: &str, _action: &str, payload: serde_json::Value| {
+            let ch = payload
+                .get("channel")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let cid = payload
+                .get("chat_id")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            Box::pin(async move {
+                Ok(serde_json::json!({"content": format!("ch={}, cid={}", ch, cid)}))
+            })
+        },
+    ));
 
     // Empty context channel/chat_id -> should fall back to stored.
     // chat_id is propagated through cluster_rpc with a "cluster:{local_node_id}:"
@@ -2185,9 +2297,11 @@ async fn test_cluster_rpc_tool_empty_sync_response() {
         local_rpc_port: 21949,
     };
     let mut tool = ClusterRpcTool::new(config);
-    tool.set_rpc_call_fn(Arc::new(|_node: &str, _action: &str, _payload: serde_json::Value| {
-        Box::pin(async { Ok(serde_json::json!({"status": "done"})) })
-    }));
+    tool.set_rpc_call_fn(Arc::new(
+        |_node: &str, _action: &str, _payload: serde_json::Value| {
+            Box::pin(async { Ok(serde_json::json!({"status": "done"})) })
+        },
+    ));
 
     let ctx = RequestContext::new("web", "chat1", "user1", "sess1");
     let result = tool
@@ -2201,7 +2315,9 @@ async fn test_cluster_rpc_tool_empty_sync_response() {
 // CronTool additional coverage: create with different schedule types
 // =========================================================================
 
-fn make_cron_service_with_dir(tmp: &TempDir) -> Arc<std::sync::Mutex<nemesis_cron::service::CronService>> {
+fn make_cron_service_with_dir(
+    tmp: &TempDir,
+) -> Arc<std::sync::Mutex<nemesis_cron::service::CronService>> {
     let db_path = tmp.path().join("cron.db");
     Arc::new(std::sync::Mutex::new(
         nemesis_cron::service::CronService::new(&db_path.to_string_lossy()),
@@ -2220,7 +2336,8 @@ async fn test_cron_tool_create_with_every_schedule() {
         "name": "test-every",
         "schedule": "every:60s",
         "content": "test reminder"
-    }).to_string();
+    })
+    .to_string();
     let result = tool.execute(&args, &ctx).await;
     assert!(result.is_ok(), "Expected ok, got: {:?}", result);
     assert!(result.unwrap().contains("Created cron job"));
@@ -2238,7 +2355,8 @@ async fn test_cron_tool_create_with_cron_expr() {
         "name": "test-cron",
         "schedule": "0 * * * *",
         "content": "hourly task"
-    }).to_string();
+    })
+    .to_string();
     let result = tool.execute(&args, &ctx).await;
     assert!(result.is_ok(), "Expected ok, got: {:?}", result);
     assert!(result.unwrap().contains("Created cron job"));
@@ -2258,7 +2376,8 @@ async fn test_cron_tool_create_and_delete() {
         "name": "temp-job",
         "schedule": "every:30s",
         "content": "temporary"
-    }).to_string();
+    })
+    .to_string();
     let create_result = tool.execute(&create_args, &ctx).await.unwrap();
     // Extract ID from "Created cron job: temp-job (ID: xxx)"
     let id_start = create_result.find("(ID: ").unwrap();
@@ -2282,7 +2401,8 @@ async fn test_cron_tool_create_invalid_every_schedule() {
         "action": "create",
         "name": "bad-schedule",
         "schedule": "every:invalid"
-    }).to_string();
+    })
+    .to_string();
     let result = tool.execute(&args, &ctx).await;
     assert!(result.is_err());
 }
@@ -2313,7 +2433,8 @@ async fn test_cron_tool_list_after_create() {
         "name": "listable-job",
         "schedule": "every:120s",
         "content": "content"
-    }).to_string();
+    })
+    .to_string();
     tool.execute(&create_args, &ctx).await.unwrap();
 
     // List
@@ -2336,8 +2457,13 @@ async fn test_install_skill_tool_missing_slug() {
     assert!(result.is_err());
     // Empty registry cannot find the skill
     let err = result.unwrap_err();
-    assert!(err.contains("Failed to install skill") || err.contains("not found") || err.contains("error"),
-        "Expected install failure, got: {}", err);
+    assert!(
+        err.contains("Failed to install skill")
+            || err.contains("not found")
+            || err.contains("error"),
+        "Expected install failure, got: {}",
+        err
+    );
 }
 
 #[tokio::test]
@@ -2498,10 +2624,7 @@ fn test_cluster_rpc_config_default() {
 async fn test_message_tool_json_without_content_field() {
     let tool = MessageTool::new();
     let ctx = RequestContext::new("web", "chat1", "user1", "sess1");
-    let result = tool
-        .execute(r#"{"other": "value"}"#, &ctx)
-        .await
-        .unwrap();
+    let result = tool.execute(r#"{"other": "value"}"#, &ctx).await.unwrap();
     // Should fall back to raw args
     assert_eq!(result, r#"{"other": "value"}"#);
 }
@@ -2526,7 +2649,10 @@ fn test_web_search_tool_extract_query_method() {
 fn test_register_shared_tools_with_forge() {
     let tmp = tempfile::tempdir().unwrap();
     let config = nemesis_forge::config::ForgeConfig::default();
-    let forge = Arc::new(nemesis_forge::forge::Forge::new(config, tmp.path().to_path_buf()));
+    let forge = Arc::new(nemesis_forge::forge::Forge::new(
+        config,
+        tmp.path().to_path_buf(),
+    ));
     let executor = Arc::new(nemesis_forge::forge_tools::ForgeToolExecutor::new(forge));
     let config = SharedToolConfig {
         forge_executor: Some(executor),
@@ -2656,7 +2782,8 @@ async fn test_cron_tool_create_no_deliver() {
         "schedule": "every:60s",
         "content": "test",
         "deliver": false
-    }).to_string();
+    })
+    .to_string();
     let result = tool.execute(&args, &ctx).await;
     assert!(result.is_ok());
 }
@@ -2678,7 +2805,8 @@ async fn test_cron_tool_create_with_at_schedule() {
         "name": "at-job",
         "schedule": format!("at:{}", future_ts),
         "content": "future task"
-    }).to_string();
+    })
+    .to_string();
     let result = tool.execute(&args, &ctx).await;
     assert!(result.is_ok(), "Expected ok, got: {:?}", result);
 }
@@ -2694,7 +2822,8 @@ async fn test_cron_tool_create_with_invalid_at_schedule() {
         "name": "bad-at",
         "schedule": "at:not-a-timestamp",
         "content": "test"
-    }).to_string();
+    })
+    .to_string();
     let result = tool.execute(&args, &ctx).await;
     assert!(result.is_err());
 }
@@ -2732,12 +2861,16 @@ async fn test_write_file_tool_with_parent_dir_creation() {
     let args = serde_json::json!({
         "path": deep_path.to_string_lossy(),
         "content": "deeply nested content"
-    }).to_string();
+    })
+    .to_string();
 
     let result = tool.execute(&args, &ctx).await.unwrap();
     assert!(result.contains("Successfully wrote"));
     assert!(deep_path.exists());
-    assert_eq!(tokio::fs::read_to_string(&deep_path).await.unwrap(), "deeply nested content");
+    assert_eq!(
+        tokio::fs::read_to_string(&deep_path).await.unwrap(),
+        "deeply nested content"
+    );
 }
 
 #[tokio::test]
@@ -2758,7 +2891,9 @@ async fn test_read_file_tool_with_json_args() {
 async fn test_edit_file_tool_with_multiple_replacements() {
     let tmp = TempDir::new().unwrap();
     let file_path = tmp.path().join("multi_edit.txt");
-    tokio::fs::write(&file_path, "aaa bbb ccc bbb").await.unwrap();
+    tokio::fs::write(&file_path, "aaa bbb ccc bbb")
+        .await
+        .unwrap();
 
     let tool = EditFileTool;
     let ctx = RequestContext::new("web", "chat1", "user1", "sess1");
@@ -2766,7 +2901,8 @@ async fn test_edit_file_tool_with_multiple_replacements() {
         "path": file_path.to_string_lossy(),
         "old_text": "bbb",
         "new_text": "xxx"
-    }).to_string();
+    })
+    .to_string();
 
     let result = tool.execute(&args, &ctx).await;
     // Should fail because "bbb" appears twice
@@ -2785,7 +2921,8 @@ async fn test_append_file_tool_with_existing_content() {
     let args = serde_json::json!({
         "path": file_path.to_string_lossy(),
         "content": "\nSecond line"
-    }).to_string();
+    })
+    .to_string();
 
     let result = tool.execute(&args, &ctx).await.unwrap();
     assert!(result.contains("Appended"));
@@ -2797,7 +2934,9 @@ async fn test_append_file_tool_with_existing_content() {
 async fn test_delete_file_tool_success() {
     let tmp = TempDir::new().unwrap();
     let file_path = tmp.path().join("delete_success.txt");
-    tokio::fs::write(&file_path, "content to delete").await.unwrap();
+    tokio::fs::write(&file_path, "content to delete")
+        .await
+        .unwrap();
     assert!(file_path.exists());
 
     let tool = DeleteFileTool;
@@ -2828,8 +2967,12 @@ async fn test_delete_dir_tool_with_contents() {
     let tmp = TempDir::new().unwrap();
     let dir_path = tmp.path().join("dir_with_files");
     tokio::fs::create_dir_all(&dir_path).await.unwrap();
-    tokio::fs::write(dir_path.join("file1.txt"), "content1").await.unwrap();
-    tokio::fs::write(dir_path.join("file2.txt"), "content2").await.unwrap();
+    tokio::fs::write(dir_path.join("file1.txt"), "content1")
+        .await
+        .unwrap();
+    tokio::fs::write(dir_path.join("file2.txt"), "content2")
+        .await
+        .unwrap();
 
     let tool = DeleteDirTool;
     let ctx = RequestContext::new("web", "chat1", "user1", "sess1");
@@ -2863,7 +3006,9 @@ fn test_extract_path_with_whitespace() {
 
 #[test]
 fn test_extract_path_and_content_with_extra_fields() {
-    let result = extract_path_and_content(r#"{"path": "/tmp/test.txt", "content": "hello", "extra": "ignored"}"#);
+    let result = extract_path_and_content(
+        r#"{"path": "/tmp/test.txt", "content": "hello", "extra": "ignored"}"#,
+    );
     assert!(result.is_ok());
     let (path, content) = result.unwrap();
     assert_eq!(path, "/tmp/test.txt");
@@ -2872,7 +3017,9 @@ fn test_extract_path_and_content_with_extra_fields() {
 
 #[test]
 fn test_extract_edit_args_success() {
-    let result = extract_edit_args(r#"{"path": "/a.txt", "old_text": "foo", "new_text": "bar", "extra": 42}"#);
+    let result = extract_edit_args(
+        r#"{"path": "/a.txt", "old_text": "foo", "new_text": "bar", "extra": 42}"#,
+    );
     assert!(result.is_ok());
     let (path, old, new) = result.unwrap();
     assert_eq!(path, "/a.txt");
@@ -2900,10 +3047,18 @@ async fn test_message_tool_with_empty_content() {
 #[tokio::test]
 async fn test_list_directory_tool_with_files_and_dirs() {
     let tmp = TempDir::new().unwrap();
-    tokio::fs::write(tmp.path().join("file1.txt"), "a").await.unwrap();
-    tokio::fs::write(tmp.path().join("file2.py"), "b").await.unwrap();
-    tokio::fs::create_dir(tmp.path().join("subdir1")).await.unwrap();
-    tokio::fs::create_dir(tmp.path().join("subdir2")).await.unwrap();
+    tokio::fs::write(tmp.path().join("file1.txt"), "a")
+        .await
+        .unwrap();
+    tokio::fs::write(tmp.path().join("file2.py"), "b")
+        .await
+        .unwrap();
+    tokio::fs::create_dir(tmp.path().join("subdir1"))
+        .await
+        .unwrap();
+    tokio::fs::create_dir(tmp.path().join("subdir2"))
+        .await
+        .unwrap();
 
     let tool = ListDirectoryTool;
     let ctx = RequestContext::new("web", "chat1", "user1", "sess1");
@@ -2931,7 +3086,18 @@ async fn test_sleep_tool_with_json_duration() {
 #[test]
 fn test_register_default_tools_tool_names() {
     let tools = register_default_tools();
-    let expected = ["message", "read_file", "write_file", "list_dir", "edit_file", "append_file", "delete_file", "create_dir", "delete_dir", "sleep"];
+    let expected = [
+        "message",
+        "read_file",
+        "write_file",
+        "list_dir",
+        "edit_file",
+        "append_file",
+        "delete_file",
+        "create_dir",
+        "delete_dir",
+        "sleep",
+    ];
     for name in &expected {
         assert!(tools.contains_key(*name), "Missing tool: {}", name);
     }
@@ -2946,7 +3112,8 @@ async fn test_exec_tool_workspace_restriction_enabled() {
     let args = serde_json::json!({
         "command": "echo hello",
         "cwd": "/etc"
-    }).to_string();
+    })
+    .to_string();
     let result = tool.execute(&args, &ctx).await;
     assert!(result.is_err());
 }
@@ -2960,7 +3127,8 @@ async fn test_exec_tool_workspace_restriction_disabled() {
     let args = serde_json::json!({
         "command": "echo hello",
         "cwd": tmp.path().to_string_lossy().to_string()
-    }).to_string();
+    })
+    .to_string();
     let result = tool.execute(&args, &ctx).await;
     assert!(result.is_ok());
 }
@@ -2970,7 +3138,11 @@ async fn test_async_exec_tool_with_wait_seconds() {
     let tmp = TempDir::new().unwrap();
     let tool = AsyncExecTool::new(&tmp.path().to_string_lossy(), false);
     let ctx = RequestContext::new("web", "chat1", "user1", "sess1");
-    let cmd = if cfg!(target_os = "windows") { "echo hello" } else { "echo hello" };
+    let cmd = if cfg!(target_os = "windows") {
+        "echo hello"
+    } else {
+        "echo hello"
+    };
     let args = serde_json::json!({"command": cmd, "wait_seconds": 5}).to_string();
     let result = tool.execute(&args, &ctx).await;
     assert!(result.is_ok());
@@ -2980,9 +3152,17 @@ async fn test_async_exec_tool_with_wait_seconds() {
 fn test_tool_descriptions_not_empty_all_tools() {
     let tools = register_default_tools();
     for (name, tool) in &tools {
-        assert!(!tool.description().is_empty(), "Tool '{}' has empty description", name);
+        assert!(
+            !tool.description().is_empty(),
+            "Tool '{}' has empty description",
+            name
+        );
         let params = tool.parameters();
-        assert!(params.is_object(), "Tool '{}' has non-object parameters", name);
+        assert!(
+            params.is_object(),
+            "Tool '{}' has non-object parameters",
+            name
+        );
     }
 }
 
@@ -3003,10 +3183,12 @@ async fn test_mcp_discover_tool_missing_command() {
 async fn test_mcp_discover_tool_nonexistent_command() {
     let tool = McpDiscoverTool::new();
     let ctx = RequestContext::new("web", "chat1", "user1", "sess1");
-    let result = tool.execute(
-        r#"{"command": "/nonexistent/path/to/server.exe", "timeout": 2}"#,
-        &ctx,
-    ).await;
+    let result = tool
+        .execute(
+            r#"{"command": "/nonexistent/path/to/server.exe", "timeout": 2}"#,
+            &ctx,
+        )
+        .await;
     assert!(result.is_err());
 }
 
@@ -3015,10 +3197,9 @@ async fn test_mcp_discover_tool_url_mode() {
     let tool = McpDiscoverTool::new();
     let ctx = RequestContext::new("web", "chat1", "user1", "sess1");
     // URL mode should attempt HTTP connection (will fail since no server running)
-    let result = tool.execute(
-        r#"{"url": "http://127.0.0.1:1/mcp", "timeout": 1}"#,
-        &ctx,
-    ).await;
+    let result = tool
+        .execute(r#"{"url": "http://127.0.0.1:1/mcp", "timeout": 1}"#, &ctx)
+        .await;
     assert!(result.is_err());
     assert!(result.unwrap_err().contains("HTTP"));
 }
@@ -3109,9 +3290,7 @@ async fn test_mcp_list_tool_dynamic_update() {
     let tool = McpListTool::new(snapshot.clone());
 
     // Add tools after creating the tool
-    *snapshot.write() = vec![
-        ("mcp_new_tool".to_string(), "New tool".to_string()),
-    ];
+    *snapshot.write() = vec![("mcp_new_tool".to_string(), "New tool".to_string())];
 
     let ctx = RequestContext::new("web", "chat1", "user1", "sess1");
     let result = tool.execute("{}", &ctx).await.unwrap();
@@ -3126,7 +3305,10 @@ async fn test_mcp_list_tool_dynamic_update() {
 #[test]
 fn test_shared_tools_include_mcp_discover() {
     let tools = register_extended_tools(None, None, None);
-    assert!(tools.contains_key("mcp_discover"), "mcp_discover should be registered by default");
+    assert!(
+        tools.contains_key("mcp_discover"),
+        "mcp_discover should be registered by default"
+    );
 }
 
 // =========================================================================
@@ -3140,10 +3322,22 @@ async fn test_cli_reference_tool_overview() {
     let result = tool.execute("{}", &ctx).await.unwrap();
     assert!(result.contains("model"), "overview should contain 'model'");
     assert!(result.contains("mcp"), "overview should contain 'mcp'");
-    assert!(result.contains("cluster"), "overview should contain 'cluster'");
-    assert!(result.contains("scanner"), "overview should contain 'scanner'");
-    assert!(!result.contains("gateway"), "overview should NOT contain 'gateway'");
-    assert!(!result.contains("shutdown"), "overview should NOT contain 'shutdown'");
+    assert!(
+        result.contains("cluster"),
+        "overview should contain 'cluster'"
+    );
+    assert!(
+        result.contains("scanner"),
+        "overview should contain 'scanner'"
+    );
+    assert!(
+        !result.contains("gateway"),
+        "overview should NOT contain 'gateway'"
+    );
+    assert!(
+        !result.contains("shutdown"),
+        "overview should NOT contain 'shutdown'"
+    );
 }
 
 #[tokio::test]
@@ -3171,7 +3365,10 @@ async fn test_cli_reference_tool_empty_command() {
     let tool = CliReferenceTool::new();
     let ctx = RequestContext::new("web", "chat1", "user1", "sess1");
     let result = tool.execute(r#"{"command": ""}"#, &ctx).await.unwrap();
-    assert!(result.contains("model"), "empty command should return overview");
+    assert!(
+        result.contains("model"),
+        "empty command should return overview"
+    );
 }
 
 #[tokio::test]
@@ -3179,7 +3376,10 @@ async fn test_cli_reference_tool_invalid_json() {
     let tool = CliReferenceTool::new();
     let ctx = RequestContext::new("web", "chat1", "user1", "sess1");
     let result = tool.execute("not json", &ctx).await.unwrap();
-    assert!(result.contains("model"), "invalid JSON should return overview");
+    assert!(
+        result.contains("model"),
+        "invalid JSON should return overview"
+    );
 }
 
 #[test]
@@ -3194,7 +3394,10 @@ fn test_cli_reference_tool_description_and_params() {
 #[test]
 fn test_shared_tools_include_cli_reference() {
     let tools = register_extended_tools(None, None, None);
-    assert!(tools.contains_key("cli_reference"), "cli_reference should be registered by default");
+    assert!(
+        tools.contains_key("cli_reference"),
+        "cli_reference should be registered by default"
+    );
 }
 
 // =========================================================================
@@ -3212,9 +3415,19 @@ fn test_cluster_rpc_params_no_peers_fn() {
     };
     let tool = ClusterRpcTool::new(config);
     let params = tool.parameters();
-    let target_desc = params["properties"]["target"]["description"].as_str().unwrap();
-    assert!(target_desc.starts_with("Target bot ID"), "got: {}", target_desc);
-    assert!(target_desc.contains("your own node_id is 'node-1'"), "got: {}", target_desc);
+    let target_desc = params["properties"]["target"]["description"]
+        .as_str()
+        .unwrap();
+    assert!(
+        target_desc.starts_with("Target bot ID"),
+        "got: {}",
+        target_desc
+    );
+    assert!(
+        target_desc.contains("your own node_id is 'node-1'"),
+        "got: {}",
+        target_desc
+    );
 }
 
 #[test]
@@ -3227,17 +3440,28 @@ fn test_cluster_rpc_params_with_peers() {
     };
     let mut tool = ClusterRpcTool::new(config);
     tool.set_peers_fn(Arc::new(|| {
-        vec![
-            ("Node-B".to_string(), "Bot B".to_string(), vec!["shell".to_string(), "web".to_string()]),
-        ]
+        vec![(
+            "Node-B".to_string(),
+            "Bot B".to_string(),
+            vec!["shell".to_string(), "web".to_string()],
+        )]
     }));
 
     let params = tool.parameters();
     let params_str = serde_json::to_string(&params).unwrap();
     assert!(params_str.contains("Node-B"), "should contain peer node ID");
-    assert!(params_str.contains("Bot B"), "should contain peer node name");
-    assert!(params_str.contains("shell"), "should contain capability 'shell'");
-    assert!(params_str.contains("web"), "should contain capability 'web'");
+    assert!(
+        params_str.contains("Bot B"),
+        "should contain peer node name"
+    );
+    assert!(
+        params_str.contains("shell"),
+        "should contain capability 'shell'"
+    );
+    assert!(
+        params_str.contains("web"),
+        "should contain capability 'web'"
+    );
 }
 
 #[test]
@@ -3252,7 +3476,9 @@ fn test_cluster_rpc_params_empty_peers() {
     tool.set_peers_fn(Arc::new(|| vec![]));
 
     let params = tool.parameters();
-    let target_desc = params["properties"]["target"]["description"].as_str().unwrap();
+    let target_desc = params["properties"]["target"]["description"]
+        .as_str()
+        .unwrap();
     assert!(
         target_desc.contains("no other peers currently online"),
         "expected 'no other peers currently online', got: {}",
@@ -3271,16 +3497,25 @@ fn test_cluster_rpc_params_with_multiple_peers_and_empty_caps() {
     let mut tool = ClusterRpcTool::new(config);
     tool.set_peers_fn(Arc::new(|| {
         vec![
-            ("Node-X".to_string(), "Bot X".to_string(), vec!["shell".to_string()]),
+            (
+                "Node-X".to_string(),
+                "Bot X".to_string(),
+                vec!["shell".to_string()],
+            ),
             ("Node-Y".to_string(), "Bot Y".to_string(), vec![]),
         ]
     }));
 
     let params = tool.parameters();
-    let target_desc = params["properties"]["target"]["description"].as_str().unwrap();
+    let target_desc = params["properties"]["target"]["description"]
+        .as_str()
+        .unwrap();
     assert!(target_desc.contains("Node-X"), "should list Node-X");
     assert!(target_desc.contains("Bot X"), "should list Bot X name");
-    assert!(target_desc.contains("shell"), "should list shell capability");
+    assert!(
+        target_desc.contains("shell"),
+        "should list shell capability"
+    );
     assert!(target_desc.contains("Node-Y"), "should list Node-Y");
     assert!(
         target_desc.contains("unknown capabilities"),
@@ -3330,9 +3565,7 @@ async fn test_cluster_rpc_execute_async_ack() {
     let mut tool = ClusterRpcTool::new(config);
     tool.set_rpc_call_fn(Arc::new(
         |_node: &str, _action: &str, _payload: serde_json::Value| {
-            Box::pin(async {
-                Ok(serde_json::json!({"status": "accepted", "task_id": "t-123"}))
-            })
+            Box::pin(async { Ok(serde_json::json!({"status": "accepted", "task_id": "t-123"})) })
         },
     ));
 
@@ -3357,9 +3590,7 @@ async fn test_cluster_rpc_execute_async_ack_includes_peer_name() {
     let mut tool = ClusterRpcTool::new(config);
     tool.set_rpc_call_fn(Arc::new(
         |_node: &str, _action: &str, _payload: serde_json::Value| {
-            Box::pin(async {
-                Ok(serde_json::json!({"status": "accepted", "task_id": "t-456"}))
-            })
+            Box::pin(async { Ok(serde_json::json!({"status": "accepted", "task_id": "t-456"})) })
         },
     ));
     tool.set_peers_fn(Arc::new(move || {
@@ -3391,9 +3622,7 @@ async fn test_cluster_rpc_execute_sync_response() {
     let mut tool = ClusterRpcTool::new(config);
     tool.set_rpc_call_fn(Arc::new(
         |_node: &str, _action: &str, _payload: serde_json::Value| {
-            Box::pin(async {
-                Ok(serde_json::json!({"status": "done", "content": "hello back"}))
-            })
+            Box::pin(async { Ok(serde_json::json!({"status": "done", "content": "hello back"})) })
         },
     ));
 
@@ -3417,9 +3646,8 @@ fn test_cluster_rpc_description() {
     };
     let tool = ClusterRpcTool::new(config);
     assert!(
-        tool.description().starts_with(
-            "Send a message to ANOTHER bot in the cluster (never yourself)"
-        )
+        tool.description()
+            .starts_with("Send a message to ANOTHER bot in the cluster (never yourself)")
     );
 }
 
@@ -3498,11 +3726,7 @@ async fn build_test_engine_with_workflow(
 
     let provider = Arc::new(StubProvider) as Arc<dyn LLMProvider>;
     let tools = Arc::new(nemesis_tools::registry::ToolRegistry::new());
-    let engine = nemesis_workflow::engine::WorkflowEngine::new_integrated(
-        provider,
-        tools,
-        None,
-    );
+    let engine = nemesis_workflow::engine::WorkflowEngine::new_integrated(provider, tools, None);
 
     let nodes = vec![NodeDef {
         id: "n1".to_string(),
@@ -3552,21 +3776,24 @@ async fn test_workflow_run_records_agent_tool_trigger() {
     let tool = WorkflowRunTool::new(engine.clone());
     let ctx = RequestContext::new("web", "chat1", "user1", "sess1");
 
-    let out = tool
-        .execute(r#"{"workflow": "wf"}"#, &ctx)
-        .await
-        .unwrap();
+    let out = tool.execute(r#"{"workflow": "wf"}"#, &ctx).await.unwrap();
     let v: serde_json::Value = serde_json::from_str(&out).unwrap();
     let exec_id = v["execution_id"].as_str().unwrap().to_string();
 
-    let exec = engine.get_execution(&exec_id).await.expect("execution must exist");
+    let exec = engine
+        .get_execution(&exec_id)
+        .await
+        .expect("execution must exist");
     match exec.trigger_source.as_ref().unwrap() {
         TriggerSource::AgentTool {
             tool_call_id,
             recursion_depth,
         } => {
             assert!(!tool_call_id.is_empty(), "tool_call_id must be populated");
-            assert_eq!(*recursion_depth, 1, "first agent call should record depth=1");
+            assert_eq!(
+                *recursion_depth, 1,
+                "first agent call should record depth=1"
+            );
         }
         other => panic!("expected AgentTool trigger, got {:?}", other),
     }
@@ -3593,10 +3820,7 @@ async fn test_workflow_run_rejects_missing_workflow_param() {
 async fn test_workflow_run_rejects_recursion_depth_exceeded() {
     let (engine, _) = build_test_engine_with_workflow("wf").await;
     // Pretend we're already at the max depth — the next call must be rejected.
-    let tool = WorkflowRunTool::with_starting_depth(
-        engine,
-        nemesis_workflow::MAX_RECURSION_DEPTH,
-    );
+    let tool = WorkflowRunTool::with_starting_depth(engine, nemesis_workflow::MAX_RECURSION_DEPTH);
     let ctx = RequestContext::new("web", "chat1", "user1", "sess1");
 
     let err = tool
@@ -3700,9 +3924,10 @@ impl AgentRunner for StubAgentRunner {
         let tool = WorkflowRunTool::new(Arc::clone(&self.engine));
         let ctx = RequestContext::new("test", "chat", "user", "session");
         let args = serde_json::json!({ "workflow": self.inner_workflow }).to_string();
-        let out = tool.execute(&args, &ctx).await.map_err(|e| {
-            format!("WorkflowRunTool failed inside StubAgentRunner: {e}")
-        })?;
+        let out = tool
+            .execute(&args, &ctx)
+            .await
+            .map_err(|e| format!("WorkflowRunTool failed inside StubAgentRunner: {e}"))?;
 
         // Record the inner execution_id so the test can look it up later.
         let v: serde_json::Value = serde_json::from_str(&out)
@@ -3743,13 +3968,11 @@ fn gap3_wf(name: &str, nodes: Vec<NodeDef>) -> Workflow {
     let edges: Vec<Edge> = nodes
         .iter()
         .flat_map(|n| {
-            n.depends_on
-                .iter()
-                .map(move |dep| Edge {
-                    from_node: dep.clone(),
-                    to_node: n.id.clone(),
-                    condition: None,
-                })
+            n.depends_on.iter().map(move |dep| Edge {
+                from_node: dep.clone(),
+                to_node: n.id.clone(),
+                condition: None,
+            })
         })
         .collect();
     Workflow {
@@ -3805,8 +4028,7 @@ async fn gap3_agent_node_to_workflow_run_tool_full_chain() {
     // Build the engine with a stub LLM provider (the LLM doesn't actually
     // drive the agent — the StubAgentRunner ignores the prompt and calls
     // WorkflowRunTool directly).
-    let provider =
-        Arc::new(LocalStubProvider) as Arc<dyn nemesis_providers::router::LLMProvider>;
+    let provider = Arc::new(LocalStubProvider) as Arc<dyn nemesis_providers::router::LLMProvider>;
     let tools_registry = Arc::new(nemesis_tools::registry::ToolRegistry::new());
     let engine = nemesis_workflow::engine::WorkflowEngine::new_integrated(
         Arc::clone(&provider),
@@ -3816,23 +4038,18 @@ async fn gap3_agent_node_to_workflow_run_tool_full_chain() {
 
     // Register the inner workflow with a capture_stack node so we can
     // inspect the live call stack when the inner workflow runs.
-    let captured_during_inner: Arc<Mutex<Option<Vec<CallFrame>>>> =
-        Arc::new(Mutex::new(None));
+    let captured_during_inner: Arc<Mutex<Option<Vec<CallFrame>>>> = Arc::new(Mutex::new(None));
     let capture_exec = Arc::new(CaptureStackExecutor {
         engine: Arc::clone(&engine),
         captured: Arc::clone(&captured_during_inner),
     });
     engine.register_node_executor("capture_stack", capture_exec);
 
-    let inner_wf = gap3_wf(
-        "inner",
-        vec![gap3_node("capture", "capture_stack", &[])],
-    );
+    let inner_wf = gap3_wf("inner", vec![gap3_node("capture", "capture_stack", &[])]);
     engine.register_workflow(inner_wf).unwrap();
 
     // Register the StubAgentRunner as the agent_node backend.
-    let stack_at_entry: Arc<Mutex<Option<Vec<CallFrame>>>> =
-        Arc::new(Mutex::new(None));
+    let stack_at_entry: Arc<Mutex<Option<Vec<CallFrame>>>> = Arc::new(Mutex::new(None));
     let inner_exec_id: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
     let runner = Arc::new(StubAgentRunner {
         engine: Arc::clone(&engine),
@@ -3854,7 +4071,11 @@ async fn gap3_agent_node_to_workflow_run_tool_full_chain() {
 
     // Trigger the outer workflow as a CLI run (top-level).
     let outer_exec = engine
-        .run("outer", std::collections::HashMap::new(), Some(TriggerSource::Cli))
+        .run(
+            "outer",
+            std::collections::HashMap::new(),
+            Some(TriggerSource::Cli),
+        )
         .await
         .expect("outer workflow should complete");
     assert_eq!(
@@ -3864,9 +4085,11 @@ async fn gap3_agent_node_to_workflow_run_tool_full_chain() {
     );
 
     // --- Verify: stack at agent entry showed the outer frame ---
-    let stack_entry = stack_at_entry.lock().unwrap().clone().expect(
-        "StubAgentRunner.run_direct must have been invoked",
-    );
+    let stack_entry = stack_at_entry
+        .lock()
+        .unwrap()
+        .clone()
+        .expect("StubAgentRunner.run_direct must have been invoked");
     assert_eq!(
         stack_entry.len(),
         1,
@@ -3898,10 +4121,7 @@ async fn gap3_agent_node_to_workflow_run_tool_full_chain() {
             tool_call_id,
             recursion_depth,
         } => {
-            assert!(
-                !tool_call_id.is_empty(),
-                "tool_call_id must be populated"
-            );
+            assert!(!tool_call_id.is_empty(), "tool_call_id must be populated");
             assert_eq!(
                 *recursion_depth, 1,
                 "first agent-mediated workflow_run must record depth=1"
@@ -3952,8 +4172,8 @@ async fn test_cli_reference_tool_all_command_arms() {
     let ctx = RequestContext::new("web", "chat1", "user1", "sess1");
 
     let commands = [
-        "model", "mcp", "channel", "cluster", "skills", "forge", "cron", "security",
-        "scanner", "log", "auth", "memory", "workflow", "cors", "status", "version",
+        "model", "mcp", "channel", "cluster", "skills", "forge", "cron", "security", "scanner",
+        "log", "auth", "memory", "workflow", "cors", "status", "version",
     ];
     for cmd in commands {
         let args = format!(r#"{{"command": "{}"}}"#, cmd);
@@ -3974,7 +4194,10 @@ async fn test_cli_reference_tool_all_command_arms() {
 
     // Uppercase input is normalized via to_lowercase (covers that branch).
     let upper = tool.execute(r#"{"command": "SCANNER"}"#, &ctx).await;
-    assert!(upper.is_ok(), "uppercase command should normalize to lowercase");
+    assert!(
+        upper.is_ok(),
+        "uppercase command should normalize to lowercase"
+    );
     assert!(upper.unwrap().contains("scanner"));
 }
 
@@ -3988,10 +4211,7 @@ async fn test_cli_reference_tool_all_command_arms() {
 
 #[tokio::test]
 async fn run_script_returns_structured_output() {
-    let tool = RunScriptTool::new(
-        std::env::temp_dir().to_string_lossy().as_ref(),
-        false,
-    );
+    let tool = RunScriptTool::new(std::env::temp_dir().to_string_lossy().as_ref(), false);
     let ctx = RequestContext::new("web", "chat1", "user1", "sess1");
     let args = r#"{"interpreter":"bash","flag":"-c","script":"echo run-out; echo run-err 1>&2"}"#;
     let result = tool
@@ -4009,10 +4229,7 @@ async fn run_script_returns_structured_output() {
 async fn run_script_captures_nonzero_exit_in_struct() {
     // A failing script is NOT an Err — the exit code is encoded in the struct
     // so the workflow script node can decide Completed vs Failed itself.
-    let tool = RunScriptTool::new(
-        std::env::temp_dir().to_string_lossy().as_ref(),
-        false,
-    );
+    let tool = RunScriptTool::new(std::env::temp_dir().to_string_lossy().as_ref(), false);
     let ctx = RequestContext::new("web", "chat1", "user1", "sess1");
     let args = r#"{"interpreter":"bash","flag":"-c","script":"echo bye; exit 7"}"#;
     let result = tool.execute(args, &ctx).await.expect("spawn succeeds");
@@ -4023,14 +4240,14 @@ async fn run_script_captures_nonzero_exit_in_struct() {
 
 #[tokio::test]
 async fn run_script_missing_args_errors() {
-    let tool = RunScriptTool::new(
-        std::env::temp_dir().to_string_lossy().as_ref(),
-        false,
-    );
+    let tool = RunScriptTool::new(std::env::temp_dir().to_string_lossy().as_ref(), false);
     let ctx = RequestContext::new("web", "chat1", "user1", "sess1");
     let err = tool
         .execute(r#"{"interpreter":"bash"}"#, &ctx) // no "script"
         .await
         .expect_err("missing 'script' should error");
-    assert!(err.contains("script"), "error should mention missing script: {err}");
+    assert!(
+        err.contains("script"),
+        "error should mention missing script: {err}"
+    );
 }

@@ -34,14 +34,8 @@ fn test_parse_search_results() {
 
 #[test]
 fn test_build_reply_subject() {
-    assert_eq!(
-        EmailChannel::build_reply_subject("Hello"),
-        "Re: Hello"
-    );
-    assert_eq!(
-        EmailChannel::build_reply_subject("Re: Hello"),
-        "Re: Hello"
-    );
+    assert_eq!(EmailChannel::build_reply_subject("Hello"), "Re: Hello");
+    assert_eq!(EmailChannel::build_reply_subject("Re: Hello"), "Re: Hello");
     assert_eq!(
         EmailChannel::build_reply_subject(""),
         "Re: NemesisBot Response"
@@ -161,19 +155,14 @@ fn test_parse_search_results_empty() {
 
 #[test]
 fn test_parse_search_results_no_search_lines() {
-    let responses = vec![
-        "NB00 OK SEARCH completed".to_string(),
-    ];
+    let responses = vec!["NB00 OK SEARCH completed".to_string()];
     let nums = EmailChannel::parse_search_results(&responses);
     assert!(nums.is_empty());
 }
 
 #[test]
 fn test_parse_search_results_single() {
-    let responses = vec![
-        "* SEARCH 42".to_string(),
-        "NB00 OK".to_string(),
-    ];
+    let responses = vec!["* SEARCH 42".to_string(), "NB00 OK".to_string()];
     let nums = EmailChannel::parse_search_results(&responses);
     assert_eq!(nums, vec!["42"]);
 }

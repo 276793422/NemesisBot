@@ -215,7 +215,9 @@ fn static_validation(content: &str, kind: &ArtifactKind) -> StaticValidationResu
             Some("Content is empty or whitespace-only".into())
         },
     });
-    if !non_empty { all_passed = false; }
+    if !non_empty {
+        all_passed = false;
+    }
 
     // Check 2: Minimum content length
     let min_len = content.len() >= 50;
@@ -228,7 +230,9 @@ fn static_validation(content: &str, kind: &ArtifactKind) -> StaticValidationResu
             Some(format!("{} bytes (< 50 minimum)", content.len()))
         },
     });
-    if !min_len { all_passed = false; }
+    if !min_len {
+        all_passed = false;
+    }
 
     // Check 3: Type-specific structure
     match kind {
@@ -238,47 +242,84 @@ fn static_validation(content: &str, kind: &ArtifactKind) -> StaticValidationResu
             checks.push(StaticCheck {
                 name: "Skill has headings".into(),
                 passed: has_sections,
-                detail: if has_sections { Some("Contains markdown headings".into()) } else { Some("Missing markdown headings".into()) },
+                detail: if has_sections {
+                    Some("Contains markdown headings".into())
+                } else {
+                    Some("Missing markdown headings".into())
+                },
             });
-            if !has_sections { all_passed = false; }
+            if !has_sections {
+                all_passed = false;
+            }
 
             let has_lists = content.contains("- ") || content.contains("* ");
             checks.push(StaticCheck {
                 name: "Skill has list items".into(),
                 passed: has_lists,
-                detail: if has_lists { Some("Contains list items".into()) } else { None },
+                detail: if has_lists {
+                    Some("Contains list items".into())
+                } else {
+                    None
+                },
             });
             // Lists are recommended but not required
         }
         ArtifactKind::Script => {
             // Scripts should have a shebang or main entry
             let has_shebang = content.starts_with("#!/");
-            let has_entry = content.contains("def main") || content.contains("function main") || content.contains("func main");
+            let has_entry = content.contains("def main")
+                || content.contains("function main")
+                || content.contains("func main");
             let has_valid_entry = has_shebang || has_entry;
             checks.push(StaticCheck {
                 name: "Script has entry point".into(),
                 passed: has_valid_entry,
-                detail: if has_shebang { Some("Has shebang line".into()) } else if has_entry { Some("Has main function".into()) } else { Some("No shebang or main function found".into()) },
+                detail: if has_shebang {
+                    Some("Has shebang line".into())
+                } else if has_entry {
+                    Some("Has main function".into())
+                } else {
+                    Some("No shebang or main function found".into())
+                },
             });
-            if !has_valid_entry { all_passed = false; }
+            if !has_valid_entry {
+                all_passed = false;
+            }
         }
         ArtifactKind::Mcp => {
             // MCP servers should have server-related code
-            let has_server = content.contains("Server") || content.contains("server") || content.contains("tool(") || content.contains("@tool");
+            let has_server = content.contains("Server")
+                || content.contains("server")
+                || content.contains("tool(")
+                || content.contains("@tool");
             checks.push(StaticCheck {
                 name: "MCP has server setup".into(),
                 passed: has_server,
-                detail: if has_server { Some("Contains server initialization".into()) } else { Some("No server setup detected".into()) },
+                detail: if has_server {
+                    Some("Contains server initialization".into())
+                } else {
+                    Some("No server setup detected".into())
+                },
             });
-            if !has_server { all_passed = false; }
+            if !has_server {
+                all_passed = false;
+            }
 
-            let has_handler = content.contains("def ") || content.contains("func ") || content.contains("async def ");
+            let has_handler = content.contains("def ")
+                || content.contains("func ")
+                || content.contains("async def ");
             checks.push(StaticCheck {
                 name: "MCP has handler functions".into(),
                 passed: has_handler,
-                detail: if has_handler { Some("Contains handler functions".into()) } else { Some("No handler functions detected".into()) },
+                detail: if has_handler {
+                    Some("Contains handler functions".into())
+                } else {
+                    Some("No handler functions detected".into())
+                },
             });
-            if !has_handler { all_passed = false; }
+            if !has_handler {
+                all_passed = false;
+            }
         }
     }
 
@@ -290,7 +331,9 @@ fn static_validation(content: &str, kind: &ArtifactKind) -> StaticValidationResu
         passed: has_reasonable_lines,
         detail: Some(format!("{} lines", line_count)),
     });
-    if !has_reasonable_lines { all_passed = false; }
+    if !has_reasonable_lines {
+        all_passed = false;
+    }
 
     StaticValidationResult {
         passed: all_passed,
@@ -307,22 +350,40 @@ fn quality_assessment(content: &str, kind: &ArtifactKind) -> QualityAssessmentRe
     let completeness_score = {
         let mut s = 0i32;
         let len = content.len();
-        if len > 500 { s += 10; }
-        else if len > 200 { s += 5; }
-        if content.lines().count() > 15 { s += 8; }
-        else if content.lines().count() > 5 { s += 4; }
+        if len > 500 {
+            s += 10;
+        } else if len > 200 {
+            s += 5;
+        }
+        if content.lines().count() > 15 {
+            s += 8;
+        } else if content.lines().count() > 5 {
+            s += 4;
+        }
         match kind {
             ArtifactKind::Skill => {
-                if content.contains("## ") { s += 4; }
-                if content.contains("- ") || content.contains("* ") { s += 3; }
+                if content.contains("## ") {
+                    s += 4;
+                }
+                if content.contains("- ") || content.contains("* ") {
+                    s += 3;
+                }
             }
             ArtifactKind::Script => {
-                if content.contains("#!") { s += 4; }
-                if content.contains("echo ") || content.contains("print(") { s += 3; }
+                if content.contains("#!") {
+                    s += 4;
+                }
+                if content.contains("echo ") || content.contains("print(") {
+                    s += 3;
+                }
             }
             ArtifactKind::Mcp => {
-                if content.contains("Server") || content.contains("server") { s += 4; }
-                if content.contains("if __name__") || content.contains("func main") { s += 3; }
+                if content.contains("Server") || content.contains("server") {
+                    s += 4;
+                }
+                if content.contains("if __name__") || content.contains("func main") {
+                    s += 3;
+                }
             }
         }
         s.min(25)
@@ -331,7 +392,11 @@ fn quality_assessment(content: &str, kind: &ArtifactKind) -> QualityAssessmentRe
         name: "Content completeness".into(),
         score: completeness_score,
         max_score: 25,
-        note: Some(format!("{} bytes, {} lines", content.len(), content.lines().count())),
+        note: Some(format!(
+            "{} bytes, {} lines",
+            content.len(),
+            content.lines().count()
+        )),
     });
     total_score += completeness_score;
 
@@ -347,7 +412,9 @@ fn quality_assessment(content: &str, kind: &ArtifactKind) -> QualityAssessmentRe
         if content.contains("handle") || content.contains("Handle") {
             s += 5;
         }
-        if content.contains("return") && (content.contains("error") || content.contains("nil") || content.contains("None")) {
+        if content.contains("return")
+            && (content.contains("error") || content.contains("nil") || content.contains("None"))
+        {
             s += 4;
         }
         s.min(25)
@@ -356,27 +423,40 @@ fn quality_assessment(content: &str, kind: &ArtifactKind) -> QualityAssessmentRe
         name: "Error handling".into(),
         score: error_handling_score,
         max_score: 25,
-        note: if error_handling_score > 0 { Some("Has error handling patterns".into()) } else { Some("No error handling detected".into()) },
+        note: if error_handling_score > 0 {
+            Some("Has error handling patterns".into())
+        } else {
+            Some("No error handling detected".into())
+        },
     });
     total_score += error_handling_score;
 
     // Dimension 3: Documentation (0-25)
     let documentation_score = {
         let mut s = 0i32;
-        let comment_lines = content.lines().filter(|l| {
-            l.trim().starts_with('#')
-                || l.trim().starts_with("//")
-                || l.trim().starts_with("/*")
-                || l.trim().starts_with("* ")
-                || l.trim().starts_with("'''")
-                || l.trim().starts_with("\"\"\"")
-        }).count();
-        if comment_lines >= 3 { s += 10; }
-        else if comment_lines >= 1 { s += 5; }
+        let comment_lines = content
+            .lines()
+            .filter(|l| {
+                l.trim().starts_with('#')
+                    || l.trim().starts_with("//")
+                    || l.trim().starts_with("/*")
+                    || l.trim().starts_with("* ")
+                    || l.trim().starts_with("'''")
+                    || l.trim().starts_with("\"\"\"")
+            })
+            .count();
+        if comment_lines >= 3 {
+            s += 10;
+        } else if comment_lines >= 1 {
+            s += 5;
+        }
         if content.contains("README") || content.contains("Usage") || content.contains("usage") {
             s += 5;
         }
-        if content.contains("description") || content.contains("Description") || content.contains("docstring") {
+        if content.contains("description")
+            || content.contains("Description")
+            || content.contains("docstring")
+        {
             s += 5;
         }
         if content.contains("```") {
@@ -398,20 +478,32 @@ fn quality_assessment(content: &str, kind: &ArtifactKind) -> QualityAssessmentRe
         // Consistent indentation
         let spaces = content.lines().filter(|l| l.starts_with("  ")).count();
         let tabs = content.lines().filter(|l| l.starts_with('\t')).count();
-        if spaces > 0 || tabs > 0 { s += 5; }
+        if spaces > 0 || tabs > 0 {
+            s += 5;
+        }
 
         // Function/method definitions
-        let fn_count = content.matches("def ").count() + content.matches("func ").count() + content.matches("fn ").count();
-        if fn_count > 0 { s += 8; }
+        let fn_count = content.matches("def ").count()
+            + content.matches("func ").count()
+            + content.matches("fn ").count();
+        if fn_count > 0 {
+            s += 8;
+        }
 
         // Type hints or type annotations
-        if content.contains(": str") || content.contains(": int") || content.contains("-> ")
-            || content.contains(": String") || content.contains(": i32") {
+        if content.contains(": str")
+            || content.contains(": int")
+            || content.contains("-> ")
+            || content.contains(": String")
+            || content.contains(": i32")
+        {
             s += 7;
         }
 
         // Return statements
-        if content.contains("return ") { s += 5; }
+        if content.contains("return ") {
+            s += 5;
+        }
 
         s.min(25)
     };
@@ -445,11 +537,7 @@ impl ForgeToolExecutor {
     }
 
     /// Execute a tool by name with the provided arguments.
-    pub async fn execute(
-        &self,
-        tool_name: &str,
-        args: &serde_json::Value,
-    ) -> ForgeToolResult {
+    pub async fn execute(&self, tool_name: &str, args: &serde_json::Value) -> ForgeToolResult {
         match tool_name {
             "forge_reflect" => self.execute_reflect(args).await,
             "forge_create" => self.execute_create(args).await,
@@ -497,10 +585,7 @@ impl ForgeToolExecutor {
         let artifact_type = args["type"].as_str().unwrap_or("").to_string();
         let name = args["name"].as_str().unwrap_or("").to_string();
         let content = args["content"].as_str().unwrap_or("").to_string();
-        let description = args["description"]
-            .as_str()
-            .unwrap_or("")
-            .to_string();
+        let description = args["description"].as_str().unwrap_or("").to_string();
 
         if artifact_type.is_empty() || name.is_empty() || content.is_empty() {
             return ForgeToolResult::err("type, name, content are required fields");
@@ -518,11 +603,7 @@ impl ForgeToolExecutor {
         // Validate artifact type
         match artifact_type.as_str() {
             "skill" | "script" | "mcp" => {}
-            _ => {
-                return ForgeToolResult::err(format!(
-                    "type must be 'skill', 'script', or 'mcp'"
-                ))
-            }
+            _ => return ForgeToolResult::err(format!("type must be 'skill', 'script', or 'mcp'")),
         }
 
         // Sanitize name
@@ -531,14 +612,16 @@ impl ForgeToolExecutor {
         // Use shared CreateSkill method for skill type (matching Go's behavior:
         // t.forge.CreateSkill(ctx, name, content, description, nil))
         if artifact_type == "skill" {
-            match self.forge.create_skill(&name, &content, &description, Vec::new()) {
+            match self
+                .forge
+                .create_skill(&name, &content, &description, Vec::new())
+            {
                 Ok(artifact) => {
                     let status = format!("{:?}", artifact.status);
                     let mut validation_info = String::new();
                     if self.forge.config().validation.auto_validate {
-                        validation_info.push_str(&format!(
-                            "\n- Auto-validation: enabled (status={})", status
-                        ));
+                        validation_info
+                            .push_str(&format!("\n- Auto-validation: enabled (status={})", status));
                     }
                     return ForgeToolResult::ok(format!(
                         "Forge artifact created:\n- Type: skill\n- Name: {}\n- Path: forge/skills/{}/SKILL.md\n- Status: {}\n- ID: {}{}",
@@ -579,11 +662,7 @@ impl ForgeToolExecutor {
             "mcp" => {
                 let language = args["language"].as_str().unwrap_or("python");
                 let ext = if language == "go" { "go" } else { "py" };
-                let entry = if language == "go" {
-                    "main"
-                } else {
-                    "server"
-                };
+                let entry = if language == "go" { "main" } else { "server" };
                 forge_dir
                     .join("mcp")
                     .join(&name)
@@ -607,7 +686,8 @@ impl ForgeToolExecutor {
                 match language {
                     "python" => {
                         let requirements = "mcp>=1.0.0\n";
-                        let _ = tokio::fs::write(mcp_dir.join("requirements.txt"), requirements).await;
+                        let _ =
+                            tokio::fs::write(mcp_dir.join("requirements.txt"), requirements).await;
                         let readme = format!(
                             "# {}\n\nForge-generated MCP server.\n\n## Usage\n\n```bash\nuv run server.py\n```\n",
                             name
@@ -691,13 +771,28 @@ impl ForgeToolExecutor {
                             "uv".to_string()
                         };
                         let cmd_args = if args["language"].as_str() == Some("go") {
-                            vec!["run".to_string(), artifact_path.file_name().unwrap_or_default().to_string_lossy().to_string()]
+                            vec![
+                                "run".to_string(),
+                                artifact_path
+                                    .file_name()
+                                    .unwrap_or_default()
+                                    .to_string_lossy()
+                                    .to_string(),
+                            ]
                         } else {
-                            vec!["run".to_string(), artifact_path.file_name().unwrap_or_default().to_string_lossy().to_string()]
+                            vec![
+                                "run".to_string(),
+                                artifact_path
+                                    .file_name()
+                                    .unwrap_or_default()
+                                    .to_string_lossy()
+                                    .to_string(),
+                            ]
                         };
                         match installer.install(&name, &command, cmd_args).await {
                             Ok(()) => {
-                                validation_info.push_str("\n- MCP auto-registered to config.mcp.json");
+                                validation_info
+                                    .push_str("\n- MCP auto-registered to config.mcp.json");
                             }
                             Err(e) => {
                                 validation_info.push_str(&format!(
@@ -721,7 +816,12 @@ impl ForgeToolExecutor {
 
         ForgeToolResult::ok(format!(
             "Forge artifact created:\n- Type: {}\n- Name: {}\n- Path: {}\n- Status: {}\n- ID: {}{}",
-            artifact_type, name, artifact_path.display(), final_status, artifact_id, validation_info
+            artifact_type,
+            name,
+            artifact_path.display(),
+            final_status,
+            artifact_id,
+            validation_info
         ))
     }
 
@@ -734,10 +834,7 @@ impl ForgeToolExecutor {
             .as_str()
             .unwrap_or("")
             .to_string();
-        let rollback_version = args["rollback_version"]
-            .as_str()
-            .unwrap_or("")
-            .to_string();
+        let rollback_version = args["rollback_version"].as_str().unwrap_or("").to_string();
 
         if id.is_empty() {
             return ForgeToolResult::err("id is required");
@@ -758,10 +855,7 @@ impl ForgeToolExecutor {
                     change_desc = format!("Rollback to version {}", rollback_version);
                 }
                 Err(e) => {
-                    return ForgeToolResult::err(format!(
-                        "Failed to load version snapshot: {}",
-                        e
-                    ))
+                    return ForgeToolResult::err(format!("Failed to load version snapshot: {}", e));
                 }
             }
         }
@@ -805,11 +899,20 @@ impl ForgeToolExecutor {
                 if matches!(a.status, nemesis_types::forge::ArtifactStatus::Active) {
                     if let Some(installer) = self.forge.mcp_installer() {
                         let _mcp_dir = artifact_path.parent().unwrap_or(&artifact_path);
-                        let _ = installer.install(
-                            &artifact.name,
-                            "uv",
-                            vec!["run".to_string(), artifact_path.file_name().unwrap_or_default().to_string_lossy().to_string()],
-                        ).await;
+                        let _ = installer
+                            .install(
+                                &artifact.name,
+                                "uv",
+                                vec![
+                                    "run".to_string(),
+                                    artifact_path
+                                        .file_name()
+                                        .unwrap_or_default()
+                                        .to_string_lossy()
+                                        .to_string(),
+                                ],
+                            )
+                            .await;
                     }
                 }
             }
@@ -857,7 +960,7 @@ impl ForgeToolExecutor {
                     return ForgeToolResult::err(format!(
                         "Unknown status filter: {}",
                         status_filter
-                    ))
+                    ));
                 }
             };
             artifacts.retain(|a| a.status == target_status);
@@ -989,8 +1092,14 @@ impl ForgeToolExecutor {
         for dim in &stage3.dimensions {
             output.push_str(&format!(
                 "  - {}: {}/{} {}\n",
-                dim.name, dim.score, dim.max_score,
-                if dim.score >= dim.max_score / 2 { "(good)" } else { "(needs improvement)" }
+                dim.name,
+                dim.score,
+                dim.max_score,
+                if dim.score >= dim.max_score / 2 {
+                    "(good)"
+                } else {
+                    "(needs improvement)"
+                }
             ));
             if let Some(ref note) = dim.note {
                 output.push_str(&format!("    - {}\n", note));
@@ -1006,10 +1115,7 @@ impl ForgeToolExecutor {
 
     async fn execute_build_mcp(&self, args: &serde_json::Value) -> ForgeToolResult {
         let id = args["id"].as_str().unwrap_or("").to_string();
-        let action = args["action"]
-            .as_str()
-            .unwrap_or("build")
-            .to_string();
+        let action = args["action"].as_str().unwrap_or("build").to_string();
 
         if id.is_empty() {
             return ForgeToolResult::err("id is required");
@@ -1083,11 +1189,23 @@ impl ForgeToolExecutor {
                 // Determine the command and args for the MCP server entry
                 let entry_name = format!("forge-{}", artifact.name);
                 let (command, args_vec) = if mcp_dir.join("server.py").exists() {
-                    ("python".to_string(), vec![mcp_dir.join("server.py").to_string_lossy().to_string()])
+                    (
+                        "python".to_string(),
+                        vec![mcp_dir.join("server.py").to_string_lossy().to_string()],
+                    )
                 } else if mcp_dir.join("main.go").exists() {
-                    ("go".to_string(), vec!["run".to_string(), mcp_dir.join("main.go").to_string_lossy().to_string()])
+                    (
+                        "go".to_string(),
+                        vec![
+                            "run".to_string(),
+                            mcp_dir.join("main.go").to_string_lossy().to_string(),
+                        ],
+                    )
                 } else {
-                    ("python".to_string(), vec![artifact_path.to_string_lossy().to_string()])
+                    (
+                        "python".to_string(),
+                        vec![artifact_path.to_string_lossy().to_string()],
+                    )
                 };
 
                 // Read or create the MCP config file
@@ -1098,9 +1216,8 @@ impl ForgeToolExecutor {
 
                 let mut config: serde_json::Value = if mcp_config_path.exists() {
                     match tokio::fs::read_to_string(&mcp_config_path).await {
-                        Ok(content) => serde_json::from_str(&content).unwrap_or_else(|_| {
-                            serde_json::json!({"mcpServers": {}})
-                        }),
+                        Ok(content) => serde_json::from_str(&content)
+                            .unwrap_or_else(|_| serde_json::json!({"mcpServers": {}})),
                         Err(_) => serde_json::json!({"mcpServers": {}}),
                     }
                 } else {
@@ -1123,19 +1240,20 @@ impl ForgeToolExecutor {
                 match serde_json::to_string_pretty(&config) {
                     Ok(pretty) => {
                         if let Err(e) = tokio::fs::write(&mcp_config_path, &pretty).await {
-                            ForgeToolResult::err(format!(
-                                "Failed to write MCP config: {}", e
-                            ))
+                            ForgeToolResult::err(format!("Failed to write MCP config: {}", e))
                         } else {
                             ForgeToolResult::ok(format!(
                                 "MCP server '{}' installed to config.mcp.json\n- Command: {}\n- Args: {:?}\n- Path: {}",
-                                entry_name, command, args_vec, mcp_config_path.display()
+                                entry_name,
+                                command,
+                                args_vec,
+                                mcp_config_path.display()
                             ))
                         }
                     }
-                    Err(e) => ForgeToolResult::err(format!(
-                        "Failed to serialize MCP config: {}", e
-                    )),
+                    Err(e) => {
+                        ForgeToolResult::err(format!("Failed to serialize MCP config: {}", e))
+                    }
                 }
             }
             "uninstall" => {
@@ -1147,11 +1265,11 @@ impl ForgeToolExecutor {
                 if mcp_config_path.exists() {
                     match tokio::fs::read_to_string(&mcp_config_path).await {
                         Ok(content) => {
-                            let mut config: serde_json::Value =
-                                serde_json::from_str(&content).unwrap_or_else(|_| {
-                                    serde_json::json!({"mcpServers": {}})
-                                });
-                            if let Some(servers) = config.get_mut("mcpServers").and_then(|v| v.as_object_mut()) {
+                            let mut config: serde_json::Value = serde_json::from_str(&content)
+                                .unwrap_or_else(|_| serde_json::json!({"mcpServers": {}}));
+                            if let Some(servers) =
+                                config.get_mut("mcpServers").and_then(|v| v.as_object_mut())
+                            {
                                 if servers.remove(&entry_name).is_some() {
                                     if let Ok(pretty) = serde_json::to_string_pretty(&config) {
                                         let _ = tokio::fs::write(&mcp_config_path, &pretty).await;
@@ -1173,9 +1291,7 @@ impl ForgeToolExecutor {
                                 ))
                             }
                         }
-                        Err(e) => ForgeToolResult::err(format!(
-                            "Failed to read MCP config: {}", e
-                        )),
+                        Err(e) => ForgeToolResult::err(format!("Failed to read MCP config: {}", e)),
                     }
                 } else {
                     ForgeToolResult::ok(format!(
@@ -1206,16 +1322,12 @@ impl ForgeToolExecutor {
                         None => {
                             return ForgeToolResult::err(
                                 "No reflection report found. Run forge_reflect first.",
-                            )
+                            );
                         }
                     }
                 } else {
                     // Validate report_path is within reflections directory
-                    let reflections_dir = self
-                        .forge
-                        .workspace()
-                        .join("forge")
-                        .join("reflections");
+                    let reflections_dir = self.forge.workspace().join("forge").join("reflections");
                     let abs_path = PathBuf::from(&report_path);
                     if let Ok(canonical) = abs_path.canonicalize() {
                         if let Ok(refl_canonical) = reflections_dir.canonicalize() {
@@ -1284,10 +1396,7 @@ impl ForgeToolExecutor {
                 if let Some(ref completed) = cycle.completed_at {
                     output.push_str(&format!("- Completed: {}\n", completed));
                 }
-                output.push_str(&format!(
-                    "- Patterns found: {}\n",
-                    cycle.patterns_found
-                ));
+                output.push_str(&format!("- Patterns found: {}\n", cycle.patterns_found));
                 output.push_str(&format!("- Actions taken: {}\n", cycle.actions_taken));
             } else {
                 output.push_str("\nNo learning cycle recorded yet.\n");
@@ -1316,10 +1425,7 @@ impl ForgeToolExecutor {
                 let truncated = utils::truncate(&sig, 30);
                 let sr = if a.usage_count > 0 {
                     let total = a.usage_count + a.consecutive_observing_rounds as u64;
-                    format!(
-                        "{:.0}%",
-                        a.usage_count as f64 / total.max(1) as f64 * 100.0
-                    )
+                    format!("{:.0}%", a.usage_count as f64 / total.max(1) as f64 * 100.0)
                 } else {
                     "N/A".to_string()
                 };
@@ -1341,9 +1447,15 @@ impl ForgeToolExecutor {
 use nemesis_types::forge::ArtifactKind;
 
 /// Resolve the on-disk path for an artifact based on its type and name.
-fn resolve_artifact_path(forge_dir: &std::path::Path, artifact: &nemesis_types::forge::Artifact) -> PathBuf {
+fn resolve_artifact_path(
+    forge_dir: &std::path::Path,
+    artifact: &nemesis_types::forge::Artifact,
+) -> PathBuf {
     match artifact.kind {
-        ArtifactKind::Skill => forge_dir.join("skills").join(&artifact.name).join("SKILL.md"),
+        ArtifactKind::Skill => forge_dir
+            .join("skills")
+            .join(&artifact.name)
+            .join("SKILL.md"),
         ArtifactKind::Script => forge_dir.join("scripts").join(&artifact.name),
         ArtifactKind::Mcp => {
             // Try both Python and Go entry points
@@ -1373,9 +1485,7 @@ fn find_latest_report(workspace: &std::path::Path) -> Option<String> {
             if path.extension().map(|e| e == "md").unwrap_or(false) {
                 if let Ok(meta) = entry.metadata() {
                     if let Ok(modified) = meta.modified() {
-                        let is_newer = latest
-                            .as_ref()
-                            .map_or(true, |(t, _)| modified > *t);
+                        let is_newer = latest.as_ref().map_or(true, |(t, _)| modified > *t);
                         if is_newer {
                             latest = Some((modified, path.to_string_lossy().to_string()));
                         }
@@ -1395,12 +1505,13 @@ fn find_latest_report(workspace: &std::path::Path) -> Option<String> {
                         if sub_path.extension().map(|e| e == "md").unwrap_or(false) {
                             if let Ok(meta) = sub_entry.metadata() {
                                 if let Ok(modified) = meta.modified() {
-                                    let is_newer = latest
-                                        .as_ref()
-                                        .map_or(true, |(t, _)| modified > *t);
+                                    let is_newer =
+                                        latest.as_ref().map_or(true, |(t, _)| modified > *t);
                                     if is_newer {
-                                        latest =
-                                            Some((modified, sub_path.to_string_lossy().to_string()));
+                                        latest = Some((
+                                            modified,
+                                            sub_path.to_string_lossy().to_string(),
+                                        ));
                                     }
                                 }
                             }
@@ -1422,25 +1533,46 @@ fn compute_quality_score(content: &str, kind: &ArtifactKind) -> (i32, String) {
     let mut notes = Vec::new();
 
     // Base score from content length
-    let len_score = if len > 500 { 25 } else if len > 200 { 15 } else if len > 50 { 5 } else { 0 };
+    let len_score = if len > 500 {
+        25
+    } else if len > 200 {
+        15
+    } else if len > 50 {
+        5
+    } else {
+        0
+    };
 
     // Structure score
     let mut struct_score = 0;
     match kind {
         ArtifactKind::Skill => {
-            if content.contains("---") { struct_score += 15; }
-            if content.contains("## ") { struct_score += 10; }
-            if content.contains("- ") { struct_score += 5; }
+            if content.contains("---") {
+                struct_score += 15;
+            }
+            if content.contains("## ") {
+                struct_score += 10;
+            }
+            if content.contains("- ") {
+                struct_score += 5;
+            }
         }
         ArtifactKind::Script => {
-            if content.contains("#!/") { struct_score += 10; }
-            if content.contains("echo ") || content.contains("test ") || content.contains("assert") {
+            if content.contains("#!/") {
+                struct_score += 10;
+            }
+            if content.contains("echo ") || content.contains("test ") || content.contains("assert")
+            {
                 struct_score += 10;
             }
         }
         ArtifactKind::Mcp => {
-            if content.contains("Server(") || content.contains("server") { struct_score += 10; }
-            if content.contains("def ") || content.contains("func ") { struct_score += 10; }
+            if content.contains("Server(") || content.contains("server") {
+                struct_score += 10;
+            }
+            if content.contains("def ") || content.contains("func ") {
+                struct_score += 10;
+            }
         }
     }
 
@@ -1456,7 +1588,11 @@ fn compute_quality_score(content: &str, kind: &ArtifactKind) -> (i32, String) {
 
     let total = (len_score + struct_score + quality_score).min(100);
     if notes.is_empty() {
-        notes.push(format!("Content: {} bytes, {} lines", len, content.lines().count()));
+        notes.push(format!(
+            "Content: {} bytes, {} lines",
+            len,
+            content.lines().count()
+        ));
     }
 
     (total, notes.join("; "))
@@ -1471,7 +1607,8 @@ pub fn increment_version(version: &str) -> String {
     let last_idx = parts.len() - 1;
     if let Ok(mut minor) = parts[last_idx].parse::<u32>() {
         minor += 1;
-        let mut result_parts: Vec<String> = parts[..last_idx].iter().map(|s| s.to_string()).collect();
+        let mut result_parts: Vec<String> =
+            parts[..last_idx].iter().map(|s| s.to_string()).collect();
         result_parts.push(minor.to_string());
         result_parts.join(".")
     } else {
@@ -1485,10 +1622,7 @@ pub fn increment_version(version: &str) -> String {
 /// and copies the artifact content to `{version}.bak`.
 pub fn save_version_snapshot(artifact_path: &str, version: &str) -> std::io::Result<()> {
     let path = std::path::Path::new(artifact_path);
-    let versions_dir = path
-        .parent()
-        .unwrap_or(path)
-        .join(".versions");
+    let versions_dir = path.parent().unwrap_or(path).join(".versions");
     std::fs::create_dir_all(&versions_dir)?;
 
     let content = std::fs::read_to_string(path).unwrap_or_default();
@@ -1516,27 +1650,23 @@ pub mod version {
     use std::path::Path;
 
     /// Save a version snapshot of an artifact file.
-    pub async fn save_snapshot(
-        artifact_path: &Path,
-        version: &str,
-    ) -> std::io::Result<()> {
+    pub async fn save_snapshot(artifact_path: &Path, version: &str) -> std::io::Result<()> {
         let versions_dir = artifact_path
             .parent()
             .unwrap_or(artifact_path)
             .join(".versions");
         tokio::fs::create_dir_all(&versions_dir).await?;
 
-        let content = tokio::fs::read_to_string(artifact_path).await.unwrap_or_default();
+        let content = tokio::fs::read_to_string(artifact_path)
+            .await
+            .unwrap_or_default();
         let snapshot_path = versions_dir.join(format!("{}.bak", version));
         tokio::fs::write(&snapshot_path, content).await?;
         Ok(())
     }
 
     /// Load a version snapshot.
-    pub async fn load_snapshot(
-        artifact_path: &Path,
-        version: &str,
-    ) -> std::io::Result<String> {
+    pub async fn load_snapshot(artifact_path: &Path, version: &str) -> std::io::Result<String> {
         let snapshot_path = artifact_path
             .parent()
             .unwrap_or(artifact_path)

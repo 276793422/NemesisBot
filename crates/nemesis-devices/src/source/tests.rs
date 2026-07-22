@@ -33,31 +33,58 @@ fn test_usb_source_default() {
 #[test]
 fn test_action_serialization() {
     assert_eq!(serde_json::to_string(&Action::Add).unwrap(), "\"add\"");
-    assert_eq!(serde_json::to_string(&Action::Remove).unwrap(), "\"remove\"");
-    assert_eq!(serde_json::to_string(&Action::Change).unwrap(), "\"change\"");
+    assert_eq!(
+        serde_json::to_string(&Action::Remove).unwrap(),
+        "\"remove\""
+    );
+    assert_eq!(
+        serde_json::to_string(&Action::Change).unwrap(),
+        "\"change\""
+    );
 }
 
 #[test]
 fn test_action_deserialization() {
-    assert_eq!(serde_json::from_str::<Action>("\"add\"").unwrap(), Action::Add);
-    assert_eq!(serde_json::from_str::<Action>("\"remove\"").unwrap(), Action::Remove);
-    assert_eq!(serde_json::from_str::<Action>("\"change\"").unwrap(), Action::Change);
+    assert_eq!(
+        serde_json::from_str::<Action>("\"add\"").unwrap(),
+        Action::Add
+    );
+    assert_eq!(
+        serde_json::from_str::<Action>("\"remove\"").unwrap(),
+        Action::Remove
+    );
+    assert_eq!(
+        serde_json::from_str::<Action>("\"change\"").unwrap(),
+        Action::Change
+    );
 }
 
 #[test]
 fn test_kind_serialization() {
     assert_eq!(serde_json::to_string(&Kind::Usb).unwrap(), "\"usb\"");
-    assert_eq!(serde_json::to_string(&Kind::Bluetooth).unwrap(), "\"bluetooth\"");
+    assert_eq!(
+        serde_json::to_string(&Kind::Bluetooth).unwrap(),
+        "\"bluetooth\""
+    );
     assert_eq!(serde_json::to_string(&Kind::Pci).unwrap(), "\"pci\"");
-    assert_eq!(serde_json::to_string(&Kind::Generic).unwrap(), "\"generic\"");
+    assert_eq!(
+        serde_json::to_string(&Kind::Generic).unwrap(),
+        "\"generic\""
+    );
 }
 
 #[test]
 fn test_kind_deserialization() {
     assert_eq!(serde_json::from_str::<Kind>("\"usb\"").unwrap(), Kind::Usb);
-    assert_eq!(serde_json::from_str::<Kind>("\"bluetooth\"").unwrap(), Kind::Bluetooth);
+    assert_eq!(
+        serde_json::from_str::<Kind>("\"bluetooth\"").unwrap(),
+        Kind::Bluetooth
+    );
     assert_eq!(serde_json::from_str::<Kind>("\"pci\"").unwrap(), Kind::Pci);
-    assert_eq!(serde_json::from_str::<Kind>("\"generic\"").unwrap(), Kind::Generic);
+    assert_eq!(
+        serde_json::from_str::<Kind>("\"generic\"").unwrap(),
+        Kind::Generic
+    );
 }
 
 #[test]
@@ -240,13 +267,25 @@ fn test_device_event_format_all_actions() {
         raw: HashMap::new(),
     };
 
-    let add_msg = DeviceEvent { action: Action::Add, ..base_event.clone() }.format_message();
+    let add_msg = DeviceEvent {
+        action: Action::Add,
+        ..base_event.clone()
+    }
+    .format_message();
     assert!(add_msg.contains("Connected"));
 
-    let remove_msg = DeviceEvent { action: Action::Remove, ..base_event.clone() }.format_message();
+    let remove_msg = DeviceEvent {
+        action: Action::Remove,
+        ..base_event.clone()
+    }
+    .format_message();
     assert!(remove_msg.contains("Disconnected"));
 
-    let change_msg = DeviceEvent { action: Action::Change, ..base_event }.format_message();
+    let change_msg = DeviceEvent {
+        action: Action::Change,
+        ..base_event
+    }
+    .format_message();
     assert!(change_msg.contains("Changed"));
 }
 

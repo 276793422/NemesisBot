@@ -11,17 +11,17 @@
 //!   integration-test --skip-long        # Skip long-running tests
 
 mod cli_tests;
-mod gateway_tests;
-mod tool_tests;
-mod security_tests;
 mod forge_tests;
+mod gateway_tests;
 mod scanner_tests;
+mod security_tests;
 mod subsystem_tests;
+mod tool_tests;
 
 use std::path::PathBuf;
 use std::time::Duration;
 
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use test_harness::*;
 
 // ---------------------------------------------------------------------------
@@ -65,16 +65,25 @@ impl TestConfig {
             i += 1;
         }
 
-        let ai_server_bin = ai_server_bin.unwrap_or_else(|| resolve_ai_server_bin().unwrap_or_else(|_| {
-            let root = resolve_project_root().unwrap_or_else(|_| PathBuf::from("."));
-            root.join("test-tools/TestAIServer/testaiserver.exe")
-        }));
-        let gateway_bin = gateway_bin.unwrap_or_else(|| resolve_nemesisbot_bin().unwrap_or_else(|_| {
-            let root = resolve_project_root().unwrap_or_else(|_| PathBuf::from("."));
-            root.join("target/release/nemesisbot.exe")
-        }));
+        let ai_server_bin = ai_server_bin.unwrap_or_else(|| {
+            resolve_ai_server_bin().unwrap_or_else(|_| {
+                let root = resolve_project_root().unwrap_or_else(|_| PathBuf::from("."));
+                root.join("test-tools/TestAIServer/testaiserver.exe")
+            })
+        });
+        let gateway_bin = gateway_bin.unwrap_or_else(|| {
+            resolve_nemesisbot_bin().unwrap_or_else(|_| {
+                let root = resolve_project_root().unwrap_or_else(|_| PathBuf::from("."));
+                root.join("target/release/nemesisbot.exe")
+            })
+        });
 
-        Ok(Self { ai_server_bin, gateway_bin, _filter: filter, _skip_long: skip_long })
+        Ok(Self {
+            ai_server_bin,
+            gateway_bin,
+            _filter: filter,
+            _skip_long: skip_long,
+        })
     }
 }
 
@@ -91,7 +100,10 @@ async fn test_config_defaults(ws: &TestWorkspace) -> Vec<TestResult> {
     let raw = match std::fs::read_to_string(&config_path) {
         Ok(r) => r,
         Err(e) => {
-            results.push(fail(&format!("{}/load", suite), &format!("Cannot read config: {}", e)));
+            results.push(fail(
+                &format!("{}/load", suite),
+                &format!("Cannot read config: {}", e),
+            ));
             return results;
         }
     };
@@ -99,7 +111,10 @@ async fn test_config_defaults(ws: &TestWorkspace) -> Vec<TestResult> {
     let config: serde_json::Value = match serde_json::from_str(&raw) {
         Ok(v) => v,
         Err(e) => {
-            results.push(fail(&format!("{}/parse", suite), &format!("Invalid JSON: {}", e)));
+            results.push(fail(
+                &format!("{}/parse", suite),
+                &format!("Invalid JSON: {}", e),
+            ));
             return results;
         }
     };
@@ -112,18 +127,28 @@ async fn test_config_defaults(ws: &TestWorkspace) -> Vec<TestResult> {
         }
     }
     if missing.is_empty() {
-        results.push(pass(&format!("{}/required_keys", suite), "All required keys present"));
+        results.push(pass(
+            &format!("{}/required_keys", suite),
+            "All required keys present",
+        ));
     } else {
-        results.push(fail(&format!("{}/required_keys", suite), &format!("Missing: {:?}", missing)));
+        results.push(fail(
+            &format!("{}/required_keys", suite),
+            &format!("Missing: {:?}", missing),
+        ));
     }
 
     // Check web channel port
-    let web_port = config.pointer("/channels/web/port").and_then(|v| v.as_i64());
+    let web_port = config
+        .pointer("/channels/web/port")
+        .and_then(|v| v.as_i64());
     if web_port == Some(49000) {
         results.push(pass(&format!("{}/web_port", suite), "49000"));
     } else {
-        results.push(pass(&format!("{}/web_port", suite),
-            &format!("Port: {:?}", web_port)));
+        results.push(pass(
+            &format!("{}/web_port", suite),
+            &format!("Port: {:?}", web_port),
+        ));
     }
 
     results
@@ -154,9 +179,14 @@ async fn test_config_deep(ws: &TestWorkspace) -> Vec<TestResult> {
             "number" => val.and_then(|v| v.as_i64()).is_some(),
             _ => false,
         };
-        if is_correct { type_ok += 1; }
+        if is_correct {
+            type_ok += 1;
+        }
     }
-    results.push(pass(&format!("{}/field_types", suite), &format!("{}/{} type checks passed", type_ok, type_checks.len())));
+    results.push(pass(
+        &format!("{}/field_types", suite),
+        &format!("{}/{} type checks passed", type_ok, type_checks.len()),
+    ));
 
     results
 }
@@ -168,15 +198,33 @@ async fn test_health_endpoints() -> Vec<TestResult> {
 
     let client = http_client();
 
-    match client.get(&format!("http://127.0.0.1:{}/health", HEALTH_PORT)).send().await {
-        Ok(resp) if resp.status().as_u16() == 200 => results.push(pass(&format!("{}/health", suite), "200 OK")),
-        Ok(resp) => results.push(fail(&format!("{}/health", suite), &format!("Status: {}", resp.status()))),
+    match client
+        .get(&format!("http://127.0.0.1:{}/health", HEALTH_PORT))
+        .send()
+        .await
+    {
+        Ok(resp) if resp.status().as_u16() == 200 => {
+            results.push(pass(&format!("{}/health", suite), "200 OK"))
+        }
+        Ok(resp) => results.push(fail(
+            &format!("{}/health", suite),
+            &format!("Status: {}", resp.status()),
+        )),
         Err(e) => results.push(fail(&format!("{}/health", suite), &format!("Error: {}", e))),
     }
 
-    match client.get(&format!("http://127.0.0.1:{}/ready", HEALTH_PORT)).send().await {
-        Ok(resp) if resp.status().as_u16() == 200 => results.push(pass(&format!("{}/ready", suite), "200 OK")),
-        Ok(resp) => results.push(fail(&format!("{}/ready", suite), &format!("Status: {}", resp.status()))),
+    match client
+        .get(&format!("http://127.0.0.1:{}/ready", HEALTH_PORT))
+        .send()
+        .await
+    {
+        Ok(resp) if resp.status().as_u16() == 200 => {
+            results.push(pass(&format!("{}/ready", suite), "200 OK"))
+        }
+        Ok(resp) => results.push(fail(
+            &format!("{}/ready", suite),
+            &format!("Status: {}", resp.status()),
+        )),
         Err(e) => results.push(fail(&format!("{}/ready", suite), &format!("Error: {}", e))),
     }
 
@@ -211,7 +259,12 @@ async fn test_tool_definitions(ws: &TestWorkspace) -> Vec<TestResult> {
         .map(|entries| {
             entries
                 .filter_map(|e| e.ok())
-                .filter(|e| e.path().extension().map(|ext| ext == "log").unwrap_or(false))
+                .filter(|e| {
+                    e.path()
+                        .extension()
+                        .map(|ext| ext == "log")
+                        .unwrap_or(false)
+                })
                 .map(|e| e.path())
                 .collect()
         })
@@ -248,9 +301,15 @@ async fn test_tool_definitions(ws: &TestWorkspace) -> Vec<TestResult> {
                     if let Ok(tools) = serde_json::from_str::<Vec<serde_json::Value>>(tools_json) {
                         let count = tools.len();
                         if count >= 15 {
-                            results.push(pass(&format!("{}/tool_count", suite), &format!("{} tools registered", count)));
+                            results.push(pass(
+                                &format!("{}/tool_count", suite),
+                                &format!("{} tools registered", count),
+                            ));
                         } else {
-                            results.push(fail(&format!("{}/tool_count", suite), &format!("Expected >= 15, got {}", count)));
+                            results.push(fail(
+                                &format!("{}/tool_count", suite),
+                                &format!("Expected >= 15, got {}", count),
+                            ));
                         }
                     }
                 }
@@ -385,7 +444,8 @@ async fn main() -> Result<()> {
     all_results.extend(cli_tests::test_cli_skills_install(&ws, &cfg.gateway_bin).await);
     all_results.extend(cli_tests::test_cli_skills_remove(&ws, &cfg.gateway_bin).await);
     all_results.extend(cli_tests::test_cli_skills_install_clawhub(&ws, &cfg.gateway_bin).await);
-    all_results.extend(cli_tests::test_cli_skills_add_source_duplicate(&ws, &cfg.gateway_bin).await);
+    all_results
+        .extend(cli_tests::test_cli_skills_add_source_duplicate(&ws, &cfg.gateway_bin).await);
 
     // --- Forge commands: status, enable/disable, reflect, list, evaluate, export, learning ---
     println!("  [1.12] Forge CLI commands...");
@@ -410,7 +470,8 @@ async fn main() -> Result<()> {
     all_results.extend(cli_tests::test_cli_scanner_add_remove(&ws, &cfg.gateway_bin).await);
     all_results.extend(cli_tests::test_cli_scanner_enable_disable(&ws, &cfg.gateway_bin).await);
     all_results.extend(cli_tests::test_cli_scanner_check_install(&ws, &cfg.gateway_bin).await);
-    all_results.extend(cli_tests::test_cli_scanner_download_test_update(&ws, &cfg.gateway_bin).await);
+    all_results
+        .extend(cli_tests::test_cli_scanner_download_test_update(&ws, &cfg.gateway_bin).await);
 
     // --- Agent commands: set llm, set concurrent-mode, message flags ---
     println!("  [1.15] Agent commands...");
@@ -426,7 +487,8 @@ async fn main() -> Result<()> {
     // --- Extra commands: memory, persona, dashboard, voice ---
     println!("  [1.17] Memory / Persona / Dashboard / Voice...");
     all_results.extend(cli_tests::test_cli_memory_status(&ws, &cfg.gateway_bin).await);
-    all_results.extend(cli_tests::test_cli_memory_disable_enable_cycle(&ws, &cfg.gateway_bin).await);
+    all_results
+        .extend(cli_tests::test_cli_memory_disable_enable_cycle(&ws, &cfg.gateway_bin).await);
     all_results.extend(cli_tests::test_cli_persona_help(&ws, &cfg.gateway_bin).await);
     all_results.extend(cli_tests::test_cli_persona_list_current(&ws, &cfg.gateway_bin).await);
     all_results.extend(cli_tests::test_cli_dashboard_help(&ws, &cfg.gateway_bin).await);
@@ -508,7 +570,10 @@ async fn main() -> Result<()> {
             "logging": {"llm": {"enabled": true}},
             "cluster": {"enabled": false}
         });
-        let _ = std::fs::write(ws.config_path(), serde_json::to_string_pretty(&config).unwrap_or_default());
+        let _ = std::fs::write(
+            ws.config_path(),
+            serde_json::to_string_pretty(&config).unwrap_or_default(),
+        );
     }
 
     // ---- Phase 2/3/4/8: Gateway-dependent tests ----
@@ -526,13 +591,18 @@ async fn main() -> Result<()> {
     tokio::time::sleep(Duration::from_secs(1)).await;
     if !ai_server.is_running().await {
         ai_server.kill().await;
-        bail!("AI Server process exited immediately (port {} may be in use)", AI_SERVER_PORT);
+        bail!(
+            "AI Server process exited immediately (port {} may be in use)",
+            AI_SERVER_PORT
+        );
     }
 
     match wait_for_http(
         &format!("http://127.0.0.1:{}/health", AI_SERVER_PORT),
         Duration::from_secs(10),
-    ).await {
+    )
+    .await
+    {
         Ok(_) => println!("  AI Server ready on port {}", AI_SERVER_PORT),
         Err(e) => {
             ai_server.kill().await;
@@ -551,7 +621,9 @@ async fn main() -> Result<()> {
     match wait_for_http(
         &format!("http://127.0.0.1:{}/health", HEALTH_PORT),
         Duration::from_secs(15),
-    ).await {
+    )
+    .await
+    {
         Ok(_) => println!("  Gateway ready on health port {}", HEALTH_PORT),
         Err(e) => {
             ai_server.kill().await;

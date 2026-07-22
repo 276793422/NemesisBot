@@ -50,9 +50,8 @@ impl PunctEngine {
 
         let text_c = sherpa::to_cstr(text);
 
-        let result_ptr = unsafe {
-            sherpa::SherpaOfflinePunctuationAddPunct(self.punct, text_c.as_ptr())
-        };
+        let result_ptr =
+            unsafe { sherpa::SherpaOfflinePunctuationAddPunct(self.punct, text_c.as_ptr()) };
 
         let result = if !result_ptr.is_null() {
             let s = unsafe { CStr::from_ptr(result_ptr) }

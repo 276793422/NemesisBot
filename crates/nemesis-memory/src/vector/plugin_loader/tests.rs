@@ -132,8 +132,14 @@ fn test_native_plugin_inner_debug() {
 #[test]
 fn test_plugin_error_all_variants() {
     let variants: Vec<PluginError> = vec![
-        PluginError::LoadFailed { path: "p".into(), error: "e".into() },
-        PluginError::SymbolNotFound { name: "n".into(), error: "e".into() },
+        PluginError::LoadFailed {
+            path: "p".into(),
+            error: "e".into(),
+        },
+        PluginError::SymbolNotFound {
+            name: "n".into(),
+            error: "e".into(),
+        },
         PluginError::NotInitialized { dim: 0 },
         PluginError::InitFailed { code: 1 },
         PluginError::EmbedFailed { code: 2 },
@@ -168,7 +174,11 @@ struct MockPlugin {
 
 impl MockPlugin {
     fn new(dim: i32) -> Self {
-        Self { dim, initialized: false, closed: false }
+        Self {
+            dim,
+            initialized: false,
+            closed: false,
+        }
     }
 }
 
@@ -233,7 +243,7 @@ fn test_mock_plugin_close_then_init() {
     let result = plugin.init("model_dir", 64);
     assert!(result.is_err());
     match result.unwrap_err() {
-        PluginError::Closed => {},
+        PluginError::Closed => {}
         e => panic!("Expected Closed, got: {}", e),
     }
 }
@@ -246,7 +256,7 @@ fn test_mock_plugin_close_then_embed() {
     let result = plugin.embed("test");
     assert!(result.is_err());
     match result.unwrap_err() {
-        PluginError::Closed => {},
+        PluginError::Closed => {}
         e => panic!("Expected Closed, got: {}", e),
     }
 }
@@ -274,7 +284,10 @@ fn test_native_plugin_inner_debug_with_library() {
 #[test]
 fn test_plugin_error_source_compatibility() {
     use std::error::Error;
-    let err = PluginError::LoadFailed { path: "test".into(), error: "err".into() };
+    let err = PluginError::LoadFailed {
+        path: "test".into(),
+        error: "err".into(),
+    };
     let _source = err.source();
 }
 
@@ -305,8 +318,14 @@ fn real_dll_path() -> Option<String> {
     }
     let manifest_dir = env!("CARGO_MANIFEST_DIR");
     let candidates = [
-        format!("{}/../../plugins/plugin-onnx/target/release/plugin_onnx.dll", manifest_dir),
-        format!("{}/../../../plugins/plugin-onnx/target/release/plugin_onnx.dll", manifest_dir),
+        format!(
+            "{}/../../plugins/plugin-onnx/target/release/plugin_onnx.dll",
+            manifest_dir
+        ),
+        format!(
+            "{}/../../../plugins/plugin-onnx/target/release/plugin_onnx.dll",
+            manifest_dir
+        ),
     ];
     for candidate in &candidates {
         let path = std::path::PathBuf::from(candidate);
@@ -330,7 +349,10 @@ fn real_model_dir() -> Option<String> {
     let candidates = [
         format!("{}/models/all-MiniLM-L6-v2", manifest_dir),
         format!("{}/../../test-data/memory-e2e", manifest_dir),
-        format!("{}/../../test-tools/plugin-onnx-test/test-data", manifest_dir),
+        format!(
+            "{}/../../test-tools/plugin-onnx-test/test-data",
+            manifest_dir
+        ),
     ];
     for candidate in &candidates {
         let path = std::path::PathBuf::from(candidate);
@@ -363,8 +385,11 @@ fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
 //   cargo test -p nemesis-memory -- --ignored --test-threads=1 <test_name>
 #[ignore]
 fn it_real_plugin_full_lifecycle() {
-    let dll_path = real_dll_path().expect("plugin DLL not found. Build with: cd plugins/plugin-onnx && cargo build --release");
-    let model_dir = real_model_dir().expect("model dir not found. Run: bash test-tools/plugin-onnx-test/scripts/setup-test.sh");
+    let dll_path = real_dll_path().expect(
+        "plugin DLL not found. Build with: cd plugins/plugin-onnx && cargo build --release",
+    );
+    let model_dir = real_model_dir()
+        .expect("model dir not found. Run: bash test-tools/plugin-onnx-test/scripts/setup-test.sh");
 
     // --- Load ---
     let mut plugin = NativePlugin::load(&dll_path).expect("Failed to load DLL");
@@ -382,12 +407,22 @@ fn it_real_plugin_full_lifecycle() {
 
     // --- Embed: L2 normalized ---
     let l2_norm: f32 = v1.iter().map(|v| v * v).sum::<f32>().sqrt();
-    assert!((l2_norm - 1.0).abs() < 1e-3, "L2 norm should be ~1.0, got {}", l2_norm);
+    assert!(
+        (l2_norm - 1.0).abs() < 1e-3,
+        "L2 norm should be ~1.0, got {}",
+        l2_norm
+    );
 
     // --- Embed: deterministic ---
     let v1b = plugin.embed("hello world").expect("embed failed");
     for (i, (a, b)) in v1.iter().zip(v1b.iter()).enumerate() {
-        assert!((a - b).abs() < 1e-6, "Mismatch at index {}: {} vs {}", i, a, b);
+        assert!(
+            (a - b).abs() < 1e-6,
+            "Mismatch at index {}: {} vs {}",
+            i,
+            a,
+            b
+        );
     }
 
     // --- Embed: semantic similarity ---
@@ -396,13 +431,21 @@ fn it_real_plugin_full_lifecycle() {
     let v_car = plugin.embed("driving a car on the highway").unwrap();
     let sim_cat_kitten = cosine_similarity(&v_cat, &v_kitten);
     let sim_cat_car = cosine_similarity(&v_cat, &v_car);
-    assert!(sim_cat_kitten > sim_cat_car,
-        "cat-kitten ({}) should be > cat-car ({})", sim_cat_kitten, sim_cat_car);
+    assert!(
+        sim_cat_kitten > sim_cat_car,
+        "cat-kitten ({}) should be > cat-car ({})",
+        sim_cat_kitten,
+        sim_cat_car
+    );
 
     // --- Embed: different texts produce different vectors ---
     let v_ml = plugin.embed("machine learning algorithms").unwrap();
     let sim_unrelated = cosine_similarity(&v_ml, &v_car);
-    assert!(sim_unrelated < 0.95, "unrelated texts should not be identical (sim={})", sim_unrelated);
+    assert!(
+        sim_unrelated < 0.95,
+        "unrelated texts should not be identical (sim={})",
+        sim_unrelated
+    );
 
     // --- Close ---
     plugin.close();

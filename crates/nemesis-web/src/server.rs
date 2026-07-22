@@ -9,19 +9,18 @@
 //! - `publish_status_loop` – periodic status push via SSE
 
 use crate::api_handlers::{
-    AppState,
-    handle_api_config, handle_api_logs, handle_api_scanner_status, handle_api_status,
-    handle_api_version, handle_api_models, handle_api_sessions, handle_api_events,
-    handle_api_readme, handle_api_license,
+    AppState, handle_api_config, handle_api_events, handle_api_license, handle_api_logs,
+    handle_api_models, handle_api_readme, handle_api_scanner_status, handle_api_sessions,
+    handle_api_status, handle_api_version,
 };
-use crate::api_usage::{handle_api_usage_summary, handle_api_usage_trends, handle_api_usage_logs};
+use crate::api_usage::{handle_api_usage_logs, handle_api_usage_summary, handle_api_usage_trends};
 use crate::cors::dev_cors_layer;
 use crate::events::EventHub;
 use crate::session::SessionManager;
 use crate::websocket_handler::handle_websocket_upgrade;
 use axum::extract::State as AxumState;
-use axum::response::sse::{Event as SseEvent, KeepAlive, Sse};
 use axum::response::IntoResponse;
+use axum::response::sse::{Event as SseEvent, KeepAlive, Sse};
 use axum::routing::get;
 use axum::{Json, Router};
 use futures::stream::Stream;
@@ -30,8 +29,8 @@ use nemesis_types::channel::InboundMessage;
 use std::convert::Infallible;
 use std::net::SocketAddr;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, AtomicUsize};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicUsize};
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 use tower_http::services::ServeDir;
@@ -226,7 +225,8 @@ impl WebServer {
     pub fn set_model_info(&self, name: &str, base_url: &str, has_key: bool) {
         *self.model_name.lock() = name.to_string();
         *self.model_base.lock() = base_url.to_string();
-        self.model_has_key.store(has_key, std::sync::atomic::Ordering::Release);
+        self.model_has_key
+            .store(has_key, std::sync::atomic::Ordering::Release);
     }
 
     /// Set the workspace path for config/log access.
@@ -235,12 +235,18 @@ impl WebServer {
     }
 
     /// Set the streaming LLM provider for the SSE chat endpoint.
-    pub fn set_streaming_provider(&mut self, provider: Arc<nemesis_providers::http_provider::HttpProvider>) {
+    pub fn set_streaming_provider(
+        &mut self,
+        provider: Arc<nemesis_providers::http_provider::HttpProvider>,
+    ) {
         self.streaming_provider = Some(provider);
     }
 
     /// Set the agent loop service for start/stop/status control.
-    pub fn set_agent_service(&mut self, service: Arc<dyn nemesis_services::bot_service::AgentLoopService>) {
+    pub fn set_agent_service(
+        &mut self,
+        service: Arc<dyn nemesis_services::bot_service::AgentLoopService>,
+    ) {
         self.agent_service = Some(service);
     }
 
@@ -262,7 +268,10 @@ impl WebServer {
     }
 
     /// Set the agent loop ref for runtime model/provider switching.
-    pub fn set_agent_loop(&mut self, agent_loop: Arc<parking_lot::RwLock<Option<Arc<nemesis_agent::r#loop::AgentLoop>>>>) {
+    pub fn set_agent_loop(
+        &mut self,
+        agent_loop: Arc<parking_lot::RwLock<Option<Arc<nemesis_agent::r#loop::AgentLoop>>>>,
+    ) {
         self.agent_loop = Some(agent_loop);
     }
 
@@ -273,7 +282,10 @@ impl WebServer {
     }
 
     /// Set the cluster lifecycle service for start/stop control.
-    pub fn set_cluster_service(&mut self, svc: Arc<dyn nemesis_services::bot_service::LifecycleService>) {
+    pub fn set_cluster_service(
+        &mut self,
+        svc: Arc<dyn nemesis_services::bot_service::LifecycleService>,
+    ) {
         self.cluster_service = Some(svc);
     }
 
@@ -298,7 +310,10 @@ impl WebServer {
     }
 
     /// Set the internal command sender for /api/internal endpoint.
-    pub fn set_internal_cmd_tx(&mut self, tx: tokio::sync::mpsc::Sender<crate::internal::InternalCommand>) {
+    pub fn set_internal_cmd_tx(
+        &mut self,
+        tx: tokio::sync::mpsc::Sender<crate::internal::InternalCommand>,
+    ) {
         self.internal_cmd_tx = Some(tx);
     }
 
@@ -321,7 +336,8 @@ impl WebServer {
 
     /// Build the Axum router with all routes.
     pub fn build_router(&self) -> Router {
-        let (inbound_tx, mut inbound_rx) = mpsc::unbounded_channel::<crate::websocket_handler::IncomingMessage>();
+        let (inbound_tx, mut inbound_rx) =
+            mpsc::unbounded_channel::<crate::websocket_handler::IncomingMessage>();
 
         let state = AppState {
             auth_token: self.config.auth_token.clone(),
@@ -347,16 +363,18 @@ impl WebServer {
             data_store: self.data_store.clone(),
             memory_manager: self.memory_manager.clone(),
             forge: self.forge.clone(),
-            agent_loop: self.agent_loop.clone().unwrap_or_else(|| Arc::new(parking_lot::RwLock::new(None))),
+            agent_loop: self
+                .agent_loop
+                .clone()
+                .unwrap_or_else(|| Arc::new(parking_lot::RwLock::new(None))),
             cluster: self.cluster.clone(),
             cluster_service: self.cluster_service.clone(),
             cluster_log_dir: self.cluster_log_dir.clone(),
             workflow_engine: self.workflow_engine.clone(),
             #[cfg(feature = "workflow")]
-            chat_secret_store: self
-                .chat_secret_store
-                .clone()
-                .unwrap_or_else(|| Arc::new(nemesis_workflow::chat_secrets::ChatSecretStore::in_memory())),
+            chat_secret_store: self.chat_secret_store.clone().unwrap_or_else(|| {
+                Arc::new(nemesis_workflow::chat_secrets::ChatSecretStore::in_memory())
+            }),
             #[cfg(not(feature = "workflow"))]
             chat_secret_store: std::sync::Arc::new(()),
             webhook_rate_limiter: self.webhook_rate_limiter.clone(),
@@ -376,14 +394,15 @@ impl WebServer {
             });
         } else {
             // No bus configured; drain messages to avoid leaking the sender
-            tokio::spawn(async move {
-                while inbound_rx.recv().await.is_some() {}
-            });
+            tokio::spawn(async move { while inbound_rx.recv().await.is_some() {} });
         }
 
         let router = Router::new()
             // WebSocket endpoint
-            .route(&self.config.ws_path, axum::routing::get(handle_websocket_upgrade))
+            .route(
+                &self.config.ws_path,
+                axum::routing::get(handle_websocket_upgrade),
+            )
             // Health check
             .route("/health", get(handle_health))
             .route("/api/health", get(handle_health))
@@ -407,7 +426,10 @@ impl WebServer {
             // SSE event stream
             .route("/api/events/stream", get(handle_events_stream))
             // SSE chat streaming endpoint
-            .route("/api/chat/stream", axum::routing::post(crate::sse_chat::handle_chat_stream));
+            .route(
+                "/api/chat/stream",
+                axum::routing::post(crate::sse_chat::handle_chat_stream),
+            );
 
         // Workflow REST endpoints (milestone 1a-E3/E4)
         #[cfg(feature = "workflow")]
@@ -415,7 +437,10 @@ impl WebServer {
 
         let mut router = router
             // Internal control endpoint (undocumented)
-            .route("/api/internal", axum::routing::post(crate::api_handlers::handle_api_internal))
+            .route(
+                "/api/internal",
+                axum::routing::post(crate::api_handlers::handle_api_internal),
+            )
             // CORS layer
             .layer(if self.config.cors_origins.is_empty() {
                 dev_cors_layer()
@@ -435,7 +460,8 @@ impl WebServer {
                     // Handle CORS preflight for static assets (WebKitGTK may send
                     // OPTIONS before loading module scripts with crossorigin attr).
                     if req.method() == http::method::Method::OPTIONS {
-                        let origin = req.headers()
+                        let origin = req
+                            .headers()
                             .get(http::header::ORIGIN)
                             .and_then(|v| v.to_str().ok())
                             .unwrap_or("*")
@@ -444,11 +470,15 @@ impl WebServer {
                             axum::http::StatusCode::NO_CONTENT,
                             [
                                 (http::header::ACCESS_CONTROL_ALLOW_ORIGIN, origin),
-                                (http::header::ACCESS_CONTROL_ALLOW_METHODS, "GET, OPTIONS".to_string()),
+                                (
+                                    http::header::ACCESS_CONTROL_ALLOW_METHODS,
+                                    "GET, OPTIONS".to_string(),
+                                ),
                                 (http::header::ACCESS_CONTROL_ALLOW_HEADERS, "*".to_string()),
                                 (http::header::VARY, "Origin".to_string()),
                             ],
-                        ).into_response();
+                        )
+                            .into_response();
                     }
                     serve_embedded_static(files, req).await
                 }
@@ -469,7 +499,8 @@ impl WebServer {
                     .layer(tower_http::set_header::SetResponseHeaderLayer::overriding(
                         http::header::CONTENT_TYPE,
                         |response: &http::Response<_>| {
-                            let ct = response.headers()
+                            let ct = response
+                                .headers()
                                 .get(http::header::CONTENT_TYPE)
                                 .and_then(|v| v.to_str().ok())
                                 .unwrap_or("");
@@ -516,7 +547,8 @@ impl WebServer {
             listen_addr = %self.config.listen_addr,
             "[WebServer] Starting web server"
         );
-        self.running.store(true, std::sync::atomic::Ordering::SeqCst);
+        self.running
+            .store(true, std::sync::atomic::Ordering::SeqCst);
 
         let _status_handle = start_publish_status_loop(
             self.event_hub.clone(),
@@ -527,26 +559,27 @@ impl WebServer {
         );
 
         let addr: SocketAddr = self.config.listen_addr.parse().map_err(|e| {
-            tracing::error!("[WebServer] Invalid listen address '{}': {}", self.config.listen_addr, e);
+            tracing::error!(
+                "[WebServer] Invalid listen address '{}': {}",
+                self.config.listen_addr,
+                e
+            );
             format!("invalid listen address: {}", e)
         })?;
         let app = self.build_router();
-        let listener = tokio::net::TcpListener::bind(addr)
-            .await
-            .map_err(|e| {
-                tracing::error!("[WebServer] Bind failed on '{}': {}", addr, e);
-                format!("bind failed: {}", e)
-            })?;
+        let listener = tokio::net::TcpListener::bind(addr).await.map_err(|e| {
+            tracing::error!("[WebServer] Bind failed on '{}': {}", addr, e);
+            format!("bind failed: {}", e)
+        })?;
 
-        let actual_addr = listener.local_addr()
+        let actual_addr = listener
+            .local_addr()
             .map_err(|e| format!("failed to get local addr: {}", e))?;
         tracing::info!("[WebServer] Listening on {}", actual_addr);
-        axum::serve(listener, app)
-            .await
-            .map_err(|e| {
-                tracing::error!("[WebServer] Server error: {}", e);
-                format!("server error: {}", e)
-            })?;
+        axum::serve(listener, app).await.map_err(|e| {
+            tracing::error!("[WebServer] Server error: {}", e);
+            format!("server error: {}", e)
+        })?;
         Ok(actual_addr)
     }
 
@@ -562,7 +595,8 @@ impl WebServer {
             listen_addr = %self.config.listen_addr,
             "[WebServer] Starting web server with graceful shutdown"
         );
-        self.running.store(true, std::sync::atomic::Ordering::SeqCst);
+        self.running
+            .store(true, std::sync::atomic::Ordering::SeqCst);
 
         let _status_handle = start_publish_status_loop(
             self.event_hub.clone(),
@@ -573,18 +607,21 @@ impl WebServer {
         );
 
         let addr: SocketAddr = self.config.listen_addr.parse().map_err(|e| {
-            tracing::error!("[WebServer] Invalid listen address '{}': {}", self.config.listen_addr, e);
+            tracing::error!(
+                "[WebServer] Invalid listen address '{}': {}",
+                self.config.listen_addr,
+                e
+            );
             format!("invalid listen address: {}", e)
         })?;
         let app = self.build_router();
-        let listener = tokio::net::TcpListener::bind(addr)
-            .await
-            .map_err(|e| {
-                tracing::error!("[WebServer] Bind failed on '{}': {}", addr, e);
-                format!("bind failed: {}", e)
-            })?;
+        let listener = tokio::net::TcpListener::bind(addr).await.map_err(|e| {
+            tracing::error!("[WebServer] Bind failed on '{}': {}", addr, e);
+            format!("bind failed: {}", e)
+        })?;
 
-        let actual_addr = listener.local_addr()
+        let actual_addr = listener
+            .local_addr()
             .map_err(|e| format!("failed to get local addr: {}", e))?;
 
         // Send the actual address immediately so the caller knows the real port.
@@ -608,7 +645,8 @@ impl WebServer {
     /// Stop the web server.
     pub fn stop(&self) {
         tracing::info!("[WebServer] Stopping web server");
-        self.running.store(false, std::sync::atomic::Ordering::SeqCst);
+        self.running
+            .store(false, std::sync::atomic::Ordering::SeqCst);
     }
 }
 
@@ -685,7 +723,8 @@ async fn serve_embedded_static(
                 (http::header::VARY, "Origin".to_string()),
             ],
             content,
-        ).into_response();
+        )
+            .into_response();
     }
 
     // 2. Path-prefix rule: standalone workflow-chat page.
@@ -698,12 +737,16 @@ async fn serve_embedded_static(
             return (
                 axum::http::StatusCode::OK,
                 [
-                    (http::header::CONTENT_TYPE, "text/html; charset=utf-8".to_string()),
+                    (
+                        http::header::CONTENT_TYPE,
+                        "text/html; charset=utf-8".to_string(),
+                    ),
                     (http::header::ACCESS_CONTROL_ALLOW_ORIGIN, origin),
                     (http::header::VARY, "Origin".to_string()),
                 ],
                 content,
-            ).into_response();
+            )
+                .into_response();
         }
     }
 
@@ -713,12 +756,16 @@ async fn serve_embedded_static(
             return (
                 axum::http::StatusCode::OK,
                 [
-                    (http::header::CONTENT_TYPE, "text/html; charset=utf-8".to_string()),
+                    (
+                        http::header::CONTENT_TYPE,
+                        "text/html; charset=utf-8".to_string(),
+                    ),
                     (http::header::ACCESS_CONTROL_ALLOW_ORIGIN, origin),
                     (http::header::VARY, "Origin".to_string()),
                 ],
                 content,
-            ).into_response();
+            )
+                .into_response();
         }
     }
 
@@ -734,10 +781,7 @@ async fn serve_embedded_static(
 /// 3. `./static/` directory
 ///
 /// Returns None if no valid static directory is found.
-pub fn resolve_static_dir(
-    explicit_path: Option<&str>,
-    workspace: Option<&str>,
-) -> Option<String> {
+pub fn resolve_static_dir(explicit_path: Option<&str>, workspace: Option<&str>) -> Option<String> {
     // 1. Explicit path
     if let Some(path) = explicit_path {
         let p = PathBuf::from(path);
@@ -845,10 +889,10 @@ impl StaticFiles for DirectoryStaticFiles {
 // ---------------------------------------------------------------------------
 
 /// Health check handler. Returns `{"status":"ok","running":true/false,"sessions":N}`.
-pub async fn handle_health(
-    AxumState(state): AxumState<Arc<AppState>>,
-) -> Json<serde_json::Value> {
-    let session_count = state.session_count.load(std::sync::atomic::Ordering::SeqCst);
+pub async fn handle_health(AxumState(state): AxumState<Arc<AppState>>) -> Json<serde_json::Value> {
+    let session_count = state
+        .session_count
+        .load(std::sync::atomic::Ordering::SeqCst);
     let running = state.running.load(std::sync::atomic::Ordering::SeqCst);
     Json(serde_json::json!({
         "status": "ok",
@@ -1010,7 +1054,9 @@ pub async fn send_to_session(
         data["model"] = serde_json::Value::String(m.to_string());
     }
     let msg = crate::protocol::ProtocolMessage::new("message", "chat", "receive", Some(data));
-    let data = msg.to_json().map_err(|e| format!("failed to marshal message: {}", e))?;
+    let data = msg
+        .to_json()
+        .map_err(|e| format!("failed to marshal message: {}", e))?;
 
     session_manager
         .broadcast(session_id, &data)
@@ -1031,11 +1077,13 @@ pub async fn send_history_to_session(
     session_id: &str,
     json_content: &str,
 ) -> Result<(), String> {
-    let data: serde_json::Value =
-        serde_json::from_str(json_content).map_err(|e| format!("failed to unmarshal history data: {}", e))?;
+    let data: serde_json::Value = serde_json::from_str(json_content)
+        .map_err(|e| format!("failed to unmarshal history data: {}", e))?;
 
     let msg = crate::protocol::ProtocolMessage::new("message", "chat", "history", Some(data));
-    let bytes = msg.to_json().map_err(|e| format!("failed to create protocol message: {}", e))?;
+    let bytes = msg
+        .to_json()
+        .map_err(|e| format!("failed to create protocol message: {}", e))?;
 
     session_manager
         .broadcast(session_id, &bytes)
@@ -1063,7 +1111,9 @@ pub fn start_publish_status_loop(
             interval.tick().await;
 
             if !running.load(std::sync::atomic::Ordering::SeqCst) {
-                tracing::debug!("[WebServer] Status publish loop stopping (server no longer running)");
+                tracing::debug!(
+                    "[WebServer] Status publish loop stopping (server no longer running)"
+                );
                 break;
             }
 
@@ -1090,10 +1140,7 @@ pub fn start_publish_status_loop(
 
 /// Subscribe to outbound messages on the bus and dispatch web channel messages
 /// to the appropriate sessions.
-pub async fn dispatch_outbound(
-    bus: Arc<MessageBus>,
-    session_manager: Arc<SessionManager>,
-) {
+pub async fn dispatch_outbound(bus: Arc<MessageBus>, session_manager: Arc<SessionManager>) {
     let mut rx = bus.subscribe_outbound();
     loop {
         match rx.recv().await {
@@ -1117,7 +1164,14 @@ pub async fn dispatch_outbound(
                 let result = if msg.message_type == "history" {
                     send_history_to_session(&session_manager, session_id, &msg.content).await
                 } else {
-                    send_to_session(&session_manager, session_id, "assistant", &msg.content, msg.meta.model.as_deref()).await
+                    send_to_session(
+                        &session_manager,
+                        session_id,
+                        "assistant",
+                        &msg.content,
+                        msg.meta.model.as_deref(),
+                    )
+                    .await
                 };
 
                 if let Err(e) = result {

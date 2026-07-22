@@ -61,7 +61,8 @@ fn test_redact_content() {
 #[test]
 fn test_jwt_detected() {
     let scanner = Scanner::new(true, "block");
-    let result = scanner.scan_content("token=eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.abc123def456");
+    let result =
+        scanner.scan_content("token=eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.abc123def456");
     assert!(result.has_matches);
 }
 
@@ -166,7 +167,8 @@ fn test_exactly_10_chars_skipped() {
 #[test]
 fn test_bearer_token_detected() {
     let scanner = Scanner::new(true, "block");
-    let result = scanner.scan_content("Authorization: Bearer eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0In0.abc123def");
+    let result = scanner
+        .scan_content("Authorization: Bearer eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0In0.abc123def");
     assert!(result.has_matches);
 }
 
@@ -212,7 +214,10 @@ fn test_scan_content_multibyte_value_no_panic() {
     // sliced mid-codepoint on the multibyte tail and panicked. Reaching the
     // assert means the credential.rs:97 floor/ceil fix held.
     let result = scanner.scan_content(r#"password="一二三四五六七八九""#);
-    assert!(result.has_matches, "secret_assignment should match the Chinese password");
+    assert!(
+        result.has_matches,
+        "secret_assignment should match the Chinese password"
+    );
 }
 
 #[test]
@@ -225,7 +230,8 @@ fn test_mongodb_connection_detected() {
 #[test]
 fn test_sendgrid_key_detected() {
     let scanner = Scanner::new(true, "block");
-    let result = scanner.scan_content("SG.abcdefghijklmnopqrstuv.xyzABCDEFGHIJKLMNO1234567890ABCDEFGHIJKLMNOPQ");
+    let result = scanner
+        .scan_content("SG.abcdefghijklmnopqrstuv.xyzABCDEFGHIJKLMNO1234567890ABCDEFGHIJKLMNOPQ");
     assert!(result.has_matches);
 }
 
@@ -349,7 +355,9 @@ fn test_credential_match_fields() {
 #[test]
 fn test_azure_connection_string_detected() {
     let scanner = Scanner::new(true, "block");
-    let result = scanner.scan_content("AccountName=myaccount;AccountKey=abc123def456ghi789jkl012mno345pqr678stu901vwx==");
+    let result = scanner.scan_content(
+        "AccountName=myaccount;AccountKey=abc123def456ghi789jkl012mno345pqr678stu901vwx==",
+    );
     assert!(result.has_matches);
 }
 
@@ -363,6 +371,8 @@ fn test_heroku_key_detected() {
 #[test]
 fn test_slack_webhook_detected() {
     let scanner = Scanner::new(true, "block");
-    let result = scanner.scan_content("https://hooks.slack.com/services/T12345678/B12345678/abcdefghijklmnopqrstuvwx");
+    let result = scanner.scan_content(
+        "https://hooks.slack.com/services/T12345678/B12345678/abcdefghijklmnopqrstuvwx",
+    );
     assert!(result.has_matches);
 }

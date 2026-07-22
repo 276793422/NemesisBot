@@ -160,7 +160,10 @@ options = ["release", "iotsmall"]
         let bf = m.features.iter().find(|f| f.id == "build-profile").unwrap();
         assert!(bf.is_enum());
         assert_eq!(bf.default.as_str(), Some("release"));
-        assert_eq!(bf.options, vec!["release".to_string(), "iotsmall".to_string()]);
+        assert_eq!(
+            bf.options,
+            vec!["release".to_string(), "iotsmall".to_string()]
+        );
     }
 
     #[test]

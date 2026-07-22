@@ -17,7 +17,7 @@ fn make_node(id: &str, depends_on: Vec<&str>) -> NodeDef {
         depends_on: depends_on.into_iter().map(|s| s.to_string()).collect(),
         retry_count: 0,
         timeout: None,
-    is_terminal: false,
+        is_terminal: false,
     }
 }
 
@@ -55,10 +55,7 @@ fn test_topological_sort_parallel() {
 
 #[test]
 fn test_topological_sort_cycle_detected() {
-    let nodes = vec![
-        make_node("a", vec!["b"]),
-        make_node("b", vec!["a"]),
-    ];
+    let nodes = vec![make_node("a", vec!["b"]), make_node("b", vec!["a"])];
     let edges = vec![];
 
     let result = topological_sort(&nodes, &edges);
@@ -68,10 +65,7 @@ fn test_topological_sort_cycle_detected() {
 
 #[test]
 fn test_topological_sort_with_edges() {
-    let nodes = vec![
-        make_node("a", vec![]),
-        make_node("b", vec![]),
-    ];
+    let nodes = vec![make_node("a", vec![]), make_node("b", vec![])];
     let edges = vec![Edge {
         from_node: "a".to_string(),
         to_node: "b".to_string(),
@@ -219,14 +213,32 @@ fn test_topological_sort_with_multiple_edges() {
         make_node("d", vec![]),
     ];
     let edges = vec![
-        Edge { from_node: "a".to_string(), to_node: "c".to_string(), condition: None },
-        Edge { from_node: "b".to_string(), to_node: "c".to_string(), condition: None },
-        Edge { from_node: "c".to_string(), to_node: "d".to_string(), condition: None },
+        Edge {
+            from_node: "a".to_string(),
+            to_node: "c".to_string(),
+            condition: None,
+        },
+        Edge {
+            from_node: "b".to_string(),
+            to_node: "c".to_string(),
+            condition: None,
+        },
+        Edge {
+            from_node: "c".to_string(),
+            to_node: "d".to_string(),
+            condition: None,
+        },
     ];
     let levels = topological_sort(&nodes, &edges).unwrap();
     // d should be in a later level than c
-    let d_level = levels.iter().position(|l| l.contains(&"d".to_string())).unwrap();
-    let c_level = levels.iter().position(|l| l.contains(&"c".to_string())).unwrap();
+    let d_level = levels
+        .iter()
+        .position(|l| l.contains(&"d".to_string()))
+        .unwrap();
+    let c_level = levels
+        .iter()
+        .position(|l| l.contains(&"c".to_string()))
+        .unwrap();
     assert!(d_level > c_level);
 }
 
@@ -468,7 +480,10 @@ fn test_build_executor_context_with_node_results() {
     wf_ctx.set_node_result("node_a", result);
 
     let ctx = build_executor_context(&wf_ctx);
-    assert_eq!(ctx.get("node_a.field1").unwrap(), &serde_json::json!("val1"));
+    assert_eq!(
+        ctx.get("node_a.field1").unwrap(),
+        &serde_json::json!("val1")
+    );
     assert_eq!(ctx.get("node_a.field2").unwrap(), &serde_json::json!(42));
     assert!(ctx.contains_key("node_a"));
 }
@@ -490,8 +505,14 @@ fn test_build_executor_context_includes_input_fields() {
 
     let ctx = build_executor_context(&wf_ctx);
     assert_eq!(ctx.get("input").unwrap(), &serde_json::json!("hello world"));
-    assert_eq!(ctx.get("content").unwrap(), &serde_json::json!("hello world"));
-    assert_eq!(ctx.get("chat_id").unwrap(), &serde_json::json!("web:sess-1"));
+    assert_eq!(
+        ctx.get("content").unwrap(),
+        &serde_json::json!("hello world")
+    );
+    assert_eq!(
+        ctx.get("chat_id").unwrap(),
+        &serde_json::json!("web:sess-1")
+    );
     assert_eq!(
         ctx.get("session_key").unwrap(),
         &serde_json::json!("wf_chat:demo")
@@ -504,7 +525,10 @@ fn test_build_executor_context_includes_input_fields() {
 fn test_build_executor_context_variable_overrides_input() {
     let mut input = HashMap::new();
     input.insert("x".to_string(), serde_json::json!("from_input"));
-    input.insert("untouched_input".to_string(), serde_json::json!("input_value"));
+    input.insert(
+        "untouched_input".to_string(),
+        serde_json::json!("input_value"),
+    );
     let wf_ctx = WorkflowContext::new(input);
     wf_ctx.set_var("x", "from_variable");
     wf_ctx.set_var("untouched", "var_value");
@@ -626,7 +650,7 @@ async fn test_cancel_mid_execution() {
         depends_on: vec![],
         retry_count: 0,
         timeout: None,
-    is_terminal: false,
+        is_terminal: false,
     }];
     let edges: Vec<Edge> = vec![];
     let mut wf_ctx = WorkflowContext::new(HashMap::new());
@@ -681,7 +705,7 @@ async fn test_schedule_completes_without_cancel() {
         depends_on: vec![],
         retry_count: 0,
         timeout: None,
-    is_terminal: false,
+        is_terminal: false,
     }];
     let edges: Vec<Edge> = vec![];
     let mut wf_ctx = WorkflowContext::new(HashMap::new());
@@ -743,7 +767,9 @@ async fn schedule_resume_skips_completed_nodes() {
     let registry = NodeExecutorRegistry::new();
     registry.register(
         "rec",
-        Arc::new(RecordingExecutor { calls: calls.clone() }),
+        Arc::new(RecordingExecutor {
+            calls: calls.clone(),
+        }),
     );
 
     // Linear DAG: a -> b -> c
@@ -794,7 +820,9 @@ async fn schedule_resume_with_empty_completed_equivalent_to_fresh() {
     let registry = NodeExecutorRegistry::new();
     registry.register(
         "rec",
-        Arc::new(RecordingExecutor { calls: calls.clone() }),
+        Arc::new(RecordingExecutor {
+            calls: calls.clone(),
+        }),
     );
 
     let nodes = vec![
@@ -805,10 +833,16 @@ async fn schedule_resume_with_empty_completed_equivalent_to_fresh() {
     let mut wf_ctx = WorkflowContext::new(HashMap::new());
     let completed: HashSet<String> = HashSet::new();
 
-    let outcome =
-        schedule_resume(&nodes, &edges, &registry, &mut wf_ctx, &completed, CancellationToken::new())
-            .await
-            .unwrap();
+    let outcome = schedule_resume(
+        &nodes,
+        &edges,
+        &registry,
+        &mut wf_ctx,
+        &completed,
+        CancellationToken::new(),
+    )
+    .await
+    .unwrap();
 
     assert_eq!(outcome, ScheduleOutcome::Completed);
     let ran = calls.lock().clone();
@@ -821,7 +855,9 @@ async fn schedule_resume_all_completed_runs_nothing() {
     let registry = NodeExecutorRegistry::new();
     registry.register(
         "rec",
-        Arc::new(RecordingExecutor { calls: calls.clone() }),
+        Arc::new(RecordingExecutor {
+            calls: calls.clone(),
+        }),
     );
 
     let nodes = vec![
@@ -832,10 +868,16 @@ async fn schedule_resume_all_completed_runs_nothing() {
     let mut wf_ctx = WorkflowContext::new(HashMap::new());
     let completed: HashSet<String> = HashSet::from(["a".to_string(), "b".to_string()]);
 
-    let outcome =
-        schedule_resume(&nodes, &edges, &registry, &mut wf_ctx, &completed, CancellationToken::new())
-            .await
-            .unwrap();
+    let outcome = schedule_resume(
+        &nodes,
+        &edges,
+        &registry,
+        &mut wf_ctx,
+        &completed,
+        CancellationToken::new(),
+    )
+    .await
+    .unwrap();
 
     assert_eq!(outcome, ScheduleOutcome::Completed);
     assert!(calls.lock().is_empty(), "no nodes should have run");
@@ -878,10 +920,16 @@ async fn schedule_resume_preserves_waiting_node_result() {
     let mut wf_ctx = WorkflowContext::new(HashMap::new());
     let completed: HashSet<String> = HashSet::new();
 
-    let outcome =
-        schedule_resume(&nodes, &edges, &registry, &mut wf_ctx, &completed, CancellationToken::new())
-            .await
-            .unwrap();
+    let outcome = schedule_resume(
+        &nodes,
+        &edges,
+        &registry,
+        &mut wf_ctx,
+        &completed,
+        CancellationToken::new(),
+    )
+    .await
+    .unwrap();
     assert_eq!(outcome, ScheduleOutcome::Completed);
 
     // "review" returned Waiting and was stored. Downstream "after" should
@@ -900,7 +948,9 @@ async fn schedule_resume_skip_set_independent_of_conditional_edges() {
     let registry = NodeExecutorRegistry::new();
     registry.register(
         "rec",
-        Arc::new(RecordingExecutor { calls: calls.clone() }),
+        Arc::new(RecordingExecutor {
+            calls: calls.clone(),
+        }),
     );
 
     let nodes = vec![
@@ -912,10 +962,16 @@ async fn schedule_resume_skip_set_independent_of_conditional_edges() {
     let mut wf_ctx = WorkflowContext::new(HashMap::new());
     let completed: HashSet<String> = HashSet::from(["a".to_string()]);
 
-    let outcome =
-        schedule_resume(&nodes, &edges, &registry, &mut wf_ctx, &completed, CancellationToken::new())
-            .await
-            .unwrap();
+    let outcome = schedule_resume(
+        &nodes,
+        &edges,
+        &registry,
+        &mut wf_ctx,
+        &completed,
+        CancellationToken::new(),
+    )
+    .await
+    .unwrap();
     assert_eq!(outcome, ScheduleOutcome::Completed);
 
     let ran = calls.lock().clone();

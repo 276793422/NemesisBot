@@ -6,20 +6,19 @@
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use thiserror::Error;
-use tracing::{info, warn, error};
+use tracing::{error, info, warn};
 
 pub mod provider_resolver;
 pub mod store;
 
 // Runtime config cache (single source of truth for the live config).
-pub use store::{global, load_live, save_live, set_global, ConfigHandle, ConfigStore};
+pub use store::{ConfigHandle, ConfigStore, global, load_live, save_live, set_global};
 
 // Re-export provider_resolver types and functions for backward compatibility
 pub use provider_resolver::{
-    ProviderResolution, ProviderResolver, ModelResolution,
-    resolve_model_config, get_model_by_name, get_effective_llm,
-    infer_provider_from_model, infer_default_model, get_default_api_base,
-    find_model_by_name, resolve_model_resolution,
+    ModelResolution, ProviderResolution, ProviderResolver, find_model_by_name,
+    get_default_api_base, get_effective_llm, get_model_by_name, infer_default_model,
+    infer_provider_from_model, resolve_model_config, resolve_model_resolution,
 };
 
 #[derive(Error, Debug)]
@@ -44,7 +43,9 @@ pub type Result<T> = std::result::Result<T, ConfigError>;
 /// Custom deserializer for `allow_from` fields that accepts JSON arrays
 /// containing mixed types (strings, numbers, etc.), converting all to strings.
 /// This matches Go's `FlexibleStringSlice` behavior.
-pub fn deserialize_flexible_string_vec<'de, D>(deserializer: D) -> std::result::Result<Vec<String>, D::Error>
+pub fn deserialize_flexible_string_vec<'de, D>(
+    deserializer: D,
+) -> std::result::Result<Vec<String>, D::Error>
 where
     D: serde::Deserializer<'de>,
 {
@@ -293,7 +294,9 @@ pub struct AgentModelConfig {
 
 /// Support both string and structured model config during deserialization.
 impl<'de> serde::Deserialize<'de> for AgentModelConfig {
-    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> std::result::Result<Self, D::Error> {
+    fn deserialize<D: serde::Deserializer<'de>>(
+        deserializer: D,
+    ) -> std::result::Result<Self, D::Error> {
         use serde::de::{self, Visitor};
         use std::fmt;
 
@@ -313,7 +316,10 @@ impl<'de> serde::Deserialize<'de> for AgentModelConfig {
                 })
             }
 
-            fn visit_map<A: serde::de::MapAccess<'de>>(self, map: A) -> std::result::Result<Self::Value, A::Error> {
+            fn visit_map<A: serde::de::MapAccess<'de>>(
+                self,
+                map: A,
+            ) -> std::result::Result<Self::Value, A::Error> {
                 #[derive(Deserialize)]
                 struct Raw {
                     #[serde(default)]
@@ -416,110 +422,174 @@ pub struct ChannelsConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct WhatsAppConfig {
-    #[serde(default)] pub enabled: bool,
-    #[serde(default)] pub bridge_url: String,
-    #[serde(default, deserialize_with = "deserialize_flexible_string_vec")] pub allow_from: Vec<String>,
-    #[serde(default)] pub sync_to: Vec<String>,
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default)]
+    pub bridge_url: String,
+    #[serde(default, deserialize_with = "deserialize_flexible_string_vec")]
+    pub allow_from: Vec<String>,
+    #[serde(default)]
+    pub sync_to: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct TelegramConfig {
-    #[serde(default)] pub enabled: bool,
-    #[serde(default)] pub token: String,
-    #[serde(default)] pub proxy: String,
-    #[serde(default, deserialize_with = "deserialize_flexible_string_vec")] pub allow_from: Vec<String>,
-    #[serde(default)] pub sync_to: Vec<String>,
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default)]
+    pub token: String,
+    #[serde(default)]
+    pub proxy: String,
+    #[serde(default, deserialize_with = "deserialize_flexible_string_vec")]
+    pub allow_from: Vec<String>,
+    #[serde(default)]
+    pub sync_to: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct FeishuConfig {
-    #[serde(default)] pub enabled: bool,
-    #[serde(default)] pub app_id: String,
-    #[serde(default)] pub app_secret: String,
-    #[serde(default)] pub encrypt_key: String,
-    #[serde(default)] pub verification_token: String,
-    #[serde(default, deserialize_with = "deserialize_flexible_string_vec")] pub allow_from: Vec<String>,
-    #[serde(default)] pub sync_to: Vec<String>,
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default)]
+    pub app_id: String,
+    #[serde(default)]
+    pub app_secret: String,
+    #[serde(default)]
+    pub encrypt_key: String,
+    #[serde(default)]
+    pub verification_token: String,
+    #[serde(default, deserialize_with = "deserialize_flexible_string_vec")]
+    pub allow_from: Vec<String>,
+    #[serde(default)]
+    pub sync_to: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct DiscordConfig {
-    #[serde(default)] pub enabled: bool,
-    #[serde(default)] pub token: String,
-    #[serde(default, deserialize_with = "deserialize_flexible_string_vec")] pub allow_from: Vec<String>,
-    #[serde(default)] pub sync_to: Vec<String>,
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default)]
+    pub token: String,
+    #[serde(default, deserialize_with = "deserialize_flexible_string_vec")]
+    pub allow_from: Vec<String>,
+    #[serde(default)]
+    pub sync_to: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct MaixCamConfig {
-    #[serde(default)] pub enabled: bool,
-    #[serde(default)] pub host: String,
-    #[serde(default)] pub port: i64,
-    #[serde(default, deserialize_with = "deserialize_flexible_string_vec")] pub allow_from: Vec<String>,
-    #[serde(default)] pub sync_to: Vec<String>,
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default)]
+    pub host: String,
+    #[serde(default)]
+    pub port: i64,
+    #[serde(default, deserialize_with = "deserialize_flexible_string_vec")]
+    pub allow_from: Vec<String>,
+    #[serde(default)]
+    pub sync_to: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct QqConfig {
-    #[serde(default)] pub enabled: bool,
-    #[serde(default)] pub app_id: String,
-    #[serde(default)] pub app_secret: String,
-    #[serde(default, deserialize_with = "deserialize_flexible_string_vec")] pub allow_from: Vec<String>,
-    #[serde(default)] pub sync_to: Vec<String>,
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default)]
+    pub app_id: String,
+    #[serde(default)]
+    pub app_secret: String,
+    #[serde(default, deserialize_with = "deserialize_flexible_string_vec")]
+    pub allow_from: Vec<String>,
+    #[serde(default)]
+    pub sync_to: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct DingTalkConfig {
-    #[serde(default)] pub enabled: bool,
-    #[serde(default)] pub client_id: String,
-    #[serde(default)] pub client_secret: String,
-    #[serde(default, deserialize_with = "deserialize_flexible_string_vec")] pub allow_from: Vec<String>,
-    #[serde(default)] pub sync_to: Vec<String>,
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default)]
+    pub client_id: String,
+    #[serde(default)]
+    pub client_secret: String,
+    #[serde(default, deserialize_with = "deserialize_flexible_string_vec")]
+    pub allow_from: Vec<String>,
+    #[serde(default)]
+    pub sync_to: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct SlackConfig {
-    #[serde(default)] pub enabled: bool,
-    #[serde(default)] pub bot_token: String,
-    #[serde(default)] pub app_token: String,
-    #[serde(default, deserialize_with = "deserialize_flexible_string_vec")] pub allow_from: Vec<String>,
-    #[serde(default)] pub sync_to: Vec<String>,
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default)]
+    pub bot_token: String,
+    #[serde(default)]
+    pub app_token: String,
+    #[serde(default, deserialize_with = "deserialize_flexible_string_vec")]
+    pub allow_from: Vec<String>,
+    #[serde(default)]
+    pub sync_to: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct LineConfig {
-    #[serde(default)] pub enabled: bool,
-    #[serde(default)] pub channel_secret: String,
-    #[serde(default)] pub channel_access_token: String,
-    #[serde(default)] pub webhook_host: String,
-    #[serde(default)] pub webhook_port: i64,
-    #[serde(default)] pub webhook_path: String,
-    #[serde(default, deserialize_with = "deserialize_flexible_string_vec")] pub allow_from: Vec<String>,
-    #[serde(default)] pub sync_to: Vec<String>,
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default)]
+    pub channel_secret: String,
+    #[serde(default)]
+    pub channel_access_token: String,
+    #[serde(default)]
+    pub webhook_host: String,
+    #[serde(default)]
+    pub webhook_port: i64,
+    #[serde(default)]
+    pub webhook_path: String,
+    #[serde(default, deserialize_with = "deserialize_flexible_string_vec")]
+    pub allow_from: Vec<String>,
+    #[serde(default)]
+    pub sync_to: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct OneBotConfig {
-    #[serde(default)] pub enabled: bool,
-    #[serde(default)] pub ws_url: String,
-    #[serde(default)] pub access_token: String,
-    #[serde(default)] pub reconnect_interval: i64,
-    #[serde(default)] pub group_trigger_prefix: Vec<String>,
-    #[serde(default, deserialize_with = "deserialize_flexible_string_vec")] pub allow_from: Vec<String>,
-    #[serde(default)] pub sync_to: Vec<String>,
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default)]
+    pub ws_url: String,
+    #[serde(default)]
+    pub access_token: String,
+    #[serde(default)]
+    pub reconnect_interval: i64,
+    #[serde(default)]
+    pub group_trigger_prefix: Vec<String>,
+    #[serde(default, deserialize_with = "deserialize_flexible_string_vec")]
+    pub allow_from: Vec<String>,
+    #[serde(default)]
+    pub sync_to: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WebChannelConfig {
-    #[serde(default = "default_true")] pub enabled: bool,
-    #[serde(default = "default_web_host")] pub host: String,
-    #[serde(default = "default_web_port")] pub port: i64,
-    #[serde(default = "default_web_path")] pub path: String,
-    #[serde(default)] pub auth_token: String,
-    #[serde(default, deserialize_with = "deserialize_flexible_string_vec")] pub allow_from: Vec<String>,
-    #[serde(default = "default_heartbeat_interval")] pub heartbeat_interval: i64,
-    #[serde(default = "default_session_timeout")] pub session_timeout: i64,
-    #[serde(default)] pub sync_to: Vec<String>,
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    #[serde(default = "default_web_host")]
+    pub host: String,
+    #[serde(default = "default_web_port")]
+    pub port: i64,
+    #[serde(default = "default_web_path")]
+    pub path: String,
+    #[serde(default)]
+    pub auth_token: String,
+    #[serde(default, deserialize_with = "deserialize_flexible_string_vec")]
+    pub allow_from: Vec<String>,
+    #[serde(default = "default_heartbeat_interval")]
+    pub heartbeat_interval: i64,
+    #[serde(default = "default_session_timeout")]
+    pub session_timeout: i64,
+    #[serde(default)]
+    pub sync_to: Vec<String>,
 }
 
 impl Default for WebChannelConfig {
@@ -540,27 +610,44 @@ impl Default for WebChannelConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct WebSocketChannelConfig {
-    #[serde(default)] pub enabled: bool,
-    #[serde(default)] pub host: String,
-    #[serde(default)] pub port: i64,
-    #[serde(default)] pub path: String,
-    #[serde(default)] pub auth_token: String,
-    #[serde(default, deserialize_with = "deserialize_flexible_string_vec")] pub allow_from: Vec<String>,
-    #[serde(default)] pub sync_to: Vec<String>,
-    #[serde(default)] pub sync_to_web: bool,
-    #[serde(default)] pub web_session_id: String,
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default)]
+    pub host: String,
+    #[serde(default)]
+    pub port: i64,
+    #[serde(default)]
+    pub path: String,
+    #[serde(default)]
+    pub auth_token: String,
+    #[serde(default, deserialize_with = "deserialize_flexible_string_vec")]
+    pub allow_from: Vec<String>,
+    #[serde(default)]
+    pub sync_to: Vec<String>,
+    #[serde(default)]
+    pub sync_to_web: bool,
+    #[serde(default)]
+    pub web_session_id: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ExternalConfig {
-    #[serde(default)] pub enabled: bool,
-    #[serde(default)] pub input_exe: String,
-    #[serde(default)] pub output_exe: String,
-    #[serde(default)] pub chat_id: String,
-    #[serde(default, deserialize_with = "deserialize_flexible_string_vec")] pub allow_from: Vec<String>,
-    #[serde(default)] pub sync_to: Vec<String>,
-    #[serde(default)] pub sync_to_web: bool,
-    #[serde(default)] pub web_session_id: String,
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default)]
+    pub input_exe: String,
+    #[serde(default)]
+    pub output_exe: String,
+    #[serde(default)]
+    pub chat_id: String,
+    #[serde(default, deserialize_with = "deserialize_flexible_string_vec")]
+    pub allow_from: Vec<String>,
+    #[serde(default)]
+    pub sync_to: Vec<String>,
+    #[serde(default)]
+    pub sync_to_web: bool,
+    #[serde(default)]
+    pub web_session_id: String,
 }
 
 // ============================================================================
@@ -569,14 +656,22 @@ pub struct ExternalConfig {
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ModelConfig {
-    #[serde(default)] pub model_name: String,
-    #[serde(default)] pub model: String,
-    #[serde(default)] pub api_base: String,
-    #[serde(default)] pub api_key: String,
-    #[serde(default)] pub proxy: String,
-    #[serde(default)] pub auth_method: String,
-    #[serde(default)] pub connect_mode: String,
-    #[serde(default)] pub workspace: String,
+    #[serde(default)]
+    pub model_name: String,
+    #[serde(default)]
+    pub model: String,
+    #[serde(default)]
+    pub api_base: String,
+    #[serde(default)]
+    pub api_key: String,
+    #[serde(default)]
+    pub proxy: String,
+    #[serde(default)]
+    pub auth_method: String,
+    #[serde(default)]
+    pub connect_mode: String,
+    #[serde(default)]
+    pub workspace: String,
 }
 
 impl ModelConfig {
@@ -607,71 +702,97 @@ impl ModelConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GatewayConfig {
-    #[serde(default = "default_gateway_host")] pub host: String,
-    #[serde(default = "default_gateway_port")] pub port: i64,
+    #[serde(default = "default_gateway_host")]
+    pub host: String,
+    #[serde(default = "default_gateway_port")]
+    pub port: i64,
 }
 
 impl Default for GatewayConfig {
     fn default() -> Self {
-        Self { host: default_gateway_host(), port: default_gateway_port() }
+        Self {
+            host: default_gateway_host(),
+            port: default_gateway_port(),
+        }
     }
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ToolsConfig {
-    #[serde(default)] pub web: WebToolsConfig,
-    #[serde(default)] pub cron: CronToolsConfig,
-    #[serde(default)] pub exec: ExecConfig,
+    #[serde(default)]
+    pub web: WebToolsConfig,
+    #[serde(default)]
+    pub cron: CronToolsConfig,
+    #[serde(default)]
+    pub exec: ExecConfig,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct WebToolsConfig {
-    #[serde(default)] pub brave: BraveConfig,
-    #[serde(default)] pub duckduckgo: DuckDuckGoConfig,
-    #[serde(default)] pub perplexity: PerplexityConfig,
+    #[serde(default)]
+    pub brave: BraveConfig,
+    #[serde(default)]
+    pub duckduckgo: DuckDuckGoConfig,
+    #[serde(default)]
+    pub perplexity: PerplexityConfig,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct BraveConfig {
-    #[serde(default)] pub enabled: bool,
-    #[serde(default)] pub api_key: String,
-    #[serde(default = "default_max_results")] pub max_results: i64,
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default)]
+    pub api_key: String,
+    #[serde(default = "default_max_results")]
+    pub max_results: i64,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct DuckDuckGoConfig {
-    #[serde(default = "default_true")] pub enabled: bool,
-    #[serde(default = "default_max_results")] pub max_results: i64,
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    #[serde(default = "default_max_results")]
+    pub max_results: i64,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct PerplexityConfig {
-    #[serde(default)] pub enabled: bool,
-    #[serde(default)] pub api_key: String,
-    #[serde(default = "default_max_results")] pub max_results: i64,
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default)]
+    pub api_key: String,
+    #[serde(default = "default_max_results")]
+    pub max_results: i64,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct CronToolsConfig {
-    #[serde(default)] pub exec_timeout_minutes: i64,
+    #[serde(default)]
+    pub exec_timeout_minutes: i64,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ExecConfig {
-    #[serde(default)] pub enable_deny_patterns: bool,
-    #[serde(default)] pub custom_deny_patterns: Vec<String>,
+    #[serde(default)]
+    pub enable_deny_patterns: bool,
+    #[serde(default)]
+    pub custom_deny_patterns: Vec<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct HeartbeatConfig {
-    #[serde(default = "default_true")] pub enabled: bool,
-    #[serde(default = "default_heartbeat_interval_minutes")] pub interval: i64,
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    #[serde(default = "default_heartbeat_interval_minutes")]
+    pub interval: i64,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct DevicesConfig {
-    #[serde(default)] pub enabled: bool,
-    #[serde(default = "default_true")] pub monitor_usb: bool,
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default = "default_true")]
+    pub monitor_usb: bool,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -682,68 +803,97 @@ pub struct LoggingConfig {
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct LlmLogConfig {
-    #[serde(default)] pub enabled: bool,
-    #[serde(default)] pub log_dir: String,
-    #[serde(default = "default_detail_level")] pub detail_level: String,
-    #[serde(default)] pub save_raw: bool,
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default)]
+    pub log_dir: String,
+    #[serde(default = "default_detail_level")]
+    pub detail_level: String,
+    #[serde(default)]
+    pub save_raw: bool,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct GeneralLogConfig {
-    #[serde(default = "default_true")] pub enabled: bool,
-    #[serde(default = "default_true")] pub enable_console: bool,
-    #[serde(default = "default_log_level")] pub level: String,
-    #[serde(default)] pub file: String,
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    #[serde(default = "default_true")]
+    pub enable_console: bool,
+    #[serde(default = "default_log_level")]
+    pub level: String,
+    #[serde(default)]
+    pub file: String,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct SecurityFlagConfig {
-    #[serde(default)] pub enabled: bool,
+    #[serde(default)]
+    pub enabled: bool,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ForgeFlagConfig {
-    #[serde(default)] pub enabled: bool,
+    #[serde(default)]
+    pub enabled: bool,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ClusterFlagConfig {
-    #[serde(default)] pub enabled: bool,
+    #[serde(default)]
+    pub enabled: bool,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct MemoryFlagConfig {
-    #[serde(default)] pub enabled: bool,
+    #[serde(default)]
+    pub enabled: bool,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct SkillsConfig {
-    #[serde(default)] pub enabled: bool,
+    #[serde(default)]
+    pub enabled: bool,
     /// Whether `skill_manage` writes require interactive approval (default false).
-    #[serde(default)] pub manage_approval: bool,
+    #[serde(default)]
+    pub manage_approval: bool,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct McpConfig {
-    #[serde(default)] pub enabled: bool,
-    #[serde(default)] pub servers: Vec<McpServerConfig>,
-    #[serde(default = "default_mcp_timeout")] pub timeout: i64,
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default)]
+    pub servers: Vec<McpServerConfig>,
+    #[serde(default = "default_mcp_timeout")]
+    pub timeout: i64,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct McpServerConfig {
-    #[serde(default)] pub name: String,
-    #[serde(default)] pub transport_type: String,
-    #[serde(default)] pub url: String,
-    #[serde(default)] pub description: String,
-    #[serde(default)] pub headers: Vec<String>,
-    #[serde(default)] pub args: Vec<String>,
-    #[serde(default)] pub env: Vec<String>,
-    #[serde(default)] pub timeout: i64,
-    #[serde(default)] pub provider_name: String,
-    #[serde(default)] pub provider_url: String,
-    #[serde(default)] pub tags: Vec<String>,
-    #[serde(default)] pub command: String,
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub transport_type: String,
+    #[serde(default)]
+    pub url: String,
+    #[serde(default)]
+    pub description: String,
+    #[serde(default)]
+    pub headers: Vec<String>,
+    #[serde(default)]
+    pub args: Vec<String>,
+    #[serde(default)]
+    pub env: Vec<String>,
+    #[serde(default)]
+    pub timeout: i64,
+    #[serde(default)]
+    pub provider_name: String,
+    #[serde(default)]
+    pub provider_url: String,
+    #[serde(default)]
+    pub tags: Vec<String>,
+    #[serde(default)]
+    pub command: String,
 }
 
 impl McpServerConfig {
@@ -1213,7 +1363,14 @@ pub fn set_embedded_defaults_from_fs(config_dir: &Path) -> Result<()> {
     let scanner_path = config_dir.join("config.scanner.default.json");
     let scanner_data = std::fs::read(&scanner_path).unwrap_or_default();
 
-    set_embedded_defaults(config_data, mcp_data, security_data, cluster_data, skills_data, scanner_data);
+    set_embedded_defaults(
+        config_data,
+        mcp_data,
+        security_data,
+        cluster_data,
+        skills_data,
+        scanner_data,
+    );
 
     Ok(())
 }
@@ -1230,7 +1387,10 @@ pub fn load_config(config_path: &Path) -> Result<Config> {
     info!("[Config] Loading config from: {:?}", config_path);
     if config_path.exists() {
         let content = std::fs::read_to_string(config_path).map_err(|e| {
-            error!("[Config] Failed to read config file {:?}: {}", config_path, e);
+            error!(
+                "[Config] Failed to read config file {:?}: {}",
+                config_path, e
+            );
             e
         })?;
         let mut config: Config = serde_json::from_str(&content).map_err(|e| {
@@ -1244,7 +1404,10 @@ pub fn load_config(config_path: &Path) -> Result<Config> {
         return Ok(config);
     }
 
-    info!("[Config] Config file not found at {:?}, trying embedded default", config_path);
+    info!(
+        "[Config] Config file not found at {:?}, trying embedded default",
+        config_path
+    );
     let defaults = get_embedded_defaults();
     if !defaults.config.is_empty() {
         if let Ok(mut config) = serde_json::from_slice::<Config>(&defaults.config) {
@@ -1254,7 +1417,9 @@ pub fn load_config(config_path: &Path) -> Result<Config> {
             info!("[Config] Config loaded successfully from embedded default");
             return Ok(config);
         } else {
-            warn!("[Config] Failed to parse embedded default config, falling back to hardcoded default");
+            warn!(
+                "[Config] Failed to parse embedded default config, falling back to hardcoded default"
+            );
         }
     }
 
@@ -1291,7 +1456,8 @@ pub fn save_config(config_path: &Path, config: &mut Config) -> Result<()> {
 
             let ws = &config.agents.defaults.workspace;
             // Check if workspace is using default path pattern
-            if ws.starts_with("~/") || ws.starts_with("~\\")
+            if ws.starts_with("~/")
+                || ws.starts_with("~\\")
                 || ws.starts_with(&user_home.to_string_lossy().to_string())
                 || ws == &default_workspace_str
             {
@@ -1325,7 +1491,8 @@ pub fn save_config(config_path: &Path, config: &mut Config) -> Result<()> {
             .create(true)
             .truncate(true)
             .mode(0o600)
-            .open(config_path).map_err(|e| {
+            .open(config_path)
+            .map_err(|e| {
                 error!("[Config] Failed to open config file for writing: {}", e);
                 e
             })?;
@@ -1399,19 +1566,27 @@ pub fn apply_env_overrides(config: &mut Config) {
         config.agents.defaults.image_model = v;
     }
     if let Ok(v) = std::env::var("NEMESISBOT_AGENTS_DEFAULTS_MAX_TOKENS") {
-        if let Ok(n) = v.parse() { config.agents.defaults.max_tokens = n; }
+        if let Ok(n) = v.parse() {
+            config.agents.defaults.max_tokens = n;
+        }
     }
     if let Ok(v) = std::env::var("NEMESISBOT_AGENTS_DEFAULTS_TEMPERATURE") {
-        if let Ok(f) = v.parse() { config.agents.defaults.temperature = f; }
+        if let Ok(f) = v.parse() {
+            config.agents.defaults.temperature = f;
+        }
     }
     if let Ok(v) = std::env::var("NEMESISBOT_AGENTS_DEFAULTS_MAX_TOOL_ITERATIONS") {
-        if let Ok(n) = v.parse() { config.agents.defaults.max_tool_iterations = n; }
+        if let Ok(n) = v.parse() {
+            config.agents.defaults.max_tool_iterations = n;
+        }
     }
     if let Ok(v) = std::env::var("NEMESISBOT_AGENTS_DEFAULTS_CONCURRENT_REQUEST_MODE") {
         config.agents.defaults.concurrent_request_mode = v;
     }
     if let Ok(v) = std::env::var("NEMESISBOT_AGENTS_DEFAULTS_QUEUE_SIZE") {
-        if let Ok(n) = v.parse() { config.agents.defaults.queue_size = n; }
+        if let Ok(n) = v.parse() {
+            config.agents.defaults.queue_size = n;
+        }
     }
 
     // Web channel
@@ -1422,7 +1597,9 @@ pub fn apply_env_overrides(config: &mut Config) {
         config.channels.web.host = v;
     }
     if let Ok(v) = std::env::var("NEMESISBOT_CHANNELS_WEB_PORT") {
-        if let Ok(n) = v.parse() { config.channels.web.port = n; }
+        if let Ok(n) = v.parse() {
+            config.channels.web.port = n;
+        }
     }
 
     // Gateway
@@ -1430,7 +1607,9 @@ pub fn apply_env_overrides(config: &mut Config) {
         config.gateway.host = v;
     }
     if let Ok(v) = std::env::var("NEMESISBOT_GATEWAY_PORT") {
-        if let Ok(n) = v.parse() { config.gateway.port = n; }
+        if let Ok(n) = v.parse() {
+            config.gateway.port = n;
+        }
     }
 
     // Heartbeat
@@ -1438,7 +1617,9 @@ pub fn apply_env_overrides(config: &mut Config) {
         config.heartbeat.enabled = v.parse().unwrap_or(true);
     }
     if let Ok(v) = std::env::var("NEMESISBOT_HEARTBEAT_INTERVAL") {
-        if let Ok(n) = v.parse() { config.heartbeat.interval = n; }
+        if let Ok(n) = v.parse() {
+            config.heartbeat.interval = n;
+        }
     }
 
     // Security
@@ -1465,7 +1646,9 @@ pub fn load_embedded_config() -> Result<Config> {
     let defaults = get_embedded_defaults();
     if defaults.config.is_empty() {
         error!("[Config] Embedded default config not available");
-        return Err(ConfigError::Validation("embedded default config not available".into()));
+        return Err(ConfigError::Validation(
+            "embedded default config not available".into(),
+        ));
     }
     let mut config: Config = serde_json::from_slice(&defaults.config).map_err(|e| {
         error!("[Config] Failed to parse embedded config: {}", e);
@@ -1479,7 +1662,10 @@ pub fn load_embedded_config() -> Result<Config> {
 
 /// Create a fully populated Config with all sensible defaults.
 pub fn default_config() -> Config {
-    let ws = WorkspaceResolver::resolve(false).join("workspace").to_string_lossy().to_string();
+    let ws = WorkspaceResolver::resolve(false)
+        .join("workspace")
+        .to_string_lossy()
+        .to_string();
     Config {
         agents: AgentsConfig {
             defaults: AgentDefaults {
@@ -1498,28 +1684,87 @@ pub fn default_config() -> Config {
         bindings: vec![],
         session: SessionConfig::default(),
         channels: ChannelsConfig {
-            whatsapp: WhatsAppConfig { bridge_url: "ws://localhost:3001".to_string(), ..Default::default() },
-            maixcam: MaixCamConfig { host: "0.0.0.0".to_string(), port: 18790, ..Default::default() },
-            line: LineConfig { webhook_host: "0.0.0.0".to_string(), webhook_port: 18791, webhook_path: "/webhook/line".to_string(), ..Default::default() },
-            onebot: OneBotConfig { ws_url: "ws://127.0.0.1:3001".to_string(), reconnect_interval: 5, ..Default::default() },
-            web: WebChannelConfig { enabled: true, host: "0.0.0.0".to_string(), port: 8080, path: "/ws".to_string(), heartbeat_interval: 30, session_timeout: 3600, ..Default::default() },
-            external: ExternalConfig { chat_id: "external:main".to_string(), sync_to: vec!["web".to_string()], ..Default::default() },
+            whatsapp: WhatsAppConfig {
+                bridge_url: "ws://localhost:3001".to_string(),
+                ..Default::default()
+            },
+            maixcam: MaixCamConfig {
+                host: "0.0.0.0".to_string(),
+                port: 18790,
+                ..Default::default()
+            },
+            line: LineConfig {
+                webhook_host: "0.0.0.0".to_string(),
+                webhook_port: 18791,
+                webhook_path: "/webhook/line".to_string(),
+                ..Default::default()
+            },
+            onebot: OneBotConfig {
+                ws_url: "ws://127.0.0.1:3001".to_string(),
+                reconnect_interval: 5,
+                ..Default::default()
+            },
+            web: WebChannelConfig {
+                enabled: true,
+                host: "0.0.0.0".to_string(),
+                port: 8080,
+                path: "/ws".to_string(),
+                heartbeat_interval: 30,
+                session_timeout: 3600,
+                ..Default::default()
+            },
+            external: ExternalConfig {
+                chat_id: "external:main".to_string(),
+                sync_to: vec!["web".to_string()],
+                ..Default::default()
+            },
             ..Default::default()
         },
         model_list: vec![],
-        gateway: GatewayConfig { host: "0.0.0.0".to_string(), port: 18790 },
+        gateway: GatewayConfig {
+            host: "0.0.0.0".to_string(),
+            port: 18790,
+        },
         tools: ToolsConfig {
             web: WebToolsConfig {
-                duckduckgo: DuckDuckGoConfig { enabled: true, max_results: 5 },
-                brave: BraveConfig { max_results: 5, ..Default::default() },
-                perplexity: PerplexityConfig { max_results: 5, ..Default::default() },
+                duckduckgo: DuckDuckGoConfig {
+                    enabled: true,
+                    max_results: 5,
+                },
+                brave: BraveConfig {
+                    max_results: 5,
+                    ..Default::default()
+                },
+                perplexity: PerplexityConfig {
+                    max_results: 5,
+                    ..Default::default()
+                },
             },
-            cron: CronToolsConfig { exec_timeout_minutes: 5 },
-            exec: ExecConfig { enable_deny_patterns: true, ..Default::default() },
+            cron: CronToolsConfig {
+                exec_timeout_minutes: 5,
+            },
+            exec: ExecConfig {
+                enable_deny_patterns: true,
+                ..Default::default()
+            },
         },
-        heartbeat: HeartbeatConfig { enabled: true, interval: 30 },
-        devices: DevicesConfig { monitor_usb: true, ..Default::default() },
-        logging: Some(LoggingConfig { llm: Some(LlmLogConfig { enabled: false, log_dir: "logs/request_logs".to_string(), detail_level: "full".to_string(), save_raw: false }), general: None }),
+        heartbeat: HeartbeatConfig {
+            enabled: true,
+            interval: 30,
+        },
+        devices: DevicesConfig {
+            monitor_usb: true,
+            ..Default::default()
+        },
+        logging: Some(LoggingConfig {
+            llm: Some(LlmLogConfig {
+                enabled: false,
+                log_dir: "logs/request_logs".to_string(),
+                detail_level: "full".to_string(),
+                save_raw: false,
+            }),
+            general: None,
+        }),
         security: Some(SecurityFlagConfig { enabled: false }),
         forge: Some(ForgeFlagConfig { enabled: false }),
         cluster: None,
@@ -1595,8 +1840,7 @@ impl Config {
     /// - If the workspace uses a default path, replace it with the actual resolved path.
     /// - Set a default log directory if none is specified.
     pub fn adjust_paths_for_environment(&mut self) {
-        let expected_workspace = WorkspaceResolver::resolve(false)
-            .join("workspace");
+        let expected_workspace = WorkspaceResolver::resolve(false).join("workspace");
 
         // Check if workspace is using a hardcoded default path
         let ws = &self.agents.defaults.workspace;
@@ -1835,37 +2079,89 @@ pub fn save_skills_config(path: &Path, cfg: &SkillsFullConfig) -> Result<()> {
 // Additional default value functions
 // ============================================================================
 
-fn default_security_action() -> String { "deny".to_string() }
-fn default_approval_timeout() -> i64 { 300 }
-fn default_max_pending() -> i64 { 100 }
-fn default_audit_retention() -> i64 { 90 }
-fn default_cache_max_size() -> i64 { 50 }
-fn default_cache_ttl_seconds() -> i64 { 300 }
-fn default_max_concurrent_searches() -> i64 { 2 }
-fn default_search_limit() -> i64 { 50 }
+fn default_security_action() -> String {
+    "deny".to_string()
+}
+fn default_approval_timeout() -> i64 {
+    300
+}
+fn default_max_pending() -> i64 {
+    100
+}
+fn default_audit_retention() -> i64 {
+    90
+}
+fn default_cache_max_size() -> i64 {
+    50
+}
+fn default_cache_ttl_seconds() -> i64 {
+    300
+}
+fn default_max_concurrent_searches() -> i64 {
+    2
+}
+fn default_search_limit() -> i64 {
+    50
+}
 
 // ============================================================================
 // Default value functions
 // ============================================================================
 
-fn default_true() -> bool { true }
-fn default_max_tokens() -> i64 { 8192 }
-fn default_temperature() -> f64 { 0.7 }
-fn default_max_tool_iterations() -> i64 { 100 }
-fn default_concurrent_request_mode() -> String { "reject".to_string() }
-fn default_queue_size() -> i64 { 8 }
-fn default_gateway_host() -> String { "0.0.0.0".to_string() }
-fn default_gateway_port() -> i64 { 18790 }
-fn default_web_host() -> String { "0.0.0.0".to_string() }
-fn default_web_port() -> i64 { 8080 }
-fn default_web_path() -> String { "/ws".to_string() }
-fn default_heartbeat_interval() -> i64 { 30 }
-fn default_session_timeout() -> i64 { 3600 }
-fn default_heartbeat_interval_minutes() -> i64 { 30 }
-fn default_max_results() -> i64 { 5 }
-fn default_detail_level() -> String { "full".to_string() }
-fn default_log_level() -> String { "INFO".to_string() }
-fn default_mcp_timeout() -> i64 { 30 }
+fn default_true() -> bool {
+    true
+}
+fn default_max_tokens() -> i64 {
+    8192
+}
+fn default_temperature() -> f64 {
+    0.7
+}
+fn default_max_tool_iterations() -> i64 {
+    100
+}
+fn default_concurrent_request_mode() -> String {
+    "reject".to_string()
+}
+fn default_queue_size() -> i64 {
+    8
+}
+fn default_gateway_host() -> String {
+    "0.0.0.0".to_string()
+}
+fn default_gateway_port() -> i64 {
+    18790
+}
+fn default_web_host() -> String {
+    "0.0.0.0".to_string()
+}
+fn default_web_port() -> i64 {
+    8080
+}
+fn default_web_path() -> String {
+    "/ws".to_string()
+}
+fn default_heartbeat_interval() -> i64 {
+    30
+}
+fn default_session_timeout() -> i64 {
+    3600
+}
+fn default_heartbeat_interval_minutes() -> i64 {
+    30
+}
+fn default_max_results() -> i64 {
+    5
+}
+fn default_detail_level() -> String {
+    "full".to_string()
+}
+fn default_log_level() -> String {
+    "INFO".to_string()
+}
+fn default_mcp_timeout() -> i64 {
+    30
+}
 
 // ============================================================================
 // Workspace detection and config loading
@@ -1964,8 +2260,8 @@ impl ConfigLoader {
     /// Load embedded default config (compile-time embedded).
     pub fn load_embedded_default() -> Result<Config> {
         let default_json = include_str!("../../../nemesisbot/config/config.default.json");
-        let config: Config = serde_json::from_str(default_json)
-            .unwrap_or_else(|_| Config::default());
+        let config: Config =
+            serde_json::from_str(default_json).unwrap_or_else(|_| Config::default());
         Ok(config)
     }
 }

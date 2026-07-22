@@ -30,10 +30,7 @@ fn test_extract_tool_calls() {
     let calls = extract_tool_calls_from_text(text);
     assert_eq!(calls.len(), 1);
     assert_eq!(calls[0].id, "call_123");
-    assert_eq!(
-        calls[0].function.as_ref().unwrap().name,
-        "read_file"
-    );
+    assert_eq!(calls[0].function.as_ref().unwrap().name, "read_file");
 }
 
 #[test]
@@ -110,7 +107,10 @@ fn test_extract_tool_calls_with_arguments_object() {
     assert_eq!(calls[0].function.as_ref().unwrap().name, "shell");
     // Arguments should be parsed
     assert!(calls[0].arguments.is_some());
-    assert_eq!(calls[0].arguments.as_ref().unwrap().get("command").unwrap(), "ls");
+    assert_eq!(
+        calls[0].arguments.as_ref().unwrap().get("command").unwrap(),
+        "ls"
+    );
 }
 
 #[test]

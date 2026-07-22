@@ -14,10 +14,7 @@ fn make_server() -> McpServer {
         }),
     };
     let echo_handler: ToolHandler = Arc::new(|args| {
-        let msg = args
-            .get("message")
-            .and_then(|v| v.as_str())
-            .unwrap_or("");
+        let msg = args.get("message").and_then(|v| v.as_str()).unwrap_or("");
         ToolCallResult::ok(msg)
     });
     server.register_tool(echo_tool, echo_handler).unwrap();
@@ -86,10 +83,7 @@ async fn list_and_call_tools() {
     let call_resp = server.handle_request(&call_req).await;
     assert!(!call_resp.is_error());
 
-    let result: ToolCallResult = serde_json::from_value(
-        call_resp.result.unwrap(),
-    )
-    .unwrap();
+    let result: ToolCallResult = serde_json::from_value(call_resp.result.unwrap()).unwrap();
     assert!(!result.is_error);
     assert_eq!(result.content[0].text.as_deref(), Some("hi there"));
 
@@ -102,8 +96,7 @@ async fn list_and_call_tools() {
         })),
     );
     let fail_resp = server.handle_request(&fail_req).await;
-    let fail_result: ToolCallResult =
-        serde_json::from_value(fail_resp.result.unwrap()).unwrap();
+    let fail_result: ToolCallResult = serde_json::from_value(fail_resp.result.unwrap()).unwrap();
     assert!(fail_result.is_error);
 }
 
@@ -387,10 +380,7 @@ async fn call_tool_with_null_params() {
 #[tokio::test]
 async fn read_resource_missing_uri() {
     let server = make_server();
-    let req = JSONRPCRequest::new(
-        "resources/read",
-        Some(serde_json::json!({})),
-    );
+    let req = JSONRPCRequest::new("resources/read", Some(serde_json::json!({})));
     let resp = server.handle_request(&req).await;
     assert!(resp.is_error());
 }

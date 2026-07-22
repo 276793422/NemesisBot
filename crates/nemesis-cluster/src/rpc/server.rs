@@ -21,7 +21,8 @@ use crate::transport::conn::{TcpConn, TcpConnConfig, WireMessage};
 
 /// Handler function type for RPC actions.
 /// Takes a JSON payload and returns a JSON result or error string.
-pub type RpcHandlerFn = Box<dyn Fn(serde_json::Value) -> Result<serde_json::Value, String> + Send + Sync>;
+pub type RpcHandlerFn =
+    Box<dyn Fn(serde_json::Value) -> Result<serde_json::Value, String> + Send + Sync>;
 
 // ---------------------------------------------------------------------------
 // RpcServerConfig
@@ -112,7 +113,9 @@ impl RpcServer {
             "[RpcServer] Handler registered for action: {}",
             action,
         );
-        self.handlers.write().insert(action.to_string(), Arc::from(handler));
+        self.handlers
+            .write()
+            .insert(action.to_string(), Arc::from(handler));
     }
 
     /// Unregister a handler for a specific action.
@@ -137,16 +140,22 @@ impl RpcServer {
         // Bind TCP listener with SO_REUSEADDR to allow quick restarts.
         let socket = tokio::net::TcpSocket::new_v4()
             .map_err(|e| format!("failed to create socket: {}", e))?;
-        socket.set_reuseaddr(true)
+        socket
+            .set_reuseaddr(true)
             .map_err(|e| format!("failed to set SO_REUSEADDR: {}", e))?;
-        let addr: std::net::SocketAddr = self.config.bind_address.parse()
-            .map_err(|e| format!("invalid bind address '{}': {}", self.config.bind_address, e))?;
-        socket.bind(addr)
+        let addr: std::net::SocketAddr =
+            self.config.bind_address.parse().map_err(|e| {
+                format!("invalid bind address '{}': {}", self.config.bind_address, e)
+            })?;
+        socket
+            .bind(addr)
             .map_err(|e| format!("failed to bind {}: {}", self.config.bind_address, e))?;
-        let listener = socket.listen(128)
+        let listener = socket
+            .listen(128)
             .map_err(|e| format!("failed to listen on {}: {}", self.config.bind_address, e))?;
 
-        let actual_port = listener.local_addr()
+        let actual_port = listener
+            .local_addr()
             .map_err(|e| format!("failed to get local addr: {}", e))?
             .port();
 
@@ -371,11 +380,14 @@ impl RpcServer {
         } else {
             // If payload is not an object, wrap it
             let mut map = serde_json::Map::new();
-            map.insert("_rpc".to_string(), serde_json::json!({
-                "from": wire_msg.from,
-                "to": wire_msg.to,
-                "id": wire_msg.id,
-            }));
+            map.insert(
+                "_rpc".to_string(),
+                serde_json::json!({
+                    "from": wire_msg.from,
+                    "to": wire_msg.to,
+                    "id": wire_msg.id,
+                }),
+            );
             payload = serde_json::Value::Object(map);
         }
 
@@ -393,8 +405,7 @@ impl RpcServer {
                 }
                 None => {
                     no_handler = true;
-                    Arc::new(Box::new(|_payload| Ok(serde_json::Value::Null))
-                        as RpcHandlerFn)
+                    Arc::new(Box::new(|_payload| Ok(serde_json::Value::Null)) as RpcHandlerFn)
                 }
             }
         }; // guard dropped here
@@ -407,10 +418,8 @@ impl RpcServer {
                 "[RpcServer] No handler for action: {}",
                 action,
             );
-            let resp = WireMessage::new_error(
-                wire_msg,
-                &format!("no handler for action: {}", action),
-            );
+            let resp =
+                WireMessage::new_error(wire_msg, &format!("no handler for action: {}", action));
             let _ = conn.send(&resp).await;
             return;
         }
@@ -480,24 +489,31 @@ impl RpcServer {
 
     fn register_default_handlers(&self) {
         // Ping handler (lowercase to match Go's action names)
-        self.register_handler("ping", Box::new(|_payload| {
-            Ok(serde_json::json!({"status": "pong"}))
-        }));
+        self.register_handler(
+            "ping",
+            Box::new(|_payload| Ok(serde_json::json!({"status": "pong"}))),
+        );
 
         // GetInfo handler
-        self.register_handler("get_info", Box::new(|_payload| {
-            Ok(serde_json::json!({
-                "version": env!("CARGO_PKG_VERSION"),
-                "status": "online",
-            }))
-        }));
+        self.register_handler(
+            "get_info",
+            Box::new(|_payload| {
+                Ok(serde_json::json!({
+                    "version": env!("CARGO_PKG_VERSION"),
+                    "status": "online",
+                }))
+            }),
+        );
 
         // GetCapabilities handler
-        self.register_handler("get_capabilities", Box::new(|_payload| {
-            Ok(serde_json::json!({
-                "capabilities": ["cluster", "rpc"],
-            }))
-        }));
+        self.register_handler(
+            "get_capabilities",
+            Box::new(|_payload| {
+                Ok(serde_json::json!({
+                    "capabilities": ["cluster", "rpc"],
+                }))
+            }),
+        );
 
         // ListActions handler
         self.register_handler("list_actions", Box::new(|_payload| {

@@ -16,9 +16,9 @@ use tracing::{info, warn};
 
 use crate::common;
 
-use nemesis_agent::types::{AgentConfig, ToolCallInfo as AgentToolCallInfo};
-use nemesis_agent::session::SessionManager;
 use nemesis_agent::r#loop::{AgentLoop, LlmMessage, LlmProvider, LlmResponse};
+use nemesis_agent::session::SessionManager;
+use nemesis_agent::types::{AgentConfig, ToolCallInfo as AgentToolCallInfo};
 
 // ===========================================================================
 // CLI enums
@@ -63,7 +63,10 @@ struct ProviderAdapter {
 
 impl ProviderAdapter {
     fn new(inner: Arc<dyn nemesis_providers::router::LLMProvider>, default_model: String) -> Self {
-        Self { inner, default_model }
+        Self {
+            inner,
+            default_model,
+        }
     }
 }
 
@@ -146,7 +149,12 @@ impl LlmProvider for ProviderAdapter {
 
         match self
             .inner
-            .chat(&provider_messages, &provider_tools, model_to_use, &provider_options)
+            .chat(
+                &provider_messages,
+                &provider_tools,
+                model_to_use,
+                &provider_options,
+            )
             .await
         {
             Ok(resp) => {
@@ -169,14 +177,16 @@ impl LlmProvider for ProviderAdapter {
                     tool_calls,
                     finished,
                     reasoning_content: resp.reasoning_content,
-                    usage: resp.usage.map(|u| nemesis_agent::loop_executor::ObserverUsageInfo {
-                        prompt_tokens: u.prompt_tokens,
-                        completion_tokens: u.completion_tokens,
-                        total_tokens: u.total_tokens,
-                        cached_tokens: u.cached_tokens,
-                        cache_creation_tokens: u.cache_creation_tokens,
-                        cache_read_tokens: u.cache_read_tokens,
-                    }),
+                    usage: resp
+                        .usage
+                        .map(|u| nemesis_agent::loop_executor::ObserverUsageInfo {
+                            prompt_tokens: u.prompt_tokens,
+                            completion_tokens: u.completion_tokens,
+                            total_tokens: u.total_tokens,
+                            cached_tokens: u.cached_tokens,
+                            cache_creation_tokens: u.cache_creation_tokens,
+                            cache_read_tokens: u.cache_read_tokens,
+                        }),
                     raw_request_body: resp.raw_request_body,
                     raw_response_body: resp.raw_response_body,
                 })
@@ -212,10 +222,7 @@ pub(crate) fn build_agent_loop(
         llm_ref: format!("{}/{}", resolution.provider_name, resolution.model_name),
         api_key: resolution.api_key,
         api_base: resolution.api_base,
-        workspace: home
-            .join("workspace")
-            .to_string_lossy()
-            .to_string(),
+        workspace: home.join("workspace").to_string_lossy().to_string(),
         connect_mode: resolution.connect_mode,
         account_id: String::new(),
         headers: std::collections::HashMap::new(),
@@ -246,7 +253,10 @@ pub(crate) fn build_agent_loop(
         }
         context_builder.build_system_prompt(false)
     };
-    info!("[Agent] System prompt built ({} chars)", system_prompt.len());
+    info!(
+        "[Agent] System prompt built ({} chars)",
+        system_prompt.len()
+    );
 
     // 5. Build AgentConfig
     let agent_config = AgentConfig {
@@ -278,9 +288,11 @@ pub(crate) fn build_agent_loop(
     let workspace_dir = home.join("workspace");
     let workspace_str = workspace_dir.to_string_lossy().to_string();
     let global_skills_str = workspace_dir.join("skills").to_string_lossy().to_string();
-    let skills_loader = std::sync::Arc::new(
-        nemesis_skills::loader::SkillsLoader::new(&workspace_str, &global_skills_str, ""),
-    );
+    let skills_loader = std::sync::Arc::new(nemesis_skills::loader::SkillsLoader::new(
+        &workspace_str,
+        &global_skills_str,
+        "",
+    ));
 
     // Minimal cron service — new() only loads jobs from disk; no set_on_job/start.
     let cron_store_path = common::cron_store_path(&home);
@@ -313,9 +325,9 @@ pub(crate) fn build_agent_loop(
         workspace_dir.clone(),
     ));
     #[cfg(feature = "forge")]
-    let forge_executor = std::sync::Arc::new(
-        nemesis_forge::forge_tools::ForgeToolExecutor::new(forge.clone()),
-    );
+    let forge_executor = std::sync::Arc::new(nemesis_forge::forge_tools::ForgeToolExecutor::new(
+        forge.clone(),
+    ));
 
     // Minimal workflow engine — no load_workflows/spawn_cron (no background).
     #[cfg(feature = "workflow")]
@@ -457,7 +469,9 @@ pub async fn run(
                     eprintln!("  Failed to initialize agent: {}", e);
                     eprintln!();
                     eprintln!("  Note: Agent mode requires a configured LLM model.");
-                    eprintln!("  Run 'nemesisbot model add --model <provider/model> --key YOUR_KEY --default'");
+                    eprintln!(
+                        "  Run 'nemesisbot model add --model <provider/model> --key YOUR_KEY --default'"
+                    );
                     eprintln!("  or start the gateway for full agent functionality.");
                     return Err(e);
                 }
@@ -480,13 +494,10 @@ pub async fn run(
                 }
                 None => {
                     // Interactive mode with rustyline
-                    let session_mgr =
-                        SessionManager::new(std::time::Duration::from_secs(3600));
+                    let session_mgr = SessionManager::new(std::time::Duration::from_secs(3600));
                     println!("  OK Session manager ready");
                     println!();
-                    println!(
-                        "Interactive mode. Type 'exit' or 'quit' to stop."
-                    );
+                    println!("Interactive mode. Type 'exit' or 'quit' to stop.");
                     println!("  Commands: /history, /clear, /status");
                     println!();
 
@@ -521,7 +532,9 @@ pub async fn run(
                                     match input.as_str() {
                                         "/history" => {
                                             if let Some(registry) = agent_loop.get_registry() {
-                                                if let Some(default_id) = registry.default_agent_id() {
+                                                if let Some(default_id) =
+                                                    registry.default_agent_id()
+                                                {
                                                     registry.with_agent(&default_id, |inst| {
                                                         let history = inst.get_history();
                                                         if history.is_empty() {
@@ -548,7 +561,9 @@ pub async fn run(
                                         }
                                         "/clear" => {
                                             if let Some(registry) = agent_loop.get_registry() {
-                                                if let Some(default_id) = registry.default_agent_id() {
+                                                if let Some(default_id) =
+                                                    registry.default_agent_id()
+                                                {
                                                     registry.with_agent(&default_id, |inst| {
                                                         inst.clear_history();
                                                     });
@@ -559,18 +574,28 @@ pub async fn run(
                                             continue;
                                         }
                                         "/status" => {
-                                            let state = if let Some(registry) = agent_loop.get_registry() {
-                                                if let Some(default_id) = registry.default_agent_id() {
-                                                    registry.with_agent(&default_id, |inst| {
-                                                        format!("{:?} ({} messages)",
-                                                            inst.state(), inst.message_count())
-                                                    }).unwrap_or_else(|| "no instance".to_string())
+                                            let state =
+                                                if let Some(registry) = agent_loop.get_registry() {
+                                                    if let Some(default_id) =
+                                                        registry.default_agent_id()
+                                                    {
+                                                        registry
+                                                            .with_agent(&default_id, |inst| {
+                                                                format!(
+                                                                    "{:?} ({} messages)",
+                                                                    inst.state(),
+                                                                    inst.message_count()
+                                                                )
+                                                            })
+                                                            .unwrap_or_else(|| {
+                                                                "no instance".to_string()
+                                                            })
+                                                    } else {
+                                                        "no instance".to_string()
+                                                    }
                                                 } else {
-                                                    "no instance".to_string()
-                                                }
-                                            } else {
-                                                "no registry".to_string()
-                                            };
+                                                    "no registry".to_string()
+                                                };
                                             println!("  Session: {}", session_key);
                                             println!("  State: {}", state);
                                             println!();
@@ -636,8 +661,13 @@ pub async fn run(
 
                 let resolution = nemesis_config::resolve_model_config(&typed_cfg, &model);
                 if let Err(_) = resolution {
-                    println!("  WARNING: Model '{}' not found in configured model_list.", model);
-                    println!("  Available models can be added with: nemesisbot model add --model <vendor/model> --key YOUR_KEY");
+                    println!(
+                        "  WARNING: Model '{}' not found in configured model_list.",
+                        model
+                    );
+                    println!(
+                        "  Available models can be added with: nemesisbot model add --model <vendor/model> --key YOUR_KEY"
+                    );
                     println!();
                     print!("  Set anyway? (y/N): ");
                     use std::io::{self, Write};
@@ -654,10 +684,7 @@ pub async fn run(
                 let mut cfg: serde_json::Value = serde_json::from_str(&data)?;
                 if let Some(obj) = cfg.as_object_mut() {
                     if !obj.contains_key("agents") {
-                        obj.insert(
-                            "agents".to_string(),
-                            serde_json::json!({"defaults": {}}),
-                        );
+                        obj.insert("agents".to_string(), serde_json::json!({"defaults": {}}));
                     }
                     if let Some(agents) = obj.get_mut("agents").and_then(|v| v.as_object_mut()) {
                         if !agents.contains_key("defaults") {
@@ -666,8 +693,10 @@ pub async fn run(
                         if let Some(defaults) =
                             agents.get_mut("defaults").and_then(|v| v.as_object_mut())
                         {
-                            defaults
-                                .insert("llm".to_string(), serde_json::Value::String(model.clone()));
+                            defaults.insert(
+                                "llm".to_string(),
+                                serde_json::Value::String(model.clone()),
+                            );
                         }
                     }
                     std::fs::write(
@@ -687,8 +716,7 @@ pub async fn run(
                     let data = std::fs::read_to_string(&cfg_path)?;
                     let mut cfg: serde_json::Value = serde_json::from_str(&data)?;
                     if let Some(obj) = cfg.as_object_mut() {
-                        if let Some(agents) =
-                            obj.get_mut("agents").and_then(|v| v.as_object_mut())
+                        if let Some(agents) = obj.get_mut("agents").and_then(|v| v.as_object_mut())
                         {
                             if let Some(defaults) =
                                 agents.get_mut("defaults").and_then(|v| v.as_object_mut())

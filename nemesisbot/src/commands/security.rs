@@ -1,7 +1,7 @@
 //! Security command - manage security settings, rules, approvals.
 
-use anyhow::Result;
 use crate::common;
+use anyhow::Result;
 
 // ---------------------------------------------------------------------------
 // CLI action enums
@@ -139,7 +139,14 @@ pub enum RulesAction {
 // Rule types and helpers
 // ---------------------------------------------------------------------------
 
-const VALID_RULE_TYPES: &[&str] = &["file", "directory", "process", "network", "hardware", "registry"];
+const VALID_RULE_TYPES: &[&str] = &[
+    "file",
+    "directory",
+    "process",
+    "network",
+    "hardware",
+    "registry",
+];
 
 /// Valid operations per rule type.
 fn valid_operations_for_type(rule_type: &str) -> &[&str] {
@@ -201,7 +208,10 @@ fn default_rules() -> serde_json::Value {
 fn write_rules_config(security_cfg: &std::path::Path, cfg: &serde_json::Value) -> Result<()> {
     let dir = security_cfg.parent().unwrap();
     let _ = std::fs::create_dir_all(dir);
-    std::fs::write(security_cfg, serde_json::to_string_pretty(cfg).unwrap_or_default())?;
+    std::fs::write(
+        security_cfg,
+        serde_json::to_string_pretty(cfg).unwrap_or_default(),
+    )?;
     Ok(())
 }
 
@@ -263,7 +273,10 @@ fn match_pattern_inner(pattern: &str, target: &str) -> bool {
                         dp[pi][ti] = dp[pi + 1][ti] || dp[pi][ti + 1];
                     }
                 }
-            } else if pc == t_chars[ti] || (pc == '/' && t_chars[ti] == '\\') || (pc == '\\' && t_chars[ti] == '/') {
+            } else if pc == t_chars[ti]
+                || (pc == '/' && t_chars[ti] == '\\')
+                || (pc == '\\' && t_chars[ti] == '/')
+            {
                 dp[pi][ti] = dp[pi + 1][ti + 1];
             }
         }
@@ -285,7 +298,10 @@ fn cmd_rules_list(security_cfg: &std::path::Path, rule_type: Option<&str>) -> Re
 
     let types_to_show = if let Some(rt) = rule_type {
         if !VALID_RULE_TYPES.contains(&rt) {
-            println!("Invalid rule type: {}. Valid types: {:?}", rt, VALID_RULE_TYPES);
+            println!(
+                "Invalid rule type: {}. Valid types: {:?}",
+                rt, VALID_RULE_TYPES
+            );
             return Ok(());
         }
         vec![rt]
@@ -303,7 +319,8 @@ fn cmd_rules_list(security_cfg: &std::path::Path, rule_type: Option<&str>) -> Re
             // Group by operation
             let valid_ops = valid_operations_for_type(rt);
             for op in valid_ops {
-                let op_rules: Vec<_> = type_rules.iter()
+                let op_rules: Vec<_> = type_rules
+                    .iter()
                     .enumerate()
                     .filter(|(_, e)| e.get("operation").and_then(|v| v.as_str()) == Some(*op))
                     .collect();
@@ -313,8 +330,14 @@ fn cmd_rules_list(security_cfg: &std::path::Path, rule_type: Option<&str>) -> Re
                 } else {
                     for (i, entry) in &op_rules {
                         let pattern = entry.get("pattern").and_then(|v| v.as_str()).unwrap_or("*");
-                        let action = entry.get("action").and_then(|v| v.as_str()).unwrap_or("deny");
-                        println!("    [{}] {}: pattern: {:<30} action: {}", op, i, pattern, action);
+                        let action = entry
+                            .get("action")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("deny");
+                        println!(
+                            "    [{}] {}: pattern: {:<30} action: {}",
+                            op, i, pattern, action
+                        );
                     }
                 }
             }
@@ -335,20 +358,31 @@ fn cmd_rules_add(
     action: Option<&str>,
 ) -> Result<()> {
     if !VALID_RULE_TYPES.contains(&rule_type) {
-        println!("Error: Invalid rule type '{}'. Valid types: {:?}", rule_type, VALID_RULE_TYPES);
+        println!(
+            "Error: Invalid rule type '{}'. Valid types: {:?}",
+            rule_type, VALID_RULE_TYPES
+        );
         return Ok(());
     }
 
     // Validate operation for this type
     let valid_ops = valid_operations_for_type(rule_type);
     if !valid_ops.contains(&operation) {
-        println!("Error: Invalid {} operation '{}'. Valid: {}", rule_type, operation, valid_ops.join(", "));
+        println!(
+            "Error: Invalid {} operation '{}'. Valid: {}",
+            rule_type,
+            operation,
+            valid_ops.join(", ")
+        );
         return Ok(());
     }
 
     let action_val = action.unwrap_or("deny");
     if action_val != "allow" && action_val != "deny" && action_val != "ask" {
-        println!("Error: Invalid action '{}'. Must be 'allow', 'deny', or 'ask'.", action_val);
+        println!(
+            "Error: Invalid action '{}'. Must be 'allow', 'deny', or 'ask'.",
+            action_val
+        );
         return Ok(());
     }
 
@@ -369,16 +403,30 @@ fn cmd_rules_add(
     }
 
     write_rules_config(security_cfg, &cfg)?;
-    println!("Rule added: [{}] {} {} -> {}", rule_type, operation, pattern.unwrap_or("*"), action_val);
+    println!(
+        "Rule added: [{}] {} {} -> {}",
+        rule_type,
+        operation,
+        pattern.unwrap_or("*"),
+        action_val
+    );
     if action_val == "ask" {
         println!("NOTE: The 'ask' action in rules is currently treated as 'deny' for security.");
     }
     Ok(())
 }
 
-fn cmd_rules_remove(security_cfg: &std::path::Path, rule_type: &str, operation: &str, index: usize) -> Result<()> {
+fn cmd_rules_remove(
+    security_cfg: &std::path::Path,
+    rule_type: &str,
+    operation: &str,
+    index: usize,
+) -> Result<()> {
     if !VALID_RULE_TYPES.contains(&rule_type) {
-        println!("Invalid rule type: {}. Valid types: {:?}", rule_type, VALID_RULE_TYPES);
+        println!(
+            "Invalid rule type: {}. Valid types: {:?}",
+            rule_type, VALID_RULE_TYPES
+        );
         return Ok(());
     }
 
@@ -388,7 +436,9 @@ fn cmd_rules_remove(security_cfg: &std::path::Path, rule_type: &str, operation: 
     if let Some(rules) = cfg.get_mut("rules").and_then(|v| v.as_object_mut()) {
         if let Some(arr) = rules.get_mut(rule_type).and_then(|v| v.as_array_mut()) {
             // Find entries matching operation at the given index
-            let matching: Vec<usize> = arr.iter().enumerate()
+            let matching: Vec<usize> = arr
+                .iter()
+                .enumerate()
                 .filter(|(_, e)| e.get("operation").and_then(|v| v.as_str()) == Some(operation))
                 .map(|(i, _)| i)
                 .collect();
@@ -410,9 +460,17 @@ fn cmd_rules_remove(security_cfg: &std::path::Path, rule_type: &str, operation: 
     Ok(())
 }
 
-fn cmd_rules_test(security_cfg: &std::path::Path, rule_type: &str, operation: &str, target: &str) -> Result<()> {
+fn cmd_rules_test(
+    security_cfg: &std::path::Path,
+    rule_type: &str,
+    operation: &str,
+    target: &str,
+) -> Result<()> {
     if !VALID_RULE_TYPES.contains(&rule_type) {
-        println!("Invalid rule type: {}. Valid types: {:?}", rule_type, VALID_RULE_TYPES);
+        println!(
+            "Invalid rule type: {}. Valid types: {:?}",
+            rule_type, VALID_RULE_TYPES
+        );
         return Ok(());
     }
 
@@ -432,11 +490,20 @@ fn cmd_rules_test(security_cfg: &std::path::Path, rule_type: &str, operation: &s
     let mut matched_rule_idx: Option<usize> = None;
     let mut matched_pattern = String::new();
 
-    if let Some(rules) = rules.and_then(|r| r.get(rule_type)).and_then(|r| r.as_array()) {
+    if let Some(rules) = rules
+        .and_then(|r| r.get(rule_type))
+        .and_then(|r| r.as_array())
+    {
         for (i, rule) in rules.iter().enumerate() {
             let pattern = rule.get("pattern").and_then(|v| v.as_str()).unwrap_or("*");
-            let rule_op = rule.get("operation").and_then(|v| v.as_str()).unwrap_or("*");
-            let action = rule.get("action").and_then(|v| v.as_str()).unwrap_or("deny");
+            let rule_op = rule
+                .get("operation")
+                .and_then(|v| v.as_str())
+                .unwrap_or("*");
+            let action = rule
+                .get("action")
+                .and_then(|v| v.as_str())
+                .unwrap_or("deny");
 
             if rule_op != "*" && rule_op != operation {
                 continue;
@@ -454,17 +521,29 @@ fn cmd_rules_test(security_cfg: &std::path::Path, rule_type: &str, operation: &s
     }
 
     if matched {
-        let (icon, _label) = if final_action == "allow" { ("ALLOWED", "allowed") } else { ("DENIED", "denied") };
-        let reason = if final_action == "deny" && cfg.get("rules")
-            .and_then(|r| r.get(rule_type))
-            .and_then(|r| r.as_array())
-            .and_then(|arr| arr.get(matched_rule_idx.unwrap()))
-            .and_then(|r| r.get("action"))
-            .and_then(|v| v.as_str()) == Some("ask")
+        let (icon, _label) = if final_action == "allow" {
+            ("ALLOWED", "allowed")
+        } else {
+            ("DENIED", "denied")
+        };
+        let reason = if final_action == "deny"
+            && cfg
+                .get("rules")
+                .and_then(|r| r.get(rule_type))
+                .and_then(|r| r.as_array())
+                .and_then(|arr| arr.get(matched_rule_idx.unwrap()))
+                .and_then(|r| r.get("action"))
+                .and_then(|v| v.as_str())
+                == Some("ask")
         {
             "Matched rule requires approval (treated as deny)".to_string()
         } else {
-            format!("Matched rule [{}]: {} -> {}", matched_rule_idx.unwrap(), matched_pattern, final_action)
+            format!(
+                "Matched rule [{}]: {} -> {}",
+                matched_rule_idx.unwrap(),
+                matched_pattern,
+                final_action
+            )
         };
         println!();
         println!("  Result:  {}", icon);
@@ -484,9 +563,14 @@ fn cmd_rules_test(security_cfg: &std::path::Path, rule_type: &str, operation: &s
 // ---------------------------------------------------------------------------
 
 fn cmd_approve(security_cfg: &std::path::Path, id: &str) -> Result<()> {
-    let pending_path = security_cfg.parent().unwrap()
-        .parent().unwrap()
-        .join("workspace").join("security").join("pending.json");
+    let pending_path = security_cfg
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .join("workspace")
+        .join("security")
+        .join("pending.json");
 
     if !pending_path.exists() {
         println!("No pending operations found.");
@@ -499,7 +583,10 @@ fn cmd_approve(security_cfg: &std::path::Path, id: &str) -> Result<()> {
     pending.retain(|p| p.get("id").and_then(|v| v.as_str()) != Some(id));
 
     if pending.len() < before {
-        std::fs::write(&pending_path, serde_json::to_string_pretty(&pending).unwrap_or_default())?;
+        std::fs::write(
+            &pending_path,
+            serde_json::to_string_pretty(&pending).unwrap_or_default(),
+        )?;
         println!("Operation {} approved.", id);
     } else {
         println!("Operation {} not found.", id);
@@ -508,9 +595,14 @@ fn cmd_approve(security_cfg: &std::path::Path, id: &str) -> Result<()> {
 }
 
 fn cmd_deny(security_cfg: &std::path::Path, id: &str, reason: Option<&str>) -> Result<()> {
-    let pending_path = security_cfg.parent().unwrap()
-        .parent().unwrap()
-        .join("workspace").join("security").join("pending.json");
+    let pending_path = security_cfg
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .join("workspace")
+        .join("security")
+        .join("pending.json");
 
     if !pending_path.exists() {
         println!("No pending operations found.");
@@ -523,8 +615,17 @@ fn cmd_deny(security_cfg: &std::path::Path, id: &str, reason: Option<&str>) -> R
     pending.retain(|p| p.get("id").and_then(|v| v.as_str()) != Some(id));
 
     if pending.len() < before {
-        std::fs::write(&pending_path, serde_json::to_string_pretty(&pending).unwrap_or_default())?;
-        println!("Operation {} denied.{}", id, reason.map(|r| format!(" Reason: {}", r)).unwrap_or_default());
+        std::fs::write(
+            &pending_path,
+            serde_json::to_string_pretty(&pending).unwrap_or_default(),
+        )?;
+        println!(
+            "Operation {} denied.{}",
+            id,
+            reason
+                .map(|r| format!(" Reason: {}", r))
+                .unwrap_or_default()
+        );
     } else {
         println!("Operation {} not found.", id);
     }
@@ -532,9 +633,14 @@ fn cmd_deny(security_cfg: &std::path::Path, id: &str, reason: Option<&str>) -> R
 }
 
 fn cmd_pending(security_cfg: &std::path::Path) -> Result<()> {
-    let pending_path = security_cfg.parent().unwrap()
-        .parent().unwrap()
-        .join("workspace").join("security").join("pending.json");
+    let pending_path = security_cfg
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .join("workspace")
+        .join("security")
+        .join("pending.json");
 
     println!("Pending Approvals");
     println!("==================");
@@ -572,7 +678,13 @@ fn cmd_edit(security_cfg: &std::path::Path) -> Result<()> {
 
     let editor = std::env::var("EDITOR")
         .or_else(|_| std::env::var("VISUAL"))
-        .unwrap_or_else(|_| if cfg!(target_os = "windows") { "notepad".to_string() } else { "vi".to_string() });
+        .unwrap_or_else(|_| {
+            if cfg!(target_os = "windows") {
+                "notepad".to_string()
+            } else {
+                "vi".to_string()
+            }
+        });
 
     println!("Opening security config in {}...", editor);
     println!("  Path: {}", security_cfg.display());
@@ -634,31 +746,42 @@ pub async fn run(action: SecurityAction, local: bool) -> Result<()> {
             let enabled = if cfg_path.exists() {
                 let data = std::fs::read_to_string(&cfg_path)?;
                 let cfg: serde_json::Value = serde_json::from_str(&data)?;
-                cfg.get("security").and_then(|s| s.get("enabled")).and_then(|v| v.as_bool()).unwrap_or(true)
+                cfg.get("security")
+                    .and_then(|s| s.get("enabled"))
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(true)
             } else {
                 true
             };
 
-            println!("  Security module: {}", if enabled { "enabled" } else { "disabled" });
+            println!(
+                "  Security module: {}",
+                if enabled { "enabled" } else { "disabled" }
+            );
 
             // Show policy settings from security config
             let rules_cfg = read_rules_config(&security_cfg)?;
-            let default_action = rules_cfg.get("default_action")
+            let default_action = rules_cfg
+                .get("default_action")
                 .and_then(|v| v.as_str())
                 .unwrap_or("allow")
                 .to_uppercase();
-            let log_ops = rules_cfg.get("log_all_operations")
+            let log_ops = rules_cfg
+                .get("log_all_operations")
                 .and_then(|v| v.as_bool())
                 .map(|v| if v { "yes" } else { "no" })
                 .unwrap_or("no");
-            let file_log = rules_cfg.get("audit_log_file_enabled")
+            let file_log = rules_cfg
+                .get("audit_log_file_enabled")
                 .and_then(|v| v.as_bool())
                 .map(|v| if v { "yes" } else { "no" })
                 .unwrap_or("no");
-            let approval_timeout = rules_cfg.get("approval_timeout")
+            let approval_timeout = rules_cfg
+                .get("approval_timeout")
                 .and_then(|v| v.as_u64())
                 .unwrap_or(0);
-            let audit_retention = rules_cfg.get("audit_retention_days")
+            let audit_retention = rules_cfg
+                .get("audit_retention_days")
                 .and_then(|v| v.as_u64())
                 .unwrap_or(0);
 
@@ -676,7 +799,8 @@ pub async fn run(action: SecurityAction, local: bool) -> Result<()> {
             if cfg_path.exists() {
                 let data = std::fs::read_to_string(&cfg_path)?;
                 let cfg: serde_json::Value = serde_json::from_str(&data)?;
-                let restrict = cfg.get("agents")
+                let restrict = cfg
+                    .get("agents")
                     .and_then(|a| a.get("defaults"))
                     .and_then(|d| d.get("restrict_to_workspace"))
                     .and_then(|v| v.as_bool())
@@ -691,7 +815,10 @@ pub async fn run(action: SecurityAction, local: bool) -> Result<()> {
                         if let Some(engines) = cfg.get("enabled").and_then(|v| v.as_array()) {
                             println!("  Scanner engines: {} configured", engines.len());
                         }
-                        let restrict = cfg.get("restrict_to_workspace").and_then(|v| v.as_bool()).unwrap_or(true);
+                        let restrict = cfg
+                            .get("restrict_to_workspace")
+                            .and_then(|v| v.as_bool())
+                            .unwrap_or(true);
                         println!("  Restrict to workspace: {}", restrict);
                     }
                 }
@@ -715,8 +842,11 @@ pub async fn run(action: SecurityAction, local: bool) -> Result<()> {
                         let valid_ops = valid_operations_for_type(rt);
                         let mut op_counts = Vec::new();
                         for op in valid_ops {
-                            let count = arr.iter()
-                                .filter(|e| e.get("operation").and_then(|v| v.as_str()) == Some(*op))
+                            let count = arr
+                                .iter()
+                                .filter(|e| {
+                                    e.get("operation").and_then(|v| v.as_str()) == Some(*op)
+                                })
                                 .count();
                             if count > 0 {
                                 op_counts.push(format!("{}={}", op, count));
@@ -760,13 +890,24 @@ pub async fn run(action: SecurityAction, local: bool) -> Result<()> {
                     }
                     // Set RestrictToWorkspace = false when security is enabled
                     if let Some(agents) = obj.get_mut("agents").and_then(|v| v.as_object_mut()) {
-                        if let Some(defaults) = agents.get_mut("defaults").and_then(|v| v.as_object_mut()) {
-                            defaults.insert("restrict_to_workspace".to_string(), serde_json::Value::Bool(false));
+                        if let Some(defaults) =
+                            agents.get_mut("defaults").and_then(|v| v.as_object_mut())
+                        {
+                            defaults.insert(
+                                "restrict_to_workspace".to_string(),
+                                serde_json::Value::Bool(false),
+                            );
                         } else {
-                            agents.insert("defaults".to_string(), serde_json::json!({"restrict_to_workspace": false}));
+                            agents.insert(
+                                "defaults".to_string(),
+                                serde_json::json!({"restrict_to_workspace": false}),
+                            );
                         }
                     }
-                    std::fs::write(&cfg_path, serde_json::to_string_pretty(&cfg).unwrap_or_default())?;
+                    std::fs::write(
+                        &cfg_path,
+                        serde_json::to_string_pretty(&cfg).unwrap_or_default(),
+                    )?;
                 }
             }
 
@@ -792,17 +933,31 @@ pub async fn run(action: SecurityAction, local: bool) -> Result<()> {
                     if let Some(sec) = obj.get_mut("security").and_then(|v| v.as_object_mut()) {
                         sec.insert("enabled".to_string(), serde_json::Value::Bool(false));
                     } else {
-                        obj.insert("security".to_string(), serde_json::json!({"enabled": false}));
+                        obj.insert(
+                            "security".to_string(),
+                            serde_json::json!({"enabled": false}),
+                        );
                     }
                     // Set RestrictToWorkspace = true when security is disabled
                     if let Some(agents) = obj.get_mut("agents").and_then(|v| v.as_object_mut()) {
-                        if let Some(defaults) = agents.get_mut("defaults").and_then(|v| v.as_object_mut()) {
-                            defaults.insert("restrict_to_workspace".to_string(), serde_json::Value::Bool(true));
+                        if let Some(defaults) =
+                            agents.get_mut("defaults").and_then(|v| v.as_object_mut())
+                        {
+                            defaults.insert(
+                                "restrict_to_workspace".to_string(),
+                                serde_json::Value::Bool(true),
+                            );
                         } else {
-                            agents.insert("defaults".to_string(), serde_json::json!({"restrict_to_workspace": true}));
+                            agents.insert(
+                                "defaults".to_string(),
+                                serde_json::json!({"restrict_to_workspace": true}),
+                            );
                         }
                     }
-                    std::fs::write(&cfg_path, serde_json::to_string_pretty(&cfg).unwrap_or_default())?;
+                    std::fs::write(
+                        &cfg_path,
+                        serde_json::to_string_pretty(&cfg).unwrap_or_default(),
+                    )?;
                 }
             }
             println!("🔓 Security module disabled");
@@ -810,101 +965,106 @@ pub async fn run(action: SecurityAction, local: bool) -> Result<()> {
             println!();
             println!("  Restart agent/gateway to apply changes");
         }
-        SecurityAction::Config { action } => {
-            match action {
-                None | Some(SecurityConfigAction::Show) => {
-                    println!("Security Configuration");
-                    println!("======================");
-                    if security_cfg.exists() {
-                        println!("{}", std::fs::read_to_string(&security_cfg)?);
-                    } else {
-                        println!("  Using default configuration.");
-                    }
+        SecurityAction::Config { action } => match action {
+            None | Some(SecurityConfigAction::Show) => {
+                println!("Security Configuration");
+                println!("======================");
+                if security_cfg.exists() {
+                    println!("{}", std::fs::read_to_string(&security_cfg)?);
+                } else {
+                    println!("  Using default configuration.");
                 }
-                Some(SecurityConfigAction::Edit) => cmd_edit(&security_cfg)?,
-                Some(SecurityConfigAction::Reset) => cmd_config_reset(&security_cfg)?,
             }
-        }
-        SecurityAction::Audit { action } => {
-            match action {
-                None | Some(AuditAction::Show { limit: _ }) => {
-                    let limit = match &action {
-                        Some(AuditAction::Show { limit }) => *limit,
-                        _ => 20,
-                    };
-                    println!("Security Audit Log (last {} entries)", limit);
-                    println!("======================================");
-                    let audit_path = common::workspace_path(&home).join("audit_chain.jsonl");
-                    if audit_path.exists() {
-                        if let Ok(data) = std::fs::read_to_string(&audit_path) {
-                            let lines: Vec<&str> = data.lines().collect();
-                            for line in lines.iter().rev().take(limit) {
-                                if let Ok(evt) = serde_json::from_str::<serde_json::Value>(line) {
-                                    println!("  [{}] {} / {} -> {} ({})",
-                                        evt.get("timestamp").and_then(|v| v.as_str()).unwrap_or("?"),
-                                        evt.get("operation").and_then(|v| v.as_str()).unwrap_or("?"),
-                                        evt.get("tool_name").and_then(|v| v.as_str()).unwrap_or("?"),
-                                        evt.get("decision").and_then(|v| v.as_str()).unwrap_or("?"),
-                                        evt.get("reason").and_then(|v| v.as_str()).unwrap_or(""),
-                                    );
-                                }
+            Some(SecurityConfigAction::Edit) => cmd_edit(&security_cfg)?,
+            Some(SecurityConfigAction::Reset) => cmd_config_reset(&security_cfg)?,
+        },
+        SecurityAction::Audit { action } => match action {
+            None | Some(AuditAction::Show { limit: _ }) => {
+                let limit = match &action {
+                    Some(AuditAction::Show { limit }) => *limit,
+                    _ => 20,
+                };
+                println!("Security Audit Log (last {} entries)", limit);
+                println!("======================================");
+                let audit_path = common::workspace_path(&home).join("audit_chain.jsonl");
+                if audit_path.exists() {
+                    if let Ok(data) = std::fs::read_to_string(&audit_path) {
+                        let lines: Vec<&str> = data.lines().collect();
+                        for line in lines.iter().rev().take(limit) {
+                            if let Ok(evt) = serde_json::from_str::<serde_json::Value>(line) {
+                                println!(
+                                    "  [{}] {} / {} -> {} ({})",
+                                    evt.get("timestamp").and_then(|v| v.as_str()).unwrap_or("?"),
+                                    evt.get("operation").and_then(|v| v.as_str()).unwrap_or("?"),
+                                    evt.get("tool_name").and_then(|v| v.as_str()).unwrap_or("?"),
+                                    evt.get("decision").and_then(|v| v.as_str()).unwrap_or("?"),
+                                    evt.get("reason").and_then(|v| v.as_str()).unwrap_or(""),
+                                );
                             }
                         }
-                    } else {
-                        println!("  No audit log found.");
                     }
+                } else {
+                    println!("  No audit log found.");
                 }
-                Some(AuditAction::Export { output }) => {
-                    println!("Exporting audit log to: {}", output);
-                    let audit_path = common::workspace_path(&home).join("audit_chain.jsonl");
-                    if audit_path.exists() {
-                        let data = std::fs::read_to_string(&audit_path)?;
-                        let entries: Vec<serde_json::Value> = data.lines()
+            }
+            Some(AuditAction::Export { output }) => {
+                println!("Exporting audit log to: {}", output);
+                let audit_path = common::workspace_path(&home).join("audit_chain.jsonl");
+                if audit_path.exists() {
+                    let data = std::fs::read_to_string(&audit_path)?;
+                    let entries: Vec<serde_json::Value> = data
+                        .lines()
+                        .filter(|l| !l.trim().is_empty())
+                        .filter_map(|l| serde_json::from_str(l).ok())
+                        .collect();
+                    let export = serde_json::json!({
+                        "exported_at": chrono::Local::now().to_rfc3339(),
+                        "total_entries": entries.len(),
+                        "entries": entries,
+                    });
+                    std::fs::write(
+                        &output,
+                        serde_json::to_string_pretty(&export).unwrap_or_default(),
+                    )?;
+                    println!("  Exported {} entries.", entries.len());
+                } else {
+                    println!("  No audit log found to export.");
+                }
+            }
+            Some(AuditAction::Denied) => {
+                println!("Denied Operations");
+                println!("=================");
+                let audit_path = common::workspace_path(&home).join("audit_chain.jsonl");
+                if audit_path.exists() {
+                    if let Ok(data) = std::fs::read_to_string(&audit_path) {
+                        let denied: Vec<_> = data
+                            .lines()
                             .filter(|l| !l.trim().is_empty())
-                            .filter_map(|l| serde_json::from_str(l).ok())
+                            .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
+                            .filter(|e| {
+                                e.get("decision").and_then(|v| v.as_str()) == Some("denied")
+                            })
                             .collect();
-                        let export = serde_json::json!({
-                            "exported_at": chrono::Local::now().to_rfc3339(),
-                            "total_entries": entries.len(),
-                            "entries": entries,
-                        });
-                        std::fs::write(&output, serde_json::to_string_pretty(&export).unwrap_or_default())?;
-                        println!("  Exported {} entries.", entries.len());
-                    } else {
-                        println!("  No audit log found to export.");
-                    }
-                }
-                Some(AuditAction::Denied) => {
-                    println!("Denied Operations");
-                    println!("=================");
-                    let audit_path = common::workspace_path(&home).join("audit_chain.jsonl");
-                    if audit_path.exists() {
-                        if let Ok(data) = std::fs::read_to_string(&audit_path) {
-                            let denied: Vec<_> = data.lines()
-                                .filter(|l| !l.trim().is_empty())
-                                .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
-                                .filter(|e| e.get("decision").and_then(|v| v.as_str()) == Some("denied"))
-                                .collect();
-                            if denied.is_empty() {
-                                println!("  No denied operations found.");
-                            } else {
-                                for evt in denied.iter().rev().take(50) {
-                                    println!("  [{}] {} / {} ({})",
-                                        evt.get("timestamp").and_then(|v| v.as_str()).unwrap_or("?"),
-                                        evt.get("tool_name").and_then(|v| v.as_str()).unwrap_or("?"),
-                                        evt.get("operation").and_then(|v| v.as_str()).unwrap_or("?"),
-                                        evt.get("reason").and_then(|v| v.as_str()).unwrap_or(""),
-                                    );
-                                }
-                                println!("  Total denied: {}", denied.len());
+                        if denied.is_empty() {
+                            println!("  No denied operations found.");
+                        } else {
+                            for evt in denied.iter().rev().take(50) {
+                                println!(
+                                    "  [{}] {} / {} ({})",
+                                    evt.get("timestamp").and_then(|v| v.as_str()).unwrap_or("?"),
+                                    evt.get("tool_name").and_then(|v| v.as_str()).unwrap_or("?"),
+                                    evt.get("operation").and_then(|v| v.as_str()).unwrap_or("?"),
+                                    evt.get("reason").and_then(|v| v.as_str()).unwrap_or(""),
+                                );
                             }
+                            println!("  Total denied: {}", denied.len());
                         }
-                    } else {
-                        println!("  No audit log found.");
                     }
+                } else {
+                    println!("  No audit log found.");
                 }
             }
-        }
+        },
         SecurityAction::Scanner { action } => {
             // Delegate to the standalone scanner module
             super::scanner::run(action, local).await?;
@@ -941,25 +1101,38 @@ pub async fn run(action: SecurityAction, local: bool) -> Result<()> {
                 }
             }
         }
-        SecurityAction::Rules { action } => {
-            match action {
-                RulesAction::List { rule_type } => {
-                    cmd_rules_list(&security_cfg, rule_type.as_deref())?
-                }
-                RulesAction::Add { rule_type, operation, pattern, action } => {
-                    cmd_rules_add(&security_cfg, &rule_type, &operation, pattern.as_deref(), action.as_deref())?
-                }
-                RulesAction::Remove { rule_type, operation, index } => {
-                    cmd_rules_remove(&security_cfg, &rule_type, &operation, index)?
-                }
-                RulesAction::Test { rule_type, operation, target } => {
-                    cmd_rules_test(&security_cfg, &rule_type, &operation, &target)?
-                }
-            }
-        }
+        SecurityAction::Rules { action } => match action {
+            RulesAction::List { rule_type } => cmd_rules_list(&security_cfg, rule_type.as_deref())?,
+            RulesAction::Add {
+                rule_type,
+                operation,
+                pattern,
+                action,
+            } => cmd_rules_add(
+                &security_cfg,
+                &rule_type,
+                &operation,
+                pattern.as_deref(),
+                action.as_deref(),
+            )?,
+            RulesAction::Remove {
+                rule_type,
+                operation,
+                index,
+            } => cmd_rules_remove(&security_cfg, &rule_type, &operation, index)?,
+            RulesAction::Test {
+                rule_type,
+                operation,
+                target,
+            } => cmd_rules_test(&security_cfg, &rule_type, &operation, &target)?,
+        },
         SecurityAction::Approve { id } => cmd_approve(&security_cfg, &id)?,
         SecurityAction::Deny { id, reason } => {
-            let reason_str = if reason.is_empty() { None } else { Some(reason.join(" ")) };
+            let reason_str = if reason.is_empty() {
+                None
+            } else {
+                Some(reason.join(" "))
+            };
             cmd_deny(&security_cfg, &id, reason_str.as_deref())?;
         }
         SecurityAction::Pending => cmd_pending(&security_cfg)?,

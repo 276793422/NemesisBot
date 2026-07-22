@@ -97,8 +97,12 @@ impl ReadFileTool {
 
 #[async_trait]
 impl Tool for ReadFileTool {
-    fn name(&self) -> &str { "read_file" }
-    fn description(&self) -> &str { "Read the contents of a file" }
+    fn name(&self) -> &str {
+        "read_file"
+    }
+    fn description(&self) -> &str {
+        "Read the contents of a file"
+    }
     fn parameters(&self) -> serde_json::Value {
         serde_json::json!({
             "type": "object",
@@ -152,7 +156,10 @@ impl WriteFileTool {
             let workspace_str = normalize_for_comparison(&self.workspace);
             let resolved_str = normalize_for_comparison(&resolved);
             if !resolved_str.starts_with(&*workspace_str) {
-                return Err(format!("access denied: path '{}' is outside the workspace", path));
+                return Err(format!(
+                    "access denied: path '{}' is outside the workspace",
+                    path
+                ));
             }
         }
 
@@ -162,8 +169,12 @@ impl WriteFileTool {
 
 #[async_trait]
 impl Tool for WriteFileTool {
-    fn name(&self) -> &str { "write_file" }
-    fn description(&self) -> &str { "Write content to a file" }
+    fn name(&self) -> &str {
+        "write_file"
+    }
+    fn description(&self) -> &str {
+        "Write content to a file"
+    }
     fn parameters(&self) -> serde_json::Value {
         serde_json::json!({
             "type": "object",
@@ -222,8 +233,12 @@ impl ListDirTool {
 
 #[async_trait]
 impl Tool for ListDirTool {
-    fn name(&self) -> &str { "list_dir" }
-    fn description(&self) -> &str { "List contents of a directory" }
+    fn name(&self) -> &str {
+        "list_dir"
+    }
+    fn description(&self) -> &str {
+        "List contents of a directory"
+    }
     fn parameters(&self) -> serde_json::Value {
         serde_json::json!({
             "type": "object",
@@ -279,8 +294,12 @@ impl FileExistsTool {
 
 #[async_trait]
 impl Tool for FileExistsTool {
-    fn name(&self) -> &str { "file_exists" }
-    fn description(&self) -> &str { "Check if a file or directory exists" }
+    fn name(&self) -> &str {
+        "file_exists"
+    }
+    fn description(&self) -> &str {
+        "Check if a file or directory exists"
+    }
     fn parameters(&self) -> serde_json::Value {
         serde_json::json!({
             "type": "object",
@@ -340,7 +359,10 @@ impl CreateDirectoryTool {
             let workspace_str = normalize_for_comparison(&self.workspace);
             let resolved_str = normalize_for_comparison(&resolved);
             if !resolved_str.starts_with(&*workspace_str) {
-                return Err(format!("access denied: path '{}' is outside the workspace", path));
+                return Err(format!(
+                    "access denied: path '{}' is outside the workspace",
+                    path
+                ));
             }
         }
 
@@ -350,8 +372,12 @@ impl CreateDirectoryTool {
 
 #[async_trait]
 impl Tool for CreateDirectoryTool {
-    fn name(&self) -> &str { "create_dir" }
-    fn description(&self) -> &str { "Create a directory (and all parent directories)" }
+    fn name(&self) -> &str {
+        "create_dir"
+    }
+    fn description(&self) -> &str {
+        "Create a directory (and all parent directories)"
+    }
     fn parameters(&self) -> serde_json::Value {
         serde_json::json!({
             "type": "object",
@@ -407,7 +433,10 @@ impl DeleteFileTool {
             let workspace_str = normalize_for_comparison(&self.workspace);
             let resolved_str = normalize_for_comparison(&resolved);
             if !resolved_str.starts_with(&*workspace_str) {
-                return Err(format!("access denied: path '{}' is outside the workspace", path));
+                return Err(format!(
+                    "access denied: path '{}' is outside the workspace",
+                    path
+                ));
             }
         }
 
@@ -417,8 +446,12 @@ impl DeleteFileTool {
 
 #[async_trait]
 impl Tool for DeleteFileTool {
-    fn name(&self) -> &str { "delete_file" }
-    fn description(&self) -> &str { "Delete a file" }
+    fn name(&self) -> &str {
+        "delete_file"
+    }
+    fn description(&self) -> &str {
+        "Delete a file"
+    }
     fn parameters(&self) -> serde_json::Value {
         serde_json::json!({
             "type": "object",
@@ -505,10 +538,7 @@ impl Tool for DeleteDirTool {
             let ws = normalize_for_comparison(&self.workspace);
             let target_str = normalize_for_comparison(&target);
             if !target_str.starts_with(&*ws) {
-                return ToolResult::error(&format!(
-                    "path '{}' is outside workspace",
-                    path
-                ));
+                return ToolResult::error(&format!("path '{}' is outside workspace", path));
             }
         }
 
@@ -520,10 +550,7 @@ impl Tool for DeleteDirTool {
                 }
             }
             Err(e) => {
-                return ToolResult::error(&format!(
-                    "failed to access directory '{}': {}",
-                    path, e
-                ));
+                return ToolResult::error(&format!("failed to access directory '{}': {}", path, e));
             }
         }
 

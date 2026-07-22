@@ -240,7 +240,9 @@ fn test_message_error_response_with_data() {
 fn test_decode_params_type_mismatch() {
     #[derive(serde::Deserialize, Debug)]
     #[allow(dead_code)]
-    struct Params { value: i32 }
+    struct Params {
+        value: i32,
+    }
     let msg = Message::new_request("test", serde_json::json!({"value": "not_a_number"}));
     let result: Result<Params, _> = msg.decode_params();
     assert!(result.is_err());
@@ -250,7 +252,9 @@ fn test_decode_params_type_mismatch() {
 fn test_decode_result_type_mismatch() {
     #[derive(serde::Deserialize, Debug)]
     #[allow(dead_code)]
-    struct MyResult { count: i32 }
+    struct MyResult {
+        count: i32,
+    }
     let msg = Message::new_response("id-1", serde_json::json!({"count": "string"}));
     let result: Result<MyResult, _> = msg.decode_result();
     assert!(result.is_err());
@@ -384,7 +388,9 @@ fn test_deserialize_minimal_message() {
 fn test_decode_params_wrong_type() {
     #[derive(serde::Deserialize, Debug)]
     #[allow(dead_code)]
-    struct StrictParams { count: i32 }
+    struct StrictParams {
+        count: i32,
+    }
     let msg = Message::new_request("test", serde_json::json!({"count": "not_int"}));
     let result: Result<StrictParams, _> = msg.decode_params();
     assert!(result.is_err());
@@ -395,7 +401,9 @@ fn test_decode_params_wrong_type() {
 fn test_decode_result_wrong_type() {
     #[derive(serde::Deserialize, Debug)]
     #[allow(dead_code)]
-    struct StrictResult { value: i32 }
+    struct StrictResult {
+        value: i32,
+    }
     let msg = Message::new_response("id-1", serde_json::json!({"value": "string"}));
     let result: Result<StrictResult, _> = msg.decode_result();
     assert!(result.is_err());
@@ -406,9 +414,13 @@ fn test_decode_result_wrong_type() {
 fn test_decode_error_data_wrong_type() {
     #[derive(serde::Deserialize, Debug)]
     #[allow(dead_code)]
-    struct StrictError { code: i32 }
+    struct StrictError {
+        code: i32,
+    }
     let msg = Message::new_error_response(
-        "id-1", ERR_INTERNAL, "err",
+        "id-1",
+        ERR_INTERNAL,
+        "err",
         Some(serde_json::json!({"code": "string"})),
     );
     let result: Result<StrictError, _> = msg.decode_error_data();

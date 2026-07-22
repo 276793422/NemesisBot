@@ -1,11 +1,11 @@
 //! Device management service.
 
+pub mod events;
 pub mod service;
 pub mod source;
-pub mod events;
 
 pub use service::{
-    DeviceService, Device, ServiceDeviceEvent, DeviceServiceConfig,
-    OutboundSender, LastChannelProvider, parse_last_channel, is_internal_channel,
+    Device, DeviceService, DeviceServiceConfig, LastChannelProvider, OutboundSender,
+    ServiceDeviceEvent, is_internal_channel, parse_last_channel,
 };
-pub use source::{DeviceEvent, EventSource, UsbEventSource, Action, Kind};
+pub use source::{Action, DeviceEvent, EventSource, Kind, UsbEventSource};

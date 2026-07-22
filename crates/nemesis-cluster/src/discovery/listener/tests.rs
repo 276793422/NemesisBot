@@ -33,7 +33,11 @@ fn test_handle_announce_registers_peer() {
 #[test]
 fn test_handle_bye_removes_peer() {
     let registry = PeerRegistry::new(HealthConfig::default());
-    registry.upsert(message_to_node_info(&make_announce("remote-3", &["10.0.0.7"], 9000)));
+    registry.upsert(message_to_node_info(&make_announce(
+        "remote-3",
+        &["10.0.0.7"],
+        9000,
+    )));
     assert!(registry.get("remote-3").is_some());
 
     let bye = DiscoveryMessage::new_bye("remote-3");
@@ -66,7 +70,15 @@ fn test_message_to_node_info_uses_first_address() {
 #[test]
 fn test_message_to_node_info_manager_role() {
     let msg = DiscoveryMessage::new_announce(
-        "mgr-1", "ManagerNode", vec!["10.0.0.1".into()], 9000, "manager", "production", vec![], vec![], "agent",
+        "mgr-1",
+        "ManagerNode",
+        vec!["10.0.0.1".into()],
+        9000,
+        "manager",
+        "production",
+        vec![],
+        vec![],
+        "agent",
     );
     let info = message_to_node_info(&msg);
     assert_eq!(info.base.role, NodeRole::Master);
@@ -147,12 +159,20 @@ fn test_udp_listener_send_receive_roundtrip() {
     let sender = UdpSocket::bind("0.0.0.0:0").unwrap();
     sender.set_broadcast(true).unwrap();
     let msg = DiscoveryMessage::new_announce(
-        "test-sender", "SenderNode",
-        vec!["10.0.0.1".into()], 9000,
-        "worker", "dev", vec![], vec![], "agent",
+        "test-sender",
+        "SenderNode",
+        vec!["10.0.0.1".into()],
+        9000,
+        "worker",
+        "dev",
+        vec![],
+        vec![],
+        "agent",
     );
     let data = msg.to_bytes().unwrap();
-    sender.send_to(&data, SocketAddrV4::new(Ipv4Addr::LOCALHOST, port)).unwrap();
+    sender
+        .send_to(&data, SocketAddrV4::new(Ipv4Addr::LOCALHOST, port))
+        .unwrap();
 
     // Wait for receive
     std::thread::sleep(Duration::from_millis(200));
@@ -186,13 +206,21 @@ fn test_udp_listener_encrypted_roundtrip() {
     let sender = UdpSocket::bind("0.0.0.0:0").unwrap();
     sender.set_broadcast(true).unwrap();
     let msg = DiscoveryMessage::new_announce(
-        "encrypted-node", "EncNode",
-        vec!["10.0.0.1".into()], 9000,
-        "worker", "dev", vec![], vec![], "agent",
+        "encrypted-node",
+        "EncNode",
+        vec!["10.0.0.1".into()],
+        9000,
+        "worker",
+        "dev",
+        vec![],
+        vec![],
+        "agent",
     );
     let plain = msg.to_bytes().unwrap();
     let encrypted = crate::discovery::crypto::encrypt_data(&key, &plain).unwrap();
-    sender.send_to(&encrypted, SocketAddrV4::new(Ipv4Addr::LOCALHOST, port)).unwrap();
+    sender
+        .send_to(&encrypted, SocketAddrV4::new(Ipv4Addr::LOCALHOST, port))
+        .unwrap();
 
     std::thread::sleep(Duration::from_millis(200));
     listener.stop().unwrap();
@@ -219,7 +247,12 @@ fn test_udp_listener_ignores_invalid_json() {
 
     // Send invalid data
     let sender = UdpSocket::bind("0.0.0.0:0").unwrap();
-    sender.send_to(b"not json at all", SocketAddrV4::new(Ipv4Addr::LOCALHOST, port)).unwrap();
+    sender
+        .send_to(
+            b"not json at all",
+            SocketAddrV4::new(Ipv4Addr::LOCALHOST, port),
+        )
+        .unwrap();
 
     std::thread::sleep(Duration::from_millis(200));
     listener.stop().unwrap();
@@ -248,12 +281,21 @@ fn test_udp_listener_ignores_wrong_encryption_key() {
     // Send data encrypted with the WRONG key
     let sender = UdpSocket::bind("0.0.0.0:0").unwrap();
     let msg = DiscoveryMessage::new_announce(
-        "attacker", "BadNode", vec!["10.0.0.1".into()], 9000,
-        "worker", "dev", vec![], vec![], "agent",
+        "attacker",
+        "BadNode",
+        vec!["10.0.0.1".into()],
+        9000,
+        "worker",
+        "dev",
+        vec![],
+        vec![],
+        "agent",
     );
     let plaintext = msg.to_bytes().unwrap();
     let encrypted = crate::discovery::crypto::encrypt_data(&key2, &plaintext).unwrap();
-    sender.send_to(&encrypted, SocketAddrV4::new(Ipv4Addr::LOCALHOST, port)).unwrap();
+    sender
+        .send_to(&encrypted, SocketAddrV4::new(Ipv4Addr::LOCALHOST, port))
+        .unwrap();
 
     std::thread::sleep(Duration::from_millis(200));
     listener.stop().unwrap();
@@ -357,7 +399,7 @@ fn test_message_to_node_info_from_message() {
 #[test]
 fn test_handle_discovery_message_own_node_ignored() {
     use crate::discovery::message::{DiscoveryMessage, DiscoveryMessageType};
-    use crate::registry::{PeerRegistry, HealthConfig};
+    use crate::registry::{HealthConfig, PeerRegistry};
     let registry = PeerRegistry::new(HealthConfig::default());
     let msg = DiscoveryMessage {
         version: "1.0".into(),
@@ -380,7 +422,7 @@ fn test_handle_discovery_message_own_node_ignored() {
 #[test]
 fn test_handle_discovery_message_remote_announce() {
     use crate::discovery::message::{DiscoveryMessage, DiscoveryMessageType};
-    use crate::registry::{PeerRegistry, HealthConfig};
+    use crate::registry::{HealthConfig, PeerRegistry};
     let registry = PeerRegistry::new(HealthConfig::default());
     let msg = DiscoveryMessage {
         version: "1.0".into(),
@@ -403,7 +445,7 @@ fn test_handle_discovery_message_remote_announce() {
 #[test]
 fn test_handle_discovery_message_bye() {
     use crate::discovery::message::{DiscoveryMessage, DiscoveryMessageType};
-    use crate::registry::{PeerRegistry, HealthConfig};
+    use crate::registry::{HealthConfig, PeerRegistry};
     let registry = PeerRegistry::new(HealthConfig::default());
     // First add the node
     let announce = DiscoveryMessage {

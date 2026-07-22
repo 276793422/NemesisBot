@@ -193,7 +193,12 @@ impl SpeexAec {
 
     /// 用项目默认参数创建（16kHz / 10ms 帧 / 512ms 尾 / 开预处理降噪）。
     pub fn with_defaults() -> Result<Self> {
-        Self::new(DEFAULT_FRAME_SIZE, DEFAULT_FILTER_LENGTH, AEC_SAMPLE_RATE, true)
+        Self::new(
+            DEFAULT_FRAME_SIZE,
+            DEFAULT_FILTER_LENGTH,
+            AEC_SAMPLE_RATE,
+            true,
+        )
     }
 
     /// 攒够一帧 near 时调一次 C 的 `AecCancelEcho`。
@@ -202,14 +207,20 @@ impl SpeexAec {
 
         // near → s16
         self.rec_s16.clear();
-        self.rec_s16
-            .extend(self.near_buf[..self.frame_size].iter().map(|&s| f32_to_s16(s)));
+        self.rec_s16.extend(
+            self.near_buf[..self.frame_size]
+                .iter()
+                .map(|&s| f32_to_s16(s)),
+        );
 
         // far → s16；不够一帧则取已有部分 + 静音补齐（表示当前没在播放，无回声可消）
         self.echo_s16.clear();
         if self.far_buf.len() >= self.frame_size {
-            self.echo_s16
-                .extend(self.far_buf[..self.frame_size].iter().map(|&s| f32_to_s16(s)));
+            self.echo_s16.extend(
+                self.far_buf[..self.frame_size]
+                    .iter()
+                    .map(|&s| f32_to_s16(s)),
+            );
             self.far_buf.drain(..self.frame_size);
         } else {
             self.echo_s16

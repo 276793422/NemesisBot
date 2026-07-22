@@ -90,13 +90,19 @@ async fn test_cleanup_old() {
 
     // Cleanup with 0-second threshold (removes everything older than "now")
     // Since the file was just created, it shouldn't be removed
-    let removed = store.cleanup_old(std::time::Duration::from_secs(0)).await.unwrap();
+    let removed = store
+        .cleanup_old(std::time::Duration::from_secs(0))
+        .await
+        .unwrap();
     // A 0-duration cleanup may or may not remove recent files depending on FS timing
     assert!(removed <= 1);
 
     // Cleanup with very long threshold shouldn't remove anything
     store.save(make_snapshot("new-task")).await.unwrap();
-    let removed2 = store.cleanup_old(std::time::Duration::from_secs(86400 * 365)).await.unwrap();
+    let removed2 = store
+        .cleanup_old(std::time::Duration::from_secs(86400 * 365))
+        .await
+        .unwrap();
     assert_eq!(removed2, 0);
 }
 
@@ -256,7 +262,11 @@ async fn test_disk_file_has_correct_name() {
     store.save(make_snapshot("my-task-id")).await.unwrap();
 
     let expected_path = dir.path().join("my-task-id.json");
-    assert!(expected_path.exists(), "Expected file at {:?}", expected_path);
+    assert!(
+        expected_path.exists(),
+        "Expected file at {:?}",
+        expected_path
+    );
 }
 
 // ============================================================
@@ -272,7 +282,10 @@ async fn test_cleanup_old_snapshots_none_expired_v2() {
     store.save(make_snapshot("fresh-task")).await.unwrap();
 
     // Cleanup with very long max age - nothing should be removed
-    let removed = store.cleanup_old(std::time::Duration::from_secs(365 * 24 * 3600)).await.unwrap();
+    let removed = store
+        .cleanup_old(std::time::Duration::from_secs(365 * 24 * 3600))
+        .await
+        .unwrap();
     assert_eq!(removed, 0);
     assert!(store.contains("fresh-task"));
 }
@@ -282,7 +295,10 @@ async fn test_cleanup_old_empty_store() {
     let dir = tempfile::tempdir().unwrap();
     let store = ContinuationStore::new(dir.path());
 
-    let removed = store.cleanup_old(std::time::Duration::from_secs(1)).await.unwrap();
+    let removed = store
+        .cleanup_old(std::time::Duration::from_secs(1))
+        .await
+        .unwrap();
     assert_eq!(removed, 0);
 }
 
@@ -361,7 +377,9 @@ async fn test_save_barrier_retry_loop() {
     let snap_json = serde_json::to_string_pretty(&make_snapshot(task_id)).unwrap();
     tokio::spawn(async move {
         tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-        tokio::fs::write(&final_path_clone, &snap_json).await.unwrap();
+        tokio::fs::write(&final_path_clone, &snap_json)
+            .await
+            .unwrap();
         tokio::fs::remove_file(&tmp_path_clone).await.unwrap();
     });
 
@@ -379,7 +397,9 @@ async fn test_save_barrier_retries_exhausted() {
 
     // Create a .json.tmp file but never write the actual .json
     let tmp_path = dir.path().join(format!("{}.json.tmp", task_id));
-    tokio::fs::write(&tmp_path, "stuck saving...").await.unwrap();
+    tokio::fs::write(&tmp_path, "stuck saving...")
+        .await
+        .unwrap();
 
     // load() should exhaust retries and return NotFound
     let result = store.load(task_id).await;
@@ -442,7 +462,10 @@ async fn test_cleanup_old_removes_old_snapshots() {
     match ps_result {
         Ok(output) if output.status.success() => {
             // Successfully set old mtime - cleanup with 1-hour threshold should remove it
-            let removed = store.cleanup_old(std::time::Duration::from_secs(3600)).await.unwrap();
+            let removed = store
+                .cleanup_old(std::time::Duration::from_secs(3600))
+                .await
+                .unwrap();
             assert_eq!(removed, 1);
             assert!(!store.contains("old-cleanup-task"));
             assert!(!file_path.exists());
@@ -485,5 +508,8 @@ async fn test_list_pending_deduplicates() {
     store2.recover_from_disk().await.unwrap();
     let pending2 = store2.list_pending().await;
     let count2 = pending2.iter().filter(|id| id == &"dedup-task").count();
-    assert_eq!(count2, 1, "list_pending should still not contain duplicates after recover");
+    assert_eq!(
+        count2, 1,
+        "list_pending should still not contain duplicates after recover"
+    );
 }

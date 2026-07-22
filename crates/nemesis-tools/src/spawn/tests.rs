@@ -121,9 +121,15 @@ async fn test_subagent_manager_register_tool() {
     struct Echo;
     #[async_trait]
     impl Tool for Echo {
-        fn name(&self) -> &str { "echo" }
-        fn description(&self) -> &str { "Echo" }
-        fn parameters(&self) -> serde_json::Value { serde_json::json!({"type": "object"}) }
+        fn name(&self) -> &str {
+            "echo"
+        }
+        fn description(&self) -> &str {
+            "Echo"
+        }
+        fn parameters(&self) -> serde_json::Value {
+            serde_json::json!({"type": "object"})
+        }
         async fn execute(&self, args: &serde_json::Value) -> ToolResult {
             ToolResult::success(args["text"].as_str().unwrap_or(""))
         }
@@ -143,9 +149,15 @@ async fn test_subagent_manager_set_tools() {
     struct Echo;
     #[async_trait]
     impl Tool for Echo {
-        fn name(&self) -> &str { "echo" }
-        fn description(&self) -> &str { "Echo" }
-        fn parameters(&self) -> serde_json::Value { serde_json::json!({"type": "object"}) }
+        fn name(&self) -> &str {
+            "echo"
+        }
+        fn description(&self) -> &str {
+            "Echo"
+        }
+        fn parameters(&self) -> serde_json::Value {
+            serde_json::json!({"type": "object"})
+        }
         async fn execute(&self, _args: &serde_json::Value) -> ToolResult {
             ToolResult::success("")
         }
@@ -174,11 +186,28 @@ async fn test_subagent_tool_execute() {
         }))
         .await;
 
-    assert!(!result.is_error, "SubagentTool should not error: {}", result.for_llm);
-    assert!(result.for_llm.contains("important-task"), "LLM content should contain label");
-    assert!(result.for_llm.contains("Subagent task completed"), "LLM content should contain completion message");
+    assert!(
+        !result.is_error,
+        "SubagentTool should not error: {}",
+        result.for_llm
+    );
+    assert!(
+        result.for_llm.contains("important-task"),
+        "LLM content should contain label"
+    );
+    assert!(
+        result.for_llm.contains("Subagent task completed"),
+        "LLM content should contain completion message"
+    );
     assert!(result.for_user.is_some(), "Should have user content");
-    assert!(result.for_user.as_ref().unwrap().contains("Subagent task received"), "User content should contain result summary");
+    assert!(
+        result
+            .for_user
+            .as_ref()
+            .unwrap()
+            .contains("Subagent task received"),
+        "User content should contain result summary"
+    );
 }
 
 #[tokio::test]
@@ -213,7 +242,10 @@ async fn test_subagent_tool_no_label() {
         .await;
 
     assert!(!result.is_error);
-    assert!(result.for_llm.contains("(unnamed)"), "Should show unnamed label when not provided");
+    assert!(
+        result.for_llm.contains("(unnamed)"),
+        "Should show unnamed label when not provided"
+    );
 }
 
 #[tokio::test]
@@ -295,7 +327,9 @@ async fn test_subagent_manager_get_nonexistent() {
 async fn test_subagent_manager_update_nonexistent() {
     let registry = Arc::new(ToolRegistry::new());
     let manager = SubagentManager::new(registry);
-    let updated = manager.update_task("nonexistent-id", "completed", "done").await;
+    let updated = manager
+        .update_task("nonexistent-id", "completed", "done")
+        .await;
     assert!(!updated);
 }
 
@@ -404,9 +438,7 @@ async fn test_subagent_tool_user_content_truncation() {
 
     // Create a very long task description
     let long_task = "x".repeat(1000);
-    let result = tool
-        .execute(&serde_json::json!({"task": long_task}))
-        .await;
+    let result = tool.execute(&serde_json::json!({"task": long_task})).await;
 
     assert!(!result.is_error);
     let user_content = result.for_user.as_ref().unwrap();
@@ -435,9 +467,15 @@ async fn test_subagent_manager_register_and_use_tool() {
     struct UpperTool;
     #[async_trait]
     impl Tool for UpperTool {
-        fn name(&self) -> &str { "upper" }
-        fn description(&self) -> &str { "Uppercase" }
-        fn parameters(&self) -> serde_json::Value { serde_json::json!({"type": "object", "properties": {"text": {"type": "string"}}, "required": ["text"]}) }
+        fn name(&self) -> &str {
+            "upper"
+        }
+        fn description(&self) -> &str {
+            "Uppercase"
+        }
+        fn parameters(&self) -> serde_json::Value {
+            serde_json::json!({"type": "object", "properties": {"text": {"type": "string"}}, "required": ["text"]})
+        }
         async fn execute(&self, args: &serde_json::Value) -> ToolResult {
             let text = args["text"].as_str().unwrap_or("");
             ToolResult::success(&text.to_uppercase())
@@ -447,7 +485,10 @@ async fn test_subagent_manager_register_and_use_tool() {
 
     // Verify tool is accessible through the registry
     assert!(manager.registry().has("upper"));
-    let result = manager.registry().execute("upper", &serde_json::json!({"text": "hello"})).await;
+    let result = manager
+        .registry()
+        .execute("upper", &serde_json::json!({"text": "hello"}))
+        .await;
     assert_eq!(result.for_llm, "HELLO");
 }
 
@@ -473,11 +514,9 @@ async fn test_subagent_tool_with_llm_callback() {
     let manager = Arc::new(SubagentManager::new(registry));
 
     // Set up a mock LLM callback that returns a fixed response
-    manager.set_llm_callback(Arc::new(|_msgs| {
-        crate::toolloop::LLMResponse {
-            content: "Task completed successfully: analysis done".to_string(),
-            tool_calls: vec![],
-        }
+    manager.set_llm_callback(Arc::new(|_msgs| crate::toolloop::LLMResponse {
+        content: "Task completed successfully: analysis done".to_string(),
+        tool_calls: vec![],
     }));
 
     let tool = SubagentTool::new(manager);
@@ -510,8 +549,12 @@ async fn test_subagent_tool_llm_callback_with_tools() {
     struct EchoTool;
     #[async_trait]
     impl Tool for EchoTool {
-        fn name(&self) -> &str { "echo" }
-        fn description(&self) -> &str { "Echo back input" }
+        fn name(&self) -> &str {
+            "echo"
+        }
+        fn description(&self) -> &str {
+            "Echo back input"
+        }
         fn parameters(&self) -> serde_json::Value {
             serde_json::json!({"type": "object", "properties": {"text": {"type": "string"}}})
         }
@@ -569,11 +612,9 @@ async fn test_spawn_tool_with_llm_background_execution() {
     let manager = Arc::new(SubagentManager::new(registry));
 
     // Set up a mock LLM callback
-    manager.set_llm_callback(Arc::new(|_msgs| {
-        crate::toolloop::LLMResponse {
-            content: "Background task completed".to_string(),
-            tool_calls: vec![],
-        }
+    manager.set_llm_callback(Arc::new(|_msgs| crate::toolloop::LLMResponse {
+        content: "Background task completed".to_string(),
+        tool_calls: vec![],
     }));
 
     let tool = SpawnTool::new(manager.clone());
@@ -606,14 +647,15 @@ async fn test_subagent_manager_has_llm_callback() {
 
     assert!(!manager.has_llm_callback(), "Should start without callback");
 
-    manager.set_llm_callback(Arc::new(|_msgs| {
-        crate::toolloop::LLMResponse {
-            content: "test".to_string(),
-            tool_calls: vec![],
-        }
+    manager.set_llm_callback(Arc::new(|_msgs| crate::toolloop::LLMResponse {
+        content: "test".to_string(),
+        tool_calls: vec![],
     }));
 
-    assert!(manager.has_llm_callback(), "Should have callback after setting");
+    assert!(
+        manager.has_llm_callback(),
+        "Should have callback after setting"
+    );
 }
 
 #[tokio::test]
@@ -630,9 +672,16 @@ async fn test_subagent_tool_fallback_without_llm() {
     assert!(!result.is_error);
     // Should contain placeholder content
     assert!(result.for_llm.contains("Subagent task completed"));
-    assert!(result.for_llm.contains("Iterations: 0"), "Without LLM, iterations should be 0");
     assert!(
-        result.for_user.as_ref().unwrap().contains("Subagent task received"),
+        result.for_llm.contains("Iterations: 0"),
+        "Without LLM, iterations should be 0"
+    );
+    assert!(
+        result
+            .for_user
+            .as_ref()
+            .unwrap()
+            .contains("Subagent task received"),
         "User content should have placeholder"
     );
 }
@@ -644,11 +693,9 @@ async fn test_subagent_tool_llm_callback_long_content_truncation() {
 
     // LLM returns very long content
     let long_content = "x".repeat(1000);
-    manager.set_llm_callback(Arc::new(move |_msgs| {
-        crate::toolloop::LLMResponse {
-            content: long_content.clone(),
-            tool_calls: vec![],
-        }
+    manager.set_llm_callback(Arc::new(move |_msgs| crate::toolloop::LLMResponse {
+        content: long_content.clone(),
+        tool_calls: vec![],
     }));
 
     let tool = SubagentTool::new(manager);
@@ -658,18 +705,20 @@ async fn test_subagent_tool_llm_callback_long_content_truncation() {
 
     assert!(!result.is_error);
     let user_content = result.for_user.as_ref().unwrap();
-    assert!(user_content.len() <= 503, "User content should be truncated, got {} chars", user_content.len());
+    assert!(
+        user_content.len() <= 503,
+        "User content should be truncated, got {} chars",
+        user_content.len()
+    );
 }
 
 #[tokio::test]
 async fn test_spawn_tool_with_callback_and_llm() {
     let registry = Arc::new(ToolRegistry::new());
     let manager = SubagentManager::new(registry);
-    manager.set_llm_callback(Arc::new(|_msgs| {
-        crate::toolloop::LLMResponse {
-            content: "background task done".to_string(),
-            tool_calls: vec![],
-        }
+    manager.set_llm_callback(Arc::new(|_msgs| crate::toolloop::LLMResponse {
+        content: "background task done".to_string(),
+        tool_calls: vec![],
     }));
 
     let manager = Arc::new(manager);

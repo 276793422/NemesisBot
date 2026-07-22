@@ -99,7 +99,7 @@ impl TriggerManager {
                 return Err(format!(
                     "unknown trigger type {:?} for workflow {:?}",
                     other, workflow_name
-                ))
+                ));
             }
         }
 
@@ -110,7 +110,9 @@ impl TriggerManager {
         // YAML silently failed to schedule. Accept both keys here for
         // backward compat, but new YAML should use `schedule`.
         if trigger.trigger_type == "cron" {
-            let expr_val = trigger.config.get("schedule")
+            let expr_val = trigger
+                .config
+                .get("schedule")
                 .or_else(|| trigger.config.get("expression"));
             if let Some(v) = expr_val.and_then(|v| v.as_str()) {
                 let mut cron = self.cron_jobs.write();
@@ -177,7 +179,10 @@ impl TriggerManager {
     /// matches any remaining config keys against `event.data`.
     ///
     /// Returns workflow names with at least one matching trigger.
-    pub fn match_trigger_event(&self, event: &crate::event_dispatcher::TriggerEvent) -> Vec<String> {
+    pub fn match_trigger_event(
+        &self,
+        event: &crate::event_dispatcher::TriggerEvent,
+    ) -> Vec<String> {
         let triggers = self.triggers.read();
         let mut matched = Vec::new();
 
@@ -188,10 +193,11 @@ impl TriggerManager {
                 }
 
                 // First key to match is event_type itself.
-                let expected_event_type = match trigger.config.get("event_type").and_then(|v| v.as_str()) {
-                    Some(pattern) => pattern,
-                    None => continue, // event trigger must declare event_type
-                };
+                let expected_event_type =
+                    match trigger.config.get("event_type").and_then(|v| v.as_str()) {
+                        Some(pattern) => pattern,
+                        None => continue, // event trigger must declare event_type
+                    };
                 if !match_glob(expected_event_type, &event.event_type) {
                     continue;
                 }

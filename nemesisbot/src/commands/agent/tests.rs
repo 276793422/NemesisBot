@@ -14,11 +14,19 @@ fn test_provider_adapter_new() {
     // - non-empty model -> use provided model
     let default_model = "gpt-4";
     let empty = "";
-    let model_used = if empty.is_empty() { default_model } else { empty };
+    let model_used = if empty.is_empty() {
+        default_model
+    } else {
+        empty
+    };
     assert_eq!(model_used, "gpt-4");
 
     let provided = "claude-3";
-    let model_used = if provided.is_empty() { default_model } else { provided };
+    let model_used = if provided.is_empty() {
+        default_model
+    } else {
+        provided
+    };
     assert_eq!(model_used, "claude-3");
 }
 
@@ -44,20 +52,17 @@ fn test_set_llm_config_json_manipulation() {
     let mut cfg: serde_json::Value = serde_json::json!({});
     if let Some(obj) = cfg.as_object_mut() {
         if !obj.contains_key("agents") {
-            obj.insert(
-                "agents".to_string(),
-                serde_json::json!({"defaults": {}}),
-            );
+            obj.insert("agents".to_string(), serde_json::json!({"defaults": {}}));
         }
         if let Some(agents) = obj.get_mut("agents").and_then(|v| v.as_object_mut()) {
             if !agents.contains_key("defaults") {
                 agents.insert("defaults".to_string(), serde_json::json!({}));
             }
-            if let Some(defaults) =
-                agents.get_mut("defaults").and_then(|v| v.as_object_mut())
-            {
-                defaults
-                    .insert("llm".to_string(), serde_json::Value::String("openai/gpt-4".to_string()));
+            if let Some(defaults) = agents.get_mut("defaults").and_then(|v| v.as_object_mut()) {
+                defaults.insert(
+                    "llm".to_string(),
+                    serde_json::Value::String("openai/gpt-4".to_string()),
+                );
             }
         }
     }
@@ -75,11 +80,11 @@ fn test_set_llm_preserves_existing_agents() {
     });
     if let Some(obj) = cfg.as_object_mut() {
         if let Some(agents) = obj.get_mut("agents").and_then(|v| v.as_object_mut()) {
-            if let Some(defaults) =
-                agents.get_mut("defaults").and_then(|v| v.as_object_mut())
-            {
-                defaults
-                    .insert("llm".to_string(), serde_json::Value::String("test/model".to_string()));
+            if let Some(defaults) = agents.get_mut("defaults").and_then(|v| v.as_object_mut()) {
+                defaults.insert(
+                    "llm".to_string(),
+                    serde_json::Value::String("test/model".to_string()),
+                );
             }
         }
     }
@@ -107,7 +112,10 @@ fn test_set_concurrent_mode_reject() {
             }
         }
     }
-    assert_eq!(cfg["agents"]["defaults"]["concurrent_request_mode"], "reject");
+    assert_eq!(
+        cfg["agents"]["defaults"]["concurrent_request_mode"],
+        "reject"
+    );
 }
 
 #[test]
@@ -133,7 +141,10 @@ fn test_set_concurrent_mode_queue_with_size() {
             }
         }
     }
-    assert_eq!(cfg["agents"]["defaults"]["concurrent_request_mode"], "queue");
+    assert_eq!(
+        cfg["agents"]["defaults"]["concurrent_request_mode"],
+        "queue"
+    );
     assert_eq!(cfg["agents"]["defaults"]["queue_size"], 16);
 }
 
@@ -210,15 +221,27 @@ fn test_agent_config_default_max_turns() {
     // as 0 in AgentConfig.max_turns (the run-loop treats 0 as "no cap"). A
     // positive value is used as-is.
     let max_tool_iterations: i32 = 0;
-    let max_turns = if max_tool_iterations <= 0 { 0u32 } else { max_tool_iterations as u32 };
+    let max_turns = if max_tool_iterations <= 0 {
+        0u32
+    } else {
+        max_tool_iterations as u32
+    };
     assert_eq!(max_turns, 0);
 
     let max_tool_iterations: i32 = 10;
-    let max_turns = if max_tool_iterations <= 0 { 0u32 } else { max_tool_iterations as u32 };
+    let max_turns = if max_tool_iterations <= 0 {
+        0u32
+    } else {
+        max_tool_iterations as u32
+    };
     assert_eq!(max_turns, 10);
 
     let max_tool_iterations: i32 = -5;
-    let max_turns = if max_tool_iterations <= 0 { 0u32 } else { max_tool_iterations as u32 };
+    let max_turns = if max_tool_iterations <= 0 {
+        0u32
+    } else {
+        max_tool_iterations as u32
+    };
     assert_eq!(max_turns, 0);
 }
 

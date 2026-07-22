@@ -59,7 +59,11 @@ pub struct UsageInfo {
     #[serde(default)]
     pub total_tokens: i64,
     /// Cached prompt tokens (DeepSeek: prompt_cache_hit_tokens, OpenAI: cached_tokens in prompt_tokens_details).
-    #[serde(default, skip_serializing_if = "Option::is_none", alias = "prompt_cache_hit_tokens")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        alias = "prompt_cache_hit_tokens"
+    )]
     pub cached_tokens: Option<i64>,
     /// Cache creation tokens (Anthropic: cache_creation_input_tokens).
     #[serde(default, skip_serializing_if = "Option::is_none")]

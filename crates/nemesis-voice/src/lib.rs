@@ -18,21 +18,21 @@ pub mod audio;
 #[cfg(target_os = "windows")]
 pub mod bootstrap;
 #[cfg(target_os = "windows")]
-pub mod loopback;
-#[cfg(target_os = "windows")]
 pub mod channel_bridge;
+#[cfg(target_os = "windows")]
+pub mod lang_restriction;
+#[cfg(target_os = "windows")]
+pub mod loopback;
 #[cfg(target_os = "windows")]
 pub mod model;
 #[cfg(target_os = "windows")]
 pub mod punct;
 #[cfg(target_os = "windows")]
-pub mod speaker;
-#[cfg(target_os = "windows")]
 pub mod sherpa;
 #[cfg(target_os = "windows")]
-pub mod stt;
+pub mod speaker;
 #[cfg(target_os = "windows")]
-pub mod lang_restriction;
+pub mod stt;
 #[cfg(target_os = "windows")]
 pub mod tts;
 #[cfg(target_os = "windows")]
@@ -41,26 +41,28 @@ pub mod vad;
 pub mod voice_detect;
 
 // --- Cloud re-exports (cross-platform) ---
-pub use transcriber::{AudioFormat, Transcriber, TranscriptionResponse};
 pub use config::AppConfig;
+pub use transcriber::{AudioFormat, Transcriber, TranscriptionResponse};
 
 // --- Local pipeline re-exports (Windows only) ---
 #[cfg(target_os = "windows")]
-pub use aec::{EchoCanceller, SpeexAec, AEC_SAMPLE_RATE, DEFAULT_FILTER_LENGTH, DEFAULT_FRAME_SIZE};
+pub use aec::{
+    AEC_SAMPLE_RATE, DEFAULT_FILTER_LENGTH, DEFAULT_FRAME_SIZE, EchoCanceller, SpeexAec,
+};
 #[cfg(target_os = "windows")]
-pub use audio::{far_end_buffer, far_end_sample_rate, AudioCapture, AudioPlayback, Resampler};
+pub use audio::{AudioCapture, AudioPlayback, Resampler, far_end_buffer, far_end_sample_rate};
 #[cfg(target_os = "windows")]
 pub use bootstrap::{download_aec_lib, init_sherpa, run_in_dir as bootstrap_run_in_dir};
 #[cfg(target_os = "windows")]
 pub use loopback::{start_loopback, stop_loopback};
 #[cfg(target_os = "windows")]
-pub use sherpa::is_initialized as sherpa_is_initialized;
-#[cfg(target_os = "windows")]
 pub use punct::PunctEngine;
 #[cfg(target_os = "windows")]
-pub use speaker::{SpeakerEngine, SpeakerManager};
+pub use sherpa::is_initialized as sherpa_is_initialized;
 #[cfg(target_os = "windows")]
 pub use speaker::cosine_similarity;
+#[cfg(target_os = "windows")]
+pub use speaker::{SpeakerEngine, SpeakerManager};
 #[cfg(target_os = "windows")]
 pub use stt::SttEngine;
 #[cfg(target_os = "windows")]

@@ -6,7 +6,11 @@ pub fn format_message(content: &str, max_len: usize) -> String {
         content.to_string()
     } else {
         let end = max_len.min(content.len());
-        format!("{}... (truncated, {} chars total)", &content[..end], content.len())
+        format!(
+            "{}... (truncated, {} chars total)",
+            &content[..end],
+            content.len()
+        )
     }
 }
 
@@ -71,7 +75,8 @@ pub fn split_message(content: &str, max_len: usize) -> Vec<String> {
                     msg_end = closing_idx;
                 } else {
                     // Code block too long; split inside with closing/reopening fences
-                    let header_end = content[unclosed_idx..].find('\n')
+                    let header_end = content[unclosed_idx..]
+                        .find('\n')
                         .map(|i| unclosed_idx + i)
                         .unwrap_or(unclosed_idx + 3);
                     let header = content[unclosed_idx..header_end].trim();
@@ -84,7 +89,13 @@ pub fn split_message(content: &str, max_len: usize) -> Vec<String> {
                         } else {
                             msg_end = inner_limit;
                         }
-                        let chunk = format!("{}\n```", content[..msg_end].trim_end_matches(|c| c == ' ' || c == '\t' || c == '\n' || c == '\r'));
+                        let chunk = format!(
+                            "{}\n```",
+                            content[..msg_end].trim_end_matches(|c| c == ' '
+                                || c == '\t'
+                                || c == '\n'
+                                || c == '\r')
+                        );
                         messages.push(chunk);
                         content = format!("{}\n{}", header, content[msg_end..].trim());
                         continue;
@@ -102,7 +113,13 @@ pub fn split_message(content: &str, max_len: usize) -> Vec<String> {
                             msg_end = unclosed_idx;
                         } else {
                             msg_end = max_len - 5;
-                            let chunk = format!("{}\n```", content[..msg_end].trim_end_matches(|c| c == ' ' || c == '\t' || c == '\n' || c == '\r'));
+                            let chunk = format!(
+                                "{}\n```",
+                                content[..msg_end].trim_end_matches(|c| c == ' '
+                                    || c == '\t'
+                                    || c == '\n'
+                                    || c == '\r')
+                            );
                             messages.push(chunk);
                             content = format!("{}\n{}", header, content[msg_end..].trim());
                             continue;
@@ -144,11 +161,7 @@ fn find_last_unclosed_code_block(text: &str) -> usize {
         }
     }
 
-    if in_code_block {
-        last_open_idx
-    } else {
-        0
-    }
+    if in_code_block { last_open_idx } else { 0 }
 }
 
 /// Find the next closing ``` starting from a position.
@@ -188,7 +201,11 @@ fn find_next_closing_code_block(text: &str, start_idx: usize) -> usize {
 /// Find the last newline character within the last N characters.
 /// Returns the byte position of the newline or 0 if not found.
 fn find_last_newline(s: &str, search_window: usize) -> usize {
-    let search_start = if s.len() > search_window { s.len() - search_window } else { 0 };
+    let search_start = if s.len() > search_window {
+        s.len() - search_window
+    } else {
+        0
+    };
     for i in (search_start..s.len()).rev() {
         if s.as_bytes()[i] == b'\n' {
             return i;
@@ -200,7 +217,11 @@ fn find_last_newline(s: &str, search_window: usize) -> usize {
 /// Find the last space character within the last N characters.
 /// Returns the byte position of the space or 0 if not found.
 fn find_last_space(s: &str, search_window: usize) -> usize {
-    let search_start = if s.len() > search_window { s.len() - search_window } else { 0 };
+    let search_start = if s.len() > search_window {
+        s.len() - search_window
+    } else {
+        0
+    };
     for i in (search_start..s.len()).rev() {
         let b = s.as_bytes()[i];
         if b == b' ' || b == b'\t' {

@@ -16,7 +16,8 @@ pub type NotificationFunc = Box<dyn Fn(&Message) + Send + Sync>;
 /// Message dispatcher that routes JSON-RPC messages to registered handlers.
 pub struct Dispatcher {
     /// Request handlers keyed by method name.
-    handlers: RwLock<HashMap<String, Box<dyn Fn(&Message) -> Result<Message, String> + Send + Sync>>>,
+    handlers:
+        RwLock<HashMap<String, Box<dyn Fn(&Message) -> Result<Message, String> + Send + Sync>>>,
     /// Notification handlers keyed by method name.
     notif_handlers: RwLock<HashMap<String, Box<dyn Fn(&Message) + Send + Sync>>>,
     /// Fallback handler for unknown methods.

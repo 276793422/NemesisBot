@@ -110,11 +110,7 @@ impl Tool for WebFetchTool {
         let max_size = args["max_size"].as_u64().unwrap_or(self.max_size as u64) as usize;
 
         // Fetch the URL
-        let result = tokio::time::timeout(
-            request_timeout,
-            self.client.get(url).send(),
-        )
-        .await;
+        let result = tokio::time::timeout(request_timeout, self.client.get(url).send()).await;
 
         match result {
             Ok(Ok(response)) => {
@@ -168,7 +164,10 @@ fn validate_url(url: &str) -> Result<(), String> {
         let lower = host.to_lowercase();
         for blocked in &blocked_hosts {
             if lower == *blocked {
-                return Err(format!("access to '{}' is not allowed (SSRF protection)", host));
+                return Err(format!(
+                    "access to '{}' is not allowed (SSRF protection)",
+                    host
+                ));
             }
         }
 
@@ -229,25 +228,22 @@ impl DuckDuckGoSearchProvider {
         let matches = link_re.find_iter(html).take(count + 5).collect::<Vec<_>>();
         if matches.is_empty() {
             // Try a more lenient fallback: any href with result class nearby
-            return Ok(format!("No results found or extraction failed. Query: {}", query));
+            return Ok(format!(
+                "No results found or extraction failed. Query: {}",
+                query
+            ));
         }
 
-        let full_captures: Vec<_> = link_re
-            .captures_iter(html)
-            .take(count + 5)
-            .collect();
+        let full_captures: Vec<_> = link_re.captures_iter(html).take(count + 5).collect();
 
-        let snippet_re = regex::Regex::new(
-            r#"<a class="result__snippet[^"]*".*?>([\s\S]*?)</a>"#,
-        )
-        .map_err(|e| format!("regex error: {}", e))?;
+        let snippet_re = regex::Regex::new(r#"<a class="result__snippet[^"]*".*?>([\s\S]*?)</a>"#)
+            .map_err(|e| format!("regex error: {}", e))?;
 
         let snippet_captures: Vec<_> = snippet_re.captures_iter(html).take(count + 5).collect();
 
         let tag_re = regex::Regex::new(r"<[^>]+>").map_err(|e| format!("regex error: {}", e))?;
-        let strip_tags = |content: &str| -> String {
-            tag_re.replace_all(content, "").trim().to_string()
-        };
+        let strip_tags =
+            |content: &str| -> String { tag_re.replace_all(content, "").trim().to_string() };
 
         let mut lines = vec![format!("Results for: {} (via DuckDuckGo)", query)];
 
@@ -268,7 +264,8 @@ impl DuckDuckGoSearchProvider {
             lines.push(format!("{}. {}\n   {}", i + 1, title, url_clean));
 
             if i < snippet_captures.len() {
-                let snippet = strip_tags(snippet_captures[i].get(1).map(|m| m.as_str()).unwrap_or(""));
+                let snippet =
+                    strip_tags(snippet_captures[i].get(1).map(|m| m.as_str()).unwrap_or(""));
                 if !snippet.is_empty() {
                     lines.push(format!("   {}", snippet));
                 }

@@ -54,7 +54,8 @@ fn two_layer_api_config(repo: &str) -> GitHubSourceConfig {
 #[tokio::test]
 async fn test_search_skills_json_success_via_mock() {
     let server = MockServer::start().await;
-    let body = r#"[{"name":"pdf","description":"PDF tool"},{"name":"csv","description":"CSV tool"}]"#;
+    let body =
+        r#"[{"name":"pdf","description":"PDF tool"},{"name":"csv","description":"CSV tool"}]"#;
     Mock::given(method("GET"))
         .and(path("/org/repo/main/skills.json"))
         .respond_with(ResponseTemplate::new(200).set_body_string(body))
@@ -174,7 +175,10 @@ async fn test_do_get_too_large_response() {
     let mut reg = GitHubRegistry::from_source(&two_layer_config("org/repo"));
     reg.base_url = server.uri();
     reg.max_size = 100; // tiny limit
-    let err = reg.do_get(&format!("{}/org/repo/main/skills.json", server.uri())).await.unwrap_err();
+    let err = reg
+        .do_get(&format!("{}/org/repo/main/skills.json", server.uri()))
+        .await
+        .unwrap_err();
     assert!(err.to_string().contains("too large"));
 }
 
@@ -551,19 +555,28 @@ async fn test_browse_pagination_offset_cursor() {
     assert_eq!(result.next_cursor.unwrap(), "offset:10");
 
     // Second page
-    let result2 = reg.browse(&BrowseSort::Trending, 10, "offset:10").await.unwrap();
+    let result2 = reg
+        .browse(&BrowseSort::Trending, 10, "offset:10")
+        .await
+        .unwrap();
     assert_eq!(result2.items.len(), 10);
     assert_eq!(result2.next_cursor.unwrap(), "offset:20");
 
     // Third page (only 10 left)
-    let result3 = reg.browse(&BrowseSort::Trending, 10, "offset:20").await.unwrap();
+    let result3 = reg
+        .browse(&BrowseSort::Trending, 10, "offset:20")
+        .await
+        .unwrap();
     assert_eq!(result3.items.len(), 10);
     // After 30 items exactly, items.len() == limit, so cursor is Some
     // Actually: offset=20, take 10 -> 10 items. items.len() == limit(10) -> next = offset:30
     assert_eq!(result3.next_cursor.unwrap(), "offset:30");
 
     // Fourth page - empty
-    let result4 = reg.browse(&BrowseSort::Trending, 10, "offset:30").await.unwrap();
+    let result4 = reg
+        .browse(&BrowseSort::Trending, 10, "offset:30")
+        .await
+        .unwrap();
     assert_eq!(result4.items.len(), 0);
     assert!(result4.next_cursor.is_none());
 }
@@ -580,7 +593,10 @@ async fn test_browse_invalid_cursor_defaults_to_zero() {
     let mut reg = GitHubRegistry::from_source(&two_layer_config("org/repo"));
     reg.base_url = server.uri();
     // Invalid cursor format -> defaults to offset 0
-    let result = reg.browse(&BrowseSort::Trending, 10, "garbage").await.unwrap();
+    let result = reg
+        .browse(&BrowseSort::Trending, 10, "garbage")
+        .await
+        .unwrap();
     assert_eq!(result.items.len(), 1);
 }
 
@@ -627,7 +643,9 @@ async fn test_download_and_install_github_api_no_dir_prefix_returns_legacy() {
     let mut reg = GitHubRegistry::from_source(&config);
     reg.base_url = server.uri();
     let dir = tempfile::tempdir().unwrap();
-    let result = reg.download_and_install("pdf", "1.0", dir.path().to_str().unwrap()).await;
+    let result = reg
+        .download_and_install("pdf", "1.0", dir.path().to_str().unwrap())
+        .await;
     assert!(result.is_ok());
     let installed = std::fs::read(dir.path().join("SKILL.md")).unwrap();
     assert_eq!(installed, b"# PDF Skill");
@@ -648,7 +666,10 @@ async fn test_download_and_install_skills_json_index_with_tree_download() {
     let mut reg = GitHubRegistry::from_source(&two_layer_config("org/repo"));
     reg.set_github_api_url(&server.uri());
     let dir = tempfile::tempdir().unwrap();
-    let err = reg.download_and_install("pdf", "1.0", dir.path().to_str().unwrap()).await.unwrap_err();
+    let err = reg
+        .download_and_install("pdf", "1.0", dir.path().to_str().unwrap())
+        .await
+        .unwrap_err();
     // No files under prefix -> NotFound
     assert!(err.to_string().contains("no files") || err.to_string().contains("not found"));
 }
@@ -669,7 +690,10 @@ async fn test_download_skill_tree_no_files_under_prefix() {
     let mut reg = GitHubRegistry::from_source(&two_layer_config("org/repo"));
     reg.set_github_api_url(&server.uri());
     let dir = tempfile::tempdir().unwrap();
-    let err = reg.download_skill_tree("skills/pdf", dir.path().to_str().unwrap()).await.unwrap_err();
+    let err = reg
+        .download_skill_tree("skills/pdf", dir.path().to_str().unwrap())
+        .await
+        .unwrap_err();
     assert!(err.to_string().contains("no files") || err.to_string().contains("not found"));
 }
 
@@ -684,7 +708,10 @@ async fn test_download_skill_tree_http_error() {
     let mut reg = GitHubRegistry::from_source(&two_layer_config("org/repo"));
     reg.set_github_api_url(&server.uri());
     let dir = tempfile::tempdir().unwrap();
-    let err = reg.download_skill_tree("skills/pdf", dir.path().to_str().unwrap()).await.unwrap_err();
+    let err = reg
+        .download_skill_tree("skills/pdf", dir.path().to_str().unwrap())
+        .await
+        .unwrap_err();
     assert!(err.to_string().contains("HTTP") || err.to_string().contains("tree"));
 }
 

@@ -9,13 +9,15 @@ fn test_plan_empty_src() {
     fs::create_dir_all(&src).unwrap();
     fs::create_dir_all(&dst).unwrap();
 
-    let plan = WorkspaceMigrator::plan_migration(
-        src.to_str().unwrap(),
-        dst.to_str().unwrap(),
-        false,
-    ).unwrap();
+    let plan =
+        WorkspaceMigrator::plan_migration(src.to_str().unwrap(), dst.to_str().unwrap(), false)
+            .unwrap();
     // All actions should be Skip since no source files exist
-    assert!(plan.actions.iter().all(|a| a.action_type == ActionType::Skip));
+    assert!(
+        plan.actions
+            .iter()
+            .all(|a| a.action_type == ActionType::Skip)
+    );
 }
 
 #[test]
@@ -28,11 +30,9 @@ fn test_plan_with_files() {
 
     fs::write(src.join("SOUL.md"), "test soul content").unwrap();
 
-    let plan = WorkspaceMigrator::plan_migration(
-        src.to_str().unwrap(),
-        dst.to_str().unwrap(),
-        false,
-    ).unwrap();
+    let plan =
+        WorkspaceMigrator::plan_migration(src.to_str().unwrap(), dst.to_str().unwrap(), false)
+            .unwrap();
     assert!(plan.total_files >= 1);
 }
 
@@ -47,11 +47,7 @@ fn test_execute_migration() {
     fs::write(src.join("SOUL.md"), "test content").unwrap();
     fs::write(src.join("USER.md"), "user content").unwrap();
 
-    let result = migrate_workspace(
-        src.to_str().unwrap(),
-        dst.to_str().unwrap(),
-        false,
-    ).unwrap();
+    let result = migrate_workspace(src.to_str().unwrap(), dst.to_str().unwrap(), false).unwrap();
     assert_eq!(result.files_copied, 2);
     assert!(dst.join("SOUL.md").exists());
     assert!(dst.join("USER.md").exists());
@@ -68,11 +64,7 @@ fn test_backup_on_conflict() {
     fs::write(src.join("SOUL.md"), "new content").unwrap();
     fs::write(dst.join("SOUL.md"), "old content").unwrap();
 
-    let result = migrate_workspace(
-        src.to_str().unwrap(),
-        dst.to_str().unwrap(),
-        false,
-    ).unwrap();
+    let result = migrate_workspace(src.to_str().unwrap(), dst.to_str().unwrap(), false).unwrap();
     assert_eq!(result.files_backed_up, 1);
     assert!(dst.join("SOUL.md.bak").exists());
     let content = fs::read_to_string(dst.join("SOUL.md")).unwrap();
@@ -88,11 +80,8 @@ fn test_dry_run() {
     fs::create_dir_all(&dst).unwrap();
     fs::write(src.join("SOUL.md"), "test").unwrap();
 
-    let plan = WorkspaceMigrator::dry_run(
-        src.to_str().unwrap(),
-        dst.to_str().unwrap(),
-        false,
-    ).unwrap();
+    let plan =
+        WorkspaceMigrator::dry_run(src.to_str().unwrap(), dst.to_str().unwrap(), false).unwrap();
     assert!(plan.total_files >= 1);
     // Dry run should NOT actually copy files
     assert!(!dst.join("SOUL.md").exists());
@@ -109,11 +98,7 @@ fn test_migration_with_dirs() {
     fs::write(src.join("memory/notes.txt"), "test notes").unwrap();
     fs::write(src.join("SOUL.md"), "soul content").unwrap();
 
-    let result = migrate_workspace(
-        src.to_str().unwrap(),
-        dst.to_str().unwrap(),
-        false,
-    ).unwrap();
+    let result = migrate_workspace(src.to_str().unwrap(), dst.to_str().unwrap(), false).unwrap();
     assert!(result.files_copied >= 2);
     assert!(result.dirs_created >= 1);
     assert!(dst.join("memory/notes.txt").exists());
@@ -157,10 +142,15 @@ fn test_plan_with_force() {
         src.to_str().unwrap(),
         dst.to_str().unwrap(),
         true, // force
-    ).unwrap();
+    )
+    .unwrap();
 
     // With force, should be Copy (not Backup) since we force overwrite
-    let soul_action = plan.actions.iter().find(|a| a.destination.contains("SOUL.md")).unwrap();
+    let soul_action = plan
+        .actions
+        .iter()
+        .find(|a| a.destination.contains("SOUL.md"))
+        .unwrap();
     assert_eq!(soul_action.action_type, ActionType::Copy);
 }
 
@@ -170,13 +160,14 @@ fn test_plan_nonexistent_src_dir() {
     let dst = dir.path().join("dst");
     fs::create_dir_all(&dst).unwrap();
 
-    let plan = WorkspaceMigrator::plan_migration(
-        "/nonexistent/src",
-        dst.to_str().unwrap(),
-        false,
-    ).unwrap();
+    let plan = WorkspaceMigrator::plan_migration("/nonexistent/src", dst.to_str().unwrap(), false)
+        .unwrap();
     // All actions should be Skip since no source files exist
-    assert!(plan.actions.iter().all(|a| a.action_type == ActionType::Skip));
+    assert!(
+        plan.actions
+            .iter()
+            .all(|a| a.action_type == ActionType::Skip)
+    );
     assert_eq!(plan.total_files, 0);
 }
 
@@ -187,14 +178,12 @@ fn test_execute_plan_skip_actions() {
     fs::create_dir_all(&dst).unwrap();
 
     let plan = MigrationPlan {
-        actions: vec![
-            MigrationAction {
-                action_type: ActionType::Skip,
-                source: None,
-                destination: "/tmp/skip".to_string(),
-                description: "test skip".to_string(),
-            },
-        ],
+        actions: vec![MigrationAction {
+            action_type: ActionType::Skip,
+            source: None,
+            destination: "/tmp/skip".to_string(),
+            description: "test skip".to_string(),
+        }],
         total_files: 0,
         total_dirs: 0,
     };
@@ -210,14 +199,12 @@ fn test_execute_plan_create_dir_action() {
     let new_dir = dir.path().join("new_subdir");
 
     let plan = MigrationPlan {
-        actions: vec![
-            MigrationAction {
-                action_type: ActionType::CreateDir,
-                source: None,
-                destination: new_dir.to_str().unwrap().to_string(),
-                description: "create dir".to_string(),
-            },
-        ],
+        actions: vec![MigrationAction {
+            action_type: ActionType::CreateDir,
+            source: None,
+            destination: new_dir.to_str().unwrap().to_string(),
+            description: "create dir".to_string(),
+        }],
         total_dirs: 1,
         total_files: 0,
     };
@@ -238,11 +225,7 @@ fn test_migration_with_nested_dirs() {
     fs::write(src.join("skills/subdir/skill.md"), "skill content").unwrap();
     fs::write(src.join("SOUL.md"), "soul").unwrap();
 
-    let result = migrate_workspace(
-        src.to_str().unwrap(),
-        dst.to_str().unwrap(),
-        false,
-    ).unwrap();
+    let result = migrate_workspace(src.to_str().unwrap(), dst.to_str().unwrap(), false).unwrap();
 
     assert!(result.dirs_created >= 2);
     assert!(dst.join("skills/subdir/skill.md").exists());
@@ -303,14 +286,15 @@ fn test_plan_migration_with_skip_in_dir() {
     // so the action becomes Backup (which still counts as file)
     fs::write(src.join("memory/notes.txt"), "notes content").unwrap();
 
-    let plan = WorkspaceMigrator::plan_migration(
-        src.to_str().unwrap(),
-        dst.to_str().unwrap(),
-        false,
-    )
-    .unwrap();
+    let plan =
+        WorkspaceMigrator::plan_migration(src.to_str().unwrap(), dst.to_str().unwrap(), false)
+            .unwrap();
     // Should have at least one action with CreateDir for memory/
-    assert!(plan.actions.iter().any(|a| a.action_type == ActionType::CreateDir));
+    assert!(
+        plan.actions
+            .iter()
+            .any(|a| a.action_type == ActionType::CreateDir)
+    );
     assert!(plan.total_dirs >= 1);
 }
 
@@ -327,12 +311,9 @@ fn test_plan_migration_count_skip_in_dir_as_zero() {
     // dir copy handles all files inside).
     fs::create_dir_all(src.join("memory")).unwrap();
 
-    let plan = WorkspaceMigrator::plan_migration(
-        src.to_str().unwrap(),
-        dst.to_str().unwrap(),
-        false,
-    )
-    .unwrap();
+    let plan =
+        WorkspaceMigrator::plan_migration(src.to_str().unwrap(), dst.to_str().unwrap(), false)
+            .unwrap();
     // memory dir gets CreateDir but no files inside it (besides the dir itself).
     // The _ => {} branch covers Skip actions encountered during dir traversal.
     assert!(plan.total_dirs >= 1);
@@ -346,18 +327,15 @@ fn test_plan_migration_empty_memory_dir() {
     fs::create_dir_all(src.join("memory")).unwrap();
     fs::create_dir_all(&dst).unwrap();
 
-    let plan = WorkspaceMigrator::plan_migration(
-        src.to_str().unwrap(),
-        dst.to_str().unwrap(),
-        false,
-    )
-    .unwrap();
+    let plan =
+        WorkspaceMigrator::plan_migration(src.to_str().unwrap(), dst.to_str().unwrap(), false)
+            .unwrap();
     // memory dir gets CreateDir action even if empty
-    assert!(plan
-        .actions
-        .iter()
-        .any(|a| a.action_type == ActionType::CreateDir
-            && a.destination.ends_with("memory")));
+    assert!(
+        plan.actions
+            .iter()
+            .any(|a| a.action_type == ActionType::CreateDir && a.destination.ends_with("memory"))
+    );
 }
 
 #[test]
@@ -568,18 +546,11 @@ fn test_dry_run_equals_plan_migration() {
     fs::create_dir_all(&dst).unwrap();
     fs::write(src.join("SOUL.md"), "x").unwrap();
 
-    let plan1 = WorkspaceMigrator::plan_migration(
-        src.to_str().unwrap(),
-        dst.to_str().unwrap(),
-        false,
-    )
-    .unwrap();
-    let plan2 = WorkspaceMigrator::dry_run(
-        src.to_str().unwrap(),
-        dst.to_str().unwrap(),
-        false,
-    )
-    .unwrap();
+    let plan1 =
+        WorkspaceMigrator::plan_migration(src.to_str().unwrap(), dst.to_str().unwrap(), false)
+            .unwrap();
+    let plan2 =
+        WorkspaceMigrator::dry_run(src.to_str().unwrap(), dst.to_str().unwrap(), false).unwrap();
     assert_eq!(plan1.total_files, plan2.total_files);
     assert_eq!(plan1.total_dirs, plan2.total_dirs);
     assert_eq!(plan1.actions.len(), plan2.actions.len());
@@ -594,19 +565,16 @@ fn test_plan_migration_only_skills_dir() {
     fs::create_dir_all(&dst).unwrap();
     fs::write(src.join("skills").join("skill1.md"), "skill").unwrap();
 
-    let plan = WorkspaceMigrator::plan_migration(
-        src.to_str().unwrap(),
-        dst.to_str().unwrap(),
-        false,
-    )
-    .unwrap();
+    let plan =
+        WorkspaceMigrator::plan_migration(src.to_str().unwrap(), dst.to_str().unwrap(), false)
+            .unwrap();
     assert!(plan.total_dirs >= 1);
     assert!(plan.total_files >= 1);
-    assert!(plan
-        .actions
-        .iter()
-        .any(|a| a.action_type == ActionType::CreateDir
-            && a.destination.ends_with("skills")));
+    assert!(
+        plan.actions
+            .iter()
+            .any(|a| a.action_type == ActionType::CreateDir && a.destination.ends_with("skills"))
+    );
 }
 
 #[test]
@@ -621,12 +589,9 @@ fn test_plan_migration_all_migrateable_files() {
         fs::write(src.join(fname), format!("content {}", fname)).unwrap();
     }
 
-    let plan = WorkspaceMigrator::plan_migration(
-        src.to_str().unwrap(),
-        dst.to_str().unwrap(),
-        false,
-    )
-    .unwrap();
+    let plan =
+        WorkspaceMigrator::plan_migration(src.to_str().unwrap(), dst.to_str().unwrap(), false)
+            .unwrap();
     // All 5 files should be planned as Copy (since dst doesn't have them)
     let copies = plan
         .actions
@@ -682,12 +647,9 @@ fn test_plan_migration_files_with_existing_dst_no_force() {
     fs::write(src.join("SOUL.md"), "new").unwrap();
     fs::write(dst.join("SOUL.md"), "old").unwrap();
 
-    let plan = WorkspaceMigrator::plan_migration(
-        src.to_str().unwrap(),
-        dst.to_str().unwrap(),
-        false,
-    )
-    .unwrap();
+    let plan =
+        WorkspaceMigrator::plan_migration(src.to_str().unwrap(), dst.to_str().unwrap(), false)
+            .unwrap();
     let backups = plan
         .actions
         .iter()
@@ -706,12 +668,9 @@ fn test_plan_migration_with_nested_subdir_in_memory() {
     fs::create_dir_all(&dst).unwrap();
     fs::write(src.join("memory").join("sub").join("file.txt"), "x").unwrap();
 
-    let plan = WorkspaceMigrator::plan_migration(
-        src.to_str().unwrap(),
-        dst.to_str().unwrap(),
-        false,
-    )
-    .unwrap();
+    let plan =
+        WorkspaceMigrator::plan_migration(src.to_str().unwrap(), dst.to_str().unwrap(), false)
+            .unwrap();
     let create_dirs = plan
         .actions
         .iter()
@@ -819,12 +778,7 @@ fn test_migrate_workspace_no_files() {
     fs::create_dir_all(&src).unwrap();
     fs::create_dir_all(&dst).unwrap();
 
-    let result = migrate_workspace(
-        src.to_str().unwrap(),
-        dst.to_str().unwrap(),
-        false,
-    )
-    .unwrap();
+    let result = migrate_workspace(src.to_str().unwrap(), dst.to_str().unwrap(), false).unwrap();
     assert_eq!(result.files_copied, 0);
     assert_eq!(result.files_backed_up, 0);
 }
@@ -839,12 +793,9 @@ fn test_plan_dir_copy_recursive() {
     fs::create_dir_all(&dst).unwrap();
     fs::write(src.join("a").join("b").join("c").join("deep.txt"), "deep").unwrap();
 
-    let plan = WorkspaceMigrator::plan_migration(
-        src.to_str().unwrap(),
-        dst.to_str().unwrap(),
-        false,
-    )
-    .unwrap();
+    let plan =
+        WorkspaceMigrator::plan_migration(src.to_str().unwrap(), dst.to_str().unwrap(), false)
+            .unwrap();
     // Note: only memory/ and skills/ dirs are migrated. /a/b/c/ won't appear unless inside one of those.
     // But the function still works without error.
     assert!(plan.total_dirs >= 0);
@@ -862,17 +813,15 @@ fn test_plan_migration_with_memory_subdir_files() {
     // dst already has file2.md (not in src) — would be Skip if we iterated dst, but we iterate src
     fs::write(dst.join("memory").join("file2.md"), "2").unwrap();
 
-    let plan = WorkspaceMigrator::plan_migration(
-        src.to_str().unwrap(),
-        dst.to_str().unwrap(),
-        false,
-    )
-    .unwrap();
+    let plan =
+        WorkspaceMigrator::plan_migration(src.to_str().unwrap(), dst.to_str().unwrap(), false)
+            .unwrap();
     // file1 in src but not dst -> Copy
-    assert!(plan
-        .actions
-        .iter()
-        .any(|a| a.action_type == ActionType::Copy && a.destination.ends_with("file1.md")));
+    assert!(
+        plan.actions
+            .iter()
+            .any(|a| a.action_type == ActionType::Copy && a.destination.ends_with("file1.md"))
+    );
 }
 
 #[test]
@@ -933,12 +882,9 @@ fn test_migration_with_dirs_count_correct() {
     fs::create_dir_all(src.join("skills").join("sub3")).unwrap();
     fs::create_dir_all(&dst).unwrap();
 
-    let plan = WorkspaceMigrator::plan_migration(
-        src.to_str().unwrap(),
-        dst.to_str().unwrap(),
-        false,
-    )
-    .unwrap();
+    let plan =
+        WorkspaceMigrator::plan_migration(src.to_str().unwrap(), dst.to_str().unwrap(), false)
+            .unwrap();
     // memory, memory/sub1, memory/sub2, skills, skills/sub3 = 5 dirs
     assert!(plan.total_dirs >= 5);
 }
@@ -954,16 +900,13 @@ fn test_plan_migration_backed_up_in_subdir() {
     fs::write(src.join("memory").join("existing.md"), "new").unwrap();
     fs::write(dst.join("memory").join("existing.md"), "old").unwrap();
 
-    let plan = WorkspaceMigrator::plan_migration(
-        src.to_str().unwrap(),
-        dst.to_str().unwrap(),
-        false,
-    )
-    .unwrap();
+    let plan =
+        WorkspaceMigrator::plan_migration(src.to_str().unwrap(), dst.to_str().unwrap(), false)
+            .unwrap();
     // Verify Backup action for existing.md
-    assert!(plan
-        .actions
-        .iter()
-        .any(|a| a.action_type == ActionType::Backup
-            && a.destination.ends_with("existing.md")));
+    assert!(
+        plan.actions
+            .iter()
+            .any(|a| a.action_type == ActionType::Backup && a.destination.ends_with("existing.md"))
+    );
 }

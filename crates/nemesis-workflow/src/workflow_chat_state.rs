@@ -117,9 +117,7 @@ impl WorkflowChatState {
             drop(guard);
             return;
         }
-        inner
-            .pending_guards
-            .insert(execution_id.to_string(), guard);
+        inner.pending_guards.insert(execution_id.to_string(), guard);
     }
 
     /// Remove and return the guard for a finished execution.

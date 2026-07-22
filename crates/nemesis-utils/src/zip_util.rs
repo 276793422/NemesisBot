@@ -24,8 +24,8 @@ pub fn extract_zip(zip_path: &str, dest_dir: &str) -> Result<(), String> {
         .map_err(|e| format!("failed to open zip file {}: {}", zip_path.display(), e))?;
 
     let reader = BufReader::new(file);
-    let mut archive = ZipArchive::new(reader)
-        .map_err(|e| format!("failed to read zip archive: {}", e))?;
+    let mut archive =
+        ZipArchive::new(reader).map_err(|e| format!("failed to read zip archive: {}", e))?;
 
     // Ensure destination directory exists
     fs::create_dir_all(dest_dir)
@@ -59,7 +59,10 @@ pub fn extract_zip(zip_path: &str, dest_dir: &str) -> Result<(), String> {
 
         // Additional check: reject entries with path traversal components
         let entry_name_lower = entry_name.to_lowercase();
-        if entry_name_lower.starts_with("..") || entry_name_lower.contains("/..") || entry_name_lower.contains("\\..") {
+        if entry_name_lower.starts_with("..")
+            || entry_name_lower.contains("/..")
+            || entry_name_lower.contains("\\..")
+        {
             return Err(format!(
                 "invalid file path: {} (zip slip detected)",
                 entry_name
@@ -67,8 +70,9 @@ pub fn extract_zip(zip_path: &str, dest_dir: &str) -> Result<(), String> {
         }
 
         if entry.is_dir() {
-            fs::create_dir_all(&entry_path)
-                .map_err(|e| format!("failed to create directory {}: {}", entry_path.display(), e))?;
+            fs::create_dir_all(&entry_path).map_err(|e| {
+                format!("failed to create directory {}: {}", entry_path.display(), e)
+            })?;
         } else {
             // Create parent directory if needed
             if let Some(parent) = entry_path.parent() {
@@ -81,25 +85,20 @@ pub fn extract_zip(zip_path: &str, dest_dir: &str) -> Result<(), String> {
                 })?;
             }
 
-            let mut out_file = File::create(&entry_path).map_err(|e| {
-                format!(
-                    "failed to create file {}: {}",
-                    entry_path.display(),
-                    e
-                )
-            })?;
+            let mut out_file = File::create(&entry_path)
+                .map_err(|e| format!("failed to create file {}: {}", entry_path.display(), e))?;
 
             let mut buf = [0u8; 8192];
             loop {
-                let n = entry.read(&mut buf).map_err(|e| {
-                    format!("failed to read zip entry {}: {}", entry_name, e)
-                })?;
+                let n = entry
+                    .read(&mut buf)
+                    .map_err(|e| format!("failed to read zip entry {}: {}", entry_name, e))?;
                 if n == 0 {
                     break;
                 }
-                out_file.write_all(&buf[..n]).map_err(|e| {
-                    format!("failed to write file {}: {}", entry_path.display(), e)
-                })?;
+                out_file
+                    .write_all(&buf[..n])
+                    .map_err(|e| format!("failed to write file {}: {}", entry_path.display(), e))?;
             }
         }
     }
@@ -190,15 +189,15 @@ fn recursively_add_directory<W: Write + std::io::Seek>(
 
             let mut buf = [0u8; 8192];
             loop {
-                let n = file.read(&mut buf).map_err(|e| {
-                    format!("failed to read file {}: {}", path.display(), e)
-                })?;
+                let n = file
+                    .read(&mut buf)
+                    .map_err(|e| format!("failed to read file {}: {}", path.display(), e))?;
                 if n == 0 {
                     break;
                 }
-                zip_writer.write_all(&buf[..n]).map_err(|e| {
-                    format!("failed to write file data to zip: {}", e)
-                })?;
+                zip_writer
+                    .write_all(&buf[..n])
+                    .map_err(|e| format!("failed to write file data to zip: {}", e))?;
             }
         }
     }

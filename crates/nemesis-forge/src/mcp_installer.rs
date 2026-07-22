@@ -58,7 +58,12 @@ impl MCPInstaller {
     }
 
     /// Install (add or update) an MCP server.
-    pub async fn install(&self, name: &str, command: &str, args: Vec<String>) -> std::io::Result<()> {
+    pub async fn install(
+        &self,
+        name: &str,
+        command: &str,
+        args: Vec<String>,
+    ) -> std::io::Result<()> {
         let mut config = self.load_config().await?;
 
         let server = MCPServerConfig {
@@ -106,9 +111,8 @@ impl MCPInstaller {
             return Ok(MCPConfig::default());
         }
         let content = tokio::fs::read_to_string(&path).await?;
-        serde_json::from_str(&content).map_err(|e| {
-            std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string())
-        })
+        serde_json::from_str(&content)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()))
     }
 
     /// Save the MCP config to disk.
@@ -117,9 +121,8 @@ impl MCPInstaller {
         if let Some(parent) = path.parent() {
             tokio::fs::create_dir_all(parent).await?;
         }
-        let json = serde_json::to_string_pretty(config).map_err(|e| {
-            std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string())
-        })?;
+        let json = serde_json::to_string_pretty(config)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()))?;
         tokio::fs::write(&path, json).await
     }
 }

@@ -155,13 +155,21 @@ pub fn score_response(resp: &LlmResponse, task: &ProbeTask) -> ProbeScore {
     }
     let format = 1.0;
     let tc = &resp.tool_calls[0];
-    let selection = if tc.name == task.expected_tool { 1.0 } else { 0.0 };
+    let selection = if tc.name == task.expected_tool {
+        1.0
+    } else {
+        0.0
+    };
     let schema = match crate::args_validator::check(&task.schema, &tc.arguments) {
         crate::args_validator::Outcome::Valid => 1.0,
         crate::args_validator::Outcome::Fixed(_) => 0.5,
         crate::args_validator::Outcome::Invalid { .. } => 0.0,
     };
-    ProbeScore { format, selection, schema }
+    ProbeScore {
+        format,
+        selection,
+        schema,
+    }
 }
 
 /// Map aggregate axis scores to a capability tier.

@@ -10,7 +10,8 @@ pub async fn run(local: bool) -> Result<(), Box<dyn std::error::Error>> {
         format!(
             "Cannot read config.json at {}: {}.\n\
              If the gateway was started with --local, run: nemesisbot --local dashboard",
-            config_path.display(), e
+            config_path.display(),
+            e
         )
     })?;
     let cfg: serde_json::Value = serde_json::from_str(&cfg_str)?;

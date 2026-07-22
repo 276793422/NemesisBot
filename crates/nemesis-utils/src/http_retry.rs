@@ -37,8 +37,7 @@ impl Default for RetryConfig {
 impl RetryConfig {
     /// Get delay for a given attempt number (0-indexed).
     pub fn delay_for_attempt(&self, attempt: u32) -> Duration {
-        let delay_secs = self.initial_delay.as_secs_f64()
-            * self.multiplier.powi(attempt as i32);
+        let delay_secs = self.initial_delay.as_secs_f64() * self.multiplier.powi(attempt as i32);
         let delay = Duration::from_secs_f64(delay_secs);
         delay.min(self.max_delay)
     }
@@ -142,10 +141,7 @@ pub async fn do_request_with_retry_reqwest(
 ///
 /// # Returns
 /// The result from the last attempt.
-pub async fn do_request_with_retry<F, Fut, T, E>(
-    max_retries: u32,
-    request_fn: F,
-) -> Result<T, E>
+pub async fn do_request_with_retry<F, Fut, T, E>(max_retries: u32, request_fn: F) -> Result<T, E>
 where
     F: Fn() -> Fut,
     Fut: Future<Output = Result<T, E>>,
@@ -153,7 +149,11 @@ where
     E: std::fmt::Debug,
 {
     let mut last_err: Option<E> = None;
-    let max = if max_retries == 0 { MAX_RETRIES } else { max_retries };
+    let max = if max_retries == 0 {
+        MAX_RETRIES
+    } else {
+        max_retries
+    };
 
     for attempt in 0..max {
         match request_fn().await {
@@ -199,9 +199,7 @@ where
 ///
 /// # Returns
 /// `Ok((status_code, body))` from the last successful attempt.
-pub async fn do_request_with_retry_simple<F, Fut>(
-    request_fn: F,
-) -> Result<(u16, String), String>
+pub async fn do_request_with_retry_simple<F, Fut>(request_fn: F) -> Result<(u16, String), String>
 where
     F: Fn() -> Fut,
     Fut: Future<Output = Result<(u16, String), String>>,

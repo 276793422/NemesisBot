@@ -38,23 +38,16 @@ pub struct WorkspaceMigrator {
 }
 
 /// Files that can be migrated.
-const MIGRATEABLE_FILES: &[&str] = &[
-    "AGENT.md",
-    "SOUL.md",
-    "USER.md",
-    "TOOLS.md",
-    "HEARTBEAT.md",
-];
+const MIGRATEABLE_FILES: &[&str] = &["AGENT.md", "SOUL.md", "USER.md", "TOOLS.md", "HEARTBEAT.md"];
 
 /// Directories that can be migrated.
-const MIGRATEABLE_DIRS: &[&str] = &[
-    "memory",
-    "skills",
-];
+const MIGRATEABLE_DIRS: &[&str] = &["memory", "skills"];
 
 impl WorkspaceMigrator {
     pub fn new(workspace_path: &str) -> Self {
-        Self { workspace_path: PathBuf::from(workspace_path) }
+        Self {
+            workspace_path: PathBuf::from(workspace_path),
+        }
     }
 
     /// Run workspace migrations (create workspace if needed).
@@ -99,7 +92,11 @@ impl WorkspaceMigrator {
             actions.extend(dir_actions);
         }
 
-        Ok(MigrationPlan { actions, total_files, total_dirs })
+        Ok(MigrationPlan {
+            actions,
+            total_files,
+            total_dirs,
+        })
     }
 
     /// Execute a migration plan.
@@ -196,7 +193,11 @@ fn plan_file_copy(src: &Path, dst: &Path, force: bool) -> MigrationAction {
 }
 
 /// Plan a directory copy action.
-fn plan_dir_copy(src_dir: &Path, dst_dir: &Path, force: bool) -> Result<Vec<MigrationAction>, String> {
+fn plan_dir_copy(
+    src_dir: &Path,
+    dst_dir: &Path,
+    force: bool,
+) -> Result<Vec<MigrationAction>, String> {
     let mut actions = Vec::new();
 
     actions.push(MigrationAction {
@@ -206,8 +207,8 @@ fn plan_dir_copy(src_dir: &Path, dst_dir: &Path, force: bool) -> Result<Vec<Migr
         description: "create directory".to_string(),
     });
 
-    let entries = fs::read_dir(src_dir)
-        .map_err(|e| format!("read dir {}: {}", src_dir.display(), e))?;
+    let entries =
+        fs::read_dir(src_dir).map_err(|e| format!("read dir {}: {}", src_dir.display(), e))?;
 
     for entry in entries {
         let entry = entry.map_err(|e| format!("read entry: {}", e))?;
@@ -231,11 +232,9 @@ fn plan_dir_copy(src_dir: &Path, dst_dir: &Path, force: bool) -> Result<Vec<Migr
 fn copy_file_with_mkdir(src: &str, dst: &str) -> Result<(), String> {
     let dst_path = Path::new(dst);
     if let Some(parent) = dst_path.parent() {
-        fs::create_dir_all(parent)
-            .map_err(|e| format!("mkdir {}: {}", parent.display(), e))?;
+        fs::create_dir_all(parent).map_err(|e| format!("mkdir {}: {}", parent.display(), e))?;
     }
-    fs::copy(src, dst)
-        .map_err(|e| format!("copy {} -> {}: {}", src, dst, e))?;
+    fs::copy(src, dst).map_err(|e| format!("copy {} -> {}: {}", src, dst, e))?;
     Ok(())
 }
 

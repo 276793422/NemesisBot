@@ -199,7 +199,11 @@ impl VectorStore {
     ) -> Result<QueryResult, String> {
         let query_embedding = (self.embed)(query)?;
 
-        let limit = if limit <= 0 { self.config.max_results } else { limit };
+        let limit = if limit <= 0 {
+            self.config.max_results
+        } else {
+            limit
+        };
         let threshold = self.config.similarity_threshold;
 
         let docs = self.docs.read();
@@ -246,7 +250,11 @@ impl VectorStore {
 
     /// Get an entry by ID.
     pub fn get_by_id(&self, id: &str) -> Option<VectorEntry> {
-        self.docs.read().iter().find(|d| d.entry.id == id).map(|d| d.entry.clone())
+        self.docs
+            .read()
+            .iter()
+            .find(|d| d.entry.id == id)
+            .map(|d| d.entry.clone())
     }
 
     /// Delete an entry by ID. Returns true if found.
@@ -284,12 +292,7 @@ impl VectorStore {
     }
 
     /// List entries with optional type filter and pagination.
-    pub fn list_entries(
-        &self,
-        type_filter: &[String],
-        offset: usize,
-        limit: usize,
-    ) -> QueryResult {
+    pub fn list_entries(&self, type_filter: &[String], offset: usize, limit: usize) -> QueryResult {
         let docs = self.docs.read();
         let filtered: Vec<&IndexedDoc> = docs
             .iter()
@@ -338,8 +341,7 @@ impl VectorStore {
             return Ok(());
         }
 
-        let content = std::fs::read_to_string(&self.persist_path)
-            .map_err(|e| e.to_string())?;
+        let content = std::fs::read_to_string(&self.persist_path).map_err(|e| e.to_string())?;
 
         for line in content.lines() {
             let line = line.trim();

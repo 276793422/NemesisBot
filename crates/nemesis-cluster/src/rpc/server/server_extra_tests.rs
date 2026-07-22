@@ -111,8 +111,10 @@ async fn test_start_bind_to_occupied_port_returns_error() {
 #[tokio::test]
 async fn test_server_restart_reuses_handlers() {
     let server = make_test_server();
-    server
-        .register_handler("custom_action", Box::new(|_| Ok(serde_json::json!({"v": 1}))));
+    server.register_handler(
+        "custom_action",
+        Box::new(|_| Ok(serde_json::json!({"v": 1}))),
+    );
     server.start().await.unwrap();
     server.stop().unwrap();
     server.start().await.unwrap();
@@ -237,10 +239,7 @@ async fn test_async_handle_request_custom_handler_returns_value() {
 #[tokio::test]
 async fn test_async_handle_request_handler_error_returns_error_response() {
     let server = make_test_server();
-    server.register_handler(
-        "boom",
-        Box::new(|_| Err("handler exploded".to_string())),
-    );
+    server.register_handler("boom", Box::new(|_| Err("handler exploded".to_string())));
     server.start().await.unwrap();
     let resp = roundtrip_plaintext(&server, make_request_wire("boom")).await;
     assert!(resp.is_some());
@@ -431,7 +430,8 @@ async fn test_encrypted_server_rejects_plaintext_client() {
 
     // Try to read response — should fail/timeout because server closes.
     let mut len_buf = [0u8; 4];
-    let result = tokio::time::timeout(Duration::from_millis(300), stream.read_exact(&mut len_buf)).await;
+    let result =
+        tokio::time::timeout(Duration::from_millis(300), stream.read_exact(&mut len_buf)).await;
     // Either timed out or read returned 0 / Err.
     assert!(result.is_err() || result.unwrap().is_err());
 
@@ -482,10 +482,8 @@ fn test_default_peer_chat_handler_with_null_task_id() {
 #[test]
 fn test_default_peer_chat_callback_with_non_string_task_id() {
     let server = make_test_server();
-    let result = server.handle_request_sync(
-        "peer_chat_callback",
-        serde_json::json!({"task_id": 12345}),
-    );
+    let result =
+        server.handle_request_sync("peer_chat_callback", serde_json::json!({"task_id": 12345}));
     assert!(result.is_ok());
     // Integer is not a string → fallback.
     assert_eq!(result.unwrap()["task_id"], "unknown");
@@ -533,10 +531,7 @@ fn test_register_many_handlers_then_query() {
 fn test_handler_uses_payload_from_sync_path() {
     // Verify sync path passes payload as-is to handler (no _rpc injection).
     let server = make_test_server();
-    server.register_handler(
-        "echo_payload",
-        Box::new(|p| Ok(p.clone())),
-    );
+    server.register_handler("echo_payload", Box::new(|p| Ok(p.clone())));
     let result = server.handle_request_sync(
         "echo_payload",
         serde_json::json!({"foo": "bar", "count": 3}),
@@ -665,9 +660,15 @@ fn test_rpc_handler_fn_with_arc_state() {
             Ok(serde_json::json!({"count": n}))
         }),
     );
-    let _ = server.handle_request_sync("count", serde_json::json!({})).unwrap();
-    let _ = server.handle_request_sync("count", serde_json::json!({})).unwrap();
-    let r = server.handle_request_sync("count", serde_json::json!({})).unwrap();
+    let _ = server
+        .handle_request_sync("count", serde_json::json!({}))
+        .unwrap();
+    let _ = server
+        .handle_request_sync("count", serde_json::json!({}))
+        .unwrap();
+    let r = server
+        .handle_request_sync("count", serde_json::json!({}))
+        .unwrap();
     assert_eq!(r["count"], 3);
     assert_eq!(counter.load(Ordering::SeqCst), 3);
 }
@@ -679,10 +680,7 @@ fn test_rpc_handler_fn_with_arc_state() {
 #[tokio::test]
 async fn test_server_handles_unicode_payload() {
     let server = make_test_server();
-    server.register_handler(
-        "echo",
-        Box::new(|p| Ok(p.clone())),
-    );
+    server.register_handler("echo", Box::new(|p| Ok(p.clone())));
     server.start().await.unwrap();
     let mut wire = make_request_wire("echo");
     wire.payload = serde_json::json!({"text": "こんにちは 世界 🌍"});
@@ -750,10 +748,14 @@ async fn test_two_sequential_requests_over_fresh_connections() {
     let server = make_test_server();
     server.start().await.unwrap();
 
-    let r1 = roundtrip_plaintext(&server, make_request_wire("ping")).await.unwrap();
+    let r1 = roundtrip_plaintext(&server, make_request_wire("ping"))
+        .await
+        .unwrap();
     assert_eq!(r1.payload["status"], "pong");
 
-    let r2 = roundtrip_plaintext(&server, make_request_wire("get_info")).await.unwrap();
+    let r2 = roundtrip_plaintext(&server, make_request_wire("get_info"))
+        .await
+        .unwrap();
     assert_eq!(r2.payload["status"], "online");
 
     server.stop().unwrap();
@@ -858,9 +860,20 @@ fn test_handle_request_sync_unknown_action_error_message() {
 fn test_default_handlers_registered_in_constructor_for_all_defaults() {
     let server = make_test_server();
     // No register_default_handlers call — should be in constructor.
-    for action in ["ping", "get_info", "get_capabilities", "list_actions", "peer_chat", "peer_chat_callback"] {
+    for action in [
+        "ping",
+        "get_info",
+        "get_capabilities",
+        "list_actions",
+        "peer_chat",
+        "peer_chat_callback",
+    ] {
         let result = server.handle_request_sync(action, serde_json::json!({}));
-        assert!(result.is_ok(), "default handler '{}' should be registered", action);
+        assert!(
+            result.is_ok(),
+            "default handler '{}' should be registered",
+            action
+        );
     }
 }
 
@@ -1005,7 +1018,9 @@ async fn test_client_close_drops_server_conn_count() {
     let port = server.port();
 
     {
-        let _stream = tokio::net::TcpStream::connect(format!("127.0.0.1:{}", port)).await.unwrap();
+        let _stream = tokio::net::TcpStream::connect(format!("127.0.0.1:{}", port))
+            .await
+            .unwrap();
         tokio::time::sleep(Duration::from_millis(100)).await;
         assert!(server.connection_count() >= 1);
     } // stream dropped here
@@ -1056,9 +1071,8 @@ fn make_server_with_handler(
 
 #[test]
 fn test_handler_error_with_newlines() {
-    let server = make_server_with_handler("multiline_err", |_| {
-        Err("line1\nline2\nline3".to_string())
-    });
+    let server =
+        make_server_with_handler("multiline_err", |_| Err("line1\nline2\nline3".to_string()));
     let result = server.handle_request_sync("multiline_err", serde_json::json!({}));
     assert!(result.is_err());
     let err = result.unwrap_err();
@@ -1131,8 +1145,8 @@ async fn test_start_then_stop_then_start_then_stop() {
 
 #[tokio::test]
 async fn test_rpc_client_against_rpc_server() {
-    use crate::rpc::client::{PeerResolver, RpcClient};
     use crate::rpc::LocalNetworkInterface;
+    use crate::rpc::client::{PeerResolver, RpcClient};
 
     let server = make_test_server();
     server.start().await.unwrap();

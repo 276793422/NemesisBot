@@ -6,9 +6,7 @@ async fn test_bootstrap_not_confirmed() {
     let dir = TempDir::new().unwrap();
     let tool = CompleteBootstrapTool::new(&dir.path().to_string_lossy());
 
-    let result = tool
-        .execute(&serde_json::json!({"confirmed": false}))
-        .await;
+    let result = tool.execute(&serde_json::json!({"confirmed": false})).await;
     assert!(result.is_error);
     assert!(result.for_llm.contains("confirm"));
 }
@@ -28,9 +26,7 @@ async fn test_bootstrap_file_not_found() {
     let tool = CompleteBootstrapTool::new(&dir.path().to_string_lossy());
 
     // No BOOTSTRAP.md file exists
-    let result = tool
-        .execute(&serde_json::json!({"confirmed": true}))
-        .await;
+    let result = tool.execute(&serde_json::json!({"confirmed": true})).await;
     assert!(!result.is_error);
     assert!(result.for_llm.contains("already been removed"));
 }
@@ -39,14 +35,18 @@ async fn test_bootstrap_file_not_found() {
 async fn test_bootstrap_success() {
     let dir = TempDir::new().unwrap();
     let bootstrap_path = dir.path().join("BOOTSTRAP.md");
-    tokio::fs::write(&bootstrap_path, "# Bootstrap").await.unwrap();
+    tokio::fs::write(&bootstrap_path, "# Bootstrap")
+        .await
+        .unwrap();
 
     let tool = CompleteBootstrapTool::new(&dir.path().to_string_lossy());
 
-    let result = tool
-        .execute(&serde_json::json!({"confirmed": true}))
-        .await;
-    assert!(!result.is_error, "Expected success, got: {}", result.for_llm);
+    let result = tool.execute(&serde_json::json!({"confirmed": true})).await;
+    assert!(
+        !result.is_error,
+        "Expected success, got: {}",
+        result.for_llm
+    );
     assert!(result.for_llm.contains("complete"));
 
     // Verify file was deleted
@@ -61,9 +61,7 @@ async fn test_bootstrap_non_boolean_confirmed() {
     let dir = TempDir::new().unwrap();
     let tool = CompleteBootstrapTool::new(&dir.path().to_string_lossy());
 
-    let result = tool
-        .execute(&serde_json::json!({"confirmed": "yes"}))
-        .await;
+    let result = tool.execute(&serde_json::json!({"confirmed": "yes"})).await;
     assert!(result.is_error);
 }
 
@@ -96,9 +94,7 @@ fn test_new_stores_workspace() {
 async fn test_bootstrap_confirmed_number_instead_of_bool() {
     let dir = TempDir::new().unwrap();
     let tool = CompleteBootstrapTool::new(&dir.path().to_string_lossy());
-    let result = tool
-        .execute(&serde_json::json!({"confirmed": 1}))
-        .await;
+    let result = tool.execute(&serde_json::json!({"confirmed": 1})).await;
     assert!(result.is_error);
 }
 
@@ -106,9 +102,7 @@ async fn test_bootstrap_confirmed_number_instead_of_bool() {
 async fn test_bootstrap_confirmed_null() {
     let dir = TempDir::new().unwrap();
     let tool = CompleteBootstrapTool::new(&dir.path().to_string_lossy());
-    let result = tool
-        .execute(&serde_json::json!({"confirmed": null}))
-        .await;
+    let result = tool.execute(&serde_json::json!({"confirmed": null})).await;
     assert!(result.is_error);
 }
 
@@ -116,20 +110,18 @@ async fn test_bootstrap_confirmed_null() {
 async fn test_bootstrap_double_execution() {
     let dir = TempDir::new().unwrap();
     let bootstrap_path = dir.path().join("BOOTSTRAP.md");
-    tokio::fs::write(&bootstrap_path, "# Bootstrap").await.unwrap();
+    tokio::fs::write(&bootstrap_path, "# Bootstrap")
+        .await
+        .unwrap();
 
     let tool = CompleteBootstrapTool::new(&dir.path().to_string_lossy());
 
     // First execution deletes the file
-    let result = tool
-        .execute(&serde_json::json!({"confirmed": true}))
-        .await;
+    let result = tool.execute(&serde_json::json!({"confirmed": true})).await;
     assert!(!result.is_error);
 
     // Second execution reports already removed
-    let result2 = tool
-        .execute(&serde_json::json!({"confirmed": true}))
-        .await;
+    let result2 = tool.execute(&serde_json::json!({"confirmed": true})).await;
     assert!(!result2.is_error);
     assert!(result2.for_llm.contains("already been removed"));
 }

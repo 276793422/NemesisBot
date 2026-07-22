@@ -14,9 +14,9 @@ use std::sync::Arc;
 use anyhow::Result;
 use tracing::info;
 
-use nemesis_web::ProviderAdapter;
 #[cfg(feature = "forge")]
 use nemesis_web::ForgeProviderBridge;
+use nemesis_web::ProviderAdapter;
 
 use crate::common;
 
@@ -79,12 +79,15 @@ pub struct SharedResources {
     // Cluster RPC closure (Cluster itself is mem::forget'd, but rpc_call_fn must survive)
     pub cluster_rpc_call_fn: Option<
         Arc<
-            dyn Fn(&str, &str, serde_json::Value)
-                -> std::pin::Pin<
+            dyn Fn(
+                    &str,
+                    &str,
+                    serde_json::Value,
+                ) -> std::pin::Pin<
                     Box<
                         dyn std::future::Future<
-                            Output = std::result::Result<serde_json::Value, String>,
-                        > + Send,
+                                Output = std::result::Result<serde_json::Value, String>,
+                            > + Send,
                     >,
                 > + Send
                 + Sync,
@@ -163,9 +166,11 @@ impl Default for SharedResources {
 ///
 /// Re-reads `config.json`, workspace files, creates new provider,
 /// registers all tools — identical to first-boot initialization.
-pub fn build_agent_loop(shared: &Arc<SharedResources>) -> Result<Arc<nemesis_agent::r#loop::AgentLoop>> {
-    use nemesis_agent::types::AgentConfig;
+pub fn build_agent_loop(
+    shared: &Arc<SharedResources>,
+) -> Result<Arc<nemesis_agent::r#loop::AgentLoop>> {
     use nemesis_agent::r#loop::{AgentLoop, ConcurrentMode};
+    use nemesis_agent::types::AgentConfig;
 
     // 1. Re-read config.json from disk.
     let config_path = shared.home.join("config.json");
@@ -288,8 +293,7 @@ pub fn build_agent_loop(shared: &Arc<SharedResources>) -> Result<Arc<nemesis_age
 
     // 6. Workspace state manager (disk-based — new instance).
     {
-        let state_mgr =
-            nemesis_state::workspace_state::WorkspaceStateManager::new(&workspace_dir);
+        let state_mgr = nemesis_state::workspace_state::WorkspaceStateManager::new(&workspace_dir);
         agent_loop.set_state_manager(state_mgr);
     }
 
@@ -400,8 +404,7 @@ pub fn build_agent_loop(shared: &Arc<SharedResources>) -> Result<Arc<nemesis_age
     }
 
     // 8. Register ClusterRpcTool (using shared call_fn + peers_fn).
-    if let (Some(config), Some(call_fn)) =
-        (&shared.cluster_rpc_config, &shared.cluster_rpc_call_fn)
+    if let (Some(config), Some(call_fn)) = (&shared.cluster_rpc_config, &shared.cluster_rpc_call_fn)
     {
         let mut cluster_rpc_tool = nemesis_agent::ClusterRpcTool::new(config.clone());
         cluster_rpc_tool.set_rpc_call_fn(call_fn.clone());
@@ -500,7 +503,9 @@ fn build_shared_tool_config(
         forge: shared.forge.clone(),
         #[cfg(feature = "memory")]
         memory_executor: shared.memory_manager.as_ref().map(|mgr| {
-            Arc::new(nemesis_memory::memory_tools::MemoryToolExecutor::new(mgr.clone()))
+            Arc::new(nemesis_memory::memory_tools::MemoryToolExecutor::new(
+                mgr.clone(),
+            ))
         }),
         #[cfg(not(feature = "memory"))]
         memory_executor: None,
@@ -669,8 +674,8 @@ pub fn build_cluster_agent_loop(
 
     // 5b. Set observer callback to capture cluster task execution details (LLM + tool calls).
     {
-        let log_cb: Arc<dyn Fn(&str, &serde_json::Value) + Send + Sync> = Arc::new(
-            |event_type: &str, data: &serde_json::Value| {
+        let log_cb: Arc<dyn Fn(&str, &serde_json::Value) + Send + Sync> =
+            Arc::new(|event_type: &str, data: &serde_json::Value| {
                 // Only log cluster-related trace events.
                 let trace_id = data.get("trace_id").and_then(|v| v.as_str()).unwrap_or("");
                 if !trace_id.starts_with("cluster") {
@@ -699,8 +704,10 @@ pub fn build_cluster_agent_loop(
                     }
                     "llm_response" => {
                         let round = data.get("round").and_then(|v| v.as_u64()).unwrap_or(0);
-                        let duration_ms =
-                            data.get("duration_ms").and_then(|v| v.as_u64()).unwrap_or(0);
+                        let duration_ms = data
+                            .get("duration_ms")
+                            .and_then(|v| v.as_u64())
+                            .unwrap_or(0);
                         let tokens = data.get("usage");
                         nemesis_cluster::cluster_log::write_cluster_log(
                             "task_llm_end",
@@ -713,13 +720,16 @@ pub fn build_cluster_agent_loop(
                         );
                     }
                     "tool_call" => {
-                        let tool_name = data
-                            .get("tool_name")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("");
-                        let success = data.get("success").and_then(|v| v.as_bool()).unwrap_or(false);
-                        let duration_ms =
-                            data.get("duration_ms").and_then(|v| v.as_u64()).unwrap_or(0);
+                        let tool_name =
+                            data.get("tool_name").and_then(|v| v.as_str()).unwrap_or("");
+                        let success = data
+                            .get("success")
+                            .and_then(|v| v.as_bool())
+                            .unwrap_or(false);
+                        let duration_ms = data
+                            .get("duration_ms")
+                            .and_then(|v| v.as_u64())
+                            .unwrap_or(0);
                         let round = data.get("round").and_then(|v| v.as_u64()).unwrap_or(0);
                         nemesis_cluster::cluster_log::write_cluster_log(
                             "task_tool_call",
@@ -734,8 +744,7 @@ pub fn build_cluster_agent_loop(
                     }
                     _ => {}
                 }
-            },
-        );
+            });
         agent_loop.set_observer_callback(log_cb);
     }
 
@@ -785,7 +794,9 @@ pub fn build_cluster_agent_loop(
                 let observer_clone = observer.clone();
                 tokio::task::block_in_place(|| {
                     tokio::runtime::Handle::current().block_on(async {
-                        mgr_clone.register(observer_clone as Arc<dyn nemesis_observer::Observer>).await;
+                        mgr_clone
+                            .register(observer_clone as Arc<dyn nemesis_observer::Observer>)
+                            .await;
                     })
                 });
                 agent_loop.set_observer_manager(mgr);
@@ -834,7 +845,11 @@ pub fn build_cluster_agent_loop(
     // midnight task (spawn_daily_cleanup). Bounded disk usage without manual
     // intervention.
     {
-        let cluster_sessions_dir = shared.home.join("workspace").join("sessions").join("cluster");
+        let cluster_sessions_dir = shared
+            .home
+            .join("workspace")
+            .join("sessions")
+            .join("cluster");
         let cluster_session_store = Arc::new(
             nemesis_agent::session::SessionStore::new_with_storage(&cluster_sessions_dir),
         );

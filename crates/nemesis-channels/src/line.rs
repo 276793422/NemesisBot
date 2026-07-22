@@ -131,19 +131,17 @@ impl LineChannel {
         let _ = hex::encode(expected); // for debugging if needed
 
         // Constant-time comparison
-        hex::decode(signature)
-            .ok()
-            .map_or(false, |sig| {
-                let expected_bytes = expected.as_slice();
-                if sig.len() != expected_bytes.len() {
-                    return false;
-                }
-                let mut result = 0u8;
-                for (a, b) in sig.iter().zip(expected_bytes.iter()) {
-                    result |= a ^ b;
-                }
-                result == 0
-            })
+        hex::decode(signature).ok().map_or(false, |sig| {
+            let expected_bytes = expected.as_slice();
+            if sig.len() != expected_bytes.len() {
+                return false;
+            }
+            let mut result = 0u8;
+            for (a, b) in sig.iter().zip(expected_bytes.iter()) {
+                result |= a ^ b;
+            }
+            result == 0
+        })
     }
 
     /// Stores a reply token for a chat.
@@ -397,10 +395,8 @@ impl Channel for LineChannel {
                 let running = running.clone();
 
                 tokio::spawn(async move {
-                    Self::handle_webhook_connection(
-                        stream, &bus, &secret, &reply_tokens, &running,
-                    )
-                    .await;
+                    Self::handle_webhook_connection(stream, &bus, &secret, &reply_tokens, &running)
+                        .await;
                 });
             }
 

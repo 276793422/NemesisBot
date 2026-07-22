@@ -57,7 +57,9 @@ impl ClusterLogWriter {
 
         // Build the log entry.
         let entry = {
-            let obj = fields.as_object_mut().expect("fields must be a JSON object");
+            let obj = fields
+                .as_object_mut()
+                .expect("fields must be a JSON object");
             obj.insert("ts".into(), serde_json::Value::String(now.to_rfc3339()));
             obj.insert("event".into(), serde_json::Value::String(event.to_string()));
             serde_json::to_string(&fields).unwrap_or_default()

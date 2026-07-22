@@ -126,17 +126,11 @@ async fn test_parse_gateway_message_allowed_users() {
     });
 
     // Not allowed
-    let msg = DiscordChannel::parse_gateway_message(
-        &d,
-        &bot_id,
-        &["user111".to_string()],
-    )
-    .await;
+    let msg = DiscordChannel::parse_gateway_message(&d, &bot_id, &["user111".to_string()]).await;
     assert!(msg.is_none());
 
     // Allowed
-    let msg =
-        DiscordChannel::parse_gateway_message(&d, &bot_id, &["user999".to_string()]).await;
+    let msg = DiscordChannel::parse_gateway_message(&d, &bot_id, &["user999".to_string()]).await;
     assert!(msg.is_some());
 }
 

@@ -56,7 +56,9 @@ fn push_rejects_depth_above_max() {
         }),
         recursion_depth: MAX_RECURSION_DEPTH + 1,
     };
-    let err = stack.push(too_deep).expect_err("over-limit push should reject");
+    let err = stack
+        .push(too_deep)
+        .expect_err("over-limit push should reject");
     assert!(err.contains("max recursion depth"), "got: {}", err);
     assert!(stack.is_empty(), "rejected push must not leave a frame");
 }
@@ -81,20 +83,24 @@ fn push_accepts_depth_at_max() {
 #[test]
 fn snapshot_is_a_copy() {
     let stack = WorkflowCallStack::new();
-    stack.push(CallFrame {
-        execution_id: "e1".to_string(),
-        workflow_name: "wf".to_string(),
-        parent_execution_id: None,
-        trigger_source: Some(TriggerSource::Cli),
-        recursion_depth: 0,
-    }).unwrap();
-    stack.push(CallFrame {
-        execution_id: "e2".to_string(),
-        workflow_name: "wf".to_string(),
-        parent_execution_id: Some("e1".to_string()),
-        trigger_source: Some(TriggerSource::Cli),
-        recursion_depth: 0,
-    }).unwrap();
+    stack
+        .push(CallFrame {
+            execution_id: "e1".to_string(),
+            workflow_name: "wf".to_string(),
+            parent_execution_id: None,
+            trigger_source: Some(TriggerSource::Cli),
+            recursion_depth: 0,
+        })
+        .unwrap();
+    stack
+        .push(CallFrame {
+            execution_id: "e2".to_string(),
+            workflow_name: "wf".to_string(),
+            parent_execution_id: Some("e1".to_string()),
+            trigger_source: Some(TriggerSource::Cli),
+            recursion_depth: 0,
+        })
+        .unwrap();
 
     let snap = stack.snapshot();
     assert_eq!(snap.len(), 2);
@@ -110,13 +116,15 @@ fn snapshot_is_a_copy() {
 fn lifo_order_preserved() {
     let stack = WorkflowCallStack::new();
     for id in ["a", "b", "c"] {
-        stack.push(CallFrame {
-            execution_id: id.to_string(),
-            workflow_name: "wf".to_string(),
-            parent_execution_id: None,
-            trigger_source: Some(TriggerSource::Cli),
-            recursion_depth: 0,
-        }).unwrap();
+        stack
+            .push(CallFrame {
+                execution_id: id.to_string(),
+                workflow_name: "wf".to_string(),
+                parent_execution_id: None,
+                trigger_source: Some(TriggerSource::Cli),
+                recursion_depth: 0,
+            })
+            .unwrap();
     }
     assert_eq!(stack.depth(), 3);
 

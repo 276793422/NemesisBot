@@ -93,7 +93,10 @@ impl CooldownTracker {
         entry.last_failure = Some(now);
 
         if reason == FailoverReason::Billing {
-            let billing_count = *entry.failure_counts.get(&FailoverReason::Billing).unwrap_or(&0);
+            let billing_count = *entry
+                .failure_counts
+                .get(&FailoverReason::Billing)
+                .unwrap_or(&0);
             entry.disabled_until = Some(now + calculate_billing_cooldown(billing_count));
             entry.disabled_reason = Some(reason);
         } else {

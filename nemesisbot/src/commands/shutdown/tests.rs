@@ -115,7 +115,8 @@ fn test_port_extraction_from_config() {
             }
         }
     });
-    let port = cfg.get("channels")
+    let port = cfg
+        .get("channels")
         .and_then(|c| c.get("web"))
         .and_then(|w| w.get("port"))
         .and_then(|v| v.as_u64())
@@ -126,7 +127,8 @@ fn test_port_extraction_from_config() {
 #[test]
 fn test_port_extraction_default() {
     let cfg = serde_json::json!({});
-    let port = cfg.get("channels")
+    let port = cfg
+        .get("channels")
         .and_then(|c| c.get("web"))
         .and_then(|w| w.get("port"))
         .and_then(|v| v.as_u64())
@@ -165,7 +167,8 @@ fn test_config_path_with_valid_config() {
 
     let data = std::fs::read_to_string(&cfg_path).unwrap();
     let parsed: serde_json::Value = serde_json::from_str(&data).unwrap();
-    let port = parsed.get("channels")
+    let port = parsed
+        .get("channels")
         .and_then(|c| c.get("web"))
         .and_then(|w| w.get("port"))
         .and_then(|v| v.as_u64())

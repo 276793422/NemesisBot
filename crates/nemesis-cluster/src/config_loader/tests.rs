@@ -67,7 +67,10 @@ fn test_app_config_roundtrip() {
 
 #[test]
 fn test_config_error_io() {
-    let err = ConfigError::Io(std::io::Error::new(std::io::ErrorKind::NotFound, "not found"));
+    let err = ConfigError::Io(std::io::Error::new(
+        std::io::ErrorKind::NotFound,
+        "not found",
+    ));
     assert!(err.to_string().contains("not found"));
 }
 

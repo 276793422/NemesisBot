@@ -142,7 +142,10 @@ fn rms_threshold_zero_marks_speaking_on_empty_chunk_due_to_geq() {
     // Pinning this behavior to prevent silent regression if the comparison changes.
     let mut d = RmsVoiceDetector::new(0.0, 1_000_000, 60_000_000);
     let _ = d.process(&[], 16000);
-    assert!(d.is_speaking(), "threshold=0 + empty chunk flips is_speaking (quirk)");
+    assert!(
+        d.is_speaking(),
+        "threshold=0 + empty chunk flips is_speaking (quirk)"
+    );
     // Buffer is still empty though
     assert!(d.flush().is_none(), "buffer should still be empty");
 }

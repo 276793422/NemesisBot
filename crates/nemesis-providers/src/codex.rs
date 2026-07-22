@@ -52,8 +52,7 @@ impl Default for CodexConfig {
 pub struct CodexProvider {
     config: CodexConfig,
     client: reqwest::Client,
-    token_source:
-        Option<Box<dyn Fn() -> Result<(String, String), String> + Send + Sync>>,
+    token_source: Option<Box<dyn Fn() -> Result<(String, String), String> + Send + Sync>>,
 }
 
 impl CodexProvider {
@@ -127,10 +126,14 @@ impl CodexProvider {
                             }));
                         }
                         for tc in &msg.tool_calls {
-                            let name = tc.name.as_deref()
+                            let name = tc
+                                .name
+                                .as_deref()
                                 .or_else(|| tc.function.as_ref().map(|f| f.name.as_str()))
                                 .unwrap_or("");
-                            let args = tc.function.as_ref()
+                            let args = tc
+                                .function
+                                .as_ref()
                                 .map(|f| f.arguments.as_str())
                                 .unwrap_or("{}");
                             input_items.push(serde_json::json!({
@@ -239,8 +242,20 @@ pub fn resolve_codex_model(model: &str) -> ResolvedCodexModel {
 
     // Unsupported model prefixes
     let unsupported = [
-        "glm", "claude", "anthropic", "gemini", "google", "moonshot", "kimi",
-        "qwen", "deepseek", "llama", "meta-llama", "mistral", "grok", "xai",
+        "glm",
+        "claude",
+        "anthropic",
+        "gemini",
+        "google",
+        "moonshot",
+        "kimi",
+        "qwen",
+        "deepseek",
+        "llama",
+        "meta-llama",
+        "mistral",
+        "grok",
+        "xai",
         "zhipu",
     ];
     for prefix in &unsupported {
@@ -266,7 +281,10 @@ pub fn resolve_codex_model(model: &str) -> ResolvedCodexModel {
 }
 
 /// Translate tool definitions for the Codex/Responses API format.
-fn translate_tools_for_codex(tools: &[ToolDefinition], enable_web_search: bool) -> Vec<serde_json::Value> {
+fn translate_tools_for_codex(
+    tools: &[ToolDefinition],
+    enable_web_search: bool,
+) -> Vec<serde_json::Value> {
     let mut result = Vec::new();
 
     for t in tools {
@@ -318,14 +336,28 @@ fn parse_codex_response(data: &serde_json::Value) -> LLMResponse {
                     }
                 }
                 "function_call" => {
-                    let id = item.get("call_id").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                    let name = item.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                    let arguments_str = item.get("arguments").and_then(|v| v.as_str()).unwrap_or("{}");
+                    let id = item
+                        .get("call_id")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    let name = item
+                        .get("name")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    let arguments_str = item
+                        .get("arguments")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("{}");
 
                     let arguments: HashMap<String, serde_json::Value> =
                         serde_json::from_str(arguments_str).unwrap_or_else(|_| {
                             let mut m = HashMap::new();
-                            m.insert("raw".to_string(), serde_json::Value::String(arguments_str.to_string()));
+                            m.insert(
+                                "raw".to_string(),
+                                serde_json::Value::String(arguments_str.to_string()),
+                            );
                             m
                         });
 
@@ -406,10 +438,7 @@ impl LLMProvider for CodexProvider {
             (self.config.api_key.clone(), self.config.account_id.clone())
         };
 
-        let url = format!(
-            "{}/responses",
-            self.config.base_url.trim_end_matches('/')
-        );
+        let url = format!("{}/responses", self.config.base_url.trim_end_matches('/'));
         let body = self.build_request_body(messages, tools, &resolved_model, options);
 
         let mut req = self
@@ -436,7 +465,12 @@ impl LLMProvider for CodexProvider {
         let status = resp.status().as_u16();
         if status >= 400 {
             let text = resp.text().await.unwrap_or_default();
-            return Err(FailoverError::from_status("codex", &resolved_model, status, &text));
+            return Err(FailoverError::from_status(
+                "codex",
+                &resolved_model,
+                status,
+                &text,
+            ));
         }
 
         let data: serde_json::Value = resp.json().await.map_err(|e| FailoverError::Format {

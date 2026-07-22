@@ -4,7 +4,10 @@ use super::*;
 fn test_default_route() {
     let resolver = RouteResolver::new(RouteConfig {
         bindings: vec![],
-        agents: vec![AgentDef { id: "main".to_string(), is_default: true }],
+        agents: vec![AgentDef {
+            id: "main".to_string(),
+            is_default: true,
+        }],
         dm_scope: "main".to_string(),
     });
     let input = RouteInput {
@@ -36,8 +39,14 @@ fn test_peer_binding() {
             match_team_id: None,
         }],
         agents: vec![
-            AgentDef { id: "main".to_string(), is_default: true },
-            AgentDef { id: "special".to_string(), is_default: false },
+            AgentDef {
+                id: "main".to_string(),
+                is_default: true,
+            },
+            AgentDef {
+                id: "special".to_string(),
+                is_default: false,
+            },
         ],
         dm_scope: "main".to_string(),
     });
@@ -70,8 +79,14 @@ fn test_guild_binding() {
             match_team_id: None,
         }],
         agents: vec![
-            AgentDef { id: "main".to_string(), is_default: true },
-            AgentDef { id: "guild-agent".to_string(), is_default: false },
+            AgentDef {
+                id: "main".to_string(),
+                is_default: true,
+            },
+            AgentDef {
+                id: "guild-agent".to_string(),
+                is_default: false,
+            },
         ],
         dm_scope: "main".to_string(),
     });
@@ -104,8 +119,14 @@ fn test_team_binding() {
             match_team_id: Some("team-456".to_string()),
         }],
         agents: vec![
-            AgentDef { id: "main".to_string(), is_default: true },
-            AgentDef { id: "team-agent".to_string(), is_default: false },
+            AgentDef {
+                id: "main".to_string(),
+                is_default: true,
+            },
+            AgentDef {
+                id: "team-agent".to_string(),
+                is_default: false,
+            },
         ],
         dm_scope: "main".to_string(),
     });
@@ -138,8 +159,14 @@ fn test_account_binding() {
             match_team_id: None,
         }],
         agents: vec![
-            AgentDef { id: "main".to_string(), is_default: true },
-            AgentDef { id: "vip-agent".to_string(), is_default: false },
+            AgentDef {
+                id: "main".to_string(),
+                is_default: true,
+            },
+            AgentDef {
+                id: "vip-agent".to_string(),
+                is_default: false,
+            },
         ],
         dm_scope: "main".to_string(),
     });
@@ -172,8 +199,14 @@ fn test_channel_wildcard_binding() {
             match_team_id: None,
         }],
         agents: vec![
-            AgentDef { id: "main".to_string(), is_default: true },
-            AgentDef { id: "catch-all".to_string(), is_default: false },
+            AgentDef {
+                id: "main".to_string(),
+                is_default: true,
+            },
+            AgentDef {
+                id: "catch-all".to_string(),
+                is_default: false,
+            },
         ],
         dm_scope: "main".to_string(),
     });
@@ -206,8 +239,14 @@ fn test_parent_peer_binding() {
             match_team_id: None,
         }],
         agents: vec![
-            AgentDef { id: "main".to_string(), is_default: true },
-            AgentDef { id: "parent-agent".to_string(), is_default: false },
+            AgentDef {
+                id: "main".to_string(),
+                is_default: true,
+            },
+            AgentDef {
+                id: "parent-agent".to_string(),
+                is_default: false,
+            },
         ],
         dm_scope: "main".to_string(),
     });
@@ -262,8 +301,14 @@ fn test_resolve_same_priority_first_match() {
             },
         ],
         agents: vec![
-            AgentDef { id: "first-agent".to_string(), is_default: true },
-            AgentDef { id: "second-agent".to_string(), is_default: false },
+            AgentDef {
+                id: "first-agent".to_string(),
+                is_default: true,
+            },
+            AgentDef {
+                id: "second-agent".to_string(),
+                is_default: false,
+            },
         ],
         dm_scope: "main".to_string(),
     });
@@ -295,7 +340,10 @@ fn test_pick_agent_unknown_falls_back_to_default() {
             match_guild_id: None,
             match_team_id: None,
         }],
-        agents: vec![AgentDef { id: "main".to_string(), is_default: true }],
+        agents: vec![AgentDef {
+            id: "main".to_string(),
+            is_default: true,
+        }],
         dm_scope: "main".to_string(),
     });
     let input = RouteInput {
@@ -321,12 +369,15 @@ fn test_find_peer_match_empty_kind_or_id() {
             agent_id: "peer-agent".to_string(),
             match_channel: "web".to_string(),
             match_account_id: "*".to_string(),
-            match_peer_kind: Some(String::new()),  // empty kind
+            match_peer_kind: Some(String::new()), // empty kind
             match_peer_id: Some("user1".to_string()),
             match_guild_id: None,
             match_team_id: None,
         }],
-        agents: vec![AgentDef { id: "main".to_string(), is_default: true }],
+        agents: vec![AgentDef {
+            id: "main".to_string(),
+            is_default: true,
+        }],
         dm_scope: "main".to_string(),
     });
     let input = RouteInput {
@@ -357,11 +408,14 @@ fn test_filter_bindings_non_matching_channel() {
             match_guild_id: None,
             match_team_id: None,
         }],
-        agents: vec![AgentDef { id: "main".to_string(), is_default: true }],
+        agents: vec![AgentDef {
+            id: "main".to_string(),
+            is_default: true,
+        }],
         dm_scope: "main".to_string(),
     });
     let input = RouteInput {
-        channel: "discord".to_string(),  // different channel
+        channel: "discord".to_string(), // different channel
         account_id: "default".to_string(),
         peer_kind: None,
         peer_id: None,
@@ -403,8 +457,14 @@ fn test_resolve_uses_first_agent_as_default_when_none_marked() {
     let resolver = RouteResolver::new(RouteConfig {
         bindings: vec![],
         agents: vec![
-            AgentDef { id: "first".to_string(), is_default: false },
-            AgentDef { id: "second".to_string(), is_default: false },
+            AgentDef {
+                id: "first".to_string(),
+                is_default: false,
+            },
+            AgentDef {
+                id: "second".to_string(),
+                is_default: false,
+            },
         ],
         dm_scope: "main".to_string(),
     });
@@ -448,14 +508,17 @@ fn test_resolve_with_whitespace_in_channel() {
     let resolver = RouteResolver::new(RouteConfig {
         bindings: vec![AgentBinding {
             agent_id: "web-agent".to_string(),
-            match_channel: "  web  ".to_string(),  // with whitespace
+            match_channel: "  web  ".to_string(), // with whitespace
             match_account_id: "*".to_string(),
             match_peer_kind: None,
             match_peer_id: None,
             match_guild_id: None,
             match_team_id: None,
         }],
-        agents: vec![AgentDef { id: "web-agent".to_string(), is_default: true }],
+        agents: vec![AgentDef {
+            id: "web-agent".to_string(),
+            is_default: true,
+        }],
         dm_scope: "main".to_string(),
     });
     let input = RouteInput {
@@ -481,11 +544,14 @@ fn test_resolve_with_whitespace_in_peer_id() {
             match_channel: "web".to_string(),
             match_account_id: "*".to_string(),
             match_peer_kind: Some("direct".to_string()),
-            match_peer_id: Some("  user1  ".to_string()),  // with whitespace
+            match_peer_id: Some("  user1  ".to_string()), // with whitespace
             match_guild_id: None,
             match_team_id: None,
         }],
-        agents: vec![AgentDef { id: "peer-agent".to_string(), is_default: true }],
+        agents: vec![AgentDef {
+            id: "peer-agent".to_string(),
+            is_default: true,
+        }],
         dm_scope: "main".to_string(),
     });
     let input = RouteInput {
@@ -512,10 +578,13 @@ fn test_resolve_with_whitespace_in_guild_id() {
             match_account_id: "*".to_string(),
             match_peer_kind: None,
             match_peer_id: None,
-            match_guild_id: Some("  guild123  ".to_string()),  // with whitespace
+            match_guild_id: Some("  guild123  ".to_string()), // with whitespace
             match_team_id: None,
         }],
-        agents: vec![AgentDef { id: "guild-agent".to_string(), is_default: true }],
+        agents: vec![AgentDef {
+            id: "guild-agent".to_string(),
+            is_default: true,
+        }],
         dm_scope: "main".to_string(),
     });
     let input = RouteInput {
@@ -543,9 +612,12 @@ fn test_resolve_with_whitespace_in_team_id() {
             match_peer_kind: None,
             match_peer_id: None,
             match_guild_id: None,
-            match_team_id: Some("  team456  ".to_string()),  // with whitespace
+            match_team_id: Some("  team456  ".to_string()), // with whitespace
         }],
-        agents: vec![AgentDef { id: "team-agent".to_string(), is_default: true }],
+        agents: vec![AgentDef {
+            id: "team-agent".to_string(),
+            is_default: true,
+        }],
         dm_scope: "main".to_string(),
     });
     let input = RouteInput {
@@ -571,11 +643,14 @@ fn test_resolve_empty_peer_id_with_binding() {
             match_channel: "web".to_string(),
             match_account_id: "*".to_string(),
             match_peer_kind: Some("direct".to_string()),
-            match_peer_id: Some(String::new()),  // empty peer_id
+            match_peer_id: Some(String::new()), // empty peer_id
             match_guild_id: None,
             match_team_id: None,
         }],
-        agents: vec![AgentDef { id: "main".to_string(), is_default: true }],
+        agents: vec![AgentDef {
+            id: "main".to_string(),
+            is_default: true,
+        }],
         dm_scope: "main".to_string(),
     });
     let input = RouteInput {
@@ -603,10 +678,13 @@ fn test_resolve_empty_guild_id_with_binding() {
             match_account_id: "*".to_string(),
             match_peer_kind: None,
             match_peer_id: None,
-            match_guild_id: Some(String::new()),  // empty guild_id
+            match_guild_id: Some(String::new()), // empty guild_id
             match_team_id: None,
         }],
-        agents: vec![AgentDef { id: "main".to_string(), is_default: true }],
+        agents: vec![AgentDef {
+            id: "main".to_string(),
+            is_default: true,
+        }],
         dm_scope: "main".to_string(),
     });
     let input = RouteInput {
@@ -635,9 +713,12 @@ fn test_resolve_empty_team_id_with_binding() {
             match_peer_kind: None,
             match_peer_id: None,
             match_guild_id: None,
-            match_team_id: Some(String::new()),  // empty team_id
+            match_team_id: Some(String::new()), // empty team_id
         }],
-        agents: vec![AgentDef { id: "main".to_string(), is_default: true }],
+        agents: vec![AgentDef {
+            id: "main".to_string(),
+            is_default: true,
+        }],
         dm_scope: "main".to_string(),
     });
     let input = RouteInput {
@@ -691,7 +772,10 @@ fn test_resolve_session_key_components() {
             match_guild_id: None,
             match_team_id: None,
         }],
-        agents: vec![AgentDef { id: "special-agent".to_string(), is_default: true }],
+        agents: vec![AgentDef {
+            id: "special-agent".to_string(),
+            is_default: true,
+        }],
         dm_scope: "per-peer".to_string(),
     });
     let input = RouteInput {
@@ -733,7 +817,10 @@ fn test_resolve_with_identity_links() {
             match_guild_id: None,
             match_team_id: None,
         }],
-        agents: vec![AgentDef { id: "special-agent".to_string(), is_default: true }],
+        agents: vec![AgentDef {
+            id: "special-agent".to_string(),
+            is_default: true,
+        }],
         dm_scope: "per-channel-peer".to_string(),
     });
     let input = RouteInput {
@@ -751,7 +838,10 @@ fn test_resolve_with_identity_links() {
 
     // Identity link should resolve alice_d to alice
     assert_eq!(route.agent_id, "special-agent");
-    assert_eq!(route.session_key, "agent:special-agent:discord:direct:alice");
+    assert_eq!(
+        route.session_key,
+        "agent:special-agent:discord:direct:alice"
+    );
 }
 
 #[test]
@@ -759,18 +849,21 @@ fn test_resolve_with_uppercase_channel() {
     let resolver = RouteResolver::new(RouteConfig {
         bindings: vec![AgentBinding {
             agent_id: "web-agent".to_string(),
-            match_channel: "WEB".to_string(),  // uppercase
+            match_channel: "WEB".to_string(), // uppercase
             match_account_id: "*".to_string(),
             match_peer_kind: None,
             match_peer_id: None,
             match_guild_id: None,
             match_team_id: None,
         }],
-        agents: vec![AgentDef { id: "web-agent".to_string(), is_default: true }],
+        agents: vec![AgentDef {
+            id: "web-agent".to_string(),
+            is_default: true,
+        }],
         dm_scope: "main".to_string(),
     });
     let input = RouteInput {
-        channel: "web".to_string(),  // lowercase
+        channel: "web".to_string(), // lowercase
         account_id: "default".to_string(),
         peer_kind: None,
         peer_id: None,
@@ -792,18 +885,21 @@ fn test_peer_match_with_uppercase_kind() {
             agent_id: "peer-agent".to_string(),
             match_channel: "web".to_string(),
             match_account_id: "*".to_string(),
-            match_peer_kind: Some("DIRECT".to_string()),  // uppercase
+            match_peer_kind: Some("DIRECT".to_string()), // uppercase
             match_peer_id: Some("user1".to_string()),
             match_guild_id: None,
             match_team_id: None,
         }],
-        agents: vec![AgentDef { id: "peer-agent".to_string(), is_default: true }],
+        agents: vec![AgentDef {
+            id: "peer-agent".to_string(),
+            is_default: true,
+        }],
         dm_scope: "main".to_string(),
     });
     let input = RouteInput {
         channel: "web".to_string(),
         account_id: "default".to_string(),
-        peer_kind: Some("direct".to_string()),  // lowercase
+        peer_kind: Some("direct".to_string()), // lowercase
         peer_id: Some("user1".to_string()),
         parent_peer_kind: None,
         parent_peer_id: None,
@@ -823,12 +919,15 @@ fn test_find_peer_match_none_kind() {
             agent_id: "peer-agent".to_string(),
             match_channel: "web".to_string(),
             match_account_id: "*".to_string(),
-            match_peer_kind: None,  // no kind constraint
+            match_peer_kind: None, // no kind constraint
             match_peer_id: Some("user1".to_string()),
             match_guild_id: None,
             match_team_id: None,
         }],
-        agents: vec![AgentDef { id: "main".to_string(), is_default: true }],
+        agents: vec![AgentDef {
+            id: "main".to_string(),
+            is_default: true,
+        }],
         dm_scope: "main".to_string(),
     });
     let input = RouteInput {
@@ -855,11 +954,14 @@ fn test_find_peer_match_none_id() {
             match_channel: "web".to_string(),
             match_account_id: "*".to_string(),
             match_peer_kind: Some("direct".to_string()),
-            match_peer_id: None,  // no ID constraint
+            match_peer_id: None, // no ID constraint
             match_guild_id: None,
             match_team_id: None,
         }],
-        agents: vec![AgentDef { id: "main".to_string(), is_default: true }],
+        agents: vec![AgentDef {
+            id: "main".to_string(),
+            is_default: true,
+        }],
         dm_scope: "main".to_string(),
     });
     let input = RouteInput {
@@ -884,18 +986,21 @@ fn test_route_input_with_uppercase_account_id() {
         bindings: vec![AgentBinding {
             agent_id: "account-agent".to_string(),
             match_channel: "web".to_string(),
-            match_account_id: "MY-ACCOUNT".to_string(),  // uppercase
+            match_account_id: "MY-ACCOUNT".to_string(), // uppercase
             match_peer_kind: None,
             match_peer_id: None,
             match_guild_id: None,
             match_team_id: None,
         }],
-        agents: vec![AgentDef { id: "account-agent".to_string(), is_default: true }],
+        agents: vec![AgentDef {
+            id: "account-agent".to_string(),
+            is_default: true,
+        }],
         dm_scope: "main".to_string(),
     });
     let input = RouteInput {
         channel: "web".to_string(),
-        account_id: "my-account".to_string(),  // lowercase
+        account_id: "my-account".to_string(), // lowercase
         peer_kind: None,
         peer_id: None,
         parent_peer_kind: None,
@@ -913,7 +1018,10 @@ fn test_route_input_with_uppercase_account_id() {
 fn test_route_with_default_agent_empty_id() {
     let resolver = RouteResolver::new(RouteConfig {
         bindings: vec![],
-        agents: vec![AgentDef { id: String::new(), is_default: true }],  // empty agent ID
+        agents: vec![AgentDef {
+            id: String::new(),
+            is_default: true,
+        }], // empty agent ID
         dm_scope: "main".to_string(),
     });
     let input = RouteInput {
@@ -936,7 +1044,7 @@ fn test_route_with_default_agent_empty_id() {
 fn test_route_with_non_default_agent_fallback() {
     let resolver = RouteResolver::new(RouteConfig {
         bindings: vec![AgentBinding {
-            agent_id: "unknown".to_string(),  // not in agents list
+            agent_id: "unknown".to_string(), // not in agents list
             match_channel: "web".to_string(),
             match_account_id: "*".to_string(),
             match_peer_kind: None,
@@ -944,7 +1052,10 @@ fn test_route_with_non_default_agent_fallback() {
             match_guild_id: None,
             match_team_id: None,
         }],
-        agents: vec![AgentDef { id: "actual-agent".to_string(), is_default: false }],
+        agents: vec![AgentDef {
+            id: "actual-agent".to_string(),
+            is_default: false,
+        }],
         dm_scope: "main".to_string(),
     });
     let input = RouteInput {

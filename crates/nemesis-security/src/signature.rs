@@ -9,15 +9,15 @@
 //!
 //! A skill directory stores its signature in a `.signature` file at the skill root.
 
-use ed25519_dalek::{SigningKey, VerifyingKey, Signer, Signature};
+use base64::Engine;
 use ed25519_dalek::Verifier as Ed25519Verifier;
+use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
+use parking_lot::RwLock;
 use rand::rngs::OsRng;
 use serde::{Deserialize, Serialize};
-use sha2::{Sha256, Digest};
+use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::path::Path;
-use parking_lot::RwLock;
-use base64::Engine;
 
 /// Name of the signature file placed in skill directories.
 const SIGNATURE_FILE_NAME: &str = ".signature";
@@ -145,7 +145,10 @@ impl TrustStore {
     /// Remove a key by signer name. Returns true if a key was removed.
     pub fn remove_key(&self, name: &str) -> bool {
         let mut keys = self.keys.write();
-        let b64 = keys.iter().find(|(_, v)| v.name == name).map(|(k, _)| k.clone());
+        let b64 = keys
+            .iter()
+            .find(|(_, v)| v.name == name)
+            .map(|(k, _)| k.clone());
         if let Some(b64) = b64 {
             keys.remove(&b64);
             drop(keys);
@@ -185,7 +188,11 @@ impl TrustStore {
 
     /// Get trust level for a key.
     pub fn trust_level(&self, public_key: &str) -> TrustLevel {
-        self.keys.read().get(public_key).map(|k| k.level).unwrap_or(TrustLevel::Unknown)
+        self.keys
+            .read()
+            .get(public_key)
+            .map(|k| k.level)
+            .unwrap_or(TrustLevel::Unknown)
     }
 
     /// List all keys currently in the trust store. The returned vec is a copy.
@@ -196,7 +203,10 @@ impl TrustStore {
     /// Revoke a key by signer name. Returns an error string if the key was not found.
     pub fn revoke_key(&self, name: &str) -> Result<(), String> {
         let mut keys = self.keys.write();
-        let b64 = keys.iter().find(|(_, v)| v.name == name).map(|(k, _)| k.clone());
+        let b64 = keys
+            .iter()
+            .find(|(_, v)| v.name == name)
+            .map(|(k, _)| k.clone());
         if let Some(b64) = b64 {
             if let Some(entry) = keys.get_mut(&b64) {
                 entry.level = TrustLevel::Revoked;
@@ -249,10 +259,7 @@ impl TrustStore {
         };
 
         let keys: Vec<TrustedKey> = self.keys.read().values().cloned().collect();
-        let file = TrustStoreFile {
-            version: 1,
-            keys,
-        };
+        let file = TrustStoreFile { version: 1, keys };
         let json = serde_json::to_string_pretty(&file).map_err(|e| e.to_string())?;
 
         // Ensure parent directory exists.
@@ -282,7 +289,8 @@ impl TrustStore {
             return Ok(());
         }
 
-        let data = std::fs::read_to_string(path).map_err(|e| format!("cannot read trust store: {}", e))?;
+        let data =
+            std::fs::read_to_string(path).map_err(|e| format!("cannot read trust store: {}", e))?;
         if data.is_empty() {
             return Ok(());
         }
@@ -586,7 +594,10 @@ impl Verifier {
                 signer: String::new(),
                 trust_level: TrustLevel::Unknown,
                 algorithm: ALGORITHM_NAME.to_string(),
-                error: format!("invalid signature length: expected 64 bytes, got {}", sig_bytes.len()),
+                error: format!(
+                    "invalid signature length: expected 64 bytes, got {}",
+                    sig_bytes.len()
+                ),
                 files_verified: 0,
                 timestamp: now,
             };
@@ -664,11 +675,14 @@ impl Verifier {
     /// The signature should be the raw Ed25519 signature bytes (64 bytes).
     /// The verification computes SHA-256 of the file content and checks it
     /// against all keys in the trust store (skipping revoked keys).
-    pub fn verify_file(&self, file_path: &Path, signature: &[u8]) -> Result<VerificationResult, String> {
+    pub fn verify_file(
+        &self,
+        file_path: &Path,
+        signature: &[u8],
+    ) -> Result<VerificationResult, String> {
         let now = chrono::Local::now().to_rfc3339();
 
-        let content = std::fs::read(file_path)
-            .map_err(|e| format!("cannot read file: {}", e))?;
+        let content = std::fs::read(file_path).map_err(|e| format!("cannot read file: {}", e))?;
 
         let hash = Sha256::digest(&content);
 
@@ -753,8 +767,7 @@ pub fn import_public_key(b64: &str) -> Result<VerifyingKey, String> {
     }
     let mut arr = [0u8; 32];
     arr.copy_from_slice(&bytes);
-    VerifyingKey::from_bytes(&arr)
-        .map_err(|e| format!("invalid public key: {}", e))
+    VerifyingKey::from_bytes(&arr).map_err(|e| format!("invalid public key: {}", e))
 }
 
 /// Compute a SHA-256 fingerprint (hex) of a public key string, suitable for display.
@@ -769,8 +782,7 @@ pub fn compute_fingerprint(public_key: &str) -> String {
 /// Computes SHA-256 of the file content and signs the hash with the provided
 /// signing key. Returns the raw 64-byte Ed25519 signature.
 pub fn sign_file(file_path: &Path, signing_key: &SigningKey) -> Result<Vec<u8>, String> {
-    let content = std::fs::read(file_path)
-        .map_err(|e| format!("cannot read file: {}", e))?;
+    let content = std::fs::read(file_path).map_err(|e| format!("cannot read file: {}", e))?;
 
     let hash = Sha256::digest(&content);
     let sig = signing_key.sign(&hash);
@@ -787,8 +799,7 @@ pub fn verify_file_with_key(
 ) -> Result<VerificationResult, String> {
     let now = chrono::Local::now().to_rfc3339();
 
-    let content = std::fs::read(file_path)
-        .map_err(|e| format!("cannot read file: {}", e))?;
+    let content = std::fs::read(file_path).map_err(|e| format!("cannot read file: {}", e))?;
 
     let hash = Sha256::digest(&content);
 
@@ -882,11 +893,7 @@ pub fn sign_content_hex(content: &str, private_key_hex: &str) -> Result<String, 
 /// Verify a signature against content and a public key (hex-encoded).
 ///
 /// Used by the existing `SignatureVerifier` compatibility layer.
-pub fn verify_signature_ed25519(
-    content: &[u8],
-    signature_hex: &str,
-    public_key_hex: &str,
-) -> bool {
+pub fn verify_signature_ed25519(content: &[u8], signature_hex: &str, public_key_hex: &str) -> bool {
     if let Ok(sig_bytes) = hex_decode_vec(signature_hex) {
         if let Ok(pk_bytes) = hex_decode_32(public_key_hex) {
             if let Ok(verifying_key) = VerifyingKey::from_bytes(&pk_bytes) {
@@ -925,16 +932,18 @@ pub fn compute_hash_signature(content: &str, public_key: &str) -> String {
 fn compute_directory_hash(dir_path: &Path) -> Result<([u8; 32], usize), String> {
     let mut entries: Vec<(String, [u8; 32])> = Vec::new();
 
-    let walker = walkdir::WalkDir::new(dir_path).into_iter().filter_entry(|e| {
-        // Skip the signature file at the root level.
-        if !e.file_type().is_dir() && e.file_name() == SIGNATURE_FILE_NAME {
-            let rel = e.path().strip_prefix(dir_path).unwrap_or(e.path());
-            // Only skip the root-level .signature
-            rel.parent().map_or(true, |p| p.as_os_str().is_empty()) == false || false
-        } else {
-            true
-        }
-    });
+    let walker = walkdir::WalkDir::new(dir_path)
+        .into_iter()
+        .filter_entry(|e| {
+            // Skip the signature file at the root level.
+            if !e.file_type().is_dir() && e.file_name() == SIGNATURE_FILE_NAME {
+                let rel = e.path().strip_prefix(dir_path).unwrap_or(e.path());
+                // Only skip the root-level .signature
+                rel.parent().map_or(true, |p| p.as_os_str().is_empty()) == false || false
+            } else {
+                true
+            }
+        });
 
     for entry in walker {
         let entry = entry.map_err(|e| format!("walk error: {}", e))?;
@@ -1066,11 +1075,17 @@ impl SignatureVerifier {
 
     /// Convenience: add a trusted key through the verifier.
     pub fn add_trusted_key(&self, public_key: &str, label: &str) {
-        self.trust_store.add_key(public_key, label, TrustLevel::Verified);
+        self.trust_store
+            .add_key(public_key, label, TrustLevel::Verified);
     }
 
     /// Verify a skill file.
-    pub fn verify_skill(&self, content: &str, signature_hex: &str, public_key_hex: &str) -> SkillVerification {
+    pub fn verify_skill(
+        &self,
+        content: &str,
+        signature_hex: &str,
+        public_key_hex: &str,
+    ) -> SkillVerification {
         let (_, trusted) = self.trust_store.is_trusted(public_key_hex);
         let trust_level = self.trust_store.trust_level(public_key_hex);
         let valid = self.verify_signature(content, signature_hex, public_key_hex);
@@ -1080,7 +1095,11 @@ impl SignatureVerifier {
             trusted,
             trust_level,
             public_key: public_key_hex.to_string(),
-            error: if !valid { "signature verification failed".to_string() } else { String::new() },
+            error: if !valid {
+                "signature verification failed".to_string()
+            } else {
+                String::new()
+            },
         }
     }
 }

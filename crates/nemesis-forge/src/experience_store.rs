@@ -101,9 +101,8 @@ impl ExperienceStore {
             .open(&file_path)
             .await?;
 
-        let mut line = serde_json::to_string(record).map_err(|e| {
-            std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string())
-        })?;
+        let mut line = serde_json::to_string(record)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()))?;
         line.push('\n');
         file.write_all(line.as_bytes()).await?;
         Ok(())
@@ -123,9 +122,8 @@ impl ExperienceStore {
             .open(&file_path)
             .await?;
 
-        let mut line = serde_json::to_string(exp).map_err(|e| {
-            std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string())
-        })?;
+        let mut line = serde_json::to_string(exp)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()))?;
         line.push('\n');
         file.write_all(line.as_bytes()).await?;
         Ok(())
@@ -181,7 +179,10 @@ impl ExperienceStore {
     ///
     /// Merges records by pattern_hash, sorts by count descending,
     /// and returns the top N.
-    pub async fn get_top_patterns(&self, top_n: usize) -> std::io::Result<Vec<AggregatedExperience>> {
+    pub async fn get_top_patterns(
+        &self,
+        top_n: usize,
+    ) -> std::io::Result<Vec<AggregatedExperience>> {
         self.get_top_patterns_since(None, top_n).await
     }
 
@@ -280,11 +281,10 @@ impl ExperienceStore {
                     }
                     match serde_json::from_str::<CollectedExperience>(line) {
                         Ok(ce) => {
-                            let young = chrono::DateTime::parse_from_rfc3339(
-                                &ce.experience.timestamp,
-                            )
-                            .map(|t| t.with_timezone(&chrono::Local) >= cutoff_dt)
-                            .unwrap_or(true); // unparseable ts → keep (don't lose data)
+                            let young =
+                                chrono::DateTime::parse_from_rfc3339(&ce.experience.timestamp)
+                                    .map(|t| t.with_timezone(&chrono::Local) >= cutoff_dt)
+                                    .unwrap_or(true); // unparseable ts → keep (don't lose data)
                             if young {
                                 new_content.push_str(line);
                                 new_content.push('\n');

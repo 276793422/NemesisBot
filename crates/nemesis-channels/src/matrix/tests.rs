@@ -177,10 +177,11 @@ fn test_process_sync_non_message_events_ignored() {
         rooms: Some(MatrixRooms {
             join: Some({
                 let mut map = std::collections::HashMap::new();
-                map.insert("!room:matrix.org".to_string(), MatrixJoinedRoom {
-                    timeline: Some(MatrixTimeline {
-                        events: vec![
-                            MatrixEvent {
+                map.insert(
+                    "!room:matrix.org".to_string(),
+                    MatrixJoinedRoom {
+                        timeline: Some(MatrixTimeline {
+                            events: vec![MatrixEvent {
                                 event_type: "m.room.member".to_string(),
                                 content: Some(MatrixContent {
                                     msgtype: None,
@@ -189,10 +190,10 @@ fn test_process_sync_non_message_events_ignored() {
                                 sender: Some("@user:matrix.org".to_string()),
                                 event_id: Some("$e1".to_string()),
                                 origin_server_ts: Some(1),
-                            },
-                        ],
-                    }),
-                });
+                            }],
+                        }),
+                    },
+                );
                 map
             }),
         }),
@@ -217,10 +218,11 @@ fn test_process_sync_allow_from_filter() {
         rooms: Some(MatrixRooms {
             join: Some({
                 let mut map = std::collections::HashMap::new();
-                map.insert("!room:matrix.org".to_string(), MatrixJoinedRoom {
-                    timeline: Some(MatrixTimeline {
-                        events: vec![
-                            MatrixEvent {
+                map.insert(
+                    "!room:matrix.org".to_string(),
+                    MatrixJoinedRoom {
+                        timeline: Some(MatrixTimeline {
+                            events: vec![MatrixEvent {
                                 event_type: "m.room.message".to_string(),
                                 content: Some(MatrixContent {
                                     msgtype: Some("m.text".to_string()),
@@ -229,10 +231,10 @@ fn test_process_sync_allow_from_filter() {
                                 sender: Some("@blocked:matrix.org".to_string()),
                                 event_id: Some("$e1".to_string()),
                                 origin_server_ts: Some(1),
-                            },
-                        ],
-                    }),
-                });
+                            }],
+                        }),
+                    },
+                );
                 map
             }),
         }),

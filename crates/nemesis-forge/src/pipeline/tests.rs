@@ -46,16 +46,28 @@ fn test_determine_status() {
     // All stages pass with high score
     let validation = ArtifactValidation {
         stage1_static: Some(StaticValidationResult {
-            stage: ValidationStage { passed: true, timestamp: String::new(), errors: vec![] },
+            stage: ValidationStage {
+                passed: true,
+                timestamp: String::new(),
+                errors: vec![],
+            },
             warnings: vec![],
         }),
         stage2_functional: Some(FunctionalValidationResult {
-            stage: ValidationStage { passed: true, timestamp: String::new(), errors: vec![] },
+            stage: ValidationStage {
+                passed: true,
+                timestamp: String::new(),
+                errors: vec![],
+            },
             tests_run: 3,
             tests_passed: 3,
         }),
         stage3_quality: Some(QualityValidationResult {
-            stage: ValidationStage { passed: true, timestamp: String::new(), errors: vec![] },
+            stage: ValidationStage {
+                passed: true,
+                timestamp: String::new(),
+                errors: vec![],
+            },
             score: 80,
             notes: String::new(),
             dimensions: Default::default(),
@@ -63,7 +75,10 @@ fn test_determine_status() {
         last_validated: String::new(),
     };
 
-    assert_eq!(pipeline.determine_status(&validation), ArtifactStatus::Active);
+    assert_eq!(
+        pipeline.determine_status(&validation),
+        ArtifactStatus::Active
+    );
 }
 
 #[tokio::test]
@@ -74,7 +89,9 @@ async fn test_evaluate_quality_no_provider() {
     );
 
     let content = "---\nname: test\n---\nA test skill content.";
-    let result = pipeline.evaluate_quality(ArtifactKind::Skill, "test", content).await;
+    let result = pipeline
+        .evaluate_quality(ArtifactKind::Skill, "test", content)
+        .await;
 
     // Without provider, should get default score
     assert!(result.stage.passed);
@@ -85,8 +102,8 @@ async fn test_evaluate_quality_no_provider() {
 
 #[tokio::test]
 async fn test_set_provider() {
-    use async_trait::async_trait;
     use crate::reflector_llm::LLMCaller;
+    use async_trait::async_trait;
 
     struct MockLLM;
 
@@ -110,7 +127,9 @@ async fn test_set_provider() {
     pipeline.set_provider(Arc::new(MockLLM));
 
     let content = "---\nname: test\n---\nA test skill content that is sufficient for validation.";
-    let result = pipeline.evaluate_quality(ArtifactKind::Skill, "test", content).await;
+    let result = pipeline
+        .evaluate_quality(ArtifactKind::Skill, "test", content)
+        .await;
 
     // With LLM provider, should get parsed score
     assert!(result.stage.passed);
@@ -126,7 +145,9 @@ async fn test_validate_async_no_provider() {
     );
 
     let content = "---\nname: test\n---\nThis is a test skill content that is long enough to pass validation.";
-    let validation = pipeline.validate_async(ArtifactKind::Skill, "test", content).await;
+    let validation = pipeline
+        .validate_async(ArtifactKind::Skill, "test", content)
+        .await;
 
     assert!(validation.stage1_static.as_ref().unwrap().stage.passed);
     assert!(validation.stage2_functional.as_ref().unwrap().stage.passed);
@@ -174,10 +195,20 @@ fn test_validate_secret_detection() {
         ForgeConfig::default(),
         Arc::new(Registry::new(crate::types::RegistryConfig::default())),
     );
-    let content = "---\nname: test\n---\nThis skill uses api_key=sk-1234567890abcdefghijklmnop to connect.";
+    let content =
+        "---\nname: test\n---\nThis skill uses api_key=sk-1234567890abcdefghijklmnop to connect.";
     let validation = pipeline.validate(ArtifactKind::Skill, "test", content);
     assert!(!validation.stage1_static.as_ref().unwrap().stage.passed);
-    assert!(validation.stage1_static.as_ref().unwrap().stage.errors.iter().any(|e| e.contains("secret")));
+    assert!(
+        validation
+            .stage1_static
+            .as_ref()
+            .unwrap()
+            .stage
+            .errors
+            .iter()
+            .any(|e| e.contains("secret"))
+    );
 }
 
 #[test]
@@ -212,14 +243,21 @@ fn test_determine_status_draft_stage1_failed() {
     );
     let validation = ArtifactValidation {
         stage1_static: Some(StaticValidationResult {
-            stage: ValidationStage { passed: false, timestamp: String::new(), errors: vec!["fail".into()] },
+            stage: ValidationStage {
+                passed: false,
+                timestamp: String::new(),
+                errors: vec!["fail".into()],
+            },
             warnings: vec![],
         }),
         stage2_functional: None,
         stage3_quality: None,
         last_validated: String::new(),
     };
-    assert_eq!(pipeline.determine_status(&validation), ArtifactStatus::Draft);
+    assert_eq!(
+        pipeline.determine_status(&validation),
+        ArtifactStatus::Draft
+    );
 }
 
 #[test]
@@ -230,18 +268,29 @@ fn test_determine_status_draft_stage2_failed() {
     );
     let validation = ArtifactValidation {
         stage1_static: Some(StaticValidationResult {
-            stage: ValidationStage { passed: true, timestamp: String::new(), errors: vec![] },
+            stage: ValidationStage {
+                passed: true,
+                timestamp: String::new(),
+                errors: vec![],
+            },
             warnings: vec![],
         }),
         stage2_functional: Some(FunctionalValidationResult {
-            stage: ValidationStage { passed: false, timestamp: String::new(), errors: vec!["fail".into()] },
+            stage: ValidationStage {
+                passed: false,
+                timestamp: String::new(),
+                errors: vec!["fail".into()],
+            },
             tests_run: 3,
             tests_passed: 1,
         }),
         stage3_quality: None,
         last_validated: String::new(),
     };
-    assert_eq!(pipeline.determine_status(&validation), ArtifactStatus::Draft);
+    assert_eq!(
+        pipeline.determine_status(&validation),
+        ArtifactStatus::Draft
+    );
 }
 
 #[test]
@@ -252,18 +301,29 @@ fn test_determine_status_observing_no_stage3() {
     );
     let validation = ArtifactValidation {
         stage1_static: Some(StaticValidationResult {
-            stage: ValidationStage { passed: true, timestamp: String::new(), errors: vec![] },
+            stage: ValidationStage {
+                passed: true,
+                timestamp: String::new(),
+                errors: vec![],
+            },
             warnings: vec![],
         }),
         stage2_functional: Some(FunctionalValidationResult {
-            stage: ValidationStage { passed: true, timestamp: String::new(), errors: vec![] },
+            stage: ValidationStage {
+                passed: true,
+                timestamp: String::new(),
+                errors: vec![],
+            },
             tests_run: 3,
             tests_passed: 3,
         }),
         stage3_quality: None,
         last_validated: String::new(),
     };
-    assert_eq!(pipeline.determine_status(&validation), ArtifactStatus::Observing);
+    assert_eq!(
+        pipeline.determine_status(&validation),
+        ArtifactStatus::Observing
+    );
 }
 
 #[test]
@@ -274,23 +334,38 @@ fn test_determine_status_draft_low_quality() {
     );
     let validation = ArtifactValidation {
         stage1_static: Some(StaticValidationResult {
-            stage: ValidationStage { passed: true, timestamp: String::new(), errors: vec![] },
+            stage: ValidationStage {
+                passed: true,
+                timestamp: String::new(),
+                errors: vec![],
+            },
             warnings: vec![],
         }),
         stage2_functional: Some(FunctionalValidationResult {
-            stage: ValidationStage { passed: true, timestamp: String::new(), errors: vec![] },
+            stage: ValidationStage {
+                passed: true,
+                timestamp: String::new(),
+                errors: vec![],
+            },
             tests_run: 3,
             tests_passed: 3,
         }),
         stage3_quality: Some(QualityValidationResult {
-            stage: ValidationStage { passed: false, timestamp: String::new(), errors: vec![] },
+            stage: ValidationStage {
+                passed: false,
+                timestamp: String::new(),
+                errors: vec![],
+            },
             score: 40,
             notes: String::new(),
             dimensions: Default::default(),
         }),
         last_validated: String::new(),
     };
-    assert_eq!(pipeline.determine_status(&validation), ArtifactStatus::Draft);
+    assert_eq!(
+        pipeline.determine_status(&validation),
+        ArtifactStatus::Draft
+    );
 }
 
 #[test]
@@ -301,23 +376,38 @@ fn test_determine_status_active_high_quality() {
     );
     let validation = ArtifactValidation {
         stage1_static: Some(StaticValidationResult {
-            stage: ValidationStage { passed: true, timestamp: String::new(), errors: vec![] },
+            stage: ValidationStage {
+                passed: true,
+                timestamp: String::new(),
+                errors: vec![],
+            },
             warnings: vec![],
         }),
         stage2_functional: Some(FunctionalValidationResult {
-            stage: ValidationStage { passed: true, timestamp: String::new(), errors: vec![] },
+            stage: ValidationStage {
+                passed: true,
+                timestamp: String::new(),
+                errors: vec![],
+            },
             tests_run: 3,
             tests_passed: 3,
         }),
         stage3_quality: Some(QualityValidationResult {
-            stage: ValidationStage { passed: true, timestamp: String::new(), errors: vec![] },
+            stage: ValidationStage {
+                passed: true,
+                timestamp: String::new(),
+                errors: vec![],
+            },
             score: 80,
             notes: "Good quality".into(),
             dimensions: Default::default(),
         }),
         last_validated: String::new(),
     };
-    assert_eq!(pipeline.determine_status(&validation), ArtifactStatus::Active);
+    assert_eq!(
+        pipeline.determine_status(&validation),
+        ArtifactStatus::Active
+    );
 }
 
 #[test]
@@ -362,7 +452,9 @@ async fn test_validate_async_skill_too_short() {
         ForgeConfig::default(),
         Arc::new(Registry::new(crate::types::RegistryConfig::default())),
     );
-    let validation = pipeline.validate_async(ArtifactKind::Skill, "short", "hi").await;
+    let validation = pipeline
+        .validate_async(ArtifactKind::Skill, "short", "hi")
+        .await;
     assert!(!validation.stage1_static.as_ref().unwrap().stage.passed);
     // Stage 2 and 3 should be None since stage 1 failed
     assert!(validation.stage2_functional.is_none());
@@ -376,7 +468,9 @@ async fn test_validate_async_script_valid() {
         Arc::new(Registry::new(crate::types::RegistryConfig::default())),
     );
     let content = "#!/bin/bash\necho hello";
-    let validation = pipeline.validate_async(ArtifactKind::Script, "test", content).await;
+    let validation = pipeline
+        .validate_async(ArtifactKind::Script, "test", content)
+        .await;
     assert!(validation.stage1_static.as_ref().unwrap().stage.passed);
 }
 
@@ -395,7 +489,11 @@ fn test_validation_stage_serialization() {
 #[test]
 fn test_static_validation_result_serialization() {
     let result = StaticValidationResult {
-        stage: ValidationStage { passed: true, timestamp: String::new(), errors: vec![] },
+        stage: ValidationStage {
+            passed: true,
+            timestamp: String::new(),
+            errors: vec![],
+        },
         warnings: vec!["test warning".into()],
     };
     let json = serde_json::to_string(&result).unwrap();
@@ -407,7 +505,11 @@ fn test_static_validation_result_serialization() {
 #[test]
 fn test_functional_validation_result_serialization() {
     let result = FunctionalValidationResult {
-        stage: ValidationStage { passed: true, timestamp: String::new(), errors: vec![] },
+        stage: ValidationStage {
+            passed: true,
+            timestamp: String::new(),
+            errors: vec![],
+        },
         tests_run: 3,
         tests_passed: 2,
     };
@@ -423,7 +525,11 @@ fn test_quality_validation_result_serialization() {
     dims.insert("correctness".to_string(), 85);
     dims.insert("security".to_string(), 90);
     let result = QualityValidationResult {
-        stage: ValidationStage { passed: true, timestamp: String::new(), errors: vec![] },
+        stage: ValidationStage {
+            passed: true,
+            timestamp: String::new(),
+            errors: vec![],
+        },
         score: 85,
         notes: "Good quality".into(),
         dimensions: dims,
@@ -438,7 +544,11 @@ fn test_quality_validation_result_serialization() {
 fn test_artifact_validation_serialization() {
     let validation = ArtifactValidation {
         stage1_static: Some(StaticValidationResult {
-            stage: ValidationStage { passed: true, timestamp: "2026-05-09".into(), errors: vec![] },
+            stage: ValidationStage {
+                passed: true,
+                timestamp: "2026-05-09".into(),
+                errors: vec![],
+            },
             warnings: vec![],
         }),
         stage2_functional: None,

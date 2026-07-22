@@ -91,7 +91,11 @@ fn context_builder_skip_bootstrap_mode() {
 #[test]
 fn context_builder_bootstrap_file_triggers_init_mode() {
     let tmp = TempDir::new().unwrap();
-    std::fs::write(tmp.path().join("BOOTSTRAP.md"), "Please set up the assistant.").unwrap();
+    std::fs::write(
+        tmp.path().join("BOOTSTRAP.md"),
+        "Please set up the assistant.",
+    )
+    .unwrap();
 
     let builder = ContextBuilder::new(tmp.path());
     let prompt = builder.build_system_prompt(false);
@@ -139,14 +143,7 @@ fn build_messages_with_history() {
         },
     ];
 
-    let messages = builder.build_messages(
-        &history,
-        "",
-        "How are you?",
-        "web",
-        "chat1",
-        false,
-    );
+    let messages = builder.build_messages(&history, "", "How are you?", "web", "chat1", false);
 
     // system + 2 history + 1 current = 4
     assert_eq!(messages.len(), 4);
@@ -255,7 +252,11 @@ fn build_messages_with_summary() {
 
     // system + current = 2
     assert_eq!(messages.len(), 2);
-    assert!(messages[0].content.contains("Previous conversation summary here."));
+    assert!(
+        messages[0]
+            .content
+            .contains("Previous conversation summary here.")
+    );
 }
 
 #[test]
@@ -274,7 +275,11 @@ fn context_builder_load_skills() {
     let skills_dir = tmp.path().join("Skills");
     let skill_a = skills_dir.join("my-skill");
     std::fs::create_dir_all(&skill_a).unwrap();
-    std::fs::write(skill_a.join("SKILL.md"), "# My Cool Skill\nDoes cool things.").unwrap();
+    std::fs::write(
+        skill_a.join("SKILL.md"),
+        "# My Cool Skill\nDoes cool things.",
+    )
+    .unwrap();
 
     let mut builder = ContextBuilder::new(tmp.path());
     builder.load_skills(&skills_dir);
@@ -354,16 +359,14 @@ fn context_builder_set_tools_registry_appends_to_existing() {
     let mut builder = ContextBuilder::new(tmp.path());
     builder.set_tool_summaries(vec!["- existing: Existing tool".to_string()]);
 
-    let definitions = vec![
-        serde_json::json!({
-            "type": "function",
-            "function": {
-                "name": "new_tool",
-                "description": "A new tool",
-                "parameters": {}
-            }
-        }),
-    ];
+    let definitions = vec![serde_json::json!({
+        "type": "function",
+        "function": {
+            "name": "new_tool",
+            "description": "A new tool",
+            "parameters": {}
+        }
+    })];
 
     builder.set_tools_registry(definitions);
 
@@ -559,14 +562,12 @@ fn context_builder_set_tools_registry_with_invalid_defs() {
     let mut builder = ContextBuilder::new(tmp.path());
 
     // Definition without function name
-    let definitions = vec![
-        serde_json::json!({
-            "type": "function",
-            "function": {
-                "description": "Missing name"
-            }
-        }),
-    ];
+    let definitions = vec![serde_json::json!({
+        "type": "function",
+        "function": {
+            "description": "Missing name"
+        }
+    })];
 
     builder.set_tools_registry(definitions);
     // Should not crash, invalid definitions are filtered
@@ -644,20 +645,18 @@ fn build_messages_with_tool_calls_in_history() {
     let tmp = TempDir::new().unwrap();
     let builder = ContextBuilder::new(tmp.path());
 
-    let history = vec![
-        crate::types::ConversationTurn {
-            role: "assistant".to_string(),
-            content: String::new(),
-            tool_calls: vec![crate::types::ToolCallInfo {
-                id: "tc_1".to_string(),
-                name: "search".to_string(),
-                arguments: "{}".to_string(),
-            }],
-            tool_call_id: None,
-            timestamp: "2026-04-29T12:00:00Z".to_string(),
-            reasoning_content: None,
-        },
-    ];
+    let history = vec![crate::types::ConversationTurn {
+        role: "assistant".to_string(),
+        content: String::new(),
+        tool_calls: vec![crate::types::ToolCallInfo {
+            id: "tc_1".to_string(),
+            name: "search".to_string(),
+            arguments: "{}".to_string(),
+        }],
+        tool_call_id: None,
+        timestamp: "2026-04-29T12:00:00Z".to_string(),
+        reasoning_content: None,
+    }];
 
     let messages = builder.build_messages(&history, "", "Continue", "web", "chat1", false);
     // system + 1 history (with tool_calls) + 1 current = 3
@@ -701,7 +700,11 @@ fn build_messages_with_tool_call_id_in_history() {
 fn context_builder_all_bootstrap_files() {
     let tmp = TempDir::new().unwrap();
     for filename in &["AGENT.md", "IDENTITY.md", "SOUL.md", "USER.md", "MCP.md"] {
-        std::fs::write(tmp.path().join(filename), format!("Content for {}", filename)).unwrap();
+        std::fs::write(
+            tmp.path().join(filename),
+            format!("Content for {}", filename),
+        )
+        .unwrap();
     }
 
     let builder = ContextBuilder::new(tmp.path());
@@ -709,7 +712,11 @@ fn context_builder_all_bootstrap_files() {
 
     for filename in &["AGENT.md", "IDENTITY.md", "SOUL.md", "USER.md", "MCP.md"] {
         assert!(prompt.contains(filename), "Missing {}", filename);
-        assert!(prompt.contains(&format!("Content for {}", filename)), "Missing content for {}", filename);
+        assert!(
+            prompt.contains(&format!("Content for {}", filename)),
+            "Missing content for {}",
+            filename
+        );
     }
 }
 

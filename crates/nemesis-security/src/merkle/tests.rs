@@ -44,7 +44,11 @@ fn test_proof_and_verify() {
     for i in 0..4 {
         let data = format!("leaf{}", i);
         let proof = tree.proof(i).unwrap();
-        assert!(tree.verify(data.as_bytes(), &proof), "proof for leaf {} should verify", i);
+        assert!(
+            tree.verify(data.as_bytes(), &proof),
+            "proof for leaf {} should verify",
+            i
+        );
     }
 }
 
@@ -98,7 +102,10 @@ fn test_sha256_hex_empty() {
 fn test_sha256_hex_known() {
     // SHA256("hello") is well-known
     let hash = sha256_hex(b"hello");
-    assert_eq!(hash, "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824");
+    assert_eq!(
+        hash,
+        "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824"
+    );
 }
 
 #[test]
@@ -119,9 +126,18 @@ fn test_sha256_pair_hex_order_matters() {
 
 #[test]
 fn test_proof_step_equality() {
-    let s1 = ProofStep { hash: "abc".to_string(), direction: "left".to_string() };
-    let s2 = ProofStep { hash: "abc".to_string(), direction: "left".to_string() };
-    let s3 = ProofStep { hash: "abc".to_string(), direction: "right".to_string() };
+    let s1 = ProofStep {
+        hash: "abc".to_string(),
+        direction: "left".to_string(),
+    };
+    let s2 = ProofStep {
+        hash: "abc".to_string(),
+        direction: "left".to_string(),
+    };
+    let s3 = ProofStep {
+        hash: "abc".to_string(),
+        direction: "right".to_string(),
+    };
     assert_eq!(s1, s2);
     assert_ne!(s1, s3);
 }
@@ -160,10 +176,7 @@ fn test_four_leaves_root_matches_manual() {
     let h2 = tree.add_leaf(b"c");
     let h3 = tree.add_leaf(b"d");
 
-    let expected_root = sha256_pair_hex(
-        &sha256_pair_hex(&h0, &h1),
-        &sha256_pair_hex(&h2, &h3),
-    );
+    let expected_root = sha256_pair_hex(&sha256_pair_hex(&h0, &h1), &sha256_pair_hex(&h2, &h3));
     assert_eq!(*tree.root_hash(), expected_root);
 }
 
@@ -214,8 +227,11 @@ fn test_proof_eight_leaves_all_verify() {
     for i in 0..8 {
         let data = format!("leaf{}", i);
         let proof = tree.proof(i).unwrap();
-        assert!(tree.verify(data.as_bytes(), &proof),
-            "proof for leaf {} should verify", i);
+        assert!(
+            tree.verify(data.as_bytes(), &proof),
+            "proof for leaf {} should verify",
+            i
+        );
     }
 }
 
@@ -225,7 +241,11 @@ fn test_verify_from_hash_wrong_root() {
     let h0 = tree.add_leaf(b"data0");
     tree.add_leaf(b"data1");
     let proof = tree.proof(0).unwrap();
-    assert!(!MerkleTree::verify_from_hash(&h0, &proof, "wrong_root_hash"));
+    assert!(!MerkleTree::verify_from_hash(
+        &h0,
+        &proof,
+        "wrong_root_hash"
+    ));
 }
 
 #[test]
@@ -281,6 +301,10 @@ fn test_same_data_different_positions() {
     // All proofs should verify
     for i in 0..3 {
         let proof = tree.proof(i).unwrap();
-        assert!(tree.verify(b"same", &proof), "proof for index {} should verify", i);
+        assert!(
+            tree.verify(b"same", &proof),
+            "proof for index {} should verify",
+            i
+        );
     }
 }

@@ -97,7 +97,11 @@ async fn test_store_allowed_by_gate_proceeds() {
             &serde_json::json!({"memory_type": "episodic", "content": "x"}),
         )
         .await;
-    assert!(result.success, "allowed store should succeed: {}", result.content);
+    assert!(
+        result.success,
+        "allowed store should succeed: {}",
+        result.content
+    );
 }
 
 #[test]
@@ -178,7 +182,11 @@ async fn test_execute_store_missing_type() {
         .execute("memory_store", &serde_json::json!({}))
         .await;
     assert!(!result.success);
-    assert!(result.content.contains("content is required for episodic memory"));
+    assert!(
+        result
+            .content
+            .contains("content is required for episodic memory")
+    );
 }
 
 #[tokio::test]
@@ -301,10 +309,7 @@ async fn test_execute_search_valid_query() {
     let executor = MemoryToolExecutor::new(mgr);
 
     let result = executor
-        .execute(
-            "memory_search",
-            &serde_json::json!({"query": "test query"}),
-        )
+        .execute("memory_search", &serde_json::json!({"query": "test query"}))
         .await;
     assert!(result.success);
     assert!(result.content.contains("test query"));
@@ -410,10 +415,7 @@ async fn test_store_graph_no_data_error() {
     let executor = MemoryToolExecutor::new(mgr);
 
     let result = executor
-        .execute(
-            "memory_store",
-            &serde_json::json!({"memory_type": "graph"}),
-        )
+        .execute("memory_store", &serde_json::json!({"memory_type": "graph"}))
         .await;
     assert!(!result.success);
     assert!(result.content.contains("entity_name") || result.content.contains("triple"));
@@ -450,7 +452,11 @@ async fn test_execute_forget_cleanup_zero_days_error() {
         )
         .await;
     assert!(!result.success);
-    assert!(result.content.contains("older_than_days must be at least 1"));
+    assert!(
+        result
+            .content
+            .contains("older_than_days must be at least 1")
+    );
 }
 
 #[tokio::test]
@@ -578,10 +584,7 @@ async fn test_execute_list_episodes_missing_session_key() {
     let executor = MemoryToolExecutor::new(mgr);
 
     let result = executor
-        .execute(
-            "memory_list",
-            &serde_json::json!({"list_type": "episodes"}),
-        )
+        .execute("memory_list", &serde_json::json!({"list_type": "episodes"}))
         .await;
     assert!(!result.success);
     assert!(result.content.contains("session_key is required"));
@@ -956,10 +959,7 @@ async fn test_execute_search_with_stored_data() {
 
     // Search for it
     let result = executor
-        .execute(
-            "memory_search",
-            &serde_json::json!({"query": "Rust"}),
-        )
+        .execute("memory_search", &serde_json::json!({"query": "Rust"}))
         .await;
     assert!(result.success);
 }
@@ -1114,10 +1114,7 @@ async fn test_execute_store_graph_missing_entity_and_triple() {
 
     // Neither entity_name nor triple_subject provided
     let result = executor
-        .execute(
-            "memory_store",
-            &serde_json::json!({"memory_type": "graph"}),
-        )
+        .execute("memory_store", &serde_json::json!({"memory_type": "graph"}))
         .await;
     assert!(!result.success);
     assert!(result.content.contains("entity_name") || result.content.contains("triple"));
@@ -1229,10 +1226,7 @@ async fn test_execute_list_status_type() {
     let executor = MemoryToolExecutor::new(mgr);
 
     let result = executor
-        .execute(
-            "memory_list",
-            &serde_json::json!({"list_type": "status"}),
-        )
+        .execute("memory_list", &serde_json::json!({"list_type": "status"}))
         .await;
     assert!(result.success);
     assert!(result.content.contains("Memory Store"));
@@ -1424,11 +1418,12 @@ async fn test_execute_store_and_search_with_vector_store() {
     let dir = tempfile::tempdir().unwrap();
     let config = crate::manager::Config::new(dir.path());
     let mgr = Arc::new(MemoryManager::new(&config));
-    let embed = crate::vector::test_fixture::shared_embed_func()
-        .expect("shared plugin not available");
+    let embed =
+        crate::vector::test_fixture::shared_embed_func().expect("shared plugin not available");
     let vs_config = crate::vector::test_fixture::plugin_store_config(
-        &dir.path().join("vector").join("vs.jsonl").to_string_lossy()
-    ).expect("plugin DLL + model files required");
+        &dir.path().join("vector").join("vs.jsonl").to_string_lossy(),
+    )
+    .expect("plugin DLL + model files required");
     mgr.init_vector_store_with_embed(embed, vs_config).unwrap();
     let executor = MemoryToolExecutor::new(mgr);
 
@@ -1446,10 +1441,7 @@ async fn test_execute_store_and_search_with_vector_store() {
 
     // Search via tool (default memory_type="all" → includes vector store semantic search)
     let result = executor
-        .execute(
-            "memory_search",
-            &serde_json::json!({"query": "roundtrip"}),
-        )
+        .execute("memory_search", &serde_json::json!({"query": "roundtrip"}))
         .await;
     assert!(result.success, "search should succeed: {}", result.content);
     // Vector store should find the stored episodic content via semantic search
@@ -1474,11 +1466,12 @@ async fn test_execute_list_with_vector_store_entries() {
     let dir = tempfile::tempdir().unwrap();
     let config = crate::manager::Config::new(dir.path());
     let mgr = Arc::new(MemoryManager::new(&config));
-    let embed = crate::vector::test_fixture::shared_embed_func()
-        .expect("shared plugin not available");
+    let embed =
+        crate::vector::test_fixture::shared_embed_func().expect("shared plugin not available");
     let vs_config = crate::vector::test_fixture::plugin_store_config(
-        &dir.path().join("vector").join("vs.jsonl").to_string_lossy()
-    ).expect("plugin DLL + model files required");
+        &dir.path().join("vector").join("vs.jsonl").to_string_lossy(),
+    )
+    .expect("plugin DLL + model files required");
     mgr.init_vector_store_with_embed(embed, vs_config).unwrap();
     let executor = MemoryToolExecutor::new(mgr);
 
@@ -1518,11 +1511,12 @@ async fn test_execute_forget_removes_from_vector_store() {
     let dir = tempfile::tempdir().unwrap();
     let config = crate::manager::Config::new(dir.path());
     let mgr = Arc::new(MemoryManager::new(&config));
-    let embed = crate::vector::test_fixture::shared_embed_func()
-        .expect("shared plugin not available");
+    let embed =
+        crate::vector::test_fixture::shared_embed_func().expect("shared plugin not available");
     let vs_config = crate::vector::test_fixture::plugin_store_config(
-        &dir.path().join("vector").join("vs.jsonl").to_string_lossy()
-    ).expect("plugin DLL + model files required");
+        &dir.path().join("vector").join("vs.jsonl").to_string_lossy(),
+    )
+    .expect("plugin DLL + model files required");
     mgr.init_vector_store_with_embed(embed, vs_config).unwrap();
     let executor = MemoryToolExecutor::new(mgr);
 
@@ -1553,10 +1547,7 @@ async fn test_execute_forget_removes_from_vector_store() {
 
     // Search should no longer find it
     let search_result = executor
-        .execute(
-            "memory_search",
-            &serde_json::json!({"query": "forgotten"}),
-        )
+        .execute("memory_search", &serde_json::json!({"query": "forgotten"}))
         .await;
     assert!(search_result.success);
 

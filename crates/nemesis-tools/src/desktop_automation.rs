@@ -11,8 +11,8 @@ use crate::registry::Tool;
 use crate::types::ToolResult;
 use async_trait::async_trait;
 use std::path::PathBuf;
-use std::sync::Arc;
 use std::str::FromStr;
+use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::Mutex;
 
@@ -171,11 +171,19 @@ impl DesktopTool {
     async fn execute_click_at(&self, args: &serde_json::Value) -> ToolResult {
         let x = match args["x"].as_i64() {
             Some(v) => v,
-            None => return ToolResult::error("parameters 'x' and 'y' are required for click_at action"),
+            None => {
+                return ToolResult::error(
+                    "parameters 'x' and 'y' are required for click_at action",
+                );
+            }
         };
         let y = match args["y"].as_i64() {
             Some(v) => v,
-            None => return ToolResult::error("parameters 'x' and 'y' are required for click_at action"),
+            None => {
+                return ToolResult::error(
+                    "parameters 'x' and 'y' are required for click_at action",
+                );
+            }
         };
 
         let button = args["button"].as_str().unwrap_or("left").to_string();
@@ -200,7 +208,7 @@ impl DesktopTool {
                     return ToolResult::silent(&format!(
                         "Clicked at ({}, {}) with {} button.\n{}",
                         x, y, button, result
-                    ))
+                    ));
                 }
                 Err(e) => return ToolResult::error(&format!("MCP click_at failed: {}", e)),
             }
@@ -269,7 +277,9 @@ impl DesktopTool {
                 .call_tool("capture_screenshot_to_file", &mcp_args)
                 .await
             {
-                Ok(result) => return ToolResult::silent(&format!("Screenshot captured.\n{}", result)),
+                Ok(result) => {
+                    return ToolResult::silent(&format!("Screenshot captured.\n{}", result));
+                }
                 Err(e) => return ToolResult::error(&format!("MCP screenshot failed: {}", e)),
             }
         }
@@ -314,7 +324,7 @@ impl DesktopTool {
                         return ToolResult::error(&format!(
                             "MCP find_window for get_window_text failed: {}",
                             e
-                        ))
+                        ));
                     }
                 }
             } else {
@@ -322,9 +332,7 @@ impl DesktopTool {
             };
 
             if resolved_hwnd.is_empty() {
-                return ToolResult::error(
-                    "could not resolve window handle for get_window_text",
-                );
+                return ToolResult::error("could not resolve window handle for get_window_text");
             }
 
             let text_args = serde_json::json!({
@@ -435,10 +443,9 @@ Start-Sleep -Milliseconds 50
 
         let timeout = *self.timeout.lock().await;
         match self.run_powershell(&script, timeout).await {
-            Ok(_) => ToolResult::silent(&format!(
-                "Clicked at ({}, {}) with {} button",
-                x, y, button
-            )),
+            Ok(_) => {
+                ToolResult::silent(&format!("Clicked at ({}, {}) with {} button", x, y, button))
+            }
             Err(e) => ToolResult::error(&format!("click_at failed: {}", e)),
         }
     }
@@ -473,31 +480,32 @@ Start-Sleep -Milliseconds 100
         h: Option<i64>,
     ) -> ToolResult {
         // Default to full primary screen if no region specified
-        let (final_x, final_y, final_w, final_h) = if x.is_none() || y.is_none() || w.is_none() || h.is_none() {
-            let screen_script = r#"
+        let (final_x, final_y, final_w, final_h) =
+            if x.is_none() || y.is_none() || w.is_none() || h.is_none() {
+                let screen_script = r#"
 Add-Type -AssemblyName System.Windows.Forms
 $screen = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
 Write-Output "$($screen.X),$($screen.Y),$($screen.Width),$($screen.Height)"
 "#;
-            let timeout = Duration::from_secs(10);
-            match self.run_powershell(screen_script, timeout).await {
-                Ok(out) => {
-                    let parts: Vec<&str> = out.trim().split(',').collect();
-                    if parts.len() == 4 {
-                        let sx = x.unwrap_or_else(|| parts[0].parse().unwrap_or(0));
-                        let sy = y.unwrap_or_else(|| parts[1].parse().unwrap_or(0));
-                        let sw = w.unwrap_or_else(|| parts[2].parse().unwrap_or(0));
-                        let sh = h.unwrap_or_else(|| parts[3].parse().unwrap_or(0));
-                        (sx, sy, sw, sh)
-                    } else {
-                        (0, 0, 1920, 1080) // fallback defaults
+                let timeout = Duration::from_secs(10);
+                match self.run_powershell(screen_script, timeout).await {
+                    Ok(out) => {
+                        let parts: Vec<&str> = out.trim().split(',').collect();
+                        if parts.len() == 4 {
+                            let sx = x.unwrap_or_else(|| parts[0].parse().unwrap_or(0));
+                            let sy = y.unwrap_or_else(|| parts[1].parse().unwrap_or(0));
+                            let sw = w.unwrap_or_else(|| parts[2].parse().unwrap_or(0));
+                            let sh = h.unwrap_or_else(|| parts[3].parse().unwrap_or(0));
+                            (sx, sy, sw, sh)
+                        } else {
+                            (0, 0, 1920, 1080) // fallback defaults
+                        }
                     }
+                    Err(_) => (0, 0, 1920, 1080),
                 }
-                Err(_) => (0, 0, 1920, 1080),
-            }
-        } else {
-            (x.unwrap(), y.unwrap(), w.unwrap(), h.unwrap())
-        };
+            } else {
+                (x.unwrap(), y.unwrap(), w.unwrap(), h.unwrap())
+            };
 
         // Ensure temp directory exists
         let temp_dir = self.workspace.join("temp");
@@ -508,7 +516,10 @@ Write-Output "$($screen.X),$($screen.Y),$($screen.Width),$($screen.Height)"
         let timestamp = chrono::Local::now().timestamp_millis();
         let filename = format!("desktop_screenshot_{}.png", timestamp);
         let output_path = temp_dir.join(&filename);
-        let output_str = output_path.to_string_lossy().to_string().replace('\'', "''");
+        let output_str = output_path
+            .to_string_lossy()
+            .to_string()
+            .replace('\'', "''");
 
         let script = format!(
             r#"

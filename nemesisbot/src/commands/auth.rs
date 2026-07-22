@@ -3,8 +3,8 @@
 //! Integrates with nemesis-auth crate for OAuth/device-code flows,
 //! credential storage, and token management.
 
-use anyhow::Result;
 use crate::common;
+use anyhow::Result;
 
 #[derive(clap::Subcommand)]
 pub enum AuthAction {
@@ -32,7 +32,10 @@ pub async fn run(action: AuthAction, local: bool) -> Result<()> {
     let auth_path = home.join("auth.json");
 
     match action {
-        AuthAction::Login { provider, device_code } => {
+        AuthAction::Login {
+            provider,
+            device_code,
+        } => {
             let valid_providers = ["openai", "anthropic"];
             if !valid_providers.contains(&provider.as_str()) {
                 println!("Unsupported provider: {}", provider);
@@ -57,7 +60,9 @@ pub async fn run(action: AuthAction, local: bool) -> Result<()> {
 
                 match result {
                     Ok(cred) => {
-                        store.save(&provider, cred).map_err(|e| anyhow::anyhow!("{}", e))?;
+                        store
+                            .save(&provider, cred)
+                            .map_err(|e| anyhow::anyhow!("{}", e))?;
                         println!("  Logged in to {} successfully.", provider);
                         println!("  Credentials saved to: {}", auth_path.display());
                         return Ok(());
@@ -87,7 +92,9 @@ pub async fn run(action: AuthAction, local: bool) -> Result<()> {
                 .map_err(|e| anyhow::anyhow!("{}", e))?;
 
             let store = nemesis_auth::AuthStore::new(&auth_path.to_string_lossy());
-            store.save(&provider, cred).map_err(|e| anyhow::anyhow!("{}", e))?;
+            store
+                .save(&provider, cred)
+                .map_err(|e| anyhow::anyhow!("{}", e))?;
 
             println!("  Token saved to: {}", auth_path.display());
             println!("  Logged in to {} successfully.", provider);

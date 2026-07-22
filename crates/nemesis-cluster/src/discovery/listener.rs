@@ -6,8 +6,8 @@
 
 use std::io;
 use std::net::{Ipv4Addr, SocketAddrV4, UdpSocket};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use crate::discovery::crypto::{decrypt_data, encrypt_data};
@@ -82,7 +82,10 @@ impl UdpListener {
     /// Start the receive loop on a background thread.
     pub fn start(&self) -> Result<(), io::Error> {
         if self.running.load(Ordering::SeqCst) {
-            return Err(io::Error::new(io::ErrorKind::AlreadyExists, "listener already running"));
+            return Err(io::Error::new(
+                io::ErrorKind::AlreadyExists,
+                "listener already running",
+            ));
         }
         self.running.store(true, Ordering::SeqCst);
 
@@ -132,8 +135,9 @@ impl UdpListener {
                                 handler_fn(&msg, sender);
                             }
                         }
-                        Err(ref e) if e.kind() == io::ErrorKind::TimedOut
-                            || e.kind() == io::ErrorKind::WouldBlock =>
+                        Err(ref e)
+                            if e.kind() == io::ErrorKind::TimedOut
+                                || e.kind() == io::ErrorKind::WouldBlock =>
                         {
                             // Timeout is expected, continue checking running flag
                             continue;
@@ -154,7 +158,10 @@ impl UdpListener {
     /// Stop the listener and join the receive thread.
     pub fn stop(&self) -> Result<(), io::Error> {
         if !self.running.load(Ordering::SeqCst) {
-            return Err(io::Error::new(io::ErrorKind::NotConnected, "listener not running"));
+            return Err(io::Error::new(
+                io::ErrorKind::NotConnected,
+                "listener not running",
+            ));
         }
         self.running.store(false, Ordering::SeqCst);
 
@@ -185,9 +192,8 @@ impl UdpListener {
 
         // Encrypt if encryption is enabled
         let send_data = if let Some(ref key) = self.enc_key {
-            encrypt_data(key, &data).map_err(|_| {
-                io::Error::new(io::ErrorKind::Other, "encryption failed")
-            })?
+            encrypt_data(key, &data)
+                .map_err(|_| io::Error::new(io::ErrorKind::Other, "encryption failed"))?
         } else {
             data
         };
@@ -340,11 +346,7 @@ pub fn handle_discovery_message(
 
 /// Convert a discovery message to an ExtendedNodeInfo for registry insertion.
 fn message_to_node_info(msg: &DiscoveryMessage) -> ExtendedNodeInfo {
-    let address = msg
-        .addresses
-        .first()
-        .cloned()
-        .unwrap_or_default();
+    let address = msg.addresses.first().cloned().unwrap_or_default();
 
     let display_name = if msg.name.is_empty() {
         format!("node-{}", &msg.node_id[..8.min(msg.node_id.len())])

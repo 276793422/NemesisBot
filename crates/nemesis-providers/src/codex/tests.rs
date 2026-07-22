@@ -126,7 +126,7 @@ fn test_build_request_body() {
         tool_call_id: None,
         timestamp: None,
         reasoning_content: None,
-extra: HashMap::new(),
+        extra: HashMap::new(),
     }];
     let body = provider.build_request_body(&messages, &[], "gpt-4o", &ChatOptions::default());
     assert_eq!(body["model"], "gpt-4o");
@@ -231,7 +231,7 @@ fn test_build_request_body_with_tools() {
         tool_call_id: None,
         timestamp: None,
         reasoning_content: None,
-extra: HashMap::new(),
+        extra: HashMap::new(),
     }];
     let tools = vec![ToolDefinition {
         tool_type: "function".to_string(),
@@ -270,7 +270,7 @@ fn test_build_request_body_with_system_message() {
             tool_call_id: None,
             timestamp: None,
             reasoning_content: None,
-extra: HashMap::new(),
+            extra: HashMap::new(),
         },
         Message {
             role: "user".to_string(),
@@ -279,7 +279,7 @@ extra: HashMap::new(),
             tool_call_id: None,
             timestamp: None,
             reasoning_content: None,
-extra: HashMap::new(),
+            extra: HashMap::new(),
         },
     ];
     let body = provider.build_request_body(&messages, &[], "gpt-4o", &ChatOptions::default());
@@ -289,26 +289,24 @@ extra: HashMap::new(),
 #[test]
 fn test_build_request_body_with_assistant_tool_calls() {
     let provider = CodexProvider::new(CodexConfig::default());
-    let messages = vec![
-        Message {
-            role: "assistant".to_string(),
-            content: "Let me read the file".to_string(),
-            tool_calls: vec![ToolCall {
-                id: "call_1".to_string(),
-                call_type: Some("function".to_string()),
-                function: Some(FunctionCall {
-                    name: "read_file".to_string(),
-                    arguments: r#"{"path":"/tmp/test"}"#.to_string(),
-                }),
-                name: Some("read_file".to_string()),
-                arguments: None,
-            }],
-            tool_call_id: None,
-            timestamp: None,
-            reasoning_content: None,
-extra: HashMap::new(),
-        },
-    ];
+    let messages = vec![Message {
+        role: "assistant".to_string(),
+        content: "Let me read the file".to_string(),
+        tool_calls: vec![ToolCall {
+            id: "call_1".to_string(),
+            call_type: Some("function".to_string()),
+            function: Some(FunctionCall {
+                name: "read_file".to_string(),
+                arguments: r#"{"path":"/tmp/test"}"#.to_string(),
+            }),
+            name: Some("read_file".to_string()),
+            arguments: None,
+        }],
+        tool_call_id: None,
+        timestamp: None,
+        reasoning_content: None,
+        extra: HashMap::new(),
+    }];
     let body = provider.build_request_body(&messages, &[], "gpt-4o", &ChatOptions::default());
     let input = body["input"].as_array().unwrap();
     // Should have: message + function_call
@@ -334,7 +332,7 @@ fn test_build_request_body_with_assistant_tool_calls_empty_content() {
         tool_call_id: None,
         timestamp: None,
         reasoning_content: None,
-extra: HashMap::new(),
+        extra: HashMap::new(),
     }];
     let body = provider.build_request_body(&messages, &[], "gpt-4o", &ChatOptions::default());
     let input = body["input"].as_array().unwrap();
@@ -352,7 +350,7 @@ fn test_build_request_body_with_assistant_no_tool_calls() {
         tool_call_id: None,
         timestamp: None,
         reasoning_content: None,
-extra: HashMap::new(),
+        extra: HashMap::new(),
     }];
     let body = provider.build_request_body(&messages, &[], "gpt-4o", &ChatOptions::default());
     let input = body["input"].as_array().unwrap();
@@ -370,7 +368,7 @@ fn test_build_request_body_with_user_tool_call_id() {
         tool_call_id: Some("call_1".to_string()),
         timestamp: None,
         reasoning_content: None,
-extra: HashMap::new(),
+        extra: HashMap::new(),
     }];
     let body = provider.build_request_body(&messages, &[], "gpt-4o", &ChatOptions::default());
     let input = body["input"].as_array().unwrap();
@@ -388,7 +386,7 @@ fn test_build_request_body_with_tool_message() {
         tool_call_id: Some("call_1".to_string()),
         timestamp: None,
         reasoning_content: None,
-extra: HashMap::new(),
+        extra: HashMap::new(),
     }];
     let body = provider.build_request_body(&messages, &[], "gpt-4o", &ChatOptions::default());
     let input = body["input"].as_array().unwrap();
@@ -405,7 +403,7 @@ fn test_build_request_body_with_tool_message_no_call_id() {
         tool_call_id: None,
         timestamp: None,
         reasoning_content: None,
-extra: HashMap::new(),
+        extra: HashMap::new(),
     }];
     let body = provider.build_request_body(&messages, &[], "gpt-4o", &ChatOptions::default());
     let input = body["input"].as_array().unwrap();
@@ -422,7 +420,7 @@ fn test_build_request_body_with_options() {
         tool_call_id: None,
         timestamp: None,
         reasoning_content: None,
-extra: HashMap::new(),
+        extra: HashMap::new(),
     }];
     let body = provider.build_request_body(
         &messages,
@@ -448,7 +446,7 @@ fn test_build_request_body_with_unknown_role() {
         tool_call_id: None,
         timestamp: None,
         reasoning_content: None,
-extra: HashMap::new(),
+        extra: HashMap::new(),
     }];
     let body = provider.build_request_body(&messages, &[], "gpt-4o", &ChatOptions::default());
     let input = body["input"].as_array().unwrap();
@@ -500,7 +498,13 @@ fn test_parse_codex_response_function_call_bad_args() {
     assert_eq!(resp.tool_calls.len(), 1);
     // Arguments that fail to parse should get raw fallback
     assert!(resp.tool_calls[0].arguments.is_some());
-    assert!(resp.tool_calls[0].arguments.as_ref().unwrap().contains_key("raw"));
+    assert!(
+        resp.tool_calls[0]
+            .arguments
+            .as_ref()
+            .unwrap()
+            .contains_key("raw")
+    );
 }
 
 #[test]
@@ -521,14 +525,34 @@ fn test_parse_codex_response_unknown_output_type() {
 #[test]
 fn test_resolve_codex_model_all_unsupported_prefixes() {
     let unsupported = [
-        "glm-4", "claude-3", "anthropic-1", "gemini-pro", "google-1",
-        "moonshot-v1", "kimi-chat", "qwen-7b", "deepseek-chat",
-        "llama-3", "meta-llama-3", "mistral-7b", "grok-1", "xai-1", "zhipu-4",
+        "glm-4",
+        "claude-3",
+        "anthropic-1",
+        "gemini-pro",
+        "google-1",
+        "moonshot-v1",
+        "kimi-chat",
+        "qwen-7b",
+        "deepseek-chat",
+        "llama-3",
+        "meta-llama-3",
+        "mistral-7b",
+        "grok-1",
+        "xai-1",
+        "zhipu-4",
     ];
     for model in &unsupported {
         let r = resolve_codex_model(model);
-        assert_eq!(r.model, CODEX_DEFAULT_MODEL, "Expected default for {}", model);
-        assert_eq!(r.fallback_reason, "unsupported model prefix", "Expected prefix reason for {}", model);
+        assert_eq!(
+            r.model, CODEX_DEFAULT_MODEL,
+            "Expected default for {}",
+            model
+        );
+        assert_eq!(
+            r.fallback_reason, "unsupported model prefix",
+            "Expected prefix reason for {}",
+            model
+        );
     }
 }
 

@@ -2,8 +2,8 @@
 //! Merkle-based SHA256 audit chain with JSONL persistence, segment rotation,
 //! export/load, and sign field support.
 
-use sha2::{Sha256, Digest};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 
 /// Audit event for the integrity chain.
@@ -73,7 +73,9 @@ pub struct AuditChain {
 
 impl AuditChain {
     pub fn new(config: AuditChainConfig) -> Self {
-        let last_hash = parking_lot::Mutex::new("0000000000000000000000000000000000000000000000000000000000000000".to_string());
+        let last_hash = parking_lot::Mutex::new(
+            "0000000000000000000000000000000000000000000000000000000000000000".to_string(),
+        );
         Self {
             config,
             last_hash,
@@ -87,14 +89,35 @@ impl AuditChain {
     /// Append an event to the audit chain.
     ///
     /// Returns an error if the chain has been closed.
-    pub fn append(&self, operation: &str, tool_name: &str, user: &str, source: &str, target: &str, decision: &str, reason: &str) -> Result<AuditEvent, String> {
-        self.append_with_sign(operation, tool_name, user, source, target, decision, reason, None)
+    pub fn append(
+        &self,
+        operation: &str,
+        tool_name: &str,
+        user: &str,
+        source: &str,
+        target: &str,
+        decision: &str,
+        reason: &str,
+    ) -> Result<AuditEvent, String> {
+        self.append_with_sign(
+            operation, tool_name, user, source, target, decision, reason, None,
+        )
     }
 
     /// Append an event with an optional signature.
     ///
     /// Returns an error if the chain has been closed.
-    pub fn append_with_sign(&self, operation: &str, tool_name: &str, user: &str, source: &str, target: &str, decision: &str, reason: &str, sign: Option<String>) -> Result<AuditEvent, String> {
+    pub fn append_with_sign(
+        &self,
+        operation: &str,
+        tool_name: &str,
+        user: &str,
+        source: &str,
+        target: &str,
+        decision: &str,
+        reason: &str,
+        sign: Option<String>,
+    ) -> Result<AuditEvent, String> {
         if self.is_closed() {
             return Err("audit chain is closed".to_string());
         }
@@ -130,8 +153,12 @@ impl AuditChain {
         };
 
         *self.last_hash.lock() = hash;
-        let count = self.event_count.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
-        self.total_events.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let count = self
+            .event_count
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+            + 1;
+        self.total_events
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
 
         // Persist to JSONL
         if let Ok(json) = serde_json::to_string(&event) {
@@ -176,8 +203,10 @@ impl AuditChain {
 
     /// Rotate to a new segment.
     fn rotate_segment(&self) {
-        self.event_count.store(0, std::sync::atomic::Ordering::SeqCst);
-        self.segment_count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        self.event_count
+            .store(0, std::sync::atomic::Ordering::SeqCst);
+        self.segment_count
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
     }
 
     /// Get the path for the current segment file.
@@ -186,13 +215,21 @@ impl AuditChain {
         if seg == 1 {
             self.config.storage_path.clone()
         } else {
-            let ext = self.config.storage_path.extension()
+            let ext = self
+                .config
+                .storage_path
+                .extension()
                 .map(|e| format!(".{}", e.to_string_lossy()))
                 .unwrap_or_default();
-            let stem = self.config.storage_path.file_stem()
+            let stem = self
+                .config
+                .storage_path
+                .file_stem()
                 .map(|s| s.to_string_lossy().to_string())
                 .unwrap_or_else(|| "audit_chain".to_string());
-            self.config.storage_path.parent()
+            self.config
+                .storage_path
+                .parent()
                 .map(|p| p.join(format!("{}_seg{:04}{}", stem, seg, ext)))
                 .unwrap_or_else(|| PathBuf::from(format!("{}_seg{:04}{}", stem, seg, ext)))
         }
@@ -227,7 +264,10 @@ impl AuditChain {
 
         // Read all segment files
         let parent = self.config.storage_path.parent().unwrap_or(Path::new("."));
-        let stem = self.config.storage_path.file_stem()
+        let stem = self
+            .config
+            .storage_path
+            .file_stem()
             .map(|s| s.to_string_lossy().to_string())
             .unwrap_or_else(|| "audit_chain".to_string());
 
@@ -283,7 +323,8 @@ impl AuditChain {
         }
 
         let count = events.len() as u64;
-        self.total_events.fetch_add(count, std::sync::atomic::Ordering::SeqCst);
+        self.total_events
+            .fetch_add(count, std::sync::atomic::Ordering::SeqCst);
 
         // Write events to storage
         let mut f = std::fs::OpenOptions::new()
@@ -306,12 +347,16 @@ impl AuditChain {
     /// updates the last hash and counters.
     pub fn load_segments(&self) -> Result<u64, String> {
         let mut total: u64 = 0;
-        let mut last_hash = "0000000000000000000000000000000000000000000000000000000000000000".to_string();
+        let mut last_hash =
+            "0000000000000000000000000000000000000000000000000000000000000000".to_string();
 
         // Collect all segment files sorted
         let mut files: Vec<PathBuf> = Vec::new();
         let parent = self.config.storage_path.parent().unwrap_or(Path::new("."));
-        let stem = self.config.storage_path.file_stem()
+        let stem = self
+            .config
+            .storage_path
+            .file_stem()
             .map(|s| s.to_string_lossy().to_string())
             .unwrap_or_else(|| "audit_chain".to_string());
 
@@ -345,7 +390,8 @@ impl AuditChain {
 
         if total > 0 {
             *self.last_hash.lock() = last_hash;
-            self.total_events.store(total, std::sync::atomic::Ordering::SeqCst);
+            self.total_events
+                .store(total, std::sync::atomic::Ordering::SeqCst);
         }
 
         Ok(total)
@@ -417,7 +463,10 @@ impl AuditChain {
     fn collect_segment_files(&self) -> Vec<PathBuf> {
         let mut files: Vec<PathBuf> = Vec::new();
         let parent = self.config.storage_path.parent().unwrap_or(Path::new("."));
-        let stem = self.config.storage_path.file_stem()
+        let stem = self
+            .config
+            .storage_path
+            .file_stem()
             .map(|s| s.to_string_lossy().to_string())
             .unwrap_or_else(|| "audit_chain".to_string());
 

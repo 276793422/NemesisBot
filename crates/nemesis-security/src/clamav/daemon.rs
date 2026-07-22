@@ -2,8 +2,8 @@
 
 use super::client::Client;
 use super::config::DaemonConfig;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 use tokio::process::{Child, Command};
 use tokio::sync::Mutex;
@@ -60,7 +60,9 @@ impl Daemon {
         // alongside the explicit stop_scanner() in the gateway shutdown path.
         cmd.kill_on_drop(true);
 
-        let child = cmd.spawn().map_err(|e| format!("failed to start clamd: {}", e))?;
+        let child = cmd
+            .spawn()
+            .map_err(|e| format!("failed to start clamd: {}", e))?;
 
         *self.process.lock().await = Some(child);
         self.running.store(true, Ordering::SeqCst);
@@ -127,7 +129,6 @@ impl Daemon {
             tokio::time::sleep(Duration::from_millis(500)).await;
         }
     }
-
 }
 
 #[cfg(test)]

@@ -2,8 +2,8 @@
 //!
 //! Uses nemesis_workflow crate for parsing, validation, and execution.
 
-use anyhow::Result;
 use crate::common;
+use anyhow::Result;
 
 #[derive(clap::Subcommand)]
 pub enum WorkflowAction {
@@ -99,12 +99,20 @@ fn scan_workflow_files(workflow_dir: &std::path::Path) -> Vec<(String, std::path
                 let path = entry.path();
                 if path.is_dir() {
                     // Skip executions directory
-                    let dir_name = path.file_name().unwrap_or_default().to_string_lossy().to_string();
+                    let dir_name = path
+                        .file_name()
+                        .unwrap_or_default()
+                        .to_string_lossy()
+                        .to_string();
                     if dir_name != "executions" {
                         scan_recursive(&path, files);
                     }
                 } else {
-                    let name = path.file_name().unwrap_or_default().to_string_lossy().to_string();
+                    let name = path
+                        .file_name()
+                        .unwrap_or_default()
+                        .to_string_lossy()
+                        .to_string();
                     if extensions.iter().any(|ext| name.ends_with(ext)) {
                         let display_name = name
                             .trim_end_matches(".yaml")
@@ -150,7 +158,11 @@ fn load_templates_from_disk() -> Vec<Template> {
 
         // workspace/workflow/templates/ (resolve using common helper)
         let home = common::resolve_home(false);
-        dirs.push(common::workspace_path(&home).join("workflow").join("templates"));
+        dirs.push(
+            common::workspace_path(&home)
+                .join("workflow")
+                .join("templates"),
+        );
 
         dirs
     };
@@ -166,12 +178,16 @@ fn load_templates_from_disk() -> Vec<Template> {
                     continue;
                 }
 
-                let ext = path.extension().map(|e| e.to_string_lossy().to_string()).unwrap_or_default();
+                let ext = path
+                    .extension()
+                    .map(|e| e.to_string_lossy().to_string())
+                    .unwrap_or_default();
                 if ext != "yaml" && ext != "yml" && ext != "json" {
                     continue;
                 }
 
-                let name = path.file_stem()
+                let name = path
+                    .file_stem()
                     .map(|s| s.to_string_lossy().to_string())
                     .unwrap_or_default();
 
@@ -184,11 +200,16 @@ fn load_templates_from_disk() -> Vec<Template> {
                     Ok(wf) => {
                         seen_names.insert(name.clone());
                         let desc = wf.description.clone();
-                        let definition = serde_json::to_value(&wf).unwrap_or(serde_json::Value::Null);
+                        let definition =
+                            serde_json::to_value(&wf).unwrap_or(serde_json::Value::Null);
                         templates.push((name, desc, definition));
                     }
                     Err(e) => {
-                        eprintln!("  Warning: Failed to parse template {}: {}", path.display(), e);
+                        eprintln!(
+                            "  Warning: Failed to parse template {}: {}",
+                            path.display(),
+                            e
+                        );
                     }
                 }
             }
@@ -202,74 +223,94 @@ fn load_templates_from_disk() -> Vec<Template> {
 /// Get the hardcoded default template definitions (fallback when no disk templates found).
 fn get_default_templates() -> Vec<Template> {
     vec![
-        ("researcher".to_string(), "Research and summarize a topic".to_string(), serde_json::json!({
-            "name": "researcher",
-            "description": "Research and summarize a topic",
-            "version": "1.0.0",
-            "nodes": [
-                {"id": "search", "node_type": "tool", "config": {"tool_name": "web_search"}, "depends_on": []},
-                {"id": "analyze", "node_type": "llm", "config": {"prompt": "Analyze and summarize the research findings"}, "depends_on": ["search"]},
-                {"id": "report", "node_type": "tool", "config": {"tool_name": "file_write"}, "depends_on": ["analyze"]}
-            ],
-            "edges": [
-                {"from_node": "search", "to_node": "analyze"},
-                {"from_node": "analyze", "to_node": "report"}
-            ]
-        })),
-        ("coder".to_string(), "Code generation with review".to_string(), serde_json::json!({
-            "name": "coder",
-            "description": "Code generation with review",
-            "version": "1.0.0",
-            "nodes": [
-                {"id": "generate", "node_type": "llm", "config": {"prompt": "Generate code based on requirements"}, "depends_on": []},
-                {"id": "review", "node_type": "llm", "config": {"prompt": "Review the generated code for quality and correctness"}, "depends_on": ["generate"]},
-                {"id": "save", "node_type": "tool", "config": {"tool_name": "file_write"}, "depends_on": ["review"]}
-            ],
-            "edges": [
-                {"from_node": "generate", "to_node": "review"},
-                {"from_node": "review", "to_node": "save", "condition": "approved"}
-            ]
-        })),
-        ("monitor".to_string(), "Monitor a system or service".to_string(), serde_json::json!({
-            "name": "monitor",
-            "description": "Monitor a system or service",
-            "version": "1.0.0",
-            "nodes": [
-                {"id": "check", "node_type": "tool", "config": {"tool_name": "http_request"}, "depends_on": []},
-                {"id": "evaluate", "node_type": "condition", "config": {"expression": "status != 200"}, "depends_on": ["check"]},
-                {"id": "alert", "node_type": "tool", "config": {"tool_name": "send_alert"}, "depends_on": ["evaluate"]}
-            ],
-            "edges": [
-                {"from_node": "check", "to_node": "evaluate"},
-                {"from_node": "evaluate", "to_node": "alert", "condition": "true"}
-            ]
-        })),
-        ("collector".to_string(), "Collect and process data".to_string(), serde_json::json!({
-            "name": "collector",
-            "description": "Collect and process data",
-            "version": "1.0.0",
-            "nodes": [
-                {"id": "fetch", "node_type": "tool", "config": {"tool_name": "http_request"}, "depends_on": []},
-                {"id": "transform", "node_type": "transform", "config": {"expression": "data.items"}, "depends_on": ["fetch"]},
-                {"id": "store", "node_type": "tool", "config": {"tool_name": "file_write"}, "depends_on": ["transform"]}
-            ],
-            "edges": [
-                {"from_node": "fetch", "to_node": "transform"},
-                {"from_node": "transform", "to_node": "store"}
-            ]
-        })),
-        ("translator".to_string(), "Translate content between languages".to_string(), serde_json::json!({
-            "name": "translator",
-            "description": "Translate content between languages",
-            "version": "1.0.0",
-            "nodes": [
-                {"id": "translate", "node_type": "llm", "config": {"prompt": "Translate the content"}, "depends_on": []},
-                {"id": "review", "node_type": "llm", "config": {"prompt": "Review translation quality"}, "depends_on": ["translate"]}
-            ],
-            "edges": [
-                {"from_node": "translate", "to_node": "review"}
-            ]
-        })),
+        (
+            "researcher".to_string(),
+            "Research and summarize a topic".to_string(),
+            serde_json::json!({
+                "name": "researcher",
+                "description": "Research and summarize a topic",
+                "version": "1.0.0",
+                "nodes": [
+                    {"id": "search", "node_type": "tool", "config": {"tool_name": "web_search"}, "depends_on": []},
+                    {"id": "analyze", "node_type": "llm", "config": {"prompt": "Analyze and summarize the research findings"}, "depends_on": ["search"]},
+                    {"id": "report", "node_type": "tool", "config": {"tool_name": "file_write"}, "depends_on": ["analyze"]}
+                ],
+                "edges": [
+                    {"from_node": "search", "to_node": "analyze"},
+                    {"from_node": "analyze", "to_node": "report"}
+                ]
+            }),
+        ),
+        (
+            "coder".to_string(),
+            "Code generation with review".to_string(),
+            serde_json::json!({
+                "name": "coder",
+                "description": "Code generation with review",
+                "version": "1.0.0",
+                "nodes": [
+                    {"id": "generate", "node_type": "llm", "config": {"prompt": "Generate code based on requirements"}, "depends_on": []},
+                    {"id": "review", "node_type": "llm", "config": {"prompt": "Review the generated code for quality and correctness"}, "depends_on": ["generate"]},
+                    {"id": "save", "node_type": "tool", "config": {"tool_name": "file_write"}, "depends_on": ["review"]}
+                ],
+                "edges": [
+                    {"from_node": "generate", "to_node": "review"},
+                    {"from_node": "review", "to_node": "save", "condition": "approved"}
+                ]
+            }),
+        ),
+        (
+            "monitor".to_string(),
+            "Monitor a system or service".to_string(),
+            serde_json::json!({
+                "name": "monitor",
+                "description": "Monitor a system or service",
+                "version": "1.0.0",
+                "nodes": [
+                    {"id": "check", "node_type": "tool", "config": {"tool_name": "http_request"}, "depends_on": []},
+                    {"id": "evaluate", "node_type": "condition", "config": {"expression": "status != 200"}, "depends_on": ["check"]},
+                    {"id": "alert", "node_type": "tool", "config": {"tool_name": "send_alert"}, "depends_on": ["evaluate"]}
+                ],
+                "edges": [
+                    {"from_node": "check", "to_node": "evaluate"},
+                    {"from_node": "evaluate", "to_node": "alert", "condition": "true"}
+                ]
+            }),
+        ),
+        (
+            "collector".to_string(),
+            "Collect and process data".to_string(),
+            serde_json::json!({
+                "name": "collector",
+                "description": "Collect and process data",
+                "version": "1.0.0",
+                "nodes": [
+                    {"id": "fetch", "node_type": "tool", "config": {"tool_name": "http_request"}, "depends_on": []},
+                    {"id": "transform", "node_type": "transform", "config": {"expression": "data.items"}, "depends_on": ["fetch"]},
+                    {"id": "store", "node_type": "tool", "config": {"tool_name": "file_write"}, "depends_on": ["transform"]}
+                ],
+                "edges": [
+                    {"from_node": "fetch", "to_node": "transform"},
+                    {"from_node": "transform", "to_node": "store"}
+                ]
+            }),
+        ),
+        (
+            "translator".to_string(),
+            "Translate content between languages".to_string(),
+            serde_json::json!({
+                "name": "translator",
+                "description": "Translate content between languages",
+                "version": "1.0.0",
+                "nodes": [
+                    {"id": "translate", "node_type": "llm", "config": {"prompt": "Translate the content"}, "depends_on": []},
+                    {"id": "review", "node_type": "llm", "config": {"prompt": "Review translation quality"}, "depends_on": ["translate"]}
+                ],
+                "edges": [
+                    {"from_node": "translate", "to_node": "review"}
+                ]
+            }),
+        ),
     ]
 }
 
@@ -289,10 +330,14 @@ fn count_executions(workflow_dir: &std::path::Path) -> usize {
         return 0;
     }
     std::fs::read_dir(&exec_dir)
-        .map(|d| d.filter_map(|e| e.ok()).filter(|e| {
-            e.file_type().map(|t| t.is_file()).unwrap_or(false)
-                && e.file_name().to_string_lossy().ends_with(".json")
-        }).count())
+        .map(|d| {
+            d.filter_map(|e| e.ok())
+                .filter(|e| {
+                    e.file_type().map(|t| t.is_file()).unwrap_or(false)
+                        && e.file_name().to_string_lossy().ends_with(".json")
+                })
+                .count()
+        })
         .unwrap_or(0)
 }
 
@@ -320,8 +365,17 @@ fn cmd_list(workflow_dir: &std::path::Path) -> Result<()> {
     } else {
         println!("  Registered Workflows ({}):", files.len());
         println!();
-        println!("  {:<22} {:<8} {:<40} {}", "Name", "Version", "Description", "Triggers");
-        println!("  {}{}{}{}", "-".repeat(22), "-".repeat(8), "-".repeat(40), "-".repeat(15));
+        println!(
+            "  {:<22} {:<8} {:<40} {}",
+            "Name", "Version", "Description", "Triggers"
+        );
+        println!(
+            "  {}{}{}{}",
+            "-".repeat(22),
+            "-".repeat(8),
+            "-".repeat(40),
+            "-".repeat(15)
+        );
 
         for (name, path) in &files {
             // Try to load metadata
@@ -334,11 +388,25 @@ fn cmd_list(workflow_dir: &std::path::Path) -> Result<()> {
                 } else {
                     wf.description.clone()
                 };
-                let triggers: Vec<&str> = wf.triggers.iter().map(|t| t.trigger_type.as_str()).collect();
-                let trigger_str = if triggers.is_empty() { "none".to_string() } else { triggers.join(", ") };
-                println!("  {:<22} {:<8} {:<40} {}", name, wf.version, desc, trigger_str);
+                let triggers: Vec<&str> = wf
+                    .triggers
+                    .iter()
+                    .map(|t| t.trigger_type.as_str())
+                    .collect();
+                let trigger_str = if triggers.is_empty() {
+                    "none".to_string()
+                } else {
+                    triggers.join(", ")
+                };
+                println!(
+                    "  {:<22} {:<8} {:<40} {}",
+                    name, wf.version, desc, trigger_str
+                );
             } else {
-                println!("  {:<22} {:<8} {:<40} {}", name, "?", "(parse error)", "none");
+                println!(
+                    "  {:<22} {:<8} {:<40} {}",
+                    name, "?", "(parse error)", "none"
+                );
             }
         }
     }
@@ -385,7 +453,12 @@ async fn cmd_run(workflow_dir: &std::path::Path, name: &str, input_args: &[Strin
     // Parse the workflow
     let workflow = nemesis_workflow::parser::parse_file(&wf_path)
         .map_err(|e| anyhow::anyhow!("Parse error: {}", e))?;
-    println!("  Loaded: {} (v{}, {} nodes)", workflow.name, workflow.version, workflow.nodes.len());
+    println!(
+        "  Loaded: {} (v{}, {} nodes)",
+        workflow.name,
+        workflow.version,
+        workflow.nodes.len()
+    );
 
     // Validate
     if let Err(e) = nemesis_workflow::parser::validate(&workflow) {
@@ -402,12 +475,17 @@ async fn cmd_run(workflow_dir: &std::path::Path, name: &str, input_args: &[Strin
 
     // Create engine and run
     let engine = nemesis_workflow::engine::WorkflowEngine::new();
-    engine.register_workflow(workflow)
+    engine
+        .register_workflow(workflow)
         .map_err(|e| anyhow::anyhow!("Registration error: {}", e))?;
 
     println!("  Executing...");
     let result = engine
-        .run(name, input_map, Some(nemesis_workflow::types::TriggerSource::Cli))
+        .run(
+            name,
+            input_map,
+            Some(nemesis_workflow::types::TriggerSource::Cli),
+        )
         .await
         .map_err(|e| anyhow::anyhow!("Execution error: {}", e))?;
 
@@ -448,7 +526,10 @@ async fn cmd_run(workflow_dir: &std::path::Path, name: &str, input_args: &[Strin
     let exec_dir = workflow_dir.join("executions");
     let _ = std::fs::create_dir_all(&exec_dir);
     let exec_path = exec_dir.join(format!("{}.json", result.id));
-    std::fs::write(&exec_path, serde_json::to_string_pretty(&result).unwrap_or_default())?;
+    std::fs::write(
+        &exec_path,
+        serde_json::to_string_pretty(&result).unwrap_or_default(),
+    )?;
     println!();
     println!("  Execution saved: {}", exec_path.display());
 
@@ -471,9 +552,20 @@ fn cmd_status(workflow_dir: &std::path::Path, id: Option<&str>) -> Result<()> {
             // Formatted detail view
             println!("Workflow Execution Detail");
             println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-            println!("  Execution ID:    {}", exec.get("id").and_then(|v| v.as_str()).unwrap_or("?"));
-            println!("  Workflow:        {}", exec.get("workflow_name").and_then(|v| v.as_str()).unwrap_or("?"));
-            println!("  State:           {}", exec.get("state").and_then(|v| v.as_str()).unwrap_or("?"));
+            println!(
+                "  Execution ID:    {}",
+                exec.get("id").and_then(|v| v.as_str()).unwrap_or("?")
+            );
+            println!(
+                "  Workflow:        {}",
+                exec.get("workflow_name")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("?")
+            );
+            println!(
+                "  State:           {}",
+                exec.get("state").and_then(|v| v.as_str()).unwrap_or("?")
+            );
 
             if let Some(started) = exec.get("started_at").and_then(|v| v.as_str()) {
                 println!("  Started:         {}", started);
@@ -551,7 +643,8 @@ fn cmd_status(workflow_dir: &std::path::Path, id: Option<&str>) -> Result<()> {
                             let output_str = output.to_string();
                             if output_str != "null" && !output_str.is_empty() {
                                 let truncated = if output_str.len() > 200 {
-                                    let cut = nemesis_types::utils::floor_char_boundary(&output_str, 197);
+                                    let cut =
+                                        nemesis_types::utils::floor_char_boundary(&output_str, 197);
                                     format!("{}...", &output_str[..cut])
                                 } else {
                                     output_str
@@ -581,23 +674,47 @@ fn cmd_status(workflow_dir: &std::path::Path, id: Option<&str>) -> Result<()> {
                 })
                 .collect();
 
-            entries.sort_by_key(|e| std::fs::metadata(e.path()).ok().and_then(|m| m.modified().ok()).unwrap_or(std::time::SystemTime::UNIX_EPOCH));
+            entries.sort_by_key(|e| {
+                std::fs::metadata(e.path())
+                    .ok()
+                    .and_then(|m| m.modified().ok())
+                    .unwrap_or(std::time::SystemTime::UNIX_EPOCH)
+            });
             entries.reverse();
 
             if entries.is_empty() {
                 println!("  No executions found.");
             } else {
-                println!("  {:<38} {:<20} {:<12} {}", "ID", "Workflow", "State", "Started");
-                println!("  {}{}{}{}", "-".repeat(38), "-".repeat(20), "-".repeat(12), "-".repeat(20));
+                println!(
+                    "  {:<38} {:<20} {:<12} {}",
+                    "ID", "Workflow", "State", "Started"
+                );
+                println!(
+                    "  {}{}{}{}",
+                    "-".repeat(38),
+                    "-".repeat(20),
+                    "-".repeat(12),
+                    "-".repeat(20)
+                );
                 for entry in entries.iter().take(20) {
                     let data = std::fs::read_to_string(entry.path())?;
                     if let Ok(exec) = serde_json::from_str::<serde_json::Value>(&data) {
                         let id = exec.get("id").and_then(|v| v.as_str()).unwrap_or("?");
-                        let wf = exec.get("workflow_name").and_then(|v| v.as_str()).unwrap_or("?");
+                        let wf = exec
+                            .get("workflow_name")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("?");
                         let state = exec.get("state").and_then(|v| v.as_str()).unwrap_or("?");
-                        let started = exec.get("started_at").and_then(|v| v.as_str()).unwrap_or("?");
+                        let started = exec
+                            .get("started_at")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("?");
                         // Trim the timestamp for display
-                        let started_short = if started.len() > 19 { &started[..19] } else { started };
+                        let started_short = if started.len() > 19 {
+                            &started[..19]
+                        } else {
+                            started
+                        };
                         println!("  {:<38} {:<20} {:<12} {}", id, wf, state, started_short);
                     }
                 }
@@ -625,7 +742,10 @@ fn cmd_template_show(name: &str) -> Result<()> {
                 println!("Triggers: {}", triggers.len());
             }
             println!();
-            println!("{}", serde_json::to_string_pretty(definition).unwrap_or_default());
+            println!(
+                "{}",
+                serde_json::to_string_pretty(definition).unwrap_or_default()
+            );
         }
         None => {
             println!("Template '{}' not found.", name);
@@ -638,31 +758,46 @@ fn cmd_template_show(name: &str) -> Result<()> {
     Ok(())
 }
 
-fn cmd_template_create(workflow_dir: &std::path::Path, template: &str, output: Option<&str>) -> Result<()> {
+fn cmd_template_create(
+    workflow_dir: &std::path::Path,
+    template: &str,
+    output: Option<&str>,
+) -> Result<()> {
     let templates = get_templates();
     let found = templates.iter().find(|(n, _, _)| *n == template);
 
     match found {
         Some((_, _, definition)) => {
             let out = output.unwrap_or(template);
-            let out_path = if out.ends_with(".yaml") || out.ends_with(".yml") || out.ends_with(".json") {
-                workflow_dir.join(out)
-            } else {
-                workflow_dir.join(format!("{}.yaml", out))
-            };
+            let out_path =
+                if out.ends_with(".yaml") || out.ends_with(".yml") || out.ends_with(".json") {
+                    workflow_dir.join(out)
+                } else {
+                    workflow_dir.join(format!("{}.yaml", out))
+                };
 
             let _ = std::fs::create_dir_all(workflow_dir);
 
             if out_path.extension().map(|e| e == "json").unwrap_or(false) {
-                std::fs::write(&out_path, serde_json::to_string_pretty(definition).unwrap_or_default())?;
+                std::fs::write(
+                    &out_path,
+                    serde_json::to_string_pretty(definition).unwrap_or_default(),
+                )?;
             } else {
                 // Write as YAML
                 let yaml = serde_yaml::to_string(definition).unwrap_or_default();
                 std::fs::write(&out_path, yaml)?;
             }
 
-            println!("Workflow created from template '{}' -> {}", template, out_path.display());
-            println!("Edit the file to customize, then run: nemesisbot workflow run {}", out);
+            println!(
+                "Workflow created from template '{}' -> {}",
+                template,
+                out_path.display()
+            );
+            println!(
+                "Edit the file to customize, then run: nemesisbot workflow run {}",
+                out
+            );
         }
         None => {
             println!("Template '{}' not found.", template);
@@ -717,7 +852,9 @@ fn cmd_validate(path: &str) -> Result<()> {
 
 pub fn run(action: WorkflowAction, local: bool) -> Result<()> {
     let home = common::resolve_home(local);
-    let workflow_dir = common::workspace_path(&home).join("workflow").join("definitions");
+    let workflow_dir = common::workspace_path(&home)
+        .join("workflow")
+        .join("definitions");
 
     match action {
         WorkflowAction::List => cmd_list(&workflow_dir)?,
@@ -736,9 +873,20 @@ pub fn run(action: WorkflowAction, local: bool) -> Result<()> {
                     println!("==================");
                     let templates = get_templates();
                     for (name, desc, def) in &templates {
-                        let nodes = def.get("nodes").and_then(|v| v.as_array()).map(|a| a.len()).unwrap_or(0);
-                        let triggers = def.get("triggers").and_then(|v| v.as_array()).map(|a| a.len()).unwrap_or(0);
-                        println!("  {} - {} ({} nodes, {} triggers)", name, desc, nodes, triggers);
+                        let nodes = def
+                            .get("nodes")
+                            .and_then(|v| v.as_array())
+                            .map(|a| a.len())
+                            .unwrap_or(0);
+                        let triggers = def
+                            .get("triggers")
+                            .and_then(|v| v.as_array())
+                            .map(|a| a.len())
+                            .unwrap_or(0);
+                        println!(
+                            "  {} - {} ({} nodes, {} triggers)",
+                            name, desc, nodes, triggers
+                        );
                     }
                     println!();
                     println!("Show details: nemesisbot workflow template show <name>");
@@ -749,9 +897,20 @@ pub fn run(action: WorkflowAction, local: bool) -> Result<()> {
                     println!("==================");
                     let templates = get_templates();
                     for (name, desc, def) in &templates {
-                        let nodes = def.get("nodes").and_then(|v| v.as_array()).map(|a| a.len()).unwrap_or(0);
-                        let triggers = def.get("triggers").and_then(|v| v.as_array()).map(|a| a.len()).unwrap_or(0);
-                        println!("  {} - {} ({} nodes, {} triggers)", name, desc, nodes, triggers);
+                        let nodes = def
+                            .get("nodes")
+                            .and_then(|v| v.as_array())
+                            .map(|a| a.len())
+                            .unwrap_or(0);
+                        let triggers = def
+                            .get("triggers")
+                            .and_then(|v| v.as_array())
+                            .map(|a| a.len())
+                            .unwrap_or(0);
+                        println!(
+                            "  {} - {} ({} nodes, {} triggers)",
+                            name, desc, nodes, triggers
+                        );
                     }
                     println!();
                     println!("Show details: nemesisbot workflow template show <name>");

@@ -8,9 +8,9 @@
 //! - Async execution tool paths
 
 use super::*;
-use tempfile::TempDir;
 use std::sync::Arc;
 use std::time::Duration;
+use tempfile::TempDir;
 
 #[tokio::test]
 async fn test_message_tool_callback_integration() {
@@ -28,7 +28,10 @@ async fn test_message_tool_callback_integration() {
         callback_called_clone.store(true, std::sync::atomic::Ordering::SeqCst);
     }));
 
-    let result = tool.execute(r#"{"content": "test message"}"#, &ctx).await.unwrap();
+    let result = tool
+        .execute(r#"{"content": "test message"}"#, &ctx)
+        .await
+        .unwrap();
     assert_eq!(result, "test message");
     assert!(tool.has_sent_in_round());
     assert!(callback_called.load(std::sync::atomic::Ordering::SeqCst));
@@ -57,7 +60,9 @@ async fn test_message_tool_stored_context_fallback() {
         callback_called_clone.store(true, std::sync::atomic::Ordering::SeqCst);
     }));
 
-    tool.execute(r#"{"content": "fallback test"}"#, &ctx).await.unwrap();
+    tool.execute(r#"{"content": "fallback test"}"#, &ctx)
+        .await
+        .unwrap();
     assert!(callback_called.load(std::sync::atomic::Ordering::SeqCst));
 }
 
@@ -75,7 +80,10 @@ async fn test_message_tool_rpc_formatting() {
     assert!(formatted.contains("response"));
 
     // Test execution
-    let result = tool.execute(r#"{"content": "response"}"#, &ctx).await.unwrap();
+    let result = tool
+        .execute(r#"{"content": "response"}"#, &ctx)
+        .await
+        .unwrap();
     assert!(result.contains("response"));
 }
 
@@ -103,7 +111,8 @@ async fn test_write_file_creates_directories() {
     let args = serde_json::json!({
         "path": path_str,
         "content": "nested content"
-    }).to_string();
+    })
+    .to_string();
 
     let result = tool.execute(&args, &ctx).await.unwrap();
     assert!(result.contains("Successfully wrote"));
@@ -188,7 +197,8 @@ async fn test_exec_tool_command_execution() {
     let args = serde_json::json!({
         "command": if cfg!(windows) { "cmd" } else { "echo" },
         "args": if cfg!(windows) { vec!["/c", "echo", "test"] } else { vec!["test"] }
-    }).to_string();
+    })
+    .to_string();
 
     let result = tool.execute(&args, &ctx).await.unwrap();
     assert!(result.contains("test") || result.len() > 0);
@@ -204,7 +214,8 @@ async fn test_exec_tool_command_failure() {
     let args = serde_json::json!({
         "command": if cfg!(windows) { "cmd" } else { "ls" },
         "args": if cfg!(windows) { vec!["/c", "dir"] } else { vec!["-la", "/nonexistent"] }
-    }).to_string();
+    })
+    .to_string();
 
     let result = tool.execute(&args, &ctx).await;
     // Command should either succeed or fail - we just want to test execution
@@ -224,7 +235,8 @@ async fn test_async_exec_tool_basic() {
         "command": if cfg!(windows) { "cmd" } else { "echo" },
         "args": if cfg!(windows) { vec!["/c", "echo", "async"] } else { vec!["async"] },
         "timeout_secs": 5
-    }).to_string();
+    })
+    .to_string();
 
     let result = tool.execute(&args, &ctx).await.unwrap();
     assert!(result.len() > 0);
@@ -241,7 +253,8 @@ async fn test_async_exec_tool_timeout() {
         "command": if cfg!(windows) { "cmd" } else { "sleep" },
         "args": if cfg!(windows) { vec!["/c", "timeout", "10"] } else { vec!["10"] },
         "timeout_secs": 1
-    }).to_string();
+    })
+    .to_string();
 
     let result = tool.execute(&args, &ctx).await;
     // Should either timeout or complete
@@ -300,12 +313,16 @@ mod file_tool_edge_cases {
         let ctx = RequestContext::new("web", "chat1", "user1", "sess1");
 
         // Create some binary-like content
-        let binary_content = vec![0u8, 255, 128, 64, 32].iter().map(|&b| format!("{:02x}", b)).collect::<String>();
+        let binary_content = vec![0u8, 255, 128, 64, 32]
+            .iter()
+            .map(|&b| format!("{:02x}", b))
+            .collect::<String>();
 
         let args = serde_json::json!({
             "path": path_str,
             "content": binary_content
-        }).to_string();
+        })
+        .to_string();
 
         let result = tool.execute(&args, &ctx).await.unwrap();
         assert!(result.contains("Successfully wrote"));
@@ -336,7 +353,12 @@ mod file_tool_edge_cases {
 
         // Create many files
         for i in 0..20 {
-            tokio::fs::write(tmp.path().join(format!("file{}.txt", i)), format!("content{}", i)).await.unwrap();
+            tokio::fs::write(
+                tmp.path().join(format!("file{}.txt", i)),
+                format!("content{}", i),
+            )
+            .await
+            .unwrap();
         }
 
         let tool = ListDirectoryTool;
@@ -371,7 +393,11 @@ mod tool_registration_tests {
         assert!(tools.contains_key("sleep"));
         // Note: exec and async_exec might not be registered by default
         // Verify basic tools exist and there are many
-        assert!(tools.len() >= 10, "Expected at least 10 default tools, got {}", tools.len());
+        assert!(
+            tools.len() >= 10,
+            "Expected at least 10 default tools, got {}",
+            tools.len()
+        );
 
         // Print tool count for debugging
         println!("Registered {} tools", tools.len());
@@ -387,8 +413,16 @@ mod tool_registration_tests {
         // Verify all tools have valid descriptions
         for (name, tool) in tools.iter() {
             let description = tool.description();
-            assert!(!description.is_empty(), "Tool {} has empty description", name);
-            assert!(description.len() < 1000, "Tool {} description too long", name);
+            assert!(
+                !description.is_empty(),
+                "Tool {} has empty description",
+                name
+            );
+            assert!(
+                description.len() < 1000,
+                "Tool {} description too long",
+                name
+            );
         }
     }
 
@@ -401,8 +435,16 @@ mod tool_registration_tests {
             let params = tool.parameters();
             // Should be valid JSON object
             if let Some(obj) = params.as_object() {
-                assert!(obj.contains_key("type"), "Tool {} missing type in parameters", name);
-                assert!(obj.contains_key("properties"), "Tool {} missing properties in parameters", name);
+                assert!(
+                    obj.contains_key("type"),
+                    "Tool {} missing type in parameters",
+                    name
+                );
+                assert!(
+                    obj.contains_key("properties"),
+                    "Tool {} missing properties in parameters",
+                    name
+                );
             } else {
                 panic!("Tool {} parameters is not a JSON object", name);
             }

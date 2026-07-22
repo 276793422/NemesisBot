@@ -28,9 +28,9 @@ pub struct JudgeRequest {
 /// The judge's verdict, parsed from the LLM's JSON response.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct JudgeVerdict {
-    pub risk_level: String, // low|medium|high|critical
+    pub risk_level: String,         // low|medium|high|critical
     pub user_authorization: String, // unknown|low|medium|high
-    pub outcome: JudgeOutcome, // allow|deny
+    pub outcome: JudgeOutcome,      // allow|deny
     pub rationale: String,
 }
 

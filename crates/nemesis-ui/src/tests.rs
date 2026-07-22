@@ -15,7 +15,10 @@ fn test_display_width_cjk() {
 #[test]
 fn test_display_width_mixed() {
     // "TestAIServer " (13 ASCII + 1 space) + 4 CJK chars (8 width) = 21
-    assert_eq!(get_display_width("TestAIServer \u{5E2E}\u{52A9}\u{7CFB}\u{7EDF}"), 21);
+    assert_eq!(
+        get_display_width("TestAIServer \u{5E2E}\u{52A9}\u{7CFB}\u{7EDF}"),
+        21
+    );
 }
 
 #[test]
@@ -40,7 +43,11 @@ fn test_format_separator() {
 
 #[test]
 fn test_format_box() {
-    let result = format_box("\u{57FA}\u{7840}\u{54CD}\u{5E94}\u{6A21}\u{578B}", "\u{5FEB}\u{901F}\u{6D4B}\u{8BD5}\u{548C}\u{6D88}\u{606F}\u{9A8C}\u{8BC1}", 62);
+    let result = format_box(
+        "\u{57FA}\u{7840}\u{54CD}\u{5E94}\u{6A21}\u{578B}",
+        "\u{5FEB}\u{901F}\u{6D4B}\u{8BD5}\u{548C}\u{6D88}\u{606F}\u{9A8C}\u{8BC1}",
+        62,
+    );
     assert!(result.contains("\u{250C}"));
     assert!(result.contains("\u{2514}"));
 }

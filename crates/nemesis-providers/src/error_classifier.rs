@@ -114,17 +114,13 @@ fn matches_rate_limit(msg: &str) -> bool {
         "quota exceeded",
         "usage limit",
     ];
-    const REGEX_PATTERNS: &[&str] = &[
-        r"exceeded.*quota",
-        r"resource.*exhausted",
-    ];
+    const REGEX_PATTERNS: &[&str] = &[r"exceeded.*quota", r"resource.*exhausted"];
     contains_any(msg, PATTERNS) || matches_any_regex(msg, REGEX_PATTERNS)
 }
 
 fn matches_overloaded(msg: &str) -> bool {
     const PATTERNS: &[&str] = &["overloaded"];
-    const REGEX_PATTERNS: &[&str] =
-        &[r#"overloaded_error"#, r#""type"\s*:\s*"overloaded_error""#];
+    const REGEX_PATTERNS: &[&str] = &[r#"overloaded_error"#, r#""type"\s*:\s*"overloaded_error""#];
     contains_any(msg, PATTERNS) || matches_any_regex(msg, REGEX_PATTERNS)
 }
 
@@ -165,11 +161,7 @@ fn matches_auth(msg: &str) -> bool {
         "no credentials found",
         "no api key found",
     ];
-    const REGEX_PATTERNS: &[&str] = &[
-        r"invalid[_ ]?api[_ ]?key",
-        r"\b401\b",
-        r"\b403\b",
-    ];
+    const REGEX_PATTERNS: &[&str] = &[r"invalid[_ ]?api[_ ]?key", r"\b401\b", r"\b403\b"];
     contains_any(msg, PATTERNS) || matches_any_regex(msg, REGEX_PATTERNS)
 }
 

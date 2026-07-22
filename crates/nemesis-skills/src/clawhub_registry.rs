@@ -9,14 +9,17 @@
 
 use std::time::Duration;
 
+use reqwest::Client;
 use serde::Deserialize;
 use tracing::debug;
-use reqwest::Client;
 
 use nemesis_types::error::{NemesisError, Result};
 
 use crate::github_tree::download_skill_tree_from_github;
-use crate::types::{validate_skill_identifier, BrowseResult, BrowseSort, InstallResult, SkillMeta, SkillSearchResult};
+use crate::types::{
+    BrowseResult, BrowseSort, InstallResult, SkillMeta, SkillSearchResult,
+    validate_skill_identifier,
+};
 
 const DEFAULT_CLAWHUB_URL: &str = "https://clawhub.ai";
 const DEFAULT_CONVEX_URL: &str = "https://wry-manatee-359.convex.cloud";
@@ -91,8 +94,7 @@ impl ClawHubRegistry {
         if !self.convex_site_url.is_empty() {
             return self.convex_site_url.clone();
         }
-        self.convex_url
-            .replace(".convex.cloud", ".convex.site")
+        self.convex_url.replace(".convex.cloud", ".convex.site")
     }
 
     /// Search for skills.
@@ -120,7 +122,10 @@ impl ClawHubRegistry {
             serde_json::from_value(value).map_err(|e| NemesisError::Serialization(e))?;
 
         if detail.skill.slug.is_empty() && detail.resolved_slug.is_empty() {
-            return Err(NemesisError::NotFound(format!("skill '{}' not found", slug)));
+            return Err(NemesisError::NotFound(format!(
+                "skill '{}' not found",
+                slug
+            )));
         }
 
         let meta_slug = if detail.skill.slug.is_empty() {
@@ -185,10 +190,7 @@ impl ClawHubRegistry {
         };
 
         // Strategy 1: Try ZIP download.
-        if let Ok(()) = self
-            .download_skill_zip(slug, target_dir)
-            .await
-        {
+        if let Ok(()) = self.download_skill_zip(slug, target_dir).await {
             debug!(
                 "ClawHub skill installed via ZIP: slug={}, owner={}",
                 slug, owner
@@ -201,7 +203,10 @@ impl ClawHubRegistry {
             });
         }
 
-        debug!("ZIP download failed, falling back to GitHub Trees API for {}", slug);
+        debug!(
+            "ZIP download failed, falling back to GitHub Trees API for {}",
+            slug
+        );
 
         // Strategy 2: Fallback to GitHub Trees API.
         let dir_prefix = format!("skills/{}/{}", owner, slug);
@@ -257,10 +262,15 @@ impl ClawHubRegistry {
             }
         }
 
-        debug!("ClawHub file API failed, falling back to GitHub raw for {}", slug);
+        debug!(
+            "ClawHub file API failed, falling back to GitHub raw for {}",
+            slug
+        );
 
         // Strategy 2: Convex + GitHub raw fallback.
-        let value = self.call_convex("skills:getBySlug", &[("slug", slug)]).await?;
+        let value = self
+            .call_convex("skills:getBySlug", &[("slug", slug)])
+            .await?;
         let detail: ConvexSkillDetail =
             serde_json::from_value(value).map_err(|e| NemesisError::Serialization(e))?;
 
@@ -276,14 +286,20 @@ impl ClawHubRegistry {
             format!("{}/{}", detail.owner.handle, slug)
         );
 
-        let resp = self.client.get(&url).send().await
+        let resp = self
+            .client
+            .get(&url)
+            .send()
+            .await
             .map_err(|e| NemesisError::Other(format!("request failed: {}", e)))?;
 
         if !resp.status().is_success() {
             return Err(NemesisError::Other(format!("HTTP {}", resp.status())));
         }
 
-        let content = resp.text().await
+        let content = resp
+            .text()
+            .await
             .map_err(|e| NemesisError::Other(format!("read failed: {}", e)))?;
 
         Ok(crate::types::SkillContent {
@@ -313,7 +329,11 @@ impl ClawHubRegistry {
             url.push_str(&format!("&cursor={}", urlencoding::encode(cursor)));
         }
 
-        let resp = self.client.get(&url).send().await
+        let resp = self
+            .client
+            .get(&url)
+            .send()
+            .await
             .map_err(|e| NemesisError::Other(format!("browse request failed: {}", e)))?;
 
         if !resp.status().is_success() {
@@ -326,11 +346,15 @@ impl ClawHubRegistry {
             )));
         }
 
-        let browse_resp: ClawhubBrowseResponse = resp.json().await
+        let browse_resp: ClawhubBrowseResponse = resp
+            .json()
+            .await
             .map_err(|e| NemesisError::Other(format!("failed to parse browse response: {}", e)))?;
 
-        let items: Vec<SkillSearchResult> = browse_resp.items.into_iter().map(|item| {
-            SkillSearchResult {
+        let items: Vec<SkillSearchResult> = browse_resp
+            .items
+            .into_iter()
+            .map(|item| SkillSearchResult {
                 score: 1.0,
                 slug: item.slug,
                 display_name: item.display_name,
@@ -341,8 +365,8 @@ impl ClawHubRegistry {
                 download_path: String::new(),
                 downloads: item.stats.downloads as i64,
                 truncated: false,
-            }
-        }).collect();
+            })
+            .collect();
 
         Ok(BrowseResult {
             items,
@@ -397,11 +421,7 @@ impl ClawHubRegistry {
     }
 
     /// Search using ClawHub search API (vector search).
-    async fn search_query(
-        &self,
-        query: &str,
-        limit: usize,
-    ) -> Result<Vec<SkillSearchResult>> {
+    async fn search_query(&self, query: &str, limit: usize) -> Result<Vec<SkillSearchResult>> {
         let limit = if limit == 0 { 20 } else { limit };
         let url = format!(
             "{}/api/search?q={}&limit={}",
@@ -539,7 +559,9 @@ impl ClawHubRegistry {
             .map_err(|e| NemesisError::Other(format!("failed to read ZIP response: {}", e)))?;
 
         if body.len() as u64 > 50 * 1024 * 1024 {
-            return Err(NemesisError::Other("ZIP file too large (>50MB)".to_string()));
+            return Err(NemesisError::Other(
+                "ZIP file too large (>50MB)".to_string(),
+            ));
         }
 
         // Extract ZIP to target directory.
@@ -566,9 +588,9 @@ fn extract_zip_to_dir(data: &[u8], target_dir: &str) -> Result<()> {
     // Collect all files to detect single top-level directory.
     let mut entries: Vec<String> = Vec::new();
     for i in 0..archive.len() {
-        let file = archive.by_index(i).map_err(|e| {
-            NemesisError::Other(format!("failed to read ZIP entry {}: {}", i, e))
-        })?;
+        let file = archive
+            .by_index(i)
+            .map_err(|e| NemesisError::Other(format!("failed to read ZIP entry {}: {}", i, e)))?;
         entries.push(file.name().to_string());
     }
 
@@ -587,9 +609,9 @@ fn extract_zip_to_dir(data: &[u8], target_dir: &str) -> Result<()> {
     std::fs::create_dir_all(target_dir).map_err(|e| NemesisError::Io(e))?;
 
     for i in 0..archive.len() {
-        let mut file = archive.by_index(i).map_err(|e| {
-            NemesisError::Other(format!("failed to read ZIP entry {}: {}", i, e))
-        })?;
+        let mut file = archive
+            .by_index(i)
+            .map_err(|e| NemesisError::Other(format!("failed to read ZIP entry {}: {}", i, e)))?;
 
         let name = file.name().to_string();
         if name.ends_with('/') {
@@ -649,7 +671,9 @@ fn find_common_prefix(entries: &[String]) -> Option<String> {
         return None;
     }
 
-    let all_same = entries.iter().all(|e| e.starts_with(&format!("{}/", first_dir)) || e == first_dir);
+    let all_same = entries
+        .iter()
+        .all(|e| e.starts_with(&format!("{}/", first_dir)) || e == first_dir);
     if all_same {
         Some(format!("{}/", first_dir))
     } else {
@@ -696,10 +720,20 @@ fn move_dir_contents(src_dir: &std::path::Path, dst_dir: &std::path::Path) -> Re
             std::fs::create_dir_all(&dst_path).map_err(|e| NemesisError::Io(e))?;
             move_dir_contents(&src_path, &dst_path)?;
         } else {
-            let data = std::fs::read(&src_path)
-                .map_err(|e| NemesisError::Other(format!("failed to read {}: {}", file_name.to_string_lossy(), e)))?;
-            std::fs::write(&dst_path, &data)
-                .map_err(|e| NemesisError::Other(format!("failed to write {}: {}", file_name.to_string_lossy(), e)))?;
+            let data = std::fs::read(&src_path).map_err(|e| {
+                NemesisError::Other(format!(
+                    "failed to read {}: {}",
+                    file_name.to_string_lossy(),
+                    e
+                ))
+            })?;
+            std::fs::write(&dst_path, &data).map_err(|e| {
+                NemesisError::Other(format!(
+                    "failed to write {}: {}",
+                    file_name.to_string_lossy(),
+                    e
+                ))
+            })?;
         }
     }
 

@@ -313,7 +313,9 @@ fn test_query_limit_caps_results() {
     let store = VectorStore::new_from_embed(stub_embed(), cfg);
     // All entries have the same content — all match identically.
     for i in 0..5 {
-        store.store_entry(&make_entry(&format!("id{}", i), "same")).unwrap();
+        store
+            .store_entry(&make_entry(&format!("id{}", i), "same"))
+            .unwrap();
     }
     let r = store.query("same", 2, &[]).unwrap();
     assert!(r.entries.len() <= 2);
@@ -328,7 +330,9 @@ fn test_query_zero_limit_uses_max_results() {
     let cfg = make_store_config(&path.to_string_lossy());
     let store = VectorStore::new_from_embed(stub_embed(), cfg);
     for i in 0..3 {
-        store.store_entry(&make_entry(&format!("z{}", i), "same")).unwrap();
+        store
+            .store_entry(&make_entry(&format!("z{}", i), "same"))
+            .unwrap();
     }
     let r = store.query("same", 0, &[]).unwrap();
     // max_results default = 10 ≥ 3.
@@ -358,7 +362,9 @@ fn test_query_with_type_filter_excludes_all() {
     let cfg = make_store_config(&path.to_string_lossy());
     let store = VectorStore::new_from_embed(stub_embed(), cfg);
     store.store_entry(&make_entry("x1", "same")).unwrap();
-    let r = store.query("same", 10, &["nonexistent_type".to_string()]).unwrap();
+    let r = store
+        .query("same", 10, &["nonexistent_type".to_string()])
+        .unwrap();
     assert_eq!(r.total, 0);
 }
 
@@ -410,7 +416,9 @@ fn test_list_entries_no_filter_returns_all() {
     let cfg = make_store_config(&path.to_string_lossy());
     let store = VectorStore::new_from_embed(stub_embed(), cfg);
     for i in 0..5 {
-        store.store_entry(&make_entry(&format!("l{}", i), "content")).unwrap();
+        store
+            .store_entry(&make_entry(&format!("l{}", i), "content"))
+            .unwrap();
     }
     let r = store.list_entries(&[], 0, 10);
     assert_eq!(r.total, 5);
@@ -441,7 +449,9 @@ fn test_list_entries_offset_skips() {
     let cfg = make_store_config(&path.to_string_lossy());
     let store = VectorStore::new_from_embed(stub_embed(), cfg);
     for i in 0..5 {
-        store.store_entry(&make_entry(&format!("o{}", i), "x")).unwrap();
+        store
+            .store_entry(&make_entry(&format!("o{}", i), "x"))
+            .unwrap();
     }
     let r = store.list_entries(&[], 3, 10);
     assert_eq!(r.total, 5);
@@ -455,7 +465,9 @@ fn test_list_entries_limit_zero_returns_all() {
     let cfg = make_store_config(&path.to_string_lossy());
     let store = VectorStore::new_from_embed(stub_embed(), cfg);
     for i in 0..3 {
-        store.store_entry(&make_entry(&format!("z{}", i), "x")).unwrap();
+        store
+            .store_entry(&make_entry(&format!("z{}", i), "x"))
+            .unwrap();
     }
     let r = store.list_entries(&[], 0, 0);
     assert_eq!(r.entries.len(), 3);
@@ -530,7 +542,10 @@ fn test_load_persisted_sync_roundtrip() {
     // new_from_embed auto-loads persisted file on construction.
     let store = VectorStore::new_from_embed(stub_embed(), cfg);
     assert_eq!(store.len(), 1);
-    assert_eq!(store.get_by_id("rt-load").unwrap().content, "loaded content");
+    assert_eq!(
+        store.get_by_id("rt-load").unwrap().content,
+        "loaded content"
+    );
 }
 
 #[test]
@@ -581,7 +596,10 @@ async fn test_load_persisted_async_roundtrip() {
     // Auto-load already populated.
     assert_eq!(store.len(), 1);
     // Verify the entry exists.
-    assert_eq!(store.get_by_id("async-load").unwrap().content, "content async");
+    assert_eq!(
+        store.get_by_id("async-load").unwrap().content,
+        "content async"
+    );
 }
 
 #[test]

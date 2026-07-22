@@ -38,10 +38,16 @@ fn test_stop_when_not_started_fails() {
 fn test_register_and_use_handler() {
     let server = make_server();
 
-    server.register_handler("TestAction", Box::new(|payload| {
-        let name = payload.get("name").and_then(|v| v.as_str()).unwrap_or("unknown");
-        Ok(serde_json::json!({"greeting": format!("Hello, {}!", name)}))
-    }));
+    server.register_handler(
+        "TestAction",
+        Box::new(|payload| {
+            let name = payload
+                .get("name")
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown");
+            Ok(serde_json::json!({"greeting": format!("Hello, {}!", name)}))
+        }),
+    );
 
     let result = server.handle_request_sync("TestAction", serde_json::json!({"name": "Alice"}));
     assert!(result.is_ok());
@@ -53,10 +59,18 @@ fn test_register_and_use_handler() {
 fn test_unregister_handler() {
     let server = make_server();
     server.register_handler("TempAction", Box::new(|_| Ok(serde_json::json!({}))));
-    assert!(server.handle_request_sync("TempAction", serde_json::json!({})).is_ok());
+    assert!(
+        server
+            .handle_request_sync("TempAction", serde_json::json!({}))
+            .is_ok()
+    );
 
     server.unregister_handler("TempAction");
-    assert!(server.handle_request_sync("TempAction", serde_json::json!({})).is_err());
+    assert!(
+        server
+            .handle_request_sync("TempAction", serde_json::json!({}))
+            .is_err()
+    );
 }
 
 #[test]
@@ -84,9 +98,10 @@ fn test_default_get_info_handler() {
 #[test]
 fn test_handler_error() {
     let server = make_server();
-    server.register_handler("FailAction", Box::new(|_| {
-        Err("something went wrong".into())
-    }));
+    server.register_handler(
+        "FailAction",
+        Box::new(|_| Err("something went wrong".into())),
+    );
 
     let result = server.handle_request_sync("FailAction", serde_json::json!({}));
     assert!(result.is_err());
@@ -124,10 +139,21 @@ fn test_default_handlers_lowercase_action_names() {
     server.register_default_handlers();
 
     // Verify all Go-compatible lowercase action names work
-    let actions = vec!["ping", "get_info", "get_capabilities", "list_actions", "peer_chat", "peer_chat_callback"];
+    let actions = vec![
+        "ping",
+        "get_info",
+        "get_capabilities",
+        "list_actions",
+        "peer_chat",
+        "peer_chat_callback",
+    ];
     for action in actions {
         let result = server.handle_request_sync(action, serde_json::json!({}));
-        assert!(result.is_ok(), "Default handler '{}' should be registered", action);
+        assert!(
+            result.is_ok(),
+            "Default handler '{}' should be registered",
+            action
+        );
     }
 }
 
@@ -136,9 +162,12 @@ fn test_default_peer_chat_handler() {
     let server = make_server();
     server.register_default_handlers();
 
-    let result = server.handle_request_sync("peer_chat", serde_json::json!({
-        "task_id": "test-123",
-    }));
+    let result = server.handle_request_sync(
+        "peer_chat",
+        serde_json::json!({
+            "task_id": "test-123",
+        }),
+    );
     assert!(result.is_ok());
     let resp = result.unwrap();
     assert_eq!(resp["status"], "accepted");
@@ -150,9 +179,12 @@ fn test_default_peer_chat_callback_handler() {
     let server = make_server();
     server.register_default_handlers();
 
-    let result = server.handle_request_sync("peer_chat_callback", serde_json::json!({
-        "task_id": "test-456",
-    }));
+    let result = server.handle_request_sync(
+        "peer_chat_callback",
+        serde_json::json!({
+            "task_id": "test-456",
+        }),
+    );
     assert!(result.is_ok());
     let resp = result.unwrap();
     assert_eq!(resp["status"], "received");
@@ -169,12 +201,19 @@ fn test_default_list_actions_handler() {
     let resp = result.unwrap();
     let actions = resp["actions"].as_array().unwrap();
     // Should contain the Go-compatible action names
-    let action_names: Vec<&str> = actions.iter()
-        .filter_map(|v| v.as_str())
-        .collect();
-    assert!(action_names.contains(&"ping"), "list_actions should contain 'ping'");
-    assert!(action_names.contains(&"get_info"), "list_actions should contain 'get_info'");
-    assert!(action_names.contains(&"peer_chat"), "list_actions should contain 'peer_chat'");
+    let action_names: Vec<&str> = actions.iter().filter_map(|v| v.as_str()).collect();
+    assert!(
+        action_names.contains(&"ping"),
+        "list_actions should contain 'ping'"
+    );
+    assert!(
+        action_names.contains(&"get_info"),
+        "list_actions should contain 'get_info'"
+    );
+    assert!(
+        action_names.contains(&"peer_chat"),
+        "list_actions should contain 'peer_chat'"
+    );
 }
 
 #[test]
@@ -188,9 +227,10 @@ fn test_handler_replacement() {
     assert_eq!(result1.unwrap()["status"], "pong");
 
     // Replace with custom handler
-    server.register_handler("ping", Box::new(|_payload| {
-        Ok(serde_json::json!({"status": "custom_pong"}))
-    }));
+    server.register_handler(
+        "ping",
+        Box::new(|_payload| Ok(serde_json::json!({"status": "custom_pong"}))),
+    );
 
     let result2 = server.handle_request_sync("ping", serde_json::json!({}));
     assert_eq!(result2.unwrap()["status"], "custom_pong");
@@ -254,10 +294,13 @@ fn test_auth_token_clear() {
 #[test]
 fn test_register_handler_and_verify() {
     let server = make_server();
-    server.register_handler("custom_action", Box::new(|payload| {
-        let val = payload.get("val").and_then(|v| v.as_i64()).unwrap_or(0);
-        Ok(serde_json::json!({"doubled": val * 2}))
-    }));
+    server.register_handler(
+        "custom_action",
+        Box::new(|payload| {
+            let val = payload.get("val").and_then(|v| v.as_i64()).unwrap_or(0);
+            Ok(serde_json::json!({"doubled": val * 2}))
+        }),
+    );
 
     let result = server.handle_request_sync("custom_action", serde_json::json!({"val": 21}));
     assert!(result.is_ok());
@@ -274,8 +317,14 @@ fn test_unregister_nonexistent_handler_noop() {
 #[test]
 fn test_multiple_handlers_independent() {
     let server = make_server();
-    server.register_handler("action_a", Box::new(|_| Ok(serde_json::json!({"from": "a"}))));
-    server.register_handler("action_b", Box::new(|_| Ok(serde_json::json!({"from": "b"}))));
+    server.register_handler(
+        "action_a",
+        Box::new(|_| Ok(serde_json::json!({"from": "a"}))),
+    );
+    server.register_handler(
+        "action_b",
+        Box::new(|_| Ok(serde_json::json!({"from": "b"}))),
+    );
 
     let result_a = server.handle_request_sync("action_a", serde_json::json!({}));
     assert_eq!(result_a.unwrap()["from"], "a");
@@ -327,11 +376,14 @@ async fn test_server_stop_then_restart() {
 #[test]
 fn test_handle_request_sync_with_complex_payload() {
     let server = make_server();
-    server.register_handler("compute", Box::new(|payload| {
-        let a = payload.get("a").and_then(|v| v.as_i64()).unwrap_or(0);
-        let b = payload.get("b").and_then(|v| v.as_i64()).unwrap_or(0);
-        Ok(serde_json::json!({"sum": a + b}))
-    }));
+    server.register_handler(
+        "compute",
+        Box::new(|payload| {
+            let a = payload.get("a").and_then(|v| v.as_i64()).unwrap_or(0);
+            let b = payload.get("b").and_then(|v| v.as_i64()).unwrap_or(0);
+            Ok(serde_json::json!({"sum": a + b}))
+        }),
+    );
 
     let result = server.handle_request_sync("compute", serde_json::json!({"a": 10, "b": 20}));
     assert!(result.is_ok());
@@ -341,9 +393,10 @@ fn test_handle_request_sync_with_complex_payload() {
 #[test]
 fn test_handle_request_sync_handler_returns_string_error() {
     let server = make_server();
-    server.register_handler("fail", Box::new(|_| {
-        Err("custom error message".to_string())
-    }));
+    server.register_handler(
+        "fail",
+        Box::new(|_| Err("custom error message".to_string())),
+    );
 
     let result = server.handle_request_sync("fail", serde_json::json!({}));
     assert!(result.is_err());
@@ -458,10 +511,13 @@ async fn test_server_auth_required() {
 #[test]
 fn test_handle_request_sync_with_null_payload() {
     let server = make_server();
-    server.register_handler("null_test", Box::new(|payload| {
-        assert!(payload.is_null());
-        Ok(serde_json::json!({"ok": true}))
-    }));
+    server.register_handler(
+        "null_test",
+        Box::new(|payload| {
+            assert!(payload.is_null());
+            Ok(serde_json::json!({"ok": true}))
+        }),
+    );
 
     let result = server.handle_request_sync("null_test", serde_json::Value::Null);
     assert!(result.is_ok());
@@ -471,15 +527,21 @@ fn test_handle_request_sync_with_null_payload() {
 #[test]
 fn test_handle_request_sync_handler_with_nested_payload() {
     let server = make_server();
-    server.register_handler("nested", Box::new(|payload| {
-        let nested = payload.get("data").and_then(|d| d.get("value"));
-        let val = nested.and_then(|v| v.as_i64()).unwrap_or(0);
-        Ok(serde_json::json!({"result": val * 3}))
-    }));
+    server.register_handler(
+        "nested",
+        Box::new(|payload| {
+            let nested = payload.get("data").and_then(|d| d.get("value"));
+            let val = nested.and_then(|v| v.as_i64()).unwrap_or(0);
+            Ok(serde_json::json!({"result": val * 3}))
+        }),
+    );
 
-    let result = server.handle_request_sync("nested", serde_json::json!({
-        "data": {"value": 7}
-    }));
+    let result = server.handle_request_sync(
+        "nested",
+        serde_json::json!({
+            "data": {"value": 7}
+        }),
+    );
     assert!(result.is_ok());
     assert_eq!(result.unwrap()["result"], 21);
 }
@@ -543,10 +605,13 @@ fn test_server_port_zero_before_start() {
 #[test]
 fn test_handle_request_sync_with_array_payload() {
     let server = make_server();
-    server.register_handler("array_action", Box::new(|payload| {
-        let count = payload.as_array().map(|a| a.len()).unwrap_or(0);
-        Ok(serde_json::json!({"count": count}))
-    }));
+    server.register_handler(
+        "array_action",
+        Box::new(|payload| {
+            let count = payload.as_array().map(|a| a.len()).unwrap_or(0);
+            Ok(serde_json::json!({"count": count}))
+        }),
+    );
 
     let result = server.handle_request_sync("array_action", serde_json::json!([1, 2, 3]));
     assert!(result.is_ok());
@@ -576,13 +641,27 @@ fn test_unregister_and_reregister_handler() {
     let server = make_server();
 
     server.register_handler("action", Box::new(|_| Ok(serde_json::json!({"v": 1}))));
-    assert_eq!(server.handle_request_sync("action", serde_json::json!({})).unwrap()["v"], 1);
+    assert_eq!(
+        server
+            .handle_request_sync("action", serde_json::json!({}))
+            .unwrap()["v"],
+        1
+    );
 
     server.unregister_handler("action");
-    assert!(server.handle_request_sync("action", serde_json::json!({})).is_err());
+    assert!(
+        server
+            .handle_request_sync("action", serde_json::json!({}))
+            .is_err()
+    );
 
     server.register_handler("action", Box::new(|_| Ok(serde_json::json!({"v": 2}))));
-    assert_eq!(server.handle_request_sync("action", serde_json::json!({})).unwrap()["v"], 2);
+    assert_eq!(
+        server
+            .handle_request_sync("action", serde_json::json!({}))
+            .unwrap()["v"],
+        2
+    );
 }
 
 #[test]
@@ -643,17 +722,20 @@ fn test_handler_with_empty_string_action() {
 #[test]
 fn test_handler_returns_complex_json() {
     let server = make_server();
-    server.register_handler("complex", Box::new(|_| {
-        Ok(serde_json::json!({
-            "nested": {
-                "deep": {
-                    "value": 42,
-                    "list": [1, 2, 3],
-                }
-            },
-            "array": [{"a": 1}, {"b": 2}],
-        }))
-    }));
+    server.register_handler(
+        "complex",
+        Box::new(|_| {
+            Ok(serde_json::json!({
+                "nested": {
+                    "deep": {
+                        "value": 42,
+                        "list": [1, 2, 3],
+                    }
+                },
+                "array": [{"a": 1}, {"b": 2}],
+            }))
+        }),
+    );
 
     let result = server.handle_request_sync("complex", serde_json::json!({}));
     assert!(result.is_ok());
@@ -701,13 +783,16 @@ fn test_handler_with_rpc_meta_injection() {
     // Verify that handle_request_sync doesn't add _rpc metadata
     // (that's only added in the real async path)
     let server = make_server();
-    server.register_handler("meta_test", Box::new(|payload| {
-        // The sync path does NOT inject _rpc metadata
-        Ok(serde_json::json!({
-            "has_rpc": payload.get("_rpc").is_some(),
-            "payload_keys": payload.as_object().map(|o| o.keys().collect::<Vec<_>>()),
-        }))
-    }));
+    server.register_handler(
+        "meta_test",
+        Box::new(|payload| {
+            // The sync path does NOT inject _rpc metadata
+            Ok(serde_json::json!({
+                "has_rpc": payload.get("_rpc").is_some(),
+                "payload_keys": payload.as_object().map(|o| o.keys().collect::<Vec<_>>()),
+            }))
+        }),
+    );
 
     let result = server.handle_request_sync("meta_test", serde_json::json!({"key": "value"}));
     assert!(result.is_ok());
@@ -719,18 +804,27 @@ fn test_handler_with_rpc_meta_injection() {
 fn test_default_handlers_registered_in_constructor() {
     let server = make_server();
     // Defaults are now registered in new(), not start(). ping should exist immediately.
-    assert!(server.handle_request_sync("ping", serde_json::json!({})).is_ok());
+    assert!(
+        server
+            .handle_request_sync("ping", serde_json::json!({}))
+            .is_ok()
+    );
     // peer_chat default handler should also exist
-    assert!(server.handle_request_sync("peer_chat", serde_json::json!({"task_id": "t1"})).is_ok());
+    assert!(
+        server
+            .handle_request_sync("peer_chat", serde_json::json!({"task_id": "t1"}))
+            .is_ok()
+    );
 }
 
 #[test]
 fn test_handler_error_propagation() {
     let server = make_server();
     let error_msg = "a very specific error message with special chars: <>&\"'";
-    server.register_handler("fail_special", Box::new(move |_| {
-        Err(error_msg.to_string())
-    }));
+    server.register_handler(
+        "fail_special",
+        Box::new(move |_| Err(error_msg.to_string())),
+    );
 
     let result = server.handle_request_sync("fail_special", serde_json::json!({}));
     assert!(result.is_err());
@@ -742,9 +836,7 @@ fn test_handler_error_propagation() {
 #[test]
 fn test_handler_with_large_payload() {
     let server = make_server();
-    server.register_handler("echo", Box::new(|payload| {
-        Ok(payload.clone())
-    }));
+    server.register_handler("echo", Box::new(|payload| Ok(payload.clone())));
 
     // Large payload
     let large_data: Vec<u8> = (0..10000).map(|i| (i % 256) as u8).collect();
@@ -762,14 +854,20 @@ fn test_handler_with_large_payload() {
 #[test]
 fn test_handler_with_unicode_payload() {
     let server = make_server();
-    server.register_handler("unicode", Box::new(|payload| {
-        let text = payload.get("text").and_then(|v| v.as_str()).unwrap_or("");
-        Ok(serde_json::json!({"length": text.len(), "text": text}))
-    }));
+    server.register_handler(
+        "unicode",
+        Box::new(|payload| {
+            let text = payload.get("text").and_then(|v| v.as_str()).unwrap_or("");
+            Ok(serde_json::json!({"length": text.len(), "text": text}))
+        }),
+    );
 
-    let result = server.handle_request_sync("unicode", serde_json::json!({
-        "text": "Hello 世界 🌍 مرحبا"
-    }));
+    let result = server.handle_request_sync(
+        "unicode",
+        serde_json::json!({
+            "text": "Hello 世界 🌍 مرحبا"
+        }),
+    );
     assert!(result.is_ok());
 }
 
@@ -836,12 +934,15 @@ async fn test_server_reuse_after_stop() {
 fn test_handler_payload_isolation() {
     // Verify handlers cannot affect each other's payloads
     let server = make_server();
-    server.register_handler("modify", Box::new(|mut payload| {
-        if let Some(obj) = payload.as_object_mut() {
-            obj.insert("added".to_string(), serde_json::json!("by_handler"));
-        }
-        Ok(payload)
-    }));
+    server.register_handler(
+        "modify",
+        Box::new(|mut payload| {
+            if let Some(obj) = payload.as_object_mut() {
+                obj.insert("added".to_string(), serde_json::json!("by_handler"));
+            }
+            Ok(payload)
+        }),
+    );
 
     let original = serde_json::json!({"original": true});
     let _ = server.handle_request_sync("modify", original.clone());

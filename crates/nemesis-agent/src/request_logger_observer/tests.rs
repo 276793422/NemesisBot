@@ -42,9 +42,7 @@ fn make_llm_request_event(trace: &str, round: usize) -> ConversationEvent {
                 serde_json::json!({"role": "system", "content": "You are helpful"}),
                 serde_json::json!({"role": "user", "content": "Hello"}),
             ],
-            tools: vec![
-                serde_json::json!({"type": "function", "function": {"name": "test_tool"}}),
-            ],
+            tools: vec![serde_json::json!({"type": "function", "function": {"name": "test_tool"}})],
         }),
     }
 }
@@ -80,7 +78,11 @@ fn make_tool_call_event(trace: &str, round: usize, tool: &str, success: bool) ->
             tool_name: tool.to_string(),
             success,
             duration_ms: 100,
-            error: if success { String::new() } else { "error".to_string() },
+            error: if success {
+                String::new()
+            } else {
+                "error".to_string()
+            },
             llm_round: round,
             arguments: String::new(),
             result: String::new(),
@@ -320,16 +322,14 @@ fn llm_response_with_tool_call_details() {
             content: "Let me search for that.".to_string(),
             tool_calls_count: 1,
             finish_reason: "tool_calls".to_string(),
-            tool_calls: vec![
-                serde_json::json!({
-                    "id": "call_123",
-                    "type": "function",
-                    "function": {
-                        "name": "web_search",
-                        "arguments": "{\"query\": \"test query\"}"
-                    }
-                }),
-            ],
+            tool_calls: vec![serde_json::json!({
+                "id": "call_123",
+                "type": "function",
+                "function": {
+                    "name": "web_search",
+                    "arguments": "{\"query\": \"test query\"}"
+                }
+            })],
             prompt_tokens: 0,
             completion_tokens: 0,
             total_tokens: 0,
@@ -694,7 +694,10 @@ async fn observer_trait_name_and_dispatch() {
     let observer = RequestLoggerObserver::new(test_config(), tmp.path());
 
     // Trait impl name() (distinct from the inherent name()).
-    assert_eq!(nemesis_observer::Observer::name(&observer), "request_logger");
+    assert_eq!(
+        nemesis_observer::Observer::name(&observer),
+        "request_logger"
+    );
 
     // Dispatch a conversation_start via the Observer trait → convert_event → internal on_event.
     let src = nemesis_observer::ConversationEvent {

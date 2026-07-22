@@ -16,9 +16,9 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 
+use argon2::Argon2;
 use argon2::password_hash::SaltString;
 use argon2::password_hash::{PasswordHash, PasswordHasher, PasswordVerifier};
-use argon2::Argon2;
 use parking_lot::RwLock;
 use rand::rngs::OsRng;
 
@@ -166,8 +166,7 @@ impl ChatSecretStore {
         // Write to tmp then rename so a crash mid-write doesn't corrupt
         // the existing file.
         let tmp = path.with_extension("json.tmp");
-        std::fs::write(&tmp, text.as_bytes())
-            .map_err(|e| format!("write tmp {:?}: {}", tmp, e))?;
+        std::fs::write(&tmp, text.as_bytes()).map_err(|e| format!("write tmp {:?}: {}", tmp, e))?;
         std::fs::rename(&tmp, path)
             .map_err(|e| format!("rename {:?} -> {:?}: {}", tmp, path.display(), e))?;
         inner.dirty = false;

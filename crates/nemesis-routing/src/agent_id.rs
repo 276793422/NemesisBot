@@ -16,7 +16,13 @@ pub fn normalize_agent_id(id: &str) -> String {
     }
     let result: String = lower
         .chars()
-        .map(|c| if c.is_ascii_alphanumeric() || c == '_' || c == '-' { c } else { '-' })
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '_' || c == '-' {
+                c
+            } else {
+                '-'
+            }
+        })
         .collect();
     let result = result.trim_matches(|c: char| c == '-').to_string();
     let result = if result.len() > MAX_AGENT_ID_LENGTH {
@@ -44,7 +50,13 @@ pub fn normalize_account_id(id: &str) -> String {
     }
     let result: String = lower
         .chars()
-        .map(|c| if c.is_ascii_alphanumeric() || c == '_' || c == '-' { c } else { '-' })
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '_' || c == '-' {
+                c
+            } else {
+                '-'
+            }
+        })
         .collect();
     let result = result.trim_matches(|c: char| c == '-').to_string();
     if result.is_empty() {
@@ -62,7 +74,8 @@ fn is_valid_id(id: &str) -> bool {
     if !first.is_ascii_alphanumeric() {
         return false;
     }
-    id.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+    id.chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
 }
 
 #[cfg(test)]

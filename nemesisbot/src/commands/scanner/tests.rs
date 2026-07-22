@@ -85,7 +85,8 @@ fn test_save_and_load_roundtrip() {
     let mut cfg = ScannerFullConfig::default();
     cfg.enabled.push("clamav".to_string());
     let engine = ClamAVEngineConfig::default();
-    cfg.engines.insert("clamav".to_string(), serde_json::to_value(engine).unwrap());
+    cfg.engines
+        .insert("clamav".to_string(), serde_json::to_value(engine).unwrap());
 
     save_scanner_config(&path, &cfg).unwrap();
     let loaded = load_scanner_config(&path).unwrap();
@@ -180,7 +181,9 @@ fn test_resolve_tools_dir() {
 
 #[test]
 fn test_check_executables_at_path_nonexistent() {
-    assert!(!check_executables_at_path("/nonexistent/path/that/does/not/exist"));
+    assert!(!check_executables_at_path(
+        "/nonexistent/path/that/does/not/exist"
+    ));
 }
 
 #[test]
@@ -211,7 +214,8 @@ fn test_cmd_list_with_engines() {
         },
         ..Default::default()
     };
-    cfg.engines.insert("clamav".to_string(), serde_json::to_value(engine).unwrap());
+    cfg.engines
+        .insert("clamav".to_string(), serde_json::to_value(engine).unwrap());
     save_scanner_config(&path, &cfg).unwrap();
 
     cmd_list(&path).unwrap();
@@ -223,7 +227,8 @@ fn test_cmd_enable_adds_to_enabled_list() {
     let path = tmp.path().join("config.scanner.json");
     let mut cfg = ScannerFullConfig::default();
     let engine = ClamAVEngineConfig::default();
-    cfg.engines.insert("clamav".to_string(), serde_json::to_value(engine).unwrap());
+    cfg.engines
+        .insert("clamav".to_string(), serde_json::to_value(engine).unwrap());
     save_scanner_config(&path, &cfg).unwrap();
 
     cmd_enable(&path, "clamav").unwrap();
@@ -239,7 +244,8 @@ fn test_cmd_enable_already_enabled() {
     let mut cfg = ScannerFullConfig::default();
     cfg.enabled.push("clamav".to_string());
     let engine = ClamAVEngineConfig::default();
-    cfg.engines.insert("clamav".to_string(), serde_json::to_value(engine).unwrap());
+    cfg.engines
+        .insert("clamav".to_string(), serde_json::to_value(engine).unwrap());
     save_scanner_config(&path, &cfg).unwrap();
 
     cmd_enable(&path, "clamav").unwrap();
@@ -255,7 +261,8 @@ fn test_cmd_disable_removes_from_enabled() {
     let mut cfg = ScannerFullConfig::default();
     cfg.enabled.push("clamav".to_string());
     let engine = ClamAVEngineConfig::default();
-    cfg.engines.insert("clamav".to_string(), serde_json::to_value(engine).unwrap());
+    cfg.engines
+        .insert("clamav".to_string(), serde_json::to_value(engine).unwrap());
     save_scanner_config(&path, &cfg).unwrap();
 
     cmd_disable(&path, "clamav").unwrap();
@@ -347,7 +354,10 @@ fn test_clamav_config_roundtrip_all_fields() {
 fn test_scanner_full_config_serialization() {
     let mut cfg = ScannerFullConfig::default();
     cfg.enabled.push("clamav".to_string());
-    cfg.engines.insert("clamav".to_string(), serde_json::json!({"address": "127.0.0.1:3310"}));
+    cfg.engines.insert(
+        "clamav".to_string(),
+        serde_json::json!({"address": "127.0.0.1:3310"}),
+    );
 
     let json = serde_json::to_string(&cfg).unwrap();
     let back: ScannerFullConfig = serde_json::from_str(&json).unwrap();
@@ -487,7 +497,10 @@ fn test_resolve_tools_dir_from_scanner_config() {
 fn test_resolve_tools_dir_path_structure() {
     let config_path = std::path::Path::new("/home/user/.nemesisbot/config/config.scanner.json");
     let tools_dir = resolve_tools_dir(config_path);
-    assert_eq!(tools_dir, std::path::PathBuf::from("/home/user/.nemesisbot/workspace/tools"));
+    assert_eq!(
+        tools_dir,
+        std::path::PathBuf::from("/home/user/.nemesisbot/workspace/tools")
+    );
 }
 
 // -------------------------------------------------------------------------
@@ -501,7 +514,14 @@ fn test_cmd_add_new_engine() {
     let cfg = ScannerFullConfig::default();
     save_scanner_config(&path, &cfg).unwrap();
 
-    cmd_add(&path, "clamav", Some("https://example.com/clamav.zip"), Some("/opt/clamav"), Some("127.0.0.1:9999")).unwrap();
+    cmd_add(
+        &path,
+        "clamav",
+        Some("https://example.com/clamav.zip"),
+        Some("/opt/clamav"),
+        Some("127.0.0.1:9999"),
+    )
+    .unwrap();
 
     let loaded = load_scanner_config(&path).unwrap();
     assert!(loaded.engines.contains_key("clamav"));
@@ -516,7 +536,10 @@ fn test_cmd_add_update_existing_engine() {
     let tmp = TempDir::new().unwrap();
     let path = tmp.path().join("config.scanner.json");
     let mut cfg = ScannerFullConfig::default();
-    cfg.engines.insert("clamav".to_string(), serde_json::json!({"address": "127.0.0.1:3310"}));
+    cfg.engines.insert(
+        "clamav".to_string(),
+        serde_json::json!({"address": "127.0.0.1:3310"}),
+    );
     save_scanner_config(&path, &cfg).unwrap();
 
     cmd_add(&path, "clamav", None, None, Some("10.0.0.1:3310")).unwrap();
@@ -550,7 +573,10 @@ fn test_cmd_remove_existing_engine() {
     let tmp = TempDir::new().unwrap();
     let path = tmp.path().join("config.scanner.json");
     let mut cfg = ScannerFullConfig::default();
-    cfg.engines.insert("clamav".to_string(), serde_json::json!({"address": "127.0.0.1:3310"}));
+    cfg.engines.insert(
+        "clamav".to_string(),
+        serde_json::json!({"address": "127.0.0.1:3310"}),
+    );
     cfg.enabled.push("clamav".to_string());
     save_scanner_config(&path, &cfg).unwrap();
 
@@ -574,7 +600,8 @@ fn test_cmd_enable_sets_pending_status() {
         state: EngineState::default(), // empty install_status
         ..Default::default()
     };
-    cfg.engines.insert("clamav".to_string(), serde_json::to_value(engine).unwrap());
+    cfg.engines
+        .insert("clamav".to_string(), serde_json::to_value(engine).unwrap());
     save_scanner_config(&path, &cfg).unwrap();
 
     cmd_enable(&path, "clamav").unwrap();
@@ -596,7 +623,8 @@ fn test_cmd_enable_preserves_existing_install_status() {
         },
         ..Default::default()
     };
-    cfg.engines.insert("clamav".to_string(), serde_json::to_value(engine).unwrap());
+    cfg.engines
+        .insert("clamav".to_string(), serde_json::to_value(engine).unwrap());
     save_scanner_config(&path, &cfg).unwrap();
 
     cmd_enable(&path, "clamav").unwrap();
@@ -626,7 +654,8 @@ fn test_cmd_check_with_multiple_engines() {
         },
         ..Default::default()
     };
-    cfg.engines.insert("clamav".to_string(), serde_json::to_value(engine1).unwrap());
+    cfg.engines
+        .insert("clamav".to_string(), serde_json::to_value(engine1).unwrap());
     save_scanner_config(&path, &cfg).unwrap();
 
     cmd_check(&path).unwrap();
@@ -763,8 +792,14 @@ fn test_scanner_full_config_with_multiple_engines() {
     let mut cfg = ScannerFullConfig::default();
     cfg.enabled.push("clamav".to_string());
     cfg.enabled.push("custom".to_string());
-    cfg.engines.insert("clamav".to_string(), serde_json::json!({"address": "127.0.0.1:3310"}));
-    cfg.engines.insert("custom".to_string(), serde_json::json!({"address": "127.0.0.1:9999"}));
+    cfg.engines.insert(
+        "clamav".to_string(),
+        serde_json::json!({"address": "127.0.0.1:3310"}),
+    );
+    cfg.engines.insert(
+        "custom".to_string(),
+        serde_json::json!({"address": "127.0.0.1:9999"}),
+    );
 
     let json = serde_json::to_string(&cfg).unwrap();
     let loaded: ScannerFullConfig = serde_json::from_str(&json).unwrap();
@@ -941,7 +976,8 @@ fn test_cmd_list_with_disabled_engine() {
     let path = tmp.path().join("config.scanner.json");
     let mut cfg = ScannerFullConfig::default();
     let engine = ClamAVEngineConfig::default();
-    cfg.engines.insert("clamav".to_string(), serde_json::to_value(engine).unwrap());
+    cfg.engines
+        .insert("clamav".to_string(), serde_json::to_value(engine).unwrap());
     save_scanner_config(&path, &cfg).unwrap();
     cmd_list(&path).unwrap();
 }
@@ -966,8 +1002,12 @@ fn test_cmd_list_with_multiple_engines() {
         url: "https://example.com/engine2.zip".to_string(),
         ..Default::default()
     };
-    cfg.engines.insert("clamav".to_string(), serde_json::to_value(engine1).unwrap());
-    cfg.engines.insert("engine2".to_string(), serde_json::to_value(engine2).unwrap());
+    cfg.engines
+        .insert("clamav".to_string(), serde_json::to_value(engine1).unwrap());
+    cfg.engines.insert(
+        "engine2".to_string(),
+        serde_json::to_value(engine2).unwrap(),
+    );
     save_scanner_config(&path, &cfg).unwrap();
     cmd_list(&path).unwrap();
 }
@@ -983,7 +1023,8 @@ fn test_cmd_check_with_disabled_engine() {
         url: "https://example.com/very-long-url-that-is-more-than-forty-characters-to-test-truncation.zip".to_string(),
         ..Default::default()
     };
-    cfg.engines.insert("clamav".to_string(), serde_json::to_value(engine).unwrap());
+    cfg.engines
+        .insert("clamav".to_string(), serde_json::to_value(engine).unwrap());
     save_scanner_config(&path, &cfg).unwrap();
     cmd_check(&path).unwrap();
 }
@@ -1003,7 +1044,8 @@ fn test_cmd_check_with_install_error() {
         },
         ..Default::default()
     };
-    cfg.engines.insert("clamav".to_string(), serde_json::to_value(engine).unwrap());
+    cfg.engines
+        .insert("clamav".to_string(), serde_json::to_value(engine).unwrap());
     save_scanner_config(&path, &cfg).unwrap();
     cmd_check(&path).unwrap();
 }
@@ -1021,7 +1063,8 @@ fn test_cmd_check_with_pending_status() {
         },
         ..Default::default()
     };
-    cfg.engines.insert("clamav".to_string(), serde_json::to_value(engine).unwrap());
+    cfg.engines
+        .insert("clamav".to_string(), serde_json::to_value(engine).unwrap());
     save_scanner_config(&path, &cfg).unwrap();
     cmd_check(&path).unwrap();
 }
@@ -1031,10 +1074,20 @@ fn test_cmd_add_update_with_url_only() {
     let tmp = TempDir::new().unwrap();
     let path = tmp.path().join("config.scanner.json");
     let mut cfg = ScannerFullConfig::default();
-    cfg.engines.insert("clamav".to_string(), serde_json::json!({"address": "127.0.0.1:3310"}));
+    cfg.engines.insert(
+        "clamav".to_string(),
+        serde_json::json!({"address": "127.0.0.1:3310"}),
+    );
     save_scanner_config(&path, &cfg).unwrap();
 
-    cmd_add(&path, "clamav", Some("https://new-url.com/clamav.zip"), None, None).unwrap();
+    cmd_add(
+        &path,
+        "clamav",
+        Some("https://new-url.com/clamav.zip"),
+        None,
+        None,
+    )
+    .unwrap();
 
     let loaded = load_scanner_config(&path).unwrap();
     let engine = parse_engine_config(loaded.engines.get("clamav").unwrap());
@@ -1046,7 +1099,10 @@ fn test_cmd_add_update_with_path_only() {
     let tmp = TempDir::new().unwrap();
     let path = tmp.path().join("config.scanner.json");
     let mut cfg = ScannerFullConfig::default();
-    cfg.engines.insert("clamav".to_string(), serde_json::json!({"address": "127.0.0.1:3310"}));
+    cfg.engines.insert(
+        "clamav".to_string(),
+        serde_json::json!({"address": "127.0.0.1:3310"}),
+    );
     save_scanner_config(&path, &cfg).unwrap();
 
     cmd_add(&path, "clamav", None, Some("/custom/path"), None).unwrap();
@@ -1104,7 +1160,11 @@ fn test_check_executables_at_path_with_clamscan_exe() {
 #[test]
 fn test_save_scanner_config_creates_parent_dir() {
     let tmp = TempDir::new().unwrap();
-    let path = tmp.path().join("nested").join("dir").join("config.scanner.json");
+    let path = tmp
+        .path()
+        .join("nested")
+        .join("dir")
+        .join("config.scanner.json");
     let cfg = ScannerFullConfig::default();
     save_scanner_config(&path, &cfg).unwrap();
     assert!(path.exists());
@@ -1183,7 +1243,10 @@ fn test_scanner_full_config_default_v2() {
 fn test_scanner_full_config_with_engines_v2() {
     let mut config = ScannerFullConfig::default();
     config.enabled.push("clamav".to_string());
-    config.engines.insert("clamav".to_string(), serde_json::json!({"address": "127.0.0.1:3310"}));
+    config.engines.insert(
+        "clamav".to_string(),
+        serde_json::json!({"address": "127.0.0.1:3310"}),
+    );
     assert_eq!(config.enabled.len(), 1);
     assert_eq!(config.engines.len(), 1);
 }
@@ -1231,7 +1294,10 @@ fn test_cmd_enable_new_engine_v2() {
     let tmp = TempDir::new().unwrap();
     let path = tmp.path().join("config.scanner.json");
     let mut cfg = ScannerFullConfig::default();
-    cfg.engines.insert("clamav".to_string(), serde_json::json!({"address": "127.0.0.1:3310"}));
+    cfg.engines.insert(
+        "clamav".to_string(),
+        serde_json::json!({"address": "127.0.0.1:3310"}),
+    );
     save_scanner_config(&path, &cfg).unwrap();
 
     cmd_enable(&path, "clamav").unwrap();
@@ -1246,7 +1312,10 @@ fn test_cmd_disable_engine_v2() {
     let path = tmp.path().join("config.scanner.json");
     let mut cfg = ScannerFullConfig::default();
     cfg.enabled.push("clamav".to_string());
-    cfg.engines.insert("clamav".to_string(), serde_json::json!({"address": "127.0.0.1:3310"}));
+    cfg.engines.insert(
+        "clamav".to_string(),
+        serde_json::json!({"address": "127.0.0.1:3310"}),
+    );
     save_scanner_config(&path, &cfg).unwrap();
 
     cmd_disable(&path, "clamav").unwrap();
@@ -1261,7 +1330,10 @@ fn test_cmd_enable_already_enabled_v2() {
     let path = tmp.path().join("config.scanner.json");
     let mut cfg = ScannerFullConfig::default();
     cfg.enabled.push("clamav".to_string());
-    cfg.engines.insert("clamav".to_string(), serde_json::json!({"address": "127.0.0.1:3310"}));
+    cfg.engines.insert(
+        "clamav".to_string(),
+        serde_json::json!({"address": "127.0.0.1:3310"}),
+    );
     save_scanner_config(&path, &cfg).unwrap();
 
     cmd_enable(&path, "clamav").unwrap();
@@ -1280,7 +1352,10 @@ fn test_cmd_remove_existing_engine_v2() {
     let path = tmp.path().join("config.scanner.json");
     let mut cfg = ScannerFullConfig::default();
     cfg.enabled.push("clamav".to_string());
-    cfg.engines.insert("clamav".to_string(), serde_json::json!({"address": "127.0.0.1:3310"}));
+    cfg.engines.insert(
+        "clamav".to_string(),
+        serde_json::json!({"address": "127.0.0.1:3310"}),
+    );
     save_scanner_config(&path, &cfg).unwrap();
 
     cmd_remove(&path, "clamav").unwrap();
@@ -1295,7 +1370,10 @@ fn test_cmd_remove_nonexistent_engine_v2() {
     let tmp = TempDir::new().unwrap();
     let path = tmp.path().join("config.scanner.json");
     let mut cfg = ScannerFullConfig::default();
-    cfg.engines.insert("clamav".to_string(), serde_json::json!({"address": "127.0.0.1:3310"}));
+    cfg.engines.insert(
+        "clamav".to_string(),
+        serde_json::json!({"address": "127.0.0.1:3310"}),
+    );
     save_scanner_config(&path, &cfg).unwrap();
 
     // Remove an existing engine works
@@ -1314,7 +1392,14 @@ fn test_cmd_add_new_engine_v2() {
     let path = tmp.path().join("config.scanner.json");
     save_scanner_config(&path, &ScannerFullConfig::default()).unwrap();
 
-    cmd_add(&path, "clamav", Some("https://scanner.example.com"), Some("/opt/scanner"), None).unwrap();
+    cmd_add(
+        &path,
+        "clamav",
+        Some("https://scanner.example.com"),
+        Some("/opt/scanner"),
+        None,
+    )
+    .unwrap();
 
     let loaded = load_scanner_config(&path).unwrap();
     assert!(loaded.engines.contains_key("clamav"));
@@ -1326,7 +1411,14 @@ fn test_cmd_add_with_address_override() {
     let path = tmp.path().join("config.scanner.json");
     save_scanner_config(&path, &ScannerFullConfig::default()).unwrap();
 
-    cmd_add(&path, "clamav", Some("https://clamav.net"), Some("/opt/clamav"), Some("10.0.0.1:3310")).unwrap();
+    cmd_add(
+        &path,
+        "clamav",
+        Some("https://clamav.net"),
+        Some("/opt/clamav"),
+        Some("10.0.0.1:3310"),
+    )
+    .unwrap();
 
     let loaded = load_scanner_config(&path).unwrap();
     let engine = parse_engine_config(loaded.engines.get("clamav").unwrap());
@@ -1362,7 +1454,8 @@ fn test_cmd_clamav_enable_and_disable() {
         address: "127.0.0.1:3310".to_string(),
         ..Default::default()
     };
-    cfg.engines.insert("clamav".to_string(), serde_json::to_value(engine).unwrap());
+    cfg.engines
+        .insert("clamav".to_string(), serde_json::to_value(engine).unwrap());
     save_scanner_config(&path, &cfg).unwrap();
 
     cmd_enable(&path, "clamav").unwrap();
@@ -1382,8 +1475,14 @@ fn test_cmd_clamav_enable_and_disable() {
 fn test_scanner_config_multiple_engines() {
     let mut cfg = ScannerFullConfig::default();
     cfg.enabled.push("clamav".to_string());
-    cfg.engines.insert("clamav".to_string(), serde_json::json!({"address": "127.0.0.1:3310"}));
-    cfg.engines.insert("custom".to_string(), serde_json::json!({"address": "127.0.0.1:9999"}));
+    cfg.engines.insert(
+        "clamav".to_string(),
+        serde_json::json!({"address": "127.0.0.1:3310"}),
+    );
+    cfg.engines.insert(
+        "custom".to_string(),
+        serde_json::json!({"address": "127.0.0.1:9999"}),
+    );
     assert_eq!(cfg.engines.len(), 2);
     assert_eq!(cfg.enabled.len(), 1);
 }

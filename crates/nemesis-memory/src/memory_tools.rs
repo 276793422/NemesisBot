@@ -184,11 +184,7 @@ impl MemoryToolExecutor {
     }
 
     /// Execute a tool by name with the provided arguments.
-    pub async fn execute(
-        &self,
-        tool_name: &str,
-        args: &serde_json::Value,
-    ) -> MemoryToolResult {
+    pub async fn execute(&self, tool_name: &str, args: &serde_json::Value) -> MemoryToolResult {
         match tool_name {
             "memory_search" => self.execute_search(args).await,
             "memory_store" => self.execute_store(args).await,
@@ -237,10 +233,8 @@ impl MemoryToolExecutor {
                                 truncate_text(&se.entry.content, 200)
                             ));
                             if !se.entry.tags.is_empty() {
-                                output.push_str(&format!(
-                                    "   Tags: {}\n",
-                                    se.entry.tags.join(", ")
-                                ));
+                                output
+                                    .push_str(&format!("   Tags: {}\n", se.entry.tags.join(", ")));
                             }
                         }
                         output.push('\n');
@@ -274,10 +268,7 @@ impl MemoryToolExecutor {
                                 truncate_text(&ep.content, 200)
                             ));
                             if !ep.tags.is_empty() {
-                                output.push_str(&format!(
-                                    "   Tags: {}\n",
-                                    ep.tags.join(", ")
-                                ));
+                                output.push_str(&format!("   Tags: {}\n", ep.tags.join(", ")));
                             }
                         }
                         output.push('\n');
@@ -329,7 +320,10 @@ impl MemoryToolExecutor {
     // -- memory_store --------------------------------------------------------
 
     async fn execute_store(&self, args: &serde_json::Value) -> MemoryToolResult {
-        let memory_type = args["memory_type"].as_str().unwrap_or("episodic").to_string();
+        let memory_type = args["memory_type"]
+            .as_str()
+            .unwrap_or("episodic")
+            .to_string();
 
         // Approval gate — never bypassed by YOLO/auto (enforced by the gate impl).
         let store_preview = format!(
@@ -362,10 +356,7 @@ impl MemoryToolExecutor {
             return MemoryToolResult::err("content is required for episodic memory");
         }
 
-        let role = args["role"]
-            .as_str()
-            .unwrap_or("assistant")
-            .to_string();
+        let role = args["role"].as_str().unwrap_or("assistant").to_string();
 
         let session_key = match args["session_key"].as_str() {
             Some(sk) if !sk.is_empty() => sk.to_string(),
@@ -396,10 +387,7 @@ impl MemoryToolExecutor {
                 "Episodic memory stored successfully (ID: {}, session: {})",
                 id, session_key
             )),
-            Err(e) => MemoryToolResult::err(format!(
-                "failed to store episodic memory: {}",
-                e
-            )),
+            Err(e) => MemoryToolResult::err(format!("failed to store episodic memory: {}", e)),
         }
     }
 
@@ -414,8 +402,7 @@ impl MemoryToolExecutor {
                 .unwrap_or("concept")
                 .to_string();
 
-            let properties: std::collections::HashMap<String, String> = args
-                ["entity_properties"]
+            let properties: std::collections::HashMap<String, String> = args["entity_properties"]
                 .as_object()
                 .map(|obj| {
                     obj.iter()
@@ -443,10 +430,7 @@ impl MemoryToolExecutor {
 
         // Store triple if provided
         let subject = args["triple_subject"].as_str().unwrap_or("").to_string();
-        let predicate = args["triple_predicate"]
-            .as_str()
-            .unwrap_or("")
-            .to_string();
+        let predicate = args["triple_predicate"].as_str().unwrap_or("").to_string();
         let object = args["triple_object"].as_str().unwrap_or("").to_string();
 
         if !subject.is_empty() && !predicate.is_empty() && !object.is_empty() {
@@ -479,10 +463,7 @@ impl MemoryToolExecutor {
             );
         }
 
-        MemoryToolResult::ok(format!(
-            "Graph memory stored:\n{}",
-            results.join("\n")
-        ))
+        MemoryToolResult::ok(format!("Graph memory stored:\n{}", results.join("\n")))
     }
 
     // -- memory_forget -------------------------------------------------------
@@ -510,10 +491,7 @@ impl MemoryToolExecutor {
 
         match action.as_str() {
             "delete_session" => {
-                let session_key = args["session_key"]
-                    .as_str()
-                    .unwrap_or("")
-                    .to_string();
+                let session_key = args["session_key"].as_str().unwrap_or("").to_string();
                 if session_key.is_empty() {
                     return MemoryToolResult::err(
                         "session_key is required for delete_session action",
@@ -525,9 +503,7 @@ impl MemoryToolExecutor {
                         "Session '{}' deleted successfully ({} episodes removed)",
                         session_key, count
                     )),
-                    Err(e) => {
-                        MemoryToolResult::err(format!("failed to delete session: {}", e))
-                    }
+                    Err(e) => MemoryToolResult::err(format!("failed to delete session: {}", e)),
                 }
             }
 
@@ -547,10 +523,7 @@ impl MemoryToolExecutor {
             }
 
             "delete_entity" => {
-                let entity_name = args["entity_name"]
-                    .as_str()
-                    .unwrap_or("")
-                    .to_string();
+                let entity_name = args["entity_name"].as_str().unwrap_or("").to_string();
                 if entity_name.is_empty() {
                     return MemoryToolResult::err(
                         "entity_name is required for delete_entity action",
@@ -562,9 +535,7 @@ impl MemoryToolExecutor {
                         "Entity '{}' and all related triples deleted",
                         entity_name
                     )),
-                    Err(e) => {
-                        MemoryToolResult::err(format!("failed to delete entity: {}", e))
-                    }
+                    Err(e) => MemoryToolResult::err(format!("failed to delete entity: {}", e)),
                 }
             }
 
@@ -577,17 +548,14 @@ impl MemoryToolExecutor {
                 }
 
                 match self.manager.delete_by_id(&id).await {
-                    Ok(true) => MemoryToolResult::ok(format!(
-                        "Memory entry '{}' deleted successfully",
-                        id
-                    )),
+                    Ok(true) => {
+                        MemoryToolResult::ok(format!("Memory entry '{}' deleted successfully", id))
+                    }
                     Ok(false) => MemoryToolResult::ok(format!(
                         "No memory entry found with ID '{}'. It may have already been deleted.",
                         id
                     )),
-                    Err(e) => {
-                        MemoryToolResult::err(format!("failed to delete by ID: {}", e))
-                    }
+                    Err(e) => MemoryToolResult::err(format!("failed to delete by ID: {}", e)),
                 }
             }
 
@@ -601,10 +569,7 @@ impl MemoryToolExecutor {
     // -- memory_list ---------------------------------------------------------
 
     async fn execute_list(&self, args: &serde_json::Value) -> MemoryToolResult {
-        let list_type = args["list_type"]
-            .as_str()
-            .unwrap_or("status")
-            .to_string();
+        let list_type = args["list_type"].as_str().unwrap_or("status").to_string();
 
         match list_type.as_str() {
             "status" => self.list_status().await,
@@ -656,24 +621,15 @@ impl MemoryToolExecutor {
     }
 
     async fn list_episodes(&self, args: &serde_json::Value) -> MemoryToolResult {
-        let session_key = args["session_key"]
-            .as_str()
-            .unwrap_or("")
-            .to_string();
+        let session_key = args["session_key"].as_str().unwrap_or("").to_string();
         if session_key.is_empty() {
-            return MemoryToolResult::err(
-                "session_key is required for episodes listing",
-            );
+            return MemoryToolResult::err("session_key is required for episodes listing");
         }
 
         let limit = args["limit"].as_u64().unwrap_or(10).min(50) as usize;
         let limit = if limit == 0 { 10 } else { limit };
 
-        match self
-            .manager
-            .get_recent_episodes(&session_key, limit)
-            .await
-        {
+        match self.manager.get_recent_episodes(&session_key, limit).await {
             Ok(episodes) => {
                 if episodes.is_empty() {
                     return MemoryToolResult::ok(format!(
@@ -721,8 +677,7 @@ impl MemoryToolExecutor {
                     return MemoryToolResult::ok("No matching triples found");
                 }
 
-                let mut output =
-                    format!("### Graph Query Results ({} triples)\n\n", triples.len());
+                let mut output = format!("### Graph Query Results ({} triples)\n\n", triples.len());
                 for (i, t) in triples.iter().enumerate() {
                     let confidence = if t.confidence > 0.0 && t.confidence < 1.0 {
                         format!(" ({:.0}%)", t.confidence * 100.0)
@@ -754,10 +709,7 @@ impl MemoryToolExecutor {
     }
 
     async fn list_graph_related(&self, args: &serde_json::Value) -> MemoryToolResult {
-        let entity_name = args["entity_name"]
-            .as_str()
-            .unwrap_or("")
-            .to_string();
+        let entity_name = args["entity_name"].as_str().unwrap_or("").to_string();
         if entity_name.is_empty() {
             return MemoryToolResult::err("entity_name is required for graph_related listing");
         }
@@ -783,11 +735,7 @@ impl MemoryToolExecutor {
             Err(_) => {}
         }
 
-        match self
-            .manager
-            .get_related_triples(&entity_name, depth)
-            .await
-        {
+        match self.manager.get_related_triples(&entity_name, depth).await {
             Ok(triples) => {
                 if triples.is_empty() {
                     return MemoryToolResult::ok(format!(
@@ -814,9 +762,7 @@ impl MemoryToolExecutor {
 
                 MemoryToolResult::ok(output)
             }
-            Err(e) => {
-                MemoryToolResult::err(format!("failed to get related entities: {}", e))
-            }
+            Err(e) => MemoryToolResult::err(format!("failed to get related entities: {}", e)),
         }
     }
 }

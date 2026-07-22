@@ -188,9 +188,8 @@ impl Collector {
             .append(true)
             .open(path)
             .await?;
-        let mut line = serde_json::to_string(ce).map_err(|e| {
-            std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string())
-        })?;
+        let mut line = serde_json::to_string(ce)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()))?;
         line.push('\n');
         file.write_all(line.as_bytes()).await?;
         Ok(())
@@ -292,9 +291,8 @@ impl Collector {
             .append(true)
             .open(path)
             .await?;
-        let mut line = serde_json::to_string(record).map_err(|e| {
-            std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string())
-        })?;
+        let mut line = serde_json::to_string(record)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()))?;
         line.push('\n');
         file.write_all(line.as_bytes()).await?;
         Ok(())
@@ -318,10 +316,7 @@ impl Collector {
     ///
     /// Fields matching any of the sanitize patterns (case-insensitive) are
     /// replaced with `[REDACTED]`.
-    pub fn sanitize_args(
-        args: &serde_json::Value,
-        sanitize_fields: &[&str],
-    ) -> serde_json::Value {
+    pub fn sanitize_args(args: &serde_json::Value, sanitize_fields: &[&str]) -> serde_json::Value {
         if sanitize_fields.is_empty() {
             return args.clone();
         }
@@ -335,7 +330,10 @@ impl Collector {
             let mut redacted = false;
             for sf in sanitize_fields {
                 if k.to_lowercase().contains(&sf.to_lowercase()) {
-                    cleaned.insert(k.clone(), serde_json::Value::String("[REDACTED]".to_string()));
+                    cleaned.insert(
+                        k.clone(),
+                        serde_json::Value::String("[REDACTED]".to_string()),
+                    );
                     redacted = true;
                     break;
                 }
@@ -498,7 +496,9 @@ impl ForgePlugin {
 
         // Try to send to async channel, fall back to direct record if full
         if self.input_tx.try_send(experience.clone()).is_err() {
-            tracing::debug!("[Collector] Input channel full, dropping experience from async channel");
+            tracing::debug!(
+                "[Collector] Input channel full, dropping experience from async channel"
+            );
         }
 
         // Immediately update in-memory aggregation (matching Go's ForgePlugin.Execute

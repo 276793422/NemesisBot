@@ -93,7 +93,11 @@ fn make_tool_call_event(trace: &str, round: usize, tool: &str, success: bool) ->
             tool_name: tool.to_string(),
             success,
             duration_ms: 80,
-            error: if success { String::new() } else { "boom".to_string() },
+            error: if success {
+                String::new()
+            } else {
+                "boom".to_string()
+            },
             llm_round: round,
             arguments: String::new(),
             result: String::new(),
@@ -157,8 +161,15 @@ fn path_falls_back_to_unknown_when_no_task_context() {
     // No set_task_context call — should fall back to _unknown
     observer.dispatch(&make_start_event("trace-no-ctx", "Hello"));
 
-    let unknown_dir = tmp.path().join("logs").join("cluster_logs").join("_unknown");
-    assert!(unknown_dir.exists(), "_unknown subdir should exist when no task context");
+    let unknown_dir = tmp
+        .path()
+        .join("logs")
+        .join("cluster_logs")
+        .join("_unknown");
+    assert!(
+        unknown_dir.exists(),
+        "_unknown subdir should exist when no task context"
+    );
 
     // Without task context, session_name is None → RequestLogger generates a random one
     let sessions: Vec<_> = std::fs::read_dir(&unknown_dir)
@@ -177,8 +188,15 @@ fn empty_device_id_falls_back_to_unknown() {
     observer.set_task_context("task-x".to_string(), "".to_string());
     observer.dispatch(&make_start_event("trace-empty-dev", "Hi"));
 
-    let unknown_dir = tmp.path().join("logs").join("cluster_logs").join("_unknown");
-    assert!(unknown_dir.exists(), "empty device_id should fall back to _unknown");
+    let unknown_dir = tmp
+        .path()
+        .join("logs")
+        .join("cluster_logs")
+        .join("_unknown");
+    assert!(
+        unknown_dir.exists(),
+        "empty device_id should fall back to _unknown"
+    );
 }
 
 #[test]
@@ -191,8 +209,15 @@ fn unsafe_chars_in_device_id_and_task_id_are_sanitized() {
     observer.dispatch(&make_start_event("trace-bad", "Hello"));
 
     // device_id should not contain \\ or : — sanitized to _
-    let bad_device_dir = tmp.path().join("logs").join("cluster_logs").join("node\\B:z");
-    assert!(!bad_device_dir.exists(), "raw unsafe device_id dir should not exist");
+    let bad_device_dir = tmp
+        .path()
+        .join("logs")
+        .join("cluster_logs")
+        .join("node\\B:z");
+    assert!(
+        !bad_device_dir.exists(),
+        "raw unsafe device_id dir should not exist"
+    );
 
     // Find what device dir was actually created
     let cluster_logs = tmp.path().join("logs").join("cluster_logs");
@@ -204,7 +229,10 @@ fn unsafe_chars_in_device_id_and_task_id_are_sanitized() {
         .collect();
     assert_eq!(device_dirs.len(), 1, "exactly one sanitized device dir");
     let device_name = &device_dirs[0];
-    assert!(!device_name.contains('\\'), "no backslash in device dir name");
+    assert!(
+        !device_name.contains('\\'),
+        "no backslash in device dir name"
+    );
     assert!(!device_name.contains(':'), "no colon in device dir name");
 
     // Check session name has no unsafe chars either
@@ -238,7 +266,11 @@ fn clear_task_context_prevents_next_event_from_inheriting_it() {
     observer.dispatch(&make_start_event("trace-2", "Second"));
 
     let dir_a = tmp.path().join("logs").join("cluster_logs").join("node-A");
-    let dir_unknown = tmp.path().join("logs").join("cluster_logs").join("_unknown");
+    let dir_unknown = tmp
+        .path()
+        .join("logs")
+        .join("cluster_logs")
+        .join("_unknown");
     assert!(dir_a.exists(), "first task logged under node-A");
     assert!(dir_unknown.exists(), "second task fell back to _unknown");
 }
@@ -454,10 +486,18 @@ fn emit_conversation_start_makes_subsequent_llm_events_logged() {
     observer.dispatch(&make_llm_request_event("trace-helper", 1));
     observer.dispatch(&make_llm_response_event("trace-helper", 1));
 
-    assert_eq!(observer.active_count(), 1, "trace should be active after start");
+    assert_eq!(
+        observer.active_count(),
+        1,
+        "trace should be active after start"
+    );
 
     observer.emit_conversation_end("trace-helper", "cluster", "task-helper", 1, "Reply", false);
-    assert_eq!(observer.active_count(), 0, "trace should be cleared after end");
+    assert_eq!(
+        observer.active_count(),
+        0,
+        "trace should be cleared after end"
+    );
 
     // Verify a session directory was created.
     let device_dir = tmp.path().join("logs").join("cluster_logs").join("node-A");
@@ -489,5 +529,8 @@ fn llm_events_without_prior_start_are_dropped() {
     assert_eq!(observer.active_count(), 0);
 
     let logs_dir = tmp.path().join("logs");
-    assert!(!logs_dir.exists(), "without ConversationStart, nothing is written");
+    assert!(
+        !logs_dir.exists(),
+        "without ConversationStart, nothing is written"
+    );
 }

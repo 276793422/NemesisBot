@@ -326,7 +326,9 @@ fn test_is_internal_channel_with_whitespace() {
 
 #[test]
 fn test_is_internal_channel_long_string() {
-    assert!(!is_internal_channel("a_very_long_channel_name_that_is_definitely_not_internal"));
+    assert!(!is_internal_channel(
+        "a_very_long_channel_name_that_is_definitely_not_internal"
+    ));
 }
 
 // --- Additional workspace state edge cases ---

@@ -4,7 +4,10 @@ use tracing_subscriber::fmt::MakeWriter;
 
 #[test]
 fn test_dual_writer_console_only() {
-    let mut w = DualWriter { console: true, file: None };
+    let mut w = DualWriter {
+        console: true,
+        file: None,
+    };
     // Should succeed — writes to stderr which is always available.
     let result = w.write(b"hello\n");
     assert!(result.is_ok());
@@ -64,7 +67,10 @@ fn test_dual_writer_file_only() {
 #[test]
 fn test_dual_writer_discard() {
     // console=false, file=None — should discard silently
-    let mut w = DualWriter { console: false, file: None };
+    let mut w = DualWriter {
+        console: false,
+        file: None,
+    };
     let result = w.write(b"discarded\n");
     assert!(result.is_ok());
     assert_eq!(result.unwrap(), 10); // reports buf.len() but writes nothing
@@ -107,7 +113,9 @@ fn test_make_writer_file_not_found_error() {
 #[test]
 fn test_go_style_formatter_format() {
     // Basic sanity: timestamp format is correct.
-    let ts = chrono::Local::now().format("%Y-%m-%dT%H:%M:%S%.6f").to_string();
+    let ts = chrono::Local::now()
+        .format("%Y-%m-%dT%H:%M:%S%.6f")
+        .to_string();
     // Should be something like "2026-05-22T05:50:26.935143"
     assert!(ts.len() >= 26);
     assert!(ts.contains('T'));
@@ -116,7 +124,10 @@ fn test_go_style_formatter_format() {
 
 #[test]
 fn test_dual_writer_flush_without_file() {
-    let mut w = DualWriter { console: true, file: None };
+    let mut w = DualWriter {
+        console: true,
+        file: None,
+    };
     assert!(w.flush().is_ok());
 }
 
@@ -182,7 +193,10 @@ fn test_make_writer_file_only() {
 #[test]
 fn test_dual_writer_write_error_handling() {
     // Test that write errors don't panic
-    let mut w = DualWriter { console: false, file: None };
+    let mut w = DualWriter {
+        console: false,
+        file: None,
+    };
     // Write to discard mode should always succeed
     let result = w.write(b"test\n");
     assert!(result.is_ok());
@@ -192,7 +206,10 @@ fn test_dual_writer_write_error_handling() {
 #[test]
 fn test_dual_writer_console_error_handling() {
     // Test console writer with stderr operations
-    let mut w = DualWriter { console: true, file: None };
+    let mut w = DualWriter {
+        console: true,
+        file: None,
+    };
     // Console writes should succeed (stderr is always available)
     assert!(w.write(b"console test\n").is_ok());
     assert!(w.flush().is_ok());
@@ -201,7 +218,10 @@ fn test_dual_writer_console_error_handling() {
 #[test]
 fn test_dual_writer_empty_buffer() {
     // Test writing empty buffer
-    let mut w = DualWriter { console: true, file: None };
+    let mut w = DualWriter {
+        console: true,
+        file: None,
+    };
     let result = w.write(b"");
     assert!(result.is_ok());
     assert_eq!(result.unwrap(), 0);
@@ -221,7 +241,9 @@ fn test_dual_make_writer_clone_behavior() {
 #[test]
 fn test_go_style_formatter_components() {
     // Test various timestamp format components
-    let ts = chrono::Local::now().format("%Y-%m-%dT%H:%M:%S%.6f").to_string();
+    let ts = chrono::Local::now()
+        .format("%Y-%m-%dT%H:%M:%S%.6f")
+        .to_string();
 
     // Check format components
     assert!(ts.contains('T')); // Date/time separator
@@ -236,9 +258,13 @@ fn test_go_style_formatter_components() {
 #[test]
 fn test_go_style_formatter_timestamp_uniqueness() {
     // Test that timestamps are reasonably unique
-    let ts1 = chrono::Local::now().format("%Y-%m-%dT%H:%M:%S%.6f").to_string();
+    let ts1 = chrono::Local::now()
+        .format("%Y-%m-%dT%H:%M:%S%.6f")
+        .to_string();
     std::thread::sleep(std::time::Duration::from_millis(10));
-    let ts2 = chrono::Local::now().format("%Y-%m-%dT%H:%M:%S%.6f").to_string();
+    let ts2 = chrono::Local::now()
+        .format("%Y-%m-%dT%H:%M:%S%.6f")
+        .to_string();
 
     // Timestamps should be different (at least in microseconds)
     assert_ne!(ts1, ts2);
@@ -248,14 +274,20 @@ fn test_go_style_formatter_timestamp_uniqueness() {
 fn test_dual_writer_large_buffer() {
     // Test writing larger buffers
     let large_data = vec![b'X'; 10000];
-    let mut w = DualWriter { console: true, file: None };
+    let mut w = DualWriter {
+        console: true,
+        file: None,
+    };
     assert!(w.write(&large_data).is_ok());
 }
 
 #[test]
 fn test_dual_writer_partial_write() {
     // Test partial writes (writes that might not consume entire buffer)
-    let mut w = DualWriter { console: false, file: None };
+    let mut w = DualWriter {
+        console: false,
+        file: None,
+    };
     let buf = b"partial";
     let result = w.write(buf);
     assert!(result.is_ok());

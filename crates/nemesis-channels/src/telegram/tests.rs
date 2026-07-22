@@ -44,10 +44,12 @@ async fn test_telegram_channel_new_validates_token() {
     let (tx, _rx) = broadcast::channel(256);
     let result = TelegramChannel::new(config, tx);
     assert!(result.is_err());
-    assert!(result
-        .unwrap_err()
-        .to_string()
-        .contains("token is required"));
+    assert!(
+        result
+            .unwrap_err()
+            .to_string()
+            .contains("token is required")
+    );
 }
 
 #[tokio::test]
@@ -131,8 +133,7 @@ async fn test_handle_incoming_message_text() {
         document: None,
     };
 
-    TelegramChannel::handle_incoming_message(&msg, &tx, &[], &None, None, None)
-        .await;
+    TelegramChannel::handle_incoming_message(&msg, &tx, &[], &None, None, None).await;
 
     let inbound = rx.try_recv().unwrap();
     assert_eq!(inbound.channel, "telegram");
@@ -171,8 +172,7 @@ async fn test_handle_incoming_message_with_photo() {
         document: None,
     };
 
-    TelegramChannel::handle_incoming_message(&msg, &tx, &[], &None, None, None)
-        .await;
+    TelegramChannel::handle_incoming_message(&msg, &tx, &[], &None, None, None).await;
 
     let inbound = rx.try_recv().unwrap();
     assert!(inbound.content.contains("A nice photo"));
@@ -205,15 +205,8 @@ async fn test_handle_incoming_message_rejected_by_allowlist() {
         document: None,
     };
 
-    TelegramChannel::handle_incoming_message(
-        &msg,
-        &tx,
-        &["12345".to_string()],
-        &None,
-        None,
-        None,
-    )
-    .await;
+    TelegramChannel::handle_incoming_message(&msg, &tx, &["12345".to_string()], &None, None, None)
+        .await;
 
     // Message should be dropped — nothing to receive
     assert!(rx.try_recv().is_err());
@@ -243,8 +236,7 @@ async fn test_handle_incoming_message_empty() {
         document: None,
     };
 
-    TelegramChannel::handle_incoming_message(&msg, &tx, &[], &None, None, None)
-        .await;
+    TelegramChannel::handle_incoming_message(&msg, &tx, &[], &None, None, None).await;
 
     let inbound = rx.try_recv().unwrap();
     assert_eq!(inbound.content, "[empty message]");
@@ -257,10 +249,12 @@ async fn test_telegram_new_with_client_validates_token() {
     let http = reqwest::Client::new();
     let result = TelegramChannel::new_with_client(config, tx, http);
     assert!(result.is_err());
-    assert!(result
-        .unwrap_err()
-        .to_string()
-        .contains("token is required"));
+    assert!(
+        result
+            .unwrap_err()
+            .to_string()
+            .contains("token is required")
+    );
 }
 
 #[tokio::test]
@@ -304,8 +298,7 @@ async fn test_handle_incoming_message_voice_no_transcriber() {
         document: None,
     };
 
-    TelegramChannel::handle_incoming_message(&msg, &tx, &[], &None, None, None)
-        .await;
+    TelegramChannel::handle_incoming_message(&msg, &tx, &[], &None, None, None).await;
 
     let inbound = rx.try_recv().unwrap();
     assert_eq!(inbound.content, "[voice]");
@@ -354,8 +347,7 @@ async fn test_voice_transcribe_unavailable_transcriber() {
         text: String::new(),
         should_fail: false,
     });
-    let result =
-        TelegramChannel::transcribe_voice(&Some(transcriber), None, None, "file123").await;
+    let result = TelegramChannel::transcribe_voice(&Some(transcriber), None, None, "file123").await;
     assert!(result.is_none());
 }
 
@@ -367,8 +359,7 @@ async fn test_voice_transcribe_no_http_client() {
         should_fail: false,
     });
     // Available transcriber but no HTTP client → can't download → None
-    let result =
-        TelegramChannel::transcribe_voice(&Some(transcriber), None, None, "file123").await;
+    let result = TelegramChannel::transcribe_voice(&Some(transcriber), None, None, "file123").await;
     assert!(result.is_none());
 }
 
@@ -499,10 +490,7 @@ fn test_telegram_config_proxy_support() {
         proxy: Some("http://proxy.example.com:8080".to_string()),
         ..Default::default()
     };
-    assert_eq!(
-        cfg.proxy.as_deref(),
-        Some("http://proxy.example.com:8080")
-    );
+    assert_eq!(cfg.proxy.as_deref(), Some("http://proxy.example.com:8080"));
 
     // Verify a channel can be created with proxy config
     let (tx, _rx) = broadcast::channel(256);

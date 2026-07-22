@@ -1,19 +1,35 @@
 use super::*;
 
-struct TestPlugin { running: bool }
+struct TestPlugin {
+    running: bool,
+}
 impl Plugin for TestPlugin {
-    fn name(&self) -> &str { "test" }
-    fn version(&self) -> &str { "1.0.0" }
-    fn init(&mut self, _config: &serde_json::Value) -> Result<(), String> { self.running = true; Ok(()) }
-    fn is_running(&self) -> bool { self.running }
-    fn as_any(&self) -> &dyn Any { self }
-    fn cleanup(&self) -> Result<(), String> { Ok(()) }
+    fn name(&self) -> &str {
+        "test"
+    }
+    fn version(&self) -> &str {
+        "1.0.0"
+    }
+    fn init(&mut self, _config: &serde_json::Value) -> Result<(), String> {
+        self.running = true;
+        Ok(())
+    }
+    fn is_running(&self) -> bool {
+        self.running
+    }
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+    fn cleanup(&self) -> Result<(), String> {
+        Ok(())
+    }
 }
 
 #[test]
 fn test_plugin_register() {
     let mut mgr = PluginManager::new();
-    mgr.register(Box::new(TestPlugin { running: false })).unwrap();
+    mgr.register(Box::new(TestPlugin { running: false }))
+        .unwrap();
     assert!(mgr.is_enabled("test"));
     assert_eq!(mgr.list_plugins().len(), 1);
 }
@@ -21,14 +37,19 @@ fn test_plugin_register() {
 #[test]
 fn test_plugin_duplicate() {
     let mut mgr = PluginManager::new();
-    mgr.register(Box::new(TestPlugin { running: false })).unwrap();
-    assert!(mgr.register(Box::new(TestPlugin { running: false })).is_err());
+    mgr.register(Box::new(TestPlugin { running: false }))
+        .unwrap();
+    assert!(
+        mgr.register(Box::new(TestPlugin { running: false }))
+            .is_err()
+    );
 }
 
 #[test]
 fn test_plugin_enable_disable() {
     let mut mgr = PluginManager::new();
-    mgr.register(Box::new(TestPlugin { running: false })).unwrap();
+    mgr.register(Box::new(TestPlugin { running: false }))
+        .unwrap();
     mgr.disable("test");
     assert!(!mgr.is_enabled("test"));
     assert!(mgr.get_plugin("test").is_none());
@@ -39,7 +60,8 @@ fn test_plugin_enable_disable() {
 #[test]
 fn test_plugin_unregister() {
     let mut mgr = PluginManager::new();
-    mgr.register(Box::new(TestPlugin { running: false })).unwrap();
+    mgr.register(Box::new(TestPlugin { running: false }))
+        .unwrap();
     mgr.unregister("test").unwrap();
     assert!(mgr.list_plugins().is_empty());
 }
@@ -47,7 +69,8 @@ fn test_plugin_unregister() {
 #[test]
 fn test_plugin_cleanup_all() {
     let mut mgr = PluginManager::new();
-    mgr.register(Box::new(TestPlugin { running: false })).unwrap();
+    mgr.register(Box::new(TestPlugin { running: false }))
+        .unwrap();
     mgr.cleanup_all();
     assert!(mgr.list_plugins().is_empty());
 }
@@ -79,9 +102,15 @@ fn test_tool_invocation_new() {
 fn test_plugin_default_version() {
     struct NoVersionPlugin;
     impl Plugin for NoVersionPlugin {
-        fn name(&self) -> &str { "noversion" }
-        fn as_any(&self) -> &dyn Any { self }
-        fn cleanup(&self) -> Result<(), String> { Ok(()) }
+        fn name(&self) -> &str {
+            "noversion"
+        }
+        fn as_any(&self) -> &dyn Any {
+            self
+        }
+        fn cleanup(&self) -> Result<(), String> {
+            Ok(())
+        }
     }
     let p = NoVersionPlugin;
     assert_eq!(p.version(), "0.1.0");
@@ -91,9 +120,15 @@ fn test_plugin_default_version() {
 fn test_plugin_default_init() {
     struct NoInitPlugin;
     impl Plugin for NoInitPlugin {
-        fn name(&self) -> &str { "noinit" }
-        fn as_any(&self) -> &dyn Any { self }
-        fn cleanup(&self) -> Result<(), String> { Ok(()) }
+        fn name(&self) -> &str {
+            "noinit"
+        }
+        fn as_any(&self) -> &dyn Any {
+            self
+        }
+        fn cleanup(&self) -> Result<(), String> {
+            Ok(())
+        }
     }
     let mut p = NoInitPlugin;
     assert!(p.init(&serde_json::Value::Null).is_ok());
@@ -103,9 +138,15 @@ fn test_plugin_default_init() {
 fn test_plugin_default_is_running() {
     struct NoRunningPlugin;
     impl Plugin for NoRunningPlugin {
-        fn name(&self) -> &str { "norunning" }
-        fn as_any(&self) -> &dyn Any { self }
-        fn cleanup(&self) -> Result<(), String> { Ok(()) }
+        fn name(&self) -> &str {
+            "norunning"
+        }
+        fn as_any(&self) -> &dyn Any {
+            self
+        }
+        fn cleanup(&self) -> Result<(), String> {
+            Ok(())
+        }
     }
     let p = NoRunningPlugin;
     assert!(!p.is_running());
@@ -115,8 +156,12 @@ fn test_plugin_default_is_running() {
 fn test_plugin_default_cleanup() {
     struct MinimalPlugin;
     impl Plugin for MinimalPlugin {
-        fn name(&self) -> &str { "minimal" }
-        fn as_any(&self) -> &dyn Any { self }
+        fn name(&self) -> &str {
+            "minimal"
+        }
+        fn as_any(&self) -> &dyn Any {
+            self
+        }
     }
     let p = MinimalPlugin;
     assert!(p.cleanup().is_ok());
@@ -126,8 +171,12 @@ fn test_plugin_default_cleanup() {
 fn test_plugin_default_execute_allows() {
     struct MinimalPlugin;
     impl Plugin for MinimalPlugin {
-        fn name(&self) -> &str { "minimal" }
-        fn as_any(&self) -> &dyn Any { self }
+        fn name(&self) -> &str {
+            "minimal"
+        }
+        fn as_any(&self) -> &dyn Any {
+            self
+        }
     }
     let p = MinimalPlugin;
     let mut inv = ToolInvocation::new("test", serde_json::Map::new());
@@ -147,14 +196,20 @@ fn test_plugin_manager_default() {
 fn test_execute_with_blocking_error() {
     struct BlockingPlugin;
     impl Plugin for BlockingPlugin {
-        fn name(&self) -> &str { "blocker" }
-        fn as_any(&self) -> &dyn Any { self }
+        fn name(&self) -> &str {
+            "blocker"
+        }
+        fn as_any(&self) -> &dyn Any {
+            self
+        }
         fn execute(&self, inv: &mut ToolInvocation) -> (bool, Option<String>, bool) {
             // Allows execution but sets a blocking error
             inv.blocking_error = Some("post-check failed".to_string());
             (true, None, false)
         }
-        fn cleanup(&self) -> Result<(), String> { Ok(()) }
+        fn cleanup(&self) -> Result<(), String> {
+            Ok(())
+        }
     }
 
     let mut mgr = PluginManager::new();
@@ -169,12 +224,18 @@ fn test_execute_with_blocking_error() {
 fn test_execute_denied_returns_formatted_error() {
     struct DenyAllPlugin;
     impl Plugin for DenyAllPlugin {
-        fn name(&self) -> &str { "denyall" }
-        fn as_any(&self) -> &dyn Any { self }
+        fn name(&self) -> &str {
+            "denyall"
+        }
+        fn as_any(&self) -> &dyn Any {
+            self
+        }
         fn execute(&self, _inv: &mut ToolInvocation) -> (bool, Option<String>, bool) {
             (false, Some("forbidden".to_string()), false)
         }
-        fn cleanup(&self) -> Result<(), String> { Ok(()) }
+        fn cleanup(&self) -> Result<(), String> {
+            Ok(())
+        }
     }
 
     let mut mgr = PluginManager::new();
@@ -205,8 +266,12 @@ fn test_disable_nonexistent() {
 fn test_get_plugin_disabled() {
     struct SimplePlugin;
     impl Plugin for SimplePlugin {
-        fn name(&self) -> &str { "simple" }
-        fn as_any(&self) -> &dyn Any { self }
+        fn name(&self) -> &str {
+            "simple"
+        }
+        fn as_any(&self) -> &dyn Any {
+            self
+        }
     }
     let mut mgr = PluginManager::new();
     mgr.register(Box::new(SimplePlugin)).unwrap();
@@ -218,22 +283,34 @@ fn test_get_plugin_disabled() {
 fn test_execute_chain_stops_on_denial() {
     struct AllowPlugin;
     impl Plugin for AllowPlugin {
-        fn name(&self) -> &str { "allow" }
-        fn as_any(&self) -> &dyn Any { self }
+        fn name(&self) -> &str {
+            "allow"
+        }
+        fn as_any(&self) -> &dyn Any {
+            self
+        }
         fn execute(&self, _inv: &mut ToolInvocation) -> (bool, Option<String>, bool) {
             (true, None, true)
         }
-        fn cleanup(&self) -> Result<(), String> { Ok(()) }
+        fn cleanup(&self) -> Result<(), String> {
+            Ok(())
+        }
     }
 
     struct DenyPlugin;
     impl Plugin for DenyPlugin {
-        fn name(&self) -> &str { "deny" }
-        fn as_any(&self) -> &dyn Any { self }
+        fn name(&self) -> &str {
+            "deny"
+        }
+        fn as_any(&self) -> &dyn Any {
+            self
+        }
         fn execute(&self, _inv: &mut ToolInvocation) -> (bool, Option<String>, bool) {
             (false, Some("blocked".to_string()), false)
         }
-        fn cleanup(&self) -> Result<(), String> { Ok(()) }
+        fn cleanup(&self) -> Result<(), String> {
+            Ok(())
+        }
     }
 
     let mut mgr = PluginManager::new();
@@ -261,12 +338,18 @@ fn test_execute_no_plugins_allows() {
 fn test_execute_skips_disabled_plugin() {
     struct DenyPlugin;
     impl Plugin for DenyPlugin {
-        fn name(&self) -> &str { "deny_disabled" }
-        fn as_any(&self) -> &dyn Any { self }
+        fn name(&self) -> &str {
+            "deny_disabled"
+        }
+        fn as_any(&self) -> &dyn Any {
+            self
+        }
         fn execute(&self, _inv: &mut ToolInvocation) -> (bool, Option<String>, bool) {
             (false, Some("should not reach".to_string()), false)
         }
-        fn cleanup(&self) -> Result<(), String> { Ok(()) }
+        fn cleanup(&self) -> Result<(), String> {
+            Ok(())
+        }
     }
 
     let mut mgr = PluginManager::new();
@@ -282,12 +365,18 @@ fn test_execute_skips_disabled_plugin() {
 fn test_execute_denied_no_error_msg() {
     struct DenyNoMsgPlugin;
     impl Plugin for DenyNoMsgPlugin {
-        fn name(&self) -> &str { "denynMsg" }
-        fn as_any(&self) -> &dyn Any { self }
+        fn name(&self) -> &str {
+            "denynMsg"
+        }
+        fn as_any(&self) -> &dyn Any {
+            self
+        }
         fn execute(&self, _inv: &mut ToolInvocation) -> (bool, Option<String>, bool) {
             (false, None, false) // denied but no message
         }
-        fn cleanup(&self) -> Result<(), String> { Ok(()) }
+        fn cleanup(&self) -> Result<(), String> {
+            Ok(())
+        }
     }
 
     let mut mgr = PluginManager::new();
@@ -309,7 +398,8 @@ fn test_tool_invocation_all_fields() {
     inv.workspace = "/home".to_string();
     inv.result = Some(serde_json::json!({"ok": true}));
     inv.blocking_error = Some("blocked".to_string());
-    inv.metadata.insert("meta_key".to_string(), serde_json::json!("meta_val"));
+    inv.metadata
+        .insert("meta_key".to_string(), serde_json::json!("meta_val"));
 
     assert_eq!(inv.tool_name, "my_tool");
     assert_eq!(inv.method, "Execute");
@@ -324,7 +414,8 @@ fn test_tool_invocation_all_fields() {
 #[test]
 fn test_plugin_manager_list_after_unregister() {
     let mut mgr = PluginManager::new();
-    mgr.register(Box::new(TestPlugin { running: false })).unwrap();
+    mgr.register(Box::new(TestPlugin { running: false }))
+        .unwrap();
     mgr.unregister("test").unwrap();
     assert!(mgr.list_plugins().is_empty());
     assert!(!mgr.is_enabled("test"));
@@ -333,7 +424,8 @@ fn test_plugin_manager_list_after_unregister() {
 #[test]
 fn test_plugin_init_with_config() {
     let mut mgr = PluginManager::new();
-    mgr.register(Box::new(TestPlugin { running: false })).unwrap();
+    mgr.register(Box::new(TestPlugin { running: false }))
+        .unwrap();
     let result = mgr.plugins[0].init(&serde_json::json!({"enabled": true}));
     assert!(result.is_ok());
 }
@@ -344,8 +436,12 @@ fn test_plugin_init_with_config() {
 fn test_get_plugin_enabled() {
     struct SimplePlugin;
     impl Plugin for SimplePlugin {
-        fn name(&self) -> &str { "simple" }
-        fn as_any(&self) -> &dyn Any { self }
+        fn name(&self) -> &str {
+            "simple"
+        }
+        fn as_any(&self) -> &dyn Any {
+            self
+        }
     }
     let mut mgr = PluginManager::new();
     mgr.register(Box::new(SimplePlugin)).unwrap();
@@ -364,13 +460,21 @@ fn test_get_plugin_nonexistent() {
 fn test_list_plugins_multiple() {
     struct PluginA;
     impl Plugin for PluginA {
-        fn name(&self) -> &str { "a" }
-        fn as_any(&self) -> &dyn Any { self }
+        fn name(&self) -> &str {
+            "a"
+        }
+        fn as_any(&self) -> &dyn Any {
+            self
+        }
     }
     struct PluginB;
     impl Plugin for PluginB {
-        fn name(&self) -> &str { "b" }
-        fn as_any(&self) -> &dyn Any { self }
+        fn name(&self) -> &str {
+            "b"
+        }
+        fn as_any(&self) -> &dyn Any {
+            self
+        }
     }
     let mut mgr = PluginManager::new();
     mgr.register(Box::new(PluginA)).unwrap();
@@ -383,13 +487,21 @@ fn test_list_plugins_multiple() {
 fn test_list_plugins_skips_disabled() {
     struct PluginA;
     impl Plugin for PluginA {
-        fn name(&self) -> &str { "a" }
-        fn as_any(&self) -> &dyn Any { self }
+        fn name(&self) -> &str {
+            "a"
+        }
+        fn as_any(&self) -> &dyn Any {
+            self
+        }
     }
     struct PluginB;
     impl Plugin for PluginB {
-        fn name(&self) -> &str { "b" }
-        fn as_any(&self) -> &dyn Any { self }
+        fn name(&self) -> &str {
+            "b"
+        }
+        fn as_any(&self) -> &dyn Any {
+            self
+        }
     }
     let mut mgr = PluginManager::new();
     mgr.register(Box::new(PluginA)).unwrap();
@@ -404,9 +516,15 @@ fn test_list_plugins_skips_disabled() {
 fn test_cleanup_all_with_cleanup_error() {
     struct ErrorCleanupPlugin;
     impl Plugin for ErrorCleanupPlugin {
-        fn name(&self) -> &str { "error_cleanup" }
-        fn as_any(&self) -> &dyn Any { self }
-        fn cleanup(&self) -> Result<(), String> { Err("cleanup error".to_string()) }
+        fn name(&self) -> &str {
+            "error_cleanup"
+        }
+        fn as_any(&self) -> &dyn Any {
+            self
+        }
+        fn cleanup(&self) -> Result<(), String> {
+            Err("cleanup error".to_string())
+        }
     }
     let mut mgr = PluginManager::new();
     mgr.register(Box::new(ErrorCleanupPlugin)).unwrap();
@@ -420,15 +538,27 @@ fn test_cleanup_all_with_cleanup_error() {
 fn test_unregister_removes_from_enabled() {
     struct PluginA;
     impl Plugin for PluginA {
-        fn name(&self) -> &str { "a" }
-        fn as_any(&self) -> &dyn Any { self }
-        fn cleanup(&self) -> Result<(), String> { Ok(()) }
+        fn name(&self) -> &str {
+            "a"
+        }
+        fn as_any(&self) -> &dyn Any {
+            self
+        }
+        fn cleanup(&self) -> Result<(), String> {
+            Ok(())
+        }
     }
     struct PluginB;
     impl Plugin for PluginB {
-        fn name(&self) -> &str { "b" }
-        fn as_any(&self) -> &dyn Any { self }
-        fn cleanup(&self) -> Result<(), String> { Ok(()) }
+        fn name(&self) -> &str {
+            "b"
+        }
+        fn as_any(&self) -> &dyn Any {
+            self
+        }
+        fn cleanup(&self) -> Result<(), String> {
+            Ok(())
+        }
     }
     let mut mgr = PluginManager::new();
     mgr.register(Box::new(PluginA)).unwrap();
@@ -443,9 +573,15 @@ fn test_unregister_removes_from_enabled() {
 fn test_unregister_cleanup_error() {
     struct FailCleanupPlugin;
     impl Plugin for FailCleanupPlugin {
-        fn name(&self) -> &str { "fail_cleanup" }
-        fn as_any(&self) -> &dyn Any { self }
-        fn cleanup(&self) -> Result<(), String> { Err("cleanup failed".to_string()) }
+        fn name(&self) -> &str {
+            "fail_cleanup"
+        }
+        fn as_any(&self) -> &dyn Any {
+            self
+        }
+        fn cleanup(&self) -> Result<(), String> {
+            Err("cleanup failed".to_string())
+        }
     }
     let mut mgr = PluginManager::new();
     mgr.register(Box::new(FailCleanupPlugin)).unwrap();
@@ -456,14 +592,22 @@ fn test_unregister_cleanup_error() {
 
 #[test]
 fn test_execute_multiple_plugins_all_allow() {
-    struct AllowPlugin { n: &'static str }
+    struct AllowPlugin {
+        n: &'static str,
+    }
     impl Plugin for AllowPlugin {
-        fn name(&self) -> &str { self.n }
-        fn as_any(&self) -> &dyn Any { self }
+        fn name(&self) -> &str {
+            self.n
+        }
+        fn as_any(&self) -> &dyn Any {
+            self
+        }
         fn execute(&self, _inv: &mut ToolInvocation) -> (bool, Option<String>, bool) {
             (true, None, false)
         }
-        fn cleanup(&self) -> Result<(), String> { Ok(()) }
+        fn cleanup(&self) -> Result<(), String> {
+            Ok(())
+        }
     }
     let mut mgr = PluginManager::new();
     mgr.register(Box::new(AllowPlugin { n: "p1" })).unwrap();
@@ -479,21 +623,33 @@ fn test_execute_multiple_plugins_all_allow() {
 fn test_execute_second_plugin_denies() {
     struct AllowPlugin;
     impl Plugin for AllowPlugin {
-        fn name(&self) -> &str { "allow" }
-        fn as_any(&self) -> &dyn Any { self }
+        fn name(&self) -> &str {
+            "allow"
+        }
+        fn as_any(&self) -> &dyn Any {
+            self
+        }
         fn execute(&self, _inv: &mut ToolInvocation) -> (bool, Option<String>, bool) {
             (true, None, false)
         }
-        fn cleanup(&self) -> Result<(), String> { Ok(()) }
+        fn cleanup(&self) -> Result<(), String> {
+            Ok(())
+        }
     }
     struct DenyPlugin;
     impl Plugin for DenyPlugin {
-        fn name(&self) -> &str { "deny_second" }
-        fn as_any(&self) -> &dyn Any { self }
+        fn name(&self) -> &str {
+            "deny_second"
+        }
+        fn as_any(&self) -> &dyn Any {
+            self
+        }
         fn execute(&self, _inv: &mut ToolInvocation) -> (bool, Option<String>, bool) {
             (false, Some("denied by second".to_string()), false)
         }
-        fn cleanup(&self) -> Result<(), String> { Ok(()) }
+        fn cleanup(&self) -> Result<(), String> {
+            Ok(())
+        }
     }
     let mut mgr = PluginManager::new();
     mgr.register(Box::new(AllowPlugin)).unwrap();
@@ -555,13 +711,19 @@ fn test_enable_nonexistent_then_register() {
 fn test_execute_with_blocking_error_uses_invocation_error() {
     struct BlockPlugin;
     impl Plugin for BlockPlugin {
-        fn name(&self) -> &str { "blocker" }
-        fn as_any(&self) -> &dyn Any { self }
+        fn name(&self) -> &str {
+            "blocker"
+        }
+        fn as_any(&self) -> &dyn Any {
+            self
+        }
         fn execute(&self, inv: &mut ToolInvocation) -> (bool, Option<String>, bool) {
             inv.blocking_error = Some("blocked via invocation".to_string());
             (true, None, false)
         }
-        fn cleanup(&self) -> Result<(), String> { Ok(()) }
+        fn cleanup(&self) -> Result<(), String> {
+            Ok(())
+        }
     }
     let mut mgr = PluginManager::new();
     mgr.register(Box::new(BlockPlugin)).unwrap();
@@ -602,24 +764,38 @@ fn test_base_plugin_as_any() {
 fn test_plugin_manager_multiple_plugins_execute_chain() {
     struct LogPlugin;
     impl Plugin for LogPlugin {
-        fn name(&self) -> &str { "logger" }
-        fn as_any(&self) -> &dyn Any { self }
+        fn name(&self) -> &str {
+            "logger"
+        }
+        fn as_any(&self) -> &dyn Any {
+            self
+        }
         fn execute(&self, inv: &mut ToolInvocation) -> (bool, Option<String>, bool) {
-            inv.metadata.insert("logged".to_string(), serde_json::json!(true));
+            inv.metadata
+                .insert("logged".to_string(), serde_json::json!(true));
             (true, None, true)
         }
-        fn cleanup(&self) -> Result<(), String> { Ok(()) }
+        fn cleanup(&self) -> Result<(), String> {
+            Ok(())
+        }
     }
 
     struct AuditPlugin;
     impl Plugin for AuditPlugin {
-        fn name(&self) -> &str { "auditor" }
-        fn as_any(&self) -> &dyn Any { self }
+        fn name(&self) -> &str {
+            "auditor"
+        }
+        fn as_any(&self) -> &dyn Any {
+            self
+        }
         fn execute(&self, inv: &mut ToolInvocation) -> (bool, Option<String>, bool) {
-            inv.metadata.insert("audited".to_string(), serde_json::json!(true));
+            inv.metadata
+                .insert("audited".to_string(), serde_json::json!(true));
             (true, None, true)
         }
-        fn cleanup(&self) -> Result<(), String> { Ok(()) }
+        fn cleanup(&self) -> Result<(), String> {
+            Ok(())
+        }
     }
 
     let mut mgr = PluginManager::new();
@@ -639,15 +815,27 @@ fn test_plugin_manager_multiple_plugins_execute_chain() {
 fn test_plugin_manager_unregister_one_of_two() {
     struct PluginA;
     impl Plugin for PluginA {
-        fn name(&self) -> &str { "a" }
-        fn as_any(&self) -> &dyn Any { self }
-        fn cleanup(&self) -> Result<(), String> { Ok(()) }
+        fn name(&self) -> &str {
+            "a"
+        }
+        fn as_any(&self) -> &dyn Any {
+            self
+        }
+        fn cleanup(&self) -> Result<(), String> {
+            Ok(())
+        }
     }
     struct PluginB;
     impl Plugin for PluginB {
-        fn name(&self) -> &str { "b" }
-        fn as_any(&self) -> &dyn Any { self }
-        fn cleanup(&self) -> Result<(), String> { Ok(()) }
+        fn name(&self) -> &str {
+            "b"
+        }
+        fn as_any(&self) -> &dyn Any {
+            self
+        }
+        fn cleanup(&self) -> Result<(), String> {
+            Ok(())
+        }
     }
 
     let mut mgr = PluginManager::new();
@@ -664,7 +852,8 @@ fn test_plugin_manager_unregister_one_of_two() {
 #[test]
 fn test_cleanup_all_clears_enabled() {
     let mut mgr = PluginManager::new();
-    mgr.register(Box::new(TestPlugin { running: false })).unwrap();
+    mgr.register(Box::new(TestPlugin { running: false }))
+        .unwrap();
     assert!(mgr.is_enabled("test"));
     mgr.cleanup_all();
     assert!(!mgr.is_enabled("test"));
@@ -723,12 +912,19 @@ fn test_base_plugin_default_trait_impls() {
 fn test_plugin_manager_register_unregister_reregister() {
     struct SimplePlugin(&'static str);
     impl Plugin for SimplePlugin {
-        fn name(&self) -> &str { self.0 }
-        fn as_any(&self) -> &dyn Any { self }
-        fn cleanup(&self) -> Result<(), String> { Ok(()) }
+        fn name(&self) -> &str {
+            self.0
+        }
+        fn as_any(&self) -> &dyn Any {
+            self
+        }
+        fn cleanup(&self) -> Result<(), String> {
+            Ok(())
+        }
     }
     let mut mgr = PluginManager::new();
-    mgr.register(Box::new(SimplePlugin("simple_plugin"))).unwrap();
+    mgr.register(Box::new(SimplePlugin("simple_plugin")))
+        .unwrap();
     assert!(mgr.is_enabled("simple_plugin"));
 
     // Unregister
@@ -736,7 +932,8 @@ fn test_plugin_manager_register_unregister_reregister() {
     assert!(!mgr.is_enabled("simple_plugin"));
 
     // Re-register
-    mgr.register(Box::new(SimplePlugin("simple_plugin"))).unwrap();
+    mgr.register(Box::new(SimplePlugin("simple_plugin")))
+        .unwrap();
     assert!(mgr.is_enabled("simple_plugin"));
 }
 
@@ -744,32 +941,52 @@ fn test_plugin_manager_register_unregister_reregister() {
 fn test_execute_chain_with_mixed_enabled_disabled() {
     struct LogPlugin;
     impl Plugin for LogPlugin {
-        fn name(&self) -> &str { "log_enabled" }
-        fn as_any(&self) -> &dyn Any { self }
+        fn name(&self) -> &str {
+            "log_enabled"
+        }
+        fn as_any(&self) -> &dyn Any {
+            self
+        }
         fn execute(&self, inv: &mut ToolInvocation) -> (bool, Option<String>, bool) {
-            inv.metadata.insert("logged".into(), serde_json::json!(true));
+            inv.metadata
+                .insert("logged".into(), serde_json::json!(true));
             (true, None, true)
         }
-        fn cleanup(&self) -> Result<(), String> { Ok(()) }
+        fn cleanup(&self) -> Result<(), String> {
+            Ok(())
+        }
     }
     struct DenyPlugin;
     impl Plugin for DenyPlugin {
-        fn name(&self) -> &str { "deny_disabled" }
-        fn as_any(&self) -> &dyn Any { self }
+        fn name(&self) -> &str {
+            "deny_disabled"
+        }
+        fn as_any(&self) -> &dyn Any {
+            self
+        }
         fn execute(&self, _inv: &mut ToolInvocation) -> (bool, Option<String>, bool) {
             (false, Some("should not reach".into()), false)
         }
-        fn cleanup(&self) -> Result<(), String> { Ok(()) }
+        fn cleanup(&self) -> Result<(), String> {
+            Ok(())
+        }
     }
     struct AuditPlugin;
     impl Plugin for AuditPlugin {
-        fn name(&self) -> &str { "audit_enabled" }
-        fn as_any(&self) -> &dyn Any { self }
+        fn name(&self) -> &str {
+            "audit_enabled"
+        }
+        fn as_any(&self) -> &dyn Any {
+            self
+        }
         fn execute(&self, inv: &mut ToolInvocation) -> (bool, Option<String>, bool) {
-            inv.metadata.insert("audited".into(), serde_json::json!(true));
+            inv.metadata
+                .insert("audited".into(), serde_json::json!(true));
             (true, None, true)
         }
-        fn cleanup(&self) -> Result<(), String> { Ok(()) }
+        fn cleanup(&self) -> Result<(), String> {
+            Ok(())
+        }
     }
 
     let mut mgr = PluginManager::new();
@@ -811,7 +1028,8 @@ fn test_tool_invocation_modify_fields() {
     inv.workspace = "/home/user".to_string();
     inv.result = Some(serde_json::json!({"ok": true}));
     inv.blocking_error = Some("denied".to_string());
-    inv.metadata.insert("key".to_string(), serde_json::json!("val"));
+    inv.metadata
+        .insert("key".to_string(), serde_json::json!("val"));
 
     assert_eq!(inv.method, "Stream");
     assert_eq!(inv.user, "admin");
@@ -826,15 +1044,27 @@ fn test_tool_invocation_modify_fields() {
 fn test_cleanup_all_multiple_with_mixed_errors() {
     struct OkPlugin(&'static str);
     impl Plugin for OkPlugin {
-        fn name(&self) -> &str { self.0 }
-        fn as_any(&self) -> &dyn Any { self }
-        fn cleanup(&self) -> Result<(), String> { Ok(()) }
+        fn name(&self) -> &str {
+            self.0
+        }
+        fn as_any(&self) -> &dyn Any {
+            self
+        }
+        fn cleanup(&self) -> Result<(), String> {
+            Ok(())
+        }
     }
     struct ErrPlugin(&'static str);
     impl Plugin for ErrPlugin {
-        fn name(&self) -> &str { self.0 }
-        fn as_any(&self) -> &dyn Any { self }
-        fn cleanup(&self) -> Result<(), String> { Err("error".to_string()) }
+        fn name(&self) -> &str {
+            self.0
+        }
+        fn as_any(&self) -> &dyn Any {
+            self
+        }
+        fn cleanup(&self) -> Result<(), String> {
+            Err("error".to_string())
+        }
     }
 
     let mut mgr = PluginManager::new();
@@ -867,7 +1097,8 @@ fn test_testplugin_all_trait_methods() {
 #[test]
 fn test_plugin_manager_full_lifecycle() {
     let mut mgr = PluginManager::default();
-    mgr.register(Box::new(TestPlugin { running: false })).unwrap();
+    mgr.register(Box::new(TestPlugin { running: false }))
+        .unwrap();
     // get_plugin when enabled
     assert!(mgr.get_plugin("test").is_some());
     // disable and get_plugin returns None

@@ -3,10 +3,7 @@ use super::*;
 #[test]
 fn test_register_and_execute() {
     let handler = CustomHandler::new();
-    handler.register(
-        "custom_echo",
-        Arc::new(|_action, payload| Ok(payload)),
-    );
+    handler.register("custom_echo", Arc::new(|_action, payload| Ok(payload)));
 
     let result = handler.execute("custom_echo", serde_json::json!({"msg": "hello"}));
     assert_eq!(result.unwrap()["msg"], "hello");

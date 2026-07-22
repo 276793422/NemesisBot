@@ -112,13 +112,11 @@ async fn test_register_rules() {
     let plugin = SecurityPlugin::new(SecurityPluginConfig {
         enabled: true,
         default_action: "deny".to_string(),
-        file_rules: vec![
-            SecurityRule {
-                pattern: "/tmp/.*".to_string(),
-                action: "allow".to_string(),
-                comment: "allow tmp".to_string(),
-            },
-        ],
+        file_rules: vec![SecurityRule {
+            pattern: "/tmp/.*".to_string(),
+            action: "allow".to_string(),
+            comment: "allow tmp".to_string(),
+        }],
         ..Default::default()
     });
 
@@ -136,11 +134,12 @@ async fn test_register_rules() {
 
 #[test]
 fn test_init_with_path() {
-    let plugin = SecurityPlugin::init_with_path(
-        SecurityPluginConfig::default(),
-        "/path/to/config.json",
+    let plugin =
+        SecurityPlugin::init_with_path(SecurityPluginConfig::default(), "/path/to/config.json");
+    assert_eq!(
+        plugin.config_path(),
+        Some("/path/to/config.json".to_string())
     );
-    assert_eq!(plugin.config_path(), Some("/path/to/config.json".to_string()));
 }
 
 #[test]
@@ -428,13 +427,11 @@ fn test_plugin_file_rules_deny() {
     let plugin = SecurityPlugin::new(SecurityPluginConfig {
         enabled: true,
         default_action: "allow".to_string(),
-        file_rules: vec![
-            SecurityRule {
-                pattern: "/etc/*".to_string(),
-                action: "deny".to_string(),
-                comment: "protect etc".to_string(),
-            },
-        ],
+        file_rules: vec![SecurityRule {
+            pattern: "/etc/*".to_string(),
+            action: "deny".to_string(),
+            comment: "protect etc".to_string(),
+        }],
         ..Default::default()
     });
     let inv = ToolInvocation {
@@ -554,7 +551,10 @@ fn test_plugin_init_with_path_custom() {
         },
         "/custom/path/security.json",
     );
-    assert_eq!(plugin.config_path(), Some("/custom/path/security.json".to_string()));
+    assert_eq!(
+        plugin.config_path(),
+        Some("/custom/path/security.json".to_string())
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -728,13 +728,14 @@ async fn test_plugin_with_audit_chain_enabled() {
 #[tokio::test(flavor = "multi_thread")]
 async fn test_plugin_set_rules_override() {
     let plugin = make_plugin();
-    plugin.set_rules(OperationType::FileRead, vec![
-        SecurityRule {
+    plugin.set_rules(
+        OperationType::FileRead,
+        vec![SecurityRule {
             pattern: "/tmp/.*".to_string(),
             action: "deny".to_string(),
             comment: "deny tmp".to_string(),
-        },
-    ]);
+        }],
+    );
     let inv = ToolInvocation {
         tool_name: "read_file".to_string(),
         args: serde_json::json!({"path": "/tmp/test.txt"}),
@@ -751,13 +752,11 @@ async fn test_plugin_process_rules() {
     let plugin = SecurityPlugin::new(SecurityPluginConfig {
         enabled: true,
         default_action: "allow".to_string(),
-        process_rules: vec![
-            SecurityRule {
-                pattern: "rm\\s+-rf".to_string(),
-                action: "deny".to_string(),
-                comment: "no recursive rm".to_string(),
-            },
-        ],
+        process_rules: vec![SecurityRule {
+            pattern: "rm\\s+-rf".to_string(),
+            action: "deny".to_string(),
+            comment: "no recursive rm".to_string(),
+        }],
         ..Default::default()
     });
     let inv = ToolInvocation {
@@ -777,13 +776,11 @@ async fn test_plugin_network_rules() {
         enabled: true,
         ssrf_enabled: false,
         default_action: "allow".to_string(),
-        network_rules: vec![
-            SecurityRule {
-                pattern: "https://trusted.com/.*".to_string(),
-                action: "allow".to_string(),
-                comment: "trusted domain".to_string(),
-            },
-        ],
+        network_rules: vec![SecurityRule {
+            pattern: "https://trusted.com/.*".to_string(),
+            action: "allow".to_string(),
+            comment: "trusted domain".to_string(),
+        }],
         ..Default::default()
     });
     let inv = ToolInvocation {
@@ -805,13 +802,11 @@ fn test_plugin_hardware_rules() {
     let plugin = SecurityPlugin::new(SecurityPluginConfig {
         enabled: true,
         default_action: "allow".to_string(),
-        file_rules: vec![
-            SecurityRule {
-                pattern: "/dev/.*".to_string(),
-                action: "deny".to_string(),
-                comment: "no device access".to_string(),
-            },
-        ],
+        file_rules: vec![SecurityRule {
+            pattern: "/dev/.*".to_string(),
+            action: "deny".to_string(),
+            comment: "no device access".to_string(),
+        }],
         ..Default::default()
     });
     let inv = ToolInvocation {
@@ -831,13 +826,11 @@ fn test_plugin_registry_rules() {
     let plugin = SecurityPlugin::new(SecurityPluginConfig {
         enabled: true,
         default_action: "allow".to_string(),
-        file_rules: vec![
-            SecurityRule {
-                pattern: "/etc/shadow".to_string(),
-                action: "deny".to_string(),
-                comment: "protect sensitive files".to_string(),
-            },
-        ],
+        file_rules: vec![SecurityRule {
+            pattern: "/etc/shadow".to_string(),
+            action: "deny".to_string(),
+            comment: "protect sensitive files".to_string(),
+        }],
         ..Default::default()
     });
     let inv = ToolInvocation {
@@ -895,7 +888,10 @@ async fn test_dlp_inbound_write_low_confidence_allowed() {
         metadata: Default::default(),
     };
     let (allowed, _err) = plugin.execute(&inv);
-    assert!(allowed, "low-confidence phone/ip on inbound write_file must not block");
+    assert!(
+        allowed,
+        "low-confidence phone/ip on inbound write_file must not block"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -919,7 +915,10 @@ async fn test_dlp_inbound_write_high_confidence_blocked() {
         metadata: Default::default(),
     };
     let (allowed, err) = plugin.execute(&inv);
-    assert!(!allowed, "high-confidence private key on inbound write must still block");
+    assert!(
+        !allowed,
+        "high-confidence private key on inbound write must still block"
+    );
     assert!(err.unwrap().contains("DLP"));
 }
 

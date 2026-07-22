@@ -12,9 +12,7 @@ fn test_i2c_tool_metadata() {
 #[tokio::test]
 async fn test_i2c_non_linux_rejected() {
     let tool = I2CTool::new();
-    let result = tool
-        .execute(&serde_json::json!({"action": "detect"}))
-        .await;
+    let result = tool.execute(&serde_json::json!({"action": "detect"})).await;
     // On non-Linux, should error
     if !cfg!(target_os = "linux") {
         assert!(result.is_error);
@@ -35,9 +33,7 @@ async fn test_i2c_missing_action() {
 #[tokio::test]
 async fn test_i2c_scan_missing_bus() {
     let tool = I2CTool::new();
-    let result = tool
-        .execute(&serde_json::json!({"action": "scan"}))
-        .await;
+    let result = tool.execute(&serde_json::json!({"action": "scan"})).await;
     if !cfg!(target_os = "linux") {
         assert!(result.is_error);
     }
@@ -89,9 +85,7 @@ fn test_spi_tool_metadata() {
 #[tokio::test]
 async fn test_spi_non_linux_rejected() {
     let tool = SPITool::new();
-    let result = tool
-        .execute(&serde_json::json!({"action": "list"}))
-        .await;
+    let result = tool.execute(&serde_json::json!({"action": "list"})).await;
     if !cfg!(target_os = "linux") {
         assert!(result.is_error);
         assert!(result.for_llm.contains("Linux"));
@@ -147,24 +141,28 @@ fn test_spi_validate_params() {
     let tool = SPITool::new();
 
     // Valid params
-    assert!(tool
-        .validate_spi_params(&serde_json::json!({"speed": 1000000, "mode": 0, "bits": 8}))
-        .is_ok());
+    assert!(
+        tool.validate_spi_params(&serde_json::json!({"speed": 1000000, "mode": 0, "bits": 8}))
+            .is_ok()
+    );
 
     // Invalid speed
-    assert!(tool
-        .validate_spi_params(&serde_json::json!({"speed": 0}))
-        .is_err());
+    assert!(
+        tool.validate_spi_params(&serde_json::json!({"speed": 0}))
+            .is_err()
+    );
 
     // Invalid mode
-    assert!(tool
-        .validate_spi_params(&serde_json::json!({"mode": 5}))
-        .is_err());
+    assert!(
+        tool.validate_spi_params(&serde_json::json!({"mode": 5}))
+            .is_err()
+    );
 
     // Invalid bits
-    assert!(tool
-        .validate_spi_params(&serde_json::json!({"bits": 0}))
-        .is_err());
+    assert!(
+        tool.validate_spi_params(&serde_json::json!({"bits": 0}))
+            .is_err()
+    );
 }
 
 // --- Additional hardware tests ---
@@ -237,7 +235,10 @@ fn test_spi_validate_bits_too_high() {
 fn test_spi_validate_all_modes() {
     let tool = SPITool::new();
     for mode in 0..=3 {
-        assert!(tool.validate_spi_params(&serde_json::json!({"mode": mode})).is_ok());
+        assert!(
+            tool.validate_spi_params(&serde_json::json!({"mode": mode}))
+                .is_ok()
+        );
     }
 }
 
@@ -288,9 +289,7 @@ async fn test_spi_missing_action() {
 #[tokio::test]
 async fn test_i2c_detect_action() {
     let tool = I2CTool::new();
-    let result = tool
-        .execute(&serde_json::json!({"action": "detect"}))
-        .await;
+    let result = tool.execute(&serde_json::json!({"action": "detect"})).await;
     if !cfg!(target_os = "linux") {
         assert!(result.is_error);
     }
@@ -300,18 +299,30 @@ async fn test_i2c_detect_action() {
 fn test_spi_validate_speed_boundary() {
     let tool = SPITool::new();
     // Just under the limit
-    assert!(tool.validate_spi_params(&serde_json::json!({"speed": 125_000_000})).is_ok());
+    assert!(
+        tool.validate_spi_params(&serde_json::json!({"speed": 125_000_000}))
+            .is_ok()
+    );
     // Just over the limit
-    assert!(tool.validate_spi_params(&serde_json::json!({"speed": 125_000_001})).is_err());
+    assert!(
+        tool.validate_spi_params(&serde_json::json!({"speed": 125_000_001}))
+            .is_err()
+    );
 }
 
 #[test]
 fn test_spi_validate_bits_boundary() {
     let tool = SPITool::new();
     // Max valid bits
-    assert!(tool.validate_spi_params(&serde_json::json!({"bits": 32})).is_ok());
+    assert!(
+        tool.validate_spi_params(&serde_json::json!({"bits": 32}))
+            .is_ok()
+    );
     // Over max
-    assert!(tool.validate_spi_params(&serde_json::json!({"bits": 33})).is_err());
+    assert!(
+        tool.validate_spi_params(&serde_json::json!({"bits": 33}))
+            .is_err()
+    );
 }
 
 // --- Additional tests for coverage ---
@@ -549,9 +560,18 @@ fn test_i2c_parse_bus_invalid() {
 #[test]
 fn test_i2c_parse_address_valid() {
     let tool = I2CTool::new();
-    assert!(tool.parse_address(&serde_json::json!({"address": 0x03})).is_ok());
-    assert!(tool.parse_address(&serde_json::json!({"address": 0x77})).is_ok());
-    assert!(tool.parse_address(&serde_json::json!({"address": 0x38})).is_ok());
+    assert!(
+        tool.parse_address(&serde_json::json!({"address": 0x03}))
+            .is_ok()
+    );
+    assert!(
+        tool.parse_address(&serde_json::json!({"address": 0x77}))
+            .is_ok()
+    );
+    assert!(
+        tool.parse_address(&serde_json::json!({"address": 0x38}))
+            .is_ok()
+    );
 }
 
 #[test]
@@ -560,19 +580,40 @@ fn test_i2c_parse_address_invalid() {
     // Missing address
     assert!(tool.parse_address(&serde_json::json!({})).is_err());
     // Too low
-    assert!(tool.parse_address(&serde_json::json!({"address": 0x00})).is_err());
-    assert!(tool.parse_address(&serde_json::json!({"address": 0x02})).is_err());
+    assert!(
+        tool.parse_address(&serde_json::json!({"address": 0x00}))
+            .is_err()
+    );
+    assert!(
+        tool.parse_address(&serde_json::json!({"address": 0x02}))
+            .is_err()
+    );
     // Too high
-    assert!(tool.parse_address(&serde_json::json!({"address": 0x78})).is_err());
-    assert!(tool.parse_address(&serde_json::json!({"address": 0xFF})).is_err());
+    assert!(
+        tool.parse_address(&serde_json::json!({"address": 0x78}))
+            .is_err()
+    );
+    assert!(
+        tool.parse_address(&serde_json::json!({"address": 0xFF}))
+            .is_err()
+    );
 }
 
 #[test]
 fn test_spi_parse_device_valid() {
     let tool = SPITool::new();
-    assert!(tool.parse_device(&serde_json::json!({"device": "2.0"})).is_ok());
-    assert!(tool.parse_device(&serde_json::json!({"device": "0.0"})).is_ok());
-    assert!(tool.parse_device(&serde_json::json!({"device": "32767.32767"})).is_ok());
+    assert!(
+        tool.parse_device(&serde_json::json!({"device": "2.0"}))
+            .is_ok()
+    );
+    assert!(
+        tool.parse_device(&serde_json::json!({"device": "0.0"}))
+            .is_ok()
+    );
+    assert!(
+        tool.parse_device(&serde_json::json!({"device": "32767.32767"}))
+            .is_ok()
+    );
 }
 
 #[test]
@@ -581,12 +622,27 @@ fn test_spi_parse_device_invalid() {
     // Missing device
     assert!(tool.parse_device(&serde_json::json!({})).is_err());
     // Empty device
-    assert!(tool.parse_device(&serde_json::json!({"device": ""})).is_err());
+    assert!(
+        tool.parse_device(&serde_json::json!({"device": ""}))
+            .is_err()
+    );
     // Wrong format
-    assert!(tool.parse_device(&serde_json::json!({"device": "abc"})).is_err());
-    assert!(tool.parse_device(&serde_json::json!({"device": "1"})).is_err());
-    assert!(tool.parse_device(&serde_json::json!({"device": "1.2.3"})).is_err());
-    assert!(tool.parse_device(&serde_json::json!({"device": "a.b"})).is_err());
+    assert!(
+        tool.parse_device(&serde_json::json!({"device": "abc"}))
+            .is_err()
+    );
+    assert!(
+        tool.parse_device(&serde_json::json!({"device": "1"}))
+            .is_err()
+    );
+    assert!(
+        tool.parse_device(&serde_json::json!({"device": "1.2.3"}))
+            .is_err()
+    );
+    assert!(
+        tool.parse_device(&serde_json::json!({"device": "a.b"}))
+            .is_err()
+    );
 }
 
 #[tokio::test]
@@ -685,9 +741,7 @@ async fn test_spi_read_valid_device() {
 #[tokio::test]
 async fn test_spi_list_action() {
     let tool = SPITool::new();
-    let result = tool
-        .execute(&serde_json::json!({"action": "list"}))
-        .await;
+    let result = tool.execute(&serde_json::json!({"action": "list"})).await;
     if !cfg!(target_os = "linux") {
         assert!(result.is_error);
     }
@@ -940,18 +994,30 @@ fn test_spi_validate_valid_all_params() {
 fn test_spi_validate_mode_boundary() {
     let tool = SPITool::new();
     // Mode 3 is valid
-    assert!(tool.validate_spi_params(&serde_json::json!({"mode": 3})).is_ok());
+    assert!(
+        tool.validate_spi_params(&serde_json::json!({"mode": 3}))
+            .is_ok()
+    );
     // Mode 4 is invalid
-    assert!(tool.validate_spi_params(&serde_json::json!({"mode": 4})).is_err());
+    assert!(
+        tool.validate_spi_params(&serde_json::json!({"mode": 4}))
+            .is_err()
+    );
 }
 
 #[test]
 fn test_spi_validate_bits_boundary_v2_r2() {
     let tool = SPITool::new();
     // Bits 8 is valid
-    assert!(tool.validate_spi_params(&serde_json::json!({"bits": 8})).is_ok());
+    assert!(
+        tool.validate_spi_params(&serde_json::json!({"bits": 8}))
+            .is_ok()
+    );
     // Bits 0 is invalid
-    assert!(tool.validate_spi_params(&serde_json::json!({"bits": 0})).is_err());
+    assert!(
+        tool.validate_spi_params(&serde_json::json!({"bits": 0}))
+            .is_err()
+    );
 }
 
 #[test]
@@ -997,66 +1063,117 @@ fn test_i2c_parse_bus_whitespace() {
 fn test_i2c_parse_address_boundary_exact() {
     let tool = I2CTool::new();
     // Exact lower boundary (0x03) is valid
-    assert!(tool.parse_address(&serde_json::json!({"address": 0x03})).is_ok());
+    assert!(
+        tool.parse_address(&serde_json::json!({"address": 0x03}))
+            .is_ok()
+    );
     // Exact upper boundary (0x77) is valid
-    assert!(tool.parse_address(&serde_json::json!({"address": 0x77})).is_ok());
+    assert!(
+        tool.parse_address(&serde_json::json!({"address": 0x77}))
+            .is_ok()
+    );
     // One below lower boundary (0x02)
-    assert!(tool.parse_address(&serde_json::json!({"address": 0x02})).is_err());
+    assert!(
+        tool.parse_address(&serde_json::json!({"address": 0x02}))
+            .is_err()
+    );
     // One above upper boundary (0x78)
-    assert!(tool.parse_address(&serde_json::json!({"address": 0x78})).is_err());
+    assert!(
+        tool.parse_address(&serde_json::json!({"address": 0x78}))
+            .is_err()
+    );
 }
 
 #[test]
 fn test_spi_parse_device_with_letter_parts() {
     let tool = SPITool::new();
     // Non-digit parts should fail
-    assert!(tool.parse_device(&serde_json::json!({"device": "a.0"})).is_err());
-    assert!(tool.parse_device(&serde_json::json!({"device": "0.a"})).is_err());
+    assert!(
+        tool.parse_device(&serde_json::json!({"device": "a.0"}))
+            .is_err()
+    );
+    assert!(
+        tool.parse_device(&serde_json::json!({"device": "0.a"}))
+            .is_err()
+    );
 }
 
 #[test]
 fn test_spi_parse_device_triple_dot() {
     let tool = SPITool::new();
-    assert!(tool.parse_device(&serde_json::json!({"device": "1.2.3"})).is_err());
+    assert!(
+        tool.parse_device(&serde_json::json!({"device": "1.2.3"}))
+            .is_err()
+    );
 }
 
 #[test]
 fn test_spi_parse_device_single_number() {
     let tool = SPITool::new();
-    assert!(tool.parse_device(&serde_json::json!({"device": "1"})).is_err());
+    assert!(
+        tool.parse_device(&serde_json::json!({"device": "1"}))
+            .is_err()
+    );
 }
 
 #[test]
 fn test_spi_validate_speed_boundary_exact() {
     let tool = SPITool::new();
     // Speed 1 Hz is valid
-    assert!(tool.validate_spi_params(&serde_json::json!({"speed": 1})).is_ok());
+    assert!(
+        tool.validate_spi_params(&serde_json::json!({"speed": 1}))
+            .is_ok()
+    );
     // Speed exactly 125_000_000 is valid
-    assert!(tool.validate_spi_params(&serde_json::json!({"speed": 125_000_000})).is_ok());
+    assert!(
+        tool.validate_spi_params(&serde_json::json!({"speed": 125_000_000}))
+            .is_ok()
+    );
     // Speed exactly 125_000_001 is invalid
-    assert!(tool.validate_spi_params(&serde_json::json!({"speed": 125_000_001})).is_err());
+    assert!(
+        tool.validate_spi_params(&serde_json::json!({"speed": 125_000_001}))
+            .is_err()
+    );
 }
 
 #[test]
 fn test_spi_validate_bits_boundary_exact() {
     let tool = SPITool::new();
     // Bits 1 is valid
-    assert!(tool.validate_spi_params(&serde_json::json!({"bits": 1})).is_ok());
+    assert!(
+        tool.validate_spi_params(&serde_json::json!({"bits": 1}))
+            .is_ok()
+    );
     // Bits 32 is valid
-    assert!(tool.validate_spi_params(&serde_json::json!({"bits": 32})).is_ok());
+    assert!(
+        tool.validate_spi_params(&serde_json::json!({"bits": 32}))
+            .is_ok()
+    );
     // Bits 33 is invalid
-    assert!(tool.validate_spi_params(&serde_json::json!({"bits": 33})).is_err());
+    assert!(
+        tool.validate_spi_params(&serde_json::json!({"bits": 33}))
+            .is_err()
+    );
 }
 
 #[test]
 fn test_spi_validate_mode_boundary_exact() {
     let tool = SPITool::new();
     // Mode 0 is valid
-    assert!(tool.validate_spi_params(&serde_json::json!({"mode": 0})).is_ok());
+    assert!(
+        tool.validate_spi_params(&serde_json::json!({"mode": 0}))
+            .is_ok()
+    );
     // Mode 3 is valid
-    assert!(tool.validate_spi_params(&serde_json::json!({"mode": 3})).is_ok());
+    assert!(
+        tool.validate_spi_params(&serde_json::json!({"mode": 3}))
+            .is_ok()
+    );
     // Mode 4 is invalid
-    assert!(tool.validate_spi_params(&serde_json::json!({"mode": 4})).is_err());
+    assert!(
+        tool.validate_spi_params(&serde_json::json!({"mode": 4}))
+            .is_err()
+    );
 }
 
 #[tokio::test]
@@ -1411,22 +1528,34 @@ fn test_i2c_parse_bus_non_string_type_rejected() {
 fn test_spi_parse_device_negative_part_rejected() {
     // Negative sign is not a digit -> rejected.
     let tool = SPITool::new();
-    assert!(tool.parse_device(&serde_json::json!({"device": "-1.0"})).is_err());
-    assert!(tool.parse_device(&serde_json::json!({"device": "1.-0"})).is_err());
+    assert!(
+        tool.parse_device(&serde_json::json!({"device": "-1.0"}))
+            .is_err()
+    );
+    assert!(
+        tool.parse_device(&serde_json::json!({"device": "1.-0"}))
+            .is_err()
+    );
 }
 
 #[test]
 fn test_spi_validate_params_float_speed_ignored() {
     // A float speed does not match as_u64(), so validation is skipped (Ok).
     let tool = SPITool::new();
-    assert!(tool.validate_spi_params(&serde_json::json!({"speed": 1.5})).is_ok());
+    assert!(
+        tool.validate_spi_params(&serde_json::json!({"speed": 1.5}))
+            .is_ok()
+    );
 }
 
 #[test]
 fn test_spi_validate_params_string_mode_ignored() {
     // A string mode does not match as_u64(), so validation is skipped (Ok).
     let tool = SPITool::new();
-    assert!(tool.validate_spi_params(&serde_json::json!({"mode": "fast"})).is_ok());
+    assert!(
+        tool.validate_spi_params(&serde_json::json!({"mode": "fast"}))
+            .is_ok()
+    );
 }
 
 #[test]
@@ -1436,7 +1565,11 @@ fn test_i2c_tool_metadata_consistent() {
     let desc = tool.description();
     assert!(desc.contains("Linux"));
     for action in ["detect", "scan", "read", "write"] {
-        assert!(desc.contains(action), "description should mention {}", action);
+        assert!(
+            desc.contains(action),
+            "description should mention {}",
+            action
+        );
     }
 }
 
@@ -1446,7 +1579,11 @@ fn test_spi_tool_metadata_consistent() {
     let desc = tool.description();
     assert!(desc.contains("Linux"));
     for action in ["list", "transfer", "read"] {
-        assert!(desc.contains(action), "description should mention {}", action);
+        assert!(
+            desc.contains(action),
+            "description should mention {}",
+            action
+        );
     }
 }
 

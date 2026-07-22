@@ -30,10 +30,7 @@ async fn test_rpc_transport_roundtrip() {
         assert_eq!(msg.action, "Ping");
 
         // Send response
-        let resp = WireMessage::new_response(
-            &msg,
-            serde_json::json!({"status": "ok"}),
-        );
+        let resp = WireMessage::new_response(&msg, serde_json::json!({"status": "ok"}));
         conn.send(&resp).await.unwrap();
 
         // Wait for the write loop to flush

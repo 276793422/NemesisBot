@@ -16,9 +16,9 @@ use std::path::Path;
 use std::process::Stdio;
 use std::time::Duration;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use futures::{SinkExt, StreamExt};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use test_harness::*;
 use tokio_tungstenite::tungstenite::Message;
 
@@ -110,7 +110,12 @@ impl GatewayProcess {
             .kill_on_drop(true)
             .spawn()
             .with_context(|| format!("Failed to spawn {}", name))?;
-        println!("  {} started (PID: {:?}, log: {})", name, child.id(), log_path.display());
+        println!(
+            "  {} started (PID: {:?}, log: {})",
+            name,
+            child.id(),
+            log_path.display()
+        );
         Ok(Self {
             child: Some(child),
             name,
@@ -210,11 +215,7 @@ fn configure_ports(home: &Path, web_port: u16, health_port: u16) -> Result<()> {
 /// nodes' UDP addresses — gateway.rs derives the RPC port via the
 /// `udp_port + 10000` convention (e.g., 11950→21950) and routes cluster_rpc
 /// calls accordingly.
-async fn setup_node(
-    ws: &TestWorkspace,
-    bin: &Path,
-    node: &NodeConfig,
-) -> Result<()> {
+async fn setup_node(ws: &TestWorkspace, bin: &Path, node: &NodeConfig) -> Result<()> {
     let name = node.name;
     println!("\n  Configuring {}...", name);
 
@@ -337,7 +338,10 @@ async fn setup_node(
         bail!("{}: cluster enable failed: {}", name, out.stderr);
     }
 
-    println!("  {} configured OK (static peers + UDP port {})", name, node.udp_port);
+    println!(
+        "  {} configured OK (static peers + UDP port {})",
+        name, node.udp_port
+    );
     Ok(())
 }
 
@@ -349,9 +353,7 @@ async fn setup_node(
 async fn ws_connect_gateway(
     port: u16,
 ) -> Result<
-    tokio_tungstenite::WebSocketStream<
-        tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
-    >,
+    tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>,
 > {
     test_harness::ws_connect(port, AUTH_TOKEN).await
 }
@@ -399,10 +401,7 @@ async fn ws_send_recv_until<P: Fn(&str) -> bool>(
                     let cmd = v.get("cmd").and_then(|c| c.as_str()).unwrap_or("");
 
                     if msg_type == "message" && module == "chat" && cmd == "receive" {
-                        let content = v["data"]["content"]
-                            .as_str()
-                            .unwrap_or("")
-                            .to_string();
+                        let content = v["data"]["content"].as_str().unwrap_or("").to_string();
                         if predicate(&content) {
                             return Ok(content);
                         }
@@ -426,7 +425,12 @@ async fn ws_send_recv_until<P: Fn(&str) -> bool>(
             Ok(Some(Ok(_))) => {} // Ignore Binary, Pong, Frame
             Ok(None) => return Err(anyhow::anyhow!("WebSocket stream ended")),
             Ok(Some(Err(e))) => return Err(anyhow::anyhow!("WebSocket error: {}", e)),
-            Err(_) => return Err(anyhow::anyhow!("Timeout after {}s (no matching response)", timeout_secs)),
+            Err(_) => {
+                return Err(anyhow::anyhow!(
+                    "Timeout after {}s (no matching response)",
+                    timeout_secs
+                ));
+            }
         }
     }
 }
@@ -607,13 +611,8 @@ async fn main() {
     // ------------------------------------------------------------------
     println!("\n--- Phase 5: Start TestAIServer ---");
 
-    let mut ai_server = ManagedProcess::spawn(
-        "TestAIServer",
-        &ai_server_bin,
-        &[],
-        &root,
-    )
-    .expect("Cannot start TestAIServer");
+    let mut ai_server = ManagedProcess::spawn("TestAIServer", &ai_server_bin, &[], &root)
+        .expect("Cannot start TestAIServer");
 
     match wait_for_http(
         &format!("http://127.0.0.1:{}/v1/models", AI_SERVER_PORT),
@@ -634,18 +633,14 @@ async fn main() {
     // ------------------------------------------------------------------
     println!("\n--- Phase 6: Start gateways ---");
 
-    let mut gw_a =
-        GatewayProcess::spawn("Gateway-A", &gateway_bin, ws_a.path())
-            .expect("Cannot start Gateway-A");
-    let mut gw_b =
-        GatewayProcess::spawn("Gateway-B", &gateway_bin, ws_b.path())
-            .expect("Cannot start Gateway-B");
-    let mut gw_c =
-        GatewayProcess::spawn("Gateway-C", &gateway_bin, ws_c.path())
-            .expect("Cannot start Gateway-C");
-    let mut gw_d =
-        GatewayProcess::spawn("Gateway-D", &gateway_bin, ws_d.path())
-            .expect("Cannot start Gateway-D");
+    let mut gw_a = GatewayProcess::spawn("Gateway-A", &gateway_bin, ws_a.path())
+        .expect("Cannot start Gateway-A");
+    let mut gw_b = GatewayProcess::spawn("Gateway-B", &gateway_bin, ws_b.path())
+        .expect("Cannot start Gateway-B");
+    let mut gw_c = GatewayProcess::spawn("Gateway-C", &gateway_bin, ws_c.path())
+        .expect("Cannot start Gateway-C");
+    let mut gw_d = GatewayProcess::spawn("Gateway-D", &gateway_bin, ws_d.path())
+        .expect("Cannot start Gateway-D");
 
     // ------------------------------------------------------------------
     // Phase 7: Wait for health checks
@@ -696,13 +691,20 @@ async fn main() {
                     );
                 }
                 if !out.stdout_contains("Config:") {
-                    return fail("T1", format!("{}: missing Config line in output", NODES[i].name));
+                    return fail(
+                        "T1",
+                        format!("{}: missing Config line in output", NODES[i].name),
+                    );
                 }
                 // Verify enabled
                 if !out.stdout_contains("Enabled: true") && !out.stdout_contains("enabled: true") {
                     return fail(
                         "T1",
-                        format!("{}: cluster not enabled. Output: {}", NODES[i].name, trunc(&out.stdout, 200)),
+                        format!(
+                            "{}: cluster not enabled. Output: {}",
+                            NODES[i].name,
+                            trunc(&out.stdout, 200)
+                        ),
                     );
                 }
             }
@@ -718,16 +720,33 @@ async fn main() {
     all_results.push(
         run_test("T2: Peer graph (static peers)", || async {
             // Verify nodes are still running
-            if !gw_a.is_running() || !gw_b.is_running() || !gw_c.is_running() || !gw_d.is_running() {
+            if !gw_a.is_running() || !gw_b.is_running() || !gw_c.is_running() || !gw_d.is_running()
+            {
                 return fail("T2", "One or more nodes crashed during startup");
             }
 
             for node in NODES.iter() {
                 let peers_path = match node.name {
-                    "Node-A" => ws_a.home().join("workspace").join("cluster").join("peers.toml"),
-                    "Node-B" => ws_b.home().join("workspace").join("cluster").join("peers.toml"),
-                    "Node-C" => ws_c.home().join("workspace").join("cluster").join("peers.toml"),
-                    "Node-D" => ws_d.home().join("workspace").join("cluster").join("peers.toml"),
+                    "Node-A" => ws_a
+                        .home()
+                        .join("workspace")
+                        .join("cluster")
+                        .join("peers.toml"),
+                    "Node-B" => ws_b
+                        .home()
+                        .join("workspace")
+                        .join("cluster")
+                        .join("peers.toml"),
+                    "Node-C" => ws_c
+                        .home()
+                        .join("workspace")
+                        .join("cluster")
+                        .join("peers.toml"),
+                    "Node-D" => ws_d
+                        .home()
+                        .join("workspace")
+                        .join("cluster")
+                        .join("peers.toml"),
                     _ => unreachable!(),
                 };
                 let content = std::fs::read_to_string(&peers_path).unwrap_or_default();
@@ -740,14 +759,20 @@ async fn main() {
                     // preserved as-is. Only `.` and `:` get replaced with `_`.
                     let sanitized = other.name.replace('.', "_").replace(':', "_");
                     if !content.contains(&format!("[peers.{}]", sanitized)) {
-                        return fail("T2", format!(
-                            "{} peers.toml missing entry for {} (looked for [peers.{}])",
-                            node.name, other.name, sanitized
-                        ));
+                        return fail(
+                            "T2",
+                            format!(
+                                "{} peers.toml missing entry for {} (looked for [peers.{}])",
+                                node.name, other.name, sanitized
+                            ),
+                        );
                     }
                 }
             }
-            pass("T2", "All 4 nodes have the other 3 as static peers".to_string())
+            pass(
+                "T2",
+                "All 4 nodes have the other 3 as static peers".to_string(),
+            )
         })
         .await,
     );
@@ -759,22 +784,35 @@ async fn main() {
     // the file content, so peer ids appear in their sanitized form (Node_B).
     all_results.push(
         run_test("T3: PeerRegistry loaded from peers.toml", || async {
-            let out = ws_a.run_cli(&gateway_bin, &["cluster", "peers", "list"]).await;
+            let out = ws_a
+                .run_cli(&gateway_bin, &["cluster", "peers", "list"])
+                .await;
             let stdout = out.stdout.clone();
             // cluster peers add sanitizes "Node-B" → "Node_B" in the TOML key.
             let has_b = stdout.contains("Node_B") || stdout.contains("Node-B");
             let has_c = stdout.contains("Node_C") || stdout.contains("Node-C");
             let has_d = stdout.contains("Node_D") || stdout.contains("Node-D");
             if has_b && has_c && has_d {
-                pass("T3", format!(
-                    "Node-A sees Node-B/C/D in peers list (exit={}, {} bytes)",
-                    out.exit_code, stdout.len()
-                ))
+                pass(
+                    "T3",
+                    format!(
+                        "Node-A sees Node-B/C/D in peers list (exit={}, {} bytes)",
+                        out.exit_code,
+                        stdout.len()
+                    ),
+                )
             } else {
-                fail("T3", format!(
-                    "PeerRegistry missing peers: B={} C={} D={} (exit={}, stdout: {})",
-                    has_b, has_c, has_d, out.exit_code, trunc(&stdout, 200)
-                ))
+                fail(
+                    "T3",
+                    format!(
+                        "PeerRegistry missing peers: B={} C={} D={} (exit={}, stdout: {})",
+                        has_b,
+                        has_c,
+                        has_d,
+                        out.exit_code,
+                        trunc(&stdout, 200)
+                    ),
+                )
             }
         })
         .await,
@@ -792,7 +830,9 @@ async fn main() {
             let msg = r#"<PEER_CHAT>{"peer_id":"Node-B","content":"hello from A"}</PEER_CHAT>"#;
             match ws_send_recv_until(&mut ws, msg, 180, |resp| {
                 resp.contains("hello from A") || resp.contains("echo")
-            }).await {
+            })
+            .await
+            {
                 Ok(resp) => {
                     if resp.contains("hello from A") {
                         pass("T4", format!("完整异步 2-hop A→B: {}", trunc(&resp, 100)))
@@ -816,7 +856,9 @@ async fn main() {
             let msg = r#"<PEER_CHAT>{"peer_id":"Node-D","content":"hello to D"}</PEER_CHAT>"#;
             match ws_send_recv_until(&mut ws, msg, 180, |resp| {
                 resp.contains("hello to D") || resp.contains("hello")
-            }).await {
+            })
+            .await
+            {
                 Ok(resp) => pass("T5", format!("完整异步 2-hop A→D: {}", trunc(&resp, 100))),
                 Err(e) => fail("T5", format!("180s 内未收到续行响应: {}", e)),
             }
@@ -861,7 +903,9 @@ async fn main() {
             let msg = r#"<PEER_CHAT>{"peer_id":"Node-A","content":"hello from B"}</PEER_CHAT>"#;
             match ws_send_recv_until(&mut ws, msg, 180, |resp| {
                 resp.contains("hello from B") || resp.contains("echo")
-            }).await {
+            })
+            .await
+            {
                 Ok(resp) => {
                     if resp.contains("hello from B") {
                         pass("T7", format!("完整双向 B→A: {}", trunc(&resp, 100)))
@@ -893,7 +937,9 @@ async fn main() {
                     );
                     match ws_send_recv_until(&mut ws, &msg, 180, |resp| {
                         resp.contains(&content) || resp.contains("concurrent-msg")
-                    }).await {
+                    })
+                    .await
+                    {
                         Ok(resp) => {
                             if resp.contains(&content) {
                                 Ok(resp)
@@ -924,15 +970,14 @@ async fn main() {
             }
 
             if fail_count == 0 {
-                pass("T8", format!("All {} concurrent async requests succeeded", pass_count))
+                pass(
+                    "T8",
+                    format!("All {} concurrent async requests succeeded", pass_count),
+                )
             } else {
                 fail(
                     "T8",
-                    format!(
-                        "{}/{} requests failed",
-                        fail_count,
-                        pass_count + fail_count
-                    ),
+                    format!("{}/{} requests failed", fail_count, pass_count + fail_count),
                 )
             }
         })
@@ -994,17 +1039,14 @@ async fn main() {
 
             // 3b: Wait for D's RPC server to be listening
             let rpc_addr = format!("127.0.0.1:{}", NODES[3].rpc_port);
-            let rpc_ready = tokio::time::timeout(
-                Duration::from_secs(15),
-                async {
-                    loop {
-                        if tokio::net::TcpStream::connect(&rpc_addr).await.is_ok() {
-                            return true;
-                        }
-                        tokio::time::sleep(Duration::from_millis(500)).await;
+            let rpc_ready = tokio::time::timeout(Duration::from_secs(15), async {
+                loop {
+                    if tokio::net::TcpStream::connect(&rpc_addr).await.is_ok() {
+                        return true;
                     }
-                },
-            )
+                    tokio::time::sleep(Duration::from_millis(500)).await;
+                }
+            })
             .await
             .unwrap_or(false);
             if !rpc_ready {
@@ -1028,7 +1070,9 @@ async fn main() {
             // D uses testai-3.1 which echoes content back.
             match ws_send_recv_until(&mut ws2, msg, 180, |resp| {
                 resp.contains("offline test") || resp.contains("hello")
-            }).await {
+            })
+            .await
+            {
                 Ok(resp) => pass(
                     "T9",
                     format!(
@@ -1037,7 +1081,13 @@ async fn main() {
                         trunc(&resp, 80)
                     ),
                 ),
-                Err(e) => fail("T9", format!("180s 内未收到续行响应 (UDP discovery may have failed): {}", e)),
+                Err(e) => fail(
+                    "T9",
+                    format!(
+                        "180s 内未收到续行响应 (UDP discovery may have failed): {}",
+                        e
+                    ),
+                ),
             }
         })
         .await,
@@ -1061,10 +1111,10 @@ async fn main() {
             // skipping the intermediate "已发送请求..." message.
             match ws_send_recv_until(&mut ws, &msg, 180, |resp| {
                 resp.contains("X") && resp.len() > 100
-            }).await {
-                Ok(resp) => {
-                    pass("T10", format!("大消息异步 OK ({} bytes)", resp.len()))
-                }
+            })
+            .await
+            {
+                Ok(resp) => pass("T10", format!("大消息异步 OK ({} bytes)", resp.len())),
                 Err(e) => fail("T10", format!("180s 内未收到匹配的续行响应: {}", e)),
             }
         })
@@ -1106,10 +1156,13 @@ async fn main() {
                 Ok(s) => s,
                 Err(e) => return fail("T12", format!("WS connect to A failed: {}", e)),
             };
-            let msg = r#"<PEER_CHAT>{"peer_id":"Node-C","content":"hello direct to C"}</PEER_CHAT>"#;
+            let msg =
+                r#"<PEER_CHAT>{"peer_id":"Node-C","content":"hello direct to C"}</PEER_CHAT>"#;
             match ws_send_recv_until(&mut ws, msg, 180, |resp| {
                 resp.contains("hello direct to C") || resp.contains("hello")
-            }).await {
+            })
+            .await
+            {
                 Ok(resp) => pass("T12", format!("完整异步 2-hop A→C: {}", trunc(&resp, 100))),
                 Err(e) => fail("T12", format!("180s 内未收到续行响应: {}", e)),
             }
@@ -1127,7 +1180,9 @@ async fn main() {
             let msg = r#"<PEER_CHAT>{"peer_id":"Node-A","content":"hello from D"}</PEER_CHAT>"#;
             match ws_send_recv_until(&mut ws, msg, 180, |resp| {
                 resp.contains("hello from D") || resp.contains("echo")
-            }).await {
+            })
+            .await
+            {
                 Ok(resp) => {
                     if resp.contains("hello from D") {
                         pass("T13", format!("完整双向 D→A: {}", trunc(&resp, 100)))
@@ -1181,10 +1236,8 @@ async fn main() {
             // Wait for the continuation response. testai-3.1 echoes the
             // content back, so the marker should reappear in the assistant
             // reply.
-            match ws_send_recv_until(&mut ws, &user_payload, 180, |resp| {
-                resp.contains(&marker)
-            })
-            .await
+            match ws_send_recv_until(&mut ws, &user_payload, 180, |resp| resp.contains(&marker))
+                .await
             {
                 Ok(_resp) => {
                     // Now scan Node-A's session_logs directory.
@@ -1212,7 +1265,7 @@ async fn main() {
                                     session_logs_dir.display(),
                                     e
                                 ),
-                            )
+                            );
                         }
                     };
                     for entry in entries.flatten() {
@@ -1323,23 +1376,40 @@ async fn main() {
             println!("  {} log not found at {}", name, src.display());
         }
         // Also copy state.toml, peers.toml and config.cluster.json
-        let state_src = ws.home().join("workspace").join("cluster").join("state.toml");
+        let state_src = ws
+            .home()
+            .join("workspace")
+            .join("cluster")
+            .join("state.toml");
         let state_dst = log_output_dir.join(format!("{}-state.toml", name));
         if state_src.exists() {
             std::fs::copy(&state_src, &state_dst).ok();
         }
-        let peers_src = ws.home().join("workspace").join("cluster").join("peers.toml");
+        let peers_src = ws
+            .home()
+            .join("workspace")
+            .join("cluster")
+            .join("peers.toml");
         let peers_dst = log_output_dir.join(format!("{}-peers.toml", name));
         if peers_src.exists() {
             std::fs::copy(&peers_src, &peers_dst).ok();
         }
-        let cluster_cfg_src = ws.home().join("workspace").join("config").join("config.cluster.json");
+        let cluster_cfg_src = ws
+            .home()
+            .join("workspace")
+            .join("config")
+            .join("config.cluster.json");
         let cluster_cfg_dst = log_output_dir.join(format!("{}-config.cluster.json", name));
         if cluster_cfg_src.exists() {
             std::fs::copy(&cluster_cfg_src, &cluster_cfg_dst).ok();
         }
     }
-    println!("  Logs saved to: {}", std::fs::canonicalize(&log_output_dir).unwrap_or_else(|_| log_output_dir.clone()).display());
+    println!(
+        "  Logs saved to: {}",
+        std::fs::canonicalize(&log_output_dir)
+            .unwrap_or_else(|_| log_output_dir.clone())
+            .display()
+    );
 
     // Final port cleanup
     cleanup_ports(&all_ports);

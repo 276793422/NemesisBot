@@ -237,7 +237,10 @@ fn test_child_connection_dispatcher() {
     let conn = ChildConnection::new("key-1".to_string(), "key-1".to_string(), 1234, tx);
     // Dispatcher should be usable
     conn.dispatcher.register("ping", |msg| {
-        Ok(Message::new_response(msg.id.as_deref().unwrap_or(""), serde_json::json!("pong")))
+        Ok(Message::new_response(
+            msg.id.as_deref().unwrap_or(""),
+            serde_json::json!("pong"),
+        ))
     });
     let req = Message::new_request("ping", serde_json::Value::Null);
     let result = conn.dispatcher.dispatch(&req).unwrap().unwrap();
@@ -311,7 +314,10 @@ fn test_server_register_handler_and_use() {
     let server = WebSocketServer::new(key_gen);
 
     server.register_handler("test.method", |msg| {
-        Ok(Message::new_response(msg.id.as_deref().unwrap_or(""), serde_json::json!({"result": "ok"})))
+        Ok(Message::new_response(
+            msg.id.as_deref().unwrap_or(""),
+            serde_json::json!({"result": "ok"}),
+        ))
     });
     // Verify it was registered (no panic)
 }
@@ -350,7 +356,9 @@ fn test_server_send_notification_nonexistent() {
 async fn test_server_call_child_nonexistent() {
     let key_gen = Arc::new(KeyGenerator::new());
     let server = WebSocketServer::new(key_gen);
-    let result = server.call_child("nonexistent", "method", serde_json::json!({})).await;
+    let result = server
+        .call_child("nonexistent", "method", serde_json::json!({}))
+        .await;
     assert!(matches!(result, Err(WsServerError::ConnectionNotFound)));
 }
 
@@ -383,7 +391,9 @@ async fn test_server_client_full_connection() {
         // Send auth message
         let auth = serde_json::json!({"type": "auth", "key": key});
         ws_stream
-            .send(tokio_tungstenite::tungstenite::Message::Text(auth.to_string().into()))
+            .send(tokio_tungstenite::tungstenite::Message::Text(
+                auth.to_string().into(),
+            ))
             .await
             .unwrap();
 
@@ -402,14 +412,16 @@ async fn test_server_client_full_connection() {
         drop(guard);
 
         // Send notification from server to client
-        let result = server.send_notification("child-test", "test.method", serde_json::json!({"data": 123}));
+        let result = server.send_notification(
+            "child-test",
+            "test.method",
+            serde_json::json!({"data": 123}),
+        );
         assert!(result.is_ok());
 
         // Client should receive the notification
-        let msg_result = tokio::time::timeout(
-            std::time::Duration::from_secs(2),
-            ws_stream.next()
-        ).await;
+        let msg_result =
+            tokio::time::timeout(std::time::Duration::from_secs(2), ws_stream.next()).await;
 
         if let Ok(Some(Ok(ws_msg))) = msg_result {
             if let tokio_tungstenite::tungstenite::Message::Text(text) = ws_msg {
@@ -439,7 +451,9 @@ async fn test_server_client_auth_failure() {
         // Send invalid auth
         let auth = serde_json::json!({"type": "auth", "key": "invalid-key"});
         let _ = ws_stream
-            .send(tokio_tungstenite::tungstenite::Message::Text(auth.to_string().into()))
+            .send(tokio_tungstenite::tungstenite::Message::Text(
+                auth.to_string().into(),
+            ))
             .await;
 
         // Give server time to process
@@ -464,7 +478,9 @@ async fn test_server_client_no_key_in_auth() {
         // Send auth without key field
         let auth = serde_json::json!({"type": "auth"});
         let _ = ws_stream
-            .send(tokio_tungstenite::tungstenite::Message::Text(auth.to_string().into()))
+            .send(tokio_tungstenite::tungstenite::Message::Text(
+                auth.to_string().into(),
+            ))
             .await;
 
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
@@ -486,7 +502,9 @@ async fn test_server_client_invalid_auth_json() {
     if let Ok((mut ws_stream, _)) = connect_result {
         // Send invalid JSON
         let _ = ws_stream
-            .send(tokio_tungstenite::tungstenite::Message::Text("not json".into()))
+            .send(tokio_tungstenite::tungstenite::Message::Text(
+                "not json".into(),
+            ))
             .await;
 
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
@@ -504,7 +522,10 @@ async fn test_server_client_request_response() {
     // Register a handler on the server
     server.register_handler("add", |msg| {
         let id = msg.id.as_deref().unwrap_or("");
-        Ok(Message::new_response(id, serde_json::json!({"result": "added"})))
+        Ok(Message::new_response(
+            id,
+            serde_json::json!({"result": "added"}),
+        ))
     });
 
     let port = server.start().await.unwrap();
@@ -516,7 +537,9 @@ async fn test_server_client_request_response() {
         // Auth
         let auth = serde_json::json!({"type": "auth", "key": key});
         ws_stream
-            .send(tokio_tungstenite::tungstenite::Message::Text(auth.to_string().into()))
+            .send(tokio_tungstenite::tungstenite::Message::Text(
+                auth.to_string().into(),
+            ))
             .await
             .unwrap();
 
@@ -526,15 +549,15 @@ async fn test_server_client_request_response() {
         let request = Message::new_request("add", serde_json::json!({"a": 1, "b": 2}));
         let request_str = serde_json::to_string(&request).unwrap();
         ws_stream
-            .send(tokio_tungstenite::tungstenite::Message::Text(request_str.into()))
+            .send(tokio_tungstenite::tungstenite::Message::Text(
+                request_str.into(),
+            ))
             .await
             .unwrap();
 
         // Receive response
-        let msg_result = tokio::time::timeout(
-            std::time::Duration::from_secs(2),
-            ws_stream.next()
-        ).await;
+        let msg_result =
+            tokio::time::timeout(std::time::Duration::from_secs(2), ws_stream.next()).await;
 
         if let Ok(Some(Ok(ws_msg))) = msg_result {
             if let tokio_tungstenite::tungstenite::Message::Text(text) = ws_msg {
@@ -563,7 +586,9 @@ async fn test_server_call_child_with_connection() {
         // Auth
         let auth = serde_json::json!({"type": "auth", "key": key});
         ws_stream
-            .send(tokio_tungstenite::tungstenite::Message::Text(auth.to_string().into()))
+            .send(tokio_tungstenite::tungstenite::Message::Text(
+                auth.to_string().into(),
+            ))
             .await
             .unwrap();
 
@@ -590,23 +615,27 @@ async fn test_server_call_child_with_connection() {
             ws_stream
         });
 
-            // Wait for the response to be ready
-            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        // Wait for the response to be ready
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
-            // Make the call
-            let call_result = server.call_child("child-call", "test.method", serde_json::json!({})).await;
-            if let Ok(response) = call_result {
-                assert!(response.is_success_response());
-                assert_eq!(response.result.as_ref().unwrap()["status"], "handled");
-            }
+        // Make the call
+        let call_result = server
+            .call_child("child-call", "test.method", serde_json::json!({}))
+            .await;
+        if let Ok(response) = call_result {
+            assert!(response.is_success_response());
+            assert_eq!(response.result.as_ref().unwrap()["status"], "handled");
+        }
 
-            // Send response from client side
-            if let Some(resp_str) = client_rx.recv().await {
-                let mut ws = read_handle.await.unwrap();
-                let _ = ws
-                    .send(tokio_tungstenite::tungstenite::Message::Text(resp_str.into()))
-                    .await;
-            }
+        // Send response from client side
+        if let Some(resp_str) = client_rx.recv().await {
+            let mut ws = read_handle.await.unwrap();
+            let _ = ws
+                .send(tokio_tungstenite::tungstenite::Message::Text(
+                    resp_str.into(),
+                ))
+                .await;
+        }
     }
 
     server.stop();
@@ -625,7 +654,9 @@ async fn test_server_remove_connection_with_child() {
         // Auth
         let auth = serde_json::json!({"type": "auth", "key": key});
         ws_stream
-            .send(tokio_tungstenite::tungstenite::Message::Text(auth.to_string().into()))
+            .send(tokio_tungstenite::tungstenite::Message::Text(
+                auth.to_string().into(),
+            ))
             .await
             .unwrap();
 
@@ -651,15 +682,20 @@ fn test_send_notification_connection_busy() {
 
     // Manually insert a connection with a locked mutex
     let (tx, _rx) = tokio::sync::mpsc::channel::<String>(64);
-    let conn = Arc::new(tokio::sync::Mutex::new(
-        ChildConnection::new("key-1".to_string(), "key-1".to_string(), 42, tx)
-    ));
+    let conn = Arc::new(tokio::sync::Mutex::new(ChildConnection::new(
+        "key-1".to_string(),
+        "key-1".to_string(),
+        42,
+        tx,
+    )));
 
     // Lock the connection so try_lock fails
     let guard = conn.blocking_lock();
     {
         let mut state = server.state.lock();
-        state.connections.insert("test-id".to_string(), conn.clone());
+        state
+            .connections
+            .insert("test-id".to_string(), conn.clone());
     }
 
     // send_notification should fail because connection is busy
@@ -676,13 +712,18 @@ fn test_send_notification_success() {
     let server = WebSocketServer::new(key_gen);
 
     let (tx, mut rx) = tokio::sync::mpsc::channel::<String>(64);
-    let conn = Arc::new(tokio::sync::Mutex::new(
-        ChildConnection::new("key-1".to_string(), "key-1".to_string(), 42, tx)
-    ));
+    let conn = Arc::new(tokio::sync::Mutex::new(ChildConnection::new(
+        "key-1".to_string(),
+        "key-1".to_string(),
+        42,
+        tx,
+    )));
 
     {
         let mut state = server.state.lock();
-        state.connections.insert("test-id".to_string(), conn.clone());
+        state
+            .connections
+            .insert("test-id".to_string(), conn.clone());
     }
 
     let result = server.send_notification("test-id", "method", serde_json::json!({"x": 1}));
@@ -742,16 +783,21 @@ async fn test_server_send_notification_connection_closed() {
     let (tx, rx) = tokio::sync::mpsc::channel::<String>(64);
     drop(rx); // Drop receiver to simulate closed channel
 
-    let conn = Arc::new(tokio::sync::Mutex::new(
-        ChildConnection::new("key-1".to_string(), "key-1".to_string(), 42, tx)
-    ));
+    let conn = Arc::new(tokio::sync::Mutex::new(ChildConnection::new(
+        "key-1".to_string(),
+        "key-1".to_string(),
+        42,
+        tx,
+    )));
 
     // Close the connection
     conn.lock().await.close();
 
     {
         let mut state = server.state.lock();
-        state.connections.insert("test-id".to_string(), conn.clone());
+        state
+            .connections
+            .insert("test-id".to_string(), conn.clone());
     }
 
     // send_notification should fail because the receiver is dropped
@@ -767,13 +813,18 @@ fn test_send_notification_connection_rx_dropped() {
     let (tx, rx) = tokio::sync::mpsc::channel::<String>(64);
     drop(rx); // Drop receiver to simulate closed channel
 
-    let conn = Arc::new(tokio::sync::Mutex::new(
-        ChildConnection::new("key-1".to_string(), "key-1".to_string(), 42, tx)
-    ));
+    let conn = Arc::new(tokio::sync::Mutex::new(ChildConnection::new(
+        "key-1".to_string(),
+        "key-1".to_string(),
+        42,
+        tx,
+    )));
 
     {
         let mut state = server.state.lock();
-        state.connections.insert("test-id".to_string(), conn.clone());
+        state
+            .connections
+            .insert("test-id".to_string(), conn.clone());
     }
 
     let result = server.send_notification("test-id", "test", serde_json::Value::Null);

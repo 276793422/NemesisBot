@@ -346,7 +346,10 @@ fn test_png_to_ico_header_format() {
     let png_data = embedded_icon_png();
     let ico_data = png_to_ico(png_data);
     // ICO header: reserved(2) + type(2) + count(2) = 6 bytes
-    assert!(ico_data.len() > 22, "ICO should be at least header + entry + PNG data");
+    assert!(
+        ico_data.len() > 22,
+        "ICO should be at least header + entry + PNG data"
+    );
     // Reserved = 0x0000
     assert_eq!(&ico_data[0..2], &[0x00, 0x00]);
     // Type = 0x0001 (ICO)
@@ -383,7 +386,10 @@ fn test_png_to_ico_embeds_original_png() {
     let ico_data = png_to_ico(png_data);
     // PNG data starts at offset 22 (6 header + 16 entry)
     let embedded = &ico_data[22..];
-    assert_eq!(embedded, png_data, "embedded PNG data should match original");
+    assert_eq!(
+        embedded, png_data,
+        "embedded PNG data should match original"
+    );
 }
 
 #[cfg(not(target_os = "android"))]
@@ -392,10 +398,12 @@ fn test_png_to_ico_size_field() {
     let png_data = embedded_icon_png();
     let ico_data = png_to_ico(png_data);
     // Size field at offset 14, 4 bytes LE
-    let size = u32::from_le_bytes(
-        ico_data[14..18].try_into().unwrap()
+    let size = u32::from_le_bytes(ico_data[14..18].try_into().unwrap());
+    assert_eq!(
+        size,
+        png_data.len() as u32,
+        "size field should match PNG data length"
     );
-    assert_eq!(size, png_data.len() as u32, "size field should match PNG data length");
 }
 
 #[cfg(not(target_os = "android"))]
@@ -404,9 +412,7 @@ fn test_png_to_ico_offset_field() {
     let png_data = embedded_icon_png();
     let ico_data = png_to_ico(png_data);
     // Offset field at offset 18, 4 bytes LE = 22
-    let offset = u32::from_le_bytes(
-        ico_data[18..22].try_into().unwrap()
-    );
+    let offset = u32::from_le_bytes(ico_data[18..22].try_into().unwrap());
     assert_eq!(offset, 22, "offset should be 22 (6 header + 16 entry)");
 }
 
@@ -416,8 +422,11 @@ fn test_png_to_ico_with_synthetic_small_png() {
     // Create a tiny 2x2 red PNG
     let img = image::RgbaImage::from_pixel(2, 2, image::Rgba([255, 0, 0, 255]));
     let mut png_buf = Vec::new();
-    img.write_to(&mut std::io::Cursor::new(&mut png_buf), image::ImageFormat::Png)
-        .unwrap();
+    img.write_to(
+        &mut std::io::Cursor::new(&mut png_buf),
+        image::ImageFormat::Png,
+    )
+    .unwrap();
     let ico_data = png_to_ico(&png_buf);
     assert_eq!(ico_data.len(), 6 + 16 + png_buf.len());
     assert_eq!(ico_data[6], 2); // width
@@ -430,5 +439,8 @@ fn test_png_to_ico_invalid_data_fallback() {
     // Invalid PNG data should fall back to returning original bytes
     let bad_data = vec![0xDE, 0xAD, 0xBE, 0xEF];
     let result = png_to_ico(&bad_data);
-    assert_eq!(result, bad_data, "invalid data should return original bytes as fallback");
+    assert_eq!(
+        result, bad_data,
+        "invalid data should return original bytes as fallback"
+    );
 }

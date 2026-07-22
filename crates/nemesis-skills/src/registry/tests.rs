@@ -230,7 +230,11 @@ fn test_registries_accessor() {
 fn test_add_source_with_branch() {
     let manager = RegistryManager::new_empty();
     manager
-        .add_source("test".to_string(), "org/skills".to_string(), Some("dev".to_string()))
+        .add_source(
+            "test".to_string(),
+            "org/skills".to_string(),
+            Some("dev".to_string()),
+        )
         .unwrap();
     let config = manager.config.read();
     assert_eq!(config.github_sources[0].branch, "dev");
@@ -267,7 +271,9 @@ async fn test_install_from_stub_registry() {
     let dir = tempfile::tempdir().unwrap();
     let manager = RegistryManager::new_empty();
     manager.add_registry(Arc::new(StubRegistryProvider));
-    let result = manager.install("stub", "test-skill", dir.path().to_str().unwrap()).await;
+    let result = manager
+        .install("stub", "test-skill", dir.path().to_str().unwrap())
+        .await;
     assert!(result.is_ok());
     assert_eq!(result.unwrap(), "latest");
 }
@@ -279,17 +285,19 @@ async fn test_install_from_stub_registry() {
 #[test]
 fn test_from_config_with_multi_source() {
     let mut config = RegistryConfig::default();
-    config.github_sources.push(crate::types::GitHubSourceConfig {
-        name: "test-source".to_string(),
-        repo: "org/skills".to_string(),
-        enabled: true,
-        branch: "main".to_string(),
-        index_type: "skills_json".to_string(),
-        index_path: "skills.json".to_string(),
-        skill_path_pattern: "skills/{slug}/SKILL.md".to_string(),
-        timeout_secs: 10,
-        max_size: 1024,
-    });
+    config
+        .github_sources
+        .push(crate::types::GitHubSourceConfig {
+            name: "test-source".to_string(),
+            repo: "org/skills".to_string(),
+            enabled: true,
+            branch: "main".to_string(),
+            index_type: "skills_json".to_string(),
+            index_path: "skills.json".to_string(),
+            skill_path_pattern: "skills/{slug}/SKILL.md".to_string(),
+            timeout_secs: 10,
+            max_size: 1024,
+        });
     let manager = RegistryManager::from_config(config);
     let reg = manager.registries();
     assert_eq!(reg.len(), 1);
@@ -299,17 +307,19 @@ fn test_from_config_with_multi_source() {
 #[test]
 fn test_from_config_with_disabled_source() {
     let mut config = RegistryConfig::default();
-    config.github_sources.push(crate::types::GitHubSourceConfig {
-        name: "disabled".to_string(),
-        repo: "org/disabled".to_string(),
-        enabled: false,
-        branch: "main".to_string(),
-        index_type: "github_api".to_string(),
-        index_path: String::new(),
-        skill_path_pattern: "skills/{slug}/SKILL.md".to_string(),
-        timeout_secs: 0,
-        max_size: 0,
-    });
+    config
+        .github_sources
+        .push(crate::types::GitHubSourceConfig {
+            name: "disabled".to_string(),
+            repo: "org/disabled".to_string(),
+            enabled: false,
+            branch: "main".to_string(),
+            index_type: "github_api".to_string(),
+            index_path: String::new(),
+            skill_path_pattern: "skills/{slug}/SKILL.md".to_string(),
+            timeout_secs: 0,
+            max_size: 0,
+        });
     let manager = RegistryManager::from_config(config);
     assert!(manager.registries().is_empty());
 }
@@ -459,7 +469,11 @@ fn test_add_source_duplicate_name() {
 fn test_add_source_with_custom_branch() {
     let manager = RegistryManager::new_empty();
     manager
-        .add_source("test".to_string(), "org/repo".to_string(), Some("develop".to_string()))
+        .add_source(
+            "test".to_string(),
+            "org/repo".to_string(),
+            Some("develop".to_string()),
+        )
         .unwrap();
     let config = manager.config.read();
     assert_eq!(config.github_sources[0].branch, "develop");
@@ -624,28 +638,32 @@ fn test_compute_relevance_partial_slug_match() {
 #[test]
 fn test_from_config_with_multiple_sources() {
     let mut config = crate::types::RegistryConfig::default();
-    config.github_sources.push(crate::types::GitHubSourceConfig {
-        name: "source-a".to_string(),
-        repo: "org/a".to_string(),
-        enabled: true,
-        branch: "main".to_string(),
-        index_type: "skills_json".to_string(),
-        index_path: "skills.json".to_string(),
-        skill_path_pattern: "skills/{slug}/SKILL.md".to_string(),
-        timeout_secs: 0,
-        max_size: 0,
-    });
-    config.github_sources.push(crate::types::GitHubSourceConfig {
-        name: "source-b".to_string(),
-        repo: "org/b".to_string(),
-        enabled: true,
-        branch: "main".to_string(),
-        index_type: "github_api".to_string(),
-        index_path: String::new(),
-        skill_path_pattern: "skills/{slug}/SKILL.md".to_string(),
-        timeout_secs: 0,
-        max_size: 0,
-    });
+    config
+        .github_sources
+        .push(crate::types::GitHubSourceConfig {
+            name: "source-a".to_string(),
+            repo: "org/a".to_string(),
+            enabled: true,
+            branch: "main".to_string(),
+            index_type: "skills_json".to_string(),
+            index_path: "skills.json".to_string(),
+            skill_path_pattern: "skills/{slug}/SKILL.md".to_string(),
+            timeout_secs: 0,
+            max_size: 0,
+        });
+    config
+        .github_sources
+        .push(crate::types::GitHubSourceConfig {
+            name: "source-b".to_string(),
+            repo: "org/b".to_string(),
+            enabled: true,
+            branch: "main".to_string(),
+            index_type: "github_api".to_string(),
+            index_path: String::new(),
+            skill_path_pattern: "skills/{slug}/SKILL.md".to_string(),
+            timeout_secs: 0,
+            max_size: 0,
+        });
     let manager = RegistryManager::from_config(config);
     assert_eq!(manager.registries().len(), 2);
 }

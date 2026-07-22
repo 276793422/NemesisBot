@@ -12,8 +12,8 @@ use tracing::{info, warn};
 
 use crate::adapter::{self, Tool};
 use crate::client::{Client, McpClient};
-use crate::stdio_transport::StdioTransport;
 use crate::http_transport::HttpTransport;
+use crate::stdio_transport::StdioTransport;
 use crate::types::{McpTool, Resource, ServerConfig, ServerInfo};
 
 // ---------------------------------------------------------------------------
@@ -177,10 +177,14 @@ impl McpManager {
     /// `registered_tool_prefixes` contains the sanitized server-name prefixes
     /// of already-registered MCP tools (e.g., `["mcp_test_server_"]`).
     pub fn find_new_servers(&self, registered_tool_prefixes: &[String]) -> Vec<&ServerConfig> {
-        self.config.servers.iter().filter(|server| {
-            let prefix = format!("mcp_{}_", adapter::sanitize_name(&server.name));
-            !registered_tool_prefixes.contains(&prefix)
-        }).collect()
+        self.config
+            .servers
+            .iter()
+            .filter(|server| {
+                let prefix = format!("mcp_{}_", adapter::sanitize_name(&server.name));
+                !registered_tool_prefixes.contains(&prefix)
+            })
+            .collect()
     }
 
     // -----------------------------------------------------------------------
@@ -210,12 +214,18 @@ impl McpManager {
             Ok(Err(e)) => {
                 // Init failed — client dropped here, killing the subprocess
                 drop(client);
-                return Err(format!("MCP server '{}' initialization failed: {}", server.name, e));
+                return Err(format!(
+                    "MCP server '{}' initialization failed: {}",
+                    server.name, e
+                ));
             }
             Err(_) => {
                 // Timeout — client dropped here, killing the subprocess
                 drop(client);
-                return Err(format!("MCP server '{}' initialization timed out", server.name));
+                return Err(format!(
+                    "MCP server '{}' initialization timed out",
+                    server.name
+                ));
             }
         }
 

@@ -102,16 +102,22 @@ fn test_tool_stats_serialization() {
 #[test]
 fn test_experience_stats_with_tools() {
     let mut tool_counts = std::collections::HashMap::new();
-    tool_counts.insert("file_read".to_string(), ToolStats {
-        count: 5,
-        success_count: 5,
-        avg_duration_ms: 100.0,
-    });
-    tool_counts.insert("file_write".to_string(), ToolStats {
-        count: 3,
-        success_count: 2,
-        avg_duration_ms: 200.0,
-    });
+    tool_counts.insert(
+        "file_read".to_string(),
+        ToolStats {
+            count: 5,
+            success_count: 5,
+            avg_duration_ms: 100.0,
+        },
+    );
+    tool_counts.insert(
+        "file_write".to_string(),
+        ToolStats {
+            count: 3,
+            success_count: 2,
+            avg_duration_ms: 200.0,
+        },
+    );
 
     let stats = ExperienceStats {
         total_count: 8,
@@ -123,7 +129,10 @@ fn test_experience_stats_with_tools() {
 
     assert_eq!(stats.tool_counts.len(), 2);
     assert_eq!(stats.tool_counts.get("file_read").unwrap().count, 5);
-    assert_eq!(stats.tool_counts.get("file_write").unwrap().success_count, 2);
+    assert_eq!(
+        stats.tool_counts.get("file_write").unwrap().success_count,
+        2
+    );
 }
 
 #[test]
@@ -244,21 +253,30 @@ fn test_experience_stats_large_values() {
 #[test]
 fn test_tool_stats_multiple_tools() {
     let mut tool_counts = std::collections::HashMap::new();
-    tool_counts.insert("file_read".to_string(), ToolStats {
-        count: 100,
-        success_count: 98,
-        avg_duration_ms: 15.5,
-    });
-    tool_counts.insert("file_write".to_string(), ToolStats {
-        count: 50,
-        success_count: 45,
-        avg_duration_ms: 25.0,
-    });
-    tool_counts.insert("exec".to_string(), ToolStats {
-        count: 20,
-        success_count: 15,
-        avg_duration_ms: 500.0,
-    });
+    tool_counts.insert(
+        "file_read".to_string(),
+        ToolStats {
+            count: 100,
+            success_count: 98,
+            avg_duration_ms: 15.5,
+        },
+    );
+    tool_counts.insert(
+        "file_write".to_string(),
+        ToolStats {
+            count: 50,
+            success_count: 45,
+            avg_duration_ms: 25.0,
+        },
+    );
+    tool_counts.insert(
+        "exec".to_string(),
+        ToolStats {
+            count: 20,
+            success_count: 15,
+            avg_duration_ms: 500.0,
+        },
+    );
     let stats = ExperienceStats {
         total_count: 170,
         success_count: 158,
@@ -377,8 +395,14 @@ fn test_collected_experience_equality_by_value() {
         timestamp: "2026-01-01T00:00:00Z".into(),
         session_key: "s".into(),
     };
-    let ce1 = CollectedExperience { experience: exp.clone(), dedup_hash: "h".into() };
-    let ce2 = CollectedExperience { experience: exp, dedup_hash: "h".into() };
+    let ce1 = CollectedExperience {
+        experience: exp.clone(),
+        dedup_hash: "h".into(),
+    };
+    let ce2 = CollectedExperience {
+        experience: exp,
+        dedup_hash: "h".into(),
+    };
     assert_eq!(ce1.dedup_hash, ce2.dedup_hash);
     assert_eq!(ce1.experience.id, ce2.experience.id);
 }
@@ -395,7 +419,7 @@ fn test_artifact_status_variants() {
         ArtifactStatus::Archived,
     ];
     for i in 0..statuses.len() {
-        for j in (i+1)..statuses.len() {
+        for j in (i + 1)..statuses.len() {
             assert_ne!(statuses[i], statuses[j]);
         }
     }
@@ -404,13 +428,9 @@ fn test_artifact_status_variants() {
 #[test]
 fn test_artifact_kind_variants() {
     use nemesis_types::forge::ArtifactKind;
-    let kinds = [
-        ArtifactKind::Skill,
-        ArtifactKind::Script,
-        ArtifactKind::Mcp,
-    ];
+    let kinds = [ArtifactKind::Skill, ArtifactKind::Script, ArtifactKind::Mcp];
     for i in 0..kinds.len() {
-        for j in (i+1)..kinds.len() {
+        for j in (i + 1)..kinds.len() {
             assert_ne!(kinds[i], kinds[j]);
         }
     }

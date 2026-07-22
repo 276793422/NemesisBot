@@ -37,13 +37,15 @@ impl EventHub {
 
     /// Subscribe to events. Returns a receiver.
     pub fn subscribe(&self) -> broadcast::Receiver<Event> {
-        self.subscriber_count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        self.subscriber_count
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         self.sender.subscribe()
     }
 
     /// Unsubscribe (decrement counter).
     pub fn unsubscribe(&self) {
-        self.subscriber_count.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+        self.subscriber_count
+            .fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
     }
 
     /// Publish an event to all subscribers.
@@ -58,7 +60,8 @@ impl EventHub {
 
     /// Get the number of active subscribers.
     pub fn subscriber_count(&self) -> usize {
-        self.subscriber_count.load(std::sync::atomic::Ordering::SeqCst)
+        self.subscriber_count
+            .load(std::sync::atomic::Ordering::SeqCst)
     }
 }
 

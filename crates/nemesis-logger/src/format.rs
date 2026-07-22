@@ -13,10 +13,10 @@ use std::io;
 use std::sync::Arc;
 
 use parking_lot::Mutex;
-use tracing_subscriber::fmt::format::Writer;
-use tracing_subscriber::fmt::{FormatEvent, FormatFields, FmtContext};
-use tracing_subscriber::registry::LookupSpan;
 use tracing::{Event, Subscriber};
+use tracing_subscriber::fmt::format::Writer;
+use tracing_subscriber::fmt::{FmtContext, FormatEvent, FormatFields};
+use tracing_subscriber::registry::LookupSpan;
 
 // ---------------------------------------------------------------------------
 // GoStyleFormatter

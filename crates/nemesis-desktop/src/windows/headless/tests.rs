@@ -1,5 +1,5 @@
-use super::*;
 use super::super::window_base::WindowData;
+use super::*;
 use std::collections::HashMap;
 
 fn make_approval_data() -> ApprovalWindowData {

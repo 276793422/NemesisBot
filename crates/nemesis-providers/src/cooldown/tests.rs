@@ -66,7 +66,10 @@ fn test_tracker_failure_count_by_reason() {
     tracker.mark_failure("openai", FailoverReason::RateLimit);
     tracker.mark_failure("openai", FailoverReason::Timeout);
 
-    assert_eq!(tracker.failure_count("openai", FailoverReason::RateLimit), 2);
+    assert_eq!(
+        tracker.failure_count("openai", FailoverReason::RateLimit),
+        2
+    );
     assert_eq!(tracker.failure_count("openai", FailoverReason::Timeout), 1);
     assert_eq!(tracker.error_count("openai"), 3);
 }
@@ -136,7 +139,10 @@ fn test_tracker_error_count_no_failure() {
 #[test]
 fn test_tracker_failure_count_no_failure() {
     let tracker = CooldownTracker::new();
-    assert_eq!(tracker.failure_count("unknown", FailoverReason::RateLimit), 0);
+    assert_eq!(
+        tracker.failure_count("unknown", FailoverReason::RateLimit),
+        0
+    );
 }
 
 #[test]
@@ -207,7 +213,9 @@ fn test_billing_cooldown_zero_errors() {
 fn test_tracker_with_custom_clock() {
     struct FrozenClock(std::time::Instant);
     impl Clock for FrozenClock {
-        fn now(&self) -> std::time::Instant { self.0 }
+        fn now(&self) -> std::time::Instant {
+            self.0
+        }
     }
     let now = std::time::Instant::now();
     let tracker = CooldownTracker::with_clock(Arc::new(FrozenClock(now)));
@@ -222,10 +230,14 @@ fn test_tracker_failure_window_reset() {
         now: parking_lot::Mutex<std::time::Instant>,
     }
     impl Clock for MutableClock {
-        fn now(&self) -> std::time::Instant { *self.now.lock() }
+        fn now(&self) -> std::time::Instant {
+            *self.now.lock()
+        }
     }
     let base = std::time::Instant::now();
-    let clock = Arc::new(MutableClock { now: parking_lot::Mutex::new(base) });
+    let clock = Arc::new(MutableClock {
+        now: parking_lot::Mutex::new(base),
+    });
     let tracker = CooldownTracker::with_clock(clock.clone());
 
     // First failure

@@ -70,7 +70,9 @@ fn security_log_dir(workspace: &str) -> PathBuf {
 pub(crate) fn flatten_audit_entry(val: &serde_json::Value) -> serde_json::Value {
     let req = val.get("request");
     let raw_decision = val.get("decision").and_then(|v| v.as_str()).unwrap_or("");
-    let result = if raw_decision.to_lowercase().starts_with("allow") || raw_decision.eq_ignore_ascii_case("approved") {
+    let result = if raw_decision.to_lowercase().starts_with("allow")
+        || raw_decision.eq_ignore_ascii_case("approved")
+    {
         "allow"
     } else {
         "deny"
@@ -104,8 +106,8 @@ impl SecurityHandler {
         let path = security_config_path(workspace);
         let config = nemesis_config::load_security_config(&path)
             .map_err(|e| format!("failed to load security config: {}", e))?;
-        let json = serde_json::to_value(&config)
-            .map_err(|e| format!("failed to serialize: {}", e))?;
+        let json =
+            serde_json::to_value(&config).map_err(|e| format!("failed to serialize: {}", e))?;
         Ok(Some(json))
     }
 
@@ -178,10 +180,11 @@ impl SecurityHandler {
         }
 
         let mut total = 0usize;
-        let mut by_level: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+        let mut by_level: std::collections::HashMap<String, usize> =
+            std::collections::HashMap::new();
 
-        let read_dir = std::fs::read_dir(&log_dir)
-            .map_err(|e| format!("failed to read dir: {}", e))?;
+        let read_dir =
+            std::fs::read_dir(&log_dir).map_err(|e| format!("failed to read dir: {}", e))?;
         for entry in read_dir {
             let entry = entry.map_err(|e| format!("failed to read entry: {}", e))?;
             let path = entry.path();

@@ -12,8 +12,8 @@
 
 use super::*;
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, AtomicUsize};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicUsize};
 use std::time::{Duration, Instant};
 
 // ============================================================
@@ -33,14 +33,26 @@ fn test_content_type_for_css() {
 
 #[test]
 fn test_content_type_for_javascript_variants() {
-    assert_eq!(content_type_for("app.js"), "application/javascript; charset=utf-8");
-    assert_eq!(content_type_for("app.mjs"), "application/javascript; charset=utf-8");
+    assert_eq!(
+        content_type_for("app.js"),
+        "application/javascript; charset=utf-8"
+    );
+    assert_eq!(
+        content_type_for("app.mjs"),
+        "application/javascript; charset=utf-8"
+    );
 }
 
 #[test]
 fn test_content_type_for_json_and_xml() {
-    assert_eq!(content_type_for("data.json"), "application/json; charset=utf-8");
-    assert_eq!(content_type_for("data.xml"), "application/xml; charset=utf-8");
+    assert_eq!(
+        content_type_for("data.json"),
+        "application/json; charset=utf-8"
+    );
+    assert_eq!(
+        content_type_for("data.xml"),
+        "application/xml; charset=utf-8"
+    );
 }
 
 #[test]
@@ -75,12 +87,18 @@ fn test_content_type_for_fonts() {
 #[test]
 fn test_content_type_for_wasm_and_map() {
     assert_eq!(content_type_for("app.wasm"), "application/wasm");
-    assert_eq!(content_type_for("app.js.map"), "application/json; charset=utf-8");
+    assert_eq!(
+        content_type_for("app.js.map"),
+        "application/json; charset=utf-8"
+    );
 }
 
 #[test]
 fn test_content_type_for_unknown_returns_octet_stream() {
-    assert_eq!(content_type_for("file.unknownext"), "application/octet-stream");
+    assert_eq!(
+        content_type_for("file.unknownext"),
+        "application/octet-stream"
+    );
     assert_eq!(content_type_for("noext"), "application/octet-stream");
     assert_eq!(content_type_for(""), "application/octet-stream");
 }
@@ -88,7 +106,10 @@ fn test_content_type_for_unknown_returns_octet_stream() {
 #[test]
 fn test_content_type_for_normalizes_uppercase_extension() {
     assert_eq!(content_type_for("INDEX.HTML"), "text/html; charset=utf-8");
-    assert_eq!(content_type_for("App.JS"), "application/javascript; charset=utf-8");
+    assert_eq!(
+        content_type_for("App.JS"),
+        "application/javascript; charset=utf-8"
+    );
     assert_eq!(content_type_for("PHOTO.PNG"), "image/png");
 }
 
@@ -174,7 +195,10 @@ fn test_static_files_trait_list_files_with_mock() {
 
 #[tokio::test]
 async fn test_serve_embedded_static_exact_match_html() {
-    let files = make_mock_static(&[("index.html", "<html>hi</html>"), ("app.js", "console.log()")]);
+    let files = make_mock_static(&[
+        ("index.html", "<html>hi</html>"),
+        ("app.js", "console.log()"),
+    ]);
     let req: axum::extract::Request = axum::http::Request::builder()
         .uri("/index.html")
         .body(axum::body::Body::empty())
@@ -183,7 +207,10 @@ async fn test_serve_embedded_static_exact_match_html() {
     assert_eq!(resp.status(), 200);
     let ct = resp.headers().get(http::header::CONTENT_TYPE).unwrap();
     assert_eq!(ct.to_str().unwrap(), "text/html; charset=utf-8");
-    let allow = resp.headers().get(http::header::ACCESS_CONTROL_ALLOW_ORIGIN).unwrap();
+    let allow = resp
+        .headers()
+        .get(http::header::ACCESS_CONTROL_ALLOW_ORIGIN)
+        .unwrap();
     assert_eq!(allow.to_str().unwrap(), "*");
 }
 
@@ -197,7 +224,10 @@ async fn test_serve_embedded_static_with_origin_header() {
         .unwrap();
     let resp = serve_embedded_static(files, req).await;
     assert_eq!(resp.status(), 200);
-    let origin = resp.headers().get(http::header::ACCESS_CONTROL_ALLOW_ORIGIN).unwrap();
+    let origin = resp
+        .headers()
+        .get(http::header::ACCESS_CONTROL_ALLOW_ORIGIN)
+        .unwrap();
     assert_eq!(origin.to_str().unwrap(), "https://myapp.example");
 }
 
@@ -269,7 +299,12 @@ async fn test_serve_embedded_static_exact_match_javascript() {
         .unwrap();
     let resp = serve_embedded_static(files, req).await;
     assert_eq!(resp.status(), 200);
-    let ct = resp.headers().get(http::header::CONTENT_TYPE).unwrap().to_str().unwrap();
+    let ct = resp
+        .headers()
+        .get(http::header::CONTENT_TYPE)
+        .unwrap()
+        .to_str()
+        .unwrap();
     assert_eq!(ct, "application/javascript; charset=utf-8");
 }
 
@@ -279,7 +314,10 @@ async fn test_serve_embedded_static_exact_match_javascript() {
 
 #[tokio::test]
 async fn test_build_router_with_embedded_static_files_serves_index() {
-    let files = make_mock_static(&[("index.html", "<html>router</html>"), ("app.js", "console.log(1)")]);
+    let files = make_mock_static(&[
+        ("index.html", "<html>router</html>"),
+        ("app.js", "console.log(1)"),
+    ]);
     let config = WebServerConfig {
         static_files: Some(files),
         ..Default::default()
@@ -336,9 +374,15 @@ async fn test_build_router_embedded_static_options_preflight_with_origin() {
         .unwrap();
     let resp = app.oneshot(req).await.unwrap();
     assert_eq!(resp.status(), 204);
-    let origin = resp.headers().get(http::header::ACCESS_CONTROL_ALLOW_ORIGIN).unwrap();
+    let origin = resp
+        .headers()
+        .get(http::header::ACCESS_CONTROL_ALLOW_ORIGIN)
+        .unwrap();
     assert_eq!(origin.to_str().unwrap(), "https://example.org");
-    let methods = resp.headers().get(http::header::ACCESS_CONTROL_ALLOW_METHODS).unwrap();
+    let methods = resp
+        .headers()
+        .get(http::header::ACCESS_CONTROL_ALLOW_METHODS)
+        .unwrap();
     assert_eq!(methods.to_str().unwrap(), "GET, OPTIONS");
     let vary = resp.headers().get(http::header::VARY).unwrap();
     assert_eq!(vary.to_str().unwrap(), "Origin");
@@ -362,7 +406,10 @@ async fn test_build_router_embedded_static_options_preflight_without_origin() {
         .unwrap();
     let resp = app.oneshot(req).await.unwrap();
     assert_eq!(resp.status(), 204);
-    let origin = resp.headers().get(http::header::ACCESS_CONTROL_ALLOW_ORIGIN).unwrap();
+    let origin = resp
+        .headers()
+        .get(http::header::ACCESS_CONTROL_ALLOW_ORIGIN)
+        .unwrap();
     assert_eq!(origin.to_str().unwrap(), "*");
 }
 
@@ -392,7 +439,11 @@ async fn test_build_router_embedded_static_returns_404_for_missing_asset() {
 #[tokio::test]
 async fn test_build_router_static_dir_html_adds_charset_utf8() {
     let dir = tempfile::tempdir().unwrap();
-    std::fs::write(dir.path().join("index.html"), "<html><body>héllo wörld</body></html>").unwrap();
+    std::fs::write(
+        dir.path().join("index.html"),
+        "<html><body>héllo wörld</body></html>",
+    )
+    .unwrap();
     let config = WebServerConfig {
         static_dir: Some(dir.path().to_string_lossy().to_string()),
         ..Default::default()
@@ -407,7 +458,12 @@ async fn test_build_router_static_dir_html_adds_charset_utf8() {
         .unwrap();
     let resp = app.oneshot(req).await.unwrap();
     assert_eq!(resp.status(), 200);
-    let ct = resp.headers().get(http::header::CONTENT_TYPE).unwrap().to_str().unwrap();
+    let ct = resp
+        .headers()
+        .get(http::header::CONTENT_TYPE)
+        .unwrap()
+        .to_str()
+        .unwrap();
     assert!(ct.contains("text/html"), "got: {}", ct);
     assert!(ct.contains("charset=utf-8"), "got: {}", ct);
 }
@@ -430,7 +486,13 @@ async fn test_build_router_static_dir_css_adds_charset_utf8() {
         .unwrap();
     let resp = app.oneshot(req).await.unwrap();
     assert_eq!(resp.status(), 200);
-    let ct = resp.headers().get(http::header::CONTENT_TYPE).unwrap().to_str().unwrap().to_string();
+    let ct = resp
+        .headers()
+        .get(http::header::CONTENT_TYPE)
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .to_string();
     assert!(ct.contains("text/css"));
     assert!(ct.contains("charset=utf-8"));
 }
@@ -494,7 +556,12 @@ async fn test_sse_stream_returns_event_stream_content_type() {
         .unwrap();
     let resp = app.oneshot(req).await.unwrap();
     assert_eq!(resp.status(), 200);
-    let ct = resp.headers().get(http::header::CONTENT_TYPE).unwrap().to_str().unwrap();
+    let ct = resp
+        .headers()
+        .get(http::header::CONTENT_TYPE)
+        .unwrap()
+        .to_str()
+        .unwrap();
     assert!(ct.contains("text/event-stream"), "got: {}", ct);
 }
 
@@ -537,7 +604,11 @@ fn test_web_server_model_base_after_set_with_key() {
     let server = WebServer::new(config);
     server.set_model_info("test-model", "https://api.example.com", true);
     assert_eq!(*server.model_base.lock(), "https://api.example.com");
-    assert!(server.model_has_key.load(std::sync::atomic::Ordering::SeqCst));
+    assert!(
+        server
+            .model_has_key
+            .load(std::sync::atomic::Ordering::SeqCst)
+    );
 }
 
 #[test]
@@ -545,7 +616,11 @@ fn test_web_server_model_has_key_false_after_set() {
     let config = WebServerConfig::default();
     let server = WebServer::new(config);
     server.set_model_info("test-model", "https://api.example.com", false);
-    assert!(!server.model_has_key.load(std::sync::atomic::Ordering::SeqCst));
+    assert!(
+        !server
+            .model_has_key
+            .load(std::sync::atomic::Ordering::SeqCst)
+    );
 }
 
 // ============================================================
@@ -619,9 +694,7 @@ async fn test_start_with_shutdown_binds_and_serves_until_signal() {
     let server = WebServer::new(config);
     let (tx, rx) = tokio::sync::broadcast::channel::<()>(1);
 
-    let handle = tokio::spawn(async move {
-        server.start_with_shutdown(rx, None).await
-    });
+    let handle = tokio::spawn(async move { server.start_with_shutdown(rx, None).await });
 
     tokio::time::sleep(Duration::from_millis(200)).await;
     let _ = tx.send(());
@@ -635,7 +708,12 @@ async fn test_start_with_shutdown_binds_and_serves_until_signal() {
 // dispatch_outbound
 // ============================================================
 
-fn make_outbound(channel: &str, chat_id: &str, content: &str, message_type: &str) -> nemesis_types::channel::OutboundMessage {
+fn make_outbound(
+    channel: &str,
+    chat_id: &str,
+    content: &str,
+    message_type: &str,
+) -> nemesis_types::channel::OutboundMessage {
     nemesis_types::channel::OutboundMessage {
         channel: channel.to_string(),
         chat_id: chat_id.to_string(),
@@ -861,7 +939,8 @@ async fn test_process_messages_preserves_voice_playback_some() {
         content: "speak this".to_string(),
         metadata: HashMap::new(),
         voice_playback: Some(true),
-    }).unwrap();
+    })
+    .unwrap();
     drop(tx);
 
     process_messages(proc_rx, bus).await;
@@ -888,7 +967,8 @@ async fn test_process_messages_no_voice_playback_keeps_none() {
         content: "no voice".to_string(),
         metadata: HashMap::new(),
         voice_playback: None,
-    }).unwrap();
+    })
+    .unwrap();
     drop(tx);
 
     process_messages(proc_rx, bus).await;
@@ -1019,7 +1099,9 @@ async fn test_handle_health_includes_running_and_sessions_reflects_state() {
         cluster_service: None,
         cluster_log_dir: None,
         workflow_engine: None,
-        chat_secret_store: std::sync::Arc::new(nemesis_workflow::chat_secrets::ChatSecretStore::in_memory()),
+        chat_secret_store: std::sync::Arc::new(
+            nemesis_workflow::chat_secrets::ChatSecretStore::in_memory(),
+        ),
         webhook_rate_limiter: Arc::new(crate::handlers::workflow::WebhookRateLimiter::new()),
         internal_cmd_tx: None,
         estop: None,

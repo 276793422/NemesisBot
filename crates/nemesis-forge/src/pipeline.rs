@@ -8,9 +8,9 @@ use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 
-use nemesis_types::forge::{ArtifactKind, ArtifactStatus};
 use crate::config::ForgeConfig;
 use crate::registry::Registry;
+use nemesis_types::forge::{ArtifactKind, ArtifactStatus};
 
 /// Base validation stage result.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -133,7 +133,12 @@ impl Pipeline {
     }
 
     /// Async version of validate for use in async contexts.
-    pub async fn validate_async(&self, kind: ArtifactKind, name: &str, content: &str) -> ArtifactValidation {
+    pub async fn validate_async(
+        &self,
+        kind: ArtifactKind,
+        name: &str,
+        content: &str,
+    ) -> ArtifactValidation {
         let mut validation = ArtifactValidation {
             stage1_static: None,
             stage2_functional: None,
@@ -215,7 +220,12 @@ impl Pipeline {
         ArtifactStatus::Observing
     }
 
-    fn validate_static(&self, kind: ArtifactKind, _name: &str, content: &str) -> StaticValidationResult {
+    fn validate_static(
+        &self,
+        kind: ArtifactKind,
+        _name: &str,
+        content: &str,
+    ) -> StaticValidationResult {
         let mut errors = Vec::new();
         let mut warnings = Vec::new();
 
@@ -306,7 +316,12 @@ impl Pipeline {
     }
 
     /// Synchronous wrapper for evaluate_quality that blocks on the async LLM call.
-    fn evaluate_quality_sync(&self, kind: ArtifactKind, name: &str, content: &str) -> QualityValidationResult {
+    fn evaluate_quality_sync(
+        &self,
+        kind: ArtifactKind,
+        name: &str,
+        content: &str,
+    ) -> QualityValidationResult {
         // Try to use an existing tokio runtime, or fall back to a new one
         let future = self.evaluate_quality(kind, name, content);
         match tokio::runtime::Handle::try_current() {
@@ -329,7 +344,12 @@ impl Pipeline {
     /// When an LLM provider is configured, calls the LLM to evaluate the
     /// artifact on four dimensions (correctness, quality, security, reusability)
     /// and computes a weighted score. Without a provider, returns a default score.
-    async fn evaluate_quality(&self, kind: ArtifactKind, name: &str, content: &str) -> QualityValidationResult {
+    async fn evaluate_quality(
+        &self,
+        kind: ArtifactKind,
+        name: &str,
+        content: &str,
+    ) -> QualityValidationResult {
         let caller = self.llm_caller.read();
 
         match caller.as_ref() {
@@ -341,7 +361,8 @@ impl Pipeline {
                     ArtifactKind::Mcp => "mcp",
                 };
 
-                let system_prompt = "You are a code quality evaluator. Respond only with valid JSON.";
+                let system_prompt =
+                    "You are a code quality evaluator. Respond only with valid JSON.";
 
                 let user_prompt = format!(
                     "Evaluate the following Forge artifact for quality.\n\n\
@@ -411,7 +432,10 @@ impl Pipeline {
                                         passed: score >= min_score,
                                         timestamp: chrono::Local::now().to_rfc3339(),
                                         errors: if score < min_score {
-                                            vec![format!("Quality score {} below threshold {}", score, min_score)]
+                                            vec![format!(
+                                                "Quality score {} below threshold {}",
+                                                score, min_score
+                                            )]
                                         } else {
                                             vec![]
                                         },
@@ -427,7 +451,9 @@ impl Pipeline {
                                     stage: ValidationStage {
                                         passed: false,
                                         timestamp: chrono::Local::now().to_rfc3339(),
-                                        errors: vec!["Failed to parse LLM response as JSON".to_string()],
+                                        errors: vec![
+                                            "Failed to parse LLM response as JSON".to_string(),
+                                        ],
                                     },
                                     score: 0,
                                     notes: String::new(),

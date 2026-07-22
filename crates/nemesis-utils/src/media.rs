@@ -29,23 +29,41 @@ impl Default for DownloadOptions {
 /// Detect media type from file extension.
 pub fn detect_media_type(filename: &str) -> &str {
     let lower = filename.to_lowercase();
-    if lower.ends_with(".png") { "image/png" }
-    else if lower.ends_with(".jpg") || lower.ends_with(".jpeg") { "image/jpeg" }
-    else if lower.ends_with(".gif") { "image/gif" }
-    else if lower.ends_with(".webp") { "image/webp" }
-    else if lower.ends_with(".svg") { "image/svg+xml" }
-    else if lower.ends_with(".mp3") { "audio/mpeg" }
-    else if lower.ends_with(".wav") { "audio/wav" }
-    else if lower.ends_with(".ogg") { "audio/ogg" }
-    else if lower.ends_with(".m4a") { "audio/mp4" }
-    else if lower.ends_with(".flac") { "audio/flac" }
-    else if lower.ends_with(".aac") { "audio/aac" }
-    else if lower.ends_with(".wma") { "audio/x-ms-wma" }
-    else if lower.ends_with(".mp4") { "video/mp4" }
-    else if lower.ends_with(".webm") { "video/webm" }
-    else if lower.ends_with(".pdf") { "application/pdf" }
-    else if lower.ends_with(".json") { "application/json" }
-    else { "application/octet-stream" }
+    if lower.ends_with(".png") {
+        "image/png"
+    } else if lower.ends_with(".jpg") || lower.ends_with(".jpeg") {
+        "image/jpeg"
+    } else if lower.ends_with(".gif") {
+        "image/gif"
+    } else if lower.ends_with(".webp") {
+        "image/webp"
+    } else if lower.ends_with(".svg") {
+        "image/svg+xml"
+    } else if lower.ends_with(".mp3") {
+        "audio/mpeg"
+    } else if lower.ends_with(".wav") {
+        "audio/wav"
+    } else if lower.ends_with(".ogg") {
+        "audio/ogg"
+    } else if lower.ends_with(".m4a") {
+        "audio/mp4"
+    } else if lower.ends_with(".flac") {
+        "audio/flac"
+    } else if lower.ends_with(".aac") {
+        "audio/aac"
+    } else if lower.ends_with(".wma") {
+        "audio/x-ms-wma"
+    } else if lower.ends_with(".mp4") {
+        "video/mp4"
+    } else if lower.ends_with(".webm") {
+        "video/webm"
+    } else if lower.ends_with(".pdf") {
+        "application/pdf"
+    } else if lower.ends_with(".json") {
+        "application/json"
+    } else {
+        "application/octet-stream"
+    }
 }
 
 /// Check if a media type is an image.
@@ -92,19 +110,23 @@ pub fn sanitize_filename(filename: &str) -> String {
         .file_name()
         .map(|n| n.to_string_lossy().to_string())
         .unwrap_or_else(|| filename.to_string());
-    base.replace("..", "")
-        .replace('/', "_")
+    base.replace("..", "").replace('/', "_")
 }
 
 /// Download a file from a URL to a local temp directory.
 /// Returns the local file path or an error.
-pub async fn download_file(url: &str, filename: &str, timeout: std::time::Duration) -> Result<String, String> {
+pub async fn download_file(
+    url: &str,
+    filename: &str,
+    timeout: std::time::Duration,
+) -> Result<String, String> {
     let client = reqwest::Client::builder()
         .timeout(timeout)
         .build()
         .map_err(|e| format!("create client: {}", e))?;
 
-    let resp = client.get(url)
+    let resp = client
+        .get(url)
         .send()
         .await
         .map_err(|e| format!("download: {}", e))?;
@@ -113,20 +135,19 @@ pub async fn download_file(url: &str, filename: &str, timeout: std::time::Durati
         return Err(format!("HTTP {}", resp.status()));
     }
 
-    let bytes = resp.bytes()
+    let bytes = resp
+        .bytes()
         .await
         .map_err(|e| format!("read body: {}", e))?;
 
     let media_dir = std::env::temp_dir().join("nemesisbot_media");
-    std::fs::create_dir_all(&media_dir)
-        .map_err(|e| format!("mkdir: {}", e))?;
+    std::fs::create_dir_all(&media_dir).map_err(|e| format!("mkdir: {}", e))?;
 
     let safe_name = sanitize_filename(filename);
     let id = crate::string_utils::random_short_id();
     let local_path = media_dir.join(format!("{}_{}", id, safe_name));
 
-    std::fs::write(&local_path, &bytes)
-        .map_err(|e| format!("write: {}", e))?;
+    std::fs::write(&local_path, &bytes).map_err(|e| format!("write: {}", e))?;
 
     Ok(local_path.to_string_lossy().to_string())
 }
@@ -156,10 +177,7 @@ pub async fn download_file_with_opts(url: &str, filename: &str, opts: DownloadOp
         &opts.logger_prefix
     };
 
-    let client = match reqwest::Client::builder()
-        .timeout(timeout)
-        .build()
-    {
+    let client = match reqwest::Client::builder().timeout(timeout).build() {
         Ok(c) => c,
         Err(e) => {
             tracing::error!(prefix = logger_prefix, error = %e, "Failed to create download client");

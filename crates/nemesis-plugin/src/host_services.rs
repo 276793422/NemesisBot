@@ -38,11 +38,8 @@ pub struct HostServices {
     /// 获取 plugin 专属数据目录路径 (如 workspace/plugins/plugin-onnx/)。
     /// host 保证目录存在（自动创建）。
     /// 返回写入字节数（不含 \\0），负数为错误码。
-    pub get_plugin_data_dir: Option<extern "C" fn(
-        plugin_name: *const c_char,
-        buf: *mut c_char,
-        buf_len: usize,
-    ) -> i32>,
+    pub get_plugin_data_dir:
+        Option<extern "C" fn(plugin_name: *const c_char, buf: *mut c_char, buf_len: usize) -> i32>,
 
     /// 获取 plugin 专属配置目录路径 (如 workspace/config/plugins/)。
     /// 返回写入字节数（不含 \\0），负数为错误码。
@@ -57,10 +54,7 @@ pub struct HostServices {
 
     /// 同步下载文件。host 负责重试、重定向、代理。
     /// 返回 0=成功, 负数=错误。
-    pub download_file: Option<extern "C" fn(
-        url: *const c_char,
-        dest_path: *const c_char,
-    ) -> i32>,
+    pub download_file: Option<extern "C" fn(url: *const c_char, dest_path: *const c_char) -> i32>,
 
     // ---- 内存管理 ----
     /// 释放 host 分配的字符串内存。
@@ -73,14 +67,16 @@ pub struct HostServices {
     /// out_rgba_len: 输出缓冲区大小（字节）
     /// out_width/out_height: 写入图像尺寸
     /// 返回: 0=成功, 负数=错误（-1=参数无效, -2=解码失败, -3=缓冲区不足）
-    pub decode_png: Option<extern "C" fn(
-        png_data: *const u8,
-        png_len: usize,
-        out_rgba: *mut u8,
-        out_rgba_len: usize,
-        out_width: *mut u32,
-        out_height: *mut u32,
-    ) -> i32>,
+    pub decode_png: Option<
+        extern "C" fn(
+            png_data: *const u8,
+            png_len: usize,
+            out_rgba: *mut u8,
+            out_rgba_len: usize,
+            out_width: *mut u32,
+            out_height: *mut u32,
+        ) -> i32,
+    >,
 }
 
 // ---------------------------------------------------------------------------
@@ -106,15 +102,18 @@ static CONFIG_DIR_PTR: OnceLock<StaticPtr> = OnceLock::new();
 pub fn build_host_services(workspace_dir: &Path) -> HostServices {
     // Store workspace dir (leaked CString — valid for process lifetime)
     let ws_cstring = std::ffi::CString::new(
-        workspace_dir.to_str().expect("workspace path is valid UTF-8")
-    ).expect("no null bytes in workspace path");
+        workspace_dir
+            .to_str()
+            .expect("workspace path is valid UTF-8"),
+    )
+    .expect("no null bytes in workspace path");
     let _ = WORKSPACE_DIR_PTR.set(StaticPtr(ws_cstring.into_raw()));
 
     // Store config dir: workspace/config/plugins/
     let config_dir = workspace_dir.join("config").join("plugins");
-    let config_cstring = std::ffi::CString::new(
-        config_dir.to_str().expect("config path is valid UTF-8")
-    ).expect("no null bytes in config path");
+    let config_cstring =
+        std::ffi::CString::new(config_dir.to_str().expect("config path is valid UTF-8"))
+            .expect("no null bytes in config path");
     let _ = CONFIG_DIR_PTR.set(StaticPtr(config_cstring.into_raw()));
 
     HostServices {
@@ -151,12 +150,18 @@ extern "C" fn host_log(level: i32, tag: *const c_char, msg: *const c_char) {
 // ---- Path implementations ----
 
 extern "C" fn host_get_workspace_dir(buf: *mut c_char, buf_len: usize) -> i32 {
-    let ptr = WORKSPACE_DIR_PTR.get().map(|s| s.0).unwrap_or(std::ptr::null_mut());
+    let ptr = WORKSPACE_DIR_PTR
+        .get()
+        .map(|s| s.0)
+        .unwrap_or(std::ptr::null_mut());
     write_cstr_to_buf(ptr, buf, buf_len)
 }
 
 extern "C" fn host_get_plugin_config_dir(buf: *mut c_char, buf_len: usize) -> i32 {
-    let ptr = CONFIG_DIR_PTR.get().map(|s| s.0).unwrap_or(std::ptr::null_mut());
+    let ptr = CONFIG_DIR_PTR
+        .get()
+        .map(|s| s.0)
+        .unwrap_or(std::ptr::null_mut());
     write_cstr_to_buf(ptr, buf, buf_len)
 }
 
@@ -169,11 +174,16 @@ extern "C" fn host_get_plugin_data_dir(
         return -1;
     }
     let plugin = unsafe { CStr::from_ptr(plugin_name) }.to_string_lossy();
-    let ws_ptr = WORKSPACE_DIR_PTR.get().map(|s| s.0).unwrap_or(std::ptr::null_mut());
+    let ws_ptr = WORKSPACE_DIR_PTR
+        .get()
+        .map(|s| s.0)
+        .unwrap_or(std::ptr::null_mut());
     let ws = if ws_ptr.is_null() {
         return -2;
     } else {
-        unsafe { CStr::from_ptr(ws_ptr) }.to_string_lossy().to_string()
+        unsafe { CStr::from_ptr(ws_ptr) }
+            .to_string_lossy()
+            .to_string()
     };
 
     let data_dir = Path::new(&*ws).join("plugins").join(&*plugin);
@@ -231,7 +241,9 @@ extern "C" fn host_download_file(url: *const c_char, dest_path: *const c_char) -
 
 extern "C" fn host_free_string(ptr: *mut c_char) {
     if !ptr.is_null() {
-        unsafe { let _ = std::ffi::CString::from_raw(ptr); }
+        unsafe {
+            let _ = std::ffi::CString::from_raw(ptr);
+        }
     }
 }
 
@@ -295,7 +307,9 @@ unsafe impl Send for TrayCallbacks {}
 unsafe impl Sync for TrayCallbacks {}
 impl Copy for TrayCallbacks {}
 impl Clone for TrayCallbacks {
-    fn clone(&self) -> Self { *self }
+    fn clone(&self) -> Self {
+        *self
+    }
 }
 
 #[cfg(test)]

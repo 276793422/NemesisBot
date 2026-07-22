@@ -12,14 +12,14 @@
 
 #[cfg(test)]
 mod memory_extra_tests {
-    use crate::handlers::memory::MemoryHandler;
     use crate::api_handlers::AppState;
     use crate::events::EventHub;
+    use crate::handlers::memory::MemoryHandler;
     use crate::session::SessionManager;
     use crate::ws_router::{ModuleHandler, RequestContext};
     use std::path::Path;
-    use std::sync::atomic::{AtomicBool, AtomicUsize};
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, AtomicUsize};
     use std::time::Instant;
 
     // -----------------------------------------------------------------------
@@ -53,7 +53,9 @@ mod memory_extra_tests {
             cluster_service: None,
             cluster_log_dir: None,
             workflow_engine: None,
-            chat_secret_store: std::sync::Arc::new(nemesis_workflow::chat_secrets::ChatSecretStore::in_memory()),
+            chat_secret_store: std::sync::Arc::new(
+                nemesis_workflow::chat_secrets::ChatSecretStore::in_memory(),
+            ),
             webhook_rate_limiter: Arc::new(crate::handlers::workflow::WebhookRateLimiter::new()),
             internal_cmd_tx: None,
             estop: None,
@@ -95,7 +97,9 @@ mod memory_extra_tests {
             cluster_service: None,
             cluster_log_dir: None,
             workflow_engine: None,
-            chat_secret_store: std::sync::Arc::new(nemesis_workflow::chat_secrets::ChatSecretStore::in_memory()),
+            chat_secret_store: std::sync::Arc::new(
+                nemesis_workflow::chat_secrets::ChatSecretStore::in_memory(),
+            ),
             webhook_rate_limiter: Arc::new(crate::handlers::workflow::WebhookRateLimiter::new()),
             internal_cmd_tx: None,
             estop: None,
@@ -132,7 +136,11 @@ mod memory_extra_tests {
         let handler = MemoryHandler;
         let ctx = make_ctx(&dir);
 
-        let result = handler.handle_cmd("stats", None, &ctx).await.unwrap().unwrap();
+        let result = handler
+            .handle_cmd("stats", None, &ctx)
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(result["memory_entries"], 0);
         assert_eq!(result["episodic_sessions"], 0);
         assert_eq!(result["episodic_episodes"], 0);
@@ -152,11 +160,7 @@ mod memory_extra_tests {
         std::fs::create_dir_all(&vector_dir).unwrap();
         // Two JSONL entries (one empty line ignored)
         let jsonl = vector_dir.join("vector_store.jsonl");
-        std::fs::write(
-            &jsonl,
-            "{\"content\":\"a\"}\n{\"content\":\"b\"}\n\n",
-        )
-        .unwrap();
+        std::fs::write(&jsonl, "{\"content\":\"a\"}\n{\"content\":\"b\"}\n\n").unwrap();
 
         // Episodic: one session dir with two episodes
         let sess = mem_dir.join("episodic").join("s1");
@@ -173,7 +177,11 @@ mod memory_extra_tests {
 
     async fn handler_stats(ctx: &RequestContext) -> serde_json::Value {
         let handler = MemoryHandler;
-        handler.handle_cmd("stats", None, ctx).await.unwrap().unwrap()
+        handler
+            .handle_cmd("stats", None, ctx)
+            .await
+            .unwrap()
+            .unwrap()
     }
 
     // -----------------------------------------------------------------------
@@ -205,10 +213,7 @@ mod memory_extra_tests {
         let long = "x".repeat(300);
         std::fs::write(
             &jsonl,
-            format!(
-                "{{\"content\":\"first\"}}\n{{\"content\":\"{}\"}}\n",
-                long
-            ),
+            format!("{{\"content\":\"first\"}}\n{{\"content\":\"{}\"}}\n", long),
         )
         .unwrap();
 
@@ -696,9 +701,7 @@ mod memory_extra_tests {
         let ctx = make_ctx(&dir);
         // data present but missing "query" field
         let data = serde_json::json!({ "foo": "bar" });
-        let result = handler
-            .handle_cmd("entries.search", Some(data), &ctx)
-            .await;
+        let result = handler.handle_cmd("entries.search", Some(data), &ctx).await;
         assert!(result.is_err());
         assert_eq!(result.unwrap_err(), "missing field: query");
     }
@@ -709,9 +712,7 @@ mod memory_extra_tests {
         let handler = MemoryHandler;
         let ctx = make_ctx(&dir);
         let data = serde_json::json!({ "notier": "x" });
-        let result = handler
-            .handle_cmd("model.install", Some(data), &ctx)
-            .await;
+        let result = handler.handle_cmd("model.install", Some(data), &ctx).await;
         assert!(result.is_err());
         assert_eq!(result.unwrap_err(), "missing field: tier");
     }

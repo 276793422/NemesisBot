@@ -14,17 +14,17 @@
 //! - `session` — Session management with DashMap
 //! - `websocket_handler` — WebSocket connection handling, send queue, message dispatch
 
-pub mod llm_bridge;
-pub mod server;
-pub mod conv_router;
 pub mod api_handlers;
 pub mod api_usage;
+pub mod conv_router;
 pub mod cors;
 pub mod events;
 pub mod handlers;
 pub mod history;
 pub mod internal;
+pub mod llm_bridge;
 pub mod protocol;
+pub mod server;
 pub mod session;
 pub mod sse_chat;
 pub mod websocket_handler;
@@ -34,24 +34,24 @@ pub mod workflow_chat;
 pub mod workflow_chat_reply_observer;
 pub mod ws_router;
 
+pub use conv_router::ConvRouter;
+pub use conv_router::SharedConvRouter;
+pub use cors::CORSConfig;
+pub use cors::CORSManager;
 pub use events::EventHub;
 #[cfg(feature = "forge")]
 pub use llm_bridge::ForgeProviderBridge;
 pub use llm_bridge::ProviderAdapter;
 pub use protocol::ProtocolMessage;
-pub use session::SessionManager;
-pub use conv_router::ConvRouter;
-pub use conv_router::SharedConvRouter;
+pub use server::DirectoryStaticFiles;
+pub use server::StaticFiles;
 pub use server::WebServer;
 pub use server::WebServerConfig;
-pub use server::StaticFiles;
-pub use server::DirectoryStaticFiles;
+pub use session::SessionManager;
 pub use websocket_handler::IncomingMessage;
-pub use ws_router::WsRouter;
 pub use ws_router::ModuleHandler;
 pub use ws_router::RequestContext;
-pub use cors::CORSConfig;
-pub use cors::CORSManager;
+pub use ws_router::WsRouter;
 
 // Previously-written extra coverage modules for the top-level handlers were
 // never `mod`-declared, so they did not compile or run.

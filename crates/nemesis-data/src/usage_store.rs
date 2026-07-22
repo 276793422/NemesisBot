@@ -3,7 +3,7 @@
 use std::path::Path;
 use std::sync::Mutex;
 
-use rusqlite::{params, Connection};
+use rusqlite::{Connection, params};
 
 use crate::db;
 use crate::models::{RequestLog, TrendPoint, UsageSummary};
@@ -92,8 +92,7 @@ impl DataStore {
         // Anthropic: cache_creation = write tokens, cache_read = read tokens
         //   correct formula: cache_read / (cache_creation + cache_read)
         // Both simplify to: hits / (hits + misses)
-        let cacheable = summary.total_cache_creation_tokens
-            + summary.total_cache_read_tokens;
+        let cacheable = summary.total_cache_creation_tokens + summary.total_cache_read_tokens;
         let cache_hit_rate = if cacheable > 0 {
             summary.total_cache_read_tokens as f64 / cacheable as f64
         } else {
@@ -116,7 +115,8 @@ impl DataStore {
         let conn = self.conn.lock().map_err(|e| e.to_string())?;
 
         let sql = match group_by {
-            "hour" => r#"
+            "hour" => {
+                r#"
                 SELECT
                     strftime('%Y-%m-%dT%H:00:00', created_at, 'unixepoch') as label,
                     (created_at / 3600) * 3600 as ts,
@@ -128,8 +128,10 @@ impl DataStore {
                     COALESCE(SUM(total_cost_usd), 0.0)
                 FROM request_logs
                 WHERE created_at >= ?1 AND created_at < ?2
-                GROUP BY ts ORDER BY ts"#,
-            "day" | _ => r#"
+                GROUP BY ts ORDER BY ts"#
+            }
+            "day" | _ => {
+                r#"
                 SELECT
                     strftime('%Y-%m-%d', created_at, 'unixepoch') as label,
                     (created_at / 86400) * 86400 as ts,
@@ -141,7 +143,8 @@ impl DataStore {
                     COALESCE(SUM(total_cost_usd), 0.0)
                 FROM request_logs
                 WHERE created_at >= ?1 AND created_at < ?2
-                GROUP BY ts ORDER BY ts"#,
+                GROUP BY ts ORDER BY ts"#
+            }
         };
 
         let mut stmt = conn
@@ -201,27 +204,24 @@ impl DataStore {
             .map_err(|e| format!("prepare logs: {e}"))?;
 
         let logs = stmt
-            .query_map(
-                params![start_ts, end_ts, page_size, offset],
-                |row| {
-                    Ok(RequestLog {
-                        id: row.get(0)?,
-                        trace_id: row.get(1)?,
-                        model: row.get(2)?,
-                        provider_type: row.get(3)?,
-                        input_tokens: row.get(4)?,
-                        output_tokens: row.get(5)?,
-                        cache_creation_tokens: row.get(6)?,
-                        cache_read_tokens: row.get(7)?,
-                        total_cost_usd: row.get(8)?,
-                        latency_ms: row.get(9)?,
-                        status_code: row.get(10)?,
-                        error_message: row.get(11)?,
-                        is_streaming: row.get::<_, i32>(12)? != 0,
-                        created_at: row.get(13)?,
-                    })
-                },
-            )
+            .query_map(params![start_ts, end_ts, page_size, offset], |row| {
+                Ok(RequestLog {
+                    id: row.get(0)?,
+                    trace_id: row.get(1)?,
+                    model: row.get(2)?,
+                    provider_type: row.get(3)?,
+                    input_tokens: row.get(4)?,
+                    output_tokens: row.get(5)?,
+                    cache_creation_tokens: row.get(6)?,
+                    cache_read_tokens: row.get(7)?,
+                    total_cost_usd: row.get(8)?,
+                    latency_ms: row.get(9)?,
+                    status_code: row.get(10)?,
+                    error_message: row.get(11)?,
+                    is_streaming: row.get::<_, i32>(12)? != 0,
+                    created_at: row.get(13)?,
+                })
+            })
             .map_err(|e| format!("query_logs: {e}"))?
             .filter_map(|r| r.ok())
             .collect();

@@ -15,7 +15,7 @@ use std::time::Duration;
 
 use nemesis_agent::context::RequestContext;
 use nemesis_agent::r#loop::Tool;
-use nemesis_agent::{register_default_tools, ExecutorChannel, RemoteExecutorTool};
+use nemesis_agent::{ExecutorChannel, RemoteExecutorTool, register_default_tools};
 
 /// Path to the built nemesisbot binary. `CARGO_BIN_EXE_nemesisbot` is injected
 /// by cargo for integration tests in this package and always points at the
@@ -64,9 +64,7 @@ fn sandbox_home() -> PathBuf {
     if dev_home.is_dir() {
         return dev_home;
     }
-    dirs::home_dir()
-        .expect("home dir")
-        .join(".nemesisbot")
+    dirs::home_dir().expect("home dir").join(".nemesisbot")
 }
 
 /// Wait for the Sandboxie box session to quiesce. Sandboxie serializes box
@@ -82,7 +80,11 @@ async fn settle_sandbox_box() {
 
 #[tokio::test]
 async fn spawn_and_call_sleep_round_trips() {
-    let ch = Arc::new(ExecutorChannel::new(nemesisbot_exe(), workspace(), Arc::new(|| false)));
+    let ch = Arc::new(ExecutorChannel::new(
+        nemesisbot_exe(),
+        workspace(),
+        Arc::new(|| false),
+    ));
     let res = ch
         .spawn_and_call("sleep", r#"{"seconds":1}"#, &ctx())
         .await
@@ -92,7 +94,11 @@ async fn spawn_and_call_sleep_round_trips() {
 
 #[tokio::test]
 async fn spawn_and_call_exec_runs_command() {
-    let ch = Arc::new(ExecutorChannel::new(nemesisbot_exe(), workspace(), Arc::new(|| false)));
+    let ch = Arc::new(ExecutorChannel::new(
+        nemesisbot_exe(),
+        workspace(),
+        Arc::new(|| false),
+    ));
     let res = ch
         .spawn_and_call("exec", r#"{"command":"echo executor-integration"}"#, &ctx())
         .await
@@ -105,7 +111,11 @@ async fn spawn_and_call_exec_runs_command() {
 
 #[tokio::test]
 async fn spawn_and_call_unknown_tool_errors() {
-    let ch = Arc::new(ExecutorChannel::new(nemesisbot_exe(), workspace(), Arc::new(|| false)));
+    let ch = Arc::new(ExecutorChannel::new(
+        nemesisbot_exe(),
+        workspace(),
+        Arc::new(|| false),
+    ));
     let err = ch
         .spawn_and_call("definitely_not_a_tool", "{}", &ctx())
         .await
@@ -115,7 +125,11 @@ async fn spawn_and_call_unknown_tool_errors() {
 
 #[tokio::test]
 async fn spawn_and_call_file_write_then_read_round_trips() {
-    let ch = Arc::new(ExecutorChannel::new(nemesisbot_exe(), workspace(), Arc::new(|| false)));
+    let ch = Arc::new(ExecutorChannel::new(
+        nemesisbot_exe(),
+        workspace(),
+        Arc::new(|| false),
+    ));
     // Unique temp file to avoid parallel-test collisions.
     let path = std::env::temp_dir().join(format!("executor_test_{}.txt", std::process::id()));
     let write_args = format!(
@@ -154,7 +168,10 @@ async fn spawn_and_call_via_pipe_round_trips() {
         .spawn_and_call("sleep", r#"{"seconds":1}"#, &ctx())
         .await
         .expect("pipe round-trip should succeed");
-    assert!(res.contains("Slept"), "unexpected sleep result via pipe: {res}");
+    assert!(
+        res.contains("Slept"),
+        "unexpected sleep result via pipe: {res}"
+    );
 }
 
 #[cfg(windows)]
@@ -211,10 +228,8 @@ async fn spawn_and_call_via_startexe_isolates_outside_workspace_write() {
     settle_sandbox_box().await;
 
     // A path OUTSIDE the workspace, unique per test run, clean slate.
-    let outside = std::env::temp_dir().join(format!(
-        "nemesis_isolation_{}.txt",
-        std::process::id()
-    ));
+    let outside =
+        std::env::temp_dir().join(format!("nemesis_isolation_{}.txt", std::process::id()));
     let _ = std::fs::remove_file(&outside);
 
     let ch = Arc::new(
@@ -264,9 +279,13 @@ async fn l23_pending_commit_brings_boxed_workspace_write_to_real_disk() {
     let _ = std::fs::remove_file(&target); // clean slate on real disk
 
     let ch = Arc::new(
-        ExecutorChannel::new(nemesisbot_exe(), workspace.to_string_lossy().to_string(), Arc::new(|| true))
-            .with_start_exe(start_exe.clone())
-            .with_timeout(Duration::from_secs(30)),
+        ExecutorChannel::new(
+            nemesisbot_exe(),
+            workspace.to_string_lossy().to_string(),
+            Arc::new(|| true),
+        )
+        .with_start_exe(start_exe.clone())
+        .with_timeout(Duration::from_secs(30)),
     );
     let args = format!(
         r#"{{"path":{:?},"content":"l23-commit-marker"}}"#,
@@ -292,7 +311,9 @@ async fn l23_pending_commit_brings_boxed_workspace_write_to_real_disk() {
     let up = dirs::home_dir().expect("home dir");
     let pending =
         nemesis_sandbox::pending::pending_workspace(&paths.box_root, &workspace, &up).unwrap();
-    let found = pending.iter().find(|p| p.real_path.ends_with("l23_test.txt"));
+    let found = pending
+        .iter()
+        .find(|p| p.real_path.ends_with("l23_test.txt"));
     assert!(
         found.is_some(),
         "pending should list l23_test.txt; got {} entries: {:?}",
@@ -325,13 +346,27 @@ fn remote_executor_tool_delegates_schema_byte_identically() {
     // wire), so prompt cache is preserved and the checkpoint safety net still
     // snapshots file writes. Captured before the local tool is moved in.
     let mut tools = register_default_tools();
-    let local = tools.remove("sleep").expect("sleep tool should be registered");
+    let local = tools
+        .remove("sleep")
+        .expect("sleep tool should be registered");
     let local_params = local.parameters();
     let local_desc = local.description();
 
-    let ch = Arc::new(ExecutorChannel::new(nemesisbot_exe(), workspace(), Arc::new(|| false)));
+    let ch = Arc::new(ExecutorChannel::new(
+        nemesisbot_exe(),
+        workspace(),
+        Arc::new(|| false),
+    ));
     let remote = RemoteExecutorTool::new("sleep".to_string(), local, ch);
 
-    assert_eq!(remote.parameters(), local_params, "parameters must delegate verbatim");
-    assert_eq!(remote.description(), local_desc, "description must delegate verbatim");
+    assert_eq!(
+        remote.parameters(),
+        local_params,
+        "parameters must delegate verbatim"
+    );
+    assert_eq!(
+        remote.description(),
+        local_desc,
+        "description must delegate verbatim"
+    );
 }

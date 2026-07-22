@@ -120,7 +120,11 @@ async fn file_store_get_recent_zero_defaults_to_ten() {
 
     for i in 0..15 {
         store
-            .append(Episode::new("sess-zerolim".into(), "user".into(), format!("m{}", i)))
+            .append(Episode::new(
+                "sess-zerolim".into(),
+                "user".into(),
+                format!("m{}", i),
+            ))
             .await
             .unwrap();
     }
@@ -135,7 +139,11 @@ async fn file_store_get_recent_more_than_total() {
     let store = FileEpisodicStore::new(dir.path());
 
     store
-        .append(Episode::new("sess-small".into(), "user".into(), "only one".into()))
+        .append(Episode::new(
+            "sess-small".into(),
+            "user".into(),
+            "only one".into(),
+        ))
         .await
         .unwrap();
 
@@ -149,15 +157,27 @@ async fn file_store_search_by_content() {
     let store = FileEpisodicStore::new(dir.path());
 
     store
-        .append(Episode::new("s1".into(), "user".into(), "The Eiffel Tower is in Paris".into()))
+        .append(Episode::new(
+            "s1".into(),
+            "user".into(),
+            "The Eiffel Tower is in Paris".into(),
+        ))
         .await
         .unwrap();
     store
-        .append(Episode::new("s2".into(), "user".into(), "The Colosseum is in Rome".into()))
+        .append(Episode::new(
+            "s2".into(),
+            "user".into(),
+            "The Colosseum is in Rome".into(),
+        ))
         .await
         .unwrap();
     store
-        .append(Episode::new("s3".into(), "user".into(), "Big Ben is in London".into()))
+        .append(Episode::new(
+            "s3".into(),
+            "user".into(),
+            "Big Ben is in London".into(),
+        ))
         .await
         .unwrap();
 
@@ -172,7 +192,11 @@ async fn file_store_search_case_insensitive() {
     let store = FileEpisodicStore::new(dir.path());
 
     store
-        .append(Episode::new("s1".into(), "user".into(), "RUST programming".into()))
+        .append(Episode::new(
+            "s1".into(),
+            "user".into(),
+            "RUST programming".into(),
+        ))
         .await
         .unwrap();
 
@@ -218,9 +242,18 @@ async fn file_store_session_count() {
     let dir = tempfile::tempdir().unwrap();
     let store = FileEpisodicStore::new(dir.path());
 
-    store.append(Episode::new("a".into(), "user".into(), "a".into())).await.unwrap();
-    store.append(Episode::new("b".into(), "user".into(), "b".into())).await.unwrap();
-    store.append(Episode::new("c".into(), "user".into(), "c".into())).await.unwrap();
+    store
+        .append(Episode::new("a".into(), "user".into(), "a".into()))
+        .await
+        .unwrap();
+    store
+        .append(Episode::new("b".into(), "user".into(), "b".into()))
+        .await
+        .unwrap();
+    store
+        .append(Episode::new("c".into(), "user".into(), "c".into()))
+        .await
+        .unwrap();
 
     let count = store.session_count().await.unwrap();
     assert_eq!(count, 3);
@@ -232,9 +265,19 @@ async fn file_store_episode_count() {
     let store = FileEpisodicStore::new(dir.path());
 
     for i in 0..5 {
-        store.append(Episode::new("s1".into(), "user".into(), format!("msg {}", i))).await.unwrap();
+        store
+            .append(Episode::new(
+                "s1".into(),
+                "user".into(),
+                format!("msg {}", i),
+            ))
+            .await
+            .unwrap();
     }
-    store.append(Episode::new("s2".into(), "user".into(), "other".into())).await.unwrap();
+    store
+        .append(Episode::new("s2".into(), "user".into(), "other".into()))
+        .await
+        .unwrap();
 
     let count = store.episode_count().await.unwrap();
     assert_eq!(count, 6);
@@ -252,7 +295,11 @@ async fn file_store_cleanup_old_episodes() {
 
     // Recent episode
     store
-        .append(Episode::new("s-recent".into(), "user".into(), "recent content".into()))
+        .append(Episode::new(
+            "s-recent".into(),
+            "user".into(),
+            "recent content".into(),
+        ))
         .await
         .unwrap();
 
@@ -303,7 +350,11 @@ async fn file_store_session_file_sanitization() {
 
     // Session key with special characters
     store
-        .append(Episode::new("sess/with:chars*?".into(), "user".into(), "sanitized".into()))
+        .append(Episode::new(
+            "sess/with:chars*?".into(),
+            "user".into(),
+            "sanitized".into(),
+        ))
         .await
         .unwrap();
 
@@ -323,7 +374,11 @@ async fn file_store_episodes_ordered_by_timestamp() {
         .await
         .unwrap();
     store
-        .append(Episode::new("s1".into(), "assistant".into(), "second".into()))
+        .append(Episode::new(
+            "s1".into(),
+            "assistant".into(),
+            "second".into(),
+        ))
         .await
         .unwrap();
     store
@@ -343,9 +398,30 @@ async fn file_store_multiple_roles() {
     let dir = tempfile::tempdir().unwrap();
     let store = FileEpisodicStore::new(dir.path());
 
-    store.append(Episode::new("s1".into(), "system".into(), "system prompt".into())).await.unwrap();
-    store.append(Episode::new("s1".into(), "user".into(), "user query".into())).await.unwrap();
-    store.append(Episode::new("s1".into(), "assistant".into(), "response".into())).await.unwrap();
+    store
+        .append(Episode::new(
+            "s1".into(),
+            "system".into(),
+            "system prompt".into(),
+        ))
+        .await
+        .unwrap();
+    store
+        .append(Episode::new(
+            "s1".into(),
+            "user".into(),
+            "user query".into(),
+        ))
+        .await
+        .unwrap();
+    store
+        .append(Episode::new(
+            "s1".into(),
+            "assistant".into(),
+            "response".into(),
+        ))
+        .await
+        .unwrap();
 
     let episodes = store.get_session("s1").await.unwrap();
     assert_eq!(episodes[0].role, "system");

@@ -12,8 +12,8 @@ use crate::types::*;
 use parking_lot::RwLock;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicI64, Ordering};
 
 // ---------------------------------------------------------------------------
 // Default deny patterns
@@ -57,13 +57,7 @@ pub static DEFAULT_DENY_PATTERNS: std::sync::LazyLock<HashMap<OperationType, Vec
                 r"C:\\Windows\\System32\\drivers\\etc\\hosts",
             ],
         );
-        m.insert(
-            OperationType::NetworkDownload,
-            vec![
-                r"file://",
-                r"ftp://",
-            ],
-        );
+        m.insert(OperationType::NetworkDownload, vec![r"file://", r"ftp://"]);
         m
     });
 
@@ -457,21 +451,32 @@ impl SecurityAuditor {
 
     /// Get all pending approval requests.
     pub fn get_pending_requests(&self) -> Vec<OperationRequest> {
-        self.active_requests
-            .read()
-            .values()
-            .cloned()
-            .collect()
+        self.active_requests.read().values().cloned().collect()
     }
 
     /// Get statistics as a HashMap of string keys to i64 values.
     pub fn statistics(&self) -> HashMap<String, i64> {
         let mut stats = HashMap::new();
-        stats.insert("total_events".to_string(), self.total_events.load(Ordering::SeqCst));
-        stats.insert("allowed".to_string(), self.allowed_count.load(Ordering::SeqCst));
-        stats.insert("denied".to_string(), self.denied_count.load(Ordering::SeqCst));
-        stats.insert("approved".to_string(), self.approved_count.load(Ordering::SeqCst));
-        stats.insert("pending".to_string(), self.pending_count.load(Ordering::SeqCst));
+        stats.insert(
+            "total_events".to_string(),
+            self.total_events.load(Ordering::SeqCst),
+        );
+        stats.insert(
+            "allowed".to_string(),
+            self.allowed_count.load(Ordering::SeqCst),
+        );
+        stats.insert(
+            "denied".to_string(),
+            self.denied_count.load(Ordering::SeqCst),
+        );
+        stats.insert(
+            "approved".to_string(),
+            self.approved_count.load(Ordering::SeqCst),
+        );
+        stats.insert(
+            "pending".to_string(),
+            self.pending_count.load(Ordering::SeqCst),
+        );
         stats
     }
 
@@ -481,14 +486,35 @@ impl SecurityAuditor {
     /// active request count, enabled status, and rule type count.
     pub fn get_statistics(&self) -> HashMap<String, serde_json::Value> {
         let mut stats = HashMap::new();
-        stats.insert("total_events".to_string(), serde_json::json!(self.total_events.load(Ordering::SeqCst)));
-        stats.insert("allowed".to_string(), serde_json::json!(self.allowed_count.load(Ordering::SeqCst)));
-        stats.insert("denied".to_string(), serde_json::json!(self.denied_count.load(Ordering::SeqCst)));
-        stats.insert("approved".to_string(), serde_json::json!(self.approved_count.load(Ordering::SeqCst)));
-        stats.insert("pending".to_string(), serde_json::json!(self.pending_count.load(Ordering::SeqCst)));
-        stats.insert("active_requests".to_string(), serde_json::json!(self.active_requests.read().len()));
+        stats.insert(
+            "total_events".to_string(),
+            serde_json::json!(self.total_events.load(Ordering::SeqCst)),
+        );
+        stats.insert(
+            "allowed".to_string(),
+            serde_json::json!(self.allowed_count.load(Ordering::SeqCst)),
+        );
+        stats.insert(
+            "denied".to_string(),
+            serde_json::json!(self.denied_count.load(Ordering::SeqCst)),
+        );
+        stats.insert(
+            "approved".to_string(),
+            serde_json::json!(self.approved_count.load(Ordering::SeqCst)),
+        );
+        stats.insert(
+            "pending".to_string(),
+            serde_json::json!(self.pending_count.load(Ordering::SeqCst)),
+        );
+        stats.insert(
+            "active_requests".to_string(),
+            serde_json::json!(self.active_requests.read().len()),
+        );
         stats.insert("enabled".to_string(), serde_json::json!(self.is_enabled()));
-        stats.insert("rule_types".to_string(), serde_json::json!(self.rules.read().len()));
+        stats.insert(
+            "rule_types".to_string(),
+            serde_json::json!(self.rules.read().len()),
+        );
         stats
     }
 
@@ -507,8 +533,7 @@ impl SecurityAuditor {
 
         // Write statistics as JSON
         let stats = self.get_statistics();
-        let content = serde_json::to_string_pretty(&stats)
-            .unwrap_or_else(|_| "{}".to_string());
+        let content = serde_json::to_string_pretty(&stats).unwrap_or_else(|_| "{}".to_string());
 
         std::fs::write(path, content)
             .map_err(|e| format!("failed to write audit log export: {}", e))?;
@@ -678,9 +703,7 @@ impl SecurityAuditor {
                 | OperationType::NetworkRequest => {
                     matcher::match_domain_pattern(&rule.pattern, &req.target)
                 }
-                _ => {
-                    rule.pattern == "*" || matcher::match_pattern(&rule.pattern, &req.target)
-                }
+                _ => rule.pattern == "*" || matcher::match_pattern(&rule.pattern, &req.target),
             };
 
             if matched {
@@ -963,10 +986,7 @@ pub async fn monitor_security_status(
 /// returns an empty vector.
 ///
 /// Equivalent to Go's `GetAuditLog()`.
-pub fn get_audit_log(
-    auditor: &SecurityAuditor,
-    filter: &AuditFilter,
-) -> Vec<AuditEvent> {
+pub fn get_audit_log(auditor: &SecurityAuditor, filter: &AuditFilter) -> Vec<AuditEvent> {
     let config = &auditor.config;
     if !config.audit_log_file_enabled {
         return Vec::new();

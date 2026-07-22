@@ -24,7 +24,9 @@ fn test_get_config_path_returns_a_path() {
 
 #[test]
 fn test_should_skip_heartbeat_nonexistent_dir() {
-    assert!(!should_skip_heartbeat_for_bootstrap(std::path::Path::new("/nonexistent/path")));
+    assert!(!should_skip_heartbeat_for_bootstrap(std::path::Path::new(
+        "/nonexistent/path"
+    )));
 }
 
 #[test]

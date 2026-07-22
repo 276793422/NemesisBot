@@ -38,7 +38,11 @@ impl Transcriber {
     pub fn new(api_key: &str) -> Self {
         Self {
             api_url: "https://api.groq.com/openai/v1".to_string(),
-            api_key: if api_key.is_empty() { None } else { Some(api_key.to_string()) },
+            api_key: if api_key.is_empty() {
+                None
+            } else {
+                Some(api_key.to_string())
+            },
             model: "whisper-large-v3".to_string(),
             http_client: reqwest::Client::builder()
                 .timeout(std::time::Duration::from_secs(60))
@@ -79,14 +83,20 @@ impl Transcriber {
     /// Uses multipart/form-data to match the Go implementation and the Groq Whisper API spec.
     pub async fn transcribe_file(&self, file_path: &Path) -> Result<TranscriptionResponse> {
         if !file_path.exists() {
-            return Err(anyhow::anyhow!("audio file not found: {}", file_path.display()));
+            return Err(anyhow::anyhow!(
+                "audio file not found: {}",
+                file_path.display()
+            ));
         }
 
-        let api_key = self.api_key.as_ref()
+        let api_key = self
+            .api_key
+            .as_ref()
             .ok_or_else(|| anyhow::anyhow!("no API key configured"))?;
 
         let file_data = std::fs::read(file_path)?;
-        let file_name = file_path.file_name()
+        let file_name = file_path
+            .file_name()
             .map(|n| n.to_string_lossy().to_string())
             .unwrap_or_else(|| "audio.wav".to_string());
 
@@ -101,7 +111,9 @@ impl Transcriber {
             .text("response_format", "json".to_string());
 
         let url = format!("{}/audio/transcriptions", self.api_url);
-        let response = self.http_client.post(&url)
+        let response = self
+            .http_client
+            .post(&url)
             .header("Authorization", format!("Bearer {}", api_key))
             .multipart(form)
             .send()
@@ -119,12 +131,18 @@ impl Transcriber {
 
     /// Transcribe audio bytes.
     /// Uses multipart/form-data to match the Go implementation and the Groq Whisper API spec.
-    pub async fn transcribe_bytes(&self, data: &[u8], format: AudioFormat) -> Result<TranscriptionResponse> {
+    pub async fn transcribe_bytes(
+        &self,
+        data: &[u8],
+        format: AudioFormat,
+    ) -> Result<TranscriptionResponse> {
         if data.is_empty() {
             return Err(anyhow::anyhow!("empty audio data"));
         }
 
-        let api_key = self.api_key.as_ref()
+        let api_key = self
+            .api_key
+            .as_ref()
             .ok_or_else(|| anyhow::anyhow!("no API key configured"))?;
 
         let (ext, mime) = match format {
@@ -148,7 +166,9 @@ impl Transcriber {
             .text("response_format", "json".to_string());
 
         let url = format!("{}/audio/transcriptions", self.api_url);
-        let response = self.http_client.post(&url)
+        let response = self
+            .http_client
+            .post(&url)
             .header("Authorization", format!("Bearer {}", api_key))
             .multipart(form)
             .send()

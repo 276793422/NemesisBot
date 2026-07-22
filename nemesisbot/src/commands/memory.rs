@@ -9,7 +9,7 @@
 
 use std::path::Path;
 
-use anyhow::{Result, Context, bail};
+use anyhow::{Context, Result, bail};
 use serde_json::Value;
 
 use crate::common;
@@ -64,15 +64,18 @@ async fn cmd_enable(home: &Path) -> Result<()> {
         anyhow::anyhow!(
             "Plugin {} not found. Enhanced memory requires {}.\n\
              Expected location: {{exe_dir}}/plugins/{}",
-            label, filename, filename
+            label,
+            filename,
+            filename
         )
     })?;
     println!("Plugin found: {}", plugin_path);
 
     // --- Step 2: Verify model files are installed ---
     let emb_cfg = nemesis_memory::vector::embedding_config::load_embedding_config(config_dir);
-    let (_, dim) = nemesis_memory::vector::embedding_config::resolve_model_files(&emb_cfg, config_dir)
-        .map_err(|e| anyhow::anyhow!("{}. 请先运行 nemesisbot memory install 下载模型", e))?;
+    let (_, dim) =
+        nemesis_memory::vector::embedding_config::resolve_model_files(&emb_cfg, config_dir)
+            .map_err(|e| anyhow::anyhow!("{}. 请先运行 nemesisbot memory install 下载模型", e))?;
     println!("Model files ready (dim={})", dim);
 
     // --- Step 3: Write config.enhanced_memory.json with enabled=true ---
@@ -88,7 +91,10 @@ async fn cmd_enable(home: &Path) -> Result<()> {
     println!();
     println!("Enhanced memory ENABLED");
     println!("  Main switch:     config.json → memory.enabled = true");
-    println!("  Sub-switch:      {} → enabled = true", em_cfg_path.display());
+    println!(
+        "  Sub-switch:      {} → enabled = true",
+        em_cfg_path.display()
+    );
     println!("  Plugin:          {}", plugin_path);
     println!("  Dimension:       {}", dim);
     println!();
@@ -149,7 +155,10 @@ fn cmd_status(home: &Path) -> Result<()> {
         match std::fs::read_to_string(&em_cfg_path) {
             Ok(content) => match serde_json::from_str::<Value>(&content) {
                 Ok(cfg) => {
-                    let enabled = cfg.get("enabled").and_then(|v| v.as_bool()).unwrap_or(false);
+                    let enabled = cfg
+                        .get("enabled")
+                        .and_then(|v| v.as_bool())
+                        .unwrap_or(false);
                     println!(
                         "  Sub-switch:     {} ({})",
                         if enabled { "ENABLED" } else { "DISABLED" },
@@ -168,7 +177,10 @@ fn cmd_status(home: &Path) -> Result<()> {
             }
         }
     } else {
-        println!("  Sub-switch:     NOT CONFIGURED ({})", em_cfg_path.display());
+        println!(
+            "  Sub-switch:     NOT CONFIGURED ({})",
+            em_cfg_path.display()
+        );
         false
     };
 
@@ -220,9 +232,14 @@ fn read_main_switch(cfg_path: &Path) -> bool {
     if !cfg_path.exists() {
         return false;
     }
-    std::fs::read_to_string(cfg_path).ok()
+    std::fs::read_to_string(cfg_path)
+        .ok()
         .and_then(|content| serde_json::from_str::<Value>(&content).ok())
-        .and_then(|v| v.get("memory").and_then(|m| m.get("enabled")).and_then(|e| e.as_bool()))
+        .and_then(|v| {
+            v.get("memory")
+                .and_then(|m| m.get("enabled"))
+                .and_then(|e| e.as_bool())
+        })
         .unwrap_or(false)
 }
 
@@ -248,18 +265,15 @@ fn set_main_switch(cfg_path: &Path, enabled: bool) -> Result<()> {
         mem.insert("enabled".to_string(), Value::Bool(enabled));
     }
 
-    let updated = serde_json::to_string_pretty(&cfg)
-        .context("serializing config")?;
-    std::fs::write(cfg_path, updated)
-        .with_context(|| format!("writing {}", cfg_path.display()))?;
+    let updated = serde_json::to_string_pretty(&cfg).context("serializing config")?;
+    std::fs::write(cfg_path, updated).with_context(|| format!("writing {}", cfg_path.display()))?;
 
     Ok(())
 }
 
 /// Auto-detect plugin library next to the current executable.
 fn detect_plugin_path() -> Option<String> {
-    nemesis_utils::find_plugin_library("plugin_onnx")
-        .map(|p| p.to_string_lossy().to_string())
+    nemesis_utils::find_plugin_library("plugin_onnx").map(|p| p.to_string_lossy().to_string())
 }
 
 /// Check if any .onnx files exist under the given directory (recursively).

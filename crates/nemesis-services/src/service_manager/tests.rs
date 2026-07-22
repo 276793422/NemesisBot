@@ -103,7 +103,9 @@ async fn test_wait_for_shutdown_with_timeout_times_out() {
     let mgr = ServiceManager::new();
 
     // Don't trigger shutdown - should timeout
-    let result = mgr.wait_for_shutdown_with_timeout(std::time::Duration::from_millis(50)).await;
+    let result = mgr
+        .wait_for_shutdown_with_timeout(std::time::Duration::from_millis(50))
+        .await;
     assert!(!result);
 }
 
@@ -111,7 +113,9 @@ async fn test_wait_for_shutdown_with_timeout_times_out() {
 async fn test_wait_for_services_with_zero_count() {
     let mgr = ServiceManager::new();
     // No services tracked, should return immediately
-    let result = mgr.wait_for_services(std::time::Duration::from_secs(1)).await;
+    let result = mgr
+        .wait_for_services(std::time::Duration::from_secs(1))
+        .await;
     assert!(result);
 }
 
@@ -187,7 +191,9 @@ async fn test_wait_for_services_timeout() {
     let mgr = ServiceManager::new();
     mgr.start_basic_services().unwrap();
     // Wait group has 1 entry, so this should timeout
-    let result = mgr.wait_for_services(std::time::Duration::from_millis(50)).await;
+    let result = mgr
+        .wait_for_services(std::time::Duration::from_millis(50))
+        .await;
     assert!(!result);
 }
 
@@ -293,7 +299,9 @@ async fn test_wait_for_shutdown_with_timeout_broadcast_trigger() {
         mgr_clone.trigger_shutdown();
     });
 
-    let result = mgr.wait_for_shutdown_with_timeout(std::time::Duration::from_secs(5)).await;
+    let result = mgr
+        .wait_for_shutdown_with_timeout(std::time::Duration::from_secs(5))
+        .await;
     assert!(result);
 }
 
@@ -468,7 +476,11 @@ fn test_is_bot_running_after_start_stop() {
             { "model": "test/1.0", "api_key": "test-key", "base_url": "", "is_default": true }
         ]
     });
-    std::fs::write(&config_path, serde_json::to_string(&config_content).unwrap()).unwrap();
+    std::fs::write(
+        &config_path,
+        serde_json::to_string(&config_content).unwrap(),
+    )
+    .unwrap();
 
     let mgr = ServiceManager::with_config(BotServiceConfig {
         config_path,
@@ -498,7 +510,11 @@ fn test_full_lifecycle_basic_start_shutdown() {
             { "model": "test/1.0", "api_key": "test-key", "base_url": "", "is_default": true }
         ]
     });
-    std::fs::write(&config_path, serde_json::to_string(&config_content).unwrap()).unwrap();
+    std::fs::write(
+        &config_path,
+        serde_json::to_string(&config_content).unwrap(),
+    )
+    .unwrap();
 
     let mgr = ServiceManager::with_config(BotServiceConfig {
         config_path,

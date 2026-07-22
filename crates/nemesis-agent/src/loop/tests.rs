@@ -15,7 +15,13 @@ impl MockLlmProvider {
 
 #[async_trait]
 impl LlmProvider for MockLlmProvider {
-    async fn chat(&self, _model: &str, _messages: Vec<LlmMessage>, _options: Option<crate::types::ChatOptions>, _tools: Vec<crate::types::ToolDefinition>) -> Result<LlmResponse, String> {
+    async fn chat(
+        &self,
+        _model: &str,
+        _messages: Vec<LlmMessage>,
+        _options: Option<crate::types::ChatOptions>,
+        _tools: Vec<crate::types::ToolDefinition>,
+    ) -> Result<LlmResponse, String> {
         let mut responses = self.responses.lock().unwrap();
         if responses.is_empty() {
             Ok(LlmResponse {
@@ -134,10 +140,7 @@ async fn estop_engaged_stops_loop_before_llm() {
         .collect();
 
     // checkpoint A 触发：Done 是急停提示，不是 mock 的回复。
-    assert!(
-        !done_events.is_empty(),
-        "急停应产生 Done 事件"
-    );
+    assert!(!done_events.is_empty(), "急停应产生 Done 事件");
     let combined = done_events.join(" | ");
     assert!(
         combined.contains("急停") || combined.contains("ESTOP"),
@@ -322,8 +325,8 @@ async fn handle_tool_call_runs_when_estop_disengaged() {
 async fn estop_blocks_remaining_tools_in_batch() {
     // checkpoint B（批次每条工具前）：第一个工具执行时触发 estop，
     // 第二个工具应被 checkpoint B 拦下、不执行。
-    use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
 
     struct EngageTool {
         estop: Arc<crate::estop::EstopState>,
@@ -449,12 +452,12 @@ async fn tool_call_and_response() {
     let events = agent_loop.run(&instance, "What is 2+2?", &context).await;
 
     // Expect: ToolCall + ToolResult + Done
-    assert!(events
-        .iter()
-        .any(|e| matches!(e, AgentEvent::ToolCall(_))));
-    assert!(events
-        .iter()
-        .any(|e| matches!(e, AgentEvent::ToolResult(_))));
+    assert!(events.iter().any(|e| matches!(e, AgentEvent::ToolCall(_))));
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, AgentEvent::ToolResult(_)))
+    );
     assert!(events.iter().any(|e| matches!(e, AgentEvent::Done(_))));
 
     // History should have: system + user + assistant(tool_call) + tool + assistant(final)
@@ -475,8 +478,7 @@ async fn rpc_correlation_id_formatting() {
     }]);
     let agent_loop = AgentLoop::new(Box::new(provider), test_config());
     let instance = AgentInstance::new(test_config());
-    let context =
-        RequestContext::for_rpc("chat123", "user1", "session1", "corr-42");
+    let context = RequestContext::for_rpc("chat123", "user1", "session1", "corr-42");
 
     let events = agent_loop.run(&instance, "Ping", &context).await;
 
@@ -527,9 +529,7 @@ async fn unknown_tool_returns_error() {
     let tool_errors: Vec<_> = events
         .iter()
         .filter_map(|e| match e {
-            AgentEvent::ToolResult(tr) if tr.result.contains("Unknown tool") => {
-                Some(tr.clone())
-            }
+            AgentEvent::ToolResult(tr) if tr.result.contains("Unknown tool") => Some(tr.clone()),
             _ => None,
         })
         .collect();
@@ -576,9 +576,11 @@ async fn max_turns_limit() {
     // The model here keeps requesting tools, so the second hit stops resumably
     // with a Done event (no longer a hard "Max iterations reached" Error) and
     // the completed work is preserved.
-    assert!(events
-        .iter()
-        .any(|e| matches!(e, AgentEvent::Done(msg) if msg.contains("暂停"))));
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, AgentEvent::Done(msg) if msg.contains("暂停")))
+    );
 }
 
 #[tokio::test]
@@ -617,7 +619,9 @@ async fn grace_round_finalizes_when_model_cooperates() {
     let mut agent_loop = AgentLoop::new(Box::new(provider), config.clone());
     agent_loop.register_tool(
         "calculator".to_string(),
-        Box::new(MockTool { result: "0".to_string() }),
+        Box::new(MockTool {
+            result: "0".to_string(),
+        }),
     );
     let instance = AgentInstance::new(config);
     let context = RequestContext::new("web", "chat1", "user1", "session1");
@@ -634,9 +638,11 @@ async fn grace_round_finalizes_when_model_cooperates() {
     assert_eq!(done_events.len(), 1);
     assert_eq!(done_events[0], "done summarizing");
     // The paused-grace Done must NOT appear — the model finalized in time.
-    assert!(!events
-        .iter()
-        .any(|e| matches!(e, AgentEvent::Done(msg) if msg.contains("暂停"))));
+    assert!(
+        !events
+            .iter()
+            .any(|e| matches!(e, AgentEvent::Done(msg) if msg.contains("暂停")))
+    );
 }
 
 #[tokio::test]
@@ -651,7 +657,13 @@ async fn transient_error_retry_succeeds() {
     }
     #[async_trait]
     impl LlmProvider for TransientThenSuccess {
-        async fn chat(&self, _model: &str, _messages: Vec<LlmMessage>, _options: Option<crate::types::ChatOptions>, _tools: Vec<crate::types::ToolDefinition>) -> Result<LlmResponse, String> {
+        async fn chat(
+            &self,
+            _model: &str,
+            _messages: Vec<LlmMessage>,
+            _options: Option<crate::types::ChatOptions>,
+            _tools: Vec<crate::types::ToolDefinition>,
+        ) -> Result<LlmResponse, String> {
             let count = self.call_count.fetch_add(1, Ordering::SeqCst);
             if count == 0 {
                 Err("connection reset by peer".to_string())
@@ -670,7 +682,9 @@ async fn transient_error_retry_succeeds() {
     }
 
     let agent_loop = AgentLoop::new(
-        Box::new(TransientThenSuccess { call_count: AtomicUsize::new(0) }),
+        Box::new(TransientThenSuccess {
+            call_count: AtomicUsize::new(0),
+        }),
         test_config(),
     );
     let instance = AgentInstance::new(test_config());
@@ -838,7 +852,9 @@ async fn resume_execution_grace_round_on_max_turns() {
     let mut agent_loop = AgentLoop::new(Box::new(provider), config.clone());
     agent_loop.register_tool(
         "calculator".to_string(),
-        Box::new(MockTool { result: "0".to_string() }),
+        Box::new(MockTool {
+            result: "0".to_string(),
+        }),
     );
     let instance = AgentInstance::new(config);
     let context = RequestContext::new("cluster", "task-123", "remote-A", "cluster-resume");
@@ -923,8 +939,18 @@ fn test_handle_command_show_model() {
 #[test]
 fn test_handle_command_list_tools() {
     let mut agent_loop = AgentLoop::new(Box::new(MockLlmProvider::new(vec![])), test_config());
-    agent_loop.register_tool("calculator".to_string(), Box::new(MockTool { result: "0".to_string() }));
-    agent_loop.register_tool("search".to_string(), Box::new(MockTool { result: "".to_string() }));
+    agent_loop.register_tool(
+        "calculator".to_string(),
+        Box::new(MockTool {
+            result: "0".to_string(),
+        }),
+    );
+    agent_loop.register_tool(
+        "search".to_string(),
+        Box::new(MockTool {
+            result: "".to_string(),
+        }),
+    );
 
     let result = agent_loop.handle_command("/list tools").unwrap();
     assert!(result.contains("calculator"));
@@ -976,17 +1002,19 @@ fn test_process_message_cluster_continuation() {
     let agent_loop = AgentLoop::new(Box::new(provider), test_config());
     let ctx = RequestContext::new("system", "chat1", "user1", "sess1");
 
-    let (_, _, handled) = agent_loop.process_message(
-        "cluster_continuation:task-123",
-        &ctx,
-    );
+    let (_, _, handled) = agent_loop.process_message("cluster_continuation:task-123", &ctx);
     assert!(handled);
 }
 
 #[test]
 fn test_get_startup_info() {
     let mut agent_loop = AgentLoop::new(Box::new(MockLlmProvider::new(vec![])), test_config());
-    agent_loop.register_tool("calculator".to_string(), Box::new(MockTool { result: "0".to_string() }));
+    agent_loop.register_tool(
+        "calculator".to_string(),
+        Box::new(MockTool {
+            result: "0".to_string(),
+        }),
+    );
 
     let info = agent_loop.get_startup_info();
     assert_eq!(info["model"], "test-model");
@@ -1076,10 +1104,7 @@ fn test_extract_continuation_task_id() {
         extract_continuation_task_id("cluster_continuation:"),
         Some("")
     );
-    assert_eq!(
-        extract_continuation_task_id("other:task-123"),
-        None
-    );
+    assert_eq!(extract_continuation_task_id("other:task-123"), None);
 }
 
 #[test]
@@ -1130,7 +1155,10 @@ fn test_resolve_route_without_peer_kind() {
 #[test]
 fn test_build_agent_main_session_key() {
     assert_eq!(build_agent_main_session_key("main"), "agent:main:main");
-    assert_eq!(build_agent_main_session_key("worker-1"), "agent:worker-1:main");
+    assert_eq!(
+        build_agent_main_session_key("worker-1"),
+        "agent:worker-1:main"
+    );
 }
 
 #[test]
@@ -1237,7 +1265,10 @@ fn test_extract_parent_peer() {
         metadata,
         voice_playback: None,
     };
-    assert_eq!(extract_parent_peer(&msg), Some("channel:chan_789".to_string()));
+    assert_eq!(
+        extract_parent_peer(&msg),
+        Some("channel:chan_789".to_string())
+    );
 }
 
 #[test]
@@ -1408,9 +1439,7 @@ fn test_process_direct() {
     let rt = tokio::runtime::Runtime::new().unwrap();
     let agent_loop = AgentLoop::new(Box::new(provider), test_config());
 
-    let result = rt.block_on(async {
-        agent_loop.process_direct("Hello", "sess1").await
-    });
+    let result = rt.block_on(async { agent_loop.process_direct("Hello", "sess1").await });
 
     assert_eq!(result, Ok("Direct response".to_string()));
 }
@@ -1430,9 +1459,7 @@ fn test_process_heartbeat() {
     let rt = tokio::runtime::Runtime::new().unwrap();
     let agent_loop = AgentLoop::new(Box::new(provider), test_config());
 
-    let result = rt.block_on(async {
-        agent_loop.process_heartbeat("Ping", "web", "chat1").await
-    });
+    let result = rt.block_on(async { agent_loop.process_heartbeat("Ping", "web", "chat1").await });
 
     assert_eq!(result, Ok("Heartbeat OK".to_string()));
 }
@@ -1545,7 +1572,13 @@ async fn test_run_with_llm_error() {
     struct ErrorProvider;
     #[async_trait]
     impl LlmProvider for ErrorProvider {
-        async fn chat(&self, _model: &str, _messages: Vec<LlmMessage>, _options: Option<crate::types::ChatOptions>, _tools: Vec<crate::types::ToolDefinition>) -> Result<LlmResponse, String> {
+        async fn chat(
+            &self,
+            _model: &str,
+            _messages: Vec<LlmMessage>,
+            _options: Option<crate::types::ChatOptions>,
+            _tools: Vec<crate::types::ToolDefinition>,
+        ) -> Result<LlmResponse, String> {
             Err("General LLM error".to_string())
         }
     }
@@ -1556,7 +1589,11 @@ async fn test_run_with_llm_error() {
 
     let events = agent_loop.run(&instance, "Hello", &context).await;
 
-    assert!(events.iter().any(|e| matches!(e, AgentEvent::Error(msg) if msg.contains("General LLM error"))));
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, AgentEvent::Error(msg) if msg.contains("General LLM error")))
+    );
 }
 
 #[tokio::test]
@@ -1568,7 +1605,13 @@ async fn test_run_with_context_error_and_retry_success() {
     }
     #[async_trait]
     impl LlmProvider for ContextErrorThenSuccessProvider {
-        async fn chat(&self, _model: &str, _messages: Vec<LlmMessage>, _options: Option<crate::types::ChatOptions>, _tools: Vec<crate::types::ToolDefinition>) -> Result<LlmResponse, String> {
+        async fn chat(
+            &self,
+            _model: &str,
+            _messages: Vec<LlmMessage>,
+            _options: Option<crate::types::ChatOptions>,
+            _tools: Vec<crate::types::ToolDefinition>,
+        ) -> Result<LlmResponse, String> {
             let count = self.call_count.fetch_add(1, Ordering::SeqCst);
             if count == 0 {
                 Err("context_length_exceeded: token limit".to_string())
@@ -1586,7 +1629,12 @@ async fn test_run_with_context_error_and_retry_success() {
         }
     }
 
-    let agent_loop = AgentLoop::new(Box::new(ContextErrorThenSuccessProvider { call_count: AtomicUsize::new(0) }), test_config());
+    let agent_loop = AgentLoop::new(
+        Box::new(ContextErrorThenSuccessProvider {
+            call_count: AtomicUsize::new(0),
+        }),
+        test_config(),
+    );
     let instance = AgentInstance::new(test_config());
     let context = RequestContext::new("web", "chat1", "user1", "session1");
 
@@ -1608,7 +1656,13 @@ async fn test_run_with_context_error_all_retries_fail() {
     struct AlwaysContextError;
     #[async_trait]
     impl LlmProvider for AlwaysContextError {
-        async fn chat(&self, _model: &str, _messages: Vec<LlmMessage>, _options: Option<crate::types::ChatOptions>, _tools: Vec<crate::types::ToolDefinition>) -> Result<LlmResponse, String> {
+        async fn chat(
+            &self,
+            _model: &str,
+            _messages: Vec<LlmMessage>,
+            _options: Option<crate::types::ChatOptions>,
+            _tools: Vec<crate::types::ToolDefinition>,
+        ) -> Result<LlmResponse, String> {
             Err("token limit exceeded".to_string())
         }
     }
@@ -1619,7 +1673,11 @@ async fn test_run_with_context_error_all_retries_fail() {
 
     let events = agent_loop.run(&instance, "Hello", &context).await;
 
-    assert!(events.iter().any(|e| matches!(e, AgentEvent::Error(msg) if msg.contains("token limit exceeded"))));
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, AgentEvent::Error(msg) if msg.contains("token limit exceeded")))
+    );
 }
 
 #[tokio::test]
@@ -1627,7 +1685,13 @@ async fn test_run_rpc_error_formatting() {
     struct ErrorProvider;
     #[async_trait]
     impl LlmProvider for ErrorProvider {
-        async fn chat(&self, _model: &str, _messages: Vec<LlmMessage>, _options: Option<crate::types::ChatOptions>, _tools: Vec<crate::types::ToolDefinition>) -> Result<LlmResponse, String> {
+        async fn chat(
+            &self,
+            _model: &str,
+            _messages: Vec<LlmMessage>,
+            _options: Option<crate::types::ChatOptions>,
+            _tools: Vec<crate::types::ToolDefinition>,
+        ) -> Result<LlmResponse, String> {
             Err("Failed".to_string())
         }
     }
@@ -1660,7 +1724,12 @@ fn test_handle_command_list_tools_empty() {
 #[test]
 fn test_handle_command_list_tools_with_tools() {
     let mut agent_loop = AgentLoop::new(Box::new(MockLlmProvider::new(vec![])), test_config());
-    agent_loop.register_tool("calculator".to_string(), Box::new(MockTool { result: "0".to_string() }));
+    agent_loop.register_tool(
+        "calculator".to_string(),
+        Box::new(MockTool {
+            result: "0".to_string(),
+        }),
+    );
 
     let result = agent_loop.handle_command("/list tools");
     assert!(result.is_some());
@@ -1817,10 +1886,20 @@ fn test_register_tool_shared() {
     let mut agent_loop = AgentLoop::new(Box::new(MockLlmProvider::new(vec![])), test_config());
     assert_eq!(agent_loop.tool_count(), 0);
 
-    agent_loop.register_tool_shared("tool1".to_string(), Box::new(MockTool { result: "ok".to_string() }));
+    agent_loop.register_tool_shared(
+        "tool1".to_string(),
+        Box::new(MockTool {
+            result: "ok".to_string(),
+        }),
+    );
     assert_eq!(agent_loop.tool_count(), 1);
 
-    agent_loop.register_tool_shared("tool2".to_string(), Box::new(MockTool { result: "ok".to_string() }));
+    agent_loop.register_tool_shared(
+        "tool2".to_string(),
+        Box::new(MockTool {
+            result: "ok".to_string(),
+        }),
+    );
     assert_eq!(agent_loop.tool_count(), 2);
 }
 
@@ -1841,10 +1920,8 @@ fn test_runtime_model_switch_refreshes_tier() {
     // changes mid-conversation.
     use nemesis_types::capability::ModelTier;
 
-    let cfg_path = std::env::temp_dir().join(format!(
-        "nemesis_test_tier_{}.json",
-        std::process::id()
-    ));
+    let cfg_path =
+        std::env::temp_dir().join(format!("nemesis_test_tier_{}.json", std::process::id()));
     std::fs::write(
         &cfg_path,
         serde_json::json!({
@@ -2048,7 +2125,9 @@ fn test_process_direct_with_channel() {
     let agent_loop = AgentLoop::new(Box::new(provider), test_config());
 
     let result = rt.block_on(async {
-        agent_loop.process_direct_with_channel("Hello", "sess1", "telegram", "chat99").await
+        agent_loop
+            .process_direct_with_channel("Hello", "sess1", "telegram", "chat99")
+            .await
     });
 
     assert_eq!(result, Ok("Response with channel".to_string()));
@@ -2096,7 +2175,12 @@ async fn test_multiple_tool_calls_in_single_response() {
     ]);
 
     let mut agent_loop = AgentLoop::new(Box::new(provider), test_config());
-    agent_loop.register_tool("calculator".to_string(), Box::new(MockTool { result: "computed".to_string() }));
+    agent_loop.register_tool(
+        "calculator".to_string(),
+        Box::new(MockTool {
+            result: "computed".to_string(),
+        }),
+    );
 
     let instance = AgentInstance::new(test_config());
     let context = RequestContext::new("web", "chat1", "user1", "session1");
@@ -2133,7 +2217,12 @@ fn test_handle_command_model_switch_by_literal_id() {
     let agent_loop = AgentLoop::new(Box::new(MockLlmProvider::new(vec![])), test_config());
     let result = agent_loop.handle_command("/model deepseek-v4-pro");
     assert!(result.is_some());
-    assert!(result.as_ref().unwrap().contains("Model switched to: deepseek-v4-pro"));
+    assert!(
+        result
+            .as_ref()
+            .unwrap()
+            .contains("Model switched to: deepseek-v4-pro")
+    );
     // Verify active_model actually changed.
     assert_eq!(*agent_loop.active_model.read(), "deepseek-v4-pro");
 }
@@ -2141,8 +2230,12 @@ fn test_handle_command_model_switch_by_literal_id() {
 #[test]
 fn test_handle_command_model_switch_by_alias() {
     let mut config = test_config();
-    config.models.insert("pro".to_string(), "deepseek-v4-pro".to_string());
-    config.models.insert("flash".to_string(), "deepseek-v4-flash".to_string());
+    config
+        .models
+        .insert("pro".to_string(), "deepseek-v4-pro".to_string());
+    config
+        .models
+        .insert("flash".to_string(), "deepseek-v4-flash".to_string());
     let agent_loop = AgentLoop::new(Box::new(MockLlmProvider::new(vec![])), config);
 
     let result = agent_loop.handle_command("/model pro");
@@ -2192,8 +2285,12 @@ fn test_set_active_model_literal_id() {
 #[test]
 fn test_set_active_model_alias_resolves() {
     let mut config = test_config();
-    config.models.insert("fast".to_string(), "gpt-4o-mini".to_string());
-    config.models.insert("smart".to_string(), "o3-mini".to_string());
+    config
+        .models
+        .insert("fast".to_string(), "gpt-4o-mini".to_string());
+    config
+        .models
+        .insert("smart".to_string(), "o3-mini".to_string());
     let agent_loop = AgentLoop::new(Box::new(MockLlmProvider::new(vec![])), config);
 
     let returned = agent_loop.set_active_model("fast");
@@ -2207,7 +2304,9 @@ fn test_set_active_model_alias_resolves() {
 #[test]
 fn test_set_active_model_unknown_alias_used_as_literal() {
     let mut config = test_config();
-    config.models.insert("pro".to_string(), "deepseek-pro".to_string());
+    config
+        .models
+        .insert("pro".to_string(), "deepseek-pro".to_string());
     let agent_loop = AgentLoop::new(Box::new(MockLlmProvider::new(vec![])), config);
 
     let returned = agent_loop.set_active_model("random-model-id");
@@ -2333,7 +2432,12 @@ fn test_handle_command_list_agents() {
 #[test]
 fn test_handle_command_list_agents_with_tools() {
     let mut agent_loop = AgentLoop::new(Box::new(MockLlmProvider::new(vec![])), test_config());
-    agent_loop.register_tool("search".to_string(), Box::new(MockTool { result: "".to_string() }));
+    agent_loop.register_tool(
+        "search".to_string(),
+        Box::new(MockTool {
+            result: "".to_string(),
+        }),
+    );
     let result = agent_loop.handle_command("/list agents");
     assert!(result.is_some());
     assert!(result.unwrap().contains("search"));
@@ -2359,7 +2463,12 @@ fn test_handle_command_show_agents_with_registry() {
 fn test_tools_accessor() {
     let mut agent_loop = AgentLoop::new(Box::new(MockLlmProvider::new(vec![])), test_config());
     assert!(agent_loop.tools().is_empty());
-    agent_loop.register_tool("test".to_string(), Box::new(MockTool { result: "ok".to_string() }));
+    agent_loop.register_tool(
+        "test".to_string(),
+        Box::new(MockTool {
+            result: "ok".to_string(),
+        }),
+    );
     assert_eq!(agent_loop.tools().len(), 1);
 }
 
@@ -2513,7 +2622,12 @@ async fn test_handle_tool_call_with_security_block() {
 
     let mut agent_loop = AgentLoop::new(Box::new(MockLlmProvider::new(vec![])), test_config());
     agent_loop.set_security_plugin(blocked_plugin);
-    agent_loop.register_tool("write_file".to_string(), Box::new(MockTool { result: "ok".to_string() }));
+    agent_loop.register_tool(
+        "write_file".to_string(),
+        Box::new(MockTool {
+            result: "ok".to_string(),
+        }),
+    );
     let context = RequestContext::new("web", "chat1", "user1", "session1");
 
     let tc = ToolCallInfo {
@@ -2522,7 +2636,9 @@ async fn test_handle_tool_call_with_security_block() {
         arguments: r#"{"path": "/some/path"}"#.to_string(),
     };
     let result = agent_loop.handle_tool_call(&tc, &context).await;
-    assert!(result.contains("Error") || result.contains("denied") || result.contains("not allowed"));
+    assert!(
+        result.contains("Error") || result.contains("denied") || result.contains("not allowed")
+    );
 }
 
 #[tokio::test]
@@ -2562,7 +2678,10 @@ async fn test_checkpoint_e2e_write_then_rewind_restores() {
 
     // Rewind turn 0 restores the turn-start content (ORIGINAL).
     let (written, _) = agent_loop.rewind(0).await.unwrap();
-    assert!(!written.is_empty(), "rewind should restore at least one file");
+    assert!(
+        !written.is_empty(),
+        "rewind should restore at least one file"
+    );
     assert_eq!(
         tokio::fs::read_to_string(&file).await.unwrap(),
         "ORIGINAL",
@@ -2609,7 +2728,9 @@ async fn test_guardian_e2e_critical_op_denied_by_judge() {
     agent_loop.set_security_plugin(plugin);
     agent_loop.register_tool(
         "shell".to_string(),
-        Box::new(MockTool { result: "ok".to_string() }),
+        Box::new(MockTool {
+            result: "ok".to_string(),
+        }),
     );
     let context = RequestContext::new("web", "chat1", "user1", "session1");
     let tc = ToolCallInfo {
@@ -2660,7 +2781,9 @@ async fn test_guardian_e2e_allows_when_judge_approves() {
     agent_loop.set_security_plugin(plugin);
     agent_loop.register_tool(
         "shell".to_string(),
-        Box::new(MockTool { result: "executed".to_string() }),
+        Box::new(MockTool {
+            result: "executed".to_string(),
+        }),
     );
     let context = RequestContext::new("web", "chat1", "user1", "session1");
     let tc = ToolCallInfo {
@@ -2681,11 +2804,15 @@ fn test_build_messages_with_tool_history() {
     let agent_loop = AgentLoop::new(Box::new(MockLlmProvider::new(vec![])), test_config());
     let instance = AgentInstance::new(test_config());
     instance.add_user_message("Hello");
-    instance.add_assistant_message("Let me check", vec![ToolCallInfo {
-        id: "tc_1".to_string(),
-        name: "calculator".to_string(),
-        arguments: "{}".to_string(),
-    }], None);
+    instance.add_assistant_message(
+        "Let me check",
+        vec![ToolCallInfo {
+            id: "tc_1".to_string(),
+            name: "calculator".to_string(),
+            arguments: "{}".to_string(),
+        }],
+        None,
+    );
     instance.add_tool_result("tc_1", "42");
     instance.add_assistant_message("The answer is 42", vec![], None);
 
@@ -2730,9 +2857,7 @@ fn test_process_heartbeat_with_response() {
     let rt = tokio::runtime::Runtime::new().unwrap();
     let agent_loop = AgentLoop::new(Box::new(provider), test_config());
 
-    let result = rt.block_on(async {
-        agent_loop.process_heartbeat("Ping", "web", "chat1").await
-    });
+    let result = rt.block_on(async { agent_loop.process_heartbeat("Ping", "web", "chat1").await });
 
     assert_eq!(result, Ok("heartbeat ok".to_string()));
 }
@@ -2742,7 +2867,13 @@ fn test_process_direct_with_error() {
     struct ErrorProvider;
     #[async_trait]
     impl LlmProvider for ErrorProvider {
-        async fn chat(&self, _model: &str, _messages: Vec<LlmMessage>, _options: Option<crate::types::ChatOptions>, _tools: Vec<crate::types::ToolDefinition>) -> Result<LlmResponse, String> {
+        async fn chat(
+            &self,
+            _model: &str,
+            _messages: Vec<LlmMessage>,
+            _options: Option<crate::types::ChatOptions>,
+            _tools: Vec<crate::types::ToolDefinition>,
+        ) -> Result<LlmResponse, String> {
             Err("test error".to_string())
         }
     }
@@ -2750,9 +2881,7 @@ fn test_process_direct_with_error() {
     let rt = tokio::runtime::Runtime::new().unwrap();
     let agent_loop = AgentLoop::new(Box::new(ErrorProvider), test_config());
 
-    let result = rt.block_on(async {
-        agent_loop.process_direct("Hello", "sess1").await
-    });
+    let result = rt.block_on(async { agent_loop.process_direct("Hello", "sess1").await });
 
     assert!(result.is_err());
     assert!(result.unwrap_err().contains("test error"));
@@ -2788,7 +2917,13 @@ fn test_process_message_slash_command() {
 
 // --- Additional coverage for process_inbound_message and bus mode ---
 
-fn make_inbound(content: &str, channel: &str, chat_id: &str, sender_id: &str, session_key: &str) -> nemesis_types::channel::InboundMessage {
+fn make_inbound(
+    content: &str,
+    channel: &str,
+    chat_id: &str,
+    sender_id: &str,
+    session_key: &str,
+) -> nemesis_types::channel::InboundMessage {
     nemesis_types::channel::InboundMessage {
         channel: channel.to_string(),
         sender_id: sender_id.to_string(),
@@ -2814,7 +2949,14 @@ async fn test_process_inbound_message_system_internal_channel() {
         raw_request_body: None,
         raw_response_body: None,
     }]);
-    let agent_loop = AgentLoop::new_bus(Box::new(provider), test_config(), outbound_tx, ConcurrentMode::Reject, 8, 0);
+    let agent_loop = AgentLoop::new_bus(
+        Box::new(provider),
+        test_config(),
+        outbound_tx,
+        ConcurrentMode::Reject,
+        8,
+        0,
+    );
 
     // System message with internal channel (cli) - should skip processing
     let msg = nemesis_types::channel::InboundMessage {
@@ -2842,7 +2984,14 @@ async fn test_process_inbound_message_system_internal_channel() {
 async fn test_process_inbound_message_history_request() {
     let (outbound_tx, _) = tokio::sync::mpsc::channel(16);
     let provider = MockLlmProvider::new(vec![]);
-    let agent_loop = AgentLoop::new_bus(Box::new(provider), test_config(), outbound_tx, ConcurrentMode::Reject, 8, 0);
+    let agent_loop = AgentLoop::new_bus(
+        Box::new(provider),
+        test_config(),
+        outbound_tx,
+        ConcurrentMode::Reject,
+        8,
+        0,
+    );
 
     let msg = nemesis_types::channel::InboundMessage {
         channel: "web".to_string(),
@@ -2877,7 +3026,14 @@ async fn test_process_inbound_message_session_busy() {
         raw_request_body: None,
         raw_response_body: None,
     }]);
-    let agent_loop = AgentLoop::new_bus(Box::new(provider), test_config(), outbound_tx, ConcurrentMode::Reject, 8, 0);
+    let agent_loop = AgentLoop::new_bus(
+        Box::new(provider),
+        test_config(),
+        outbound_tx,
+        ConcurrentMode::Reject,
+        8,
+        0,
+    );
 
     // First process a message to determine what session key the resolver uses.
     // Then acquire that key and verify the busy check works.
@@ -2916,7 +3072,14 @@ async fn test_process_inbound_message_route_resolver() {
         raw_request_body: None,
         raw_response_body: None,
     }]);
-    let agent_loop = AgentLoop::new_bus(Box::new(provider), test_config(), outbound_tx, ConcurrentMode::Reject, 8, 0);
+    let agent_loop = AgentLoop::new_bus(
+        Box::new(provider),
+        test_config(),
+        outbound_tx,
+        ConcurrentMode::Reject,
+        8,
+        0,
+    );
 
     let msg = make_inbound("Hello route", "web", "chat1", "user1", "");
     let (agent_id, response, err) = agent_loop.process_inbound_message(&msg).await;
@@ -2938,7 +3101,14 @@ async fn test_process_inbound_message_route_with_agent_scoped_key() {
         raw_request_body: None,
         raw_response_body: None,
     }]);
-    let agent_loop = AgentLoop::new_bus(Box::new(provider), test_config(), outbound_tx, ConcurrentMode::Reject, 8, 0);
+    let agent_loop = AgentLoop::new_bus(
+        Box::new(provider),
+        test_config(),
+        outbound_tx,
+        ConcurrentMode::Reject,
+        8,
+        0,
+    );
 
     let msg = nemesis_types::channel::InboundMessage {
         channel: "web".to_string(),
@@ -2972,9 +3142,9 @@ async fn test_process_inbound_message_no_resolver_fallback() {
     let agent_loop = AgentLoop::new(Box::new(provider), test_config());
 
     // process_direct_with_channel works in standalone mode
-    let result = agent_loop.process_direct_with_channel(
-        "Hello no resolver", "web:chat1", "web", "chat1"
-    ).await;
+    let result = agent_loop
+        .process_direct_with_channel("Hello no resolver", "web:chat1", "web", "chat1")
+        .await;
     assert!(result.is_ok());
 }
 
@@ -2992,7 +3162,14 @@ async fn test_run_bus_owned_sends_outbound() {
         raw_request_body: None,
         raw_response_body: None,
     }]);
-    let agent_loop = AgentLoop::new_bus(Box::new(provider), test_config(), outbound_tx, ConcurrentMode::Reject, 8, 0);
+    let agent_loop = AgentLoop::new_bus(
+        Box::new(provider),
+        test_config(),
+        outbound_tx,
+        ConcurrentMode::Reject,
+        8,
+        0,
+    );
 
     // Send a message
     let msg = make_inbound("Hello bus", "web", "chat1", "user1", "web:chat1");
@@ -3037,8 +3214,14 @@ async fn test_assistant_outbound_carries_model_badge() {
     }]);
 
     let session_key = "web:chat1";
-    let agent_loop =
-        AgentLoop::new_bus(Box::new(provider), test_config(), outbound_tx, ConcurrentMode::Reject, 8, 0);
+    let agent_loop = AgentLoop::new_bus(
+        Box::new(provider),
+        test_config(),
+        outbound_tx,
+        ConcurrentMode::Reject,
+        8,
+        0,
+    );
     agent_loop.set_config_path(cfg_path);
 
     let msg = make_inbound("Hello badge", "web", "chat1", "user1", session_key);
@@ -3048,7 +3231,9 @@ async fn test_assistant_outbound_carries_model_badge() {
 
     // The assistant OutboundMessage carries the resolved display model
     // (provider/name) for the per-message "供应商·模型名" badge.
-    let out = outbound_rx.try_recv().expect("expected an assistant outbound");
+    let out = outbound_rx
+        .try_recv()
+        .expect("expected an assistant outbound");
     assert!(out.content.contains("badge test response"));
     assert_eq!(
         out.meta.model.as_deref(),
@@ -3061,9 +3246,10 @@ async fn test_assistant_outbound_carries_model_badge() {
     // metadata.session_id (empty here) → default main key.
     let main_key = "agent_main_main";
     let (msgs, _total, _, _) = crate::chat_log::read_chat_log(main_key, 50, None);
-    let assistant = msgs
-        .iter()
-        .find(|m| m["role"].as_str() == Some("assistant") && m["content"].as_str() == Some("badge test response"));
+    let assistant = msgs.iter().find(|m| {
+        m["role"].as_str() == Some("assistant")
+            && m["content"].as_str() == Some("badge test response")
+    });
     if let Some(assistant) = assistant {
         assert_eq!(
             assistant["model"].as_str(),
@@ -3090,7 +3276,14 @@ async fn test_run_bus_owned_rpc_correlation_prefix() {
         raw_request_body: None,
         raw_response_body: None,
     }]);
-    let agent_loop = AgentLoop::new_bus(Box::new(provider), test_config(), outbound_tx, ConcurrentMode::Reject, 8, 0);
+    let agent_loop = AgentLoop::new_bus(
+        Box::new(provider),
+        test_config(),
+        outbound_tx,
+        ConcurrentMode::Reject,
+        8,
+        0,
+    );
 
     let msg = nemesis_types::channel::InboundMessage {
         channel: "rpc".to_string(),
@@ -3134,12 +3327,19 @@ async fn test_process_system_message_with_result_extraction() {
         raw_request_body: None,
         raw_response_body: None,
     }]);
-    let agent_loop = AgentLoop::new_bus(Box::new(provider), test_config(), outbound_tx, ConcurrentMode::Reject, 8, 0);
+    let agent_loop = AgentLoop::new_bus(
+        Box::new(provider),
+        test_config(),
+        outbound_tx,
+        ConcurrentMode::Reject,
+        8,
+        0,
+    );
 
     let msg = nemesis_types::channel::InboundMessage {
         channel: "system".to_string(),
         sender_id: "subagent-1".to_string(),
-        chat_id: "web:chat1".to_string(),  // non-internal channel
+        chat_id: "web:chat1".to_string(), // non-internal channel
         content: "Task 'my_task' completed.\n\nResult:\nThe actual result content".to_string(),
         media: vec![],
         session_key: String::new(),
@@ -3163,7 +3363,14 @@ async fn test_process_system_message_without_result_prefix() {
         raw_request_body: None,
         raw_response_body: None,
     }]);
-    let agent_loop = AgentLoop::new_bus(Box::new(provider), test_config(), outbound_tx, ConcurrentMode::Reject, 8, 0);
+    let agent_loop = AgentLoop::new_bus(
+        Box::new(provider),
+        test_config(),
+        outbound_tx,
+        ConcurrentMode::Reject,
+        8,
+        0,
+    );
 
     let msg = nemesis_types::channel::InboundMessage {
         channel: "system".to_string(),
@@ -3183,16 +3390,14 @@ async fn test_process_system_message_without_result_prefix() {
 #[tokio::test]
 async fn test_summarize_history_owned_short_history() {
     let provider = MockLlmProvider::new(vec![]);
-    let history: Vec<crate::types::ConversationTurn> = vec![
-        crate::types::ConversationTurn {
-            role: "user".to_string(),
-            content: "Hi".to_string(),
-            tool_calls: Vec::new(),
-            tool_call_id: None,
-            timestamp: String::new(),
-            reasoning_content: None,
-        },
-    ];
+    let history: Vec<crate::types::ConversationTurn> = vec![crate::types::ConversationTurn {
+        role: "user".to_string(),
+        content: "Hi".to_string(),
+        tool_calls: Vec::new(),
+        tool_call_id: None,
+        timestamp: String::new(),
+        reasoning_content: None,
+    }];
     let result = summarize_history_owned(&history, "", 128000, &provider, "test-model", None).await;
     assert!(result.is_none()); // Too short to summarize
 }
@@ -3479,10 +3684,19 @@ async fn test_maybe_summarize_no_session_store() {
     // Add many messages to trigger summarization
     for i in 0..30 {
         instance.add_user_message(&format!("Message {} with enough content to make it long enough for token estimation to exceed threshold in some way", i));
-        instance.add_assistant_message(&format!("Response {} with similar padding content to increase estimated tokens", i), Vec::new(), None);
+        instance.add_assistant_message(
+            &format!(
+                "Response {} with similar padding content to increase estimated tokens",
+                i
+            ),
+            Vec::new(),
+            None,
+        );
     }
     // Should not panic even without session store
-    agent_loop.maybe_summarize(&instance, "test-session", "web", "chat1").await;
+    agent_loop
+        .maybe_summarize(&instance, "test-session", "web", "chat1")
+        .await;
 }
 
 #[tokio::test]
@@ -3497,17 +3711,35 @@ async fn test_maybe_summarize_already_summarizing() {
         raw_request_body: None,
         raw_response_body: None,
     }]);
-    let agent_loop = AgentLoop::new_bus(Box::new(provider), test_config(), outbound_tx, ConcurrentMode::Reject, 8, 0);
+    let agent_loop = AgentLoop::new_bus(
+        Box::new(provider),
+        test_config(),
+        outbound_tx,
+        ConcurrentMode::Reject,
+        8,
+        0,
+    );
     let instance = AgentInstance::new(test_config());
     for i in 0..30 {
-        instance.add_user_message(&format!("Long user message {} with padding to increase tokens", i));
-        instance.add_assistant_message(&format!("Long response {} with padding", i), Vec::new(), None);
+        instance.add_user_message(&format!(
+            "Long user message {} with padding to increase tokens",
+            i
+        ));
+        instance.add_assistant_message(
+            &format!("Long response {} with padding", i),
+            Vec::new(),
+            None,
+        );
     }
 
     // First call triggers summarization
-    agent_loop.maybe_summarize(&instance, "sess1", "web", "chat1").await;
+    agent_loop
+        .maybe_summarize(&instance, "sess1", "web", "chat1")
+        .await;
     // Second call should be skipped (already summarizing)
-    agent_loop.maybe_summarize(&instance, "sess1", "web", "chat1").await;
+    agent_loop
+        .maybe_summarize(&instance, "sess1", "web", "chat1")
+        .await;
 }
 
 // =========================================================================
@@ -3543,7 +3775,12 @@ async fn test_run_with_tool_call_and_rpc_context() {
     ]);
 
     let mut agent_loop = AgentLoop::new(Box::new(provider), test_config());
-    agent_loop.register_tool("calculator".to_string(), Box::new(MockTool { result: "2".to_string() }));
+    agent_loop.register_tool(
+        "calculator".to_string(),
+        Box::new(MockTool {
+            result: "2".to_string(),
+        }),
+    );
 
     let instance = AgentInstance::new(test_config());
     let context = RequestContext::for_rpc("chat1", "user1", "session1", "rpc-corr-1");
@@ -3634,18 +3871,39 @@ async fn test_run_multiple_iterations_with_different_tools() {
     ]);
 
     let mut agent_loop = AgentLoop::new(Box::new(provider), test_config());
-    agent_loop.register_tool("search".to_string(), Box::new(MockTool { result: "found".to_string() }));
-    agent_loop.register_tool("calculator".to_string(), Box::new(MockTool { result: "42".to_string() }));
+    agent_loop.register_tool(
+        "search".to_string(),
+        Box::new(MockTool {
+            result: "found".to_string(),
+        }),
+    );
+    agent_loop.register_tool(
+        "calculator".to_string(),
+        Box::new(MockTool {
+            result: "42".to_string(),
+        }),
+    );
 
     let instance = AgentInstance::new(test_config());
     let context = RequestContext::new("web", "chat1", "user1", "session1");
 
-    let events = agent_loop.run(&instance, "Search and calculate", &context).await;
+    let events = agent_loop
+        .run(&instance, "Search and calculate", &context)
+        .await;
 
     // Should have 2 ToolCall + 2 ToolResult + 1 Done
-    let tool_calls: Vec<_> = events.iter().filter(|e| matches!(e, AgentEvent::ToolCall(_))).collect();
-    let tool_results: Vec<_> = events.iter().filter(|e| matches!(e, AgentEvent::ToolResult(_))).collect();
-    let done: Vec<_> = events.iter().filter(|e| matches!(e, AgentEvent::Done(_))).collect();
+    let tool_calls: Vec<_> = events
+        .iter()
+        .filter(|e| matches!(e, AgentEvent::ToolCall(_)))
+        .collect();
+    let tool_results: Vec<_> = events
+        .iter()
+        .filter(|e| matches!(e, AgentEvent::ToolResult(_)))
+        .collect();
+    let done: Vec<_> = events
+        .iter()
+        .filter(|e| matches!(e, AgentEvent::Done(_)))
+        .collect();
     assert_eq!(tool_calls.len(), 2);
     assert_eq!(tool_results.len(), 2);
     assert_eq!(done.len(), 1);
@@ -3654,17 +3912,15 @@ async fn test_run_multiple_iterations_with_different_tools() {
 #[tokio::test]
 async fn test_run_with_empty_response_then_final() {
     // LLM returns empty content first, then final answer on second call
-    let provider = MockLlmProvider::new(vec![
-        LlmResponse {
-            content: "".to_string(),
-            tool_calls: Vec::new(),
-            finished: true,
-            reasoning_content: None,
-            usage: None,
-            raw_request_body: None,
-            raw_response_body: None,
-        },
-    ]);
+    let provider = MockLlmProvider::new(vec![LlmResponse {
+        content: "".to_string(),
+        tool_calls: Vec::new(),
+        finished: true,
+        reasoning_content: None,
+        usage: None,
+        raw_request_body: None,
+        raw_response_body: None,
+    }]);
 
     let agent_loop = AgentLoop::new(Box::new(provider), test_config());
     let instance = AgentInstance::new(test_config());
@@ -3781,7 +4037,14 @@ async fn test_run_bus_owned_with_slash_command() {
     let (inbound_tx, inbound_rx) = tokio::sync::mpsc::channel(16);
 
     let provider = MockLlmProvider::new(vec![]);
-    let agent_loop = AgentLoop::new_bus(Box::new(provider), test_config(), outbound_tx, ConcurrentMode::Reject, 8, 0);
+    let agent_loop = AgentLoop::new_bus(
+        Box::new(provider),
+        test_config(),
+        outbound_tx,
+        ConcurrentMode::Reject,
+        8,
+        0,
+    );
 
     let msg = make_inbound("/show model", "web", "chat1", "user1", "web:chat1");
     inbound_tx.send(msg).await.unwrap();
@@ -3819,7 +4082,14 @@ async fn test_run_bus_owned_multiple_messages() {
             raw_response_body: None,
         },
     ]);
-    let agent_loop = AgentLoop::new_bus(Box::new(provider), test_config(), outbound_tx, ConcurrentMode::Reject, 8, 0);
+    let agent_loop = AgentLoop::new_bus(
+        Box::new(provider),
+        test_config(),
+        outbound_tx,
+        ConcurrentMode::Reject,
+        8,
+        0,
+    );
 
     let msg1 = make_inbound("Message 1", "web", "chat1", "user1", "web:chat1a");
     let msg2 = make_inbound("Message 2", "web", "chat1", "user1", "web:chat1b");
@@ -3867,7 +4137,14 @@ async fn test_process_inbound_message_with_route_resolver_configured() {
         dm_scope: "main".to_string(),
     };
 
-    let mut agent_loop = AgentLoop::new_bus(Box::new(provider), test_config(), outbound_tx, ConcurrentMode::Reject, 8, 0);
+    let mut agent_loop = AgentLoop::new_bus(
+        Box::new(provider),
+        test_config(),
+        outbound_tx,
+        ConcurrentMode::Reject,
+        8,
+        0,
+    );
     agent_loop.set_route_resolver(nemesis_routing::RouteResolver::new(config));
 
     let msg = nemesis_types::channel::InboundMessage {
@@ -3923,7 +4200,13 @@ async fn test_run_with_rpc_error_has_prefix() {
     struct ErrProvider;
     #[async_trait]
     impl LlmProvider for ErrProvider {
-        async fn chat(&self, _model: &str, _messages: Vec<LlmMessage>, _options: Option<crate::types::ChatOptions>, _tools: Vec<crate::types::ToolDefinition>) -> Result<LlmResponse, String> {
+        async fn chat(
+            &self,
+            _model: &str,
+            _messages: Vec<LlmMessage>,
+            _options: Option<crate::types::ChatOptions>,
+            _tools: Vec<crate::types::ToolDefinition>,
+        ) -> Result<LlmResponse, String> {
             Err("Something went wrong".to_string())
         }
     }
@@ -4016,7 +4299,12 @@ async fn test_process_direct_with_tool_calls() {
     ]);
 
     let mut agent_loop = AgentLoop::new(Box::new(provider), test_config());
-    agent_loop.register_tool("calculator".to_string(), Box::new(MockTool { result: "21".to_string() }));
+    agent_loop.register_tool(
+        "calculator".to_string(),
+        Box::new(MockTool {
+            result: "21".to_string(),
+        }),
+    );
 
     let result = agent_loop.process_direct("What is 3*7?", "sess1").await;
     assert_eq!(result, Ok("The answer is 21".to_string()));
@@ -4070,19 +4358,17 @@ fn test_format_tools_for_log_multiple_tools() {
 
 #[test]
 fn test_format_messages_for_log_with_tool_calls_and_content() {
-    let messages = vec![
-        LlmMessage {
-            role: "assistant".to_string(),
-            content: "Let me help you.".to_string(),
-            tool_calls: Some(vec![ToolCallInfo {
-                id: "call_1".to_string(),
-                name: "read_file".to_string(),
-                arguments: r#"{"path":"/test.txt"}"#.to_string(),
-            }]),
-            tool_call_id: None,
-            reasoning_content: None,
-        },
-    ];
+    let messages = vec![LlmMessage {
+        role: "assistant".to_string(),
+        content: "Let me help you.".to_string(),
+        tool_calls: Some(vec![ToolCallInfo {
+            id: "call_1".to_string(),
+            name: "read_file".to_string(),
+            arguments: r#"{"path":"/test.txt"}"#.to_string(),
+        }]),
+        tool_call_id: None,
+        reasoning_content: None,
+    }];
     let result = format_messages_for_log(&messages);
     assert!(result.contains("ToolCalls:"));
     assert!(result.contains("call_1"));
@@ -4092,15 +4378,13 @@ fn test_format_messages_for_log_with_tool_calls_and_content() {
 
 #[test]
 fn test_format_messages_for_log_with_tool_call_id_v2() {
-    let messages = vec![
-        LlmMessage {
-            role: "tool".to_string(),
-            content: "file contents here".to_string(),
-            tool_calls: None,
-            tool_call_id: Some("call_abc".to_string()),
-            reasoning_content: None,
-        },
-    ];
+    let messages = vec![LlmMessage {
+        role: "tool".to_string(),
+        content: "file contents here".to_string(),
+        tool_calls: None,
+        tool_call_id: Some("call_abc".to_string()),
+        reasoning_content: None,
+    }];
     let result = format_messages_for_log(&messages);
     assert!(result.contains("ToolCallID: call_abc"));
 }
@@ -4108,15 +4392,13 @@ fn test_format_messages_for_log_with_tool_call_id_v2() {
 #[test]
 fn test_format_messages_for_log_long_content_truncated() {
     let long_content = "A".repeat(500);
-    let messages = vec![
-        LlmMessage {
-            role: "user".to_string(),
-            content: long_content.clone(),
-            tool_calls: None,
-            tool_call_id: None,
-            reasoning_content: None,
-        },
-    ];
+    let messages = vec![LlmMessage {
+        role: "user".to_string(),
+        content: long_content.clone(),
+        tool_calls: None,
+        tool_call_id: None,
+        reasoning_content: None,
+    }];
     let result = format_messages_for_log(&messages);
     assert!(result.len() < long_content.len() + 100);
 }
@@ -4124,19 +4406,17 @@ fn test_format_messages_for_log_long_content_truncated() {
 #[test]
 fn test_format_messages_for_log_long_arguments_truncated() {
     let long_args = "X".repeat(500);
-    let messages = vec![
-        LlmMessage {
-            role: "assistant".to_string(),
-            content: String::new(),
-            tool_calls: Some(vec![ToolCallInfo {
-                id: "call_1".to_string(),
-                name: "test".to_string(),
-                arguments: long_args.clone(),
-            }]),
-            tool_call_id: None,
-            reasoning_content: None,
-        },
-    ];
+    let messages = vec![LlmMessage {
+        role: "assistant".to_string(),
+        content: String::new(),
+        tool_calls: Some(vec![ToolCallInfo {
+            id: "call_1".to_string(),
+            name: "test".to_string(),
+            arguments: long_args.clone(),
+        }]),
+        tool_call_id: None,
+        reasoning_content: None,
+    }];
     let result = format_messages_for_log(&messages);
     assert!(result.len() < long_args.len() + 100);
 }
@@ -4153,7 +4433,11 @@ fn test_format_tools_for_log_long_args_truncated() {
     assert!(result.len() < long_args.len() + 100);
 }
 
-fn make_inbound_msg(sender_id: &str, chat_id: &str, metadata: std::collections::HashMap<String, String>) -> nemesis_types::channel::InboundMessage {
+fn make_inbound_msg(
+    sender_id: &str,
+    chat_id: &str,
+    metadata: std::collections::HashMap<String, String>,
+) -> nemesis_types::channel::InboundMessage {
     nemesis_types::channel::InboundMessage {
         channel: "web".to_string(),
         sender_id: sender_id.to_string(),
@@ -4225,7 +4509,10 @@ fn test_extract_parent_peer_no_metadata_v2() {
 
 #[test]
 fn test_extract_continuation_task_id_valid_v2() {
-    assert_eq!(extract_continuation_task_id("cluster_continuation:task-123"), Some("task-123"));
+    assert_eq!(
+        extract_continuation_task_id("cluster_continuation:task-123"),
+        Some("task-123")
+    );
 }
 
 #[test]
@@ -4247,7 +4534,10 @@ fn test_is_internal_channel_all_variants() {
 #[test]
 fn test_build_agent_main_session_key_various() {
     assert_eq!(build_agent_main_session_key("main"), "agent:main:main");
-    assert_eq!(build_agent_main_session_key("worker-1"), "agent:worker-1:main");
+    assert_eq!(
+        build_agent_main_session_key("worker-1"),
+        "agent:worker-1:main"
+    );
     assert_eq!(build_agent_main_session_key(""), "agent::main");
 }
 
@@ -4370,7 +4660,9 @@ async fn test_history_returns_all_messages() {
     let path = nemesis_path::default_path_manager()
         .sessions_log_dir()
         .join(format!("{}.jsonl", safe_key));
-    if path.exists() { let _ = std::fs::remove_file(&path); }
+    if path.exists() {
+        let _ = std::fs::remove_file(&path);
+    }
     for i in 0..3 {
         crate::chat_log::append_chat_log(key, "user", &format!("User msg {}", i));
         crate::chat_log::append_chat_log(key, "assistant", &format!("Reply {}", i));
@@ -4385,7 +4677,9 @@ async fn test_history_returns_all_messages() {
         8,
         0,
     );
-    al.set_session_store(std::sync::Arc::new(crate::session::SessionStore::new_in_memory()));
+    al.set_session_store(std::sync::Arc::new(
+        crate::session::SessionStore::new_in_memory(),
+    ));
     let al = Arc::new(al);
 
     let msg = make_history_inbound("web:sess1", Some(20), None);
@@ -4394,14 +4688,20 @@ async fn test_history_returns_all_messages() {
     assert!(err.is_none());
 
     let out = tokio::time::timeout(std::time::Duration::from_secs(2), outbound_rx.recv())
-        .await.expect("timeout").expect("closed");
+        .await
+        .expect("timeout")
+        .expect("closed");
     assert_eq!(out.channel, "web");
     assert_eq!(out.chat_id, "web:sess1");
     assert_eq!(out.message_type, "history");
 
     let data: serde_json::Value = serde_json::from_str(&out.content).unwrap();
     let msgs = data["messages"].as_array().unwrap();
-    assert!(msgs.len() >= 6, "expected at least 6 messages, got {}", msgs.len());
+    assert!(
+        msgs.len() >= 6,
+        "expected at least 6 messages, got {}",
+        msgs.len()
+    );
 }
 
 // --- Unit tests: chat_log pagination with isolated session keys ---
@@ -4455,7 +4755,9 @@ async fn test_history_e2e_via_bus_arc() {
     let path = nemesis_path::default_path_manager()
         .sessions_log_dir()
         .join(format!("{}.jsonl", safe_key));
-    if path.exists() { let _ = std::fs::remove_file(&path); }
+    if path.exists() {
+        let _ = std::fs::remove_file(&path);
+    }
     populate_session_log(key, 2); // 4 messages
 
     let (outbound_tx, mut outbound_rx) =
@@ -4468,7 +4770,9 @@ async fn test_history_e2e_via_bus_arc() {
         8,
         0,
     );
-    al.set_session_store(std::sync::Arc::new(crate::session::SessionStore::new_in_memory()));
+    al.set_session_store(std::sync::Arc::new(
+        crate::session::SessionStore::new_in_memory(),
+    ));
     let (inbound_tx, inbound_rx) =
         tokio::sync::mpsc::channel::<nemesis_types::channel::InboundMessage>(64);
     let al = Arc::new(al);
@@ -4478,19 +4782,29 @@ async fn test_history_e2e_via_bus_arc() {
 
     tokio::time::sleep(std::time::Duration::from_millis(30)).await;
 
-    inbound_tx.send(make_history_inbound("web:s1", Some(20), None)).await.unwrap();
+    inbound_tx
+        .send(make_history_inbound("web:s1", Some(20), None))
+        .await
+        .unwrap();
 
     let out = tokio::time::timeout(std::time::Duration::from_secs(2), outbound_rx.recv())
-        .await.expect("timeout").expect("closed");
+        .await
+        .expect("timeout")
+        .expect("closed");
     assert_eq!(out.message_type, "history");
     let data: serde_json::Value = serde_json::from_str(&out.content).unwrap();
-    assert!(data["messages"].as_array().unwrap().len() >= 4,
-        "expected at least 4 messages, got {}", data["messages"].as_array().unwrap().len());
+    assert!(
+        data["messages"].as_array().unwrap().len() >= 4,
+        "expected at least 4 messages, got {}",
+        data["messages"].as_array().unwrap().len()
+    );
 
     al.stop();
     drop(inbound_tx);
     let _ = handle.await;
-    if path.exists() { let _ = std::fs::remove_file(&path); }
+    if path.exists() {
+        let _ = std::fs::remove_file(&path);
+    }
 }
 
 // =========================================================================
@@ -4519,11 +4833,16 @@ async fn test_run_with_reasoning_content() {
     let instance = AgentInstance::new(test_config());
     let context = RequestContext::new("web", "chat1", "user1", "session1");
 
-    let events = agent_loop.run(&instance, "Think about this", &context).await;
-    let done: Vec<_> = events.iter().filter_map(|e| match e {
-        AgentEvent::Done(msg) => Some(msg.clone()),
-        _ => None,
-    }).collect();
+    let events = agent_loop
+        .run(&instance, "Think about this", &context)
+        .await;
+    let done: Vec<_> = events
+        .iter()
+        .filter_map(|e| match e {
+            AgentEvent::Done(msg) => Some(msg.clone()),
+            _ => None,
+        })
+        .collect();
     assert_eq!(done.len(), 1);
     assert_eq!(done[0], "Final answer");
 }
@@ -4584,7 +4903,13 @@ async fn test_run_with_provider_error_no_retry() {
     struct ErrorProvider;
     #[async_trait]
     impl LlmProvider for ErrorProvider {
-        async fn chat(&self, _model: &str, _messages: Vec<LlmMessage>, _options: Option<crate::types::ChatOptions>, _tools: Vec<crate::types::ToolDefinition>) -> Result<LlmResponse, String> {
+        async fn chat(
+            &self,
+            _model: &str,
+            _messages: Vec<LlmMessage>,
+            _options: Option<crate::types::ChatOptions>,
+            _tools: Vec<crate::types::ToolDefinition>,
+        ) -> Result<LlmResponse, String> {
             Err("Provider unavailable".to_string())
         }
     }
@@ -4593,10 +4918,13 @@ async fn test_run_with_provider_error_no_retry() {
     let context = RequestContext::new("web", "chat1", "user1", "session1");
 
     let events = agent_loop.run(&instance, "Hello", &context).await;
-    let errors: Vec<_> = events.iter().filter_map(|e| match e {
-        AgentEvent::Error(msg) => Some(msg.clone()),
-        _ => None,
-    }).collect();
+    let errors: Vec<_> = events
+        .iter()
+        .filter_map(|e| match e {
+            AgentEvent::Error(msg) => Some(msg.clone()),
+            _ => None,
+        })
+        .collect();
     assert!(!errors.is_empty());
     assert!(errors[0].contains("Provider unavailable"));
 }
@@ -4628,17 +4956,23 @@ async fn test_run_with_empty_content_then_response() {
         },
     ]);
     let mut agent_loop = AgentLoop::new(Box::new(provider), test_config());
-    agent_loop.register_tool("calculator".to_string(), Box::new(MockTool {
-        result: "2".to_string(),
-    }));
+    agent_loop.register_tool(
+        "calculator".to_string(),
+        Box::new(MockTool {
+            result: "2".to_string(),
+        }),
+    );
     let instance = AgentInstance::new(test_config());
     let context = RequestContext::new("web", "chat1", "user1", "session1");
 
     let events = agent_loop.run(&instance, "What is 1+1?", &context).await;
-    let done: Vec<_> = events.iter().filter_map(|e| match e {
-        AgentEvent::Done(msg) => Some(msg.clone()),
-        _ => None,
-    }).collect();
+    let done: Vec<_> = events
+        .iter()
+        .filter_map(|e| match e {
+            AgentEvent::Done(msg) => Some(msg.clone()),
+            _ => None,
+        })
+        .collect();
     assert_eq!(done.len(), 1);
     assert_eq!(done[0], "The answer is 2.");
 }
@@ -4662,7 +4996,13 @@ async fn test_process_direct_returns_error_on_provider_failure() {
     struct FailProvider;
     #[async_trait]
     impl LlmProvider for FailProvider {
-        async fn chat(&self, _model: &str, _messages: Vec<LlmMessage>, _options: Option<crate::types::ChatOptions>, _tools: Vec<crate::types::ToolDefinition>) -> Result<LlmResponse, String> {
+        async fn chat(
+            &self,
+            _model: &str,
+            _messages: Vec<LlmMessage>,
+            _options: Option<crate::types::ChatOptions>,
+            _tools: Vec<crate::types::ToolDefinition>,
+        ) -> Result<LlmResponse, String> {
             Err("LLM failure".to_string())
         }
     }
@@ -4677,7 +5017,13 @@ async fn test_process_heartbeat_returns_default_on_empty_response() {
     struct EmptyProvider;
     #[async_trait]
     impl LlmProvider for EmptyProvider {
-        async fn chat(&self, _model: &str, _messages: Vec<LlmMessage>, _options: Option<crate::types::ChatOptions>, _tools: Vec<crate::types::ToolDefinition>) -> Result<LlmResponse, String> {
+        async fn chat(
+            &self,
+            _model: &str,
+            _messages: Vec<LlmMessage>,
+            _options: Option<crate::types::ChatOptions>,
+            _tools: Vec<crate::types::ToolDefinition>,
+        ) -> Result<LlmResponse, String> {
             Ok(LlmResponse {
                 content: String::new(),
                 tool_calls: Vec::new(),
@@ -4695,7 +5041,10 @@ async fn test_process_heartbeat_returns_default_on_empty_response() {
     // When the LLM returns empty content, process_heartbeat returns empty string
     // because the Done event has empty content and there's no Error event
     let response = result.unwrap();
-    assert!(response.is_empty() || response == "I've completed processing but have no response to give.");
+    assert!(
+        response.is_empty()
+            || response == "I've completed processing but have no response to give."
+    );
 }
 
 #[test]
@@ -4725,25 +5074,21 @@ fn test_llm_message_serialization_roundtrip_all_fields() {
 fn test_extract_peer_various_metadata() {
     // Test with peer_kind=cluster
     let msg = make_inbound_with_metadata(
-        "web", "chat1", "user1",
+        "web",
+        "chat1",
+        "user1",
         vec![("peer_kind", "cluster"), ("peer_id", "node-2")],
     );
     let peer = extract_peer(&msg);
     assert_eq!(peer, "cluster:node-2");
 
     // Test with peer_kind=direct (uses sender_id as fallback)
-    let msg = make_inbound_with_metadata(
-        "web", "chat1", "user-123",
-        vec![("peer_kind", "direct")],
-    );
+    let msg = make_inbound_with_metadata("web", "chat1", "user-123", vec![("peer_kind", "direct")]);
     let peer = extract_peer(&msg);
     assert_eq!(peer, "direct:user-123");
 
     // Test with no peer_kind -> falls back to sender_id
-    let msg = make_inbound_with_metadata(
-        "web", "chat1", "fallback-user",
-        vec![],
-    );
+    let msg = make_inbound_with_metadata("web", "chat1", "fallback-user", vec![]);
     let peer = extract_peer(&msg);
     assert_eq!(peer, "fallback-user");
 }
@@ -4869,19 +5214,30 @@ async fn test_run_with_multiple_tool_iterations() {
         },
     ]);
     let mut agent_loop = AgentLoop::new(Box::new(provider), test_config());
-    agent_loop.register_tool("tool1".to_string(), Box::new(MockTool {
-        result: "tool result".to_string(),
-    }));
+    agent_loop.register_tool(
+        "tool1".to_string(),
+        Box::new(MockTool {
+            result: "tool result".to_string(),
+        }),
+    );
     let instance = AgentInstance::new(test_config());
     let context = RequestContext::new("web", "chat1", "user1", "session1");
 
-    let events = agent_loop.run(&instance, "Do something twice", &context).await;
-    let tool_calls: Vec<_> = events.iter().filter(|e| matches!(e, AgentEvent::ToolCall(_))).collect();
+    let events = agent_loop
+        .run(&instance, "Do something twice", &context)
+        .await;
+    let tool_calls: Vec<_> = events
+        .iter()
+        .filter(|e| matches!(e, AgentEvent::ToolCall(_)))
+        .collect();
     assert_eq!(tool_calls.len(), 2);
-    let done: Vec<_> = events.iter().filter_map(|e| match e {
-        AgentEvent::Done(msg) => Some(msg.clone()),
-        _ => None,
-    }).collect();
+    let done: Vec<_> = events
+        .iter()
+        .filter_map(|e| match e {
+            AgentEvent::Done(msg) => Some(msg.clone()),
+            _ => None,
+        })
+        .collect();
     assert_eq!(done[0], "Final response after 2 tool calls");
 }
 
@@ -4890,9 +5246,19 @@ fn test_agent_loop_tool_count() {
     let provider = MockLlmProvider::new(vec![]);
     let mut al = AgentLoop::new(Box::new(provider), test_config());
     assert_eq!(al.tool_count(), 0);
-    al.register_tool("tool1".to_string(), Box::new(MockTool { result: "r1".to_string() }));
+    al.register_tool(
+        "tool1".to_string(),
+        Box::new(MockTool {
+            result: "r1".to_string(),
+        }),
+    );
     assert_eq!(al.tool_count(), 1);
-    al.register_tool("tool2".to_string(), Box::new(MockTool { result: "r2".to_string() }));
+    al.register_tool(
+        "tool2".to_string(),
+        Box::new(MockTool {
+            result: "r2".to_string(),
+        }),
+    );
     assert_eq!(al.tool_count(), 2);
 }
 
@@ -4900,7 +5266,12 @@ fn test_agent_loop_tool_count() {
 fn test_agent_loop_register_tool_shared() {
     let provider = MockLlmProvider::new(vec![]);
     let mut al = AgentLoop::new(Box::new(provider), test_config());
-    al.register_tool_shared("shared_tool".to_string(), Box::new(MockTool { result: "shared".to_string() }));
+    al.register_tool_shared(
+        "shared_tool".to_string(),
+        Box::new(MockTool {
+            result: "shared".to_string(),
+        }),
+    );
     assert_eq!(al.tool_count(), 1);
 }
 
@@ -4925,9 +5296,9 @@ async fn test_process_direct_with_channel_custom() {
         raw_response_body: None,
     }]);
     let agent_loop = AgentLoop::new(Box::new(provider), test_config());
-    let result = agent_loop.process_direct_with_channel(
-        "Hello", "session-1", "discord", "channel-123"
-    ).await;
+    let result = agent_loop
+        .process_direct_with_channel("Hello", "session-1", "discord", "channel-123")
+        .await;
     assert!(result.is_ok());
     assert_eq!(result.unwrap(), "Custom channel response");
 }
@@ -4935,13 +5306,16 @@ async fn test_process_direct_with_channel_custom() {
 #[test]
 fn test_handle_command_show_system_prompt_with_config() {
     let provider = MockLlmProvider::new(vec![]);
-    let al = AgentLoop::new(Box::new(provider), AgentConfig {
-        model: "test".to_string(),
-        system_prompt: Some("You are a helpful assistant.".to_string()),
-        max_turns: 5,
-        tools: vec![],
-        models: std::collections::HashMap::new(),
-    });
+    let al = AgentLoop::new(
+        Box::new(provider),
+        AgentConfig {
+            model: "test".to_string(),
+            system_prompt: Some("You are a helpful assistant.".to_string()),
+            max_turns: 5,
+            tools: vec![],
+            models: std::collections::HashMap::new(),
+        },
+    );
     // /show system_prompt may not be a recognized command target
     // The important thing is it doesn't panic and returns something
     let result = al.handle_command("/show system_prompt");
@@ -4966,11 +5340,14 @@ fn make_stored_asst_tc(content: &str, ids: &[&str]) -> crate::session::StoredMes
     crate::session::StoredMessage {
         role: "assistant".to_string(),
         content: content.to_string(),
-        tool_calls: ids.iter().map(|id| crate::session::StoredToolCall {
-            id: id.to_string(),
-            name: "tool".to_string(),
-            arguments: "{}".to_string(),
-        }).collect(),
+        tool_calls: ids
+            .iter()
+            .map(|id| crate::session::StoredToolCall {
+                id: id.to_string(),
+                name: "tool".to_string(),
+                arguments: "{}".to_string(),
+            })
+            .collect(),
         tool_call_id: None,
         timestamp: String::new(),
         reasoning_content: None,
@@ -5100,9 +5477,12 @@ async fn test_forge_records_successful_tool_experience() {
         },
     ]);
     let mut agent_loop = AgentLoop::new(Box::new(provider), test_config());
-    agent_loop.register_tool("calculator".to_string(), Box::new(MockTool {
-        result: "4".to_string(),
-    }));
+    agent_loop.register_tool(
+        "calculator".to_string(),
+        Box::new(MockTool {
+            result: "4".to_string(),
+        }),
+    );
     agent_loop.set_forge(forge.clone());
     let instance = AgentInstance::new(test_config());
     let context = RequestContext::new("web", "chat1", "user1", "session1");
@@ -5111,11 +5491,17 @@ async fn test_forge_records_successful_tool_experience() {
 
     // Verify experience was recorded
     let experiences = forge.collector().experiences();
-    assert!(!experiences.is_empty(), "expected at least one recorded experience");
+    assert!(
+        !experiences.is_empty(),
+        "expected at least one recorded experience"
+    );
 
     let exp = &experiences[0].experience;
     assert_eq!(exp.tool_name, "calculator");
-    assert!(exp.success, "successful tool call should record success=true");
+    assert!(
+        exp.success,
+        "successful tool call should record success=true"
+    );
     // duration_ms can be 0 if tool executes in <1ms
     assert!(exp.session_key.contains("web"));
     assert!(!exp.id.is_empty());
@@ -5167,10 +5553,16 @@ async fn test_forge_records_tool_error_experience() {
     let _events = agent_loop.run(&instance, "fail", &context).await;
 
     let experiences = forge.collector().experiences();
-    assert!(!experiences.is_empty(), "expected experience even for failed tool");
+    assert!(
+        !experiences.is_empty(),
+        "expected experience even for failed tool"
+    );
     let exp = &experiences[0].experience;
     assert!(!exp.success, "tool error should record success=false");
-    assert!(exp.output_summary.contains("Tool error:"), "output should contain error prefix");
+    assert!(
+        exp.output_summary.contains("Tool error:"),
+        "output should contain error prefix"
+    );
 }
 
 #[tokio::test]
@@ -5200,18 +5592,24 @@ async fn test_forge_no_experience_without_forge() {
         },
     ]);
     let mut agent_loop = AgentLoop::new(Box::new(provider), test_config());
-    agent_loop.register_tool("calculator".to_string(), Box::new(MockTool {
-        result: "4".to_string(),
-    }));
+    agent_loop.register_tool(
+        "calculator".to_string(),
+        Box::new(MockTool {
+            result: "4".to_string(),
+        }),
+    );
     // No forge set — should work normally without panic
     let instance = AgentInstance::new(test_config());
     let context = RequestContext::new("web", "chat1", "user1", "session1");
 
     let events = agent_loop.run(&instance, "calc", &context).await;
-    let done: Vec<_> = events.iter().filter_map(|e| match e {
-        AgentEvent::Done(msg) => Some(msg.clone()),
-        _ => None,
-    }).collect();
+    let done: Vec<_> = events
+        .iter()
+        .filter_map(|e| match e {
+            AgentEvent::Done(msg) => Some(msg.clone()),
+            _ => None,
+        })
+        .collect();
     assert_eq!(done.len(), 1);
 }
 
@@ -5249,7 +5647,12 @@ async fn test_summarize_history_owned_batch_returns_summary() {
     let provider = MockLlmProvider::new(vec![llm_text("Batch summary")]);
     // 6 turns (>4) → to_summarize = first 2 (<=10 → batch path).
     let history: Vec<crate::types::ConversationTurn> = (0..6)
-        .map(|i| turn(if i % 2 == 0 { "user" } else { "assistant" }, &format!("msg {}", i)))
+        .map(|i| {
+            turn(
+                if i % 2 == 0 { "user" } else { "assistant" },
+                &format!("msg {}", i),
+            )
+        })
         .collect();
     let result = summarize_history_owned(&history, "", 128000, &provider, "test-model", None).await;
     assert!(result.is_some(), "batch summarize should return a summary");
@@ -5265,10 +5668,18 @@ async fn test_summarize_history_owned_multipart_merges() {
         llm_text("merged summary"),
     ]);
     let history: Vec<crate::types::ConversationTurn> = (0..16)
-        .map(|i| turn(if i % 2 == 0 { "user" } else { "assistant" }, &format!("msg {}", i)))
+        .map(|i| {
+            turn(
+                if i % 2 == 0 { "user" } else { "assistant" },
+                &format!("msg {}", i),
+            )
+        })
         .collect();
     let result = summarize_history_owned(&history, "", 128000, &provider, "test-model", None).await;
-    assert!(result.is_some(), "multipart summarize should return a summary");
+    assert!(
+        result.is_some(),
+        "multipart summarize should return a summary"
+    );
     assert!(result.unwrap().contains("merged summary"));
 }
 
@@ -5277,7 +5688,12 @@ async fn test_summarize_history_owned_omits_oversized_messages() {
     // One oversized message in to_summarize triggers the omitted-note branch.
     let provider = MockLlmProvider::new(vec![llm_text("Short summary")]);
     let mut history: Vec<crate::types::ConversationTurn> = (0..6)
-        .map(|i| turn(if i % 2 == 0 { "user" } else { "assistant" }, &format!("msg {}", i)))
+        .map(|i| {
+            turn(
+                if i % 2 == 0 { "user" } else { "assistant" },
+                &format!("msg {}", i),
+            )
+        })
         .collect();
     // history[0] is in to_summarize (first 2); make it oversized.
     history[0].content = "x".repeat(10_000);
@@ -5297,9 +5713,22 @@ async fn test_summarize_history_owned_with_observer_manager() {
     let provider = MockLlmProvider::new(vec![llm_text("observed summary")]);
     let observer = Arc::new(nemesis_observer::Manager::new());
     let history: Vec<crate::types::ConversationTurn> = (0..6)
-        .map(|i| turn(if i % 2 == 0 { "user" } else { "assistant" }, &format!("m{}", i)))
+        .map(|i| {
+            turn(
+                if i % 2 == 0 { "user" } else { "assistant" },
+                &format!("m{}", i),
+            )
+        })
         .collect();
-    let result = summarize_history_owned(&history, "", 128000, &provider, "test-model", Some(observer)).await;
+    let result = summarize_history_owned(
+        &history,
+        "",
+        128000,
+        &provider,
+        "test-model",
+        Some(observer),
+    )
+    .await;
     assert!(result.is_some());
     assert!(result.unwrap().contains("observed summary"));
 }

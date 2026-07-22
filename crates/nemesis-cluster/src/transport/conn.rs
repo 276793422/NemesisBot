@@ -7,8 +7,8 @@
 
 use std::io::{Read, Write};
 use std::net::TcpStream;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use parking_lot::RwLock;
@@ -20,8 +20,8 @@ use tokio::task::JoinHandle;
 use tracing::{debug, trace, warn};
 
 use super::frame::{
-    decrypt_frame, derive_key, encrypt_frame, write_frame_async, AsyncFrameReader, AES_KEY_SIZE,
-    MAX_FRAME_SIZE,
+    AES_KEY_SIZE, AsyncFrameReader, MAX_FRAME_SIZE, decrypt_frame, derive_key, encrypt_frame,
+    write_frame_async,
 };
 
 // ===========================================================================
@@ -342,14 +342,8 @@ impl TcpConn {
     /// The connection is not started — call `start()` to launch the read/write
     /// loops.
     pub fn new(conn: TokioTcpStream, config: TcpConnConfig) -> Self {
-        let local_addr = conn
-            .local_addr()
-            .map(|a| a.to_string())
-            .unwrap_or_default();
-        let remote_addr = conn
-            .peer_addr()
-            .map(|a| a.to_string())
-            .unwrap_or_default();
+        let local_addr = conn.local_addr().map(|a| a.to_string()).unwrap_or_default();
+        let remote_addr = conn.peer_addr().map(|a| a.to_string()).unwrap_or_default();
 
         let (send_tx, send_rx) = mpsc::channel(config.send_buffer_size);
         let (recv_tx, recv_rx) = mpsc::channel(config.read_buffer_size);
@@ -461,7 +455,10 @@ impl TcpConn {
                         };
                         match WireMessage::from_bytes(&plaintext) {
                             Ok(msg) => {
-                                trace!("[Transport] Received message: id={}, type={}", msg.id, msg.msg_type);
+                                trace!(
+                                    "[Transport] Received message: id={}, type={}",
+                                    msg.id, msg.msg_type
+                                );
                                 *last_used_r.write() = Instant::now();
                                 if recv_tx.try_send(msg).is_err() {
                                     let count = dropped_r.fetch_add(1, Ordering::SeqCst);

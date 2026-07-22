@@ -8,7 +8,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use tokio::sync::{broadcast, mpsc, RwLock};
+use tokio::sync::{RwLock, broadcast, mpsc};
 use tracing::{debug, error, info, warn};
 
 use nemesis_types::channel::OutboundMessage;
@@ -116,13 +116,13 @@ impl ChannelManager {
     /// and dispatches messages to the appropriate channel.
     /// Must be called exactly once after registration and before start.
     pub fn start_dispatch_loop(self: &Arc<Self>) -> Result<()> {
-        let rx = self
-            .outbound_rx
-            .lock()
-            .take()
-            .ok_or_else(|| NemesisError::Channel("dispatch loop already started".to_string()))?;
+        let rx =
+            self.outbound_rx.lock().take().ok_or_else(|| {
+                NemesisError::Channel("dispatch loop already started".to_string())
+            })?;
 
-        self.dispatch_started.store(true, std::sync::atomic::Ordering::Release);
+        self.dispatch_started
+            .store(true, std::sync::atomic::Ordering::Release);
 
         let mgr = Arc::clone(self);
         tokio::spawn(async move {
@@ -240,7 +240,10 @@ impl ChannelManager {
     pub async fn start_all(self: &Arc<Self>) -> Result<()> {
         // Auto-start dispatch loop if not yet started (M3).
         // In Go, StartAll() starts the dispatch goroutine internally.
-        if !self.dispatch_started.load(std::sync::atomic::Ordering::Acquire) {
+        if !self
+            .dispatch_started
+            .load(std::sync::atomic::Ordering::Acquire)
+        {
             self.start_dispatch_loop()?;
         }
 
@@ -264,7 +267,10 @@ impl ChannelManager {
             }
         }
 
-        info!("[ChannelManager] All channels started, count={}", started_count);
+        info!(
+            "[ChannelManager] All channels started, count={}",
+            started_count
+        );
         Ok(())
     }
 
@@ -279,7 +285,8 @@ impl ChannelManager {
         // In Go, cancelling the context stops the dispatch goroutine.
         // In Rust, cloned senders keep the mpsc channel alive, so we
         // need an explicit signal.
-        self.shutdown.store(true, std::sync::atomic::Ordering::Release);
+        self.shutdown
+            .store(true, std::sync::atomic::Ordering::Release);
 
         let map = self.channels.read().await;
 
@@ -336,7 +343,10 @@ impl ChannelManager {
                 match ch.send(msg).await {
                     Ok(()) => Ok(()),
                     Err(e) => {
-                        error!("[ChannelManager] Failed to dispatch outbound message to {}: {}", channel_name, e);
+                        error!(
+                            "[ChannelManager] Failed to dispatch outbound message to {}: {}",
+                            channel_name, e
+                        );
                         self.metrics
                             .send_errors
                             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -348,7 +358,10 @@ impl ChannelManager {
                 self.metrics
                     .dropped_not_found
                     .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                warn!("[ChannelManager] No channel found for outbound message, target={}", channel_name);
+                warn!(
+                    "[ChannelManager] No channel found for outbound message, target={}",
+                    channel_name
+                );
                 Err(NemesisError::Channel(format!(
                     "channel '{}' not found for outbound message",
                     channel_name
@@ -554,7 +567,10 @@ impl std::fmt::Debug for ChannelInitConfig {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ChannelInitConfig")
             .field("web", &self.web)
-            .field("web_server_ops", &self.web_server_ops.as_ref().map(|_| "Some(...)"))
+            .field(
+                "web_server_ops",
+                &self.web_server_ops.as_ref().map(|_| "Some(...)"),
+            )
             .finish()
     }
 }
@@ -879,17 +895,17 @@ impl ChannelManager {
         {
             if let Some(ref cfg) = config.websocket {
                 info!("[ChannelManager] attempting to initialize WebSocket channel");
-                let ch = crate::websocket::WebSocketChannel::new(
-                    cfg.clone(),
-                    bus_sender.clone(),
-                );
+                let ch = crate::websocket::WebSocketChannel::new(cfg.clone(), bus_sender.clone());
                 self.register_or_replace(Arc::new(ch)).await;
                 info!("[ChannelManager] WebSocket channel enabled successfully");
             }
         }
 
         let count = self.channel_count().await;
-        info!(enabled_channels = count, "[ChannelManager] channel initialization completed");
+        info!(
+            enabled_channels = count,
+            "[ChannelManager] channel initialization completed"
+        );
 
         Ok(())
     }

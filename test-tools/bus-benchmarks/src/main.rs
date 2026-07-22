@@ -9,8 +9,8 @@
 //!   6. Burst Traffic                  (5 bursts x 100 messages)
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use nemesis_bus::MessageBus;
@@ -65,7 +65,10 @@ impl BenchResult {
         let status = if self.passed { "PASS" } else { "FAIL" };
         println!("  [{}] {}", status, self.name);
         println!("         Messages : {}", self.total_messages);
-        println!("         Elapsed  : {:.3} ms", self.elapsed.as_secs_f64() * 1000.0);
+        println!(
+            "         Elapsed  : {:.3} ms",
+            self.elapsed.as_secs_f64() * 1000.0
+        );
         println!("         Throughput: {:.0} msg/s", self.msgs_per_sec());
         if !self.detail.is_empty() {
             println!("         Detail   : {}", self.detail);
@@ -238,7 +241,12 @@ async fn bench_high_frequency() -> BenchResult {
 
     let start = Instant::now();
     for i in 0..MSG_COUNT {
-        bus.publish_inbound(make_inbound("bench", "sender", "chat", &format!("hf-{}", i)));
+        bus.publish_inbound(make_inbound(
+            "bench",
+            "sender",
+            "chat",
+            &format!("hf-{}", i),
+        ));
     }
     let publish_elapsed = start.elapsed();
 
@@ -348,11 +356,7 @@ async fn bench_concurrent_mixed() -> BenchResult {
         passed,
         detail: format!(
             "published={}, per_sub=[{:?}], min={}, max={}, expected_per_sub={}",
-            TOTAL_PUBLISHED,
-            received_per_sub,
-            min,
-            max,
-            TOTAL_PUBLISHED
+            TOTAL_PUBLISHED, received_per_sub, min, max, TOTAL_PUBLISHED
         ),
     }
 }
@@ -510,11 +514,7 @@ async fn bench_outbound_throughput() -> BenchResult {
 
     let start = Instant::now();
     for i in 0..MSG_COUNT {
-        bus.publish_outbound(make_outbound(
-            "bench",
-            "chat",
-            &format!("out-{}", i),
-        ));
+        bus.publish_outbound(make_outbound("bench", "chat", &format!("out-{}", i)));
     }
 
     let _ = recv_handle.await;
@@ -588,15 +588,16 @@ async fn bench_bidirectional() -> BenchResult {
         tokio::spawn(async move {
             for i in 0..INBOUND_COUNT {
                 bus_in.publish_inbound(make_inbound(
-                    "bench", "sender", "chat", &format!("in-{}", i),
+                    "bench",
+                    "sender",
+                    "chat",
+                    &format!("in-{}", i),
                 ));
             }
         }),
         tokio::spawn(async move {
             for i in 0..OUTBOUND_COUNT {
-                bus_out.publish_outbound(make_outbound(
-                    "bench", "chat", &format!("out-{}", i),
-                ));
+                bus_out.publish_outbound(make_outbound("bench", "chat", &format!("out-{}", i)));
             }
         })
     );
@@ -671,7 +672,11 @@ async fn main() {
     println!("  Total msg  : {}", total_messages);
     println!(
         "  Overall    : {}",
-        if all_passed { "ALL PASSED" } else { "SOME FAILED" }
+        if all_passed {
+            "ALL PASSED"
+        } else {
+            "SOME FAILED"
+        }
     );
     println!("-------------------------------------------------------------");
 

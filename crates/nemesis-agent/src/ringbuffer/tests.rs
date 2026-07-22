@@ -266,7 +266,11 @@ fn test_ring_buffer_push_throughput() {
 
     assert_eq!(rb.len(), 10_000);
     // Should push 100k items in under 500ms
-    assert!(elapsed < std::time::Duration::from_millis(500), "RingBuffer push too slow: {:?}", elapsed);
+    assert!(
+        elapsed < std::time::Duration::from_millis(500),
+        "RingBuffer push too slow: {:?}",
+        elapsed
+    );
 }
 
 #[test]
@@ -283,5 +287,9 @@ fn test_ring_buffer_get_all_throughput() {
     let elapsed = start.elapsed();
 
     // Should read 1000 times in under 500ms
-    assert!(elapsed < std::time::Duration::from_millis(500), "RingBuffer get_all too slow: {:?}", elapsed);
+    assert!(
+        elapsed < std::time::Duration::from_millis(500),
+        "RingBuffer get_all too slow: {:?}",
+        elapsed
+    );
 }

@@ -39,22 +39,34 @@ fn test_ff1_adjust_confidence_uses_success_rate_not_usage_count() {
     let dir = tempfile::tempdir().unwrap();
     let registry = Arc::new(Registry::new(RegistryConfig::default()));
     registry.add(Artifact {
-        id: "skill-x".into(), name: "x".into(),
-        kind: ArtifactKind::Skill, version: "1.0".into(),
-        status: ArtifactStatus::Active, content: "...".into(), tool_signature: vec![],
+        id: "skill-x".into(),
+        name: "x".into(),
+        kind: ArtifactKind::Skill,
+        version: "1.0".into(),
+        status: ArtifactStatus::Active,
+        content: "...".into(),
+        tool_signature: vec![],
         created_at: "2026-01-01T00:00:00+08:00".into(),
         updated_at: "2026-01-01T00:00:00+08:00".into(),
-        usage_count: 42, last_degraded_at: None, success_rate: 0.5,
+        usage_count: 42,
+        last_degraded_at: None,
+        success_rate: 0.5,
         consecutive_observing_rounds: 0,
     });
     let cycle_store = CycleStore::new(dir.path());
     let engine = LearningEngine::new(ForgeConfig::default(), registry.clone(), cycle_store);
     engine.adjust_confidence_for_test(&[EvaluationResult {
-        artifact_id: "skill-x".into(), verdict: "positive".into(),
-        improvement_score: 0.5, sample_size: 10,
+        artifact_id: "skill-x".into(),
+        verdict: "positive".into(),
+        improvement_score: 0.5,
+        sample_size: 10,
     }]);
     let a = registry.get("skill-x").expect("artifact present");
-    assert!((a.success_rate - 0.6).abs() < 1e-9, "success_rate should be 0.6, got {}", a.success_rate);
+    assert!(
+        (a.success_rate - 0.6).abs() < 1e-9,
+        "success_rate should be 0.6, got {}",
+        a.success_rate
+    );
     assert_eq!(a.usage_count, 42, "usage_count must be untouched (F-F1)");
 }
 
@@ -73,20 +85,33 @@ fn test_ff2_disable_degraded_skill_hides_deployed_file() {
 
     let registry = Arc::new(Registry::new(RegistryConfig::default()));
     registry.add(Artifact {
-        id: "skill-mybad".into(), name: "mybad".into(),
-        kind: ArtifactKind::Skill, version: "1.0".into(),
-        status: ArtifactStatus::Degraded, content: "...".into(), tool_signature: vec![],
+        id: "skill-mybad".into(),
+        name: "mybad".into(),
+        kind: ArtifactKind::Skill,
+        version: "1.0".into(),
+        status: ArtifactStatus::Degraded,
+        content: "...".into(),
+        tool_signature: vec![],
         created_at: "2026-01-01T00:00:00+08:00".into(),
         updated_at: "2026-01-01T00:00:00+08:00".into(),
-        usage_count: 0, last_degraded_at: None, success_rate: 0.0,
+        usage_count: 0,
+        last_degraded_at: None,
+        success_rate: 0.0,
         consecutive_observing_rounds: 0,
     });
     let cycle_store = CycleStore::new(&forge_dir);
-    let engine = LearningEngine::with_forge_dir(ForgeConfig::default(), forge_dir, registry, cycle_store);
+    let engine =
+        LearningEngine::with_forge_dir(ForgeConfig::default(), forge_dir, registry, cycle_store);
     engine.disable_degraded_skills_impl();
 
-    assert!(!skill_dir.join("SKILL.md").exists(), "degraded skill must be disabled");
-    assert!(skill_dir.join("SKILL.md.disabled").exists(), "should be renamed to .disabled");
+    assert!(
+        !skill_dir.join("SKILL.md").exists(),
+        "degraded skill must be disabled"
+    );
+    assert!(
+        skill_dir.join("SKILL.md.disabled").exists(),
+        "should be renamed to .disabled"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -106,12 +131,18 @@ async fn test_fc1_closed_loop_produces_deployed_skill() {
 
     // Shared registry across pipeline + monitor + engine (F-C3).
     let pipeline = Arc::new(Pipeline::new(ForgeConfig::default(), registry.clone()));
-    let monitor = Arc::new(DeploymentMonitor::new(ForgeConfig::default(), registry.clone()));
+    let monitor = Arc::new(DeploymentMonitor::new(
+        ForgeConfig::default(),
+        registry.clone(),
+    ));
     let engine = LearningEngine::with_forge_dir(
-        ForgeConfig::default(), forge_dir.clone(), registry.clone(), cycle_store,
+        ForgeConfig::default(),
+        forge_dir.clone(),
+        registry.clone(),
+        cycle_store,
     );
     engine.set_pipeline(pipeline); // F-C1
-    engine.set_monitor(monitor);   // F-C1
+    engine.set_monitor(monitor); // F-C1
     // Mock LLM returns a valid draft (>=50 chars, frontmatter, no dangerous /
     // secret content) -> passes validate_static; pipeline has no LLM so Stage 3
     // hardcodes score 70 -> Active -> deployed.
@@ -126,7 +157,8 @@ async fn test_fc1_closed_loop_produces_deployed_skill() {
 
     // 12 successful uses of one tool -> tool_chain freq 12, confidence ~1.0
     // -> generate_actions emits a create_skill action.
-    let exps: Vec<CollectedExperience> = (0..12).map(|_| make_collected("file_read", true)).collect();
+    let exps: Vec<CollectedExperience> =
+        (0..12).map(|_| make_collected("file_read", true)).collect();
     let cycle = engine.run_cycle(&exps).await;
 
     // F-C3: the deployed artifact is in the SHARED registry the monitor/pipeline use.
@@ -134,14 +166,26 @@ async fn test_fc1_closed_loop_produces_deployed_skill() {
         .list(None, None)
         .iter()
         .any(|a| matches!(a.kind, nemesis_types::forge::ArtifactKind::Skill));
-    assert!(has_skill, "closed loop should register a Skill artifact in the shared registry");
+    assert!(
+        has_skill,
+        "closed loop should register a Skill artifact in the shared registry"
+    );
     // F-C1: a skill file was actually written to disk.
     let any_skill_file = std::fs::read_dir(forge_dir.join("skills"))
-        .map(|rd| rd.filter_map(|e| e.ok()).any(|e| e.path().join("SKILL.md").exists()))
+        .map(|rd| {
+            rd.filter_map(|e| e.ok())
+                .any(|e| e.path().join("SKILL.md").exists())
+        })
         .unwrap_or(false);
-    assert!(any_skill_file, "closed loop should write a SKILL.md under forge/skills/");
+    assert!(
+        any_skill_file,
+        "closed loop should write a SKILL.md under forge/skills/"
+    );
     // F-M3: create_skill action should be counted in actions_taken.
-    assert!(cycle.actions_taken >= 1, "create_skill should be counted (F-M3)");
+    assert!(
+        cycle.actions_taken >= 1,
+        "create_skill should be counted (F-M3)"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -149,23 +193,31 @@ async fn test_fc2_refine_then_deploy() {
     // F-C2: a draft that fails validation must be refined, the refined version
     // re-validated and deployed (the old code discarded the refined output and
     // returned after one attempt).
-    use std::sync::atomic::{AtomicU8, Ordering};
     use crate::monitor::DeploymentMonitor;
     use crate::pipeline::Pipeline;
+    use std::sync::atomic::{AtomicU8, Ordering};
     let dir = tempfile::tempdir().unwrap();
     let forge_dir = dir.path().join("forge");
     std::fs::create_dir_all(&forge_dir).unwrap();
     let registry = Arc::new(Registry::new(RegistryConfig::default()));
     let cycle_store = CycleStore::new(&forge_dir);
     let pipeline = Arc::new(Pipeline::new(ForgeConfig::default(), registry.clone()));
-    let monitor = Arc::new(DeploymentMonitor::new(ForgeConfig::default(), registry.clone()));
+    let monitor = Arc::new(DeploymentMonitor::new(
+        ForgeConfig::default(),
+        registry.clone(),
+    ));
     let engine = LearningEngine::with_forge_dir(
-        ForgeConfig::default(), forge_dir.clone(), registry.clone(), cycle_store,
+        ForgeConfig::default(),
+        forge_dir.clone(),
+        registry.clone(),
+        cycle_store,
     );
     engine.set_pipeline(pipeline);
     engine.set_monitor(monitor);
 
-    struct RefineMock { call: AtomicU8 }
+    struct RefineMock {
+        call: AtomicU8,
+    }
     #[async_trait::async_trait]
     impl crate::reflector_llm::LLMCaller for RefineMock {
         async fn chat(&self, _s: &str, _u: &str, _m: Option<i64>) -> Result<String, String> {
@@ -179,9 +231,12 @@ async fn test_fc2_refine_then_deploy() {
             }
         }
     }
-    engine.set_provider(Arc::new(RefineMock { call: AtomicU8::new(0) }));
+    engine.set_provider(Arc::new(RefineMock {
+        call: AtomicU8::new(0),
+    }));
 
-    let exps: Vec<CollectedExperience> = (0..12).map(|_| make_collected("file_read", true)).collect();
+    let exps: Vec<CollectedExperience> =
+        (0..12).map(|_| make_collected("file_read", true)).collect();
     engine.run_cycle(&exps).await;
 
     // Despite the first draft failing, refinement produced a deployable skill.
@@ -189,7 +244,10 @@ async fn test_fc2_refine_then_deploy() {
         .list(None, None)
         .iter()
         .any(|a| matches!(a.kind, nemesis_types::forge::ArtifactKind::Skill));
-    assert!(has_skill, "refined skill should be deployed after first draft failed (F-C2)");
+    assert!(
+        has_skill,
+        "refined skill should be deployed after first draft failed (F-C2)"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -198,18 +256,24 @@ async fn test_fm7_pipeline_lock_free_during_slow_llm() {
     // must be FREE (cloned out + guard dropped before the call). A slow mock
     // LLM (2s sleep) + a concurrent try_lock probe proves this — with the old
     // code (lock held across LLM), the probe would fail.
-    use std::sync::atomic::{AtomicBool, Ordering};
-    use crate::pipeline::Pipeline;
     use crate::monitor::DeploymentMonitor;
+    use crate::pipeline::Pipeline;
+    use std::sync::atomic::{AtomicBool, Ordering};
     let dir = tempfile::tempdir().unwrap();
     let forge_dir = dir.path().join("forge");
     std::fs::create_dir_all(&forge_dir).unwrap();
     let registry = Arc::new(Registry::new(RegistryConfig::default()));
     let cycle_store = CycleStore::new(&forge_dir);
     let pipeline = Arc::new(Pipeline::new(ForgeConfig::default(), registry.clone()));
-    let monitor = Arc::new(DeploymentMonitor::new(ForgeConfig::default(), registry.clone()));
+    let monitor = Arc::new(DeploymentMonitor::new(
+        ForgeConfig::default(),
+        registry.clone(),
+    ));
     let engine = Arc::new(LearningEngine::with_forge_dir(
-        ForgeConfig::default(), forge_dir, registry, cycle_store,
+        ForgeConfig::default(),
+        forge_dir,
+        registry,
+        cycle_store,
     ));
     engine.set_pipeline(pipeline);
     engine.set_monitor(monitor);
@@ -235,11 +299,14 @@ async fn test_fm7_pipeline_lock_free_during_slow_llm() {
     });
 
     // Trigger create_skill (12 same-tool experiences → high-confidence pattern).
-    let exps: Vec<CollectedExperience> = (0..12).map(|_| make_collected("file_read", true)).collect();
+    let exps: Vec<CollectedExperience> =
+        (0..12).map(|_| make_collected("file_read", true)).collect();
     engine.run_cycle(&exps).await;
 
-    assert!(lock_was_free.load(Ordering::SeqCst),
-        "pipeline lock must be FREE during the LLM call (F-M7) — probe at 500ms during 2s LLM");
+    assert!(
+        lock_was_free.load(Ordering::SeqCst),
+        "pipeline lock must be FREE during the LLM call (F-M7) — probe at 500ms during 2s LLM"
+    );
 }
 
 #[test]
@@ -257,10 +324,13 @@ fn test_fm1_suggestions_kept_when_no_deployed_skill() {
     let registry = Arc::new(Registry::new(RegistryConfig::default()));
     // Empty registry — no deployed skill → suggestion must survive.
     let cycle_store = CycleStore::new(&forge_dir);
-    let engine = LearningEngine::with_forge_dir(ForgeConfig::default(), forge_dir, registry, cycle_store);
+    let engine =
+        LearningEngine::with_forge_dir(ForgeConfig::default(), forge_dir, registry, cycle_store);
     engine.check_suggestion_adoption_for_test(&[]);
-    assert!(prompts_dir.join("test_suggestion.md").exists(),
-        "suggestion should survive when no deployed skill (F-M1)");
+    assert!(
+        prompts_dir.join("test_suggestion.md").exists(),
+        "suggestion should survive when no deployed skill (F-M1)"
+    );
 }
 
 #[test]
@@ -274,15 +344,27 @@ fn test_fm2a_classify_verdict_respects_configured_threshold() {
     config.learning.degrade_threshold = 0.5;
     let monitor = DeploymentMonitor::new(config, registry);
     let artifact = Artifact {
-        id: "x".into(), name: "x".into(), kind: ArtifactKind::Skill, version: "1.0".into(),
-        status: ArtifactStatus::Active, content: "".into(), tool_signature: vec![],
-        created_at: "".into(), updated_at: "".into(), usage_count: 0, last_degraded_at: None,
-        success_rate: 0.0, consecutive_observing_rounds: 0,
+        id: "x".into(),
+        name: "x".into(),
+        kind: ArtifactKind::Skill,
+        version: "1.0".into(),
+        status: ArtifactStatus::Active,
+        content: "".into(),
+        tool_signature: vec![],
+        created_at: "".into(),
+        updated_at: "".into(),
+        usage_count: 0,
+        last_degraded_at: None,
+        success_rate: 0.0,
+        consecutive_observing_rounds: 0,
     };
     // improvement=-0.15: with threshold=0.5 → "negative" (new, respects config);
     // old code forced -0.2 → "observing" (ignored user config).
-    assert_eq!(monitor.classify_verdict(-0.15, &artifact), "negative",
-        "threshold=0.5 should make -0.15 'negative', not 'observing'");
+    assert_eq!(
+        monitor.classify_verdict(-0.15, &artifact),
+        "negative",
+        "threshold=0.5 should make -0.15 'negative', not 'observing'"
+    );
 }
 
 #[tokio::test]
@@ -292,9 +374,8 @@ async fn test_run_cycle() {
     let cycle_store = CycleStore::new(dir.path().join("cycles.jsonl"));
     let engine = LearningEngine::new(ForgeConfig::default(), registry, cycle_store);
 
-    let exps: Vec<CollectedExperience> = (0..5)
-        .map(|_| make_collected("file_read", true))
-        .collect();
+    let exps: Vec<CollectedExperience> =
+        (0..5).map(|_| make_collected("file_read", true)).collect();
 
     let cycle = engine.run_cycle(&exps).await;
     assert!(cycle.patterns_found > 0);
@@ -371,7 +452,11 @@ fn test_detect_efficiency_issue() {
         .iter()
         .filter(|p| p.pattern_type == "efficiency_issue")
         .collect();
-    assert!(!efficiency.is_empty(), "Expected efficiency issue patterns, got: {:?}", patterns);
+    assert!(
+        !efficiency.is_empty(),
+        "Expected efficiency issue patterns, got: {:?}",
+        patterns
+    );
     assert!(efficiency[0].description.contains("slow_tool"));
 }
 
@@ -428,23 +513,28 @@ fn test_detect_all_four_pattern_types() {
     }
 
     let patterns = engine.extract_patterns(&exps);
-    let types: std::collections::HashSet<&str> = patterns
-        .iter()
-        .map(|p| p.pattern_type.as_str())
-        .collect();
+    let types: std::collections::HashSet<&str> =
+        patterns.iter().map(|p| p.pattern_type.as_str()).collect();
 
-    assert!(types.contains("tool_chain"), "Should detect tool_chain, found: {:?}", types);
+    assert!(
+        types.contains("tool_chain"),
+        "Should detect tool_chain, found: {:?}",
+        types
+    );
     assert!(
         types.contains("error_recovery"),
-        "Should detect error_recovery, found: {:?}", types
+        "Should detect error_recovery, found: {:?}",
+        types
     );
     assert!(
         types.contains("efficiency_issue"),
-        "Should detect efficiency_issue, found: {:?}", types
+        "Should detect efficiency_issue, found: {:?}",
+        types
     );
     assert!(
         types.contains("success_template"),
-        "Should detect success_template, found: {:?}", types
+        "Should detect success_template, found: {:?}",
+        types
     );
 }
 
@@ -494,7 +584,11 @@ fn test_generate_actions_for_all_pattern_types() {
     // error_recovery (conf 0.85 >= 0.5) => create_skill
     // efficiency_issue => suggest_prompt
     // success_template (conf 0.95 >= 0.5) => create_skill
-    assert!(actions.len() >= 3, "Expected at least 3 actions, got {}", actions.len());
+    assert!(
+        actions.len() >= 3,
+        "Expected at least 3 actions, got {}",
+        actions.len()
+    );
 
     let create_skills: Vec<_> = actions
         .iter()
@@ -611,9 +705,7 @@ async fn test_run_cycle_persists() {
     let cycle_store = CycleStore::new(dir.path());
     let engine = LearningEngine::new(ForgeConfig::default(), registry, cycle_store);
 
-    let exps: Vec<CollectedExperience> = (0..3)
-        .map(|_| make_collected("tool", true))
-        .collect();
+    let exps: Vec<CollectedExperience> = (0..3).map(|_| make_collected("tool", true)).collect();
     let cycle = engine.run_cycle(&exps).await;
     assert!(cycle.id.len() > 0);
     assert!(cycle.started_at.len() > 0);
@@ -652,7 +744,10 @@ fn test_extract_patterns_tool_chain_detection() {
 
     let patterns = engine.extract_patterns(&exps);
     assert!(patterns.iter().any(|p| p.pattern_type == "tool_chain"));
-    let tc = patterns.iter().find(|p| p.pattern_type == "tool_chain").unwrap();
+    let tc = patterns
+        .iter()
+        .find(|p| p.pattern_type == "tool_chain")
+        .unwrap();
     assert!(tc.frequency >= 3);
     assert!(tc.confidence > 0.0);
 }
@@ -693,7 +788,7 @@ fn test_extract_patterns_sorted_by_confidence() {
 
     let patterns = engine.extract_patterns(&exps);
     for i in 1..patterns.len() {
-        assert!(patterns[i-1].confidence >= patterns[i].confidence);
+        assert!(patterns[i - 1].confidence >= patterns[i].confidence);
     }
 }
 
@@ -812,7 +907,11 @@ fn test_generate_actions_sorted_by_priority() {
     if actions.len() >= 2 {
         // High priority (create_skill) should come before medium (suggest_prompt)
         let priority_order = |p: &str| -> u8 {
-            match p { "high" => 0, "medium" => 1, _ => 2 }
+            match p {
+                "high" => 0,
+                "medium" => 1,
+                _ => 2,
+            }
         };
         assert!(priority_order(&actions[0].priority) <= priority_order(&actions[1].priority));
     }
@@ -842,9 +941,7 @@ fn test_detect_error_recovery_no_errors() {
     let cycle_store = CycleStore::new(dir.path().join("cycles.jsonl"));
     let engine = LearningEngine::new(ForgeConfig::default(), registry, cycle_store);
 
-    let exps: Vec<CollectedExperience> = (0..5)
-        .map(|_| make_collected("perfect", true))
-        .collect();
+    let exps: Vec<CollectedExperience> = (0..5).map(|_| make_collected("perfect", true)).collect();
     let patterns = engine.extract_patterns(&exps);
     assert!(!patterns.iter().any(|p| p.pattern_type == "error_recovery"));
 }
@@ -862,10 +959,16 @@ fn test_detect_success_template_with_failure() {
     exps.push(make_collected("almost_perfect", false));
 
     let patterns = engine.extract_patterns(&exps);
-    let success: Vec<_> = patterns.iter()
-        .filter(|p| p.pattern_type == "success_template" && p.tools.contains(&"almost_perfect".to_string()))
+    let success: Vec<_> = patterns
+        .iter()
+        .filter(|p| {
+            p.pattern_type == "success_template" && p.tools.contains(&"almost_perfect".to_string())
+        })
         .collect();
-    assert!(success.is_empty(), "Should not be success template if any failure");
+    assert!(
+        success.is_empty(),
+        "Should not be success template if any failure"
+    );
 }
 
 #[test]
@@ -943,7 +1046,10 @@ fn test_generate_skill_name_simple() {
 
 #[test]
 fn test_generate_skill_name_with_underscores() {
-    assert_eq!(generate_skill_name("file_read->file_write"), "file-read-file-write-workflow");
+    assert_eq!(
+        generate_skill_name("file_read->file_write"),
+        "file-read-file-write-workflow"
+    );
 }
 
 #[test]
@@ -1169,9 +1275,7 @@ async fn test_run_cycle_with_forge_dir() {
         registry,
         cycle_store,
     );
-    let exps: Vec<CollectedExperience> = (0..3)
-        .map(|_| make_collected("tool", true))
-        .collect();
+    let exps: Vec<CollectedExperience> = (0..3).map(|_| make_collected("tool", true)).collect();
     let cycle = engine.run_cycle(&exps).await;
     assert_eq!(cycle.status, nemesis_types::forge::CycleStatus::Completed);
 }
@@ -1313,7 +1417,10 @@ fn test_set_pipeline() {
     let registry2 = registry.clone();
     let engine = LearningEngine::new(ForgeConfig::default(), registry, cycle_store);
 
-    let pipeline = Arc::new(crate::pipeline::Pipeline::new(ForgeConfig::default(), registry2));
+    let pipeline = Arc::new(crate::pipeline::Pipeline::new(
+        ForgeConfig::default(),
+        registry2,
+    ));
     engine.set_pipeline(pipeline);
 }
 
@@ -1387,9 +1494,7 @@ fn test_detect_tool_chain_patterns_few_experiences() {
     let cycle_store = CycleStore::new(dir.path().join("cycles.jsonl"));
     let engine = LearningEngine::new(ForgeConfig::default(), registry, cycle_store);
 
-    let exps: Vec<CollectedExperience> = (0..2)
-        .map(|_| make_collected("tool_a", true))
-        .collect();
+    let exps: Vec<CollectedExperience> = (0..2).map(|_| make_collected("tool_a", true)).collect();
     let patterns = engine.detect_tool_chains(&exps);
     assert!(patterns.is_empty());
 }
@@ -1503,7 +1608,10 @@ async fn test_get_latest_cycle_empty() {
     let engine = LearningEngine::new(ForgeConfig::default(), registry, cycle_store);
 
     let latest = engine.get_latest_cycle();
-    assert!(latest.is_none(), "Should be None when no cycles have been run");
+    assert!(
+        latest.is_none(),
+        "Should be None when no cycles have been run"
+    );
 }
 
 // ============================================================
@@ -1745,12 +1853,8 @@ async fn test_run_cycle_with_suggest_prompt_action() {
     let cycle_store = CycleStore::new(dir.path().join("cycles.jsonl"));
     let mut config = ForgeConfig::default();
     config.learning.min_pattern_frequency = 3;
-    let engine = LearningEngine::with_forge_dir(
-        config,
-        dir.path().join("forge"),
-        registry,
-        cycle_store,
-    );
+    let engine =
+        LearningEngine::with_forge_dir(config, dir.path().join("forge"), registry, cycle_store);
 
     // Create efficiency_issue pattern which triggers suggest_prompt
     let mut exps = Vec::new();
@@ -1787,16 +1891,10 @@ async fn test_run_cycle_auto_create_limit() {
     let cycle_store = CycleStore::new(dir.path().join("cycles.jsonl"));
     let mut config = ForgeConfig::default();
     config.learning.max_auto_creates = 1;
-    let engine = LearningEngine::with_forge_dir(
-        config,
-        dir.path().join("forge"),
-        registry,
-        cycle_store,
-    );
+    let engine =
+        LearningEngine::with_forge_dir(config, dir.path().join("forge"), registry, cycle_store);
 
-    let exps: Vec<CollectedExperience> = (0..5)
-        .map(|_| make_collected("tool", true))
-        .collect();
+    let exps: Vec<CollectedExperience> = (0..5).map(|_| make_collected("tool", true)).collect();
     let cycle = engine.run_cycle(&exps).await;
     assert_eq!(cycle.status, nemesis_types::forge::CycleStatus::Completed);
 }
@@ -1827,7 +1925,8 @@ async fn test_execute_suggest_prompt_writes_file() {
     // Verify file was written
     let prompts_dir = dir.path().join("prompts");
     assert!(prompts_dir.exists());
-    let files: Vec<_> = std::fs::read_dir(&prompts_dir).unwrap()
+    let files: Vec<_> = std::fs::read_dir(&prompts_dir)
+        .unwrap()
         .filter_map(|e| e.ok())
         .collect();
     assert_eq!(files.len(), 1);
@@ -1872,7 +1971,8 @@ fn test_execute_suggest_prompt_special_chars_in_name() {
     engine.execute_suggest_prompt_for_test(&mut action);
     assert_eq!(action.status, "executed");
     // Name should be sanitized: arrows replaced, spaces replaced
-    let files: Vec<_> = std::fs::read_dir(dir.path().join("prompts")).unwrap()
+    let files: Vec<_> = std::fs::read_dir(dir.path().join("prompts"))
+        .unwrap()
         .filter_map(|e| e.ok())
         .collect();
     assert_eq!(files.len(), 1);
@@ -1947,11 +2047,16 @@ fn test_check_suggestion_adoption_removes_files() {
     engine.check_suggestion_adoption(&patterns);
 
     // All _suggestion.md files should be removed
-    let remaining: Vec<_> = std::fs::read_dir(&prompts_dir).unwrap()
+    let remaining: Vec<_> = std::fs::read_dir(&prompts_dir)
+        .unwrap()
         .filter_map(|e| e.ok())
         .collect();
     // The non-suggestion file should remain
-    assert!(remaining.iter().any(|f| f.file_name().to_string_lossy().contains("other_file")));
+    assert!(
+        remaining
+            .iter()
+            .any(|f| f.file_name().to_string_lossy().contains("other_file"))
+    );
 }
 
 #[test]
@@ -1983,12 +2088,12 @@ fn test_detect_efficiency_issue_single_tool_no_pattern() {
     // Only one experience for a tool => can't be 2x slower than itself
     let exps = vec![make_collected_with_duration("solo_tool", true, 500)];
     let patterns = engine.extract_patterns(&exps);
-    let efficiency: Vec<_> = patterns.iter()
+    let efficiency: Vec<_> = patterns
+        .iter()
         .filter(|p| p.pattern_type == "efficiency_issue")
         .collect();
     assert!(efficiency.is_empty());
 }
-
 
 #[test]
 fn test_sort_actions_with_unknown_priority() {

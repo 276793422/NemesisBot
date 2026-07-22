@@ -27,10 +27,9 @@ fn test_unknown_action() {
 #[test]
 fn test_custom_action_registration() {
     let handler = DefaultHandler::new("node-1".into());
-    handler.custom_handler().register(
-        "my_action",
-        std::sync::Arc::new(|_, p| Ok(p)),
-    );
+    handler
+        .custom_handler()
+        .register("my_action", std::sync::Arc::new(|_, p| Ok(p)));
 
     let result = handler.handle("my_action", serde_json::json!({"key": "value"}));
     assert!(result.success);
@@ -231,10 +230,7 @@ fn test_forge_share_action() {
 #[test]
 fn test_forge_share_missing_report() {
     let handler = DefaultHandler::new("node-1".into());
-    let result = handler.handle(
-        "forge_share",
-        serde_json::json!({"source_node": "node-2"}),
-    );
+    let result = handler.handle("forge_share", serde_json::json!({"source_node": "node-2"}));
     assert!(!result.success);
 }
 
@@ -255,7 +251,12 @@ fn test_llm_proxy_action() {
     );
     // Without a real provider, returns success with a validation-only response
     assert!(result.success);
-    assert!(result.response["content"].as_str().unwrap().contains("no provider configured"));
+    assert!(
+        result.response["content"]
+            .as_str()
+            .unwrap()
+            .contains("no provider configured")
+    );
 }
 
 #[test]
@@ -287,9 +288,7 @@ fn test_custom_handler_success() {
     let handler = DefaultHandler::new("node-1".into());
     handler.custom_handler().register(
         "my_custom",
-        std::sync::Arc::new(|_, p| {
-            Ok(serde_json::json!({"echo": p}))
-        }),
+        std::sync::Arc::new(|_, p| Ok(serde_json::json!({"echo": p}))),
     );
     let result = handler.handle("my_custom", serde_json::json!({"data": 42}));
     assert!(result.success);

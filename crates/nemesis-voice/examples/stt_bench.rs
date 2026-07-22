@@ -4,7 +4,7 @@
 //! Usage:
 //!   cargo run --release --example stt_bench -p nemesis-voice -- <voice_dir> [wav]
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use std::path::PathBuf;
 use std::time::Instant;
 
@@ -20,7 +20,8 @@ fn read_wav_pcm_mono(path: &PathBuf) -> Result<(Vec<f32>, u32)> {
     let mut i = 12;
     while i + 8 <= bytes.len() {
         let id = &bytes[i..i + 4];
-        let sz = u32::from_le_bytes([bytes[i + 4], bytes[i + 5], bytes[i + 6], bytes[i + 7]]) as usize;
+        let sz =
+            u32::from_le_bytes([bytes[i + 4], bytes[i + 5], bytes[i + 6], bytes[i + 7]]) as usize;
         let body_end = (i + 8 + sz).min(bytes.len());
         let body = &bytes[i + 8..body_end];
         if id == b"fmt " && body.len() >= 16 {
@@ -39,7 +40,11 @@ fn read_wav_pcm_mono(path: &PathBuf) -> Result<(Vec<f32>, u32)> {
         bail!("missing fmt/data chunk in {}", path.display());
     }
     if bits != 16 {
-        bail!("expected 16-bit PCM, got {} bits in {}", bits, path.display());
+        bail!(
+            "expected 16-bit PCM, got {} bits in {}",
+            bits,
+            path.display()
+        );
     }
     let samples: Vec<f32> = data
         .chunks_exact(2)
@@ -58,7 +63,8 @@ fn bench_lang(
     samples: &[f32],
     sr: u32,
 ) -> Result<()> {
-    let engine = nemesis_voice::SttEngine::new(stt_dir, model_name, lang_arg, false, use_itn, threads)?;
+    let engine =
+        nemesis_voice::SttEngine::new(stt_dir, model_name, lang_arg, false, use_itn, threads)?;
 
     // warmup (first decode includes ORT session warm-up / graph allocation)
     let _ = engine.recognize_detail(samples, sr)?;
@@ -77,10 +83,20 @@ fn bench_lang(
     times.sort_by(|a, b| a.partial_cmp(b).unwrap());
     let mean = times.iter().sum::<f64>() / N as f64;
     let dur_s = samples.len() as f64 / sr as f64;
-    let rt = if mean > 0.0 { dur_s / (mean / 1000.0) } else { 0.0 };
+    let rt = if mean > 0.0 {
+        dur_s / (mean / 1000.0)
+    } else {
+        0.0
+    };
     println!(
         "language={:>5} | detected={:?} | mean={:6.1}ms min={:6.1}ms max={:6.1}ms ({:5.1}x RT) | text={:?}",
-        lang_arg, last_lang, mean, times[0], times[N - 1], rt, last_text
+        lang_arg,
+        last_lang,
+        mean,
+        times[0],
+        times[N - 1],
+        rt,
+        last_text
     );
     Ok(())
 }
@@ -91,16 +107,20 @@ fn main() -> Result<()> {
             .nth(1)
             .deref_or_exit("usage: stt_bench <voice_dir> [wav]"),
     );
-    let wav = PathBuf::from(
-        std::env::args()
-            .nth(2)
-            .unwrap_or_else(|| voice_dir.join("tts_test.wav").to_string_lossy().into_owned()),
-    );
+    let wav = PathBuf::from(std::env::args().nth(2).unwrap_or_else(|| {
+        voice_dir
+            .join("tts_test.wav")
+            .to_string_lossy()
+            .into_owned()
+    }));
 
     let config_path = voice_dir.join("config.toml");
     let cfg = nemesis_voice::AppConfig::load_or_default(&config_path);
 
-    println!("loading sherpa-onnx runtime from {} ...", voice_dir.display());
+    println!(
+        "loading sherpa-onnx runtime from {} ...",
+        voice_dir.display()
+    );
     nemesis_voice::bootstrap::init_sherpa(&voice_dir)?;
 
     let stt_dir = nemesis_voice::model::ensure_stt_model(&cfg)?;
@@ -148,9 +168,7 @@ fn main() -> Result<()> {
     }
 
     println!("{}", "-".repeat(96));
-    println!(
-        "lang_remedy path (language=auto + lang_remedy=true → 模型声明补救则建第二引擎):"
-    );
+    println!("lang_remedy path (language=auto + lang_remedy=true → 模型声明补救则建第二引擎):");
     // 用真实 model_name（sensevoice）+ lang_remedy=true，走生产路径：
     // 模型声明了补救 → 建英文 fallback 引擎。中文样本检测为 zh 不触发重解，但验证了双引擎构造。
     let fb_engine = nemesis_voice::SttEngine::new(
@@ -170,9 +188,7 @@ fn main() -> Result<()> {
     );
 
     println!("{}", "-".repeat(96));
-    println!(
-        "lang_remedy=false (强制关闭补救，回退纯 auto — 模拟换不误判模型):"
-    );
+    println!("lang_remedy=false (强制关闭补救，回退纯 auto — 模拟换不误判模型):");
     let nofb = nemesis_voice::SttEngine::new(
         &stt_dir,
         &cfg.stt.model_name,

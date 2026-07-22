@@ -187,7 +187,10 @@ impl SessionManager {
             message_len = message.len(),
             "[WebSocket] Session not found or no send queue"
         );
-        Err(format!("session not found or no send queue: {}", session_id))
+        Err(format!(
+            "session not found or no send queue: {}",
+            session_id
+        ))
     }
 
     /// Get active session count.

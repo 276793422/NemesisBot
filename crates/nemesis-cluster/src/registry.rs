@@ -133,7 +133,11 @@ impl PeerRegistry {
 
     /// Whether a peer is static/configured. Returns `false` if unknown.
     pub fn is_peer_static(&self, node_id: &str) -> bool {
-        self.peers.lock().get(node_id).map(|e| e.is_static).unwrap_or(false)
+        self.peers
+            .lock()
+            .get(node_id)
+            .map(|e| e.is_static)
+            .unwrap_or(false)
     }
 
     /// Remove a peer by node ID.
@@ -219,9 +223,7 @@ impl PeerRegistry {
         self.peers
             .lock()
             .values()
-            .filter(|e| {
-                e.info.status == NodeStatus::Online && e.info.base.id != exclude_node_id
-            })
+            .filter(|e| e.info.status == NodeStatus::Online && e.info.base.id != exclude_node_id)
             .map(|e| e.info.clone())
             .collect()
     }
@@ -256,10 +258,7 @@ impl PeerRegistry {
             .values()
             .filter(|e| {
                 e.info.status == NodeStatus::Online
-                    && e.info
-                        .capabilities
-                        .iter()
-                        .any(|c| capabilities.contains(c))
+                    && e.info.capabilities.iter().any(|c| capabilities.contains(c))
             })
             .map(|e| e.info.clone())
             .collect()
@@ -317,7 +316,8 @@ impl PeerRegistry {
     /// Returns the list of evicted node IDs.
     pub fn evict_stale(&self) -> Vec<String> {
         let now = chrono::Local::now();
-        let threshold = now - chrono::Duration::seconds(self.health_config.eviction_timeout_secs as i64);
+        let threshold =
+            now - chrono::Duration::seconds(self.health_config.eviction_timeout_secs as i64);
 
         let mut peers = self.peers.lock();
         let to_evict: Vec<String> = peers
@@ -325,7 +325,9 @@ impl PeerRegistry {
             .filter_map(|(id, entry)| {
                 // Only evict peers that are already offline (stale/failed)
                 if entry.info.status != NodeStatus::Online {
-                    if let Ok(last_check) = chrono::DateTime::parse_from_rfc3339(&entry.last_health_check) {
+                    if let Ok(last_check) =
+                        chrono::DateTime::parse_from_rfc3339(&entry.last_health_check)
+                    {
                         let last_check_utc = last_check.with_timezone(&chrono::Local);
                         if last_check_utc < threshold {
                             return Some(id.clone());
@@ -349,7 +351,8 @@ impl PeerRegistry {
     /// are now marked Offline because their last health check is too old).
     pub fn check_health(&self) -> Vec<String> {
         let now = chrono::Local::now();
-        let threshold = now - chrono::Duration::seconds(self.health_config.stale_timeout_secs as i64);
+        let threshold =
+            now - chrono::Duration::seconds(self.health_config.stale_timeout_secs as i64);
 
         let mut peers = self.peers.lock();
         let mut newly_stale = Vec::new();
@@ -402,5 +405,6 @@ fn addr_matches(candidate: &str, needle: &str) -> bool {
         Some((h, p)) if !p.is_empty() && !h.is_empty() => (h, Some(p)),
         _ => (needle_lc.as_str(), None),
     };
-    cand_host == needle_host && (cand_port.is_none() || needle_port.is_none() || cand_port == needle_port)
+    cand_host == needle_host
+        && (cand_port.is_none() || needle_port.is_none() || cand_port == needle_port)
 }

@@ -26,7 +26,7 @@ use tracing::debug;
 
 use nemesis_agent::context::RequestContext;
 use nemesis_agent::r#loop::Tool;
-use nemesis_agent::{register_shared_tools, SharedToolConfig};
+use nemesis_agent::{SharedToolConfig, register_shared_tools};
 
 /// Wire request from the gateway (mirror of the gateway-side `ExecutorRequest`).
 #[derive(serde::Deserialize)]
@@ -132,7 +132,7 @@ async fn dispatch(tools: &HashMap<String, Box<dyn Tool>>, line: &str) -> Executo
                 ok: false,
                 result: String::new(),
                 error: format!("bad request line: {e}"),
-            }
+            };
         }
     };
 
@@ -144,7 +144,7 @@ async fn dispatch(tools: &HashMap<String, Box<dyn Tool>>, line: &str) -> Executo
                 ok: false,
                 result: String::new(),
                 error: format!("bad context: {e}"),
-            }
+            };
         }
     };
 
@@ -155,7 +155,7 @@ async fn dispatch(tools: &HashMap<String, Box<dyn Tool>>, line: &str) -> Executo
                 ok: false,
                 result: String::new(),
                 error: format!("unknown tool: {}", req.tool),
-            }
+            };
         }
     };
 

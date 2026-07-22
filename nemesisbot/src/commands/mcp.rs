@@ -3,8 +3,8 @@
 //! Provides full client connectivity via nemesis_mcp crate for
 //! listing tools/resources/prompts and testing server connections.
 
-use anyhow::Result;
 use crate::common;
+use anyhow::Result;
 use nemesis_mcp::client::Client;
 
 #[derive(clap::Subcommand)]
@@ -98,24 +98,33 @@ fn find_server(mcp_cfg_path: &std::path::Path, name: &str) -> Result<Option<serd
 
 /// Build a ServerConfig from the JSON stored in mcp config.
 fn json_to_server_config(server: &serde_json::Value) -> nemesis_mcp::types::ServerConfig {
-    let name = server.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string();
-    let command = server.get("command").and_then(|v| v.as_str()).unwrap_or("").to_string();
-    let args: Vec<String> = server.get("args")
+    let name = server
+        .get("name")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    let command = server
+        .get("command")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    let args: Vec<String> = server
+        .get("args")
         .and_then(|v| v.as_array())
-        .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
-        .unwrap_or_default();
-
-    let env: Option<Vec<String>> = server.get("env")
-        .and_then(|v| v.as_array())
-        .map(|arr| {
-            arr.iter()
+        .map(|a| {
+            a.iter()
                 .filter_map(|v| v.as_str().map(String::from))
                 .collect()
-        });
+        })
+        .unwrap_or_default();
 
-    let timeout = server.get("timeout")
-        .and_then(|v| v.as_u64())
-        .unwrap_or(30);
+    let env: Option<Vec<String>> = server.get("env").and_then(|v| v.as_array()).map(|arr| {
+        arr.iter()
+            .filter_map(|v| v.as_str().map(String::from))
+            .collect()
+    });
+
+    let timeout = server.get("timeout").and_then(|v| v.as_u64()).unwrap_or(30);
 
     nemesis_mcp::types::ServerConfig {
         name,
@@ -131,7 +140,9 @@ async fn connect_to_server(server: &serde_json::Value) -> Result<nemesis_mcp::cl
     let config = json_to_server_config(server);
     let mut client = nemesis_mcp::client::McpClient::from_config(&config)
         .map_err(|e| anyhow::anyhow!("Failed to create MCP client: {}", e))?;
-    client.initialize().await
+    client
+        .initialize()
+        .await
         .map_err(|e| anyhow::anyhow!("Failed to initialize MCP connection: {}", e))?;
     Ok(client)
 }
@@ -155,15 +166,25 @@ fn sync_mcp_master_switch(mcp_cfg_path: &std::path::Path, enabled: bool) -> Resu
         return Ok(());
     }
 
-    let mut cfg: serde_json::Value =
-        serde_json::from_str(&std::fs::read_to_string(&config_json)?)?;
-    if cfg.get("mcp").and_then(|m| m.get("enabled")).and_then(|v| v.as_bool()) == Some(enabled) {
+    let mut cfg: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&config_json)?)?;
+    if cfg
+        .get("mcp")
+        .and_then(|m| m.get("enabled"))
+        .and_then(|v| v.as_bool())
+        == Some(enabled)
+    {
         return Ok(()); // already in desired state
     }
 
     cfg["mcp"]["enabled"] = serde_json::Value::Bool(enabled);
-    std::fs::write(&config_json, serde_json::to_string_pretty(&cfg).unwrap_or_default())?;
-    tracing::info!("[MCP] Synced master switch: config.json mcp.enabled = {}", enabled);
+    std::fs::write(
+        &config_json,
+        serde_json::to_string_pretty(&cfg).unwrap_or_default(),
+    )?;
+    tracing::info!(
+        "[MCP] Synced master switch: config.json mcp.enabled = {}",
+        enabled
+    );
     Ok(())
 }
 
@@ -182,7 +203,10 @@ fn cmd_list(mcp_cfg_path: &std::path::Path) -> Result<()> {
         let data = std::fs::read_to_string(mcp_cfg_path)?;
         let cfg: serde_json::Value = serde_json::from_str(&data)?;
 
-        let enabled = cfg.get("enabled").and_then(|v| v.as_bool()).unwrap_or(false);
+        let enabled = cfg
+            .get("enabled")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
 
         if let Some(servers) = cfg.get("servers").and_then(|v| v.as_array()) {
             println!("Configured MCP Servers ({}):", servers.len());
@@ -193,12 +217,26 @@ fn cmd_list(mcp_cfg_path: &std::path::Path) -> Result<()> {
             } else {
                 for server in servers {
                     let name = server.get("name").and_then(|v| v.as_str()).unwrap_or("?");
-                    let command = server.get("command").and_then(|v| v.as_str()).unwrap_or("?");
-                    let args = server.get("args").and_then(|v| v.as_array())
-                        .map(|a| a.iter().filter_map(|v| v.as_str()).collect::<Vec<_>>().join(" "))
+                    let command = server
+                        .get("command")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("?");
+                    let args = server
+                        .get("args")
+                        .and_then(|v| v.as_array())
+                        .map(|a| {
+                            a.iter()
+                                .filter_map(|v| v.as_str())
+                                .collect::<Vec<_>>()
+                                .join(" ")
+                        })
                         .unwrap_or_default();
                     let timeout = server.get("timeout").and_then(|v| v.as_u64()).unwrap_or(0);
-                    let env_count = server.get("env").and_then(|v| v.as_array()).map(|a| a.len()).unwrap_or(0);
+                    let env_count = server
+                        .get("env")
+                        .and_then(|v| v.as_array())
+                        .map(|a| a.len())
+                        .unwrap_or(0);
 
                     println!("  {}", name);
                     println!("    Command: {} {}", command, args);
@@ -224,7 +262,14 @@ fn cmd_list(mcp_cfg_path: &std::path::Path) -> Result<()> {
     Ok(())
 }
 
-fn cmd_add(mcp_cfg_path: &std::path::Path, name: &str, command: &str, args: Option<&str>, env: &[String], timeout: u64) -> Result<()> {
+fn cmd_add(
+    mcp_cfg_path: &std::path::Path,
+    name: &str,
+    command: &str,
+    args: Option<&str>,
+    env: &[String],
+    timeout: u64,
+) -> Result<()> {
     let dir = mcp_cfg_path.parent().unwrap();
     let _ = std::fs::create_dir_all(dir);
 
@@ -262,7 +307,10 @@ fn cmd_add(mcp_cfg_path: &std::path::Path, name: &str, command: &str, args: Opti
     }
     cfg["enabled"] = serde_json::Value::Bool(true);
 
-    std::fs::write(mcp_cfg_path, serde_json::to_string_pretty(&cfg).unwrap_or_default())?;
+    std::fs::write(
+        mcp_cfg_path,
+        serde_json::to_string_pretty(&cfg).unwrap_or_default(),
+    )?;
 
     // Sync master switch in config.json: set mcp.enabled = true
     sync_mcp_master_switch(mcp_cfg_path, true)?;
@@ -278,7 +326,8 @@ fn cmd_add(mcp_cfg_path: &std::path::Path, name: &str, command: &str, args: Opti
 
 fn cmd_remove(mcp_cfg_path: &std::path::Path, name: &str) -> Result<()> {
     if mcp_cfg_path.exists() {
-        let mut cfg: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(mcp_cfg_path)?)?;
+        let mut cfg: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(mcp_cfg_path)?)?;
         let mut found = false;
         if let Some(servers) = cfg.get_mut("servers").and_then(|v| v.as_array_mut()) {
             let before = servers.len();
@@ -286,7 +335,10 @@ fn cmd_remove(mcp_cfg_path: &std::path::Path, name: &str) -> Result<()> {
             found = servers.len() < before;
         }
         if found {
-            std::fs::write(mcp_cfg_path, serde_json::to_string_pretty(&cfg).unwrap_or_default())?;
+            std::fs::write(
+                mcp_cfg_path,
+                serde_json::to_string_pretty(&cfg).unwrap_or_default(),
+            )?;
             println!("MCP server '{}' removed.", name);
             println!("Restart agent/gateway to apply changes.");
         } else {
@@ -309,7 +361,10 @@ async fn cmd_test(mcp_cfg_path: &std::path::Path, name: &str) -> Result<()> {
         }
     };
 
-    let command = server.get("command").and_then(|v| v.as_str()).unwrap_or("?");
+    let command = server
+        .get("command")
+        .and_then(|v| v.as_str())
+        .unwrap_or("?");
     println!("  Command: {}", command);
 
     // Check if command exists
@@ -336,7 +391,10 @@ async fn cmd_test(mcp_cfg_path: &std::path::Path, name: &str) -> Result<()> {
                 Err(e) => println!("  Tools: error - {}", e),
             }
 
-            client.close().await.map_err(|e| anyhow::anyhow!("close error: {}", e))?;
+            client
+                .close()
+                .await
+                .map_err(|e| anyhow::anyhow!("close error: {}", e))?;
             println!("  Disconnected: OK");
             println!();
             println!("✅ Test passed.");
@@ -361,7 +419,10 @@ async fn cmd_tools(mcp_cfg_path: &std::path::Path, name: &str) -> Result<()> {
     };
 
     let mut client = connect_to_server(&server).await?;
-    let tools = client.list_tools().await.map_err(|e| anyhow::anyhow!("list_tools failed: {}", e))?;
+    let tools = client
+        .list_tools()
+        .await
+        .map_err(|e| anyhow::anyhow!("list_tools failed: {}", e))?;
 
     if tools.is_empty() {
         println!("  No tools available.");
@@ -375,19 +436,28 @@ async fn cmd_tools(mcp_cfg_path: &std::path::Path, name: &str) -> Result<()> {
             println!("   Description: {}", desc);
 
             // Extract parameters from input_schema
-            if let Some(properties) = tool.input_schema.get("properties").and_then(|v| v.as_object()) {
-                let required: Vec<&str> = tool.input_schema.get("required")
+            if let Some(properties) = tool
+                .input_schema
+                .get("properties")
+                .and_then(|v| v.as_object())
+            {
+                let required: Vec<&str> = tool
+                    .input_schema
+                    .get("required")
                     .and_then(|v| v.as_array())
                     .map(|arr| arr.iter().filter_map(|v| v.as_str()).collect())
                     .unwrap_or_default();
 
-                let param_names: Vec<String> = properties.keys().map(|k| {
-                    if required.contains(&k.as_str()) {
-                        format!("{}*", k)
-                    } else {
-                        k.clone()
-                    }
-                }).collect();
+                let param_names: Vec<String> = properties
+                    .keys()
+                    .map(|k| {
+                        if required.contains(&k.as_str()) {
+                            format!("{}*", k)
+                        } else {
+                            k.clone()
+                        }
+                    })
+                    .collect();
 
                 if !param_names.is_empty() {
                     println!("   Parameters: {}", param_names.join(", "));
@@ -396,7 +466,10 @@ async fn cmd_tools(mcp_cfg_path: &std::path::Path, name: &str) -> Result<()> {
         }
     }
 
-    client.close().await.map_err(|e| anyhow::anyhow!("close error: {}", e))?;
+    client
+        .close()
+        .await
+        .map_err(|e| anyhow::anyhow!("close error: {}", e))?;
     Ok(())
 }
 
@@ -412,7 +485,10 @@ async fn cmd_resources(mcp_cfg_path: &std::path::Path, name: &str) -> Result<()>
     };
 
     let mut client = connect_to_server(&server).await?;
-    let resources = client.list_resources().await.map_err(|e| anyhow::anyhow!("list_resources failed: {}", e))?;
+    let resources = client
+        .list_resources()
+        .await
+        .map_err(|e| anyhow::anyhow!("list_resources failed: {}", e))?;
 
     if resources.is_empty() {
         println!("  No resources available.");
@@ -436,7 +512,10 @@ async fn cmd_resources(mcp_cfg_path: &std::path::Path, name: &str) -> Result<()>
         }
     }
 
-    client.close().await.map_err(|e| anyhow::anyhow!("close error: {}", e))?;
+    client
+        .close()
+        .await
+        .map_err(|e| anyhow::anyhow!("close error: {}", e))?;
     Ok(())
 }
 
@@ -452,7 +531,10 @@ async fn cmd_prompts(mcp_cfg_path: &std::path::Path, name: &str) -> Result<()> {
     };
 
     let mut client = connect_to_server(&server).await?;
-    let prompts = client.list_prompts().await.map_err(|e| anyhow::anyhow!("list_prompts failed: {}", e))?;
+    let prompts = client
+        .list_prompts()
+        .await
+        .map_err(|e| anyhow::anyhow!("list_prompts failed: {}", e))?;
 
     if prompts.is_empty() {
         println!("  No prompts available.");
@@ -470,7 +552,11 @@ async fn cmd_prompts(mcp_cfg_path: &std::path::Path, name: &str) -> Result<()> {
             if !p.arguments.is_empty() {
                 println!("   Arguments:");
                 for arg in &p.arguments {
-                    let required_marker = if arg.required.unwrap_or(false) { "*" } else { "" };
+                    let required_marker = if arg.required.unwrap_or(false) {
+                        "*"
+                    } else {
+                        ""
+                    };
                     if let Some(arg_desc) = arg.description.as_deref() {
                         if !arg_desc.is_empty() {
                             println!("     - {}{}: {}", arg.name, required_marker, arg_desc);
@@ -486,21 +572,32 @@ async fn cmd_prompts(mcp_cfg_path: &std::path::Path, name: &str) -> Result<()> {
         }
     }
 
-    client.close().await.map_err(|e| anyhow::anyhow!("close error: {}", e))?;
+    client
+        .close()
+        .await
+        .map_err(|e| anyhow::anyhow!("close error: {}", e))?;
     Ok(())
 }
 
 fn cmd_inspect(mcp_cfg_path: &std::path::Path, name: &str) -> Result<()> {
     println!("Inspecting MCP server '{}'...", name);
     if let Some(server) = find_server(mcp_cfg_path, name)? {
-        println!("{}", serde_json::to_string_pretty(&server).unwrap_or_default());
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&server).unwrap_or_default()
+        );
     } else {
         println!("  Server '{}' not found.", name);
     }
     Ok(())
 }
 
-async fn cmd_discover(command: Option<&str>, url: Option<&str>, args: Option<&str>, timeout: u64) -> Result<()> {
+async fn cmd_discover(
+    command: Option<&str>,
+    url: Option<&str>,
+    args: Option<&str>,
+    timeout: u64,
+) -> Result<()> {
     let result = match (url, command) {
         (Some(url), _) => {
             println!("Discovering MCP HTTP server: {}", url);
@@ -511,7 +608,8 @@ async fn cmd_discover(command: Option<&str>, url: Option<&str>, args: Option<&st
             let tool_args: Vec<String> = args
                 .map(|a| a.split(',').map(|s| s.trim().to_string()).collect())
                 .unwrap_or_default();
-            nemesis_mcp::manager::discover_server_metadata(command, tool_args, vec![], timeout).await
+            nemesis_mcp::manager::discover_server_metadata(command, tool_args, vec![], timeout)
+                .await
         }
         (None, None) => {
             println!("Error: provide either --command <path> or --url <url>");
@@ -539,18 +637,27 @@ async fn cmd_discover(command: Option<&str>, url: Option<&str>, args: Option<&st
                     println!("  {}. {}", i + 1, tool.name);
                     println!("     {}", desc);
 
-                    if let Some(props) = tool.input_schema.get("properties").and_then(|p| p.as_object()) {
-                        let required: Vec<&str> = tool.input_schema.get("required")
+                    if let Some(props) = tool
+                        .input_schema
+                        .get("properties")
+                        .and_then(|p| p.as_object())
+                    {
+                        let required: Vec<&str> = tool
+                            .input_schema
+                            .get("required")
                             .and_then(|r| r.as_array())
                             .map(|a| a.iter().filter_map(|v| v.as_str()).collect())
                             .unwrap_or_default();
-                        let param_names: Vec<String> = props.keys().map(|k| {
-                            if required.contains(&k.as_str()) {
-                                format!("{}*", k)
-                            } else {
-                                k.clone()
-                            }
-                        }).collect();
+                        let param_names: Vec<String> = props
+                            .keys()
+                            .map(|k| {
+                                if required.contains(&k.as_str()) {
+                                    format!("{}*", k)
+                                } else {
+                                    k.clone()
+                                }
+                            })
+                            .collect();
                         if !param_names.is_empty() {
                             println!("     Parameters: {}", param_names.join(", "));
                         }
@@ -609,9 +716,20 @@ pub fn run(action: McpAction, local: bool) -> Result<()> {
 
     match action {
         McpAction::List => cmd_list(&mcp_cfg_path)?,
-        McpAction::Add { name, command, args, env, timeout } => {
-            cmd_add(&mcp_cfg_path, &name, &command, args.as_deref(), &env, timeout)?
-        }
+        McpAction::Add {
+            name,
+            command,
+            args,
+            env,
+            timeout,
+        } => cmd_add(
+            &mcp_cfg_path,
+            &name,
+            &command,
+            args.as_deref(),
+            &env,
+            timeout,
+        )?,
         McpAction::Remove { name } => cmd_remove(&mcp_cfg_path, &name)?,
         McpAction::Test { name } => {
             let result = tokio::task::block_in_place(|| {
@@ -638,9 +756,19 @@ pub fn run(action: McpAction, local: bool) -> Result<()> {
             })?;
             result
         }
-        McpAction::Discover { command, url, args, timeout } => {
+        McpAction::Discover {
+            command,
+            url,
+            args,
+            timeout,
+        } => {
             let result = tokio::task::block_in_place(|| {
-                tokio::runtime::Handle::current().block_on(cmd_discover(command.as_deref(), url.as_deref(), args.as_deref(), timeout))
+                tokio::runtime::Handle::current().block_on(cmd_discover(
+                    command.as_deref(),
+                    url.as_deref(),
+                    args.as_deref(),
+                    timeout,
+                ))
             })?;
             result
         }

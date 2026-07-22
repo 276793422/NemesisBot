@@ -260,10 +260,7 @@ impl Workflow {
     ///
     /// Decision 5 in the integration plan: surfaces workflow results back to
     /// the LLM via the `workflow_run` agent tool.
-    pub fn compute_output(
-        &self,
-        node_results: &HashMap<String, NodeResult>,
-    ) -> serde_json::Value {
+    pub fn compute_output(&self, node_results: &HashMap<String, NodeResult>) -> serde_json::Value {
         let terminal_ids: Vec<&str> = self
             .nodes
             .iter()
@@ -322,7 +319,8 @@ impl Workflow {
         nodes_sorted.sort_by(|a, b| a.id.cmp(&b.id));
         let mut edges_sorted = self.edges.clone();
         edges_sorted.sort_by(|a, b| {
-            (a.from_node.as_str(), a.to_node.as_str()).cmp(&(b.from_node.as_str(), b.to_node.as_str()))
+            (a.from_node.as_str(), a.to_node.as_str())
+                .cmp(&(b.from_node.as_str(), b.to_node.as_str()))
         });
 
         // Serialise each field independently to control key order and skip

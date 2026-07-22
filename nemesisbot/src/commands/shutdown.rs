@@ -4,8 +4,8 @@
 //! a shutdown signal. The gateway writes its PID to
 //! `{home}/gateway.pid` on startup.
 
-use anyhow::Result;
 use crate::common;
+use anyhow::Result;
 
 /// Name of the PID file written by the gateway on startup.
 const PID_FILE: &str = "gateway.pid";
@@ -75,7 +75,8 @@ pub fn run(local: bool) -> Result<()> {
     // Method 3: Try HTTP endpoint
     if let Ok(data) = std::fs::read_to_string(common::config_path(&home)) {
         if let Ok(cfg) = serde_json::from_str::<serde_json::Value>(&data) {
-            let port = cfg.get("channels")
+            let port = cfg
+                .get("channels")
                 .and_then(|c| c.get("web"))
                 .and_then(|w| w.get("port"))
                 .and_then(|v| v.as_u64())

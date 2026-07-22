@@ -206,10 +206,7 @@ impl FeishuChannel {
             )));
         }
 
-        let token = body
-            .data
-            .map(|d| d.tenant_access_token)
-            .unwrap_or_default();
+        let token = body.data.map(|d| d.tenant_access_token).unwrap_or_default();
         *self.access_token.write() = token.clone();
         Ok(token)
     }
@@ -244,9 +241,7 @@ impl FeishuChannel {
 
         if !resp.status().is_success() {
             let body = resp.text().await.unwrap_or_default();
-            return Err(NemesisError::Channel(format!(
-                "feishu send error: {body}"
-            )));
+            return Err(NemesisError::Channel(format!("feishu send error: {body}")));
         }
 
         Ok(())
@@ -480,14 +475,9 @@ impl FeishuChannel {
 
                 let _token = match token_result {
                     Ok(resp) => {
-                        if let Ok(body) = resp
-                            .json::<ApiResponse<TenantTokenResponse>>()
-                            .await
-                        {
+                        if let Ok(body) = resp.json::<ApiResponse<TenantTokenResponse>>().await {
                             if body.code == 0 {
-                                body.data
-                                    .map(|d| d.tenant_access_token)
-                                    .unwrap_or_default()
+                                body.data.map(|d| d.tenant_access_token).unwrap_or_default()
                             } else {
                                 warn!(code = body.code, "[FeishuChannel] auth error, backing off");
                                 tokio::select! {
@@ -544,7 +534,10 @@ impl FeishuChannel {
                                     continue;
                                 }
                             } else {
-                                warn!(code = body.code, "[FeishuChannel] ws endpoint error, backing off");
+                                warn!(
+                                    code = body.code,
+                                    "[FeishuChannel] ws endpoint error, backing off"
+                                );
                                 tokio::select! {
                                     _ = tokio::time::sleep(backoff) => {}
                                     _ = &mut cancel_rx => break,

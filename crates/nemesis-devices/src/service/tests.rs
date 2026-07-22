@@ -1,5 +1,5 @@
-use super::*;
 use super::super::source::{Action, Kind};
+use super::*;
 use std::sync::atomic::AtomicUsize;
 
 #[test]
@@ -26,9 +26,15 @@ fn test_register_and_get() {
 fn test_unregister() {
     let svc = DeviceService::new();
     svc.register(Device {
-        id: "d1".to_string(), name: "D1".to_string(), device_type: "sensor".to_string(),
-        status: "online".to_string(), vendor_id: None, product_id: None, serial: None,
-        connected_at: None, metadata: HashMap::new(),
+        id: "d1".to_string(),
+        name: "D1".to_string(),
+        device_type: "sensor".to_string(),
+        status: "online".to_string(),
+        vendor_id: None,
+        product_id: None,
+        serial: None,
+        connected_at: None,
+        metadata: HashMap::new(),
     });
     assert!(svc.unregister("d1").is_some());
     assert!(svc.get("d1").is_none());
@@ -44,9 +50,15 @@ fn test_event_handler() {
     }));
 
     svc.register(Device {
-        id: "d1".to_string(), name: "D1".to_string(), device_type: "sensor".to_string(),
-        status: "online".to_string(), vendor_id: None, product_id: None, serial: None,
-        connected_at: None, metadata: HashMap::new(),
+        id: "d1".to_string(),
+        name: "D1".to_string(),
+        device_type: "sensor".to_string(),
+        status: "online".to_string(),
+        vendor_id: None,
+        product_id: None,
+        serial: None,
+        connected_at: None,
+        metadata: HashMap::new(),
     });
     svc.unregister("d1");
     assert_eq!(event_count.load(Ordering::SeqCst), 2);
@@ -81,13 +93,31 @@ fn test_config_default() {
 
 #[test]
 fn test_parse_last_channel() {
-    assert_eq!(parse_last_channel("web:user123"), ("web".to_string(), "user123".to_string()));
-    assert_eq!(parse_last_channel("discord:789"), ("discord".to_string(), "789".to_string()));
+    assert_eq!(
+        parse_last_channel("web:user123"),
+        ("web".to_string(), "user123".to_string())
+    );
+    assert_eq!(
+        parse_last_channel("discord:789"),
+        ("discord".to_string(), "789".to_string())
+    );
     assert_eq!(parse_last_channel(""), ("".to_string(), "".to_string()));
-    assert_eq!(parse_last_channel("nocolon"), ("".to_string(), "".to_string()));
-    assert_eq!(parse_last_channel(":empty"), ("".to_string(), "".to_string()));
-    assert_eq!(parse_last_channel("empty:"), ("".to_string(), "".to_string()));
-    assert_eq!(parse_last_channel("multi:part:here"), ("multi".to_string(), "part:here".to_string()));
+    assert_eq!(
+        parse_last_channel("nocolon"),
+        ("".to_string(), "".to_string())
+    );
+    assert_eq!(
+        parse_last_channel(":empty"),
+        ("".to_string(), "".to_string())
+    );
+    assert_eq!(
+        parse_last_channel("empty:"),
+        ("".to_string(), "".to_string())
+    );
+    assert_eq!(
+        parse_last_channel("multi:part:here"),
+        ("multi".to_string(), "part:here".to_string())
+    );
 }
 
 #[test]
@@ -117,7 +147,9 @@ fn test_send_notification_with_bus() {
     let sent = Arc::new(Mutex::new(Vec::<(String, String, String)>::new()));
     let sent_clone = sent.clone();
     svc.set_bus_sender(Box::new(move |ch, id, content| {
-        sent_clone.lock().push((ch.to_string(), id.to_string(), content.to_string()));
+        sent_clone
+            .lock()
+            .push((ch.to_string(), id.to_string(), content.to_string()));
     }));
 
     svc.set_state_manager(Arc::new(MockState {
@@ -167,7 +199,9 @@ fn test_send_notification_no_state() {
     let sent = Arc::new(Mutex::new(Vec::<(String, String, String)>::new()));
     let sent_clone = sent.clone();
     svc.set_bus_sender(Box::new(move |ch, id, content| {
-        sent_clone.lock().push((ch.to_string(), id.to_string(), content.to_string()));
+        sent_clone
+            .lock()
+            .push((ch.to_string(), id.to_string(), content.to_string()));
     }));
     // No state set
     let ev = DeviceEvent {
@@ -190,7 +224,9 @@ fn test_send_notification_internal_channel() {
     let sent = Arc::new(Mutex::new(Vec::<(String, String, String)>::new()));
     let sent_clone = sent.clone();
     svc.set_bus_sender(Box::new(move |ch, id, content| {
-        sent_clone.lock().push((ch.to_string(), id.to_string(), content.to_string()));
+        sent_clone
+            .lock()
+            .push((ch.to_string(), id.to_string(), content.to_string()));
     }));
     svc.set_state_manager(Arc::new(MockState {
         last_channel: "system:internal".to_string(),
@@ -216,7 +252,9 @@ fn test_send_notification_empty_last_channel() {
     let sent = Arc::new(Mutex::new(Vec::<(String, String, String)>::new()));
     let sent_clone = sent.clone();
     svc.set_bus_sender(Box::new(move |ch, id, content| {
-        sent_clone.lock().push((ch.to_string(), id.to_string(), content.to_string()));
+        sent_clone
+            .lock()
+            .push((ch.to_string(), id.to_string(), content.to_string()));
     }));
     svc.set_state_manager(Arc::new(MockState {
         last_channel: String::new(),
@@ -292,7 +330,9 @@ fn test_service_device_event_added() {
 
 #[test]
 fn test_service_device_event_removed() {
-    let ev = ServiceDeviceEvent::Removed { device_id: "d2".into() };
+    let ev = ServiceDeviceEvent::Removed {
+        device_id: "d2".into(),
+    };
     let json = serde_json::to_string(&ev).unwrap();
     assert!(json.contains("Removed"));
 }
@@ -301,7 +341,10 @@ fn test_service_device_event_removed() {
 fn test_service_device_event_changed() {
     let mut changes = HashMap::new();
     changes.insert("status".into(), "offline".into());
-    let ev = ServiceDeviceEvent::Changed { device_id: "d3".into(), changes };
+    let ev = ServiceDeviceEvent::Changed {
+        device_id: "d3".into(),
+        changes,
+    };
     let json = serde_json::to_string(&ev).unwrap();
     assert!(json.contains("Changed"));
 }
@@ -329,14 +372,26 @@ fn test_device_service_register_multiple() {
 fn test_device_service_register_overwrite() {
     let svc = DeviceService::new();
     svc.register(Device {
-        id: "d1".into(), name: "Original".into(), device_type: "t".into(),
-        status: "online".into(), vendor_id: None, product_id: None, serial: None,
-        connected_at: None, metadata: HashMap::new(),
+        id: "d1".into(),
+        name: "Original".into(),
+        device_type: "t".into(),
+        status: "online".into(),
+        vendor_id: None,
+        product_id: None,
+        serial: None,
+        connected_at: None,
+        metadata: HashMap::new(),
     });
     svc.register(Device {
-        id: "d1".into(), name: "Updated".into(), device_type: "t".into(),
-        status: "offline".into(), vendor_id: None, product_id: None, serial: None,
-        connected_at: None, metadata: HashMap::new(),
+        id: "d1".into(),
+        name: "Updated".into(),
+        device_type: "t".into(),
+        status: "offline".into(),
+        vendor_id: None,
+        product_id: None,
+        serial: None,
+        connected_at: None,
+        metadata: HashMap::new(),
     });
     assert_eq!(svc.count(), 1);
     assert_eq!(svc.get("d1").unwrap().name, "Updated");
@@ -353,14 +408,26 @@ fn test_device_service_unregister_nonexistent() {
 fn test_device_service_list() {
     let svc = DeviceService::new();
     svc.register(Device {
-        id: "d1".into(), name: "D1".into(), device_type: "t".into(),
-        status: "online".into(), vendor_id: None, product_id: None, serial: None,
-        connected_at: None, metadata: HashMap::new(),
+        id: "d1".into(),
+        name: "D1".into(),
+        device_type: "t".into(),
+        status: "online".into(),
+        vendor_id: None,
+        product_id: None,
+        serial: None,
+        connected_at: None,
+        metadata: HashMap::new(),
     });
     svc.register(Device {
-        id: "d2".into(), name: "D2".into(), device_type: "t".into(),
-        status: "online".into(), vendor_id: None, product_id: None, serial: None,
-        connected_at: None, metadata: HashMap::new(),
+        id: "d2".into(),
+        name: "D2".into(),
+        device_type: "t".into(),
+        status: "online".into(),
+        vendor_id: None,
+        product_id: None,
+        serial: None,
+        connected_at: None,
+        metadata: HashMap::new(),
     });
     let list = svc.list();
     assert_eq!(list.len(), 2);
@@ -379,9 +446,15 @@ fn test_device_service_status_initial() {
 fn test_device_service_status_with_devices() {
     let svc = DeviceService::new();
     svc.register(Device {
-        id: "d1".into(), name: "D1".into(), device_type: "t".into(),
-        status: "online".into(), vendor_id: None, product_id: None, serial: None,
-        connected_at: None, metadata: HashMap::new(),
+        id: "d1".into(),
+        name: "D1".into(),
+        device_type: "t".into(),
+        status: "online".into(),
+        vendor_id: None,
+        product_id: None,
+        serial: None,
+        connected_at: None,
+        metadata: HashMap::new(),
     });
     let status = svc.status();
     assert_eq!(status["device_count"], 1);
@@ -416,7 +489,10 @@ fn test_device_service_config_serialization() {
 fn test_parse_last_channel_various() {
     // Valid
     assert_eq!(parse_last_channel("web:abc"), ("web".into(), "abc".into()));
-    assert_eq!(parse_last_channel("telegram:12345"), ("telegram".into(), "12345".into()));
+    assert_eq!(
+        parse_last_channel("telegram:12345"),
+        ("telegram".into(), "12345".into())
+    );
 
     // Invalid
     assert_eq!(parse_last_channel(":"), ("".into(), "".into()));
@@ -446,9 +522,15 @@ fn test_device_service_handler_on_register_and_unregister() {
     }));
 
     svc.register(Device {
-        id: "d1".into(), name: "D1".into(), device_type: "sensor".into(),
-        status: "online".into(), vendor_id: None, product_id: None, serial: None,
-        connected_at: None, metadata: HashMap::new(),
+        id: "d1".into(),
+        name: "D1".into(),
+        device_type: "sensor".into(),
+        status: "online".into(),
+        vendor_id: None,
+        product_id: None,
+        serial: None,
+        connected_at: None,
+        metadata: HashMap::new(),
     });
     svc.unregister("d1");
 
@@ -463,9 +545,15 @@ fn test_device_service_no_handler_no_panic() {
     let svc = DeviceService::new();
     // Should not panic when no handler is set
     svc.register(Device {
-        id: "d1".into(), name: "D1".into(), device_type: "t".into(),
-        status: "online".into(), vendor_id: None, product_id: None, serial: None,
-        connected_at: None, metadata: HashMap::new(),
+        id: "d1".into(),
+        name: "D1".into(),
+        device_type: "t".into(),
+        status: "online".into(),
+        vendor_id: None,
+        product_id: None,
+        serial: None,
+        connected_at: None,
+        metadata: HashMap::new(),
     });
     svc.unregister("d1");
 }
@@ -565,14 +653,26 @@ fn test_service_status_disabled() {
 fn test_service_status_after_register() {
     let svc = DeviceService::new();
     svc.register(Device {
-        id: "d1".into(), name: "D1".into(), device_type: "t".into(),
-        status: "online".into(), vendor_id: None, product_id: None, serial: None,
-        connected_at: None, metadata: HashMap::new(),
+        id: "d1".into(),
+        name: "D1".into(),
+        device_type: "t".into(),
+        status: "online".into(),
+        vendor_id: None,
+        product_id: None,
+        serial: None,
+        connected_at: None,
+        metadata: HashMap::new(),
     });
     svc.register(Device {
-        id: "d2".into(), name: "D2".into(), device_type: "t".into(),
-        status: "online".into(), vendor_id: None, product_id: None, serial: None,
-        connected_at: None, metadata: HashMap::new(),
+        id: "d2".into(),
+        name: "D2".into(),
+        device_type: "t".into(),
+        status: "online".into(),
+        vendor_id: None,
+        product_id: None,
+        serial: None,
+        connected_at: None,
+        metadata: HashMap::new(),
     });
     let status = svc.status();
     assert_eq!(status["device_count"], 2);
@@ -627,7 +727,11 @@ fn test_service_device_event_changed_serialization() {
     };
     let json = serde_json::to_string(&ev).unwrap();
     let parsed: ServiceDeviceEvent = serde_json::from_str(&json).unwrap();
-    if let ServiceDeviceEvent::Changed { device_id, changes: c } = parsed {
+    if let ServiceDeviceEvent::Changed {
+        device_id,
+        changes: c,
+    } = parsed
+    {
         assert_eq!(device_id, "dev-changed");
         assert_eq!(c.len(), 2);
     } else {
@@ -641,7 +745,9 @@ fn test_send_notification_with_invalid_channel_format() {
     let sent = Arc::new(Mutex::new(Vec::<(String, String, String)>::new()));
     let sent_clone = sent.clone();
     svc.set_bus_sender(Box::new(move |ch, id, content| {
-        sent_clone.lock().push((ch.to_string(), id.to_string(), content.to_string()));
+        sent_clone
+            .lock()
+            .push((ch.to_string(), id.to_string(), content.to_string()));
     }));
     // "nocolon" format - parse returns empty
     svc.set_state_manager(Arc::new(MockState {
@@ -668,7 +774,9 @@ fn test_send_notification_with_empty_platform() {
     let sent = Arc::new(Mutex::new(Vec::<(String, String, String)>::new()));
     let sent_clone = sent.clone();
     svc.set_bus_sender(Box::new(move |ch, id, content| {
-        sent_clone.lock().push((ch.to_string(), id.to_string(), content.to_string()));
+        sent_clone
+            .lock()
+            .push((ch.to_string(), id.to_string(), content.to_string()));
     }));
     svc.set_state_manager(Arc::new(MockState {
         last_channel: ":onlyuser".to_string(),
@@ -694,7 +802,9 @@ fn test_send_notification_with_subagent_channel() {
     let sent = Arc::new(Mutex::new(Vec::<(String, String, String)>::new()));
     let sent_clone = sent.clone();
     svc.set_bus_sender(Box::new(move |ch, id, content| {
-        sent_clone.lock().push((ch.to_string(), id.to_string(), content.to_string()));
+        sent_clone
+            .lock()
+            .push((ch.to_string(), id.to_string(), content.to_string()));
     }));
     svc.set_state_manager(Arc::new(MockState {
         last_channel: "subagent:agent1".to_string(),
@@ -720,7 +830,9 @@ fn test_send_notification_remove_action() {
     let sent = Arc::new(Mutex::new(Vec::<(String, String, String)>::new()));
     let sent_clone = sent.clone();
     svc.set_bus_sender(Box::new(move |ch, id, content| {
-        sent_clone.lock().push((ch.to_string(), id.to_string(), content.to_string()));
+        sent_clone
+            .lock()
+            .push((ch.to_string(), id.to_string(), content.to_string()));
     }));
     svc.set_state_manager(Arc::new(MockState {
         last_channel: "web:user456".to_string(),
@@ -772,9 +884,15 @@ async fn test_start_already_running_idempotent() {
 fn test_status_after_register_and_unregister() {
     let svc = DeviceService::new();
     svc.register(Device {
-        id: "d1".into(), name: "D1".into(), device_type: "t".into(),
-        status: "online".into(), vendor_id: None, product_id: None, serial: None,
-        connected_at: None, metadata: HashMap::new(),
+        id: "d1".into(),
+        name: "D1".into(),
+        device_type: "t".into(),
+        status: "online".into(),
+        vendor_id: None,
+        product_id: None,
+        serial: None,
+        connected_at: None,
+        metadata: HashMap::new(),
     });
     assert_eq!(svc.status()["device_count"], 1);
     svc.unregister("d1");
@@ -789,7 +907,9 @@ fn test_send_notification_with_cli_channel() {
     let sent = Arc::new(Mutex::new(Vec::<(String, String, String)>::new()));
     let sent_clone = sent.clone();
     svc.set_bus_sender(Box::new(move |ch, id, content| {
-        sent_clone.lock().push((ch.to_string(), id.to_string(), content.to_string()));
+        sent_clone
+            .lock()
+            .push((ch.to_string(), id.to_string(), content.to_string()));
     }));
     svc.set_state_manager(Arc::new(MockState {
         last_channel: "cli:admin".to_string(),
@@ -815,7 +935,9 @@ fn test_send_notification_change_action() {
     let sent = Arc::new(Mutex::new(Vec::<(String, String, String)>::new()));
     let sent_clone = sent.clone();
     svc.set_bus_sender(Box::new(move |ch, id, content| {
-        sent_clone.lock().push((ch.to_string(), id.to_string(), content.to_string()));
+        sent_clone
+            .lock()
+            .push((ch.to_string(), id.to_string(), content.to_string()));
     }));
     svc.set_state_manager(Arc::new(MockState {
         last_channel: "web:user789".to_string(),
@@ -847,9 +969,15 @@ fn test_register_emits_added_event() {
     }));
 
     svc.register(Device {
-        id: "d1".into(), name: "D1".into(), device_type: "sensor".into(),
-        status: "online".into(), vendor_id: None, product_id: None, serial: None,
-        connected_at: None, metadata: HashMap::new(),
+        id: "d1".into(),
+        name: "D1".into(),
+        device_type: "sensor".into(),
+        status: "online".into(),
+        vendor_id: None,
+        product_id: None,
+        serial: None,
+        connected_at: None,
+        metadata: HashMap::new(),
     });
     let evts = events.lock();
     assert_eq!(evts.len(), 1);
@@ -922,7 +1050,11 @@ fn test_service_device_event_added_serialization() {
     };
     let json = serde_json::to_string(&ev).unwrap();
     let parsed: ServiceDeviceEvent = serde_json::from_str(&json).unwrap();
-    if let ServiceDeviceEvent::Added { device_id, device_type } = parsed {
+    if let ServiceDeviceEvent::Added {
+        device_id,
+        device_type,
+    } = parsed
+    {
         assert_eq!(device_id, "dev-add");
         assert_eq!(device_type, "bluetooth");
     } else {
@@ -932,7 +1064,9 @@ fn test_service_device_event_added_serialization() {
 
 #[test]
 fn test_service_device_event_removed_serialization() {
-    let ev = ServiceDeviceEvent::Removed { device_id: "dev-rm".into() };
+    let ev = ServiceDeviceEvent::Removed {
+        device_id: "dev-rm".into(),
+    };
     let json = serde_json::to_string(&ev).unwrap();
     let parsed: ServiceDeviceEvent = serde_json::from_str(&json).unwrap();
     if let ServiceDeviceEvent::Removed { device_id } = parsed {
@@ -954,19 +1088,37 @@ fn test_parse_last_channel_valid_multi_colon() {
 fn test_service_count_after_multiple_operations() {
     let svc = DeviceService::new();
     svc.register(Device {
-        id: "a".into(), name: "A".into(), device_type: "t".into(),
-        status: "online".into(), vendor_id: None, product_id: None, serial: None,
-        connected_at: None, metadata: HashMap::new(),
+        id: "a".into(),
+        name: "A".into(),
+        device_type: "t".into(),
+        status: "online".into(),
+        vendor_id: None,
+        product_id: None,
+        serial: None,
+        connected_at: None,
+        metadata: HashMap::new(),
     });
     svc.register(Device {
-        id: "b".into(), name: "B".into(), device_type: "t".into(),
-        status: "online".into(), vendor_id: None, product_id: None, serial: None,
-        connected_at: None, metadata: HashMap::new(),
+        id: "b".into(),
+        name: "B".into(),
+        device_type: "t".into(),
+        status: "online".into(),
+        vendor_id: None,
+        product_id: None,
+        serial: None,
+        connected_at: None,
+        metadata: HashMap::new(),
     });
     svc.register(Device {
-        id: "c".into(), name: "C".into(), device_type: "t".into(),
-        status: "online".into(), vendor_id: None, product_id: None, serial: None,
-        connected_at: None, metadata: HashMap::new(),
+        id: "c".into(),
+        name: "C".into(),
+        device_type: "t".into(),
+        status: "online".into(),
+        vendor_id: None,
+        product_id: None,
+        serial: None,
+        connected_at: None,
+        metadata: HashMap::new(),
     });
     assert_eq!(svc.count(), 3);
     svc.unregister("b");
@@ -1221,7 +1373,9 @@ fn test_send_notification_with_all_device_types() {
     let sent_clone = sent.clone();
 
     svc.set_bus_sender(Box::new(move |ch, id, content| {
-        sent_clone.lock().push((ch.to_string(), id.to_string(), content.to_string()));
+        sent_clone
+            .lock()
+            .push((ch.to_string(), id.to_string(), content.to_string()));
     }));
 
     svc.set_state_manager(Arc::new(MockState {
@@ -1350,10 +1504,22 @@ fn test_device_with_empty_and_none_fields() {
 #[test]
 fn test_parse_last_channel_edge_cases() {
     // Test with various edge cases
-    assert_eq!(parse_last_channel("a:b"), ("a".to_string(), "b".to_string()));
-    assert_eq!(parse_last_channel("aa:bb"), ("aa".to_string(), "bb".to_string()));
-    assert_eq!(parse_last_channel("a:b:c"), ("a".to_string(), "b:c".to_string()));
-    assert_eq!(parse_last_channel("long-platform:long-user-id"), ("long-platform".to_string(), "long-user-id".to_string()));
+    assert_eq!(
+        parse_last_channel("a:b"),
+        ("a".to_string(), "b".to_string())
+    );
+    assert_eq!(
+        parse_last_channel("aa:bb"),
+        ("aa".to_string(), "bb".to_string())
+    );
+    assert_eq!(
+        parse_last_channel("a:b:c"),
+        ("a".to_string(), "b:c".to_string())
+    );
+    assert_eq!(
+        parse_last_channel("long-platform:long-user-id"),
+        ("long-platform".to_string(), "long-user-id".to_string())
+    );
 }
 
 #[test]
@@ -1364,7 +1530,15 @@ fn test_is_internal_channel_comprehensive() {
     }
 
     // All external channels should return false
-    for channel in ["web", "websocket", "rpc", "telegram", "discord", "slack", "email"] {
+    for channel in [
+        "web",
+        "websocket",
+        "rpc",
+        "telegram",
+        "discord",
+        "slack",
+        "email",
+    ] {
         assert!(!is_internal_channel(channel));
     }
 }

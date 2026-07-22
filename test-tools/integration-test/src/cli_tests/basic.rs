@@ -1,7 +1,7 @@
 //! Basic CLI commands: version, onboard, status
 
-use std::path::Path;
 use serde_json::Value;
+use std::path::Path;
 use test_harness::*;
 
 // ---------------------------------------------------------------------------
@@ -15,12 +15,20 @@ pub async fn test_cli_version(ws: &TestWorkspace, bin: &Path) -> Vec<TestResult>
 
     let output = ws.run_cli(bin, &["version"]).await;
     if output.success() && (output.stdout_contains("version") || output.stdout_contains("0.")) {
-        results.push(pass(&format!("{}/exit_and_output", suite),
-            &format!("exit={}, output has version info", output.exit_code)));
+        results.push(pass(
+            &format!("{}/exit_and_output", suite),
+            &format!("exit={}, output has version info", output.exit_code),
+        ));
     } else {
-        results.push(fail(&format!("{}/exit_and_output", suite), &format!(
-            "exit={}, stdout='{}', stderr='{}'",
-            output.exit_code, output.stdout.trim(), output.stderr.trim())));
+        results.push(fail(
+            &format!("{}/exit_and_output", suite),
+            &format!(
+                "exit={}, stdout='{}', stderr='{}'",
+                output.exit_code,
+                output.stdout.trim(),
+                output.stderr.trim()
+            ),
+        ));
     }
 
     // Test version with --help
@@ -49,9 +57,15 @@ pub async fn test_cli_onboard_default(ws: &TestWorkspace, bin: &Path) -> Vec<Tes
     if output.success() {
         results.push(pass(&format!("{}/exit", suite), "exit=0"));
     } else {
-        results.push(fail(&format!("{}/exit", suite), &format!(
-            "exit={}, stdout='{}', stderr='{}'",
-            output.exit_code, output.stdout.trim(), output.stderr.trim())));
+        results.push(fail(
+            &format!("{}/exit", suite),
+            &format!(
+                "exit={}, stdout='{}', stderr='{}'",
+                output.exit_code,
+                output.stdout.trim(),
+                output.stderr.trim()
+            ),
+        ));
         // Don't return early — still check files for diagnostic purposes
     }
 
@@ -79,11 +93,15 @@ pub async fn test_cli_onboard_default(ws: &TestWorkspace, bin: &Path) -> Vec<Tes
         }
     }
     if dirs_missing.is_empty() {
-        results.push(pass(&format!("{}/directories", suite),
-            &format!("All {} directories present", dirs_ok)));
+        results.push(pass(
+            &format!("{}/directories", suite),
+            &format!("All {} directories present", dirs_ok),
+        ));
     } else {
-        results.push(fail(&format!("{}/directories", suite),
-            &format!("Missing: {:?}", dirs_missing)));
+        results.push(fail(
+            &format!("{}/directories", suite),
+            &format!("Missing: {:?}", dirs_missing),
+        ));
     }
 
     // --- Config file verification (6 files) ---
@@ -127,43 +145,61 @@ pub async fn test_cli_onboard_default(ws: &TestWorkspace, bin: &Path) -> Vec<Tes
 
     for cc in &config_checks {
         if !cc.path.exists() {
-            results.push(fail(&format!("{}/config_{}", suite, cc.name),
-                &format!("{} not found at {}", cc.name, cc.path.display())));
+            results.push(fail(
+                &format!("{}/config_{}", suite, cc.name),
+                &format!("{} not found at {}", cc.name, cc.path.display()),
+            ));
             continue;
         }
         let raw = match std::fs::read_to_string(&cc.path) {
             Ok(r) => r,
             Err(e) => {
-                results.push(fail(&format!("{}/config_{}", suite, cc.name),
-                    &format!("Cannot read {}: {}", cc.name, e)));
+                results.push(fail(
+                    &format!("{}/config_{}", suite, cc.name),
+                    &format!("Cannot read {}: {}", cc.name, e),
+                ));
                 continue;
             }
         };
         let val: Value = match serde_json::from_str(&raw) {
             Ok(v) => v,
             Err(e) => {
-                results.push(fail(&format!("{}/config_{}", suite, cc.name),
-                    &format!("Invalid JSON in {}: {}", cc.name, e)));
+                results.push(fail(
+                    &format!("{}/config_{}", suite, cc.name),
+                    &format!("Invalid JSON in {}: {}", cc.name, e),
+                ));
                 continue;
             }
         };
-        let missing: Vec<&str> = cc.required_keys.iter()
+        let missing: Vec<&str> = cc
+            .required_keys
+            .iter()
             .filter(|k| val.get(*k).is_none())
             .copied()
             .collect();
         if missing.is_empty() {
-            results.push(pass(&format!("{}/config_{}", suite, cc.name),
-                &format!("{} exists with all required keys", cc.name)));
+            results.push(pass(
+                &format!("{}/config_{}", suite, cc.name),
+                &format!("{} exists with all required keys", cc.name),
+            ));
         } else {
-            results.push(fail(&format!("{}/config_{}", suite, cc.name),
-                &format!("{} missing keys: {:?}", cc.name, missing)));
+            results.push(fail(
+                &format!("{}/config_{}", suite, cc.name),
+                &format!("{} missing keys: {:?}", cc.name, missing),
+            ));
         }
     }
 
     // --- Workspace template files verification (9 md files) ---
     let md_files = [
-        "IDENTITY.md", "SOUL.md", "USER.md", "AGENT.md", "BOOT.md",
-        "MCP.md", "TOOLS.md", "HEARTBEAT.md",
+        "IDENTITY.md",
+        "SOUL.md",
+        "USER.md",
+        "AGENT.md",
+        "BOOT.md",
+        "MCP.md",
+        "TOOLS.md",
+        "HEARTBEAT.md",
     ];
     let mut md_ok = 0usize;
     let mut md_missing = Vec::new();
@@ -176,27 +212,39 @@ pub async fn test_cli_onboard_default(ws: &TestWorkspace, bin: &Path) -> Vec<Tes
         }
     }
     if md_missing.is_empty() {
-        results.push(pass(&format!("{}/workspace_md_files", suite),
-            &format!("All {} md files present", md_ok)));
+        results.push(pass(
+            &format!("{}/workspace_md_files", suite),
+            &format!("All {} md files present", md_ok),
+        ));
     } else {
-        results.push(fail(&format!("{}/workspace_md_files", suite),
-            &format!("Missing: {:?}", md_missing)));
+        results.push(fail(
+            &format!("{}/workspace_md_files", suite),
+            &format!("Missing: {:?}", md_missing),
+        ));
     }
 
     // BOOTSTRAP.md should NOT exist in workspace (deleted by onboard step 10)
     let bootstrap_ws = workspace.join("BOOTSTRAP.md");
     if !bootstrap_ws.exists() {
-        results.push(pass(&format!("{}/bootstrap_deleted", suite),
-            "BOOTSTRAP.md correctly deleted from workspace"));
+        results.push(pass(
+            &format!("{}/bootstrap_deleted", suite),
+            "BOOTSTRAP.md correctly deleted from workspace",
+        ));
     } else {
-        results.push(fail(&format!("{}/bootstrap_deleted", suite),
-            "BOOTSTRAP.md still exists in workspace (should have been deleted)"));
+        results.push(fail(
+            &format!("{}/bootstrap_deleted", suite),
+            "BOOTSTRAP.md still exists in workspace (should have been deleted)",
+        ));
     }
 
     // --- Built-in skills verification (6 skills) ---
     let skills = [
-        "weather/SKILL.md", "github/SKILL.md", "summarize/SKILL.md",
-        "cluster/SKILL.md", "skill-creator/SKILL.md", "test-skill/SKILL.md",
+        "weather/SKILL.md",
+        "github/SKILL.md",
+        "summarize/SKILL.md",
+        "cluster/SKILL.md",
+        "skill-creator/SKILL.md",
+        "test-skill/SKILL.md",
     ];
     let mut skills_ok = 0usize;
     let mut skills_missing = Vec::new();
@@ -209,19 +257,32 @@ pub async fn test_cli_onboard_default(ws: &TestWorkspace, bin: &Path) -> Vec<Tes
         }
     }
     if skills_missing.is_empty() {
-        results.push(pass(&format!("{}/builtin_skills", suite),
-            &format!("All {} built-in skills present", skills_ok)));
+        results.push(pass(
+            &format!("{}/builtin_skills", suite),
+            &format!("All {} built-in skills present", skills_ok),
+        ));
     } else {
-        results.push(fail(&format!("{}/builtin_skills", suite),
-            &format!("Missing skills: {:?}", skills_missing)));
+        results.push(fail(
+            &format!("{}/builtin_skills", suite),
+            &format!("Missing skills: {:?}", skills_missing),
+        ));
     }
 
     // --- Helper files verification ---
     let helper_files = [
-        ("scripts/install-clawhub-skill.bat", workspace.join("scripts/install-clawhub-skill.bat")),
-        ("scripts/install-clawhub-skill.sh", workspace.join("scripts/install-clawhub-skill.sh")),
+        (
+            "scripts/install-clawhub-skill.bat",
+            workspace.join("scripts/install-clawhub-skill.bat"),
+        ),
+        (
+            "scripts/install-clawhub-skill.sh",
+            workspace.join("scripts/install-clawhub-skill.sh"),
+        ),
         ("memory/MEMORY.md", workspace.join("memory/MEMORY.md")),
-        ("cluster/peers.toml", workspace.join("cluster").join("peers.toml")),
+        (
+            "cluster/peers.toml",
+            workspace.join("cluster").join("peers.toml"),
+        ),
     ];
     let mut helpers_ok = 0usize;
     let mut helpers_missing = Vec::new();
@@ -233,11 +294,15 @@ pub async fn test_cli_onboard_default(ws: &TestWorkspace, bin: &Path) -> Vec<Tes
         }
     }
     if helpers_missing.is_empty() {
-        results.push(pass(&format!("{}/helper_files", suite),
-            &format!("All {} helper files present", helpers_ok)));
+        results.push(pass(
+            &format!("{}/helper_files", suite),
+            &format!("All {} helper files present", helpers_ok),
+        ));
     } else {
-        results.push(fail(&format!("{}/helper_files", suite),
-            &format!("Missing: {:?}", helpers_missing)));
+        results.push(fail(
+            &format!("{}/helper_files", suite),
+            &format!("Missing: {:?}", helpers_missing),
+        ));
     }
 
     // --- Skills config content verification ---
@@ -246,7 +311,8 @@ pub async fn test_cli_onboard_default(ws: &TestWorkspace, bin: &Path) -> Vec<Tes
         if let Ok(val) = serde_json::from_str::<Value>(&raw) {
             let sources = val.get("github_sources").and_then(|v| v.as_array());
             if let Some(arr) = sources {
-                let source_names: Vec<&str> = arr.iter()
+                let source_names: Vec<&str> = arr
+                    .iter()
                     .filter_map(|s| s.get("name").and_then(|n| n.as_str()))
                     .collect();
                 let has_anthropics = source_names.iter().any(|n| *n == "anthropics");
@@ -255,37 +321,68 @@ pub async fn test_cli_onboard_default(ws: &TestWorkspace, bin: &Path) -> Vec<Tes
                 let count = source_names.len();
 
                 if has_anthropics && has_openclaw && has_clawhub {
-                    results.push(pass(&format!("{}/skills_sources", suite),
-                        &format!("{} GitHub sources (anthropics, openclaw) + clawhub", count)));
+                    results.push(pass(
+                        &format!("{}/skills_sources", suite),
+                        &format!("{} GitHub sources (anthropics, openclaw) + clawhub", count),
+                    ));
                 } else {
                     let mut missing = Vec::new();
-                    if !has_anthropics { missing.push("anthropics"); }
-                    if !has_openclaw { missing.push("openclaw"); }
-                    if !has_clawhub { missing.push("clawhub"); }
-                    results.push(fail(&format!("{}/skills_sources", suite),
-                        &format!("Missing: {:?}", missing)));
+                    if !has_anthropics {
+                        missing.push("anthropics");
+                    }
+                    if !has_openclaw {
+                        missing.push("openclaw");
+                    }
+                    if !has_clawhub {
+                        missing.push("clawhub");
+                    }
+                    results.push(fail(
+                        &format!("{}/skills_sources", suite),
+                        &format!("Missing: {:?}", missing),
+                    ));
                 }
             } else {
-                results.push(fail(&format!("{}/skills_sources", suite),
-                    "github_sources is not an array"));
+                results.push(fail(
+                    &format!("{}/skills_sources", suite),
+                    "github_sources is not an array",
+                ));
             }
         }
     }
 
     // --- Skills list CLI verification ---
     let skills_list = ws.run_cli(bin, &["skills", "list"]).await;
-    if skills_list.success() || skills_list.stdout_contains("weather") || skills_list.stdout_contains("skill") {
-        let builtin_count = ["weather", "github", "summarize", "cluster", "skill-creator", "test-skill"]
-            .iter()
-            .filter(|s| skills_list.stdout_contains(s))
-            .count();
-        results.push(pass(&format!("{}/skills_list", suite),
-            &format!("skills list exit={}, found {}/6 built-in skills in output",
-                skills_list.exit_code, builtin_count)));
+    if skills_list.success()
+        || skills_list.stdout_contains("weather")
+        || skills_list.stdout_contains("skill")
+    {
+        let builtin_count = [
+            "weather",
+            "github",
+            "summarize",
+            "cluster",
+            "skill-creator",
+            "test-skill",
+        ]
+        .iter()
+        .filter(|s| skills_list.stdout_contains(s))
+        .count();
+        results.push(pass(
+            &format!("{}/skills_list", suite),
+            &format!(
+                "skills list exit={}, found {}/6 built-in skills in output",
+                skills_list.exit_code, builtin_count
+            ),
+        ));
     } else {
-        results.push(fail(&format!("{}/skills_list", suite),
-            &format!("exit={}, stdout='{}'", skills_list.exit_code,
-                skills_list.stdout.chars().take(200).collect::<String>())));
+        results.push(fail(
+            &format!("{}/skills_list", suite),
+            &format!(
+                "exit={}, stdout='{}'",
+                skills_list.exit_code,
+                skills_list.stdout.chars().take(200).collect::<String>()
+            ),
+        ));
     }
 
     // --- Additional directories (created by step 10) ---
@@ -295,8 +392,14 @@ pub async fn test_cli_onboard_default(ws: &TestWorkspace, bin: &Path) -> Vec<Tes
         ("workspace/workflow", workspace.join("workflow")),
     ];
     let extra_ok = extra_dirs.iter().filter(|(_, p)| p.is_dir()).count();
-    results.push(pass(&format!("{}/extra_dirs", suite),
-        &format!("{}/{} extra directories present", extra_ok, extra_dirs.len())));
+    results.push(pass(
+        &format!("{}/extra_dirs", suite),
+        &format!(
+            "{}/{} extra directories present",
+            extra_ok,
+            extra_dirs.len()
+        ),
+    ));
 
     // --- Test onboard --help ---
     let help = ws.run_cli(bin, &["onboard", "--help"]).await;
@@ -310,8 +413,10 @@ pub async fn test_cli_onboard_default(ws: &TestWorkspace, bin: &Path) -> Vec<Tes
         let fresh_ws = match TestWorkspace::new() {
             Ok(w) => w,
             Err(e) => {
-                results.push(fail(&format!("{}/flag_format", suite),
-                    &format!("Cannot create fresh workspace: {}", e)));
+                results.push(fail(
+                    &format!("{}/flag_format", suite),
+                    &format!("Cannot create fresh workspace: {}", e),
+                ));
                 return results;
             }
         };
@@ -320,13 +425,22 @@ pub async fn test_cli_onboard_default(ws: &TestWorkspace, bin: &Path) -> Vec<Tes
             // Spot-check a few key files
             let config_ok = fresh_ws.config_path().is_file();
             let identity_ok = fresh_ws.workspace().join("IDENTITY.md").is_file();
-            let skills_ok = fresh_ws.workspace().join("skills/weather/SKILL.md").is_file();
-            results.push(pass(&format!("{}/flag_format", suite),
-                &format!("onboard --default: config={}, identity={}, skills={}",
-                    config_ok, identity_ok, skills_ok)));
+            let skills_ok = fresh_ws
+                .workspace()
+                .join("skills/weather/SKILL.md")
+                .is_file();
+            results.push(pass(
+                &format!("{}/flag_format", suite),
+                &format!(
+                    "onboard --default: config={}, identity={}, skills={}",
+                    config_ok, identity_ok, skills_ok
+                ),
+            ));
         } else {
-            results.push(fail(&format!("{}/flag_format", suite),
-                &format!("onboard --default exit={}", flag_output.exit_code)));
+            results.push(fail(
+                &format!("{}/flag_format", suite),
+                &format!("onboard --default exit={}", flag_output.exit_code),
+            ));
         }
     }
 
@@ -344,11 +458,15 @@ pub async fn test_cli_status(ws: &TestWorkspace, bin: &Path) -> Vec<TestResult> 
 
     let output = ws.run_cli(bin, &["status"]).await;
     if output.success() || output.stdout_contains("status") || output.stdout_contains("Status") {
-        results.push(pass(&format!("{}/output", suite),
-            &format!("exit={}, output received", output.exit_code)));
+        results.push(pass(
+            &format!("{}/output", suite),
+            &format!("exit={}, output received", output.exit_code),
+        ));
     } else {
-        results.push(pass(&format!("{}/output", suite),
-            &format!("exit={} (may need gateway)", output.exit_code)));
+        results.push(pass(
+            &format!("{}/output", suite),
+            &format!("exit={} (may need gateway)", output.exit_code),
+        ));
     }
 
     results
@@ -368,8 +486,10 @@ pub async fn test_cli_shutdown(ws: &TestWorkspace, bin: &Path) -> Vec<TestResult
     if help.success() {
         results.push(pass(&format!("{}/help", suite), "Shutdown help works"));
     } else {
-        results.push(fail(&format!("{}/help", suite),
-            &format!("exit={}", help.exit_code)));
+        results.push(fail(
+            &format!("{}/help", suite),
+            &format!("exit={}", help.exit_code),
+        ));
     }
 
     results

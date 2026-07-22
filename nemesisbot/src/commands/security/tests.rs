@@ -205,7 +205,14 @@ fn test_default_rules_structure() {
     assert!(rules["hardware"].is_array());
     assert!(rules["registry"].is_array());
     // All should be empty arrays
-    for key in &["file", "directory", "process", "network", "hardware", "registry"] {
+    for key in &[
+        "file",
+        "directory",
+        "process",
+        "network",
+        "hardware",
+        "registry",
+    ] {
         assert!(rules[*key].as_array().unwrap().is_empty());
     }
 }
@@ -517,7 +524,11 @@ fn test_cmd_rules_test_wildcard_operation() {
 #[test]
 fn test_cmd_pending_no_file() {
     let tmp = tempfile::TempDir::new().unwrap();
-    let security_cfg = tmp.path().join("workspace").join("config").join("config.security.json");
+    let security_cfg = tmp
+        .path()
+        .join("workspace")
+        .join("config")
+        .join("config.security.json");
     cmd_pending(&security_cfg).unwrap();
 }
 
@@ -529,14 +540,21 @@ fn test_cmd_pending_empty_file() {
     std::fs::create_dir_all(&dir).unwrap();
     let pending_path = dir.join("pending.json");
     std::fs::write(&pending_path, "[]").unwrap();
-    let security_cfg = home.join("workspace").join("config").join("config.security.json");
+    let security_cfg = home
+        .join("workspace")
+        .join("config")
+        .join("config.security.json");
     cmd_pending(&security_cfg).unwrap();
 }
 
 #[test]
 fn test_cmd_approve_no_file() {
     let tmp = tempfile::TempDir::new().unwrap();
-    let security_cfg = tmp.path().join("workspace").join("config").join("config.security.json");
+    let security_cfg = tmp
+        .path()
+        .join("workspace")
+        .join("config")
+        .join("config.security.json");
     cmd_approve(&security_cfg, "test-id").unwrap();
 }
 
@@ -555,11 +573,15 @@ fn test_cmd_approve_existing() {
         {"id": "op-2", "operation": "process_exec", "tool_name": "test"}
     ]);
     std::fs::write(&pending_path, serde_json::to_string(&pending).unwrap()).unwrap();
-    let security_cfg = home.join("workspace").join("config").join("config.security.json");
+    let security_cfg = home
+        .join("workspace")
+        .join("config")
+        .join("config.security.json");
 
     cmd_approve(&security_cfg, "op-1").unwrap();
 
-    let data: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&pending_path).unwrap()).unwrap();
+    let data: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&pending_path).unwrap()).unwrap();
     let remaining = data.as_array().unwrap();
     assert_eq!(remaining.len(), 1);
     assert_eq!(remaining[0]["id"], "op-2");
@@ -573,7 +595,10 @@ fn test_cmd_approve_not_found() {
     std::fs::create_dir_all(&dir).unwrap();
     let pending_path = dir.join("pending.json");
     std::fs::write(&pending_path, r#"[{"id": "op-1"}]"#).unwrap();
-    let security_cfg = home.join("workspace").join("config").join("config.security.json");
+    let security_cfg = home
+        .join("workspace")
+        .join("config")
+        .join("config.security.json");
 
     cmd_approve(&security_cfg, "nonexistent-id").unwrap();
 }
@@ -587,18 +612,26 @@ fn test_cmd_deny_existing() {
     let pending_path = dir.join("pending.json");
     let pending = serde_json::json!([{"id": "op-1"}, {"id": "op-2"}]);
     std::fs::write(&pending_path, serde_json::to_string(&pending).unwrap()).unwrap();
-    let security_cfg = home.join("workspace").join("config").join("config.security.json");
+    let security_cfg = home
+        .join("workspace")
+        .join("config")
+        .join("config.security.json");
 
     cmd_deny(&security_cfg, "op-1", Some("dangerous")).unwrap();
 
-    let data: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&pending_path).unwrap()).unwrap();
+    let data: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&pending_path).unwrap()).unwrap();
     assert_eq!(data.as_array().unwrap().len(), 1);
 }
 
 #[test]
 fn test_cmd_deny_no_file() {
     let tmp = tempfile::TempDir::new().unwrap();
-    let security_cfg = tmp.path().join("workspace").join("config").join("config.security.json");
+    let security_cfg = tmp
+        .path()
+        .join("workspace")
+        .join("config")
+        .join("config.security.json");
     cmd_deny(&security_cfg, "test-id", None).unwrap();
 }
 
@@ -627,7 +660,14 @@ fn test_match_pattern_edge_cases() {
 
 #[test]
 fn test_valid_operations_all_types() {
-    let types = vec!["file", "directory", "process", "network", "hardware", "registry"];
+    let types = vec![
+        "file",
+        "directory",
+        "process",
+        "network",
+        "hardware",
+        "registry",
+    ];
     for t in &types {
         let ops = valid_operations_for_type(t);
         assert!(!ops.is_empty(), "Type '{}' should have operations", t);
@@ -654,7 +694,14 @@ fn test_default_security_config_all_fields() {
 #[test]
 fn test_default_rules_all_types() {
     let rules = default_rules();
-    for t in &["file", "directory", "process", "network", "hardware", "registry"] {
+    for t in &[
+        "file",
+        "directory",
+        "process",
+        "network",
+        "hardware",
+        "registry",
+    ] {
         assert!(rules[*t].is_array());
         assert!(rules[*t].as_array().unwrap().is_empty());
     }
@@ -684,7 +731,14 @@ fn test_cmd_rules_list_all_types() {
     let path = dir.join("config.security.json");
     write_rules_config(&path, &default_security_config()).unwrap();
 
-    for t in &["file", "directory", "process", "network", "hardware", "registry"] {
+    for t in &[
+        "file",
+        "directory",
+        "process",
+        "network",
+        "hardware",
+        "registry",
+    ] {
         cmd_rules_list(&path, Some(t)).unwrap();
     }
 }
@@ -753,11 +807,15 @@ fn test_cmd_deny_with_reason() {
     let pending_path = dir.join("pending.json");
     let pending = serde_json::json!([{"id": "op-1"}, {"id": "op-2"}]);
     std::fs::write(&pending_path, serde_json::to_string(&pending).unwrap()).unwrap();
-    let security_cfg = home.join("workspace").join("config").join("config.security.json");
+    let security_cfg = home
+        .join("workspace")
+        .join("config")
+        .join("config.security.json");
 
     cmd_deny(&security_cfg, "op-2", Some("too dangerous")).unwrap();
 
-    let data: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&pending_path).unwrap()).unwrap();
+    let data: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&pending_path).unwrap()).unwrap();
     assert_eq!(data.as_array().unwrap().len(), 1);
 }
 
@@ -770,11 +828,15 @@ fn test_cmd_deny_without_reason() {
     let pending_path = dir.join("pending.json");
     let pending = serde_json::json!([{"id": "op-x"}]);
     std::fs::write(&pending_path, serde_json::to_string(&pending).unwrap()).unwrap();
-    let security_cfg = home.join("workspace").join("config").join("config.security.json");
+    let security_cfg = home
+        .join("workspace")
+        .join("config")
+        .join("config.security.json");
 
     cmd_deny(&security_cfg, "op-x", None).unwrap();
 
-    let data: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&pending_path).unwrap()).unwrap();
+    let data: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&pending_path).unwrap()).unwrap();
     assert!(data.as_array().unwrap().is_empty());
 }
 
@@ -863,9 +925,19 @@ fn test_default_security_config_pending_is_empty() {
 fn test_default_security_config_rules_all_empty() {
     let cfg = default_security_config();
     let rules = &cfg["rules"];
-    for key in &["file", "directory", "process", "network", "hardware", "registry"] {
-        assert!(rules[key].as_array().unwrap().is_empty(),
-            "Rule type '{}' should be empty", key);
+    for key in &[
+        "file",
+        "directory",
+        "process",
+        "network",
+        "hardware",
+        "registry",
+    ] {
+        assert!(
+            rules[key].as_array().unwrap().is_empty(),
+            "Rule type '{}' should be empty",
+            key
+        );
     }
 }
 
@@ -956,7 +1028,10 @@ fn test_cmd_rules_remove_middle_index() {
 fn test_cmd_pending_no_dir() {
     let tmp = tempfile::TempDir::new().unwrap();
     let home = tmp.path();
-    let security_cfg = home.join("workspace").join("config").join("config.security.json");
+    let security_cfg = home
+        .join("workspace")
+        .join("config")
+        .join("config.security.json");
     cmd_pending(&security_cfg).unwrap();
 }
 
@@ -970,8 +1045,15 @@ fn test_cmd_pending_with_entries() {
         {"id": "op-1", "operation": "file_write", "target": "/etc/test", "risk": "HIGH"},
         {"id": "op-2", "operation": "process_exec", "target": "rm -rf /", "risk": "CRITICAL"}
     ]);
-    std::fs::write(dir.join("pending.json"), serde_json::to_string(&pending).unwrap()).unwrap();
-    let security_cfg = home.join("workspace").join("config").join("config.security.json");
+    std::fs::write(
+        dir.join("pending.json"),
+        serde_json::to_string(&pending).unwrap(),
+    )
+    .unwrap();
+    let security_cfg = home
+        .join("workspace")
+        .join("config")
+        .join("config.security.json");
     cmd_pending(&security_cfg).unwrap();
 }
 
@@ -986,14 +1068,20 @@ fn test_cmd_approve_removes_entry() {
     let dir = home.join("workspace").join("workspace").join("security");
     std::fs::create_dir_all(&dir).unwrap();
     let pending = serde_json::json!([{"id": "op-approve-test"}, {"id": "op-other"}]);
-    std::fs::write(dir.join("pending.json"), serde_json::to_string(&pending).unwrap()).unwrap();
-    let security_cfg = home.join("workspace").join("config").join("config.security.json");
+    std::fs::write(
+        dir.join("pending.json"),
+        serde_json::to_string(&pending).unwrap(),
+    )
+    .unwrap();
+    let security_cfg = home
+        .join("workspace")
+        .join("config")
+        .join("config.security.json");
 
     cmd_approve(&security_cfg, "op-approve-test").unwrap();
 
-    let data: serde_json::Value = serde_json::from_str(
-        &std::fs::read_to_string(dir.join("pending.json")).unwrap()
-    ).unwrap();
+    let data: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(dir.join("pending.json")).unwrap()).unwrap();
     let arr = data.as_array().unwrap();
     assert_eq!(arr.len(), 1);
     assert_eq!(arr[0]["id"], "op-other");

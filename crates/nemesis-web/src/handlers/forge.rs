@@ -80,14 +80,16 @@ fn load_config(home: &str) -> Result<nemesis_config::Config, String> {
     if let Some(cfg) = nemesis_config::load_live() {
         return Ok(cfg);
     }
-    nemesis_config::load_config(&config_path(home)).map_err(|e| format!("failed to load config: {}", e))
+    nemesis_config::load_config(&config_path(home))
+        .map_err(|e| format!("failed to load config: {}", e))
 }
 
 fn save_config_to_disk(home: &str, config: &mut nemesis_config::Config) -> Result<(), String> {
     if let Some(r) = nemesis_config::save_live(config.clone()) {
         return r.map_err(|e| format!("failed to save config: {}", e));
     }
-    nemesis_config::save_config(&config_path(home), config).map_err(|e| format!("failed to save config: {}", e))
+    nemesis_config::save_config(&config_path(home), config)
+        .map_err(|e| format!("failed to save config: {}", e))
 }
 
 fn forge_dir(workspace: &str) -> PathBuf {
@@ -99,12 +101,22 @@ fn forge_dir(workspace: &str) -> PathBuf {
 // ---------------------------------------------------------------------------
 
 impl ForgeHandler {
-    fn status(&self, home: &str, workspace: &str, ctx: &RequestContext) -> Result<Option<serde_json::Value>, String> {
+    fn status(
+        &self,
+        home: &str,
+        workspace: &str,
+        ctx: &RequestContext,
+    ) -> Result<Option<serde_json::Value>, String> {
         let config = load_config(home)?;
         let enabled = config.forge.as_ref().map(|f| f.enabled).unwrap_or(false);
 
         // Check actual runtime state from Forge instance.
-        let is_running = ctx.state.forge.as_ref().map(|f| f.is_running()).unwrap_or(false);
+        let is_running = ctx
+            .state
+            .forge
+            .as_ref()
+            .map(|f| f.is_running())
+            .unwrap_or(false);
         let started_at = ctx.state.forge.as_ref().and_then(|f| f.started_at());
 
         // Load forge config for intervals
@@ -184,12 +196,14 @@ impl ForgeHandler {
         // Registry stats
         let registry_file = fd.join("registry.json");
         let artifacts = read_registry_artifacts(&registry_file);
-        let active_count = artifacts.iter().filter(|a| {
-            a.get("status").and_then(|s| s.as_str()) == Some("Active")
-        }).count();
-        let observing_count = artifacts.iter().filter(|a| {
-            a.get("status").and_then(|s| s.as_str()) == Some("Observing")
-        }).count();
+        let active_count = artifacts
+            .iter()
+            .filter(|a| a.get("status").and_then(|s| s.as_str()) == Some("Active"))
+            .count();
+        let observing_count = artifacts
+            .iter()
+            .filter(|a| a.get("status").and_then(|s| s.as_str()) == Some("Observing"))
+            .count();
 
         // Learning cycle stats
         let learning_dir = fd.join("learning");
@@ -286,12 +300,20 @@ impl ForgeHandler {
                 continue;
             }
             if path.extension().map(|e| e == "md").unwrap_or(false) {
-                let name = path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+                let name = path
+                    .file_name()
+                    .map(|n| n.to_string_lossy().to_string())
+                    .unwrap_or_default();
                 let size = path.metadata().map(|m| m.len()).unwrap_or(0);
-                let modified = path.metadata().ok().and_then(|m| m.modified().ok()).map(|t| {
-                    let dt: chrono::DateTime<chrono::Local> = t.into();
-                    dt.to_rfc3339()
-                }).unwrap_or_default();
+                let modified = path
+                    .metadata()
+                    .ok()
+                    .and_then(|m| m.modified().ok())
+                    .map(|t| {
+                        let dt: chrono::DateTime<chrono::Local> = t.into();
+                        dt.to_rfc3339()
+                    })
+                    .unwrap_or_default();
 
                 // Extract date from filename: reflection_YYYY-MM-DD_HHMMSS.md
                 let date = name.get(11..21).unwrap_or("").to_string();
@@ -307,7 +329,9 @@ impl ForgeHandler {
 
         // Sort by modified date descending
         reports.sort_by(|a, b| {
-            b.get("modified").and_then(|v| v.as_str()).unwrap_or("")
+            b.get("modified")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
                 .cmp(a.get("modified").and_then(|v| v.as_str()).unwrap_or(""))
         });
 
@@ -324,7 +348,10 @@ impl ForgeHandler {
             Some(path) => {
                 let content = std::fs::read_to_string(&path)
                     .map_err(|e| format!("failed to read report: {}", e))?;
-                let name = path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+                let name = path
+                    .file_name()
+                    .map(|n| n.to_string_lossy().to_string())
+                    .unwrap_or_default();
                 Ok(Some(serde_json::json!({
                     "found": true,
                     "name": name,
@@ -387,9 +414,19 @@ impl ForgeHandler {
         })))
     }
 
-    fn registry_update(&self, workspace: &str, data: &serde_json::Value) -> Result<Option<serde_json::Value>, String> {
-        let id = data.get("id").and_then(|v| v.as_str()).ok_or("missing 'id' field")?;
-        let status = data.get("status").and_then(|v| v.as_str()).ok_or("missing 'status' field")?;
+    fn registry_update(
+        &self,
+        workspace: &str,
+        data: &serde_json::Value,
+    ) -> Result<Option<serde_json::Value>, String> {
+        let id = data
+            .get("id")
+            .and_then(|v| v.as_str())
+            .ok_or("missing 'id' field")?;
+        let status = data
+            .get("status")
+            .and_then(|v| v.as_str())
+            .ok_or("missing 'status' field")?;
 
         let registry_file = forge_dir(workspace).join("registry.json");
         if !registry_file.exists() {
@@ -406,8 +443,14 @@ impl ForgeHandler {
         for artifact in &mut artifacts {
             if artifact.get("id").and_then(|v| v.as_str()) == Some(id) {
                 if let Some(obj) = artifact.as_object_mut() {
-                    obj.insert("status".to_string(), serde_json::Value::String(status.to_string()));
-                    obj.insert("updated_at".to_string(), serde_json::Value::String(chrono::Local::now().to_rfc3339()));
+                    obj.insert(
+                        "status".to_string(),
+                        serde_json::Value::String(status.to_string()),
+                    );
+                    obj.insert(
+                        "updated_at".to_string(),
+                        serde_json::Value::String(chrono::Local::now().to_rfc3339()),
+                    );
                 }
                 found = true;
                 break;
@@ -423,7 +466,9 @@ impl ForgeHandler {
         std::fs::write(&registry_file, updated)
             .map_err(|e| format!("failed to write registry: {}", e))?;
 
-        Ok(Some(serde_json::json!({ "updated": true, "id": id, "status": status })))
+        Ok(Some(
+            serde_json::json!({ "updated": true, "id": id, "status": status }),
+        ))
     }
 }
 
@@ -591,7 +636,9 @@ impl ForgeHandler {
             }
         }
 
-        Ok(Some(serde_json::json!({ "saved": true, "enabled": enabled })))
+        Ok(Some(
+            serde_json::json!({ "saved": true, "enabled": enabled }),
+        ))
     }
 
     fn learning_toggle(
@@ -632,7 +679,10 @@ impl ForgeHandler {
                     learning_obj.insert("enabled".to_string(), serde_json::Value::Bool(enabled));
                 }
             } else {
-                obj.insert("learning".to_string(), serde_json::json!({ "enabled": enabled }));
+                obj.insert(
+                    "learning".to_string(),
+                    serde_json::json!({ "enabled": enabled }),
+                );
             }
         }
         let updated = serde_json::to_string_pretty(&forge_config)
@@ -647,7 +697,9 @@ impl ForgeHandler {
 
         tracing::info!(enabled, "[Forge] Learning toggle via dashboard");
 
-        Ok(Some(serde_json::json!({ "saved": true, "learning_enabled": enabled })))
+        Ok(Some(
+            serde_json::json!({ "saved": true, "learning_enabled": enabled }),
+        ))
     }
 }
 
@@ -676,53 +728,82 @@ fn compute_experience_stats(path: &PathBuf) -> ExperienceStatsResult {
 
     let content = match std::fs::read_to_string(path) {
         Ok(c) => c,
-        Err(_) => return ExperienceStatsResult {
-            total_count: 0,
-            success_count: 0,
-            failure_count: 0,
-            avg_duration_ms: 0.0,
-            tool_counts: serde_json::json!({}),
-        },
+        Err(_) => {
+            return ExperienceStatsResult {
+                total_count: 0,
+                success_count: 0,
+                failure_count: 0,
+                avg_duration_ms: 0.0,
+                tool_counts: serde_json::json!({}),
+            };
+        }
     };
 
     let mut total = 0usize;
     let mut success = 0usize;
     let mut total_duration = 0u64;
-    let mut tool_map: std::collections::HashMap<String, (usize, usize, u64)> = std::collections::HashMap::new();
+    let mut tool_map: std::collections::HashMap<String, (usize, usize, u64)> =
+        std::collections::HashMap::new();
 
     for line in content.lines() {
         let line = line.trim();
-        if line.is_empty() { continue; }
+        if line.is_empty() {
+            continue;
+        }
         if let Ok(exp) = serde_json::from_str::<serde_json::Value>(line) {
             // Navigate into experience.experience structure
             let inner = exp.get("experience").unwrap_or(&exp);
-            let tool_name = inner.get("tool_name").and_then(|v| v.as_str()).unwrap_or("unknown").to_string();
-            let is_success = inner.get("success").and_then(|v| v.as_bool()).unwrap_or(false);
-            let duration = inner.get("duration_ms").and_then(|v| v.as_u64()).unwrap_or(0);
+            let tool_name = inner
+                .get("tool_name")
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown")
+                .to_string();
+            let is_success = inner
+                .get("success")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            let duration = inner
+                .get("duration_ms")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
 
             total += 1;
-            if is_success { success += 1; }
+            if is_success {
+                success += 1;
+            }
             total_duration += duration;
 
             let entry = tool_map.entry(tool_name).or_insert((0, 0, 0));
             entry.0 += 1;
-            if is_success { entry.1 += 1; }
+            if is_success {
+                entry.1 += 1;
+            }
             entry.2 += duration;
         }
     }
 
     let failure = total - success;
-    let avg_duration = if total > 0 { total_duration as f64 / total as f64 } else { 0.0 };
+    let avg_duration = if total > 0 {
+        total_duration as f64 / total as f64
+    } else {
+        0.0
+    };
 
-    let tool_counts: serde_json::Map<String, serde_json::Value> = tool_map.into_iter().map(|(name, (count, succ, dur))| {
-        (name, serde_json::json!({
-            "count": count,
-            "success": succ,
-            "failure": count - succ,
-            "success_rate": if count > 0 { succ as f64 / count as f64 } else { 0.0 },
-            "avg_duration_ms": if count > 0 { dur as f64 / count as f64 } else { 0.0 },
-        }))
-    }).collect();
+    let tool_counts: serde_json::Map<String, serde_json::Value> = tool_map
+        .into_iter()
+        .map(|(name, (count, succ, dur))| {
+            (
+                name,
+                serde_json::json!({
+                    "count": count,
+                    "success": succ,
+                    "failure": count - succ,
+                    "success_rate": if count > 0 { succ as f64 / count as f64 } else { 0.0 },
+                    "avg_duration_ms": if count > 0 { dur as f64 / count as f64 } else { 0.0 },
+                }),
+            )
+        })
+        .collect();
 
     ExperienceStatsResult {
         total_count: total,
@@ -744,7 +825,11 @@ fn read_recent_experiences(path: &PathBuf, limit: usize) -> Vec<serde_json::Valu
     };
 
     let lines: Vec<&str> = content.lines().filter(|l| !l.trim().is_empty()).collect();
-    let start = if lines.len() > limit { lines.len() - limit } else { 0 };
+    let start = if lines.len() > limit {
+        lines.len() - limit
+    } else {
+        0
+    };
 
     lines[start..].iter().filter_map(|l| {
         let parsed: serde_json::Value = serde_json::from_str(l).ok()?;
@@ -791,12 +876,15 @@ fn count_jsonl_in_subdirs(dir: &PathBuf) -> usize {
     let mut count = 0;
     if let Ok(month_entries) = std::fs::read_dir(dir) {
         for month_entry in month_entries.flatten() {
-            if !month_entry.path().is_dir() { continue; }
+            if !month_entry.path().is_dir() {
+                continue;
+            }
             if let Ok(file_entries) = std::fs::read_dir(month_entry.path()) {
                 for file_entry in file_entries.flatten() {
                     let name = file_entry.file_name().to_string_lossy().to_string();
                     if name.ends_with(".jsonl") {
-                        let content = std::fs::read_to_string(file_entry.path()).unwrap_or_default();
+                        let content =
+                            std::fs::read_to_string(file_entry.path()).unwrap_or_default();
                         count += content.lines().filter(|l| !l.trim().is_empty()).count();
                     }
                 }
@@ -825,7 +913,9 @@ fn find_latest_file_path(dir: &PathBuf, ext: &str) -> Option<PathBuf> {
     if let Ok(entries) = std::fs::read_dir(dir) {
         for entry in entries.flatten() {
             let path = entry.path();
-            if !path.is_file() { continue; }
+            if !path.is_file() {
+                continue;
+            }
             if path.extension().map(|e| e == ext).unwrap_or(false) {
                 if let Ok(meta) = path.metadata() {
                     if let Ok(modified) = meta.modified() {
@@ -858,18 +948,24 @@ fn read_learning_cycles(dir: &PathBuf) -> Vec<serde_json::Value> {
     let mut results = Vec::new();
     if let Ok(month_entries) = std::fs::read_dir(dir) {
         for month_entry in month_entries.flatten() {
-            if !month_entry.path().is_dir() { continue; }
+            if !month_entry.path().is_dir() {
+                continue;
+            }
             if let Ok(file_entries) = std::fs::read_dir(month_entry.path()) {
                 for file_entry in file_entries.flatten() {
                     let name = file_entry.file_name().to_string_lossy().to_string();
-                    if !name.ends_with(".jsonl") { continue; }
+                    if !name.ends_with(".jsonl") {
+                        continue;
+                    }
                     let content = match std::fs::read_to_string(file_entry.path()) {
                         Ok(c) => c,
                         Err(_) => continue,
                     };
                     for line in content.lines() {
                         let line = line.trim();
-                        if line.is_empty() { continue; }
+                        if line.is_empty() {
+                            continue;
+                        }
                         if let Ok(v) = serde_json::from_str::<serde_json::Value>(line) {
                             results.push(v);
                         }

@@ -17,7 +17,13 @@ impl MockProvider {
 
 #[async_trait]
 impl LlmProvider for MockProvider {
-    async fn chat(&self, _model: &str, _messages: Vec<LlmMessage>, _options: Option<crate::types::ChatOptions>, _tools: Vec<crate::types::ToolDefinition>) -> Result<LlmResponse, String> {
+    async fn chat(
+        &self,
+        _model: &str,
+        _messages: Vec<LlmMessage>,
+        _options: Option<crate::types::ChatOptions>,
+        _tools: Vec<crate::types::ToolDefinition>,
+    ) -> Result<LlmResponse, String> {
         let mut responses = self.responses.lock().unwrap();
         if responses.is_empty() {
             Ok(LlmResponse {
@@ -42,11 +48,7 @@ struct MockTool {
 
 #[async_trait]
 impl Tool for MockTool {
-    async fn execute(
-        &self,
-        _args: &str,
-        _context: &RequestContext,
-    ) -> Result<String, String> {
+    async fn execute(&self, _args: &str, _context: &RequestContext) -> Result<String, String> {
         Ok(self.result.clone())
     }
 }
@@ -285,8 +287,7 @@ async fn test_max_turns_limit() {
     let mut config = test_executor_config();
     config.max_turns = 3;
 
-    let mut executor =
-        AgentLoopExecutor::new(provider, inbound_rx, outbound_tx, config);
+    let mut executor = AgentLoopExecutor::new(provider, inbound_rx, outbound_tx, config);
     executor.register_tool(
         "calculator",
         Arc::new(MockTool {
@@ -680,10 +681,20 @@ async fn test_executor_register_tool() {
         AgentLoopExecutor::new(provider, inbound_rx, outbound_tx, test_executor_config());
     assert!(executor.tools.is_empty());
 
-    executor.register_tool("test_tool", Arc::new(MockTool { result: "ok".to_string() }));
+    executor.register_tool(
+        "test_tool",
+        Arc::new(MockTool {
+            result: "ok".to_string(),
+        }),
+    );
     assert_eq!(executor.tools.len(), 1);
     assert!(executor.tools.contains_key("test_tool"));
-    assert!(executor.agent_config.tools.contains(&"test_tool".to_string()));
+    assert!(
+        executor
+            .agent_config
+            .tools
+            .contains(&"test_tool".to_string())
+    );
 }
 
 #[tokio::test]
@@ -697,8 +708,14 @@ async fn test_executor_set_fallback_candidates() {
     assert!(executor.fallback_candidates.is_empty());
 
     executor.set_fallback_candidates(vec![
-        FallbackCandidate { provider: "p1".to_string(), model: "m1".to_string() },
-        FallbackCandidate { provider: "p2".to_string(), model: "m2".to_string() },
+        FallbackCandidate {
+            provider: "p1".to_string(),
+            model: "m1".to_string(),
+        },
+        FallbackCandidate {
+            provider: "p2".to_string(),
+            model: "m2".to_string(),
+        },
     ]);
     assert_eq!(executor.fallback_candidates.len(), 2);
 }
@@ -755,7 +772,7 @@ async fn test_executor_set_continuation_manager() {
     assert!(executor.continuation_manager.is_none());
 
     executor.set_continuation_manager(Arc::new(
-        crate::loop_continuation::ContinuationManager::new()
+        crate::loop_continuation::ContinuationManager::new(),
     ));
     assert!(executor.continuation_manager.is_some());
 }
@@ -771,7 +788,10 @@ fn test_observer_event_conversation_start() {
         content: "hello".to_string(),
     };
     let conv_event = event.to_conversation_event();
-    assert_eq!(conv_event.event_type, nemesis_observer::EventType::ConversationStart);
+    assert_eq!(
+        conv_event.event_type,
+        nemesis_observer::EventType::ConversationStart
+    );
 }
 
 #[test]
@@ -786,7 +806,10 @@ fn test_observer_event_conversation_end() {
         chat_id: "chat1".to_string(),
     };
     let conv_event = event.to_conversation_event();
-    assert_eq!(conv_event.event_type, nemesis_observer::EventType::ConversationEnd);
+    assert_eq!(
+        conv_event.event_type,
+        nemesis_observer::EventType::ConversationEnd
+    );
 }
 
 #[test]
@@ -804,7 +827,10 @@ fn test_observer_event_llm_request() {
         api_base: String::new(),
     };
     let conv_event = event.to_conversation_event();
-    assert_eq!(conv_event.event_type, nemesis_observer::EventType::LlmRequest);
+    assert_eq!(
+        conv_event.event_type,
+        nemesis_observer::EventType::LlmRequest
+    );
 }
 
 #[test]
@@ -823,7 +849,10 @@ fn test_observer_event_llm_response() {
         raw_response_body: None,
     };
     let conv_event = event.to_conversation_event();
-    assert_eq!(conv_event.event_type, nemesis_observer::EventType::LlmResponse);
+    assert_eq!(
+        conv_event.event_type,
+        nemesis_observer::EventType::LlmResponse
+    );
 }
 
 #[test]
@@ -928,7 +957,13 @@ async fn test_executor_process_message_llm_error() {
     struct ErrorProvider;
     #[async_trait]
     impl LlmProvider for ErrorProvider {
-        async fn chat(&self, _model: &str, _messages: Vec<LlmMessage>, _options: Option<crate::types::ChatOptions>, _tools: Vec<crate::types::ToolDefinition>) -> Result<LlmResponse, String> {
+        async fn chat(
+            &self,
+            _model: &str,
+            _messages: Vec<LlmMessage>,
+            _options: Option<crate::types::ChatOptions>,
+            _tools: Vec<crate::types::ToolDefinition>,
+        ) -> Result<LlmResponse, String> {
             Err("LLM failed".to_string())
         }
     }
@@ -1013,7 +1048,12 @@ async fn test_process_and_publish_with_tool_call() {
 
     let mut executor =
         AgentLoopExecutor::new(provider, inbound_rx, outbound_tx, test_executor_config());
-    executor.register_tool("test_tool", Arc::new(MockTool { result: "ok".to_string() }));
+    executor.register_tool(
+        "test_tool",
+        Arc::new(MockTool {
+            result: "ok".to_string(),
+        }),
+    );
 
     let context = RequestContext::new("web", "chat1", "user1", "sess1");
     let result = executor
@@ -1044,7 +1084,10 @@ async fn test_executor_runs_with_channel_close() {
     let mut executor =
         AgentLoopExecutor::new(provider, inbound_rx, outbound_tx, test_executor_config());
 
-    inbound_tx.send(make_inbound("Hi", "web", "")).await.unwrap();
+    inbound_tx
+        .send(make_inbound("Hi", "web", ""))
+        .await
+        .unwrap();
     drop(inbound_tx);
 
     executor.run().await;
@@ -1062,7 +1105,13 @@ async fn test_executor_context_window_error_retry() {
     }
     #[async_trait]
     impl LlmProvider for ContextErrorProvider {
-        async fn chat(&self, _model: &str, _messages: Vec<LlmMessage>, _options: Option<crate::types::ChatOptions>, _tools: Vec<crate::types::ToolDefinition>) -> Result<LlmResponse, String> {
+        async fn chat(
+            &self,
+            _model: &str,
+            _messages: Vec<LlmMessage>,
+            _options: Option<crate::types::ChatOptions>,
+            _tools: Vec<crate::types::ToolDefinition>,
+        ) -> Result<LlmResponse, String> {
             let count = self.call_count.fetch_add(1, Ordering::SeqCst);
             if count == 0 {
                 Err("context_length_exceeded".to_string())
@@ -1080,14 +1129,18 @@ async fn test_executor_context_window_error_retry() {
         }
     }
 
-    let provider = Arc::new(ContextErrorProvider { call_count: AtomicUsize::new(0) });
+    let provider = Arc::new(ContextErrorProvider {
+        call_count: AtomicUsize::new(0),
+    });
     let (_inbound_tx, inbound_rx) = mpsc::channel(16);
     let (outbound_tx, mut outbound_rx) = mpsc::channel(16);
 
     let executor =
         AgentLoopExecutor::new(provider, inbound_rx, outbound_tx, test_executor_config());
 
-    executor.process_message(make_inbound("Big query", "web", "")).await;
+    executor
+        .process_message(make_inbound("Big query", "web", ""))
+        .await;
 
     // First message should be about compression
     let _msg1 = outbound_rx.recv().await.unwrap();
@@ -1117,18 +1170,17 @@ async fn test_run_agent_loop_simple() {
     let (outbound_tx, _outbound_rx) = mpsc::channel(16);
     drop(inbound_tx);
 
-    let provider = Arc::new(MockProvider::new(vec![
-        crate::r#loop::LlmResponse {
-            content: "Agent loop result".to_string(),
-            tool_calls: Vec::new(),
-            finished: true,
-            reasoning_content: None,
-            usage: None,
-            raw_request_body: None,
-            raw_response_body: None,
-        },
-    ]));
-    let executor = AgentLoopExecutor::new(provider, inbound_rx, outbound_tx, ExecutorConfig::default());
+    let provider = Arc::new(MockProvider::new(vec![crate::r#loop::LlmResponse {
+        content: "Agent loop result".to_string(),
+        tool_calls: Vec::new(),
+        finished: true,
+        reasoning_content: None,
+        usage: None,
+        raw_request_body: None,
+        raw_response_body: None,
+    }]));
+    let executor =
+        AgentLoopExecutor::new(provider, inbound_rx, outbound_tx, ExecutorConfig::default());
 
     let ctx = RequestContext::new("web", "chat1", "user1", "sess1");
     let result = executor.run_agent_loop("sess1", "Hello", &ctx).await;
@@ -1166,11 +1218,19 @@ async fn test_run_agent_loop_with_tool_call() {
             raw_response_body: None,
         },
     ]));
-    let mut executor = AgentLoopExecutor::new(provider, inbound_rx, outbound_tx, ExecutorConfig::default());
-    executor.register_tool("calculator", Arc::new(MockTool { result: "2".to_string() }));
+    let mut executor =
+        AgentLoopExecutor::new(provider, inbound_rx, outbound_tx, ExecutorConfig::default());
+    executor.register_tool(
+        "calculator",
+        Arc::new(MockTool {
+            result: "2".to_string(),
+        }),
+    );
 
     let ctx = RequestContext::new("web", "chat1", "user1", "sess1");
-    let result = executor.run_agent_loop("sess-tools", "What is 1+1?", &ctx).await;
+    let result = executor
+        .run_agent_loop("sess-tools", "What is 1+1?", &ctx)
+        .await;
     assert!(result.is_ok());
     assert!(result.unwrap().contains("The answer is 2"));
 }
@@ -1201,16 +1261,26 @@ async fn test_run_agent_loop_max_iterations() {
     let mut config = ExecutorConfig::default();
     config.max_turns = 3;
     let mut executor = AgentLoopExecutor::new(provider, inbound_rx, outbound_tx, config);
-    executor.register_tool("loop_tool", Arc::new(MockTool { result: "0".to_string() }));
+    executor.register_tool(
+        "loop_tool",
+        Arc::new(MockTool {
+            result: "0".to_string(),
+        }),
+    );
 
     let ctx = RequestContext::new("web", "chat1", "user1", "sess-loop");
-    let result = executor.run_agent_loop("sess-loop", "Loop test", &ctx).await;
+    let result = executor
+        .run_agent_loop("sess-loop", "Loop test", &ctx)
+        .await;
     assert!(result.is_ok());
     // run_agent_loop does not call check_iteration_limit, so it returns
     // empty content when max turns is reached with only tool calls
     let content = result.unwrap();
-    assert!(content.is_empty() || content.contains("No more responses"),
-        "Expected empty or exhaustion, got: {}", content);
+    assert!(
+        content.is_empty() || content.contains("No more responses"),
+        "Expected empty or exhaustion, got: {}",
+        content
+    );
 }
 
 #[tokio::test]
@@ -1235,7 +1305,8 @@ async fn test_check_iteration_limit_not_hit() {
     drop(inbound_tx);
 
     let provider = Arc::new(MockProvider::new(vec![]));
-    let executor = AgentLoopExecutor::new(provider, inbound_rx, outbound_tx, ExecutorConfig::default());
+    let executor =
+        AgentLoopExecutor::new(provider, inbound_rx, outbound_tx, ExecutorConfig::default());
 
     let result = executor.check_iteration_limit("Normal response", 3);
     assert_eq!(result, "Normal response");
@@ -1248,9 +1319,20 @@ async fn test_handle_tool_calls_batch() {
     drop(inbound_tx);
 
     let provider = Arc::new(MockProvider::new(vec![]));
-    let mut executor = AgentLoopExecutor::new(provider, inbound_rx, outbound_tx, ExecutorConfig::default());
-    executor.register_tool("tool_a", Arc::new(MockTool { result: "A result".to_string() }));
-    executor.register_tool("tool_b", Arc::new(MockTool { result: "B result".to_string() }));
+    let mut executor =
+        AgentLoopExecutor::new(provider, inbound_rx, outbound_tx, ExecutorConfig::default());
+    executor.register_tool(
+        "tool_a",
+        Arc::new(MockTool {
+            result: "A result".to_string(),
+        }),
+    );
+    executor.register_tool(
+        "tool_b",
+        Arc::new(MockTool {
+            result: "B result".to_string(),
+        }),
+    );
 
     let ctx = RequestContext::new("web", "chat1", "user1", "sess1");
     let tool_calls = vec![
@@ -1265,7 +1347,9 @@ async fn test_handle_tool_calls_batch() {
             arguments: "{}".to_string(),
         },
     ];
-    let results = executor.handle_tool_calls(&tool_calls, &ctx, "trace-1", 1).await;
+    let results = executor
+        .handle_tool_calls(&tool_calls, &ctx, "trace-1", 1)
+        .await;
     assert_eq!(results.len(), 2);
     assert_eq!(results[0].result, "A result");
     assert_eq!(results[1].result, "B result");
@@ -1278,7 +1362,8 @@ async fn test_handle_tool_calls_unknown_tool() {
     drop(inbound_tx);
 
     let provider = Arc::new(MockProvider::new(vec![]));
-    let executor = AgentLoopExecutor::new(provider, inbound_rx, outbound_tx, ExecutorConfig::default());
+    let executor =
+        AgentLoopExecutor::new(provider, inbound_rx, outbound_tx, ExecutorConfig::default());
 
     let ctx = RequestContext::new("web", "chat1", "user1", "sess1");
     let tool_calls = vec![ToolCallInfo {
@@ -1286,7 +1371,9 @@ async fn test_handle_tool_calls_unknown_tool() {
         name: "nonexistent".to_string(),
         arguments: "{}".to_string(),
     }];
-    let results = executor.handle_tool_calls(&tool_calls, &ctx, "trace-1", 1).await;
+    let results = executor
+        .handle_tool_calls(&tool_calls, &ctx, "trace-1", 1)
+        .await;
     assert_eq!(results.len(), 1);
     assert!(results[0].is_error);
     assert!(results[0].result.contains("Unknown tool"));
@@ -1299,7 +1386,8 @@ async fn test_update_tool_contexts() {
     drop(inbound_tx);
 
     let provider = Arc::new(MockProvider::new(vec![]));
-    let executor = AgentLoopExecutor::new(provider, inbound_rx, outbound_tx, ExecutorConfig::default());
+    let executor =
+        AgentLoopExecutor::new(provider, inbound_rx, outbound_tx, ExecutorConfig::default());
 
     // Should not panic even without context-aware tools
     executor.update_tool_contexts("web", "chat1");
@@ -1348,18 +1436,17 @@ async fn test_call_llm_with_fallback_no_candidates() {
     let (outbound_tx, _outbound_rx) = mpsc::channel(16);
     drop(inbound_tx);
 
-    let provider = Arc::new(MockProvider::new(vec![
-        crate::r#loop::LlmResponse {
-            content: "Direct response".to_string(),
-            tool_calls: Vec::new(),
-            finished: true,
-            reasoning_content: None,
-            usage: None,
-            raw_request_body: None,
-            raw_response_body: None,
-        },
-    ]));
-    let executor = AgentLoopExecutor::new(provider, inbound_rx, outbound_tx, ExecutorConfig::default());
+    let provider = Arc::new(MockProvider::new(vec![crate::r#loop::LlmResponse {
+        content: "Direct response".to_string(),
+        tool_calls: Vec::new(),
+        finished: true,
+        reasoning_content: None,
+        usage: None,
+        raw_request_body: None,
+        raw_response_body: None,
+    }]));
+    let executor =
+        AgentLoopExecutor::new(provider, inbound_rx, outbound_tx, ExecutorConfig::default());
 
     let messages = vec![crate::r#loop::LlmMessage {
         role: "user".to_string(),
@@ -1368,7 +1455,9 @@ async fn test_call_llm_with_fallback_no_candidates() {
         tool_call_id: None,
         reasoning_content: None,
     }];
-    let result = executor.call_llm_with_fallback(&messages, None, vec![]).await;
+    let result = executor
+        .call_llm_with_fallback(&messages, None, vec![])
+        .await;
     assert!(result.is_ok());
     assert_eq!(result.unwrap().content, "Direct response");
 }
@@ -1623,21 +1712,21 @@ async fn test_call_llm_with_fallback_with_candidates() {
     let (outbound_tx, _outbound_rx) = mpsc::channel(16);
     drop(inbound_tx);
 
-    let provider = Arc::new(MockProvider::new(vec![
-        crate::r#loop::LlmResponse {
-            content: "Fallback response".to_string(),
-            tool_calls: Vec::new(),
-            finished: true,
-            reasoning_content: None,
-            usage: None,
-            raw_request_body: None,
-            raw_response_body: None,
-        },
-    ]));
-    let mut executor = AgentLoopExecutor::new(provider, inbound_rx, outbound_tx, ExecutorConfig::default());
-    executor.set_fallback_candidates(vec![
-        FallbackCandidate { provider: "p1".to_string(), model: "m1".to_string() },
-    ]);
+    let provider = Arc::new(MockProvider::new(vec![crate::r#loop::LlmResponse {
+        content: "Fallback response".to_string(),
+        tool_calls: Vec::new(),
+        finished: true,
+        reasoning_content: None,
+        usage: None,
+        raw_request_body: None,
+        raw_response_body: None,
+    }]));
+    let mut executor =
+        AgentLoopExecutor::new(provider, inbound_rx, outbound_tx, ExecutorConfig::default());
+    executor.set_fallback_candidates(vec![FallbackCandidate {
+        provider: "p1".to_string(),
+        model: "m1".to_string(),
+    }]);
 
     let messages = vec![crate::r#loop::LlmMessage {
         role: "user".to_string(),
@@ -1646,7 +1735,9 @@ async fn test_call_llm_with_fallback_with_candidates() {
         tool_call_id: None,
         reasoning_content: None,
     }];
-    let result = executor.call_llm_with_fallback(&messages, None, vec![]).await;
+    let result = executor
+        .call_llm_with_fallback(&messages, None, vec![])
+        .await;
     assert!(result.is_ok());
 }
 
@@ -1721,9 +1812,24 @@ async fn test_executor_register_multiple_tools() {
     let mut executor =
         AgentLoopExecutor::new(provider, inbound_rx, outbound_tx, test_executor_config());
 
-    executor.register_tool("tool1", Arc::new(MockTool { result: "r1".to_string() }));
-    executor.register_tool("tool2", Arc::new(MockTool { result: "r2".to_string() }));
-    executor.register_tool("tool3", Arc::new(MockTool { result: "r3".to_string() }));
+    executor.register_tool(
+        "tool1",
+        Arc::new(MockTool {
+            result: "r1".to_string(),
+        }),
+    );
+    executor.register_tool(
+        "tool2",
+        Arc::new(MockTool {
+            result: "r2".to_string(),
+        }),
+    );
+    executor.register_tool(
+        "tool3",
+        Arc::new(MockTool {
+            result: "r3".to_string(),
+        }),
+    );
 
     assert_eq!(executor.tools.len(), 3);
     assert!(executor.tools.contains_key("tool1"));
@@ -1754,12 +1860,10 @@ fn test_executor_config_custom() {
 #[test]
 fn test_fallback_executor_clears_cooldown_on_success() {
     let executor = FallbackExecutor::new();
-    let candidates = vec![
-        FallbackCandidate {
-            provider: "test".to_string(),
-            model: "model-1".to_string(),
-        },
-    ];
+    let candidates = vec![FallbackCandidate {
+        provider: "test".to_string(),
+        model: "model-1".to_string(),
+    }];
 
     let rt = tokio::runtime::Runtime::new().unwrap();
 

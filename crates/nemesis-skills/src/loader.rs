@@ -3,9 +3,9 @@
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
+use nemesis_types::error::{NemesisError, Result};
 use regex::Regex;
 use tracing::{debug, warn};
-use nemesis_types::error::{NemesisError, Result};
 
 use crate::lint::{LintResult, SkillLinter};
 use crate::types::SkillInfo;
@@ -209,21 +209,33 @@ impl SkillsLoader {
         let mut skills = Vec::new();
 
         // 1. Workspace skills (highest priority)
-        self.scan_directory_into(&self.workspace_skills, "workspace", &mut skills, &HashSet::new());
+        self.scan_directory_into(
+            &self.workspace_skills,
+            "workspace",
+            &mut skills,
+            &HashSet::new(),
+        );
 
         // 2. Global skills - skipped if already present in workspace
-        let workspace_names: HashSet<String> = skills.iter()
+        let workspace_names: HashSet<String> = skills
+            .iter()
             .filter(|s| s.source == "workspace")
             .map(|s| s.name.clone())
             .collect();
         self.scan_directory_into(&self.global_skills, "global", &mut skills, &workspace_names);
 
         // 3. Built-in skills - skipped if already present in workspace or global
-        let existing_names: HashSet<String> = skills.iter()
+        let existing_names: HashSet<String> = skills
+            .iter()
             .filter(|s| s.source == "workspace" || s.source == "global")
             .map(|s| s.name.clone())
             .collect();
-        self.scan_directory_into(&self.builtin_skills, "builtin", &mut skills, &existing_names);
+        self.scan_directory_into(
+            &self.builtin_skills,
+            "builtin",
+            &mut skills,
+            &existing_names,
+        );
 
         skills
     }
@@ -264,9 +276,8 @@ impl SkillsLoader {
         let parts: Vec<String> = skill_names
             .iter()
             .filter_map(|name| {
-                self.load_skill(name).map(|content| {
-                    format!("### Skill: {}\n\n{}", name, content)
-                })
+                self.load_skill(name)
+                    .map(|content| format!("### Skill: {}\n\n{}", name, content))
             })
             .collect();
 
@@ -416,7 +427,10 @@ impl SkillsLoader {
                 }
             }
 
-            debug!("Loaded skill: {} from {} ({})", info.name, info.path, source);
+            debug!(
+                "Loaded skill: {} from {} ({})",
+                info.name, info.path, source
+            );
             skills.push(info);
         }
     }
@@ -495,7 +509,9 @@ impl SkillsLoader {
     /// Returns `Ok(map)` if the frontmatter is valid JSON with "name" and/or
     /// "description" fields, or `Err` if parsing fails (not valid JSON or
     /// neither field present).
-    fn parse_json_frontmatter(frontmatter: &str) -> std::result::Result<std::collections::HashMap<String, String>, ()> {
+    fn parse_json_frontmatter(
+        frontmatter: &str,
+    ) -> std::result::Result<std::collections::HashMap<String, String>, ()> {
         #[derive(serde::Deserialize)]
         struct JsonFrontmatter {
             #[serde(default)]
@@ -550,7 +566,11 @@ impl SkillsLoader {
         let mut skills = Vec::new();
 
         let entries = std::fs::read_dir(root).map_err(|e| {
-            NemesisError::Config(format!("Failed to read directory {}: {}", root.display(), e))
+            NemesisError::Config(format!(
+                "Failed to read directory {}: {}",
+                root.display(),
+                e
+            ))
         })?;
 
         for entry in entries {
@@ -591,10 +611,7 @@ impl SkillsLoader {
 
         let (frontmatter, _body) = Self::parse_frontmatter(&content);
 
-        let name = frontmatter
-            .get("name")
-            .cloned()
-            .unwrap_or(dir_name.clone());
+        let name = frontmatter.get("name").cloned().unwrap_or(dir_name.clone());
         let description = frontmatter.get("description").cloned().unwrap_or_default();
 
         Ok(SkillInfo {

@@ -42,7 +42,8 @@ fn test_auth_store_save_and_get() {
     let auth_path = tmp.path().join("auth.json");
 
     let store = nemesis_auth::AuthStore::new(&auth_path.to_string_lossy());
-    let cred = nemesis_auth::AuthCredential::login_paste_token("openai", "test-token-12345").unwrap();
+    let cred =
+        nemesis_auth::AuthCredential::login_paste_token("openai", "test-token-12345").unwrap();
     store.save("openai", cred).unwrap();
 
     let retrieved = store.get("openai");

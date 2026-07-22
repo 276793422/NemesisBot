@@ -37,9 +37,12 @@ async fn test_fp2_read_recent_returns_last_n() {
     for i in 0..5u32 {
         let ce = CollectedExperience {
             experience: Experience {
-                id: format!("id{}", i), tool_name: format!("tool{}", i),
-                input_summary: "x".into(), output_summary: "y".into(),
-                success: true, duration_ms: 1,
+                id: format!("id{}", i),
+                tool_name: format!("tool{}", i),
+                input_summary: "x".into(),
+                output_summary: "y".into(),
+                success: true,
+                duration_ms: 1,
                 timestamp: "2026-01-01T00:00:00+08:00".into(),
                 session_key: "s".into(),
             },
@@ -53,8 +56,15 @@ async fn test_fp2_read_recent_returns_last_n() {
     let store = ExperienceStore::from_forge_dir(dir.path());
     let recent = store.read_recent(3).await.unwrap();
     assert_eq!(recent.len(), 3, "should return only the last 3");
-    let names: Vec<&str> = recent.iter().map(|c| c.experience.tool_name.as_str()).collect();
-    assert_eq!(names, vec!["tool2", "tool3", "tool4"], "should be the last 3 in order");
+    let names: Vec<&str> = recent
+        .iter()
+        .map(|c| c.experience.tool_name.as_str())
+        .collect();
+    assert_eq!(
+        names,
+        vec!["tool2", "tool3", "tool4"],
+        "should be the last 3 in order"
+    );
 }
 
 #[tokio::test]
@@ -68,17 +78,25 @@ async fn test_fd2_cleanup_trims_flat_file_by_age() {
     let mk = |tool: &str, ts: &str| {
         serde_json::to_string(&CollectedExperience {
             experience: Experience {
-                id: tool.into(), tool_name: tool.into(),
-                input_summary: "x".into(), output_summary: "y".into(),
-                success: true, duration_ms: 1, timestamp: ts.into(), session_key: "s".into(),
+                id: tool.into(),
+                tool_name: tool.into(),
+                input_summary: "x".into(),
+                output_summary: "y".into(),
+                success: true,
+                duration_ms: 1,
+                timestamp: ts.into(),
+                session_key: "s".into(),
             },
             dedup_hash: tool.into(),
-        }).unwrap()
+        })
+        .unwrap()
     };
     let now = chrono::Local::now().to_rfc3339();
-    let content = format!("{}\n{}\n",
+    let content = format!(
+        "{}\n{}\n",
         mk("old_tool", "2020-01-01T00:00:00+08:00"),
-        mk("new_tool", &now));
+        mk("new_tool", &now)
+    );
     std::fs::write(exp_dir.join("experiences.jsonl"), content).unwrap();
 
     let store = ExperienceStore::from_forge_dir(dir.path());
@@ -111,7 +129,10 @@ async fn test_read_aggregated_since_filter() {
 
     // Create an old file manually
     let old_date = chrono::Local::now() - chrono::Duration::days(100);
-    let old_month = dir.path().join("experiences").join(old_date.format("%Y%m").to_string());
+    let old_month = dir
+        .path()
+        .join("experiences")
+        .join(old_date.format("%Y%m").to_string());
     std::fs::create_dir_all(&old_month).unwrap();
     let old_agg = AggregatedExperience {
         pattern_hash: "old_hash".to_string(),
@@ -122,7 +143,11 @@ async fn test_read_aggregated_since_filter() {
         last_seen: old_date.to_rfc3339(),
     };
     let old_file = old_month.join(format!("{}.jsonl", old_date.format("%Y%m%d")));
-    std::fs::write(&old_file, format!("{}\n", serde_json::to_string(&old_agg).unwrap())).unwrap();
+    std::fs::write(
+        &old_file,
+        format!("{}\n", serde_json::to_string(&old_agg).unwrap()),
+    )
+    .unwrap();
 
     // Append a recent record
     let recent_agg = make_aggregated("recent_hash", "recent_tool", 10);
@@ -177,7 +202,10 @@ async fn test_get_top_patterns_since() {
 
     // Create an old file manually with high count
     let old_date = chrono::Local::now() - chrono::Duration::days(100);
-    let old_month = dir.path().join("experiences").join(old_date.format("%Y%m").to_string());
+    let old_month = dir
+        .path()
+        .join("experiences")
+        .join(old_date.format("%Y%m").to_string());
     std::fs::create_dir_all(&old_month).unwrap();
     let old_agg = AggregatedExperience {
         pattern_hash: "old_hash".to_string(),
@@ -188,10 +216,17 @@ async fn test_get_top_patterns_since() {
         last_seen: old_date.to_rfc3339(),
     };
     let old_file = old_month.join(format!("{}.jsonl", old_date.format("%Y%m%d")));
-    std::fs::write(&old_file, format!("{}\n", serde_json::to_string(&old_agg).unwrap())).unwrap();
+    std::fs::write(
+        &old_file,
+        format!("{}\n", serde_json::to_string(&old_agg).unwrap()),
+    )
+    .unwrap();
 
     // Append recent records
-    store.append_aggregated(&make_aggregated("hash1", "recent_tool", 20)).await.unwrap();
+    store
+        .append_aggregated(&make_aggregated("hash1", "recent_tool", 20))
+        .await
+        .unwrap();
 
     // Without filter, old should be included
     let all_top = store.get_top_patterns(1).await.unwrap();
@@ -225,14 +260,20 @@ async fn test_cleanup_removes_old() {
 
     // Create an old file manually
     let old_date = chrono::Local::now() - chrono::Duration::days(100);
-    let month_dir = dir.path().join("experiences").join(old_date.format("%Y%m").to_string());
+    let month_dir = dir
+        .path()
+        .join("experiences")
+        .join(old_date.format("%Y%m").to_string());
     std::fs::create_dir_all(&month_dir).unwrap();
     let old_file = month_dir.join(format!("{}.jsonl", old_date.format("%Y%m%d")));
     std::fs::write(&old_file, "test data\n").unwrap();
 
     // Create a recent file
     let recent_date = chrono::Local::now();
-    let recent_month = dir.path().join("experiences").join(recent_date.format("%Y%m").to_string());
+    let recent_month = dir
+        .path()
+        .join("experiences")
+        .join(recent_date.format("%Y%m").to_string());
     std::fs::create_dir_all(&recent_month).unwrap();
     let recent_file = recent_month.join(format!("{}.jsonl", recent_date.format("%Y%m%d")));
     std::fs::write(&recent_file, "recent data\n").unwrap();
@@ -363,9 +404,18 @@ async fn test_get_top_patterns_empty() {
 async fn test_get_top_patterns_all_returned() {
     let dir = tempfile::tempdir().unwrap();
     let store = ExperienceStore::from_forge_dir(dir.path());
-    store.append_aggregated(&make_aggregated("h1", "a", 10)).await.unwrap();
-    store.append_aggregated(&make_aggregated("h2", "b", 5)).await.unwrap();
-    store.append_aggregated(&make_aggregated("h3", "c", 1)).await.unwrap();
+    store
+        .append_aggregated(&make_aggregated("h1", "a", 10))
+        .await
+        .unwrap();
+    store
+        .append_aggregated(&make_aggregated("h2", "b", 5))
+        .await
+        .unwrap();
+    store
+        .append_aggregated(&make_aggregated("h3", "c", 1))
+        .await
+        .unwrap();
     let top = store.get_top_patterns(0).await.unwrap();
     assert_eq!(top.len(), 3);
 }
@@ -402,7 +452,8 @@ async fn test_read_all_with_data() {
     };
     let line = serde_json::to_string(&ce).unwrap();
     tokio::fs::write(exp_path.join("experiences.jsonl"), format!("{}\n", line))
-        .await.unwrap();
+        .await
+        .unwrap();
 
     let all = store.read_all().await.unwrap();
     assert_eq!(all.len(), 1);
@@ -418,7 +469,8 @@ async fn test_read_all_ignores_invalid_json() {
     std::fs::create_dir_all(&exp_path).unwrap();
     let content = "invalid json line\n{\"valid\": true}\n";
     tokio::fs::write(exp_path.join("experiences.jsonl"), content)
-        .await.unwrap();
+        .await
+        .unwrap();
 
     let all = store.read_all().await.unwrap();
     assert!(all.is_empty()); // Neither line is valid CollectedExperience
@@ -432,10 +484,14 @@ async fn test_count_after_append() {
     let exp_path = dir.path().join("experiences");
     std::fs::create_dir_all(&exp_path).unwrap();
     let exp = make_experience("tool");
-    let ce = CollectedExperience { experience: exp, dedup_hash: "h".into() };
+    let ce = CollectedExperience {
+        experience: exp,
+        dedup_hash: "h".into(),
+    };
     let line = serde_json::to_string(&ce).unwrap();
     tokio::fs::write(exp_path.join("experiences.jsonl"), format!("{}\n", line))
-        .await.unwrap();
+        .await
+        .unwrap();
 
     assert_eq!(store.count().await.unwrap(), 1);
 }
@@ -527,7 +583,10 @@ async fn test_read_aggregated_merges_same_hash() {
 
     let all = store.read_aggregated().await.unwrap();
     // Same hash entries are stored separately (no merge on read)
-    let shared: Vec<_> = all.iter().filter(|a| a.pattern_hash == "shared-hash").collect();
+    let shared: Vec<_> = all
+        .iter()
+        .filter(|a| a.pattern_hash == "shared-hash")
+        .collect();
     assert_eq!(shared.len(), 2);
 }
 
@@ -537,10 +596,22 @@ async fn test_read_aggregated_merges_same_hash() {
 async fn test_get_top_patterns_sorted() {
     let dir = tempfile::tempdir().unwrap();
     let store = ExperienceStore::from_forge_dir(dir.path());
-    store.append_aggregated(&make_aggregated("h1", "tool_low", 2)).await.unwrap();
-    store.append_aggregated(&make_aggregated("h2", "tool_mid", 5)).await.unwrap();
-    store.append_aggregated(&make_aggregated("h3", "tool_high", 20)).await.unwrap();
-    store.append_aggregated(&make_aggregated("h4", "tool_med2", 10)).await.unwrap();
+    store
+        .append_aggregated(&make_aggregated("h1", "tool_low", 2))
+        .await
+        .unwrap();
+    store
+        .append_aggregated(&make_aggregated("h2", "tool_mid", 5))
+        .await
+        .unwrap();
+    store
+        .append_aggregated(&make_aggregated("h3", "tool_high", 20))
+        .await
+        .unwrap();
+    store
+        .append_aggregated(&make_aggregated("h4", "tool_med2", 10))
+        .await
+        .unwrap();
 
     let top = store.get_top_patterns(3).await.unwrap();
     assert_eq!(top.len(), 3);
@@ -553,9 +624,18 @@ async fn test_get_top_patterns_sorted() {
 async fn test_get_stats_with_data() {
     let dir = tempfile::tempdir().unwrap();
     let store = ExperienceStore::from_forge_dir(dir.path());
-    store.append_aggregated(&make_aggregated("h1", "a", 5)).await.unwrap();
-    store.append_aggregated(&make_aggregated("h2", "b", 3)).await.unwrap();
-    store.append_aggregated(&make_aggregated("h3", "c", 1)).await.unwrap();
+    store
+        .append_aggregated(&make_aggregated("h1", "a", 5))
+        .await
+        .unwrap();
+    store
+        .append_aggregated(&make_aggregated("h2", "b", 3))
+        .await
+        .unwrap();
+    store
+        .append_aggregated(&make_aggregated("h3", "c", 1))
+        .await
+        .unwrap();
 
     let (total, unique) = store.get_stats().await.unwrap();
     assert_eq!(total, 9); // 5 + 3 + 1
@@ -566,7 +646,10 @@ async fn test_get_stats_with_data() {
 async fn test_read_aggregated_since_today() {
     let dir = tempfile::tempdir().unwrap();
     let store = ExperienceStore::from_forge_dir(dir.path());
-    store.append_aggregated(&make_aggregated("h1", "tool", 5)).await.unwrap();
+    store
+        .append_aggregated(&make_aggregated("h1", "tool", 5))
+        .await
+        .unwrap();
 
     let today = chrono::Local::now() - chrono::Duration::days(1);
     let result = store.read_aggregated_since(Some(today)).await.unwrap();
@@ -631,5 +714,8 @@ async fn test_append_experience_deduplication() {
 #[tokio::test]
 async fn test_file_newer_than_invalid_filename() {
     // "notadate" >= "20260512" is true lexicographically (lowercase > digits)
-    assert!(ExperienceStore::file_newer_than("notadate.jsonl", &chrono::Local::now()));
+    assert!(ExperienceStore::file_newer_than(
+        "notadate.jsonl",
+        &chrono::Local::now()
+    ));
 }

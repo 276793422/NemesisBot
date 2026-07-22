@@ -143,10 +143,10 @@ fn test_parse_token_response_invalid_json() {
 #[test]
 fn test_extract_account_id_from_jwt() {
     // Build a minimal JWT with chatgpt_account_id claim
-    let header = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(r#"{"alg":"RS256","typ":"JWT"}"#);
-    let payload = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(
-        r#"{"chatgpt_account_id":"acct_abc"}"#,
-    );
+    let header =
+        base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(r#"{"alg":"RS256","typ":"JWT"}"#);
+    let payload = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .encode(r#"{"chatgpt_account_id":"acct_abc"}"#);
     let jwt = format!("{}.{}.signature", header, payload);
     let id = extract_account_id_impl(&jwt);
     assert_eq!(id.unwrap(), "acct_abc");
@@ -155,9 +155,8 @@ fn test_extract_account_id_from_jwt() {
 #[test]
 fn test_extract_account_id_from_namespaced_claim() {
     let header = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(r#"{"alg":"RS256"}"#);
-    let payload = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(
-        r#"{"https://api.openai.com/auth.chatgpt_account_id":"acct_ns"}"#,
-    );
+    let payload = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .encode(r#"{"https://api.openai.com/auth.chatgpt_account_id":"acct_ns"}"#);
     let jwt = format!("{}.{}.sig", header, payload);
     let id = extract_account_id_impl(&jwt);
     assert_eq!(id.unwrap(), "acct_ns");
@@ -166,9 +165,8 @@ fn test_extract_account_id_from_namespaced_claim() {
 #[test]
 fn test_extract_account_id_from_nested_auth() {
     let header = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(r#"{"alg":"RS256"}"#);
-    let payload = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(
-        r#"{"https://api.openai.com/auth":{"chatgpt_account_id":"acct_nested"}}"#,
-    );
+    let payload = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .encode(r#"{"https://api.openai.com/auth":{"chatgpt_account_id":"acct_nested"}}"#);
     let jwt = format!("{}.{}.sig", header, payload);
     let id = extract_account_id_impl(&jwt);
     assert_eq!(id.unwrap(), "acct_nested");
@@ -177,9 +175,8 @@ fn test_extract_account_id_from_nested_auth() {
 #[test]
 fn test_extract_account_id_from_organizations() {
     let header = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(r#"{"alg":"RS256"}"#);
-    let payload = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(
-        r#"{"organizations":[{"id":"org_123"},{"id":"org_456"}]}"#,
-    );
+    let payload = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .encode(r#"{"organizations":[{"id":"org_123"},{"id":"org_456"}]}"#);
     let jwt = format!("{}.{}.sig", header, payload);
     let id = extract_account_id_impl(&jwt);
     assert_eq!(id.unwrap(), "org_123");
@@ -238,7 +235,12 @@ fn test_open_ai_oauth_config() {
 fn test_standalone_build_authorize_url() {
     let cfg = super::open_ai_oauth_config();
     let pkce = crate::pkce::generate_pkce();
-    let url = super::build_authorize_url(&cfg, &pkce, "mystate", "http://localhost:1455/auth/callback");
+    let url = super::build_authorize_url(
+        &cfg,
+        &pkce,
+        "mystate",
+        "http://localhost:1455/auth/callback",
+    );
     assert!(url.contains("oauth/authorize"));
     assert!(url.contains("code_challenge"));
     assert!(url.contains("S256"));
@@ -263,9 +265,8 @@ fn test_standalone_extract_account_id() {
 
     // Valid JWT with claim
     let header = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(r#"{"alg":"RS256"}"#);
-    let payload = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(
-        r#"{"chatgpt_account_id":"acct_test"}"#,
-    );
+    let payload = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .encode(r#"{"chatgpt_account_id":"acct_test"}"#);
     let jwt = format!("{}.{}.sig", header, payload);
     assert_eq!(super::extract_account_id(&jwt), "acct_test");
 }
@@ -273,9 +274,8 @@ fn test_standalone_extract_account_id() {
 #[test]
 fn test_standalone_parse_jwt_claims() {
     let header = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(r#"{"alg":"RS256"}"#);
-    let payload = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(
-        r#"{"sub":"user_123","name":"test"}"#,
-    );
+    let payload = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .encode(r#"{"sub":"user_123","name":"test"}"#);
     let jwt = format!("{}.{}.sig", header, payload);
     let claims = super::parse_jwt_claims(&jwt).unwrap();
     assert_eq!(claims.get("sub").unwrap().as_str().unwrap(), "user_123");
@@ -621,10 +621,7 @@ fn test_parse_token_response_with_id_token_account_id() {
     let header = URL_SAFE_NO_PAD.encode(r#"{"alg":"RS256"}"#);
     let payload = URL_SAFE_NO_PAD.encode(r#"{"chatgpt_account_id":"acct_from_id_token"}"#);
     let id_token = format!("{}.{}.sig", header, payload);
-    let body_json = format!(
-        r#"{{"access_token":"at_1","id_token":"{}"}}"#,
-        id_token
-    );
+    let body_json = format!(r#"{{"access_token":"at_1","id_token":"{}"}}"#, id_token);
     let cred = parse_token_response_impl(body_json.as_bytes(), "openai").unwrap();
     assert_eq!(cred.account_id.unwrap(), "acct_from_id_token");
 }
@@ -636,10 +633,7 @@ fn test_parse_token_response_account_id_fallback_to_access_token() {
     let header = URL_SAFE_NO_PAD.encode(r#"{"alg":"RS256"}"#);
     let payload = URL_SAFE_NO_PAD.encode(r#"{"chatgpt_account_id":"acct_from_access"}"#);
     let access_token = format!("{}.{}.sig", header, payload);
-    let body_json = format!(
-        r#"{{"access_token":"{}"}}"#,
-        access_token
-    );
+    let body_json = format!(r#"{{"access_token":"{}"}}"#, access_token);
     let cred = parse_token_response_impl(body_json.as_bytes(), "openai").unwrap();
     assert_eq!(cred.account_id.unwrap(), "acct_from_access");
 }
@@ -659,9 +653,8 @@ fn test_extract_account_id_empty_string_claims() {
 fn test_extract_account_id_empty_namespaced_claim() {
     use base64::engine::general_purpose::URL_SAFE_NO_PAD;
     let header = URL_SAFE_NO_PAD.encode(r#"{"alg":"RS256"}"#);
-    let payload = URL_SAFE_NO_PAD.encode(
-        r#"{"https://api.openai.com/auth.chatgpt_account_id":""}"#,
-    );
+    let payload =
+        URL_SAFE_NO_PAD.encode(r#"{"https://api.openai.com/auth.chatgpt_account_id":""}"#);
     let jwt = format!("{}.{}.sig", header, payload);
     let id = extract_account_id_impl(&jwt);
     assert!(id.is_none());
@@ -671,9 +664,8 @@ fn test_extract_account_id_empty_namespaced_claim() {
 fn test_extract_account_id_empty_nested_auth() {
     use base64::engine::general_purpose::URL_SAFE_NO_PAD;
     let header = URL_SAFE_NO_PAD.encode(r#"{"alg":"RS256"}"#);
-    let payload = URL_SAFE_NO_PAD.encode(
-        r#"{"https://api.openai.com/auth":{"chatgpt_account_id":""}}"#,
-    );
+    let payload =
+        URL_SAFE_NO_PAD.encode(r#"{"https://api.openai.com/auth":{"chatgpt_account_id":""}}"#);
     let jwt = format!("{}.{}.sig", header, payload);
     let id = extract_account_id_impl(&jwt);
     assert!(id.is_none());
@@ -683,9 +675,7 @@ fn test_extract_account_id_empty_nested_auth() {
 fn test_extract_account_id_empty_org_id() {
     use base64::engine::general_purpose::URL_SAFE_NO_PAD;
     let header = URL_SAFE_NO_PAD.encode(r#"{"alg":"RS256"}"#);
-    let payload = URL_SAFE_NO_PAD.encode(
-        r#"{"organizations":[{"id":""}]}"#,
-    );
+    let payload = URL_SAFE_NO_PAD.encode(r#"{"organizations":[{"id":""}]}"#);
     let jwt = format!("{}.{}.sig", header, payload);
     let id = extract_account_id_impl(&jwt);
     assert!(id.is_none());
@@ -696,9 +686,7 @@ fn test_extract_account_id_org_non_object_entry() {
     // Organizations array with non-object entries -> should be skipped
     use base64::engine::general_purpose::URL_SAFE_NO_PAD;
     let header = URL_SAFE_NO_PAD.encode(r#"{"alg":"RS256"}"#);
-    let payload = URL_SAFE_NO_PAD.encode(
-        r#"{"organizations":["string",42,null]}"#,
-    );
+    let payload = URL_SAFE_NO_PAD.encode(r#"{"organizations":["string",42,null]}"#);
     let jwt = format!("{}.{}.sig", header, payload);
     let id = extract_account_id_impl(&jwt);
     assert!(id.is_none());
@@ -808,14 +796,10 @@ fn test_parse_token_response_impl_provider_field() {
 fn test_parse_token_response_with_id_token_account_id_namespaced() {
     use base64::engine::general_purpose::URL_SAFE_NO_PAD;
     let header = URL_SAFE_NO_PAD.encode(r#"{"alg":"RS256"}"#);
-    let payload = URL_SAFE_NO_PAD.encode(
-        r#"{"https://api.openai.com/auth.chatgpt_account_id":"ns_acct_1"}"#,
-    );
+    let payload =
+        URL_SAFE_NO_PAD.encode(r#"{"https://api.openai.com/auth.chatgpt_account_id":"ns_acct_1"}"#);
     let id_token = format!("{}.{}.sig", header, payload);
-    let body_json = format!(
-        r#"{{"access_token":"at_1","id_token":"{}"}}"#,
-        id_token
-    );
+    let body_json = format!(r#"{{"access_token":"at_1","id_token":"{}"}}"#, id_token);
     let cred = parse_token_response_impl(body_json.as_bytes(), "openai").unwrap();
     assert_eq!(cred.account_id.unwrap(), "ns_acct_1");
 }
@@ -824,14 +808,10 @@ fn test_parse_token_response_with_id_token_account_id_namespaced() {
 fn test_parse_token_response_with_id_token_nested_auth() {
     use base64::engine::general_purpose::URL_SAFE_NO_PAD;
     let header = URL_SAFE_NO_PAD.encode(r#"{"alg":"RS256"}"#);
-    let payload = URL_SAFE_NO_PAD.encode(
-        r#"{"https://api.openai.com/auth":{"chatgpt_account_id":"nested_acct_1"}}"#,
-    );
+    let payload = URL_SAFE_NO_PAD
+        .encode(r#"{"https://api.openai.com/auth":{"chatgpt_account_id":"nested_acct_1"}}"#);
     let id_token = format!("{}.{}.sig", header, payload);
-    let body_json = format!(
-        r#"{{"access_token":"at_1","id_token":"{}"}}"#,
-        id_token
-    );
+    let body_json = format!(r#"{{"access_token":"at_1","id_token":"{}"}}"#, id_token);
     let cred = parse_token_response_impl(body_json.as_bytes(), "openai").unwrap();
     assert_eq!(cred.account_id.unwrap(), "nested_acct_1");
 }
@@ -844,10 +824,7 @@ fn test_parse_token_response_with_id_token_org() {
         r#"{"organizations":[{"id":"org_123","name":"TestOrg"},{"id":"org_456","name":"Other"}]}"#,
     );
     let id_token = format!("{}.{}.sig", header, payload);
-    let body_json = format!(
-        r#"{{"access_token":"at_1","id_token":"{}"}}"#,
-        id_token
-    );
+    let body_json = format!(r#"{{"access_token":"at_1","id_token":"{}"}}"#, id_token);
     let cred = parse_token_response_impl(body_json.as_bytes(), "openai").unwrap();
     assert_eq!(cred.account_id.unwrap(), "org_123");
 }
@@ -882,9 +859,8 @@ fn test_extract_account_id_impl_invalid_jwt() {
 fn test_extract_account_id_impl_namespaced_claim() {
     use base64::engine::general_purpose::URL_SAFE_NO_PAD;
     let header = URL_SAFE_NO_PAD.encode(r#"{"alg":"RS256"}"#);
-    let payload = URL_SAFE_NO_PAD.encode(
-        r#"{"https://api.openai.com/auth.chatgpt_account_id":"ns_id_123"}"#,
-    );
+    let payload =
+        URL_SAFE_NO_PAD.encode(r#"{"https://api.openai.com/auth.chatgpt_account_id":"ns_id_123"}"#);
     let jwt = format!("{}.{}.sig", header, payload);
     let id = extract_account_id_impl(&jwt);
     assert_eq!(id.unwrap(), "ns_id_123");
@@ -894,9 +870,8 @@ fn test_extract_account_id_impl_namespaced_claim() {
 fn test_extract_account_id_impl_nested_auth() {
     use base64::engine::general_purpose::URL_SAFE_NO_PAD;
     let header = URL_SAFE_NO_PAD.encode(r#"{"alg":"RS256"}"#);
-    let payload = URL_SAFE_NO_PAD.encode(
-        r#"{"https://api.openai.com/auth":{"chatgpt_account_id":"nested_id_123"}}"#,
-    );
+    let payload = URL_SAFE_NO_PAD
+        .encode(r#"{"https://api.openai.com/auth":{"chatgpt_account_id":"nested_id_123"}}"#);
     let jwt = format!("{}.{}.sig", header, payload);
     let id = extract_account_id_impl(&jwt);
     assert_eq!(id.unwrap(), "nested_id_123");
@@ -906,9 +881,7 @@ fn test_extract_account_id_impl_nested_auth() {
 fn test_extract_account_id_impl_organization() {
     use base64::engine::general_purpose::URL_SAFE_NO_PAD;
     let header = URL_SAFE_NO_PAD.encode(r#"{"alg":"RS256"}"#);
-    let payload = URL_SAFE_NO_PAD.encode(
-        r#"{"organizations":[{"id":"org_acct_1"}]}"#,
-    );
+    let payload = URL_SAFE_NO_PAD.encode(r#"{"organizations":[{"id":"org_acct_1"}]}"#);
     let jwt = format!("{}.{}.sig", header, payload);
     let id = extract_account_id_impl(&jwt);
     assert_eq!(id.unwrap(), "org_acct_1");
@@ -918,9 +891,8 @@ fn test_extract_account_id_impl_organization() {
 fn test_extract_account_id_priority_direct_over_org() {
     use base64::engine::general_purpose::URL_SAFE_NO_PAD;
     let header = URL_SAFE_NO_PAD.encode(r#"{"alg":"RS256"}"#);
-    let payload = URL_SAFE_NO_PAD.encode(
-        r#"{"chatgpt_account_id":"direct_acct","organizations":[{"id":"org_acct"}]}"#,
-    );
+    let payload = URL_SAFE_NO_PAD
+        .encode(r#"{"chatgpt_account_id":"direct_acct","organizations":[{"id":"org_acct"}]}"#);
     let jwt = format!("{}.{}.sig", header, payload);
     let id = extract_account_id_impl(&jwt);
     // Direct chatgpt_account_id should take priority
@@ -1219,8 +1191,14 @@ fn test_credential_serialization() {
 
 #[test]
 fn test_provider_display_name() {
-    assert_eq!(crate::token::provider_display_name("anthropic"), "console.anthropic.com");
-    assert_eq!(crate::token::provider_display_name("openai"), "platform.openai.com");
+    assert_eq!(
+        crate::token::provider_display_name("anthropic"),
+        "console.anthropic.com"
+    );
+    assert_eq!(
+        crate::token::provider_display_name("openai"),
+        "platform.openai.com"
+    );
     assert_eq!(crate::token::provider_display_name("custom"), "custom");
 }
 
@@ -1301,9 +1279,8 @@ fn test_parse_token_response_with_string_expires_in() {
 #[test]
 fn test_extract_account_id_empty_chatgpt_account_id() {
     let header = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(r#"{"alg":"RS256"}"#);
-    let payload = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(
-        r#"{"chatgpt_account_id":""}"#,
-    );
+    let payload =
+        base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(r#"{"chatgpt_account_id":""}"#);
     let jwt = format!("{}.{}.sig", header, payload);
     let id = extract_account_id_impl(&jwt);
     assert!(id.is_none());
@@ -1312,9 +1289,8 @@ fn test_extract_account_id_empty_chatgpt_account_id() {
 #[test]
 fn test_extract_account_id_empty_organization_id() {
     let header = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(r#"{"alg":"RS256"}"#);
-    let payload = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(
-        r#"{"organizations":[{"id":""}]}"#,
-    );
+    let payload =
+        base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(r#"{"organizations":[{"id":""}]}"#);
     let jwt = format!("{}.{}.sig", header, payload);
     let id = extract_account_id_impl(&jwt);
     assert!(id.is_none());
@@ -1323,9 +1299,8 @@ fn test_extract_account_id_empty_organization_id() {
 #[test]
 fn test_extract_account_id_organizations_non_object_entry() {
     let header = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(r#"{"alg":"RS256"}"#);
-    let payload = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(
-        r#"{"organizations":["not_an_object"]}"#,
-    );
+    let payload = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .encode(r#"{"organizations":["not_an_object"]}"#);
     let jwt = format!("{}.{}.sig", header, payload);
     let id = extract_account_id_impl(&jwt);
     assert!(id.is_none());
@@ -1334,9 +1309,8 @@ fn test_extract_account_id_organizations_non_object_entry() {
 #[test]
 fn test_extract_account_id_no_id_field_in_org() {
     let header = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(r#"{"alg":"RS256"}"#);
-    let payload = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(
-        r#"{"organizations":[{"name":"test_org"}]}"#,
-    );
+    let payload = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .encode(r#"{"organizations":[{"name":"test_org"}]}"#);
     let jwt = format!("{}.{}.sig", header, payload);
     let id = extract_account_id_impl(&jwt);
     assert!(id.is_none());
@@ -1490,9 +1464,8 @@ async fn test_refresh_access_token_empty_refresh_token() {
 #[test]
 fn test_parse_token_response_with_valid_id_token() {
     let header = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(r#"{"alg":"RS256"}"#);
-    let payload = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(
-        r#"{"chatgpt_account_id":"acct_from_id_token"}"#,
-    );
+    let payload = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .encode(r#"{"chatgpt_account_id":"acct_from_id_token"}"#);
     let id_token = format!("{}.{}.sig", header, payload);
 
     let body = format!(r#"{{"access_token":"at_123","id_token":"{}"}}"#, id_token);
@@ -1578,7 +1551,16 @@ fn test_parse_device_code_response_valid_fields() {
 #[test]
 fn test_base64url_decode_various_length_inputs() {
     use base64::engine::general_purpose::URL_SAFE_NO_PAD;
-    let test_cases: Vec<&[u8]> = vec![b"a", b"ab", b"abc", b"abcd", b"abcde", b"abcdef", b"abcdefg", b"abcdefgh"];
+    let test_cases: Vec<&[u8]> = vec![
+        b"a",
+        b"ab",
+        b"abc",
+        b"abcd",
+        b"abcde",
+        b"abcdef",
+        b"abcdefg",
+        b"abcdefgh",
+    ];
     for original in test_cases {
         let encoded = URL_SAFE_NO_PAD.encode(original);
         let decoded = base64url_decode(&encoded).unwrap();
@@ -1616,7 +1598,9 @@ fn test_extract_account_id_with_account_id_in_jwt() {
 fn test_parse_jwt_claims_impl_with_nested_claims() {
     use base64::engine::general_purpose::URL_SAFE_NO_PAD;
     let header = URL_SAFE_NO_PAD.encode(r#"{"alg":"RS256"}"#);
-    let payload = URL_SAFE_NO_PAD.encode(r#"{"sub":"user_1","email":"test@example.com","org":{"id":"org1","role":"admin"}}"#);
+    let payload = URL_SAFE_NO_PAD.encode(
+        r#"{"sub":"user_1","email":"test@example.com","org":{"id":"org1","role":"admin"}}"#,
+    );
     let jwt = format!("{}.{}.sig", header, payload);
     let claims = parse_jwt_claims_impl(&jwt).unwrap();
     assert_eq!(claims["sub"].as_str().unwrap(), "user_1");
@@ -1684,7 +1668,10 @@ async fn refresh_access_token_success_returns_new_token() {
         .await;
 
     let cfg = cfg_for(&server);
-    let refreshed = cfg.refresh_access_token(&cred_with_refresh("rt_old")).await.unwrap();
+    let refreshed = cfg
+        .refresh_access_token(&cred_with_refresh("rt_old"))
+        .await
+        .unwrap();
     assert_eq!(refreshed.access_token, "new_at");
     assert_eq!(refreshed.refresh_token.as_deref(), Some("new_rt"));
 }
@@ -1704,7 +1691,10 @@ async fn refresh_access_token_preserves_refresh_token_when_omitted() {
         .await;
 
     let cfg = cfg_for(&server);
-    let refreshed = cfg.refresh_access_token(&cred_with_refresh("rt_old")).await.unwrap();
+    let refreshed = cfg
+        .refresh_access_token(&cred_with_refresh("rt_old"))
+        .await
+        .unwrap();
     assert_eq!(refreshed.access_token, "new_at");
     assert_eq!(refreshed.refresh_token.as_deref(), Some("rt_old"));
     // account_id is also preserved when the response omits it.
@@ -1721,7 +1711,10 @@ async fn refresh_access_token_error_status_returns_err() {
         .await;
 
     let cfg = cfg_for(&server);
-    let err = cfg.refresh_access_token(&cred_with_refresh("rt_old")).await.unwrap_err();
+    let err = cfg
+        .refresh_access_token(&cred_with_refresh("rt_old"))
+        .await
+        .unwrap_err();
     assert!(err.contains("token refresh failed"));
     assert!(err.contains("invalid_grant"));
 }
@@ -1775,7 +1768,9 @@ async fn poll_device_code_pending_returns_none() {
         .await;
 
     let cfg = cfg_for(&server);
-    let res = poll_device_code(&cfg, "dev_auth_1", "USER-CODE").await.unwrap();
+    let res = poll_device_code(&cfg, "dev_auth_1", "USER-CODE")
+        .await
+        .unwrap();
     assert!(res.is_none());
 }
 
@@ -1803,7 +1798,10 @@ async fn poll_device_code_success_returns_credential() {
         .await;
 
     let cfg = cfg_for(&server);
-    let cred = poll_device_code(&cfg, "dev_auth_1", "USER-CODE").await.unwrap().unwrap();
+    let cred = poll_device_code(&cfg, "dev_auth_1", "USER-CODE")
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(cred.access_token, "final_at");
     assert_eq!(cred.refresh_token.as_deref(), Some("final_rt"));
 }

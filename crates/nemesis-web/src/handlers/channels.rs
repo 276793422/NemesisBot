@@ -111,10 +111,7 @@ impl ChannelsHandler {
         name: &str,
         data: &serde_json::Value,
     ) -> Result<Option<serde_json::Value>, String> {
-        let channel_config = data
-            .get("config")
-            .ok_or("missing config field")?
-            .clone();
+        let channel_config = data.get("config").ok_or("missing config field")?.clone();
         let mut config = load_config(home)?;
 
         // Serialize channels to a mutable JSON object, update the channel, then re-parse

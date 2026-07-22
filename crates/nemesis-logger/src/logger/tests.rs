@@ -281,7 +281,11 @@ fn test_logger_config_serialization_deserialization() {
 #[test]
 fn test_log_level_filtering_with_file_output() {
     let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("filtered.log").to_string_lossy().to_string();
+    let path = dir
+        .path()
+        .join("filtered.log")
+        .to_string_lossy()
+        .to_string();
     let logger = NemesisLogger::new();
     logger.enable_file(&path).unwrap();
 
@@ -305,13 +309,22 @@ fn test_log_level_filtering_with_file_output() {
 #[test]
 fn test_log_with_empty_map_fields() {
     let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("empty_fields.log").to_string_lossy().to_string();
+    let path = dir
+        .path()
+        .join("empty_fields.log")
+        .to_string_lossy()
+        .to_string();
     let logger = NemesisLogger::new();
     logger.enable_file(&path).unwrap();
 
     // Pass Some(empty_map) - fields should be treated as None
     let empty_fields = serde_json::Map::new();
-    logger.log(LogLevel::Info, "comp", "msg with empty fields", Some(empty_fields));
+    logger.log(
+        LogLevel::Info,
+        "comp",
+        "msg with empty fields",
+        Some(empty_fields),
+    );
 
     logger.disable_file();
 
@@ -445,9 +458,7 @@ fn test_init_default_function() {
     // Note: This test might fail if other tests have already initialized the global subscriber
     // In a real scenario, the subscriber can only be set once globally
     // We're testing that the function doesn't cause undefined behavior/crashes
-    let _ = std::panic::catch_unwind(|| {
-        init_default()
-    });
+    let _ = std::panic::catch_unwind(|| init_default());
     // Test passes if we get here (no crash)
 }
 
@@ -459,9 +470,7 @@ fn test_init_logger_with_config() {
         json_format: false,
         file_output: None,
     };
-    let _ = std::panic::catch_unwind(|| {
-        init_logger(&config)
-    });
+    let _ = std::panic::catch_unwind(|| init_logger(&config));
     // Test passes if we get here (no crash)
 }
 
@@ -476,9 +485,7 @@ fn test_init_logger_with_file_output() {
         json_format: false,
         file_output: Some(path.clone()),
     };
-    let _ = std::panic::catch_unwind(|| {
-        init_logger(&config)
-    });
+    let _ = std::panic::catch_unwind(|| init_logger(&config));
     // Test passes if we get here (no crash)
 }
 
@@ -490,9 +497,7 @@ fn test_init_logger_json_format() {
         json_format: true,
         file_output: None,
     };
-    let _ = std::panic::catch_unwind(|| {
-        init_logger(&config)
-    });
+    let _ = std::panic::catch_unwind(|| init_logger(&config));
     // Test passes if we get here (no crash)
 }
 
@@ -566,7 +571,13 @@ fn test_logger_level_filtering_all_levels() {
     let logger = NemesisLogger::new();
 
     // Test each level as minimum threshold
-    for min_level in [LogLevel::Debug, LogLevel::Info, LogLevel::Warn, LogLevel::Error, LogLevel::Fatal] {
+    for min_level in [
+        LogLevel::Debug,
+        LogLevel::Info,
+        LogLevel::Warn,
+        LogLevel::Error,
+        LogLevel::Fatal,
+    ] {
         logger.set_level(min_level);
 
         // Only levels >= min_level should pass
@@ -601,7 +612,11 @@ fn test_logger_enable_disable_console() {
 #[test]
 fn test_logger_file_enable_disable_operations() {
     let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("enable_disable.log").to_string_lossy().to_string();
+    let path = dir
+        .path()
+        .join("enable_disable.log")
+        .to_string_lossy()
+        .to_string();
 
     let logger = NemesisLogger::new();
 

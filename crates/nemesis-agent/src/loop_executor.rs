@@ -1010,7 +1010,10 @@ impl AgentLoopExecutor {
         info!("[AgentLoopExecutor] starting");
 
         while let Some(msg) = self.inbound_rx.recv().await {
-            debug!("[AgentLoopExecutor] Received inbound message from channel={}", msg.channel);
+            debug!(
+                "[AgentLoopExecutor] Received inbound message from channel={}",
+                msg.channel
+            );
             self.process_message(msg).await;
         }
 
@@ -1040,9 +1043,12 @@ impl AgentLoopExecutor {
 
         // Check for cluster continuation prefix.
         if msg.channel == "system"
-            && msg.sender_id.starts_with(nemesis_types::constants::CLUSTER_CONTINUATION_PREFIX)
+            && msg
+                .sender_id
+                .starts_with(nemesis_types::constants::CLUSTER_CONTINUATION_PREFIX)
         {
-            let task_id = &msg.sender_id[nemesis_types::constants::CLUSTER_CONTINUATION_PREFIX.len()..];
+            let task_id =
+                &msg.sender_id[nemesis_types::constants::CLUSTER_CONTINUATION_PREFIX.len()..];
             debug!(
                 "[AgentLoopExecutor] Cluster continuation message received: task_id={}",
                 task_id
@@ -1134,7 +1140,8 @@ impl AgentLoopExecutor {
             chat_id: msg.chat_id.clone(),
             sender_id: msg.sender_id.clone(),
             content: msg.content.clone(),
-        }).await;
+        })
+        .await;
 
         let conversation_start = std::time::Instant::now();
 
@@ -1144,7 +1151,10 @@ impl AgentLoopExecutor {
             && !nemesis_types::constants::is_internal_channel(&msg.channel)
         {
             let channel_key = format!("{}:{}", msg.channel, msg.chat_id);
-            debug!("[AgentLoopExecutor] Recording last channel: {}", channel_key);
+            debug!(
+                "[AgentLoopExecutor] Recording last channel: {}",
+                channel_key
+            );
         }
 
         // Add user message to instance history.
@@ -1163,10 +1173,7 @@ impl AgentLoopExecutor {
         instance.add_assistant_message(&final_content, Vec::new(), None);
 
         // Save session to disk.
-        if let Err(e) = self
-            .session_persistence
-            .save_session(&msg.session_key)
-        {
+        if let Err(e) = self.session_persistence.save_session(&msg.session_key) {
             warn!("[AgentLoopExecutor] Failed to save session: {}", e);
         }
 
@@ -1191,7 +1198,8 @@ impl AgentLoopExecutor {
             content: final_content.clone(),
             channel: msg.channel.clone(),
             chat_id: msg.chat_id.clone(),
-        }).await;
+        })
+        .await;
 
         // Log response.
         let response_preview = nemesis_types::utils::truncate(&final_content, 120);
@@ -1254,7 +1262,10 @@ impl AgentLoopExecutor {
 
             // Build the message list from instance history.
             let messages = self.build_messages(instance);
-            debug!("[AgentLoopExecutor] Sending {} messages to LLM", messages.len());
+            debug!(
+                "[AgentLoopExecutor] Sending {} messages to LLM",
+                messages.len()
+            );
 
             // Build tool definitions from registered tools for LLM function calling.
             // Sort by name for a stable order — see loop.rs for rationale
@@ -1262,26 +1273,27 @@ impl AgentLoopExecutor {
             let tool_defs: Vec<crate::types::ToolDefinition> = {
                 let mut names: Vec<&String> = self.tools.keys().collect();
                 names.sort();
-                names.into_iter()
+                names
+                    .into_iter()
                     .filter_map(|name| self.tools.get(name).map(|tool| (name, tool)))
-                    .map(|(name, tool)| {
-                        crate::types::ToolDefinition {
-                            tool_type: "function".to_string(),
-                            function: crate::types::ToolFunctionDef {
-                                name: name.clone(),
-                                description: tool.description(),
-                                parameters: tool.parameters(),
-                            },
-                        }
+                    .map(|(name, tool)| crate::types::ToolDefinition {
+                        tool_type: "function".to_string(),
+                        function: crate::types::ToolFunctionDef {
+                            name: name.clone(),
+                            description: tool.description(),
+                            parameters: tool.parameters(),
+                        },
                     })
                     .collect()
             };
 
             // Emit LLM request event (asynchronous).
-            let msg_values: Vec<serde_json::Value> = messages.iter()
+            let msg_values: Vec<serde_json::Value> = messages
+                .iter()
                 .filter_map(|m| serde_json::to_value(m).ok())
                 .collect();
-            let tool_values: Vec<serde_json::Value> = tool_defs.iter()
+            let tool_values: Vec<serde_json::Value> = tool_defs
+                .iter()
                 .filter_map(|t| serde_json::to_value(t).ok())
                 .collect();
             self.emit_async_event(ObserverEvent::LlmRequest {
@@ -1302,13 +1314,24 @@ impl AgentLoopExecutor {
             let round_start = std::time::Instant::now();
 
             let mut response = self
-                .call_llm_with_retry(instance, messages, max_retries, context, trace_id, iteration, Some(crate::types::ChatOptions::default()), tool_defs)
+                .call_llm_with_retry(
+                    instance,
+                    messages,
+                    max_retries,
+                    context,
+                    trace_id,
+                    iteration,
+                    Some(crate::types::ChatOptions::default()),
+                    tool_defs,
+                )
                 .await;
 
             let round_duration = round_start.elapsed();
 
             // Emit LLM response event (asynchronous).
-            let tc_values: Vec<serde_json::Value> = response.tool_calls.iter()
+            let tc_values: Vec<serde_json::Value> = response
+                .tool_calls
+                .iter()
                 .filter_map(|tc| serde_json::to_value(tc).ok())
                 .collect();
             let tc_count = response.tool_calls.len();
@@ -1320,7 +1343,11 @@ impl AgentLoopExecutor {
                 content: response.content.clone(),
                 tool_calls: tc_values,
                 tool_calls_count: tc_count,
-                finish_reason: if response.finished { Some("stop".to_string()) } else { None },
+                finish_reason: if response.finished {
+                    Some("stop".to_string())
+                } else {
+                    None
+                },
                 usage: response.usage.clone(),
                 raw_request_body: response.raw_request_body.take(),
                 raw_response_body: response.raw_response_body.take(),
@@ -1337,10 +1364,17 @@ impl AgentLoopExecutor {
                         input_tokens: usage.prompt_tokens,
                         output_tokens: usage.completion_tokens,
                         cache_creation_tokens: usage.cache_creation_tokens.unwrap_or(0),
-                        cache_read_tokens: usage.cache_read_tokens.or(usage.cached_tokens).unwrap_or(0),
+                        cache_read_tokens: usage
+                            .cache_read_tokens
+                            .or(usage.cached_tokens)
+                            .unwrap_or(0),
                         total_cost_usd: 0.0,
                         latency_ms: round_duration.as_millis() as i64,
-                        status_code: if response.content.starts_with("Error:") { 500 } else { 200 },
+                        status_code: if response.content.starts_with("Error:") {
+                            500
+                        } else {
+                            200
+                        },
                         error_message: None,
                         is_streaming: false,
                         created_at: chrono::Local::now().timestamp(),
@@ -1362,7 +1396,11 @@ impl AgentLoopExecutor {
             }
 
             // Log tool calls.
-            let tool_names: Vec<&str> = response.tool_calls.iter().map(|tc| tc.name.as_str()).collect();
+            let tool_names: Vec<&str> = response
+                .tool_calls
+                .iter()
+                .map(|tc| tc.name.as_str())
+                .collect();
             info!(
                 "[AgentLoopExecutor] LLM requested tool calls: {:?} (iteration={})",
                 tool_names, iteration
@@ -1371,7 +1409,11 @@ impl AgentLoopExecutor {
             // Build assistant message with tool calls.
             let assistant_content = response.content.clone();
             let tool_calls = response.tool_calls.clone();
-            instance.add_assistant_message(&assistant_content, tool_calls.clone(), response.reasoning_content.clone());
+            instance.add_assistant_message(
+                &assistant_content,
+                tool_calls.clone(),
+                response.reasoning_content.clone(),
+            );
 
             // Execute tool calls with complex result handling.
             instance.set_state(AgentState::ExecutingTool);
@@ -1417,7 +1459,10 @@ impl AgentLoopExecutor {
 
                 // Emit observer event (asynchronous).
                 let success = tool_result.err.is_none();
-                let result_str = tool_result.err.clone().unwrap_or_else(|| tool_result.for_llm.clone());
+                let result_str = tool_result
+                    .err
+                    .clone()
+                    .unwrap_or_else(|| tool_result.for_llm.clone());
                 self.emit_async_event(ObserverEvent::ToolCall {
                     trace_id: trace_id.to_string(),
                     tool_name: tc.name.clone(),
@@ -1459,7 +1504,10 @@ impl AgentLoopExecutor {
                         meta: Default::default(),
                     };
                     if let Err(e) = self.outbound_tx.send(outbound).await {
-                        warn!("[AgentLoopExecutor] Failed to send tool result to user: {}", e);
+                        warn!(
+                            "[AgentLoopExecutor] Failed to send tool result to user: {}",
+                            e
+                        );
                     }
                     debug!(
                         "[AgentLoopExecutor] Sent tool result to user: tool={}, len={}",
@@ -1470,9 +1518,7 @@ impl AgentLoopExecutor {
 
                 // Determine content for LLM based on tool result.
                 let content_for_llm = if tool_result.for_llm.is_empty() {
-                    tool_result
-                        .err
-                        .unwrap_or_default()
+                    tool_result.err.unwrap_or_default()
                 } else {
                     tool_result.for_llm
                 };
@@ -1508,7 +1554,10 @@ impl AgentLoopExecutor {
     /// Check if iteration limit was exceeded and return appropriate message.
     fn check_iteration_limit(&self, final_content: &str, iterations: u32) -> String {
         if iterations >= self.config.max_turns && final_content.is_empty() {
-            format!("Max iterations ({}) reached without final response", self.config.max_turns)
+            format!(
+                "Max iterations ({}) reached without final response",
+                self.config.max_turns
+            )
         } else {
             final_content.to_string()
         }
@@ -1564,18 +1613,21 @@ impl AgentLoopExecutor {
 
             let result = self
                 .fallback_executor
-                .execute(&self.fallback_candidates, |candidate_provider, candidate_model| {
-                    let prov = provider.clone();
-                    let msgs = messages_owned.clone();
-                    let o = opts.clone();
-                    let t = tools_clone.clone();
-                    let m = if candidate_provider.is_empty() {
-                        model.clone()
-                    } else {
-                        candidate_model.clone()
-                    };
-                    async move { prov.chat(&m, msgs, o, t).await }
-                })
+                .execute(
+                    &self.fallback_candidates,
+                    |candidate_provider, candidate_model| {
+                        let prov = provider.clone();
+                        let msgs = messages_owned.clone();
+                        let o = opts.clone();
+                        let t = tools_clone.clone();
+                        let m = if candidate_provider.is_empty() {
+                            model.clone()
+                        } else {
+                            candidate_model.clone()
+                        };
+                        async move { prov.chat(&m, msgs, o, t).await }
+                    },
+                )
                 .await;
 
             match result {
@@ -1617,7 +1669,9 @@ impl AgentLoopExecutor {
         let mut retry_count = 0u32;
 
         loop {
-            let result = self.call_llm_with_fallback(&current_messages, options.clone(), tool_defs.clone()).await;
+            let result = self
+                .call_llm_with_fallback(&current_messages, options.clone(), tool_defs.clone())
+                .await;
 
             match result {
                 Ok(response) => {
@@ -1636,7 +1690,10 @@ impl AgentLoopExecutor {
 
                     // If not a context error, or we've exhausted retries, return error as response.
                     if !is_context_error || retry_count >= max_retries {
-                        warn!("[AgentLoopExecutor] LLM call failed (non-recoverable): {}", err);
+                        warn!(
+                            "[AgentLoopExecutor] LLM call failed (non-recoverable): {}",
+                            err
+                        );
                         return crate::r#loop::LlmResponse {
                             content: format!("Error: {}", err),
                             tool_calls: Vec::new(),
@@ -1654,7 +1711,8 @@ impl AgentLoopExecutor {
                     );
 
                     // Notify user about compression on first retry (skip internal channels).
-                    if retry_count == 0 && !nemesis_types::constants::is_internal_channel(&context.channel)
+                    if retry_count == 0
+                        && !nemesis_types::constants::is_internal_channel(&context.channel)
                     {
                         let outbound = nemesis_types::channel::OutboundMessage {
                             channel: context.channel.clone(),
@@ -1674,7 +1732,8 @@ impl AgentLoopExecutor {
                     current_messages = self.build_messages(instance);
 
                     // Emit a new LLM request for the retry (asynchronous).
-                    let retry_msg_values: Vec<serde_json::Value> = current_messages.iter()
+                    let retry_msg_values: Vec<serde_json::Value> = current_messages
+                        .iter()
                         .filter_map(|m| serde_json::to_value(m).ok())
                         .collect();
                     self.emit_async_event(ObserverEvent::LlmRequest {
@@ -1708,12 +1767,19 @@ impl AgentLoopExecutor {
 
         for tc in tool_calls {
             let tool_start = std::time::Instant::now();
-            info!("[AgentLoopExecutor] Executing tool: {} (id={})", tc.name, tc.id);
+            info!(
+                "[AgentLoopExecutor] Executing tool: {} (id={})",
+                tc.name, tc.id
+            );
 
             let result = match self.tools.get(&tc.name) {
                 Some(tool) => match tool.execute(&tc.arguments, context).await {
                     Ok(output) => {
-                        debug!("[AgentLoopExecutor] Tool {} returned: {} bytes", tc.name, output.len());
+                        debug!(
+                            "[AgentLoopExecutor] Tool {} returned: {} bytes",
+                            tc.name,
+                            output.len()
+                        );
                         ToolCallResult {
                             tool_name: tc.name.clone(),
                             result: output,
@@ -1767,14 +1833,15 @@ impl AgentLoopExecutor {
     /// at the cache-miss rate.
     fn build_messages(&self, instance: &AgentInstance) -> Vec<LlmMessage> {
         let history = instance.get_history();
-        let now = chrono::Local::now().format("%Y-%m-%d %H:%M (%A)").to_string();
+        let now = chrono::Local::now()
+            .format("%Y-%m-%d %H:%M (%A)")
+            .to_string();
         // Platform/shell hint folded into the same ephemeral system message as
         // the time marker (single injection point → identical prompt-cache
         // behavior to before). Guides the model away from interactive commands
         // that hang the exec tool (e.g. bare Windows `date` vs `date /t`).
         #[cfg(target_os = "windows")]
-        let env_hint =
-            "platform: windows\ndefault_shell: cmd\ntime_cmd: use `date /t` or `echo %date% %time%` or PowerShell `Get-Date`";
+        let env_hint = "platform: windows\ndefault_shell: cmd\ntime_cmd: use `date /t` or `echo %date% %time%` or PowerShell `Get-Date`";
         #[cfg(not(target_os = "windows"))]
         let env_hint = "platform: unix\ndefault_shell: sh\ntime_cmd: use `date`";
         let time_msg = LlmMessage {
@@ -1808,8 +1875,7 @@ impl AgentLoopExecutor {
 
         match last_user_idx {
             Some(idx) => {
-                let mut messages: Vec<LlmMessage> =
-                    Vec::with_capacity(history.len() + 1);
+                let mut messages: Vec<LlmMessage> = Vec::with_capacity(history.len() + 1);
                 messages.extend(history[..idx].into_iter().cloned().map(turn_to_msg));
                 messages.push(time_msg);
                 messages.extend(history[idx..].into_iter().cloned().map(turn_to_msg));
@@ -1888,9 +1954,8 @@ impl AgentLoopExecutor {
         instance.add_user_message(user_message);
         instance.set_state(AgentState::Thinking);
 
-        let (final_content, turns_used) = self
-            .run_llm_iteration(&instance, context, &trace_id)
-            .await;
+        let (final_content, turns_used) =
+            self.run_llm_iteration(&instance, context, &trace_id).await;
 
         instance.set_state(AgentState::Idle);
 
@@ -1923,7 +1988,9 @@ impl AgentLoopExecutor {
         user_message: &str,
         context: &RequestContext,
     ) -> Result<String, String> {
-        let result = self.run_agent_loop(session_key, user_message, context).await?;
+        let result = self
+            .run_agent_loop(session_key, user_message, context)
+            .await?;
 
         // Publish the outbound message.
         let outbound = nemesis_types::channel::OutboundMessage {

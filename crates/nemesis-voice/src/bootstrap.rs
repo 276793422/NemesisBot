@@ -9,9 +9,9 @@
 //!
 //! Voice pipeline (TTS/STT) is only supported on Windows.
 
-use anyhow::{bail, Result};
 #[cfg(target_os = "windows")]
 use anyhow::Context;
+use anyhow::{Result, bail};
 #[cfg(target_os = "windows")]
 use std::fs;
 use std::path::Path;
@@ -115,14 +115,20 @@ pub fn run_in_dir(config_path: &Path, lib_dir: &Path) -> Result<bool> {
 
     // Read proxy from config
     let proxy_url = crate::config::AppConfig::load_or_default(config_path)
-        .models.proxy.url.clone();
+        .models
+        .proxy
+        .url
+        .clone();
 
     let all_present = REQUIRED_LIBS.iter().all(|lib| lib_dir.join(lib).exists());
 
     if all_present {
         tracing::info!("[setup] Runtime libraries found.");
     } else {
-        tracing::info!("[setup] Downloading sherpa-onnx v{} runtime ...", SHERPA_VERSION);
+        tracing::info!(
+            "[setup] Downloading sherpa-onnx v{} runtime ...",
+            SHERPA_VERSION
+        );
         download_runtime_libs(lib_dir, &proxy_url)?;
         tracing::info!("[setup] Runtime libraries ready.");
     }
@@ -192,7 +198,8 @@ fn download_runtime_libs(exe_dir: &Path, proxy_url: &str) -> Result<()> {
         )
     });
 
-    handle.join()
+    handle
+        .join()
         .map_err(|_| anyhow::anyhow!("Download thread panicked"))?
 }
 
@@ -226,8 +233,8 @@ async fn try_download_and_extract(url: &str, exe_dir: &Path, proxy_url: &str) ->
     let part_path = temp_dir.join(format!("{}.part", archive_name));
 
     // Use .part file for download; only promote to final name on success
-    let need_download = !archive_path.exists()
-        || fs::metadata(&archive_path).map(|m| m.len()).unwrap_or(0) == 0;
+    let need_download =
+        !archive_path.exists() || fs::metadata(&archive_path).map(|m| m.len()).unwrap_or(0) == 0;
 
     if need_download {
         tracing::info!("Downloading {} ...", archive_name);
@@ -244,7 +251,8 @@ async fn try_download_and_extract(url: &str, exe_dir: &Path, proxy_url: &str) ->
             client_builder = client_builder.proxy(proxy);
         }
 
-        let client = client_builder.build()
+        let client = client_builder
+            .build()
             .context("Failed to create HTTP client")?;
 
         let response = client
@@ -287,7 +295,11 @@ async fn try_download_and_extract(url: &str, exe_dir: &Path, proxy_url: &str) ->
             if last_report.elapsed() >= std::time::Duration::from_secs(5) {
                 let elapsed = last_report.elapsed().as_secs_f64();
                 let chunk_bytes = downloaded - last_downloaded;
-                let speed = if elapsed > 0.0 { chunk_bytes as f64 / elapsed } else { 0.0 };
+                let speed = if elapsed > 0.0 {
+                    chunk_bytes as f64 / elapsed
+                } else {
+                    0.0
+                };
                 let speed_str = format_speed(speed);
                 if let Some(total) = total_size {
                     let pct = downloaded as f64 / total as f64 * 100.0;
@@ -299,13 +311,20 @@ async fn try_download_and_extract(url: &str, exe_dir: &Path, proxy_url: &str) ->
                         speed_str
                     );
                 } else {
-                    tracing::info!("{:.1} MB downloaded  {}/s", downloaded as f64 / (1024.0 * 1024.0), speed_str);
+                    tracing::info!(
+                        "{:.1} MB downloaded  {}/s",
+                        downloaded as f64 / (1024.0 * 1024.0),
+                        speed_str
+                    );
                 }
                 last_report = std::time::Instant::now();
                 last_downloaded = downloaded;
             }
         }
-        tracing::info!("Download complete: {:.0} MB", downloaded as f64 / (1024.0 * 1024.0));
+        tracing::info!(
+            "Download complete: {:.0} MB",
+            downloaded as f64 / (1024.0 * 1024.0)
+        );
 
         // Promote .part → final name only after successful download
         let _ = fs::remove_file(&archive_path);
@@ -313,7 +332,10 @@ async fn try_download_and_extract(url: &str, exe_dir: &Path, proxy_url: &str) ->
             .with_context(|| "Failed to rename downloaded file")?;
     } else {
         let size = fs::metadata(&archive_path)?.len();
-        tracing::info!("Using cached archive: {:.0} MB", size as f64 / (1024.0 * 1024.0));
+        tracing::info!(
+            "Using cached archive: {:.0} MB",
+            size as f64 / (1024.0 * 1024.0)
+        );
     }
 
     tracing::info!("Extracting libraries ...");
@@ -322,7 +344,12 @@ async fn try_download_and_extract(url: &str, exe_dir: &Path, proxy_url: &str) ->
     fs::create_dir_all(&extract_dir)?;
 
     let status = std::process::Command::new("tar")
-        .args(["-xjf", &archive_path.to_string_lossy(), "-C", &extract_dir.to_string_lossy()])
+        .args([
+            "-xjf",
+            &archive_path.to_string_lossy(),
+            "-C",
+            &extract_dir.to_string_lossy(),
+        ])
         .output()
         .context("Failed to run tar command")?;
 
@@ -366,7 +393,10 @@ pub fn download_aec_lib(dst_dir: &Path, proxy_url: &str) -> Result<PathBuf> {
         fs::create_dir_all(&dst_dir)?;
         let lib_path = dst_dir.join(AEC_LIB_FILENAME);
         if lib_path.exists() {
-            tracing::info!("[aec] {} already present, skipping download.", AEC_LIB_FILENAME);
+            tracing::info!(
+                "[aec] {} already present, skipping download.",
+                AEC_LIB_FILENAME
+            );
             return Ok(lib_path);
         }
 
@@ -416,8 +446,8 @@ async fn try_download_aec(url: &str, dst_dir: &Path, proxy_url: &str) -> Result<
     fs::create_dir_all(&temp_dir)?;
 
     let archive_path = temp_dir.join(AEC_WIN_ARTIFACT);
-    let need_download = !archive_path.exists()
-        || fs::metadata(&archive_path).map(|m| m.len()).unwrap_or(0) == 0;
+    let need_download =
+        !archive_path.exists() || fs::metadata(&archive_path).map(|m| m.len()).unwrap_or(0) == 0;
     if need_download {
         download_to(url, &archive_path, proxy_url, AEC_WIN_ARTIFACT).await?;
     } else {
@@ -507,8 +537,8 @@ async fn download_to(url: &str, archive_path: &Path, proxy_url: &str, label: &st
     let mut last_report = std::time::Instant::now();
     let mut last_downloaded: u64 = 0;
 
-    use std::io::Write;
     use futures::StreamExt;
+    use std::io::Write;
     let mut stream = response.bytes_stream();
     while let Some(chunk) = stream.next().await {
         let chunk = chunk.context("Failed to read download chunk")?;
@@ -544,7 +574,10 @@ async fn download_to(url: &str, archive_path: &Path, proxy_url: &str, label: &st
             last_downloaded = downloaded;
         }
     }
-    tracing::info!("[aec] Download complete: {:.0} KB", downloaded as f64 / 1024.0);
+    tracing::info!(
+        "[aec] Download complete: {:.0} KB",
+        downloaded as f64 / 1024.0
+    );
     drop(file); // Windows 上 rename 前关掉句柄
 
     let _ = fs::remove_file(archive_path);
@@ -623,8 +656,9 @@ fn copy_libs_from(src_dir: &Path, dst_dir: &Path) -> Result<()> {
         let src = src_dir.join(lib);
         let dst = dst_dir.join(lib);
         if src.exists() {
-            fs::copy(&src, &dst)
-                .with_context(|| format!("Failed to copy {} to {}", src.display(), dst.display()))?;
+            fs::copy(&src, &dst).with_context(|| {
+                format!("Failed to copy {} to {}", src.display(), dst.display())
+            })?;
             let size = fs::metadata(&dst)?.len();
             tracing::info!("{} ({:.1} MB)", lib, size as f64 / (1024.0 * 1024.0));
         } else {

@@ -16,11 +16,11 @@ use std::sync::Arc;
 
 use parking_lot::{Mutex, RwLock};
 use serde::{Deserialize, Serialize};
-use tracing::{debug, info, warn, error};
+use tracing::{debug, error, info, warn};
 
-use crate::state::BotState;
 use crate::helpers::get_config_path;
 use crate::log_hook::LogHookHandle;
+use crate::state::BotState;
 
 /// A single component that the BotService manages.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -557,7 +557,8 @@ pub struct BotService {
     /// Type-erased service handles, behind a lock for concurrent access.
     services: Arc<RwLock<ServiceRegistry>>,
     /// Optional restart callback for post-save restart (set by application wiring layer).
-    restart_callback: Arc<Mutex<Option<Box<dyn Fn() -> nemesis_types::error::Result<()> + Send + Sync>>>>,
+    restart_callback:
+        Arc<Mutex<Option<Box<dyn Fn() -> nemesis_types::error::Result<()> + Send + Sync>>>>,
     /// Log hook chain for bridging log events to external consumers (e.g., SSE).
     log_hooks: Arc<crate::log_hook::LogHookChain>,
 }
@@ -736,7 +737,10 @@ impl BotService {
     /// let svc_clone = svc.clone();
     /// svc.set_restart_callback(Box::new(move || svc_clone.restart()));
     /// ```
-    pub fn set_restart_callback(&self, cb: Box<dyn Fn() -> nemesis_types::error::Result<()> + Send + Sync>) {
+    pub fn set_restart_callback(
+        &self,
+        cb: Box<dyn Fn() -> nemesis_types::error::Result<()> + Send + Sync>,
+    ) {
         *self.restart_callback.lock() = Some(cb);
     }
 
@@ -830,7 +834,9 @@ impl BotService {
             // Check if BOOTSTRAP.md exists (skip heartbeat during initialization).
             let bootstrap_path = workspace.join("BOOTSTRAP.md");
             if bootstrap_path.exists() {
-                info!("[BotService] Skipping heartbeat: BOOTSTRAP.md exists (initialization in progress)");
+                info!(
+                    "[BotService] Skipping heartbeat: BOOTSTRAP.md exists (initialization in progress)"
+                );
                 return;
             }
 
@@ -839,7 +845,10 @@ impl BotService {
                 match agent.process_heartbeat() {
                     Ok(response) => {
                         if !response.is_empty() {
-                            info!(response_len = response.len(), "[BotService] Heartbeat processed");
+                            info!(
+                                response_len = response.len(),
+                                "[BotService] Heartbeat processed"
+                            );
                         }
                     }
                     Err(e) => {
@@ -954,7 +963,10 @@ impl BotService {
     /// ```
     pub fn register_log_hook(&self, hook: LogHookHandle) {
         self.log_hooks.register(hook);
-        info!("[BotService] Log hook registered (total: {})", self.log_hooks.len());
+        info!(
+            "[BotService] Log hook registered (total: {})",
+            self.log_hooks.len()
+        );
     }
 
     /// Return a reference to the log hook chain.
@@ -983,7 +995,10 @@ impl BotService {
         config_json: &serde_json::Value,
         restart: bool,
     ) -> nemesis_types::error::Result<()> {
-        info!("[BotService] Saving configuration to {:?}", self.config.config_path);
+        info!(
+            "[BotService] Saving configuration to {:?}",
+            self.config.config_path
+        );
 
         // Validate that the config JSON is a valid object
         if !config_json.is_object() {
@@ -993,13 +1008,12 @@ impl BotService {
         }
 
         // Attempt to deserialize as ConfigFile to validate structure
-        let config_data: ConfigFile = serde_json::from_value(config_json.clone())
-            .map_err(|e| {
-                nemesis_types::error::NemesisError::Validation(format!(
-                    "invalid config structure: {}",
-                    e
-                ))
-            })?;
+        let config_data: ConfigFile = serde_json::from_value(config_json.clone()).map_err(|e| {
+            nemesis_types::error::NemesisError::Validation(format!(
+                "invalid config structure: {}",
+                e
+            ))
+        })?;
 
         // Validate models configuration (at least one model with API key)
         if config_data.models.is_empty() {
@@ -1008,10 +1022,7 @@ impl BotService {
             ));
         }
 
-        let has_valid_model = config_data
-            .models
-            .iter()
-            .any(|m| !m.api_key.is_empty());
+        let has_valid_model = config_data.models.iter().any(|m| !m.api_key.is_empty());
         if !has_valid_model {
             return Err(nemesis_types::error::NemesisError::Validation(
                 "no model with valid API key found".to_string(),
@@ -1021,22 +1032,19 @@ impl BotService {
         // Ensure the parent directory exists
         if let Some(parent) = self.config.config_path.parent() {
             if !parent.exists() {
-                std::fs::create_dir_all(parent).map_err(|e| {
-                    nemesis_types::error::NemesisError::Io(e)
-                })?;
+                std::fs::create_dir_all(parent)
+                    .map_err(|e| nemesis_types::error::NemesisError::Io(e))?;
             }
         }
 
         // Serialize with pretty formatting
-        let config_str = serde_json::to_string_pretty(config_json).map_err(|e| {
-            nemesis_types::error::NemesisError::Serialization(e)
-        })?;
+        let config_str = serde_json::to_string_pretty(config_json)
+            .map_err(|e| nemesis_types::error::NemesisError::Serialization(e))?;
 
         // Write to disk atomically: write to temp file, then rename
         let temp_path = self.config.config_path.with_extension("json.tmp");
-        std::fs::write(&temp_path, &config_str).map_err(|e| {
-            nemesis_types::error::NemesisError::Io(e)
-        })?;
+        std::fs::write(&temp_path, &config_str)
+            .map_err(|e| nemesis_types::error::NemesisError::Io(e))?;
 
         // Atomic rename
         std::fs::rename(&temp_path, &self.config.config_path).map_err(|e| {
@@ -1106,7 +1114,10 @@ impl BotService {
 
         // Check config file exists
         if !self.config.config_path.exists() {
-            return Err(format!("config file not found: {:?}", self.config.config_path));
+            return Err(format!(
+                "config file not found: {:?}",
+                self.config.config_path
+            ));
         }
 
         // Read and parse the config file
@@ -1130,10 +1141,7 @@ impl BotService {
                 .unwrap_or_else(|| PathBuf::from("."))
         };
 
-        info!(
-            "[BotService] Config loaded, workspace={:?}",
-            workspace
-        );
+        info!("[BotService] Config loaded, workspace={:?}", workspace);
 
         // Update config flags from the loaded file
         {
@@ -1184,10 +1192,7 @@ impl BotService {
         }
 
         // Check if at least one model has a valid API key
-        let has_valid_model = config_file
-            .models
-            .iter()
-            .any(|m| !m.api_key.is_empty());
+        let has_valid_model = config_file.models.iter().any(|m| !m.api_key.is_empty());
 
         if !has_valid_model {
             return Err("no model with valid API key found".to_string());
@@ -1238,13 +1243,22 @@ impl BotService {
 
         // Core components are always required
         enabled.enable(Component::Bus);
-        info!("[BotService] Component initialized: {}", Component::Bus.label());
+        info!(
+            "[BotService] Component initialized: {}",
+            Component::Bus.label()
+        );
 
         enabled.enable(Component::Agent);
-        info!("[BotService] Component initialized: {}", Component::Agent.label());
+        info!(
+            "[BotService] Component initialized: {}",
+            Component::Agent.label()
+        );
 
         enabled.enable(Component::Channels);
-        info!("[BotService] Component initialized: {}", Component::Channels.label());
+        info!(
+            "[BotService] Component initialized: {}",
+            Component::Channels.label()
+        );
 
         // --- Phase 2: Parallel independent service creation ---
         // In Go, these run in parallel using errgroup. In Rust, the application
@@ -1253,27 +1267,42 @@ impl BotService {
 
         // Cron service (always enabled)
         enabled.enable(Component::Cron);
-        info!("[BotService] Component initialized: {}", Component::Cron.label());
+        info!(
+            "[BotService] Component initialized: {}",
+            Component::Cron.label()
+        );
 
         // Heartbeat service (check config)
         if config_file_data.heartbeat.enabled {
             enabled.enable(Component::Heartbeat);
-            info!("[BotService] Component initialized: {}", Component::Heartbeat.label());
+            info!(
+                "[BotService] Component initialized: {}",
+                Component::Heartbeat.label()
+            );
         }
 
         // Health server (always enabled)
         enabled.enable(Component::Health);
-        info!("[BotService] Component initialized: {}", Component::Health.label());
+        info!(
+            "[BotService] Component initialized: {}",
+            Component::Health.label()
+        );
 
         // Devices (check config)
         if config_file_data.devices.enabled {
             enabled.enable(Component::Devices);
-            info!("[BotService] Component initialized: {}", Component::Devices.label());
+            info!(
+                "[BotService] Component initialized: {}",
+                Component::Devices.label()
+            );
         }
 
         // Skills (always enabled)
         enabled.enable(Component::Skills);
-        info!("[BotService] Component initialized: {}", Component::Skills.label());
+        info!(
+            "[BotService] Component initialized: {}",
+            Component::Skills.label()
+        );
 
         // --- Phase 3: Wire up service dependencies (sequential) ---
         // These steps depend on the services created in Phase 2.
@@ -1282,13 +1311,19 @@ impl BotService {
         // Security (config-driven)
         if self.config.security_enabled || config_file_data.security.enabled {
             enabled.enable(Component::Security);
-            info!("[BotService] Component initialized: {}", Component::Security.label());
+            info!(
+                "[BotService] Component initialized: {}",
+                Component::Security.label()
+            );
         }
 
         // Workflow (config-driven)
         if self.config.workflow_enabled || config_file_data.workflow.enabled {
             enabled.enable(Component::Workflow);
-            info!("[BotService] Component initialized: {}", Component::Workflow.label());
+            info!(
+                "[BotService] Component initialized: {}",
+                Component::Workflow.label()
+            );
         }
 
         // --- Phase 4: Forge and Observer setup ---
@@ -1297,24 +1332,36 @@ impl BotService {
         // Forge self-learning module
         if self.config.forge_enabled || config_file_data.forge.enabled {
             enabled.enable(Component::Forge);
-            info!("[BotService] Component initialized: {}", Component::Forge.label());
+            info!(
+                "[BotService] Component initialized: {}",
+                Component::Forge.label()
+            );
         }
 
         // Cluster (config-driven)
         if self.config.cluster_enabled {
             enabled.enable(Component::Cluster);
-            info!("[BotService] Component initialized: {}", Component::Cluster.label());
+            info!(
+                "[BotService] Component initialized: {}",
+                Component::Cluster.label()
+            );
         }
 
         // Memory subsystem (config-driven)
         if self.config.memory_enabled || config_file_data.memory.enabled {
             enabled.enable(Component::Memory);
-            info!("[BotService] Component initialized: {}", Component::Memory.label());
+            info!(
+                "[BotService] Component initialized: {}",
+                Component::Memory.label()
+            );
         }
 
         // Observer (enabled if any observers will be registered)
         enabled.enable(Component::Observer);
-        info!("[BotService] Component initialized: {}", Component::Observer.label());
+        info!(
+            "[BotService] Component initialized: {}",
+            Component::Observer.label()
+        );
 
         info!("[BotService] Components initialized");
         Ok(())
@@ -1339,32 +1386,29 @@ impl BotService {
 
         // 1. Start heartbeat service
         if let Some(ref heartbeat) = services.heartbeat {
-            heartbeat.start().map_err(|e| {
-                format!("failed to start heartbeat service: {}", e)
-            })?;
+            heartbeat
+                .start()
+                .map_err(|e| format!("failed to start heartbeat service: {}", e))?;
             info!("[BotService] Heartbeat service started");
         }
 
         // 2. Start device service
         if let Some(ref devices) = services.devices {
-            devices.start().map_err(|e| {
-                format!("failed to start device service: {}", e)
-            })?;
+            devices
+                .start()
+                .map_err(|e| format!("failed to start device service: {}", e))?;
             info!("[BotService] Device service started");
         }
 
         // 3. Start channel manager
         if let Some(ref channels) = services.channels {
-            channels.start().map_err(|e| {
-                format!("failed to start channel manager: {}", e)
-            })?;
+            channels
+                .start()
+                .map_err(|e| format!("failed to start channel manager: {}", e))?;
 
             let enabled_channels = channels.enabled_channels();
             if !enabled_channels.is_empty() {
-                info!(
-                    "[BotService] Channels enabled: {:?}",
-                    enabled_channels
-                );
+                info!("[BotService] Channels enabled: {:?}", enabled_channels);
             }
         }
 
@@ -1418,9 +1462,9 @@ impl BotService {
 
         // 7. Start Forge self-learning module
         if let Some(ref forge) = services.forge {
-            forge.start().map_err(|e| {
-                format!("failed to start forge service: {}", e)
-            })?;
+            forge
+                .start()
+                .map_err(|e| format!("failed to start forge service: {}", e))?;
             info!("[BotService] Forge service started");
         }
 

@@ -15,4 +15,6 @@ pub mod types;
 
 pub use file_store::FileCheckpointStore;
 pub use store::{CheckpointStore, InMemoryCheckpointStore, StoreError};
-pub use types::{parse_state, Checkpoint, CheckpointMeta, SerializableContext, SerializableNodeResult};
+pub use types::{
+    Checkpoint, CheckpointMeta, SerializableContext, SerializableNodeResult, parse_state,
+};

@@ -2,4 +2,6 @@
 
 pub mod service;
 
-pub use service::{HeartbeatService, HeartbeatConfig, HeartbeatHandler, HeartbeatResult, MessageBus, StateManager};
+pub use service::{
+    HeartbeatConfig, HeartbeatHandler, HeartbeatResult, HeartbeatService, MessageBus, StateManager,
+};

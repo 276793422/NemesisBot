@@ -197,9 +197,8 @@ pub fn save_static_config(path: &Path, config: &StaticConfig) -> Result<(), Conf
     }
 
     // Serialize to TOML
-    let toml_str = toml::to_string_pretty(config).map_err(|e| {
-        std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string())
-    })?;
+    let toml_str = toml::to_string_pretty(config)
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()))?;
 
     // Atomic write: write to tmp file, then rename
     atomic_write(path, toml_str.as_bytes())?;
@@ -225,9 +224,8 @@ pub fn save_dynamic_state(path: &Path, state: &DynamicState) -> Result<(), Confi
     }
 
     // Serialize to TOML
-    let toml_str = toml::to_string_pretty(state).map_err(|e| {
-        std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string())
-    })?;
+    let toml_str = toml::to_string_pretty(state)
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()))?;
 
     // Atomic write
     atomic_write(path, toml_str.as_bytes())?;
@@ -331,7 +329,10 @@ pub fn append_peer_to_file_with_name(
 
     // Ensure `peers` is a table (replace if it was a legacy array)
     if !table.get("peers").map_or(false, |v| v.is_table()) {
-        table.insert("peers".to_string(), toml::Value::Table(toml::value::Table::new()));
+        table.insert(
+            "peers".to_string(),
+            toml::Value::Table(toml::value::Table::new()),
+        );
     }
     let peers_table = table
         .get_mut("peers")
@@ -351,12 +352,18 @@ pub fn append_peer_to_file_with_name(
     }
 
     let mut peer_entry = toml::value::Table::new();
-    peer_entry.insert("address".to_string(), toml::Value::String(address.to_string()));
+    peer_entry.insert(
+        "address".to_string(),
+        toml::Value::String(address.to_string()),
+    );
     if let Some(n) = name {
         peer_entry.insert("name".to_string(), toml::Value::String(n.to_string()));
     }
     peer_entry.insert("role".to_string(), toml::Value::String(role.to_string()));
-    peer_entry.insert("category".to_string(), toml::Value::String(category.to_string()));
+    peer_entry.insert(
+        "category".to_string(),
+        toml::Value::String(category.to_string()),
+    );
     peers_table.insert(key, toml::Value::Table(peer_entry));
 
     // Serialize and atomic write
@@ -469,7 +476,10 @@ pub fn ensure_node_id(path: &Path, node_id: &str) -> Result<bool, ConfigError> {
 
     // Ensure [node] is a table
     if !table.get("node").map_or(false, |v| v.is_table()) {
-        table.insert("node".to_string(), toml::Value::Table(toml::value::Table::new()));
+        table.insert(
+            "node".to_string(),
+            toml::Value::Table(toml::value::Table::new()),
+        );
     }
     let node_table = table
         .get_mut("node")
@@ -477,10 +487,7 @@ pub fn ensure_node_id(path: &Path, node_id: &str) -> Result<bool, ConfigError> {
         .expect("node entry just ensured to be a table");
 
     // Check if id is already set to the same value (no-op)
-    let current_id = node_table
-        .get("id")
-        .and_then(|v| v.as_str())
-        .unwrap_or("");
+    let current_id = node_table.get("id").and_then(|v| v.as_str()).unwrap_or("");
     if !current_id.is_empty() {
         // User has set an id; respect it
         return Ok(false);

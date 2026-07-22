@@ -71,7 +71,9 @@ fn test_extended_node_info_get_uptime() {
             role: NodeRole::Worker,
             address: "10.0.0.1:9000".into(),
             category: "development".into(),
-            last_seen: chrono::Local::now().format("%Y-%m-%dT%H:%M:%SZ").to_string(),
+            last_seen: chrono::Local::now()
+                .format("%Y-%m-%dT%H:%M:%SZ")
+                .to_string(),
         },
         status: NodeStatus::Online,
         capabilities: vec!["llm".into()],
@@ -314,7 +316,11 @@ fn test_get_uptime_future_timestamp() {
 fn test_node_status_connecting_serialization_roundtrip() {
     let status = NodeStatus::Connecting;
     let json = serde_json::to_string(&status).unwrap();
-    assert!(json.contains("Connecting"), "expected Connecting in JSON, got: {}", json);
+    assert!(
+        json.contains("Connecting"),
+        "expected Connecting in JSON, got: {}",
+        json
+    );
     let back: NodeStatus = serde_json::from_str(&json).unwrap();
     assert_eq!(back, NodeStatus::Connecting);
 }
@@ -325,7 +331,11 @@ fn test_node_status_connecting_string_representation() {
     assert_eq!(node.get_status_string(), "connecting");
     // Display should show "connecting"
     let display = format!("{}", node);
-    assert!(display.contains("connecting"), "expected 'connecting' in display: {}", display);
+    assert!(
+        display.contains("connecting"),
+        "expected 'connecting' in display: {}",
+        display
+    );
 }
 
 // -- content_eq tests --

@@ -8,8 +8,8 @@
 
 use super::*;
 use crate::source::{Action, EventSource, Kind, UsbEventSource};
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use tokio::sync::mpsc;
 
 // ---------------------------------------------------------------------------
@@ -449,7 +449,8 @@ async fn test_start_with_failing_mock_source_continues() {
         poll_interval_secs: 1,
         monitor_usb: false,
     };
-    let sources: Vec<Box<dyn EventSource>> = vec![Box::new(MockEventSource::failing(Kind::Usb, true, false))];
+    let sources: Vec<Box<dyn EventSource>> =
+        vec![Box::new(MockEventSource::failing(Kind::Usb, true, false))];
     let svc = DeviceService::with_sources_for_test(config, sources);
     let result = svc.start().await;
     assert!(result.is_ok());
@@ -594,7 +595,9 @@ fn test_send_notification_with_bus_set_after_state() {
         last_channel: "web:123".to_string(),
     }));
     svc.set_bus_sender(Box::new(move |ch, id, content| {
-        sent_clone.lock().push((ch.to_string(), id.to_string(), content.to_string()));
+        sent_clone
+            .lock()
+            .push((ch.to_string(), id.to_string(), content.to_string()));
     }));
 
     let ev = DeviceEvent {
@@ -934,7 +937,11 @@ fn test_service_device_event_added_with_empty_fields() {
     let json = serde_json::to_string(&ev).unwrap();
     assert!(json.contains("Added"));
     let parsed: ServiceDeviceEvent = serde_json::from_str(&json).unwrap();
-    if let ServiceDeviceEvent::Added { device_id, device_type } = parsed {
+    if let ServiceDeviceEvent::Added {
+        device_id,
+        device_type,
+    } = parsed
+    {
         assert!(device_id.is_empty());
         assert!(device_type.is_empty());
     } else {
@@ -944,7 +951,9 @@ fn test_service_device_event_added_with_empty_fields() {
 
 #[test]
 fn test_service_device_event_removed_with_empty_id() {
-    let ev = ServiceDeviceEvent::Removed { device_id: String::new() };
+    let ev = ServiceDeviceEvent::Removed {
+        device_id: String::new(),
+    };
     let json = serde_json::to_string(&ev).unwrap();
     let parsed: ServiceDeviceEvent = serde_json::from_str(&json).unwrap();
     if let ServiceDeviceEvent::Removed { device_id } = parsed {
@@ -1406,9 +1415,15 @@ impl LastChannelProvider for CustomLastChannel {
 #[test]
 fn test_last_channel_provider_dyn_dispatch() {
     let providers: Vec<Arc<dyn LastChannelProvider>> = vec![
-        Arc::new(CustomLastChannel { channel: "web:1".to_string() }),
-        Arc::new(CustomLastChannel { channel: "discord:2".to_string() }),
-        Arc::new(CustomLastChannel { channel: "".to_string() }),
+        Arc::new(CustomLastChannel {
+            channel: "web:1".to_string(),
+        }),
+        Arc::new(CustomLastChannel {
+            channel: "discord:2".to_string(),
+        }),
+        Arc::new(CustomLastChannel {
+            channel: "".to_string(),
+        }),
     ];
 
     assert_eq!(providers[0].get_last_channel(), "web:1");

@@ -222,7 +222,10 @@ pub fn repair_tool_message_pairs(messages: &mut Vec<ConversationTurn>) {
             }
         }
         for idx in to_remove {
-            debug!("[repair_tool_message_pairs] Removing duplicate tool message at {}", idx);
+            debug!(
+                "[repair_tool_message_pairs] Removing duplicate tool message at {}",
+                idx
+            );
             messages.remove(idx);
         }
     }
@@ -255,7 +258,11 @@ pub fn repair_tool_message_pairs(messages: &mut Vec<ConversationTurn>) {
     let n = messages.len();
     for i in 0..n {
         if messages[i].role == "assistant" && !messages[i].tool_calls.is_empty() {
-            let call_ids: Vec<String> = messages[i].tool_calls.iter().map(|tc| tc.id.clone()).collect();
+            let call_ids: Vec<String> = messages[i]
+                .tool_calls
+                .iter()
+                .map(|tc| tc.id.clone())
+                .collect();
             let mut found_ids: HashSet<String> = HashSet::new();
             for j in (i + 1)..n {
                 if messages[j].role == "tool" {
@@ -269,7 +276,9 @@ pub fn repair_tool_message_pairs(messages: &mut Vec<ConversationTurn>) {
                 }
             }
             if found_ids.len() < call_ids.len() {
-                messages[i].tool_calls.retain(|tc| found_ids.contains(&tc.id));
+                messages[i]
+                    .tool_calls
+                    .retain(|tc| found_ids.contains(&tc.id));
             }
         }
     }

@@ -10,7 +10,7 @@ fn test_build_system_prompt() {
         tool_call_id: None,
         timestamp: None,
         reasoning_content: None,
-extra: std::collections::HashMap::new(),
+        extra: std::collections::HashMap::new(),
     }];
     let prompt = provider.build_system_prompt(&messages, &[]);
     assert_eq!(prompt, "You are helpful");
@@ -42,7 +42,7 @@ fn test_messages_to_prompt_single_user() {
         tool_call_id: None,
         timestamp: None,
         reasoning_content: None,
-extra: std::collections::HashMap::new(),
+        extra: std::collections::HashMap::new(),
     }];
     let prompt = provider.messages_to_prompt(&messages);
     assert_eq!(prompt, "Hello world");
@@ -59,7 +59,7 @@ fn test_messages_to_prompt_multi() {
             tool_call_id: None,
             timestamp: None,
             reasoning_content: None,
-extra: std::collections::HashMap::new(),
+            extra: std::collections::HashMap::new(),
         },
         Message {
             role: "assistant".to_string(),
@@ -68,7 +68,7 @@ extra: std::collections::HashMap::new(),
             tool_call_id: None,
             timestamp: None,
             reasoning_content: None,
-extra: std::collections::HashMap::new(),
+            extra: std::collections::HashMap::new(),
         },
     ];
     let prompt = provider.messages_to_prompt(&messages);
@@ -139,17 +139,15 @@ fn test_claude_cli_config_deserialization_defaults() {
 #[test]
 fn test_build_system_prompt_with_tools() {
     let provider = ClaudeCliProvider::new(ClaudeCliConfig::default());
-    let messages = vec![
-        Message {
-            role: "system".to_string(),
-            content: "Be helpful".to_string(),
-            tool_calls: vec![],
-            tool_call_id: None,
-            timestamp: None,
-            reasoning_content: None,
-extra: std::collections::HashMap::new(),
-        },
-    ];
+    let messages = vec![Message {
+        role: "system".to_string(),
+        content: "Be helpful".to_string(),
+        tool_calls: vec![],
+        tool_call_id: None,
+        timestamp: None,
+        reasoning_content: None,
+        extra: std::collections::HashMap::new(),
+    }];
     let tools = vec![ToolDefinition {
         tool_type: "function".to_string(),
         function: ToolFunctionDefinition {
@@ -174,7 +172,7 @@ fn test_build_system_prompt_no_system_messages() {
         tool_call_id: None,
         timestamp: None,
         reasoning_content: None,
-extra: std::collections::HashMap::new(),
+        extra: std::collections::HashMap::new(),
     }];
     let prompt = provider.build_system_prompt(&messages, &[]);
     assert!(prompt.is_empty());
@@ -191,7 +189,7 @@ fn test_messages_to_prompt_with_tool_result() {
             tool_call_id: None,
             timestamp: None,
             reasoning_content: None,
-extra: std::collections::HashMap::new(),
+            extra: std::collections::HashMap::new(),
         },
         Message {
             role: "tool".to_string(),
@@ -200,7 +198,7 @@ extra: std::collections::HashMap::new(),
             tool_call_id: Some("call_1".into()),
             timestamp: None,
             reasoning_content: None,
-extra: std::collections::HashMap::new(),
+            extra: std::collections::HashMap::new(),
         },
     ];
     let prompt = provider.messages_to_prompt(&messages);
@@ -218,7 +216,7 @@ fn test_messages_to_prompt_system_ignored() {
             tool_call_id: None,
             timestamp: None,
             reasoning_content: None,
-extra: std::collections::HashMap::new(),
+            extra: std::collections::HashMap::new(),
         },
         Message {
             role: "user".to_string(),
@@ -227,7 +225,7 @@ extra: std::collections::HashMap::new(),
             tool_call_id: None,
             timestamp: None,
             reasoning_content: None,
-extra: std::collections::HashMap::new(),
+            extra: std::collections::HashMap::new(),
         },
     ];
     let prompt = provider.messages_to_prompt(&messages);
@@ -239,17 +237,15 @@ extra: std::collections::HashMap::new(),
 #[test]
 fn test_messages_to_prompt_tool_without_call_id() {
     let provider = ClaudeCliProvider::new(ClaudeCliConfig::default());
-    let messages = vec![
-        Message {
-            role: "tool".to_string(),
-            content: "orphan result".to_string(),
-            tool_calls: vec![],
-            tool_call_id: None,
-            timestamp: None,
-            reasoning_content: None,
-extra: std::collections::HashMap::new(),
-        },
-    ];
+    let messages = vec![Message {
+        role: "tool".to_string(),
+        content: "orphan result".to_string(),
+        tool_calls: vec![],
+        tool_call_id: None,
+        timestamp: None,
+        reasoning_content: None,
+        extra: std::collections::HashMap::new(),
+    }];
     let prompt = provider.messages_to_prompt(&messages);
     // Tool message without tool_call_id should be skipped
     assert!(prompt.is_empty());

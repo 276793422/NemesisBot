@@ -300,8 +300,10 @@ fn test_sign_skill_and_verify_skill() {
         enabled: true,
         strict: false,
         trust_store_path: ts_path.to_string_lossy().to_string(),
-    }).unwrap();
-    v.trust_store().add_key(&public_key_b64, "test-signer", TrustLevel::Verified);
+    })
+    .unwrap();
+    v.trust_store()
+        .add_key(&public_key_b64, "test-signer", TrustLevel::Verified);
 
     let result = v.verify_skill(&skill_dir);
     assert!(result.valid);
@@ -322,7 +324,8 @@ fn test_verify_skill_no_signature_file() {
         enabled: true,
         strict: false,
         trust_store_path: ts_path.to_string_lossy().to_string(),
-    }).unwrap();
+    })
+    .unwrap();
 
     let result = v.verify_skill(&skill_dir);
     assert!(!result.valid);
@@ -340,7 +343,8 @@ fn test_verify_skill_not_a_directory() {
         enabled: true,
         strict: false,
         trust_store_path: ts_path.to_string_lossy().to_string(),
-    }).unwrap();
+    })
+    .unwrap();
 
     let result = v.verify_skill(&file_path);
     assert!(!result.valid);
@@ -367,7 +371,8 @@ fn test_sign_skill_tampered_content() {
         enabled: true,
         strict: false,
         trust_store_path: ts_path.to_string_lossy().to_string(),
-    }).unwrap();
+    })
+    .unwrap();
 
     let result = v.verify_skill(&skill_dir);
     assert!(!result.valid);
@@ -390,8 +395,10 @@ fn test_verifier_verify_file_with_trust_store() {
         enabled: true,
         strict: false,
         trust_store_path: ts_path.to_string_lossy().to_string(),
-    }).unwrap();
-    v.trust_store().add_key(&public_key_b64, "test-signer", TrustLevel::Community);
+    })
+    .unwrap();
+    v.trust_store()
+        .add_key(&public_key_b64, "test-signer", TrustLevel::Community);
 
     let sig = sign_file(&file_path, &signing_key).unwrap();
     let result = v.verify_file(&file_path, &sig).unwrap();
@@ -414,7 +421,8 @@ fn test_verifier_verify_file_unknown_key() {
         enabled: true,
         strict: false,
         trust_store_path: ts_path.to_string_lossy().to_string(),
-    }).unwrap();
+    })
+    .unwrap();
 
     let sig = sign_file(&file_path, &signing_key).unwrap();
     let result = v.verify_file(&file_path, &sig).unwrap();
@@ -438,8 +446,10 @@ fn test_verifier_verify_file_revoked_key() {
         enabled: true,
         strict: false,
         trust_store_path: ts_path.to_string_lossy().to_string(),
-    }).unwrap();
-    v.trust_store().add_key(&public_key_b64, "revoke-me", TrustLevel::Verified);
+    })
+    .unwrap();
+    v.trust_store()
+        .add_key(&public_key_b64, "revoke-me", TrustLevel::Verified);
     v.trust_store().revoke_key("revoke-me").unwrap();
 
     let sig = sign_file(&file_path, &signing_key).unwrap();
@@ -554,7 +564,8 @@ fn test_new_verifier_empty_trust_store() {
         enabled: true,
         strict: false,
         trust_store_path: String::new(),
-    }).unwrap();
+    })
+    .unwrap();
     assert_eq!(v.trust_store().key_count(), 0);
 }
 
@@ -589,7 +600,12 @@ fn test_trust_level_default() {
 
 #[test]
 fn test_trust_level_serialization_roundtrip() {
-    for level in [TrustLevel::Unknown, TrustLevel::Community, TrustLevel::Verified, TrustLevel::Revoked] {
+    for level in [
+        TrustLevel::Unknown,
+        TrustLevel::Community,
+        TrustLevel::Verified,
+        TrustLevel::Revoked,
+    ] {
         let json = serde_json::to_string(&level).unwrap();
         let parsed: TrustLevel = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed, level);
@@ -660,7 +676,8 @@ fn test_verifier_verify_file_not_found() {
         enabled: true,
         strict: false,
         trust_store_path: ts_path.to_string_lossy().to_string(),
-    }).unwrap();
+    })
+    .unwrap();
 
     let result = v.verify_file(Path::new("/nonexistent/file.txt"), b"somesig");
     // verify_file returns an error for nonexistent files
@@ -759,7 +776,8 @@ fn test_verify_skill_not_strict_unknown_key() {
         enabled: true,
         strict: false, // not strict -> should report valid but unknown trust
         trust_store_path: ts_path.to_string_lossy().to_string(),
-    }).unwrap();
+    })
+    .unwrap();
 
     let result = v.verify_skill(&skill_dir);
     // Not strict: valid signature but key not in trust store
@@ -780,7 +798,8 @@ fn test_verifier_no_signature_file_returns_invalid() {
         enabled: true,
         strict: false,
         trust_store_path: ts_path.to_string_lossy().to_string(),
-    }).unwrap();
+    })
+    .unwrap();
 
     let result = v.verify_skill(&skill_dir);
     assert!(!result.valid);
@@ -842,7 +861,8 @@ fn test_verifier_strict_mode_unknown_key_untrusted() {
         enabled: true,
         strict: true, // strict mode
         trust_store_path: ts_path.to_string_lossy().to_string(),
-    }).unwrap();
+    })
+    .unwrap();
 
     let result = v.verify_skill(&skill_dir);
     // Signature is cryptographically valid but signer is unknown (not trusted)
@@ -971,7 +991,8 @@ fn test_verifier_verify_file_corrupt_signature() {
         enabled: true,
         strict: false,
         trust_store_path: ts_path.to_string_lossy().to_string(),
-    }).unwrap();
+    })
+    .unwrap();
 
     // Pass a corrupt signature (wrong length)
     let result = v.verify_file(&file_path, b"corrupt_sig");
@@ -1003,9 +1024,11 @@ fn test_verifier_verify_file_with_strict_mode() {
         enabled: true,
         strict: true,
         trust_store_path: ts_path.to_string_lossy().to_string(),
-    }).unwrap();
+    })
+    .unwrap();
     // Don't add key - strict mode should reject unknown keys
-    v.trust_store().add_key(&public_key_b64, "test-signer", TrustLevel::Verified);
+    v.trust_store()
+        .add_key(&public_key_b64, "test-signer", TrustLevel::Verified);
 
     let sig = sign_file(&file_path, &signing_key).unwrap();
     let result = v.verify_file(&file_path, &sig).unwrap();
@@ -1043,7 +1066,8 @@ fn test_verifier_verify_skill_with_tampered_signature_file() {
 
     // Tamper with the .signature file
     let sig_path = skill_dir.join(SIGNATURE_FILE_NAME);
-    let mut content: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&sig_path).unwrap()).unwrap();
+    let mut content: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&sig_path).unwrap()).unwrap();
     content["signature"] = serde_json::json!("aaaa0000bbbb1111");
     std::fs::write(&sig_path, serde_json::to_string(&content).unwrap()).unwrap();
 
@@ -1052,7 +1076,8 @@ fn test_verifier_verify_skill_with_tampered_signature_file() {
         enabled: true,
         strict: false,
         trust_store_path: ts_path.to_string_lossy().to_string(),
-    }).unwrap();
+    })
+    .unwrap();
 
     let result = v.verify_skill(&skill_dir);
     assert!(!result.valid);
@@ -1072,7 +1097,8 @@ fn test_verifier_verify_skill_with_invalid_signature_json() {
         enabled: true,
         strict: false,
         trust_store_path: ts_path.to_string_lossy().to_string(),
-    }).unwrap();
+    })
+    .unwrap();
 
     let result = v.verify_skill(&skill_dir);
     assert!(!result.valid);
@@ -1150,7 +1176,11 @@ fn test_sign_skill_with_many_files() {
     let skill_dir = dir.path().join("bigskill");
     std::fs::create_dir_all(&skill_dir).unwrap();
     for i in 0..10 {
-        std::fs::write(skill_dir.join(format!("file{}.txt", i)), format!("content {}", i)).unwrap();
+        std::fs::write(
+            skill_dir.join(format!("file{}.txt", i)),
+            format!("content {}", i),
+        )
+        .unwrap();
     }
 
     let kp = generate_key_pair().unwrap();
@@ -1166,8 +1196,10 @@ fn test_sign_skill_with_many_files() {
         enabled: true,
         strict: false,
         trust_store_path: ts_path.to_string_lossy().to_string(),
-    }).unwrap();
-    v.trust_store().add_key(&public_key_b64, "multi-author", TrustLevel::Verified);
+    })
+    .unwrap();
+    v.trust_store()
+        .add_key(&public_key_b64, "multi-author", TrustLevel::Verified);
 
     let result = v.verify_skill(&skill_dir);
     assert!(result.valid);

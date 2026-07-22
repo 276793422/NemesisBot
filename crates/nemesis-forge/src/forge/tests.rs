@@ -5,7 +5,12 @@ struct MockLLMCaller;
 
 #[async_trait::async_trait]
 impl crate::reflector_llm::LLMCaller for MockLLMCaller {
-    async fn chat(&self, _system_prompt: &str, _user_prompt: &str, _max_tokens: Option<i64>) -> Result<String, String> {
+    async fn chat(
+        &self,
+        _system_prompt: &str,
+        _user_prompt: &str,
+        _max_tokens: Option<i64>,
+    ) -> Result<String, String> {
         Ok("mock".to_string())
     }
 }
@@ -96,14 +101,18 @@ fn test_fm11_frontmatter_added_when_separator_not_at_start() {
     // as existing frontmatter (old `contains("---")` skipped adding the wrapper).
     let dir = tempfile::tempdir().unwrap();
     let forge = Forge::new(ForgeConfig::default(), dir.path().to_path_buf());
-    let artifact = forge.create_skill(
-        "fm11-test",
-        "# Title\n\nSome text.\n\n---\n\nMore text here that is long enough.",
-        "desc",
-        vec![],
-    ).unwrap();
-    assert!(artifact.content.starts_with("---\nname: fm11-test"),
-        "frontmatter should be prepended when content doesn't start with ---");
+    let artifact = forge
+        .create_skill(
+            "fm11-test",
+            "# Title\n\nSome text.\n\n---\n\nMore text here that is long enough.",
+            "desc",
+            vec![],
+        )
+        .unwrap();
+    assert!(
+        artifact.content.starts_with("---\nname: fm11-test"),
+        "frontmatter should be prepended when content doesn't start with ---"
+    );
 }
 
 #[test]
@@ -126,22 +135,33 @@ fn test_create_skill() {
     let config = ForgeConfig::default();
     let forge = Forge::new(config, dir.path().to_path_buf());
 
-    let artifact = forge.create_skill(
-        "my-skill",
-        "# My Skill\nThis is a test skill content.",
-        "A test skill",
-        vec!["file_read".to_string()],
-    ).unwrap();
+    let artifact = forge
+        .create_skill(
+            "my-skill",
+            "# My Skill\nThis is a test skill content.",
+            "A test skill",
+            vec!["file_read".to_string()],
+        )
+        .unwrap();
 
     assert_eq!(artifact.name, "my-skill");
     assert!(artifact.id.starts_with("skill-"));
 
     // Check the skill file was written in forge dir
-    let skill_path = dir.path().join("forge").join("skills").join("my-skill").join("SKILL.md");
+    let skill_path = dir
+        .path()
+        .join("forge")
+        .join("skills")
+        .join("my-skill")
+        .join("SKILL.md");
     assert!(skill_path.exists());
 
     // Check the workspace copy with -forge suffix
-    let ws_skill_path = dir.path().join("skills").join("my-skill-forge").join("SKILL.md");
+    let ws_skill_path = dir
+        .path()
+        .join("skills")
+        .join("my-skill-forge")
+        .join("SKILL.md");
     assert!(ws_skill_path.exists());
 
     // Check it was registered
@@ -167,7 +187,12 @@ fn test_create_skill_rejects_dangerous_content() {
     assert!(res.unwrap_err().contains("security validation"));
 
     // Rejected skill must NOT be written to disk.
-    let skill_path = dir.path().join("forge").join("skills").join("bad-skill").join("SKILL.md");
+    let skill_path = dir
+        .path()
+        .join("forge")
+        .join("skills")
+        .join("bad-skill")
+        .join("SKILL.md");
     assert!(!skill_path.exists(), "rejected skill must not be written");
 
     // A safe (even if short) skill is still accepted — length is quality, not security.
@@ -177,7 +202,11 @@ fn test_create_skill_rejects_dangerous_content() {
         "safe",
         vec![],
     );
-    assert!(ok.is_ok(), "safe skill should be accepted, got: {:?}", ok.err());
+    assert!(
+        ok.is_ok(),
+        "safe skill should be accepted, got: {:?}",
+        ok.err()
+    );
 }
 
 #[test]
@@ -186,12 +215,14 @@ fn test_create_skill_auto_frontmatter() {
     let config = ForgeConfig::default();
     let forge = Forge::new(config, dir.path().to_path_buf());
 
-    let artifact = forge.create_skill(
-        "auto-frontmatter",
-        "Just plain content without frontmatter.",
-        "Auto frontmatter test",
-        vec![],
-    ).unwrap();
+    let artifact = forge
+        .create_skill(
+            "auto-frontmatter",
+            "Just plain content without frontmatter.",
+            "Auto frontmatter test",
+            vec![],
+        )
+        .unwrap();
 
     // Content should have frontmatter added
     assert!(artifact.content.contains("---"));
@@ -205,12 +236,9 @@ fn test_create_skill_existing_frontmatter() {
     let forge = Forge::new(config, dir.path().to_path_buf());
 
     let content = "---\nname: existing\n---\nCustom content.";
-    let artifact = forge.create_skill(
-        "existing-fm",
-        content,
-        "Test",
-        vec![],
-    ).unwrap();
+    let artifact = forge
+        .create_skill("existing-fm", content, "Test", vec![])
+        .unwrap();
 
     // Should not double-add frontmatter
     assert!(artifact.content.starts_with("---"));
@@ -329,12 +357,14 @@ fn test_forge_reflect_now_with_reflector() {
 fn test_create_skill_with_tool_signature() {
     let dir = tempfile::tempdir().unwrap();
     let forge = Forge::new(ForgeConfig::default(), dir.path().to_path_buf());
-    let artifact = forge.create_skill(
-        "signed-skill",
-        "Content with signature",
-        "Signed",
-        vec!["file_read".to_string(), "file_write".to_string()],
-    ).unwrap();
+    let artifact = forge
+        .create_skill(
+            "signed-skill",
+            "Content with signature",
+            "Signed",
+            vec!["file_read".to_string(), "file_write".to_string()],
+        )
+        .unwrap();
     assert_eq!(artifact.tool_signature.len(), 2);
     assert!(artifact.tool_signature.contains(&"file_read".to_string()));
     assert!(artifact.tool_signature.contains(&"file_write".to_string()));
@@ -344,7 +374,9 @@ fn test_create_skill_with_tool_signature() {
 fn test_create_skill_registry_updated() {
     let dir = tempfile::tempdir().unwrap();
     let forge = Forge::new(ForgeConfig::default(), dir.path().to_path_buf());
-    forge.create_skill("reg-test", "content", "desc", vec![]).unwrap();
+    forge
+        .create_skill("reg-test", "content", "desc", vec![])
+        .unwrap();
     let all = forge.registry.list(None, None);
     assert!(all.iter().any(|a| a.name == "reg-test"));
 }
@@ -353,13 +385,20 @@ fn test_create_skill_registry_updated() {
 fn test_create_skill_file_content() {
     let dir = tempfile::tempdir().unwrap();
     let forge = Forge::new(ForgeConfig::default(), dir.path().to_path_buf());
-    forge.create_skill(
-        "file-check",
-        "---\nname: file-check\n---\nContent here",
-        "desc",
-        vec![],
-    ).unwrap();
-    let skill_path = dir.path().join("forge").join("skills").join("file-check").join("SKILL.md");
+    forge
+        .create_skill(
+            "file-check",
+            "---\nname: file-check\n---\nContent here",
+            "desc",
+            vec![],
+        )
+        .unwrap();
+    let skill_path = dir
+        .path()
+        .join("forge")
+        .join("skills")
+        .join("file-check")
+        .join("SKILL.md");
     let content = std::fs::read_to_string(&skill_path).unwrap();
     assert!(content.contains("Content here"));
 }
@@ -371,14 +410,14 @@ fn test_create_skill_with_active_default_status() {
     config.artifacts.default_status = "active".to_string();
     let forge = Forge::new(config, dir.path().to_path_buf());
 
-    let artifact = forge.create_skill(
-        "active-skill",
-        "Content",
-        "Active skill",
-        vec![],
-    ).unwrap();
+    let artifact = forge
+        .create_skill("active-skill", "Content", "Active skill", vec![])
+        .unwrap();
 
-    assert_eq!(artifact.status, nemesis_types::forge::ArtifactStatus::Active);
+    assert_eq!(
+        artifact.status,
+        nemesis_types::forge::ArtifactStatus::Active
+    );
 }
 
 #[test]
@@ -388,14 +427,14 @@ fn test_create_skill_with_observing_default_status() {
     config.artifacts.default_status = "observing".to_string();
     let forge = Forge::new(config, dir.path().to_path_buf());
 
-    let artifact = forge.create_skill(
-        "observing-skill",
-        "Content",
-        "Observing skill",
-        vec![],
-    ).unwrap();
+    let artifact = forge
+        .create_skill("observing-skill", "Content", "Observing skill", vec![])
+        .unwrap();
 
-    assert_eq!(artifact.status, nemesis_types::forge::ArtifactStatus::Observing);
+    assert_eq!(
+        artifact.status,
+        nemesis_types::forge::ArtifactStatus::Observing
+    );
 }
 
 #[test]
@@ -405,12 +444,9 @@ fn test_create_skill_with_unknown_default_status() {
     config.artifacts.default_status = "unknown_status".to_string();
     let forge = Forge::new(config, dir.path().to_path_buf());
 
-    let artifact = forge.create_skill(
-        "unknown-skill",
-        "Content",
-        "Unknown status skill",
-        vec![],
-    ).unwrap();
+    let artifact = forge
+        .create_skill("unknown-skill", "Content", "Unknown status skill", vec![])
+        .unwrap();
 
     assert_eq!(artifact.status, nemesis_types::forge::ArtifactStatus::Draft);
 }
@@ -500,12 +536,14 @@ fn test_create_skill_without_auto_validate() {
     config.validation.auto_validate = false;
     let forge = Forge::new(config, dir.path().to_path_buf());
 
-    let artifact = forge.create_skill(
-        "no-validate",
-        "Content",
-        "No validation",
-        vec!["file_read".to_string()],
-    ).unwrap();
+    let artifact = forge
+        .create_skill(
+            "no-validate",
+            "Content",
+            "No validation",
+            vec!["file_read".to_string()],
+        )
+        .unwrap();
 
     assert_eq!(artifact.name, "no-validate");
     // Should be draft since auto_validate is off
@@ -540,13 +578,20 @@ struct ProgrammableMockLLM {
 
 impl ProgrammableMockLLM {
     fn new(response: &str) -> Self {
-        Self { response: response.to_string() }
+        Self {
+            response: response.to_string(),
+        }
     }
 }
 
 #[async_trait::async_trait]
 impl crate::reflector_llm::LLMCaller for ProgrammableMockLLM {
-    async fn chat(&self, _system_prompt: &str, _user_prompt: &str, _max_tokens: Option<i64>) -> Result<String, String> {
+    async fn chat(
+        &self,
+        _system_prompt: &str,
+        _user_prompt: &str,
+        _max_tokens: Option<i64>,
+    ) -> Result<String, String> {
         Ok(self.response.clone())
     }
 }
@@ -556,7 +601,12 @@ struct ErrorMockLLM;
 
 #[async_trait::async_trait]
 impl crate::reflector_llm::LLMCaller for ErrorMockLLM {
-    async fn chat(&self, _system_prompt: &str, _user_prompt: &str, _max_tokens: Option<i64>) -> Result<String, String> {
+    async fn chat(
+        &self,
+        _system_prompt: &str,
+        _user_prompt: &str,
+        _max_tokens: Option<i64>,
+    ) -> Result<String, String> {
         Err("LLM unavailable".to_string())
     }
 }
@@ -570,13 +620,20 @@ struct MockSyncProvider {
 #[allow(dead_code)]
 impl MockSyncProvider {
     fn new(response: &str) -> Self {
-        Self { response: response.to_string() }
+        Self {
+            response: response.to_string(),
+        }
     }
 }
 
 #[async_trait::async_trait]
 impl crate::reflector_llm::LLMCaller for MockSyncProvider {
-    async fn chat(&self, _system: &str, _user: &str, _max_tokens: Option<i64>) -> Result<String, String> {
+    async fn chat(
+        &self,
+        _system: &str,
+        _user: &str,
+        _max_tokens: Option<i64>,
+    ) -> Result<String, String> {
         Ok(self.response.clone())
     }
 }
@@ -586,13 +643,22 @@ struct ErrorSyncProvider;
 
 #[async_trait::async_trait]
 impl crate::reflector_llm::LLMCaller for ErrorSyncProvider {
-    async fn chat(&self, _system: &str, _user: &str, _max_tokens: Option<i64>) -> Result<String, String> {
+    async fn chat(
+        &self,
+        _system: &str,
+        _user: &str,
+        _max_tokens: Option<i64>,
+    ) -> Result<String, String> {
         Err("LLM provider unavailable".to_string())
     }
 }
 
 /// Build a test CollectedExperience.
-fn make_collected_experience(tool: &str, success: bool, dur: u64) -> crate::types::CollectedExperience {
+fn make_collected_experience(
+    tool: &str,
+    success: bool,
+    dur: u64,
+) -> crate::types::CollectedExperience {
     crate::types::CollectedExperience {
         dedup_hash: format!("test-{}-{}", tool, success),
         experience: nemesis_types::forge::Experience {
@@ -613,7 +679,11 @@ async fn write_test_experiences(forge_dir: &std::path::Path, count: usize) {
     let store = crate::experience_store::ExperienceStore::from_forge_dir(forge_dir);
     for i in 0..count {
         let exp = make_collected_experience(
-            if i % 2 == 0 { "file_read" } else { "shell_exec" },
+            if i % 2 == 0 {
+                "file_read"
+            } else {
+                "shell_exec"
+            },
             true,
             100 + i as u64 * 50,
         );
@@ -640,7 +710,10 @@ fn create_integration_forge(dir: &std::path::Path) -> Arc<Forge> {
         registry.clone(),
         crate::cycle_store::CycleStore::new(&cycle_dir),
     );
-    let monitor = Arc::new(crate::monitor::DeploymentMonitor::new(config.clone(), registry));
+    let monitor = Arc::new(crate::monitor::DeploymentMonitor::new(
+        config.clone(),
+        registry,
+    ));
     let cs = crate::cycle_store::CycleStore::new(&cycle_dir);
     forge.init_learning(engine, monitor, cs);
 
@@ -668,9 +741,7 @@ async fn test_reflection_cycle_writes_report() {
         let reports: Vec<_> = std::fs::read_dir(&reflections_dir)
             .unwrap()
             .filter_map(|e| e.ok())
-            .filter(|e| {
-                e.path().extension().map(|ext| ext == "md").unwrap_or(false)
-            })
+            .filter(|e| e.path().extension().map(|ext| ext == "md").unwrap_or(false))
             .collect();
         assert!(!reports.is_empty(), "expected at least one report file");
     }
@@ -679,7 +750,10 @@ async fn test_reflection_cycle_writes_report() {
     if let Some(ref cycle_store) = forge.cycle_store() {
         let cycles = cycle_store.read_all().await.unwrap();
         assert!(!cycles.is_empty(), "expected at least one learning cycle");
-        assert_eq!(cycles[0].status, nemesis_types::forge::CycleStatus::Completed);
+        assert_eq!(
+            cycles[0].status,
+            nemesis_types::forge::CycleStatus::Completed
+        );
     }
 }
 
@@ -800,8 +874,10 @@ async fn test_cleanup_cycle_removes_old_experiences() {
 
     // Recent should still be readable
     let after = store.read_all().await.unwrap();
-    assert!(after.iter().any(|e| e.experience.tool_name == "new_tool"),
-        "recent experience should survive");
+    assert!(
+        after.iter().any(|e| e.experience.tool_name == "new_tool"),
+        "recent experience should survive"
+    );
 }
 
 #[tokio::test]
@@ -856,8 +932,11 @@ async fn test_pattern_tool_chain_detection() {
 
     let patterns = engine.extract_patterns(&experiences);
     assert!(!patterns.is_empty(), "expected at least one pattern");
-    assert!(patterns.iter().any(|p| p.pattern_type == "tool_chain"),
-        "expected tool_chain pattern, got: {:?}", patterns.iter().map(|p| &p.pattern_type).collect::<Vec<_>>());
+    assert!(
+        patterns.iter().any(|p| p.pattern_type == "tool_chain"),
+        "expected tool_chain pattern, got: {:?}",
+        patterns.iter().map(|p| &p.pattern_type).collect::<Vec<_>>()
+    );
 }
 
 #[tokio::test]
@@ -870,12 +949,19 @@ async fn test_pattern_error_recovery_detection() {
 
     // Same tool: 5 failures + 5 successes (frequency = error_count, must be ≥5)
     let mut experiences = vec![];
-    for _ in 0..5 { experiences.push(make_collected_experience("web_fetch", false, 500)); }
-    for _ in 0..5 { experiences.push(make_collected_experience("web_fetch", true, 200)); }
+    for _ in 0..5 {
+        experiences.push(make_collected_experience("web_fetch", false, 500));
+    }
+    for _ in 0..5 {
+        experiences.push(make_collected_experience("web_fetch", true, 200));
+    }
 
     let patterns = engine.extract_patterns(&experiences);
-    assert!(patterns.iter().any(|p| p.pattern_type == "error_recovery"),
-        "expected error_recovery pattern, got: {:?}", patterns.iter().map(|p| &p.pattern_type).collect::<Vec<_>>());
+    assert!(
+        patterns.iter().any(|p| p.pattern_type == "error_recovery"),
+        "expected error_recovery pattern, got: {:?}",
+        patterns.iter().map(|p| &p.pattern_type).collect::<Vec<_>>()
+    );
 }
 
 #[tokio::test]
@@ -888,12 +974,21 @@ async fn test_pattern_efficiency_issue_detection() {
 
     // Most tools fast, one tool very slow — need enough fast tools to keep overall avg low
     let mut experiences = vec![];
-    for _ in 0..10 { experiences.push(make_collected_experience("file_read", true, 100)); }
-    for _ in 0..5 { experiences.push(make_collected_experience("shell_exec", true, 50000)); }
+    for _ in 0..10 {
+        experiences.push(make_collected_experience("file_read", true, 100));
+    }
+    for _ in 0..5 {
+        experiences.push(make_collected_experience("shell_exec", true, 50000));
+    }
 
     let patterns = engine.extract_patterns(&experiences);
-    assert!(patterns.iter().any(|p| p.pattern_type == "efficiency_issue"),
-        "expected efficiency_issue pattern, got: {:?}", patterns.iter().map(|p| &p.pattern_type).collect::<Vec<_>>());
+    assert!(
+        patterns
+            .iter()
+            .any(|p| p.pattern_type == "efficiency_issue"),
+        "expected efficiency_issue pattern, got: {:?}",
+        patterns.iter().map(|p| &p.pattern_type).collect::<Vec<_>>()
+    );
 }
 
 #[tokio::test]
@@ -910,8 +1005,13 @@ async fn test_pattern_success_template_detection() {
         .collect();
 
     let patterns = engine.extract_patterns(&experiences);
-    assert!(patterns.iter().any(|p| p.pattern_type == "success_template"),
-        "expected success_template pattern, got: {:?}", patterns.iter().map(|p| &p.pattern_type).collect::<Vec<_>>());
+    assert!(
+        patterns
+            .iter()
+            .any(|p| p.pattern_type == "success_template"),
+        "expected success_template pattern, got: {:?}",
+        patterns.iter().map(|p| &p.pattern_type).collect::<Vec<_>>()
+    );
 }
 
 #[tokio::test]
@@ -926,7 +1026,10 @@ async fn test_no_patterns_insufficient_data() {
     let experiences = vec![make_collected_experience("file_read", true, 100)];
 
     let patterns = engine.extract_patterns(&experiences);
-    assert!(patterns.is_empty(), "expected no patterns with insufficient data");
+    assert!(
+        patterns.is_empty(),
+        "expected no patterns with insufficient data"
+    );
 }
 
 #[tokio::test]
@@ -957,7 +1060,7 @@ fn test_pipeline_validation_passes_with_mock() {
     let registry = Arc::new(Registry::new(RegistryConfig::default()));
     let pipeline = Pipeline::new(ForgeConfig::default(), registry);
     pipeline.set_provider(Arc::new(ProgrammableMockLLM::new(
-        r#"{"score": 0.9, "feedback": "Good quality"}"#
+        r#"{"score": 0.9, "feedback": "Good quality"}"#,
     )));
 
     let content = "---\nname: test-skill\n---\n# Test Skill\nThis is a well-structured skill.";
@@ -968,8 +1071,11 @@ fn test_pipeline_validation_passes_with_mock() {
     );
     // Pipeline should complete without error
     let status = pipeline.determine_status(&validation);
-    assert_ne!(status, nemesis_types::forge::ArtifactStatus::Negative,
-        "valid content should not be Negative");
+    assert_ne!(
+        status,
+        nemesis_types::forge::ArtifactStatus::Negative,
+        "valid content should not be Negative"
+    );
 }
 
 #[test]
@@ -1008,7 +1114,10 @@ fn test_reflector_with_llm_failure() {
     // Should have stats even without LLM
     assert!(!report.date.is_empty());
     assert!(report.stats.total_records > 0);
-    assert!(report.llm_insights.is_none(), "no LLM insights expected without LLM provider");
+    assert!(
+        report.llm_insights.is_none(),
+        "no LLM insights expected without LLM provider"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -1029,7 +1138,10 @@ async fn test_learning_engine_with_llm_failure() {
     // Should not panic
     let cycle = engine.run_cycle(&experiences).await;
     assert_eq!(cycle.status, nemesis_types::forge::CycleStatus::Completed);
-    assert!(cycle.patterns_found > 0, "patterns should still be detected");
+    assert!(
+        cycle.patterns_found > 0,
+        "patterns should still be detected"
+    );
     // actions_taken may be 0 because LLM failed for skill generation
 }
 
@@ -1065,11 +1177,8 @@ async fn test_reflection_cycle_learning_disabled() {
     // LearningEngine exists but disabled
     let registry = Arc::new(Registry::new(RegistryConfig::default()));
     let cycle_store = crate::cycle_store::CycleStore::new(&dir.path().join("forge"));
-    let engine = crate::learning_engine::LearningEngine::new(
-        ForgeConfig::default(),
-        registry,
-        cycle_store,
-    );
+    let engine =
+        crate::learning_engine::LearningEngine::new(ForgeConfig::default(), registry, cycle_store);
     let monitor = Arc::new(crate::monitor::DeploymentMonitor::new(
         ForgeConfig::default(),
         Arc::new(Registry::new(RegistryConfig::default())),
@@ -1089,5 +1198,8 @@ async fn test_reflection_cycle_learning_disabled() {
         .filter_map(|e| e.ok())
         .filter(|e| e.path().extension().map(|ext| ext == "md").unwrap_or(false))
         .count();
-    assert!(count > 0, "report should be written even with learning disabled");
+    assert!(
+        count > 0,
+        "report should be written even with learning disabled"
+    );
 }

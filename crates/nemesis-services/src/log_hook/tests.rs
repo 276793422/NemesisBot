@@ -219,9 +219,7 @@ fn test_dispatch_empty_chain() {
 #[test]
 fn test_dispatch_many_hooks() {
     let chain = LogHookChain::new();
-    let counters: Vec<Arc<CountingHook>> = (0..10)
-        .map(|_| Arc::new(CountingHook::new()))
-        .collect();
+    let counters: Vec<Arc<CountingHook>> = (0..10).map(|_| Arc::new(CountingHook::new())).collect();
 
     for c in &counters {
         chain.register(c.clone());

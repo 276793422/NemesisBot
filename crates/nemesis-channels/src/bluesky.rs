@@ -114,7 +114,10 @@ pub struct BlueskyChannel {
 
 impl BlueskyChannel {
     /// Creates a new `BlueskyChannel`.
-    pub fn new(config: BlueskyConfig, bus_sender: broadcast::Sender<InboundMessage>) -> Result<Self> {
+    pub fn new(
+        config: BlueskyConfig,
+        bus_sender: broadcast::Sender<InboundMessage>,
+    ) -> Result<Self> {
         if config.server.is_empty() || config.handle.is_empty() || config.password.is_empty() {
             return Err(NemesisError::Channel(
                 "bluesky server, handle, and password are required".to_string(),
@@ -188,9 +191,7 @@ impl BlueskyChannel {
         let uri = at_uri.strip_prefix("at://").unwrap_or(at_uri);
         let parts: Vec<&str> = uri.splitn(3, '/').collect();
         if parts.len() < 3 {
-            return Err(NemesisError::Channel(format!(
-                "invalid AT URI: {at_uri}"
-            )));
+            return Err(NemesisError::Channel(format!("invalid AT URI: {at_uri}")));
         }
 
         let url = format!(
@@ -209,9 +210,7 @@ impl BlueskyChannel {
 
         if !resp.status().is_success() {
             let body = resp.text().await.unwrap_or_default();
-            return Err(NemesisError::Channel(format!(
-                "getRecord error: {body}"
-            )));
+            return Err(NemesisError::Channel(format!("getRecord error: {body}")));
         }
 
         let result: GetRecordResponse = resp
@@ -246,10 +245,7 @@ impl BlueskyChannel {
             record,
         };
 
-        let url = format!(
-            "{}/xrpc/com.atproto.repo.createRecord",
-            self.config.server
-        );
+        let url = format!("{}/xrpc/com.atproto.repo.createRecord", self.config.server);
 
         let resp = self
             .http
@@ -262,9 +258,7 @@ impl BlueskyChannel {
 
         if !resp.status().is_success() {
             let body = resp.text().await.unwrap_or_default();
-            return Err(NemesisError::Channel(format!(
-                "createRecord error: {body}"
-            )));
+            return Err(NemesisError::Channel(format!("createRecord error: {body}")));
         }
 
         let result: CreateRecordResponse = resp
@@ -401,7 +395,10 @@ impl Channel for BlueskyChannel {
                 };
 
                 if !resp.status().is_success() {
-                    warn!("[BlueskyChannel] notification poll returned {}", resp.status());
+                    warn!(
+                        "[BlueskyChannel] notification poll returned {}",
+                        resp.status()
+                    );
                     if resp.status().as_u16() == 401 {
                         // Session expired, clear it
                         *access_token.write() = String::new();

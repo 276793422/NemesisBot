@@ -234,7 +234,10 @@ impl CronTool {
                     let output = if result.is_error {
                         format!("Error executing scheduled command: {}", result.for_llm)
                     } else {
-                        format!("Scheduled command '{}' executed:\n{}", command, result.for_llm)
+                        format!(
+                            "Scheduled command '{}' executed:\n{}",
+                            command, result.for_llm
+                        )
                     };
 
                     if let Some(ref out) = self.output {
@@ -354,9 +357,7 @@ impl CronTool {
                 expr: expr.to_string(),
             }
         } else {
-            return ToolResult::error(
-                "one of at_seconds, every_seconds, or cron_expr is required",
-            );
+            return ToolResult::error("one of at_seconds, every_seconds, or cron_expr is required");
         };
 
         let mut deliver = args["deliver"].as_bool().unwrap_or(true);

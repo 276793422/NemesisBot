@@ -230,8 +230,16 @@ fn test_tree_entry_blob_and_tree_types() {
         ]
     }"#;
     let response: TreeResponse = serde_json::from_str(json).unwrap();
-    let blobs: Vec<_> = response.tree.iter().filter(|e| e.entry_type == "blob").collect();
-    let trees: Vec<_> = response.tree.iter().filter(|e| e.entry_type == "tree").collect();
+    let blobs: Vec<_> = response
+        .tree
+        .iter()
+        .filter(|e| e.entry_type == "blob")
+        .collect();
+    let trees: Vec<_> = response
+        .tree
+        .iter()
+        .filter(|e| e.entry_type == "tree")
+        .collect();
     assert_eq!(blobs.len(), 2);
     assert_eq!(trees.len(), 1);
 }
@@ -418,7 +426,7 @@ async fn test_download_skill_tree_no_trailing_slash_prefix() {
         "http://127.0.0.1:1",
         "test/repo",
         "main",
-        "skills/pdf",  // no trailing slash
+        "skills/pdf", // no trailing slash
         "/tmp/nonexistent_download_test2",
         1024,
     )

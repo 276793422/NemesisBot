@@ -8,7 +8,11 @@ fn make_health_config(port: u16) -> nemesis_health::server::HealthServerConfig {
 }
 
 fn make_heartbeat_config() -> nemesis_heartbeat::HeartbeatConfig {
-    nemesis_heartbeat::HeartbeatConfig::new(30, true, std::env::temp_dir().to_string_lossy().to_string())
+    nemesis_heartbeat::HeartbeatConfig::new(
+        30,
+        true,
+        std::env::temp_dir().to_string_lossy().to_string(),
+    )
 }
 
 // -------------------------------------------------------------------------
@@ -17,21 +21,27 @@ fn make_heartbeat_config() -> nemesis_heartbeat::HeartbeatConfig {
 
 #[tokio::test]
 async fn test_health_server_adapter_initial_state() {
-    let health_server = Arc::new(nemesis_health::server::HealthServer::new(make_health_config(18790)));
+    let health_server = Arc::new(nemesis_health::server::HealthServer::new(
+        make_health_config(18790),
+    ));
     let adapter = HealthServerAdapter::new(health_server);
     assert!(adapter.start().is_ok());
 }
 
 #[test]
 fn test_health_server_adapter_stop() {
-    let health_server = Arc::new(nemesis_health::server::HealthServer::new(make_health_config(18791)));
+    let health_server = Arc::new(nemesis_health::server::HealthServer::new(
+        make_health_config(18791),
+    ));
     let adapter = HealthServerAdapter::new(health_server);
     assert!(adapter.stop().is_ok());
 }
 
 #[tokio::test]
 async fn test_health_server_adapter_start_idempotent() {
-    let health_server = Arc::new(nemesis_health::server::HealthServer::new(make_health_config(18792)));
+    let health_server = Arc::new(nemesis_health::server::HealthServer::new(
+        make_health_config(18792),
+    ));
     let adapter = HealthServerAdapter::new(health_server);
     assert!(adapter.start().is_ok());
     assert!(adapter.start().is_ok());
@@ -44,21 +54,27 @@ async fn test_health_server_adapter_start_idempotent() {
 
 #[tokio::test]
 async fn test_heartbeat_adapter_initial_state() {
-    let heartbeat = Arc::new(nemesis_heartbeat::service::HeartbeatService::new(make_heartbeat_config()));
+    let heartbeat = Arc::new(nemesis_heartbeat::service::HeartbeatService::new(
+        make_heartbeat_config(),
+    ));
     let adapter = HeartbeatServiceAdapter::new(heartbeat);
     assert!(adapter.start().is_ok());
 }
 
 #[test]
 fn test_heartbeat_adapter_stop() {
-    let heartbeat = Arc::new(nemesis_heartbeat::service::HeartbeatService::new(make_heartbeat_config()));
+    let heartbeat = Arc::new(nemesis_heartbeat::service::HeartbeatService::new(
+        make_heartbeat_config(),
+    ));
     let adapter = HeartbeatServiceAdapter::new(heartbeat);
     assert!(adapter.stop().is_ok());
 }
 
 #[tokio::test]
 async fn test_heartbeat_adapter_start_idempotent() {
-    let heartbeat = Arc::new(nemesis_heartbeat::service::HeartbeatService::new(make_heartbeat_config()));
+    let heartbeat = Arc::new(nemesis_heartbeat::service::HeartbeatService::new(
+        make_heartbeat_config(),
+    ));
     let adapter = HeartbeatServiceAdapter::new(heartbeat);
     assert!(adapter.start().is_ok());
     assert!(adapter.start().is_ok());
@@ -125,7 +141,9 @@ fn test_atomic_bool_swap_behavior() {
 
 #[tokio::test]
 async fn test_health_server_adapter_trait_object() {
-    let health_server = Arc::new(nemesis_health::server::HealthServer::new(make_health_config(18793)));
+    let health_server = Arc::new(nemesis_health::server::HealthServer::new(
+        make_health_config(18793),
+    ));
     let adapter = HealthServerAdapter::new(health_server);
     let _trait_obj: &dyn LifecycleService = &adapter;
     assert!(adapter.start().is_ok());
@@ -133,7 +151,9 @@ async fn test_health_server_adapter_trait_object() {
 
 #[tokio::test]
 async fn test_heartbeat_adapter_trait_object() {
-    let heartbeat = Arc::new(nemesis_heartbeat::service::HeartbeatService::new(make_heartbeat_config()));
+    let heartbeat = Arc::new(nemesis_heartbeat::service::HeartbeatService::new(
+        make_heartbeat_config(),
+    ));
     let adapter = HeartbeatServiceAdapter::new(heartbeat);
     let _trait_obj: &dyn LifecycleService = &adapter;
     assert!(adapter.start().is_ok());
@@ -194,13 +214,17 @@ fn make_test_agent_loop() -> Arc<nemesis_agent::r#loop::AgentLoop> {
     Arc::new(al)
 }
 
-fn make_test_shared(bus: &Arc<nemesis_bus::MessageBus>) -> Arc<crate::agent_factory::SharedResources> {
+fn make_test_shared(
+    bus: &Arc<nemesis_bus::MessageBus>,
+) -> Arc<crate::agent_factory::SharedResources> {
     let (outbound_tx, _outbound_rx) = tokio::sync::mpsc::channel(16);
     Arc::new(crate::agent_factory::SharedResources {
         home: std::path::PathBuf::from("/tmp/test"),
         bus: bus.clone(),
         agent_outbound_tx: outbound_tx,
-        cron_service: Arc::new(std::sync::Mutex::new(nemesis_cron::service::CronService::new(""))),
+        cron_service: Arc::new(std::sync::Mutex::new(
+            nemesis_cron::service::CronService::new(""),
+        )),
         mcp_config_path: std::path::PathBuf::from("/tmp/test/mcp.json"),
         ..Default::default()
     })

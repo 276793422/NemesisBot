@@ -34,7 +34,15 @@ async fn test_health_endpoint() {
         version: Some("test".to_string()),
     });
     let app = server.build_router();
-    let resp = app.oneshot(Request::builder().uri("/health").body(Body::empty()).unwrap()).await.unwrap();
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .uri("/health")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
     assert_eq!(resp.status(), 200);
 }
 
@@ -42,7 +50,10 @@ async fn test_health_endpoint() {
 async fn test_live_endpoint() {
     let server = HealthServer::new(HealthServerConfig::default());
     let app = server.build_router();
-    let resp = app.oneshot(Request::builder().uri("/live").body(Body::empty()).unwrap()).await.unwrap();
+    let resp = app
+        .oneshot(Request::builder().uri("/live").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
     assert_eq!(resp.status(), 200);
 }
 
@@ -50,7 +61,15 @@ async fn test_live_endpoint() {
 async fn test_ready_endpoint() {
     let server = HealthServer::new(HealthServerConfig::default());
     let app = server.build_router();
-    let resp = app.oneshot(Request::builder().uri("/ready").body(Body::empty()).unwrap()).await.unwrap();
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .uri("/ready")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
     assert_eq!(resp.status(), 200);
 }
 
@@ -76,7 +95,10 @@ fn test_record_multiple_beats() {
     let server = HealthServer::new(HealthServerConfig::default());
     for i in 0..100 {
         server.record_beat();
-        assert_eq!(server.state().beat_count.load(Ordering::SeqCst), i as u64 + 1);
+        assert_eq!(
+            server.state().beat_count.load(Ordering::SeqCst),
+            i as u64 + 1
+        );
     }
 }
 
@@ -130,7 +152,15 @@ async fn test_health_response_body() {
         version: Some("1.0.0".to_string()),
     });
     let app = server.build_router();
-    let resp = app.oneshot(Request::builder().uri("/health").body(Body::empty()).unwrap()).await.unwrap();
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .uri("/health")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
     let body = axum::body::to_bytes(resp.into_body(), 1024).await.unwrap();
     let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
     assert_eq!(json["status"], "healthy");
@@ -141,7 +171,10 @@ async fn test_health_response_body() {
 async fn test_live_response_body() {
     let server = HealthServer::new(HealthServerConfig::default());
     let app = server.build_router();
-    let resp = app.oneshot(Request::builder().uri("/live").body(Body::empty()).unwrap()).await.unwrap();
+    let resp = app
+        .oneshot(Request::builder().uri("/live").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
     let body = axum::body::to_bytes(resp.into_body(), 1024).await.unwrap();
     let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
     assert_eq!(json["alive"], true);
@@ -153,7 +186,15 @@ async fn test_ready_with_checks() {
     server.set_ready(true);
     server.register_check("test_check", Box::new(|| (true, "all good".to_string())));
     let app = server.build_router();
-    let resp = app.oneshot(Request::builder().uri("/ready").body(Body::empty()).unwrap()).await.unwrap();
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .uri("/ready")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
     let body = axum::body::to_bytes(resp.into_body(), 1024).await.unwrap();
     let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
     assert_eq!(json["ready"], true);
@@ -186,14 +227,17 @@ async fn test_ready_endpoint_with_failing_check() {
 
     let app = server.build_router();
     let resp = app
-        .oneshot(Request::builder().uri("/ready").body(Body::empty()).unwrap())
+        .oneshot(
+            Request::builder()
+                .uri("/ready")
+                .body(Body::empty())
+                .unwrap(),
+        )
         .await
         .unwrap();
     assert_eq!(resp.status(), 200);
 
-    let body = axum::body::to_bytes(resp.into_body(), 1024)
-        .await
-        .unwrap();
+    let body = axum::body::to_bytes(resp.into_body(), 1024).await.unwrap();
     let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
     assert_eq!(json["ready"], false);
     assert_eq!(json["checks"]["failing_check"]["healthy"], false);
@@ -207,23 +251,20 @@ async fn test_ready_endpoint_with_failing_check() {
 async fn test_ready_set_false_with_passing_checks() {
     let server = HealthServer::new(HealthServerConfig::default());
     // Manual flag is false (default), but all checks pass
-    server.register_check(
-        "db",
-        Box::new(|| (true, "database ok".to_string())),
-    );
-    server.register_check(
-        "cache",
-        Box::new(|| (true, "cache ok".to_string())),
-    );
+    server.register_check("db", Box::new(|| (true, "database ok".to_string())));
+    server.register_check("cache", Box::new(|| (true, "cache ok".to_string())));
 
     let app = server.build_router();
     let resp = app
-        .oneshot(Request::builder().uri("/ready").body(Body::empty()).unwrap())
+        .oneshot(
+            Request::builder()
+                .uri("/ready")
+                .body(Body::empty())
+                .unwrap(),
+        )
         .await
         .unwrap();
-    let body = axum::body::to_bytes(resp.into_body(), 1024)
-        .await
-        .unwrap();
+    let body = axum::body::to_bytes(resp.into_body(), 1024).await.unwrap();
     let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
 
     // Manual flag (false) should override passing checks
@@ -236,20 +277,20 @@ async fn test_ready_set_false_with_passing_checks() {
 #[tokio::test]
 async fn test_ready_set_false_then_true_with_passing_checks() {
     let server = HealthServer::new(HealthServerConfig::default());
-    server.register_check(
-        "svc",
-        Box::new(|| (true, "service ok".to_string())),
-    );
+    server.register_check("svc", Box::new(|| (true, "service ok".to_string())));
 
     // First: set_ready false (default), ready should be false
     let app = server.build_router();
     let resp = app
-        .oneshot(Request::builder().uri("/ready").body(Body::empty()).unwrap())
+        .oneshot(
+            Request::builder()
+                .uri("/ready")
+                .body(Body::empty())
+                .unwrap(),
+        )
         .await
         .unwrap();
-    let body = axum::body::to_bytes(resp.into_body(), 1024)
-        .await
-        .unwrap();
+    let body = axum::body::to_bytes(resp.into_body(), 1024).await.unwrap();
     let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
     assert_eq!(json["ready"], false);
 
@@ -257,12 +298,15 @@ async fn test_ready_set_false_then_true_with_passing_checks() {
     server.set_ready(true);
     let app = server.build_router();
     let resp = app
-        .oneshot(Request::builder().uri("/ready").body(Body::empty()).unwrap())
+        .oneshot(
+            Request::builder()
+                .uri("/ready")
+                .body(Body::empty())
+                .unwrap(),
+        )
         .await
         .unwrap();
-    let body = axum::body::to_bytes(resp.into_body(), 1024)
-        .await
-        .unwrap();
+    let body = axum::body::to_bytes(resp.into_body(), 1024).await.unwrap();
     let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
     assert_eq!(json["ready"], true);
 }
@@ -275,12 +319,15 @@ async fn test_health_endpoint_json_fields() {
     });
     let app = server.build_router();
     let resp = app
-        .oneshot(Request::builder().uri("/health").body(Body::empty()).unwrap())
+        .oneshot(
+            Request::builder()
+                .uri("/health")
+                .body(Body::empty())
+                .unwrap(),
+        )
         .await
         .unwrap();
-    let body = axum::body::to_bytes(resp.into_body(), 1024)
-        .await
-        .unwrap();
+    let body = axum::body::to_bytes(resp.into_body(), 1024).await.unwrap();
     let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
 
     // Validate all expected fields exist
@@ -304,24 +351,30 @@ async fn test_health_endpoint_uptime_increases() {
     let app = server.build_router();
     let resp1 = app
         .clone()
-        .oneshot(Request::builder().uri("/health").body(Body::empty()).unwrap())
+        .oneshot(
+            Request::builder()
+                .uri("/health")
+                .body(Body::empty())
+                .unwrap(),
+        )
         .await
         .unwrap();
-    let body1 = axum::body::to_bytes(resp1.into_body(), 1024)
-        .await
-        .unwrap();
+    let body1 = axum::body::to_bytes(resp1.into_body(), 1024).await.unwrap();
     let json1: serde_json::Value = serde_json::from_slice(&body1).unwrap();
 
     // Small delay to let uptime tick
     std::thread::sleep(std::time::Duration::from_millis(100));
 
     let resp2 = app
-        .oneshot(Request::builder().uri("/health").body(Body::empty()).unwrap())
+        .oneshot(
+            Request::builder()
+                .uri("/health")
+                .body(Body::empty())
+                .unwrap(),
+        )
         .await
         .unwrap();
-    let body2 = axum::body::to_bytes(resp2.into_body(), 1024)
-        .await
-        .unwrap();
+    let body2 = axum::body::to_bytes(resp2.into_body(), 1024).await.unwrap();
     let json2: serde_json::Value = serde_json::from_slice(&body2).unwrap();
 
     let uptime1 = json1["uptime_seconds"].as_u64().unwrap();
@@ -337,12 +390,15 @@ async fn test_health_no_version() {
     });
     let app = server.build_router();
     let resp = app
-        .oneshot(Request::builder().uri("/health").body(Body::empty()).unwrap())
+        .oneshot(
+            Request::builder()
+                .uri("/health")
+                .body(Body::empty())
+                .unwrap(),
+        )
         .await
         .unwrap();
-    let body = axum::body::to_bytes(resp.into_body(), 1024)
-        .await
-        .unwrap();
+    let body = axum::body::to_bytes(resp.into_body(), 1024).await.unwrap();
     let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
     assert_eq!(json["version"], serde_json::Value::Null);
 }
@@ -376,12 +432,15 @@ async fn test_ready_endpoint_no_checks() {
     // No checks registered, ready flag is false (default)
     let app = server.build_router();
     let resp = app
-        .oneshot(Request::builder().uri("/ready").body(Body::empty()).unwrap())
+        .oneshot(
+            Request::builder()
+                .uri("/ready")
+                .body(Body::empty())
+                .unwrap(),
+        )
         .await
         .unwrap();
-    let body = axum::body::to_bytes(resp.into_body(), 1024)
-        .await
-        .unwrap();
+    let body = axum::body::to_bytes(resp.into_body(), 1024).await.unwrap();
     let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
     assert_eq!(json["ready"], false);
     assert_eq!(json["beat_count"], 0);
@@ -399,12 +458,15 @@ async fn test_ready_endpoint_beat_count_reflected() {
 
     let app = server.build_router();
     let resp = app
-        .oneshot(Request::builder().uri("/ready").body(Body::empty()).unwrap())
+        .oneshot(
+            Request::builder()
+                .uri("/ready")
+                .body(Body::empty())
+                .unwrap(),
+        )
         .await
         .unwrap();
-    let body = axum::body::to_bytes(resp.into_body(), 1024)
-        .await
-        .unwrap();
+    let body = axum::body::to_bytes(resp.into_body(), 1024).await.unwrap();
     let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
     assert_eq!(json["beat_count"], 3);
 }
@@ -413,27 +475,21 @@ async fn test_ready_endpoint_beat_count_reflected() {
 async fn test_ready_with_mixed_checks() {
     let server = HealthServer::new(HealthServerConfig::default());
     server.set_ready(true);
-    server.register_check(
-        "db",
-        Box::new(|| (true, "database connected".to_string())),
-    );
-    server.register_check(
-        "redis",
-        Box::new(|| (true, "redis ok".to_string())),
-    );
-    server.register_check(
-        "disk",
-        Box::new(|| (false, "disk 95% full".to_string())),
-    );
+    server.register_check("db", Box::new(|| (true, "database connected".to_string())));
+    server.register_check("redis", Box::new(|| (true, "redis ok".to_string())));
+    server.register_check("disk", Box::new(|| (false, "disk 95% full".to_string())));
 
     let app = server.build_router();
     let resp = app
-        .oneshot(Request::builder().uri("/ready").body(Body::empty()).unwrap())
+        .oneshot(
+            Request::builder()
+                .uri("/ready")
+                .body(Body::empty())
+                .unwrap(),
+        )
         .await
         .unwrap();
-    let body = axum::body::to_bytes(resp.into_body(), 1024)
-        .await
-        .unwrap();
+    let body = axum::body::to_bytes(resp.into_body(), 1024).await.unwrap();
     let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
 
     // One failing check should make ready=false even with set_ready(true)
@@ -455,12 +511,15 @@ async fn test_ready_check_override_by_failing_check() {
 
     let app = server.build_router();
     let resp = app
-        .oneshot(Request::builder().uri("/ready").body(Body::empty()).unwrap())
+        .oneshot(
+            Request::builder()
+                .uri("/ready")
+                .body(Body::empty())
+                .unwrap(),
+        )
         .await
         .unwrap();
-    let body = axum::body::to_bytes(resp.into_body(), 1024)
-        .await
-        .unwrap();
+    let body = axum::body::to_bytes(resp.into_body(), 1024).await.unwrap();
     let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
     // Failing check overrides set_ready(true)
     assert_eq!(json["ready"], false);
@@ -520,7 +579,12 @@ async fn test_ready_no_checks_set_ready_true() {
     // No checks registered, but ready flag is true
     let app = server.build_router();
     let resp = app
-        .oneshot(Request::builder().uri("/ready").body(Body::empty()).unwrap())
+        .oneshot(
+            Request::builder()
+                .uri("/ready")
+                .body(Body::empty())
+                .unwrap(),
+        )
         .await
         .unwrap();
     let body = axum::body::to_bytes(resp.into_body(), 1024).await.unwrap();
@@ -546,7 +610,12 @@ async fn test_health_endpoint_with_null_version() {
     });
     let app = server.build_router();
     let resp = app
-        .oneshot(Request::builder().uri("/health").body(Body::empty()).unwrap())
+        .oneshot(
+            Request::builder()
+                .uri("/health")
+                .body(Body::empty())
+                .unwrap(),
+        )
         .await
         .unwrap();
     let body = axum::body::to_bytes(resp.into_body(), 1024).await.unwrap();
@@ -599,10 +668,13 @@ fn test_register_check_and_invoke() {
     let server = HealthServer::new(HealthServerConfig::default());
     let call_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let call_count_clone = call_count.clone();
-    server.register_check("counter", Box::new(move || {
-        call_count_clone.fetch_add(1, Ordering::SeqCst);
-        (true, "called".to_string())
-    }));
+    server.register_check(
+        "counter",
+        Box::new(move || {
+            call_count_clone.fetch_add(1, Ordering::SeqCst);
+            (true, "called".to_string())
+        }),
+    );
 
     let checks = server.state().checks.lock();
     let (healthy, msg) = checks.get("counter").unwrap()();
@@ -618,7 +690,12 @@ async fn test_ready_endpoint_timestamp_format() {
     server.set_ready(true);
     let app = server.build_router();
     let resp = app
-        .oneshot(Request::builder().uri("/ready").body(Body::empty()).unwrap())
+        .oneshot(
+            Request::builder()
+                .uri("/ready")
+                .body(Body::empty())
+                .unwrap(),
+        )
         .await
         .unwrap();
     let body = axum::body::to_bytes(resp.into_body(), 1024).await.unwrap();
@@ -635,14 +712,22 @@ async fn test_health_uptime_is_reasonable() {
     });
     let app = server.build_router();
     let resp = app
-        .oneshot(Request::builder().uri("/health").body(Body::empty()).unwrap())
+        .oneshot(
+            Request::builder()
+                .uri("/health")
+                .body(Body::empty())
+                .unwrap(),
+        )
         .await
         .unwrap();
     let body = axum::body::to_bytes(resp.into_body(), 1024).await.unwrap();
     let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
     let uptime = json["uptime_seconds"].as_u64().unwrap();
     // Should be very small (< 10 seconds) since just created
-    assert!(uptime < 10, "uptime should be small for newly created server");
+    assert!(
+        uptime < 10,
+        "uptime should be small for newly created server"
+    );
 }
 
 #[test]
@@ -668,7 +753,12 @@ async fn test_ready_with_multiple_checks_all_passing() {
 
     let app = server.build_router();
     let resp = app
-        .oneshot(Request::builder().uri("/ready").body(Body::empty()).unwrap())
+        .oneshot(
+            Request::builder()
+                .uri("/ready")
+                .body(Body::empty())
+                .unwrap(),
+        )
         .await
         .unwrap();
     let body = axum::body::to_bytes(resp.into_body(), 1024).await.unwrap();
@@ -756,7 +846,12 @@ async fn test_ready_endpoint_single_passing_check() {
 
     let app = server.build_router();
     let resp = app
-        .oneshot(Request::builder().uri("/ready").body(Body::empty()).unwrap())
+        .oneshot(
+            Request::builder()
+                .uri("/ready")
+                .body(Body::empty())
+                .unwrap(),
+        )
         .await
         .unwrap();
     let body = axum::body::to_bytes(resp.into_body(), 1024).await.unwrap();
@@ -774,7 +869,12 @@ async fn test_ready_endpoint_single_failing_check() {
 
     let app = server.build_router();
     let resp = app
-        .oneshot(Request::builder().uri("/ready").body(Body::empty()).unwrap())
+        .oneshot(
+            Request::builder()
+                .uri("/ready")
+                .body(Body::empty())
+                .unwrap(),
+        )
         .await
         .unwrap();
     let body = axum::body::to_bytes(resp.into_body(), 1024).await.unwrap();
@@ -814,7 +914,12 @@ async fn test_health_uptime_is_nonnegative() {
     });
     let app = server.build_router();
     let resp = app
-        .oneshot(Request::builder().uri("/health").body(Body::empty()).unwrap())
+        .oneshot(
+            Request::builder()
+                .uri("/health")
+                .body(Body::empty())
+                .unwrap(),
+        )
         .await
         .unwrap();
     let body = axum::body::to_bytes(resp.into_body(), 1024).await.unwrap();
@@ -834,7 +939,12 @@ async fn test_ready_endpoint_with_beats_and_checks() {
 
     let app = server.build_router();
     let resp = app
-        .oneshot(Request::builder().uri("/ready").body(Body::empty()).unwrap())
+        .oneshot(
+            Request::builder()
+                .uri("/ready")
+                .body(Body::empty())
+                .unwrap(),
+        )
         .await
         .unwrap();
     let body = axum::body::to_bytes(resp.into_body(), 1024).await.unwrap();

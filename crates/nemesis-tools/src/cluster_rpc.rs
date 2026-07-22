@@ -148,7 +148,10 @@ impl ClusterOps for StubClusterOps {
         if !self.connected {
             return Err("cluster not connected".to_string());
         }
-        Ok(format!("stub response from {} for action {}", peer_id, action))
+        Ok(format!(
+            "stub response from {} for action {}",
+            peer_id, action
+        ))
     }
 
     fn get_local_ips(&self) -> Vec<String> {
@@ -211,8 +214,7 @@ impl ClusterRpcTool {
             return Ok("No other bots currently online".to_string());
         }
 
-        serde_json::to_string_pretty(&peers)
-            .map_err(|e| format!("failed to marshal peers: {}", e))
+        serde_json::to_string_pretty(&peers).map_err(|e| format!("failed to marshal peers: {}", e))
     }
 
     /// Get all available capabilities in the cluster.
@@ -234,11 +236,7 @@ impl ClusterRpcTool {
     /// generates a task ID, and submits the task to the cluster. Returns an
     /// `AsyncToolResult` with the task ID for the caller to correlate with
     /// a continuation snapshot.
-    fn execute_async_peer_chat(
-        &self,
-        peer_id: &str,
-        mut payload: serde_json::Value,
-    ) -> ToolResult {
+    fn execute_async_peer_chat(&self, peer_id: &str, mut payload: serde_json::Value) -> ToolResult {
         // 1. Inject source information
         payload["_source"] = serde_json::json!({
             "node_id": self.cluster.node_id(),
@@ -266,10 +264,13 @@ impl ClusterRpcTool {
             .unwrap_or_default();
 
         // 4. Submit async task
-        match self
-            .cluster
-            .submit_task(peer_id, "peer_chat", &payload, &origin_channel, &origin_chat_id)
-        {
+        match self.cluster.submit_task(
+            peer_id,
+            "peer_chat",
+            &payload,
+            &origin_channel,
+            &origin_chat_id,
+        ) {
             Ok(submitted_id) => {
                 info!(
                     task_id = %submitted_id,
@@ -323,10 +324,7 @@ impl crate::registry::Tool for ClusterRpcTool {
                     } else {
                         p.capabilities.join(", ")
                     };
-                    desc.push_str(&format!(
-                        "- {} ({}): {}\n",
-                        p.id, p.name, caps
-                    ));
+                    desc.push_str(&format!("- {} ({}): {}\n", p.id, p.name, caps));
                 }
                 desc
             }
@@ -367,9 +365,7 @@ impl crate::registry::Tool for ClusterRpcTool {
 
         // Check if cluster is connected
         if !self.cluster.is_connected() {
-            return ToolResult::error(
-                "cluster is not connected. Enable cluster mode first.",
-            );
+            return ToolResult::error("cluster is not connected. Enable cluster mode first.");
         }
 
         // Extract payload

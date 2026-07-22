@@ -45,7 +45,8 @@ impl FileCheckpointStore {
     }
 
     fn exec_dir(&self, execution_id: &str) -> PathBuf {
-        self.checkpoints_dir().join(sanitize_path_component(execution_id))
+        self.checkpoints_dir()
+            .join(sanitize_path_component(execution_id))
     }
 
     fn checkpoint_path(&self, execution_id: &str, checkpoint_id: &str) -> PathBuf {
@@ -71,11 +72,7 @@ impl FileCheckpointStore {
 
     /// Move an unparseable file to `{exec}/.corrupt/` so it stops breaking
     /// directory scans. Returns the moved path on success.
-    fn quarantine_corrupt(
-        &self,
-        execution_id: &str,
-        cp_path: &Path,
-    ) -> Option<PathBuf> {
+    fn quarantine_corrupt(&self, execution_id: &str, cp_path: &Path) -> Option<PathBuf> {
         let corrupt_dir = self.corrupt_dir(execution_id);
         let file_name = cp_path.file_name()?.to_string_lossy().to_string();
         let dest = corrupt_dir.join(file_name);
@@ -249,11 +246,7 @@ impl CheckpointStore for FileCheckpointStore {
         Ok(metas)
     }
 
-    async fn delete(
-        &self,
-        execution_id: &str,
-        checkpoint_id: &str,
-    ) -> Result<(), StoreError> {
+    async fn delete(&self, execution_id: &str, checkpoint_id: &str) -> Result<(), StoreError> {
         let path = self.checkpoint_path(execution_id, checkpoint_id);
         match fs::remove_file(&path) {
             Ok(_) => Ok(()),

@@ -72,7 +72,8 @@ fn test_extract_sse_data_multi_line() {
 
 #[test]
 fn test_extract_sse_data_error_response() {
-    let event = "data: {\"jsonrpc\":\"2.0\",\"id\":5,\"error\":{\"code\":-32600,\"message\":\"bad\"}}";
+    let event =
+        "data: {\"jsonrpc\":\"2.0\",\"id\":5,\"error\":{\"code\":-32600,\"message\":\"bad\"}}";
     let result = extract_sse_data(event).unwrap();
     assert!(result.error.is_some());
     assert_eq!(result.error.unwrap().code, -32600);

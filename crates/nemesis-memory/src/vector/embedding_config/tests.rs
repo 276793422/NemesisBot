@@ -62,7 +62,10 @@ fn test_models_config_get_mut() {
 fn test_config_path_helper() {
     let dir = Path::new("/tmp/test");
     let path = config_path(dir);
-    assert_eq!(path, std::path::PathBuf::from("/tmp/test/config.enhanced_memory.json"));
+    assert_eq!(
+        path,
+        std::path::PathBuf::from("/tmp/test/config.enhanced_memory.json")
+    );
 }
 
 #[test]
@@ -95,8 +98,12 @@ fn test_resolve_model_files_existing_local_paths() {
     std::fs::write(model_dir.join("tokenizer.json"), b"{}").unwrap();
 
     let mut config = EmbeddingConfig::default();
-    config.models.medium.local_model_path = model_dir.join("model.onnx").to_string_lossy().to_string();
-    config.models.medium.local_tokenizer_path = model_dir.join("tokenizer.json").to_string_lossy().to_string();
+    config.models.medium.local_model_path =
+        model_dir.join("model.onnx").to_string_lossy().to_string();
+    config.models.medium.local_tokenizer_path = model_dir
+        .join("tokenizer.json")
+        .to_string_lossy()
+        .to_string();
 
     let (dir, dim) = resolve_model_files(&config, temp_dir.path()).unwrap();
     assert_eq!(dim, 384);

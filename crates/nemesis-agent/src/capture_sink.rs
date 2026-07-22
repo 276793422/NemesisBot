@@ -166,9 +166,7 @@ impl CaptureSink {
             .remove(session_key)
             .unwrap_or_default();
 
-        let ts = chrono::Local::now()
-            .format("%Y-%m-%d_%H-%M-%S")
-            .to_string();
+        let ts = chrono::Local::now().format("%Y-%m-%d_%H-%M-%S").to_string();
         let dir = self
             .workspace
             .join("logs")

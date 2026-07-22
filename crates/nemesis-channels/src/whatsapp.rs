@@ -103,7 +103,10 @@ impl WhatsAppChannel {
     }
 
     /// Processes an inbound message from the bridge.
-    pub fn process_inbound(&self, msg: &WhatsAppInboundMessage) -> Option<(String, String, String)> {
+    pub fn process_inbound(
+        &self,
+        msg: &WhatsAppInboundMessage,
+    ) -> Option<(String, String, String)> {
         let msg_type = msg.msg_type.as_deref().unwrap_or("");
         if msg_type != "message" {
             return None;

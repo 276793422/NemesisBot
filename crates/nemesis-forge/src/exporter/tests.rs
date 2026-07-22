@@ -26,7 +26,11 @@ async fn test_export_skill() {
     let exporter = Exporter::new(config);
 
     let path = exporter
-        .export(ArtifactKind::Skill, "my-skill", "---\nname: test\n---\nContent")
+        .export(
+            ArtifactKind::Skill,
+            "my-skill",
+            "---\nname: test\n---\nContent",
+        )
         .await
         .unwrap();
 
@@ -77,7 +81,10 @@ async fn test_export_artifact_with_manifest() {
     std::fs::write(artifact_dir.join("SKILL.md"), &artifact.content).unwrap();
 
     let target_dir = dir.path().join("export");
-    let export_dir = exporter.export_artifact(&artifact, &target_dir).await.unwrap();
+    let export_dir = exporter
+        .export_artifact(&artifact, &target_dir)
+        .await
+        .unwrap();
 
     // Check main file
     assert!(export_dir.join("SKILL.md").exists());
@@ -152,7 +159,8 @@ async fn test_export_mcp() {
     let exporter = Exporter::new(config);
     let path = exporter
         .export(ArtifactKind::Mcp, "my-mcp", "mcp content")
-        .await.unwrap();
+        .await
+        .unwrap();
     assert!(path.exists());
 }
 
@@ -163,7 +171,10 @@ async fn test_copy_skill_creates_directory() {
     let exporter = Exporter::new(config);
     let ws_dir = dir.path().join("skills").join("new-skill-forge");
     assert!(!ws_dir.exists());
-    exporter.copy_skill_to_workspace("new-skill", "test").await.unwrap();
+    exporter
+        .copy_skill_to_workspace("new-skill", "test")
+        .await
+        .unwrap();
     assert!(ws_dir.exists());
     assert!(ws_dir.join("SKILL.md").exists());
 }
@@ -174,11 +185,18 @@ async fn test_export_manifest_json_structure() {
     let config = ExportConfig::new(dir.path());
     let exporter = Exporter::new(config);
     let artifact = make_artifact("manifest-test", ArtifactKind::Skill, ArtifactStatus::Active);
-    let artifact_dir = dir.path().join("forge").join("skills").join("manifest-test");
+    let artifact_dir = dir
+        .path()
+        .join("forge")
+        .join("skills")
+        .join("manifest-test");
     std::fs::create_dir_all(&artifact_dir).unwrap();
     std::fs::write(artifact_dir.join("SKILL.md"), &artifact.content).unwrap();
     let target_dir = dir.path().join("export");
-    let export_dir = exporter.export_artifact(&artifact, &target_dir).await.unwrap();
+    let export_dir = exporter
+        .export_artifact(&artifact, &target_dir)
+        .await
+        .unwrap();
     let manifest_path = export_dir.join("forge-manifest.json");
     let manifest: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(&manifest_path).unwrap()).unwrap();
@@ -228,7 +246,10 @@ async fn test_export_artifact_script_type() {
     std::fs::write(artifact_dir.join("test-script"), &artifact.content).unwrap();
 
     let target_dir = dir.path().join("export");
-    let export_dir = exporter.export_artifact(&artifact, &target_dir).await.unwrap();
+    let export_dir = exporter
+        .export_artifact(&artifact, &target_dir)
+        .await
+        .unwrap();
     assert!(export_dir.join("test-script").exists());
     assert!(export_dir.join("forge-manifest.json").exists());
 }
@@ -245,7 +266,10 @@ async fn test_export_artifact_mcp_type() {
     std::fs::write(artifact_dir.join("server.py"), &artifact.content).unwrap();
 
     let target_dir = dir.path().join("export");
-    let export_dir = exporter.export_artifact(&artifact, &target_dir).await.unwrap();
+    let export_dir = exporter
+        .export_artifact(&artifact, &target_dir)
+        .await
+        .unwrap();
     assert!(export_dir.join("server.py").exists());
 }
 
@@ -263,7 +287,10 @@ async fn test_export_artifact_with_project_files() {
     std::fs::write(artifact_dir.join("README.md"), "# Readme\n").unwrap();
 
     let target_dir = dir.path().join("export");
-    let export_dir = exporter.export_artifact(&artifact, &target_dir).await.unwrap();
+    let export_dir = exporter
+        .export_artifact(&artifact, &target_dir)
+        .await
+        .unwrap();
 
     assert!(export_dir.join("requirements.txt").exists());
     assert!(export_dir.join("README.md").exists());
@@ -279,10 +306,17 @@ async fn test_export_artifact_with_tests_dir() {
     let artifact_dir = dir.path().join("forge").join("skills").join("tested-skill");
     std::fs::create_dir_all(artifact_dir.join("tests")).unwrap();
     std::fs::write(artifact_dir.join("SKILL.md"), &artifact.content).unwrap();
-    std::fs::write(artifact_dir.join("tests/test_main.py"), "def test_it(): pass\n").unwrap();
+    std::fs::write(
+        artifact_dir.join("tests/test_main.py"),
+        "def test_it(): pass\n",
+    )
+    .unwrap();
 
     let target_dir = dir.path().join("export");
-    let export_dir = exporter.export_artifact(&artifact, &target_dir).await.unwrap();
+    let export_dir = exporter
+        .export_artifact(&artifact, &target_dir)
+        .await
+        .unwrap();
 
     assert!(export_dir.join("tests").is_dir());
     assert!(export_dir.join("tests/test_main.py").exists());

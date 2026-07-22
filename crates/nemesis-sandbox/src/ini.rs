@@ -41,8 +41,7 @@ pub fn write_sandboxie_ini(ini_path: &Path, box_name: &str, box_root: &Path) -> 
          OpenPipePath=\\Device\\NamedPipe\\{box_name}_*\n\
          FileRootPath={box_root_nt}\n"
     );
-    std::fs::write(ini_path, content)
-        .with_context(|| format!("write {}", ini_path.display()))?;
+    std::fs::write(ini_path, content).with_context(|| format!("write {}", ini_path.display()))?;
     tracing::info!(
         "[sandbox] wrote {} (box={box_name}, root={})",
         ini_path.display(),

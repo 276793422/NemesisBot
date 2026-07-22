@@ -5,8 +5,8 @@
 //! transitions used by the agent loop.
 
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::types::{AgentConfig, AgentState, ConversationTurn, ToolCallInfo};
 use tracing::debug;
@@ -165,7 +165,12 @@ impl AgentInstance {
     }
 
     /// Add an assistant message (with optional tool calls) to the history.
-    pub fn add_assistant_message(&self, content: &str, tool_calls: Vec<ToolCallInfo>, reasoning_content: Option<String>) {
+    pub fn add_assistant_message(
+        &self,
+        content: &str,
+        tool_calls: Vec<ToolCallInfo>,
+        reasoning_content: Option<String>,
+    ) {
         let turn = ConversationTurn {
             role: "assistant".to_string(),
             content: content.to_string(),
@@ -210,9 +215,7 @@ impl AgentInstance {
         let matching: Vec<usize> = history
             .iter()
             .enumerate()
-            .filter(|(_, t)| {
-                t.role == "tool" && t.tool_call_id.as_deref() == Some(tool_call_id)
-            })
+            .filter(|(_, t)| t.role == "tool" && t.tool_call_id.as_deref() == Some(tool_call_id))
             .map(|(i, _)| i)
             .collect();
 
@@ -269,13 +272,14 @@ impl AgentInstance {
             return;
         }
 
-        debug!("[AgentInstance] Compressing history for instance id={}, {} turns", self.id, history.len());
+        debug!(
+            "[AgentInstance] Compressing history for instance id={}, {} turns",
+            self.id,
+            history.len()
+        );
 
         // Find the system prompt (first message with role "system").
-        let system_prompt = history
-            .iter()
-            .find(|t| t.role == "system")
-            .cloned();
+        let system_prompt = history.iter().find(|t| t.role == "system").cloned();
 
         // Collect non-system turns.
         let non_system: Vec<ConversationTurn> = history
@@ -325,7 +329,11 @@ impl AgentInstance {
     /// messages), the system prompt must not be lost.
     pub fn set_history(&self, new_history: Vec<ConversationTurn>) {
         let mut history = self.history.lock().unwrap();
-        debug!("[AgentInstance] Setting history for instance id={}, new_len={}", self.id, new_history.len());
+        debug!(
+            "[AgentInstance] Setting history for instance id={}, new_len={}",
+            self.id,
+            new_history.len()
+        );
         let old_system_prompt = history.first().filter(|t| t.role == "system").cloned();
         *history = new_history;
         if let Some(sp) = old_system_prompt {
@@ -371,7 +379,9 @@ impl AgentInstance {
 
     /// Get the number of non-system messages in history.
     pub fn message_count(&self) -> usize {
-        self.history.lock().unwrap()
+        self.history
+            .lock()
+            .unwrap()
             .iter()
             .filter(|t| t.role != "system")
             .count()
@@ -489,10 +499,7 @@ impl AgentInstance {
     /// Truncate history: keep the system prompt (if any) and the most recent turns.
     fn truncate_history(&self, history: &mut std::sync::MutexGuard<'_, Vec<ConversationTurn>>) {
         // Find the system prompt.
-        let system_prompt = history
-            .iter()
-            .find(|t| t.role == "system")
-            .cloned();
+        let system_prompt = history.iter().find(|t| t.role == "system").cloned();
 
         // Keep the last half of max_history non-system turns.
         let keep_count = self.max_history / 2;

@@ -58,7 +58,10 @@ impl QualityScorer {
     ///
     /// The metadata map may contain keys like "name", "description", "source" that
     /// supplement the content analysis.
-    pub fn score(content: &str, metadata: Option<&std::collections::HashMap<&str, &str>>) -> QualityScore {
+    pub fn score(
+        content: &str,
+        metadata: Option<&std::collections::HashMap<&str, &str>>,
+    ) -> QualityScore {
         let empty_meta = std::collections::HashMap::new();
         let meta = metadata.unwrap_or(&empty_meta);
 
@@ -177,8 +180,10 @@ impl QualityScorer {
         }
 
         // 3. Steps/instructions
-        if has_heading_pattern(content, r"(?i)^#+\s*(?:steps|instructions|procedure|workflow|process)")
-            || content.to_lowercase().contains("step 1")
+        if has_heading_pattern(
+            content,
+            r"(?i)^#+\s*(?:steps|instructions|procedure|workflow|process)",
+        ) || content.to_lowercase().contains("step 1")
             || content.to_lowercase().contains("step 1:")
             || Regex::new(r"(?i)^\d+\.\s")
                 .map(|re| re.is_match(content))
@@ -198,8 +203,10 @@ impl QualityScorer {
         }
 
         // 5. Inputs/outputs
-        if has_heading_pattern(content, r"(?i)^#+\s*(?:inputs?|outputs?|parameters?|arguments?|io\b)")
-            || content.to_lowercase().contains("input:")
+        if has_heading_pattern(
+            content,
+            r"(?i)^#+\s*(?:inputs?|outputs?|parameters?|arguments?|io\b)",
+        ) || content.to_lowercase().contains("input:")
             || content.to_lowercase().contains("output:")
             || content.to_lowercase().contains("parameter")
         {
@@ -208,8 +215,10 @@ impl QualityScorer {
         }
 
         // 6. Error handling hints
-        if has_heading_pattern(content, r"(?i)^#+\s*(?:errors?|error\s*handling|troubleshooting|caveats?|warnings?)")
-            || content.to_lowercase().contains("error")
+        if has_heading_pattern(
+            content,
+            r"(?i)^#+\s*(?:errors?|error\s*handling|troubleshooting|caveats?|warnings?)",
+        ) || content.to_lowercase().contains("error")
             || content.to_lowercase().contains("fail")
             || content.to_lowercase().contains("exception")
         {
@@ -333,8 +342,10 @@ impl QualityScorer {
         }
 
         // 2. Validation rules
-        if has_heading_pattern(content, r"(?i)^#+\s*(?:validation|rules|constraints?|requirements?)")
-            || lower.contains("validate")
+        if has_heading_pattern(
+            content,
+            r"(?i)^#+\s*(?:validation|rules|constraints?|requirements?)",
+        ) || lower.contains("validate")
             || lower.contains("must be")
             || lower.contains("required")
             || lower.contains("constraint")
@@ -344,8 +355,10 @@ impl QualityScorer {
         }
 
         // 3. Edge case mentions
-        if has_heading_pattern(content, r"(?i)^#+\s*(?:edge\s*cases?|corner\s*cases?|boundary)")
-            || lower.contains("edge case")
+        if has_heading_pattern(
+            content,
+            r"(?i)^#+\s*(?:edge\s*cases?|corner\s*cases?|boundary)",
+        ) || lower.contains("edge case")
             || lower.contains("corner case")
             || lower.contains("boundary")
             || lower.contains("limit")
@@ -355,8 +368,10 @@ impl QualityScorer {
         }
 
         // 4. Error scenarios
-        if has_heading_pattern(content, r"(?i)^#+\s*(?:error\s*scenarios?|failure\s*modes?|error\s*cases?)")
-            || lower.contains("error scenario")
+        if has_heading_pattern(
+            content,
+            r"(?i)^#+\s*(?:error\s*scenarios?|failure\s*modes?|error\s*cases?)",
+        ) || lower.contains("error scenario")
             || lower.contains("failure mode")
             || lower.contains("when.*fails")
             || lower.contains("error condition")
@@ -402,7 +417,9 @@ fn has_heading_pattern(content: &str, pattern: &str) -> bool {
     } else {
         format!("(?m){}", pattern)
     };
-    Regex::new(&full_pattern).map(|re| re.is_match(content)).unwrap_or(false)
+    Regex::new(&full_pattern)
+        .map(|re| re.is_match(content))
+        .unwrap_or(false)
 }
 
 /// Returns the number of non-overlapping matches of pattern in content.
@@ -481,7 +498,12 @@ fn is_consistent_script(content: &str) -> bool {
 fn is_unicode_common(r: char) -> bool {
     // Matches Go's unicode.Common category roughly:
     // whitespace, digits, punctuation, symbols
-    r.is_whitespace() || r.is_numeric() || r.is_ascii_punctuation() || r == '\n' || r == '\r' || r == '\t'
+    r.is_whitespace()
+        || r.is_numeric()
+        || r.is_ascii_punctuation()
+        || r == '\n'
+        || r == '\r'
+        || r == '\t'
 }
 
 /// Check if a character is CJK (Han, Hiragana, Katakana).

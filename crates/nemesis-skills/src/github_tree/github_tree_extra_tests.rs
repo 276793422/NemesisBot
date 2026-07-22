@@ -335,7 +335,9 @@ async fn test_download_file_success() {
         .await;
 
     let client = http_client();
-    let data = download_file(&client, &format!("{}/file.txt", server.uri()), 1024).await.unwrap();
+    let data = download_file(&client, &format!("{}/file.txt", server.uri()), 1024)
+        .await
+        .unwrap();
     assert_eq!(data, b"hello world");
 }
 
@@ -350,7 +352,9 @@ async fn test_download_file_too_large() {
         .await;
 
     let client = http_client();
-    let err = download_file(&client, &format!("{}/file.txt", server.uri()), 10).await.unwrap_err();
+    let err = download_file(&client, &format!("{}/file.txt", server.uri()), 10)
+        .await
+        .unwrap_err();
     assert!(err.to_string().contains("too large"));
 }
 
@@ -364,7 +368,9 @@ async fn test_download_file_http_error() {
         .await;
 
     let client = http_client();
-    let err = download_file(&client, &format!("{}/file.txt", server.uri()), 1024).await.unwrap_err();
+    let err = download_file(&client, &format!("{}/file.txt", server.uri()), 1024)
+        .await
+        .unwrap_err();
     assert!(err.to_string().contains("HTTP"));
 }
 
@@ -379,7 +385,9 @@ async fn test_download_file_http_error_truncates_body() {
         .await;
 
     let client = http_client();
-    let err = download_file(&client, &format!("{}/file.txt", server.uri()), 1024).await.unwrap_err();
+    let err = download_file(&client, &format!("{}/file.txt", server.uri()), 1024)
+        .await
+        .unwrap_err();
     let msg = err.to_string();
     // Body should be truncated to 512 chars in error message
     assert!(msg.contains("HTTP"));
@@ -389,7 +397,9 @@ async fn test_download_file_http_error_truncates_body() {
 async fn test_download_file_request_failure() {
     let client = http_client();
     // Invalid port -> connection refused
-    let err = download_file(&client, "http://127.0.0.1:1/file.txt", 1024).await.unwrap_err();
+    let err = download_file(&client, "http://127.0.0.1:1/file.txt", 1024)
+        .await
+        .unwrap_err();
     assert!(err.to_string().contains("request failed"));
 }
 
@@ -404,7 +414,9 @@ async fn test_download_file_zero_max_size_does_not_use_default() {
         .await;
 
     let client = http_client();
-    let err = download_file(&client, &format!("{}/file.txt", server.uri()), 0).await.unwrap_err();
+    let err = download_file(&client, &format!("{}/file.txt", server.uri()), 0)
+        .await
+        .unwrap_err();
     // With max_size=0, any content > 0 is too large
     assert!(err.to_string().contains("too large"));
 }

@@ -23,8 +23,7 @@ use crate::toolloop::{LLMCallback, ToolLoopConfig, run_tool_loop};
 use crate::types::ToolResult;
 
 /// System prompt injected into every subagent conversation.
-const SUBAGENT_SYSTEM_PROMPT: &str =
-    "You are a subagent. Complete the given task independently and provide a clear, concise result.";
+const SUBAGENT_SYSTEM_PROMPT: &str = "You are a subagent. Complete the given task independently and provide a clear, concise result.";
 
 // ---------------------------------------------------------------------------
 // SubagentTask
@@ -325,7 +324,8 @@ impl Tool for SubagentTool {
             None => {
                 // No LLM callback configured - fall back to placeholder.
                 let placeholder = format!("Subagent task received: {}", task);
-                self.manager.update_task(&task_id, "completed", &placeholder);
+                self.manager
+                    .update_task(&task_id, "completed", &placeholder);
                 (placeholder, 0)
             }
         };

@@ -29,7 +29,10 @@ fn test_is_loopback() {
 
 #[test]
 fn test_build_bind_address() {
-    assert_eq!(build_bind_address(Some("0.0.0.0:9100"), 9000), "0.0.0.0:9100");
+    assert_eq!(
+        build_bind_address(Some("0.0.0.0:9100"), 9000),
+        "0.0.0.0:9100"
+    );
     assert_eq!(build_bind_address(None, 9000), "0.0.0.0:9000");
     assert_eq!(build_bind_address(Some(""), 9000), "0.0.0.0:9000");
 }
@@ -78,9 +81,9 @@ fn test_get_all_local_ips_excludes_virtual() {
     let ips = get_all_local_ips();
     // Verify each returned IP is valid IPv4, not loopback, not link-local
     for (i, ip) in ips.iter().enumerate() {
-        let parsed: IpAddr = ip.parse().unwrap_or_else(|_| {
-            panic!("Invalid IP at index {}: {}", i, ip)
-        });
+        let parsed: IpAddr = ip
+            .parse()
+            .unwrap_or_else(|_| panic!("Invalid IP at index {}: {}", i, ip));
         assert!(!parsed.is_loopback(), "should not include loopback: {}", ip);
 
         if let IpAddr::V4(v4) = parsed {
@@ -113,7 +116,10 @@ fn test_get_all_local_ips_sorted_by_priority() {
     // but we can verify the result is deterministic.
     let ips1 = get_all_local_ips();
     let ips2 = get_all_local_ips();
-    assert_eq!(ips1, ips2, "get_all_local_ips should return deterministic results");
+    assert_eq!(
+        ips1, ips2,
+        "get_all_local_ips should return deterministic results"
+    );
 }
 
 #[test]
@@ -294,7 +300,10 @@ fn test_is_loopback_ipv6() {
 
 #[test]
 fn test_build_bind_address_with_port() {
-    assert_eq!(build_bind_address(Some("0.0.0.0:9100"), 9000), "0.0.0.0:9100");
+    assert_eq!(
+        build_bind_address(Some("0.0.0.0:9100"), 9000),
+        "0.0.0.0:9100"
+    );
 }
 
 // ============================================================
@@ -508,7 +517,10 @@ fn test_build_bind_address_empty() {
 
 #[test]
 fn test_build_bind_address_custom() {
-    assert_eq!(build_bind_address(Some("192.168.1.1:8080"), 9000), "192.168.1.1:8080");
+    assert_eq!(
+        build_bind_address(Some("192.168.1.1:8080"), 9000),
+        "192.168.1.1:8080"
+    );
 }
 
 #[test]

@@ -1,6 +1,6 @@
 use super::*;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex as StdMutex;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 #[test]
 fn test_format_rpc_prefix() {
@@ -76,9 +76,7 @@ async fn test_empty_message() {
     let tool = MessageTool::new();
     tool.set_send_callback(Arc::new(|_, _, _| Ok(()))).await;
     tool.set_context("web", "chat-1").await;
-    let result = tool
-        .execute(&serde_json::json!({"content": ""}))
-        .await;
+    let result = tool.execute(&serde_json::json!({"content": ""})).await;
     assert!(result.is_error);
 }
 
@@ -117,7 +115,10 @@ async fn test_set_context_resets_correlation_id() {
     // Resetting context should clear correlation_id
     tool.set_context("rpc", "chat-2").await;
     let corr = tool.correlation_id.lock().await.clone();
-    assert!(corr.is_empty(), "correlation_id should be reset by set_context");
+    assert!(
+        corr.is_empty(),
+        "correlation_id should be reset by set_context"
+    );
 }
 
 #[tokio::test]
@@ -156,17 +157,18 @@ async fn test_set_send_callback() {
         .execute(&serde_json::json!({"content": "Hello!"}))
         .await;
 
-    assert!(result.silent, "Result should be silent when callback delivers message");
+    assert!(
+        result.silent,
+        "Result should be silent when callback delivers message"
+    );
     assert_eq!(call_count.load(Ordering::SeqCst), 1);
 }
 
 #[tokio::test]
 async fn test_send_callback_error() {
     let tool = MessageTool::new();
-    tool.set_send_callback(Arc::new(|_, _, _| {
-        Err("connection refused".to_string())
-    }))
-    .await;
+    tool.set_send_callback(Arc::new(|_, _, _| Err("connection refused".to_string())))
+        .await;
 
     tool.set_context("web", "chat-1").await;
     let result = tool
@@ -425,9 +427,7 @@ async fn test_multiple_messages_in_round() {
     tool.set_send_callback(Arc::new(|_, _, _| Ok(()))).await;
     tool.set_context("web", "chat-1").await;
 
-    let _ = tool
-        .execute(&serde_json::json!({"content": "First"}))
-        .await;
+    let _ = tool.execute(&serde_json::json!({"content": "First"})).await;
     assert!(tool.has_sent_in_round().await);
 
     // Second message should still work
@@ -534,9 +534,7 @@ async fn test_message_tool_reset_round() {
     tool.set_send_callback(Arc::new(|_, _, _| Ok(()))).await;
     tool.set_context("web", "chat-1").await;
 
-    let _ = tool
-        .execute(&serde_json::json!({"content": "First"}))
-        .await;
+    let _ = tool.execute(&serde_json::json!({"content": "First"})).await;
     assert!(tool.has_sent_in_round().await);
 
     tool.reset_round().await;
@@ -600,9 +598,7 @@ async fn test_message_content_null_treated_as_missing() {
     tool.set_send_callback(Arc::new(|_, _, _| Ok(()))).await;
     tool.set_context("web", "chat-1").await;
 
-    let result = tool
-        .execute(&serde_json::json!({"content": null}))
-        .await;
+    let result = tool.execute(&serde_json::json!({"content": null})).await;
     assert!(result.is_error);
 }
 

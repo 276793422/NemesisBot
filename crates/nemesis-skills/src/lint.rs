@@ -172,7 +172,6 @@ impl SkillLinter {
                 "DEST-006",
                 LintSeverity::High,
             ),
-
             // ---- Exfiltration (6) ----
             (
                 LintCategory::Exfiltration,
@@ -216,7 +215,6 @@ impl SkillLinter {
                 "EXFL-006",
                 LintSeverity::Critical,
             ),
-
             // ---- Privilege (5) ----
             (
                 LintCategory::Privilege,
@@ -253,7 +251,6 @@ impl SkillLinter {
                 "PRIV-005",
                 LintSeverity::Medium,
             ),
-
             // ---- Obfuscation (5) ----
             (
                 LintCategory::Obfuscation,
@@ -290,7 +287,6 @@ impl SkillLinter {
                 "OBFS-005",
                 LintSeverity::Medium,
             ),
-
             // ---- Recon (5) ----
             (
                 LintCategory::Recon,
@@ -391,9 +387,9 @@ impl SkillLinter {
     ///
     /// Mirrors Go's `hasCriticalOrHigh(issues)`.
     pub fn has_critical_or_high(warnings: &[LintWarning]) -> bool {
-        warnings.iter().any(|w| {
-            w.severity == LintSeverity::Critical || w.severity == LintSeverity::High
-        })
+        warnings
+            .iter()
+            .any(|w| w.severity == LintSeverity::Critical || w.severity == LintSeverity::High)
     }
 
     /// Calculate safety score based on warnings.

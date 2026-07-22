@@ -61,7 +61,10 @@ fn test_can_stop() {
 
 #[test]
 fn test_from_str_lossy() {
-    assert_eq!(BotState::from_str_lossy("not_started"), BotState::NotStarted);
+    assert_eq!(
+        BotState::from_str_lossy("not_started"),
+        BotState::NotStarted
+    );
     assert_eq!(BotState::from_str_lossy("starting"), BotState::Starting);
     assert_eq!(BotState::from_str_lossy("running"), BotState::Running);
     assert_eq!(BotState::from_str_lossy("error"), BotState::Error);
@@ -105,15 +108,30 @@ fn state_can_transition_to(_from: BotState, _to: BotState) {
 
 #[test]
 fn test_all_states_serilize_to_snake_case() {
-    assert_eq!(serde_json::to_string(&BotState::NotStarted).unwrap(), "\"not_started\"");
-    assert_eq!(serde_json::to_string(&BotState::Starting).unwrap(), "\"starting\"");
-    assert_eq!(serde_json::to_string(&BotState::Running).unwrap(), "\"running\"");
-    assert_eq!(serde_json::to_string(&BotState::Error).unwrap(), "\"error\"");
+    assert_eq!(
+        serde_json::to_string(&BotState::NotStarted).unwrap(),
+        "\"not_started\""
+    );
+    assert_eq!(
+        serde_json::to_string(&BotState::Starting).unwrap(),
+        "\"starting\""
+    );
+    assert_eq!(
+        serde_json::to_string(&BotState::Running).unwrap(),
+        "\"running\""
+    );
+    assert_eq!(
+        serde_json::to_string(&BotState::Error).unwrap(),
+        "\"error\""
+    );
 }
 
 #[test]
 fn test_from_str_lossy_all_valid() {
-    assert_eq!(BotState::from_str_lossy("not_started"), BotState::NotStarted);
+    assert_eq!(
+        BotState::from_str_lossy("not_started"),
+        BotState::NotStarted
+    );
     assert_eq!(BotState::from_str_lossy("starting"), BotState::Starting);
     assert_eq!(BotState::from_str_lossy("running"), BotState::Running);
     assert_eq!(BotState::from_str_lossy("error"), BotState::Error);
@@ -126,7 +144,12 @@ fn test_from_str_lossy_empty_string() {
 
 #[test]
 fn test_display_matches_from_str_lossy() {
-    for state in [BotState::NotStarted, BotState::Starting, BotState::Running, BotState::Error] {
+    for state in [
+        BotState::NotStarted,
+        BotState::Starting,
+        BotState::Running,
+        BotState::Error,
+    ] {
         let s = state.to_string();
         assert_eq!(BotState::from_str_lossy(&s), state);
     }

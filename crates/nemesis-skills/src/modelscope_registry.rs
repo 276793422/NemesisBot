@@ -121,7 +121,13 @@ impl ModelScopeRegistry {
         "modelscope"
     }
 
-    async fn api_search(&self, query: &str, page: i64, page_size: i64, sort: &str) -> Result<ApiResponse> {
+    async fn api_search(
+        &self,
+        query: &str,
+        page: i64,
+        page_size: i64,
+        sort: &str,
+    ) -> Result<ApiResponse> {
         let body = SearchRequest {
             page_size,
             page_number: page,
@@ -130,19 +136,28 @@ impl ModelScopeRegistry {
             criterion: vec![],
             with_top_collection: false,
         };
-        let resp = self.client
+        let resp = self
+            .client
             .put(&self.base_url)
             .json(&body)
             .send()
             .await
             .map_err(|e| NemesisError::Other(format!("ModelScope request failed: {}", e)))?;
         if !resp.status().is_success() {
-            return Err(NemesisError::Other(format!("ModelScope HTTP {}", resp.status())));
+            return Err(NemesisError::Other(format!(
+                "ModelScope HTTP {}",
+                resp.status()
+            )));
         }
-        let api: ApiResponse = resp.json().await
+        let api: ApiResponse = resp
+            .json()
+            .await
             .map_err(|e| NemesisError::Other(format!("ModelScope parse error: {}", e)))?;
         if api.code != 200 {
-            return Err(NemesisError::Other(format!("ModelScope API error: {}", api.message)));
+            return Err(NemesisError::Other(format!(
+                "ModelScope API error: {}",
+                api.message
+            )));
         }
         Ok(api)
     }
@@ -191,14 +206,20 @@ impl ModelScopeRegistry {
     pub async fn search(&self, query: &str, limit: usize) -> Result<Vec<SkillSearchResult>> {
         let page_size = limit.min(50) as i64;
         let api = self.api_search(query, 1, page_size, "Default").await?;
-        Ok(api.data.skill_list.iter().map(Self::convert_skill).collect())
+        Ok(api
+            .data
+            .skill_list
+            .iter()
+            .map(Self::convert_skill)
+            .collect())
     }
 
     pub async fn get_skill_meta(&self, slug: &str) -> Result<SkillMeta> {
         validate_skill_identifier(slug).map_err(|e| NemesisError::Validation(e))?;
         let api = self.api_search(slug, 1, 1, "Default").await?;
-        let skill = api.data.skill_list.into_iter().next()
-            .ok_or_else(|| NemesisError::NotFound(format!("skill '{}' not found on ModelScope", slug)))?;
+        let skill = api.data.skill_list.into_iter().next().ok_or_else(|| {
+            NemesisError::NotFound(format!("skill '{}' not found on ModelScope", slug))
+        })?;
         let summary = if skill.description.is_empty() {
             skill.description_en.clone()
         } else {
@@ -226,20 +247,34 @@ impl ModelScopeRegistry {
         validate_skill_identifier(slug).map_err(|e| NemesisError::Validation(e))?;
         let meta = self.get_skill_meta(slug).await?;
         let api = self.api_search(slug, 1, 1, "Default").await?;
-        let skill = api.data.skill_list.into_iter().next()
+        let skill = api
+            .data
+            .skill_list
+            .into_iter()
+            .next()
             .ok_or_else(|| NemesisError::NotFound(format!("skill '{}' not found", slug)))?;
 
-        let raw_url = Self::source_url_to_raw(&skill.source_url)
-            .ok_or_else(|| NemesisError::Other(format!("cannot parse SourceURL: {}", skill.source_url)))?;
+        let raw_url = Self::source_url_to_raw(&skill.source_url).ok_or_else(|| {
+            NemesisError::Other(format!("cannot parse SourceURL: {}", skill.source_url))
+        })?;
 
         debug!("ModelScope download from: {}", raw_url);
 
-        let resp = self.client.get(&raw_url).send().await
+        let resp = self
+            .client
+            .get(&raw_url)
+            .send()
+            .await
             .map_err(|e| NemesisError::Other(format!("download failed: {}", e)))?;
         if !resp.status().is_success() {
-            return Err(NemesisError::Other(format!("download HTTP {}", resp.status())));
+            return Err(NemesisError::Other(format!(
+                "download HTTP {}",
+                resp.status()
+            )));
         }
-        let content = resp.text().await
+        let content = resp
+            .text()
+            .await
             .map_err(|e| NemesisError::Other(format!("read failed: {}", e)))?;
 
         let target_path = std::path::Path::new(target_dir);
@@ -259,18 +294,29 @@ impl ModelScopeRegistry {
     pub async fn get_skill_content(&self, slug: &str) -> Result<SkillContent> {
         validate_skill_identifier(slug).map_err(|e| NemesisError::Validation(e))?;
         let api = self.api_search(slug, 1, 1, "Default").await?;
-        let skill = api.data.skill_list.into_iter().next()
+        let skill = api
+            .data
+            .skill_list
+            .into_iter()
+            .next()
             .ok_or_else(|| NemesisError::NotFound(format!("skill '{}' not found", slug)))?;
 
-        let raw_url = Self::source_url_to_raw(&skill.source_url)
-            .ok_or_else(|| NemesisError::Other(format!("cannot parse SourceURL: {}", skill.source_url)))?;
+        let raw_url = Self::source_url_to_raw(&skill.source_url).ok_or_else(|| {
+            NemesisError::Other(format!("cannot parse SourceURL: {}", skill.source_url))
+        })?;
 
-        let resp = self.client.get(&raw_url).send().await
+        let resp = self
+            .client
+            .get(&raw_url)
+            .send()
+            .await
             .map_err(|e| NemesisError::Other(format!("request failed: {}", e)))?;
         if !resp.status().is_success() {
             return Err(NemesisError::Other(format!("HTTP {}", resp.status())));
         }
-        let content = resp.text().await
+        let content = resp
+            .text()
+            .await
             .map_err(|e| NemesisError::Other(format!("read failed: {}", e)))?;
 
         Ok(SkillContent {
@@ -280,8 +326,17 @@ impl ModelScopeRegistry {
         })
     }
 
-    pub async fn browse(&self, sort: &BrowseSort, limit: usize, cursor: &str) -> Result<BrowseResult> {
-        let page = if cursor.is_empty() { 1i64 } else { cursor.parse::<i64>().unwrap_or(1) };
+    pub async fn browse(
+        &self,
+        sort: &BrowseSort,
+        limit: usize,
+        cursor: &str,
+    ) -> Result<BrowseResult> {
+        let page = if cursor.is_empty() {
+            1i64
+        } else {
+            cursor.parse::<i64>().unwrap_or(1)
+        };
         let page_size = limit.min(100) as i64;
         let sort_str = match sort {
             BrowseSort::Downloads => "DownloadCount",
@@ -289,11 +344,20 @@ impl ModelScopeRegistry {
             _ => "Default",
         };
         let api = self.api_search("", page, page_size, sort_str).await?;
-        let items: Vec<SkillSearchResult> = api.data.skill_list.iter().map(Self::convert_skill).collect();
+        let items: Vec<SkillSearchResult> = api
+            .data
+            .skill_list
+            .iter()
+            .map(Self::convert_skill)
+            .collect();
         let has_more = (page * page_size) < api.data.total_count;
         Ok(BrowseResult {
             items,
-            next_cursor: if has_more { Some((page + 1).to_string()) } else { None },
+            next_cursor: if has_more {
+                Some((page + 1).to_string())
+            } else {
+                None
+            },
         })
     }
 }

@@ -6,11 +6,11 @@
 
 use std::sync::Arc;
 
-use nemesis_agent::instance::AgentInstance;
-use nemesis_agent::types::AgentConfig;
-use nemesis_agent::r#loop::AgentLoop;
-use nemesis_agent::types::AgentEvent;
 use nemesis_agent::context::RequestContext;
+use nemesis_agent::instance::AgentInstance;
+use nemesis_agent::r#loop::AgentLoop;
+use nemesis_agent::types::AgentConfig;
+use nemesis_agent::types::AgentEvent;
 use nemesis_cluster::cluster_task::{ClusterTaskList, ClusterWorkQueue, TaskStatus};
 use nemesis_cluster::rpc::client::RpcClient;
 use nemesis_cluster::rpc::peer_chat_handler::send_callback;
@@ -173,7 +173,14 @@ async fn execute_new_task(
     if let Some(ref obs) = cluster_observer {
         let final_msg = extract_final_message(&events);
         let rounds = count_llm_rounds(&events);
-        obs.emit_conversation_end(&trace_id, "cluster", &task.task_id, rounds, &final_msg, false);
+        obs.emit_conversation_end(
+            &trace_id,
+            "cluster",
+            &task.task_id,
+            rounds,
+            &final_msg,
+            false,
+        );
         obs.clear_task_context();
     }
 
@@ -190,7 +197,11 @@ async fn execute_new_task(
             "[ClusterAgent] Task went async, saving state"
         );
 
-        nemesis_cluster::logger::log_task("exec_async", &task.task_id, &format!("child={}", child_task_id));
+        nemesis_cluster::logger::log_task(
+            "exec_async",
+            &task.task_id,
+            &format!("child={}", child_task_id),
+        );
 
         task_list.save_async_state(
             &task.task_id,
@@ -214,7 +225,11 @@ async fn execute_new_task(
     );
     send_task_callback(rpc_client, task, "success", &result, "").await;
     task_list.complete_task(&task.task_id);
-    nemesis_cluster::logger::log_task("exec_done", &task.task_id, &format!("events={}", events.len()));
+    nemesis_cluster::logger::log_task(
+        "exec_done",
+        &task.task_id,
+        &format!("events={}", events.len()),
+    );
     Ok(())
 }
 
@@ -274,7 +289,14 @@ async fn resume_task(
     if let Some(ref obs) = cluster_observer {
         let final_msg = extract_final_message(&events);
         let rounds = count_llm_rounds(&events);
-        obs.emit_conversation_end(&trace_id, "cluster", &task.task_id, rounds, &final_msg, false);
+        obs.emit_conversation_end(
+            &trace_id,
+            "cluster",
+            &task.task_id,
+            rounds,
+            &final_msg,
+            false,
+        );
         obs.clear_task_context();
     }
 
@@ -291,7 +313,11 @@ async fn resume_task(
             "[ClusterAgent] Resumed task went async again"
         );
 
-        nemesis_cluster::logger::log_task("exec_async", &task.task_id, &format!("child={}", child_task_id));
+        nemesis_cluster::logger::log_task(
+            "exec_async",
+            &task.task_id,
+            &format!("child={}", child_task_id),
+        );
 
         task_list.save_async_state(
             &task.task_id,
@@ -319,7 +345,11 @@ async fn resume_task(
     );
     send_task_callback(rpc_client, task, "success", &result, "").await;
     task_list.complete_task(&task.task_id);
-    nemesis_cluster::logger::log_task("exec_done", &task.task_id, &format!("events={}", events.len()));
+    nemesis_cluster::logger::log_task(
+        "exec_done",
+        &task.task_id,
+        &format!("events={}", events.len()),
+    );
     Ok(())
 }
 
@@ -377,10 +407,8 @@ fn restore_session_history(
     };
     let stored = store.get_or_create(session_key);
     if !stored.messages.is_empty() {
-        let history: Vec<nemesis_agent::types::ConversationTurn> = stored.messages
-            .into_iter()
-            .map(|m| m.into())
-            .collect();
+        let history: Vec<nemesis_agent::types::ConversationTurn> =
+            stored.messages.into_iter().map(|m| m.into()).collect();
         let count = history.len();
         instance.set_history(history);
         if !stored.summary.is_empty() {
@@ -447,9 +475,10 @@ fn persist_session_history(
 /// tool_result marker — the marker is the load-bearing signal and is
 /// independent of how the message is phrased for the user.
 fn is_async_done(conversation: &[nemesis_agent::types::ConversationTurn]) -> bool {
-    conversation.iter().rev().any(|t| {
-        t.role == "tool" && t.content.contains("__CLUSTER_ASYNC__")
-    })
+    conversation
+        .iter()
+        .rev()
+        .any(|t| t.role == "tool" && t.content.contains("__CLUSTER_ASYNC__"))
 }
 
 /// Extract child_task_id and tool_call_id from the conversation history.
@@ -472,7 +501,10 @@ fn extract_async_info(
             if let Some(marker_start) = turn.content.find("__CLUSTER_ASYNC__") {
                 let json_str = &turn.content[marker_start + "__CLUSTER_ASYNC__".len()..];
                 if let Ok(info) = serde_json::from_str::<serde_json::Value>(json_str) {
-                    child_task_id = info.get("task_id").and_then(|v| v.as_str()).map(String::from);
+                    child_task_id = info
+                        .get("task_id")
+                        .and_then(|v| v.as_str())
+                        .map(String::from);
                 }
             }
 

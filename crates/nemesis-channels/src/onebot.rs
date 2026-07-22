@@ -99,12 +99,18 @@ pub struct OneBotChannel {
     last_message_ids: dashmap::DashMap<String, String>,
     transcriber: parking_lot::RwLock<Option<Arc<dyn crate::base::VoiceTranscriber>>>,
     bus_sender: broadcast::Sender<InboundMessage>,
-    ws_sink: Arc<tokio::sync::RwLock<Option<futures::stream::SplitSink<
-        tokio_tungstenite::WebSocketStream<
-            tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
+    ws_sink: Arc<
+        tokio::sync::RwLock<
+            Option<
+                futures::stream::SplitSink<
+                    tokio_tungstenite::WebSocketStream<
+                        tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
+                    >,
+                    tokio_tungstenite::tungstenite::Message,
+                >,
+            >,
         >,
-        tokio_tungstenite::tungstenite::Message,
-    >>>>,
+    >,
 }
 
 struct DedupRing {
@@ -142,7 +148,10 @@ impl DedupRing {
 
 impl OneBotChannel {
     /// Creates a new `OneBotChannel`.
-    pub fn new(config: OneBotConfig, bus_sender: broadcast::Sender<InboundMessage>) -> Result<Self> {
+    pub fn new(
+        config: OneBotConfig,
+        bus_sender: broadcast::Sender<InboundMessage>,
+    ) -> Result<Self> {
         if config.ws_url.is_empty() {
             return Err(NemesisError::Channel(
                 "OneBot ws_url not configured".to_string(),
@@ -281,11 +290,7 @@ impl OneBotChannel {
     }
 
     /// Checks group trigger conditions.
-    pub fn check_group_trigger(
-        &self,
-        content: &str,
-        is_bot_mentioned: bool,
-    ) -> (bool, String) {
+    pub fn check_group_trigger(&self, content: &str, is_bot_mentioned: bool) -> (bool, String) {
         if is_bot_mentioned {
             return (true, content.trim().to_string());
         }
@@ -303,7 +308,11 @@ impl OneBotChannel {
     }
 
     /// Builds a send request.
-    pub fn build_send_request(&self, chat_id: &str, content: &str) -> Option<(String, serde_json::Value)> {
+    pub fn build_send_request(
+        &self,
+        chat_id: &str,
+        content: &str,
+    ) -> Option<(String, serde_json::Value)> {
         let (action, id_key, raw_id) = if let Some(rest) = chat_id.strip_prefix("group:") {
             ("send_group_msg", "group_id", rest)
         } else if let Some(rest) = chat_id.strip_prefix("private:") {
@@ -329,12 +338,15 @@ impl OneBotChannel {
 
     /// Stores last message ID for a chat.
     pub fn store_last_message_id(&self, chat_id: &str, message_id: &str) {
-        self.last_message_ids.insert(chat_id.to_string(), message_id.to_string());
+        self.last_message_ids
+            .insert(chat_id.to_string(), message_id.to_string());
     }
 
     /// Gets last message ID for a chat.
     pub fn get_last_message_id(&self, chat_id: &str) -> Option<String> {
-        self.last_message_ids.get(chat_id).map(|v| v.value().clone())
+        self.last_message_ids
+            .get(chat_id)
+            .map(|v| v.value().clone())
     }
 
     /// Generates a unique echo string for API requests.
@@ -430,7 +442,9 @@ impl Channel for OneBotChannel {
                     let msg = match tokio::time::timeout(
                         std::time::Duration::from_secs(120),
                         stream.next(),
-                    ).await {
+                    )
+                    .await
+                    {
                         Ok(Some(Ok(m))) => m,
                         Ok(Some(Err(e))) => {
                             warn!("[OneBotChannel] WS read error: {e}");
@@ -502,7 +516,11 @@ impl Channel for OneBotChannel {
                         event.get("user_id").unwrap_or(&serde_json::Value::Null),
                     );
                     let group_id = event.get("group_id").and_then(|v| {
-                        if v.is_null() { None } else { Some(Self::parse_json_string(v)) }
+                        if v.is_null() {
+                            None
+                        } else {
+                            Some(Self::parse_json_string(v))
+                        }
                     });
 
                     let is_group = group_id.is_some();
@@ -612,10 +630,7 @@ impl Channel for OneBotChannel {
         let (action, params) = self
             .build_send_request(&msg.chat_id, &msg.content)
             .ok_or_else(|| {
-                NemesisError::Channel(format!(
-                    "invalid chat ID format: {}",
-                    msg.chat_id
-                ))
+                NemesisError::Channel(format!("invalid chat ID format: {}", msg.chat_id))
             })?;
 
         let echo = self.next_echo();
@@ -635,7 +650,8 @@ impl Channel for OneBotChannel {
         if let Some(sink) = ws_guard.as_mut() {
             use futures::SinkExt;
             use tokio_tungstenite::tungstenite::Message;
-            sink.send(Message::Text(json.into())).await
+            sink.send(Message::Text(json.into()))
+                .await
                 .map_err(|e| NemesisError::Channel(format!("OneBot WS send failed: {e}")))?;
         } else {
             return Err(NemesisError::Channel(

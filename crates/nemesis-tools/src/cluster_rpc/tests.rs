@@ -3,15 +3,17 @@ use crate::registry::Tool;
 
 fn make_connected_tool() -> ClusterRpcTool {
     let mut stub = StubClusterOps::connected("node-1");
-    stub.peers = vec![
-        PeerInfo {
-            id: "node-2".to_string(),
-            name: "Bot2".to_string(),
-            capabilities: vec!["chat".to_string(), "tools".to_string()],
-            status: "online".to_string(),
-        },
+    stub.peers = vec![PeerInfo {
+        id: "node-2".to_string(),
+        name: "Bot2".to_string(),
+        capabilities: vec!["chat".to_string(), "tools".to_string()],
+        status: "online".to_string(),
+    }];
+    stub.capabilities = vec![
+        "chat".to_string(),
+        "tools".to_string(),
+        "translate".to_string(),
     ];
-    stub.capabilities = vec!["chat".to_string(), "tools".to_string(), "translate".to_string()];
     ClusterRpcTool::with_cluster(Arc::new(stub))
 }
 

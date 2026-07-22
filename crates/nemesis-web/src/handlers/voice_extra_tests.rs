@@ -9,8 +9,8 @@ mod voice_extra_tests {
     use crate::handlers::voice::VoiceHandler;
     use crate::session::SessionManager;
     use crate::ws_router::{ModuleHandler, RequestContext};
-    use std::sync::atomic::{AtomicBool, AtomicUsize};
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, AtomicUsize};
     use std::time::Instant;
 
     fn make_ctx(dir: &tempfile::TempDir) -> RequestContext {
@@ -40,7 +40,9 @@ mod voice_extra_tests {
             cluster_service: None,
             cluster_log_dir: None,
             workflow_engine: None,
-            chat_secret_store: Arc::new(nemesis_workflow::chat_secrets::ChatSecretStore::in_memory()),
+            chat_secret_store: Arc::new(
+                nemesis_workflow::chat_secrets::ChatSecretStore::in_memory(),
+            ),
             webhook_rate_limiter: Arc::new(crate::handlers::workflow::WebhookRateLimiter::new()),
             internal_cmd_tx: None,
             estop: None,
@@ -81,7 +83,11 @@ mod voice_extra_tests {
         let h = VoiceHandler::new();
         let dir = tempfile::tempdir().unwrap();
         let ctx = make_ctx(&dir);
-        let r = h.handle_cmd("config_get", None, &ctx).await.unwrap().unwrap();
+        let r = h
+            .handle_cmd("config_get", None, &ctx)
+            .await
+            .unwrap()
+            .unwrap();
         assert!(r.is_object());
     }
 
@@ -90,8 +96,18 @@ mod voice_extra_tests {
         let h = VoiceHandler::new();
         let dir = tempfile::tempdir().unwrap();
         let ctx = make_ctx(&dir);
-        h.handle_cmd("config_set", Some(serde_json::json!({"content": "# test config"})), &ctx).await.unwrap();
-        let r = h.handle_cmd("config_get", None, &ctx).await.unwrap().unwrap();
+        h.handle_cmd(
+            "config_set",
+            Some(serde_json::json!({"content": "# test config"})),
+            &ctx,
+        )
+        .await
+        .unwrap();
+        let r = h
+            .handle_cmd("config_get", None, &ctx)
+            .await
+            .unwrap()
+            .unwrap();
         assert!(r.is_object());
     }
 
@@ -100,7 +116,11 @@ mod voice_extra_tests {
         let h = VoiceHandler::new();
         let dir = tempfile::tempdir().unwrap();
         let ctx = make_ctx(&dir);
-        let r = h.handle_cmd("voice_config_get", None, &ctx).await.unwrap().unwrap();
+        let r = h
+            .handle_cmd("voice_config_get", None, &ctx)
+            .await
+            .unwrap()
+            .unwrap();
         assert!(r.is_object());
     }
 
@@ -109,7 +129,11 @@ mod voice_extra_tests {
         let h = VoiceHandler::new();
         let dir = tempfile::tempdir().unwrap();
         let ctx = make_ctx(&dir);
-        let r = h.handle_cmd("chat_config_get", None, &ctx).await.unwrap().unwrap();
+        let r = h
+            .handle_cmd("chat_config_get", None, &ctx)
+            .await
+            .unwrap()
+            .unwrap();
         assert!(r.is_object());
     }
 
@@ -136,7 +160,11 @@ mod voice_extra_tests {
         let h = VoiceHandler::new();
         let dir = tempfile::tempdir().unwrap();
         let ctx = make_ctx(&dir);
-        let r = h.handle_cmd("speaker_list", None, &ctx).await.unwrap().unwrap();
+        let r = h
+            .handle_cmd("speaker_list", None, &ctx)
+            .await
+            .unwrap()
+            .unwrap();
         assert!(r.is_object());
     }
 
@@ -145,7 +173,11 @@ mod voice_extra_tests {
         let h = VoiceHandler::new();
         let dir = tempfile::tempdir().unwrap();
         let ctx = make_ctx(&dir);
-        let r = h.handle_cmd("engine_status", None, &ctx).await.unwrap().unwrap();
+        let r = h
+            .handle_cmd("engine_status", None, &ctx)
+            .await
+            .unwrap()
+            .unwrap();
         assert!(r.is_object());
     }
 
@@ -163,7 +195,10 @@ mod voice_extra_tests {
         let h = VoiceHandler::new();
         let dir = tempfile::tempdir().unwrap();
         let ctx = make_ctx(&dir);
-        let err = h.handle_cmd("engine_start", Some(serde_json::json!({})), &ctx).await.unwrap_err();
+        let err = h
+            .handle_cmd("engine_start", Some(serde_json::json!({})), &ctx)
+            .await
+            .unwrap_err();
         assert!(err.contains("missing field: model"));
     }
 
@@ -172,7 +207,10 @@ mod voice_extra_tests {
         let h = VoiceHandler::new();
         let dir = tempfile::tempdir().unwrap();
         let ctx = make_ctx(&dir);
-        let err = h.handle_cmd("install_model", Some(serde_json::json!({})), &ctx).await.unwrap_err();
+        let err = h
+            .handle_cmd("install_model", Some(serde_json::json!({})), &ctx)
+            .await
+            .unwrap_err();
         assert!(err.contains("missing field: model"));
     }
 
@@ -181,7 +219,10 @@ mod voice_extra_tests {
         let h = VoiceHandler::new();
         let dir = tempfile::tempdir().unwrap();
         let ctx = make_ctx(&dir);
-        let err = h.handle_cmd("pipeline_start", Some(serde_json::json!({})), &ctx).await.unwrap_err();
+        let err = h
+            .handle_cmd("pipeline_start", Some(serde_json::json!({})), &ctx)
+            .await
+            .unwrap_err();
         assert!(err.contains("missing field: model"));
     }
 
@@ -190,7 +231,10 @@ mod voice_extra_tests {
         let h = VoiceHandler::new();
         let dir = tempfile::tempdir().unwrap();
         let ctx = make_ctx(&dir);
-        let err = h.handle_cmd("speaker_remove", Some(serde_json::json!({})), &ctx).await.unwrap_err();
+        let err = h
+            .handle_cmd("speaker_remove", Some(serde_json::json!({})), &ctx)
+            .await
+            .unwrap_err();
         assert!(err.contains("missing field: name"));
     }
 
@@ -199,7 +243,10 @@ mod voice_extra_tests {
         let h = VoiceHandler::new();
         let dir = tempfile::tempdir().unwrap();
         let ctx = make_ctx(&dir);
-        let err = h.handle_cmd("speaker_set_threshold", Some(serde_json::json!({})), &ctx).await.unwrap_err();
+        let err = h
+            .handle_cmd("speaker_set_threshold", Some(serde_json::json!({})), &ctx)
+            .await
+            .unwrap_err();
         assert!(err.contains("missing field: threshold"));
     }
 
@@ -224,7 +271,11 @@ mod voice_extra_tests {
         )
         .await
         .unwrap();
-        let r = h.handle_cmd("voice_config_get", None, &ctx).await.unwrap().unwrap();
+        let r = h
+            .handle_cmd("voice_config_get", None, &ctx)
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(r["speaker_id"], 99);
         assert_eq!(r["volume"], 80);
         assert_eq!(r["speed"], 1.5);
@@ -238,7 +289,10 @@ mod voice_extra_tests {
         let h = VoiceHandler::new();
         let dir = tempfile::tempdir().unwrap();
         let ctx = make_ctx(&dir);
-        let err = h.handle_cmd("voice_config_set", None, &ctx).await.unwrap_err();
+        let err = h
+            .handle_cmd("voice_config_set", None, &ctx)
+            .await
+            .unwrap_err();
         assert!(err.contains("missing data"));
     }
 
@@ -248,13 +302,21 @@ mod voice_extra_tests {
         let dir = tempfile::tempdir().unwrap();
         let ctx = make_ctx(&dir);
         let r = h
-            .handle_cmd("chat_config_set", Some(serde_json::json!({"stt": true})), &ctx)
+            .handle_cmd(
+                "chat_config_set",
+                Some(serde_json::json!({"stt": true})),
+                &ctx,
+            )
             .await
             .unwrap()
             .unwrap();
         assert_eq!(r["success"], true);
         // Round-trip via chat_config_get to prove it persisted.
-        let g = h.handle_cmd("chat_config_get", None, &ctx).await.unwrap().unwrap();
+        let g = h
+            .handle_cmd("chat_config_get", None, &ctx)
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(g["stt"], true);
     }
 
@@ -263,7 +325,10 @@ mod voice_extra_tests {
         let h = VoiceHandler::new();
         let dir = tempfile::tempdir().unwrap();
         let ctx = make_ctx(&dir);
-        let err = h.handle_cmd("chat_config_set", None, &ctx).await.unwrap_err();
+        let err = h
+            .handle_cmd("chat_config_set", None, &ctx)
+            .await
+            .unwrap_err();
         assert!(err.contains("missing data"));
     }
 
@@ -272,7 +337,11 @@ mod voice_extra_tests {
         let h = VoiceHandler::new();
         let dir = tempfile::tempdir().unwrap();
         let ctx = make_ctx(&dir);
-        let r = h.handle_cmd("speaker_status", None, &ctx).await.unwrap().unwrap();
+        let r = h
+            .handle_cmd("speaker_status", None, &ctx)
+            .await
+            .unwrap()
+            .unwrap();
         // Enabled defaults to false in tests (no engine loaded); threshold
         // falls back to the default when no voiceprint config exists.
         assert!(r["enabled"].is_boolean());
@@ -296,7 +365,11 @@ mod voice_extra_tests {
         let dir = tempfile::tempdir().unwrap();
         let ctx = make_ctx(&dir);
         let r = h
-            .handle_cmd("engine_stop", Some(serde_json::json!({"model": "stt"})), &ctx)
+            .handle_cmd(
+                "engine_stop",
+                Some(serde_json::json!({"model": "stt"})),
+                &ctx,
+            )
             .await
             .unwrap()
             .unwrap();
@@ -310,7 +383,11 @@ mod voice_extra_tests {
         let dir = tempfile::tempdir().unwrap();
         let ctx = make_ctx(&dir);
         let r = h
-            .handle_cmd("engine_stop", Some(serde_json::json!({"model": "tts"})), &ctx)
+            .handle_cmd(
+                "engine_stop",
+                Some(serde_json::json!({"model": "tts"})),
+                &ctx,
+            )
             .await
             .unwrap()
             .unwrap();
@@ -324,7 +401,11 @@ mod voice_extra_tests {
         let dir = tempfile::tempdir().unwrap();
         let ctx = make_ctx(&dir);
         let r = h
-            .handle_cmd("engine_stop", Some(serde_json::json!({"model": "speaker"})), &ctx)
+            .handle_cmd(
+                "engine_stop",
+                Some(serde_json::json!({"model": "speaker"})),
+                &ctx,
+            )
             .await
             .unwrap()
             .unwrap();
@@ -338,7 +419,11 @@ mod voice_extra_tests {
         let dir = tempfile::tempdir().unwrap();
         let ctx = make_ctx(&dir);
         let err = h
-            .handle_cmd("engine_stop", Some(serde_json::json!({"model": "bogus"})), &ctx)
+            .handle_cmd(
+                "engine_stop",
+                Some(serde_json::json!({"model": "bogus"})),
+                &ctx,
+            )
             .await
             .unwrap_err();
         assert!(err.contains("unknown model"));
@@ -400,7 +485,10 @@ mod voice_extra_tests {
         let h = VoiceHandler::new();
         let dir = tempfile::tempdir().unwrap();
         let ctx = make_ctx(&dir);
-        let err = h.handle_cmd("stt_dialogue_reset", None, &ctx).await.unwrap_err();
+        let err = h
+            .handle_cmd("stt_dialogue_reset", None, &ctx)
+            .await
+            .unwrap_err();
         assert!(err.contains("No dialogue session active"));
     }
 
@@ -409,7 +497,11 @@ mod voice_extra_tests {
         let h = VoiceHandler::new();
         let dir = tempfile::tempdir().unwrap();
         let ctx = make_ctx(&dir);
-        let r = h.handle_cmd("speaker_register_cancel", None, &ctx).await.unwrap().unwrap();
+        let r = h
+            .handle_cmd("speaker_register_cancel", None, &ctx)
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(r["cancelled"], true);
     }
 
@@ -418,7 +510,10 @@ mod voice_extra_tests {
         let h = VoiceHandler::new();
         let dir = tempfile::tempdir().unwrap();
         let ctx = make_ctx(&dir);
-        let err = h.handle_cmd("speaker_register_start", None, &ctx).await.unwrap_err();
+        let err = h
+            .handle_cmd("speaker_register_start", None, &ctx)
+            .await
+            .unwrap_err();
         assert!(err.contains("missing data"));
     }
 
@@ -438,7 +533,10 @@ mod voice_extra_tests {
         let h = VoiceHandler::new();
         let dir = tempfile::tempdir().unwrap();
         let ctx = make_ctx(&dir);
-        let err = h.handle_cmd("tts", Some(serde_json::json!({})), &ctx).await.unwrap_err();
+        let err = h
+            .handle_cmd("tts", Some(serde_json::json!({})), &ctx)
+            .await
+            .unwrap_err();
         assert!(err.contains("missing field: text"));
     }
 

@@ -11,8 +11,12 @@ fn test_parse_protocol() {
 
 #[test]
 fn test_is_new_protocol() {
-    assert!(ProtocolMessage::is_new_protocol(br#"{"type":"message","module":"chat","cmd":"send"}"#));
-    assert!(!ProtocolMessage::is_new_protocol(br#"{"type":"message","cmd":"send"}"#));
+    assert!(ProtocolMessage::is_new_protocol(
+        br#"{"type":"message","module":"chat","cmd":"send"}"#
+    ));
+    assert!(!ProtocolMessage::is_new_protocol(
+        br#"{"type":"message","cmd":"send"}"#
+    ));
     assert!(!ProtocolMessage::is_new_protocol(br#"not json"#));
 }
 
@@ -25,7 +29,12 @@ fn test_new_message() {
 
 #[test]
 fn test_to_json_roundtrip() {
-    let msg = ProtocolMessage::new("message", "chat", "send", Some(serde_json::json!({"content": "hi"})));
+    let msg = ProtocolMessage::new(
+        "message",
+        "chat",
+        "send",
+        Some(serde_json::json!({"content": "hi"})),
+    );
     let bytes = msg.to_json().unwrap();
     let parsed = ProtocolMessage::parse(&bytes).unwrap();
     assert_eq!(parsed.msg_type, "message");
@@ -48,21 +57,28 @@ fn test_parse_missing_fields() {
 #[test]
 fn test_is_new_protocol_various() {
     // Valid new protocol
-    assert!(ProtocolMessage::is_new_protocol(br#"{"type":"msg","module":"chat","cmd":"send"}"#));
+    assert!(ProtocolMessage::is_new_protocol(
+        br#"{"type":"msg","module":"chat","cmd":"send"}"#
+    ));
     // Empty module
     assert!(!ProtocolMessage::is_new_protocol(br#"{"module":""}"#));
     // Missing module
-    assert!(!ProtocolMessage::is_new_protocol(br#"{"type":"msg","cmd":"send"}"#));
+    assert!(!ProtocolMessage::is_new_protocol(
+        br#"{"type":"msg","cmd":"send"}"#
+    ));
 }
 
 #[test]
 fn test_decode_data_success() {
     let msg = ProtocolMessage::parse(
-        br#"{"type":"message","module":"chat","cmd":"send","data":{"content":"hello"}}"#
-    ).unwrap();
+        br#"{"type":"message","module":"chat","cmd":"send","data":{"content":"hello"}}"#,
+    )
+    .unwrap();
 
     #[derive(serde::Deserialize)]
-    struct ChatData { content: String }
+    struct ChatData {
+        content: String,
+    }
     let data: ChatData = msg.decode_data().unwrap();
     assert_eq!(data.content, "hello");
 }
@@ -77,7 +93,12 @@ fn test_decode_data_no_data() {
 
 #[test]
 fn test_decode_data_wrong_type() {
-    let msg = ProtocolMessage::new("test", "mod", "cmd", Some(serde_json::json!("not an object")));
+    let msg = ProtocolMessage::new(
+        "test",
+        "mod",
+        "cmd",
+        Some(serde_json::json!("not an object")),
+    );
     let result: Result<std::collections::HashMap<String, String>, _> = msg.decode_data();
     assert!(result.is_err());
 }
@@ -135,13 +156,17 @@ fn test_parse_preserves_data_types() {
 
 #[test]
 fn test_is_new_protocol_with_empty_module() {
-    assert!(!ProtocolMessage::is_new_protocol(br#"{"type":"msg","module":""}"#));
+    assert!(!ProtocolMessage::is_new_protocol(
+        br#"{"type":"msg","module":""}"#
+    ));
 }
 
 #[test]
 fn test_is_new_protocol_with_only_module() {
     // Has module but no type - should still be new protocol
-    assert!(ProtocolMessage::is_new_protocol(br#"{"module":"chat","cmd":"send"}"#));
+    assert!(ProtocolMessage::is_new_protocol(
+        br#"{"module":"chat","cmd":"send"}"#
+    ));
 }
 
 #[test]
@@ -170,25 +195,29 @@ fn test_new_message_with_array_data() {
 
 #[test]
 fn test_decode_data_into_vec() {
-    let msg = ProtocolMessage::parse(
-        br#"{"type":"test","module":"m","cmd":"c","data":[1,2,3]}"#
-    ).unwrap();
+    let msg = ProtocolMessage::parse(br#"{"type":"test","module":"m","cmd":"c","data":[1,2,3]}"#)
+        .unwrap();
     let data: Vec<i32> = msg.decode_data().unwrap();
     assert_eq!(data, vec![1, 2, 3]);
 }
 
 #[test]
 fn test_decode_data_type_mismatch() {
-    let msg = ProtocolMessage::parse(
-        br#"{"type":"test","module":"m","cmd":"c","data":"not a number"}"#
-    ).unwrap();
+    let msg =
+        ProtocolMessage::parse(br#"{"type":"test","module":"m","cmd":"c","data":"not a number"}"#)
+            .unwrap();
     let result: Result<i32, _> = msg.decode_data();
     assert!(result.is_err());
 }
 
 #[test]
 fn test_to_json_produces_valid_json() {
-    let msg = ProtocolMessage::new("test", "mod", "cmd", Some(serde_json::json!({"key": "val"})));
+    let msg = ProtocolMessage::new(
+        "test",
+        "mod",
+        "cmd",
+        Some(serde_json::json!({"key": "val"})),
+    );
     let bytes = msg.to_json().unwrap();
     let json_str = String::from_utf8(bytes).unwrap();
     // Should be valid JSON
@@ -278,7 +307,9 @@ fn test_request_builder() {
 #[test]
 fn test_response_ok_builder() {
     let msg = ProtocolMessage::response_ok(
-        "models", "list", "req-001",
+        "models",
+        "list",
+        "req-001",
         Some(serde_json::json!([{"name": "gpt-4"}])),
     );
     assert_eq!(msg.msg_type, "response");
@@ -309,7 +340,12 @@ fn test_push_builder() {
 
 #[test]
 fn test_request_response_roundtrip() {
-    let req = ProtocolMessage::request("models", "list", "req-100", Some(serde_json::json!({"detail": true})));
+    let req = ProtocolMessage::request(
+        "models",
+        "list",
+        "req-100",
+        Some(serde_json::json!({"detail": true})),
+    );
     let bytes = req.to_json().unwrap();
     let parsed = ProtocolMessage::parse(&bytes).unwrap();
     assert_eq!(parsed.msg_type, "request");

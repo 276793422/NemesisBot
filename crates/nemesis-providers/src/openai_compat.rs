@@ -66,8 +66,8 @@ pub struct OpenAICompatProvider {
 impl OpenAICompatProvider {
     /// Create a new OpenAI-compatible provider.
     pub fn new(config: OpenAICompatConfig) -> Self {
-        let mut builder = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(config.timeout_secs));
+        let mut builder =
+            reqwest::Client::builder().timeout(std::time::Duration::from_secs(config.timeout_secs));
 
         if let Some(ref proxy_url) = config.proxy {
             if let Ok(proxy) = reqwest::Proxy::all(proxy_url) {
@@ -95,8 +95,8 @@ impl OpenAICompatProvider {
         let prefix = &model[..idx];
         let prefix_lower = prefix.to_lowercase();
         match prefix_lower.as_str() {
-            "moonshot" | "nvidia" | "groq" | "ollama" | "deepseek" | "google"
-            | "openrouter" | "zhipu" => model[idx + 1..].to_string(),
+            "moonshot" | "nvidia" | "groq" | "ollama" | "deepseek" | "google" | "openrouter"
+            | "zhipu" => model[idx + 1..].to_string(),
             _ => model.to_string(),
         }
     }
@@ -186,7 +186,8 @@ fn parse_response(data: &serde_json::Value) -> LLMResponse {
         // Extract cached tokens from provider-specific fields:
         // - DeepSeek: prompt_cache_hit_tokens
         // - OpenAI: prompt_tokens_details.cached_tokens
-        let cached = u.get("prompt_cache_hit_tokens")
+        let cached = u
+            .get("prompt_cache_hit_tokens")
             .and_then(|v| v.as_i64())
             .or_else(|| {
                 u.get("prompt_tokens_details")
@@ -227,7 +228,10 @@ fn parse_response(data: &serde_json::Value) -> LLMResponse {
                     let arguments: HashMap<String, serde_json::Value> =
                         serde_json::from_str(&arguments_str).unwrap_or_else(|_| {
                             let mut m = HashMap::new();
-                            m.insert("raw".to_string(), serde_json::Value::String(arguments_str.clone()));
+                            m.insert(
+                                "raw".to_string(),
+                                serde_json::Value::String(arguments_str.clone()),
+                            );
                             m
                         });
 

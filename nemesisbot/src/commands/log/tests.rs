@@ -511,5 +511,10 @@ fn test_cmd_llm_config_both_options() {
     let data: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(&cfg).unwrap()).unwrap();
     assert_eq!(data["logging"]["llm"]["detail_level"], "truncated");
-    assert!(data["logging"]["llm"]["log_dir"].as_str().unwrap().contains("custom-logs"));
+    assert!(
+        data["logging"]["llm"]["log_dir"]
+            .as_str()
+            .unwrap()
+            .contains("custom-logs")
+    );
 }

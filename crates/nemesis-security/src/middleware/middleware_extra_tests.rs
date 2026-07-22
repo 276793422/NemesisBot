@@ -14,17 +14,18 @@
 //! - HttpRequest default / ProcessOutput / FileMetadata / DirEntry structs
 
 use super::*;
-use crate::auditor::{AuditorConfig, AuditFilter, OperationRequest};
-use crate::types::{
-    validate_path, is_safe_command, get_danger_level, OperationType, DangerLevel,
-};
+use crate::auditor::{AuditFilter, AuditorConfig, OperationRequest};
+use crate::types::{DangerLevel, OperationType, get_danger_level, is_safe_command, validate_path};
 use std::sync::Arc;
 
 // ---------------------------------------------------------------------------
 // Helper constructors
 // ---------------------------------------------------------------------------
 
-fn make_middleware_with_preset(preset: PermissionPreset, default_action: &str) -> SecurityMiddleware {
+fn make_middleware_with_preset(
+    preset: PermissionPreset,
+    default_action: &str,
+) -> SecurityMiddleware {
     let config = AuditorConfig {
         enabled: true,
         default_action: default_action.to_string(),
@@ -93,7 +94,10 @@ fn extra_validate_path_dangerous_windows_hosts_literal_check() {
     // When the file exists, canonicalize() returns a UNC path (\\?\C:\Windows\system32\...)
     // that won't match the literal. We test the dangerous-path check by using a path
     // that doesn't exist so canonicalize fails and the original input is checked directly.
-    let result = validate_path("C:\\Windows\\System32\\drivers\\etc\\hosts_xyz_nonexistent", "");
+    let result = validate_path(
+        "C:\\Windows\\System32\\drivers\\etc\\hosts_xyz_nonexistent",
+        "",
+    );
     // Even though canonicalize fails, the dangerous-check uses starts_with against the
     // literal "C:\\Windows\\System32\\drivers\\etc\\hosts", which would match
     // "...hosts_xyz_nonexistent" only if Windows-normalized. Without canonicalization,
@@ -114,7 +118,10 @@ fn extra_validate_path_safe_path() {
 fn extra_validate_path_workspace_canonicalization() {
     // Use a real tempdir so canonicalize works
     let dir = tempfile::tempdir().unwrap();
-    let ws = std::fs::canonicalize(dir.path()).unwrap().to_string_lossy().to_string();
+    let ws = std::fs::canonicalize(dir.path())
+        .unwrap()
+        .to_string_lossy()
+        .to_string();
     // Create the file so canonicalize succeeds on the path
     let file_path_buf = std::path::Path::new(&ws).join("file.txt");
     std::fs::write(&file_path_buf, "x").unwrap();
@@ -251,113 +258,179 @@ fn extra_get_danger_level_dir_read_low() {
 
 #[test]
 fn extra_get_danger_level_network_download_medium() {
-    assert_eq!(get_danger_level(OperationType::NetworkDownload), DangerLevel::Medium);
+    assert_eq!(
+        get_danger_level(OperationType::NetworkDownload),
+        DangerLevel::Medium
+    );
 }
 
 #[test]
 fn extra_get_danger_level_network_request_medium() {
-    assert_eq!(get_danger_level(OperationType::NetworkRequest), DangerLevel::Medium);
+    assert_eq!(
+        get_danger_level(OperationType::NetworkRequest),
+        DangerLevel::Medium
+    );
 }
 
 #[test]
 fn extra_get_danger_level_file_write_high() {
-    assert_eq!(get_danger_level(OperationType::FileWrite), DangerLevel::High);
+    assert_eq!(
+        get_danger_level(OperationType::FileWrite),
+        DangerLevel::High
+    );
 }
 
 #[test]
 fn extra_get_danger_level_file_delete_high() {
-    assert_eq!(get_danger_level(OperationType::FileDelete), DangerLevel::High);
+    assert_eq!(
+        get_danger_level(OperationType::FileDelete),
+        DangerLevel::High
+    );
 }
 
 #[test]
 fn extra_get_danger_level_dir_create_high() {
-    assert_eq!(get_danger_level(OperationType::DirCreate), DangerLevel::High);
+    assert_eq!(
+        get_danger_level(OperationType::DirCreate),
+        DangerLevel::High
+    );
 }
 
 #[test]
 fn extra_get_danger_level_dir_delete_high() {
-    assert_eq!(get_danger_level(OperationType::DirDelete), DangerLevel::High);
+    assert_eq!(
+        get_danger_level(OperationType::DirDelete),
+        DangerLevel::High
+    );
 }
 
 #[test]
 fn extra_get_danger_level_process_spawn_high() {
-    assert_eq!(get_danger_level(OperationType::ProcessSpawn), DangerLevel::High);
+    assert_eq!(
+        get_danger_level(OperationType::ProcessSpawn),
+        DangerLevel::High
+    );
 }
 
 #[test]
 fn extra_get_danger_level_process_exec_critical() {
-    assert_eq!(get_danger_level(OperationType::ProcessExec), DangerLevel::Critical);
+    assert_eq!(
+        get_danger_level(OperationType::ProcessExec),
+        DangerLevel::Critical
+    );
 }
 
 #[test]
 fn extra_get_danger_level_process_kill_critical() {
-    assert_eq!(get_danger_level(OperationType::ProcessKill), DangerLevel::Critical);
+    assert_eq!(
+        get_danger_level(OperationType::ProcessKill),
+        DangerLevel::Critical
+    );
 }
 
 #[test]
 fn extra_get_danger_level_system_shutdown_critical() {
-    assert_eq!(get_danger_level(OperationType::SystemShutdown), DangerLevel::Critical);
+    assert_eq!(
+        get_danger_level(OperationType::SystemShutdown),
+        DangerLevel::Critical
+    );
 }
 
 #[test]
 fn extra_get_danger_level_system_reboot_critical() {
-    assert_eq!(get_danger_level(OperationType::SystemReboot), DangerLevel::Critical);
+    assert_eq!(
+        get_danger_level(OperationType::SystemReboot),
+        DangerLevel::Critical
+    );
 }
 
 #[test]
 fn extra_get_danger_level_system_config_critical() {
-    assert_eq!(get_danger_level(OperationType::SystemConfig), DangerLevel::Critical);
+    assert_eq!(
+        get_danger_level(OperationType::SystemConfig),
+        DangerLevel::Critical
+    );
 }
 
 #[test]
 fn extra_get_danger_level_system_service_critical() {
-    assert_eq!(get_danger_level(OperationType::SystemService), DangerLevel::Critical);
+    assert_eq!(
+        get_danger_level(OperationType::SystemService),
+        DangerLevel::Critical
+    );
 }
 
 #[test]
 fn extra_get_danger_level_system_install_critical() {
-    assert_eq!(get_danger_level(OperationType::SystemInstall), DangerLevel::Critical);
+    assert_eq!(
+        get_danger_level(OperationType::SystemInstall),
+        DangerLevel::Critical
+    );
 }
 
 #[test]
 fn extra_get_danger_level_registry_write_critical() {
-    assert_eq!(get_danger_level(OperationType::RegistryWrite), DangerLevel::Critical);
+    assert_eq!(
+        get_danger_level(OperationType::RegistryWrite),
+        DangerLevel::Critical
+    );
 }
 
 #[test]
 fn extra_get_danger_level_registry_delete_critical() {
-    assert_eq!(get_danger_level(OperationType::RegistryDelete), DangerLevel::Critical);
+    assert_eq!(
+        get_danger_level(OperationType::RegistryDelete),
+        DangerLevel::Critical
+    );
 }
 
 #[test]
 fn extra_get_danger_level_registry_read_default_medium() {
     // RegistryRead is not explicitly mapped; falls to default => Medium
-    assert_eq!(get_danger_level(OperationType::RegistryRead), DangerLevel::Medium);
+    assert_eq!(
+        get_danger_level(OperationType::RegistryRead),
+        DangerLevel::Medium
+    );
 }
 
 #[test]
 fn extra_get_danger_level_process_suspend_default_medium() {
-    assert_eq!(get_danger_level(OperationType::ProcessSuspend), DangerLevel::Medium);
+    assert_eq!(
+        get_danger_level(OperationType::ProcessSuspend),
+        DangerLevel::Medium
+    );
 }
 
 #[test]
 fn extra_get_danger_level_network_upload_default_medium() {
-    assert_eq!(get_danger_level(OperationType::NetworkUpload), DangerLevel::Medium);
+    assert_eq!(
+        get_danger_level(OperationType::NetworkUpload),
+        DangerLevel::Medium
+    );
 }
 
 #[test]
 fn extra_get_danger_level_hardware_i2c_default_medium() {
-    assert_eq!(get_danger_level(OperationType::HardwareI2C), DangerLevel::Medium);
+    assert_eq!(
+        get_danger_level(OperationType::HardwareI2C),
+        DangerLevel::Medium
+    );
 }
 
 #[test]
 fn extra_get_danger_level_hardware_spi_default_medium() {
-    assert_eq!(get_danger_level(OperationType::HardwareSPI), DangerLevel::Medium);
+    assert_eq!(
+        get_danger_level(OperationType::HardwareSPI),
+        DangerLevel::Medium
+    );
 }
 
 #[test]
 fn extra_get_danger_level_hardware_gpio_default_medium() {
-    assert_eq!(get_danger_level(OperationType::HardwareGPIO), DangerLevel::Medium);
+    assert_eq!(
+        get_danger_level(OperationType::HardwareGPIO),
+        DangerLevel::Medium
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -457,7 +530,8 @@ fn extra_middleware_new_default_preset_is_standard() {
 fn extra_middleware_with_preset_stores_preset() {
     let config = AuditorConfig::default();
     let auditor = Arc::new(SecurityAuditor::new(config));
-    let mw = SecurityMiddleware::with_preset(auditor, "u2", "rpc", "/ws", PermissionPreset::Elevated);
+    let mw =
+        SecurityMiddleware::with_preset(auditor, "u2", "rpc", "/ws", PermissionPreset::Elevated);
     assert_eq!(mw.preset(), PermissionPreset::Elevated);
 }
 
@@ -485,7 +559,9 @@ fn extra_middleware_set_preset_to_readonly() {
 #[test]
 fn extra_check_operation_denied_by_preset_returns_correct_message() {
     let mw = make_middleware_with_preset(PermissionPreset::ReadOnly, "allow");
-    let err = mw.check_operation(OperationType::ProcessExec, "ls").unwrap_err();
+    let err = mw
+        .check_operation(OperationType::ProcessExec, "ls")
+        .unwrap_err();
     assert!(err.contains("not allowed"));
     assert!(err.contains("ReadOnly"));
 }
@@ -494,7 +570,9 @@ fn extra_check_operation_denied_by_preset_returns_correct_message() {
 fn extra_check_operation_auditor_denies_default_deny() {
     let mw = make_middleware_with_preset(PermissionPreset::Unrestricted, "deny");
     // Auditor default_action = deny → request denied by ABAC.
-    let err = mw.check_operation(OperationType::ProcessExec, "echo ok").unwrap_err();
+    let err = mw
+        .check_operation(OperationType::ProcessExec, "echo ok")
+        .unwrap_err();
     // The error returned by the auditor may be empty or a permission-denied string.
     assert!(matches!(err.as_str(), "" | "permission denied" | _));
 }
@@ -520,7 +598,13 @@ fn extra_check_operation_auditor_ask_creates_pending() {
         ..Default::default()
     };
     let auditor = Arc::new(SecurityAuditor::new(config));
-    let mw = SecurityMiddleware::with_preset(auditor.clone(), "u", "s", "/ws", PermissionPreset::Standard);
+    let mw = SecurityMiddleware::with_preset(
+        auditor.clone(),
+        "u",
+        "s",
+        "/ws",
+        PermissionPreset::Standard,
+    );
     let result = mw.check_operation(OperationType::FileWrite, "/tmp/test");
     assert!(result.is_err());
     // Should be pending now
@@ -556,7 +640,10 @@ fn extra_file_wrapper_check_dir_read_in_readonly() {
 #[tokio::test]
 async fn extra_file_wrapper_write_outside_workspace_blocked() {
     let dir = tempfile::tempdir().unwrap();
-    let ws = std::fs::canonicalize(dir.path()).unwrap().to_string_lossy().to_string();
+    let ws = std::fs::canonicalize(dir.path())
+        .unwrap()
+        .to_string_lossy()
+        .to_string();
     let outside = if cfg!(target_os = "windows") {
         "C:\\Windows\\evil.txt"
     } else {
@@ -568,7 +655,8 @@ async fn extra_file_wrapper_write_outside_workspace_blocked() {
         ..Default::default()
     };
     let auditor = Arc::new(SecurityAuditor::new(config));
-    let mw = SecurityMiddleware::with_preset(auditor, "u", "s", &ws, PermissionPreset::Unrestricted);
+    let mw =
+        SecurityMiddleware::with_preset(auditor, "u", "s", &ws, PermissionPreset::Unrestricted);
     let w = SecureFileWrapper::new(&mw);
     let result = w.write_file(outside, "evil").await;
     assert!(result.is_err());
@@ -581,7 +669,10 @@ async fn extra_file_wrapper_read_dangerous_path_blocked() {
         return;
     }
     let dir = tempfile::tempdir().unwrap();
-    let ws = std::fs::canonicalize(dir.path()).unwrap().to_string_lossy().to_string();
+    let ws = std::fs::canonicalize(dir.path())
+        .unwrap()
+        .to_string_lossy()
+        .to_string();
     let config = AuditorConfig {
         enabled: true,
         default_action: "allow".to_string(),
@@ -597,7 +688,10 @@ async fn extra_file_wrapper_read_dangerous_path_blocked() {
 #[tokio::test]
 async fn extra_file_wrapper_write_within_workspace_in_tempdir() {
     let dir = tempfile::tempdir().unwrap();
-    let ws = std::fs::canonicalize(dir.path()).unwrap().to_string_lossy().to_string();
+    let ws = std::fs::canonicalize(dir.path())
+        .unwrap()
+        .to_string_lossy()
+        .to_string();
     let config = AuditorConfig {
         enabled: true,
         default_action: "allow".to_string(),
@@ -606,10 +700,7 @@ async fn extra_file_wrapper_write_within_workspace_in_tempdir() {
     let auditor = Arc::new(SecurityAuditor::new(config));
     let mw = SecurityMiddleware::with_preset(auditor, "u", "s", &ws, PermissionPreset::Standard);
     let w = SecureFileWrapper::new(&mw);
-    let file_path = format!(
-        "{sep}test_extra.txt",
-        sep = std::path::MAIN_SEPARATOR
-    );
+    let file_path = format!("{sep}test_extra.txt", sep = std::path::MAIN_SEPARATOR);
     let file_path = format!("{}{}", ws, file_path);
     let result = w.write_file(&file_path, "extra").await;
     assert!(result.is_ok());
@@ -620,7 +711,10 @@ async fn extra_file_wrapper_write_within_workspace_in_tempdir() {
 #[tokio::test]
 async fn extra_file_wrapper_write_creates_nested_parent_dirs() {
     let dir = tempfile::tempdir().unwrap();
-    let ws = std::fs::canonicalize(dir.path()).unwrap().to_string_lossy().to_string();
+    let ws = std::fs::canonicalize(dir.path())
+        .unwrap()
+        .to_string_lossy()
+        .to_string();
     let config = AuditorConfig {
         enabled: true,
         default_action: "allow".to_string(),
@@ -642,12 +736,11 @@ async fn extra_file_wrapper_write_creates_nested_parent_dirs() {
 #[tokio::test]
 async fn extra_file_wrapper_edit_file_with_multiline_pattern_match() {
     let dir = tempfile::tempdir().unwrap();
-    let ws = std::fs::canonicalize(dir.path()).unwrap().to_string_lossy().to_string();
-    let file_path = format!(
-        "{}{sep}multi.txt",
-        ws,
-        sep = std::path::MAIN_SEPARATOR
-    );
+    let ws = std::fs::canonicalize(dir.path())
+        .unwrap()
+        .to_string_lossy()
+        .to_string();
+    let file_path = format!("{}{sep}multi.txt", ws, sep = std::path::MAIN_SEPARATOR);
     std::fs::write(&file_path, "alpha\nbeta\ngamma").unwrap();
     let config = AuditorConfig {
         enabled: true,
@@ -666,12 +759,11 @@ async fn extra_file_wrapper_edit_file_with_multiline_pattern_match() {
 #[tokio::test]
 async fn extra_file_wrapper_edit_file_pattern_single_line_match() {
     let dir = tempfile::tempdir().unwrap();
-    let ws = std::fs::canonicalize(dir.path()).unwrap().to_string_lossy().to_string();
-    let file_path = format!(
-        "{}{sep}single.txt",
-        ws,
-        sep = std::path::MAIN_SEPARATOR
-    );
+    let ws = std::fs::canonicalize(dir.path())
+        .unwrap()
+        .to_string_lossy()
+        .to_string();
+    let file_path = format!("{}{sep}single.txt", ws, sep = std::path::MAIN_SEPARATOR);
     std::fs::write(&file_path, "old text here").unwrap();
     let config = AuditorConfig {
         enabled: true,
@@ -690,12 +782,11 @@ async fn extra_file_wrapper_edit_file_pattern_single_line_match() {
 #[tokio::test]
 async fn extra_file_wrapper_edit_file_pattern_not_found_error() {
     let dir = tempfile::tempdir().unwrap();
-    let ws = std::fs::canonicalize(dir.path()).unwrap().to_string_lossy().to_string();
-    let file_path = format!(
-        "{}{sep}nofind.txt",
-        ws,
-        sep = std::path::MAIN_SEPARATOR
-    );
+    let ws = std::fs::canonicalize(dir.path())
+        .unwrap()
+        .to_string_lossy()
+        .to_string();
+    let file_path = format!("{}{sep}nofind.txt", ws, sep = std::path::MAIN_SEPARATOR);
     std::fs::write(&file_path, "different content").unwrap();
     let config = AuditorConfig {
         enabled: true,
@@ -713,12 +804,11 @@ async fn extra_file_wrapper_edit_file_pattern_not_found_error() {
 #[tokio::test]
 async fn extra_file_wrapper_append_creates_when_nonexistent() {
     let dir = tempfile::tempdir().unwrap();
-    let ws = std::fs::canonicalize(dir.path()).unwrap().to_string_lossy().to_string();
-    let file_path = format!(
-        "{}{sep}brand_new.txt",
-        ws,
-        sep = std::path::MAIN_SEPARATOR
-    );
+    let ws = std::fs::canonicalize(dir.path())
+        .unwrap()
+        .to_string_lossy()
+        .to_string();
+    let file_path = format!("{}{sep}brand_new.txt", ws, sep = std::path::MAIN_SEPARATOR);
     let config = AuditorConfig {
         enabled: true,
         default_action: "allow".to_string(),
@@ -736,12 +826,11 @@ async fn extra_file_wrapper_append_creates_when_nonexistent() {
 #[tokio::test]
 async fn extra_file_wrapper_stat_returns_modified_time_non_empty() {
     let dir = tempfile::tempdir().unwrap();
-    let ws = std::fs::canonicalize(dir.path()).unwrap().to_string_lossy().to_string();
-    let file_path = format!(
-        "{}{sep}statmod.txt",
-        ws,
-        sep = std::path::MAIN_SEPARATOR
-    );
+    let ws = std::fs::canonicalize(dir.path())
+        .unwrap()
+        .to_string_lossy()
+        .to_string();
+    let file_path = format!("{}{sep}statmod.txt", ws, sep = std::path::MAIN_SEPARATOR);
     std::fs::write(&file_path, "data").unwrap();
     let config = AuditorConfig {
         enabled: true,
@@ -759,18 +848,21 @@ async fn extra_file_wrapper_stat_returns_modified_time_non_empty() {
 #[tokio::test]
 async fn extra_file_wrapper_read_directory_sorts_entries() {
     let dir = tempfile::tempdir().unwrap();
-    let ws = std::fs::canonicalize(dir.path()).unwrap().to_string_lossy().to_string();
+    let ws = std::fs::canonicalize(dir.path())
+        .unwrap()
+        .to_string_lossy()
+        .to_string();
     // Create entries in reverse-sorted order
-    std::fs::write(format!(
-        "{}{sep}z.txt",
-        ws,
-        sep = std::path::MAIN_SEPARATOR
-    ), "z").unwrap();
-    std::fs::write(format!(
-        "{}{sep}a.txt",
-        ws,
-        sep = std::path::MAIN_SEPARATOR
-    ), "a").unwrap();
+    std::fs::write(
+        format!("{}{sep}z.txt", ws, sep = std::path::MAIN_SEPARATOR),
+        "z",
+    )
+    .unwrap();
+    std::fs::write(
+        format!("{}{sep}a.txt", ws, sep = std::path::MAIN_SEPARATOR),
+        "a",
+    )
+    .unwrap();
     let config = AuditorConfig {
         enabled: true,
         default_action: "allow".to_string(),
@@ -788,17 +880,20 @@ async fn extra_file_wrapper_read_directory_sorts_entries() {
 #[tokio::test]
 async fn extra_file_wrapper_list_dir_returns_sorted_entries() {
     let dir = tempfile::tempdir().unwrap();
-    let ws = std::fs::canonicalize(dir.path()).unwrap().to_string_lossy().to_string();
-    std::fs::write(format!(
-        "{}{sep}y.txt",
-        ws,
-        sep = std::path::MAIN_SEPARATOR
-    ), "yy").unwrap();
-    std::fs::write(format!(
-        "{}{sep}b.txt",
-        ws,
-        sep = std::path::MAIN_SEPARATOR
-    ), "b").unwrap();
+    let ws = std::fs::canonicalize(dir.path())
+        .unwrap()
+        .to_string_lossy()
+        .to_string();
+    std::fs::write(
+        format!("{}{sep}y.txt", ws, sep = std::path::MAIN_SEPARATOR),
+        "yy",
+    )
+    .unwrap();
+    std::fs::write(
+        format!("{}{sep}b.txt", ws, sep = std::path::MAIN_SEPARATOR),
+        "b",
+    )
+    .unwrap();
     let config = AuditorConfig {
         enabled: true,
         default_action: "allow".to_string(),
@@ -816,12 +911,11 @@ async fn extra_file_wrapper_list_dir_returns_sorted_entries() {
 #[tokio::test]
 async fn extra_file_wrapper_create_dir_alias_in_tempdir() {
     let dir = tempfile::tempdir().unwrap();
-    let ws = std::fs::canonicalize(dir.path()).unwrap().to_string_lossy().to_string();
-    let new_dir = format!(
-        "{}{sep}alias",
-        ws,
-        sep = std::path::MAIN_SEPARATOR
-    );
+    let ws = std::fs::canonicalize(dir.path())
+        .unwrap()
+        .to_string_lossy()
+        .to_string();
+    let new_dir = format!("{}{sep}alias", ws, sep = std::path::MAIN_SEPARATOR);
     let config = AuditorConfig {
         enabled: true,
         default_action: "allow".to_string(),
@@ -838,12 +932,11 @@ async fn extra_file_wrapper_create_dir_alias_in_tempdir() {
 #[tokio::test]
 async fn extra_file_wrapper_remove_dir_in_tempdir() {
     let dir = tempfile::tempdir().unwrap();
-    let ws = std::fs::canonicalize(dir.path()).unwrap().to_string_lossy().to_string();
-    let target = format!(
-        "{}{sep}torm",
-        ws,
-        sep = std::path::MAIN_SEPARATOR
-    );
+    let ws = std::fs::canonicalize(dir.path())
+        .unwrap()
+        .to_string_lossy()
+        .to_string();
+    let target = format!("{}{sep}torm", ws, sep = std::path::MAIN_SEPARATOR);
     std::fs::create_dir_all(&target).unwrap();
     let config = AuditorConfig {
         enabled: true,
@@ -851,7 +944,8 @@ async fn extra_file_wrapper_remove_dir_in_tempdir() {
         ..Default::default()
     };
     let auditor = Arc::new(SecurityAuditor::new(config));
-    let mw = SecurityMiddleware::with_preset(auditor, "u", "s", &ws, PermissionPreset::Unrestricted);
+    let mw =
+        SecurityMiddleware::with_preset(auditor, "u", "s", &ws, PermissionPreset::Unrestricted);
     let w = SecureFileWrapper::new(&mw);
     let result = w.remove_dir(&target).await;
     assert!(result.is_ok());
@@ -861,7 +955,10 @@ async fn extra_file_wrapper_remove_dir_in_tempdir() {
 #[tokio::test]
 async fn extra_file_wrapper_create_directory_fails_when_preset_readonly() {
     let dir = tempfile::tempdir().unwrap();
-    let ws = std::fs::canonicalize(dir.path()).unwrap().to_string_lossy().to_string();
+    let ws = std::fs::canonicalize(dir.path())
+        .unwrap()
+        .to_string_lossy()
+        .to_string();
     let config = AuditorConfig {
         enabled: true,
         default_action: "allow".to_string(),
@@ -870,11 +967,7 @@ async fn extra_file_wrapper_create_directory_fails_when_preset_readonly() {
     let auditor = Arc::new(SecurityAuditor::new(config));
     let mw = SecurityMiddleware::with_preset(auditor, "u", "s", &ws, PermissionPreset::ReadOnly);
     let w = SecureFileWrapper::new(&mw);
-    let new_dir = format!(
-        "{}{sep}denied",
-        ws,
-        sep = std::path::MAIN_SEPARATOR
-    );
+    let new_dir = format!("{}{sep}denied", ws, sep = std::path::MAIN_SEPARATOR);
     let result = w.create_directory(&new_dir).await;
     assert!(result.is_err());
 }
@@ -882,12 +975,11 @@ async fn extra_file_wrapper_create_directory_fails_when_preset_readonly() {
 #[tokio::test]
 async fn extra_file_wrapper_open_file_returns_bytes() {
     let dir = tempfile::tempdir().unwrap();
-    let ws = std::fs::canonicalize(dir.path()).unwrap().to_string_lossy().to_string();
-    let file_path = format!(
-        "{}{sep}bin.dat",
-        ws,
-        sep = std::path::MAIN_SEPARATOR
-    );
+    let ws = std::fs::canonicalize(dir.path())
+        .unwrap()
+        .to_string_lossy()
+        .to_string();
+    let file_path = format!("{}{sep}bin.dat", ws, sep = std::path::MAIN_SEPARATOR);
     std::fs::write(&file_path, b"\xff\xfe\x00\x01").unwrap();
     let config = AuditorConfig {
         enabled: true,
@@ -940,7 +1032,9 @@ async fn extra_process_execute_command_blocked_by_preset() {
 async fn extra_process_execute_command_fails_on_nonexistent_command() {
     let mw = make_middleware_with_preset(PermissionPreset::Elevated, "allow");
     let w = SecureProcessWrapper::new(&mw);
-    let result = w.execute_command("this_command_does_not_exist_xyz", 5).await;
+    let result = w
+        .execute_command("this_command_does_not_exist_xyz", 5)
+        .await;
     assert!(result.is_err());
 }
 
@@ -1719,7 +1813,13 @@ fn extra_approve_pending_request_success() {
         ..Default::default()
     };
     let auditor = Arc::new(SecurityAuditor::new(config));
-    let mw = SecurityMiddleware::with_preset(auditor.clone(), "u", "s", "/ws", PermissionPreset::Unrestricted);
+    let mw = SecurityMiddleware::with_preset(
+        auditor.clone(),
+        "u",
+        "s",
+        "/ws",
+        PermissionPreset::Unrestricted,
+    );
     let req = OperationRequest {
         id: "approve-test".to_string(),
         op_type: OperationType::FileWrite,
@@ -1743,7 +1843,13 @@ fn extra_deny_pending_request_success() {
         ..Default::default()
     };
     let auditor = Arc::new(SecurityAuditor::new(config));
-    let mw = SecurityMiddleware::with_preset(auditor.clone(), "u", "s", "/ws", PermissionPreset::Unrestricted);
+    let mw = SecurityMiddleware::with_preset(
+        auditor.clone(),
+        "u",
+        "s",
+        "/ws",
+        PermissionPreset::Unrestricted,
+    );
     let req = OperationRequest {
         id: "deny-test".to_string(),
         op_type: OperationType::FileWrite,
@@ -1785,7 +1891,13 @@ fn extra_security_summary_pending_summaries_structure() {
         ..Default::default()
     };
     let auditor = Arc::new(SecurityAuditor::new(config));
-    let mw = SecurityMiddleware::with_preset(auditor.clone(), "alice", "test", "/ws", PermissionPreset::Unrestricted);
+    let mw = SecurityMiddleware::with_preset(
+        auditor.clone(),
+        "alice",
+        "test",
+        "/ws",
+        PermissionPreset::Unrestricted,
+    );
     let req = OperationRequest {
         id: "summary-test".to_string(),
         op_type: OperationType::FileWrite,
@@ -2027,7 +2139,10 @@ fn extra_http_request_construction_with_all_fields() {
     let req = HttpRequest {
         url: "https://example.com".to_string(),
         method: "PATCH".to_string(),
-        headers: vec![("A".to_string(), "1".to_string()), ("B".to_string(), "2".to_string())],
+        headers: vec![
+            ("A".to_string(), "1".to_string()),
+            ("B".to_string(), "2".to_string()),
+        ],
         body: Some("body".to_string()),
         timeout_secs: Some(60),
     };
@@ -2100,12 +2215,11 @@ fn extra_check_operation_returns_err_with_default_message_when_no_specific() {
 #[test]
 fn extra_validate_path_inside_workspace_returns_ok() {
     let dir = tempfile::tempdir().unwrap();
-    let ws = std::fs::canonicalize(dir.path()).unwrap().to_string_lossy().to_string();
-    let file_path = format!(
-        "{}{sep}inside.txt",
-        ws,
-        sep = std::path::MAIN_SEPARATOR
-    );
+    let ws = std::fs::canonicalize(dir.path())
+        .unwrap()
+        .to_string_lossy()
+        .to_string();
+    let file_path = format!("{}{sep}inside.txt", ws, sep = std::path::MAIN_SEPARATOR);
     let result = validate_path(&file_path, &ws);
     assert!(result.is_ok());
 }
@@ -2114,8 +2228,14 @@ fn extra_validate_path_inside_workspace_returns_ok() {
 fn extra_validate_path_outside_workspace_returns_err() {
     let dir1 = tempfile::tempdir().unwrap();
     let dir2 = tempfile::tempdir().unwrap();
-    let ws = std::fs::canonicalize(dir1.path()).unwrap().to_string_lossy().to_string();
-    let outside = std::fs::canonicalize(dir2.path()).unwrap().to_string_lossy().to_string();
+    let ws = std::fs::canonicalize(dir1.path())
+        .unwrap()
+        .to_string_lossy()
+        .to_string();
+    let outside = std::fs::canonicalize(dir2.path())
+        .unwrap()
+        .to_string_lossy()
+        .to_string();
     let outside_file = format!(
         "{}{sep}outside.txt",
         outside,
@@ -2221,8 +2341,14 @@ fn extra_check_operation_when_auditor_disabled_succeeds_regardless_of_danger() {
     let mw = SecurityMiddleware::with_preset(auditor, "u", "s", "/ws", PermissionPreset::Elevated);
     // Even critical ops should succeed when auditor is disabled
     assert!(mw.check_operation(OperationType::ProcessExec, "ls").is_ok());
-    assert!(mw.check_operation(OperationType::ProcessSpawn, "ls").is_ok());
-    assert!(mw.check_operation(OperationType::FileDelete, "/tmp/x").is_ok());
+    assert!(
+        mw.check_operation(OperationType::ProcessSpawn, "ls")
+            .is_ok()
+    );
+    assert!(
+        mw.check_operation(OperationType::FileDelete, "/tmp/x")
+            .is_ok()
+    );
 }
 
 #[test]
@@ -2235,7 +2361,10 @@ fn extra_check_operation_when_auditor_disabled_still_respects_preset() {
     let auditor = Arc::new(SecurityAuditor::new(config));
     let mw = SecurityMiddleware::with_preset(auditor, "u", "s", "/ws", PermissionPreset::ReadOnly);
     // ProcessExec denied by preset even when auditor is disabled
-    assert!(mw.check_operation(OperationType::ProcessExec, "ls").is_err());
+    assert!(
+        mw.check_operation(OperationType::ProcessExec, "ls")
+            .is_err()
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -2291,20 +2420,36 @@ fn extra_permission_is_target_denied_substring_match() {
 #[test]
 fn extra_unrestricted_allows_all_22_operation_types() {
     let presets = [
-        OperationType::FileRead, OperationType::FileWrite, OperationType::FileDelete,
-        OperationType::DirRead, OperationType::DirCreate, OperationType::DirDelete,
-        OperationType::ProcessExec, OperationType::ProcessSpawn, OperationType::ProcessKill,
-        OperationType::ProcessSuspend, OperationType::NetworkDownload,
-        OperationType::NetworkUpload, OperationType::NetworkRequest,
-        OperationType::HardwareI2C, OperationType::HardwareSPI, OperationType::HardwareGPIO,
-        OperationType::SystemShutdown, OperationType::SystemReboot,
-        OperationType::SystemConfig, OperationType::SystemService, OperationType::SystemInstall,
-        OperationType::RegistryRead, OperationType::RegistryWrite, OperationType::RegistryDelete,
+        OperationType::FileRead,
+        OperationType::FileWrite,
+        OperationType::FileDelete,
+        OperationType::DirRead,
+        OperationType::DirCreate,
+        OperationType::DirDelete,
+        OperationType::ProcessExec,
+        OperationType::ProcessSpawn,
+        OperationType::ProcessKill,
+        OperationType::ProcessSuspend,
+        OperationType::NetworkDownload,
+        OperationType::NetworkUpload,
+        OperationType::NetworkRequest,
+        OperationType::HardwareI2C,
+        OperationType::HardwareSPI,
+        OperationType::HardwareGPIO,
+        OperationType::SystemShutdown,
+        OperationType::SystemReboot,
+        OperationType::SystemConfig,
+        OperationType::SystemService,
+        OperationType::SystemInstall,
+        OperationType::RegistryRead,
+        OperationType::RegistryWrite,
+        OperationType::RegistryDelete,
     ];
     for op in &presets {
         assert!(
             PermissionPreset::Unrestricted.allows(*op),
-            "Expected Unrestricted to allow {:?}", op
+            "Expected Unrestricted to allow {:?}",
+            op
         );
     }
 }
@@ -2313,15 +2458,30 @@ fn extra_unrestricted_allows_all_22_operation_types() {
 fn extra_readonly_only_allows_two_ops() {
     let mut count = 0;
     let all_ops = [
-        OperationType::FileRead, OperationType::FileWrite, OperationType::FileDelete,
-        OperationType::DirRead, OperationType::DirCreate, OperationType::DirDelete,
-        OperationType::ProcessExec, OperationType::ProcessSpawn, OperationType::ProcessKill,
-        OperationType::ProcessSuspend, OperationType::NetworkDownload,
-        OperationType::NetworkUpload, OperationType::NetworkRequest,
-        OperationType::HardwareI2C, OperationType::HardwareSPI, OperationType::HardwareGPIO,
-        OperationType::SystemShutdown, OperationType::SystemReboot,
-        OperationType::SystemConfig, OperationType::SystemService, OperationType::SystemInstall,
-        OperationType::RegistryRead, OperationType::RegistryWrite, OperationType::RegistryDelete,
+        OperationType::FileRead,
+        OperationType::FileWrite,
+        OperationType::FileDelete,
+        OperationType::DirRead,
+        OperationType::DirCreate,
+        OperationType::DirDelete,
+        OperationType::ProcessExec,
+        OperationType::ProcessSpawn,
+        OperationType::ProcessKill,
+        OperationType::ProcessSuspend,
+        OperationType::NetworkDownload,
+        OperationType::NetworkUpload,
+        OperationType::NetworkRequest,
+        OperationType::HardwareI2C,
+        OperationType::HardwareSPI,
+        OperationType::HardwareGPIO,
+        OperationType::SystemShutdown,
+        OperationType::SystemReboot,
+        OperationType::SystemConfig,
+        OperationType::SystemService,
+        OperationType::SystemInstall,
+        OperationType::RegistryRead,
+        OperationType::RegistryWrite,
+        OperationType::RegistryDelete,
     ];
     for op in &all_ops {
         if PermissionPreset::ReadOnly.allows(*op) {
@@ -2335,15 +2495,30 @@ fn extra_readonly_only_allows_two_ops() {
 fn extra_standard_allows_six_ops() {
     let mut count = 0;
     let all_ops = [
-        OperationType::FileRead, OperationType::FileWrite, OperationType::FileDelete,
-        OperationType::DirRead, OperationType::DirCreate, OperationType::DirDelete,
-        OperationType::ProcessExec, OperationType::ProcessSpawn, OperationType::ProcessKill,
-        OperationType::ProcessSuspend, OperationType::NetworkDownload,
-        OperationType::NetworkUpload, OperationType::NetworkRequest,
-        OperationType::HardwareI2C, OperationType::HardwareSPI, OperationType::HardwareGPIO,
-        OperationType::SystemShutdown, OperationType::SystemReboot,
-        OperationType::SystemConfig, OperationType::SystemService, OperationType::SystemInstall,
-        OperationType::RegistryRead, OperationType::RegistryWrite, OperationType::RegistryDelete,
+        OperationType::FileRead,
+        OperationType::FileWrite,
+        OperationType::FileDelete,
+        OperationType::DirRead,
+        OperationType::DirCreate,
+        OperationType::DirDelete,
+        OperationType::ProcessExec,
+        OperationType::ProcessSpawn,
+        OperationType::ProcessKill,
+        OperationType::ProcessSuspend,
+        OperationType::NetworkDownload,
+        OperationType::NetworkUpload,
+        OperationType::NetworkRequest,
+        OperationType::HardwareI2C,
+        OperationType::HardwareSPI,
+        OperationType::HardwareGPIO,
+        OperationType::SystemShutdown,
+        OperationType::SystemReboot,
+        OperationType::SystemConfig,
+        OperationType::SystemService,
+        OperationType::SystemInstall,
+        OperationType::RegistryRead,
+        OperationType::RegistryWrite,
+        OperationType::RegistryDelete,
     ];
     for op in &all_ops {
         if PermissionPreset::Standard.allows(*op) {
@@ -2357,15 +2532,30 @@ fn extra_standard_allows_six_ops() {
 fn extra_elevated_allows_eleven_ops() {
     let mut count = 0;
     let all_ops = [
-        OperationType::FileRead, OperationType::FileWrite, OperationType::FileDelete,
-        OperationType::DirRead, OperationType::DirCreate, OperationType::DirDelete,
-        OperationType::ProcessExec, OperationType::ProcessSpawn, OperationType::ProcessKill,
-        OperationType::ProcessSuspend, OperationType::NetworkDownload,
-        OperationType::NetworkUpload, OperationType::NetworkRequest,
-        OperationType::HardwareI2C, OperationType::HardwareSPI, OperationType::HardwareGPIO,
-        OperationType::SystemShutdown, OperationType::SystemReboot,
-        OperationType::SystemConfig, OperationType::SystemService, OperationType::SystemInstall,
-        OperationType::RegistryRead, OperationType::RegistryWrite, OperationType::RegistryDelete,
+        OperationType::FileRead,
+        OperationType::FileWrite,
+        OperationType::FileDelete,
+        OperationType::DirRead,
+        OperationType::DirCreate,
+        OperationType::DirDelete,
+        OperationType::ProcessExec,
+        OperationType::ProcessSpawn,
+        OperationType::ProcessKill,
+        OperationType::ProcessSuspend,
+        OperationType::NetworkDownload,
+        OperationType::NetworkUpload,
+        OperationType::NetworkRequest,
+        OperationType::HardwareI2C,
+        OperationType::HardwareSPI,
+        OperationType::HardwareGPIO,
+        OperationType::SystemShutdown,
+        OperationType::SystemReboot,
+        OperationType::SystemConfig,
+        OperationType::SystemService,
+        OperationType::SystemInstall,
+        OperationType::RegistryRead,
+        OperationType::RegistryWrite,
+        OperationType::RegistryDelete,
     ];
     for op in &all_ops {
         if PermissionPreset::Elevated.allows(*op) {

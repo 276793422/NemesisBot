@@ -142,8 +142,14 @@ fn search_result_empty() {
 fn scored_entry_ordering() {
     let e1 = Entry::new(MemoryType::LongTerm, "a".to_string());
     let e2 = Entry::new(MemoryType::LongTerm, "b".to_string());
-    let s1 = ScoredEntry { entry: e1, score: 0.9 };
-    let s2 = ScoredEntry { entry: e2, score: 0.5 };
+    let s1 = ScoredEntry {
+        entry: e1,
+        score: 0.9,
+    };
+    let s2 = ScoredEntry {
+        entry: e2,
+        score: 0.5,
+    };
     assert!(s1.score > s2.score);
 }
 
@@ -180,7 +186,8 @@ fn entry_with_empty_tags() {
 
 #[test]
 fn entry_with_empty_metadata() {
-    let entry = Entry::new(MemoryType::LongTerm, "no meta".to_string()).with_metadata(HashMap::new());
+    let entry =
+        Entry::new(MemoryType::LongTerm, "no meta".to_string()).with_metadata(HashMap::new());
     assert!(entry.metadata.is_empty());
 }
 

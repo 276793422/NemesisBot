@@ -9,7 +9,7 @@ fn test_message_serialization() {
         tool_call_id: None,
         timestamp: None,
         reasoning_content: None,
-extra: HashMap::new(),
+        extra: HashMap::new(),
     };
     let json = serde_json::to_string(&msg).unwrap();
     assert!(json.contains("\"role\":\"user\""));
@@ -111,7 +111,7 @@ fn test_message_with_tool_calls() {
         tool_call_id: None,
         timestamp: None,
         reasoning_content: None,
-extra: HashMap::new(),
+        extra: HashMap::new(),
     };
     let json = serde_json::to_string(&msg).unwrap();
     let deserialized: Message = serde_json::from_str(&json).unwrap();
@@ -127,7 +127,7 @@ fn test_message_with_tool_call_id() {
         tool_call_id: Some("call_123".to_string()),
         timestamp: None,
         reasoning_content: None,
-extra: HashMap::new(),
+        extra: HashMap::new(),
     };
     let json = serde_json::to_string(&msg).unwrap();
     assert!(json.contains("call_123"));
@@ -145,7 +145,7 @@ fn test_message_with_timestamp() {
         tool_call_id: None,
         timestamp: Some(now),
         reasoning_content: None,
-extra: HashMap::new(),
+        extra: HashMap::new(),
     };
     let json = serde_json::to_string(&msg).unwrap();
     let deserialized: Message = serde_json::from_str(&json).unwrap();
@@ -161,7 +161,7 @@ fn test_message_skip_empty_tool_calls() {
         tool_call_id: None,
         timestamp: None,
         reasoning_content: None,
-extra: HashMap::new(),
+        extra: HashMap::new(),
     };
     let json = serde_json::to_string(&msg).unwrap();
     // Empty tool_calls should be skipped
@@ -177,7 +177,7 @@ fn test_message_skip_none_fields() {
         tool_call_id: None,
         timestamp: None,
         reasoning_content: None,
-extra: HashMap::new(),
+        extra: HashMap::new(),
     };
     let json = serde_json::to_string(&msg).unwrap();
     assert!(!json.contains("tool_call_id"));
@@ -243,9 +243,9 @@ fn test_llm_response_no_usage_serialization() {
         finish_reason: "stop".to_string(),
         usage: None,
         reasoning_content: None,
-extra: HashMap::new(),
-raw_request_body: None,
-raw_response_body: None,
+        extra: HashMap::new(),
+        raw_request_body: None,
+        raw_response_body: None,
     };
     let json = serde_json::to_string(&resp).unwrap();
     assert!(!json.contains("usage"));
@@ -275,9 +275,9 @@ fn test_llm_response_with_tool_calls_serialization() {
             cache_read_tokens: None,
         }),
         reasoning_content: None,
-extra: HashMap::new(),
-raw_request_body: None,
-raw_response_body: None,
+        extra: HashMap::new(),
+        raw_request_body: None,
+        raw_response_body: None,
     };
     let json = serde_json::to_string(&resp).unwrap();
     let deserialized: LLMResponse = serde_json::from_str(&json).unwrap();
@@ -304,14 +304,16 @@ fn test_usage_info_serialization() {
 
 #[test]
 fn test_tool_definition_default_type() {
-    let json = r#"{"function":{"name":"test","description":"a test","parameters":{"type":"object"}}}"#;
+    let json =
+        r#"{"function":{"name":"test","description":"a test","parameters":{"type":"object"}}}"#;
     let td: ToolDefinition = serde_json::from_str(json).unwrap();
     assert_eq!(td.tool_type, "function");
 }
 
 #[test]
 fn test_tool_definition_explicit_type() {
-    let json = r#"{"type":"custom","function":{"name":"test","description":"a test","parameters":{}}}"#;
+    let json =
+        r#"{"type":"custom","function":{"name":"test","description":"a test","parameters":{}}}"#;
     let td: ToolDefinition = serde_json::from_str(json).unwrap();
     assert_eq!(td.tool_type, "custom");
 }
@@ -347,7 +349,10 @@ fn test_chat_options_default() {
 #[test]
 fn test_chat_options_with_extra() {
     let mut extra = HashMap::new();
-    extra.insert("custom_field".to_string(), serde_json::json!("custom_value"));
+    extra.insert(
+        "custom_field".to_string(),
+        serde_json::json!("custom_value"),
+    );
     let opts = ChatOptions {
         temperature: Some(0.7),
         max_tokens: Some(4096),
@@ -464,9 +469,9 @@ fn test_llm_response_serialization() {
             cache_read_tokens: None,
         }),
         reasoning_content: None,
-extra: HashMap::new(),
-raw_request_body: None,
-raw_response_body: None,
+        extra: HashMap::new(),
+        raw_request_body: None,
+        raw_response_body: None,
     };
     let json = serde_json::to_string(&resp).unwrap();
     let parsed: LLMResponse = serde_json::from_str(&json).unwrap();

@@ -396,7 +396,10 @@ fn extra_handle_message_request_with_full_send_channel() {
     let send_tx_opt = Some(send_tx);
 
     dispatcher.register("test", |msg| {
-        Ok(Message::new_response(msg.id.as_deref().unwrap_or(""), serde_json::json!("ok")))
+        Ok(Message::new_response(
+            msg.id.as_deref().unwrap_or(""),
+            serde_json::json!("ok"),
+        ))
     });
 
     let request = Message::new_request("test", serde_json::Value::Null);
@@ -464,11 +467,17 @@ fn extra_client_register_handler_overrides_existing() {
     let ws_key = make_ws_key();
     let client = WebSocketClient::new(&ws_key);
     client.register_handler("method", |msg| {
-        Ok(Message::new_response(msg.id.as_deref().unwrap_or(""), serde_json::json!("first")))
+        Ok(Message::new_response(
+            msg.id.as_deref().unwrap_or(""),
+            serde_json::json!("first"),
+        ))
     });
     // Override
     client.register_handler("method", |msg| {
-        Ok(Message::new_response(msg.id.as_deref().unwrap_or(""), serde_json::json!("second")))
+        Ok(Message::new_response(
+            msg.id.as_deref().unwrap_or(""),
+            serde_json::json!("second"),
+        ))
     });
     let req = Message::new_request("method", serde_json::Value::Null);
     let result = client.dispatcher().dispatch(&req).unwrap().unwrap();
@@ -741,18 +750,39 @@ fn extra_client_multiple_handlers_independent() {
     let client = WebSocketClient::new(&ws_key);
 
     client.register_handler("m1", |msg| {
-        Ok(Message::new_response(msg.id.as_deref().unwrap_or(""), serde_json::json!("r1")))
+        Ok(Message::new_response(
+            msg.id.as_deref().unwrap_or(""),
+            serde_json::json!("r1"),
+        ))
     });
     client.register_handler("m2", |msg| {
-        Ok(Message::new_response(msg.id.as_deref().unwrap_or(""), serde_json::json!("r2")))
+        Ok(Message::new_response(
+            msg.id.as_deref().unwrap_or(""),
+            serde_json::json!("r2"),
+        ))
     });
     client.register_handler("m3", |msg| {
-        Ok(Message::new_response(msg.id.as_deref().unwrap_or(""), serde_json::json!("r3")))
+        Ok(Message::new_response(
+            msg.id.as_deref().unwrap_or(""),
+            serde_json::json!("r3"),
+        ))
     });
 
-    let r1 = client.dispatcher().dispatch(&Message::new_request("m1", serde_json::Value::Null)).unwrap().unwrap();
-    let r2 = client.dispatcher().dispatch(&Message::new_request("m2", serde_json::Value::Null)).unwrap().unwrap();
-    let r3 = client.dispatcher().dispatch(&Message::new_request("m3", serde_json::Value::Null)).unwrap().unwrap();
+    let r1 = client
+        .dispatcher()
+        .dispatch(&Message::new_request("m1", serde_json::Value::Null))
+        .unwrap()
+        .unwrap();
+    let r2 = client
+        .dispatcher()
+        .dispatch(&Message::new_request("m2", serde_json::Value::Null))
+        .unwrap()
+        .unwrap();
+    let r3 = client
+        .dispatcher()
+        .dispatch(&Message::new_request("m3", serde_json::Value::Null))
+        .unwrap()
+        .unwrap();
 
     assert_eq!(r1.result.unwrap(), serde_json::json!("r1"));
     assert_eq!(r2.result.unwrap(), serde_json::json!("r2"));
@@ -765,17 +795,34 @@ fn extra_client_fallback_only_for_unknown_methods() {
     let client = WebSocketClient::new(&ws_key);
 
     client.register_handler("known", |msg| {
-        Ok(Message::new_response(msg.id.as_deref().unwrap_or(""), serde_json::json!("from_known")))
+        Ok(Message::new_response(
+            msg.id.as_deref().unwrap_or(""),
+            serde_json::json!("from_known"),
+        ))
     });
     client.set_fallback(|msg| {
-        Ok(Message::new_response(msg.id.as_deref().unwrap_or(""), serde_json::json!("from_fallback")))
+        Ok(Message::new_response(
+            msg.id.as_deref().unwrap_or(""),
+            serde_json::json!("from_fallback"),
+        ))
     });
 
-    let r_known = client.dispatcher().dispatch(&Message::new_request("known", serde_json::Value::Null)).unwrap().unwrap();
-    let r_unknown = client.dispatcher().dispatch(&Message::new_request("unknown", serde_json::Value::Null)).unwrap().unwrap();
+    let r_known = client
+        .dispatcher()
+        .dispatch(&Message::new_request("known", serde_json::Value::Null))
+        .unwrap()
+        .unwrap();
+    let r_unknown = client
+        .dispatcher()
+        .dispatch(&Message::new_request("unknown", serde_json::Value::Null))
+        .unwrap()
+        .unwrap();
 
     assert_eq!(r_known.result.unwrap(), serde_json::json!("from_known"));
-    assert_eq!(r_unknown.result.unwrap(), serde_json::json!("from_fallback"));
+    assert_eq!(
+        r_unknown.result.unwrap(),
+        serde_json::json!("from_fallback")
+    );
 }
 
 // ===========================================================================
@@ -814,7 +861,10 @@ fn extra_handle_message_request_no_send_channel_logs_warning() {
     let send_tx_opt: Option<tokio::sync::mpsc::Sender<String>> = None;
 
     dispatcher.register("test", |msg| {
-        Ok(Message::new_response(msg.id.as_deref().unwrap_or(""), serde_json::json!("ok")))
+        Ok(Message::new_response(
+            msg.id.as_deref().unwrap_or(""),
+            serde_json::json!("ok"),
+        ))
     });
 
     let request = Message::new_request("test", serde_json::Value::Null);

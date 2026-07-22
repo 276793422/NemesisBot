@@ -96,7 +96,12 @@ impl Message {
     }
 
     /// Create an error response.
-    pub fn new_error_response(id: &str, code: i32, message: &str, data: Option<serde_json::Value>) -> Self {
+    pub fn new_error_response(
+        id: &str,
+        code: i32,
+        message: &str,
+        data: Option<serde_json::Value>,
+    ) -> Self {
         Self {
             jsonrpc: VERSION.to_string(),
             id: Some(id.to_string()),

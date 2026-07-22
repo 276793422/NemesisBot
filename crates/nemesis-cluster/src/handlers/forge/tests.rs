@@ -276,10 +276,7 @@ fn test_forge_get_reflections_with_empty_filename() {
     let provider = Box::new(FileForgeProvider::new(dir.path()));
     let handler = ForgeHandler::with_provider("node-a".into(), provider);
 
-    let result = handler.handle(
-        "forge_get_reflections",
-        serde_json::json!({"filename": ""}),
-    );
+    let result = handler.handle("forge_get_reflections", serde_json::json!({"filename": ""}));
     assert!(result.success);
 }
 

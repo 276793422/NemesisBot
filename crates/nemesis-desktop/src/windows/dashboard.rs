@@ -7,8 +7,8 @@ use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 
-use crate::websocket::client::WebSocketClient;
 use super::window_base::{WindowBase, WindowData};
+use crate::websocket::client::WebSocketClient;
 
 /// Data for a dashboard window.
 #[derive(Debug, Clone, Serialize, Deserialize)]

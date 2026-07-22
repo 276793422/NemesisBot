@@ -26,14 +26,34 @@ impl MockWebServer {
 }
 
 impl WebServerOps for MockWebServer {
-    fn send_to_session(&self, session_id: &str, role: &str, content: &str, model: Option<&str>) -> std::result::Result<(), String> {
-        self.sent.lock().unwrap().push((session_id.to_string(), role.to_string(), content.to_string()));
-        self.sent_models.lock().unwrap().push(model.map(|s| s.to_string()));
+    fn send_to_session(
+        &self,
+        session_id: &str,
+        role: &str,
+        content: &str,
+        model: Option<&str>,
+    ) -> std::result::Result<(), String> {
+        self.sent.lock().unwrap().push((
+            session_id.to_string(),
+            role.to_string(),
+            content.to_string(),
+        ));
+        self.sent_models
+            .lock()
+            .unwrap()
+            .push(model.map(|s| s.to_string()));
         Ok(())
     }
 
-    fn send_history_to_session(&self, session_id: &str, content: &str) -> std::result::Result<(), String> {
-        self.history.lock().unwrap().push((session_id.to_string(), content.to_string()));
+    fn send_history_to_session(
+        &self,
+        session_id: &str,
+        content: &str,
+    ) -> std::result::Result<(), String> {
+        self.history
+            .lock()
+            .unwrap()
+            .push((session_id.to_string(), content.to_string()));
         Ok(())
     }
 
@@ -46,7 +66,9 @@ impl WebServerOps for MockWebServer {
         vec!["s1".to_string(), "s2".to_string()]
     }
 
-    fn start_server(&self) -> std::result::Result<(), String> { Ok(()) }
+    fn start_server(&self) -> std::result::Result<(), String> {
+        Ok(())
+    }
     fn stop_server(&self) {}
 }
 
@@ -406,7 +428,13 @@ async fn test_send_with_empty_content() {
 struct FailingMockServer;
 
 impl WebServerOps for FailingMockServer {
-    fn send_to_session(&self, _: &str, _: &str, _: &str, _: Option<&str>) -> std::result::Result<(), String> {
+    fn send_to_session(
+        &self,
+        _: &str,
+        _: &str,
+        _: &str,
+        _: Option<&str>,
+    ) -> std::result::Result<(), String> {
         Err("send failed".to_string())
     }
     fn send_history_to_session(&self, _: &str, _: &str) -> std::result::Result<(), String> {
@@ -415,8 +443,12 @@ impl WebServerOps for FailingMockServer {
     fn broadcast(&self, _: &str) -> std::result::Result<(), String> {
         Err("broadcast failed".to_string())
     }
-    fn active_session_ids(&self) -> Vec<String> { vec![] }
-    fn start_server(&self) -> std::result::Result<(), String> { Ok(()) }
+    fn active_session_ids(&self) -> Vec<String> {
+        vec![]
+    }
+    fn start_server(&self) -> std::result::Result<(), String> {
+        Ok(())
+    }
     fn stop_server(&self) {}
 }
 
@@ -714,7 +746,13 @@ async fn test_send_to_unknown_session_type() {
 struct FailStartServer;
 
 impl WebServerOps for FailStartServer {
-    fn send_to_session(&self, _: &str, _: &str, _: &str, _: Option<&str>) -> std::result::Result<(), String> {
+    fn send_to_session(
+        &self,
+        _: &str,
+        _: &str,
+        _: &str,
+        _: Option<&str>,
+    ) -> std::result::Result<(), String> {
         Ok(())
     }
     fn send_history_to_session(&self, _: &str, _: &str) -> std::result::Result<(), String> {
@@ -723,7 +761,9 @@ impl WebServerOps for FailStartServer {
     fn broadcast(&self, _: &str) -> std::result::Result<(), String> {
         Ok(())
     }
-    fn active_session_ids(&self) -> Vec<String> { vec![] }
+    fn active_session_ids(&self) -> Vec<String> {
+        vec![]
+    }
     fn start_server(&self) -> std::result::Result<(), String> {
         Err("server start failed".to_string())
     }
@@ -994,7 +1034,9 @@ async fn test_send_mixed_types() {
         content: "session msg".to_string(),
         message_type: String::new(),
         meta: Default::default(),
-    }).await.unwrap();
+    })
+    .await
+    .unwrap();
 
     // Broadcast
     ch.send(OutboundMessage {
@@ -1003,7 +1045,9 @@ async fn test_send_mixed_types() {
         content: "broadcast msg".to_string(),
         message_type: String::new(),
         meta: Default::default(),
-    }).await.unwrap();
+    })
+    .await
+    .unwrap();
 
     // History
     ch.send(OutboundMessage {
@@ -1012,7 +1056,9 @@ async fn test_send_mixed_types() {
         content: "history data".to_string(),
         message_type: "history".to_string(),
         meta: Default::default(),
-    }).await.unwrap();
+    })
+    .await
+    .unwrap();
 
     assert_eq!(mock.sent.lock().unwrap().len(), 1);
     assert_eq!(mock.broadcasts.lock().unwrap().len(), 1);

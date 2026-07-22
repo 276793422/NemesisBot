@@ -48,7 +48,10 @@ async fn test_scan_hook_scan_tool_invocation_unknown_tool() {
     let hook = ScanHook::new(scanner);
     let args = serde_json::json!({});
     // Unknown tools should be allowed
-    let result = hook.scan_tool_invocation("unknown_tool", &args).await.unwrap();
+    let result = hook
+        .scan_tool_invocation("unknown_tool", &args)
+        .await
+        .unwrap();
     assert!(result);
 }
 
@@ -58,7 +61,10 @@ async fn test_scan_hook_scan_tool_invocation_write_no_content() {
     let hook = ScanHook::new(scanner);
     let args = serde_json::json!({});
     // write_file with no content field should be ok
-    let result = hook.scan_tool_invocation("write_file", &args).await.unwrap();
+    let result = hook
+        .scan_tool_invocation("write_file", &args)
+        .await
+        .unwrap();
     assert!(result);
 }
 
@@ -67,7 +73,10 @@ async fn test_scan_hook_scan_tool_invocation_write_empty_content() {
     let scanner = Arc::new(Scanner::new(ScannerConfig::default()));
     let hook = ScanHook::new(scanner);
     let args = serde_json::json!({"content": ""});
-    let result = hook.scan_tool_invocation("write_file", &args).await.unwrap();
+    let result = hook
+        .scan_tool_invocation("write_file", &args)
+        .await
+        .unwrap();
     assert!(result);
 }
 
@@ -85,7 +94,10 @@ async fn test_scan_hook_scan_tool_invocation_append_file_no_content() {
     let scanner = Arc::new(Scanner::new(ScannerConfig::default()));
     let hook = ScanHook::new(scanner);
     let args = serde_json::json!({});
-    let result = hook.scan_tool_invocation("append_file", &args).await.unwrap();
+    let result = hook
+        .scan_tool_invocation("append_file", &args)
+        .await
+        .unwrap();
     assert!(result);
 }
 
@@ -112,7 +124,10 @@ async fn test_scan_hook_scan_tool_invocation_execute_command() {
     let scanner = Arc::new(Scanner::new(ScannerConfig::default()));
     let hook = ScanHook::new(scanner);
     let args = serde_json::json!({"command": "dir"});
-    let result = hook.scan_tool_invocation("execute_command", &args).await.unwrap();
+    let result = hook
+        .scan_tool_invocation("execute_command", &args)
+        .await
+        .unwrap();
     assert!(result);
 }
 
@@ -120,7 +135,10 @@ async fn test_scan_hook_scan_tool_invocation_execute_command() {
 async fn test_scan_hook_scan_file_path_nonexistent() {
     let scanner = Arc::new(Scanner::new(ScannerConfig::default()));
     let hook = ScanHook::new(scanner);
-    let result = hook.scan_file_path(Path::new("/nonexistent/file.txt")).await.unwrap();
+    let result = hook
+        .scan_file_path(Path::new("/nonexistent/file.txt"))
+        .await
+        .unwrap();
     assert!(result.0); // clean
     assert!(result.1.is_none()); // no scan result
 }
@@ -142,7 +160,10 @@ async fn test_scan_hook_scan_file_path_safe_extension() {
 async fn test_scan_hook_scan_downloaded_file_nonexistent() {
     let scanner = Arc::new(Scanner::new(ScannerConfig::default()));
     let hook = ScanHook::new(scanner);
-    let result = hook.scan_downloaded_file(Path::new("/nonexistent/file.exe")).await.unwrap();
+    let result = hook
+        .scan_downloaded_file(Path::new("/nonexistent/file.exe"))
+        .await
+        .unwrap();
     assert!(result.0); // clean
     assert!(result.1.is_none());
 }

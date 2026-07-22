@@ -14,15 +14,30 @@ mod types_extra {
     #[test]
     fn test_operation_type_all_variants_copy() {
         let ops = [
-            OperationType::FileRead, OperationType::FileWrite, OperationType::FileDelete,
-            OperationType::DirRead, OperationType::DirCreate, OperationType::DirDelete,
-            OperationType::ProcessExec, OperationType::ProcessSpawn, OperationType::ProcessKill,
+            OperationType::FileRead,
+            OperationType::FileWrite,
+            OperationType::FileDelete,
+            OperationType::DirRead,
+            OperationType::DirCreate,
+            OperationType::DirDelete,
+            OperationType::ProcessExec,
+            OperationType::ProcessSpawn,
+            OperationType::ProcessKill,
             OperationType::ProcessSuspend,
-            OperationType::NetworkDownload, OperationType::NetworkUpload, OperationType::NetworkRequest,
-            OperationType::HardwareI2C, OperationType::HardwareSPI, OperationType::HardwareGPIO,
-            OperationType::SystemShutdown, OperationType::SystemReboot, OperationType::SystemConfig,
-            OperationType::SystemService, OperationType::SystemInstall,
-            OperationType::RegistryRead, OperationType::RegistryWrite, OperationType::RegistryDelete,
+            OperationType::NetworkDownload,
+            OperationType::NetworkUpload,
+            OperationType::NetworkRequest,
+            OperationType::HardwareI2C,
+            OperationType::HardwareSPI,
+            OperationType::HardwareGPIO,
+            OperationType::SystemShutdown,
+            OperationType::SystemReboot,
+            OperationType::SystemConfig,
+            OperationType::SystemService,
+            OperationType::SystemInstall,
+            OperationType::RegistryRead,
+            OperationType::RegistryWrite,
+            OperationType::RegistryDelete,
         ];
         assert_eq!(ops.len(), 24);
     }
@@ -37,7 +52,12 @@ mod types_extra {
 
     #[test]
     fn test_danger_level_serde_all() {
-        for dl in [DangerLevel::Low, DangerLevel::Medium, DangerLevel::High, DangerLevel::Critical] {
+        for dl in [
+            DangerLevel::Low,
+            DangerLevel::Medium,
+            DangerLevel::High,
+            DangerLevel::Critical,
+        ] {
             let json = serde_json::to_string(&dl).unwrap();
             let back: DangerLevel = serde_json::from_str(&json).unwrap();
             assert_eq!(dl, back);
@@ -103,7 +123,10 @@ mod types_extra {
     #[test]
     fn test_tool_to_operation_kill_aliases() {
         assert_eq!(tool_to_operation("kill"), Some(OperationType::ProcessKill));
-        assert_eq!(tool_to_operation("kill_process"), Some(OperationType::ProcessKill));
+        assert_eq!(
+            tool_to_operation("kill_process"),
+            Some(OperationType::ProcessKill)
+        );
     }
 
     #[test]
@@ -341,10 +364,7 @@ mod scanner_extra {
 
     #[test]
     fn test_extension_rules_should_scan() {
-        let rules = ExtensionRules::new(
-            vec!["exe".to_string(), "dll".to_string()],
-            vec![],
-        );
+        let rules = ExtensionRules::new(vec!["exe".to_string(), "dll".to_string()], vec![]);
         assert!(rules.should_scan_file(std::path::Path::new("test.exe")));
         assert!(rules.should_scan_file(std::path::Path::new("test.dll")));
         assert!(!rules.should_scan_file(std::path::Path::new("test.txt")));
@@ -469,15 +489,23 @@ mod command_extra {
 
     #[test]
     fn test_platform_variants() {
-        let _ = [Platform::All, Platform::Linux, Platform::Windows, Platform::MacOS];
+        let _ = [
+            Platform::All,
+            Platform::Linux,
+            Platform::Windows,
+            Platform::MacOS,
+        ];
     }
 
     #[test]
     fn test_command_category_variants() {
         let _ = [
-            CommandCategory::Destructive, CommandCategory::Network,
-            CommandCategory::Privilege, CommandCategory::Recon,
-            CommandCategory::Obfuscation, CommandCategory::Persistence,
+            CommandCategory::Destructive,
+            CommandCategory::Network,
+            CommandCategory::Privilege,
+            CommandCategory::Recon,
+            CommandCategory::Obfuscation,
+            CommandCategory::Persistence,
             CommandCategory::Exfiltration,
         ];
     }
@@ -560,7 +588,12 @@ mod credential_extra {
         let scanner = Scanner::new(true, "block");
         let result = scanner.scan_content("ACa1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6");
         if result.has_matches {
-            assert!(result.matches.iter().any(|m| m.pattern_name == "twilio_sid"));
+            assert!(
+                result
+                    .matches
+                    .iter()
+                    .any(|m| m.pattern_name == "twilio_sid")
+            );
         }
     }
 
@@ -569,7 +602,12 @@ mod credential_extra {
         let scanner = Scanner::new(true, "block");
         let result = scanner.scan_content("key-a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6");
         if result.has_matches {
-            assert!(result.matches.iter().any(|m| m.pattern_name == "mailgun_key"));
+            assert!(
+                result
+                    .matches
+                    .iter()
+                    .any(|m| m.pattern_name == "mailgun_key")
+            );
         }
     }
 
@@ -585,7 +623,9 @@ mod credential_extra {
     #[test]
     fn test_bearer_token_in_header_detected() {
         let scanner = Scanner::new(true, "block");
-        let result = scanner.scan_content("Authorization: Bearer eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0In0.abc123def");
+        let result = scanner.scan_content(
+            "Authorization: Bearer eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0In0.abc123def",
+        );
         assert!(result.has_matches);
     }
 
@@ -656,7 +696,12 @@ mod dlp_extra {
 
     #[test]
     fn test_dlp_severity_serialization() {
-        for sev in [DlpSeverity::Low, DlpSeverity::Medium, DlpSeverity::High, DlpSeverity::Critical] {
+        for sev in [
+            DlpSeverity::Low,
+            DlpSeverity::Medium,
+            DlpSeverity::High,
+            DlpSeverity::Critical,
+        ] {
             let json = serde_json::to_string(&sev).unwrap();
             let back: DlpSeverity = serde_json::from_str(&json).unwrap();
             assert_eq!(sev, back);
@@ -743,14 +788,16 @@ mod dlp_extra {
     fn test_dlp_total_rule_count_increases_with_custom() {
         let engine = DlpEngine::new(true, "block");
         let base_count = engine.total_rule_count();
-        engine.add_rule(DlpRule {
-            name: "custom1".to_string(),
-            category: "test".to_string(),
-            pattern: r"CUSTOM_\d+".to_string(),
-            enabled: true,
-            action: "block".to_string(),
-            confidence: DlpConfidence::Medium,
-        }).unwrap();
+        engine
+            .add_rule(DlpRule {
+                name: "custom1".to_string(),
+                category: "test".to_string(),
+                pattern: r"CUSTOM_\d+".to_string(),
+                enabled: true,
+                action: "block".to_string(),
+                confidence: DlpConfidence::Medium,
+            })
+            .unwrap();
         assert_eq!(engine.total_rule_count(), base_count + 1);
     }
 
@@ -766,7 +813,12 @@ mod dlp_extra {
         let engine = DlpEngine::new(true, "block");
         let result = engine.scan_text("azure_api_key = abcdefghijklmnopqrstuvwxyz123456");
         if result.has_matches {
-            assert!(result.matches.iter().any(|m| m.rule_name == "azure_api_key"));
+            assert!(
+                result
+                    .matches
+                    .iter()
+                    .any(|m| m.rule_name == "azure_api_key")
+            );
         }
     }
 
@@ -775,7 +827,12 @@ mod dlp_extra {
         let engine = DlpEngine::new(true, "block");
         let result = engine.scan_text("ya29.abcdefghijklmnopqrstuvwxyz1234567890");
         if result.has_matches {
-            assert!(result.matches.iter().any(|m| m.rule_name == "google_oauth_token"));
+            assert!(
+                result
+                    .matches
+                    .iter()
+                    .any(|m| m.rule_name == "google_oauth_token")
+            );
         }
     }
 
@@ -977,7 +1034,17 @@ mod audit_log_extra {
     fn test_audit_logger_disabled_no_panic() {
         let mut logger = AuditLogger::disabled();
         // Should not panic when logging events while disabled
-        logger.log_event("test", "allowed", "file_read", "user", "cli", "/tmp", "LOW", "ok", "default");
+        logger.log_event(
+            "test",
+            "allowed",
+            "file_read",
+            "user",
+            "cli",
+            "/tmp",
+            "LOW",
+            "ok",
+            "default",
+        );
         assert!(!logger.is_enabled());
     }
 
@@ -1472,7 +1539,7 @@ mod signature_extra {
         // The public key is hex-encoded; convert to base64 for import_public_key
         let pub_bytes: Vec<u8> = (0..kp.public_key.len())
             .step_by(2)
-            .map(|i| u8::from_str_radix(&kp.public_key[i..i+2], 16).unwrap())
+            .map(|i| u8::from_str_radix(&kp.public_key[i..i + 2], 16).unwrap())
             .collect();
         use base64::Engine;
         let b64 = base64::engine::general_purpose::STANDARD.encode(&pub_bytes);
@@ -1482,7 +1549,11 @@ mod signature_extra {
 
     #[test]
     fn test_trust_level_variants() {
-        let _ = [TrustLevel::Unknown, TrustLevel::Community, TrustLevel::Verified];
+        let _ = [
+            TrustLevel::Unknown,
+            TrustLevel::Community,
+            TrustLevel::Verified,
+        ];
     }
 
     #[test]
@@ -1511,7 +1582,11 @@ mod approval_extra {
 
     #[test]
     fn test_approval_status_variants() {
-        let _ = [ApprovalStatus::Pending, ApprovalStatus::Approved, ApprovalStatus::Denied];
+        let _ = [
+            ApprovalStatus::Pending,
+            ApprovalStatus::Approved,
+            ApprovalStatus::Denied,
+        ];
     }
 
     #[test]

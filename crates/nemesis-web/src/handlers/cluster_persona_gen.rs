@@ -102,10 +102,7 @@ pub fn validate(pkg: &mut PersonaPackage) -> Result<(), String> {
         return Err("soul_md 为空".into());
     }
     if pkg.role != "worker" && pkg.role != "manager" {
-        return Err(format!(
-            "role 必须 worker/manager，模型给出 '{}'",
-            pkg.role
-        ));
+        return Err(format!("role 必须 worker/manager，模型给出 '{}'", pkg.role));
     }
     // Cap emoji to a few code points (models sometimes append variation
     // selectors or a stray word).

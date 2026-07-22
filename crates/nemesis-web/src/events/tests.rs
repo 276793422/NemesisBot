@@ -254,13 +254,16 @@ fn test_subscribe_and_drop_receiver() {
 fn test_event_with_nested_object() {
     let hub = EventHub::new();
     let mut rx = hub.subscribe();
-    hub.publish("nested", serde_json::json!({
-        "level1": {
-            "level2": {
-                "value": 42
+    hub.publish(
+        "nested",
+        serde_json::json!({
+            "level1": {
+                "level2": {
+                    "value": 42
+                }
             }
-        }
-    }));
+        }),
+    );
     let event = rx.try_recv().unwrap();
     assert_eq!(event.data["level1"]["level2"]["value"], 42);
 }

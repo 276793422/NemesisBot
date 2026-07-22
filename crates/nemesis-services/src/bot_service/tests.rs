@@ -55,8 +55,11 @@ fn make_config_with_file(dir: &std::path::Path) -> BotServiceConfig {
             }
         }
     });
-    std::fs::write(&config_path, serde_json::to_string_pretty(&config_content).unwrap())
-        .unwrap();
+    std::fs::write(
+        &config_path,
+        serde_json::to_string_pretty(&config_content).unwrap(),
+    )
+    .unwrap();
 
     BotServiceConfig {
         config_path,
@@ -121,8 +124,11 @@ fn test_save_config_writes_to_disk() {
             }
         ]
     });
-    std::fs::write(&config_path, serde_json::to_string_pretty(&initial_config).unwrap())
-        .unwrap();
+    std::fs::write(
+        &config_path,
+        serde_json::to_string_pretty(&initial_config).unwrap(),
+    )
+    .unwrap();
 
     let svc = BotService::new(BotServiceConfig {
         config_path: config_path.clone(),
@@ -239,7 +245,11 @@ fn test_validate_config_checks_api_keys() {
 
     let result = svc.start();
     assert!(result.is_err());
-    assert!(svc.get_error().unwrap().contains("no model with valid API key"));
+    assert!(
+        svc.get_error()
+            .unwrap()
+            .contains("no model with valid API key")
+    );
 }
 
 #[test]
@@ -307,11 +317,17 @@ fn test_inject_and_get_forge() {
     // Create a mock forge service
     struct MockForge;
     impl LifecycleService for MockForge {
-        fn start(&self) -> Result<(), String> { Ok(()) }
-        fn stop(&self) -> Result<(), String> { Ok(()) }
+        fn start(&self) -> Result<(), String> {
+            Ok(())
+        }
+        fn stop(&self) -> Result<(), String> {
+            Ok(())
+        }
     }
     impl ForgeService for MockForge {
-        fn forge_name(&self) -> &str { "mock_forge" }
+        fn forge_name(&self) -> &str {
+            "mock_forge"
+        }
     }
 
     svc.inject_forge(Arc::new(MockForge));
@@ -326,8 +342,12 @@ fn test_inject_memory() {
 
     struct MockMemory;
     impl LifecycleService for MockMemory {
-        fn start(&self) -> Result<(), String> { Ok(()) }
-        fn stop(&self) -> Result<(), String> { Ok(()) }
+        fn start(&self) -> Result<(), String> {
+            Ok(())
+        }
+        fn stop(&self) -> Result<(), String> {
+            Ok(())
+        }
     }
     impl MemoryService for MockMemory {}
 
@@ -450,8 +470,12 @@ fn test_inject_and_get_cron() {
 
     struct MockCron;
     impl LifecycleService for MockCron {
-        fn start(&self) -> Result<(), String> { Ok(()) }
-        fn stop(&self) -> Result<(), String> { Ok(()) }
+        fn start(&self) -> Result<(), String> {
+            Ok(())
+        }
+        fn stop(&self) -> Result<(), String> {
+            Ok(())
+        }
     }
     impl CronService for MockCron {}
 
@@ -495,7 +519,9 @@ fn test_inject_observer() {
 
     struct MockObserver;
     impl ObserverManager for MockObserver {
-        fn has_observers(&self) -> bool { false }
+        fn has_observers(&self) -> bool {
+            false
+        }
     }
 
     svc.inject_observer(Arc::new(MockObserver));
@@ -507,8 +533,12 @@ fn test_inject_heartbeat() {
 
     struct MockHeartbeat;
     impl LifecycleService for MockHeartbeat {
-        fn start(&self) -> Result<(), String> { Ok(()) }
-        fn stop(&self) -> Result<(), String> { Ok(()) }
+        fn start(&self) -> Result<(), String> {
+            Ok(())
+        }
+        fn stop(&self) -> Result<(), String> {
+            Ok(())
+        }
     }
     impl HeartbeatService for MockHeartbeat {}
 
@@ -521,8 +551,12 @@ fn test_inject_devices() {
 
     struct MockDevices;
     impl LifecycleService for MockDevices {
-        fn start(&self) -> Result<(), String> { Ok(()) }
-        fn stop(&self) -> Result<(), String> { Ok(()) }
+        fn start(&self) -> Result<(), String> {
+            Ok(())
+        }
+        fn stop(&self) -> Result<(), String> {
+            Ok(())
+        }
     }
     impl DeviceService for MockDevices {}
 
@@ -535,8 +569,12 @@ fn test_inject_health() {
 
     struct MockHealth;
     impl LifecycleService for MockHealth {
-        fn start(&self) -> Result<(), String> { Ok(()) }
-        fn stop(&self) -> Result<(), String> { Ok(()) }
+        fn start(&self) -> Result<(), String> {
+            Ok(())
+        }
+        fn stop(&self) -> Result<(), String> {
+            Ok(())
+        }
     }
     impl HealthServer for MockHealth {}
 
@@ -549,11 +587,17 @@ fn test_inject_channels() {
 
     struct MockChannels;
     impl LifecycleService for MockChannels {
-        fn start(&self) -> Result<(), String> { Ok(()) }
-        fn stop(&self) -> Result<(), String> { Ok(()) }
+        fn start(&self) -> Result<(), String> {
+            Ok(())
+        }
+        fn stop(&self) -> Result<(), String> {
+            Ok(())
+        }
     }
     impl ChannelManager for MockChannels {
-        fn enabled_channels(&self) -> Vec<String> { vec![] }
+        fn enabled_channels(&self) -> Vec<String> {
+            vec![]
+        }
     }
 
     svc.inject_channels(Arc::new(MockChannels));
@@ -566,8 +610,12 @@ fn test_inject_agent() {
 
     struct MockAgent;
     impl LifecycleService for MockAgent {
-        fn start(&self) -> Result<(), String> { Ok(()) }
-        fn stop(&self) -> Result<(), String> { Ok(()) }
+        fn start(&self) -> Result<(), String> {
+            Ok(())
+        }
+        fn stop(&self) -> Result<(), String> {
+            Ok(())
+        }
     }
     impl AgentLoopService for MockAgent {}
 
@@ -706,11 +754,20 @@ fn test_enabled_components_is_enabled_unknown() {
 fn test_enabled_components_enable_disable_roundtrip() {
     let mut ec = EnabledComponents::new();
     for comp in [
-        Component::Bus, Component::Channels, Component::Agent,
-        Component::Security, Component::Forge, Component::Cluster,
-        Component::Memory, Component::Workflow, Component::Skills,
-        Component::Cron, Component::Heartbeat, Component::Devices,
-        Component::Health, Component::Observer,
+        Component::Bus,
+        Component::Channels,
+        Component::Agent,
+        Component::Security,
+        Component::Forge,
+        Component::Cluster,
+        Component::Memory,
+        Component::Workflow,
+        Component::Skills,
+        Component::Cron,
+        Component::Heartbeat,
+        Component::Devices,
+        Component::Health,
+        Component::Observer,
     ] {
         ec.enable(comp);
         assert!(ec.is_enabled(comp));
@@ -724,11 +781,20 @@ fn test_enabled_components_enable_disable_roundtrip() {
 #[test]
 fn test_component_all_variants_serde() {
     let all = vec![
-        Component::Bus, Component::Channels, Component::Agent,
-        Component::Security, Component::Forge, Component::Cluster,
-        Component::Memory, Component::Workflow, Component::Skills,
-        Component::Cron, Component::Heartbeat, Component::Devices,
-        Component::Health, Component::Observer,
+        Component::Bus,
+        Component::Channels,
+        Component::Agent,
+        Component::Security,
+        Component::Forge,
+        Component::Cluster,
+        Component::Memory,
+        Component::Workflow,
+        Component::Skills,
+        Component::Cron,
+        Component::Heartbeat,
+        Component::Devices,
+        Component::Health,
+        Component::Observer,
     ];
     for comp in &all {
         let json = serde_json::to_string(comp).unwrap();
@@ -781,7 +847,8 @@ fn test_model_entry_serde() {
 #[test]
 fn test_model_entry_api_base_alias() {
     // The alias "api_base" should also deserialize into base_url
-    let json = r#"{"model":"test/1","api_key":"k","api_base":"http://host:123","is_default":false}"#;
+    let json =
+        r#"{"model":"test/1","api_key":"k","api_base":"http://host:123","is_default":false}"#;
     let entry: ModelEntry = serde_json::from_str(json).unwrap();
     assert_eq!(entry.base_url, "http://host:123");
 }
@@ -816,8 +883,12 @@ fn test_lifecycle_service_default_stop() {
 
 struct MockAgentDefault;
 impl LifecycleService for MockAgentDefault {
-    fn start(&self) -> Result<(), String> { Ok(()) }
-    fn stop(&self) -> Result<(), String> { Ok(()) }
+    fn start(&self) -> Result<(), String> {
+        Ok(())
+    }
+    fn stop(&self) -> Result<(), String> {
+        Ok(())
+    }
 }
 impl AgentLoopService for MockAgentDefault {}
 
@@ -869,8 +940,12 @@ async fn test_create_heartbeat_handler_with_agent() {
 
     struct MockAgentHeartbeat;
     impl LifecycleService for MockAgentHeartbeat {
-        fn start(&self) -> Result<(), String> { Ok(()) }
-        fn stop(&self) -> Result<(), String> { Ok(()) }
+        fn start(&self) -> Result<(), String> {
+            Ok(())
+        }
+        fn stop(&self) -> Result<(), String> {
+            Ok(())
+        }
     }
     impl AgentLoopService for MockAgentHeartbeat {
         fn process_heartbeat(&self) -> Result<String, String> {
@@ -894,8 +969,12 @@ async fn test_create_heartbeat_handler_agent_error() {
 
     struct MockAgentError;
     impl LifecycleService for MockAgentError {
-        fn start(&self) -> Result<(), String> { Ok(()) }
-        fn stop(&self) -> Result<(), String> { Ok(()) }
+        fn start(&self) -> Result<(), String> {
+            Ok(())
+        }
+        fn stop(&self) -> Result<(), String> {
+            Ok(())
+        }
     }
     impl AgentLoopService for MockAgentError {
         fn process_heartbeat(&self) -> Result<String, String> {
@@ -1014,7 +1093,11 @@ fn test_load_config_workspace_from_config_file() {
             { "model": "test/1.0", "api_key": "test-key", "base_url": "", "is_default": true }
         ]
     });
-    std::fs::write(&config_path, serde_json::to_string(&config_content).unwrap()).unwrap();
+    std::fs::write(
+        &config_path,
+        serde_json::to_string(&config_content).unwrap(),
+    )
+    .unwrap();
 
     let svc = BotService::new(BotServiceConfig {
         config_path,
@@ -1037,7 +1120,11 @@ fn test_load_config_workspace_from_config_field() {
             { "model": "test/1.0", "api_key": "test-key", "base_url": "", "is_default": true }
         ]
     });
-    std::fs::write(&config_path, serde_json::to_string(&config_content).unwrap()).unwrap();
+    std::fs::write(
+        &config_path,
+        serde_json::to_string(&config_content).unwrap(),
+    )
+    .unwrap();
 
     let svc = BotService::new(BotServiceConfig {
         config_path,
@@ -1061,7 +1148,11 @@ fn test_load_config_workspace_default_to_parent() {
             { "model": "test/1.0", "api_key": "test-key", "base_url": "", "is_default": true }
         ]
     });
-    std::fs::write(&config_path, serde_json::to_string(&config_content).unwrap()).unwrap();
+    std::fs::write(
+        &config_path,
+        serde_json::to_string(&config_content).unwrap(),
+    )
+    .unwrap();
 
     let svc = BotService::new(BotServiceConfig {
         config_path,
@@ -1097,7 +1188,11 @@ fn make_config_with_flags(
         "heartbeat": { "enabled": heartbeat_enabled, "interval": 60 },
         "security": { "enabled": true }
     });
-    std::fs::write(&config_path, serde_json::to_string(&config_content).unwrap()).unwrap();
+    std::fs::write(
+        &config_path,
+        serde_json::to_string(&config_content).unwrap(),
+    )
+    .unwrap();
 
     BotServiceConfig {
         config_path,
@@ -1192,7 +1287,11 @@ fn test_init_components_all_disabled_optional() {
         "heartbeat": { "enabled": false, "interval": 60 },
         "security": { "enabled": false }
     });
-    std::fs::write(&config_path, serde_json::to_string(&config_content).unwrap()).unwrap();
+    std::fs::write(
+        &config_path,
+        serde_json::to_string(&config_content).unwrap(),
+    )
+    .unwrap();
 
     let svc = BotService::new(BotServiceConfig {
         config_path,
@@ -1222,8 +1321,12 @@ fn test_start_services_with_channel_manager() {
 
     struct MockChannelsWithNames;
     impl LifecycleService for MockChannelsWithNames {
-        fn start(&self) -> Result<(), String> { Ok(()) }
-        fn stop(&self) -> Result<(), String> { Ok(()) }
+        fn start(&self) -> Result<(), String> {
+            Ok(())
+        }
+        fn stop(&self) -> Result<(), String> {
+            Ok(())
+        }
     }
     impl ChannelManager for MockChannelsWithNames {
         fn enabled_channels(&self) -> Vec<String> {
@@ -1246,8 +1349,12 @@ fn test_start_services_heartbeat_start_failure() {
 
     struct FailingHeartbeat;
     impl LifecycleService for FailingHeartbeat {
-        fn start(&self) -> Result<(), String> { Err("heartbeat start error".to_string()) }
-        fn stop(&self) -> Result<(), String> { Ok(()) }
+        fn start(&self) -> Result<(), String> {
+            Err("heartbeat start error".to_string())
+        }
+        fn stop(&self) -> Result<(), String> {
+            Ok(())
+        }
     }
     impl HeartbeatService for FailingHeartbeat {}
 
@@ -1265,8 +1372,12 @@ fn test_start_services_devices_start_failure() {
 
     struct FailingDevices;
     impl LifecycleService for FailingDevices {
-        fn start(&self) -> Result<(), String> { Err("devices start error".to_string()) }
-        fn stop(&self) -> Result<(), String> { Ok(()) }
+        fn start(&self) -> Result<(), String> {
+            Err("devices start error".to_string())
+        }
+        fn stop(&self) -> Result<(), String> {
+            Ok(())
+        }
     }
     impl DeviceService for FailingDevices {}
 
@@ -1284,11 +1395,17 @@ fn test_start_services_channel_start_failure() {
 
     struct FailingChannels;
     impl LifecycleService for FailingChannels {
-        fn start(&self) -> Result<(), String> { Err("channels start error".to_string()) }
-        fn stop(&self) -> Result<(), String> { Ok(()) }
+        fn start(&self) -> Result<(), String> {
+            Err("channels start error".to_string())
+        }
+        fn stop(&self) -> Result<(), String> {
+            Ok(())
+        }
     }
     impl ChannelManager for FailingChannels {
-        fn enabled_channels(&self) -> Vec<String> { vec![] }
+        fn enabled_channels(&self) -> Vec<String> {
+            vec![]
+        }
     }
 
     svc.inject_channels(Arc::new(FailingChannels));
@@ -1305,8 +1422,12 @@ fn test_start_services_cron_non_fatal_failure() {
 
     struct FailingCron;
     impl LifecycleService for FailingCron {
-        fn start(&self) -> Result<(), String> { Err("cron start error".to_string()) }
-        fn stop(&self) -> Result<(), String> { Ok(()) }
+        fn start(&self) -> Result<(), String> {
+            Err("cron start error".to_string())
+        }
+        fn stop(&self) -> Result<(), String> {
+            Ok(())
+        }
     }
     impl CronService for FailingCron {}
 
@@ -1326,11 +1447,17 @@ fn test_start_services_forge_start_failure() {
 
     struct FailingForge;
     impl LifecycleService for FailingForge {
-        fn start(&self) -> Result<(), String> { Err("forge start error".to_string()) }
-        fn stop(&self) -> Result<(), String> { Ok(()) }
+        fn start(&self) -> Result<(), String> {
+            Err("forge start error".to_string())
+        }
+        fn stop(&self) -> Result<(), String> {
+            Ok(())
+        }
     }
     impl ForgeService for FailingForge {
-        fn forge_name(&self) -> &str { "failing_forge" }
+        fn forge_name(&self) -> &str {
+            "failing_forge"
+        }
     }
 
     svc.inject_forge(Arc::new(FailingForge));
@@ -1349,18 +1476,26 @@ async fn test_stop_all_with_injected_services() {
 
     struct MockFullService;
     impl LifecycleService for MockFullService {
-        fn start(&self) -> Result<(), String> { Ok(()) }
-        fn stop(&self) -> Result<(), String> { Ok(()) }
+        fn start(&self) -> Result<(), String> {
+            Ok(())
+        }
+        fn stop(&self) -> Result<(), String> {
+            Ok(())
+        }
     }
     impl ForgeService for MockFullService {
-        fn forge_name(&self) -> &str { "mock" }
+        fn forge_name(&self) -> &str {
+            "mock"
+        }
     }
     impl MemoryService for MockFullService {}
     impl HeartbeatService for MockFullService {}
     impl DeviceService for MockFullService {}
     impl HealthServer for MockFullService {}
     impl ChannelManager for MockFullService {
-        fn enabled_channels(&self) -> Vec<String> { vec![] }
+        fn enabled_channels(&self) -> Vec<String> {
+            vec![]
+        }
     }
     impl AgentLoopService for MockFullService {}
     impl CronService for MockFullService {}
@@ -1394,15 +1529,23 @@ async fn test_stop_all_with_service_stop_errors() {
 
     struct ErrorOnStop;
     impl LifecycleService for ErrorOnStop {
-        fn start(&self) -> Result<(), String> { Ok(()) }
-        fn stop(&self) -> Result<(), String> { Err("stop error".to_string()) }
+        fn start(&self) -> Result<(), String> {
+            Ok(())
+        }
+        fn stop(&self) -> Result<(), String> {
+            Err("stop error".to_string())
+        }
     }
     impl ChannelManager for ErrorOnStop {
-        fn enabled_channels(&self) -> Vec<String> { vec![] }
+        fn enabled_channels(&self) -> Vec<String> {
+            vec![]
+        }
     }
     impl AgentLoopService for ErrorOnStop {}
     impl ForgeService for ErrorOnStop {
-        fn forge_name(&self) -> &str { "error_forge" }
+        fn forge_name(&self) -> &str {
+            "error_forge"
+        }
     }
 
     svc.inject_channels(Arc::new(ErrorOnStop));
@@ -1561,8 +1704,12 @@ async fn test_start_services_health_server_start() {
 
     struct MockHealthSvc;
     impl LifecycleService for MockHealthSvc {
-        fn start(&self) -> Result<(), String> { Ok(()) }
-        fn stop(&self) -> Result<(), String> { Ok(()) }
+        fn start(&self) -> Result<(), String> {
+            Ok(())
+        }
+        fn stop(&self) -> Result<(), String> {
+            Ok(())
+        }
     }
     impl HealthServer for MockHealthSvc {}
 
@@ -1584,8 +1731,12 @@ async fn test_start_services_health_stop_error() {
 
     struct ErrorHealthStop;
     impl LifecycleService for ErrorHealthStop {
-        fn start(&self) -> Result<(), String> { Ok(()) }
-        fn stop(&self) -> Result<(), String> { Err("health stop error".to_string()) }
+        fn start(&self) -> Result<(), String> {
+            Ok(())
+        }
+        fn stop(&self) -> Result<(), String> {
+            Err("health stop error".to_string())
+        }
     }
     impl HealthServer for ErrorHealthStop {}
 
@@ -1605,11 +1756,17 @@ fn test_stop_all_forge_stop_error() {
 
     struct ErrorForgeStop;
     impl LifecycleService for ErrorForgeStop {
-        fn start(&self) -> Result<(), String> { Ok(()) }
-        fn stop(&self) -> Result<(), String> { Err("forge stop error".to_string()) }
+        fn start(&self) -> Result<(), String> {
+            Ok(())
+        }
+        fn stop(&self) -> Result<(), String> {
+            Err("forge stop error".to_string())
+        }
     }
     impl ForgeService for ErrorForgeStop {
-        fn forge_name(&self) -> &str { "error_forge" }
+        fn forge_name(&self) -> &str {
+            "error_forge"
+        }
     }
 
     svc.inject_forge(Arc::new(ErrorForgeStop));
@@ -1627,8 +1784,12 @@ fn test_stop_all_with_memory_service() {
 
     struct MockMemorySvc;
     impl LifecycleService for MockMemorySvc {
-        fn start(&self) -> Result<(), String> { Ok(()) }
-        fn stop(&self) -> Result<(), String> { Ok(()) }
+        fn start(&self) -> Result<(), String> {
+            Ok(())
+        }
+        fn stop(&self) -> Result<(), String> {
+            Ok(())
+        }
     }
     impl MemoryService for MockMemorySvc {}
 
@@ -1650,7 +1811,11 @@ async fn test_save_config_and_restart_while_running() {
             { "model": "test/1.0", "api_key": "test-key", "base_url": "", "is_default": true }
         ]
     });
-    std::fs::write(&config_path, serde_json::to_string(&config_content).unwrap()).unwrap();
+    std::fs::write(
+        &config_path,
+        serde_json::to_string(&config_content).unwrap(),
+    )
+    .unwrap();
 
     let svc = Arc::new(BotService::new(BotServiceConfig {
         config_path,
@@ -1696,7 +1861,11 @@ async fn test_save_config_restart_no_callback() {
             { "model": "test/1.0", "api_key": "test-key", "base_url": "", "is_default": true }
         ]
     });
-    std::fs::write(&config_path, serde_json::to_string(&config_content).unwrap()).unwrap();
+    std::fs::write(
+        &config_path,
+        serde_json::to_string(&config_content).unwrap(),
+    )
+    .unwrap();
 
     let svc = BotService::new(BotServiceConfig {
         config_path,
@@ -1729,8 +1898,12 @@ async fn test_start_services_agent_in_background() {
 
     struct MockAgentBg;
     impl LifecycleService for MockAgentBg {
-        fn start(&self) -> Result<(), String> { Ok(()) }
-        fn stop(&self) -> Result<(), String> { Ok(()) }
+        fn start(&self) -> Result<(), String> {
+            Ok(())
+        }
+        fn stop(&self) -> Result<(), String> {
+            Ok(())
+        }
     }
     impl AgentLoopService for MockAgentBg {}
 
@@ -1754,8 +1927,12 @@ fn test_stop_all_heartbeat_stop_error() {
 
     struct ErrorHeartbeatStop;
     impl LifecycleService for ErrorHeartbeatStop {
-        fn start(&self) -> Result<(), String> { Ok(()) }
-        fn stop(&self) -> Result<(), String> { Err("heartbeat stop error".to_string()) }
+        fn start(&self) -> Result<(), String> {
+            Ok(())
+        }
+        fn stop(&self) -> Result<(), String> {
+            Err("heartbeat stop error".to_string())
+        }
     }
     impl HeartbeatService for ErrorHeartbeatStop {}
 
@@ -1774,8 +1951,12 @@ fn test_stop_all_cron_stop_error() {
 
     struct ErrorCronStop;
     impl LifecycleService for ErrorCronStop {
-        fn start(&self) -> Result<(), String> { Ok(()) }
-        fn stop(&self) -> Result<(), String> { Err("cron stop error".to_string()) }
+        fn start(&self) -> Result<(), String> {
+            Ok(())
+        }
+        fn stop(&self) -> Result<(), String> {
+            Err("cron stop error".to_string())
+        }
     }
     impl CronService for ErrorCronStop {}
 
@@ -1794,8 +1975,12 @@ fn test_stop_all_devices_stop_error() {
 
     struct ErrorDeviceStop;
     impl LifecycleService for ErrorDeviceStop {
-        fn start(&self) -> Result<(), String> { Ok(()) }
-        fn stop(&self) -> Result<(), String> { Err("device stop error".to_string()) }
+        fn start(&self) -> Result<(), String> {
+            Ok(())
+        }
+        fn stop(&self) -> Result<(), String> {
+            Err("device stop error".to_string())
+        }
     }
     impl DeviceService for ErrorDeviceStop {}
 
@@ -1887,9 +2072,12 @@ fn test_save_config_rejects_bad_structure() {
     });
 
     // Valid JSON object but with wrong field types
-    let result = svc.save_config(&serde_json::json!({
-        "models": "not an array"
-    }), false);
+    let result = svc.save_config(
+        &serde_json::json!({
+            "models": "not an array"
+        }),
+        false,
+    );
     assert!(result.is_err());
 }
 

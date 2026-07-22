@@ -114,7 +114,9 @@ fn test_init_vector_store_from_config_no_plugin_errors() {
     let cfg = Config::new(dir.path());
     let mgr = MemoryManager::new(&cfg);
     let config_dir = tempfile::tempdir().unwrap();
-    let err = mgr.init_vector_store_from_config(config_dir.path()).unwrap_err();
+    let err = mgr
+        .init_vector_store_from_config(config_dir.path())
+        .unwrap_err();
     assert!(err.contains("not found"));
 }
 
@@ -275,8 +277,12 @@ async fn test_list_episodic_sessions_returns_keys() {
     let dir = tempfile::tempdir().unwrap();
     let cfg = Config::new(dir.path());
     let mgr = MemoryManager::new(&cfg);
-    mgr.append_episode(Episode::new("a".into(), "user".into(), "x".into())).await.unwrap();
-    mgr.append_episode(Episode::new("b".into(), "user".into(), "y".into())).await.unwrap();
+    mgr.append_episode(Episode::new("a".into(), "user".into(), "x".into()))
+        .await
+        .unwrap();
+    mgr.append_episode(Episode::new("b".into(), "user".into(), "y".into()))
+        .await
+        .unwrap();
     let sessions = mgr.list_episodic_sessions().await.unwrap();
     assert!(sessions.len() >= 2);
 }
@@ -361,14 +367,20 @@ async fn test_graph_delete_nonexistent_entity() {
 #[test]
 fn test_parse_memory_type_uppercase() {
     // Uppercase variants should fall to LongTerm default.
-    assert_eq!(parse_memory_type_from_str("LONG_TERM"), MemoryType::LongTerm);
+    assert_eq!(
+        parse_memory_type_from_str("LONG_TERM"),
+        MemoryType::LongTerm
+    );
     assert_eq!(parse_memory_type_from_str("EPISODIC"), MemoryType::LongTerm);
 }
 
 #[test]
 fn test_parse_memory_type_with_whitespace() {
     // Whitespace is not trimmed; unknown → LongTerm default.
-    assert_eq!(parse_memory_type_from_str(" long_term "), MemoryType::LongTerm);
+    assert_eq!(
+        parse_memory_type_from_str(" long_term "),
+        MemoryType::LongTerm
+    );
 }
 
 #[test]
@@ -385,7 +397,10 @@ async fn test_store_episodic_tags_include_role() {
     let dir = tempfile::tempdir().unwrap();
     let cfg = Config::new(dir.path());
     let mgr = MemoryManager::new(&cfg);
-    let id = mgr.store_episodic("s-tags", "user", "tag test").await.unwrap();
+    let id = mgr
+        .store_episodic("s-tags", "user", "tag test")
+        .await
+        .unwrap();
     let got = mgr.get(&id).await.unwrap().unwrap();
     assert!(got.tags.contains(&"user".to_string()));
     assert!(got.tags.contains(&"conversation".to_string()));
@@ -396,7 +411,10 @@ async fn test_store_episodic_metadata_has_session_key() {
     let dir = tempfile::tempdir().unwrap();
     let cfg = Config::new(dir.path());
     let mgr = MemoryManager::new(&cfg);
-    let id = mgr.store_episodic("s-meta", "user", "meta test").await.unwrap();
+    let id = mgr
+        .store_episodic("s-meta", "user", "meta test")
+        .await
+        .unwrap();
     let got = mgr.get(&id).await.unwrap().unwrap();
     assert_eq!(got.metadata.get("session_key").unwrap(), "s-meta");
     assert_eq!(got.metadata.get("role").unwrap(), "user");
@@ -453,7 +471,12 @@ fn test_with_config_dir_creates_default_when_missing() {
     let config_dir = tempfile::tempdir().unwrap();
     let _mgr = MemoryManager::with_config_dir(data_dir.path(), config_dir.path());
     // After call, the default config file should exist.
-    assert!(config_dir.path().join("config.enhanced_memory.json").exists());
+    assert!(
+        config_dir
+            .path()
+            .join("config.enhanced_memory.json")
+            .exists()
+    );
 }
 
 #[test]
@@ -464,7 +487,11 @@ fn test_with_config_dir_enabled_no_plugin_writes_disabled() {
     std::fs::write(&path, r#"{"enabled": true, "active": "medium"}"#).unwrap();
     let _mgr = MemoryManager::with_config_dir(data_dir.path(), config_dir.path());
     let content = std::fs::read_to_string(&path).unwrap();
-    assert!(content.contains("\"enabled\": false"), "config should be disabled: {}", content);
+    assert!(
+        content.contains("\"enabled\": false"),
+        "config should be disabled: {}",
+        content
+    );
 }
 
 // ============================================================

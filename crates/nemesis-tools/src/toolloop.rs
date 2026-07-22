@@ -149,11 +149,7 @@ pub async fn run_tool_loop(
 }
 
 /// Execute a single tool call.
-async fn execute_tool(
-    registry: &ToolRegistry,
-    name: &str,
-    args: &serde_json::Value,
-) -> ToolResult {
+async fn execute_tool(registry: &ToolRegistry, name: &str, args: &serde_json::Value) -> ToolResult {
     match registry.get(name) {
         Some(tool) => tool.execute(args).await,
         None => ToolResult::error(&format!("unknown tool: {}", name)),

@@ -125,7 +125,10 @@ impl EventSource for UsbEventSource {
                                     if l.is_empty() {
                                         // End of block - process accumulated properties
                                         if !current_props.is_empty() {
-                                            let action = match current_props.get("ACTION").map(|s| s.as_str()) {
+                                            let action = match current_props
+                                                .get("ACTION")
+                                                .map(|s| s.as_str())
+                                            {
                                                 Some("add") => Action::Add,
                                                 Some("remove") => Action::Remove,
                                                 Some("change") => Action::Change,
@@ -134,21 +137,26 @@ impl EventSource for UsbEventSource {
                                             let event = DeviceEvent {
                                                 action,
                                                 kind: Kind::Usb,
-                                                device_id: current_props.get("DEVPATH")
+                                                device_id: current_props
+                                                    .get("DEVPATH")
                                                     .cloned()
                                                     .unwrap_or_default(),
-                                                vendor: current_props.get("ID_VENDOR_FROM_DATABASE")
+                                                vendor: current_props
+                                                    .get("ID_VENDOR_FROM_DATABASE")
                                                     .or_else(|| current_props.get("ID_VENDOR"))
                                                     .cloned()
                                                     .unwrap_or_default(),
-                                                product: current_props.get("ID_MODEL_FROM_DATABASE")
+                                                product: current_props
+                                                    .get("ID_MODEL_FROM_DATABASE")
                                                     .or_else(|| current_props.get("ID_MODEL"))
                                                     .cloned()
                                                     .unwrap_or_default(),
-                                                serial: current_props.get("ID_SERIAL_SHORT")
+                                                serial: current_props
+                                                    .get("ID_SERIAL_SHORT")
                                                     .cloned()
                                                     .unwrap_or_default(),
-                                                capabilities: current_props.get("ID_USB_INTERFACES")
+                                                capabilities: current_props
+                                                    .get("ID_USB_INTERFACES")
                                                     .cloned()
                                                     .unwrap_or_default(),
                                                 raw: current_props.clone(),

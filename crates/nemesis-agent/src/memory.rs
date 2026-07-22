@@ -103,8 +103,7 @@ impl ConversationMemory {
             );
             // Keep turns from keep_from onward, plus turn 0 (system).
             let system = self.turns.first().cloned();
-            let remaining: Vec<ConversationTurn> =
-                self.turns.drain(keep_from..).collect();
+            let remaining: Vec<ConversationTurn> = self.turns.drain(keep_from..).collect();
             self.turns.truncate(1);
             self.turns.extend(remaining);
             // Edge case: if we didn't have a system prompt, don't keep an empty slot.
@@ -182,7 +181,10 @@ impl MemoryStore {
         // Ensure memory directory exists.
         let _ = fs::create_dir_all(&memory_dir);
 
-        info!("[MemoryStore] Initialized, memory_dir={}", memory_dir.display());
+        info!(
+            "[MemoryStore] Initialized, memory_dir={}",
+            memory_dir.display()
+        );
 
         Self {
             workspace,
@@ -195,7 +197,9 @@ impl MemoryStore {
     fn today_file(&self) -> PathBuf {
         let today = Local::now().format("%Y%m%d").to_string(); // YYYYMMDD
         let month_dir = &today[..6]; // YYYYMM
-        self.memory_dir.join(month_dir).join(format!("{}.md", today))
+        self.memory_dir
+            .join(month_dir)
+            .join(format!("{}.md", today))
     }
 
     /// Read the long-term memory file (`MEMORY.md`).
@@ -207,7 +211,10 @@ impl MemoryStore {
 
     /// Write content to the long-term memory file.
     pub fn write_long_term(&self, content: &str) -> std::io::Result<()> {
-        debug!("[MemoryStore] Writing long-term memory, {} bytes", content.len());
+        debug!(
+            "[MemoryStore] Writing long-term memory, {} bytes",
+            content.len()
+        );
         if let Some(parent) = self.memory_file.parent() {
             fs::create_dir_all(parent)?;
         }
@@ -226,7 +233,10 @@ impl MemoryStore {
     ///
     /// If the file does not exist yet, it is created with a date header.
     pub fn append_today(&self, content: &str) -> std::io::Result<()> {
-        debug!("[MemoryStore] Appending to today's daily note, {} bytes", content.len());
+        debug!(
+            "[MemoryStore] Appending to today's daily note, {} bytes",
+            content.len()
+        );
         let path = self.today_file();
 
         // Ensure month directory exists.
@@ -237,11 +247,7 @@ impl MemoryStore {
         let existing = fs::read_to_string(&path).unwrap_or_default();
 
         let new_content = if existing.is_empty() {
-            format!(
-                "# {}\n\n{}",
-                Local::now().format("%Y-%m-%d"),
-                content
-            )
+            format!("# {}\n\n{}", Local::now().format("%Y-%m-%d"), content)
         } else {
             format!("{}\n{}", existing, content)
         };
@@ -258,7 +264,10 @@ impl MemoryStore {
             let date = today - chrono::Duration::days(i as i64);
             let date_str = date.format("%Y%m%d").to_string();
             let month_dir = &date_str[..6];
-            let path = self.memory_dir.join(month_dir).join(format!("{}.md", date_str));
+            let path = self
+                .memory_dir
+                .join(month_dir)
+                .join(format!("{}.md", date_str));
 
             if let Ok(data) = fs::read_to_string(&path) {
                 notes.push(data);

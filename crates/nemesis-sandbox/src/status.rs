@@ -12,7 +12,11 @@ pub enum ServiceState {
 
 /// Query a Windows service's state by name (e.g. "SbieSvc", "SbieDrv").
 pub fn service_state(name: &str) -> ServiceState {
-    let out = match std::process::Command::new("sc").arg("query").arg(name).output() {
+    let out = match std::process::Command::new("sc")
+        .arg("query")
+        .arg(name)
+        .output()
+    {
         Ok(o) => o,
         Err(_) => return ServiceState::NotFound,
     };

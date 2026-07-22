@@ -5,11 +5,11 @@
 
 use crate::handlers::require_workspace;
 use crate::ws_router::{ModuleHandler, RequestContext};
-use nemesis_config::{load_scanner_config, save_scanner_config, EngineState, ScannerFullConfig};
+use nemesis_config::{EngineState, ScannerFullConfig, load_scanner_config, save_scanner_config};
 use nemesis_security::scanner::{
-    available_engines, create_engine, ClamAVEngine, InstallableEngine,
-    INSTALL_STATUS_FAILED, INSTALL_STATUS_INSTALLED, INSTALL_STATUS_PENDING,
-    DB_STATUS_MISSING, DB_STATUS_READY,
+    ClamAVEngine, DB_STATUS_MISSING, DB_STATUS_READY, INSTALL_STATUS_FAILED,
+    INSTALL_STATUS_INSTALLED, INSTALL_STATUS_PENDING, InstallableEngine, available_engines,
+    create_engine,
 };
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
@@ -129,7 +129,9 @@ fn get_str_field(data: &serde_json::Value, field: &str) -> Result<String, String
 }
 
 fn get_opt_str_field(data: &serde_json::Value, field: &str) -> Option<String> {
-    data.get(field).and_then(|v| v.as_str()).map(|s| s.to_string())
+    data.get(field)
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string())
 }
 
 fn build_engine_response(
@@ -152,8 +154,8 @@ fn build_engine_response(
 
 fn build_all_engines_status(workspace: &str) -> Result<Vec<serde_json::Value>, String> {
     let path = scanner_config_path(workspace);
-    let cfg = load_scanner_config(&path)
-        .map_err(|e| format!("failed to load scanner config: {}", e))?;
+    let cfg =
+        load_scanner_config(&path).map_err(|e| format!("failed to load scanner config: {}", e))?;
 
     let enabled_set: HashSet<&str> = cfg.enabled.iter().map(|s| s.as_str()).collect();
 
@@ -198,8 +200,8 @@ impl ScannerHandler {
         let path = scanner_config_path(workspace);
         let config = load_scanner_config(&path)
             .map_err(|e| format!("failed to load scanner config: {}", e))?;
-        let json = serde_json::to_value(&config)
-            .map_err(|e| format!("failed to serialize: {}", e))?;
+        let json =
+            serde_json::to_value(&config).map_err(|e| format!("failed to serialize: {}", e))?;
         Ok(Some(json))
     }
 
@@ -230,7 +232,11 @@ impl ScannerHandler {
         let mut cfg = load_scanner_config(&path)
             .map_err(|e| format!("failed to load scanner config: {}", e))?;
 
-        let target_name = data.and_then(|d| d.get("name").and_then(|v| v.as_str()).map(|s| s.to_string()));
+        let target_name = data.and_then(|d| {
+            d.get("name")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string())
+        });
         let enabled_set: HashSet<&str> = cfg.enabled.iter().map(|s| s.as_str()).collect();
 
         let names_to_check: Vec<String> = if let Some(ref name) = target_name {
@@ -301,7 +307,11 @@ impl ScannerHandler {
                 }
             }
 
-            results.push(build_engine_response(name, cfg.engines.get(name).unwrap_or(&raw), is_enabled));
+            results.push(build_engine_response(
+                name,
+                cfg.engines.get(name).unwrap_or(&raw),
+                is_enabled,
+            ));
         }
 
         if changed {
@@ -347,22 +357,24 @@ impl ScannerHandler {
             }
         }
 
-        save_scanner_config(&path, &cfg)
-            .map_err(|e| format!("failed to save config: {}", e))?;
+        save_scanner_config(&path, &cfg).map_err(|e| format!("failed to save config: {}", e))?;
 
         let engines = build_all_engines_status(workspace)?;
         Ok(Some(serde_json::json!({ "engines": engines })))
     }
 
-    fn cmd_disable(&self, workspace: &str, name: &str) -> Result<Option<serde_json::Value>, String> {
+    fn cmd_disable(
+        &self,
+        workspace: &str,
+        name: &str,
+    ) -> Result<Option<serde_json::Value>, String> {
         let path = scanner_config_path(workspace);
         let mut cfg = load_scanner_config(&path)
             .map_err(|e| format!("failed to load scanner config: {}", e))?;
 
         cfg.enabled.retain(|e| !e.eq_ignore_ascii_case(name));
 
-        save_scanner_config(&path, &cfg)
-            .map_err(|e| format!("failed to save config: {}", e))?;
+        save_scanner_config(&path, &cfg).map_err(|e| format!("failed to save config: {}", e))?;
 
         let engines = build_all_engines_status(workspace)?;
         Ok(Some(serde_json::json!({ "engines": engines })))
@@ -378,7 +390,8 @@ impl ScannerHandler {
         let force = data.get("force").and_then(|v| v.as_bool()).unwrap_or(false);
         let url_override = get_opt_str_field(data, "url");
 
-        let cancel_token = mark_op_started(&name).await
+        let cancel_token = mark_op_started(&name)
+            .await
             .ok_or_else(|| format!("{} operation already in progress", name))?;
 
         let hub = ctx.state.event_hub.clone();
@@ -389,23 +402,35 @@ impl ScannerHandler {
 
         tokio::spawn(async move {
             let result = install_engine_inner(
-                &ws, &name, force, url_override.as_deref(),
-                &hub, &cancel_token, &progress_cb,
-            ).await;
+                &ws,
+                &name,
+                force,
+                url_override.as_deref(),
+                &hub,
+                &cancel_token,
+                &progress_cb,
+            )
+            .await;
 
             match result {
                 Ok(()) => {
-                    hub.publish("scanner-progress", serde_json::json!({
-                        "engine": name, "phase": "complete", "progress": 100,
-                        "message": format!("{} installed successfully", name)
-                    }));
+                    hub.publish(
+                        "scanner-progress",
+                        serde_json::json!({
+                            "engine": name, "phase": "complete", "progress": 100,
+                            "message": format!("{} installed successfully", name)
+                        }),
+                    );
                 }
                 Err(e) => {
                     if e == "download cancelled" {
-                        hub.publish("scanner-progress", serde_json::json!({
-                            "engine": name, "phase": "cancelled", "progress": 0,
-                            "message": format!("{} installation cancelled", name)
-                        }));
+                        hub.publish(
+                            "scanner-progress",
+                            serde_json::json!({
+                                "engine": name, "phase": "cancelled", "progress": 0,
+                                "message": format!("{} installation cancelled", name)
+                            }),
+                        );
                     } else {
                         let path = scanner_config_path(&ws);
                         if let Ok(mut cfg) = load_scanner_config(&path) {
@@ -427,10 +452,13 @@ impl ScannerHandler {
                             }
                         }
 
-                        hub.publish("scanner-progress", serde_json::json!({
-                            "engine": name, "phase": "error", "progress": 0,
-                            "message": format!("Installation failed: {}", e)
-                        }));
+                        hub.publish(
+                            "scanner-progress",
+                            serde_json::json!({
+                                "engine": name, "phase": "error", "progress": 0,
+                                "message": format!("Installation failed: {}", e)
+                            }),
+                        );
                     }
                 }
             }
@@ -438,7 +466,9 @@ impl ScannerHandler {
             mark_op_finished(&name).await;
         });
 
-        Ok(Some(serde_json::json!({ "started": true, "engine": response_name })))
+        Ok(Some(
+            serde_json::json!({ "started": true, "engine": response_name }),
+        ))
     }
 
     async fn cmd_update_db(
@@ -450,7 +480,8 @@ impl ScannerHandler {
         let name = get_str_field(data, "name")?;
         let op_key = format!("{}-update-db", name);
 
-        let cancel_token = mark_op_started(&op_key).await
+        let cancel_token = mark_op_started(&op_key)
+            .await
             .ok_or_else(|| format!("{} database update already in progress", name))?;
 
         let hub = ctx.state.event_hub.clone();
@@ -458,10 +489,13 @@ impl ScannerHandler {
         let response_name = name.clone();
 
         tokio::spawn(async move {
-            hub.publish("scanner-progress", serde_json::json!({
-                "engine": name, "phase": "downloading-db", "progress": 0,
-                "message": format!("Starting {} database update...", name)
-            }));
+            hub.publish(
+                "scanner-progress",
+                serde_json::json!({
+                    "engine": name, "phase": "downloading-db", "progress": 0,
+                    "message": format!("Starting {} database update...", name)
+                }),
+            );
 
             let result = update_db_inner(&ws, &name, &hub, &cancel_token).await;
 
@@ -484,22 +518,31 @@ impl ScannerHandler {
                         }
                     }
 
-                    hub.publish("scanner-progress", serde_json::json!({
-                        "engine": name, "phase": "complete", "progress": 100,
-                        "message": format!("{} database updated", name)
-                    }));
+                    hub.publish(
+                        "scanner-progress",
+                        serde_json::json!({
+                            "engine": name, "phase": "complete", "progress": 100,
+                            "message": format!("{} database updated", name)
+                        }),
+                    );
                 }
                 Err(e) => {
                     if e == "database update cancelled" {
-                        hub.publish("scanner-progress", serde_json::json!({
-                            "engine": name, "phase": "cancelled", "progress": 0,
-                            "message": format!("{} database update cancelled", name)
-                        }));
+                        hub.publish(
+                            "scanner-progress",
+                            serde_json::json!({
+                                "engine": name, "phase": "cancelled", "progress": 0,
+                                "message": format!("{} database update cancelled", name)
+                            }),
+                        );
                     } else {
-                        hub.publish("scanner-progress", serde_json::json!({
-                            "engine": name, "phase": "error", "progress": 0,
-                            "message": format!("Database update failed: {}", e)
-                        }));
+                        hub.publish(
+                            "scanner-progress",
+                            serde_json::json!({
+                                "engine": name, "phase": "error", "progress": 0,
+                                "message": format!("Database update failed: {}", e)
+                            }),
+                        );
                     }
                 }
             }
@@ -507,7 +550,9 @@ impl ScannerHandler {
             mark_op_finished(&op_key).await;
         });
 
-        Ok(Some(serde_json::json!({ "started": true, "engine": response_name })))
+        Ok(Some(
+            serde_json::json!({ "started": true, "engine": response_name }),
+        ))
     }
 
     async fn cmd_test(
@@ -522,12 +567,14 @@ impl ScannerHandler {
         let cfg = load_scanner_config(&path)
             .map_err(|e| format!("failed to load scanner config: {}", e))?;
 
-        let raw = cfg.engines.get(&name)
+        let raw = cfg
+            .engines
+            .get(&name)
             .ok_or_else(|| format!("engine '{}' not found", name))?
             .clone();
 
-        let engine = create_engine(&name, &raw)
-            .map_err(|e| format!("failed to create engine: {}", e))?;
+        let engine =
+            create_engine(&name, &raw).map_err(|e| format!("failed to create engine: {}", e))?;
 
         let result = engine.scan_file(std::path::Path::new(&file_path)).await;
 
@@ -553,7 +600,9 @@ impl ScannerHandler {
         let mut cfg = load_scanner_config(&path)
             .map_err(|e| format!("failed to load scanner config: {}", e))?;
 
-        let raw = cfg.engines.get(&name)
+        let raw = cfg
+            .engines
+            .get(&name)
             .ok_or_else(|| format!("engine '{}' not found", name))?
             .clone();
 
@@ -591,8 +640,7 @@ impl ScannerHandler {
             .map_err(|e| format!("failed to serialize engine config: {}", e))?;
         cfg.engines.insert(name.clone(), updated);
 
-        save_scanner_config(&path, &cfg)
-            .map_err(|e| format!("failed to save config: {}", e))?;
+        save_scanner_config(&path, &cfg).map_err(|e| format!("failed to save config: {}", e))?;
 
         let engines = build_all_engines_status(workspace)?;
         Ok(Some(serde_json::json!({ "engines": engines })))
@@ -632,8 +680,7 @@ impl ScannerHandler {
             .map_err(|e| format!("failed to serialize engine config: {}", e))?;
 
         cfg.engines.insert(name.clone(), engine_json);
-        save_scanner_config(&path, &cfg)
-            .map_err(|e| format!("failed to save config: {}", e))?;
+        save_scanner_config(&path, &cfg).map_err(|e| format!("failed to save config: {}", e))?;
 
         let engines = build_all_engines_status(workspace)?;
         Ok(Some(serde_json::json!({ "engines": engines })))
@@ -660,7 +707,9 @@ impl ScannerHandler {
 
         if let Some(token) = ops.get(&key) {
             token.cancel();
-            Ok(Some(serde_json::json!({ "cancelled": true, "engine": name })))
+            Ok(Some(
+                serde_json::json!({ "cancelled": true, "engine": name }),
+            ))
         } else {
             Err(format!("no active operation for {}", name))
         }
@@ -681,13 +730,24 @@ fn make_download_progress_cb(
     Arc::new(move |written: u64, total: u64| {
         let (pct, msg) = if total > 0 {
             let p = (written as f64 / total as f64 * 100.0).min(100.0) as u32;
-            (p, format!("下载中 {}% ({}/{})", p, format_bytes(written), format_bytes(total)))
+            (
+                p,
+                format!(
+                    "下载中 {}% ({}/{})",
+                    p,
+                    format_bytes(written),
+                    format_bytes(total)
+                ),
+            )
         } else {
             (0, format!("下载中 {} bytes", format_bytes(written)))
         };
-        hub.publish("scanner-progress", serde_json::json!({
-            "engine": engine_name, "phase": "downloading", "progress": pct, "message": msg
-        }));
+        hub.publish(
+            "scanner-progress",
+            serde_json::json!({
+                "engine": engine_name, "phase": "downloading", "progress": pct, "message": msg
+            }),
+        );
     })
 }
 
@@ -714,17 +774,21 @@ async fn install_engine_inner(
     on_progress: &Arc<dyn Fn(u64, u64) + Send + Sync>,
 ) -> Result<(), String> {
     let path = scanner_config_path(workspace);
-    let cfg = load_scanner_config(&path)
-        .map_err(|e| format!("load config: {}", e))?;
+    let cfg = load_scanner_config(&path).map_err(|e| format!("load config: {}", e))?;
 
-    let raw = cfg.engines.get(name)
+    let raw = cfg
+        .engines
+        .get(name)
         .ok_or_else(|| format!("engine '{}' not found", name))?
         .clone();
 
     let engine_cfg = parse_engine_config(&raw);
 
     if engine_cfg.state.install_status == INSTALL_STATUS_INSTALLED && !force {
-        return Err(format!("{} already installed. Use force=true to reinstall.", name));
+        return Err(format!(
+            "{} already installed. Use force=true to reinstall.",
+            name
+        ));
     }
 
     let install_dir = if !engine_cfg.clamav_path.is_empty() {
@@ -732,12 +796,13 @@ async fn install_engine_inner(
     } else {
         resolve_tools_dir(workspace)
     };
-    std::fs::create_dir_all(&install_dir)
-        .map_err(|e| format!("create install dir: {}", e))?;
+    std::fs::create_dir_all(&install_dir).map_err(|e| format!("create install dir: {}", e))?;
 
     // Convert nemesis-config type to nemesis-security type
     let security_config = nemesis_security::scanner::ClamAVEngineConfig {
-        url: url_override.map(|s| s.to_string()).unwrap_or(engine_cfg.url),
+        url: url_override
+            .map(|s| s.to_string())
+            .unwrap_or(engine_cfg.url),
         clamav_path: engine_cfg.clamav_path.clone(),
         address: engine_cfg.address.clone(),
         scan_on_write: engine_cfg.scan_on_write,
@@ -757,23 +822,34 @@ async fn install_engine_inner(
 
     let engine = ClamAVEngine::new(security_config);
 
-    hub.publish("scanner-progress", serde_json::json!({
-        "engine": name, "phase": "downloading", "progress": 10,
-        "message": format!("Downloading {}...", name)
-    }));
+    hub.publish(
+        "scanner-progress",
+        serde_json::json!({
+            "engine": name, "phase": "downloading", "progress": 10,
+            "message": format!("Downloading {}...", name)
+        }),
+    );
 
     let dir_str = install_dir.to_string_lossy().to_string();
-    engine.download(&dir_str, cancel_token.clone(), Some(on_progress.clone())).await?;
+    engine
+        .download(&dir_str, cancel_token.clone(), Some(on_progress.clone()))
+        .await?;
 
-    hub.publish("scanner-progress", serde_json::json!({
-        "engine": name, "phase": "extracting", "progress": 50,
-        "message": format!("Extracting {}...", name)
-    }));
+    hub.publish(
+        "scanner-progress",
+        serde_json::json!({
+            "engine": name, "phase": "extracting", "progress": 50,
+            "message": format!("Extracting {}...", name)
+        }),
+    );
 
-    hub.publish("scanner-progress", serde_json::json!({
-        "engine": name, "phase": "configuring", "progress": 70,
-        "message": format!("Configuring {}...", name)
-    }));
+    hub.publish(
+        "scanner-progress",
+        serde_json::json!({
+            "engine": name, "phase": "configuring", "progress": 70,
+            "message": format!("Configuring {}...", name)
+        }),
+    );
 
     let clamav_path = engine.get_clamav_path();
     if !clamav_path.is_empty() {
@@ -788,7 +864,10 @@ async fn install_engine_inner(
 
         let daemon_config = nemesis_security::clamav::config::DaemonConfig {
             clamav_path: clamav_path.clone(),
-            config_file: std::path::Path::new(&clamav_path).join("clamd.conf").to_string_lossy().to_string(),
+            config_file: std::path::Path::new(&clamav_path)
+                .join("clamd.conf")
+                .to_string_lossy()
+                .to_string(),
             database_dir: db_dir.to_string_lossy().to_string(),
             listen_addr: "127.0.0.1:3310".to_string(),
             temp_dir: String::new(),
@@ -797,16 +876,25 @@ async fn install_engine_inner(
         let _ = nemesis_security::clamav::config::generate_clamd_config(&daemon_config);
     }
 
-    hub.publish("scanner-progress", serde_json::json!({
-        "engine": name, "phase": "downloading-db", "progress": 80,
-        "message": format!("Downloading {} virus database...", name)
-    }));
+    hub.publish(
+        "scanner-progress",
+        serde_json::json!({
+            "engine": name, "phase": "downloading-db", "progress": 80,
+            "message": format!("Downloading {} virus database...", name)
+        }),
+    );
 
     if !clamav_path.is_empty() {
         let updater_config = nemesis_security::clamav::updater::UpdaterConfig {
             clamav_path: clamav_path.clone(),
-            database_dir: std::path::Path::new(&clamav_path).join("database").to_string_lossy().to_string(),
-            config_file: std::path::Path::new(&clamav_path).join("freshclam.conf").to_string_lossy().to_string(),
+            database_dir: std::path::Path::new(&clamav_path)
+                .join("database")
+                .to_string_lossy()
+                .to_string(),
+            config_file: std::path::Path::new(&clamav_path)
+                .join("freshclam.conf")
+                .to_string_lossy()
+                .to_string(),
             update_interval: std::time::Duration::from_secs(24 * 3600),
             mirror_urls: vec![],
         };
@@ -816,8 +904,7 @@ async fn install_engine_inner(
         }
     }
 
-    let mut cfg2 = load_scanner_config(&path)
-        .map_err(|e| format!("reload config: {}", e))?;
+    let mut cfg2 = load_scanner_config(&path).map_err(|e| format!("reload config: {}", e))?;
     if let Some(old_raw) = cfg2.engines.get(name).cloned() {
         let mut updated = old_raw.clone();
         if let Some(obj) = updated.as_object_mut() {
@@ -838,8 +925,7 @@ async fn install_engine_inner(
             obj.insert("data_dir".to_string(), serde_json::json!(clamav_path));
         }
         cfg2.engines.insert(name.to_string(), updated);
-        save_scanner_config(&path, &cfg2)
-            .map_err(|e| format!("save config: {}", e))?;
+        save_scanner_config(&path, &cfg2).map_err(|e| format!("save config: {}", e))?;
     }
 
     Ok(())
@@ -852,10 +938,11 @@ async fn update_db_inner(
     cancel_token: &CancellationToken,
 ) -> Result<(), String> {
     let path = scanner_config_path(workspace);
-    let cfg = load_scanner_config(&path)
-        .map_err(|e| format!("load config: {}", e))?;
+    let cfg = load_scanner_config(&path).map_err(|e| format!("load config: {}", e))?;
 
-    let raw = cfg.engines.get(name)
+    let raw = cfg
+        .engines
+        .get(name)
         .ok_or_else(|| format!("engine '{}' not found", name))?
         .clone();
 
@@ -869,16 +956,24 @@ async fn update_db_inner(
     let db_dir = if !engine_cfg.data_dir.is_empty() {
         engine_cfg.data_dir.clone()
     } else {
-        std::path::Path::new(&clamav_path).join("database").to_string_lossy().to_string()
+        std::path::Path::new(&clamav_path)
+            .join("database")
+            .to_string_lossy()
+            .to_string()
     };
 
-    let config_file = std::path::Path::new(&clamav_path).join("freshclam.conf")
-        .to_string_lossy().to_string();
+    let config_file = std::path::Path::new(&clamav_path)
+        .join("freshclam.conf")
+        .to_string_lossy()
+        .to_string();
 
-    hub.publish("scanner-progress", serde_json::json!({
-        "engine": name, "phase": "downloading-db", "progress": 50,
-        "message": format!("Running freshclam for {}...", name)
-    }));
+    hub.publish(
+        "scanner-progress",
+        serde_json::json!({
+            "engine": name, "phase": "downloading-db", "progress": 50,
+            "message": format!("Running freshclam for {}...", name)
+        }),
+    );
 
     let updater_config = nemesis_security::clamav::updater::UpdaterConfig {
         clamav_path: clamav_path.clone(),

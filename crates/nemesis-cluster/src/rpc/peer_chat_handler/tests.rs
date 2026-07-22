@@ -122,7 +122,11 @@ async fn test_async_processing_success() {
                     task_id: task_id.into(),
                     status: status.into(),
                     response: response.into(),
-                    error: if error.is_empty() { None } else { Some(error.into()) },
+                    error: if error.is_empty() {
+                        None
+                    } else {
+                        Some(error.into())
+                    },
                 });
             }
             Ok(())
@@ -137,7 +141,9 @@ async fn test_async_processing_success() {
         should_fail: false,
     });
 
-    let persister = Arc::new(MockPersister { tx: std::sync::Mutex::new(Some(tx)) });
+    let persister = Arc::new(MockPersister {
+        tx: std::sync::Mutex::new(Some(tx)),
+    });
 
     let source_info = Some(serde_json::json!({"node_id": "node-a"}));
     let req = make_request();
@@ -189,7 +195,11 @@ async fn test_async_processing_no_llm_channel() {
                     task_id: task_id.into(),
                     status: status.into(),
                     response: String::new(),
-                    error: if error.is_empty() { None } else { Some(error.into()) },
+                    error: if error.is_empty() {
+                        None
+                    } else {
+                        Some(error.into())
+                    },
                 });
             }
             Ok(())
@@ -199,7 +209,9 @@ async fn test_async_processing_no_llm_channel() {
         }
     }
 
-    let persister = Arc::new(MockPersister { tx: std::sync::Mutex::new(Some(tx)) });
+    let persister = Arc::new(MockPersister {
+        tx: std::sync::Mutex::new(Some(tx)),
+    });
     let source_info = Some(serde_json::json!({"node_id": "node-a"}));
     let req = make_request();
 
@@ -399,7 +411,11 @@ async fn test_async_processing_llm_submit_fails() {
                     task_id: task_id.into(),
                     status: status.into(),
                     response: String::new(),
-                    error: if error.is_empty() { None } else { Some(error.into()) },
+                    error: if error.is_empty() {
+                        None
+                    } else {
+                        Some(error.into())
+                    },
                 });
             }
             Ok(())
@@ -414,7 +430,9 @@ async fn test_async_processing_llm_submit_fails() {
         should_fail: true,
     });
 
-    let persister = Arc::new(MockPersister { tx: std::sync::Mutex::new(Some(tx)) });
+    let persister = Arc::new(MockPersister {
+        tx: std::sync::Mutex::new(Some(tx)),
+    });
     let source_info = Some(serde_json::json!({"node_id": "node-a"}));
     let req = make_request();
 
@@ -483,7 +501,11 @@ async fn test_async_processing_llm_channel_closed() {
                     task_id: task_id.into(),
                     status: status.into(),
                     response: String::new(),
-                    error: if error.is_empty() { None } else { Some(error.into()) },
+                    error: if error.is_empty() {
+                        None
+                    } else {
+                        Some(error.into())
+                    },
                 });
             }
             Ok(())
@@ -494,7 +516,9 @@ async fn test_async_processing_llm_channel_closed() {
     }
 
     let llm = Arc::new(DroppingLlmChannel);
-    let persister = Arc::new(MockPersister { tx: std::sync::Mutex::new(Some(tx)) });
+    let persister = Arc::new(MockPersister {
+        tx: std::sync::Mutex::new(Some(tx)),
+    });
     let source_info = Some(serde_json::json!({"node_id": "node-a"}));
     let req = make_request();
 
@@ -552,7 +576,9 @@ async fn test_async_processing_no_source_node() {
         should_fail: false,
     });
 
-    let persister = Arc::new(MockPersister { tx: std::sync::Mutex::new(Some(tx)) });
+    let persister = Arc::new(MockPersister {
+        tx: std::sync::Mutex::new(Some(tx)),
+    });
     let source_info = None; // No source info
     let req = make_request();
 
@@ -561,7 +587,7 @@ async fn test_async_processing_no_source_node() {
             "test-no-source",
             &req,
             "node-a",
-            "",  // empty source_node_id
+            "", // empty source_node_id
             &source_info,
             Some(llm.as_ref()),
             None,
@@ -588,7 +614,9 @@ async fn test_handle_extracts_source_from_rpc_meta() {
         "content": "Hello",
         "_source": {"node_id": "should-be-ignored"},
     });
-    let meta = RpcMeta { from: Some("source-node-1".into()) };
+    let meta = RpcMeta {
+        from: Some("source-node-1".into()),
+    };
     let ack = handler.handle(payload, Some(meta));
     assert_eq!(ack.status, "accepted");
 }
@@ -625,7 +653,11 @@ fn test_persist_result_with_persister() {
             source_node: &str,
         ) -> Result<(), String> {
             let _ = self.tx.lock().unwrap().send((
-                task_id.into(), status.into(), response.into(), error.into(), source_node.into()
+                task_id.into(),
+                status.into(),
+                response.into(),
+                error.into(),
+                source_node.into(),
             ));
             Ok(())
         }
@@ -635,7 +667,9 @@ fn test_persist_result_with_persister() {
     }
 
     let mut handler = PeerChatHandler::new("node-b".into());
-    handler.set_result_persister(Arc::new(MockPersister { tx: std::sync::Mutex::new(tx) }));
+    handler.set_result_persister(Arc::new(MockPersister {
+        tx: std::sync::Mutex::new(tx),
+    }));
 
     handler.persist_result("task-1", "success", "response text", "", "node-a");
 
@@ -756,7 +790,9 @@ async fn test_handle_with_rpc_meta_with_from() {
     let payload = serde_json::json!({
         "content": "Hello",
     });
-    let meta = RpcMeta { from: Some("source-node".into()) };
+    let meta = RpcMeta {
+        from: Some("source-node".into()),
+    };
     let ack = handler.handle(payload, Some(meta));
     assert_eq!(ack.status, "accepted");
 }
@@ -864,16 +900,24 @@ async fn test_handle_with_persister_set_running_called() {
     }
     impl TaskResultPersister for MockPersister {
         fn set_running(&self, task_id: &str, source_node: &str) {
-            let _ = self.tx.lock().unwrap().send((task_id.into(), source_node.into()));
+            let _ = self
+                .tx
+                .lock()
+                .unwrap()
+                .send((task_id.into(), source_node.into()));
         }
-        fn set_result(
-            &self, _: &str, _: &str, _: &str, _: &str, _: &str,
-        ) -> Result<(), String> { Ok(()) }
-        fn delete(&self, _: &str) -> Result<(), String> { Ok(()) }
+        fn set_result(&self, _: &str, _: &str, _: &str, _: &str, _: &str) -> Result<(), String> {
+            Ok(())
+        }
+        fn delete(&self, _: &str) -> Result<(), String> {
+            Ok(())
+        }
     }
 
     let mut handler = PeerChatHandler::new("node-b".into());
-    handler.set_result_persister(Arc::new(MockPersister { tx: std::sync::Mutex::new(tx) }));
+    handler.set_result_persister(Arc::new(MockPersister {
+        tx: std::sync::Mutex::new(tx),
+    }));
 
     // Source node ID is now taken from rpc_meta.from (not from payload._source.node_id).
     let payload = serde_json::json!({
@@ -881,7 +925,9 @@ async fn test_handle_with_persister_set_running_called() {
         "task_id": "task-with-source",
         "_source": {"node_id": "should-be-ignored", "chat_id": "web:abc"},
     });
-    let meta = RpcMeta { from: Some("source-node-1".into()) };
+    let meta = RpcMeta {
+        from: Some("source-node-1".into()),
+    };
     let ack = handler.handle(payload, Some(meta));
     assert_eq!(ack.status, "accepted");
 
@@ -927,16 +973,24 @@ async fn test_async_processing_llm_timeout() {
                     task_id: task_id.into(),
                     status: status.into(),
                     response: String::new(),
-                    error: if error.is_empty() { None } else { Some(error.into()) },
+                    error: if error.is_empty() {
+                        None
+                    } else {
+                        Some(error.into())
+                    },
                 });
             }
             Ok(())
         }
-        fn delete(&self, _task_id: &str) -> Result<(), String> { Ok(()) }
+        fn delete(&self, _task_id: &str) -> Result<(), String> {
+            Ok(())
+        }
     }
 
     let llm = Arc::new(SlowLlmChannel);
-    let persister = Arc::new(MockPersister { tx: std::sync::Mutex::new(Some(tx)) });
+    let persister = Arc::new(MockPersister {
+        tx: std::sync::Mutex::new(Some(tx)),
+    });
     let source_info = Some(serde_json::json!({"node_id": "node-a"}));
     let req = make_request();
 
@@ -962,8 +1016,11 @@ async fn test_async_processing_llm_timeout() {
     // The error could be either "response channel closed" (if oneshot sender is dropped)
     // or "LLM processing timeout" (if the timeout fires first)
     let err = result.error.unwrap();
-    assert!(err.contains("timeout") || err.contains("response channel closed") || err.contains("LLM"),
-        "unexpected error: {}", err);
+    assert!(
+        err.contains("timeout") || err.contains("response channel closed") || err.contains("LLM"),
+        "unexpected error: {}",
+        err
+    );
     let _ = tx;
 }
 
@@ -987,13 +1044,20 @@ async fn test_send_callback_or_persist_no_source() {
             source_node: &str,
         ) -> Result<(), String> {
             // When source is empty, set_result should not be called
-            assert!(!source_node.is_empty(), "set_result should not be called with empty source");
+            assert!(
+                !source_node.is_empty(),
+                "set_result should not be called with empty source"
+            );
             Ok(())
         }
-        fn delete(&self, _: &str) -> Result<(), String> { Ok(()) }
+        fn delete(&self, _: &str) -> Result<(), String> {
+            Ok(())
+        }
     }
 
-    let persister = Arc::new(MockPersister { tx: std::sync::Mutex::new(Some(tx)) });
+    let persister = Arc::new(MockPersister {
+        tx: std::sync::Mutex::new(Some(tx)),
+    });
 
     send_callback_or_persist(
         None,
@@ -1051,11 +1115,15 @@ async fn test_session_key_composite_with_node_id_and_chat_id() {
             "chat_id": "web:abc123",
         },
     });
-    let meta = RpcMeta { from: Some("node-A".into()) };
+    let meta = RpcMeta {
+        from: Some("node-A".into()),
+    };
     let ack = handler.handle(payload, Some(meta));
     assert_eq!(ack.status, "accepted");
 
-    let task = task_list.get_task("test-composite-1").expect("task should be enqueued");
+    let task = task_list
+        .get_task("test-composite-1")
+        .expect("task should be enqueued");
     assert_eq!(task.source.node_id, "node-A");
     assert_eq!(task.source.session_key, "cluster_rpc:node-A/web:abc123");
 }
@@ -1076,11 +1144,15 @@ async fn test_session_key_default_chat_id_when_missing() {
             // chat_id intentionally missing
         },
     });
-    let meta = RpcMeta { from: Some("node-A".into()) };
+    let meta = RpcMeta {
+        from: Some("node-A".into()),
+    };
     let ack = handler.handle(payload, Some(meta));
     assert_eq!(ack.status, "accepted");
 
-    let task = task_list.get_task("test-composite-2").expect("task should be enqueued");
+    let task = task_list
+        .get_task("test-composite-2")
+        .expect("task should be enqueued");
     assert_eq!(task.source.node_id, "node-A");
     assert_eq!(task.source.session_key, "cluster_rpc:node-A/default");
 }
@@ -1102,11 +1174,15 @@ async fn test_source_node_id_from_rpc_meta_ignores_payload_source() {
             "chat_id": "web:xyz",
         },
     });
-    let meta = RpcMeta { from: Some("real-node-id".into()) };
+    let meta = RpcMeta {
+        from: Some("real-node-id".into()),
+    };
     let ack = handler.handle(payload, Some(meta));
     assert_eq!(ack.status, "accepted");
 
-    let task = task_list.get_task("test-composite-3").expect("task should be enqueued");
+    let task = task_list
+        .get_task("test-composite-3")
+        .expect("task should be enqueued");
     assert_eq!(
         task.source.node_id, "real-node-id",
         "source_node_id must come from rpc_meta.from, not payload._source.node_id"
@@ -1136,7 +1212,9 @@ async fn test_session_key_no_rpc_meta_falls_back_to_chat_id() {
     let ack = handler.handle(payload, None);
     assert_eq!(ack.status, "accepted");
 
-    let task = task_list.get_task("test-composite-4").expect("task should be enqueued");
+    let task = task_list
+        .get_task("test-composite-4")
+        .expect("task should be enqueued");
     assert_eq!(task.source.node_id, "");
     assert_eq!(task.source.session_key, "cluster_rpc:web:degraded");
 }

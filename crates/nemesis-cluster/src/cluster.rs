@@ -16,9 +16,7 @@ use tokio::sync::broadcast;
 
 use nemesis_types::cluster::Task;
 
-use crate::cluster_config::{
-    DynamicState, PeerConfig, PeerStatus,
-};
+use crate::cluster_config::{DynamicState, PeerConfig, PeerStatus};
 use crate::config_loader::ConfigError;
 use crate::continuation_store::ContinuationStore;
 use crate::discovery::ClusterCallbacks;
@@ -108,8 +106,9 @@ pub struct Cluster {
     cluster_work_queue: Mutex<Option<Arc<crate::cluster_task::ClusterWorkQueue>>>,
 
     // -- Testing override for CallWithContext --
-    call_with_context_fn:
-        Mutex<Option<Arc<dyn Fn(&str, &str, serde_json::Value) -> Result<Vec<u8>, String> + Send + Sync>>>,
+    call_with_context_fn: Mutex<
+        Option<Arc<dyn Fn(&str, &str, serde_json::Value) -> Result<Vec<u8>, String> + Send + Sync>>,
+    >,
 }
 
 impl Cluster {
@@ -128,7 +127,10 @@ impl Cluster {
 
         Self {
             node_id: node_id.clone(),
-            node_name: parking_lot::RwLock::new(format!("Bot {}", &node_id[..8.min(node_id.len())])),
+            node_name: parking_lot::RwLock::new(format!(
+                "Bot {}",
+                &node_id[..8.min(node_id.len())]
+            )),
             node_type: "agent".into(),
             address: config.bind_address.clone(),
             role: parking_lot::RwLock::new("worker".into()),
@@ -184,8 +186,15 @@ impl Cluster {
         // Try to load existing node identity from static config
         let peers_path = cluster_dir.join("peers.toml");
         let sc = crate::cluster_config::load_static_config(&peers_path).ok();
-        let node_id = sc.as_ref()
-            .and_then(|s| if s.node.id.is_empty() { None } else { Some(s.node.id.clone()) })
+        let node_id = sc
+            .as_ref()
+            .and_then(|s| {
+                if s.node.id.is_empty() {
+                    None
+                } else {
+                    Some(s.node.id.clone())
+                }
+            })
             .unwrap_or(node_id);
 
         // Persist runtime-generated node_id to peers.toml [node].id so it
@@ -193,18 +202,25 @@ impl Cluster {
         if let Err(e) = crate::cluster_config::ensure_node_id(&peers_path, &node_id) {
             tracing::warn!("[Cluster] Failed to persist node_id to peers.toml: {}", e);
         }
-        let node_name_default = sc.as_ref()
-            .and_then(|s| if s.node.name.is_empty() { None } else { Some(s.node.name.clone()) })
+        let node_name_default = sc
+            .as_ref()
+            .and_then(|s| {
+                if s.node.name.is_empty() {
+                    None
+                } else {
+                    Some(s.node.name.clone())
+                }
+            })
             .unwrap_or_else(|| format!("Bot {}", &node_id[..8.min(node_id.len())]));
-        let role_default = sc.as_ref()
+        let role_default = sc
+            .as_ref()
             .map(|s| s.node.role.clone())
             .unwrap_or_else(|| "worker".into());
-        let category_default = sc.as_ref()
+        let category_default = sc
+            .as_ref()
             .map(|s| s.node.category.clone())
             .unwrap_or_else(|| "general".into());
-        let tags_default = sc.as_ref()
-            .map(|s| s.node.tags.clone())
-            .unwrap_or_default();
+        let tags_default = sc.as_ref().map(|s| s.node.tags.clone()).unwrap_or_default();
 
         Self {
             node_id: node_id.clone(),
@@ -252,7 +268,11 @@ impl Cluster {
 
         // Register local node
         // Ensure the local node always has the "cluster" capability.
-        let mut local_caps = self.capabilities.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        let mut local_caps = self
+            .capabilities
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
         if !local_caps.iter().any(|c| c.eq_ignore_ascii_case("cluster")) {
             local_caps.push("cluster".into());
         }
@@ -262,7 +282,8 @@ impl Cluster {
         let display_address = if self.address.starts_with("0.0.0.0") {
             let port = self.address.rsplit(':').next().unwrap_or("");
             let ips = network::get_all_local_ips();
-            let ip = ips.iter()
+            let ip = ips
+                .iter()
                 .find(|ip| !ip.starts_with("127."))
                 .or_else(|| ips.first())
                 .map(|s| s.as_str())
@@ -319,7 +340,11 @@ impl Cluster {
         // Start the sync loop (periodic node timeout check + disk persistence)
         self.start_sync_loop();
 
-        logger::log_lifecycle("start", &self.node_id, &format!("rpc_port={}", self.rpc_port));
+        logger::log_lifecycle(
+            "start",
+            &self.node_id,
+            &format!("rpc_port={}", self.rpc_port),
+        );
     }
 
     /// Load the RPC auth token from `workspace/config/config.cluster.json`
@@ -342,7 +367,11 @@ impl Cluster {
         };
 
         let token = match serde_json::from_str::<serde_json::Value>(&data) {
-            Ok(v) => v.get("token").and_then(|t| t.as_str()).unwrap_or("").to_string(),
+            Ok(v) => v
+                .get("token")
+                .and_then(|t| t.as_str())
+                .unwrap_or("")
+                .to_string(),
             Err(e) => {
                 tracing::warn!(path = %cfg_path.display(), error = %e, "[Cluster] Failed to parse cluster config for token");
                 return;
@@ -424,12 +453,10 @@ impl Cluster {
         }
 
         match std::fs::read_to_string(&cfg_path) {
-            Ok(data) => {
-                serde_json::from_str::<serde_json::Value>(&data)
-                    .ok()
-                    .and_then(|v| v.get("token").and_then(|t| t.as_str()).map(String::from))
-                    .unwrap_or_default()
-            }
+            Ok(data) => serde_json::from_str::<serde_json::Value>(&data)
+                .ok()
+                .and_then(|v| v.get("token").and_then(|t| t.as_str()).map(String::from))
+                .unwrap_or_default(),
             Err(_) => String::new(),
         }
     }
@@ -880,22 +907,22 @@ impl Cluster {
     }
 
     /// Convert an RPC address (`host:rpc_port`) to the UDP address (`host:udp_port`)
-/// for peers.toml write-back, reversing the static loader's
-/// `rpc_port = udp_port + 10000` convention (gateway.rs). Falls back to the
-/// input unchanged if the port can't be parsed or is ≤ 10000 (no convention to
-/// reverse — e.g. a non-standard port or an address without a port).
-fn rpc_to_udp_address(rpc_addr: &str) -> String {
-    if let Some((host, port_str)) = rpc_addr.rsplit_once(':') {
-        if let Ok(rpc_port) = port_str.parse::<u32>() {
-            if rpc_port > 10000 {
-                return format!("{}:{}", host, rpc_port - 10000);
+    /// for peers.toml write-back, reversing the static loader's
+    /// `rpc_port = udp_port + 10000` convention (gateway.rs). Falls back to the
+    /// input unchanged if the port can't be parsed or is ≤ 10000 (no convention to
+    /// reverse — e.g. a non-standard port or an address without a port).
+    fn rpc_to_udp_address(rpc_addr: &str) -> String {
+        if let Some((host, port_str)) = rpc_addr.rsplit_once(':') {
+            if let Ok(rpc_port) = port_str.parse::<u32>() {
+                if rpc_port > 10000 {
+                    return format!("{}:{}", host, rpc_port - 10000);
+                }
             }
         }
+        rpc_addr.to_string()
     }
-    rpc_addr.to_string()
-}
 
-/// Persist the real peer info to peers.toml under `[peers.{real_id}]`.
+    /// Persist the real peer info to peers.toml under `[peers.{real_id}]`.
     fn persist_real_peer_to_toml(&self, real_id: &str, info: &RealNodeInfo) {
         let path = &self.static_config_path;
         let role_str = match info.role {
@@ -931,12 +958,7 @@ fn rpc_to_udp_address(rpc_addr: &str) -> String {
     /// peer with the real ID), this is a no-op aside from a content refresh via
     /// `persist_real_peer_to_toml`. Otherwise the placeholder is deleted and the
     /// real ID is written.
-    fn upgrade_peer_in_peers_toml(
-        &self,
-        placeholder: &str,
-        real_id: &str,
-        info: &RealNodeInfo,
-    ) {
+    fn upgrade_peer_in_peers_toml(&self, placeholder: &str, real_id: &str, info: &RealNodeInfo) {
         let path = &self.static_config_path;
         // Same key after sanitization → just write the real_id content.
         if crate::cluster_config::sanitize_peer_key(placeholder)
@@ -951,8 +973,8 @@ fn rpc_to_udp_address(rpc_addr: &str) -> String {
             if !path.exists() {
                 return Ok(toml::Value::Table(toml::value::Table::new()));
             }
-            let content = std::fs::read_to_string(path)
-                .map_err(|e| format!("read peers.toml: {}", e))?;
+            let content =
+                std::fs::read_to_string(path).map_err(|e| format!("read peers.toml: {}", e))?;
             content
                 .parse::<toml::Value>()
                 .or_else(|_| Ok(toml::Value::Table(toml::value::Table::new())))
@@ -1014,12 +1036,9 @@ fn rpc_to_udp_address(rpc_addr: &str) -> String {
         original_channel: &str,
         original_chat_id: &str,
     ) -> String {
-        let task = self.task_manager.create_task(
-            action,
-            payload,
-            original_channel,
-            original_chat_id,
-        );
+        let task =
+            self.task_manager
+                .create_task(action, payload, original_channel, original_chat_id);
         logger::log_task("submitted", &task.id, action);
         task.id
     }
@@ -1086,11 +1105,7 @@ fn rpc_to_udp_address(rpc_addr: &str) -> String {
     pub fn fail_task(&self, task_id: &str, error: &str) -> bool {
         let ok = self.task_manager.fail_task(task_id, error);
         if ok {
-            tracing::warn!(
-                task_id = task_id,
-                error = error,
-                "[Cluster] Task failed",
-            );
+            tracing::warn!(task_id = task_id, error = error, "[Cluster] Task failed",);
             logger::log_task("failed", task_id, error);
         }
         ok
@@ -1194,10 +1209,8 @@ fn rpc_to_udp_address(rpc_addr: &str) -> String {
                                     );
                                     // Serialize the result to bytes (matching Go's []byte return)
                                     match &response.result {
-                                        Some(val) => {
-                                            serde_json::to_vec(val)
-                                                .map_err(|e| format!("serialize response: {}", e))
-                                        }
+                                        Some(val) => serde_json::to_vec(val)
+                                            .map_err(|e| format!("serialize response: {}", e)),
                                         None => Ok(Vec::new()),
                                     }
                                 }
@@ -1288,10 +1301,8 @@ fn rpc_to_udp_address(rpc_addr: &str) -> String {
                                 "[Cluster] Async RPC call completed successfully",
                             );
                             match &response.result {
-                                Some(val) => {
-                                    serde_json::to_vec(val)
-                                        .map_err(|e| format!("serialize response: {}", e))
-                                }
+                                Some(val) => serde_json::to_vec(val)
+                                    .map_err(|e| format!("serialize response: {}", e)),
                                 None => Ok(Vec::new()),
                             }
                         }
@@ -1325,7 +1336,6 @@ fn rpc_to_udp_address(rpc_addr: &str) -> String {
     ) {
         *self.call_with_context_fn.lock() = Some(Arc::from(f));
     }
-
 
     // -- Bus integration ------------------------------------------------------
 
@@ -1588,7 +1598,9 @@ fn rpc_to_udp_address(rpc_addr: &str) -> String {
     fn sync_local_node_to_registry(&self) {
         // Preserve the resolved address from the existing registry entry,
         // since self.address may still be 0.0.0.0 before start() resolves it.
-        let existing_address = self.registry.get(&self.node_id)
+        let existing_address = self
+            .registry
+            .get(&self.node_id)
             .map(|e| e.base.address.clone())
             .unwrap_or_else(|| self.address.clone());
 
@@ -1597,7 +1609,9 @@ fn rpc_to_udp_address(rpc_addr: &str) -> String {
             "master" | "manager" => nemesis_types::cluster::NodeRole::Master,
             _ => nemesis_types::cluster::NodeRole::Worker,
         };
-        let caps = self.capabilities.lock()
+        let caps = self
+            .capabilities
+            .lock()
             .unwrap_or_else(|e| e.into_inner())
             .clone();
         let info = ExtendedNodeInfo {
@@ -1656,15 +1670,14 @@ fn rpc_to_udp_address(rpc_addr: &str) -> String {
             last_sync: chrono::Local::now().to_rfc3339(),
         };
 
-        crate::cluster_config::save_dynamic_state(&self.dynamic_state_path, &state)
-            .map_err(|e| {
-                tracing::error!(
-                    path = %self.dynamic_state_path.display(),
-                    error = %e,
-                    "[Cluster] Failed to sync state to disk",
-                );
-                e
-            })
+        crate::cluster_config::save_dynamic_state(&self.dynamic_state_path, &state).map_err(|e| {
+            tracing::error!(
+                path = %self.dynamic_state_path.display(),
+                error = %e,
+                "[Cluster] Failed to sync state to disk",
+            );
+            e
+        })
     }
 
     // -- Peer capability search ------------------------------------------------
@@ -1754,30 +1767,35 @@ fn rpc_to_udp_address(rpc_addr: &str) -> String {
         }
 
         // Register peer_chat_callback handler (A-side: receive result from B)
-        if let Err(e) = self.register_rpc_handler(
-            "peer_chat_callback",
-            self.build_callback_handler(),
-        ) {
-            logger::log_error("cluster", &format!("register peer_chat_callback: {}", e), "");
+        if let Err(e) =
+            self.register_rpc_handler("peer_chat_callback", self.build_callback_handler())
+        {
+            logger::log_error(
+                "cluster",
+                &format!("register peer_chat_callback: {}", e),
+                "",
+            );
         }
 
         // Register hello handler
         let node_id = self.node_id.clone();
-        if let Err(e) = self.register_rpc_handler("hello", Box::new(move |_payload| {
-            Ok(serde_json::json!({
-                "node_id": node_id,
-                "status": "online",
-                "message": "hello from cluster node",
-            }))
-        })) {
+        if let Err(e) = self.register_rpc_handler(
+            "hello",
+            Box::new(move |_payload| {
+                Ok(serde_json::json!({
+                    "node_id": node_id,
+                    "status": "online",
+                    "message": "hello from cluster node",
+                }))
+            }),
+        ) {
             logger::log_error("cluster", &format!("register hello: {}", e), "");
         }
 
         // H4: Register query_task_result handler (B-side responds to A's polling)
-        if let Err(e) = self.register_rpc_handler(
-            "query_task_result",
-            self.build_query_task_result_handler(),
-        ) {
+        if let Err(e) =
+            self.register_rpc_handler("query_task_result", self.build_query_task_result_handler())
+        {
             logger::log_error("cluster", &format!("register query_task_result: {}", e), "");
         }
 
@@ -1786,7 +1804,11 @@ fn rpc_to_udp_address(rpc_addr: &str) -> String {
             "confirm_task_delivery",
             self.build_confirm_task_delivery_handler(),
         ) {
-            logger::log_error("cluster", &format!("register confirm_task_delivery: {}", e), "");
+            logger::log_error(
+                "cluster",
+                &format!("register confirm_task_delivery: {}", e),
+                "",
+            );
         }
     }
 
@@ -1804,21 +1826,27 @@ fn rpc_to_udp_address(rpc_addr: &str) -> String {
 
         // ping
         let node_id = self.node_id.clone();
-        self.register_rpc_handler("ping", Box::new(move |_payload| {
-            Ok(serde_json::json!({
-                "status": "pong",
-                "node_id": node_id,
-            }))
-        }))?;
+        self.register_rpc_handler(
+            "ping",
+            Box::new(move |_payload| {
+                Ok(serde_json::json!({
+                    "status": "pong",
+                    "node_id": node_id,
+                }))
+            }),
+        )?;
 
         // get_capabilities — shares Arc with Cluster for real-time reads
         let caps_arc = self.capabilities.clone();
-        self.register_rpc_handler("get_capabilities", Box::new(move |_payload| {
-            let caps = caps_arc.lock().unwrap_or_else(|e| e.into_inner()).clone();
-            Ok(serde_json::json!({
-                "capabilities": caps,
-            }))
-        }))?;
+        self.register_rpc_handler(
+            "get_capabilities",
+            Box::new(move |_payload| {
+                let caps = caps_arc.lock().unwrap_or_else(|e| e.into_inner()).clone();
+                Ok(serde_json::json!({
+                    "capabilities": caps,
+                }))
+            }),
+        )?;
 
         // get_info — returns data matching DiscoveryMessage broadcast format
         // Static fields (cloned, immutable after startup):
@@ -1831,93 +1859,114 @@ fn rpc_to_udp_address(rpc_addr: &str) -> String {
         let rpc_port = self.rpc_port;
         // Dynamic fields (real-time):
         let caps_arc = self.capabilities.clone();
-        self.register_rpc_handler("get_info", Box::new(move |_payload| {
-            let addresses = network::get_all_local_ips();
-            let capabilities = caps_arc.lock().unwrap_or_else(|e| e.into_inner()).clone();
-            Ok(serde_json::json!({
-                "version": "1.0",
-                "node_id": node_id,
-                "name": node_name,
-                "addresses": addresses,
-                "rpc_port": rpc_port,
-                "role": role,
-                "category": category,
-                "tags": tags,
-                "capabilities": capabilities,
-                "node_type": node_type,
-                "status": "online",
-            }))
-        }))?;
+        self.register_rpc_handler(
+            "get_info",
+            Box::new(move |_payload| {
+                let addresses = network::get_all_local_ips();
+                let capabilities = caps_arc.lock().unwrap_or_else(|e| e.into_inner()).clone();
+                Ok(serde_json::json!({
+                    "version": "1.0",
+                    "node_id": node_id,
+                    "name": node_name,
+                    "addresses": addresses,
+                    "rpc_port": rpc_port,
+                    "role": role,
+                    "category": category,
+                    "tags": tags,
+                    "capabilities": capabilities,
+                    "node_type": node_type,
+                    "status": "online",
+                }))
+            }),
+        )?;
 
         // list_actions
         let node_id = self.node_id.clone();
-        self.register_rpc_handler("list_actions", Box::new(move |_payload| {
-            let schemas = crate::actions_schema::builtin_schemas();
-            let actions: Vec<String> = schemas.iter().map(|s| s.action.to_string()).collect();
-            Ok(serde_json::json!({
-                "node_id": node_id,
-                "actions": actions,
-            }))
-        }))?;
+        self.register_rpc_handler(
+            "list_actions",
+            Box::new(move |_payload| {
+                let schemas = crate::actions_schema::builtin_schemas();
+                let actions: Vec<String> = schemas.iter().map(|s| s.action.to_string()).collect();
+                Ok(serde_json::json!({
+                    "node_id": node_id,
+                    "actions": actions,
+                }))
+            }),
+        )?;
 
         // hello
         let node_id = self.node_id.clone();
-        self.register_rpc_handler("hello", Box::new(move |_payload| {
-            Ok(serde_json::json!({
-                "node_id": node_id,
-                "status": "online",
-                "message": "hello from cluster node",
-            }))
-        }))?;
+        self.register_rpc_handler(
+            "hello",
+            Box::new(move |_payload| {
+                Ok(serde_json::json!({
+                    "node_id": node_id,
+                    "status": "online",
+                    "message": "hello from cluster node",
+                }))
+            }),
+        )?;
 
         // diagnostics.system — OS, memory, uptime
-        self.register_rpc_handler("diagnostics.system", Box::new(move |_payload| {
-            let os = std::env::consts::OS.to_string();
-            let arch = std::env::consts::ARCH.to_string();
-            let hostname = crate::diagnostics::get_hostname();
-            let (mem_total, mem_used, uptime_secs) = crate::diagnostics::collect_system_metrics();
-            let os_version = crate::diagnostics::collect_os_version();
-            Ok(serde_json::json!({
-                "os": os, "os_version": os_version, "arch": arch,
-                "hostname": hostname, "uptime_secs": uptime_secs,
-                "memory_total_bytes": mem_total, "memory_used_bytes": mem_used,
-            }))
-        }))?;
+        self.register_rpc_handler(
+            "diagnostics.system",
+            Box::new(move |_payload| {
+                let os = std::env::consts::OS.to_string();
+                let arch = std::env::consts::ARCH.to_string();
+                let hostname = crate::diagnostics::get_hostname();
+                let (mem_total, mem_used, uptime_secs) =
+                    crate::diagnostics::collect_system_metrics();
+                let os_version = crate::diagnostics::collect_os_version();
+                Ok(serde_json::json!({
+                    "os": os, "os_version": os_version, "arch": arch,
+                    "hostname": hostname, "uptime_secs": uptime_secs,
+                    "memory_total_bytes": mem_total, "memory_used_bytes": mem_used,
+                }))
+            }),
+        )?;
 
         // diagnostics.network — network interfaces and IPs
-        self.register_rpc_handler("diagnostics.network", Box::new(move |_payload| {
-            let interfaces = network::get_local_network_interfaces();
-            let all_ips = network::get_all_local_ips();
-            Ok(serde_json::json!({
-                "interfaces": interfaces,
-                "all_ips": all_ips,
-            }))
-        }))?;
+        self.register_rpc_handler(
+            "diagnostics.network",
+            Box::new(move |_payload| {
+                let interfaces = network::get_local_network_interfaces();
+                let all_ips = network::get_all_local_ips();
+                Ok(serde_json::json!({
+                    "interfaces": interfaces,
+                    "all_ips": all_ips,
+                }))
+            }),
+        )?;
 
         // diagnostics.cluster_state — peers this node sees
         let registry_arc = self.registry.clone();
-        self.register_rpc_handler("diagnostics.cluster_state", Box::new(move |_payload| {
-            let all_nodes = registry_arc.list_peers();
-            let online: Vec<_> = all_nodes.iter()
-                .filter(|n| n.is_online())
-                .map(|n| serde_json::json!({
-                    "id": n.base.id,
-                    "name": n.base.name,
-                    "address": n.base.address,
-                    "role": n.base.role,
-                    "last_seen": n.base.last_seen,
+        self.register_rpc_handler(
+            "diagnostics.cluster_state",
+            Box::new(move |_payload| {
+                let all_nodes = registry_arc.list_peers();
+                let online: Vec<_> = all_nodes
+                    .iter()
+                    .filter(|n| n.is_online())
+                    .map(|n| {
+                        serde_json::json!({
+                            "id": n.base.id,
+                            "name": n.base.name,
+                            "address": n.base.address,
+                            "role": n.base.role,
+                            "last_seen": n.base.last_seen,
+                        })
+                    })
+                    .collect();
+                Ok(serde_json::json!({
+                    "node_count": all_nodes.len(),
+                    "online_count": online.len(),
+                    "nodes": online,
                 }))
-                .collect();
-            Ok(serde_json::json!({
-                "node_count": all_nodes.len(),
-                "online_count": online.len(),
-                "nodes": online,
-            }))
-        }))?;
+            }),
+        )?;
 
         Ok(())
     }
-
 
     /// Register forge-related RPC handlers for cross-node learning.
     ///
@@ -1939,81 +1988,90 @@ fn rpc_to_udp_address(rpc_addr: &str) -> String {
         // forge_share: receive a remote reflection report
         let provider_share = provider.clone_boxed();
         let node_id_share = node_id.clone();
-        self.register_rpc_handler("forge_share", Box::new(move |payload| {
-            let from = payload
-                .get("from")
-                .and_then(|v| v.as_str())
-                .unwrap_or("unknown");
+        self.register_rpc_handler(
+            "forge_share",
+            Box::new(move |payload| {
+                let from = payload
+                    .get("from")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("unknown");
 
-            tracing::info!(
-                source_node = from,
-                local_node = %node_id_share,
-                "[Cluster] Received forge reflection report from peer"
-            );
+                tracing::info!(
+                    source_node = from,
+                    local_node = %node_id_share,
+                    "[Cluster] Received forge reflection report from peer"
+                );
 
-            if let Err(e) = provider_share.receive_reflection(&payload) {
-                tracing::error!(error = %e, "[Cluster] Failed to store reflection");
-                return Ok(serde_json::json!({
-                    "status": "error",
-                    "error": format!("Failed to store reflection: {}", e),
-                }));
-            }
+                if let Err(e) = provider_share.receive_reflection(&payload) {
+                    tracing::error!(error = %e, "[Cluster] Failed to store reflection");
+                    return Ok(serde_json::json!({
+                        "status": "error",
+                        "error": format!("Failed to store reflection: {}", e),
+                    }));
+                }
 
-            Ok(serde_json::json!({
-                "status": "ok",
-                "message": "Reflection received",
-                "node_id": node_id_share,
-                "timestamp": chrono::Local::now().to_rfc3339(),
-            }))
-        }))?;
+                Ok(serde_json::json!({
+                    "status": "ok",
+                    "message": "Reflection received",
+                    "node_id": node_id_share,
+                    "timestamp": chrono::Local::now().to_rfc3339(),
+                }))
+            }),
+        )?;
 
         // forge_get_reflections: list available local reflections
         let provider_list = provider.clone_boxed();
         let node_id_list = node_id.clone();
-        self.register_rpc_handler("forge_get_reflections", Box::new(move |payload| {
-            let from = payload
-                .get("from")
-                .and_then(|v| v.as_str())
-                .unwrap_or("unknown");
+        self.register_rpc_handler(
+            "forge_get_reflections",
+            Box::new(move |payload| {
+                let from = payload
+                    .get("from")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("unknown");
 
-            tracing::info!(
-                from = from,
-                local_node = %node_id_list,
-                "[Cluster] Reflections list requested by peer"
-            );
+                tracing::info!(
+                    from = from,
+                    local_node = %node_id_list,
+                    "[Cluster] Reflections list requested by peer"
+                );
 
-            let mut result = provider_list.get_reflections_list_payload();
+                let mut result = provider_list.get_reflections_list_payload();
 
-            // If a specific reflection is requested, include its content (sanitized)
-            if let Some(filename) = payload.get("filename").and_then(|v| v.as_str()) {
-                if !filename.is_empty() {
-                    match provider_list.read_reflection_content(filename) {
-                        Ok(content) => {
-                            result["content"] =
-                                serde_json::Value::String(provider_list.sanitize_content(&content));
-                            result["filename"] = serde_json::Value::String(filename.into());
-                        }
-                        Err(e) => {
-                            tracing::error!(
-                                filename = filename,
-                                error = %e,
-                                "[Cluster] Failed to read reflection"
-                            );
-                            return Ok(serde_json::json!({
-                                "status": "error",
-                                "error": format!("Failed to read reflection: {}", e),
-                            }));
+                // If a specific reflection is requested, include its content (sanitized)
+                if let Some(filename) = payload.get("filename").and_then(|v| v.as_str()) {
+                    if !filename.is_empty() {
+                        match provider_list.read_reflection_content(filename) {
+                            Ok(content) => {
+                                result["content"] = serde_json::Value::String(
+                                    provider_list.sanitize_content(&content),
+                                );
+                                result["filename"] = serde_json::Value::String(filename.into());
+                            }
+                            Err(e) => {
+                                tracing::error!(
+                                    filename = filename,
+                                    error = %e,
+                                    "[Cluster] Failed to read reflection"
+                                );
+                                return Ok(serde_json::json!({
+                                    "status": "error",
+                                    "error": format!("Failed to read reflection: {}", e),
+                                }));
+                            }
                         }
                     }
                 }
-            }
 
-            result["node_id"] = serde_json::Value::String(node_id_list.clone());
+                result["node_id"] = serde_json::Value::String(node_id_list.clone());
 
-            Ok(result)
-        }))?;
+                Ok(result)
+            }),
+        )?;
 
-        tracing::info!("[Cluster] Registered forge RPC handlers: forge_share, forge_get_reflections");
+        tracing::info!(
+            "[Cluster] Registered forge RPC handlers: forge_share, forge_get_reflections"
+        );
         Ok(())
     }
 
@@ -2093,10 +2151,7 @@ fn rpc_to_udp_address(rpc_addr: &str) -> String {
                 .get("response")
                 .and_then(|v| v.as_str())
                 .unwrap_or("");
-            let error = payload
-                .get("error")
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
+            let error = payload.get("error").and_then(|v| v.as_str()).unwrap_or("");
 
             tracing::info!(
                 task_id = %task_id,
@@ -2219,12 +2274,7 @@ fn rpc_to_udp_address(rpc_addr: &str) -> String {
     pub async fn poll_stale_pending_tasks(&self) {
         let call_fn = self.call_with_context_fn.lock().clone();
         let rpc_client = self.rpc_client.lock().clone();
-        poll_stale_pending_tasks(
-            &self.task_manager,
-            &call_fn,
-            rpc_client.as_deref(),
-        )
-        .await;
+        poll_stale_pending_tasks(&self.task_manager, &call_fn, rpc_client.as_deref()).await;
     }
 
     /// Confirm task delivery to the B-node, allowing it to clean up the result.
@@ -2313,16 +2363,15 @@ fn rpc_to_udp_address(rpc_addr: &str) -> String {
 /// which calls `c.CallWithContext()`.
 async fn poll_stale_pending_tasks(
     task_manager: &Arc<TaskManager>,
-    call_fn: &Option<Arc<dyn Fn(&str, &str, serde_json::Value) -> Result<Vec<u8>, String> + Send + Sync>>,
+    call_fn: &Option<
+        Arc<dyn Fn(&str, &str, serde_json::Value) -> Result<Vec<u8>, String> + Send + Sync>,
+    >,
     rpc_client: Option<&RpcClient>,
 ) {
     let tasks = task_manager.list_pending_tasks();
 
     if !tasks.is_empty() {
-        tracing::debug!(
-            count = tasks.len(),
-            "[Cluster] Polling stale pending tasks",
-        );
+        tracing::debug!(count = tasks.len(), "[Cluster] Polling stale pending tasks",);
     }
 
     for task in tasks {
@@ -2345,12 +2394,7 @@ async fn poll_stale_pending_tasks(
                 age_secs = age.num_seconds(),
                 "[Cluster] Timing out stale task after 24h",
             );
-            task_manager.complete_callback(
-                &task.id,
-                "error",
-                "",
-                "task timed out after 24h",
-            );
+            task_manager.complete_callback(&task.id, "error", "", "task timed out after 24h");
             continue;
         }
 
@@ -2373,11 +2417,7 @@ async fn poll_stale_pending_tasks(
                 target: Some(task.peer_id.clone()),
             };
             match client
-                .call_with_timeout(
-                    &task.peer_id,
-                    request,
-                    Duration::from_secs(30),
-                )
+                .call_with_timeout(&task.peer_id, request, Duration::from_secs(30))
                 .await
             {
                 Ok(resp) => {
@@ -2411,10 +2451,7 @@ async fn poll_stale_pending_tasks(
             Err(_) => continue,
         };
 
-        let status = resp
-            .get("status")
-            .and_then(|v| v.as_str())
-            .unwrap_or("");
+        let status = resp.get("status").and_then(|v| v.as_str()).unwrap_or("");
 
         match status {
             "running" => {
@@ -2431,20 +2468,9 @@ async fn poll_stale_pending_tasks(
                     peer_id = %task.peer_id,
                     "[Cluster] Stale task recovered from peer",
                 );
-                task_manager.complete_callback(
-                    &task.id,
-                    &result_status,
-                    &response,
-                    &error,
-                );
+                task_manager.complete_callback(&task.id, &result_status, &response, &error);
                 // Best-effort delivery confirmation
-                confirm_delivery_with(
-                    call_fn,
-                    rpc_client,
-                    &task.peer_id,
-                    &task.id,
-                )
-                .await;
+                confirm_delivery_with(call_fn, rpc_client, &task.peer_id, &task.id).await;
             }
             "not_found" => {
                 tracing::warn!(
@@ -2452,12 +2478,7 @@ async fn poll_stale_pending_tasks(
                     peer_id = %task.peer_id,
                     "[Cluster] Stale task not found on remote peer",
                 );
-                task_manager.complete_callback(
-                    &task.id,
-                    "error",
-                    "",
-                    "remote task not found",
-                );
+                task_manager.complete_callback(&task.id, "error", "", "remote task not found");
             }
             _ => {
                 // Unknown status, skip.
@@ -2470,7 +2491,9 @@ async fn poll_stale_pending_tasks(
 /// Notify the B-node that the task result was received.
 /// Uses the RPC client if available, otherwise the synchronous test override.
 async fn confirm_delivery_with(
-    call_fn: &Option<Arc<dyn Fn(&str, &str, serde_json::Value) -> Result<Vec<u8>, String> + Send + Sync>>,
+    call_fn: &Option<
+        Arc<dyn Fn(&str, &str, serde_json::Value) -> Result<Vec<u8>, String> + Send + Sync>,
+    >,
     rpc_client: Option<&RpcClient>,
     peer_id: &str,
     task_id: &str,
@@ -2548,7 +2571,10 @@ impl ClusterCallbacks for Cluster {
     }
 
     fn capabilities(&self) -> Vec<String> {
-        self.capabilities.lock().unwrap_or_else(|e| e.into_inner()).clone()
+        self.capabilities
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
     }
 
     fn node_type(&self) -> String {
@@ -2609,7 +2635,11 @@ impl PeerResolver for ClusterPeerResolver {
                 info.addresses.clone()
             } else {
                 let (host, _) = parse_host_port(&info.base.address);
-                if host.is_empty() { Vec::new() } else { vec![host] }
+                if host.is_empty() {
+                    Vec::new()
+                } else {
+                    vec![host]
+                }
             };
             return Some((addresses, port, is_online));
         }
@@ -2626,7 +2656,11 @@ impl PeerResolver for ClusterPeerResolver {
                     info.addresses.clone()
                 } else {
                     let (host, _) = parse_host_port(&info.base.address);
-                    if host.is_empty() { Vec::new() } else { vec![host] }
+                    if host.is_empty() {
+                        Vec::new()
+                    } else {
+                        vec![host]
+                    }
                 };
                 return Some((addresses, port, is_online));
             }

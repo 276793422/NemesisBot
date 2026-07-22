@@ -3,8 +3,8 @@
 //! Mirrors Go command/forge.go with full lifecycle:
 //! Status, Enable, Disable, Reflect, List, Evaluate, Export, Learning.
 
-use anyhow::Result;
 use crate::common;
+use anyhow::Result;
 
 #[derive(clap::Subcommand)]
 pub enum ForgeAction {
@@ -103,7 +103,10 @@ fn load_forge_config(forge_dir: &std::path::Path) -> serde_json::Value {
 fn save_forge_config(forge_dir: &std::path::Path, cfg: &serde_json::Value) -> Result<()> {
     let _ = std::fs::create_dir_all(forge_dir);
     let config_path = forge_dir.join("forge.json");
-    std::fs::write(&config_path, serde_json::to_string_pretty(cfg).unwrap_or_default())?;
+    std::fs::write(
+        &config_path,
+        serde_json::to_string_pretty(cfg).unwrap_or_default(),
+    )?;
     Ok(())
 }
 
@@ -124,7 +127,11 @@ fn load_registry(forge_dir: &std::path::Path) -> Vec<serde_json::Value> {
 // Command implementations
 // ---------------------------------------------------------------------------
 
-fn cmd_status(_home: &std::path::Path, cfg_path: &std::path::Path, forge_dir: &std::path::Path) -> Result<()> {
+fn cmd_status(
+    _home: &std::path::Path,
+    cfg_path: &std::path::Path,
+    forge_dir: &std::path::Path,
+) -> Result<()> {
     println!("Forge Self-Learning Module");
     println!("==========================");
 
@@ -132,7 +139,10 @@ fn cmd_status(_home: &std::path::Path, cfg_path: &std::path::Path, forge_dir: &s
     let enabled = if cfg_path.exists() {
         let data = std::fs::read_to_string(cfg_path)?;
         let cfg: serde_json::Value = serde_json::from_str(&data)?;
-        cfg.get("forge").and_then(|f| f.get("enabled")).and_then(|v| v.as_bool()).unwrap_or(false)
+        cfg.get("forge")
+            .and_then(|f| f.get("enabled"))
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false)
     } else {
         false
     };
@@ -140,21 +150,68 @@ fn cmd_status(_home: &std::path::Path, cfg_path: &std::path::Path, forge_dir: &s
 
     // Show forge config details
     let forge_cfg = load_forge_config(forge_dir);
-    println!("  Collection interval: {}s", forge_cfg.get("collect_interval_sec").and_then(|v| v.as_u64()).unwrap_or(300));
-    println!("  Reflection interval: {}s", forge_cfg.get("reflect_interval_sec").and_then(|v| v.as_u64()).unwrap_or(3600));
-    println!("  Min experiences: {}", forge_cfg.get("min_experiences").and_then(|v| v.as_u64()).unwrap_or(5));
-    println!("  LLM semantic analysis: {}", forge_cfg.get("llm_semantic_analysis").and_then(|v| v.as_bool()).unwrap_or(true));
-    println!("  Default artifact status: {}", forge_cfg.get("default_artifact_status").and_then(|v| v.as_str()).unwrap_or("draft"));
-    println!("  Trace collection: {}", forge_cfg.get("trace_collection").and_then(|v| v.as_bool()).unwrap_or(true));
+    println!(
+        "  Collection interval: {}s",
+        forge_cfg
+            .get("collect_interval_sec")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(300)
+    );
+    println!(
+        "  Reflection interval: {}s",
+        forge_cfg
+            .get("reflect_interval_sec")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(3600)
+    );
+    println!(
+        "  Min experiences: {}",
+        forge_cfg
+            .get("min_experiences")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(5)
+    );
+    println!(
+        "  LLM semantic analysis: {}",
+        forge_cfg
+            .get("llm_semantic_analysis")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(true)
+    );
+    println!(
+        "  Default artifact status: {}",
+        forge_cfg
+            .get("default_artifact_status")
+            .and_then(|v| v.as_str())
+            .unwrap_or("draft")
+    );
+    println!(
+        "  Trace collection: {}",
+        forge_cfg
+            .get("trace_collection")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(true)
+    );
 
     // Learning status
-    let learning_enabled = forge_cfg.get("learning_enabled").and_then(|v| v.as_bool()).unwrap_or(false);
+    let learning_enabled = forge_cfg
+        .get("learning_enabled")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
     println!("  Learning enabled: {}", learning_enabled);
 
     // Show directory status (7 dirs)
     println!();
     println!("  Directories:");
-    for d in &["experiences", "reflections", "skills", "scripts", "mcp", "traces", "learning"] {
+    for d in &[
+        "experiences",
+        "reflections",
+        "skills",
+        "scripts",
+        "mcp",
+        "traces",
+        "learning",
+    ] {
         let path = forge_dir.join(d);
         let exists = path.exists();
         let count = if exists {
@@ -167,7 +224,10 @@ fn cmd_status(_home: &std::path::Path, cfg_path: &std::path::Path, forge_dir: &s
 
     // Show prompts dir
     let prompts_dir = forge_dir.join("prompts");
-    println!("    prompts: [{}]", common::status_icon(prompts_dir.exists()));
+    println!(
+        "    prompts: [{}]",
+        common::status_icon(prompts_dir.exists())
+    );
 
     // Show forge config file path
     let forge_config = forge_dir.join("forge.json");
@@ -183,11 +243,19 @@ fn cmd_status(_home: &std::path::Path, cfg_path: &std::path::Path, forge_dir: &s
     println!("  Registry: {} artifact(s)", registry.len());
     if !registry.is_empty() {
         // Group by type
-        let mut type_counts: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
-        let mut status_counts: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
+        let mut type_counts: std::collections::HashMap<&str, usize> =
+            std::collections::HashMap::new();
+        let mut status_counts: std::collections::HashMap<&str, usize> =
+            std::collections::HashMap::new();
         for artifact in &registry {
-            let t = artifact.get("type").and_then(|v| v.as_str()).unwrap_or("unknown");
-            let s = artifact.get("status").and_then(|v| v.as_str()).unwrap_or("unknown");
+            let t = artifact
+                .get("type")
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown");
+            let s = artifact
+                .get("status")
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown");
             *type_counts.entry(t).or_insert(0) += 1;
             *status_counts.entry(s).or_insert(0) += 1;
         }
@@ -220,12 +288,23 @@ fn cmd_enable(cfg_path: &std::path::Path, forge_dir: &std::path::Path) -> Result
             } else {
                 obj.insert("forge".to_string(), serde_json::json!({"enabled": true}));
             }
-            std::fs::write(cfg_path, serde_json::to_string_pretty(&cfg).unwrap_or_default())?;
+            std::fs::write(
+                cfg_path,
+                serde_json::to_string_pretty(&cfg).unwrap_or_default(),
+            )?;
         }
     }
 
     // Create 7 forge directories + prompts
-    for d in &["experiences", "reflections", "skills", "scripts", "mcp", "traces", "learning"] {
+    for d in &[
+        "experiences",
+        "reflections",
+        "skills",
+        "scripts",
+        "mcp",
+        "traces",
+        "learning",
+    ] {
         let _ = std::fs::create_dir_all(forge_dir.join(d));
     }
     let _ = std::fs::create_dir_all(forge_dir.join("prompts"));
@@ -262,7 +341,10 @@ fn cmd_disable(cfg_path: &std::path::Path) -> Result<()> {
             } else {
                 obj.insert("forge".to_string(), serde_json::json!({"enabled": false}));
             }
-            std::fs::write(cfg_path, serde_json::to_string_pretty(&cfg).unwrap_or_default())?;
+            std::fs::write(
+                cfg_path,
+                serde_json::to_string_pretty(&cfg).unwrap_or_default(),
+            )?;
         }
     }
     println!("Forge module disabled. Restart gateway to apply.");
@@ -274,7 +356,11 @@ fn cmd_reflect(cfg_path: &std::path::Path, forge_dir: &std::path::Path) -> Resul
     if cfg_path.exists() {
         if let Ok(data) = std::fs::read_to_string(cfg_path) {
             if let Ok(cfg) = serde_json::from_str::<serde_json::Value>(&data) {
-                let enabled = cfg.get("forge").and_then(|f| f.get("enabled")).and_then(|v| v.as_bool()).unwrap_or(false);
+                let enabled = cfg
+                    .get("forge")
+                    .and_then(|f| f.get("enabled"))
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
                 if !enabled {
                     println!("Forge module is not enabled. Run 'nemesisbot forge enable' first.");
                     return Ok(());
@@ -326,22 +412,24 @@ fn cmd_reflect(cfg_path: &std::path::Path, forge_dir: &std::path::Path) -> Resul
     }) {
         Ok(exps) => {
             // Convert AggregatedExperience to CollectedExperience for the reflector
-            exps.iter().map(|ae| {
-                let success = ae.success_rate >= 0.5;
-                nemesis_forge::types::CollectedExperience {
-                    experience: nemesis_forge::types::Experience {
-                        id: ae.pattern_hash.clone(),
-                        tool_name: ae.tool_name.clone(),
-                        input_summary: String::new(),
-                        output_summary: String::new(),
-                        success,
-                        duration_ms: ae.avg_duration_ms as u64,
-                        timestamp: ae.last_seen.clone(),
-                        session_key: String::new(),
-                    },
-                    dedup_hash: ae.pattern_hash.clone(),
-                }
-            }).collect::<Vec<_>>()
+            exps.iter()
+                .map(|ae| {
+                    let success = ae.success_rate >= 0.5;
+                    nemesis_forge::types::CollectedExperience {
+                        experience: nemesis_forge::types::Experience {
+                            id: ae.pattern_hash.clone(),
+                            tool_name: ae.tool_name.clone(),
+                            input_summary: String::new(),
+                            output_summary: String::new(),
+                            success,
+                            duration_ms: ae.avg_duration_ms as u64,
+                            timestamp: ae.last_seen.clone(),
+                            session_key: String::new(),
+                        },
+                        dedup_hash: ae.pattern_hash.clone(),
+                    }
+                })
+                .collect::<Vec<_>>()
         }
         Err(_) => {
             println!("  No aggregated experiences found. Nothing to reflect on.");
@@ -357,13 +445,13 @@ fn cmd_reflect(cfg_path: &std::path::Path, forge_dir: &std::path::Path) -> Resul
     println!("  Loaded {} aggregated experience(s).", experiences.len());
 
     // Run the real reflector (Stages 1-4: statistical + trace analysis)
-    let report = forge.reflector()
+    let report = forge
+        .reflector()
         .expect("reflector initialized above")
         .reflect(&experiences, None, "today", "all");
 
     // Write the reflection report to disk
-    let reflector_ref = forge.reflector()
-        .expect("reflector initialized above");
+    let reflector_ref = forge.reflector().expect("reflector initialized above");
     match reflector_ref.write_report(&report) {
         Ok(path) => {
             println!("  Reflection report saved: {}", path.display());
@@ -380,14 +468,21 @@ fn cmd_reflect(cfg_path: &std::path::Path, forge_dir: &std::path::Path) -> Resul
     println!("    Period: {}", report.period);
     println!("    Total records: {}", report.stats.total_records);
     println!("    Unique patterns: {}", report.stats.unique_patterns);
-    println!("    Avg success rate: {:.1}%", report.stats.avg_success_rate * 100.0);
+    println!(
+        "    Avg success rate: {:.1}%",
+        report.stats.avg_success_rate * 100.0
+    );
 
     if !report.stats.top_patterns.is_empty() {
         println!();
         println!("    Top patterns:");
         for p in report.stats.top_patterns.iter().take(5) {
-            println!("      {} - {} uses, {:.0}% success",
-                p.tool_name, p.count, p.success_rate * 100.0);
+            println!(
+                "      {} - {} uses, {:.0}% success",
+                p.tool_name,
+                p.count,
+                p.success_rate * 100.0
+            );
         }
     }
 
@@ -395,8 +490,12 @@ fn cmd_reflect(cfg_path: &std::path::Path, forge_dir: &std::path::Path) -> Resul
         println!();
         println!("    Low success patterns:");
         for p in &report.stats.low_success {
-            println!("      {} - {:.0}% success over {} calls",
-                p.tool_name, p.success_rate * 100.0, p.count);
+            println!(
+                "      {} - {:.0}% success over {} calls",
+                p.tool_name,
+                p.success_rate * 100.0,
+                p.count
+            );
         }
     }
 
@@ -419,10 +518,12 @@ fn cmd_list(forge_dir: &std::path::Path, r#type: &str) -> Result<()> {
 
     if !registry.is_empty() {
         // Use registry for formatted output (matches Go behavior)
-        let filtered: Vec<_> = registry.iter()
+        let filtered: Vec<_> = registry
+            .iter()
             .filter(|a| {
-                if r#type == "all" { true }
-                else {
+                if r#type == "all" {
+                    true
+                } else {
                     a.get("type").and_then(|v| v.as_str()).unwrap_or("") == r#type
                 }
             })
@@ -435,8 +536,14 @@ fn cmd_list(forge_dir: &std::path::Path, r#type: &str) -> Result<()> {
                 let id = artifact.get("id").and_then(|v| v.as_str()).unwrap_or("?");
                 let t = artifact.get("type").and_then(|v| v.as_str()).unwrap_or("?");
                 let name = artifact.get("name").and_then(|v| v.as_str()).unwrap_or("?");
-                let version = artifact.get("version").and_then(|v| v.as_str()).unwrap_or("-");
-                let status = artifact.get("status").and_then(|v| v.as_str()).unwrap_or("?");
+                let version = artifact
+                    .get("version")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("-");
+                let status = artifact
+                    .get("status")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("?");
                 println!("  ID: {}", id);
                 println!("    Type: {}", t);
                 println!("    Name: {}", name);
@@ -457,9 +564,7 @@ fn cmd_list(forge_dir: &std::path::Path, r#type: &str) -> Result<()> {
             let path = forge_dir.join(d);
             println!("  {}:", d);
             if path.exists() {
-                let entries: Vec<_> = std::fs::read_dir(&path)?
-                    .filter_map(|e| e.ok())
-                    .collect();
+                let entries: Vec<_> = std::fs::read_dir(&path)?.filter_map(|e| e.ok()).collect();
                 if entries.is_empty() {
                     println!("    (none)");
                 } else {
@@ -479,15 +584,33 @@ fn cmd_evaluate(forge_dir: &std::path::Path, id: &str) -> Result<()> {
     println!("Evaluating artifact: {}", id);
 
     let registry = load_registry(forge_dir);
-    let artifact = registry.iter().find(|a| {
-        a.get("id").and_then(|v| v.as_str()) == Some(id)
-    });
+    let artifact = registry
+        .iter()
+        .find(|a| a.get("id").and_then(|v| v.as_str()) == Some(id));
 
     if let Some(artifact) = artifact {
-        println!("  Name: {}", artifact.get("name").and_then(|v| v.as_str()).unwrap_or("?"));
-        println!("  Type: {}", artifact.get("type").and_then(|v| v.as_str()).unwrap_or("?"));
-        println!("  Version: {}", artifact.get("version").and_then(|v| v.as_str()).unwrap_or("?"));
-        println!("  Status: {}", artifact.get("status").and_then(|v| v.as_str()).unwrap_or("?"));
+        println!(
+            "  Name: {}",
+            artifact.get("name").and_then(|v| v.as_str()).unwrap_or("?")
+        );
+        println!(
+            "  Type: {}",
+            artifact.get("type").and_then(|v| v.as_str()).unwrap_or("?")
+        );
+        println!(
+            "  Version: {}",
+            artifact
+                .get("version")
+                .and_then(|v| v.as_str())
+                .unwrap_or("?")
+        );
+        println!(
+            "  Status: {}",
+            artifact
+                .get("status")
+                .and_then(|v| v.as_str())
+                .unwrap_or("?")
+        );
 
         if let Some(score) = artifact.get("score").and_then(|v| v.as_f64()) {
             println!("  Score: {:.2}", score);
@@ -503,7 +626,12 @@ fn cmd_evaluate(forge_dir: &std::path::Path, id: &str) -> Result<()> {
     Ok(())
 }
 
-fn cmd_export(forge_dir: &std::path::Path, output: Option<&str>, export_all: bool, artifact_id: Option<&str>) -> Result<()> {
+fn cmd_export(
+    forge_dir: &std::path::Path,
+    output: Option<&str>,
+    export_all: bool,
+    artifact_id: Option<&str>,
+) -> Result<()> {
     if !forge_dir.exists() {
         println!("  Forge workspace not initialized. Run 'nemesisbot forge enable' first.");
         return Ok(());
@@ -513,23 +641,23 @@ fn cmd_export(forge_dir: &std::path::Path, output: Option<&str>, export_all: boo
 
     // Determine target directory: workspace/forge/exports/ (matching Go)
     let target_dir = match output {
-        Some(path) if std::path::Path::new(path).is_absolute() => {
-            std::path::PathBuf::from(path)
-        }
+        Some(path) if std::path::Path::new(path).is_absolute() => std::path::PathBuf::from(path),
         _ => forge_dir.join("exports"),
     };
 
     // Create a registry with the forge dir's registry.json and load from disk
     let registry = std::sync::Arc::new(nemesis_forge::registry::Registry::new(
         nemesis_forge::types::RegistryConfig {
-            index_path: forge_dir.join("registry.json").to_string_lossy().to_string(),
-        }
+            index_path: forge_dir
+                .join("registry.json")
+                .to_string_lossy()
+                .to_string(),
+        },
     ));
 
     // Load registry from disk (async)
-    tokio::task::block_in_place(|| {
-        tokio::runtime::Handle::current().block_on(registry.load())
-    }).map_err(|e| anyhow::anyhow!("Failed to load registry: {}", e))?;
+    tokio::task::block_in_place(|| tokio::runtime::Handle::current().block_on(registry.load()))
+        .map_err(|e| anyhow::anyhow!("Failed to load registry: {}", e))?;
 
     // Check if registry has any artifacts
     let all_artifacts = registry.list(None, None);
@@ -539,7 +667,8 @@ fn cmd_export(forge_dir: &std::path::Path, output: Option<&str>, export_all: boo
     }
 
     // Create a real Exporter with the registry
-    let export_config = nemesis_forge::exporter::ExportConfig::with_registry(&workspace, registry.clone());
+    let export_config =
+        nemesis_forge::exporter::ExportConfig::with_registry(&workspace, registry.clone());
     let exporter = nemesis_forge::exporter::Exporter::new(export_config);
 
     if let Some(id) = artifact_id {
@@ -555,8 +684,10 @@ fn cmd_export(forge_dir: &std::path::Path, output: Option<&str>, export_all: boo
         };
 
         let export_dir = tokio::task::block_in_place(|| {
-            tokio::runtime::Handle::current().block_on(exporter.export_artifact(&artifact, &target_dir))
-        }).map_err(|e| anyhow::anyhow!("Export failed: {}", e))?;
+            tokio::runtime::Handle::current()
+                .block_on(exporter.export_artifact(&artifact, &target_dir))
+        })
+        .map_err(|e| anyhow::anyhow!("Export failed: {}", e))?;
 
         println!("  Artifact exported to: {}", export_dir.display());
     } else {
@@ -569,7 +700,8 @@ fn cmd_export(forge_dir: &std::path::Path, output: Option<&str>, export_all: boo
 
         let count = tokio::task::block_in_place(|| {
             tokio::runtime::Handle::current().block_on(exporter.export_all(&target_dir))
-        }).map_err(|e| anyhow::anyhow!("Export failed: {}", e))?;
+        })
+        .map_err(|e| anyhow::anyhow!("Export failed: {}", e))?;
 
         if count == 0 {
             println!("  No artifacts to export.");
@@ -577,7 +709,11 @@ fn cmd_export(forge_dir: &std::path::Path, output: Option<&str>, export_all: boo
                 println!("  Use --all to include non-active artifacts.");
             }
         } else {
-            println!("  Exported {} artifact(s) to: {}", count, target_dir.display());
+            println!(
+                "  Exported {} artifact(s) to: {}",
+                count,
+                target_dir.display()
+            );
         }
     }
 
@@ -589,26 +725,86 @@ fn cmd_learning_status(forge_dir: &std::path::Path) -> Result<()> {
     println!("====================");
 
     let forge_cfg = load_forge_config(forge_dir);
-    let enabled = forge_cfg.get("learning_enabled").and_then(|v| v.as_bool()).unwrap_or(false);
+    let enabled = forge_cfg
+        .get("learning_enabled")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
     println!("  Enabled: {}", enabled);
 
     // Show detailed learning config
     if let Some(learning) = forge_cfg.get("learning") {
         println!();
         println!("  Configuration:");
-        println!("    Min Pattern Frequency: {}", learning.get("min_pattern_frequency").and_then(|v| v.as_u64()).unwrap_or(3));
-        println!("    High Confidence Threshold: {}", learning.get("high_confidence_threshold").and_then(|v| v.as_f64()).unwrap_or(0.8));
-        println!("    Max Auto Creates: {}", learning.get("max_auto_creates").and_then(|v| v.as_u64()).unwrap_or(3));
-        println!("    Max Refine Rounds: {}", learning.get("max_refine_rounds").and_then(|v| v.as_u64()).unwrap_or(3));
-        println!("    Min Outcome Samples: {}", learning.get("min_outcome_samples").and_then(|v| v.as_u64()).unwrap_or(5));
-        println!("    Monitor Window (days): {}", learning.get("monitor_window_days").and_then(|v| v.as_u64()).unwrap_or(7));
-        println!("    Degrade Threshold: {}", learning.get("degrade_threshold").and_then(|v| v.as_f64()).unwrap_or(-0.2));
-        println!("    Degrade Cooldown (days): {}", learning.get("degrade_cooldown_days").and_then(|v| v.as_u64()).unwrap_or(7));
-        println!("    LLM Budget Tokens: {}", learning.get("llm_budget_tokens").and_then(|v| v.as_u64()).unwrap_or(8000));
+        println!(
+            "    Min Pattern Frequency: {}",
+            learning
+                .get("min_pattern_frequency")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(3)
+        );
+        println!(
+            "    High Confidence Threshold: {}",
+            learning
+                .get("high_confidence_threshold")
+                .and_then(|v| v.as_f64())
+                .unwrap_or(0.8)
+        );
+        println!(
+            "    Max Auto Creates: {}",
+            learning
+                .get("max_auto_creates")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(3)
+        );
+        println!(
+            "    Max Refine Rounds: {}",
+            learning
+                .get("max_refine_rounds")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(3)
+        );
+        println!(
+            "    Min Outcome Samples: {}",
+            learning
+                .get("min_outcome_samples")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(5)
+        );
+        println!(
+            "    Monitor Window (days): {}",
+            learning
+                .get("monitor_window_days")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(7)
+        );
+        println!(
+            "    Degrade Threshold: {}",
+            learning
+                .get("degrade_threshold")
+                .and_then(|v| v.as_f64())
+                .unwrap_or(-0.2)
+        );
+        println!(
+            "    Degrade Cooldown (days): {}",
+            learning
+                .get("degrade_cooldown_days")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(7)
+        );
+        println!(
+            "    LLM Budget Tokens: {}",
+            learning
+                .get("llm_budget_tokens")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(8000)
+        );
     }
 
     // Show trace collection status
-    let trace_collection = forge_cfg.get("trace_collection").and_then(|v| v.as_bool()).unwrap_or(true);
+    let trace_collection = forge_cfg
+        .get("trace_collection")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(true);
     println!();
     println!("  Trace Collection: {}", trace_collection);
 
@@ -620,9 +816,15 @@ fn cmd_learning_enable(forge_dir: &std::path::Path) -> Result<()> {
 
     let mut cfg = load_forge_config(forge_dir);
     if let Some(obj) = cfg.as_object_mut() {
-        obj.insert("learning_enabled".to_string(), serde_json::Value::Bool(true));
+        obj.insert(
+            "learning_enabled".to_string(),
+            serde_json::Value::Bool(true),
+        );
         // Auto-enable trace collection when learning is enabled
-        obj.insert("trace_collection".to_string(), serde_json::Value::Bool(true));
+        obj.insert(
+            "trace_collection".to_string(),
+            serde_json::Value::Bool(true),
+        );
     }
 
     // Ensure learning directory exists
@@ -632,7 +834,10 @@ fn cmd_learning_enable(forge_dir: &std::path::Path) -> Result<()> {
     save_forge_config(forge_dir, &cfg)?;
     println!("Learning loop enabled.");
     println!("  Trace collection: auto-enabled");
-    println!("  Learning directory: {}", forge_dir.join("learning").display());
+    println!(
+        "  Learning directory: {}",
+        forge_dir.join("learning").display()
+    );
     println!("  Restart gateway to apply.");
     Ok(())
 }
@@ -642,7 +847,10 @@ fn cmd_learning_disable(forge_dir: &std::path::Path) -> Result<()> {
 
     let mut cfg = load_forge_config(forge_dir);
     if let Some(obj) = cfg.as_object_mut() {
-        obj.insert("learning_enabled".to_string(), serde_json::Value::Bool(false));
+        obj.insert(
+            "learning_enabled".to_string(),
+            serde_json::Value::Bool(false),
+        );
     }
 
     save_forge_config(forge_dir, &cfg)?;
@@ -664,10 +872,22 @@ fn cmd_learning_history(forge_dir: &std::path::Path, limit: usize) -> Result<()>
                 for line in lines.iter().rev().take(limit) {
                     if let Ok(evt) = serde_json::from_str::<serde_json::Value>(line) {
                         let ts = evt.get("timestamp").and_then(|v| v.as_str()).unwrap_or("?");
-                        let patterns = evt.get("patterns_found").and_then(|v| v.as_u64()).unwrap_or(0);
-                        let actions = evt.get("actions_generated").and_then(|v| v.as_u64()).unwrap_or(0);
-                        let deployed = evt.get("actions_deployed").and_then(|v| v.as_u64()).unwrap_or(0);
-                        println!("  [{}] patterns={} actions={} deployed={}", ts, patterns, actions, deployed);
+                        let patterns = evt
+                            .get("patterns_found")
+                            .and_then(|v| v.as_u64())
+                            .unwrap_or(0);
+                        let actions = evt
+                            .get("actions_generated")
+                            .and_then(|v| v.as_u64())
+                            .unwrap_or(0);
+                        let deployed = evt
+                            .get("actions_deployed")
+                            .and_then(|v| v.as_u64())
+                            .unwrap_or(0);
+                        println!(
+                            "  [{}] patterns={} actions={} deployed={}",
+                            ts, patterns, actions, deployed
+                        );
                     } else {
                         println!("  {}", line);
                     }
@@ -704,15 +924,13 @@ pub fn run(action: ForgeAction, local: bool) -> Result<()> {
                 .unwrap_or_else(|| "forge_export.json".to_string());
             cmd_export(&forge_dir, Some(&effective_output), all, id.as_deref())?
         }
-        ForgeAction::Learning { action } => {
-            match action {
-                None => cmd_learning_status(&forge_dir)?,
-                Some(LearningAction::Status) => cmd_learning_status(&forge_dir)?,
-                Some(LearningAction::Enable) => cmd_learning_enable(&forge_dir)?,
-                Some(LearningAction::Disable) => cmd_learning_disable(&forge_dir)?,
-                Some(LearningAction::History { limit }) => cmd_learning_history(&forge_dir, limit)?,
-            }
-        }
+        ForgeAction::Learning { action } => match action {
+            None => cmd_learning_status(&forge_dir)?,
+            Some(LearningAction::Status) => cmd_learning_status(&forge_dir)?,
+            Some(LearningAction::Enable) => cmd_learning_enable(&forge_dir)?,
+            Some(LearningAction::Disable) => cmd_learning_disable(&forge_dir)?,
+            Some(LearningAction::History { limit }) => cmd_learning_history(&forge_dir, limit)?,
+        },
     }
     Ok(())
 }

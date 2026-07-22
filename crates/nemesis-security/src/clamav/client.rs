@@ -1,10 +1,10 @@
 //! ClamAV TCP client for the clamd daemon.
 
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tokio::net::TcpStream;
 use std::net::SocketAddr;
 use std::path::Path;
 use std::time::Duration;
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::net::TcpStream;
 
 /// Scan result from clamd.
 #[derive(Debug, Clone)]
@@ -106,7 +106,10 @@ impl Client {
 
             // Send INSTREAM command
             let cmd = b"nINSTREAM\n";
-            stream.write_all(cmd).await.map_err(|e| format!("failed to send INSTREAM: {}", e))?;
+            stream
+                .write_all(cmd)
+                .await
+                .map_err(|e| format!("failed to send INSTREAM: {}", e))?;
 
             // Stream in chunks with 4-byte big-endian length prefix
             let chunk_size = 32 * 1024;
@@ -115,18 +118,30 @@ impl Client {
                 let end = (offset + chunk_size).min(content.len());
                 let chunk = &content[offset..end];
                 let len = chunk.len() as u32;
-                stream.write_all(&len.to_be_bytes()).await.map_err(|e| format!("write chunk len: {}", e))?;
-                stream.write_all(chunk).await.map_err(|e| format!("write chunk data: {}", e))?;
+                stream
+                    .write_all(&len.to_be_bytes())
+                    .await
+                    .map_err(|e| format!("write chunk len: {}", e))?;
+                stream
+                    .write_all(chunk)
+                    .await
+                    .map_err(|e| format!("write chunk data: {}", e))?;
                 offset = end;
             }
 
             // Send termination (0-length chunk)
-            stream.write_all(&0u32.to_be_bytes()).await.map_err(|e| format!("send termination: {}", e))?;
+            stream
+                .write_all(&0u32.to_be_bytes())
+                .await
+                .map_err(|e| format!("send termination: {}", e))?;
 
             // Read response
             let mut reader = BufReader::new(stream);
             let mut resp_line = String::new();
-            reader.read_line(&mut resp_line).await.map_err(|e| format!("read response: {}", e))?;
+            reader
+                .read_line(&mut resp_line)
+                .await
+                .map_err(|e| format!("read response: {}", e))?;
 
             Ok::<ClamavScanResult, String>(parse_scan_response(resp_line.trim()))
         })
@@ -159,7 +174,10 @@ impl Client {
 
         let cmd = format!("n{}\n", command);
         let (read_half, mut write_half) = stream.into_split();
-        write_half.write_all(cmd.as_bytes()).await.map_err(|e| format!("send command: {}", e))?;
+        write_half
+            .write_all(cmd.as_bytes())
+            .await
+            .map_err(|e| format!("send command: {}", e))?;
 
         let mut reader = BufReader::new(read_half);
         let mut lines = Vec::new();

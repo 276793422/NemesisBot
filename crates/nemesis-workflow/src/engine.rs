@@ -16,16 +16,16 @@ use tokio::sync::RwLock;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
 
-use crate::checkpoint::{
-    Checkpoint, CheckpointStore, FileCheckpointStore, SerializableContext,
-};
+use crate::checkpoint::{Checkpoint, CheckpointStore, FileCheckpointStore, SerializableContext};
 use crate::context::WorkflowContext;
 use crate::events::{WorkflowEvent, WorkflowEventManager};
 use crate::nodes::{NodeExecutorRegistry, SubWorkflowNodeExecutor};
 use crate::persistence::WorkflowPersistence;
 use crate::scheduler::{self, ScheduleOutcome};
 use crate::triggers::CronTimezone;
-use crate::types::{Execution, ExecutionState, NodeDef, NodeResult, TriggerConfig, TriggerSource, Workflow};
+use crate::types::{
+    Execution, ExecutionState, NodeDef, NodeResult, TriggerConfig, TriggerSource, Workflow,
+};
 
 /// Render a path for logging without panicking on non-UTF8.
 fn path_dbg(path: &Path) -> String {
@@ -347,7 +347,9 @@ impl WorkflowEngine {
             event_manager: WorkflowEventManager::new(),
             call_stack: std::sync::Arc::new(crate::call_stack::WorkflowCallStack::new()),
             event_dispatcher: crate::event_dispatcher::EventDispatcher::default(),
-            workflow_chat_state: std::sync::Arc::new(crate::workflow_chat_state::WorkflowChatState::new()),
+            workflow_chat_state: std::sync::Arc::new(
+                crate::workflow_chat_state::WorkflowChatState::new(),
+            ),
             usage_store: crate::nodes::new_usage_store_slot(),
         }
     }
@@ -371,7 +373,9 @@ impl WorkflowEngine {
             event_manager: WorkflowEventManager::new(),
             call_stack: std::sync::Arc::new(crate::call_stack::WorkflowCallStack::new()),
             event_dispatcher: crate::event_dispatcher::EventDispatcher::default(),
-            workflow_chat_state: std::sync::Arc::new(crate::workflow_chat_state::WorkflowChatState::new()),
+            workflow_chat_state: std::sync::Arc::new(
+                crate::workflow_chat_state::WorkflowChatState::new(),
+            ),
             usage_store: crate::nodes::new_usage_store_slot(),
         });
 
@@ -402,7 +406,9 @@ impl WorkflowEngine {
             event_manager: WorkflowEventManager::new(),
             call_stack: std::sync::Arc::new(crate::call_stack::WorkflowCallStack::new()),
             event_dispatcher: crate::event_dispatcher::EventDispatcher::default(),
-            workflow_chat_state: std::sync::Arc::new(crate::workflow_chat_state::WorkflowChatState::new()),
+            workflow_chat_state: std::sync::Arc::new(
+                crate::workflow_chat_state::WorkflowChatState::new(),
+            ),
             usage_store: crate::nodes::new_usage_store_slot(),
         }
     }
@@ -423,7 +429,9 @@ impl WorkflowEngine {
             event_manager: WorkflowEventManager::new(),
             call_stack: std::sync::Arc::new(crate::call_stack::WorkflowCallStack::new()),
             event_dispatcher: crate::event_dispatcher::EventDispatcher::default(),
-            workflow_chat_state: std::sync::Arc::new(crate::workflow_chat_state::WorkflowChatState::new()),
+            workflow_chat_state: std::sync::Arc::new(
+                crate::workflow_chat_state::WorkflowChatState::new(),
+            ),
             usage_store: crate::nodes::new_usage_store_slot(),
         });
 
@@ -449,7 +457,9 @@ impl WorkflowEngine {
             event_manager: WorkflowEventManager::new(),
             call_stack: std::sync::Arc::new(crate::call_stack::WorkflowCallStack::new()),
             event_dispatcher: crate::event_dispatcher::EventDispatcher::default(),
-            workflow_chat_state: std::sync::Arc::new(crate::workflow_chat_state::WorkflowChatState::new()),
+            workflow_chat_state: std::sync::Arc::new(
+                crate::workflow_chat_state::WorkflowChatState::new(),
+            ),
             usage_store: crate::nodes::new_usage_store_slot(),
         }
     }
@@ -471,7 +481,9 @@ impl WorkflowEngine {
             event_manager: WorkflowEventManager::new(),
             call_stack: std::sync::Arc::new(crate::call_stack::WorkflowCallStack::new()),
             event_dispatcher: crate::event_dispatcher::EventDispatcher::default(),
-            workflow_chat_state: std::sync::Arc::new(crate::workflow_chat_state::WorkflowChatState::new()),
+            workflow_chat_state: std::sync::Arc::new(
+                crate::workflow_chat_state::WorkflowChatState::new(),
+            ),
             usage_store: crate::nodes::new_usage_store_slot(),
         }
     }
@@ -516,20 +528,21 @@ impl WorkflowEngine {
         executions_dir: Option<PathBuf>,
         checkpoint_root: Option<PathBuf>,
     ) -> Arc<Self> {
-        let checkpoint_store: Option<Arc<dyn CheckpointStore>> = checkpoint_root
-            .as_ref()
-            .and_then(|dir| match FileCheckpointStore::new(dir.clone()) {
-                Ok(s) => Some(Arc::new(s) as Arc<dyn CheckpointStore>),
-                Err(e) => {
-                    warn!(
-                        target: "nemesis_workflow::engine",
-                        error = %e,
-                        dir = ?dir,
-                        "failed to initialise checkpoint store; resume will not survive restart"
-                    );
-                    None
-                }
-            });
+        let checkpoint_store: Option<Arc<dyn CheckpointStore>> =
+            checkpoint_root
+                .as_ref()
+                .and_then(|dir| match FileCheckpointStore::new(dir.clone()) {
+                    Ok(s) => Some(Arc::new(s) as Arc<dyn CheckpointStore>),
+                    Err(e) => {
+                        warn!(
+                            target: "nemesis_workflow::engine",
+                            error = %e,
+                            dir = ?dir,
+                            "failed to initialise checkpoint store; resume will not survive restart"
+                        );
+                        None
+                    }
+                });
 
         let engine = Arc::new(Self {
             workflows: DashMap::new(),
@@ -543,7 +556,9 @@ impl WorkflowEngine {
             event_manager: WorkflowEventManager::new(),
             call_stack: std::sync::Arc::new(crate::call_stack::WorkflowCallStack::new()),
             event_dispatcher: crate::event_dispatcher::EventDispatcher::default(),
-            workflow_chat_state: std::sync::Arc::new(crate::workflow_chat_state::WorkflowChatState::new()),
+            workflow_chat_state: std::sync::Arc::new(
+                crate::workflow_chat_state::WorkflowChatState::new(),
+            ),
             usage_store: crate::nodes::new_usage_store_slot(),
         });
 
@@ -567,17 +582,21 @@ impl WorkflowEngine {
         );
         engine.node_executors.register(
             "question_classifier",
-            Arc::new(crate::nodes::QuestionClassifierNodeExecutor::with_usage_store(
-                provider.clone(),
-                engine.usage_store.clone(),
-            )),
+            Arc::new(
+                crate::nodes::QuestionClassifierNodeExecutor::with_usage_store(
+                    provider.clone(),
+                    engine.usage_store.clone(),
+                ),
+            ),
         );
         engine.node_executors.register(
             "parameter_extractor",
-            Arc::new(crate::nodes::ParameterExtractorNodeExecutor::with_usage_store(
-                provider,
-                engine.usage_store.clone(),
-            )),
+            Arc::new(
+                crate::nodes::ParameterExtractorNodeExecutor::with_usage_store(
+                    provider,
+                    engine.usage_store.clone(),
+                ),
+            ),
         );
         engine.node_executors.register(
             "sub_workflow",
@@ -708,7 +727,12 @@ impl WorkflowEngine {
     /// Used by gateway (milestone 1a-E2) to register cron schedules at startup.
     pub fn list_cron_workflows(
         &self,
-    ) -> Vec<(String, String, CronTimezone, HashMap<String, serde_json::Value>)> {
+    ) -> Vec<(
+        String,
+        String,
+        CronTimezone,
+        HashMap<String, serde_json::Value>,
+    )> {
         let mut out = Vec::new();
         for entry in self.workflows.iter() {
             let wf = entry.value();
@@ -745,10 +769,8 @@ impl WorkflowEngine {
                     .get("input")
                     .and_then(|v| v.as_object())
                     .map(|m| {
-                        let mut map: HashMap<String, serde_json::Value> = m
-                            .iter()
-                            .map(|(k, v)| (k.clone(), v.clone()))
-                            .collect();
+                        let mut map: HashMap<String, serde_json::Value> =
+                            m.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
                         // Backfill the unified `input` string so `{{input}}`
                         // in prompts resolves even when the cron config
                         // doesn't explicitly declare an `input` field.
@@ -811,36 +833,32 @@ impl WorkflowEngine {
                     let now_utc = chrono::Utc::now();
                     let now_local = chrono::Local::now();
                     let delay = match timezone {
-                        CronTimezone::Utc => {
-                            match cron.find_next_occurrence(&now_utc, false) {
-                                Ok(next) => (next - now_utc).to_std().unwrap_or_else(|_| {
-                                    std::time::Duration::from_millis(100)
-                                }),
-                                Err(err) => {
-                                    tracing::warn!(
-                                        workflow = %task_name,
-                                        error = %err,
-                                        "[Workflow] Failed to compute next cron fire, stopping schedule"
-                                    );
-                                    return;
-                                }
+                        CronTimezone::Utc => match cron.find_next_occurrence(&now_utc, false) {
+                            Ok(next) => (next - now_utc)
+                                .to_std()
+                                .unwrap_or_else(|_| std::time::Duration::from_millis(100)),
+                            Err(err) => {
+                                tracing::warn!(
+                                    workflow = %task_name,
+                                    error = %err,
+                                    "[Workflow] Failed to compute next cron fire, stopping schedule"
+                                );
+                                return;
                             }
-                        }
-                        CronTimezone::Local => {
-                            match cron.find_next_occurrence(&now_local, false) {
-                                Ok(next) => (next - now_local).to_std().unwrap_or_else(|_| {
-                                    std::time::Duration::from_millis(100)
-                                }),
-                                Err(err) => {
-                                    tracing::warn!(
-                                        workflow = %task_name,
-                                        error = %err,
-                                        "[Workflow] Failed to compute next cron fire, stopping schedule"
-                                    );
-                                    return;
-                                }
+                        },
+                        CronTimezone::Local => match cron.find_next_occurrence(&now_local, false) {
+                            Ok(next) => (next - now_local)
+                                .to_std()
+                                .unwrap_or_else(|_| std::time::Duration::from_millis(100)),
+                            Err(err) => {
+                                tracing::warn!(
+                                    workflow = %task_name,
+                                    error = %err,
+                                    "[Workflow] Failed to compute next cron fire, stopping schedule"
+                                );
+                                return;
                             }
-                        }
+                        },
                     };
                     tokio::time::sleep(delay).await;
 
@@ -906,7 +924,9 @@ impl WorkflowEngine {
     /// Access the per-workflow chat serialization state (1c-E8).
     /// The WebSocket send handler and the reply observer share this instance
     /// to serialize concurrent workflow_chat sends to the same workflow.
-    pub fn workflow_chat_state(&self) -> &std::sync::Arc<crate::workflow_chat_state::WorkflowChatState> {
+    pub fn workflow_chat_state(
+        &self,
+    ) -> &std::sync::Arc<crate::workflow_chat_state::WorkflowChatState> {
         &self.workflow_chat_state
     }
 
@@ -1013,8 +1033,8 @@ impl WorkflowEngine {
             // flag is the authoritative signal (Gap 2 fix); the
             // all-completed fallback covers legacy checkpoints written
             // before the flag existed.
-            let all_completed = cp.completed_nodes.len() >= workflow.nodes.len()
-                && cp.waiting_node.is_none();
+            let all_completed =
+                cp.completed_nodes.len() >= workflow.nodes.len() && cp.waiting_node.is_none();
             if cp.terminal || all_completed {
                 continue;
             }
@@ -1023,7 +1043,8 @@ impl WorkflowEngine {
             // metadata on the checkpoint (the snapshot carries variables/input
             // separately), so we lift them back out of the context snapshot.
             let now = Local::now();
-            let mut execution = Execution::new(workflow.name.clone(), cp.context_snapshot.input.clone());
+            let mut execution =
+                Execution::new(workflow.name.clone(), cp.context_snapshot.input.clone());
             execution.id = exec_id.clone();
             execution.started_at = cp.saved_at.with_timezone(&chrono::Local);
             execution.workflow_hash = Some(cp.workflow_hash.clone());
@@ -1332,24 +1353,24 @@ impl WorkflowEngine {
             )));
         }
 
-
         let dir = self.workflow_defs_dir.read().clone().ok_or_else(|| {
             EngineError::PersistenceError(
                 "workflow_defs_dir not set; call set_workflow_defs_dir() first".to_string(),
             )
         })?;
 
-        std::fs::create_dir_all(&dir).map_err(|e| {
-            EngineError::PersistenceError(format!("create dir {:?}: {}", dir, e))
-        })?;
+        std::fs::create_dir_all(&dir)
+            .map_err(|e| EngineError::PersistenceError(format!("create dir {:?}: {}", dir, e)))?;
 
-        let path = dir.join(format!("{}.yaml", sanitize_workflow_filename(&workflow.name)));
+        let path = dir.join(format!(
+            "{}.yaml",
+            sanitize_workflow_filename(&workflow.name)
+        ));
         let yaml = serde_yaml::to_string(&workflow).map_err(|e| {
             EngineError::PersistenceError(format!("serialize workflow {:?}: {}", workflow.name, e))
         })?;
-        std::fs::write(&path, yaml).map_err(|e| {
-            EngineError::PersistenceError(format!("write {:?}: {}", path, e))
-        })?;
+        std::fs::write(&path, yaml)
+            .map_err(|e| EngineError::PersistenceError(format!("write {:?}: {}", path, e)))?;
 
         self.workflows.insert(workflow.name.clone(), workflow);
         Ok(())
@@ -1370,10 +1391,7 @@ impl WorkflowEngine {
             let candidate = dir.join(format!("{}.yaml", sanitize_workflow_filename(name)));
             if candidate.exists() {
                 std::fs::remove_file(&candidate).map_err(|e| {
-                    EngineError::PersistenceError(format!(
-                        "remove {:?}: {}",
-                        candidate, e
-                    ))
+                    EngineError::PersistenceError(format!("remove {:?}: {}", candidate, e))
                 })?;
             }
             // Also try .yml + .json variants — load_workflows_from_dir accepts all three.
@@ -1481,7 +1499,8 @@ impl WorkflowEngine {
         // Load the execution snapshot we will mutate.
         let mut execution = {
             let execs = self.executions.read().await;
-            execs.get(execution_id)
+            execs
+                .get(execution_id)
                 .cloned()
                 .ok_or_else(|| EngineError::ExecutionNotFound(execution_id.to_string()))?
         };
@@ -1494,9 +1513,8 @@ impl WorkflowEngine {
         // from the trigger source (AgentTool-triggered runs carry a depth;
         // everything else is 0). Push can reject if a caller bypassed the
         // WorkflowRunTool's pre-check and tried to start at depth > MAX.
-        let recursion_depth = crate::call_stack::CallFrame::depth_from_trigger(
-            &execution.trigger_source,
-        );
+        let recursion_depth =
+            crate::call_stack::CallFrame::depth_from_trigger(&execution.trigger_source);
         // If we're already inside a workflow run (sub_workflow node, or an
         // agent_node that re-invoked workflow_run), link this new frame to
         // the current top of the stack as its parent. Top-level invocations
@@ -1825,7 +1843,10 @@ impl WorkflowEngine {
     /// per-node timeout, conditional edges, cancellation token, or hooks.
     /// Production code should call `run` / `run_async` / `start_async`. This
     /// method is retained only because legacy tests build on it.
-    #[deprecated(since = "0.1.0", note = "use `run` / `run_async` / `start_async` instead — this path skips retry/timeout/conditional-edges/cancellation")]
+    #[deprecated(
+        since = "0.1.0",
+        note = "use `run` / `run_async` / `start_async` instead — this path skips retry/timeout/conditional-edges/cancellation"
+    )]
     pub async fn start_execution(
         &self,
         workflow_name: &str,
@@ -1850,11 +1871,8 @@ impl WorkflowEngine {
         let mut context = execution.input.clone();
 
         // Build node lookup.
-        let node_map: HashMap<&str, &NodeDef> = workflow
-            .nodes
-            .iter()
-            .map(|n| (n.id.as_str(), n))
-            .collect();
+        let node_map: HashMap<&str, &NodeDef> =
+            workflow.nodes.iter().map(|n| (n.id.as_str(), n)).collect();
 
         // Track completed nodes.
         let mut completed: HashSet<String> = HashSet::new();
@@ -1902,7 +1920,9 @@ impl WorkflowEngine {
                 };
 
                 let node_state = result.state;
-                execution.node_results.insert(node_id.clone(), result.clone());
+                execution
+                    .node_results
+                    .insert(node_id.clone(), result.clone());
 
                 // Merge output into context.
                 if let Some(obj) = result.output.as_object() {
@@ -2098,10 +2118,7 @@ impl WorkflowEngine {
                     result.ended_at = Local::now();
                     if let Some(approved) = review_result.get("approved") {
                         if let Some(b) = approved.as_bool() {
-                            debug!(
-                                "[Workflow] Node {} review result: approved={}",
-                                node_id, b
-                            );
+                            debug!("[Workflow] Node {} review result: approved={}", node_id, b);
                         }
                     }
                     found_waiting = Some(node_id.clone());
@@ -2110,10 +2127,7 @@ impl WorkflowEngine {
             }
 
             let waiting_id = found_waiting.ok_or_else(|| {
-                EngineError::InvalidState(format!(
-                    "execution {} has no node in waiting state",
-                    id
-                ))
+                EngineError::InvalidState(format!("execution {} has no node in waiting state", id))
             })?;
 
             // Mark as Running while schedule_resume executes.
@@ -2297,7 +2311,10 @@ impl WorkflowEngine {
     /// Errors are logged but not propagated -- persistence is best-effort.
     async fn persist_execution(&self, execution: &Execution) {
         if let Some(ref dir) = self.persistence_dir {
-            let file_path = dir.join(format!("{}_{}.jsonl", execution.workflow_name, execution.id));
+            let file_path = dir.join(format!(
+                "{}_{}.jsonl",
+                execution.workflow_name, execution.id
+            ));
             let persistence = WorkflowPersistence::new(&file_path);
             if let Err(e) = persistence.save_execution(execution) {
                 warn!(
@@ -2388,7 +2405,9 @@ fn validate_dag(nodes: &[NodeDef]) -> Result<(), EngineError> {
 
     if visited < nodes.len() {
         // Some nodes were never visited -- cycle exists.
-        return Err(EngineError::CycleDetected("circular dependency".to_string()));
+        return Err(EngineError::CycleDetected(
+            "circular dependency".to_string(),
+        ));
     }
 
     Ok(())

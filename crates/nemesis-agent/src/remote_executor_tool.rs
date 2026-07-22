@@ -224,8 +224,8 @@ impl ExecutorChannel {
     }
 
     fn parse_response(resp_line: &str) -> Result<String, String> {
-        let resp: ExecutorResponse = serde_json::from_str(resp_line)
-            .map_err(|e| format!("parse executor response: {e}"))?;
+        let resp: ExecutorResponse =
+            serde_json::from_str(resp_line).map_err(|e| format!("parse executor response: {e}"))?;
         if resp.ok {
             Ok(resp.result)
         } else if resp.error.is_empty() {
@@ -248,11 +248,7 @@ impl ExecutorChannel {
     }
 
     /// stdio transport (sandbox=false): write stdin, read stdout.
-    async fn spawn_and_call_stdio(
-        &self,
-        tool: &str,
-        request_line: &str,
-    ) -> Result<String, String> {
+    async fn spawn_and_call_stdio(&self, tool: &str, request_line: &str) -> Result<String, String> {
         let mut cmd = self.build_command();
         cmd.stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -304,11 +300,7 @@ impl ExecutorChannel {
     /// — `start_exe=None` spawns directly (transport test); `start_exe=Some`
     /// wraps with Start.exe (real box, L2.2).
     #[cfg(windows)]
-    async fn spawn_and_call_pipe(
-        &self,
-        tool: &str,
-        request_line: &str,
-    ) -> Result<String, String> {
+    async fn spawn_and_call_pipe(&self, tool: &str, request_line: &str) -> Result<String, String> {
         use crate::executor_pipe;
 
         let id = executor_pipe::unique_pipe_id();

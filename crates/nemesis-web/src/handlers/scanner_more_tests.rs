@@ -29,8 +29,8 @@ use crate::events::EventHub;
 use crate::session::SessionManager;
 use crate::ws_router::{ModuleHandler, RequestContext};
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, AtomicUsize};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicUsize};
 use std::time::Instant;
 
 // -----------------------------------------------------------------------
@@ -64,7 +64,9 @@ fn make_ctx(dir: &tempfile::TempDir) -> RequestContext {
         cluster_service: None,
         cluster_log_dir: None,
         workflow_engine: None,
-        chat_secret_store: std::sync::Arc::new(nemesis_workflow::chat_secrets::ChatSecretStore::in_memory()),
+        chat_secret_store: std::sync::Arc::new(
+            nemesis_workflow::chat_secrets::ChatSecretStore::in_memory(),
+        ),
         webhook_rate_limiter: Arc::new(crate::handlers::workflow::WebhookRateLimiter::new()),
         internal_cmd_tx: None,
         estop: None,
@@ -155,7 +157,11 @@ async fn test_check_db_status_missing_when_no_db_file() {
     let db_dir = install_root.join("database");
     std::fs::create_dir_all(&db_dir).unwrap();
     // No daily.cvd written — status should be "missing".
-    let exe_name = if cfg!(windows) { "clamscan.exe" } else { "clamscan" };
+    let exe_name = if cfg!(windows) {
+        "clamscan.exe"
+    } else {
+        "clamscan"
+    };
     std::fs::write(install_root.join(exe_name), b"fake").unwrap();
 
     let engine = nemesis_config::ClamAVEngineConfig {
@@ -255,10 +261,7 @@ async fn test_check_persists_state_change_to_disk() {
     let ctx = make_ctx(&dir);
 
     let data = serde_json::json!({ "name": "clamav" });
-    let _ = handler
-        .handle_cmd("check", Some(data), &ctx)
-        .await
-        .unwrap();
+    let _ = handler.handle_cmd("check", Some(data), &ctx).await.unwrap();
 
     // Reload the persisted config and verify the state was written back.
     let persisted_path = dir.path().join("config/config.scanner.json");
@@ -712,7 +715,10 @@ async fn test_config_save_valid_full_config_round_trip() {
         .unwrap()
         .unwrap();
     assert_eq!(reloaded["enabled"][0], "clamav");
-    assert_eq!(reloaded["engines"]["clamav"]["url"], "https://example.com/c.zip");
+    assert_eq!(
+        reloaded["engines"]["clamav"]["url"],
+        "https://example.com/c.zip"
+    );
     assert_eq!(reloaded["engines"]["clamav"]["max_file_size"], 1000);
 }
 
@@ -770,10 +776,7 @@ async fn test_config_save_with_extra_engine_fields_preserved() {
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(
-        reloaded["engines"]["clamav"]["custom_field"],
-        "abc123"
-    );
+    assert_eq!(reloaded["engines"]["clamav"]["custom_field"], "abc123");
 }
 
 // =======================================================================
@@ -1068,9 +1071,7 @@ async fn test_install_already_installed_without_force_errors() {
     let persisted_path = dir.path().join("config/config.scanner.json");
     let persisted = std::fs::read_to_string(&persisted_path).unwrap();
     let persisted_json: serde_json::Value = serde_json::from_str(&persisted).unwrap();
-    if persisted_json["engines"][unique.as_str()]["state"]["install_status"]
-        == "failed"
-    {
+    if persisted_json["engines"][unique.as_str()]["state"]["install_status"] == "failed" {
         found_failure = true;
     }
     // If not found, that's because the spawned task finished between the
@@ -1247,10 +1248,7 @@ async fn test_cancel_install_op_by_exact_key() {
     // in flight.
     let mut cancelled = false;
     for _ in 0..50 {
-        match handler
-            .handle_cmd("cancel", Some(data.clone()), &ctx)
-            .await
-        {
+        match handler.handle_cmd("cancel", Some(data.clone()), &ctx).await {
             Ok(r) => {
                 assert!(r.unwrap()["cancelled"].as_bool().unwrap());
                 cancelled = true;

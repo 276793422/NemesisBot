@@ -84,8 +84,8 @@ fn set_executor_config(home: &std::path::Path, enabled: bool, sandbox: bool) -> 
     }
     // CLI / no-store fallback: direct disk write.
     let config_path = home.join("config.json");
-    let raw = std::fs::read_to_string(&config_path)
-        .map_err(|e| format!("read config.json: {e}"))?;
+    let raw =
+        std::fs::read_to_string(&config_path).map_err(|e| format!("read config.json: {e}"))?;
     let mut val: serde_json::Value =
         serde_json::from_str(&raw).map_err(|e| format!("parse config.json: {e}"))?;
     let entry = serde_json::json!({ "enabled": enabled, "sandbox": sandbox });
@@ -94,7 +94,8 @@ fn set_executor_config(home: &std::path::Path, enabled: bool, sandbox: bool) -> 
     } else {
         return Err("config.json is not a JSON object".into());
     }
-    let out = serde_json::to_string_pretty(&val).map_err(|e| format!("serialize config.json: {e}"))?;
+    let out =
+        serde_json::to_string_pretty(&val).map_err(|e| format!("serialize config.json: {e}"))?;
     std::fs::write(&config_path, out).map_err(|e| format!("write config.json: {e}"))?;
     Ok(())
 }
@@ -164,8 +165,7 @@ impl ModuleHandler for SandboxHandler {
                 let sbiedrv =
                     nemesis_sandbox::status::service_state(nemesis_sandbox::DRIVER_SERVICE);
                 let start_exe_present = paths.start_exe().exists();
-                let ready =
-                    matches!(sbiesvc, ServiceState::Running) && start_exe_present;
+                let ready = matches!(sbiesvc, ServiceState::Running) && start_exe_present;
                 Ok(Some(serde_json::json!({
                     "sbiesvc": format!("{:?}", sbiesvc),
                     "sbiedrv": format!("{:?}", sbiedrv),
@@ -263,12 +263,16 @@ impl ModuleHandler for SandboxHandler {
             "start" => {
                 run_cli_subcmd(&home, "start").await?;
                 set_executor_config(&home, true, true)?;
-                Ok(Some(serde_json::json!({ "ok": true, "restart_required": true })))
+                Ok(Some(
+                    serde_json::json!({ "ok": true, "restart_required": true }),
+                ))
             }
             "stop" => {
                 run_cli_subcmd(&home, "stop").await?;
                 set_executor_config(&home, false, false)?;
-                Ok(Some(serde_json::json!({ "ok": true, "restart_required": true })))
+                Ok(Some(
+                    serde_json::json!({ "ok": true, "restart_required": true }),
+                ))
             }
             "open_box" => {
                 #[cfg(target_os = "windows")]

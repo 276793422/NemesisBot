@@ -96,7 +96,8 @@ impl SessionManager {
             return session.clone();
         }
         let session = Session::new(session_key, channel, chat_id);
-        self.sessions.insert(session_key.to_string(), session.clone());
+        self.sessions
+            .insert(session_key.to_string(), session.clone());
         session
     }
 
@@ -226,11 +227,15 @@ impl From<&ConversationTurn> for StoredMessage {
         Self {
             role: turn.role.clone(),
             content: turn.content.clone(),
-            tool_calls: turn.tool_calls.iter().map(|tc| StoredToolCall {
-                id: tc.id.clone(),
-                name: tc.name.clone(),
-                arguments: tc.arguments.clone(),
-            }).collect(),
+            tool_calls: turn
+                .tool_calls
+                .iter()
+                .map(|tc| StoredToolCall {
+                    id: tc.id.clone(),
+                    name: tc.name.clone(),
+                    arguments: tc.arguments.clone(),
+                })
+                .collect(),
             tool_call_id: turn.tool_call_id.clone(),
             timestamp: turn.timestamp.clone(),
             // Do NOT persist reasoning_content — Go's session does not store it,
@@ -245,11 +250,15 @@ impl From<StoredMessage> for ConversationTurn {
         Self {
             role: msg.role,
             content: msg.content,
-            tool_calls: msg.tool_calls.into_iter().map(|tc| crate::types::ToolCallInfo {
-                id: tc.id,
-                name: tc.name,
-                arguments: tc.arguments,
-            }).collect(),
+            tool_calls: msg
+                .tool_calls
+                .into_iter()
+                .map(|tc| crate::types::ToolCallInfo {
+                    id: tc.id,
+                    name: tc.name,
+                    arguments: tc.arguments,
+                })
+                .collect(),
             tool_call_id: msg.tool_call_id,
             timestamp: msg.timestamp,
             reasoning_content: msg.reasoning_content,
@@ -309,13 +318,18 @@ impl SessionStore {
             created: Local::now(),
             updated: Local::now(),
         };
-        self.sessions.write().unwrap().insert(key.to_string(), session.clone());
+        self.sessions
+            .write()
+            .unwrap()
+            .insert(key.to_string(), session.clone());
         session
     }
 
     /// Get the conversation history for a session.
     pub fn get_history(&self, key: &str) -> Vec<StoredMessage> {
-        self.sessions.read().unwrap()
+        self.sessions
+            .read()
+            .unwrap()
             .get(key)
             .map(|s| s.messages.clone())
             .unwrap_or_default()
@@ -436,7 +450,9 @@ impl SessionStore {
 
     /// Get the summary for a session.
     pub fn get_summary(&self, key: &str) -> String {
-        self.sessions.read().unwrap()
+        self.sessions
+            .read()
+            .unwrap()
             .get(key)
             .map(|s| s.summary.clone())
             .unwrap_or_default()
@@ -480,7 +496,8 @@ impl SessionStore {
             .map_err(|e| format!("serialize error: {}", e))?;
 
         let filename = sanitize_filename(key);
-        if filename == "." || filename == ".." || filename.contains('/') || filename.contains('\\') {
+        if filename == "." || filename == ".." || filename.contains('/') || filename.contains('\\')
+        {
             return Err("invalid session key for filename".into());
         }
 
@@ -494,14 +511,12 @@ impl SessionStore {
         let tmp_name = format!("session-{}-{}-{}.tmp", filename, std::process::id(), n);
         let tmp_path = storage_dir.join(&tmp_name);
 
-        std::fs::write(&tmp_path, &data)
-            .map_err(|e| format!("write temp error: {}", e))?;
+        std::fs::write(&tmp_path, &data).map_err(|e| format!("write temp error: {}", e))?;
 
-        std::fs::rename(&tmp_path, &session_path)
-            .map_err(|e| {
-                let _ = std::fs::remove_file(&tmp_path);
-                format!("rename error: {}", e)
-            })?;
+        std::fs::rename(&tmp_path, &session_path).map_err(|e| {
+            let _ = std::fs::remove_file(&tmp_path);
+            format!("rename error: {}", e)
+        })?;
 
         Ok(())
     }
@@ -532,7 +547,10 @@ impl SessionStore {
 
             match serde_json::from_str::<StoredSession>(&data) {
                 Ok(session) => {
-                    self.sessions.write().unwrap().insert(session.key.clone(), session);
+                    self.sessions
+                        .write()
+                        .unwrap()
+                        .insert(session.key.clone(), session);
                     loaded += 1;
                 }
                 Err(_) => continue,
@@ -616,7 +634,9 @@ impl SessionStore {
         let legacy_log = logs_dir.join("agent_main_session_legacy.jsonl");
         if main_log.exists() && !legacy_log.exists() {
             match std::fs::rename(&main_log, &legacy_log) {
-                Ok(_) => info!("[migrate] session_logs: agent_main_main.jsonl → agent_main_session_legacy.jsonl"),
+                Ok(_) => info!(
+                    "[migrate] session_logs: agent_main_main.jsonl → agent_main_session_legacy.jsonl"
+                ),
                 Err(e) => warn!("[migrate] failed to rename session log: {}", e),
             }
         }
@@ -629,12 +649,15 @@ impl SessionStore {
                 Ok(data) => {
                     if let Ok(mut v) = serde_json::from_str::<serde_json::Value>(&data) {
                         if v.get("key").and_then(|k| k.as_str()) == Some("agent:main:main") {
-                            v["key"] = serde_json::Value::String("agent:main:session:legacy".to_string());
+                            v["key"] =
+                                serde_json::Value::String("agent:main:session:legacy".to_string());
                         }
                         if let Ok(out) = serde_json::to_string_pretty(&v) {
                             if std::fs::write(&legacy_json, out).is_ok() {
                                 let _ = std::fs::remove_file(&main_json);
-                                info!("[migrate] sessions: agent_main_main.json → agent_main_session_legacy.json");
+                                info!(
+                                    "[migrate] sessions: agent_main_main.json → agent_main_session_legacy.json"
+                                );
                             }
                         }
                     }
@@ -749,9 +772,7 @@ impl SessionStore {
 /// Sanitize a session key for use as a filename.
 /// Replaces ':' (volume separator on Windows) with '_'.
 fn sanitize_filename(key: &str) -> String {
-    key.replace(':', "_")
-        .replace('\\', "_")
-        .replace('/', "_")
+    key.replace(':', "_").replace('\\', "_").replace('/', "_")
 }
 
 // ---------------------------------------------------------------------------
@@ -852,11 +873,7 @@ impl Summarizer {
     /// Check if summarization should be triggered based on message count and token estimate.
     ///
     /// Mirrors Go's `maybeSummarize` threshold check.
-    pub fn should_summarize(
-        &self,
-        history: &[ConversationTurn],
-        context_window: usize,
-    ) -> bool {
+    pub fn should_summarize(&self, history: &[ConversationTurn], context_window: usize) -> bool {
         let token_estimate = estimate_tokens_for_turns(history);
         let threshold = context_window * 75 / 100;
         history.len() > 20 || token_estimate > threshold
@@ -910,11 +927,7 @@ impl Summarizer {
     /// 5. For <=10 messages, summarize in one batch
     ///
     /// Returns the generated summary, or empty string if summarization was skipped.
-    pub fn summarize_session(
-        &self,
-        session_key: &str,
-        history: &[ConversationTurn],
-    ) -> String {
+    pub fn summarize_session(&self, session_key: &str, history: &[ConversationTurn]) -> String {
         // Need at least 5 messages to summarize (keep last 4).
         if history.len() <= 4 {
             return String::new();
@@ -978,7 +991,10 @@ impl Summarizer {
             self.session_store.set_summary(session_key, &final_summary);
 
             if let Err(e) = self.session_store.save(session_key) {
-                warn!("[SessionStore] Failed to save session after summarization: {}", e);
+                warn!(
+                    "[SessionStore] Failed to save session after summarization: {}",
+                    e
+                );
             }
         }
 
@@ -1041,7 +1057,9 @@ impl Summarizer {
         });
         let start = std::time::Instant::now();
         let mut response = tokio_block_on(async {
-            self.provider.chat(&self.model, messages, summarize_opts, vec![]).await
+            self.provider
+                .chat(&self.model, messages, summarize_opts, vec![])
+                .await
         });
         let duration_ms = start.elapsed().as_millis() as u64;
         let (response_content, raw_req, raw_resp) = match &mut response {
@@ -1138,7 +1156,9 @@ impl Summarizer {
         });
         let start = std::time::Instant::now();
         let mut response = tokio_block_on(async {
-            self.provider.chat(&self.model, messages, summarize_opts, vec![]).await
+            self.provider
+                .chat(&self.model, messages, summarize_opts, vec![])
+                .await
         });
         let duration_ms = start.elapsed().as_millis() as u64;
         let (response_content, raw_req, raw_resp) = match &mut response {

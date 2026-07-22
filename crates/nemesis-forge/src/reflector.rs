@@ -204,7 +204,9 @@ impl Reflector {
     }
 
     /// Get a reference to the LLM caller (if set).
-    pub fn llm_caller(&self) -> parking_lot::RwLockReadGuard<'_, Option<Arc<dyn crate::reflector_llm::LLMCaller>>> {
+    pub fn llm_caller(
+        &self,
+    ) -> parking_lot::RwLockReadGuard<'_, Option<Arc<dyn crate::reflector_llm::LLMCaller>>> {
         self.llm_caller.read()
     }
 
@@ -277,8 +279,7 @@ impl Reflector {
         }
 
         // Overall success rate insight
-        let success_rate =
-            stats.success_count as f64 / stats.total_count as f64 * 100.0;
+        let success_rate = stats.success_count as f64 / stats.total_count as f64 * 100.0;
         insights.push(format!(
             "Overall success rate: {:.1}% ({}/{})",
             success_rate, stats.success_count, stats.total_count
@@ -375,9 +376,7 @@ impl Reflector {
             total_duration += e.duration_ms as i64;
             total_steps += 1;
 
-            let entry = tool_counts
-                .entry(e.tool_name.clone())
-                .or_insert((0, 0));
+            let entry = tool_counts.entry(e.tool_name.clone()).or_insert((0, 0));
             entry.0 += 1;
             if !e.success {
                 entry.1 += 1;
@@ -406,7 +405,9 @@ impl Reflector {
             // Commit chain every 3 tools or at the end
             if chain_tool_count >= 3 {
                 let success = ce.experience.success;
-                let entry = chain_counts.entry(current_chain.clone()).or_insert((0, 0, 0.0));
+                let entry = chain_counts
+                    .entry(current_chain.clone())
+                    .or_insert((0, 0, 0.0));
                 entry.0 += 1;
                 if success {
                     entry.1 += 1;
@@ -501,7 +502,9 @@ impl Reflector {
 
         // Stage 4: Cluster sharing integration
         if self.cluster_enabled {
-            tracing::info!("[Reflector] Stage 4: Cluster sharing enabled, report will be shared after generation");
+            tracing::info!(
+                "[Reflector] Stage 4: Cluster sharing enabled, report will be shared after generation"
+            );
         }
 
         ReflectionReport {
@@ -544,7 +547,10 @@ impl Reflector {
             .await
             {
                 Ok(insights) => {
-                    tracing::info!(len = insights.len(), "[Reflector] LLM semantic analysis completed");
+                    tracing::info!(
+                        len = insights.len(),
+                        "[Reflector] LLM semantic analysis completed"
+                    );
                     report.llm_insights = Some(insights);
                 }
                 Err(e) => {
@@ -573,9 +579,7 @@ impl Reflector {
             stats.total_records += 1;
             *stats.tool_frequency.entry(e.tool_name.clone()).or_insert(0) += 1;
 
-            let entry = tool_data
-                .entry(e.tool_name.clone())
-                .or_insert((0, 0, 0, 0));
+            let entry = tool_data.entry(e.tool_name.clone()).or_insert((0, 0, 0, 0));
             entry.0 += 1;
             entry.1 += e.duration_ms as i64;
             if e.success {
@@ -595,7 +599,7 @@ impl Reflector {
 
         // Build top patterns (sorted by count)
         let mut sorted_tools: Vec<_> = tool_data.iter().collect();
-        sorted_tools.sort_by(|a, b| b.1 .0.cmp(&a.1 .0));
+        sorted_tools.sort_by(|a, b| b.1.0.cmp(&a.1.0));
 
         for (tool, (count, total_dur, successes, _)) in sorted_tools.iter().take(10) {
             let sr = if *count > 0 {
@@ -625,7 +629,9 @@ impl Reflector {
                     count: *count,
                     avg_duration_ms: total_dur / *count as i64,
                     success_rate: sr,
-                    suggestion: "Low success rate - investigate failure causes and improve error handling".to_string(),
+                    suggestion:
+                        "Low success rate - investigate failure causes and improve error handling"
+                            .to_string(),
                 });
             }
         }
@@ -641,8 +647,7 @@ impl Reflector {
         match period {
             "today" => {
                 let now = chrono::Local::now();
-                let start_of_day = now.date_naive().and_hms_opt(0, 0, 0)
-                    .unwrap_or_default();
+                let start_of_day = now.date_naive().and_hms_opt(0, 0, 0).unwrap_or_default();
                 Some(start_of_day.and_utc().to_rfc3339())
             }
             "week" => {
@@ -653,8 +658,7 @@ impl Reflector {
             _ => {
                 // Default: today
                 let now = chrono::Local::now();
-                let start_of_day = now.date_naive().and_hms_opt(0, 0, 0)
-                    .unwrap_or_default();
+                let start_of_day = now.date_naive().and_hms_opt(0, 0, 0).unwrap_or_default();
                 Some(start_of_day.and_utc().to_rfc3339())
             }
         }
@@ -671,11 +675,10 @@ impl Reflector {
         let cutoff = Self::resolve_period(period);
         match cutoff {
             None => experiences.iter().collect(),
-            Some(cutoff_str) => {
-                experiences.iter().filter(|ce| {
-                    ce.experience.timestamp >= cutoff_str
-                }).collect()
-            }
+            Some(cutoff_str) => experiences
+                .iter()
+                .filter(|ce| ce.experience.timestamp >= cutoff_str)
+                .collect(),
         }
     }
 
@@ -691,9 +694,10 @@ impl Reflector {
         if focus.is_empty() || focus == "all" {
             experiences.iter().collect()
         } else {
-            experiences.iter().filter(|ce| {
-                ce.experience.tool_name == focus
-            }).collect()
+            experiences
+                .iter()
+                .filter(|ce| ce.experience.tool_name == focus)
+                .collect()
         }
     }
 
@@ -882,17 +886,12 @@ impl Reflector {
             .map_err(|e| format!("failed to create reflections dir: {}", e))?;
 
         let now = chrono::Local::now();
-        let filename = format!(
-            "reflection_{}_{}.md",
-            report.date,
-            now.format("%H%M%S")
-        );
+        let filename = format!("reflection_{}_{}.md", report.date, now.format("%H%M%S"));
         let path = self.reflections_dir.join(&filename);
 
         let md_content = self.format_report_markdown(report);
 
-        std::fs::write(&path, md_content)
-            .map_err(|e| format!("failed to write report: {}", e))?;
+        std::fs::write(&path, md_content).map_err(|e| format!("failed to write report: {}", e))?;
 
         tracing::info!(path = %path.display(), "[Reflector] Wrote reflection report");
         Ok(path)
@@ -918,8 +917,7 @@ impl Reflector {
                 if path.extension().map(|e| e == "md").unwrap_or(false) {
                     if let Ok(metadata) = path.metadata() {
                         if let Ok(modified) = metadata.modified() {
-                            let modified_time: chrono::DateTime<chrono::Local> =
-                                modified.into();
+                            let modified_time: chrono::DateTime<chrono::Local> = modified.into();
                             if modified_time < cutoff {
                                 if std::fs::remove_file(&path).is_ok() {
                                     deleted += 1;
@@ -936,7 +934,11 @@ impl Reflector {
         }
 
         if deleted > 0 {
-            tracing::info!(deleted, max_age_days, "[Reflector] Cleaned up old reflection reports");
+            tracing::info!(
+                deleted,
+                max_age_days,
+                "[Reflector] Cleaned up old reflection reports"
+            );
         }
         deleted
     }
@@ -977,8 +979,9 @@ impl Reflector {
     /// Returns `Err` if no reports exist or the file cannot be read.
     pub fn get_latest_report_content(&self) -> Result<String, String> {
         match self.get_latest_report() {
-            Some(path) => std::fs::read_to_string(&path)
-                .map_err(|e| format!("failed to read report: {}", e)),
+            Some(path) => {
+                std::fs::read_to_string(&path).map_err(|e| format!("failed to read report: {}", e))
+            }
             None => Err("no reflection reports found".to_string()),
         }
     }
@@ -1007,8 +1010,7 @@ impl Reflector {
                 if path.extension().map(|e| e == "md").unwrap_or(false) {
                     if let Ok(metadata) = path.metadata() {
                         if let Ok(modified) = metadata.modified() {
-                            let modified_time: chrono::DateTime<chrono::Local> =
-                                modified.into();
+                            let modified_time: chrono::DateTime<chrono::Local> = modified.into();
                             if modified_time < cutoff {
                                 if let Err(e) = std::fs::remove_file(&path) {
                                     errors.push(format!(
@@ -1027,7 +1029,11 @@ impl Reflector {
         if errors.is_empty() {
             Ok(())
         } else {
-            Err(format!("{} errors during cleanup: {}", errors.len(), errors.join("; ")))
+            Err(format!(
+                "{} errors during cleanup: {}",
+                errors.len(),
+                errors.join("; ")
+            ))
         }
     }
 
@@ -1039,8 +1045,14 @@ impl Reflector {
         md.push_str(&format!("**Focus:** {}\n\n", report.focus));
 
         md.push_str("## Statistics\n\n");
-        md.push_str(&format!("- Total records: {}\n", report.stats.total_records));
-        md.push_str(&format!("- Unique patterns: {}\n", report.stats.unique_patterns));
+        md.push_str(&format!(
+            "- Total records: {}\n",
+            report.stats.total_records
+        ));
+        md.push_str(&format!(
+            "- Unique patterns: {}\n",
+            report.stats.unique_patterns
+        ));
         md.push_str(&format!(
             "- Average success rate: {:.1}%\n",
             report.stats.avg_success_rate * 100.0
@@ -1051,7 +1063,10 @@ impl Reflector {
             for p in &report.stats.top_patterns {
                 md.push_str(&format!(
                     "- **{}**: {} uses, {:.0}% success, {:.0}ms avg\n",
-                    p.tool_name, p.count, p.success_rate * 100.0, p.avg_duration_ms
+                    p.tool_name,
+                    p.count,
+                    p.success_rate * 100.0,
+                    p.avg_duration_ms
                 ));
             }
         }
@@ -1061,7 +1076,9 @@ impl Reflector {
             for p in &report.stats.low_success {
                 md.push_str(&format!(
                     "- **{}**: {:.0}% success over {} calls\n",
-                    p.tool_name, p.success_rate * 100.0, p.count
+                    p.tool_name,
+                    p.success_rate * 100.0,
+                    p.count
                 ));
             }
         }
@@ -1069,7 +1086,10 @@ impl Reflector {
         if let Some(ref trace_stats) = report.trace_stats {
             md.push_str("\n## Trace Analysis\n\n");
             md.push_str(&format!("- Total traces: {}\n", trace_stats.total_traces));
-            md.push_str(&format!("- Avg duration: {}ms\n", trace_stats.avg_duration_ms));
+            md.push_str(&format!(
+                "- Avg duration: {}ms\n",
+                trace_stats.avg_duration_ms
+            ));
             md.push_str(&format!(
                 "- Efficiency score: {:.2}\n",
                 trace_stats.efficiency_score

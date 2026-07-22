@@ -4,9 +4,9 @@
 //! Phase 3: Placeholder data filled from cluster log reader.
 //! Phase 4: SSE bridge is wired in gateway.rs via `set_cluster_log_hook`.
 
+use super::cluster_persona_gen;
 use crate::handlers::{require_home, require_workspace};
 use crate::ws_router::{ModuleHandler, RequestContext};
-use super::cluster_persona_gen;
 use nemesis_cluster::cluster::Cluster;
 use nemesis_cluster::cluster_log_reader;
 use nemesis_types::cluster::{NodeRole, TaskStatus};
@@ -28,16 +28,11 @@ impl ClusterHandler {
         ctx: &RequestContext,
     ) -> Result<Option<serde_json::Value>, String> {
         let cluster = require_cluster(ctx)?;
-        let node_id = data["node_id"]
-            .as_str()
-            .ok_or("missing node_id")?;
-        let action = data["action"]
-            .as_str()
-            .ok_or("missing action")?;
+        let node_id = data["node_id"].as_str().ok_or("missing node_id")?;
+        let action = data["action"].as_str().ok_or("missing action")?;
 
         // Use RPC client directly for async call with 10s timeout
-        let rpc_client = cluster.rpc_client_arc()
-            .ok_or("RPC client not available")?;
+        let rpc_client = cluster.rpc_client_arc().ok_or("RPC client not available")?;
 
         let request = nemesis_cluster::rpc_types::RPCRequest {
             id: uuid::Uuid::new_v4().to_string(),
@@ -83,16 +78,12 @@ impl ModuleHandler for ClusterHandler {
             "nodes.list" => self.nodes_list(ctx),
             "nodes.ping" => {
                 let data = data.ok_or("missing data")?;
-                let node_id = data["node_id"]
-                    .as_str()
-                    .ok_or("missing node_id")?;
+                let node_id = data["node_id"].as_str().ok_or("missing node_id")?;
                 self.nodes_ping(node_id, ctx).await
             }
             "nodes.remove" => {
                 let data = data.ok_or("missing data")?;
-                let node_id = data["node_id"]
-                    .as_str()
-                    .ok_or("missing node_id")?;
+                let node_id = data["node_id"].as_str().ok_or("missing node_id")?;
                 self.nodes_remove(node_id, ctx)
             }
             "nodes.add" => {
@@ -105,9 +96,7 @@ impl ModuleHandler for ClusterHandler {
             }
             "nodes.detail" => {
                 let data = data.ok_or("missing data")?;
-                let node_id = data["node_id"]
-                    .as_str()
-                    .ok_or("missing node_id")?;
+                let node_id = data["node_id"].as_str().ok_or("missing node_id")?;
                 self.nodes_detail(node_id, ctx)
             }
             "tasks.list" => {
@@ -126,16 +115,12 @@ impl ModuleHandler for ClusterHandler {
             }
             "tasks.cancel" => {
                 let data = data.ok_or("missing data")?;
-                let task_id = data["task_id"]
-                    .as_str()
-                    .ok_or("missing task_id")?;
+                let task_id = data["task_id"].as_str().ok_or("missing task_id")?;
                 self.tasks_cancel(task_id, ctx)
             }
             "tasks.detail" => {
                 let data = data.ok_or("missing data")?;
-                let task_id = data["task_id"]
-                    .as_str()
-                    .ok_or("missing task_id")?;
+                let task_id = data["task_id"].as_str().ok_or("missing task_id")?;
                 self.tasks_detail(task_id, ctx)
             }
             "tasks.submit" => {
@@ -251,7 +236,10 @@ impl ClusterHandler {
 
         // Use adapter's running state (reflects actual start/stop from Dashboard),
         // not cluster.is_running() which is true once cluster.start() is called at init.
-        let running = ctx.state.cluster_service.as_ref()
+        let running = ctx
+            .state
+            .cluster_service
+            .as_ref()
             .map(|s| nemesis_services::bot_service::LifecycleService::is_running(s.as_ref()))
             .unwrap_or(false);
 
@@ -327,16 +315,13 @@ impl ClusterHandler {
                 0.0
             };
             let activity = if active_tasks > 0 { 1.0 } else { 0.5 };
-            let health_score = ((online_rate * 40.0 + success_rate * 40.0 + activity * 20.0) as i32)
-                .clamp(0, 100);
+            let health_score =
+                ((online_rate * 40.0 + success_rate * 40.0 + activity * 20.0) as i32).clamp(0, 100);
 
             // Phase 3: Fill recent_events from log reader
             let recent_events = match require_log_dir(ctx) {
                 Ok(log_dir) => {
-                    let events = cluster_log_reader::read_recent_events(
-                        Path::new(&log_dir),
-                        20,
-                    );
+                    let events = cluster_log_reader::read_recent_events(Path::new(&log_dir), 20);
                     serde_json::to_value(events).unwrap_or(serde_json::json!([]))
                 }
                 Err(_) => serde_json::json!([]),
@@ -429,14 +414,20 @@ impl ClusterHandler {
         if let Ok(workspace) = require_workspace(ctx) {
             let _ = Self::update_cluster_config_enabled(workspace, true);
         }
-        let svc = ctx.state.cluster_service.as_ref()
+        let svc = ctx
+            .state
+            .cluster_service
+            .as_ref()
             .ok_or("cluster service not available")?;
         svc.start().map_err(|e| format!("start failed: {}", e))?;
         Ok(Some(serde_json::json!({ "started": true })))
     }
 
     fn runtime_stop(&self, ctx: &RequestContext) -> Result<Option<serde_json::Value>, String> {
-        let svc = ctx.state.cluster_service.as_ref()
+        let svc = ctx
+            .state
+            .cluster_service
+            .as_ref()
             .ok_or("cluster service not available")?;
         svc.stop().map_err(|e| format!("stop failed: {}", e))?;
         // Persist enabled=false to config.cluster.json after stopping
@@ -455,9 +446,7 @@ impl ClusterHandler {
 
         // Phase 3: Get per-node stats from log reader
         let node_stats_map = match require_log_dir(ctx) {
-            Ok(log_dir) => {
-                cluster_log_reader::aggregate_node_stats(Path::new(&log_dir))
-            }
+            Ok(log_dir) => cluster_log_reader::aggregate_node_stats(Path::new(&log_dir)),
             Err(_) => std::collections::HashMap::new(),
         };
 
@@ -633,9 +622,7 @@ impl ClusterHandler {
             .to_string();
 
         // Snapshot the original status so we can restore on failure.
-        let original_status = cluster
-            .get_peer(&peer_id)
-            .map(|p| p.status);
+        let original_status = cluster.get_peer(&peer_id).map(|p| p.status);
 
         // Mark online to bypass the resolver's online-check.
         cluster.mark_peer_online_for_refresh(&peer_id);
@@ -643,10 +630,7 @@ impl ClusterHandler {
         // Call get_info via RPC. Use a 15s timeout to fail fast for unreachable
         // peers (default RPC timeout is 60min which is far too long for a UI
         // refresh button).
-        let timeout_secs = data["timeout_secs"]
-            .as_u64()
-            .unwrap_or(15)
-            .clamp(1, 60);
+        let timeout_secs = data["timeout_secs"].as_u64().unwrap_or(15).clamp(1, 60);
         let call_result = tokio::time::timeout(
             std::time::Duration::from_secs(timeout_secs),
             cluster.call_with_context_async(
@@ -671,10 +655,7 @@ impl ClusterHandler {
                 if let Some(s) = original_status {
                     cluster.set_peer_status(&peer_id, s);
                 }
-                return Err(format!(
-                    "RPC get_info timed out ({}s)",
-                    timeout_secs
-                ));
+                return Err(format!("RPC get_info timed out ({}s)", timeout_secs));
             }
         };
 
@@ -689,7 +670,11 @@ impl ClusterHandler {
         let name = resp["name"].as_str().unwrap_or("").to_string();
         let addresses: Vec<String> = resp["addresses"]
             .as_array()
-            .map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|v| v.as_str().map(String::from))
+                    .collect()
+            })
             .unwrap_or_default();
         let rpc_port = resp["rpc_port"].as_u64().unwrap_or(0) as u16;
         let role_str = resp["role"].as_str().unwrap_or("worker");
@@ -701,7 +686,11 @@ impl ClusterHandler {
         let category = resp["category"].as_str().unwrap_or("general").to_string();
         let capabilities: Vec<String> = resp["capabilities"]
             .as_array()
-            .map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|v| v.as_str().map(String::from))
+                    .collect()
+            })
             .unwrap_or_default();
         let node_type = resp["node_type"].as_str().unwrap_or("").to_string();
 
@@ -767,8 +756,7 @@ impl ClusterHandler {
         // Enrich with log stats
         let stats = match require_log_dir(ctx) {
             Ok(log_dir) => {
-                let map =
-                    cluster_log_reader::aggregate_node_stats(Path::new(&log_dir));
+                let map = cluster_log_reader::aggregate_node_stats(Path::new(&log_dir));
                 map.get(node_id).cloned()
             }
             Err(_) => None,
@@ -936,10 +924,7 @@ impl ClusterHandler {
                 if all_task_ids.is_empty() {
                     std::collections::HashMap::new()
                 } else {
-                    cluster_log_reader::aggregate_task_summaries(
-                        Path::new(&log_dir),
-                        &all_task_ids,
-                    )
+                    cluster_log_reader::aggregate_task_summaries(Path::new(&log_dir), &all_task_ids)
                 }
             }
             Err(_) => std::collections::HashMap::new(),
@@ -998,11 +983,8 @@ impl ClusterHandler {
         // Phase 2: Apply pagination
         let offset_val = offset.unwrap_or(0);
         let limit_val = limit.unwrap_or(result.len());
-        let paginated: Vec<&serde_json::Value> = result
-            .iter()
-            .skip(offset_val)
-            .take(limit_val)
-            .collect();
+        let paginated: Vec<&serde_json::Value> =
+            result.iter().skip(offset_val).take(limit_val).collect();
 
         Ok(Some(serde_json::json!({
             "tasks": paginated,
@@ -1053,10 +1035,7 @@ impl ClusterHandler {
         let summary = match require_log_dir(ctx) {
             Ok(log_dir) => {
                 let ids = vec![task_id.to_string()];
-                let map = cluster_log_reader::aggregate_task_summaries(
-                    Path::new(&log_dir),
-                    &ids,
-                );
+                let map = cluster_log_reader::aggregate_task_summaries(Path::new(&log_dir), &ids);
                 map.get(task_id).cloned()
             }
             Err(_) => None,
@@ -1127,13 +1106,12 @@ impl ClusterHandler {
             // 3. Send peer_chat RPC to target node (fire-and-forget style)
             //    The target will ACK immediately, then process async via agent.
             //    Results come back via peer_chat_callback.
-            let rpc_client = cluster.rpc_client_arc()
-                .ok_or("RPC client not available")?;
+            let rpc_client = cluster.rpc_client_arc().ok_or("RPC client not available")?;
 
             let request = nemesis_cluster::rpc_types::RPCRequest {
                 id: task_id.clone(),
                 action: nemesis_cluster::rpc_types::ActionType::Known(
-                    nemesis_cluster::rpc_types::KnownAction::PeerChat
+                    nemesis_cluster::rpc_types::KnownAction::PeerChat,
                 ),
                 payload: rpc_payload,
                 source: cluster.node_id().to_string(),
@@ -1145,7 +1123,10 @@ impl ClusterHandler {
             // The task status will be updated when the callback arrives.
             let timeout = std::time::Duration::from_secs(30);
             let _ = tokio::spawn(async move {
-                match rpc_client.call_with_timeout(&target_owned, request, timeout).await {
+                match rpc_client
+                    .call_with_timeout(&target_owned, request, timeout)
+                    .await
+                {
                     Ok(_ack) => {
                         tracing::info!("[Cluster] peer_chat RPC ACK received");
                     }
@@ -1161,12 +1142,7 @@ impl ClusterHandler {
             let payload = serde_json::json!({
                 "content": content,
             });
-            cluster.submit_task(
-                "dashboard_test",
-                payload,
-                "dashboard",
-                "dashboard_session",
-            )
+            cluster.submit_task("dashboard_test", payload, "dashboard", "dashboard_session")
         };
 
         Ok(Some(serde_json::json!({
@@ -1200,8 +1176,7 @@ impl ClusterHandler {
         // Phase 3: Replace full-mesh with real RPC connections from log reader
         let connections: Vec<serde_json::Value> = match require_log_dir(ctx) {
             Ok(log_dir) => {
-                let rpc_conns =
-                    cluster_log_reader::read_rpc_connections(Path::new(&log_dir));
+                let rpc_conns = cluster_log_reader::read_rpc_connections(Path::new(&log_dir));
                 rpc_conns
                     .iter()
                     .map(|c| {
@@ -1254,8 +1229,7 @@ impl ClusterHandler {
     /// Phase 2: Get RPC traces.
     fn traces(&self, ctx: &RequestContext) -> Result<Option<serde_json::Value>, String> {
         let log_dir = require_log_dir(ctx)?;
-        let traces =
-            cluster_log_reader::reconstruct_traces(Path::new(&log_dir));
+        let traces = cluster_log_reader::reconstruct_traces(Path::new(&log_dir));
         Ok(Some(serde_json::json!({ "traces": traces })))
     }
 
@@ -1270,14 +1244,14 @@ impl ClusterHandler {
             .and_then(|d| d["limit"].as_u64())
             .map(|v| v as usize)
             .unwrap_or(50);
-        let events = cluster_log_reader::read_recent_events(
-            Path::new(&log_dir),
-            limit,
-        );
+        let events = cluster_log_reader::read_recent_events(Path::new(&log_dir), limit);
         Ok(Some(serde_json::json!({ "events": events })))
     }
 
-    async fn snapshots_list(&self, ctx: &RequestContext) -> Result<Option<serde_json::Value>, String> {
+    async fn snapshots_list(
+        &self,
+        ctx: &RequestContext,
+    ) -> Result<Option<serde_json::Value>, String> {
         let cluster = require_cluster(ctx)?;
         let cont_store = cluster.continuation_store();
 
@@ -1297,10 +1271,7 @@ impl ClusterHandler {
                         .and_then(|n| n.to_str())
                         .unwrap_or("")
                         .to_string();
-                    let size = entry
-                        .metadata()
-                        .map(|m| m.len())
-                        .unwrap_or(0);
+                    let size = entry.metadata().map(|m| m.len()).unwrap_or(0);
                     let created = entry
                         .metadata()
                         .ok()
@@ -1323,7 +1294,10 @@ impl ClusterHandler {
         Ok(Some(serde_json::json!({ "snapshots": snapshots })))
     }
 
-    async fn snapshots_cleanup(&self, ctx: &RequestContext) -> Result<Option<serde_json::Value>, String> {
+    async fn snapshots_cleanup(
+        &self,
+        ctx: &RequestContext,
+    ) -> Result<Option<serde_json::Value>, String> {
         let cluster = require_cluster(ctx)?;
         let cont_store = cluster.continuation_store();
 
@@ -1353,8 +1327,7 @@ impl ClusterHandler {
         let mut config: serde_json::Value = if path.exists() {
             let content = std::fs::read_to_string(&path)
                 .map_err(|e| format!("failed to read cluster config: {}", e))?;
-            serde_json::from_str(&content)
-                .map_err(|e| format!("invalid cluster config: {}", e))?
+            serde_json::from_str(&content).map_err(|e| format!("invalid cluster config: {}", e))?
         } else {
             serde_json::json!({})
         };
@@ -1362,15 +1335,23 @@ impl ClusterHandler {
         if let Ok(home) = require_home(ctx) {
             let main_cfg_path = PathBuf::from(home).join("config.json");
             let master_enabled = if main_cfg_path.exists() {
-                std::fs::read_to_string(&main_cfg_path).ok()
+                std::fs::read_to_string(&main_cfg_path)
+                    .ok()
                     .and_then(|c| serde_json::from_str::<serde_json::Value>(&c).ok())
-                    .and_then(|v| v.get("cluster").and_then(|c| c.get("enabled")).and_then(|e| e.as_bool()))
+                    .and_then(|v| {
+                        v.get("cluster")
+                            .and_then(|c| c.get("enabled"))
+                            .and_then(|e| e.as_bool())
+                    })
                     .unwrap_or(false)
             } else {
                 false
             };
             if let Some(obj) = config.as_object_mut() {
-                obj.insert("master_enabled".to_string(), serde_json::json!(master_enabled));
+                obj.insert(
+                    "master_enabled".to_string(),
+                    serde_json::json!(master_enabled),
+                );
             }
         }
         // Return node identity from Cluster runtime or peers.toml
@@ -1379,8 +1360,14 @@ impl ClusterHandler {
                 obj.insert("node_id".to_string(), serde_json::json!(cluster.node_id()));
                 obj.insert("name".to_string(), serde_json::json!(cluster.node_name()));
                 obj.insert("role".to_string(), serde_json::json!(cluster.role()));
-                obj.insert("category".to_string(), serde_json::json!(cluster.category()));
-                obj.insert("node_type".to_string(), serde_json::json!(cluster.node_type()));
+                obj.insert(
+                    "category".to_string(),
+                    serde_json::json!(cluster.category()),
+                );
+                obj.insert(
+                    "node_type".to_string(),
+                    serde_json::json!(cluster.node_type()),
+                );
                 obj.insert("tags".to_string(), serde_json::json!(cluster.tags()));
                 let caps = cluster.get_capabilities();
                 obj.insert("capabilities".to_string(), serde_json::json!(caps));
@@ -1388,12 +1375,16 @@ impl ClusterHandler {
         } else if let Ok(workspace) = require_workspace(ctx) {
             let ppath = peers_path(workspace);
             if ppath.exists() {
-                if let Ok(static_cfg) = nemesis_cluster::cluster_config::load_static_config(&ppath) {
+                if let Ok(static_cfg) = nemesis_cluster::cluster_config::load_static_config(&ppath)
+                {
                     if let Some(obj) = config.as_object_mut() {
                         obj.insert("node_id".to_string(), serde_json::json!(static_cfg.node.id));
                         obj.insert("name".to_string(), serde_json::json!(static_cfg.node.name));
                         obj.insert("role".to_string(), serde_json::json!(static_cfg.node.role));
-                        obj.insert("category".to_string(), serde_json::json!(static_cfg.node.category));
+                        obj.insert(
+                            "category".to_string(),
+                            serde_json::json!(static_cfg.node.category),
+                        );
                         obj.insert("tags".to_string(), serde_json::json!(static_cfg.node.tags));
                     }
                 }
@@ -1411,9 +1402,7 @@ impl ClusterHandler {
 
         // Phase 2: Config validation
         if let Some(cluster_cfg) = data.get("cluster") {
-            let discovery_port = cluster_cfg
-                .get("discovery_port")
-                .and_then(|v| v.as_u64());
+            let discovery_port = cluster_cfg.get("discovery_port").and_then(|v| v.as_u64());
             let rpc_port = cluster_cfg.get("rpc_port").and_then(|v| v.as_u64());
 
             // Check ports in valid range (1-65535)
@@ -1431,9 +1420,7 @@ impl ClusterHandler {
             // Check discovery_port != rpc_port
             if let (Some(dp), Some(rp)) = (discovery_port, rpc_port) {
                 if dp == rp {
-                    return Err(
-                        "discovery_port and rpc_port must be different".to_string()
-                    );
+                    return Err("discovery_port and rpc_port must be different".to_string());
                 }
             }
         }
@@ -1458,7 +1445,8 @@ impl ClusterHandler {
         ctx: &RequestContext,
         data: &serde_json::Value,
     ) -> Result<Option<serde_json::Value>, String> {
-        let enabled = data.get("enabled")
+        let enabled = data
+            .get("enabled")
             .and_then(|v| v.as_bool())
             .ok_or("missing or invalid 'enabled' field")?;
         let home = require_home(ctx)?;
@@ -1468,8 +1456,8 @@ impl ClusterHandler {
         }
         let content = std::fs::read_to_string(&main_cfg_path)
             .map_err(|e| format!("failed to read config.json: {}", e))?;
-        let mut main_cfg: serde_json::Value = serde_json::from_str(&content)
-            .map_err(|e| format!("invalid config.json: {}", e))?;
+        let mut main_cfg: serde_json::Value =
+            serde_json::from_str(&content).map_err(|e| format!("invalid config.json: {}", e))?;
         // Ensure cluster object exists
         if main_cfg.get("cluster").is_none() {
             main_cfg["cluster"] = serde_json::json!({});
@@ -1483,7 +1471,9 @@ impl ClusterHandler {
             .map_err(|e| format!("failed to serialize config.json: {}", e))?;
         std::fs::write(&main_cfg_path, updated)
             .map_err(|e| format!("failed to write config.json: {}", e))?;
-        Ok(Some(serde_json::json!({ "updated": true, "enabled": enabled })))
+        Ok(Some(
+            serde_json::json!({ "updated": true, "enabled": enabled }),
+        ))
     }
 
     /// Update the `enabled` field in config.cluster.json.
@@ -1525,12 +1515,15 @@ impl ClusterHandler {
     }
 
     /// Read cluster persona files from workspace.
-    fn identity_get_files(&self, ctx: &RequestContext) -> Result<Option<serde_json::Value>, String> {
+    fn identity_get_files(
+        &self,
+        ctx: &RequestContext,
+    ) -> Result<Option<serde_json::Value>, String> {
         let workspace = require_workspace(ctx)?;
         let identity = crate::handlers::read_workspace_file(workspace, "cluster/IDENTITY.md")
             .unwrap_or_default();
-        let soul = crate::handlers::read_workspace_file(workspace, "cluster/SOUL.md")
-            .unwrap_or_default();
+        let soul =
+            crate::handlers::read_workspace_file(workspace, "cluster/SOUL.md").unwrap_or_default();
         Ok(Some(serde_json::json!({
             "identity": identity,
             "soul": soul,
@@ -1544,20 +1537,27 @@ impl ClusterHandler {
         ctx: &RequestContext,
     ) -> Result<Option<serde_json::Value>, String> {
         let workspace = require_workspace(ctx)?;
-        let file = data.get("file").and_then(|v| v.as_str())
+        let file = data
+            .get("file")
+            .and_then(|v| v.as_str())
             .ok_or("missing 'file' field")?;
         let allowed = ["IDENTITY.md", "SOUL.md"];
         if !allowed.contains(&file) {
-            return Err(format!("file '{}' not allowed, must be one of: {}", file, allowed.join(", ")));
+            return Err(format!(
+                "file '{}' not allowed, must be one of: {}",
+                file,
+                allowed.join(", ")
+            ));
         }
-        let content = data.get("content").and_then(|v| v.as_str())
+        let content = data
+            .get("content")
+            .and_then(|v| v.as_str())
             .ok_or("missing 'content' field")?;
         let path = crate::handlers::resolve_path(workspace, &format!("cluster/{}", file))?;
         if let Some(parent) = path.parent() {
             let _ = std::fs::create_dir_all(parent);
         }
-        std::fs::write(&path, content)
-            .map_err(|e| format!("failed to write {}: {}", file, e))?;
+        std::fs::write(&path, content).map_err(|e| format!("failed to write {}: {}", file, e))?;
         tracing::info!(file = %file, "[Cluster] Persona file saved");
         Ok(Some(serde_json::json!({"saved": true, "file": file})))
     }
@@ -1594,7 +1594,8 @@ impl ClusterHandler {
         let tier = Self::resolve_active_tier_for(ctx)?;
         if matches!(tier, nemesis_types::capability::ModelTier::Mini) {
             return Err(
-                "当前模型能力档为 mini，人格生成需要 normal/big 档模型，请切换或升级模型后再试".into(),
+                "当前模型能力档为 mini，人格生成需要 normal/big 档模型，请切换或升级模型后再试"
+                    .into(),
             );
         }
 
@@ -1613,8 +1614,7 @@ impl ClusterHandler {
         ctx: &RequestContext,
     ) -> Result<Option<serde_json::Value>, String> {
         let mut pkg: cluster_persona_gen::PersonaPackage =
-            serde_json::from_value(data.clone())
-                .map_err(|e| format!("无效的人格包: {}", e))?;
+            serde_json::from_value(data.clone()).map_err(|e| format!("无效的人格包: {}", e))?;
         cluster_persona_gen::validate(&mut pkg)?;
 
         let workspace = require_workspace(ctx)?;
@@ -1637,16 +1637,13 @@ impl ClusterHandler {
         let mut reloaded = false;
         let mut note = String::new();
         if let Some(svc) = ctx.state.cluster_service.as_ref() {
-            let running =
-                nemesis_services::bot_service::LifecycleService::is_running(svc.as_ref());
+            let running = nemesis_services::bot_service::LifecycleService::is_running(svc.as_ref());
             if running {
                 match svc.stop().and_then(|_| svc.start()) {
                     Ok(()) => reloaded = true,
                     Err(e) => {
                         tracing::warn!("[Cluster] persona-apply reload failed: {}", e);
-                        note = format!(
-                            "（重启集群以加载新人格失败：{e}，将在下次启动集群时生效）"
-                        );
+                        note = format!("（重启集群以加载新人格失败：{e}，将在下次启动集群时生效）");
                     }
                 }
             } else {
@@ -1684,8 +1681,7 @@ impl ClusterHandler {
         if let Some(parent) = path.parent() {
             let _ = std::fs::create_dir_all(parent);
         }
-        std::fs::write(&path, content)
-            .map_err(|e| format!("写入 cluster/{} 失败: {}", file, e))?;
+        std::fs::write(&path, content).map_err(|e| format!("写入 cluster/{} 失败: {}", file, e))?;
         Ok(())
     }
 
@@ -1833,10 +1829,12 @@ impl ClusterHandler {
         ctx: &RequestContext,
     ) -> Result<Option<serde_json::Value>, String> {
         let (default_udp, default_tcp) = Self::read_cluster_ports(ctx);
-        let udp_port = data.get("udp_port")
+        let udp_port = data
+            .get("udp_port")
             .and_then(|v| v.as_u64())
             .unwrap_or(default_udp as u64) as u16;
-        let tcp_port = data.get("tcp_port")
+        let tcp_port = data
+            .get("tcp_port")
             .and_then(|v| v.as_u64())
             .unwrap_or(default_tcp as u64) as u16;
 
@@ -1864,10 +1862,12 @@ impl ClusterHandler {
             Err(_) => return (default_udp, default_tcp),
         };
 
-        let udp = cfg.get("port")
+        let udp = cfg
+            .get("port")
             .and_then(|v| v.as_u64())
             .unwrap_or(default_udp as u64) as u16;
-        let tcp = cfg.get("rpc_port")
+        let tcp = cfg
+            .get("rpc_port")
             .and_then(|v| v.as_u64())
             .unwrap_or(default_tcp as u64) as u16;
         (udp, tcp)
@@ -1934,7 +1934,7 @@ fn test_broadcast_loopback() -> serde_json::Value {
                 "name": "broadcast_loopback",
                 "pass": false,
                 "detail": format!("绑定接收套接字失败: {}", e)
-            })
+            });
         }
     };
     receiver.set_broadcast(true).ok();
@@ -1945,12 +1945,10 @@ fn test_broadcast_loopback() -> serde_json::Value {
                 "name": "broadcast_loopback",
                 "pass": false,
                 "detail": format!("获取接收端口失败: {}", e)
-            })
+            });
         }
     };
-    receiver
-        .set_read_timeout(Some(Duration::from_secs(2)))
-        .ok();
+    receiver.set_read_timeout(Some(Duration::from_secs(2))).ok();
 
     // Bind sender on a different random port
     let sender = match UdpSocket::bind("0.0.0.0:0") {
@@ -1960,7 +1958,7 @@ fn test_broadcast_loopback() -> serde_json::Value {
                 "name": "broadcast_loopback",
                 "pass": false,
                 "detail": format!("绑定发送套接字失败: {}", e)
-            })
+            });
         }
     };
     sender.set_broadcast(true).ok();
@@ -1988,8 +1986,9 @@ fn test_broadcast_loopback() -> serde_json::Value {
             "pass": false,
             "detail": "收到数据但不匹配"
         }),
-        Err(e) if e.kind() == std::io::ErrorKind::TimedOut
-            || e.kind() == std::io::ErrorKind::WouldBlock =>
+        Err(e)
+            if e.kind() == std::io::ErrorKind::TimedOut
+                || e.kind() == std::io::ErrorKind::WouldBlock =>
         {
             serde_json::json!({
                 "name": "broadcast_loopback",
@@ -2044,14 +2043,26 @@ fn check_platform_firewall(udp_port: u16, tcp_port: u16) -> serde_json::Value {
 
     // Check if rules already exist
     let udp_rule_exists = std::process::Command::new("netsh")
-        .args(&["advfirewall", "firewall", "show", "rule", "name=NemesisBot Discovery"])
+        .args(&[
+            "advfirewall",
+            "firewall",
+            "show",
+            "rule",
+            "name=NemesisBot Discovery",
+        ])
         .output()
         .ok()
         .map(|o| o.status.success())
         .unwrap_or(false);
 
     let tcp_rule_exists = std::process::Command::new("netsh")
-        .args(&["advfirewall", "firewall", "show", "rule", "name=NemesisBot RPC"])
+        .args(&[
+            "advfirewall",
+            "firewall",
+            "show",
+            "rule",
+            "name=NemesisBot RPC",
+        ])
         .output()
         .ok()
         .map(|o| o.status.success())
@@ -2105,10 +2116,10 @@ fn check_platform_firewall(udp_port: u16, tcp_port: u16) -> serde_json::Value {
                 });
             }
             // UFW is active — check if ports are allowed
-            let udp_ok = stdout.contains(&format!("{}/udp", udp_port))
-                || stdout.contains("Anywhere");
-            let tcp_ok = stdout.contains(&format!("{}/tcp", tcp_port))
-                || stdout.contains("Anywhere");
+            let udp_ok =
+                stdout.contains(&format!("{}/udp", udp_port)) || stdout.contains("Anywhere");
+            let tcp_ok =
+                stdout.contains(&format!("{}/tcp", tcp_port)) || stdout.contains("Anywhere");
             if udp_ok && tcp_ok {
                 return serde_json::json!({
                     "name": "firewall_status",
@@ -2218,9 +2229,18 @@ fn spawn_elevated(exe: &str, args: &str) -> Result<(), String> {
     use std::ffi::OsStr;
     use std::os::windows::ffi::OsStrExt;
 
-    let verb: Vec<u16> = OsStr::new("runas").encode_wide().chain(std::iter::once(0)).collect();
-    let file: Vec<u16> = OsStr::new(exe).encode_wide().chain(std::iter::once(0)).collect();
-    let params: Vec<u16> = OsStr::new(args).encode_wide().chain(std::iter::once(0)).collect();
+    let verb: Vec<u16> = OsStr::new("runas")
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect();
+    let file: Vec<u16> = OsStr::new(exe)
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect();
+    let params: Vec<u16> = OsStr::new(args)
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect();
 
     #[link(name = "shell32")]
     unsafe extern "system" {
@@ -2252,9 +2272,11 @@ fn spawn_elevated(exe: &str, args: &str) -> Result<(), String> {
     Ok(())
 }
 
-
 #[cfg(target_os = "windows")]
-fn add_platform_firewall_rules(udp_port: u16, tcp_port: u16) -> Result<Option<serde_json::Value>, String> {
+fn add_platform_firewall_rules(
+    udp_port: u16,
+    tcp_port: u16,
+) -> Result<Option<serde_json::Value>, String> {
     let manual_udp = format!(
         "netsh advfirewall firewall add rule name=\"NemesisBot Discovery\" dir=in action=allow protocol=UDP localport={} profile=any",
         udp_port
@@ -2267,9 +2289,14 @@ fn add_platform_firewall_rules(udp_port: u16, tcp_port: u16) -> Result<Option<se
     // Step 1: Try direct execution (succeeds if already running as admin)
     let udp_ok = std::process::Command::new("netsh")
         .args(&[
-            "advfirewall", "firewall", "add", "rule",
+            "advfirewall",
+            "firewall",
+            "add",
+            "rule",
             "name=NemesisBot Discovery",
-            "dir=in", "action=allow", "protocol=UDP",
+            "dir=in",
+            "action=allow",
+            "protocol=UDP",
             &format!("localport={}", udp_port),
             "profile=any",
         ])
@@ -2279,9 +2306,14 @@ fn add_platform_firewall_rules(udp_port: u16, tcp_port: u16) -> Result<Option<se
 
     let tcp_ok = std::process::Command::new("netsh")
         .args(&[
-            "advfirewall", "firewall", "add", "rule",
+            "advfirewall",
+            "firewall",
+            "add",
+            "rule",
             "name=NemesisBot RPC",
-            "dir=in", "action=allow", "protocol=TCP",
+            "dir=in",
+            "action=allow",
+            "protocol=TCP",
             &format!("localport={}", tcp_port),
             "profile=any",
         ])
@@ -2304,37 +2336,39 @@ fn add_platform_firewall_rules(udp_port: u16, tcp_port: u16) -> Result<Option<se
     // Always try UAC elevation as fallback.
     let exe_path = std::env::current_exe().map_err(|e| format!("无法获取当前程序路径: {}", e))?;
     let exe_str = exe_path.to_str().ok_or("程序路径包含非法字符")?;
-    let args = format!("cluster firewall add --udp-port {} --tcp-port {}", udp_port, tcp_port);
+    let args = format!(
+        "cluster firewall add --udp-port {} --tcp-port {}",
+        udp_port, tcp_port
+    );
 
     match spawn_elevated(exe_str, &args) {
-        Ok(()) => {
-            Ok(Some(serde_json::json!({
-                "success": false,
-                "udp_rule_added": false,
-                "tcp_rule_added": false,
-                "message": "已弹出 UAC 提权请求，请在弹窗中确认。添加完成后请重新检测网络。".to_string(),
-                "permission_denied": false,
-                "uac_triggered": true,
-                "manual_commands": [manual_udp, manual_tcp],
-                "platform_hint": "如果未看到 UAC 弹窗，请手动执行以下命令",
-            })))
-        }
-        Err(e) => {
-            Ok(Some(serde_json::json!({
-                "success": false,
-                "udp_rule_added": false,
-                "tcp_rule_added": false,
-                "message": format!("无法启动 UAC 提权: {}", e),
-                "permission_denied": true,
-                "manual_commands": [manual_udp, manual_tcp],
-                "platform_hint": "以管理员身份手动执行以下命令",
-            })))
-        }
+        Ok(()) => Ok(Some(serde_json::json!({
+            "success": false,
+            "udp_rule_added": false,
+            "tcp_rule_added": false,
+            "message": "已弹出 UAC 提权请求，请在弹窗中确认。添加完成后请重新检测网络。".to_string(),
+            "permission_denied": false,
+            "uac_triggered": true,
+            "manual_commands": [manual_udp, manual_tcp],
+            "platform_hint": "如果未看到 UAC 弹窗，请手动执行以下命令",
+        }))),
+        Err(e) => Ok(Some(serde_json::json!({
+            "success": false,
+            "udp_rule_added": false,
+            "tcp_rule_added": false,
+            "message": format!("无法启动 UAC 提权: {}", e),
+            "permission_denied": true,
+            "manual_commands": [manual_udp, manual_tcp],
+            "platform_hint": "以管理员身份手动执行以下命令",
+        }))),
     }
 }
 
 #[cfg(target_os = "linux")]
-fn add_platform_firewall_rules(udp_port: u16, tcp_port: u16) -> Result<Option<serde_json::Value>, String> {
+fn add_platform_firewall_rules(
+    udp_port: u16,
+    tcp_port: u16,
+) -> Result<Option<serde_json::Value>, String> {
     // Try ufw first
     let ufw_exists = std::process::Command::new("which")
         .arg("ufw")
@@ -2352,8 +2386,14 @@ fn add_platform_firewall_rules(udp_port: u16, tcp_port: u16) -> Result<Option<se
             .arg(format!("{}/tcp", tcp_port))
             .output();
 
-        let udp_ok = udp_result.as_ref().map(|o| o.status.success()).unwrap_or(false);
-        let tcp_ok = tcp_result.as_ref().map(|o| o.status.success()).unwrap_or(false);
+        let udp_ok = udp_result
+            .as_ref()
+            .map(|o| o.status.success())
+            .unwrap_or(false);
+        let tcp_ok = tcp_result
+            .as_ref()
+            .map(|o| o.status.success())
+            .unwrap_or(false);
 
         if udp_ok && tcp_ok {
             return Ok(Some(serde_json::json!({
@@ -2368,14 +2408,38 @@ fn add_platform_firewall_rules(udp_port: u16, tcp_port: u16) -> Result<Option<se
 
     // Fallback: iptables
     let udp_result = std::process::Command::new("iptables")
-        .args(&["-I", "INPUT", "-p", "udp", "--dport", &udp_port.to_string(), "-j", "ACCEPT"])
+        .args(&[
+            "-I",
+            "INPUT",
+            "-p",
+            "udp",
+            "--dport",
+            &udp_port.to_string(),
+            "-j",
+            "ACCEPT",
+        ])
         .output();
     let tcp_result = std::process::Command::new("iptables")
-        .args(&["-I", "INPUT", "-p", "tcp", "--dport", &tcp_port.to_string(), "-j", "ACCEPT"])
+        .args(&[
+            "-I",
+            "INPUT",
+            "-p",
+            "tcp",
+            "--dport",
+            &tcp_port.to_string(),
+            "-j",
+            "ACCEPT",
+        ])
         .output();
 
-    let udp_ok = udp_result.as_ref().map(|o| o.status.success()).unwrap_or(false);
-    let tcp_ok = tcp_result.as_ref().map(|o| o.status.success()).unwrap_or(false);
+    let udp_ok = udp_result
+        .as_ref()
+        .map(|o| o.status.success())
+        .unwrap_or(false);
+    let tcp_ok = tcp_result
+        .as_ref()
+        .map(|o| o.status.success())
+        .unwrap_or(false);
 
     if udp_ok && tcp_ok {
         return Ok(Some(serde_json::json!({
@@ -2391,12 +2455,18 @@ fn add_platform_firewall_rules(udp_port: u16, tcp_port: u16) -> Result<Option<se
     let manual_udp = if ufw_exists {
         format!("sudo ufw allow {}/udp", udp_port)
     } else {
-        format!("sudo iptables -I INPUT -p udp --dport {} -j ACCEPT", udp_port)
+        format!(
+            "sudo iptables -I INPUT -p udp --dport {} -j ACCEPT",
+            udp_port
+        )
     };
     let manual_tcp = if ufw_exists {
         format!("sudo ufw allow {}/tcp", tcp_port)
     } else {
-        format!("sudo iptables -I INPUT -p tcp --dport {} -j ACCEPT", tcp_port)
+        format!(
+            "sudo iptables -I INPUT -p tcp --dport {} -j ACCEPT",
+            tcp_port
+        )
     };
 
     Ok(Some(serde_json::json!({
@@ -2411,7 +2481,10 @@ fn add_platform_firewall_rules(udp_port: u16, tcp_port: u16) -> Result<Option<se
 }
 
 #[cfg(target_os = "macos")]
-fn add_platform_firewall_rules(_udp_port: u16, _tcp_port: u16) -> Result<Option<serde_json::Value>, String> {
+fn add_platform_firewall_rules(
+    _udp_port: u16,
+    _tcp_port: u16,
+) -> Result<Option<serde_json::Value>, String> {
     Ok(Some(serde_json::json!({
         "success": false,
         "udp_rule_added": false,
@@ -2424,7 +2497,10 @@ fn add_platform_firewall_rules(_udp_port: u16, _tcp_port: u16) -> Result<Option<
 }
 
 #[cfg(not(any(target_os = "windows", target_os = "linux", target_os = "macos")))]
-fn add_platform_firewall_rules(_udp_port: u16, _tcp_port: u16) -> Result<Option<serde_json::Value>, String> {
+fn add_platform_firewall_rules(
+    _udp_port: u16,
+    _tcp_port: u16,
+) -> Result<Option<serde_json::Value>, String> {
     Err("当前平台不支持防火墙规则管理".to_string())
 }
 

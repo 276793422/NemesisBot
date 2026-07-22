@@ -192,8 +192,14 @@ fn test_set_and_get_roundtrip() {
     set_channel_config(&cfg, "web", "port", "9090").unwrap();
     set_channel_config(&cfg, "web", "host", "192.168.1.1").unwrap();
 
-    assert_eq!(get_channel_config(&cfg, "web", "port"), Some("9090".to_string()));
-    assert_eq!(get_channel_config(&cfg, "web", "host"), Some("192.168.1.1".to_string()));
+    assert_eq!(
+        get_channel_config(&cfg, "web", "port"),
+        Some("9090".to_string())
+    );
+    assert_eq!(
+        get_channel_config(&cfg, "web", "host"),
+        Some("192.168.1.1".to_string())
+    );
 }
 
 #[test]
@@ -202,7 +208,10 @@ fn test_set_overwrite_value() {
     let cfg = make_config(&tmp);
 
     set_channel_config(&cfg, "web", "port", "3000").unwrap();
-    assert_eq!(get_channel_config(&cfg, "web", "port"), Some("3000".to_string()));
+    assert_eq!(
+        get_channel_config(&cfg, "web", "port"),
+        Some("3000".to_string())
+    );
 }
 
 #[test]
@@ -223,9 +232,21 @@ fn test_set_remove_then_get() {
 
 #[test]
 fn test_known_channels_contains_all_expected() {
-    let expected = ["web", "websocket", "telegram", "discord", "whatsapp",
-        "feishu", "slack", "line", "onebot", "qq", "dingtalk",
-        "maixcam", "external"];
+    let expected = [
+        "web",
+        "websocket",
+        "telegram",
+        "discord",
+        "whatsapp",
+        "feishu",
+        "slack",
+        "line",
+        "onebot",
+        "qq",
+        "dingtalk",
+        "maixcam",
+        "external",
+    ];
     for name in &expected {
         assert!(KNOWN_CHANNELS.contains(name), "Missing channel: {}", name);
     }
@@ -261,8 +282,14 @@ fn test_set_channel_config_multiple_keys_same_channel() {
     set_channel_config(&cfg, "discord", "token", "abc").unwrap();
     set_channel_config(&cfg, "discord", "guild_id", "12345").unwrap();
 
-    assert_eq!(get_channel_config(&cfg, "discord", "token"), Some("abc".to_string()));
-    assert_eq!(get_channel_config(&cfg, "discord", "guild_id"), Some("12345".to_string()));
+    assert_eq!(
+        get_channel_config(&cfg, "discord", "token"),
+        Some("abc".to_string())
+    );
+    assert_eq!(
+        get_channel_config(&cfg, "discord", "guild_id"),
+        Some("12345".to_string())
+    );
 }
 
 #[test]
@@ -271,7 +298,10 @@ fn test_set_channel_config_value_with_spaces() {
     let cfg = make_config(&tmp);
 
     set_channel_config(&cfg, "web", "host", "my server name").unwrap();
-    assert_eq!(get_channel_config(&cfg, "web", "host"), Some("my server name".to_string()));
+    assert_eq!(
+        get_channel_config(&cfg, "web", "host"),
+        Some("my server name".to_string())
+    );
 }
 
 #[test]
@@ -280,7 +310,10 @@ fn test_set_channel_config_empty_value() {
     let cfg = make_config(&tmp);
 
     set_channel_config(&cfg, "web", "custom_field", "").unwrap();
-    assert_eq!(get_channel_config(&cfg, "web", "custom_field"), Some("".to_string()));
+    assert_eq!(
+        get_channel_config(&cfg, "web", "custom_field"),
+        Some("".to_string())
+    );
 }
 
 // -------------------------------------------------------------------------
@@ -318,7 +351,10 @@ fn test_remove_channel_config_preserves_other_keys() {
 
     assert!(get_channel_config(&cfg, "web", "host").is_none());
     // auth_token should still be there
-    assert_eq!(get_channel_config(&cfg, "web", "auth_token"), Some("mysecrettoken123".to_string()));
+    assert_eq!(
+        get_channel_config(&cfg, "web", "auth_token"),
+        Some("mysecrettoken123".to_string())
+    );
 }
 
 #[test]
@@ -382,7 +418,8 @@ fn test_enable_channel_via_pointer_mut() {
     }
     std::fs::write(&cfg, serde_json::to_string_pretty(&config).unwrap()).unwrap();
 
-    let loaded: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&cfg).unwrap()).unwrap();
+    let loaded: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&cfg).unwrap()).unwrap();
     assert_eq!(loaded["channels"]["telegram"]["enabled"], true);
 }
 
@@ -401,7 +438,8 @@ fn test_disable_channel_via_pointer_mut() {
     }
     std::fs::write(&cfg, serde_json::to_string_pretty(&config).unwrap()).unwrap();
 
-    let loaded: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&cfg).unwrap()).unwrap();
+    let loaded: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&cfg).unwrap()).unwrap();
     assert_eq!(loaded["channels"]["web"]["enabled"], false);
 }
 
@@ -607,8 +645,14 @@ fn test_external_input_via_config() {
     set_channel_config(&cfg, "external", "input_script", "/path/to/input.sh").unwrap();
     set_channel_config(&cfg, "external", "output_script", "/path/to/output.sh").unwrap();
 
-    assert_eq!(get_channel_config(&cfg, "external", "input_script"), Some("/path/to/input.sh".to_string()));
-    assert_eq!(get_channel_config(&cfg, "external", "output_script"), Some("/path/to/output.sh".to_string()));
+    assert_eq!(
+        get_channel_config(&cfg, "external", "input_script"),
+        Some("/path/to/input.sh".to_string())
+    );
+    assert_eq!(
+        get_channel_config(&cfg, "external", "output_script"),
+        Some("/path/to/output.sh".to_string())
+    );
 }
 
 // -------------------------------------------------------------------------
@@ -624,9 +668,18 @@ fn test_multiple_channels_configured() {
     set_channel_config(&cfg, "telegram", "enabled", "true").unwrap();
     set_channel_config(&cfg, "discord", "enabled", "true").unwrap();
 
-    assert_eq!(get_channel_config(&cfg, "web", "enabled"), Some("true".to_string()));
-    assert_eq!(get_channel_config(&cfg, "telegram", "enabled"), Some("true".to_string()));
-    assert_eq!(get_channel_config(&cfg, "discord", "enabled"), Some("true".to_string()));
+    assert_eq!(
+        get_channel_config(&cfg, "web", "enabled"),
+        Some("true".to_string())
+    );
+    assert_eq!(
+        get_channel_config(&cfg, "telegram", "enabled"),
+        Some("true".to_string())
+    );
+    assert_eq!(
+        get_channel_config(&cfg, "discord", "enabled"),
+        Some("true".to_string())
+    );
 }
 
 // -------------------------------------------------------------------------
@@ -663,7 +716,12 @@ fn test_uuid_session_format_multiple() {
 #[test]
 fn test_known_channels_all_lowercase() {
     for ch in KNOWN_CHANNELS {
-        assert_eq!(*ch, ch.to_lowercase(), "Channel '{}' should be lowercase", ch);
+        assert_eq!(
+            *ch,
+            ch.to_lowercase(),
+            "Channel '{}' should be lowercase",
+            ch
+        );
     }
 }
 
@@ -674,11 +732,17 @@ fn test_set_get_remove_lifecycle() {
 
     // Set
     set_channel_config(&cfg, "web", "test_key", "test_value").unwrap();
-    assert_eq!(get_channel_config(&cfg, "web", "test_key"), Some("test_value".to_string()));
+    assert_eq!(
+        get_channel_config(&cfg, "web", "test_key"),
+        Some("test_value".to_string())
+    );
 
     // Overwrite
     set_channel_config(&cfg, "web", "test_key", "new_value").unwrap();
-    assert_eq!(get_channel_config(&cfg, "web", "test_key"), Some("new_value".to_string()));
+    assert_eq!(
+        get_channel_config(&cfg, "web", "test_key"),
+        Some("new_value".to_string())
+    );
 
     // Remove
     remove_channel_config(&cfg, "web", "test_key").unwrap();
@@ -742,28 +806,44 @@ fn test_set_channel_config_creates_channels_key() {
 #[test]
 fn test_auth_token_last4_long_token() {
     let auth = "abcdefghijklmnop";
-    let last4 = if auth.len() > 4 { &auth[auth.len() - 4..] } else { auth };
+    let last4 = if auth.len() > 4 {
+        &auth[auth.len() - 4..]
+    } else {
+        auth
+    };
     assert_eq!(last4, "mnop");
 }
 
 #[test]
 fn test_auth_token_last4_short_token() {
     let auth = "abc";
-    let last4 = if auth.len() > 4 { &auth[auth.len() - 4..] } else { auth };
+    let last4 = if auth.len() > 4 {
+        &auth[auth.len() - 4..]
+    } else {
+        auth
+    };
     assert_eq!(last4, "abc");
 }
 
 #[test]
 fn test_auth_token_last4_exactly_4() {
     let auth = "abcd";
-    let last4 = if auth.len() > 4 { &auth[auth.len() - 4..] } else { auth };
+    let last4 = if auth.len() > 4 {
+        &auth[auth.len() - 4..]
+    } else {
+        auth
+    };
     assert_eq!(last4, "abcd");
 }
 
 #[test]
 fn test_auth_token_last4_empty() {
     let auth = "";
-    let last4 = if auth.len() > 4 { &auth[auth.len() - 4..] } else { auth };
+    let last4 = if auth.len() > 4 {
+        &auth[auth.len() - 4..]
+    } else {
+        auth
+    };
     assert_eq!(last4, "");
 }
 
@@ -784,12 +864,17 @@ fn test_enable_unknown_channel_creates_entry() {
         if let Some(obj) = ch.as_object_mut() {
             obj.insert("enabled".to_string(), serde_json::Value::Bool(true));
         }
-    } else if let Some(channels) = config.as_object_mut().and_then(|o| o.get_mut("channels")).and_then(|v| v.as_object_mut()) {
+    } else if let Some(channels) = config
+        .as_object_mut()
+        .and_then(|o| o.get_mut("channels"))
+        .and_then(|v| v.as_object_mut())
+    {
         channels.insert(name.to_string(), serde_json::json!({"enabled": true}));
     }
     std::fs::write(&cfg, serde_json::to_string_pretty(&config).unwrap()).unwrap();
 
-    let loaded: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&cfg).unwrap()).unwrap();
+    let loaded: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&cfg).unwrap()).unwrap();
     assert_eq!(loaded["channels"]["discord"]["enabled"], true);
 }
 
@@ -808,7 +893,8 @@ fn test_enable_channel_with_existing_config_preserves_fields() {
     }
     std::fs::write(&cfg, serde_json::to_string_pretty(&config).unwrap()).unwrap();
 
-    let loaded: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&cfg).unwrap()).unwrap();
+    let loaded: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&cfg).unwrap()).unwrap();
     assert_eq!(loaded["channels"]["telegram"]["enabled"], true);
 }
 
@@ -830,7 +916,8 @@ fn test_disable_channel_preserves_other_keys() {
     }
     std::fs::write(&cfg, serde_json::to_string_pretty(&config).unwrap()).unwrap();
 
-    let loaded: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&cfg).unwrap()).unwrap();
+    let loaded: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&cfg).unwrap()).unwrap();
     assert_eq!(loaded["channels"]["web"]["enabled"], false);
     assert_eq!(loaded["channels"]["web"]["host"], "0.0.0.0");
     assert_eq!(loaded["channels"]["web"]["port"], 8080);
@@ -849,7 +936,8 @@ fn test_channel_list_status_parsing() {
     let config: serde_json::Value = serde_json::from_str(&data).unwrap();
 
     for ch in KNOWN_CHANNELS {
-        let enabled = config.get("channels")
+        let enabled = config
+            .get("channels")
             .and_then(|c| c.get(*ch))
             .and_then(|c| c.get("enabled"))
             .and_then(|v| v.as_bool())
@@ -957,7 +1045,10 @@ fn test_set_channel_config_special_chars() {
     let cfg = make_empty_config(&tmp);
 
     set_channel_config(&cfg, "web", "host", "host-with-dashes.example.com").unwrap();
-    assert_eq!(get_channel_config(&cfg, "web", "host"), Some("host-with-dashes.example.com".to_string()));
+    assert_eq!(
+        get_channel_config(&cfg, "web", "host"),
+        Some("host-with-dashes.example.com".to_string())
+    );
 }
 
 #[test]
@@ -966,7 +1057,10 @@ fn test_set_channel_config_unicode_value() {
     let cfg = make_empty_config(&tmp);
 
     set_channel_config(&cfg, "web", "label", "中文标签").unwrap();
-    assert_eq!(get_channel_config(&cfg, "web", "label"), Some("中文标签".to_string()));
+    assert_eq!(
+        get_channel_config(&cfg, "web", "label"),
+        Some("中文标签".to_string())
+    );
 }
 
 #[test]
@@ -975,7 +1069,10 @@ fn test_set_channel_config_json_in_value() {
     let cfg = make_empty_config(&tmp);
 
     set_channel_config(&cfg, "web", "extra", r#"{"nested":true}"#).unwrap();
-    assert_eq!(get_channel_config(&cfg, "web", "extra"), Some(r#"{"nested":true}"#.to_string()));
+    assert_eq!(
+        get_channel_config(&cfg, "web", "extra"),
+        Some(r#"{"nested":true}"#.to_string())
+    );
 }
 
 // -------------------------------------------------------------------------
@@ -989,18 +1086,30 @@ fn test_sequential_enable_disable() {
 
     // Enable
     set_channel_config(&cfg, "telegram", "enabled", "true").unwrap();
-    assert_eq!(get_channel_config(&cfg, "telegram", "enabled"), Some("true".to_string()));
+    assert_eq!(
+        get_channel_config(&cfg, "telegram", "enabled"),
+        Some("true".to_string())
+    );
 
     // Configure
     set_channel_config(&cfg, "telegram", "token", "123456:ABC").unwrap();
-    assert_eq!(get_channel_config(&cfg, "telegram", "token"), Some("123456:ABC".to_string()));
+    assert_eq!(
+        get_channel_config(&cfg, "telegram", "token"),
+        Some("123456:ABC".to_string())
+    );
 
     // Disable
     set_channel_config(&cfg, "telegram", "enabled", "false").unwrap();
-    assert_eq!(get_channel_config(&cfg, "telegram", "enabled"), Some("false".to_string()));
+    assert_eq!(
+        get_channel_config(&cfg, "telegram", "enabled"),
+        Some("false".to_string())
+    );
 
     // Token still present
-    assert_eq!(get_channel_config(&cfg, "telegram", "token"), Some("123456:ABC".to_string()));
+    assert_eq!(
+        get_channel_config(&cfg, "telegram", "token"),
+        Some("123456:ABC".to_string())
+    );
 }
 
 // -------------------------------------------------------------------------
@@ -1027,7 +1136,8 @@ fn test_config_preserves_extra_fields() {
 
     set_channel_config(&cfg_path, "web", "port", "8080").unwrap();
 
-    let data: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&cfg_path).unwrap()).unwrap();
+    let data: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&cfg_path).unwrap()).unwrap();
     assert_eq!(data["channels"]["web"]["custom_field"], "custom_value");
     assert_eq!(data["other_section"]["key"], "value");
     assert_eq!(data["channels"]["web"]["port"], "8080");
@@ -1061,5 +1171,8 @@ fn test_format_token_for_channel_display() {
     assert_eq!(crate::common::format_token(""), "(not set)");
     assert_eq!(crate::common::format_token("short"), "***");
     assert_eq!(crate::common::format_token("12345678"), "***");
-    assert_eq!(crate::common::format_token("my-secret-auth-token-value"), "my-s...alue");
+    assert_eq!(
+        crate::common::format_token("my-secret-auth-token-value"),
+        "my-s...alue"
+    );
 }

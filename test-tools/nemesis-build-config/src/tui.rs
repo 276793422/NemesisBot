@@ -13,15 +13,15 @@ use std::path::Path;
 use crossterm::{
     event::{self, Event, KeyCode, KeyEventKind},
     execute,
-    terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
+    terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
 use ratatui::{
+    Terminal,
     backend::CrosstermBackend,
     layout::{Constraint, Direction, Layout},
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, List, ListItem, ListState, Paragraph},
-    Terminal,
 };
 
 use crate::config::BuildConfig;
@@ -48,7 +48,12 @@ fn rows(manifest: &FeatureManifest) -> Vec<Row> {
         .collect::<std::collections::BTreeSet<_>>()
         .into_iter()
         .collect();
-    cats.sort_by_key(|c| order.iter().position(|o| *o == c.as_str()).unwrap_or(usize::MAX));
+    cats.sort_by_key(|c| {
+        order
+            .iter()
+            .position(|o| *o == c.as_str())
+            .unwrap_or(usize::MAX)
+    });
     for cat in cats {
         rows.push(Row {
             id: String::new(),
@@ -70,12 +75,17 @@ fn row_text(row: &Row, manifest: &FeatureManifest, cfg: &BuildConfig) -> Line<'s
     if row.id.is_empty() {
         return Line::from(Span::styled(
             row.label.clone(),
-            Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
         ));
     }
     let spec = manifest.features.iter().find(|f| f.id == row.id);
     let marker = if row.is_enum {
-        let cur = cfg.get_enum(&row.id).map(|s| s.to_string()).unwrap_or_default();
+        let cur = cfg
+            .get_enum(&row.id)
+            .map(|s| s.to_string())
+            .unwrap_or_default();
         format!("[{:>8}]", cur)
     } else {
         match cfg.get_bool(&row.id) {
@@ -96,7 +106,11 @@ fn row_text(row: &Row, manifest: &FeatureManifest, cfg: &BuildConfig) -> Line<'s
 }
 
 /// Run the TUI. Returns Ok(()) on clean exit.
-pub fn run(manifest: &FeatureManifest, cfg: &mut BuildConfig, config_path: &Path) -> io::Result<()> {
+pub fn run(
+    manifest: &FeatureManifest,
+    cfg: &mut BuildConfig,
+    config_path: &Path,
+) -> io::Result<()> {
     enable_raw_mode()?;
     let mut stdout = io::stdout();
     execute!(stdout, EnterAlternateScreen)?;
@@ -128,14 +142,28 @@ fn interactive_loop(
         terminal.draw(|f| {
             let chunks = Layout::default()
                 .direction(Direction::Vertical)
-                .constraints([Constraint::Min(1), Constraint::Length(3), Constraint::Length(2)])
+                .constraints([
+                    Constraint::Min(1),
+                    Constraint::Length(3),
+                    Constraint::Length(2),
+                ])
                 .split(f.area());
 
-            let items: Vec<ListItem> =
-                rows.iter().map(|r| ListItem::new(row_text(r, manifest, cfg))).collect();
+            let items: Vec<ListItem> = rows
+                .iter()
+                .map(|r| ListItem::new(row_text(r, manifest, cfg)))
+                .collect();
             let list = List::new(items)
-                .block(Block::default().borders(Borders::ALL).title("NemesisBot 构建配置"))
-                .highlight_style(Style::default().bg(Color::DarkGray).add_modifier(Modifier::BOLD));
+                .block(
+                    Block::default()
+                        .borders(Borders::ALL)
+                        .title("NemesisBot 构建配置"),
+                )
+                .highlight_style(
+                    Style::default()
+                        .bg(Color::DarkGray)
+                        .add_modifier(Modifier::BOLD),
+                );
             f.render_stateful_widget(list, chunks[0], &mut state.clone());
 
             // detail / help line
@@ -163,10 +191,7 @@ fn interactive_loop(
 
             let help = "↑↓ 移动 · Space 切换 · →/Enter 切换枚举 · s 保存 · q 退出";
             let dirty_mark = if dirty { " (未保存)" } else { "" };
-            f.render_widget(
-                Paragraph::new(format!("{help}{dirty_mark}")),
-                chunks[2],
-            );
+            f.render_widget(Paragraph::new(format!("{help}{dirty_mark}")), chunks[2]);
         })?;
 
         if !event::poll(std::time::Duration::from_millis(250))? {
@@ -186,7 +211,12 @@ fn interactive_loop(
                     break;
                 }
                 // Ctrl+C: abort without saving.
-                KeyCode::Char('c') if k.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) => break,
+                KeyCode::Char('c')
+                    if k.modifiers
+                        .contains(crossterm::event::KeyModifiers::CONTROL) =>
+                {
+                    break;
+                }
                 KeyCode::Char('s') => {
                     // save in place; keep editing
                     if let Err(e) = cfg.save(config_path) {
@@ -220,12 +250,18 @@ fn interactive_loop(
                     if let Some(i) = state.selected() {
                         if let Some(r) = rows.get(i) {
                             if r.is_enum {
-                                if let Some(spec) = manifest.features.iter().find(|f| f.id == r.id) {
+                                if let Some(spec) = manifest.features.iter().find(|f| f.id == r.id)
+                                {
                                     if spec.options.is_empty() {
                                         continue;
                                     }
                                     let cur = cfg.get_enum(&r.id).unwrap_or("");
-                                    let idx = spec.options.iter().position(|o| o == cur).map(|p| p + 1).unwrap_or(0);
+                                    let idx = spec
+                                        .options
+                                        .iter()
+                                        .position(|o| o == cur)
+                                        .map(|p| p + 1)
+                                        .unwrap_or(0);
                                     let next = &spec.options[idx % spec.options.len()];
                                     cfg.set_enum(&r.id, next);
                                     dirty = true;

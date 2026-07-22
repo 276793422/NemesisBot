@@ -159,7 +159,10 @@ fn test_recover_skips_completed_failed() {
     list.update_status("t-fail", TaskStatus::Failed);
 
     let recovered = list.recover_task_ids();
-    assert!(recovered.is_empty(), "Completed and Failed tasks should not be recovered");
+    assert!(
+        recovered.is_empty(),
+        "Completed and Failed tasks should not be recovered"
+    );
 
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -232,7 +235,10 @@ async fn test_work_queue_returns_none_on_close() {
 
     let result = tokio::time::timeout(Duration::from_secs(2), queue.next()).await;
     assert!(result.is_ok(), "next() should return quickly, not hang");
-    assert!(result.unwrap().is_none(), "Expected None when all senders are dropped");
+    assert!(
+        result.unwrap().is_none(),
+        "Expected None when all senders are dropped"
+    );
 }
 
 #[test]

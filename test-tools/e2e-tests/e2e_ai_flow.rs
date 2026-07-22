@@ -28,7 +28,9 @@ async fn chat_request(messages: Vec<Value>, tools: Vec<Value>) -> Value {
         .await
         .expect("Failed to send request");
 
-    resp.json::<Value>().await.expect("Failed to parse response")
+    resp.json::<Value>()
+        .await
+        .expect("Failed to parse response")
 }
 
 #[tokio::test]
@@ -119,7 +121,10 @@ async fn test_e2e_tool_call_flow() {
 
     // Step 1: Initial request with tools
     let resp = chat_request(messages.clone(), tools.clone()).await;
-    println!("[E2E] Step 1 - LLM response: {}", serde_json::to_string_pretty(&resp).unwrap());
+    println!(
+        "[E2E] Step 1 - LLM response: {}",
+        serde_json::to_string_pretty(&resp).unwrap()
+    );
 
     // Verify we got a response
     assert!(resp.get("choices").is_some(), "No choices in step 1");
@@ -164,7 +169,10 @@ async fn test_e2e_tool_call_flow() {
             }));
 
             let final_resp = chat_request(full_messages, vec![]).await;
-            println!("[E2E] Step 3 - Final response: {}", serde_json::to_string_pretty(&final_resp).unwrap());
+            println!(
+                "[E2E] Step 3 - Final response: {}",
+                serde_json::to_string_pretty(&final_resp).unwrap()
+            );
             assert!(final_resp.get("choices").is_some(), "No choices in step 3");
         }
     } else {
@@ -204,9 +212,14 @@ async fn test_e2e_usage_tracking() {
     let resp = chat_request(messages, vec![]).await;
 
     let usage = resp.get("usage").expect("No usage info in response");
-    assert!(usage["total_tokens"].as_i64().unwrap_or(0) > 0, "Usage should have tokens");
-    println!("[E2E] Usage: prompt={}, completion={}, total={}",
+    assert!(
+        usage["total_tokens"].as_i64().unwrap_or(0) > 0,
+        "Usage should have tokens"
+    );
+    println!(
+        "[E2E] Usage: prompt={}, completion={}, total={}",
         usage["prompt_tokens"].as_i64().unwrap_or(0),
         usage["completion_tokens"].as_i64().unwrap_or(0),
-        usage["total_tokens"].as_i64().unwrap_or(0));
+        usage["total_tokens"].as_i64().unwrap_or(0)
+    );
 }

@@ -1,6 +1,6 @@
 use super::*;
 use nemesis_agent::instance::AgentInstance;
-use nemesis_agent::r#loop::{AgentLoop, LlmProvider, LlmMessage, LlmResponse};
+use nemesis_agent::r#loop::{AgentLoop, LlmMessage, LlmProvider, LlmResponse};
 use nemesis_agent::session::SessionStore;
 use nemesis_agent::types::{AgentConfig, AgentEvent, ConversationTurn, ToolCallInfo};
 use nemesis_cluster::cluster_task::{ClusterTask, TaskSource, TaskStatus};
@@ -79,7 +79,10 @@ fn test_extract_async_info_json_marker() {
         ),
     ];
     let result = extract_async_info(&conversation);
-    assert_eq!(result, Some(("child-123".to_string(), "tc_456".to_string())));
+    assert_eq!(
+        result,
+        Some(("child-123".to_string(), "tc_456".to_string()))
+    );
 }
 
 #[test]
@@ -284,10 +287,7 @@ fn test_persist_save_failure_does_not_panic() {
     // propagating.
     let tmp = tempfile::tempdir().unwrap();
     let store = std::sync::Arc::new(SessionStore::new_with_storage(tmp.path()));
-    let mut agent_loop = AgentLoop::new(
-        Box::new(NullLlmProvider),
-        make_test_config(),
-    );
+    let mut agent_loop = AgentLoop::new(Box::new(NullLlmProvider), make_test_config());
     agent_loop.set_session_store(store.clone());
 
     let instance = AgentInstance::new(make_test_config());

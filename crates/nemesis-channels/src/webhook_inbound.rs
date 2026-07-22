@@ -138,7 +138,10 @@ impl WebhookInboundChannel {
 
     /// Extracts path segments for routing.
     /// Pattern: /webhook/{channel_name}/{chat_id}
-    pub fn extract_routing<'a>(path: &'a str, base_path: &str) -> (Option<&'a str>, Option<&'a str>) {
+    pub fn extract_routing<'a>(
+        path: &'a str,
+        base_path: &str,
+    ) -> (Option<&'a str>, Option<&'a str>) {
         let base = base_path.trim_end_matches('/');
         let remaining = match path.strip_prefix(base) {
             Some(r) => r,
@@ -157,9 +160,18 @@ impl WebhookInboundChannel {
     }
 
     /// Processes a webhook request.
-    pub fn process_request(&self, req: &WebhookRequest) -> (String, String, HashMap<String, String>) {
-        let sender_id = req.sender_id.clone().unwrap_or_else(|| "webhook".to_string());
-        let chat_id = req.chat_id.clone().unwrap_or_else(|| "webhook:default".to_string());
+    pub fn process_request(
+        &self,
+        req: &WebhookRequest,
+    ) -> (String, String, HashMap<String, String>) {
+        let sender_id = req
+            .sender_id
+            .clone()
+            .unwrap_or_else(|| "webhook".to_string());
+        let chat_id = req
+            .chat_id
+            .clone()
+            .unwrap_or_else(|| "webhook:default".to_string());
 
         let mut metadata = HashMap::new();
         metadata.insert("platform".to_string(), "webhook_inbound".to_string());
@@ -185,8 +197,7 @@ impl WebhookInboundChannel {
     /// Cleans up expired pending requests.
     pub fn cleanup_expired(&self) {
         let now = tokio::time::Instant::now();
-        self.pending
-            .retain(|_, pr| now < pr.deadline);
+        self.pending.retain(|_, pr| now < pr.deadline);
     }
 }
 

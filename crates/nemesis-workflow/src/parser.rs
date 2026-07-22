@@ -6,8 +6,8 @@
 use std::collections::HashSet;
 use std::path::Path;
 
-use crate::types::Workflow;
 use crate::scheduler::topological_sort;
+use crate::types::Workflow;
 
 /// Parse a YAML or JSON byte slice into a Workflow definition.
 pub fn parse(data: &[u8]) -> Result<Workflow, String> {
@@ -41,7 +41,10 @@ pub fn validate(wf: &Workflow) -> Result<(), String> {
     }
 
     if wf.nodes.is_empty() {
-        return Err(format!("workflow {:?} must have at least one node", wf.name));
+        return Err(format!(
+            "workflow {:?} must have at least one node",
+            wf.name
+        ));
     }
 
     // Check unique node IDs
@@ -79,10 +82,7 @@ pub fn validate(wf: &Workflow) -> Result<(), String> {
     for n in &wf.nodes {
         for dep in &n.depends_on {
             if !node_ids.contains(dep) {
-                return Err(format!(
-                    "node {:?} depends_on unknown node {:?}",
-                    n.id, dep
-                ));
+                return Err(format!("node {:?} depends_on unknown node {:?}", n.id, dep));
             }
         }
     }

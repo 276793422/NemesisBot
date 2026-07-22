@@ -1,7 +1,7 @@
 //! Cron command - manage scheduled tasks.
 
-use anyhow::Result;
 use crate::common;
+use anyhow::Result;
 
 #[derive(clap::Subcommand)]
 pub enum CronAction {
@@ -66,10 +66,12 @@ pub fn run(action: CronAction, local: bool) -> Result<()> {
                         for job in arr {
                             let id = job.get("id").and_then(|v| v.as_str()).unwrap_or("?");
                             let name = job.get("name").and_then(|v| v.as_str()).unwrap_or("?");
-                            let enabled = job.get("enabled").and_then(|v| v.as_bool()).unwrap_or(true);
+                            let enabled =
+                                job.get("enabled").and_then(|v| v.as_bool()).unwrap_or(true);
 
                             // Structured schedule: try "display" field first, fall back to plain string
-                            let schedule_display = job.get("schedule")
+                            let schedule_display = job
+                                .get("schedule")
                                 .and_then(|s| {
                                     // If schedule is an object with "display", use it
                                     if s.is_object() {
@@ -81,7 +83,8 @@ pub fn run(action: CronAction, local: bool) -> Result<()> {
                                 .unwrap_or("?");
 
                             // Compute next run for interval-based jobs
-                            let next_run = job.get("schedule")
+                            let next_run = job
+                                .get("schedule")
                                 .and_then(|s| s.get("every_ms").and_then(|v| v.as_u64()))
                                 .map(|ms| {
                                     let secs = ms / 1000;
@@ -91,7 +94,10 @@ pub fn run(action: CronAction, local: bool) -> Result<()> {
 
                             println!("  {} ({})", name, id);
                             println!("    Schedule: {}", next_run);
-                            println!("    Status: {}", if enabled { "enabled" } else { "disabled" });
+                            println!(
+                                "    Status: {}",
+                                if enabled { "enabled" } else { "disabled" }
+                            );
                             println!();
                         }
                     }
@@ -103,7 +109,15 @@ pub fn run(action: CronAction, local: bool) -> Result<()> {
                 println!("  Add one with: nemesisbot cron add -n <name> -m <message> -e <seconds>");
             }
         }
-        CronAction::Add { name, message, every, cron, deliver, to, channel } => {
+        CronAction::Add {
+            name,
+            message,
+            every,
+            cron,
+            deliver,
+            to,
+            channel,
+        } => {
             let schedule = if let Some(secs) = every {
                 serde_json::json!({
                     "kind": "interval",
@@ -143,18 +157,26 @@ pub fn run(action: CronAction, local: bool) -> Result<()> {
                 vec![]
             };
             jobs.push(job);
-            std::fs::write(&store_path, serde_json::to_string_pretty(&serde_json::Value::Array(jobs)).unwrap_or_default())?;
+            std::fs::write(
+                &store_path,
+                serde_json::to_string_pretty(&serde_json::Value::Array(jobs)).unwrap_or_default(),
+            )?;
 
             println!("Added job '{}' ({})", name, id);
         }
         CronAction::Remove { id } => {
             if store_path.exists() {
                 let data = std::fs::read_to_string(&store_path)?;
-                let mut jobs: Vec<serde_json::Value> = serde_json::from_str(&data).unwrap_or_default();
+                let mut jobs: Vec<serde_json::Value> =
+                    serde_json::from_str(&data).unwrap_or_default();
                 let before = jobs.len();
                 jobs.retain(|j| j.get("id").and_then(|v| v.as_str()) != Some(&id));
                 if jobs.len() < before {
-                    std::fs::write(&store_path, serde_json::to_string_pretty(&serde_json::Value::Array(jobs)).unwrap_or_default())?;
+                    std::fs::write(
+                        &store_path,
+                        serde_json::to_string_pretty(&serde_json::Value::Array(jobs))
+                            .unwrap_or_default(),
+                    )?;
                     println!("Removed job {}", id);
                 } else {
                     println!("Job {} not found.", id);
@@ -163,12 +185,8 @@ pub fn run(action: CronAction, local: bool) -> Result<()> {
                 println!("Job {} not found.", id);
             }
         }
-        CronAction::Enable { id } => {
-            toggle_job(&store_path, &id, true)
-        }
-        CronAction::Disable { id } => {
-            toggle_job(&store_path, &id, false)
-        }
+        CronAction::Enable { id } => toggle_job(&store_path, &id, true),
+        CronAction::Disable { id } => toggle_job(&store_path, &id, false),
     }
     Ok(())
 }
@@ -187,8 +205,16 @@ fn toggle_job(store_path: &std::path::Path, id: &str, enabled: bool) {
                 }
             }
             if found {
-                let _ = std::fs::write(store_path, serde_json::to_string_pretty(&serde_json::Value::Array(jobs)).unwrap_or_default());
-                println!("Job {} {}", id, if enabled { "enabled" } else { "disabled" });
+                let _ = std::fs::write(
+                    store_path,
+                    serde_json::to_string_pretty(&serde_json::Value::Array(jobs))
+                        .unwrap_or_default(),
+                );
+                println!(
+                    "Job {} {}",
+                    id,
+                    if enabled { "enabled" } else { "disabled" }
+                );
             } else {
                 println!("Job {} not found.", id);
             }

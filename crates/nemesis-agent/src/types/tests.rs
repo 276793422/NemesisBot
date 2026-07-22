@@ -77,13 +77,11 @@ fn conversation_turn_with_tool_calls() {
     let turn = ConversationTurn {
         role: "assistant".to_string(),
         content: String::new(),
-        tool_calls: vec![
-            ToolCallInfo {
-                id: "tc_1".to_string(),
-                name: "file_read".to_string(),
-                arguments: r#"{"path":"/tmp/test"}"#.to_string(),
-            },
-        ],
+        tool_calls: vec![ToolCallInfo {
+            id: "tc_1".to_string(),
+            name: "file_read".to_string(),
+            arguments: r#"{"path":"/tmp/test"}"#.to_string(),
+        }],
         tool_call_id: None,
         timestamp: "2026-04-29T12:00:00Z".to_string(),
         reasoning_content: None,
@@ -237,7 +235,12 @@ fn agent_state_variants() {
 
 #[test]
 fn agent_state_serialization() {
-    for state in &[AgentState::Idle, AgentState::Thinking, AgentState::ExecutingTool, AgentState::Responding] {
+    for state in &[
+        AgentState::Idle,
+        AgentState::Thinking,
+        AgentState::ExecutingTool,
+        AgentState::Responding,
+    ] {
         let json = serde_json::to_string(&state).unwrap();
         let parsed: AgentState = serde_json::from_str(&json).unwrap();
         assert_eq!(*state, parsed);
@@ -349,11 +352,14 @@ fn make_assistant_with_tc(content: &str, ids: &[&str]) -> ConversationTurn {
     ConversationTurn {
         role: "assistant".to_string(),
         content: content.to_string(),
-        tool_calls: ids.iter().map(|id| ToolCallInfo {
-            id: id.to_string(),
-            name: "tool".to_string(),
-            arguments: "{}".to_string(),
-        }).collect(),
+        tool_calls: ids
+            .iter()
+            .map(|id| ToolCallInfo {
+                id: id.to_string(),
+                name: "tool".to_string(),
+                arguments: "{}".to_string(),
+            })
+            .collect(),
         tool_call_id: None,
         timestamp: String::new(),
         reasoning_content: None,
@@ -494,7 +500,10 @@ fn repair_tool_pairs_dedupes_duplicate_tool_call_id_keeps_last() {
     repair_tool_message_pairs(&mut msgs);
     let tool_msgs: Vec<_> = msgs.iter().filter(|m| m.role == "tool").collect();
     assert_eq!(tool_msgs.len(), 1, "duplicate must collapse to one");
-    assert_eq!(tool_msgs[0].content, "real callback result", "must keep the last");
+    assert_eq!(
+        tool_msgs[0].content, "real callback result",
+        "must keep the last"
+    );
 }
 
 #[test]

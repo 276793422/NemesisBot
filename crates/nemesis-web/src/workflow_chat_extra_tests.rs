@@ -10,8 +10,8 @@ mod workflow_chat_extra_tests {
     use nemesis_workflow::engine::WorkflowEngine;
     use nemesis_workflow::types::{NodeDef, Workflow};
     use std::collections::HashMap;
-    use std::sync::atomic::{AtomicBool, AtomicUsize};
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, AtomicUsize};
     use std::time::Instant;
 
     fn make_state(engine: Option<Arc<WorkflowEngine>>) -> Arc<AppState> {
@@ -40,7 +40,9 @@ mod workflow_chat_extra_tests {
             cluster_service: None,
             cluster_log_dir: None,
             workflow_engine: engine,
-            chat_secret_store: Arc::new(nemesis_workflow::chat_secrets::ChatSecretStore::in_memory()),
+            chat_secret_store: Arc::new(
+                nemesis_workflow::chat_secrets::ChatSecretStore::in_memory(),
+            ),
             webhook_rate_limiter: Arc::new(crate::handlers::workflow::WebhookRateLimiter::new()),
             internal_cmd_tx: None,
             estop: None,
@@ -55,7 +57,9 @@ mod workflow_chat_extra_tests {
     #[tokio::test]
     async fn unknown_cmd_returns_error() {
         let state = make_state(None);
-        let res = handle_workflow_chat_message(state, "s".into(), "c".into(), pm("frobnicate", None)).await;
+        let res =
+            handle_workflow_chat_message(state, "s".into(), "c".into(), pm("frobnicate", None))
+                .await;
         assert!(res.is_err());
         assert!(res.unwrap_err().contains("unknown workflow_chat cmd"));
     }
@@ -82,7 +86,10 @@ mod workflow_chat_extra_tests {
             state,
             "s".into(),
             "c".into(),
-            pm("send", Some(serde_json::json!({"index": "x", "content": "   "}))),
+            pm(
+                "send",
+                Some(serde_json::json!({"index": "x", "content": "   "})),
+            ),
         )
         .await;
         assert!(res.is_err());
@@ -97,7 +104,10 @@ mod workflow_chat_extra_tests {
             state,
             "s".into(),
             "c".into(),
-            pm("send", Some(serde_json::json!({"index": "x", "content": "hi"}))),
+            pm(
+                "send",
+                Some(serde_json::json!({"index": "x", "content": "hi"})),
+            ),
         )
         .await;
         assert!(res.is_ok());
@@ -114,7 +124,10 @@ mod workflow_chat_extra_tests {
         )
         .await;
         assert!(res.is_err());
-        assert!(res.unwrap_err().contains("invalid workflow_chat.history_request data"));
+        assert!(
+            res.unwrap_err()
+                .contains("invalid workflow_chat.history_request data")
+        );
     }
 
     #[tokio::test]
@@ -124,7 +137,10 @@ mod workflow_chat_extra_tests {
             state,
             "s".into(),
             "c".into(),
-            pm("history_request", Some(serde_json::json!({"index": "x", "request_id": "r1"}))),
+            pm(
+                "history_request",
+                Some(serde_json::json!({"index": "x", "request_id": "r1"})),
+            ),
         )
         .await;
         assert!(res.is_ok());
@@ -225,10 +241,7 @@ mod workflow_chat_extra_tests {
         let engine = Arc::new(WorkflowEngine::new());
         let name = "chat_ok_wf";
         engine
-            .register_workflow(make_workflow(
-                name,
-                vec![make_node("n1", "delay", vec![])],
-            ))
+            .register_workflow(make_workflow(name, vec![make_node("n1", "delay", vec![])]))
             .unwrap();
         let index = WorkflowEngine::chat_index(name);
         let state = make_state(Some(engine));
@@ -257,10 +270,7 @@ mod workflow_chat_extra_tests {
         let engine = Arc::new(WorkflowEngine::new());
         let name = "hist_wf";
         engine
-            .register_workflow(make_workflow(
-                name,
-                vec![make_node("n1", "delay", vec![])],
-            ))
+            .register_workflow(make_workflow(name, vec![make_node("n1", "delay", vec![])]))
             .unwrap();
         let index = WorkflowEngine::chat_index(name);
         let state = make_state(Some(engine));

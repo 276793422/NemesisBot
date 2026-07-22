@@ -21,7 +21,9 @@ pub fn features_arg(cfg: &BuildConfig) -> String {
 
 /// The selected build profile (defaults to "release" if unset).
 pub fn profile_arg(cfg: &BuildConfig) -> String {
-    cfg.get_enum("build-profile").unwrap_or("release").to_string()
+    cfg.get_enum("build-profile")
+        .unwrap_or("release")
+        .to_string()
 }
 
 /// Validate a config against a manifest: returns problems like features that
@@ -199,7 +201,11 @@ default = true
         cfg.set_bool("cluster", true);
         cfg.set_bool("channels-rpc", false); // dependency unsatisfied
         let problems = validate(&cfg, &manifest);
-        assert!(problems.iter().any(|p| p.contains("requires `channels-rpc`")));
+        assert!(
+            problems
+                .iter()
+                .any(|p| p.contains("requires `channels-rpc`"))
+        );
     }
 
     #[test]

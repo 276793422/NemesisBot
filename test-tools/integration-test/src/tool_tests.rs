@@ -31,12 +31,16 @@ pub async fn test_tool_read_file(ws: &TestWorkspace) -> Vec<TestResult> {
     // Send message to trigger read_file tool
     match ws_send_and_recv(&mut stream, "read the file test_read.txt", 30).await {
         Ok(content) => {
-            results.push(pass(&format!("{}/executed", suite),
-                &format!("Tool flow completed ({} bytes)", content.len())));
+            results.push(pass(
+                &format!("{}/executed", suite),
+                &format!("Tool flow completed ({} bytes)", content.len()),
+            ));
         }
         Err(e) => {
-            results.push(pass(&format!("{}/attempted", suite),
-                &format!("Tool attempted: {}", e)));
+            results.push(pass(
+                &format!("{}/attempted", suite),
+                &format!("Tool attempted: {}", e),
+            ));
         }
     }
 
@@ -60,23 +64,38 @@ pub async fn test_tool_write_file(ws: &TestWorkspace) -> Vec<TestResult> {
         }
     };
 
-    match ws_send_and_recv(&mut stream, "create a file called test_write.txt with content 'test content'", 30).await {
+    match ws_send_and_recv(
+        &mut stream,
+        "create a file called test_write.txt with content 'test content'",
+        30,
+    )
+    .await
+    {
         Ok(content) => {
-            results.push(pass(&format!("{}/executed", suite),
-                &format!("Write tool flow completed ({} bytes)", content.len())));
+            results.push(pass(
+                &format!("{}/executed", suite),
+                &format!("Write tool flow completed ({} bytes)", content.len()),
+            ));
 
             // Check if file was actually created
             let written_file = ws.workspace().join("test_write.txt");
             if written_file.exists() {
-                results.push(pass(&format!("{}/file_exists", suite), "File created on disk"));
+                results.push(pass(
+                    &format!("{}/file_exists", suite),
+                    "File created on disk",
+                ));
             } else {
-                results.push(pass(&format!("{}/file_exists", suite),
-                    "File not found (AI may have chosen different action)"));
+                results.push(pass(
+                    &format!("{}/file_exists", suite),
+                    "File not found (AI may have chosen different action)",
+                ));
             }
         }
         Err(e) => {
-            results.push(pass(&format!("{}/attempted", suite),
-                &format!("Tool attempted: {}", e)));
+            results.push(pass(
+                &format!("{}/attempted", suite),
+                &format!("Tool attempted: {}", e),
+            ));
         }
     }
 
@@ -104,14 +123,24 @@ pub async fn test_tool_edit_file(ws: &TestWorkspace) -> Vec<TestResult> {
         }
     };
 
-    match ws_send_and_recv(&mut stream, "edit the file test_edit.txt and replace 'Original' with 'Modified'", 30).await {
+    match ws_send_and_recv(
+        &mut stream,
+        "edit the file test_edit.txt and replace 'Original' with 'Modified'",
+        30,
+    )
+    .await
+    {
         Ok(content) => {
-            results.push(pass(&format!("{}/executed", suite),
-                &format!("Edit tool flow completed ({} bytes)", content.len())));
+            results.push(pass(
+                &format!("{}/executed", suite),
+                &format!("Edit tool flow completed ({} bytes)", content.len()),
+            ));
         }
         Err(e) => {
-            results.push(pass(&format!("{}/attempted", suite),
-                &format!("Tool attempted: {}", e)));
+            results.push(pass(
+                &format!("{}/attempted", suite),
+                &format!("Tool attempted: {}", e),
+            ));
         }
     }
 
@@ -142,12 +171,16 @@ pub async fn test_tool_list_dir(ws: &TestWorkspace) -> Vec<TestResult> {
 
     match ws_send_and_recv(&mut stream, "list files in the testdir directory", 30).await {
         Ok(content) => {
-            results.push(pass(&format!("{}/executed", suite),
-                &format!("List dir flow completed ({} bytes)", content.len())));
+            results.push(pass(
+                &format!("{}/executed", suite),
+                &format!("List dir flow completed ({} bytes)", content.len()),
+            ));
         }
         Err(e) => {
-            results.push(pass(&format!("{}/attempted", suite),
-                &format!("Tool attempted: {}", e)));
+            results.push(pass(
+                &format!("{}/attempted", suite),
+                &format!("Tool attempted: {}", e),
+            ));
         }
     }
 
@@ -180,12 +213,16 @@ pub async fn test_tool_create_delete_dir(_ws: &TestWorkspace) -> Vec<TestResult>
     .await
     {
         Ok(content) => {
-            results.push(pass(&format!("{}/executed", suite),
-                &format!("Create/delete dir flow completed ({} bytes)", content.len())));
+            results.push(pass(
+                &format!("{}/executed", suite),
+                &format!("Create/delete dir flow completed ({} bytes)", content.len()),
+            ));
         }
         Err(e) => {
-            results.push(pass(&format!("{}/attempted", suite),
-                &format!("Tool attempted: {}", e)));
+            results.push(pass(
+                &format!("{}/attempted", suite),
+                &format!("Tool attempted: {}", e),
+            ));
         }
     }
 
@@ -215,12 +252,16 @@ pub async fn test_tool_delete_file(ws: &TestWorkspace) -> Vec<TestResult> {
 
     match ws_send_and_recv(&mut stream, "delete the file to_delete.txt", 30).await {
         Ok(content) => {
-            results.push(pass(&format!("{}/executed", suite),
-                &format!("Delete file flow completed ({} bytes)", content.len())));
+            results.push(pass(
+                &format!("{}/executed", suite),
+                &format!("Delete file flow completed ({} bytes)", content.len()),
+            ));
         }
         Err(e) => {
-            results.push(pass(&format!("{}/attempted", suite),
-                &format!("Tool attempted: {}", e)));
+            results.push(pass(
+                &format!("{}/attempted", suite),
+                &format!("Tool attempted: {}", e),
+            ));
         }
     }
 
@@ -248,12 +289,20 @@ pub async fn test_tool_sleep() -> Vec<TestResult> {
     match ws_send_and_recv(&mut stream, "sleep for 1 second", 30).await {
         Ok(content) => {
             let elapsed = start.elapsed();
-            results.push(pass(&format!("{}/executed", suite),
-                &format!("Sleep flow completed in {:?} ({} bytes)", elapsed, content.len())));
+            results.push(pass(
+                &format!("{}/executed", suite),
+                &format!(
+                    "Sleep flow completed in {:?} ({} bytes)",
+                    elapsed,
+                    content.len()
+                ),
+            ));
         }
         Err(e) => {
-            results.push(pass(&format!("{}/attempted", suite),
-                &format!("Tool attempted: {}", e)));
+            results.push(pass(
+                &format!("{}/attempted", suite),
+                &format!("Tool attempted: {}", e),
+            ));
         }
     }
 
@@ -277,14 +326,24 @@ pub async fn test_tool_message() -> Vec<TestResult> {
         }
     };
 
-    match ws_send_and_recv(&mut stream, "send a message saying 'test message from tool'", 30).await {
+    match ws_send_and_recv(
+        &mut stream,
+        "send a message saying 'test message from tool'",
+        30,
+    )
+    .await
+    {
         Ok(content) => {
-            results.push(pass(&format!("{}/executed", suite),
-                &format!("Message tool flow completed ({} bytes)", content.len())));
+            results.push(pass(
+                &format!("{}/executed", suite),
+                &format!("Message tool flow completed ({} bytes)", content.len()),
+            ));
         }
         Err(e) => {
-            results.push(pass(&format!("{}/attempted", suite),
-                &format!("Tool attempted: {}", e)));
+            results.push(pass(
+                &format!("{}/attempted", suite),
+                &format!("Tool attempted: {}", e),
+            ));
         }
     }
 
@@ -316,8 +375,10 @@ pub async fn test_tool_multi_step(ws: &TestWorkspace) -> Vec<TestResult> {
     .await
     {
         Ok(content) => {
-            results.push(pass(&format!("{}/executed", suite),
-                &format!("Multi-step tool chain completed ({} bytes)", content.len())));
+            results.push(pass(
+                &format!("{}/executed", suite),
+                &format!("Multi-step tool chain completed ({} bytes)", content.len()),
+            ));
 
             // Verify the file exists
             if ws.workspace().join("multi_test.txt").exists() {
@@ -325,8 +386,10 @@ pub async fn test_tool_multi_step(ws: &TestWorkspace) -> Vec<TestResult> {
             }
         }
         Err(e) => {
-            results.push(pass(&format!("{}/attempted", suite),
-                &format!("Multi-step attempted: {}", e)));
+            results.push(pass(
+                &format!("{}/attempted", suite),
+                &format!("Multi-step attempted: {}", e),
+            ));
         }
     }
 
@@ -350,21 +413,19 @@ pub async fn test_tool_error_recovery() -> Vec<TestResult> {
         }
     };
 
-    match ws_send_and_recv(
-        &mut stream,
-        "read the file nonexistent_file_xyz.txt",
-        30,
-    )
-    .await
-    {
+    match ws_send_and_recv(&mut stream, "read the file nonexistent_file_xyz.txt", 30).await {
         Ok(content) => {
             // The tool should fail gracefully and return an error message
-            results.push(pass(&format!("{}/handled", suite),
-                &format!("Error handled gracefully ({} bytes)", content.len())));
+            results.push(pass(
+                &format!("{}/handled", suite),
+                &format!("Error handled gracefully ({} bytes)", content.len()),
+            ));
         }
         Err(e) => {
-            results.push(pass(&format!("{}/handled", suite),
-                &format!("Error propagated: {}", e)));
+            results.push(pass(
+                &format!("{}/handled", suite),
+                &format!("Error propagated: {}", e),
+            ));
         }
     }
 
@@ -388,13 +449,7 @@ pub async fn test_tool_workspace_restriction() -> Vec<TestResult> {
         }
     };
 
-    match ws_send_and_recv(
-        &mut stream,
-        "read the file /etc/passwd",
-        30,
-    )
-    .await
-    {
+    match ws_send_and_recv(&mut stream, "read the file /etc/passwd", 30).await {
         Ok(content) => {
             // Should be blocked by security or return access denied
             let lower = content.to_lowercase();
@@ -404,15 +459,22 @@ pub async fn test_tool_workspace_restriction() -> Vec<TestResult> {
                 || lower.contains("restricted")
                 || lower.contains("access");
             if blocked {
-                results.push(pass(&format!("{}/blocked", suite), "Workspace restriction enforced"));
+                results.push(pass(
+                    &format!("{}/blocked", suite),
+                    "Workspace restriction enforced",
+                ));
             } else {
-                results.push(pass(&format!("{}/response", suite),
-                    &format!("Response received (may be mock): {} bytes", content.len())));
+                results.push(pass(
+                    &format!("{}/response", suite),
+                    &format!("Response received (may be mock): {} bytes", content.len()),
+                ));
             }
         }
         Err(e) => {
-            results.push(pass(&format!("{}/blocked", suite),
-                &format!("Blocked by security: {}", e)));
+            results.push(pass(
+                &format!("{}/blocked", suite),
+                &format!("Blocked by security: {}", e),
+            ));
         }
     }
 

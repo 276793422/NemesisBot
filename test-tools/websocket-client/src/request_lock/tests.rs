@@ -1,5 +1,5 @@
 use super::*;
-use tokio::time::{sleep, Duration};
+use tokio::time::{Duration, sleep};
 
 #[tokio::test]
 async fn test_request_lock_basic() {
@@ -42,7 +42,11 @@ async fn test_request_lock_concurrent() {
 
     let task1 = tokio::spawn(async move {
         for i in 1..=3 {
-            while lock1.try_acquire(format!("task1-{}", i).to_string()).await.is_err() {
+            while lock1
+                .try_acquire(format!("task1-{}", i).to_string())
+                .await
+                .is_err()
+            {
                 sleep(Duration::from_millis(10)).await;
             }
             sleep(Duration::from_millis(50)).await;
@@ -52,7 +56,11 @@ async fn test_request_lock_concurrent() {
 
     let task2 = tokio::spawn(async move {
         for i in 1..=3 {
-            while lock2.try_acquire(format!("task2-{}", i).to_string()).await.is_err() {
+            while lock2
+                .try_acquire(format!("task2-{}", i).to_string())
+                .await
+                .is_err()
+            {
                 sleep(Duration::from_millis(10)).await;
             }
             sleep(Duration::from_millis(30)).await;

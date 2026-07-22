@@ -38,10 +38,7 @@ impl SkillInfo {
             errors.push("name is required".to_string());
         } else {
             if self.name.len() > MAX_SKILL_NAME_LENGTH {
-                errors.push(format!(
-                    "name exceeds {} characters",
-                    MAX_SKILL_NAME_LENGTH
-                ));
+                errors.push(format!("name exceeds {} characters", MAX_SKILL_NAME_LENGTH));
             }
             let re = regex::Regex::new(r"^[a-zA-Z0-9]+(-[a-zA-Z0-9]+)*$").unwrap();
             if !re.is_match(&self.name) {
@@ -508,7 +505,13 @@ pub fn contains_ci(haystack: &str, needle: &str) -> bool {
 /// Convert string to lowercase (ASCII-only, efficient).
 pub fn to_lower(s: &str) -> String {
     s.chars()
-        .map(|c| if c.is_ascii_uppercase() { c.to_ascii_lowercase() } else { c })
+        .map(|c| {
+            if c.is_ascii_uppercase() {
+                c.to_ascii_lowercase()
+            } else {
+                c
+            }
+        })
         .collect()
 }
 

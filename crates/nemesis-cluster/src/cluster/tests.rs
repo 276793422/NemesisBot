@@ -74,12 +74,7 @@ fn test_complete_and_fail_task() {
     let cluster = Cluster::new(make_config());
     cluster.start();
 
-    let task_id = cluster.submit_task(
-        "peer_chat",
-        serde_json::json!({}),
-        "rpc",
-        "chat-1",
-    );
+    let task_id = cluster.submit_task("peer_chat", serde_json::json!({}), "rpc", "chat-1");
 
     // Complete
     cluster.assign_task(&task_id, "node-a");
@@ -88,12 +83,7 @@ fn test_complete_and_fail_task() {
     assert_eq!(task.status, TaskStatus::Completed);
 
     // Fail a different task
-    let task_id2 = cluster.submit_task(
-        "forge_share",
-        serde_json::json!({}),
-        "rpc",
-        "chat-2",
-    );
+    let task_id2 = cluster.submit_task("forge_share", serde_json::json!({}), "rpc", "chat-2");
     assert!(cluster.fail_task(&task_id2, "timeout"));
     let task = cluster.get_task(&task_id2).unwrap();
     assert_eq!(task.status, TaskStatus::Failed);
@@ -216,21 +206,41 @@ fn test_call_with_context_override() {
 
 #[test]
 fn test_parse_host_port() {
-    assert_eq!(parse_host_port("10.0.0.1:21949"), ("10.0.0.1".into(), 21949u16));
-    assert_eq!(parse_host_port("example.com:8080"), ("example.com".into(), 8080u16));
-    assert_eq!(parse_host_port("no-port"), ("no-port".into(), DEFAULT_RPC_PORT));
+    assert_eq!(
+        parse_host_port("10.0.0.1:21949"),
+        ("10.0.0.1".into(), 21949u16)
+    );
+    assert_eq!(
+        parse_host_port("example.com:8080"),
+        ("example.com".into(), 8080u16)
+    );
+    assert_eq!(
+        parse_host_port("no-port"),
+        ("no-port".into(), DEFAULT_RPC_PORT)
+    );
 }
 
 #[test]
 fn test_generate_node_id() {
     let id = generate_node_id();
-    assert!(id.starts_with("node-"), "id should start with 'node-': {}", id);
+    assert!(
+        id.starts_with("node-"),
+        "id should start with 'node-': {}",
+        id
+    );
     assert!(id.len() > 10);
     // Verify format: node-{hostname}-{uuid} where uuid is 36 chars (8-4-4-4-12)
     // hostname may contain '-' (e.g. "LAPTOP-FOO"), so check by tail (uuid is last 36 chars)
-    assert!(id.len() >= 5 + 36, "id should be at least 'node-' + 36-char uuid");
+    assert!(
+        id.len() >= 5 + 36,
+        "id should be at least 'node-' + 36-char uuid"
+    );
     let uuid_part = &id[id.len() - 36..];
-    assert_eq!(uuid_part.matches('-').count(), 4, "uuid should have 4 hyphens");
+    assert_eq!(
+        uuid_part.matches('-').count(),
+        4,
+        "uuid should have 4 hyphens"
+    );
 }
 
 struct MockBus {
@@ -290,7 +300,11 @@ fn test_call_with_context_after_start_no_peer_errors() {
     let cluster = Cluster::new(make_config());
     cluster.start();
     let result = cluster.call_with_context("nonexistent-peer", "ping", serde_json::json!({}));
-    assert!(result.is_err(), "Expected error for nonexistent peer, got: {:?}", result);
+    assert!(
+        result.is_err(),
+        "Expected error for nonexistent peer, got: {:?}",
+        result
+    );
 }
 
 #[test]
@@ -485,29 +499,43 @@ fn test_register_forge_handlers() {
 
     // Create a file-based forge provider
     let dir = tempfile::tempdir().unwrap();
-    let provider = Box::new(
-        crate::handlers::FileForgeProvider::new(dir.path()),
-    );
+    let provider = Box::new(crate::handlers::FileForgeProvider::new(dir.path()));
 
     // Register forge handlers
     let result = cluster.register_forge_handlers(provider);
-    assert!(result.is_ok(), "register_forge_handlers should succeed: {:?}", result);
+    assert!(
+        result.is_ok(),
+        "register_forge_handlers should succeed: {:?}",
+        result
+    );
 
     // Verify handlers are registered by making RPC calls through the server
     let rpc_server = cluster.rpc_server.as_ref().unwrap();
 
     // Test forge_share handler
-    let share_result = rpc_server.handle_request_sync("forge_share", serde_json::json!({
-        "source_node": "remote-node-1",
-        "report": {"insights": ["test insight"], "score": 0.85},
-    }));
-    assert!(share_result.is_ok(), "forge_share handler should succeed: {:?}", share_result);
+    let share_result = rpc_server.handle_request_sync(
+        "forge_share",
+        serde_json::json!({
+            "source_node": "remote-node-1",
+            "report": {"insights": ["test insight"], "score": 0.85},
+        }),
+    );
+    assert!(
+        share_result.is_ok(),
+        "forge_share handler should succeed: {:?}",
+        share_result
+    );
     let resp = share_result.unwrap();
     assert_eq!(resp["status"], "ok");
 
     // Test forge_get_reflections handler
-    let list_result = rpc_server.handle_request_sync("forge_get_reflections", serde_json::json!({}));
-    assert!(list_result.is_ok(), "forge_get_reflections handler should succeed: {:?}", list_result);
+    let list_result =
+        rpc_server.handle_request_sync("forge_get_reflections", serde_json::json!({}));
+    assert!(
+        list_result.is_ok(),
+        "forge_get_reflections handler should succeed: {:?}",
+        list_result
+    );
     let list_resp = list_result.unwrap();
     assert!(list_resp.get("reflections").is_some());
     assert_eq!(list_resp["node_id"], "local-node-001");
@@ -527,9 +555,7 @@ fn test_register_forge_handlers_not_running() {
     assert!(!cluster.is_running());
 
     let dir = tempfile::tempdir().unwrap();
-    let provider = Box::new(
-        crate::handlers::FileForgeProvider::new(dir.path()),
-    );
+    let provider = Box::new(crate::handlers::FileForgeProvider::new(dir.path()));
 
     let result = cluster.register_forge_handlers(provider);
     assert!(result.is_err());
@@ -545,7 +571,13 @@ fn test_register_basic_handlers_registers_all() {
 
     // Verify all basic handlers are registered
     let rpc_server = cluster.rpc_server.as_ref().unwrap();
-    let actions = vec!["ping", "get_capabilities", "get_info", "list_actions", "hello"];
+    let actions = vec![
+        "ping",
+        "get_capabilities",
+        "get_info",
+        "list_actions",
+        "hello",
+    ];
     for action in actions {
         let result = rpc_server.handle_request_sync(action, serde_json::json!({}));
         assert!(result.is_ok(), "Handler '{}' should be registered", action);
@@ -722,25 +754,34 @@ fn test_all_go_handlers_registered_after_full_setup() {
 
     // Register forge handlers
     let dir = tempfile::tempdir().unwrap();
-    let provider = Box::new(
-        crate::handlers::FileForgeProvider::new(dir.path()),
-    );
+    let provider = Box::new(crate::handlers::FileForgeProvider::new(dir.path()));
     cluster.register_forge_handlers(provider).unwrap();
 
     // Verify ALL Go-compatible handlers are registered
     let rpc_server = cluster.rpc_server.as_ref().unwrap();
     let expected_actions = vec![
         // Default handlers
-        "ping", "get_capabilities", "get_info", "list_actions",
+        "ping",
+        "get_capabilities",
+        "get_info",
+        "list_actions",
         // Peer chat handlers
-        "peer_chat", "peer_chat_callback", "hello",
-        "query_task_result", "confirm_task_delivery",
+        "peer_chat",
+        "peer_chat_callback",
+        "hello",
+        "query_task_result",
+        "confirm_task_delivery",
         // Forge handlers
-        "forge_share", "forge_get_reflections",
+        "forge_share",
+        "forge_get_reflections",
     ];
     for action in expected_actions {
         let result = rpc_server.handle_request_sync(action, serde_json::json!({}));
-        assert!(result.is_ok(), "Handler '{}' should be registered after full setup", action);
+        assert!(
+            result.is_ok(),
+            "Handler '{}' should be registered after full setup",
+            action
+        );
     }
 }
 
@@ -1100,7 +1141,11 @@ fn test_rpc_server_restart() {
     let server = RpcServer::new(config);
 
     // Default handlers should be registered (in constructor now)
-    assert!(server.handle_request_sync("ping", serde_json::json!({})).is_ok());
+    assert!(
+        server
+            .handle_request_sync("ping", serde_json::json!({}))
+            .is_ok()
+    );
 
     let rt = tokio::runtime::Runtime::new().unwrap();
     // First start
@@ -1110,10 +1155,15 @@ fn test_rpc_server_restart() {
     assert_ne!(port1, 0);
 
     // Register a custom handler
-    server.register_handler("custom_test", Box::new(|_payload| {
-        Ok(serde_json::json!({"custom": true}))
-    }));
-    assert!(server.handle_request_sync("custom_test", serde_json::json!({})).is_ok());
+    server.register_handler(
+        "custom_test",
+        Box::new(|_payload| Ok(serde_json::json!({"custom": true}))),
+    );
+    assert!(
+        server
+            .handle_request_sync("custom_test", serde_json::json!({}))
+            .is_ok()
+    );
 
     // Stop
     server.stop().unwrap();
@@ -1127,12 +1177,22 @@ fn test_rpc_server_restart() {
     assert_ne!(port2, 0);
 
     // Custom handler should survive restart
-    assert!(server.handle_request_sync("custom_test", serde_json::json!({})).is_ok());
-    let resp = server.handle_request_sync("custom_test", serde_json::json!({})).unwrap();
+    assert!(
+        server
+            .handle_request_sync("custom_test", serde_json::json!({}))
+            .is_ok()
+    );
+    let resp = server
+        .handle_request_sync("custom_test", serde_json::json!({}))
+        .unwrap();
     assert_eq!(resp["custom"], true);
 
     // Default handler should also survive (not overwritten by restart)
-    assert!(server.handle_request_sync("ping", serde_json::json!({})).is_ok());
+    assert!(
+        server
+            .handle_request_sync("ping", serde_json::json!({}))
+            .is_ok()
+    );
 
     server.stop().unwrap();
 }
@@ -1326,9 +1386,8 @@ fn test_get_capabilities_dedup() {
 fn test_register_rpc_handler_not_running() {
     let cluster = Cluster::new(make_config());
     // Not started, so register_rpc_handler should fail
-    let result = cluster.register_rpc_handler("test_action", Box::new(|_| {
-        Ok(serde_json::json!({}))
-    }));
+    let result =
+        cluster.register_rpc_handler("test_action", Box::new(|_| Ok(serde_json::json!({}))));
     assert!(result.is_err());
     assert!(result.unwrap_err().contains("not running"));
 }
@@ -1338,9 +1397,8 @@ fn test_register_rpc_handler_no_server() {
     let cluster = Cluster::new(make_config());
     cluster.start();
     // No RPC server set, should fail
-    let result = cluster.register_rpc_handler("test_action", Box::new(|_| {
-        Ok(serde_json::json!({}))
-    }));
+    let result =
+        cluster.register_rpc_handler("test_action", Box::new(|_| Ok(serde_json::json!({}))));
     assert!(result.is_err());
     assert!(result.unwrap_err().contains("RPC server"));
     cluster.stop();
@@ -1412,7 +1470,12 @@ async fn test_call_with_context_async_override_returns_error() {
     }));
 
     let result = cluster
-        .call_with_context_async("peer-1", "action", serde_json::json!({}), Duration::from_secs(5))
+        .call_with_context_async(
+            "peer-1",
+            "action",
+            serde_json::json!({}),
+            Duration::from_secs(5),
+        )
         .await;
     assert!(result.is_err());
 }
@@ -1516,19 +1579,52 @@ fn test_remove_node_then_readd() {
     let cluster = Cluster::new(make_config());
     cluster.start();
 
-    cluster.handle_discovered_node("node-x", "x", vec!["10.0.0.1".into()], 21949, "worker", "dev", vec![], vec![], "agent");
+    cluster.handle_discovered_node(
+        "node-x",
+        "x",
+        vec!["10.0.0.1".into()],
+        21949,
+        "worker",
+        "dev",
+        vec![],
+        vec![],
+        "agent",
+    );
     assert!(cluster.get_node_info("node-x").is_some());
 
     cluster.remove_node("node-x");
     assert!(cluster.get_node_info("node-x").is_none());
 
     // Re-discovery blocked by blacklist
-    cluster.handle_discovered_node("node-x", "x-v2", vec!["10.0.0.2".into()], 21949, "worker", "dev", vec![], vec![], "agent");
-    assert!(cluster.get_node_info("node-x").is_none(), "blacklisted node should not be re-added");
+    cluster.handle_discovered_node(
+        "node-x",
+        "x-v2",
+        vec!["10.0.0.2".into()],
+        21949,
+        "worker",
+        "dev",
+        vec![],
+        vec![],
+        "agent",
+    );
+    assert!(
+        cluster.get_node_info("node-x").is_none(),
+        "blacklisted node should not be re-added"
+    );
 
     // After unban, re-discovery works
     cluster.unban_node("node-x");
-    cluster.handle_discovered_node("node-x", "x-v2", vec!["10.0.0.2".into()], 21949, "worker", "dev", vec![], vec![], "agent");
+    cluster.handle_discovered_node(
+        "node-x",
+        "x-v2",
+        vec!["10.0.0.2".into()],
+        21949,
+        "worker",
+        "dev",
+        vec![],
+        vec![],
+        "agent",
+    );
     let node = cluster.get_node_info("node-x").unwrap();
     assert_eq!(node.base.name, "x-v2");
     cluster.stop();
@@ -1689,11 +1785,12 @@ async fn test_poll_stale_pending_tasks_stale_with_call_fn() {
     tm.submit(task).unwrap();
 
     // Provide a call_fn that returns a "not_found" response
-    let call_fn: Option<Arc<dyn Fn(&str, &str, serde_json::Value) -> Result<Vec<u8>, String> + Send + Sync>> =
-        Some(Arc::new(|_peer, _action, _payload| {
-            let resp = serde_json::json!({"status": "not_found", "task_id": "stale-5m"});
-            Ok(serde_json::to_vec(&resp).unwrap())
-        }));
+    let call_fn: Option<
+        Arc<dyn Fn(&str, &str, serde_json::Value) -> Result<Vec<u8>, String> + Send + Sync>,
+    > = Some(Arc::new(|_peer, _action, _payload| {
+        let resp = serde_json::json!({"status": "not_found", "task_id": "stale-5m"});
+        Ok(serde_json::to_vec(&resp).unwrap())
+    }));
 
     poll_stale_pending_tasks(&tm, &call_fn, None).await;
     let t = tm.get_task("stale-5m").unwrap();
@@ -1719,22 +1816,23 @@ async fn test_poll_stale_pending_tasks_stale_with_done_response() {
     tm.submit(task).unwrap();
 
     // call_fn returns a "done" response with success
-    let call_fn: Option<Arc<dyn Fn(&str, &str, serde_json::Value) -> Result<Vec<u8>, String> + Send + Sync>> =
-        Some(Arc::new(|_peer, action, _payload| {
-            if action == "query_task_result" {
-                let resp = serde_json::json!({
-                    "status": "done",
-                    "task_id": "stale-done",
-                    "result_status": "success",
-                    "response": "hello",
-                    "error": ""
-                });
-                Ok(serde_json::to_vec(&resp).unwrap())
-            } else {
-                // confirm_task_delivery
-                Ok(Vec::new())
-            }
-        }));
+    let call_fn: Option<
+        Arc<dyn Fn(&str, &str, serde_json::Value) -> Result<Vec<u8>, String> + Send + Sync>,
+    > = Some(Arc::new(|_peer, action, _payload| {
+        if action == "query_task_result" {
+            let resp = serde_json::json!({
+                "status": "done",
+                "task_id": "stale-done",
+                "result_status": "success",
+                "response": "hello",
+                "error": ""
+            });
+            Ok(serde_json::to_vec(&resp).unwrap())
+        } else {
+            // confirm_task_delivery
+            Ok(Vec::new())
+        }
+    }));
 
     poll_stale_pending_tasks(&tm, &call_fn, None).await;
     let t = tm.get_task("stale-done").unwrap();
@@ -1760,11 +1858,12 @@ async fn test_poll_stale_pending_tasks_stale_with_running_response() {
     tm.submit(task).unwrap();
 
     // call_fn returns "running" status - should remain pending
-    let call_fn: Option<Arc<dyn Fn(&str, &str, serde_json::Value) -> Result<Vec<u8>, String> + Send + Sync>> =
-        Some(Arc::new(|_peer, _action, _payload| {
-            let resp = serde_json::json!({"status": "running", "task_id": "stale-running"});
-            Ok(serde_json::to_vec(&resp).unwrap())
-        }));
+    let call_fn: Option<
+        Arc<dyn Fn(&str, &str, serde_json::Value) -> Result<Vec<u8>, String> + Send + Sync>,
+    > = Some(Arc::new(|_peer, _action, _payload| {
+        let resp = serde_json::json!({"status": "running", "task_id": "stale-running"});
+        Ok(serde_json::to_vec(&resp).unwrap())
+    }));
 
     poll_stale_pending_tasks(&tm, &call_fn, None).await;
     let t = tm.get_task("stale-running").unwrap();
@@ -1814,10 +1913,11 @@ async fn test_poll_stale_pending_tasks_call_fn_error() {
     tm.submit(task).unwrap();
 
     // call_fn returns error -> task stays pending
-    let call_fn: Option<Arc<dyn Fn(&str, &str, serde_json::Value) -> Result<Vec<u8>, String> + Send + Sync>> =
-        Some(Arc::new(|_peer, _action, _payload| {
-            Err("connection refused".to_string())
-        }));
+    let call_fn: Option<
+        Arc<dyn Fn(&str, &str, serde_json::Value) -> Result<Vec<u8>, String> + Send + Sync>,
+    > = Some(Arc::new(|_peer, _action, _payload| {
+        Err("connection refused".to_string())
+    }));
 
     poll_stale_pending_tasks(&tm, &call_fn, None).await;
     let t = tm.get_task("call-error").unwrap();
@@ -1828,13 +1928,14 @@ async fn test_poll_stale_pending_tasks_call_fn_error() {
 async fn test_confirm_delivery_with_call_fn() {
     let confirmed = Arc::new(Mutex::new(false));
     let confirmed_clone = confirmed.clone();
-    let call_fn: Option<Arc<dyn Fn(&str, &str, serde_json::Value) -> Result<Vec<u8>, String> + Send + Sync>> =
-        Some(Arc::new(move |_peer, action, _payload| {
-            if action == "confirm_task_delivery" {
-                *confirmed_clone.lock() = true;
-            }
-            Ok(Vec::new())
-        }));
+    let call_fn: Option<
+        Arc<dyn Fn(&str, &str, serde_json::Value) -> Result<Vec<u8>, String> + Send + Sync>,
+    > = Some(Arc::new(move |_peer, action, _payload| {
+        if action == "confirm_task_delivery" {
+            *confirmed_clone.lock() = true;
+        }
+        Ok(Vec::new())
+    }));
 
     confirm_delivery_with(&call_fn, None, "peer-1", "task-1").await;
     assert!(*confirmed.lock());
@@ -1912,9 +2013,13 @@ fn test_query_task_result_handler_not_found() {
 #[test]
 fn test_query_task_result_handler_found() {
     let cluster = Cluster::new(make_config());
-    cluster.result_store.store_success("task-1", "peer_chat", serde_json::json!({
-        "response": "hello world",
-    }));
+    cluster.result_store.store_success(
+        "task-1",
+        "peer_chat",
+        serde_json::json!({
+            "response": "hello world",
+        }),
+    );
     let handler = cluster.build_query_task_result_handler();
     let result = handler(serde_json::json!({"task_id": "task-1"}));
     let resp = result.unwrap();
@@ -1926,7 +2031,9 @@ fn test_query_task_result_handler_found() {
 #[test]
 fn test_query_task_result_handler_failed_result() {
     let cluster = Cluster::new(make_config());
-    cluster.result_store.store_failure("task-err", "peer_chat", "something failed");
+    cluster
+        .result_store
+        .store_failure("task-err", "peer_chat", "something failed");
     let handler = cluster.build_query_task_result_handler();
     let result = handler(serde_json::json!({"task_id": "task-err"}));
     let resp = result.unwrap();
@@ -1945,7 +2052,9 @@ fn test_confirm_task_delivery_handler_empty_task_id() {
 #[test]
 fn test_confirm_task_delivery_handler_removes_result() {
     let cluster = Cluster::new(make_config());
-    cluster.result_store.store_success("task-del", "peer_chat", serde_json::json!({"r": "v"}));
+    cluster
+        .result_store
+        .store_success("task-del", "peer_chat", serde_json::json!({"r": "v"}));
     assert!(cluster.result_store.get("task-del").is_some());
 
     let handler = cluster.build_confirm_task_delivery_handler();
@@ -2122,7 +2231,17 @@ fn test_cluster_callbacks_handle_node_offline() {
     let cluster = Cluster::new(make_config());
     cluster.start();
 
-    cluster.handle_discovered_node("off-node", "off", vec!["10.0.0.1".into()], 21949, "worker", "dev", vec![], vec![], "agent");
+    cluster.handle_discovered_node(
+        "off-node",
+        "off",
+        vec!["10.0.0.1".into()],
+        21949,
+        "worker",
+        "dev",
+        vec![],
+        vec![],
+        "agent",
+    );
     ClusterCallbacks::handle_node_offline(&cluster, "off-node", "test");
     let node = cluster.get_node_info("off-node").unwrap();
     assert_eq!(node.status, NodeStatus::Offline);
@@ -2133,7 +2252,12 @@ async fn test_call_with_context_async_no_runtime_no_client() {
     let cluster = Cluster::new(make_config());
     // No RPC client set
     let result = cluster
-        .call_with_context_async("peer-1", "ping", serde_json::json!({}), Duration::from_secs(5))
+        .call_with_context_async(
+            "peer-1",
+            "ping",
+            serde_json::json!({}),
+            Duration::from_secs(5),
+        )
         .await;
     assert!(result.is_err());
 }
@@ -2388,8 +2512,14 @@ fn test_list_tasks_after_submit_and_complete() {
     let tasks = cluster.list_tasks();
     assert_eq!(tasks.len(), 2);
     // One completed, one pending
-    let completed: Vec<_> = tasks.iter().filter(|t| t.status == TaskStatus::Completed).collect();
-    let pending: Vec<_> = tasks.iter().filter(|t| t.status == TaskStatus::Pending).collect();
+    let completed: Vec<_> = tasks
+        .iter()
+        .filter(|t| t.status == TaskStatus::Completed)
+        .collect();
+    let pending: Vec<_> = tasks
+        .iter()
+        .filter(|t| t.status == TaskStatus::Pending)
+        .collect();
     assert_eq!(completed.len(), 1);
     assert_eq!(pending.len(), 1);
 }
@@ -2551,9 +2681,12 @@ fn test_cluster_with_callback() {
     let config = make_config();
     let callback_called = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let called = callback_called.clone();
-    let cluster = Cluster::with_callback(config, Box::new(move |_task| {
-        called.store(true, std::sync::atomic::Ordering::SeqCst);
-    }));
+    let cluster = Cluster::with_callback(
+        config,
+        Box::new(move |_task| {
+            called.store(true, std::sync::atomic::Ordering::SeqCst);
+        }),
+    );
     assert!(!cluster.node_id().is_empty());
 }
 
@@ -2698,11 +2831,21 @@ fn test_cluster_register_forge_handlers_not_running() {
     let cluster = Cluster::new(make_config());
     struct MockProvider;
     impl crate::handlers::ForgeDataProvider for MockProvider {
-        fn receive_reflection(&self, _payload: &serde_json::Value) -> Result<(), String> { Ok(()) }
-        fn get_reflections_list_payload(&self) -> serde_json::Value { serde_json::json!({}) }
-        fn read_reflection_content(&self, _filename: &str) -> Result<String, String> { Err("not found".into()) }
-        fn sanitize_content(&self, content: &str) -> String { content.to_string() }
-        fn clone_boxed(&self) -> Box<dyn crate::handlers::ForgeDataProvider> { Box::new(MockProvider) }
+        fn receive_reflection(&self, _payload: &serde_json::Value) -> Result<(), String> {
+            Ok(())
+        }
+        fn get_reflections_list_payload(&self) -> serde_json::Value {
+            serde_json::json!({})
+        }
+        fn read_reflection_content(&self, _filename: &str) -> Result<String, String> {
+            Err("not found".into())
+        }
+        fn sanitize_content(&self, content: &str) -> String {
+            content.to_string()
+        }
+        fn clone_boxed(&self) -> Box<dyn crate::handlers::ForgeDataProvider> {
+            Box::new(MockProvider)
+        }
     }
     let result = cluster.register_forge_handlers(Box::new(MockProvider));
     assert!(result.is_err());
@@ -2861,7 +3004,10 @@ fn test_sync_to_disk_write_failure() {
     // The state.toml would go inside cluster/ which is now a file, not a dir
     let result = cluster.sync_to_disk();
     // Should fail because the parent "cluster" path is a file, not a directory
-    assert!(result.is_err(), "Expected sync_to_disk to fail with blocked path");
+    assert!(
+        result.is_err(),
+        "Expected sync_to_disk to fail with blocked path"
+    );
     cluster.stop();
 }
 
@@ -2951,11 +3097,12 @@ async fn test_poll_stale_pending_tasks_unknown_status_response() {
     tm.submit(task).unwrap();
 
     // Returns a status that doesn't match "running", "done", or "not_found"
-    let call_fn: Option<Arc<dyn Fn(&str, &str, serde_json::Value) -> Result<Vec<u8>, String> + Send + Sync>> =
-        Some(Arc::new(|_peer, _action, _payload| {
-            let resp = serde_json::json!({"status": "weird_unknown_status", "task_id": "weird-status"});
-            Ok(serde_json::to_vec(&resp).unwrap())
-        }));
+    let call_fn: Option<
+        Arc<dyn Fn(&str, &str, serde_json::Value) -> Result<Vec<u8>, String> + Send + Sync>,
+    > = Some(Arc::new(|_peer, _action, _payload| {
+        let resp = serde_json::json!({"status": "weird_unknown_status", "task_id": "weird-status"});
+        Ok(serde_json::to_vec(&resp).unwrap())
+    }));
 
     poll_stale_pending_tasks(&tm, &call_fn, None).await;
     let t = tm.get_task("weird-status").unwrap();
@@ -2984,10 +3131,11 @@ async fn test_poll_stale_pending_tasks_invalid_json_response() {
     tm.submit(task).unwrap();
 
     // Returns invalid JSON bytes
-    let call_fn: Option<Arc<dyn Fn(&str, &str, serde_json::Value) -> Result<Vec<u8>, String> + Send + Sync>> =
-        Some(Arc::new(|_peer, _action, _payload| {
-            Ok(b"this is not valid json {{{".to_vec())
-        }));
+    let call_fn: Option<
+        Arc<dyn Fn(&str, &str, serde_json::Value) -> Result<Vec<u8>, String> + Send + Sync>,
+    > = Some(Arc::new(|_peer, _action, _payload| {
+        Ok(b"this is not valid json {{{".to_vec())
+    }));
 
     poll_stale_pending_tasks(&tm, &call_fn, None).await;
     let t = tm.get_task("invalid-json").unwrap();
@@ -3016,22 +3164,23 @@ async fn test_poll_stale_pending_tasks_done_with_error_status() {
     tm.submit(task).unwrap();
 
     // call_fn returns "done" with result_status "error"
-    let call_fn: Option<Arc<dyn Fn(&str, &str, serde_json::Value) -> Result<Vec<u8>, String> + Send + Sync>> =
-        Some(Arc::new(|_peer, action, _payload| {
-            if action == "query_task_result" {
-                let resp = serde_json::json!({
-                    "status": "done",
-                    "task_id": "done-err",
-                    "result_status": "error",
-                    "response": "",
-                    "error": "something went wrong on remote"
-                });
-                Ok(serde_json::to_vec(&resp).unwrap())
-            } else {
-                // confirm_task_delivery
-                Ok(Vec::new())
-            }
-        }));
+    let call_fn: Option<
+        Arc<dyn Fn(&str, &str, serde_json::Value) -> Result<Vec<u8>, String> + Send + Sync>,
+    > = Some(Arc::new(|_peer, action, _payload| {
+        if action == "query_task_result" {
+            let resp = serde_json::json!({
+                "status": "done",
+                "task_id": "done-err",
+                "result_status": "error",
+                "response": "",
+                "error": "something went wrong on remote"
+            });
+            Ok(serde_json::to_vec(&resp).unwrap())
+        } else {
+            // confirm_task_delivery
+            Ok(Vec::new())
+        }
+    }));
 
     poll_stale_pending_tasks(&tm, &call_fn, None).await;
     let t = tm.get_task("done-err").unwrap();
@@ -3057,7 +3206,10 @@ fn test_confirm_delivery_with_call_fn_fallback() {
     }));
 
     cluster.confirm_delivery("peer-1", "task-1");
-    assert!(*call_invoked.lock(), "call_with_context_fn should have been invoked");
+    assert!(
+        *call_invoked.lock(),
+        "call_with_context_fn should have been invoked"
+    );
 }
 
 // -- 9. confirm_delivery with neither client nor fn --------------------------
@@ -3191,16 +3343,20 @@ fn test_register_forge_handlers_success() {
 
     // Verify forge_share works
     let rpc_server = cluster.rpc_server.as_ref().unwrap();
-    let share_result = rpc_server.handle_request_sync("forge_share", serde_json::json!({
-        "source_node": "node-remote-1",
-        "report": {"insights": ["test insight"], "score": 0.9},
-    }));
+    let share_result = rpc_server.handle_request_sync(
+        "forge_share",
+        serde_json::json!({
+            "source_node": "node-remote-1",
+            "report": {"insights": ["test insight"], "score": 0.9},
+        }),
+    );
     assert!(share_result.is_ok());
     let resp = share_result.unwrap();
     assert_eq!(resp["status"], "ok");
 
     // Verify forge_get_reflections works
-    let list_result = rpc_server.handle_request_sync("forge_get_reflections", serde_json::json!({}));
+    let list_result =
+        rpc_server.handle_request_sync("forge_get_reflections", serde_json::json!({}));
     assert!(list_result.is_ok());
     let resp = list_result.unwrap();
     assert!(resp.get("reflections").is_some());
@@ -3223,7 +3379,9 @@ fn test_register_forge_handlers_forge_share_error() {
         fn read_reflection_content(&self, _filename: &str) -> Result<String, String> {
             Err("not found".into())
         }
-        fn sanitize_content(&self, content: &str) -> String { content.to_string() }
+        fn sanitize_content(&self, content: &str) -> String {
+            content.to_string()
+        }
         fn clone_boxed(&self) -> Box<dyn crate::handlers::ForgeDataProvider> {
             Box::new(ErrorProvider)
         }
@@ -3234,14 +3392,22 @@ fn test_register_forge_handlers_forge_share_error() {
 
     // forge_share should return error status when receive_reflection fails
     let rpc_server = cluster.rpc_server.as_ref().unwrap();
-    let share_result = rpc_server.handle_request_sync("forge_share", serde_json::json!({
-        "source_node": "node-1",
-        "report": {"data": "test"},
-    }));
+    let share_result = rpc_server.handle_request_sync(
+        "forge_share",
+        serde_json::json!({
+            "source_node": "node-1",
+            "report": {"data": "test"},
+        }),
+    );
     assert!(share_result.is_ok());
     let resp = share_result.unwrap();
     assert_eq!(resp["status"], "error");
-    assert!(resp["error"].as_str().unwrap().contains("simulated storage failure"));
+    assert!(
+        resp["error"]
+            .as_str()
+            .unwrap()
+            .contains("simulated storage failure")
+    );
 }
 
 // -- 16. register_forge_handlers forge_get_reflections with filename ---------
@@ -3262,9 +3428,12 @@ fn test_register_forge_handlers_get_reflections_with_filename() {
     assert!(result.is_ok());
 
     let rpc_server = cluster.rpc_server.as_ref().unwrap();
-    let list_result = rpc_server.handle_request_sync("forge_get_reflections", serde_json::json!({
-        "filename": "test-reflection.json",
-    }));
+    let list_result = rpc_server.handle_request_sync(
+        "forge_get_reflections",
+        serde_json::json!({
+            "filename": "test-reflection.json",
+        }),
+    );
     assert!(list_result.is_ok());
     let resp = list_result.unwrap();
     // Should include the content of the specific reflection
@@ -3285,13 +3454,21 @@ fn test_register_forge_handlers_get_reflections_read_error() {
 
     // Request a non-existent file
     let rpc_server = cluster.rpc_server.as_ref().unwrap();
-    let list_result = rpc_server.handle_request_sync("forge_get_reflections", serde_json::json!({
-        "filename": "nonexistent-file.json",
-    }));
+    let list_result = rpc_server.handle_request_sync(
+        "forge_get_reflections",
+        serde_json::json!({
+            "filename": "nonexistent-file.json",
+        }),
+    );
     assert!(list_result.is_ok());
     let resp = list_result.unwrap();
     assert_eq!(resp["status"], "error");
-    assert!(resp["error"].as_str().unwrap().contains("Failed to read reflection"));
+    assert!(
+        resp["error"]
+            .as_str()
+            .unwrap()
+            .contains("Failed to read reflection")
+    );
 }
 
 // -- 18. register_peer_chat_handlers with RPC channel ------------------------
@@ -3320,31 +3497,43 @@ fn test_register_peer_chat_handlers_with_rpc_channel() {
     // Verify all peer chat handlers are registered
     let rpc_server = cluster.rpc_server.as_ref().unwrap();
 
-    let peer_chat_result = rpc_server.handle_request_sync("peer_chat", serde_json::json!({
-        "content": "hello",
-        "task_id": "t1",
-    }));
+    let peer_chat_result = rpc_server.handle_request_sync(
+        "peer_chat",
+        serde_json::json!({
+            "content": "hello",
+            "task_id": "t1",
+        }),
+    );
     assert!(peer_chat_result.is_ok());
     assert_eq!(peer_chat_result.unwrap()["status"], "accepted");
 
-    let callback_result = rpc_server.handle_request_sync("peer_chat_callback", serde_json::json!({
-        "task_id": "nonexistent",
-        "status": "success",
-    }));
+    let callback_result = rpc_server.handle_request_sync(
+        "peer_chat_callback",
+        serde_json::json!({
+            "task_id": "nonexistent",
+            "status": "success",
+        }),
+    );
     assert!(callback_result.is_ok());
 
     let hello_result = rpc_server.handle_request_sync("hello", serde_json::json!({}));
     assert!(hello_result.is_ok());
     assert_eq!(hello_result.unwrap()["status"], "online");
 
-    let query_result = rpc_server.handle_request_sync("query_task_result", serde_json::json!({
-        "task_id": "nonexistent",
-    }));
+    let query_result = rpc_server.handle_request_sync(
+        "query_task_result",
+        serde_json::json!({
+            "task_id": "nonexistent",
+        }),
+    );
     assert!(query_result.is_ok());
 
-    let confirm_result = rpc_server.handle_request_sync("confirm_task_delivery", serde_json::json!({
-        "task_id": "nonexistent",
-    }));
+    let confirm_result = rpc_server.handle_request_sync(
+        "confirm_task_delivery",
+        serde_json::json!({
+            "task_id": "nonexistent",
+        }),
+    );
     assert!(confirm_result.is_ok());
 }
 
@@ -3378,7 +3567,10 @@ fn test_cluster_peer_resolver_fallback_scan_by_name() {
 
     // Resolve by name (fallback scan)
     let result = resolver.get_peer_info("MyNode");
-    assert!(result.is_some(), "Should find peer by name via fallback scan");
+    assert!(
+        result.is_some(),
+        "Should find peer by name via fallback scan"
+    );
     let (addresses, port, is_online) = result.unwrap();
     assert!(addresses.contains(&"192.168.1.50".to_string()));
     assert_eq!(port, 21949);
@@ -3429,7 +3621,11 @@ fn test_generate_node_id_uniqueness_multiple() {
     let mut ids = std::collections::HashSet::new();
     for _ in 0..50 {
         let id = generate_node_id();
-        assert!(id.starts_with("node-"), "ID should start with 'node-': {}", id);
+        assert!(
+            id.starts_with("node-"),
+            "ID should start with 'node-': {}",
+            id
+        );
         assert!(ids.insert(id), "Generated duplicate node ID");
     }
     assert_eq!(ids.len(), 50);
@@ -3508,7 +3704,10 @@ fn test_with_workspace_persists_runtime_id_to_peers_toml() {
         cluster.node_id(),
         "persisted id should match cluster.node_id()"
     );
-    assert!(!loaded.node.id.is_empty(), "persisted id should not be empty");
+    assert!(
+        !loaded.node.id.is_empty(),
+        "persisted id should not be empty"
+    );
     assert!(
         loaded.node.id.starts_with("node-"),
         "persisted id should use 'node-' prefix, got: {}",
@@ -3808,9 +4007,15 @@ fn test_mark_peer_online_for_refresh_flips_offline_to_online() {
         node_type: String::new(),
     });
 
-    assert_eq!(cluster.get_peer("peer-x").unwrap().status, NodeStatus::Offline);
+    assert_eq!(
+        cluster.get_peer("peer-x").unwrap().status,
+        NodeStatus::Offline
+    );
     cluster.mark_peer_online_for_refresh("peer-x");
-    assert_eq!(cluster.get_peer("peer-x").unwrap().status, NodeStatus::Online);
+    assert_eq!(
+        cluster.get_peer("peer-x").unwrap().status,
+        NodeStatus::Online
+    );
 }
 
 #[test]
@@ -3836,7 +4041,10 @@ fn test_set_peer_status_restores_offline() {
     });
 
     cluster.set_peer_status("peer-y", NodeStatus::Offline);
-    assert_eq!(cluster.get_peer("peer-y").unwrap().status, NodeStatus::Offline);
+    assert_eq!(
+        cluster.get_peer("peer-y").unwrap().status,
+        NodeStatus::Offline
+    );
 }
 
 #[test]
@@ -3934,16 +4142,37 @@ fn test_handle_discovered_node_does_not_collapse_same_host_different_port() {
 
     let addresses = vec!["127.0.0.1".to_string()];
     cluster.handle_discovered_node(
-        "Node-B", "Node-B", addresses.clone(),
-        21950, "worker", "general", vec![], vec![], "test",
+        "Node-B",
+        "Node-B",
+        addresses.clone(),
+        21950,
+        "worker",
+        "general",
+        vec![],
+        vec![],
+        "test",
     );
     cluster.handle_discovered_node(
-        "Node-C", "Node-C", addresses.clone(),
-        21951, "worker", "general", vec![], vec![], "test",
+        "Node-C",
+        "Node-C",
+        addresses.clone(),
+        21951,
+        "worker",
+        "general",
+        vec![],
+        vec![],
+        "test",
     );
     cluster.handle_discovered_node(
-        "Node-D", "Node-D", addresses.clone(),
-        21952, "worker", "general", vec![], vec![], "test",
+        "Node-D",
+        "Node-D",
+        addresses.clone(),
+        21952,
+        "worker",
+        "general",
+        vec![],
+        vec![],
+        "test",
     );
 
     // All three must remain in registry. handle_discovered_node only writes
@@ -3955,6 +4184,7 @@ fn test_handle_discovered_node_does_not_collapse_same_host_different_port() {
     let ids: Vec<&str> = nodes.iter().map(|n| n.base.id.as_str()).collect();
     assert!(
         ids.contains(&"Node-B") && ids.contains(&"Node-C") && ids.contains(&"Node-D"),
-        "expected all three peers to survive, got: {:?}", ids
+        "expected all three peers to survive, got: {:?}",
+        ids
     );
 }

@@ -59,10 +59,7 @@ fn test_is_allowed_compound_sender_id() {
 #[test]
 fn test_is_allowed_compound_both_sides() {
     // Both senderID and allowlist entry are compound
-    let ch = BaseChannel::with_allow_list(
-        "test",
-        vec!["123456|username".into(), "user2".into()],
-    );
+    let ch = BaseChannel::with_allow_list("test", vec!["123456|username".into(), "user2".into()]);
     assert!(ch.is_allowed("123456|username"));
 }
 
@@ -84,10 +81,7 @@ fn test_is_allowed_at_prefix_compound_sender() {
 fn test_is_allowed_compound_allowlist_matches_id_part() {
     // Compound allowlist entry "123456|correct_user" matches senderID "123456|username"
     // because id_part (123456) == allowed_id (123456)
-    let ch = BaseChannel::with_allow_list(
-        "test",
-        vec!["123456|correct_user".into()],
-    );
+    let ch = BaseChannel::with_allow_list("test", vec!["123456|correct_user".into()]);
     assert!(ch.is_allowed("123456|username"));
 }
 
@@ -143,10 +137,12 @@ fn test_add_sync_target_prevents_self_sync() {
     let target = Arc::new(MockChannel::new("source"));
     let result = ch.add_sync_target("source", target);
     assert!(result.is_err());
-    assert!(result
-        .unwrap_err()
-        .to_string()
-        .contains("cannot sync to itself"));
+    assert!(
+        result
+            .unwrap_err()
+            .to_string()
+            .contains("cannot sync to itself")
+    );
 }
 
 #[test]
@@ -313,7 +309,8 @@ async fn test_sync_to_targets_skips_self() {
     let ch = BaseChannel::new("self");
 
     let other = Arc::new(MockChannel::new("other"));
-    ch.add_sync_target("other", other.clone() as Arc<dyn Channel>).unwrap();
+    ch.add_sync_target("other", other.clone() as Arc<dyn Channel>)
+        .unwrap();
 
     ch.sync_to_targets("test").await;
     let msgs = other.sent_messages();
@@ -489,10 +486,8 @@ fn test_is_allowed_long_sender_id() {
 
 #[test]
 fn test_is_allowed_multiple_entries_partial() {
-    let ch = BaseChannel::with_allow_list(
-        "test",
-        vec!["user1".into(), "user2".into(), "user3".into()],
-    );
+    let ch =
+        BaseChannel::with_allow_list("test", vec!["user1".into(), "user2".into(), "user3".into()]);
     assert!(ch.is_allowed("user2"));
     assert!(!ch.is_allowed("user4"));
 }
@@ -601,7 +596,8 @@ async fn test_add_sync_target_replaces_existing() {
 async fn test_sync_to_targets_empty_content() {
     let ch = BaseChannel::new("source");
     let target = Arc::new(MockChannel::new("target"));
-    ch.add_sync_target("target", target.clone() as Arc<dyn Channel>).unwrap();
+    ch.add_sync_target("target", target.clone() as Arc<dyn Channel>)
+        .unwrap();
 
     ch.sync_to_targets("").await;
     let msgs = target.sent_messages();
@@ -613,7 +609,8 @@ async fn test_sync_to_targets_empty_content() {
 async fn test_sync_to_targets_large_content() {
     let ch = BaseChannel::new("source");
     let target = Arc::new(MockChannel::new("target"));
-    ch.add_sync_target("target", target.clone() as Arc<dyn Channel>).unwrap();
+    ch.add_sync_target("target", target.clone() as Arc<dyn Channel>)
+        .unwrap();
 
     let large = "x".repeat(1_000_000);
     ch.sync_to_targets(&large).await;
@@ -626,7 +623,8 @@ async fn test_sync_to_targets_large_content() {
 async fn test_sync_to_targets_unicode_content() {
     let ch = BaseChannel::new("source");
     let target = Arc::new(MockChannel::new("target"));
-    ch.add_sync_target("target", target.clone() as Arc<dyn Channel>).unwrap();
+    ch.add_sync_target("target", target.clone() as Arc<dyn Channel>)
+        .unwrap();
 
     let unicode_content = "Hello 世界 🌍 مرحبا";
     ch.sync_to_targets(unicode_content).await;
@@ -638,7 +636,8 @@ async fn test_sync_to_targets_unicode_content() {
 async fn test_sync_to_targets_special_chars_content() {
     let ch = BaseChannel::new("source");
     let target = Arc::new(MockChannel::new("target"));
-    ch.add_sync_target("target", target.clone() as Arc<dyn Channel>).unwrap();
+    ch.add_sync_target("target", target.clone() as Arc<dyn Channel>)
+        .unwrap();
 
     let special = "Test <>&\"'`\n\t\r";
     ch.sync_to_targets(special).await;
@@ -653,9 +652,12 @@ async fn test_sync_multiple_targets() {
     let t2 = Arc::new(MockChannel::new("t2"));
     let t3 = Arc::new(MockChannel::new("t3"));
 
-    ch.add_sync_target("t1", t1.clone() as Arc<dyn Channel>).unwrap();
-    ch.add_sync_target("t2", t2.clone() as Arc<dyn Channel>).unwrap();
-    ch.add_sync_target("t3", t3.clone() as Arc<dyn Channel>).unwrap();
+    ch.add_sync_target("t1", t1.clone() as Arc<dyn Channel>)
+        .unwrap();
+    ch.add_sync_target("t2", t2.clone() as Arc<dyn Channel>)
+        .unwrap();
+    ch.add_sync_target("t3", t3.clone() as Arc<dyn Channel>)
+        .unwrap();
 
     ch.sync_to_targets("multi-target").await;
 
@@ -670,8 +672,10 @@ async fn test_sync_failing_target_does_not_block_others() {
     let fail_target = Arc::new(FailingMockChannel::new("fail"));
     let ok_target = Arc::new(MockChannel::new("ok"));
 
-    ch.add_sync_target("fail", fail_target as Arc<dyn Channel>).unwrap();
-    ch.add_sync_target("ok", ok_target.clone() as Arc<dyn Channel>).unwrap();
+    ch.add_sync_target("fail", fail_target as Arc<dyn Channel>)
+        .unwrap();
+    ch.add_sync_target("ok", ok_target.clone() as Arc<dyn Channel>)
+        .unwrap();
 
     ch.sync_to_targets("test").await;
 
@@ -758,7 +762,8 @@ fn test_enabled_state_transitions() {
 fn test_debug_format_includes_sync_targets() {
     let ch = BaseChannel::new("debug-test");
     let target = Arc::new(MockChannel::new("tgt"));
-    ch.add_sync_target("tgt", target as Arc<dyn Channel>).unwrap();
+    ch.add_sync_target("tgt", target as Arc<dyn Channel>)
+        .unwrap();
 
     let debug_str = format!("{:?}", ch);
     assert!(debug_str.contains("debug-test"));
@@ -821,7 +826,8 @@ fn test_with_allow_list_many_entries() {
 fn test_remove_sync_target_twice() {
     let ch = BaseChannel::new("test");
     let target = Arc::new(MockChannel::new("tgt"));
-    ch.add_sync_target("tgt", target as Arc<dyn Channel>).unwrap();
+    ch.add_sync_target("tgt", target as Arc<dyn Channel>)
+        .unwrap();
 
     ch.remove_sync_target("tgt");
     ch.remove_sync_target("tgt"); // second removal - no panic
@@ -846,10 +852,18 @@ struct BareChannel;
 
 #[async_trait]
 impl Channel for BareChannel {
-    fn name(&self) -> &str { "bare" }
-    async fn start(&self) -> Result<()> { Ok(()) }
-    async fn stop(&self) -> Result<()> { Ok(()) }
-    async fn send(&self, _msg: OutboundMessage) -> Result<()> { Ok(()) }
+    fn name(&self) -> &str {
+        "bare"
+    }
+    async fn start(&self) -> Result<()> {
+        Ok(())
+    }
+    async fn stop(&self) -> Result<()> {
+        Ok(())
+    }
+    async fn send(&self, _msg: OutboundMessage) -> Result<()> {
+        Ok(())
+    }
 }
 
 #[test]
@@ -873,7 +887,10 @@ fn test_channel_default_add_sync_target() {
     let ch = BareChannel;
     let target = Arc::new(MockChannel::new("target"));
     // Default add_sync_target should return Ok
-    assert!(ch.add_sync_target("target", target as Arc<dyn Channel>).is_ok());
+    assert!(
+        ch.add_sync_target("target", target as Arc<dyn Channel>)
+            .is_ok()
+    );
 }
 
 #[test]
@@ -909,9 +926,15 @@ impl fmt::Debug for SlowMockChannel {
 
 #[async_trait]
 impl Channel for SlowMockChannel {
-    fn name(&self) -> &str { &self.name }
-    async fn start(&self) -> Result<()> { Ok(()) }
-    async fn stop(&self) -> Result<()> { Ok(()) }
+    fn name(&self) -> &str {
+        &self.name
+    }
+    async fn start(&self) -> Result<()> {
+        Ok(())
+    }
+    async fn stop(&self) -> Result<()> {
+        Ok(())
+    }
     async fn send(&self, msg: OutboundMessage) -> Result<()> {
         // Sleep longer than the 3-second sync timeout
         tokio::time::sleep(std::time::Duration::from_secs(5)).await;
@@ -924,7 +947,8 @@ impl Channel for SlowMockChannel {
 async fn test_sync_to_targets_timeout() {
     let ch = BaseChannel::new("source");
     let slow_target = Arc::new(SlowMockChannel::new("slow"));
-    ch.add_sync_target("slow", slow_target as Arc<dyn Channel>).unwrap();
+    ch.add_sync_target("slow", slow_target as Arc<dyn Channel>)
+        .unwrap();
 
     // This should timeout after 3 seconds but not block forever
     let start = tokio::time::Instant::now();
@@ -944,9 +968,12 @@ async fn test_sync_to_targets_mixed_quality() {
     let fail = Arc::new(FailingMockChannel::new("fail"));
     let slow = Arc::new(SlowMockChannel::new("slow"));
 
-    ch.add_sync_target("ok", ok.clone() as Arc<dyn Channel>).unwrap();
-    ch.add_sync_target("fail", fail as Arc<dyn Channel>).unwrap();
-    ch.add_sync_target("slow", slow as Arc<dyn Channel>).unwrap();
+    ch.add_sync_target("ok", ok.clone() as Arc<dyn Channel>)
+        .unwrap();
+    ch.add_sync_target("fail", fail as Arc<dyn Channel>)
+        .unwrap();
+    ch.add_sync_target("slow", slow as Arc<dyn Channel>)
+        .unwrap();
 
     // Should complete (with timeout on slow, error on fail, success on ok)
     let start = tokio::time::Instant::now();
@@ -981,8 +1008,12 @@ async fn test_sync_to_targets_filters_self_name_in_entries() {
     // This tests the double-check filter in sync_to_targets
     let other = Arc::new(MockChannel::new("other"));
     let self_target = Arc::new(MockChannel::new("self"));
-    ch.sync_targets.write().insert("other".to_string(), other.clone() as Arc<dyn Channel>);
-    ch.sync_targets.write().insert("self".to_string(), self_target as Arc<dyn Channel>);
+    ch.sync_targets
+        .write()
+        .insert("other".to_string(), other.clone() as Arc<dyn Channel>);
+    ch.sync_targets
+        .write()
+        .insert("self".to_string(), self_target as Arc<dyn Channel>);
 
     ch.sync_to_targets("test").await;
 

@@ -28,7 +28,10 @@ fn test_parse_duration_seconds() {
 
 #[test]
 fn test_parse_duration_composite() {
-    assert_eq!(parse_duration_string("1d2h30m15s"), Duration::from_secs(86400 + 7200 + 1800 + 15));
+    assert_eq!(
+        parse_duration_string("1d2h30m15s"),
+        Duration::from_secs(86400 + 7200 + 1800 + 15)
+    );
 }
 
 #[test]
@@ -220,7 +223,10 @@ fn test_parse_duration_7d() {
 
 #[test]
 fn test_parse_duration_1d12h() {
-    assert_eq!(parse_duration_string("1d12h"), Duration::from_secs(86400 + 43200));
+    assert_eq!(
+        parse_duration_string("1d12h"),
+        Duration::from_secs(86400 + 43200)
+    );
 }
 
 #[test]
@@ -330,7 +336,10 @@ async fn test_manager_start_disabled_returns_ok() {
 fn test_parse_duration_complex_composite() {
     // Test 2d8h45m30s
     let expected = 2 * 86400 + 8 * 3600 + 45 * 60 + 30;
-    assert_eq!(parse_duration_string("2d8h45m30s"), Duration::from_secs(expected));
+    assert_eq!(
+        parse_duration_string("2d8h45m30s"),
+        Duration::from_secs(expected)
+    );
 }
 
 #[test]
@@ -361,5 +370,8 @@ fn test_parse_duration_only_seconds() {
 #[test]
 fn test_parse_duration_hours_and_minutes() {
     let expected = 2 * 3600 + 30 * 60;
-    assert_eq!(parse_duration_string("2h30m"), Duration::from_secs(expected));
+    assert_eq!(
+        parse_duration_string("2h30m"),
+        Duration::from_secs(expected)
+    );
 }

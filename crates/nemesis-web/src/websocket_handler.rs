@@ -72,10 +72,7 @@ impl SendQueue {
             let _ = done_tx.send(true);
         });
 
-        Self {
-            tx,
-            done: done_rx,
-        }
+        Self { tx, done: done_rx }
     }
 
     /// Send data through the queue. Blocks until the data is queued.
@@ -220,10 +217,14 @@ pub async fn handle_websocket(
     let send_queue = Arc::new(SendQueue::new(sink));
 
     // Store send queue in session for outbound messages
-    state.session_manager_ref().set_send_queue(&session_id, send_queue.clone());
+    state
+        .session_manager_ref()
+        .set_send_queue(&session_id, send_queue.clone());
 
     // Increment session count
-    state.session_count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    state
+        .session_count
+        .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
 
     // Message read loop
     let mut ping_interval = tokio::time::interval(Duration::from_secs(30));
@@ -394,7 +395,9 @@ pub async fn handle_websocket(
 
     // Cleanup
     state.session_manager_ref().remove_session(&session_id);
-    state.session_count.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+    state
+        .session_count
+        .fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
 
     tracing::info!(
         session_id = %session_id,
@@ -418,8 +421,8 @@ pub fn handle_text_message(
     chat_id: &str,
     raw: &[u8],
 ) -> Result<Option<IncomingMessage>, String> {
-    let msg = ProtocolMessage::parse(raw)
-        .map_err(|e| format!("invalid protocol message: {}", e))?;
+    let msg =
+        ProtocolMessage::parse(raw).map_err(|e| format!("invalid protocol message: {}", e))?;
 
     match msg.msg_type.as_str() {
         "message" => handle_message_module(session_id, sender_id, chat_id, &msg),

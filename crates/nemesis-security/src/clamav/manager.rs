@@ -9,8 +9,8 @@ use super::hook::ScanHook;
 use super::scanner::{Scanner, ScannerConfig};
 use super::updater::{Updater, UpdaterConfig};
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 /// Manager configuration.
@@ -80,8 +80,10 @@ impl Manager {
         // Step 1: Auto-detect ClamAV path if not set
         let mut clamav_path = self.config.clamav_path.clone();
         if clamav_path.is_empty() {
-            clamav_path = config::detect_clamav_path()
-                .ok_or_else(|| "ClamAV installation not found; set clamav_path in config or install ClamAV".to_string())?;
+            clamav_path = config::detect_clamav_path().ok_or_else(|| {
+                "ClamAV installation not found; set clamav_path in config or install ClamAV"
+                    .to_string()
+            })?;
             tracing::info!(path = %clamav_path, "[Scanner] Auto-detected ClamAV");
         }
 
@@ -153,7 +155,10 @@ impl Manager {
 
         if updater.is_database_stale(Duration::from_secs(24 * 3600)) {
             tracing::info!("[Scanner] Downloading virus database before starting clamd");
-            match updater.update(tokio_util::sync::CancellationToken::new(), None).await {
+            match updater
+                .update(tokio_util::sync::CancellationToken::new(), None)
+                .await
+            {
                 Ok(()) => {
                     tracing::info!("[Scanner] Virus database downloaded successfully");
                 }

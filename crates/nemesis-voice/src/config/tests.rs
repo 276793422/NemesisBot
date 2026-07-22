@@ -25,7 +25,10 @@ fn proxy_config_is_set_false_for_empty_or_whitespace() {
     assert!(!p.is_set());
 
     p.url = "   ".to_string();
-    assert!(!p.is_set(), "whitespace-only url should be treated as unset");
+    assert!(
+        !p.is_set(),
+        "whitespace-only url should be treated as unset"
+    );
 
     p.url = "http://127.0.0.1:7890".to_string();
     assert!(p.is_set());

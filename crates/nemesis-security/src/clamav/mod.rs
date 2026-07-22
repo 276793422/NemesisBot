@@ -6,10 +6,10 @@
 pub mod client;
 pub mod config;
 pub mod daemon;
+pub mod hook;
 pub mod manager;
 pub mod scanner;
 pub mod updater;
-pub mod hook;
 
 use std::path::Path;
 

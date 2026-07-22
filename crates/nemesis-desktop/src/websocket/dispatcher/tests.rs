@@ -1,12 +1,14 @@
 use super::*;
 
-
 #[test]
 fn test_register_and_dispatch_request() {
     let dispatcher = Dispatcher::new();
     dispatcher.register("ping", |msg| {
         let id = msg.id.as_deref().unwrap_or("");
-        Ok(Message::new_response(id, serde_json::json!({"status": "pong"})))
+        Ok(Message::new_response(
+            id,
+            serde_json::json!({"status": "pong"}),
+        ))
     });
 
     let msg = Message::new_request("ping", serde_json::Value::Null);
@@ -47,13 +49,19 @@ fn test_fallback_handler() {
     let dispatcher = Dispatcher::new();
     dispatcher.set_fallback(|msg| {
         let id = msg.id.as_deref().unwrap_or("");
-        Ok(Message::new_response(id, serde_json::json!({"fallback": true})))
+        Ok(Message::new_response(
+            id,
+            serde_json::json!({"fallback": true}),
+        ))
     });
 
     let msg = Message::new_request("anything", serde_json::Value::Null);
     let result = dispatcher.dispatch(&msg).unwrap();
     let resp = result.unwrap();
-    assert_eq!(resp.result.as_ref().unwrap()["fallback"], serde_json::json!(true));
+    assert_eq!(
+        resp.result.as_ref().unwrap()["fallback"],
+        serde_json::json!(true)
+    );
 }
 
 #[test]
@@ -86,28 +94,35 @@ fn test_register_overwrites_handler() {
     let c1 = counter.clone();
     dispatcher.register("method", move |msg| {
         c1.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        Ok(Message::new_response(msg.id.as_deref().unwrap_or(""), serde_json::json!("first")))
+        Ok(Message::new_response(
+            msg.id.as_deref().unwrap_or(""),
+            serde_json::json!("first"),
+        ))
     });
 
     // Overwrite with second handler
     let c2 = counter.clone();
     dispatcher.register("method", move |msg| {
         c2.fetch_add(10, std::sync::atomic::Ordering::SeqCst);
-        Ok(Message::new_response(msg.id.as_deref().unwrap_or(""), serde_json::json!("second")))
+        Ok(Message::new_response(
+            msg.id.as_deref().unwrap_or(""),
+            serde_json::json!("second"),
+        ))
     });
 
     let msg = Message::new_request("method", serde_json::Value::Null);
     let result = dispatcher.dispatch(&msg).unwrap().unwrap();
-    assert_eq!(result.result.as_ref().unwrap(), &serde_json::json!("second"));
+    assert_eq!(
+        result.result.as_ref().unwrap(),
+        &serde_json::json!("second")
+    );
     assert_eq!(counter.load(std::sync::atomic::Ordering::SeqCst), 10);
 }
 
 #[test]
 fn test_handler_returns_error() {
     let dispatcher = Dispatcher::new();
-    dispatcher.register("fail", |_msg| {
-        Err("handler error".to_string())
-    });
+    dispatcher.register("fail", |_msg| Err("handler error".to_string()));
 
     let msg = Message::new_request("fail", serde_json::Value::Null);
     let result = dispatcher.dispatch(&msg);
@@ -149,13 +164,19 @@ fn test_dispatch_request_to_fallback() {
 
     dispatcher.set_fallback(move |msg| {
         called_clone.store(true, std::sync::atomic::Ordering::SeqCst);
-        Ok(Message::new_response(msg.id.as_deref().unwrap_or(""), serde_json::json!("handled")))
+        Ok(Message::new_response(
+            msg.id.as_deref().unwrap_or(""),
+            serde_json::json!("handled"),
+        ))
     });
 
     let msg = Message::new_request("unregistered_method", serde_json::Value::Null);
     let result = dispatcher.dispatch(&msg).unwrap().unwrap();
     assert!(called.load(std::sync::atomic::Ordering::SeqCst));
-    assert_eq!(result.result.as_ref().unwrap(), &serde_json::json!("handled"));
+    assert_eq!(
+        result.result.as_ref().unwrap(),
+        &serde_json::json!("handled")
+    );
 }
 
 #[test]
@@ -167,17 +188,26 @@ fn test_dispatch_request_registered_takes_priority_over_fallback() {
 
     dispatcher.register("method", move |msg| {
         w1.store(1, std::sync::atomic::Ordering::SeqCst);
-        Ok(Message::new_response(msg.id.as_deref().unwrap_or(""), serde_json::json!("handler")))
+        Ok(Message::new_response(
+            msg.id.as_deref().unwrap_or(""),
+            serde_json::json!("handler"),
+        ))
     });
 
     dispatcher.set_fallback(move |msg| {
         w2.store(2, std::sync::atomic::Ordering::SeqCst);
-        Ok(Message::new_response(msg.id.as_deref().unwrap_or(""), serde_json::json!("fallback")))
+        Ok(Message::new_response(
+            msg.id.as_deref().unwrap_or(""),
+            serde_json::json!("fallback"),
+        ))
     });
 
     let msg = Message::new_request("method", serde_json::Value::Null);
     let result = dispatcher.dispatch(&msg).unwrap().unwrap();
-    assert_eq!(result.result.as_ref().unwrap(), &serde_json::json!("handler"));
+    assert_eq!(
+        result.result.as_ref().unwrap(),
+        &serde_json::json!("handler")
+    );
     assert_eq!(which.load(std::sync::atomic::Ordering::SeqCst), 1);
 }
 
@@ -186,10 +216,16 @@ fn test_dispatch_multiple_different_methods() {
     let dispatcher = Dispatcher::new();
 
     dispatcher.register("add", |msg| {
-        Ok(Message::new_response(msg.id.as_deref().unwrap_or(""), serde_json::json!("added")))
+        Ok(Message::new_response(
+            msg.id.as_deref().unwrap_or(""),
+            serde_json::json!("added"),
+        ))
     });
     dispatcher.register("remove", |msg| {
-        Ok(Message::new_response(msg.id.as_deref().unwrap_or(""), serde_json::json!("removed")))
+        Ok(Message::new_response(
+            msg.id.as_deref().unwrap_or(""),
+            serde_json::json!("removed"),
+        ))
     });
 
     let msg1 = Message::new_request("add", serde_json::Value::Null);
@@ -198,7 +234,10 @@ fn test_dispatch_multiple_different_methods() {
 
     let msg2 = Message::new_request("remove", serde_json::Value::Null);
     let resp2 = dispatcher.dispatch(&msg2).unwrap().unwrap();
-    assert_eq!(resp2.result.as_ref().unwrap(), &serde_json::json!("removed"));
+    assert_eq!(
+        resp2.result.as_ref().unwrap(),
+        &serde_json::json!("removed")
+    );
 }
 
 #[test]
@@ -206,12 +245,18 @@ fn test_dispatch_request_accesses_params() {
     let dispatcher = Dispatcher::new();
     dispatcher.register("echo", |msg| {
         let params = msg.params.clone().unwrap_or_default();
-        Ok(Message::new_response(msg.id.as_deref().unwrap_or(""), params))
+        Ok(Message::new_response(
+            msg.id.as_deref().unwrap_or(""),
+            params,
+        ))
     });
 
     let msg = Message::new_request("echo", serde_json::json!({"hello": "world"}));
     let resp = dispatcher.dispatch(&msg).unwrap().unwrap();
-    assert_eq!(resp.result.as_ref().unwrap()["hello"], serde_json::json!("world"));
+    assert_eq!(
+        resp.result.as_ref().unwrap()["hello"],
+        serde_json::json!("world")
+    );
 }
 
 #[test]

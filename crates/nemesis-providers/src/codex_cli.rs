@@ -93,10 +93,8 @@ impl CodexCliProvider {
                 "assistant" => conversation_parts.push(format!("Assistant: {}", msg.content)),
                 "tool" => {
                     if let Some(ref tc_id) = msg.tool_call_id {
-                        conversation_parts.push(format!(
-                            "[Tool Result for {}]: {}",
-                            tc_id, msg.content
-                        ));
+                        conversation_parts
+                            .push(format!("[Tool Result for {}]: {}", tc_id, msg.content));
                     }
                 }
                 _ => {}
@@ -232,9 +230,9 @@ impl CodexCliProvider {
             finish_reason: finish_reason.to_string(),
             usage,
             reasoning_content: None,
-    extra: std::collections::HashMap::new(),
-    raw_request_body: None,
-    raw_response_body: None,
+            extra: std::collections::HashMap::new(),
+            raw_request_body: None,
+            raw_response_body: None,
         })
     }
 }

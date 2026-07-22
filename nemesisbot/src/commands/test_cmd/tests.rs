@@ -271,7 +271,7 @@ fn test_approval_data_with_special_chars() {
         "req-<script>",
         "file_write",
         "HIGH",
-        "C:\\Users\\test & verify\\file.txt"
+        "C:\\Users\\test & verify\\file.txt",
     );
     assert_eq!(data["request_id"], "req-<script>");
     assert_eq!(data["target"], "C:\\Users\\test & verify\\file.txt");

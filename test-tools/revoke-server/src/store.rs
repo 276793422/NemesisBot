@@ -10,10 +10,10 @@
 //! - `trusted_keys`(key_fp, status, not_after)
 //! - `audit`(id, timestamp, action, operator, dim, value, reason, detail)
 
-use anyhow::{anyhow, Result};
-use parking_lot::Mutex;
+use anyhow::{Result, anyhow};
 use nemesis_verify::{Crl, CrlEntry, KeyStatus, RevDim, TrustedKey, TrustedKeyList};
-use rusqlite::{params, Connection, OptionalExtension};
+use parking_lot::Mutex;
+use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 
 /// 审计记录（admin 操作全留痕）。
@@ -86,7 +86,14 @@ pub trait RevocationStore: Send + Sync {
     fn add_audit(&self, record: AuditRecord) -> Result<()>;
     fn list_audit(&self, limit: u32) -> Result<Vec<AuditRecord>>;
     // users（签发 token 管理）
-    fn add_user(&self, token: &str, name: &str, publisher: Option<&str>, issuer_name: &str, created_at: u64) -> Result<()>;
+    fn add_user(
+        &self,
+        token: &str,
+        name: &str,
+        publisher: Option<&str>,
+        issuer_name: &str,
+        created_at: u64,
+    ) -> Result<()>;
     fn get_user_by_token(&self, token: &str) -> Result<Option<UserRecord>>;
     fn list_users(&self) -> Result<Vec<UserRecord>>;
     // issuers（动态发行方，admin 创建，CA 签）
@@ -172,7 +179,9 @@ impl SqliteStore {
 /// 读 meta 表（自由函数：调用方持 conn 锁，避免重入死锁——parking_lot Mutex 不可重入）。
 fn meta_get(conn: &Connection, key: &str) -> Result<String> {
     let v: Option<String> = conn
-        .query_row("SELECT value FROM meta WHERE key=?", params![key], |r| r.get(0))
+        .query_row("SELECT value FROM meta WHERE key=?", params![key], |r| {
+            r.get(0)
+        })
         .optional()?;
     v.ok_or_else(|| anyhow!("meta key not found: {}", key))
 }
@@ -224,7 +233,12 @@ impl RevocationStore for SqliteStore {
         let conn = self.conn.lock();
         conn.execute(
             "INSERT OR REPLACE INTO crl_entries(dim, value, revoked_at, reason) VALUES(?,?,?,?)",
-            params![dim_str(entry.dim), entry.value, entry.revoked_at, entry.reason],
+            params![
+                dim_str(entry.dim),
+                entry.value,
+                entry.revoked_at,
+                entry.reason
+            ],
         )?;
         conn.execute(
             "UPDATE meta SET value = CAST(CAST(value AS INTEGER) + 1 AS TEXT) WHERE key='crl_version'",
@@ -241,7 +255,9 @@ impl RevocationStore for SqliteStore {
 
     fn list_trusted_keys(&self) -> Result<TrustedKeyList> {
         let conn = self.conn.lock();
-        let version: u64 = meta_get(&conn, "trusted_keys_version")?.parse().unwrap_or(1);
+        let version: u64 = meta_get(&conn, "trusted_keys_version")?
+            .parse()
+            .unwrap_or(1);
         let mut stmt = conn.prepare("SELECT key_fp, status, not_after FROM trusted_keys")?;
         let keys = stmt
             .query_map([], |row| {
@@ -271,9 +287,11 @@ impl RevocationStore for SqliteStore {
             [],
         )?;
         let ver: u64 = conn
-            .query_row("SELECT value FROM meta WHERE key='trusted_keys_version'", [], |r| {
-                r.get::<_, String>(0)
-            })?
+            .query_row(
+                "SELECT value FROM meta WHERE key='trusted_keys_version'",
+                [],
+                |r| r.get::<_, String>(0),
+            )?
             .parse()
             .unwrap_or(1);
         Ok(ver)
@@ -322,7 +340,14 @@ impl RevocationStore for SqliteStore {
     }
 
     // ---- users（签发 token 管理）----
-    fn add_user(&self, token: &str, name: &str, publisher: Option<&str>, issuer_name: &str, created_at: u64) -> Result<()> {
+    fn add_user(
+        &self,
+        token: &str,
+        name: &str,
+        publisher: Option<&str>,
+        issuer_name: &str,
+        created_at: u64,
+    ) -> Result<()> {
         let conn = self.conn.lock();
         conn.execute(
             "INSERT OR REPLACE INTO users(token, name, publisher, active, created_at, issuer_name) VALUES(?,?,?,?,?,?)",

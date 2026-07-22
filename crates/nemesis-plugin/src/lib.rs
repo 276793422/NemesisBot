@@ -5,7 +5,7 @@ pub mod plugin;
 pub mod tool_wrapper;
 pub mod wrapper;
 
-pub use host_services::{HostServices, build_host_services, HOST_SERVICES_VERSION};
-pub use plugin::{Plugin, BasePlugin, PluginManager, ToolInvocation};
+pub use host_services::{HOST_SERVICES_VERSION, HostServices, build_host_services};
+pub use plugin::{BasePlugin, Plugin, PluginManager, ToolInvocation};
+pub use tool_wrapper::{PluginableTool, ToolExecutor, ToolWrapper};
 pub use wrapper::PluginWrapper;
-pub use tool_wrapper::{ToolExecutor, ToolWrapper, PluginableTool};

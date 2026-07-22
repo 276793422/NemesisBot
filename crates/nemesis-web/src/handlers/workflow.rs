@@ -26,9 +26,9 @@ use std::net::IpAddr;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use axum::Json;
 use axum::extract::{ConnectInfo, Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
-use axum::Json;
 use hmac::{Hmac, Mac};
 use sha2::Sha256;
 
@@ -53,7 +53,9 @@ fn engine_missing() -> (StatusCode, Json<serde_json::Value>) {
 }
 
 /// Helper: map an [`EngineError`] to a status code + JSON body.
-fn engine_error(err: nemesis_workflow::engine::EngineError) -> (StatusCode, Json<serde_json::Value>) {
+fn engine_error(
+    err: nemesis_workflow::engine::EngineError,
+) -> (StatusCode, Json<serde_json::Value>) {
     use nemesis_workflow::engine::EngineError::*;
     let (code, kind) = match &err {
         WorkflowNotFound(_) => (StatusCode::NOT_FOUND, "workflow_not_found"),
@@ -241,9 +243,7 @@ pub async fn handle_workflow_executions(
     // The engine already filters by workflow_name. State filter is applied
     // client-side here because ExecutionState debug-format matching is
     // handler-level policy, not engine-level.
-    let mut executions = engine
-        .list_executions(q.workflow_name.as_deref())
-        .await;
+    let mut executions = engine.list_executions(q.workflow_name.as_deref()).await;
 
     if let Some(want_state) = &q.state {
         executions.retain(|e| format!("{:?}", e.state) == *want_state);
@@ -253,10 +253,7 @@ pub async fn handle_workflow_executions(
         executions.truncate(limit);
     }
 
-    let rows: Vec<serde_json::Value> = executions
-        .iter()
-        .map(execution_summary_json)
-        .collect();
+    let rows: Vec<serde_json::Value> = executions.iter().map(execution_summary_json).collect();
 
     Ok(Json(serde_json::json!({
         "executions": rows,
@@ -338,7 +335,13 @@ pub async fn handle_workflow_webhook_get(
         .await
         .map_err(engine_error)?;
 
-    audit_webhook(&state, &name, client_ip, "accepted_get", Some(&execution_id));
+    audit_webhook(
+        &state,
+        &name,
+        client_ip,
+        "accepted_get",
+        Some(&execution_id),
+    );
     Ok(Json(serde_json::json!({
         "execution_id": execution_id,
         "workflow_name": name,
@@ -394,11 +397,7 @@ async fn workflow_webhook_secret(state: &AppState, name: &str) -> Option<String>
 
 /// Verify `X-Signature: <hex HMAC-SHA256(secret, body)>`. Returns
 /// `Err(reason)` on missing / malformed / mismatched signature.
-fn verify_signature(
-    headers: &HeaderMap,
-    body: &[u8],
-    secret: &[u8],
-) -> Result<(), String> {
+fn verify_signature(headers: &HeaderMap, body: &[u8], secret: &[u8]) -> Result<(), String> {
     let sig = headers
         .get("X-Signature")
         .ok_or_else(|| "missing X-Signature header".to_string())?
@@ -407,8 +406,8 @@ fn verify_signature(
     let sig = sig.trim();
 
     type HmacSha256 = Hmac<Sha256>;
-    let mut mac = HmacSha256::new_from_slice(secret)
-        .map_err(|e| format!("hmac key error: {}", e))?;
+    let mut mac =
+        HmacSha256::new_from_slice(secret).map_err(|e| format!("hmac key error: {}", e))?;
     mac.update(body);
     let expected_bytes = mac.finalize().into_bytes();
 
@@ -502,8 +501,7 @@ impl WebhookRateLimiter {
         if queue.len() >= WEBHOOK_RATE_MAX {
             // Earliest timestamp still in window tells us when we can slip one in.
             let oldest = *queue.front().unwrap();
-            let retry_after = WEBHOOK_RATE_WINDOW
-                .saturating_sub(now.duration_since(oldest));
+            let retry_after = WEBHOOK_RATE_WINDOW.saturating_sub(now.duration_since(oldest));
             return Err(retry_after);
         }
         queue.push_back(now);
@@ -582,15 +580,10 @@ fn ensure_unified_input(map: &mut HashMap<String, serde_json::Value>) {
     if map.contains_key("input") {
         return;
     }
-    let obj: serde_json::Map<String, serde_json::Value> = map
-        .iter()
-        .map(|(k, v)| (k.clone(), v.clone()))
-        .collect();
+    let obj: serde_json::Map<String, serde_json::Value> =
+        map.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
     let serialized = serde_json::Value::Object(obj).to_string();
-    map.insert(
-        "input".to_string(),
-        serde_json::Value::String(serialized),
-    );
+    map.insert("input".to_string(), serde_json::Value::String(serialized));
 }
 
 /// Build a detailed JSON view of an Execution for the status endpoint.
@@ -628,7 +621,10 @@ pub fn routes() -> axum::Router<Arc<AppState>> {
         .route("/api/workflow/list", get(handle_workflow_list))
         .route("/api/workflow/status/{id}", get(handle_workflow_status))
         .route("/api/workflow/executions", get(handle_workflow_executions))
-        .route("/api/workflow/webhook/{name}", post(handle_workflow_webhook))
+        .route(
+            "/api/workflow/webhook/{name}",
+            post(handle_workflow_webhook),
+        )
         .route(
             "/api/workflow/webhook/{name}",
             get(handle_workflow_webhook_get),
@@ -645,7 +641,10 @@ pub fn routes() -> axum::Router<Arc<AppState>> {
         // See "Standalone workflow-chat HTTP endpoints" section below for
         // why these are unauthenticated.
         .route("/api/workflow/chat/info", get(handle_workflow_chat_info))
-        .route("/api/workflow/chat/verify", post(handle_workflow_chat_verify))
+        .route(
+            "/api/workflow/chat/verify",
+            post(handle_workflow_chat_verify),
+        )
 }
 
 /// List every checkpoint (metadata only) for an execution — milestone 1b-A1
@@ -718,12 +717,8 @@ pub async fn handle_workflow_checkpoint_load(
         Err(e) => {
             use nemesis_workflow::checkpoint::StoreError;
             let (code, kind) = match &e {
-                StoreError::NotFound { .. } => {
-                    (StatusCode::NOT_FOUND, "checkpoint_not_found")
-                }
-                StoreError::Corrupt(_) => {
-                    (StatusCode::INTERNAL_SERVER_ERROR, "checkpoint_corrupt")
-                }
+                StoreError::NotFound { .. } => (StatusCode::NOT_FOUND, "checkpoint_not_found"),
+                StoreError::Corrupt(_) => (StatusCode::INTERNAL_SERVER_ERROR, "checkpoint_corrupt"),
                 _ => (StatusCode::INTERNAL_SERVER_ERROR, "checkpoint_load_failed"),
             };
             Err((
@@ -779,21 +774,16 @@ pub async fn handle_workflow_chat_info(
             "reason": "no workflow matches this index",
         }))),
         Some(name) => {
-            let wf = engine
-                .get_workflow(&name)
-                .ok_or_else(|| {
-                    (
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        Json(serde_json::json!({
-                            "error": "workflow_vanished",
-                            "message": format!("workflow vanished after resolve: {}", name),
-                        })),
-                    )
-                })?;
-            let has_human_review = wf
-                .nodes
-                .iter()
-                .any(|n| n.node_type == "human_review");
+            let wf = engine.get_workflow(&name).ok_or_else(|| {
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(serde_json::json!({
+                        "error": "workflow_vanished",
+                        "message": format!("workflow vanished after resolve: {}", name),
+                    })),
+                )
+            })?;
+            let has_human_review = wf.nodes.iter().any(|n| n.node_type == "human_review");
             let chat_eligible = !has_human_review;
             let reason = if has_human_review {
                 Some(format!(
@@ -903,9 +893,11 @@ impl crate::ws_router::ModuleHandler for WorkflowHandler {
         data: Option<serde_json::Value>,
         ctx: &crate::ws_router::RequestContext,
     ) -> Result<Option<serde_json::Value>, String> {
-        let engine = ctx.state.workflow_engine.as_ref().ok_or_else(|| {
-            "workflow engine is not configured on this gateway".to_string()
-        })?;
+        let engine = ctx
+            .state
+            .workflow_engine
+            .as_ref()
+            .ok_or_else(|| "workflow engine is not configured on this gateway".to_string())?;
 
         match cmd {
             "list" => {
@@ -952,15 +944,11 @@ impl crate::ws_router::ModuleHandler for WorkflowHandler {
 
             "create" => {
                 let data = data.ok_or("missing data")?;
-                let wf_raw = data
-                    .get("workflow")
-                    .ok_or("missing field: workflow")?;
+                let wf_raw = data.get("workflow").ok_or("missing field: workflow")?;
                 let wf: nemesis_workflow::types::Workflow = serde_json::from_value(wf_raw.clone())
                     .map_err(|e| format!("invalid workflow definition: {}", e))?;
                 let name = wf.name.clone();
-                engine
-                    .persist_workflow(wf)
-                    .map_err(|e| e.to_string())?;
+                engine.persist_workflow(wf).map_err(|e| e.to_string())?;
                 Ok(Some(serde_json::json!({
                     "name": name,
                     "created": true,
@@ -974,17 +962,14 @@ impl crate::ws_router::ModuleHandler for WorkflowHandler {
                     .and_then(|v| v.as_str())
                     .ok_or("missing field: name")?
                     .to_string();
-                let wf_raw = data
-                    .get("workflow")
-                    .ok_or("missing field: workflow")?;
-                let mut wf: nemesis_workflow::types::Workflow = serde_json::from_value(wf_raw.clone())
-                    .map_err(|e| format!("invalid workflow definition: {}", e))?;
+                let wf_raw = data.get("workflow").ok_or("missing field: workflow")?;
+                let mut wf: nemesis_workflow::types::Workflow =
+                    serde_json::from_value(wf_raw.clone())
+                        .map_err(|e| format!("invalid workflow definition: {}", e))?;
                 // Force the name to match the URL/param — caller can't rename
                 // via update; renames require delete + create.
                 wf.name = name.clone();
-                engine
-                    .persist_workflow(wf)
-                    .map_err(|e| e.to_string())?;
+                engine.persist_workflow(wf).map_err(|e| e.to_string())?;
                 Ok(Some(serde_json::json!({
                     "name": name,
                     "updated": true,
@@ -1008,9 +993,7 @@ impl crate::ws_router::ModuleHandler for WorkflowHandler {
 
             "validate" => {
                 let data = data.ok_or("missing data")?;
-                let wf_raw = data
-                    .get("workflow")
-                    .ok_or("missing field: workflow")?;
+                let wf_raw = data.get("workflow").ok_or("missing field: workflow")?;
                 let wf: nemesis_workflow::types::Workflow = serde_json::from_value(wf_raw.clone())
                     .map_err(|e| format!("invalid workflow definition: {}", e))?;
                 let errors = nemesis_workflow::engine::WorkflowEngine::validate_workflow(&wf);
@@ -1130,10 +1113,8 @@ impl crate::ws_router::ModuleHandler for WorkflowHandler {
                         let wf = engine
                             .get_workflow(&name)
                             .ok_or_else(|| format!("workflow vanished after resolve: {}", name))?;
-                        let has_human_review = wf
-                            .nodes
-                            .iter()
-                            .any(|n| n.node_type == "human_review");
+                        let has_human_review =
+                            wf.nodes.iter().any(|n| n.node_type == "human_review");
                         let chat_eligible = !has_human_review;
                         let reason = if has_human_review {
                             Some(format!(
@@ -1209,9 +1190,7 @@ impl crate::ws_router::ModuleHandler for WorkflowHandler {
                     .and_then(|v| v.as_u64())
                     .map(|n| n as usize);
 
-                let mut executions = engine
-                    .list_executions(workflow_name.as_deref())
-                    .await;
+                let mut executions = engine.list_executions(workflow_name.as_deref()).await;
                 if let Some(want_state) = &state_filter {
                     executions.retain(|e| format!("{:?}", e.state) == *want_state);
                 }
@@ -1219,10 +1198,8 @@ impl crate::ws_router::ModuleHandler for WorkflowHandler {
                 if let Some(limit) = limit {
                     executions.truncate(limit);
                 }
-                let rows: Vec<serde_json::Value> = executions
-                    .iter()
-                    .map(execution_summary_json)
-                    .collect();
+                let rows: Vec<serde_json::Value> =
+                    executions.iter().map(execution_summary_json).collect();
                 Ok(Some(serde_json::json!({
                     "executions": rows,
                     "count": rows.len(),
@@ -1239,10 +1216,7 @@ impl crate::ws_router::ModuleHandler for WorkflowHandler {
                 let store = engine.checkpoint_store().ok_or_else(|| {
                     "checkpoint_store_unavailable: persistence is not enabled".to_string()
                 })?;
-                let metas = store
-                    .list(exec_id)
-                    .await
-                    .map_err(|e| e.to_string())?;
+                let metas = store.list(exec_id).await.map_err(|e| e.to_string())?;
                 Ok(Some(serde_json::json!({
                     "execution_id": exec_id,
                     "checkpoints": metas,
@@ -1274,8 +1248,9 @@ impl crate::ws_router::ModuleHandler for WorkflowHandler {
                 // Dashboard-only: a session that connected via the standalone
                 // workflow-chat page must not be able to mutate passwords.
                 if ctx.auth_method != crate::session::AuthMethod::Dashboard {
-                    return Err("permission_denied: set_chat_password requires dashboard auth"
-                        .to_string());
+                    return Err(
+                        "permission_denied: set_chat_password requires dashboard auth".to_string(),
+                    );
                 }
                 let data = data.ok_or("missing data")?;
                 let index = data
@@ -1301,8 +1276,10 @@ impl crate::ws_router::ModuleHandler for WorkflowHandler {
 
             "clear_chat_password" => {
                 if ctx.auth_method != crate::session::AuthMethod::Dashboard {
-                    return Err("permission_denied: clear_chat_password requires dashboard auth"
-                        .to_string());
+                    return Err(
+                        "permission_denied: clear_chat_password requires dashboard auth"
+                            .to_string(),
+                    );
                 }
                 let data = data.ok_or("missing data")?;
                 let index = data

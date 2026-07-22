@@ -246,7 +246,11 @@ pub fn reconstruct_traces(log_dir: &Path) -> Vec<RpcTrace> {
             continue;
         }
 
-        let direction = entry.data.get("direction").and_then(|v| v.as_str()).unwrap_or("");
+        let direction = entry
+            .data
+            .get("direction")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
         if direction != "outbound" {
             continue;
         }
@@ -389,7 +393,9 @@ fn read_log_entries(log_dir: &Path, days: u32) -> Vec<ClusterLogEvent> {
 fn format_event(entry: &ClusterLogEvent) -> Option<FormattedEvent> {
     let ts = &entry.ts;
     let time = if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(ts) {
-        dt.with_timezone(&chrono::Local).format("%H:%M:%S").to_string()
+        dt.with_timezone(&chrono::Local)
+            .format("%H:%M:%S")
+            .to_string()
     } else if ts.len() >= 19 {
         ts[11..19].to_string()
     } else {
@@ -411,13 +417,19 @@ fn format_event(entry: &ClusterLogEvent) -> Option<FormattedEvent> {
         "cluster_start" => ("system", format!("集群启动 ({})", node_id)),
         "cluster_stop" => ("system", "集群停止".to_string()),
         "node_discovered" | "node_updated" => {
-            let addr = entry.data.get("peer_addr").and_then(|v| v.as_str())
+            let addr = entry
+                .data
+                .get("peer_addr")
+                .and_then(|v| v.as_str())
                 .or_else(|| entry.data.get("details").and_then(|v| v.as_str()))
                 .unwrap_or(node_id);
             ("node_online", format!("节点上线 {}", addr))
         }
         "node_offline" => {
-            let addr = entry.data.get("peer_addr").and_then(|v| v.as_str())
+            let addr = entry
+                .data
+                .get("peer_addr")
+                .and_then(|v| v.as_str())
                 .unwrap_or(node_id);
             ("node_offline", format!("节点离线 {}", addr))
         }
@@ -438,17 +450,8 @@ fn format_event(entry: &ClusterLogEvent) -> Option<FormattedEvent> {
             "task_start",
             format!("任务分配 {} → {}", short_id(task_id), node_id),
         ),
-        "task_exec_start" => (
-            "task_start",
-            format!(
-                "任务开始执行 {}",
-                short_id(task_id),
-            ),
-        ),
-        "task_exec_resume" => (
-            "task_start",
-            format!("任务恢复执行 {}", short_id(task_id)),
-        ),
+        "task_exec_start" => ("task_start", format!("任务开始执行 {}", short_id(task_id),)),
+        "task_exec_resume" => ("task_start", format!("任务恢复执行 {}", short_id(task_id))),
         "task_exec_done" => (
             "task_complete",
             format!(
@@ -461,14 +464,8 @@ fn format_event(entry: &ClusterLogEvent) -> Option<FormattedEvent> {
                     .unwrap_or("")
             ),
         ),
-        "task_exec_async" => (
-            "task_start",
-            format!("任务异步等待 {}", short_id(task_id)),
-        ),
-        "task_completed" => (
-            "task_complete",
-            format!("任务完成 {}", short_id(task_id)),
-        ),
+        "task_exec_async" => ("task_start", format!("任务异步等待 {}", short_id(task_id))),
+        "task_completed" => ("task_complete", format!("任务完成 {}", short_id(task_id))),
         "task_failed" | "task_exec_failed" => (
             "task_fail",
             format!(
@@ -560,11 +557,7 @@ fn format_event(entry: &ClusterLogEvent) -> Option<FormattedEvent> {
 
 /// Truncate an ID to 8 characters for display.
 fn short_id(id: &str) -> &str {
-    if id.len() > 8 {
-        &id[..8]
-    } else {
-        id
-    }
+    if id.len() > 8 { &id[..8] } else { id }
 }
 
 #[cfg(test)]

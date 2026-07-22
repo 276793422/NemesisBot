@@ -35,7 +35,10 @@ impl SystemHandler {
 
     fn status(&self, ctx: &RequestContext) -> Result<Option<serde_json::Value>, String> {
         let uptime = ctx.state.start_time.elapsed().as_secs();
-        let session_count = ctx.state.session_count.load(std::sync::atomic::Ordering::SeqCst);
+        let session_count = ctx
+            .state
+            .session_count
+            .load(std::sync::atomic::Ordering::SeqCst);
         let running = ctx.state.running.load(std::sync::atomic::Ordering::SeqCst);
         let model_name = ctx.state.model_name.lock().clone();
 
@@ -48,10 +51,10 @@ impl SystemHandler {
         });
 
         if let Some(ref ws) = ctx.workspace {
-            status.as_object_mut().unwrap().insert(
-                "workspace".to_string(),
-                serde_json::json!(ws),
-            );
+            status
+                .as_object_mut()
+                .unwrap()
+                .insert("workspace".to_string(), serde_json::json!(ws));
         }
 
         Ok(Some(status))

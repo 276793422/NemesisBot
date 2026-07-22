@@ -5,7 +5,7 @@ mod discovery;
 mod listener;
 mod message;
 
-pub use crypto::{CryptoService, derive_key, encrypt_data, decrypt_data};
-pub use discovery::{DiscoveryConfig, DiscoveryService, DiscoveryError, ClusterCallbacks};
-pub use listener::{handle_discovery_message, DiscoveryAction, UdpListener};
+pub use crypto::{CryptoService, decrypt_data, derive_key, encrypt_data};
+pub use discovery::{ClusterCallbacks, DiscoveryConfig, DiscoveryError, DiscoveryService};
+pub use listener::{DiscoveryAction, UdpListener, handle_discovery_message};
 pub use message::{DiscoveryMessage, DiscoveryMessageType, MessageValidationError};

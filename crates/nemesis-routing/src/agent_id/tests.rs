@@ -71,7 +71,11 @@ fn test_normalize_agent_id_unicode() {
     assert!(!result.contains('\u{4e2d}'));
     assert!(!result.contains('\u{6587}'));
     // Result is valid ASCII
-    assert!(result.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-'));
+    assert!(
+        result
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+    );
 }
 
 #[test]

@@ -1,12 +1,22 @@
 //! Channel command - manage communication channels.
 
-use anyhow::Result;
 use crate::common;
+use anyhow::Result;
 
 const KNOWN_CHANNELS: &[&str] = &[
-    "web", "websocket", "telegram", "discord", "whatsapp",
-    "feishu", "slack", "line", "onebot", "qq", "dingtalk",
-    "maixcam", "external",
+    "web",
+    "websocket",
+    "telegram",
+    "discord",
+    "whatsapp",
+    "feishu",
+    "slack",
+    "line",
+    "onebot",
+    "qq",
+    "dingtalk",
+    "maixcam",
+    "external",
 ];
 
 #[derive(clap::Subcommand)]
@@ -115,12 +125,17 @@ pub fn run(action: ChannelAction, local: bool) -> Result<()> {
                 let data = std::fs::read_to_string(&cfg_path)?;
                 let cfg: serde_json::Value = serde_json::from_str(&data)?;
                 for ch in KNOWN_CHANNELS {
-                    let enabled = cfg.get("channels")
+                    let enabled = cfg
+                        .get("channels")
                         .and_then(|c| c.get(*ch))
                         .and_then(|c| c.get("enabled"))
                         .and_then(|v| v.as_bool())
                         .unwrap_or(false);
-                    println!("{:<12} {:<12}", ch, if enabled { "enabled" } else { "disabled" });
+                    println!(
+                        "{:<12} {:<12}",
+                        ch,
+                        if enabled { "enabled" } else { "disabled" }
+                    );
                 }
             } else {
                 for ch in KNOWN_CHANNELS {
@@ -144,10 +159,17 @@ pub fn run(action: ChannelAction, local: bool) -> Result<()> {
                     if let Some(obj) = ch.as_object_mut() {
                         obj.insert("enabled".to_string(), serde_json::Value::Bool(true));
                     }
-                } else if let Some(channels) = cfg.as_object_mut().and_then(|o| o.get_mut("channels")).and_then(|v| v.as_object_mut()) {
+                } else if let Some(channels) = cfg
+                    .as_object_mut()
+                    .and_then(|o| o.get_mut("channels"))
+                    .and_then(|v| v.as_object_mut())
+                {
                     channels.insert(name.clone(), serde_json::json!({"enabled": true}));
                 }
-                std::fs::write(&cfg_path, serde_json::to_string_pretty(&cfg).unwrap_or_default())?;
+                std::fs::write(
+                    &cfg_path,
+                    serde_json::to_string_pretty(&cfg).unwrap_or_default(),
+                )?;
             }
             println!("Channel '{}' enabled.", name);
             println!("Restart gateway for changes to take effect.");
@@ -166,7 +188,10 @@ pub fn run(action: ChannelAction, local: bool) -> Result<()> {
                         obj.insert("enabled".to_string(), serde_json::Value::Bool(false));
                     }
                 }
-                std::fs::write(&cfg_path, serde_json::to_string_pretty(&cfg).unwrap_or_default())?;
+                std::fs::write(
+                    &cfg_path,
+                    serde_json::to_string_pretty(&cfg).unwrap_or_default(),
+                )?;
             }
             println!("Channel '{}' disabled.", name);
         }
@@ -187,18 +212,29 @@ pub fn run(action: ChannelAction, local: bool) -> Result<()> {
                             println!("  Enabled: {}", enabled);
                             println!("  Host: {}", host);
                             println!("  Port: {}", port);
-                            println!("  Authentication: {}", if has_auth { "enabled" } else { "disabled" });
+                            println!(
+                                "  Authentication: {}",
+                                if has_auth { "enabled" } else { "disabled" }
+                            );
                             if has_auth {
                                 let last4 = if auth.len() > 4 {
-    let s = nemesis_types::utils::ceil_char_boundary(auth, auth.len() - 4);
-    &auth[s..]
-} else { auth };
+                                    let s = nemesis_types::utils::ceil_char_boundary(
+                                        auth,
+                                        auth.len() - 4,
+                                    );
+                                    &auth[s..]
+                                } else {
+                                    auth
+                                };
                                 println!("  Auth Token: ****{} (length: {})", last4, auth.len());
                             }
                             println!("  Access URL: http://{}:{}", host, port);
                         }
                         "websocket" => {
-                            let host = ch.get("host").and_then(|v| v.as_str()).unwrap_or("127.0.0.1");
+                            let host = ch
+                                .get("host")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("127.0.0.1");
                             let port = ch.get("port").and_then(|v| v.as_u64()).unwrap_or(49001);
                             let path = ch.get("path").and_then(|v| v.as_str()).unwrap_or("/ws");
                             let auth = ch.get("auth_token").and_then(|v| v.as_str()).unwrap_or("");
@@ -207,7 +243,10 @@ pub fn run(action: ChannelAction, local: bool) -> Result<()> {
                             println!("  Host: {}", host);
                             println!("  Port: {}", port);
                             println!("  Path: {}", path);
-                            println!("  Authentication: {}", if has_auth { "enabled" } else { "disabled" });
+                            println!(
+                                "  Authentication: {}",
+                                if has_auth { "enabled" } else { "disabled" }
+                            );
                             println!("  Connection URL: ws://{}:{}{}", host, port, path);
                         }
                         _ => {
@@ -244,7 +283,9 @@ pub fn run(action: ChannelAction, local: bool) -> Result<()> {
                         return Ok(());
                     }
                     if token.len() < 8 {
-                        println!("  Warning: Token is short (less than 8 characters). Consider using a longer token.");
+                        println!(
+                            "  Warning: Token is short (less than 8 characters). Consider using a longer token."
+                        );
                     }
                     print!("  Save this token? (y/N): ");
                     io::stdout().flush().ok();
@@ -255,11 +296,15 @@ pub fn run(action: ChannelAction, local: bool) -> Result<()> {
                         return Ok(());
                     }
                     set_channel_config(&cfg_path, "web", "auth_token", &token)?;
-                    println!("  Web auth token set: {}****",
+                    println!(
+                        "  Web auth token set: {}****",
                         if token.len() > 4 {
-    let e = nemesis_types::utils::floor_char_boundary(&token, 4);
-    &token[..e]
-} else { "***" });
+                            let e = nemesis_types::utils::floor_char_boundary(&token, 4);
+                            &token[..e]
+                        } else {
+                            "***"
+                        }
+                    );
                 }
                 WebAction::AuthSet { token } => {
                     if token.is_empty() {
@@ -267,14 +312,20 @@ pub fn run(action: ChannelAction, local: bool) -> Result<()> {
                         return Ok(());
                     }
                     if token.len() < 8 {
-                        println!("  Warning: Token is short. Consider using a longer token for better security.");
+                        println!(
+                            "  Warning: Token is short. Consider using a longer token for better security."
+                        );
                     }
                     set_channel_config(&cfg_path, "web", "auth_token", &token)?;
-                    println!("  Web auth token set: {}****",
+                    println!(
+                        "  Web auth token set: {}****",
                         if token.len() > 4 {
-    let e = nemesis_types::utils::floor_char_boundary(&token, 4);
-    &token[..e]
-} else { "***" });
+                            let e = nemesis_types::utils::floor_char_boundary(&token, 4);
+                            &token[..e]
+                        } else {
+                            "***"
+                        }
+                    );
                 }
                 WebAction::AuthGet => {
                     let masked = get_channel_config(&cfg_path, "web", "auth_token")
@@ -297,8 +348,14 @@ pub fn run(action: ChannelAction, local: bool) -> Result<()> {
                         let data = std::fs::read_to_string(&cfg_path)?;
                         let cfg: serde_json::Value = serde_json::from_str(&data)?;
                         if let Some(web) = cfg.get("channels").and_then(|c| c.get("web")) {
-                            let enabled = web.get("enabled").and_then(|v| v.as_bool()).unwrap_or(false);
-                            let host = web.get("host").and_then(|v| v.as_str()).unwrap_or("0.0.0.0");
+                            let enabled = web
+                                .get("enabled")
+                                .and_then(|v| v.as_bool())
+                                .unwrap_or(false);
+                            let host = web
+                                .get("host")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("0.0.0.0");
                             let port = web.get("port").and_then(|v| v.as_u64()).unwrap_or(8080);
                             let auth = web.get("auth_token").and_then(|v| v.as_str()).unwrap_or("");
                             let ws_path = web.get("path").and_then(|v| v.as_str()).unwrap_or("/ws");
@@ -306,12 +363,20 @@ pub fn run(action: ChannelAction, local: bool) -> Result<()> {
                             println!("  Enabled: {}", enabled);
                             println!("  Host: {}", host);
                             println!("  Port: {}", port);
-                            println!("  Authentication: {}", if has_auth { "enabled" } else { "disabled" });
+                            println!(
+                                "  Authentication: {}",
+                                if has_auth { "enabled" } else { "disabled" }
+                            );
                             if has_auth {
                                 let last4 = if auth.len() > 4 {
-    let s = nemesis_types::utils::ceil_char_boundary(auth, auth.len() - 4);
-    &auth[s..]
-} else { auth };
+                                    let s = nemesis_types::utils::ceil_char_boundary(
+                                        auth,
+                                        auth.len() - 4,
+                                    );
+                                    &auth[s..]
+                                } else {
+                                    auth
+                                };
                                 println!("  Auth Token: ****{} (length: {})", last4, auth.len());
                             }
                             println!("  WebSocket Path: {}", ws_path);
@@ -325,7 +390,9 @@ pub fn run(action: ChannelAction, local: bool) -> Result<()> {
                 }
                 WebAction::Clear => {
                     use std::io::{self, Write};
-                    println!("  WARNING: Clearing the auth token means anyone can access the Web UI.");
+                    println!(
+                        "  WARNING: Clearing the auth token means anyone can access the Web UI."
+                    );
                     print!("  Continue? (y/N): ");
                     io::stdout().flush().ok();
                     let mut answer = String::new();
@@ -345,24 +412,45 @@ pub fn run(action: ChannelAction, local: bool) -> Result<()> {
                         let cfg: serde_json::Value = serde_json::from_str(&data)?;
                         if let Some(web) = cfg.get("channels").and_then(|c| c.get("web")) {
                             let enabled = web.get("enabled").and_then(|v| v.as_bool());
-                            let host = web.get("host").and_then(|v| v.as_str()).unwrap_or("0.0.0.0");
+                            let host = web
+                                .get("host")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("0.0.0.0");
                             let port = web.get("port").and_then(|v| v.as_u64()).unwrap_or(8080);
                             let auth = web.get("auth_token").and_then(|v| v.as_str()).unwrap_or("");
                             let ws_path = web.get("path").and_then(|v| v.as_str()).unwrap_or("/ws");
                             let tls_cert = web.get("tls_cert").and_then(|v| v.as_str());
                             let tls_key = web.get("tls_key").and_then(|v| v.as_str());
                             let cors = web.get("cors").and_then(|v| v.as_bool());
-                            let max_connections = web.get("max_connections").and_then(|v| v.as_u64());
+                            let max_connections =
+                                web.get("max_connections").and_then(|v| v.as_u64());
 
-                            println!("  Enabled: {}", enabled.map(|b| b.to_string()).unwrap_or("(not set)".to_string()));
+                            println!(
+                                "  Enabled: {}",
+                                enabled
+                                    .map(|b| b.to_string())
+                                    .unwrap_or("(not set)".to_string())
+                            );
                             println!("  Host: {}", host);
                             println!("  Port: {}", port);
-                            println!("  Authentication: {}", if !auth.is_empty() { "enabled" } else { "disabled" });
+                            println!(
+                                "  Authentication: {}",
+                                if !auth.is_empty() {
+                                    "enabled"
+                                } else {
+                                    "disabled"
+                                }
+                            );
                             if !auth.is_empty() {
                                 let last4 = if auth.len() > 4 {
-    let s = nemesis_types::utils::ceil_char_boundary(auth, auth.len() - 4);
-    &auth[s..]
-} else { auth };
+                                    let s = nemesis_types::utils::ceil_char_boundary(
+                                        auth,
+                                        auth.len() - 4,
+                                    );
+                                    &auth[s..]
+                                } else {
+                                    auth
+                                };
                                 println!("  Auth Token: ****{} (length: {})", last4, auth.len());
                             }
                             println!("  WebSocket Path: {}", ws_path);
@@ -381,7 +469,17 @@ pub fn run(action: ChannelAction, local: bool) -> Result<()> {
                             }
                             // Show any other fields not covered above
                             if let Some(obj) = web.as_object() {
-                                let covered = ["enabled", "host", "port", "auth_token", "path", "tls_cert", "tls_key", "cors", "max_connections"];
+                                let covered = [
+                                    "enabled",
+                                    "host",
+                                    "port",
+                                    "auth_token",
+                                    "path",
+                                    "tls_cert",
+                                    "tls_key",
+                                    "cors",
+                                    "max_connections",
+                                ];
                                 for (k, v) in obj {
                                     if !covered.contains(&k.as_str()) {
                                         println!("  {}: {}", k, v);
@@ -418,28 +516,43 @@ pub fn run(action: ChannelAction, local: bool) -> Result<()> {
                     let mut input = String::new();
                     io::stdin().read_line(&mut input).ok();
                     let v = input.trim().to_string();
-                    if !v.is_empty() { host = v; }
+                    if !v.is_empty() {
+                        host = v;
+                    }
 
                     print!("Port [{}]: ", port);
                     io::stdout().flush().ok();
                     input.clear();
                     io::stdin().read_line(&mut input).ok();
                     let v = input.trim().to_string();
-                    if !v.is_empty() { port = v; }
+                    if !v.is_empty() {
+                        port = v;
+                    }
 
                     print!("Path [{}]: ", path);
                     io::stdout().flush().ok();
                     input.clear();
                     io::stdin().read_line(&mut input).ok();
                     let v = input.trim().to_string();
-                    if !v.is_empty() { path = v; }
+                    if !v.is_empty() {
+                        path = v;
+                    }
 
-                    print!("Auth token [{}]: ", if token.is_empty() { "none" } else { &token[..4.min(token.len())] });
+                    print!(
+                        "Auth token [{}]: ",
+                        if token.is_empty() {
+                            "none"
+                        } else {
+                            &token[..4.min(token.len())]
+                        }
+                    );
                     io::stdout().flush().ok();
                     input.clear();
                     io::stdin().read_line(&mut input).ok();
                     let v = input.trim().to_string();
-                    if !v.is_empty() { token = v; }
+                    if !v.is_empty() {
+                        token = v;
+                    }
 
                     // Save all values
                     set_channel_config(&cfg_path, "websocket", "host", &host)?;
@@ -456,10 +569,16 @@ pub fn run(action: ChannelAction, local: bool) -> Result<()> {
                         if let Ok(mut cfg) = serde_json::from_str::<serde_json::Value>(&data) {
                             if let Some(ws) = cfg.pointer_mut("/channels/websocket") {
                                 if let Some(obj) = ws.as_object_mut() {
-                                    obj.insert("enabled".to_string(), serde_json::Value::Bool(true));
+                                    obj.insert(
+                                        "enabled".to_string(),
+                                        serde_json::Value::Bool(true),
+                                    );
                                 }
                             }
-                            let _ = std::fs::write(&cfg_path, serde_json::to_string_pretty(&cfg).unwrap_or_default());
+                            let _ = std::fs::write(
+                                &cfg_path,
+                                serde_json::to_string_pretty(&cfg).unwrap_or_default(),
+                            );
                         }
                     }
 
@@ -476,7 +595,11 @@ pub fn run(action: ChannelAction, local: bool) -> Result<()> {
                         io::stdout().flush().ok();
                         input.clear();
                         io::stdin().read_line(&mut input).ok();
-                        let session = if input.trim().is_empty() { default_session } else { input.trim().to_string() };
+                        let session = if input.trim().is_empty() {
+                            default_session
+                        } else {
+                            input.trim().to_string()
+                        };
 
                         // Sync host, port, path, and token to web channel
                         set_channel_config(&cfg_path, "web", "host", &host)?;
@@ -511,7 +634,9 @@ pub fn run(action: ChannelAction, local: bool) -> Result<()> {
                 WebSocketAction::Set { key, mut value } => {
                     // Validate port range
                     if key == "port" {
-                        let port: u16 = value.parse().map_err(|_| anyhow::anyhow!("Invalid port number"))?;
+                        let port: u16 = value
+                            .parse()
+                            .map_err(|_| anyhow::anyhow!("Invalid port number"))?;
                         if port == 0 {
                             anyhow::bail!("Port cannot be 0");
                         }
@@ -537,33 +662,53 @@ pub fn run(action: ChannelAction, local: bool) -> Result<()> {
                     println!("External Channel Setup");
                     println!("{}", "-".repeat(40));
 
-                    let mut input_exe = get_channel_config(&cfg_path, "external", "input_exe")
-                        .unwrap_or_default();
-                    let mut output_exe = get_channel_config(&cfg_path, "external", "output_exe")
-                        .unwrap_or_default();
+                    let mut input_exe =
+                        get_channel_config(&cfg_path, "external", "input_exe").unwrap_or_default();
+                    let mut output_exe =
+                        get_channel_config(&cfg_path, "external", "output_exe").unwrap_or_default();
                     let mut chat_id = get_channel_config(&cfg_path, "external", "chat_id")
                         .unwrap_or_else(|| "external:main".to_string());
 
-                    print!("Input executable [{}]: ", if input_exe.is_empty() { "none" } else { &input_exe });
+                    print!(
+                        "Input executable [{}]: ",
+                        if input_exe.is_empty() {
+                            "none"
+                        } else {
+                            &input_exe
+                        }
+                    );
                     io::stdout().flush().ok();
                     let mut input = String::new();
                     io::stdin().read_line(&mut input).ok();
                     let v = input.trim().to_string();
-                    if !v.is_empty() { input_exe = v; }
+                    if !v.is_empty() {
+                        input_exe = v;
+                    }
 
-                    print!("Output executable [{}]: ", if output_exe.is_empty() { "none" } else { &output_exe });
+                    print!(
+                        "Output executable [{}]: ",
+                        if output_exe.is_empty() {
+                            "none"
+                        } else {
+                            &output_exe
+                        }
+                    );
                     io::stdout().flush().ok();
                     input.clear();
                     io::stdin().read_line(&mut input).ok();
                     let v = input.trim().to_string();
-                    if !v.is_empty() { output_exe = v; }
+                    if !v.is_empty() {
+                        output_exe = v;
+                    }
 
                     print!("Chat ID [{}]: ", chat_id);
                     io::stdout().flush().ok();
                     input.clear();
                     io::stdin().read_line(&mut input).ok();
                     let v = input.trim().to_string();
-                    if !v.is_empty() { chat_id = v; }
+                    if !v.is_empty() {
+                        chat_id = v;
+                    }
 
                     // Save all values
                     if input_exe.is_empty() {
@@ -583,16 +728,36 @@ pub fn run(action: ChannelAction, local: bool) -> Result<()> {
                         if let Ok(mut cfg) = serde_json::from_str::<serde_json::Value>(&data) {
                             if let Some(ext) = cfg.pointer_mut("/channels/external") {
                                 if let Some(obj) = ext.as_object_mut() {
-                                    obj.insert("enabled".to_string(), serde_json::Value::Bool(true));
+                                    obj.insert(
+                                        "enabled".to_string(),
+                                        serde_json::Value::Bool(true),
+                                    );
                                 }
                             }
-                            let _ = std::fs::write(&cfg_path, serde_json::to_string_pretty(&cfg).unwrap_or_default());
+                            let _ = std::fs::write(
+                                &cfg_path,
+                                serde_json::to_string_pretty(&cfg).unwrap_or_default(),
+                            );
                         }
                     }
 
                     println!("External channel configured and enabled.");
-                    println!("  Input exe:  {}", if input_exe.is_empty() { "(none)" } else { &input_exe });
-                    println!("  Output exe: {}", if output_exe.is_empty() { "(none)" } else { &output_exe });
+                    println!(
+                        "  Input exe:  {}",
+                        if input_exe.is_empty() {
+                            "(none)"
+                        } else {
+                            &input_exe
+                        }
+                    );
+                    println!(
+                        "  Output exe: {}",
+                        if output_exe.is_empty() {
+                            "(none)"
+                        } else {
+                            &output_exe
+                        }
+                    );
                     println!("  Chat ID:    {}", chat_id);
                 }
                 ExternalAction::Config => {
@@ -611,10 +776,10 @@ pub fn run(action: ChannelAction, local: bool) -> Result<()> {
                     println!("Testing External Channel Programs");
                     println!("{}", "-".repeat(40));
 
-                    let input_exe = get_channel_config(&cfg_path, "external", "input_exe")
-                        .unwrap_or_default();
-                    let output_exe = get_channel_config(&cfg_path, "external", "output_exe")
-                        .unwrap_or_default();
+                    let input_exe =
+                        get_channel_config(&cfg_path, "external", "input_exe").unwrap_or_default();
+                    let output_exe =
+                        get_channel_config(&cfg_path, "external", "output_exe").unwrap_or_default();
 
                     if input_exe.is_empty() && output_exe.is_empty() {
                         println!("  No external programs configured.");
@@ -704,7 +869,12 @@ fn uuid_session() -> String {
 }
 
 /// Set a value at `channels.<channel>.<key>` in the JSON config file.
-fn set_channel_config(cfg_path: &std::path::Path, channel: &str, key: &str, value: &str) -> Result<()> {
+fn set_channel_config(
+    cfg_path: &std::path::Path,
+    channel: &str,
+    key: &str,
+    value: &str,
+) -> Result<()> {
     if !cfg_path.exists() {
         anyhow::bail!("Config file not found: {}", cfg_path.display());
     }
@@ -722,20 +892,32 @@ fn set_channel_config(cfg_path: &std::path::Path, channel: &str, key: &str, valu
             .entry(channel)
             .or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()));
         if let Some(obj) = ch_entry.as_object_mut() {
-            obj.insert(key.to_string(), serde_json::Value::String(value.to_string()));
+            obj.insert(
+                key.to_string(),
+                serde_json::Value::String(value.to_string()),
+            );
         }
     } else {
         // No "channels" key at all; create the full path
         let mut ch_map = serde_json::Map::new();
-        ch_map.insert(key.to_string(), serde_json::Value::String(value.to_string()));
+        ch_map.insert(
+            key.to_string(),
+            serde_json::Value::String(value.to_string()),
+        );
         let mut channels_map = serde_json::Map::new();
         channels_map.insert(channel.to_string(), serde_json::Value::Object(ch_map));
         if let Some(obj) = cfg.as_object_mut() {
-            obj.insert("channels".to_string(), serde_json::Value::Object(channels_map));
+            obj.insert(
+                "channels".to_string(),
+                serde_json::Value::Object(channels_map),
+            );
         }
     }
 
-    std::fs::write(cfg_path, serde_json::to_string_pretty(&cfg).unwrap_or_default())?;
+    std::fs::write(
+        cfg_path,
+        serde_json::to_string_pretty(&cfg).unwrap_or_default(),
+    )?;
     Ok(())
 }
 
@@ -767,7 +949,10 @@ fn remove_channel_config(cfg_path: &std::path::Path, channel: &str, key: &str) -
         }
     }
 
-    std::fs::write(cfg_path, serde_json::to_string_pretty(&cfg).unwrap_or_default())?;
+    std::fs::write(
+        cfg_path,
+        serde_json::to_string_pretty(&cfg).unwrap_or_default(),
+    )?;
     Ok(())
 }
 

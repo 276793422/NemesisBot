@@ -27,7 +27,10 @@ impl Default for MigrateConfig {
 // ---------------------------------------------------------------------------
 
 /// Extract a nested object (map) from a JSON object by key.
-pub fn get_map<'a>(data: &'a serde_json::Value, key: &str) -> Option<&'a serde_json::Map<String, serde_json::Value>> {
+pub fn get_map<'a>(
+    data: &'a serde_json::Value,
+    key: &str,
+) -> Option<&'a serde_json::Map<String, serde_json::Value>> {
     data.get(key)?.as_object()
 }
 

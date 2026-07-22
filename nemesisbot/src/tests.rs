@@ -170,10 +170,7 @@ fn test_local_flag_filtering() {
 
 #[test]
 fn test_local_flag_not_present() {
-    let args = vec![
-        "nemesisbot".to_string(),
-        "gateway".to_string(),
-    ];
+    let args = vec!["nemesisbot".to_string(), "gateway".to_string()];
     let mut local_mode = false;
     let filtered_args: Vec<String> = args
         .into_iter()
@@ -248,10 +245,15 @@ fn test_onboard_default_detection_neither() {
 
 #[test]
 fn test_platform_detection() {
-    let _platform = if cfg!(target_os = "windows") { "Windows" }
-        else if cfg!(target_os = "macos") { "macOS" }
-        else if cfg!(target_os = "linux") { "Linux" }
-        else { "Unknown" };
+    let _platform = if cfg!(target_os = "windows") {
+        "Windows"
+    } else if cfg!(target_os = "macos") {
+        "macOS"
+    } else if cfg!(target_os = "linux") {
+        "Linux"
+    } else {
+        "Unknown"
+    };
     // On this Windows machine, should be "Windows"
     #[cfg(target_os = "windows")]
     assert_eq!(_platform, "Windows");
@@ -269,8 +271,14 @@ fn test_config_llm_logging_modification() {
     if let Some(logging) = cfg.get_mut("logging").and_then(|v| v.get_mut("llm")) {
         if let Some(obj) = logging.as_object_mut() {
             obj.insert("enabled".to_string(), serde_json::Value::Bool(true));
-            obj.insert("log_dir".to_string(), serde_json::Value::String("logs/request_logs".to_string()));
-            obj.insert("detail_level".to_string(), serde_json::Value::String("full".to_string()));
+            obj.insert(
+                "log_dir".to_string(),
+                serde_json::Value::String("logs/request_logs".to_string()),
+            );
+            obj.insert(
+                "detail_level".to_string(),
+                serde_json::Value::String("full".to_string()),
+            );
         }
     }
     assert_eq!(cfg["logging"]["llm"]["enabled"], true);
@@ -314,7 +322,10 @@ fn test_config_workspace_restriction_modification() {
     });
     if let Some(agents) = cfg.get_mut("agents").and_then(|v| v.get_mut("defaults")) {
         if let Some(obj) = agents.as_object_mut() {
-            obj.insert("restrict_to_workspace".to_string(), serde_json::Value::Bool(false));
+            obj.insert(
+                "restrict_to_workspace".to_string(),
+                serde_json::Value::Bool(false),
+            );
         }
     }
     assert_eq!(cfg["agents"]["defaults"]["restrict_to_workspace"], false);
@@ -327,8 +338,14 @@ fn test_config_web_channel_modification() {
     });
     if let Some(web) = cfg.pointer_mut("/channels/web") {
         if let Some(obj) = web.as_object_mut() {
-            obj.insert("auth_token".to_string(), serde_json::Value::String("276793422".to_string()));
-            obj.insert("host".to_string(), serde_json::Value::String("127.0.0.1".to_string()));
+            obj.insert(
+                "auth_token".to_string(),
+                serde_json::Value::String("276793422".to_string()),
+            );
+            obj.insert(
+                "host".to_string(),
+                serde_json::Value::String("127.0.0.1".to_string()),
+            );
             obj.insert("port".to_string(), serde_json::Value::Number(49000.into()));
         }
     }
@@ -376,9 +393,15 @@ fn test_gateway_args_construction() {
     let quiet = false;
     let no_console = true;
     let mut gateway_args: Vec<String> = Vec::new();
-    if debug { gateway_args.push("--debug".to_string()); }
-    if quiet { gateway_args.push("--quiet".to_string()); }
-    if no_console { gateway_args.push("--no-console".to_string()); }
+    if debug {
+        gateway_args.push("--debug".to_string());
+    }
+    if quiet {
+        gateway_args.push("--quiet".to_string());
+    }
+    if no_console {
+        gateway_args.push("--no-console".to_string());
+    }
     assert_eq!(gateway_args, vec!["--debug", "--no-console"]);
 }
 
@@ -388,9 +411,15 @@ fn test_gateway_args_empty() {
     let quiet = false;
     let no_console = false;
     let mut gateway_args: Vec<String> = Vec::new();
-    if debug { gateway_args.push("--debug".to_string()); }
-    if quiet { gateway_args.push("--quiet".to_string()); }
-    if no_console { gateway_args.push("--no-console".to_string()); }
+    if debug {
+        gateway_args.push("--debug".to_string());
+    }
+    if quiet {
+        gateway_args.push("--quiet".to_string());
+    }
+    if no_console {
+        gateway_args.push("--no-console".to_string());
+    }
     assert!(gateway_args.is_empty());
 }
 
@@ -439,9 +468,15 @@ fn test_gateway_args_construction_with_debug() {
     let quiet = false;
     let no_console = false;
     let mut gateway_args: Vec<String> = Vec::new();
-    if debug { gateway_args.push("--debug".to_string()); }
-    if quiet { gateway_args.push("--quiet".to_string()); }
-    if no_console { gateway_args.push("--no-console".to_string()); }
+    if debug {
+        gateway_args.push("--debug".to_string());
+    }
+    if quiet {
+        gateway_args.push("--quiet".to_string());
+    }
+    if no_console {
+        gateway_args.push("--no-console".to_string());
+    }
     assert!(gateway_args.contains(&"--debug".to_string()));
     assert!(!gateway_args.contains(&"--quiet".to_string()));
 }
@@ -452,9 +487,15 @@ fn test_gateway_args_construction_with_all() {
     let quiet = true;
     let no_console = true;
     let mut gateway_args: Vec<String> = Vec::new();
-    if debug { gateway_args.push("--debug".to_string()); }
-    if quiet { gateway_args.push("--quiet".to_string()); }
-    if no_console { gateway_args.push("--no-console".to_string()); }
+    if debug {
+        gateway_args.push("--debug".to_string());
+    }
+    if quiet {
+        gateway_args.push("--quiet".to_string());
+    }
+    if no_console {
+        gateway_args.push("--no-console".to_string());
+    }
     assert!(gateway_args.contains(&"--debug".to_string()));
     assert!(gateway_args.contains(&"--quiet".to_string()));
     assert!(gateway_args.contains(&"--no-console".to_string()));
@@ -501,7 +542,10 @@ fn test_config_path_resolution() {
 
 #[test]
 fn test_node_id_format_for_onboard() {
-    let node_id = format!("node-{}", uuid::Uuid::new_v4().to_string().split('-').next().unwrap());
+    let node_id = format!(
+        "node-{}",
+        uuid::Uuid::new_v4().to_string().split('-').next().unwrap()
+    );
     assert!(node_id.starts_with("node-"));
     assert!(node_id.len() > 5);
 }
@@ -557,15 +601,19 @@ fn test_config_default_has_expected_sections() {
 #[test]
 fn test_config_cluster_default_has_ports() {
     let cfg: serde_json::Value = serde_json::from_str(CONFIG_CLUSTER_DEFAULT).unwrap();
-    assert!(cfg.get("port").is_some() || cfg.get("rpc_port").is_some(),
-        "Cluster config should have port settings");
+    assert!(
+        cfg.get("port").is_some() || cfg.get("rpc_port").is_some(),
+        "Cluster config should have port settings"
+    );
 }
 
 #[test]
 fn test_config_scanner_default_has_engines() {
     let cfg: serde_json::Value = serde_json::from_str(CONFIG_SCANNER_DEFAULT).unwrap();
-    assert!(cfg.get("engines").is_some() || cfg.get("enabled").is_some(),
-        "Scanner config should have engines or enabled list");
+    assert!(
+        cfg.get("engines").is_some() || cfg.get("enabled").is_some(),
+        "Scanner config should have engines or enabled list"
+    );
 }
 
 #[test]
@@ -621,8 +669,14 @@ fn test_config_web_channel_modification_with_pointer() {
     });
     if let Some(web) = cfg.pointer_mut("/channels/web") {
         if let Some(obj) = web.as_object_mut() {
-            obj.insert("auth_token".to_string(), serde_json::Value::String("test-token".to_string()));
-            obj.insert("host".to_string(), serde_json::Value::String("0.0.0.0".to_string()));
+            obj.insert(
+                "auth_token".to_string(),
+                serde_json::Value::String("test-token".to_string()),
+            );
+            obj.insert(
+                "host".to_string(),
+                serde_json::Value::String("0.0.0.0".to_string()),
+            );
             obj.insert("port".to_string(), serde_json::Value::Number(8080.into()));
         }
     }

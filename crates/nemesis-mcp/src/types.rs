@@ -134,7 +134,10 @@ impl JSONRPCError {
 
     /// Convenience: method-not-found error.
     pub fn method_not_found(method: &str) -> Self {
-        Self::new(Self::METHOD_NOT_FOUND, format!("Method not found: {method}"))
+        Self::new(
+            Self::METHOD_NOT_FOUND,
+            format!("Method not found: {method}"),
+        )
     }
 
     /// Convenience: invalid-params error.
