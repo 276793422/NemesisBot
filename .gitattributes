@@ -1,0 +1,12 @@
+# Line-ending policy for NemesisBot Rust sources.
+#
+# Force LF for *.rs regardless of core.autocrlf. The repo already stores *.rs
+# blobs as LF (core.autocrlf=true strips CRLF on commit); this attribute makes
+# checkouts produce LF working trees too, so rustfmt output (LF) and git agree
+# and the "LF will be replaced by CRLF" churn for Rust files disappears.
+#
+# Scoped to *.rs ONLY — .bat/.ps1/.sh/.json/.toml/etc. intentionally keep their
+# current (CRLF) line endings here. Normalizing those is a separate, larger
+# change. (Aside: scripts/build-linux.sh is currently CRLF, which can break
+# execution under Linux bash — worth fixing on its own, not via this file.)
+*.rs text eol=lf

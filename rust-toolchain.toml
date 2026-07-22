@@ -1,0 +1,14 @@
+# Toolchain override for NemesisBot.
+#
+# Uses the stable channel (currently rustc 1.95.0 / rustfmt 1.9.0) — the same
+# channel CI installs via dtolnay/rust-toolchain@stable — so local and CI
+# formatting agree, and cloning the repo does NOT force anyone to download a
+# specific-version toolchain.
+#
+# Tradeoff: tracking `stable` means a new stable release can ship a rustfmt that
+# formats slightly differently and makes `cargo fmt --check` flag the baseline.
+# If/when that happens — or to fully freeze formatting — change `channel` to an
+# exact version such as "1.95.0". Be aware that pinning a specific version makes
+# rustup download that toolchain on every machine that doesn't already have it.
+[toolchain]
+channel = "stable"

@@ -1,0 +1,13 @@
+# NemesisBot rustfmt configuration.
+#
+# Intentionally minimal: formatting follows rustfmt's built-in defaults. What
+# actually keeps formatting stable across contributors is the rustfmt VERSION
+# pinned in rust-toolchain.toml, not options here — do not add subjective style
+# options without re-running `cargo fmt --all` repo-wide, since any non-default
+# option makes the committed baseline non-compliant.
+#
+# Line endings are handled at the git layer (.gitattributes: `*.rs eol=lf`), so
+# `newline_style` is deliberately left at the default. Setting
+# `newline_style = "Unix"` would additionally make rustfmt rewrite the ~96 .rs
+# files that are still CRLF in some working trees — do that as a separate,
+# deliberate step if you want rustfmt-side LF enforcement.
