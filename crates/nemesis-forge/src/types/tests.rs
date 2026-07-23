@@ -45,7 +45,7 @@ fn test_collector_config_default() {
 #[test]
 fn test_registry_config_default() {
     let cfg = RegistryConfig::default();
-    assert_eq!(cfg.index_path, "forge_registry.json");
+    assert_eq!(cfg.index_path, "");
 }
 
 #[test]
@@ -446,5 +446,5 @@ fn test_collector_config_default_values() {
 #[test]
 fn test_registry_config_default_values() {
     let cfg = RegistryConfig::default();
-    assert_eq!(cfg.index_path, "forge_registry.json");
+    assert_eq!(cfg.index_path, "");
 }

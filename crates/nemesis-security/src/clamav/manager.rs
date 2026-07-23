@@ -169,6 +169,20 @@ impl Manager {
         }
         self.updater = Some(Arc::new(updater));
 
+        // G3: hard-validate the virus DB exists before spawning. An empty DB
+        // makes clamd load 0 signatures and silently report every file as CLEAN
+        // (false negatives — malware passes). If the download above failed or
+        // was skipped and there's still no DB, refuse to start clamd.
+        let main_cvd = Path::new(&db_dir).join("main.cvd");
+        if !main_cvd.exists() {
+            return Err(format!(
+                "virus database missing ({} not found); refusing to start clamd \
+                 with empty DB (would silently report all files clean). \
+                 Run freshclam or set a valid data_dir.",
+                main_cvd.display()
+            ));
+        }
+
         // Step 5: Start daemon
         let daemon = Arc::new(Daemon::new(daemon_cfg));
         daemon.start().await?;
@@ -223,6 +237,20 @@ impl Manager {
 
         self.started.store(false, Ordering::SeqCst);
         tracing::info!("[Scanner] ClamAV manager stopped");
+        Ok(())
+    }
+
+    /// Restart the clamd daemon (stop the possibly-dead one + re-spawn). Used
+    /// when clamd crashed mid-run (detected via scan failure + ping failure).
+    /// Reuses the Daemon instance (config/client unchanged); only the child
+    /// process is re-spawned. Does NOT re-do config gen / DB download.
+    pub async fn restart(&self) -> Result<(), String> {
+        let Some(daemon) = self.daemon.as_ref() else {
+            return Err("no daemon to restart".to_string());
+        };
+        let _ = daemon.stop().await; // stop dead daemon (idempotent, resets running)
+        daemon.start().await?; // re-spawn (running reset → start proceeds)
+        tracing::info!("[Scanner] clamd restarted after crash");
         Ok(())
     }
 

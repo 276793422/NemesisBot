@@ -176,6 +176,7 @@ async fn spawn_and_call_via_pipe_round_trips() {
 
 #[cfg(windows)]
 #[tokio::test]
+#[ignore = "requires Sandboxie started (SbieDrv + SbieSvc + NemesisBox drivable); run via the sandbox e2e workflow or `cargo test -p nemesisbot --test executor -- --ignored`"]
 async fn spawn_and_call_via_startexe_crosses_box() {
     // L2.2 headline test: spawn via Start.exe into NemesisBox, exchange over the
     // named pipe. Verifies the box's OpenPipePath lets the pipe through (the
@@ -207,6 +208,7 @@ async fn spawn_and_call_via_startexe_crosses_box() {
 
 #[cfg(windows)]
 #[tokio::test]
+#[ignore = "requires Sandboxie started (SbieDrv + SbieSvc + NemesisBox drivable); run via the sandbox e2e workflow or `cargo test -p nemesisbot --test executor -- --ignored`"]
 async fn spawn_and_call_via_startexe_isolates_outside_workspace_write() {
     // L2.2 isolation: a boxed write_file to a path OUTSIDE the workspace must
     // NOT touch the real disk — the write is contained in the box's virtual FS.
@@ -258,6 +260,7 @@ async fn spawn_and_call_via_startexe_isolates_outside_workspace_write() {
 
 #[cfg(windows)]
 #[tokio::test]
+#[ignore = "requires Sandboxie started (SbieDrv + SbieSvc + NemesisBox drivable); run via the sandbox e2e workflow or `cargo test -p nemesisbot --test executor -- --ignored`"]
 async fn l23_pending_commit_brings_boxed_workspace_write_to_real_disk() {
     // L2.3: a sandboxed write to the workspace lands in the box's virtual FS;
     // pending lists it; commit copies it to real disk. (write_file is a unit tool

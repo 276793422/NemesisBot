@@ -914,6 +914,9 @@ fn test_resolve_home_dir_auto_detect_with_dir() {
 
 #[test]
 fn test_path_manager_all_config_paths() {
+    // PathManager accessors read process-global ENV_* vars live; acquire ENV_LOCK
+    // so a parallel env-setting test can't leak ENV_CONFIG and flip config_path().
+    let _g = ENV_LOCK.lock();
     let pm = PathManager::with_home(PathBuf::from("/tmp/all_paths"));
     assert_eq!(
         pm.config_path(),

@@ -4,6 +4,7 @@ use super::*;
 /// This exercises the download path directly (bypasses the system-7z check),
 /// validating it for users who don't have 7-Zip pre-installed.
 #[tokio::test]
+#[ignore = "requires network (downloads 7z from GitHub); run via `cargo test -p nemesis-sandbox download_and_unzip -- --ignored` or the sandbox e2e workflow"]
 async fn download_and_unzip_7z_brings_7z_exe_into_runtime() {
     let tmp = tempfile::tempdir().unwrap();
     download_and_unzip_7z(tmp.path())

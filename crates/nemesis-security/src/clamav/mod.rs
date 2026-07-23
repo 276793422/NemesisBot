@@ -8,6 +8,7 @@ pub mod config;
 pub mod daemon;
 pub mod hook;
 pub mod manager;
+pub mod ownership;
 pub mod scanner;
 pub mod updater;
 

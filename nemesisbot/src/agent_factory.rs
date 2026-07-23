@@ -345,7 +345,7 @@ pub fn build_agent_loop(
                     nemesis_sandbox::status::service_state(nemesis_sandbox::USERMODE_SERVICE),
                     nemesis_sandbox::status::ServiceState::Running
                 );
-                if start_exe.exists() && sbiesvc_running {
+                if start_exe.exists() && sbiesvc_running && nemesis_sandbox::status::engine_owned(&paths) {
                     info!(
                         "[AgentFactory] executor separation enabled (sandbox = live probe via \
                          ConfigStore, Start.exe box available): child {}",

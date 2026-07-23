@@ -41,7 +41,13 @@ mod win {
     pub fn relaunch_elevated(exe: &Path, args: &[String]) -> anyhow::Result<()> {
         let op = wide("runas");
         let file = wide(&exe.to_string_lossy());
-        let params_str = args.join(" ");
+        // Quote any arg containing spaces (e.g. `--home C:\Users\My Name\...`)
+        // so the elevated child's command-line parser receives it as one arg.
+        let params_str = args
+            .iter()
+            .map(|a| if a.contains(' ') { format!("\"{a}\"") } else { a.clone() })
+            .collect::<Vec<_>>()
+            .join(" ");
         let params = wide(&params_str);
         let h = unsafe {
             ShellExecuteW(

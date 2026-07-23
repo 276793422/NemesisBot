@@ -831,7 +831,8 @@ async fn test_clamav_wrapper_scan_file_clean() {
 
 #[tokio::test]
 async fn test_clamav_wrapper_get_info() {
-    let scanner = ScanEngine::ClamAV.build();
+    // Closed port → deterministic "not ready" regardless of a real clamd.
+    let scanner = ScanEngine::ClamAV.build_with_address("127.0.0.1:1");
     let info = scanner.get_info().await;
     assert_eq!(info.name, "clamav");
     assert!(!info.ready); // No daemon running

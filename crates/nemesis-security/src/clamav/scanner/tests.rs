@@ -203,7 +203,9 @@ fn test_scanner_config_clone() {
 
 #[tokio::test]
 async fn test_scanner_new_with_client() {
-    let client = Client::new("127.0.0.1:3310");
+    // Closed port → deterministic connection refusal, so the "no daemon" path
+    // holds regardless of whether clamd is running on the test machine.
+    let client = Client::new("127.0.0.1:1");
     let scanner = Scanner::new_with_client(client, test_config());
     assert!(scanner.ping().await.is_err()); // no daemon running
 }
@@ -291,13 +293,17 @@ fn test_default_scanner_config_function() {
 
 #[tokio::test]
 async fn test_scan_file_nonexistent_when_enabled() {
-    let scanner = Scanner::new(test_config());
-    // scan_file calls client.scan_file which connects to clamd
-    // When clamd is not running, this should return an error
+    // Closed port → deterministic connection failure (independent of whether
+    // clamd is running on this machine).
+    let config = ScannerConfig {
+        address: "127.0.0.1:1".to_string(),
+        ..test_config()
+    };
+    let scanner = Scanner::new(config);
     let result = scanner
         .scan_file(Path::new("/tmp/nonexistent_file_for_test.txt"))
         .await;
-    // Will fail because no clamd daemon
+    // Fails because nothing listens at the closed port.
     assert!(result.is_err());
 }
 

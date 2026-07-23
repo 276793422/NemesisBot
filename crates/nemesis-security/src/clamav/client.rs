@@ -64,6 +64,15 @@ impl Client {
         Ok(())
     }
 
+    /// Ask clamd to shut down (clamd `SHUTDOWN` command). clamd typically closes
+    /// the connection right after, so callers treat a read error as "already
+    /// exiting". Used on bot exit to stop a clamd we are reusing (no child
+    /// handle because we didn't spawn it); a spawned clamd is killed via its
+    /// `Child` handle instead.
+    pub async fn shutdown(&self) -> Result<(), String> {
+        self.send_command("SHUTDOWN").await.map(|_| ())
+    }
+
     /// Get clamd version.
     pub async fn version(&self) -> Result<String, String> {
         self.send_command("VERSION").await

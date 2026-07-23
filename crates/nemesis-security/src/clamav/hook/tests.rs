@@ -34,11 +34,13 @@ fn test_format_scan_result_clean() {
 
 #[tokio::test]
 async fn test_scan_hook_new() {
-    let scanner = Arc::new(Scanner::new(ScannerConfig::default()));
+    // Closed port → deterministic "ping fails" even when clamd is running here.
+    let scanner = Arc::new(Scanner::new(ScannerConfig {
+        address: "127.0.0.1:1".to_string(),
+        ..ScannerConfig::default()
+    }));
     let hook = ScanHook::new(scanner);
-    // Verify hook can return the scanner
     let scanner_ref = hook.get_scanner();
-    // Access ping to verify scanner was created (config is private)
     assert!(scanner_ref.ping().await.is_err()); // not running, so ping should fail
 }
 
@@ -185,7 +187,11 @@ fn test_format_scan_result_variants() {
 
 #[tokio::test]
 async fn test_health_check_fails_when_not_running() {
-    let scanner = Arc::new(Scanner::new(ScannerConfig::default()));
+    // Closed port → deterministic "health_check fails" even when clamd is running here.
+    let scanner = Arc::new(Scanner::new(ScannerConfig {
+        address: "127.0.0.1:1".to_string(),
+        ..ScannerConfig::default()
+    }));
     let hook = ScanHook::new(scanner);
     assert!(hook.health_check().await.is_err());
 }

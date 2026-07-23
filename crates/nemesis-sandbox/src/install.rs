@@ -135,3 +135,90 @@ pub fn stop(paths: &SandboxPaths, purge: bool) -> Result<()> {
     }
     Ok(())
 }
+
+/// Start ONLY the user-mode SbieSvc service — a runtime op that does NOT touch
+/// the kernel driver and does NOT re-register the service. Used by
+/// `ensure_sandbox_ready` at gateway startup when the driver is already
+/// installed but SbieSvc is stopped (e.g. after a crash or an external
+/// `sc stop`). Driver and service are independent: bringing the service up must
+/// not re-trigger the driver-install UAC. Whether a non-elevated caller can
+/// start the service depends on the SbieSvc service ACL — `kmdutil::start`
+/// opens the existing service via the SCM (no `SC_MANAGER_CREATE_SERVICE`),
+/// unlike the install verbs. Must NOT be used to (re)install the engine.
+pub fn start_service(paths: &SandboxPaths) -> Result<()> {
+    if matches!(service_state(USERMODE_SERVICE), ServiceState::Running) {
+        return Ok(()); // already up (residual) — reuse, nothing to do
+    }
+    kmdutil::run(kmdutil::start(&paths.kmdutil(), USERMODE_SERVICE), false)
+        .context("start SbieSvc")?;
+    let s = wait_for_state(
+        USERMODE_SERVICE,
+        ServiceState::Running,
+        Duration::from_secs(15),
+    );
+    if s != ServiceState::Running {
+        bail!("SbieSvc did not reach RUNNING (state={s:?})");
+    }
+    tracing::info!("[sandbox] SbieSvc started (driver untouched)");
+    Ok(())
+}
+
+/// Stop ONLY the user-mode SbieSvc service — a runtime op; the kernel driver
+/// stays loaded and the service stays registered (reversible by
+/// [`start_service`]). Used on gateway exit to stop OUR SbieSvc per-run. The
+/// driver is deliberately left resident (uninstalling it needs UAC and is
+/// BSOD-prone; see Route A). No UAC — `kmdutil::stop` opens the existing
+/// service via the SCM, no `SC_MANAGER_CREATE_SERVICE`.
+pub fn stop_service(paths: &SandboxPaths) -> Result<()> {
+    let _ = kmdutil::run(kmdutil::stop(&paths.kmdutil(), USERMODE_SERVICE), true);
+    tracing::info!("[sandbox] SbieSvc stop issued (driver untouched)");
+    Ok(())
+}
+
+/// Tolerant "make engine installed + SbieSvc running" — the elevated worker
+/// behind `ensure_sandbox_ready` (startup decision rows 3–6). Unlike [`start`],
+/// this is tolerant of already-registered components, so it recovers ANY partial
+/// install state to fully-installed + running:
+///   - stops the service first (row 5: service running without a registered
+///     driver → register driver, then restart service so it binds the driver);
+///   - registers driver + service tolerant ("already exists" → no-op);
+///   - (re)writes IniPath, service-key DWORDs, Sandboxie.ini;
+///   - starts the service.
+/// Must be called elevated (kernel driver install → UAC).
+pub fn ensure_installed(paths: &SandboxPaths) -> Result<()> {
+    paths
+        .verify_runtime()
+        .context("runtime files missing — run `nemesisbot sandbox install` first")?;
+
+    // 归属门：不在别人的 Sandboxie 上动（名字冲突也装不了自己的）。
+    if !crate::status::engine_owned(paths) {
+        bail!(
+            "foreign Sandboxie registered (SbieDrv/SbieSvc not under {}) — \
+             refusing to install over it",
+            paths.runtime_dir.display()
+        );
+    }
+
+    // Row 5 safety: stop a running service before (re)registering the driver.
+    let _ = kmdutil::run(kmdutil::stop(&paths.kmdutil(), USERMODE_SERVICE), true);
+
+    // Register driver + service tolerant (ignore "already exists"); IniPath and
+    // service-key DWORDs are idempotent registry writes.
+    let _ = kmdutil::run(
+        kmdutil::install_driver(&paths.kmdutil(), &paths.sbiedrv_sys(), &paths.sbiemsg_dll()),
+        true,
+    );
+    let _ = kmdutil::set_ini_path(&paths.ini_path);
+    let _ = kmdutil::run(
+        kmdutil::install_service(&paths.kmdutil(), &paths.sbiesvc_exe(), &paths.sbiemsg_dll()),
+        true,
+    );
+    let _ = kmdutil::set_sbiesvc_service_key_dwounds();
+
+    ini::write_sandboxie_ini(&paths.ini_path, crate::DEFAULT_BOX_NAME, &paths.box_root)?;
+
+    // Start the service (no-op if already running) + wait for RUNNING.
+    start_service(paths)?;
+    tracing::info!("[sandbox] engine ensured installed + SbieSvc running (tolerant)");
+    Ok(())
+}

@@ -62,7 +62,7 @@ pub struct RegistryConfig {
 impl Default for RegistryConfig {
     fn default() -> Self {
         Self {
-            index_path: String::from("forge_registry.json"),
+            index_path: String::new(),
         }
     }
 }

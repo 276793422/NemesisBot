@@ -455,6 +455,19 @@ fn test_get_effective_llm() {
 #[test]
 fn test_embedded_defaults() {
     let _guard = GLOBAL_STATE_LOCK.lock().unwrap();
+    // EMBEDDED_DEFAULTS is a process-global cache that other tests may have
+    // populated; reset to empty so the "fresh state" assertions below are
+    // deterministic — and so a failed assertion here cannot poison
+    // GLOBAL_STATE_LOCK (which cascaded into ~36 PoisonError failures under
+    // parallel scheduling).
+    set_embedded_defaults(
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+    );
     let defaults = get_embedded_defaults();
     assert!(defaults.config.is_empty());
     assert!(defaults.mcp.is_empty());

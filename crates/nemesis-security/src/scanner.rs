@@ -1031,6 +1031,48 @@ impl ClamavScannerWrapper {
     fn set_update_interval(&mut self, interval: String) {
         self.manager_config.update_interval = interval;
     }
+
+    /// Is the clamd at our configured address OURS (exe path matches our
+    /// clamd.exe)? Fail-closed: if we can't verify → false → don't reuse/kill/
+    /// scan-via it (could be a foreign ClamAV or another bot instance).
+    fn clamd_is_ours(&self) -> bool {
+        let our = crate::clamav::find_executable(&self.manager_config.clamav_path, "clamd");
+        crate::clamav::ownership::clamd_is_ours(&self.config_address, std::path::Path::new(&our))
+    }
+
+    /// If clamd is down (ping fails), restart it via the Manager that spawned
+    /// it. Returns true if clamd is alive afterwards (was up, or restarted ok).
+    /// Serializes restarts via the manager lock so concurrent scan failures
+    /// don't all restart at once. No-op if we reused a clamd (no Manager).
+    async fn restart_clamd_if_down(&self) -> bool {
+        // Transient scan error or real crash? ping to find out.
+        if self.scanner.ping().await.is_ok() {
+            return true; // up — scan error was transient, no restart needed
+        }
+        // clamd down — restart, serialized via the manager lock.
+        let guard = self.manager.lock().await;
+        if self.scanner.ping().await.is_ok() {
+            return true; // a concurrent scan may have just restarted it
+        }
+        let Some(mgr) = guard.as_ref() else {
+            tracing::warn!(
+                "[Scanner] clamd at {} down but no Manager (reused); cannot restart",
+                self.config_address
+            );
+            return false;
+        };
+        tracing::warn!("[Scanner] clamd crashed mid-run — restarting");
+        match mgr.restart().await {
+            Ok(()) => {
+                tracing::info!("[Scanner] clamd restarted");
+                true
+            }
+            Err(e) => {
+                tracing::warn!("[Scanner] clamd restart failed: {e}");
+                false
+            }
+        }
+    }
 }
 
 #[async_trait]
@@ -1055,7 +1097,33 @@ impl VirusScanner for ClamavScannerWrapper {
             return Ok(());
         }
 
-        // Try to use Manager to start the daemon (full lifecycle management).
+        // Residual detection: if a clamd is already answering at our address
+        // (left over from a previous run that didn't clean up — e.g. a crash),
+        // reuse it. Don't spawn a conflicting clamd, and don't kill it on stop
+        // (`stop` below only kills when `manager` is Some). Starting clamd is
+        // resource-heavy, so reusing an existing one is worth the probe.
+        if self.scanner.ping().await.is_ok() {
+            // Ownership: only reuse if it's OUR clamd — never a foreign ClamAV
+            // (system install / another bot) whose config + DB differ.
+            if !self.clamd_is_ours() {
+                tracing::warn!(
+                    "[Scanner] clamd at {} is not ours (foreign ClamAV / another instance); not reusing",
+                    self.config_address
+                );
+                return Err(format!(
+                    "clamd at {} is not ours; refusing to reuse foreign ClamAV",
+                    self.config_address
+                ));
+            }
+            tracing::info!(
+                "[Scanner] Reusing existing clamd at {} (ours, residual)",
+                self.config_address
+            );
+            self.started.store(true, Ordering::SeqCst);
+            return Ok(()); // manager stays None → stop() SHUTDOWNs it (verified ours)
+        }
+
+        // No residual → spawn via Manager (full lifecycle management).
         // This handles: config generation, DB download, daemon start, auto-update.
         if !self.manager_config.clamav_path.is_empty() {
             let mgr_config = crate::clamav::manager::ManagerConfig {
@@ -1085,11 +1153,17 @@ impl VirusScanner for ClamavScannerWrapper {
             }
         }
 
-        // Fallback: just verify connectivity to an already-running daemon
+        // Fallback (Manager start failed — e.g. port taken): only reuse if OURS.
         self.scanner
             .ping()
             .await
             .map_err(|e| format!("ClamAV ping failed: {}", e))?;
+        if !self.clamd_is_ours() {
+            return Err(format!(
+                "clamd at {} is not ours; not reusing foreign ClamAV (Manager start failed)",
+                self.config_address
+            ));
+        }
         self.started.store(true, Ordering::SeqCst);
         Ok(())
     }
@@ -1100,8 +1174,25 @@ impl VirusScanner for ClamavScannerWrapper {
         }
         let mut guard = self.manager.lock().await;
         if let Some(mgr) = guard.take() {
+            // We spawned this clamd — kill the child handle we own.
             mgr.stop().await?;
-            tracing::info!("[Scanner] ClamAV daemon stopped via Manager");
+            tracing::info!("[Scanner] ClamAV daemon stopped (spawned child killed)");
+        } else {
+            // Reused a residual clamd (no child handle). Only SHUTDOWN if it's
+            // OURS — never kill a foreign clamd (system ClamAV / another bot).
+            if !self.clamd_is_ours() {
+                tracing::info!(
+                    "[Scanner] clamd at {} is not ours; not killing foreign clamd on stop",
+                    self.config_address
+                );
+                return Ok(());
+            }
+            match self.scanner.shutdown().await {
+                Ok(()) => tracing::info!("[Scanner] reused clamd (ours) told to SHUTDOWN"),
+                Err(e) => tracing::debug!(
+                    "[Scanner] clamd SHUTDOWN returned {e} (likely already exiting)"
+                ),
+            }
         }
         Ok(())
     }
@@ -1123,6 +1214,18 @@ impl VirusScanner for ClamavScannerWrapper {
 
     async fn scan_file(&self, path: &Path) -> ScanResult {
         let start = std::time::Instant::now();
+        // Don't scan via a clamd we didn't start/verify (foreign, or spawn
+        // failed) — return degraded instead of trusting a foreign/not-ours clamd.
+        if !self.started.load(Ordering::SeqCst) {
+            return ScanResult {
+                path: path.to_string_lossy().to_string(),
+                infected: false,
+                virus: String::new(),
+                raw: "clamd not available (not started / foreign)".to_string(),
+                engine: "clamav".to_string(),
+                duration: format!("{:?}", start.elapsed()),
+            };
+        }
         match self.scanner.scan_file(path).await {
             Ok(result) => ScanResult {
                 path: result.path,
@@ -1132,19 +1235,45 @@ impl VirusScanner for ClamavScannerWrapper {
                 engine: "clamav".to_string(),
                 duration: format!("{:?}", start.elapsed()),
             },
-            Err(e) => ScanResult {
-                path: path.to_string_lossy().to_string(),
-                infected: false,
-                virus: String::new(),
-                raw: format!("scan error: {}", e),
-                engine: "clamav".to_string(),
-                duration: format!("{:?}", start.elapsed()),
-            },
+            Err(e) => {
+                // Scan failed — maybe clamd crashed. Restart + retry once.
+                if self.restart_clamd_if_down().await {
+                    if let Ok(r) = self.scanner.scan_file(path).await {
+                        return ScanResult {
+                            path: r.path,
+                            infected: r.infected,
+                            virus: r.virus,
+                            raw: r.raw,
+                            engine: "clamav".to_string(),
+                            duration: format!("{:?}", start.elapsed()),
+                        };
+                    }
+                }
+                // Still failing → G5 fail-open (clean on unavailable).
+                ScanResult {
+                    path: path.to_string_lossy().to_string(),
+                    infected: false,
+                    virus: String::new(),
+                    raw: format!("scan error (clamd unavailable, restart attempted): {e}"),
+                    engine: "clamav".to_string(),
+                    duration: format!("{:?}", start.elapsed()),
+                }
+            }
         }
     }
 
     async fn scan_content(&self, content: &[u8]) -> ScanResult {
         let start = std::time::Instant::now();
+        if !self.started.load(Ordering::SeqCst) {
+            return ScanResult {
+                path: String::new(),
+                infected: false,
+                virus: String::new(),
+                raw: "clamd not available (not started / foreign)".to_string(),
+                engine: "clamav".to_string(),
+                duration: format!("{:?}", start.elapsed()),
+            };
+        }
         match self.scanner.scan_content(content).await {
             Ok(result) => ScanResult {
                 path: result.path,
@@ -1154,14 +1283,28 @@ impl VirusScanner for ClamavScannerWrapper {
                 engine: "clamav".to_string(),
                 duration: format!("{:?}", start.elapsed()),
             },
-            Err(e) => ScanResult {
-                path: String::new(),
-                infected: false,
-                virus: String::new(),
-                raw: format!("scan error: {}", e),
-                engine: "clamav".to_string(),
-                duration: format!("{:?}", start.elapsed()),
-            },
+            Err(e) => {
+                if self.restart_clamd_if_down().await {
+                    if let Ok(r) = self.scanner.scan_content(content).await {
+                        return ScanResult {
+                            path: r.path,
+                            infected: r.infected,
+                            virus: r.virus,
+                            raw: r.raw,
+                            engine: "clamav".to_string(),
+                            duration: format!("{:?}", start.elapsed()),
+                        };
+                    }
+                }
+                ScanResult {
+                    path: String::new(),
+                    infected: false,
+                    virus: String::new(),
+                    raw: format!("scan error (clamd unavailable, restart attempted): {e}"),
+                    engine: "clamav".to_string(),
+                    duration: format!("{:?}", start.elapsed()),
+                }
+            }
         }
     }
 

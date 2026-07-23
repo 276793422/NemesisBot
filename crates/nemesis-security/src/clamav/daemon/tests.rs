@@ -119,9 +119,12 @@ fn test_daemon_config_debug() {
 
 #[test]
 fn test_daemon_is_ready_when_running_but_no_daemon() {
-    let daemon = Daemon::new(test_config());
+    // Closed port: with `running` forced true, ping must still fail, so
+    // is_ready() is false. Deterministic regardless of a real clamd.
+    let mut cfg = test_config();
+    cfg.listen_addr = "127.0.0.1:1".to_string();
+    let daemon = Daemon::new(cfg);
     daemon.running.store(true, Ordering::SeqCst);
-    // Running is true but no actual daemon, so ping should fail
     let rt = tokio::runtime::Runtime::new().unwrap();
     assert!(!rt.block_on(async { daemon.is_ready().await }));
     daemon.running.store(false, Ordering::SeqCst);

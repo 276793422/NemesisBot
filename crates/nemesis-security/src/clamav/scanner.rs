@@ -223,6 +223,13 @@ impl Scanner {
         self.client.ping().await
     }
 
+    /// Ask clamd to shut down (clamd `SHUTDOWN` command). Used on bot exit to
+    /// stop a clamd we are REUSING (no child handle, because we didn't spawn
+    /// it). A clamd we spawned is killed via its `Child` handle instead.
+    pub async fn shutdown(&self) -> Result<(), String> {
+        self.client.shutdown().await
+    }
+
     async fn record_scan(&self, bytes: u64, infected: bool, is_error: bool) {
         let mut stats = self.stats.lock().await;
         stats.total_scans += 1;

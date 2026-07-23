@@ -1012,6 +1012,16 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
     nemesis_config::set_global(config_store.clone());
     let cfg = config_store.handle().read().clone();
 
+    // Step 4b: Ensure the Sandboxie engine is ready (Route A) — driver and
+    // service are judged SEPARATELY, so this never triggers the per-run
+    // driver-install UAC. Steady-state (both resident) is a reuse no-op; only
+    // the lightweight "start service if stopped" path may run.
+    #[cfg(feature = "sandbox")]
+    {
+        let sandbox_enabled = cfg.executor.as_ref().map_or(false, |ec| ec.sandbox);
+        crate::commands::sandbox::ensure_sandbox_ready(&home, sandbox_enabled);
+    }
+
     // [capture] Initialize the diagnostic capture sink — failure-triggered
     // only (zero happy-path overhead). Reads `debug.capture.enabled`
     // (defaults to true when unset). Evidence lands in
@@ -3682,18 +3692,15 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
         }
     }
 
-    // Uninstall sandbox driver + service on exit (user opted for full cleanup).
-    // Needs admin → UAC fire-and-forget if gateway isn't elevated. Driver unload
-    // is BSOD-prone but mitigated: install::stop tolerant mode + KmdUtil retry,
-    // and per-call executors have exited by now (agent loop stopped earlier).
+    // Sandbox per-run cleanup (Route A): stop OUR SbieSvc service (verified by
+    // binary path under our runtime dir — a system/foreign Sandboxie is left
+    // alone) but LEAVE the kernel driver resident. Stopping the service needs
+    // no UAC; uninstalling the driver would (and is BSOD-prone), so only an
+    // explicit `sandbox stop` (CLI / dashboard button) uninstalls it. Next
+    // start `ensure_sandbox_ready` restarts the service; the driver is reused.
     #[cfg(feature = "sandbox")]
     {
-        if let Err(e) = crate::commands::sandbox::stop_for_shutdown(&home).await {
-            warn!(
-                "[Gateway] sandbox shutdown cleanup failed: {} (driver/service may remain)",
-                e
-            );
-        }
+        crate::commands::sandbox::stop_service_if_ours(&home);
     }
 
     // Close the message bus

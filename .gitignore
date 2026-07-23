@@ -28,3 +28,9 @@ scripts/customize/.config
 /cluster-uat-logs
 /test-tools/TestAIServer
 /dist
+
+# Crate-local runtime artifacts created by tests (Cluster::new() defaults to
+# CWD as workspace; during `cargo test` CWD is the crate dir, so state lands
+# here). Not source, not shipped, not read by production. Untracked in P0;
+# proper test isolation via tempdirs for the 151 Cluster::new() callers is P2.
+/crates/nemesis-cluster/cluster/
