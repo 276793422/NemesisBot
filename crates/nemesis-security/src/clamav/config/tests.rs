@@ -25,7 +25,7 @@ fn test_generate_freshclam_config() {
         .to_string_lossy()
         .to_string();
     let db_dir = dir.path().join("db").to_string_lossy().to_string();
-    generate_freshclam_config(&db_dir, &config_file).unwrap();
+    generate_freshclam_config(&db_dir, &config_file, "").unwrap();
     let content = fs::read_to_string(&config_file).unwrap();
     assert!(content.contains("DatabaseMirror database.clamav.net"));
 }
@@ -87,7 +87,7 @@ fn test_generate_freshclam_config_creates_db_dir() {
         .join("freshclam.conf")
         .to_string_lossy()
         .to_string();
-    generate_freshclam_config(&db_dir.to_string_lossy(), &config_file).unwrap();
+    generate_freshclam_config(&db_dir.to_string_lossy(), &config_file, "").unwrap();
     assert!(db_dir.exists());
     let content = fs::read_to_string(&config_file).unwrap();
     assert!(content.contains("DatabaseMirror database.clamav.net"));
@@ -96,7 +96,7 @@ fn test_generate_freshclam_config_creates_db_dir() {
 
 #[test]
 fn test_generate_freshclam_config_empty_path_fails() {
-    let result = generate_freshclam_config("/tmp", "");
+    let result = generate_freshclam_config("/tmp", "", "");
     assert!(result.is_err());
 }
 
@@ -175,7 +175,7 @@ fn test_generate_freshclam_config_empty_db_dir() {
         .join("freshclam.conf")
         .to_string_lossy()
         .to_string();
-    generate_freshclam_config("", &config_file).unwrap();
+    generate_freshclam_config("", &config_file, "").unwrap();
     let content = fs::read_to_string(&config_file).unwrap();
     assert!(content.contains("DatabaseMirror"));
     // No DatabaseDirectory line
@@ -193,4 +193,50 @@ fn test_generate_clamd_config_invalid_path() {
     let result = generate_clamd_config(&cfg);
     // Result depends on filesystem permissions
     let _ = result;
+}
+
+#[test]
+fn test_generate_clamd_config_includes_log_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let log_path = dir.path().join("logs").join("clamd.log");
+    let cfg = DaemonConfig {
+        config_file: dir.path().join("clamd.conf").to_string_lossy().to_string(),
+        log_file: log_path.to_string_lossy().to_string(),
+        ..Default::default()
+    };
+    generate_clamd_config(&cfg).unwrap();
+    let content = fs::read_to_string(&cfg.config_file).unwrap();
+    // Path is forward-slashed — backslashes break clamd's conf parser on Windows.
+    let expected = log_path.to_string_lossy().replace('\\', "/");
+    assert!(content.contains(&format!("LogFile {}", expected)));
+}
+
+#[test]
+fn test_generate_clamd_config_omits_log_file_when_empty() {
+    let dir = tempfile::tempdir().unwrap();
+    let cfg = DaemonConfig {
+        config_file: dir.path().join("clamd.conf").to_string_lossy().to_string(),
+        ..Default::default()
+    };
+    generate_clamd_config(&cfg).unwrap();
+    let content = fs::read_to_string(&cfg.config_file).unwrap();
+    // No bare "LogFile " directive line. ("\nLogFile " avoids matching the
+    // unrelated "LogFileMaxSize" key, which contains "LogFile" as a substring.)
+    assert!(!content.contains("\nLogFile "));
+}
+
+#[test]
+fn test_generate_freshclam_config_includes_update_log_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let config_file = dir
+        .path()
+        .join("freshclam.conf")
+        .to_string_lossy()
+        .to_string();
+    let log_path = dir.path().join("logs").join("freshclam.log");
+    generate_freshclam_config("", &config_file, &log_path.to_string_lossy()).unwrap();
+    let content = fs::read_to_string(&config_file).unwrap();
+    // freshclam uses UpdateLogFile, not LogFile.
+    let expected = log_path.to_string_lossy().replace('\\', "/");
+    assert!(content.contains(&format!("UpdateLogFile {}", expected)));
 }

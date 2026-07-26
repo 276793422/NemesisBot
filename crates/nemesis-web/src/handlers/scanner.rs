@@ -854,12 +854,15 @@ async fn install_engine_inner(
     let clamav_path = engine.get_clamav_path();
     if !clamav_path.is_empty() {
         let db_dir = std::path::Path::new(&clamav_path).join("database");
+        let log_dir = std::path::Path::new(&clamav_path).join("logs");
         let _ = std::fs::create_dir_all(&db_dir);
+        let _ = std::fs::create_dir_all(&log_dir);
 
         let freshclam_conf = std::path::Path::new(&clamav_path).join("freshclam.conf");
         let _ = nemesis_security::clamav::config::generate_freshclam_config(
             &db_dir.to_string_lossy(),
             &freshclam_conf.to_string_lossy(),
+            &log_dir.join("freshclam.log").to_string_lossy(),
         );
 
         let daemon_config = nemesis_security::clamav::config::DaemonConfig {
@@ -871,6 +874,7 @@ async fn install_engine_inner(
             database_dir: db_dir.to_string_lossy().to_string(),
             listen_addr: "127.0.0.1:3310".to_string(),
             temp_dir: String::new(),
+            log_file: log_dir.join("clamd.log").to_string_lossy().to_string(),
             startup_timeout_secs: 120,
         };
         let _ = nemesis_security::clamav::config::generate_clamd_config(&daemon_config);

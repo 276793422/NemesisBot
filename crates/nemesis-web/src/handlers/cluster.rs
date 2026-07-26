@@ -1619,9 +1619,12 @@ impl ClusterHandler {
 
         let workspace = require_workspace(ctx)?;
 
-        // 1) Write the two cluster persona files.
+        // 1) Write the cluster persona files (IDENTITY + SOUL standard; EXPERTISE optional).
         Self::write_cluster_file(workspace, "IDENTITY.md", &pkg.identity_md)?;
         Self::write_cluster_file(workspace, "SOUL.md", &pkg.soul_md)?;
+        if !pkg.expertise_md.trim().is_empty() {
+            Self::write_cluster_file(workspace, "EXPERTISE.md", &pkg.expertise_md)?;
+        }
 
         // 2) Update node identity — runtime (immediate) + peers.toml [node] (persist).
         let cluster = require_cluster(ctx)?;

@@ -112,8 +112,9 @@ impl Manager {
         let db_dir = Path::new(&data_dir).join("database");
         let config_dir = Path::new(&data_dir).join("config");
         let temp_dir = Path::new(&data_dir).join("temp");
+        let log_dir = Path::new(&data_dir).join("logs");
 
-        for dir in [&db_dir, &config_dir, &temp_dir] {
+        for dir in [&db_dir, &config_dir, &temp_dir, &log_dir] {
             std::fs::create_dir_all(dir)
                 .map_err(|e| format!("failed to create directory {}: {}", dir.display(), e))?;
         }
@@ -127,6 +128,8 @@ impl Manager {
 
         let clamd_conf = config_dir.join("clamd.conf");
         let freshclam_conf = config_dir.join("freshclam.conf");
+        let clamd_log = log_dir.join("clamd.log");
+        let freshclam_log = log_dir.join("freshclam.log");
 
         let daemon_cfg = DaemonConfig {
             clamav_path: clamav_path.clone(),
@@ -134,6 +137,7 @@ impl Manager {
             database_dir: db_dir.to_string_lossy().to_string(),
             listen_addr: address.clone(),
             temp_dir: temp_dir.to_string_lossy().to_string(),
+            log_file: clamd_log.to_string_lossy().to_string(),
             ..Default::default()
         };
 
@@ -141,6 +145,7 @@ impl Manager {
         config::generate_freshclam_config(
             &db_dir.to_string_lossy(),
             &freshclam_conf.to_string_lossy(),
+            &freshclam_log.to_string_lossy(),
         )?;
 
         // Step 4: Download virus database if stale

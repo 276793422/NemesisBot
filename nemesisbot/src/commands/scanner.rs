@@ -1026,12 +1026,15 @@ async fn cmd_clamav_install_inner(
     if state.install_status == "installed" && !detected_path.is_empty() {
         let clamav_dir = std::path::Path::new(&detected_path);
         let db_dir = clamav_dir.join("database");
+        let log_dir = clamav_dir.join("logs");
+        let _ = std::fs::create_dir_all(&log_dir);
 
         // Generate freshclam.conf
         let freshclam_conf = clamav_dir.join("freshclam.conf");
         match nemesis_security::clamav::config::generate_freshclam_config(
             &db_dir.to_string_lossy(),
             &freshclam_conf.to_string_lossy(),
+            &log_dir.join("freshclam.log").to_string_lossy(),
         ) {
             Ok(()) => println!("  clamav           generated freshclam.conf"),
             Err(e) => println!(
@@ -1052,6 +1055,7 @@ async fn cmd_clamav_install_inner(
                 engine_cfg.address.clone()
             },
             temp_dir: clamav_dir.join("tmp").to_string_lossy().to_string(),
+            log_file: log_dir.join("clamd.log").to_string_lossy().to_string(),
             startup_timeout_secs: 120,
         };
         match nemesis_security::clamav::config::generate_clamd_config(&daemon_config) {
@@ -1147,9 +1151,12 @@ async fn cmd_clamav_update(security_cfg: &std::path::Path) -> Result<()> {
     let freshclam_conf = clamav_dir.join("freshclam.conf");
     if !freshclam_conf.exists() {
         println!("  Generating freshclam.conf...");
+        let log_dir = clamav_dir.join("logs");
+        let _ = std::fs::create_dir_all(&log_dir);
         nemesis_security::clamav::config::generate_freshclam_config(
             &db_dir.to_string_lossy(),
             &freshclam_conf.to_string_lossy(),
+            &log_dir.join("freshclam.log").to_string_lossy(),
         )
         .map_err(|e| anyhow::anyhow!(e))?;
     }

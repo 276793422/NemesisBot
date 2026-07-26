@@ -1,6 +1,7 @@
 //! ClamAV virus database updater.
 
 use std::path::Path;
+use std::process::Stdio;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, SystemTime};
@@ -66,6 +67,12 @@ impl Updater {
         if let Some(ref cb) = on_progress {
             cb(0, 0);
         }
+
+        // Discard freshclam's inherited stdio. Its normal log already goes to
+        // `UpdateLogFile` from freshclam.conf; this prevents the output from
+        // leaking into the NemesisBot log.
+        cmd.stdout(Stdio::null());
+        cmd.stderr(Stdio::null());
 
         let mut child = cmd
             .spawn()

@@ -8,6 +8,7 @@ fn test_config() -> DaemonConfig {
         listen_addr: "127.0.0.1:3310".to_string(),
         temp_dir: "/tmp".to_string(),
         startup_timeout_secs: 120,
+        ..Default::default()
     }
 }
 

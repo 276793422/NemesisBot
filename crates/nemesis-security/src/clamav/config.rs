@@ -11,6 +11,10 @@ pub struct DaemonConfig {
     pub database_dir: String,
     pub listen_addr: String,
     pub temp_dir: String,
+    /// Where clamd writes its own log (emitted into clamd.conf as `LogFile`).
+    /// Empty = no `LogFile` directive (clamd then logs to stderr, which leaks
+    /// into the NemesisBot log via the inherited child stdio).
+    pub log_file: String,
     pub startup_timeout_secs: u64,
 }
 
@@ -22,6 +26,7 @@ impl Default for DaemonConfig {
             database_dir: String::new(),
             listen_addr: "127.0.0.1:3310".to_string(),
             temp_dir: String::new(),
+            log_file: String::new(),
             startup_timeout_secs: 120,
         }
     }
@@ -75,6 +80,15 @@ pub fn generate_clamd_config(cfg: &DaemonConfig) -> Result<(), String> {
         "LogTime yes".to_string(),
         "LogRotate yes".to_string(),
         "LogFileMaxSize 10M".to_string(),
+    ]);
+    // Route clamd's own log to a dedicated file. Without `LogFile`, clamd logs
+    // to stderr; since the spawned child inherits the parent's stdio, that
+    // output leaks into the NemesisBot log. Rotation is handled by clamd via
+    // LogFileMaxSize/LogRotate above — no Rust-side rotation needed.
+    if !cfg.log_file.is_empty() {
+        lines.push(format!("LogFile {}", cfg.log_file.replace('\\', "/")));
+    }
+    lines.extend([
         String::new(),
         "# Scan options".to_string(),
         "ScanPE yes".to_string(),
@@ -106,7 +120,11 @@ pub fn generate_clamd_config(cfg: &DaemonConfig) -> Result<(), String> {
 }
 
 /// Generate a minimal freshclam.conf.
-pub fn generate_freshclam_config(db_dir: &str, config_file: &str) -> Result<(), String> {
+pub fn generate_freshclam_config(
+    db_dir: &str,
+    config_file: &str,
+    log_file: &str,
+) -> Result<(), String> {
     if config_file.is_empty() {
         return Err("config file path is required".to_string());
     }
@@ -131,7 +149,14 @@ pub fn generate_freshclam_config(db_dir: &str, config_file: &str) -> Result<(), 
         "Checks 24".to_string(),
         "LogTime yes".to_string(),
         "LogRotate yes".to_string(),
+        "LogFileMaxSize 10M".to_string(),
     ]);
+    // freshclam uses `UpdateLogFile` (not `LogFile`). Same stderr-leak rationale
+    // as clamd: without this directive freshclam output is inherited by the
+    // spawned child and leaks into the NemesisBot log.
+    if !log_file.is_empty() {
+        lines.push(format!("UpdateLogFile {}", log_file.replace('\\', "/")));
+    }
 
     let content = lines.join("\n") + "\n";
     fs::write(config_file, content).map_err(|e| format!("write freshclam.conf: {}", e))?;

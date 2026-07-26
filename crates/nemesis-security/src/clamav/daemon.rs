@@ -2,6 +2,7 @@
 
 use super::client::Client;
 use super::config::DaemonConfig;
+use std::process::Stdio;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
@@ -59,6 +60,11 @@ impl Daemon {
         // start hits a port conflict → ping-only fallback. Belt-and-suspenders
         // alongside the explicit stop_scanner() in the gateway shutdown path.
         cmd.kill_on_drop(true);
+        // Discard clamd's inherited stdio. Its normal log already goes to the
+        // `LogFile` from clamd.conf; this only suppresses config-parse-time
+        // fatal output that would otherwise leak into the NemesisBot log.
+        cmd.stdout(Stdio::null());
+        cmd.stderr(Stdio::null());
 
         let child = cmd
             .spawn()
