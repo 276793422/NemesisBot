@@ -2,66 +2,72 @@
 //! error mapping, and HTTP mock-based flows.
 
 use super::*;
-use wiremock::matchers::{method, path};
+use wiremock::matchers::{method, path, query_param};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 // ============================================================
-// source_url_to_raw edge cases
+// fetch_skill_content: per-skill JSON detail API
 // ============================================================
 
-#[test]
-fn test_source_url_to_raw_github_with_blob_branch() {
-    let url = "https://github.com/owner/repo/tree/v1.0.0/skills/foo";
-    let raw = ModelScopeRegistry::source_url_to_raw(url).unwrap();
-    assert_eq!(
-        raw,
-        "https://raw.githubusercontent.com/owner/repo/v1.0.0/skills/foo/SKILL.md"
-    );
+/// Build a detail-endpoint JSON body with the given ReadMeContent.
+fn detail_json(read_me: &str) -> String {
+    format!(
+        r#"{{"Code":200,"Data":{{"Name":"pdf","ReadMeContent":{}}},"Message":"ok","Success":true}}"#,
+        serde_json::Value::String(read_me.to_string())
+    )
 }
 
-#[test]
-fn test_source_url_to_raw_missing_tree_segment() {
-    let url = "https://github.com/owner/repo/blob/main/skills/foo";
-    // parts[2] = "blob" != "tree" -> None
-    assert!(ModelScopeRegistry::source_url_to_raw(url).is_none());
+#[tokio::test]
+async fn test_fetch_skill_content_success() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/PantherAng/pdf"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(detail_json("---\nname: pdf\n---\nbody")))
+        .mount(&server)
+        .await;
+    let reg = make_registry_pointing_at(&server).await;
+    let content = reg.fetch_skill_content("PantherAng", "pdf").await.unwrap();
+    assert!(content.starts_with("---\nname: pdf"));
+    assert!(content.contains("body"));
 }
 
-#[test]
-fn test_source_url_to_raw_tree_at_end() {
-    let url = "https://github.com/owner/repo/tree";
-    // splitn(4, '/') gives only 3 parts; parts.len() < 4 -> None
-    assert!(ModelScopeRegistry::source_url_to_raw(url).is_none());
+#[tokio::test]
+async fn test_fetch_skill_content_empty_readme_errors() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(detail_json("")))
+        .mount(&server)
+        .await;
+    let reg = make_registry_pointing_at(&server).await;
+    let err = reg.fetch_skill_content("PantherAng", "pdf").await.unwrap_err();
+    assert!(err.to_string().contains("empty"));
 }
 
-#[test]
-fn test_source_url_to_raw_only_branch_no_path() {
-    let url = "https://github.com/owner/repo/tree/main";
-    // rest = "main", splitn(2, '/') -> ["main"], len < 2 -> None
-    assert!(ModelScopeRegistry::source_url_to_raw(url).is_none());
+#[tokio::test]
+async fn test_fetch_skill_content_api_error_code() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_string(r#"{"Code":404,"Data":{},"Message":"not found","Success":false}"#),
+        )
+        .mount(&server)
+        .await;
+    let reg = make_registry_pointing_at(&server).await;
+    let err = reg.fetch_skill_content("PantherAng", "pdf").await.unwrap_err();
+    assert!(err.to_string().contains("404") || err.to_string().contains("not found"));
 }
 
-#[test]
-fn test_source_url_to_raw_empty_input() {
-    assert!(ModelScopeRegistry::source_url_to_raw("").is_none());
-}
-
-#[test]
-fn test_source_url_to_raw_wrong_scheme() {
-    assert!(ModelScopeRegistry::source_url_to_raw("http://github.com/owner/repo/tree/main/x").is_none());
-}
-
-#[test]
-fn test_source_url_to_raw_with_deep_path() {
-    let url = "https://github.com/owner/repo/tree/main/skills/category/subcategory/skill-name";
-    let raw = ModelScopeRegistry::source_url_to_raw(url).unwrap();
-    // branch = "main", path = "skills/category/subcategory/skill-name"
-    assert!(raw.ends_with("/main/skills/category/subcategory/skill-name/SKILL.md"));
-    assert!(raw.starts_with("https://raw.githubusercontent.com/owner/repo/main/"));
-}
-
-#[test]
-fn test_source_url_to_raw_not_github_host() {
-    assert!(ModelScopeRegistry::source_url_to_raw("https://gitlab.com/owner/repo/tree/main/foo").is_none());
+#[tokio::test]
+async fn test_fetch_skill_content_http_error() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .respond_with(ResponseTemplate::new(500))
+        .mount(&server)
+        .await;
+    let reg = make_registry_pointing_at(&server).await;
+    let err = reg.fetch_skill_content("PantherAng", "pdf").await.unwrap_err();
+    assert!(err.to_string().contains("HTTP"));
 }
 
 // ============================================================
@@ -188,8 +194,18 @@ fn test_modelscope_skill_missing_fields_default_to_empty() {
     assert_eq!(s.name, "x");
     assert_eq!(s.display_name, "");
     assert_eq!(s.description, "");
-    assert_eq!(s.source_url, "");
+    assert_eq!(s.path, "");
     assert_eq!(s.download_count, 0);
+}
+
+#[test]
+fn test_modelscope_skill_source_and_source_url_deserialized() {
+    // The GitHub-fallback dispatch depends on `source` ("github") and a parseable
+    // `source_url`. Verify both fields deserialize from the catalog shape.
+    let json = r#"{"Name":"mingli","Source":"github","SourceUrl":"https://github.com/o/r/tree/main/p/mingli"}"#;
+    let s: ModelScopeSkill = serde_json::from_str(json).unwrap();
+    assert_eq!(s.source, "github");
+    assert_eq!(s.source_url, "https://github.com/o/r/tree/main/p/mingli");
 }
 
 #[test]
@@ -265,6 +281,7 @@ fn test_search_request_criterion_can_hold_objects() {
 async fn make_registry_pointing_at(server: &MockServer) -> ModelScopeRegistry {
     let mut reg = ModelScopeRegistry::new();
     reg.base_url = server.uri();
+    reg.content_base_url = server.uri();
     reg
 }
 
@@ -457,10 +474,12 @@ async fn test_download_and_install_no_files() {
 }
 
 #[tokio::test]
-async fn test_download_and_install_unparseable_source_url() {
+async fn test_download_and_install_name_mismatch_errors() {
+    // Free-text search may return a skill whose name differs from the slug
+    // (e.g. the duplicated catalog slug "chinese-novelist"); install must
+    // refuse rather than silently install the wrong skill.
     let server = MockServer::start().await;
-    // source_url that doesn't match github tree format
-    let body = r#"{"Code":200,"Data":{"SkillList":[{"Name":"pdf","SourceUrl":"https://gitlab.com/x"}],"TotalCount":1},"Message":"ok","Success":true}"#;
+    let body = r#"{"Code":200,"Data":{"SkillList":[{"Name":"not-pdf","Path":"X","SourceUrl":"https://gitlab.com/x"}],"TotalCount":1},"Message":"ok","Success":true}"#;
     Mock::given(method("PUT"))
         .respond_with(ResponseTemplate::new(200).set_body_string(body))
         .mount(&server)
@@ -468,33 +487,177 @@ async fn test_download_and_install_unparseable_source_url() {
 
     let reg = make_registry_pointing_at(&server).await;
     let err = reg.download_and_install("pdf", "1.0", "/tmp/modelscope_install").await.unwrap_err();
-    assert!(err.to_string().contains("SourceURL"));
+    assert!(err.to_string().to_lowercase().contains("not found"));
+    assert!(err.to_string().contains("not-pdf"));
 }
 
 #[tokio::test]
 async fn test_download_and_install_full_success() {
     let server = MockServer::start().await;
-    let body = make_skill_json(&[(
-        "pdf",
-        "PDF",
-        "summary",
-        "",
-        "https://github.com/owner/repo/tree/main/skills/pdf",
-        "alice",
-        0,
-    )]);
+    // Search returns a skill with Path + a non-github SourceUrl, proving install
+    // no longer depends on SourceUrl being a github tree URL.
+    let search_body = r#"{"Code":200,"Data":{"SkillList":[{"Name":"pdf","DisplayName":"PDF","Description":"summary","Path":"PantherAng","SourceUrl":"https://gitlab.com/x"}],"TotalCount":1},"Message":"ok","Success":true}"#;
     Mock::given(method("PUT"))
-        .respond_with(ResponseTemplate::new(200).set_body_string(body))
+        .respond_with(ResponseTemplate::new(200).set_body_string(search_body))
         .mount(&server)
         .await;
 
-    // Mock the raw GitHub download (won't actually hit github - need a mock server for raw).
-    // We can't easily redirect the raw URL, so we use a temp dir + verify call structure.
+    // Root file listing (?Root= empty): a `references/` tree + SKILL.md blob.
+    Mock::given(method("GET"))
+        .and(path("/PantherAng/pdf/repo/files"))
+        .and(query_param("Root", ""))
+        .respond_with(ResponseTemplate::new(200).set_body_string(
+            r#"{"Code":200,"Data":{"Files":[{"Path":"references","Type":"tree"},{"Path":"SKILL.md","Type":"blob"}]},"Message":"ok","Success":true}"#,
+        ))
+        .mount(&server)
+        .await;
+    // `references/` listing (?Root=references) — mutually exclusive with the
+    // root mock by query param, so mount order does not matter.
+    Mock::given(method("GET"))
+        .and(path("/PantherAng/pdf/repo/files"))
+        .and(query_param("Root", "references"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(
+            r#"{"Code":200,"Data":{"Files":[{"Path":"references/detail.md","Type":"blob"}]},"Message":"ok","Success":true}"#,
+        ))
+        .mount(&server)
+        .await;
+    // File contents via /repo/raw.
+    Mock::given(method("GET"))
+        .and(path("/PantherAng/pdf/repo/raw"))
+        .and(query_param("FilePath", "SKILL.md"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(
+            r#"{"Code":200,"Data":{"Content":"---\nname: pdf\n---\n# PDF skill"},"Message":"ok","Success":true}"#,
+        ))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/PantherAng/pdf/repo/raw"))
+        .and(query_param("FilePath", "references/detail.md"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(
+            r#"{"Code":200,"Data":{"Content":"detail body"},"Message":"ok","Success":true}"#,
+        ))
+        .mount(&server)
+        .await;
+
     let dir = tempfile::tempdir().unwrap();
     let reg = make_registry_pointing_at(&server).await;
-    // Will fail at the raw download step (since raw.githubusercontent.com is real but unreachable in CI),
-    // but the structure call is exercised.
-    let _ = reg.download_and_install("pdf", "1.0", dir.path().to_str().unwrap()).await;
+    let result = reg.download_and_install("pdf", "1.0", dir.path().to_str().unwrap()).await.unwrap();
+    assert_eq!(result.version, "latest");
+    assert_eq!(result.summary, "summary");
+    let skill_md = std::fs::read_to_string(dir.path().join("SKILL.md")).unwrap();
+    assert!(skill_md.starts_with("---\nname: pdf"));
+    assert!(skill_md.contains("# PDF skill"));
+    // Companion file under a subdirectory is installed too.
+    let detail = std::fs::read_to_string(dir.path().join("references").join("detail.md")).unwrap();
+    assert_eq!(detail, "detail body");
+}
+
+#[tokio::test]
+async fn test_download_and_install_rejects_path_traversal() {
+    // A malicious listing must not be able to write outside the target dir.
+    let server = MockServer::start().await;
+    Mock::given(method("PUT"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(
+            r#"{"Code":200,"Data":{"SkillList":[{"Name":"pdf","DisplayName":"PDF","Description":"s","Path":"PantherAng","SourceUrl":"x"}],"TotalCount":1},"Message":"ok","Success":true}"#,
+        ))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/PantherAng/pdf/repo/files"))
+        .and(query_param("Root", ""))
+        .respond_with(ResponseTemplate::new(200).set_body_string(
+            r#"{"Code":200,"Data":{"Files":[{"Path":"../evil.md","Type":"blob"}]},"Message":"ok","Success":true}"#,
+        ))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/PantherAng/pdf/repo/raw"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(
+            r#"{"Code":200,"Data":{"Content":"evil"},"Message":"ok","Success":true}"#,
+        ))
+        .mount(&server)
+        .await;
+
+    let dir = tempfile::tempdir().unwrap();
+    let reg = make_registry_pointing_at(&server).await;
+    let err = reg.download_and_install("pdf", "1.0", dir.path().to_str().unwrap()).await.unwrap_err();
+    let msg = err.to_string().to_lowercase();
+    assert!(msg.contains("unsafe") || msg.contains("traversal") || msg.contains("security"));
+    assert!(!dir.path().join("../evil.md").exists());
+}
+
+#[tokio::test]
+#[ignore = "live network test against modelscope.cn; run with --ignored"]
+async fn live_modelscope_install_divination_full_tree() {
+    // Verifies the FULL skill tree (SKILL.md + references/) installs, not just
+    // SKILL.md. The `divination` skill (@hhszzzz) has SKILL.md + 7 reference files.
+    let reg = ModelScopeRegistry::new();
+    let dir = tempfile::tempdir().unwrap();
+    reg.download_and_install("divination", "latest", dir.path().to_str().unwrap())
+        .await
+        .expect("install should succeed");
+
+    assert!(dir.path().join("SKILL.md").exists(), "SKILL.md must be installed");
+    let refs_dir = dir.path().join("references");
+    assert!(refs_dir.is_dir(), "references/ directory must be installed");
+    let ref_count = std::fs::read_dir(&refs_dir).unwrap().count();
+    assert!(ref_count >= 5, "expected several reference files, got {}", ref_count);
+
+    let bazi = std::fs::read_to_string(refs_dir.join("bazi-workflow.md"))
+        .expect("bazi-workflow.md must be installed");
+    assert!(bazi.contains("Bazi") || bazi.contains("八字"), "content must be intact UTF-8");
+}
+
+#[tokio::test]
+async fn test_download_and_install_thin_non_github_skips_fallback() {
+    // A ModelScope-native skill mirrored as only SKILL.md (no subdirs, Source=ModelScope)
+    // must install the mirrored SKILL.md and NOT attempt the GitHub fallback.
+    let server = MockServer::start().await;
+    Mock::given(method("PUT"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(
+            r#"{"Code":200,"Data":{"SkillList":[{"Name":"pdf","DisplayName":"PDF","Description":"s","Path":"PantherAng","Source":"ModelScope","SourceUrl":""}],"TotalCount":1},"Message":"ok","Success":true}"#,
+        ))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/PantherAng/pdf/repo/files"))
+        .and(query_param("Root", ""))
+        .respond_with(ResponseTemplate::new(200).set_body_string(
+            r#"{"Code":200,"Data":{"Files":[{"Path":"SKILL.md","Type":"blob"}]},"Message":"ok","Success":true}"#,
+        ))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/PantherAng/pdf/repo/raw"))
+        .and(query_param("FilePath", "SKILL.md"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(
+            r#"{"Code":200,"Data":{"Content":"---\nname: pdf\n---\nbody"},"Message":"ok","Success":true}"#,
+        ))
+        .mount(&server)
+        .await;
+
+    let dir = tempfile::tempdir().unwrap();
+    let reg = make_registry_pointing_at(&server).await;
+    reg.download_and_install("pdf", "1.0", dir.path().to_str().unwrap())
+        .await
+        .expect("install should succeed");
+    let skill_md = std::fs::read_to_string(dir.path().join("SKILL.md")).unwrap();
+    assert!(skill_md.starts_with("---\nname: pdf"));
+}
+
+#[tokio::test]
+#[ignore = "live network test; mingli is only partially mirrored on ModelScope"]
+async fn live_modelscope_install_mingli_partial_mirror_graceful() {
+    // mingli's ModelScope mirror is only SKILL.md; its references/ + scripts/ live
+    // on GitHub. Where GitHub is reachable, the fallback installs the full tree;
+    // where it is not (e.g. a network blocking api.github.com), the install must
+    // still degrade gracefully to the mirrored SKILL.md rather than fail.
+    let reg = ModelScopeRegistry::new();
+    let dir = tempfile::tempdir().unwrap();
+    reg.download_and_install("mingli", "latest", dir.path().to_str().unwrap())
+        .await
+        .expect("install should succeed (at least the mirrored SKILL.md)");
+    assert!(dir.path().join("SKILL.md").exists(), "mirrored SKILL.md must install");
 }
 
 #[tokio::test]
@@ -517,16 +680,23 @@ async fn test_get_skill_content_not_found() {
 }
 
 #[tokio::test]
-async fn test_get_skill_content_unparseable_url() {
+async fn test_get_skill_content_via_detail_api() {
     let server = MockServer::start().await;
-    let body = r#"{"Code":200,"Data":{"SkillList":[{"Name":"pdf","SourceUrl":"https://example.com/x"}]},"Message":"ok","Success":true}"#;
+    let body = r#"{"Code":200,"Data":{"SkillList":[{"Name":"pdf","Path":"PantherAng","SourceUrl":"https://example.com/x"}],"TotalCount":1},"Message":"ok","Success":true}"#;
     Mock::given(method("PUT"))
         .respond_with(ResponseTemplate::new(200).set_body_string(body))
         .mount(&server)
         .await;
+    Mock::given(method("GET"))
+        .and(path("/PantherAng/pdf"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(detail_json("---\nname: pdf\n---\nbody")))
+        .mount(&server)
+        .await;
     let reg = make_registry_pointing_at(&server).await;
-    let err = reg.get_skill_content("pdf").await.unwrap_err();
-    assert!(err.to_string().contains("SourceURL"));
+    let content = reg.get_skill_content("pdf").await.unwrap();
+    assert_eq!(content.slug, "pdf");
+    assert_eq!(content.filename, "SKILL.md");
+    assert!(content.content.starts_with("---\nname: pdf"));
 }
 
 // ============================================================
@@ -651,6 +821,7 @@ fn test_registry_name() {
 fn test_default_base_url() {
     let reg = ModelScopeRegistry::new();
     assert_eq!(reg.base_url, "https://www.modelscope.cn/api/v1/dolphin/skills");
+    assert_eq!(reg.content_base_url, "https://www.modelscope.cn/api/v1/skills");
 }
 
 // ============================================================
