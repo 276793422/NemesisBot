@@ -79,6 +79,20 @@ const COMPACT_STUCK_PLATEAU_RATIO: usize = 90; // %
 /// pause auto-summarization and warn.
 const COMPACT_STUCK_LIMIT: u32 = 2;
 
+/// Target number of trailing messages kept verbatim (not summarized) when the
+/// summary cache advances. The tail `history[C..]` is held at ~`K_TARGET`
+/// messages by `maybe_update_summary` (C = len - K_TARGET). Small enough that
+/// the LLM always sees recent context verbatim, large enough to ride out a
+/// few tool-call rounds between summarizations.
+const K_TARGET: usize = 6;
+
+/// Aggressive verbatim-tail size used by `force_compression` (the last-resort
+/// retry path on LLM context errors). Smaller than `K_TARGET` because the
+/// situation is already an emergency — prefer a larger summarized prefix over
+/// failing the request. A second compression folds everything into the summary
+/// (tail → 0).
+const SMALL_K_FORCE: usize = 2;
+
 /// Session-keyed state maps on `AgentLoop` (`compact_state`, `summarizing`) are
 /// size-bounded: when one exceeds this many entries we clear it wholesale. These
 /// maps are best-effort — losing an entry just re-learns the state on the next
@@ -2138,13 +2152,22 @@ impl AgentLoop {
     // Summarization
     // -----------------------------------------------------------------------
 
-    /// Trigger summarization if thresholds are met.
-    /// Mirrors Go's `maybeSummarize()`.
+    /// Advance the summary cache if the verbatim tail is over the context
+    /// threshold.
     ///
-    /// In Go this runs in a goroutine (`go func()`) so it doesn't block the
-    /// response. We mirror this by spawning a tokio task when summarization
-    /// is needed.
-    async fn maybe_summarize(
+    /// Inline-summarization pipeline (replaces Go's `maybeSummarize`). The
+    /// summary cache covers `history[..covers_up_to]`; `build_messages` sends
+    /// `history[covers_up_to..]` verbatim. Token pressure is therefore on the
+    /// *tail* (what the LLM actually receives), so the threshold is evaluated
+    /// against the tail, not the full history. When the tail exceeds the
+    /// threshold and is longer than `K_TARGET`, the cache advances to
+    /// `covers_up_to = len - K_TARGET` and the newly-covered prefix is folded
+    /// into the summary. History is never mutated (append-only); bounding is
+    /// the session store's job.
+    ///
+    /// Persistence: this updates the in-memory cache on the instance. The save
+    /// path persists the cache alongside the full history (see S3.3).
+    async fn maybe_update_summary(
         &self,
         instance: &AgentInstance,
         session_key: &str,
@@ -2153,36 +2176,59 @@ impl AgentLoop {
     ) {
         let history = instance.get_history();
         let context_window = instance.context_window();
-        let token_estimate = estimate_tokens_for_turns(&history);
+
+        // C indexes the full history (system prompt at index 0); the verbatim
+        // tail build_messages sends is history[C..]. Clamp to history length
+        // for safety against a stale cache index.
+        let cache = instance.get_summary_cache();
+        let c = cache
+            .as_ref()
+            .map(|c| c.covers_up_to)
+            .filter(|&c| c >= 1)
+            .unwrap_or(0)
+            .min(history.len());
+        let existing_summary = cache.as_ref().map(|c| c.text.as_str()).unwrap_or("");
+
+        // Token pressure is on the tail (system + summary + history[C..] is
+        // what build_messages emits). The covered prefix is already folded into
+        // the summary, so it does not count toward pressure.
+        let tail_tokens = estimate_tokens_for_turns(&history[c..]);
+        let tail_len = history.len().saturating_sub(c);
         let soft = context_window * COMPACT_SOFT_RATIO / 100;
         let threshold = context_window * COMPACT_SUMMARIZE_RATIO / 100;
+        // Summarize runs only when the tail is over threshold AND long enough to
+        // shrink (more than K_TARGET messages past C). A short tail that is huge
+        // in tokens (a large system prompt or an early oversized tool result)
+        // can't be helped by advancing C — leave it to force_compression.
+        let will_summarize = tail_tokens >= threshold && tail_len > K_TARGET;
 
-        // ⑩ Graded tiers (soft / summarize) + stuck self-check. One critical
-        // section. Soft is info-log-only (must NOT pollute the model's input or
-        // session_log). Stuck pauses auto-summarization when it isn't reducing
-        // the prompt, so we don't loop summarizing forever.
+        // ⑩ Graded tiers (soft / summarize) + stuck self-check on the tail.
+        // Soft is info-log-only. The stuck counter only ticks when summarize
+        // will ACTUALLY run — otherwise a chronically-over-threshold tail that
+        // is too short to summarize (e.g. a big system prompt with few turns)
+        // would tick the counter without ever attempting a summarize and pause
+        // summarization before it gets the chance.
         let mut paused_stuck = false;
         {
             let mut states = self.compact_state.lock();
-            // ⑩ Bound growth: clear wholesale under size pressure (best-effort).
             if states.len() > SESSION_STATE_MAX_ENTRIES {
                 states.clear();
             }
             let st = states.entry(session_key.to_string()).or_default();
 
-            if token_estimate >= soft && !st.soft_noticed {
+            if tail_tokens >= soft && !st.soft_noticed {
                 st.soft_noticed = true;
                 info!(
-                    "[AgentLoop] context at ~{}% of window ({} / {}); summarization will trigger at {}%",
-                    token_estimate * 100 / context_window.max(1),
-                    token_estimate,
+                    "[AgentLoop] context tail at ~{}% of window ({} / {}); summarization will trigger at {}%",
+                    tail_tokens * 100 / context_window.max(1),
+                    tail_tokens,
                     context_window,
                     COMPACT_SUMMARIZE_RATIO
                 );
             }
 
-            if token_estimate >= threshold && history.len() > 20 {
-                if summarize_was_ineffective(st.last_summary_tokens, token_estimate) {
+            if will_summarize {
+                if summarize_was_ineffective(st.last_summary_tokens, tail_tokens) {
                     st.consecutive_failures += 1;
                 } else {
                     st.consecutive_failures = 0;
@@ -2190,16 +2236,16 @@ impl AgentLoop {
                 if st.consecutive_failures >= COMPACT_STUCK_LIMIT {
                     if !st.stuck {
                         warn!(
-                            "[AgentLoop] compaction stuck: summarization has not reduced the prompt {} times in a row; pausing auto-summarization (raise context_window or reduce tool output)",
+                            "[AgentLoop] compaction stuck: summarization has not reduced the tail {} times in a row; pausing auto-summarization (raise context_window or reduce tool output)",
                             st.consecutive_failures
                         );
                         st.stuck = true;
                     }
                     paused_stuck = true;
                 } else {
-                    st.last_summary_tokens = token_estimate;
+                    st.last_summary_tokens = tail_tokens;
                 }
-            } else if token_estimate < threshold {
+            } else if tail_tokens < threshold {
                 // Breathing room — clear the stuck latch.
                 st.consecutive_failures = 0;
                 st.stuck = false;
@@ -2209,16 +2255,13 @@ impl AgentLoop {
             return;
         }
 
-        if history.len() <= 20 && token_estimate <= threshold {
+        if !will_summarize {
             return;
         }
 
         let summarize_key = format!("main:{}", session_key);
         {
             let mut map = self.summarizing.lock();
-            // Bound growth: clear wholesale under size pressure. Best-effort —
-            // the worst case is one redundant concurrent summarization, which
-            // overwrites benignly.
             if map.len() > SESSION_STATE_MAX_ENTRIES {
                 map.clear();
             }
@@ -2228,47 +2271,22 @@ impl AgentLoop {
             map.insert(summarize_key.clone(), true);
         }
 
-        // Clone all data needed by the spawned task.
-        let provider = self.provider.read().clone(); // Arc clone
+        // New boundary: cover everything except the last K_TARGET messages
+        // (the verbatim tail kept for continuity). new_C > c is guaranteed by
+        // the tail_len > K_TARGET check above, so we always advance and never
+        // re-summarize the same prefix. Adjust so the tail doesn't start mid
+        // tool_call/result pair (keeps the pair verbatim, not dropped by repair).
+        let new_c = tool_safe_boundary(&history, history.len() - K_TARGET);
+
+        let provider = self.provider.read().clone();
         let model = self.active_model.read().clone();
-        let outbound_tx = self.outbound_tx.clone(); // Option<Sender> clone
-        let session_store = self.session_store.clone(); // Option<Arc<SessionStore>> clone
-        let summarizing_flag = self.summarizing.clone(); // Arc clone for clearing after completion
-        let observer_mgr = self.observer_manager.clone(); // Option<Arc<Manager>> clone
-        let history_clone = history;
-        // [capture] Snapshot baseline: what the summarize task STARTED from.
-        // If a later set_history writes a vec derived from this snapshot AFTER
-        // the main loop appended newer messages, it proves the old-snapshot
-        // overwrite race. (No content hash here — ConversationTurn differs
-        // from StoredMessage; len is enough to correlate with set_history.)
-        if crate::capture_sink::CaptureSink::enabled() {
-            if let Some(sink) = crate::capture_sink::CaptureSink::global() {
-                sink.record_session_write(
-                    session_key,
-                    crate::capture_sink::SessionWriteCapture {
-                        writer: "summarize_spawn".to_string(),
-                        op: "snapshot_baseline".to_string(),
-                        before_len: None,
-                        after_len: Some(history_clone.len()),
-                        first_role: None,
-                        last_role: None,
-                        messages_hash: String::new(),
-                        overwrite_detected: false,
-                        ts: String::new(),
-                    },
-                );
-            }
-        }
-        let existing_summary = instance.get_summary();
-        let session_key_owned = session_key.to_string();
+        let outbound_tx = self.outbound_tx.clone();
+        let summarizing_flag = self.summarizing.clone();
+        let observer_mgr = self.observer_manager.clone();
         let channel_owned = channel.to_string();
         let chat_id_owned = chat_id.to_string();
         let clear_key = summarize_key.clone();
 
-        // Synchronous summarization in-turn (no spawn). Because run_bus_arc is
-        // sequential, the next message's writes can't race with this one → no
-        // lost update, no stale-snapshot gap. This is the fix for the
-        // set_history overwrite defect.
         if !is_internal_channel(&channel_owned) {
             if let Some(ref tx) = outbound_tx {
                 let outbound = nemesis_types::channel::OutboundMessage {
@@ -2283,10 +2301,14 @@ impl AgentLoop {
             }
         }
 
-        // Perform summarization (async, awaits provider.chat — no block_on).
-        let summary = summarize_history_owned(
-            &history_clone,
-            &existing_summary,
+        // Fold the prefix history[..new_c] into the summary, merged with the
+        // existing summary (which already covers history[..c]). summarize the
+        // FULL prefix from source each time (no "keep last N" — that would
+        // leave a gap between the summary and the verbatim tail).
+        let prefix_refs: Vec<&crate::types::ConversationTurn> = history[..new_c].iter().collect();
+        let summary = summarize_prefix_owned(
+            &prefix_refs,
+            existing_summary,
             context_window,
             provider.as_ref(),
             &model,
@@ -2295,247 +2317,88 @@ impl AgentLoop {
         .await;
 
         if let Some(summary) = summary {
-            // Save summary to session store if available.
-            if let Some(ref store) = session_store {
-                let stored_messages: Vec<crate::session::StoredMessage> = history_clone
-                    .iter()
-                    .map(|m| crate::session::StoredMessage::from(m))
-                    .collect();
-
-                // Keep last 4 messages for continuity, preserving tool message pairs.
-                let retained = truncate_with_tool_pairs(&stored_messages, 4);
-
-                store.set_history(&session_key_owned, retained);
-                store.set_summary(&session_key_owned, &summary);
-                let _ = store.save(&session_key_owned);
-            }
+            instance.set_summary_cache(Some(crate::instance::SummaryCache {
+                covers_up_to: new_c,
+                text: summary,
+            }));
         }
 
-        // Clear the summarizing flag so this session can be re-summarized later.
         {
             let mut map = summarizing_flag.lock();
             map.remove(&clear_key);
         }
     }
 
-    /// Summarize the conversation history for a session.
-    /// Mirrors Go's `summarizeSession()`.
+    /// Force-compress by aggressively advancing the summary cache.
     ///
-    /// NOTE: The main loop uses the standalone free functions instead (see
-    /// `summarize_history_owned`). Kept as reference implementation.
-    #[allow(dead_code)]
-    fn summarize_session(&self, instance: &AgentInstance, _session_key: &str) {
+    /// Last-resort path used when the LLM reports a context error and the
+    /// caller retries. Does NOT mutate history (history is append-only); it
+    /// shrinks what `build_messages` emits by advancing `covers_up_to` and
+    /// recomputing the summary over the larger covered prefix.
+    ///
+    /// Progressive: each call shrinks the verbatim tail further. The first call
+    /// reduces the tail to [`SMALL_K_FORCE`] messages; if that still isn't
+    /// enough (the caller will retry), the next call folds everything into the
+    /// summary (tail → 0). Bounded by the caller's retry limit.
+    pub async fn force_compression(&self, instance: &AgentInstance) {
         let history = instance.get_history();
+        let cache = instance.get_summary_cache();
+        let current_c = cache
+            .as_ref()
+            .map(|c| c.covers_up_to)
+            .filter(|&c| c >= 1)
+            .unwrap_or(0)
+            .min(history.len());
+        let existing_summary = cache.as_ref().map(|c| c.text.as_str()).unwrap_or("");
 
-        // Keep last 4 messages for continuity.
-        if history.len() <= 4 {
-            return;
-        }
-
-        let to_summarize = &history[..history.len() - 4];
-
-        // Oversized message guard.
-        let max_msg_tokens = instance.context_window() / 2;
-        let mut valid_messages: Vec<&crate::types::ConversationTurn> = Vec::new();
-        let mut omitted = false;
-
-        for m in to_summarize {
-            if m.role != "user" && m.role != "assistant" {
-                continue;
-            }
-            let msg_tokens = crate::session::estimate_tokens(&m.content);
-            if msg_tokens > max_msg_tokens {
-                omitted = true;
-                continue;
-            }
-            valid_messages.push(m);
-        }
-
-        if valid_messages.is_empty() {
-            return;
-        }
-
-        // Multi-part summarization.
-        let final_summary = if valid_messages.len() > 10 {
-            self.summarize_multipart(&valid_messages)
+        // Shrink the verbatim tail: to SMALL_K_FORCE if it's still large,
+        // otherwise cover everything (tail → 0) as the final resort.
+        let current_tail_len = history.len().saturating_sub(current_c);
+        let raw_c = if current_tail_len > SMALL_K_FORCE {
+            history.len() - SMALL_K_FORCE
         } else {
-            let existing = instance.get_summary();
-            self.summarize_batch(&valid_messages, &existing)
+            history.len()
         };
-
-        let final_summary = if omitted && !final_summary.is_empty() {
-            format!(
-                "{}\n[Note: Some oversized messages were omitted from this summary for efficiency.]",
-                final_summary
-            )
-        } else {
-            final_summary
-        };
-
-        if !final_summary.is_empty() {
-            instance.set_summary(&final_summary);
-            instance.truncate_to(4);
-        }
-    }
-
-    /// Force-compress conversation history by aggressively dropping oldest 50% of messages.
-    ///
-    /// This is used as a last resort when the context window is exceeded and retry
-    /// with compression is needed. Mirrors Go's `forceCompression()`.
-    ///
-    /// The resulting history structure matches Go's pattern:
-    /// 1. System prompt (first message if role == "system")
-    /// 2. Compression note
-    /// 3. Second half of conversation (kept portion)
-    /// 4. Last message (explicitly preserved regardless of the split point)
-    pub fn force_compression(&self, instance: &AgentInstance) {
-        let history = instance.get_history();
-        if history.len() <= 4 {
+        // Keep tool_call/result pairs intact in the tail (don't let the boundary
+        // drop an orphan result that the summary can't capture).
+        let new_c = tool_safe_boundary(&history, raw_c);
+        // Must advance and have a non-empty prefix to summarize.
+        if new_c <= current_c || new_c == 0 {
             return;
         }
 
-        // Keep system prompt (usually [0]) and the very last message (user's trigger).
-        // We want to drop the oldest half of the *conversation*.
-        // Assuming [0] is system, [1:] is conversation.
-        if history.len() < 2 {
-            return;
+        let provider = self.provider.read().clone();
+        let model = self.active_model.read().clone();
+        let observer_mgr = self.observer_manager.clone();
+
+        // Fold the prefix history[..new_c] into the summary, merged with the
+        // existing summary (which covers history[..current_c]).
+        let prefix_refs: Vec<&crate::types::ConversationTurn> = history[..new_c].iter().collect();
+        let summary = summarize_prefix_owned(
+            &prefix_refs,
+            existing_summary,
+            instance.context_window(),
+            provider.as_ref(),
+            &model,
+            observer_mgr,
+        )
+        .await;
+
+        if let Some(summary) = summary {
+            instance.set_summary_cache(Some(crate::instance::SummaryCache {
+                covers_up_to: new_c,
+                text: summary,
+            }));
+            info!(
+                "[AgentLoop] Force-compressed: covers_up_to {} -> {} (verbatim tail {} -> {} messages)",
+                current_c,
+                new_c,
+                current_tail_len,
+                history.len() - new_c
+            );
         }
-        let conversation = &history[1..history.len() - 1];
-        if conversation.is_empty() {
-            return;
-        }
-
-        let mid = conversation.len() / 2;
-        let dropped_count = mid;
-
-        // New history structure:
-        // 1. System Prompt
-        // 2. [Compression note]
-        // 3. Second half of conversation (kept from mid onwards)
-        // 4. Last message (always preserved)
-        let kept_conversation = &conversation[mid..];
-
-        let mut retained = Vec::new();
-
-        // Always keep the system prompt (first message if role == "system").
-        if !history.is_empty() && history[0].role == "system" {
-            retained.push(history[0].clone());
-        }
-
-        // Add a compression note as a system message.
-        let note = crate::types::ConversationTurn {
-            role: "system".to_string(),
-            content: format!(
-                "[System: Emergency compression dropped {} oldest messages due to context limit]",
-                dropped_count
-            ),
-            tool_calls: Vec::new(),
-            tool_call_id: None,
-            timestamp: chrono::Local::now().to_rfc3339(),
-            reasoning_content: None,
-        };
-        retained.push(note);
-
-        // Append the kept portion of conversation.
-        for msg in kept_conversation {
-            retained.push(msg.clone());
-        }
-
-        // Always append the very last message from the original history.
-        // This matches Go's explicit `history[len(history)-1]` preservation.
-        let last_msg = history.last().unwrap();
-        // Only add if not already the last element in retained (avoid duplication).
-        if retained.last().map(|m| m.content.as_str()) != Some(&last_msg.content) {
-            retained.push(last_msg.clone());
-        }
-
-        crate::types::repair_tool_message_pairs(&mut retained);
-
-        let total = history.len();
-        instance.set_history(retained);
-        info!(
-            "[AgentLoop] Force-compressed history: {} messages -> {} messages (dropped {})",
-            total,
-            instance.get_history().len(),
-            dropped_count
-        );
-    }
-
-    /// Multi-part summarization: split, summarize each half, merge.
-    /// NOTE: See `summarize_multipart_owned` for the standalone version used by the main loop.
-    #[allow(dead_code)]
-    fn summarize_multipart(&self, messages: &[&crate::types::ConversationTurn]) -> String {
-        let mid = messages.len() / 2;
-        let part1 = &messages[..mid];
-        let part2 = &messages[mid..];
-
-        let s1 = self.summarize_batch(part1, "");
-        let s2 = self.summarize_batch(part2, "");
-
-        // Merge via LLM.
-        let merge_prompt = format!(
-            "Merge these two conversation summaries into one cohesive summary:\n\n1: {}\n\n2: {}",
-            s1, s2
-        );
-
-        let llm_messages = vec![LlmMessage {
-            role: "user".to_string(),
-            content: merge_prompt,
-            tool_calls: None,
-            tool_call_id: None,
-            reasoning_content: None,
-        }];
-
-        let p = self.provider.read().clone();
-        let m = self.active_model.read().clone();
-        let response = block_on_llm_chat(&*p, &m, llm_messages);
-
-        match response {
-            Some(Ok(resp)) if !resp.content.is_empty() => resp.content,
-            _ => format!("{} {}", s1, s2),
-        }
-    }
-
-    /// Summarize a batch of messages using the LLM.
-    /// Mirrors Go's `summarizeBatch()`.
-    /// NOTE: See `summarize_batch_owned` for the standalone version used by the main loop.
-    #[allow(dead_code)]
-    fn summarize_batch(
-        &self,
-        batch: &[&crate::types::ConversationTurn],
-        existing_summary: &str,
-    ) -> String {
-        let mut prompt = String::from(
-            "Provide a concise summary of this conversation segment, preserving core context and key points.\n",
-        );
-        if !existing_summary.is_empty() {
-            prompt.push_str(&format!("Existing context: {}\n", existing_summary));
-        }
-        prompt.push_str("\nCONVERSATION:\n");
-        for m in batch {
-            prompt.push_str(&format!("{}: {}\n", m.role, m.content));
-        }
-
-        let messages = vec![LlmMessage {
-            role: "user".to_string(),
-            content: prompt,
-            tool_calls: None,
-            tool_call_id: None,
-            reasoning_content: None,
-        }];
-
-        let p = self.provider.read().clone();
-        let m = self.active_model.read().clone();
-        let response = block_on_llm_chat(&*p, &m, messages);
-
-        match response {
-            Some(Ok(resp)) => resp.content,
-            Some(Err(e)) => {
-                debug!("[AgentLoop] summarize_batch LLM call failed: {}", e);
-                String::new()
-            }
-            None => String::new(),
-        }
+        // If summarize returned None (e.g., prefix had no valid user/assistant
+        // content), leave the cache as-is; the caller's bounded retry gives up.
     }
 
     // -----------------------------------------------------------------------
@@ -2553,18 +2416,39 @@ impl AgentLoop {
         };
         let instance = AgentInstance::new(config);
 
-        // Restore history from session store if available.
+        // Restore history + summary cache from session store if available.
         // Mirrors Go's `agent.Sessions.Get(sessionKey)` in `getOrCreateInstance`.
         if let Some(ref store) = self.session_store {
             let stored = store.get_or_create(session_key);
             let existing_summary = store.get_summary(session_key);
+            let covers = store.get_summary_covers_up_to(session_key);
             if !stored.messages.is_empty() {
                 let history: Vec<crate::types::ConversationTurn> =
                     stored.messages.into_iter().map(|m| m.into()).collect();
                 instance.set_history(history);
             }
+            // Restore the summary cache. covers_up_to indexes the full history
+            // (system prompt at index 0). For new-format files it is stored
+            // explicitly; for legacy files (pre-refactor, field absent → None)
+            // we map it so build_messages sends ALL loaded messages verbatim
+            // while injecting the summary as floating context for older content
+            // that was truncated out under the old regime.
             if !existing_summary.is_empty() {
-                instance.set_summary(&existing_summary);
+                let history = instance.get_history();
+                if !history.is_empty() {
+                    let c = match covers {
+                        Some(c) => c.clamp(1, history.len()),
+                        None => history
+                            .iter()
+                            .take_while(|t| t.role == "system")
+                            .count()
+                            .max(1),
+                    };
+                    instance.set_summary_cache(Some(crate::instance::SummaryCache {
+                        covers_up_to: c,
+                        text: existing_summary,
+                    }));
+                }
             }
         }
 
@@ -2624,17 +2508,20 @@ impl AgentLoop {
             .await;
 
         // Maybe trigger summarization.
-        self.maybe_summarize(&instance, session_key, channel, chat_id)
+        self.maybe_update_summary(&instance, session_key, channel, chat_id)
             .await;
 
-        // Persist to session store — mirrors Go's runAgentLoop exactly:
-        //   Line 104: agent.Sessions.AddMessage(sessionKey, "user", userMessage)
-        //   Line 151: agent.Sessions.AddMessage(sessionKey, "assistant", finalContent)
-        //   Line 152: agent.Sessions.Save(sessionKey)
+        // Persist to session store. Post-refactor (inline-summarization): the
+        // store holds the FULL instance history (system + user + assistant +
+        // tool calls/results), not just a user/assistant log, so the summary
+        // cache's covers_up_to index stays coherent across turns (the instance
+        // is rebuilt from the store each turn). The user-facing conversation
+        // log is written separately to chat_log below.
         //
-        // Session file only stores user + final assistant (conversation log).
-        // Instance history (in-memory) keeps all messages for LLM context.
-        // These are intentionally separate, matching Go's architecture.
+        // (Pre-refactor this appended only user + final assistant, mirroring
+        // Go's runAgentLoop. That left tool context out of the session file
+        // and made a persistent summary cache incoherent — the root cause of
+        // the "summary not injected / silent amnesia" bug this refactor fixes.)
 
         // Extract final response once (shared by session store, chat log, and observer).
         let final_response = events
@@ -2655,17 +2542,35 @@ impl AgentLoop {
             // Ensure session exists in store.
             store.get_or_create(session_key);
 
-            // Add user message.
-            store.add_message(session_key, "user", user_message);
-
-            // Add final assistant response.
-            store.add_message(session_key, "assistant", &final_response);
-
-            // Save summary if available.
-            let summary = instance.get_summary();
-            if !summary.is_empty() {
-                store.set_summary(session_key, &summary);
+            // Persist the summary cache (text + covers_up_to) BEFORE the
+            // history: set_history's trim_to_limit reads covers_up_to to decide
+            // which oldest messages are safe to drop (only from the covered
+            // prefix) and adjusts it downward by the number dropped. Setting
+            // covers first means the trim operates on this turn's correct value
+            // and leaves a coherent store (messages + covers aligned). Setting
+            // it AFTER would clobber the trim's adjustment and, for long
+            // conversations (>MAX_STORED_MESSAGES), leave covers_up_to too large
+            // so build_messages drops the verbatim tail.
+            match instance.get_summary_cache() {
+                Some(cache) => {
+                    store.set_summary(session_key, &cache.text);
+                    store.set_summary_covers_up_to(session_key, Some(cache.covers_up_to));
+                }
+                None => {
+                    store.set_summary(session_key, "");
+                    store.set_summary_covers_up_to(session_key, None);
+                }
             }
+
+            // Persist the full instance history (the store is the single source
+            // of truth the next turn's get_or_create_instance reloads). trim runs
+            // inside, bounding to MAX_STORED_MESSAGES and adjusting covers_up_to.
+            let stored: Vec<crate::session::StoredMessage> = instance
+                .get_history()
+                .iter()
+                .map(crate::session::StoredMessage::from)
+                .collect();
+            store.set_history(session_key, stored);
 
             if let Err(e) = store.save(session_key) {
                 warn!(
@@ -3072,8 +2977,9 @@ impl AgentLoop {
                         while retry_count < max_retries {
                             retry_count += 1;
 
-                            // Force-compress: drop oldest 50% of messages.
-                            self.force_compression(instance);
+                            // Force-compress: advance the summary cache (tail → SMALL_K_FORCE,
+                            // then → 0 on a second pass). History is not mutated.
+                            self.force_compression(instance).await;
 
                             // Rebuild messages from compressed history.
                             let mut compressed_messages = self.build_messages(instance);
@@ -4029,6 +3935,66 @@ impl AgentLoop {
     pub fn build_messages(&self, instance: &AgentInstance) -> Vec<LlmMessage> {
         let history = instance.get_history();
 
+        // Inline-summary pipeline. When a summary cache is active, its `text`
+        // folds the covered prefix `history[..covers_up_to]` into the leading
+        // system message, and `history[covers_up_to..]` is sent verbatim. Every
+        // message is either summarized (in `text`) or verbatim — no gap, no
+        // overlap. With no active cache this degrades to sending the entire
+        // history verbatim, byte-identical to pre-refactor behavior.
+        //
+        // `covers_up_to` indexes the full history vector including the system
+        // prompt at index 0. The system prompt is never summarized — it is
+        // rebuilt as the leading system message with the summary appended (so
+        // the cached prefix stays stable between summary updates).
+        let cache = instance.get_summary_cache();
+        let active_cache = cache
+            .as_ref()
+            .filter(|c| !c.text.is_empty() && c.covers_up_to >= 1);
+
+        let mut turns: Vec<crate::types::ConversationTurn> = if let Some(c) = active_cache {
+            let c_idx = c.covers_up_to.min(history.len());
+            // Verbatim tail starts at c_idx but never re-includes the system
+            // prompt at index 0 (it is rebuilt as the leading message below).
+            let tail_start = c_idx.max(1).min(history.len());
+            let summary_block =
+                format!("\n\n## Summary of Previous Conversation\n\n{}", c.text);
+
+            let mut out: Vec<crate::types::ConversationTurn> =
+                Vec::with_capacity(history.len() - tail_start + 1);
+            if history.first().map_or(false, |t| t.role == "system") {
+                // Merge the summary into the configured system prompt (history[0]).
+                let mut sys = history[0].clone();
+                sys.content.push_str(&summary_block);
+                out.push(sys);
+            } else {
+                // No system prompt at history[0]: emit the summary as a
+                // dedicated leading system turn so the provider still sees it.
+                out.push(crate::types::ConversationTurn {
+                    role: "system".to_string(),
+                    content: summary_block,
+                    tool_calls: Vec::new(),
+                    tool_call_id: None,
+                    timestamp: chrono::Local::now().to_rfc3339(),
+                    reasoning_content: None,
+                });
+            }
+            out.extend(history[tail_start..].iter().cloned());
+            out
+        } else {
+            history
+        };
+
+        // Enforce tool-pair consistency at the LLM boundary. Upstream paths
+        // (summarization, session save/load) can leave an assistant tool_call
+        // whose result was dropped — or vice versa — and providers then reject
+        // the whole request with 400 "insufficient tool messages following
+        // tool_calls". Every main-loop LLM call's messages flow through here,
+        // so repairing this local copy is the universal guarantee: the
+        // provider never sees an inconsistent sequence, regardless of which
+        // upstream path produced the history. (Non-destructive: the instance's
+        // own history is untouched; only the outgoing view is cleaned.)
+        crate::types::repair_tool_message_pairs(&mut turns);
+
         let now = chrono::Local::now()
             .format("%Y-%m-%d %H:%M (%A)")
             .to_string();
@@ -4057,23 +4023,23 @@ impl AgentLoop {
         };
 
         // Inject dyn_msg just before the last user message, but only when there
-        // is a system prompt at history[0] to protect (otherwise there's no
+        // is a system prompt at turns[0] to protect (otherwise there's no
         // cached prefix to preserve).
-        let last_user_idx = history
+        let last_user_idx = turns
             .iter()
             .rposition(|t| t.role == "user")
             .filter(|&i| i > 0)
-            .filter(|_| history.first().map_or(false, |t| t.role == "system"));
+            .filter(|_| turns.first().map_or(false, |t| t.role == "system"));
 
         match last_user_idx {
             Some(idx) => {
-                let mut messages: Vec<LlmMessage> = Vec::with_capacity(history.len() + 1);
-                messages.extend(history[..idx].iter().map(turn_to_msg));
+                let mut messages: Vec<LlmMessage> = Vec::with_capacity(turns.len() + 1);
+                messages.extend(turns[..idx].iter().map(turn_to_msg));
                 messages.push(dyn_msg);
-                messages.extend(history[idx..].iter().map(turn_to_msg));
+                messages.extend(turns[idx..].iter().map(turn_to_msg));
                 messages
             }
-            None => history.iter().map(turn_to_msg).collect(),
+            None => turns.iter().map(turn_to_msg).collect(),
         }
     }
 
@@ -4299,94 +4265,55 @@ impl AgentLoop {
 // Standalone summarization helpers (usable from spawned tasks)
 // ---------------------------------------------------------------------------
 
-/// Truncate message list to last `keep_count`, preserving tool message pairs.
-/// Operates on `StoredMessage` (session store layer).
-fn truncate_with_tool_pairs(
-    messages: &[crate::session::StoredMessage],
-    keep_count: usize,
-) -> Vec<crate::session::StoredMessage> {
-    if messages.len() <= keep_count {
-        return messages.to_vec();
+/// Adjust a summarize boundary so the verbatim tail `history[new_c..]` doesn't
+/// START in the middle of a tool_call/result pair.
+///
+/// `summarize_prefix_owned` only folds user/assistant `content` into the
+/// summary — tool_calls and tool results are not summarized. If the boundary
+/// landed between an assistant tool_call (covered by the summary only as text
+/// content, which is often empty for a pure tool-call turn) and its tool
+/// result, `repair_tool_message_pairs` would drop the orphan result from the
+/// tail and the whole interaction would vanish from the LLM's view. Backing
+/// `new_c` up past any leading tool messages moves the parent assistant (and
+/// sibling results) into the verbatim tail, keeping the pair intact. (The old
+/// `truncate_with_tool_pairs` did the equivalent by prepending the parent.)
+///
+/// The summary still covers `history[..returned_new_c]` and the tail is
+/// `history[returned_new_c..]` — the gap-free invariant holds; the tail just
+/// grows slightly past `K_TARGET` when a pair straddles the boundary.
+fn tool_safe_boundary(history: &[crate::types::ConversationTurn], mut new_c: usize) -> usize {
+    while new_c > 0 && new_c < history.len() && history[new_c].role == "tool" {
+        new_c -= 1;
     }
-
-    let start = messages.len() - keep_count;
-    let mut retained: Vec<crate::session::StoredMessage> = messages[start..].to_vec();
-
-    while !retained.is_empty() && retained[0].role == "tool" {
-        let tool_call_id = retained[0].tool_call_id.clone();
-
-        if let Some(ref tc_id) = tool_call_id {
-            let mut found = false;
-            if start > 0 {
-                for i in (0..start).rev() {
-                    if messages[i].role == "assistant" {
-                        if messages[i].tool_calls.iter().any(|tc| tc.id == *tc_id) {
-                            retained.insert(0, messages[i].clone());
-                            found = true;
-                            break;
-                        }
-                    }
-                }
-            }
-            if found {
-                break;
-            }
-        }
-        retained.remove(0);
-    }
-
-    if !retained.is_empty() {
-        // Check ALL assistant messages for incomplete tool_calls.
-        // An assistant has tool_calls but no corresponding tool responses
-        // means the responses were cut off by truncation.
-        let n = retained.len();
-        for i in 0..n {
-            if retained[i].role == "assistant" && !retained[i].tool_calls.is_empty() {
-                let call_ids: Vec<&str> = retained[i]
-                    .tool_calls
-                    .iter()
-                    .map(|tc| tc.id.as_str())
-                    .collect();
-                let has_responses = retained[i + 1..].iter().any(|m| {
-                    m.role == "tool"
-                        && m.tool_call_id
-                            .as_ref()
-                            .map_or(false, |id| call_ids.contains(&id.as_str()))
-                });
-                if !has_responses {
-                    retained[i].tool_calls.clear();
-                }
-            }
-        }
-    }
-
-    retained
+    new_c
 }
 
-/// Standalone summarization function that can run in a spawned task.
-/// Takes ownership of all data it needs (history, provider Arc, model).
-/// Returns `Some(summary)` if summarization was performed, `None` if skipped.
-async fn summarize_history_owned(
-    history: &[crate::types::ConversationTurn],
+/// Summarize a contiguous prefix of the conversation, merging any existing
+/// summary.
+///
+/// Summarizes **all** of `messages` (no internal "keep last N" step) — the
+/// caller has already chosen the verbatim tail boundary (`K_TARGET`), so every
+/// message passed in is meant to be folded into the summary. Keeping a "last N"
+/// here would leave a gap between the summary and the verbatim tail. Reuses the
+/// multipart/batch machinery; merges `existing_summary` (which covers messages
+/// before this prefix) into the result.
+///
+/// Returns `Some(summary)` if a non-empty summary was produced, `None`
+/// otherwise (no valid messages, or the LLM returned empty).
+async fn summarize_prefix_owned(
+    messages: &[&crate::types::ConversationTurn],
     existing_summary: &str,
     context_window: usize,
     provider: &dyn LlmProvider,
     model: &str,
     observer_manager: Option<Arc<nemesis_observer::Manager>>,
 ) -> Option<String> {
-    // Keep last 4 messages for continuity.
-    if history.len() <= 4 {
-        return None;
-    }
-
-    let to_summarize = &history[..history.len() - 4];
-
     // Oversized message guard.
     let max_msg_tokens = context_window / 2;
     let mut valid_messages: Vec<&crate::types::ConversationTurn> = Vec::new();
     let mut omitted = false;
 
-    for m in to_summarize {
+    for m in messages {
         if m.role != "user" && m.role != "assistant" {
             continue;
         }
@@ -4402,7 +4329,6 @@ async fn summarize_history_owned(
         return None;
     }
 
-    // Multi-part summarization.
     let final_summary = if valid_messages.len() > 10 {
         summarize_multipart_owned(&valid_messages, provider, model, observer_manager).await
     } else {
@@ -4516,31 +4442,6 @@ async fn summarize_batch_owned(
             String::new()
         }
         None => String::new(),
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Helper: block_on for LLM calls from sync context
-// ---------------------------------------------------------------------------
-
-/// Run an async LLM call in a blocking context.
-/// Uses tokio::task::block_in_place if inside a runtime, otherwise creates one.
-fn block_on_llm_chat(
-    provider: &dyn LlmProvider,
-    model: &str,
-    messages: Vec<LlmMessage>,
-) -> Option<Result<LlmResponse, String>> {
-    match tokio::runtime::Handle::try_current() {
-        Ok(handle) => Some(tokio::task::block_in_place(|| {
-            handle.block_on(provider.chat(model, messages, None, vec![]))
-        })),
-        Err(_) => {
-            let rt = match tokio::runtime::Runtime::new() {
-                Ok(r) => r,
-                Err(_) => return None,
-            };
-            Some(rt.block_on(provider.chat(model, messages, None, vec![])))
-        }
     }
 }
 

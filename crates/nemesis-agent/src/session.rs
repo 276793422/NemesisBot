@@ -195,6 +195,13 @@ pub struct StoredSession {
     /// Current summary of older messages.
     #[serde(default)]
     pub summary: String,
+    /// Number of leading messages (into the full instance history, including
+    /// the system prompt at index 0) that `summary` covers. `None` on legacy
+    /// session files written before this field existed — loaded as `None`,
+    /// treated by the pipeline as "summary covers everything before the loaded
+    /// tail". Added in S1; not yet consumed.
+    #[serde(default)]
+    pub summary_covers_up_to: Option<usize>,
     /// When this session was created.
     pub created: DateTime<Local>,
     /// When this session was last updated.
@@ -315,6 +322,7 @@ impl SessionStore {
             key: key.to_string(),
             messages: Vec::new(),
             summary: String::new(),
+            summary_covers_up_to: None,
             created: Local::now(),
             updated: Local::now(),
         };
@@ -339,10 +347,11 @@ impl SessionStore {
     pub fn set_history(&self, key: &str, messages: Vec<StoredMessage>) {
         let capture_on = crate::capture_sink::CaptureSink::enabled();
         if let Some(session) = self.sessions.write().unwrap().get_mut(key) {
-            // [capture] set_history is a wholesale replace (no merge). When the
-            // incoming vec is shorter than what's currently stored, it's an old
-            // snapshot overwriting newer writes — the suspected maybe_summarize
-            // race. Record before/after + hash so the timeline can prove it.
+            // [capture] set_history is a wholesale replace (no merge). The old
+            // maybe_summarize stale-snapshot overwrite race is now structurally
+            // impossible (post inline-summarization refactor: the summarize path
+            // no longer writes a truncated history back to the store), but the
+            // capture is retained as a general write-timeline diagnostic.
             let (before_len, overwrite, first_role, last_role, incoming_hash) = if capture_on {
                 let before = session.messages.len();
                 let h = Self::hash_messages(&messages);
@@ -357,6 +366,7 @@ impl SessionStore {
                 (0usize, false, None, None, String::new())
             };
             session.messages = messages;
+            Self::trim_to_limit(session);
             session.updated = Local::now();
             if capture_on {
                 if let Some(sink) = crate::capture_sink::CaptureSink::global() {
@@ -392,6 +402,7 @@ impl SessionStore {
                 timestamp: chrono::Local::now().to_rfc3339(),
                 reasoning_content: None,
             });
+            Self::trim_to_limit(session);
             session.updated = Local::now();
             // [capture] main-loop append. Pairing with set_history records
             // reveals main vs summarize write ordering on the timeline.
@@ -418,10 +429,45 @@ impl SessionStore {
         }
     }
 
-    /// [capture] Stable hash of a message vec's (role, content) sequence —
-    /// lets the write timeline distinguish wholesale replacement from
-    /// in-place growth. Associated fn (no &self) so callers reuse it.
-    fn hash_messages(messages: &[StoredMessage]) -> String {
+/// Maximum number of messages kept in a stored session (disk + in-memory).
+///
+/// When exceeded, the oldest messages are dropped — but only from the
+/// summary-covered prefix (`index < summary_covers_up_to`), and the index is
+/// adjusted down by the number dropped so the cache stays coherent. The
+/// verbatim tail (`index >= covers_up_to`, ≈ K_target ≪ this limit) is never
+/// touched. See [`SessionStore::trim_to_limit`].
+pub(crate) const MAX_STORED_MESSAGES: usize = 1000;
+
+/// Drop oldest messages when a session exceeds [`MAX_STORED_MESSAGES`],
+/// adjusting `summary_covers_up_to` so the cache index stays coherent.
+///
+/// Only messages the summary already covers (index < `covers_up_to`) are
+/// eligible to drop — the verbatim tail is never touched. If there is no
+/// summary yet (`covers_up_to` is `None` / 0), nothing is dropped: we'd rather
+/// overshoot the soft limit than silently lose unsaved context. A summary gets
+/// computed as the conversation grows, after which drops become safe.
+///
+/// This is the SOLE history-trimming mechanism post-refactor (the instance's
+/// history is append-only). Called from `set_history` and `add_message`.
+fn trim_to_limit(session: &mut StoredSession) {
+    if session.messages.len() <= Self::MAX_STORED_MESSAGES {
+        return;
+    }
+    let overflow = session.messages.len() - Self::MAX_STORED_MESSAGES;
+    let c = session.summary_covers_up_to.unwrap_or(0);
+    // Clamp to the covered prefix so we never drop verbatim-tail messages.
+    let drop_n = overflow.min(c);
+    if drop_n == 0 {
+        return;
+    }
+    session.messages.drain(0..drop_n);
+    session.summary_covers_up_to = Some(c - drop_n);
+}
+
+/// [capture] Stable hash of a message vec's (role, content) sequence —
+/// lets the write timeline distinguish wholesale replacement from
+/// in-place growth. Associated fn (no &self) so callers reuse it.
+fn hash_messages(messages: &[StoredMessage]) -> String {
         use std::collections::hash_map::DefaultHasher;
         use std::hash::{Hash, Hasher};
         let mut hasher = DefaultHasher::new();
@@ -462,6 +508,26 @@ impl SessionStore {
     pub fn set_summary(&self, key: &str, summary: &str) {
         if let Some(session) = self.sessions.write().unwrap().get_mut(key) {
             session.summary = summary.to_string();
+            session.updated = Local::now();
+        }
+    }
+
+    /// Get the `summary_covers_up_to` index for a session.
+    ///
+    /// Returns `None` when unset (including legacy session files that predate
+    /// the field — serde loads them with the default `None`).
+    pub fn get_summary_covers_up_to(&self, key: &str) -> Option<usize> {
+        self.sessions
+            .read()
+            .unwrap()
+            .get(key)
+            .and_then(|s| s.summary_covers_up_to)
+    }
+
+    /// Set the `summary_covers_up_to` index for a session. Pass `None` to clear.
+    pub fn set_summary_covers_up_to(&self, key: &str, covers: Option<usize>) {
+        if let Some(session) = self.sessions.write().unwrap().get_mut(key) {
+            session.summary_covers_up_to = covers;
             session.updated = Local::now();
         }
     }
@@ -616,6 +682,7 @@ impl SessionStore {
         if let Some(session) = self.sessions.write().unwrap().get_mut(key) {
             session.messages.clear();
             session.summary.clear();
+            session.summary_covers_up_to = None;
             session.updated = Local::now();
         }
     }

@@ -1,8 +1,9 @@
 //! Agent instance: manages conversation history and state for a single session.
 //!
-//! Each `AgentInstance` tracks the full conversation history for one session,
-//! enforces a maximum history length with truncation, and exposes state
-//! transitions used by the agent loop.
+//! Each `AgentInstance` tracks the full conversation history for one session.
+//! History is strictly append-only in memory (summarization/compression no
+//! longer mutate it); bounding is the session store's responsibility (drop
+//! oldest with a C-aware index adjustment — see `SessionStore::trim_to_limit`).
 
 use std::path::PathBuf;
 use std::sync::Mutex;
@@ -11,11 +12,26 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use crate::types::{AgentConfig, AgentState, ConversationTurn, ToolCallInfo};
 use tracing::debug;
 
-/// Default maximum number of conversation turns to keep (excluding system prompt).
-const DEFAULT_MAX_HISTORY: usize = 100;
-
 /// Monotonically increasing instance counter for unique IDs.
 static INSTANCE_COUNTER: AtomicU64 = AtomicU64::new(1);
+
+/// Cached conversation summary covering a contiguous prefix of history.
+///
+/// Invariant: `text` summarizes `history[..covers_up_to]`, and `build_messages`
+/// sends `history[covers_up_to..]` verbatim — every message is either
+/// summarized (in `text`) or sent verbatim, with no gap and no overlap.
+///
+/// `covers_up_to` is an index into the full `AgentInstance` history vector
+/// (including the system prompt at index 0). The sole writer is the
+/// summarization path (`maybe_update_summary` / `force_compression`);
+/// `build_messages` only reads.
+#[derive(Debug, Clone)]
+pub struct SummaryCache {
+    /// Summary covers `history[..covers_up_to]`.
+    pub covers_up_to: usize,
+    /// The summary text (empty summary ⇒ no cache).
+    pub text: String,
+}
 
 /// An agent instance that manages conversation history for a single session.
 pub struct AgentInstance {
@@ -27,12 +43,11 @@ pub struct AgentInstance {
     history: Mutex<Vec<ConversationTurn>>,
     /// Current agent state.
     state: Mutex<AgentState>,
-    /// Maximum number of turns to retain (excluding system).
-    max_history: usize,
     /// Optional metadata attached to this instance.
     metadata: Mutex<serde_json::Value>,
-    /// Summary of compressed older messages.
-    summary: Mutex<String>,
+    /// Cached summary covering a history prefix (`SummaryCache`). None when
+    /// no summary is cached. See [`SummaryCache`] for the gap-free invariant.
+    summary_cache: Mutex<Option<SummaryCache>>,
     /// Context window size for token-based summarization thresholds.
     context_window: usize,
     /// Workspace directory path for this agent.
@@ -65,9 +80,8 @@ impl AgentInstance {
             config,
             history: Mutex::new(Vec::new()),
             state: Mutex::new(AgentState::Idle),
-            max_history: DEFAULT_MAX_HISTORY,
             metadata: Mutex::new(serde_json::Value::Null),
-            summary: Mutex::new(String::new()),
+            summary_cache: Mutex::new(None),
             context_window: 32000,
             workspace: PathBuf::new(),
             max_iterations: 60,
@@ -357,14 +371,21 @@ impl AgentInstance {
         }
     }
 
-    /// Get the current summary of compressed older messages.
-    pub fn get_summary(&self) -> String {
-        self.summary.lock().unwrap().clone()
+    /// Get the cached summary covering a history prefix, if any.
+    ///
+    /// Returns a clone of the cached [`SummaryCache`] (text + `covers_up_to`),
+    /// or `None` when no summary is cached.
+    pub fn get_summary_cache(&self) -> Option<SummaryCache> {
+        self.summary_cache.lock().unwrap().clone()
     }
 
-    /// Set the summary of compressed older messages.
-    pub fn set_summary(&self, summary: &str) {
-        *self.summary.lock().unwrap() = summary.to_string();
+    /// Set or clear the cached summary covering a history prefix.
+    ///
+    /// Pass `None` to clear. The caller is responsible for maintaining the
+    /// invariant that `text` summarizes `history[..covers_up_to]` (see
+    /// [`SummaryCache`]).
+    pub fn set_summary_cache(&self, cache: Option<SummaryCache>) {
+        *self.summary_cache.lock().unwrap() = cache;
     }
 
     /// Get the context window size.
@@ -481,42 +502,13 @@ impl AgentInstance {
         *self.provider_meta.lock().unwrap() = Some(meta);
     }
 
-    /// Internal helper: push a turn and apply truncation if needed.
+    /// Internal helper: push a turn. History is strictly append-only —
+    /// bounding (with C-aware index adjustment) is the session store's job
+    /// (`SessionStore::trim_to_limit`), never the instance's, so that the
+    /// summary cache's `covers_up_to` index stays valid as history grows.
     fn push_turn(&self, turn: ConversationTurn) {
         let mut history = self.history.lock().unwrap();
-
-        // Count non-system turns.
-        let non_system_count = history.iter().filter(|t| t.role != "system").count();
-
-        // If we are at capacity and this is a non-system turn, truncate.
-        if turn.role != "system" && non_system_count >= self.max_history {
-            self.truncate_history(&mut history);
-        }
-
         history.push(turn);
-    }
-
-    /// Truncate history: keep the system prompt (if any) and the most recent turns.
-    fn truncate_history(&self, history: &mut std::sync::MutexGuard<'_, Vec<ConversationTurn>>) {
-        // Find the system prompt.
-        let system_prompt = history.iter().find(|t| t.role == "system").cloned();
-
-        // Keep the last half of max_history non-system turns.
-        let keep_count = self.max_history / 2;
-        let non_system: Vec<ConversationTurn> = history
-            .iter()
-            .filter(|t| t.role != "system")
-            .cloned()
-            .collect();
-
-        history.clear();
-        if let Some(sp) = system_prompt {
-            history.push(sp);
-        }
-        let start = non_system.len().saturating_sub(keep_count);
-        history.extend(non_system.into_iter().skip(start));
-
-        crate::types::repair_tool_message_pairs(&mut *history);
     }
 }
 

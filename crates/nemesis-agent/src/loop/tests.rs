@@ -1848,7 +1848,10 @@ fn test_build_messages_from_instance() {
 
 #[tokio::test]
 async fn test_force_compression() {
-    let provider = MockLlmProvider::new(vec![]);
+    // Redesigned (S4): force_compression does NOT mutate history. It advances
+    // the summary cache to len-SMALL_K_FORCE and recomputes the summary, so
+    // build_messages emits a shorter verbatim tail.
+    let provider = MockLlmProvider::new(vec![llm_text("EMERGENCY SUMMARY")]);
     let agent_loop = AgentLoop::new(Box::new(provider), test_config());
 
     let instance = AgentInstance::new(test_config());
@@ -1858,27 +1861,33 @@ async fn test_force_compression() {
     // system + 10 = 11
     assert_eq!(instance.get_history().len(), 11);
 
-    agent_loop.force_compression(&instance);
+    agent_loop.force_compression(&instance).await;
 
-    let history = instance.get_history();
-    assert!(history.len() < 11);
-    // System prompt preserved
-    assert_eq!(history[0].role, "system");
-    // Compression note present
-    assert!(history[1].content.contains("Emergency compression"));
+    // History is unchanged (append-only).
+    assert_eq!(instance.get_history().len(), 11);
+    assert_eq!(instance.get_history()[0].role, "system");
+    // Cache advanced to len - SMALL_K_FORCE.
+    let cache = instance.get_summary_cache().expect("cache should be set");
+    assert_eq!(cache.covers_up_to, 11 - SMALL_K_FORCE);
+    assert_eq!(cache.text, "EMERGENCY SUMMARY");
 }
 
-#[test]
-fn test_force_compression_short_history() {
-    let provider = MockLlmProvider::new(vec![]);
+#[tokio::test]
+async fn test_force_compression_short_history() {
+    // A history whose only conversation content summarizes to an empty result
+    // (empty LLM response) → cache stays None (no-op). History unchanged.
+    // (MockLlmProvider returns "No more responses" when exhausted, which is
+    // non-empty, so use an explicit empty response to exercise the None path.)
+    let provider = MockLlmProvider::new(vec![llm_text("")]);
     let agent_loop = AgentLoop::new(Box::new(provider), test_config());
 
     let instance = AgentInstance::new(test_config());
     instance.add_user_message("Hello");
 
-    let original_len = instance.get_history().len();
-    agent_loop.force_compression(&instance);
-    assert_eq!(instance.get_history().len(), original_len); // No change
+    agent_loop.force_compression(&instance).await;
+    assert!(instance.get_summary_cache().is_none());
+    // History len unchanged: system + 1 user = 2.
+    assert_eq!(instance.get_history().len(), 2);
 }
 
 #[test]
@@ -3388,40 +3397,9 @@ async fn test_process_system_message_without_result_prefix() {
 }
 
 #[tokio::test]
-async fn test_summarize_history_owned_short_history() {
-    let provider = MockLlmProvider::new(vec![]);
-    let history: Vec<crate::types::ConversationTurn> = vec![crate::types::ConversationTurn {
-        role: "user".to_string(),
-        content: "Hi".to_string(),
-        tool_calls: Vec::new(),
-        tool_call_id: None,
-        timestamp: String::new(),
-        reasoning_content: None,
-    }];
-    let result = summarize_history_owned(&history, "", 128000, &provider, "test-model", None).await;
-    assert!(result.is_none()); // Too short to summarize
-}
-
-#[tokio::test]
-async fn test_summarize_history_owned_filters_non_user_messages() {
-    let provider = MockLlmProvider::new(vec![]);
-    // 5 messages, all system/tool -> should return None (no valid messages)
-    let history: Vec<crate::types::ConversationTurn> = (0..6)
-        .map(|i| crate::types::ConversationTurn {
-            role: if i == 0 { "system" } else { "tool" }.to_string(),
-            content: "msg".to_string(),
-            tool_calls: Vec::new(),
-            tool_call_id: None,
-            timestamp: String::new(),
-            reasoning_content: None,
-        })
-        .collect();
-    let result = summarize_history_owned(&history, "", 128000, &provider, "test-model", None).await;
-    assert!(result.is_none());
-}
-
-#[test]
-fn test_force_compression_no_system_prompt() {
+async fn test_force_compression_no_system_prompt() {
+    // force_compression works without a system prompt: the cache advances and
+    // build_messages emits the leading summary system turn + verbatim tail.
     let config = AgentConfig {
         model: "test".to_string(),
         system_prompt: None,
@@ -3430,34 +3408,53 @@ fn test_force_compression_no_system_prompt() {
         models: std::collections::HashMap::new(),
     };
     let instance = AgentInstance::new(config);
-    // Add many messages without system prompt
-    for i in 0..20 {
+    for i in 0..5 {
         instance.add_user_message(&format!("User message {}", i));
         instance.add_assistant_message(&format!("Response {}", i), Vec::new(), None);
     }
+    // No system prompt → history = 10 conversation messages.
 
-    let agent_loop = AgentLoop::new(Box::new(MockLlmProvider::new(vec![])), test_config());
-    let initial_len = instance.get_history().len();
-    agent_loop.force_compression(&instance);
-    let compressed_len = instance.get_history().len();
-    assert!(compressed_len < initial_len);
+    let agent_loop = AgentLoop::new(
+        Box::new(MockLlmProvider::new(vec![llm_text("SUMMARY")])),
+        test_config(),
+    );
+    agent_loop.force_compression(&instance).await;
+
+    let cache = instance.get_summary_cache().expect("cache should be set");
+    assert_eq!(cache.covers_up_to, 10 - SMALL_K_FORCE);
+    assert_eq!(cache.text, "SUMMARY");
+    // History unchanged.
+    assert_eq!(instance.get_history().len(), 10);
 }
 
-#[test]
-fn test_force_compression_preserves_last_message() {
+#[tokio::test]
+async fn test_force_compression_preserves_last_message() {
+    // The current user message must remain in the verbatim tail after
+    // compression so build_messages still sends it to the LLM.
     let instance = AgentInstance::new(test_config());
     for i in 0..20 {
         instance.add_user_message(&format!("User {}", i));
         instance.add_assistant_message(&format!("Response {}", i), Vec::new(), None);
     }
-    // Add a final user message
     instance.add_user_message("Final message");
+    // history = [sys, 40 msgs, "Final message"] = 42.
 
-    let agent_loop = AgentLoop::new(Box::new(MockLlmProvider::new(vec![])), test_config());
-    agent_loop.force_compression(&instance);
+    let agent_loop = AgentLoop::new(
+        Box::new(MockLlmProvider::new(vec![llm_text("SUMMARY")])),
+        test_config(),
+    );
+    agent_loop.force_compression(&instance).await;
 
-    let history = instance.get_history();
-    assert_eq!(history.last().unwrap().content, "Final message");
+    let cache = instance.get_summary_cache().expect("cache should be set");
+    assert_eq!(cache.covers_up_to, 42 - SMALL_K_FORCE); // tail = last 2 messages
+    // build_messages sends the verbatim tail, which includes "Final message".
+    let messages = agent_loop.build_messages(&instance);
+    let joined: String = messages
+        .iter()
+        .map(|m| m.content.clone())
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(joined.contains("Final message"));
 }
 
 #[test]
@@ -3695,7 +3692,7 @@ async fn test_maybe_summarize_no_session_store() {
     }
     // Should not panic even without session store
     agent_loop
-        .maybe_summarize(&instance, "test-session", "web", "chat1")
+        .maybe_update_summary(&instance, "test-session", "web", "chat1")
         .await;
 }
 
@@ -3734,12 +3731,404 @@ async fn test_maybe_summarize_already_summarizing() {
 
     // First call triggers summarization
     agent_loop
-        .maybe_summarize(&instance, "sess1", "web", "chat1")
+        .maybe_update_summary(&instance, "sess1", "web", "chat1")
         .await;
     // Second call should be skipped (already summarizing)
     agent_loop
-        .maybe_summarize(&instance, "sess1", "web", "chat1")
+        .maybe_update_summary(&instance, "sess1", "web", "chat1")
         .await;
+}
+
+#[tokio::test]
+async fn test_maybe_update_summary_advances_cache_when_tail_over_threshold() {
+    // Small context window → 75% threshold is low, so a handful of messages
+    // crosses it. Verifies the cache advances to len-K_TARGET and stores the
+    // summary text.
+    let (outbound_tx, _) = tokio::sync::mpsc::channel(16);
+    let provider = MockLlmProvider::new(vec![llm_text("SUMMARY")]);
+    let agent_loop = AgentLoop::new_bus(
+        Box::new(provider),
+        test_config(),
+        outbound_tx,
+        ConcurrentMode::Reject,
+        8,
+        0,
+    );
+    let mut instance = AgentInstance::new(test_config());
+    instance.set_context_window(100); // threshold = 75 tokens
+    for i in 0..5 {
+        instance.add_user_message(&format!("user msg {} with padding to add tokens", i));
+        instance.add_assistant_message(
+            &format!("assistant reply {} with padding", i),
+            Vec::new(),
+            None,
+        );
+    }
+    // history = [sys, 5u, 5a] = 11. tail tokens > 75; tail_len = 11 > K_TARGET.
+    agent_loop
+        .maybe_update_summary(&instance, "s", "web", "c")
+        .await;
+
+    let cache = instance.get_summary_cache().expect("cache should be set");
+    assert_eq!(cache.covers_up_to, 11 - K_TARGET);
+    assert_eq!(cache.text, "SUMMARY");
+}
+
+#[tokio::test]
+async fn test_maybe_update_summary_no_trigger_below_threshold() {
+    // Huge context window → threshold never crossed → cache stays None and the
+    // LLM is never called (no responses provisioned).
+    let (outbound_tx, _) = tokio::sync::mpsc::channel(16);
+    let provider = MockLlmProvider::new(vec![]);
+    let agent_loop = AgentLoop::new_bus(
+        Box::new(provider),
+        test_config(),
+        outbound_tx,
+        ConcurrentMode::Reject,
+        8,
+        0,
+    );
+    let mut instance = AgentInstance::new(test_config());
+    instance.set_context_window(100_000);
+    for i in 0..5 {
+        instance.add_user_message(&format!("msg {}", i));
+        instance.add_assistant_message(&format!("reply {}", i), Vec::new(), None);
+    }
+    agent_loop
+        .maybe_update_summary(&instance, "s", "web", "c")
+        .await;
+    assert!(instance.get_summary_cache().is_none());
+}
+
+#[tokio::test]
+async fn test_maybe_update_summary_no_stuck_when_tail_short_but_over_threshold() {
+    // Regression (found via S7 实跑): a few HUGE messages put tail_tokens over
+    // the threshold while tail_len <= K_TARGET (too short to summarize yet).
+    // The stuck counter must NOT tick in this state — the old logic ticked it
+    // on `tail_tokens >= threshold` regardless of tail_len, so a big system
+    // prompt / early oversized tool result paused summarization before it ever
+    // ran. Verify summarize still fires once the tail grows long enough.
+    let (outbound_tx, _) = tokio::sync::mpsc::channel(16);
+    let provider = MockLlmProvider::new(vec![llm_text("SUMMARY")]);
+    let agent_loop = AgentLoop::new_bus(
+        Box::new(provider),
+        test_config(),
+        outbound_tx,
+        ConcurrentMode::Reject,
+        8,
+        0,
+    );
+    let mut instance = AgentInstance::new(test_config());
+    instance.set_context_window(100); // threshold = 75 tokens
+    // 3 huge messages: tail_tokens way over 75, but tail_len = 3 <= K_TARGET(6).
+    instance.add_user_message(&"x".repeat(500));
+    instance.add_assistant_message(&"y".repeat(500), Vec::new(), None);
+    instance.add_user_message(&"z".repeat(500));
+
+    // Two calls while over-threshold-but-too-short. Old bug: stuck ticks to 2
+    // and pauses. Fix: no tick (can't summarize yet).
+    agent_loop
+        .maybe_update_summary(&instance, "s", "web", "c")
+        .await;
+    agent_loop
+        .maybe_update_summary(&instance, "s", "web", "c")
+        .await;
+    assert!(instance.get_summary_cache().is_none()); // too short to summarize
+
+    // Grow the tail past K_TARGET — summarize MUST still run (not paused).
+    for i in 0..5 {
+        instance.add_user_message(&format!("grow {}", i));
+        instance.add_assistant_message(&format!("ack {}", i), Vec::new(), None);
+    }
+    agent_loop
+        .maybe_update_summary(&instance, "s", "web", "c")
+        .await;
+    instance
+        .get_summary_cache()
+        .expect("summarize must run once the tail is long enough (stuck did not pause it)");
+}
+
+#[test]
+fn test_tool_safe_boundary_backs_past_leading_tool() {
+    // The summarize boundary (len - K_TARGET) may land between an assistant
+    // tool_call and its tool result. tool_safe_boundary must back it up to the
+    // parent assistant so the pair stays verbatim in the tail (otherwise repair
+    // drops the orphan result and the interaction is lost — summarize only
+    // covers user/assistant content, not tool_calls/results).
+    let tc = |id: &str| crate::types::ToolCallInfo {
+        id: id.to_string(),
+        name: "t".to_string(),
+        arguments: "{}".to_string(),
+    };
+    let turn = |role: &str,
+                content: &str,
+                tcs: Vec<crate::types::ToolCallInfo>,
+                tcid: Option<&str>| crate::types::ConversationTurn {
+        role: role.to_string(),
+        content: content.to_string(),
+        tool_calls: tcs,
+        tool_call_id: tcid.map(String::from),
+        timestamp: String::new(),
+        reasoning_content: None,
+    };
+    let history = vec![
+        turn("system", "sys", vec![], None),            // 0
+        turn("user", "u1", vec![], None),               // 1
+        turn("user", "u2", vec![], None),               // 2
+        turn("assistant", "go", vec![tc("c1")], None),  // 3 parent
+        turn("tool", "res", vec![], Some("c1")),        // 4 naive boundary lands here
+        turn("user", "u3", vec![], None),               // 5
+        turn("assistant", "a2", vec![], None),          // 6
+        turn("user", "u4", vec![], None),               // 7
+        turn("assistant", "a3", vec![], None),          // 8
+        turn("user", "u5", vec![], None),               // 9
+    ];
+    // Naive new_c = 10 - K_TARGET(6) = 4 → history[4] is tool → back up to 3.
+    assert_eq!(tool_safe_boundary(&history, 10 - K_TARGET), 3);
+    // If the boundary is already on a non-tool, it is unchanged.
+    assert_eq!(tool_safe_boundary(&history, 5), 5);
+    // Multiple consecutive tools back up past all of them to the parent.
+    let history2 = vec![
+        turn("assistant", "go", vec![tc("c1"), tc("c2")], None), // 0 parent
+        turn("tool", "r1", vec![], Some("c1")),                  // 1
+        turn("tool", "r2", vec![], Some("c2")),                  // 2
+        turn("user", "u", vec![], None),                         // 3
+    ];
+    assert_eq!(tool_safe_boundary(&history2, 2), 0);
+}
+
+#[tokio::test]
+async fn test_maybe_update_summary_boundary_is_tool_pair_safe() {
+    // Integration: maybe_update_summary must set a tool-safe covers_up_to when
+    // the naive boundary (len - K_TARGET) lands on a tool result. Regression
+    // for the boundary-splits-tool-pair info loss found in second-pass review.
+    let (outbound_tx, _) = tokio::sync::mpsc::channel(16);
+    let provider = MockLlmProvider::new(vec![llm_text("SUMMARY")]);
+    let agent_loop = AgentLoop::new_bus(
+        Box::new(provider),
+        test_config(),
+        outbound_tx,
+        ConcurrentMode::Reject,
+        8,
+        0,
+    );
+    let mut instance = AgentInstance::new(test_config());
+    instance.set_context_window(100); // threshold = 75 tokens
+    let tc = |id: &str| crate::types::ToolCallInfo {
+        id: id.to_string(),
+        name: "t".to_string(),
+        arguments: "{}".to_string(),
+    };
+    let turn = |role: &str,
+                content: &str,
+                tcs: Vec<crate::types::ToolCallInfo>,
+                tcid: Option<&str>| crate::types::ConversationTurn {
+        role: role.to_string(),
+        content: content.to_string(),
+        tool_calls: tcs,
+        tool_call_id: tcid.map(String::from),
+        timestamp: String::new(),
+        reasoning_content: None,
+    };
+    instance.set_history(vec![
+        turn("system", "sys", vec![], None),                       // 0
+        turn("user", &format!("u1 {}", "x".repeat(60)), vec![], None), // 1
+        turn("user", &format!("u2 {}", "x".repeat(60)), vec![], None), // 2
+        turn("assistant", "go", vec![tc("c1")], None),             // 3 parent
+        turn("tool", "res", vec![], Some("c1")),                   // 4 naive new_c lands here
+        turn("user", &format!("u3 {}", "x".repeat(60)), vec![], None), // 5
+        turn("assistant", "a2", vec![], None),                     // 6
+        turn("user", &format!("u4 {}", "x".repeat(60)), vec![], None), // 7
+        turn("assistant", "a3", vec![], None),                     // 8
+        turn("user", &format!("u5 {}", "x".repeat(60)), vec![], None), // 9
+    ]);
+    // len=10, naive new_c = 10 - K_TARGET(6) = 4 → tool_safe_boundary backs to 3.
+    agent_loop
+        .maybe_update_summary(&instance, "s", "web", "c")
+        .await;
+    let cache = instance.get_summary_cache().expect("cache should be set");
+    assert_eq!(
+        cache.covers_up_to, 3,
+        "boundary must back up past the tool result to its parent assistant"
+    );
+}
+
+#[tokio::test]
+async fn test_e2e_summarize_persist_reload_inject() {
+    // True end-to-end of the amnesia-fix chain: summarize -> persist -> reload
+    // -> build_messages injects. This chains the pieces the isolated unit tests
+    // cover separately, verifying the WIRING between them — exactly where the
+    // three review-found bugs lived (stuck pause, save order, boundary split).
+    // context_window is forced small only on the summarizing turn; the reload
+    // turn resets it to 32000 but build_messages doesn't use context_window,
+    // so injection still works.
+    let (outbound_tx, _) = tokio::sync::mpsc::channel(16);
+    let provider = MockLlmProvider::new(vec![llm_text("EARLIER CONTEXT SUMMARY")]);
+    let mut agent_loop = AgentLoop::new_bus(
+        Box::new(provider),
+        test_config(),
+        outbound_tx,
+        ConcurrentMode::Reject,
+        8,
+        0,
+    );
+    let store = std::sync::Arc::new(crate::session::SessionStore::new_in_memory());
+    agent_loop.set_session_store(store.clone());
+    store.get_or_create("e2e:k");
+
+    // --- Turn 1: accumulate history, trigger summarization, persist. ---
+    let mut inst = agent_loop.get_or_create_instance("e2e:k");
+    inst.set_context_window(100); // small threshold forces summarization
+    for i in 0..8 {
+        inst.add_user_message(&format!("user msg {} with padding to cross threshold", i));
+        inst.add_assistant_message(&format!("assistant reply {}", i), Vec::new(), None);
+    }
+    agent_loop
+        .maybe_update_summary(&inst, "e2e:k", "web", "c")
+        .await;
+    let cache_after = inst
+        .get_summary_cache()
+        .expect("summarize should have set the cache");
+    assert_eq!(cache_after.text, "EARLIER CONTEXT SUMMARY");
+    // Persist, mirroring run_agent_loop_internal's save path (cache BEFORE history).
+    store.set_summary("e2e:k", &cache_after.text);
+    store.set_summary_covers_up_to("e2e:k", Some(cache_after.covers_up_to));
+    let stored: Vec<crate::session::StoredMessage> = inst
+        .get_history()
+        .iter()
+        .map(crate::session::StoredMessage::from)
+        .collect();
+    store.set_history("e2e:k", stored);
+
+    // --- Turn 2: reload from store; build_messages must inject the summary. ---
+    let inst2 = agent_loop.get_or_create_instance("e2e:k");
+    let cache_loaded = inst2
+        .get_summary_cache()
+        .expect("cache must survive the store round-trip (the amnesia fix)");
+    assert_eq!(cache_loaded.text, "EARLIER CONTEXT SUMMARY");
+    assert!(cache_loaded.covers_up_to >= 1);
+
+    let messages = agent_loop.build_messages(&inst2);
+    assert!(
+        messages[0].content.contains("## Summary of Previous Conversation"),
+        "summary must be injected into the system message"
+    );
+    assert!(messages[0].content.contains("EARLIER CONTEXT SUMMARY"));
+    // The verbatim tail (recent turns) is still sent.
+    let joined: String = messages
+        .iter()
+        .map(|m| m.content.clone())
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(joined.contains("assistant reply 7"));
+}
+
+#[tokio::test]
+async fn test_summarize_prefix_owned_returns_summary() {
+    // summarize_prefix_owned folds ALL provided messages (no "keep last N")
+    // and merges the existing summary.
+    let provider = MockLlmProvider::new(vec![llm_text("prefix summary")]);
+    let turns = vec![
+        summary_turn("user", "question one"),
+        summary_turn("assistant", "answer one"),
+        summary_turn("user", "question two"),
+    ];
+    let refs: Vec<&crate::types::ConversationTurn> = turns.iter().collect();
+    let result =
+        summarize_prefix_owned(&refs, "existing context", 32000, &provider, "test-model", None)
+            .await;
+    assert!(result.is_some(), "prefix summarize should return a summary");
+    assert!(result.unwrap().contains("prefix summary"));
+}
+
+// --- S3.3: save/load cache round-trip (the amnesia fix wiring) ---
+
+fn stored(role: &str, content: &str) -> crate::session::StoredMessage {
+    crate::session::StoredMessage::from(&summary_turn(role, content))
+}
+
+#[test]
+fn test_get_or_create_instance_restores_summary_cache() {
+    // New-format file: full history + summary + covers_up_to. get_or_create
+    // must restore the cache, and build_messages must inject the summary and
+    // send only the verbatim tail (history[covers_up_to..]).
+    let mut agent_loop = AgentLoop::new(Box::new(MockLlmProvider::new(vec![])), test_config());
+    let store = std::sync::Arc::new(crate::session::SessionStore::new_in_memory());
+    agent_loop.set_session_store(store.clone());
+
+    // set_history/set_summary require the session to pre-exist (they use get_mut).
+    store.get_or_create("sk");
+    let msgs = vec![
+        stored("system", "SYS"),
+        stored("user", "old question"),
+        stored("assistant", "old answer"),
+        stored("user", "recent question"),
+        stored("assistant", "recent answer"),
+    ];
+    store.set_history("sk", msgs);
+    store.set_summary("sk", "OLD SUMMARY");
+    store.set_summary_covers_up_to("sk", Some(3));
+
+    let instance = agent_loop.get_or_create_instance("sk");
+    let cache = instance.get_summary_cache().expect("cache should be restored");
+    assert_eq!(cache.covers_up_to, 3);
+    assert_eq!(cache.text, "OLD SUMMARY");
+
+    let messages = agent_loop.build_messages(&instance);
+    assert!(messages[0].content.contains("OLD SUMMARY"));
+    let joined: String = messages
+        .iter()
+        .map(|m| m.content.clone())
+        .collect::<Vec<_>>()
+        .join("\n");
+    // Covered prefix (indices 1, 2 < 3) folded into summary, not sent verbatim.
+    assert!(!joined.contains("old question"));
+    assert!(!joined.contains("old answer"));
+    // Verbatim tail (indices 3, 4) preserved.
+    assert!(joined.contains("recent question"));
+    assert!(joined.contains("recent answer"));
+}
+
+#[test]
+fn test_get_or_create_instance_legacy_summary_mapping() {
+    // Legacy file (pre-refactor): summary present but covers_up_to absent.
+    // Must map covers_up_to so ALL loaded messages are sent verbatim while the
+    // summary is injected as floating context (it covered older, truncated
+    // content not in the loaded messages).
+    let mut agent_loop = AgentLoop::new(Box::new(MockLlmProvider::new(vec![])), test_config());
+    let store = std::sync::Arc::new(crate::session::SessionStore::new_in_memory());
+    agent_loop.set_session_store(store.clone());
+
+    store.get_or_create("sk");
+    let msgs = vec![
+        stored("system", "SYS"),
+        stored("user", "first"),
+        stored("assistant", "second"),
+        stored("user", "third"),
+    ];
+    store.set_history("sk", msgs);
+    store.set_summary("sk", "LEGACY FLOATING SUMMARY");
+    // covers_up_to intentionally NOT set → None (legacy).
+
+    let instance = agent_loop.get_or_create_instance("sk");
+    let cache = instance
+        .get_summary_cache()
+        .expect("cache should be restored from legacy file");
+    // Leading-system count = 1 → all conversation sent verbatim.
+    assert_eq!(cache.covers_up_to, 1);
+    assert_eq!(cache.text, "LEGACY FLOATING SUMMARY");
+
+    let messages = agent_loop.build_messages(&instance);
+    assert!(messages[0].content.contains("LEGACY FLOATING SUMMARY"));
+    let joined: String = messages
+        .iter()
+        .map(|m| m.content.clone())
+        .collect::<Vec<_>>()
+        .join("\n");
+    // No loaded message lost — all sent verbatim.
+    assert!(joined.contains("first"));
+    assert!(joined.contains("second"));
+    assert!(joined.contains("third"));
 }
 
 // =========================================================================
@@ -5323,10 +5712,63 @@ fn test_handle_command_show_system_prompt_with_config() {
     let _ = result;
 }
 
-// --- truncate_with_tool_pairs tests ---
+#[test]
+fn test_build_messages_repairs_orphan_tool_call() {
+    // The exact failure shape: an assistant tool_call with no matching tool
+    // result in history (the kind of state a buggy truncation can persist).
+    // build_messages is the LLM-boundary chokepoint — every main-loop LLM call
+    // flows through it — so it must repair the orphan away before the messages
+    // reach the provider, preventing the 400.
+    let agent_loop = AgentLoop::new(Box::new(MockLlmProvider::new(vec![])), test_config());
+    let instance = AgentInstance::new(test_config());
+    let tc = |id: &str| crate::types::ToolCallInfo {
+        id: id.to_string(),
+        name: "t".to_string(),
+        arguments: "{}".to_string(),
+    };
+    let turn = |role: &str, content: &str, tcs: Vec<crate::types::ToolCallInfo>, tcid: Option<&str>| crate::types::ConversationTurn {
+        role: role.to_string(),
+        content: content.to_string(),
+        tool_calls: tcs,
+        tool_call_id: tcid.map(|s| s.to_string()),
+        timestamp: String::new(),
+        reasoning_content: None,
+    };
+    // assistant issues [call_A, call_B] but only call_B has a tool result.
+    instance.set_history(vec![
+        turn("system", "sys", vec![], None),
+        turn("user", "do it", vec![], None),
+        turn("assistant", "go", vec![tc("call_A"), tc("call_B")], None),
+        turn("tool", "respB", vec![], Some("call_B")),
+        turn("user", "next", vec![], None),
+    ]);
 
-fn make_stored(role: &str, content: &str) -> crate::session::StoredMessage {
-    crate::session::StoredMessage {
+    let messages = agent_loop.build_messages(&instance);
+
+    let asst = messages
+        .iter()
+        .find(|m| m.role == "assistant" && m.tool_calls.is_some())
+        .expect("assistant with tool_calls present");
+    let ids: Vec<&str> = asst
+        .tool_calls
+        .as_ref()
+        .unwrap()
+        .iter()
+        .map(|tc| tc.id.as_str())
+        .collect();
+    assert_eq!(
+        ids, vec!["call_B"],
+        "orphan call_A must be repaired away before the messages reach the LLM"
+    );
+}
+
+// ===========================================================================
+// S2: build_messages inline-summary pipeline
+// ===========================================================================
+
+/// Build a ConversationTurn with empty tool_calls / tool_call_id.
+fn summary_turn(role: &str, content: &str) -> crate::types::ConversationTurn {
+    crate::types::ConversationTurn {
         role: role.to_string(),
         content: content.to_string(),
         tool_calls: Vec::new(),
@@ -5336,98 +5778,176 @@ fn make_stored(role: &str, content: &str) -> crate::session::StoredMessage {
     }
 }
 
-fn make_stored_asst_tc(content: &str, ids: &[&str]) -> crate::session::StoredMessage {
-    crate::session::StoredMessage {
-        role: "assistant".to_string(),
-        content: content.to_string(),
-        tool_calls: ids
-            .iter()
-            .map(|id| crate::session::StoredToolCall {
-                id: id.to_string(),
-                name: "tool".to_string(),
-                arguments: "{}".to_string(),
-            })
-            .collect(),
-        tool_call_id: None,
-        timestamp: String::new(),
-        reasoning_content: None,
-    }
-}
+#[test]
+fn test_build_messages_injects_summary_from_cache() {
+    // cache.covers_up_to = 3 folds history[..3] = [sys, u1, a1] into the
+    // summary; history[3..] = [u2, a2, u3] is sent verbatim. The covered
+    // messages (u1, a1) must NOT appear in the output.
+    let agent_loop = AgentLoop::new(Box::new(MockLlmProvider::new(vec![])), test_config());
+    let instance = AgentInstance::new(test_config());
+    instance.set_history(vec![
+        summary_turn("system", "SYS"),
+        summary_turn("user", "first"),
+        summary_turn("assistant", "second"),
+        summary_turn("user", "third"),
+        summary_turn("assistant", "fourth"),
+        summary_turn("user", "fifth"),
+    ]);
+    instance.set_summary_cache(Some(crate::instance::SummaryCache {
+        covers_up_to: 3,
+        text: "EARLIER CONTEXT".to_string(),
+    }));
 
-fn make_stored_tool(content: &str, tc_id: &str) -> crate::session::StoredMessage {
-    crate::session::StoredMessage {
-        role: "tool".to_string(),
-        content: content.to_string(),
-        tool_calls: Vec::new(),
-        tool_call_id: Some(tc_id.to_string()),
-        timestamp: String::new(),
-        reasoning_content: None,
-    }
+    let messages = agent_loop.build_messages(&instance);
+
+    // Leading system message carries the original prompt + the summary block.
+    assert_eq!(messages[0].role, "system");
+    assert!(messages[0].content.contains("SYS"));
+    assert!(messages[0].content.contains("## Summary of Previous Conversation"));
+    assert!(messages[0].content.contains("EARLIER CONTEXT"));
+
+    let joined: String = messages
+        .iter()
+        .map(|m| m.content.clone())
+        .collect::<Vec<_>>()
+        .join("\n");
+    // Covered prefix is absent (folded into the summary, not sent verbatim).
+    assert!(!joined.contains("first"));
+    assert!(!joined.contains("second"));
+    // Verbatim tail is present.
+    assert!(joined.contains("third"));
+    assert!(joined.contains("fourth"));
+    assert!(joined.contains("fifth"));
 }
 
 #[test]
-fn test_truncate_tool_pairs_intact_after_truncation() {
-    let msgs = vec![
-        make_stored("user", "u1"),
-        make_stored_asst_tc("", &["call_1"]),
-        make_stored_tool("resp", "call_1"),
-        make_stored("user", "u2"),
-        make_stored("assistant", "text"),
-        make_stored("user", "u3"),
-    ];
-    let result = truncate_with_tool_pairs(&msgs, 4);
-    // Last 4: [tool(resp), user, assistant, user]
-    // tool at start → look back → find assistant(tc) → include it
-    assert!(result.len() >= 4);
-    // Verify no orphaned tool at start
-    assert_ne!(result[0].role, "tool");
+fn test_build_messages_cache_preserves_tail_verbatim() {
+    // The verbatim tail (history[C..]) must be emitted byte-for-byte:
+    // identical role + content, in order. This is the no-gap / no-overlap
+    // invariant of the pipeline.
+    let agent_loop = AgentLoop::new(Box::new(MockLlmProvider::new(vec![])), test_config());
+    let instance = AgentInstance::new(test_config());
+    instance.set_history(vec![
+        summary_turn("system", "SYS"),
+        summary_turn("user", "covered-u"),
+        summary_turn("assistant", "covered-a"),
+        summary_turn("user", "tail-u"),
+        summary_turn("assistant", "tail-a"),
+        summary_turn("user", "last-u"),
+    ]);
+    instance.set_summary_cache(Some(crate::instance::SummaryCache {
+        covers_up_to: 3,
+        text: "summary text".to_string(),
+    }));
+
+    let messages = agent_loop.build_messages(&instance);
+
+    // Drop the leading system+summary and the injected dyn_msg to recover the
+    // verbatim conversation tail. The dyn_msg sits just before the last user.
+    let tail: Vec<&str> = messages
+        .iter()
+        .filter(|m| m.role != "system") // exclude sys+summary and dyn_msg
+        .map(|m| m.content.as_str())
+        .collect();
+    assert_eq!(
+        tail,
+        vec!["tail-u", "tail-a", "last-u"],
+        "verbatim tail must be history[C..] in order"
+    );
 }
 
 #[test]
-fn test_truncate_tool_pairs_cutoff_between_asst_tool() {
-    let msgs = vec![
-        make_stored("user", "u1"),
-        make_stored_asst_tc("", &["call_1"]),
-        make_stored_tool("resp", "call_1"),
-        make_stored("user", "u2"),
-    ];
-    let result = truncate_with_tool_pairs(&msgs, 2);
-    // Last 2: [tool(resp), user]
-    // tool at start → look back → find asst(tc) → include
-    assert!(result.len() >= 2);
-    assert_ne!(result[0].role, "tool");
+fn test_build_messages_cache_empty_text_degrades() {
+    // An empty summary text means "no cache": build_messages must send the
+    // entire history verbatim (legacy behavior), NOT drop the covered prefix.
+    let agent_loop = AgentLoop::new(Box::new(MockLlmProvider::new(vec![])), test_config());
+    let instance = AgentInstance::new(test_config());
+    instance.set_history(vec![
+        summary_turn("system", "SYS"),
+        summary_turn("user", "first"),
+        summary_turn("assistant", "second"),
+        summary_turn("user", "third"),
+    ]);
+    instance.set_summary_cache(Some(crate::instance::SummaryCache {
+        covers_up_to: 3,
+        text: String::new(),
+    }));
+
+    let messages = agent_loop.build_messages(&instance);
+    let joined: String = messages
+        .iter()
+        .map(|m| m.content.clone())
+        .collect::<Vec<_>>()
+        .join("\n");
+    // Everything is present (no folding for an empty summary).
+    assert!(joined.contains("first"));
+    assert!(joined.contains("second"));
+    assert!(joined.contains("third"));
+    assert!(!joined.contains("## Summary of Previous Conversation"));
 }
 
 #[test]
-fn test_truncate_tool_pairs_multiple_orphaned_tools() {
-    let msgs = vec![
-        make_stored("user", "u1"),
-        make_stored_asst_tc("", &["call_1"]),
-        make_stored_tool("resp1", "call_1"),
-        make_stored_tool("resp2", "orphan_id"),
-        make_stored("user", "u2"),
-        make_stored("user", "u3"),
-    ];
-    let result = truncate_with_tool_pairs(&msgs, 3);
-    // Last 3: [tool(resp2), user, user]
-    // resp2's id not in any prior asst → remove
-    assert_eq!(result.len(), 2);
-    assert_eq!(result[0].role, "user");
+fn test_build_messages_cache_zero_covers_degrades() {
+    // covers_up_to = 0 means "summary covers nothing" → treat as no cache and
+    // send everything verbatim. (Guards against a degenerate cache dropping the
+    // whole history.)
+    let agent_loop = AgentLoop::new(Box::new(MockLlmProvider::new(vec![])), test_config());
+    let instance = AgentInstance::new(test_config());
+    instance.set_history(vec![
+        summary_turn("system", "SYS"),
+        summary_turn("user", "first"),
+        summary_turn("assistant", "second"),
+    ]);
+    instance.set_summary_cache(Some(crate::instance::SummaryCache {
+        covers_up_to: 0,
+        text: "some summary".to_string(),
+    }));
+
+    let messages = agent_loop.build_messages(&instance);
+    let joined: String = messages
+        .iter()
+        .map(|m| m.content.clone())
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(joined.contains("first"));
+    assert!(joined.contains("second"));
 }
 
 #[test]
-fn test_truncate_tool_pairs_trailing_asst_clears_calls() {
-    let msgs = vec![
-        make_stored("user", "u1"),
-        make_stored("assistant", "text"),
-        make_stored_asst_tc("", &["call_1"]),
-        make_stored("user", "u2"),
-    ];
-    let result = truncate_with_tool_pairs(&msgs, 2);
-    // Last 2: [asst(tc), user] — asst has tool_calls but no tool response
-    assert_eq!(result.len(), 2);
-    assert_eq!(result[0].role, "assistant");
-    assert!(result[0].tool_calls.is_empty());
+fn test_build_messages_cache_no_system_prompt() {
+    // When history has no system prompt at index 0, the summary is emitted as
+    // a dedicated leading system turn (so the provider still receives it).
+    let config = AgentConfig {
+        model: "test".to_string(),
+        system_prompt: None,
+        max_turns: 5,
+        tools: Vec::new(),
+        models: std::collections::HashMap::new(),
+    };
+    let agent_loop = AgentLoop::new(Box::new(MockLlmProvider::new(vec![])), config.clone());
+    let instance = AgentInstance::new(config);
+    instance.set_history(vec![
+        summary_turn("user", "old-q"),
+        summary_turn("assistant", "old-a"),
+        summary_turn("user", "new-q"),
+    ]);
+    instance.set_summary_cache(Some(crate::instance::SummaryCache {
+        covers_up_to: 2,
+        text: "FLOATING SUMMARY".to_string(),
+    }));
+
+    let messages = agent_loop.build_messages(&instance);
+    // First message is the synthesized summary system turn.
+    assert_eq!(messages[0].role, "system");
+    assert!(messages[0].content.contains("FLOATING SUMMARY"));
+    // The covered prefix (old-q) is folded away; new-q is verbatim.
+    let joined: String = messages
+        .iter()
+        .map(|m| m.content.clone())
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(!joined.contains("old-q"));
+    assert!(joined.contains("new-q"));
 }
 
 // =========================================================================
@@ -5613,23 +6133,6 @@ async fn test_forge_no_experience_without_forge() {
     assert_eq!(done.len(), 1);
 }
 
-// ===========================================================================
-// Coverage gap: summarize_history_owned batch / multipart / omitted branches.
-// The existing tests only covered the short-history and all-filtered (None)
-// paths. These exercise the LLM-calling paths via block_on_llm_chat.
-// ===========================================================================
-
-fn turn(role: &str, content: &str) -> crate::types::ConversationTurn {
-    crate::types::ConversationTurn {
-        role: role.to_string(),
-        content: content.to_string(),
-        tool_calls: Vec::new(),
-        tool_call_id: None,
-        timestamp: String::new(),
-        reasoning_content: None,
-    }
-}
-
 fn llm_text(content: &str) -> LlmResponse {
     LlmResponse {
         content: content.to_string(),
@@ -5640,95 +6143,4 @@ fn llm_text(content: &str) -> LlmResponse {
         raw_request_body: None,
         raw_response_body: None,
     }
-}
-
-#[tokio::test]
-async fn test_summarize_history_owned_batch_returns_summary() {
-    let provider = MockLlmProvider::new(vec![llm_text("Batch summary")]);
-    // 6 turns (>4) → to_summarize = first 2 (<=10 → batch path).
-    let history: Vec<crate::types::ConversationTurn> = (0..6)
-        .map(|i| {
-            turn(
-                if i % 2 == 0 { "user" } else { "assistant" },
-                &format!("msg {}", i),
-            )
-        })
-        .collect();
-    let result = summarize_history_owned(&history, "", 128000, &provider, "test-model", None).await;
-    assert!(result.is_some(), "batch summarize should return a summary");
-    assert!(result.unwrap().contains("Batch summary"));
-}
-
-#[tokio::test]
-async fn test_summarize_history_owned_multipart_merges() {
-    // 16 turns → to_summarize = 12 (>10 → multipart: 2 batches + 1 merge = 3 calls).
-    let provider = MockLlmProvider::new(vec![
-        llm_text("part one"),
-        llm_text("part two"),
-        llm_text("merged summary"),
-    ]);
-    let history: Vec<crate::types::ConversationTurn> = (0..16)
-        .map(|i| {
-            turn(
-                if i % 2 == 0 { "user" } else { "assistant" },
-                &format!("msg {}", i),
-            )
-        })
-        .collect();
-    let result = summarize_history_owned(&history, "", 128000, &provider, "test-model", None).await;
-    assert!(
-        result.is_some(),
-        "multipart summarize should return a summary"
-    );
-    assert!(result.unwrap().contains("merged summary"));
-}
-
-#[tokio::test]
-async fn test_summarize_history_owned_omits_oversized_messages() {
-    // One oversized message in to_summarize triggers the omitted-note branch.
-    let provider = MockLlmProvider::new(vec![llm_text("Short summary")]);
-    let mut history: Vec<crate::types::ConversationTurn> = (0..6)
-        .map(|i| {
-            turn(
-                if i % 2 == 0 { "user" } else { "assistant" },
-                &format!("msg {}", i),
-            )
-        })
-        .collect();
-    // history[0] is in to_summarize (first 2); make it oversized.
-    history[0].content = "x".repeat(10_000);
-    // context_window=100 → max_msg_tokens=50 → the 10000-char msg is oversized.
-    let result = summarize_history_owned(&history, "", 100, &provider, "test-model", None).await;
-    assert!(result.is_some());
-    assert!(
-        result.unwrap().contains("omitted"),
-        "summary should note that oversized messages were omitted"
-    );
-}
-
-#[tokio::test]
-async fn test_summarize_history_owned_with_observer_manager() {
-    // Passing observer_manager = Some covers the emit_observer_events_around_llm
-    // observer branches (ConversationStart / LlmResponse / ConversationEnd emit).
-    let provider = MockLlmProvider::new(vec![llm_text("observed summary")]);
-    let observer = Arc::new(nemesis_observer::Manager::new());
-    let history: Vec<crate::types::ConversationTurn> = (0..6)
-        .map(|i| {
-            turn(
-                if i % 2 == 0 { "user" } else { "assistant" },
-                &format!("m{}", i),
-            )
-        })
-        .collect();
-    let result = summarize_history_owned(
-        &history,
-        "",
-        128000,
-        &provider,
-        "test-model",
-        Some(observer),
-    )
-    .await;
-    assert!(result.is_some());
-    assert!(result.unwrap().contains("observed summary"));
 }

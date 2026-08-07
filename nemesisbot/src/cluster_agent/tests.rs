@@ -275,7 +275,7 @@ fn test_persist_silent_when_no_session_store_attached() {
     let instance = AgentInstance::new(make_test_config());
 
     // Must not panic; must not modify the instance.
-    persist_session_history(&agent_loop, &instance, "any-key", "hello", "world");
+    persist_session_history(&agent_loop, &instance, "any-key");
     assert_eq!(instance.get_history().len(), 1);
 }
 
@@ -297,10 +297,10 @@ fn test_persist_save_failure_does_not_panic() {
     assert!(store.save("..").is_err());
 
     // persist_session_history with invalid key must swallow the error.
-    persist_session_history(&agent_loop, &instance, "..", "hello", "world");
+    persist_session_history(&agent_loop, &instance, "..");
 
-    // Instance history is untouched (persist doesn't read instance for
-    // append-only writes — it just adds user/assistant rows).
+    // Instance history is untouched (persist reads instance.get_history() to
+    // write the store, but does not mutate the instance itself).
     assert_eq!(instance.get_history().len(), 1);
 }
 
@@ -320,50 +320,56 @@ fn test_restore_session_history_empty_store_returns_zero() {
 fn test_persist_then_restore_roundtrip() {
     let (agent_loop, store) = make_loop_with_session_store();
     let instance = AgentInstance::new(make_test_config());
+    instance.add_user_message("hello");
+    instance.add_assistant_message("world", Vec::new(), None);
+    // instance history = [system, user, assistant].
 
-    // Persist a (user, assistant) pair.
-    persist_session_history(&agent_loop, &instance, "sess-1", "hello", "world");
+    // Post-refactor: persist writes the instance's FULL history (not just a
+    // user/assistant pair), so the store stays coherent with covers_up_to.
+    persist_session_history(&agent_loop, &instance, "sess-1");
 
-    // Store should have 2 messages (no system prompt stored).
     let msgs = store.get_history("sess-1");
-    assert_eq!(msgs.len(), 2);
-    assert_eq!(msgs[0].role, "user");
-    assert_eq!(msgs[0].content, "hello");
-    assert_eq!(msgs[1].role, "assistant");
-    assert_eq!(msgs[1].content, "world");
+    assert_eq!(msgs.len(), 3);
+    assert_eq!(msgs[0].role, "system");
+    assert_eq!(msgs[1].role, "user");
+    assert_eq!(msgs[1].content, "hello");
+    assert_eq!(msgs[2].role, "assistant");
+    assert_eq!(msgs[2].content, "world");
 
-    // New instance should be able to restore the same history.
-    // set_history automatically prepends the instance's system_prompt, so the
-    // final history is [system, user, assistant] = 3 turns.
+    // A fresh instance restores the same full history.
     let instance2 = AgentInstance::new(make_test_config());
     let restored = restore_session_history(&agent_loop, &instance2, "sess-1");
-    assert_eq!(restored, 2);
+    assert_eq!(restored, 3);
     let history = instance2.get_history();
     assert_eq!(history.len(), 3);
     assert_eq!(history[0].role, "system");
-    assert_eq!(history[1].role, "user");
     assert_eq!(history[1].content, "hello");
-    assert_eq!(history[2].role, "assistant");
     assert_eq!(history[2].content, "world");
 }
 
 #[test]
 fn test_different_session_keys_isolated() {
     let (agent_loop, store) = make_loop_with_session_store();
-    let instance = AgentInstance::new(make_test_config());
 
-    persist_session_history(&agent_loop, &instance, "sess-A", "hello-A", "world-A");
-    persist_session_history(&agent_loop, &instance, "sess-B", "hello-B", "world-B");
-
-    assert_eq!(store.get_history("sess-A").len(), 2);
-    assert_eq!(store.get_history("sess-B").len(), 2);
-
-    // Restoring A on a fresh instance must give A's messages, not B's.
-    // history = [system, user-A, assistant-A]; we check indexes 1 and 2.
     let instance_a = AgentInstance::new(make_test_config());
-    let restored = restore_session_history(&agent_loop, &instance_a, "sess-A");
-    assert_eq!(restored, 2);
-    let history = instance_a.get_history();
+    instance_a.add_user_message("hello-A");
+    instance_a.add_assistant_message("world-A", Vec::new(), None);
+    persist_session_history(&agent_loop, &instance_a, "sess-A");
+
+    let instance_b = AgentInstance::new(make_test_config());
+    instance_b.add_user_message("hello-B");
+    instance_b.add_assistant_message("world-B", Vec::new(), None);
+    persist_session_history(&agent_loop, &instance_b, "sess-B");
+
+    // Each session key holds its own full history ([system, user, assistant]).
+    assert_eq!(store.get_history("sess-A").len(), 3);
+    assert_eq!(store.get_history("sess-B").len(), 3);
+
+    // Restoring A must give A's messages, not B's.
+    let instance_a2 = AgentInstance::new(make_test_config());
+    let restored = restore_session_history(&agent_loop, &instance_a2, "sess-A");
+    assert_eq!(restored, 3);
+    let history = instance_a2.get_history();
     assert_eq!(history.len(), 3);
     assert_eq!(history[0].role, "system");
     assert_eq!(history[1].content, "hello-A");
@@ -371,23 +377,31 @@ fn test_different_session_keys_isolated() {
 }
 
 #[test]
-fn test_persist_appends_across_multiple_calls() {
-    // Multi-turn conversation: each peer_chat appends a (user, assistant) pair.
-    // Verifies we accumulate history rather than overwrite.
+fn test_persist_grows_history_across_turns() {
+    // Real cluster flow: each peer_chat restores the persisted history,
+    // extends it with the new turn, and re-persists. Growth comes from
+    // restore+extend (persist is a wholesale replace with the instance's full
+    // history — it does not append on its own).
     let (agent_loop, store) = make_loop_with_session_store();
-    let instance = AgentInstance::new(make_test_config());
 
-    persist_session_history(&agent_loop, &instance, "sess-multi", "msg-1", "resp-1");
-    persist_session_history(&agent_loop, &instance, "sess-multi", "msg-2", "resp-2");
+    // Turn 1.
+    let inst1 = AgentInstance::new(make_test_config());
+    inst1.add_user_message("msg-1");
+    inst1.add_assistant_message("resp-1", Vec::new(), None);
+    persist_session_history(&agent_loop, &inst1, "sess-multi");
+    assert_eq!(store.get_history("sess-multi").len(), 3); // [sys, msg-1, resp-1]
+
+    // Turn 2: restore, extend, persist.
+    let inst2 = AgentInstance::new(make_test_config());
+    restore_session_history(&agent_loop, &inst2, "sess-multi");
+    inst2.add_user_message("msg-2");
+    inst2.add_assistant_message("resp-2", Vec::new(), None);
+    persist_session_history(&agent_loop, &inst2, "sess-multi");
 
     let msgs = store.get_history("sess-multi");
-    assert_eq!(msgs.len(), 4);
-    assert_eq!(msgs[0].role, "user");
-    assert_eq!(msgs[0].content, "msg-1");
-    assert_eq!(msgs[1].role, "assistant");
-    assert_eq!(msgs[1].content, "resp-1");
-    assert_eq!(msgs[2].role, "user");
-    assert_eq!(msgs[2].content, "msg-2");
-    assert_eq!(msgs[3].role, "assistant");
-    assert_eq!(msgs[3].content, "resp-2");
+    assert_eq!(msgs.len(), 5); // [sys, msg-1, resp-1, msg-2, resp-2]
+    assert_eq!(msgs[1].content, "msg-1");
+    assert_eq!(msgs[2].content, "resp-1");
+    assert_eq!(msgs[3].content, "msg-2");
+    assert_eq!(msgs[4].content, "resp-2");
 }

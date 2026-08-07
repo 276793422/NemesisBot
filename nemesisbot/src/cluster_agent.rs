@@ -213,16 +213,10 @@ async fn execute_new_task(
     }
 
     let result = extract_final_message(&events);
-    // Persist (user, assistant) pair to SessionStore before sending the callback.
-    // Async-path tasks skip this; they'll be persisted by resume_task when the
-    // callback comes back and the task actually completes.
-    persist_session_history(
-        agent_loop,
-        &instance,
-        &task.source.session_key,
-        &task.content,
-        &result,
-    );
+    // Persist the full instance history + cache to SessionStore before sending
+    // the callback. Async-path tasks skip this; they'll be persisted by
+    // resume_task when the callback comes back and the task actually completes.
+    persist_session_history(agent_loop, &instance, &task.source.session_key);
     send_task_callback(rpc_client, task, "success", &result, "").await;
     task_list.complete_task(&task.task_id);
     nemesis_cluster::logger::log_task(
@@ -329,20 +323,10 @@ async fn resume_task(
     }
 
     let result = extract_final_message(&events);
-    // Persist (user, assistant) pair. user_content is `task.content` (the
-    // original request from the source node), not "(resume)" — SessionStore
-    // captures user-intent + final-response pairs, not internal resume markers.
-    // If execute_new_task already wrote a user row (sync-completion path,
-    // theoretically impossible to reach resume_task from), this would duplicate
-    // it; but resume_task is only reached from the async path, where
-    // execute_new_task skipped persist. So the append is correct.
-    persist_session_history(
-        agent_loop,
-        &instance,
-        &task.source.session_key,
-        &task.content,
-        &result,
-    );
+    // Persist the full instance history + cache. The original user request and
+    // the resumed turn's tool result / final response are all in the instance
+    // history already, so no separate content args are needed.
+    persist_session_history(agent_loop, &instance, &task.source.session_key);
     send_task_callback(rpc_client, task, "success", &result, "").await;
     task_list.complete_task(&task.task_id);
     nemesis_cluster::logger::log_task(
@@ -388,10 +372,11 @@ fn build_context(task: &nemesis_cluster::cluster_task::ClusterTask) -> RequestCo
 
 /// Restore conversation history from SessionStore into the given AgentInstance.
 ///
-/// Mirrors `AgentLoop::get_or_create_instance` (loop.rs:2056-2069):
+/// Mirrors `AgentLoop::get_or_create_instance`:
 /// - Reads `StoredSession` by `session_key`
 /// - If non-empty, converts messages to `ConversationTurn` and calls `set_history`
-/// - If summary is non-empty, sets it via `set_summary`
+/// - Restores the summary cache (text + covers_up_to); legacy files (field
+///   absent) map covers_up_to so all loaded messages are sent verbatim
 ///
 /// Failures are silent (no panic) — cluster peer_chat must degrade gracefully
 /// if SessionStore is unavailable or corrupt. Returns the number of restored
@@ -406,56 +391,71 @@ fn restore_session_history(
         None => return 0,
     };
     let stored = store.get_or_create(session_key);
-    if !stored.messages.is_empty() {
-        let history: Vec<nemesis_agent::types::ConversationTurn> =
-            stored.messages.into_iter().map(|m| m.into()).collect();
-        let count = history.len();
-        instance.set_history(history);
-        if !stored.summary.is_empty() {
-            instance.set_summary(&stored.summary);
-        }
-        count
-    } else {
-        0
+    if stored.messages.is_empty() {
+        return 0;
     }
+    let covers = store.get_summary_covers_up_to(session_key);
+    let history: Vec<nemesis_agent::types::ConversationTurn> =
+        stored.messages.into_iter().map(|m| m.into()).collect();
+    let count = history.len();
+    instance.set_history(history);
+    if !stored.summary.is_empty() {
+        let history = instance.get_history();
+        if !history.is_empty() {
+            let c = match covers {
+                Some(c) => c.clamp(1, history.len()),
+                None => history
+                    .iter()
+                    .take_while(|t| t.role == "system")
+                    .count()
+                    .max(1),
+            };
+            instance.set_summary_cache(Some(nemesis_agent::instance::SummaryCache {
+                covers_up_to: c,
+                text: stored.summary,
+            }));
+        }
+    }
+    count
 }
 
-/// Persist the (user, assistant) pair for a session to SessionStore.
+/// Persist the full instance history + summary cache for a session to
+/// SessionStore.
 ///
-/// Mirrors `AgentLoop::run_agent_loop_internal` (loop.rs:2129-2148):
-/// - Ensures the session exists in store
-/// - Adds user message + final assistant response
-/// - Saves summary if available
-/// - Persists to disk
+/// Mirrors `AgentLoop::run_agent_loop_internal`'s save path (post-refactor):
+/// the store holds the FULL instance history (not just a user/assistant log)
+/// so the summary cache's covers_up_to index stays coherent across turns.
 ///
 /// Used by both `execute_new_task` and `resume_task` on their sync-completion paths.
 /// Async paths (task went async again) skip this — the next resume will write the
-/// final response when it eventually completes.
-///
-/// `user_content` is `task.content` for new tasks; resume paths pass `""` to skip
-/// the user message (it was already written by the original execute_new_task).
-fn persist_session_history(
-    agent_loop: &AgentLoop,
-    instance: &AgentInstance,
-    session_key: &str,
-    user_content: &str,
-    assistant_content: &str,
-) {
+/// final response when it eventually completes. The user/assistant content is
+/// already in the instance history (added by run_with_trace / the resume
+/// snapshot), so no separate content args are needed.
+fn persist_session_history(agent_loop: &AgentLoop, instance: &AgentInstance, session_key: &str) {
     let store = match agent_loop.session_store() {
         Some(s) => s,
         None => return,
     };
     store.get_or_create(session_key);
-    if !user_content.is_empty() {
-        store.add_message(session_key, "user", user_content);
+    // Set the cache BEFORE set_history: trim_to_limit reads covers_up_to to
+    // decide which oldest messages are safe to drop and adjusts it downward;
+    // setting it first keeps the store coherent (mirrors AgentLoop's save path).
+    match instance.get_summary_cache() {
+        Some(cache) => {
+            store.set_summary(session_key, &cache.text);
+            store.set_summary_covers_up_to(session_key, Some(cache.covers_up_to));
+        }
+        None => {
+            store.set_summary(session_key, "");
+            store.set_summary_covers_up_to(session_key, None);
+        }
     }
-    if !assistant_content.is_empty() {
-        store.add_message(session_key, "assistant", assistant_content);
-    }
-    let summary = instance.get_summary();
-    if !summary.is_empty() {
-        store.set_summary(session_key, &summary);
-    }
+    let stored: Vec<nemesis_agent::session::StoredMessage> = instance
+        .get_history()
+        .iter()
+        .map(nemesis_agent::session::StoredMessage::from)
+        .collect();
+    store.set_history(session_key, stored);
     if let Err(e) = store.save(session_key) {
         tracing::warn!(
             session_key = %session_key,

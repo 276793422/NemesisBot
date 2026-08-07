@@ -490,6 +490,7 @@ fn test_stored_session_serialization() {
             reasoning_content: None,
         }],
         summary: "test summary".to_string(),
+        summary_covers_up_to: None,
         created: Local::now(),
         updated: Local::now(),
     };
@@ -801,11 +802,215 @@ fn test_stored_session_debug() {
         key: "test-key".to_string(),
         messages: Vec::new(),
         summary: String::new(),
+        summary_covers_up_to: None,
         created: chrono::Local::now(),
         updated: chrono::Local::now(),
     };
     let debug_str = format!("{:?}", session);
     assert!(debug_str.contains("test-key"));
+}
+
+// --- S1: summary_covers_up_to field (zero-behavior addition) ---
+
+#[test]
+fn test_stored_session_legacy_json_loads_covers_none() {
+    // A session file written before `summary_covers_up_to` existed must load
+    // without error and default the new field to None (serde default). This is
+    // the backward-compatibility guarantee for the refactor.
+    let session = StoredSession {
+        key: "legacy:key".to_string(),
+        messages: Vec::new(),
+        summary: "legacy summary".to_string(),
+        summary_covers_up_to: Some(7), // set, then strip from JSON below
+        created: Local::now(),
+        updated: Local::now(),
+    };
+    let json = serde_json::to_string(&session).unwrap();
+    let mut value: serde_json::Value = serde_json::from_str(&json).unwrap();
+    // Simulate a legacy file: remove the new field entirely.
+    assert!(value
+        .as_object_mut()
+        .unwrap()
+        .remove("summary_covers_up_to")
+        .is_some());
+    let legacy_json = serde_json::to_string(&value).unwrap();
+
+    let loaded: StoredSession = serde_json::from_str(&legacy_json).unwrap();
+    assert_eq!(loaded.summary, "legacy summary");
+    assert!(loaded.summary_covers_up_to.is_none());
+}
+
+#[test]
+fn test_session_store_summary_covers_up_to_get_set() {
+    let store = SessionStore::new_in_memory();
+    store.get_or_create("test:key");
+
+    // Default is None.
+    assert!(store.get_summary_covers_up_to("test:key").is_none());
+
+    store.set_summary_covers_up_to("test:key", Some(12));
+    assert_eq!(store.get_summary_covers_up_to("test:key"), Some(12));
+
+    // Clear back to None.
+    store.set_summary_covers_up_to("test:key", None);
+    assert!(store.get_summary_covers_up_to("test:key").is_none());
+}
+
+#[test]
+fn test_session_store_summary_covers_up_to_disk_roundtrip() {
+    let dir = tempfile::tempdir().unwrap();
+    {
+        let store = SessionStore::new_with_storage(dir.path());
+        store.get_or_create("disk:key");
+        store.set_summary("disk:key", "persisted summary");
+        store.set_summary_covers_up_to("disk:key", Some(9));
+        store.save("disk:key").unwrap();
+    }
+    // Re-open from disk.
+    let store2 = SessionStore::new_with_storage(dir.path());
+    assert_eq!(store2.get_summary("disk:key"), "persisted summary");
+    assert_eq!(store2.get_summary_covers_up_to("disk:key"), Some(9));
+}
+
+#[test]
+fn test_session_store_clear_resets_covers_up_to() {
+    let store = SessionStore::new_in_memory();
+    store.get_or_create("clear:key");
+    store.set_summary("clear:key", "temp");
+    store.set_summary_covers_up_to("clear:key", Some(5));
+
+    store.clear_session("clear:key");
+    assert!(store.get_summary("clear:key").is_empty());
+    assert!(store.get_summary_covers_up_to("clear:key").is_none());
+}
+
+// --- S3.1: store-level C-aware trimming (MAX_STORED_MESSAGES = 1000) ---
+
+fn stored_msgs(n: usize) -> Vec<StoredMessage> {
+    (0..n)
+        .map(|i| StoredMessage {
+            role: "user".to_string(),
+            content: format!("m{}", i),
+            tool_calls: Vec::new(),
+            tool_call_id: None,
+            timestamp: String::new(),
+            reasoning_content: None,
+        })
+        .collect()
+}
+
+#[test]
+fn test_trim_to_limit_drops_oldest_adjusts_covers() {
+    let mut session = StoredSession {
+        key: "k".to_string(),
+        messages: stored_msgs(1050),
+        summary: "sum".to_string(),
+        summary_covers_up_to: Some(1040),
+        created: Local::now(),
+        updated: Local::now(),
+    };
+    // overflow = 50, all within the covered prefix (1040 >= 50) → drop 50,
+    // covers -= 50. The verbatim tail (original [1040..1050]) survives intact.
+    SessionStore::trim_to_limit(&mut session);
+    assert_eq!(session.messages.len(), SessionStore::MAX_STORED_MESSAGES);
+    assert_eq!(session.summary_covers_up_to, Some(1040 - 50));
+    // Oldest 50 dropped → first remaining is m50.
+    assert_eq!(session.messages[0].content, "m50");
+    // Tail preserved (last message unchanged).
+    assert_eq!(session.messages.last().unwrap().content, "m1049");
+}
+
+#[test]
+fn test_trim_to_limit_no_drop_without_summary() {
+    let mut session = StoredSession {
+        key: "k".to_string(),
+        messages: stored_msgs(1050),
+        summary: String::new(),
+        summary_covers_up_to: None,
+        created: Local::now(),
+        updated: Local::now(),
+    };
+    // No summary → no covered prefix → dropping would lose verbatim context.
+    // Refuse to trim rather than silently lose data.
+    SessionStore::trim_to_limit(&mut session);
+    assert_eq!(session.messages.len(), 1050);
+    assert!(session.summary_covers_up_to.is_none());
+}
+
+#[test]
+fn test_trim_to_limit_never_touches_verbatim_tail() {
+    // covers (10) < overflow (50): can only drop 10 (the covered prefix),
+    // never reach into the verbatim tail. (Degenerate config — in practice
+    // tail ≈ K_target ≪ 1000 so overflow < covers always — but the clamp must
+    // hold defensively.)
+    let mut session = StoredSession {
+        key: "k".to_string(),
+        messages: stored_msgs(1050),
+        summary: "sum".to_string(),
+        summary_covers_up_to: Some(10),
+        created: Local::now(),
+        updated: Local::now(),
+    };
+    SessionStore::trim_to_limit(&mut session);
+    assert_eq!(session.messages.len(), 1040); // dropped only 10
+    assert_eq!(session.summary_covers_up_to, Some(0));
+    // First 10 dropped → first remaining is m10.
+    assert_eq!(session.messages[0].content, "m10");
+}
+
+#[test]
+fn test_trim_to_limit_under_limit_noop() {
+    let mut session = StoredSession {
+        key: "k".to_string(),
+        messages: stored_msgs(500),
+        summary: "sum".to_string(),
+        summary_covers_up_to: Some(100),
+        created: Local::now(),
+        updated: Local::now(),
+    };
+    SessionStore::trim_to_limit(&mut session);
+    assert_eq!(session.messages.len(), 500);
+    assert_eq!(session.summary_covers_up_to, Some(100));
+}
+
+#[test]
+fn test_set_history_trims_and_adjusts_covers() {
+    // Integration: set_history applies trim; accessors reflect it.
+    let store = SessionStore::new_in_memory();
+    store.get_or_create("k");
+    store.set_summary_covers_up_to("k", Some(1040));
+    store.set_history("k", stored_msgs(1050));
+    assert_eq!(
+        store.get_history("k").len(),
+        SessionStore::MAX_STORED_MESSAGES
+    );
+    assert_eq!(store.get_summary_covers_up_to("k"), Some(1040 - 50));
+}
+
+#[test]
+fn test_save_path_order_keeps_covers_coherent_after_trim() {
+    // Regression for the save-clobbers-trim bug found in verification: the
+    // AgentLoop save path must set the cache BEFORE set_history. Replicates
+    // that ordering and verifies a long history (>MAX_STORED_MESSAGES) trims
+    // coherently — covers_up_to is decremented to match the dropped oldest
+    // messages, so the verbatim tail (last K_TARGET) survives. The OLD order
+    // (history then cache) overwrote the trim's adjustment, leaving covers too
+    // large and dropping the verbatim tail.
+    let store = SessionStore::new_in_memory();
+    store.get_or_create("long:k");
+    let instance_covers = 1050 - 6; // tail = last 6 messages (K_TARGET)
+    // Save-path order: cache first, then history.
+    store.set_summary("long:k", "summary text");
+    store.set_summary_covers_up_to("long:k", Some(instance_covers));
+    store.set_history("long:k", stored_msgs(1050));
+
+    let final_covers = store.get_summary_covers_up_to("long:k").expect("covers set");
+    let final_len = store.get_history("long:k").len();
+    assert_eq!(final_len, SessionStore::MAX_STORED_MESSAGES); // trimmed to 1000
+    // covers decremented by the 50 dropped oldest: 1044 -> 994.
+    assert_eq!(final_covers, instance_covers - 50);
+    // Verbatim tail (last K_TARGET=6 messages) survives: len - covers == 6.
+    assert_eq!(final_len - final_covers, 6, "verbatim tail must survive trim");
 }
 
 // --- Additional coverage for session and summarizer ---

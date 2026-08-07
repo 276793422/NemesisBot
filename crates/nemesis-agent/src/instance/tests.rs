@@ -213,12 +213,37 @@ fn instance_message_count_excludes_system() {
 }
 
 #[test]
-fn instance_set_and_get_summary() {
+fn instance_summary_cache_default_none() {
+    // A fresh instance has no summary cache.
     let instance = AgentInstance::new(test_config());
-    assert!(instance.get_summary().is_empty());
+    assert!(instance.get_summary_cache().is_none());
+}
 
-    instance.set_summary("Previous conversation summary");
-    assert_eq!(instance.get_summary(), "Previous conversation summary");
+#[test]
+fn instance_summary_cache_set_get_roundtrip() {
+    let instance = AgentInstance::new(test_config());
+
+    instance.set_summary_cache(Some(SummaryCache {
+        covers_up_to: 4,
+        text: "Earlier we discussed X and Y.".to_string(),
+    }));
+
+    let cache = instance.get_summary_cache().expect("cache should be set");
+    assert_eq!(cache.covers_up_to, 4);
+    assert_eq!(cache.text, "Earlier we discussed X and Y.");
+}
+
+#[test]
+fn instance_summary_cache_clear() {
+    let instance = AgentInstance::new(test_config());
+    instance.set_summary_cache(Some(SummaryCache {
+        covers_up_to: 3,
+        text: "stub".to_string(),
+    }));
+    assert!(instance.get_summary_cache().is_some());
+
+    instance.set_summary_cache(None);
+    assert!(instance.get_summary_cache().is_none());
 }
 
 #[test]
@@ -377,22 +402,25 @@ fn instance_clear_history_no_system_prompt() {
 }
 
 #[test]
-fn instance_history_truncation_at_max_capacity() {
+fn instance_history_is_append_only() {
+    // S3.1: push_turn no longer truncates — history is strictly append-only.
+    // Bounding (drop-oldest with C-aware index adjustment) is the session
+    // store's responsibility, never the instance's, so covers_up_to stays valid.
     let instance = AgentInstance::new(test_config());
 
-    // DEFAULT_MAX_HISTORY is 100. Push 101 non-system turns.
     for i in 0..101 {
         instance.add_user_message(&format!("msg_{}", i));
     }
 
     let history = instance.get_history();
-    // Should have been truncated (system + kept turns < 102)
-    assert!(history.len() < 102);
-    // System prompt should still be first
+    // system + 101 user turns, nothing dropped.
+    assert_eq!(history.len(), 102);
     assert_eq!(history[0].role, "system");
-    // Most recent messages should be preserved
+    // Oldest message is still there (no truncation).
+    assert_eq!(history[1].content, "msg_0");
+    // Most recent preserved.
     let last_content = history.last().unwrap().content.clone();
-    assert!(last_content.starts_with("msg_"));
+    assert_eq!(last_content, "msg_100");
 }
 
 #[test]

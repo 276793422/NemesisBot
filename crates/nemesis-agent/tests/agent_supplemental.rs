@@ -498,14 +498,6 @@ fn test_agent_instance_truncate_to() {
 }
 
 #[test]
-fn test_agent_instance_summary() {
-    let instance = AgentInstance::new(test_config());
-    assert!(instance.get_summary().is_empty());
-    instance.set_summary("Test summary");
-    assert_eq!(instance.get_summary(), "Test summary");
-}
-
-#[test]
 fn test_agent_instance_context_window() {
     let instance = AgentInstance::new(test_config());
     let default = instance.context_window();
@@ -1734,6 +1726,7 @@ fn test_stored_session_serialization() {
             reasoning_content: None,
         }],
         summary: "A greeting".to_string(),
+        summary_covers_up_to: None,
         created: chrono::Local::now(),
         updated: chrono::Local::now(),
     };
@@ -1771,6 +1764,7 @@ fn test_stored_session_with_tool_calls() {
             },
         ],
         summary: String::new(),
+        summary_covers_up_to: None,
         created: chrono::Local::now(),
         updated: chrono::Local::now(),
     };
