@@ -67,6 +67,12 @@ pub struct SandboxPaths {
     pub ini_path: PathBuf,
     /// Box virtual-FS root (where the box mirrors paths).
     pub box_root: PathBuf,
+    /// The app home these paths are under (`<home>/workspace/tools/sandboxie/`).
+    /// Stored so install/start can read `<home>/config.json` (e.g. the
+    /// `executor.allow_network` box-network switch) when rewriting Sandboxie.ini —
+    /// nemesis-sandbox does not depend on nemesis-config, so it reads the JSON
+    /// directly.
+    pub home: PathBuf,
 }
 
 impl SandboxPaths {
@@ -76,6 +82,7 @@ impl SandboxPaths {
     pub fn new(home: &Path) -> Self {
         let base = home.join("workspace").join("tools").join("sandboxie");
         Self {
+            home: home.to_path_buf(),
             runtime_dir: base.join("runtime"),
             ini_path: base.join("Sandboxie.ini"),
             box_root: base.join("box").join(DEFAULT_BOX_NAME),

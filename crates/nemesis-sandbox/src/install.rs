@@ -18,6 +18,26 @@ use crate::kmdutil;
 use crate::status::{ServiceState, service_state};
 use crate::{DRIVER_SERVICE, SandboxPaths, USERMODE_SERVICE, download, extract, ini};
 
+/// Read the box-network switch (`executor.allow_network`) from `<home>/config.json`.
+/// nemesis-sandbox does not depend on nemesis-config, so it parses the JSON
+/// directly. Defaults to `false` (network blocked) when the file/field is missing
+/// or unparseable — matching the pre-switch behavior, so a fresh install stays
+/// offline until the user explicitly enables it from the UI.
+fn read_allow_network(paths: &SandboxPaths) -> bool {
+    let raw = match std::fs::read_to_string(paths.home.join("config.json")) {
+        Ok(s) => s,
+        Err(_) => return false,
+    };
+    let val: serde_json::Value = match serde_json::from_str(&raw) {
+        Ok(v) => v,
+        Err(_) => return false,
+    };
+    val.get("executor")
+        .and_then(|e| e.get("allow_network"))
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false)
+}
+
 /// Poll `service_state(name)` until it reaches `target` or `timeout` elapses.
 pub fn wait_for_state(name: &str, target: ServiceState, timeout: Duration) -> ServiceState {
     let deadline = std::time::Instant::now() + timeout;
@@ -91,7 +111,7 @@ pub fn start(paths: &SandboxPaths) -> Result<()> {
     .context("install SbieSvc")?;
     kmdutil::set_sbiesvc_service_key_dwounds().context("set SbieSvc service-key DWORDs")?;
 
-    ini::write_sandboxie_ini(&paths.ini_path, crate::DEFAULT_BOX_NAME, &paths.box_root)
+    ini::write_sandboxie_ini(&paths.ini_path, crate::DEFAULT_BOX_NAME, &paths.box_root, read_allow_network(paths))
         .context("write Sandboxie.ini")?;
 
     kmdutil::run(kmdutil::start(&paths.kmdutil(), USERMODE_SERVICE), false)
@@ -215,10 +235,13 @@ pub fn ensure_installed(paths: &SandboxPaths) -> Result<()> {
     );
     let _ = kmdutil::set_sbiesvc_service_key_dwounds();
 
-    ini::write_sandboxie_ini(&paths.ini_path, crate::DEFAULT_BOX_NAME, &paths.box_root)?;
+    ini::write_sandboxie_ini(&paths.ini_path, crate::DEFAULT_BOX_NAME, &paths.box_root, read_allow_network(paths))?;
 
     // Start the service (no-op if already running) + wait for RUNNING.
     start_service(paths)?;
     tracing::info!("[sandbox] engine ensured installed + SbieSvc running (tolerant)");
     Ok(())
 }
+
+#[cfg(test)]
+mod tests;

@@ -65,39 +65,77 @@ async fn run_cli_subcmd(home: &std::path::Path, cmd: &str) -> Result<(), String>
     Ok(())
 }
 
-/// Write `executor.enabled` + `executor.sandbox` into the live config so the
-/// gateway picks up the sandbox on next start. Called by `start` (true,true)
-/// and `stop` (false,false) so the UI toggle fully reflects in config.
-///
-/// Goes through the process-wide [`ConfigStore`](nemesis_config::ConfigStore)
-/// when installed (gateway mode): the update lands in-memory AND on disk, so
-/// the executor's live sandbox probe flips on the very next tool call — no
-/// gateway restart needed. Falls back to a direct disk write in CLI mode
-/// (no store installed).
-fn set_executor_config(home: &std::path::Path, enabled: bool, sandbox: bool) -> Result<(), String> {
+/// Apply a mutation to the `executor` config section, preserving sibling fields.
+/// Gateway mode goes through the process-wide ConfigStore (in-memory + persist);
+/// CLI/no-store mode falls back to a direct read-merge-write of config.json. Both
+/// paths merge field-by-field, so editing one switch (e.g. allow_network) never
+/// clobbers the others (e.g. enabled/sandbox) — this is the fix for the earlier
+/// overwrite bug where `start`/`stop` reset allow_network to false.
+fn update_executor<F: FnOnce(&mut nemesis_config::ExecutorSeparationConfig)>(
+    home: &std::path::Path,
+    f: F,
+) -> Result<(), String> {
     if let Some(store) = nemesis_config::global() {
         return store
             .update(|c| {
-                c.executor = Some(nemesis_config::ExecutorSeparationConfig { enabled, sandbox });
+                let e = c.executor.get_or_insert(Default::default());
+                f(e);
             })
             .map_err(|e| format!("update executor config: {e}"));
     }
-    // CLI / no-store fallback: direct disk write.
+    // CLI / no-store fallback: read-merge-write config.json field by field.
     let config_path = home.join("config.json");
     let raw =
         std::fs::read_to_string(&config_path).map_err(|e| format!("read config.json: {e}"))?;
     let mut val: serde_json::Value =
         serde_json::from_str(&raw).map_err(|e| format!("parse config.json: {e}"))?;
-    let entry = serde_json::json!({ "enabled": enabled, "sandbox": sandbox });
-    if let Some(obj) = val.as_object_mut() {
-        obj.insert("executor".into(), entry);
-    } else {
-        return Err("config.json is not a JSON object".into());
-    }
+    // Read the existing executor section FIRST (immutable borrow), before the
+    // mutable object borrow below — borrowing `val` both ways at once won't compile.
+    let existing = val
+        .get("executor")
+        .and_then(|v| {
+            serde_json::from_value::<nemesis_config::ExecutorSeparationConfig>(v.clone()).ok()
+        });
+    let obj = val
+        .as_object_mut()
+        .ok_or_else(|| "config.json is not a JSON object".to_string())?;
+    // Start from the existing executor section (if any) so unrelated fields survive.
+    let mut e = existing.unwrap_or_default();
+    f(&mut e);
+    obj.insert(
+        "executor".into(),
+        serde_json::to_value(&e).map_err(|e| format!("serialize executor: {e}"))?,
+    );
     let out =
         serde_json::to_string_pretty(&val).map_err(|e| format!("serialize config.json: {e}"))?;
     std::fs::write(&config_path, out).map_err(|e| format!("write config.json: {e}"))?;
     Ok(())
+}
+
+/// Read the current `executor.allow_network` (the box-network switch) for UI
+/// display. ConfigStore in gateway mode, direct disk read otherwise. Defaults to
+/// false (network blocked) when unset.
+fn current_allow_network(home: &std::path::Path) -> bool {
+    if let Some(store) = nemesis_config::global() {
+        let handle = store.handle();
+        let c = handle.read();
+        return c.executor.as_ref().map_or(false, |e| e.allow_network);
+    }
+    let Ok(raw) = std::fs::read_to_string(home.join("config.json")) else {
+        return false;
+    };
+    serde_json::from_str::<serde_json::Value>(&raw)
+        .ok()
+        .and_then(|v| v.get("executor").cloned())
+        .and_then(|e| serde_json::from_value::<nemesis_config::ExecutorSeparationConfig>(e).ok())
+        .map_or(false, |e| e.allow_network)
+}
+
+fn set_executor_config(home: &std::path::Path, enabled: bool, sandbox: bool) -> Result<(), String> {
+    update_executor(home, |e| {
+        e.enabled = enabled;
+        e.sandbox = sandbox;
+    })
 }
 
 /// Parse the shared `{ all?: bool, files?: string[] }` selection arg used by
@@ -171,6 +209,7 @@ impl ModuleHandler for SandboxHandler {
                     "sbiedrv": format!("{:?}", sbiedrv),
                     "start_exe_present": start_exe_present,
                     "ready": ready,
+                    "allow_network": current_allow_network(&home),
                     "box_root": paths.box_root.to_string_lossy(),
                 })))
             }
@@ -191,6 +230,7 @@ impl ModuleHandler for SandboxHandler {
                         "driver_installed": driver_installed,
                         "sbiesvc_running": sbiesvc_running,
                     },
+                    "allow_network": current_allow_network(&home),
                 })))
             }
             "pending" => {
@@ -284,7 +324,68 @@ impl ModuleHandler for SandboxHandler {
                 }
                 Ok(Some(serde_json::json!({ "ok": true })))
             }
+            // Open an explorer window INSIDE the box: Start.exe /box:NemesisBox explorer.exe.
+            // Unlike open_box (host explorer viewing the box folder), this runs explorer as
+            // a boxed process — anything the user launches from it (cmd, browser, installer)
+            // inherits the box via Sandboxie process-tree propagation. cwd = %USERPROFILE%.
+            "open_explorer" => {
+                let start_exe = paths.start_exe();
+                let ready = matches!(
+                    nemesis_sandbox::status::service_state(nemesis_sandbox::USERMODE_SERVICE),
+                    ServiceState::Running
+                ) && start_exe.exists();
+                if !ready {
+                    return Err("sandbox not ready — start the engine first".into());
+                }
+                #[cfg(target_os = "windows")]
+                {
+                    std::process::Command::new(start_exe)
+                        .arg(format!("/box:{}", nemesis_sandbox::DEFAULT_BOX_NAME))
+                        .arg("explorer.exe")
+                        .arg(user_profile())
+                        .spawn()
+                        .map_err(|e| format!("spawn in-box explorer: {e}"))?;
+                }
+                Ok(Some(serde_json::json!({ "ok": true })))
+            }
+            // Toggle the box-level network switch (AllowNetworkAccess). Persists to config,
+            // rewrites Sandboxie.ini, and reloads Sandboxie so NEW box processes pick up the
+            // new rule. Already-running box processes keep their old network state until
+            // restarted (Sandboxie WFP caches BlockInternet per-process; reload doesn't
+            // refresh it). reload is fire-and-forget — Start.exe exits right after re-reading.
+            "set_network" => {
+                let enabled = data
+                    .as_ref()
+                    .and_then(|d| d.get("enabled"))
+                    .and_then(|v| v.as_bool())
+                    .ok_or("set_network requires { enabled: bool }")?;
+                update_executor(&home, |e| {
+                    e.allow_network = enabled;
+                })?;
+                nemesis_sandbox::ini::write_sandboxie_ini(
+                    &paths.ini_path,
+                    nemesis_sandbox::DEFAULT_BOX_NAME,
+                    &paths.box_root,
+                    enabled,
+                )
+                .map_err(|e| format!("rewrite Sandboxie.ini: {e}"))?;
+                #[cfg(target_os = "windows")]
+                {
+                    std::process::Command::new(paths.start_exe())
+                        .arg("/reload")
+                        .spawn()
+                        .map_err(|e| format!("spawn Start.exe /reload: {e}"))?;
+                }
+                Ok(Some(serde_json::json!({
+                    "ok": true,
+                    "allow_network": enabled,
+                    "restart_hint": "newly started box processes pick this up immediately; already-open ones need reopening",
+                })))
+            }
             other => Err(format!("unknown sandbox command: {other}")),
         }
     }
 }
+
+#[cfg(test)]
+mod tests;

@@ -18,12 +18,20 @@ use std::path::Path;
 use anyhow::{Context, Result};
 
 /// Write the NemesisBox definition to `ini_path`.
-pub fn write_sandboxie_ini(ini_path: &Path, box_name: &str, box_root: &Path) -> Result<()> {
+pub fn write_sandboxie_ini(
+    ini_path: &Path,
+    box_name: &str,
+    box_root: &Path,
+    allow_network: bool,
+) -> Result<()> {
     if let Some(parent) = ini_path.parent() {
         std::fs::create_dir_all(parent)
             .with_context(|| format!("create ini dir {}", parent.display()))?;
     }
     let box_root_nt = format!(r"\??\{}", box_root.display());
+    // `AllowNetworkAccess` is the box-level WFP network switch (core/drv/wfp.c).
+    // y = box processes may use the network; n = egress blocked for the whole box.
+    let net = if allow_network { "y" } else { "n" };
     let content = format!(
         "[GlobalSettings]\n\
          \n\
@@ -36,7 +44,7 @@ pub fn write_sandboxie_ini(ini_path: &Path, box_name: &str, box_root: &Path) -> 
          \n\
          [{box_name}]\n\
          Enabled=y\n\
-         AllowNetworkAccess=n\n\
+         AllowNetworkAccess={net}\n\
          DropAdminRights=y\n\
          OpenPipePath=\\Device\\NamedPipe\\{box_name}_*\n\
          FileRootPath={box_root_nt}\n"
@@ -49,3 +57,6 @@ pub fn write_sandboxie_ini(ini_path: &Path, box_name: &str, box_root: &Path) -> 
     );
     Ok(())
 }
+
+#[cfg(test)]
+mod tests;

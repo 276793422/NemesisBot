@@ -163,12 +163,22 @@ impl Default for Config {
 /// - `sandbox`: Layer 2 — wrap the child spawn with Sandboxie `Start.exe /box:`.
 ///   Requires `enabled = true` AND Sandboxie installed (next phase). The gateway
 ///   probes for Start.exe and falls back if absent.
+/// - `allow_network`: Sandboxie box-level network switch — writes
+///   `AllowNetworkAccess=y/n` into Sandboxie.ini for the NemesisBox box. Applies
+///   to every process in the box (the executor child AND any program the user
+///   launches from the in-box explorer). Independent of `enabled`/`sandbox`.
+///   A flip takes effect for NEWLY started box processes after `Start.exe
+///   /reload`; already-running box processes keep their old network state until
+///   restarted (Sandboxie's WFP callout reads a per-process `BlockInternet`
+///   cache that reload does not refresh).
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ExecutorSeparationConfig {
     #[serde(default)]
     pub enabled: bool,
     #[serde(default)]
     pub sandbox: bool,
+    #[serde(default)]
+    pub allow_network: bool,
 }
 
 // ============================================================================

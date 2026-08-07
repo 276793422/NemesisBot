@@ -16,6 +16,7 @@ const busy = ref<string | null>(null)
 const selected = ref<Set<string>>(new Set())
 
 const ready = computed(() => !!status.value?.ready)
+const allowNetwork = computed(() => !!status.value?.allow_network)
 const sevenZipOk = computed(() => !!env.value?.seven_zip?.available)
 const filesAcquired = computed(() => !!env.value?.sandboxie?.files_acquired)
 const driverInstalled = computed(() => !!env.value?.sandboxie?.driver_installed)
@@ -189,6 +190,39 @@ async function openBox() {
   }
 }
 
+// Open an explorer window INSIDE the box (Start.exe /box:NemesisBox explorer.exe).
+// Anything launched from it inherits the box via process-tree propagation. cwd is
+// %USERPROFILE%. Only enabled when the engine is ready.
+async function openExplorer() {
+  busy.value = 'open_explorer'
+  try {
+    await request('sandbox', 'open_explorer')
+    toast.success('已在沙盒内打开资源管理器（用户目录）')
+  } catch (e: any) {
+    toast.error('打开失败: ' + (e?.message ?? e))
+  } finally {
+    busy.value = null
+  }
+}
+
+// Toggle the box-level network switch (AllowNetworkAccess). Persists to config,
+// rewrites Sandboxie.ini, reloads Sandboxie. Newly started box processes pick it up
+// immediately; already-open ones need reopening (Sandboxie WFP caches BlockInternet
+// per-process; reload doesn't refresh it).
+async function toggleNetwork() {
+  const next = !allowNetwork.value
+  busy.value = 'set_network'
+  try {
+    await request('sandbox', 'set_network', { enabled: next })
+    toast.success(`盒内联网已${next ? '开启' : '关闭'} · 新启动的程序立即生效，已打开的需重开`)
+    await refreshAll()
+  } catch (e: any) {
+    toast.error('切换失败: ' + (e?.message ?? e))
+  } finally {
+    busy.value = null
+  }
+}
+
 onMounted(async () => {
   await Promise.all([refreshAll(), checkEnv()])
 })
@@ -218,6 +252,8 @@ onMounted(async () => {
              : busy === 'stop' ? '正在停止 Sandboxie 引擎（卸驱动 + 服务，会弹 UAC）...'
              : busy === 'sync' || busy === 'sync_all' ? '正在同步文件到主机...'
              : busy === 'delete' ? '正在从沙箱删除文件...'
+             : busy === 'open_explorer' ? '正在沙盒内打开资源管理器...'
+             : busy === 'set_network' ? '正在切换盒内联网状态...'
              : '正在检查环境...' }}
           </span>
         </div>
@@ -281,6 +317,28 @@ onMounted(async () => {
               </div>
             </div>
 
+            <!-- Box network switch (AllowNetworkAccess) — sibling under the engine block. -->
+            <div v-if="filesAcquired" style="border-top: 1px solid var(--border); padding-top: var(--space-4); margin-top: var(--space-4);">
+              <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: var(--space-2);">
+                <span style="font-weight: 500;">盒内联网</span>
+                <button
+                  class="btn btn-sm"
+                  :class="{ 'btn-primary': allowNetwork }"
+                  @click="toggleNetwork"
+                  :disabled="!!busy"
+                >
+                  {{ allowNetwork ? '已开启' : '已关闭' }}
+                </button>
+              </div>
+              <div style="padding-left: var(--space-4); font-size: var(--text-sm); color: var(--text-secondary);">
+                <span :style="{ color: allowNetwork ? 'var(--success)' : 'var(--text-secondary)' }">{{ allowNetwork ? '●' : '○' }}</span>
+                <span style="margin-left: var(--space-2);">{{ allowNetwork ? '盒内程序允许联网' : '盒内程序禁止联网' }}</span>
+              </div>
+              <div style="padding-left: var(--space-4); margin-top: var(--space-1); font-size: var(--text-xs); color: var(--text-secondary);">
+                切换对新启动的盒内程序立即生效；已打开的需重开。
+              </div>
+            </div>
+
             <div v-if="!sevenZipOk && !filesAcquired" style="margin-top: var(--space-3); font-size: var(--text-xs); color: var(--text-secondary);">
               提示：先准备 7z 环境，再下载 Sandboxie 文件（无 UAC）。文件就绪后点"启动"激活引擎（装驱动，弹 UAC）。然后在 config.json 设 <code>executor.enabled=true, sandbox=true</code> 重启 gateway 即可启用沙盒执行。
             </div>
@@ -316,7 +374,10 @@ onMounted(async () => {
                   <span style="color: var(--text-secondary);">沙箱缓存路径：</span>
                   <code>{{ status?.box_root || '(未知)' }}</code>
                 </div>
-                <button class="btn btn-sm" @click="openBox" :disabled="!status?.box_root">打开沙箱</button>
+                <div style="display: flex; gap: var(--space-2);">
+                  <button class="btn btn-sm" @click="openBox" :disabled="!status?.box_root">打开沙箱</button>
+                  <button class="btn btn-sm btn-primary" @click="openExplorer" :disabled="!!busy || !ready">打开盒内资源管理器</button>
+                </div>
               </div>
             </div>
           </div>

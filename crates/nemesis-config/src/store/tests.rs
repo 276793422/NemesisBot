@@ -14,7 +14,7 @@ fn tmp_store() -> (tempfile::TempDir, ConfigStore) {
 }
 
 fn exec_cfg(enabled: bool, sandbox: bool) -> ExecutorSeparationConfig {
-    ExecutorSeparationConfig { enabled, sandbox }
+    ExecutorSeparationConfig { enabled, sandbox, allow_network: false }
 }
 
 #[test]
