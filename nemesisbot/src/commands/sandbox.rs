@@ -468,10 +468,16 @@ pub fn ensure_sandbox_ready(home: &std::path::Path, sandbox_enabled: bool) {
     }
 }
 
-/// Bot 退出时停掉**我们自己的** SbieSvc 服务（per-run）。驱动**不动**（常驻，避
-/// UAC + BSOD 风险），只有 `sandbox stop` 显式卸载。只有"binary 路径在我们
-/// runtime 目录下"的服务才停——别人的系统级 Sandboxie 不碰。停服务不要 UAC。
-/// 稳态：上次正常退出已停服务 → 本次启动 ensure_sandbox_ready 重启它。
+/// 停掉**我们自己的** SbieSvc 服务（per-run）。驱动**不动**（常驻，避 UAC + BSOD
+/// 风险），只有 `sandbox stop` 显式卸载。只有「binary 路径在我们 runtime 目录下」
+/// 的服务才停——别人的系统级 Sandboxie 不碰。
+///
+/// ⚠️ **当前未在 gateway 退出路径调用**（`gateway.rs` 里的调用已注释禁用）。
+/// 原因：网关非提权，停特权 SbieSvc 经 `KmdUtil.exe stop` 会被拒 + 弹 GUI 权限窗，
+/// 阻塞 bot 退出。保留此函数与「is_ours」判定逻辑，供将来走**提权路径**停服务时
+/// 复用。如需恢复退出时停服务，必须改成提权执行（见 `elevation.rs`），否则会
+/// 重新弹窗。
+#[allow(dead_code)]
 pub fn stop_service_if_ours(home: &std::path::Path) {
     let svc = nemesis_sandbox::status::service_state(nemesis_sandbox::USERMODE_SERVICE);
     if !matches!(svc, ServiceState::Running) {

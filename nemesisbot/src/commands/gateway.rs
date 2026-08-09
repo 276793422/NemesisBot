@@ -3692,16 +3692,21 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
         }
     }
 
-    // Sandbox per-run cleanup (Route A): stop OUR SbieSvc service (verified by
-    // binary path under our runtime dir — a system/foreign Sandboxie is left
-    // alone) but LEAVE the kernel driver resident. Stopping the service needs
-    // no UAC; uninstalling the driver would (and is BSOD-prone), so only an
-    // explicit `sandbox stop` (CLI / dashboard button) uninstalls it. Next
-    // start `ensure_sandbox_ready` restarts the service; the driver is reused.
-    #[cfg(feature = "sandbox")]
-    {
-        crate::commands::sandbox::stop_service_if_ours(&home);
-    }
+    // Sandbox: leave SbieSvc RESIDENT on exit — do NOT stop it. The gateway
+    // runs non-elevated; stopping the privileged SbieSvc shells out to
+    // `KmdUtil.exe stop SbieSvc`, which is denied (needs admin) and pops a GUI
+    // "no permission" dialog that blocks shutdown. A running SbieSvc is
+    // harmless: `ensure_sandbox_ready` reuses it on next start (see
+    // commands/sandbox.rs), and the kernel driver is resident-by-design. Use
+    // the elevated `sandbox stop` CLI / dashboard button to fully uninstall.
+    //
+    // DISABLED — original per-run stop call kept here for reference. To
+    // re-enable, the stop MUST go through an ELEVATED path (elevation.rs /
+    // runas); a non-elevated stop re-introduces the KmdUtil permission popup.
+    // #[cfg(feature = "sandbox")]
+    // {
+    //     crate::commands::sandbox::stop_service_if_ours(&home);
+    // }
 
     // Close the message bus
     bus.close();
