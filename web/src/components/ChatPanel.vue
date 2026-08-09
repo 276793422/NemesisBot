@@ -181,13 +181,26 @@ function handleWSMessage(data: any) {
     const activeModule = props.module ?? 'chat'
     if (data.type === 'message' && data.module === activeModule) {
       if (data.cmd === 'receive') {
-        chatStore.addMessage({
-          role: data.data.role || 'assistant',
-          content: data.data.content,
-          timestamp: data.timestamp,
-          model: data.data.model,
-        })
+        const incomingRole = data.data.role || 'assistant'
+        const incomingContent = data.data?.content
+        const last = chatStore.messages[chatStore.messages.length - 1]
+        // Skip addMessage if the watchdog already recovered this exact
+        // response from session_log (late-arriving live frame, same tail).
+        const isDuplicateRecovery =
+          !!last &&
+          last.role === incomingRole &&
+          incomingContent != null &&
+          last.content === incomingContent
+        if (!isDuplicateRecovery) {
+          chatStore.addMessage({
+            role: incomingRole,
+            content: data.data.content,
+            timestamp: data.timestamp,
+            model: data.data.model,
+          })
+        }
         chatStore.streaming = false
+        clearWatchdog()
 
         // TTS playback: if enabled, send AI response to backend for synthesis
         if (voicePlayback.value && ttsReady.value && data.data.role !== 'user' && data.data.content) {
@@ -205,6 +218,7 @@ function handleWSMessage(data: any) {
           timestamp: data.timestamp,
         })
         chatStore.streaming = false
+        clearWatchdog()
       }
     } else if (data.type === 'system' && data.module === 'error' && data.cmd === 'notify') {
       chatStore.addMessage({
@@ -250,9 +264,84 @@ function handleWSMessage(data: any) {
   })
 }
 
+// --- Watchdog: recover from a lost live response frame ---
+// If `streaming` stays true past WATCHDOG_MS with no receive/error frame, the
+// WS frame was likely lost (e.g. half-open connection). The response is already
+// persisted to session_log, so resync by reloading the latest page and
+// REPLACING the message list (no dedup / stable-id needed). Default chat only
+// — workflow_chat streaming is engine-driven, not in this session_log path.
+const WATCHDOG_MS = 45000
+const MAX_WATCHDOG_ATTEMPTS = 3
+let watchdogTimer: ReturnType<typeof setTimeout> | null = null
+let watchdogAttempts = 0
+let pendingWatchdogReload = false
+// # of assistant messages at send time — used to detect that the lost
+// response has actually landed in session_log (vs. still running).
+let assistantCountAtSend = 0
+
+function clearWatchdog() {
+  if (watchdogTimer) {
+    clearTimeout(watchdogTimer)
+    watchdogTimer = null
+  }
+}
+function armWatchdog() {
+  clearWatchdog()
+  watchdogTimer = setTimeout(onWatchdog, WATCHDOG_MS)
+}
+function startWatchdog() {
+  watchdogAttempts = 0
+  pendingWatchdogReload = false
+  assistantCountAtSend = chatStore.messages.filter(m => m.role === 'assistant').length
+  armWatchdog()
+}
+function reloadLatest() {
+  pendingWatchdogReload = true
+  sendHistoryRequest('watchdog_' + Date.now(), 50, null, {
+    module: props.module,
+    moduleData: activeModuleData(),
+  })
+}
+function onWatchdog() {
+  watchdogTimer = null
+  if (!chatStore.streaming) return
+  if (!isDefaultChat.value) return
+  watchdogAttempts++
+  reloadLatest()
+}
+
 function handleHistoryResponse(data: any) {
   chatStore.historyLoading = false
   if (!data) return
+
+  // Watchdog-driven resync: if a genuinely new assistant message is in
+  // session_log (more than at send time), the lost response landed — replace
+  // from source of truth and un-stick. Otherwise keep the current view and
+  // re-check (never drop the just-sent user message).
+  if (pendingWatchdogReload) {
+    pendingWatchdogReload = false
+    const rawMsgs: any[] = data.messages || []
+    const latestAssistantCount = rawMsgs.filter((m: any) => m.role === 'assistant').length
+    if (chatStore.streaming && latestAssistantCount > assistantCountAtSend) {
+      chatStore.replaceMessages(
+        rawMsgs.map((m: any) => ({
+          role: m.role,
+          content: m.content,
+          timestamp: m.timestamp || new Date().toISOString(),
+          model: m.model,
+        })),
+      )
+      chatStore.streaming = false
+      clearWatchdog()
+      nextTick(() => scrollToBottom())
+    } else if (chatStore.streaming && watchdogAttempts < MAX_WATCHDOG_ATTEMPTS) {
+      // Response not landed yet (maybe still running) — re-check later.
+      armWatchdog()
+    } else {
+      clearWatchdog()
+    }
+    return
+  }
 
   const historyMessages = data.messages || []
   if (historyMessages.length > 0) {
@@ -315,6 +404,7 @@ function sendMessage() {
 
   chatStore.clearInput()
   chatStore.streaming = true
+  startWatchdog()
 
   // Reset textarea height
   if (chatInput.value) chatInput.value.style.height = 'auto'

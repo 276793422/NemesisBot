@@ -54,7 +54,9 @@ pub struct SendQueue {
 impl SendQueue {
     /// Create a new send queue wrapping a WebSocket sink.
     /// Spawns a background task that processes the send queue.
-    pub fn new(mut sink: SplitSink<WebSocket, Message>) -> Self {
+    /// `session_id` is captured only for diagnostic logging when a write
+    /// fails — it is not stored, so the struct/test constructor is unchanged.
+    pub fn new(mut sink: SplitSink<WebSocket, Message>, session_id: String) -> Self {
         let (tx, mut rx) = mpsc::channel::<Vec<u8>>(256);
         let (done_tx, done_rx) = tokio::sync::watch::channel(false);
 
@@ -63,13 +65,25 @@ impl SendQueue {
                 let text = String::from_utf8_lossy(&data).into_owned();
                 let msg = Message::Text(text.into());
                 if sink.feed(msg).await.is_err() {
+                    tracing::warn!(
+                        session_id = %session_id,
+                        "[WebSocket] sink feed failed; closing send queue"
+                    );
                     break;
                 }
                 if sink.flush().await.is_err() {
+                    tracing::warn!(
+                        session_id = %session_id,
+                        "[WebSocket] sink flush failed; closing send queue"
+                    );
                     break;
                 }
             }
             let _ = done_tx.send(true);
+            tracing::info!(
+                session_id = %session_id,
+                "[WebSocket] send queue task exited"
+            );
         });
 
         Self { tx, done: done_rx }
@@ -214,7 +228,7 @@ pub async fn handle_websocket(
     let (sink, mut stream) = socket.split();
 
     // Create send queue for thread-safe writes
-    let send_queue = Arc::new(SendQueue::new(sink));
+    let send_queue = Arc::new(SendQueue::new(sink, session_id.clone()));
 
     // Store send queue in session for outbound messages
     state

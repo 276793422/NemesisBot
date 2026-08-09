@@ -30,6 +30,13 @@ export const useChatStore = defineStore('chat', () => {
     messages.value = [...history, ...messages.value]
   }
 
+  /** Replace the whole message list — used by the chat watchdog to resync
+   *  from session_log when a live response frame is suspected lost. Replacing
+   *  (not merging) avoids any dedup / stable-id requirement. */
+  function replaceMessages(msgs: ChatMessage[]) {
+    messages.value = [...msgs]
+  }
+
   function clearInput() {
     input.value = ''
   }
@@ -59,6 +66,7 @@ export const useChatStore = defineStore('chat', () => {
     historyLoaded,
     addMessage,
     prependHistory,
+    replaceMessages,
     clearInput,
     reset,
   }
