@@ -104,6 +104,116 @@ async fn simple_text_response() {
     assert_eq!(done_events[0], "Hello!");
 }
 
+/// A usage whose completion_tokens sits exactly at the default max_tokens cap
+/// (8192) — the truncation signal the continue-generation path detects.
+fn cap_usage() -> Option<crate::loop_executor::ObserverUsageInfo> {
+    Some(crate::loop_executor::ObserverUsageInfo {
+        prompt_tokens: 100,
+        completion_tokens: 8192,
+        total_tokens: 8292,
+        cached_tokens: None,
+        cache_creation_tokens: None,
+        cache_read_tokens: None,
+    })
+}
+
+/// Truncation at the max_tokens cap must trigger continue-generation: the loop
+/// drops the truncated partial and reaches the model's follow-up response
+/// instead of accepting the cut-off partial. (Under the old behavior the
+/// partial would be accepted as the final answer; under the validation-failure
+/// misroute a truncated tool call would force-stop — this mock uses a no-tool
+/// partial so the assertion is independent of the tier retry budget.)
+#[tokio::test]
+async fn length_truncation_triggers_continue_generation() {
+    let provider = MockLlmProvider::new(vec![
+        LlmResponse {
+            content: "partial preamble that got cut".to_string(),
+            tool_calls: Vec::new(),
+            finished: false,
+            reasoning_content: None,
+            usage: cap_usage(),
+            raw_request_body: None,
+            raw_response_body: None,
+        },
+        LlmResponse {
+            content: "completed after continuing".to_string(),
+            tool_calls: Vec::new(),
+            finished: true,
+            reasoning_content: None,
+            usage: None,
+            raw_request_body: None,
+            raw_response_body: None,
+        },
+    ]);
+    let agent_loop = AgentLoop::new(Box::new(provider), test_config());
+    let instance = AgentInstance::new(test_config());
+    let context = RequestContext::new("web", "chat1", "user1", "session1");
+
+    let events = agent_loop
+        .run(&instance, "write a big file", &context)
+        .await;
+
+    let done: Vec<_> = events
+        .iter()
+        .filter_map(|e| match e {
+            AgentEvent::Done(m) => Some(m.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(done.len(), 1, "expected exactly one Done: {:?}", events);
+    assert_eq!(
+        done[0], "completed after continuing",
+        "continue-generation must reach the follow-up response, not accept the truncated partial"
+    );
+}
+
+/// Repeated truncation exhausts MAX_LENGTH_CONTINUATIONS and surfaces the
+/// clear "输出反复超过 max_tokens" error — NOT the misleading
+/// "工具参数校验连续失败" / "not valid JSON" validation error.
+#[tokio::test]
+async fn length_truncation_budget_exhausts_with_clear_error() {
+    let truncated = || LlmResponse {
+        content: "x".to_string(),
+        tool_calls: Vec::new(),
+        finished: false,
+        reasoning_content: None,
+        usage: cap_usage(),
+        raw_request_body: None,
+        raw_response_body: None,
+    };
+    // More than MAX_LENGTH_CONTINUATIONS (5) truncated responses.
+    let provider = MockLlmProvider::new(vec![truncated(); 7]);
+    let mut cfg = test_config();
+    cfg.max_turns = 12; // allow enough turns to reach the exhaustion branch
+    let agent_loop = AgentLoop::new(Box::new(provider), cfg);
+    let instance = AgentInstance::new(test_config());
+    let context = RequestContext::new("web", "chat1", "user1", "session1");
+
+    let events = agent_loop
+        .run(&instance, "write a huge file", &context)
+        .await;
+
+    let errors: Vec<_> = events
+        .iter()
+        .filter_map(|e| match e {
+            AgentEvent::Error(m) => Some(m.clone()),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        errors.iter().any(|m| m.contains("max_tokens")),
+        "expected the clear max_tokens error, got events: {:?}",
+        events
+    );
+    assert!(
+        errors
+            .iter()
+            .all(|m| !m.contains("校验连续失败") && !m.contains("not valid JSON")),
+        "must NOT surface the misleading validation error: {:?}",
+        errors
+    );
+}
+
 #[tokio::test]
 async fn estop_engaged_stops_loop_before_llm() {
     // 触发的急停必须在 checkpoint A（轮次顶部）break，**在调用 LLM 之前**——

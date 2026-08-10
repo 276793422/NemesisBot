@@ -2718,6 +2718,14 @@ impl AgentLoop {
         // reaches the tier budget the loop stops, preventing a struggling model
         // from burning max_turns on the same malformed call.
         let mut validation_failures = 0u32;
+        // Continue-generation budget for max_tokens truncation: when output
+        // hits the token cap it's cut mid-way (often mid tool-call JSON).
+        // Instead of routing the broken call through the validation budget
+        // (which force-stops with a misleading "args invalid" error — Big tier
+        // = 0 retries), append partial content + a "continue" prompt and
+        // re-loop. Mirrors 内部专项 (MAX_CONTINUATIONS=5) / nanobot (3).
+        let mut length_continuations = 0u32;
+        const MAX_LENGTH_CONTINUATIONS: u32 = 5;
         // ② Grace-round latch. When the tool-call budget is exhausted we grant
         // one extra round (with GRACE_ROUND_NUDGE injected) so the model can
         // synthesize a final answer from completed work; a second hit stops
@@ -3257,6 +3265,60 @@ impl AgentLoop {
                     }
                 }
             }
+
+            // Continue-generation on max_tokens truncation (内部专项/nanobot
+            // pattern). When completion hits the cap, output is cut mid-way —
+            // often mid tool-call JSON, which args_validator would report as
+            // "Arguments are not valid JSON" and burn the validation budget
+            // (Big tier = 0 retries → instant force-stop with a misleading
+            // error). Detect it here: drop the truncated tool calls (executing
+            // them would write a partial file / run half-formed args), keep
+            // partial content, append a "continue" prompt, re-loop. Bounded so
+            // a genuinely too-large file surfaces a clear error, not a loop.
+            // NOTE: detection assumes chat_opts.max_tokens is Some — the agent
+            // always sets Some(8192) when building chat_opts. If that ever
+            // becomes None (provider's own default cap), gate on is_some():
+            // the 8192 fallback could false-positive against a higher cap.
+            let token_cap = chat_opts.max_tokens.unwrap_or(8192) as u64;
+            let hit_cap = response
+                .usage
+                .as_ref()
+                .map(|u| (u.completion_tokens as u64) >= token_cap)
+                .unwrap_or(false);
+            if hit_cap {
+                if length_continuations < MAX_LENGTH_CONTINUATIONS {
+                    length_continuations += 1;
+                    warn!(
+                        "[AgentLoop] response truncated at max_tokens cap ({token_cap}); \
+                         continue-generation {length_continuations}/{MAX_LENGTH_CONTINUATIONS}"
+                    );
+                    instance.add_assistant_message(
+                        &response.content,
+                        Vec::new(),
+                        response.reasoning_content.clone(),
+                    );
+                    instance.add_user_message(
+                        "Output limit reached. Continue exactly where you left off — \
+                         no recap, no apology. If you were writing a large file, \
+                         break it into smaller writes.",
+                    );
+                    continue;
+                }
+                // Budget exhausted: clear, non-misleading error.
+                warn!(
+                    "[AgentLoop] length-continuation budget exhausted; \
+                     output keeps exceeding max_tokens ({token_cap})"
+                );
+                let notice = format!(
+                    "输出反复超过 max_tokens 上限（{token_cap}）被截断，文件可能太大。\
+                     请调大 max_tokens，或让我分段写入。"
+                );
+                instance.add_assistant_message(&notice, Vec::new(), None);
+                events.push(AgentEvent::Error(context.format_rpc_message(&notice)));
+                break;
+            }
+            // Complete (non-truncated) response — reset the counter.
+            length_continuations = 0;
 
             // ⑧ Cross-round prose repetition: if the model's content is
             // near-identical to the previous round's, queue a transient nudge
