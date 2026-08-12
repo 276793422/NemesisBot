@@ -171,6 +171,31 @@ pub fn resolve_active_tier(cfg: &serde_json::Value, active_alias: &str) -> Model
     tier.resolve(&hint)
 }
 
+/// Resolve the per-model output token cap (`max_output_tokens`) for the active
+/// model alias, by looking up `model_list[]` for the matching entry (by
+/// `model_name` or `model`) and returning its `max_output_tokens` field. `None`
+/// when the entry isn't found or the field is absent — the caller falls back to
+/// a default.
+///
+/// Lets each model declare its real output ceiling so the agent requests
+/// `max_tokens = cap` instead of a one-size-fits-all default: large files that
+/// fit within the model's real cap write in one shot instead of truncating.
+/// Pure (no IO); `AgentLoop::current_max_tokens` reads config.json fresh and
+/// hands the parsed value here. Mirrors [`resolve_active_tier`].
+pub fn resolve_max_output_tokens(cfg: &serde_json::Value, active_alias: &str) -> Option<i64> {
+    cfg.get("model_list")
+        .and_then(|v| v.as_array())
+        .and_then(|arr| {
+            arr.iter().find(|m| {
+                let name = m.get("model_name").and_then(|v| v.as_str()).unwrap_or("");
+                let full = m.get("model").and_then(|v| v.as_str()).unwrap_or("");
+                name == active_alias || full == active_alias
+            })
+        })
+        .and_then(|m| m.get("max_output_tokens"))
+        .and_then(|v| v.as_i64())
+}
+
 /// Resolve the display model id (`provider/name`, e.g. `deepseek/deepseek-v4-flash`)
 /// for the active model alias, by looking up `model_list[]` for the matching
 /// entry (by `model_name` or `model`) and returning its `model` field. Falls

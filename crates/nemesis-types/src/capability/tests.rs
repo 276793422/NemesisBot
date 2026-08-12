@@ -129,6 +129,36 @@ fn resolve_active_tier_from_config() {
 }
 
 #[test]
+fn resolve_max_output_tokens_from_config() {
+    let cfg = serde_json::json!({
+        "model_list": [
+            {"model": "qwen/qwen3-30b-a3b", "model_name": "qwen3-30b-a3b"},
+            {"model": "anthropic/claude-sonnet-4", "model_name": "claude-sonnet-4",
+             "max_output_tokens": 16384}
+        ]
+    });
+    // Declared cap returned verbatim.
+    assert_eq!(
+        resolve_max_output_tokens(&cfg, "claude-sonnet-4"),
+        Some(16384)
+    );
+    // Match by full `model` id also works.
+    assert_eq!(
+        resolve_max_output_tokens(&cfg, "anthropic/claude-sonnet-4"),
+        Some(16384)
+    );
+    // Field absent on the entry → None (caller falls back to the default).
+    assert_eq!(resolve_max_output_tokens(&cfg, "qwen3-30b-a3b"), None);
+    // Unknown alias → None.
+    assert_eq!(resolve_max_output_tokens(&cfg, "nonexistent"), None);
+    // No model_list at all → None.
+    assert_eq!(
+        resolve_max_output_tokens(&serde_json::json!({}), "deepseek-v4-flash"),
+        None
+    );
+}
+
+#[test]
 fn resolve_display_model_basic() {
     let cfg = serde_json::json!({
         "model_list": [

@@ -2704,9 +2704,11 @@ impl AgentLoop {
     ) -> Vec<AgentEvent> {
         let mut events = Vec::new();
 
-        // Chat options matching Go's defaults: max_tokens: 8192, temperature: 0.7.
+        // max_tokens: per-model `max_output_tokens` from config if declared
+        // (each model's real output ceiling, not a blanket 8192 — large files
+        // write in one shot instead of truncating); else 8192. temperature 0.7.
         let chat_opts = crate::types::ChatOptions {
-            max_tokens: Some(8192),
+            max_tokens: Some(self.current_max_tokens().unwrap_or(8192)),
             temperature: Some(0.7),
             ..Default::default()
         };
@@ -3962,6 +3964,26 @@ impl AgentLoop {
             .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
             .map(|v| nemesis_types::capability::resolve_display_model(&v, &active))
             .unwrap_or(active)
+    }
+
+    /// Resolve the active model's per-model output token cap (`max_output_tokens`)
+    /// from config.json, used as the chat request's `max_tokens`. Reads config
+    /// fresh each call (like `current_display_model`). `None` when config is
+    /// unavailable (standalone mode) or the field is absent — caller falls back
+    /// to the 8192 default. Lets each model declare its real output ceiling so
+    /// large files write in one shot instead of truncating at a blanket cap.
+    pub(crate) fn current_max_tokens(&self) -> Option<u32> {
+        let active = self.active_model.read().clone();
+        let path = match self.config_path.read().clone() {
+            Some(p) => p,
+            None => return None,
+        };
+        std::fs::read_to_string(&path)
+            .ok()
+            .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+            .and_then(|v| nemesis_types::capability::resolve_max_output_tokens(&v, &active))
+            .map(|n| n as u32)
+            // ↑ i64 (from JSON) → u32; max_output_tokens is a non-negative count
     }
 
     /// Phase 4a: detect config.json on-disk changes (by mtime) and re-resolve
