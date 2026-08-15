@@ -102,6 +102,7 @@ async fn test_multiple_observers() {
             error: None,
             llm_round: 1,
             chain_pos: 0,
+            result: None,
         }),
     };
     manager.emit_sync(event).await;
@@ -609,6 +610,7 @@ async fn test_tool_call_event_data() {
             error: None,
             llm_round: 2,
             chain_pos: 1,
+            result: None,
         }),
     };
 

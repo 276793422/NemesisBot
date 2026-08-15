@@ -569,6 +569,7 @@ fn convert_event_tool_call() {
             error: Some("timeout".to_string()),
             llm_round: 1,
             chain_pos: 0,
+            result: None,
         }),
     );
     let e = convert_event(&src).expect("tool call should convert");

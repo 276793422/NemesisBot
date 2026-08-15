@@ -512,7 +512,7 @@ pub fn convert_event(src: &nemesis_observer::ConversationEvent) -> Option<Conver
                     .map(|(k, v)| format!("\"{}\": {}", k, v))
                     .collect::<Vec<_>>()
                     .join(", "),
-                result: String::new(),
+                result: d.result.clone().unwrap_or_default(),
             }),
         }),
     }

@@ -18,7 +18,7 @@ path = "src/main.rs"
 default = [
     "channels-web", "channels-webhook", "channels-rpc",
     "migrate", "devices", "desktop", "health", "heartbeat", "auth", "voice", "cluster",
-    "forge", "memory", "workflow", "security", "sandbox", "usage",
+    "forge", "memory", "workflow", "security", "sandbox", "eval", "usage",
 ]
 
 # Optional subsystems (on by default = current full build; drop with --no-default-features)
@@ -38,6 +38,9 @@ security = ["dep:nemesis-security", "nemesis-security/security", "nemesis-agent/
 # Sandboxie integration (executor.sandbox=true + `nemesisbot sandbox` install/use/uninstall).
 # Optional — off in minimal-iot/IoT (Sandboxie is Windows-driver-based, not used on IoT).
 sandbox = ["dep:nemesis-sandbox", "nemesis-web/sandbox"]
+# `nemesisbot eval` — prompt/skill behaviour assessment (needs the sandbox +
+# security layers, the injector and the LLM proxy).
+eval = ["sandbox", "security", "dep:nemesis-injector", "dep:nemesis-eval-proxy"]
 
 # Frontend-only gate (no Rust code): controls the "使用统计" Dashboard page
 # (UsageView) which pulls in echarts (~558KB). Off in minimal-iot → the page +
@@ -95,6 +98,8 @@ nemesis-voice = { workspace = true, optional = true }
 nemesis-logger = { workspace = true }
 nemesis-utils = { workspace = true }
 nemesis-sandbox = { workspace = true, optional = true }
+nemesis-injector = { workspace = true, optional = true }
+nemesis-eval-proxy = { workspace = true, optional = true }
 serde_yaml = { workspace = true }
 clap = { workspace = true }
 tokio = { workspace = true }
@@ -121,6 +126,10 @@ chrono = { workspace = true }
 winresource = "0.1"
 
 [dev-dependencies]
+tempfile = "3"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_System_Threading"] }
 tempfile = "3"
 
 [target.'cfg(unix)'.dependencies]

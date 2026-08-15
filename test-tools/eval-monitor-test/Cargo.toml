@@ -1,0 +1,19 @@
+[package]
+name = "eval-monitor-test"
+version = "0.1.0"
+edition = "2021"
+description = "E2E test for the eval monitor DLL (plugins/plugin-eval-monitor): launch inside the signed SbieCtrl host, generate in-box activity, check the JSONL output + exit code"
+
+[[bin]]
+name = "monitor_dll_test"
+path = "main.rs"
+
+[dependencies]
+nemesis-injector = { path = "../../crates/nemesis-injector" }
+
+[profile.release]
+panic = "abort"
+
+# Standalone project — NOT a workspace member (references absolute runtime
+# paths; run manually against a provisioned sandbox environment).
+[workspace]

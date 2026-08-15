@@ -3470,6 +3470,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "nemesis-eval-proxy"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "futures",
+ "reqwest",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+ "tokio-test",
+ "tracing",
+]
+
+[[package]]
 name = "nemesis-forge"
 version = "0.1.0"
 dependencies = [
@@ -3531,6 +3545,15 @@ dependencies = [
  "tempfile",
  "tokio",
  "tracing",
+]
+
+[[package]]
+name = "nemesis-injector"
+version = "0.1.0"
+dependencies = [
+ "thiserror 2.0.18",
+ "tracing",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -3984,9 +4007,11 @@ dependencies = [
  "nemesis-data",
  "nemesis-desktop",
  "nemesis-devices",
+ "nemesis-eval-proxy",
  "nemesis-forge",
  "nemesis-health",
  "nemesis-heartbeat",
+ "nemesis-injector",
  "nemesis-logger",
  "nemesis-mcp",
  "nemesis-memory",
@@ -4018,6 +4043,7 @@ dependencies = [
  "tracing-subscriber",
  "uuid",
  "which",
+ "windows-sys 0.59.0",
  "winresource",
 ]
 
@@ -6126,6 +6152,28 @@ checksum = "1729aa945f29d91ba541258c8df89027d5792d85a8841fb65e8bf0f4ede4ef61"
 dependencies = [
  "rustls",
  "tokio",
+]
+
+[[package]]
+name = "tokio-stream"
+version = "0.1.19"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a3d06f0b082ba57c26b79407372e57cf2a1e28124f78e9479fe80322cf53420b"
+dependencies = [
+ "futures-core",
+ "pin-project-lite",
+ "tokio",
+]
+
+[[package]]
+name = "tokio-test"
+version = "0.4.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3f6d24790a10a7af737693a3e8f1d03faef7e6ca0cc99aae5066f533766de545"
+dependencies = [
+ "futures-core",
+ "tokio",
+ "tokio-stream",
 ]
 
 [[package]]

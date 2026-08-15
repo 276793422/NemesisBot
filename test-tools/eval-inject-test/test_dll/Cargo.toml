@@ -1,0 +1,20 @@
+[package]
+name = "test_dll"
+version = "0.1.0"
+edition = "2021"
+description = "Test DLL injected into the signed SbieCtrl.exe host: verifies SessionLeader bypass, EnumProcessEx box pid enumeration, and QueryProcess image lookup"
+
+[lib]
+name = "test_dll"
+crate-type = ["cdylib"]
+path = "src/lib.rs"
+
+[dependencies]
+
+[profile.release]
+panic = "abort"
+opt-level = "z"
+lto = true
+
+# Standalone project — NOT a workspace member.
+[workspace]

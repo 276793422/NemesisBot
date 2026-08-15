@@ -240,6 +240,15 @@ desc = "Sandboxie 沙盒（executor.sandbox=true + nemesisbot sandbox 装/卸/�
 category = "subsystems"
 default = true
 
+# NOTE: `eval` 依赖 sandbox+security（复合 feature），提供 `nemesisbot eval`
+# prompt/skill 安全行为评估（沙盒真跑 + 四记录点 + LLM 代理脱敏）。
+[[feature]]
+id = "eval"
+label = "行为评估（eval 命令）"
+desc = "prompt/skill 沙盒内行为评估（`nemesisbot eval`，仅数据采集不下结论）。依赖 sandbox+security+EP 注入器+LLM 代理。IoT/Linux 建议关"
+category = "subsystems"
+default = true
+
 # ── Frontend-only gate (no Rust code; exists in nemesisbot/Cargo.toml [features]
 #    only so `nemesis-config check` passes) ────────────────────────────────
 

@@ -149,6 +149,13 @@ pub struct ToolCallData {
     pub error: Option<String>,
     pub llm_round: u32,
     pub chain_pos: u32,
+    /// Full tool execution result (also kept on the success path).
+    ///
+    /// Historically the ToolCall conversion only kept the result string in
+    /// `error` on failure and dropped it on success, so observers could never
+    /// scan tool outputs (credentials / DLP / sensitive-page detection).
+    /// `None` for constructors that predate the field.
+    pub result: Option<String>,
 }
 
 /// Observer trait for receiving conversation events.

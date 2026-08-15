@@ -1,0 +1,27 @@
+[package]
+name = "nemesis-injector"
+version.workspace = true
+license.workspace = true
+edition.workspace = true
+
+[lib]
+name = "nemesis_injector"
+path = "src/lib.rs"
+
+[dependencies]
+thiserror = { workspace = true }
+tracing = { workspace = true }
+
+# Windows API。windows-sys 比 windows 轻，只用 needed features。
+[target.'cfg(windows)'.dependencies.windows-sys]
+version = "0.59"
+features = [
+    "Win32_Foundation",
+    "Win32_System_Diagnostics_Debug",
+    "Win32_System_Memory",
+    "Win32_System_LibraryLoader",
+    "Win32_System_Threading",
+    "Win32_Security",
+]
+
+# 非 Windows 编译为 stub（保 cargo check 绿，与项目其他 crate 一致）

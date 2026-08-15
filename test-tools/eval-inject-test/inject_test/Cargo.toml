@@ -1,0 +1,19 @@
+[package]
+name = "inject_test"
+version = "0.1.0"
+edition = "2021"
+description = "Injection harness test: launch suspended SbieCtrl.exe + inject test_dll.dll, verify the signature-wall bypass (inject_result.txt)"
+
+[[bin]]
+name = "inject_test"
+path = "main.rs"
+
+[dependencies]
+nemesis-injector = { path = "../../../crates/nemesis-injector" }
+
+[profile.release]
+panic = "abort"
+
+# Standalone project — NOT a workspace member (references absolute runtime
+# paths; run manually against a provisioned sandbox environment).
+[workspace]

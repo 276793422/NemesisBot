@@ -36,6 +36,8 @@ members = [
     "crates/nemesis-session",
     "crates/nemesis-state",
     "crates/nemesis-utils",
+    "crates/nemesis-injector",
+    "crates/nemesis-eval-proxy",
     "crates/nemesis-voice",
     "crates/nemesis-ui",
     "nemesisbot",
@@ -164,6 +166,8 @@ nemesis-routing = { path = "crates/nemesis-routing" }
 nemesis-session = { path = "crates/nemesis-session" }
 nemesis-state = { path = "crates/nemesis-state" }
 nemesis-utils = { path = "crates/nemesis-utils" }
+nemesis-injector = { path = "crates/nemesis-injector" }
+nemesis-eval-proxy = { path = "crates/nemesis-eval-proxy" }
 nemesis-voice = { path = "crates/nemesis-voice" }
 nemesis-ui = { path = "crates/nemesis-ui" }
 

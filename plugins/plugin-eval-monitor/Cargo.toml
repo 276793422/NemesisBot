@@ -1,0 +1,28 @@
+[package]
+name = "plugin-eval-monitor"
+version = "0.1.0"
+license = "AGPL-3.0-only"
+edition = "2021"
+description = "NemesisBot eval monitor DLL — injected into the signed SbieCtrl.exe host by nemesis-injector to collect Sandboxie driver-level monitor events for the eval box"
+
+# Standalone project — NOT part of the main workspace (cdylib has separate target).
+[workspace]
+
+[lib]
+name = "eval_monitor_dll"
+crate-type = ["cdylib"]
+path = "src/lib.rs"
+
+[dependencies]
+# Intentionally dependency-free: this DLL is injected into a signed host
+# (SbieCtrl.exe) and must stay tiny and self-contained. All SbieApi access is
+# dynamic (LoadLibrary + GetProcAddress) and output is hand-rolled JSONL.
+
+[profile.release]
+panic = "abort"
+opt-level = "z"
+lto = true
+
+# Build: cd plugins/plugin-eval-monitor && cargo build --release
+# Output: target/release/eval_monitor_dll.dll
+# Loaded at eval runtime from this path (nemesisbot/src/commands/eval.rs).

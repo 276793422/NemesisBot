@@ -318,6 +318,9 @@ impl ObserverEvent {
                         error: if *success { None } else { Some(result.clone()) },
                         llm_round: *round,
                         chain_pos: 0,
+                        // Keep the full result on the success path too, so
+                        // observers can scan tool outputs (credentials / DLP).
+                        result: Some(result.clone()),
                     }),
                 }
             }

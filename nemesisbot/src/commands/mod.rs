@@ -21,6 +21,8 @@ pub mod memory;
 pub mod migrate;
 pub mod model;
 pub mod persona;
+#[cfg(feature = "eval")]
+pub mod eval;
 #[cfg(feature = "sandbox")]
 pub mod sandbox;
 #[cfg(feature = "security")]

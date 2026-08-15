@@ -14,6 +14,8 @@ mod commands;
 mod common;
 mod embedded;
 mod exec_worker;
+#[cfg(feature = "eval")]
+mod eval_worker;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
@@ -179,6 +181,13 @@ enum Commands {
         #[command(subcommand)]
         action: commands::sandbox::SandboxCommand,
     },
+    /// Evaluate a prompt / skill's runtime behaviour in a sandbox
+    /// (data collection only, no verdict)
+    #[cfg(feature = "eval")]
+    Eval {
+        #[command(subcommand)]
+        action: commands::eval::EvalAction,
+    },
     /// Manage local voice pipeline
     #[cfg(feature = "voice")]
     Voice {
@@ -238,6 +247,17 @@ async fn main() -> Result<()> {
     // reaches the gateway code that spawns executors.
     if std::env::var("NEMESISBOT_ROLE").as_deref() == Ok("executor") {
         return exec_worker::run().await;
+    }
+
+    // Eval-agent role short-circuit: spawned inside the NemesisEvalBox sandbox
+    // by `nemesisbot eval` (via Start.exe). Same pattern as the executor role —
+    // no CLI parsing, workspace comes from env, never runs path resolution.
+    #[cfg(feature = "eval")]
+    {
+        if std::env::var("NEMESISBOT_ROLE").as_deref() == Ok("eval-agent") {
+            common::ensure_default_logger();
+            return eval_worker::run().await;
+        }
     }
 
     // Early check for child mode (--multiple flag) before any CLI parsing.
@@ -305,6 +325,18 @@ fn main() -> Result<()> {
             .enable_all()
             .build()?;
         return rt.block_on(exec_worker::run());
+    }
+
+    // Eval-agent role short-circuit (see the non-mac entry for rationale).
+    #[cfg(feature = "eval")]
+    {
+        if std::env::var("NEMESISBOT_ROLE").as_deref() == Ok("eval-agent") {
+            common::ensure_default_logger();
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()?;
+            return rt.block_on(eval_worker::run());
+        }
     }
 
     // macOS: winit's EventLoop must run on the process main thread. We run the
@@ -789,6 +821,11 @@ async fn run_command(cli: Cli) -> Result<()> {
         Commands::Sandbox { action } => {
             common::ensure_default_logger();
             commands::sandbox::run(action, cli.local).await?;
+        }
+        #[cfg(feature = "eval")]
+        Commands::Eval { action } => {
+            common::ensure_default_logger();
+            commands::eval::run(action, cli.local).await?;
         }
         #[cfg(feature = "voice")]
         Commands::Voice { action } => {
