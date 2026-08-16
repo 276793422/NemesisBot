@@ -22,12 +22,24 @@
 //! 6p cleanup — real environment untouched (ini section restored)
 
 
-use std::path::{Path, PathBuf};
+// Platform isolation: everything below the CLI types is `#[cfg(windows)]`
+// (see each item); on other targets only `run()` remains, which bails with a
+// clear runtime error. Imports used solely by windows-gated code are gated
+// too, so non-Windows builds stay warning-free.
+use std::path::PathBuf;
+
+#[cfg(target_os = "windows")]
+use std::path::Path;
+#[cfg(target_os = "windows")]
 use std::process::Command;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{bail, Result};
 use clap::{Args, Subcommand};
 
+#[cfg(target_os = "windows")]
+use anyhow::Context;
+
+#[cfg(target_os = "windows")]
 use crate::common;
 
 #[derive(Subcommand)]
@@ -71,6 +83,7 @@ pub struct EvalCommon {
 pub async fn run(action: EvalAction, cli_local: bool) -> Result<()> {
     #[cfg(not(target_os = "windows"))]
     {
+        let _ = (action, cli_local); // silence unused params on non-Windows
         bail!("`nemesisbot eval` is Windows-only (requires Sandboxie).");
     }
     #[cfg(target_os = "windows")]
@@ -210,28 +223,37 @@ async fn run_eval(
     // keys are REQUIRED for Start.exe to launch anything in the box — without
     // them every spawn fails with ERROR_MOD_NOT_FOUND(126) + an error dialog
     // (verified by the NemesisBox-vs-eval-box key diff, 2026-08-15).
-    let eval_box = "NemesisEvalBox";
+    // A UNIQUE section name per run: SbieSvc caches per-section state and
+    // repeated create/delete of the SAME section left it in a stale
+    // "refuses to start processes" state (the `eval skill` exit-1 bug,
+    // 2026-08-16). A fresh name sidesteps the cache entirely. Still ≤33
+    // chars (SbieApi_QueryProcess box[34] limit).
+    let eval_box = format!("NemesisEvalBox_{}", std::process::id());
     let eval_box_root = home.join("box_root");
     // Do NOT pre-create the box root: Sandboxie creates it on first launch,
     // and a pre-created root makes delete_sandbox's internal rmdir fail with
     // Code 3 + a dialog (dialog-capture verified, 2026-08-16).
     let ini_backup = std::fs::read_to_string(sandbox_root.join("Sandboxie.ini"))?;
-    for (k, v) in [
-        ("Enabled", "y"),
-        ("FileRootPath", &format!(r"\??\{}", eval_box_root.display())),
-        ("DropAdminRights", "y"),
-        ("AllowNetworkAccess", if common_args.allow_network { "y" } else { "n" }),
-        ("ConfigLevel", "9"),
-        ("Template", "SkipHook"),
-        ("AutoRecover", "y"),
-        ("BlockNetworkFiles", "y"),
-    ] {
-        sbieini_set(&sbieini, eval_box, k, v)?;
-    }
 
-    // Guard: everything below runs, then ini is restored + box cleaned even
-    // on error paths.
-    let result = {
+    // Guard: EVERYTHING that can fail after the ini section starts being
+    // written goes inside this block. A mid-loop SbieIni failure must not
+    // skip the ini restore below (section keys would stay in the REAL ini —
+    // worse than a leaked temp dir). Cleanup after the block runs on success
+    // and error paths alike.
+    let result = async {
+        for (k, v) in [
+            ("Enabled", "y"),
+            ("FileRootPath", &format!(r"\??\{}", eval_box_root.display())),
+            ("DropAdminRights", "y"),
+            ("AllowNetworkAccess", if common_args.allow_network { "y" } else { "n" }),
+            ("ConfigLevel", "9"),
+            ("Template", "SkipHook"),
+            ("AutoRecover", "y"),
+            ("BlockNetworkFiles", "y"),
+        ] {
+            sbieini_set(&sbieini, &eval_box, k, v)?;
+        }
+
         // 6g — LLM proxy. The fake-key config is only complete once the
         // proxy port is known.
         let proxy = nemesis_eval_proxy::start(real_base, resolution.api_key.clone())
@@ -247,7 +269,7 @@ async fn run_eval(
             &model_name,
             &model_ref,
             &sbieini,
-            eval_box,
+            &eval_box,
             &eval_box_root,
             &start_exe,
             &sbiectrl,
@@ -261,12 +283,25 @@ async fn run_eval(
 
         proxy.shutdown().await;
         eval_result
-    };
+    }
+    .await;
 
-    // 6p — cleanup: box content, ini restore (TempDir drop removes the rest).
-    clean_box(&start_exe, eval_box, &eval_box_root);
-    std::fs::write(sandbox_root.join("Sandboxie.ini"), &ini_backup)?;
-    result
+    // 6p — cleanup: box content, ini restore, temp dir removal — ALL paths.
+    // The original result takes priority (a cleanup warning never masks the
+    // eval error), but a failed ini restore on an otherwise-successful run
+    // fails the command: an unrestored ini is real-environment pollution.
+    clean_box(&start_exe, &eval_box, &eval_box_root);
+    let ini_restore = std::fs::write(sandbox_root.join("Sandboxie.ini"), &ini_backup)
+        .context("restore Sandboxie.ini after eval");
+    if let Err(e) = &ini_restore {
+        eprintln!("[eval] WARN: {e:#} (real Sandboxie.ini left dirty — fix manually)");
+    }
+    close_temp_with_retry(tmp, &eval_box_root);
+    match (result, ini_restore) {
+        (Err(e), _) => Err(e),
+        (Ok(()), Err(e)) => Err(e),
+        (Ok(()), Ok(())) => Ok(()),
+    }
 }
 
 /// Phases 6d(write config)→6o of the eval run, executed while the proxy is
@@ -394,8 +429,7 @@ async fn run_phases(
             // 6n — pending files + agent report from the box mirror.
     // The temp home lives under C:\Users\<u>\... so Sandboxie redirects its
     // writes to the USER tree of the box: <box_root>\user\current\<rel-after-
-    // the-user-dir>. (user\current already stands for C:\Users\<u> — verified
-    // layout: box_root\user\current\AppData\Local\Temp\<tmp>\worker_diag.txt.)
+    // the-user-dir>. (user\current already stands for C:\Users\<u>.)
     let rel_full = home
         .to_string_lossy()
         .trim_start_matches(r"C:\")
@@ -444,10 +478,7 @@ async fn run_phases(
         println!("[eval] box mirror tree:\n{listing}");
         let _ = std::fs::write(
             agent_report_dir.join("worker_debug.txt"),
-            format!(
-                "alive: {alive}\nlisting:\n{listing}\ndiag: {}",
-                std::fs::read_to_string(box_mirror.join("worker_diag.txt")).unwrap_or_default()
-            ),
+            format!("alive: {alive}\nlisting:\n{listing}"),
         );
     }
     let tool_trace =
@@ -480,6 +511,7 @@ async fn run_phases(
         serde_json::to_string_pretty(&serde_json::json!({
             "kind": kind,
             "model": model_name,
+            "box": eval_box,
             "allow_network": common_args.allow_network,
             "timeout_fuse_secs": common_args.observe_secs,
             "final_response_excerpt": final_response.chars().take(500).collect::<String>(),
@@ -574,6 +606,62 @@ fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Delete the eval temp dir reliably. TempDir's Drop self-deletes but
+/// SILENTLY — a Sandboxie handle releasing a beat late leaks the whole temp
+/// tree with no trace (verified 2026-08-16: failed-run dirs left in %TEMP%).
+///
+/// The blocker is SbieSvc holding the box's registry hive (box_root/RegHive*)
+/// open while it processes the async `delete_sandbox_silent` — deleting the
+/// temp dir before SbieSvc releases the hive fails with sharing violations
+/// that outlast short retries (verified 2026-08-16). So: first wait for the
+/// BOX ROOT itself to disappear (SbieSvc's own delete is the authority; up to
+/// ~10s), then close/remove the temp dir with retries.
+///
+/// Note `TempDir::close(self)` consumes the TempDir via mem::forget even on
+/// failure, so the retry goes through an Option. Best-effort by design:
+/// never fails the eval result.
+#[cfg(target_os = "windows")]
+fn close_temp_with_retry(tmp: tempfile::TempDir, eval_box_root: &Path) {
+    // Phase 0: wait for SbieSvc to finish deleting the box (hive release).
+    for _ in 0..20 {
+        if !eval_box_root.exists() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(500));
+    }
+    let mut opt = Some(tmp);
+    let path = opt.as_ref().expect("tempdir").path().to_path_buf();
+    // Phase 1: explicit close with retries for late handle release.
+    for _ in 0..6 {
+        if let Some(t) = opt.take() {
+            if t.close().is_ok() {
+                return;
+            }
+        } else {
+            return; // consumed successfully in an earlier iteration
+        }
+        std::thread::sleep(std::time::Duration::from_millis(500));
+    }
+    // Phase 2: close() keeps failing (or the TempDir was consumed by a failed
+    // close, which forget()s it) — plain recursive delete on the same path.
+    if path.exists() {
+        let mut last_err = None;
+        for _ in 0..10 {
+            match std::fs::remove_dir_all(&path) {
+                Ok(()) => return,
+                Err(e) => {
+                    last_err = Some(e);
+                    std::thread::sleep(std::time::Duration::from_millis(1000));
+                }
+            }
+        }
+        eprintln!(
+            "[eval] WARN: temp dir not removed (SbieSvc still holds the box hive?): {} ({last_err:?})",
+            path.display()
+        );
+    }
+}
+
 #[cfg(target_os = "windows")]
 fn sbieini_set(sbieini: &Path, section: &str, key: &str, value: &str) -> Result<()> {
     let out = Command::new(sbieini)
@@ -608,9 +696,10 @@ fn clean_box(start_exe: &Path, box_name: &str, box_root: &Path) {
 /// project, built separately in release profile).
 #[cfg(target_os = "windows")]
 fn monitor_dll_path() -> Result<PathBuf> {
+    // CARGO_MANIFEST_DIR is <repo>/nemesisbot — ONE level up reaches the repo
+    // root (two would escape to C:\AI\NemesisBot\).
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let p = manifest_dir
-        .join("..")
         .join("..")
         .join("plugins")
         .join("plugin-eval-monitor")

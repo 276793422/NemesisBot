@@ -52,7 +52,9 @@ const SEM_FAILCRITICALERRORS: u32 = 0x0001;
 const SEM_NOGPFAULTERRORBOX: u32 = 0x0002;
 const SEM_NOOPENFILEERRORBOX: u32 = 0x8000;
 
-const NO_MORE_ENTRIES: i32 = 0x8000001Au32 as i32;
+// MonitorGetEx returns 0x8000001A (NO_MORE_ENTRIES) when the buffer is empty;
+// the drain loop just treats any non-zero return as "done for now", so the
+// constant is not referenced explicitly.
 const MONITOR_TYPE_MASK: u32 = 0xFF;
 
 /// Monitor event types (api_flags.h) — only the ones we label.
@@ -210,15 +212,74 @@ pub extern "C" fn Run() {
 
         let boxw = wide(&box_name);
 
+        // Event attribution. The monitor buffer is GLOBAL — events from every
+        // box (e.g. the gateway's NemesisBox) and system processes all arrive
+        // here. Three-way classification keeps eval-box events without losing
+        // short-lived processes:
+        //   "box:<name>"   pid is in the accumulated eval-box pid set. The set
+        //                  only GROWS (a process seen in ANY enumeration round
+        //                  stays) — a cmd that lives 1-2s spans 2-4 rounds, so
+        //                  short-lived children are still attributed. Growth is
+        //                  safe: pids are only added while they are verifiably
+        //                  in the eval box, and pid reuse within one eval run
+        //                  is not a thing Windows does on this timescale.
+        //   "other"        pid verifiably belongs to ANOTHER box (QueryProcess
+        //                  succeeded with a different box name) — dropped.
+        //                  This kills the resident-process noise.
+        //   "unattributed" pid already exited AND was never enumerated (died
+        //                  between two 500ms rounds) — kept with this marker.
+        //                  Better noisy than blind: a sub-second process that
+        //                  probed outside the box is exactly what an eval
+        //                  wants to see. The command process can filter these
+        //                  further if desired.
+        // Events without a pid (pid==0, e.g. some SYSCALL rows) are
+        // "unattributed" too.
+        let mut known_pids: std::collections::HashSet<u32> = std::collections::HashSet::new();
+        let unattributed = "unattributed";
+        let box_tag = format!("box:{box_name}");
+
+        // Per-event attribution decision.
+        let classify = |pid: u32, known: &std::collections::HashSet<u32>| -> Option<String> {
+            if pid != 0 && known.contains(&pid) {
+                return Some(box_tag.clone());
+            }
+            if pid != 0 {
+                // Ask the driver which box this pid lives in. Success with a
+                // different box name → verifiably not ours → drop.
+                let (mut bn, mut inm, mut sid) = ([0u16; 34], [0u16; 96], [0u16; 96]);
+                let mut ses = 0u32;
+                let r = qp(pid as *mut c_void, bn.as_mut_ptr(), inm.as_mut_ptr(), sid.as_mut_ptr(), &mut ses);
+                if r == 0 {
+                    let b = from_wide(&bn);
+                    if !b.is_empty() && b != box_name {
+                        return None; // another box's process — noise
+                    }
+                    if b == box_name {
+                        return Some(box_tag.clone()); // late discovery (missed by a round)
+                    }
+                    // Empty box name: pid outside every box (unsandboxed host
+                    // process) — cannot be our eval agent; drop.
+                    return None;
+                }
+                // Query failed: process gone, never enumerated → keep.
+                return Some(unattributed.to_string());
+            }
+            Some(unattributed.to_string()) // pid==0 rows
+        };
+
         // 3.5 Initial process snapshot (informational; the eval box has no
         //     resident baseline — empty count is the completion signal).
         let (mut pids, mut cnt) = ([0u32; 512], 512u32);
         let _ = en(boxw.as_ptr(), 0, u32::MAX, pids.as_mut_ptr(), &mut cnt);
+        for i in 0..(cnt as usize).min(512) {
+            known_pids.insert(pids[i]);
+        }
         w(&format!("# initial process count={cnt}"));
 
         // 4. Main loop: collect events until the box is empty, then a short
         //    tail window for stragglers, then off + exit.
         let mut total_events: u64 = 0;
+        let mut dropped_events: u64 = 0;
         let mut empty_since: Option<u64> = None; // first tick where the box was empty
         loop {
             // -- drain the monitor buffer --
@@ -233,18 +294,26 @@ pub extern "C" fn Run() {
                 let base = t & MONITOR_TYPE_MASK;
                 let open = t & 0x0001_0000 != 0;
                 let deny = t & 0x0002_0000 != 0;
-                let ts = unsafe { GetTickCount64() };
-                w(&format!(
-                    "{{\"ts\":{},\"type\":\"{}\",\"pid\":{},\"tid\":{},\"open\":{},\"deny\":{},\"name\":\"{}\"}}",
-                    ts,
-                    type_label(base),
-                    pid,
-                    tid,
-                    open,
-                    deny,
-                    json_escape(&ns)
-                ));
-                total_events += 1;
+                match classify(pid, &known_pids) {
+                    Some(owner) => {
+                        let ts = GetTickCount64();
+                        w(&format!(
+                            "{{\"ts\":{},\"type\":\"{}\",\"pid\":{},\"tid\":{},\"open\":{},\"deny\":{},\"box\":\"{}\",\"name\":\"{}\"}}",
+                            ts,
+                            type_label(base),
+                            pid,
+                            tid,
+                            open,
+                            deny,
+                            owner,
+                            json_escape(&ns)
+                        ));
+                        total_events += 1;
+                    }
+                    None => {
+                        dropped_events += 1;
+                    }
+                }
                 if total_events % 500 == 0 {
                     // Snapshot progress into the comment channel.
                     let (mut p, mut c) = ([0u32; 512], 512u32);
@@ -257,14 +326,20 @@ pub extern "C" fn Run() {
                             imgs.push(format!("{}:{}", p[i], from_wide(&inm)));
                         }
                     }
-                    w(&format!("# progress events={total_events} procs={c} [{}]", imgs.join(", ")));
+                    w(&format!("# progress events={total_events} dropped={dropped_events} procs={c} [{}]", imgs.join(", ")));
                 }
             }
 
             // -- enumerate the box --
             let (mut p, mut c) = ([0u32; 512], 512u32);
             let _ = en(boxw.as_ptr(), 0, u32::MAX, p.as_mut_ptr(), &mut c);
-            let now = unsafe { GetTickCount64() };
+            let now = GetTickCount64();
+            // Refresh the accumulated pid set: membership in this round's
+            // enumeration is the driver's own answer to "is this pid in the
+            // eval box", so every new pid is verifiably ours.
+            for i in 0..(c as usize).min(512) {
+                known_pids.insert(p[i]);
+            }
 
             if c == 0 {
                 match empty_since {
@@ -285,7 +360,7 @@ pub extern "C" fn Run() {
 
         let mut off2: u32 = 0;
         let _ = mc(&mut off2, std::ptr::null_mut());
-        w(&format!("# done total_events={total_events}"));
+        w(&format!("# done total_events={total_events} dropped={dropped_events} known_pids={}", known_pids.len()));
         ExitProcess(0);
     }
 }

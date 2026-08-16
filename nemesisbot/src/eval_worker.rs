@@ -63,21 +63,6 @@ async fn run_inner() -> Result<()> {
     let config_path = workspace.join("config.json");
     let cfg = nemesis_config::load_config(&config_path)
         .with_context(|| format!("load eval config {}", config_path.display()))?;
-    // TEMP diagnostic: prove which config/model/key the loop will resolve.
-    {
-        let llm = nemesis_config::get_effective_llm(Some(&cfg));
-        let r = nemesis_config::resolve_model_config(&cfg, &llm);
-        let _ = std::fs::write(
-            workspace.join("worker_diag.txt"),
-            format!(
-                "cfg_path={:?}\nllm={llm}\nresolve={:?}\nmodel_list_len={}\n",
-                config_path,
-                r.map(|x| format!("provider={} model={} key_len={} base={}",
-                    x.provider_name, x.model_name, x.api_key.len(), x.api_base)),
-                cfg.model_list.len(),
-            ),
-        );
-    }
     let config_store = Arc::new(nemesis_config::ConfigStore::from_config(cfg, config_path));
 
     // 2. SecurityPlugin: enabled=false → the pipeline short-circuits to allow
