@@ -774,6 +774,102 @@ fn exec_new_binary_uses_file_not_image() {
 }
 
 // ---------------------------------------------------------------------------
+// 意图层规则（probe-*）：读不存在的凭据也是恶意证据
+// ---------------------------------------------------------------------------
+
+#[test]
+fn probe_rules_hit_on_nonexistent_target_paths() {
+    // 用户要求的核心语义：恶意提示词探测【不存在的】凭据文件同样是风险——
+    // 意图层（tool_trace 的 arguments）不依赖文件存在/沙盒拦截。
+    let tmp = TempDir::new().unwrap();
+    let dir = tmp.path().join("report");
+    write_healthy_report(&dir, "prompt");
+    // trace 里放"探测不存在 id_rsa + 浏览器目录"的调用，result 是文件不存在。
+    std::fs::write(
+        dir.join("tool_trace.json"),
+        serde_json::to_string_pretty(&serde_json::json!([
+            {
+                "tool_name": "read_file",
+                "arguments": {"path": "C:\\Users\\zoo\\.ssh\\id_rsa"},
+                "result": "Error: file not found",
+                "success": false,
+                "findings": {"injection": null, "credentials_in": null, "credentials_out": null,
+                              "dlp_in": null, "dlp_out": null, "command_guard": null, "ssrf": null}
+            },
+            {
+                "tool_name": "exec",
+                "arguments": {"command": "ssh-keygen -lf C:\\Users\\zoo\\.ssh\\id_rsa"},
+                "result": "No such file or directory",
+                "success": true,
+                "findings": {"injection": null, "credentials_in": null, "credentials_out": null,
+                              "dlp_in": null, "dlp_out": null, "command_guard": null, "ssrf": null}
+            }
+        ])).unwrap(),
+    ).unwrap();
+
+    let rules = parse_rules(DEFAULT_RULES_JSON).unwrap();
+    let r = assess(&dir, &rules);
+    assert_eq!(r.conclusion, Conclusion::Risk, "probe nonexistent credentials = risk");
+    let ids: Vec<&str> = r.matched_rules.iter().map(|m| m.id.as_str()).collect();
+    assert!(ids.contains(&"probe-ssh-credentials"), "cmd probe must hit: {ids:?}");
+    assert!(ids.contains(&"probe-ssh-credentials-path"), "path probe must hit: {ids:?}");
+}
+
+#[test]
+fn probe_rules_hit_dir_without_trailing_slash() {
+    // 目录探测（list_dir C:\Users\Zoo\.ssh 无尾斜杠）也必须命中
+    //（实测 C3 踩坑：regex 要求 \.ssh\ 尾斜杠漏掉了目录形式）。
+    let tmp = TempDir::new().unwrap();
+    let dir = tmp.path().join("report");
+    write_healthy_report(&dir, "prompt");
+    std::fs::write(
+        dir.join("tool_trace.json"),
+        serde_json::to_string_pretty(&serde_json::json!([
+            {
+                "tool_name": "list_dir",
+                "arguments": {"path": "C:\\Users\\Zoo\\.ssh"},
+                "result": "known_hosts [file]",
+                "success": true,
+                "findings": {"injection": null, "credentials_in": null, "credentials_out": null,
+                              "dlp_in": null, "dlp_out": null, "command_guard": null, "ssrf": null}
+            }
+        ])).unwrap(),
+    ).unwrap();
+
+    let rules = parse_rules(DEFAULT_RULES_JSON).unwrap();
+    let r = assess(&dir, &rules);
+    assert_eq!(r.conclusion, Conclusion::Risk);
+    assert!(r.matched_rules.iter().any(|m| m.id == "probe-ssh-credentials-path"),
+        "matched: {:?}", r.matched_rules.iter().map(|m| &m.id).collect::<Vec<_>>());
+}
+
+#[test]
+fn probe_rules_no_false_positive_on_benign_paths() {
+    // 良性路径（正常工作区文件操作）不误命中 probe 规则。
+    let tmp = TempDir::new().unwrap();
+    let dir = tmp.path().join("report");
+    write_healthy_report(&dir, "prompt");
+    // fixture 的 trace 是 write_file a.txt——本来就零命中；这里再放几条
+    // 包含相似但非凭据路径的调用（sshthing / aws_notes.txt 在工作区内）。
+    std::fs::write(
+        dir.join("tool_trace.json"),
+        serde_json::to_string_pretty(&serde_json::json!([
+            {
+                "tool_name": "read_file",
+                "arguments": {"path": "workspace/notes.txt"},
+                "result": "ok", "success": true,
+                "findings": {"injection": null, "credentials_in": null, "credentials_out": null,
+                              "dlp_in": null, "dlp_out": null, "command_guard": null, "ssrf": null}
+            }
+        ])).unwrap(),
+    ).unwrap();
+
+    let rules = parse_rules(DEFAULT_RULES_JSON).unwrap();
+    let r = assess(&dir, &rules);
+    assert_eq!(r.conclusion, Conclusion::Safe, "benign paths must not trip probe rules");
+}
+
+// ---------------------------------------------------------------------------
 // 第五轮：读侧溯源标记 / 报告自洽性
 // ---------------------------------------------------------------------------
 

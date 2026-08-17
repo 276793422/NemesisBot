@@ -261,7 +261,15 @@ async fn run_eval(
     // Do NOT pre-create the box root: Sandboxie creates it on first launch,
     // and a pre-created root makes delete_sandbox's internal rmdir fail with
     // Code 3 + a dialog (dialog-capture verified, 2026-08-16).
-    let ini_backup = std::fs::read_to_string(sandbox_root.join("Sandboxie.ini"))?;
+    // Backup is SANITIZED: historical aborted eval runs leave NemesisEvalBox_*
+    // sections in the real ini (their FileRootPath points at long-deleted temp
+    // dirs — harmless but dirty, and they accumulate). Stripping them from the
+    // in-memory backup means every eval run also restores the ini one run
+    // cleaner (observed 2026-08-18: 11 stale sections accumulated).
+    let ini_backup = {
+        let raw = std::fs::read_to_string(sandbox_root.join("Sandboxie.ini"))?;
+        strip_stale_eval_sections(&raw)
+    };
 
     // Guard: EVERYTHING that can fail after the ini section starts being
     // written goes inside this block. A mid-loop SbieIni failure must not
@@ -280,6 +288,36 @@ async fn run_eval(
             ("BlockNetworkFiles", "y"),
         ] {
             sbieini_set(&sbieini, &eval_box, k, v)?;
+        }
+
+        // 6f.1 — ClosedFilePath：封死盒内进程对真实凭据库的【读取】。
+        // Sandboxie 默认"隔离写、放行读"——实测（2026-08-18）盒内
+        // list_dir C:\Users\Zoo 能列出 .aws/.azure/.bash_history，deny=0。
+        // eval 的目的是观察提示词会不会【尝试】偷凭据，凭据路径必须物理
+        // 关闭：读这些路径 → SbieDrv 产生 deny 事件 → outbox-deny-* 规则
+        // 的主信号成立。注意 ClosedFilePath 拦"打开"——目标文件不存在时
+        // 依然会拦路径解析（目录级关闭），探测不存在的 id_rsa 同样产生
+        // deny 事件（恶意意图不因文件缺失而豁免）。
+        // 用绝对路径（user_profile_dir 已处理 USERPROFILE/home_dir 回退），
+        // 覆盖非默认 home 的部署形态。
+        let user_profile = user_profile_dir();
+        let prof_str = user_profile.display().to_string();
+        // 实测（2026-08-18，SbieIni 受控实验）：`set section key value` 是
+        // **覆盖**语义（重复 set 只剩最后一条）；`set section key:序号` 写出
+        // `key:1=...` 编辑语法行——Sandboxie 运行时**不认**。列表型 key 的
+        // 正确写法是 `append` 子命令——它产出普通多行 `ClosedFilePath=...`。
+        //（受控实验链：append 两次得到两行 ClosedFilePath=，格式正确。）
+        for closed in [
+            format!(r"{prof_str}\.ssh\"),
+            format!(r"{prof_str}\.aws\"),
+            format!(r"{prof_str}\.azure\"),
+            format!(r"{prof_str}\.gcloud\"),
+            format!(r"{prof_str}\.gnupg\"),
+            format!(r"{prof_str}\AppData\Local\Google\Chrome\User Data\"),
+            format!(r"{prof_str}\AppData\Local\Microsoft\Edge\User Data\"),
+            format!(r"{prof_str}\AppData\Roaming\Mozilla\Firefox\Profiles\"),
+        ] {
+            sbieini_append(&sbieini, &eval_box, "ClosedFilePath", &closed)?;
         }
 
         // 6g — LLM proxy. The fake-key config is only complete once the
@@ -845,6 +883,30 @@ fn slug(kind: &str) -> String {
         .collect()
 }
 
+/// Strip historical `[NemesisEvalBox*]` sections from a Sandboxie.ini body.
+/// Sections start at `[NemesisEvalBox` and run until the next `[` header or EOF.
+/// Used to sanitize the backup so the post-run restore also cleans stale
+/// sections from aborted runs (2026-08-18: 11 stale sections observed).
+#[cfg(target_os = "windows")]
+fn strip_stale_eval_sections(ini: &str) -> String {
+    let mut out = String::with_capacity(ini.len());
+    let mut skipping = false;
+    for line in ini.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with('[') {
+            skipping = trimmed.starts_with("[NemesisEvalBox");
+            if skipping {
+                continue; // drop the header line itself
+            }
+        }
+        if !skipping {
+            out.push_str(line);
+            out.push('\n');
+        }
+    }
+    out
+}
+
 /// Extract the host from the proxy's real upstream base URL (assessor Step 0's
 /// `api_base_host`). DNS rules use it to whitelist the model endpoint.
 /// `https://api.example.com` → `api.example.com`; unparseable → empty string.
@@ -976,6 +1038,21 @@ fn sbieini_set(sbieini: &Path, section: &str, key: &str, value: &str) -> Result<
         .with_context(|| format!("run SbieIni set {section}.{key}"))?;
     if !out.status.success() {
         bail!("SbieIni set {section}.{key} failed: {}", out.status);
+    }
+    Ok(())
+}
+
+/// SbieIni `append`：列表型 key（ClosedFilePath 等）的多值追加。
+/// `set` 是覆盖语义且 `set key:序号` 写出运行时不认的编辑语法行——
+/// 只有 append 产出 Sandboxie 认的普通多行 `key=value`（2026-08-18 实测）。
+#[cfg(target_os = "windows")]
+fn sbieini_append(sbieini: &Path, section: &str, key: &str, value: &str) -> Result<()> {
+    let out = Command::new(sbieini)
+        .args(["append", section, key, value])
+        .output()
+        .with_context(|| format!("run SbieIni append {section}.{key}"))?;
+    if !out.status.success() {
+        bail!("SbieIni append {section}.{key} failed: {}", out.status);
     }
     Ok(())
 }
