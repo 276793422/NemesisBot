@@ -292,7 +292,11 @@ impl EvalTaggingObserver {
             out.injection = Some(InjectionFinding {
                 is_injection: r.is_injection,
                 score: r.score,
-                level: format!("{:?}", r.level),
+                // level is already a lowercase string ("low".."critical") — clone
+                // it directly. (Was `format!("{:?}", r.level)` which serialized
+                // as "\"low\"" — doubly-quoted, forcing rule authors into
+                // four-escape regexes. Fixed per assessor plan C2.)
+                level: r.level.clone(),
             });
         }
 

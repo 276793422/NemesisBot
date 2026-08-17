@@ -101,6 +101,7 @@ nemesis-sandbox = { workspace = true, optional = true }
 nemesis-injector = { workspace = true, optional = true }
 nemesis-eval-proxy = { workspace = true, optional = true }
 serde_yaml = { workspace = true }
+regex = { workspace = true }
 clap = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }

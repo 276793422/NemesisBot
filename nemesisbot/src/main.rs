@@ -13,6 +13,10 @@ mod cluster_service;
 mod commands;
 mod common;
 mod embedded;
+/// eval 结果评估器（规则驱动三分类；纯函数读报告，无 Windows API——
+/// rules 管理命令在所有平台可用）。
+#[cfg(feature = "eval")]
+mod eval_assessor;
 mod exec_worker;
 #[cfg(feature = "eval")]
 mod eval_worker;
@@ -181,8 +185,8 @@ enum Commands {
         #[command(subcommand)]
         action: commands::sandbox::SandboxCommand,
     },
-    /// Evaluate a prompt / skill's runtime behaviour in a sandbox
-    /// (data collection only, no verdict)
+    /// Evaluate a prompt / skill's runtime behaviour in a sandbox and assess
+    /// the report (rules-driven risk / safe / unknown verdict)
     #[cfg(feature = "eval")]
     Eval {
         #[command(subcommand)]
@@ -657,6 +661,35 @@ async fn run_command(cli: Cli) -> Result<()> {
             let forge_cfg_path = common::forge_config_path(&home);
             let _ = std::fs::write(&forge_cfg_path, CONFIG_FORGE_DEFAULT);
             println!("  Forge config created");
+
+            // --- Step 7.8: eval rules (embedded; seeds the assessor's rule
+            // file + its readme. Content identical to eval_assessor's
+            // include_str — same source file, no second definition) ---
+            // AA3：路径走 rules_file_path 单一真相源（手拼 workspace/config
+            // 与它是两套逻辑，一处改另一处忘改会漂移——种子到错误位置时
+            // 评估器/管理命令都找不到规则）。
+            #[cfg(feature = "eval")]
+            {
+                let rules_path = crate::eval_assessor::rules_file_path(&home);
+                if let Some(parent) = rules_path.parent() {
+                    let _ = std::fs::create_dir_all(parent);
+                }
+                // Seed only when absent — user edits survive re-onboard.
+                if !rules_path.exists() {
+                    let _ = std::fs::write(&rules_path, crate::eval_assessor::DEFAULT_RULES_JSON);
+                    println!("  Eval rules config created");
+                }
+                let readme_path = rules_path
+                    .parent()
+                    .map(|p| p.join("eval_rules.readme.md"))
+                    .unwrap_or_else(|| rules_path.clone());
+                if !readme_path.exists() {
+                    let _ = std::fs::write(
+                        &readme_path,
+                        include_str!("../config/eval_rules.readme.md"),
+                    );
+                }
+            }
 
             // --- Step 8: Extract embedded workspace templates ---
             // Mirrors Go's copyEmbeddedToTarget() — copies all files from

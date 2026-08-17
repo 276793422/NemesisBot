@@ -91,6 +91,17 @@ fn test_config_scanner_default_is_valid_json() {
     assert!(cfg.is_object());
 }
 
+#[cfg(feature = "eval")]
+#[test]
+fn test_eval_rules_default_is_valid_and_unique_ids() {
+    let file = crate::eval_assessor::parse_rules(crate::eval_assessor::DEFAULT_RULES_JSON).unwrap();
+    assert!(file.rules.len() >= 10, "default rule set too small: {}", file.rules.len());
+    let mut ids = std::collections::HashSet::new();
+    for r in &file.rules {
+        assert!(ids.insert(r.id.clone()), "duplicate id {}", r.id);
+    }
+}
+
 #[test]
 fn test_config_enhanced_memory_default_is_valid_json() {
     let cfg: serde_json::Value = serde_json::from_str(CONFIG_ENHANCED_MEMORY_DEFAULT).unwrap();

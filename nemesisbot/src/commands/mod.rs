@@ -23,6 +23,9 @@ pub mod model;
 pub mod persona;
 #[cfg(feature = "eval")]
 pub mod eval;
+/// `eval rules` 子命令组（规则管理；纯文件操作跨平台）。
+#[cfg(feature = "eval")]
+pub mod eval_rules;
 #[cfg(feature = "sandbox")]
 pub mod sandbox;
 #[cfg(feature = "security")]

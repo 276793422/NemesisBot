@@ -15,6 +15,7 @@ REM   bin\bin_windows\
 REM     nemesisbot.exe
 REM     plugins\
 REM       plugin_ui.dll
+REM       eval_monitor_dll.dll
 REM     tests\
 REM       cluster-test.exe
 REM       integration-test.exe
@@ -209,13 +210,36 @@ if exist "plugins\plugin-onnx\Cargo.toml" (
         echo   WARN Plugin-onnx DLL build failed ^(non-fatal, continuing without plugin^)
         echo.
         set CARGO_TARGET_DIR=target\target_windows
-        goto step5
+        goto plugin_eval_monitor
     )
     popd
     set CARGO_TARGET_DIR=target\target_windows
     echo   OK Plugin-onnx DLL built
 ) else (
     echo   SKIP plugins\plugin-onnx\Cargo.toml not found
+)
+echo.
+
+:plugin_eval_monitor
+REM --- plugin-eval-monitor（eval 沙盒监控 DLL；2026-08-18 部署化：
+REM     exe 旁 plugins\ 查找，不再绑死仓库绝对路径） ---
+if exist "plugins\plugin-eval-monitor\Cargo.toml" (
+    echo   Building plugin-eval-monitor...
+    pushd plugins\plugin-eval-monitor
+    set CARGO_TARGET_DIR=..\..\target\target_windows\plugins\plugin-eval-monitor
+    cargo build --release
+    if errorlevel 1 (
+        popd
+        echo   WARN Plugin-eval-monitor DLL build failed ^(non-fatal — eval 功能将不可用^)
+        echo.
+        set CARGO_TARGET_DIR=target\target_windows
+        goto step5
+    )
+    popd
+    set CARGO_TARGET_DIR=target\target_windows
+    echo   OK Plugin-eval-monitor DLL built
+) else (
+    echo   SKIP plugins\plugin-eval-monitor\Cargo.toml not found
 )
 echo.
 
@@ -263,6 +287,18 @@ if exist "target\target_windows\plugins\plugin-onnx\release\plugin_onnx.dll" (
 
 if "!ONNX_DLL_FOUND!"=="0" if "%SKIP_PLUGIN%"=="0" (
     echo   WARN plugin-onnx.dll not found in build output
+)
+
+REM Copy eval-monitor DLL to bin\bin_windows\plugins\
+REM （eval 沙盒监控；exe 旁 plugins\ 查找——部署目录拷走即用）
+set EVAL_MONITOR_FOUND=0
+if exist "target\target_windows\plugins\plugin-eval-monitor\release\eval_monitor_dll.dll" (
+    copy /y "target\target_windows\plugins\plugin-eval-monitor\release\eval_monitor_dll.dll" "bin\bin_windows\plugins\" >nul 2>&1
+    set /a COPIED+=1
+    set EVAL_MONITOR_FOUND=1
+)
+if "!EVAL_MONITOR_FOUND!"=="0" if "%SKIP_PLUGIN%"=="0" (
+    echo   WARN eval_monitor_dll.dll not found in build output ^(eval 功能将不可用^)
 )
 
 if "!DLL_FOUND!"=="0" if "%SKIP_PLUGIN%"=="0" (

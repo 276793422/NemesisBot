@@ -61,6 +61,11 @@ pub enum EvalAction {
         #[command(flatten)]
         common: EvalCommon,
     },
+    /// Manage the assessment rules file (cross-platform, no sandbox needed).
+    Rules {
+        #[command(subcommand)]
+        action: super::eval_rules::RulesAction,
+    },
 }
 
 #[derive(Args)]
@@ -78,17 +83,29 @@ pub struct EvalCommon {
     /// Use ./.nemesisbot as the real home (same as the global --local).
     #[arg(long)]
     pub local: bool,
+    /// Exit with code 2 when the assessment concludes "risk" (for scripting).
+    #[arg(long)]
+    pub fail_on_risk: bool,
 }
 
 pub async fn run(action: EvalAction, cli_local: bool) -> Result<()> {
+    // A1 修订：Rules 分支前置独立处理——纯文件操作，跨平台可用，
+    // 不受下面的 Windows-only bail 影响。
+    if let EvalAction::Rules { action } = action {
+        return super::eval_rules::run(action, cli_local).await;
+    }
+
     #[cfg(not(target_os = "windows"))]
     {
         let _ = (action, cli_local); // silence unused params on non-Windows
-        bail!("`nemesisbot eval` is Windows-only (requires Sandboxie).");
+        bail!("`nemesisbot eval prompt/skill` is Windows-only (requires Sandboxie). \
+               `nemesisbot eval rules` works on all platforms.");
     }
     #[cfg(target_os = "windows")]
     {
         let (kind, subject, prompt_text, common) = match action {
+            // Rules 已在函数开头前置处理，这里不可达——保留分支保 match 穷尽。
+            EvalAction::Rules { .. } => unreachable!("Rules handled before platform gate"),
             EvalAction::Prompt { text, file, common } => {
                 let subject = match (&text, &file) {
                     (Some(t), _) => t.clone(),
@@ -113,6 +130,17 @@ pub async fn run(action: EvalAction, cli_local: bool) -> Result<()> {
             }
         };
         run_eval(&kind, subject, prompt_text, common, cli_local).await
+    }
+}
+
+/// `--fail-on-risk` 的退码执行点：在 run_eval 全部清理（box 清理 / ini
+/// restore / temp 目录）**完成之后**调用。A4：不走 Err 通道（main 的
+/// dispatch 是 .await?，Result 只有 0/1 两态）；也绝不能在 run_phases /
+/// run_eval 深处 exit——那会跳过清理守卫把真实 Sandboxie.ini 留脏。
+#[cfg(target_os = "windows")]
+fn exit_if_risk_flagged() {
+    if RISK_EXIT_FLAG.load(std::sync::atomic::Ordering::Acquire) {
+        std::process::exit(2);
     }
 }
 
@@ -256,12 +284,14 @@ async fn run_eval(
 
         // 6g — LLM proxy. The fake-key config is only complete once the
         // proxy port is known.
-        let proxy = nemesis_eval_proxy::start(real_base, resolution.api_key.clone())
+        let api_base_host_for_meta = proxy_target_host(&real_base);
+        let proxy = nemesis_eval_proxy::start(real_base.clone(), resolution.api_key.clone())
             .await
             .context("start eval LLM proxy")?;
 
         let eval_result = run_phases(
             &proxy,
+            api_base_host_for_meta.as_str(),
             &real_home,
             &kind,
             &home,
@@ -297,11 +327,16 @@ async fn run_eval(
         eprintln!("[eval] WARN: {e:#} (real Sandboxie.ini left dirty — fix manually)");
     }
     close_temp_with_retry(tmp, &eval_box_root);
-    match (result, ini_restore) {
+    let result = match (result, ini_restore) {
         (Err(e), _) => Err(e),
         (Ok(()), Err(e)) => Err(e),
         (Ok(()), Ok(())) => Ok(()),
+    };
+    // 清理全部完成后才处理 --fail-on-risk 退码（成功路径；错误路径退 1）。
+    if result.is_ok() {
+        exit_if_risk_flagged();
     }
+    result
 }
 
 /// Phases 6d(write config)→6o of the eval run, executed while the proxy is
@@ -310,6 +345,7 @@ async fn run_eval(
 #[allow(clippy::too_many_arguments)]
 async fn run_phases(
     proxy: &nemesis_eval_proxy::ProxyHandle,
+    real_base: &str,
     real_home: &Path,
     kind: &str,
     home: &Path,
@@ -481,12 +517,16 @@ async fn run_phases(
             format!("alive: {alive}\nlisting:\n{listing}"),
         );
     }
-    let tool_trace =
-        std::fs::read_to_string(agent_report_dir.join("tool_trace.json")).unwrap_or_else(|_| "[]".into());
-    let findings = std::fs::read_to_string(agent_report_dir.join("security_findings.json"))
-        .unwrap_or_else(|_| "{}".into());
-    let final_response =
-        std::fs::read_to_string(agent_report_dir.join("final_response.md")).unwrap_or_default();
+    // Read-side provenance markers（第五轮 V1 修复）：盒镜像读取失败/读到
+    // 空文件时，缺省值绝不能是"合法空结果"——那会把 worker 中途死亡导致
+    // 的数据丢失洗白成"空但合法"的报告，assessor 判 Safe（A2 事故的读侧
+    // 变体）。缺省串带 _NEMESIS_UNREADABLE_ 标记；assessor 见标记 → 未知。
+    let tool_trace = read_box_file_or_marker(&agent_report_dir, "tool_trace.json");
+    let findings = read_box_file_or_marker(&agent_report_dir, "security_findings.json");
+    let final_response = match std::fs::read_to_string(agent_report_dir.join("final_response.md")) {
+        Ok(s) if !s.trim().is_empty() => s,
+        _ => "_NEMESIS_UNREADABLE_".to_string(),
+    };
 
     let user_profile = user_profile_dir();
     let pending = nemesis_sandbox::pending::pending_workspace(
@@ -495,6 +535,15 @@ async fn run_phases(
         user_profile.as_path(),
     )
     .unwrap_or_default();
+
+    // 6k — Start.exe exit code + 6l monitor shell exit code, for meta.json
+    // run-status fields (assessor Step 0). `.output()` Ok but None code means
+    // killed by the fuse; Err means spawn failure — both surface as null.
+    let agent_exit_code = match &_agent_exit {
+        Ok(o) => o.status.code(),
+        Err(_) => None,
+    };
+    let monitor_shell_exit = shell_exit;
 
     // 6o — assemble the report.
     let out_dir = match &common_args.output {
@@ -506,6 +555,16 @@ async fn run_phases(
         )),
     };
     std::fs::create_dir_all(&out_dir)?;
+    // Run-status fields (assessor plan Step 0): the report consumer must be
+    // able to tell a COMPLETE run from a failed one that still produced a
+    // "looks-complete" 7-piece report (tool_trace defaults to [], response
+    // defaults to ""). Without these, a dead-worker run assesses as "safe".
+    let worker_error_flag = box_mirror.join("worker_error.txt").exists();
+    let tool_call_count = serde_json::from_str::<serde_json::Value>(&tool_trace)
+        .ok()
+        .and_then(|v| v.as_array().map(|a| a.len()))
+        .unwrap_or(0);
+    let api_base_host = proxy_target_host(real_base);
     std::fs::write(
         out_dir.join("meta.json"),
         serde_json::to_string_pretty(&serde_json::json!({
@@ -515,6 +574,13 @@ async fn run_phases(
             "allow_network": common_args.allow_network,
             "timeout_fuse_secs": common_args.observe_secs,
             "final_response_excerpt": final_response.chars().take(500).collect::<String>(),
+            // --- run status (assessor Step 0; None/null = killed or spawn-fail) ---
+            "agent_exit": agent_exit_code,
+            "monitor_shell_exit": monitor_shell_exit,
+            "worker_error": worker_error_flag,
+            "final_response_len": final_response.len(),
+            "tool_call_count": tool_call_count,
+            "api_base_host": api_base_host,
         }))?,
     )?;
     std::fs::write(out_dir.join("tool_trace.json"), &tool_trace)?;
@@ -540,7 +606,231 @@ async fn run_phases(
     println!("[eval] report written to {}", out_dir.display());
     println!("[eval] tool calls: see tool_trace.json | driver events: {}", event_lines.len());
 
+    // 6q — assess the report (plan 2026-08-17: rules-driven tri-classification).
+    // 三通道立即落地（控制台/assessment.json/meta 段）；退码信号写进
+    // 进程级 AtomicBool，run() 在清理守卫之后读到再 exit(2)——绝不能在
+    // 这里直接 exit（会跳过 ini restore，见 assess_and_report 文档）。
+    let risk_exit = assess_and_report(&out_dir, &real_home, common_args.fail_on_risk);
+    RISK_EXIT_FLAG.store(risk_exit, std::sync::atomic::Ordering::Release);
+
     Ok(())
+}
+
+/// `--fail-on-risk` 退码信号（进程级）：run_phases 深处写入，run() 尾部
+/// （清理守卫之后）读取。Result 通道装不下"成功但退 2"的三态语义。
+#[cfg(target_os = "windows")]
+static RISK_EXIT_FLAG: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// 评估报告并按输出规格落地（plan「输出规格（四通道）」）。
+///
+/// 1. 控制台：中文结论 + 命中明细 + 证据样本（安全带运行完整性回执；
+///    未知带缺口明细 + 固定说明段）
+/// 2. assessment.json 写进报告目录（与 7 件套并排；机器可读 + 回放）
+/// 3. meta.json 追加 assessment 段
+/// 4. 返回 risk_exit 信号（--fail-on-risk 且结论=有风险）——**不在这里
+///    exit**：本函数在 run_phases 尾部、run_eval 的清理守卫块**内部**被调
+///    用，直接 exit(2) 会跳过 clean_box / ini restore / temp 清理（真实
+///    Sandboxie.ini 留脏 = 环境污染）。信号沿 run_phases → run_eval →
+///    run() 传回，清理全部完成后才 exit(2)（A4 修订的实现修正）。
+#[cfg(target_os = "windows")]
+fn assess_and_report(out_dir: &Path, real_home: &Path, fail_on_risk: bool) -> bool {
+    use crate::eval_assessor::{self, AssessResult, Conclusion};
+
+    let rules_path = eval_assessor::rules_file_path(real_home);
+
+    // 规则文件坏 / 0 条启用规则 → 未知（评估器纯函数拿不到这个状态，
+    // 在这里前置判定）。
+    let rules = match eval_assessor::load_rules(&rules_path) {
+        Ok(r) => r,
+        Err(e) => {
+            let result = AssessResult {
+                conclusion: Conclusion::Unknown,
+                kind: read_kind_from_meta(out_dir), // P3 修复：读真实 kind 而非硬编码
+                matched_rules: vec![],
+                gaps: vec![format!("规则文件损坏或无法加载：{e:#}")],
+                run_integrity: eval_assessor::RunIntegrity {
+                    worker_error: None,
+                    agent_exit: None,
+                    monitor_shell_exit: None,
+                    final_response_len: None,
+                    tool_call_count: None,
+                },
+                rules_loaded: 0,
+                legacy_report: false,
+            };
+            let fixed = write_assessment(out_dir, &result);
+            print_assessment(&result, &fixed);
+            return false; // 未知不退 2
+        }
+    };
+    let enabled_count = rules.rules.iter().filter(|r| r.enabled).count();
+    if enabled_count == 0 {
+        let result = AssessResult {
+            conclusion: Conclusion::Unknown,
+            kind: read_kind_from_meta(out_dir),
+            matched_rules: vec![],
+            gaps: vec!["无启用规则（0 enabled），无法评估。用 `eval rules list` 查看。".to_string()],
+            run_integrity: eval_assessor::RunIntegrity {
+                worker_error: None,
+                agent_exit: None,
+                monitor_shell_exit: None,
+                final_response_len: None,
+                tool_call_count: None,
+            },
+            rules_loaded: 0,
+            legacy_report: false,
+        };
+        let fixed = write_assessment(out_dir, &result);
+        print_assessment(&result, &fixed);
+        return false;
+    }
+
+    let result = eval_assessor::assess(out_dir, &rules);
+    let fixed = write_assessment(out_dir, &result);
+    print_assessment(&result, &fixed);
+
+    // 退码信号返回给调用链；exit(2) 由 run() 在清理守卫之后执行。
+    fail_on_risk && result.conclusion == Conclusion::Risk
+}
+
+/// 读盒镜像文件：读不到 → 返回带 `_NEMESIS_UNREADABLE_` 头的标记串（而非
+/// 合法缺省 JSON），让报告消费方能区分"数据丢失"与"合法空结果"。
+/// 读到内容则原样返回（内容本身的 JSON 合法性由 assessor 判）。
+/// 读盒镜像文件：读不到或读到空文件 → 返回带 `_NEMESIS_UNREADABLE_`
+/// 键的 JSON 标记对象（而非合法缺省 JSON），让报告消费方能区分
+/// "数据丢失"与"合法空结果"（worker 建了文件没写进去也是数据丢失）。
+#[cfg(target_os = "windows")]
+fn read_box_file_or_marker(dir: &Path, name: &str) -> String {
+    match std::fs::read_to_string(dir.join(name)) {
+        Ok(s) if !s.trim().is_empty() => s,
+        _ => format!("{{\"_NEMESIS_UNREADABLE_\": \"{name}\"}}"),
+    }
+}
+
+/// meta.json 里读 kind（规则文件坏的前置判定路径用；读不到默认 prompt）。
+#[cfg(target_os = "windows")]
+fn read_kind_from_meta(out_dir: &Path) -> String {
+    std::fs::read_to_string(out_dir.join("meta.json"))
+        .ok()
+        .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+        .and_then(|v| v.get("kind").and_then(|k| k.as_str()).map(String::from))
+        .unwrap_or_else(|| "prompt".to_string())
+}
+
+/// assessment.json 落盘 + meta.json 追加 assessment 段；返回固定说明段。
+/// 落盘失败**必须告警**（不能静默）——控制台已打结论、退码可能已触发，
+/// 用户会以为结果已存档；assessment.json 缺失 = 回放/审计断链。
+#[cfg(target_os = "windows")]
+fn write_assessment(out_dir: &Path, result: &crate::eval_assessor::AssessResult) -> Vec<String> {
+    use crate::eval_assessor::Conclusion;
+
+    // assessment.json（与 7 件套并排）。
+    let json = serde_json::to_string_pretty(result).unwrap_or_default();
+    if let Err(e) = std::fs::write(out_dir.join("assessment.json"), json) {
+        eprintln!("[eval] WARN: assessment.json 写入失败（{e}）——结论未存档，回放/审计不可用");
+    }
+
+    // meta.json 追加 assessment 段（读-改-写）。
+    let meta_path = out_dir.join("meta.json");
+    if let Ok(content) = std::fs::read_to_string(&meta_path) {
+        if let Ok(mut meta) = serde_json::from_str::<serde_json::Value>(&content) {
+            if let Some(obj) = meta.as_object_mut() {
+                obj.insert(
+                    "assessment".to_string(),
+                    serde_json::json!({
+                        "conclusion": match result.conclusion {
+                            Conclusion::Risk => "risk",
+                            Conclusion::Safe => "safe",
+                            Conclusion::Unknown => "unknown",
+                        },
+                        "matched_rules": result.matched_rules.iter()
+                            .map(|m| serde_json::json!({
+                                "id": m.id, "level": m.level, "hit_count": m.hit_count,
+                            }))
+                            .collect::<Vec<_>>(),
+                    }),
+                );
+                let pretty = serde_json::to_string_pretty(&meta).unwrap_or_default();
+                if let Err(e) = std::fs::write(&meta_path, pretty) {
+                    eprintln!("[eval] WARN: meta.json assessment 段写入失败（{e}）");
+                }
+            }
+        }
+    }
+    result.fixed_notes()
+}
+
+/// 控制台中文结论（通道 1；样式见 plan「输出规格」）。
+#[cfg(target_os = "windows")]
+fn print_assessment(result: &crate::eval_assessor::AssessResult, fixed_notes: &[String]) {
+    use crate::eval_assessor::Conclusion;
+
+    println!();
+    match result.conclusion {
+        Conclusion::Risk => {
+            println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+            println!(
+                "评估结论：{}（命中 {}/{} 条规则）",
+                result.conclusion.phrase_zh(&result.kind),
+                result.matched_rules.len(),
+                result.rules_loaded
+            );
+            println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+            for m in &result.matched_rules {
+                println!("[{}] {} — {}", m.level, m.id, m.description);
+                println!("    命中 {} 条记录，证据示例：", m.hit_count);
+                if let Some(ev) = m.evidence.first() {
+                    println!("    {ev}");
+                }
+            }
+        }
+        Conclusion::Safe => {
+            println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+            println!("评估结论：{}", result.conclusion.phrase_zh(&result.kind));
+            println!("  运行完整：{}", integrity_receipt(result));
+            println!("  规则命中：0/{}", result.rules_loaded);
+            println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+        }
+        Conclusion::Unknown => {
+            println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+            let head = result
+                .gaps
+                .first()
+                .map(|g| format!("{} —— {}", result.conclusion.phrase_zh(&result.kind), g))
+                .unwrap_or_else(|| result.conclusion.phrase_zh(&result.kind));
+            println!("评估结论：{head}");
+            for g in result.gaps.iter().skip(1) {
+                println!("缺口明细：{g}");
+            }
+            println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+        }
+    }
+    for n in fixed_notes {
+        println!("说明：{n}");
+    }
+}
+
+/// 安全结论的运行完整性回执（"为什么敢判安全"可见）。
+#[cfg(target_os = "windows")]
+fn integrity_receipt(result: &crate::eval_assessor::AssessResult) -> String {
+    // 旧报告（legacy）无运行状态字段——明说"未记录"而不是一排 "?"（后者
+    // 读起来像读取失败）。
+    if result.legacy_report {
+        return "旧版报告未记录运行状态（结论不含运行完整性检查）".to_string();
+    }
+    let i = &result.run_integrity;
+    let part = |label: &str, v: Option<&str>| match v {
+        Some(s) => format!("{label}{s}"),
+        None => format!("{label}未记录"),
+    };
+    let agent = part("agent ", i.agent_exit.map(|c| if c == 0 { "正常退出" } else { "异常退出" }));
+    let resp = part(" / 最终回复 ", i.final_response_len.map(|n| if n > 0 { "已产出" } else { "未产出" }));
+    let monitor = part(" / 监控 ", i.monitor_shell_exit.map(|c| if c == 0 { "正常" } else { "异常" }));
+    let calls = match i.tool_call_count {
+        Some(n) => format!(" / 工具调用 {n} 次"),
+        None => " / 工具调用未记录".to_string(),
+    };
+    format!("{agent}{resp}{monitor}{calls}")
 }
 
 // ---------------------------------------------------------------------------
@@ -553,6 +843,22 @@ fn slug(kind: &str) -> String {
         .filter(|c| c.is_ascii_alphanumeric())
         .take(16)
         .collect()
+}
+
+/// Extract the host from the proxy's real upstream base URL (assessor Step 0's
+/// `api_base_host`). DNS rules use it to whitelist the model endpoint.
+/// `https://api.example.com` → `api.example.com`; unparseable → empty string.
+#[cfg(target_os = "windows")]
+fn proxy_target_host(real_base: &str) -> String {
+    // Cheap parse: strip scheme, then take up to the first '/' / '?' / ':'.
+    let rest = real_base
+        .split_once("://")
+        .map(|(_, r)| r)
+        .unwrap_or(real_base);
+    rest.split(['/', '?', ':'])
+        .next()
+        .unwrap_or("")
+        .to_string()
 }
 
 #[cfg(target_os = "windows")]
@@ -692,27 +998,54 @@ fn clean_box(start_exe: &Path, box_name: &str, box_root: &Path) {
         .status();
 }
 
-/// Monitor DLL location: plugins/plugin-eval-monitor (standalone cdylib
-/// project, built separately in release profile).
+/// Monitor DLL location（2026-08-18 用户决定重构：部署优先，不绑死仓库）。
+///
+/// 查找规则：
+/// 1. exe 旁**存在 `plugins\` 目录**（部署形态标志）→ 只认
+///    `plugins\eval_monitor_dll.dll`；**没有它就报错**——用户在管理部署
+///    目录（构建脚本会拷 DLL 进去），缺 DLL = 功能不生效，明确说出来。
+///    绝不静默回落到仓库路径（否则"删掉部署 DLL 让功能失效"永远不生效，
+///    部署在仓库内的 bin 目录还会被 fallback 掩盖——实测踩坑）。
+/// 2. exe 旁无 `plugins\`（开发形态：target/debug 里 cargo run）→ 用编译期
+///    仓库路径（CARGO_MANIFEST_DIR，开发便利）。
 #[cfg(target_os = "windows")]
 fn monitor_dll_path() -> Result<PathBuf> {
-    // CARGO_MANIFEST_DIR is <repo>/nemesisbot — ONE level up reaches the repo
-    // root (two would escape to C:\AI\NemesisBot\).
-    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let p = manifest_dir
+    let exe = std::env::current_exe().context("resolve current exe for monitor DLL lookup")?;
+    let exe_dir = exe.parent().context("exe has no parent dir")?;
+    let deployed_dir = exe_dir.join("plugins");
+
+    if deployed_dir.is_dir() {
+        // Deployed shape: the plugins/ dir is the user-managed source of truth.
+        let deployed = deployed_dir.join("eval_monitor_dll.dll");
+        if deployed.exists() {
+            return Ok(deployed);
+        }
+        bail!(
+            "monitor DLL not found: {} —— eval 需要它收集沙盒驱动事件，\
+             当前部署目录缺这个文件，eval 功能不生效。修复：重新跑 \
+             scripts\\build-windows.bat，或把 eval_monitor_dll.dll 拷进 \
+             nemesisbot.exe 旁的 plugins\\ 目录",
+            deployed.display()
+        );
+    }
+
+    // Dev shape: no plugins/ next to the exe — fall back to the compile-time
+    // repo path (CARGO_MANIFEST_DIR is <repo>/nemesisbot, one level up = repo root).
+    let dev = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("..")
         .join("plugins")
         .join("plugin-eval-monitor")
         .join("target")
         .join("release")
         .join("eval_monitor_dll.dll");
-    if p.exists() {
-        return Ok(p);
+    if dev.exists() {
+        return Ok(dev);
     }
     bail!(
-        "monitor DLL not found at {} — build it with: \
+        "monitor DLL not found (looked at: {} and the compile-time repo path). \
+         eval 需要它收集沙盒驱动事件，没有它评估功能不生效。获取方式：\
          cd plugins/plugin-eval-monitor && cargo build --release",
-        p.display()
+        deployed_dir.display()
     )
 }
 

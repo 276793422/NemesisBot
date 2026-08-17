@@ -4030,6 +4030,7 @@ dependencies = [
  "nemesis-web",
  "nemesis-workflow",
  "parking_lot",
+ "regex",
  "reqwest",
  "rustyline",
  "serde",
