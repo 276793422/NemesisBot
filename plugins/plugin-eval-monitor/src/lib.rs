@@ -57,6 +57,20 @@ const SEM_NOOPENFILEERRORBOX: u32 = 0x8000;
 // constant is not referenced explicitly.
 const MONITOR_TYPE_MASK: u32 = 0xFF;
 
+/// Event-file caps (plan docs/PLAN/2026-08-18_eval-monitor-event-cap.md).
+/// A runaway in-box command (observed: `where /r AppData\Local` scanning tens
+/// of GB) floods the JSONL at ~100 MB/min — without a cap a malicious prompt
+/// can weaponize eval itself into a disk bomb. Two limits, first one reached
+/// wins. Override via env (0 = unlimited):
+///   NEMESISBOT_EVAL_MAX_EVENTS (default 10,000,000 lines)
+///   NEMESISBOT_EVAL_MAX_BYTES  (default 2 GB)
+/// Above the cap: normal events are suppressed (still drained + counted, so
+/// the driver buffer never stalls), but **deny events are still written** —
+/// deny is the core signal for the outbox-deny-* rules, and "flood noise +
+/// probe credentials" is exactly the combination where evidence matters most.
+const MAX_EVENTS_DEFAULT: u64 = 10_000_000;
+const MAX_BYTES_DEFAULT: u64 = 2 * 1024 * 1024 * 1024;
+
 /// Monitor event types (api_flags.h) — only the ones we label.
 fn type_label(t: u32) -> &'static str {
     match t {
@@ -134,6 +148,12 @@ pub extern "C" fn Run() {
     let timeout_secs: u64 = env_var("NEMESISBOT_EVAL_TIMEOUT_SECS")
         .and_then(|s| s.parse().ok())
         .unwrap_or(1800); // 30 min fuse by default
+    let max_events: u64 = env_var("NEMESISBOT_EVAL_MAX_EVENTS")
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(MAX_EVENTS_DEFAULT);
+    let max_bytes: u64 = env_var("NEMESISBOT_EVAL_MAX_BYTES")
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(MAX_BYTES_DEFAULT);
 
 
     let Some(events_path) = events_path else {
@@ -280,6 +300,12 @@ pub extern "C" fn Run() {
         //    tail window for stragglers, then off + exit.
         let mut total_events: u64 = 0;
         let mut dropped_events: u64 = 0;
+        // Cap bookkeeping (plan 2026-08-18): once either limit is hit, normal
+        // events are suppressed (counted, not written); deny events bypass the
+        // cap — they are the evidence the outbox-deny-* rules run on.
+        let mut written_bytes: u64 = 0;
+        let mut suppressed_events: u64 = 0;
+        let mut limit_marked = false;
         let mut empty_since: Option<u64> = None; // first tick where the box was empty
         loop {
             // -- drain the monitor buffer --
@@ -297,24 +323,49 @@ pub extern "C" fn Run() {
                 match classify(pid, &known_pids) {
                     Some(owner) => {
                         let ts = GetTickCount64();
-                        w(&format!(
-                            "{{\"ts\":{},\"type\":\"{}\",\"pid\":{},\"tid\":{},\"open\":{},\"deny\":{},\"box\":\"{}\",\"name\":\"{}\"}}",
-                            ts,
-                            type_label(base),
-                            pid,
-                            tid,
-                            open,
-                            deny,
-                            owner,
-                            json_escape(&ns)
-                        ));
-                        total_events += 1;
+                        let over_cap = (max_events != 0 && total_events >= max_events)
+                            || (max_bytes != 0 && written_bytes >= max_bytes);
+                        if over_cap && !deny {
+                            // Suppressed: still drained (driver buffer never
+                            // stalls), just not persisted.
+                            suppressed_events += 1;
+                            if !limit_marked {
+                                w(&format!(
+                                    "# LIMIT events={total_events} bytes={written_bytes} reached, \
+                                     normal events suppressed (deny still recorded)"
+                                ));
+                                limit_marked = true;
+                            }
+                        } else {
+                            let line = format!(
+                                "{{\"ts\":{},\"type\":\"{}\",\"pid\":{},\"tid\":{},\"open\":{},\"deny\":{},\"box\":\"{}\",\"name\":\"{}\"}}",
+                                ts,
+                                type_label(base),
+                                pid,
+                                tid,
+                                open,
+                                deny,
+                                owner,
+                                json_escape(&ns)
+                            );
+                            w(&line);
+                            written_bytes += line.len() as u64 + 1; // +1 newline
+                            total_events += 1;
+                        }
                     }
                     None => {
                         dropped_events += 1;
                     }
                 }
-                if total_events % 500 == 0 {
+                // Progress heartbeat. Must NOT key off total_events alone:
+                // once the cap freezes total_events, `3000 % 500 == 0` is
+                // always true and every suppressed event would print a line —
+                // turning the heartbeat itself into the flood (observed:
+                // 1.5M progress lines). Key off TOTAL activity (written +
+                // suppressed) so the heartbeat keeps a sane cadence through
+                // suppression.
+                let activity = total_events + suppressed_events;
+                if activity > 0 && activity % 500 == 0 {
                     // Snapshot progress into the comment channel.
                     let (mut p, mut c) = ([0u32; 512], 512u32);
                     let _ = en(boxw.as_ptr(), 0, u32::MAX, p.as_mut_ptr(), &mut c);
@@ -326,7 +377,7 @@ pub extern "C" fn Run() {
                             imgs.push(format!("{}:{}", p[i], from_wide(&inm)));
                         }
                     }
-                    w(&format!("# progress events={total_events} dropped={dropped_events} procs={c} [{}]", imgs.join(", ")));
+                    w(&format!("# progress events={total_events} dropped={dropped_events} suppressed={suppressed_events} procs={c} [{}]", imgs.join(", ")));
                 }
             }
 
@@ -360,7 +411,13 @@ pub extern "C" fn Run() {
 
         let mut off2: u32 = 0;
         let _ = mc(&mut off2, std::ptr::null_mut());
-        w(&format!("# done total_events={total_events} dropped={dropped_events} known_pids={}", known_pids.len()));
+        // total_events counts what was written (incl. post-cap deny lines);
+        // suppressed counts normal events dropped after the cap — the total
+        // never lies about how much activity happened.
+        w(&format!(
+            "# done total_events={total_events} dropped={dropped_events} suppressed={suppressed_events} known_pids={}",
+            known_pids.len()
+        ));
         ExitProcess(0);
     }
 }

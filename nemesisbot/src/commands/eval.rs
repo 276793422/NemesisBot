@@ -492,6 +492,13 @@ async fn run_phases(
             if let Some(errline) = events_raw.lines().find(|l| l.starts_with("# ERROR")) {
                 bail!("environment problem, eval aborted: {errline}");
             }
+            // Event-cap truncation marker (plan 2026-08-18): make the loss
+            // visible on the console — the file itself carries the # LIMIT line.
+            if events_raw.lines().any(|l| l.starts_with("# LIMIT")) {
+                println!(
+                    "[eval] WARN: 监控事件文件达上限被截断（普通事件已抑制，deny 事件仍记录）——普通规则的命中计数可能偏低"
+                );
+            }
             if !matches!(shell_exit, Some(0)) {
                 bail!(
                     "monitor shell exited abnormally ({:?}) — \
@@ -633,8 +640,15 @@ async fn run_phases(
             })).collect::<Vec<_>>(),
         }))?,
     )?;
-    // driver_events: keep the JSONL events (drop comment lines).
-    let event_lines: Vec<&str> = events_raw.lines().filter(|l| l.starts_with('{')).collect();
+    // driver_events: keep the JSONL events + the semantic comment lines.
+    // `# LIMIT`（截断标记，plan 2026-08-18）和 `# done`（含 suppressed 计数）
+    // 是评估者和人工判读需要的信息——只过滤 progress 等纯噪音注释。
+    let event_lines: Vec<&str> = events_raw
+        .lines()
+        .filter(|l| {
+            l.starts_with('{') || l.starts_with("# LIMIT") || l.starts_with("# done")
+        })
+        .collect();
     std::fs::write(
         out_dir.join("driver_events.jsonl"),
         format!("{}\n", event_lines.join("\n")),
