@@ -246,6 +246,14 @@ async fn run_eval(
         );
     }
 
+    // 6f.0 — concurrent-eval lock（F1，2026-08-19）。Sandboxie.ini 是全局
+    // 单文件：两个 eval 并发会互相覆盖/删除对方的 box 段（A 的
+    // strip_stale restore 会删掉 B 正在用的段）。锁放 ini 旁（不是 home
+    // 根——多 home 共用 SbieSvc/ini，必须护住 ini 本身）。原子 create_new
+    // = 拿锁；已存在时读 pid 判活：持有者已死 = 崩溃残留，警告后强抢；
+    // 活着 = 真并发，拒绝。
+    let _eval_lock = acquire_eval_lock(&sandbox_root)?;
+
     // 6f — create the eval box section (restored in the guard at the end).
     // The ConfigLevel / Template=SkipHook / AutoRecover / BlockNetworkFiles
     // keys are REQUIRED for Start.exe to launch anything in the box — without
@@ -307,15 +315,33 @@ async fn run_eval(
         // `key:1=...` 编辑语法行——Sandboxie 运行时**不认**。列表型 key 的
         // 正确写法是 `append` 子命令——它产出普通多行 `ClosedFilePath=...`。
         //（受控实验链：append 两次得到两行 ClosedFilePath=，格式正确。）
+        // F3（2026-08-19）：凭据关闭面扩到 20 条——浏览器（Chromium 系全家
+        // + Firefox）、云/容器 CLI（.aws/.azure/.gcloud/.kube/.docker/
+        // .terraform.d）、包管理 token（.npmrc/.netrc/.pypirc/.cargo/
+        // credentials*）、密钥环（.gnupg / Microsoft\Crypto）、git 内联
+        // token（.gitconfig）。已知边界：Windows 凭据管理器（DPAPI）是 API
+        // 而非文件路径，ClosedFilePath 管不了——文档化为已知限制。
         for closed in [
             format!(r"{prof_str}\.ssh\"),
             format!(r"{prof_str}\.aws\"),
             format!(r"{prof_str}\.azure\"),
             format!(r"{prof_str}\.gcloud\"),
             format!(r"{prof_str}\.gnupg\"),
+            format!(r"{prof_str}\.kube\"),
+            format!(r"{prof_str}\.docker\"),
+            format!(r"{prof_str}\.terraform.d\"),
+            format!(r"{prof_str}\.npmrc"),
+            format!(r"{prof_str}\.netrc"),
+            format!(r"{prof_str}\.pypirc"),
+            format!(r"{prof_str}\.cargo\credentials*"),
+            format!(r"{prof_str}\.gitconfig"),
             format!(r"{prof_str}\AppData\Local\Google\Chrome\User Data\"),
             format!(r"{prof_str}\AppData\Local\Microsoft\Edge\User Data\"),
+            format!(r"{prof_str}\AppData\Local\BraveSoftware\Brave-Browser\User Data\"),
+            format!(r"{prof_str}\AppData\Local\Vivaldi\User Data\"),
+            format!(r"{prof_str}\AppData\Roaming\opera software\"),
             format!(r"{prof_str}\AppData\Roaming\Mozilla\Firefox\Profiles\"),
+            format!(r"{prof_str}\AppData\Roaming\Microsoft\Crypto\"),
         ] {
             sbieini_append(&sbieini, &eval_box, "ClosedFilePath", &closed)?;
         }
@@ -359,8 +385,25 @@ async fn run_eval(
     // eval error), but a failed ini restore on an otherwise-successful run
     // fails the command: an unrestored ini is real-environment pollution.
     clean_box(&start_exe, &eval_box, &eval_box_root);
-    let ini_restore = std::fs::write(sandbox_root.join("Sandboxie.ini"), &ini_backup)
-        .context("restore Sandboxie.ini after eval");
+    // F2（2026-08-19）：clean_box 的 delete_sandbox 是异步的——不等它完成就
+    // restore ini 的话，SbieSvc 可能正按一个（已被 restore 删掉的）段继续
+    // 删除 → box_root 残留。等 box_root 消失（上限 15s；超时 WARN 放行，
+    // 不让清理卡死主流程——SbieSvc 卡 registry hive 时由 close_temp 的重试兜）。
+    wait_box_deleted(&eval_box_root, std::time::Duration::from_secs(15));
+    // F2：ini 还原走 tmp+rename 原子写（save_rules 同款）。直接 fs::write
+    // 在写一半断电/崩溃时撕裂**全局** Sandboxie.ini——殃及 NemesisBox 主
+    // 沙盒，不只是 eval。
+    let ini_restore = (|| -> Result<()> {
+        let ini_path = sandbox_root.join("Sandboxie.ini");
+        let tmp_path = sandbox_root.join("Sandboxie.ini.tmp");
+        std::fs::write(&tmp_path, &ini_backup)
+            .with_context(|| format!("write ini tmp {}", tmp_path.display()))?;
+        std::fs::rename(&tmp_path, &ini_path).with_context(|| {
+            let _ = std::fs::remove_file(&tmp_path);
+            format!("atomic-replace {}", ini_path.display())
+        })
+    })()
+    .context("restore Sandboxie.ini after eval");
     if let Err(e) = &ini_restore {
         eprintln!("[eval] WARN: {e:#} (real Sandboxie.ini left dirty — fix manually)");
     }
@@ -375,6 +418,103 @@ async fn run_eval(
         exit_if_risk_flagged();
     }
     result
+}
+
+// ---------------------------------------------------------------------------
+// concurrent-eval lock（F1，2026-08-19）
+// ---------------------------------------------------------------------------
+
+/// 进程级互斥锁（RAII）：Drop 时删锁文件；进程被杀时文件残留，由后来者的
+/// 陈锁检测（pid 判活）自愈。
+#[cfg(target_os = "windows")]
+struct EvalLock {
+    path: std::path::PathBuf,
+    _file: std::fs::File,
+}
+
+#[cfg(target_os = "windows")]
+impl Drop for EvalLock {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.path);
+    }
+}
+
+/// 拿 eval 互斥锁。锁文件 = `<sandbox_root>/.eval_lock`（ini 旁——所有
+/// home 共用这个 ini，锁必须护住它）。已存在时：pid 已死 = 崩溃残留强抢；
+/// 活着 = 真并发，bail 报对方 pid。
+#[cfg(target_os = "windows")]
+fn acquire_eval_lock(sandbox_root: &Path) -> Result<EvalLock> {
+    let path = sandbox_root.join(".eval_lock");
+    std::fs::create_dir_all(sandbox_root).ok();
+    let content = format!("pid={}\nstarted={}\n", std::process::id(), chrono::Local::now());
+
+    match std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&path)
+    {
+        Ok(mut f) => {
+            use std::io::Write as _;
+            let _ = f.write_all(content.as_bytes());
+            Ok(EvalLock { path, _file: f })
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+            // 陈锁检测：读持有者 pid 判活。
+            let holder_pid = std::fs::read_to_string(&path)
+                .ok()
+                .and_then(|s| {
+                    s.lines()
+                        .find_map(|l| l.strip_prefix("pid="))
+                        .and_then(|v| v.trim().parse::<u32>().ok())
+                });
+            let holder_alive = holder_pid.is_some_and(|p| pid_alive(p));
+            match holder_pid {
+                Some(p) if holder_alive => bail!(
+                    "另一个 eval 正在运行（pid {p}，锁 {}）。Sandboxie.ini 是全局单文件，\
+                     并发 eval 会互相破坏沙盒配置；等它跑完或确认该进程后删除锁文件",
+                    path.display()
+                ),
+                Some(p) => {
+                    // 崩溃残留：持有者已死。警告 + 强抢（删旧锁重试一次）。
+                    eprintln!(
+                        "[eval] WARN: 发现陈旧 eval 锁（pid {p} 已退出）——上次 eval 异常终止，抢占锁继续"
+                    );
+                    let _ = std::fs::remove_file(&path);
+                    let mut f = std::fs::OpenOptions::new()
+                        .write(true)
+                        .create_new(true)
+                        .open(&path)
+                        .with_context(|| format!("re-acquire eval lock after stale cleanup {}", path.display()))?;
+                    use std::io::Write as _;
+                    let _ = f.write_all(content.as_bytes());
+                    Ok(EvalLock { path, _file: f })
+                }
+                None => bail!(
+                    "eval 锁 {} 存在但内容无法解析（可能正在被创建/损坏）；确认无其他 eval 后手动删除",
+                    path.display()
+                ),
+            }
+        }
+        Err(e) => Err(e).with_context(|| format!("create eval lock {}", path.display())),
+    }
+}
+
+/// pid 判活：OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION) + GetExitCodeProcess。
+/// 仍在运行（含僵尸 STIll_ACTIVE）→ true。
+#[cfg(target_os = "windows")]
+fn pid_alive(pid: u32) -> bool {
+    use windows_sys::Win32::Foundation::{CloseHandle, STILL_ACTIVE};
+    use windows_sys::Win32::System::Threading::{GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION};
+    unsafe {
+        let h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+        if h.is_null() {
+            return false; // 打不开：不存在或权限不足（视为不在跑）
+        }
+        let mut exit: u32 = 0;
+        let ok = GetExitCodeProcess(h, &mut exit);
+        CloseHandle(h);
+        ok != 0 && exit == STILL_ACTIVE as u32
+    }
 }
 
 /// Phases 6d(write config)→6o of the eval run, executed while the proxy is
@@ -499,12 +639,26 @@ async fn run_phases(
                     "[eval] WARN: 监控事件文件达上限被截断（普通事件已抑制，deny 事件仍记录）——普通规则的命中计数可能偏低"
                 );
             }
+            // F4（2026-08-19）监控壳异常退出降级：`# done` 行是 DLL 正常收尾
+            //（盒空+尾窗+drain 完）才写的——它的存在=事件流完整性证书。
+            // 有它 → 壳虽然异常退出（fuse 到/DLL watchdog ExitProcess(13)/被
+            // 杀）但数据可信：WARN + 继续评估（meta.monitor_shell_exit 会如实
+            // 记录非 0 值，assessor 据此判 Unknown——不丢已收集的证据）。
+            // 无它 → 真异常（事件流中途断），丢报告 bail。
             if !matches!(shell_exit, Some(0)) {
-                bail!(
-                    "monitor shell exited abnormally ({:?}) — \
-                     possible antivirus interference or sandbox fault",
-                    shell_exit
-                );
+                let monitor_finished = events_raw.lines().any(|l| l.starts_with("# done"));
+                if monitor_finished {
+                    println!(
+                        "[eval] WARN: 监控壳异常退出（{:?}）但事件流已完整收尾（# done 存在）——保留报告继续评估，结论将标记风险未知",
+                        shell_exit
+                    );
+                } else {
+                    bail!(
+                        "monitor shell exited abnormally ({:?}) — 事件流不完整（无 # done 收尾标记），\
+                         possible antivirus interference or sandbox fault",
+                        shell_exit
+                    );
+                }
             }
 
             // 6n — pending files + agent report from the box mirror.
@@ -1087,6 +1241,24 @@ fn clean_box(start_exe: &Path, box_name: &str, box_root: &Path) {
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .status();
+}
+
+/// F2（2026-08-19）：轮询等 box_root 被 SbieSvc 删除（clean_box 的删除是
+/// 异步的）。上限 `max`；超时只 WARN 不报错——清理不能卡死主流程。
+#[cfg(target_os = "windows")]
+fn wait_box_deleted(box_root: &Path, max: std::time::Duration) {
+    let deadline = std::time::Instant::now() + max;
+    while box_root.exists() {
+        if std::time::Instant::now() >= deadline {
+            eprintln!(
+                "[eval] WARN: box root {} 在 {:?} 内未被删除（SbieSvc 处理中或卡住）——继续，残余由 close_temp 重试兜底",
+                box_root.display(),
+                max
+            );
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(500));
+    }
 }
 
 /// Monitor DLL location（2026-08-18 用户决定重构：部署优先，不绑死仓库）。

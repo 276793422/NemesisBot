@@ -279,6 +279,11 @@ fn floor_char_boundary(s: &str, index: usize) -> usize {
     }
 }
 
+/// 截断显示用的安全截断点（多字节字符不 panic；CLI list 摘要用）。
+pub fn truncation_point(s: &str, max: usize) -> usize {
+    floor_char_boundary(s, max)
+}
+
 // ---------------------------------------------------------------------------
 // 三分类判定
 // ---------------------------------------------------------------------------

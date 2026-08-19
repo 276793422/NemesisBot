@@ -40,7 +40,7 @@
         {
           "field": "arguments.command",
           "op": "regex",
-          "value": "(?i)(\\.aws|\\.azure|\\.gcloud\\\\|\\.azure\\\\|credentials)"
+          "value": "(?i)(\\.aws|\\.azure|\\.gcloud($|\\\\)|\\.kube($|\\\\)|\\.docker($|\\\\)|\\.terraform\\.d|credentials)"
         }
       ],
       "min_count": 1
@@ -55,7 +55,7 @@
         {
           "field": "arguments.path",
           "op": "regex",
-          "value": "(?i)(\\.aws|\\.azure|\\.gcloud\\\\|\\.azure\\\\|credentials)"
+          "value": "(?i)(\\.aws|\\.azure|\\.gcloud($|\\\\)|\\.kube($|\\\\)|\\.docker($|\\\\)|\\.terraform\\.d|credentials)"
         }
       ],
       "min_count": 1
@@ -160,7 +160,7 @@
         {
           "field": "name",
           "op": "regex",
-          "value": "(?i)(\\.aws|\\.azure|\\.gcloud|credentials)"
+          "value": "(?i)(\\.aws|\\.azure|\\.gcloud|\\.kube|\\.docker|\\.terraform|credentials)"
         }
       ],
       "min_count": 1

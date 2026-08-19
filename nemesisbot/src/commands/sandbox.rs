@@ -12,7 +12,7 @@
 
 use std::time::Duration;
 
-use anyhow::Result;
+use anyhow::{bail, Context, Result};
 use clap::Subcommand;
 
 use crate::common;
@@ -51,6 +51,16 @@ pub enum SandboxCommand {
         #[arg(long)]
         force: bool,
     },
+    /// Force-terminate ALL processes inside a box and discard its contents —
+    /// the engine (driver + SbieSvc) keeps running and other boxes are
+    /// untouched. Use when an eval / executor run goes rogue.
+    /// No args = all NemesisEvalBox_* boxes (eval leftovers);
+    /// --box-name NAME for a specific box (e.g. NemesisBox, the executor box).
+    Kill {
+        /// Kill this specific box instead of all eval boxes.
+        #[arg(long)]
+        box_name: Option<String>,
+    },
     /// Activate the engine: install driver + service + write ini + start SbieSvc.
     /// Needs admin (kernel driver) → triggers UAC. Requires `install` (files) first.
     Start {
@@ -78,6 +88,7 @@ pub async fn run(action: SandboxCommand, local: bool) -> Result<()> {
         SandboxCommand::Pending => pending(&paths, local),
         SandboxCommand::Commit { all, files } => commit(&paths, local, all, files),
         SandboxCommand::Clear { force } => clear(&paths, local, force),
+        SandboxCommand::Kill { box_name } => kill(&paths, box_name),
         SandboxCommand::Start { internal } => start(&paths, local, internal),
         SandboxCommand::EnsureReady { internal, home } => {
             let h = home
@@ -226,6 +237,240 @@ fn clear(paths: &nemesis_sandbox::SandboxPaths, local: bool, force: bool) -> Res
     println!("Box cleared.");
     Ok(())
 }
+
+/// Force-terminate every process inside the box(es) and discard box contents.
+/// The engine (driver + SbieSvc) keeps running; other boxes untouched.
+///
+/// Call pattern is deliberately the one VERIFIED in eval.rs's clean_box since
+/// 2026-08-16 (delete_sandbox_silent + null stdio + box-root-exists guard —
+/// a missing root makes Start.exe pop a "Code 3" dialog). terminate_all runs
+/// first so processes die even if the content delete later fails.
+fn kill(paths: &nemesis_sandbox::SandboxPaths, box_name: Option<String>) -> Result<()> {
+    let start_exe = paths.start_exe();
+    if !start_exe.exists() {
+        bail!(
+            "Start.exe not found at {} — run `nemesisbot sandbox install` first",
+            start_exe.display()
+        );
+    }
+
+    // Box-section existence guard: calling Start.exe on a box name that has
+    // no ini section HANGS (verified: terminate_all on a nonexistent box
+    // blocks indefinitely waiting on SbieSvc). Validate against the ini first.
+    let ini_sections: std::collections::HashSet<String> = {
+        let ini = std::fs::read_to_string(&paths.ini_path)
+            .context("read Sandboxie.ini to enumerate box sections")?;
+        ini.lines()
+            .filter_map(|l| {
+                let t = l.trim();
+                t.strip_prefix('[')
+                    .and_then(|s| s.strip_suffix(']'))
+                    .map(String::from)
+            })
+            .collect()
+    };
+
+    let boxes: Vec<String> = match &box_name {
+        Some(b) => {
+            if !ini_sections.contains(b) {
+                println!(
+                    "Box '{b}' has no section in {} — nothing to kill.",
+                    paths.ini_path.display()
+                );
+                return Ok(());
+            }
+            vec![b.clone()]
+        }
+        None => {
+            // All eval boxes: sections named NemesisEvalBox_* in the real ini.
+            ini_sections
+                .iter()
+                .filter(|s| s.starts_with("NemesisEvalBox_"))
+                .cloned()
+                .collect()
+        }
+    };
+    if boxes.is_empty() {
+        println!("No NemesisEvalBox_* sections in ini — nothing to kill. (Use --box <name> for a specific box.)");
+        return Ok(());
+    }
+
+    for b in &boxes {
+        // Box-root existence check（eval clean_box 同款守卫，2026-08-16 实证）：
+        // 对 FileRootPath 已不存在的死段调 Start.exe 会挂死/弹 Code 3 对话框。
+        // 死段（历史残留）没有活进程可杀——直接跳过 Start.exe，留给 eval 的
+        // ini restore / strip 清理。
+        let file_root = box_file_root(&paths.ini_path, b);
+        if let Some(root) = &file_root {
+            if !root.exists() {
+                println!(
+                    "[sandbox] box {b}: FileRootPath {} 已不存在（历史残留段，无活进程）——跳过 Start.exe，段由下次 eval 还原清理",
+                    root.display()
+                );
+                continue;
+            }
+        } else {
+            println!("[sandbox] box {b}: ini 段缺 FileRootPath——跳过 Start.exe");
+            continue;
+        }
+        println!("[sandbox] killing box {b}: /terminate + delete_sandbox_silent (engine stays up)...");
+        // 命令语法（官方 StartCommandLine 文档，2026-08-19 查证）：
+        // - 停盒内进程是【开关形式】"/terminate"——裸写 "terminate_all" 会被
+        //   Start.exe 当成要启动的程序名 → "找不到指定程序"弹窗串（实錯：
+        //   20 个盒 × 1 弹窗，用户屏幕实报）。
+        // - delete_sandbox_silent 是位置命令形式（不带斜杠），二者语法不同。
+        // 快失败：3s 无响应即树杀并跳过（防个别盒拖垮整轮 kill）。
+        let term_ok = run_startexe_timeout(&start_exe, b, "/terminate", std::time::Duration::from_secs(3));
+        if term_ok {
+            run_startexe_timeout(&start_exe, b, "delete_sandbox_silent", std::time::Duration::from_secs(10));
+            println!("[sandbox] box {b} killed (processes terminated, contents discarded).");
+        } else {
+            println!(
+                "[sandbox] box {b}: /terminate 无响应。已树杀 Start.exe 并跳过。清理正途：重启 SbieSvc（nemesisbot sandbox stop + start）"
+            );
+        }
+    }
+    println!(
+        "\nDone. Engine (SbieSvc/driver) still running — other boxes (e.g. NemesisBox) untouched."
+    );
+    Ok(())
+}
+
+/// 从 ini 段里读 `FileRootPath=` 的值（盒虚拟根路径）。段缺失该 key → None。
+fn box_file_root(ini_path: &std::path::Path, section: &str) -> Option<std::path::PathBuf> {
+    let ini = std::fs::read_to_string(ini_path).ok()?;
+    let mut in_section = false;
+    for line in ini.lines() {
+        let t = line.trim();
+        if t.starts_with('[') {
+            in_section = t.trim_start_matches('[').trim_end_matches(']') == section;
+            continue;
+        }
+        if in_section {
+            if let Some(v) = t.strip_prefix("FileRootPath=") {
+                // 形如 `\??\C:\...`——剥掉 NT 前缀
+                let p = v.trim().trim_start_matches(r"\??\");
+                return Some(std::path::PathBuf::from(p));
+            }
+        }
+    }
+    None
+}
+
+/// spawn Start.exe 子命令（silent stdio 防弹窗）+ 轮询超时。返回是否在超时
+/// 内完成（true=正常结束，false=超时已树杀）。超时树杀（taskkill /T 连孙
+/// 进程）+ WARN——一个坏盒不能卡死整轮 kill。
+///
+/// 命令语法注意（官方 StartCommandLine 文档，2026-08-19 查证）：
+/// - 开关类（/terminate /reload /listpids）带斜杠；裸写会被当【要启动的
+///   程序名】→ "找不到指定程序"弹窗串（实测翻车根源）
+/// - 位置命令类（delete_sandbox_silent 等）不带斜杠
+/// - **/silent 消除 Start.exe 自身的弹窗错误框**——所有调用都带上
+///
+/// 孤儿防护：Job Object kill-on-close——本进程被外杀时内核自动终止 job
+/// 内全部 Start.exe，杜绝孤儿继续弹窗。
+fn run_startexe_timeout(start_exe: &std::path::Path, box_name: &str, sub: &str, timeout: std::time::Duration) -> bool {
+    let mut child = match std::process::Command::new(start_exe)
+        .arg(format!("/box:{box_name}"))
+        .arg("/silent")
+        .arg(sub)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+    {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("[sandbox] WARN: spawn Start.exe {sub} for {box_name} failed: {e}");
+            return false;
+        }
+    };
+    // Job Object：把子进程挂进"父死子亡"的 job（一次创建，进程退出时内核
+    // 自动杀掉 job 里所有进程——孤儿从根上不可能存在）。
+    let _job = ChildJob::assign(&child);
+    let deadline = std::time::Instant::now() + timeout;
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => return true, // finished (any exit code — best effort)
+            Ok(None) => {
+                if std::time::Instant::now() >= deadline {
+                    // 树杀：Start.exe 可能有孙进程，kill() 只杀直接子。
+                    let _ = std::process::Command::new("taskkill")
+                        .args(["/PID", &child.id().to_string(), "/T", "/F"])
+                        .stdout(std::process::Stdio::null())
+                        .stderr(std::process::Stdio::null())
+                        .status();
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    eprintln!(
+                        "[sandbox] WARN: Start.exe {sub} for box {box_name} 无响应（坏盒）——树杀后跳过",
+                    );
+                    return false;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(200));
+            }
+            Err(_) => return false,
+        }
+    }
+}
+
+/// Windows Job Object（kill-on-close）：assign 后进程退出时内核自动终止
+/// job 内所有进程——防 Start.exe 孤儿（父被外杀后继续弹窗）。
+struct ChildJob(windows_sys::Win32::Foundation::HANDLE);
+
+#[cfg(target_os = "windows")]
+impl ChildJob {
+    fn assign(child: &std::process::Child) -> Option<Self> {
+        use windows_sys::Win32::System::JobObjects::{
+            AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
+            SetInformationJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+            JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+        };
+        unsafe {
+            let job = CreateJobObjectW(std::ptr::null(), std::ptr::null());
+            if job.is_null() {
+                return None;
+            }
+            let mut info: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = std::mem::zeroed();
+            info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+            if SetInformationJobObject(
+                job,
+                JobObjectExtendedLimitInformation,
+                &info as *const _ as *const core::ffi::c_void,
+                std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
+            ) == 0
+            {
+                return None;
+            }
+            let h = match child.as_raw_handle() {
+                h if h.is_null() => {
+                    let _ = windows_sys::Win32::Foundation::CloseHandle(job);
+                    return None;
+                }
+                h => h as windows_sys::Win32::Foundation::HANDLE,
+            };
+            if AssignProcessToJobObject(job, h) == 0 {
+                // 子进程已退出或句柄无效——job 由 Drop 关闭（空 job 无害）
+                let _ = windows_sys::Win32::Foundation::CloseHandle(job);
+                return None;
+            }
+            Some(Self(job))
+        }
+    }
+}
+
+#[cfg(target_os = "windows")]
+impl Drop for ChildJob {
+    fn drop(&mut self) {
+        unsafe {
+            // 关闭 job 句柄：因 KILL_ON_JOB_CLOSE，本进程退出/句柄关闭时
+            // job 内残留子进程被内核强制终止。
+            windows_sys::Win32::Foundation::CloseHandle(self.0);
+        }
+    }
+}
+
+#[cfg(target_os = "windows")]
+use std::os::windows::io::AsRawHandle as _;
 
 /// Activate the engine: install driver + service + ini + start SbieSvc. Needs
 /// admin (kernel driver) → UAC self-relaunch. Requires files acquired (`install`).

@@ -843,6 +843,40 @@ fn probe_rules_hit_dir_without_trailing_slash() {
         "matched: {:?}", r.matched_rules.iter().map(|m| &m.id).collect::<Vec<_>>());
 }
 
+// ---------------------------------------------------------------------------
+// F4（2026-08-19）：监控壳异常退出降级的评估语义
+// ---------------------------------------------------------------------------
+
+#[test]
+fn degraded_monitor_run_is_unknown_not_lost() {
+    // F4 配套：监控壳异常退出（fuse 到/watchdog）但事件流完整（# done 在）
+    // → eval.rs 保留报告、meta.monitor_shell_exit 如实记非 0 → assessor
+    // 判 Unknown（运行链有未解释中断，零命中不是有效观察）。
+    let tmp = TempDir::new().unwrap();
+    let dir = tmp.path().join("report");
+    write_healthy_report(&dir, "prompt");
+    patch_meta(&dir, "monitor_shell_exit", serde_json::json!(13)); // DLL watchdog code
+
+    let rules = parse_rules(DEFAULT_RULES_JSON).unwrap();
+    let r = assess(&dir, &rules);
+    assert_eq!(r.conclusion, Conclusion::Unknown, "degraded monitor run must not be Safe");
+    assert!(r.gaps.iter().any(|g| g.contains("monitor_shell_exit")), "gaps={:?}", r.gaps);
+}
+
+#[test]
+fn null_monitor_exit_fuse_timeout_is_unknown() {
+    // F4 配套：fuse 超时（shell_exit=None → meta null）+ 事件流完整 → 同样
+    // 降级保留 → Unknown（不是"监控正常"）。
+    let tmp = TempDir::new().unwrap();
+    let dir = tmp.path().join("report");
+    write_healthy_report(&dir, "prompt");
+    patch_meta(&dir, "monitor_shell_exit", serde_json::Value::Null);
+
+    let rules = parse_rules(DEFAULT_RULES_JSON).unwrap();
+    let r = assess(&dir, &rules);
+    assert_eq!(r.conclusion, Conclusion::Unknown);
+}
+
 #[test]
 fn probe_rules_no_false_positive_on_benign_paths() {
     // 良性路径（正常工作区文件操作）不误命中 probe 规则。
