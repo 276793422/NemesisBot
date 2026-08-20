@@ -164,3 +164,24 @@
 旧版报告（无运行状态字段）跳过运行中断判定，但 assessment.json 标注 `legacy_report: true`。
 
 评估输出：控制台中文结论 + 报告目录下 `assessment.json`（机器可读，可事后回放重评）+ `meta.json` 的 `assessment` 段。`--fail-on-risk` 时结论为有风险 → 退出码 2（供脚本/CI 判定）。
+
+## 程序化集成（三方自动化执行）
+
+```bat
+nemesisbot.exe eval prompt "<待检文本>" --fail-on-risk --observe-secs 300
+```
+
+**退出码（程序判据）**：
+
+| 退出码 | 含义 | 三方侧动作 |
+|---|---|---|
+| 0 | 结论=安全 **或** 未知（细分见 assessment.json） | 放行 |
+| 1 | 命令错误（环境/配置/沙盒未就绪/并发锁） | 告警运维 |
+| 2 | **结论=有风险**（需 `--fail-on-risk`） | 拦截 |
+
+**机器可读结果**：`<报告目录>/assessment.json`——`conclusion`（risk/safe/unknown）+ `matched_rules[]`（id/level/hit_count/evidence 原文）。报告目录默认 `<home>/workspace/logs/eval/<时间戳>_prompt/`（目录名按时间排序取最新即可），或用 `--output <dir>` 自选。
+
+**集成注意**：
+- 判断只认**退码或 assessment.json**，不要解析 stdout（人读格式，含日志混排）
+- **必须串行执行**——并发 eval 被互斥锁拒绝（第二个立刻退码 1）
+- `--observe-secs` 按需设短（简单 prompt 120-300s 足够；默认 1800s 是硬熔断上限）

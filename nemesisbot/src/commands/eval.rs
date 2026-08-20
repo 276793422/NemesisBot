@@ -83,7 +83,12 @@ pub struct EvalCommon {
     /// Use ./.nemesisbot as the real home (same as the global --local).
     #[arg(long)]
     pub local: bool,
-    /// Exit with code 2 when the assessment concludes "risk" (for scripting).
+    /// Exit with code 2 when the assessment concludes "risk". Exit codes:
+    /// 0 = safe or unknown (see assessment.json to distinguish),
+    /// 1 = command error (environment/config/sandbox), 2 = risk.
+    /// Machine-readable details: <report>/assessment.json (conclusion +
+    /// matched_rules). Runs must be serial — a second concurrent eval fails
+    /// with exit 1 (mutex lock).
     #[arg(long)]
     pub fail_on_risk: bool,
 }
