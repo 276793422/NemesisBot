@@ -415,7 +415,7 @@ impl Router {
         // Filter candidates that match the requested model
         let matching: Vec<&Candidate> = candidates
             .iter()
-            .filter(|c| c.model == resolved || resolved.contains('/') && c.model == resolved)
+            .filter(|c| model_matches(c.model.as_str(), &resolved))
             .collect();
 
         if matching.is_empty() {
@@ -442,7 +442,7 @@ impl Router {
         // Filter candidates that match the requested model
         let matching: Vec<&Candidate> = candidates
             .iter()
-            .filter(|c| c.model == resolved || resolved.contains('/') && c.model == resolved)
+            .filter(|c| model_matches(c.model.as_str(), &resolved))
             .collect();
 
         if matching.is_empty() {
@@ -607,6 +607,26 @@ impl Router {
     /// Get the metrics collector.
     pub fn metrics(&self) -> Arc<MetricsCollector> {
         Arc::clone(&self.metrics)
+    }
+}
+
+/// Candidate 的 model 与请求的 model 匹配：全名相等，或（请求带 provider
+/// 前缀时）裸名也匹配——`deepseek/deepseek-chat` 的请求能命中
+/// `model: "deepseek-chat"` 的候选。
+///
+/// 历史：这里曾写成 `c.model == resolved || resolved.contains('/') &&
+/// c.model == resolved`——右半边是左半边的子集，整个表达式恒等于
+/// `c.model == resolved`，前缀形态从未匹配过（clippy overly_complex_bool_expr
+/// 抓出，2026-08-21 修复）。model 的 `provider/name` 双形态是真实需求
+///（config.model_list 存全名、agents.defaults.llm 存裸名，见
+/// nemesisbot/src/commands/eval.rs 的 model_ref 组装）。
+fn model_matches(candidate_model: &str, requested: &str) -> bool {
+    if candidate_model == requested {
+        return true;
+    }
+    match requested.rsplit_once('/') {
+        Some((_, bare)) if !bare.is_empty() => candidate_model == bare,
+        _ => false,
     }
 }
 

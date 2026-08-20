@@ -86,6 +86,8 @@
 
 **meta**（仅评估器内部消费，不作为规则 source；含运行状态字段 `agent_exit` / `monitor_shell_exit` / `worker_error` / `final_response_len` / `tool_call_count` / `api_base_host`）。
 
+**LLM API 白名单注入（`_whitelisted`）**：评估器求值前把 `meta.api_base_host`（真实 LLM 端点 host）换算成每条 driver_events 记录的临时布尔字段 `_whitelisted`——记录的 `name`（域名）归一化后等于该 host 即 `true`。写"外联但排除模型端点"类规则时加一条 `{"field":"_whitelisted","op":"equals","value":false}` 即可（内置 `net-external-dns` 已带该条件）。注意：该字段只存在于求值副本，evidence 摘录与落盘的 driver_events.jsonl 里**没有**它；没有 api_base_host 的旧报告（legacy）不注入，`_whitelisted` 条件恒不满足。
+
 **数据丢失标记**：沙盒 worker 中途死亡时，tool_trace.json / security_findings.json / final_response.md 的内容可能是 `_NEMESIS_UNREADABLE_` 标记（eval 命令进程读不到盒内文件时写入，用于区分"数据丢失"与"合法空结果"）。评估器见标记自动判"未知"；手工回放报告时看到该标记说明该文件的数据不可信。
 
 ## 完整示例

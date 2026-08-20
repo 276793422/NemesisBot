@@ -17,8 +17,10 @@ fn main() {
         Err(e) => { eprintln!("[test] inject failed: {e}"); std::process::exit(1); }
     };
 
-    let code = wait_and_get_exit(hp);
-    close_handles(hp, ht);
+    // SAFETY: hp/ht 直接来自 launch_and_inject 的成功返回，未并发关闭、
+    // 各只关一次——满足两个 unsafe 函数的契约。
+    let code = unsafe { wait_and_get_exit(hp) };
+    unsafe { close_handles(hp, ht) };
     println!("[test] host exited code={:?}", code);
 
     let log = r"C:\AI\NemesisBot\NemesisBot_Rust\test-tools\eval-inject-test\test_dll\inject_result.txt";

@@ -284,6 +284,13 @@ pub fn truncation_point(s: &str, max: usize) -> usize {
     floor_char_boundary(s, max)
 }
 
+/// host 归一化（`_whitelisted` 注入用）：小写 + 去尾点。DNS 解析器可能报
+/// `api.example.com.`（尾点形式），与 meta.api_base_host 的裸 host 直比会
+/// 漏判——两条形态都要归一到同一个键再比较。
+fn normalize_host(s: &str) -> String {
+    s.trim().to_ascii_lowercase().trim_end_matches('.').to_string()
+}
+
 // ---------------------------------------------------------------------------
 // 三分类判定
 // ---------------------------------------------------------------------------
@@ -622,11 +629,20 @@ pub fn assess(report_dir: &Path, rules: &RulesFile) -> AssessResult {
     // subject 整个文本作为一条记录 { "text": "<全文>" }。
     let subject_record = serde_json::json!({ "text": subject_txt });
 
-    // 白名单注入（A3）：把 api_base_host 注入为 driver_events 每条记录的
-    // 临时字段 _whitelist_host，规则里写常规 regex 排除即可，不加跨源机制。
-    // 只注入到**求值副本**——evidence 摘录用原始记录，展示数据不被实现
-    // 细节污染。X1 修复：仅当有 host 要注入才克隆（63k 事件的 Value 深拷贝
-    // 是数十 MB 级开销；legacy 报告无 api_base_host 时原实现白克隆一次）。
+    // 白名单注入（A3，2026-08-21 重做）：把 api_base_host 换算成每条
+    // driver_events 记录的临时布尔字段 `_whitelisted`——该记录的 `name`
+    // 归一化后等于 LLM API 端点 host 即 true。规则侧用现有 op 就能表达
+    // 排除语义：`name` 匹配外域正则 **且** `_whitelisted` equals false
+    //（记录内 AND 天然支持）。
+    // 原实现注入的是 `_whitelist_host: "<host>"` 字符串字段 + 注释声称
+    // "规则里写常规 regex 排除即可"——但所有 op 都做"规则常量 vs 单字段"
+    // 的比较，**没有任何 op 能表达跨字段不等**（且 regex crate 不支持
+    // look-ahead），注入的字段实际无法被任何规则消费：机制从上线起就是
+    // 死的（启用 net-external-dns 后每次 eval 的 LLM API DNS 解析都误判
+    // "有风险"，规则因此只能默认关着）。
+    // 仍只注入到**求值副本**——evidence 摘录用原始记录，展示数据不被
+    // 实现细节污染。仅当有 host 要注入才克隆（63k 事件的 Value 深拷贝
+    // 是数十 MB 级开销；legacy 报告无 api_base_host 时零成本）。
     let api_base_host = meta
         .get("api_base_host")
         .and_then(|v| v.as_str())
@@ -635,10 +651,18 @@ pub fn assess(report_dir: &Path, rules: &RulesFile) -> AssessResult {
     let event_records: Vec<serde_json::Value> = if api_base_host.is_empty() {
         Vec::new() // 不注入 → 求值直接用原始 driver_events（见下方 source 选择）
     } else {
+        let host_norm = normalize_host(&api_base_host);
         let mut records = driver_events.clone();
         for rec in &mut records {
+            // name 归一化等值比较要在 as_object_mut 之前取值（rec 同时不可变
+            // + 可变借用是 E0502）。
+            let whitelisted = rec
+                .get("name")
+                .and_then(|v| v.as_str())
+                .map(|n| normalize_host(n) == host_norm)
+                .unwrap_or(false);
             if let Some(obj) = rec.as_object_mut() {
-                obj.insert("_whitelist_host".into(), serde_json::json!(api_base_host));
+                obj.insert("_whitelisted".into(), serde_json::json!(whitelisted));
             }
         }
         records

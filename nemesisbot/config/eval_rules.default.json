@@ -294,7 +294,7 @@
     },
     {
       "id": "net-external-dns",
-      "description": "盒内解析了外部域名（正匹配常见公网 TLD，本地名 local/lan/internal 与私网 IP 不会命中；联网型技能评估前请按需开启，默认关闭——github 拉 release 等合法外联会命中）",
+      "description": "盒内解析了外部域名（正匹配常见公网 TLD，本地名 local/lan/internal 与私网 IP 不命中；LLM API 端点域名经评估器注入的 _whitelisted 字段排除，不因模型调用本身误报；联网型技能评估前请按需开启，默认关闭——github 拉 release 等合法外联会命中）",
       "level": "low",
       "enabled": false,
       "source": "driver_events",
@@ -313,6 +313,11 @@
           "field": "name",
           "op": "regex",
           "value": "(?i)^[a-z0-9][a-z0-9.-]*\\.(com|net|org|io|cn|dev|ai|app|co|edu|gov|info|me|xyz|ru|uk|de|jp|kr|us)(\\.[a-z]{2})?\\.?$"
+        },
+        {
+          "field": "_whitelisted",
+          "op": "equals",
+          "value": false
         }
       ],
       "min_count": 1

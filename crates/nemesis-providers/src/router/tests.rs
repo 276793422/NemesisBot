@@ -698,3 +698,51 @@ fn test_prune_no_samples() {
     // Should not panic with empty collector
     collector.prune(std::time::Duration::from_secs(3600));
 }
+
+#[test]
+fn test_model_matches_full_name() {
+    assert!(model_matches("deepseek-chat", "deepseek/deepseek-chat"));
+    assert!(model_matches("deepseek/deepseek-chat", "deepseek/deepseek-chat"));
+    assert!(model_matches("gpt-4", "gpt-4"));
+}
+
+#[test]
+fn test_model_matches_bare_name_request() {
+    // 请求是裸名 → 只有裸名候选命中（不能拿裸名去匹配别人的前缀形态，
+    // "chat" 不命中 "deepseek/deepseek-chat"）。
+    assert!(model_matches("deepseek-chat", "deepseek-chat"));
+    assert!(!model_matches("deepseek/deepseek-chat", "deepseek-chat"));
+    assert!(!model_matches("chat", "deepseek-chat"));
+}
+
+#[test]
+fn test_model_matches_edge_forms() {
+    // 尾斜杠/空段/多段前缀的边界形态。
+    assert!(!model_matches("deepseek-chat", "deepseek/")); // 空 bare 段不匹配
+    assert!(model_matches("a", "x/y/a")); // 多段取最后一段（罕见但无害）
+    assert!(!model_matches("other", "deepseek/deepseek-chat"));
+}
+
+#[test]
+fn test_select_by_prefixed_model_finds_bare_candidate() {
+    // 修复前（恒等表达式）这条 select 走 fallback 分支返回第一个候选，
+    // 这里钉死前缀请求能命中裸名候选。
+    let router = Router::new(RouterConfig::default());
+    router.add_candidate(Candidate {
+        provider: "other".to_string(),
+        model: "llama-3".to_string(),
+        cost_per_1k: 0.01,
+        quality_score: 0.5,
+        priority: 1,
+    });
+    router.add_candidate(Candidate {
+        provider: "deepseek".to_string(),
+        model: "deepseek-chat".to_string(),
+        cost_per_1k: 0.01,
+        quality_score: 0.5,
+        priority: 2,
+    });
+    let selected = router.select("deepseek/deepseek-chat").unwrap();
+    assert_eq!(selected.provider, "deepseek");
+    assert_eq!(selected.model, "deepseek-chat");
+}

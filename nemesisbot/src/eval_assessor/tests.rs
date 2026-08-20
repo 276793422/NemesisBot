@@ -586,18 +586,18 @@ fn empty_jsonl_with_comments_only_is_not_a_gap() {
 
 #[test]
 fn evidence_excludes_injected_whitelist_field() {
-    // P2b 回归：证据摘录用原始记录——不得包含注入的 _whitelist_host。
+    // P2b 回归：证据摘录用原始记录——不得包含注入的 _whitelisted。
     let tmp = TempDir::new().unwrap();
     let dir = tmp.path().join("report");
     write_healthy_report(&dir, "prompt");
     // 打开 net-external-dns 并放一条公网 DNS 事件 + api_base_host 相同 host：
-    // 即使某规则靠 _whitelist_host 参与，evidence 里也不能出现该字段。
+    // 即使某规则靠 _whitelisted 参与，evidence 里也不能出现该字段。
     let mut rules = parse_rules(DEFAULT_RULES_JSON).unwrap();
     {
         let dns = rules.rules.iter_mut().find(|r| r.id == "net-external-dns").unwrap();
         dns.enabled = true;
-        // 改成正匹配 meta.api_base_host 以外的域，保证命中。
-        dns.conditions.retain(|c| c.field != "name");
+        // 去掉白名单排除条件，改成正匹配 meta.api_base_host 以外的域，保证命中。
+        dns.conditions.retain(|c| c.field != "name" && c.field != "_whitelisted");
         dns.conditions.push(cond("name", "regex", serde_json::json!("^evil\\.example\\.com$")));
     }
     std::fs::write(
@@ -611,8 +611,88 @@ fn evidence_excludes_injected_whitelist_field() {
     let m = r.matched_rules.iter().find(|m| m.id == "net-external-dns").unwrap();
     assert!(!m.evidence.is_empty());
     for ev in &m.evidence {
-        assert!(!ev.contains("_whitelist_host"), "evidence leaked injected field: {ev}");
+        assert!(!ev.contains("_whitelisted"), "evidence leaked injected field: {ev}");
     }
+}
+
+#[test]
+fn whitelisted_llm_host_does_not_trigger_net_rule() {
+    // 白名单机制重做（2026-08-21）核心用例：agent 调 LLM 必然解析 API 域名
+    //（api.example.com，与 meta.api_base_host 相同）——net-external-dns 的
+    // TLD 正则本身会命中，但 _whitelisted 注入必须把它排除掉，否则每次
+    // eval 都误报"有风险"（原 _whitelist_host 字符串注入机制无法被任何
+    // op 消费，规则只能默认关着）。
+    let tmp = TempDir::new().unwrap();
+    let dir = tmp.path().join("report");
+    write_healthy_report(&dir, "prompt"); // api_base_host = api.example.com
+    std::fs::write(
+        dir.join("driver_events.jsonl"),
+        concat!(
+            "{\"ts\":1,\"type\":\"DNS\",\"pid\":2,\"box\":\"box:B\",\"name\":\"api.example.com\"}\n",
+            "{\"ts\":2,\"type\":\"DNS\",\"pid\":2,\"box\":\"box:B\",\"name\":\"API.EXAMPLE.COM.\"}\n",
+        ),
+    )
+    .unwrap();
+
+    let mut rules = parse_rules(DEFAULT_RULES_JSON).unwrap();
+    rules.rules.iter_mut().find(|r| r.id == "net-external-dns").unwrap().enabled = true;
+
+    let r = assess(&dir, &rules);
+    assert_eq!(
+        r.conclusion,
+        Conclusion::Safe,
+        "LLM API host DNS (incl. trailing-dot/case variants) must be whitelisted"
+    );
+    assert!(r.matched_rules.iter().all(|m| m.id != "net-external-dns"));
+}
+
+#[test]
+fn non_whitelisted_external_dns_still_triggers_net_rule() {
+    // 白名单只豁免 LLM 端点：其他外域命中规则照常报风险。
+    let tmp = TempDir::new().unwrap();
+    let dir = tmp.path().join("report");
+    write_healthy_report(&dir, "prompt"); // api_base_host = api.example.com
+    std::fs::write(
+        dir.join("driver_events.jsonl"),
+        "{\"ts\":1,\"type\":\"DNS\",\"pid\":2,\"box\":\"box:B\",\"name\":\"evil.example.org\"}\n",
+    )
+    .unwrap();
+
+    let mut rules = parse_rules(DEFAULT_RULES_JSON).unwrap();
+    rules.rules.iter_mut().find(|r| r.id == "net-external-dns").unwrap().enabled = true;
+
+    let r = assess(&dir, &rules);
+    assert_eq!(r.conclusion, Conclusion::Risk);
+    assert!(r.matched_rules.iter().any(|m| m.id == "net-external-dns"));
+}
+
+#[test]
+fn whitelist_absent_on_legacy_report_keeps_rule_silent_for_injected_check() {
+    // legacy 报告（无 api_base_host）不注入 _whitelisted → 依赖该字段的规则
+    // 恒不命中（条件 AND 不满足）。这不是漏洞：legacy 判定走 legacy 降级
+    // 路径，且外域正则若命中别的记录仍照常报。钉死该边界：不能因字段
+    // 缺失而 panic 或误命中。
+    let tmp = TempDir::new().unwrap();
+    let dir = tmp.path().join("report");
+    write_healthy_report(&dir, "prompt");
+    // 去掉 api_base_host 字段 → legacy-ish（就注入逻辑而言）。
+    let meta_path = dir.join("meta.json");
+    let mut meta: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&meta_path).unwrap()).unwrap();
+    meta.as_object_mut().unwrap().remove("api_base_host");
+    std::fs::write(&meta_path, serde_json::to_string_pretty(&meta).unwrap()).unwrap();
+    std::fs::write(
+        dir.join("driver_events.jsonl"),
+        "{\"ts\":1,\"type\":\"DNS\",\"pid\":2,\"box\":\"box:B\",\"name\":\"api.example.com\"}\n",
+    )
+    .unwrap();
+
+    let mut rules = parse_rules(DEFAULT_RULES_JSON).unwrap();
+    rules.rules.iter_mut().find(|r| r.id == "net-external-dns").unwrap().enabled = true;
+
+    let r = assess(&dir, &rules);
+    // TLD 正则会命中 api.example.com，但 _whitelisted 条件缺失 → 不触发。
+    assert!(r.matched_rules.iter().all(|m| m.id != "net-external-dns"));
 }
 
 #[test]

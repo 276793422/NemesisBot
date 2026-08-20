@@ -43,8 +43,10 @@ fn main() {
         .output();
     println!("[test] in-box activity done");
 
-    let code = wait_and_get_exit(hp);
-    close_handles(hp, ht);
+    // SAFETY: hp/ht 直接来自 launch_and_inject_with_env 的成功返回，未并发
+    // 关闭、各只关一次——满足两个 unsafe 函数的契约。
+    let code = unsafe { wait_and_get_exit(hp) };
+    unsafe { close_handles(hp, ht) };
     println!("[test] monitor shell exited code={code:?}");
 
     let out = std::fs::read_to_string(events).unwrap_or_default();

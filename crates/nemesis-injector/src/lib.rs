@@ -317,7 +317,13 @@ fn inject_ep_hijack(hp: HANDLE, dll_path: &str) -> Result<(), InjectError> {
 // 注入器自身只取它们的地址（GetModuleHandleA + GetProcAddress），不直接 import。
 
 /// 关闭句柄对（便利函数）。
-pub fn close_handles(hp: HANDLE, ht: HANDLE) {
+///
+/// # Safety
+/// `hp` / `ht` 必须是本注入器（[`launch_and_inject`] 系列）返回的**有效**
+/// 句柄，且每个句柄只调用一次——传入野指针或重复关闭是未定义行为
+///（Windows 句柄值可能被复用，误关会影响无关对象）。标 `unsafe` 是
+/// 语义修正（安全签名接裸 HANDLE 属于把 UB 包进 safe API），非应付 lint。
+pub unsafe fn close_handles(hp: HANDLE, ht: HANDLE) {
     unsafe {
         CloseHandle(ht);
         CloseHandle(hp);
@@ -325,7 +331,11 @@ pub fn close_handles(hp: HANDLE, ht: HANDLE) {
 }
 
 /// 等待进程退出（阻塞），返回退出码。
-pub fn wait_and_get_exit(hp: HANDLE) -> Option<u32> {
+///
+/// # Safety
+/// `hp` 必须是本注入器返回的**有效**进程句柄；句柄被并发关闭或已释放
+/// 后调用是未定义行为。
+pub unsafe fn wait_and_get_exit(hp: HANDLE) -> Option<u32> {
     use windows_sys::Win32::System::Threading::{GetExitCodeProcess, WaitForSingleObject, INFINITE};
     unsafe {
         if WaitForSingleObject(hp, INFINITE) != 0 {

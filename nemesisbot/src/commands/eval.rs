@@ -667,27 +667,15 @@ async fn run_phases(
             }
 
             // 6n — pending files + agent report from the box mirror.
-    // The temp home lives under C:\Users\<u>\... so Sandboxie redirects its
-    // writes to the USER tree of the box: <box_root>\user\current\<rel-after-
-    // the-user-dir>. (user\current already stands for C:\Users\<u>.)
-    let rel_full = home
-        .to_string_lossy()
-        .trim_start_matches(r"C:\")
-        .replace('\\', "/");
-    let box_mirror = {
-        // user-tree mirror: strip the Users\<name>\ prefix
-        let rel_user = rel_full
-            .strip_prefix("Users/")
-            .and_then(|r| r.split_once('/').map(|(_, rest)| rest.to_string()))
-            .unwrap_or_else(|| rel_full.clone());
-        let user_mirror = eval_box_root.join("user").join("current").join(&rel_user);
-        if user_mirror.exists() {
-            user_mirror
-        } else {
-            // drive mirror for non-profile paths (whole path after C:\)
-            eval_box_root.join("drive").join("C").join(&rel_full)
-        }
-    };
+    // Box-mirror path derivation must mirror Sandboxie's own redirection
+    // (the reverse of nemesis_sandbox::pending::real_path_for_box):
+    //   real path under %USERPROFILE%  →  <box_root>\user\current\<rel>
+    //   anything else (any drive)      →  <box_root>\drive\<L>\<rel>
+    // The temp home comes from %TEMP%, which may live on ANY drive — the
+    // drive letter must be parsed from the path, never assumed to be C
+    // (hard-coding C made every eval read fail on TEMP=D:\ machines; every
+    // report landed _NEMESIS_UNREADABLE_ → permanently "risk unknown").
+    let box_mirror = box_mirror_for(home, eval_box_root, &user_profile_dir());
     // The worker writes its report to <workspace>/logs/eval where its
     // "workspace" env var == our home (config.json dir) — NOT home/workspace.
     // (Verified box-mirror tree: .../.tmpX/logs/eval/tool_trace.json.)
@@ -1080,6 +1068,58 @@ fn strip_stale_eval_sections(ini: &str) -> String {
     out
 }
 
+/// Derive the in-box mirror path for a real path, following Sandboxie's
+/// redirection layout (reverse of `nemesis_sandbox::pending::real_path_for_box`):
+///
+/// - real path under `user_profile` (case-insensitive prefix match — Windows
+///   paths differ in case between env vars and canonicalization) →
+///   `<box_root>/user/current/<rest>`
+/// - any other path on a drive letter → `<box_root>/drive/<L>/<rest-without-X:\>`
+///
+/// User-tree candidates are probed first (the eval temp home normally lives
+/// under %USERPROFILE% via %TEMP%); the drive mirror is the fallback for
+/// redirected TEMP dirs on other drives / other roots. UNC paths
+/// (`\\server\share`) have no drive letter and no box mirror — returns the
+/// drive-less path unchanged, callers treat it as "not found".
+#[cfg(target_os = "windows")]
+fn box_mirror_for(home: &Path, box_root: &Path, user_profile: &Path) -> PathBuf {
+    let home_str = home.to_string_lossy().to_string();
+
+    // 1) user-tree mirror: home under %USERPROFILE% (case-insensitive).
+    let prof_str = user_profile.to_string_lossy().to_string();
+    let prof_prefix = format!("{}\\", prof_str.trim_end_matches('\\'));
+    if home_str.to_ascii_lowercase().starts_with(&prof_prefix.to_ascii_lowercase()) {
+        let rel = &home_str[prof_prefix.len()..]; // safe: len from the original string
+        let user_mirror = box_root
+            .join("user")
+            .join("current")
+            .join(Path::new(rel));
+        if user_mirror.exists() {
+            return user_mirror;
+        }
+        // Profile-relative path exists-check failed: still fall through to the
+        // drive mirror below — the home might genuinely sit outside the profile
+        // (e.g. TEMP redirected while USERPROFILE moved), and the drive mirror
+        // of the same path is a valid candidate too.
+    }
+
+    // 2) drive mirror: <box_root>/drive/<L>/<rest>. Drive letter comes from
+    //    the path itself (`D:\foo` → D) — never assumed.
+    if let Some(rest) = home_str.strip_prefix(r"\\?\") {
+        // Canonicalize verbatim form: \\?\C:\foo — strip before drive parsing.
+        return box_mirror_for(Path::new(rest), box_root, user_profile);
+    }
+    let bytes = home_str.as_bytes();
+    if bytes.len() >= 3 && bytes[1] == b':' && (bytes[2] == b'\\' || bytes[2] == b'/') {
+        let letter = home_str[..1].to_ascii_uppercase();
+        let rest = &home_str[3..]; // skip "X:\"
+        return box_root.join("drive").join(letter).join(rest);
+    }
+    // UNC or relative — no mirror layout applies; return as-is (caller's
+    // exists()/read checks will simply fail → _NEMESIS_UNREADABLE_ markers).
+    home.to_path_buf()
+}
+
 /// Extract the host from the proxy's real upstream base URL (assessor Step 0's
 /// `api_base_host`). DNS rules use it to whitelist the model endpoint.
 /// `https://api.example.com` → `api.example.com`; unparseable → empty string.
@@ -1331,7 +1371,7 @@ async fn wait_with_timeout(handle: windows_sys::Win32::Foundation::HANDLE, timeo
     use windows_sys::Win32::System::Threading::{GetExitCodeProcess, WaitForSingleObject};
     // HANDLE (*mut c_void) is not Send — round-trip through usize.
     let h = handle as usize;
-    let ms = timeout.as_millis() as u32;
+    let ms = wait_timeout_ms(timeout);
     let code = tokio::task::spawn_blocking(move || unsafe {
         let h = h as windows_sys::Win32::Foundation::HANDLE;
         if WaitForSingleObject(h, ms) != 0 {
@@ -1349,7 +1389,24 @@ async fn wait_with_timeout(handle: windows_sys::Win32::Foundation::HANDLE, timeo
     code
 }
 
+/// Duration → WaitForSingleObject 的 u32 毫秒。`as u32` 直接截断会把
+/// ≥49.7 天的熔断值静默变成任意小数（熔断提前触发）；反向的坑更隐蔽——
+/// u32::MAX **正好是 INFINITE 哨兵**，饱和到 MAX 等于把"超长等待"变成
+/// "永久等待"。饱和到 MAX-1，两个方向都钉死。
+#[cfg(target_os = "windows")]
+fn wait_timeout_ms(d: std::time::Duration) -> u32 {
+    let ms = d.as_millis();
+    if ms >= u128::from(u32::MAX - 1) {
+        u32::MAX - 1
+    } else {
+        ms as u32
+    }
+}
+
 #[cfg(target_os = "windows")]
 use std::os::windows::process::CommandExt as _;
 
 // Silence unused import when compiled without the windows-only body.
+
+#[cfg(all(test, target_os = "windows"))]
+mod tests;
