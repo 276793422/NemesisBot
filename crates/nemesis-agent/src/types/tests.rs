@@ -425,8 +425,19 @@ fn repair_tool_pairs_mismatched_id_removed() {
         make_tool_response("result", "call_B"),
     ];
     repair_tool_message_pairs(&mut msgs);
-    assert_eq!(msgs.len(), 3);
-    assert_eq!(msgs[3 - 1].role, "user"); // last is user, tool removed
+    // G2 (U2): the orphaned call_A now gets a SYNTHETIC unknown-outcome
+    // result instead of being dropped; the mismatched call_B result is still
+    // removed (Pass 1). The assistant keeps its call.
+    assert_eq!(msgs.len(), 4);
+    let assistant = &msgs[1];
+    assert_eq!(assistant.tool_calls.len(), 1);
+    assert_eq!(assistant.tool_calls[0].id, "call_A");
+    let synth = &msgs[2];
+    assert_eq!(synth.role, "tool");
+    assert_eq!(synth.tool_call_id.as_deref(), Some("call_A"));
+    assert!(synth.content.contains(TOOL_OUTCOME_UNKNOWN));
+    let no_b = msgs.iter().any(|m| m.tool_call_id.as_deref() == Some("call_B"));
+    assert!(!no_b, "mismatched call_B result removed");
 }
 
 #[test]
@@ -436,9 +447,17 @@ fn repair_tool_pairs_missing_tool_response_clears_calls() {
         make_tool_response("result_a", "call_A"),
     ];
     repair_tool_message_pairs(&mut msgs);
-    assert_eq!(msgs.len(), 2);
-    assert_eq!(msgs[0].tool_calls.len(), 1);
-    assert_eq!(msgs[0].tool_calls[0].id, "call_A");
+    // G2 (U2): call_B gets a synthetic result; the assistant keeps BOTH
+    // calls (previously call_B was dropped from tool_calls). The synthetic
+    // inserts at assistant+1 (call order), the real result_A follows it.
+    assert_eq!(msgs.len(), 3);
+    assert_eq!(msgs[0].tool_calls.len(), 2);
+    let synth = &msgs[1];
+    assert_eq!(synth.role, "tool");
+    assert_eq!(synth.tool_call_id.as_deref(), Some("call_B"));
+    assert!(synth.content.contains(TOOL_OUTCOME_UNKNOWN));
+    assert_eq!(msgs[2].tool_call_id.as_deref(), Some("call_A"));
+    assert_eq!(msgs[2].content, "result_a");
 }
 
 #[test]
@@ -449,11 +468,17 @@ fn repair_tool_pairs_partial_response_keeps_matched() {
         make_tool_response("c", "call_C"),
     ];
     repair_tool_message_pairs(&mut msgs);
-    assert_eq!(msgs.len(), 3);
-    assert_eq!(msgs[0].tool_calls.len(), 2);
-    let ids: Vec<&str> = msgs[0].tool_calls.iter().map(|tc| tc.id.as_str()).collect();
-    assert!(ids.contains(&"call_A"));
-    assert!(ids.contains(&"call_C"));
+    // G2 (U2): all three calls survive on the assistant; call_B gains a
+    // synthetic result inserted after the assistant (matching the model's
+    // call order, before the later real results).
+    assert_eq!(msgs.len(), 4);
+    assert_eq!(msgs[0].tool_calls.len(), 3);
+    let synth = &msgs[1];
+    assert_eq!(synth.role, "tool");
+    assert_eq!(synth.tool_call_id.as_deref(), Some("call_B"));
+    assert!(synth.content.contains(TOOL_OUTCOME_UNKNOWN));
+    assert_eq!(msgs[2].content, "a");
+    assert_eq!(msgs[3].content, "c");
 }
 
 #[test]
@@ -532,4 +557,125 @@ fn repair_tool_pairs_keeps_distinct_tool_call_ids() {
     repair_tool_message_pairs(&mut msgs);
     let tool_msgs: Vec<_> = msgs.iter().filter(|m| m.role == "tool").collect();
     assert_eq!(tool_msgs.len(), 2, "distinct ids must both survive");
+}
+
+// ---------------------------------------------------------------------------
+// G2 (U2): repair_tool_message_pairs synthesizes TOOL_OUTCOME_UNKNOWN results
+// ---------------------------------------------------------------------------
+
+/// Helper: build a ConversationTurn quickly.
+fn turn(role: &str, content: &str, tool_calls: Vec<ToolCallInfo>, tool_call_id: Option<String>) -> ConversationTurn {
+    ConversationTurn {
+        role: role.to_string(),
+        content: content.to_string(),
+        tool_calls,
+        tool_call_id,
+        timestamp: "2026-08-21T00:00:00Z".to_string(),
+        reasoning_content: None,
+    }
+}
+
+fn call(id: &str, name: &str) -> ToolCallInfo {
+    ToolCallInfo {
+        id: id.to_string(),
+        name: name.to_string(),
+        arguments: "{}".to_string(),
+    }
+}
+
+/// An orphaned tool_call gets a synthetic tool result inserted right after its
+/// assistant turn (paired, model-visible, carries TOOL_OUTCOME_UNKNOWN), and
+/// the tool_call is NOT dropped from the assistant turn.
+#[test]
+fn test_repair_synthesizes_unknown_outcome_tool_result() {
+    let mut msgs = vec![
+        turn("system", "sys", vec![], None),
+        turn("user", "hi", vec![], None),
+        turn("assistant", "let me check", vec![call("call_1", "read_file")], None),
+        // NO tool result for call_1 (the orphan case: crash / truncation).
+        turn("user", "and then?", vec![], None),
+    ];
+    let snapshot_len = msgs.len();
+    repair_tool_message_pairs(&mut msgs);
+
+    // The assistant turn still carries its tool_call.
+    let assistant = msgs.iter().find(|m| m.role == "assistant").unwrap();
+    assert_eq!(assistant.tool_calls.len(), 1);
+    assert_eq!(assistant.tool_calls[0].id, "call_1");
+
+    // A synthetic tool result exists, positioned after the assistant turn,
+    // with the call id pointing back and the unknown-outcome wording.
+    let assistant_pos = msgs.iter().position(|m| m.role == "assistant").unwrap();
+    let synth = &msgs[assistant_pos + 1];
+    assert_eq!(synth.role, "tool");
+    assert_eq!(synth.tool_call_id.as_deref(), Some("call_1"));
+    assert!(synth.content.contains(TOOL_OUTCOME_UNKNOWN));
+    assert!(synth.content.contains("只读或幂等"));
+    assert!(synth.content.contains("验证外部状态"));
+
+    // Exactly one turn was added.
+    assert_eq!(msgs.len(), snapshot_len + 1);
+}
+
+/// Multiple orphaned calls in one assistant turn get synthetic results in the
+/// model's original call order.
+#[test]
+fn test_repair_synthesizes_multiple_unknown_outcomes_in_call_order() {
+    let mut msgs = vec![
+        turn("user", "do two things", vec![], None),
+        turn(
+            "assistant",
+            "two calls",
+            vec![call("call_a", "grep"), call("call_b", "exec")],
+            None,
+        ),
+        // Only call_b has a result, and it comes AFTER where both synthetics
+        // would insert — call_a is the orphan.
+        turn("tool", "ok", vec![], Some("call_b".to_string())),
+    ];
+    repair_tool_message_pairs(&mut msgs);
+
+    let assistant_pos = msgs.iter().position(|m| m.role == "assistant").unwrap();
+    // Next turn after the assistant must be the synthetic result for call_a
+    // (the FIRST call — insertion order matches the model's call order).
+    let synth_a = &msgs[assistant_pos + 1];
+    assert_eq!(synth_a.role, "tool");
+    assert_eq!(synth_a.tool_call_id.as_deref(), Some("call_a"));
+    // Then the real result for call_b.
+    let real_b = &msgs[assistant_pos + 2];
+    assert_eq!(real_b.tool_call_id.as_deref(), Some("call_b"));
+    assert_eq!(real_b.content, "ok");
+    // No additional synthetic for call_b.
+    assert_eq!(msgs.len(), 4);
+}
+
+/// repair only transforms the projection copy: the caller's Vec is the copy
+/// build_messages made; this test pins that the function's contract is
+/// "in-place on the given Vec" — the non-mutation of instance history is a
+/// build_messages property, verified separately in loop tests. Here we pin
+/// that a fully-paired history is a no-op (byte-identical semantics).
+#[test]
+fn test_repair_paired_history_is_noop() {
+    let mut msgs = vec![
+        turn("system", "sys", vec![], None),
+        turn("user", "hi", vec![], None),
+        turn("assistant", "checking", vec![call("call_1", "read_file")], None),
+        turn("tool", "file contents", vec![], Some("call_1".to_string())),
+    ];
+    let before = msgs.clone();
+    repair_tool_message_pairs(&mut msgs);
+    assert_eq!(msgs, before);
+}
+
+/// Orphaned tool RESULTS (result without a preceding call) are still removed
+/// (Pass 1 unchanged) — the synthesis only addresses the missing-result side.
+#[test]
+fn test_repair_still_removes_orphaned_tool_results() {
+    let mut msgs = vec![
+        turn("user", "hi", vec![], None),
+        turn("tool", "ghost result", vec![], Some("call_nonexistent".to_string())),
+    ];
+    repair_tool_message_pairs(&mut msgs);
+    assert_eq!(msgs.len(), 1);
+    assert_eq!(msgs[0].role, "user");
 }

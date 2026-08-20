@@ -5866,10 +5866,27 @@ fn test_build_messages_repairs_orphan_tool_call() {
         .iter()
         .map(|tc| tc.id.as_str())
         .collect();
+    // G2 (U2): the orphan call_A is NO LONGER dropped — it now gets a
+    // synthetic TOOL_OUTCOME_UNKNOWN result, so BOTH calls survive and the
+    // provider transcript stays balanced (same 400-prevention guarantee, but
+    // the model also learns its half-executed call happened).
     assert_eq!(
-        ids, vec!["call_B"],
-        "orphan call_A must be repaired away before the messages reach the LLM"
+        ids,
+        vec!["call_A", "call_B"],
+        "orphan call_A keeps its call and gains a synthetic unknown-outcome result"
     );
+    let synth = messages
+        .iter()
+        .find(|m| m.role == "tool" && m.tool_call_id.as_deref() == Some("call_A"))
+        .expect("synthetic tool result for call_A present");
+    assert!(synth.content.contains("TOOL_OUTCOME_UNKNOWN"));
+    // And the stored instance history is untouched (repair is projection-only).
+    let stored = instance.get_history();
+    assert_eq!(stored.len(), 5);
+    assert!(stored
+        .iter()
+        .all(|m| m.tool_call_id.as_deref() != Some("call_A")),
+        "no synthetic result leaks into stored history");
 }
 
 // ===========================================================================
@@ -6252,5 +6269,162 @@ fn llm_text(content: &str) -> LlmResponse {
         usage: None,
         raw_request_body: None,
         raw_response_body: None,
+    }
+}
+
+// ===========================================================================
+// G1 (U1): summary request reuses the conversation prefix
+// ===========================================================================
+
+/// Mock provider that RECORDS every request's messages (unlike
+/// MockLlmProvider, which discards them) and returns a canned response.
+struct CapturingMockProvider {
+    captured: std::sync::Mutex<Vec<Vec<LlmMessage>>>,
+    reply: String,
+}
+
+#[async_trait]
+impl LlmProvider for CapturingMockProvider {
+    async fn chat(
+        &self,
+        _model: &str,
+        messages: Vec<LlmMessage>,
+        _options: Option<crate::types::ChatOptions>,
+        _tools: Vec<crate::types::ToolDefinition>,
+    ) -> Result<LlmResponse, String> {
+        self.captured.lock().unwrap().push(messages);
+        Ok(LlmResponse {
+            content: self.reply.clone(),
+            tool_calls: Vec::new(),
+            finished: true,
+            reasoning_content: None,
+            usage: None,
+            raw_request_body: None,
+            raw_response_body: None,
+        })
+    }
+}
+
+fn g1_history(n_turns: usize) -> Vec<crate::types::ConversationTurn> {
+    let mut h = vec![summary_turn("system", "SYSTEM_PROMPT_TEXT")];
+    for i in 0..n_turns {
+        h.push(summary_turn("user", &format!("user message {i}")));
+        h.push(summary_turn("assistant", &format!("assistant reply {i}")));
+    }
+    h
+}
+
+/// G1 core assertion: the summary request is
+/// [system (verbatim, no summary block), ...covered messages (original
+/// structure, byte-equal), instruction user message]. The bare
+/// `role: content` text-concatenation form is gone (no "CONVERSATION:" dump).
+#[tokio::test]
+async fn test_summarize_request_reuses_conversation_prefix() {
+    let provider = CapturingMockProvider {
+        captured: std::sync::Mutex::new(Vec::new()),
+        reply: "summary text".to_string(),
+    };
+    // Covered prefix: system + 3 user/assistant pairs (7 turns).
+    let history = g1_history(3);
+    let prefix_refs: Vec<&crate::types::ConversationTurn> = history[..7].iter().collect();
+
+    let out = summarize_prefix_owned(
+        &prefix_refs,
+        "old summary",
+        32_000,
+        &provider,
+        "m",
+        None,
+    )
+    .await;
+
+    assert_eq!(out.as_deref(), Some("summary text"));
+    let requests = provider.captured.lock().unwrap();
+    assert_eq!(requests.len(), 1, "single batch call for <=10 messages");
+    let msgs = &requests[0];
+    // Layout: [system, u0, a0, u1, a1, u2, a2, instruction]
+    assert_eq!(msgs.len(), 8);
+    assert_eq!(msgs[0].role, "system");
+    assert_eq!(msgs[0].content, "SYSTEM_PROMPT_TEXT");
+    for (i, (role, content)) in [
+        ("user", "user message 0"),
+        ("assistant", "assistant reply 0"),
+        ("user", "user message 1"),
+        ("assistant", "assistant reply 1"),
+        ("user", "user message 2"),
+        ("assistant", "assistant reply 2"),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        assert_eq!(msgs[i + 1].role, role, "position {} role", i + 1);
+        assert_eq!(msgs[i + 1].content, content, "position {} content", i + 1);
+    }
+    // Structure preserved: message bodies are the ORIGINAL contents, not a
+    // flattened "user: user message 0" concatenation.
+    assert!(msgs.iter().any(|m| m.content == "user message 0"));
+    assert!(!msgs.iter().any(|m| m.content.contains("CONVERSATION:")));
+    // Trailing instruction exists and carries the prior-summary fold.
+    let last = msgs.last().unwrap();
+    assert_eq!(last.role, "user");
+    assert!(last.content.contains("old summary"));
+    assert!(last.content.contains("摘要"));
+}
+
+
+/// G1 multipart: >10 covered messages split into two batches; each batch's
+/// message list is [system?, ...contiguous prefix slice..., instruction] —
+/// i.e. an ordered subset of the covered prefix.
+#[tokio::test]
+async fn test_summarize_multipart_batch_is_prefix_subset() {
+    let provider = CapturingMockProvider {
+        captured: std::sync::Mutex::new(Vec::new()),
+        reply: "part summary".to_string(),
+    };
+    // 6 pairs = 12 valid user/assistant messages (>10 → multipart).
+    let history = g1_history(6);
+    let prefix_refs: Vec<&crate::types::ConversationTurn> = history.iter().collect();
+
+    let out = summarize_prefix_owned(
+        &prefix_refs,
+        "",
+        32_000,
+        &provider,
+        "m",
+        None,
+    )
+    .await;
+
+    assert!(out.is_some());
+    let requests = provider.captured.lock().unwrap();
+    // 2 part calls + 1 merge call = 3.
+    assert_eq!(requests.len(), 3);
+    // Part 1: [system, u0..a2, instruction] = 1 + 6 + 1 = 8 messages.
+    let p1 = &requests[0];
+    assert_eq!(p1.len(), 8);
+    assert_eq!(p1[0].role, "system");
+    assert_eq!(p1[1].content, "user message 0");
+    assert_eq!(p1[6].content, "assistant reply 2");
+    // Part 2: [system, u3..a5, instruction].
+    let p2 = &requests[1];
+    assert_eq!(p2.len(), 8);
+    assert_eq!(p2[0].role, "system");
+    assert_eq!(p2[1].content, "user message 3");
+    assert_eq!(p2[6].content, "assistant reply 5");
+    // Both parts end with the instruction, not with history.
+    assert_eq!(p1.last().unwrap().role, "user");
+    assert!(p1.last().unwrap().content.contains("摘要"));
+    assert_eq!(p2.last().unwrap().role, "user");
+    // The merge call is a plain user message (no system) — merge has no
+    // prefix to reuse.
+    let merge = &requests[2];
+    assert_eq!(merge.len(), 1);
+    assert_eq!(merge[0].role, "user");
+    assert!(merge[0].content.contains("Merge these two"));
+    // No bare-concatenation form anywhere.
+    for req in requests.iter() {
+        for m in req.iter() {
+            assert!(!m.content.contains("CONVERSATION:"));
+        }
     }
 }

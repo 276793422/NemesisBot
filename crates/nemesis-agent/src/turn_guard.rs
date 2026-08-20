@@ -39,6 +39,14 @@ pub const STORM_THRESHOLD: u32 = 3;
 /// write is idempotent, the point is to break the loop.)
 pub const REPEAT_SUCCESS_THRESHOLD: u32 = 2;
 
+/// ⑤′ Per-turn threshold for the READ-side repeat nudge: a read-like tool
+/// (grep/read_file/exec…) succeeding this many times with identical args
+/// within one turn is a re-query loop — the model is not consuming the result.
+/// Higher than the write threshold (read retries are harmless, so we tolerate
+/// more before nudging) and the nudge text differs: the point for reads is
+/// "change approach or conclude", not "verify the write".
+pub const READ_REPEAT_NUDGE_THRESHOLD: u32 = 3;
+
 /// ⑧ Similarity (4-gram Jaccard) at which two consecutive response contents
 /// count as a repeat.
 pub const TEXT_REPETITION_SIM_THRESHOLD: f64 = 0.8;
@@ -83,6 +91,11 @@ pub struct TurnGuard {
     storm_count: u32,
     /// ⑤ `(write tool, canonical args) → success count this turn`.
     success_counts: HashMap<String, u32>,
+    /// ⑤′ `(read tool, canonical args) → success count this turn`. Separate
+    /// map so the read threshold (3) cannot interact with the write threshold
+    /// (2): a mixed read/write tool name is keyed once per side and each side
+    /// counts independently.
+    read_success_counts: HashMap<String, u32>,
     /// ⑦ Consecutive degenerate final answers this turn.
     empty_final_count: u32,
     /// ⑧ Last non-empty response content, for cross-round prose repetition.
@@ -183,6 +196,32 @@ impl TurnGuard {
         if *count > REPEAT_SUCCESS_THRESHOLD {
             Some(format!(
                 "\n[loop guard] {} 已在本任务中以相同参数成功 {} 次。重复同样的写操作没有意义。请确认结果（读回 / 测试），或换下一步操作，或在最终答复里收尾。",
+                tool, *count
+            ))
+        } else {
+            None
+        }
+    }
+
+    /// ⑤′ Record a successful READ-like tool call; returns a nudge when this
+    /// exact `(tool, args)` has succeeded at least [`READ_REPEAT_NUDGE_THRESHOLD`]
+    /// times this turn — the model is re-querying instead of consuming the
+    /// result it already has. Advisory only (never blocks): legitimate repeats
+    /// (e.g. re-reading a file the model itself just edited) merely get one
+    /// extra line appended. Write-like tools are ignored here — ⑤ owns them.
+    /// The nudge text is deliberately softer than ⑤'s: a read retry has no
+    /// side effects, so the ask is "change approach or conclude", not "verify
+    /// the write".
+    pub fn record_read_success(&mut self, tool: &str, args: &str) -> Option<String> {
+        if is_write_like_tool(tool) {
+            return None;
+        }
+        let sig = format!("{}\x00{}", tool, canonical_args(args));
+        let count = self.read_success_counts.entry(sig).or_insert(0);
+        *count += 1;
+        if *count >= READ_REPEAT_NUDGE_THRESHOLD {
+            Some(format!(
+                "\n[loop guard] {} 已在本任务中以相同参数查询 {} 次，每次结果都一样。重复查询不会带来新信息。请重读上一次的结果并基于它行动、调整查询参数或搜索范围，或在最终答复里收尾。",
                 tool, *count
             ))
         } else {

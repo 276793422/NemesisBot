@@ -200,7 +200,23 @@ pub enum AgentEvent {
 /// When violated:
 /// - Duplicate tool messages (same tool_call_id) collapse to the last one
 /// - Orphaned tool messages are removed
-/// - Assistant tool_calls without responses are cleared
+/// - Assistant tool_calls without responses get a SYNTHETIC tool result
+///   (see [`TOOL_OUTCOME_UNKNOWN`]) instead of being silently dropped: the
+///   model keeps visibility of its own half-executed call and can decide
+///   whether a retry is safe.
+///
+/// This operates on the projection copy built by `build_messages` — it never
+/// mutates the stored `AgentInstance` history.
+pub const TOOL_OUTCOME_UNKNOWN: &str = "TOOL_OUTCOME_UNKNOWN";
+
+/// Wording for the synthetic tool result injected by
+/// [`repair_tool_message_pairs`]. Deliberately ONE tier: unlike dsh (which has
+/// a durable `tool/call` event and can distinguish "started, outcome unknown"
+/// from "never started"), we have no execution-trace event, so splitting into
+/// two tiers would fabricate precision we do not have. The single message
+/// tells the model the outcome is unknown and how to decide on a retry.
+const TOOL_OUTCOME_UNKNOWN_TEXT: &str = "该工具调用没有记录到结果，其执行结果未知。请根据操作性质决定：仅在操作是只读或幂等时可以直接重试；若可能有副作用（写文件、执行命令、发送消息等），请先验证外部状态（读回文件 / 检查输出）或询问用户，不要盲目重试。";
+
 pub fn repair_tool_message_pairs(messages: &mut Vec<ConversationTurn>) {
     if messages.is_empty() {
         return;
@@ -254,8 +270,21 @@ pub fn repair_tool_message_pairs(messages: &mut Vec<ConversationTurn>) {
         keep
     });
 
-    // Pass 2: clear incomplete assistant tool_calls.
+    // Pass 2: give every unanswered assistant tool_call a synthetic tool
+    // result instead of dropping the call. Dropping hid the model's own
+    // half-executed call from it: pairing was preserved but the model had no
+    // basis to decide whether a retry was safe. The synthetic result states
+    // the outcome is unknown and the retry policy; the call itself stays in
+    // `tool_calls` so the provider transcript stays balanced.
+    //
+    // Insertion must happen right after the assistant turn's own position
+    // (before the next assistant), and multiple missing calls insert in the
+    // model's own call order. Because we grow `messages` while iterating over
+    // indices captured on the ORIGINAL length, process the original range in
+    // order and collect (insert_at, turn) pairs first, then apply them
+    // back-to-front so earlier indices stay valid.
     let n = messages.len();
+    let mut insertions: Vec<(usize, ConversationTurn)> = Vec::new();
     for i in 0..n {
         if messages[i].role == "assistant" && !messages[i].tool_calls.is_empty() {
             let call_ids: Vec<String> = messages[i]
@@ -264,6 +293,12 @@ pub fn repair_tool_message_pairs(messages: &mut Vec<ConversationTurn>) {
                 .map(|tc| tc.id.clone())
                 .collect();
             let mut found_ids: HashSet<String> = HashSet::new();
+            // Scan to the END of the projection, not just to the next
+            // assistant: Pass 0 already guarantees at most one tool result
+            // per call id, so a result found anywhere after this turn means
+            // the call IS answered. Breaking at an intervening assistant here
+            // would synthesize a SECOND result for an id that already has one
+            // (duplicate tool_call_id — providers reject that).
             for j in (i + 1)..n {
                 if messages[j].role == "tool" {
                     if let Some(ref tc_id) = messages[j].tool_call_id {
@@ -271,16 +306,45 @@ pub fn repair_tool_message_pairs(messages: &mut Vec<ConversationTurn>) {
                             found_ids.insert(tc_id.clone());
                         }
                     }
-                } else if messages[j].role == "assistant" {
-                    break;
                 }
             }
             if found_ids.len() < call_ids.len() {
-                messages[i]
-                    .tool_calls
-                    .retain(|tc| found_ids.contains(&tc.id));
+                for tc in &messages[i].tool_calls {
+                    if !found_ids.contains(&tc.id) {
+                        debug!(
+                            "[repair_tool_message_pairs] Synthesizing unknown-outcome tool result for call {}",
+                            tc.id
+                        );
+                        insertions.push((
+                            i + 1,
+                            ConversationTurn {
+                                role: "tool".to_string(),
+                                content: format!(
+                                    "[{}] {}",
+                                    TOOL_OUTCOME_UNKNOWN, TOOL_OUTCOME_UNKNOWN_TEXT
+                                ),
+                                tool_calls: Vec::new(),
+                                tool_call_id: Some(tc.id.clone()),
+                                timestamp: messages[i].timestamp.clone(),
+                                reasoning_content: None,
+                            },
+                        ));
+                    }
+                }
             }
         }
+    }
+    // Apply back-to-front. Multiple insertions at the same base index were
+    // pushed in call order; inserting back-to-front reverses that, so apply
+    // same-index groups front-to-back by iterating the collected pairs in
+    // order within equal base indices — simplest correct approach: iterate
+    // collected pairs in REVERSE overall, and for equal base indices they
+    // were collected in forward call order, so reverse order inserts the LAST
+    // call first at position i+1, then the second-to-last at i+1 lands BEFORE
+    // it — which restores the model's call order. Verified by test
+    // `test_repair_synthesizes_unknown_outcome_tool_result`.
+    for (at, turn) in insertions.into_iter().rev() {
+        messages.insert(at, turn);
     }
 }
 

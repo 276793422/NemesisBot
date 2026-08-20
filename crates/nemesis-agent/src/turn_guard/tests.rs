@@ -264,3 +264,48 @@ fn similarity_basics() {
         ) < 0.4
     );
 }
+
+/// ⑤′ Read-side repeat: a read-like tool succeeding with identical args
+/// nudges from the 3rd call on; 2 calls stay silent. Write-like tools are not
+/// counted here (⑤ owns them with its own threshold).
+#[test]
+fn test_read_side_repeat_success_nudge() {
+    let mut g = TurnGuard::new();
+    let args = r#"{"pattern":"foo","path":"src"}"#;
+    // Threshold is 3 → calls 1 and 2 are silent…
+    assert!(g.record_read_success("grep", args).is_none());
+    assert!(g.record_read_success("grep", args).is_none());
+    // …the 3rd nudges.
+    let nudge = g.record_read_success("grep", args);
+    assert!(nudge.is_some());
+    let text = nudge.unwrap();
+    assert!(text.contains("grep"));
+    // Softer wording than the write-side nudge: no "确认结果（读回 / 测试）",
+    // the ask is re-consume / change query / conclude.
+    assert!(text.contains("重读上一次的结果"));
+
+    // Different args reset nothing but count separately (no nudge).
+    assert!(g.record_read_success("grep", r#"{"pattern":"bar","path":"src"}"#).is_none());
+
+    // Write-like tools are ignored by the read side entirely (⑤ owns them).
+    for _ in 0..5 {
+        assert!(g.record_read_success("write_file", args).is_none());
+    }
+}
+
+/// ⑤′ Read-side and write-side counters are independent maps: interleaved
+/// read/write calls with the same tool-name shape never cross-contaminate.
+#[test]
+fn test_read_side_counts_independent_of_write_side() {
+    let mut g = TurnGuard::new();
+    let args = r#"{"path":"a.rs"}"#;
+    // Two reads (below read threshold) then a write — the write still uses the
+    // write-side counter and does not see the reads.
+    assert!(g.record_read_success("read_file", args).is_none());
+    assert!(g.record_read_success("read_file", args).is_none());
+    // read_file is NOT in WRITE_LIKE_TOOLS, so the write side ignores it; the
+    // two sides only overlap on disjoint tool sets, verified here.
+    assert!(g.record_write_success("read_file", args).is_none());
+    // And a genuinely write-like tool is invisible to the read side.
+    assert!(g.record_read_success("edit_file", args).is_none());
+}

@@ -13,6 +13,21 @@ use std::time::Duration;
 /// Maximum output length before truncation.
 const MAX_OUTPUT_LEN: usize = 10_000;
 
+/// Head/tail budget within MAX_OUTPUT_LEN when truncating (the marker takes
+/// the rest). Head+tail instead of head-only: shell errors (compiler
+/// diagnostics, stack traces) cluster at the END of output, so a head-only
+/// cut hides exactly what the model needs. Decision per G3 of the dsh
+/// alignment first-batch goal: this local truncation now matches the unified
+/// prune semantics (head + marker + tail) implemented in
+/// `nemesis-agent::prune` (which handles the >8192-char tier for ALL tools
+/// at the loop level); this shell-local, tighter bound is kept as defense in
+/// depth for paths that bypass the loop-level prune. Also fixes a latent
+/// multi-byte panic: the old implementation byte-sliced, which panics on
+/// Chinese output straddling the boundary (see the str-slice-multibyte-panic
+/// incident class).
+const TRUNCATE_HEAD_CHARS: usize = 4000;
+const TRUNCATE_TAIL_CHARS: usize = 4000;
+
 /// Default deny patterns compiled from regex strings.
 /// These mirror the Go version's `defaultDenyPatterns`.
 fn default_deny_patterns() -> Vec<Regex> {
@@ -410,15 +425,22 @@ impl ShellTool {
         command.to_string()
     }
 
-    /// Truncate output to MAX_OUTPUT_LEN characters.
+    /// Truncate output to head + marker + tail within MAX_OUTPUT_LEN
+    /// characters. Char-based slicing (multi-byte safe).
     fn truncate_output(output: &str) -> String {
-        if output.len() > MAX_OUTPUT_LEN {
-            let truncated = &output[..MAX_OUTPUT_LEN];
-            let remaining = output.len() - MAX_OUTPUT_LEN;
-            format!("{}\n... (truncated, {} more chars)", truncated, remaining)
-        } else {
-            output.to_string()
+        let total = output.chars().count();
+        if total <= MAX_OUTPUT_LEN {
+            return output.to_string();
         }
+        let head: String = output.chars().take(TRUNCATE_HEAD_CHARS).collect();
+        let tail: String = output
+            .chars()
+            .skip(total.saturating_sub(TRUNCATE_TAIL_CHARS))
+            .collect();
+        let omitted = total - TRUNCATE_HEAD_CHARS - TRUNCATE_TAIL_CHARS;
+        format!(
+            "{head}\n... (truncated, {omitted} chars omitted in the middle; full output had {total} chars — narrow the command or redirect to a file and read it with offset/limit)\n...{tail}"
+        )
     }
 }
 

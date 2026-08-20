@@ -526,6 +526,10 @@ pub struct AgentLoop {
     /// so dashboard-added models and CLI `model set-tier` are picked up live,
     /// with no stale snapshot.
     config_path: parking_lot::RwLock<Option<std::path::PathBuf>>,
+    /// G4 (U4): root directory for tool-result spill files
+    /// (`<home>/logs/spill`). `None` disables spilling (results fall back to
+    /// the G3 prune tier). Set via `set_spill_root` by the agent factory.
+    spill_root: parking_lot::RwLock<Option<std::path::PathBuf>>,
     /// Last-seen mtime of config.json; `check_config_reload` compares against
     /// this each round to detect on-disk changes without re-reading every turn.
     config_mtime: parking_lot::RwLock<Option<std::time::SystemTime>>,
@@ -601,6 +605,7 @@ impl AgentLoop {
             memory_executor: parking_lot::RwLock::new(None),
             tier: parking_lot::RwLock::new(nemesis_types::capability::ModelTier::Big),
             config_path: parking_lot::RwLock::new(None),
+            spill_root: parking_lot::RwLock::new(None),
             config_mtime: parking_lot::RwLock::new(None),
             estop: parking_lot::RwLock::new(None),
         }
@@ -741,6 +746,7 @@ impl AgentLoop {
             memory_executor: parking_lot::RwLock::new(None),
             tier: parking_lot::RwLock::new(nemesis_types::capability::ModelTier::Big),
             config_path: parking_lot::RwLock::new(None),
+            spill_root: parking_lot::RwLock::new(None),
             config_mtime: parking_lot::RwLock::new(None),
             estop: parking_lot::RwLock::new(None),
         }
@@ -3633,6 +3639,82 @@ impl AgentLoop {
                     result
                 };
 
+                // ⑤′ Read-side repeat guard: a non-write tool succeeding with
+                // identical args repeatedly is a re-query loop — the model is
+                // not consuming the result it already has. Advisory nudge only
+                // (never blocks). Same NOTE as ⑤ above: keys on the model's
+                // ORIGINAL args, not the auto-fixed form.
+                let result = if tool_succeeded {
+                    match turn_guard.record_read_success(&tc.name, &tc.arguments) {
+                        Some(nudge) => {
+                            info!(
+                                "[AgentLoop] loop guard: '{}' repeated an identical read; nudging",
+                                tc.name
+                            );
+                            format!("{}\n{}", result, nudge)
+                        }
+                        None => result,
+                    }
+                } else {
+                    result
+                };
+
+                // G3 (U3) + G4 (U4): model-free size gates, applied before the
+                // result enters history. Two tiers compose:
+                //   >= SPILL_THRESHOLD_CHARS  → spill whole text to disk, keep
+                //                               preview + locator (readable back
+                //                               via read_file offset/limit).
+                //   > MAX_TOOL_RESULT_INLINE_CHARS (and no spill) → head +
+                //                               marker + tail prune.
+                // Spill is best-effort: a storage failure falls through to the
+                // prune tier (a spill failure must never lose a successful
+                // tool call's content outright).
+                let result = {
+                    let spill_root = self.spill_root.read().clone();
+                    let spilled = spill_root.as_ref().and_then(|root| {
+                        let stamp = chrono::Local::now().format("%Y%m%d_%H%M%S%3f").to_string();
+                        match crate::spill::spill_tool_result(
+                            &result,
+                            &tc.name,
+                            root,
+                            &context.session_key,
+                            &stamp,
+                            &tc.id,
+                        ) {
+                            crate::spill::SpillOutcome::Spilled(text) => Some(text),
+                            crate::spill::SpillOutcome::SpillFailed => {
+                                warn!(
+                                    "[AgentLoop] tool result spill failed for '{}' — falling back to prune tier",
+                                    tc.name
+                                );
+                                None
+                            }
+                            crate::spill::SpillOutcome::BelowThreshold => None,
+                        }
+                    });
+                    match spilled {
+                        Some(text) => {
+                            info!(
+                                "[AgentLoop] tool result spilled to disk: '{}' result >= {} chars",
+                                tc.name,
+                                crate::spill::SPILL_THRESHOLD_CHARS
+                            );
+                            text
+                        }
+                        None => match crate::prune::prune_tool_result(&result, &tc.name) {
+                            Some(pruned) => {
+                                info!(
+                                    "[AgentLoop] tool result pruned: '{}' result exceeded {} chars",
+                                    tc.name,
+                                    crate::prune::MAX_TOOL_RESULT_INLINE_CHARS
+                                );
+                                pruned
+                            }
+                            None => result,
+                        },
+                    }
+                };
+
                 // ⑥ Alternating-loop guard: per-turn (tool, error) failure
                 // frequency, NOT reset by intervening successes (also handles ④
                 // storm — consecutive identical — internally). On a repeated
@@ -3915,6 +3997,15 @@ impl AgentLoop {
     /// sync. Called by `agent_factory` at gateway startup.
     pub fn set_config_path(&self, path: std::path::PathBuf) {
         *self.config_path.write() = Some(path);
+    }
+
+    /// G4 (U4): enable tool-result spill with the given root directory
+    /// (expected `<home>/logs/spill`). Results above the spill threshold are
+    /// written whole under this root and the conversation keeps a bounded
+    /// preview + locator. Without a call, spilling stays disabled and results
+    /// use only the G3 prune tier.
+    pub fn set_spill_root(&self, root: std::path::PathBuf) {
+        *self.spill_root.write() = Some(root);
     }
 
     /// Phase 4a: re-resolve the capability tier against the currently active
@@ -4382,6 +4473,15 @@ fn tool_safe_boundary(history: &[crate::types::ConversationTurn], mut new_c: usi
 /// multipart/batch machinery; merges `existing_summary` (which covers messages
 /// before this prefix) into the result.
 ///
+/// G1 (U1) prefix-reuse: the summary request is built as
+/// `[system, ...original covered messages..., instruction]` — the same leading
+/// messages the main loop sends (byte-equal per message), so the provider's
+/// warm KV prefix from the last routed request is REUSED rather than
+/// invalidated (dsh compaction-basic's "genuine prefix" principle). The old
+/// form (single bare user message with `role: content` text concatenation)
+/// shared no prefix with real requests and destroyed structure (tool_calls
+/// flattened to text).
+///
 /// Returns `Some(summary)` if a non-empty summary was produced, `None`
 /// otherwise (no valid messages, or the LLM returned empty).
 async fn summarize_prefix_owned(
@@ -4413,10 +4513,28 @@ async fn summarize_prefix_owned(
         return None;
     }
 
+    // G1: the system prompt anchoring the prefix. `messages` is
+    // history[..new_c]; history[0] is the system turn — include it verbatim
+    // (WITHOUT the summary block the main loop appends: that would leak the
+    // old summary into the prefix and change it between rounds).
+    let system_msg: Option<LlmMessage> = messages
+        .first()
+        .filter(|m| m.role == "system")
+        .map(|m| conversation_turn_to_llm_message(m));
+
     let final_summary = if valid_messages.len() > 10 {
-        summarize_multipart_owned(&valid_messages, provider, model, observer_manager).await
+        summarize_multipart_owned(
+            system_msg.as_ref(),
+            &valid_messages,
+            existing_summary,
+            provider,
+            model,
+            observer_manager,
+        )
+        .await
     } else {
         summarize_batch_owned(
+            system_msg.as_ref(),
             &valid_messages,
             existing_summary,
             provider,
@@ -4442,9 +4560,39 @@ async fn summarize_prefix_owned(
     }
 }
 
+/// G1 (U1): build an LLM wire message from a ConversationTurn preserving the
+/// original structure (role/content/tool_calls/tool_call_id/reasoning) — the
+/// same projection `build_messages`'s `turn_to_msg` performs. Shared by the
+/// summarizers so the summary request's prefix messages are byte-equal to the
+/// main loop's.
+fn conversation_turn_to_llm_message(turn: &crate::types::ConversationTurn) -> LlmMessage {
+    LlmMessage {
+        role: turn.role.clone(),
+        content: turn.content.clone(),
+        tool_calls: if turn.tool_calls.is_empty() {
+            None
+        } else {
+            Some(turn.tool_calls.clone())
+        },
+        tool_call_id: turn.tool_call_id.clone(),
+        reasoning_content: turn.reasoning_content.clone(),
+    }
+}
+
+/// The trailing instruction for a G1 prefix-reuse summary request. Kept in one
+/// place so the batch and multipart paths emit the identical instruction.
+const SUMMARIZE_INSTRUCTION: &str = "请对以上对话片段做一份简明摘要，保留核心上下文与关键要点，供后续对话作为前情提要使用。";
+
 /// Multi-part summarization (standalone, works in spawned task).
+///
+/// G1 (U1): each part is summarized as `[system?, ...part messages,
+/// instruction]` — a part is a contiguous slice of the covered prefix, so its
+/// message list is a true ordered prefix subset of the main request's history
+/// (prefix-cache friendly in the same way).
 async fn summarize_multipart_owned(
+    system_msg: Option<&LlmMessage>,
     messages: &[&crate::types::ConversationTurn],
+    existing_summary: &str,
     provider: &dyn LlmProvider,
     model: &str,
     observer_manager: Option<Arc<nemesis_observer::Manager>>,
@@ -4453,8 +4601,8 @@ async fn summarize_multipart_owned(
     let part1 = &messages[..mid];
     let part2 = &messages[mid..];
 
-    let s1 = summarize_batch_owned(part1, "", provider, model, observer_manager.clone()).await;
-    let s2 = summarize_batch_owned(part2, "", provider, model, observer_manager.clone()).await;
+    let s1 = summarize_batch_owned(system_msg, part1, existing_summary, provider, model, observer_manager.clone()).await;
+    let s2 = summarize_batch_owned(system_msg, part2, "", provider, model, observer_manager.clone()).await;
 
     // Merge via LLM.
     let merge_prompt = format!(
@@ -4485,31 +4633,43 @@ async fn summarize_multipart_owned(
 }
 
 /// Single-batch summarization (standalone, works in spawned task).
+///
+/// G1 (U1): the request is `[system?, ...covered messages (original
+/// structure), instruction]` — a genuine prefix of the conversation plus the
+/// trailing instruction, replacing the old single bare user message with
+/// `role: content` text concatenation.
 async fn summarize_batch_owned(
+    system_msg: Option<&LlmMessage>,
     batch: &[&crate::types::ConversationTurn],
     existing_summary: &str,
     provider: &dyn LlmProvider,
     model: &str,
     observer_manager: Option<Arc<nemesis_observer::Manager>>,
 ) -> String {
-    let mut prompt = String::from(
-        "Provide a concise summary of this conversation segment, preserving core context and key points.\n",
-    );
-    if !existing_summary.is_empty() {
-        prompt.push_str(&format!("Existing context: {}\n", existing_summary));
+    let mut messages: Vec<LlmMessage> = Vec::with_capacity(batch.len() + 2);
+    if let Some(sys) = system_msg {
+        messages.push(sys.clone());
     }
-    prompt.push_str("\nCONVERSATION:\n");
     for m in batch {
-        prompt.push_str(&format!("{}: {}\n", m.role, m.content));
+        messages.push(conversation_turn_to_llm_message(m));
     }
-
-    let messages = vec![LlmMessage {
+    // Trailing instruction (merged with any existing-summary context so the
+    // fold still carries prior coverage).
+    let mut instruction = String::new();
+    if !existing_summary.is_empty() {
+        instruction.push_str(&format!(
+            "Existing context (summary of the earlier conversation, merge with the new summary): {}\n\n",
+            existing_summary
+        ));
+    }
+    instruction.push_str(SUMMARIZE_INSTRUCTION);
+    messages.push(LlmMessage {
         role: "user".to_string(),
-        content: prompt,
+        content: instruction,
         tool_calls: None,
         tool_call_id: None,
         reasoning_content: None,
-    }];
+    });
 
     let response = emit_observer_events_around_llm(
         observer_manager.as_ref(),

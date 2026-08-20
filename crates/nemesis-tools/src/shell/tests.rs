@@ -437,12 +437,16 @@ fn test_truncate_short_output() {
 
 #[test]
 fn test_truncate_long_output() {
+    // G3: head+marker+tail semantics (matched to nemesis-agent::prune).
     let long_output: String = "x".repeat(15_000);
     let truncated = ShellTool::truncate_output(&long_output);
-    assert!(truncated.len() > 10_000);
-    assert!(truncated.len() < 11_000); // 10000 + truncation message
     assert!(truncated.contains("truncated"));
-    assert!(truncated.contains("5000 more chars"));
+    // 15000 - 4000 head - 4000 tail = 7000 omitted.
+    assert!(truncated.contains("7000 chars omitted"));
+    // Head and tail both survive around the marker line.
+    assert!(truncated.starts_with('x'));
+    let last_line = truncated.lines().last().unwrap();
+    assert!(last_line.ends_with('x'), "tail run survives: {last_line}");
 }
 
 #[test]
@@ -458,7 +462,8 @@ fn test_truncate_just_over_limit() {
     let output: String = "x".repeat(10_001);
     let truncated = ShellTool::truncate_output(&output);
     assert!(truncated.contains("truncated"));
-    assert!(truncated.contains("1 more chars"));
+    // 10001 - 4000 - 4000 = 2001 omitted.
+    assert!(truncated.contains("2001 chars omitted"));
 }
 
 // ============================================================
@@ -914,10 +919,11 @@ fn test_truncate_empty_output() {
 
 #[test]
 fn test_truncate_large_output() {
-    // Use a large ASCII string to safely test truncation
+    // Use a large ASCII string to safely test truncation. G3: head+tail
+    // keeps ~8000 chars + marker, within the local budget.
     let large_output = "x".repeat(15000);
     let truncated = ShellTool::truncate_output(&large_output);
-    assert!(truncated.len() > 10000);
+    assert!(truncated.chars().count() <= 10_000);
     assert!(truncated.contains("truncated"));
 }
 
@@ -930,7 +936,18 @@ fn test_truncate_exactly_one_over_limit() {
     let output: String = "x".repeat(10_001);
     let truncated = ShellTool::truncate_output(&output);
     assert!(truncated.contains("truncated"));
-    assert!(truncated.contains("1 more chars"));
+    assert!(truncated.contains("2001 chars omitted"));
+}
+
+#[test]
+fn test_truncate_multibyte_no_panic() {
+    // G3: char-based slicing — the old byte-slice form panicked on Chinese
+    // output straddling the limit (str-slice-multibyte-panic class).
+    let output = "中".repeat(10_001);
+    let truncated = ShellTool::truncate_output(&output);
+    assert!(truncated.contains("truncated"));
+    // No U+FFFD replacement chars: every boundary landed on a char boundary.
+    assert!(!truncated.contains('\u{fffd}'));
 }
 
 #[test]

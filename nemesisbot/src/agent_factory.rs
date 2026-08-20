@@ -259,6 +259,9 @@ pub fn build_agent_loop(
     // runtime model switches and dashboard/CLI config edits re-resolve it live.
     agent_loop.set_tier(resolved_tier);
     agent_loop.set_config_path(shared.home.join("config.json"));
+    // G4 (U4): enable tool-result spill under <home>/logs/spill — oversized
+    // results (>64k chars) land there whole with a locator in-conversation.
+    agent_loop.set_spill_root(shared.home.join("logs").join("spill"));
     // 绑定全局急停状态（每次重建都重新绑到 SharedResources 上的同一个 Arc，
     // 所以急停状态在 agent stop/start 后自动保持）。
     agent_loop.set_estop(shared.estop.clone());
