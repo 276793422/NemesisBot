@@ -587,6 +587,7 @@ fn test_skills_full_config_roundtrip() {
 fn test_full_config_roundtrip() {
     let config = Config {
         agents: AgentsConfig {
+            claude_code_tool: ClaudeCodeToolConfig::default(),
             defaults: AgentDefaults {
                 max_tokens: 256000,
                 temperature: 0.5,
@@ -2048,6 +2049,7 @@ fn test_model_config_all_fields() {
         api_key: "sk-test".to_string(),
         proxy: "http://proxy:8080".to_string(),
         auth_method: "bearer".to_string(),
+        reasoning_effort: "high".to_string(),
         connect_mode: "streaming".to_string(),
         workspace: "/custom/ws".to_string(),
     };

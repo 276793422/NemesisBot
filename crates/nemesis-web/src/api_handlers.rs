@@ -905,8 +905,8 @@ pub fn write_json_error(message: &str, _code: u16) -> Vec<u8> {
 // Tests
 // ---------------------------------------------------------------------------
 
-#[cfg(test)]
+#[cfg(all(test, feature = "workflow"))]
 mod tests;
 
-#[cfg(test)]
+#[cfg(all(test, feature = "workflow"))]
 mod extra_tests;

@@ -403,6 +403,7 @@ fn test_provider_resolution_serialization() {
         api_base: "https://api.openai.com/v1".to_string(),
         proxy: String::new(),
         auth_method: String::new(),
+        reasoning_effort: String::new(),
         connect_mode: String::new(),
         workspace: String::new(),
         enabled: true,
@@ -522,4 +523,78 @@ fn test_resolve_model_resolution_default() {
     let res = resolve_model_resolution(&cfg);
     assert_eq!(res.primary, "zhipu/glm-4.7-flash");
     assert!(res.fallbacks.is_empty());
+}
+
+// ---------------------------------------------------------------------------
+// H2 (U15): api_key credential references (env: prefix)
+// ---------------------------------------------------------------------------
+
+/// Unique var names per test run (env-test race discipline: crate-root
+/// GLOBAL_STATE_LOCK + a name unique to this test so parallel suites that
+/// take different locks cannot collide on the same variable).
+fn unique_env_var(tag: &str) -> String {
+    format!(
+        "NEMESIS_TEST_KEY_{}_{}_{}",
+        tag,
+        std::process::id(),
+        line!()
+    )
+}
+
+#[test]
+fn test_api_key_env_reference_resolves() {
+    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let var = unique_env_var("resolve");
+    // SAFETY: env-test discipline — GLOBAL_STATE_LOCK held, unique var name.
+    unsafe { std::env::set_var(&var, "secret-from-env") };
+
+    let cfg = Config {
+        model_list: vec![ModelConfig {
+            model_name: "ref".to_string(),
+            model: "openai/gpt-4".to_string(),
+            api_key: format!("env:{}", var),
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+    let res = resolve_model_config(&cfg, "ref").unwrap();
+    assert_eq!(res.api_key, "secret-from-env");
+
+    // Unset variable → loud error naming the var and the remedy.
+    // SAFETY: same lock held, unique var.
+    unsafe { std::env::remove_var(&var) };
+    let err = resolve_model_config(&cfg, "ref").unwrap_err();
+    let msg = format!("{:?}", err);
+    assert!(msg.contains(&var), "error names the variable: {msg}");
+    assert!(msg.contains("env"), "error mentions env remedy: {msg}");
+}
+
+#[test]
+fn test_api_key_literal_passthrough() {
+    let cfg = Config {
+        model_list: vec![ModelConfig {
+            model_name: "lit".to_string(),
+            model: "openai/gpt-4".to_string(),
+            api_key: "sk-literal-123".to_string(),
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+    let res = resolve_model_config(&cfg, "lit").unwrap();
+    assert_eq!(res.api_key, "sk-literal-123");
+}
+
+#[test]
+fn test_api_key_env_empty_reference_fails_loud() {
+    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let cfg = Config {
+        model_list: vec![ModelConfig {
+            model_name: "bad".to_string(),
+            model: "openai/gpt-4".to_string(),
+            api_key: "env:".to_string(),
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+    assert!(resolve_model_config(&cfg, "bad").is_err());
 }

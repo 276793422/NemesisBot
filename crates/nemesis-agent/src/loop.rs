@@ -530,6 +530,16 @@ pub struct AgentLoop {
     /// (`<home>/logs/spill`). `None` disables spilling (results fall back to
     /// the G3 prune tier). Set via `set_spill_root` by the agent factory.
     spill_root: parking_lot::RwLock<Option<std::path::PathBuf>>,
+    /// H3 (P2.2): skills loader for the catalog digest. `None` disables the
+    /// digest injection entirely. Set via `set_skills_loader`.
+    skills_loader: parking_lot::RwLock<Option<Arc<nemesis_skills::loader::SkillsLoader>>>,
+    /// H3 (P2.2): per-session last-injected catalog hash. In-process only —
+    /// a restart re-injects once (documented acceptable in skills_digest.rs).
+    skills_digest_state: crate::skills_digest::SharedDigestState,
+    /// H5 (U18): workspace root for the AGENTS.md/CLAUDE.md instruction
+    /// chain. `None` disables the instructions section of the merged
+    /// context digest.
+    workspace_root: parking_lot::RwLock<Option<std::path::PathBuf>>,
     /// Last-seen mtime of config.json; `check_config_reload` compares against
     /// this each round to detect on-disk changes without re-reading every turn.
     config_mtime: parking_lot::RwLock<Option<std::time::SystemTime>>,
@@ -606,6 +616,9 @@ impl AgentLoop {
             tier: parking_lot::RwLock::new(nemesis_types::capability::ModelTier::Big),
             config_path: parking_lot::RwLock::new(None),
             spill_root: parking_lot::RwLock::new(None),
+            skills_loader: parking_lot::RwLock::new(None),
+            skills_digest_state: std::sync::Arc::new(crate::skills_digest::DigestState::new()),
+            workspace_root: parking_lot::RwLock::new(None),
             config_mtime: parking_lot::RwLock::new(None),
             estop: parking_lot::RwLock::new(None),
         }
@@ -747,6 +760,9 @@ impl AgentLoop {
             tier: parking_lot::RwLock::new(nemesis_types::capability::ModelTier::Big),
             config_path: parking_lot::RwLock::new(None),
             spill_root: parking_lot::RwLock::new(None),
+            skills_loader: parking_lot::RwLock::new(None),
+            skills_digest_state: std::sync::Arc::new(crate::skills_digest::DigestState::new()),
+            workspace_root: parking_lot::RwLock::new(None),
             config_mtime: parking_lot::RwLock::new(None),
             estop: parking_lot::RwLock::new(None),
         }
@@ -2716,6 +2732,8 @@ impl AgentLoop {
         let chat_opts = crate::types::ChatOptions {
             max_tokens: Some(self.current_max_tokens().unwrap_or(8192)),
             temperature: Some(0.7),
+            // H4 (U16 half): per-model reasoning effort from config.json.
+            reasoning_effort: self.current_reasoning_effort(),
             ..Default::default()
         };
 
@@ -3733,6 +3751,57 @@ impl AgentLoop {
                 };
                 instance.add_tool_result(&tc.id, &fed_result);
 
+                // H5 (U18): touch-driven instruction-chain invalidation. A
+                // successful read_file/write_file/edit_file may have touched
+                // a file on the workspace instruction chain — invalidate the
+                // context digests so the next build re-reads the chain.
+                // (File-level check only: the re-read happens at injection
+                // time. Rare + cheap: only fires for these three tools and
+                // only when the path matches a chain file name.)
+                if tool_succeeded
+                    && matches!(tc.name.as_str(), "read_file" | "write_file" | "edit_file")
+                {
+                    if let Some(args_val) = serde_json::from_str::<serde_json::Value>(
+                        &tc.arguments,
+                    )
+                    .ok()
+                    {
+                        if let Some(path_str) =
+                            args_val.get("path").and_then(|v| v.as_str())
+                        {
+                            let touched = std::path::PathBuf::from(path_str);
+                            let ws_root = self.workspace_root.read().clone();
+                            if let Some(ref root) = ws_root {
+                                // Chain files are <dir>/AGENTS.md or CLAUDE.md
+                                // under the workspace — check by file name to
+                                // avoid re-reading the whole chain on every
+                                // file op (the full path_is_on_chain check
+                                // happens against the loaded chain at
+                                // injection; here the name match is the
+                                // conservative trigger).
+                                let name = touched
+                                    .file_name()
+                                    .map(|n| n.to_string_lossy().to_string())
+                                    .unwrap_or_default();
+                                if name == "AGENTS.md" || name == "CLAUDE.md" {
+                                    let chain = crate::workspace_instructions::load_instruction_chain(
+                                        root, root,
+                                    );
+                                    if crate::workspace_instructions::path_is_on_chain(
+                                        &chain, &touched,
+                                    ) {
+                                        info!(
+                                            "[AgentLoop] instruction-chain file touched: {} — context digest invalidated",
+                                            touched.display()
+                                        );
+                                        self.invalidate_context_digests();
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
                 // ⑥ Escalation: same (tool, error) failed past the hard-stop
                 // threshold → nudges are being ignored. Latch a stop event and
                 // break the tool batch; the outer-scope check after this for-loop
@@ -4008,6 +4077,37 @@ impl AgentLoop {
         *self.spill_root.write() = Some(root);
     }
 
+    /// H3 (P2.2): enable skills-catalog digest injection by providing the
+    /// loader. The digest is injected (same point as the time/env hint) only
+    /// when the catalog changed since the last injection for this session.
+    pub fn set_skills_loader(
+        &self,
+        loader: Arc<nemesis_skills::loader::SkillsLoader>,
+    ) {
+        *self.skills_loader.write() = Some(loader);
+    }
+
+    /// H5 (U18): enable the workspace instruction-chain section by giving
+    /// the workspace root (chain root = this dir; the chain itself is read
+    /// per-injection).
+    pub fn set_workspace_root(&self, root: std::path::PathBuf) {
+        *self.workspace_root.write() = Some(root);
+    }
+
+    /// H5 (U18): touch-driven digest invalidation. Called by the dispatch
+    /// path when a read_file/write_file/edit_file call touched a file that
+    /// is on the session's instruction chain — the next build_messages
+    /// re-reads the chain and re-injects. `session_key` is the stable key
+    /// build_messages derived (first-user-content hash); the dispatch path
+    /// does not know it, so this drops the WHOLE digest state entry list is
+    /// not viable — instead we clear all session keys whose chain contains
+    /// the touched path. Simplest correct form given the keying: clear ALL
+    /// entries (re-inject once for every live session on the next build) —
+    /// file touches on the chain are rare, so over-invalidation is cheap.
+    pub fn invalidate_context_digests(&self) {
+        self.skills_digest_state.clear_all();
+    }
+
     /// Phase 4a: re-resolve the capability tier against the currently active
     /// model by reading config.json live. Per-model `model_tier`/`real_name`/
     /// `model_size_b` are honoured; a missing/unreadable config falls back to
@@ -4063,6 +4163,20 @@ impl AgentLoop {
     /// unavailable (standalone mode) or the field is absent — caller falls back
     /// to the 8192 default. Lets each model declare its real output ceiling so
     /// large files write in one shot instead of truncating at a blanket cap.
+    /// H4 (U16 half): the active model's reasoning-effort tier from
+    /// config.json (`model set-effort`). None when unset/"off"/standalone.
+    pub(crate) fn current_reasoning_effort(&self) -> Option<String> {
+        let active = self.active_model.read().clone();
+        let path = match self.config_path.read().clone() {
+            Some(p) => p,
+            None => return None,
+        };
+        std::fs::read_to_string(&path)
+            .ok()
+            .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+            .and_then(|v| nemesis_types::capability::resolve_reasoning_effort(&v, &active))
+    }
+
     pub(crate) fn current_max_tokens(&self) -> Option<u32> {
         let active = self.active_model.read().clone();
         let path = match self.config_path.read().clone() {
@@ -4200,6 +4314,63 @@ impl AgentLoop {
         // Inject dyn_msg just before the last user message, but only when there
         // is a system prompt at turns[0] to protect (otherwise there's no
         // cached prefix to preserve).
+        //
+        // H3 (P2.2) + H5 (U18): the skills-catalog digest AND the workspace
+        // instruction chain ride the SAME injection point as one MERGED
+        // message (two sections inside one <system-reminder> wrapper), with
+        // the same prefix-protection condition. It injects ONLY when the
+        // union content changed since the last injection for this session
+        // (see skills_digest::DigestState) — identical content ⇒ no extra
+        // message ⇒ the prefix the time/env hint preserves stays preserved.
+        // Touch-driven invalidation (H5): the dispatch path calls
+        // `invalidate_session_digest` when a read/write/edit touches a file
+        // on the instruction chain, forcing the next build to re-read.
+        let context_digest_msg: Option<LlmMessage> = {
+            let loader = self.skills_loader.read().clone();
+            let ws_root = self.workspace_root.read().clone();
+            let stable_key = turns
+                .iter()
+                .find(|t| t.role == "user")
+                .map(|t| crate::skills_digest::digest_hash(&t.content))
+                .unwrap_or_default();
+            // Build the merged content: skills section (if any) + workspace
+            // instructions section (if any).
+            let mut sections: Vec<String> = Vec::new();
+            if let Some(ref l) = loader {
+                let infos = l.list_skills();
+                if !infos.is_empty() {
+                    let catalog = crate::skills_digest::catalog_from_skills_infos(&infos);
+                    let rendered = crate::skills_digest::render_skills_digest(&catalog);
+                    sections.push(crate::skills_digest::digest_message(&rendered));
+                }
+            }
+            if let Some(ref root) = ws_root {
+                let cwd = root.clone(); // workspace root ≈ conversation cwd
+                let chain = crate::workspace_instructions::load_instruction_chain(root, &cwd);
+                let rendered = crate::workspace_instructions::render_instructions_section(&chain);
+                if !rendered.is_empty() {
+                    sections.push(rendered);
+                }
+            }
+            if sections.is_empty() {
+                None
+            } else {
+                let merged = format!(
+                    "<system-reminder>\n{}\n</system-reminder>",
+                    sections.join("\n\n")
+                );
+                self.skills_digest_state
+                    .should_inject(&stable_key, &merged)
+                    .map(|m| LlmMessage {
+                        role: "system".to_string(),
+                        content: m,
+                        tool_calls: None,
+                        tool_call_id: None,
+                        reasoning_content: None,
+                    })
+            }
+        };
+
         let last_user_idx = turns
             .iter()
             .rposition(|t| t.role == "user")
@@ -4208,8 +4379,12 @@ impl AgentLoop {
 
         match last_user_idx {
             Some(idx) => {
-                let mut messages: Vec<LlmMessage> = Vec::with_capacity(turns.len() + 1);
+                let mut messages: Vec<LlmMessage> =
+                    Vec::with_capacity(turns.len() + 1 + context_digest_msg.is_some() as usize);
                 messages.extend(turns[..idx].iter().map(turn_to_msg));
+                if let Some(d) = context_digest_msg {
+                    messages.push(d);
+                }
                 messages.push(dyn_msg);
                 messages.extend(turns[idx..].iter().map(turn_to_msg));
                 messages

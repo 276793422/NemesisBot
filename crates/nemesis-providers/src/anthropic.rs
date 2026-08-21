@@ -220,6 +220,27 @@ impl AnthropicProvider {
             body["tools"] = serde_json::json!(translate_tools(tools));
         }
 
+        // H4 (U16 half): reasoning effort → Anthropic extended-thinking
+        // budget. Anthropic has no "effort" wire field; it takes
+        // `thinking: {type: "enabled", budget_tokens: N}`. Tier→budget is a
+        // FIXED documented mapping (low=1024 / medium=4096 / high=16384) —
+        // budgets must stay well under max_tokens, and these leave headroom
+        // under the 4096 default. "off"/empty sends nothing.
+        if let Some(ref effort) = options.reasoning_effort {
+            let budget = match effort.as_str() {
+                "low" => Some(1024usize),
+                "medium" => Some(4096usize),
+                "high" => Some(16384usize),
+                _ => None, // "off" or unknown → no thinking block
+            };
+            if let Some(b) = budget {
+                body["thinking"] = serde_json::json!({
+                    "type": "enabled",
+                    "budget_tokens": b
+                });
+            }
+        }
+
         body
     }
 }

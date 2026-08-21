@@ -97,6 +97,10 @@ pub struct ChatOptions {
     /// Stop sequences that end generation early.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub stop: Option<Vec<String>>,
+    /// H4 (U16 half): reasoning-effort tier ("low"|"medium"|"high"; None =
+    /// send nothing). Translated by each provider into its wire format.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reasoning_effort: Option<String>,
 }
 
 impl Default for ChatOptions {
@@ -106,6 +110,7 @@ impl Default for ChatOptions {
             temperature: Some(0.7),
             top_p: None,
             stop: None,
+            reasoning_effort: None,
         }
     }
 }

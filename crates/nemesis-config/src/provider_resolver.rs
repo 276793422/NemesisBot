@@ -39,6 +39,9 @@ pub struct ProviderResolution {
     pub connect_mode: String,
     pub workspace: String,
     pub enabled: bool,
+    /// H4 (U16 half): reasoning-effort tier from the model entry ("" = unset).
+    #[serde(default)]
+    pub reasoning_effort: String,
 }
 
 impl Default for ProviderResolution {
@@ -46,6 +49,7 @@ impl Default for ProviderResolution {
         Self {
             provider_name: String::new(),
             model_name: String::new(),
+            reasoning_effort: String::new(),
             api_key: String::new(),
             api_base: String::new(),
             proxy: String::new(),
@@ -76,7 +80,7 @@ pub fn resolve_model_config(cfg: &Config, model_ref: &str) -> Result<ProviderRes
     // First, try to find by model_name (exact match)
     for mc in &cfg.model_list {
         if mc.model_name == model_ref {
-            return Ok(resolve_from_model_config(mc));
+            return resolve_from_model_config(mc);
         }
     }
 
@@ -84,7 +88,7 @@ pub fn resolve_model_config(cfg: &Config, model_ref: &str) -> Result<ProviderRes
     if model_ref.contains('/') {
         for mc in &cfg.model_list {
             if mc.model == model_ref {
-                return Ok(resolve_from_model_config(mc));
+                return resolve_from_model_config(mc);
             }
         }
     }
@@ -109,7 +113,38 @@ pub fn resolve_model_config(cfg: &Config, model_ref: &str) -> Result<ProviderRes
 
 /// Convert a ModelConfig to ProviderResolution.
 /// Mirrors Go `resolveFromModelConfig`.
-fn resolve_from_model_config(mc: &ModelConfig) -> ProviderResolution {
+/// H2 (U15): resolve an api_key VALUE that may be a credential REFERENCE of
+/// the form `env:VAR_NAME`. A literal (non-`env:`-prefixed) value passes
+/// through unchanged — full backward compatibility. An `env:` reference is
+/// resolved from the process environment at read time (no caching: changing
+/// the env var takes effect on the next resolve, mirroring dsh's
+/// per-operation credential resolution). A reference that does not resolve
+/// fails LOUD with the variable name and remedy — never silently degrades to
+/// an empty key (which would surface later as a confusing provider 401).
+pub(crate) fn resolve_api_key_value(raw: &str, model_for_error: &str) -> Result<String> {
+    let Some(var) = raw.strip_prefix("env:") else {
+        return Ok(raw.to_string());
+    };
+    if var.is_empty() {
+        return Err(ConfigError::Validation(format!(
+            "model '{}': api_key uses an empty env: reference — name a variable (e.g. \"env:MY_PROVIDER_KEY\") or use a literal key in config.json",
+            model_for_error
+        )));
+    }
+    match std::env::var(var) {
+        Ok(v) if !v.is_empty() => Ok(v),
+        Ok(_) => Err(ConfigError::Validation(format!(
+            "model '{}': environment variable '{}' for api_key is set but empty — set it to the key, or use a literal key in config.json",
+            model_for_error, var
+        ))),
+        Err(_) => Err(ConfigError::Validation(format!(
+            "model '{}': environment variable '{}' for api_key is not set — set the env var, or use a literal key in config.json",
+            model_for_error, var
+        ))),
+    }
+}
+
+fn resolve_from_model_config(mc: &ModelConfig) -> Result<ProviderResolution> {
     let (provider_name, model_name) = if mc.model.contains('/') {
         let mut parts = mc.model.splitn(2, '/');
         let provider = parts.next().unwrap_or("").to_lowercase();
@@ -126,17 +161,18 @@ fn resolve_from_model_config(mc: &ModelConfig) -> ProviderResolution {
         mc.api_base.clone()
     };
 
-    ProviderResolution {
+    Ok(ProviderResolution {
         provider_name,
         model_name,
-        api_key: mc.api_key.clone(),
+        api_key: resolve_api_key_value(&mc.api_key, &mc.model)?,
         api_base,
         proxy: mc.proxy.clone(),
         auth_method: mc.auth_method.clone(),
         connect_mode: mc.connect_mode.clone(),
         workspace: mc.workspace.clone(),
         enabled: true,
-    }
+        reasoning_effort: mc.reasoning_effort.clone(),
+    })
 }
 
 /// Find a model configuration by name or model field (returns reference).

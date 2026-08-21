@@ -41,6 +41,7 @@ nemesis-state = { workspace = true }
 nemesis-data = { workspace = true }
 nemesis-path = { workspace = true }
 parking_lot = { workspace = true }
+sha2 = { workspace = true }
 reqwest = { workspace = true }
 regex = { workspace = true }
 

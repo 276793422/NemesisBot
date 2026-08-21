@@ -48,5 +48,5 @@ impl ModuleHandler for EstopHandler {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "workflow"))]
 mod tests;

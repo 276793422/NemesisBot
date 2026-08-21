@@ -141,6 +141,7 @@ impl ModelsHandler {
             auth_method: String::new(),
             connect_mode: String::new(),
             workspace: String::new(),
+            reasoning_effort: String::new(), // H4: default no tier
         });
         save_config(home, &mut config)?;
         Ok(Some(

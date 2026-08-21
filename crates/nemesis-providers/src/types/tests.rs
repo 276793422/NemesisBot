@@ -358,6 +358,7 @@ fn test_chat_options_with_extra() {
         max_tokens: Some(4096),
         top_p: Some(0.9),
         stop: Some(vec!["END".to_string()]),
+        reasoning_effort: None,
         extra,
     };
     assert_eq!(opts.temperature, Some(0.7));

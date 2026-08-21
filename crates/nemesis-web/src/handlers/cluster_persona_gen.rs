@@ -671,6 +671,7 @@ async fn chat_json(
         max_tokens: Some(8192),
         top_p: None,
         stop: None,
+        reasoning_effort: None,
         extra: std::collections::HashMap::new(),
     };
     let resp = (&**provider)

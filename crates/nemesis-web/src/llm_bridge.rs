@@ -87,6 +87,7 @@ impl nemesis_agent::r#loop::LlmProvider for ProviderAdapter {
                 max_tokens: opts.max_tokens.map(|t| t as i64),
                 top_p: opts.top_p.map(|p| p as f64),
                 stop: opts.stop,
+                reasoning_effort: opts.reasoning_effort.clone(), // H4: tier passes through
                 extra: HashMap::new(),
             },
             None => nemesis_providers::types::ChatOptions {
@@ -94,6 +95,7 @@ impl nemesis_agent::r#loop::LlmProvider for ProviderAdapter {
                 max_tokens: Some(8192),
                 top_p: None,
                 stop: None,
+                reasoning_effort: None,
                 extra: HashMap::new(),
             },
         };
@@ -216,6 +218,7 @@ impl nemesis_forge::reflector_llm::LLMCaller for ForgeProviderBridge {
             max_tokens,
             top_p: None,
             stop: None,
+            reasoning_effort: None,
             extra: HashMap::new(),
         };
 

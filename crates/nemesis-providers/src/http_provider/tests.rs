@@ -1236,6 +1236,7 @@ async fn test_chat_stream_with_custom_options() {
         max_tokens: Some(1000),
         top_p: Some(0.9),
         stop: Some(vec!["END".to_string()]),
+        reasoning_effort: None,
         extra: HashMap::new(),
     };
 
@@ -1321,6 +1322,7 @@ async fn test_chat_with_custom_options() {
         max_tokens: Some(2048),
         top_p: Some(0.9),
         stop: Some(vec!["STOP".to_string()]),
+        reasoning_effort: None,
         extra: HashMap::new(),
     };
 

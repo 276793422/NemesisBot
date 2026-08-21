@@ -261,6 +261,7 @@ fn chat_options_serialization() {
         temperature: Some(0.5),
         top_p: None,
         stop: Some(vec!["\n".to_string()]),
+        reasoning_effort: None,
     };
     let json = serde_json::to_string(&opts).unwrap();
     let parsed: ChatOptions = serde_json::from_str(&json).unwrap();

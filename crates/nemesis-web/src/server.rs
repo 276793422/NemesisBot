@@ -1199,8 +1199,8 @@ pub async fn dispatch_outbound(bus: Arc<MessageBus>, session_manager: Arc<Sessio
 // Tests
 // ---------------------------------------------------------------------------
 
-#[cfg(test)]
+#[cfg(all(test, feature = "workflow"))]
 mod tests;
 
-#[cfg(test)]
+#[cfg(all(test, feature = "workflow"))]
 mod extra_tests;

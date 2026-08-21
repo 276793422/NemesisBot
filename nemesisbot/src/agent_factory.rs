@@ -262,6 +262,14 @@ pub fn build_agent_loop(
     // G4 (U4): enable tool-result spill under <home>/logs/spill — oversized
     // results (>64k chars) land there whole with a locator in-conversation.
     agent_loop.set_spill_root(shared.home.join("logs").join("spill"));
+    // H3 (P2.2): skills-catalog digest injection — same loader the
+    // skills_list tools use, so the advertised catalog matches reality.
+    if let Some(ref loader) = shared.skills_loader {
+        agent_loop.set_skills_loader(loader.clone());
+    }
+    // H5 (U18): workspace instruction chain (AGENTS.md/CLAUDE.md) rides the
+    // same merged context-digest injection.
+    agent_loop.set_workspace_root(shared.home.join("workspace"));
     // 绑定全局急停状态（每次重建都重新绑到 SharedResources 上的同一个 Arc，
     // 所以急停状态在 agent stop/start 后自动保持）。
     agent_loop.set_estop(shared.estop.clone());
@@ -553,6 +561,9 @@ fn build_shared_tool_config(
             .as_ref()
             .map(|s| s.manage_approval)
             .unwrap_or(false),
+        // H7 (U13 half): opt-in claude_code delegation tool.
+        claude_code_tool_enabled: cfg.agents.claude_code_tool.enabled,
+        claude_code_tool_timeout_secs: cfg.agents.claude_code_tool.timeout_secs,
     }
 }
 

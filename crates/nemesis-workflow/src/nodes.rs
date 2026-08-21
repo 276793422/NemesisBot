@@ -357,6 +357,7 @@ impl NodeExecutor for RealLLMNodeExecutor {
             top_p: None,
             stop: None,
             extra: HashMap::new(),
+            reasoning_effort: None, // H4: workflow nodes don't set a tier
         };
 
         // ---- Invoke provider ----
@@ -2130,6 +2131,7 @@ impl NodeExecutor for QuestionClassifierNodeExecutor {
                 top_p: None,
                 stop: None,
                 extra: HashMap::new(),
+                reasoning_effort: None, // H4: workflow nodes don't set a tier
             };
 
             // Capture per-call start so each retry's RequestLog has its own
@@ -2420,6 +2422,7 @@ impl NodeExecutor for ParameterExtractorNodeExecutor {
                 top_p: None,
                 stop: None,
                 extra: HashMap::new(),
+                reasoning_effort: None, // H4: workflow nodes don't set a tier
             };
 
             // Capture per-call start so each retry's RequestLog has its own

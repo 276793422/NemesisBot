@@ -128,5 +128,5 @@ impl Default for WsRouter {
 // Tests
 // ---------------------------------------------------------------------------
 
-#[cfg(test)]
+#[cfg(all(test, feature = "workflow"))]
 mod tests;

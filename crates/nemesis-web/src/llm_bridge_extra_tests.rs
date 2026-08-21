@@ -291,6 +291,7 @@ mod llm_bridge_extra_tests {
             temperature: Some(0.5_f32),
             top_p: Some(0.9_f32),
             stop: Some(vec!["\n".to_string()]),
+            reasoning_effort: None,
         });
         let _ = adapter
             .chat("m", one_user_message(), opts, empty_messages_to_tools())

@@ -55,9 +55,9 @@ pub use ws_router::WsRouter;
 
 // Previously-written extra coverage modules for the top-level handlers were
 // never `mod`-declared, so they did not compile or run.
-#[cfg(test)]
+#[cfg(all(test, feature = "workflow"))]
 mod api_usage_extra_tests;
-#[cfg(test)]
+#[cfg(all(test, feature = "forge"))]
 mod llm_bridge_extra_tests;
 #[cfg(test)]
 mod sse_chat_extra_tests;

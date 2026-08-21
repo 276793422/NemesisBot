@@ -237,7 +237,7 @@ pub fn require_home(ctx: &crate::ws_router::RequestContext) -> Result<&str, Stri
 // Tests
 // ---------------------------------------------------------------------------
 
-#[cfg(test)]
+#[cfg(all(test, feature = "workflow", feature = "security"))]
 mod tests;
 
 // Previously-written extra/more coverage modules were never `mod`-declared, so
@@ -250,17 +250,17 @@ mod cluster_more_tests;
 mod forge_extra_tests;
 #[cfg(all(test, feature = "memory"))]
 mod memory_extra_tests;
-#[cfg(test)]
+#[cfg(all(test, feature = "workflow"))]
 mod persona_extra_tests;
-#[cfg(test)]
+#[cfg(all(test, feature = "workflow"))]
 mod persona_more_tests;
 #[cfg(all(test, feature = "security"))]
 mod scanner_extra_tests;
 #[cfg(all(test, feature = "security"))]
 mod scanner_more_tests;
-#[cfg(test)]
+#[cfg(all(test, feature = "workflow"))]
 mod skills_extra_tests;
-#[cfg(test)]
+#[cfg(all(test, feature = "workflow"))]
 mod skills_more_tests;
 #[cfg(all(test, feature = "voice"))]
 mod voice_extra_tests;

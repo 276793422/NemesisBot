@@ -196,6 +196,32 @@ pub fn resolve_max_output_tokens(cfg: &serde_json::Value, active_alias: &str) ->
         .and_then(|v| v.as_i64())
 }
 
+/// H4 (U16 half): resolve the per-model `reasoning_effort` tier for the
+/// active model alias. Mirrors [`resolve_max_output_tokens`]: finds the
+/// matching `model_list[]` entry and returns its `reasoning_effort` string
+/// ("off"|"low"|"medium"|"high"); None/empty → None (send nothing).
+pub fn resolve_reasoning_effort(cfg: &serde_json::Value, active_alias: &str) -> Option<String> {
+    let e = cfg
+        .get("model_list")
+        .and_then(|v| v.as_array())
+        .and_then(|arr| {
+            arr.iter().find(|m| {
+                let name = m.get("model_name").and_then(|v| v.as_str()).unwrap_or("");
+                let full = m.get("model").and_then(|v| v.as_str()).unwrap_or("");
+                name == active_alias || full == active_alias
+            })
+        })
+        .and_then(|m| m.get("reasoning_effort"))
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string())
+        .unwrap_or_default();
+    match e.as_str() {
+        "" | "off" => None,
+        tier @ ("low" | "medium" | "high") => Some(tier.to_string()),
+        _ => None,
+    }
+}
+
 /// Resolve the display model id (`provider/name`, e.g. `deepseek/deepseek-v4-flash`)
 /// for the active model alias, by looking up `model_list[]` for the matching
 /// entry (by `model_name` or `model`) and returning its `model` field. Falls
@@ -333,3 +359,30 @@ pub fn tier_allowed_tools(tier: ModelTier) -> &'static [&'static str] {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod effort_tests {
+    use super::resolve_reasoning_effort;
+
+    #[test]
+    fn test_resolve_reasoning_effort_tiers() {
+        let cfg = serde_json::json!({
+            "model_list": [
+                {"model_name": "a", "model": "x/a", "reasoning_effort": "high"},
+                {"model_name": "b", "model": "x/b", "reasoning_effort": "off"},
+                {"model_name": "c", "model": "x/c"},
+                {"model_name": "d", "model": "x/d", "reasoning_effort": "weird"}
+            ]
+        });
+        assert_eq!(
+            resolve_reasoning_effort(&cfg, "a").as_deref(),
+            Some("high")
+        );
+        // "off" → None (send nothing).
+        assert_eq!(resolve_reasoning_effort(&cfg, "b"), None);
+        // Missing field → None.
+        assert_eq!(resolve_reasoning_effort(&cfg, "c"), None);
+        // Unknown tier → None (no garbage on the wire).
+        assert_eq!(resolve_reasoning_effort(&cfg, "d"), None);
+    }
+}

@@ -147,6 +147,7 @@ impl nemesis_security::guardian::LlmJudge for GatewayLlmJudge {
             max_tokens: Some(256),
             top_p: None,
             stop: None,
+            reasoning_effort: None,
             extra: std::collections::HashMap::new(),
         };
         let resp = self
@@ -3247,6 +3248,11 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
         } else {
             info!("[Gateway] Cron scheduler started");
         }
+        // H1 (U12) armed gate: basic services (bus + agent) are up at this
+        // point — latch the arm so persisted jobs may fire. Everything before
+        // this line ran with the service disarmed (fresh-process protection:
+        // a restart must not silently resume autonomous scheduling).
+        cron.arm();
     }
 
     // Step 15: Print agent startup info

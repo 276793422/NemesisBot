@@ -159,6 +159,16 @@ impl OpenAICompatProvider {
             body["stop"] = serde_json::json!(stop);
         }
 
+        // H4 (U16 half): reasoning effort — OpenAI-compatible wire field.
+        // We send the field whenever a tier is set; models/gateways that do
+        // not support it decide on their side (per goal: no client-side
+        // model gating).
+        if let Some(ref effort) = options.reasoning_effort {
+            if !effort.is_empty() {
+                body["reasoning_effort"] = serde_json::json!(effort);
+            }
+        }
+
         body
     }
 }

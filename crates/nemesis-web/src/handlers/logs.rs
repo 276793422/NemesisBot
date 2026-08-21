@@ -1730,5 +1730,5 @@ fn parse_local_tool_results(content: &str) -> Vec<serde_json::Value> {
     out
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "security"))]
 mod tests;

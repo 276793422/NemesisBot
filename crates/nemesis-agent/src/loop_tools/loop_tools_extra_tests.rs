@@ -1556,3 +1556,62 @@ async fn test_forge_bridge_unknown_tool_name_returns_err() {
     assert!(!result.success);
     assert!(result.content.contains("Unknown forge tool"));
 }
+
+// ===========================================================================
+// H1 (U12): CronTool continue_session
+// ===========================================================================
+
+#[tokio::test]
+async fn test_cron_create_continue_session_uses_ext() {
+    use crate::context::RequestContext;
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("cron.json").to_string_lossy().to_string();
+    let svc = Arc::new(std::sync::Mutex::new(nemesis_cron::service::CronService::new(
+        &path,
+    )));
+    let t = CronTool::new(Arc::clone(&svc));
+
+    let ctx = RequestContext {
+        channel: "web".to_string(),
+        chat_id: "chat9".to_string(),
+        user: "u".to_string(),
+        session_key: "agent:convo-42".to_string(),
+        correlation_id: None,
+        async_callback: None,
+    };
+
+    // continue_session=true → job payload carries the CALLER's session_key.
+    let out = t
+        .execute(
+            r#"{"action":"create","name":"cont","schedule":"every:60s","content":"check in","deliver":false,"continue_session":true}"#,
+            &ctx,
+        )
+        .await
+        .unwrap();
+    assert!(out.contains("continues this session"), "out: {out}");
+    {
+        let jobs = svc.lock().unwrap().list_jobs(true);
+        let j = jobs.iter().find(|j| j.name == "cont").expect("job created");
+        assert_eq!(
+            j.payload.session_key.as_deref(),
+            Some("agent:convo-42"),
+            "session_key from calling context"
+        );
+        assert!(!j.payload.deliver);
+    }
+
+    // continue_session absent/false → legacy add_job path, session_key None.
+    let out2 = t
+        .execute(
+            r#"{"action":"create","name":"fresh","schedule":"every:60s","content":"ping","deliver":false}"#,
+            &ctx,
+        )
+        .await
+        .unwrap();
+    assert!(!out2.contains("continues this session"));
+    {
+        let jobs = svc.lock().unwrap().list_jobs(true);
+        let j = jobs.iter().find(|j| j.name == "fresh").expect("job2");
+        assert_eq!(j.payload.session_key, None, "default stays fresh-session");
+    }
+}

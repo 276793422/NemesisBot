@@ -820,7 +820,8 @@ fn test_cron_service_start_and_stop() {
 
     let rt = tokio::runtime::Runtime::new().unwrap();
     rt.block_on(async {
-        svc.start().await.unwrap();
+        svc.arm(); // H1: arm before start (fresh-process gate)
+    svc.start().await.unwrap();
     });
     let status = svc.status();
     assert_eq!(status["enabled"], true);
@@ -1591,9 +1592,11 @@ fn test_cron_service_start_idempotent() {
     let rt = tokio::runtime::Runtime::new().unwrap();
     rt.block_on(async {
         // First start
-        svc.start().await.unwrap();
+        svc.arm(); // H1: arm before start (fresh-process gate)
+    svc.start().await.unwrap();
         // Second start should be idempotent (return Ok)
-        svc.start().await.unwrap();
+        svc.arm(); // H1: arm before start (fresh-process gate)
+    svc.start().await.unwrap();
     });
 
     svc.stop();
@@ -1698,7 +1701,8 @@ fn test_recompute_next_runs_skips_disabled() {
     // recompute_next_runs is private, but start() calls it
     let rt = tokio::runtime::Runtime::new().unwrap();
     rt.block_on(async {
-        svc.start().await.unwrap();
+        svc.arm(); // H1: arm before start (fresh-process gate)
+    svc.start().await.unwrap();
     });
     svc.stop();
 
@@ -1913,7 +1917,8 @@ fn test_cron_service_status_running_with_no_jobs() {
 
     let rt = tokio::runtime::Runtime::new().unwrap();
     rt.block_on(async {
-        svc.start().await.unwrap();
+        svc.arm(); // H1: arm before start (fresh-process gate)
+    svc.start().await.unwrap();
     });
 
     let status = svc.status();
@@ -2000,6 +2005,7 @@ async fn test_cron_service_start_stop_with_handler() {
     )
     .unwrap();
 
+    svc.arm(); // H1: arm before start (fresh-process gate)
     svc.start().await.unwrap();
 
     // Wait for the cron tick to process
@@ -2045,6 +2051,7 @@ async fn test_cron_service_start_deletes_after_run() {
         .unwrap();
     assert!(job.delete_after_run);
 
+    svc.arm(); // H1: arm before start (fresh-process gate)
     svc.start().await.unwrap();
     tokio::time::sleep(Duration::from_secs(4)).await;
     svc.stop();
@@ -2083,6 +2090,7 @@ async fn test_cron_service_handler_error() {
         )
         .unwrap();
 
+    svc.arm(); // H1: arm before start (fresh-process gate)
     svc.start().await.unwrap();
     tokio::time::sleep(Duration::from_secs(3)).await;
     svc.stop();
@@ -2120,6 +2128,7 @@ async fn test_cron_service_no_handler_sets_ok() {
         )
         .unwrap();
 
+    svc.arm(); // H1: arm before start (fresh-process gate)
     svc.start().await.unwrap();
     tokio::time::sleep(Duration::from_secs(3)).await;
     svc.stop();
@@ -2160,6 +2169,7 @@ async fn test_cron_service_every_job_recomputes_next_run() {
     )
     .unwrap();
 
+    svc.arm(); // H1: arm before start (fresh-process gate)
     svc.start().await.unwrap();
     tokio::time::sleep(Duration::from_secs(5)).await;
     svc.stop();
@@ -2587,4 +2597,89 @@ fn test_validate_invalid_expressions() {
     assert!(CronService::validate_schedule("60 0 0 * * *").is_err()); // minute OOB
     assert!(CronService::validate_schedule("0 0 0 32 1 *").is_err()); // day OOB
     assert!(CronService::validate_schedule("0 0 0 1 13 *").is_err()); // month OOB
+}
+
+// ---------------------------------------------------------------------------
+// H1 (U12): startup arm gate
+// ---------------------------------------------------------------------------
+
+/// A fresh service is DISARMED: due persisted jobs do not fire until arm().
+/// After arm() they fire normally.
+#[tokio::test]
+async fn test_cron_startup_disarmed_until_arm() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("cron.json").to_string_lossy().to_string();
+
+    // Create a store with an enabled, immediately-due job, then let it drop
+    // — simulating a previous process's persisted state.
+    {
+        let svc = CronService::new(&path);
+        svc.arm(); // the OLD process was armed; its jobs are enabled
+        svc.add_job(
+            "due-job",
+            CronSchedule {
+                kind: "at".to_string(),
+                at_ms: Some(chrono::Local::now().timestamp_millis() - 1000), // already due
+                every_ms: None,
+                expr: None,
+                tz: None,
+            },
+            "fire me",
+            true,
+            Some("web"),
+            Some("chat1"),
+        )
+        .unwrap();
+    }
+
+    // Fresh process: same store path → loads the persisted job. Disarmed.
+    let svc = CronService::new(&path);
+    assert!(svc.is_disarmed(), "fresh process starts disarmed");
+    {
+        let jobs = svc.store.lock().jobs.clone();
+        assert_eq!(jobs.len(), 1, "persisted job loaded");
+        assert!(jobs[0].enabled, "enabled flag preserved on disk");
+    }
+
+    // Handler that records invocations.
+    let fired = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let fired2 = fired.clone();
+    svc.set_on_job(move |_job| {
+        fired2.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Ok("ok".to_string())
+    });
+
+    svc.start().await.unwrap();
+    // Disarmed: even though the job is due, nothing fires within a few ticks.
+    tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+    assert_eq!(
+        fired.load(std::sync::atomic::Ordering::SeqCst),
+        0,
+        "disarmed gate suppresses due jobs"
+    );
+    assert!(svc.is_disarmed(), "still disarmed before explicit arm");
+
+    // Arm: job becomes eligible and fires.
+    svc.arm();
+    assert!(!svc.is_disarmed());
+    // The due job's next_run was NOT consumed while disarmed (gate skips
+    // before collection), so it should fire on the next tick after arm.
+    tokio::time::sleep(std::time::Duration::from_millis(2500)).await;
+    assert!(
+        fired.load(std::sync::atomic::Ordering::SeqCst) >= 1,
+        "armed service fires the persisted job"
+    );
+    svc.stop();
+}
+
+/// arm() is idempotent and jobs created after startup fire normally once
+/// armed (armed latches for the process lifetime).
+#[tokio::test]
+async fn test_cron_arm_idempotent_and_latches() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("cron.json").to_string_lossy().to_string();
+    let svc = CronService::new(&path);
+    svc.arm();
+    svc.arm(); // idempotent — no panic, no double effects
+    assert!(!svc.is_disarmed());
 }

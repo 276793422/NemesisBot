@@ -325,6 +325,7 @@ fn test_chat_options_defaults() {
         max_tokens: Some(8192),
         top_p: None,
         stop: None,
+        reasoning_effort: None,
         extra: std::collections::HashMap::new(),
     };
     assert_eq!(provider_options.temperature, Some(0.7));
@@ -345,6 +346,7 @@ fn test_chat_options_from_agent_options() {
         max_tokens: max_tokens.map(|t| t as i64),
         top_p: top_p.map(|p| p as f64),
         stop: None,
+        reasoning_effort: None,
         extra: std::collections::HashMap::new(),
     };
     assert_eq!(provider_options.temperature, Some(0.5));

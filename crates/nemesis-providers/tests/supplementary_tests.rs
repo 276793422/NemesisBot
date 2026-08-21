@@ -210,6 +210,7 @@ mod types_extra {
             max_tokens: Some(2048),
             top_p: Some(0.95),
             stop: Some(vec!["STOP".to_string(), "END".to_string()]),
+            reasoning_effort: None,
             extra,
         };
         assert_eq!(opts.temperature.unwrap(), 0.5);

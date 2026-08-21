@@ -566,3 +566,36 @@ fn test_assistant_with_tool_calls_and_function_fallback() {
     assert_eq!(content[0]["type"], "tool_use");
     assert_eq!(content[0]["name"], "search"); // from function.name fallback
 }
+
+// H4 (U16 half): reasoning effort → thinking budget mapping
+#[test]
+fn test_effort_anthropic_budget_mapping() {
+    let provider = AnthropicProvider::new(AnthropicConfig::default());
+    let messages = vec![Message {
+        role: "user".to_string(),
+        content: "Hello".to_string(),
+        tool_calls: vec![],
+        tool_call_id: None,
+        timestamp: None,
+        reasoning_content: None,
+        extra: HashMap::new(),
+    }];
+    let mk = |tier: Option<&str>| {
+        let mut o = ChatOptions::default();
+        o.reasoning_effort = tier.map(|t| t.to_string());
+        provider.build_request_body(&messages, &[], "claude-3", &o)
+    };
+    // Fixed tier→budget map.
+    for (tier, budget) in [("low", 1024), ("medium", 4096), ("high", 16384)] {
+        let b = mk(Some(tier));
+        assert_eq!(b["thinking"]["type"], "enabled", "tier {tier}");
+        assert_eq!(b["thinking"]["budget_tokens"], budget, "tier {tier}");
+    }
+    // None / "off" / unknown → no thinking block.
+    for none_case in [mk(None), mk(Some("off")), mk(Some("banana"))] {
+        assert!(
+            none_case.get("thinking").is_none(),
+            "no thinking block for unset/off/unknown"
+        );
+    }
+}

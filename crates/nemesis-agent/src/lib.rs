@@ -37,6 +37,8 @@ pub mod message_preprocess;
 pub mod probe;
 pub mod registry;
 pub mod prune;
+pub mod skills_digest;
+pub mod workspace_instructions;
 pub mod remote_executor_tool;
 pub mod spill;
 pub mod request_logger;

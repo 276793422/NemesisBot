@@ -122,12 +122,23 @@ pub struct CronService {
     running: Arc<Mutex<bool>>,
     stop_handle: Arc<Mutex<Option<JoinHandle<()>>>>,
     on_job: Arc<Mutex<Option<Box<dyn Fn(&CronJob) -> Result<String, String> + Send + Sync>>>>,
+    /// Startup arm gate (H1, U12): a fresh process starts DISARMED —
+    /// persisted jobs do not fire until the owning startup path calls
+    /// [`CronService::arm`] (the gateway does this once bus+agent are ready).
+    /// This is the "restart → paused pending confirmation" stance (dsh goal
+    /// armed-gate analog): a restart must not silently resume autonomous
+    /// scheduling. Jobs created AFTER startup are unaffected (armed latches
+    /// for the process lifetime; only `new()` re-arms the gate).
+    pending_arm: Arc<Mutex<bool>>,
 }
 
 impl CronService {
-    /// Create a new cron service.
+    /// Create a new cron service. Starts DISARMED (see [`Self::arm`]).
     pub fn new(store_path: &str) -> Self {
-        info!("[Cron] Service created, store_path={}", store_path);
+        info!(
+            "[Cron] Service created, store_path={} (disarmed until arm())",
+            store_path
+        );
         let svc = Self {
             store_path: store_path.to_string(),
             store: Arc::new(Mutex::new(CronStoreData {
@@ -137,11 +148,27 @@ impl CronService {
             running: Arc::new(Mutex::new(false)),
             stop_handle: Arc::new(Mutex::new(None)),
             on_job: Arc::new(Mutex::new(None)),
+            pending_arm: Arc::new(Mutex::new(true)),
         };
         if let Err(e) = svc.load_store() {
             warn!("[Cron] Failed to load store on init: {}", e);
         }
         svc
+    }
+
+    /// Arm the service: allow persisted jobs to fire. Called once by the
+    /// gateway after startup completes (bus + agent ready). Idempotent.
+    pub fn arm(&self) {
+        let mut p = self.pending_arm.lock();
+        if *p {
+            info!("[Cron] Service armed: persisted jobs may now fire");
+            *p = false;
+        }
+    }
+
+    /// Whether the startup gate is still closed.
+    pub fn is_disarmed(&self) -> bool {
+        *self.pending_arm.lock()
     }
 
     /// Start the cron service.
@@ -160,6 +187,7 @@ impl CronService {
         let store = self.store.clone();
         let on_job = self.on_job.clone();
         let store_path = self.store_path.clone();
+        let pending_arm_flag = self.pending_arm.clone();
 
         let handle = tokio::spawn(async move {
             let mut interval = tokio::time::interval(Duration::from_secs(1));
@@ -170,6 +198,12 @@ impl CronService {
                 }
                 // Check jobs — mirrors Go's checkJobs()
                 let now_ms = Local::now().timestamp_millis();
+                // H1 arm gate: while disarmed (fresh process, gateway startup
+                // not yet complete), due jobs are NOT fired and their
+                // next_run stays intact — they resume once arm() latches.
+                if *pending_arm_flag.lock() {
+                    continue;
+                }
                 let due: Vec<String> = {
                     let s = store.lock();
                     s.jobs
@@ -716,10 +750,23 @@ impl CronService {
 
     fn recompute_next_runs(&self) {
         let now_ms = Local::now().timestamp_millis();
+        let disarmed = self.is_disarmed();
         let mut store = self.store.lock();
         for job in &mut store.jobs {
             if job.enabled {
                 job.state.next_run_at_ms = compute_next_run(&job.schedule, now_ms);
+                // H1: while DISARMED, a past-due one-shot "at" job keeps its
+                // stale due time instead of being recomputed to None — an
+                // "at" job whose time passed during downtime must fire once
+                // when the service arms (compute_next_run drops it because
+                // at_ms <= now; that drop is correct only for a fully
+                // restarted schedule, not a gated one).
+                if disarmed
+                    && job.state.next_run_at_ms.is_none()
+                    && job.schedule.kind == "at"
+                {
+                    job.state.next_run_at_ms = job.schedule.at_ms;
+                }
             }
         }
     }

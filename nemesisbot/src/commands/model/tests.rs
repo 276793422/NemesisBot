@@ -934,3 +934,43 @@ fn test_no_default_model_in_config() {
         .unwrap_or("");
     assert_eq!(default_model, "");
 }
+
+// H4 (U16 half): model set-effort writes/clears reasoning_effort in config
+#[test]
+fn test_model_set_effort_cli() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let home = tmp.path().join(".nemesisbot");
+    fs::create_dir_all(&home).unwrap();
+    let cfg_path = home.join("config.json");
+    let cfg = serde_json::json!({"model_list": [
+        {"model_name": "m1", "model": "test/m1"}
+    ]});
+    fs::write(&cfg_path, serde_json::to_string(&cfg).unwrap()).unwrap();
+
+    // Simulate set-effort high (same config surgery the CLI handler does).
+    let data = fs::read_to_string(&cfg_path).unwrap();
+    let mut config: serde_json::Value = serde_json::from_str(&data).unwrap();
+    let updated = crate::commands::model::update_model_entry_for_test(&mut config, "m1", |e| {
+        e["reasoning_effort"] = serde_json::Value::String("high".to_string());
+    });
+    assert!(updated);
+    fs::write(&cfg_path, serde_json::to_string_pretty(&config).unwrap()).unwrap();
+
+    let loaded: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&cfg_path).unwrap()).unwrap();
+    assert_eq!(
+        loaded["model_list"][0]["reasoning_effort"],
+        serde_json::json!("high")
+    );
+
+    // Simulate set-effort off (clear).
+    let mut config: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&cfg_path).unwrap()).unwrap();
+    crate::commands::model::update_model_entry_for_test(&mut config, "m1", |e| {
+        e["reasoning_effort"] = serde_json::Value::String(String::new());
+    });
+    fs::write(&cfg_path, serde_json::to_string_pretty(&config).unwrap()).unwrap();
+    let loaded: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&cfg_path).unwrap()).unwrap();
+    assert_eq!(loaded["model_list"][0]["reasoning_effort"], serde_json::json!(""));
+}

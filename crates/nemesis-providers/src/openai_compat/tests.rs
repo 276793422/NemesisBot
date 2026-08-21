@@ -512,3 +512,33 @@ fn test_default_model_and_name_accessors() {
     assert_eq!(provider.default_model(), "default-model");
     assert_eq!(provider.name(), "my-provider");
 }
+
+// H4 (U16 half): reasoning_effort wire field
+#[test]
+fn test_effort_openai_request_includes_field() {
+    let provider = OpenAICompatProvider::new(OpenAICompatConfig::default());
+    let messages = vec![Message {
+        role: "user".to_string(),
+        content: "hi".to_string(),
+        tool_calls: vec![],
+        tool_call_id: None,
+        timestamp: None,
+        reasoning_content: None,
+        extra: std::collections::HashMap::new(),
+    }];
+    let mut opts = ChatOptions::default();
+    opts.reasoning_effort = Some("high".to_string());
+    let body = provider.build_request_body(&messages, &[], "gpt-4", &opts);
+    assert_eq!(body["reasoning_effort"], serde_json::json!("high"));
+
+    // None → field absent.
+    let opts_none = ChatOptions::default();
+    let body_none = provider.build_request_body(&messages, &[], "gpt-4", &opts_none);
+    assert!(body_none.get("reasoning_effort").is_none());
+
+    // Empty string → absent (defensive).
+    let mut opts_empty = ChatOptions::default();
+    opts_empty.reasoning_effort = Some(String::new());
+    let body_empty = provider.build_request_body(&messages, &[], "gpt-4", &opts_empty);
+    assert!(body_empty.get("reasoning_effort").is_none());
+}

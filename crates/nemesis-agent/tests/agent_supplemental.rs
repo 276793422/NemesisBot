@@ -127,6 +127,7 @@ fn test_chat_options_custom() {
         temperature: Some(0.5),
         top_p: Some(0.9),
         stop: Some(vec!["\n".to_string()]),
+        reasoning_effort: None,
     };
     assert_eq!(opts.max_tokens, Some(4096));
     assert_eq!(opts.temperature, Some(0.5));
@@ -141,6 +142,7 @@ fn test_chat_options_serialization_skips_none() {
         temperature: None,
         top_p: None,
         stop: None,
+        reasoning_effort: None,
     };
     let json = serde_json::to_string(&opts).unwrap();
     assert!(json.contains("max_tokens"));
@@ -2525,6 +2527,7 @@ fn test_chat_options_all_none() {
         temperature: None,
         top_p: None,
         stop: None,
+        reasoning_effort: None,
     };
     let json = serde_json::to_string(&opts).unwrap();
     let back: ChatOptions = serde_json::from_str(&json).unwrap();
@@ -2538,6 +2541,7 @@ fn test_chat_options_roundtrip() {
         temperature: Some(0.3),
         top_p: Some(0.95),
         stop: Some(vec!["STOP".to_string(), "END".to_string()]),
+        reasoning_effort: None,
     };
     let json = serde_json::to_string(&opts).unwrap();
     let back: ChatOptions = serde_json::from_str(&json).unwrap();

@@ -221,6 +221,30 @@ pub struct AgentsConfig {
     pub defaults: AgentDefaults,
     #[serde(default)]
     pub list: Vec<AgentConfigEntry>,
+    /// H7 (U13 half): Claude Code delegation tool settings. Default
+    /// disabled (opt-in) — absent section = tool never registered.
+    #[serde(default)]
+    pub claude_code_tool: ClaudeCodeToolConfig,
+}
+
+/// H7 (U13 half): `agents.claude_code_tool` config section.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ClaudeCodeToolConfig {
+    /// Enable the claude_code delegation tool (default false).
+    #[serde(default)]
+    pub enabled: bool,
+    /// Per-delegation wall-clock timeout in seconds (default 300).
+    #[serde(default)]
+    pub timeout_secs: Option<u64>,
+}
+
+impl Default for ClaudeCodeToolConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            timeout_secs: None,
+        }
+    }
 }
 
 impl Default for AgentsConfig {
@@ -228,6 +252,7 @@ impl Default for AgentsConfig {
         Self {
             defaults: AgentDefaults::default(),
             list: vec![],
+            claude_code_tool: ClaudeCodeToolConfig::default(),
         }
     }
 }
@@ -682,6 +707,11 @@ pub struct ModelConfig {
     pub connect_mode: String,
     #[serde(default)]
     pub workspace: String,
+    /// H4 (U16 half): reasoning-effort tier for this model ("off" | "low" |
+    /// "medium" | "high"). Empty (the default) = send nothing and let the
+    /// provider default apply. Written by `nemesisbot model set-effort`.
+    #[serde(default)]
+    pub reasoning_effort: String,
 }
 
 impl ModelConfig {
@@ -1678,6 +1708,7 @@ pub fn default_config() -> Config {
         .to_string();
     Config {
         agents: AgentsConfig {
+            claude_code_tool: ClaudeCodeToolConfig::default(),
             defaults: AgentDefaults {
                 workspace: ws,
                 restrict_to_workspace: true,

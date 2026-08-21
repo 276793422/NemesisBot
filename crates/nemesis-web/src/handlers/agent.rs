@@ -168,5 +168,5 @@ fn update_model_info(ctx: &RequestContext) {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "workflow"))]
 mod tests;

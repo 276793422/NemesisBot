@@ -1104,7 +1104,7 @@ impl Tool for CronTool {
     }
 
     fn parameters(&self) -> serde_json::Value {
-        serde_json::json!({"type":"object","properties":{"action":{"type":"string","description":"One of: create, delete, list"},"at_seconds":{"type":"integer","description":"Seconds from now for one-time execution"},"every_seconds":{"type":"integer","description":"Interval in seconds for recurring execution"},"cron_expr":{"type":"string","description":"Cron expression for complex schedules"},"command":{"type":"string","description":"Command or message to execute"},"message":{"type":"string","description":"Reminder message"}}})
+        serde_json::json!({"type":"object","properties":{"action":{"type":"string","description":"One of: create, delete, list"},"at_seconds":{"type":"integer","description":"Seconds from now for one-time execution"},"every_seconds":{"type":"integer","description":"Interval in seconds for recurring execution"},"cron_expr":{"type":"string","description":"Cron expression for complex schedules"},"command":{"type":"string","description":"Command or message to execute"},"message":{"type":"string","description":"Reminder message"},"continue_session":{"type":"boolean","description":"true = when the job fires, continue THIS conversation's session (context/persona preserved, reply lands in this chat history). false (default) = fresh session at fire time. Only meaningful with deliver=false."}}})
     }
 
     async fn execute(&self, args: &str, context: &RequestContext) -> Result<String, String> {
@@ -1199,8 +1199,39 @@ impl Tool for CronTool {
                     context.chat_id.clone()
                 };
 
-                let job = svc
-                    .add_job(
+                // H1 (U12): continue_session=true routes the fired job back
+                // into THIS conversation's session (context/persona kept,
+                // reply persisted to this chat's history) via add_job_ext's
+                // session_key — the gateway's on_job handler consumes it.
+                // The session key comes from the CALLING context (the
+                // conversation creating the job), never from model input.
+                let continue_session = val
+                    .get("continue_session")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+
+                let job = if continue_session {
+                    svc.add_job_ext(
+                        name,
+                        schedule,
+                        content,
+                        deliver,
+                        if channel.is_empty() {
+                            None
+                        } else {
+                            Some(&channel)
+                        },
+                        if chat_id.is_empty() {
+                            None
+                        } else {
+                            Some(&chat_id)
+                        },
+                        Some(&context.session_key),
+                        true,
+                    )
+                    .map_err(|e| e.to_string())?
+                } else {
+                    svc.add_job(
                         name,
                         schedule,
                         content,
@@ -1216,8 +1247,17 @@ impl Tool for CronTool {
                             Some(&chat_id)
                         },
                     )
-                    .map_err(|e| e.to_string())?;
-                Ok(format!("Created cron job: {} (ID: {})", job.name, job.id))
+                    .map_err(|e| e.to_string())?
+                };
+                let mode_note = if continue_session {
+                    " [continues this session]"
+                } else {
+                    ""
+                };
+                Ok(format!(
+                    "Created cron job: {} (ID: {}){}",
+                    job.name, job.id, mode_note
+                ))
             }
             "delete" => {
                 let id = val.get("id").and_then(|v| v.as_str()).unwrap_or("");
@@ -4436,6 +4476,11 @@ pub struct SharedToolConfig {
     pub workspace: Option<String>,
     /// Cron service for scheduling jobs.
     pub cron_service: Option<Arc<std::sync::Mutex<nemesis_cron::service::CronService>>>,
+    /// H7 (U13 half): enable the claude_code delegation tool. Default false
+    /// (opt-in) — a user with the CLI installed is never surprised by it.
+    pub claude_code_tool_enabled: bool,
+    /// H7: wall-clock timeout per delegation (None = 300s default).
+    pub claude_code_tool_timeout_secs: Option<u64>,
     /// Forge tool executor for self-learning tools (forge_reflect, forge_create, etc).
     #[cfg(feature = "forge")]
     pub forge_executor: Option<Arc<nemesis_forge::forge_tools::ForgeToolExecutor>>,
@@ -4477,6 +4522,8 @@ impl Default for SharedToolConfig {
             skills_loader: None,
             workspace: None,
             cron_service: None,
+            claude_code_tool_enabled: false,
+            claude_code_tool_timeout_secs: None,
             forge_executor: None,
             forge: None,
             memory_executor: None,
@@ -4673,6 +4720,33 @@ pub fn register_shared_tools(config: &SharedToolConfig) -> HashMap<String, Box<d
             "cron".to_string(),
             Box::new(CronTool::new(Arc::clone(cron_svc))),
         );
+    }
+
+    // H7 (U13 half): Claude Code delegation — opt-in (config flag, default
+    // false) AND the CLI must be locatable. Absent CLI ⇒ not registered
+    // (graceful degradation, one info line). The probe is cached for the
+    // process lifetime (static OnceLock).
+    if config.claude_code_tool_enabled {
+        static CLI_PROBE: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
+        let cli = CLI_PROBE.get_or_init(claude_code_tool::find_claude_cli);
+        match cli {
+            Some(path) => {
+                info!(
+                    "[Tools] claude_code delegation tool registered (cli: {})",
+                    path
+                );
+                tools.insert(
+                    "claude_code".to_string(),
+                    Box::new(claude_code_tool::ClaudeCodeTool::new(
+                        path.clone(),
+                        config.claude_code_tool_timeout_secs,
+                    )),
+                );
+            }
+            None => {
+                info!("[Tools] claude_code_tool enabled in config but claude CLI not found on PATH; tool not registered");
+            }
+        }
     }
 
     // Forge tools (mirrors Go's forgeTools registration in bot_service.go).
@@ -4886,6 +4960,8 @@ pub fn register_extended_tools(
         skills_loader: None,
         workspace: None,
         cron_service: None,
+        claude_code_tool_enabled: false,
+        claude_code_tool_timeout_secs: None,
         forge_executor: None,
         forge: None,
         memory_executor: None,
@@ -4896,6 +4972,8 @@ pub fn register_extended_tools(
     };
     register_shared_tools(&shared_config)
 }
+
+pub mod claude_code_tool;
 
 #[cfg(test)]
 mod coverage_boost_tests;

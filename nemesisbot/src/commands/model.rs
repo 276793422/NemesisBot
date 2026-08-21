@@ -64,6 +64,14 @@ pub enum ModelAction {
         /// Real model name, e.g. "Qwen3-30B-A3B"
         real_name: String,
     },
+    /// H4 (U16 half): set the reasoning-effort tier for a model.
+    /// "off" clears it (send nothing); low/medium/high set the tier that
+    /// providers translate into their wire format.
+    SetEffort {
+        name: String,
+        /// One of: off | low | medium | high
+        effort: String,
+    },
     /// Run a capability probe — sends 7 short tool-use tasks to the model and
     /// writes the detected tier to config. Costs ~7 LLM calls. Explicit only.
     Probe { name: String },
@@ -454,6 +462,43 @@ pub fn run(action: ModelAction, local: bool) -> Result<()> {
                 println!("Model not found: {}", name);
             }
         }
+        ModelAction::SetEffort { name, effort } => {
+            if !cfg_path.exists() {
+                anyhow::bail!("Configuration not found. Run 'nemesisbot onboard default' first.");
+            }
+            let e = effort.to_lowercase();
+            if !matches!(e.as_str(), "off" | "low" | "medium" | "high") {
+                anyhow::bail!(
+                    "Invalid effort '{}'. Use one of: off | low | medium | high",
+                    effort
+                );
+            }
+            let data = std::fs::read_to_string(&cfg_path)?;
+            let mut cfg: serde_json::Value = serde_json::from_str(&data)?;
+            // "off" clears the field (absent = send nothing); a tier writes it.
+            let value = if e == "off" {
+                serde_json::Value::String(String::new())
+            } else {
+                serde_json::Value::String(e.clone())
+            };
+            let updated = update_model_entry(&mut cfg, &name, |en| {
+                en["reasoning_effort"] = value.clone();
+            });
+            if updated {
+                std::fs::write(
+                    &cfg_path,
+                    serde_json::to_string_pretty(&cfg).unwrap_or_default(),
+                )?;
+                if e == "off" {
+                    println!("✓ {} → reasoning_effort cleared", name);
+                } else {
+                    println!("✓ {} → reasoning_effort={}", name, e);
+                }
+                println!("  (生效于下次 LLM 调用前的 config 重读)");
+            } else {
+                println!("Model not found: {}", name);
+            }
+        }
         ModelAction::SetSize { name, size } => {
             if !cfg_path.exists() {
                 anyhow::bail!("Configuration not found.");
@@ -531,6 +576,19 @@ pub fn run(action: ModelAction, local: bool) -> Result<()> {
 
 /// Find a model entry in `model_list` by alias / full id / `vendor/<name>` suffix
 /// and apply a mutation. Returns true if the entry was found and updated.
+/// Test-visible delegate for `update_model_entry` (same crate, tests module).
+#[cfg(test)]
+pub(crate) fn update_model_entry_for_test<F>(
+    cfg: &mut serde_json::Value,
+    name: &str,
+    f: F,
+) -> bool
+where
+    F: FnOnce(&mut serde_json::Value),
+{
+    update_model_entry(cfg, name, f)
+}
+
 fn update_model_entry<F>(cfg: &mut serde_json::Value, name: &str, f: F) -> bool
 where
     F: FnOnce(&mut serde_json::Value),

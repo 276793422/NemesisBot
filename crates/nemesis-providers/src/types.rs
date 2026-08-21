@@ -122,6 +122,11 @@ pub struct ChatOptions {
     pub top_p: Option<f64>,
     pub stop: Option<Vec<String>>,
     pub extra: HashMap<String, serde_json::Value>,
+    /// H4 (U16 half): reasoning-effort tier ("low"|"medium"|"high"; None =
+    /// send nothing). Providers translate as their wire format requires
+    /// (OpenAI-compatible: `reasoning_effort`; Anthropic: `thinking`
+    /// budget_tokens via a fixed tier→budget map).
+    pub reasoning_effort: Option<String>,
 }
 
 /// Model configuration with primary model and fallback list.

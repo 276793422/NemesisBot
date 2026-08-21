@@ -655,5 +655,5 @@ pub async fn broadcast_to_session(
 #[cfg(test)]
 mod tests;
 
-#[cfg(test)]
+#[cfg(all(test, feature = "workflow"))]
 mod extra_tests;
