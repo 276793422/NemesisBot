@@ -110,6 +110,11 @@ impl Tool for ClaudeCodeTool {
         // settings (e.g. --permission-mode in the user's claude config)
         // govern the child.
         let mut cmd = Command::new(&self.cli_path);
+        // Timeout safety: if tokio::time::timeout drops the output() future
+        // at the deadline, the spawned child must die with it — without
+        // kill_on_drop the CLI process would outlive the tool call as an
+        // orphan (second-pass review fix).
+        cmd.kill_on_drop(true);
         cmd.arg("--print")
             .arg("-p")
             .arg(prompt)
@@ -125,15 +130,46 @@ impl Tool for ClaudeCodeTool {
             cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
         }
 
-        let out = tokio::time::timeout(Duration::from_secs(self.timeout_secs), cmd.output())
-            .await
-            .map_err(|_| {
-                format!(
+        // Spawn explicitly so a timeout KILLS THE PROCESS TREE: killing
+        // only the direct child (bat wrapper) leaves grandchildren holding
+        // the inherited stdout/stderr pipes open, and output() futures hang
+        // on pipe close until every holder exits (Windows inheritance
+        // classic — this is why the earlier kill_on_drop fix alone did not
+        // shorten the timeout path).
+        let child = cmd
+            .spawn()
+            .map_err(|e| format!("Error: failed to spawn claude CLI: {}", e))?;
+        // Capture the pid BEFORE moving `child` into wait_with_output (the
+        // timeout arm needs it for the tree kill).
+        let child_pid = child.id();
+        let out = match tokio::time::timeout(Duration::from_secs(self.timeout_secs), child.wait_with_output()).await {
+            Ok(r) => r.map_err(|e| format!("Error: claude CLI output wait failed: {}", e))?,
+            Err(_) => {
+                #[cfg(windows)]
+                {
+                    // Tree-kill (the CLI may spawn workers that inherit the
+                    // pipes).
+                    use std::os::windows::process::CommandExt;
+                    let _ = std::process::Command::new("taskkill")
+                        .args(["/PID", &child_pid.unwrap_or_default().to_string(), "/T", "/F"])
+                        .stdout(Stdio::null())
+                        .stderr(Stdio::null())
+                        .creation_flags(0x0800_0000)
+                        .status();
+                }
+                #[cfg(not(windows))]
+                {
+                    // POSIX: `child` was moved into wait_with_output;
+                    // kill_on_drop(true) (set at spawn) kills it when the
+                    // dropped future's Child reaper runs. Worker reaping is
+                    // the CLI's own responsibility on POSIX.
+                }
+                return Err(format!(
                     "Error: claude_code delegation timed out after {}s",
                     self.timeout_secs
-                )
-            })?
-            .map_err(|e| format!("Error: failed to spawn claude CLI: {}", e))?;
+                ));
+            }
+        };
 
         let stdout = String::from_utf8_lossy(&out.stdout);
         let stderr = String::from_utf8_lossy(&out.stderr);

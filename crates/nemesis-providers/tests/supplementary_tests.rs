@@ -1438,6 +1438,8 @@ mod router_extra {
             cost_per_1k: 0.03,
             quality_score: 0.9,
             priority: 1,
+            semantic_description: String::new(),
+        
         };
         let json = serde_json::to_string(&c).unwrap();
         let back: Candidate = serde_json::from_str(&json).unwrap();
@@ -1613,6 +1615,8 @@ mod router_extra {
             cost_per_1k: 0.01,
             quality_score: 0.5,
             priority: 1,
+            semantic_description: String::new(),
+        
         });
         let sel = router.select("m1").unwrap();
         assert_eq!(sel.provider, "p1");
@@ -1648,6 +1652,8 @@ mod router_extra {
             cost_per_1k: 0.10,
             quality_score: 0.9,
             priority: 1,
+            semantic_description: String::new(),
+        
         });
         router.add_candidate(Candidate {
             provider: "cheap".to_string(),
@@ -1655,6 +1661,8 @@ mod router_extra {
             cost_per_1k: 0.01,
             quality_score: 0.5,
             priority: 2,
+            semantic_description: String::new(),
+        
         });
         let sel = router.select("m1").unwrap();
         assert_eq!(sel.provider, "cheap");
@@ -1672,6 +1680,8 @@ mod router_extra {
             cost_per_1k: 0.01,
             quality_score: 0.3,
             priority: 1,
+            semantic_description: String::new(),
+        
         });
         router.add_candidate(Candidate {
             provider: "high-q".to_string(),
@@ -1679,6 +1689,8 @@ mod router_extra {
             cost_per_1k: 0.10,
             quality_score: 0.95,
             priority: 2,
+            semantic_description: String::new(),
+        
         });
         let sel = router.select("m1").unwrap();
         assert_eq!(sel.provider, "high-q");
@@ -1696,6 +1708,8 @@ mod router_extra {
             cost_per_1k: 0.01,
             quality_score: 0.9,
             priority: 1,
+            semantic_description: String::new(),
+        
         });
         router.add_candidate(Candidate {
             provider: "high-pri".to_string(),
@@ -1703,6 +1717,8 @@ mod router_extra {
             cost_per_1k: 0.10,
             quality_score: 0.3,
             priority: 10,
+            semantic_description: String::new(),
+        
         });
         let sel = router.select("m1").unwrap();
         assert_eq!(sel.provider, "high-pri");
@@ -1720,6 +1736,8 @@ mod router_extra {
             cost_per_1k: 0.01,
             quality_score: 0.3,
             priority: 1,
+            semantic_description: String::new(),
+        
         });
         router.add_candidate(Candidate {
             provider: "expensive".to_string(),
@@ -1727,6 +1745,8 @@ mod router_extra {
             cost_per_1k: 0.10,
             quality_score: 0.9,
             priority: 2,
+            semantic_description: String::new(),
+        
         });
         let cost_sel = router.select_with_policy(Policy::Cost, "m1").unwrap();
         assert_eq!(cost_sel.provider, "cheap");
@@ -1743,6 +1763,8 @@ mod router_extra {
             cost_per_1k: 0.01,
             quality_score: 0.5,
             priority: 1,
+            semantic_description: String::new(),
+        
         });
         let sel = router.select("nonexistent").unwrap();
         assert_eq!(sel.model, "default-model");

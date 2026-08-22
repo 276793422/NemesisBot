@@ -43,17 +43,20 @@ fn test_digest_message_replacement_semantics() {
 
 #[test]
 fn test_digest_state_inject_only_on_change() {
+    // I2 semantics: the injection is NOT persisted in history, so every
+    // build must re-emit the digest message — byte-identically when
+    // unchanged (stable re-emission preserves the provider prefix), and
+    // with fresh content when changed.
     let st = DigestState::new();
     let rendered = "alpha: a";
     // First call injects.
-    assert!(st.should_inject("sess1", rendered).is_some());
-    // Same content again → no injection (prefix preserved).
-    assert!(st.should_inject("sess1", rendered).is_none());
-    assert!(st.should_inject("sess1", rendered).is_none());
-    // Changed catalog → re-inject (replacement).
-    assert!(st.should_inject("sess1", "alpha: a2").is_some());
-    // Per-session isolation: another session starts fresh.
-    assert!(st.should_inject("sess2", "alpha: a2").is_some());
+    assert_eq!(st.should_inject("sess1", rendered).as_deref(), Some("alpha: a"));
+    // Same content again → SAME rendering re-emitted (stable).
+    assert_eq!(st.should_inject("sess1", rendered).as_deref(), Some("alpha: a"));
+    // Changed content → the NEW content is returned (replacement).
+    assert_eq!(st.should_inject("sess1", "alpha: a2").as_deref(), Some("alpha: a2"));
+    // Per-session isolation: another session gets its own state.
+    assert_eq!(st.should_inject("sess2", "alpha: a2").as_deref(), Some("alpha: a2"));
 }
 
 #[test]
@@ -147,20 +150,33 @@ fn test_skills_digest_injected_when_changed() {
         }),
         "first build injects the catalog (system-reminder wrapped)"
     );
-    // Second build, same catalog: NO new digest message.
+    // Second build, same catalog: the digest message RE-APPEARS
+    // byte-identically (I2 stable re-emission — injection is not persisted,
+    // so each build re-sends it; identical bytes keep the prefix).
     let m2 = agent_loop.build_messages(&instance);
-    // Unchanged catalog → NO second digest message (m2 is one SHORTER: the
-    // first build's injection was one-time; m2 has only sys+time+user).
     assert_eq!(
         m2.len(),
-        m1.len() - 1,
-        "unchanged catalog does not inject again"
+        m1.len(),
+        "unchanged catalog re-emits the same message (same count)"
     );
-    assert!(
-        !m2.iter()
-            .any(|m| m.content.contains("# Available Skills")),
-        "second build carries no digest"
-    );
+    let strip_time = |c: &str| -> String {
+        c.lines()
+            .filter(|l| !l.contains("Current Time") && !l.trim_start().starts_with("20"))
+            .collect::<Vec<_>>()
+            .join("
+")
+    };
+    let snap1: Vec<String> = m1
+        .iter()
+        .filter(|m| m.content.contains("# Available Skills"))
+        .map(|m| strip_time(&m.content))
+        .collect();
+    let snap2: Vec<String> = m2
+        .iter()
+        .filter(|m| m.content.contains("# Available Skills"))
+        .map(|m| strip_time(&m.content))
+        .collect();
+    assert_eq!(snap1, snap2, "identical re-emission (time-insensitive)");
 }
 
 #[test]

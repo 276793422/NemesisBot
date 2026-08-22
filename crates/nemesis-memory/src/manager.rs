@@ -331,6 +331,23 @@ impl MemoryManager {
         Ok(())
     }
 
+    /// I5 (P3.4): embed a single text through the active vector store's
+    /// embedding backend. None when the vector store is inactive or the
+    /// embedding call fails (callers degrade). The backend is whatever
+    /// `init_vector_store` wired (ONNX plugin when loaded, n-gram fallback
+    /// otherwise) — callers don't choose.
+    pub fn embed_text(&self, text: &str) -> Option<Vec<f32>> {
+        // M5 fix (full review): clone the embed handle OUT of the read
+        // guard before the (tens-of-ms ONNX) call — holding the store lock
+        // across inference blocked every store writer (init/reload).
+        let embed = {
+            let vs = self.vector_store.read();
+            vs.as_ref().map(|v| v.embed_handle())
+        };
+        let embed = embed?;
+        embed(text).ok()
+    }
+
     /// Gracefully shut down all stores and disable the manager.
     ///
     /// Mirrors Go `Manager.Close`: sets `enabled = false`, then closes each

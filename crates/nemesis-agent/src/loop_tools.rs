@@ -4481,6 +4481,10 @@ pub struct SharedToolConfig {
     pub claude_code_tool_enabled: bool,
     /// H7: wall-clock timeout per delegation (None = 300s default).
     pub claude_code_tool_timeout_secs: Option<u64>,
+    /// I4 (U13 half): enable the codex_delegate tool. Default false.
+    pub codex_tool_enabled: bool,
+    /// I4: wall-clock timeout per codex delegation (None = 300s default).
+    pub codex_tool_timeout_secs: Option<u64>,
     /// Forge tool executor for self-learning tools (forge_reflect, forge_create, etc).
     #[cfg(feature = "forge")]
     pub forge_executor: Option<Arc<nemesis_forge::forge_tools::ForgeToolExecutor>>,
@@ -4524,6 +4528,8 @@ impl Default for SharedToolConfig {
             cron_service: None,
             claude_code_tool_enabled: false,
             claude_code_tool_timeout_secs: None,
+            codex_tool_enabled: false,
+            codex_tool_timeout_secs: None,
             forge_executor: None,
             forge: None,
             memory_executor: None,
@@ -4749,6 +4755,30 @@ pub fn register_shared_tools(config: &SharedToolConfig) -> HashMap<String, Box<d
         }
     }
 
+    // I4 (U13 other half): Codex CLI delegation — same opt-in + probe shape.
+    if config.codex_tool_enabled {
+        static CODEX_PROBE: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
+        let cli = CODEX_PROBE.get_or_init(codex_tool::find_codex_cli);
+        match cli {
+            Some(path) => {
+                info!(
+                    "[Tools] codex_delegate tool registered (cli: {})",
+                    path
+                );
+                tools.insert(
+                    "codex_delegate".to_string(),
+                    Box::new(codex_tool::CodexTool::new(
+                        path.clone(),
+                        config.codex_tool_timeout_secs,
+                    )),
+                );
+            }
+            None => {
+                info!("[Tools] codex_tool enabled in config but codex CLI not found on PATH; tool not registered");
+            }
+        }
+    }
+
     // Forge tools (mirrors Go's forgeTools registration in bot_service.go).
     // Registered when forge executor is provided (i.e. forge.enabled = true).
     #[cfg(feature = "forge")]
@@ -4962,6 +4992,8 @@ pub fn register_extended_tools(
         cron_service: None,
         claude_code_tool_enabled: false,
         claude_code_tool_timeout_secs: None,
+        codex_tool_enabled: false,
+        codex_tool_timeout_secs: None,
         forge_executor: None,
         forge: None,
         memory_executor: None,
@@ -4974,6 +5006,7 @@ pub fn register_extended_tools(
 }
 
 pub mod claude_code_tool;
+pub mod codex_tool;
 
 #[cfg(test)]
 mod coverage_boost_tests;

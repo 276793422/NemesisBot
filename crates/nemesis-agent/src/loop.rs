@@ -242,10 +242,23 @@ pub const BUSY_MESSAGE: &str =
 /// Concurrent request handling mode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ConcurrentMode {
-    /// Reject new messages when session is busy.
+    /// Reject new messages when session is busy (default; legacy behavior).
     Reject,
-    /// Queue messages when session is busy.
+    /// Queue messages when session is busy — processed after the current turn.
     Queue,
+    /// Queue + steer: `!`-prefixed messages are injected into the RUNNING
+    /// turn before its next LLM call (I1 / U7).
+    Steer,
+}
+
+/// Parse the config string. Unknown values fall back to Reject (fail-safe
+/// to legacy behavior) with a warn at the call site.
+pub fn parse_concurrent_mode(s: &str) -> ConcurrentMode {
+    match s.trim().to_lowercase().as_str() {
+        "queue" => ConcurrentMode::Queue,
+        "steer" => ConcurrentMode::Steer,
+        _ => ConcurrentMode::Reject,
+    }
 }
 
 impl Default for ConcurrentMode {
@@ -428,8 +441,21 @@ pub struct AgentLoop {
     running: AtomicBool,
     /// Per-session busy state with queue length tracking.
     session_busy: parking_lot::Mutex<HashMap<String, SessionBusyState>>,
+    /// Session busy check: mode-aware I1 (U7).
     /// Concurrent request handling mode.
     concurrent_mode: ConcurrentMode,
+    /// Re-injection sender into the agent's own inbound mpsc (round-5 review
+    /// fix). The queue-drain path uses it to hand the queued head back to the
+    /// normal `run_bus_*` consumer instead of recursing inline — so the reply
+    /// gets the SAME post-processing as any other message (rpc correlation
+    /// prefix, sent_in_round check+clear, error→"Error processing message"
+    /// conversion + capture flush, meta.model). Deliberately NOT the bus
+    /// broadcast: re-publishing on the bus would re-match workflow
+    /// message-triggers (double firing). `None` in standalone mode (no drain
+    /// consumer exists) and until the adapter wires it.
+    reinject_tx: parking_lot::RwLock<
+        Option<tokio::sync::mpsc::Sender<nemesis_types::channel::InboundMessage>>,
+    >,
     /// Configured queue size for queue mode. Stored for config/logging parity
     /// but NOT read: under `run_bus_arc`'s sequential processing, queue mode is
     /// treated as reject (see `try_start_session`), so this is dead. Remove
@@ -533,13 +559,22 @@ pub struct AgentLoop {
     /// H3 (P2.2): skills loader for the catalog digest. `None` disables the
     /// digest injection entirely. Set via `set_skills_loader`.
     skills_loader: parking_lot::RwLock<Option<Arc<nemesis_skills::loader::SkillsLoader>>>,
-    /// H3 (P2.2): per-session last-injected catalog hash. In-process only —
-    /// a restart re-injects once (documented acceptable in skills_digest.rs).
-    skills_digest_state: crate::skills_digest::SharedDigestState,
+    /// H3 (P2.2): digest emission handle. Round-5: stateless under I2
+    /// merged-snapshot semantics (sections re-render from disk every build;
+    /// the old per-session hash map gated nothing and was removed — see
+    /// skills_digest.rs module doc).
+    skills_digest_state: std::sync::Arc<crate::skills_digest::DigestState>,
+    /// I1 (U7): per-session message inbox for Queue/Steer modes. Unused in
+    /// Reject mode (kept anyway — trivial cost, simplifies mode switching).
+    inbox: crate::inbox::SharedInbox,
     /// H5 (U18): workspace root for the AGENTS.md/CLAUDE.md instruction
     /// chain. `None` disables the instructions section of the merged
     /// context digest.
     workspace_root: parking_lot::RwLock<Option<std::path::PathBuf>>,
+    /// Full-review M4: context-snapshot message role ("user" default;
+    /// "system" restores the pre-I2 shape for strict chat templates that
+    /// reject adjacent user/user pairs).
+    snapshot_role: parking_lot::RwLock<String>,
     /// Last-seen mtime of config.json; `check_config_reload` compares against
     /// this each round to detect on-disk changes without re-reading every turn.
     config_mtime: parking_lot::RwLock<Option<std::time::SystemTime>>,
@@ -592,7 +627,8 @@ impl AgentLoop {
             running: AtomicBool::new(false),
             session_busy: parking_lot::Mutex::new(HashMap::new()),
             concurrent_mode: ConcurrentMode::Reject,
-            queue_size: 8,
+            reinject_tx: parking_lot::RwLock::new(None),
+            queue_size: crate::inbox::DEFAULT_QUEUE_SIZE,
             max_continuation_permits: 0,
             continuation_semaphore: None,
             summarizing: Arc::new(parking_lot::Mutex::new(HashMap::new())),
@@ -618,7 +654,9 @@ impl AgentLoop {
             spill_root: parking_lot::RwLock::new(None),
             skills_loader: parking_lot::RwLock::new(None),
             skills_digest_state: std::sync::Arc::new(crate::skills_digest::DigestState::new()),
+            inbox: std::sync::Arc::new(crate::inbox::Inbox::new(crate::inbox::DEFAULT_QUEUE_SIZE)),
             workspace_root: parking_lot::RwLock::new(None),
+            snapshot_role: parking_lot::RwLock::new("user".to_string()),
             config_mtime: parking_lot::RwLock::new(None),
             estop: parking_lot::RwLock::new(None),
         }
@@ -635,6 +673,19 @@ impl AgentLoop {
     /// 重启后自动保持（状态本体在 `SharedResources` 上，不在 loop 上）。
     pub fn set_estop(&self, estop: Arc<crate::estop::EstopState>) {
         *self.estop.write() = Some(estop);
+    }
+
+    /// Wire the re-injection sender for the queue-drain path (round-5 review
+    /// fix). The adapter passes a clone of the SAME mpsc sender that feeds
+    /// `run_bus_arc`'s receiver, so a drained queued head re-enters the normal
+    /// consumer loop and its reply gets full post-processing (rpc prefix,
+    /// sent_in_round, error conversion). Call after the channel pair is
+    /// created, before `run_bus_*` starts consuming.
+    pub fn set_reinject_tx(
+        &self,
+        tx: tokio::sync::mpsc::Sender<nemesis_types::channel::InboundMessage>,
+    ) {
+        *self.reinject_tx.write() = Some(tx);
     }
 
     /// Stash the memory tool executor so the gateway can later attach an approval
@@ -736,6 +787,7 @@ impl AgentLoop {
             running: AtomicBool::new(false),
             session_busy: parking_lot::Mutex::new(HashMap::new()),
             concurrent_mode,
+            reinject_tx: parking_lot::RwLock::new(None),
             queue_size,
             max_continuation_permits,
             continuation_semaphore,
@@ -762,7 +814,9 @@ impl AgentLoop {
             spill_root: parking_lot::RwLock::new(None),
             skills_loader: parking_lot::RwLock::new(None),
             skills_digest_state: std::sync::Arc::new(crate::skills_digest::DigestState::new()),
+            inbox: std::sync::Arc::new(crate::inbox::Inbox::new(queue_size.max(1))),
             workspace_root: parking_lot::RwLock::new(None),
+            snapshot_role: parking_lot::RwLock::new("user".to_string()),
             config_mtime: parking_lot::RwLock::new(None),
             estop: parking_lot::RwLock::new(None),
         }
@@ -1792,13 +1846,81 @@ impl AgentLoop {
             (agent_id, session_key)
         };
 
-        // Session busy check.
+        // Session busy check — I1 (U7) mode-aware:
+        //   Reject (default): legacy BUSY_MESSAGE bounce, byte-identical.
+        //   Queue/Steer: park the message in the session inbox instead of
+        //   bouncing. The running turn claims it (steer: next LLM call; queue:
+        //   turn end starts a new one with the head). Capacity-bounded with a
+        //   clear receipt so the rule is discoverable.
         if !self.try_acquire_session(&session_key) {
-            warn!(
-                "[AgentLoop] Session busy, returning busy message: session_key={}, mode={:?}",
-                session_key, self.concurrent_mode
-            );
-            return (agent_id, BUSY_MESSAGE.to_string(), None);
+            match self.concurrent_mode {
+                ConcurrentMode::Reject => {
+                    warn!(
+                        "[AgentLoop] Session busy, returning busy message: session_key={}, mode={:?}",
+                        session_key, self.concurrent_mode
+                    );
+                    return (agent_id, BUSY_MESSAGE.to_string(), None);
+                }
+                ConcurrentMode::Queue | ConcurrentMode::Steer => {
+                    let queued = crate::inbox::QueuedMessage {
+                        msg: nemesis_types::channel::InboundMessage {
+                            channel: msg.channel.clone(),
+                            sender_id: msg.sender_id.clone(),
+                            chat_id: msg.chat_id.clone(),
+                            content: msg.content.clone(),
+                            media: msg.media.clone(),
+                            session_key: msg.session_key.clone(),
+                            correlation_id: msg.correlation_id.clone(),
+                            metadata: msg.metadata.clone(),
+                            voice_playback: msg.voice_playback,
+                        },
+                        timestamp: chrono::Local::now().to_rfc3339(),
+                    };
+                    // Second-pass review fix: the `!`-prefix steer channel
+                    // exists ONLY in Steer mode. Queue mode is pure
+                    // queueing — enqueue_for_mode routes everything to
+                    // next_turn when steer is disabled.
+                    match self.inbox.enqueue_for_mode(
+                        &session_key,
+                        queued,
+                        self.concurrent_mode == ConcurrentMode::Steer,
+                    ) {
+                        crate::inbox::EnqueueOutcome::QueuedForNextTurn => {
+                            info!(
+                                "[AgentLoop] Session busy — message queued for next turn: session_key={}",
+                                session_key
+                            );
+                            return (
+                                agent_id,
+                                "⏳ 当前正在处理上一条消息。你的消息已排队，将在本轮结束后继续处理。".to_string(),
+                                None,
+                            );
+                        }
+                        crate::inbox::EnqueueOutcome::QueuedForNextStep => {
+                            info!(
+                                "[AgentLoop] Session busy — steer message queued for in-turn injection: session_key={}",
+                                session_key
+                            );
+                            return (
+                                agent_id,
+                                "⚡ 已接收为紧急插话（消息以 ! 开头），将在 AI 的下一步思考前注入。非紧急消息请去掉 ! 前缀排队等待。".to_string(),
+                                None,
+                            );
+                        }
+                        crate::inbox::EnqueueOutcome::Rejected => {
+                            warn!(
+                                "[AgentLoop] Session busy and inbox full — message refused: session_key={}",
+                                session_key
+                            );
+                            return (
+                                agent_id,
+                                "⏳ 排队已满，消息未能接收。请等当前任务完成后再发。".to_string(),
+                                None,
+                            );
+                        }
+                    }
+                }
+            }
         }
 
         // Create cancellation token for this session.
@@ -1829,6 +1951,103 @@ impl AgentLoop {
         // Clean up cancellation token and release session.
         self.remove_cancel_token(&session_key);
         self.release_session(&session_key);
+
+        // I1 (U7) post-turn inbox handling:
+        //   - Unconsumed next-step (steer) messages ALWAYS transfer back to
+        //     the next-turn queue — both for cancelled turns AND for turns
+        //     that finished normally with a steer arriving too late for the
+        //     escape hatch (second-pass review fix: the cancelled-only
+        //     transfer left stale steers in next_step, which a LATER turn
+        //     would claim out of context). Transferred messages become the
+        //     next turn's input — nothing is lost, nothing arrives stale.
+        //   - Completed turn with queued next-turn messages: requeue the head
+        //     through the normal inbound path (fresh busy acquire),
+        //     serialized behind this turn because the session was already
+        //     released.
+        self.inbox.transfer_next_step_to_next_turn(&session_key);
+        if matches!(
+            self.concurrent_mode,
+            ConcurrentMode::Queue | ConcurrentMode::Steer
+        ) {
+            if let Some(head) = self.inbox.claim_next_turn_head(&session_key) {
+                info!(
+                    "[AgentLoop] processing queued next-turn message: session_key={}, len={}",
+                    session_key,
+                    head.msg.content.len()
+                );
+                // ROUND-5 REVIEW FIX: re-inject the queued head into the
+                // agent's own inbound mpsc (the same one `run_bus_*`
+                // consumes) instead of recursing inline. The normal consumer
+                // then applies the SAME post-processing as any other message:
+                // [rpc:{cid}] correlation prefix, sent_in_round check+clear,
+                // error → "Error processing message" + capture flush, and
+                // meta.model. The previous inline recursion published the
+                // reply raw — an rpc-channel queued reply lost its prefix
+                // (RPCChannel::send drops unprefixed replies) and a FAILED
+                // queued turn produced no user-visible output at all.
+                // H3 (full review): the queued message wraps the ORIGINAL
+                // InboundMessage whole (round-5), so replaying is a clone
+                // with only the session_key normalized to this queue's key.
+                //
+                // NOT bus.publish_inbound (broadcast): that would re-match
+                // workflow message-triggers for an already-matched message
+                // (double firing). The agent's private mpsc has no other
+                // subscriber.
+                //
+                // try_send (never a blocking await on a full channel from
+                // inside the sole consumer task): capacity 1024 vs inbox cap
+                // 8/session makes a full channel unreachable in practice; on
+                // the theoretical overflow the message is logged and dropped
+                // rather than deadlocking the loop.
+                let mut inbound = head.msg.clone();
+                inbound.session_key = session_key.to_string();
+                let reinject = self.reinject_tx.read().clone();
+                match reinject {
+                    Some(tx) => {
+                        if let Err(e) = tx.try_send(inbound) {
+                            // No consumer (standalone/tests without run_bus)
+                            // or channel full — surface loudly either way.
+                            warn!(
+                                "[AgentLoop] failed to re-inject queued message (session_key={}, err={}) — message dropped",
+                                session_key, e
+                            );
+                        }
+                    }
+                    None => {
+                        // Standalone mode / tests without the mpsc wired:
+                        // process inline as before so the message is not
+                        // silently lost, with the error path at least
+                        // converted to a user-visible reply.
+                        warn!(
+                            "[AgentLoop] reinject_tx not set — processing queued message inline (post-processing skipped), session_key={}",
+                            session_key
+                        );
+                        let fut = Box::pin(self.process_inbound_message(&inbound));
+                        let (_id2, resp2, err2) = fut.await;
+                        let content = match err2 {
+                            Some(e) => format!("Error processing message: {}", e),
+                            None => resp2,
+                        };
+                        if !content.is_empty() {
+                            if let Some(ref tx) = self.outbound_tx {
+                                let outbound = nemesis_types::channel::OutboundMessage {
+                                    channel: head.msg.channel.clone(),
+                                    chat_id: head.msg.chat_id.clone(),
+                                    content,
+                                    message_type: String::new(),
+                                    meta: Default::default(),
+                                };
+                                let _ = tx.send(outbound).await;
+                            }
+                        }
+                    }
+                }
+            }
+            // Drop empty queues (housekeeping; keeps the map bounded).
+            if self.inbox.pending(&session_key) == (0, 0) {
+                self.inbox.clear(&session_key);
+            }
+        }
 
         match result {
             Ok(response) => (agent_id, response, None),
@@ -2490,6 +2709,14 @@ impl AgentLoop {
         cron_job_id: Option<&str>,
         cron_job_name: Option<&str>,
     ) -> Result<String, String> {
+        // Round-5 fix: cron-originated turns are exempt from boundary events,
+        // same as heartbeat. A recurring cron job targeting a persistent
+        // session would grow its boundary sidecar (3+ rows per fire) without
+        // bound — the exact unbounded-growth failure the heartbeat exemption
+        // exists to prevent. The gateway cron handler (gateway.rs) delivers
+        // via the bus with metadata cron_job_id, which flows here through
+        // the caller; the CronTool path passes user="cron" (detected below).
+        let is_cron_turn = cron_job_id.is_some();
         // Generate trace ID and emit conversation_start event.
         let trace_id = format!(
             "{}-{}",
@@ -2516,7 +2743,12 @@ impl AgentLoop {
         }
 
         let instance = self.get_or_create_instance(session_key);
-        let context = RequestContext::new(channel, chat_id, "agent", session_key);
+        let mut context = RequestContext::new(channel, chat_id, "agent", session_key);
+        if is_cron_turn {
+            // Round-5 fix: propagate cron origin so run_llm_loop's boundary
+            // gating can exempt it (see log_boundaries).
+            context.user = "cron".to_string();
+        }
 
         let events = self
             .run_with_trace(
@@ -2737,6 +2969,23 @@ impl AgentLoop {
             ..Default::default()
         };
 
+        // I3 (U9): durable turn boundary markers. Heartbeat sessions are
+        // exempt — they run periodically and would grow heartbeat.jsonl
+        // without bound (3+ boundary lines per beat, forever).
+        // 4th-pass fix: the heartbeat exemption keys on the CONTEXT user
+        // marker (set by process_heartbeat), not the session_key — a real
+        // user session could legitimately be named "agent:heartbeat" and
+        // would have been silently exempted from boundary logging.
+        // Round-5 fix: cron-originated turns are exempt too (user=="cron",
+        // set by run_agent_loop_internal when cron_job_id metadata is
+        // present) — a recurring cron on a persistent session grows the
+        // boundary sidecar unboundedly otherwise.
+        let log_boundaries = context.user != "heartbeat"
+            && context.user != "cron"
+            && !is_internal_channel(&context.channel);
+        if log_boundaries {
+            crate::chat_log::append_boundary_event(&context.session_key, "turn_start", "");
+        }
         let mut turns_used = 0u32;
         // Phase 2 (small-model-tool-robustness): per-request consecutive
         // validation-failure counter. Reset on any successful (valid or
@@ -2767,6 +3016,12 @@ impl AgentLoop {
         // ⑧ Pending cross-round prose-repetition nudge (same transient pattern:
         // re-applied after each build_messages, never persisted to history).
         let mut repetition_nudge_pending: Option<String> = None;
+        // I1 (U7): one-shot escape-hatch latch (see the Accept branch).
+        let mut steer_escape_used = false;
+        // L2 (full review): terminal reason recorded AT the break site
+        // instead of post-hoc string sniffing (a model reply containing
+        // the paused-after wording would have been misclassified).
+        let mut terminal_reason: Option<&'static str> = None;
 
         loop {
             // Auto-reload MCP tools if config file changed.
@@ -2821,6 +3076,7 @@ impl AgentLoop {
                         "[AgentLoop] paused after {} tool-call rounds (grace round exhausted)",
                         self.config.max_turns
                     );
+                    terminal_reason = Some("max_turns");
                     events.push(AgentEvent::Done(format!(
                         "已在 {} 轮工具调用后暂停，已完成的工作已保存。发送下一条消息可继续，或调大 max_tool_iterations（设为 0 表示不限）。",
                         self.config.max_turns
@@ -2829,7 +3085,49 @@ impl AgentLoop {
                 }
             }
 
-            // Build the message list from instance history.
+            // I1 (U7): inbox claim — before EVERY LLM call of this turn, take
+            // all pending steer messages (next-step) into history as real user
+            // messages (persisted: they ARE genuine user input). Placement
+            // after the existing history = same position as the time/env
+            // injection's protected prefix zone (appended user turn), so the
+            // provider prefix stays stable.
+            //
+            // ROUND-5 EFFICIENCY FIX: claim BEFORE build_messages (it used to
+            // run after, so every steered round built the full message list
+            // twice — skills catalog scan + instruction-chain file IO + 2
+            // sha256s — and threw the first build away). One build, always.
+            let steer_batch = self.inbox.claim_next_step(&context.session_key);
+            if !steer_batch.is_empty() {
+                for m in &steer_batch {
+                    // L4 (full review) + round-5: strip the marker via the
+                    // SINGLE shared rule (inbox::strip_steer_marker) — it is a
+                    // ROUTING signal, not content, and the same message must
+                    // arrive marker-free whether injected in-turn (here) or
+                    // replayed post-turn (drain path).
+                    let content = crate::inbox::strip_steer_marker(&m.msg.content).to_string();
+                    instance.add_user_message(&content);
+                    crate::chat_log::append_chat_log(
+                        &context.session_key,
+                        "user",
+                        &format!("[steer] {}", content),
+                    );
+                    info!(
+                        "[AgentLoop] steer message injected before LLM call: session_key={}, len={}",
+                        context.session_key,
+                        m.msg.content.len()
+                    );
+                    if log_boundaries {
+                        crate::chat_log::append_boundary_event(
+                            &context.session_key,
+                            "steer_injected",
+                            &format!("len={}", m.msg.content.len()),
+                        );
+                    }
+                }
+            }
+
+            // Build the message list from instance history (AFTER the steer
+            // claim so injected turns are already included).
             let mut messages = self.build_messages(instance);
 
             // Voice playback prompt injection: append to last user message (not stored in history).
@@ -2945,6 +3243,22 @@ impl AgentLoop {
             // 注意：subscribe() 返回的是 owned Receiver（不借用 guard），所以这里
             // 拿完就能放掉 estop 的读锁。
             let mut estop_rx = self.estop.read().as_ref().map(|e| e.subscribe());
+
+            // I3 (U9): durable llm_request marker (model + size estimate,
+            // no bodies). Heartbeat/internal-channel exemption (see
+            // turn_start).
+            if log_boundaries {
+                crate::chat_log::append_boundary_event(
+                    &context.session_key,
+                    "llm_request",
+                    &format!(
+                        "model={} messages={} turns_used={}",
+                        self.active_model.read(),
+                        messages.len(),
+                        turns_used
+                    ),
+                );
+            }
 
             // Use tokio::select! to allow cancellation / e-stop during the LLM call.
             let chat_result = tokio::select! {
@@ -3381,6 +3695,26 @@ impl AgentLoop {
                             Vec::new(),
                             response.reasoning_content.clone(),
                         );
+                        // I1 (U7) turn escape hatch: the model is about to
+                        // finish, but an unclaimed steer message arrived in
+                        // the last moments — hand it to the model for one
+                        // more round instead of answering past it (dsh
+                        // turn-stopping semantics: pending next-step input
+                        // keeps the turn open). At most once per turn
+                        // (steer_escape_used) so `!`-spam cannot loop the
+                        // turn forever.
+                        if !steer_escape_used
+                            && self.inbox.has_next_step(&context.session_key)
+                            && self.concurrent_mode == ConcurrentMode::Steer
+                        {
+                            steer_escape_used = true;
+                            info!(
+                                "[AgentLoop] escape hatch: pending steer at turn end, one more round"
+                            );
+                            // Loop again — the claim at the top of the next
+                            // iteration injects the steer message(s).
+                            continue;
+                        }
                         let formatted = context.format_rpc_message(&content);
                         events.push(AgentEvent::Done(formatted));
                         break;
@@ -3850,6 +4184,21 @@ impl AgentLoop {
         }
 
         instance.set_state(crate::types::AgentState::Idle);
+
+        // I3 (U9): durable turn_end marker with the terminal reason.
+        // L2 (full review): the reason comes from the break-site latch
+        // (terminal_reason), not from sniffing the Done text — a model
+        // reply containing the paused-after wording can no longer be
+        // misclassified as max_turns.
+        let end_reason = if cancel_token.is_cancelled() {
+            "cancelled"
+        } else {
+            terminal_reason.unwrap_or("done")
+        };
+        if log_boundaries {
+            crate::chat_log::append_boundary_event(&context.session_key, "turn_end", end_reason);
+        }
+
         events
     }
 
@@ -4094,6 +4443,13 @@ impl AgentLoop {
         *self.workspace_root.write() = Some(root);
     }
 
+    /// Full-review M4: set the context-snapshot message role ("user" |
+    /// "system"). Anything unrecognized stays/becomes "user" (default).
+    pub fn set_snapshot_role(&self, role: &str) {
+        let r = if role.eq_ignore_ascii_case("system") { "system" } else { "user" };
+        *self.snapshot_role.write() = r.to_string();
+    }
+
     /// H5 (U18): touch-driven digest invalidation. Called by the dispatch
     /// path when a read_file/write_file/edit_file call touched a file that
     /// is on the session's instruction chain — the next build_messages
@@ -4284,6 +4640,11 @@ impl AgentLoop {
         // own history is untouched; only the outgoing view is cleaned.)
         crate::types::repair_tool_message_pairs(&mut turns);
 
+        // I2 (U8): time/env becomes the FIRST section of the merged context
+        // snapshot (was a standalone system-role dyn_msg). Minute granularity:
+        // the timestamp truncates to the minute so a burst of calls within
+        // the same minute does not churn the digest (dsh runtime-context
+        // snapshot discipline: identical content ⇒ no re-injection).
         let now = chrono::Local::now()
             .format("%Y-%m-%d %H:%M (%A)")
             .to_string();
@@ -4291,13 +4652,10 @@ impl AgentLoop {
         let env_hint = "platform: windows\ndefault_shell: cmd\ntime_cmd: use `date /t` or `echo %date% %time%` or PowerShell `Get-Date`";
         #[cfg(not(target_os = "windows"))]
         let env_hint = "platform: unix\ndefault_shell: sh\ntime_cmd: use `date`";
-        let dyn_msg = LlmMessage {
-            role: "system".to_string(),
-            content: format!("# Current Time\n{}\n# Environment\n{}", now, env_hint),
-            tool_calls: None,
-            tool_call_id: None,
-            reasoning_content: None,
-        };
+        let snapshot_section = format!(
+            "# Current Time / Environment snapshot\n{}\n# Environment\n{}\n(本快照取代之前的时间/环境快照)",
+            now, env_hint
+        );
 
         let turn_to_msg = |turn: &crate::types::ConversationTurn| LlmMessage {
             role: turn.role.clone(),
@@ -4315,27 +4673,23 @@ impl AgentLoop {
         // is a system prompt at turns[0] to protect (otherwise there's no
         // cached prefix to preserve).
         //
-        // H3 (P2.2) + H5 (U18): the skills-catalog digest AND the workspace
-        // instruction chain ride the SAME injection point as one MERGED
-        // message (two sections inside one <system-reminder> wrapper), with
-        // the same prefix-protection condition. It injects ONLY when the
-        // union content changed since the last injection for this session
-        // (see skills_digest::DigestState) — identical content ⇒ no extra
-        // message ⇒ the prefix the time/env hint preserves stays preserved.
-        // Touch-driven invalidation (H5): the dispatch path calls
-        // `invalidate_session_digest` when a read/write/edit touches a file
-        // on the instruction chain, forcing the next build to re-read.
+        // H3 (P2.2) + H5 (U18) + I2 (U8): the skills-catalog digest, the
+        // workspace instruction chain, AND the time/env snapshot ride ONE
+        // injection point as a single MERGED message (sections inside one
+        // <system-reminder> wrapper), with the same prefix-protection
+        // condition. Re-emitted on EVERY build (not persisted in history) —
+        // deterministic rendering keeps it byte-identical while nothing
+        // changed, which is what preserves the provider prefix. Sections
+        // re-read from disk each build, so file touches are picked up
+        // naturally (H5's invalidate call is a structural no-op).
         let context_digest_msg: Option<LlmMessage> = {
             let loader = self.skills_loader.read().clone();
             let ws_root = self.workspace_root.read().clone();
-            let stable_key = turns
-                .iter()
-                .find(|t| t.role == "user")
-                .map(|t| crate::skills_digest::digest_hash(&t.content))
-                .unwrap_or_default();
-            // Build the merged content: skills section (if any) + workspace
-            // instructions section (if any).
-            let mut sections: Vec<String> = Vec::new();
+            // Build the merged content: time/env snapshot (I2) + skills
+            // section (if any) + workspace instructions section (if any).
+            // The snapshot is ALWAYS present (time always renders), so the
+            // merged message exists for every session.
+            let mut sections: Vec<String> = vec![snapshot_section.clone()];
             if let Some(ref l) = loader {
                 let infos = l.list_skills();
                 if !infos.is_empty() {
@@ -4360,9 +4714,14 @@ impl AgentLoop {
                     sections.join("\n\n")
                 );
                 self.skills_digest_state
-                    .should_inject(&stable_key, &merged)
+                    .should_inject("", &merged) // stateless since round-5
                     .map(|m| LlmMessage {
-                        role: "system".to_string(),
+                        // I2 (U8): user-role snapshot (was system) — the
+                        // system prompt stays byte-frozen; dynamic facts
+                        // arrive as conversation messages. M4: role is
+                        // configurable for strict chat templates that
+                        // reject adjacent user/user pairs.
+                        role: self.snapshot_role.read().clone(),
                         content: m,
                         tool_calls: None,
                         tool_call_id: None,
@@ -4385,7 +4744,6 @@ impl AgentLoop {
                 if let Some(d) = context_digest_msg {
                     messages.push(d);
                 }
-                messages.push(dyn_msg);
                 messages.extend(turns[idx..].iter().map(turn_to_msg));
                 messages
             }
@@ -5173,5 +5531,7 @@ pub fn truncate(s: &str, max_len: usize) -> String {
     nemesis_types::utils::truncate(s, max_len)
 }
 
+#[cfg(test)]
+mod inbox_tests;
 #[cfg(test)]
 mod tests;

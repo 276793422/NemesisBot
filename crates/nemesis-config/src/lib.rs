@@ -225,6 +225,27 @@ pub struct AgentsConfig {
     /// disabled (opt-in) — absent section = tool never registered.
     #[serde(default)]
     pub claude_code_tool: ClaudeCodeToolConfig,
+    /// I4 (U13 other half): Codex delegation tool settings (same shape).
+    #[serde(default)]
+    pub codex_tool: CodexToolConfig,
+}
+
+/// I4: `agents.codex_tool` config section (mirrors claude_code_tool).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CodexToolConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default)]
+    pub timeout_secs: Option<u64>,
+}
+
+impl Default for CodexToolConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            timeout_secs: None,
+        }
+    }
 }
 
 /// H7 (U13 half): `agents.claude_code_tool` config section.
@@ -253,6 +274,7 @@ impl Default for AgentsConfig {
             defaults: AgentDefaults::default(),
             list: vec![],
             claude_code_tool: ClaudeCodeToolConfig::default(),
+            codex_tool: CodexToolConfig::default(),
         }
     }
 }
@@ -277,6 +299,12 @@ pub struct AgentDefaults {
     pub max_tool_iterations: i64,
     #[serde(default = "default_concurrent_request_mode")]
     pub concurrent_request_mode: String,
+    /// Full-review M4: context-snapshot message role. "user" (default,
+    /// dsh-aligned) places the merged snapshot as a user message; some
+    /// strict chat templates reject adjacent user/user pairs — set
+    /// "system" to restore the pre-I2 single system-role injection.
+    #[serde(default = "default_snapshot_role")]
+    pub snapshot_role: String,
     #[serde(default = "default_queue_size")]
     pub queue_size: i64,
     #[serde(default)]
@@ -295,6 +323,7 @@ impl Default for AgentDefaults {
             temperature: default_temperature(),
             max_tool_iterations: default_max_tool_iterations(),
             concurrent_request_mode: default_concurrent_request_mode(),
+            snapshot_role: default_snapshot_role(),
             queue_size: default_queue_size(),
             max_continuation_permits: 0,
         }
@@ -1709,6 +1738,7 @@ pub fn default_config() -> Config {
     Config {
         agents: AgentsConfig {
             claude_code_tool: ClaudeCodeToolConfig::default(),
+            codex_tool: CodexToolConfig::default(),
             defaults: AgentDefaults {
                 workspace: ws,
                 restrict_to_workspace: true,
@@ -2163,6 +2193,10 @@ fn default_max_tool_iterations() -> i64 {
 }
 fn default_concurrent_request_mode() -> String {
     "reject".to_string()
+}
+
+fn default_snapshot_role() -> String {
+    "user".to_string()
 }
 fn default_queue_size() -> i64 {
     8

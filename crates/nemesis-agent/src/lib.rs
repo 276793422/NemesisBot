@@ -36,6 +36,7 @@ pub mod memory;
 pub mod message_preprocess;
 pub mod probe;
 pub mod registry;
+pub mod inbox;
 pub mod prune;
 pub mod skills_digest;
 pub mod workspace_instructions;

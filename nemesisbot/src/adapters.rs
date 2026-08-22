@@ -275,6 +275,13 @@ impl LifecycleService for AgentLoopServiceAdapter {
         let (agent_inbound_tx, agent_inbound_rx) =
             tokio::sync::mpsc::channel::<nemesis_types::channel::InboundMessage>(1024);
 
+        // Round-5 review fix: give the agent loop a clone of the SENDER so
+        // its queue-drain path can re-inject queued heads into this same
+        // mpsc — the reply then flows through run_bus_arc's normal
+        // post-processing (rpc prefix, sent_in_round, error conversion)
+        // instead of being published raw by an inline recursion.
+        agent_loop.set_reinject_tx(agent_inbound_tx.clone());
+
         // Bridge: bus inbound broadcast → agent inbound mpsc
         let bus_inbound = self.bus.subscribe_inbound();
         let rt = self.rt.clone();

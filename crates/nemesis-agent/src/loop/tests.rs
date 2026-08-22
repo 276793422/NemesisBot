@@ -1948,10 +1948,11 @@ fn test_build_messages_from_instance() {
 
     let messages = agent_loop.build_messages(&instance);
 
-    // system + (injected Current Time/Environment system msg) + user + assistant = 4
+    // system + (I2: user-role merged context snapshot) + user + assistant = 4
     assert_eq!(messages.len(), 4);
     assert_eq!(messages[0].role, "system");
-    assert_eq!(messages[1].role, "system"); // injected time/env marker
+    assert_eq!(messages[1].role, "user"); // merged context snapshot (I2)
+    assert!(messages[1].content.contains("Current Time"));
     assert_eq!(messages[2].role, "user");
     assert_eq!(messages[3].role, "assistant");
 }
@@ -4825,7 +4826,10 @@ fn test_build_messages_preserves_history_order() {
     assert_eq!(messages[1].role, "user");
     assert_eq!(messages[1].content, "First");
     assert_eq!(messages[2].role, "assistant");
-    assert_eq!(messages[3].role, "system"); // injected time/env marker
+    // I2 (U8): time/env is now the FIRST section of the merged context
+    // snapshot injected as a USER-role message (was system-role dyn_msg).
+    assert_eq!(messages[3].role, "user"); // merged context snapshot
+    assert!(messages[3].content.contains("Current Time"));
     assert_eq!(messages[4].role, "user");
     assert_eq!(messages[4].content, "Third");
 }
@@ -5969,11 +5973,13 @@ fn test_build_messages_cache_preserves_tail_verbatim() {
 
     let messages = agent_loop.build_messages(&instance);
 
-    // Drop the leading system+summary and the injected dyn_msg to recover the
-    // verbatim conversation tail. The dyn_msg sits just before the last user.
+    // Drop the leading system+summary and the injected context snapshot
+    // (I2: user-role <system-reminder> message before the last user) to
+    // recover the verbatim conversation tail.
     let tail: Vec<&str> = messages
         .iter()
-        .filter(|m| m.role != "system") // exclude sys+summary and dyn_msg
+        .filter(|m| m.role != "system") // exclude sys+summary
+        .filter(|m| !(m.role == "user" && m.content.starts_with("<system-reminder>")))
         .map(|m| m.content.as_str())
         .collect();
     assert_eq!(

@@ -154,6 +154,15 @@ impl PathManager {
         self.workspace().join("logs").join("session_logs")
     }
 
+    /// Get the boundary-events sidecar directory (round-5 review fix).
+    /// Turn/step boundary audit events live in `<session>.jsonl` files HERE,
+    /// deliberately OUTSIDE `session_logs/` — scan_session_logs admits every
+    /// `*.jsonl` in that dir, so a sidecar placed there would surface as a
+    /// phantom session in the Dashboard session list.
+    pub fn boundary_events_dir(&self) -> PathBuf {
+        self.workspace().join("logs").join("boundary")
+    }
+
     /// Get the temp directory.
     pub fn temp_dir(&self) -> PathBuf {
         self.home_dir.read().join("workspace").join("temp")

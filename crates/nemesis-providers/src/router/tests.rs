@@ -29,6 +29,8 @@ fn test_select_fallback() {
         cost_per_1k: 0.03,
         quality_score: 0.9,
         priority: 1,
+        semantic_description: String::new(),
+    
     });
     router.add_candidate(Candidate {
         provider: "azure".to_string(),
@@ -36,6 +38,8 @@ fn test_select_fallback() {
         cost_per_1k: 0.03,
         quality_score: 0.9,
         priority: 2,
+        semantic_description: String::new(),
+    
     });
 
     let selected = router.select("gpt-4").unwrap();
@@ -54,6 +58,8 @@ fn test_select_cost() {
         cost_per_1k: 0.03,
         quality_score: 0.9,
         priority: 1,
+        semantic_description: String::new(),
+    
     });
     router.add_candidate(Candidate {
         provider: "deepseek".to_string(),
@@ -61,6 +67,8 @@ fn test_select_cost() {
         cost_per_1k: 0.01,
         quality_score: 0.7,
         priority: 1,
+        semantic_description: String::new(),
+    
     });
 
     let selected = router.select("gpt-4").unwrap();
@@ -266,6 +274,7 @@ fn test_router_select_throughput() {
             cost_per_1k: 0.01,
             quality_score: 0.9,
             priority: i as i32,
+            semantic_description: String::new(),
         });
     }
 
@@ -342,6 +351,8 @@ fn test_select_quality_policy() {
         cost_per_1k: 0.03,
         quality_score: 0.9,
         priority: 1,
+        semantic_description: String::new(),
+    
     });
     router.add_candidate(Candidate {
         provider: "deepseek".to_string(),
@@ -349,6 +360,8 @@ fn test_select_quality_policy() {
         cost_per_1k: 0.01,
         quality_score: 0.7,
         priority: 2,
+        semantic_description: String::new(),
+    
     });
 
     let selected = router.select("gpt-4").unwrap();
@@ -367,6 +380,8 @@ fn test_select_latency_policy() {
         cost_per_1k: 0.03,
         quality_score: 0.9,
         priority: 1,
+        semantic_description: String::new(),
+    
     });
     router.add_candidate(Candidate {
         provider: "slow-provider".to_string(),
@@ -374,6 +389,8 @@ fn test_select_latency_policy() {
         cost_per_1k: 0.01,
         quality_score: 0.7,
         priority: 2,
+        semantic_description: String::new(),
+    
     });
 
     // Record metrics for the slow provider (higher latency)
@@ -410,6 +427,8 @@ fn test_select_round_robin() {
         cost_per_1k: 0.03,
         quality_score: 0.9,
         priority: 1,
+        semantic_description: String::new(),
+    
     });
     router.add_candidate(Candidate {
         provider: "provider-b".to_string(),
@@ -417,6 +436,8 @@ fn test_select_round_robin() {
         cost_per_1k: 0.01,
         quality_score: 0.7,
         priority: 2,
+        semantic_description: String::new(),
+    
     });
 
     let first = router.select("gpt-4").unwrap();
@@ -434,6 +455,8 @@ fn test_select_no_matching_returns_first() {
         cost_per_1k: 0.01,
         quality_score: 0.5,
         priority: 1,
+        semantic_description: String::new(),
+    
     });
 
     let selected = router.select("nonexistent-model");
@@ -460,6 +483,8 @@ fn test_select_with_policy_override() {
         cost_per_1k: 0.01,
         quality_score: 0.5,
         priority: 1,
+        semantic_description: String::new(),
+    
     });
     router.add_candidate(Candidate {
         provider: "expensive".to_string(),
@@ -467,6 +492,8 @@ fn test_select_with_policy_override() {
         cost_per_1k: 0.10,
         quality_score: 0.9,
         priority: 2,
+        semantic_description: String::new(),
+    
     });
 
     // Default is Fallback (priority-based)
@@ -579,6 +606,8 @@ fn test_candidate_serialization() {
         cost_per_1k: 0.03,
         quality_score: 0.9,
         priority: 1,
+        semantic_description: String::new(),
+    
     };
     let json = serde_json::to_string(&c).unwrap();
     let deserialized: Candidate = serde_json::from_str(&json).unwrap();
@@ -656,6 +685,8 @@ fn test_router_register_and_use_provider() {
         cost_per_1k: 0.0,
         quality_score: 0.5,
         priority: 1,
+        semantic_description: String::new(),
+    
     });
 
     let selected = router.select("mock-model");
@@ -734,6 +765,8 @@ fn test_select_by_prefixed_model_finds_bare_candidate() {
         cost_per_1k: 0.01,
         quality_score: 0.5,
         priority: 1,
+        semantic_description: String::new(),
+    
     });
     router.add_candidate(Candidate {
         provider: "deepseek".to_string(),
@@ -741,8 +774,83 @@ fn test_select_by_prefixed_model_finds_bare_candidate() {
         cost_per_1k: 0.01,
         quality_score: 0.5,
         priority: 2,
+        semantic_description: String::new(),
+    
     });
     let selected = router.select("deepseek/deepseek-chat").unwrap();
     assert_eq!(selected.provider, "deepseek");
     assert_eq!(selected.model, "deepseek-chat");
+}
+
+// ===========================================================================
+// I5 (P3.4): semantic routing
+// ===========================================================================
+
+fn sem_candidate(provider: &str, model: &str, desc: &str, priority: i32) -> Candidate {
+    Candidate {
+        provider: provider.to_string(),
+        model: model.to_string(),
+        cost_per_1k: 0.0,
+        quality_score: 0.5,
+        priority,
+        semantic_description: desc.to_string(),
+    }
+}
+
+/// Fixed-vector mock embedder: keywords map to orthogonal unit vectors.
+fn mock_embedder() -> SemanticEmbedder {
+    std::sync::Arc::new(|text: &str| -> Option<Vec<f32>> {
+        let t = text.to_lowercase();
+        if t.contains("code") || t.contains("编程") {
+            Some(vec![1.0, 0.0])
+        } else if t.contains("chat") || t.contains("闲聊") {
+            Some(vec![0.0, 1.0])
+        } else {
+            None // unknown domain = unavailable
+        }
+    })
+}
+
+#[test]
+fn test_semantic_policy_selects_matching_model() {
+    let router = Router::new(RouterConfig::default());
+    router.set_semantic_embedder(mock_embedder());
+    let code_model = sem_candidate("prov-a", "code-gen-model", "best at coding 编程 tasks", 1);
+    let chat_model = sem_candidate("prov-b", "chat-warm-model", "good at chat 闲聊 casual talk", 1);
+    let matching = vec![code_model.clone(), chat_model];
+
+    // Programming intent routes to the code model.
+    let pick = router.select_with_semantic("帮我写段 code 修复这个 bug", &matching);
+    assert_eq!(pick.as_ref().map(|c| c.model.as_str()), Some("code-gen-model"));
+
+    // Chat intent routes to the chat model.
+    let pick2 = router.select_with_semantic("陪我 chat 聊聊天", &matching);
+    assert_eq!(pick2.as_ref().map(|c| c.model.as_str()), Some("chat-warm-model"));
+}
+
+#[test]
+fn test_semantic_fallback_when_no_embedder() {
+    let router = Router::new(RouterConfig::default()); // NO embedder injected
+    let low_pri = sem_candidate("prov-a", "model-a", "code stuff", 1);
+    let high_pri = sem_candidate("prov-b", "model-b", "chat stuff", 9);
+    let matching = vec![low_pri, high_pri.clone()];
+    // Degrades to priority order (fail-open, no panic).
+    let pick = router.select_with_semantic("any intent", &matching);
+    assert_eq!(pick.as_ref().map(|c| c.model.as_str()), Some("model-b"));
+
+    // Embedder present but returns None for this text → also fallback.
+    let router2 = Router::new(RouterConfig::default());
+    router2.set_semantic_embedder(mock_embedder());
+    let pick2 = router2.select_with_semantic("unknown domain text", &matching);
+    assert_eq!(pick2.as_ref().map(|c| c.model.as_str()), Some("model-b"));
+}
+
+/// Policy enum accepts "semantic"; unknown strings keep the legacy
+/// get_policy fallback behavior (unknown name → balanced).
+#[test]
+fn test_policy_semantic_serde_roundtrip() {
+    let p: Policy = serde_json::from_str("\"semantic\"").unwrap();
+    assert!(matches!(p, Policy::Semantic));
+    let back = serde_json::to_string(&p).unwrap();
+    assert_eq!(back, "\"semantic\"");
 }

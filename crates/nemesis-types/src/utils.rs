@@ -34,6 +34,31 @@ pub fn now_timestamp() -> String {
     chrono::Local::now().to_rfc3339()
 }
 
+/// Cosine similarity between two f32 vectors, accumulated in f64.
+/// 0.0 when lengths differ, either is empty, or either norm is zero
+/// (dimension mismatch = incomparable; zero vector = undefined direction).
+///
+/// Round-5 dedup: THE single cosine implementation — nemesis-memory's
+/// `cosine_similarity` and nemesis-providers' router (semantic model
+/// routing) both delegate here so a numerics fix lands once.
+pub fn cosine_similarity_f32(a: &[f32], b: &[f32]) -> f64 {
+    if a.len() != b.len() || a.is_empty() {
+        return 0.0;
+    }
+    let mut dot = 0.0f64;
+    let mut norm_a = 0.0f64;
+    let mut norm_b = 0.0f64;
+    for i in 0..a.len() {
+        dot += f64::from(a[i]) * f64::from(b[i]);
+        norm_a += f64::from(a[i]) * f64::from(a[i]);
+        norm_b += f64::from(b[i]) * f64::from(b[i]);
+    }
+    if norm_a == 0.0 || norm_b == 0.0 {
+        return 0.0;
+    }
+    dot / (norm_a * norm_b).sqrt()
+}
+
 /// Returns the largest byte index `i` such that `i <= max_len` and `s.is_char_boundary(i)`.
 ///
 /// Safe to use for prefix slicing: `&s[..floor_char_boundary(s, n)]`

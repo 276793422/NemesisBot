@@ -89,32 +89,16 @@ struct IndexedDoc {
 /// The vector store provides semantic search over embedded entries.
 pub struct VectorStore {
     docs: RwLock<Vec<IndexedDoc>>,
-    embed: Box<dyn Fn(&str) -> Result<Vec<f32>, String> + Send + Sync>,
+    embed: std::sync::Arc<dyn Fn(&str) -> Result<Vec<f32>, String> + Send + Sync>,
     config: StoreConfig,
     persist_path: PathBuf,
 }
 
 /// Compute cosine similarity between two vectors.
+/// Round-5 dedup: delegates to the shared implementation in nemesis-types
+/// (kept as a re-export point for existing callers).
 pub fn cosine_similarity(a: &[f32], b: &[f32]) -> f64 {
-    if a.len() != b.len() || a.is_empty() {
-        return 0.0;
-    }
-
-    let mut dot = 0.0f64;
-    let mut norm_a = 0.0f64;
-    let mut norm_b = 0.0f64;
-
-    for i in 0..a.len() {
-        dot += a[i] as f64 * b[i] as f64;
-        norm_a += a[i] as f64 * a[i] as f64;
-        norm_b += b[i] as f64 * b[i] as f64;
-    }
-
-    if norm_a == 0.0 || norm_b == 0.0 {
-        return 0.0;
-    }
-
-    dot / (norm_a.sqrt() * norm_b.sqrt())
+    nemesis_types::utils::cosine_similarity_f32(a, b)
 }
 
 impl VectorStore {
@@ -136,8 +120,12 @@ impl VectorStore {
             host_services: None,
         };
 
-        let embed = new_embedding_func(&vector_config)
-            .map_err(|e| format!("Failed to create embedding function: {}", e))?;
+        let embed: std::sync::Arc<
+            dyn Fn(&str) -> Result<Vec<f32>, String> + Send + Sync,
+        > = std::sync::Arc::from(
+            new_embedding_func(&vector_config)
+                .map_err(|e| format!("Failed to create embedding function: {}", e))?,
+        );
 
         let store = Self {
             docs: RwLock::new(Vec::new()),
@@ -159,9 +147,12 @@ impl VectorStore {
     /// plugin across multiple VectorStore instances.
     #[cfg(any(test, feature = "test-fixture"))]
     pub fn new_from_embed(
-        embed: Box<dyn Fn(&str) -> Result<Vec<f32>, String> + Send + Sync>,
+        embed: crate::vector::EmbeddingFunc,
         config: StoreConfig,
     ) -> Self {
+        let embed: std::sync::Arc<
+            dyn Fn(&str) -> Result<Vec<f32>, String> + Send + Sync,
+        > = std::sync::Arc::from(embed);
         let persist_path = if config.storage_path.is_empty() {
             PathBuf::from("memory/vector/vector_store.jsonl")
         } else {
@@ -191,6 +182,18 @@ impl VectorStore {
     }
 
     /// Query the vector store for similar entries.
+    /// Clone the embedding handle out (M5): lets callers run inference
+    /// WITHOUT holding the store's RwLock across the (slow) embed call.
+    pub fn embed_handle(
+        &self,
+    ) -> std::sync::Arc<dyn Fn(&str) -> Result<Vec<f32>, String> + Send + Sync> {
+        self.embed.clone()
+    }
+
+    // Round-5: removed dead `embed_raw` (zero callers). A second public embed
+    // path beside embed_handle invited bypassing the M5 lock-discipline fix.
+    // The Arc-returning embed_handle is the one sanctioned way out.
+
     pub fn query(
         &self,
         query: &str,

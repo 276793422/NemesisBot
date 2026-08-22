@@ -117,9 +117,33 @@ pub fn read_chat_log(
         .take(end - start)
         .filter_map(|l| l.ok())
         .filter_map(|l| serde_json::from_str::<Value>(&l).ok())
+        // ROUND-5 FIX: boundary events moved to a sidecar file (see
+        // `boundary_path`), so the message jsonl can no longer contain them.
+        // The filter stays as a one-line guard for dev machines that ran a
+        // batch-3 build with interleaved boundaries — cheap and harmless.
+        .filter(|v| v.get("role").and_then(|r| r.as_str()) != Some("boundary"))
         .collect();
 
     (page, total, start > 0, start)
+}
+
+/// Read ONLY the boundary (audit) events of a session — replay/audit tooling
+/// reads through here. Round-5 fix: these live in the sidecar file
+/// (`logs/boundary/<safe_key>.jsonl`), not the message jsonl.
+pub fn read_boundary_events(session_key: &str) -> Vec<Value> {
+    let path = boundary_path(session_key);
+    if !path.exists() {
+        return Vec::new();
+    }
+    let file = match File::open(&path) {
+        Ok(f) => f,
+        Err(_) => return Vec::new(),
+    };
+    std::io::BufReader::new(file)
+        .lines()
+        .filter_map(|l| l.ok())
+        .filter_map(|l| serde_json::from_str::<Value>(&l).ok())
+        .collect()
 }
 
 /// Resolve the JSONL file path for a session key.
@@ -131,7 +155,9 @@ fn log_path(session_key: &str) -> PathBuf {
 }
 
 /// Delete a session's chat log file (JSONL). Used by session management
-/// (delete conversation) to clear the user-facing history. No-op if absent.
+/// (delete conversation) to clear the user-facing history. Also deletes the
+/// boundary-events sidecar so a re-created session doesn't inherit stale
+/// audit rows. No-op if absent.
 pub fn delete_chat_log(session_key: &str) {
     let path = log_path(session_key);
     if let Err(e) = std::fs::remove_file(&path) {
@@ -139,14 +165,27 @@ pub fn delete_chat_log(session_key: &str) {
             tracing::warn!("[chat_log] Failed to delete {}: {}", path.display(), e);
         }
     }
+    let bpath = boundary_path(session_key);
+    if let Err(e) = std::fs::remove_file(&bpath) {
+        if e.kind() != std::io::ErrorKind::NotFound {
+            tracing::warn!("[chat_log] Failed to delete {}: {}", bpath.display(), e);
+        }
+    }
 }
 
 /// Clear (truncate) a session's chat log, keeping the file. Used by session
 /// management "clear" — empties history but the session id stays usable.
+/// Also truncates the boundary-events sidecar (same lifecycle).
 pub fn clear_chat_log(session_key: &str) {
     let path = log_path(session_key);
     if let Err(e) = fs::write(&path, "") {
         tracing::warn!("[chat_log] Failed to clear {}: {}", path.display(), e);
+    }
+    let bpath = boundary_path(session_key);
+    if bpath.exists() {
+        if let Err(e) = fs::write(&bpath, "") {
+            tracing::warn!("[chat_log] Failed to clear {}: {}", bpath.display(), e);
+        }
     }
 }
 
@@ -183,3 +222,53 @@ pub fn read_session_meta(session_key: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests;
+
+// ---------------------------------------------------------------------------
+// I3 (U9): boundary events (round-5 fix: sidecar file)
+// ---------------------------------------------------------------------------
+
+/// Resolve the boundary-events SIDECAR path (`logs/boundary/<safe_key>.jsonl`).
+///
+/// Round-5 review fix: boundary events used to be interleaved into the
+/// message jsonl — which skewed `read_chat_log` pagination counts (total
+/// counted boundary lines, pages underfilled or came back empty with
+/// has_more=true), made every NEW session's first line a `turn_start` row
+/// (blank title/preview in the Dashboard session list, which reads
+/// `lines[0]["content"]`), and rendered empty bubbles in raw readers
+/// (`logs.rs` session_detail / scan_session_logs bypass read_chat_log).
+/// A separate file fixes all of them at the storage layer. Deliberately NOT
+/// inside `session_logs/`: that dir is scanned for `*.jsonl` as sessions —
+/// a sidecar there would appear as a phantom session.
+fn boundary_path(session_key: &str) -> PathBuf {
+    let safe_key = session_key.replace(':', "_");
+    default_path_manager()
+        .boundary_events_dir()
+        .join(format!("{}.jsonl", safe_key))
+}
+
+/// Append a turn/step boundary event to the session's boundary sidecar.
+/// Lightweight durable markers for replay/audit: `turn_start` / `turn_end`
+/// (with a reason) / `llm_request` (model + token estimate) /
+/// `steer_injected`. Never contains message bodies.
+pub fn append_boundary_event(session_key: &str, kind: &str, detail: &str) {
+    let path = boundary_path(session_key);
+    if let Some(parent) = path.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+    let mut file = match OpenOptions::new().create(true).append(true).open(&path) {
+        Ok(f) => f,
+        Err(e) => {
+            tracing::warn!("[chat_log] boundary event open failed {}: {}", path.display(), e);
+            return;
+        }
+    };
+    let entry = serde_json::json!({
+        "role": "boundary",
+        "event": kind,
+        "detail": detail,
+        "timestamp": Local::now().to_rfc3339(),
+    });
+    if let Ok(line) = serde_json::to_string(&entry) {
+        let _ = writeln!(file, "{}", line);
+    }
+}

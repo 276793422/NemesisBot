@@ -810,3 +810,58 @@ fn rand_u16() -> u16 {
 
 #[cfg(test)]
 mod tests;
+
+// ---------------------------------------------------------------------------
+// I3 (U9): request/chat-log consistency anchor (lightweight)
+// ---------------------------------------------------------------------------
+
+/// Message-role sequence extracted from one side of the comparison.
+#[derive(Debug, PartialEq)]
+pub struct RoleSequence {
+    pub roles: Vec<String>,
+    /// Boundary events in the chat log (kind, in order).
+    pub boundaries: Vec<String>,
+}
+
+/// Compare a recorded LLM request's message role sequence against the
+/// roles replayed from the session's chat log entries. Lightweight anchor
+/// (counts + role order only — NOT byte equality; the full-fidelity check
+/// comes with complete session event sourcing). Returns a warning string
+/// on mismatch (caller logs it; this NEVER fails the request path).
+///
+/// STATUS (full review L6): audit tooling — consumed by tests today; the
+/// production wiring point is the future replay/audit console (U9's
+/// follow-up). Exported deliberately for that consumer.
+pub fn check_request_log_consistency(
+    request_roles: &[&str],
+    chat_log_roles: &[&str],
+) -> Result<(), String> {
+    // The request may append injected non-persisted context (snapshots,
+    // nudges) as extra user/system messages, and repair may drop/insert
+    // tool pairs. The INVARIANT worth catching today: every PERSISTED chat
+    // log role sequence must appear as a subsequence of the request roles
+    // (persistence cannot invent messages the provider never saw).
+    let mut ri = 0usize;
+    for cr in chat_log_roles {
+        loop {
+            if ri >= request_roles.len() {
+                let failed_at = chat_log_roles
+                    .iter()
+                    .take_while(|r| **r != *cr)
+                    .count();
+                return Err(format!(
+                    "consistency: chat-log role '{}' at index {} not present in the recorded request roles (request has {} entries)",
+                    cr,
+                    failed_at,
+                    request_roles.len()
+                ));
+            }
+            if &request_roles[ri] == cr {
+                ri += 1;
+                break;
+            }
+            ri += 1;
+        }
+    }
+    Ok(())
+}

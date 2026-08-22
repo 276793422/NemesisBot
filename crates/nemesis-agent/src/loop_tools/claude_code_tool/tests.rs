@@ -56,7 +56,7 @@ async fn test_claude_code_tool_timeout_returns_error() {
     let dir = tempfile::tempdir().unwrap();
     let script = if cfg!(windows) {
         let p = dir.path().join("fake_claude.bat");
-        std::fs::write(&p, "@echo off\r\nping -n 30 127.0.0.1 > nul\r\n").unwrap();
+        std::fs::write(&p, "@echo off\r\nping -n 3 127.0.0.1 > nul\r\n").unwrap();
         p
     } else {
         let p = dir.path().join("fake_claude.sh");

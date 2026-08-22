@@ -1615,3 +1615,24 @@ async fn test_cron_create_continue_session_uses_ext() {
         assert_eq!(j.payload.session_key, None, "default stays fresh-session");
     }
 }
+
+// ===========================================================================
+// I4 (U13 half): Codex tool registration gate
+// ===========================================================================
+
+#[test]
+fn test_codex_tool_not_registered_default() {
+    use crate::loop_tools::SharedToolConfig;
+    let tools = crate::loop_tools::register_shared_tools(&SharedToolConfig::default());
+    assert!(
+        !tools.contains_key("codex_delegate"),
+        "default (disabled) config must not register codex_delegate"
+    );
+    // Enabled but CLI absent (this test host) → still not registered.
+    let mut cfg = SharedToolConfig::default();
+    cfg.codex_tool_enabled = true;
+    let tools2 = crate::loop_tools::register_shared_tools(&cfg);
+    if crate::loop_tools::codex_tool::find_codex_cli().is_none() {
+        assert!(!tools2.contains_key("codex_delegate"));
+    }
+}

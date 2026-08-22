@@ -1,21 +1,24 @@
 //! Skills catalog digest injection (H3 / P2.2, dsh-alignment second batch).
 //!
 //! Renders the installed-skills catalog as a compact digest (one line per
-//! skill, name + truncated description) and injects it as a system-role
-//! message at the same injection point as the time/env hint — but ONLY when
-//! the digest CHANGED since the last injection for this session (dsh's
-//! catalog-digest discipline: identical catalog ⇒ no new message ⇒ the
-//! provider's warm KV prefix is preserved; a changed catalog injects a
-//! replacement message that supersedes earlier ones).
+//! skill, name + truncated description). Since I2 (U8) the digest rides the
+//! MERGED snapshot message as one section among several (time/env + skills +
+//! workspace instructions) inside a single <system-reminder> wrapper,
+//! injected on EVERY build before the last user message — the injection is
+//! NOT persisted in history, so each build must re-emit it, and byte-identical
+//! re-emission (deterministic rendering) is what preserves the provider's
+//! warm KV prefix.
 //!
-//! Known limitation (documented per goal): digest state is in-process,
-//! per-session. A restart loses it and re-injects once — acceptable; the
-//! restart itself already breaks the prefix.
+//! Round-5 note (dead state removed): the original change-detection design
+//! (hash the merged content, inject only when it changed) was superseded by
+//! the I2 merged-snapshot semantics — with the time section always present
+//! and re-emitted every build, the stored hash gated nothing. The map and
+//! per-build sha256 bookkeeping were removed; `should_inject` is now a
+//! documented passthrough kept for the loop.rs call shape. If true
+//! change-gating returns (e.g. per-field supersedes headers per U8's full
+//! design), rebuild it as a SnapshotProjection, not by resurrecting this.
 
-use parking_lot::Mutex;
 use sha2::{Digest, Sha256};
-use std::collections::HashMap;
-use std::sync::Arc;
 
 /// Max characters of each skill's description kept in the digest.
 const DIGEST_DESC_CHARS: usize = 500;
@@ -62,38 +65,37 @@ pub fn digest_message(rendered: &str) -> String {
     )
 }
 
-/// Per-session digest state: the hash of the last injected catalog. Shared
-/// via Arc on AgentLoop.
-pub struct DigestState {
-    last_injected: Mutex<HashMap<String, String>>,
-}
+/// Digest emission state handle (round-5: stateless).
+///
+/// The original change-detection map was dead under I2 merged-snapshot
+/// semantics (see module doc). Kept as a type so the AgentLoop field and
+/// the H5 touch-invalidation call chain (`invalidate_context_digests`)
+/// stay intact — the RE-READ of instruction files already happens every
+/// build (sections are re-rendered from disk each time), so touch
+/// invalidation is structurally covered. If change-gating returns, this is
+/// the place to hang per-session state again.
+pub struct DigestState;
 
 impl DigestState {
     pub fn new() -> Self {
-        Self {
-            last_injected: Mutex::new(HashMap::new()),
-        }
+        Self
     }
 
-    /// Decide whether this catalog should inject for `session_key`, and
-    /// record the decision. Returns `Some(rendered)` when the catalog changed
-    /// (caller builds the message and injects it); `None` when unchanged
-    /// (inject nothing — preserve the prefix).
-    pub fn should_inject(&self, session_key: &str, rendered: &str) -> Option<String> {
-        let hash = digest_hash(rendered);
-        let mut map = self.last_injected.lock();
-        if map.get(session_key) == Some(&hash) {
-            return None;
-        }
-        map.insert(session_key.to_string(), hash);
+    /// Decide the context-digest message for this build. Under I2
+    /// merged-snapshot semantics this ALWAYS re-emits (the injection is not
+    /// persisted in history; every build must carry it, byte-identically
+    /// when nothing changed — deterministic rendering preserves the provider
+    /// prefix). `session_key`/hash bookkeeping was removed with the dead
+    /// change-detection state (round-5).
+    pub fn should_inject(&self, _session_key: &str, rendered: &str) -> Option<String> {
         Some(rendered.to_string())
     }
 
-    /// H5 (U18): drop every session's recorded digest (touch-driven
-    /// invalidation). Each live session re-injects once on its next build.
-    pub fn clear_all(&self) {
-        self.last_injected.lock().clear();
-    }
+    /// H5 (U18): touch-driven invalidation. Structurally a no-op since
+    /// round-5 (sections re-read from disk on every build — there is no
+    /// cached rendering to invalidate); kept for the call-chain shape and
+    /// as the anchor if change-gating returns.
+    pub fn clear_all(&self) {}
 }
 
 /// Convenience: collect the catalog from a SkillsLoader scan result
@@ -109,9 +111,6 @@ pub fn catalog_from_skills_infos(
         })
         .collect()
 }
-
-/// Shared digest-state handle.
-pub type SharedDigestState = Arc<DigestState>;
 
 #[cfg(test)]
 mod tests;

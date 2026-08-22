@@ -169,7 +169,7 @@ impl Default for SharedResources {
 pub fn build_agent_loop(
     shared: &Arc<SharedResources>,
 ) -> Result<Arc<nemesis_agent::r#loop::AgentLoop>> {
-    use nemesis_agent::r#loop::{AgentLoop, ConcurrentMode};
+    use nemesis_agent::r#loop::AgentLoop;
     use nemesis_agent::types::AgentConfig;
 
     // 1. Re-read config.json from disk.
@@ -247,12 +247,23 @@ pub fn build_agent_loop(
     };
 
     let max_continuation_permits = cfg.agents.defaults.max_continuation_permits.max(0) as usize;
+    // I1 (U7): concurrent_request_mode from config ("reject" default =
+    // legacy behavior; "queue"/"steer" enable the session inbox).
+    let mode_str = cfg.agents.defaults.concurrent_request_mode.trim().to_lowercase();
+    if !matches!(mode_str.as_str(), "reject" | "queue" | "steer") {
+        tracing::warn!(
+            "[AgentFactory] unknown concurrent_request_mode '{}' — falling back to reject",
+            cfg.agents.defaults.concurrent_request_mode
+        );
+    }
+    let concurrent_mode = nemesis_agent::r#loop::parse_concurrent_mode(&mode_str);
+    let queue_size = cfg.agents.defaults.queue_size.max(1) as usize;
     let mut agent_loop = AgentLoop::new_bus(
         Box::new(adapter),
         agent_config,
         shared.agent_outbound_tx.clone(),
-        ConcurrentMode::Reject,
-        8,
+        concurrent_mode,
+        queue_size,
         max_continuation_permits,
     );
     // Phase 4a: apply the resolved startup tier + remember the config path so
@@ -270,6 +281,9 @@ pub fn build_agent_loop(
     // H5 (U18): workspace instruction chain (AGENTS.md/CLAUDE.md) rides the
     // same merged context-digest injection.
     agent_loop.set_workspace_root(shared.home.join("workspace"));
+    // Full-review M4: snapshot role from config ("user" default; "system"
+    // for strict chat templates).
+    agent_loop.set_snapshot_role(&cfg.agents.defaults.snapshot_role);
     // 绑定全局急停状态（每次重建都重新绑到 SharedResources 上的同一个 Arc，
     // 所以急停状态在 agent stop/start 后自动保持）。
     agent_loop.set_estop(shared.estop.clone());
@@ -564,6 +578,9 @@ fn build_shared_tool_config(
         // H7 (U13 half): opt-in claude_code delegation tool.
         claude_code_tool_enabled: cfg.agents.claude_code_tool.enabled,
         claude_code_tool_timeout_secs: cfg.agents.claude_code_tool.timeout_secs,
+        // I4 (U13 other half): opt-in codex delegation tool.
+        codex_tool_enabled: cfg.agents.codex_tool.enabled,
+        codex_tool_timeout_secs: cfg.agents.codex_tool.timeout_secs,
     }
 }
 
@@ -988,4 +1005,25 @@ fn spawn_daily_cleanup(store: Arc<nemesis_agent::session::SessionStore>, label: 
             }
         }
     });
+}
+
+/// I5 (P3.4): semantic-embedder assembly helper. The providers Router is a
+/// complete-but-not-yet-wired module (no production consumer builds it
+/// today); this helper is the ready-made bridge for when it enters the
+/// factory chain: it wires the memory manager's embedding backend (ONNX
+/// plugin when loaded, n-gram fallback otherwise) into the router as the
+/// SemanticEmbedder. Compilation-verified; invoked at Router adoption time.
+#[allow(dead_code)]
+#[cfg(feature = "memory")]
+pub fn attach_semantic_embedder(
+    router: &nemesis_providers::router::Router,
+    memory: Option<&std::sync::Arc<nemesis_memory::manager::MemoryManager>>,
+) {
+    let Some(memory) = memory else {
+        return; // no memory subsystem => Semantic degrades to fallback
+    };
+    let mgr = memory.clone();
+    router.set_semantic_embedder(std::sync::Arc::new(move |text: &str| {
+        mgr.embed_text(text)
+    }));
 }

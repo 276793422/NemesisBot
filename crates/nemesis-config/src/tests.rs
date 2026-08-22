@@ -588,6 +588,7 @@ fn test_full_config_roundtrip() {
     let config = Config {
         agents: AgentsConfig {
             claude_code_tool: ClaudeCodeToolConfig::default(),
+            codex_tool: CodexToolConfig::default(),
             defaults: AgentDefaults {
                 max_tokens: 256000,
                 temperature: 0.5,

@@ -10,6 +10,13 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+/// I5 (P3.4): runtime-injected embedding function. Providers do NOT
+/// depend on any embedding crate — the assembly layer (agent_factory)
+/// injects this closure (typically wrapping nemesis-memory's vector store).
+/// `None` = embedding unavailable for this text → caller degrades.
+pub type SemanticEmbedder =
+    Arc<dyn Fn(&str) -> Option<Vec<f32>> + Send + Sync>;
+
 /// Selection policy.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -19,6 +26,11 @@ pub enum Policy {
     Latency,
     RoundRobin,
     Fallback,
+    /// I5 (P3.4): semantic routing — embed the conversation text and pick
+    /// the candidate whose (embedded) description is closest by cosine.
+    /// Requires an injected SemanticEmbedder at runtime; without one the
+    /// selection degrades to Fallback (fail-open, never blocks).
+    Semantic,
 }
 
 impl Default for Policy {
@@ -188,6 +200,11 @@ pub struct Candidate {
     pub quality_score: f64,
     #[serde(default)]
     pub priority: i32,
+    /// I5 (P3.4): natural-language "what this model is good at". Used by
+    /// Policy::Semantic (embedded at selection time, cached by description
+    /// hash). Empty = not considered for semantic matching.
+    #[serde(default)]
+    pub semantic_description: String,
 }
 
 fn default_quality() -> f64 {
@@ -369,6 +386,10 @@ pub struct Router {
     metrics: Arc<MetricsCollector>,
     config: RwLock<RouterConfig>,
     rr_counters: DashMap<String, AtomicU64>,
+    /// I5 (P3.4): injected embedder (None ⇒ Semantic degrades to Fallback).
+    semantic_embedder: RwLock<Option<SemanticEmbedder>>,
+    /// I5: cached description vectors, keyed by the description text.
+    semantic_desc_cache: DashMap<String, Arc<Vec<f64>>>,
 }
 
 impl Router {
@@ -379,7 +400,20 @@ impl Router {
             metrics: Arc::new(MetricsCollector::new(1000)),
             config: RwLock::new(config),
             rr_counters: DashMap::new(),
+            semantic_embedder: RwLock::new(None),
+            semantic_desc_cache: DashMap::new(),
         }
+    }
+
+    /// I5 (P3.4): inject the embedding closure (assembly-time; providers
+    /// stays free of embedding-crate dependencies). Without a call,
+    /// Policy::Semantic selection degrades to Fallback. Swapping the
+    /// embedder also invalidates the cached description vectors (M3 fix:
+    /// a new backend produces a different vector space — stale entries
+    /// would be compared against nothing).
+    pub fn set_semantic_embedder(&self, embedder: SemanticEmbedder) {
+        self.semantic_desc_cache.clear();
+        *self.semantic_embedder.write() = Some(embedder);
     }
 
     /// Register a provider.
@@ -498,9 +532,106 @@ impl Router {
                 .max_by(|a, b| a.priority.cmp(&b.priority))
                 .cloned()
                 .cloned(),
+            Policy::Semantic => self.select_semantic(matching),
         }
     }
 
+
+    /// I5 (P3.4): semantic selection. Embeds nothing per candidate unless a
+    /// SemanticEmbedder is injected; every text must embed (None anywhere ⇒
+    /// degrade to Fallback with a single warn — fail-open).
+    fn select_semantic(&self, matching: &[&Candidate]) -> Option<Candidate> {
+        // This internal path (select_by_policy) carries NO intent text, so
+        // semantic matching is impossible — degrades deterministically to
+        // priority order. M3 fix: the warning fires ONCE per process
+        // (select() can be called per request; per-call warns flood logs).
+        static SEMANTIC_DEGRADE_WARNED: std::sync::atomic::AtomicBool =
+            std::sync::atomic::AtomicBool::new(false);
+        if !SEMANTIC_DEGRADE_WARNED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+            if self.semantic_embedder.read().is_none() {
+                tracing::warn!(
+                    "[Router] semantic policy selected without intent/embedder — degrading to priority order (use select_with_semantic; warning shown once)"
+                );
+            } else {
+                tracing::warn!(
+                    "[Router] semantic policy needs intent text — use select_with_semantic(); degrading to priority order (warning shown once)"
+                );
+            }
+        }
+        matching
+            .iter()
+            .max_by(|a, b| a.priority.cmp(&b.priority))
+            .cloned()
+            .cloned()
+    }
+
+    /// I5 (P3.4): semantic selection with an explicit INTENT text (the
+    /// conversation excerpt or the routing alias description). Weights the
+    /// conversation: last user message is the dominant signal (0.7), last
+    /// assistant reply secondary (0.3) — callers pass the already-weighted
+    /// blend or simply the last user message; this fn embeds ONE text.
+    pub fn select_with_semantic(
+        &self,
+        intent_text: &str,
+        matching: &[Candidate],
+    ) -> Option<Candidate> {
+        // Round-5 fix: once-per-process degrade warns, mirroring the
+        // select_semantic guard above — this fn is per-request hot path once
+        // the Router gets a production consumer; per-call warns would flood.
+        static SEMANTIC_NO_EMBEDDER_WARNED: std::sync::atomic::AtomicBool =
+            std::sync::atomic::AtomicBool::new(false);
+        static SEMANTIC_NO_INTENT_WARNED: std::sync::atomic::AtomicBool =
+            std::sync::atomic::AtomicBool::new(false);
+        let embedder = self.semantic_embedder.read().clone();
+        let Some(embedder) = embedder else {
+            if !SEMANTIC_NO_EMBEDDER_WARNED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                tracing::warn!(
+                    "[Router] semantic selection without injected embedder — fallback order (warning shown once)"
+                );
+            }
+            return matching
+                .iter()
+                .max_by(|a, b| a.priority.cmp(&b.priority))
+                .cloned();
+        };
+        // Intent embed unavailable (e.g. unknown domain) — degrade to
+        // priority order, NOT None (fail-open: routing always answers).
+        let Some(q) = embedder(intent_text) else {
+            if !SEMANTIC_NO_INTENT_WARNED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                tracing::warn!(
+                    "[Router] semantic intent embedding unavailable — fallback order (warning shown once)"
+                );
+            }
+            return matching.iter().max_by_key(|c| c.priority).cloned();
+        };
+        let q: Vec<f64> = q.into_iter().map(f64::from).collect();
+
+        let embed_cached = |text: &str| -> Option<Arc<Vec<f64>>> {
+            if let Some(hit) = self.semantic_desc_cache.get(text) {
+                return Some(hit.clone());
+            }
+            let v = embedder(text)?;
+            let v: Vec<f64> = v.into_iter().map(f64::from).collect();
+            let arc = Arc::new(v);
+            self.semantic_desc_cache.insert(text.to_string(), arc.clone());
+            Some(arc)
+        };
+
+        let mut best: Option<(f64, &Candidate)> = None;
+        for c in matching.iter().filter(|c| !c.semantic_description.is_empty()) {
+            let Some(dv) = embed_cached(&c.semantic_description) else {
+                continue; // this candidate's description won't embed — skip
+            };
+            let score = cosine(&q, &dv);
+            if best.as_ref().map_or(true, |(bs, _)| score > *bs) {
+                best = Some((score, c));
+            }
+        }
+        best.map(|(_, c)| c.clone()).or_else(|| {
+            // All descriptions failed to embed — deterministic fallback.
+            matching.iter().max_by_key(|c| c.priority).cloned()
+        })
+    }
     /// Set the default routing policy.
     ///
     /// Mirrors Go's `Router.SetPolicy`.
@@ -632,3 +763,16 @@ fn model_matches(candidate_model: &str, requested: &str) -> bool {
 
 #[cfg(test)]
 mod tests;
+
+/// Cosine similarity; 0.0 when either vector is empty or lengths differ
+/// (embedding dimension mismatch = incomparable, treat as orthogonal).
+/// Round-5 dedup: delegates to the shared f32 implementation in
+/// nemesis-types (router vectors are f64-cast from f32 embeddings).
+fn cosine(a: &[f64], b: &[f64]) -> f64 {
+    if a.is_empty() || b.is_empty() || a.len() != b.len() {
+        return 0.0;
+    }
+    let af: Vec<f32> = a.iter().map(|x| *x as f32).collect();
+    let bf: Vec<f32> = b.iter().map(|x| *x as f32).collect();
+    nemesis_types::utils::cosine_similarity_f32(&af, &bf)
+}

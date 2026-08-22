@@ -155,11 +155,28 @@ fn test_touch_invalidates_digest_and_reinjects() {
         .iter()
         .any(|m| m.content.contains("version one instructions")));
 
-    // 2. Second build without change: not re-injected.
+    // 2. Second build without change: re-emitted byte-identically (I2
+    // stable re-emission — same content, same bytes).
     let m2 = agent_loop.build_messages(&instance);
-    assert!(!m2
+    let strip_time = |c: &str| -> String {
+        c.lines()
+            .filter(|l| !l.contains("Current Time") && !l.trim_start().starts_with("20"))
+            .collect::<Vec<_>>()
+            .join("
+")
+    };
+    let v1: Vec<String> = m1
         .iter()
-        .any(|m| m.content.contains("Workspace Instructions")));
+        .filter(|m| m.content.contains("Workspace Instructions"))
+        .map(|m| strip_time(&m.content))
+        .collect();
+    let v2: Vec<String> = m2
+        .iter()
+        .filter(|m| m.content.contains("Workspace Instructions"))
+        .map(|m| strip_time(&m.content))
+        .collect();
+    assert!(!v2.is_empty(), "digest re-emitted (not persisted)");
+    assert_eq!(v1, v2, "identical when unchanged (time-insensitive)");
 
     // 3. Touch the chain file (new content) + invalidate (dispatch path
     //    calls invalidate_context_digests when a chain file is touched).
