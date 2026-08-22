@@ -26,6 +26,7 @@ pub mod checkpoint;
 pub mod context;
 pub mod estop;
 pub mod executor_pipe;
+pub mod history_search;
 pub mod instance;
 pub mod r#loop;
 pub mod loop_continuation;

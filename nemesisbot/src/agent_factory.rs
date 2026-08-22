@@ -428,6 +428,33 @@ pub fn build_agent_loop(
         }
     }
 
+    // P3.1 (sixth batch): wire the auto-inject channel — the memory manager
+    // (read-only retrieval, deliberately NOT the approval-gated executor)
+    // plus the auto_inject/top_k flags from config.enhanced_memory.json.
+    // Default (auto_inject=false) keeps message output byte-identical.
+    // `shared.memory_manager` is None when `memory.enabled=false` in
+    // config.json → no retrieval, injection stays off regardless of flags.
+    #[cfg(feature = "memory")]
+    {
+        let config_dir = shared.home.join("workspace").join("config");
+        let (auto, top_k) = {
+            let emb = nemesis_memory::vector::embedding_config::load_embedding_config(
+                &config_dir,
+            );
+            (emb.auto_inject, emb.auto_inject_top_k)
+        };
+        agent_loop.set_memory_inject(shared.memory_manager.clone(), auto, top_k);
+        if auto {
+            info!("[AgentFactory] memory auto-inject enabled (top_k={top_k})");
+        }
+    }
+    #[cfg(not(feature = "memory"))]
+    {
+        // Flags-only stub (no manager exists without the memory crate);
+        // injection is structurally a no-op here regardless.
+        agent_loop.set_memory_inject(false, 3);
+    }
+
     // 8. Register ClusterRpcTool (using shared call_fn + peers_fn).
     if let (Some(config), Some(call_fn)) = (&shared.cluster_rpc_config, &shared.cluster_rpc_call_fn)
     {

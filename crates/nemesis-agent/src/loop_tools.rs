@@ -200,6 +200,10 @@ impl Tool for ReadFileTool {
             .await
             .map_err(|e| format!("Failed to read file: {}", e))
     }
+
+    fn is_read_only(&self) -> bool {
+        true
+    }
 }
 
 /// A tool that writes content to a file on disk.
@@ -320,6 +324,10 @@ impl Tool for ListDirectoryTool {
         } else {
             Ok(listing.join("\n"))
         }
+    }
+
+    fn is_read_only(&self) -> bool {
+        true
     }
 }
 
@@ -1415,6 +1423,10 @@ impl Tool for WebSearchTool {
 
         Err("No search provider configured. Enable at least one search provider.".to_string())
     }
+
+    fn is_read_only(&self) -> bool {
+        true
+    }
 }
 
 impl WebSearchTool {
@@ -1868,6 +1880,10 @@ impl Tool for WebFetchTool {
                 )
             })
         }
+    }
+
+    fn is_read_only(&self) -> bool {
+        true
     }
 }
 
@@ -3367,6 +3383,10 @@ impl Tool for GrepTool {
             ))
         }
     }
+
+    fn is_read_only(&self) -> bool {
+        true
+    }
 }
 
 /// Git tool — read-only git queries (status/diff/log/show/branch) in the workspace.
@@ -3921,6 +3941,62 @@ impl Tool for CliReferenceTool {
         } else {
             cli_detail(command)
         }
+    }
+}
+
+/// U20 (sixth batch): cross-session full-text search over chat history
+/// (session_logs). Lazy-indexes on first use (FTS5), falls back to a linear
+/// scan if the index DB is unavailable. Read-only.
+pub struct HistorySearchTool;
+
+impl HistorySearchTool {
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+#[async_trait]
+impl Tool for HistorySearchTool {
+    fn description(&self) -> String {
+        "Search past conversation history across ALL sessions (FTS full-text). \
+         Returns session key + snippet + timestamp for each hit — use it to find \
+         which conversation discussed a topic or contains specific wording. \
+         Supports Chinese and English."
+            .to_string()
+    }
+
+    fn parameters(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "Search text (words or a phrase)."
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Max hits (default 10, max 100)."
+                }
+            },
+            "required": ["query"]
+        })
+    }
+
+    async fn execute(&self, args: &str, _context: &RequestContext) -> Result<String, String> {
+        let v: serde_json::Value = serde_json::from_str(args)
+            .map_err(|e| format!("Invalid arguments: {}", e))?;
+        let query = v
+            .get("query")
+            .and_then(|q| q.as_str())
+            .ok_or("Missing 'query' argument")?;
+        if query.trim().is_empty() {
+            return Err("'query' must not be empty".to_string());
+        }
+        let limit = v.get("limit").and_then(|l| l.as_u64()).unwrap_or(10) as usize;
+        // Lazy full index on first use (mtime-incremental after that).
+        crate::history_search::reindex_session_logs();
+        let hits = crate::history_search::search(query, limit);
+        Ok(crate::history_search::render_hits(&hits))
     }
 }
 
@@ -4804,6 +4880,11 @@ pub fn register_shared_tools(config: &SharedToolConfig) -> HashMap<String, Box<d
     tools.insert(
         "cli_reference".to_string(),
         Box::new(CliReferenceTool::new()),
+    );
+    // U20 (sixth batch): cross-session history full-text search.
+    tools.insert(
+        "history_search".to_string(),
+        Box::new(HistorySearchTool::new()),
     );
     {
         let snapshot = config

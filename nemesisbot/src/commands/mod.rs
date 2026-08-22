@@ -13,6 +13,7 @@ pub mod estop;
 #[cfg(feature = "forge")]
 pub mod forge;
 pub mod gateway;
+pub mod history;
 pub mod log;
 pub mod mcp;
 #[cfg(feature = "memory")]

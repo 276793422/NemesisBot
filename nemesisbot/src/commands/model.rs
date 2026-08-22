@@ -75,9 +75,13 @@ pub enum ModelAction {
     /// Run a capability probe — sends 7 short tool-use tasks to the model and
     /// writes the detected tier to config. Costs ~7 LLM calls. Explicit only.
     Probe { name: String },
+    /// U16 (sixth batch): fetch the models.dev catalog (context windows /
+    /// max output tokens per model) and cache it at
+    /// `<config>/models_catalog.json`. `model add` auto-fills from the cache.
+    CatalogUpdate,
 }
 
-pub fn run(action: ModelAction, local: bool) -> Result<()> {
+pub async fn run(action: ModelAction, local: bool) -> Result<()> {
     let home = common::resolve_home(local);
     let cfg_path = common::config_path(&home);
 
@@ -135,6 +139,35 @@ pub fn run(action: ModelAction, local: bool) -> Result<()> {
             // tier. Resolved at runtime from the model name (and any real_name /
             // model_size_b the user adds later). Override with `model set-tier`.
             entry["model_tier"] = serde_json::Value::String("auto".to_string());
+
+            // U16 (sixth batch): auto-fill context_window / max_output_tokens
+            // from the models.dev catalog cache when the model is a catalog
+            // hit and the user didn't set them otherwise (there is no CLI
+            // flag for these today — catalog is the only writer besides a
+            // manual config edit). Falls back silently when no/empty cache:
+            // `model catalog update` populates it.
+            {
+                let cfg_dir = cfg_path
+                    .parent()
+                    .map(|p| p.to_path_buf())
+                    .unwrap_or_default();
+                if let Ok(Some(cat)) = catalog::load_cache(&cfg_dir) {
+                    if let Some(hit) = catalog::lookup(&cat, &model) {
+                        entry["context_window"] =
+                            serde_json::Value::Number(hit.context_window.into());
+                        if let Some(mot) = hit.max_output_tokens {
+                            entry["max_output_tokens"] = serde_json::Value::Number(mot.into());
+                        }
+                        println!(
+                            "  Catalog hit (models.dev): context_window={}, max_output_tokens={}",
+                            hit.context_window,
+                            hit.max_output_tokens
+                                .map(|n| n.to_string())
+                                .unwrap_or_else(|| "(not declared)".to_string())
+                        );
+                    }
+                }
+            }
 
             // Add to model list
             if let Some(obj) = cfg.as_object_mut() {
@@ -570,6 +603,51 @@ pub fn run(action: ModelAction, local: bool) -> Result<()> {
             })?;
             println!("{}", format_probe_report(&name, &report));
         }
+        ModelAction::CatalogUpdate => {
+            if !cfg_path.exists() {
+                anyhow::bail!("Configuration not found. Run 'nemesisbot onboard default' first.");
+            }
+            println!("正在拉取 models.dev 模型目录（{}，失败自动走 jsDelivr 镜像）...", catalog::API_URL);
+            let cfg_dir = cfg_path
+                .parent()
+                .map(|p| p.to_path_buf())
+                .unwrap_or_default();
+            match catalog::fetch_http().await {
+                Ok(entries) => {
+                    let n = entries.len();
+                    catalog::save_cache(&cfg_dir, entries).map_err(|e| {
+                        anyhow::anyhow!("目录写入失败（{}）：{e}", catalog::catalog_path(&cfg_dir).display())
+                    })?;
+                    println!(
+                        "目录已更新：{} 个模型 → {}",
+                        n,
+                        catalog::catalog_path(&cfg_dir).display()
+                    );
+                    println!("之后 `model add` 命中的模型会自动填充 context_window / max_output_tokens。");
+                }
+                Err(e) => {
+                    // Offline/intranet semantics: keep the existing cache,
+                    // report loudly, exit non-zero (CLI contract).
+                    let cached = catalog::load_cache(&cfg_dir).ok().flatten();
+                    match cached {
+                        Some(cat) => {
+                            println!(
+                                "拉取失败（{e}），保留现有缓存：{} 个模型（fetched_at={}）",
+                                cat.entries.len(),
+                                cat.fetched_at
+                            );
+                        }
+                        None => {
+                            anyhow::bail!(
+                                "拉取失败且无本地缓存：{e}\n\
+                                 内网部署请在外网机器上运行 `model catalog update` 后拷贝 {} 过来。",
+                                catalog::catalog_path(&cfg_dir).display()
+                            );
+                        }
+                    }
+                }
+            }
+        }
     }
     Ok(())
 }
@@ -678,6 +756,9 @@ fn format_probe_report(name: &str, r: &nemesis_agent::probe::ProbeReport) -> Str
     s.push_str(&format!("  → tier={} (已写入 config.json)", r.tier));
     s
 }
+
+/// U16 (sixth batch): models.dev catalog fetch / cache / lookup.
+pub mod catalog;
 
 #[cfg(test)]
 mod tests;

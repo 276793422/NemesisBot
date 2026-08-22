@@ -72,7 +72,13 @@ pub fn append_chat_log_full(
     }
     if let Err(e) = writeln!(file, "{}", entry) {
         tracing::warn!("[chat_log] Failed to write to {}: {}", path.display(), e);
+        return;
     }
+    // U20 (sixth batch): lazy FTS index hook — best-effort, failures inside
+    // are swallowed (the next full reindex repairs). Timestamp mirrors the
+    // entry written above.
+    let ts = entry.get("timestamp").and_then(|t| t.as_str()).unwrap_or("");
+    crate::history_search::index_append(session_key, role, content, ts);
 }
 
 /// Read chat log with pagination.

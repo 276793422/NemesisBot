@@ -222,6 +222,26 @@ pub fn resolve_reasoning_effort(cfg: &serde_json::Value, active_alias: &str) -> 
     }
 }
 
+/// U16 (sixth batch): resolve the per-model `context_window` (input token
+/// capacity) for the active model alias. Mirrors
+/// [`resolve_max_output_tokens`]. `None` → caller keeps its default (the
+/// historical 32000 hardcoded in `AgentInstance`). Written by `model add`
+/// when the models.dev catalog hit fills it, or manually via config.json.
+pub fn resolve_context_window(cfg: &serde_json::Value, active_alias: &str) -> Option<i64> {
+    cfg.get("model_list")
+        .and_then(|v| v.as_array())
+        .and_then(|arr| {
+            arr.iter().find(|m| {
+                let name = m.get("model_name").and_then(|v| v.as_str()).unwrap_or("");
+                let full = m.get("model").and_then(|v| v.as_str()).unwrap_or("");
+                name == active_alias || full == active_alias
+            })
+        })
+        .and_then(|m| m.get("context_window"))
+        .and_then(|v| v.as_i64())
+        .filter(|w| *w > 0)
+}
+
 /// Resolve the display model id (`provider/name`, e.g. `deepseek/deepseek-v4-flash`)
 /// for the active model alias, by looking up `model_list[]` for the matching
 /// entry (by `model_name` or `model`) and returning its `model` field. Falls
@@ -311,6 +331,12 @@ fn detect_tier_from_keywords(name: &str) -> Option<ModelTier> {
 /// plan, Phase 3). An empty slice means "no filtering" — Tier A (Big) and
 /// unresolved Auto see the full toolset. Tier C (Mini) sees a core 13; Tier B
 /// (Normal) a mid ~23 set. Tools not present at runtime are simply skipped.
+///
+/// Sixth-batch sweep: the CLI-delegation tools (`claude_code`, `codex_delegate`)
+/// are Normal-tier and above. Delegation means composing a self-contained task
+/// for another agent — a Mini-class model gets better results doing the work
+/// with its core tools than mis-scoping a delegation prompt. Big/Auto are
+/// unaffected (empty slice = full toolset).
 pub fn tier_allowed_tools(tier: ModelTier) -> &'static [&'static str] {
     match tier {
         ModelTier::Mini => &[
@@ -352,6 +378,8 @@ pub fn tier_allowed_tools(tier: ModelTier) -> &'static [&'static str] {
             "skills_info",
             "mcp_list",
             "workflow_run",
+            "claude_code",
+            "codex_delegate",
         ],
         ModelTier::Big | ModelTier::Auto => &[],
     }

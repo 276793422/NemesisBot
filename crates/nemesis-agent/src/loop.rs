@@ -220,6 +220,16 @@ pub trait Tool: Send + Sync {
     fn preview(&self, _args: &str) -> Option<FileChange> {
         None
     }
+
+    /// U5 (sixth batch): whether this tool is a pure read with no side effects
+    /// (filesystem read, list, search, web fetch — safe to run concurrently
+    /// with other read-only calls in the same tool batch). Default `false`
+    /// — FAIL-CLOSED: a tool that has not declared itself read-only never
+    /// joins the parallel pool, so a latent writer can't slip in. Writer
+    /// tools and `exec` (even `cat`) stay `false`.
+    fn is_read_only(&self) -> bool {
+        false
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -409,6 +419,17 @@ impl SentInRoundTracker {
 /// and agent config. In bus-integrated mode, it additionally owns a
 /// registry of agent instances, a message bus adapter, summarizer,
 /// and session busy tracker.
+
+/// U5 (sixth batch): one parallel-executed read-only call's result, captured
+/// for serial guard replay in source order. `validation_failed` lets the
+/// serial loop replay the `validation_failures` counter exactly as the serial
+/// path would (Invalid → +1; Valid/Fixed → reset to 0).
+struct PrecomputedTool {
+    result: String,
+    validation_failed: bool,
+    duration_ms: u64,
+}
+
 pub struct AgentLoop {
     // --- Standalone fields (always present) ---
     /// LLM provider for generating responses.
@@ -540,6 +561,22 @@ pub struct AgentLoop {
     #[cfg(not(feature = "memory"))]
     #[allow(dead_code)] // placeholder when memory feature is off
     memory_executor: parking_lot::RwLock<Option<()>>,
+    /// P3.1 (sixth batch): memory manager for the AUTO-INJECT channel —
+    /// read-only retrieval (top-K vector search over the current user
+    /// message) feeding the `# Memory Context` snapshot section. Deliberately
+    /// SEPARATE from `memory_executor`: that one gates store/forget behind
+    /// interactive approval; auto-inject is pure retrieval and must not trip
+    /// the approval gate. `None` (default) disables injection entirely.
+    #[cfg(feature = "memory")]
+    memory_inject_manager:
+        parking_lot::RwLock<Option<Arc<nemesis_memory::manager::MemoryManager>>>,
+    #[cfg(not(feature = "memory"))]
+    #[allow(dead_code)] // placeholder when memory feature is off
+    memory_inject_manager: parking_lot::RwLock<Option<()>>,
+    /// P3.1: auto_inject flag + top_k loaded from config.enhanced_memory.json
+    /// by the factory (`set_memory_inject`). Tuple so both values travel
+    /// together on the one setter. Default (false, 3) = feature off.
+    memory_inject_cfg: parking_lot::RwLock<(bool, usize)>,
     /// Capability tier (small-model-tool-robustness plan, Phase 4a). Resolved at
     /// construction from the active model's `model_tier` config (see
     /// [`nemesis_types::capability`]). Drives tool-set size (Phase 3),
@@ -649,6 +686,11 @@ impl AgentLoop {
             checkpoint_store: parking_lot::RwLock::new(None),
             turn_counter: std::sync::atomic::AtomicUsize::new(0),
             memory_executor: parking_lot::RwLock::new(None),
+            #[cfg(feature = "memory")]
+            memory_inject_manager: parking_lot::RwLock::new(None),
+            #[cfg(not(feature = "memory"))]
+            memory_inject_manager: parking_lot::RwLock::new(None),
+            memory_inject_cfg: parking_lot::RwLock::new((false, 3)),
             tier: parking_lot::RwLock::new(nemesis_types::capability::ModelTier::Big),
             config_path: parking_lot::RwLock::new(None),
             spill_root: parking_lot::RwLock::new(None),
@@ -694,6 +736,32 @@ impl AgentLoop {
     #[cfg(feature = "memory")]
     pub fn set_memory_executor(&self, exec: Arc<nemesis_memory::memory_tools::MemoryToolExecutor>) {
         *self.memory_executor.write() = Some(exec);
+    }
+
+    /// P3.1 (sixth batch): wire the auto-inject channel — the memory manager
+    /// (read-only retrieval) plus the `auto_inject`/`top_k` flags read from
+    /// `config.enhanced_memory.json`. Passing `auto_inject=false` (the
+    /// default everywhere) keeps the loop byte-identical to pre-P3.1.
+    /// The `manager` param is cfg-gated: absent (and so not suppressable)
+    /// under `--no-default-features` — memory injection is a no-op there.
+    #[cfg(feature = "memory")]
+    pub fn set_memory_inject(
+        &self,
+        manager: Option<Arc<nemesis_memory::manager::MemoryManager>>,
+        auto_inject: bool,
+        top_k: usize,
+    ) {
+        *self.memory_inject_manager.write() = manager;
+        *self.memory_inject_cfg.write() = (auto_inject, top_k);
+    }
+
+    /// P3.1 stub (memory feature off): accepts only the flags (the manager
+    /// param doesn't exist without the memory crate). Injection stays off —
+    /// `memory_inject_cfg` records `(false, _)` from the real builder, but
+    /// `prefetch_memory_context` returns None regardless (no manager).
+    #[cfg(not(feature = "memory"))]
+    pub fn set_memory_inject(&self, auto_inject: bool, top_k: usize) {
+        *self.memory_inject_cfg.write() = (auto_inject, top_k);
     }
 
     /// Attach an approval gate to the memory executor (if one was stashed). After
@@ -809,6 +877,11 @@ impl AgentLoop {
             checkpoint_store: parking_lot::RwLock::new(None),
             turn_counter: std::sync::atomic::AtomicUsize::new(0),
             memory_executor: parking_lot::RwLock::new(None),
+            #[cfg(feature = "memory")]
+            memory_inject_manager: parking_lot::RwLock::new(None),
+            #[cfg(not(feature = "memory"))]
+            memory_inject_manager: parking_lot::RwLock::new(None),
+            memory_inject_cfg: parking_lot::RwLock::new((false, 3)),
             tier: parking_lot::RwLock::new(nemesis_types::capability::ModelTier::Big),
             config_path: parking_lot::RwLock::new(None),
             spill_root: parking_lot::RwLock::new(None),
@@ -2416,7 +2489,14 @@ impl AgentLoop {
         chat_id: &str,
     ) {
         let history = instance.get_history();
-        let context_window = instance.context_window();
+        // U16 (sixth batch): prefer the active model's per-model
+        // `context_window` from config.json over the instance's 32000
+        // default (the S1-S7 leftover). Falls back to the instance value
+        // when unset/standalone — behavior unchanged for configs without
+        // the field.
+        let context_window = self
+            .current_context_window()
+            .unwrap_or_else(|| instance.context_window());
 
         // C indexes the full history (system prompt at index 0); the verbatim
         // tail build_messages sends is history[C..]. Clamp to history length
@@ -2618,7 +2698,10 @@ impl AgentLoop {
         let summary = summarize_prefix_owned(
             &prefix_refs,
             existing_summary,
-            instance.context_window(),
+            // U16: per-model context_window when declared (same preference
+            // order as the threshold computation above).
+            self.current_context_window()
+                .unwrap_or_else(|| instance.context_window()),
             provider.as_ref(),
             &model,
             observer_mgr,
@@ -3126,9 +3209,21 @@ impl AgentLoop {
                 }
             }
 
+            // P3.1 (sixth batch): auto-inject memory prefetch — async search
+            // against the CURRENT (latest) user message, done OUTSIDE
+            // build_messages (which is sync; search is async). Per round: the
+            // latest user message changes when steer messages land, so
+            // re-prefetching per LLM round keeps the section in sync with
+            // what the model is about to see. Off (default) ⇒ None ⇒ the
+            // build is byte-identical to pre-P3.1.
+            let memory_hits: Option<Vec<String>> = self
+                .prefetch_memory_context(instance)
+                .await;
+
             // Build the message list from instance history (AFTER the steer
             // claim so injected turns are already included).
-            let mut messages = self.build_messages(instance);
+            let mut messages =
+                self.build_messages_with_memory(instance, memory_hits.as_deref());
 
             // Voice playback prompt injection: append to last user message (not stored in history).
             if voice_playback {
@@ -3772,9 +3867,41 @@ impl AgentLoop {
             // again — escalation fired every round without stopping (observed
             // 43× in a deployed test), and "validation stopping loop" was a lie.
             let mut force_stop: Option<AgentEvent> = None;
-            for tc in &tool_calls {
+            // U5 (sixth batch): precompute execution for an ALL-read-only batch
+            // (≥2 calls, every tool is_read_only). The for-loop then replays the
+            // serial guards on the precomputed results in source order — the
+            // audit chain stays ordered = model source order (roadmap risk 3).
+            // cluster_rpc/exec/writers are never read-only → this stays None for
+            // those batches → the loop below runs byte-identical to pre-U5.
+            // `None` also when a cancel/estop is already engaged at batch start
+            // (the for-loop's per-item check handles that case unchanged).
+            let precomputed: Option<Vec<PrecomputedTool>> = if tool_calls.len() >= 2
+                && !cancel_token.is_cancelled()
+                && !self
+                    .estop
+                    .read()
+                    .as_ref()
+                    .map(|e| e.is_engaged())
+                    .unwrap_or(false)
+                && tool_calls
+                    .iter()
+                    .all(|tc| self.tool_is_read_only(&tc.name))
+            {
+                let pc = self.precompute_readonly_batch(&tool_calls, context).await;
+                Some(pc)
+            } else {
+                None
+            };
+            // U5: in the parallel path, cancel/estop are NOT re-checked per item
+            // — the batch was checkpointed non-cancelled above and runs to
+            // completion (goal §四 documented semantic: a cancel arriving during
+            // the parallel window takes effect on the NEXT turn, not mid-batch).
+            // The serial path (precomputed.is_none()) keeps the per-item checks
+            // byte-identical.
+            let skip_cancel_estop = precomputed.is_some();
+            for (batch_idx, tc) in tool_calls.iter().enumerate() {
                 // Check cancellation before each tool execution.
-                if cancel_token.is_cancelled() {
+                if !skip_cancel_estop && cancel_token.is_cancelled() {
                     info!(
                         "[AgentLoop] LLM loop cancelled before tool execution: {}, turns_used={}",
                         tc.name, turns_used
@@ -3808,31 +3935,51 @@ impl AgentLoop {
                 // auto-fixes high-confidence field-name typos (edit distance ≤2);
                 // otherwise bounces a structured error back to the model so it
                 // can self-correct on the next round.
-                let result = match self.check_tool_args(tc) {
-                    crate::args_validator::Outcome::Valid => {
-                        validation_failures = 0;
-                        self.handle_tool_call(tc, context).await
-                    }
-                    crate::args_validator::Outcome::Fixed(fixed_args) => {
-                        validation_failures = 0;
-                        info!(
-                            "[AgentLoop] Auto-fixed args for tool '{}' (id={})",
-                            tc.name, tc.id
-                        );
-                        let mut fixed = tc.clone();
-                        fixed.arguments = fixed_args;
-                        self.handle_tool_call(&fixed, context).await
-                    }
-                    crate::args_validator::Outcome::Invalid { message, class } => {
+                //
+                // U5 (sixth batch): when `precomputed` is Some, the execution
+                // already ran concurrently (above) — replay its result + the
+                // `validation_failures` counter increment here, then fall
+                // through to the SAME serial guards (observer/capture/
+                // turn_guard/spill/escalation). Guards run in source order
+                // because join_all preserves iteration order. `tool_duration`
+                // carries the REAL per-task wall time (measured in the pool),
+                // not this near-zero clone.
+                let (result, tool_duration_ms) = if let Some(ref pc) = precomputed {
+                    let p = &pc[batch_idx];
+                    if p.validation_failed {
                         validation_failures += 1;
-                        warn!(
-                            "[AgentLoop] Arg validation failed for tool '{}' (id={}, class={}): {}",
-                            tc.name, tc.id, class, message
-                        );
-                        format!("Tool error: {}", message)
+                    } else {
+                        validation_failures = 0;
                     }
+                    (p.result.clone(), p.duration_ms)
+                } else {
+                    let r = match self.check_tool_args(tc) {
+                        crate::args_validator::Outcome::Valid => {
+                            validation_failures = 0;
+                            self.handle_tool_call(tc, context).await
+                        }
+                        crate::args_validator::Outcome::Fixed(fixed_args) => {
+                            validation_failures = 0;
+                            info!(
+                                "[AgentLoop] Auto-fixed args for tool '{}' (id={})",
+                                tc.name, tc.id
+                            );
+                            let mut fixed = tc.clone();
+                            fixed.arguments = fixed_args;
+                            self.handle_tool_call(&fixed, context).await
+                        }
+                        crate::args_validator::Outcome::Invalid { message, class } => {
+                            validation_failures += 1;
+                            warn!(
+                                "[AgentLoop] Arg validation failed for tool '{}' (id={}, class={}): {}",
+                                tc.name, tc.id, class, message
+                            );
+                            format!("Tool error: {}", message)
+                        }
+                    };
+                    (r, tool_start.elapsed().as_millis() as u64)
                 };
-                let tool_duration = tool_start.elapsed();
+                let tool_duration = std::time::Duration::from_millis(tool_duration_ms);
                 let tool_success =
                     !result.starts_with("Error:") && !result.starts_with("Tool error:");
 
@@ -4206,6 +4353,77 @@ impl AgentLoop {
     // Tool handling
     // -----------------------------------------------------------------------
 
+    /// U5 (sixth batch): is `name` a registered read-only tool? Looks up the
+    /// agent-side registry and asks the tool's `is_read_only()`. Fail-closed:
+    /// unknown tools and writer tools return false → never join the parallel
+    /// pool. When executor separation is ON, the MOVE_TOOLS (incl. read_file/
+    /// list_dir/grep) are `RemoteExecutorTool` instances whose `is_read_only()`
+    /// is the default `false` — so an executor-separated batch naturally
+    /// falls back to serial here, no separate check needed.
+    fn tool_is_read_only(&self, name: &str) -> bool {
+        match self.tools.read().get(name) {
+            Some(t) => t.is_read_only(),
+            None => false,
+        }
+    }
+
+    /// U5: the result of one parallel-executed read-only call, captured for
+    /// serial guard replay in source order. `validation_failed` lets the
+    /// serial loop replay the `validation_failures` counter exactly as the
+    /// serial path would (Invalid → +1; Valid/Fixed → reset to 0).
+
+    /// U5: concurrently execute an ALL-read-only batch (validated read-only
+    /// by the caller). Each task runs the SAME execution path as the serial
+    /// loop's match (`check_tool_args` → `handle_tool_call` or synthesize an
+    /// Invalid error), gated by a 4-permit semaphore. Returns results in
+    /// SOURCE ORDER (`join_all` preserves iteration order) so the serial
+    /// guard-replay keeps the audit chain ordered = model source order
+    /// (roadmap risk 3 hard constraint). cluster_rpc/exec/writers are never
+    /// here (not read-only) → `__ASYNC__` continuation and executor paths
+    /// are structurally excluded.
+    async fn precompute_readonly_batch(
+        &self,
+        tool_calls: &[ToolCallInfo],
+        context: &RequestContext,
+    ) -> Vec<PrecomputedTool> {
+        let sem = std::sync::Arc::new(tokio::sync::Semaphore::new(4));
+        let futs = tool_calls.iter().map(|tc| {
+            let sem = sem.clone();
+            let tc = tc.clone();
+            async move {
+                let _permit = sem.acquire().await.ok();
+                let start = std::time::Instant::now();
+                let (result, validation_failed) = match self.check_tool_args(&tc) {
+                    crate::args_validator::Outcome::Valid => {
+                        (self.handle_tool_call(&tc, context).await, false)
+                    }
+                    crate::args_validator::Outcome::Fixed(fixed_args) => {
+                        info!(
+                            "[AgentLoop] Auto-fixed args for tool '{}' (id={})",
+                            tc.name, tc.id
+                        );
+                        let mut fixed = tc.clone();
+                        fixed.arguments = fixed_args;
+                        (self.handle_tool_call(&fixed, context).await, false)
+                    }
+                    crate::args_validator::Outcome::Invalid { message, .. } => {
+                        warn!(
+                            "[AgentLoop] Arg validation failed for tool '{}' (id={}): {}",
+                            tc.name, tc.id, message
+                        );
+                        (format!("Tool error: {}", message), true)
+                    }
+                };
+                PrecomputedTool {
+                    result,
+                    validation_failed,
+                    duration_ms: start.elapsed().as_millis() as u64,
+                }
+            }
+        });
+        futures::future::join_all(futs).await
+    }
+
     /// Execute a single tool call.
     pub async fn handle_tool_call(
         &self,
@@ -4547,6 +4765,26 @@ impl AgentLoop {
             // ↑ i64 (from JSON) → u32; max_output_tokens is a non-negative count
     }
 
+    /// U16 (sixth batch): resolve the active model's per-model
+    /// `context_window` (input token capacity) from config.json. Reads config
+    /// fresh each call (same pattern as `current_max_tokens`). `None` when
+    /// unset/standalone — callers keep their existing default. This closes
+    /// the S1-S7 leftover: the compaction thresholds in `maybe_summarize`
+    /// were computed against a hardcoded 32000 regardless of the model's
+    /// real window (a 200K-window model compacted 6× too early).
+    pub(crate) fn current_context_window(&self) -> Option<usize> {
+        let active = self.active_model.read().clone();
+        let path = match self.config_path.read().clone() {
+            Some(p) => p,
+            None => return None,
+        };
+        std::fs::read_to_string(&path)
+            .ok()
+            .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+            .and_then(|v| nemesis_types::capability::resolve_context_window(&v, &active))
+            .map(|w| w as usize)
+    }
+
     /// Phase 4a: detect config.json on-disk changes (by mtime) and re-resolve
     /// the active model's tier if it changed. Runs once per LLM round, next to
     /// `check_mcp_reload`. Picks up dashboard model additions and CLI
@@ -4568,6 +4806,76 @@ impl AgentLoop {
         self.refresh_active_tier();
     }
 
+    /// P3.1 (sixth batch): retrieve relevant long-term memories for the
+    /// LATEST user message (vector top-K, score-thresholded, deduped by
+    /// pairwise cosine > 0.92 — goal §三 semantics). `None` whenever the
+    /// feature is off (default), the manager/vector store is absent, or no
+    /// hit clears the bar — `None` keeps build_messages byte-identical.
+    #[cfg_attr(not(feature = "memory"), allow(unused_variables))]
+    async fn prefetch_memory_context(&self, instance: &AgentInstance) -> Option<Vec<String>> {
+        #[cfg(feature = "memory")]
+        {
+            let (auto, top_k) = *self.memory_inject_cfg.read();
+            if !auto {
+                return None;
+            }
+            // Latest USER message is the retrieval signal.
+            let history = instance.get_history();
+            let query = history
+                .iter()
+                .rev()
+                .find(|t| t.role == "user")
+                .map(|t| t.content.clone())?;
+            if query.trim().is_empty() {
+                return None;
+            }
+            let mgr = self.memory_inject_manager.read().clone()?;
+            let result = mgr.search(&query, None, top_k.max(1) + 2).await.ok()?;
+            // Score threshold: vector scores are cosine (0..1) when the store
+            // is active; keep hits >= 0.35 — low enough to catch related
+            // memory, high enough to skip noise. The keyword-fallback path
+            // yields score 0.0 (no semantic confidence) → below bar.
+            const MIN_SCORE: f64 = 0.35;
+            let mut scored: Vec<(f64, String)> = result
+                .entries
+                .into_iter()
+                .filter_map(|e| {
+                    let s = e.score;
+                    if s < MIN_SCORE {
+                        return None;
+                    }
+                    let content = e.entry.content;
+                    let cut = content.char_indices().nth(300).map(|(i, _)| i).unwrap_or(content.len());
+                    Some((s, content[..cut].to_string()))
+                })
+                .collect();
+            // Sort best-first, cap at top_k.
+            scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+            // Pairwise dedup: drop a weaker hit whose cosine with a kept hit
+            // exceeds 0.92. Cheap at top_k+2 candidates.
+            let mut kept: Vec<(f64, String)> = Vec::new();
+            'cand: for cand in scored {
+                for k in &kept {
+                    if textwise_similar(&cand.1, &k.1) > 0.92 {
+                        continue 'cand;
+                    }
+                }
+                kept.push(cand);
+                if kept.len() >= top_k.max(1) {
+                    break;
+                }
+            }
+            if kept.is_empty() {
+                return None;
+            }
+            Some(kept.into_iter().map(|(_, c)| c).collect())
+        }
+        #[cfg(not(feature = "memory"))]
+        {
+            None
+        }
+    }
+
     /// Build the LLM message list from the instance conversation history.
     ///
     /// Injects an ephemeral "# Current Time / # Environment" system message
@@ -4577,7 +4885,22 @@ impl AgentLoop {
     /// are billed at the cache-miss rate. The platform/shell hint steers the
     /// model away from interactive commands that hang the exec tool (e.g. bare
     /// Windows `date` vs `date /t`) — small-model-tool-robustness plan Phase 1.
+    ///
+    /// P3.1 (sixth batch): `memory_hits` (caller-side async prefetch — search
+    /// is async, this fn is sync) renders a `# Memory Context` section into
+    /// the merged snapshot. `None`/empty = no section, byte-identical to
+    /// pre-P3.1 output.
     pub fn build_messages(&self, instance: &AgentInstance) -> Vec<LlmMessage> {
+        self.build_messages_with_memory(instance, None)
+    }
+
+    /// P3.1 companion: same as [`build_messages`] plus an optional
+    /// pre-fetched memory-hit section.
+    pub fn build_messages_with_memory(
+        &self,
+        instance: &AgentInstance,
+        memory_hits: Option<&[String]>,
+    ) -> Vec<LlmMessage> {
         let history = instance.get_history();
 
         // Inline-summary pipeline. When a summary cache is active, its `text`
@@ -4704,6 +5027,22 @@ impl AgentLoop {
                 let rendered = crate::workspace_instructions::render_instructions_section(&chain);
                 if !rendered.is_empty() {
                     sections.push(rendered);
+                }
+            }
+            // P3.1 (sixth batch): pre-fetched memory hits as a section. The
+            // caller (run_llm_loop) did the async search against the CURRENT
+            // user message; here we only render. Empty/None ⇒ no section ⇒
+            // byte-identical output to auto_inject=false.
+            if let Some(hits) = memory_hits {
+                if !hits.is_empty() {
+                    let body = hits
+                        .iter()
+                        .map(|h| format!("- {}", h))
+                        .collect::<Vec<_>>()
+                        .join("\n");
+                    sections.push(format!(
+                        "# Memory Context\n{body}\n\n(以上是自动检索到的相关长期记忆，可能与当前对话有关，也可能无关——自行判断取舍。)"
+                    ));
                 }
             }
             if sections.is_empty() {
@@ -5529,6 +5868,27 @@ pub fn format_tools_for_log(tools: &[ToolCallInfo]) -> String {
 /// UTF-8 safe: finds the nearest char boundary before slicing.
 pub fn truncate(s: &str, max_len: usize) -> String {
     nemesis_types::utils::truncate(s, max_len)
+}
+
+/// P3.1 (sixth batch): cheap text similarity (char-bigram Jaccard) for the
+/// auto-inject dedup pass. Approximates "same memory, near-identical text"
+/// without another embedding call — the dedup bar (0.92) is deliberately
+/// high so only true near-duplicates are dropped.
+fn textwise_similar(a: &str, b: &str) -> f64 {
+    let bigrams = |s: &str| -> std::collections::HashSet<(char, char)> {
+        let t: Vec<char> = s.chars().collect();
+        t.windows(2).map(|w| (w[0], w[1])).collect()
+    };
+    let (ba, bb) = (bigrams(a), bigrams(b));
+    if ba.is_empty() && bb.is_empty() {
+        return 1.0; // both empty (or single-char) → identical
+    }
+    if ba.is_empty() || bb.is_empty() {
+        return 0.0;
+    }
+    let inter = ba.intersection(&bb).count() as f64;
+    let union = ba.union(&bb).count() as f64;
+    inter / union
 }
 
 #[cfg(test)]

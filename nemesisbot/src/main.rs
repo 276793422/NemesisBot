@@ -108,6 +108,11 @@ enum Commands {
     },
     /// Show system status
     Status,
+    /// Search conversation history across sessions (U20 full-text search)
+    History {
+        #[command(subcommand)]
+        action: commands::history::HistoryAction,
+    },
     /// Manage communication channels
     Channel {
         #[command(subcommand)]
@@ -792,6 +797,10 @@ async fn run_command(cli: Cli) -> Result<()> {
             common::ensure_default_logger();
             commands::status::run(cli.local)?;
         }
+        Commands::History { action } => {
+            common::ensure_default_logger();
+            commands::history::run(action, cli.local).await?;
+        }
         Commands::Channel { action } => {
             common::ensure_default_logger();
             commands::channel::run(action, cli.local)?;
@@ -807,7 +816,7 @@ async fn run_command(cli: Cli) -> Result<()> {
         }
         Commands::Model { action } => {
             common::ensure_default_logger();
-            commands::model::run(action, cli.local)?;
+            commands::model::run(action, cli.local).await?;
         }
         Commands::Cron { action } => {
             common::ensure_default_logger();

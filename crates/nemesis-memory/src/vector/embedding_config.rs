@@ -31,10 +31,23 @@ pub struct EmbeddingConfig {
     /// Model definitions for each tier.
     #[serde(default)]
     pub models: ModelsConfig,
+    /// P3.1 (sixth batch): auto-inject memory hits into the conversation as
+    /// a `# Memory Context` snapshot section. Grey-release default OFF —
+    /// with false the agent's message stream is byte-identical to before
+    /// this feature existed (same promise as steer mode).
+    #[serde(default)]
+    pub auto_inject: bool,
+    /// P3.1: how many top-K memory hits to inject at most (default 3).
+    #[serde(default = "default_auto_inject_top_k")]
+    pub auto_inject_top_k: usize,
 }
 
 fn default_active() -> String {
     "medium".to_string()
+}
+
+fn default_auto_inject_top_k() -> usize {
+    3
 }
 
 impl Default for EmbeddingConfig {
@@ -43,6 +56,8 @@ impl Default for EmbeddingConfig {
             enabled: false,
             active: default_active(),
             models: ModelsConfig::default(),
+            auto_inject: false,
+            auto_inject_top_k: default_auto_inject_top_k(),
         }
     }
 }
@@ -169,6 +184,8 @@ fn default_config_json() -> String {
     let config = EmbeddingConfig {
         enabled: false,
         active: default_active(),
+        auto_inject: false,
+        auto_inject_top_k: default_auto_inject_top_k(),
         models: ModelsConfig {
             large: ModelConfig {
                 name: "bge-base-en-v1.5".into(),

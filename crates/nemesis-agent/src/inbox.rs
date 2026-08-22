@@ -17,7 +17,7 @@
 //! receipt so users can find it.
 
 use parking_lot::Mutex;
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 
 /// Default capacity (total across both queues) per session.
@@ -74,10 +74,12 @@ pub enum EnqueueOutcome {
     Rejected,
 }
 
+/// Sixth-batch sweep: `VecDeque` — the queues are FIFOs (push_back/pop_front);
+/// the previous `Vec` + `remove(0)` was an O(n) shift per head claim.
 #[derive(Default)]
 struct SessionQueues {
-    next_turn: Vec<QueuedMessage>,
-    next_step: Vec<QueuedMessage>,
+    next_turn: VecDeque<QueuedMessage>,
+    next_step: VecDeque<QueuedMessage>,
 }
 
 /// Inboxes for all live sessions.
@@ -118,10 +120,10 @@ impl Inbox {
             return EnqueueOutcome::Rejected;
         }
         if steer {
-            q.next_step.push(msg);
+            q.next_step.push_back(msg);
             EnqueueOutcome::QueuedForNextStep
         } else {
-            q.next_turn.push(msg);
+            q.next_turn.push_back(msg);
             EnqueueOutcome::QueuedForNextTurn
         }
     }
@@ -131,7 +133,7 @@ impl Inbox {
     pub fn claim_next_step(&self, session_key: &str) -> Vec<QueuedMessage> {
         let mut all = self.queues.lock();
         match all.get_mut(session_key) {
-            Some(q) => std::mem::take(&mut q.next_step),
+            Some(q) => std::mem::take(&mut q.next_step).into_iter().collect(),
             None => Vec::new(),
         }
     }
@@ -139,13 +141,7 @@ impl Inbox {
     /// Claim the head of the next-turn queue (one message starts a new turn).
     pub fn claim_next_turn_head(&self, session_key: &str) -> Option<QueuedMessage> {
         let mut all = self.queues.lock();
-        all.get_mut(session_key).and_then(|q| {
-            if q.next_turn.is_empty() {
-                None
-            } else {
-                Some(q.next_turn.remove(0))
-            }
-        })
+        all.get_mut(session_key).and_then(|q| q.next_turn.pop_front())
     }
 
     /// Peek whether a next-step message is pending (turn-escape-hatch check).
@@ -175,7 +171,7 @@ impl Inbox {
             for m in stepped.iter_mut() {
                 m.msg.content = strip_steer_marker(&m.msg.content).to_string();
             }
-            q.next_turn.extend(stepped);
+            q.next_turn.append(&mut stepped);
         }
     }
 

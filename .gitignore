@@ -34,3 +34,9 @@ scripts/customize/.config
 # here). Not source, not shipped, not read by production. Untracked in P0;
 # proper test isolation via tempdirs for the 151 Cluster::new() callers is P2.
 /crates/nemesis-cluster/cluster/
+
+# Python artifacts (sixth-batch sweep): the SDK under test-tools/python/sdk
+# runs pytest in-repo; bytecode caches and pytest scratch must not be committed.
+__pycache__/
+*.pyc
+.pytest_cache/

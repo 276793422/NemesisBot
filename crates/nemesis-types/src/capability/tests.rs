@@ -194,3 +194,48 @@ fn display_lowercase() {
     assert_eq!(ModelTier::Mini.to_string(), "mini");
     assert_eq!(ModelTier::Auto.to_string(), "auto");
 }
+
+// U16 (sixth batch): per-model context_window resolution.
+#[test]
+fn resolve_context_window_per_model() {
+    let cfg = serde_json::json!({
+        "model_list": [
+            {"model_name": "opus", "model": "anthropic/claude-opus-4.7-fast",
+             "context_window": 1000000},
+            {"model_name": "small", "model": "x/small", "context_window": 0},
+            {"model_name": "plain", "model": "x/plain"}
+        ]
+    });
+    assert_eq!(
+        resolve_context_window(&cfg, "opus"),
+        Some(1000000),
+        "match by alias"
+    );
+    assert_eq!(
+        resolve_context_window(&cfg, "anthropic/claude-opus-4.7-fast"),
+        Some(1000000),
+        "match by full id"
+    );
+    assert_eq!(
+        resolve_context_window(&cfg, "small"),
+        None,
+        "zero window filtered out"
+    );
+    assert_eq!(resolve_context_window(&cfg, "plain"), None, "field absent");
+    assert_eq!(
+        resolve_context_window(&serde_json::json!({}), "anything"),
+        None,
+        "no model_list"
+    );
+}
+
+// Sixth-batch sweep: delegation tools are Normal-tier and above.
+#[test]
+fn tier_lists_delegation_tools() {
+    let normal = tier_allowed_tools(ModelTier::Normal);
+    assert!(normal.contains(&"claude_code"), "claude_code in Normal");
+    assert!(normal.contains(&"codex_delegate"), "codex_delegate in Normal");
+    let mini = tier_allowed_tools(ModelTier::Mini);
+    assert!(!mini.contains(&"claude_code"), "Mini excluded by design");
+    assert!(!mini.contains(&"codex_delegate"), "Mini excluded by design");
+}

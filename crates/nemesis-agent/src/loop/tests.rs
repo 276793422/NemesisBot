@@ -65,6 +65,41 @@ impl Tool for StrictTool {
     }
 }
 
+/// U5 (sixth batch): a read-only tool that sleeps a fixed duration then
+/// returns a marker — drives the concurrency wall-clock test. The delay
+/// is what the parallel pool overlaps; a serial path would sum them.
+struct SlowReadTool {
+    marker: String,
+    delay_ms: u64,
+}
+
+#[async_trait]
+impl Tool for SlowReadTool {
+    async fn execute(&self, _args: &str, _ctx: &RequestContext) -> Result<String, String> {
+        tokio::time::sleep(std::time::Duration::from_millis(self.delay_ms)).await;
+        Ok(self.marker.clone())
+    }
+    fn is_read_only(&self) -> bool {
+        true
+    }
+}
+
+/// U5: same shape but NOT read-only (default `false`) — forces a mixed batch
+/// onto the serial path, the byte-identical-to-pre-U5 fallback.
+struct SlowWriteTool {
+    marker: String,
+    delay_ms: u64,
+}
+
+#[async_trait]
+impl Tool for SlowWriteTool {
+    async fn execute(&self, _args: &str, _ctx: &RequestContext) -> Result<String, String> {
+        tokio::time::sleep(std::time::Duration::from_millis(self.delay_ms)).await;
+        Ok(self.marker.clone())
+    }
+    // is_read_only defaults to false — fail-closed, never joins the pool.
+}
+
 fn test_config() -> AgentConfig {
     AgentConfig {
         model: "test-model".to_string(),
@@ -1955,6 +1990,80 @@ fn test_build_messages_from_instance() {
     assert!(messages[1].content.contains("Current Time"));
     assert_eq!(messages[2].role, "user");
     assert_eq!(messages[3].role, "assistant");
+}
+
+// P3.1 (sixth batch): memory auto-inject snapshot section.
+#[test]
+fn test_build_messages_with_memory_off_is_byte_identical() {
+    // auto_inject defaults to false (the (false, 3) in new()). With None
+    // hits the output must be byte-identical to the plain build_messages.
+    let agent_loop = AgentLoop::new(Box::new(MockLlmProvider::new(vec![])), test_config());
+    let instance = AgentInstance::new(test_config());
+    instance.add_user_message("Hello world");
+    // LlmMessage fields aren't all PartialEq, so compare a deterministic
+    // projection (role + content + tool-call count) — enough to catch any
+    // section drift (a stray Memory Context block would change content).
+    let proj = |m: &crate::r#loop::LlmMessage| {
+        (
+            m.role.clone(),
+            m.content.clone(),
+            m.tool_calls.as_ref().map(|v| v.len()).unwrap_or(0),
+        )
+    };
+
+    let plain: Vec<_> = agent_loop.build_messages(&instance).iter().map(proj).collect();
+    let with_none: Vec<_> = agent_loop
+        .build_messages_with_memory(&instance, None)
+        .iter()
+        .map(proj)
+        .collect();
+    assert_eq!(plain, with_none, "None hits → identical to plain");
+
+    let with_empty_hits: &[String] = &[];
+    let with_empty: Vec<_> = agent_loop
+        .build_messages_with_memory(&instance, Some(with_empty_hits))
+        .iter()
+        .map(proj)
+        .collect();
+    assert_eq!(plain, with_empty, "empty hits → identical to plain");
+}
+
+#[test]
+fn test_build_messages_with_memory_renders_section() {
+    let agent_loop = AgentLoop::new(Box::new(MockLlmProvider::new(vec![])), test_config());
+    let instance = AgentInstance::new(test_config());
+    instance.add_user_message("deploy the docs system");
+
+    let hits = vec![
+        "user prefers concise output".to_string(),
+        "deploy target is the staging box".to_string(),
+    ];
+    let messages = agent_loop.build_messages_with_memory(&instance, Some(&hits));
+    // The merged snapshot is the second message (after system, before the
+    // real last user). Find the snapshot user-role message carrying both the
+    // Memory Context section AND the always-present Current Time section.
+    let snapshot = messages
+        .iter()
+        .find(|m| m.role == "user" && m.content.contains("# Memory Context"))
+        .expect("Memory Context section rendered in the snapshot");
+    assert!(snapshot.content.contains("user prefers concise output"));
+    assert!(snapshot.content.contains("deploy target is the staging box"));
+    assert!(snapshot.content.contains("# Current Time"), "snapshot still carries time");
+}
+
+#[test]
+fn test_textwise_similar_dedup_helper() {
+    // Near-duplicate (trivial diff) → high similarity — the case dedup is
+    // built for (same memory stored twice). Bigram Jaccard is a cheap proxy
+    // for vector cosine; adding whole words drops it fast, so the pair must
+    // be genuinely near-identical.
+    let a = "the user prefers concise output in replies";
+    let b = "the user prefers concise output in replies.";
+    assert!(textwise_similar(a, b) > 0.92, "near-dup: {}", textwise_similar(a, b));
+    // Unrelated → low.
+    assert!(textwise_similar("deploy the docs", "weather is sunny") < 0.2);
+    // Empty pair → 1.0 (degenerate, but the caller guards against it).
+    assert_eq!(textwise_similar("", ""), 1.0);
 }
 
 #[tokio::test]
@@ -6276,6 +6385,110 @@ fn llm_text(content: &str) -> LlmResponse {
         raw_request_body: None,
         raw_response_body: None,
     }
+}
+
+/// U5 helper: a response requesting the named tools in order (no content).
+fn llm_tool_calls(names: &[&str]) -> LlmResponse {
+    let tool_calls = names
+        .iter()
+        .map(|n| ToolCallInfo {
+            id: format!("call_{}", n),
+            name: n.to_string(),
+            arguments: "{}".to_string(),
+        })
+        .collect();
+    LlmResponse {
+        content: String::new(),
+        tool_calls,
+        finished: false,
+        reasoning_content: None,
+        usage: None,
+        raw_request_body: None,
+        raw_response_body: None,
+    }
+}
+
+// ===========================================================================
+// U5 (sixth batch): read-only tool concurrency + source-order
+// ===========================================================================
+
+#[tokio::test]
+async fn u5_readonly_batch_runs_concurrently() {
+    // 3 read-only tools each sleeping 300ms. Serial ≈ 900ms; parallel ≈ 300ms.
+    // Bound at 700ms to stay well clear of serial while tolerating scheduler
+    // jitter / the 4-permit semaphore (3 ≤ 4 → no queueing).
+    let provider = MockLlmProvider::new(vec![
+        llm_tool_calls(&["r1", "r2", "r3"]),
+        llm_text("done"),
+    ]);
+    let mut agent_loop = AgentLoop::new(Box::new(provider), test_config());
+    agent_loop.register_tool("r1".into(), Box::new(SlowReadTool { marker: "A".into(), delay_ms: 300 }));
+    agent_loop.register_tool("r2".into(), Box::new(SlowReadTool { marker: "B".into(), delay_ms: 300 }));
+    agent_loop.register_tool("r3".into(), Box::new(SlowReadTool { marker: "C".into(), delay_ms: 300 }));
+
+    let instance = AgentInstance::new(test_config());
+    let context = RequestContext::new("web", "c1", "u1", "s1");
+    let start = std::time::Instant::now();
+    let _ = agent_loop.run(&instance, "go", &context).await;
+    let elapsed = start.elapsed();
+    assert!(
+        elapsed < std::time::Duration::from_millis(700),
+        "3×300ms read-only should overlap (parallel); took {:?}",
+        elapsed
+    );
+}
+
+#[tokio::test]
+async fn u5_writer_in_batch_keeps_serial() {
+    // A writer (default is_read_only=false) in the batch → the batch is NOT
+    // all-read-only → serial path, byte-identical to pre-U5. 2×300ms serial ≈
+    // 600ms. Bound: > 500ms proves they did NOT overlap (parallel would be
+    // ~300ms).
+    let provider = MockLlmProvider::new(vec![
+        llm_tool_calls(&["r1", "w1"]),
+        llm_text("done"),
+    ]);
+    let mut agent_loop = AgentLoop::new(Box::new(provider), test_config());
+    agent_loop.register_tool("r1".into(), Box::new(SlowReadTool { marker: "A".into(), delay_ms: 300 }));
+    agent_loop.register_tool("w1".into(), Box::new(SlowWriteTool { marker: "W".into(), delay_ms: 300 }));
+
+    let instance = AgentInstance::new(test_config());
+    let context = RequestContext::new("web", "c1", "u1", "s2");
+    let start = std::time::Instant::now();
+    let _ = agent_loop.run(&instance, "go", &context).await;
+    let elapsed = start.elapsed();
+    assert!(
+        elapsed > std::time::Duration::from_millis(500),
+        "a writer forces serial (2×300ms≈600ms); took {:?}",
+        elapsed
+    );
+}
+
+#[tokio::test]
+async fn u5_parallel_results_preserve_source_order() {
+    // Distinct markers A/B/C — the tool_results must reach history in MODEL
+    // SOURCE ORDER (the roadmap risk-3 hard constraint), not completion order.
+    // Tiny delays so order is a function of source position, not timing.
+    let provider = MockLlmProvider::new(vec![
+        llm_tool_calls(&["r1", "r2", "r3"]),
+        llm_text("done"),
+    ]);
+    let mut agent_loop = AgentLoop::new(Box::new(provider), test_config());
+    agent_loop.register_tool("r1".into(), Box::new(SlowReadTool { marker: "A".into(), delay_ms: 5 }));
+    agent_loop.register_tool("r2".into(), Box::new(SlowReadTool { marker: "B".into(), delay_ms: 5 }));
+    agent_loop.register_tool("r3".into(), Box::new(SlowReadTool { marker: "C".into(), delay_ms: 5 }));
+
+    let instance = AgentInstance::new(test_config());
+    let context = RequestContext::new("web", "c1", "u1", "s3");
+    let events = agent_loop.run(&instance, "go", &context).await;
+    let tool_results: Vec<String> = events
+        .iter()
+        .filter_map(|e| match e {
+            AgentEvent::ToolResult(r) => Some(r.result.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(tool_results, vec!["A", "B", "C"], "source order preserved");
 }
 
 // ===========================================================================

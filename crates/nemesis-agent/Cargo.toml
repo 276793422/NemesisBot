@@ -44,6 +44,9 @@ parking_lot = { workspace = true }
 sha2 = { workspace = true }
 reqwest = { workspace = true }
 regex = { workspace = true }
+# U20 (sixth batch): FTS5 index for session full-text search. Same version +
+# features as nemesis-data's rusqlite — Cargo compiles the bundled SQLite once.
+rusqlite = { version = "0.34", features = ["bundled"] }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util", "macros"] }
