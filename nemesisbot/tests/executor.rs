@@ -47,6 +47,9 @@ fn ctx() -> RequestContext {
 ///      `nemesisbot sandbox start` is typically run on Windows — auto-detected
 ///      so the tests hit the real box without env hand-holding),
 ///   3. `~/.nemesisbot` (default-home fallback).
+// 仅被下方 cfg(windows) 的 Sandboxie 测试调用——非 Windows 编译出来是死码，
+// 且 Linux rustc 1.95 渲染死码警告会 ICE，故随调用方一起按平台裁剪。
+#[cfg(windows)]
 fn sandbox_home() -> PathBuf {
     if let Ok(h) = std::env::var("NEMESISBOT_HOME") {
         return PathBuf::from(h);
@@ -74,6 +77,8 @@ fn sandbox_home() -> PathBuf {
 /// write sees a not-yet-flushed box. Both race the session teardown. In
 /// production the LLM latency between tool calls masks this; the L2.2 tests
 /// run back-to-back, so they must let the box settle.
+// 同 sandbox_home：仅 cfg(windows) 测试调用，随调用方按平台裁剪。
+#[cfg(windows)]
 async fn settle_sandbox_box() {
     tokio::time::sleep(std::time::Duration::from_secs(3)).await;
 }
@@ -372,4 +377,115 @@ fn remote_executor_tool_delegates_schema_byte_identically() {
         local_desc,
         "description must delegate verbatim"
     );
+}
+
+// ---------------------------------------------------------------------------
+// U11 用户态沙盒 e2e（Linux：landlock 自装；B7 验收本体）
+// ---------------------------------------------------------------------------
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn u11_userland_sandbox_write_outside_denied_inside_allowed() {
+    // U11/B7 验收：sandbox probe=true → gateway 以 stdio + SANDBOX 标记 spawn
+    // 真实 nemesisbot 子进程 → 子进程（exec_worker）对自身装 landlock
+    // （writable = workspace）→ write_file 写工作区内成功落盘、写工作区外
+    // 被 syscall 层拒绝。整条链是 gateway 生产路径（spawn_and_call），非
+    // 手工拼装。
+    //
+    // 环境依赖：内核 landlock（WSL2 kernel 5.15+/6.x 均有）。不可用时跳过
+    // 并注明（降级路径本身由 exec_worker::plan 决策表单测覆盖）。
+    #[cfg(feature = "sandbox")]
+    {
+        use nemesis_sandbox::backend::{detect_backend, Availability};
+        let unavailable = matches!(
+            detect_backend().map(|b| b.availability()),
+            None | Some(Availability::Unavailable(_))
+        );
+        if unavailable {
+            eprintln!("SKIP: no userland sandbox backend on this kernel");
+            return;
+        }
+    }
+
+    let ws = tempfile::tempdir().expect("workspace tempdir");
+    let ch = Arc::new(
+        ExecutorChannel::new(
+            nemesisbot_exe(),
+            ws.path().to_string_lossy().to_string(),
+            Arc::new(|| true),
+        )
+        .with_timeout(Duration::from_secs(120)),
+    );
+
+    // 写内：成功 + 真盘文件存在
+    let inside = ws.path().join("inside_ok.txt");
+    let args = format!(
+        r#"{{"path":{:?},"content":"u11-inside"}}"#,
+        inside.to_string_lossy()
+    );
+    let res = ch.spawn_and_call("write_file", &args, &ctx()).await;
+    assert!(
+        res.as_ref().map(|r| r.contains("wrote")).unwrap_or(false),
+        "write INSIDE workspace should succeed: {:?}",
+        res
+    );
+    assert!(inside.exists(), "inside write must land on real disk");
+
+    // 写外（workspace 的兄弟目录）：syscall 层拒绝 → 工具报错
+    let outside = ws
+        .path()
+        .parent()
+        .expect("tempdir parent")
+        .join(format!("nemesis_u11_outside_{}.txt", std::process::id()));
+    let _ = std::fs::remove_file(&outside);
+    let args = format!(
+        r#"{{"path":{:?},"content":"must-be-denied"}}"#,
+        outside.to_string_lossy()
+    );
+    let res = ch.spawn_and_call("write_file", &args, &ctx()).await;
+    assert!(
+        res.is_err() || !res.as_ref().unwrap().contains("wrote"),
+        "write OUTSIDE workspace must be DENIED, got: {:?}",
+        res
+    );
+    assert!(
+        !outside.exists(),
+        "ISOLATION FAILED: outside file leaked to real disk"
+    );
+    let _ = std::fs::remove_file(&outside);
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn u11_userland_sandbox_disabled_marker_absent_writes_anywhere() {
+    // 反向对照：probe=false（Layer 1，无标记）→ 子进程不装沙盒 → 写工作区
+    // 外照常成功（确认上面的拒绝确实来自用户态沙盒，而非工具自身的
+    // workspace 限制）。
+    let ws = tempfile::tempdir().expect("workspace tempdir");
+    let ch = Arc::new(
+        ExecutorChannel::new(
+            nemesisbot_exe(),
+            ws.path().to_string_lossy().to_string(),
+            Arc::new(|| false),
+        )
+        .with_timeout(Duration::from_secs(120)),
+    );
+    let outside = ws
+        .path()
+        .parent()
+        .expect("tempdir parent")
+        .join(format!("nemesis_u11_plain_{}.txt", std::process::id()));
+    let _ = std::fs::remove_file(&outside);
+    let args = format!(
+        r#"{{"path":{:?},"content":"plain-layer1"}}"#,
+        outside.to_string_lossy()
+    );
+    let res = ch.spawn_and_call("write_file", &args, &ctx()).await;
+    assert!(
+        res.as_ref().map(|r| r.contains("wrote")).unwrap_or(false),
+        "Layer-1 (no sandbox marker) outside write should succeed: {:?}",
+        res
+    );
+    assert!(outside.exists(), "Layer-1 write must land on disk");
+    let _ = std::fs::remove_file(&outside);
 }

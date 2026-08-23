@@ -325,6 +325,17 @@ pub struct WorkflowEngine {
     /// Gateway fills it via [`Self::set_usage_store`] after constructing the
     /// `DataStore`. Empty by default so unit tests work without a database.
     usage_store: crate::nodes::UsageStoreSlot,
+    /// U10 统一执行世界（可选装配）。挂上后：控制面写盘点
+    /// （persist_workflow / delete_workflow_file / persist_execution）过
+    /// `check_writable` 守卫；script 节点获得 world 工具/Spawn 车道。
+    /// `None`（单测/裸装配）= 完全旧行为。经 [`Self::set_execution_world`]
+    /// 装配（同时重注册 script 执行器带上 world）。
+    execution_world:
+        parking_lot::RwLock<Option<Arc<dyn nemesis_sandbox::exec_world::ExecutionWorld>>>,
+    /// `new_integrated_with_dirs` 收到的工具 registry。仅为
+    /// `set_execution_world` 重注册 script 执行器时保留 tools 车道用；
+    /// 其余构造器恒 `None`。
+    script_tools: Option<Arc<nemesis_tools::registry::ToolRegistry>>,
 }
 
 impl WorkflowEngine {
@@ -351,6 +362,8 @@ impl WorkflowEngine {
                 crate::workflow_chat_state::WorkflowChatState::new(),
             ),
             usage_store: crate::nodes::new_usage_store_slot(),
+            execution_world: parking_lot::RwLock::new(None),
+            script_tools: None,
         }
     }
 
@@ -377,6 +390,8 @@ impl WorkflowEngine {
                 crate::workflow_chat_state::WorkflowChatState::new(),
             ),
             usage_store: crate::nodes::new_usage_store_slot(),
+            execution_world: parking_lot::RwLock::new(None),
+            script_tools: None,
         });
 
         // Wire the engine into the sub_workflow executor. `register` works
@@ -410,6 +425,8 @@ impl WorkflowEngine {
                 crate::workflow_chat_state::WorkflowChatState::new(),
             ),
             usage_store: crate::nodes::new_usage_store_slot(),
+            execution_world: parking_lot::RwLock::new(None),
+            script_tools: None,
         }
     }
 
@@ -433,6 +450,8 @@ impl WorkflowEngine {
                 crate::workflow_chat_state::WorkflowChatState::new(),
             ),
             usage_store: crate::nodes::new_usage_store_slot(),
+            execution_world: parking_lot::RwLock::new(None),
+            script_tools: None,
         });
 
         engine.node_executors.register(
@@ -461,6 +480,8 @@ impl WorkflowEngine {
                 crate::workflow_chat_state::WorkflowChatState::new(),
             ),
             usage_store: crate::nodes::new_usage_store_slot(),
+            execution_world: parking_lot::RwLock::new(None),
+            script_tools: None,
         }
     }
 
@@ -485,6 +506,8 @@ impl WorkflowEngine {
                 crate::workflow_chat_state::WorkflowChatState::new(),
             ),
             usage_store: crate::nodes::new_usage_store_slot(),
+            execution_world: parking_lot::RwLock::new(None),
+            script_tools: None,
         }
     }
 
@@ -560,6 +583,8 @@ impl WorkflowEngine {
                 crate::workflow_chat_state::WorkflowChatState::new(),
             ),
             usage_store: crate::nodes::new_usage_store_slot(),
+            execution_world: parking_lot::RwLock::new(None),
+            script_tools: Some(tools.clone()),
         });
 
         // Override mock node executors with real ones. Pass the engine's
@@ -1259,6 +1284,64 @@ impl WorkflowEngine {
         self.workflow_defs_dir.read().clone()
     }
 
+    /// U10：装配统一执行世界。
+    ///
+    /// 挂上后：① 控制面写盘点（`persist_workflow` / `delete_workflow_file` /
+    /// `persist_execution`）过 `check_writable` 守卫（越界拒）；② 重注册
+    /// `script` 执行器带上 world（integrated 装配保留 tools 车道优先）——
+    /// 无 registry 的装配（CLI `workflow run`）经 world 工具车道进
+    /// executor 子进程/Sandboxie 盒；③ per-node `sandbox: false` 显式
+    /// opt-out 走受守卫 Spawn 车道。
+    pub fn set_execution_world(
+        &self,
+        world: Arc<dyn nemesis_sandbox::exec_world::ExecutionWorld>,
+    ) {
+        let exec = match self.script_tools.clone() {
+            Some(tools) => crate::nodes::ScriptNodeExecutor::with_tools_and_world(tools, world.clone()),
+            None => crate::nodes::ScriptNodeExecutor::with_world(world.clone()),
+        };
+        self.node_executors.register("script", Arc::new(exec));
+        *self.execution_world.write() = Some(world.clone());
+        info!(
+            target: "nemesis_workflow::engine",
+            semantics = %world.spawn_semantics(),
+            world = world.name(),
+            "execution world attached (U10 unified execution)"
+        );
+    }
+
+    /// Query the attached execution world (U10). `None` = bare engine
+    /// (unit tests / no assembly) — all guards inert, script falls to bare
+    /// spawn.
+    pub fn execution_world(
+        &self,
+    ) -> Option<Arc<dyn nemesis_sandbox::exec_world::ExecutionWorld>> {
+        self.execution_world.read().clone()
+    }
+
+    /// Upgrade the parallel/loop stub executors to the real composite
+    /// executors (children dispatch through this engine's registry — so
+    /// world-wired `script` children route via the registry instead of the
+    /// inline bare-spawn stub path). The integrated constructor does this
+    /// internally; bare engines (CLI `workflow run`) call this explicitly.
+    pub fn install_composite_node_executors(&self) {
+        NodeExecutorRegistry::install_composite_executors(&self.node_executors);
+    }
+
+    /// 控制面写守卫（U10）：world 未装配 = 放行（单测/裸装配旧行为）；
+    /// 装配后 path 必须落在 world 的 writable_roots 内。
+    fn guard_engine_write(&self, path: &std::path::Path) -> Result<(), EngineError> {
+        let world = self.execution_world.read().clone();
+        if let Some(world) = world {
+            if let Err(reason) = world.check_writable(path) {
+                return Err(EngineError::PersistenceError(format!(
+                    "[U10 execution-world guard] {reason}"
+                )));
+            }
+        }
+        Ok(())
+    }
+
     /// Build a detailed summary of every registered workflow, suitable for
     /// the UI's workflow list view. Includes trigger driver status (the
     /// single source of truth — the UI does not hardcode this) and the
@@ -1366,6 +1449,9 @@ impl WorkflowEngine {
             "{}.yaml",
             sanitize_workflow_filename(&workflow.name)
         ));
+        // U10 控制面写守卫：定义文件必须落在执行世界的 writable_roots 内
+        // （文件名已 sanitize，守卫兜配置错位/未来回归）。
+        self.guard_engine_write(&path)?;
         let yaml = serde_yaml::to_string(&workflow).map_err(|e| {
             EngineError::PersistenceError(format!("serialize workflow {:?}: {}", workflow.name, e))
         })?;
@@ -1390,6 +1476,8 @@ impl WorkflowEngine {
         if let Some(dir) = dir {
             let candidate = dir.join(format!("{}.yaml", sanitize_workflow_filename(name)));
             if candidate.exists() {
+                // U10 控制面写守卫（删除同守卫：能删就能写）。
+                self.guard_engine_write(&candidate)?;
                 std::fs::remove_file(&candidate).map_err(|e| {
                     EngineError::PersistenceError(format!("remove {:?}: {}", candidate, e))
                 })?;
@@ -2315,6 +2403,16 @@ impl WorkflowEngine {
                 "{}_{}.jsonl",
                 execution.workflow_name, execution.id
             ));
+            // U10 控制面写守卫：`workflow_name` 来自用户 YAML（此处**未**
+            // sanitize——`../evil` 能拼出逃逸路径），守卫是这条链的唯一
+            // 拦截层。persist 是 best-effort：拒 = warn + 跳过，不 fail 执行。
+            if let Err(e) = self.guard_engine_write(&file_path) {
+                warn!(
+                    "[Workflow] Refused to persist execution {} outside writable roots: {}",
+                    execution.id, e
+                );
+                return;
+            }
             let persistence = WorkflowPersistence::new(&file_path);
             if let Err(e) = persistence.save_execution(execution) {
                 warn!(

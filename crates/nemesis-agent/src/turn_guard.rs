@@ -9,6 +9,9 @@
 //! so arg-based matching misses the loop. See the plan doc
 //! `docs/PLAN/2026-07-06_agent-loop-turn-management-and-stuck-detection.md`
 //! (§4⑥) for the rationale.
+//! Exception: ⑤′ (`record_read_success`, the U6 read-repeat advisory) keys on
+//! `(tool, canonical args)` on purpose — it detects *identical* re-queries of
+//! read-like tools, where exact-args matching is precisely the signal.
 
 use std::collections::{HashMap, HashSet};
 

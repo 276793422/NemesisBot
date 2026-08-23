@@ -362,6 +362,8 @@ fn detect_tier_from_keywords(name: &str) -> Option<ModelTier> {
 /// for another agent — a Mini-class model gets better results doing the work
 /// with its core tools than mis-scoping a delegation prompt. Big/Auto are
 /// unaffected (empty slice = full toolset).
+/// L1 (U19): `lsp` likewise Normal+ — it needs 4 exact parameters (enum op +
+/// 0-based UTF-16 line/character), which Mini-class models fumble.
 pub fn tier_allowed_tools(tier: ModelTier) -> &'static [&'static str] {
     match tier {
         ModelTier::Mini => &[
@@ -405,6 +407,7 @@ pub fn tier_allowed_tools(tier: ModelTier) -> &'static [&'static str] {
             "workflow_run",
             "claude_code",
             "codex_delegate",
+            "lsp",
         ],
         ModelTier::Big | ModelTier::Auto => &[],
     }

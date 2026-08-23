@@ -82,6 +82,10 @@ pub struct Condition {
 }
 
 /// level 排序权重（critical 最高）。未知 level 排最后。
+// 评估半边（assess 及其组件）只在 eval.rs 的 Windows（Sandboxie）调用链上
+// 有生产调用方；非 Windows bin 构建无调用 → allow 死码（单测跨平台照常覆盖，
+// 消费端回到非 Windows 时删掉这批 cfg_attr 即可）。
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
 fn level_rank(level: &str) -> u8 {
     match level {
         "critical" => 0,
@@ -287,6 +291,7 @@ pub fn truncation_point(s: &str, max: usize) -> usize {
 /// host 归一化（`_whitelisted` 注入用）：小写 + 去尾点。DNS 解析器可能报
 /// `api.example.com.`（尾点形式），与 meta.api_base_host 的裸 host 直比会
 /// 漏判——两条形态都要归一到同一个键再比较。
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
 fn normalize_host(s: &str) -> String {
     s.trim().to_ascii_lowercase().trim_end_matches('.').to_string()
 }
@@ -298,6 +303,7 @@ fn normalize_host(s: &str) -> String {
 /// 评估结论。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
 pub enum Conclusion {
     Risk,
     Safe,
@@ -307,6 +313,7 @@ pub enum Conclusion {
 impl Conclusion {
     /// 中文结论短语（带名词前缀；kind=skill 时"技能"否则"提示词"）。
     /// Safe 措辞带"本次运行范围内"限定——单次运行非证明，绝不裸"安全"。
+    #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
     pub fn phrase_zh(&self, kind: &str) -> String {
         let noun = if kind == "skill" { "技能" } else { "提示词" };
         match self {
@@ -319,6 +326,7 @@ impl Conclusion {
 
 /// 命中明细（assessment.json 的 matched_rules 项 / 控制台证据行）。
 #[derive(Debug, Clone, Serialize)]
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
 pub struct MatchedRule {
     pub id: String,
     pub description: String,
@@ -330,6 +338,7 @@ pub struct MatchedRule {
 
 /// 运行完整性快照（Step 0 字段；旧报告缺失 → None）。
 #[derive(Debug, Clone, Serialize)]
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
 pub struct RunIntegrity {
     pub worker_error: Option<bool>,
     pub agent_exit: Option<i64>,
@@ -340,6 +349,7 @@ pub struct RunIntegrity {
 
 /// 评估结果（assess 的返回值；序列化为 assessment.json）。
 #[derive(Debug, Clone, Serialize)]
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
 pub struct AssessResult {
     pub conclusion: Conclusion,
     pub kind: String,
@@ -355,6 +365,7 @@ pub struct AssessResult {
 
 impl AssessResult {
     /// 未知时的固定说明段（输出在结论后）。
+    #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
     pub fn fixed_notes(&self) -> Vec<String> {
         let mut notes = vec![
             "单次运行仅覆盖一条行为分支，本次未触发不代表其他模型/温度/多轮下不触发。".to_string(),
@@ -370,6 +381,7 @@ impl AssessResult {
 }
 
 /// 读报告文件并解析 JSON（缺失/坏 → Err 带具体文件名）。
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
 fn read_report_file(dir: &Path, name: &str) -> Result<serde_json::Value> {
     let p = dir.join(name);
     let content =
@@ -382,6 +394,7 @@ fn read_report_file(dir: &Path, name: &str) -> Result<serde_json::Value> {
 ///
 /// 注意：规则文件本身的加载在调用方（eval.rs）——评估器拿到的是已解析规则。
 /// 规则文件坏 / 0 条启用规则的"未知"判定由调用方在调 assess 前处理。
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
 pub fn assess(report_dir: &Path, rules: &RulesFile) -> AssessResult {
     // ── 报告四件套读取（缺失/解析失败 → 未知） ──
     let meta = read_report_file(report_dir, "meta.json");
@@ -762,6 +775,7 @@ pub fn assess(report_dir: &Path, rules: &RulesFile) -> AssessResult {
 
 /// 预编译正则对单值匹配（数组字段任一元素命中；与 match_value 的 regex
 /// 分支语义一致，只是不再现场编译）。
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
 fn regex_match_value(re: &regex::Regex, value: &serde_json::Value) -> bool {
     if let Some(arr) = value.as_array() {
         return arr.iter().any(|el| regex_match_value(re, el));
@@ -773,6 +787,7 @@ fn regex_match_value(re: &regex::Regex, value: &serde_json::Value) -> bool {
 /// 单行解析失败跳过（截断的尾行不该废掉整份报告）。
 /// 但**全部 `{` 开头的行都解析失败** = 文件损坏 → Err（返回 Ok(空) 会让
 /// 零事件参与求值、完整性字段又正常 → 误判"安全"——正是 A2 要防的）。
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
 fn read_jsonl(dir: &Path, name: &str) -> Result<Vec<serde_json::Value>> {
     let p = dir.join(name);
     let content =

@@ -1581,6 +1581,16 @@ impl AgentLoopExecutor {
     ///
     /// Mirrors Go's tool execution with `ExecuteWithContext` and the
     /// async callback pattern.
+    ///
+    /// ⚠️ K1a/K1b (U14) hook coverage note: this legacy path runs NEITHER the
+    /// tool-level hooks (`crate::hooks::ToolHook`, wired in
+    /// `AgentLoop::handle_tool_call`) NOR the LLM-call-level hooks
+    /// (`crate::hooks::LlmHook`, wired in `AgentLoop::run_llm_loop`).
+    /// AgentLoopExecutor has zero production construction sites (verified
+    /// 2026-08-23), so no dead hook wiring was added here. If this path is
+    /// ever revived, both hook layers MUST be wired (tools: around the
+    /// `tool.execute` call below; LLM: around its provider.chat call) to
+    /// preserve hook coverage parity.
     async fn execute_tool_with_result(
         &self,
         tc: &ToolCallInfo,

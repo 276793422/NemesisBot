@@ -23,6 +23,16 @@ fn test_tool_to_operation() {
     assert_eq!(tool_to_operation("unknown"), None);
 }
 
+/// U10 统一执行世界：`run_script`（workflow script 节点/agent 脚本入口，
+/// MOVE_TOOLS 成员）必须分类为 ProcessExec——此前缺分类 → 8 层管线全跳。
+#[test]
+fn test_tool_to_operation_run_script_classified() {
+    assert_eq!(
+        tool_to_operation("run_script"),
+        Some(OperationType::ProcessExec)
+    );
+}
+
 #[test]
 fn test_extract_target() {
     let args = serde_json::json!({"path": "/tmp/test.txt"});

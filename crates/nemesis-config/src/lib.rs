@@ -229,6 +229,37 @@ pub struct AgentsConfig {
     /// I4 (U13 other half): Codex delegation tool settings (same shape).
     #[serde(default)]
     pub codex_tool: CodexToolConfig,
+    /// L1 (U19): read-only LSP tool settings. Default disabled (opt-in) —
+    /// and even when enabled, the tool registers only if at least one
+    /// language server (rust-analyzer/gopls/…) is found on PATH.
+    #[serde(default)]
+    pub lsp_tool: LspToolConfig,
+}
+
+/// L1 (U19): `agents.lsp_tool` config section.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LspToolConfig {
+    /// Enable the `lsp` semantic-code tool (default false).
+    #[serde(default)]
+    pub enabled: bool,
+    /// Per-request LSP timeout in seconds (default 120 — first queries wait
+    /// behind server indexing on big repos).
+    #[serde(default)]
+    pub timeout_secs: Option<u64>,
+    /// Idle session reap threshold in seconds (default 600). Sessions idle
+    /// longer than this get shut down lazily on the next query.
+    #[serde(default)]
+    pub idle_secs: Option<u64>,
+}
+
+impl Default for LspToolConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            timeout_secs: None,
+            idle_secs: None,
+        }
+    }
 }
 
 /// I4: `agents.codex_tool` config section (mirrors claude_code_tool).
@@ -290,6 +321,7 @@ impl Default for AgentsConfig {
             list: vec![],
             claude_code_tool: ClaudeCodeToolConfig::default(),
             codex_tool: CodexToolConfig::default(),
+            lsp_tool: LspToolConfig::default(),
         }
     }
 }
@@ -1760,6 +1792,7 @@ pub fn default_config() -> Config {
         agents: AgentsConfig {
             claude_code_tool: ClaudeCodeToolConfig::default(),
             codex_tool: CodexToolConfig::default(),
+            lsp_tool: LspToolConfig::default(),
             defaults: AgentDefaults {
                 workspace: ws,
                 restrict_to_workspace: true,

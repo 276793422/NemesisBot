@@ -416,7 +416,12 @@ fn cmd_list(workflow_dir: &std::path::Path) -> Result<()> {
     Ok(())
 }
 
-async fn cmd_run(workflow_dir: &std::path::Path, name: &str, input_args: &[String]) -> Result<()> {
+async fn cmd_run(
+    home: &std::path::Path,
+    workflow_dir: &std::path::Path,
+    name: &str,
+    input_args: &[String],
+) -> Result<()> {
     println!("Running workflow: {}", name);
 
     // Find the workflow file
@@ -475,6 +480,51 @@ async fn cmd_run(workflow_dir: &std::path::Path, name: &str, input_args: &[Strin
 
     // Create engine and run
     let engine = nemesis_workflow::engine::WorkflowEngine::new();
+
+    // U10 统一执行世界：CLI 裸引擎此前是执行体隔离的逃逸路径——script
+    // 节点落到 `ScriptNodeExecutor::new()` 的裸 spawn，executor.sandbox=true
+    // 也拦不住。executor 分离开（+ `sandbox` feature）时挂上与 gateway 同一
+    // 条开关链的 ExecutionWorld：script 节点经 executor 子进程/Sandboxie 盒，
+    // 引擎控制面写盘限 {home}/workspace/workflow 子树。
+    // 同时把 parallel/loop 从 stub 升级为真组合执行器（stub 会把 script 子
+    // 节点 inline 裸跑、把 llm 等子类型静默跳过；升级后 script 子节点同样
+    // 走 world，llm 等裸引擎没有执行器的子类型显式报错而非假成功）。
+    // config.json 缺失/不可解析 → 无 world（保持旧行为），不阻断 run。
+    #[cfg(feature = "sandbox")]
+    {
+        use nemesis_sandbox::exec_world::ExecutionWorld as _;
+        let workflow_root = workflow_dir
+            .parent()
+            .map(|p| p.to_path_buf())
+            .unwrap_or_else(|| workflow_dir.to_path_buf());
+        let world = nemesis_config::ConfigStore::load(&home.join("config.json"))
+            .ok()
+            .and_then(|store| {
+                crate::exec_world::build_workflow_world(
+                    home,
+                    &home.join("workspace"),
+                    vec![workflow_root.clone()],
+                    vec![home.join("workspace")],
+                    store.handle(),
+                )
+                .ok()
+                .flatten()
+            });
+        match world {
+            Some(world) => {
+                println!(
+                    "  Execution world: {} ({})",
+                    world.name(),
+                    world.spawn_semantics()
+                );
+                engine.set_execution_world(world);
+                engine.install_composite_node_executors();
+            }
+            None => {
+                println!("  Execution world: none (executor separation off; scripts run in-process)");
+            }
+        }
+    }
     engine
         .register_workflow(workflow)
         .map_err(|e| anyhow::anyhow!("Registration error: {}", e))?;
@@ -860,7 +910,7 @@ pub fn run(action: WorkflowAction, local: bool) -> Result<()> {
         WorkflowAction::List => cmd_list(&workflow_dir)?,
         WorkflowAction::Run { name, input } => {
             let result = tokio::task::block_in_place(|| {
-                tokio::runtime::Handle::current().block_on(cmd_run(&workflow_dir, &name, &input))
+                tokio::runtime::Handle::current().block_on(cmd_run(&home, &workflow_dir, &name, &input))
             })?;
             result
         }

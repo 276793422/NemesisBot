@@ -4608,6 +4608,14 @@ pub struct SharedToolConfig {
     /// read_only/workspace_write/danger_full_access, snake_case config →
     /// kebab-case CLI value). NOT in the tool schema.
     pub codex_tool_sandbox: String,
+    /// L1 (U19): enable the read-only `lsp` semantic-code tool. Default
+    /// false — and even when true, registration additionally requires at
+    /// least one language server on PATH (probe at registration).
+    pub lsp_tool_enabled: bool,
+    /// L1: per-request LSP timeout (None = 120s default).
+    pub lsp_tool_timeout_secs: Option<u64>,
+    /// L1: idle session reap threshold (None = 600s default).
+    pub lsp_tool_idle_secs: Option<u64>,
     /// Forge tool executor for self-learning tools (forge_reflect, forge_create, etc).
     #[cfg(feature = "forge")]
     pub forge_executor: Option<Arc<nemesis_forge::forge_tools::ForgeToolExecutor>>,
@@ -4655,6 +4663,9 @@ impl Default for SharedToolConfig {
             codex_tool_enabled: false,
             codex_tool_timeout_secs: None,
             codex_tool_sandbox: String::new(),
+            lsp_tool_enabled: false,
+            lsp_tool_timeout_secs: None,
+            lsp_tool_idle_secs: None,
             forge_executor: None,
             forge: None,
             memory_executor: None,
@@ -4906,6 +4917,38 @@ pub fn register_shared_tools(config: &SharedToolConfig) -> HashMap<String, Box<d
         }
     }
 
+    // L1 (U19): read-only LSP semantic-code tool — same opt-in + probe
+    // shape: config opts in AND at least one language server on PATH.
+    // Absent/failed probe ⇒ tool not registered at all (no dead schema).
+    if config.lsp_tool_enabled {
+        static LSP_PROBE: std::sync::OnceLock<Vec<&'static str>> = std::sync::OnceLock::new();
+        let available = LSP_PROBE.get_or_init(|| {
+            nemesis_lsp::registry::probe_available()
+                .iter()
+                .map(|l| l.label())
+                .collect()
+        });
+        if available.is_empty() {
+            info!(
+                "[Tools] lsp_tool enabled in config but no language server \
+                 (rust-analyzer/gopls/typescript-language-server/pyright/clangd) \
+                 found on PATH; tool not registered"
+            );
+        } else {
+            info!(
+                "[Tools] lsp tool registered (language servers on PATH: {})",
+                available.join(", ")
+            );
+            tools.insert(
+                "lsp".to_string(),
+                Box::new(lsp_tool::LspTool::new(
+                    config.lsp_tool_timeout_secs,
+                    config.lsp_tool_idle_secs,
+                )),
+            );
+        }
+    }
+
     // Forge tools (mirrors Go's forgeTools registration in bot_service.go).
     // Registered when forge executor is provided (i.e. forge.enabled = true).
     #[cfg(feature = "forge")]
@@ -5128,6 +5171,9 @@ pub fn register_extended_tools(
         codex_tool_enabled: false,
         codex_tool_timeout_secs: None,
         codex_tool_sandbox: String::new(),
+        lsp_tool_enabled: false,
+        lsp_tool_timeout_secs: None,
+        lsp_tool_idle_secs: None,
         forge_executor: None,
         forge: None,
         memory_executor: None,
@@ -5142,6 +5188,7 @@ pub fn register_extended_tools(
 pub mod claude_code_tool;
 pub mod cli_delegation;
 pub mod codex_tool;
+pub mod lsp_tool;
 
 #[cfg(test)]
 mod coverage_boost_tests;

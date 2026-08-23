@@ -12,11 +12,17 @@
 //!
 //! Windows-only at runtime; non-Windows compiles to stubs that return errors
 //! (so `cargo check --workspace` stays green cross-platform).
+//!
+//! U11 userland backends (Linux landlock/bwrap, macOS Seatbelt) live in
+//! [`backend`] — cross-platform trait layer with cfg'd platform impls; Windows
+//! registers no userland backend by design (Sandboxie owns it).
 
 use std::path::{Path, PathBuf};
 
+pub mod backend;
 pub mod download;
 pub mod elevation;
+pub mod exec_world;
 pub mod extract;
 pub mod ini;
 pub mod install;

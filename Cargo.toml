@@ -40,6 +40,7 @@ members = [
     "crates/nemesis-eval-proxy",
     "crates/nemesis-voice",
     "crates/nemesis-ui",
+    "crates/nemesis-lsp",
     "nemesisbot",
     "test-tools/integration-test",
     "test-tools/cluster-test",
@@ -129,6 +130,7 @@ socket2 = { version = "0.5", features = ["all"] }
 # Testing
 mockall = "0.13"
 tokio-test = "0.4"
+which = "6"
 
 # Internal crates
 nemesis-types = { path = "crates/nemesis-types" }
@@ -145,6 +147,7 @@ nemesis-memory = { path = "crates/nemesis-memory" }
 nemesis-workflow = { path = "crates/nemesis-workflow" }
 nemesis-skills = { path = "crates/nemesis-skills", default-features = false }
 nemesis-mcp = { path = "crates/nemesis-mcp" }
+nemesis-lsp = { path = "crates/nemesis-lsp" }
 nemesis-agent = { path = "crates/nemesis-agent", default-features = false }
 nemesis-channels = { path = "crates/nemesis-channels" }
 nemesis-forge = { path = "crates/nemesis-forge" }

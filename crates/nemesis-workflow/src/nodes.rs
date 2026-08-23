@@ -1695,19 +1695,40 @@ pub struct ScriptNodeExecutor {
     /// executor separation / Sandboxie contains the script identically to
     /// `exec`). `None` in unit tests / stub paths → direct spawn fallback.
     tools: Option<Arc<nemesis_tools::registry::ToolRegistry>>,
+    /// U10 统一执行世界。优先级：registry 工具车道 → world 工具车道（CLI/
+    /// 无 registry 装配）→ 受守卫 Spawn 车道（per-node `sandbox: false`
+    /// 显式 opt-out）→ 裸 spawn（单测，无任何装配）。见模块文档
+    /// `crates/nemesis-sandbox/src/exec_world.rs`。
+    world: Option<Arc<dyn nemesis_sandbox::exec_world::ExecutionWorld>>,
 }
 
 impl ScriptNodeExecutor {
     /// No tool registry → direct spawn (unit tests, stub executors,
     /// `execute_inline_node`). Preserves the pre-sandbox behaviour.
     pub fn new() -> Self {
-        Self { tools: None }
+        Self { tools: None, world: None }
     }
 
     /// With the agent tool registry bridged in by the gateway → scripts run via
     /// the `run_script` MOVE_TOOL (sandbox-aware, security-pipelined).
     pub fn with_tools(tools: Arc<nemesis_tools::registry::ToolRegistry>) -> Self {
-        Self { tools: Some(tools) }
+        Self { tools: Some(tools), world: None }
+    }
+
+    /// With a U10 execution world but no registry (CLI / bare engines):
+    /// scripts route through the world's tool lane (executor child / box).
+    pub fn with_world(world: Arc<dyn nemesis_sandbox::exec_world::ExecutionWorld>) -> Self {
+        Self { tools: None, world: Some(world) }
+    }
+
+    /// Registry + world (gateway integrated engine after
+    /// `set_execution_world`): registry lane first, world covers the
+    /// opt-out/Spawn lanes.
+    pub fn with_tools_and_world(
+        tools: Arc<nemesis_tools::registry::ToolRegistry>,
+        world: Arc<dyn nemesis_sandbox::exec_world::ExecutionWorld>,
+    ) -> Self {
+        Self { tools: Some(tools), world: Some(world) }
     }
 }
 
@@ -1784,10 +1805,100 @@ impl NodeExecutor for ScriptNodeExecutor {
                 ));
             }
             // run_script not registered (minimal/test registry) → fall through
-            // to the direct-spawn fallback below.
+            // to the world / direct-spawn paths below.
         }
 
-        // Fallback (no registry — unit tests / stub paths): direct spawn.
+        // U10 per-node `sandbox` 开关（config key，bool）：
+        // - 缺省 / `true`：跟随全局（registry → world 工具车道 → 受守卫
+        //   Spawn 车道），与 agent `exec` 同一开关链。
+        // - `false`：**显式 opt-out**——脚本在本进程内直跑（受守卫：
+        //   cwd 根 + env 清洗 + CREATE_NO_WINDOW + 超时），不进子进程/盒。
+        //   语义边界：per-node 只能降级不能升级（executor.sandbox=false 时
+        //   没有通道/盒可进，`sandbox: true` 不凭空造出盒）。
+        let sandbox_opt = node.config.get("sandbox").and_then(|v| v.as_bool());
+
+        if sandbox_opt == Some(false) {
+            if let Some(world) = &self.world {
+                let op = nemesis_sandbox::exec_world::ExecOp::Spawn(
+                    nemesis_sandbox::exec_world::SpawnOp {
+                        program: interpreter.to_string(),
+                        args: vec![flag.to_string(), resolved_script.clone()],
+                        cwd: None,
+                        stdin: None,
+                        timeout_secs: None,
+                    },
+                );
+                match world.run(op).await {
+                    Ok(outcome) => {
+                        return Ok(script_output_node_result(
+                            &node.id,
+                            now,
+                            language,
+                            outcome.stdout,
+                            outcome.stderr,
+                            outcome.exit_code.unwrap_or(-1) as i64,
+                        ));
+                    }
+                    Err(e) => {
+                        return Ok(script_output_node_result(
+                            &node.id,
+                            now,
+                            language,
+                            String::new(),
+                            format!("execution-world spawn failed: {e}"),
+                            -1,
+                        ));
+                    }
+                }
+            }
+            // 无 world（单测/裸装配）→ 落到下方裸 spawn（保持旧行为）。
+        }
+
+        // U10 world 工具车道：无 registry 的装配（CLI `workflow run`、裸
+        // engine）经执行世界调 `run_script` —— 与 agent `exec` 同一个
+        // executor 子进程 / Sandboxie 盒开关，不再有「CLI 直 spawn 绕过
+        // 沙盒」的逃逸路径。
+        if let Some(world) = &self.world {
+            if world.supports_tool_calls() {
+                let args = serde_json::json!({
+                    "interpreter": interpreter,
+                    "flag": flag,
+                    "script": resolved_script,
+                })
+                .to_string();
+                let op = nemesis_sandbox::exec_world::ExecOp::Tool(
+                    nemesis_sandbox::exec_world::ToolOp {
+                        tool: "run_script".to_string(),
+                        args,
+                    },
+                );
+                match world.run(op).await {
+                    Ok(outcome) => {
+                        return Ok(script_output_node_result(
+                            &node.id,
+                            now,
+                            language,
+                            outcome.stdout,
+                            outcome.stderr,
+                            outcome.exit_code.unwrap_or(-1) as i64,
+                        ));
+                    }
+                    Err(e) => {
+                        return Ok(script_output_node_result(
+                            &node.id,
+                            now,
+                            language,
+                            String::new(),
+                            format!("execution-world tool lane failed: {e}"),
+                            -1,
+                        ));
+                    }
+                }
+            }
+        }
+
+        // Fallback (no registry / no world — unit tests / stub paths):
+        // direct spawn.
         let output = tokio::process::Command::new(interpreter)
             .arg(flag)
             .arg(&resolved_script)

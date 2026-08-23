@@ -589,6 +589,7 @@ fn test_full_config_roundtrip() {
         agents: AgentsConfig {
             claude_code_tool: ClaudeCodeToolConfig::default(),
             codex_tool: CodexToolConfig::default(),
+            lsp_tool: LspToolConfig::default(),
             defaults: AgentDefaults {
                 max_tokens: 256000,
                 temperature: 0.5,

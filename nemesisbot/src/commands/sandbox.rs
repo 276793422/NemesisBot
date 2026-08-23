@@ -385,7 +385,9 @@ fn run_startexe_timeout(start_exe: &std::path::Path, box_name: &str, sub: &str, 
         }
     };
     // Job Object：把子进程挂进"父死子亡"的 job（一次创建，进程退出时内核
-    // 自动杀掉 job 里所有进程——孤儿从根上不可能存在）。
+    // 自动杀掉 job 里所有进程——孤儿从根上不可能存在）。Windows 专属（Job
+    // Object API）；非 Windows 上 Start.exe 本就不存在，spawn 早退，无需 job。
+    #[cfg(target_os = "windows")]
     let _job = ChildJob::assign(&child);
     let deadline = std::time::Instant::now() + timeout;
     loop {
@@ -415,6 +417,8 @@ fn run_startexe_timeout(start_exe: &std::path::Path, box_name: &str, sub: &str, 
 
 /// Windows Job Object（kill-on-close）：assign 后进程退出时内核自动终止
 /// job 内所有进程——防 Start.exe 孤儿（父被外杀后继续弹窗）。
+/// Windows 专属（windows-sys 是 target 门控依赖 + Job Object API）。
+#[cfg(target_os = "windows")]
 struct ChildJob(windows_sys::Win32::Foundation::HANDLE);
 
 #[cfg(target_os = "windows")]

@@ -56,6 +56,10 @@ pub const INJECTION_REPETITION_NUDGE: &str = "repetition_nudge";
 /// Ledger source tag (voice): the playback-mode suffix appended to the last
 /// user message's content — a mutation, not a standalone message.
 pub const INJECTION_VOICE_APPEND: &str = "voice_append";
+/// Ledger source tag (K1b/U14): messages appended by a registered LLM pre
+/// hook (reminder / discipline prompts), between the built nudges and the
+/// LlmRequest observer event.
+pub const INJECTION_LLM_HOOK: &str = "llm_hook";
 
 /// One non-persisted injection recorded for replay. `index` is the position in
 /// the FINAL message vec sent to the provider (after all inserts/appends that

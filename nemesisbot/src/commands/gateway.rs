@@ -1150,6 +1150,49 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
 
         // Load all workflow definitions from {home}/workspace/workflow/definitions/.
         engine.set_workflow_defs_dir(workflow_defs_dir.clone());
+
+        // U10 统一执行世界：workflow script 节点（无 registry 的装配路径）、
+        // per-node `sandbox: false` 的受守卫直跑、引擎控制面写盘（persist/
+        // delete 根外拒绝）都经同一个 ExecutionWorld。executor 分离开（默认）
+        // → 无 world（行为不变）；开 → 与 agent 工具层同一条开关链
+        // （executor.enabled / executor.sandbox，live probe）。
+        // 注意：gateway 的 script 节点主路径仍走注册表车道（AgentToolAdapter
+        // 桥接的 agent 工具 —— 已是 RemoteExecutorTool 包装，Layer 1/2 生效）；
+        // world 提供的是 CLI 侧同能力 + 引擎 IO 守卫 + spawn 车道。
+        #[cfg(feature = "sandbox")]
+        {
+            let workspace_dir = home.join("workspace");
+            let spawn_roots = vec![workspace_dir.clone()];
+            match crate::exec_world::build_workflow_world(
+                &home,
+                &workspace_dir,
+                vec![
+                    workflow_defs_dir.clone(),
+                    workflow_checkpoints_dir.clone(),
+                    workflow_executions_dir.clone(),
+                ],
+                spawn_roots,
+                config_store.handle(),
+            ) {
+                Ok(Some(world)) => {
+                    engine.set_execution_world(world);
+                }
+                Ok(None) => {
+                    info!(
+                        "[Gateway] executor separation off — workflow engine runs without an \
+                         execution world (script nodes via tool registry, engine IO unguarded; \
+                         pre-U10 behaviour)"
+                    );
+                }
+                Err(e) => {
+                    warn!(
+                        "[Gateway] execution world build failed (engine continues without it): {}",
+                        e
+                    );
+                }
+            }
+        }
+
         match engine.load_workflows_from_dir(&workflow_defs_dir) {
             Ok(n) => {
                 info!(

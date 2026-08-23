@@ -24,18 +24,8 @@ use crate::{DRIVER_SERVICE, SandboxPaths, USERMODE_SERVICE, download, extract, i
 /// or unparseable — matching the pre-switch behavior, so a fresh install stays
 /// offline until the user explicitly enables it from the UI.
 fn read_allow_network(paths: &SandboxPaths) -> bool {
-    let raw = match std::fs::read_to_string(paths.home.join("config.json")) {
-        Ok(s) => s,
-        Err(_) => return false,
-    };
-    let val: serde_json::Value = match serde_json::from_str(&raw) {
-        Ok(v) => v,
-        Err(_) => return false,
-    };
-    val.get("executor")
-        .and_then(|e| e.get("allow_network"))
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false)
+    // 同一语义的用户态侧消费见 backend::read_executor_allow_network（U11）。
+    crate::backend::read_executor_allow_network(&paths.home)
 }
 
 /// Poll `service_state(name)` until it reaches `target` or `timeout` elapses.

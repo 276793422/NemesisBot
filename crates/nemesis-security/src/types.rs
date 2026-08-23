@@ -289,6 +289,13 @@ pub fn tool_to_operation(tool_name: &str) -> Option<OperationType> {
         "exec" | "execute_command" | "shell" | "exec_async" | "cron" => {
             Some(OperationType::ProcessExec)
         }
+        // U10 统一执行世界：`run_script` 是 workflow script 节点 + agent 的
+        // 脚本执行入口（MOVE_TOOLS 成员，与 `exec` 同路由到 executor 子进程/
+        // Sandboxie 盒）。此前不在表内 → 8 层管线全跳直接放行（未知名放行
+        // 分支），是统一路由链上唯一未分类的执行类工具。与 `exec` 同档
+        // ProcessExec。`grep`/`git` 同为 MOVE_TOOLS 但语义是读/版本库操作，
+        // 分类留给 tool-plugin 批（declared_operation_type 前置读一并落）。
+        "run_script" => Some(OperationType::ProcessExec),
         "spawn" => Some(OperationType::ProcessSpawn),
         "kill" | "kill_process" => Some(OperationType::ProcessKill),
         "download" | "install_skill" => Some(OperationType::NetworkDownload),

@@ -112,6 +112,10 @@ pub struct ExecutorChannel {
     pub start_exe: Option<PathBuf>,
     /// Sandboxie box name.
     pub box_name: String,
+    /// App home（gateway 侧解析好的）。U11：传给子进程读
+    /// `<home>/config.json` 的 `executor.allow_network`（用户态沙盒禁网
+    /// 开关；`None` = 测试/裸构造，子进程按默认 false 处理）。
+    pub home: Option<PathBuf>,
     /// Per-call hard timeout (the child must respond within this).
     pub timeout: Duration,
 }
@@ -133,8 +137,16 @@ impl ExecutorChannel {
             sandbox_probe,
             start_exe: None,
             box_name: "NemesisBox".to_string(),
+            home: None,
             timeout: Duration::from_secs(24 * 3600),
         }
+    }
+
+    /// Set the app home (child reads `executor.allow_network` from its
+    /// config.json; U11 userland sandbox network switch).
+    pub fn with_home(mut self, home: PathBuf) -> Self {
+        self.home = Some(home);
+        self
     }
 
     /// Set the Sandboxie `Start.exe` path (L2.2: wraps the spawn for real box).
@@ -169,6 +181,9 @@ impl ExecutorChannel {
         };
         cmd.env("NEMESISBOT_ROLE", "executor")
             .env("NEMESISBOT_EXECUTOR_WORKSPACE", &self.workspace);
+        if let Some(home) = &self.home {
+            cmd.env("NEMESISBOT_EXECUTOR_HOME", home);
+        }
         // Prevent a console window from flashing on each per-call spawn (every
         // tool call spawns a fresh child; without this, Windows pops a black
         // console window that disappears when the child exits).
@@ -195,13 +210,17 @@ impl ExecutorChannel {
             }
             #[cfg(not(windows))]
             {
-                let _ = request_line;
-                return Err(
-                    "sandbox (named-pipe) transport is only supported on Windows".to_string(),
-                );
+                // U11: non-Windows userland sandbox (landlock 优先 / bwrap 兜底，
+                // 见 nemesis_sandbox::backend)。与 Sandboxie 不同，用户态后端不
+                // 改变 stdio 通路——子进程（exec_worker）看到 env 标记后在启动时
+                // 对自身装上限制（自装式），stdio 传输照常。降级语义在子进程侧：
+                // 后端不可用 → warn + 无盒继续，不拒调用（不崩）。
+                return self
+                    .spawn_and_call_stdio(tool, &request_line, true)
+                    .await;
             }
         }
-        self.spawn_and_call_stdio(tool, &request_line).await
+        self.spawn_and_call_stdio(tool, &request_line, false).await
     }
 
     fn build_request_line(
@@ -247,9 +266,19 @@ impl ExecutorChannel {
         }
     }
 
-    /// stdio transport (sandbox=false): write stdin, read stdout.
-    async fn spawn_and_call_stdio(&self, tool: &str, request_line: &str) -> Result<String, String> {
+    /// stdio transport (sandbox=false, or non-Windows userland sandbox): write
+    /// stdin, read stdout. `userland_sandbox` sets the env marker the child
+    /// (`exec_worker`) reads at startup to self-apply landlock/bwrap (U11).
+    async fn spawn_and_call_stdio(
+        &self,
+        tool: &str,
+        request_line: &str,
+        userland_sandbox: bool,
+    ) -> Result<String, String> {
         let mut cmd = self.build_command();
+        if userland_sandbox {
+            cmd.env("NEMESISBOT_EXECUTOR_SANDBOX", "1");
+        }
         cmd.stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());

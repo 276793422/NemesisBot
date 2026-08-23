@@ -622,6 +622,21 @@ pub struct AgentLoop {
     /// across sessions in this MVP — adequate for single-session deployments;
     /// multi-session isolation is a documented follow-up.
     turn_counter: std::sync::atomic::AtomicUsize,
+    /// K1a (U14): user tool hooks — pre runs after the fixed security gate,
+    /// post runs after execute and before Forge. RwLock so hooks can be
+    /// registered from `&self` post-construction (K2 hooks.json wiring).
+    /// See `crate::hooks` module doc for the full 布点图.
+    tool_hooks: parking_lot::RwLock<crate::hooks::ToolHookManager>,
+    /// K1b (U14): LLM-call-level hooks — pre may append reminder messages
+    /// (visible in request_log), post may allow/replace/retry/block the
+    /// response. See `crate::hooks` module doc（LLM 调用级布点）.
+    llm_hooks: parking_lot::RwLock<crate::hooks::LlmHookManager>,
+    /// K2 (U14): prompt/turn lifecycle hooks — on_user_prompt runs in
+    /// `run_with_trace` BEFORE the message enters history (blocked prompts
+    /// are never seen by the model), on_turn_end runs after the final
+    /// answer is accepted, before the turn ends. Primary consumer: the CC
+    /// hooks.json dialect bridge (`crate::cc_hooks`).
+    lifecycle_hooks: parking_lot::RwLock<crate::hooks::LifecycleHookManager>,
     /// Memory tool executor reference, so the gateway can attach an approval
     /// gate post-construction (memory_store/forget require interactive approval).
     #[cfg(feature = "memory")]
@@ -754,6 +769,9 @@ impl AgentLoop {
             cancel_tokens: dashmap::DashMap::new(),
             checkpoint_store: parking_lot::RwLock::new(None),
             turn_counter: std::sync::atomic::AtomicUsize::new(0),
+            tool_hooks: parking_lot::RwLock::new(crate::hooks::ToolHookManager::new()),
+            llm_hooks: parking_lot::RwLock::new(crate::hooks::LlmHookManager::new()),
+            lifecycle_hooks: parking_lot::RwLock::new(crate::hooks::LifecycleHookManager::new()),
             memory_executor: parking_lot::RwLock::new(None),
             #[cfg(feature = "memory")]
             memory_inject_manager: parking_lot::RwLock::new(None),
@@ -784,6 +802,29 @@ impl AgentLoop {
     /// 重启后自动保持（状态本体在 `SharedResources` 上，不在 loop 上）。
     pub fn set_estop(&self, estop: Arc<crate::estop::EstopState>) {
         *self.estop.write() = Some(estop);
+    }
+
+    /// K1a (U14): 注册一个用户工具钩子。pre 在固定 security 闸之后、工具
+    /// 执行之前运行；post 在执行之后、Forge 记录之前运行（详见
+    /// `crate::hooks` 模块文档）。RwLock 注册——运行中随时可挂。
+    pub fn add_tool_hook(&self, hook: Arc<dyn crate::hooks::ToolHook>) {
+        self.tool_hooks.write().add(hook);
+    }
+
+    /// K1b (U14): 注册一个 LLM 调用级钩子。pre 在 messages 组装后、
+    /// LlmRequest observer 事件前运行（可 Append 提醒消息 / 拦下本轮）；
+    /// post 在响应错误恢复后、LlmResponse observer 事件前运行（可
+    /// Allow/Replace/有限 Retry/Block）。详见 `crate::hooks` 模块文档。
+    pub fn add_llm_hook(&self, hook: Arc<dyn crate::hooks::LlmHook>) {
+        self.llm_hooks.write().add(hook);
+    }
+
+    /// K2 (U14): 注册一个 prompt/turn 生命周期钩子。on_user_prompt 在
+    /// `run_with_trace` 顶部、消息进 history **之前**运行（拦截则模型
+    /// 永远看不到该消息）；on_turn_end 在最终答案被接受后、Done 事件前
+    /// 运行（可注入 feedback 要求再答一轮，预算封顶 fail-open）。
+    pub fn add_lifecycle_hook(&self, hook: Arc<dyn crate::hooks::LifecycleHook>) {
+        self.lifecycle_hooks.write().add(hook);
     }
 
     /// Wire the re-injection sender for the queue-drain path (round-5 review
@@ -945,6 +986,9 @@ impl AgentLoop {
             cancel_tokens: dashmap::DashMap::new(),
             checkpoint_store: parking_lot::RwLock::new(None),
             turn_counter: std::sync::atomic::AtomicUsize::new(0),
+            tool_hooks: parking_lot::RwLock::new(crate::hooks::ToolHookManager::new()),
+            llm_hooks: parking_lot::RwLock::new(crate::hooks::LlmHookManager::new()),
+            lifecycle_hooks: parking_lot::RwLock::new(crate::hooks::LifecycleHookManager::new()),
             memory_executor: parking_lot::RwLock::new(None),
             #[cfg(feature = "memory")]
             memory_inject_manager: parking_lot::RwLock::new(None),
@@ -3098,6 +3142,34 @@ impl AgentLoop {
         cancel_token: &tokio_util::sync::CancellationToken,
         turn_budget: Option<u32>,
     ) -> Vec<AgentEvent> {
+        // K2 (U14): prompt-level lifecycle hooks (CC SessionStart +
+        // UserPromptSubmit dialect events). Runs BEFORE `add_user_message`
+        // so a blocked prompt NEVER enters history — the model doesn't see
+        // it, matching CC's block semantics. `resume_execution` does not
+        // pass through here (no new user prompt → no event), by design.
+        {
+            let lifecycle = self.lifecycle_hooks.read().snapshot();
+            if !lifecycle.is_empty() {
+                let prompt = crate::hooks::HookPrompt {
+                    session_key: context.session_key.clone(),
+                    channel: context.channel.clone(),
+                    chat_id: context.chat_id.clone(),
+                    prompt: user_message.to_string(),
+                };
+                if let Some(reason) = crate::hooks::run_user_prompt_hooks(&lifecycle, &prompt).await
+                {
+                    warn!(
+                        "[AgentLoop] prompt hook blocked the message for session '{}': {}",
+                        context.session_key, reason
+                    );
+                    return vec![AgentEvent::Done(format!(
+                        "⛔ HOOK BLOCKED: {} — A registered hook denied this prompt. Adjust the hook policy and resend.",
+                        reason
+                    ))];
+                }
+            }
+        }
+
         // Add user message to instance history.
         instance.add_user_message(user_message);
         instance.set_state(crate::types::AgentState::Thinking);
@@ -3211,8 +3283,17 @@ impl AgentLoop {
         // instead of post-hoc string sniffing (a model reply containing
         // the paused-after wording would have been misclassified).
         let mut terminal_reason: Option<&'static str> = None;
+        // K2 (U14): turn-end hook (CC Stop) continue budget. Each
+        // `Continue` demand injects the hook feedback as a user message and
+        // grants one more round; exhausted → stop anyway (fail-open, same
+        // discipline as MAX_LLM_HOOK_RETRIES).
+        let mut turn_end_continues: u32 = 0;
 
-        loop {
+        // K1b (U14): labeled so the LLM post-hook retry loop (deep inside,
+        // around the guarded re-call) can abort the turn with `break 'turn`.
+        // Bare `break`s elsewhere keep targeting their nearest loop — this
+        // label only ADDS a way to name the turn loop, changing nothing else.
+        'turn: loop {
             // Auto-reload MCP tools if config file changed.
             self.check_mcp_reload();
             // Phase 4a: re-resolve capability tier if config.json changed on
@@ -3429,33 +3510,51 @@ impl AgentLoop {
 
             debug!("[AgentLoop] Sending {} messages to LLM", messages.len());
 
+            // K1b (U14): LLM-call-level pre hooks. Runs AFTER messages are
+            // built (nudges included) and BEFORE the LlmRequest observer
+            // event — appended messages land in request_log and in the T8
+            // replay ledger (byte-exact replay keeps holding).
+            {
+                let llm_hooks = self.llm_hooks.read().snapshot();
+                if !llm_hooks.is_empty() {
+                    let hook_call = crate::hooks::HookLlmCall {
+                        model: self.active_model.read().clone(),
+                        session_key: context.session_key.clone(),
+                        round: turns_used as usize + 1,
+                    };
+                    match crate::hooks::run_llm_pre_hooks(&llm_hooks, &hook_call, &messages).await {
+                        Ok(appended) => {
+                            for m in appended {
+                                replay_injections.push(crate::replay::InjectionRecord {
+                                    index: messages.len(),
+                                    role: m.role.clone(),
+                                    source: crate::replay::INJECTION_LLM_HOOK.to_string(),
+                                    content: m.content.clone(),
+                                });
+                                messages.push(m);
+                            }
+                        }
+                        Err(reason) => {
+                            warn!(
+                                "[AgentLoop] LLM hook blocked the call, turns_used={}: {}",
+                                turns_used, reason
+                            );
+                            events.push(AgentEvent::Done(format!(
+                                "⛔ HOOK BLOCKED: {} — A registered LLM hook denied this round. Do NOT retry unless the user changes the hook policy.",
+                                reason
+                            )));
+                            break;
+                        }
+                    }
+                }
+            }
+
             // Build tool definitions from registered tools for LLM function calling.
             // Mirrors Go's ToolRegistry.ToProviderDefs() which calls tool.Description() and tool.Parameters().
             // Sort by name so the order is stable across runs — a deterministic
             // tool order gives reproducible behaviour and avoids unnecessary prompt
             // variation between requests.
-            let tool_defs: Vec<crate::types::ToolDefinition> = {
-                let tools_guard = self.tools.read();
-                // Phase 3 (small-model-tool-robustness): tier-based toolset.
-                // Empty allowed-list (Big/Auto) = show everything; Mini/Normal
-                // see a restricted set to reduce small-model cognitive load.
-                let allowed = nemesis_types::capability::tier_allowed_tools(*self.tier.read());
-                let mut names: Vec<&String> = tools_guard.keys().collect();
-                names.sort();
-                names
-                    .into_iter()
-                    .filter(|name| allowed.is_empty() || allowed.contains(&name.as_str()))
-                    .filter_map(|name| tools_guard.get(name).map(|tool| (name, tool)))
-                    .map(|(name, tool)| crate::types::ToolDefinition {
-                        tool_type: "function".to_string(),
-                        function: crate::types::ToolFunctionDef {
-                            name: name.clone(),
-                            description: tool.description(),
-                            parameters: tool.parameters(),
-                        },
-                    })
-                    .collect()
-            };
+            let tool_defs: Vec<crate::types::ToolDefinition> = self.build_tool_defs();
             debug!(
                 "[AgentLoop] Sending {} tool definitions to LLM",
                 tool_defs.len()
@@ -3541,26 +3640,9 @@ impl AgentLoop {
                     events.push(AgentEvent::Done("已取消".to_string()));
                     break;
                 }
-                // 急停：watch 翻成 engaged 才 resolve。
-                _ = async {
-                    match estop_rx.as_mut() {
-                        Some(rx) => {
-                            // 订阅时已经 engaged（checkpoint A → subscribe 之间的窗口）
-                            // → 立刻 return，否则 changed() 会干等下一次变化、漏掉这次。
-                            if *rx.borrow() {
-                                return;
-                            }
-                            while rx.changed().await.is_ok() {
-                                if *rx.borrow() {
-                                    return;
-                                }
-                            }
-                        }
-                        None => {
-                            std::future::pending::<()>().await;
-                        }
-                    }
-                } => {
+                // 急停：watch 翻成 engaged 才 resolve。（K1b 起该等待逻辑抽成
+                // wait_estop_engaged 共享——hook 重呼路径用同一段，防漂移。）
+                _ = Self::wait_estop_engaged(estop_rx.as_mut()) => {
                     info!(
                         "[AgentLoop] E-stop engaged during LLM call, turns_used={}",
                         turns_used
@@ -3818,6 +3900,140 @@ impl AgentLoop {
                     }
                 }
             };
+
+            // K1b (U14): LLM-call-level post hooks — the「拦思考」layer. Runs
+            // AFTER the built-in error recovery, BEFORE the LlmResponse
+            // observer event / turns_used increment, so every downstream
+            // consumer (observer, usage, tool execution) sees the final
+            // decision. Retry re-calls carry the same cancel/e-stop select
+            // guard and emit their own LlmRequest observer event (visible in
+            // request_log; no extra T8 ledger record — same shape as the
+            // built-in transient retries).
+            {
+                let llm_hooks = self.llm_hooks.read().snapshot();
+                if !llm_hooks.is_empty() {
+                    let mut hook_retries: u32 = 0;
+                    loop {
+                        let hook_call = crate::hooks::HookLlmCall {
+                            model: active_model.clone(),
+                            session_key: context.session_key.clone(),
+                            round: turns_used as usize + 1,
+                        };
+                        // Pass a clone: on fail-open paths (budget exhausted /
+                        // retry call failed) `response` still holds the
+                        // original and needs no restore.
+                        match crate::hooks::run_llm_post_hooks(
+                            &llm_hooks,
+                            &hook_call,
+                            response.clone(),
+                        )
+                        .await
+                        {
+                            crate::hooks::PostLlmOutcome::Allow(final_resp) => {
+                                response = final_resp;
+                                break;
+                            }
+                            crate::hooks::PostLlmOutcome::Block { reason } => {
+                                warn!(
+                                    "[AgentLoop] LLM hook blocked the response, turns_used={}: {}",
+                                    turns_used, reason
+                                );
+                                events.push(AgentEvent::Done(format!(
+                                    "⛔ HOOK BLOCKED: {} — A registered LLM hook terminated this round. Inform the user.",
+                                    reason
+                                )));
+                                break 'turn;
+                            }
+                            crate::hooks::PostLlmOutcome::Retry { reason } => {
+                                if hook_retries >= crate::hooks::MAX_LLM_HOOK_RETRIES {
+                                    warn!(
+                                        "[AgentLoop] LLM hook retry budget exhausted ({}), allowing the previous response",
+                                        crate::hooks::MAX_LLM_HOOK_RETRIES
+                                    );
+                                    break;
+                                }
+                                hook_retries += 1;
+                                // Regenerate: rebuild messages (the first
+                                // attempt's were moved into the call), append
+                                // the hook feedback, re-call under the same
+                                // cancel/e-stop guard.
+                                let mut r_msgs = self.build_messages(instance);
+                                r_msgs.push(LlmMessage {
+                                    role: "system".to_string(),
+                                    content: format!("# Hook feedback: {}", reason),
+                                    tool_calls: None,
+                                    tool_call_id: None,
+                                    reasoning_content: None,
+                                });
+                                let r_tools = self.build_tool_defs();
+                                self.emit_observer_sync(
+                                    crate::loop_executor::ObserverEvent::LlmRequest {
+                                        trace_id: trace_id.to_string(),
+                                        round: turns_used + 1,
+                                        model: active_model.clone(),
+                                        messages_count: r_msgs.len(),
+                                        tools_count: r_tools.len(),
+                                        messages: r_msgs
+                                            .iter()
+                                            .filter_map(|m| serde_json::to_value(m).ok())
+                                            .collect(),
+                                        tools: r_tools
+                                            .iter()
+                                            .filter_map(|t| serde_json::to_value(t).ok())
+                                            .collect(),
+                                        provider_name: String::new(),
+                                        api_key: String::new(),
+                                        api_base: String::new(),
+                                    },
+                                )
+                                .await;
+                                let mut r_estop_rx =
+                                    self.estop.read().as_ref().map(|e| e.subscribe());
+                                let r = tokio::select! {
+                                    res = active_provider.chat(&active_model, r_msgs, Some(chat_opts.clone()), r_tools) => res,
+                                    _ = cancel_token.cancelled() => {
+                                        info!("[AgentLoop] Hook retry call cancelled, turns_used={}", turns_used);
+                                        events.push(AgentEvent::Done("已取消".to_string()));
+                                        break 'turn;
+                                    }
+                                    _ = Self::wait_estop_engaged(r_estop_rx.as_mut()) => {
+                                        info!(
+                                            "[AgentLoop] E-stop engaged during hook retry call, turns_used={}",
+                                            turns_used
+                                        );
+                                        events.push(AgentEvent::Done(
+                                            "⛔ 已急停 (E-STOP) — LLM 调用已中断。发送 `nemesisbot estop --release` 恢复。"
+                                                .to_string(),
+                                        ));
+                                        break 'turn;
+                                    }
+                                };
+                                match r {
+                                    Ok(resp) => {
+                                        info!(
+                                            "[AgentLoop] Hook retry {} succeeded, re-checking response",
+                                            hook_retries
+                                        );
+                                        response = resp;
+                                        continue;
+                                    }
+                                    Err(e) => {
+                                        // Fail-open: keep the response the hook
+                                        // rejected — a failed re-call must not
+                                        // lose the round's only answer.
+                                        warn!(
+                                            "[AgentLoop] Hook retry call failed, keeping previous response: {}",
+                                            e
+                                        );
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
             turns_used += 1;
 
             // Emit LLM response observer event.
@@ -3987,6 +4203,49 @@ impl AgentLoop {
                             // Loop again — the claim at the top of the next
                             // iteration injects the steer message(s).
                             continue;
+                        }
+                        // K2 (U14): turn-end lifecycle hooks (CC Stop
+                        // dialect event). Runs after the assistant message
+                        // is recorded, before the Done event. `Continue`
+                        // injects the hook feedback as a user message and
+                        // grants one more round, bounded by
+                        // MAX_TURN_END_CONTINUES (exhausted → stop anyway,
+                        // fail-open). Only the normal Accept path fires —
+                        // heartbeat (its own branch above), GiveUp and
+                        // error/stop paths do not.
+                        {
+                            let lifecycle = self.lifecycle_hooks.read().snapshot();
+                            if !lifecycle.is_empty() {
+                                let end = crate::hooks::HookTurnEnd {
+                                    session_key: context.session_key.clone(),
+                                    channel: context.channel.clone(),
+                                    chat_id: context.chat_id.clone(),
+                                    final_content: content.clone(),
+                                    stop_hook_active: turn_end_continues > 0,
+                                };
+                                if let crate::hooks::TurnEndDecision::Continue { feedback } =
+                                    crate::hooks::run_turn_end_hooks(&lifecycle, &end).await
+                                {
+                                    if turn_end_continues < crate::hooks::MAX_TURN_END_CONTINUES {
+                                        turn_end_continues += 1;
+                                        info!(
+                                            "[AgentLoop] turn-end hook blocked stopping \
+                                             ({}/{}, session '{}') — one more round",
+                                            turn_end_continues,
+                                            crate::hooks::MAX_TURN_END_CONTINUES,
+                                            context.session_key
+                                        );
+                                        instance.add_user_message(&feedback);
+                                        continue 'turn;
+                                    }
+                                    warn!(
+                                        "[AgentLoop] turn-end hook keeps blocking stop after {} \
+                                         continues; stopping anyway (fail-open), session '{}'",
+                                        crate::hooks::MAX_TURN_END_CONTINUES,
+                                        context.session_key
+                                    );
+                                }
+                            }
                         }
                         let formatted = context.format_rpc_message(&content);
                         events.push(AgentEvent::Done(formatted));
@@ -4608,6 +4867,67 @@ impl AgentLoop {
         futures::future::join_all(futs).await
     }
 
+    /// Build the LLM-visible tool definitions from the registry.
+    ///
+    /// Extracted verbatim from `run_llm_loop` (K1b, U14) so the post-LLM
+    /// hook retry re-call rebuilds them from the same single source instead
+    /// of duplicating the tier-filter/sort block (the transient-retry path
+    /// predates the extraction and keeps its inline copy — untouched).
+    ///
+    /// Mirrors Go's ToolRegistry.ToProviderDefs() which calls
+    /// tool.Description() and tool.Parameters(). Sort by name so the order is
+    /// stable across runs — a deterministic tool order gives reproducible
+    /// behaviour and avoids unnecessary prompt variation between requests.
+    fn build_tool_defs(&self) -> Vec<crate::types::ToolDefinition> {
+        let tools_guard = self.tools.read();
+        // Phase 3 (small-model-tool-robustness): tier-based toolset.
+        // Empty allowed-list (Big/Auto) = show everything; Mini/Normal
+        // see a restricted set to reduce small-model cognitive load.
+        let allowed = nemesis_types::capability::tier_allowed_tools(*self.tier.read());
+        let mut names: Vec<&String> = tools_guard.keys().collect();
+        names.sort();
+        names
+            .into_iter()
+            .filter(|name| allowed.is_empty() || allowed.contains(&name.as_str()))
+            .filter_map(|name| tools_guard.get(name).map(|tool| (name, tool)))
+            .map(|(name, tool)| crate::types::ToolDefinition {
+                tool_type: "function".to_string(),
+                function: crate::types::ToolFunctionDef {
+                    name: name.clone(),
+                    description: tool.description(),
+                    parameters: tool.parameters(),
+                },
+            })
+            .collect()
+    }
+
+    /// Wait until the e-stop watch flips to engaged, or forever if no
+    /// receiver is wired (`None` → pending, i.e. the select arm never fires).
+    ///
+    /// Extracted verbatim from the estop arm of the primary LLM-call select
+    /// (K1b, U14) — the post-LLM hook retry re-call needs the identical
+    /// subscribe-window-safe wait (if already engaged at subscribe time,
+    /// return immediately instead of waiting for the NEXT change).
+    async fn wait_estop_engaged(rx: Option<&mut tokio::sync::watch::Receiver<bool>>) {
+        match rx {
+            Some(rx) => {
+                // 订阅时已经 engaged（checkpoint A → subscribe 之间的窗口）
+                // → 立刻 return，否则 changed() 会干等下一次变化、漏掉这次。
+                if *rx.borrow() {
+                    return;
+                }
+                while rx.changed().await.is_ok() {
+                    if *rx.borrow() {
+                        return;
+                    }
+                }
+            }
+            None => {
+                std::future::pending::<()>().await;
+            }
+        }
+    }
+
     /// Execute a single tool call.
     pub async fn handle_tool_call(
         &self,
@@ -4693,6 +5013,34 @@ impl AgentLoop {
             }
         }
 
+        // K1a (U14): user tool hooks. Pre hooks run here — AFTER the fixed
+        // security gate above (which stays inline as the de-facto pre[0]; see
+        // crate::hooks module doc for why it wasn't converted to a trait
+        // object) and BEFORE context injection / checkpoint / execute.
+        // Ordered, first Block wins. Fires on every dispatch attempt,
+        // including unknown tool names (a hook may deny what the model
+        // *tried* to call — mirrors CC PreToolUse).
+        let hook_call = crate::hooks::HookToolCall {
+            name: tool_call.name.clone(),
+            arguments: tool_call.arguments.clone(),
+            channel: context.channel.clone(),
+            chat_id: context.chat_id.clone(),
+            session_key: context.session_key.clone(),
+        };
+        {
+            let hooks = self.tool_hooks.read().snapshot();
+            if let Some(reason) = crate::hooks::run_pre_hooks(&hooks, &hook_call).await {
+                warn!(
+                    "[AgentLoop] Hook blocked tool {}: {}",
+                    tool_call.name, reason
+                );
+                return format!(
+                    "⛔ HOOK BLOCKED: {} — A registered hook denied this operation. Do NOT retry unless the user changes the hook policy. Inform the user if this keeps blocking.",
+                    reason
+                );
+            }
+        }
+
         // Inject channel/chat_id into context-aware tools before execution.
         // Mirrors loop_executor.rs:1634 which calls set_context for AgentLoopExecutor.
         {
@@ -4721,6 +5069,7 @@ impl AgentLoop {
                 }
             }
         }
+        let tool_was_registered = tool_opt.is_some();
         let result = match tool_opt {
             Some(tool) => match tool.execute(&tool_call.arguments, context).await {
                 Ok(result) => {
@@ -4740,6 +5089,18 @@ impl AgentLoop {
                 warn!("[AgentLoop] Unknown tool: {}", tool_call.name);
                 format!("Error: Unknown tool '{}'", tool_call.name)
             }
+        };
+
+        // K1a (U14): user post-tool hooks — pipeline, each hook sees the
+        // current (possibly already-replaced) result, all hooks run. Only
+        // when the tool actually executed (Pre/Post pairing — the
+        // unknown-tool path never dispatched). Runs BEFORE Forge so the
+        // recorded experience matches the final result.
+        let result = if tool_was_registered {
+            let hooks = self.tool_hooks.read().snapshot();
+            crate::hooks::run_post_hooks(&hooks, &hook_call, result).await
+        } else {
+            result
         };
 
         // Record experience for Forge self-learning (non-blocking).

@@ -1521,6 +1521,26 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c34f04666d835ff5d62e058c3995147c06f42fe86ff053337632bca83e42702d"
 
 [[package]]
+name = "enumflags2"
+version = "0.7.12"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1027f7680c853e056ebcec683615fb6fbbc07dbaa13b4d5d9442b146ded4ecef"
+dependencies = [
+ "enumflags2_derive",
+]
+
+[[package]]
+name = "enumflags2_derive"
+version = "0.7.12"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "67c78a4d8fdf9953a5c9d458f9efe940fd97a0cab0941c075a813ac594733827"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.117",
+]
+
+[[package]]
 name = "env_filter"
 version = "1.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2814,6 +2834,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "landlock"
+version = "0.4.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4cca98e95f35b29d469dade6724c6f96cec9236640f745a0e99b0334ec320ab1"
+dependencies = [
+ "enumflags2",
+ "libc",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "lazy_static"
 version = "1.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3268,6 +3299,7 @@ dependencies = [
  "nemesis-cron",
  "nemesis-data",
  "nemesis-forge",
+ "nemesis-lsp",
  "nemesis-mcp",
  "nemesis-memory",
  "nemesis-observer",
@@ -3573,6 +3605,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "nemesis-lsp"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tracing",
+ "which",
+]
+
+[[package]]
 name = "nemesis-mcp"
 version = "0.1.0"
 dependencies = [
@@ -3701,7 +3744,9 @@ name = "nemesis-sandbox"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "async-trait",
  "bytes",
+ "landlock",
  "nemesis-types",
  "reqwest",
  "serde",
@@ -3968,6 +4013,7 @@ dependencies = [
  "dashmap",
  "nemesis-data",
  "nemesis-providers",
+ "nemesis-sandbox",
  "nemesis-tools",
  "nemesis-types",
  "parking_lot",

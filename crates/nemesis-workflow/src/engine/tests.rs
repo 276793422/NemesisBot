@@ -2428,3 +2428,135 @@ mod e2e_input_pipeline {
         );
     }
 }
+
+// ---------------------------------------------------------------------------
+// U10 统一执行世界：控制面写守卫（writable_roots）
+// ---------------------------------------------------------------------------
+
+/// 窄根世界：roots 只含 `allowed`（模拟 gateway 只授 definitions/
+/// checkpoints/executions 三目录）。
+struct NarrowWorld {
+    allowed: std::path::PathBuf,
+}
+
+#[async_trait::async_trait]
+impl nemesis_sandbox::exec_world::ExecutionWorld for NarrowWorld {
+    fn name(&self) -> &str {
+        "narrow-test-world"
+    }
+    fn writable_roots(&self) -> Vec<std::path::PathBuf> {
+        vec![self.allowed.clone()]
+    }
+    fn spawn_semantics(&self) -> nemesis_sandbox::exec_world::SpawnSemantics {
+        nemesis_sandbox::exec_world::SpawnSemantics::InProcess
+    }
+    async fn run(
+        &self,
+        _op: nemesis_sandbox::exec_world::ExecOp,
+    ) -> Result<nemesis_sandbox::exec_world::ExecOutcome, String> {
+        Err("not used in guard tests".to_string())
+    }
+}
+
+fn temp_root(tag: &str) -> std::path::PathBuf {
+    let d = tempfile::tempdir().expect("tempdir");
+    let kept = d.keep();
+    let p = kept.join(tag);
+    std::fs::create_dir_all(&p).expect("mkdir");
+    p
+}
+
+/// U10 原验收「引擎越界写被拦」：defs_dir 配到世界根外 → persist_workflow
+/// 被守卫拒（Err 带 guard 标记），文件不落盘。
+#[tokio::test]
+async fn u10_guard_denies_out_of_root_persist_workflow() {
+    let in_root = temp_root("allowed");
+    let out_root = temp_root("outside");
+    let engine = WorkflowEngine::new();
+    engine.set_workflow_defs_dir(out_root.clone());
+    engine.set_execution_world(std::sync::Arc::new(NarrowWorld { allowed: in_root }));
+
+    let wf = make_workflow(
+        "escape_attempt",
+        vec![make_node("n1", "delay", vec![])],
+    );
+    let err = engine.persist_workflow(wf).expect_err("must be denied");
+    assert!(
+        err.to_string().contains("[U10 execution-world guard]"),
+        "err={err}"
+    );
+    assert!(
+        !out_root.join("escape_attempt.yaml").exists(),
+        "no file may land outside the roots"
+    );
+}
+
+/// 守卫放行根内写（正常 CRUD 不受影响）。
+#[tokio::test]
+async fn u10_guard_allows_in_root_persist_workflow() {
+    let root = temp_root("allowed");
+    let engine = WorkflowEngine::new();
+    engine.set_workflow_defs_dir(root.clone());
+    engine.set_execution_world(std::sync::Arc::new(NarrowWorld { allowed: root.clone() }));
+
+    let wf = make_workflow("fine_wf", vec![make_node("n1", "delay", vec![])]);
+    engine
+        .persist_workflow(wf)
+        .expect("in-root write must pass the guard");
+    assert!(root.join("fine_wf.yaml").exists());
+}
+
+/// 执行 JSONL 的 workflow_name 逃逸路径（"../escape_1"）被守卫拒。
+/// persist_execution 是 best-effort：拒 = 跳过（warn），此处直接验守卫判定。
+#[tokio::test]
+async fn u10_guard_denies_jsonl_name_traversal() {
+    let root = temp_root("executions");
+    let engine = WorkflowEngine::with_persistence(root.clone());
+    engine.set_execution_world(std::sync::Arc::new(NarrowWorld { allowed: root.clone() }));
+
+    // 同 persist_execution 的拼接逻辑：name 未 sanitize，`..` 能拼出逃逸路径。
+    let escape_path = root.join("../escape_1.jsonl");
+    let denied = engine.guard_engine_write(&escape_path);
+    assert!(denied.is_err(), "traversal path must be denied");
+    // 根内正常路径放行。
+    let ok_path = root.join("normal_wf_abc.jsonl");
+    assert!(engine.guard_engine_write(&ok_path).is_ok());
+}
+
+/// 未装配 world = 完全旧行为（单测/裸装配零回归）。
+#[tokio::test]
+async fn u10_no_world_writes_unchanged() {
+    let root = temp_root("free");
+    let engine = WorkflowEngine::new();
+    engine.set_workflow_defs_dir(root.clone());
+    // 不 set_execution_world。
+    let wf = make_workflow("legacy_behavior", vec![make_node("n1", "delay", vec![])]);
+    engine
+        .persist_workflow(wf)
+        .expect("no world attached → old behavior, no guard");
+    assert!(root.join("legacy_behavior.yaml").exists());
+}
+
+/// set_execution_world 重注册 script 执行器（integrated 装配保 tools 车道，
+/// 裸装配挂 world）——engine.execution_world() 可查询。
+#[tokio::test]
+async fn u10_set_execution_world_registers_script_and_exposes_world() {
+    let root = temp_root("allowed");
+    let engine = WorkflowEngine::new_arc();
+    assert!(engine.execution_world().is_none());
+    engine.set_execution_world(std::sync::Arc::new(NarrowWorld { allowed: root }));
+    let world = engine.execution_world().expect("world attached");
+    assert_eq!(world.name(), "narrow-test-world");
+    // script 执行器已重注册（通过 registry 可取到且不 panic）。
+    assert!(engine.node_executors.get("script").is_some());
+}
+
+/// install_composite_node_executors：裸引擎可升级 parallel/loop 组合执行器
+/// （CLI 装配用——children 经 registry 分发，world 化 script 生效）。
+#[tokio::test]
+async fn u10_install_composite_node_executors_on_bare_engine() {
+    let engine = WorkflowEngine::new_arc();
+    engine.install_composite_node_executors();
+    assert!(engine.node_executors.get("parallel").is_some());
+    assert!(engine.node_executors.get("loop").is_some());
+}

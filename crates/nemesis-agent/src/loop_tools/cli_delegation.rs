@@ -68,7 +68,10 @@ pub async fn run_cli_delegation(spec: CliDelegationSpec<'_>) -> Result<String, S
         .spawn()
         .map_err(|e| format!("Error: failed to spawn {}: {}", spec.cli_label, e))?;
     // Capture the pid BEFORE moving `child` into wait_with_output (the
-    // timeout arm needs it for the tree kill).
+    // timeout arm needs it for the tree kill — Windows only; POSIX arm above
+    // relies on kill_on_drop, hence the cfg_attr to keep non-Windows builds
+    // warning-free).
+    #[cfg_attr(not(windows), allow(unused_variables))]
     let child_pid = child.id();
     let out = match tokio::time::timeout(
         Duration::from_secs(spec.timeout_secs),

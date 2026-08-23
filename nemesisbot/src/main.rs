@@ -20,6 +20,9 @@ mod eval_assessor;
 mod exec_worker;
 #[cfg(feature = "eval")]
 mod eval_worker;
+/// U10 统一执行世界：executor 通道装配单一真相源 + workflow 引擎的
+/// ExecutionWorld 桥（world 部分 `sandbox` feature 门控）。
+mod exec_world;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};

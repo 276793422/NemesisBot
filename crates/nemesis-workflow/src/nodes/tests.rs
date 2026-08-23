@@ -4211,3 +4211,173 @@ async fn test_loop_counter_mode_still_works() {
     assert_eq!(result.output["iterations"].as_u64().unwrap(), 2);
     assert_eq!(result.output["mode"].as_str().unwrap(), "counter");
 }
+
+// ---------------------------------------------------------------------------
+// U10 统一执行世界：script 节点车道路由（world 工具车道 / per-node
+// sandbox:false Spawn 车道 / DirectWorld 无工具车道回退裸 spawn）
+// ---------------------------------------------------------------------------
+
+/// 记录型假世界：捕获收到的 ExecOp，回放预设结局（不真 spawn）。
+struct FakeWorld {
+    ops: std::sync::Arc<parking_lot::Mutex<Vec<String>>>,
+    preset_stdout: String,
+    supports_tools: bool,
+}
+
+#[async_trait::async_trait]
+impl nemesis_sandbox::exec_world::ExecutionWorld for FakeWorld {
+    fn name(&self) -> &str {
+        "fake-world"
+    }
+    fn writable_roots(&self) -> Vec<std::path::PathBuf> {
+        vec![]
+    }
+    fn spawn_semantics(&self) -> nemesis_sandbox::exec_world::SpawnSemantics {
+        nemesis_sandbox::exec_world::SpawnSemantics::SandboxBoxed
+    }
+    fn supports_tool_calls(&self) -> bool {
+        self.supports_tools
+    }
+    async fn run(
+        &self,
+        op: nemesis_sandbox::exec_world::ExecOp,
+    ) -> Result<nemesis_sandbox::exec_world::ExecOutcome, String> {
+        use nemesis_sandbox::exec_world::ExecOp;
+        let tag = match &op {
+            ExecOp::Tool(t) => format!("tool:{}:{}", t.tool, t.args),
+            ExecOp::Spawn(s) => format!("spawn:{}:{:?}", s.program, s.args),
+        };
+        self.ops.lock().push(tag);
+        Ok(nemesis_sandbox::exec_world::ExecOutcome {
+            exit_code: Some(0),
+            stdout: self.preset_stdout.clone(),
+            stderr: String::new(),
+            timed_out: false,
+        })
+    }
+}
+
+fn script_node_config(script: &str, sandbox: Option<bool>) -> HashMap<String, serde_json::Value> {
+    let mut config = HashMap::new();
+    config.insert("script".to_string(), serde_json::json!(script));
+    config.insert("language".to_string(), serde_json::json!("bash"));
+    if let Some(s) = sandbox {
+        config.insert("sandbox".to_string(), serde_json::json!(s));
+    }
+    config
+}
+
+/// 无 registry + world 有工具车道 → run_script 走 world（CLI 装配路径，
+/// 不再有「CLI 直 spawn 绕过沙盒」的逃逸）。
+#[tokio::test]
+async fn u10_script_routes_through_world_tool_lane() {
+    let ops = std::sync::Arc::new(parking_lot::Mutex::new(Vec::new()));
+    let world = FakeWorld {
+        ops: ops.clone(),
+        preset_stdout: "from-world".to_string(),
+        supports_tools: true,
+    };
+    let exec = ScriptNodeExecutor::with_world(std::sync::Arc::new(world));
+    let node = make_node("n1", "script", script_node_config("echo hi", None));
+    let result = exec
+        .execute(&node, &HashMap::new(), &empty_wf_ctx())
+        .await
+        .unwrap();
+    assert_eq!(result.state, ExecutionState::Completed, "err={:?}", result.error);
+    assert!(result.output["stdout"].as_str().unwrap().contains("from-world"));
+    let recorded = ops.lock();
+    assert_eq!(recorded.len(), 1, "exactly one world op: {recorded:?}");
+    assert!(recorded[0].starts_with("tool:run_script:"), "recorded={:?}", recorded[0]);
+    // args 里的 script 内容完整传到世界（executor 子进程拿到的就是它）。
+    assert!(recorded[0].contains("echo hi"), "recorded={:?}", recorded[0]);
+}
+
+/// per-node `sandbox: false` 显式 opt-out → 受守卫 Spawn 车道（本进程直跑
+/// 语义，不进子进程/盒）——即使 world 有工具车道。
+#[tokio::test]
+async fn u10_script_sandbox_false_uses_spawn_lane() {
+    let ops = std::sync::Arc::new(parking_lot::Mutex::new(Vec::new()));
+    let world = FakeWorld {
+        ops: ops.clone(),
+        preset_stdout: "direct".to_string(),
+        supports_tools: true,
+    };
+    let exec = ScriptNodeExecutor::with_world(std::sync::Arc::new(world));
+    let node = make_node("n1", "script", script_node_config("echo hi", Some(false)));
+    let result = exec
+        .execute(&node, &HashMap::new(), &empty_wf_ctx())
+        .await
+        .unwrap();
+    assert_eq!(result.state, ExecutionState::Completed, "err={:?}", result.error);
+    let recorded = ops.lock();
+    assert_eq!(recorded.len(), 1);
+    assert!(recorded[0].starts_with("spawn:"), "opt-out must take the Spawn lane: {recorded:?}");
+}
+
+/// per-node `sandbox: true`（显式跟随全局）→ 仍走工具车道。
+#[tokio::test]
+async fn u10_script_sandbox_true_follows_tool_lane() {
+    let ops = std::sync::Arc::new(parking_lot::Mutex::new(Vec::new()));
+    let world = FakeWorld {
+        ops: ops.clone(),
+        preset_stdout: "x".to_string(),
+        supports_tools: true,
+    };
+    let exec = ScriptNodeExecutor::with_world(std::sync::Arc::new(world));
+    let node = make_node("n1", "script", script_node_config("echo hi", Some(true)));
+    exec.execute(&node, &HashMap::new(), &empty_wf_ctx()).await.unwrap();
+    let recorded = ops.lock();
+    assert!(recorded[0].starts_with("tool:run_script:"), "{recorded:?}");
+}
+
+/// world 无工具车道（DirectWorld 形态）且无 registry → 回退裸 spawn
+/// （旧行为保留，不 Err 不 panic）。
+#[tokio::test]
+async fn u10_script_world_without_tool_lane_falls_back_to_bare_spawn() {
+    let ops = std::sync::Arc::new(parking_lot::Mutex::new(Vec::new()));
+    let world = FakeWorld {
+        ops: ops.clone(),
+        preset_stdout: "never".to_string(),
+        supports_tools: false,
+    };
+    let exec = ScriptNodeExecutor::with_world(std::sync::Arc::new(world));
+    let node = make_node("n1", "script", script_node_config("echo hi", None));
+    let result = exec
+        .execute(&node, &HashMap::new(), &empty_wf_ctx())
+        .await
+        .unwrap();
+    // 裸 spawn 真跑 bash（同既有 test_script_node_executor 环境）。
+    assert_eq!(result.state, ExecutionState::Completed, "err={:?}", result.error);
+    assert!(ops.lock().is_empty(), "no world op should be recorded");
+}
+
+/// world 工具车道执行失败（Err）→ 节点 Failed + stderr 带 world 错误
+/// （不是 panic / 不是静默成功）。
+#[tokio::test]
+async fn u10_script_world_tool_lane_error_surfaces() {
+    struct ErrWorld;
+    #[async_trait::async_trait]
+    impl nemesis_sandbox::exec_world::ExecutionWorld for ErrWorld {
+        fn name(&self) -> &str { "err-world" }
+        fn writable_roots(&self) -> Vec<std::path::PathBuf> { vec![] }
+        fn spawn_semantics(&self) -> nemesis_sandbox::exec_world::SpawnSemantics {
+            nemesis_sandbox::exec_world::SpawnSemantics::ExecutorChild
+        }
+        fn supports_tool_calls(&self) -> bool { true }
+        async fn run(
+            &self,
+            _op: nemesis_sandbox::exec_world::ExecOp,
+        ) -> Result<nemesis_sandbox::exec_world::ExecOutcome, String> {
+            Err("executor channel unavailable".to_string())
+        }
+    }
+    let exec = ScriptNodeExecutor::with_world(std::sync::Arc::new(ErrWorld));
+    let node = make_node("n1", "script", script_node_config("echo hi", None));
+    let result = exec
+        .execute(&node, &HashMap::new(), &empty_wf_ctx())
+        .await
+        .unwrap();
+    assert_eq!(result.state, ExecutionState::Failed);
+    let err = result.error.unwrap();
+    assert!(err.contains("executor channel unavailable"), "err={err}");
+}
