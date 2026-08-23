@@ -32,6 +32,7 @@ pub mod eval_rules;
 pub mod sandbox;
 #[cfg(feature = "security")]
 pub mod scanner;
+pub mod session;
 #[cfg(feature = "security")]
 pub mod security;
 pub mod shutdown;

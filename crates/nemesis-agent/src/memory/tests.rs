@@ -8,6 +8,8 @@ fn make_turn(role: &str, content: impl Into<String>) -> ConversationTurn {
         tool_call_id: None,
         timestamp: "2026-04-29T12:00:00Z".to_string(),
         reasoning_content: None,
+        tool_name: None,
+        tool_result_projection: None,
     }
 }
 

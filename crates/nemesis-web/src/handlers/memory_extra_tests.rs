@@ -155,7 +155,10 @@ mod memory_extra_tests {
     async fn test_memory_stats_with_jsonl_and_episodic() {
         let dir = tempfile::tempdir().unwrap();
         let ws = dir.path();
-        let mem_dir = ws.join("memory");
+        // Manager's real tree is `memory_vector/`（gateway with_config 的
+        // data_dir）；stats 与 manager 同源读这棵树（V2 修复：旧代码数的是
+        // 永远不会被加载的 `memory/`）。
+        let mem_dir = ws.join("memory_vector");
         let vector_dir = mem_dir.join("vector");
         std::fs::create_dir_all(&vector_dir).unwrap();
         // Two JSONL entries (one empty line ignored)
@@ -333,10 +336,17 @@ mod memory_extra_tests {
             .unwrap();
         assert!(r2["stored"].as_bool().unwrap());
 
-        let jsonl = ws.join("memory").join("vector").join("vector_store.jsonl");
+        // Raw-append fallback writes the manager's load path
+        // （memory_vector/vector/，V2 修复）；legacy `memory/vector/`
+        // 是 manager 永远不加载的死树，不得再写。
+        let jsonl = ws
+            .join("memory_vector")
+            .join("vector")
+            .join("vector_store.jsonl");
         let content = std::fs::read_to_string(&jsonl).unwrap();
         let lines: Vec<&str> = content.lines().filter(|l| !l.trim().is_empty()).collect();
         assert_eq!(lines.len(), 2);
+        assert!(!ws.join("memory").join("vector").join("vector_store.jsonl").exists());
     }
 
     // -----------------------------------------------------------------------

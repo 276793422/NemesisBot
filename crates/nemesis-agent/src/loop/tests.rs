@@ -4285,6 +4285,8 @@ fn test_tool_safe_boundary_backs_past_leading_tool() {
         tool_call_id: tcid.map(String::from),
         timestamp: String::new(),
         reasoning_content: None,
+        tool_name: None,
+        tool_result_projection: None,
     };
     let history = vec![
         turn("system", "sys", vec![], None),            // 0
@@ -4344,6 +4346,8 @@ async fn test_maybe_update_summary_boundary_is_tool_pair_safe() {
         tool_call_id: tcid.map(String::from),
         timestamp: String::new(),
         reasoning_content: None,
+        tool_name: None,
+        tool_result_projection: None,
     };
     instance.set_history(vec![
         turn("system", "sys", vec![], None),                       // 0
@@ -6292,6 +6296,8 @@ fn test_build_messages_repairs_orphan_tool_call() {
         tool_call_id: tcid.map(|s| s.to_string()),
         timestamp: String::new(),
         reasoning_content: None,
+        tool_name: None,
+        tool_result_projection: None,
     };
     // assistant issues [call_A, call_B] but only call_B has a tool result.
     instance.set_history(vec![
@@ -6351,6 +6357,8 @@ fn summary_turn(role: &str, content: &str) -> crate::types::ConversationTurn {
         tool_call_id: None,
         timestamp: String::new(),
         reasoning_content: None,
+        tool_name: None,
+        tool_result_projection: None,
     }
 }
 
@@ -6984,4 +6992,778 @@ async fn test_summarize_multipart_batch_is_prefix_subset() {
             assert!(!m.content.contains("CONVERSATION:"));
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// V5 gate-in-pump: busy-gate outcomes + spawned turn tasks
+// (run_bus_impl's Queue/Steer arm; the U7 inbox is reachable in production
+// only since this restructure — previously the serial pump let message 2
+// wait in the mpsc until the session had already been released.)
+// ---------------------------------------------------------------------------
+
+/// Reject mode + busy session → Immediate BUSY_MESSAGE bounce (legacy
+/// behavior, byte-identical).
+#[test]
+fn test_gate_busy_reject_mode_bounces() {
+    let (outbound_tx, _) = tokio::sync::mpsc::channel(16);
+    let provider = MockLlmProvider::new(vec![]);
+    let agent_loop = AgentLoop::new_bus(
+        Box::new(provider),
+        test_config(),
+        outbound_tx,
+        ConcurrentMode::Reject,
+        8,
+        0,
+    );
+
+    let msg = make_inbound("busy probe", "web", "chat1", "user1", "");
+    let (_, session_key) = agent_loop.route_message(&msg);
+    assert!(agent_loop.try_acquire_session(&session_key));
+
+    let response = match agent_loop.gate_inbound(&msg) {
+        GateOutcome::Immediate { agent_id: _, response } => response,
+        _ => panic!("expected Immediate busy bounce in Reject mode"),
+    };
+    assert!(response.contains("try again later"), "bounce: {response}");
+    // Nothing parked anywhere.
+    assert_eq!(agent_loop.inbox.pending(&session_key), (0, 0));
+    agent_loop.release_session(&session_key);
+}
+
+/// Queue mode + busy session → parked in the next-turn inbox with the ⏳
+/// receipt returned inline (published by the pump without a turn task).
+#[test]
+fn test_gate_busy_queue_mode_parks_in_next_turn() {
+    let (outbound_tx, _) = tokio::sync::mpsc::channel(16);
+    let provider = MockLlmProvider::new(vec![]);
+    let agent_loop = AgentLoop::new_bus(
+        Box::new(provider),
+        test_config(),
+        outbound_tx,
+        ConcurrentMode::Queue,
+        8,
+        0,
+    );
+
+    let msg = make_inbound("等等别删", "web", "chat1", "user1", "");
+    let (agent_id, session_key) = agent_loop.route_message(&msg);
+    assert_eq!(agent_id, "main");
+    assert!(agent_loop.try_acquire_session(&session_key));
+
+    let response = match agent_loop.gate_inbound(&msg) {
+        GateOutcome::Immediate { agent_id: _, response } => response,
+        _ => panic!("expected Immediate queue receipt"),
+    };
+    assert!(response.contains("已排队"), "receipt: {response}");
+    assert_eq!(agent_loop.inbox.pending(&session_key), (1, 0));
+    agent_loop.release_session(&session_key);
+}
+
+/// Steer mode + busy session + bang-prefixed message → parked in the
+/// next-step inbox (in-turn injection channel) with the ⚡ receipt.
+#[test]
+fn test_gate_busy_steer_mode_parks_bang_in_next_step() {
+    let (outbound_tx, _) = tokio::sync::mpsc::channel(16);
+    let provider = MockLlmProvider::new(vec![]);
+    let agent_loop = AgentLoop::new_bus(
+        Box::new(provider),
+        test_config(),
+        outbound_tx,
+        ConcurrentMode::Steer,
+        8,
+        0,
+    );
+
+    let msg = make_inbound("!等等别删！", "web", "chat1", "user1", "");
+    let (_, session_key) = agent_loop.route_message(&msg);
+    assert!(agent_loop.try_acquire_session(&session_key));
+
+    let response = match agent_loop.gate_inbound(&msg) {
+        GateOutcome::Immediate { agent_id: _, response } => response,
+        _ => panic!("expected Immediate steer receipt"),
+    };
+    assert!(response.contains("紧急插话"), "receipt: {response}");
+    assert_eq!(agent_loop.inbox.pending(&session_key), (0, 1));
+    agent_loop.release_session(&session_key);
+}
+
+/// Free session → Admitted: the gate acquires the session and mints the
+/// cancel token on the turn's behalf (everything the pre-split monolith had
+/// at the same point).
+#[test]
+fn test_gate_admits_when_free_and_mints_token() {
+    let (outbound_tx, _) = tokio::sync::mpsc::channel(16);
+    let provider = MockLlmProvider::new(vec![]);
+    let agent_loop = AgentLoop::new_bus(
+        Box::new(provider),
+        test_config(),
+        outbound_tx,
+        ConcurrentMode::Queue,
+        8,
+        0,
+    );
+
+    let msg = make_inbound("hello", "web", "chat1", "user1", "");
+    let (agent_id, session_key) = agent_loop.route_message(&msg);
+    assert!(!agent_loop.is_session_busy(&session_key));
+
+    match agent_loop.gate_inbound(&msg) {
+        GateOutcome::Admitted(admission) => {
+            assert_eq!(admission.agent_id, agent_id);
+            assert_eq!(admission.session_key, session_key);
+            assert!(!admission.cancel_token.is_cancelled());
+            // The gate HOLDS the session until the turn tail releases it.
+            assert!(agent_loop.is_session_busy(&session_key));
+        }
+        _ => panic!("expected Admitted"),
+    }
+    agent_loop.release_session(&session_key);
+}
+
+/// Full pump (Queue mode): an admitted message runs as a spawned turn task
+/// and its reply flows through the shared finish tail (outbound publish).
+#[tokio::test]
+async fn test_run_bus_queue_mode_spawns_and_finishes_turn() {
+    let (outbound_tx, mut outbound_rx) = tokio::sync::mpsc::channel(16);
+    let provider = MockLlmProvider::new(vec![LlmResponse {
+        content: "queued-turn-reply".to_string(),
+        tool_calls: Vec::new(),
+        finished: true,
+        reasoning_content: None,
+        usage: None,
+        raw_request_body: None,
+        raw_response_body: None,
+    }]);
+    let agent_loop = AgentLoop::new_bus(
+        Box::new(provider),
+        test_config(),
+        outbound_tx,
+        ConcurrentMode::Queue,
+        8,
+        0,
+    );
+    let arc = std::sync::Arc::new(agent_loop);
+    let (in_tx, in_rx) = tokio::sync::mpsc::channel(16);
+    let pump = tokio::spawn(arc.clone().run_bus_arc(in_rx));
+
+    in_tx
+        .send(make_inbound("hello queue", "web", "chat1", "user1", ""))
+        .await
+        .unwrap();
+    let reply = tokio::time::timeout(std::time::Duration::from_secs(10), outbound_rx.recv())
+        .await
+        .expect("turn reply within timeout")
+        .expect("outbound channel open");
+    assert_eq!(reply.content, "queued-turn-reply");
+    assert_eq!(reply.meta.model.as_deref(), Some("test-model"));
+
+    arc.stop();
+    // Drop the sender so the pump's recv() returns None and the loop exits
+    // (stop() only takes effect between messages; recv() itself never wakes).
+    drop(in_tx);
+    let _ = pump.await;
+}
+
+/// Post-turn drain: a message parked while the session was busy must be
+/// processed by the admitted turn's drain block (reinject_tx unset → inline
+/// fallback) and published — a parked message is never silently lost.
+#[tokio::test]
+async fn test_process_admitted_drains_parked_next_turn() {
+    let (outbound_tx, mut outbound_rx) = tokio::sync::mpsc::channel(16);
+    let provider = MockLlmProvider::new(vec![
+        LlmResponse {
+            content: "turn-reply".to_string(),
+            tool_calls: Vec::new(),
+            finished: true,
+            reasoning_content: None,
+            usage: None,
+            raw_request_body: None,
+            raw_response_body: None,
+        },
+        LlmResponse {
+            content: "drained-reply".to_string(),
+            tool_calls: Vec::new(),
+            finished: true,
+            reasoning_content: None,
+            usage: None,
+            raw_request_body: None,
+            raw_response_body: None,
+        },
+    ]);
+    let agent_loop = AgentLoop::new_bus(
+        Box::new(provider),
+        test_config(),
+        outbound_tx,
+        ConcurrentMode::Queue,
+        8,
+        0,
+    );
+
+    // Park msg2 while the session is busy.
+    let msg2 = make_inbound("等等别删", "web", "chat1", "user1", "");
+    let (_, session_key) = agent_loop.route_message(&msg2);
+    assert!(agent_loop.try_acquire_session(&session_key));
+    match agent_loop.gate_inbound(&msg2) {
+        GateOutcome::Immediate { response, .. } => assert!(response.contains("已排队")),
+        _ => panic!("expected queue receipt"),
+    }
+    // Free the session so the real turn can be admitted.
+    agent_loop.release_session(&session_key);
+
+    // Admit + run the turn for msg1 on the same session.
+    let msg1 = make_inbound("turn one", "web", "chat1", "user1", "");
+    let admission = match agent_loop.gate_inbound(&msg1) {
+        GateOutcome::Admitted(a) => a,
+        _ => panic!("expected Admitted"),
+    };
+    assert_eq!(admission.session_key, session_key);
+    let (turn_agent_id, turn_response, turn_err) =
+        agent_loop.process_admitted(&msg1, admission).await;
+    assert_eq!(turn_agent_id, "main");
+    assert!(turn_err.is_none());
+    assert!(turn_response.contains("turn-reply"));
+
+    // The session was released by the tail.
+    assert!(!agent_loop.is_session_busy(&session_key));
+
+    // The parked head was drained and its reply published (inline fallback).
+    let drained = tokio::time::timeout(std::time::Duration::from_secs(10), outbound_rx.recv())
+        .await
+        .expect("drained reply within timeout")
+        .expect("outbound channel open");
+    assert!(drained.content.contains("drained-reply"), "{:?}", drained.content);
+}
+
+/// Drop-guard probe: proves `stop()` ABORTS tracked turn tasks (the future
+/// is dropped mid-flight, not left running).
+struct TurnAbortProbe {
+    dropped: std::sync::Arc<std::sync::atomic::AtomicBool>,
+}
+impl Drop for TurnAbortProbe {
+    fn drop(&mut self) {
+        self.dropped.store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+/// stop() must abort in-flight spawned turn tasks (Queue/Steer modes) —
+/// otherwise a long turn would outlive the loop's shutdown.
+#[tokio::test]
+async fn test_stop_aborts_tracked_turn_tasks() {
+    let (outbound_tx, _) = tokio::sync::mpsc::channel(16);
+    let provider = MockLlmProvider::new(vec![]);
+    let agent_loop = AgentLoop::new_bus(
+        Box::new(provider),
+        test_config(),
+        outbound_tx,
+        ConcurrentMode::Steer,
+        8,
+        0,
+    );
+    let arc = std::sync::Arc::new(agent_loop);
+
+    let dropped = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let probe = TurnAbortProbe {
+        dropped: dropped.clone(),
+    };
+    arc.spawn_turn_task(async move {
+        let _probe = probe;
+        tokio::time::sleep(std::time::Duration::from_secs(600)).await;
+    });
+    // Let the spawned task actually start.
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    arc.stop();
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    assert!(
+        dropped.load(std::sync::atomic::Ordering::SeqCst),
+        "stop() must abort (drop) tracked turn tasks"
+    );
+}
+
+
+// ---------------------------------------------------------------------------
+// X1 (U3 projection prune): build-time fold keeps history originals.
+// ---------------------------------------------------------------------------
+
+fn x1_loop_turn(role: &str, content: &str) -> crate::types::ConversationTurn {
+    crate::types::ConversationTurn {
+        role: role.to_string(),
+        content: content.to_string(),
+        tool_calls: Vec::new(),
+        tool_call_id: None,
+        timestamp: String::new(),
+        reasoning_content: None,
+        tool_name: None,
+        tool_result_projection: None,
+    }
+}
+
+/// The single-source seam: `project_history_for_request` folds oversized
+/// tool results to their bounded form while the SOURCE history keeps the
+/// originals byte-for-byte (the mid-section stays recoverable for replay /
+/// branching). Small tool results and non-tool turns pass through.
+#[test]
+fn test_projection_folds_tool_results_keeps_history_originals() {
+    let big: String = {
+        let head: String = "A".repeat(3_600);
+        let mid: String = "B".repeat(6_000);
+        let tail: String = "C".repeat(3_600);
+        format!("{head}{mid}{tail}")
+    };
+    let caller = {
+        let mut a = x1_loop_turn("assistant", "calling");
+        a.tool_calls = vec![
+            crate::types::ToolCallInfo {
+                id: "tc_1".to_string(),
+                name: "exec".to_string(),
+                arguments: "{}".to_string(),
+            },
+            crate::types::ToolCallInfo {
+                id: "tc_2".to_string(),
+                name: "exec".to_string(),
+                arguments: "{}".to_string(),
+            },
+        ];
+        a
+    };
+    let history = vec![
+        x1_loop_turn("system", "sys"),
+        x1_loop_turn("user", "run the thing"),
+        caller,
+        {
+            let mut t = x1_loop_turn("tool", &big);
+            t.tool_call_id = Some("tc_1".to_string());
+            t.tool_name = Some("exec".to_string());
+            t
+        },
+        {
+            let mut t = x1_loop_turn("tool", "small-ok");
+            t.tool_call_id = Some("tc_2".to_string());
+            t
+        },
+        x1_loop_turn("assistant", "done"),
+    ];
+
+    let projected = super::project_history_for_request(&history, None);
+
+    // History is untouched: the oversized original survives verbatim.
+    assert_eq!(history[3].content, big, "history must keep the original");
+    // Model side: the oversized tool turn is folded...
+    let p_tool = projected
+        .iter()
+        .find(|t| t.role == "tool" && t.content.contains("exec"))
+        .expect("oversized tool turn must be folded");
+    assert!(p_tool.content.chars().count() < big.chars().count());
+    assert!(p_tool.content.contains("exec"));
+    // ...the small tool result passes through...
+    assert!(
+        projected.iter().any(|t| t.content == "small-ok"),
+        "in-budget tool result passes through"
+    );
+    // ...and non-tool turns are untouched.
+    assert!(projected.iter().any(|t| t.content == "run the thing"));
+    assert!(projected.iter().any(|t| t.content == "done"));
+}
+
+/// The fold also applies in summary mode (the summary branch rebuilds the
+/// tail; tail tool results must fold there too), and the recorded override
+/// (spill locator) wins over the recompute.
+#[test]
+fn test_projection_summary_mode_and_override() {
+    let big: String = "Z".repeat(20_000);
+    let caller = {
+        let mut a = x1_loop_turn("assistant", "a1");
+        a.tool_calls = vec![crate::types::ToolCallInfo {
+            id: "tc_9".to_string(),
+            name: "git".to_string(),
+            arguments: "{}".to_string(),
+        }];
+        a
+    };
+    let history = vec![
+        x1_loop_turn("system", "sys"),
+        x1_loop_turn("user", "q1"),
+        caller,
+        {
+            let mut t = x1_loop_turn("tool", &big);
+            t.tool_call_id = Some("tc_9".to_string());
+            t.tool_name = Some("git".to_string());
+            t.tool_result_projection = Some("[spilled to disk: /tmp/x.jsonl]".to_string());
+            t
+        },
+    ];
+    let projected = super::project_history_for_request(&history, Some(("sum", 2)));
+    assert_eq!(history[3].content, big, "history keeps the original");
+    assert!(
+        projected
+            .iter()
+            .any(|t| t.role == "tool" && t.content == "[spilled to disk: /tmp/x.jsonl]"),
+        "recorded override (spill locator) must win in the projection"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// X2 (U8 refinement): merged-snapshot `# Runtime Policy` section —
+// approval wiring / guardian judge presence / live capability tier, all
+// rendered from plain state (no clocks) so the merged message stays
+// byte-stable between turns.
+// ---------------------------------------------------------------------------
+
+/// Extract the `# Runtime Policy` section text from a merged snapshot
+/// message (from the header line to the end of the message content).
+fn x2_policy_section(messages: &[crate::r#loop::LlmMessage]) -> String {
+    let snap = messages
+        .iter()
+        .find(|m| m.role == "user" && m.content.contains("# Runtime Policy"))
+        .expect("merged snapshot with Runtime Policy section");
+    let start = snap.content.find("# Runtime Policy").unwrap();
+    snap.content[start..].to_string()
+}
+
+#[test]
+fn test_x2_runtime_policy_default_off() {
+    let agent_loop = AgentLoop::new(Box::new(MockLlmProvider::new(vec![])), test_config());
+    let instance = AgentInstance::new(test_config());
+    instance.add_user_message("hello");
+    let messages = agent_loop.build_messages(&instance);
+
+    let section = x2_policy_section(&messages);
+    assert!(section.contains("approval: off"), "default approval: {section}");
+    assert!(section.contains("guardian: off"), "no plugin: {section}");
+    // The tier line renders one of the four Display values.
+    let tier_line = section
+        .lines()
+        .find(|l| l.starts_with("model_tier: "))
+        .expect("model_tier line");
+    let v = tier_line.trim_start_matches("model_tier: ");
+    assert!(
+        matches!(v, "auto" | "mini" | "normal" | "big"),
+        "tier display value: {v}"
+    );
+
+    // Ordering: the policy section renders AFTER the always-first Current
+    // Time section, and the merged message still closes its wrapper.
+    let snap = messages
+        .iter()
+        .find(|m| m.role == "user" && m.content.contains("# Runtime Policy"))
+        .unwrap();
+    let t = snap.content.find("# Current Time").unwrap();
+    let p = snap.content.find("# Runtime Policy").unwrap();
+    assert!(p > t, "Runtime Policy renders after Current Time");
+    assert!(snap.content.ends_with("</system-reminder>"));
+}
+
+#[test]
+fn test_x2_runtime_policy_state_reflected_and_deterministic() {
+    let agent_loop = AgentLoop::new(Box::new(MockLlmProvider::new(vec![])), test_config());
+    let instance = AgentInstance::new(test_config());
+    instance.add_user_message("hello");
+    agent_loop.set_tier(nemesis_types::capability::ModelTier::Mini);
+    agent_loop.set_interactive_approval(true);
+
+    let s1 = x2_policy_section(&agent_loop.build_messages(&instance));
+    assert!(s1.contains("approval: interactive"), "{s1}");
+    assert!(s1.contains("model_tier: mini"), "live tier rendered: {s1}");
+
+    // Determinism: same state must render byte-identical bytes (no clocks
+    // inside the section — the Current Time section above it is the only
+    // time-bearing part of the merged snapshot).
+    let s2 = x2_policy_section(&agent_loop.build_messages(&instance));
+    assert_eq!(s1, s2, "same state must render identical section bytes");
+
+    // Flipping the flag back changes the section (state, not compile-time).
+    agent_loop.set_interactive_approval(false);
+    let s3 = x2_policy_section(&agent_loop.build_messages(&instance));
+    assert!(s3.contains("approval: off"), "{s3}");
+    assert_ne!(s1, s3, "flag flip must be visible in the section");
+}
+
+#[test]
+fn test_x2_runtime_policy_guardian_on_reflects_live_judge() {
+    use nemesis_security::guardian::{JudgeOutcome, JudgeRequest, JudgeVerdict, LlmJudge};
+    use nemesis_security::pipeline::{SecurityPlugin, SecurityPluginConfig};
+
+    struct OkJudge;
+    #[async_trait]
+    impl LlmJudge for OkJudge {
+        async fn judge(&self, _req: &JudgeRequest) -> Result<JudgeVerdict, String> {
+            Ok(JudgeVerdict {
+                risk_level: "low".into(),
+                user_authorization: "high".into(),
+                outcome: JudgeOutcome::Allow,
+                rationale: String::new(),
+            })
+        }
+    }
+
+    // Rules allow everything so the plugin is inert for tool dispatch; the
+    // ONLY thing under test is judge-presence reflection in the snapshot.
+    let plugin = Arc::new(SecurityPlugin::new(SecurityPluginConfig {
+        enabled: true,
+        command_guard_enabled: false,
+        injection_enabled: false,
+        credential_enabled: false,
+        dlp_enabled: false,
+        ssrf_enabled: false,
+        default_action: "allow".to_string(),
+        ..Default::default()
+    }));
+    plugin.set_judge(Arc::new(OkJudge));
+
+    let mut agent_loop = AgentLoop::new(Box::new(MockLlmProvider::new(vec![])), test_config());
+    agent_loop.set_security_plugin(plugin);
+    let instance = AgentInstance::new(test_config());
+    instance.add_user_message("hello");
+
+    let section = x2_policy_section(&agent_loop.build_messages(&instance));
+    assert!(section.contains("guardian: on"), "judge attached: {section}");
+    assert!(section.contains("approval: off"), "approval untouched: {section}");
+}
+
+// ---------------------------------------------------------------------------
+// Y1 (Phase4-a): semantic tool-documentation folding — loop-level gates.
+// Pure decision/rendering tests live in `src/tool_doc_folding/tests.rs`;
+// these verify the LOOP-side contract: default-off = byte-identical defs,
+// enabled+manager = folded provider-visible shape (the same `tool_defs`
+// value the LlmRequest observer event serializes into request_log), and
+// the Mini-tier exclusion.
+// ---------------------------------------------------------------------------
+
+/// A tool whose only interesting surface is its description text.
+struct FoldProbeTool {
+    description: String,
+}
+
+#[async_trait]
+impl Tool for FoldProbeTool {
+    async fn execute(&self, _args: &str, _context: &RequestContext) -> Result<String, String> {
+        Ok("ok".to_string())
+    }
+    fn description(&self) -> String {
+        self.description.clone()
+    }
+}
+
+fn y1_probe_loop() -> AgentLoop {
+    let mut agent_loop = AgentLoop::new(Box::new(MockLlmProvider::new(vec![])), test_config());
+    agent_loop.register_tool(
+        "weather_probe".to_string(),
+        Box::new(FoldProbeTool {
+            description: "Get the weather forecast for a city. Supports current conditions and multi-day outlook."
+                .to_string(),
+        }),
+    );
+    agent_loop.register_tool(
+        "file_probe".to_string(),
+        Box::new(FoldProbeTool {
+            description: "Read a file from disk. Supports offset and limit for partial reads."
+                .to_string(),
+        }),
+    );
+    agent_loop.register_tool(
+        "web_probe".to_string(),
+        Box::new(FoldProbeTool {
+            description: "Search the web for current information. Returns titles and snippets."
+                .to_string(),
+        }),
+    );
+    agent_loop
+}
+
+fn y1_find_def<'a>(
+    defs: &'a [crate::types::ToolDefinition],
+    name: &str,
+) -> &'a crate::types::ToolDefinition {
+    defs.iter()
+        .find(|d| d.function.name == name)
+        .unwrap_or_else(|| panic!("tool {name} present"))
+}
+
+#[test]
+fn test_y1_folding_disabled_is_byte_identical() {
+    let agent_loop = y1_probe_loop();
+    let instance = AgentInstance::new(test_config());
+    instance.add_user_message("what is the weather today");
+
+    // (a) No config_path (standalone/test loop) → folding off.
+    let baseline = agent_loop.build_tool_defs();
+    let folded = agent_loop.apply_tool_doc_folding(baseline.clone(), &instance);
+    assert_eq!(
+        serde_json::to_string(&baseline).unwrap(),
+        serde_json::to_string(&folded).unwrap(),
+        "standalone loop must pass defs through byte-identically"
+    );
+
+    // (b) config.json present but the section is disabled → same bytes.
+    let dir = tempfile::tempdir().unwrap();
+    let cfg = dir.path().join("config.json");
+    std::fs::write(
+        &cfg,
+        r#"{"agents": {"tool_doc_folding": {"enabled": false, "expand_top_n": 1}}}"#,
+    )
+    .unwrap();
+    agent_loop.set_config_path(cfg);
+    let folded = agent_loop.apply_tool_doc_folding(baseline.clone(), &instance);
+    assert_eq!(
+        serde_json::to_string(&baseline).unwrap(),
+        serde_json::to_string(&folded).unwrap(),
+        "disabled section must pass defs through byte-identically"
+    );
+
+    // (c) config.json without the section entirely → same bytes.
+    let cfg2 = dir.path().join("config2.json");
+    std::fs::write(&cfg2, r#"{"agents": {"defaults": {}}}"#).unwrap();
+    agent_loop.set_config_path(cfg2);
+    let folded = agent_loop.apply_tool_doc_folding(baseline.clone(), &instance);
+    assert_eq!(
+        serde_json::to_string(&baseline).unwrap(),
+        serde_json::to_string(&folded).unwrap(),
+        "absent section must pass defs through byte-identically"
+    );
+}
+
+#[cfg(feature = "memory")]
+#[test]
+fn test_y1_folding_enabled_no_manager_degrades_to_passthrough() {
+    let agent_loop = y1_probe_loop();
+    let dir = tempfile::tempdir().unwrap();
+    let cfg = dir.path().join("config.json");
+    std::fs::write(
+        &cfg,
+        r#"{"agents": {"tool_doc_folding": {"enabled": true, "expand_top_n": 1}}}"#,
+    )
+    .unwrap();
+    agent_loop.set_config_path(cfg);
+
+    let instance = AgentInstance::new(test_config());
+    instance.add_user_message("what is the weather today");
+
+    // Enabled but no memory manager wired (embed backend absent) → the loop
+    // must degrade to unfolded defs, never fold blind.
+    let baseline = agent_loop.build_tool_defs();
+    let folded = agent_loop.apply_tool_doc_folding(baseline.clone(), &instance);
+    assert_eq!(
+        serde_json::to_string(&baseline).unwrap(),
+        serde_json::to_string(&folded).unwrap(),
+        "no embed backend ⇒ byte-identical passthrough"
+    );
+}
+
+#[cfg(feature = "memory")]
+#[test]
+fn test_y1_folding_enabled_shapes_provider_defs() {
+    use nemesis_memory::manager::{Config as MemoryManagerConfig, MemoryManager};
+    use nemesis_memory::vector::{EmbeddingFunc, StoreConfig};
+    use std::sync::Arc;
+
+    // Deterministic toy embedding: one-hot over sentinel keywords, so the
+    // weather query ranks the weather tool top by construction.
+    let embed: EmbeddingFunc = Box::new(|text: &str| -> Result<Vec<f32>, String> {
+        if text.contains("weather") {
+            Ok(vec![1.0, 0.0, 0.0])
+        } else if text.contains("file") {
+            Ok(vec![0.0, 1.0, 0.0])
+        } else if text.contains("web") {
+            Ok(vec![0.0, 0.0, 1.0])
+        } else {
+            Ok(vec![0.05, 0.05, 0.05])
+        }
+    });
+    let dir = tempfile::tempdir().unwrap();
+    let manager = Arc::new(MemoryManager::new(&MemoryManagerConfig::new(dir.path())));
+    manager
+        .init_vector_store_with_embed(embed, StoreConfig::default())
+        .unwrap();
+
+    let agent_loop = y1_probe_loop();
+    agent_loop.set_memory_inject(Some(manager), false, 0);
+    let cfg = dir.path().join("config.json");
+    std::fs::write(
+        &cfg,
+        r#"{"agents": {"tool_doc_folding": {"enabled": true, "expand_top_n": 1}}}"#,
+    )
+    .unwrap();
+    agent_loop.set_config_path(cfg);
+
+    let instance = AgentInstance::new(test_config());
+    instance.add_user_message("what is the weather today");
+
+    let folded = agent_loop.apply_tool_doc_folding(agent_loop.build_tool_defs(), &instance);
+    // These defs are EXACTLY what the LlmRequest observer event serializes
+    // (request_log's `tools` array) and what provider.chat receives.
+    assert_eq!(
+        y1_find_def(&folded, "weather_probe").function.description,
+        "Get the weather forecast for a city. Supports current conditions and multi-day outlook.",
+        "top-1 keeps FULL description bytes"
+    );
+    assert_eq!(
+        y1_find_def(&folded, "file_probe").function.description,
+        "Read a file from disk.",
+        "non-top folds to first sentence"
+    );
+    assert_eq!(
+        y1_find_def(&folded, "web_probe").function.description,
+        "Search the web for current information.",
+        "non-top folds to first sentence"
+    );
+    // Names / schemas / count untouched (orthogonal to supply).
+    assert_eq!(folded.len(), 3);
+
+    // Determinism incl. the description-vector cache: second call renders
+    // identical bytes (cache hit path, no re-embed).
+    let again = agent_loop.apply_tool_doc_folding(agent_loop.build_tool_defs(), &instance);
+    assert_eq!(
+        serde_json::to_string(&folded).unwrap(),
+        serde_json::to_string(&again).unwrap(),
+        "same state must render identical fold bytes (cache path)"
+    );
+}
+
+#[cfg(feature = "memory")]
+#[test]
+fn test_y1_folding_mini_tier_excluded() {
+    use nemesis_memory::manager::{Config as MemoryManagerConfig, MemoryManager};
+    use nemesis_memory::vector::{EmbeddingFunc, StoreConfig};
+    use std::sync::Arc;
+
+    let embed: EmbeddingFunc = Box::new(|text: &str| -> Result<Vec<f32>, String> {
+        if text.contains("weather") {
+            Ok(vec![1.0, 0.0, 0.0])
+        } else if text.contains("file") {
+            Ok(vec![0.0, 1.0, 0.0])
+        } else if text.contains("web") {
+            Ok(vec![0.0, 0.0, 1.0])
+        } else {
+            Ok(vec![0.05, 0.05, 0.05])
+        }
+    });
+    let dir = tempfile::tempdir().unwrap();
+    let manager = Arc::new(MemoryManager::new(&MemoryManagerConfig::new(dir.path())));
+    manager
+        .init_vector_store_with_embed(embed, StoreConfig::default())
+        .unwrap();
+
+    let agent_loop = y1_probe_loop();
+    agent_loop.set_memory_inject(Some(manager), false, 0);
+    let cfg = dir.path().join("config.json");
+    std::fs::write(
+        &cfg,
+        r#"{"agents": {"tool_doc_folding": {"enabled": true, "expand_top_n": 1}}}"#,
+    )
+    .unwrap();
+    agent_loop.set_config_path(cfg);
+    agent_loop.set_tier(nemesis_types::capability::ModelTier::Mini);
+
+    let instance = AgentInstance::new(test_config());
+    instance.add_user_message("what is the weather today");
+
+    // Mini tier never participates: the 13-tool core set has nothing to
+    // save, so even folding fully enabled+manager wired stays passthrough.
+    let baseline = agent_loop.build_tool_defs();
+    let folded = agent_loop.apply_tool_doc_folding(baseline.clone(), &instance);
+    assert_eq!(
+        serde_json::to_string(&baseline).unwrap(),
+        serde_json::to_string(&folded).unwrap(),
+        "mini tier must never fold"
+    );
 }

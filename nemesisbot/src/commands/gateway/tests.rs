@@ -403,6 +403,64 @@ fn test_load_security_rules_invalid_json() {
 }
 
 // -------------------------------------------------------------------------
+// apply_security_layer_switches tests（layer 开关构造期生效——V3 真机揭的
+// 死键 bug 的回归测试）
+// -------------------------------------------------------------------------
+
+#[test]
+fn test_apply_security_layer_switches_all_off() {
+    let json = serde_json::json!({
+        "layers": {
+            "injection": {"enabled": false},
+            "command_guard": {"enabled": false},
+            "credential": {"enabled": false},
+            "ssrf": {"enabled": false}
+        }
+    });
+    let mut cfg = nemesis_security::pipeline::SecurityPluginConfig::default();
+    apply_security_layer_switches(&json, &mut cfg);
+    assert!(!cfg.injection_enabled);
+    assert!(!cfg.command_guard_enabled);
+    assert!(!cfg.credential_enabled);
+    assert!(!cfg.ssrf_enabled);
+    // dlp 不归这个函数管（有独立的多字段读取块）
+    assert!(cfg.dlp_enabled);
+}
+
+#[test]
+fn test_apply_security_layer_switches_absent_keys_keep_defaults() {
+    // 只有 dlp 段（合法形状）：其余 layer 开关保持默认全开
+    let json = serde_json::json!({"layers": {"dlp": {"enabled": true}}});
+    let mut cfg = nemesis_security::pipeline::SecurityPluginConfig::default();
+    apply_security_layer_switches(&json, &mut cfg);
+    assert!(cfg.injection_enabled);
+    assert!(cfg.command_guard_enabled);
+    assert!(cfg.credential_enabled);
+    assert!(cfg.ssrf_enabled);
+}
+
+#[test]
+fn test_apply_security_layer_switches_no_layers_section() {
+    // 完全没有 layers 段（最小配置文件）：不 panic、不改任何值
+    let json = serde_json::json!({"default_action": "allow"});
+    let mut cfg = nemesis_security::pipeline::SecurityPluginConfig::default();
+    apply_security_layer_switches(&json, &mut cfg);
+    assert!(cfg.ssrf_enabled && cfg.injection_enabled);
+}
+
+#[test]
+fn test_apply_security_layer_switches_partial_override() {
+    // 只关 ssrf，其余默认开（V3 e2e 的实际形状）
+    let json = serde_json::json!({"layers": {"ssrf": {"enabled": false}}});
+    let mut cfg = nemesis_security::pipeline::SecurityPluginConfig::default();
+    apply_security_layer_switches(&json, &mut cfg);
+    assert!(!cfg.ssrf_enabled);
+    assert!(cfg.injection_enabled);
+    assert!(cfg.command_guard_enabled);
+    assert!(cfg.credential_enabled);
+}
+
+// -------------------------------------------------------------------------
 // count_enabled_channels tests
 // -------------------------------------------------------------------------
 

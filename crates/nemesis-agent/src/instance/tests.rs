@@ -366,6 +366,8 @@ fn instance_set_history() {
             tool_call_id: None,
             timestamp: String::new(),
             reasoning_content: None,
+            tool_name: None,
+            tool_result_projection: None,
         },
         ConversationTurn {
             role: "user".to_string(),
@@ -374,6 +376,8 @@ fn instance_set_history() {
             tool_call_id: None,
             timestamp: String::new(),
             reasoning_content: None,
+            tool_name: None,
+            tool_result_projection: None,
         },
     ];
 
@@ -496,6 +500,8 @@ fn make_history_with_async_placeholder() -> Vec<ConversationTurn> {
             tool_call_id: None,
             timestamp: String::new(),
             reasoning_content: None,
+            tool_name: None,
+            tool_result_projection: None,
         },
         ConversationTurn {
             role: "user".to_string(),
@@ -504,6 +510,8 @@ fn make_history_with_async_placeholder() -> Vec<ConversationTurn> {
             tool_call_id: None,
             timestamp: String::new(),
             reasoning_content: None,
+            tool_name: None,
+            tool_result_projection: None,
         },
         ConversationTurn {
             role: "assistant".to_string(),
@@ -516,6 +524,8 @@ fn make_history_with_async_placeholder() -> Vec<ConversationTurn> {
             tool_call_id: None,
             timestamp: String::new(),
             reasoning_content: None,
+            tool_name: None,
+            tool_result_projection: None,
         },
         ConversationTurn {
             role: "tool".to_string(),
@@ -524,6 +534,8 @@ fn make_history_with_async_placeholder() -> Vec<ConversationTurn> {
             tool_call_id: Some("tc_X".to_string()),
             timestamp: String::new(),
             reasoning_content: None,
+            tool_name: None,
+            tool_result_projection: None,
         },
     ]
 }

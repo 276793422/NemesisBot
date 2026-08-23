@@ -160,6 +160,44 @@ fn log_path(session_key: &str) -> PathBuf {
         .join(format!("{}.jsonl", safe_key))
 }
 
+/// Z1 (Phase4-d): copy the first `at_turn` COMPLETE user turns of
+/// `source_key`'s chat log to `new_key`, lines VERBATIM (original
+/// timestamps and extra fields preserved — a fork must not re-stamp
+/// history). Uses the same user-turn counting as the SessionStore-side
+/// fork cut, so the Dashboard log and the model-context store stay aligned.
+/// Returns the number of lines copied. The lazy FTS full-index picks the
+/// new file up on first search; no per-line index_append needed here.
+pub fn copy_chat_log_prefix(source_key: &str, new_key: &str, at_turn: usize) -> usize {
+    // Whole-log read: fork is a one-shot admin op, not a hot path.
+    let (all, _total, _more, _oldest) = read_chat_log(source_key, usize::MAX, None);
+    let mut turns = 0usize;
+    let mut lines: Vec<String> = Vec::new();
+    for v in all {
+        if v.get("role").and_then(|r| r.as_str()) == Some("user") {
+            turns += 1;
+            if turns > at_turn {
+                break;
+            }
+        }
+        if let Ok(line) = serde_json::to_string(&v) {
+            lines.push(line);
+        }
+    }
+    if lines.is_empty() {
+        return 0;
+    }
+    let target = log_path(new_key);
+    if let Some(parent) = target.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+    if let Ok(mut f) = OpenOptions::new().create(true).append(true).open(&target) {
+        for l in &lines {
+            let _ = writeln!(f, "{}", l);
+        }
+    }
+    lines.len()
+}
+
 /// Delete a session's chat log file (JSONL). Used by session management
 /// (delete conversation) to clear the user-facing history. Also deletes the
 /// boundary-events sidecar so a re-created session doesn't inherit stale

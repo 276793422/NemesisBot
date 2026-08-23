@@ -252,13 +252,13 @@ pub async fn wait_for_http(url: &str, timeout: Duration) -> Result<()> {
 // WebSocket helpers
 // ---------------------------------------------------------------------------
 
+/// The WebSocket stream type returned by [`ws_connect`] (named so callers can
+/// hold one across await points without spelling out the full generic type).
+pub type WsStream =
+    tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
+
 /// Connect to WebSocket with auth token.
-pub async fn ws_connect(
-    port: u16,
-    token: &str,
-) -> Result<
-    tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>,
-> {
+pub async fn ws_connect(port: u16, token: &str) -> Result<WsStream> {
     let url = format!("ws://127.0.0.1:{}/ws?token={}", port, token);
     let (stream, _) = tokio_tungstenite::connect_async(&url)
         .await

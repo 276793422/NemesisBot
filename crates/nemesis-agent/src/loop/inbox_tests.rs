@@ -259,6 +259,8 @@ fn hist_with_user(content: &str) -> Vec<crate::types::ConversationTurn> {
             tool_call_id: None,
             timestamp: String::new(),
             reasoning_content: None,
+            tool_name: None,
+            tool_result_projection: None,
         },
         crate::types::ConversationTurn {
             role: "user".to_string(),
@@ -267,6 +269,8 @@ fn hist_with_user(content: &str) -> Vec<crate::types::ConversationTurn> {
             tool_call_id: None,
             timestamp: String::new(),
             reasoning_content: None,
+            tool_name: None,
+            tool_result_projection: None,
         },
     ]
 }

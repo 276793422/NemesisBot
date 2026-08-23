@@ -35,6 +35,8 @@ fn conversation_turn_serialization() {
         tool_call_id: None,
         timestamp: "2026-04-29T12:00:00Z".to_string(),
         reasoning_content: None,
+        tool_name: None,
+        tool_result_projection: None,
     };
     let json = serde_json::to_string(&turn).unwrap();
     let parsed: ConversationTurn = serde_json::from_str(&json).unwrap();
@@ -85,6 +87,8 @@ fn conversation_turn_with_tool_calls() {
         tool_call_id: None,
         timestamp: "2026-04-29T12:00:00Z".to_string(),
         reasoning_content: None,
+        tool_name: None,
+        tool_result_projection: None,
     };
     let json = serde_json::to_string(&turn).unwrap();
     let parsed: ConversationTurn = serde_json::from_str(&json).unwrap();
@@ -156,6 +160,8 @@ fn conversation_turn_tool_call_id() {
         tool_call_id: Some("tc_123".to_string()),
         timestamp: "2026-04-29T12:00:00Z".to_string(),
         reasoning_content: None,
+        tool_name: None,
+        tool_result_projection: None,
     };
     let json = serde_json::to_string(&turn).unwrap();
     let parsed: ConversationTurn = serde_json::from_str(&json).unwrap();
@@ -292,6 +298,8 @@ fn conversation_turn_clone() {
         tool_call_id: None,
         timestamp: "2026-04-29T12:00:00Z".to_string(),
         reasoning_content: None,
+        tool_name: None,
+        tool_result_projection: None,
     };
     let cloned = turn.clone();
     assert_eq!(cloned.role, "user");
@@ -346,6 +354,8 @@ fn make_turn(role: &str, content: &str) -> ConversationTurn {
         tool_call_id: None,
         timestamp: String::new(),
         reasoning_content: None,
+        tool_name: None,
+        tool_result_projection: None,
     }
 }
 
@@ -364,6 +374,8 @@ fn make_assistant_with_tc(content: &str, ids: &[&str]) -> ConversationTurn {
         tool_call_id: None,
         timestamp: String::new(),
         reasoning_content: None,
+        tool_name: None,
+        tool_result_projection: None,
     }
 }
 
@@ -375,6 +387,8 @@ fn make_tool_response(content: &str, tc_id: &str) -> ConversationTurn {
         tool_call_id: Some(tc_id.to_string()),
         timestamp: String::new(),
         reasoning_content: None,
+        tool_name: None,
+        tool_result_projection: None,
     }
 }
 
@@ -573,6 +587,8 @@ fn turn(role: &str, content: &str, tool_calls: Vec<ToolCallInfo>, tool_call_id: 
         tool_call_id,
         timestamp: "2026-08-21T00:00:00Z".to_string(),
         reasoning_content: None,
+        tool_name: None,
+        tool_result_projection: None,
     }
 }
 
@@ -679,4 +695,106 @@ fn test_repair_still_removes_orphaned_tool_results() {
     repair_tool_message_pairs(&mut msgs);
     assert_eq!(msgs.len(), 1);
     assert_eq!(msgs[0].role, "user");
+}
+
+// ---------------------------------------------------------------------------
+// X1 (U3 projection prune): per-turn model-facing projection unit tests.
+// ---------------------------------------------------------------------------
+
+fn x1_turn(role: &str, content: &str) -> ConversationTurn {
+    ConversationTurn {
+        role: role.to_string(),
+        content: content.to_string(),
+        tool_calls: Vec::new(),
+        tool_call_id: None,
+        timestamp: String::new(),
+        reasoning_content: None,
+        tool_name: None,
+        tool_result_projection: None,
+    }
+}
+
+/// Non-tool turns NEVER fold - even oversized user/assistant content reaches
+/// the provider verbatim (pruning is a tool-result policy only).
+#[test]
+fn test_model_facing_non_tool_passthrough() {
+    let big: String = "u".repeat(20_000);
+    for role in ["user", "assistant", "system"] {
+        let t = x1_turn(role, &big);
+        assert_eq!(
+            t.model_facing_content(),
+            big,
+            "non-tool turns must never fold"
+        );
+    }
+}
+
+/// Oversized tool result without a recorded override folds to
+/// head + marker + tail: bounded, marker carries the tool name, head/tail
+/// bytes match the original's first/last 3600 chars.
+#[test]
+fn test_model_facing_tool_pruned_shape() {
+    let original: String = {
+        let head: String = "H".repeat(3_600);
+        let mid: String = "M".repeat(5_000);
+        let tail: String = "T".repeat(3_600);
+        format!("{head}{mid}{tail}")
+    };
+    let mut t = x1_turn("tool", &original);
+    t.tool_name = Some("grep".to_string());
+    let projected = t.model_facing_content().into_owned();
+    assert!(
+        projected.chars().count() < original.chars().count(),
+        "oversized tool result must shrink"
+    );
+    assert!(
+        projected.contains("grep"),
+        "marker must carry the tool name"
+    );
+    assert!(projected.starts_with(&"H".repeat(3_600)));
+    assert!(projected.ends_with(&"T".repeat(3_600)));
+}
+
+/// A recorded override (spill locator / guard nudges) wins verbatim - even
+/// over content that would otherwise pass through unpruned.
+#[test]
+fn test_model_facing_override_wins() {
+    let mut t = x1_turn("tool", "small");
+    t.tool_result_projection = Some("SPILLED: see file".to_string());
+    assert_eq!(t.model_facing_content(), "SPILLED: see file");
+}
+
+/// In-budget tool results pass through untouched.
+#[test]
+fn test_model_facing_small_tool_passthrough() {
+    let t = x1_turn("tool", "ok");
+    assert_eq!(t.model_facing_content(), "ok");
+}
+
+/// FOLD IDEMPOTENCE: the prune output is itself under the inline threshold,
+/// so projecting an already-projected turn (old sessions whose stored tool
+/// content was pruned by the pre-X1 write-time gate) is a byte-level no-op.
+#[test]
+fn test_model_facing_projection_idempotent() {
+    let original: String = "x".repeat(20_000);
+    let mut t = x1_turn("tool", &original);
+    t.tool_name = Some("exec".to_string());
+    let once = t.model_facing_content().into_owned();
+    let mut t2 = x1_turn("tool", &once);
+    t2.tool_name = Some("exec".to_string());
+    assert_eq!(
+        t2.model_facing_content().as_ref(),
+        once,
+        "second projection must be a no-op (old-session compatibility)"
+    );
+}
+
+/// Missing tool_name (old sessions) falls back to the generic "tool" in the
+/// marker instead of failing.
+#[test]
+fn test_model_facing_tool_name_fallback() {
+    let original: String = "y".repeat(20_000);
+    let t = x1_turn("tool", &original);
+    let projected = t.model_facing_content().into_owned();
+    assert!(projected.contains("tool"), "marker falls back to tool");
 }

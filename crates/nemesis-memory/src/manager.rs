@@ -226,6 +226,17 @@ impl MemoryManager {
         );
     }
 
+    /// Report whether the vector store is live (in-memory index active).
+    ///
+    /// The web Dashboard store command uses this to choose between the live
+    /// `store_entry` path (embed + immediately searchable by the agent's
+    /// memory_search / auto-inject, persisted by the adapter) and a raw JSONL
+    /// append at the load path (ingested with embeddings only when the store
+    /// is (re-)initialized).
+    pub fn is_vector_enabled(&self) -> bool {
+        *self.vector_enabled.read()
+    }
+
     /// Initialize the vector store at runtime (e.g. from a Dashboard toggle).
     ///
     /// If the vector store is already initialized, just enables it.

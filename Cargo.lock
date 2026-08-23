@@ -4065,6 +4065,7 @@ dependencies = [
  "nemesis-memory",
  "nemesis-migrate",
  "nemesis-observer",
+ "nemesis-path",
  "nemesis-providers",
  "nemesis-sandbox",
  "nemesis-security",
@@ -4100,9 +4101,13 @@ dependencies = [
 name = "nemesisbot-tests"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
+ "futures",
  "reqwest",
  "serde_json",
+ "test-harness",
  "tokio",
+ "tokio-tungstenite 0.26.2",
 ]
 
 [[package]]

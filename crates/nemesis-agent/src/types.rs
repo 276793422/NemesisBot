@@ -44,6 +44,13 @@ pub struct ConversationTurn {
     /// Role: "system", "user", "assistant", or "tool".
     pub role: String,
     /// Text content of the turn.
+    ///
+    /// X1 (U3 projection prune): for role="tool" turns this is the tool's
+    /// ORIGINAL output, un-pruned and un-spilled — the mid-section stays
+    /// recoverable (history replay / session branching). The bounded,
+    /// model-facing form is derived per-request via
+    /// [`ConversationTurn::model_facing_content`]; the provider never sees
+    /// more than the prune budget of any tool result.
     pub content: String,
     /// Tool calls issued by the assistant in this turn.
     pub tool_calls: Vec<ToolCallInfo>,
@@ -55,6 +62,52 @@ pub struct ConversationTurn {
     /// Stored for passing back to the API in subsequent turns.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub reasoning_content: Option<String>,
+    /// X1 (U3 projection prune): tool name for role="tool" turns. The prune
+    /// marker embeds the tool name, and with the gates moved to the
+    /// projection the recompute must be self-contained per turn (the name
+    /// otherwise only lives on the preceding assistant turn's tool_calls,
+    /// which pure per-turn functions cannot see). None on old sessions and
+    /// non-tool turns — the marker then falls back to "tool".
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub tool_name: Option<String>,
+    /// X1 (U3 projection prune): the COMPLETE model-facing replacement text,
+    /// recorded at tool time ONLY when it cannot be recomputed from
+    /// `content` later — the spill tier (the locator path embeds a
+    /// wall-clock stamp) and any turn-guard nudge decoration (⑤/⑤′/⑥ —
+    /// dynamic per-turn state). `None` ⇒ the projection recomputes
+    /// `prune_tool_result(content, tool_name)`, a pure deterministic
+    /// function, so replay/branch rebuilds recompute rather than consult the
+    /// injection ledger. Idempotence: prune output stays under the inline
+    /// threshold, and old sessions' tool content is already pruned, so
+    /// projecting an already-projected turn is a no-op.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub tool_result_projection: Option<String>,
+}
+
+impl ConversationTurn {
+    /// X1 (U3 projection prune): the content the MODEL must see for this
+    /// turn. Tool results keep their original in history; this is the
+    /// bounded projection — the recorded override when present (spill
+    /// locator / guard nudges — not recomputable), else the pure prune
+    /// recompute, else the content as-is. Same input ⇒ same output; both
+    /// `project_history_for_request` (request building + replay rebuild)
+    /// and the compaction token estimate go through here so they can never
+    /// drift from what the provider actually receives.
+    pub fn model_facing_content(&self) -> std::borrow::Cow<'_, str> {
+        if self.role != "tool" {
+            return std::borrow::Cow::Borrowed(&self.content);
+        }
+        if let Some(ref projection) = self.tool_result_projection {
+            return std::borrow::Cow::Borrowed(projection.as_str());
+        }
+        match crate::prune::prune_tool_result(
+            &self.content,
+            self.tool_name.as_deref().unwrap_or("tool"),
+        ) {
+            Some(pruned) => std::borrow::Cow::Owned(pruned),
+            None => std::borrow::Cow::Borrowed(&self.content),
+        }
+    }
 }
 
 /// Information about a single tool call within a conversation turn.
@@ -332,6 +385,8 @@ pub fn repair_tool_message_pairs(messages: &mut Vec<ConversationTurn>) {
                                 tool_call_id: Some(tc.id.clone()),
                                 timestamp: messages[i].timestamp.clone(),
                                 reasoning_content: None,
+                                tool_name: Some(tc.name.clone()),
+                                tool_result_projection: None,
                             },
                         ));
                     }

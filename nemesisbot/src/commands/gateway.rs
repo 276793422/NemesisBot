@@ -322,10 +322,51 @@ impl nemesis_forge::bridge::ClusterForgeBridge for ClusterForgeBridgeAdapter {
     }
 }
 
+/// Apply the simple layer on/off toggles (`layers.injection/command_guard/
+/// credential/ssrf.enabled`) from `config.security.json` to the constructor
+/// config.
+///
+/// Why this exists: layer components are built as `Option<T>` at
+/// `SecurityPlugin::new()` time — once constructed a layer cannot be torn
+/// down, and `reload_config` only extracts + logs these toggles (it never
+/// rebuilds layers). Startup construction is therefore the ONLY effective
+/// path; before this helper, these four toggles were dead keys (only
+/// `layers.dlp` and `audit_chain_enabled` were read). Discovered by the V3
+/// real-machine e2e: `layers.ssrf.enabled=false` was silently ignored.
+///
+/// Absent keys keep the current value (caller passes defaults), mirroring
+/// reload_config's `unwrap_or(current)` semantics.
+#[cfg(feature = "security")]
+fn apply_security_layer_switches(
+    sec_json: &serde_json::Value,
+    config: &mut nemesis_security::pipeline::SecurityPluginConfig,
+) {
+    let Some(layers) = sec_json.get("layers").and_then(|l| l.as_object()) else {
+        return;
+    };
+    let flag = |key: &str, slot: &mut bool| {
+        if let Some(b) = layers
+            .get(key)
+            .and_then(|d| d.get("enabled"))
+            .and_then(|x| x.as_bool())
+        {
+            *slot = b;
+        }
+    };
+    flag("injection", &mut config.injection_enabled);
+    flag("command_guard", &mut config.command_guard_enabled);
+    flag("credential", &mut config.credential_enabled);
+    flag("ssrf", &mut config.ssrf_enabled);
+}
+
 /// Load security rules from `config.security.json` and apply to the SecurityPlugin.
 ///
 /// Parses the JSON config file's `file_rules`, `dir_rules`, `process_rules`, etc.
 /// and registers them as ABAC rules on the auditor. Also sets `default_action`.
+///
+/// Note: layer on/off toggles (`layers.*.enabled`) are NOT applied here —
+/// layers are constructed (or not) at `SecurityPlugin::new()` time, so the
+/// toggles are applied by [`apply_security_layer_switches`] before construction.
 #[cfg(feature = "security")]
 fn load_security_rules(
     plugin: &Arc<nemesis_security::pipeline::SecurityPlugin>,
@@ -2442,6 +2483,9 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
                         security_config.dlp_inbound_action = s.to_string();
                     }
                 }
+                // 其余 layer 开关（injection/command_guard/credential/ssrf）：
+                // 构造期是唯一生效路径（reload 只打日志不重建 layer）。
+                apply_security_layer_switches(v, &mut security_config);
             }
             let audit_chain_enabled = sec_json
                 .as_ref()
@@ -3503,6 +3547,9 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
                 {
                     agent_loop.set_memory_approval_gate(Arc::new(GatewayMemoryGate::new(adapter)));
                 }
+                // X2 (U8 refinement): reflect interactive-approval reachability
+                // in the merged context snapshot's `# Runtime Policy` section.
+                agent_loop.set_interactive_approval(true);
                 info!("[Gateway] Approval manager wired (popup via ProcessManager)");
             }
             #[cfg(not(feature = "desktop"))]

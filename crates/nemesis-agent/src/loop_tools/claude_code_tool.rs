@@ -8,10 +8,11 @@
 //! "argument construction + config" shell).
 //!
 //! T5 (U13 original item): the permission mode is a FIXED config tier
-//! (`agents.claude_code_tool.permission_mode`, enum
-//! default/accept_edits/plan/bypass_permissions, default `accept_edits` —
-//! non-interactive-safe). It is deliberately NOT in the tool schema: the
-//! model cannot choose it; the deployment config governs the child.
+//! (`agents.claude_code_tool.permission_mode`, CLI camelCase enum
+//! acceptEdits/auto/bypassPermissions/manual/dontAsk/plan, default
+//! `acceptEdits` — non-interactive-safe). It is deliberately NOT in the tool
+//! schema: the model cannot choose it; the deployment config governs the
+//! child.
 //!
 //! Registration is OPT-IN: `claude_code_tool.enabled = true` in config
 //! (default false), AND the CLI must be locatable at registration time —
@@ -36,12 +37,12 @@ pub fn find_claude_cli() -> Option<String> {
 pub struct ClaudeCodeTool {
     cli_path: String,
     timeout_secs: u64,
-    /// T5: fixed permission tier (already normalized; default accept_edits).
+    /// T5: fixed permission tier (already normalized; default acceptEdits).
     permission_mode: &'static str,
 }
 
 impl ClaudeCodeTool {
-    /// `permission_mode: None` = unset in config → `accept_edits` (default).
+    /// `permission_mode: None` = unset in config → `acceptEdits` (default).
     /// Unknown values fall back to the default (fail-safe).
     pub fn new(cli_path: String, timeout_secs: Option<u64>, permission_mode: Option<&str>) -> Self {
         Self {

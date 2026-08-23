@@ -333,7 +333,13 @@ fn test_updater_is_database_stale_with_old_update() {
 fn test_updater_is_database_stale_zero_threshold() {
     let config = test_config();
     let updater = Updater::new(config);
-    *updater.last_update.lock().unwrap() = Some(SystemTime::now());
+    // 1s in the past, NOT SystemTime::now(): on Windows the clock quantum
+    // (~15ms) can make elapsed() return exactly ZERO for a just-set
+    // timestamp, and ZERO > ZERO is false - a latent flake under parallel
+    // load. A 1s-old timestamp makes "zero threshold => stale" hold on
+    // every platform deterministically.
+    *updater.last_update.lock().unwrap() =
+        Some(SystemTime::now() - Duration::from_secs(1));
     // Zero threshold -> always stale
     assert!(updater.is_database_stale(Duration::ZERO));
 }

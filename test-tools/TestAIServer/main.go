@@ -3,6 +3,8 @@ package main
 import (
 	"flag"
 	"fmt"
+	"time"
+
 	"testaiserver/handlers"
 	"testaiserver/logger"
 	"testaiserver/models"
@@ -66,7 +68,13 @@ func main() {
 	registry.Register(models.NewTestAI50())
 	registry.Register(models.NewTestAI60())
 	registry.Register(models.NewTestAI70())
-	fmt.Println("测试模型已注册: testai-1.1, testai-1.2, testai-1.3, testai-2.0, testai-3.0, testai-3.1, testai-4.2, testai-4.3, testai-5.0, testai-6.0, testai-7.0")
+	registry.Register(models.NewTestAI80())
+	registry.Register(models.NewTestAI21())
+	registry.Register(models.NewTestAI90())
+	registry.Register(models.NewTestAI91())
+	registry.Register(models.NewTestAI92())
+	registry.Register(models.NewTestAI93())
+	fmt.Println("测试模型已注册: testai-1.1, testai-1.2, testai-1.3, testai-2.0, testai-2.1, testai-3.0, testai-3.1, testai-4.2, testai-4.3, testai-5.0, testai-6.0, testai-7.0, testai-8.0, testai-9.0, testai-9.1, testai-9.2, testai-9.3")
 
 	// 创建 Gin 路由
 	router := gin.New()
@@ -90,6 +98,22 @@ func main() {
 	// 健康检查端点（供测试工具 wait_for_http 探测）
 	router.GET("/health", func(c *gin.Context) {
 		c.JSON(200, gin.H{"status": "ok"})
+	})
+
+	// /slow?secs=N —— 确定性慢速端点，供 testai-2.1 并行批（U5 只读并发）
+	// 的墙钟验证：3 个 web_fetch 各睡 6s/3s/2s，并发执行总耗时 ≈ 6s。
+	// secs 夹在 [0,60] 防呆。
+	router.GET("/slow", func(c *gin.Context) {
+		secs := 0
+		fmt.Sscanf(c.Query("secs"), "%d", &secs)
+		if secs < 0 {
+			secs = 0
+		}
+		if secs > 60 {
+			secs = 60
+		}
+		time.Sleep(time.Duration(secs) * time.Second)
+		c.String(200, fmt.Sprintf("slept %d seconds", secs))
 	})
 
 	// 启动信息

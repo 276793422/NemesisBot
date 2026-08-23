@@ -59,6 +59,8 @@ fn make_turn(role: &str, content: &str, tool_calls: Vec<ToolCallInfo>) -> Conver
         tool_call_id: None,
         timestamp: "2026-06-04T00:00:00Z".to_string(),
         reasoning_content: None,
+        tool_name: None,
+        tool_result_projection: None,
     }
 }
 

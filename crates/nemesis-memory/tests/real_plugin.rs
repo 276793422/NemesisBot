@@ -108,3 +108,44 @@ async fn it_onnx_vector_store_with_manager() {
 
     // Do NOT call mgr.close() — shared fixture must not be released
 }
+
+#[test]
+// Ignored (ONNX): requires plugin_onnx.dll + model files (same setup as the
+// tests above). V2 (B4 memory auto-inject) calibration: pins the cosine
+// assumptions the gateway inject pipeline relies on —
+//   * the VectorStore query threshold is 0.7 (gateway with_config StoreConfig)
+//   * prefetch_memory_context's MIN_SCORE bar is 0.35 (loop.rs)
+// so a related Q/A pair must clear 0.7 and an unrelated query must stay
+// below 0.35 with the default medium model (all-MiniLM-L6-v2). If a model
+// or tier swap changes these numbers, the e2e pair below must be re-tuned.
+// MUST run single-threaded (shared ONNX runtime): -- --ignored --test-threads=1
+#[ignore]
+fn it_onnx_auto_inject_similarity_calibration() {
+    use nemesis_memory::vector::cosine_similarity;
+
+    let embed = __test_fixture::shared_embed_func().expect("shared plugin not available");
+
+    // Exactly the strings the V2 e2e (test-tools/e2e-tests/v_batch.rs) sends.
+    let stored = "My favorite project codename is FALCON-77.";
+    let related = "What is my favorite project codename? <MEM_CHECK>";
+    let unrelated = "What is the capital of France? <MEM_CHECK>";
+
+    let v_stored = embed(stored).unwrap();
+    let v_related = embed(related).unwrap();
+    let v_unrelated = embed(unrelated).unwrap();
+
+    let sim_related = cosine_similarity(&v_stored, &v_related);
+    let sim_unrelated = cosine_similarity(&v_stored, &v_unrelated);
+    println!("calibration: related={sim_related:.4} unrelated={sim_unrelated:.4}");
+
+    assert!(
+        sim_related >= 0.7,
+        "related pair must clear the VectorStore 0.7 query threshold, got {sim_related:.4}"
+    );
+    assert!(
+        sim_unrelated < 0.35,
+        "unrelated pair must stay under the 0.35 inject bar, got {sim_unrelated:.4}"
+    );
+
+    // Do NOT call mgr.close() — shared fixture must not be released
+}

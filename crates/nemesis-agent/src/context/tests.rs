@@ -132,6 +132,8 @@ fn build_messages_with_history() {
             tool_call_id: None,
             timestamp: "2026-04-29T12:00:00Z".to_string(),
             reasoning_content: None,
+            tool_name: None,
+            tool_result_projection: None,
         },
         crate::types::ConversationTurn {
             role: "assistant".to_string(),
@@ -140,6 +142,8 @@ fn build_messages_with_history() {
             tool_call_id: None,
             timestamp: "2026-04-29T12:00:01Z".to_string(),
             reasoning_content: None,
+            tool_name: None,
+            tool_result_projection: None,
         },
     ];
 
@@ -168,6 +172,8 @@ fn build_messages_skips_orphaned_tool_at_start() {
             tool_call_id: Some("tc_1".to_string()),
             timestamp: "2026-04-29T12:00:00Z".to_string(),
             reasoning_content: None,
+            tool_name: None,
+            tool_result_projection: None,
         },
         crate::types::ConversationTurn {
             role: "user".to_string(),
@@ -176,6 +182,8 @@ fn build_messages_skips_orphaned_tool_at_start() {
             tool_call_id: None,
             timestamp: "2026-04-29T12:00:01Z".to_string(),
             reasoning_content: None,
+            tool_name: None,
+            tool_result_projection: None,
         },
     ];
 
@@ -201,6 +209,8 @@ fn build_messages_skips_all_leading_orphaned_tools() {
             tool_call_id: Some("tc_1".to_string()),
             timestamp: "2026-04-29T12:00:00Z".to_string(),
             reasoning_content: None,
+            tool_name: None,
+            tool_result_projection: None,
         },
         crate::types::ConversationTurn {
             role: "tool".to_string(),
@@ -209,6 +219,8 @@ fn build_messages_skips_all_leading_orphaned_tools() {
             tool_call_id: Some("tc_2".to_string()),
             timestamp: "2026-04-29T12:00:01Z".to_string(),
             reasoning_content: None,
+            tool_name: None,
+            tool_result_projection: None,
         },
         crate::types::ConversationTurn {
             role: "tool".to_string(),
@@ -217,6 +229,8 @@ fn build_messages_skips_all_leading_orphaned_tools() {
             tool_call_id: Some("tc_3".to_string()),
             timestamp: "2026-04-29T12:00:02Z".to_string(),
             reasoning_content: None,
+            tool_name: None,
+            tool_result_projection: None,
         },
         crate::types::ConversationTurn {
             role: "user".to_string(),
@@ -225,6 +239,8 @@ fn build_messages_skips_all_leading_orphaned_tools() {
             tool_call_id: None,
             timestamp: "2026-04-29T12:00:03Z".to_string(),
             reasoning_content: None,
+            tool_name: None,
+            tool_result_projection: None,
         },
     ];
 
@@ -656,6 +672,8 @@ fn build_messages_with_tool_calls_in_history() {
         tool_call_id: None,
         timestamp: "2026-04-29T12:00:00Z".to_string(),
         reasoning_content: None,
+        tool_name: None,
+        tool_result_projection: None,
     }];
 
     let messages = builder.build_messages(&history, "", "Continue", "web", "chat1", false);
@@ -678,6 +696,8 @@ fn build_messages_with_tool_call_id_in_history() {
             tool_call_id: Some("tc_123".to_string()),
             timestamp: "2026-04-29T12:00:00Z".to_string(),
             reasoning_content: None,
+            tool_name: None,
+            tool_result_projection: None,
         },
         crate::types::ConversationTurn {
             role: "assistant".to_string(),
@@ -686,6 +706,8 @@ fn build_messages_with_tool_call_id_in_history() {
             tool_call_id: None,
             timestamp: "2026-04-29T12:00:01Z".to_string(),
             reasoning_content: None,
+            tool_name: None,
+            tool_result_projection: None,
         },
     ];
 
@@ -754,3 +776,4 @@ fn skill_info_debug() {
     let debug_str = format!("{:?}", info);
     assert!(debug_str.contains("test-skill"));
 }
+

@@ -172,7 +172,7 @@ pub struct ReadFileTool;
 #[async_trait]
 impl Tool for ReadFileTool {
     fn description(&self) -> String {
-        "Read the contents of a file".to_string()
+        "Read the contents of a file. For large files (e.g. spill locator files), pass offset/limit to read a character-based segment instead of the whole file".to_string()
     }
 
     fn parameters(&self) -> serde_json::Value {
@@ -182,6 +182,14 @@ impl Tool for ReadFileTool {
                 "path": {
                     "type": "string",
                     "description": "Path to the file to read"
+                },
+                "offset": {
+                    "type": "integer",
+                    "description": "Optional start offset in characters (0-based). Use with limit to read large files in segments"
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Optional max characters to return starting at offset (positive)"
                 }
             },
             "required": ["path"]
@@ -196,9 +204,35 @@ impl Tool for ReadFileTool {
             return Err(format!("File not found: {}", path.display()));
         }
 
-        tokio::fs::read_to_string(path)
+        let content = tokio::fs::read_to_string(path)
             .await
-            .map_err(|e| format!("Failed to read file: {}", e))
+            .map_err(|e| format!("Failed to read file: {}", e))?;
+
+        // Optional char-based segmentation (offset/limit). This backs the
+        // spill marker's promise ("可用 read_file 工具按 offset/limit 分段
+        // 读取"): without it, re-reading a >64KB spill file would itself
+        // spill again (a locator pointing at another locator). Char-based
+        // slicing is multibyte-safe. When neither param is present the raw
+        // full content is returned byte-identically (legacy path).
+        let (offset, limit) = extract_offset_limit(args)?;
+        if offset.is_none() && limit.is_none() {
+            return Ok(content);
+        }
+        let offset = offset.unwrap_or(0);
+        let total = content.chars().count();
+        // Effective limit defaults to "to end of file" when only offset is given.
+        let eff_limit = limit.unwrap_or(total.saturating_sub(offset));
+        let slice: String = content.chars().skip(offset).take(eff_limit).collect();
+        let returned = slice.chars().count();
+        Ok(format!(
+            "[read_file 分段] path={} total_chars={} offset={} limit={} chars_returned={}\n{}",
+            path.display(),
+            total,
+            offset,
+            eff_limit,
+            returned,
+            slice
+        ))
     }
 
     fn is_read_only(&self) -> bool {
@@ -344,6 +378,36 @@ fn extract_path(args: &str) -> Result<String, String> {
     }
     // Fallback: treat raw args as path.
     Ok(args.trim().to_string())
+}
+
+/// Extract optional `offset`/`limit` (non-negative integers) from read_file
+/// arguments. Returns `Ok((None, None))` when neither is present (legacy
+/// full-read path) and when args are not JSON at all (raw-path fallback).
+/// Validation errors are explicit so a malformed value is never silently
+/// ignored (args_validator would catch type errors first, but this tool is
+/// also callable via paths that bypass it).
+fn extract_offset_limit(args: &str) -> Result<(Option<usize>, Option<usize>), String> {
+    let val: serde_json::Value = match serde_json::from_str(args) {
+        Ok(v) => v,
+        Err(_) => return Ok((None, None)),
+    };
+    let parse = |name: &str| -> Result<Option<usize>, String> {
+        match val.get(name) {
+            None | Some(serde_json::Value::Null) => Ok(None),
+            Some(v) => {
+                let n = v.as_u64().ok_or_else(|| {
+                    format!("'{name}' must be a non-negative integer, got: {v}")
+                })?;
+                Ok(Some(n as usize))
+            }
+        }
+    };
+    let offset = parse("offset")?;
+    let limit = parse("limit")?;
+    if limit == Some(0) {
+        return Err("'limit' must be a positive integer (got 0)".to_string());
+    }
+    Ok((offset, limit))
 }
 
 /// Extract path and content from tool arguments (JSON).

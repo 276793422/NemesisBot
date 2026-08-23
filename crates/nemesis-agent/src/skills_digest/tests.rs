@@ -128,6 +128,8 @@ fn test_skills_digest_injected_when_changed() {
             tool_call_id: None,
             timestamp: String::new(),
             reasoning_content: None,
+            tool_name: None,
+            tool_result_projection: None,
         },
         crate::types::ConversationTurn {
             role: "user".to_string(),
@@ -136,6 +138,8 @@ fn test_skills_digest_injected_when_changed() {
             tool_call_id: None,
             timestamp: String::new(),
             reasoning_content: None,
+            tool_name: None,
+            tool_result_projection: None,
         },
     ]);
 
@@ -210,6 +214,8 @@ fn test_skills_digest_empty_no_injection() {
             tool_call_id: None,
             timestamp: String::new(),
             reasoning_content: None,
+            tool_name: None,
+            tool_result_projection: None,
         },
         crate::types::ConversationTurn {
             role: "user".to_string(),
@@ -218,6 +224,8 @@ fn test_skills_digest_empty_no_injection() {
             tool_call_id: None,
             timestamp: String::new(),
             reasoning_content: None,
+            tool_name: None,
+            tool_result_projection: None,
         },
     ]);
     let m = agent_loop.build_messages(&instance);

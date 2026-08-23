@@ -116,6 +116,11 @@ enum Commands {
         #[command(subcommand)]
         action: commands::history::HistoryAction,
     },
+    /// Manage conversation sessions (Z1: fork a session at a turn boundary)
+    Session {
+        #[command(subcommand)]
+        action: commands::session::SessionAction,
+    },
     /// Manage communication channels
     Channel {
         #[command(subcommand)]
@@ -821,6 +826,10 @@ async fn run_command(cli: Cli) -> Result<()> {
         Commands::History { action } => {
             common::ensure_default_logger();
             commands::history::run(action, cli.local).await?;
+        }
+        Commands::Session { action } => {
+            common::ensure_default_logger();
+            commands::session::run(action, cli.local)?;
         }
         Commands::Channel { action } => {
             common::ensure_default_logger();

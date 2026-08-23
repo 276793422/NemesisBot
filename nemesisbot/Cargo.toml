@@ -97,6 +97,9 @@ nemesis-devices = { workspace = true, optional = true }
 nemesis-voice = { workspace = true, optional = true }
 nemesis-logger = { workspace = true }
 nemesis-utils = { workspace = true }
+# Z1 session fork: chat_log copy goes through the process-global path manager;
+# the CLI verifies it agrees with the resolved home (refuses to half-fork).
+nemesis-path = { workspace = true }
 nemesis-sandbox = { workspace = true, optional = true }
 nemesis-injector = { workspace = true, optional = true }
 nemesis-eval-proxy = { workspace = true, optional = true }

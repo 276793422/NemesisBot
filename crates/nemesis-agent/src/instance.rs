@@ -100,6 +100,8 @@ impl AgentInstance {
                 tool_call_id: None,
                 timestamp: chrono::Local::now().to_rfc3339(),
                 reasoning_content: None,
+                tool_name: None,
+                tool_result_projection: None,
             };
             instance.history.lock().unwrap().push(system_turn);
         }
@@ -174,6 +176,8 @@ impl AgentInstance {
             tool_call_id: None,
             timestamp: chrono::Local::now().to_rfc3339(),
             reasoning_content: None,
+            tool_name: None,
+            tool_result_projection: None,
         };
         self.push_turn(turn);
     }
@@ -192,6 +196,8 @@ impl AgentInstance {
             tool_call_id: None,
             timestamp: chrono::Local::now().to_rfc3339(),
             reasoning_content,
+            tool_name: None,
+            tool_result_projection: None,
         };
         self.push_turn(turn);
     }
@@ -205,6 +211,39 @@ impl AgentInstance {
             tool_call_id: Some(tool_call_id.to_string()),
             timestamp: chrono::Local::now().to_rfc3339(),
             reasoning_content: None,
+            tool_name: None,
+            tool_result_projection: None,
+        };
+        self.push_turn(turn);
+    }
+
+    /// X1 (U3 projection prune): add a tool result keeping the ORIGINAL
+    /// content in history, with the bounded model-facing projection carried
+    /// alongside instead of replacing the content.
+    ///
+    /// `tool_name` feeds the deterministic prune-marker recompute in
+    /// [`ConversationTurn::model_facing_content`] (the main agent loop knows
+    /// the name at dispatch time). `projection` is the recorded override —
+    /// set ONLY when the model-facing text cannot be recomputed from the
+    /// original later: the spill tier (locator path embeds a wall-clock
+    /// stamp) or any turn-guard nudge decoration (⑤/⑤′/⑥ — dynamic per-turn
+    /// state). `None` ⇒ build-time projection recomputes the pure prune.
+    pub fn add_tool_result_projected(
+        &self,
+        tool_call_id: &str,
+        original: &str,
+        tool_name: &str,
+        projection: Option<String>,
+    ) {
+        let turn = ConversationTurn {
+            role: "tool".to_string(),
+            content: original.to_string(),
+            tool_calls: Vec::new(),
+            tool_call_id: Some(tool_call_id.to_string()),
+            timestamp: chrono::Local::now().to_rfc3339(),
+            reasoning_content: None,
+            tool_name: Some(tool_name.to_string()),
+            tool_result_projection: projection,
         };
         self.push_turn(turn);
     }
@@ -241,6 +280,8 @@ impl AgentInstance {
                 tool_call_id: Some(tool_call_id.to_string()),
                 timestamp: chrono::Local::now().to_rfc3339(),
                 reasoning_content: None,
+                tool_name: None,
+                tool_result_projection: None,
             };
             history.push(turn);
             return;
@@ -327,6 +368,8 @@ impl AgentInstance {
             tool_call_id: None,
             timestamp: timestamp.clone(),
             reasoning_content: None,
+            tool_name: None,
+            tool_result_projection: None,
         };
         history.push(compression_note);
 

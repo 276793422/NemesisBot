@@ -66,12 +66,12 @@ impl ModuleHandler for MemoryHandler {
                 let data = data.ok_or("missing data")?;
                 let query = crate::handlers::get_str(&data, "query")?;
                 let limit = data.get("limit").and_then(|v| v.as_u64()).unwrap_or(10) as usize;
-                self.entries_search(workspace, &query, limit)
+                self.entries_search(workspace, &query, limit, ctx).await
             }
             "entries.store" => {
                 let data = data.ok_or("missing data")?;
                 let content = crate::handlers::get_str(&data, "content")?;
-                self.entries_store(workspace, &content)
+                self.entries_store(workspace, &content, ctx).await
             }
 
             // --- Enhanced memory: model management ---
@@ -86,7 +86,7 @@ impl ModuleHandler for MemoryHandler {
             "vector.search" => {
                 let data = data.ok_or("missing data")?;
                 let query = crate::handlers::get_str(&data, "query")?;
-                self.entries_search(workspace, &query, 10)
+                self.entries_search(workspace, &query, 10, ctx).await
             }
 
             _ => Err(format!("unknown command: memory.{}", cmd)),
@@ -101,6 +101,49 @@ impl ModuleHandler for MemoryHandler {
 /// Auto-detect plugin library path next to the current executable.
 fn detect_plugin_path() -> Option<String> {
     nemesis_utils::find_plugin_library("plugin_onnx").map(|p| p.to_string_lossy().to_string())
+}
+
+/// Vector-store JSONL path — the MemoryManager's own persistence file.
+///
+/// MUST stay in lockstep with the gateway's manager construction
+/// (`gateway.rs`: `memory_data_dir = <workspace>/memory_vector`, store
+/// persists at `data_dir/vector/vector_store.jsonl`). The pre-fix handler
+/// read/wrote `<workspace>/memory/vector/` instead — a parallel tree no
+/// reader ever loaded, so Dashboard-stored entries were invisible to the
+/// agent's memory_search and the auto-inject prefetch.
+fn vector_store_jsonl_path(workspace: &str) -> PathBuf {
+    PathBuf::from(workspace)
+        .join("memory_vector")
+        .join("vector")
+        .join("vector_store.jsonl")
+}
+
+/// One-time migration: entries stored through the pre-fix Dashboard wrote to
+/// `<workspace>/memory/vector/vector_store.jsonl`. Copy them to the manager's
+/// load path (only when the target doesn't exist yet) so the path fix doesn't
+/// orphan them — without this the fixed entries.list would show an empty list
+/// for data the user can still see under the old tree.
+fn migrate_legacy_vector_store(workspace: &str) {
+    let legacy = PathBuf::from(workspace)
+        .join("memory")
+        .join("vector")
+        .join("vector_store.jsonl");
+    let target = vector_store_jsonl_path(workspace);
+    if !legacy.is_file() || target.exists() {
+        return;
+    }
+    let Some(parent) = target.parent() else { return };
+    if std::fs::create_dir_all(parent).is_err() {
+        return;
+    }
+    match std::fs::copy(&legacy, &target) {
+        Ok(_) => tracing::info!(
+            "[Memory] migrated legacy vector store {} -> {}",
+            legacy.display(),
+            target.display()
+        ),
+        Err(e) => tracing::warn!("[Memory] legacy vector store migration failed: {}", e),
+    }
 }
 
 /// Read the `memory.enabled` field from the main config.json.
@@ -539,16 +582,23 @@ impl MemoryHandler {
     ) -> Result<Option<serde_json::Value>, String> {
         let memory_dir = PathBuf::from(workspace).join("memory");
 
+        // Vector/episodic/graph live under the MemoryManager's data_dir
+        // (`<workspace>/memory_vector/`, see gateway.rs) — NOT under
+        // `<workspace>/memory/`. Pre-fix stats counted the wrong tree, so
+        // real agent-written episodic/graph data showed as 0.
+        migrate_legacy_vector_store(workspace);
+        let mgr_dir = PathBuf::from(workspace).join("memory_vector");
+
         // Vector entries: count lines in vector_store.jsonl
-        let vector_jsonl = memory_dir.join("vector").join("vector_store.jsonl");
+        let vector_jsonl = mgr_dir.join("vector").join("vector_store.jsonl");
         let vector_entries = count_jsonl_lines(&vector_jsonl);
 
         // Episodic: count files under episodic/
-        let episodic_dir = memory_dir.join("episodic");
+        let episodic_dir = mgr_dir.join("episodic");
         let (episodic_sessions, episodic_episodes) = count_episodic(&episodic_dir);
 
         // Graph: count lines in entities.jsonl and triples.jsonl
-        let graph_dir = memory_dir.join("graph");
+        let graph_dir = mgr_dir.join("graph");
         let graph_entities = count_jsonl_lines(&graph_dir.join("entities.jsonl"));
         let graph_triples = count_jsonl_lines(&graph_dir.join("triples.jsonl"));
 
@@ -581,10 +631,8 @@ impl MemoryHandler {
     }
 
     fn entries_list(&self, workspace: &str) -> Result<Option<serde_json::Value>, String> {
-        let jsonl_path = PathBuf::from(workspace)
-            .join("memory")
-            .join("vector")
-            .join("vector_store.jsonl");
+        migrate_legacy_vector_store(workspace);
+        let jsonl_path = vector_store_jsonl_path(workspace);
         if !jsonl_path.exists() {
             return Ok(Some(serde_json::json!({ "entries": [], "total": 0 })));
         }
@@ -613,16 +661,50 @@ impl MemoryHandler {
         ))
     }
 
-    fn entries_search(
+    async fn entries_search(
         &self,
         workspace: &str,
         query: &str,
         limit: usize,
+        ctx: &crate::ws_router::RequestContext,
     ) -> Result<Option<serde_json::Value>, String> {
-        let jsonl_path = PathBuf::from(workspace)
-            .join("memory")
-            .join("vector")
-            .join("vector_store.jsonl");
+        // Live MemoryManager with vector store active → semantic search
+        // through the same index the agent's memory_search / auto-inject
+        // prefetch use (single truth source). Falls back to the keyword
+        // substring scan over the persisted JSONL below when no manager
+        // exists (memory.enabled=false) or the vector store is off.
+        #[cfg(feature = "memory")]
+        if let Some(mgr) = ctx.state.memory_manager.as_ref() {
+            if mgr.is_vector_enabled() {
+                let result = mgr
+                    .search(query, None, limit)
+                    .await
+                    .map_err(|e| format!("search error: {}", e))?;
+                let results: Vec<serde_json::Value> = result
+                    .entries
+                    .iter()
+                    .map(|se| {
+                        truncate_entry_content(serde_json::json!({
+                            "id": se.entry.id,
+                            "type": se.entry.typ.to_string(),
+                            "content": se.entry.content,
+                            "metadata": se.entry.metadata,
+                            "tags": se.entry.tags,
+                            "score": se.score,
+                            "created_at": se.entry.created_at.to_rfc3339(),
+                            "updated_at": se.entry.updated_at.to_rfc3339(),
+                        }))
+                    })
+                    .collect();
+                let total = results.len();
+                return Ok(Some(serde_json::json!({
+                    "query": query, "results": results, "total": total, "search_type": "semantic"
+                })));
+            }
+        }
+
+        migrate_legacy_vector_store(workspace);
+        let jsonl_path = vector_store_jsonl_path(workspace);
         if !jsonl_path.exists() {
             return Ok(Some(serde_json::json!({
                 "query": query, "results": [], "total": 0, "search_type": "keyword"
@@ -661,15 +743,40 @@ impl MemoryHandler {
         })))
     }
 
-    fn entries_store(
+    async fn entries_store(
         &self,
         workspace: &str,
         content: &str,
+        ctx: &crate::ws_router::RequestContext,
     ) -> Result<Option<serde_json::Value>, String> {
-        let jsonl_path = PathBuf::from(workspace)
-            .join("memory")
-            .join("vector")
-            .join("vector_store.jsonl");
+        // Live MemoryManager with vector store active → single truth source:
+        // store_entry embeds the content, adds it to the in-memory index
+        // (immediately visible to the agent's memory_search AND the auto-inject
+        // prefetch) and persists via the adapter at the manager's own JSONL.
+        // Pre-fix this command raw-appended to <workspace>/memory/vector/ —
+        // a path no reader ever loaded.
+        #[cfg(feature = "memory")]
+        if let Some(mgr) = ctx.state.memory_manager.as_ref() {
+            if mgr.is_vector_enabled() {
+                let entry = nemesis_memory::types::Entry::new(
+                    nemesis_memory::types::MemoryType::LongTerm,
+                    content.to_string(),
+                );
+                let id = mgr
+                    .store_entry(entry)
+                    .await
+                    .map_err(|e| format!("store entry error: {}", e))?;
+                return Ok(Some(serde_json::json!({ "id": id, "stored": true })));
+            }
+            // Manager present but vector off → fall through to the raw
+            // append: the in-memory general store (LocalStore) is not
+            // persisted, so the JSONL at the load path is the only durable
+            // copy — it is re-embedded when the sub-switch re-initializes
+            // the vector store.
+        }
+
+        migrate_legacy_vector_store(workspace);
+        let jsonl_path = vector_store_jsonl_path(workspace);
 
         // Ensure directory exists
         if let Some(parent) = jsonl_path.parent() {

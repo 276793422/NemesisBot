@@ -916,6 +916,117 @@ async fn test_read_file_not_found() {
     assert!(result.unwrap_err().contains("not found"));
 }
 
+// --- read_file offset/limit segmentation (backs the spill marker promise) ---
+
+#[tokio::test]
+async fn test_read_file_offset_limit_slices_by_chars_not_bytes() {
+    let tmp = TempDir::new().unwrap();
+    let file_path = tmp.path().join("zh.txt");
+    // 5 chars / 15 UTF-8 bytes: slicing must be char-based (multibyte-safe).
+    tokio::fs::write(&file_path, "你好世界A")
+        .await
+        .unwrap();
+
+    let tool = ReadFileTool;
+    let ctx = RequestContext::new("web", "chat1", "user1", "sess1");
+    let args = format!(
+        r#"{{"path": {:?}, "offset": 2, "limit": 3}}"#,
+        file_path.to_string_lossy()
+    );
+    let out = tool.execute(&args, &ctx).await.unwrap();
+    assert!(
+        out.starts_with("[read_file 分段] "),
+        "segmented read must carry the header, got: {out}"
+    );
+    assert!(out.contains("total_chars=5"), "{out}");
+    assert!(out.contains("offset=2"), "{out}");
+    assert!(out.contains("limit=3"), "{out}");
+    assert!(out.contains("chars_returned=3"), "{out}");
+    assert!(out.ends_with("世界A"), "slice must be chars 2..5, got: {out}");
+}
+
+#[tokio::test]
+async fn test_read_file_without_offset_limit_is_byte_identical() {
+    let tmp = TempDir::new().unwrap();
+    let file_path = tmp.path().join("plain.txt");
+    let raw = "line1\nline2\nno trailing newline";
+    tokio::fs::write(&file_path, raw).await.unwrap();
+
+    let tool = ReadFileTool;
+    let ctx = RequestContext::new("web", "chat1", "user1", "sess1");
+    let args = format!(r#"{{"path": {:?}}}"#, file_path.to_string_lossy());
+    let out = tool.execute(&args, &ctx).await.unwrap();
+    assert_eq!(out, raw, "legacy full read must stay byte-identical");
+}
+
+#[tokio::test]
+async fn test_read_file_offset_beyond_eof_returns_empty_slice() {
+    let tmp = TempDir::new().unwrap();
+    let file_path = tmp.path().join("small.txt");
+    tokio::fs::write(&file_path, "abc").await.unwrap();
+
+    let tool = ReadFileTool;
+    let ctx = RequestContext::new("web", "chat1", "user1", "sess1");
+    let args = format!(
+        r#"{{"path": {:?}, "offset": 100, "limit": 10}}"#,
+        file_path.to_string_lossy()
+    );
+    let out = tool.execute(&args, &ctx).await.unwrap();
+    assert!(out.contains("total_chars=3"), "{out}");
+    assert!(out.contains("chars_returned=0"), "{out}");
+    let body = out.split_once('\n').map(|(_, b)| b).unwrap_or("");
+    assert!(
+        body.is_empty(),
+        "beyond-EOF slice must be empty, got body: {body:?}"
+    );
+}
+
+#[tokio::test]
+async fn test_read_file_rejects_malformed_offset_limit() {
+    let tmp = TempDir::new().unwrap();
+    let file_path = tmp.path().join("x.txt");
+    tokio::fs::write(&file_path, "abc").await.unwrap();
+
+    let tool = ReadFileTool;
+    let ctx = RequestContext::new("web", "chat1", "user1", "sess1");
+    let base = file_path.to_string_lossy().to_string();
+
+    // limit=0 is meaningless and must be an explicit error, not a silent no-op.
+    let err = tool
+        .execute(&format!(r#"{{"path": {:?}, "limit": 0}}"#, base), &ctx)
+        .await
+        .unwrap_err();
+    assert!(err.contains("limit"), "{err}");
+
+    // negative offset / string-typed values are explicit errors too.
+    let err = tool
+        .execute(&format!(r#"{{"path": {:?}, "offset": -1}}"#, base), &ctx)
+        .await
+        .unwrap_err();
+    assert!(err.contains("offset"), "{err}");
+    let err = tool
+        .execute(&format!(r#"{{"path": {:?}, "offset": "2"}}"#, base), &ctx)
+        .await
+        .unwrap_err();
+    assert!(err.contains("offset"), "{err}");
+}
+
+#[test]
+fn test_extract_offset_limit_non_json_falls_back_to_none() {
+    // Raw-path fallback (non-JSON args) must not error on missing offset/limit.
+    assert_eq!(extract_offset_limit("C:/some/raw path.txt").unwrap(), (None, None));
+    // JSON without either field → legacy full read.
+    assert_eq!(
+        extract_offset_limit(r#"{"path": "a.txt"}"#).unwrap(),
+        (None, None)
+    );
+    // Explicit nulls are treated as absent.
+    assert_eq!(
+        extract_offset_limit(r#"{"path": "a.txt", "offset": null}"#).unwrap(),
+        (None, None)
+    );
+}
+
 #[tokio::test]
 async fn test_list_dir_not_found() {
     let tool = ListDirectoryTool;

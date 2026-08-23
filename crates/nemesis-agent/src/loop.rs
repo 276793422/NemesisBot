@@ -31,7 +31,7 @@ use tracing::{debug, error, info, warn};
 use crate::context::RequestContext;
 use crate::instance::AgentInstance;
 use crate::registry::AgentRegistry;
-use crate::session::{SessionStore, estimate_tokens_for_turns};
+use crate::session::{SessionStore, estimate_tokens_for_turns_projected};
 use crate::types::{AgentConfig, AgentEvent, ToolCallInfo, ToolCallResult};
 use nemesis_routing::{AgentDef, RouteConfig, RouteInput as RoutingRouteInput, RouteResolver};
 
@@ -158,6 +158,8 @@ pub(crate) fn project_history_for_request(
                 tool_call_id: None,
                 timestamp: chrono::Local::now().to_rfc3339(),
                 reasoning_content: None,
+                tool_name: None,
+                tool_result_projection: None,
             });
         }
         out.extend(history[tail_start..].iter().cloned());
@@ -165,6 +167,22 @@ pub(crate) fn project_history_for_request(
     } else {
         history.to_vec()
     };
+
+    // X1 (U3 projection prune): tool results fold to their bounded
+    // model-facing form HERE — history keeps the originals (recoverable
+    // mid-sections, branchable history), the provider never sees an
+    // oversized tool result. Recorded override wins (spill locator / guard
+    // nudges — not recomputable); else the pure prune recompute. Idempotent:
+    // prune output stays under the inline threshold, so old sessions whose
+    // tool content is already pruned pass through byte-untouched. Because
+    // replay rebuilds through this same function, the fold automatically
+    // applies to audit replay too (no injection-ledger entry needed — the
+    // transform is a pure function of the history state).
+    for turn in &mut turns {
+        if turn.role == "tool" {
+            turn.content = turn.model_facing_content().into_owned();
+        }
+    }
 
     // Enforce tool-pair consistency at the LLM boundary. Upstream paths
     // (summarization, session save/load) can leave an assistant tool_call
@@ -328,6 +346,33 @@ pub enum ConcurrentMode {
     /// Queue + steer: `!`-prefixed messages are injected into the RUNNING
     /// turn before its next LLM call (I1 / U7).
     Steer,
+}
+
+/// V5 (2026-08-23): outcome of the synchronous inbound gate (`gate_inbound`).
+enum GateOutcome {
+    /// `cluster_continuation` marker — the pump handles it inline via
+    /// `dispatch_continuation` (serial, unchanged from the legacy loop).
+    Continuation(String),
+    /// Short-circuit reply (busy receipt / busy bounce / queue-full / slash
+    /// command response). No session was acquired.
+    Immediate {
+        agent_id: String,
+        response: String,
+    },
+    /// System (non-continuation) / history-request passthrough — async
+    /// handling, no session semantics.
+    Ungated,
+    /// Normal chat message: the session is already acquired and the cancel
+    /// token minted. The tail (`process_admitted`) owns release + drain.
+    Admitted(TurnAdmission),
+}
+
+/// V5: admission minted by the gate — everything the turn tail needs that
+/// the gate acquired on the message's behalf.
+struct TurnAdmission {
+    agent_id: String,
+    session_key: String,
+    cancel_token: tokio_util::sync::CancellationToken,
 }
 
 /// Parse the config string. Unknown values fall back to Reject (fail-safe
@@ -547,10 +592,11 @@ pub struct AgentLoop {
         Option<tokio::sync::mpsc::Sender<nemesis_types::channel::InboundMessage>>,
     >,
     /// Configured queue size for queue mode. Stored for config/logging parity
-    /// but NOT read: under `run_bus_arc`'s sequential processing, queue mode is
-    /// treated as reject (see `try_start_session`), so this is dead. Remove
-    /// this field (+ the `new_bus` param + call sites) if queue mode is
-    /// permanently retired.
+    /// but NOT read: busy-queueing lives in `crate::inbox` (capacity-bounded
+    /// FIFO per session), not in the session_busy map (see
+    /// `try_start_session`'s comment for why the old counter path was
+    /// removed). Remove this field (+ the `new_bus` param + call sites) if
+    /// queue mode is permanently retired.
     #[allow(dead_code)]
     queue_size: usize,
     /// Maximum concurrent cluster continuation tasks.
@@ -688,6 +734,13 @@ pub struct AgentLoop {
     /// I1 (U7): per-session message inbox for Queue/Steer modes. Unused in
     /// Reject mode (kept anyway — trivial cost, simplifies mode switching).
     inbox: crate::inbox::SharedInbox,
+    /// V5 (2026-08-23): abort handles of the Queue/Steer pump's spawned turn
+    /// tasks. The pump itself is aborted by the adapter on stop; without
+    /// tracking, those spawned turns would be orphaned and keep publishing
+    /// replies after the "stop". `stop()` aborts them (mirrors the serial
+    /// pump where aborting the one task killed the in-flight turn). Reject
+    /// mode never spawns — stays empty.
+    turn_task_handles: parking_lot::Mutex<Vec<tokio::task::AbortHandle>>,
     /// H5 (U18): workspace root for the AGENTS.md/CLAUDE.md instruction
     /// chain. `None` disables the instructions section of the merged
     /// context digest.
@@ -696,6 +749,23 @@ pub struct AgentLoop {
     /// "system" restores the pre-I2 shape for strict chat templates that
     /// reject adjacent user/user pairs).
     snapshot_role: parking_lot::RwLock<String>,
+    /// X2 (U8 refinement): whether interactive approval (desktop popup
+    /// adapter wired to the auditor by the gateway) is reachable. Rendered
+    /// into the merged context snapshot's `# Runtime Policy` section. The
+    /// guardian line reads the security plugin's live judge; the tier line
+    /// reads the live capability tier — all three are state (no clocks), so
+    /// the section renders deterministically: same state ⇒ same bytes.
+    interactive_approval: parking_lot::RwLock<bool>,
+    /// Y1 (Phase4-a): per-tool description embedding cache (tool name →
+    /// (description bytes, vector)) for semantic doc folding. Entries
+    /// re-embed only when a tool's description text changes, so after the
+    /// first round folding adds no embed calls beyond the query itself.
+    /// Read only on the memory-feature path (the embed backend lives in
+    /// nemesis-memory); `allow(dead_code)` keeps the no-default-features
+    /// build warning-clean.
+    #[cfg_attr(not(feature = "memory"), allow(dead_code))]
+    tool_vec_cache:
+        parking_lot::RwLock<std::collections::HashMap<String, (String, Vec<f32>)>>,
     /// Last-seen mtime of config.json; `check_config_reload` compares against
     /// this each round to detect on-disk changes without re-reading every turn.
     config_mtime: parking_lot::RwLock<Option<std::time::SystemTime>>,
@@ -784,8 +854,11 @@ impl AgentLoop {
             skills_loader: parking_lot::RwLock::new(None),
             skills_digest_state: std::sync::Arc::new(crate::skills_digest::DigestState::new()),
             inbox: std::sync::Arc::new(crate::inbox::Inbox::new(crate::inbox::DEFAULT_QUEUE_SIZE)),
+            turn_task_handles: parking_lot::Mutex::new(Vec::new()),
             workspace_root: parking_lot::RwLock::new(None),
             snapshot_role: parking_lot::RwLock::new("user".to_string()),
+            interactive_approval: parking_lot::RwLock::new(false),
+            tool_vec_cache: parking_lot::RwLock::new(std::collections::HashMap::new()),
             config_mtime: parking_lot::RwLock::new(None),
             estop: parking_lot::RwLock::new(None),
         }
@@ -1001,8 +1074,11 @@ impl AgentLoop {
             skills_loader: parking_lot::RwLock::new(None),
             skills_digest_state: std::sync::Arc::new(crate::skills_digest::DigestState::new()),
             inbox: std::sync::Arc::new(crate::inbox::Inbox::new(queue_size.max(1))),
+            turn_task_handles: parking_lot::Mutex::new(Vec::new()),
             workspace_root: parking_lot::RwLock::new(None),
             snapshot_role: parking_lot::RwLock::new("user".to_string()),
+            interactive_approval: parking_lot::RwLock::new(false),
+            tool_vec_cache: parking_lot::RwLock::new(std::collections::HashMap::new()),
             config_mtime: parking_lot::RwLock::new(None),
             estop: parking_lot::RwLock::new(None),
         }
@@ -1433,105 +1509,119 @@ impl AgentLoop {
     /// Stops when `stop()` is called or the inbound channel closes.
     ///
     /// Test-only variant; production code uses `run_bus_arc`.
-    #[cfg(test)]
-    pub async fn run_bus_owned(
-        self,
-        mut inbound_rx: tokio::sync::mpsc::Receiver<nemesis_types::channel::InboundMessage>,
+    /// Post-turn finish (V5: extracted verbatim from the original run_bus
+    /// bodies so the serial pump and spawned turn tasks share one tail):
+    /// error funnel + capture flush, sent-in-round check, RPC correlation
+    /// prefix, outbound publish.
+    ///
+    /// `check_sent_in_round`: Reject (serial — no turn can overlap) keeps the
+    /// historical check+clear. Queue/Steer Immediate replies (busy receipts,
+    /// slash responses) pass false: they can run while the session's turn is
+    /// in flight, and touching that turn's sent-in-round flag mid-flight
+    /// would corrupt its end-of-turn publish decision.
+    async fn finish_message(
+        &self,
+        msg: &nemesis_types::channel::InboundMessage,
+        response: String,
+        err: Option<String>,
+        check_sent_in_round: bool,
     ) {
-        self.running.store(true, Ordering::Release);
-
-        while self.running.load(Ordering::Acquire) {
-            match inbound_rx.recv().await {
-                Some(msg) => {
-                    let (agent_id, response, err) = self.process_inbound_message(&msg).await;
-
-                    // Check for cluster continuation marker.
-                    if agent_id == "__continuation__" {
-                        let task_id = response;
-                        info!(
-                            "[AgentLoop] Handling cluster continuation for task {} (permits={})",
-                            task_id, self.max_continuation_permits
-                        );
-                        self.dispatch_continuation(task_id, &msg).await;
-                        continue;
-                    }
-
-                    let response = match err {
-                        Some(e) => {
-                            // [capture] Agent error funnel: the full error
-                            // becomes the user-visible response. Flush the
-                            // session's captured evidence + the complete error
-                            // text (the user sees a short "Error: ..."; this
-                            // keeps the full source string for root-causing).
-                            if let Some(sink) = crate::capture_sink::CaptureSink::global() {
-                                sink.flush(&msg.session_key, "agent_error", None, Some(e.as_str()));
-                            }
-                            format!("Error processing message: {}", e)
-                        }
-                        None => response,
-                    };
-
-                    if !response.is_empty() {
-                        // Check if a tool (e.g., MessageTool) already sent a response for this
-                        // session in the current round. Mirrors Go's alreadySent check.
-                        let already_sent = self.sent_in_round.has_sent_in_round(&msg.session_key);
-                        // Only clear this session's flag, not all sessions.
-                        // Go clears per-tool-instance state, so clearing only the current
-                        // session preserves other sessions' sent-in-round tracking.
-                        self.sent_in_round.clear(&msg.session_key);
-
-                        if already_sent {
-                            debug!(
-                                "[AgentLoop] Skipping outbound publish: message tool already sent response for session {}",
-                                msg.session_key
-                            );
-                        } else if let Some(ref tx) = self.outbound_tx {
-                            // For RPC channel, add correlation ID prefix if not already present.
-                            let final_content = if msg.channel == "rpc"
-                                && !msg.correlation_id.is_empty()
-                                && !response.starts_with(&format!("[rpc:{}]", msg.correlation_id))
-                            {
-                                format!("[rpc:{}] {}", msg.correlation_id, response)
-                            } else {
-                                response
-                            };
-
-                            info!(
-                                "[AgentLoop] Response message     to {}:{}: {}",
-                                msg.channel,
-                                msg.chat_id,
-                                truncate(&final_content, 80)
-                            );
-
-                            let outbound = nemesis_types::channel::OutboundMessage {
-                                channel: msg.channel.clone(),
-                                chat_id: msg.chat_id.clone(),
-                                content: final_content,
-                                message_type: String::new(),
-                                meta: nemesis_types::channel::OutboundMeta {
-                                    model: Some(self.current_display_model()),
-                                },
-                            };
-                            if let Err(e) = tx.send(outbound).await {
-                                warn!("[AgentLoop] Failed to send outbound message: {}", e);
-                            }
-                        }
-                    }
+        let response = match err {
+            Some(e) => {
+                // [capture] Agent error funnel: the full error
+                // becomes the user-visible response. Flush the
+                // session's captured evidence + the complete error
+                // text (the user sees a short "Error: ..."; this
+                // keeps the full source string for root-causing).
+                if let Some(sink) = crate::capture_sink::CaptureSink::global() {
+                    sink.flush(&msg.session_key, "agent_error", None, Some(e.as_str()));
                 }
-                None => {
-                    // Channel closed.
-                    break;
-                }
+                format!("Error processing message: {}", e)
+            }
+            None => response,
+        };
+
+        if response.is_empty() {
+            return;
+        }
+
+        if check_sent_in_round {
+            // Check if a tool (e.g., MessageTool) already sent a response for this
+            // session in the current round. Mirrors Go's alreadySent check.
+            let already_sent = self.sent_in_round.has_sent_in_round(&msg.session_key);
+            // Only clear this session's flag, not all sessions.
+            // Go clears per-tool-instance state, so clearing only the current
+            // session preserves other sessions' sent-in-round tracking.
+            self.sent_in_round.clear(&msg.session_key);
+
+            if already_sent {
+                debug!(
+                    "[AgentLoop] Skipping outbound publish: message tool already sent response for session {}",
+                    msg.session_key
+                );
+                return;
             }
         }
 
-        self.running.store(false, Ordering::Release);
+        if let Some(ref tx) = self.outbound_tx {
+            // For RPC channel, add correlation ID prefix if not already present.
+            let final_content = if msg.channel == "rpc"
+                && !msg.correlation_id.is_empty()
+                && !response.starts_with(&format!("[rpc:{}]", msg.correlation_id))
+            {
+                format!("[rpc:{}] {}", msg.correlation_id, response)
+            } else {
+                response
+            };
+
+            info!(
+                "[AgentLoop] Response message     to {}:{}: {}",
+                msg.channel,
+                msg.chat_id,
+                truncate(&final_content, 80)
+            );
+
+            let outbound = nemesis_types::channel::OutboundMessage {
+                channel: msg.channel.clone(),
+                chat_id: msg.chat_id.clone(),
+                content: final_content,
+                message_type: String::new(),
+                meta: nemesis_types::channel::OutboundMeta {
+                    model: Some(self.current_display_model()),
+                },
+            };
+            if let Err(e) = tx.send(outbound).await {
+                warn!("[AgentLoop] Failed to send outbound message: {}", e);
+            }
+        }
     }
 
-    /// Same as `run_bus_owned` but takes `Arc<Self>` so the AgentLoop can be
-    /// shared with other components (e.g. heartbeat handler) while the bus
-    /// loop is running.
-    pub async fn run_bus_arc(
+    /// Spawn a turn task (Queue/Steer modes) and track its abort handle so
+    /// `stop()` can cancel in-flight turns. Finished handles are pruned on
+    /// each insert, keeping the vec bounded by live turns.
+    fn spawn_turn_task<F>(&self, fut: F)
+    where
+        F: std::future::Future<Output = ()> + Send + 'static,
+    {
+        let handle = tokio::spawn(fut);
+        let mut handles = self.turn_task_handles.lock();
+        handles.retain(|h| !h.is_finished());
+        handles.push(handle.abort_handle());
+    }
+
+    /// Shared bus pump (V5): mode-dependent dispatch.
+    ///
+    /// Reject (default): serial — byte-identical to the historical loop;
+    /// each turn completes before the next message is processed.
+    ///
+    /// Queue/Steer: the synchronous gate (`gate_inbound`) runs inline in the
+    /// pump (routing + busy check + inbox parking + receipts), then each
+    /// admitted turn runs as a tracked spawned task so a long turn cannot
+    /// starve the gate — this is what makes the U7 inbox reachable from
+    /// production channels. Same-session ordering holds because the gate
+    /// acquires the session BEFORE spawning; cross-session turns run
+    /// concurrently. Continuations stay inline (serialized with the pump).
+    async fn run_bus_impl(
         self: Arc<Self>,
         mut inbound_rx: tokio::sync::mpsc::Receiver<nemesis_types::channel::InboundMessage>,
     ) {
@@ -1540,77 +1630,61 @@ impl AgentLoop {
 
         while self.running.load(Ordering::Acquire) {
             match inbound_rx.recv().await {
-                Some(msg) => {
-                    let (agent_id, response, err) = self.process_inbound_message(&msg).await;
+                Some(msg) => match self.concurrent_mode {
+                    ConcurrentMode::Reject => {
+                        let (agent_id, response, err) = self.process_inbound_message(&msg).await;
 
-                    // Check for cluster continuation marker.
-                    if agent_id == "__continuation__" {
-                        let task_id = response;
-                        info!(
-                            "[AgentLoop] Handling cluster continuation for task {} (permits={})",
-                            task_id, self.max_continuation_permits
-                        );
-                        self.dispatch_continuation(task_id, &msg).await;
-                        continue;
-                    }
-
-                    let response = match err {
-                        Some(e) => {
-                            // [capture] Agent error funnel: the full error
-                            // becomes the user-visible response. Flush the
-                            // session's captured evidence + the complete error
-                            // text (the user sees a short "Error: ..."; this
-                            // keeps the full source string for root-causing).
-                            if let Some(sink) = crate::capture_sink::CaptureSink::global() {
-                                sink.flush(&msg.session_key, "agent_error", None, Some(e.as_str()));
-                            }
-                            format!("Error processing message: {}", e)
-                        }
-                        None => response,
-                    };
-
-                    if !response.is_empty() {
-                        let already_sent = self.sent_in_round.has_sent_in_round(&msg.session_key);
-                        self.sent_in_round.clear(&msg.session_key);
-
-                        if already_sent {
-                            debug!(
-                                "[AgentLoop] Skipping outbound publish: message tool already sent response for session {}",
-                                msg.session_key
-                            );
-                        } else if let Some(ref tx) = self.outbound_tx {
-                            let final_content = if msg.channel == "rpc"
-                                && !msg.correlation_id.is_empty()
-                                && !response.starts_with(&format!("[rpc:{}]", msg.correlation_id))
-                            {
-                                format!("[rpc:{}] {}", msg.correlation_id, response)
-                            } else {
-                                response
-                            };
-
+                        // Check for cluster continuation marker.
+                        if agent_id == "__continuation__" {
+                            let task_id = response;
                             info!(
-                                "[AgentLoop] Response message     to {}:{}: {}",
-                                msg.channel,
-                                msg.chat_id,
-                                truncate(&final_content, 80)
+                                "[AgentLoop] Handling cluster continuation for task {} (permits={})",
+                                task_id, self.max_continuation_permits
                             );
-
-                            let outbound = nemesis_types::channel::OutboundMessage {
-                                channel: msg.channel.clone(),
-                                chat_id: msg.chat_id.clone(),
-                                content: final_content,
-                                message_type: String::new(),
-                                meta: nemesis_types::channel::OutboundMeta {
-                                    model: Some(self.current_display_model()),
-                                },
-                            };
-                            if let Err(e) = tx.send(outbound).await {
-                                warn!("[AgentLoop] Failed to send outbound message: {}", e);
-                            }
+                            self.dispatch_continuation(task_id, &msg).await;
+                            continue;
                         }
+
+                        self.finish_message(&msg, response, err, true).await;
                     }
-                }
+                    ConcurrentMode::Queue | ConcurrentMode::Steer => match self.gate_inbound(&msg) {
+                        GateOutcome::Continuation(task_id) => {
+                            info!(
+                                "[AgentLoop] Handling cluster continuation for task {} (permits={})",
+                                task_id, self.max_continuation_permits
+                            );
+                            self.dispatch_continuation(task_id, &msg).await;
+                        }
+                        GateOutcome::Immediate {
+                            agent_id: _,
+                            response,
+                        } => {
+                            // Busy receipt / slash reply — publish inline.
+                            // Never touches sent_in_round (may overlap the
+                            // session's running turn; see finish_message).
+                            self.finish_message(&msg, response, None, false).await;
+                        }
+                        GateOutcome::Ungated => {
+                            let this = self.clone();
+                            let m = msg.clone();
+                            self.spawn_turn_task(async move {
+                                let (_, response, err) = this.process_ungated(&m).await;
+                                this.finish_message(&m, response, err, true).await;
+                            });
+                        }
+                        GateOutcome::Admitted(admission) => {
+                            let this = self.clone();
+                            let m = msg.clone();
+                            self.spawn_turn_task(async move {
+                                let (_, response, err) =
+                                    this.process_admitted(&m, admission).await;
+                                this.finish_message(&m, response, err, true).await;
+                            });
+                        }
+                    },
+                },
                 None => {
+                    // Channel closed.
                     break;
                 }
             }
@@ -1620,11 +1694,45 @@ impl AgentLoop {
         self.running.store(false, Ordering::Release);
     }
 
+    /// Run the main bus consumption loop (takes ownership of the receiver).
+    ///
+    /// This is the preferred entry point for bus-integrated mode.
+    /// Mirrors Go's `AgentLoop.Run(ctx)`. Continuously consumes inbound
+    /// messages, processes them, and publishes outbound responses.
+    /// Stops when `stop()` is called or the inbound channel closes.
+    ///
+    /// Test-only variant; production code uses `run_bus_arc`.
+    #[cfg(test)]
+    pub async fn run_bus_owned(
+        self,
+        inbound_rx: tokio::sync::mpsc::Receiver<nemesis_types::channel::InboundMessage>,
+    ) {
+        std::sync::Arc::new(self).run_bus_impl(inbound_rx).await;
+    }
+
+    /// Same as `run_bus_owned` but takes `Arc<Self>` so the AgentLoop can be
+    /// shared with other components (e.g. heartbeat handler) while the bus
+    /// loop is running.
+    pub async fn run_bus_arc(
+        self: Arc<Self>,
+        inbound_rx: tokio::sync::mpsc::Receiver<nemesis_types::channel::InboundMessage>,
+    ) {
+        self.run_bus_impl(inbound_rx).await;
+    }
+
     /// Stop the bus consumption loop.
     /// Mirrors Go's `AgentLoop.Stop()`.
     pub fn stop(&self) {
         info!("[AgentLoop] Stop requested");
         self.running.store(false, Ordering::Release);
+        // V5 (2026-08-23): kill Queue/Steer mode's spawned turn tasks. The
+        // adapter aborts the pump task itself; without this the spawned turns
+        // would be orphaned (holding Arc clones) and keep running/publishing
+        // after the stop.
+        let mut handles = self.turn_task_handles.lock();
+        for h in handles.drain(..) {
+            h.abort();
+        }
     }
 
     /// Check whether the loop is currently running.
@@ -1909,8 +2017,26 @@ impl AgentLoop {
         &self,
         msg: &nemesis_types::channel::InboundMessage,
     ) -> (String, String, Option<String>) {
-        let content_preview = truncate(&msg.content, 80);
+        // V5 (2026-08-23): gate first (sync classification + session
+        // acquire), then the matching tail. Reject mode's serial pump and
+        // all direct callers (heartbeat, tests, inline queue-drain fallback)
+        // still enter here — behavior identical to the pre-split monolith.
+        match self.gate_inbound(msg) {
+            GateOutcome::Continuation(task_id) => {
+                ("__continuation__".to_string(), task_id, None)
+            }
+            GateOutcome::Immediate { agent_id, response } => (agent_id, response, None),
+            GateOutcome::Ungated => self.process_ungated(msg).await,
+            GateOutcome::Admitted(admission) => self.process_admitted(msg, admission).await,
+        }
+    }
 
+    /// Turn preamble shared by every gated path (V5: extracted verbatim from
+    /// the head of the pre-split `process_inbound_message`, so gate-time
+    /// short-circuits — busy receipts, slash replies — behave exactly as
+    /// before: the monolith opened the checkpoint turn and logged BEFORE any
+    /// classification).
+    fn turn_preamble(&self, msg: &nemesis_types::channel::InboundMessage) {
         // Open a checkpoint turn for the edit safety net (so writer-tool changes
         // during this message can be rewound). No-op when no store is attached.
         let cp_turn = self
@@ -1925,41 +2051,18 @@ impl AgentLoop {
 
         info!(
             "[AgentLoop] Processing message from {}:{}: {}",
-            msg.channel, msg.sender_id, content_preview
+            msg.channel,
+            msg.sender_id,
+            truncate(&msg.content, 80)
         );
+    }
 
-        // Route system messages.
-        if msg.channel == "system" {
-            // Cluster continuation — return special marker for the bus loop to handle.
-            if msg
-                .sender_id
-                .starts_with(nemesis_types::constants::CLUSTER_CONTINUATION_PREFIX)
-            {
-                let task_id =
-                    &msg.sender_id[nemesis_types::constants::CLUSTER_CONTINUATION_PREFIX.len()..];
-                debug!(
-                    "[AgentLoop] Cluster continuation message intercepted, task_id={}",
-                    task_id
-                );
-                return ("__continuation__".to_string(), task_id.to_string(), None);
-            }
-            let (resp, err) = self.process_system_message(msg).await;
-            return (String::new(), resp, err);
-        }
-
-        // History request.
-        if let Some(request_type) = msg.metadata.get("request_type") {
-            if request_type == "history" {
-                self.handle_history_request(msg).await;
-                return (String::new(), String::new(), None);
-            }
-        }
-
-        // Slash commands.
-        if let Some(response) = self.handle_command_with_context(&msg.content, &msg.channel) {
-            return (String::new(), response, None);
-        }
-
+    /// Resolve (agent_id, session_key) for a message (V5: extracted verbatim
+    /// from the routing block of the pre-split `process_inbound_message`).
+    fn route_message(
+        &self,
+        msg: &nemesis_types::channel::InboundMessage,
+    ) -> (String, String) {
         // Resolve agent and session via route resolver.
         // Mirrors Go's processMessage: al.registry.ResolveRoute(RouteInput{...})
         let (agent_id, session_key) = if let Some(ref resolver) = self.route_resolver {
@@ -2031,6 +2134,57 @@ impl AgentLoop {
 
             (agent_id, session_key)
         };
+        (agent_id, session_key)
+    }
+
+    /// Synchronous inbound gate (V5 / B5 真机揭的接线 bug，2026-08-23):
+    /// 生产 pump（`run_bus_*`）原是纯串行消费者——`process_inbound_message`
+    /// 把整个回合 await 到底才 recv 下一条消息，busy 闸门对用户消息永远
+    /// 不可达（U7 inbox 因此在真机上从未生效，只有单测手动占住 session
+    /// 验证过）。Queue/Steer 模式下 pump 现在同步跑这个闸门（同 session
+    /// 保序：忙时的第二条消息必见 busy → 入队/回执），回合在独立 task
+    /// 里并发跑；Reject 模式维持原串行路径（行为零变化）。
+    ///
+    /// 闸门只做同步分类 + session 获取；async 处理（system/history/回合
+    /// 本体）留给 tail。slash 命令在这里同步执行并短路（原路径在 busy
+    /// 检查前同步返回；且命令可能有副作用，tail 不得重跑）。
+    fn gate_inbound(&self, msg: &nemesis_types::channel::InboundMessage) -> GateOutcome {
+        self.turn_preamble(msg);
+
+        // Route system messages.
+        if msg.channel == "system" {
+            // Cluster continuation — the pump handles via dispatch_continuation.
+            if msg
+                .sender_id
+                .starts_with(nemesis_types::constants::CLUSTER_CONTINUATION_PREFIX)
+            {
+                let task_id =
+                    &msg.sender_id[nemesis_types::constants::CLUSTER_CONTINUATION_PREFIX.len()..];
+                debug!(
+                    "[AgentLoop] Cluster continuation message intercepted, task_id={}",
+                    task_id
+                );
+                return GateOutcome::Continuation(task_id.to_string());
+            }
+            return GateOutcome::Ungated;
+        }
+
+        // History request.
+        if let Some(request_type) = msg.metadata.get("request_type") {
+            if request_type == "history" {
+                return GateOutcome::Ungated;
+            }
+        }
+
+        // Slash commands.
+        if let Some(response) = self.handle_command_with_context(&msg.content, &msg.channel) {
+            return GateOutcome::Immediate {
+                agent_id: String::new(),
+                response,
+            };
+        }
+
+        let (agent_id, session_key) = self.route_message(msg);
 
         // Session busy check — I1 (U7) mode-aware:
         //   Reject (default): legacy BUSY_MESSAGE bounce, byte-identical.
@@ -2045,7 +2199,10 @@ impl AgentLoop {
                         "[AgentLoop] Session busy, returning busy message: session_key={}, mode={:?}",
                         session_key, self.concurrent_mode
                     );
-                    return (agent_id, BUSY_MESSAGE.to_string(), None);
+                    return GateOutcome::Immediate {
+                        agent_id,
+                        response: BUSY_MESSAGE.to_string(),
+                    };
                 }
                 ConcurrentMode::Queue | ConcurrentMode::Steer => {
                     let queued = crate::inbox::QueuedMessage {
@@ -2076,43 +2233,86 @@ impl AgentLoop {
                                 "[AgentLoop] Session busy — message queued for next turn: session_key={}",
                                 session_key
                             );
-                            return (
+                            return GateOutcome::Immediate {
                                 agent_id,
-                                "⏳ 当前正在处理上一条消息。你的消息已排队，将在本轮结束后继续处理。".to_string(),
-                                None,
-                            );
+                                response: "⏳ 当前正在处理上一条消息。你的消息已排队，将在本轮结束后继续处理。".to_string(),
+                            };
                         }
                         crate::inbox::EnqueueOutcome::QueuedForNextStep => {
                             info!(
                                 "[AgentLoop] Session busy — steer message queued for in-turn injection: session_key={}",
                                 session_key
                             );
-                            return (
+                            return GateOutcome::Immediate {
                                 agent_id,
-                                "⚡ 已接收为紧急插话（消息以 ! 开头），将在 AI 的下一步思考前注入。非紧急消息请去掉 ! 前缀排队等待。".to_string(),
-                                None,
-                            );
+                                response: "⚡ 已接收为紧急插话（消息以 ! 开头），将在 AI 的下一步思考前注入。非紧急消息请去掉 ! 前缀排队等待。".to_string(),
+                            };
                         }
                         crate::inbox::EnqueueOutcome::Rejected => {
                             warn!(
                                 "[AgentLoop] Session busy and inbox full — message refused: session_key={}",
                                 session_key
                             );
-                            return (
+                            return GateOutcome::Immediate {
                                 agent_id,
-                                "⏳ 排队已满，消息未能接收。请等当前任务完成后再发。".to_string(),
-                                None,
-                            );
+                                response: "⏳ 排队已满，消息未能接收。请等当前任务完成后再发。".to_string(),
+                            };
                         }
                     }
                 }
             }
         }
 
-        // Create cancellation token for this session.
+        // Create a cancellation token for this session (V5: minted in the
+        // gate so the spawned turn tail starts with everything the
+        // pre-split monolith had at this point).
         let cancel_token = self.create_cancel_token(&session_key);
+        GateOutcome::Admitted(TurnAdmission {
+            agent_id,
+            session_key,
+            cancel_token,
+        })
+    }
 
-        // Process with the loop, then release.
+    /// Ungated tail: system (non-continuation) + history-request handling
+    /// (V5: extracted verbatim from the pre-split monolith's early returns).
+    async fn process_ungated(
+        &self,
+        msg: &nemesis_types::channel::InboundMessage,
+    ) -> (String, String, Option<String>) {
+        if msg.channel == "system" {
+            let (resp, err) = self.process_system_message(msg).await;
+            return (String::new(), resp, err);
+        }
+
+        // History request.
+        if let Some(request_type) = msg.metadata.get("request_type") {
+            if request_type == "history" {
+                self.handle_history_request(msg).await;
+                return (String::new(), String::new(), None);
+            }
+        }
+
+        // The gate classified everything else; unreachable in practice.
+        (String::new(), String::new(), None)
+    }
+
+    /// Admitted turn tail (V5): preprocess → run turn → cleanup/release →
+    /// inbox drain. The session is ALREADY acquired and the cancel token
+    /// minted by `gate_inbound`; this fn owns release + reinject (the drain
+    /// block runs unconditionally after the turn so an admitted session can
+    /// never leak busy).
+    async fn process_admitted(
+        &self,
+        msg: &nemesis_types::channel::InboundMessage,
+        admission: TurnAdmission,
+    ) -> (String, String, Option<String>) {
+        let TurnAdmission {
+            agent_id,
+            session_key,
+            cancel_token,
+        } = admission;
+
         let voice_playback = msg.voice_playback.unwrap_or(false);
         // @file expansion: inline referenced file contents before sending to LLM.
         let processed_content = crate::message_preprocess::expand_at_files(
@@ -2492,13 +2692,16 @@ impl AgentLoop {
             return true;
         }
 
-        // Session is busy — reject. Queue mode is now treated as reject: the
-        // old Queue path incremented queue_length WITHOUT storing the message,
-        // and release_session kept busy while queue_length>0 → the session
-        // could deadlock (no turn ever acquires to drain the counter). Under
-        // run_bus_arc's sequential processing there's no real concurrent
-        // queueing need, so both modes reject. (queue_length stays 0, so
-        // release_session naturally sets busy=false.)
+        // Session is busy — reject HERE. Queueing is NOT done at this layer:
+        // the old Queue path incremented queue_length WITHOUT storing the
+        // message, and release_session kept busy while queue_length>0 → the
+        // session could deadlock (no turn ever acquires to drain the
+        // counter). Busy-queueing lives in `crate::inbox` (FIFO per session),
+        // driven by `gate_inbound`'s busy branch — reachable since V5's
+        // gate-in-pump restructure (the gate runs before the turn task is
+        // spawned, so a busy session is detected while its turn is still
+        // running). (queue_length stays 0, so release_session naturally sets
+        // busy=false.)
         let _ = self.concurrent_mode;
         false
     }
@@ -2635,8 +2838,11 @@ impl AgentLoop {
 
         // Token pressure is on the tail (system + summary + history[C..] is
         // what build_messages emits). The covered prefix is already folded into
-        // the summary, so it does not count toward pressure.
-        let tail_tokens = estimate_tokens_for_turns(&history[c..]);
+        // the summary, so it does not count toward pressure. X1: measured over
+        // the MODEL-FACING projection — history keeps tool originals since the
+        // size gates moved to build_messages, so the raw estimate would count
+        // a 70KB original the provider only ever sees as a bounded locator.
+        let tail_tokens = estimate_tokens_for_turns_projected(&history[c..]);
         let tail_len = history.len().saturating_sub(c);
         let soft = context_window * COMPACT_SOFT_RATIO / 100;
         let threshold = context_window * COMPACT_SUMMARIZE_RATIO / 100;
@@ -3554,7 +3760,10 @@ impl AgentLoop {
             // Sort by name so the order is stable across runs — a deterministic
             // tool order gives reproducible behaviour and avoids unnecessary prompt
             // variation between requests.
-            let tool_defs: Vec<crate::types::ToolDefinition> = self.build_tool_defs();
+            // Y1 (Phase4-a): fold AFTER the tier filter — description text only,
+            // byte-identical passthrough whenever folding is off/degrades.
+            let tool_defs: Vec<crate::types::ToolDefinition> =
+                self.apply_tool_doc_folding(self.build_tool_defs(), instance);
             debug!(
                 "[AgentLoop] Sending {} tool definitions to LLM",
                 tool_defs.len()
@@ -3965,7 +4174,13 @@ impl AgentLoop {
                                     tool_call_id: None,
                                     reasoning_content: None,
                                 });
-                                let r_tools = self.build_tool_defs();
+                                // Y1 (Phase4-a): fold the retry call's defs with
+                                // the same gates/rendering as the main call —
+                                // same query ⇒ same fold bytes.
+                                let r_tools = self.apply_tool_doc_folding(
+                                    self.build_tool_defs(),
+                                    instance,
+                                );
                                 self.emit_observer_sync(
                                     crate::loop_executor::ObserverEvent::LlmRequest {
                                         trace_id: trace_id.to_string(),
@@ -4560,6 +4775,14 @@ impl AgentLoop {
                 // keeps re-sending the same (typo'd) args, that IS the repeat
                 // we want to catch, regardless of the per-call auto-fix.
                 // Detection stays consistent; the signature is the pre-fix form.
+                // X1 (U3 projection prune): the pure tool output, kept for
+                // history. The ⑤/⑤′/⑥ guard nudges below decorate only the
+                // MODEL-facing text; `guard_nudged` marks that a decoration
+                // fired (the decorated form cannot be recomputed from the
+                // original later, so it must be recorded as the projection
+                // override — see the gate block below).
+                let original_result = result.clone();
+                let mut guard_nudged = false;
                 let result = if tool_succeeded {
                     match turn_guard.record_write_success(&tc.name, &tc.arguments) {
                         Some(nudge) => {
@@ -4567,6 +4790,7 @@ impl AgentLoop {
                                 "[AgentLoop] loop guard: '{}' repeated an identical write; nudging",
                                 tc.name
                             );
+                            guard_nudged = true;
                             format!("{}\n{}", result, nudge)
                         }
                         None => result,
@@ -4587,6 +4811,7 @@ impl AgentLoop {
                                 "[AgentLoop] loop guard: '{}' repeated an identical read; nudging",
                                 tc.name
                             );
+                            guard_nudged = true;
                             format!("{}\n{}", result, nudge)
                         }
                         None => result,
@@ -4595,8 +4820,13 @@ impl AgentLoop {
                     result
                 };
 
-                // G3 (U3) + G4 (U4): model-free size gates, applied before the
-                // result enters history. Two tiers compose:
+                // G3 (U3) + G4 (U4) + X1 (U3 projection prune): model-free
+                // size gates, computed here but applied at the PROJECTION
+                // (build_messages), not at history-write time. History keeps
+                // `original_result` (the mid-section stays recoverable for
+                // history replay / session branching); `gate_text` is the
+                // bounded model-facing form the OLD code stored in history —
+                // byte-identical to pre-X1 behavior:
                 //   >= SPILL_THRESHOLD_CHARS  → spill whole text to disk, keep
                 //                               preview + locator (readable back
                 //                               via read_file offset/limit).
@@ -4605,7 +4835,8 @@ impl AgentLoop {
                 // Spill is best-effort: a storage failure falls through to the
                 // prune tier (a spill failure must never lose a successful
                 // tool call's content outright).
-                let result = {
+                let mut spill_applied = false;
+                let gate_text: String = {
                     let spill_root = self.spill_root.read().clone();
                     let spilled = spill_root.as_ref().and_then(|root| {
                         let stamp = chrono::Local::now().format("%Y%m%d_%H%M%S%3f").to_string();
@@ -4635,6 +4866,7 @@ impl AgentLoop {
                                 tc.name,
                                 crate::spill::SPILL_THRESHOLD_CHARS
                             );
+                            spill_applied = true;
                             text
                         }
                         None => match crate::prune::prune_tool_result(&result, &tc.name) {
@@ -4655,19 +4887,35 @@ impl AgentLoop {
                 // frequency, NOT reset by intervening successes (also handles ④
                 // storm — consecutive identical — internally). On a repeated
                 // failure, append a nudge so the model sees it in the error.
+                // Signature input is the post-gate text — same as pre-X1.
                 let error_for_guard: Option<&str> =
-                    if tool_succeeded { None } else { Some(&result) };
-                let fed_result = match turn_guard.record_tool_outcome(&tc.name, error_for_guard) {
-                    Some(nudge) => {
+                    if tool_succeeded { None } else { Some(&gate_text) };
+                let nudge6 = turn_guard
+                    .record_tool_outcome(&tc.name, error_for_guard)
+                    .map(|nudge| {
                         info!(
                             "[AgentLoop] loop guard: '{}' repeating the same failure within this turn; nudging",
                             tc.name
                         );
-                        format!("{}\n{}", result, nudge)
-                    }
-                    None => result,
-                };
-                instance.add_tool_result(&tc.id, &fed_result);
+                        nudge
+                    });
+
+                // X1: the recorded projection override — only when the final
+                // model-facing text cannot be recomputed from the original
+                // later: the spill tier (locator path embeds a wall-clock
+                // stamp) or any guard-nudge decoration (⑤/⑤′/⑥ — dynamic
+                // per-turn state). Otherwise None and build_messages
+                // recomputes the pure prune (deterministic, ledger-free).
+                let projection: Option<String> =
+                    if spill_applied || guard_nudged || nudge6.is_some() {
+                        Some(match &nudge6 {
+                            Some(nudge) => format!("{}\n{}", gate_text, nudge),
+                            None => gate_text.clone(),
+                        })
+                    } else {
+                        None
+                    };
+                instance.add_tool_result_projected(&tc.id, &original_result, &tc.name, projection);
 
                 // H5 (U18): touch-driven instruction-chain invalidation. A
                 // successful read_file/write_file/edit_file may have touched
@@ -4899,6 +5147,138 @@ impl AgentLoop {
                 },
             })
             .collect()
+    }
+
+    /// Y1 (Phase4-a): read `agents.tool_doc_folding` from config.json FRESH
+    /// each call (same pattern as [`current_summarizer_prefix_reuse`] — the
+    /// dashboard/CLI can flip it while the gateway runs). Absent section,
+    /// unreadable file, or a standalone loop (no config_path) →
+    /// `(false, default)` — folding off, tool defs byte-identical.
+    pub(crate) fn current_tool_doc_folding(&self) -> (bool, usize) {
+        const OFF: (bool, usize) = (false, crate::tool_doc_folding::DEFAULT_EXPAND_TOP_N);
+        let path = match self.config_path.read().clone() {
+            Some(p) => p,
+            None => return OFF,
+        };
+        let v = std::fs::read_to_string(&path)
+            .ok()
+            .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok());
+        let Some(v) = v else {
+            return OFF;
+        };
+        let sec = v.get("agents").and_then(|a| a.get("tool_doc_folding"));
+        let enabled = sec
+            .and_then(|s| s.get("enabled"))
+            .and_then(|b| b.as_bool())
+            .unwrap_or(false);
+        let top_n = sec
+            .and_then(|s| s.get("expand_top_n"))
+            .and_then(|n| n.as_u64())
+            .map(|n| n as usize)
+            .unwrap_or(crate::tool_doc_folding::DEFAULT_EXPAND_TOP_N);
+        (enabled, top_n)
+    }
+
+    /// Y1 (Phase4-a): semantic tool-documentation folding, applied AFTER the
+    /// tier filter and ORTHOGONAL to tool supply — folded tools stay
+    /// callable with their full parameter schema; only the description text
+    /// shrinks. Returns the defs byte-unchanged unless EVERY gate opens:
+    /// config enabled, tier != Mini (the 13-tool core set has nothing to
+    /// save), a wired memory manager (P3.1 embed backend), a non-empty
+    /// latest user message, and successful embeddings for the query and
+    /// every tool description (all-or-nothing — a tool that cannot be ranked
+    /// must not be folded). Deterministic for a given (descriptions, query,
+    /// embed backend) triple, so the two call sites (main call + hook retry
+    /// re-call) and any rebuild that re-derives defs render the same bytes.
+    fn apply_tool_doc_folding(
+        &self,
+        defs: Vec<crate::types::ToolDefinition>,
+        instance: &AgentInstance,
+    ) -> Vec<crate::types::ToolDefinition> {
+        #[cfg(feature = "memory")]
+        let (enabled, top_n) = self.current_tool_doc_folding();
+        #[cfg(not(feature = "memory"))]
+        let (enabled, _) = self.current_tool_doc_folding();
+        if !enabled {
+            return defs;
+        }
+        if *self.tier.read() == nemesis_types::capability::ModelTier::Mini {
+            return defs;
+        }
+        #[cfg(feature = "memory")]
+        {
+            // Latest USER message is the ranking signal (same choice as
+            // `prefetch_memory_context`).
+            let query = instance
+                .get_history()
+                .iter()
+                .rev()
+                .find(|t| t.role == "user")
+                .map(|t| t.content.clone())
+                .unwrap_or_default();
+            if query.trim().is_empty() {
+                return defs;
+            }
+            let manager = match self.memory_inject_manager.read().clone() {
+                Some(m) => m,
+                None => {
+                    debug!(
+                        "[AgentLoop] tool_doc_folding enabled but no memory manager (embed \
+                         backend) wired — leaving docs unfolded"
+                    );
+                    return defs;
+                }
+            };
+            let query_vec = match manager.embed_text(&query) {
+                Some(v) => v,
+                None => {
+                    debug!(
+                        "[AgentLoop] tool_doc_folding: query embedding failed — leaving docs \
+                         unfolded"
+                    );
+                    return defs;
+                }
+            };
+            let mut sims: std::collections::HashMap<String, f32> =
+                std::collections::HashMap::with_capacity(defs.len());
+            {
+                // Cache guard held only for the embed-and-rank pass (the fold
+                // render itself touches no shared state).
+                let mut cache = self.tool_vec_cache.write();
+                for d in &defs {
+                    let cached = cache.get(&d.function.name);
+                    let vec = match cached {
+                        Some((desc, v)) if desc == &d.function.description => v.clone(),
+                        _ => match manager.embed_text(&d.function.description) {
+                            Some(v) => {
+                                cache.insert(
+                                    d.function.name.clone(),
+                                    (d.function.description.clone(), v.clone()),
+                                );
+                                v
+                            }
+                            None => {
+                                debug!(
+                                    "[AgentLoop] tool_doc_folding: embedding failed for tool \
+                                     {} — leaving docs unfolded",
+                                    d.function.name
+                                );
+                                return defs;
+                            }
+                        },
+                    };
+                    let sim = crate::tool_doc_folding::cosine(&query_vec, &vec);
+                    sims.insert(d.function.name.clone(), sim);
+                }
+            }
+            crate::tool_doc_folding::fold_tool_defs(defs, &sims, top_n)
+        }
+        #[cfg(not(feature = "memory"))]
+        {
+            // No embed backend compiled in — folding cannot rank; passthrough.
+            let _ = instance;
+            defs
+        }
     }
 
     /// Wait until the e-stop watch flips to engaged, or forever if no
@@ -5211,6 +5591,14 @@ impl AgentLoop {
     pub fn set_snapshot_role(&self, role: &str) {
         let r = if role.eq_ignore_ascii_case("system") { "system" } else { "user" };
         *self.snapshot_role.write() = r.to_string();
+    }
+
+    /// X2 (U8 refinement): tell the loop whether interactive approval
+    /// (desktop popup) is wired. Called by the gateway after it attaches
+    /// the approval adapter; renders into the `# Runtime Policy` snapshot
+    /// section. Default `false` (standalone / non-desktop builds).
+    pub fn set_interactive_approval(&self, enabled: bool) {
+        *self.interactive_approval.write() = enabled;
     }
 
     /// H5 (U18): touch-driven digest invalidation. Called by the dispatch
@@ -5595,6 +5983,41 @@ impl AgentLoop {
                     ));
                 }
             }
+            // X2 (U8 refinement): runtime policy facts as the LAST section.
+            // All three inputs are plain state rendered without clocks —
+            // deterministic (same state ⇒ identical bytes, so the merged
+            // message stays byte-stable between turns and the historical
+            // prefix before it is untouched either way):
+            //   approval — live wiring flag (gateway sets after attaching
+            //     the desktop popup adapter);
+            //   guardian — live judge presence on the security plugin
+            //     (feature-off builds render "off");
+            //   model_tier — the live capability tier (auto re-resolves on
+            //     config reload; the snapshot picks the new value up at the
+            //     next build).
+            #[cfg(feature = "security")]
+            let guardian_on = self
+                .security_plugin
+                .as_ref()
+                .is_some_and(|p| p.judge().is_some());
+            #[cfg(not(feature = "security"))]
+            let guardian_on = false;
+            let approval_on = *self.interactive_approval.read();
+            let tier_now = *self.tier.read();
+            sections.push(format!(
+                "# Runtime Policy\napproval: {}\nguardian: {}\nmodel_tier: {}\n(当前审批/守护/模型档位运行时策略快照；策略变更后下一次构建生效。)",
+                if approval_on {
+                    "interactive（ask 规则触发弹窗审批）"
+                } else {
+                    "off（无交互审批，ask 规则按默认策略处理）"
+                },
+                if guardian_on {
+                    "on（CRITICAL 操作语义二审）"
+                } else {
+                    "off"
+                },
+                tier_now,
+            ));
             if sections.is_empty() {
                 None
             } else {

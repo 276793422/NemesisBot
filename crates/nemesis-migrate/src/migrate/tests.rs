@@ -783,6 +783,10 @@ fn test_dirs_home_fallback() {
 
 #[test]
 fn test_resolve_openclaw_home_default() {
+    // Reads process-global env (OPENCLAW_HOME/Home) — must hold the shared
+    // lock or a sibling writer test (set_var OPENCLAW_HOME under the lock)
+    // can flip the resolution mid-run (env-test-race-lock-pattern).
+    let _guard = GLOBAL_STATE_LOCK.lock().unwrap();
     // No override, should resolve via dirs_home
     let result = resolve_openclaw_home("");
     assert!(result.is_ok());
@@ -792,6 +796,8 @@ fn test_resolve_openclaw_home_default() {
 
 #[test]
 fn test_resolve_nemesisbot_home_default() {
+    // Same env-race discipline as test_resolve_openclaw_home_default above.
+    let _guard = GLOBAL_STATE_LOCK.lock().unwrap();
     // No override, should resolve via dirs_home
     let result = resolve_nemesisbot_home("");
     assert!(result.is_ok());

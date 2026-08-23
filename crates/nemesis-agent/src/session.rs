@@ -209,7 +209,9 @@ pub struct StoredSession {
 }
 
 /// A single message in stored session history.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// `PartialEq`/`Eq` derive: pure-data struct, added for Z1 fork tests
+/// (prefix == source-prefix assertions); no behavioral change.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StoredMessage {
     pub role: String,
     pub content: String,
@@ -219,10 +221,20 @@ pub struct StoredMessage {
     pub timestamp: String,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub reasoning_content: Option<String>,
+    /// X1 (U3 projection prune): tool name for role="tool" turns (feeds the
+    /// deterministic prune-marker recompute). See `ConversationTurn::tool_name`.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub tool_name: Option<String>,
+    /// X1 (U3 projection prune): recorded model-facing override for oversized
+    /// tool results (spill locator / guard nudges). Must round-trip the store
+    /// or a reload would silently change what the model sees. See
+    /// `ConversationTurn::tool_result_projection`.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub tool_result_projection: Option<String>,
 }
 
 /// Stored tool call info.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StoredToolCall {
     pub id: String,
     pub name: String,
@@ -248,6 +260,8 @@ impl From<&ConversationTurn> for StoredMessage {
             // Do NOT persist reasoning_content — Go's session does not store it,
             // and including it bloats session files with internal model thinking.
             reasoning_content: None,
+            tool_name: turn.tool_name.clone(),
+            tool_result_projection: turn.tool_result_projection.clone(),
         }
     }
 }
@@ -269,6 +283,8 @@ impl From<StoredMessage> for ConversationTurn {
             tool_call_id: msg.tool_call_id,
             timestamp: msg.timestamp,
             reasoning_content: msg.reasoning_content,
+            tool_name: msg.tool_name,
+            tool_result_projection: msg.tool_result_projection,
         }
     }
 }
@@ -317,6 +333,29 @@ impl SessionStore {
             return session.clone();
         }
         drop(sessions);
+
+        // Z1 (Phase4-d): disk fallback on an in-memory miss. A session file
+        // can legitimately appear AFTER this store was constructed — the
+        // canonical case is `nemesisbot session fork`, which a CLI process
+        // writes while the gateway keeps running. Without this fallback the
+        // running gateway would materialize an EMPTY session for the forked
+        // key and later `save()` would overwrite the fork file with that
+        // near-empty history (the fork silently lost). Construction-time
+        // `load_from_disk` still covers the restart path; this covers the
+        // live path. Corrupt/absent file → same empty-session behavior as
+        // before.
+        if let Some(dir) = &self.storage_dir {
+            let path = dir.join(format!("{}.json", sanitize_filename(key)));
+            if let Ok(data) = std::fs::read_to_string(&path) {
+                if let Ok(session) = serde_json::from_str::<StoredSession>(&data) {
+                    self.sessions
+                        .write()
+                        .unwrap()
+                        .insert(key.to_string(), session.clone());
+                    return session;
+                }
+            }
+        }
 
         let session = StoredSession {
             key: key.to_string(),
@@ -401,6 +440,8 @@ impl SessionStore {
                 tool_call_id: None,
                 timestamp: chrono::Local::now().to_rfc3339(),
                 reasoning_content: None,
+                tool_name: None,
+                tool_result_projection: None,
             });
             Self::trim_to_limit(session);
             session.updated = Local::now();
@@ -643,6 +684,17 @@ fn hash_messages(messages: &[StoredMessage]) -> String {
         self.sessions.read().unwrap().contains_key(key)
     }
 
+    /// Whether a session FILE for `key` exists on disk, regardless of the
+    /// in-memory cache. Z1 (Phase4-d): fork key-uniqueness checks both this
+    /// and `contains`, so a store constructed before a file appeared (the
+    /// running gateway) still refuses to collide with it.
+    pub fn file_exists(&self, key: &str) -> bool {
+        match &self.storage_dir {
+            Some(dir) => dir.join(format!("{}.json", sanitize_filename(key))).exists(),
+            None => false,
+        }
+    }
+
     /// Remove a session from memory (does not delete from disk).
     pub fn remove(&self, key: &str) -> Option<StoredSession> {
         self.sessions.write().unwrap().remove(key)
@@ -858,6 +910,18 @@ pub fn estimate_tokens(text: &str) -> usize {
 /// Estimate the total token count for a list of conversation turns.
 pub fn estimate_tokens_for_turns(turns: &[ConversationTurn]) -> usize {
     turns.iter().map(|t| estimate_tokens(&t.content)).sum()
+}
+
+/// X1 (U3 projection prune): estimate over the MODEL-FACING projection.
+/// Compaction pressure must track what the provider actually receives —
+/// since the size gates moved to the projection, history keeps full
+/// originals and the raw estimate would over-trigger summarization for a
+/// 70KB tool result the model only ever sees as a 2KB spill locator.
+pub fn estimate_tokens_for_turns_projected(turns: &[ConversationTurn]) -> usize {
+    turns
+        .iter()
+        .map(|t| estimate_tokens(&t.model_facing_content()))
+        .sum()
 }
 
 /// Estimate tokens for stored messages.
@@ -1360,6 +1424,8 @@ pub fn force_compress_turns(history: &[ConversationTurn]) -> Vec<ConversationTur
         tool_call_id: None,
         timestamp: chrono::Local::now().to_rfc3339(),
         reasoning_content: None,
+        tool_name: None,
+        tool_result_projection: None,
     });
 
     // Kept conversation.

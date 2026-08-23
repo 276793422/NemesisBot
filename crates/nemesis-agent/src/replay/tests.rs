@@ -35,6 +35,8 @@ fn turn(role: &str, content: &str) -> ConversationTurn {
         tool_call_id: None,
         timestamp: chrono::Local::now().to_rfc3339(),
         reasoning_content: None,
+        tool_name: None,
+        tool_result_projection: None,
     }
 }
 
@@ -544,6 +546,166 @@ async fn test_full_turn_replay_byte_exact() {
                 assert!(
                     verify_request_replay(&rebuilt, recorded_round).is_ok(),
                     "round {} replay must be byte-exact against the provider's view",
+                    round
+                );
+            }
+            other => panic!("round {} expected Rebuilt, got {:?}", round, other),
+        }
+    }
+
+    cleanup_sidecars(&key);
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// Acceptance (goal X1 / U3): a full turn whose tool result is OVERSIZED
+/// (above the 8192-char inline budget, below the spill threshold). Three
+/// properties must hold end-to-end:
+///   1. HISTORY keeps the ORIGINAL bytes (recoverable mid-section);
+///   2. the PROVIDER saw the bounded pruned form (never the original);
+///   3. per-round replay rebuild — which RECOMPUTES the fold through
+///      `project_history_for_request` with no injection-ledger entry for it
+///      — is byte-exact against what the provider received.
+#[tokio::test]
+async fn test_x1_pruned_tool_result_replay_byte_exact() {
+    let key = unique_key("x1_pruned");
+    // 13,200 chars: > 8192 (inline budget, must fold) but < 65,536 (spill
+    // threshold, must NOT spill — the recompute path, not a locator override).
+    let original: String = {
+        let head: String = "A".repeat(3_600);
+        let mid: String = "B".repeat(6_000);
+        let tail: String = "C".repeat(3_600);
+        format!("{head}{mid}{tail}")
+    };
+    assert_eq!(original.chars().count(), 13_200);
+
+    struct BigOutputTool {
+        output: String,
+    }
+
+    #[async_trait]
+    impl LoopTool for BigOutputTool {
+        async fn execute(&self, _args: &str, _context: &RequestContext) -> Result<String, String> {
+            Ok(self.output.clone())
+        }
+    }
+
+    let capturing = Arc::new(CapturingProvider {
+        responses: Mutex::new(vec![
+            LlmResponse {
+                content: String::new(),
+                tool_calls: vec![ToolCallInfo {
+                    id: "tc_big".to_string(),
+                    name: "big_output".to_string(),
+                    arguments: "{}".to_string(),
+                }],
+                finished: false,
+                reasoning_content: None,
+                usage: None,
+                raw_request_body: None,
+                raw_response_body: None,
+            },
+            LlmResponse {
+                content: "Done with the big output.".to_string(),
+                tool_calls: Vec::new(),
+                finished: true,
+                reasoning_content: None,
+                usage: None,
+                raw_request_body: None,
+                raw_response_body: None,
+            },
+        ]),
+        captured: Mutex::new(Vec::new()),
+    });
+
+    let dir = std::env::temp_dir().join(format!("x1_replay_{}_{}", key, std::process::id()));
+    let _ = std::fs::create_dir_all(&dir);
+    let store = Arc::new(SessionStore::new_with_storage(&dir));
+    store.get_or_create(&key);
+    let mut agent_loop = AgentLoop::new(
+        Box::new(ForwardingProvider {
+            inner: capturing.clone(),
+        }),
+        test_config(),
+    );
+    agent_loop.register_tool("big_output".to_string(), Box::new(BigOutputTool { output: original.clone() }));
+    agent_loop.set_session_store(store.clone());
+
+    let instance = AgentInstance::new(test_config());
+    let context = RequestContext::new("web", "chat1", "user1", &key);
+
+    let events = agent_loop
+        .run(&instance, "run the big thing", &context)
+        .await;
+    assert!(
+        events.iter().any(|e| matches!(e, AgentEvent::Done(_))),
+        "turn must finish"
+    );
+
+    // (1) History keeps the ORIGINAL — byte-for-byte, mid-section intact.
+    let history = instance.get_history();
+    let tool_turn = history
+        .iter()
+        .find(|t| t.role == "tool")
+        .expect("tool turn in history");
+    assert_eq!(tool_turn.content, original, "history must keep the original");
+    assert_eq!(tool_turn.tool_name.as_deref(), Some("big_output"));
+    assert!(
+        tool_turn.tool_result_projection.is_none(),
+        "below spill threshold with no guard nudge: no override recorded"
+    );
+
+    // (2) The provider's round-2 request saw the bounded pruned form.
+    let captured = capturing.captured.lock().unwrap().clone();
+    assert_eq!(captured.len(), 2);
+    let round2_tool: Vec<&serde_json::Value> = captured[1]
+        .iter()
+        .filter(|m| m.get("role").and_then(|r| r.as_str()) == Some("tool"))
+        .collect();
+    assert_eq!(round2_tool.len(), 1);
+    let seen = round2_tool[0]
+        .get("content")
+        .and_then(|c| c.as_str())
+        .expect("tool content in round-2 request");
+    assert!(
+        seen.chars().count() < original.chars().count(),
+        "provider must see the bounded form, got {} chars",
+        seen.chars().count()
+    );
+    assert!(seen.contains("big_output"), "marker names the tool");
+    assert!(!seen.contains(&"B".repeat(100)), "mid-section elided");
+
+    // Persist (store round-trip must preserve the original + fields).
+    store.get_or_create(&key);
+    store.set_summary(&key, "");
+    store.set_summary_covers_up_to(&key, None);
+    store.set_history(
+        &key,
+        history
+            .iter()
+            .map(crate::session::StoredMessage::from)
+            .collect(),
+    );
+    let reloaded: Vec<ConversationTurn> = store
+        .get_history(&key)
+        .into_iter()
+        .map(|m| m.into())
+        .collect();
+    let reloaded_tool = reloaded
+        .iter()
+        .find(|t| t.role == "tool")
+        .expect("tool turn after reload");
+    assert_eq!(reloaded_tool.content, original, "store round-trip keeps original");
+    assert_eq!(reloaded_tool.tool_name.as_deref(), Some("big_output"));
+
+    // (3) Byte-exact replay for BOTH rounds: the rebuild recomputes the fold
+    // (deterministic projection, no ledger entry for the prune itself).
+    for (i, recorded_round) in captured.iter().enumerate() {
+        let round = i + 1;
+        match rebuild_request_messages(&store, &key, round).expect("rebuild ok") {
+            RebuildOutcome::Rebuilt(rebuilt) => {
+                assert!(
+                    verify_request_replay(&rebuilt, recorded_round).is_ok(),
+                    "round {} replay must be byte-exact (recomputed fold)",
                     round
                 );
             }

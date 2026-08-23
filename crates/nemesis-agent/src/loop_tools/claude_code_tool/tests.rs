@@ -37,25 +37,35 @@ fn test_claude_code_permission_mode_not_in_schema() {
     );
 }
 
-/// T5: tier normalization — None → default accept_edits; explicit values
-/// pass through; unknown → default.
+/// T5: tier normalization — None → default acceptEdits; explicit camelCase
+/// values pass through; legacy snake_case maps over; unknown → default.
+/// （值集与 claude CLI 2.1.240 `--help` 实测对齐——V4 真机修正。）
 #[test]
 fn test_claude_code_permission_mode_normalization() {
     assert_eq!(
         ClaudeCodeTool::new("C:/fake".into(), None, None).permission_mode(),
-        "accept_edits"
+        "acceptEdits"
     );
     assert_eq!(
         ClaudeCodeTool::new("C:/fake".into(), None, Some("plan")).permission_mode(),
         "plan"
     );
     assert_eq!(
+        ClaudeCodeTool::new("C:/fake".into(), None, Some("bypassPermissions")).permission_mode(),
+        "bypassPermissions"
+    );
+    // Legacy snake_case（T5 时代的错误值集）→ camelCase 映射。
+    assert_eq!(
+        ClaudeCodeTool::new("C:/fake".into(), None, Some("accept_edits")).permission_mode(),
+        "acceptEdits"
+    );
+    assert_eq!(
         ClaudeCodeTool::new("C:/fake".into(), None, Some("bypass_permissions")).permission_mode(),
-        "bypass_permissions"
+        "bypassPermissions"
     );
     assert_eq!(
         ClaudeCodeTool::new("C:/fake".into(), None, Some("nope")).permission_mode(),
-        "accept_edits"
+        "acceptEdits"
     );
 }
 
@@ -105,7 +115,8 @@ async fn test_claude_code_tool_timeout_returns_error() {
 }
 
 /// T5: the spawned CLI actually receives `--permission-mode <tier>` —
-/// default accept_edits, and an explicitly configured tier.
+/// default acceptEdits, and an explicitly configured tier. Values are the
+/// CLI's own camelCase set (V4 真机对齐：snake_case 会被真实 CLI 拒收)。
 #[tokio::test]
 async fn test_claude_code_permission_mode_flag_passed_to_cli() {
     let dir = tempfile::tempdir().unwrap();
@@ -117,7 +128,7 @@ async fn test_claude_code_permission_mode_flag_passed_to_cli() {
     assert!(out.is_ok(), "{:?}", out);
     let got = fake.received_args();
     assert!(got.contains("--permission-mode"), "flag present: {got}");
-    assert!(got.contains("accept_edits"), "default tier: {got}");
+    assert!(got.contains("acceptEdits"), "default tier: {got}");
     assert!(got.contains("--print"), "print mode: {got}");
     assert!(got.contains("hello task"), "prompt forwarded: {got}");
 

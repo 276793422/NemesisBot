@@ -285,6 +285,8 @@ fn test_conversation_turn_user() {
         tool_call_id: None,
         timestamp: "2026-01-01T00:00:00Z".to_string(),
         reasoning_content: None,
+        tool_name: None,
+        tool_result_projection: None,
     };
     let json = serde_json::to_string(&turn).unwrap();
     let back: ConversationTurn = serde_json::from_str(&json).unwrap();
@@ -311,6 +313,8 @@ fn test_conversation_turn_assistant_with_tools() {
         tool_call_id: None,
         timestamp: "2026-01-01T00:00:01Z".to_string(),
         reasoning_content: None,
+        tool_name: None,
+        tool_result_projection: None,
     };
     assert_eq!(turn.tool_calls.len(), 2);
     let json = serde_json::to_string(&turn).unwrap();
@@ -329,6 +333,8 @@ fn test_conversation_turn_tool_response() {
         tool_call_id: Some("tc-1".to_string()),
         timestamp: "2026-01-01T00:00:02Z".to_string(),
         reasoning_content: None,
+        tool_name: None,
+        tool_result_projection: None,
     };
     assert_eq!(turn.tool_call_id, Some("tc-1".to_string()));
     let json = serde_json::to_string(&turn).unwrap();
@@ -483,6 +489,8 @@ fn test_agent_instance_set_history() {
         tool_call_id: None,
         timestamp: "2026-01-01T00:00:00Z".to_string(),
         reasoning_content: None,
+        tool_name: None,
+        tool_result_projection: None,
     }];
     instance.set_history(history);
     assert_eq!(instance.message_count(), 1);
@@ -824,6 +832,8 @@ fn test_context_builder_build_messages_with_history() {
             tool_call_id: None,
             timestamp: String::new(),
             reasoning_content: None,
+            tool_name: None,
+            tool_result_projection: None,
         },
         ConversationTurn {
             role: "assistant".to_string(),
@@ -832,6 +842,8 @@ fn test_context_builder_build_messages_with_history() {
             tool_call_id: None,
             timestamp: String::new(),
             reasoning_content: None,
+            tool_name: None,
+            tool_result_projection: None,
         },
     ];
     let messages = builder.build_messages(&history, "", "How are you?", "web", "c1", false);
@@ -869,6 +881,8 @@ fn test_context_builder_build_messages_skip_orphaned_tools() {
             tool_call_id: Some("tc-1".to_string()),
             timestamp: String::new(),
             reasoning_content: None,
+            tool_name: None,
+            tool_result_projection: None,
         },
         ConversationTurn {
             role: "user".to_string(),
@@ -877,6 +891,8 @@ fn test_context_builder_build_messages_skip_orphaned_tools() {
             tool_call_id: None,
             timestamp: String::new(),
             reasoning_content: None,
+            tool_name: None,
+            tool_result_projection: None,
         },
     ];
     let messages = builder.build_messages(&history, "", "Hi", "web", "c1", false);
@@ -1044,6 +1060,8 @@ fn test_session_store_history() {
         tool_call_id: None,
         timestamp: String::new(),
         reasoning_content: None,
+        tool_name: None,
+        tool_result_projection: None,
     }];
     store.set_history("key1", msgs);
     let history = store.get_history("key1");
@@ -1072,6 +1090,8 @@ fn test_session_store_truncate() {
             tool_call_id: None,
             timestamp: String::new(),
             reasoning_content: None,
+            tool_name: None,
+            tool_result_projection: None,
         })
         .collect();
     store.set_history("key1", msgs);
@@ -1166,6 +1186,8 @@ fn test_stored_message_from_turn() {
         tool_call_id: None,
         timestamp: "2026-01-01T00:00:00Z".to_string(),
         reasoning_content: None,
+        tool_name: None,
+        tool_result_projection: None,
     };
     let stored: StoredMessage = (&turn).into();
     assert_eq!(stored.role, "assistant");
@@ -1182,6 +1204,8 @@ fn test_turn_from_stored_message() {
         tool_call_id: Some("tc-1".to_string()),
         timestamp: String::new(),
         reasoning_content: None,
+        tool_name: None,
+        tool_result_projection: None,
     };
     let turn: ConversationTurn = stored.into();
     assert_eq!(turn.role, "tool");
@@ -1221,6 +1245,8 @@ fn test_estimate_tokens_for_turns() {
             tool_call_id: None,
             timestamp: String::new(),
             reasoning_content: None,
+            tool_name: None,
+            tool_result_projection: None,
         },
         ConversationTurn {
             role: "assistant".to_string(),
@@ -1229,6 +1255,8 @@ fn test_estimate_tokens_for_turns() {
             tool_call_id: None,
             timestamp: String::new(),
             reasoning_content: None,
+            tool_name: None,
+            tool_result_projection: None,
         },
     ];
     assert_eq!(estimate_tokens_for_turns(&turns), 4);
@@ -1248,6 +1276,8 @@ fn test_force_compress_short() {
             tool_call_id: None,
             timestamp: String::new(),
             reasoning_content: None,
+            tool_name: None,
+            tool_result_projection: None,
         })
         .collect();
 
@@ -1265,6 +1295,8 @@ fn test_force_compress_long() {
             tool_call_id: None,
             timestamp: String::new(),
             reasoning_content: None,
+            tool_name: None,
+            tool_result_projection: None,
         })
         .collect();
 
@@ -1286,6 +1318,8 @@ fn test_force_compress_exact_boundary() {
             tool_call_id: None,
             timestamp: String::new(),
             reasoning_content: None,
+            tool_name: None,
+            tool_result_projection: None,
         })
         .collect();
 
@@ -1374,6 +1408,8 @@ fn test_conversation_memory_add() {
         tool_call_id: None,
         timestamp: String::new(),
         reasoning_content: None,
+        tool_name: None,
+        tool_result_projection: None,
     });
     assert_eq!(mem.len(), 1);
     assert!(!mem.is_empty());
@@ -1390,6 +1426,8 @@ fn test_conversation_memory_get_context() {
         tool_call_id: None,
         timestamp: String::new(),
         reasoning_content: None,
+        tool_name: None,
+        tool_result_projection: None,
     });
     let ctx = mem.get_context();
     assert_eq!(ctx.len(), 1);
@@ -1407,6 +1445,8 @@ fn test_conversation_memory_estimated_tokens() {
         tool_call_id: None,
         timestamp: String::new(),
         reasoning_content: None,
+        tool_name: None,
+        tool_result_projection: None,
     });
     let tokens = mem.estimated_tokens();
     assert!(tokens > 0);
@@ -1423,6 +1463,8 @@ fn test_conversation_memory_search() {
         tool_call_id: None,
         timestamp: String::new(),
         reasoning_content: None,
+        tool_name: None,
+        tool_result_projection: None,
     });
     mem.add(ConversationTurn {
         role: "assistant".to_string(),
@@ -1431,6 +1473,8 @@ fn test_conversation_memory_search() {
         tool_call_id: None,
         timestamp: String::new(),
         reasoning_content: None,
+        tool_name: None,
+        tool_result_projection: None,
     });
 
     let results = mem.search("Rust");
@@ -1726,6 +1770,8 @@ fn test_stored_session_serialization() {
             tool_call_id: None,
             timestamp: "2026-01-01T00:00:00Z".to_string(),
             reasoning_content: None,
+            tool_name: None,
+            tool_result_projection: None,
         }],
         summary: "A greeting".to_string(),
         summary_covers_up_to: None,
@@ -1755,6 +1801,8 @@ fn test_stored_session_with_tool_calls() {
                 tool_call_id: None,
                 timestamp: String::new(),
                 reasoning_content: None,
+                tool_name: None,
+                tool_result_projection: None,
             },
             StoredMessage {
                 role: "tool".to_string(),
@@ -1763,6 +1811,8 @@ fn test_stored_session_with_tool_calls() {
                 tool_call_id: Some("tc-1".to_string()),
                 timestamp: String::new(),
                 reasoning_content: None,
+                tool_name: None,
+                tool_result_projection: None,
             },
         ],
         summary: String::new(),
@@ -2046,6 +2096,8 @@ fn test_context_builder_build_messages_tool_in_middle() {
             tool_call_id: None,
             timestamp: String::new(),
             reasoning_content: None,
+            tool_name: None,
+            tool_result_projection: None,
         },
         ConversationTurn {
             role: "tool".to_string(),
@@ -2054,6 +2106,8 @@ fn test_context_builder_build_messages_tool_in_middle() {
             tool_call_id: Some("tc-1".to_string()),
             timestamp: String::new(),
             reasoning_content: None,
+            tool_name: None,
+            tool_result_projection: None,
         },
         ConversationTurn {
             role: "assistant".to_string(),
@@ -2062,6 +2116,8 @@ fn test_context_builder_build_messages_tool_in_middle() {
             tool_call_id: None,
             timestamp: String::new(),
             reasoning_content: None,
+            tool_name: None,
+            tool_result_projection: None,
         },
     ];
     let messages = builder.build_messages(&history, "", "Next", "web", "c1", false);
@@ -2185,6 +2241,8 @@ fn test_session_store_truncate_fewer_than_keep() {
             tool_call_id: None,
             timestamp: String::new(),
             reasoning_content: None,
+            tool_name: None,
+            tool_result_projection: None,
         })
         .collect();
     store.set_history("key1", msgs);
@@ -2218,6 +2276,8 @@ fn test_conversation_memory_multiple_adds() {
             tool_call_id: None,
             timestamp: String::new(),
             reasoning_content: None,
+            tool_name: None,
+            tool_result_projection: None,
         });
     }
     assert_eq!(mem.len(), 20);
@@ -2236,6 +2296,8 @@ fn test_conversation_memory_search_case_insensitive() {
         tool_call_id: None,
         timestamp: String::new(),
         reasoning_content: None,
+        tool_name: None,
+        tool_result_projection: None,
     });
     assert_eq!(mem.search("rust").len(), 1);
     assert_eq!(mem.search("RUST").len(), 1);
@@ -2260,6 +2322,8 @@ fn test_conversation_memory_tokens_multiple_messages() {
         tool_call_id: None,
         timestamp: String::new(),
         reasoning_content: None,
+        tool_name: None,
+        tool_result_projection: None,
     });
     mem.add(ConversationTurn {
         role: "assistant".to_string(),
@@ -2268,6 +2332,8 @@ fn test_conversation_memory_tokens_multiple_messages() {
         tool_call_id: None,
         timestamp: String::new(),
         reasoning_content: None,
+        tool_name: None,
+        tool_result_projection: None,
     });
     let tokens = mem.estimated_tokens();
     // "Hello world" (11 chars) -> 11*2/5=4, "Goodbye world" (13 chars) -> 13*2/5=5 => total 9
@@ -2413,6 +2479,8 @@ fn test_force_compress_preserves_system() {
             tool_call_id: None,
             timestamp: String::new(),
             reasoning_content: None,
+            tool_name: None,
+            tool_result_projection: None,
         })
         .collect();
     let result = force_compress_turns(&history);
@@ -2430,6 +2498,8 @@ fn test_force_compress_preserves_last() {
             tool_call_id: None,
             timestamp: String::new(),
             reasoning_content: None,
+            tool_name: None,
+            tool_result_projection: None,
         })
         .collect();
     let result = force_compress_turns(&history);
@@ -2452,6 +2522,8 @@ fn test_force_compress_single() {
         tool_call_id: None,
         timestamp: String::new(),
         reasoning_content: None,
+        tool_name: None,
+        tool_result_projection: None,
     }];
     let result = force_compress_turns(&history);
     assert_eq!(result.len(), 1);
@@ -2550,3 +2622,4 @@ fn test_chat_options_roundtrip() {
     assert_eq!(back.top_p, Some(0.95));
     assert_eq!(back.stop.as_ref().unwrap().len(), 2);
 }
+

@@ -97,6 +97,8 @@ fn test_session_store_history() {
             tool_call_id: None,
             timestamp: "2026-01-01T00:00:00Z".to_string(),
             reasoning_content: None,
+            tool_name: None,
+            tool_result_projection: None,
         },
         StoredMessage {
             role: "assistant".to_string(),
@@ -105,6 +107,8 @@ fn test_session_store_history() {
             tool_call_id: None,
             timestamp: "2026-01-01T00:00:01Z".to_string(),
             reasoning_content: None,
+            tool_name: None,
+            tool_result_projection: None,
         },
     ];
 
@@ -142,6 +146,8 @@ fn test_session_store_truncate() {
             tool_call_id: None,
             timestamp: "2026-01-01T00:00:00Z".to_string(),
             reasoning_content: None,
+            tool_name: None,
+            tool_result_projection: None,
         })
         .collect();
 
@@ -170,6 +176,8 @@ fn test_session_store_disk_persistence() {
             tool_call_id: None,
             timestamp: "2026-01-01T00:00:00Z".to_string(),
             reasoning_content: None,
+            tool_name: None,
+            tool_result_projection: None,
         }],
     );
     store.save("disk:key1").unwrap();
@@ -224,6 +232,8 @@ fn test_estimate_tokens_for_turns() {
             tool_call_id: None,
             timestamp: String::new(),
             reasoning_content: None,
+            tool_name: None,
+            tool_result_projection: None,
         },
         ConversationTurn {
             role: "assistant".to_string(),
@@ -232,6 +242,8 @@ fn test_estimate_tokens_for_turns() {
             tool_call_id: None,
             timestamp: String::new(),
             reasoning_content: None,
+            tool_name: None,
+            tool_result_projection: None,
         },
     ];
     // "Hello" = 5 chars, "World" = 5 chars, total = 10, 10*2/5 = 4
@@ -250,6 +262,8 @@ fn test_force_compress_short() {
             tool_call_id: None,
             timestamp: String::new(),
             reasoning_content: None,
+            tool_name: None,
+            tool_result_projection: None,
         })
         .collect();
 
@@ -272,6 +286,8 @@ fn test_force_compress_long() {
             tool_call_id: None,
             timestamp: String::new(),
             reasoning_content: None,
+            tool_name: None,
+            tool_result_projection: None,
         })
         .collect();
 
@@ -319,6 +335,8 @@ fn test_stored_message_roundtrip() {
         tool_call_id: None,
         timestamp: "2026-01-01T00:00:00Z".to_string(),
         reasoning_content: None,
+        tool_name: None,
+        tool_result_projection: None,
     };
 
     let stored: StoredMessage = (&turn).into();
@@ -403,6 +421,8 @@ fn test_session_store_set_history_nonexistent() {
             tool_call_id: None,
             timestamp: String::new(),
             reasoning_content: None,
+            tool_name: None,
+            tool_result_projection: None,
         }],
     );
     assert!(store.get_history("nonexistent").is_empty());
@@ -428,6 +448,8 @@ fn test_session_store_truncate_fewer_than_keep() {
             tool_call_id: None,
             timestamp: String::new(),
             reasoning_content: None,
+            tool_name: None,
+            tool_result_projection: None,
         }],
     );
     store.truncate_history("test:trunc", 10);
@@ -488,6 +510,8 @@ fn test_stored_session_serialization() {
             tool_call_id: Some("tc_1".to_string()),
             timestamp: "2026-01-01T00:00:00Z".to_string(),
             reasoning_content: None,
+            tool_name: None,
+            tool_result_projection: None,
         }],
         summary: "test summary".to_string(),
         summary_covers_up_to: None,
@@ -510,6 +534,8 @@ fn test_estimate_tokens_for_messages() {
         tool_call_id: None,
         timestamp: String::new(),
         reasoning_content: None,
+        tool_name: None,
+        tool_result_projection: None,
     }];
     let tokens = estimate_tokens_for_messages(&messages);
     assert!(tokens > 0);
@@ -526,6 +552,8 @@ fn test_force_compress_exact_boundary() {
             tool_call_id: None,
             timestamp: String::new(),
             reasoning_content: None,
+            tool_name: None,
+            tool_result_projection: None,
         })
         .collect();
     let result = force_compress_turns(&history);
@@ -543,6 +571,8 @@ fn test_force_compress_empty_conversation() {
             tool_call_id: None,
             timestamp: String::new(),
             reasoning_content: None,
+            tool_name: None,
+            tool_result_projection: None,
         },
         ConversationTurn {
             role: "user".to_string(),
@@ -551,6 +581,8 @@ fn test_force_compress_empty_conversation() {
             tool_call_id: None,
             timestamp: String::new(),
             reasoning_content: None,
+            tool_name: None,
+            tool_result_projection: None,
         },
     ];
     let result = force_compress_turns(&history);
@@ -624,6 +656,8 @@ fn test_session_store_set_and_get_history() {
             tool_call_id: None,
             timestamp: "2026-01-01T00:00:00Z".to_string(),
             reasoning_content: None,
+            tool_name: None,
+            tool_result_projection: None,
         },
         StoredMessage {
             role: "assistant".to_string(),
@@ -632,6 +666,8 @@ fn test_session_store_set_and_get_history() {
             tool_call_id: None,
             timestamp: "2026-01-01T00:00:01Z".to_string(),
             reasoning_content: None,
+            tool_name: None,
+            tool_result_projection: None,
         },
     ];
     store.set_history("test-key", messages);
@@ -672,6 +708,8 @@ fn test_estimate_tokens_for_turns_basic() {
         tool_call_id: None,
         timestamp: String::new(),
         reasoning_content: None,
+        tool_name: None,
+        tool_result_projection: None,
     }];
     let tokens = estimate_tokens_for_turns(&turns);
     assert!(tokens > 0);
@@ -693,6 +731,8 @@ fn test_stored_message_from_conversation_turn() {
         tool_call_id: None,
         timestamp: "2026-01-01T00:00:00Z".to_string(),
         reasoning_content: None,
+        tool_name: None,
+        tool_result_projection: None,
     };
     let stored: StoredMessage = StoredMessage::from(&turn);
     assert_eq!(stored.role, "user");
@@ -714,6 +754,8 @@ fn test_session_store_truncate_history() {
             tool_call_id: None,
             timestamp: String::new(),
             reasoning_content: None,
+            tool_name: None,
+            tool_result_projection: None,
         })
         .collect();
     store.set_history("test-key", msgs);
@@ -744,6 +786,8 @@ fn test_session_store_truncate_to_zero() {
             tool_call_id: None,
             timestamp: String::new(),
             reasoning_content: None,
+            tool_name: None,
+            tool_result_projection: None,
         })
         .collect();
     store.set_history("test-key", msgs);
@@ -769,6 +813,8 @@ fn test_force_compress_with_many_messages() {
         tool_call_id: None,
         timestamp: String::new(),
         reasoning_content: None,
+        tool_name: None,
+        tool_result_projection: None,
     }];
     for i in 0..20 {
         history.push(ConversationTurn {
@@ -778,6 +824,8 @@ fn test_force_compress_with_many_messages() {
             tool_call_id: None,
             timestamp: String::new(),
             reasoning_content: None,
+            tool_name: None,
+            tool_result_projection: None,
         });
     }
     let result = force_compress_turns(&history);
@@ -895,6 +943,8 @@ fn stored_msgs(n: usize) -> Vec<StoredMessage> {
             tool_call_id: None,
             timestamp: String::new(),
             reasoning_content: None,
+            tool_name: None,
+            tool_result_projection: None,
         })
         .collect()
 }
@@ -1055,6 +1105,8 @@ fn test_session_store_disk_roundtrip() {
             tool_call_id: None,
             timestamp: chrono::Local::now().to_rfc3339(),
             reasoning_content: None,
+            tool_name: None,
+            tool_result_projection: None,
         })
         .collect();
     store.set_history("web:chat1", messages);
@@ -1127,6 +1179,8 @@ fn test_cleanup_old_sessions_keeps_recent_deletes_old() {
             tool_call_id: None,
             timestamp: "2026-06-18T00:00:00Z".to_string(),
             reasoning_content: None,
+            tool_name: None,
+            tool_result_projection: None,
         }],
     );
     store.save("recent:key").unwrap();
@@ -1232,6 +1286,8 @@ fn test_session_store_truncate_exact() {
             tool_call_id: None,
             timestamp: String::new(),
             reasoning_content: None,
+            tool_name: None,
+            tool_result_projection: None,
         })
         .collect();
     store.set_history("key1", msgs);
@@ -1257,6 +1313,8 @@ fn test_stored_message_from_conversation_turn_with_tools() {
         tool_call_id: Some("tc_1".to_string()),
         timestamp: "2026-01-01T00:00:00Z".to_string(),
         reasoning_content: None,
+        tool_name: None,
+        tool_result_projection: None,
     };
 
     let stored: StoredMessage = StoredMessage::from(&turn);
@@ -1280,6 +1338,8 @@ fn test_stored_message_into_conversation_turn() {
         tool_call_id: None,
         timestamp: "2026-01-01T00:00:00Z".to_string(),
         reasoning_content: None,
+        tool_name: None,
+        tool_result_projection: None,
     };
 
     let turn: ConversationTurn = ConversationTurn::from(stored);
@@ -1316,6 +1376,8 @@ fn test_estimate_tokens_for_messages_with_content() {
         tool_call_id: None,
         timestamp: String::new(),
         reasoning_content: None,
+        tool_name: None,
+        tool_result_projection: None,
     }];
     let tokens = estimate_tokens_for_messages(&messages);
     assert!(tokens > 0);
@@ -1391,6 +1453,8 @@ fn test_summarizer_should_summarize_short_history() {
             tool_call_id: None,
             timestamp: String::new(),
             reasoning_content: None,
+            tool_name: None,
+            tool_result_projection: None,
         })
         .collect();
     assert!(!summarizer.should_summarize(&history, 128000));
@@ -1417,6 +1481,8 @@ fn test_summarizer_should_summarize_long_history() {
             tool_call_id: None,
             timestamp: String::new(),
             reasoning_content: None,
+            tool_name: None,
+            tool_result_projection: None,
         })
         .collect();
     // 30 messages > 20 threshold
@@ -1453,6 +1519,8 @@ fn test_summarizer_should_summarize_by_token_threshold() {
             tool_call_id: None,
             timestamp: String::new(),
             reasoning_content: None,
+            tool_name: None,
+            tool_result_projection: None,
         })
         .collect();
     // Token threshold is 100 * 75 / 100 = 75 tokens
@@ -1490,6 +1558,8 @@ fn test_summarizer_summarize_session_too_few_messages() {
             tool_call_id: None,
             timestamp: String::new(),
             reasoning_content: None,
+            tool_name: None,
+            tool_result_projection: None,
         })
         .collect();
     // Only 4 messages (<=4), so summarize_session returns empty
@@ -1514,6 +1584,8 @@ fn test_summarizer_summarize_session_all_system_messages() {
             tool_call_id: None,
             timestamp: String::new(),
             reasoning_content: None,
+            tool_name: None,
+            tool_result_projection: None,
         })
         .collect();
     // All system messages -> none pass the user/assistant filter
@@ -1538,6 +1610,8 @@ fn test_summarizer_summarize_session_basic() {
             tool_call_id: None,
             timestamp: String::new(),
             reasoning_content: None,
+            tool_name: None,
+            tool_result_projection: None,
         })
         .collect();
     let result = summarizer.summarize_session("test:basic", &history);
@@ -1576,6 +1650,8 @@ fn test_summarizer_maybe_summarize_internal_channel() {
             tool_call_id: None,
             timestamp: String::new(),
             reasoning_content: None,
+            tool_name: None,
+            tool_result_projection: None,
         })
         .collect();
     let result = summarizer.maybe_summarize("test:cli", "cli", "direct", &history, 128000);
@@ -1599,6 +1675,8 @@ fn test_summarizer_maybe_summarize_not_triggered() {
             tool_call_id: None,
             timestamp: String::new(),
             reasoning_content: None,
+            tool_name: None,
+            tool_result_projection: None,
         })
         .collect();
     assert!(!summarizer.maybe_summarize("test:short", "web", "chat1", &history, 128000));
@@ -1614,6 +1692,8 @@ fn test_force_compress_three_messages() {
             tool_call_id: None,
             timestamp: String::new(),
             reasoning_content: None,
+            tool_name: None,
+            tool_result_projection: None,
         },
         ConversationTurn {
             role: "user".to_string(),
@@ -1622,6 +1702,8 @@ fn test_force_compress_three_messages() {
             tool_call_id: None,
             timestamp: String::new(),
             reasoning_content: None,
+            tool_name: None,
+            tool_result_projection: None,
         },
         ConversationTurn {
             role: "assistant".to_string(),
@@ -1630,6 +1712,8 @@ fn test_force_compress_three_messages() {
             tool_call_id: None,
             timestamp: String::new(),
             reasoning_content: None,
+            tool_name: None,
+            tool_result_projection: None,
         },
     ];
     // 3 messages (<=4), should return unchanged
@@ -1646,6 +1730,8 @@ fn test_force_compress_preserves_system_and_last() {
         tool_call_id: None,
         timestamp: String::new(),
         reasoning_content: None,
+        tool_name: None,
+        tool_result_projection: None,
     }];
     for i in 0..10 {
         history.push(ConversationTurn {
@@ -1655,6 +1741,8 @@ fn test_force_compress_preserves_system_and_last() {
             tool_call_id: None,
             timestamp: String::new(),
             reasoning_content: None,
+            tool_name: None,
+            tool_result_projection: None,
         });
     }
     let result = force_compress_turns(&history);
@@ -1743,4 +1831,51 @@ fn test_session_store_disk_save_and_reload_multiple() {
         assert!(store2.contains(&key));
         assert_eq!(store2.get_summary(&key), format!("Summary {}", i));
     }
+}
+
+
+// ---------------------------------------------------------------------------
+// X1 (U3 projection prune): compaction pressure measures the projection.
+// ---------------------------------------------------------------------------
+
+/// Compaction decisions must reflect what the PROVIDER sees (the folded
+/// projection), not the raw originals - otherwise large originals kept in
+/// history would over-trigger summarization even though the request context
+/// stays bounded.
+#[test]
+fn test_estimate_tokens_projected_bounded() {
+    let big: String = "k".repeat(20_000);
+    let turns = vec![ConversationTurn {
+        role: "tool".to_string(),
+        content: big.clone(),
+        tool_calls: Vec::new(),
+        tool_call_id: Some("tc_1".to_string()),
+        timestamp: String::new(),
+        reasoning_content: None,
+        tool_name: Some("exec".to_string()),
+        tool_result_projection: None,
+    }];
+    let raw = super::estimate_tokens(&big);
+    let projected = super::estimate_tokens_for_turns_projected(&turns);
+    assert!(
+        projected < raw,
+        "projected estimate ({projected}) must be below the raw estimate ({raw})"
+    );
+    // The projection itself is bounded by the prune budget (head+marker+tail).
+    assert!(projected < 3_000, "projected estimate stays bounded");
+    // Non-tool content is estimated verbatim.
+    let plain = vec![ConversationTurn {
+        role: "user".to_string(),
+        content: big.clone(),
+        tool_calls: Vec::new(),
+        tool_call_id: None,
+        timestamp: String::new(),
+        reasoning_content: None,
+        tool_name: None,
+        tool_result_projection: None,
+    }];
+    assert_eq!(
+        super::estimate_tokens_for_turns_projected(&plain),
+        super::estimate_tokens(&big)
+    );
 }

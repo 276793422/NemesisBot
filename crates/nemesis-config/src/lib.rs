@@ -234,6 +234,43 @@ pub struct AgentsConfig {
     /// language server (rust-analyzer/gopls/…) is found on PATH.
     #[serde(default)]
     pub lsp_tool: LspToolConfig,
+    /// Y1 (Phase4-a): semantic tool-documentation folding. Default off —
+    /// absent section = tool defs render byte-identical to the pre-Y1 build.
+    #[serde(default)]
+    pub tool_doc_folding: ToolDocFoldingConfig,
+}
+
+/// Y1 (Phase4-a): `agents.tool_doc_folding` config section. When enabled,
+/// the `expand_top_n` tools most similar to the current conversation (cosine
+/// between the latest user message and each tool description, via the P3.1
+/// embed backend) keep their full description; the rest collapse to a
+/// one-line summary. Orthogonal to tier supply — folding rewrites
+/// description TEXT only, every tool stays callable with its full parameter
+/// schema. The Mini tier never participates (13-tool core set, nothing to
+/// save). Requires a wired memory manager (embed backend); without one the
+/// loop degrades to unfolded defs.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ToolDocFoldingConfig {
+    /// Master switch (default false).
+    #[serde(default)]
+    pub enabled: bool,
+    /// How many tools stay fully expanded, ranked by similarity
+    /// (default 8; ties break alphabetically for determinism).
+    #[serde(default = "default_tool_doc_folding_top_n")]
+    pub expand_top_n: usize,
+}
+
+fn default_tool_doc_folding_top_n() -> usize {
+    8
+}
+
+impl Default for ToolDocFoldingConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            expand_top_n: default_tool_doc_folding_top_n(),
+        }
+    }
 }
 
 /// L1 (U19): `agents.lsp_tool` config section.
@@ -322,6 +359,7 @@ impl Default for AgentsConfig {
             claude_code_tool: ClaudeCodeToolConfig::default(),
             codex_tool: CodexToolConfig::default(),
             lsp_tool: LspToolConfig::default(),
+            tool_doc_folding: ToolDocFoldingConfig::default(),
         }
     }
 }
@@ -1793,6 +1831,7 @@ pub fn default_config() -> Config {
             claude_code_tool: ClaudeCodeToolConfig::default(),
             codex_tool: CodexToolConfig::default(),
             lsp_tool: LspToolConfig::default(),
+            tool_doc_folding: ToolDocFoldingConfig::default(),
             defaults: AgentDefaults {
                 workspace: ws,
                 restrict_to_workspace: true,

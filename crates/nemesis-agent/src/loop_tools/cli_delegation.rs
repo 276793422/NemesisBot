@@ -10,8 +10,8 @@
 //! item required — config-driven, NEVER model-selectable (absent from the
 //! tool schema on purpose):
 //! - claude: `agents.claude_code_tool.permission_mode` → `--permission-mode`
-//!   (enum default/accept_edits/plan/bypass_permissions, default
-//!   accept_edits)
+//!   (CLI camelCase enum acceptEdits/auto/bypassPermissions/manual/dontAsk/
+//!   plan, default acceptEdits; legacy snake_case config values map over)
 //! - codex: `agents.codex_tool.sandbox` → `--sandbox <kebab>` (enum
 //!   read_only/workspace_write/danger_full_access, default read_only) +
 //!   implied `--ask-for-approval never`
@@ -131,6 +131,12 @@ pub fn delegation_cwd(session_key: &str) -> PathBuf {
 
 /// Locate a CLI on PATH: `where <name>` (Windows) / `which <name>`.
 /// Returns the resolved path, or None when not installed.
+///
+/// Windows nuance (V4 真机揭的 bug，2026-08-23）：npm 风格安装会在 PATH 上
+/// 同时落一个**无扩展名的 POSIX sh shim** 和一个 `.cmd` 包装（`where claude`
+/// 先吐 shim）。`Command::new(<无扩展名>)` 在 Windows 上必失败（os error 193
+/// "不是有效的 Win32 应用程序"）——所以这里不能盲取第一行，要优先挑带
+/// Windows 可执行扩展名的候选。
 pub fn find_cli_on_path(name: &str) -> Option<String> {
     let finder = if cfg!(windows) { "where" } else { "which" };
     let out = std::process::Command::new(finder)
@@ -143,35 +149,87 @@ pub fn find_cli_on_path(name: &str) -> Option<String> {
         return None;
     }
     let s = String::from_utf8_lossy(&out.stdout);
-    let first = s.lines().next()?.trim().to_string();
-    if first.is_empty() {
-        None
-    } else {
-        Some(first)
+    let lines: Vec<&str> = s.lines().map(|l| l.trim()).filter(|l| !l.is_empty()).collect();
+    let first = lines.first().copied()?;
+    #[cfg(windows)]
+    {
+        if let Some(picked) = pick_windows_exec_candidate(&lines) {
+            return Some(picked);
+        }
     }
+    // 非 Windows（或 Windows 上没有任何带可执行扩展名的候选——保留旧行为，
+    // 让 spawn 错误如实暴露而不是误报"未安装"）。
+    Some(first.to_string())
+}
+
+/// Windows 可执行扩展名（`where` 候选筛选用）。
+#[cfg(windows)]
+const WINDOWS_EXEC_EXTENSIONS: [&str; 4] = ["exe", "cmd", "bat", "com"];
+
+/// 从 `where` 输出行里挑第一个带 Windows 可执行扩展名的候选；
+/// 全都不带扩展名（如纯 shim 布局）则 None（调用方回退第一行）。
+#[cfg(windows)]
+fn pick_windows_exec_candidate(lines: &[&str]) -> Option<String> {
+    lines
+        .iter()
+        .find(|l| {
+            std::path::Path::new(l)
+                .extension()
+                .and_then(|e| e.to_str())
+                .map(|e| WINDOWS_EXEC_EXTENSIONS.contains(&e.to_ascii_lowercase().as_str()))
+                .unwrap_or(false)
+        })
+        .map(|l| l.to_string())
 }
 
 // ---------------------------------------------------------------------------
 // T5 fixed permission tiers (config-driven, NOT model-selectable)
 // ---------------------------------------------------------------------------
 
-/// Valid claude `--permission-mode` tiers. Default `accept_edits` — the
-/// non-interactive-safe tier.
-pub const CC_PERMISSION_MODES: [&str; 4] = [
-    "default",
-    "accept_edits",
+/// Valid claude `--permission-mode` values — the CLI's own camelCase set
+/// (verified against claude CLI 2.1.240 `--help`: acceptEdits / auto /
+/// bypassPermissions / manual / dontAsk / plan). V4 真机揭的第二个 bug
+/// (2026-08-23)：T5 原来硬编码 snake_case（default/accept_edits/...），
+/// 真实 CLI 直接拒收 `accept_edits`（exit 2 "invalid choice"），委派从未
+/// 在真机上跑通过——mock 测试钉的是错误假设。Default `acceptEdits` —
+/// the non-interactive-safe tier.
+pub const CC_PERMISSION_MODES: [&str; 6] = [
+    "acceptEdits",
+    "auto",
+    "bypassPermissions",
+    "manual",
+    "dontAsk",
     "plan",
-    "bypass_permissions",
 ];
-pub const CC_PERMISSION_MODE_DEFAULT: &str = "accept_edits";
+pub const CC_PERMISSION_MODE_DEFAULT: &str = "acceptEdits";
 
-/// Normalize a configured claude permission mode: empty/unknown → default
-/// (fail-safe, matching the crate's graceful config-degradation style).
+/// Legacy snake_case aliases (T5 era config values / old docs). The feature
+/// never worked end-to-end with these (the CLI rejects them), but configs in
+/// the wild may carry them — map instead of silently degrading to default.
+const CC_PERMISSION_MODE_LEGACY_ALIASES: [(&str, &str); 4] = [
+    ("default", "acceptEdits"),
+    ("accept_edits", "acceptEdits"),
+    ("bypass_permissions", "bypassPermissions"),
+    ("plan", "plan"),
+];
+
+/// Normalize a configured claude permission mode: exact camelCase match wins;
+/// legacy snake_case maps over; empty/unknown → default (fail-safe, matching
+/// the crate's graceful config-degradation style).
 pub fn resolve_cc_permission_mode(cfg: &str) -> &'static str {
-    match CC_PERMISSION_MODES.iter().find(|m| **m == cfg) {
-        Some(m) => m,
-        None => CC_PERMISSION_MODE_DEFAULT,
+    if let Some(m) = CC_PERMISSION_MODES.iter().find(|m| **m == cfg) {
+        return m;
     }
+    if let Some((_, mapped)) = CC_PERMISSION_MODE_LEGACY_ALIASES
+        .iter()
+        .find(|(old, _)| *old == cfg)
+    {
+        return CC_PERMISSION_MODES
+            .iter()
+            .find(|m| *m == mapped)
+            .unwrap_or(&CC_PERMISSION_MODE_DEFAULT);
+    }
+    CC_PERMISSION_MODE_DEFAULT
 }
 
 /// Valid codex sandbox tiers (config side, snake_case).

@@ -132,6 +132,8 @@ fn test_touch_invalidates_digest_and_reinjects() {
                 tool_call_id: None,
                 timestamp: String::new(),
                 reasoning_content: None,
+                tool_name: None,
+                tool_result_projection: None,
             },
             ConversationTurn {
                 role: "user".to_string(),
@@ -140,6 +142,8 @@ fn test_touch_invalidates_digest_and_reinjects() {
                 tool_call_id: None,
                 timestamp: String::new(),
                 reasoning_content: None,
+                tool_name: None,
+                tool_result_projection: None,
             },
         ]
     };
