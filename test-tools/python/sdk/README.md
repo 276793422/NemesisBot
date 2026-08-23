@@ -16,6 +16,18 @@ A `nemesisbot(.exe)` binary must be on PATH or passed via `binary=`.
 
 ## Usage
 
+3-line one-shot (the `turn()` API manages the gateway lifecycle for you —
+starts `nemesisbot --local gateway`, sends, waits for the assistant reply,
+stops it again):
+
+```python
+from nemesisbot import NemesisBot
+bot = NemesisBot(workspace="./mybot")
+print(bot.turn("List the files in this directory."))
+```
+
+Multi-turn / long-lived gateway — use the context manager and `send()`:
+
 ```python
 from nemesisbot import NemesisBot
 

@@ -790,6 +790,201 @@ async fn grace_round_finalizes_when_model_cooperates() {
     );
 }
 
+// -------------------------------------------------------------------------
+// T3 (U12): per-turn cron budget override
+// -------------------------------------------------------------------------
+
+fn tool_loop_response() -> LlmResponse {
+    LlmResponse {
+        content: String::new(),
+        tool_calls: vec![ToolCallInfo {
+            id: "tc_budget".to_string(),
+            name: "calculator".to_string(),
+            arguments: "{}".to_string(),
+        }],
+        finished: false,
+        reasoning_content: None,
+        usage: None,
+        raw_request_body: None,
+        raw_response_body: None,
+    }
+}
+
+/// A budget override REPLACES the global max_turns for the turn: with
+/// max_turns=100 but budget=2, the turn stops after 2 tool rounds (+1 grace
+/// round reusing the existing semantics) with the budget-specific message —
+/// not after 100.
+#[tokio::test]
+async fn cron_budget_override_stops_turn() {
+    // Plenty of tool-requesting responses — the budget must cut the turn
+    // short while responses remain (proving the stop is budget-driven, not
+    // mock-exhaustion-driven).
+    let responses: Vec<LlmResponse> = (0..20).map(|_| tool_loop_response()).collect();
+    let provider = MockLlmProvider::new(responses);
+    let mut config = test_config();
+    config.max_turns = 100;
+
+    let mut agent_loop = AgentLoop::new(Box::new(provider), config.clone());
+    agent_loop.register_tool(
+        "calculator".to_string(),
+        Box::new(MockTool {
+            result: "0".to_string(),
+        }),
+    );
+
+    let instance = AgentInstance::new(config);
+    let context = RequestContext::new("web", "chat1", "user1", "session-budget");
+
+    let trace_id = "budget-test".to_string();
+    let token = tokio_util::sync::CancellationToken::new();
+    let events = agent_loop
+        .run_with_trace(
+            &instance,
+            "loop forever",
+            &context,
+            &trace_id,
+            false,
+            &token,
+            Some(2),
+        )
+        .await;
+
+    // Budget-specific Done message (distinct from the global max_turns
+    // wording: mentions the job surviving + re-budgeting).
+    let done = events.iter().find_map(|e| match e {
+        AgentEvent::Done(msg) => Some(msg.clone()),
+        _ => None,
+    });
+    let done = done.expect("budget stop emits a Done");
+    assert!(done.contains("定时任务预算 2 轮"), "done: {done}");
+    assert!(done.contains("定时任务未被删除"), "done: {done}");
+    // 2 budgeted tool rounds + 1 grace round = 3 tool-call events — far
+    // below the 20 available responses and the global cap of 100.
+    let tool_rounds = events
+        .iter()
+        .filter(|e| matches!(e, AgentEvent::ToolCall(_)))
+        .count();
+    assert_eq!(tool_rounds, 3, "2 budget rounds + 1 grace round");
+}
+
+/// No budget (None) → the global max_turns applies with its usual message
+/// (the cron override must not accidentally change default behavior).
+#[tokio::test]
+async fn cron_budget_none_uses_global_default() {
+    let responses: Vec<LlmResponse> = (0..10).map(|_| tool_loop_response()).collect();
+    let provider = MockLlmProvider::new(responses);
+    let mut config = test_config();
+    config.max_turns = 3;
+
+    let mut agent_loop = AgentLoop::new(Box::new(provider), config.clone());
+    agent_loop.register_tool(
+        "calculator".to_string(),
+        Box::new(MockTool {
+            result: "0".to_string(),
+        }),
+    );
+
+    let instance = AgentInstance::new(config);
+    let context = RequestContext::new("web", "chat1", "user1", "session-budget-none");
+
+    let trace_id = "budget-none-test".to_string();
+    let token = tokio_util::sync::CancellationToken::new();
+    let events = agent_loop
+        .run_with_trace(
+            &instance,
+            "loop forever",
+            &context,
+            &trace_id,
+            false,
+            &token,
+            None,
+        )
+        .await;
+
+    let done = events
+        .iter()
+        .find_map(|e| match e {
+            AgentEvent::Done(msg) => Some(msg.clone()),
+            _ => None,
+        })
+        .expect("global cap emits a Done");
+    assert!(
+        done.contains("调大 max_tool_iterations"),
+        "global-default wording, got: {done}"
+    );
+    assert!(
+        !done.contains("定时任务预算"),
+        "no budget wording without an override, got: {done}"
+    );
+}
+
+/// Budget exhaustion on a cron-exempt turn (user=="cron") still writes ONE
+/// boundary turn_end marker with reason budget_exhausted — the observability
+/// requirement for T3 despite the cron boundary-exemption.
+#[tokio::test]
+async fn cron_budget_exhaustion_writes_boundary_marker() {
+    let responses: Vec<LlmResponse> = (0..10).map(|_| tool_loop_response()).collect();
+    let provider = MockLlmProvider::new(responses);
+    let mut config = test_config();
+    config.max_turns = 100;
+
+    let mut agent_loop = AgentLoop::new(Box::new(provider), config.clone());
+    agent_loop.register_tool(
+        "calculator".to_string(),
+        Box::new(MockTool {
+            result: "0".to_string(),
+        }),
+    );
+
+    let instance = AgentInstance::new(config);
+    // user="cron" is what run_agent_loop_internal sets for cron-originated
+    // turns — log_boundaries is false for it (the unbounded-growth exemption).
+    let mut context = RequestContext::new("web", "chatc", "cron", "agent:u12-budget-bnd");
+    context.user = "cron".to_string();
+
+    let trace_id = "budget-bnd-test".to_string();
+    let token = tokio_util::sync::CancellationToken::new();
+    let events = agent_loop
+        .run_with_trace(
+            &instance,
+            "loop forever",
+            &context,
+            &trace_id,
+            false,
+            &token,
+            Some(2),
+        )
+        .await;
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, AgentEvent::Done(m) if m.contains("定时任务预算"))),
+        "budget stop fired"
+    );
+
+    // Sidecar: exactly one budget_exhausted turn_end (no turn_start — the
+    // cron exemption suppresses those).
+    let safe_key = "agent:u12-budget-bnd".replace(':', "_");
+    let sidecar = nemesis_path::paths::default_path_manager()
+        .boundary_events_dir()
+        .join(format!("{}.jsonl", safe_key));
+    let content = std::fs::read_to_string(&sidecar).unwrap_or_default();
+    let turn_ends: Vec<&str> = content
+        .lines()
+        .filter(|l| l.contains("\"turn_end\""))
+        .collect();
+    assert!(
+        turn_ends.iter().any(|l| l.contains("budget_exhausted")),
+        "sidecar has budget_exhausted turn_end: {content}"
+    );
+    assert_eq!(turn_ends.len(), 1, "exactly one turn_end, got: {turn_ends:?}");
+    assert!(
+        !content.contains("\"turn_start\""),
+        "cron exemption still suppresses per-turn markers"
+    );
+    let _ = std::fs::remove_file(&sidecar);
+}
+
 #[tokio::test]
 async fn transient_error_retry_succeeds() {
     // ③ A transient error (network/stream/5xx) is retried up to
@@ -4254,11 +4449,152 @@ async fn test_summarize_prefix_owned_returns_summary() {
         summary_turn("user", "question two"),
     ];
     let refs: Vec<&crate::types::ConversationTurn> = turns.iter().collect();
-    let result =
-        summarize_prefix_owned(&refs, "existing context", 32000, &provider, "test-model", None)
-            .await;
+    let result = summarize_prefix_owned(
+        &refs,
+        "existing context",
+        32000,
+        true,
+        &provider,
+        "test-model",
+        None,
+    )
+    .await;
     assert!(result.is_some(), "prefix summarize should return a summary");
     assert!(result.unwrap().contains("prefix summary"));
+}
+
+// -------------------------------------------------------------------------
+// T4 (U1): per-model summarizer prefix-reuse switch
+// (shape capture reuses CapturingMockProvider, defined near the G1 tests below)
+// -------------------------------------------------------------------------
+
+/// prefix_reuse=true (default) → G1 shape: the request preserves message
+/// structure — system first (when present), original user/assistant turns in
+/// order, trailing instruction. NOT a flattened single message.
+#[tokio::test]
+async fn test_summarize_prefix_reuse_true_keeps_g1_shape() {
+    let provider = CapturingMockProvider {
+        captured: std::sync::Mutex::new(Vec::new()),
+        reply: "S".to_string(),
+    };
+    let turns = vec![
+        summary_turn("system", "SYS"),
+        summary_turn("user", "question one"),
+        summary_turn("assistant", "answer one"),
+        summary_turn("user", "question two"),
+    ];
+    let refs: Vec<&crate::types::ConversationTurn> = turns.iter().collect();
+    let out = summarize_prefix_owned(
+        &refs,
+        "",
+        32000,
+        true,
+        &provider,
+        "test-model",
+        None,
+    )
+    .await;
+    assert!(out.is_some());
+
+    let seen = provider.captured.lock().unwrap();
+    assert_eq!(seen.len(), 1, "small batch = one LLM call");
+    let msgs = &seen[0];
+    // system preserved as its own message...
+    assert_eq!(msgs[0].role, "system");
+    assert_eq!(msgs[0].content, "SYS");
+    // ...original turns keep role structure...
+    assert_eq!(msgs[1].role, "user");
+    assert_eq!(msgs[1].content, "question one");
+    assert_eq!(msgs[2].role, "assistant");
+    // ...trailing instruction as the final user message.
+    assert_eq!(msgs.last().unwrap().role, "user");
+    assert!(msgs.last().unwrap().content.contains("简明摘要"));
+}
+
+/// prefix_reuse=false → OLD shape: exactly ONE bare user message whose
+/// content flattens the covered messages as `role: content` lines + the
+/// instruction (plus existing-summary context when present).
+#[tokio::test]
+async fn test_summarize_prefix_reuse_false_uses_bare_shape() {
+    let provider = CapturingMockProvider {
+        captured: std::sync::Mutex::new(Vec::new()),
+        reply: "S".to_string(),
+    };
+    let turns = vec![
+        summary_turn("system", "SYS"),
+        summary_turn("user", "question one"),
+        summary_turn("assistant", "answer one"),
+        summary_turn("user", "question two"),
+    ];
+    let refs: Vec<&crate::types::ConversationTurn> = turns.iter().collect();
+    let out = summarize_prefix_owned(
+        &refs,
+        "prior coverage",
+        32000,
+        false,
+        &provider,
+        "test-model",
+        None,
+    )
+    .await;
+    assert!(out.is_some());
+
+    let seen = provider.captured.lock().unwrap();
+    assert_eq!(seen.len(), 1, "old shape = one LLM call");
+    let msgs = &seen[0];
+    assert_eq!(msgs.len(), 1, "single bare user message");
+    assert_eq!(msgs[0].role, "user");
+    let c = &msgs[0].content;
+    assert!(c.contains("prior coverage"), "existing summary merged");
+    assert!(c.contains("user: question one"), "flattened role lines");
+    assert!(c.contains("assistant: answer one"), "flattened role lines");
+    assert!(c.contains("简明摘要"), "instruction present");
+    // No system message in the old shape.
+    assert!(!msgs.iter().any(|m| m.role == "system"));
+}
+
+/// `current_summarizer_prefix_reuse`: absent/standalone → true (default keeps
+/// prefix for the main model); explicit false → false; explicit true → true.
+#[test]
+fn test_current_summarizer_prefix_reuse_default_and_off() {
+    // Standalone (no config_path) → default true.
+    let standalone = AgentLoop::new(Box::new(MockLlmProvider::new(vec![])), test_config());
+    assert!(standalone.current_summarizer_prefix_reuse());
+
+    let cfg_path = std::env::temp_dir().join(format!(
+        "nemesis_test_sumswitch_{}.json",
+        std::process::id()
+    ));
+    std::fs::write(
+        &cfg_path,
+        serde_json::json!({
+            "model_list": [
+                {"model": "cheap/sum", "model_name": "cheap-sum", "summarizer_prefix_reuse": false},
+                {"model": "main/m1", "model_name": "main-m1"}
+            ]
+        })
+        .to_string(),
+    )
+    .unwrap();
+
+    let agent_loop = AgentLoop::new(Box::new(MockLlmProvider::new(vec![])), test_config());
+    agent_loop.set_config_path(cfg_path.clone());
+    agent_loop.set_active_model("cheap-sum");
+    assert!(
+        !agent_loop.current_summarizer_prefix_reuse(),
+        "explicit false opts out"
+    );
+    // Field absent → default true.
+    agent_loop.set_active_model("main-m1");
+    assert!(
+        agent_loop.current_summarizer_prefix_reuse(),
+        "absent → default true (main model keeps prefix)"
+    );
+    // Unknown model → default true.
+    agent_loop.set_active_model("opaque-alias");
+    assert!(agent_loop.current_summarizer_prefix_reuse());
+
+    let _ = std::fs::remove_file(&cfg_path);
 }
 
 // --- S3.3: save/load cache round-trip (the amnesia fix wiring) ---
@@ -6551,6 +6887,7 @@ async fn test_summarize_request_reuses_conversation_prefix() {
         &prefix_refs,
         "old summary",
         32_000,
+        true,
         &provider,
         "m",
         None,
@@ -6608,6 +6945,7 @@ async fn test_summarize_multipart_batch_is_prefix_subset() {
         &prefix_refs,
         "",
         32_000,
+        true,
         &provider,
         "m",
         None,

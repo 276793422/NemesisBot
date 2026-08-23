@@ -1,7 +1,9 @@
-//! Tests for the Claude Code delegation tool (H7 / U13 half).
+//! Tests for the Claude Code delegation tool (H7 / U13 half; T5 permission
+//! tier + shared-layer refactor).
 
 use super::*;
 use crate::context::RequestContext;
+use crate::loop_tools::cli_delegation::tests::FakeArgEchoCli;
 
 fn test_ctx() -> RequestContext {
     RequestContext {
@@ -16,16 +18,50 @@ fn test_ctx() -> RequestContext {
 
 #[test]
 fn test_claude_code_tool_schema() {
-    let t = ClaudeCodeTool::new("C:/fake/claude.exe".into(), None);
+    let t = ClaudeCodeTool::new("C:/fake/claude.exe".into(), None, None);
     let p = t.parameters();
     assert!(p["properties"]["prompt"].is_object());
     assert_eq!(p["required"][0], "prompt");
     assert!(t.description().contains("Claude Code"));
 }
 
+/// T5: the permission mode is a FIXED config tier — it must NOT appear in the
+/// model-facing schema.
+#[test]
+fn test_claude_code_permission_mode_not_in_schema() {
+    let t = ClaudeCodeTool::new("C:/fake/claude.exe".into(), None, Some("plan"));
+    let schema = t.parameters().to_string();
+    assert!(
+        !schema.contains("permission"),
+        "permission mode must not be model-selectable: {schema}"
+    );
+}
+
+/// T5: tier normalization — None → default accept_edits; explicit values
+/// pass through; unknown → default.
+#[test]
+fn test_claude_code_permission_mode_normalization() {
+    assert_eq!(
+        ClaudeCodeTool::new("C:/fake".into(), None, None).permission_mode(),
+        "accept_edits"
+    );
+    assert_eq!(
+        ClaudeCodeTool::new("C:/fake".into(), None, Some("plan")).permission_mode(),
+        "plan"
+    );
+    assert_eq!(
+        ClaudeCodeTool::new("C:/fake".into(), None, Some("bypass_permissions")).permission_mode(),
+        "bypass_permissions"
+    );
+    assert_eq!(
+        ClaudeCodeTool::new("C:/fake".into(), None, Some("nope")).permission_mode(),
+        "accept_edits"
+    );
+}
+
 #[tokio::test]
 async fn test_claude_code_missing_prompt_fails() {
-    let t = ClaudeCodeTool::new("C:/fake/claude.exe".into(), None);
+    let t = ClaudeCodeTool::new("C:/fake/claude.exe".into(), None, None);
     let ctx = test_ctx();
     let err = t.execute(r#"{}"#, &ctx).await.unwrap_err();
     assert!(err.contains("prompt"));
@@ -37,22 +73,9 @@ async fn test_claude_code_missing_prompt_fails() {
 }
 
 /// Goal-required: a slow fake CLI hits the timeout and produces a STRUCTURED
-/// error, not a panic. Uses a python one-liner sleep as the "CLI".
+/// error, not a panic. Exercises the shared run_cli_delegation timeout arm.
 #[tokio::test]
 async fn test_claude_code_tool_timeout_returns_error() {
-    let fake_cli = if cfg!(windows) {
-        // python sleeps 30s; tool timeout is 1s.
-        "python"
-    } else {
-        "python3"
-    };
-    // Build the tool with the fake CLI directly (bypassing find_claude_cli).
-    let t = ClaudeCodeTool::new(fake_cli.to_string(), Some(1));
-
-    // Monkey-run: our execute always passes --print..., which python won't
-    // understand. Instead, verify the timeout path with a wrapper: use
-    // cmd/powershell that sleeps. Simplest cross-platform: use python via a
-    // tiny script file as the "cli".
     let dir = tempfile::tempdir().unwrap();
     let script = if cfg!(windows) {
         let p = dir.path().join("fake_claude.bat");
@@ -68,7 +91,7 @@ async fn test_claude_code_tool_timeout_returns_error() {
         }
         p
     };
-    let t = ClaudeCodeTool::new(script.to_string_lossy().to_string(), Some(1));
+    let t = ClaudeCodeTool::new(script.to_string_lossy().to_string(), Some(1), None);
     let ctx = test_ctx();
     // The timeout surfaces as Result::Err carrying a STRUCTURED message
     // (never a panic, never a hang). Both channels are acceptable shape.
@@ -79,6 +102,33 @@ async fn test_claude_code_tool_timeout_returns_error() {
     };
     assert!(text.contains("Error:"), "structured error: {text}");
     assert!(text.contains("timed out"), "mentions timeout: {text}");
+}
+
+/// T5: the spawned CLI actually receives `--permission-mode <tier>` —
+/// default accept_edits, and an explicitly configured tier.
+#[tokio::test]
+async fn test_claude_code_permission_mode_flag_passed_to_cli() {
+    let dir = tempfile::tempdir().unwrap();
+    let fake = FakeArgEchoCli::new(dir.path(), "fake_claude2");
+
+    // Default (unset) tier.
+    let t = ClaudeCodeTool::new(fake.cli_path(), Some(5), None);
+    let out = t.execute(r#"{"prompt":"hello task"}"#, &test_ctx()).await;
+    assert!(out.is_ok(), "{:?}", out);
+    let got = fake.received_args();
+    assert!(got.contains("--permission-mode"), "flag present: {got}");
+    assert!(got.contains("accept_edits"), "default tier: {got}");
+    assert!(got.contains("--print"), "print mode: {got}");
+    assert!(got.contains("hello task"), "prompt forwarded: {got}");
+
+    // Explicit tier.
+    let _ = std::fs::remove_file(&fake.marker);
+    let t2 = ClaudeCodeTool::new(fake.cli_path(), Some(5), Some("plan"));
+    t2.execute(r#"{"prompt":"plan it"}"#, &test_ctx())
+        .await
+        .unwrap();
+    let got2 = fake.received_args();
+    assert!(got2.contains("--permission-mode plan"), "explicit tier: {got2}");
 }
 
 /// Goal-required: enabled=false (or CLI absent) ⇒ build_tools output does

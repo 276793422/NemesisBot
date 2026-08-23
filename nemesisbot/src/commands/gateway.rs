@@ -1294,6 +1294,13 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
                             let mut m = std::collections::HashMap::new();
                             m.insert("cron_job_id".to_string(), job.id.clone());
                             m.insert("cron_job_name".to_string(), job.name.clone());
+                            // T3 (U12): per-fire tool-round budget — the agent
+                            // loop reads this and caps the continuation turn's
+                            // tool iterations at this value (graceful stop via
+                            // the grace-round path; job survives).
+                            if let Some(mr) = job.payload.max_rounds {
+                                m.insert("cron_max_rounds".to_string(), mr.to_string());
+                            }
                             m
                         },
                         voice_playback: None,

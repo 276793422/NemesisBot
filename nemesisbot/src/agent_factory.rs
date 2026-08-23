@@ -272,7 +272,22 @@ pub fn build_agent_loop(
     agent_loop.set_config_path(shared.home.join("config.json"));
     // G4 (U4): enable tool-result spill under <home>/logs/spill — oversized
     // results (>64k chars) land there whole with a locator in-conversation.
-    agent_loop.set_spill_root(shared.home.join("logs").join("spill"));
+    let spill_root = shared.home.join("logs").join("spill");
+    agent_loop.set_spill_root(spill_root.clone());
+    // U4 retention: startup sweep + daily midnight task. retention=0 disables.
+    let spill_retention = cfg.agents.defaults.spill_retention_days.max(0) as u64;
+    if spill_retention > 0 {
+        let deleted = nemesis_agent::spill::cleanup_expired(&spill_root, spill_retention);
+        if deleted > 0 {
+            info!(
+                deleted,
+                retention_days = spill_retention,
+                "[AgentFactory] spill startup cleanup (TTL={}d)",
+                spill_retention
+            );
+        }
+    }
+    spawn_daily_spill_cleanup(spill_root, shared.home.join("config.json"));
     // H3 (P2.2): skills-catalog digest injection — same loader the
     // skills_list tools use, so the advertised catalog matches reality.
     if let Some(ref loader) = shared.skills_loader {
@@ -605,9 +620,11 @@ fn build_shared_tool_config(
         // H7 (U13 half): opt-in claude_code delegation tool.
         claude_code_tool_enabled: cfg.agents.claude_code_tool.enabled,
         claude_code_tool_timeout_secs: cfg.agents.claude_code_tool.timeout_secs,
+        claude_code_tool_permission_mode: cfg.agents.claude_code_tool.permission_mode.clone(),
         // I4 (U13 other half): opt-in codex delegation tool.
         codex_tool_enabled: cfg.agents.codex_tool.enabled,
         codex_tool_timeout_secs: cfg.agents.codex_tool.timeout_secs,
+        codex_tool_sandbox: cfg.agents.codex_tool.sandbox.clone(),
     }
 }
 
@@ -1028,6 +1045,58 @@ fn spawn_daily_cleanup(store: Arc<nemesis_agent::session::SessionStore>, label: 
                     label = %label,
                     "[AgentFactory] {} SessionStore daily midnight cleanup (TTL=7d)",
                     label
+                );
+            }
+        }
+    });
+}
+
+/// U4: daily-midnight spill retention sweep (mirrors `spawn_daily_cleanup`).
+///
+/// Retention days are re-read from config.json on EVERY run, so a dashboard
+/// edit of `agents.spill_retention_days` applies at the next midnight without
+/// a restart; `0` skips that night's sweep. Once-guard: `build_agent_loop`
+/// runs again on agent rebuilds (persona activate etc.) — only the first
+/// spawn survives for the process lifetime (one home per process).
+fn spawn_daily_spill_cleanup(spill_root: std::path::PathBuf, config_path: std::path::PathBuf) {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    static SPILL_CLEANUP_SPAWNED: AtomicBool = AtomicBool::new(false);
+    if SPILL_CLEANUP_SPAWNED.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    tokio::spawn(async move {
+        use chrono::TimeZone;
+        loop {
+            let now = chrono::Local::now();
+            let next_midnight = chrono::Local
+                .from_local_datetime(
+                    &now.date_naive()
+                        .succ_opt()
+                        .unwrap()
+                        .and_hms_opt(0, 0, 0)
+                        .unwrap(),
+                )
+                .unwrap();
+            let dur = next_midnight.signed_duration_since(now);
+            let sleep_secs = dur.num_seconds().max(60) as u64;
+
+            tokio::time::sleep(std::time::Duration::from_secs(sleep_secs)).await;
+
+            // Live-read retention (default 7 on unreadable config; negative -> 0 -> skip).
+            let retention = nemesis_config::load_config(&config_path)
+                .map(|c| c.agents.defaults.spill_retention_days)
+                .unwrap_or(7)
+                .max(0) as u64;
+            if retention == 0 {
+                continue;
+            }
+            let deleted = nemesis_agent::spill::cleanup_expired(&spill_root, retention);
+            if deleted > 0 {
+                info!(
+                    deleted,
+                    retention_days = retention,
+                    "[AgentFactory] spill daily midnight cleanup (TTL={}d)",
+                    retention
                 );
             }
         }

@@ -63,6 +63,12 @@ async fn run_inner() -> Result<()> {
     let config_path = workspace.join("config.json");
     let cfg = nemesis_config::load_config(&config_path)
         .with_context(|| format!("load eval config {}", config_path.display()))?;
+    // U15: if the sanitized config carries `yaml:<alias>` api_key references,
+    // resolve them against the eval home's credentials.yaml (missing file
+    // fails loud with the remedy — no silent empty key).
+    nemesis_config::credentials::set_global_credentials_path(
+        nemesis_config::credentials::credentials_path_for_home(&workspace),
+    );
     let config_store = Arc::new(nemesis_config::ConfigStore::from_config(cfg, config_path));
 
     // 2. SecurityPlugin: enabled=false → the pipeline short-circuits to allow

@@ -1,24 +1,26 @@
-//! Claude Code subagent delegation tool (H7 / U13 half, minimal spawn
-//! version, dsh-alignment second batch).
+//! Claude Code subagent delegation tool (H7 / U13 half; T5 refactored to the
+//! shared CLI-delegation layer).
 //!
 //! Delegates a self-contained task to the local Claude Code CLI:
-//! `claude --print -p "<prompt>" --output-format text`, stdout collected as
-//! the result. This is the MINIMAL half-item per the goal: no Codex, no
-//! Agent-SDK deep integration, no nested dsh, no CC hooks, no permission
-//! pass-through (the CLI's own permission config governs the child; see the
-//! note at the dispatch site in loop.rs — this tool call itself passes
-//! through the normal security pipeline like any other tool).
+//! `claude --print -p "<prompt>" --output-format text --permission-mode <tier>`,
+//! stdout collected as the result. The spawn/timeout/tree-kill plumbing lives
+//! in [`super::cli_delegation`] (T5 / A9 — this file is now the
+//! "argument construction + config" shell).
+//!
+//! T5 (U13 original item): the permission mode is a FIXED config tier
+//! (`agents.claude_code_tool.permission_mode`, enum
+//! default/accept_edits/plan/bypass_permissions, default `accept_edits` —
+//! non-interactive-safe). It is deliberately NOT in the tool schema: the
+//! model cannot choose it; the deployment config governs the child.
 //!
 //! Registration is OPT-IN: `claude_code_tool.enabled = true` in config
 //! (default false), AND the CLI must be locatable at registration time —
 //! absent CLI ⇒ tool simply not registered (graceful degradation).
 
 use crate::context::RequestContext;
+use crate::loop_tools::cli_delegation::{self, CliDelegationSpec};
 use crate::loop_tools::Tool;
 use async_trait::async_trait;
-use std::process::Stdio;
-use std::time::Duration;
-use tokio::process::Command;
 
 /// Default wall-clock budget for one delegation.
 const DEFAULT_TIMEOUT_SECS: u64 = 300;
@@ -26,23 +28,7 @@ const DEFAULT_TIMEOUT_SECS: u64 = 300;
 /// Locate the Claude Code CLI: `where claude` (Windows) / `which claude`.
 /// Returns the resolved path, or None when not installed.
 pub fn find_claude_cli() -> Option<String> {
-    let finder = if cfg!(windows) { "where" } else { "which" };
-    let out = std::process::Command::new(finder)
-        .arg("claude")
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .output()
-        .ok()?;
-    if !out.status.success() {
-        return None;
-    }
-    let s = String::from_utf8_lossy(&out.stdout);
-    let first = s.lines().next()?.trim().to_string();
-    if first.is_empty() {
-        None
-    } else {
-        Some(first)
-    }
+    cli_delegation::find_cli_on_path("claude")
 }
 
 /// The delegation tool. Constructed only when the CLI was found AND the
@@ -50,14 +36,27 @@ pub fn find_claude_cli() -> Option<String> {
 pub struct ClaudeCodeTool {
     cli_path: String,
     timeout_secs: u64,
+    /// T5: fixed permission tier (already normalized; default accept_edits).
+    permission_mode: &'static str,
 }
 
 impl ClaudeCodeTool {
-    pub fn new(cli_path: String, timeout_secs: Option<u64>) -> Self {
+    /// `permission_mode: None` = unset in config → `accept_edits` (default).
+    /// Unknown values fall back to the default (fail-safe).
+    pub fn new(cli_path: String, timeout_secs: Option<u64>, permission_mode: Option<&str>) -> Self {
         Self {
             cli_path,
             timeout_secs: timeout_secs.unwrap_or(DEFAULT_TIMEOUT_SECS),
+            permission_mode: cli_delegation::resolve_cc_permission_mode(
+                permission_mode.unwrap_or(""),
+            ),
         }
+    }
+
+    /// The normalized permission tier this tool spawns with (test/debug
+    /// visibility).
+    pub fn permission_mode(&self) -> &str {
+        self.permission_mode
     }
 }
 
@@ -68,6 +67,8 @@ impl Tool for ClaudeCodeTool {
     }
 
     fn parameters(&self) -> serde_json::Value {
+        // T5: permission_mode is intentionally ABSENT — fixed config tier,
+        // not model-selectable.
         serde_json::json!({
             "type": "object",
             "properties": {
@@ -91,95 +92,30 @@ impl Tool for ClaudeCodeTool {
             return Err("'prompt' must not be empty".to_string());
         }
 
-        // Run in a real directory: the session_key is NOT a path in general
-        // (e.g. "web:chat123"), so only use it as a cwd base when its parent
-        // actually exists on disk; otherwise fall back to the process cwd.
-        let cwd = {
-            let p = std::path::Path::new(&context.session_key)
-                .parent()
-                .map(|p| p.to_path_buf());
-            match p {
-                Some(dir) if dir.is_dir() => dir,
-                _ => std::env::current_dir()
-                    .unwrap_or_else(|_| std::path::PathBuf::from(".")),
-            }
-        };
+        let cwd: std::path::PathBuf = cli_delegation::delegation_cwd(&context.session_key);
 
-        // H7 minimal: `--print` runs non-interactively and prints the final
-        // answer to stdout. No permission flags passed — the CLI's own
-        // settings (e.g. --permission-mode in the user's claude config)
-        // govern the child.
-        let mut cmd = Command::new(&self.cli_path);
-        // Timeout safety: if tokio::time::timeout drops the output() future
-        // at the deadline, the spawned child must die with it — without
-        // kill_on_drop the CLI process would outlive the tool call as an
-        // orphan (second-pass review fix).
-        cmd.kill_on_drop(true);
-        cmd.arg("--print")
-            .arg("-p")
-            .arg(prompt)
-            .arg("--output-format")
-            .arg("text")
-            .current_dir(&cwd)
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
-        #[cfg(windows)]
-        {
-            // Never open a console window (project background-process rule).
-            cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
-        }
+        // T5 (U13): `--permission-mode <tier>` keeps the child deterministic
+        // per deployment config. (H7 originally passed no permission flag and
+        // let the CLI's own settings govern the child; the original U13
+        // acceptance requires a fixed non-interactive tier instead.)
+        let args = vec![
+            "--print".to_string(),
+            "-p".to_string(),
+            prompt.to_string(),
+            "--output-format".to_string(),
+            "text".to_string(),
+            "--permission-mode".to_string(),
+            self.permission_mode.to_string(),
+        ];
 
-        // Spawn explicitly so a timeout KILLS THE PROCESS TREE: killing
-        // only the direct child (bat wrapper) leaves grandchildren holding
-        // the inherited stdout/stderr pipes open, and output() futures hang
-        // on pipe close until every holder exits (Windows inheritance
-        // classic — this is why the earlier kill_on_drop fix alone did not
-        // shorten the timeout path).
-        let child = cmd
-            .spawn()
-            .map_err(|e| format!("Error: failed to spawn claude CLI: {}", e))?;
-        // Capture the pid BEFORE moving `child` into wait_with_output (the
-        // timeout arm needs it for the tree kill).
-        let child_pid = child.id();
-        let out = match tokio::time::timeout(Duration::from_secs(self.timeout_secs), child.wait_with_output()).await {
-            Ok(r) => r.map_err(|e| format!("Error: claude CLI output wait failed: {}", e))?,
-            Err(_) => {
-                #[cfg(windows)]
-                {
-                    // Tree-kill (the CLI may spawn workers that inherit the
-                    // pipes).
-                    use std::os::windows::process::CommandExt;
-                    let _ = std::process::Command::new("taskkill")
-                        .args(["/PID", &child_pid.unwrap_or_default().to_string(), "/T", "/F"])
-                        .stdout(Stdio::null())
-                        .stderr(Stdio::null())
-                        .creation_flags(0x0800_0000)
-                        .status();
-                }
-                #[cfg(not(windows))]
-                {
-                    // POSIX: `child` was moved into wait_with_output;
-                    // kill_on_drop(true) (set at spawn) kills it when the
-                    // dropped future's Child reaper runs. Worker reaping is
-                    // the CLI's own responsibility on POSIX.
-                }
-                return Err(format!(
-                    "Error: claude_code delegation timed out after {}s",
-                    self.timeout_secs
-                ));
-            }
-        };
-
-        let stdout = String::from_utf8_lossy(&out.stdout);
-        let stderr = String::from_utf8_lossy(&out.stderr);
-        if !out.status.success() {
-            return Ok(format!(
-                "Error: claude CLI exited with {}.\nstdout:\n{}\nstderr:\n{}",
-                out.status, stdout, stderr
-            ));
-        }
-        Ok(stdout.trim().to_string())
+        cli_delegation::run_cli_delegation(CliDelegationSpec {
+            cli: &self.cli_path,
+            cli_label: "claude CLI",
+            args,
+            timeout_secs: self.timeout_secs,
+            cwd: &cwd,
+        })
+        .await
     }
 }
 

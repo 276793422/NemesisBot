@@ -8,6 +8,7 @@ use std::path::{Path, PathBuf};
 use thiserror::Error;
 use tracing::{error, info, warn};
 
+pub mod credentials;
 pub mod provider_resolver;
 pub mod store;
 
@@ -237,6 +238,12 @@ pub struct CodexToolConfig {
     pub enabled: bool,
     #[serde(default)]
     pub timeout_secs: Option<u64>,
+    /// T5 (U13): fixed sandbox tier — `read_only` | `workspace_write` |
+    /// `danger_full_access` (default `read_only`). Config-side snake_case,
+    /// mapped to codex's kebab-case CLI value (`--sandbox read-only` etc.) at
+    /// spawn. Empty/unknown → default (fail-safe). NOT model-selectable.
+    #[serde(default)]
+    pub sandbox: String,
 }
 
 impl Default for CodexToolConfig {
@@ -244,6 +251,7 @@ impl Default for CodexToolConfig {
         Self {
             enabled: false,
             timeout_secs: None,
+            sandbox: String::new(),
         }
     }
 }
@@ -257,6 +265,12 @@ pub struct ClaudeCodeToolConfig {
     /// Per-delegation wall-clock timeout in seconds (default 300).
     #[serde(default)]
     pub timeout_secs: Option<u64>,
+    /// T5 (U13): fixed permission tier — `default` | `accept_edits` | `plan`
+    /// | `bypass_permissions` (default `accept_edits`, the
+    /// non-interactive-safe tier) → `--permission-mode <tier>` at spawn.
+    /// Empty/unknown → default (fail-safe). NOT model-selectable.
+    #[serde(default)]
+    pub permission_mode: String,
 }
 
 impl Default for ClaudeCodeToolConfig {
@@ -264,6 +278,7 @@ impl Default for ClaudeCodeToolConfig {
         Self {
             enabled: false,
             timeout_secs: None,
+            permission_mode: String::new(),
         }
     }
 }
@@ -309,6 +324,11 @@ pub struct AgentDefaults {
     pub queue_size: i64,
     #[serde(default)]
     pub max_continuation_permits: i64,
+    /// U4: tool-result spill retention (days). Spill files under
+    /// `<home>/logs/spill/` older than this are deleted (startup scan +
+    /// daily midnight task in agent_factory). 0 = never clean up. Default 7.
+    #[serde(default = "default_spill_retention_days")]
+    pub spill_retention_days: i64,
 }
 
 impl Default for AgentDefaults {
@@ -326,6 +346,7 @@ impl Default for AgentDefaults {
             snapshot_role: default_snapshot_role(),
             queue_size: default_queue_size(),
             max_continuation_permits: 0,
+            spill_retention_days: default_spill_retention_days(),
         }
     }
 }
@@ -2200,6 +2221,9 @@ fn default_snapshot_role() -> String {
 }
 fn default_queue_size() -> i64 {
     8
+}
+fn default_spill_retention_days() -> i64 {
+    7
 }
 fn default_gateway_host() -> String {
     "0.0.0.0".to_string()

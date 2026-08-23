@@ -242,6 +242,31 @@ pub fn resolve_context_window(cfg: &serde_json::Value, active_alias: &str) -> Op
         .filter(|w| *w > 0)
 }
 
+/// T4 (U1): resolve the per-model `summarizer_prefix_reuse` flag for the
+/// active model alias. Mirrors [`resolve_max_output_tokens`]. `None` when
+/// unset/entry missing (caller's default applies = keep the prefix-reuse
+/// shape); `Some(false)` opts this model's summarizer out of prefix reuse —
+/// cheap summarizer models can break the assumed warm KV prefix (different
+/// tokenizer, no prompt caching), for which the fallback is the old
+/// shape-neutral single-message summary request. Explicit `true` is
+/// equivalent to the default but records intent in config.
+pub fn resolve_summarizer_prefix_reuse(
+    cfg: &serde_json::Value,
+    active_alias: &str,
+) -> Option<bool> {
+    cfg.get("model_list")
+        .and_then(|v| v.as_array())
+        .and_then(|arr| {
+            arr.iter().find(|m| {
+                let name = m.get("model_name").and_then(|v| v.as_str()).unwrap_or("");
+                let full = m.get("model").and_then(|v| v.as_str()).unwrap_or("");
+                name == active_alias || full == active_alias
+            })
+        })
+        .and_then(|m| m.get("summarizer_prefix_reuse"))
+        .and_then(|v| v.as_bool())
+}
+
 /// Resolve the display model id (`provider/name`, e.g. `deepseek/deepseek-v4-flash`)
 /// for the active model alias, by looking up `model_list[]` for the matching
 /// entry (by `model_name` or `model`) and returning its `model` field. Falls

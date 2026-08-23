@@ -571,6 +571,73 @@ async fn test_memory_tools_with_executor() {
     assert!(result.contains("deleted"));
 }
 
+/// Regression (T7 e2e bug #2): the agent-facing memory tool wrappers must
+/// expose EXACTLY the schemas `MemoryToolExecutor` consumes. The wrappers
+/// used to carry hand-copied schemas that drifted (store demanded `key` +
+/// tags-as-string; executor reads `memory_type`/`content`/tags-as-array) —
+/// args_validator validated against the wrapper schema, so executor-valid
+/// tool calls were rejected in production. The tests above bypass this by
+/// calling execute() directly, which is why the drift went unnoticed.
+#[cfg(feature = "memory")]
+#[test]
+fn test_memory_tool_schemas_match_executor_definitions() {
+    use nemesis_memory::memory_tools::memory_tool_definitions;
+
+    let cases: Vec<(&str, Box<dyn Fn() -> (String, serde_json::Value)>)> = vec![
+        (
+            "memory_search",
+            Box::new(|| {
+                let t = MemorySearchTool::new(None);
+                (t.description(), t.parameters())
+            }),
+        ),
+        (
+            "memory_store",
+            Box::new(|| {
+                let t = MemoryStoreTool::new(None);
+                (t.description(), t.parameters())
+            }),
+        ),
+        (
+            "memory_forget",
+            Box::new(|| {
+                let t = MemoryForgetTool::new(None);
+                (t.description(), t.parameters())
+            }),
+        ),
+        (
+            "memory_list",
+            Box::new(|| {
+                let t = MemoryListTool::new(None);
+                (t.description(), t.parameters())
+            }),
+        ),
+    ];
+
+    let defs = memory_tool_definitions();
+    for (name, get_wrapper) in cases {
+        let def = defs
+            .iter()
+            .find(|d| d.name == name)
+            .unwrap_or_else(|| panic!("executor definitions must cover `{name}`"));
+        let (desc, params) = get_wrapper();
+        assert_eq!(desc, def.description, "description drift for `{name}`");
+        assert_eq!(params, def.parameters, "schema drift for `{name}`");
+        // Sanity: the executor's store schema must accept the args shape the
+        // test model emits (tags as array, no `key`) — the exact call that
+        // was rejected before the fix.
+        if name == "memory_store" {
+            let required = def.parameters["required"].as_array().unwrap();
+            assert!(
+                !required.iter().any(|v| v == "key"),
+                "memory_store must not require `key` (executor ignores it)"
+            );
+            let tags = &def.parameters["properties"]["tags"];
+            assert_eq!(tags["type"], "array", "tags must be an array");
+        }
+    }
+}
+
 #[tokio::test]
 async fn test_skills_tools_stub() {
     let ctx = RequestContext::new("web", "chat1", "user1", "sess1");

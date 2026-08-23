@@ -1190,6 +1190,7 @@ fn test_cron_job_message_construction() {
             channel: Some("web".to_string()),
             to: Some("user1".to_string()),
             session_key: None,
+            max_rounds: None,
         },
         state: nemesis_cron::service::CronJobState {
             next_run_at_ms: Some(1000),

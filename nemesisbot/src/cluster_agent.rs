@@ -168,7 +168,7 @@ async fn execute_new_task(
         );
     }
     let events = agent_loop
-        .run_with_trace(&instance, &task.content, &context, &trace_id, false, &token)
+        .run_with_trace(&instance, &task.content, &context, &trace_id, false, &token, None)
         .await;
     if let Some(ref obs) = cluster_observer {
         let final_msg = extract_final_message(&events);

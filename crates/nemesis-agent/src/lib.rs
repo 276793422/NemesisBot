@@ -39,6 +39,7 @@ pub mod probe;
 pub mod registry;
 pub mod inbox;
 pub mod prune;
+pub mod replay;
 pub mod skills_digest;
 pub mod workspace_instructions;
 pub mod remote_executor_tool;

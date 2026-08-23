@@ -11,6 +11,7 @@ const emit = defineEmits<{
 const tabs = [
   { id: 'events',   label: '实时事件流', icon: '📡' },
   { id: 'sessions', label: '会话浏览器', icon: '💬' },
+  { id: 'search',   label: '会话检索',   icon: '🔍' },
   { id: 'audit',    label: '安全审计',   icon: '🔒' },
   { id: 'chain',    label: '审计链',     icon: '🔗' },
 ]

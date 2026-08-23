@@ -739,6 +739,36 @@ fn test_agents_config_default() {
     assert!(agents.list.is_empty());
 }
 
+/// T5 (U13): delegation permission-tier config — new fields parse, absent
+/// fields (old config.json) default to empty (= tool default tier).
+#[test]
+fn test_delegation_tool_permission_tier_config() {
+    // Old JSON (pre-T5) — no permission_mode/sandbox keys.
+    let old: AgentsConfig = serde_json::from_str(r#"{"list": []}"#).unwrap();
+    assert_eq!(old.claude_code_tool.permission_mode, "");
+    assert_eq!(old.codex_tool.sandbox, "");
+
+    // New JSON with explicit tiers.
+    let cfg: AgentsConfig = serde_json::from_str(
+        r#"{
+        "list": [],
+        "claude_code_tool": {"enabled": true, "permission_mode": "plan", "timeout_secs": 120},
+        "codex_tool": {"enabled": true, "sandbox": "workspace_write"}
+    }"#,
+    )
+    .unwrap();
+    assert!(cfg.claude_code_tool.enabled);
+    assert_eq!(cfg.claude_code_tool.permission_mode, "plan");
+    assert_eq!(cfg.claude_code_tool.timeout_secs, Some(120));
+    assert!(cfg.codex_tool.enabled);
+    assert_eq!(cfg.codex_tool.sandbox, "workspace_write");
+    // Round-trip keeps the tiers.
+    let rt: AgentsConfig =
+        serde_json::from_str(&serde_json::to_string(&cfg).unwrap()).unwrap();
+    assert_eq!(rt.claude_code_tool.permission_mode, "plan");
+    assert_eq!(rt.codex_tool.sandbox, "workspace_write");
+}
+
 #[test]
 fn test_channels_config_default() {
     let channels = ChannelsConfig::default();

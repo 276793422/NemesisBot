@@ -1112,7 +1112,7 @@ impl Tool for CronTool {
     }
 
     fn parameters(&self) -> serde_json::Value {
-        serde_json::json!({"type":"object","properties":{"action":{"type":"string","description":"One of: create, delete, list"},"at_seconds":{"type":"integer","description":"Seconds from now for one-time execution"},"every_seconds":{"type":"integer","description":"Interval in seconds for recurring execution"},"cron_expr":{"type":"string","description":"Cron expression for complex schedules"},"command":{"type":"string","description":"Command or message to execute"},"message":{"type":"string","description":"Reminder message"},"continue_session":{"type":"boolean","description":"true = when the job fires, continue THIS conversation's session (context/persona preserved, reply lands in this chat history). false (default) = fresh session at fire time. Only meaningful with deliver=false."}}})
+        serde_json::json!({"type":"object","properties":{"action":{"type":"string","description":"One of: create, delete, list"},"at_seconds":{"type":"integer","description":"Seconds from now for one-time execution"},"every_seconds":{"type":"integer","description":"Interval in seconds for recurring execution"},"cron_expr":{"type":"string","description":"Cron expression for complex schedules"},"command":{"type":"string","description":"Command or message to execute"},"message":{"type":"string","description":"Reminder message"},"continue_session":{"type":"boolean","description":"true = when the job fires, continue THIS conversation's session (context/persona preserved, reply lands in this chat history). false (default) = fresh session at fire time. Only meaningful with deliver=false."},"max_rounds":{"type":"integer","enum":[5,10,20],"default":10,"description":"Per-fire tool-round budget when continue_session=true: the fired turn stops gracefully after this many tool rounds (work is saved; the job is NOT deleted — next fire re-budgets). Fixed tiers only. Ignored when continue_session=false."}}})
     }
 
     async fn execute(&self, args: &str, context: &RequestContext) -> Result<String, String> {
@@ -1218,6 +1218,22 @@ impl Tool for CronTool {
                     .and_then(|v| v.as_bool())
                     .unwrap_or(false);
 
+                // T3 (U12): per-fire tool-round budget, only meaningful with
+                // continue_session=true. Fixed enum tiers (5/10/20) — the
+                // args_validator rejects off-enum values before dispatch, so a
+                // model cannot free-form this into a 1000-round budget. Default
+                // 10 per the goal's tier table. None when not continuing (the
+                // fired turn then runs under the global max_turns).
+                let max_rounds: Option<u32> = if continue_session {
+                    Some(
+                        val.get("max_rounds")
+                            .and_then(|v| v.as_u64())
+                            .unwrap_or(10) as u32,
+                    )
+                } else {
+                    None
+                };
+
                 let job = if continue_session {
                     svc.add_job_ext(
                         name,
@@ -1235,6 +1251,7 @@ impl Tool for CronTool {
                             Some(&chat_id)
                         },
                         Some(&context.session_key),
+                        max_rounds,
                         true,
                     )
                     .map_err(|e| e.to_string())?
@@ -1258,9 +1275,12 @@ impl Tool for CronTool {
                     .map_err(|e| e.to_string())?
                 };
                 let mode_note = if continue_session {
-                    " [continues this session]"
+                    format!(
+                        " [continues this session; per-fire budget {} rounds]",
+                        max_rounds.unwrap_or(10)
+                    )
                 } else {
-                    ""
+                    String::new()
                 };
                 Ok(format!(
                     "Created cron job: {} (ID: {}){}",
@@ -2505,6 +2525,25 @@ impl Tool for SpawnTool {
 // Memory tools
 // ===========================================================================
 
+/// Fetch a memory tool's canonical definition from nemesis-memory.
+///
+/// Single source of truth for the agent-facing memory tool schemas: the
+/// wrappers' `parameters()`/`description()` below delegate to
+/// [`memory_tool_definitions`] so they can never drift from what
+/// `MemoryToolExecutor` actually consumes. (T7 e2e found exactly that
+/// drift: the hand-copied `memory_store` schema demanded `key` +
+/// tags-as-string while the executor reads `memory_type`/`content` +
+/// tags-as-array — args_validator then rejected executor-valid calls.)
+///
+/// [`memory_tool_definitions`]: nemesis_memory::memory_tools::memory_tool_definitions
+#[cfg(feature = "memory")]
+fn memory_tool_def(name: &str) -> nemesis_memory::memory_tools::MemoryTool {
+    nemesis_memory::memory_tools::memory_tool_definitions()
+        .into_iter()
+        .find(|d| d.name == name)
+        .unwrap_or_else(|| panic!("memory_tool_definitions must cover `{name}`"))
+}
+
 /// Memory search tool for searching conversation memory.
 ///
 /// Delegates to `nemesis_memory::memory_tools::MemoryToolExecutor` for the
@@ -2526,11 +2565,11 @@ impl MemorySearchTool {
 #[async_trait]
 impl Tool for MemorySearchTool {
     fn description(&self) -> String {
-        "Search long-term memory for relevant information".to_string()
+        memory_tool_def("memory_search").description
     }
 
     fn parameters(&self) -> serde_json::Value {
-        serde_json::json!({"type":"object","properties":{"query":{"type":"string","description":"Search query"},"limit":{"type":"integer","description":"Maximum results to return"}},"required":["query"]})
+        memory_tool_def("memory_search").parameters
     }
 
     async fn execute(&self, args: &str, _context: &RequestContext) -> Result<String, String> {
@@ -2571,11 +2610,11 @@ impl MemoryStoreTool {
 #[async_trait]
 impl Tool for MemoryStoreTool {
     fn description(&self) -> String {
-        "Store information in long-term memory".to_string()
+        memory_tool_def("memory_store").description
     }
 
     fn parameters(&self) -> serde_json::Value {
-        serde_json::json!({"type":"object","properties":{"key":{"type":"string","description":"Memory key"},"content":{"type":"string","description":"Content to store"},"tags":{"type":"string","description":"Comma-separated tags"}},"required":["key","content"]})
+        memory_tool_def("memory_store").parameters
     }
 
     async fn execute(&self, args: &str, _context: &RequestContext) -> Result<String, String> {
@@ -2616,11 +2655,11 @@ impl MemoryForgetTool {
 #[async_trait]
 impl Tool for MemoryForgetTool {
     fn description(&self) -> String {
-        "Remove information from long-term memory".to_string()
+        memory_tool_def("memory_forget").description
     }
 
     fn parameters(&self) -> serde_json::Value {
-        serde_json::json!({"type":"object","properties":{"action":{"type":"string","description":"Action: delete_session or delete_key"},"session_key":{"type":"string","description":"Session key to forget"},"key":{"type":"string","description":"Memory key to forget"}}})
+        memory_tool_def("memory_forget").parameters
     }
 
     async fn execute(&self, args: &str, _context: &RequestContext) -> Result<String, String> {
@@ -2661,11 +2700,11 @@ impl MemoryListTool {
 #[async_trait]
 impl Tool for MemoryListTool {
     fn description(&self) -> String {
-        "List all memories in long-term storage".to_string()
+        memory_tool_def("memory_list").description
     }
 
     fn parameters(&self) -> serde_json::Value {
-        serde_json::json!({"type":"object","properties":{"limit":{"type":"integer","description":"Maximum items to return"},"offset":{"type":"integer","description":"Offset for pagination"}}})
+        memory_tool_def("memory_list").parameters
     }
 
     async fn execute(&self, args: &str, _context: &RequestContext) -> Result<String, String> {
@@ -4557,10 +4596,18 @@ pub struct SharedToolConfig {
     pub claude_code_tool_enabled: bool,
     /// H7: wall-clock timeout per delegation (None = 300s default).
     pub claude_code_tool_timeout_secs: Option<u64>,
+    /// T5 (U13): fixed claude permission tier (empty = default accept_edits;
+    /// enum default/accept_edits/plan/bypass_permissions). NOT in the tool
+    /// schema — deployment config governs, the model cannot choose it.
+    pub claude_code_tool_permission_mode: String,
     /// I4 (U13 half): enable the codex_delegate tool. Default false.
     pub codex_tool_enabled: bool,
     /// I4: wall-clock timeout per codex delegation (None = 300s default).
     pub codex_tool_timeout_secs: Option<u64>,
+    /// T5 (U13): fixed codex sandbox tier (empty = default read_only; enum
+    /// read_only/workspace_write/danger_full_access, snake_case config →
+    /// kebab-case CLI value). NOT in the tool schema.
+    pub codex_tool_sandbox: String,
     /// Forge tool executor for self-learning tools (forge_reflect, forge_create, etc).
     #[cfg(feature = "forge")]
     pub forge_executor: Option<Arc<nemesis_forge::forge_tools::ForgeToolExecutor>>,
@@ -4604,8 +4651,10 @@ impl Default for SharedToolConfig {
             cron_service: None,
             claude_code_tool_enabled: false,
             claude_code_tool_timeout_secs: None,
+            claude_code_tool_permission_mode: String::new(),
             codex_tool_enabled: false,
             codex_tool_timeout_secs: None,
+            codex_tool_sandbox: String::new(),
             forge_executor: None,
             forge: None,
             memory_executor: None,
@@ -4822,6 +4871,7 @@ pub fn register_shared_tools(config: &SharedToolConfig) -> HashMap<String, Box<d
                     Box::new(claude_code_tool::ClaudeCodeTool::new(
                         path.clone(),
                         config.claude_code_tool_timeout_secs,
+                        Some(&config.claude_code_tool_permission_mode),
                     )),
                 );
             }
@@ -4846,6 +4896,7 @@ pub fn register_shared_tools(config: &SharedToolConfig) -> HashMap<String, Box<d
                     Box::new(codex_tool::CodexTool::new(
                         path.clone(),
                         config.codex_tool_timeout_secs,
+                        Some(&config.codex_tool_sandbox),
                     )),
                 );
             }
@@ -5073,8 +5124,10 @@ pub fn register_extended_tools(
         cron_service: None,
         claude_code_tool_enabled: false,
         claude_code_tool_timeout_secs: None,
+        claude_code_tool_permission_mode: String::new(),
         codex_tool_enabled: false,
         codex_tool_timeout_secs: None,
+        codex_tool_sandbox: String::new(),
         forge_executor: None,
         forge: None,
         memory_executor: None,
@@ -5087,6 +5140,7 @@ pub fn register_extended_tools(
 }
 
 pub mod claude_code_tool;
+pub mod cli_delegation;
 pub mod codex_tool;
 
 #[cfg(test)]

@@ -1,0 +1,10 @@
+README.md
+pyproject.toml
+nemesisbot/__init__.py
+nemesisbot/client.py
+nemesisbot.egg-info/PKG-INFO
+nemesisbot.egg-info/SOURCES.txt
+nemesisbot.egg-info/dependency_links.txt
+nemesisbot.egg-info/requires.txt
+nemesisbot.egg-info/top_level.txt
+tests/test_client.py

@@ -139,6 +139,11 @@ impl TasksHandler {
         let channel = get_opt_str(data, "channel");
         let to = get_opt_str(data, "to");
         let session_key = get_opt_str(data, "session_key");
+        // T3 (U12): optional per-fire tool-round budget (continuation turns).
+        let max_rounds = data
+            .get("max_rounds")
+            .and_then(|v| v.as_u64())
+            .map(|v| v as u32);
         let prompt = get_opt_str(data, "prompt").unwrap_or_default();
         let enabled = data
             .get("enabled")
@@ -153,6 +158,7 @@ impl TasksHandler {
             channel.as_deref(),
             to.as_deref(),
             session_key.as_deref(),
+            max_rounds,
             enabled,
         )?;
         Ok(Some(

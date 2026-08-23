@@ -593,6 +593,7 @@ fn test_cron_payload_serialization() {
         channel: Some("web".to_string()),
         to: Some("user1".to_string()),
         session_key: None,
+        max_rounds: None,
     };
     let json = serde_json::to_string(&payload).unwrap();
     let parsed: CronPayload = serde_json::from_str(&json).unwrap();
@@ -600,6 +601,71 @@ fn test_cron_payload_serialization() {
     assert_eq!(parsed.message, "hello");
     assert!(parsed.deliver);
     assert_eq!(parsed.channel, Some("web".to_string()));
+}
+
+// -------------------------------------------------------------------------
+// T3 (U12): max_rounds per-fire budget
+// -------------------------------------------------------------------------
+
+/// Old payloads persisted BEFORE max_rounds existed must deserialize with
+/// max_rounds = None (#[serde(default)] compatibility).
+#[test]
+fn test_cron_payload_max_rounds_old_json_compat() {
+    let old_json = r#"{
+        "kind": "agent_turn",
+        "message": "check in",
+        "command": null,
+        "deliver": false,
+        "channel": "web",
+        "to": null,
+        "session_key": "agent:main:session:abc"
+    }"#;
+    let parsed: CronPayload = serde_json::from_str(old_json).unwrap();
+    assert_eq!(parsed.session_key.as_deref(), Some("agent:main:session:abc"));
+    assert_eq!(parsed.max_rounds, None, "old JSON → no budget");
+}
+
+/// New payloads carry the budget through a serialize/deserialize round-trip.
+#[test]
+fn test_cron_payload_max_rounds_roundtrip() {
+    let payload = CronPayload {
+        kind: "agent_turn".to_string(),
+        message: "m".to_string(),
+        command: None,
+        deliver: false,
+        channel: None,
+        to: None,
+        session_key: Some("agent:s".to_string()),
+        max_rounds: Some(5),
+    };
+    let json = serde_json::to_string(&payload).unwrap();
+    assert!(json.contains("\"max_rounds\":5"), "field serialized: {json}");
+    let parsed: CronPayload = serde_json::from_str(&json).unwrap();
+    assert_eq!(parsed.max_rounds, Some(5));
+}
+
+/// add_job_ext threads max_rounds into the payload; the legacy add_job
+/// delegates with None (no budget → global default at fire time).
+#[test]
+fn test_add_job_ext_max_rounds() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("cron.json").to_string_lossy().to_string();
+    let svc = CronService::new(&path);
+    let every = CronSchedule {
+        kind: "every".to_string(),
+        at_ms: None,
+        every_ms: Some(60000),
+        expr: None,
+        tz: None,
+    };
+    let budgeted = svc
+        .add_job_ext("b", every.clone(), "m", false, None, None, Some("agent:s"), Some(10), true)
+        .unwrap();
+    assert_eq!(budgeted.payload.max_rounds, Some(10));
+    assert_eq!(budgeted.payload.session_key.as_deref(), Some("agent:s"));
+
+    let legacy = svc.add_job("l", every, "m", false, None, None).unwrap();
+    assert_eq!(legacy.payload.max_rounds, None, "legacy path → no budget");
 }
 
 #[test]
@@ -641,6 +707,7 @@ fn test_cron_job_serialization() {
             channel: None,
             to: None,
             session_key: None,
+            max_rounds: None,
         },
         state: CronJobState {
             next_run_at_ms: Some(now_ms + 60000),

@@ -1,10 +1,11 @@
 <script setup lang="ts">
-import { ref, computed, watch } from 'vue'
+import { ref, computed, watch, nextTick } from 'vue'
 import LogsTabs from '../components/logs/LogsTabs.vue'
 import EventStream from '../components/logs/EventStream.vue'
 import SessionExplorer from '../components/logs/SessionExplorer.vue'
 import SecurityAudit from '../components/logs/SecurityAudit.vue'
 import IntegrityChain from '../components/logs/IntegrityChain.vue'
+import HistorySearch from '../components/logs/HistorySearch.vue'
 import { useWSAPI } from '../composables/useWSAPI'
 import type {
   SessionEntry, LlmRequestEntry, ClusterTaskEntry,
@@ -101,6 +102,24 @@ watch(activeTab, (tab) => {
 function onNavigate(target: { type: string; id: string }) {
   console.log('[LogsView] navigate', target)
 }
+
+// T6 (U20): 会话检索 → 定位跳转。HistorySearch 的 session_key 就是
+// session_detail 期望的文件 stem，无需转换；切到会话浏览器并联动选中。
+// SessionExplorer 是 v-else-if 挂载的——从检索页切过来时组件重挂，prop
+// 首值不会触发 watch，所以这里用 null→nextTick 赋值制造一次变更。
+const focusSessionId = ref<string | null>(null)
+
+async function onLocate(sessionKey: string) {
+  focusSessionId.value = null
+  activeTab.value = 'sessions'
+  if (!loadedTabs.has('sessions')) {
+    // Ensure the list data lands before the focus prop settles, so the
+    // target row can highlight if it's within the loaded page.
+    await loadSessionsTab()
+  }
+  await nextTick()
+  focusSessionId.value = sessionKey
+}
 </script>
 
 <template>
@@ -120,8 +139,13 @@ function onNavigate(target: { type: string; id: string }) {
           :sessions="sessions"
           :requests="requests"
           :tasks="tasks"
+          :focus-session="focusSessionId"
           @navigate="onNavigate"
           @reload="loadSessionsTab"
+        />
+        <HistorySearch
+          v-else-if="activeTab === 'search'"
+          @locate="onLocate"
         />
         <SecurityAudit
           v-else-if="activeTab === 'audit'"

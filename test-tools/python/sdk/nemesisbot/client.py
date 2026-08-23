@@ -26,6 +26,7 @@ Known limitations (minimal version, per goal):
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import shutil
@@ -44,19 +45,25 @@ class NemesisBotError(RuntimeError):
 
 DEFAULT_WEB_PORT = 49000
 DEFAULT_TIMEOUT = 300.0
-HEALTH_PORT = 18790
+DEFAULT_HEALTH_PORT = 18790
 
 
-def _read_ws_endpoint(workspace: Path, fallback_port: int) -> tuple[int, str]:
-    """Resolve the web-server /ws endpoint for a `--local` workspace.
+def _read_ws_endpoint(workspace: Path, fallback_port: int) -> tuple[int, str, int]:
+    """Resolve the web-server /ws endpoint + health port for a `--local`
+    workspace.
 
-    Reads <workspace>/.nemesisbot/config.json for channels.web.port and
-    auth_token, then prefers the gateway's post-bind report in
-    <workspace>/.nemesisbot/workspace/state/gateway.json (real bound port)
-    when present and reachable-looking.
+    Reads <workspace>/.nemesisbot/config.json for channels.web.port,
+    auth_token and gateway.port (the health server's port — per-workspace,
+    NOT a machine constant: other gateways may already own the default
+    18790), then prefers the gateway's post-bind report in
+    <workspace>/.nemesisbot/workspace/state/gateway.json (real bound web
+    port) when present and reachable-looking.
+
+    Returns (web_port, auth_token, health_port).
     """
     port = fallback_port
     token = ""
+    health_port = DEFAULT_HEALTH_PORT
     cfg_path = workspace / ".nemesisbot" / "config.json"
     try:
         with open(cfg_path, encoding="utf-8") as f:
@@ -64,6 +71,8 @@ def _read_ws_endpoint(workspace: Path, fallback_port: int) -> tuple[int, str]:
         web = (cfg.get("channels") or {}).get("web") or {}
         port = int(web.get("port") or fallback_port)
         token = str(web.get("auth_token") or "")
+        gateway = cfg.get("gateway") or {}
+        health_port = int(gateway.get("port") or DEFAULT_HEALTH_PORT)
     except (OSError, ValueError):
         pass  # not onboarded yet / unparsable — fall back to defaults
     state_path = workspace / ".nemesisbot" / "workspace" / "state" / "gateway.json"
@@ -75,7 +84,7 @@ def _read_ws_endpoint(workspace: Path, fallback_port: int) -> tuple[int, str]:
             port = real
     except (OSError, ValueError):
         pass
-    return port, token
+    return port, token, health_port
 
 
 def _find_binary(explicit: Optional[str] = None) -> str:
@@ -124,6 +133,10 @@ class NemesisBot:
         self.startup_timeout = startup_timeout
         self._proc: Optional[subprocess.Popen] = None
         self._ws = None
+        # Health port for THIS workspace (per-config gateway.port). Resolved
+        # at start(); NOT a machine constant — another gateway may already
+        # own the default 18790, which would false-positive the probe.
+        self._health_port = DEFAULT_HEALTH_PORT
 
     # -- lifecycle ---------------------------------------------------------
 
@@ -148,21 +161,33 @@ class NemesisBot:
             )
         finally:
             log_f.close()
-        self._wait_healthy()
-        # Resolve the web /ws endpoint AFTER the gateway is up: config.json
-        # carries port+token, gateway.json carries the real bound port.
+        # Read the workspace config BEFORE the health probe: the health
+        # port is per-workspace (config gateway.port), and probing the
+        # default would happily succeed against some OTHER machine-local
+        # gateway. gateway.json's real bound web port is re-read after the
+        # gateway is up.
         if self._ws_port_override is None:
-            self.ws_port, self.auth_token = _read_ws_endpoint(
+            self.ws_port, self.auth_token, self._health_port = _read_ws_endpoint(
                 self.workspace, DEFAULT_WEB_PORT
             )
         else:
-            _, self.auth_token = _read_ws_endpoint(self.workspace, self.ws_port)
+            _, self.auth_token, self._health_port = _read_ws_endpoint(
+                self.workspace, self.ws_port
+            )
+            self.ws_port = self._ws_port_override
+        self._wait_healthy()
+        # Re-resolve once healthy: gateway.json (post-bind real web port)
+        # only exists once the gateway is up.
+        if self._ws_port_override is None:
+            self.ws_port, self.auth_token, self._health_port = _read_ws_endpoint(
+                self.workspace, DEFAULT_WEB_PORT
+            )
 
     def _wait_healthy(self) -> None:
         import urllib.request
 
         deadline = time.monotonic() + self.startup_timeout
-        url = f"http://127.0.0.1:{HEALTH_PORT}/health"
+        url = f"http://127.0.0.1:{self._health_port}/health"
         last_err: Optional[Exception] = None
         while time.monotonic() < deadline:
             if self._proc and self._proc.poll() is not None:
@@ -185,8 +210,6 @@ class NemesisBot:
         """Terminate the subprocess tree."""
         if self._ws is not None:
             try:
-                import asyncio
-
                 asyncio.get_event_loop().run_until_complete(self._ws.close())
             except Exception:  # noqa: BLE001 — best-effort close
                 pass
@@ -215,6 +238,28 @@ class NemesisBot:
     def __exit__(self, *exc) -> None:
         self.stop()
 
+    def turn(self, prompt: str, timeout: float = DEFAULT_TIMEOUT) -> str:
+        """One-shot synchronous turn (U17): the 3-line entry point.
+
+        Starts the gateway if this instance doesn't already own a running
+        one, sends one prompt, blocks for the assistant's reply frame
+        (same completion semantics + timeout watchdog as :meth:`send`),
+        and stops the gateway again only if this call started it. When the
+        instance was already started (context manager / explicit
+        :meth:`start`), the gateway stays up for further turns::
+
+            bot = NemesisBot(workspace="./mybot")
+            print(bot.turn("List the files in this directory."))
+        """
+        owned = self._proc is None
+        if owned:
+            self.start()
+        try:
+            return self.send(prompt, timeout)
+        finally:
+            if owned:
+                self.stop()
+
     # -- chat ----------------------------------------------------------------
 
     def send(self, prompt: str, timeout: float = DEFAULT_TIMEOUT) -> str:
@@ -224,8 +269,6 @@ class NemesisBot:
         `chat/receive` frame completes the turn (the protocol has no
         explicit done frame). `system/error` frames raise.
         """
-        import asyncio
-
         return asyncio.run(self._send_async(prompt, timeout))
 
     async def _send_async(self, prompt: str, timeout: float) -> str:

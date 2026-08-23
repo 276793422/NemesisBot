@@ -1,25 +1,32 @@
-//! Codex CLI delegation tool (I4 / U13 other half, minimal spawn version,
-//! dsh-alignment third batch).
+//! Codex CLI delegation tool (I4 / U13 other half; T5 refactored to the
+//! shared CLI-delegation layer).
 //!
 //! Delegates a self-contained task to the local OpenAI Codex CLI:
-//! `codex exec "<prompt>"` (one-shot non-interactive execution; stdout
-//! collected as the result). VERIFICATION STATUS: the codex CLI was NOT
-//! present on this machine when this was written, so the exec sub-command
-//! shape follows Codex CLI's public documentation (`codex exec` runs a
-//! prompt non-interactively); if your codex build differs, adjust the args
-//! below — the tool degrades to a structured error, never panics.
+//! `codex exec --skip-git-repo-check --sandbox <tier> --ask-for-approval never "<prompt>"`
+//! (one-shot non-interactive execution; stdout collected as the result).
+//! The spawn/timeout/tree-kill plumbing lives in [`super::cli_delegation`]
+//! (T5 / A9 — this file is now the "argument construction + config" shell).
 //!
-//! Same minimal scope as its H7 claude_code sibling: no app-server
-//! JSON-RPC session, no permission pass-through (the CLI's own config
-//! governs the child). Registration is OPT-IN (`agents.codex_tool.enabled`,
-//! default false) AND requires the CLI on PATH at registration time.
+//! T5 (U13 original item): the sandbox is a FIXED config tier
+//! (`agents.codex_tool.sandbox`, enum read_only/workspace_write/
+//! danger_full_access, default `read_only`) mapped to codex's kebab-case CLI
+//! value at spawn, plus the implied `--ask-for-approval never` (non-interactive
+//! — there is no TTY to answer an approval prompt, a hung child just burns
+//! the timeout). Deliberately NOT in the tool schema: the model cannot
+//! choose it.
+//!
+//! VERIFICATION STATUS: the codex CLI was NOT present on this machine when
+//! this was written, so the exec sub-command shape follows Codex CLI's public
+//! documentation; real-machine verification is the tracked B3 debt — the tool
+//! degrades to a structured error, never panics.
+//!
+//! Registration is OPT-IN (`agents.codex_tool.enabled`, default false) AND
+//! requires the CLI on PATH at registration time.
 
 use crate::context::RequestContext;
+use crate::loop_tools::cli_delegation::{self, CliDelegationSpec};
 use crate::loop_tools::Tool;
 use async_trait::async_trait;
-use std::process::Stdio;
-use std::time::Duration;
-use tokio::process::Command;
 
 /// Default wall-clock budget for one delegation.
 const DEFAULT_TIMEOUT_SECS: u64 = 300;
@@ -27,23 +34,7 @@ const DEFAULT_TIMEOUT_SECS: u64 = 300;
 /// Locate the Codex CLI: `where codex` (Windows) / `which codex`.
 /// Returns the resolved path, or None when not installed.
 pub fn find_codex_cli() -> Option<String> {
-    let finder = if cfg!(windows) { "where" } else { "which" };
-    let out = std::process::Command::new(finder)
-        .arg("codex")
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .output()
-        .ok()?;
-    if !out.status.success() {
-        return None;
-    }
-    let s = String::from_utf8_lossy(&out.stdout);
-    let first = s.lines().next()?.trim().to_string();
-    if first.is_empty() {
-        None
-    } else {
-        Some(first)
-    }
+    cli_delegation::find_cli_on_path("codex")
 }
 
 /// The delegation tool. Constructed only when the CLI was found AND the
@@ -51,14 +42,26 @@ pub fn find_codex_cli() -> Option<String> {
 pub struct CodexTool {
     cli_path: String,
     timeout_secs: u64,
+    /// T5: fixed sandbox tier (snake_case, already normalized; default
+    /// read_only).
+    sandbox: &'static str,
 }
 
 impl CodexTool {
-    pub fn new(cli_path: String, timeout_secs: Option<u64>) -> Self {
+    /// `sandbox: None` = unset in config → `read_only` (default). Unknown
+    /// values fall back to the default (fail-safe).
+    pub fn new(cli_path: String, timeout_secs: Option<u64>, sandbox: Option<&str>) -> Self {
         Self {
             cli_path,
             timeout_secs: timeout_secs.unwrap_or(DEFAULT_TIMEOUT_SECS),
+            sandbox: cli_delegation::resolve_codex_sandbox(sandbox.unwrap_or("")),
         }
+    }
+
+    /// The normalized sandbox tier this tool spawns with (test/debug
+    /// visibility).
+    pub fn sandbox(&self) -> &str {
+        self.sandbox
     }
 }
 
@@ -69,6 +72,8 @@ impl Tool for CodexTool {
     }
 
     fn parameters(&self) -> serde_json::Value {
+        // T5: sandbox is intentionally ABSENT — fixed config tier, not
+        // model-selectable.
         serde_json::json!({
             "type": "object",
             "properties": {
@@ -92,100 +97,32 @@ impl Tool for CodexTool {
             return Err("'prompt' must not be empty".to_string());
         }
 
-        // Run in a real directory: the session_key is NOT a path in general
-        // (e.g. "web:chat123"), so only use it as a cwd base when its parent
-        // actually exists on disk; otherwise fall back to the process cwd.
-        let cwd = {
-            let p = std::path::Path::new(&context.session_key)
-                .parent()
-                .map(|p| p.to_path_buf());
-            match p {
-                Some(dir) if dir.is_dir() => dir,
-                _ => std::env::current_dir()
-                    .unwrap_or_else(|_| std::path::PathBuf::from(".")),
-            }
-        };
+        let cwd: std::path::PathBuf = cli_delegation::delegation_cwd(&context.session_key);
 
-        // I4 minimal: `codex exec` runs the prompt non-interactively and
-        // prints the final answer to stdout. No permission flags passed —
-        // the CLI's own config governs the child. (See the module doc:
-        // exec-shape per public docs, CLI absent on the dev machine.)
-        //
-        // Round-5 fix: `--skip-git-repo-check` — codex exec refuses to run
-        // outside a git repository by default, and the gateway's cwd is
-        // typically the (non-git) workspace home, which would make EVERY
-        // delegation fail with codex's not-inside-a-git-repo error. The
-        // in-repo codex_cli provider (nemesis-providers/src/codex_cli.rs)
-        // passes the same flag.
-        let mut cmd = Command::new(&self.cli_path);
-        // Timeout safety: if tokio::time::timeout drops the output() future
-        // at the deadline, the spawned child must die with it — without
-        // kill_on_drop the CLI process would outlive the tool call as an
-        // orphan (second-pass review fix).
-        cmd.kill_on_drop(true);
-        cmd.arg("exec")
-            .arg("--skip-git-repo-check")
-            .arg(prompt)
-            .current_dir(&cwd)
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
-        #[cfg(windows)]
-        {
-            // Never open a console window (project background-process rule).
-            cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
-        }
+        // `codex exec` runs the prompt non-interactively and prints the final
+        // answer to stdout. `--skip-git-repo-check`: codex exec refuses to
+        // run outside a git repository by default, and the gateway's cwd is
+        // typically the (non-git) workspace home (same flag as the in-repo
+        // codex_cli provider). `--sandbox` + `--ask-for-approval never` are
+        // the T5 fixed tiers (see module doc).
+        let args = vec![
+            "exec".to_string(),
+            "--skip-git-repo-check".to_string(),
+            "--sandbox".to_string(),
+            cli_delegation::codex_sandbox_kebab(self.sandbox).to_string(),
+            "--ask-for-approval".to_string(),
+            "never".to_string(),
+            prompt.to_string(),
+        ];
 
-        // Spawn explicitly so a timeout KILLS THE PROCESS TREE: killing
-        // only the direct child (bat wrapper) leaves grandchildren holding
-        // the inherited stdout/stderr pipes open, and output() futures hang
-        // on pipe close until every holder exits (Windows inheritance
-        // classic — this is why the earlier kill_on_drop fix alone did not
-        // shorten the timeout path).
-        let child = cmd
-            .spawn()
-            .map_err(|e| format!("Error: failed to spawn codex CLI: {}", e))?;
-        // Capture the pid BEFORE moving `child` into wait_with_output (the
-        // timeout arm needs it for the tree kill).
-        let child_pid = child.id();
-        let out = match tokio::time::timeout(Duration::from_secs(self.timeout_secs), child.wait_with_output()).await {
-            Ok(r) => r.map_err(|e| format!("Error: codex CLI output wait failed: {}", e))?,
-            Err(_) => {
-                #[cfg(windows)]
-                {
-                    // Tree-kill (the CLI may spawn workers that inherit the
-                    // pipes).
-                    use std::os::windows::process::CommandExt;
-                    let _ = std::process::Command::new("taskkill")
-                        .args(["/PID", &child_pid.unwrap_or_default().to_string(), "/T", "/F"])
-                        .stdout(Stdio::null())
-                        .stderr(Stdio::null())
-                        .creation_flags(0x0800_0000)
-                        .status();
-                }
-                #[cfg(not(windows))]
-                {
-                    // POSIX: `child` was moved into wait_with_output;
-                    // kill_on_drop(true) (set at spawn) kills it when the
-                    // dropped future's Child reaper runs. Worker reaping is
-                    // the CLI's own responsibility on POSIX.
-                }
-                return Err(format!(
-                    "Error: codex delegation timed out after {}s",
-                    self.timeout_secs
-                ));
-            }
-        };
-
-        let stdout = String::from_utf8_lossy(&out.stdout);
-        let stderr = String::from_utf8_lossy(&out.stderr);
-        if !out.status.success() {
-            return Ok(format!(
-                "Error: codex CLI exited with {}.\nstdout:\n{}\nstderr:\n{}",
-                out.status, stdout, stderr
-            ));
-        }
-        Ok(stdout.trim().to_string())
+        cli_delegation::run_cli_delegation(CliDelegationSpec {
+            cli: &self.cli_path,
+            cli_label: "codex CLI",
+            args,
+            timeout_secs: self.timeout_secs,
+            cwd: &cwd,
+        })
+        .await
     }
 }
 

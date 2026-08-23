@@ -161,6 +161,12 @@ enum Commands {
         #[command(subcommand)]
         action: commands::auth::AuthAction,
     },
+    /// Migrate model API keys into credentials.yaml references (U15).
+    /// NOTE: model API keys — distinct from `auth`'s OAuth credential store.
+    Credentials {
+        #[command(subcommand)]
+        action: commands::credentials::CredentialsAction,
+    },
     /// Manage skills
     Skills {
         #[command(subcommand)]
@@ -438,6 +444,18 @@ fn main() -> Result<()> {
 /// Shared command dispatch, used by both the `#[tokio::main]` entry
 /// (Windows / Linux) and the macOS manual-runtime entry.
 async fn run_command(cli: Cli) -> Result<()> {
+    // U15: point `yaml:<alias>` api_key references at this home's
+    // workspace/config/credentials.yaml. Resolution reads the file
+    // per-operation (mirroring `env:VAR`), so one assignment at process
+    // start covers every later resolve in this process (gateway runtime,
+    // web handlers, cluster agents, CLI commands).
+    {
+        let cred_home = common::resolve_home(cli.local);
+        nemesis_config::credentials::set_global_credentials_path(
+            nemesis_config::credentials::credentials_path_for_home(&cred_home),
+        );
+    }
+
     match cli.command {
         Commands::Onboard { default, args } => {
             // Support both `onboard default` (Go-compatible) and `onboard --default`
@@ -839,6 +857,10 @@ async fn run_command(cli: Cli) -> Result<()> {
         Commands::Auth { action } => {
             common::ensure_default_logger();
             commands::auth::run(action, cli.local).await?;
+        }
+        Commands::Credentials { action } => {
+            common::ensure_default_logger();
+            commands::credentials::run(action, cli.local).await?;
         }
         Commands::Skills { action } => {
             common::ensure_default_logger();

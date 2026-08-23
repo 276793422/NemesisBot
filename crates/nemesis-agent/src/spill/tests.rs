@@ -148,3 +148,72 @@ fn test_sanitize_segment() {
     let long = "a".repeat(500);
     assert_eq!(sanitize_segment(&long).chars().count(), 80);
 }
+
+// ---------------------------------------------------------------------------
+// U4 retention cleanup (startup scan + daily task call this)
+// ---------------------------------------------------------------------------
+
+/// Create a spill file and set its mtime to `age_secs` ago (std-only:
+/// `File::set_modified`, no new dev-dependency).
+fn make_spill_file(root: &Path, session: &str, name: &str, age_secs: u64, content: &str) {
+    use std::io::Write;
+    let dir = root.join(session);
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join(name);
+    let mut f = std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .open(&path)
+        .unwrap();
+    f.write_all(content.as_bytes()).unwrap();
+    drop(f);
+    let past =
+        std::time::SystemTime::now() - std::time::Duration::from_secs(age_secs);
+    let f = std::fs::OpenOptions::new().write(true).open(&path).unwrap();
+    f.set_modified(past).unwrap();
+}
+
+#[test]
+fn test_cleanup_expired_deletes_old_and_keeps_fresh() {
+    let root = temp_root("retention");
+    make_spill_file(&root, "s1", "old.txt", 10 * 24 * 3600, "old"); // 10 days
+    make_spill_file(&root, "s1", "fresh.txt", 1 * 24 * 3600, "fresh"); // 1 day
+    make_spill_file(&root, "s2", "also_old.txt", 30 * 24 * 3600, "old2"); // 30 days
+
+    let deleted = cleanup_expired(&root, 7);
+    assert_eq!(deleted, 2, "two expired files deleted");
+    assert!(!root.join("s1").join("old.txt").exists());
+    assert!(root.join("s1").join("fresh.txt").exists(), "fresh file kept");
+    assert!(!root.join("s2").exists(), "s2 became empty -> dir removed");
+    assert!(root.join("s1").exists(), "s1 still has a file -> dir kept");
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn test_cleanup_zero_days_disables() {
+    let root = temp_root("retention0");
+    make_spill_file(&root, "s1", "old.txt", 365 * 24 * 3600, "ancient");
+    assert_eq!(cleanup_expired(&root, 0), 0, "0 = disabled, nothing touched");
+    assert!(root.join("s1").join("old.txt").exists());
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn test_cleanup_missing_root_is_noop() {
+    let root = temp_root("retention_absent");
+    assert_eq!(cleanup_expired(&root, 7), 0);
+}
+
+#[test]
+fn test_cleanup_removes_root_when_fully_empty() {
+    let root = temp_root("retention_all_old");
+    make_spill_file(&root, "s1", "a.txt", 10 * 24 * 3600, "x");
+    make_spill_file(&root, "s2", "b.txt", 10 * 24 * 3600, "y");
+    assert_eq!(cleanup_expired(&root, 7), 2);
+    assert!(
+        !root.join("s1").exists() && !root.join("s2").exists(),
+        "empty session dirs removed"
+    );
+    let _ = std::fs::remove_dir_all(&root);
+}

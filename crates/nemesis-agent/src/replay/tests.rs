@@ -1,0 +1,556 @@
+//! Tests for the projection-ledger replay (T8 / U9 ②).
+//!
+//! Isolation note: the ledger sidecar resolves through the process-global
+//! `default_path_manager()` boundary dir. Every test uses a unique session
+//! key and removes its own `<key>.replay.jsonl` (+ boundary sidecar) at the
+//! end — same precedent as the T6 history_search tests.
+
+use super::*;
+use crate::context::RequestContext;
+use crate::instance::AgentInstance;
+use crate::r#loop::{
+    AgentLoop, LlmMessage, LlmProvider, LlmResponse, Tool as LoopTool, VOICE_PLAYBACK_SUFFIX,
+};
+use crate::session::SessionStore;
+use crate::types::{AgentConfig, AgentEvent, ConversationTurn, ToolCallInfo};
+use async_trait::async_trait;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
+
+fn test_config() -> AgentConfig {
+    AgentConfig {
+        model: "test-model".to_string(),
+        system_prompt: Some("You are a test assistant.".to_string()),
+        max_turns: 5,
+        tools: vec!["calculator".to_string()],
+        models: std::collections::HashMap::new(),
+    }
+}
+
+fn turn(role: &str, content: &str) -> ConversationTurn {
+    ConversationTurn {
+        role: role.to_string(),
+        content: content.to_string(),
+        tool_calls: Vec::new(),
+        tool_call_id: None,
+        timestamp: chrono::Local::now().to_rfc3339(),
+        reasoning_content: None,
+    }
+}
+
+static KEY_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+/// Unique-per-process session key so parallel test runs never share a ledger.
+fn unique_key(prefix: &str) -> String {
+    format!(
+        "{}_{}_{}",
+        prefix,
+        std::process::id(),
+        KEY_COUNTER.fetch_add(1, Ordering::SeqCst)
+    )
+}
+
+/// Best-effort removal of this test's sidecars from the global boundary dir.
+fn cleanup_sidecars(key: &str) {
+    let dir = nemesis_path::default_path_manager().boundary_events_dir();
+    let safe = key.replace(':', "_");
+    let _ = std::fs::remove_file(dir.join(format!("{}.replay.jsonl", safe)));
+    let _ = std::fs::remove_file(dir.join(format!("{}.jsonl", safe)));
+}
+
+fn temp_store(key: &str) -> (SessionStore, std::path::PathBuf) {
+    let dir = std::env::temp_dir().join(format!("t8_replay_{}_{}", key, std::process::id()));
+    let _ = std::fs::create_dir_all(&dir);
+    let store = SessionStore::new_with_storage(&dir);
+    store.get_or_create(key);
+    (store, dir)
+}
+
+/// Never-called provider (unit builds only; the full-loop test uses
+/// [`CapturingProvider`]).
+struct NoopProvider;
+
+#[async_trait]
+impl LlmProvider for NoopProvider {
+    async fn chat(
+        &self,
+        _model: &str,
+        _messages: Vec<LlmMessage>,
+        _options: Option<crate::types::ChatOptions>,
+        _tools: Vec<crate::types::ToolDefinition>,
+    ) -> Result<LlmResponse, String> {
+        Err("not supposed to be called".to_string())
+    }
+}
+
+/// Provider that records the exact message list (as `serde_json::Value`, the
+/// same serialization the request_logger's raw.json uses) for every chat
+/// call, then plays back scripted responses. Shared via Arc so the test keeps
+/// a handle after the AgentLoop takes ownership of a forwarding wrapper.
+struct CapturingProvider {
+    responses: Mutex<Vec<LlmResponse>>,
+    captured: Mutex<Vec<Vec<serde_json::Value>>>,
+}
+
+#[async_trait]
+impl LlmProvider for CapturingProvider {
+    async fn chat(
+        &self,
+        _model: &str,
+        messages: Vec<LlmMessage>,
+        _options: Option<crate::types::ChatOptions>,
+        _tools: Vec<crate::types::ToolDefinition>,
+    ) -> Result<LlmResponse, String> {
+        self.captured
+            .lock()
+            .unwrap()
+            .push(messages.iter().filter_map(|m| serde_json::to_value(m).ok()).collect());
+        let mut responses = self.responses.lock().unwrap();
+        if responses.is_empty() {
+            Ok(LlmResponse {
+                content: "No more responses".to_string(),
+                tool_calls: Vec::new(),
+                finished: true,
+                reasoning_content: None,
+                usage: None,
+                raw_request_body: None,
+                raw_response_body: None,
+            })
+        } else {
+            Ok(responses.remove(0))
+        }
+    }
+}
+
+/// Thin forwarder so the test keeps the [`CapturingProvider`] handle.
+struct ForwardingProvider {
+    inner: Arc<CapturingProvider>,
+}
+
+#[async_trait]
+impl LlmProvider for ForwardingProvider {
+    async fn chat(
+        &self,
+        model: &str,
+        messages: Vec<LlmMessage>,
+        options: Option<crate::types::ChatOptions>,
+        tools: Vec<crate::types::ToolDefinition>,
+    ) -> Result<LlmResponse, String> {
+        self.inner.chat(model, messages, options, tools).await
+    }
+}
+
+struct EchoTool;
+
+#[async_trait]
+impl LoopTool for EchoTool {
+    async fn execute(&self, _args: &str, _context: &RequestContext) -> Result<String, String> {
+        Ok("4".to_string())
+    }
+}
+
+/// Unit: annotated build + ledger round-trip rebuilds BYTE-EXACTLY — including
+/// when the store's history grew AFTER the recorded round (the round's
+/// `history_len_at_build` truncates the tail).
+#[test]
+fn test_rebuild_byte_exact_with_ledger_and_later_history() {
+    let key = unique_key("t8_unit_exact");
+    let agent_loop = AgentLoop::new(Box::new(NoopProvider), test_config());
+    let instance = AgentInstance::new(test_config());
+    instance.set_history(vec![
+        turn("system", "You are a test assistant."),
+        turn("user", "first question"),
+        turn("assistant", "first answer"),
+        turn("user", "second question"),
+    ]);
+
+    let (messages, annotation) = agent_loop.build_messages_with_memory_annotated(&instance, None);
+    // Preconditions the test depends on: system at [0] + a trailing user
+    // message ⇒ the merged context digest IS injected mid-vec.
+    let digest_index = annotation
+        .digest_index
+        .expect("digest must be injected with system[0] + trailing user");
+    assert_eq!(annotation.history_len, 4, "no summary cache: full history");
+    assert!(annotation.summary_as_of.is_none());
+    assert!(
+        messages[digest_index].content.contains("# Current Time"),
+        "digest content expected at {}",
+        digest_index
+    );
+
+    let recorded: Vec<serde_json::Value> = messages
+        .iter()
+        .filter_map(|m| serde_json::to_value(m).ok())
+        .collect();
+
+    append_projection_record(&RequestProjectionRecord {
+        trace_id: "unit-exact".to_string(),
+        session_key: key.clone(),
+        round: 1,
+        ts: now_rfc3339(),
+        messages_count: messages.len(),
+        roles: messages.iter().map(|m| m.role.clone()).collect(),
+        history_len_at_build: annotation.history_len,
+        injections: vec![InjectionRecord {
+            index: digest_index,
+            role: messages[digest_index].role.clone(),
+            source: INJECTION_CONTEXT_DIGEST.to_string(),
+            content: messages[digest_index].content.clone(),
+        }],
+        voice_append: None,
+        summary_as_of: annotation.summary_as_of.clone(),
+    });
+
+    // Store history has grown past the round (post-round assistant + new user).
+    let (store, dir) = temp_store(&key);
+    let mut final_history = instance.get_history();
+    final_history.push(turn("assistant", "second answer (after the recorded round)"));
+    final_history.push(turn("user", "third question (after the recorded round)"));
+    store.set_history(
+        &key,
+        final_history.iter().map(|t| t.into()).collect(),
+    );
+
+    match rebuild_request_messages(&store, &key, 1).expect("rebuild must not error") {
+        RebuildOutcome::Rebuilt(rebuilt) => {
+            assert!(
+                verify_request_replay(&rebuilt, &recorded).is_ok(),
+                "rebuild must be byte-exact against the build output even though \
+                 the store's history grew after the round"
+            );
+        }
+        other => panic!("expected Rebuilt, got {:?}", other),
+    }
+
+    cleanup_sidecars(&key);
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// Unit: an injection whose recorded content changed (or any message diff)
+/// is LOCATED — first-difference index + kind, not a bare "mismatch".
+#[test]
+fn test_verify_locates_injection_diff() {
+    let agent_loop = AgentLoop::new(Box::new(NoopProvider), test_config());
+    let instance = AgentInstance::new(test_config());
+    instance.set_history(vec![
+        turn("system", "You are a test assistant."),
+        turn("user", "hello"),
+    ]);
+
+    let (messages, annotation) = agent_loop.build_messages_with_memory_annotated(&instance, None);
+    let digest_index = annotation.digest_index.expect("digest injected");
+
+    let recorded: Vec<serde_json::Value> = messages
+        .iter()
+        .filter_map(|m| serde_json::to_value(m).ok())
+        .collect();
+    // Simulate a drifted injection (e.g. ledger recorded an older digest).
+    let mut tampered = recorded.clone();
+    tampered[digest_index]["content"] =
+        serde_json::json!("<system-reminder>\nstale digest\n</system-reminder>");
+
+    let diff = verify_request_replay(&messages, &tampered)
+        .expect_err("a tampered digest content must be caught");
+    assert_eq!(diff.index, digest_index, "diff located at the digest position");
+    assert_eq!(diff.kind, "content");
+    assert!(
+        diff.detail.contains("content differs"),
+        "detail should describe the content diff: {}",
+        diff.detail
+    );
+
+    // Role drift is classified separately.
+    let mut tampered_role = recorded.clone();
+    tampered_role[digest_index]["role"] = serde_json::json!("system");
+    let diff = verify_request_replay(&messages, &tampered_role)
+        .expect_err("role drift must be caught");
+    assert_eq!(diff.kind, "role");
+
+    // Count mismatch is classified separately.
+    let truncated = &recorded[..recorded.len() - 1];
+    let diff =
+        verify_request_replay(&messages, truncated).expect_err("count mismatch must be caught");
+    assert_eq!(diff.kind, "count");
+}
+
+/// Unit: the voice-playback suffix is a MUTATION of a persisted-derived
+/// message; the ledger's `voice_append` replays it after all inserts.
+/// Expected bytes are hand-authored (no circularity).
+#[test]
+fn test_voice_append_replays_on_top_of_digest_insert() {
+    let key = unique_key("t8_unit_voice");
+    let (store, dir) = temp_store(&key);
+    store.set_history(
+        &key,
+        vec![
+            turn("system", "You are a test assistant."),
+            turn("user", "hello"),
+        ]
+        .iter()
+        .map(|t| t.into())
+        .collect(),
+    );
+    let digest_body = "<system-reminder>\n# Current Time / Environment snapshot\nfake\n</system-reminder>";
+    append_projection_record(&RequestProjectionRecord {
+        trace_id: "unit-voice".to_string(),
+        session_key: key.clone(),
+        round: 1,
+        ts: now_rfc3339(),
+        messages_count: 3,
+        roles: vec!["system".into(), "user".into(), "user".into()],
+        history_len_at_build: 2,
+        injections: vec![InjectionRecord {
+            index: 1,
+            role: "user".to_string(),
+            source: INJECTION_CONTEXT_DIGEST.to_string(),
+            content: digest_body.to_string(),
+        }],
+        voice_append: Some(VoiceAppend {
+            index: 2,
+            suffix: VOICE_PLAYBACK_SUFFIX.to_string(),
+        }),
+        summary_as_of: None,
+    });
+
+    // Hand-authored expected request bytes: system, digest, user+suffix.
+    // Built via LlmMessage serialization (not json! literals) because
+    // `to_value(LlmMessage)` emits `tool_calls:null`/`tool_call_id:null` —
+    // the exact bytes the provider/ request_logger see.
+    let lm = |role: &str, content: String| LlmMessage {
+        role: role.to_string(),
+        content,
+        tool_calls: None,
+        tool_call_id: None,
+        reasoning_content: None,
+    };
+    let recorded: Vec<serde_json::Value> = [
+        lm("system", "You are a test assistant.".to_string()),
+        lm("user", digest_body.to_string()),
+        lm("user", format!("hello{}", VOICE_PLAYBACK_SUFFIX)),
+    ]
+    .iter()
+    .filter_map(|m| serde_json::to_value(m).ok())
+    .collect();
+
+    match rebuild_request_messages(&store, &key, 1).expect("rebuild must not error") {
+        RebuildOutcome::Rebuilt(rebuilt) => {
+            assert!(verify_request_replay(&rebuilt, &recorded).is_ok(),
+                "digest insert + voice suffix must replay to the hand-authored bytes");
+        }
+        other => panic!("expected Rebuilt, got {:?}", other),
+    }
+
+    cleanup_sidecars(&key);
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// Unit: ledger ABSENT for the round (pre-feature session / exempted turn) ⇒
+/// `verify_session_round` degrades EXPLICITLY to the role-subsequence anchor,
+/// with a note saying so — never silently claims byte-exactness.
+#[test]
+fn test_no_ledger_degrades_to_subsequence() {
+    let key = unique_key("t8_unit_noledger");
+    let (store, dir) = temp_store(&key);
+    store.set_history(
+        &key,
+        vec![
+            turn("system", "You are a test assistant."),
+            turn("user", "hello"),
+            turn("assistant", "hi"),
+        ]
+        .iter()
+        .map(|t| t.into())
+        .collect(),
+    );
+    // No append_projection_record — ledger absent.
+
+    let recorded = vec![
+        serde_json::json!({"role": "system", "content": "You are a test assistant."}),
+        serde_json::json!({"role": "user", "content": "hello"}),
+        serde_json::json!({"role": "assistant", "content": "hi"}),
+    ];
+
+    match verify_session_round(&store, &key, 1, &recorded) {
+        Ok(ReplayCheck::DegradedSubsequence { note, verdict }) => {
+            assert!(!note.is_empty(), "degradation must be explained");
+            assert!(
+                note.contains("no projection ledger record"),
+                "note should say why: {}",
+                note
+            );
+            // All persisted roles appear in order in the recording → anchor Ok.
+            assert!(verdict.is_ok(), "subsequence anchor should hold here");
+        }
+        other => panic!("expected DegradedSubsequence, got {:?}", other),
+    }
+
+    cleanup_sidecars(&key);
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// Unit: ledger exists but the history the round needed was trimmed away
+/// (`MAX_STORED_MESSAGES` / store reset) ⇒ `Unavailable` with the numbers —
+/// replay never fabricates messages.
+#[test]
+fn test_trimmed_history_reports_unavailable() {
+    let key = unique_key("t8_unit_trimmed");
+    let (store, dir) = temp_store(&key);
+    store.set_history(
+        &key,
+        vec![
+            turn("system", "You are a test assistant."),
+            turn("user", "hello"),
+        ]
+        .iter()
+        .map(|t| t.into())
+        .collect(),
+    );
+    append_projection_record(&RequestProjectionRecord {
+        trace_id: "unit-trim".to_string(),
+        session_key: key.clone(),
+        round: 1,
+        ts: now_rfc3339(),
+        messages_count: 10,
+        roles: vec!["system".to_string(); 10],
+        history_len_at_build: 10, // the round saw 10; the store kept 2
+        injections: vec![],
+        voice_append: None,
+        summary_as_of: None,
+    });
+
+    match rebuild_request_messages(&store, &key, 1).expect("rebuild must not error") {
+        RebuildOutcome::Unavailable { needed, available } => {
+            assert_eq!(needed, 10);
+            assert_eq!(available, 2);
+        }
+        other => panic!("expected Unavailable, got {:?}", other),
+    }
+
+    let recorded = vec![serde_json::json!({"role": "system", "content": "x"})];
+    match verify_session_round(&store, &key, 1, &recorded) {
+        Ok(ReplayCheck::Unavailable { needed, available }) => {
+            assert_eq!((needed, available), (10, 2));
+        }
+        other => panic!("expected ReplayCheck::Unavailable, got {:?}", other),
+    }
+
+    cleanup_sidecars(&key);
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// Acceptance (goal T8): a FULL turn with a real tool loop — the ledger
+/// records every round, and each round replays from the session store +
+/// ledger BYTE-EXACTLY against what the provider actually received
+/// (`serde_json::to_value` per message — the same serialization the
+/// request_logger's raw.json uses). Round 1's replay works even though the
+/// turn's later rounds grew the history — the as-of truncation property.
+#[tokio::test]
+async fn test_full_turn_replay_byte_exact() {
+    let key = unique_key("t8_full");
+    let capturing = Arc::new(CapturingProvider {
+        responses: Mutex::new(vec![
+            LlmResponse {
+                content: String::new(),
+                tool_calls: vec![ToolCallInfo {
+                    id: "tc_1".to_string(),
+                    name: "calculator".to_string(),
+                    arguments: r#"{"expr":"2+2"}"#.to_string(),
+                }],
+                finished: false,
+                reasoning_content: None,
+                usage: None,
+                raw_request_body: None,
+                raw_response_body: None,
+            },
+            LlmResponse {
+                content: "The answer is 4.".to_string(),
+                tool_calls: Vec::new(),
+                finished: true,
+                reasoning_content: None,
+                usage: None,
+                raw_request_body: None,
+                raw_response_body: None,
+            },
+        ]),
+        captured: Mutex::new(Vec::new()),
+    });
+
+    let dir = std::env::temp_dir().join(format!("t8_replay_{}_{}", key, std::process::id()));
+    let _ = std::fs::create_dir_all(&dir);
+    // ONE store object shared by the loop and the assertions — the store's
+    // in-memory map is per-instance; a second `new_with_storage` on the same
+    // dir would not see the loop's writes.
+    let store = Arc::new(SessionStore::new_with_storage(&dir));
+    store.get_or_create(&key);
+    let mut agent_loop = AgentLoop::new(
+        Box::new(ForwardingProvider {
+            inner: capturing.clone(),
+        }),
+        test_config(),
+    );
+    agent_loop.register_tool("calculator".to_string(), Box::new(EchoTool));
+    agent_loop.set_session_store(store.clone());
+
+    let instance = AgentInstance::new(test_config());
+    let context = RequestContext::new("web", "chat1", "user1", &key);
+
+    let events = agent_loop.run(&instance, "What is 2+2?", &context).await;
+    assert!(
+        events.iter().any(|e| matches!(e, AgentEvent::Done(_))),
+        "turn must finish"
+    );
+    // system + user + assistant(tool_call) + tool + assistant(final)
+    assert_eq!(instance.get_history().len(), 5);
+
+    let records = load_projection_records(&key);
+    assert_eq!(
+        records.len(),
+        2,
+        "two LLM rounds must produce two ledger rows"
+    );
+    assert_eq!(records[0].round, 1);
+    assert_eq!(records[1].round, 2);
+    for r in &records {
+        assert!(
+            r.injections.iter().any(|i| i.source == INJECTION_CONTEXT_DIGEST),
+            "every round's digest injection must be recorded"
+        );
+    }
+
+    let captured = capturing.captured.lock().unwrap().clone();
+    assert_eq!(captured.len(), 2, "provider must have seen two requests");
+
+    // Persist to the store, mirroring run_agent_loop_internal's save path
+    // (cache BEFORE history; same precedent as loop/tests.rs:4408) — `run()`
+    // itself drives the LLM loop but not the session-store save wrapper.
+    store.get_or_create(&key);
+    store.set_summary(&key, "");
+    store.set_summary_covers_up_to(&key, None);
+    store.set_history(
+        &key,
+        instance
+            .get_history()
+            .iter()
+            .map(crate::session::StoredMessage::from)
+            .collect(),
+    );
+    assert_eq!(store.get_history(&key).len(), 5);
+
+    // Byte-exact per-round replay against what the provider received.
+    for (i, recorded_round) in captured.iter().enumerate() {
+        let round = i + 1;
+        match rebuild_request_messages(&store, &key, round).expect("rebuild ok") {
+            RebuildOutcome::Rebuilt(rebuilt) => {
+                assert!(
+                    verify_request_replay(&rebuilt, recorded_round).is_ok(),
+                    "round {} replay must be byte-exact against the provider's view",
+                    round
+                );
+            }
+            other => panic!("round {} expected Rebuilt, got {:?}", round, other),
+        }
+    }
+
+    cleanup_sidecars(&key);
+    let _ = std::fs::remove_dir_all(dir);
+}

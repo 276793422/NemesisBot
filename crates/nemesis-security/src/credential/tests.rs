@@ -7,6 +7,29 @@ fn test_no_credentials() {
     assert!(!result.has_matches);
 }
 
+// U15: credential REFERENCE strings are not secrets. `env:VAR` / `yaml:<alias>`
+// api_key forms carry a variable/alias name, not a key value — the scanner must
+// not flag them (false positives would block legitimate config inspection).
+#[test]
+fn test_reference_forms_not_flagged() {
+    let scanner = Scanner::new(true, "block");
+    // Bare reference values (as they travel through tool args / config views).
+    for content in [
+        "yaml:openai-main",
+        "env:MY_PROVIDER_KEY",
+        "api_key: yaml:zhipu_free",
+        "api_key: env:OPENAI_KEY",
+    ] {
+        let result = scanner.scan_content(content);
+        assert!(
+            !result.has_matches,
+            "reference form {:?} must not be flagged: {:?}",
+            content, result.matches
+        );
+    }
+}
+
+
 #[test]
 fn test_aws_key_detected() {
     let scanner = Scanner::new(true, "block");

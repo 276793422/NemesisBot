@@ -98,6 +98,22 @@ impl ModuleHandler for LogsHandler {
                 let session = crate::handlers::get_str(&data, "session")?;
                 self.session_detail(ctx, workspace, &session).await
             }
+            // T6 (U20): cross-session full-text search over session_logs.
+            // Fresh-first: the mtime-incremental reindex runs before the
+            // query so newly appended messages are findable (the FTS arm
+            // does not fall back to a linear scan on an empty-but-stale
+            // index). nemesis-agent is a non-optional dependency — no
+            // feature gate needed.
+            "history_search" => {
+                let data = data.ok_or("missing data")?;
+                let query = crate::handlers::get_str(&data, "query")?;
+                if query.trim().is_empty() {
+                    return Err("query must not be empty".to_string());
+                }
+                let limit = opt_u64(&Some(data), "limit", 20);
+                self.history_search(&query, limit)
+            }
+            "history_reindex" => self.history_reindex(),
             _ => Err(format!("unknown command: logs.{}", cmd)),
         }
     }
@@ -906,6 +922,37 @@ impl LogsHandler {
             "total_segments": total,
             "first_broken_index": first_broken,
             "broken_count": broken_count,
+        })))
+    }
+
+    // T6 (U20): cross-session full-text search via the agent-side FTS5
+    // index (crates/nemesis-agent/src/history_search.rs). NOTE: that module
+    // resolves session_logs through the GLOBAL default path manager, not
+    // this handler's `workspace` param — the two point at the same home in
+    // production (the dashboard serves the process that owns the logs).
+    fn history_search(
+        &self,
+        query: &str,
+        limit: usize,
+    ) -> Result<Option<serde_json::Value>, String> {
+        // Fresh-first: mtime-incremental reindex so messages appended since
+        // the last index pass are findable (search_fts does NOT fall back to
+        // a linear scan on a working-but-stale index).
+        let _ = nemesis_agent::history_search::reindex_session_logs();
+        let hits = nemesis_agent::history_search::search(query, limit);
+        let count = hits.len();
+        Ok(Some(serde_json::json!({
+            "hits": hits,
+            "count": count,
+            "query": query,
+            "limit": limit,
+        })))
+    }
+
+    fn history_reindex(&self) -> Result<Option<serde_json::Value>, String> {
+        let reindexed_sessions = nemesis_agent::history_search::reindex_session_logs();
+        Ok(Some(serde_json::json!({
+            "reindexed_sessions": reindexed_sessions,
         })))
     }
 
@@ -1732,3 +1779,8 @@ fn parse_local_tool_results(content: &str) -> Vec<serde_json::Value> {
 
 #[cfg(all(test, feature = "security"))]
 mod tests;
+
+// T6 (U20) history_search/history_reindex tests. Deliberately NOT
+// security-gated: these commands depend only on nemesis-agent (non-optional).
+#[cfg(test)]
+mod history_tests;

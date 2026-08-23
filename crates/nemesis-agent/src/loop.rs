@@ -110,6 +110,75 @@ fn summarize_was_ineffective(last_summary_tokens: usize, current_tokens: usize) 
         && current_tokens >= last_summary_tokens * COMPACT_STUCK_PLATEAU_RATIO / 100
 }
 
+/// Voice-playback suffix appended to the last user message when voice mode is
+/// on (transient — never persisted to instance history / session_log).
+/// T8 (U9 ②): hoisted from an inline literal so the replay ledger records the
+/// exact same bytes the provider saw (single source of truth).
+pub(crate) const VOICE_PLAYBACK_SUFFIX: &str = "（语音播报模式已开启，请用简洁、便于口语播报的方式回复，避免使用代码块、表格等不适合语音的内容。）";
+
+/// Fold the summary cache over the history + enforce tool-pair consistency —
+/// the persisted-derived projection every main-loop LLM request starts from.
+///
+/// T8 (U9 ②): extracted from `build_messages_with_memory` so the replay
+/// ledger (`crate::replay`) rebuilds requests through the SAME code path —
+/// production build and audit replay cannot drift apart (single source of
+/// truth; same lesson as the T7 memory-tool schema-drift fix).
+///
+/// `summary` is `(text, covers_up_to)`; `None` sends the history verbatim.
+/// `covers_up_to` indexes the full history vector including the system prompt
+/// at index 0. The system prompt is never summarized — it is rebuilt as the
+/// leading system message with the summary appended (so the cached prefix
+/// stays stable between summary updates).
+pub(crate) fn project_history_for_request(
+    history: &[crate::types::ConversationTurn],
+    summary: Option<(&str, usize)>,
+) -> Vec<crate::types::ConversationTurn> {
+    let mut turns: Vec<crate::types::ConversationTurn> = if let Some((text, covers_up_to)) = summary
+    {
+        let c_idx = covers_up_to.min(history.len());
+        // Verbatim tail starts at c_idx but never re-includes the system
+        // prompt at index 0 (it is rebuilt as the leading message below).
+        let tail_start = c_idx.max(1).min(history.len());
+        let summary_block = format!("\n\n## Summary of Previous Conversation\n\n{}", text);
+
+        let mut out: Vec<crate::types::ConversationTurn> =
+            Vec::with_capacity(history.len() - tail_start + 1);
+        if history.first().map_or(false, |t| t.role == "system") {
+            // Merge the summary into the configured system prompt (history[0]).
+            let mut sys = history[0].clone();
+            sys.content.push_str(&summary_block);
+            out.push(sys);
+        } else {
+            // No system prompt at history[0]: emit the summary as a
+            // dedicated leading system turn so the provider still sees it.
+            out.push(crate::types::ConversationTurn {
+                role: "system".to_string(),
+                content: summary_block,
+                tool_calls: Vec::new(),
+                tool_call_id: None,
+                timestamp: chrono::Local::now().to_rfc3339(),
+                reasoning_content: None,
+            });
+        }
+        out.extend(history[tail_start..].iter().cloned());
+        out
+    } else {
+        history.to_vec()
+    };
+
+    // Enforce tool-pair consistency at the LLM boundary. Upstream paths
+    // (summarization, session save/load) can leave an assistant tool_call
+    // whose result was dropped — or vice versa — and providers then reject
+    // the whole request with 400 "insufficient tool messages following
+    // tool_calls". Every main-loop LLM call's messages flow through here,
+    // so repairing this local copy is the universal guarantee: the
+    // provider never sees an inconsistent sequence, regardless of which
+    // upstream path produced the history. (Non-destructive: the instance's
+    // own history is untouched; only the outgoing view is cleaned.)
+    crate::types::repair_tool_message_pairs(&mut turns);
+    turns
+}
+
 /// A simplified LLM message used for building requests.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LlmMessage {
@@ -1654,7 +1723,7 @@ impl AgentLoop {
 
         let token = tokio_util::sync::CancellationToken::new();
         let events = self
-            .run_with_trace(&instance, content, &context, &trace_id, false, &token)
+            .run_with_trace(&instance, content, &context, &trace_id, false, &token, None)
             .await;
 
         // Extract final response for the conversation end event.
@@ -1742,7 +1811,7 @@ impl AgentLoop {
 
         let token = tokio_util::sync::CancellationToken::new();
         let events = self
-            .run_with_trace(&instance, content, &context, &trace_id, false, &token)
+            .run_with_trace(&instance, content, &context, &trace_id, false, &token, None)
             .await;
 
         // Extract final response for the conversation end event.
@@ -2008,6 +2077,14 @@ impl AgentLoop {
         );
         let cron_job_id = msg.metadata.get("cron_job_id").map(|s| s.as_str());
         let cron_job_name = msg.metadata.get("cron_job_name").map(|s| s.as_str());
+        // T3 (U12): per-fire tool-round budget set by the gateway cron fire
+        // handler from the job's max_rounds payload. Absent/unparsable → None
+        // → the turn runs under the global max_turns.
+        let cron_max_rounds = msg
+            .metadata
+            .get("cron_max_rounds")
+            .and_then(|s| s.parse::<u32>().ok())
+            .filter(|v| *v > 0);
         let result = self
             .run_agent_loop_internal(
                 &session_key,
@@ -2018,6 +2095,7 @@ impl AgentLoop {
                 &cancel_token,
                 cron_job_id,
                 cron_job_name,
+                cron_max_rounds,
             )
             .await;
 
@@ -2194,6 +2272,7 @@ impl AgentLoop {
                 &cancel_token,
                 cron_job_id,
                 cron_job_name,
+                None,
             )
             .await;
 
@@ -2631,6 +2710,7 @@ impl AgentLoop {
             &prefix_refs,
             existing_summary,
             context_window,
+            self.current_summarizer_prefix_reuse(),
             provider.as_ref(),
             &model,
             observer_mgr,
@@ -2702,6 +2782,8 @@ impl AgentLoop {
             // order as the threshold computation above).
             self.current_context_window()
                 .unwrap_or_else(|| instance.context_window()),
+            // T4: per-model prefix-reuse switch (false → old bare shape).
+            self.current_summarizer_prefix_reuse(),
             provider.as_ref(),
             &model,
             observer_mgr,
@@ -2791,6 +2873,7 @@ impl AgentLoop {
         cancel_token: &tokio_util::sync::CancellationToken,
         cron_job_id: Option<&str>,
         cron_job_name: Option<&str>,
+        turn_budget: Option<u32>,
     ) -> Result<String, String> {
         // Round-5 fix: cron-originated turns are exempt from boundary events,
         // same as heartbeat. A recurring cron job targeting a persistent
@@ -2841,6 +2924,7 @@ impl AgentLoop {
                 &trace_id,
                 voice_playback,
                 cancel_token,
+                turn_budget,
             )
             .await;
 
@@ -2986,8 +3070,16 @@ impl AgentLoop {
             chrono::Local::now().timestamp_nanos_opt().unwrap_or(0)
         );
         let token = tokio_util::sync::CancellationToken::new();
-        self.run_with_trace(instance, user_message, context, &trace_id, false, &token)
-            .await
+        self.run_with_trace(
+            instance,
+            user_message,
+            context,
+            &trace_id,
+            false,
+            &token,
+            None,
+        )
+        .await
     }
 
     /// Run the agent loop with a specific trace ID for observer event correlation.
@@ -3004,13 +3096,21 @@ impl AgentLoop {
         trace_id: &str,
         voice_playback: bool,
         cancel_token: &tokio_util::sync::CancellationToken,
+        turn_budget: Option<u32>,
     ) -> Vec<AgentEvent> {
         // Add user message to instance history.
         instance.add_user_message(user_message);
         instance.set_state(crate::types::AgentState::Thinking);
 
-        self.run_llm_loop(instance, context, trace_id, voice_playback, cancel_token)
-            .await
+        self.run_llm_loop(
+            instance,
+            context,
+            trace_id,
+            voice_playback,
+            cancel_token,
+            turn_budget,
+        )
+        .await
     }
 
     /// Resume execution from a previously saved conversation state.
@@ -3026,11 +3126,16 @@ impl AgentLoop {
     ) -> Vec<AgentEvent> {
         instance.set_state(crate::types::AgentState::Thinking);
         let token = tokio_util::sync::CancellationToken::new();
-        self.run_llm_loop(instance, context, trace_id, false, &token)
+        self.run_llm_loop(instance, context, trace_id, false, &token, None)
             .await
     }
 
     /// Core LLM loop shared by `run_with_trace()` and `resume_execution()`.
+    ///
+    /// `turn_budget` (T3/U12): per-turn tool-round override. When set (>0) it
+    /// REPLACES `config.max_turns` for this turn — the per-fire budget of a
+    /// cron continuation. Exhaustion reuses the grace-round semantics (one
+    /// finalize round, then a resumable stop with reason `budget_exhausted`).
     async fn run_llm_loop(
         &self,
         instance: &AgentInstance,
@@ -3038,6 +3143,7 @@ impl AgentLoop {
         trace_id: &str,
         voice_playback: bool,
         cancel_token: &tokio_util::sync::CancellationToken,
+        turn_budget: Option<u32>,
     ) -> Vec<AgentEvent> {
         let mut events = Vec::new();
 
@@ -3143,26 +3249,43 @@ impl AgentLoop {
             }
 
             // ①/② max_turns cap + grace round. max_turns == 0 means unlimited
-            // (opt-in). On the first hit we grant one grace round (with
+            // (opt-in). T3 (U12): when a per-turn budget override is set
+            // (cron continuation's max_rounds), it REPLACES the global cap for
+            // this turn. On the first hit we grant one grace round (with
             // GRACE_ROUND_NUDGE injected below) so the model can finalize from
             // completed work; a second hit stops resumably — no work is lost.
-            if self.config.max_turns > 0 && turns_used >= self.config.max_turns {
+            let effective_max_turns = turn_budget.unwrap_or(self.config.max_turns);
+            if effective_max_turns > 0 && turns_used >= effective_max_turns {
                 if !grace_round {
                     grace_round = true;
                     info!(
                         "[AgentLoop] max_turns ({}) reached after {} turns; granting one grace round to finalize",
-                        self.config.max_turns, turns_used
+                        effective_max_turns, turns_used
                     );
                     // Fall through: this iteration runs as the grace round.
+                } else if turn_budget.is_some() {
+                    warn!(
+                        "[AgentLoop] paused after {} tool-call rounds (per-turn budget exhausted, grace round spent)",
+                        effective_max_turns
+                    );
+                    // T3 (U12): budget-driven stop. The job that fired this
+                    // turn is NOT deleted — the next fire re-budgets, so the
+                    // message says so instead of suggesting a config change.
+                    terminal_reason = Some("budget_exhausted");
+                    events.push(AgentEvent::Done(format!(
+                        "已在定时任务预算 {} 轮工具调用后暂停，已完成的工作已保存。定时任务未被删除，下次触发时会重新获得预算。",
+                        effective_max_turns
+                    )));
+                    break;
                 } else {
                     warn!(
                         "[AgentLoop] paused after {} tool-call rounds (grace round exhausted)",
-                        self.config.max_turns
+                        effective_max_turns
                     );
                     terminal_reason = Some("max_turns");
                     events.push(AgentEvent::Done(format!(
                         "已在 {} 轮工具调用后暂停，已完成的工作已保存。发送下一条消息可继续，或调大 max_tool_iterations（设为 0 表示不限）。",
-                        self.config.max_turns
+                        effective_max_turns
                     )));
                     break;
                 }
@@ -3222,13 +3345,32 @@ impl AgentLoop {
 
             // Build the message list from instance history (AFTER the steer
             // claim so injected turns are already included).
-            let mut messages =
-                self.build_messages_with_memory(instance, memory_hits.as_deref());
+            //
+            // T8 (U9 ②): the annotated build + the injection records below
+            // form this round's projection ledger — everything a later
+            // byte-exact replay needs beyond the session store (the
+            // transient injections are never persisted). See `crate::replay`.
+            let (mut messages, build_annotation) =
+                self.build_messages_with_memory_annotated(instance, memory_hits.as_deref());
+            let mut replay_injections: Vec<crate::replay::InjectionRecord> = Vec::new();
+            if let Some(idx) = build_annotation.digest_index {
+                replay_injections.push(crate::replay::InjectionRecord {
+                    index: idx,
+                    role: messages[idx].role.clone(),
+                    source: crate::replay::INJECTION_CONTEXT_DIGEST.to_string(),
+                    content: messages[idx].content.clone(),
+                });
+            }
+            let mut replay_voice: Option<crate::replay::VoiceAppend> = None;
 
             // Voice playback prompt injection: append to last user message (not stored in history).
             if voice_playback {
-                if let Some(last_user) = messages.iter_mut().rev().find(|m| m.role == "user") {
-                    last_user.content.push_str("（语音播报模式已开启，请用简洁、便于口语播报的方式回复，避免使用代码块、表格等不适合语音的内容。）");
+                if let Some(pos) = messages.iter().rposition(|m| m.role == "user") {
+                    messages[pos].content.push_str(VOICE_PLAYBACK_SUFFIX);
+                    replay_voice = Some(crate::replay::VoiceAppend {
+                        index: pos,
+                        suffix: VOICE_PLAYBACK_SUFFIX.to_string(),
+                    });
                 }
             }
 
@@ -3242,6 +3384,12 @@ impl AgentLoop {
                     tool_call_id: None,
                     reasoning_content: None,
                 });
+                replay_injections.push(crate::replay::InjectionRecord {
+                    index: messages.len() - 1,
+                    role: "system".to_string(),
+                    source: crate::replay::INJECTION_GRACE_NUDGE.to_string(),
+                    content: GRACE_ROUND_NUDGE.to_string(),
+                });
             }
 
             // ⑦ Re-inject a pending degenerate-answer nudge (transient, like the
@@ -3254,6 +3402,12 @@ impl AgentLoop {
                     tool_call_id: None,
                     reasoning_content: None,
                 });
+                replay_injections.push(crate::replay::InjectionRecord {
+                    index: messages.len() - 1,
+                    role: "user".to_string(),
+                    source: crate::replay::INJECTION_DEGENERATE_NUDGE.to_string(),
+                    content: nudge.clone(),
+                });
             }
 
             // ⑧ Re-inject a pending prose-repetition nudge (transient).
@@ -3264,6 +3418,12 @@ impl AgentLoop {
                     tool_calls: None,
                     tool_call_id: None,
                     reasoning_content: None,
+                });
+                replay_injections.push(crate::replay::InjectionRecord {
+                    index: messages.len() - 1,
+                    role: "system".to_string(),
+                    source: crate::replay::INJECTION_REPETITION_NUDGE.to_string(),
+                    content: nudge.clone(),
                 });
             }
 
@@ -3342,6 +3502,12 @@ impl AgentLoop {
             // I3 (U9): durable llm_request marker (model + size estimate,
             // no bodies). Heartbeat/internal-channel exemption (see
             // turn_start).
+            //
+            // T8 (U9 ②): projection-ledger sidecar for this round — the
+            // durable record of every non-persisted injection (full bodies),
+            // enabling byte-exact replay from the session store. Same
+            // cron/heartbeat/internal exemption as the marker above: those
+            // turns recur forever and would grow the ledger unboundedly.
             if log_boundaries {
                 crate::chat_log::append_boundary_event(
                     &context.session_key,
@@ -3353,6 +3519,18 @@ impl AgentLoop {
                         turns_used
                     ),
                 );
+                crate::replay::append_projection_record(&crate::replay::RequestProjectionRecord {
+                    trace_id: trace_id.to_string(),
+                    session_key: context.session_key.clone(),
+                    round: turns_used as usize + 1,
+                    ts: crate::replay::now_rfc3339(),
+                    messages_count: messages.len(),
+                    roles: messages.iter().map(|m| m.role.clone()).collect(),
+                    history_len_at_build: build_annotation.history_len,
+                    injections: replay_injections,
+                    voice_append: replay_voice,
+                    summary_as_of: build_annotation.summary_as_of.clone(),
+                });
             }
 
             // Use tokio::select! to allow cancellation / e-stop during the LLM call.
@@ -4344,6 +4522,12 @@ impl AgentLoop {
         };
         if log_boundaries {
             crate::chat_log::append_boundary_event(&context.session_key, "turn_end", end_reason);
+        } else if terminal_reason == Some("budget_exhausted") {
+            // T3 (U12): cron turns are exempt from per-turn boundary events
+            // (a recurring job would grow the sidecar unboundedly), but a
+            // budget-exhausted stop is a rare, one-shot terminal fact worth
+            // exactly one marker — the budget's observability requirement.
+            crate::chat_log::append_boundary_event(&context.session_key, "turn_end", end_reason);
         }
 
         events
@@ -4785,6 +4969,29 @@ impl AgentLoop {
             .map(|w| w as usize)
     }
 
+    /// T4 (U1): per-model summarizer prefix-reuse switch from config.json
+    /// (`summarizer_prefix_reuse`, default true — the main model keeps the
+    /// G1 prefix-reuse summary shape). `false` → the summary request falls
+    /// back to the pre-G1 shape (single bare user message with
+    /// `role: content` text concatenation), for cheap summarizer models that
+    /// break the assumed warm KV prefix. Reads config fresh each call (same
+    /// pattern as [`current_max_tokens`]); standalone (no config_path) →
+    /// default true.
+    pub(crate) fn current_summarizer_prefix_reuse(&self) -> bool {
+        let active = self.active_model.read().clone();
+        let path = match self.config_path.read().clone() {
+            Some(p) => p,
+            None => return true,
+        };
+        std::fs::read_to_string(&path)
+            .ok()
+            .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+            .and_then(|v| {
+                nemesis_types::capability::resolve_summarizer_prefix_reuse(&v, &active)
+            })
+            .unwrap_or(true)
+    }
+
     /// Phase 4a: detect config.json on-disk changes (by mtime) and re-resolve
     /// the active model's tier if it changed. Runs once per LLM round, next to
     /// `check_mcp_reload`. Picks up dashboard model additions and CLI
@@ -4901,6 +5108,23 @@ impl AgentLoop {
         instance: &AgentInstance,
         memory_hits: Option<&[String]>,
     ) -> Vec<LlmMessage> {
+        self.build_messages_with_memory_annotated(instance, memory_hits)
+            .0
+    }
+
+    /// T8 (U9 ②) companion: [`build_messages_with_memory`] plus a
+    /// [`crate::replay::BuildAnnotation`] recording everything a later
+    /// byte-exact replay needs that is NOT derivable from the final session
+    /// file — the digest injection's final-vec position, the folded history
+    /// length, and the summary-cache state AS OF this build (the session
+    /// file's final summary may have advanced later in the same turn).
+    /// Byte-identical output to the unannotated build; the annotation rides
+    /// alongside and never feeds the provider.
+    pub fn build_messages_with_memory_annotated(
+        &self,
+        instance: &AgentInstance,
+        memory_hits: Option<&[String]>,
+    ) -> (Vec<LlmMessage>, crate::replay::BuildAnnotation) {
         let history = instance.get_history();
 
         // Inline-summary pipeline. When a summary cache is active, its `text`
@@ -4909,59 +5133,24 @@ impl AgentLoop {
         // message is either summarized (in `text`) or verbatim — no gap, no
         // overlap. With no active cache this degrades to sending the entire
         // history verbatim, byte-identical to pre-refactor behavior.
-        //
-        // `covers_up_to` indexes the full history vector including the system
-        // prompt at index 0. The system prompt is never summarized — it is
-        // rebuilt as the leading system message with the summary appended (so
-        // the cached prefix stays stable between summary updates).
         let cache = instance.get_summary_cache();
         let active_cache = cache
             .as_ref()
             .filter(|c| !c.text.is_empty() && c.covers_up_to >= 1);
 
-        let mut turns: Vec<crate::types::ConversationTurn> = if let Some(c) = active_cache {
-            let c_idx = c.covers_up_to.min(history.len());
-            // Verbatim tail starts at c_idx but never re-includes the system
-            // prompt at index 0 (it is rebuilt as the leading message below).
-            let tail_start = c_idx.max(1).min(history.len());
-            let summary_block =
-                format!("\n\n## Summary of Previous Conversation\n\n{}", c.text);
+        let turns = project_history_for_request(
+            &history,
+            active_cache.map(|c| (c.text.as_str(), c.covers_up_to)),
+        );
 
-            let mut out: Vec<crate::types::ConversationTurn> =
-                Vec::with_capacity(history.len() - tail_start + 1);
-            if history.first().map_or(false, |t| t.role == "system") {
-                // Merge the summary into the configured system prompt (history[0]).
-                let mut sys = history[0].clone();
-                sys.content.push_str(&summary_block);
-                out.push(sys);
-            } else {
-                // No system prompt at history[0]: emit the summary as a
-                // dedicated leading system turn so the provider still sees it.
-                out.push(crate::types::ConversationTurn {
-                    role: "system".to_string(),
-                    content: summary_block,
-                    tool_calls: Vec::new(),
-                    tool_call_id: None,
-                    timestamp: chrono::Local::now().to_rfc3339(),
-                    reasoning_content: None,
-                });
-            }
-            out.extend(history[tail_start..].iter().cloned());
-            out
-        } else {
-            history
+        let mut annotation = crate::replay::BuildAnnotation {
+            digest_index: None,
+            history_len: turns.len(),
+            summary_as_of: active_cache.map(|c| crate::replay::SummaryAsOf {
+                covers_up_to: c.covers_up_to,
+                text: c.text.clone(),
+            }),
         };
-
-        // Enforce tool-pair consistency at the LLM boundary. Upstream paths
-        // (summarization, session save/load) can leave an assistant tool_call
-        // whose result was dropped — or vice versa — and providers then reject
-        // the whole request with 400 "insufficient tool messages following
-        // tool_calls". Every main-loop LLM call's messages flow through here,
-        // so repairing this local copy is the universal guarantee: the
-        // provider never sees an inconsistent sequence, regardless of which
-        // upstream path produced the history. (Non-destructive: the instance's
-        // own history is untouched; only the outgoing view is cleaned.)
-        crate::types::repair_tool_message_pairs(&mut turns);
 
         // I2 (U8): time/env becomes the FIRST section of the merged context
         // snapshot (was a standalone system-role dyn_msg). Minute granularity:
@@ -5082,11 +5271,15 @@ impl AgentLoop {
                 messages.extend(turns[..idx].iter().map(turn_to_msg));
                 if let Some(d) = context_digest_msg {
                     messages.push(d);
+                    // T8 (U9 ②): final-vec position of the digest injection —
+                    // recorded because it is rebuilt-on-every-request and never
+                    // persisted, so replay must re-insert it at this position.
+                    annotation.digest_index = Some(messages.len() - 1);
                 }
                 messages.extend(turns[idx..].iter().map(turn_to_msg));
-                messages
+                (messages, annotation)
             }
-            None => turns.iter().map(turn_to_msg).collect(),
+            None => (turns.iter().map(turn_to_msg).collect(), annotation),
         }
     }
 
@@ -5356,10 +5549,16 @@ fn tool_safe_boundary(history: &[crate::types::ConversationTurn], mut new_c: usi
 ///
 /// Returns `Some(summary)` if a non-empty summary was produced, `None`
 /// otherwise (no valid messages, or the LLM returned empty).
+///
+/// T4 (U1) per-model switch: `prefix_reuse == false` falls back to the
+/// pre-G1 shape (`summarize_bare_concat_owned`) — per-model config
+/// `summarizer_prefix_reuse: false`, for cheap summarizer models that break
+/// the assumed warm KV prefix. Default (true) keeps the prefix-reuse shape.
 async fn summarize_prefix_owned(
     messages: &[&crate::types::ConversationTurn],
     existing_summary: &str,
     context_window: usize,
+    prefix_reuse: bool,
     provider: &dyn LlmProvider,
     model: &str,
     observer_manager: Option<Arc<nemesis_observer::Manager>>,
@@ -5385,18 +5584,9 @@ async fn summarize_prefix_owned(
         return None;
     }
 
-    // G1: the system prompt anchoring the prefix. `messages` is
-    // history[..new_c]; history[0] is the system turn — include it verbatim
-    // (WITHOUT the summary block the main loop appends: that would leak the
-    // old summary into the prefix and change it between rounds).
-    let system_msg: Option<LlmMessage> = messages
-        .first()
-        .filter(|m| m.role == "system")
-        .map(|m| conversation_turn_to_llm_message(m));
-
-    let final_summary = if valid_messages.len() > 10 {
-        summarize_multipart_owned(
-            system_msg.as_ref(),
+    let final_summary = if !prefix_reuse {
+        // T4 (U1): old shape — single bare user message, no structure.
+        summarize_bare_concat_owned(
             &valid_messages,
             existing_summary,
             provider,
@@ -5405,15 +5595,36 @@ async fn summarize_prefix_owned(
         )
         .await
     } else {
-        summarize_batch_owned(
-            system_msg.as_ref(),
-            &valid_messages,
-            existing_summary,
-            provider,
-            model,
-            observer_manager,
-        )
-        .await
+        // G1: the system prompt anchoring the prefix. `messages` is
+        // history[..new_c]; history[0] is the system turn — include it verbatim
+        // (WITHOUT the summary block the main loop appends: that would leak the
+        // old summary into the prefix and change it between rounds).
+        let system_msg: Option<LlmMessage> = messages
+            .first()
+            .filter(|m| m.role == "system")
+            .map(|m| conversation_turn_to_llm_message(m));
+
+        if valid_messages.len() > 10 {
+            summarize_multipart_owned(
+                system_msg.as_ref(),
+                &valid_messages,
+                existing_summary,
+                provider,
+                model,
+                observer_manager,
+            )
+            .await
+        } else {
+            summarize_batch_owned(
+                system_msg.as_ref(),
+                &valid_messages,
+                existing_summary,
+                provider,
+                model,
+                observer_manager,
+            )
+            .await
+        }
     };
 
     let final_summary = if omitted && !final_summary.is_empty() {
@@ -5454,6 +5665,66 @@ fn conversation_turn_to_llm_message(turn: &crate::types::ConversationTurn) -> Ll
 /// The trailing instruction for a G1 prefix-reuse summary request. Kept in one
 /// place so the batch and multipart paths emit the identical instruction.
 const SUMMARIZE_INSTRUCTION: &str = "请对以上对话片段做一份简明摘要，保留核心上下文与关键要点，供后续对话作为前情提要使用。";
+
+/// T4 (U1): pre-G1 summary shape, restored as the per-model fallback
+/// (`summarizer_prefix_reuse: false`).
+///
+/// This is the OLD request form the G1 refactor replaced: a single bare user
+/// message whose content is the covered messages flattened as
+/// `role: content` text lines, plus the instruction (and any existing-summary
+/// context). It shares NO prefix with real requests and destroys structure
+/// (tool_calls flatten to text) — which is exactly why it is NOT the default.
+/// It remains useful for cheap summarizer models whose warm-KV-prefix
+/// assumption G1 relies on does not hold (different tokenizer, no prompt
+/// caching): a shape-neutral single message is the lowest-common-denominator
+/// request those models handle reliably. The G1 prefix-reuse path
+/// (summarize_multipart_owned / summarize_batch_owned) stays the default for
+/// the main model; this function is invoked ONLY when the per-model switch
+/// opts out.
+async fn summarize_bare_concat_owned(
+    messages: &[&crate::types::ConversationTurn],
+    existing_summary: &str,
+    provider: &dyn LlmProvider,
+    model: &str,
+    observer_manager: Option<Arc<nemesis_observer::Manager>>,
+) -> String {
+    let mut content = String::new();
+    if !existing_summary.is_empty() {
+        content.push_str(&format!(
+            "Existing context (summary of the earlier conversation, merge with the new summary): {}\n\n",
+            existing_summary
+        ));
+    }
+    for m in messages {
+        content.push_str(&format!("{}: {}\n", m.role, m.content));
+    }
+    content.push_str(SUMMARIZE_INSTRUCTION);
+
+    let llm_messages = vec![LlmMessage {
+        role: "user".to_string(),
+        content,
+        tool_calls: None,
+        tool_call_id: None,
+        reasoning_content: None,
+    }];
+
+    let response = emit_observer_events_around_llm(
+        observer_manager.as_ref(),
+        "summarize-bare-concat",
+        model,
+        provider.chat(model, llm_messages, None, vec![]),
+    )
+    .await;
+
+    match response {
+        Some(Ok(resp)) => resp.content,
+        Some(Err(e)) => {
+            debug!("[AgentLoop] summarize_bare_concat_owned LLM call failed: {}", e);
+            String::new()
+        }
+        None => String::new(),
+    }
+}
 
 /// Multi-part summarization (standalone, works in spawned task).
 ///

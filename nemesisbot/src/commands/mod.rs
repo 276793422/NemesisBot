@@ -4,6 +4,7 @@ pub mod agent;
 #[cfg(feature = "auth")]
 pub mod auth;
 pub mod channel;
+pub mod credentials;
 #[cfg(feature = "cluster")]
 pub mod cluster;
 pub mod cors;

@@ -34,6 +34,16 @@ pub struct CronPayload {
     /// time). Empty/None = fall through to routing-derived keying.
     #[serde(default)]
     pub session_key: Option<String>,
+    /// T3 (U12): per-fire tool-round budget for continuation turns. When set,
+    /// the fired turn's tool-iteration cap uses this value instead of the
+    /// global `max_tool_iterations` (a scheduled continuation must not burn
+    /// the full 100-round budget). Exhaustion stops gracefully via the
+    /// existing grace-round path — the job is NOT deleted; the next fire
+    /// re-budgets. Set by the CronTool `continue_session` path (enum 5/10/20)
+    /// and consumed by the gateway fire handler as `cron_max_rounds`
+    /// metadata. `None` = no per-job budget (global default applies).
+    #[serde(default)]
+    pub max_rounds: Option<u32>,
 }
 
 /// Partial update for a cron job. Each field is optional: `None` = leave
@@ -342,7 +352,8 @@ impl CronService {
     }
 
     /// Add a new job (legacy 6-param signature — kept for existing callers and
-    /// tests). Delegates to [`add_job_ext`] with `session_key=None, enabled=true`.
+    /// tests). Delegates to [`add_job_ext`] with
+    /// `session_key=None, max_rounds=None, enabled=true`.
     pub fn add_job(
         &self,
         name: &str,
@@ -352,11 +363,12 @@ impl CronService {
         channel: Option<&str>,
         to: Option<&str>,
     ) -> Result<CronJob, String> {
-        self.add_job_ext(name, schedule, message, deliver, channel, to, None, true)
+        self.add_job_ext(name, schedule, message, deliver, channel, to, None, None, true)
     }
 
-    /// Add a new job with full control over `session_key` and `enabled`. This is
-    /// the path used by the web UI (`tasks.cron.add`).
+    /// Add a new job with full control over `session_key`, `max_rounds` and
+    /// `enabled`. This is the path used by the web UI (`tasks.cron.add`) and
+    /// the agent's CronTool (`continue_session` + `max_rounds`).
     pub fn add_job_ext(
         &self,
         name: &str,
@@ -366,6 +378,7 @@ impl CronService {
         channel: Option<&str>,
         to: Option<&str>,
         session_key: Option<&str>,
+        max_rounds: Option<u32>,
         enabled: bool,
     ) -> Result<CronJob, String> {
         let cron_expr = schedule.expr.as_deref().unwrap_or(schedule.kind.as_str());
@@ -388,6 +401,7 @@ impl CronService {
                 channel: channel.map(|s| s.to_string()),
                 to: to.map(|s| s.to_string()),
                 session_key: session_key.map(|s| s.to_string()),
+                max_rounds,
             },
             state: CronJobState {
                 next_run_at_ms: if enabled {

@@ -24,8 +24,33 @@ fn fresh_session(prefix: &str) -> String {
             .unwrap()
             .as_nanos()
     );
+    // Family hygiene: a FAILED run panics at its assert before the trailing
+    // delete_chat_log, leaving its same-prefix file behind. Those leftovers
+    // share identical literal content, so ~20 of them fill the limit-20
+    // search window and push the current session out — the failure then
+    // self-perpetuates. Purge the family so every run starts clean.
+    purge_family(prefix);
     crate::chat_log::delete_chat_log(&key);
     key
+}
+
+/// Delete leftover `test:hs:<prefix>:*` session files from prior (failed)
+/// runs — this test family's own artifacts only, never foreign keys.
+fn purge_family(prefix: &str) {
+    let dir = nemesis_path::default_path_manager().sessions_log_dir();
+    let Ok(rd) = std::fs::read_dir(&dir) else {
+        return;
+    };
+    let stem_prefix = format!("test_hs_{prefix}_");
+    for ent in rd.flatten() {
+        let path = ent.path();
+        let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else {
+            continue;
+        };
+        if stem.starts_with(&stem_prefix) {
+            let _ = std::fs::remove_file(&path);
+        }
+    }
 }
 
 #[test]
@@ -42,6 +67,32 @@ fn test_cjk_bigrams() {
     assert_eq!(cjk_bigrams("hello, 世界!"), "hello 世界");
     // Empty stays empty.
     assert_eq!(cjk_bigrams(""), "");
+}
+
+/// 2026-08-23 regression (found by the strict-completion final regression):
+/// deleting a session's chat log must purge its FTS rows on the next
+/// reindex — pre-fix, deleted files' rows lingered forever (ghost hits
+/// accumulated across runs until they pushed live sessions out of the
+/// search window; in production a deleted session stayed searchable).
+#[test]
+fn test_reindex_purges_deleted_session_rows() {
+    let _lock = IDX_LOCK.lock();
+    let k = fresh_session("ghost");
+    crate::chat_log::append_chat_log(&k, "user", "ghostsessionmarker unique phrase zq7");
+    reindex_session_logs();
+    assert!(
+        !search("ghostsessionmarker", 10).is_empty(),
+        "must hit before delete"
+    );
+
+    crate::chat_log::delete_chat_log(&k);
+    reindex_session_logs();
+    let hits = search("ghostsessionmarker", 10);
+    assert!(
+        hits.iter().all(|h| h.session_key != k.replace(':', "_")),
+        "deleted session's rows must be purged, got {:?}",
+        hits.iter().map(|h| &h.session_key).collect::<Vec<_>>()
+    );
 }
 
 #[test]
@@ -81,6 +132,9 @@ fn test_fts_english_and_snippet() {
     assert!(!hits.is_empty(), "english phrase hits");
     let h = &hits[0];
     assert_eq!(h.role, "user");
+    // Same ghost-row lesson as the incremental test: pin the session so a
+    // stale row from a deleted prior-run file can never satisfy the assert.
+    assert_eq!(h.session_key, k.replace(':', "_"));
     assert!(h.snippet.contains("brown"), "snippet: {}", h.snippet);
 
     // No-hit query returns empty (not an error).
@@ -124,6 +178,11 @@ fn test_index_append_incremental() {
     let hits = search("wabbajack", 10);
     assert_eq!(hits.len(), 1, "appended row indexed incrementally: {hits:?}");
     assert_eq!(hits[0].role, "assistant");
+    // Key assertion: without it a STALE row from a deleted prior-run file
+    // could satisfy this test (which is exactly how the raw-key/stem lookup
+    // mismatch in index_append stayed masked — ghost rows answered the
+    // query while the real append was never indexed).
+    assert_eq!(hits[0].session_key, k.replace(':', "_"));
 
     crate::chat_log::delete_chat_log(&k);
 }

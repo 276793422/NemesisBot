@@ -945,9 +945,12 @@ async fn test_memory_list_tool_invalid_json_no_executor() {
 #[test]
 fn test_memory_search_tool_description_and_params() {
     let tool = MemorySearchTool::new(None);
-    assert!(tool.description().contains("memory"));
+    // Schemas derive from nemesis-memory's memory_tool_definitions() (single
+    // source of truth; see test_memory_tool_schemas_match_executor_definitions).
+    assert!(tool.description().to_lowercase().contains("memor"));
     let p = tool.parameters();
     assert!(p["properties"]["query"].is_object());
+    assert!(p["properties"]["memory_type"].is_object());
 }
 
 #[test]
@@ -955,8 +958,9 @@ fn test_memory_store_tool_description_and_params() {
     let tool = MemoryStoreTool::new(None);
     assert!(tool.description().contains("Store"));
     let p = tool.parameters();
-    assert!(p["properties"]["key"].is_object());
+    assert!(p["properties"]["memory_type"].is_object());
     assert!(p["properties"]["content"].is_object());
+    assert!(p["properties"]["tags"].is_object());
 }
 
 #[test]
@@ -972,8 +976,8 @@ fn test_memory_list_tool_description_and_params() {
     let tool = MemoryListTool::new(None);
     assert!(!tool.description().is_empty());
     let p = tool.parameters();
+    assert!(p["properties"]["list_type"].is_object());
     assert!(p["properties"]["limit"].is_object());
-    assert!(p["properties"]["offset"].is_object());
 }
 
 // ===========================================================================
@@ -1614,6 +1618,66 @@ async fn test_cron_create_continue_session_uses_ext() {
         let j = jobs.iter().find(|j| j.name == "fresh").expect("job2");
         assert_eq!(j.payload.session_key, None, "default stays fresh-session");
     }
+}
+
+/// T3 (U12): continue_session + max_rounds — the budget lands in the job
+/// payload (explicit tier, default 10 when omitted, ignored when not
+/// continuing the session).
+#[tokio::test]
+async fn test_cron_create_continue_session_max_rounds() {
+    use crate::context::RequestContext;
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("cron.json").to_string_lossy().to_string();
+    let svc = Arc::new(std::sync::Mutex::new(nemesis_cron::service::CronService::new(
+        &path,
+    )));
+    let t = CronTool::new(Arc::clone(&svc));
+
+    let ctx = RequestContext {
+        channel: "web".to_string(),
+        chat_id: "chat9".to_string(),
+        user: "u".to_string(),
+        session_key: "agent:convo-b".to_string(),
+        correlation_id: None,
+        async_callback: None,
+    };
+
+    // Explicit tier → payload carries it.
+    t.execute(
+        r#"{"action":"create","name":"b5","schedule":"every:60s","content":"c","deliver":false,"continue_session":true,"max_rounds":5}"#,
+        &ctx,
+    )
+    .await
+    .unwrap();
+    // Omitted → schema default 10.
+    t.execute(
+        r#"{"action":"create","name":"bdef","schedule":"every:60s","content":"c","deliver":false,"continue_session":true}"#,
+        &ctx,
+    )
+    .await
+    .unwrap();
+    // continue_session=false → budget ignored (fresh-session path has no
+    // per-fire budget).
+    t.execute(
+        r#"{"action":"create","name":"bnone","schedule":"every:60s","content":"c","deliver":false,"max_rounds":20}"#,
+        &ctx,
+    )
+    .await
+    .unwrap();
+
+    let jobs = svc.lock().unwrap().list_jobs(true);
+    let by_name = |n: &str| jobs.iter().find(|j| j.name == n).unwrap_or_else(|| panic!("{n}"));
+    assert_eq!(by_name("b5").payload.max_rounds, Some(5), "explicit tier");
+    assert_eq!(
+        by_name("bdef").payload.max_rounds,
+        Some(10),
+        "default tier when omitted"
+    );
+    assert_eq!(
+        by_name("bnone").payload.max_rounds,
+        None,
+        "budget ignored without continue_session"
+    );
 }
 
 // ===========================================================================

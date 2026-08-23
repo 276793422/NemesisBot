@@ -163,6 +163,7 @@ pub fn reindex_session_logs() -> usize {
         return 0;
     };
     let mut rows = 0usize;
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
     for ent in rd.flatten() {
         let path = ent.path();
         if path.extension().and_then(|e| e.to_str()) != Some("jsonl") {
@@ -178,6 +179,7 @@ pub fn reindex_session_logs() -> usize {
         let Ok(mtime) = meta.modified() else {
             continue;
         };
+        seen.insert(stem.to_string());
         let mut did_index = false;
         let mut skipped_fresh = false;
         with_conn(|conn, indexed| {
@@ -208,6 +210,35 @@ pub fn reindex_session_logs() -> usize {
             rows += 1;
         }
     }
+
+    // Orphan purge (2026-08-23): rows whose source file no longer exists must
+    // go — pre-fix, deleted sessions' rows lingered forever and eventually
+    // filled the search window with ghosts. The comparison is DB-vs-disk
+    // directly: gating on the in-memory `indexed` map (`known == seen`) made
+    // the purge unreachable exactly when it was needed — a fresh process's
+    // full scan registers every disk file into `indexed`, so the map always
+    // equals the disk set afterwards, and files deleted while no process was
+    // watching (leaked test files, sessions deleted in a prior run) kept
+    // their rows. One SELECT DISTINCT per reindex is cheap (stems only).
+    with_conn(|conn, indexed| {
+        let indexed_keys: Vec<String> = conn
+            .prepare("SELECT DISTINCT session_key FROM history_fts")
+            .map(|mut s| {
+                s.query_map([], |r| r.get::<_, String>(0))
+                    .map(|ks| ks.flatten().collect::<Vec<_>>())
+                    .unwrap_or_default()
+            })
+            .unwrap_or_default();
+        for k in indexed_keys {
+            if !seen.contains(&k) {
+                let _ = conn.execute(
+                    "DELETE FROM history_fts WHERE session_key = ?1",
+                    rusqlite::params![k],
+                );
+            }
+        }
+        indexed.retain(|k, _| seen.contains(k));
+    });
     rows
 }
 
@@ -239,19 +270,27 @@ fn insert_row(
 /// reindex picks the row up. Track seq by file line count only when the
 /// index already knows the file; otherwise skip (full reindex handles it).
 pub fn index_append(session_key: &str, role: &str, content: &str, timestamp: &str) {
+    // Namespace: the DB rows and the `indexed` map are keyed by FILE STEM
+    // (colons replaced) — same as reindex_session_logs, since chat_log
+    // writes `<stem>.jsonl`. 2026-08-23 fix: this used to look up the RAW
+    // session key, so for the normal production key form (`chan:chat:user`,
+    // always contains ':') the "file already indexed" check never matched
+    // and the incremental hook silently never fired — masked until the
+    // orphan-row purge stopped stale rows from satisfying the tests.
+    let stem = session_key.replace(':', "_");
     let _ = with_conn(|conn, indexed| {
-        if !indexed.contains_key(session_key) {
+        if !indexed.contains_key(&stem) {
             return; // never full-indexed — first query reindexes everything
         }
         let seq: i64 = conn
             .query_row(
                 "SELECT COALESCE(MAX(seq), -1) + 1 FROM history_fts WHERE session_key = ?1",
-                rusqlite::params![session_key],
+                rusqlite::params![stem],
                 |r| r.get(0),
             )
             .unwrap_or(0);
         let v = serde_json::json!({"role": role, "content": content, "timestamp": timestamp});
-        if let Err(e) = insert_row(conn, session_key, seq as usize, &v) {
+        if let Err(e) = insert_row(conn, &stem, seq as usize, &v) {
             tracing::warn!("[history_search] index_append failed: {e}");
         }
     });

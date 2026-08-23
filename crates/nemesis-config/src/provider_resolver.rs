@@ -113,35 +113,41 @@ pub fn resolve_model_config(cfg: &Config, model_ref: &str) -> Result<ProviderRes
 
 /// Convert a ModelConfig to ProviderResolution.
 /// Mirrors Go `resolveFromModelConfig`.
-/// H2 (U15): resolve an api_key VALUE that may be a credential REFERENCE of
-/// the form `env:VAR_NAME`. A literal (non-`env:`-prefixed) value passes
-/// through unchanged — full backward compatibility. An `env:` reference is
-/// resolved from the process environment at read time (no caching: changing
-/// the env var takes effect on the next resolve, mirroring dsh's
-/// per-operation credential resolution). A reference that does not resolve
-/// fails LOUD with the variable name and remedy — never silently degrades to
-/// an empty key (which would surface later as a confusing provider 401).
+/// H2 (U15): resolve an api_key VALUE that may be a credential REFERENCE.
+/// Three layers, checked in order (structural — the prefixes are disjoint):
+/// 1. `env:VAR_NAME` — resolved from the process environment at read time.
+/// 2. `yaml:<alias>` — resolved from `workspace/config/credentials.yaml`
+///    (U15 completion; see `credentials` module).
+/// 3. Literal value — passes through unchanged (full backward compatibility).
+/// References are resolved per-operation with NO caching: changing the env var
+/// or credentials.yaml takes effect on the next resolve, mirroring dsh's
+/// per-operation credential resolution. A reference that does not resolve
+/// fails LOUD with the variable/alias name and remedy — never silently
+/// degrades to an empty key (which would surface later as a confusing 401).
 pub(crate) fn resolve_api_key_value(raw: &str, model_for_error: &str) -> Result<String> {
-    let Some(var) = raw.strip_prefix("env:") else {
-        return Ok(raw.to_string());
-    };
-    if var.is_empty() {
-        return Err(ConfigError::Validation(format!(
-            "model '{}': api_key uses an empty env: reference — name a variable (e.g. \"env:MY_PROVIDER_KEY\") or use a literal key in config.json",
-            model_for_error
-        )));
+    if let Some(var) = raw.strip_prefix("env:") {
+        if var.is_empty() {
+            return Err(ConfigError::Validation(format!(
+                "model '{}': api_key uses an empty env: reference — name a variable (e.g. \"env:MY_PROVIDER_KEY\") or use a literal key in config.json",
+                model_for_error
+            )));
+        }
+        return match std::env::var(var) {
+            Ok(v) if !v.is_empty() => Ok(v),
+            Ok(_) => Err(ConfigError::Validation(format!(
+                "model '{}': environment variable '{}' for api_key is set but empty — set it to the key, or use a literal key in config.json",
+                model_for_error, var
+            ))),
+            Err(_) => Err(ConfigError::Validation(format!(
+                "model '{}': environment variable '{}' for api_key is not set — set the env var, or use a literal key in config.json",
+                model_for_error, var
+            ))),
+        };
     }
-    match std::env::var(var) {
-        Ok(v) if !v.is_empty() => Ok(v),
-        Ok(_) => Err(ConfigError::Validation(format!(
-            "model '{}': environment variable '{}' for api_key is set but empty — set it to the key, or use a literal key in config.json",
-            model_for_error, var
-        ))),
-        Err(_) => Err(ConfigError::Validation(format!(
-            "model '{}': environment variable '{}' for api_key is not set — set the env var, or use a literal key in config.json",
-            model_for_error, var
-        ))),
+    if let Some(alias) = raw.strip_prefix("yaml:") {
+        return crate::credentials::resolve_yaml_reference(alias, model_for_error);
     }
+    Ok(raw.to_string())
 }
 
 fn resolve_from_model_config(mc: &ModelConfig) -> Result<ProviderResolution> {

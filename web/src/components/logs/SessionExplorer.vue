@@ -10,6 +10,9 @@ const props = defineProps<{
   sessions: SessionEntry[]
   requests: LlmRequestEntry[]
   tasks: ClusterTaskEntry[]
+  /** T6 (U20): locate target from the history-search tab — a session file
+   *  stem exactly matching what session_detail expects. */
+  focusSession?: string | null
 }>()
 
 const emit = defineEmits<{
@@ -124,6 +127,17 @@ const subTabs = [
 // populates the props. If the user clicks reload in the toolbar, this fires.
 watch(() => props.sessions.length + props.requests.length + props.tasks.length, () => {
   // props changed — no action needed; child components are reactive
+})
+
+// T6 (U20): external locate from the history-search tab. Switch to the
+// sessions sub-tab and select+fetch the target session's detail. Works even
+// when the session isn't in the currently loaded list page — selectSession
+// fetches by id regardless (the detail data lands in sessionMessages; the
+// list highlights it only if present).
+watch(() => props.focusSession, (id) => {
+  if (!id) return
+  subTab.value = 'sessions'
+  selectSession(id)
 })
 </script>
 

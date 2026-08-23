@@ -2,10 +2,30 @@
 name = "nemesisbot"
 version = "0.1.0"
 description = "Python SDK for driving NemesisBot as a subprocess (spawn gateway --local, chat over WebSocket)"
+readme = "README.md"
+license = { text = "AGPL-3.0-only" }
 requires-python = ">=3.10"
+keywords = ["nemesisbot", "ai-agent", "agent-sdk", "llm", "subprocess"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: GNU Affero General Public License v3",
+    "Operating System :: Microsoft :: Windows",
+    "Operating System :: POSIX :: Linux",
+    "Operating System :: MacOS",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+]
 dependencies = [
     "websockets>=12.0",
 ]
+
+[project.urls]
+Homepage = "https://github.com/276793422/NemesisBot_Rust"
 
 [project.optional-dependencies]
 dev = [

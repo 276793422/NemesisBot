@@ -112,5 +112,89 @@ pub fn spill_tool_result(
     ))
 }
 
+/// U4 retention cleanup: delete spill files older than `retention_days`
+/// (by file mtime), then remove session dirs that became empty (and the
+/// spill root itself if it became empty). Returns the number of files
+/// deleted. Failures on individual files/dirs WARN but never abort the sweep
+/// — cleanup is housekeeping, not a correctness path. `retention_days == 0`
+/// is the caller's "disabled" flag (returns 0 without touching the tree).
+pub fn cleanup_expired(spill_root: &Path, retention_days: u64) -> usize {
+    if retention_days == 0 {
+        return 0;
+    }
+    let cutoff = std::time::SystemTime::now()
+        - std::time::Duration::from_secs(retention_days * 24 * 3600);
+    let mut deleted = 0usize;
+
+    let sessions = match std::fs::read_dir(spill_root) {
+        Ok(rd) => rd,
+        Err(_) => return 0, // no root / unreadable — nothing to clean
+    };
+    for entry in sessions.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            let mut dir_empty = true;
+            if let Ok(files) = std::fs::read_dir(&path) {
+                for f in files.flatten() {
+                    let fp = f.path();
+                    if fp.is_dir() {
+                        dir_empty = false; // unexpected nesting — leave it alone
+                        continue;
+                    }
+                    let expired = f
+                        .metadata()
+                        .and_then(|m| m.modified())
+                        .map(|mt| mt < cutoff)
+                        .unwrap_or(false);
+                    if expired {
+                        match std::fs::remove_file(&fp) {
+                            Ok(()) => deleted += 1,
+                            Err(e) => {
+                                tracing::warn!(
+                                    "[Spill] retention cleanup failed to delete '{}': {}",
+                                    fp.display(),
+                                    e
+                                );
+                                dir_empty = false; // file survived — dir not empty
+                            }
+                        }
+                    } else {
+                        dir_empty = false; // fresh file kept
+                    }
+                }
+            }
+            if dir_empty {
+                if let Err(e) = std::fs::remove_dir(&path) {
+                    tracing::warn!(
+                        "[Spill] retention cleanup failed to remove dir '{}': {}",
+                        path.display(),
+                        e
+                    );
+                }
+            }
+        } else if path.is_file() {
+            // A stray file directly under the root (not expected from
+            // spill_tool_result, but sweep it under the same rule).
+            let expired = entry
+                .metadata()
+                .and_then(|m| m.modified())
+                .map(|mt| mt < cutoff)
+                .unwrap_or(false);
+            if expired {
+                if let Err(e) = std::fs::remove_file(&path) {
+                    tracing::warn!(
+                        "[Spill] retention cleanup failed to delete '{}': {}",
+                        path.display(),
+                        e
+                    );
+                } else {
+                    deleted += 1;
+                }
+            }
+        }
+    }
+    deleted
+}
+
 #[cfg(test)]
 mod tests;
