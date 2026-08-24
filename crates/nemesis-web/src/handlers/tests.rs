@@ -5460,3 +5460,93 @@ fn test_parse_cluster_dir_name_without_ms() {
     assert_eq!(ts, "2026-06-17_14-23-45");
     assert_eq!(task, "taskABC");
 }
+
+// -----------------------------------------------------------------------
+// Sessions delete → cron cascade (2026-08-25 zombie-resurrection fix)
+// -----------------------------------------------------------------------
+
+#[tokio::test]
+async fn test_sessions_delete_pauses_cron_jobs_bound_to_session() {
+    let handler = sessions::SessionsHandler;
+    let dir = tempfile::tempdir().unwrap();
+    let ctx = make_ctx(&dir);
+
+    // Seed three jobs directly in the cron service:
+    // A) enabled + pinned to the session being deleted  → must be paused
+    // B) enabled + pinned to a DIFFERENT session        → must stay enabled
+    // C) already-disabled + pinned to the deleted one   → untouched, NOT reported
+    let victim_key = "agent:main:session:victim-sid".to_string();
+    let schedule = |ms: i64| nemesis_cron::CronSchedule {
+        kind: "every".to_string(),
+        at_ms: None,
+        every_ms: Some(ms),
+        expr: None,
+        tz: None,
+    };
+    let add = |name: &str, key: Option<&str>, enabled: bool| {
+        let svc = ctx.state.cron.as_ref().unwrap();
+        let svc = svc.lock().unwrap();
+        svc.add_job_ext(
+            name,
+            schedule(60_000),
+            "ping",
+            false,
+            None,
+            None,
+            key,
+            None,
+            enabled,
+        )
+        .unwrap()
+    };
+    let job_a = add("target-job", Some(&victim_key), true);
+    let _job_b = add("other-job", Some("agent:main:session:other-sid"), true);
+    let _job_c = add("already-off", Some(&victim_key), false);
+
+    // Delete the session.
+    let result = handler
+        .handle_cmd("delete", Some(serde_json::json!({ "session_id": "victim-sid" })), &ctx)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(result["deleted"], "victim-sid");
+    let paused = result["paused_cron_jobs"].as_array().unwrap();
+    assert_eq!(paused.len(), 1, "exactly the enabled target job is reported");
+    assert_eq!(paused[0]["id"], job_a.id.as_str());
+    assert_eq!(paused[0]["name"], "target-job");
+
+    // Post-state: A paused, B enabled, C untouched-disabled.
+    let svc = ctx.state.cron.as_ref().unwrap();
+    let svc = svc.lock().unwrap();
+    let jobs = svc.list_jobs(true);
+    let by_name = |n: &str| jobs.iter().find(|j| j.name == n).unwrap();
+    assert!(!by_name("target-job").enabled, "pinned job paused");
+    assert!(
+        by_name("other-job").enabled,
+        "job bound to another session stays enabled"
+    );
+    assert!(!by_name("already-off").enabled, "disabled job untouched");
+    // next_run cleared on pause so the fire loop skips it entirely.
+    assert!(by_name("target-job").state.next_run_at_ms.is_none());
+}
+
+#[tokio::test]
+async fn test_sessions_delete_no_cron_service_still_deletes() {
+    // AppState.cron is None in some embeddings — delete must not fall over.
+    let handler = sessions::SessionsHandler;
+    let dir = tempfile::tempdir().unwrap();
+    let mut ctx = make_ctx(&dir);
+    Arc::get_mut(&mut ctx.state).unwrap().cron = None;
+
+    let result = handler
+        .handle_cmd("delete", Some(serde_json::json!({ "session_id": "x" })), &ctx)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(result["deleted"], "x");
+    assert_eq!(
+        result["paused_cron_jobs"].as_array().unwrap().len(),
+        0,
+        "empty paused list, not null/missing"
+    );
+}

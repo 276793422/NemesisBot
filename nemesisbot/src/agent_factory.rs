@@ -437,7 +437,12 @@ pub fn build_agent_loop(
         let cont_mgr = Arc::new(nemesis_agent::ContinuationManager::with_disk_store(
             &workspace_dir,
         ));
-        agent_loop.set_continuation_manager(cont_mgr);
+        agent_loop.set_continuation_manager(cont_mgr.clone());
+        // rpc_cache TTL (2026-08-25): continuation snapshots whose callback
+        // never arrives (peer died, task lost) used to accumulate in
+        // {workspace}/cluster/rpc_cache/ forever. Same 7-day TTL as the
+        // SessionStore: startup sweep + daily midnight.
+        spawn_rpc_cache_cleanup(cont_mgr);
     }
 
     // 10. Inject shared Arc references.
@@ -1050,6 +1055,60 @@ fn spawn_daily_cleanup(store: Arc<nemesis_agent::session::SessionStore>, label: 
                     label = %label,
                     "[AgentFactory] {} SessionStore daily midnight cleanup (TTL=7d)",
                     label
+                );
+            }
+        }
+    });
+}
+
+/// rpc_cache continuation-snapshot TTL sweep (mirrors `spawn_daily_cleanup`).
+///
+/// 2026-08-25: `ContinuationManager::cleanup_old_snapshots(7d)` had no
+/// production caller — snapshots whose callback never arrives accumulated
+/// in `{workspace}/cluster/rpc_cache/` forever (and would be re-recovered
+/// into memory by `recover_to_manager` after every restart). This runs a
+/// sweep immediately at startup, then daily at local midnight, same as the
+/// SessionStore TTL. Once-guard: `build_agent_loop` runs again on agent
+/// rebuilds — only the first spawn survives for the process lifetime.
+fn spawn_rpc_cache_cleanup(mgr: Arc<nemesis_agent::ContinuationManager>) {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    static RPC_CACHE_CLEANUP_SPAWNED: AtomicBool = AtomicBool::new(false);
+    if RPC_CACHE_CLEANUP_SPAWNED.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    const TTL: std::time::Duration = std::time::Duration::from_secs(7 * 24 * 3600);
+    tokio::spawn(async move {
+        use chrono::TimeZone;
+        // Startup sweep.
+        let removed = mgr.cleanup_old_snapshots(TTL).await;
+        if removed > 0 {
+            info!(
+                removed,
+                "[AgentFactory] rpc_cache continuation startup cleanup (TTL=7d)"
+            );
+        }
+        loop {
+            // Calculate seconds until next local midnight.
+            let now = chrono::Local::now();
+            let next_midnight = chrono::Local
+                .from_local_datetime(
+                    &now.date_naive()
+                        .succ_opt()
+                        .unwrap()
+                        .and_hms_opt(0, 0, 0)
+                        .unwrap(),
+                )
+                .unwrap();
+            let dur = next_midnight.signed_duration_since(now);
+            let sleep_secs = dur.num_seconds().max(60) as u64;
+
+            tokio::time::sleep(std::time::Duration::from_secs(sleep_secs)).await;
+
+            let removed = mgr.cleanup_old_snapshots(TTL).await;
+            if removed > 0 {
+                info!(
+                    removed,
+                    "[AgentFactory] rpc_cache continuation midnight cleanup (TTL=7d)"
                 );
             }
         }

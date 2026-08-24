@@ -3,9 +3,11 @@
  * P3-1 (2026-08-24 UI entry gap): 会话分叉弹窗 —— Z1 session fork 的完整版 UI。
  *
  * 打开时拉取轮次表（GET /api/chat/sessions/:id/turns，同 CLI `session show`
- * 的轮次计数：一轮 = 完整 user→…→assistant 交换），用户选分岔点后 POST
- * fork（后端走 Z1 fork_session：SessionStore + chat_log 前缀复制 + 边界事件，
- * 原会话不动）。成功后 emit('forked', 新会话 id)，由父组件刷新列表并切换。
+ * 的轮次计数：一轮 = 完整 user→…→assistant 交换；每行显示轮首提问 preview +
+ * 轮末回复 end_preview —— 分叉保留完整轮次，选这行新会话就停在 end_preview 上），
+ * 用户选分岔点后 POST fork（后端走 Z1 fork_session：SessionStore 前缀 +
+ * chat_log 从同一前缀投影生成 + 边界事件，原会话不动）。成功后
+ * emit('forked', 新会话 id)，由父组件刷新列表并切换。
  */
 import { ref, watch } from 'vue'
 import { useChatApi, type SessionTurnRow } from '../composables/useChatApi'
@@ -79,7 +81,10 @@ async function doFork() {
           <label v-for="t in turns" :key="t.turn" class="turn-row">
             <input type="radio" :value="t.turn" v-model="atTurn" />
             <span class="turn-no">第 {{ t.turn }} 轮</span>
-            <span class="turn-preview">{{ t.preview }}</span>
+            <span class="turn-main">
+              <span class="turn-preview">{{ t.preview }}</span>
+              <span class="turn-end">↳ 分叉末条：{{ t.end_preview }}</span>
+            </span>
             <span class="turn-meta">{{ t.kept_messages }} 条</span>
           </label>
         </div>
@@ -184,8 +189,23 @@ async function doFork() {
   min-width: 56px;
   color: var(--text-muted);
 }
-.turn-preview {
+.turn-main {
   flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+.turn-preview {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+/* 该轮最后一条回复的首行 —— 分叉保留完整轮次，新会话将停在它上面。
+ * end_preview 缺席（旧后端）时整行不渲染，不算错误。 */
+.turn-end {
+  font-size: 11px;
+  color: var(--text-muted);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;

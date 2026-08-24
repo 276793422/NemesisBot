@@ -175,16 +175,21 @@ async fn test_turns_table_counts_and_previews() {
     assert_eq!(turns.len(), 3);
     // Turn rows: preview = first line of the USER message; kept_messages is
     // cumulative INCLUDING the leading system prompt (fork-cut semantics).
+    // end_preview = the turn's last non-empty user/assistant first line —
+    // what a fork at that turn ends on (2026-08-25 fix contract).
     assert_eq!(turns[0]["turn"], 1);
     assert_eq!(turns[0]["preview"], "第一问：你好");
+    assert_eq!(turns[0]["end_preview"], "回答一");
     assert_eq!(turns[0]["time"], "t1");
     assert_eq!(turns[0]["turn_messages"], 2);
     assert_eq!(turns[0]["kept_messages"], 3); // sys + u1 + a1
     assert_eq!(turns[1]["turn"], 2);
     assert_eq!(turns[1]["turn_messages"], 3); // u2 + tool + a2
     assert_eq!(turns[1]["kept_messages"], 6);
+    assert_eq!(turns[1]["end_preview"], "回答二"); // tool rows never preview
     assert_eq!(turns[2]["turn"], 3);
     assert_eq!(turns[2]["preview"], "第三问：再见");
+    assert_eq!(turns[2]["end_preview"], "回答三");
     assert_eq!(turns[2]["kept_messages"], 8); // whole history
 
     nemesis_agent::chat_log::delete_chat_log(&key);
@@ -265,8 +270,23 @@ async fn test_fork_creates_new_session_and_switch_target() {
     let source_history = fresh.get_history(&key);
     assert_eq!(source_history.len(), 8);
 
-    // chat_log prefix mirrored for the Dashboard browser.
-    assert!(v["chat_log_lines"].as_u64().unwrap() >= 1);
+    // chat_log projected FROM THE STORE PREFIX (2026-08-25 fix): the
+    // user/assistant rows of messages[..cut], timestamps from the store.
+    // seed layout [sys,u1,a1,u2,tool,a2,u3,a3] cut at 6 → 4 rows, ending
+    // on the picked turn's final assistant reply "回答二" (ts t5).
+    assert_eq!(v["chat_log_lines"].as_u64().unwrap(), 4);
+    let (forked_log, _n, _m, _o) = nemesis_agent::chat_log::read_chat_log(&new_key, 50, None);
+    assert_eq!(forked_log.len(), 4);
+    // Full store content is projected verbatim (the live append path logs
+    // full message bodies too — the seed's hand-written log lines above
+    // only carried the first line, which is a fixture shortcut, not the
+    // real format).
+    assert_eq!(forked_log[0]["content"], "第一问：你好\n第二行不进预览");
+    assert_eq!(
+        forked_log.last().unwrap()["content"], "回答二",
+        "fork must END on the picked turn's final assistant reply"
+    );
+    assert_eq!(forked_log.last().unwrap()["timestamp"], "t5");
 
     // Cleanup the global-dir artifacts (nanos-unique keys).
     nemesis_agent::chat_log::delete_chat_log(&key);

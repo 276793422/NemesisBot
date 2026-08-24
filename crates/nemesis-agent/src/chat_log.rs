@@ -167,6 +167,22 @@ fn log_path(session_key: &str) -> PathBuf {
 /// fork cut, so the Dashboard log and the model-context store stay aligned.
 /// Returns the number of lines copied. The lazy FTS full-index picks the
 /// new file up on first search; no per-line index_append needed here.
+///
+/// ⚠ SUPERSEDED (2026-08-25 fork 内容错位修复): the "same user-turn
+/// counting" claim above only holds while the two stores never diverge —
+/// and they DO diverge in the wild (real case: a legacy session whose
+/// SessionStore had 29 turns of August content while its append-only
+/// chat_log carried 42 turns starting July 19; compaction also folds store
+/// turns away while chat_log is never truncated). Forking such a session
+/// stitched a store prefix of one conversation onto a chat_log prefix of a
+/// DIFFERENT conversation, so the Dashboard (which renders history from
+/// chat_log) showed content unrelated to the turn picked in the dialog.
+/// `fork_session` now generates the new key's chat_log from the store
+/// prefix instead (`write_chat_log_from_store`) — SessionStore is the
+/// single source of truth for turn semantics. Kept (not deleted) per the
+/// code-change discipline: re-enable only if a future caller can guarantee
+/// the two stores are content-aligned (none can today).
+#[allow(dead_code)]
 pub fn copy_chat_log_prefix(source_key: &str, new_key: &str, at_turn: usize) -> usize {
     // Whole-log read: fork is a one-shot admin op, not a hot path.
     let (all, _total, _more, _oldest) = read_chat_log(source_key, usize::MAX, None);
@@ -198,10 +214,94 @@ pub fn copy_chat_log_prefix(source_key: &str, new_key: &str, at_turn: usize) -> 
     lines.len()
 }
 
+/// FIX (2026-08-25): single source of truth for "which stored messages
+/// become chat_log rows" — used by BOTH `write_chat_log_from_store` (the
+/// fork projection) AND the turns endpoint's `end_preview` computation
+/// (api_handlers). The two call sites must never drift apart, or the fork
+/// dialog's "分叉末条" preview would disagree with what the fork actually
+/// ends on — the exact class of bug this round fixed. Tool/system rows
+/// never project (chat_log is the UI bubble source); an `assistant` row
+/// with empty/whitespace content is a pure tool_calls intermediate, not a
+/// displayable reply.
+pub fn is_projected_chat_row(role: &str, content: &str) -> bool {
+    match role {
+        "user" => true,
+        "assistant" => !content.trim().is_empty(),
+        _ => false,
+    }
+}
+
+/// FIX (2026-08-25 分叉内容错位): generate `new_key`'s chat_log by
+/// PROJECTING a SessionStore history prefix — the replacement for
+/// `copy_chat_log_prefix` (see its ⚠ SUPERSEDED note for the divergence
+/// bug this fixes).
+///
+/// Projection semantics (SessionStore is the single source of truth for
+/// turn semantics — the fork dialog's turn table and the fork cut both
+/// read it, so the forked session's chat_log must be derived from the same
+/// prefix, not from a second, independently-counted copy):
+/// - only `user` / `assistant` rows are written (chat_log is the UI bubble
+///   source; tool/system rows were never logged there);
+/// - `assistant` rows with empty/whitespace content are skipped — those are
+///   pure tool_calls intermediate messages; the final per-turn reply has
+///   content. (A non-empty intermediate reply is real model output and is
+///   kept — honest content beats byte-parity with a source log that may
+///   itself be stale.)
+/// - timestamps come from the stored messages (a fork must not re-stamp
+///   history);
+/// - model badge / cron markers are NOT carried over (the store does not
+///   record them; a missing badge degrades to "no badge" on the read side,
+///   which parses fine — an acceptable display-only cost for guaranteed
+///   store↔log alignment).
+///
+/// By construction the new session's two stores agree: the Dashboard's
+/// last displayed message == the last user/assistant message of
+/// `messages`. The lazy FTS full-index picks the new file up on first
+/// search; no per-line index_append needed here (same as the old copy).
+/// Returns the number of lines written.
+pub fn write_chat_log_from_store(
+    new_key: &str,
+    messages: &[crate::session::StoredMessage],
+) -> usize {
+    let mut lines: Vec<String> = Vec::new();
+    for m in messages {
+        if !is_projected_chat_row(&m.role, &m.content) {
+            continue;
+        }
+        let entry = serde_json::json!({
+            "role": m.role,
+            "content": m.content,
+            "timestamp": m.timestamp,
+        });
+        if let Ok(line) = serde_json::to_string(&entry) {
+            lines.push(line);
+        }
+    }
+    if lines.is_empty() {
+        return 0;
+    }
+    let target = log_path(new_key);
+    if let Some(parent) = target.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+    let mut written = 0usize;
+    if let Ok(mut f) = OpenOptions::new().create(true).append(true).open(&target) {
+        for l in &lines {
+            if writeln!(f, "{}", l).is_ok() {
+                written += 1;
+            }
+        }
+    }
+    written
+}
+
 /// Delete a session's chat log file (JSONL). Used by session management
 /// (delete conversation) to clear the user-facing history. Also deletes the
-/// boundary-events sidecar so a re-created session doesn't inherit stale
-/// audit rows. No-op if absent.
+/// boundary-events sidecar (so a re-created session doesn't inherit stale
+/// audit rows) and the title meta sidecar (2026-08-25: it used to survive as
+/// an orphan — invisible to `sessions.list` which scans jsonl only, but dead
+/// bytes on disk; `clear` deliberately KEEPS the meta because the
+/// conversation stays alive with its title). No-op if absent.
 pub fn delete_chat_log(session_key: &str) {
     let path = log_path(session_key);
     if let Err(e) = std::fs::remove_file(&path) {
@@ -213,6 +313,12 @@ pub fn delete_chat_log(session_key: &str) {
     if let Err(e) = std::fs::remove_file(&bpath) {
         if e.kind() != std::io::ErrorKind::NotFound {
             tracing::warn!("[chat_log] Failed to delete {}: {}", bpath.display(), e);
+        }
+    }
+    let mpath = meta_path(session_key);
+    if let Err(e) = std::fs::remove_file(&mpath) {
+        if e.kind() != std::io::ErrorKind::NotFound {
+            tracing::warn!("[chat_log] Failed to delete {}: {}", mpath.display(), e);
         }
     }
 }

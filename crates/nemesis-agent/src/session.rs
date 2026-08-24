@@ -3,6 +3,9 @@
 //! Provides:
 //! - `Session` / `SessionManager` for tracking active sessions
 //! - `SessionStore` for persistent conversation history with disk storage
+//! - Self-heal rebuild: a store entry missing past the 7-day TTL is
+//!   reconstructed from the append-only chat_log on next access (see
+//!   [`SessionStore::rebuild_from_chat_log`])
 //! - `Summarizer` for LLM-driven multi-part session summarization
 //! - Token estimation and force compression utilities
 
@@ -357,6 +360,26 @@ impl SessionStore {
             }
         }
 
+        // 2026-08-25 自愈重建（TTL 生命周期不对称修复）: memory AND disk both
+        // missed. Before defaulting to an EMPTY session — the exact mechanism
+        // behind 失忆会话 (UI shows chat_log history while the model context is
+        // gone: `cleanup_old_sessions` evicts the store json after 7 idle days
+        // but chat_log never expires) and behind permanent store↔log divergence
+        // (continuing such a session used to rebuild context from scratch) —
+        // try replaying the append-only chat_log. Persisted immediately, same
+        // reasoning as the Z1 disk fallback above. In-memory-only stores (no
+        // storage_dir) skip this: they are never TTL-evicted either.
+        if self.storage_dir.is_some() {
+            if let Some(session) = self.rebuild_from_chat_log(key) {
+                self.sessions
+                    .write()
+                    .unwrap()
+                    .insert(key.to_string(), session.clone());
+                let _ = self.save(key);
+                return session;
+            }
+        }
+
         let session = StoredSession {
             key: key.to_string(),
             messages: Vec::new(),
@@ -370,6 +393,84 @@ impl SessionStore {
             .unwrap()
             .insert(key.to_string(), session.clone());
         session
+    }
+
+    /// 2026-08-25 自愈重建: rebuild a missing store entry by replaying the
+    /// session's append-only chat_log (`session_logs/{key}.jsonl`).
+    ///
+    /// Why this exists: `cleanup_old_sessions` (startup + daily midnight,
+    /// 7-day TTL) deletes ONLY the store json — chat_log never expires. Left
+    /// as-is, any session idle past the TTL becomes "UI shows history, model
+    /// remembers nothing" (失忆会话), and continuing it rebuilt context from
+    /// zero while chat_log kept growing (permanent divergence; real cases
+    /// found in production 2026-08-25). With this hook the chat_log is the
+    /// durable source of truth and the store degrades to a rebuildable cache.
+    ///
+    /// Callers: only `get_or_create`, after the in-memory map AND the disk
+    /// json both missed — a live store file always wins, so this can never
+    /// clobber existing context (including Z1 fork files, which land via the
+    /// disk fallback above).
+    ///
+    /// Fidelity limits (accepted, documented): chat_log only ever recorded
+    /// user/assistant rows, so a rebuild carries no tool-call history and no
+    /// summary; the agent instance re-injects the current system prompt on
+    /// load (its `set_history` inserts the missing system row at [0]).
+    /// Replayed rows keep their original timestamps; `updated` is stamped
+    /// now so the rebuilt file survives a fresh TTL cycle. Long logs replay
+    /// only their newest [`MAX_STORED_MESSAGES`] rows — the same bound the
+    /// store itself enforces.
+    fn rebuild_from_chat_log(&self, key: &str) -> Option<StoredSession> {
+        // read_chat_log(limit, None) returns the NEWEST `limit` rows.
+        let (rows, total, _, _) =
+            crate::chat_log::read_chat_log(key, Self::MAX_STORED_MESSAGES, None);
+        let mut messages: Vec<StoredMessage> = Vec::with_capacity(rows.len());
+        for v in rows {
+            let role = v.get("role").and_then(|r| r.as_str()).unwrap_or("");
+            let content = v.get("content").and_then(|c| c.as_str()).unwrap_or("");
+            // Single-source-of-truth row predicate (same one the fork's
+            // chat_log projection and the turns endpoint's end_preview use):
+            // skips empty-content assistant intermediates.
+            if !crate::chat_log::is_projected_chat_row(role, content) {
+                continue;
+            }
+            messages.push(StoredMessage {
+                role: role.to_string(),
+                content: content.to_string(),
+                tool_calls: Vec::new(),
+                tool_call_id: None,
+                timestamp: v
+                    .get("timestamp")
+                    .and_then(|t| t.as_str())
+                    .unwrap_or_default()
+                    .to_string(),
+                reasoning_content: None,
+                tool_name: None,
+                tool_result_projection: None,
+            });
+        }
+        if messages.is_empty() {
+            return None; // no chat_log either → caller falls through to a fresh session
+        }
+        let created = messages
+            .first()
+            .and_then(|m| DateTime::parse_from_rfc3339(&m.timestamp).ok())
+            .map(|dt| dt.with_timezone(&Local))
+            .unwrap_or_else(Local::now);
+        let session = StoredSession {
+            key: key.to_string(),
+            messages,
+            summary: String::new(),
+            summary_covers_up_to: None,
+            created,
+            updated: Local::now(),
+        };
+        info!(
+            key = %key,
+            replayed = session.messages.len(),
+            log_total = total,
+            "[SessionStore] self-heal: store json missing, rebuilt context from chat_log"
+        );
+        Some(session)
     }
 
     /// Get the conversation history for a session.
@@ -730,12 +831,32 @@ fn hash_messages(messages: &[StoredMessage]) -> String {
 
     /// Clear a session's messages + summary but keep the key (conversation
     /// stays usable, history emptied). Used by "clear" in session management.
+    ///
+    /// FIX (2026-08-25 两存储分叉摸底): the on-disk file MUST go too. The
+    /// old version only cleared the in-memory entry, so `sessions/*.json`
+    /// still carried the full history — after a gateway restart the store
+    /// reloaded it and the LLM context "came back to life" while chat_log
+    /// had already been truncated by the handler, diverging the two stores
+    /// in the worst direction (model remembers everything the user just
+    /// cleared; UI shows nothing). Removing the file is safe: the next
+    /// `get_or_create` lazily rebuilds an empty session. Known boundary
+    /// (shared with `delete_session`): a turn already in flight for this
+    /// key may save() the old history back at its end — management ops vs
+    /// concurrent turns is a pre-existing race, unchanged here.
     pub fn clear_session(&self, key: &str) {
-        if let Some(session) = self.sessions.write().unwrap().get_mut(key) {
-            session.messages.clear();
-            session.summary.clear();
-            session.summary_covers_up_to = None;
-            session.updated = Local::now();
+        // Drop the in-memory entry (next get_or_create rebuilds an empty one).
+        self.sessions.write().unwrap().remove(key);
+        if let Some(dir) = &self.storage_dir {
+            let path = dir.join(format!("{}.json", sanitize_filename(key)));
+            if let Err(e) = std::fs::remove_file(&path) {
+                if e.kind() != std::io::ErrorKind::NotFound {
+                    warn!(
+                        file = %path.display(),
+                        error = %e,
+                        "[SessionStore] clear_session: failed to remove json"
+                    );
+                }
+            }
         }
     }
 
@@ -798,6 +919,14 @@ fn hash_messages(messages: &[StoredMessage]) -> String {
     ///
     /// Used by cluster_agent and the main AgentLoop at startup and via daily cron
     /// to bound disk usage from accumulated peer_chat history files.
+    ///
+    /// Lifecycle note (2026-08-25): this deletes ONLY the store json — the
+    /// append-only chat_log (`session_logs/*.jsonl`) never expires, so an
+    /// evicted session keeps its UI history while model context is gone.
+    /// That asymmetry used to produce 失忆会话 and permanent store↔log
+    /// divergence; it is now healed on next access by
+    /// [`SessionStore::rebuild_from_chat_log`] (store = rebuildable cache,
+    /// chat_log = source of truth).
     pub fn cleanup_old_sessions(&self, max_age_days: u64) -> usize {
         let storage_dir = match &self.storage_dir {
             Some(d) => d.clone(),

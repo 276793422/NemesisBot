@@ -1015,6 +1015,10 @@ fn first_line_trunc(s: &str, max: usize) -> String {
 /// dialog. Same counting as the CLI `session show`: a turn is one complete
 /// user→…→assistant exchange; `kept_messages` is the cumulative history size
 /// a fork cut at that turn retains (includes the leading system prompt).
+/// `end_preview` is the first line of the turn's last non-empty
+/// user/assistant message — what the forked session will end on (the fork
+/// keeps turns COMPLETE, so the fork ends on the assistant reply, while
+/// `preview` shows the user question that starts the turn).
 ///
 /// Requires `X-Auth-Token` matching `web.auth_token`.
 pub async fn handle_api_chat_session_turns(
@@ -1048,8 +1052,15 @@ pub async fn handle_api_chat_session_turns(
     // Turn table (CLI show_turns counting): one row per complete user turn;
     // messages before the first user msg (system prompt) lead into turn 1's
     // cumulative count, mirroring the fork cut index semantics.
+    // `end_preview` = first line of the turn's LAST user/assistant message
+    // (empty-content tool_calls intermediates skipped) — exactly what the
+    // forked session's Dashboard will display as its final bubble, since
+    // the fork's chat_log is projected from the same store prefix (2026-08-25
+    // fix). The dialog shows both so "what I pick" and "where the fork
+    // ends" are visible together.
     struct TurnRow {
         preview: String,
+        end_preview: String,
         time: String,
         turn_messages: usize,
     }
@@ -1059,11 +1070,17 @@ pub async fn handle_api_chat_session_turns(
         if m.role == "user" {
             rows.push(TurnRow {
                 preview: first_line_trunc(&m.content, 60),
+                end_preview: first_line_trunc(&m.content, 60),
                 time: m.timestamp.clone(),
                 turn_messages: 1,
             });
         } else if let Some(r) = rows.last_mut() {
             r.turn_messages += 1;
+            // Same row-selection predicate as the fork's chat_log projection
+            // (single source of truth — see chat_log::is_projected_chat_row).
+            if nemesis_agent::chat_log::is_projected_chat_row(&m.role, &m.content) {
+                r.end_preview = first_line_trunc(&m.content, 60);
+            }
         } else {
             leading += 1;
         }
@@ -1078,6 +1095,7 @@ pub async fn handle_api_chat_session_turns(
             serde_json::json!({
                 "turn": i + 1,
                 "preview": r.preview,
+                "end_preview": r.end_preview,
                 "time": r.time,
                 "turn_messages": r.turn_messages,
                 "kept_messages": kept,

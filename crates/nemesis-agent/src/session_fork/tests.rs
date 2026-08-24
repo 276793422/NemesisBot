@@ -189,10 +189,16 @@ fn test_fork_errors_on_empty_or_turnless_source() {
     assert!(fork_session(&store, &src, None, None).is_err());
 }
 
+/// FIX (2026-08-25 分叉内容错位) 契约：源会话的两个存储**故意构造成分叉**
+/// （chat_log 塞一段与 store 完全无关的旧对话，模拟真实 legacy 会话——
+/// append-only chat_log 从不截断，而 store 会被 compaction 折叠或事故重建）。
+/// fork 后新会话的 chat_log 必须**从 store 前缀投影生成**（与弹窗轮次表
+/// 同源），而不是从源 chat_log 独立计数复制——否则新会话 = 两段不同对话
+/// 的缝合怪，Dashboard 显示与所选轮完全对不上。
 #[test]
-fn test_fork_copies_chat_log_prefix_verbatim_plus_boundary_events() {
+fn test_fork_projects_chat_log_from_store_prefix_plus_boundary_events() {
     let src = unique_src();
-    // 3 turns in the chat log (user/assistant pairs).
+    // DIVERGED chat_log: 3 turns of an unrelated old conversation.
     append_chat_log(&src, "user", "chat turn one q");
     append_chat_log(&src, "assistant", "chat turn one a");
     append_chat_log(&src, "user", "chat turn two q");
@@ -206,13 +212,35 @@ fn test_fork_copies_chat_log_prefix_verbatim_plus_boundary_events() {
     store.set_history(&src, three_turn_history());
 
     let info = fork_session(&store, &src, None, Some(2)).unwrap();
-    // Chat log prefix: turns 1-2 = 4 lines, timestamps VERBATIM (equal to
-    // the source's first four entries).
+    // three_turn_history() = [sys, u1, a1, u2, a_call, tool, a2, u3, a3];
+    // --at 2 keeps [..7) = through "turn two answer". The projected chat_log
+    // contains the user/assistant rows of that prefix IN ORDER — NOT the
+    // source chat_log's own "chat turn …" lines.
+    let expected: Vec<(&str, &str)> = vec![
+        ("user", "turn one question"),
+        ("assistant", "turn one answer"),
+        ("user", "turn two question"),
+        ("assistant", "calling tool"),
+        ("assistant", "turn two answer"),
+    ];
     let (copied, t, _m, _o) = read_chat_log(&info.new_key, 50, None);
-    assert_eq!(t, 4);
-    let (orig, _ot, _om, _oo) = read_chat_log(&src, 50, None);
-    for (c, o) in copied.iter().zip(orig.iter()) {
-        assert_eq!(c, o, "copied chat-log lines must be verbatim");
+    assert_eq!(t, expected.len(), "projected line count");
+    for (i, v) in copied.iter().enumerate() {
+        assert_eq!(v["role"], expected[i].0, "row {i} role");
+        assert_eq!(v["content"], expected[i].1, "row {i} content");
+        // Timestamps come from the stored messages (fork never re-stamps).
+        assert_eq!(v["timestamp"], "2026-08-24T00:00:00+08:00", "row {i} ts");
+    }
+    // The alignment invariant in one line: the Dashboard's last displayed
+    // message == the last user/assistant message of the store prefix.
+    assert_eq!(
+        copied.last().unwrap()["content"], "turn two answer",
+        "fork must END on the picked turn's final assistant reply"
+    );
+    // None of the diverged old conversation leaked into the fork.
+    for v in &copied {
+        let c = v["content"].as_str().unwrap_or("");
+        assert!(!c.starts_with("chat turn"), "divergent log leaked: {c}");
     }
     // Boundary events recorded on both keys (U9 sidecar).
     let out_ev = read_boundary_events(&src);

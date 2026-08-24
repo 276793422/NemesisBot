@@ -25,6 +25,8 @@ export interface SessionEntry {
 export interface SessionTurnRow {
   turn: number
   preview: string
+  /** 该轮最后一条非空 user/assistant 消息首行 —— 分叉后新会话的末条。 */
+  end_preview: string
   time: string
   /** Messages inside this user→…→assistant exchange. */
   turn_messages: number
@@ -84,7 +86,10 @@ export function useChatApi() {
     rename: async (session_id: string, title: string): Promise<{ session_id: string; title: string }> =>
       await request('sessions', 'rename', { session_id, title }),
 
-    delete: async (session_id: string): Promise<{ deleted: string }> =>
+    /** `paused_cron_jobs` (2026-08-25): cron jobs that were bound to the
+     * deleted session get disabled by the backend so they can't fire on —
+     * and resurrect — a deleted conversation. */
+    delete: async (session_id: string): Promise<{ deleted: string; paused_cron_jobs?: { id: string; name: string }[] }> =>
       await request('sessions', 'delete', { session_id }),
 
     clear: async (session_id: string): Promise<{ cleared: string }> =>

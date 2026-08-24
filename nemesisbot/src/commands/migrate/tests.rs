@@ -1,5 +1,4 @@
 use super::*;
-use crate::GLOBAL_STATE_LOCK;
 use tempfile::TempDir;
 
 #[test]

@@ -23,7 +23,15 @@
 //! - `SessionStore` (model context restore — `get_or_create_instance`
 //!   rebuilds the provider-visible history from it, X1 projection applied
 //!   deterministically at build time), and
-//! - `chat_log` jsonl (Dashboard session browser / history reads).
+//! - `chat_log` jsonl (Dashboard session browser / history reads) —
+//!   GENERATED from the store prefix (`chat_log::write_chat_log_from_store`),
+//!   NOT copied from the source chat_log. FIX (2026-08-25): the source
+//!   session's two stores can diverge (append-only chat_log vs a store that
+//!   compaction folds or an incident rebuilt); copying each side's own
+//!   "first N user turns" produced a Frankenstein fork whose Dashboard
+//!   content didn't match the turn picked in the dialog. Deriving the log
+//!   from the same store prefix the dialog counted keeps the two stores
+//!   aligned by construction.
 //! Boundary events (`session_fork_out` / `session_fork_in`) land in the
 //! U9 sidecar for both keys.
 
@@ -89,12 +97,20 @@ fn unique_key(store: &SessionStore, source_key: &str, requested: Option<String>)
     unreachable!("uniquifier exhausted u64-ish range");
 }
 
-/// Copy the source session's chat_log prefix (same user-turn counting) to
-/// the new key, preserving each line's original fields verbatim
-/// (timestamps included). Delegates to `chat_log::copy_chat_log_prefix`
-/// (file-layout internals stay private to chat_log). Returns lines copied.
-fn copy_chat_log_prefix(source_key: &str, new_key: &str, at_turn: usize) -> usize {
-    chat_log::copy_chat_log_prefix(source_key, new_key, at_turn)
+/// Generate the new session's chat_log by projecting the store prefix.
+///
+/// FIX (2026-08-25 分叉内容错位): the old path copied the source chat_log's
+/// own "first N user turns" — independently counted, with no content
+/// alignment to the store cut. When the two stores diverge (real case:
+/// legacy session with 29 store turns of August content vs 42 chat_log
+/// turns from July; compaction folds store turns the same way), the forked
+/// session stitched unrelated conversations together and the Dashboard
+/// showed a different conversation than the turn the user picked.
+/// `write_chat_log_from_store` derives the log from the SAME prefix the
+/// dialog counted (`messages[..cut]`), so the two stores agree by
+/// construction. Returns lines written.
+fn write_chat_log_from_store(new_key: &str, messages: &[StoredMessage]) -> usize {
+    chat_log::write_chat_log_from_store(new_key, messages)
 }
 
 /// Fork `source_key` at a turn boundary into a new session key.
@@ -156,7 +172,9 @@ pub fn fork_session(
 
     // Mirror the prefix into the chat log so the Dashboard session browser
     // and history reads see the forked conversation, not an empty key.
-    let chat_log_lines = copy_chat_log_prefix(source_key, &new_key, at);
+    // FIX: projected FROM THE STORE PREFIX (see write_chat_log_from_store)
+    // — never re-counted from the source chat_log.
+    let chat_log_lines = write_chat_log_from_store(&new_key, &messages[..cut]);
 
     // Boundary events on BOTH keys (U9 sidecar; new key = fresh ledger).
     chat_log::append_boundary_event(

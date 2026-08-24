@@ -1828,3 +1828,168 @@ fn test_recover_to_manager_skips_corrupt_snapshot() {
     let mgr = ContinuationManager::with_disk_store(tmp.path());
     assert!(!mgr.has_continuation_sync("corrupt"));
 }
+
+// ---------------------------------------------------------------------------
+// 2026-08-25 self-heal ordering regression: persist_final_reply must be
+// store-first, or a missing store entry rebuilds from chat_log that ALREADY
+// contains the final reply and add_message appends it a second time.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_persist_final_reply_no_duplicate_when_store_missing() {
+    // Simulate the exact production scenario the ordering protects: a
+    // TTL-evicted store (json missing) whose chat_log still holds prior
+    // turns. The final reply must appear exactly ONCE in the store and ONCE
+    // in the jsonl — never twice in either.
+    let key = format!(
+        "test:persist:final:{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    );
+    crate::chat_log::delete_chat_log(&key); // clean slate
+
+    crate::chat_log::append_chat_log(&key, "user", "prior user turn");
+    crate::chat_log::append_chat_log(&key, "assistant", "prior assistant turn");
+
+    let tmp = TempDir::new().unwrap();
+    let store = crate::session::SessionStore::new_with_storage(tmp.path());
+
+    persist_final_reply(Some(&store), &key, "test-model", "FINAL-REPLY");
+
+    let hist = store.get_history(&key);
+    let finals = hist
+        .iter()
+        .filter(|m| m.content == "FINAL-REPLY")
+        .count();
+    assert_eq!(finals, 1, "final reply duplicated in store: {:?}", hist.iter().map(|m| m.content.clone()).collect::<Vec<_>>());
+    // The rebuilt prefix survived alongside it.
+    assert!(hist.iter().any(|m| m.content == "prior user turn"));
+    assert!(hist.iter().any(|m| m.content == "prior assistant turn"));
+
+    let (rows, _, _, _) = crate::chat_log::read_chat_log(&key, 100, None);
+    let jsonl_finals = rows
+        .iter()
+        .filter(|r| r.get("content").and_then(|c| c.as_str()) == Some("FINAL-REPLY"))
+        .count();
+    assert_eq!(jsonl_finals, 1, "final reply duplicated in jsonl");
+
+    crate::chat_log::delete_chat_log(&key);
+}
+
+#[test]
+fn test_persist_final_reply_none_store_still_logs() {
+    // No session store wired (legacy call path) → chat_log still gets the
+    // reply exactly once; the helper must not touch any store.
+    let key = format!(
+        "test:persist:final:none:{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    );
+    crate::chat_log::delete_chat_log(&key); // clean slate
+
+    persist_final_reply(None, &key, "test-model", "ONLY-LOG");
+
+    let (rows, _, _, _) = crate::chat_log::read_chat_log(&key, 100, None);
+    assert_eq!(rows.len(), 1);
+    assert_eq!(
+        rows[0].get("content").and_then(|c| c.as_str()),
+        Some("ONLY-LOG")
+    );
+
+    crate::chat_log::delete_chat_log(&key);
+}
+
+// -----------------------------------------------------------------------
+// rpc_cache TTL cleanup (2026-08-25)
+// -----------------------------------------------------------------------
+
+#[tokio::test]
+async fn test_cleanup_old_snapshots_removes_stale_keeps_fresh() {
+    let tmp = TempDir::new().unwrap();
+    let manager = ContinuationManager::with_disk_store(tmp.path());
+
+    for task in ["stale-task", "fresh-task"] {
+        manager
+            .save_continuation(
+                task,
+                vec![make_message("user", "hi")],
+                "tc",
+                "rpc",
+                "chat",
+                "test_session",
+            )
+            .await;
+    }
+    let stale_path = tmp.path().join("cluster").join("rpc_cache").join("stale-task.json");
+    assert!(stale_path.exists(), "snapshot written to cluster/rpc_cache");
+    assert!(manager.has_continuation("stale-task").await);
+
+    // Age the stale file 3 hours back (mirrors the nemesis-cluster store
+    // test's technique); falls back to "age everything" when PowerShell
+    // isn't available.
+    let aged = {
+        let out = std::process::Command::new("powershell")
+            .args([
+                "-NoProfile",
+                "-Command",
+                &format!(
+                    "(Get-Item '{}').LastWriteTime = (Get-Date).AddHours(-3)",
+                    stale_path.display()
+                ),
+            ])
+            .output();
+        matches!(&out, Ok(o) if o.status.success())
+    };
+
+    if aged {
+        // 1h TTL: only the aged file qualifies.
+        let removed = manager
+            .cleanup_old_snapshots(std::time::Duration::from_secs(3600))
+            .await;
+        assert_eq!(removed, 1);
+        assert!(!manager.has_continuation("stale-task").await);
+        assert!(manager.has_continuation("fresh-task").await);
+        assert!(!stale_path.exists());
+        assert!(tmp.path().join("cluster").join("rpc_cache").join("fresh-task.json").exists());
+        // Long TTL removes nothing further.
+        let removed = manager
+            .cleanup_old_snapshots(std::time::Duration::from_secs(7 * 24 * 3600))
+            .await;
+        assert_eq!(removed, 0);
+    } else {
+        // No PowerShell: verify the mechanism with an effectively-zero TTL.
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        let removed = manager
+            .cleanup_old_snapshots(std::time::Duration::from_nanos(1))
+            .await;
+        assert!(removed > 0, "mechanism works even without mtime aging");
+        assert!(!manager.has_continuation("stale-task").await);
+        assert!(!stale_path.exists());
+    }
+}
+
+#[tokio::test]
+async fn test_cleanup_old_snapshots_memory_only_manager_is_noop() {
+    // Constructed without a disk store -> cleanup must be a clean no-op.
+    let manager = ContinuationManager::new();
+    manager
+        .save_continuation(
+            "mem-only",
+            vec![make_message("user", "hi")],
+            "tc",
+            "rpc",
+            "chat",
+            "test_session",
+        )
+        .await;
+    let removed = manager
+        .cleanup_old_snapshots(std::time::Duration::from_nanos(1))
+        .await;
+    assert_eq!(removed, 0);
+    // In-memory entries are untouched by the no-disk-store path.
+    assert!(manager.has_continuation("mem-only").await);
+}

@@ -1,5 +1,4 @@
 use super::*;
-use crate::GLOBAL_STATE_LOCK;
 use std::fs;
 
 #[test]

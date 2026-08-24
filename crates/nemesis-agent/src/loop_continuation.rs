@@ -258,6 +258,37 @@ impl ContinuationStore {
         recovered
     }
 
+    /// List task IDs whose disk snapshot is older than `max_age` (mtime-based).
+    ///
+    /// 2026-08-25: snapshots whose callback never arrives (peer died, task
+    /// lost mid-flight) used to accumulate in `cluster/rpc_cache/` forever —
+    /// the write side had no retention counterpart. The caller
+    /// (`ContinuationManager::cleanup_old_snapshots`) evicts both the file
+    /// and the in-memory twin. Mtime (not the in-file `created_at` field) is
+    /// the clock: every save rewrites the file, so mtime == last write.
+    pub fn stale_task_ids(&self, max_age: Duration) -> Vec<String> {
+        let cutoff = std::time::SystemTime::now() - max_age;
+        let mut stale = Vec::new();
+        let Ok(entries) = std::fs::read_dir(&self.base_dir) else {
+            return stale;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if !path.extension().map(|e| e == "json").unwrap_or(false) {
+                continue;
+            }
+            let Ok(modified) = entry.metadata().and_then(|m| m.modified()) else {
+                continue;
+            };
+            if modified < cutoff {
+                if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
+                    stale.push(stem.to_string());
+                }
+            }
+        }
+        stale
+    }
+
     fn snapshot_path(&self, task_id: &str) -> PathBuf {
         self.base_dir.join(format!("{}.json", task_id))
     }
@@ -531,6 +562,30 @@ impl ContinuationManager {
         conts.contains_key(task_id)
     }
 
+    /// TTL cleanup: remove continuations older than `max_age` from BOTH the
+    /// disk store and the in-memory map (2026-08-25).
+    ///
+    /// A continuation waiting longer than the TTL is dead by construction —
+    /// the outer RPC timeout ceiling is 60 minutes, so nothing legitimately
+    /// in-flight can be days old; what's left is a callback that never comes
+    /// (peer died, task lost) and would otherwise leak on disk forever and,
+    /// after a restart, get re-recovered into memory by `recover_to_manager`.
+    /// Mirrors the SessionStore 7-day TTL (`cleanup_old_sessions`) and the
+    /// nemesis-cluster `ContinuationStore::cleanup_old` semantics (same
+    /// directory, other implementation). No-op without a disk store.
+    /// Returns the number of continuations removed.
+    pub async fn cleanup_old_snapshots(&self, max_age: Duration) -> usize {
+        let Some(store) = self.disk_store.as_ref() else {
+            return 0;
+        };
+        let stale = store.stale_task_ids(max_age);
+        for task_id in &stale {
+            self.continuations.lock().await.remove(task_id);
+            store.delete(task_id);
+        }
+        stale.len()
+    }
+
     /// Check whether a continuation exists in memory (synchronous).
     ///
     /// Uses `blocking_lock` — safe during initialisation before any async
@@ -557,6 +612,41 @@ impl Default for ContinuationManager {
 // ---------------------------------------------------------------------------
 // handle_cluster_continuation -- the core continuation handler
 // ---------------------------------------------------------------------------
+
+/// Persist a continuation's final assistant reply to BOTH stores, store-first.
+///
+/// Order matters (2026-08-25 self-heal regression fix): `get_or_create` may
+/// REBUILD a missing store entry by replaying the jsonl chat_log
+/// (`SessionStore::rebuild_from_chat_log`). If the chat_log append ran FIRST,
+/// the rebuild would already contain this final reply and `add_message` would
+/// append it a SECOND time — a duplicated assistant turn in the model's
+/// context. Store-first mirrors the normal AgentLoop turn-end path (store
+/// persist, then chat_log append), so rebuild and append can never see the
+/// same row twice. Extracted from `handle_cluster_continuation` step 6 so the
+/// ordering contract is unit-testable in isolation.
+pub(crate) fn persist_final_reply(
+    store: Option<&SessionStore>,
+    session_key: &str,
+    model: &str,
+    final_content: &str,
+) {
+    if let Some(store) = store {
+        store.get_or_create(session_key);
+        store.add_message(session_key, "assistant", final_content);
+        if let Err(e) = store.save(session_key) {
+            warn!(
+                "[Continuation] Failed to persist session history for {}: {}",
+                session_key, e
+            );
+        }
+    }
+    crate::chat_log::append_chat_log_with_model(
+        session_key,
+        "assistant",
+        final_content,
+        Some(model),
+    );
+}
 
 /// Handle a cluster continuation callback.
 ///
@@ -813,27 +903,10 @@ pub async fn handle_cluster_continuation<T: ToolLookup>(
     // 6. Send final response.
     if !final_content.is_empty() {
         // Persist final reply to chat_log and session_store before sending
-        // outbound. Mirrors the normal AgentLoop path at loop.rs:2125-2148 so
-        // the user-visible history stays consistent across async continuations.
-        // Skip when session_key is empty (legacy on-disk snapshots saved before
-        // this field existed).
+        // outbound. Skip when session_key is empty (legacy on-disk snapshots
+        // saved before this field existed).
         if !cont_data.session_key.is_empty() {
-            crate::chat_log::append_chat_log_with_model(
-                &cont_data.session_key,
-                "assistant",
-                &final_content,
-                Some(model),
-            );
-            if let Some(store) = session_store {
-                store.get_or_create(&cont_data.session_key);
-                store.add_message(&cont_data.session_key, "assistant", &final_content);
-                if let Err(e) = store.save(&cont_data.session_key) {
-                    warn!(
-                        "[Continuation] Failed to persist session history for {}: {}",
-                        cont_data.session_key, e
-                    );
-                }
-            }
+            persist_final_reply(session_store, &cont_data.session_key, model, &final_content);
         }
 
         let outbound = nemesis_types::channel::OutboundMessage {

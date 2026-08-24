@@ -15,7 +15,6 @@
 use super::*;
 use crate::context::RequestContext;
 use std::sync::Arc;
-use tempfile::TempDir;
 
 // ===========================================================================
 // cli_detail: each match arm needs at least one test to drive coverage
@@ -1246,7 +1245,7 @@ async fn test_web_search_tool_brave_empty_key_falls_through() {
         duckduckgo_enabled: true,
         ..Default::default()
     };
-    let t = WebSearchTool::new(cfg);
+    let _t = WebSearchTool::new(cfg); // constructed to pin the cfg-driven branch under test
     let ctx = RequestContext::new("web", "c1", "u1", "s1");
     // Brave enabled but key empty -> falls through to DuckDuckGo (would attempt network).
     // We don't run the live request, but we can verify it doesn't go down the

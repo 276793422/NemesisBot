@@ -932,6 +932,42 @@ fn test_session_store_clear_resets_covers_up_to() {
     assert!(store.get_summary_covers_up_to("clear:key").is_none());
 }
 
+/// FIX (2026-08-25 两存储分叉摸底): "clear" must wipe the on-disk file too.
+/// The old version only cleared the in-memory entry, so a gateway restart
+/// reloaded the full history from `sessions/*.json` while chat_log had been
+/// truncated — the model "remembered" a conversation the user just cleared.
+#[test]
+fn test_session_store_clear_removes_disk_file_no_revival_after_reload() {
+    let dir = tempfile::tempdir().unwrap();
+    let key = "clear:disk";
+    {
+        let store = SessionStore::new_with_storage(dir.path());
+        store.get_or_create(key);
+        store.set_history(key, stored_msgs(3));
+        store.save(key).unwrap();
+        assert!(dir.path().join("clear_disk.json").exists(), "seed file");
+    }
+
+    let store2 = SessionStore::new_with_storage(dir.path());
+    assert_eq!(store2.get_history(key).len(), 3, "seed round-trips");
+    store2.clear_session(key);
+    // Disk file gone (not just the in-memory copy)…
+    assert!(
+        !dir.path().join("clear_disk.json").exists(),
+        "clear must remove the on-disk store file"
+    );
+    // …and a fresh store (simulating a gateway restart) sees an EMPTY
+    // session — no revival.
+    let store3 = SessionStore::new_with_storage(dir.path());
+    assert!(
+        store3.get_history(key).is_empty(),
+        "history must not come back to life after reload"
+    );
+    // The key stays usable (next turn lazily rebuilds an empty session).
+    store3.get_or_create(key);
+    assert!(store3.get_history(key).is_empty());
+}
+
 // --- S3.1: store-level C-aware trimming (MAX_STORED_MESSAGES = 1000) ---
 
 fn stored_msgs(n: usize) -> Vec<StoredMessage> {
@@ -1878,4 +1914,237 @@ fn test_estimate_tokens_projected_bounded() {
         super::estimate_tokens_for_turns_projected(&plain),
         super::estimate_tokens(&big)
     );
+}
+
+// ---------------------------------------------------------------------------
+// 2026-08-25 自愈重建（TTL 生命周期不对称修复）: store json 被 7 天 TTL 清理
+// （或缺失）而 chat_log 还活着 → get_or_create 重放 jsonl，而不是新建一个
+// 空的失忆会话。夹具刻意是"脏数据"（不对称机制在野外产出的真实状态）——
+// 干净夹具正是这类 bug 在此前几轮测试里始终不可见的原因。
+// ---------------------------------------------------------------------------
+
+/// Store 缺 + jsonl 在 → 重放 user/assistant 行（空 assistant 跳过），
+/// 时间戳沿用 jsonl 原值，重建立即落盘（crash-safe），二次访问走内存。
+#[test]
+fn test_get_or_create_rebuilds_from_chat_log_when_store_missing() {
+    let key = "test:rebuild:store-missing";
+    crate::chat_log::delete_chat_log(key); // clean slate
+    crate::chat_log::append_chat_log(key, "user", "第一问");
+    // 纯 tool_calls 中间态（空 assistant）：chat_log 里可能有，重放必须跳过
+    crate::chat_log::append_chat_log(key, "assistant", "");
+    crate::chat_log::append_chat_log(key, "assistant", "第一答");
+    let (rows, total, _, _) = crate::chat_log::read_chat_log(key, 10, None);
+    assert_eq!(total, 3);
+
+    let dir = tempfile::tempdir().unwrap();
+    let store = SessionStore::new_with_storage(dir.path()); // 空目录：无 store 文件
+    let session = store.get_or_create(key);
+
+    assert_eq!(session.messages.len(), 2, "空 assistant 中间态必须被跳过");
+    assert_eq!(session.messages[0].role, "user");
+    assert_eq!(session.messages[0].content, "第一问");
+    assert_eq!(session.messages[1].role, "assistant");
+    assert_eq!(session.messages[1].content, "第一答");
+    // 时间戳沿用 jsonl 原值（重建不得重盖时间戳）
+    assert_eq!(
+        session.messages[0].timestamp,
+        rows[0]["timestamp"].as_str().unwrap()
+    );
+    assert_eq!(
+        session.messages[1].timestamp,
+        rows[2]["timestamp"].as_str().unwrap()
+    );
+    // TTL 记账：updated=now，重建后的文件能活过新一轮 7 天
+    assert!(session.updated > session.created);
+
+    // 重建立即持久化：第二个实例直接从磁盘加载，不发生二次重建
+    assert!(store.file_exists(key));
+    let store2 = SessionStore::new_with_storage(dir.path());
+    assert_eq!(store2.get_or_create(key).messages.len(), 2);
+
+    crate::chat_log::delete_chat_log(key); // cleanup
+}
+
+/// Store 文件在（Z1 场景：文件在 store 构造后才出现）→ 磁盘回退获胜，
+/// 绝不用 jsonl 重放覆盖活上下文。
+#[test]
+fn test_get_or_create_no_rebuild_when_store_file_exists() {
+    let key = "test:rebuild:store-wins";
+    crate::chat_log::delete_chat_log(key);
+    // jsonl 内容与 store 内容刻意不同：谁赢一目了然
+    crate::chat_log::append_chat_log(key, "user", "jsonl 独有内容");
+
+    let dir = tempfile::tempdir().unwrap();
+    // 先构造（目录为空，不加载任何东西），再让文件出现 → 走磁盘回退层。
+    // 种子直接手写 store 文件：任何走 get_or_create 的种子路径都会先撞上
+    // 重建层（jsonl 已在），把夹具污染成"jsonl 内容 + 追加"的混合体。
+    let store = SessionStore::new_with_storage(dir.path());
+    let store_path = dir.path().join(format!("{}.json", sanitize_filename(key)));
+    let session_json = serde_json::to_string_pretty(&StoredSession {
+        key: key.to_string(),
+        messages: vec![StoredMessage {
+            role: "user".to_string(),
+            content: "store 独有内容".to_string(),
+            tool_calls: Vec::new(),
+            tool_call_id: None,
+            timestamp: "2026-08-25T00:00:00+08:00".to_string(),
+            reasoning_content: None,
+            tool_name: None,
+            tool_result_projection: None,
+        }],
+        summary: String::new(),
+        summary_covers_up_to: None,
+        created: Local::now(),
+        updated: Local::now(),
+    })
+    .unwrap();
+    std::fs::write(&store_path, session_json).unwrap();
+
+    let session = store.get_or_create(key);
+    assert_eq!(session.messages.len(), 1);
+    assert_eq!(session.messages[0].content, "store 独有内容");
+    assert!(
+        !session.messages.iter().any(|m| m.content.contains("jsonl")),
+        "jsonl 重放不得覆盖在盘的 store 上下文"
+    );
+
+    crate::chat_log::delete_chat_log(key); // cleanup
+}
+
+/// 双侧都没有 → 行为不变：空会话，且不落盘空文件。
+#[test]
+fn test_get_or_create_fresh_key_without_log_stays_empty() {
+    let key = "test:rebuild:fresh-no-log";
+    crate::chat_log::delete_chat_log(key); // 确保无 jsonl
+    let dir = tempfile::tempdir().unwrap();
+    let store = SessionStore::new_with_storage(dir.path());
+    let session = store.get_or_create(key);
+    assert!(session.messages.is_empty());
+    assert!(!store.file_exists(key), "无内容可重放时不得写出空 store 文件");
+    crate::chat_log::delete_chat_log(key); // cleanup
+}
+
+/// 纯内存 store（无 storage_dir）不做重建——它既不落盘也不被 TTL 清理，
+/// 且重放会触碰全局路径管理器（测试环境下即真实 sessions_log_dir）。
+#[test]
+fn test_in_memory_store_never_rebuilds_from_chat_log() {
+    let key = "test:rebuild:in-memory-gate";
+    crate::chat_log::delete_chat_log(key);
+    crate::chat_log::append_chat_log(key, "user", "有 jsonl 但 store 无盘目录");
+    let store = SessionStore::new_in_memory();
+    let session = store.get_or_create(key);
+    assert!(session.messages.is_empty(), "重建必须门控在 storage_dir 上");
+    crate::chat_log::delete_chat_log(key); // cleanup
+}
+
+/// 超长 jsonl 只重放最新 MAX_STORED_MESSAGES 行（与 store 自身的截断上限
+/// 同源）——重建恢复的是模型的工作尾部，不是无界档案。
+#[test]
+fn test_rebuild_caps_at_max_stored_messages_keeps_newest() {
+    let key = "test:rebuild:cap";
+    crate::chat_log::delete_chat_log(key);
+    // 一次性写入 MAX+5 行（逐行 append 会对真实 sessions_log_dir 开关文件
+    // 1000+ 次，没必要）
+    let log_path = nemesis_path::default_path_manager()
+        .sessions_log_dir()
+        .join(format!("{}.jsonl", key.replace(':', "_")));
+    std::fs::create_dir_all(log_path.parent().unwrap()).unwrap();
+    let mut lines = String::new();
+    for i in 0..(SessionStore::MAX_STORED_MESSAGES + 5) {
+        let entry = serde_json::json!({
+            "role": "user",
+            "content": format!("row {}", i),
+            "timestamp": "2026-08-25T00:00:00+08:00",
+        });
+        lines.push_str(&entry.to_string());
+        lines.push('\n');
+    }
+    std::fs::write(&log_path, lines).unwrap();
+
+    let dir = tempfile::tempdir().unwrap();
+    let store = SessionStore::new_with_storage(dir.path());
+    let session = store.get_or_create(key);
+
+    assert_eq!(session.messages.len(), SessionStore::MAX_STORED_MESSAGES);
+    // 留下的是最新尾部
+    assert_eq!(
+        session.messages.last().unwrap().content,
+        format!("row {}", SessionStore::MAX_STORED_MESSAGES + 4)
+    );
+
+    crate::chat_log::delete_chat_log(key); // cleanup
+}
+
+// ---------------------------------------------------------------------------
+// 2026-08-25 management-op regression pins: clear/delete must leave BOTH
+// stores empty, and the self-heal rebuild layer must NOT resurrect content
+// the user asked to remove. The compositions below mirror the exact call
+// sequences the Dashboard handlers run (handlers/sessions.rs).
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_cleared_session_does_not_resurrect_via_rebuild() {
+    // Handler "clear" sequence: truncate jsonl FIRST, then drop the store
+    // entry. A subsequent get_or_create must yield an EMPTY session — the
+    // truncated jsonl has nothing to replay.
+    let key = format!(
+        "test:mgmt:clear:{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    );
+    crate::chat_log::append_chat_log(&key, "user", "secret to forget");
+    crate::chat_log::append_chat_log(&key, "assistant", "ok noted");
+
+    let dir = tempfile::tempdir().unwrap();
+    let store = SessionStore::new_with_storage(dir.path());
+    // Materialize + persist so the store json exists (dirty-data shape).
+    store.get_or_create(&key);
+    store.add_message(&key, "user", "secret to forget");
+    store.add_message(&key, "assistant", "ok noted");
+    let _ = store.save(&key);
+
+    // The clear sequence.
+    crate::chat_log::clear_chat_log(&key);
+    store.clear_session(&key);
+
+    let after = store.get_or_create(&key);
+    assert!(
+        after.messages.is_empty(),
+        "cleared session resurrected via rebuild: {:?}",
+        after.messages
+    );
+    crate::chat_log::delete_chat_log(&key); // cleanup
+}
+
+#[test]
+fn test_deleted_session_does_not_resurrect_via_rebuild() {
+    // Handler "delete" sequence: store.delete_session removes the in-memory
+    // entry, the store json AND the jsonl. A subsequent get_or_create must
+    // yield an EMPTY session.
+    let key = format!(
+        "test:mgmt:delete:{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    );
+    crate::chat_log::append_chat_log(&key, "user", "gone after delete");
+
+    let dir = tempfile::tempdir().unwrap();
+    let store = SessionStore::new_with_storage(dir.path());
+    store.get_or_create(&key);
+    store.add_message(&key, "user", "gone after delete");
+    let _ = store.save(&key);
+
+    store.delete_session(&key);
+
+    let after = store.get_or_create(&key);
+    assert!(
+        after.messages.is_empty(),
+        "deleted session resurrected via rebuild: {:?}",
+        after.messages
+    );
+    crate::chat_log::delete_chat_log(&key); // cleanup
 }

@@ -2,9 +2,11 @@
 //!
 //! `session fork` 把一个会话在选定轮次边界处分支成新会话（真分支，非
 //! 回滚）：原会话不动，新会话拿到到该轮为止的完整上下文（SessionStore
-//! history + summary（一致性允许时）+ chat_log 前缀逐字拷贝 + 双方
-//! boundary 事件）。`session list` 列出可分支的会话，`session show`
-//! 展示一个会话的轮次边界表（选 `--at` 的辅助）。
+//! history + summary（一致性允许时）+ chat_log **从同一 store 前缀投影
+//! 生成**（2026-08-25 修复：源会话两存储可能分叉——chat_log 从不截断而
+//! store 会被压缩/重建——旧「按 chat_log 自己的轮数复制前缀」会拼出两段
+//! 不同对话的缝合会话）+ 双方 boundary 事件）。`session list` 列出可分支
+//! 的会话，`session show` 展示一个会话的轮次边界表（选 `--at` 的辅助）。
 //!
 //! 网关可同时保持运行：fork 由本 CLI 进程直接落盘，运行中的网关靠
 //! SessionStore 的「内存未命中→磁盘回退」（Z1 新增）在下一条消息时
@@ -92,7 +94,7 @@ pub fn run(action: SessionAction, local: bool) -> Result<()> {
                 "  摘要缓存 : {}",
                 if info.summary_kept { "已随分支携带" } else { "未携带（覆盖范围越过分支点）" }
             );
-            println!("  聊天记录 : 拷贝 {} 行（时间戳逐字保留）", info.chat_log_lines);
+            println!("  聊天记录 : 从 store 前缀投影 {} 行（时间戳沿用消息原值）", info.chat_log_lines);
             if let Some(ws_id) = info.new_key.strip_prefix("agent:main:session:") {
                 println!(
                     "  打开方式 : WebSocket 消息 metadata.session_id={}（Dashboard/Chat 直接可用）",

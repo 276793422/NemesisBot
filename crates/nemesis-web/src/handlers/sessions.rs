@@ -100,13 +100,51 @@ impl ModuleHandler for SessionsHandler {
                 );
                 // Clear SessionStore (in-memory + sessions/*.json) +
                 // session_logs/*.jsonl. Best-effort; absence is not an error.
-                let guard = ctx.state.agent_loop.read();
-                if let Some(al) = guard.as_ref() {
-                    if let Some(store) = al.session_store() {
-                        store.delete_session(&session_key);
+                {
+                    let guard = ctx.state.agent_loop.read();
+                    if let Some(al) = guard.as_ref() {
+                        if let Some(store) = al.session_store() {
+                            store.delete_session(&session_key);
+                        }
                     }
                 }
-                Ok(Some(serde_json::json!({ "deleted": session_id })))
+                // Cron cascade (2026-08-25): a scheduled job pinned to this
+                // session_key would otherwise FIRE on a deleted conversation
+                // and resurrect it — an empty jsonl re-created + cron rows
+                // appended, a session the user explicitly deleted coming
+                // back as a zombie. Disable (NOT remove: the job definition
+                // stays on the Tasks page for re-pointing/re-enabling) every
+                // ENABLED job whose payload targets this session, and report
+                // what was paused. Disabled jobs are left untouched.
+                // Guard released above so we never hold agent_loop + cron
+                // mutexes together.
+                let mut paused: Vec<serde_json::Value> = Vec::new();
+                if let Some(svc) = ctx.state.cron.as_ref() {
+                    if let Ok(svc) = svc.lock() {
+                        for job in svc.list_jobs(true) {
+                            if !job.enabled {
+                                continue;
+                            }
+                            if job.payload.session_key.as_deref() != Some(session_key.as_str()) {
+                                continue;
+                            }
+                            match svc.enable_job(&job.id, false) {
+                                Ok(j) => paused.push(serde_json::json!({
+                                    "id": j.id,
+                                    "name": j.name,
+                                })),
+                                Err(e) => tracing::warn!(
+                                    "[sessions] delete cascade: failed to pause cron job {} ({}): {}",
+                                    job.id, job.name, e
+                                ),
+                            }
+                        }
+                    }
+                }
+                Ok(Some(serde_json::json!({
+                    "deleted": session_id,
+                    "paused_cron_jobs": paused,
+                })))
             }
             "clear" => {
                 let session_id = data
@@ -120,13 +158,19 @@ impl ModuleHandler for SessionsHandler {
                     nemesis_agent::session::SessionStore::sanitize_session_id(&session_id)
                 );
                 // Clear SessionStore messages + session_logs jsonl (keep meta/key).
+                // Order matters (2026-08-25 self-heal note): truncate the
+                // chat_log FIRST, then drop the store json. If we crashed
+                // between the two steps the other way round, the surviving
+                // jsonl would let `rebuild_from_chat_log` resurrect the
+                // content the user just asked to clear. jsonl-first keeps the
+                // rebuild path unable to revive cleared data.
+                nemesis_agent::chat_log::clear_chat_log(&session_key);
                 let guard = ctx.state.agent_loop.read();
                 if let Some(al) = guard.as_ref() {
                     if let Some(store) = al.session_store() {
                         store.clear_session(&session_key);
                     }
                 }
-                nemesis_agent::chat_log::clear_chat_log(&session_key);
                 Ok(Some(serde_json::json!({ "cleared": session_id })))
             }
             "export" => {

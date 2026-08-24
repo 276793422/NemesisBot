@@ -10,6 +10,7 @@
 import { defineStore } from 'pinia'
 import { ref } from 'vue'
 import { useChatApi, type SessionEntry } from '../composables/useChatApi'
+import { useToast } from '../composables/useToast'
 import { useChatStore } from './chat'
 
 export const useSessionStore = defineStore('session', () => {
@@ -91,7 +92,15 @@ export const useSessionStore = defineStore('session', () => {
 
   async function remove(session_id: string) {
     try {
-      await api.delete(session_id)
+      const res = await api.delete(session_id)
+      // 2026-08-25: the backend disables cron jobs bound to the deleted
+      // session (they would otherwise fire on — and resurrect — it).
+      // Surface that visibly, or the user just wonders why the job stopped.
+      const paused = res.paused_cron_jobs ?? []
+      if (paused.length > 0) {
+        const names = paused.map(j => j.name).join('、')
+        useToast().warn(`已停用绑定该会话的定时任务：${names}（可在任务页重新启用）`, 8000)
+      }
       sessions.value = sessions.value.filter(s => s.id !== session_id)
       // If we deleted the active one, fall back to the first remaining (or null).
       if (currentId.value === session_id) {

@@ -336,21 +336,35 @@ pub async fn test_cli_session_fork(ws: &TestWorkspace, bin: &Path) -> Vec<TestRe
         fail(&format!("{}/source_untouched", suite), "source session mutated")
     });
 
-    // Chat-log prefix copied verbatim (first 2 lines of fork == first 2 of source).
+    // Chat-log projected FROM THE STORE PREFIX (2026-08-25 fork 内容错位修复
+    // 契约): rows = the user/assistant messages of messages[..cut], timestamps
+    // taken from the store — NOT copied verbatim from the source chat_log
+    // (whose timestamps can diverge; its per-turn counting definitely can).
+    // --at 1 keeps [u1, a1]: expect 2 rows "question/answer", ts 10:00:00 /
+    // 10:00:05 straight from the store messages above.
     let fork_log = ws
         .workspace()
         .join("logs")
         .join("session_logs")
         .join("agent_main_session_it1f.jsonl");
     if let Ok(fdata) = std::fs::read_to_string(&fork_log) {
-        let flines: Vec<&str> = fdata.lines().collect();
-        let ok = flines.len() >= 2 && flines[0] == log_lines[0] && flines[1] == log_lines[1];
+        let rows: Vec<Value> = fdata
+            .lines()
+            .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+            .collect();
+        let ok = rows.len() == 2
+            && rows[0]["role"] == "user"
+            && rows[0]["content"] == "ITFORK turn one question"
+            && rows[0]["timestamp"] == "2026-08-24T10:00:00+08:00"
+            && rows[1]["role"] == "assistant"
+            && rows[1]["content"] == "ITFORK turn one answer"
+            && rows[1]["timestamp"] == "2026-08-24T10:00:05+08:00";
         results.push(if ok {
-            pass(&format!("{}/chatlog_prefix", suite), "verbatim 2-line prefix")
+            pass(&format!("{}/chatlog_prefix", suite), "store-projected 2-row prefix")
         } else {
             fail(
                 &format!("{}/chatlog_prefix", suite),
-                &format!("fork head={:?}", &flines[..flines.len().min(2)]),
+                &format!("fork rows={rows:?}"),
             )
         });
     } else {

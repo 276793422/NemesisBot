@@ -52,3 +52,49 @@ fn test_append_with_model_round_trip() {
 
     delete_chat_log(key); // cleanup
 }
+
+/// Single-source-of-truth row predicate (2026-08-25 fork-fix round): the
+/// fork's chat_log projection and the turns endpoint's `end_preview` MUST
+/// use the same rule, or the dialog preview would disagree with what the
+/// fork actually ends on. Pin it here.
+#[test]
+fn test_is_projected_chat_row() {
+    use super::is_projected_chat_row;
+    assert!(is_projected_chat_row("user", "anything"));
+    assert!(is_projected_chat_row("user", "")); // user rows always project
+    assert!(is_projected_chat_row("assistant", "reply"));
+    assert!(!is_projected_chat_row("assistant", "")); // tool_calls intermediate
+    assert!(!is_projected_chat_row("assistant", "   \n ")); // whitespace-only
+    assert!(!is_projected_chat_row("tool", "result"));
+    assert!(!is_projected_chat_row("system", "prompt"));
+}
+
+// 2026-08-25: delete_chat_log must also remove the title meta sidecar
+// (orphan-file fix); clear_chat_log must KEEP it (title survives a clear).
+#[test]
+fn test_delete_chat_log_removes_meta_but_clear_keeps_it() {
+    let key = format!(
+        "test:meta:lifecycle:{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    );
+    crate::chat_log::append_chat_log(&key, "user", "row");
+    crate::chat_log::write_session_meta(&key, "title to keep");
+
+    // clear: jsonl emptied, meta survives
+    crate::chat_log::clear_chat_log(&key);
+    let (rows, _, _, _) = crate::chat_log::read_chat_log(&key, 10, None);
+    assert_eq!(rows.len(), 0);
+    assert_eq!(
+        crate::chat_log::read_session_meta(&key).as_deref(),
+        Some("title to keep")
+    );
+
+    // delete: everything gone including meta
+    crate::chat_log::delete_chat_log(&key);
+    assert!(crate::chat_log::read_session_meta(&key).is_none());
+    let (rows2, _, _, _) = crate::chat_log::read_chat_log(&key, 10, None);
+    assert_eq!(rows2.len(), 0);
+}

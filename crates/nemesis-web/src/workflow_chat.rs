@@ -7,8 +7,12 @@
 //!
 //! Two cmds live here:
 //! - `send` — resolves `<index>` → workflow_name, serializes per-workflow,
-//!   writes user msg to session_store, calls `engine.start_async`.
-//! - `history_request` — reads prior turns from session_store and replies
+//!   writes user msg to chat_log (`wf_chat:{name}` jsonl; the assistant
+//!   side lands there via `workflow_chat_reply_observer`), calls
+//!   `engine.start_async`. Workflow-chat sessions do NOT keep a
+//!   SessionStore copy — chat_log is their single store (2026-08-25
+//!   audit note; this line used to claim session_store, which was stale).
+//! - `history_request` — reads prior turns from chat_log and replies
 //!   on the same WS connection (bypasses the bus entirely).
 //!
 //! The chat_id passed in from the WebSocket layer is the transport chat_id
