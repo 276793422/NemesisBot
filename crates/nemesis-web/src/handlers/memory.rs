@@ -1039,3 +1039,6 @@ fn count_episodic(dir: &std::path::Path) -> (usize, usize) {
     }
     (sessions, episodes)
 }
+
+#[cfg(all(test, feature = "memory"))]
+mod tests;

@@ -152,3 +152,55 @@ fn test_parse_any_zero_entry_shapes_are_misses() {
     assert!(parse_any(wrong_shape_object).is_ok()); // via models_json parser
     assert!(parse_any("{}").is_err()); // neither shape yields entries
 }
+
+// by_family — 4b layer-1 gap fill: grouping semantics had no direct test
+// (parse/cache tests above cover ingestion, not the family grouping).
+#[test]
+fn test_by_family_groups_and_none_bucket() {
+    let catalog = Catalog {
+        version: 1,
+        fetched_at: "2026-08-24T00:00:00Z".to_string(),
+        entries: vec![
+            CatalogEntry {
+                key: "openai/gpt-5.2".to_string(),
+                context_window: 400000,
+                max_output_tokens: Some(128000),
+                family: Some("gpt".to_string()),
+            },
+            CatalogEntry {
+                key: "openai/o4-mini".to_string(),
+                context_window: 200000,
+                max_output_tokens: Some(100000),
+                family: Some("gpt".to_string()),
+            },
+            CatalogEntry {
+                key: "anthropic/claude-opus-5".to_string(),
+                context_window: 1000000,
+                max_output_tokens: Some(64000),
+                family: Some("claude".to_string()),
+            },
+            CatalogEntry {
+                key: "weird/no-family".to_string(),
+                context_window: 8000,
+                max_output_tokens: None,
+                family: None,
+            },
+        ],
+    };
+    let grouped = by_family(&catalog);
+    assert_eq!(
+        grouped.get("gpt").map(|v| v.as_slice()),
+        Some(&["openai/gpt-5.2".to_string(), "openai/o4-mini".to_string()][..]),
+        "same-family entries share a bucket, in catalog order"
+    );
+    assert_eq!(
+        grouped.get("claude").map(|v| v.as_slice()),
+        Some(&["anthropic/claude-opus-5".to_string()][..])
+    );
+    assert_eq!(
+        grouped.get("(none)").map(|v| v.as_slice()),
+        Some(&["weird/no-family".to_string()][..]),
+        "missing family lands in the (none) bucket, not dropped"
+    );
+    assert_eq!(grouped.len(), 3, "exactly three buckets");
+}

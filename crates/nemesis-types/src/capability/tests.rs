@@ -239,3 +239,25 @@ fn tier_lists_delegation_tools() {
     assert!(!mini.contains(&"claude_code"), "Mini excluded by design");
     assert!(!mini.contains(&"codex_delegate"), "Mini excluded by design");
 }
+
+#[test]
+fn test_resolve_reasoning_effort_tiers() {
+    let cfg = serde_json::json!({
+        "model_list": [
+            {"model_name": "a", "model": "x/a", "reasoning_effort": "high"},
+            {"model_name": "b", "model": "x/b", "reasoning_effort": "off"},
+            {"model_name": "c", "model": "x/c"},
+            {"model_name": "d", "model": "x/d", "reasoning_effort": "weird"}
+        ]
+    });
+    assert_eq!(
+        resolve_reasoning_effort(&cfg, "a").as_deref(),
+        Some("high")
+    );
+    // "off" → None (send nothing).
+    assert_eq!(resolve_reasoning_effort(&cfg, "b"), None);
+    // Missing field → None.
+    assert_eq!(resolve_reasoning_effort(&cfg, "c"), None);
+    // Unknown tier → None (no garbage on the wire).
+    assert_eq!(resolve_reasoning_effort(&cfg, "d"), None);
+}

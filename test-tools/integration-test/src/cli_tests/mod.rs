@@ -10,6 +10,7 @@ pub mod channel;
 pub mod cluster;
 pub mod cors;
 pub mod cron;
+pub mod dsh_series;
 pub mod extra_commands;
 pub mod forge;
 pub mod log;
@@ -67,6 +68,12 @@ pub use auth::test_cli_auth_status;
 
 pub use cron::test_cli_cron_crud;
 pub use cron::test_cli_cron_list;
+
+pub use dsh_series::test_cli_credentials_import;
+pub use dsh_series::test_cli_history_search;
+pub use dsh_series::test_cli_model_catalog_update;
+pub use dsh_series::test_cli_model_set_effort;
+pub use dsh_series::test_cli_session_fork;
 
 pub use mcp::test_cli_mcp_crud;
 pub use mcp::test_cli_mcp_inspect;

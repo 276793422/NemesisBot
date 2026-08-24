@@ -446,7 +446,7 @@ pub async fn run(action: ModelAction, local: bool) -> Result<()> {
                 )?;
                 println!("Model removed: {}", name);
             } else {
-                println!("Model not found: {}", name);
+                anyhow::bail!("Model not found: {}", name);
             }
         }
         ModelAction::Default => {
@@ -492,7 +492,7 @@ pub async fn run(action: ModelAction, local: bool) -> Result<()> {
                 println!("✓ {} → model_tier={}", name, parsed);
                 println!("  (生效于下次 gateway 启动；当前运行实例需重启)");
             } else {
-                println!("Model not found: {}", name);
+                anyhow::bail!("Model not found: {}", name);
             }
         }
         ModelAction::SetEffort { name, effort } => {
@@ -529,7 +529,7 @@ pub async fn run(action: ModelAction, local: bool) -> Result<()> {
                 }
                 println!("  (生效于下次 LLM 调用前的 config 重读)");
             } else {
-                println!("Model not found: {}", name);
+                anyhow::bail!("Model not found: {}", name);
             }
         }
         ModelAction::SetSize { name, size } => {
@@ -558,7 +558,7 @@ pub async fn run(action: ModelAction, local: bool) -> Result<()> {
                     name, size_b, resolved
                 );
             } else {
-                println!("Model not found: {}", name);
+                anyhow::bail!("Model not found: {}", name);
             }
         }
         ModelAction::SetRealName { name, real_name } => {
@@ -587,7 +587,7 @@ pub async fn run(action: ModelAction, local: bool) -> Result<()> {
                     name, real_name, resolved
                 );
             } else {
-                println!("Model not found: {}", name);
+                anyhow::bail!("Model not found: {}", name);
             }
         }
         ModelAction::Probe { name } => {

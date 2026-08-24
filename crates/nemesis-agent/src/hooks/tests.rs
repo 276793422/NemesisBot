@@ -790,3 +790,170 @@ async fn llm_no_hooks_single_unchanged_call() {
         "no hook artifacts may appear without registered hooks"
     );
 }
+
+// ---------------------------------------------------------------------------
+// K1b lifecycle entry points: run_user_prompt_hooks / run_turn_end_hooks
+// (4b layer-1 gap fill — these two run_* fns had zero coverage while the
+// LlmHook pre/post family above was fully tested).
+// ---------------------------------------------------------------------------
+
+use super::{
+    HookPrompt, HookTurnEnd, LifecycleHook, PromptDecision, TurnEndDecision,
+    run_turn_end_hooks, run_user_prompt_hooks,
+};
+
+struct PromptHook {
+    name: &'static str,
+    block: Option<String>,
+    called: AtomicBool,
+}
+
+#[async_trait]
+impl LifecycleHook for PromptHook {
+    fn name(&self) -> String {
+        self.name.to_string()
+    }
+    async fn on_user_prompt(&self, _p: &HookPrompt) -> PromptDecision {
+        self.called.store(true, Ordering::SeqCst);
+        match &self.block {
+            Some(reason) => PromptDecision::Block {
+                reason: reason.clone(),
+            },
+            None => PromptDecision::Allow,
+        }
+    }
+}
+
+struct TurnEndHook {
+    name: &'static str,
+    continue_feedback: Option<String>,
+    called: AtomicBool,
+}
+
+#[async_trait]
+impl LifecycleHook for TurnEndHook {
+    fn name(&self) -> String {
+        self.name.to_string()
+    }
+    async fn on_turn_end(&self, _e: &HookTurnEnd) -> TurnEndDecision {
+        self.called.store(true, Ordering::SeqCst);
+        match &self.continue_feedback {
+            Some(feedback) => TurnEndDecision::Continue {
+                feedback: feedback.clone(),
+            },
+            None => TurnEndDecision::Stop,
+        }
+    }
+}
+
+fn sample_prompt() -> HookPrompt {
+    HookPrompt {
+        session_key: "web:u1:c1".to_string(),
+        channel: "web".to_string(),
+        chat_id: "c1".to_string(),
+        prompt: "hello".to_string(),
+    }
+}
+
+fn sample_turn_end() -> HookTurnEnd {
+    HookTurnEnd {
+        session_key: "web:u1:c1".to_string(),
+        channel: "web".to_string(),
+        chat_id: "c1".to_string(),
+        final_content: "done".to_string(),
+        stop_hook_active: false,
+    }
+}
+
+#[tokio::test]
+async fn user_prompt_hooks_all_allow_returns_none_and_runs_all() {
+    let h1 = Arc::new(PromptHook {
+        name: "p1",
+        block: None,
+        called: AtomicBool::new(false),
+    });
+    let h2 = Arc::new(PromptHook {
+        name: "p2",
+        block: None,
+        called: AtomicBool::new(false),
+    });
+    let hooks: Vec<Arc<dyn LifecycleHook>> = vec![h1.clone(), h2.clone()];
+    let verdict = run_user_prompt_hooks(&hooks, &sample_prompt()).await;
+    assert_eq!(verdict, None, "all-allow must yield None (proceed)");
+    assert!(h1.called.load(Ordering::SeqCst) && h2.called.load(Ordering::SeqCst));
+}
+
+#[tokio::test]
+async fn user_prompt_hooks_first_block_short_circuits() {
+    let blocker = Arc::new(PromptHook {
+        name: "blocker",
+        block: Some("injected prompt".to_string()),
+        called: AtomicBool::new(false),
+    });
+    let after = Arc::new(PromptHook {
+        name: "after",
+        block: None,
+        called: AtomicBool::new(false),
+    });
+    let hooks: Vec<Arc<dyn LifecycleHook>> = vec![blocker.clone(), after.clone()];
+    let verdict = run_user_prompt_hooks(&hooks, &sample_prompt()).await;
+    assert_eq!(verdict.as_deref(), Some("injected prompt"));
+    assert!(blocker.called.load(Ordering::SeqCst));
+    assert!(
+        !after.called.load(Ordering::SeqCst),
+        "first Block must short-circuit; later hooks must not run"
+    );
+}
+
+#[tokio::test]
+async fn turn_end_hooks_all_stop_or_empty_yields_stop() {
+    // Empty list → Stop (no hook demands more).
+    let empty: Vec<Arc<dyn LifecycleHook>> = vec![];
+    assert!(matches!(
+        run_turn_end_hooks(&empty, &sample_turn_end()).await,
+        TurnEndDecision::Stop
+    ));
+    // All Stop → Stop, every hook consulted.
+    let h1 = Arc::new(TurnEndHook {
+        name: "t1",
+        continue_feedback: None,
+        called: AtomicBool::new(false),
+    });
+    let h2 = Arc::new(TurnEndHook {
+        name: "t2",
+        continue_feedback: None,
+        called: AtomicBool::new(false),
+    });
+    let hooks: Vec<Arc<dyn LifecycleHook>> = vec![h1.clone(), h2.clone()];
+    assert!(matches!(
+        run_turn_end_hooks(&hooks, &sample_turn_end()).await,
+        TurnEndDecision::Stop
+    ));
+    assert!(h1.called.load(Ordering::SeqCst) && h2.called.load(Ordering::SeqCst));
+}
+
+#[tokio::test]
+async fn turn_end_hooks_first_continue_short_circuits_with_feedback() {
+    let veto = Arc::new(TurnEndHook {
+        name: "veto",
+        continue_feedback: Some("please verify the fix".to_string()),
+        called: AtomicBool::new(false),
+    });
+    let after = Arc::new(TurnEndHook {
+        name: "after",
+        continue_feedback: None,
+        called: AtomicBool::new(false),
+    });
+    let hooks: Vec<Arc<dyn LifecycleHook>> = vec![veto.clone(), after.clone()];
+    match run_turn_end_hooks(&hooks, &sample_turn_end()).await {
+        TurnEndDecision::Continue { feedback } => {
+            assert_eq!(feedback, "please verify the fix");
+        }
+        other => panic!("expected Continue, got {other:?}"),
+    }
+    assert!(veto.called.load(Ordering::SeqCst));
+    assert!(
+        !after.called.load(Ordering::SeqCst),
+        "first Continue must short-circuit; later hooks must not run"
+    );
+}

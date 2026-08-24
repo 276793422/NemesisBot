@@ -26,7 +26,15 @@ scripts/customize/.config
 /log
 /test-tools/autotest
 /cluster-uat-logs
-/test-tools/TestAIServer
+# TestAIServer: 只忽略构建/运行产物；.go 源码必须可入库。
+# 曾用整目录忽略 /test-tools/TestAIServer，导致系列新增 models/v_models.go
+# 被静默吞掉（未入库），而已入库的 main.go 引用其构造器 → 干净 checkout 编译断裂。
+/test-tools/TestAIServer/testaiserver.exe
+/test-tools/TestAIServer/*.log
+/test-tools/TestAIServer/log/
+# ONNX 测试 fixture 缓存（plugin-onnx-test setup 脚本下载 ~90MB 模型到此处，
+# 见 crates/nemesis-memory/src/manager/tests.rs 顶部注释）；大二进制永不入库。
+/test-data/
 /dist
 
 # Crate-local runtime artifacts created by tests (Cluster::new() defaults to
@@ -40,3 +48,8 @@ scripts/customize/.config
 __pycache__/
 *.pyc
 .pytest_cache/
+# Python 打包产物（pip install -e / python -m build 生成，非源码）：
+# build/ 与 egg-info/ 在 dd2e522 已被误提交入库；忽略规则防止再次发生，
+# 已入库副本需 `git rm -r --cached` 移除（见影响分析报告问题台账 #3）。
+/test-tools/python/sdk/build/
+/test-tools/python/sdk/nemesisbot.egg-info/

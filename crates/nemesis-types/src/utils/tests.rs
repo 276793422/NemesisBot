@@ -319,3 +319,36 @@ fn test_ceil_char_boundary_multibyte() {
 fn test_ceil_char_boundary_empty() {
     assert_eq!(ceil_char_boundary("", 0), 0);
 }
+
+// cosine_similarity_f32 — 4b layer-1 gap fill (had production callers in
+// nemesis-memory vector store + providers router but zero direct tests).
+#[test]
+fn test_cosine_similarity_identical_direction() {
+    let a = [1.0f32, 2.0, 3.0];
+    let b = [2.0f32, 4.0, 6.0]; // same direction, different magnitude
+    let s = cosine_similarity_f32(&a, &b);
+    assert!((s - 1.0).abs() < 1e-9, "same-direction vectors: {s}");
+}
+
+#[test]
+fn test_cosine_similarity_orthogonal_and_opposite() {
+    let s = cosine_similarity_f32(&[1.0f32, 0.0], &[0.0f32, 1.0]);
+    assert!(s.abs() < 1e-9, "orthogonal: {s}");
+    let s = cosine_similarity_f32(&[1.0f32, 0.0], &[-1.0f32, 0.0]);
+    assert!((s + 1.0).abs() < 1e-9, "opposite: {s}");
+}
+
+#[test]
+fn test_cosine_similarity_degenerate_inputs() {
+    // Length mismatch, empty, and zero vectors all defined as 0.0 (f64).
+    assert_eq!(cosine_similarity_f32(&[1.0f32], &[1.0f32, 2.0]), 0.0);
+    assert_eq!(cosine_similarity_f32(&[], &[]), 0.0);
+    assert_eq!(cosine_similarity_f32(&[0.0f32, 0.0], &[1.0f32, 2.0]), 0.0);
+}
+
+#[test]
+fn test_cosine_similarity_f64_accumulation() {
+    // Known non-trivial value: [1,0,1] vs [1,1,0] => 1/ (sqrt2 * sqrt2) = 0.5
+    let s = cosine_similarity_f32(&[1.0f32, 0.0, 1.0], &[1.0f32, 1.0, 0.0]);
+    assert!((s - 0.5).abs() < 1e-9, "45-degree vectors: {s}");
+}

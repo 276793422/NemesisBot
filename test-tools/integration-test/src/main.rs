@@ -376,6 +376,18 @@ async fn main() -> Result<()> {
     all_results.extend(cli_tests::test_cli_model_remove(&ws, &cfg.gateway_bin).await);
     all_results.extend(cli_tests::test_cli_model_default(&ws, &cfg.gateway_bin).await);
 
+    // --- DSH-series new CLI (4b layer-④ fill): set-effort / session fork /
+    //     history search / credentials import / catalog-update.
+    //     Order matters: credentials_import expects test/effort-model with a
+    //     plaintext key seeded by set_effort; all run before the Phase-1
+    //     config restore, so their config mutations are contained. ---
+    println!("  [1.2b] DSH-series CLI (set-effort/session/history/credentials/catalog)...");
+    all_results.extend(cli_tests::test_cli_model_set_effort(&ws, &cfg.gateway_bin).await);
+    all_results.extend(cli_tests::test_cli_session_fork(&ws, &cfg.gateway_bin).await);
+    all_results.extend(cli_tests::test_cli_history_search(&ws, &cfg.gateway_bin).await);
+    all_results.extend(cli_tests::test_cli_credentials_import(&ws, &cfg.gateway_bin).await);
+    all_results.extend(cli_tests::test_cli_model_catalog_update(&ws, &cfg.gateway_bin).await);
+
     // --- Channel commands: list, enable/disable, status, web, websocket, external ---
     println!("  [1.3] Channel commands...");
     all_results.extend(cli_tests::test_cli_channel_list(&ws, &cfg.gateway_bin).await);
