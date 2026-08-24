@@ -258,9 +258,10 @@ pub async fn fetch_http() -> Result<Vec<CatalogEntry>, String> {
 }
 
 /// Build a catalog from a pre-parsed entries map (test/factory helper).
-// 仅测试调用（非测试 bin 构建无调用方）。Windows 上容忍该警告（既有基线）；
-// Linux rustc 1.95 渲染此多行警告会 ICE（StyledBuffer 越界），cfg_attr 绕开。
-#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+// 仅测试调用（非测试 bin 构建无调用方）。无条件 allow 消警：Windows 上此前
+// 容忍警告作基线；Linux rustc 1.95 渲染该多行警告会 ICE（StyledBuffer 越界），
+// 直接不产生警告则两端都干净。
+#[allow(dead_code)]
 pub fn catalog_from(entries: Vec<CatalogEntry>) -> Catalog {
     Catalog {
         version: 1,
@@ -271,8 +272,8 @@ pub fn catalog_from(entries: Vec<CatalogEntry>) -> Catalog {
 
 /// Reverse map for diagnostics: family → keys (unused now, kept for the
 /// `model catalog` listing UX).
-// 同上：仅测试调用；Linux rustc 1.95 渲染此警告 ICE，cfg_attr 绕开。
-#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+// 同上：仅测试调用；无条件 allow 消警（含 Windows），同时避开 Linux 渲染 ICE。
+#[allow(dead_code)]
 pub fn by_family(catalog: &Catalog) -> HashMap<String, Vec<String>> {
     let mut m: HashMap<String, Vec<String>> = HashMap::new();
     for e in &catalog.entries {

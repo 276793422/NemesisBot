@@ -12,7 +12,11 @@ export default defineConfig({
   },
   build: {
     outDir: '../crates/nemesis-web/static',
-    emptyOutDir: false,
+    // outDir 在项目根之外（web/ → crates/nemesis-web/static/），Vite 默认不
+    // 清空 → 陈旧 hash chunk 逐轮累积，全部被 include_dir! 嵌进 exe（2026-08-24
+    // 复检实测累积 ~4MB/167 个文件、实际引用仅 ~33 个）。static/ 内容 100% 由
+    // 本构建产出（三个 rollup 入口 + public/ 拷贝），可安全清空重建。
+    emptyOutDir: true,
     chunkSizeWarningLimit: 600,
     rollupOptions: {
       input: {

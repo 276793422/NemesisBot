@@ -78,7 +78,7 @@ pub use loop_tools::register_shared_tools;
 pub use loop_tools::setup_cluster_rpc_channel;
 pub use memory::ConversationMemory;
 pub use registry::AgentRegistry;
-pub use remote_executor_tool::{ExecutorChannel, MOVE_TOOLS, RemoteExecutorTool};
+pub use remote_executor_tool::{ExecutorChannel, MOVE_TOOLS, RemoteExecutorTool, StrictGate};
 pub use request_logger::RequestLogger;
 pub use request_logger_observer::RequestLoggerObserver;
 pub use ringbuffer::RingBuffer;

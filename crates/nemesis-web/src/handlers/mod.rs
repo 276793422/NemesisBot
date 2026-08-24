@@ -6,6 +6,7 @@
 
 pub mod agent;
 pub mod channels;
+pub mod coding;
 #[cfg(feature = "cluster")]
 pub mod cluster;
 #[cfg(feature = "cluster")]
@@ -14,6 +15,7 @@ pub mod config;
 pub mod estop;
 #[cfg(feature = "forge")]
 pub mod forge;
+pub mod hooks;
 pub mod identity;
 pub mod logs;
 pub mod mcp;
@@ -76,6 +78,13 @@ pub fn register_all(router: &mut crate::ws_router::WsRouter) {
         router.register(Arc::new(forge::ForgeHandler::new()));
     }
     router.register(Arc::new(tasks::TasksHandler));
+    // P2-1 (2026-08-24 UI entry gap): 「代码开发」页 read-only status commands
+    // (LSP PATH probe + tool config sections). No feature gate — nemesis-lsp
+    // is an unconditional agent dependency (lsp tool itself is config-gated).
+    router.register(Arc::new(coding::CodingHandler));
+    // P4 (2026-08-24 UI entry gap): 设置页「Hooks」Tab — hooks.json 读写
+    // (CC 方言, nemesis-agent cc_hooks)。No feature gate — cc_hooks 无条件编译。
+    router.register(Arc::new(hooks::HooksHandler));
     #[cfg(feature = "cluster")]
     {
         router.register(Arc::new(cluster::ClusterHandler::new()));
@@ -177,6 +186,44 @@ pub fn get_opt_str(data: &serde_json::Value, field: &str) -> Option<String> {
     data.get(field)
         .and_then(|v| v.as_str())
         .map(|s| s.to_string())
+}
+
+/// Extract an optional bool field, loud on wrong types: key absent or null →
+/// None (leave unchanged); present but not a bool → Err. Project convention
+/// (cf. sandbox `set_config`): a present-but-mistyped key must fail visibly
+/// instead of being silently ignored — the frontend bug surfaces in the same
+/// turn rather than as "the toggle does nothing".
+pub fn get_opt_bool_loud(data: &serde_json::Value, field: &str) -> Result<Option<bool>, String> {
+    match data.get(field) {
+        None | Some(serde_json::Value::Null) => Ok(None),
+        Some(v) => v
+            .as_bool()
+            .map(Some)
+            .ok_or_else(|| format!("field '{}' must be a bool (got {v})", field)),
+    }
+}
+
+/// Same loud contract as [`get_opt_bool_loud`] for unsigned integers.
+pub fn get_opt_u64_loud(data: &serde_json::Value, field: &str) -> Result<Option<u64>, String> {
+    match data.get(field) {
+        None | Some(serde_json::Value::Null) => Ok(None),
+        Some(v) => v
+            .as_u64()
+            .map(Some)
+            .ok_or_else(|| format!("field '{}' must be a non-negative integer (got {v})", field)),
+    }
+}
+
+/// Same loud contract as [`get_opt_bool_loud`] for strings.
+pub fn get_opt_str_loud(data: &serde_json::Value, field: &str) -> Result<Option<String>, String> {
+    match data.get(field) {
+        None | Some(serde_json::Value::Null) => Ok(None),
+        Some(v) => v
+            .as_str()
+            .map(|s| s.to_string())
+            .map(Some)
+            .ok_or_else(|| format!("field '{}' must be a string (got {v})", field)),
+    }
 }
 
 /// Read a text file from the workspace.

@@ -24,6 +24,7 @@ pub mod history;
 pub mod internal;
 pub mod llm_bridge;
 pub mod protocol;
+pub mod sdk_embed;
 pub mod server;
 pub mod session;
 pub mod sse_chat;

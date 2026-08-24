@@ -55,6 +55,17 @@ use nemesis_config::ConfigHandle;
 /// - `executor.sandbox` 的实时翻转由注入的 probe 闭包承担（每次工具调用读
 ///   ConfigStore，不重启进程生效）。
 ///
+/// P5-2 严格模式（`executor.strict`，默认 false=现状字节不变）：通道在所有
+/// 分支都挂 [`nemesis_agent::StrictGate`]——闸门 live 读 strict，false 秒过；
+/// true 时对"要求沙盒"的调用做就绪性复检，不过则**拒绝执行**（fail-closed，
+/// 见 `spawn_and_call`），不再静默降级。按平台：
+/// - Windows：Sandboxie 就绪 + 构造时确实挂上了 Start.exe（引擎在 Agent
+///   启动后才就绪的窗口里通道没有 start_exe——闸门必须连构造结果一起验，
+///   否则会放行一个根本进不了盒的通道；此时提示 `sandbox start` + 重启）；
+/// - 非 Windows：用户态后端可用性（`detect_backend`；Partial 算可用，缺口
+///   在日志/状态如实标注——严格模式保证「有盒」，不保证「盒无能力缺口」）；
+/// - trim 构建（`sandbox` feature 被裁）：本构建不可能有盒 → 严格时恒拒。
+///
 /// `home` 只在 `sandbox` feature 开启时用于 Sandboxie 就绪检查（trim 构建下
 /// 允许未使用）。
 #[cfg_attr(not(feature = "sandbox"), allow(unused_variables))]
@@ -79,6 +90,7 @@ pub fn build_executor_channel(
     // Live sandbox probe: read the ConfigStore on EVERY tool call so toggling
     // executor.sandbox (dashboard stop/start, config edit) takes effect WITHOUT
     // a gateway restart.
+    let strict_handle = config_handle.clone();
     let sandbox_probe: Arc<dyn Fn() -> bool + Send + Sync> = Arc::new(move || {
         config_handle
             .read()
@@ -86,19 +98,109 @@ pub fn build_executor_channel(
             .as_ref()
             .map_or(false, |ec| ec.sandbox)
     });
+    // Live strict probe (P5-2): the gate re-reads this per call, so flipping
+    // executor.strict takes effect on the next tool call — no restart.
+    let strict_now: Arc<dyn Fn() -> bool + Send + Sync> = Arc::new(move || {
+        strict_handle
+            .read()
+            .executor
+            .as_ref()
+            .map_or(false, |ec| ec.strict)
+    });
+
+    // Sandboxie Layer-2 attach decision (feature-gated; computed on every
+    // platform that compiles the feature — on non-Windows Start.exe never
+    // exists under home, so it falls through to the stdio path).
+    #[cfg(feature = "sandbox")]
+    let (start_exe, sbiesvc_running, engine_owned_now): (std::path::PathBuf, bool, bool) = {
+        let paths = nemesis_sandbox::SandboxPaths::new(home);
+        (
+            paths.start_exe(),
+            matches!(
+                nemesis_sandbox::status::service_state(nemesis_sandbox::USERMODE_SERVICE),
+                nemesis_sandbox::status::ServiceState::Running
+            ),
+            nemesis_sandbox::status::engine_owned(&paths),
+        )
+    };
+
+    // ── P5-2 strict gate, per platform (see fn docs) ─────────────────────────
+    // The attach decision must be made ONCE here — the gate captures what
+    // construction actually attaches, not just the path on disk (an engine that
+    // came up AFTER this agent started leaves the channel box-less even though
+    // Start.exe now exists; strict must refuse that, not wave it through).
+    #[cfg(feature = "sandbox")]
+    let will_attach: bool = start_exe.exists() && sbiesvc_running && engine_owned_now;
+
+    #[cfg(all(feature = "sandbox", windows))]
+    let strict_gate: nemesis_agent::StrictGate = {
+        let home = home.to_path_buf();
+        let attached_start_exe: Option<std::path::PathBuf> =
+            if will_attach { Some(start_exe.clone()) } else { None };
+        Arc::new(move || {
+            if !strict_now() {
+                return Ok(());
+            }
+            // 构造时没挂上 Start.exe：这个通道物理上进不了盒（哪怕引擎现在
+            // 已就绪）——严格模式拒绝并要求重启（重建通道）。
+            let Some(attached_path) = &attached_start_exe else {
+                return Err(
+                    "this agent was started while Sandboxie was not ready — its executor \
+                     channel has no box attached; run `nemesisbot sandbox start`, then \
+                     restart the agent"
+                        .to_string(),
+                );
+            };
+            let sbiesvc_running = matches!(
+                nemesis_sandbox::status::service_state(nemesis_sandbox::USERMODE_SERVICE),
+                nemesis_sandbox::status::ServiceState::Running
+            );
+            let owned = nemesis_sandbox::status::engine_owned(&nemesis_sandbox::SandboxPaths::new(&home));
+            if attached_path.exists() && sbiesvc_running && owned {
+                Ok(())
+            } else {
+                Err(format!(
+                    "Sandboxie engine not ready (Start.exe present: {}, SbieSvc \
+                     running: {sbiesvc_running}, engine owned: {owned}) — run `nemesisbot \
+                     sandbox start`, then restart the agent",
+                    attached_path.exists(),
+                ))
+            }
+        })
+    };
+    #[cfg(all(feature = "sandbox", not(windows)))]
+    let strict_gate: nemesis_agent::StrictGate = Arc::new(move || {
+        if !strict_now() {
+            return Ok(());
+        }
+        match nemesis_sandbox::backend::detect_backend() {
+            // 只关心存在性（detect 不返回 Unavailable 后端）；名字留给日志层。
+            Some(_) => Ok(()),
+            None => Err(
+                "no userland sandbox backend available (landlock + bwrap both unavailable) \
+                 — install bubblewrap (or run on a landlock kernel) to use strict mode"
+                    .to_string(),
+            ),
+        }
+    });
+    #[cfg(not(feature = "sandbox"))]
+    let strict_gate: nemesis_agent::StrictGate = Arc::new(move || {
+        if !strict_now() {
+            return Ok(());
+        }
+        Err(
+            "the 'sandbox' feature is not compiled into this build — executor.sandbox \
+             cannot be honoured (use a full build for strict mode)"
+                .to_string(),
+        )
+    });
 
     // start_exe is fixed at startup (the path never changes). Attach it only if
     // Sandboxie is actually ready now; otherwise leave None and the probe-driven
     // path picks stdio.
     #[cfg(feature = "sandbox")]
     {
-        let paths = nemesis_sandbox::SandboxPaths::new(home);
-        let start_exe = paths.start_exe();
-        let sbiesvc_running = matches!(
-            nemesis_sandbox::status::service_state(nemesis_sandbox::USERMODE_SERVICE),
-            nemesis_sandbox::status::ServiceState::Running
-        );
-        if start_exe.exists() && sbiesvc_running && nemesis_sandbox::status::engine_owned(&paths) {
+        if will_attach {
             tracing::info!(
                 "[Executor] executor separation enabled (sandbox = live probe via \
                  ConfigStore, Start.exe box available): child {}",
@@ -107,15 +209,25 @@ pub fn build_executor_channel(
             return Ok(Some(Arc::new(
                 nemesis_agent::ExecutorChannel::new(exe_path, workspace, sandbox_probe)
                     .with_start_exe(start_exe)
-                    .with_home(home.to_path_buf()),
+                    .with_home(home.to_path_buf())
+                    .with_strict_gate(strict_gate),
             )));
         }
         tracing::warn!(
             "[Executor] Sandboxie not ready (Start.exe exists={}, SbieSvc running={}). \
              executor.sandbox is still honoured live via the ConfigStore probe, but \
-             without Start.exe the box is not applied.",
+             without Start.exe the box is not applied{}.",
             start_exe.exists(),
-            sbiesvc_running
+            sbiesvc_running,
+            if nemesis_config::load_live()
+                .map(|c| c.executor.map_or(false, |e| e.strict))
+                .unwrap_or(false)
+            {
+                " — executor.strict is ON: sandboxed tool calls will be REFUSED until \
+                 the engine is started and the agent restarted"
+            } else {
+                ""
+            }
         );
     }
     #[cfg(not(feature = "sandbox"))]
@@ -134,7 +246,8 @@ pub fn build_executor_channel(
     );
     Ok(Some(Arc::new(
         nemesis_agent::ExecutorChannel::new(exe_path, workspace, sandbox_probe)
-            .with_home(home.to_path_buf()),
+            .with_home(home.to_path_buf())
+            .with_strict_gate(strict_gate),
     )))
 }
 
@@ -272,3 +385,6 @@ mod world {
 
 #[cfg(feature = "sandbox")]
 pub use world::build_workflow_world;
+
+#[cfg(test)]
+mod tests;

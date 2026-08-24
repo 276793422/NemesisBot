@@ -92,6 +92,10 @@ struct ExecutorResponse {
 // ExecutorChannel — spawns a fresh child per call, one request → one response
 // ---------------------------------------------------------------------------
 
+/// Type alias for the P5-2 strict fail-closed gate (keeps the struct decl and
+/// `spawn_and_call` readable).
+pub type StrictGate = Arc<dyn Fn() -> Result<(), String> + Send + Sync>;
+
 /// Spawn configuration for executor children. Holds no mutable state, so a
 /// single `Arc<ExecutorChannel>` is shared by every `RemoteExecutorTool`.
 pub struct ExecutorChannel {
@@ -106,6 +110,15 @@ pub struct ExecutorChannel {
     /// nemesis-agent deliberately does not depend on nemesis-config, so the
     /// decision is passed in as a closure rather than a stored bool.
     pub sandbox_probe: Arc<dyn Fn() -> bool + Send + Sync>,
+    /// P5-2 严格模式 fail-closed 闸门（跨平台统一语义）：`Some` 时，凡
+    /// `sandbox_probe()` 为 true（本次调用**要求**沙盒）的调用先过闸门——
+    /// 闸门 `Err` 则**拒绝执行**并返回明确错误（fail-closed），不再走
+    /// "warn + 无盒降级"（fail-open，现状）。闸门内部自行 live 读
+    /// `executor.strict`（经注入的 ConfigStore 闭包）：false 时秒过、行为
+    /// 与现状逐字节一致；true 时做平台就绪性复检（Windows=Sandboxie
+    /// 引擎；非 Windows=用户态后端可用性；trim 构建=恒拒）。`None` = 未
+    /// 注入（测试/裸构造）= 无闸门 = 现状。
+    pub strict_gate: Option<StrictGate>,
     /// Sandboxie `Start.exe` path. `Some` → spawn via `Start.exe /box:<box>`
     /// (real containment, L2.2). `None` → spawn the executor directly (Layer 1,
     /// or L2.1 transport testing without the box).
@@ -135,6 +148,9 @@ impl ExecutorChannel {
             exe_path,
             workspace,
             sandbox_probe,
+            // None = 无严格闸门（fail-open，现状）；gateway 装配侧
+            // （exec_world）按平台注入。
+            strict_gate: None,
             start_exe: None,
             box_name: "NemesisBox".to_string(),
             home: None,
@@ -153,6 +169,14 @@ impl ExecutorChannel {
     #[allow(dead_code)]
     pub fn with_start_exe(mut self, start_exe: PathBuf) -> Self {
         self.start_exe = Some(start_exe);
+        self
+    }
+
+    /// Set the P5-2 strict fail-closed gate (see [`ExecutorChannel::strict_gate`]).
+    /// Injected by the gateway assembly (`exec_world`); tests use it to prove
+    /// refusal happens BEFORE any spawn.
+    pub fn with_strict_gate(mut self, gate: StrictGate) -> Self {
+        self.strict_gate = Some(gate);
         self
     }
 
@@ -204,6 +228,22 @@ impl ExecutorChannel {
     ) -> Result<String, String> {
         let request_line = self.build_request_line(tool, args, ctx)?;
         if (self.sandbox_probe)() {
+            // P5-2 严格模式（fail-closed）：本次调用要求沙盒（sandbox_probe
+            // 为 true），先过严格闸门——不过则拒绝执行，绝不静默降级成无盒。
+            // 闸门内部 live 读 executor.strict：false 时秒过（现状字节不变）。
+            if let Some(gate) = &self.strict_gate {
+                if let Err(reason) = gate() {
+                    tracing::warn!(
+                        "[Executor] strict mode refusing '{tool}': sandbox required \
+                         but unavailable: {reason}"
+                    );
+                    return Err(format!(
+                        "strict mode (fail-closed): executor.sandbox=true but the \
+                         sandbox backend is unavailable ({reason}) — refusing to run \
+                         '{tool}' unsandboxed"
+                    ));
+                }
+            }
             #[cfg(windows)]
             {
                 return self.spawn_and_call_pipe(tool, &request_line).await;
@@ -214,7 +254,8 @@ impl ExecutorChannel {
                 // 见 nemesis_sandbox::backend)。与 Sandboxie 不同，用户态后端不
                 // 改变 stdio 通路——子进程（exec_worker）看到 env 标记后在启动时
                 // 对自身装上限制（自装式），stdio 传输照常。降级语义在子进程侧：
-                // 后端不可用 → warn + 无盒继续，不拒调用（不崩）。
+                // 后端不可用 → warn + 无盒继续（fail-open 默认；strict=true 时
+                // gateway 侧闸门已在上面拒绝 + 子进程侧 engage 同样拒绝，双保险）。
                 return self
                     .spawn_and_call_stdio(tool, &request_line, true)
                     .await;

@@ -152,6 +152,53 @@ fn detect_backend_none_on_windows() {
 }
 
 // ---------------------------------------------------------------------------
+// P5：read_executor_strict / probe_userland_backends
+// ---------------------------------------------------------------------------
+
+fn write_home_config(dir: &std::path::Path, body: &str) {
+    std::fs::write(dir.join("config.json"), body).expect("seed config.json");
+}
+
+#[test]
+fn read_executor_strict_defaults_false_and_reads_true() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    // 无 config.json → false（fail-open 现状）
+    assert!(!read_executor_strict(dir.path()));
+    // 缺 executor 段 / 缺 strict 键 → false
+    write_home_config(dir.path(), r#"{ "executor": { "sandbox": true } }"#);
+    assert!(!read_executor_strict(dir.path()));
+    // 显式 true → true
+    write_home_config(
+        dir.path(),
+        r#"{ "executor": { "enabled": true, "sandbox": true, "strict": true } }"#,
+    );
+    assert!(read_executor_strict(dir.path()));
+    // 损坏 JSON → false（不 panic）
+    write_home_config(dir.path(), "{ not json");
+    assert!(!read_executor_strict(dir.path()));
+}
+
+/// 逐后端探测：Windows 空（Sandboxie 承担）；Linux/macOS 至少列出本平台后端
+/// 且名字唯一。结构断言不依赖机器能力（缺 bwrap 的内核也合法返回 Unavailable）。
+#[test]
+fn probe_userland_backends_shape_per_platform() {
+    let probes = probe_userland_backends();
+    if cfg!(target_os = "windows") {
+        assert!(probes.is_empty(), "Windows 不注册用户态后端: {probes:?}");
+        return;
+    }
+    assert!(!probes.is_empty(), "Linux/macOS 至少一个用户态后端");
+    let mut names: Vec<_> = probes.iter().map(|p| p.name.clone()).collect();
+    let total = names.len();
+    names.sort();
+    names.dedup();
+    assert_eq!(names.len(), total, "后端名重复: {probes:?}");
+    for p in &probes {
+        assert!(!p.name.is_empty());
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Linux：真实 landlock / bwrap 行为（真机=WSL2 Ubuntu，报告如实标注环境）
 // ---------------------------------------------------------------------------
 

@@ -7,6 +7,12 @@ const { request } = useWSAPI()
 const toast = useToast()
 
 // Backend returns: model_name, model, api_base, api_key (masked), proxy, is_default
+// + P3-2 raw extras (null = 未设置) + catalog_match (exact-key hit, nullable)
+interface CatalogMatch {
+  context_window?: number
+  max_output_tokens?: number
+  family?: string
+}
 interface Model {
   model_name: string
   model: string
@@ -14,6 +20,12 @@ interface Model {
   api_key?: string
   proxy?: string
   is_default?: boolean
+  model_tier?: string | null
+  reasoning_effort?: string | null
+  model_size_b?: number | string | null
+  real_name?: string | null
+  context_window?: number | string | null
+  catalog_match?: CatalogMatch | null
 }
 
 const models = ref<Model[]>([])
@@ -24,6 +36,22 @@ const addForm = ref({ name: '', model: '', key: '', base_url: '', proxy: '' })
 const testing = ref<string | null>(null)
 const switching = ref<string | null>(null)
 
+// P3-2: attribute editor — which cards are expanded + per-card drafts.
+const expandedAttrs = ref<Set<string>>(new Set())
+interface AttrDraft {
+  tier: string
+  effort: string // '' = off（不发送）
+  size: string
+  realName: string
+  ctx: string
+}
+const attrDrafts = ref<Record<string, AttrDraft>>({})
+
+// P3-2: models.dev catalog cache state + refresh busy flag.
+interface CatalogInfo { exists: boolean; fetched_at: string; entries: number }
+const catalogInfo = ref<CatalogInfo | null>(null)
+const catalogUpdating = ref(false)
+
 async function loadModels() {
   try {
     const data = await request('models', 'list')
@@ -32,6 +60,129 @@ async function loadModels() {
     toast.error('加载模型失败: ' + e)
   }
   loading.value = false
+}
+
+async function loadCatalogInfo() {
+  try {
+    catalogInfo.value = await request('models', 'catalog_info')
+  } catch {
+    catalogInfo.value = { exists: false, fetched_at: '', entries: 0 }
+  }
+}
+
+/** P3-2: 拉取 models.dev 目录（后端 spawn CLI `model catalog-update`，90s 超时）。 */
+async function updateCatalog() {
+  if (catalogUpdating.value) return
+  catalogUpdating.value = true
+  try {
+    catalogInfo.value = await request('models', 'catalog_update')
+    toast.success(`模型目录已更新（${catalogInfo.value?.entries ?? 0} 条）`)
+    await loadModels() // catalog_match per model may have changed
+  } catch (e: any) {
+    toast.error('目录更新失败: ' + e)
+  }
+  catalogUpdating.value = false
+}
+
+function toggleAttrs(m: Model) {
+  const s = new Set(expandedAttrs.value)
+  if (s.has(m.model_name)) {
+    s.delete(m.model_name)
+  } else {
+    s.add(m.model_name)
+    // Seed the draft from current values (null → empty/off).
+    attrDrafts.value[m.model_name] = {
+      tier: m.model_tier || 'auto',
+      effort: m.reasoning_effort || '',
+      size: m.model_size_b != null ? String(m.model_size_b) : '',
+      realName: m.real_name || '',
+      ctx: m.context_window != null ? String(m.context_window) : '',
+    }
+  }
+  expandedAttrs.value = s
+}
+
+/** Fields whose draft differs from the loaded values (only these are saved). */
+function dirtyFields(m: Model): string[] {
+  const d = attrDrafts.value[m.model_name]
+  if (!d) return []
+  const out: string[] = []
+  if ((m.model_tier || 'auto') !== d.tier) out.push('model_tier')
+  if ((m.reasoning_effort || '') !== d.effort) out.push('reasoning_effort')
+  const sizeStr = m.model_size_b != null ? String(m.model_size_b) : ''
+  if (sizeStr !== d.size.trim()) out.push('model_size_b')
+  if ((m.real_name || '') !== d.realName.trim()) out.push('real_name')
+  const ctxStr = m.context_window != null ? String(m.context_window) : ''
+  if (ctxStr !== d.ctx.trim()) out.push('context_window')
+  return out
+}
+
+/** 生效方式标注（对码结论）：tier/effort 走 agent 每轮 LLM 开头的
+ * check_config_reload 重读（改完即时生效）；size/real_name 参与 auto 档
+ * 检测、同链路生效；显式 tier 下 size/real_name 不参与。 */
+const FIELD_EFFECT: Record<string, string> = {
+  model_tier: '即时生效（下一次 LLM 轮自动重读配置）',
+  reasoning_effort: '即时生效（下次 LLM 调用前重读配置）',
+  model_size_b: 'auto 档下即时生效（参与能力自动检测）',
+  real_name: 'auto 档下即时生效（别名识别真名）',
+  context_window: '保存后生效（上下文预算依据）',
+}
+
+/** P3-2: 保存属性 — 逐字段走后端 raw-JSON RMW（保留 config.json 其余键）。 */
+async function saveAttrs(m: Model) {
+  const d = attrDrafts.value[m.model_name]
+  if (!d) return
+  const fields = dirtyFields(m)
+  if (fields.length === 0) {
+    toast.info('没有修改过的属性')
+    return
+  }
+  const values: Record<string, unknown> = {
+    model_tier: d.tier,
+    // ''（off）由后端归一为空串 = 不发送
+    reasoning_effort: d.effort || 'off',
+    model_size_b: d.size.trim() === '' ? null : Number(d.size.trim()),
+    real_name: d.realName.trim(),
+    context_window: d.ctx.trim() === '' ? null : Number(d.ctx.trim()),
+  }
+  // v1 不支持写 null：清空场景跳过该字段，保存名单只含真正落盘的字段，
+  // toast 如实反映（不能宣称保存了实际没写的字段）。
+  const skipped: string[] = []
+  for (const f of fields) {
+    if (values[f] == null) { skipped.push(f); continue } // 清空场景：v1 不支持写 null，留原值
+    try {
+      await request('models', 'update_field', { name: m.model_name, field: f, value: values[f] })
+    } catch (e: any) {
+      toast.error(`${f} 保存失败: ` + e)
+      await loadModels()
+      return
+    }
+  }
+  const saved = fields.filter((f) => !skipped.includes(f))
+  if (saved.length > 0) toast.success(`已保存：${saved.join('、')}`)
+  if (skipped.length > 0) {
+    toast.info(`未保存（v1 暂不支持清空，保留原值）：${skipped.join('、')}`)
+  }
+  await loadModels()
+  // Re-seed the draft from the refreshed values so the dirty diff resets.
+  const fresh = models.value.find((x) => x.model_name === m.model_name)
+  if (fresh) {
+    attrDrafts.value[m.model_name] = {
+      tier: fresh.model_tier || 'auto',
+      effort: fresh.reasoning_effort || '',
+      size: fresh.model_size_b != null ? String(fresh.model_size_b) : '',
+      realName: fresh.real_name || '',
+      ctx: fresh.context_window != null ? String(fresh.context_window) : '',
+    }
+  }
+}
+
+/** P3-2: context_window 一键填入 models.dev 目录值。 */
+function fillCtxFromCatalog(m: Model) {
+  const cw = m.catalog_match?.context_window
+  if (cw == null) return
+  const d = attrDrafts.value[m.model_name]
+  if (d) d.ctx = String(cw)
 }
 
 async function addModel() {
@@ -95,7 +246,10 @@ async function testModel(name: string) {
   testing.value = null
 }
 
-onMounted(loadModels)
+onMounted(() => {
+  loadModels()
+  loadCatalogInfo()
+})
 </script>
 
 <template>
@@ -103,6 +257,16 @@ onMounted(loadModels)
     <div class="page-header">
       <h2>模型管理</h2>
       <div class="page-header-actions">
+        <!-- P3-2: models.dev 目录缓存状态 + 一键刷新（后端 spawn CLI，90s 超时） -->
+        <span v-if="catalogInfo" class="catalog-hint">
+          {{ catalogInfo.exists
+              ? `目录缓存：${catalogInfo.entries} 条 · ${catalogInfo.fetched_at || '时间未知'}`
+              : '目录未拉取（context_window 自动填充需先更新目录）' }}
+        </span>
+        <button class="btn" :disabled="catalogUpdating" @click="updateCatalog">
+          <span v-if="catalogUpdating" class="spinner" style="width:14px;height:14px;"></span>
+          {{ catalogUpdating ? '拉取中…' : '更新模型目录' }}
+        </button>
         <button class="btn btn-primary" @click="showAdd = !showAdd">{{ showAdd ? '取消' : '+ 添加模型' }}</button>
       </div>
     </div>
@@ -174,12 +338,71 @@ onMounted(loadModels)
               <span class="settings-value">{{ m.api_base || '--' }}</span>
               <span class="settings-key">代理</span>
               <span class="settings-value">{{ m.proxy || '--' }}</span>
+              <span class="settings-key">能力档</span>
+              <span class="settings-value">{{ m.model_tier || 'auto（自动检测）' }}</span>
+            </div>
+          </div>
+          <!-- P3-2: 属性编辑展开区（tier / effort / 参数量 / 真名 / context_window） -->
+          <div v-if="expandedAttrs.has(m.model_name) && attrDrafts[m.model_name]" class="attr-editor">
+            <div class="attr-grid">
+              <div class="attr-field">
+                <label class="form-label">能力档 tier</label>
+                <select class="form-input" v-model="attrDrafts[m.model_name].tier">
+                  <option value="auto">auto（自动检测）</option>
+                  <option value="mini">mini（小模型 · 核心 13 工具）</option>
+                  <option value="normal">normal（中模型 · ~26 工具）</option>
+                  <option value="big">big（大模型 · 全量 42 工具）</option>
+                </select>
+                <span class="attr-effect">{{ FIELD_EFFECT['model_tier'] }}</span>
+              </div>
+              <div class="attr-field">
+                <label class="form-label">推理力度 effort</label>
+                <select class="form-input" v-model="attrDrafts[m.model_name].effort">
+                  <option value="">off（不发送）</option>
+                  <option value="low">low</option>
+                  <option value="medium">medium</option>
+                  <option value="high">high</option>
+                </select>
+                <span class="attr-effect">{{ FIELD_EFFECT['reasoning_effort'] }}</span>
+              </div>
+              <div class="attr-field">
+                <label class="form-label">参数量（十亿参数，如 30 = 30B）</label>
+                <input class="form-input" type="number" min="1" v-model="attrDrafts[m.model_name].size" placeholder="30" />
+                <span class="attr-effect">{{ FIELD_EFFECT['model_size_b'] }}</span>
+              </div>
+              <div class="attr-field">
+                <label class="form-label">真名（别名模型的实际型号名）</label>
+                <input class="form-input" v-model="attrDrafts[m.model_name].realName" placeholder="如 Qwen3-30B" />
+                <span class="attr-effect">{{ FIELD_EFFECT['real_name'] }}</span>
+              </div>
+              <div class="attr-field attr-field--wide">
+                <label class="form-label">
+                  context_window
+                  <template v-if="m.catalog_match?.context_window">
+                    · 目录值：{{ m.catalog_match.context_window.toLocaleString() }}
+                    <a href="javascript:void(0)" @click="fillCtxFromCatalog(m)">填入</a>
+                  </template>
+                </label>
+                <input class="form-input" type="number" min="1" v-model="attrDrafts[m.model_name].ctx" placeholder="131072" />
+                <span class="attr-effect">
+                  {{ FIELD_EFFECT['context_window'] }}
+                  <template v-if="m.catalog_match?.family">（models.dev：{{ m.catalog_match.family }}）</template>
+                </span>
+              </div>
+            </div>
+            <div class="attr-actions">
+              <span class="attr-dirty">{{ dirtyFields(m).length ? `已修改：${dirtyFields(m).join('、')}` : '无修改' }}</span>
+              <button class="btn btn-sm" @click="toggleAttrs(m)">收起</button>
+              <button class="btn btn-sm btn-primary" @click="saveAttrs(m)">保存属性</button>
             </div>
           </div>
           <div class="card-footer">
             <button class="btn btn-sm btn-ghost" @click="testModel(m.model_name)" :disabled="testing === m.model_name">
               <span v-if="testing === m.model_name" class="spinner" style="width:14px;height:14px;"></span>
               {{ testing === m.model_name ? '测试中...' : '测试' }}
+            </button>
+            <button class="btn btn-sm btn-ghost" @click="toggleAttrs(m)">
+              {{ expandedAttrs.has(m.model_name) ? '收起属性' : '属性' }}
             </button>
             <button
               v-if="!m.is_default"
@@ -222,5 +445,46 @@ onMounted(loadModels)
   font-size: var(--text-sm, 13px);
   color: var(--color-success, #22c55e);
   font-weight: 500;
+}
+
+/* P3-2 attribute editor */
+.catalog-hint {
+  font-size: 12px;
+  color: var(--text-muted);
+  margin-right: var(--space-2);
+}
+.attr-editor {
+  padding: 10px 16px;
+  border-top: 1px dashed var(--border);
+  background: var(--bg-primary);
+}
+.attr-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px 14px;
+}
+.attr-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.attr-field--wide {
+  grid-column: 1 / -1;
+}
+.attr-effect {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+.attr-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 10px;
+}
+.attr-dirty {
+  flex: 1;
+  font-size: 11px;
+  color: var(--text-muted);
 }
 </style>

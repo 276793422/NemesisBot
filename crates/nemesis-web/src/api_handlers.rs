@@ -16,8 +16,9 @@ use crate::events::EventHub;
 use crate::session::SessionManager;
 use crate::websocket_handler::IncomingMessage;
 use axum::Json;
-use axum::extract::{Query, State};
+use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
+use axum::response::IntoResponse;
 
 use nemesis_services::bot_service::AgentLoopService;
 use nemesis_types::utils;
@@ -457,6 +458,53 @@ pub async fn handle_api_license() -> Json<serde_json::Value> {
     Json(serde_json::json!({
         "content": EMBEDDED_LICENSE,
     }))
+}
+
+// ---------------------------------------------------------------------------
+// Handler: SDK downloads (P2-2, 2026-08-24 UI entry gap)
+// ---------------------------------------------------------------------------
+
+/// Serve an embedded SDK zip artifact with download headers. Same open-GET
+/// policy as /api/system/readme|license (static public artifacts, no
+/// secrets); auth for state-changing ops stays on the WS layer.
+fn sdk_zip_response(bytes: &'static [u8], filename: String) -> axum::response::Response {
+    (
+        StatusCode::OK,
+        [
+            (
+                axum::http::header::CONTENT_TYPE,
+                "application/zip".to_string(),
+            ),
+            (
+                axum::http::header::CONTENT_DISPOSITION,
+                format!("attachment; filename=\"{filename}\""),
+            ),
+            (axum::http::header::CACHE_CONTROL, "no-store".to_string()),
+        ],
+        bytes.to_vec(),
+    )
+        .into_response()
+}
+
+/// `GET /api/sdk/export` — SDK source tree zip (files at zip root), for
+/// browsing/extending the SDK locally.
+pub async fn handle_sdk_export() -> axum::response::Response {
+    sdk_zip_response(
+        crate::sdk_embed::SDK_EXPORT_ZIP,
+        format!("nemesisbot-sdk-{}.zip", crate::sdk_embed::SDK_VERSION),
+    )
+}
+
+/// `GET /api/sdk/pip` — sdist-layout zip (single `nemesisbot-<version>/`
+/// top-level dir) installable via `pip install ./<file>.zip`.
+pub async fn handle_sdk_pip() -> axum::response::Response {
+    sdk_zip_response(
+        crate::sdk_embed::SDK_SDIST_ZIP,
+        format!(
+            "nemesisbot-sdk-pip-{}.zip",
+            crate::sdk_embed::SDK_VERSION
+        ),
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -902,6 +950,221 @@ pub fn write_json_error(message: &str, _code: u16) -> Vec<u8> {
 }
 
 // ---------------------------------------------------------------------------
+// Handlers: /api/chat/sessions/{id}/turns + /fork
+// (P3-1, 2026-08-24 UI entry gap — session fork dialog backing)
+// ---------------------------------------------------------------------------
+
+/// Map a dashboard session id to the store session key (same mapping as the
+/// sessions WSAPI handler: `agent:main:session:{sanitized}`).
+fn chat_session_key(sid: &str) -> String {
+    format!(
+        "agent:main:session:{}",
+        nemesis_agent::session::SessionStore::sanitize_session_id(sid)
+    )
+}
+
+/// Reverse of [`chat_session_key`] — lets the frontend switch to the new
+/// session after a fork (ids are what the session list WSAPI speaks).
+fn chat_session_id(key: &str) -> String {
+    key.strip_prefix("agent:main:session:")
+        .unwrap_or(key)
+        .to_string()
+}
+
+/// Resolve the store a turns/fork request operates on:
+/// 1. the LIVE agent's store when the agent is running (authoritative — it
+///    holds the in-memory history the loop is appending to), else
+/// 2. a fresh store over `<home>/workspace/sessions` (agent stopped).
+///    `new_with_storage` loads existing session files at construction and
+///    `get_or_create` falls back to disk on an in-memory miss (Z1), so fork
+///    files created by other processes are visible — and a fork made against
+///    this fallback store survives a running gateway that later re-reads the
+///    same directory instead of overwriting it.
+fn resolve_fork_store(
+    state: &AppState,
+) -> Result<Arc<nemesis_agent::session::SessionStore>, (StatusCode, Json<serde_json::Value>)> {
+    if let Some(al) = state.agent_loop.read().as_ref() {
+        if let Some(store) = al.session_store() {
+            return Ok(store.clone());
+        }
+    }
+    let home = state.home.as_deref().ok_or_else(|| {
+        (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(serde_json::json!({"error": "home not configured"})),
+        )
+    })?;
+    let dir = PathBuf::from(home).join("workspace").join("sessions");
+    Ok(Arc::new(nemesis_agent::session::SessionStore::new_with_storage(
+        dir,
+    )))
+}
+
+/// First non-empty line of a message, truncated for preview display.
+/// char-based truncation (never splits a multi-byte character).
+fn first_line_trunc(s: &str, max: usize) -> String {
+    let first = s.lines().find(|l| !l.trim().is_empty()).unwrap_or("");
+    let mut out: String = first.chars().take(max).collect();
+    if first.chars().count() > max {
+        out.push('…');
+    }
+    out
+}
+
+/// `GET /api/chat/sessions/{id}/turns` — turn-boundary table for the fork
+/// dialog. Same counting as the CLI `session show`: a turn is one complete
+/// user→…→assistant exchange; `kept_messages` is the cumulative history size
+/// a fork cut at that turn retains (includes the leading system prompt).
+///
+/// Requires `X-Auth-Token` matching `web.auth_token`.
+pub async fn handle_api_chat_session_turns(
+    headers: axum::http::HeaderMap,
+    Path(session_id): Path<String>,
+    State(state): State<Arc<AppState>>,
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
+    let token = headers
+        .get("X-Auth-Token")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    if !verify_token(token, &state.auth_token) {
+        return Err((
+            StatusCode::UNAUTHORIZED,
+            Json(serde_json::json!({"error": "unauthorized"})),
+        ));
+    }
+
+    let store = resolve_fork_store(&state)?;
+    let key = chat_session_key(&session_id);
+    let messages = store.get_history(&key);
+    if messages.is_empty() {
+        return Err((
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({
+                "error": format!("会话 {session_id} 不存在或历史为空")
+            })),
+        ));
+    }
+
+    // Turn table (CLI show_turns counting): one row per complete user turn;
+    // messages before the first user msg (system prompt) lead into turn 1's
+    // cumulative count, mirroring the fork cut index semantics.
+    struct TurnRow {
+        preview: String,
+        time: String,
+        turn_messages: usize,
+    }
+    let mut rows: Vec<TurnRow> = Vec::new();
+    let mut leading = 0usize;
+    for m in &messages {
+        if m.role == "user" {
+            rows.push(TurnRow {
+                preview: first_line_trunc(&m.content, 60),
+                time: m.timestamp.clone(),
+                turn_messages: 1,
+            });
+        } else if let Some(r) = rows.last_mut() {
+            r.turn_messages += 1;
+        } else {
+            leading += 1;
+        }
+    }
+    let total_turns = rows.len();
+    let mut kept = leading;
+    let turns: Vec<serde_json::Value> = rows
+        .into_iter()
+        .enumerate()
+        .map(|(i, r)| {
+            kept += r.turn_messages;
+            serde_json::json!({
+                "turn": i + 1,
+                "preview": r.preview,
+                "time": r.time,
+                "turn_messages": r.turn_messages,
+                "kept_messages": kept,
+            })
+        })
+        .collect();
+
+    Ok(Json(serde_json::json!({
+        "session_id": session_id,
+        "session_key": key,
+        "total_turns": total_turns,
+        "total_messages": messages.len(),
+        "turns": turns,
+    })))
+}
+
+/// `POST /api/chat/sessions/{id}/fork` — fork at a turn boundary.
+/// Body: `{ "at_turn": 2, "title": "新分支" }` (both optional; omitted
+/// `at_turn` = fork at head / whole history). Delegates to the Z1
+/// `fork_session` (SessionStore + chat_log copy + boundary events) — the UI
+/// must NOT reimplement the copy semantics.
+///
+/// Requires `X-Auth-Token` matching `web.auth_token`.
+pub async fn handle_api_chat_session_fork(
+    headers: axum::http::HeaderMap,
+    Path(session_id): Path<String>,
+    State(state): State<Arc<AppState>>,
+    Json(body): Json<serde_json::Value>,
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
+    let token = headers
+        .get("X-Auth-Token")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    if !verify_token(token, &state.auth_token) {
+        return Err((
+            StatusCode::UNAUTHORIZED,
+            Json(serde_json::json!({"error": "unauthorized"})),
+        ));
+    }
+
+    let at_turn = body.get("at_turn").and_then(|v| v.as_u64()).map(|v| v as usize);
+    let title = body
+        .get("title")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+
+    let store = resolve_fork_store(&state)?;
+    let key = chat_session_key(&session_id);
+    // Pre-check so unknown sessions surface as 404 (fork_session's own
+    // empty-check would otherwise collapse into a 500 below).
+    if store.get_history(&key).is_empty() {
+        return Err((
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({
+                "error": format!("会话 {session_id} 不存在或历史为空")
+            })),
+        ));
+    }
+
+    let info = nemesis_agent::session_fork::fork_session(&store, &key, None, at_turn)
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": e})),
+            )
+        })?;
+    // Optional title for the new session's meta (same call the sessions
+    // WSAPI rename uses).
+    if let Some(t) = title {
+        nemesis_agent::chat_log::write_session_meta(&info.new_key, &t);
+    }
+
+    Ok(Json(serde_json::json!({
+        "forked": true,
+        "session_id": chat_session_id(&info.new_key),
+        "source_session_id": session_id,
+        "source_key": info.source_key,
+        "new_key": info.new_key,
+        "at_turn": info.at_turn,
+        "kept_messages": info.kept_messages,
+        "dropped_messages": info.dropped_messages,
+        "summary_kept": info.summary_kept,
+        "chat_log_lines": info.chat_log_lines,
+    })))
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
@@ -910,3 +1173,16 @@ mod tests;
 
 #[cfg(all(test, feature = "workflow"))]
 mod extra_tests;
+
+// P2-2 (2026-08-24 UI entry gap): SDK download-route tests are stateless
+// (handlers take no State), so they run under every feature combo —
+// deliberately NOT behind the workflow gate above.
+#[cfg(test)]
+mod sdk_route_tests;
+
+// P3-1 (2026-08-24 UI entry gap): session-fork route tests. The handlers
+// depend only on nemesis-agent (non-optional), so like sdk_route_tests these
+// run under every feature combo (make_state cfg-branches the two
+// workflow-typed AppState fields).
+#[cfg(test)]
+mod fork_route_tests;

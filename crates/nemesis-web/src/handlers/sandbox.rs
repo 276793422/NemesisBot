@@ -1,8 +1,10 @@
 //! Sandbox handler — Sandboxie install / status / start commands for the
 //! Sandbox management page.
 //!
-//! Commands: `status`, `check`, `pending`, `install_7z`, `install_sandboxie`,
-//! `start`.
+//! Commands: `overview` (P5 platform-adaptive summary), `status`, `check`,
+//! `pending`, `commit`, `delete`, `install_7z`, `install_sandboxie`, `start`,
+//! `stop`, `open_box`, `open_explorer`, `set_network`, `set_config` (P5
+//! field-wise executor switches).
 //!
 //! `install_sandboxie` / `start` need admin (driver + service ops) → they spawn
 //! the `nemesisbot sandbox <install|start>` CLI subprocess, which self-elevates
@@ -41,12 +43,17 @@ fn user_profile() -> PathBuf {
 /// await it. Generous timeout for UAC + download + KmdUtil install.
 async fn run_cli_subcmd(home: &std::path::Path, cmd: &str) -> Result<(), String> {
     let exe = std::env::current_exe().map_err(|e| format!("current_exe: {e}"))?;
+    // resolve_home() joins `.nemesisbot` onto the env var, so pass the PARENT:
+    // `home` here is already `<...>/.nemesisbot` — passing it directly made the
+    // child resolve `<...>/.nemesisbot/.nemesisbot` (double-join bug; P3-2
+    // catalog_update hit the same trap).
+    let env_home = home.parent().unwrap_or(home);
     let output = tokio::time::timeout(
         Duration::from_secs(300),
         tokio::process::Command::new(&exe)
             .arg("sandbox")
             .arg(cmd)
-            .env("NEMESISBOT_HOME", home)
+            .env("NEMESISBOT_HOME", env_home)
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::piped())
             .output(),
@@ -116,19 +123,27 @@ fn update_executor<F: FnOnce(&mut nemesis_config::ExecutorSeparationConfig)>(
 /// display. ConfigStore in gateway mode, direct disk read otherwise. Defaults to
 /// false (network blocked) when unset.
 fn current_allow_network(home: &std::path::Path) -> bool {
+    current_executor(home).allow_network
+}
+
+/// Read the whole `executor` section (all four switches: enabled / sandbox /
+/// allow_network / strict) — single source for `overview` display and
+/// `set_config` echo. Same dual-path resolution as [`current_allow_network`];
+/// defaults mirror `ExecutorSeparationConfig::default()` (all false).
+fn current_executor(home: &std::path::Path) -> nemesis_config::ExecutorSeparationConfig {
     if let Some(store) = nemesis_config::global() {
         let handle = store.handle();
         let c = handle.read();
-        return c.executor.as_ref().map_or(false, |e| e.allow_network);
+        return c.executor.clone().unwrap_or_default();
     }
     let Ok(raw) = std::fs::read_to_string(home.join("config.json")) else {
-        return false;
+        return Default::default();
     };
     serde_json::from_str::<serde_json::Value>(&raw)
         .ok()
         .and_then(|v| v.get("executor").cloned())
         .and_then(|e| serde_json::from_value::<nemesis_config::ExecutorSeparationConfig>(e).ok())
-        .map_or(false, |e| e.allow_network)
+        .unwrap_or_default()
 }
 
 fn set_executor_config(home: &std::path::Path, enabled: bool, sandbox: bool) -> Result<(), String> {
@@ -211,6 +226,82 @@ impl ModuleHandler for SandboxHandler {
                     "ready": ready,
                     "allow_network": current_allow_network(&home),
                     "box_root": paths.box_root.to_string_lossy(),
+                })))
+            }
+            // P5-1/P5-2 平台自适应总览：一次调用回答「我在什么平台 / 四个
+            // executor 开关现在是什么（live）/ 后端探测看到什么 / 沙盒执行现在
+            // 是否真的会被兑现」。Windows → Sandboxie 探测（kind=sandboxie）；
+            // 其他平台 → 用户态后端逐个探测（kind=userland，含每个后端的
+            // 可用性 + 缺口/原因）。`ready` 与 exec_world 装配的就绪语义一致
+            // （Windows = Start.exe + SbieSvc Running + engine_owned；非
+            // Windows = detect_backend() 选中了后端）。
+            "overview" => {
+                let executor = current_executor(&home);
+                let platform = if cfg!(target_os = "windows") {
+                    "windows"
+                } else if cfg!(target_os = "linux") {
+                    "linux"
+                } else if cfg!(target_os = "macos") {
+                    "macos"
+                } else {
+                    "other"
+                };
+                let (backend_probe, ready) = if cfg!(target_os = "windows") {
+                    let start_exe_present = paths.start_exe().exists();
+                    let sbiesvc_running =
+                        matches!(nemesis_sandbox::status::service_state(nemesis_sandbox::USERMODE_SERVICE), ServiceState::Running);
+                    let engine_owned = nemesis_sandbox::status::engine_owned(&paths);
+                    (
+                        serde_json::json!({
+                            "kind": "sandboxie",
+                            "start_exe_present": start_exe_present,
+                            "sbiesvc_running": sbiesvc_running,
+                            "engine_owned": engine_owned,
+                        }),
+                        start_exe_present && sbiesvc_running && engine_owned,
+                    )
+                } else {
+                    let backends: Vec<_> = nemesis_sandbox::backend::probe_userland_backends()
+                        .into_iter()
+                        .map(|p| {
+                            let (availability, detail) = match p.availability {
+                                nemesis_sandbox::backend::Availability::Full => ("full", vec![]),
+                                nemesis_sandbox::backend::Availability::Partial(gaps) => {
+                                    ("partial", gaps)
+                                }
+                                nemesis_sandbox::backend::Availability::Unavailable(reason) => {
+                                    ("unavailable", vec![reason])
+                                }
+                            };
+                            serde_json::json!({
+                                "name": p.name,
+                                "form": format!("{:?}", p.form),
+                                "availability": availability,
+                                "detail": detail,
+                            })
+                        })
+                        .collect();
+                    let selected =
+                        nemesis_sandbox::backend::detect_backend().map(|b| b.name().to_string());
+                    (
+                        serde_json::json!({
+                            "kind": "userland",
+                            "backends": backends,
+                            "selected": selected,
+                        }),
+                        selected.is_some(),
+                    )
+                };
+                Ok(Some(serde_json::json!({
+                    "platform": platform,
+                    "executor": {
+                        "enabled": executor.enabled,
+                        "sandbox": executor.sandbox,
+                        "allow_network": executor.allow_network,
+                        "strict": executor.strict,
+                    },
+                    "backend_probe": backend_probe,
+                    "ready": ready,
                 })))
             }
             "check" => {
@@ -380,6 +471,64 @@ impl ModuleHandler for SandboxHandler {
                     "ok": true,
                     "allow_network": enabled,
                     "restart_hint": "newly started box processes pick this up immediately; already-open ones need reopening",
+                })))
+            }
+            // P5-1/P5-2 executor 开关的逐字段变更（Linux 联动开关 + 全平台
+            // strict 开关走这里）。每个 bool 只在**显式出现**时应用，其余兄弟
+            // 字段原样保留（update_executor 逐字段合并）；出现但非 bool → 报
+            // 错（不静默忽略）。注意：Windows 的盒级联网开关仍走 `set_network`
+            // （那里还有 Sandboxie.ini 重写 + /reload 副作用）；Linux/macOS 的
+            // allow_network 直接经此处生效（无 Sandboxie 副作用）。
+            "set_config" => {
+                let d = data.clone().unwrap_or_default();
+                let get_bool = |key: &str| -> Result<Option<bool>, String> {
+                    match d.get(key) {
+                        None => Ok(None),
+                        Some(v) => v.as_bool().map(Some).ok_or_else(|| {
+                            format!("set_config field '{key}' must be a bool, got: {v}")
+                        }),
+                    }
+                };
+                let enabled = get_bool("enabled")?;
+                let sandbox = get_bool("sandbox")?;
+                let allow_network = get_bool("allow_network")?;
+                let strict = get_bool("strict")?;
+                if enabled.is_none()
+                    && sandbox.is_none()
+                    && allow_network.is_none()
+                    && strict.is_none()
+                {
+                    return Err(
+                        "set_config requires at least one of { enabled, sandbox, allow_network, strict: bool }"
+                            .into(),
+                    );
+                }
+                update_executor(&home, |e| {
+                    if let Some(v) = enabled {
+                        e.enabled = v;
+                    }
+                    if let Some(v) = sandbox {
+                        e.sandbox = v;
+                    }
+                    if let Some(v) = allow_network {
+                        e.allow_network = v;
+                    }
+                    if let Some(v) = strict {
+                        e.strict = v;
+                    }
+                })?;
+                let now = current_executor(&home);
+                Ok(Some(serde_json::json!({
+                    "ok": true,
+                    "executor": {
+                        "enabled": now.enabled,
+                        "sandbox": now.sandbox,
+                        "allow_network": now.allow_network,
+                        "strict": now.strict,
+                    },
+                    // enabled 决定装配期是否建通道（agent 重启才生效）；sandbox
+                    // /strict 是 live probe，下一次工具调用即生效。
+                    "restart_hint": "executor.enabled 变更需重启 Agent；sandbox/strict 对后续工具调用实时生效",
                 })))
             }
             other => Err(format!("unknown sandbox command: {other}")),

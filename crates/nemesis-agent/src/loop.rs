@@ -5569,6 +5569,13 @@ impl AgentLoop {
         *self.spill_root.write() = Some(root);
     }
 
+    /// D2 (2026-08-24 arch review): read back the configured spill root, if
+    /// any. Diagnostics/test seam for verifying factory wiring — both the
+    /// main and cluster factories point at `<home>/logs/spill`.
+    pub fn spill_root_path(&self) -> Option<std::path::PathBuf> {
+        self.spill_root.read().clone()
+    }
+
     /// H3 (P2.2): enable skills-catalog digest injection by providing the
     /// loader. The digest is injected (same point as the time/env hint) only
     /// when the catalog changed since the last injection for this session.

@@ -534,8 +534,15 @@ pub async fn test_cli_model_catalog_update(ws: &TestWorkspace, bin: &Path) -> Ve
         .run_cli_with_timeout(bin, &["model", "catalog-update"], 90)
         .await;
     let online = out.success() && out.stdout_contains("目录已更新");
+    // 离线大声报告会落在两个流：进度行走 stdout（「正在拉取…」），终态
+    // bail! 走 stderr（「Error: 拉取失败…」）。2026-08-24 复检前只查 stdout
+    // ——之前每轮网络都好、只走过 online 分支，离线分支首次被真实验证
+    // （models.dev + jsDelivr 双端点不通）时暴露检测串找错流 → 假 FAIL。
     let offline = !out.success()
-        && (out.stdout_contains("拉取失败") || out.stdout_contains("目录不可用"));
+        && (out.stdout_contains("拉取失败")
+            || out.stdout_contains("目录不可用")
+            || out.stderr_contains("拉取失败")
+            || out.stderr_contains("目录不可用"));
     results.push(if online || offline {
         pass(
             &format!("{}/contract", suite),

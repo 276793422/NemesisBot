@@ -4,6 +4,13 @@ version.workspace = true
 license.workspace = true
 edition.workspace = true
 
+# P2-2 (2026-08-24 UI entry gap): compile-time packaging of the Python SDK
+# (test-tools/python/sdk) into the two zips embedded by sdk_embed.rs. Same
+# `zip` crate the rest of the workspace already uses (nemesis-utils/skills/
+# sandbox/security); deflate-only keeps the build script light.
+[build-dependencies]
+zip = { version = "2", default-features = false, features = ["deflate"] }
+
 [dependencies]
 nemesis-types = { workspace = true }
 nemesis-bus = { workspace = true }
@@ -22,6 +29,10 @@ nemesis-data = { workspace = true }
 nemesis-agent = { workspace = true }
 nemesis-workflow = { workspace = true, optional = true }
 nemesis-utils = { workspace = true }
+# P2-1 (2026-08-24 UI entry gap): coding.lsp_status probes the language-server
+# registry table (SERVERS / server_available). Unconditional, mirroring
+# nemesis-agent's own non-optional dependency on nemesis-lsp.
+nemesis-lsp = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true }
@@ -58,3 +69,6 @@ sandbox = ["dep:nemesis-sandbox"]
 [dev-dependencies]
 tempfile = "3"
 tokio-tungstenite = { workspace = true }
+# P2-2: sdk_embed tests open the embedded bytes as a real archive (structural
+# round-trip — the guarantee that unzip/pip install work, not just non-empty).
+zip = { version = "2", default-features = false, features = ["deflate"] }

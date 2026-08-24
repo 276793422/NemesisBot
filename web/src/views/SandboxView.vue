@@ -9,12 +9,38 @@ const toast = useToast()
 // --- State ---
 const loading = ref(true)
 const activeTab = ref<'config' | 'status' | 'files'>('config')
+// P5 平台自适应总览（platform / executor 四开关 live / backend_probe / ready）
+const overview = ref<any>(null)
 const status = ref<any>(null)
 const env = ref<any>(null)
 const pending = ref<any[]>([])
 const busy = ref<string | null>(null)
 const selected = ref<Set<string>>(new Set())
 
+const platform = computed(() => overview.value?.platform ?? null)
+const isWindows = computed(() => platform.value === 'windows')
+// 非 Windows（linux/macos/other）一律走用户态布局（other 无后端，布局仍诚实渲染探测为空）
+const isUserland = computed(() => platform.value !== null && platform.value !== 'windows')
+const executorCfg = computed(() => overview.value?.executor ?? null)
+const executorOn = computed(() => !!executorCfg.value?.enabled && !!executorCfg.value?.sandbox)
+const strictOn = computed(() => !!executorCfg.value?.strict)
+const allowNetworkCfg = computed(() => !!executorCfg.value?.allow_network)
+const sandboxReady = computed(() => !!overview.value?.ready)
+const backends = computed<any[]>(() => overview.value?.backend_probe?.backends ?? [])
+const selectedBackend = computed(() => overview.value?.backend_probe?.selected ?? null)
+const strictHint = computed(() => {
+  if (isWindows.value) {
+    return sandboxReady.value
+      ? '当前引擎：✅ Sandboxie 就绪 — 严格模式可兑现'
+      : '当前引擎：⚠️ Sandboxie 未就绪 — 严格开启后，要求沙盒的高危工具调用将被拒绝，直到引擎启动且重启 Agent'
+  }
+  if (selectedBackend.value) {
+    return `当前后端：✅ ${selectedBackend.value} 可用 — 严格模式可兑现`
+  }
+  return '当前后端：⚠️ landlock / bwrap 均不可用 — 严格开启后，要求沙盒的高危工具调用将被拒绝'
+})
+
+// Windows-only（Sandboxie 专属语义）computed 保持原样
 const ready = computed(() => !!status.value?.ready)
 const allowNetwork = computed(() => !!status.value?.allow_network)
 const sevenZipOk = computed(() => !!env.value?.seven_zip?.available)
@@ -25,12 +51,17 @@ const sbiesvcRunning = computed(() => !!env.value?.sandboxie?.sbiesvc_running)
 async function refreshAll() {
   loading.value = true
   try {
-    const [st, pend] = await Promise.all([
-      request('sandbox', 'status').catch(() => null),
-      request('sandbox', 'pending').catch(() => []),
-    ])
-    status.value = st
-    pending.value = Array.isArray(pend) ? pend : (pend?.files ?? [])
+    // overview 是平台真相源：先拿它，再按平台决定要不要拉 Sandboxie 专属状态
+    const ov = await request('sandbox', 'overview').catch(() => null)
+    overview.value = ov
+    if (ov?.platform === 'windows') {
+      const [st, pend] = await Promise.all([
+        request('sandbox', 'status').catch(() => null),
+        request('sandbox', 'pending').catch(() => []),
+      ])
+      status.value = st
+      pending.value = Array.isArray(pend) ? pend : (pend?.files ?? [])
+    }
   } finally {
     loading.value = false
   }
@@ -45,6 +76,69 @@ async function checkEnv() {
   } finally {
     busy.value = null
   }
+}
+
+// --- P5：executor 开关逐字段变更（Linux 联动 / 全平台 strict / Linux 联网） ---
+async function setExecutorCfg(fields: Record<string, boolean>, successMsg: string) {
+  busy.value = 'set_config'
+  try {
+    const r = await request('sandbox', 'set_config', fields)
+    toast.success(r?.restart_hint ? `${successMsg}（${r.restart_hint}）` : successMsg)
+    await refreshAll()
+  } catch (e: any) {
+    toast.error('设置失败: ' + (e?.message ?? e))
+  } finally {
+    busy.value = null
+  }
+}
+
+function enableSandboxExec() {
+  if (!window.confirm(
+    '即将启用沙盒执行（用户态沙盒）：\n' +
+    '• executor.enabled=true + executor.sandbox=true（联动）\n' +
+    '• ⚠️ executor.enabled 需重启 Agent 生效；sandbox 对后续工具调用实时生效\n\n' +
+    '确认启用？'
+  )) return
+  setExecutorCfg({ enabled: true, sandbox: true }, '沙盒执行已启用')
+}
+
+function disableSandboxExec() {
+  if (!window.confirm(
+    '即将停用沙盒执行：\n' +
+    '• executor.enabled=false + executor.sandbox=false（联动）\n' +
+    '• ⚠️ 停用后高危工具在 executor 子进程内执行，但不再有沙盒强制\n\n' +
+    '确认停用？'
+  )) return
+  setExecutorCfg({ enabled: false, sandbox: false }, '沙盒执行已停用')
+}
+
+function toggleUserlandNetwork() {
+  const next = !allowNetworkCfg.value
+  setExecutorCfg(
+    { allow_network: next },
+    `沙盒内联网已${next ? '开启' : '关闭'}`
+  )
+}
+
+function toggleStrict() {
+  const next = !strictOn.value
+  // 开启严格模式且当前后端不可用 = 立即开始拒绝高危工具调用——值得一次确认
+  if (next && !sandboxReady.value) {
+    if (!window.confirm(
+      '当前沙盒后端不可用：\n' +
+      `${strictHint.value}\n` +
+      '开启严格模式后，要求沙盒的工具调用将被【拒绝执行】（而非降级）。\n\n' +
+      '确认开启？'
+    )) return
+  }
+  setExecutorCfg({ strict: next }, `严格模式已${next ? '开启（fail-closed）' : '关闭（fail-open）'}`)
+}
+
+function availText(a: string): string {
+  return a === 'full' ? '可用' : a === 'partial' ? '部分可用' : '不可用'
+}
+function availColor(a: string): string {
+  return a === 'full' ? 'var(--success)' : a === 'partial' ? 'var(--warning, orange)' : 'var(--danger, #ef4444)'
 }
 
 async function install7z() {
@@ -224,21 +318,25 @@ async function toggleNetwork() {
 }
 
 onMounted(async () => {
-  await Promise.all([refreshAll(), checkEnv()])
+  await refreshAll()
+  if (isWindows.value) await checkEnv()
 })
 </script>
 
 <template>
   <div class="page-sandbox">
-    <div class="page-header"><h2>沙盒</h2></div>
+    <div class="page-header">
+      <h2>沙盒</h2>
+      <span v-if="platform" class="platform-badge">{{ platform === 'windows' ? 'Windows · Sandboxie' : platform === 'linux' ? 'Linux · 用户态沙盒' : platform === 'macos' ? 'macOS · Seatbelt' : platform }}</span>
+    </div>
     <div class="page-body">
 
-      <!-- Tabs -->
-      <div class="tabs">
-        <button class="tab" :class="{ active: activeTab === 'config' }" @click="activeTab = 'config'">沙箱配置</button>
-        <button class="tab" :class="{ active: activeTab === 'status' }" @click="activeTab = 'status'">沙箱状态</button>
-        <button class="tab" :class="{ active: activeTab === 'files' }" @click="activeTab = 'files'">沙箱文件</button>
-        <button class="btn btn-sm" style="margin-left: auto;" @click="refreshAll" :disabled="!!busy">刷新</button>
+      <!-- 平台信息加载失败（overview 是平台真相源） -->
+      <div v-if="!platform" class="card">
+        <div class="card-body" style="color: var(--text-secondary); font-size: var(--text-sm);">
+          {{ loading ? '加载中…' : '无法获取沙盒平台总览（sandbox.overview）— 请确认网关以完整构建运行（含 sandbox feature）。' }}
+          <button class="btn btn-sm" style="margin-left: var(--space-2);" @click="refreshAll" :disabled="!!busy || loading">重试</button>
+        </div>
       </div>
 
       <!-- Busy banner -->
@@ -254,9 +352,20 @@ onMounted(async () => {
              : busy === 'delete' ? '正在从沙箱删除文件...'
              : busy === 'open_explorer' ? '正在沙盒内打开资源管理器...'
              : busy === 'set_network' ? '正在切换盒内联网状态...'
+             : busy === 'set_config' ? '正在更新执行体配置...'
              : '正在检查环境...' }}
           </span>
         </div>
+      </div>
+
+      <!-- ════════ Windows 布局：3 Tab Sandboxie 专属语义（保持原样）+ 严格模式卡 ════════ -->
+      <template v-if="isWindows">
+      <!-- Tabs -->
+      <div class="tabs">
+        <button class="tab" :class="{ active: activeTab === 'config' }" @click="activeTab = 'config'">沙箱配置</button>
+        <button class="tab" :class="{ active: activeTab === 'status' }" @click="activeTab = 'status'">沙箱状态</button>
+        <button class="tab" :class="{ active: activeTab === 'files' }" @click="activeTab = 'files'">沙箱文件</button>
+        <button class="btn btn-sm" style="margin-left: auto;" @click="refreshAll" :disabled="!!busy">刷新</button>
       </div>
 
       <!-- ════════ 沙箱配置 ════════ -->
@@ -339,6 +448,30 @@ onMounted(async () => {
               </div>
             </div>
 
+            <!-- P5-2 严格模式（fail-closed）— Windows 按钮旁写清 Sandboxie 引擎实际状态 -->
+            <div style="border-top: 1px solid var(--border); padding-top: var(--space-4); margin-top: var(--space-4);">
+              <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: var(--space-2);">
+                <span style="font-weight: 500;">严格模式（fail-closed）</span>
+                <button
+                  class="btn btn-sm"
+                  :class="{ 'btn-primary': strictOn }"
+                  @click="toggleStrict"
+                  :disabled="!!busy"
+                >
+                  {{ strictOn ? '已开启' : '已关闭' }}
+                </button>
+              </div>
+              <div style="padding-left: var(--space-4); font-size: var(--text-sm); color: var(--text-secondary);">
+                <span :style="{ color: strictOn ? 'var(--warning, orange)' : 'var(--text-secondary)' }">●</span>
+                <span style="margin-left: var(--space-2);">
+                  {{ strictOn ? '要求沙盒的调用：Sandboxie 不可用即拒绝执行（不静默降级）' : '要求沙盒的调用：Sandboxie 不可用时降级为无盒执行（warn，现状默认）' }}
+                </span>
+              </div>
+              <div style="padding-left: var(--space-4); margin-top: var(--space-1); font-size: var(--text-xs); color: var(--text-secondary);">
+                {{ strictHint }}
+              </div>
+            </div>
+
             <div v-if="!sevenZipOk && !filesAcquired" style="margin-top: var(--space-3); font-size: var(--text-xs); color: var(--text-secondary);">
               提示：先准备 7z 环境，再下载 Sandboxie 文件（无 UAC）。文件就绪后点"启动"激活引擎（装驱动，弹 UAC）。然后在 config.json 设 <code>executor.enabled=true, sandbox=true</code> 重启 gateway 即可启用沙盒执行。
             </div>
@@ -410,6 +543,114 @@ onMounted(async () => {
           </div>
         </div>
       </div>
+      </template>
+
+      <!-- ════════ Linux / macOS 布局：用户态沙盒（P5-1） ════════ -->
+      <template v-if="isUserland">
+      <div style="display: flex; justify-content: flex-end; margin-bottom: var(--space-3);">
+        <button class="btn btn-sm" @click="refreshAll" :disabled="!!busy">刷新</button>
+      </div>
+
+      <!-- 联动开关（同 Windows 启动/停止按钮模式：enabled+sandbox 一起翻） -->
+      <div class="card" style="margin-bottom: var(--space-3);">
+        <div class="card-header"><h3 style="margin: 0;">执行沙盒（用户态）</h3></div>
+        <div class="card-body">
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: var(--space-2);">
+            <div>
+              <span style="font-weight: 500;">沙盒执行</span>
+              <span
+                style="margin-left: var(--space-2); font-size: var(--text-sm);"
+                :style="{ color: executorOn ? 'var(--success)' : 'var(--text-secondary)' }"
+              >{{ executorOn ? '● 已启用' : '○ 已停用' }}</span>
+            </div>
+            <div style="display: flex; gap: var(--space-2);">
+              <button v-if="!executorOn" class="btn btn-sm btn-primary" @click="enableSandboxExec" :disabled="!!busy">启用沙盒执行</button>
+              <button v-else class="btn btn-sm btn-danger" @click="disableSandboxExec" :disabled="!!busy">停用沙盒执行</button>
+            </div>
+          </div>
+          <div style="font-size: var(--text-xs); color: var(--text-secondary);">
+            联动开关：executor.enabled + executor.sandbox 一起翻（与 Windows 启动/停止按钮同模式）。executor.enabled 需重启 Agent 生效；sandbox 对后续工具调用实时生效。
+          </div>
+        </div>
+      </div>
+
+      <!-- 后端探测（landlock / bwrap 逐个探测 + 实际选用） -->
+      <div class="card" style="margin-bottom: var(--space-3);">
+        <div class="card-header" style="display: flex; justify-content: space-between; align-items: center;">
+          <h3 style="margin: 0;">后端探测</h3>
+          <span style="font-size: var(--text-sm); color: var(--text-secondary);">
+            实际选用：<span :style="{ color: selectedBackend ? 'var(--success)' : 'var(--danger, #ef4444)' }">{{ selectedBackend ?? '无（沙盒不可用）' }}</span>
+          </span>
+        </div>
+        <div class="card-body" style="display: flex; flex-direction: column; gap: var(--space-2); font-size: var(--text-sm);">
+          <div v-for="b in backends" :key="b.name" style="display: flex; align-items: center; gap: var(--space-2); flex-wrap: wrap;">
+            <span style="font-weight: 500; min-width: 96px;">{{ b.name }}</span>
+            <span style="font-size: var(--text-xs); color: var(--text-secondary);">({{ b.form === 'SelfApply' ? '进程内自装' : '包装命令' }})</span>
+            <span :style="{ color: availColor(b.availability), fontSize: 'var(--text-sm)' }">{{ availText(b.availability) }}</span>
+            <span v-if="b.detail?.length" style="color: var(--text-secondary); font-size: var(--text-xs);">{{ b.detail.join('；') }}</span>
+            <span v-if="selectedBackend === b.name" style="font-size: var(--text-xs); color: var(--accent);">✓ 已选用</span>
+          </div>
+          <div v-if="!backends.length" style="color: var(--text-secondary);">本平台无用户态沙盒后端（探测为空）。</div>
+        </div>
+      </div>
+
+      <!-- 沙盒内联网（Linux 无 Sandboxie.ini 副作用，直接走 set_config） -->
+      <div class="card" style="margin-bottom: var(--space-3);">
+        <div class="card-header"><h3 style="margin: 0;">沙盒内联网</h3></div>
+        <div class="card-body">
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: var(--space-2);">
+            <span style="font-weight: 500;">executor.allow_network</span>
+            <button
+              class="btn btn-sm"
+              :class="{ 'btn-primary': allowNetworkCfg }"
+              @click="toggleUserlandNetwork"
+              :disabled="!!busy"
+            >
+              {{ allowNetworkCfg ? '已开启' : '已关闭' }}
+            </button>
+          </div>
+          <div style="font-size: var(--text-xs); color: var(--text-secondary);">
+            {{ allowNetworkCfg ? '沙盒内程序允许联网（需后端支持网络隔离才有意义：bwrap --unshare-net / Seatbelt deny network）' : '沙盒内程序禁止联网（bwrap --unshare-net / Seatbelt deny network；landlock 本身不覆盖网络）' }}
+          </div>
+        </div>
+      </div>
+
+      <!-- P5-2 严格模式 — 按钮旁写清 landlock/bwrap 探测结果 -->
+      <div class="card" style="margin-bottom: var(--space-3);">
+        <div class="card-header"><h3 style="margin: 0;">严格模式（fail-closed）</h3></div>
+        <div class="card-body">
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: var(--space-2);">
+            <span style="font-weight: 500;">executor.strict</span>
+            <button
+              class="btn btn-sm"
+              :class="{ 'btn-primary': strictOn }"
+              @click="toggleStrict"
+              :disabled="!!busy"
+            >
+              {{ strictOn ? '已开启' : '已关闭' }}
+            </button>
+          </div>
+          <div style="font-size: var(--text-sm); color: var(--text-secondary); margin-bottom: var(--space-1);">
+            {{ strictOn
+              ? '要求沙盒的调用：后端不可用即拒绝执行（不静默降级）'
+              : '要求沙盒的调用：后端不可用时降级为无盒执行（warn，现状默认）' }}
+          </div>
+          <div style="font-size: var(--text-xs); color: var(--text-secondary);">{{ strictHint }}</div>
+        </div>
+      </div>
+
+      <!-- 诚实说明卡（机制边界，如实写明） -->
+      <div class="card">
+        <div class="card-header"><h3 style="margin: 0;">机制说明（诚实边界）</h3></div>
+        <div class="card-body" style="font-size: var(--text-sm); color: var(--text-secondary);">
+          <ul style="margin: 0; padding-left: var(--space-5); display: flex; flex-direction: column; gap: var(--space-1);">
+            <li>文件系统隔离 = 内核强制（Linux: landlock；macOS: Seatbelt 配置文件）</li>
+            <li>网络隔离需要 bwrap（landlock 不覆盖网络；Seatbelt 经 deny network 规则）</li>
+            <li>无「写捕获 / 待提交」模型：越界写 = <b>直接拒绝</b>，不是关进盒等手动提交（与 Windows Sandboxie 语义不同）</li>
+          </ul>
+        </div>
+      </div>
+      </template>
 
     </div>
   </div>
@@ -417,4 +658,12 @@ onMounted(async () => {
 
 <style scoped>
 code { background: var(--bg-secondary, rgba(0,0,0,0.05)); padding: 1px 4px; border-radius: 3px; font-size: var(--text-xs); }
+.platform-badge {
+  font-size: var(--text-xs);
+  color: var(--text-secondary);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 2px 10px;
+  margin-left: var(--space-3);
+}
 </style>

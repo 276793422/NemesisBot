@@ -14,7 +14,14 @@ fn tmp_store() -> (tempfile::TempDir, ConfigStore) {
 }
 
 fn exec_cfg(enabled: bool, sandbox: bool) -> ExecutorSeparationConfig {
-    ExecutorSeparationConfig { enabled, sandbox, allow_network: false }
+    // P5-2 加了 strict 字段；`..Default::default()` 让本 helper 不随字段
+    // 增减再碎一次（默认 strict=false = 现状语义）。
+    ExecutorSeparationConfig {
+        enabled,
+        sandbox,
+        allow_network: false,
+        ..Default::default()
+    }
 }
 
 #[test]

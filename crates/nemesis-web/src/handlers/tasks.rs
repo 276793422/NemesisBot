@@ -8,13 +8,40 @@
 //! take effect immediately.
 
 use crate::handlers::{
-    get_opt_str, get_str, read_workspace_file, require_workspace, write_workspace_file,
+    get_opt_bool_loud, get_opt_str, get_str, read_workspace_file, require_workspace,
+    write_workspace_file,
 };
 use crate::ws_router::{ModuleHandler, RequestContext};
 use nemesis_cron::{CronJob, CronJobPatch, CronSchedule, CronService};
 use std::sync::Arc;
 
 pub struct TasksHandler;
+
+/// P1-2 (2026-08-24 UI entry gap): three-state `max_rounds` parsing shared by
+/// cron.add / cron.update —
+/// * key absent → `Ok(None)` = leave unchanged (update) / global default (add)
+/// * `null`     → `Ok(Some(None))` = explicitly clear to the global default
+/// * integer    → `Ok(Some(Some(n)))` = set
+///
+/// Present-but-invalid values (wrong type, negative, fractional, 0,
+/// > u32::MAX) error LOUDLY. Degrading them to "absent" would silently wipe a
+/// job's budget on a typo'd payload, and 0 specifically is filtered to
+/// "no budget" downstream (`loop.rs` cron_max_rounds `.filter(|v| *v > 0)`),
+/// so accepting it would mean "unlimited" while looking like "zero" — both
+/// are rejected instead.
+fn parse_max_rounds_patch(data: &serde_json::Value) -> Result<Option<Option<u32>>, String> {
+    match data.get("max_rounds") {
+        None => Ok(None),
+        Some(serde_json::Value::Null) => Ok(Some(None)),
+        Some(v) => match v.as_u64() {
+            Some(n) if (1..=u32::MAX as u64).contains(&n) => Ok(Some(Some(n as u32))),
+            _ => Err(format!(
+                "max_rounds 必须是 1-{} 的整数或 null（收到 {v}）",
+                u32::MAX
+            )),
+        },
+    }
+}
 
 #[async_trait::async_trait]
 impl ModuleHandler for TasksHandler {
@@ -140,15 +167,10 @@ impl TasksHandler {
         let to = get_opt_str(data, "to");
         let session_key = get_opt_str(data, "session_key");
         // T3 (U12): optional per-fire tool-round budget (continuation turns).
-        let max_rounds = data
-            .get("max_rounds")
-            .and_then(|v| v.as_u64())
-            .map(|v| v as u32);
+        // Absent/null → global default; invalid present values rejected.
+        let max_rounds = parse_max_rounds_patch(data)?.flatten();
         let prompt = get_opt_str(data, "prompt").unwrap_or_default();
-        let enabled = data
-            .get("enabled")
-            .and_then(|v| v.as_bool())
-            .unwrap_or(true);
+        let enabled = get_opt_bool_loud(data, "enabled")?.unwrap_or(true);
         let schedule = cron_expr_to_schedule(&cron);
         let job = svc.lock().unwrap().add_job_ext(
             &name,
@@ -191,7 +213,12 @@ impl TasksHandler {
                 .get("session_key")
                 .and_then(|v| v.as_str())
                 .map(String::from),
-            enabled: data.get("enabled").and_then(|v| v.as_bool()),
+            enabled: get_opt_bool_loud(data, "enabled")?,
+            // P1-2: three states via parse_max_rounds_patch — key absent =
+            // leave unchanged, null = clear (global default), 1..=u32::MAX =
+            // set; present-but-invalid is rejected loudly (would otherwise
+            // degrade to "clear" and silently wipe the job's budget).
+            max_rounds: parse_max_rounds_patch(data)?,
         };
         // Validate cron expr if a new one is provided.
         if let Some(ref sched) = patch.schedule {
@@ -279,6 +306,8 @@ fn job_to_view(job: &CronJob) -> serde_json::Value {
         "to": job.payload.to,
         "session_key": job.payload.session_key,
         "prompt": job.payload.message,
+        // P1-2: current per-job budget (null = global default applies).
+        "max_rounds": job.payload.max_rounds,
         "enabled": job.enabled,
         "description": description,
         "next_run_at_ms": job.state.next_run_at_ms,
@@ -313,3 +342,6 @@ fn cron_preview(expr: &str) -> serde_json::Value {
         }
     }
 }
+
+#[cfg(test)]
+mod tests;

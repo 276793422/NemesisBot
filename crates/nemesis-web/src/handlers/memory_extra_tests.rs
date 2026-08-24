@@ -537,6 +537,159 @@ mod memory_extra_tests {
         assert_eq!(v["active"], "large");
     }
 
+    // -----------------------------------------------------------------------
+    // config.set / config.get — P1-1 auto_inject flags (2026-08-24 UI entry gap)
+    // -----------------------------------------------------------------------
+
+    /// Set both flags, then read back through `load_embedding_config` — the
+    /// exact reader `agent_factory` uses at AgentLoop build time (stronger
+    /// than asserting raw JSON), plus a `config.get` round-trip.
+    #[tokio::test]
+    async fn test_memory_config_set_auto_inject_roundtrip() {
+        let dir = tempfile::tempdir().unwrap();
+        let ws = dir.path();
+        write_config(ws);
+        let handler = MemoryHandler;
+        let ctx = make_ctx(&dir);
+
+        let data = serde_json::json!({ "auto_inject": true, "auto_inject_top_k": 5 });
+        let r = handler
+            .handle_cmd("config.set", Some(data), &ctx)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(r["updated"], true);
+
+        // 1. Disk read-back through the real consumer path.
+        let config_dir = ws.join("config");
+        let emb = nemesis_memory::vector::embedding_config::load_embedding_config(&config_dir);
+        assert!(emb.auto_inject, "auto_inject persisted");
+        assert_eq!(emb.auto_inject_top_k, 5, "auto_inject_top_k persisted");
+
+        // 2. config.get round-trip (what the UI card loads on mount).
+        let got = handler
+            .handle_cmd("config.get", None, &ctx)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(got["auto_inject"], true);
+        assert_eq!(got["auto_inject_top_k"], 5);
+    }
+
+    /// top_k outside 1..=10 is rejected with the 1-10 message — both ends
+    /// (0 and 11). Values this low/high would either inject nothing useful
+    /// or blow the prompt budget.
+    #[tokio::test]
+    async fn test_memory_config_set_auto_inject_top_k_out_of_range() {
+        let dir = tempfile::tempdir().unwrap();
+        write_config(dir.path());
+        let handler = MemoryHandler;
+        let ctx = make_ctx(&dir);
+
+        for bad in [0u64, 11u64] {
+            let data = serde_json::json!({ "auto_inject_top_k": bad });
+            let err = handler
+                .handle_cmd("config.set", Some(data), &ctx)
+                .await
+                .unwrap_err();
+            assert!(
+                err.contains("1-10"),
+                "value {} must be rejected with range message, got: {}",
+                bad,
+                err
+            );
+        }
+    }
+
+    /// 2026-08-24 re-review: present-but-mistyped switch keys must error
+    /// loudly (sandbox `set_config` convention) instead of being silently
+    /// ignored — under the old parse, every one of these payloads returned
+    /// `updated: true` while doing nothing, so a frontend type bug showed up
+    /// as "the toggle does nothing" instead of an error.
+    #[tokio::test]
+    async fn test_memory_config_set_wrong_types_rejected_loudly() {
+        let dir = tempfile::tempdir().unwrap();
+        write_config(dir.path());
+        let handler = MemoryHandler;
+        let ctx = make_ctx(&dir);
+
+        let cases: Vec<(&str, serde_json::Value)> = vec![
+            ("main_enabled", serde_json::json!("yes")),
+            ("sub_enabled", serde_json::json!(1)),
+            ("active_tier", serde_json::json!(5)),
+            ("auto_inject", serde_json::json!("true")),
+            ("auto_inject_top_k", serde_json::json!("5")),
+            ("auto_inject_top_k", serde_json::json!(5.5)),
+            ("auto_inject_top_k", serde_json::json!(-3)),
+            ("embedding_config_content", serde_json::json!(42)),
+        ];
+        for (key, value) in cases {
+            let mut map = serde_json::Map::new();
+            map.insert(key.to_string(), value.clone());
+            let data = serde_json::Value::Object(map);
+            let err = handler
+                .handle_cmd("config.set", Some(data), &ctx)
+                .await
+                .unwrap_err();
+            assert!(
+                err.contains(key),
+                "wrong type for '{key}' must be rejected naming the field, got: {err}"
+            );
+        }
+    }
+
+    /// Explicit nulls keep the "leave unchanged" contract (the loud helpers
+    /// only reject wrong TYPES, not null) — the frontend relies on sending
+    /// sparse patches.
+    #[tokio::test]
+    async fn test_memory_config_set_null_means_unchanged() {
+        let dir = tempfile::tempdir().unwrap();
+        write_config(dir.path());
+        let handler = MemoryHandler;
+        let ctx = make_ctx(&dir);
+
+        let data = serde_json::json!({
+            "main_enabled": serde_json::Value::Null,
+            "sub_enabled": serde_json::Value::Null,
+            "active_tier": serde_json::Value::Null,
+            "auto_inject": serde_json::Value::Null,
+            "auto_inject_top_k": serde_json::Value::Null,
+        });
+        let r = handler
+            .handle_cmd("config.set", Some(data), &ctx)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(r["updated"], true);
+        // auto_inject stays at its fresh-workspace default.
+        let got = handler
+            .handle_cmd("config.get", None, &ctx)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(got["auto_inject"], false);
+        assert_eq!(got["auto_inject_top_k"], 3);
+    }
+
+    /// Fresh workspace (no config.enhanced_memory.json) → `config.get`
+    /// reports the serde defaults (false / 3), so the UI card never shows
+    /// undefined state.
+    #[tokio::test]
+    async fn test_memory_config_get_auto_inject_defaults() {
+        let dir = tempfile::tempdir().unwrap();
+        write_config(dir.path());
+        let handler = MemoryHandler;
+        let ctx = make_ctx(&dir);
+
+        let got = handler
+            .handle_cmd("config.get", None, &ctx)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(got["auto_inject"], false);
+        assert_eq!(got["auto_inject_top_k"], 3);
+    }
+
     #[tokio::test]
     async fn test_memory_config_set_embedding_config_content_overwrite() {
         let dir = tempfile::tempdir().unwrap();

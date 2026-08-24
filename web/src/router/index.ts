@@ -19,6 +19,8 @@ const routes: RouteRecordRaw[] = [
   { path: '/skills', name: 'skills', component: () => import('../views/SkillsView.vue') },
   { path: '/mcp', name: 'mcp', component: () => import('../views/McpView.vue') },
   { path: '/channels', name: 'channels', component: () => import('../views/ChannelsView.vue') },
+  // P2-1 (2026-08-24 UI entry gap): 「代码开发」页（LSP/CC/Codex 委派配置）。
+  { path: '/coding', name: 'coding', component: () => import('../views/CodingView.vue') },
   ...(import.meta.env.VITE_FEATURE_WORKFLOW !== 'false' ? [{ path: '/workflows', name: 'workflows', component: () => import('../views/WorkflowView.vue') }] : []),
   // Note: `/workflow/chat/<index>` is served as a standalone HTML page
   // (workflow-chat.html, see vite.config.ts + serve_embedded_static),
@@ -34,6 +36,8 @@ const routes: RouteRecordRaw[] = [
   ...(import.meta.env.VITE_FEATURE_SECURITY !== 'false' ? [{ path: '/security', name: 'security', component: () => import('../views/SecurityView.vue') }] : []),
   ...(import.meta.env.VITE_FEATURE_SECURITY !== 'false' ? [{ path: '/scanner', name: 'scanner', component: () => import('../views/ScannerView.vue') }] : []),
   ...(import.meta.env.VITE_FEATURE_SANDBOX !== 'false' ? [{ path: '/sandbox', name: 'sandbox', component: () => import('../views/SandboxView.vue') }] : []),
+  // P2-2 (2026-08-24 UI entry gap): 「二次开发」SDK 内嵌导出页。
+  { path: '/sdk', name: 'sdk', component: () => import('../views/SdkView.vue') },
   // Other
   { path: '/about', name: 'about', component: () => import('../views/AboutView.vue') },
   { path: '/license', name: 'license', component: () => import('../views/LicenseView.vue') },

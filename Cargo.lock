@@ -3976,6 +3976,7 @@ dependencies = [
  "nemesis-cron",
  "nemesis-data",
  "nemesis-forge",
+ "nemesis-lsp",
  "nemesis-memory",
  "nemesis-providers",
  "nemesis-sandbox",
@@ -4000,6 +4001,7 @@ dependencies = [
  "tracing",
  "url",
  "uuid",
+ "zip",
 ]
 
 [[package]]

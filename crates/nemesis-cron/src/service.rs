@@ -58,6 +58,11 @@ pub struct CronJobPatch {
     pub to: Option<String>,
     pub session_key: Option<String>,
     pub enabled: Option<bool>,
+    /// P1-2 (2026-08-24 UI entry gap): per-fire tool-round budget, patchable.
+    /// Three states — `None` = leave unchanged, `Some(None)` = clear the
+    /// budget (global default applies), `Some(Some(n))` = set the budget.
+    /// Mirrors the `max_rounds` semantics of `CronPayload` / `add_job_ext`.
+    pub max_rounds: Option<Option<u32>>,
 }
 
 /// One executed run of a cron job (for the task's run-history view).
@@ -545,6 +550,11 @@ impl CronService {
             } else {
                 Some(sk.clone())
             };
+        }
+        // P1-2: three-state budget patch — Some(None) clears (global default
+        // applies), Some(Some(n)) sets; None leaves unchanged.
+        if let Some(new_budget) = patch.max_rounds {
+            job.payload.max_rounds = new_budget;
         }
         if let Some(en) = patch.enabled {
             job.enabled = en;

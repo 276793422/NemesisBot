@@ -17,6 +17,7 @@ mod scanner_tests;
 mod security_tests;
 mod subsystem_tests;
 mod tool_tests;
+mod ui_batch_series;
 
 use std::path::PathBuf;
 use std::time::Duration;
@@ -623,6 +624,9 @@ async fn main() -> Result<()> {
     }
 
     // Start Gateway
+    // UI 批次（P3）session 种子必须在 gateway spawn 前落盘——live agent
+    // store 构造时 load_from_disk 才能看到（生产「重启后仍可见」路径）。
+    ui_batch_series::seed_fork_sessions(&ws);
     let mut gateway = ManagedProcess::spawn(
         "Gateway",
         &cfg.gateway_bin,
@@ -692,6 +696,20 @@ async fn main() -> Result<()> {
     all_results.extend(subsystem_tests::test_mcp_tool_call().await);
     all_results.extend(subsystem_tests::test_observer_events(&ws).await);
     all_results.extend(subsystem_tests::test_heartbeat_trigger().await);
+
+    // ---- UI batch series (P1-P5 新端点, goal §九.3) ----
+    // 末位运行：会改 config.json（sandbox set_config / models add），
+    // 不能污染前面的默认配置断言（test_config_defaults 等）。
+    println!("\n[Phase 2b] UI batch series (P1-P5 endpoints)...");
+    println!("{}", "-".repeat(60));
+    all_results.extend(ui_batch_series::test_ui_p1_memory_auto_inject(&ws).await);
+    all_results.extend(ui_batch_series::test_ui_p1_cron_max_rounds(&ws).await);
+    all_results.extend(ui_batch_series::test_ui_p2_coding().await);
+    all_results.extend(ui_batch_series::test_ui_p2_sdk_http().await);
+    all_results.extend(ui_batch_series::test_ui_p3_models_update_field(&ws).await);
+    all_results.extend(ui_batch_series::test_ui_p3_fork_http(&ws).await);
+    all_results.extend(ui_batch_series::test_ui_p4_hooks(&ws).await);
+    all_results.extend(ui_batch_series::test_ui_p5_sandbox(&ws).await);
 
     // ---- Cleanup ----
     println!("\n  Stopping services...");

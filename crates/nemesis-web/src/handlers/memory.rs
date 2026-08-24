@@ -6,7 +6,8 @@
 //!           model.install
 
 use crate::handlers::{
-    read_workspace_file, require_home, require_workspace, resolve_path, write_workspace_file,
+    get_opt_bool_loud, get_opt_str_loud, get_opt_u64_loud, read_workspace_file, require_home,
+    require_workspace, resolve_path, write_workspace_file,
 };
 use crate::ws_router::{ModuleHandler, RequestContext};
 use std::collections::HashSet;
@@ -477,6 +478,11 @@ impl MemoryHandler {
             "active_tier": active_tier,
             "similarity_threshold": 0.7,
             "max_results": 10,
+            // P1-1 (2026-08-24 UI entry gap): auto-inject flags for the
+            // "自动记忆注入" card. Read by agent_factory at AgentLoop build
+            // time — changes take effect after the Agent restarts.
+            "auto_inject": emb_cfg.auto_inject,
+            "auto_inject_top_k": emb_cfg.auto_inject_top_k,
             "embedding_config_content": embedding_config_content,
         })))
     }
@@ -488,8 +494,11 @@ impl MemoryHandler {
         data: &serde_json::Value,
         ctx: &crate::ws_router::RequestContext,
     ) -> Result<Option<serde_json::Value>, String> {
+        // 2026-08-24 re-review: every switch key below validates loudly
+        // (present-but-mistyped → Err, absent/null → unchanged) instead of
+        // silently ignoring wrong types — sandbox `set_config` convention.
         // Main switch
-        if let Some(enabled) = data.get("main_enabled").and_then(|v| v.as_bool()) {
+        if let Some(enabled) = get_opt_bool_loud(data, "main_enabled")? {
             set_main_switch(home, enabled)?;
             if !enabled {
                 if let Some(mgr) = ctx.state.memory_manager.as_ref() {
@@ -499,7 +508,7 @@ impl MemoryHandler {
         }
 
         // Sub switch (write via unified config + runtime control)
-        if let Some(enabled) = data.get("sub_enabled").and_then(|v| v.as_bool()) {
+        if let Some(enabled) = get_opt_bool_loud(data, "sub_enabled")? {
             if enabled {
                 // Check model files before enabling
                 let emb_cfg =
@@ -549,18 +558,39 @@ impl MemoryHandler {
         }
 
         // Active tier
-        if let Some(tier) = data.get("active_tier").and_then(|v| v.as_str()) {
+        if let Some(tier) = get_opt_str_loud(data, "active_tier")? {
             let mut emb_cfg =
                 nemesis_memory::vector::embedding_config::load_embedding_config(config_dir);
             emb_cfg.active = tier.to_string();
             nemesis_memory::vector::embedding_config::save_embedding_config(&emb_cfg, config_dir);
         }
 
+        // P1-1 (2026-08-24 UI entry gap): auto-inject flags. Persisted into
+        // config.enhanced_memory.json (same EmbeddingConfig the factory
+        // reads). NOT runtime-hot: agent_factory reads them once at
+        // AgentLoop build time (set_memory_inject), so the UI card tells the
+        // user to restart the Agent (agent.stop → agent.start) after saving.
+        if let Some(v) = get_opt_bool_loud(data, "auto_inject")? {
+            let mut emb_cfg =
+                nemesis_memory::vector::embedding_config::load_embedding_config(config_dir);
+            emb_cfg.auto_inject = v;
+            nemesis_memory::vector::embedding_config::save_embedding_config(&emb_cfg, config_dir);
+        }
+        if let Some(v) = get_opt_u64_loud(data, "auto_inject_top_k")? {
+            // Range check (1..=10): values outside would either disable the
+            // feature (0) or blow the prompt budget (huge). Wrong types are
+            // already rejected by get_opt_u64_loud above.
+            if !(1..=10).contains(&v) {
+                return Err(format!("auto_inject_top_k 必须在 1-10 之间（收到 {}）", v));
+            }
+            let mut emb_cfg =
+                nemesis_memory::vector::embedding_config::load_embedding_config(config_dir);
+            emb_cfg.auto_inject_top_k = v as usize;
+            nemesis_memory::vector::embedding_config::save_embedding_config(&emb_cfg, config_dir);
+        }
+
         // Embedding config content (full overwrite of config.enhanced_memory.json)
-        if let Some(content) = data
-            .get("embedding_config_content")
-            .and_then(|v| v.as_str())
-        {
+        if let Some(content) = get_opt_str_loud(data, "embedding_config_content")? {
             let emb_path = config_dir.join("config.enhanced_memory.json");
             std::fs::write(&emb_path, content)
                 .map_err(|e| format!("write embedding config error: {}", e))?;

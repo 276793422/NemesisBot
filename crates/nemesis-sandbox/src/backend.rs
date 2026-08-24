@@ -214,6 +214,81 @@ pub fn read_executor_allow_network(home: &Path) -> bool {
         .unwrap_or(false)
 }
 
+/// 读 `<home>/config.json` 的 `executor.strict`（P5-2 严格模式开关；缺失/
+/// 损坏默认 false = fail-open 现状，与 [`read_executor_allow_network`] 同款
+/// 语义）。executor 子进程（`exec_worker` 的 `engage`）用它决定「无后端 /
+/// 自装失败」时是降级 warn 继续还是拒绝执行（fail-closed）。
+pub fn read_executor_strict(home: &Path) -> bool {
+    let raw = match std::fs::read_to_string(home.join("config.json")) {
+        Ok(s) => s,
+        Err(_) => return false,
+    };
+    let val: serde_json::Value = match serde_json::from_str(&raw) {
+        Ok(v) => v,
+        Err(_) => return false,
+    };
+    val.get("executor")
+        .and_then(|e| e.get("strict"))
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false)
+}
+
+// ---------------------------------------------------------------------------
+// 逐后端探测（诊断/状态展示，P5-1 沙盒页「后端探测状态」）
+// ---------------------------------------------------------------------------
+
+/// 单个用户态后端的探测结果（不参与 [`detect_backend`] 的优先级选择——
+/// 状态页要把 landlock / bwrap 各自的可用性**并列展示**，选了 landlock 也
+/// 要告诉用户 bwrap 装没装）。
+#[derive(Debug, Clone)]
+pub struct UserlandBackendProbe {
+    /// 后端名（landlock / bwrap / sandbox-exec）。
+    pub name: String,
+    /// 形态（自装 vs 包装）。
+    pub form: BackendForm,
+    /// 本机可用性（探测，不装规则）。
+    pub availability: Availability,
+}
+
+/// 逐个探测本机**全部**用户态后端（不排序、不选择）。Windows 返回空 vec
+/// （设计上 Sandboxie 承担沙盒，见 [`detect_platform_backend`] 的 Windows 注释）。
+pub fn probe_userland_backends() -> Vec<UserlandBackendProbe> {
+    probe_platform_userland_backends()
+}
+
+#[cfg(target_os = "linux")]
+fn probe_platform_userland_backends() -> Vec<UserlandBackendProbe> {
+    let landlock = super::backend::landlock_impl::LandlockBackend::new();
+    let bwrap = super::backend::bwrap_impl::BwrapBackend::new();
+    vec![
+        UserlandBackendProbe {
+            name: landlock.name().to_string(),
+            form: landlock.form(),
+            availability: landlock.availability(),
+        },
+        UserlandBackendProbe {
+            name: bwrap.name().to_string(),
+            form: bwrap.form(),
+            availability: bwrap.availability(),
+        },
+    ]
+}
+
+#[cfg(target_os = "macos")]
+fn probe_platform_userland_backends() -> Vec<UserlandBackendProbe> {
+    let seatbelt = super::backend::seatbelt_impl::SeatbeltBackend::new();
+    vec![UserlandBackendProbe {
+        name: seatbelt.name().to_string(),
+        form: seatbelt.form(),
+        availability: seatbelt.availability(),
+    }]
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+fn probe_platform_userland_backends() -> Vec<UserlandBackendProbe> {
+    Vec::new()
+}
+
 /// bubblewrap 参数构造（纯函数）。写 = `--bind`（读写挂载），读+执行 =
 /// `--ro-bind`。根挂载 `--ro-bind / /` 后对 writable_roots 再 `--bind`
 /// （后项覆盖先项）。`--unshare-net` 只在 `allow_network=false` 时加（会断

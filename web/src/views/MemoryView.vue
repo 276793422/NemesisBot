@@ -31,6 +31,14 @@ const similarityThreshold = ref(0.7)
 const maxResults = ref(10)
 const _configInitialized = ref(false)
 
+// --- Enhanced memory: auto-inject (P1-1, 2026-08-24) ---
+// 区别于记忆库（有问才答：agent 主动 memory_search）——自动注入是不问自答：
+// 每轮 LLM 调用前自动把与最新消息最相关的 top_k 条记忆注入上下文。
+// 开关在 agent_factory 构建 AgentLoop 时读取，保存后需重启 Agent 生效。
+const autoInject = ref(false)
+const autoInjectTopK = ref(3)
+const restartingAgent = ref(false)
+
 // --- Enhanced memory: content ---
 const memoryStats = ref<any>(null)
 const entriesList = ref<any[]>([])
@@ -127,6 +135,8 @@ async function loadConfig() {
     activeTier.value = data?.active_tier ?? 'medium'
     similarityThreshold.value = data?.similarity_threshold ?? 0.7
     maxResults.value = data?.max_results ?? 10
+    autoInject.value = data?.auto_inject ?? false
+    autoInjectTopK.value = data?.auto_inject_top_k ?? 3
     if (data?.embedding_config_content) {
       embeddingConfigContent.value = data.embedding_config_content
     }
@@ -273,6 +283,8 @@ function saveConfigDebounced() {
         active_tier: activeTier.value,
         similarity_threshold: similarityThreshold.value,
         max_results: maxResults.value,
+        auto_inject: autoInject.value,
+        auto_inject_top_k: Math.min(10, Math.max(1, autoInjectTopK.value || 3)),
       })
       // Show restart hint when enabling enhanced memory
       if (subEnabled.value) {
@@ -284,7 +296,23 @@ function saveConfigDebounced() {
   }, 500)
 }
 
-watch([mainEnabled, subEnabled, activeTier, similarityThreshold, maxResults], () => {
+// 自动注入开关是 Agent 启动时读取的——保存后一键重启 Agent（agent.stop →
+// agent.start 按磁盘 config 重建 AgentLoop，无需重启进程）。
+async function restartAgent() {
+  restartingAgent.value = true
+  try {
+    await request('agent', 'stop')
+    // 给 stop 的清理动作（spawned 任务 abort、session 落盘）一点时间。
+    await new Promise(r => setTimeout(r, 1000))
+    await request('agent', 'start')
+    toast.success('Agent 已重启，自动注入设置已生效')
+  } catch (e: any) {
+    toast.error('重启 Agent 失败: ' + (e?.message || e))
+  }
+  restartingAgent.value = false
+}
+
+watch([mainEnabled, subEnabled, activeTier, similarityThreshold, maxResults, autoInject, autoInjectTopK], () => {
   saveConfigDebounced()
 })
 
@@ -591,6 +619,56 @@ onUnmounted(() => {
           </div>
 
         </div><!-- End Row 2 -->
+
+        <!-- Row 3 (P1-1, 2026-08-24): auto memory injection card -->
+        <div class="card" style="margin-top: var(--space-4);">
+          <div class="card-header" style="display: flex; justify-content: space-between; align-items: center;">
+            <h3 style="margin: 0;">自动记忆注入（每轮自动想起）</h3>
+            <button class="btn btn-sm" :disabled="restartingAgent" @click="restartAgent">
+              {{ restartingAgent ? '重启中...' : '重启 Agent 生效' }}
+            </button>
+          </div>
+          <div class="card-body">
+            <p style="color: var(--text-secondary); font-size: var(--text-sm); margin: 0 0 var(--space-3);">
+              记忆库是<b>有问才答</b>（agent 觉得需要时主动查 memory_search）；自动注入是<b>不问自答</b>——
+              每轮 LLM 调用前，自动把与最新消息最相关的记忆注入上下文，模型不用自己开口问就能想起来。
+              开关在 Agent 启动时读取，保存后需点击右上角「重启 Agent 生效」。
+            </p>
+            <div class="settings-grid">
+              <!-- Prerequisite status -->
+              <span class="settings-key">前置状态</span>
+              <span style="display: flex; align-items: center; gap: var(--space-2); font-size: var(--text-sm);">
+                <template v-if="!mainEnabled || !subEnabled">
+                  <span class="badge badge-neutral">强化记忆未启用</span>
+                  <span style="color: var(--text-muted);">先打开上方「主开关 + 强化记忆」</span>
+                </template>
+                <template v-else-if="!envStatus?.models?.[activeTier]?.model_ready">
+                  <span class="badge badge-error">模型未安装</span>
+                  <span style="color: var(--text-muted);">先点上方「环境管理」卡片里的安装按钮</span>
+                </template>
+                <template v-else>
+                  <span class="badge badge-success">就绪</span>
+                  <span style="color: var(--text-muted);">{{ activeTier }} 档模型已安装，注入可用</span>
+                </template>
+              </span>
+
+              <!-- Auto-inject switch -->
+              <span class="settings-key">自动注入</span>
+              <label class="toggle-switch">
+                <input type="checkbox" v-model="autoInject" :disabled="!subEnabled" />
+                <span class="toggle-slider"></span>
+                <span class="toggle-label">{{ autoInject ? '启用' : '停用' }}</span>
+              </label>
+
+              <!-- Top-K -->
+              <span class="settings-key">注入条数</span>
+              <div style="display: flex; align-items: center; gap: var(--space-3);">
+                <input type="number" v-model.number="autoInjectTopK" min="1" max="10" style="width: 70px; text-align: center;" :disabled="!subEnabled || !autoInject" />
+                <span style="color: var(--text-muted); font-size: var(--text-xs);">每轮最多注入的相关记忆条数（1-10，默认 3）</span>
+              </div>
+            </div>
+          </div>
+        </div><!-- End Row 3 -->
 
       </div><!-- End vector tab -->
     </div>

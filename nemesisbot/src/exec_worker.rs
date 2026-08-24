@@ -82,6 +82,8 @@ pub async fn run() -> Result<()> {
 fn executor_main() -> Result<()> {
     let workspace = std::env::var("NEMESISBOT_EXECUTOR_WORKSPACE")
         .context("NEMESISBOT_EXECUTOR_WORKSPACE not set (executor role requires it)")?;
+    // 仅 `sandbox` 构建的 engage() 使用（trim 构建下无消费方）。
+    #[cfg_attr(not(feature = "sandbox"), allow(unused_variables))]
     let home = std::env::var_os("NEMESISBOT_EXECUTOR_HOME").map(std::path::PathBuf::from);
 
     let sandbox_marker = std::env::var("NEMESISBOT_EXECUTOR_SANDBOX").as_deref() == Ok("1");
@@ -89,19 +91,31 @@ fn executor_main() -> Result<()> {
     if sandbox_marker && !already_boxed {
         #[cfg(feature = "sandbox")]
         {
-            match userland::engage(&workspace, home.as_deref())? {
-                userland::Outcome::Continue => {}
+            match userland::engage(&workspace, home.as_deref()) {
+                Ok(userland::Outcome::Continue) => {}
                 // 盒内实例已完成整个会话（本进程只是 stdio 代理）：按其退出码收尾。
-                userland::Outcome::ReexecDone(status) => {
+                Ok(userland::Outcome::ReexecDone(status)) => {
                     if status.success() {
                         return Ok(());
                     }
                     anyhow::bail!("wrapped executor exited: {status}");
                 }
+                // P5-2：沙盒介入失败（严格模式拒绝 / re-exec spawn 失败）。
+                // 此时 gateway 的工具调用已在途（per-call 子进程）——先回一行
+                // 干净的协议错误再退出，让模型/用户看到拒绝原因，而不是对着
+                // 「子进程无响应」猜。
+                Err(e) => {
+                    emit_error_response(&e.to_string());
+                    return Ok(());
+                }
             }
         }
         #[cfg(not(feature = "sandbox"))]
         {
+            // trim 构建：子进程侧保持 fail-open warn（gateway 侧的严格闸门
+            // 已在 spawn 前拒绝该配置下的调用——见 exec_world 的 feature-off
+            // 闸门；这里再拒属于重复防线，且本构建读不到 backend 的 strict
+            // 解析，不值得为它引入裸 config 解析）。
             tracing::warn!(
                 "[executor] sandbox marker set but the 'sandbox' feature is not compiled \
                  into this build — running unsandboxed"
@@ -114,6 +128,29 @@ fn executor_main() -> Result<()> {
         .build()
         .context("build executor runtime")?;
     rt.block_on(run_loop(&workspace))
+}
+
+/// 在进工具循环前失败时，向 stdout 回一行协议错误（P5-2）。
+///
+/// engage 失败发生在任何请求读取之前，但 per-call 子进程被 spawn 的前提就是
+/// gateway 有一个调用在途——直接 exit 会让 gateway 收到 EOF、报「子进程无响
+/// 应」这种没法排查的错。写一行 `ExecutorResponse`（ok=false）再退出，拒绝
+/// 原因就能干净地回到模型/用户面前。同步 IO（专用线程上、runtime 建好之前）。
+#[cfg_attr(not(feature = "sandbox"), allow(dead_code))] // 唯一调用点在 feature 门内
+fn emit_error_response(error: &str) {
+    let resp = ExecutorResponse {
+        ok: false,
+        result: String::new(),
+        error: error.to_string(),
+    };
+    let mut line = serde_json::to_string(&resp).unwrap_or_else(|_| {
+        r#"{"ok":false,"result":"","error":"executor failed before tool loop"}"#.to_string()
+    });
+    line.push('\n');
+    use std::io::Write;
+    let mut out = std::io::stdout().lock();
+    let _ = out.write_all(line.as_bytes());
+    let _ = out.flush();
 }
 
 /// 工具循环（原 run() 主体）：注册共享工具集 + 选传输层。
@@ -155,7 +192,8 @@ mod userland {
         self, BackendForm, Enforcement, SandboxBackend, SandboxConf,
     };
 
-    /// engage() 的结果。
+    /// engage() 的结果。`Debug`：测试里 `expect_err` 需要 Ok 侧 Debug。
+    #[derive(Debug)]
     pub enum Outcome {
         /// 继续（Plain 路径 / 自装完成 / 降级完成）。
         Continue,
@@ -187,15 +225,30 @@ mod userland {
         WrapReexec,
     }
 
-    /// 沙盒介入点（executor 专用线程上调用）。永不因沙盒失败而 Err——
-    /// 降级语义 = warn + 无盒继续（U11 验收「Landlock 不可用降级无盒+warn
-    /// 不崩」）。唯一 Err 出口是 re-exec 的进程层失败（spawn 不起来 = 代理
-    /// 模式根本没法跑，交给上层报错）。
+    /// 沙盒介入点（executor 专用线程上调用）。默认降级语义 = warn + 无盒
+    /// 继续、永不因沙盒失败而 Err（U11 验收「Landlock 不可用降级无盒+warn
+    /// 不崩」）。Err 出口有二：
+    /// 1. re-exec 的进程层失败（spawn 不起来 = 代理模式根本没法跑）；
+    /// 2. **P5-2 严格模式**（`executor.strict=true`）：无可用后端 / 自装失败
+    ///    时改判为 Err（fail-closed 拒绝）——gateway 侧闸门已在 spawn 前拒
+    ///    绝过一遍，这里是子进程侧的第二道防线（防两边探测结果分叉，如
+    ///    bwrap 在闸门过后、子进程启动前的窗口里被卸载）。
+    ///    注意 **Partial 强制不算失败**（规则已装、有能力缺口如 landlock 不
+    ///    覆盖网络）——严格模式保证「有盒」，不保证「盒无能力缺口」，缺口
+    ///    照旧 warn + 状态页如实展示。
     pub fn engage(workspace: &str, home: Option<&Path>) -> Result<Outcome> {
+        let strict = home.map(backend::read_executor_strict).unwrap_or(false);
         let detected = backend::detect_backend();
         let form = detected.as_ref().map(|b: &Arc<dyn SandboxBackend>| b.form());
         match plan(true, false, form) {
             Plan::Plain => {
+                if strict {
+                    anyhow::bail!(
+                        "strict mode (fail-closed): executor.sandbox is on but no \
+                         userland sandbox backend is available on this system — \
+                         refusing to run unsandboxed"
+                    );
+                }
                 tracing::warn!(
                     "[executor] no userland sandbox backend on this system — running \
                      unsandboxed (executor.sandbox stays honoured for Windows Sandboxie)"
@@ -218,11 +271,20 @@ mod userland {
                          gaps): {gaps:?}",
                         backend.name()
                     ),
-                    Err(err) => tracing::warn!(
-                        "[executor] userland sandbox '{}' apply failed: {err} — running \
-                         unsandboxed",
-                        backend.name()
-                    ),
+                    Err(err) => {
+                        if strict {
+                            anyhow::bail!(
+                                "strict mode (fail-closed): userland sandbox '{}' apply \
+                                 failed: {err} — refusing to run unsandboxed",
+                                backend.name()
+                            );
+                        }
+                        tracing::warn!(
+                            "[executor] userland sandbox '{}' apply failed: {err} — running \
+                             unsandboxed",
+                            backend.name()
+                        );
+                    }
                 }
                 Ok(Outcome::Continue)
             }

@@ -419,6 +419,15 @@ impl WebServer {
             // System info endpoints (readme, license)
             .route("/api/system/readme", get(handle_api_readme))
             .route("/api/system/license", get(handle_api_license))
+            // SDK export downloads (P2-2, 二次开发 page)
+            .route(
+                "/api/sdk/export",
+                get(crate::api_handlers::handle_sdk_export),
+            )
+            .route(
+                "/api/sdk/pip",
+                get(crate::api_handlers::handle_sdk_pip),
+            )
             // Usage statistics endpoints
             .route("/api/usage/summary", get(handle_api_usage_summary))
             .route("/api/usage/trends", get(handle_api_usage_trends))
@@ -429,6 +438,15 @@ impl WebServer {
             .route(
                 "/api/chat/stream",
                 axum::routing::post(crate::sse_chat::handle_chat_stream),
+            )
+            // Session fork dialog backing (P3-1, 2026-08-24 UI entry gap)
+            .route(
+                "/api/chat/sessions/{id}/turns",
+                get(crate::api_handlers::handle_api_chat_session_turns),
+            )
+            .route(
+                "/api/chat/sessions/{id}/fork",
+                axum::routing::post(crate::api_handlers::handle_api_chat_session_fork),
             );
 
         // Workflow REST endpoints (milestone 1a-E3/E4)

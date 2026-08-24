@@ -172,6 +172,13 @@ impl Default for Config {
 ///   /reload`; already-running box processes keep their old network state until
 ///   restarted (Sandboxie's WFP callout reads a per-process `BlockInternet`
 ///   cache that reload does not refresh).
+/// - `strict`（P5-2 严格模式）: fail-closed 闸门 — `sandbox=true` 被要求但本机
+///   沙盒后端不可用（Windows=Sandboxie 未就绪；Linux=landlock/bwrap 均不可用；
+///   裁剪构建=`sandbox` feature 被裁掉）时**拒绝执行高危工具**并明确报错，
+///   而非默认的 warn + 无盒降级（fail-open）。注意 Partial 强制（后端可用但
+///   有能力缺口，如 landlock 不覆盖网络）**不算不可用**——严格模式放行并
+///   在日志/状态里如实标注缺口。默认 false = 现状字节不变。开关经
+///   ConfigStore 翻转后对后续工具调用实时生效（与 `sandbox` 同链路）。
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ExecutorSeparationConfig {
     #[serde(default)]
@@ -180,6 +187,8 @@ pub struct ExecutorSeparationConfig {
     pub sandbox: bool,
     #[serde(default)]
     pub allow_network: bool,
+    #[serde(default)]
+    pub strict: bool,
 }
 
 // ============================================================================

@@ -138,18 +138,26 @@ pub struct CcEvents {
 
 impl CcEvents {
     fn total_scripts(&self) -> usize {
-        let groups = [
-            &self.pre_tool_use,
-            &self.post_tool_use,
-            &self.session_start,
-            &self.user_prompt_submit,
-            &self.stop,
-        ];
-        groups.iter().map(|g| g.iter().map(|x| x.hooks.len()).sum::<usize>()).sum()
+        self.script_counts().iter().map(|(_, n)| n).sum()
     }
 
     fn is_empty(&self) -> bool {
         self.total_scripts() == 0
+    }
+
+    /// Per-event script counts（hooks.json 的 PascalCase 事件名）。诊断/用
+    /// UI 用（P4 Hooks Tab 的 summary）——字段私有，外部 crate 走这里。
+    /// 顺序：PreToolUse, PostToolUse, SessionStart, UserPromptSubmit, Stop。
+    pub fn script_counts(&self) -> [(&'static str, usize); 5] {
+        let count =
+            |v: &Vec<CcHookGroup>| v.iter().map(|g| g.hooks.len()).sum::<usize>();
+        [
+            ("PreToolUse", count(&self.pre_tool_use)),
+            ("PostToolUse", count(&self.post_tool_use)),
+            ("SessionStart", count(&self.session_start)),
+            ("UserPromptSubmit", count(&self.user_prompt_submit)),
+            ("Stop", count(&self.stop)),
+        ]
     }
 }
 
@@ -510,6 +518,10 @@ impl CcHookBridge {
     }
 
     /// 当前 session 的 stop_hook_active（测试用 pub(crate) 可见）。
+    // 仅 cc_hooks/tests.rs 调用（断言二次 Stop 的 stop_hook_active 标志），
+    // 非测试构建无调用方 → allow 消警（生产链路走 `end.stop_hook_active`
+    // 直读结构体，见下方 dispatch 处，不经此访问器）。
+    #[allow(dead_code)]
     pub(crate) fn stop_hook_active_for(&self, session_key: &str) -> bool {
         self.stop_blocks
             .lock()

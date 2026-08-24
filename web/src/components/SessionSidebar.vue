@@ -6,14 +6,17 @@
  * UI conventions follow `components/logs/SessionList.vue` (selected highlight,
  * relative time, first-message-as-title).
  */
-import { onMounted, computed } from 'vue'
+import { onMounted, computed, ref } from 'vue'
 import { useSessionStore } from '../stores/session'
 import { useToast } from '../composables/useToast'
+import ForkSessionModal from './ForkSessionModal.vue'
 
 const sessionStore = useSessionStore()
 const toast = useToast()
 const sessions = computed(() => sessionStore.sessions)
 const currentId = computed(() => sessionStore.currentId)
+// P3-1: fork dialog state (null = closed).
+const forkTarget = ref<{ id: string; title: string } | null>(null)
 
 onMounted(async () => {
   // Refresh the list when the sidebar opens (5s cache in fetchList).
@@ -69,6 +72,20 @@ async function exportSession(s: { id: string; title?: string; firstMessage: stri
   }
 }
 
+/** P3-1: open the fork dialog for this session. */
+function forkSession(s: { id: string; title?: string; firstMessage: string }, e: Event) {
+  e.stopPropagation()
+  forkTarget.value = { id: s.id, title: s.title || s.firstMessage || s.id.slice(0, 8) }
+}
+
+/** P3-1: fork done — refresh the list (force, the new session bypasses the
+ * 5s cache) and switch to the new session. */
+async function onForked(newSessionId: string) {
+  forkTarget.value = null
+  await sessionStore.fetchList(true)
+  sessionStore.switchTo(newSessionId)
+}
+
 function title(s: { title?: string; firstMessage: string; id: string }): string {
   return s.title || s.firstMessage || s.id.slice(0, 8)
 }
@@ -104,6 +121,7 @@ function relTime(ts: string): string {
           <button class="del-btn" @click="renameSession(s, $event)" title="重命名">✏</button>
           <button class="del-btn" @click="clearSession(s, $event)" title="清空消息">🗑</button>
           <button class="del-btn" @click="exportSession(s, $event)" title="导出">📥</button>
+          <button class="del-btn" @click="forkSession(s, $event)" title="分叉（从某一轮另开分支）">⑂</button>
           <button class="del-btn" @click="del(s.id, $event)" title="删除会话">×</button>
         </div>
       </div>
@@ -111,6 +129,14 @@ function relTime(ts: string): string {
         暂无会话，点击「新建」开始
       </div>
     </div>
+    <!-- P3-1: session fork dialog -->
+    <ForkSessionModal
+      v-if="forkTarget"
+      :session-id="forkTarget.id"
+      :session-title="forkTarget.title"
+      @close="forkTarget = null"
+      @forked="onForked"
+    />
   </div>
 </template>
 

@@ -668,6 +668,57 @@ fn test_add_job_ext_max_rounds() {
     assert_eq!(legacy.payload.max_rounds, None, "legacy path → no budget");
 }
 
+/// P1-2 (2026-08-24 UI entry gap): `tasks.cron.update` patches the per-fire
+/// budget through `CronJobPatch.max_rounds`. Three states must hold:
+/// `Some(Some(n))` sets, `Some(None)` clears (global default), `None` (key
+/// absent) leaves the existing budget untouched.
+#[test]
+fn test_patch_job_max_rounds_three_states() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("cron.json").to_string_lossy().to_string();
+    let svc = CronService::new(&path);
+    let every = CronSchedule {
+        kind: "every".to_string(),
+        at_ms: None,
+        every_ms: Some(60000),
+        expr: None,
+        tz: None,
+    };
+    let job = svc
+        .add_job_ext("j", every, "m", false, None, None, None, Some(10), true)
+        .unwrap();
+
+    // 1. absent key → unchanged.
+    let patched = svc
+        .patch_job(&job.id, &CronJobPatch::default())
+        .unwrap();
+    assert_eq!(patched.payload.max_rounds, Some(10), "absent → unchanged");
+
+    // 2. null (Some(None)) → cleared, global default applies.
+    let cleared = svc
+        .patch_job(
+            &job.id,
+            &CronJobPatch {
+                max_rounds: Some(None),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    assert_eq!(cleared.payload.max_rounds, None, "Some(None) → cleared");
+
+    // 3. number (Some(Some(n))) → set.
+    let set = svc
+        .patch_job(
+            &job.id,
+            &CronJobPatch {
+                max_rounds: Some(Some(20)),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    assert_eq!(set.payload.max_rounds, Some(20), "Some(Some(20)) → set");
+}
+
 #[test]
 fn test_cron_job_state_serialization() {
     let state = CronJobState {

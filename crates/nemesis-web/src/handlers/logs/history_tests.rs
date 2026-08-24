@@ -52,10 +52,22 @@ fn make_ctx(dir: &tempfile::TempDir) -> RequestContext {
         cluster_service: None,
         cluster_log_dir: None,
         workflow_engine: None,
+        // AppState dual-declares these two fields (workflow-gated real /
+        // `Arc<()>` stub — api_handlers.rs). This module deliberately has NO
+        // feature gate (history commands depend only on nemesis-agent), so the
+        // fields must be built per-combo: without the workflow feature the
+        // stubs get `Arc::new(())` (fixes `cargo test -p nemesis-web`
+        // zero-feature compile, broken since this file landed in dd2e522).
+        #[cfg(feature = "workflow")]
         chat_secret_store: std::sync::Arc::new(
             nemesis_workflow::chat_secrets::ChatSecretStore::in_memory(),
         ),
+        #[cfg(not(feature = "workflow"))]
+        chat_secret_store: std::sync::Arc::new(()),
+        #[cfg(feature = "workflow")]
         webhook_rate_limiter: Arc::new(crate::handlers::workflow::WebhookRateLimiter::new()),
+        #[cfg(not(feature = "workflow"))]
+        webhook_rate_limiter: Arc::new(()),
         internal_cmd_tx: None,
         estop: None,
         cron: None,

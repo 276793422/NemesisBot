@@ -2,7 +2,7 @@
 //!
 //! Two factory functions:
 //! - `build_agent_loop()` — main agent (bus mode, session store, continuation manager, etc.)
-//! - `build_cluster_agent_loop()` — cluster agent (standalone mode, full tools, no bus)
+//! - `build_cluster_agent_loop()` — cluster agent (standalone mode, tier-resolved tool set, no bus)
 //!
 //! Both share the same tool registration and MCP logic via `register_tools_and_mcp()`.
 //! The difference is in mode (bus vs standalone) and which optional subsystems are attached.
@@ -19,6 +19,9 @@ use nemesis_web::ForgeProviderBridge;
 use nemesis_web::ProviderAdapter;
 
 use crate::common;
+
+#[cfg(test)]
+mod tests;
 
 // ---------------------------------------------------------------------------
 // SharedResources — infrastructure that survives Agent restart
@@ -696,6 +699,50 @@ pub fn build_cluster_agent_loop(
     // 绑定全局急停状态（集群 agent 同样吃急停——peer_chat 跑完整工具链，不能漏）。
     agent_loop.set_estop(shared.estop.clone());
 
+    // D1 (2026-08-24 arch review, U-list D1): the cluster agent must resolve
+    // the same startup capability tier as the main agent. Before this, the
+    // cluster loop always ran the AgentLoop::new default (Big = full 42-tool
+    // set) even when the active model is a small model — the main agent's
+    // mini-tier filtering never applied cluster-side. Same wiring as
+    // build_agent_loop: resolve from the raw config.json Value (model_tier
+    // is a dynamic field there), then remember the config path so the loop's
+    // check_config_reload re-resolves the tier live when config.json changes
+    // on disk (dashboard model add / CLI `model set-tier`) cluster-side too.
+    let cfg_json: serde_json::Value = std::fs::read_to_string(&config_path)
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or(serde_json::Value::Null);
+    let resolved_tier = nemesis_types::capability::resolve_active_tier(&cfg_json, &model_name);
+    info!(
+        "[AgentFactory] Cluster model '{}' capability tier: {}",
+        model_name, resolved_tier
+    );
+    agent_loop.set_tier(resolved_tier);
+    agent_loop.set_config_path(config_path.clone());
+
+    // D2 (2026-08-24 arch review, U-list D2): enable tool-result spill for
+    // the cluster agent too — cluster peer_chat is exactly the long-task /
+    // huge-output case; without a spill root, oversized results (>64k chars)
+    // degrade to the prune profile (head+tail 3600) with no full copy on
+    // disk. Shares the main agent's spill root and retention setting.
+    // NOTE: the daily-midnight cleanup task is already spawned by
+    // build_agent_loop for this same root — deliberately NOT spawned again
+    // here (a second timer would double-scan).
+    let spill_root = shared.home.join("logs").join("spill");
+    agent_loop.set_spill_root(spill_root.clone());
+    let spill_retention = cfg.agents.defaults.spill_retention_days.max(0) as u64;
+    if spill_retention > 0 {
+        let deleted = nemesis_agent::spill::cleanup_expired(&spill_root, spill_retention);
+        if deleted > 0 {
+            info!(
+                deleted,
+                retention_days = spill_retention,
+                "[AgentFactory] cluster spill startup cleanup (TTL={}d)",
+                spill_retention
+            );
+        }
+    }
+
     // 5b. Set observer callback to capture cluster task execution details (LLM + tool calls).
     {
         let log_cb: Arc<dyn Fn(&str, &serde_json::Value) + Send + Sync> =
@@ -845,6 +892,15 @@ pub fn build_cluster_agent_loop(
     // only). Pass None → all tools stay local.
     register_tools_and_mcp(&mut agent_loop, shared, &tool_config, None);
 
+    // D3 (2026-08-24 arch review): P3.1 auto memory injection (per-round
+    // injection of relevant local user memories before each LLM call) is
+    // deliberately NOT wired for the cluster agent — same policy as the
+    // hooks exemption in build_agent_loop (comment above there): a remote
+    // peer's task context must not receive this local user's personal
+    // memories. The wiring below is a different thing: it only stashes the
+    // memory executor for the interactive memory tools (memory_store /
+    // memory_forget with approval gating).
+    //
     // Stash the memory executor so the gateway can attach an approval gate
     // post-construction (P2: agent memory_store/forget require interactive
     // approval, never bypassed by YOLO/auto).

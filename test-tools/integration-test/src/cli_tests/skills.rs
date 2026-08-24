@@ -269,14 +269,18 @@ pub async fn test_cli_skills_source(ws: &TestWorkspace, bin: &Path) -> Vec<TestR
     }
 
     // 2. add-source (use add-source shorthand)
+    // 网络探测（GitHub API + raw 多端点）在高延迟网络下合法超过 15s 默认
+    // 超时（2026-08-24 复检实测：网络劣化时被杀→空输出→4 条级联假 FAIL）；
+    // 与 model catalog-update 同例显式放宽。
     let add = ws
-        .run_cli(
+        .run_cli_with_timeout(
             bin,
             &[
                 "skills",
                 "add-source",
                 "https://github.com/anthropics/skills",
             ],
+            60,
         )
         .await;
     if add.stdout_contains("Adding skill registry") && add.stdout_contains("anthropics/skills") {
@@ -335,9 +339,9 @@ pub async fn test_cli_skills_source(ws: &TestWorkspace, bin: &Path) -> Vec<TestR
         results.push(pass(&format!("{}/list_details", suite), "Partial details"));
     }
 
-    // 4. source add (long form: source add)
+    // 4. source add (long form: source add) — same network probe, same 60s
     let add2 = ws
-        .run_cli(bin, &["skills", "source", "add", "openclaw/skills"])
+        .run_cli_with_timeout(bin, &["skills", "source", "add", "openclaw/skills"], 60)
         .await;
     if add2.stdout_contains("Adding") || add2.success() {
         results.push(pass(
@@ -842,15 +846,16 @@ pub async fn test_cli_skills_add_source_duplicate(
         .run_cli(bin, &["skills", "source", "remove", "skills"])
         .await;
 
-    // Add first time
+    // Add first time（网络探测，同上放宽到 60s）
     let add1 = ws
-        .run_cli(
+        .run_cli_with_timeout(
             bin,
             &[
                 "skills",
                 "add-source",
                 "https://github.com/anthropics/skills",
             ],
+            60,
         )
         .await;
     if add1.stdout_contains("added") {
@@ -862,15 +867,16 @@ pub async fn test_cli_skills_add_source_duplicate(
         ));
     }
 
-    // Add same source again — should detect duplicate
+    // Add same source again — should detect duplicate（同上 60s）
     let add2 = ws
-        .run_cli(
+        .run_cli_with_timeout(
             bin,
             &[
                 "skills",
                 "add-source",
                 "https://github.com/anthropics/skills",
             ],
+            60,
         )
         .await;
     if add2.stdout_contains("already exists") {

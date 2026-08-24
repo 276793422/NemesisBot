@@ -56,6 +56,9 @@ interface CronForm {
   sessionKey: string
   prompt: string
   enabled: boolean
+  // P1-2 (2026-08-24): per-fire tool-round budget. null = no per-job budget
+  // (global max_tool_iterations applies). Enum 5/10/20, default 10 on set.
+  maxRounds: number | null
 }
 const showCronModal = ref(false)
 const cronForm = ref<CronForm>(defaultCronForm())
@@ -69,6 +72,7 @@ function defaultCronForm(): CronForm {
     id: null, name: '', preset: 'daily', time: '09:00',
     weekday: 1, monthDay: 1, everyMinutes: 5,
     cron: '0 9 * * *', sessionKey: '', prompt: '', enabled: true,
+    maxRounds: null,
   }
 }
 
@@ -231,6 +235,7 @@ function openEditCron(job: any) {
     everyMinutes: (det.everyMinutes as number) ?? 5,
     cron: det.preset === 'custom' ? (det.cron as string) || job.cron || '' : job.cron || '',
     sessionKey: job.session_key || '', prompt: job.prompt || '', enabled: job.enabled !== false,
+    maxRounds: (job.max_rounds as number) ?? null,
   }
   preview.value = null
   loadSessions()
@@ -248,6 +253,9 @@ async function saveCronJob() {
     session_key: cronForm.value.sessionKey || '',
     prompt: cronForm.value.prompt,
     enabled: cronForm.value.enabled,
+    // P1-2: null = no per-job budget; a number sets the per-fire cap.
+    // add 路径 null → 无预算；update 路径 null → 清除预算，语义一致。
+    max_rounds: cronForm.value.maxRounds,
   }
   try {
     if (cronForm.value.id) {
@@ -383,6 +391,7 @@ onBeforeUnmount(() => clearTimeout(previewTimer))
                 </td>
                 <td>
                   <span class="badge" :class="job.enabled ? 'badge-success' : 'badge-neutral'">{{ job.enabled ? '启用' : '暂停' }}</span>
+                  <span v-if="job.max_rounds != null" class="badge badge-info" style="margin-left: 4px;" title="每轮工具调用预算">⏱ {{ job.max_rounds }}</span>
                   <div v-if="job.last_status === 'error'" style="color: var(--error); font-size: var(--text-xs); margin-top: 2px;" :title="job.last_error">⚠ 出错</div>
                 </td>
                 <td style="font-size: var(--text-sm); color: var(--text-secondary);">{{ formatMs(job.next_run_at_ms) }}</td>
@@ -470,6 +479,17 @@ onBeforeUnmount(() => clearTimeout(previewTimer))
           <div class="form-group">
             <label class="form-label">人格</label>
             <input class="form-input" :value="`当前激活：${activePersona}（定时任务沿用）`" disabled>
+          </div>
+
+          <div class="form-group">
+            <label class="form-label">轮次预算</label>
+            <select class="form-select" v-model="cronForm.maxRounds" style="max-width: 200px;">
+              <option :value="null">不设预算（用全局上限）</option>
+              <option :value="5">5 轮</option>
+              <option :value="10">10 轮（推荐）</option>
+              <option :value="20">20 轮</option>
+            </select>
+            <p class="form-hint">到点触发这一轮对话时，agent 最多连续跑多少轮工具调用。预算用完会优雅收尾（不会硬断），下个周期重新计。定时任务建议设预算，避免无人值守时烧满全局 100 轮上限。</p>
           </div>
 
           <div class="form-group">

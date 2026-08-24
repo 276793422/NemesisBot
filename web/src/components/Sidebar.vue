@@ -102,6 +102,7 @@ const navGroups = [
       { id: 'skills', label: 'Skills', path: '/skills', icon: 'M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 1 1 7.072 0l-.548.547A3.374 3.374 0 0 0 14 18.469V19a2 2 0 1 1-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z' },
       { id: 'mcp', label: 'MCP', path: '/mcp', icon: 'M4 6h16M4 12h16M4 18h16' },
       { id: 'channels', label: '通道', path: '/channels', icon: 'M22 12h-4l-3 9L9 3l-3 9H2' },
+      { id: 'coding', label: '代码开发', path: '/coding', icon: 'M16 18l6-6-6-6M8 6l-6 6 6 6' },
       { id: 'workflows', label: '工作流', path: '/workflows', icon: 'M3 3h7v7H3zM14 3h7v7h-7zM3 14h7v7H3zM14 14h7v7h-7zM10 6.5h4M10 17.5h4M6.5 10v4M17.5 10v4' },
     ],
   },
@@ -122,6 +123,7 @@ const navGroups = [
       { id: 'scanner', label: '扫描器', path: '/scanner', icon: 'M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7z M12 9a3 3 0 1 0 0 6 3 3 0 0 0 0-6z' },
       { id: 'sandbox', label: '沙盒', path: '/sandbox', icon: 'M5 11h14a2 2 0 0 1 2 2v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-7a2 2 0 0 1 2-2zm0 0V7a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2v4 M12 15v3' },
       { id: 'local-models', label: '本地模型', path: '/local-models', icon: 'M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z M3.27 6.96L12 12.01l8.73-5.05 M12 22.08V12' },
+      { id: 'sdk', label: '二次开发', path: '/sdk', icon: 'M10 20l4-16m4 4l4 4-4 4M6 16l-4-4 4-4' },
     ],
   },
   {
