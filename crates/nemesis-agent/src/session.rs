@@ -423,31 +423,7 @@ impl SessionStore {
         // read_chat_log(limit, None) returns the NEWEST `limit` rows.
         let (rows, total, _, _) =
             crate::chat_log::read_chat_log(key, Self::MAX_STORED_MESSAGES, None);
-        let mut messages: Vec<StoredMessage> = Vec::with_capacity(rows.len());
-        for v in rows {
-            let role = v.get("role").and_then(|r| r.as_str()).unwrap_or("");
-            let content = v.get("content").and_then(|c| c.as_str()).unwrap_or("");
-            // Single-source-of-truth row predicate (same one the fork's
-            // chat_log projection and the turns endpoint's end_preview use):
-            // skips empty-content assistant intermediates.
-            if !crate::chat_log::is_projected_chat_row(role, content) {
-                continue;
-            }
-            messages.push(StoredMessage {
-                role: role.to_string(),
-                content: content.to_string(),
-                tool_calls: Vec::new(),
-                tool_call_id: None,
-                timestamp: v
-                    .get("timestamp")
-                    .and_then(|t| t.as_str())
-                    .unwrap_or_default()
-                    .to_string(),
-                reasoning_content: None,
-                tool_name: None,
-                tool_result_projection: None,
-            });
-        }
+        let messages = projected_messages_from_rows(&rows);
         if messages.is_empty() {
             return None; // no chat_log either → caller falls through to a fresh session
         }
@@ -1242,7 +1218,10 @@ impl Summarizer {
 
             // Keep only last 4 messages.
             // NOTE: 此处有与 loop.rs::maybe_summarize 相同的 tool 对完整性问题。
-            // 当前为死代码（仅测试使用）。若未来启用，需同步修复。
+            // 当前为死代码（仅测试使用）。若未来启用，除 tool 对问题外还必须
+            // 同步采用 loop.rs 2026-08-25 的失败传播语义（summarize_batch/
+            // multipart 返回 Option，任一部分失败绝不写 summary/推进 covers）——
+            // 本路径 summarize_batch 失败仍返回空串，会复刻"摘要静默失败"事故。
             let truncated: Vec<StoredMessage> = history[history.len().saturating_sub(4)..]
                 .iter()
                 .map(|t| t.into())
@@ -1579,6 +1558,44 @@ pub fn force_compress_turns(history: &[ConversationTurn]) -> Vec<ConversationTur
 /// Check if a channel is internal (not user-facing).
 pub fn is_internal_channel(channel: &str) -> bool {
     matches!(channel, "cli" | "system" | "subagent")
+}
+
+/// 2026-08-25 fork 第三轮: shared "jsonl rows → StoredMessage" mapping for
+/// EVERY path that materializes store content FROM the chat_log (the
+/// self-heal rebuild AND `session_fork::fork_session`'s new-session store
+/// side). One mapping, two consumers — the fork's store must be
+/// byte-identical to what a later self-heal rebuild of the fork's jsonl
+/// would produce, or the fork's model context would silently change the
+/// day its store json ages out of the 7-day TTL.
+///
+/// Semantics (identical to the original inline rebuild code): rows pass the
+/// single-source-of-truth predicate [`crate::chat_log::is_projected_chat_row`]
+/// (empty-content assistant intermediates skipped); tool_calls stay empty
+/// (chat_log never recorded them); timestamps keep their jsonl values.
+pub(crate) fn projected_messages_from_rows(rows: &[serde_json::Value]) -> Vec<StoredMessage> {
+    rows.iter()
+        .filter_map(|v| {
+            let role = v.get("role").and_then(|r| r.as_str()).unwrap_or("");
+            let content = v.get("content").and_then(|c| c.as_str()).unwrap_or("");
+            if !crate::chat_log::is_projected_chat_row(role, content) {
+                return None;
+            }
+            Some(StoredMessage {
+                role: role.to_string(),
+                content: content.to_string(),
+                tool_calls: Vec::new(),
+                tool_call_id: None,
+                timestamp: v
+                    .get("timestamp")
+                    .and_then(|t| t.as_str())
+                    .unwrap_or_default()
+                    .to_string(),
+                reasoning_content: None,
+                tool_name: None,
+                tool_result_projection: None,
+            })
+        })
+        .collect()
 }
 
 // ---------------------------------------------------------------------------

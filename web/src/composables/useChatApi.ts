@@ -21,16 +21,18 @@ export interface SessionEntry {
   title?: string
 }
 
-/** P3-1 (2026-08-24 UI entry gap): fork-dialog turn row (GET /api/chat/sessions/:id/turns). */
+/** P3-1 (2026-08-24 UI entry gap): fork-dialog turn row (GET /api/chat/sessions/:id/turns).
+ * 2026-08-25 第三轮：计数全部按 chat_log jsonl 行（UI 渲染的真相源），不含
+ * system/tool 行。 */
 export interface SessionTurnRow {
   turn: number
   preview: string
   /** 该轮最后一条非空 user/assistant 消息首行 —— 分叉后新会话的末条。 */
   end_preview: string
   time: string
-  /** Messages inside this user→…→assistant exchange. */
+  /** chat_log rows inside this user→…→assistant exchange. */
   turn_messages: number
-  /** Cumulative history size a fork cut at this turn retains (含 system). */
+  /** Cumulative chat_log rows a fork cut at this turn retains. */
   kept_messages: number
 }
 

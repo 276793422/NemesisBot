@@ -28,6 +28,9 @@
 //! trigger the interactive approval popup nor the guardian LLM judge, so batch
 //! workflows run unattended (per the workflow tool-node design decision).
 
+// Only used inside the `#[cfg(feature = "security")]` execute block below —
+// gate the import so security-off builds stay warning-free.
+#[cfg(feature = "security")]
 use std::collections::HashMap;
 use std::sync::Arc;
 

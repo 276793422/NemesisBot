@@ -205,7 +205,11 @@ pub async fn test_cli_session_fork(ws: &TestWorkspace, bin: &Path) -> Vec<TestRe
         fail(&format!("{}/fork_missing", suite), "exit=0 on missing source")
     });
 
-    // Fabricate a real 2-turn session + its chat log.
+    // Fabricate a real 2-turn session + its chat log. The two stores are
+    // DELIBERATELY divergent on timestamps (store = 12:xx, jsonl = 10:xx) —
+    // 2026-08-25 round 3: jsonl is the single source of truth for fork
+    // content, so the fork must carry the JSONL timestamps verbatim, never
+    // the store's.
     let key = "agent:main:session:it1";
     let safe = key.replace(':', "_");
     let sess_path = ws.workspace().join("sessions").join(format!("{safe}.json"));
@@ -213,10 +217,10 @@ pub async fn test_cli_session_fork(ws: &TestWorkspace, bin: &Path) -> Vec<TestRe
     let session_json = serde_json::json!({
         "key": key,
         "messages": [
-            {"role": "user", "content": "ITFORK turn one question", "tool_calls": [], "tool_call_id": null, "timestamp": "2026-08-24T10:00:00+08:00"},
-            {"role": "assistant", "content": "ITFORK turn one answer", "tool_calls": [], "tool_call_id": null, "timestamp": "2026-08-24T10:00:05+08:00"},
-            {"role": "user", "content": "ITFORK turn two question", "tool_calls": [], "tool_call_id": null, "timestamp": "2026-08-24T10:01:00+08:00"},
-            {"role": "assistant", "content": "ITFORK turn two answer", "tool_calls": [], "tool_call_id": null, "timestamp": "2026-08-24T10:01:05+08:00"}
+            {"role": "user", "content": "ITFORK turn one question", "tool_calls": [], "tool_call_id": null, "timestamp": "2026-08-24T12:00:00+08:00"},
+            {"role": "assistant", "content": "ITFORK turn one answer", "tool_calls": [], "tool_call_id": null, "timestamp": "2026-08-24T12:00:05+08:00"},
+            {"role": "user", "content": "ITFORK turn two question", "tool_calls": [], "tool_call_id": null, "timestamp": "2026-08-24T12:01:00+08:00"},
+            {"role": "assistant", "content": "ITFORK turn two answer", "tool_calls": [], "tool_call_id": null, "timestamp": "2026-08-24T12:01:05+08:00"}
         ],
         "summary": "",
         "created": "2026-08-24T10:00:00+08:00",
@@ -231,15 +235,14 @@ pub async fn test_cli_session_fork(ws: &TestWorkspace, bin: &Path) -> Vec<TestRe
         .join(format!("{safe}.jsonl"));
     std::fs::create_dir_all(log_path.parent().unwrap()).unwrap();
     let log_lines: Vec<String> = [
-        "user|ITFORK turn one question",
-        "assistant|ITFORK turn one answer",
-        "user|ITFORK turn two question",
-        "assistant|ITFORK turn two answer",
+        ("user", "ITFORK turn one question", "2026-08-24T10:00:00+08:00"),
+        ("assistant", "ITFORK turn one answer", "2026-08-24T10:00:05+08:00"),
+        ("user", "ITFORK turn two question", "2026-08-24T10:01:00+08:00"),
+        ("assistant", "ITFORK turn two answer", "2026-08-24T10:01:05+08:00"),
     ]
     .iter()
-    .map(|l| {
-        let (role, content) = l.split_once('|').unwrap();
-        serde_json::json!({"role": role, "content": content, "timestamp": "2026-08-24T10:00:00+08:00"}).to_string()
+    .map(|(role, content, ts)| {
+        serde_json::json!({"role": role, "content": content, "timestamp": ts}).to_string()
     })
     .collect();
     std::fs::write(&log_path, log_lines.join("\n") + "\n").unwrap();
@@ -336,12 +339,11 @@ pub async fn test_cli_session_fork(ws: &TestWorkspace, bin: &Path) -> Vec<TestRe
         fail(&format!("{}/source_untouched", suite), "source session mutated")
     });
 
-    // Chat-log projected FROM THE STORE PREFIX (2026-08-25 fork 内容错位修复
-    // 契约): rows = the user/assistant messages of messages[..cut], timestamps
-    // taken from the store — NOT copied verbatim from the source chat_log
-    // (whose timestamps can diverge; its per-turn counting definitely can).
-    // --at 1 keeps [u1, a1]: expect 2 rows "question/answer", ts 10:00:00 /
-    // 10:00:05 straight from the store messages above.
+    // Chat-log copied VERBATIM from the source jsonl prefix (2026-08-25
+    // 第三轮契约): rows = source jsonl lines [..cut], byte-for-byte — the
+    // store is a rebuildable cache and never defines fork content. --at 1
+    // keeps [u1, a1]: expect 2 rows with the JSONL timestamps (10:00:00 /
+    // 10:00:05), NOT the store's divergent 12:xx ones.
     let fork_log = ws
         .workspace()
         .join("logs")
@@ -360,7 +362,7 @@ pub async fn test_cli_session_fork(ws: &TestWorkspace, bin: &Path) -> Vec<TestRe
             && rows[1]["content"] == "ITFORK turn one answer"
             && rows[1]["timestamp"] == "2026-08-24T10:00:05+08:00";
         results.push(if ok {
-            pass(&format!("{}/chatlog_prefix", suite), "store-projected 2-row prefix")
+            pass(&format!("{}/chatlog_prefix", suite), "jsonl verbatim 2-row prefix")
         } else {
             fail(
                 &format!("{}/chatlog_prefix", suite),

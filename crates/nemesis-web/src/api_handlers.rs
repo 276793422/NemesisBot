@@ -971,9 +971,11 @@ fn chat_session_id(key: &str) -> String {
         .to_string()
 }
 
-/// Resolve the store a turns/fork request operates on:
+/// Resolve the store the fork WRITE path materializes the new session into
+/// (round 3: the turns endpoint reads jsonl directly and no longer needs a
+/// store; only `POST .../fork` comes through here):
 /// 1. the LIVE agent's store when the agent is running (authoritative — it
-///    holds the in-memory history the loop is appending to), else
+///    holds the in-memory map the running gateway appends to), else
 /// 2. a fresh store over `<home>/workspace/sessions` (agent stopped).
 ///    `new_with_storage` loads existing session files at construction and
 ///    `get_or_create` falls back to disk on an in-memory miss (Z1), so fork
@@ -1013,12 +1015,17 @@ fn first_line_trunc(s: &str, max: usize) -> String {
 
 /// `GET /api/chat/sessions/{id}/turns` — turn-boundary table for the fork
 /// dialog. Same counting as the CLI `session show`: a turn is one complete
-/// user→…→assistant exchange; `kept_messages` is the cumulative history size
-/// a fork cut at that turn retains (includes the leading system prompt).
-/// `end_preview` is the first line of the turn's last non-empty
-/// user/assistant message — what the forked session will end on (the fork
-/// keeps turns COMPLETE, so the fork ends on the assistant reply, while
-/// `preview` shows the user question that starts the turn).
+/// user→…→assistant exchange over the **chat_log rows** (round-3 fix,
+/// 2026-08-25: jsonl is the single source of truth for turn semantics —
+/// the Dashboard renders these rows and the fork cut lands on them; the
+/// SessionStore copy is a lossy cache that compaction folds, tool
+/// intermediates pollute and the 7-day TTL deletes, so it must never
+/// define what "第 N 轮" means). `kept_messages` is the cumulative row
+/// count a fork cut at that turn retains. `end_preview` is the first line
+/// of the turn's last non-empty user/assistant row — what the forked
+/// session will end on (the fork keeps turns COMPLETE, so the fork ends
+/// on the assistant reply, while `preview` shows the user question that
+/// starts the turn).
 ///
 /// Requires `X-Auth-Token` matching `web.auth_token`.
 pub async fn handle_api_chat_session_turns(
@@ -1037,10 +1044,13 @@ pub async fn handle_api_chat_session_turns(
         ));
     }
 
-    let store = resolve_fork_store(&state)?;
+    // ROUND-3: read the chat_log rows — the same source `fork_session`
+    // cuts on and the Dashboard renders. Counting on any other store would
+    // re-create the coordinate-mismatch bug this round fixed.
     let key = chat_session_key(&session_id);
-    let messages = store.get_history(&key);
-    if messages.is_empty() {
+    let (rows, total, _, _) =
+        nemesis_agent::chat_log::read_chat_log(&key, usize::MAX, None);
+    if rows.is_empty() {
         return Err((
             StatusCode::NOT_FOUND,
             Json(serde_json::json!({
@@ -1049,45 +1059,50 @@ pub async fn handle_api_chat_session_turns(
         ));
     }
 
-    // Turn table (CLI show_turns counting): one row per complete user turn;
-    // messages before the first user msg (system prompt) lead into turn 1's
-    // cumulative count, mirroring the fork cut index semantics.
-    // `end_preview` = first line of the turn's LAST user/assistant message
-    // (empty-content tool_calls intermediates skipped) — exactly what the
-    // forked session's Dashboard will display as its final bubble, since
-    // the fork's chat_log is projected from the same store prefix (2026-08-25
-    // fix). The dialog shows both so "what I pick" and "where the fork
-    // ends" are visible together.
+    // Turn table: one row per complete user turn; rows before the first
+    // user row lead into turn 1's cumulative count (normally none — jsonl
+    // never records the system prompt).
+    // `end_preview` = first line of the turn's LAST user/assistant row —
+    // exactly what the forked session's Dashboard will display as its
+    // final bubble, since the fork copies these same rows verbatim
+    // (round-3 fix). The dialog shows both so "what I pick" and "where
+    // the fork ends" are visible together.
     struct TurnRow {
         preview: String,
         end_preview: String,
         time: String,
         turn_messages: usize,
     }
-    let mut rows: Vec<TurnRow> = Vec::new();
+    let mut turn_rows: Vec<TurnRow> = Vec::new();
     let mut leading = 0usize;
-    for m in &messages {
-        if m.role == "user" {
-            rows.push(TurnRow {
-                preview: first_line_trunc(&m.content, 60),
-                end_preview: first_line_trunc(&m.content, 60),
-                time: m.timestamp.clone(),
+    for v in &rows {
+        let role = v.get("role").and_then(|r| r.as_str()).unwrap_or("");
+        let content = v.get("content").and_then(|c| c.as_str()).unwrap_or("");
+        if role == "user" {
+            turn_rows.push(TurnRow {
+                preview: first_line_trunc(content, 60),
+                end_preview: first_line_trunc(content, 60),
+                time: v
+                    .get("timestamp")
+                    .and_then(|t| t.as_str())
+                    .unwrap_or("")
+                    .to_string(),
                 turn_messages: 1,
             });
-        } else if let Some(r) = rows.last_mut() {
+        } else if let Some(r) = turn_rows.last_mut() {
             r.turn_messages += 1;
-            // Same row-selection predicate as the fork's chat_log projection
+            // Same row-selection predicate as the fork's store mapping
             // (single source of truth — see chat_log::is_projected_chat_row).
-            if nemesis_agent::chat_log::is_projected_chat_row(&m.role, &m.content) {
-                r.end_preview = first_line_trunc(&m.content, 60);
+            if nemesis_agent::chat_log::is_projected_chat_row(role, content) {
+                r.end_preview = first_line_trunc(content, 60);
             }
         } else {
             leading += 1;
         }
     }
-    let total_turns = rows.len();
+    let total_turns = turn_rows.len();
     let mut kept = leading;
-    let turns: Vec<serde_json::Value> = rows
+    let turns: Vec<serde_json::Value> = turn_rows
         .into_iter()
         .enumerate()
         .map(|(i, r)| {
@@ -1107,7 +1122,7 @@ pub async fn handle_api_chat_session_turns(
         "session_id": session_id,
         "session_key": key,
         "total_turns": total_turns,
-        "total_messages": messages.len(),
+        "total_messages": total,
         "turns": turns,
     })))
 }
@@ -1145,8 +1160,12 @@ pub async fn handle_api_chat_session_fork(
     let store = resolve_fork_store(&state)?;
     let key = chat_session_key(&session_id);
     // Pre-check so unknown sessions surface as 404 (fork_session's own
-    // empty-check would otherwise collapse into a 500 below).
-    if store.get_history(&key).is_empty() {
+    // empty-check would otherwise collapse into a 500 below). Round 3:
+    // existence = a non-empty chat_log jsonl (the fork's truth source);
+    // the store json may legitimately be gone (7-day TTL) — that must NOT
+    // make a live session unforkable.
+    let (_, log_total, _, _) = nemesis_agent::chat_log::read_chat_log(&key, 1, None);
+    if log_total == 0 {
         return Err((
             StatusCode::NOT_FOUND,
             Json(serde_json::json!({

@@ -160,6 +160,40 @@ fn log_path(session_key: &str) -> PathBuf {
         .join(format!("{}.jsonl", safe_key))
 }
 
+/// Does this session have a chat_log jsonl on disk? (2026-08-25 fork 第三轮)
+/// `session_fork::unique_key` consults this so a fork never APPENDS onto a
+/// previous fork's surviving jsonl after its store json aged out of the
+/// 7-day TTL (append would duplicate the whole prefix).
+pub fn chat_log_exists(session_key: &str) -> bool {
+    log_path(session_key).exists()
+}
+
+/// Write pre-read chat_log rows under `new_key`, VERBATIM (2026-08-25 fork
+/// 第三轮). Each row is a complete jsonl `Value` — original timestamps,
+/// model badges, cron markers, everything preserved byte-faithfully. This is
+/// the fork's jsonl side: the fork dialog counts turns ON these rows, so the
+/// copy must be exactly the rows the user picked, not a re-derived
+/// projection. Returns the number of lines written.
+pub fn write_chat_log_rows(new_key: &str, rows: &[Value]) -> usize {
+    if rows.is_empty() {
+        return 0;
+    }
+    let target = log_path(new_key);
+    if let Some(parent) = target.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+    let mut written = 0usize;
+    if let Ok(mut f) = OpenOptions::new().create(true).append(true).open(&target) {
+        for v in rows {
+            let Ok(line) = serde_json::to_string(v) else { continue };
+            if writeln!(f, "{}", line).is_ok() {
+                written += 1;
+            }
+        }
+    }
+    written
+}
+
 /// Z1 (Phase4-d): copy the first `at_turn` COMPLETE user turns of
 /// `source_key`'s chat log to `new_key`, lines VERBATIM (original
 /// timestamps and extra fields preserved — a fork must not re-stamp
@@ -168,20 +202,18 @@ fn log_path(session_key: &str) -> PathBuf {
 /// Returns the number of lines copied. The lazy FTS full-index picks the
 /// new file up on first search; no per-line index_append needed here.
 ///
-/// ⚠ SUPERSEDED (2026-08-25 fork 内容错位修复): the "same user-turn
-/// counting" claim above only holds while the two stores never diverge —
-/// and they DO diverge in the wild (real case: a legacy session whose
-/// SessionStore had 29 turns of August content while its append-only
-/// chat_log carried 42 turns starting July 19; compaction also folds store
-/// turns away while chat_log is never truncated). Forking such a session
-/// stitched a store prefix of one conversation onto a chat_log prefix of a
-/// DIFFERENT conversation, so the Dashboard (which renders history from
-/// chat_log) showed content unrelated to the turn picked in the dialog.
-/// `fork_session` now generates the new key's chat_log from the store
-/// prefix instead (`write_chat_log_from_store`) — SessionStore is the
-/// single source of truth for turn semantics. Kept (not deleted) per the
-/// code-change discipline: re-enable only if a future caller can guarantee
-/// the two stores are content-aligned (none can today).
+/// ⚠ SUPERSEDED TWICE — do not re-enable:
+/// - Round 2 (2026-08-25 上午, fork 内容错位第一修): disabled in favor of
+///   `write_chat_log_from_store` on the then-belief that SessionStore was
+///   the single source of truth for turn semantics (see that note below).
+/// - Round 3 (2026-08-25 深夜): the self-heal fix made jsonl the single
+///   source of truth (store = rebuildable cache that compaction folds and
+///   TTL deletes); the round-2 assumption was backwards, and forking off
+///   the store produced garbage on real production sessions (store held a
+///   truncated, tool-intermediate-polluted history while the user picked a
+///   turn by the clean jsonl the UI renders). `fork_session` now reads the
+///   rows itself and writes them via `write_chat_log_rows`.
+/// Kept (not deleted) per the code-change discipline.
 #[allow(dead_code)]
 pub fn copy_chat_log_prefix(source_key: &str, new_key: &str, at_turn: usize) -> usize {
     // Whole-log read: fork is a one-shot admin op, not a hot path.
@@ -214,15 +246,15 @@ pub fn copy_chat_log_prefix(source_key: &str, new_key: &str, at_turn: usize) -> 
     lines.len()
 }
 
-/// FIX (2026-08-25): single source of truth for "which stored messages
-/// become chat_log rows" — used by BOTH `write_chat_log_from_store` (the
-/// fork projection) AND the turns endpoint's `end_preview` computation
-/// (api_handlers). The two call sites must never drift apart, or the fork
-/// dialog's "分叉末条" preview would disagree with what the fork actually
-/// ends on — the exact class of bug this round fixed. Tool/system rows
-/// never project (chat_log is the UI bubble source); an `assistant` row
-/// with empty/whitespace content is a pure tool_calls intermediate, not a
-/// displayable reply.
+/// FIX (2026-08-25): single source of truth for "which rows become visible
+/// chat rows" — used by the self-heal rebuild / fork store mapping
+/// (`session::projected_messages_from_rows`) AND the turns endpoint's
+/// `end_preview` computation (api_handlers). The call sites must never
+/// drift apart, or the fork dialog's "分叉末条" preview would disagree with
+/// what the fork actually ends on — the exact class of bug this round
+/// fixed. Tool/system rows never project (chat_log is the UI bubble
+/// source); an `assistant` row with empty/whitespace content is a pure
+/// tool_calls intermediate, not a displayable reply.
 pub fn is_projected_chat_row(role: &str, content: &str) -> bool {
     match role {
         "user" => true,
@@ -231,15 +263,24 @@ pub fn is_projected_chat_row(role: &str, content: &str) -> bool {
     }
 }
 
-/// FIX (2026-08-25 分叉内容错位): generate `new_key`'s chat_log by
+/// FIX (2026-08-25 分叉内容错位, round 2): generate `new_key`'s chat_log by
 /// PROJECTING a SessionStore history prefix — the replacement for
 /// `copy_chat_log_prefix` (see its ⚠ SUPERSEDED note for the divergence
 /// bug this fixes).
 ///
-/// Projection semantics (SessionStore is the single source of truth for
-/// turn semantics — the fork dialog's turn table and the fork cut both
-/// read it, so the forked session's chat_log must be derived from the same
-/// prefix, not from a second, independently-counted copy):
+/// ⚠ SUPERSEDED (2026-08-25 round 3, fork 第三轮): this function's premise —
+/// "SessionStore is the single source of truth for turn semantics" — was
+/// inverted by the self-heal fix later the same day: jsonl is the truth,
+/// the store is a lossy, compaction-folded, TTL-deleted cache. Projecting
+/// the fork's chat_log FROM the store made the fork inherit every store
+/// defect (truncated history, tool-intermediate pollution, folded turns),
+/// producing garbage forks on real production sessions. `fork_session` now
+/// copies the jsonl rows verbatim (`write_chat_log_rows`) and derives the
+/// store FROM those rows (`session::projected_messages_from_rows`) — the
+/// store→jsonl direction is dead. Kept (not deleted) per the code-change
+/// discipline.
+///
+/// Projection semantics (historical, for when this was live):
 /// - only `user` / `assistant` rows are written (chat_log is the UI bubble
 ///   source; tool/system rows were never logged there);
 /// - `assistant` rows with empty/whitespace content are skipped — those are
@@ -259,6 +300,7 @@ pub fn is_projected_chat_row(role: &str, content: &str) -> bool {
 /// `messages`. The lazy FTS full-index picks the new file up on first
 /// search; no per-line index_append needed here (same as the old copy).
 /// Returns the number of lines written.
+#[allow(dead_code)]
 pub fn write_chat_log_from_store(
     new_key: &str,
     messages: &[crate::session::StoredMessage],

@@ -246,7 +246,9 @@ fn test_convert_real_agent_files_batch() {
         ),
     ];
 
-    for (path, expected_name_part) in &test_cases {
+    // `expected_name_part` is documentation-only (which repo file maps to
+    // which persona name); underscored to keep the test build warning-free.
+    for (path, _expected_name_part) in &test_cases {
         if !std::path::Path::new(path).exists() {
             continue;
         }

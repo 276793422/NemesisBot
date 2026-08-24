@@ -154,9 +154,10 @@ fn sanitize_key(key: &str) -> String {
 // ---------------------------------------------------------------------------
 
 /// 种入 2 轮会话 `agent:main:session:itui1`（dsh_series 同款格式）。
-/// 必须在 gateway spawn 之前调：turns/fork 走 live agent store 的
-/// `get_history`（内存 map，无磁盘回退），只有构造期 load_from_disk
-/// 能把种子载入——这也正是生产里「重启前的会话重启后可见」的路径。
+/// 在 gateway spawn 之前调（保持与旧契约相同的种子时机）。2026-08-25
+/// 第三轮起 turns/fork 直接读 chat_log jsonl（不再走 live store 的
+/// get_history），但 store json 仍种着——fork 的 store 写路径与
+/// `session list` 依旧要看到它。
 pub fn seed_fork_sessions(ws: &TestWorkspace) {
     let key = "agent:main:session:itui1";
     let safe = sanitize_key(key);

@@ -2305,6 +2305,196 @@ async fn test_force_compression_short_history() {
     assert_eq!(instance.get_history().len(), 2);
 }
 
+// -------------------------------------------------------------------------
+// 2026-08-25 摘要静默失败回归测试（生产事故：legacy 会话的 store summary
+// 字段存着一次失败的摘要 LLM 回复"请把摘要贴给我"，covers=268 已推进，
+// 7 月上下文被折叠后静默丢失）。契约：任一摘要 LLM 调用失败 →
+// summarize_prefix_owned 返回 None → 调用方绝不推进 covers_up_to。
+// -------------------------------------------------------------------------
+
+/// Provider with a programmable queue of outcomes (Ok reply or Err) plus a
+/// call counter — drives the failure-propagation tests below.
+struct OutcomeMockProvider {
+    outcomes: std::sync::Mutex<Vec<Result<LlmResponse, String>>>,
+    calls: std::sync::Mutex<usize>,
+}
+
+impl OutcomeMockProvider {
+    fn new(outcomes: Vec<Result<LlmResponse, String>>) -> Self {
+        Self {
+            outcomes: std::sync::Mutex::new(outcomes),
+            calls: std::sync::Mutex::new(0),
+        }
+    }
+
+    fn call_count(&self) -> usize {
+        *self.calls.lock().unwrap()
+    }
+}
+
+#[async_trait]
+impl LlmProvider for OutcomeMockProvider {
+    async fn chat(
+        &self,
+        _model: &str,
+        _messages: Vec<LlmMessage>,
+        _options: Option<crate::types::ChatOptions>,
+        _tools: Vec<crate::types::ToolDefinition>,
+    ) -> Result<LlmResponse, String> {
+        *self.calls.lock().unwrap() += 1;
+        let mut outcomes = self.outcomes.lock().unwrap();
+        if outcomes.is_empty() {
+            // No more programmed outcomes → treat as failure (never a
+            // plausible-looking reply that could mask a bug as a pass).
+            Err("no more programmed outcomes".to_string())
+        } else {
+            outcomes.remove(0)
+        }
+    }
+}
+
+/// THE production regression: multipart path (>10 valid messages) where one
+/// part's summarizer call fails. Old behavior: the empty part fed the merge
+/// prompt, the merge model answered with a "you didn't paste the summaries"
+/// complaint, and that complaint was stored as the summary (covers advanced,
+/// prefix context silently lost). New contract: None, merge never called.
+#[tokio::test]
+async fn test_summarize_multipart_part_failure_returns_none() {
+    // 6 pairs = 12 valid messages → multipart. Part 1 Ok, part 2 Err.
+    // The third programmed outcome (merge reply) must NEVER be consumed.
+    let provider = OutcomeMockProvider::new(vec![
+        Ok(llm_text("part one summary")),
+        Err("network down".to_string()),
+        Ok(llm_text("merged summary")),
+    ]);
+    let history = g1_history(6);
+    let prefix_refs: Vec<&crate::types::ConversationTurn> = history.iter().collect();
+
+    let out = summarize_prefix_owned(&prefix_refs, "", 32_000, true, &provider, "m", None).await;
+
+    assert!(out.is_none(), "part failure must yield None, got {out:?}");
+    assert_eq!(
+        provider.call_count(),
+        2,
+        "merge call must not happen when a part failed"
+    );
+}
+
+/// Both parts fail → None after exactly 2 calls (merge skipped).
+#[tokio::test]
+async fn test_summarize_multipart_both_parts_fail_returns_none() {
+    let provider = OutcomeMockProvider::new(vec![
+        Err("timeout".to_string()),
+        Err("timeout".to_string()),
+    ]);
+    let history = g1_history(6);
+    let prefix_refs: Vec<&crate::types::ConversationTurn> = history.iter().collect();
+
+    let out = summarize_prefix_owned(&prefix_refs, "", 32_000, true, &provider, "m", None).await;
+
+    assert!(out.is_none());
+    assert_eq!(provider.call_count(), 2, "merge call must not happen");
+}
+
+/// Both parts succeed but the MERGE call fails → degrade to concatenating the
+/// two validated part summaries (real content preserved), never a complaint.
+#[tokio::test]
+async fn test_summarize_multipart_merge_failure_falls_back_to_concat() {
+    let provider = OutcomeMockProvider::new(vec![
+        Ok(llm_text("part one summary")),
+        Ok(llm_text("part two summary")),
+        Err("merge endpoint down".to_string()),
+    ]);
+    let history = g1_history(6);
+    let prefix_refs: Vec<&crate::types::ConversationTurn> = history.iter().collect();
+
+    let out = summarize_prefix_owned(&prefix_refs, "", 32_000, true, &provider, "m", None).await;
+
+    let summary = out.expect("both parts valid → concat fallback, not None");
+    assert!(
+        summary.contains("part one summary") && summary.contains("part two summary"),
+        "fallback must carry both validated parts, got {summary:?}"
+    );
+}
+
+/// Small-batch path (<=10 messages): a failed summarizer call → None
+/// (previously an empty string that prefix_owned already mapped to None, but
+/// the failure is now loud and explicit at the helper boundary).
+#[tokio::test]
+async fn test_summarize_batch_failure_returns_none() {
+    let provider = OutcomeMockProvider::new(vec![Err("500 upstream".to_string())]);
+    let turns = vec![
+        summary_turn("user", "question one"),
+        summary_turn("assistant", "answer one"),
+    ];
+    let refs: Vec<&crate::types::ConversationTurn> = turns.iter().collect();
+
+    let out = summarize_prefix_owned(&refs, "", 32_000, true, &provider, "m", None).await;
+    assert!(out.is_none());
+}
+
+/// prefix_reuse=false (bare-concat shape): failure → None as well.
+#[tokio::test]
+async fn test_summarize_bare_concat_failure_returns_none() {
+    let provider = OutcomeMockProvider::new(vec![Err("503".to_string())]);
+    let turns = vec![summary_turn("user", "q"), summary_turn("assistant", "a")];
+    let refs: Vec<&crate::types::ConversationTurn> = turns.iter().collect();
+
+    let out = summarize_prefix_owned(&refs, "", 32_000, false, &provider, "m", None).await;
+    assert!(out.is_none());
+}
+
+/// End-to-end at the compression entry point: force_compression with a
+/// failing summarizer must leave the summary cache UNSET (covers never
+/// advances) — the covered prefix stays verbatim in build_messages output
+/// instead of being folded behind a nonexistent summary.
+#[tokio::test]
+async fn test_force_compression_llm_failure_keeps_cache_unset() {
+    let provider = OutcomeMockProvider::new(vec![Err("summarizer unavailable".to_string())]);
+    let agent_loop = AgentLoop::new(Box::new(provider), test_config());
+
+    let instance = AgentInstance::new(test_config());
+    for i in 0..10 {
+        instance.add_user_message(&format!("msg_{}", i));
+    }
+    assert_eq!(instance.get_history().len(), 11);
+
+    agent_loop.force_compression(&instance).await;
+
+    assert!(
+        instance.get_summary_cache().is_none(),
+        "failed summary must not advance covers_up_to"
+    );
+    // History unchanged (append-only) — nothing folded away.
+    assert_eq!(instance.get_history().len(), 11);
+}
+
+/// End-to-end for a PRE-EXISTING cache: when re-summarization fails, the OLD
+/// cache must survive untouched (force_compression retries after a context
+/// error; a failed retry must not wipe or corrupt the previous coverage).
+#[tokio::test]
+async fn test_force_compression_llm_failure_preserves_existing_cache() {
+    let provider = OutcomeMockProvider::new(vec![Err("summarizer unavailable".to_string())]);
+    let agent_loop = AgentLoop::new(Box::new(provider), test_config());
+
+    let instance = AgentInstance::new(test_config());
+    for i in 0..10 {
+        instance.add_user_message(&format!("msg_{}", i));
+    }
+    instance.set_summary_cache(Some(crate::instance::SummaryCache {
+        covers_up_to: 3,
+        text: "previous coverage".to_string(),
+    }));
+
+    agent_loop.force_compression(&instance).await;
+
+    let cache = instance
+        .get_summary_cache()
+        .expect("old cache must survive a failed re-summarization");
+    assert_eq!(cache.covers_up_to, 3);
+    assert_eq!(cache.text, "previous coverage");
+}
+
 #[test]
 fn test_register_tool_shared() {
     let mut agent_loop = AgentLoop::new(Box::new(MockLlmProvider::new(vec![])), test_config());

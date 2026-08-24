@@ -5,8 +5,9 @@
  * 打开时拉取轮次表（GET /api/chat/sessions/:id/turns，同 CLI `session show`
  * 的轮次计数：一轮 = 完整 user→…→assistant 交换；每行显示轮首提问 preview +
  * 轮末回复 end_preview —— 分叉保留完整轮次，选这行新会话就停在 end_preview 上），
- * 用户选分岔点后 POST fork（后端走 Z1 fork_session：SessionStore 前缀 +
- * chat_log 从同一前缀投影生成 + 边界事件，原会话不动）。成功后
+ * 用户选分岔点后 POST fork（后端走 Z1 fork_session，2026-08-25 第三轮：轮次
+ * 与分叉内容都以 chat_log jsonl 为唯一真相源——jsonl 前缀逐行原样复制，新
+ * 会话 store 由同一批行重建，原会话不动）。成功后
  * emit('forked', 新会话 id)，由父组件刷新列表并切换。
  */
 import { ref, watch } from 'vue'

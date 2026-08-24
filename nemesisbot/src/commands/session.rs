@@ -1,12 +1,14 @@
 //! `nemesisbot session` — Z1 (Phase4-d) 会话分支 CLI。
 //!
 //! `session fork` 把一个会话在选定轮次边界处分支成新会话（真分支，非
-//! 回滚）：原会话不动，新会话拿到到该轮为止的完整上下文（SessionStore
-//! history + summary（一致性允许时）+ chat_log **从同一 store 前缀投影
-//! 生成**（2026-08-25 修复：源会话两存储可能分叉——chat_log 从不截断而
-//! store 会被压缩/重建——旧「按 chat_log 自己的轮数复制前缀」会拼出两段
-//! 不同对话的缝合会话）+ 双方 boundary 事件）。`session list` 列出可分支
-//! 的会话，`session show` 展示一个会话的轮次边界表（选 `--at` 的辅助）。
+//! 回滚）：原会话不动，新会话拿到到该轮为止的完整上下文。**2026-08-25
+//! 第三轮修复：轮次语义以 chat_log jsonl 为唯一真相源**（UI 渲染、弹窗
+//! 计数、分叉切口三者同源）——分叉时 jsonl 前缀**逐行原样复制**，新会话
+//! 的 SessionStore 用同一批行经共享映射重建（与自愈重建同构；store 只是
+//! 可重建缓存，会被压缩折叠/被 7 天 TTL 删除，绝不能定义"第 N 轮"）。
+//! 双方 boundary 事件照记。`session list` 列出可分支的会话（轮数按
+//! jsonl 计），`session show` 展示一个会话的轮次边界表（选 `--at` 的
+//! 辅助）。
 //!
 //! 网关可同时保持运行：fork 由本 CLI 进程直接落盘，运行中的网关靠
 //! SessionStore 的「内存未命中→磁盘回退」（Z1 新增）在下一条消息时
@@ -16,7 +18,7 @@ use crate::common;
 use anyhow::{Result, bail};
 use clap::Subcommand;
 use nemesis_agent::session::SessionStore;
-use nemesis_agent::session_fork::{fork_session, user_turn_count};
+use nemesis_agent::session_fork::{fork_session, row_user_turn_count};
 use std::io::IsTerminal;
 use std::path::Path;
 
@@ -70,7 +72,7 @@ pub fn run(action: SessionAction, local: bool) -> Result<()> {
 
     match action {
         SessionAction::List => list_sessions(&home),
-        SessionAction::Show { session_key } => show_turns(&store, &session_key),
+        SessionAction::Show { session_key } => show_turns(&session_key),
         SessionAction::Fork {
             session_key,
             at,
@@ -78,7 +80,7 @@ pub fn run(action: SessionAction, local: bool) -> Result<()> {
         } => {
             let at = match at {
                 Some(n) => Some(n),
-                None => interactive_pick(&store, &session_key)?,
+                None => interactive_pick(&session_key)?,
             };
             let info = fork_session(&store, &session_key, new_key, at)
                 .map_err(|e| anyhow::anyhow!("{}", e))?;
@@ -86,15 +88,16 @@ pub fn run(action: SessionAction, local: bool) -> Result<()> {
             println!("  源会话   : {}（未改动）", info.source_key);
             println!("  新会话   : {}", info.new_key);
             println!(
-                "  边界     : 第 {} 轮（保留 {} 条消息 / 源会话 {} 条中丢弃 {} 条）",
-                info.at_turn, info.kept_messages,
-                info.kept_messages + info.dropped_messages, info.dropped_messages
+                "  边界     : 第 {} 轮（保留前 {} 行 / 源会话共 {} 行）",
+                info.at_turn,
+                info.kept_messages,
+                info.kept_messages + info.dropped_messages
             );
+            println!("  摘要缓存 : 未携带（分叉上下文以聊天记录行为准）");
             println!(
-                "  摘要缓存 : {}",
-                if info.summary_kept { "已随分支携带" } else { "未携带（覆盖范围越过分支点）" }
+                "  聊天记录 : 逐行原样复制 {} 行（时间戳等原字段保真）",
+                info.chat_log_lines
             );
-            println!("  聊天记录 : 从 store 前缀投影 {} 行（时间戳沿用消息原值）", info.chat_log_lines);
             if let Some(ws_id) = info.new_key.strip_prefix("agent:main:session:") {
                 println!(
                     "  打开方式 : WebSocket 消息 metadata.session_id={}（Dashboard/Chat 直接可用）",
@@ -107,7 +110,10 @@ pub fn run(action: SessionAction, local: bool) -> Result<()> {
     }
 }
 
-/// `session list`：读 sessions 目录，按 updated 倒序。
+/// `session list`：读 sessions 目录（元数据：key / updated / 摘要标签），
+/// 轮数与行数按各会话的 chat_log jsonl 统计（2026-08-25 第三轮：jsonl 是
+/// 轮次语义的真相源——store 被压缩/TTL 删过之后其条数不代表可分支内
+/// 容）。jsonl 缺失（纯 store 残留）显示 0/0。按 updated 倒序。
 fn list_sessions(home: &Path) -> Result<()> {
     let dir = common::sessions_dir(home);
     let mut rows: Vec<(String, usize, usize, String, String)> = Vec::new();
@@ -128,10 +134,12 @@ fn list_sessions(home: &Path) -> Result<()> {
             } else {
                 format!("（摘要 {}字）", s.summary.chars().count())
             };
+            let (log_rows, _, _, _) =
+                nemesis_agent::chat_log::read_chat_log(&s.key, usize::MAX, None);
             rows.push((
                 s.key.clone(),
-                user_turn_count(&s.messages),
-                s.messages.len(),
+                row_user_turn_count(&log_rows),
+                log_rows.len(),
                 s.updated.format("%Y-%m-%d %H:%M").to_string(),
                 summary_tag,
             ));
@@ -142,53 +150,54 @@ fn list_sessions(home: &Path) -> Result<()> {
         return Ok(());
     }
     rows.sort_by(|a, b| b.3.cmp(&a.3));
-    println!("{:<44} {:>6} {:>9}  {:<16} {}", "SESSION KEY", "TURNS", "MESSAGES", "UPDATED", "");
+    println!("{:<44} {:>6} {:>9}  {:<16} {}", "SESSION KEY", "TURNS", "ROWS", "UPDATED", "");
     for (key, turns, msgs, updated, tag) in &rows {
         println!("{:<44} {:>6} {:>9}  {:<16} {}", key, turns, msgs, updated, tag);
     }
-    println!("\n（home: {}）", home.display());
+    println!("\n（TURNS/ROWS 按 chat_log 统计；home: {}）", home.display());
     Ok(())
 }
 
 /// `session show`：轮次边界表 — 每个完整 user 轮一行（轮号 / 边界含义 /
-/// 首条消息预览）。
-fn show_turns(store: &SessionStore, session_key: &str) -> Result<()> {
-    let messages = store.get_history(session_key);
-    if messages.is_empty() {
-        bail!("会话 {:?} 不存在或历史为空（用 session list 查看可用 key）", session_key);
+/// 首条消息预览）。按 chat_log jsonl 行统计（与 fork 切口同源）。
+fn show_turns(session_key: &str) -> Result<()> {
+    let (rows, _, _, _) = nemesis_agent::chat_log::read_chat_log(session_key, usize::MAX, None);
+    if rows.is_empty() {
+        bail!("会话 {:?} 不存在或聊天记录（jsonl）为空（用 session list 查看可用 key）", session_key);
     }
-    let turns = user_turn_count(&messages);
+    let turns = row_user_turn_count(&rows);
     if turns == 0 {
         bail!("会话 {:?} 没有完整 user 轮次，无可分支内容", session_key);
     }
-    println!("会话 {} 共 {} 轮 / {} 条消息：", session_key, turns, messages.len());
+    println!("会话 {} 共 {} 轮 / {} 行聊天记录：", session_key, turns, rows.len());
     let mut turn = 0usize;
     let mut preview: Option<&str> = None;
     let mut acc = 0usize;
-    for m in &messages {
-        if m.role == "user" {
+    for v in &rows {
+        let role = v.get("role").and_then(|r| r.as_str()).unwrap_or("");
+        if role == "user" {
             if let Some(p) = preview.take() {
-                println!("  --at {:<3} 保留前 {} 轮（{} 条消息）  首条: {}", turn, turn, acc, p);
+                println!("  --at {:<3} 保留前 {} 轮（{} 行）  首条: {}", turn, turn, acc, p);
                 acc = 0;
             }
             turn += 1;
-            preview = Some(m.content.as_str());
+            preview = v.get("content").and_then(|c| c.as_str());
         }
         acc += 1;
     }
     if let Some(p) = preview {
-        println!("  --at {:<3} 保留前 {} 轮（{} 条消息）  首条: {}", turn, turn, acc, p);
+        println!("  --at {:<3} 保留前 {} 轮（{} 行）  首条: {}", turn, turn, acc, p);
     }
     println!("  （--at {} = 全量分支；省略 --at 默认全量）", turns);
     Ok(())
 }
 
 /// 交互选边界：仅在 TTY 下询问；非 TTY（脚本/管道）默认全量。
-fn interactive_pick(store: &SessionStore, session_key: &str) -> Result<Option<usize>> {
+fn interactive_pick(session_key: &str) -> Result<Option<usize>> {
     if !std::io::stdin().is_terminal() {
         return Ok(None);
     }
-    show_turns(store, session_key)?;
+    show_turns(session_key)?;
     print!("\n要分支到第几轮？（回车 = 全量分支）> ");
     use std::io::Write;
     let _ = std::io::stdout().flush();

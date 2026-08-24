@@ -2972,6 +2972,13 @@ impl AgentLoop {
                 covers_up_to: new_c,
                 text: summary,
             }));
+        } else {
+            // 2026-08-25 摘要静默失败修复：失败（或无可摘要内容）时绝不推进
+            // covers —— 否则被折叠的上下文会静默丢失。Loud warn，不静默。
+            warn!(
+                "[AgentLoop] auto-summarization produced no summary for {} (LLM failure or no valid content); keeping full history, covers_up_to unchanged",
+                session_key
+            );
         }
 
         {
@@ -3052,9 +3059,14 @@ impl AgentLoop {
                 current_tail_len,
                 history.len() - new_c
             );
+        } else {
+            // 2026-08-25 摘要静默失败修复：force 路径同样绝不推进 covers。
+            // 调用方的有界重试会放弃并向上报错（响亮失败优于静默失忆）。
+            warn!(
+                "[AgentLoop] force-compression produced no summary (LLM failure or no valid content); covers_up_to stays {}, the caller's bounded retry will surface the error",
+                current_c
+            );
         }
-        // If summarize returned None (e.g., prefix had no valid user/assistant
-        // content), leave the cache as-is; the caller's bounded retry gives up.
     }
 
     // -----------------------------------------------------------------------
@@ -6339,7 +6351,12 @@ fn tool_safe_boundary(history: &[crate::types::ConversationTurn], mut new_c: usi
 /// flattened to text).
 ///
 /// Returns `Some(summary)` if a non-empty summary was produced, `None`
-/// otherwise (no valid messages, or the LLM returned empty).
+/// otherwise. **None 的两种含义都不允许调用方推进 covers_up_to**：
+/// (a) 前缀里没有可摘要的 user/assistant 内容；(b) 摘要 LLM 调用失败
+/// （2026-08-25 摘要静默失败修复：此前 batch 失败返回空字符串，multipart
+/// 拿两段空串去 merge，merge 模型回"你没把摘要贴给我"，这段**失败回复**
+/// 被当摘要存进 store、covers 照常推进——被折叠的上下文静默丢失。现在
+/// 失败一路传播为 None，调用方保持原 history 不折叠并 warn。）
 ///
 /// T4 (U1) per-model switch: `prefix_reuse == false` falls back to the
 /// pre-G1 shape (`summarize_bare_concat_owned`) — per-model config
@@ -6418,20 +6435,15 @@ async fn summarize_prefix_owned(
         }
     };
 
-    let final_summary = if omitted && !final_summary.is_empty() {
-        format!(
+    let final_summary = match final_summary {
+        Some(s) if omitted && !s.is_empty() => Some(format!(
             "{}\n[Note: Some oversized messages were omitted from this summary for efficiency.]",
-            final_summary
-        )
-    } else {
-        final_summary
+            s
+        )),
+        other => other,
     };
 
-    if final_summary.is_empty() {
-        None
-    } else {
-        Some(final_summary)
-    }
+    final_summary.filter(|s| !s.is_empty())
 }
 
 /// G1 (U1): build an LLM wire message from a ConversationTurn preserving the
@@ -6472,13 +6484,16 @@ const SUMMARIZE_INSTRUCTION: &str = "请对以上对话片段做一份简明摘�
 /// (summarize_multipart_owned / summarize_batch_owned) stays the default for
 /// the main model; this function is invoked ONLY when the per-model switch
 /// opts out.
+/// Returns `Some(summary)` on a non-empty LLM reply; `None` on LLM failure or
+/// empty reply (failure must propagate — never fold history behind a failed
+/// summary; see the 2026-08-25 fix note on `summarize_prefix_owned`).
 async fn summarize_bare_concat_owned(
     messages: &[&crate::types::ConversationTurn],
     existing_summary: &str,
     provider: &dyn LlmProvider,
     model: &str,
     observer_manager: Option<Arc<nemesis_observer::Manager>>,
-) -> String {
+) -> Option<String> {
     let mut content = String::new();
     if !existing_summary.is_empty() {
         content.push_str(&format!(
@@ -6508,12 +6523,16 @@ async fn summarize_bare_concat_owned(
     .await;
 
     match response {
-        Some(Ok(resp)) => resp.content,
+        Some(Ok(resp)) if !resp.content.is_empty() => Some(resp.content),
+        Some(Ok(_)) => None,
         Some(Err(e)) => {
-            debug!("[AgentLoop] summarize_bare_concat_owned LLM call failed: {}", e);
-            String::new()
+            warn!(
+                "[AgentLoop] summarize_bare_concat_owned LLM call failed (summary NOT produced, history stays unfolded): {}",
+                e
+            );
+            None
         }
-        None => String::new(),
+        None => None,
     }
 }
 
@@ -6523,6 +6542,13 @@ async fn summarize_bare_concat_owned(
 /// instruction]` — a part is a contiguous slice of the covered prefix, so its
 /// message list is a true ordered prefix subset of the main request's history
 /// (prefix-cache friendly in the same way).
+///
+/// Returns `Some` only when BOTH parts produced real summaries. If either
+/// part's LLM call fails → `None` (whole summarization fails; the caller must
+/// keep the history unfolded — a half-empty merge prompt makes the merge model
+/// answer with a "you didn't paste the summaries" complaint, and storing that
+/// complaint as the summary silently amnesiates the covered prefix; this is
+/// the exact production failure found in the legacy session 2026-08-25).
 async fn summarize_multipart_owned(
     system_msg: Option<&LlmMessage>,
     messages: &[&crate::types::ConversationTurn],
@@ -6530,13 +6556,24 @@ async fn summarize_multipart_owned(
     provider: &dyn LlmProvider,
     model: &str,
     observer_manager: Option<Arc<nemesis_observer::Manager>>,
-) -> String {
+) -> Option<String> {
     let mid = messages.len() / 2;
     let part1 = &messages[..mid];
     let part2 = &messages[mid..];
 
     let s1 = summarize_batch_owned(system_msg, part1, existing_summary, provider, model, observer_manager.clone()).await;
     let s2 = summarize_batch_owned(system_msg, part2, "", provider, model, observer_manager.clone()).await;
+
+    let (s1, s2) = match (s1, s2) {
+        (Some(a), Some(b)) => (a, b),
+        (failed, _) => {
+            warn!(
+                "[AgentLoop] multipart summarization aborted: one part failed to summarize ({}); summary NOT produced, history stays unfolded",
+                if failed.is_none() { "part 1" } else { "part 2" }
+            );
+            return None;
+        }
+    };
 
     // Merge via LLM.
     let merge_prompt = format!(
@@ -6561,8 +6598,21 @@ async fn summarize_multipart_owned(
     .await;
 
     match response {
-        Some(Ok(resp)) if !resp.content.is_empty() => resp.content,
-        _ => format!("{} {}", s1, s2),
+        Some(Ok(resp)) if !resp.content.is_empty() => Some(resp.content),
+        Some(Ok(_)) => {
+            // Empty merge reply: both parts are validated non-empty —
+            // concatenate them instead of losing the coverage.
+            Some(format!("{}\n\n{}", s1, s2))
+        }
+        _ => {
+            // Merge call failed: same fallback — both parts hold real
+            // summaries, so concatenation preserves the information (the
+            // next compaction round will re-fold them into a merged one).
+            warn!(
+                "[AgentLoop] multipart merge LLM call failed; falling back to concatenating the two (validated) part summaries"
+            );
+            Some(format!("{}\n\n{}", s1, s2))
+        }
     }
 }
 
@@ -6572,6 +6622,10 @@ async fn summarize_multipart_owned(
 /// structure), instruction]` — a genuine prefix of the conversation plus the
 /// trailing instruction, replacing the old single bare user message with
 /// `role: content` text concatenation.
+///
+/// Returns `Some` on a non-empty LLM reply; `None` on LLM failure or empty
+/// reply (failure propagates — see the 2026-08-25 fix note on
+/// `summarize_prefix_owned`).
 async fn summarize_batch_owned(
     system_msg: Option<&LlmMessage>,
     batch: &[&crate::types::ConversationTurn],
@@ -6579,7 +6633,7 @@ async fn summarize_batch_owned(
     provider: &dyn LlmProvider,
     model: &str,
     observer_manager: Option<Arc<nemesis_observer::Manager>>,
-) -> String {
+) -> Option<String> {
     let mut messages: Vec<LlmMessage> = Vec::with_capacity(batch.len() + 2);
     if let Some(sys) = system_msg {
         messages.push(sys.clone());
@@ -6614,12 +6668,16 @@ async fn summarize_batch_owned(
     .await;
 
     match response {
-        Some(Ok(resp)) => resp.content,
+        Some(Ok(resp)) if !resp.content.is_empty() => Some(resp.content),
+        Some(Ok(_)) => None,
         Some(Err(e)) => {
-            debug!("[AgentLoop] summarize_batch_owned LLM call failed: {}", e);
-            String::new()
+            warn!(
+                "[AgentLoop] summarize_batch_owned LLM call failed (summary NOT produced, history stays unfolded): {}",
+                e
+            );
+            None
         }
-        None => String::new(),
+        None => None,
     }
 }
 
@@ -6936,6 +6994,10 @@ pub fn truncate(s: &str, max_len: usize) -> String {
 /// auto-inject dedup pass. Approximates "same memory, near-identical text"
 /// without another embedding call — the dedup bar (0.92) is deliberately
 /// high so only true near-duplicates are dropped.
+// Only called from the `#[cfg(feature = "memory")]` dedup pass — same gate
+// pattern as `prefetch_memory_context` above, so memory-off builds stay
+// warning-free.
+#[cfg_attr(not(feature = "memory"), allow(dead_code))]
 fn textwise_similar(a: &str, b: &str) -> f64 {
     let bigrams = |s: &str| -> std::collections::HashSet<(char, char)> {
         let t: Vec<char> = s.chars().collect();
