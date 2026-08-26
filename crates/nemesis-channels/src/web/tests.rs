@@ -1099,3 +1099,17 @@ fn test_web_channel_config_debug() {
     assert!(debug_str.contains("127.0.0.1"));
     assert!(debug_str.contains("8080"));
 }
+
+// ===========================================================================
+// S2 coverage (2026-08-26): Channel trait is_running impl (shadowed on
+// direct calls by the inherent is_running)
+// ===========================================================================
+
+/// Direct calls resolve to the inherent `is_running`; the trait impl is only
+/// reachable through `Arc<dyn Channel>` dispatch.
+#[test]
+fn s2_web_channel_trait_is_running_via_dyn_dispatch() {
+    let ch = WebChannel::new(WebChannelConfig::default());
+    let dyn_ch: Arc<dyn Channel> = Arc::new(ch);
+    assert!(!dyn_ch.is_running());
+}

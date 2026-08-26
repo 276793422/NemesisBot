@@ -1143,3 +1143,486 @@ fn test_write_rules_config_creates_dirs() {
     write_rules_config(&path, &cfg).unwrap();
     assert!(path.exists());
 }
+
+// =========================================================================
+// S11b 覆盖率冲刺：security run() 全 arm 扫描（Status/Enable/Disable/
+// Config Show+Edit/Audit Show+Export+Denied/Test/Rules 分发/Approve/Deny/
+// Pending/Edit）+ cmd_edit 三分支（EDITOR 成功/非零/不存在）。
+// ConfigReset 走 stdin 交互（豁免，不测）。
+//
+// 隔离：NEMESISBOT_HOME → 临时根（home = {tmp}/.nemesisbot），全程持
+// crate::GLOBAL_STATE_LOCK；EDITOR 覆盖测试同锁内 set/restore。
+// =========================================================================
+
+struct S11bTempHomeEnv {
+    _tmp: tempfile::TempDir,
+    home: std::path::PathBuf,
+}
+
+impl Drop for S11bTempHomeEnv {
+    fn drop(&mut self) {
+        unsafe { std::env::remove_var("NEMESISBOT_HOME") };
+    }
+}
+
+fn s11b_temp_home_env() -> S11bTempHomeEnv {
+    let tmp = tempfile::tempdir().unwrap();
+    let home = tmp.path().join(".nemesisbot");
+    std::fs::create_dir_all(home.join("workspace").join("config")).unwrap();
+    unsafe { std::env::set_var("NEMESISBOT_HOME", tmp.path()) };
+    S11bTempHomeEnv { _tmp: tmp, home }
+}
+
+/// EDITOR 环境变量 RAII：set → drop 恢复原值（或移除）。
+struct S11bEditorEnv(Option<String>);
+
+impl S11bEditorEnv {
+    fn set(val: &str) -> Self {
+        let old = std::env::var("EDITOR").ok();
+        unsafe { std::env::set_var("EDITOR", val) };
+        S11bEditorEnv(old)
+    }
+}
+
+impl Drop for S11bEditorEnv {
+    fn drop(&mut self) {
+        match self.0.take() {
+            Some(v) => unsafe { std::env::set_var("EDITOR", v) },
+            None => unsafe { std::env::remove_var("EDITOR") },
+        }
+    }
+}
+
+// ------------------------------- Status -----------------------------------
+
+#[tokio::test]
+async fn test_s11b_run_status_default_no_files() {
+    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let th = s11b_temp_home_env();
+    // 无 config.json / 无 security cfg → 全默认 + "Scanner: not configured"
+    run(SecurityAction::Status, false).await.unwrap();
+    assert!(!crate::common::config_path(&th.home).exists());
+}
+
+#[tokio::test]
+async fn test_s11b_run_status_with_configs() {
+    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let th = s11b_temp_home_env();
+    // 主配置：security.enabled=false + restrict_to_workspace=true
+    let cfg_path = crate::common::config_path(&th.home);
+    std::fs::write(
+        &cfg_path,
+        r#"{"security": {"enabled": false}, "agents": {"defaults": {"restrict_to_workspace": true}}}"#,
+    )
+    .unwrap();
+    // security cfg：scanner 段 + 带 op 计数与不带 op 计数的 rules
+    let sec_cfg = crate::common::security_config_path(&th.home);
+    std::fs::write(
+        &sec_cfg,
+        r#"{
+            "default_action": "deny",
+            "log_all_operations": true,
+            "audit_log_file_enabled": true,
+            "approval_timeout": 60,
+            "audit_retention_days": 7,
+            "enabled": ["clamav"],
+            "restrict_to_workspace": false,
+            "rules": {
+                "file": [{"operation": "read", "pattern": "*.txt", "action": "deny"},
+                          {"operation": "read", "pattern": "*.md", "action": "deny"}],
+                "network": [{"operation": "weird_op", "pattern": "*", "action": "deny"}]
+            }
+        }"#,
+    )
+    .unwrap();
+    run(SecurityAction::Status, false).await.unwrap();
+}
+
+// --------------------------- Enable / Disable -----------------------------
+
+#[tokio::test]
+async fn test_s11b_run_enable_disable_flips() {
+    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let th = s11b_temp_home_env();
+    let cfg_path = crate::common::config_path(&th.home);
+    std::fs::write(
+        &cfg_path,
+        r#"{"security": {"enabled": false}, "agents": {"defaults": {"restrict_to_workspace": true}}}"#,
+    )
+    .unwrap();
+    let sec_cfg = crate::common::security_config_path(&th.home);
+
+    run(SecurityAction::Enable, false).await.unwrap();
+    let v: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&cfg_path).unwrap()).unwrap();
+    assert_eq!(v["security"]["enabled"], true);
+    assert_eq!(v["agents"]["defaults"]["restrict_to_workspace"], false);
+    assert!(sec_cfg.exists(), "Enable 会落默认 security 配置");
+
+    run(SecurityAction::Disable, false).await.unwrap();
+    let v: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&cfg_path).unwrap()).unwrap();
+    assert_eq!(v["security"]["enabled"], false);
+    assert_eq!(v["agents"]["defaults"]["restrict_to_workspace"], true);
+}
+
+#[tokio::test]
+async fn test_s11b_run_enable_disable_insert_missing_sections() {
+    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let th = s11b_temp_home_env();
+    let cfg_path = crate::common::config_path(&th.home);
+    // 实测行为：security 段缺失会补插；agents 段整体缺失时【不】补插
+    // （外层 if let 无 else），restrict_to_workspace 维持未写。
+    std::fs::write(&cfg_path, "{}").unwrap();
+    run(SecurityAction::Enable, false).await.unwrap();
+    let v: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&cfg_path).unwrap()).unwrap();
+    assert_eq!(v["security"]["enabled"], true);
+    assert!(v.get("agents").is_none(), "agents 段缺失时不补插（现状）");
+    // agents 段存在但无 defaults → 走 defaults 补插分支
+    std::fs::write(&cfg_path, r#"{"agents": {}}"#).unwrap();
+    run(SecurityAction::Enable, false).await.unwrap();
+    let v: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&cfg_path).unwrap()).unwrap();
+    assert_eq!(v["agents"]["defaults"]["restrict_to_workspace"], false);
+    std::fs::write(&cfg_path, r#"{"agents": {}}"#).unwrap();
+    run(SecurityAction::Disable, false).await.unwrap();
+    let v: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&cfg_path).unwrap()).unwrap();
+    assert_eq!(v["agents"]["defaults"]["restrict_to_workspace"], true);
+    // 无 config.json 时 Enable/Disable 只落 security cfg（不崩）
+    std::fs::remove_file(&cfg_path).unwrap();
+    run(SecurityAction::Disable, false).await.unwrap();
+    assert!(!cfg_path.exists());
+}
+
+// ------------------------------ Config ------------------------------------
+
+#[tokio::test]
+async fn test_s11b_run_config_show_missing_and_present() {
+    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let th = s11b_temp_home_env();
+    let sec_cfg = crate::common::security_config_path(&th.home);
+    // 无文件：None 与 Show 都走 default 分支
+    run(SecurityAction::Config { action: None }, false).await.unwrap();
+    run(
+        SecurityAction::Config {
+            action: Some(SecurityConfigAction::Show),
+        },
+        false,
+    )
+    .await
+    .unwrap();
+    // 有文件：打印文件内容
+    std::fs::create_dir_all(sec_cfg.parent().unwrap()).unwrap();
+    std::fs::write(&sec_cfg, r#"{"default_action": "marker-s11b"}"#).unwrap();
+    run(
+        SecurityAction::Config {
+            action: Some(SecurityConfigAction::Show),
+        },
+        false,
+    )
+    .await
+    .unwrap();
+}
+
+/// cmd_edit / SecurityAction::Edit 三分支：EDITOR 成功退出 / 非零退出 / 不存在。
+#[tokio::test]
+async fn test_s11b_run_edit_via_editor_env() {
+    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let _th = s11b_temp_home_env();
+
+    // 1) EDITOR=hostname（存在、退出 0）→ Configuration saved 分支；
+    //    同时覆盖「配置不存在时先落默认」的分支
+    {
+        let _ed = S11bEditorEnv::set("hostname");
+        run(
+            SecurityAction::Config {
+                action: Some(SecurityConfigAction::Edit),
+            },
+            false,
+        )
+        .await
+        .unwrap();
+        let sec_cfg = crate::common::security_config_path(&_th.home);
+        assert!(sec_cfg.exists(), "cmd_edit 先写默认配置再开编辑器");
+    }
+
+    // 2) EDITOR=不存在的命令 → Failed to open editor 分支
+    {
+        let _ed = S11bEditorEnv::set("definitely-missing-editor-s11b");
+        run(
+            SecurityAction::Config {
+                action: Some(SecurityConfigAction::Edit),
+            },
+            false,
+        )
+        .await
+        .unwrap();
+    }
+
+    // 3) EDITOR=脚本退出 3 → "Editor exited with status" 分支；顺带覆盖顶层 Edit arm
+    let tmp = tempfile::tempdir().unwrap();
+    let bat = tmp.path().join("fail3.bat");
+    std::fs::write(&bat, "@exit /b 3\r\n").unwrap();
+    {
+        let _ed = S11bEditorEnv::set(bat.to_str().unwrap());
+        run(SecurityAction::Edit, false).await.unwrap();
+    }
+}
+
+// ------------------------------- Audit ------------------------------------
+
+#[tokio::test]
+async fn test_s11b_run_audit_show_export_denied() {
+    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let th = s11b_temp_home_env();
+    let audit_path = crate::common::workspace_path(&th.home).join("audit_chain.jsonl");
+    std::fs::create_dir_all(audit_path.parent().unwrap()).unwrap();
+    let line = |ts: &str, op: &str, tool: &str, dec: &str, reason: &str| {
+        serde_json::json!({
+            "timestamp": ts, "operation": op, "tool_name": tool,
+            "decision": dec, "reason": reason
+        })
+        .to_string()
+    };
+    std::fs::write(
+        &audit_path,
+        [
+            line("t1", "file_read", "read_file", "allowed", ""),
+            line("t2", "process_exec", "exec", "denied", "dangerous command"),
+            line("t3", "file_write", "write_file", "denied", "outside workspace"),
+            "not-json-line".to_string(),
+        ]
+        .join("\n"),
+    )
+    .unwrap();
+
+    // Show：默认 limit=20（None）与 Some(Show{limit:1})
+    run(SecurityAction::Audit { action: None }, false).await.unwrap();
+    run(
+        SecurityAction::Audit {
+            action: Some(AuditAction::Show { limit: 1 }),
+        },
+        false,
+    )
+    .await
+    .unwrap();
+    // Denied：2 条 denied + 总数行
+    run(
+        SecurityAction::Audit {
+            action: Some(AuditAction::Denied),
+        },
+        false,
+    )
+    .await
+    .unwrap();
+    // Export：写出 JSON（跳过坏行）
+    let out = th.home.join("export.json");
+    run(
+        SecurityAction::Audit {
+            action: Some(AuditAction::Export {
+                output: out.to_string_lossy().into_owned(),
+            }),
+        },
+        false,
+    )
+    .await
+    .unwrap();
+    let v: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&out).unwrap()).unwrap();
+    assert_eq!(v["total_entries"], 3, "坏行被 filter_map 跳过");
+    assert_eq!(v["entries"].as_array().unwrap().len(), 3);
+
+    // 无审计文件的三条分支
+    std::fs::remove_file(&audit_path).unwrap();
+    run(SecurityAction::Audit { action: None }, false).await.unwrap();
+    run(
+        SecurityAction::Audit {
+            action: Some(AuditAction::Denied),
+        },
+        false,
+    )
+    .await
+    .unwrap();
+    let out2 = th.home.join("export2.json");
+    run(
+        SecurityAction::Audit {
+            action: Some(AuditAction::Export {
+                output: out2.to_string_lossy().into_owned(),
+            }),
+        },
+        false,
+    )
+    .await
+    .unwrap();
+    assert!(!out2.exists(), "无审计文件不落 export");
+}
+
+// -------------------------------- Test ------------------------------------
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_s11b_run_security_test_allowed_blocked_invalid_json() {
+    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let _th = s11b_temp_home_env();
+    // ALLOWED：低风险读文件
+    run(
+        SecurityAction::Test {
+            tool: "read_file".into(),
+            args: r#"{"path": "a.txt"}"#.into(),
+        },
+        false,
+    )
+    .await
+    .unwrap();
+    // BLOCKED：命令守卫确定性拦截 rm -rf /
+    run(
+        SecurityAction::Test {
+            tool: "exec".into(),
+            args: r#"{"command": "rm -rf /"}"#.into(),
+        },
+        false,
+    )
+    .await
+    .unwrap();
+    // 非法 JSON args → 错误打印
+    run(
+        SecurityAction::Test {
+            tool: "read_file".into(),
+            args: "not json".into(),
+        },
+        false,
+    )
+    .await
+    .unwrap();
+}
+
+// ------------------------------- Rules ------------------------------------
+
+#[tokio::test]
+async fn test_s11b_run_rules_dispatch_arms() {
+    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let _th = s11b_temp_home_env();
+    // List：无类型 + 指定类型（无配置文件 → 默认规则）
+    run(
+        SecurityAction::Rules {
+            action: RulesAction::List { rule_type: None },
+        },
+        false,
+    )
+    .await
+    .unwrap();
+    run(
+        SecurityAction::Rules {
+            action: RulesAction::List {
+                rule_type: Some("file".into()),
+            },
+        },
+        false,
+    )
+    .await
+    .unwrap();
+    // Test：对默认（空）规则集测试目标
+    run(
+        SecurityAction::Rules {
+            action: RulesAction::Test {
+                rule_type: "file".into(),
+                operation: "read".into(),
+                target: "x.txt".into(),
+            },
+        },
+        false,
+    )
+    .await
+    .unwrap();
+}
+
+// --------------------- Approve / Deny / Pending ---------------------------
+// 注意（挂账 S11b-1，quality-hardening goal 冲刺 S11）：cmd_approve/cmd_deny/
+// cmd_pending 经 security_cfg（<home>/workspace/config/config.security.json）
+// parent().parent() 再 join("workspace")/join("security") → 解析到
+// <home>/workspace/workspace/security/pending.json（双 workspace）。
+// 且全代码库零写入者（ApprovalManager 挂内存）→ 该文件永远不存在，
+// CLI 审批三命令实际永远走 "No pending operations found"。
+// 本测试把夹具放在当前（错误的）解析路径以钉住现状；修复路径时此测试需同步改。
+
+fn s11b_write_dead_pending(home: &std::path::Path, ids: &[&str]) -> std::path::PathBuf {
+    let pending_path = home
+        .join("workspace")
+        .join("workspace")
+        .join("security")
+        .join("pending.json");
+    std::fs::create_dir_all(pending_path.parent().unwrap()).unwrap();
+    let arr: Vec<serde_json::Value> = ids
+        .iter()
+        .map(|id| serde_json::json!({"id": id, "operation": "file_write", "args": {}}))
+        .collect();
+    std::fs::write(&pending_path, serde_json::to_string_pretty(&arr).unwrap()).unwrap();
+    pending_path
+}
+
+#[tokio::test]
+async fn test_s11b_run_approve_deny_pending() {
+    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let th = s11b_temp_home_env();
+    let pending_path = s11b_write_dead_pending(&th.home, &["op-1", "op-2"]);
+
+    // Pending：列出条目
+    run(SecurityAction::Pending, false).await.unwrap();
+    // Approve：op-1 移除
+    run(SecurityAction::Approve { id: "op-1".into() }, false)
+        .await
+        .unwrap();
+    let v: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&pending_path).unwrap()).unwrap();
+    assert_eq!(v.as_array().unwrap().len(), 1);
+    assert_eq!(v[0]["id"], "op-2");
+    // Approve 不存在的 id
+    run(SecurityAction::Approve { id: "nope".into() }, false)
+        .await
+        .unwrap();
+    // Deny：带 reason（Vec join 分支）与不带（None 分支）
+    run(
+        SecurityAction::Deny {
+            id: "op-2".into(),
+            reason: vec!["too".into(), "risky".into()],
+        },
+        false,
+    )
+    .await
+    .unwrap();
+    let v: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&pending_path).unwrap()).unwrap();
+    assert!(v.as_array().unwrap().is_empty());
+    run(
+        SecurityAction::Deny {
+            id: "op-2".into(),
+            reason: vec![],
+        },
+        false,
+    )
+    .await
+    .unwrap();
+    // 文件移除后 → "No pending operations found."
+    std::fs::remove_file(&pending_path).unwrap();
+    run(SecurityAction::Pending, false).await.unwrap();
+    run(SecurityAction::Approve { id: "x".into() }, false)
+        .await
+        .unwrap();
+}
+
+// ---------------------------- Scanner 委派 --------------------------------
+
+#[tokio::test]
+async fn test_s11b_run_scanner_delegate_list() {
+    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let _th = s11b_temp_home_env();
+    // security scanner 子命令直接委派给 scanner 模块（无配置 → 空表）
+    run(
+        SecurityAction::Scanner {
+            action: ScannerAction::List,
+        },
+        false,
+    )
+    .await
+    .unwrap();
+}

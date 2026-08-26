@@ -53,3 +53,4 @@ __pycache__/
 # 已入库副本需 `git rm -r --cached` 移除（见影响分析报告问题台账 #3）。
 /test-tools/python/sdk/build/
 /test-tools/python/sdk/nemesisbot.egg-info/
+/Temp

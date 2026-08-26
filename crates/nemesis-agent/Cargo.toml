@@ -53,6 +53,11 @@ rusqlite = { version = "0.34", features = ["bundled"] }
 tokio = { workspace = true, features = ["test-util", "macros"] }
 mockall = { workspace = true }
 nemesis-providers = { workspace = true }
+# S9 (quality-hardening goal 冲刺 S9): thread-local subscriber so tracing macro
+# field expressions (info!/warn!/debug! args) get evaluated in tests — without a
+# subscriber those lines never count as covered. Same pattern as
+# nemesis-sandbox/src/test_util.rs.
+tracing-subscriber = { workspace = true }
 # Y1 (Phase4-a): loop-level folding tests inject a deterministic fake embed
 # backend into a real MemoryManager — `init_vector_store_with_embed` is gated
 # behind nemesis-memory's `test-fixture` feature.

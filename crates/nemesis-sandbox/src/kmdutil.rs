@@ -163,3 +163,6 @@ fn reg_add_dword(key: &str, value: &str, data: &str) -> Result<()> {
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod tests;

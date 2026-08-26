@@ -599,3 +599,201 @@ fn test_effort_anthropic_budget_mapping() {
         );
     }
 }
+
+use serde_json::json;
+
+// ===========================================================================
+// W4c 补测（2026-08-25）：chat() HTTP 矩阵（wiremock）+ build_request_body
+// assistant/tool 消息分支
+// ===========================================================================
+
+use wiremock::matchers::{body_partial_json, header, method, path};
+use wiremock::{Mock, MockServer, ResponseTemplate};
+
+fn anth_config(base: &str) -> AnthropicConfig {
+    AnthropicConfig {
+        api_key: "ak-test".to_string(),
+        base_url: base.to_string(),
+        default_model: "claude-default".to_string(),
+        timeout_secs: 10,
+    }
+}
+
+fn anth_messages() -> Vec<Message> {
+    vec![Message {
+        role: "user".to_string(),
+        content: "hi".to_string(),
+        tool_calls: vec![],
+        tool_call_id: None,
+        timestamp: None,
+        reasoning_content: None,
+        extra: HashMap::new(),
+    }]
+}
+
+#[tokio::test]
+async fn test_w4c_anth_chat_success_headers_and_default_model() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .and(header("x-api-key", "ak-test"))
+        .and(header("anthropic-version", "2023-06-01"))
+        .and(body_partial_json(json!({"model": "claude-default"})))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "content": [
+                {"type": "text", "text": "hello-from-anthropic"}
+            ],
+            "stop_reason": "end_turn",
+            "usage": {"input_tokens": 2, "output_tokens": 3}
+        })))
+        .mount(&server)
+        .await;
+
+    let provider = AnthropicProvider::new(anth_config(&server.uri()));
+    // model 空 → default_model
+    let resp = provider
+        .chat(&anth_messages(), &[], "", &ChatOptions::default())
+        .await
+        .unwrap();
+    assert_eq!(resp.content, "hello-from-anthropic");
+    // anthropic 的 end_turn 归一化为 openai 风格的 "stop"
+    assert_eq!(resp.finish_reason, "stop");
+}
+
+#[tokio::test]
+async fn test_w4c_anth_chat_429_maps_rate_limit() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .respond_with(ResponseTemplate::new(429).set_body_string("slow down"))
+        .mount(&server)
+        .await;
+
+    let provider = AnthropicProvider::new(anth_config(&server.uri()));
+    let err = provider
+        .chat(&anth_messages(), &[], "m", &ChatOptions::default())
+        .await
+        .unwrap_err();
+    assert!(matches!(err, FailoverError::RateLimit { .. }));
+}
+
+#[tokio::test]
+async fn test_w4c_anth_chat_invalid_json_maps_format() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .respond_with(ResponseTemplate::new(200).set_body_string("<<<garbage"))
+        .mount(&server)
+        .await;
+
+    let provider = AnthropicProvider::new(anth_config(&server.uri()));
+    let err = provider
+        .chat(&anth_messages(), &[], "m", &ChatOptions::default())
+        .await
+        .unwrap_err();
+    assert!(matches!(err, FailoverError::Format { .. }));
+}
+
+#[tokio::test]
+async fn test_w4c_anth_chat_dead_port_maps_timeout() {
+    let provider = AnthropicProvider::new(anth_config("http://127.0.0.1:1"));
+    let err = provider
+        .chat(&anth_messages(), &[], "m", &ChatOptions::default())
+        .await
+        .unwrap_err();
+    assert!(matches!(err, FailoverError::Timeout { .. }));
+}
+
+#[test]
+fn test_w4c_anth_build_body_assistant_tool_calls_and_tool_result() {
+    let provider = AnthropicProvider::new(anth_config("http://unused"));
+
+    let mut tc = ToolCall {
+        id: "tc-1".to_string(),
+        call_type: None,
+        function: None,
+        name: Some("get_weather".to_string()),
+        arguments: Some(HashMap::from([
+            ("city".to_string(), serde_json::json!("北京")),
+        ])),
+    };
+    let messages = vec![
+        Message {
+            role: "assistant".to_string(),
+            content: "let me check".to_string(),
+            tool_calls: vec![tc.clone()],
+            tool_call_id: None,
+            timestamp: None,
+            reasoning_content: None,
+            extra: HashMap::new(),
+        },
+        Message {
+            role: "assistant".to_string(),
+            content: String::new(),
+            tool_calls: vec![tc.clone()],
+            tool_call_id: None,
+            timestamp: None,
+            reasoning_content: None,
+            extra: HashMap::new(),
+        },
+        Message {
+            role: "tool".to_string(),
+            content: "{\"temp\": 25}".to_string(),
+            tool_calls: vec![],
+            tool_call_id: Some("tc-1".to_string()),
+            timestamp: None,
+            reasoning_content: None,
+            extra: HashMap::new(),
+        },
+    ];
+
+    let body = provider.build_request_body(&messages, &[], "m", &ChatOptions::default());
+    let api_msgs = body["messages"].as_array().unwrap();
+
+    // 第一条 assistant：text 块 + tool_use 块
+    let first = &api_msgs[0];
+    assert_eq!(first["role"], "assistant");
+    let blocks = first["content"].as_array().unwrap();
+    assert_eq!(blocks[0]["type"], "text");
+    assert_eq!(blocks[0]["text"], "let me check");
+    assert_eq!(blocks[1]["type"], "tool_use");
+    assert_eq!(blocks[1]["id"], "tc-1");
+    assert_eq!(blocks[1]["name"], "get_weather");
+    assert_eq!(blocks[1]["input"]["city"], "北京");
+
+    // 第二条 assistant：content 为空 → 只有 tool_use 块（无空 text 块）
+    let second = &api_msgs[1];
+    let blocks2 = second["content"].as_array().unwrap();
+    assert_eq!(blocks2.len(), 1);
+    assert_eq!(blocks2[0]["type"], "tool_use");
+
+    // tool 结果 → role=user + tool_result
+    let third = &api_msgs[2];
+    assert_eq!(third["role"], "user");
+    let blocks3 = third["content"].as_array().unwrap();
+    assert_eq!(blocks3[0]["type"], "tool_result");
+    assert_eq!(blocks3[0]["tool_use_id"], "tc-1");
+    assert_eq!(blocks3[0]["content"], "{\"temp\": 25}");
+
+    // name 兜底链：function.name 路径
+    tc.name = None;
+    tc.arguments = None;
+    tc.function = Some(FunctionCall {
+        name: "fn-name".to_string(),
+        arguments: "{}".to_string(),
+    });
+    let msgs2 = vec![Message {
+        role: "assistant".to_string(),
+        content: String::new(),
+        tool_calls: vec![tc],
+        tool_call_id: None,
+        timestamp: None,
+        reasoning_content: None,
+        extra: HashMap::new(),
+    }];
+    let body2 = provider.build_request_body(&msgs2, &[], "m", &ChatOptions::default());
+    let b = body2["messages"][0]["content"][0].clone();
+    assert_eq!(b["name"], "fn-name");
+    // arguments 为 None → 空 object
+    assert_eq!(b["input"], serde_json::json!({}));
+}

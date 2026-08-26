@@ -217,3 +217,108 @@ fn test_cleanup_removes_root_when_fully_empty() {
     );
     let _ = std::fs::remove_dir_all(&root);
 }
+
+// ---------------------------------------------------------------------------
+// Additional branch coverage (W3a)
+// ---------------------------------------------------------------------------
+
+/// `File::create` failure: a DIRECTORY pre-created exactly where the spill
+/// FILE would land makes create_dir_all succeed but File::create fail →
+/// SpillFailed (best-effort: caller keeps the original result).
+#[test]
+fn test_spill_file_create_blocked_by_directory_at_path() {
+    let root = temp_root("blocked_create");
+    // Spill file would be root/sess/<stamp>_<call>.txt — make that path a dir.
+    std::fs::create_dir_all(root.join("sess").join("20260821_000000_call.txt")).unwrap();
+    let out = spill_tool_result(
+        &"x".repeat(SPILL_THRESHOLD_CHARS + 10),
+        "exec",
+        &root,
+        "sess",
+        "20260821_000000",
+        "call",
+    );
+    assert!(matches!(out, SpillOutcome::SpillFailed));
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// Unexpected NESTED dir inside a session dir: `dir_empty = false` (line 141)
+/// and the nested dir is left alone; flat expired files still swept.
+#[test]
+fn test_cleanup_nested_dir_left_alone() {
+    let root = temp_root("retention_nested");
+    std::fs::create_dir_all(root.join("s1").join("nested")).unwrap();
+    make_spill_file(&root, "s1", "old.txt", 10 * 24 * 3600, "x");
+    let deleted = cleanup_expired(&root, 7);
+    assert_eq!(deleted, 1, "only the flat expired file deleted");
+    assert!(
+        root.join("s1").join("nested").exists(),
+        "nested dir left alone"
+    );
+    assert!(root.join("s1").exists(), "dir not empty -> kept");
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// Expired file that CANNOT be deleted (read-only on Windows): the sweep warns
+/// (line 152-153), keeps `dir_empty = false` (line 158), so the session dir
+/// survives with the locked file inside. Cleanup never aborts.
+#[cfg(windows)]
+#[test]
+fn test_cleanup_readonly_file_survives_and_keeps_dir() {
+    let root = temp_root("retention_ro");
+    make_spill_file(&root, "s_ro", "locked.txt", 10 * 24 * 3600, "locked");
+    let p = root.join("s_ro").join("locked.txt");
+
+    // 探针判定只读删除语义：部分文件系统（ReFS/Dev Drive）不强制，实测可删
+    // ——未强制时跳过（该 warn/保留分支只在不强制只读的机器上可达）。
+    let probe = root.join("ro_probe.txt");
+    std::fs::write(&probe, b"p").unwrap();
+    let mut perm = std::fs::metadata(&probe).unwrap().permissions();
+    perm.set_readonly(true);
+    std::fs::set_permissions(&probe, perm).unwrap();
+    let enforced = std::fs::remove_file(&probe).is_err();
+    if !enforced {
+        eprintln!("skipping readonly-survives arm: filesystem does not enforce readonly deletes");
+        let _ = std::fs::remove_dir_all(&root);
+        return;
+    }
+
+    let mut perm = std::fs::metadata(&p).unwrap().permissions();
+    perm.set_readonly(true);
+    std::fs::set_permissions(&p, perm).unwrap();
+
+    let deleted = cleanup_expired(&root, 7);
+    assert_eq!(deleted, 0, "read-only file could not be deleted");
+    assert!(p.exists(), "locked file survived the sweep");
+    assert!(root.join("s_ro").exists(), "dir kept (still not empty)");
+
+    // Cleanup: clear readonly so remove_dir_all can remove the tree.
+    let mut perm = std::fs::metadata(&p).unwrap().permissions();
+    perm.set_readonly(false);
+    std::fs::set_permissions(&p, perm).unwrap();
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// Stray files DIRECTLY under the spill root (lines 175-193): expired ones are
+/// swept by the same retention rule (and counted); fresh ones kept.
+#[test]
+fn test_cleanup_stray_files_under_root_swept_by_same_rule() {
+    let root = temp_root("retention_stray");
+    std::fs::create_dir_all(&root).unwrap();
+
+    let old = root.join("stray_old.txt");
+    std::fs::write(&old, "x").unwrap();
+    let past = std::time::SystemTime::now() - std::time::Duration::from_secs(10 * 24 * 3600);
+    let f = std::fs::OpenOptions::new().write(true).open(&old).unwrap();
+    f.set_modified(past).unwrap();
+    drop(f);
+
+    let fresh = root.join("stray_fresh.txt");
+    std::fs::write(&fresh, "y").unwrap();
+
+    let deleted = cleanup_expired(&root, 7);
+    assert_eq!(deleted, 1, "expired stray deleted, fresh kept");
+    assert!(!old.exists(), "expired stray removed");
+    assert!(fresh.exists(), "fresh stray kept");
+    let _ = std::fs::remove_dir_all(&root);
+}

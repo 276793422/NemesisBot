@@ -1273,3 +1273,277 @@ fn test_rate_limiter_window_tracks_multiple_peers_independently() {
     assert!(limiter.acquire("peer-2").is_ok());
     assert!(limiter.acquire("peer-2").is_err());
 }
+
+// ===========================================================================
+// S4 coverage: tracing field lines (need an installed subscriber), acquire
+// exhaustion, rate-limited early return, call timeout fields, success/fail
+// result-log fields, fallback break/RemoteError, decrypt-failure path.
+// ===========================================================================
+
+/// No-op tracing subscriber so field-recording lines inside
+/// `tracing::warn!`/`info!`/`error!` macros actually execute.
+struct S4ClientSubscriber;
+
+impl tracing::Subscriber for S4ClientSubscriber {
+    fn enabled(&self, _metadata: &tracing::Metadata<'_>) -> bool {
+        true
+    }
+    fn new_span(&self, _span: &tracing::span::Attributes<'_>) -> tracing::Id {
+        tracing::Id::from_u64(1)
+    }
+    fn record(&self, _span: &tracing::Id, _values: &tracing::span::Record<'_>) {}
+    fn record_follows_from(&self, _span: &tracing::Id, _follows: &tracing::Id) {}
+    fn event(&self, _event: &tracing::Event<'_>) {}
+    fn enter(&self, _span: &tracing::Id) {}
+    fn exit(&self, _span: &tracing::Id) {}
+}
+
+static S4_CLIENT_SUBSCRIBER: std::sync::Once = std::sync::Once::new();
+
+fn install_s4_client_subscriber() {
+    S4_CLIENT_SUBSCRIBER.call_once(|| {
+        let _ = tracing::subscriber::set_global_default(S4ClientSubscriber);
+    });
+}
+
+fn s4_make_request(id: &str) -> RPCRequest {
+    RPCRequest {
+        id: id.into(),
+        action: ActionType::Known(KnownAction::Ping),
+        payload: serde_json::json!({}),
+        source: "node-a".into(),
+        target: Some("node-b".into()),
+    }
+}
+
+/// Window-limit rejection logs its warn fields when a subscriber is
+/// installed (client.rs 115-126).
+#[test]
+fn test_s4_rate_limiter_window_limit_logs_fields() {
+    install_s4_client_subscriber();
+    let limiter = RateLimiter::new(100, Duration::from_secs(3600), 2, Duration::from_secs(3600));
+    assert!(limiter.acquire("s4-peer").is_ok());
+    assert!(limiter.acquire("s4-peer").is_ok());
+    let err = limiter.acquire("s4-peer").unwrap_err();
+    match err {
+        RpcClientError::RateLimited(msg) => assert!(msg.contains("exceeded"), "{}", msg),
+        other => panic!("expected RateLimited, got {:?}", other),
+    }
+}
+
+/// Token exhaustion takes the fall-through arm of the token check
+/// (client.rs 128-145).
+#[test]
+fn test_s4_rate_limiter_token_exhaustion_fallthrough() {
+    let limiter = RateLimiter::new(1, Duration::from_secs(3600), 1000, Duration::from_secs(3600));
+    assert!(limiter.acquire("s4-peer").is_ok());
+    let err = limiter.acquire("s4-peer").unwrap_err();
+    match err {
+        RpcClientError::RateLimited(msg) => assert!(msg.contains("no tokens"), "{}", msg),
+        other => panic!("expected RateLimited, got {:?}", other),
+    }
+}
+
+/// acquire_async retries 600 times then gives up (client.rs 152-179).
+/// Paused clock makes the 600 x 100ms sleeps advance instantly.
+#[tokio::test(start_paused = true)]
+async fn test_s4_acquire_async_exhaustion_after_retries() {
+    install_s4_client_subscriber();
+    let limiter = RateLimiter::new(0, Duration::from_secs(3600), 1_000_000, Duration::from_secs(3600));
+    let err = limiter.acquire_async("s4-peer").await.unwrap_err();
+    match err {
+        RpcClientError::RateLimited(msg) => {
+            assert!(msg.contains("rate limited after 600 retries"), "{}", msg)
+        }
+        other => panic!("expected RateLimited, got {:?}", other),
+    }
+}
+
+/// call_with_timeout rejects the request when the rate limiter is
+/// exhausted (client.rs 302-310). Paused clock so the internal 600-retry
+/// wait completes instantly; the limiter is swapped in white-box style
+/// with zero tokens.
+#[tokio::test(start_paused = true)]
+async fn test_s4_call_with_timeout_rate_limited_early_return() {
+    install_s4_client_subscriber();
+    let resolver = Arc::new(MultiAddrResolver {
+        addresses: vec!["127.0.0.1:1".into()],
+        port: 0,
+        online: true,
+    });
+    let mut client = RpcClient::with_resolver(resolver);
+    client.rate_limiter = RateLimiter::new(
+        0,
+        Duration::from_secs(3600),
+        1_000_000,
+        Duration::from_secs(3600),
+    );
+
+    let result = client
+        .call_with_timeout("s4-peer", s4_make_request("s4-rl"), Duration::from_secs(5))
+        .await;
+    match result {
+        Err(RpcClientError::RateLimited(msg)) => {
+            assert!(msg.contains("retries"), "{}", msg)
+        }
+        other => panic!("expected RateLimited, got {:?}", other),
+    }
+}
+
+/// A server that accepts and reads the request but never replies makes
+/// call_with_timeout time out; the error! fields execute
+/// (client.rs 355-368).
+#[tokio::test]
+async fn test_s4_call_timeout_logs_error_fields() {
+    install_s4_client_subscriber();
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap().to_string();
+    let server = tokio::spawn(async move {
+        // Accept and read the request, then keep the socket open silently.
+        while let Ok((mut sock, _)) = listener.accept().await {
+            let mut len_buf = [0u8; 4];
+            if sock.read_exact(&mut len_buf).await.is_err() {
+                continue;
+            }
+            let len = u32::from_be_bytes(len_buf) as usize;
+            let mut buf = vec![0u8; len];
+            let _ = sock.read_exact(&mut buf).await;
+            tokio::time::sleep(Duration::from_secs(30)).await;
+        }
+    });
+
+    let resolver = Arc::new(MultiAddrResolver {
+        addresses: vec![addr],
+        port: 0,
+        online: true,
+    });
+    let client = RpcClient::with_resolver(resolver);
+
+    let result = client
+        .call_with_timeout("s4-peer", s4_make_request("s4-to"), Duration::from_millis(200))
+        .await;
+    match result {
+        Err(RpcClientError::Timeout) => {}
+        other => panic!("expected Timeout, got {:?}", other),
+    }
+    server.abort();
+}
+
+/// Successful and failed calls log their duration fields
+/// (client.rs 399-417).
+#[tokio::test]
+async fn test_s4_call_result_logging_fields() {
+    install_s4_client_subscriber();
+
+    // Success path → info! with duration_ms (401-406).
+    let server = spawn_response_server(RPCResponse {
+        id: "s4-ok".into(),
+        result: Some(serde_json::json!({"status": "ok"})),
+        error: None,
+    })
+    .await;
+    let resolver = Arc::new(MultiAddrResolver {
+        addresses: vec![server.addr.clone()],
+        port: 0,
+        online: true,
+    });
+    let client = RpcClient::with_resolver(resolver);
+    let ok = client
+        .call_with_timeout("s4-peer", s4_make_request("s4-ok"), Duration::from_secs(5))
+        .await;
+    assert!(ok.is_ok(), "{:?}", ok);
+
+    // Failure path (unresolvable peer) → warn! with duration_ms (408-415).
+    let client2 = RpcClient::new();
+    let err = client2
+        .call_with_timeout("s4-missing-peer", s4_make_request("s4-fail"), Duration::from_secs(5))
+        .await;
+    match err {
+        Err(RpcClientError::Connection(msg)) => {
+            assert!(msg.contains("peer not found"), "{}", msg)
+        }
+        other => panic!("expected Connection(peer not found), got {:?}", other),
+    }
+}
+
+/// The fallback loop gives up after three additional attempts
+/// (client.rs 457-465). All addresses are dead loopback ports.
+#[tokio::test]
+async fn test_s4_send_and_receive_breaks_after_three_fallbacks() {
+    let client = RpcClient::new();
+    let best = "127.0.0.1:1".to_string();
+    let all: Vec<String> = vec![
+        best.clone(),
+        "127.0.0.1:1".into(), // duplicate of best → continue
+        "127.0.0.1:2".into(),
+        "127.0.0.1:3".into(),
+        "127.0.0.1:4".into(),
+        "127.0.0.1:5".into(), // fifth other: attempts already 3 → break
+    ];
+    let result = client
+        .send_and_receive(&best, &all, &s4_make_request("s4-brk"))
+        .await;
+    match result {
+        Err(RpcClientError::Connection(msg)) => {
+            assert!(msg.contains("all connection attempts failed"), "{}", msg)
+        }
+        other => panic!("expected Connection(all attempts failed), got {:?}", other),
+    }
+}
+
+/// A fallback address that IS reachable but returns a handler-level
+/// error propagates RemoteError from the fallback branch
+/// (client.rs 473-482).
+#[tokio::test]
+async fn test_s4_fallback_remote_error_propagates() {
+    let server = spawn_response_server(RPCResponse {
+        id: "s4-remote-err".into(),
+        result: None,
+        error: Some("handler exploded".into()),
+    })
+    .await;
+
+    let resolver = Arc::new(MultiAddrResolver {
+        addresses: vec!["127.0.0.1:1".into(), server.addr.clone()],
+        port: 0,
+        online: true,
+    });
+    let client = RpcClient::with_resolver(resolver);
+
+    let result = client
+        .call_with_timeout("s4-peer", s4_make_request("s4-remote-err"), Duration::from_secs(5))
+        .await;
+    match result {
+        Err(RpcClientError::RemoteError(err)) => {
+            assert_eq!(err, "handler exploded");
+        }
+        other => panic!("expected RemoteError, got {:?}", other),
+    }
+    assert_eq!(server.requests.load(Ordering::SeqCst), 1);
+}
+
+/// An authenticated client that receives non-encrypted garbage fails
+/// response decryption (client.rs 604-607).
+#[tokio::test]
+async fn test_s4_auth_client_decrypt_garbage_response_fails() {
+    let server = spawn_garbage_server(b"definitely not an encrypted frame".to_vec()).await;
+
+    let resolver = Arc::new(MultiAddrResolver {
+        addresses: vec![server.addr.clone()],
+        port: 0,
+        online: true,
+    });
+    let client = RpcClient::with_resolver(resolver);
+    client.set_auth_token("s4-auth-token".into());
+
+    let result = client
+        .call_with_timeout("s4-peer", s4_make_request("s4-dec"), Duration::from_secs(5))
+        .await;
+    match result {
+        Err(RpcClientError::Connection(msg)) => {
+            assert!(msg.contains("decrypt"), "{}", msg)
+        }
+        other => panic!("expected Connection(decrypt ...), got {:?}", other),
+    }
+    assert_eq!(server.requests.load(Ordering::SeqCst), 1);
+}

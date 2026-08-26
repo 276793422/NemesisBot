@@ -4429,3 +4429,360 @@ async fn run_script_missing_args_errors() {
         "error should mention missing script: {err}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// W3a batch 5 — loop_tools gap tests (RunScriptTool arms, AsyncExecTool spawn
+// error, grep_recursive filters, GitTool fresh-repo arms, WorkflowRunTool
+// input typing, HistorySearchTool arg validation). Appended 2026-08-25.
+// ---------------------------------------------------------------------------
+
+fn script_ctx() -> RequestContext {
+    RequestContext::new("web", "chat1", "user1", "sess1")
+}
+
+#[tokio::test]
+async fn run_script_invalid_json_errors() {
+    let tool = RunScriptTool::new(std::env::temp_dir().to_string_lossy().as_ref(), false);
+    let err = tool
+        .execute("not json at all", &script_ctx())
+        .await
+        .expect_err("invalid JSON must error");
+    assert!(err.contains("Invalid arguments"), "got: {err}");
+}
+
+#[tokio::test]
+async fn run_script_missing_interpreter_errors() {
+    let tool = RunScriptTool::new(std::env::temp_dir().to_string_lossy().as_ref(), false);
+    let err = tool
+        .execute(r#"{"script":"echo hi"}"#, &script_ctx())
+        .await
+        .expect_err("missing 'interpreter' must error");
+    assert!(err.contains("interpreter"), "got: {err}");
+}
+
+#[tokio::test]
+async fn run_script_workspace_restriction_denies_outside_cwd() {
+    let ws = TempDir::new().unwrap();
+    let outside = TempDir::new().unwrap();
+    let tool = RunScriptTool::new(ws.path().to_string_lossy().as_ref(), true);
+    let args = serde_json::json!({
+        "interpreter": "bash",
+        "flag": "-c",
+        "script": "echo hello",
+        "cwd": outside.path().to_string_lossy(),
+    })
+    .to_string();
+    let err = tool
+        .execute(&args, &script_ctx())
+        .await
+        .expect_err("cwd outside workspace must be denied under restrict");
+    assert!(
+        err.contains("Access denied") && err.contains("outside workspace"),
+        "got: {err}"
+    );
+}
+
+#[tokio::test]
+async fn run_script_nonexistent_interpreter_errors() {
+    let tool = RunScriptTool::new(std::env::temp_dir().to_string_lossy().as_ref(), false);
+    let args = r#"{"interpreter":"definitely-not-a-real-interpreter-xyz","script":"hi"}"#;
+    let err = tool
+        .execute(args, &script_ctx())
+        .await
+        .expect_err("spawn failure must error");
+    assert!(err.contains("Failed to execute script"), "got: {err}");
+}
+
+#[cfg(windows)]
+#[tokio::test]
+async fn run_script_timeout_kills_hung_script() {
+    // ping on loopback runs ~4s; timeout_secs=1 must trigger the timeout arm.
+    let tool = RunScriptTool::new(std::env::temp_dir().to_string_lossy().as_ref(), false);
+    let args = serde_json::json!({
+        "interpreter": "cmd",
+        "flag": "/C",
+        "script": "ping -n 5 127.0.0.1",
+        "timeout": 1,
+    })
+    .to_string();
+    let err = tool
+        .execute(&args, &script_ctx())
+        .await
+        .expect_err("long-running script must time out");
+    assert!(err.contains("timed out after 1 seconds"), "got: {err}");
+}
+
+#[cfg(not(windows))]
+#[tokio::test]
+async fn run_script_timeout_kills_hung_script() {
+    let tool = RunScriptTool::new(std::env::temp_dir().to_string_lossy().as_ref(), false);
+    let args = serde_json::json!({
+        "interpreter": "sh",
+        "flag": "-c",
+        "script": "sleep 5",
+        "timeout": 1,
+    })
+    .to_string();
+    let err = tool
+        .execute(&args, &script_ctx())
+        .await
+        .expect_err("long-running script must time out");
+    assert!(err.contains("timed out after 1 seconds"), "got: {err}");
+}
+
+#[tokio::test]
+async fn run_script_cwd_override_runs_in_subdir() {
+    let tmp = TempDir::new().unwrap();
+    let sub = tmp.path().join("subdir_w3a");
+    std::fs::create_dir_all(&sub).unwrap();
+    let tool = RunScriptTool::new(tmp.path().to_string_lossy().as_ref(), false);
+
+    #[cfg(windows)]
+    let args = serde_json::json!({
+        "interpreter": "cmd",
+        "flag": "/C",
+        "script": "cd",
+        "cwd": sub.to_string_lossy(),
+    });
+    #[cfg(not(windows))]
+    let args = serde_json::json!({
+        "interpreter": "sh",
+        "flag": "-c",
+        "script": "pwd",
+        "cwd": sub.to_string_lossy(),
+    });
+    let out = tool
+        .execute(&args.to_string(), &script_ctx())
+        .await
+        .expect("cwd override run should succeed");
+    assert!(
+        out.contains("subdir_w3a"),
+        "script should run inside the cwd override, got: {out}"
+    );
+}
+
+#[tokio::test]
+async fn async_exec_spawn_failure_errors() {
+    // A nonexistent working_dir makes the spawn itself fail (io error), which
+    // must surface as "Failed to start command" rather than a panic.
+    let tmp = TempDir::new().unwrap();
+    let tool = AsyncExecTool::new(tmp.path().to_string_lossy().as_ref(), false);
+    let args = serde_json::json!({
+        "command": "echo hi",
+        "working_dir": tmp.path().join("no-such-dir-w3a").to_string_lossy(),
+        "wait_seconds": 1,
+    })
+    .to_string();
+    let err = tool
+        .execute(&args, &script_ctx())
+        .await
+        .expect_err("spawn in missing dir must error");
+    assert!(err.contains("Failed to start command"), "got: {err}");
+}
+
+// --- grep_recursive direct tests (private fn, reachable via super::) -------
+
+#[test]
+fn grep_recursive_skips_hidden_and_build_dirs() {
+    let tmp = TempDir::new().unwrap();
+    std::fs::create_dir_all(tmp.path().join(".hidden")).unwrap();
+    std::fs::create_dir_all(tmp.path().join("target")).unwrap();
+    std::fs::create_dir_all(tmp.path().join("src")).unwrap();
+    std::fs::write(tmp.path().join(".hidden").join("h.rs"), "needle here\n").unwrap();
+    std::fs::write(tmp.path().join("target").join("t.rs"), "needle here\n").unwrap();
+    std::fs::write(tmp.path().join("src").join("s.rs"), "needle here\n").unwrap();
+
+    let re = regex::Regex::new("needle").unwrap();
+    let mut out = Vec::new();
+    grep_recursive(tmp.path(), &re, None, 10, &mut out);
+    assert_eq!(out.len(), 1, "only src/s.rs must match: {out:?}");
+    assert!(
+        out[0].replace('\\', "/").ends_with("src/s.rs:1: needle here"),
+        "got: {out:?}"
+    );
+}
+
+#[test]
+fn grep_recursive_skips_oversized_files() {
+    let tmp = TempDir::new().unwrap();
+    let big = format!("needle {}", "x".repeat(1_000_000));
+    std::fs::write(tmp.path().join("big.txt"), big).unwrap();
+
+    let re = regex::Regex::new("needle").unwrap();
+    let mut out = Vec::new();
+    grep_recursive(tmp.path(), &re, None, 10, &mut out);
+    assert!(out.is_empty(), ">1MB file must be skipped: {out:?}");
+}
+
+#[test]
+fn grep_recursive_truncates_long_multibyte_lines_at_char_boundary() {
+    let tmp = TempDir::new().unwrap();
+    // "needle" (6B) + "ab" (2B) then CJK: byte 300 lands mid-character, so the
+    // backoff loop must walk to a char boundary before slicing.
+    let line = format!("needle ab{}", "中".repeat(200));
+    std::fs::write(tmp.path().join("long.txt"), &line).unwrap();
+
+    let re = regex::Regex::new("needle").unwrap();
+    let mut out = Vec::new();
+    grep_recursive(tmp.path(), &re, None, 10, &mut out);
+    assert_eq!(out.len(), 1);
+    let entry = &out[0];
+    assert!(entry.contains('…'), "long line must end with ellipsis: {entry}");
+    assert!(entry.contains("long.txt:1: needle ab"), "prefix kept: {entry}");
+    // The truncated body must be strictly shorter than the full 600+ byte line.
+    let body = entry.rsplit(": ").next().unwrap();
+    assert!(body.len() < line.len(), "body must be truncated: {} vs {}", body.len(), line.len());
+}
+
+#[test]
+fn grep_recursive_missing_dir_is_silent() {
+    let tmp = TempDir::new().unwrap();
+    let re = regex::Regex::new("anything").unwrap();
+    let mut out = Vec::new();
+    grep_recursive(&tmp.path().join("no-such-dir"), &re, None, 10, &mut out);
+    assert!(out.is_empty(), "read_dir error must just return: {out:?}");
+}
+
+#[test]
+fn grep_recursive_respects_max_results() {
+    let tmp = TempDir::new().unwrap();
+    std::fs::write(tmp.path().join("a.txt"), "needle\n").unwrap();
+    std::fs::write(tmp.path().join("b.txt"), "needle\n").unwrap();
+
+    let re = regex::Regex::new("needle").unwrap();
+    let mut out = Vec::new();
+    grep_recursive(tmp.path(), &re, None, 1, &mut out);
+    assert_eq!(out.len(), 1, "max=1 must cap results: {out:?}");
+}
+
+// --- GitTool fresh-repo arms ------------------------------------------------
+
+#[tokio::test]
+async fn git_tool_fresh_repo_diff_and_log_arms() {
+    let tmp = TempDir::new().unwrap();
+    // `git init` is local-only, deterministic, and fast.
+    let init_ok = std::process::Command::new("git")
+        .arg("init")
+        .arg("-q")
+        .current_dir(tmp.path())
+        .output();
+    match init_ok {
+        Ok(o) if o.status.success() => {}
+        // Git binary missing / init failed: skip rather than fail.
+        _ => {
+            eprintln!("skipping: git init failed in tempdir");
+            return;
+        }
+    }
+
+    let tool = GitTool::new(tmp.path().to_string_lossy().to_string());
+    let ctx = script_ctx();
+
+    // Empty repo: `git diff` succeeds with empty stdout -> "(no changes / empty)" arm.
+    let diff = tool
+        .execute(r#"{"action":"diff"}"#, &ctx)
+        .await
+        .expect("diff on fresh repo must be Ok");
+    assert!(
+        diff.contains("(no changes / empty)"),
+        "empty diff must hit the no-changes arm, got: {diff}"
+    );
+
+    // Empty repo: `git log` fails with empty stdout -> Err arm.
+    let log_err = tool
+        .execute(r#"{"action":"log"}"#, &ctx)
+        .await
+        .expect_err("log without commits must error");
+    assert!(log_err.contains("git log failed"), "got: {log_err}");
+}
+
+#[tokio::test]
+async fn git_tool_log_with_extra_args_and_branch() {
+    // The project tree is a real git repo (git walks up from the test cwd).
+    let cwd = std::env::current_dir().unwrap().to_string_lossy().to_string();
+    let tool = GitTool::new(cwd.clone());
+    let ctx = script_ctx();
+
+    let log = tool
+        .execute(r#"{"action":"log","args":"-3 --no-color"}"#, &ctx)
+        .await
+        .expect("log with extra args should run in a real repo");
+    assert!(!log.trim().is_empty(), "log output should have commits");
+
+    let branch = tool
+        .execute(r#"{"action":"branch"}"#, &ctx)
+        .await
+        .expect("branch action should succeed in a repo");
+    assert!(
+        branch.contains("*") || branch.contains("(no changes / empty)"),
+        "branch -vv output unexpected: {branch}"
+    );
+}
+
+// --- WorkflowRunTool input typing -------------------------------------------
+
+#[tokio::test]
+async fn workflow_run_input_type_arms() {
+    let (engine, _) = build_test_engine_with_workflow("wf-input").await;
+    let tool = WorkflowRunTool::new(engine);
+    let ctx = script_ctx();
+
+    // input as a non-object must be rejected.
+    let err = tool
+        .execute(r#"{"workflow":"wf-input","input":[1,2]}"#, &ctx)
+        .await
+        .expect_err("array input must be rejected");
+    assert!(err.contains("must be an object"), "got: {err}");
+
+    // input: null is treated as "no input" and must succeed.
+    let out = tool
+        .execute(r#"{"workflow":"wf-input","input":null}"#, &ctx)
+        .await
+        .expect("null input must be accepted");
+    let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+    assert_eq!(v["workflow"], "wf-input");
+}
+
+// --- HistorySearchTool arg validation (error arms only — the happy path
+// --- touches the global FTS index and must stay in tests/history_search_fts.rs)
+
+#[tokio::test]
+async fn history_search_tool_rejects_bad_args() {
+    let tool = HistorySearchTool::new();
+    let ctx = script_ctx();
+
+    let err = tool
+        .execute("not json", &ctx)
+        .await
+        .expect_err("invalid JSON must error before touching the index");
+    assert!(err.contains("Invalid arguments"), "got: {err}");
+
+    let err = tool
+        .execute(r#"{}"#, &ctx)
+        .await
+        .expect_err("missing query must error");
+    assert!(err.contains("Missing 'query'"), "got: {err}");
+
+    let err = tool
+        .execute(r#"{"query":"   "}"#, &ctx)
+        .await
+        .expect_err("blank query must error");
+    assert!(err.contains("must not be empty"), "got: {err}");
+}
+
+#[test]
+fn history_search_tool_metadata() {
+    let tool = HistorySearchTool::new();
+    assert!(tool.description().contains("history"));
+    let params = tool.parameters();
+    assert!(
+        params["properties"]["query"].is_object(),
+        "parameters must document 'query': {params}"
+    );
+    // 注意：该工具事实只读（FTS 查询），但未覆写 is_read_only（trait 默认
+    // false）。此处钉当前契约，防止未来有人无意中翻转。
+    assert!(
+        !tool.is_read_only(),
+        "HistorySearchTool does not override is_read_only (trait default false)"
+    );
+}

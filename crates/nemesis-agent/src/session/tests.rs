@@ -2148,3 +2148,563 @@ fn test_deleted_session_does_not_resurrect_via_rebuild() {
     );
     crate::chat_log::delete_chat_log(&key); // cleanup
 }
+
+// ---------------------------------------------------------------------------
+// W3a branch coverage (capture, save/load edge arms, migrate, cleanup,
+// summarizer edge arms)
+// ---------------------------------------------------------------------------
+
+fn conv_turn(role: &str, content: &str) -> ConversationTurn {
+    ConversationTurn {
+        role: role.to_string(),
+        content: content.to_string(),
+        tool_calls: Vec::new(),
+        tool_call_id: None,
+        timestamp: String::new(),
+        reasoning_content: None,
+        tool_name: None,
+        tool_result_projection: None,
+    }
+}
+
+/// The ONLY `CaptureSink::init` caller in this test binary: after it runs the
+/// capture branches in set_history/add_message are live, and a shrinking
+/// set_history must auto-flush the write timeline to disk.
+#[test]
+fn test_capture_records_session_writes_when_enabled() {
+    let cap_dir = tempfile::tempdir().unwrap();
+    crate::capture_sink::CaptureSink::init(cap_dir.path().to_path_buf(), true);
+    assert!(crate::capture_sink::CaptureSink::enabled());
+
+    let store = SessionStore::new_in_memory();
+    store.get_or_create("cap:key");
+    store.set_history("cap:key", stored_msgs(3)); // growth: overwrite=false
+    store.add_message("cap:key", "user", "hello"); // append capture
+    // Shrink -> overwrite_detected=true -> immediate flush to disk.
+    store.set_history("cap:key", stored_msgs(1));
+
+    let base = cap_dir.path().join("logs").join("capture").join("cap_key");
+    let entries: Vec<_> = std::fs::read_dir(&base).unwrap().collect();
+    assert_eq!(entries.len(), 1, "overwrite should have flushed exactly once");
+    let edir = entries[0].as_ref().unwrap().path();
+    assert!(
+        edir.to_string_lossy().contains("session_overwrite"),
+        "flush dir: {}",
+        edir.display()
+    );
+    assert!(
+        edir.join("02.session_writes.jsonl").exists(),
+        "write timeline must be on disk"
+    );
+}
+
+/// `hash_messages` is stable for identical (role, content) sequences and
+/// distinct for different ones.
+#[test]
+fn test_hash_messages_stable_and_distinct() {
+    let a = stored_msgs(2);
+    let b = stored_msgs(2);
+    assert_eq!(SessionStore::hash_messages(&a), SessionStore::hash_messages(&b));
+    let c = stored_msgs(3);
+    assert_ne!(SessionStore::hash_messages(&a), SessionStore::hash_messages(&c));
+    assert!(!SessionStore::hash_messages(&[]).is_empty(), "16-hex digits");
+}
+
+/// `sanitize_session_id` keeps [A-Za-z0-9_-] and collapses everything else
+/// (per char, multi-byte safe).
+#[test]
+fn test_sanitize_session_id_charset() {
+    assert_eq!(SessionStore::sanitize_session_id("abc-123_X"), "abc-123_X");
+    assert_eq!(SessionStore::sanitize_session_id(r"a:b/c\d"), "a_b_c_d");
+    assert_eq!(SessionStore::sanitize_session_id("中文.key"), "___key");
+    assert_eq!(SessionStore::sanitize_session_id(""), "");
+}
+
+/// save(): rename failure (destination path is a DIRECTORY on Windows) ->
+/// Err("rename error ...") and the temp file is cleaned up.
+#[test]
+fn test_save_rename_failure_returns_error_and_cleans_temp() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = SessionStore::new_with_storage(dir.path());
+    store.get_or_create("rn:key");
+    std::fs::create_dir_all(dir.path().join("rn_key.json")).unwrap();
+    let err = store.save("rn:key").unwrap_err();
+    assert!(err.contains("rename error"), "unexpected error: {err}");
+    let leftovers: Vec<String> = std::fs::read_dir(dir.path())
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .map(|e| e.file_name().to_string_lossy().to_string())
+        .filter(|n| n.ends_with(".tmp"))
+        .collect();
+    assert!(leftovers.is_empty(), "temp removed: {leftovers:?}");
+}
+
+/// load_from_disk: non-`.json` entries skipped; a `.json`-named DIRECTORY
+/// (unreadable) skipped; the valid file still loads.
+#[test]
+fn test_load_from_disk_skips_non_json_and_unreadable_entries() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("notes.txt"), "ignore").unwrap();
+    std::fs::create_dir_all(dir.path().join("dir_named.json")).unwrap();
+    let good = StoredSession {
+        key: "good:key".to_string(),
+        messages: vec![],
+        summary: String::new(),
+        summary_covers_up_to: None,
+        created: Local::now(),
+        updated: Local::now(),
+    };
+    std::fs::write(
+        dir.path().join("good_key.json"),
+        serde_json::to_string(&good).unwrap(),
+    )
+    .unwrap();
+
+    let store = SessionStore::new_with_storage(dir.path());
+    assert_eq!(store.len(), 1, "only the valid json loads");
+    assert!(store.contains("good:key"));
+}
+
+/// load_from_disk with an uncreatable storage dir (parent is a FILE): the
+/// read_dir error arm is tolerated (empty store, no panic).
+#[test]
+fn test_load_from_disk_unreadable_dir_is_tolerated() {
+    let tmp = tempfile::tempdir().unwrap();
+    let blocker = tmp.path().join("blocker");
+    std::fs::write(&blocker, b"x").unwrap();
+    let store = SessionStore::new_with_storage(&blocker.join("sessions"));
+    assert!(store.is_empty());
+}
+
+/// delete_session for a key whose store file was never written: the json
+/// removal hits NotFound (no warn), still deletes the jsonl best-effort and
+/// reports the in-memory presence.
+#[test]
+fn test_delete_session_missing_files_is_quiet() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = SessionStore::new_with_storage(dir.path());
+    store.get_or_create("gone:key");
+    assert!(store.delete_session("gone:key"));
+    assert!(!store.contains("gone:key"));
+    assert!(!store.file_exists("gone:key"));
+}
+
+/// cleanup_old_sessions skips non-json entries, `.json`-named directories
+/// (unreadable), and files whose `updated` is not valid RFC3339.
+#[test]
+fn test_cleanup_skips_non_json_unreadable_and_bad_timestamp() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path().to_path_buf();
+    let store = SessionStore::new_with_storage(&dir);
+    std::fs::write(dir.join("notes.txt"), "x").unwrap();
+    std::fs::create_dir_all(dir.join("weird.json")).unwrap();
+    let bad = serde_json::json!({"key":"bad:ts","messages":[],"updated":"not-a-date"});
+    std::fs::write(dir.join("bad_ts.json"), bad.to_string()).unwrap();
+
+    assert_eq!(store.cleanup_old_sessions(0), 0);
+    assert!(dir.join("notes.txt").exists());
+    assert!(dir.join("weird.json").exists());
+    assert!(dir.join("bad_ts.json").exists());
+}
+
+/// cleanup_old_sessions with an unreadable storage dir: warns and returns 0.
+#[test]
+fn test_cleanup_unreadable_dir_returns_zero() {
+    let tmp = tempfile::tempdir().unwrap();
+    let blocker = tmp.path().join("f");
+    std::fs::write(&blocker, b"x").unwrap();
+    let store = SessionStore::new_with_storage(&blocker.join("s"));
+    assert_eq!(store.cleanup_old_sessions(7), 0);
+}
+
+/// An expired file that cannot be deleted (read-only on Windows): the sweep
+/// warns per-file and continues; the count stays honest.
+#[cfg(windows)]
+#[test]
+fn test_cleanup_readonly_expired_file_survives() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path().to_path_buf();
+    let store = SessionStore::new_with_storage(&dir);
+    let v = serde_json::json!({
+        "key": "ro:key",
+        "messages": [],
+        "updated": "2020-01-01T00:00:00+00:00",
+    });
+    let p = dir.join("ro_key.json");
+    std::fs::write(&p, v.to_string()).unwrap();
+
+    // 探针判定只读删除语义：部分文件系统（ReFS/Dev Drive）不强制，实测可删
+    // ——未强制时跳过存活断言（该 warn 分支只在不强制只读的机器上可达）。
+    let probe = dir.join("ro_probe.txt");
+    std::fs::write(&probe, b"p").unwrap();
+    let mut perm = std::fs::metadata(&probe).unwrap().permissions();
+    perm.set_readonly(true);
+    std::fs::set_permissions(&probe, perm).unwrap();
+    let enforced = std::fs::remove_file(&probe).is_err();
+    if !enforced {
+        eprintln!("skipping readonly-survives arm: filesystem does not enforce readonly deletes");
+        return;
+    }
+
+    let mut perm = std::fs::metadata(&p).unwrap().permissions();
+    perm.set_readonly(true);
+    std::fs::set_permissions(&p, perm).unwrap();
+
+    let deleted = store.cleanup_old_sessions(7);
+    assert_eq!(deleted, 0, "read-only file could not be deleted");
+    assert!(p.exists(), "locked file survives");
+
+    // cleanup: clear readonly so the tempdir can be removed.
+    let mut perm = std::fs::metadata(&p).unwrap().permissions();
+    perm.set_readonly(false);
+    std::fs::set_permissions(&p, perm).unwrap();
+}
+
+/// migrate_legacy_main happy path: jsonl renamed, store json rewritten with
+/// the new key and the old file removed; second call is a no-op.
+/// SAFETY: the jsonl side uses the REAL sessions_log_dir with FIXED names --
+/// skipped entirely when either file already exists (real user data).
+#[test]
+fn test_migrate_legacy_main_happy_path() {
+    let logs_dir = nemesis_path::default_path_manager().sessions_log_dir();
+    let main_log = logs_dir.join("agent_main_main.jsonl");
+    let legacy_log = logs_dir.join("agent_main_session_legacy.jsonl");
+    if main_log.exists() || legacy_log.exists() {
+        return; // production home carries real data; do not touch it
+    }
+    std::fs::create_dir_all(&logs_dir).unwrap();
+    std::fs::write(&main_log, "{\"role\":\"user\",\"content\":\"legacy q\"}\n").unwrap();
+
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("agent_main_main.json"),
+        serde_json::json!({
+            "key": "agent:main:main",
+            "messages": [],
+            "summary": "",
+            "created": "2026-01-01T00:00:00+08:00",
+            "updated": "2026-01-01T00:00:00+08:00",
+        })
+        .to_string(),
+    )
+    .unwrap();
+
+    SessionStore::migrate_legacy_main(dir.path());
+
+    assert!(legacy_log.exists(), "jsonl renamed to legacy name");
+    assert!(!main_log.exists());
+    let legacy_json = dir.path().join("agent_main_session_legacy.json");
+    assert!(legacy_json.exists(), "store json rewritten");
+    let v: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&legacy_json).unwrap()).unwrap();
+    assert_eq!(v["key"], "agent:main:session:legacy");
+    assert!(!dir.path().join("agent_main_main.json").exists());
+
+    // Idempotent: nothing left to migrate, no panic.
+    SessionStore::migrate_legacy_main(dir.path());
+
+    let _ = std::fs::remove_file(&legacy_log); // cleanup what we created
+}
+
+/// migrate_legacy_main json-side edge arms: corrupt source kept; a source
+/// whose key does not match `agent:main:main` is still moved but its key is
+/// NOT rewritten.
+#[test]
+fn test_migrate_legacy_main_json_edge_arms() {
+    let logs_dir = nemesis_path::default_path_manager().sessions_log_dir();
+    let main_log = logs_dir.join("agent_main_main.jsonl");
+    let legacy_log = logs_dir.join("agent_main_session_legacy.jsonl");
+    if main_log.exists() || legacy_log.exists() {
+        return; // never touch real user data
+    }
+
+    // Corrupt json: read ok, parse fails -> warn, source untouched.
+    let dir1 = tempfile::tempdir().unwrap();
+    std::fs::write(dir1.path().join("agent_main_main.json"), "NOT JSON").unwrap();
+    SessionStore::migrate_legacy_main(dir1.path());
+    assert!(
+        dir1.path().join("agent_main_main.json").exists(),
+        "corrupt source kept (data not lost)"
+    );
+    assert!(!dir1.path().join("agent_main_session_legacy.json").exists());
+
+    // Non-matching key: file migrated verbatim, key NOT rewritten.
+    let dir2 = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir2.path().join("agent_main_main.json"),
+        r#"{"key":"other:key","x":1}"#,
+    )
+    .unwrap();
+    SessionStore::migrate_legacy_main(dir2.path());
+    let p = dir2.path().join("agent_main_session_legacy.json");
+    assert!(p.exists(), "migrated regardless of key value");
+    let v: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&p).unwrap()).unwrap();
+    assert_eq!(v["key"], "other:key", "non-matching key left as-is");
+    assert!(!dir2.path().join("agent_main_main.json").exists());
+}
+
+// --- Summarizer edge arms (W3a) ---
+
+struct ErrorLlmProvider;
+#[async_trait]
+impl LlmProvider for ErrorLlmProvider {
+    async fn chat(
+        &self,
+        _model: &str,
+        _messages: Vec<LlmMessage>,
+        _options: Option<crate::types::ChatOptions>,
+        _tools: Vec<crate::types::ToolDefinition>,
+    ) -> Result<crate::r#loop::LlmResponse, String> {
+        Err("provider down".to_string())
+    }
+}
+
+struct EmptyContentLlmProvider;
+#[async_trait]
+impl LlmProvider for EmptyContentLlmProvider {
+    async fn chat(
+        &self,
+        _model: &str,
+        _messages: Vec<LlmMessage>,
+        _options: Option<crate::types::ChatOptions>,
+        _tools: Vec<crate::types::ToolDefinition>,
+    ) -> Result<crate::r#loop::LlmResponse, String> {
+        Ok(crate::r#loop::LlmResponse {
+            content: String::new(),
+            tool_calls: Vec::new(),
+            finished: true,
+            reasoning_content: None,
+            usage: None,
+            raw_request_body: None,
+            raw_response_body: None,
+        })
+    }
+}
+
+/// Provider error in the batch path -> empty summary (never a panic, never a
+/// partial), and the store is NOT updated.
+#[test]
+fn test_summarize_batch_provider_error_returns_empty() {
+    let store = Arc::new(SessionStore::new_in_memory());
+    store.get_or_create("err:key");
+    let summarizer =
+        Summarizer::new_silent(Arc::new(ErrorLlmProvider), "m".to_string(), 128000, store.clone());
+    let history: Vec<ConversationTurn> = (0..8)
+        .map(|i| conv_turn(if i % 2 == 0 { "user" } else { "assistant" }, &format!("m{i}")))
+        .collect();
+    let result = summarizer.summarize_session("err:key", &history);
+    assert_eq!(result, "");
+    assert!(store.get_summary("err:key").is_empty(), "no summary on error");
+}
+
+/// Multipart path (>10 valid messages) with a failing provider: both halves
+/// fall back to "", the merge falls back to concatenation.
+#[test]
+fn test_summarize_multipart_provider_error_falls_back_to_concat() {
+    let store = Arc::new(SessionStore::new_in_memory());
+    store.get_or_create("mp:key");
+    let summarizer =
+        Summarizer::new_silent(Arc::new(ErrorLlmProvider), "m".to_string(), 128000, store.clone());
+    let history: Vec<ConversationTurn> = (0..16)
+        .map(|i| conv_turn("user", &format!("m{i}")))
+        .collect();
+    let result = summarizer.summarize_session("mp:key", &history);
+    assert_eq!(result, " ", "empty halves concatenated with a space");
+}
+
+/// Multipart path with a provider that returns Ok but EMPTY content: the
+/// merge result is empty -> fallback concatenation (the `Ok(_)` empty arm).
+#[test]
+fn test_summarize_multipart_empty_merge_falls_back() {
+    let store = Arc::new(SessionStore::new_in_memory());
+    store.get_or_create("mpe:key");
+    let summarizer = Summarizer::new_silent(
+        Arc::new(EmptyContentLlmProvider),
+        "m".to_string(),
+        128000,
+        store,
+    );
+    let history: Vec<ConversationTurn> = (0..16)
+        .map(|i| conv_turn("user", &format!("m{i}")))
+        .collect();
+    let result = summarizer.summarize_session("mpe:key", &history);
+    assert_eq!(result, " ", "empty merge falls back to concatenated halves");
+}
+
+/// An existing stored summary is folded into the batch prompt ("Existing
+/// context" line).
+#[test]
+fn test_summarize_session_uses_existing_summary() {
+    let store = Arc::new(SessionStore::new_in_memory());
+    store.get_or_create("prior:key");
+    store.set_summary("prior:key", "prior context");
+    let summarizer =
+        Summarizer::new_silent(Arc::new(NullLlmProvider), "m".to_string(), 128000, store.clone());
+    let history: Vec<ConversationTurn> = (0..8)
+        .map(|i| conv_turn("user", &format!("m{i}")))
+        .collect();
+    let result = summarizer.summarize_session("prior:key", &history);
+    assert_eq!(result, "summary");
+    assert_eq!(store.get_summary("prior:key"), "summary");
+}
+
+/// One oversized message (relative to context_window/2) is omitted and the
+/// final summary carries the omission note.
+#[test]
+fn test_summarize_session_appends_omission_note_for_oversized() {
+    let store = Arc::new(SessionStore::new_in_memory());
+    store.get_or_create("omit:key");
+    let summarizer =
+        Summarizer::new_silent(Arc::new(NullLlmProvider), "m".to_string(), 400, store);
+    let history = vec![
+        conv_turn("user", &"H".repeat(20_000)), // ~8000 tokens > 200 cap
+        conv_turn("user", "q1"),
+        conv_turn("assistant", "a1"),
+        conv_turn("user", "q2"),
+        conv_turn("assistant", "a2"),
+        conv_turn("user", "q3"),
+        conv_turn("assistant", "a3"),
+    ];
+    let result = summarizer.summarize_session("omit:key", &history);
+    assert!(result.starts_with("summary"), "{result}");
+    assert!(
+        result.contains("oversized messages were omitted"),
+        "omission note missing: {result}"
+    );
+}
+
+/// summarize_session with a store whose save fails (broken storage dir):
+/// warn only -- the summary is still returned.
+#[test]
+fn test_summarize_session_save_failure_warns_but_returns_summary() {
+    let tmp = tempfile::tempdir().unwrap();
+    let blocker = tmp.path().join("f");
+    std::fs::write(&blocker, b"x").unwrap();
+    let store = Arc::new(SessionStore::new_with_storage(&blocker.join("s")));
+    let key = format!(
+        "test:savefail:{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    );
+    store.get_or_create(&key);
+    let summarizer =
+        Summarizer::new_silent(Arc::new(NullLlmProvider), "m".to_string(), 128000, store.clone());
+    let history: Vec<ConversationTurn> = (0..8)
+        .map(|i| conv_turn("user", &format!("m{i}")))
+        .collect();
+    let result = summarizer.summarize_session(&key, &history);
+    assert_eq!(result, "summary", "save failure must not eat the summary");
+}
+
+/// maybe_summarize with the session already mid-summarization -> false
+/// (the dedup guard, hit BEFORE notify).
+#[test]
+fn test_maybe_summarize_skips_when_already_summarizing() {
+    let store = Arc::new(SessionStore::new_in_memory());
+    let summarizer =
+        Summarizer::new_silent(Arc::new(NullLlmProvider), "m".to_string(), 128000, store.clone());
+    summarizer.summarizing.insert("m:test:dup".to_string(), true);
+    let history: Vec<ConversationTurn> = (0..30)
+        .map(|i| conv_turn("user", &format!("m{i}")))
+        .collect();
+    assert!(!summarizer.maybe_summarize("test:dup", "web", "c1", &history, 128000));
+}
+
+/// maybe_summarize on a NON-internal channel notifies the user once.
+#[test]
+fn test_maybe_summarize_notifies_non_internal_channel() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    struct CountingNotify {
+        count: std::sync::Arc<AtomicUsize>,
+    }
+    impl SummarizationNotifier for CountingNotify {
+        fn notify(&self, _c: &str, _id: &str, _msg: &str) {
+            self.count.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+    let count = std::sync::Arc::new(AtomicUsize::new(0));
+    let store = Arc::new(SessionStore::new_in_memory());
+    let summarizer = Summarizer::new(
+        Arc::new(NullLlmProvider),
+        "m".to_string(),
+        128000,
+        store,
+        Box::new(CountingNotify { count: count.clone() }),
+        None,
+    );
+    let history: Vec<ConversationTurn> = (0..30)
+        .map(|i| conv_turn("user", &format!("m{i}")))
+        .collect();
+    assert!(summarizer.maybe_summarize("test:notify", "web", "c1", &history, 128000));
+    assert_eq!(count.load(Ordering::SeqCst), 1);
+}
+
+/// Summarizer with an observer manager attached: the batch path emits
+/// ConversationStart/LlmRequest/LlmResponse/ConversationEnd without panicking.
+#[test]
+fn test_summarize_batch_emits_observer_events() {
+    let store = Arc::new(SessionStore::new_in_memory());
+    store.get_or_create("obs:key");
+    let summarizer = Summarizer::new(
+        Arc::new(NullLlmProvider),
+        "m".to_string(),
+        128000,
+        store,
+        Box::new(NullNotifier),
+        Some(Arc::new(nemesis_observer::Manager::new())),
+    );
+    let history: Vec<ConversationTurn> = (0..8)
+        .map(|i| conv_turn("user", &format!("m{i}")))
+        .collect();
+    let result = summarizer.summarize_session("obs:key", &history);
+    assert_eq!(result, "summary");
+}
+
+/// tokio_block_on with NO ambient runtime creates one (Err arm).
+#[test]
+fn tokio_block_on_creates_runtime_when_none() {
+    let v = tokio_block_on(async { 7u32 });
+    assert_eq!(v, 7);
+}
+
+/// tokio_block_on INSIDE a multi-thread runtime uses block_in_place (Ok arm).
+#[tokio::test(flavor = "multi_thread")]
+async fn tokio_block_on_uses_current_runtime() {
+    let v = tokio_block_on(async { 11u32 });
+    assert_eq!(v, 11);
+}
+
+/// clear_session: in-memory entry dropped AND the on-disk json removed; the
+/// key lazily rebuilds empty; clearing a never-saved key is a quiet no-op.
+#[test]
+fn test_clear_session_empties_memory_and_disk() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = SessionStore::new_with_storage(dir.path());
+    store.get_or_create("clr:key");
+    store.set_history("clr:key", stored_msgs(2));
+    store.save("clr:key").unwrap();
+    assert!(dir.path().join("clr_key.json").exists());
+
+    store.clear_session("clr:key");
+    assert!(!dir.path().join("clr_key.json").exists(), "disk file removed");
+    assert!(!store.contains("clr:key"));
+
+    // NotFound arm: clearing again (no file) must not panic or warn.
+    store.clear_session("clr:key");
+
+    // Key rebuilds lazily as an empty session.
+    store.get_or_create("clr:key");
+    assert!(store.get_history("clr:key").is_empty());
+}
+
+/// load_from_disk on an in-memory store: returns immediately (None arm).
+#[test]
+fn test_load_from_disk_in_memory_store_is_noop() {
+    let store = SessionStore::new_in_memory();
+    store.get_or_create("mem:key");
+    store.load_from_disk(); // must not panic or drop in-memory sessions
+    assert!(store.contains("mem:key"));
+}

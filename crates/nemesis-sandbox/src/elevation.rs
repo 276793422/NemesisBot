@@ -93,3 +93,6 @@ mod win {
 }
 
 pub use win::{is_elevated, relaunch_elevated};
+
+#[cfg(test)]
+mod tests;

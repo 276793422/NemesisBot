@@ -477,7 +477,14 @@ pub async fn run(action: ClusterAction, local: bool) -> Result<()> {
             }
             Some(PeerAction::Remove { id }) => {
                 println!("Removing peer: {}", id);
-                let key_safe = id.replace('.', "_").replace(':', "_").replace('-', "_");
+                // (BUG #26, quality-hardening goal 冲刺 S11) 权威写路径
+                // sanitize_peer_key 只替换 `.`/`:`（保留 `-`），而此处旧逻辑把
+                // `-` 也换成 `_` 再查表 → `peers add --id node-a` 写出
+                // `[peers.node-a]`，`peers remove --id node-a` 查 `node_a`
+                // 永远 not found；真实节点 ID（node-{host}-{uuid}）全带 `-`。
+                // 修法对齐 enable_peer_in_toml：候选 key 依次尝试
+                // （legacy `-`→`_` / canonical `.`+`:` / 原始 id），再兜底按
+                // address 扫描。
                 let peers_path = common::cluster_dir(&home).join("peers.toml");
                 if peers_path.exists() {
                     if let Ok(data) = std::fs::read_to_string(&peers_path) {
@@ -487,12 +494,39 @@ pub async fn run(action: ClusterAction, local: bool) -> Result<()> {
                                 .and_then(|t| t.get_mut("peers"))
                                 .and_then(|v| v.as_table_mut())
                             {
-                                if peers.remove(&key_safe).is_some() {
-                                    let _ = std::fs::write(
-                                        &peers_path,
-                                        toml::to_string_pretty(&doc).unwrap_or_default(),
-                                    );
-                                    println!("  Peer {} removed.", id);
+                                let legacy_key =
+                                    id.replace('.', "_").replace(':', "_").replace('-', "_");
+                                let canonical_key = id.replace('.', "_").replace(':', "_");
+                                let target_key = if peers.contains_key(&legacy_key) {
+                                    Some(legacy_key)
+                                } else if peers.contains_key(&canonical_key) {
+                                    Some(canonical_key)
+                                } else if peers.contains_key(id.as_str()) {
+                                    Some(id.clone())
+                                } else {
+                                    // 兜底：按 address 字段匹配（enable/disable 同款）
+                                    peers.iter().find_map(|(k, v)| {
+                                        let addr = v
+                                            .as_table()
+                                            .and_then(|t| t.get("address"))
+                                            .and_then(|a| a.as_str());
+                                        if addr == Some(id.as_str()) {
+                                            Some(k.clone())
+                                        } else {
+                                            None
+                                        }
+                                    })
+                                };
+                                if let Some(key) = target_key {
+                                    if peers.remove(&key).is_some() {
+                                        let _ = std::fs::write(
+                                            &peers_path,
+                                            toml::to_string_pretty(&doc).unwrap_or_default(),
+                                        );
+                                        println!("  Peer {} removed.", id);
+                                    } else {
+                                        println!("  Peer {} not found.", id);
+                                    }
                                 } else {
                                     println!("  Peer {} not found.", id);
                                 }

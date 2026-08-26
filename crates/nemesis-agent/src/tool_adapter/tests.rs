@@ -70,3 +70,43 @@ fn test_adapter_forwards_schema_and_metadata() {
     assert!(names.contains(&"path"));
     assert!(names.contains(&"content"));
 }
+
+/// Security deny path: with a plugin whose default action is "deny" and no
+/// rules, a known write tool is blocked at the ABAC layer BEFORE the inner
+/// tool runs — the adapter must surface `⛔ SECURITY BLOCKED: …` (never
+/// execute the wrapped tool).
+#[cfg(feature = "security")]
+#[tokio::test]
+async fn test_adapter_security_deny_blocks_execution() {
+    use nemesis_security::pipeline::{SecurityPlugin, SecurityPluginConfig};
+
+    // default config = enabled, default_action "deny", zero rules → every
+    // classified operation denies at Layer 3 (ABAC default action).
+    let plugin = Arc::new(SecurityPlugin::new(SecurityPluginConfig::default()));
+
+    let tmp_path =
+        std::env::temp_dir().join(format!("nemesis_adapter_deny_{}.txt", std::process::id()));
+    let _ = std::fs::remove_file(&tmp_path);
+
+    let inner: Arc<dyn AgentTool> = Arc::new(crate::loop_tools::WriteFileTool);
+    let adapter = AgentToolAdapter::new(
+        "write_file".to_string(),
+        inner,
+        Some(plugin),
+    );
+
+    let args = serde_json::json!({ "path": tmp_path.display().to_string(), "content": "must not be written" });
+    let result = adapter.execute(&args).await;
+    assert!(result.is_error, "deny must surface as error result");
+    assert!(
+        result.for_llm.contains("SECURITY BLOCKED"),
+        "explicit blocked prefix expected, got: {}",
+        result.for_llm
+    );
+    // The wrapped tool must NOT have run.
+    assert!(
+        !tmp_path.exists(),
+        "denied write must not touch the filesystem"
+    );
+    let _ = std::fs::remove_file(&tmp_path);
+}

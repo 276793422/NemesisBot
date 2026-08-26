@@ -770,6 +770,8 @@ async fn test_restore_missing_workspace() {
 
 #[tokio::test]
 async fn test_shop_refresh_no_network() {
+    // refresh 清空三级全局缓存，必须与 persona/tests.rs 的种子测试互斥。
+    let _shop_guard = crate::handlers::persona::tests::SHOP_TEST_LOCK.lock().await;
     let dir = tempfile::tempdir().unwrap();
     let ctx = make_ctx(&dir);
     let h = PersonaHandler::new();

@@ -442,3 +442,116 @@ async fn file_store_episode_with_metadata() {
     let episodes = store.get_session("s1").await.unwrap();
     assert_eq!(episodes[0].metadata.get("source").unwrap(), "api");
 }
+
+// ---- S5 coverage: filesystem error branches ----
+
+#[tokio::test]
+async fn append_create_dir_fails_when_data_dir_is_file() {
+    // data_dir exists as a FILE → create_dir_all errors.
+    let dir = tempfile::tempdir().unwrap();
+    let file_path = dir.path().join("blocker");
+    std::fs::write(&file_path, "x").unwrap();
+
+    let store = FileEpisodicStore::new(&file_path);
+    let ep = Episode::new("s".to_string(), "user".to_string(), "hi".to_string());
+    let err = store.append(ep).await.unwrap_err();
+    assert!(err.contains("Failed to create episodic dir"), "got: {err}");
+}
+
+#[tokio::test]
+async fn append_open_fails_when_session_file_is_directory() {
+    // {data_dir}/{session}.jsonl pre-created as a DIRECTORY → append-open fails.
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join("s.jsonl")).unwrap();
+
+    let store = FileEpisodicStore::new(dir.path());
+    let ep = Episode::new("s".to_string(), "user".to_string(), "hi".to_string());
+    let err = store.append(ep).await.unwrap_err();
+    assert!(err.contains("Failed to open episode file"), "got: {err}");
+}
+
+#[tokio::test]
+async fn get_session_read_fails_when_session_file_is_directory() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join("s.jsonl")).unwrap();
+
+    let store = FileEpisodicStore::new(dir.path());
+    let err = store.get_session("s").await.unwrap_err();
+    assert!(err.contains("Failed to read session file"), "got: {err}");
+}
+
+#[tokio::test]
+async fn delete_session_read_fails_when_session_file_is_directory() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join("s.jsonl")).unwrap();
+
+    let store = FileEpisodicStore::new(dir.path());
+    let err = store.delete_session("s").await.unwrap_err();
+    assert!(err.contains("Failed to read session file"), "got: {err}");
+}
+
+// delete_session remove-failure arm (episodic.rs:185) is structural on this
+// toolchain: std/tokio fs::remove_file on Windows now clears the read-only
+// attribute before deleting, and std exposes no share_mode handle API to hold
+// a blocking open handle — the failure is not injectable in-process.
+
+#[tokio::test]
+async fn delete_by_id_rewrite_fails_on_readonly_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = FileEpisodicStore::new(dir.path());
+
+    let mut ep1 = Episode::new("rw".to_string(), "user".to_string(), "one".to_string());
+    ep1.timestamp = chrono::Local::now() - chrono::Duration::days(10);
+    let ep2 = Episode::new("rw".to_string(), "user".to_string(), "two".to_string());
+    store.append(ep1.clone()).await.unwrap();
+    store.append(ep2).await.unwrap();
+
+    let path = dir.path().join("rw.jsonl");
+    let mut perms = std::fs::metadata(&path).unwrap().permissions();
+    perms.set_readonly(true);
+    std::fs::set_permissions(&path, perms).unwrap();
+
+    // Deleting ep1 leaves ep2 → rewrite path → write fails on readonly file.
+    let err = store.delete_by_id(&ep1.id).await.unwrap_err();
+    assert!(err.contains("Failed to rewrite session file"), "got: {err}");
+
+    let mut perms = std::fs::metadata(&path).unwrap().permissions();
+    perms.set_readonly(false);
+    std::fs::set_permissions(&path, perms).unwrap();
+}
+
+#[tokio::test]
+async fn cleanup_rewrite_fails_on_readonly_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = FileEpisodicStore::new(dir.path());
+
+    let mut old = Episode::new("cw".to_string(), "user".to_string(), "old".to_string());
+    old.timestamp = chrono::Local::now() - chrono::Duration::days(10);
+    let keep = Episode::new("cw".to_string(), "user".to_string(), "new".to_string());
+    store.append(old).await.unwrap();
+    store.append(keep).await.unwrap();
+
+    let path = dir.path().join("cw.jsonl");
+    let mut perms = std::fs::metadata(&path).unwrap().permissions();
+    perms.set_readonly(true);
+    std::fs::set_permissions(&path, perms).unwrap();
+
+    // cleanup(1) → old removed, keep remains → rewrite path → write fails.
+    let err = store.cleanup(1).await.unwrap_err();
+    assert!(err.contains("Failed to rewrite session file"), "got: {err}");
+
+    let mut perms = std::fs::metadata(&path).unwrap().permissions();
+    perms.set_readonly(false);
+    std::fs::set_permissions(&path, perms).unwrap();
+}
+
+#[tokio::test]
+async fn list_sessions_fails_when_data_dir_is_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let file_path = dir.path().join("blocker");
+    std::fs::write(&file_path, "x").unwrap();
+
+    let store = FileEpisodicStore::new(&file_path);
+    let err = store.list_sessions().await.unwrap_err();
+    assert!(err.contains("Failed to read episodic dir"), "got: {err}");
+}

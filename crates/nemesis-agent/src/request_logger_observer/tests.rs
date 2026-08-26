@@ -736,3 +736,118 @@ async fn observer_trait_name_and_dispatch() {
     nemesis_observer::Observer::on_event(&observer, end).await;
     assert_eq!(observer.active_count(), 0);
 }
+
+// --- W3a: raw 模式失败兜底 envelope、无 name 的 tool_call 过滤 ---
+
+#[test]
+fn raw_mode_failure_fallback_writes_error_envelope() {
+    // raw 模式下 LLM 失败（raw_response_body=None + finish_reason="error"）
+    // 必须合成 failure_fallback envelope 落盘，而不是静默丢掉这一轮。
+    let tmp = TempDir::new().unwrap();
+    let observer = RequestLoggerObserver::new(raw_config(), tmp.path());
+
+    observer.on_event(&make_start_event("trace-rawfail", "hi"));
+    observer.on_event(&ConversationEvent {
+        event_type: EventType::LLMResponse,
+        trace_id: "trace-rawfail".to_string(),
+        timestamp: Local::now(),
+        data: EventData::LLMResponse(LLMResponseEventData {
+            round: 1,
+            duration_ms: 250,
+            content: "Error: provider timeout".to_string(),
+            tool_calls_count: 0,
+            finish_reason: "error".to_string(),
+            tool_calls: vec![],
+            prompt_tokens: 0,
+            completion_tokens: 0,
+            total_tokens: 0,
+            cached_tokens: None,
+            raw_request_body: None,
+            raw_response_body: None, // 失败路径硬编码 None（loop.rs）
+        }),
+    });
+    observer.on_event(&make_end_event("trace-rawfail", 1));
+
+    let log_dir = tmp.path().join("logs").join("llm");
+    let session = std::fs::read_dir(&log_dir)
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .find(|e| e.file_type().map_or(false, |ft| ft.is_dir()))
+        .map(|e| e.path())
+        .expect("session dir exists");
+    let raw = std::fs::read_dir(&session)
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .find(|e| {
+            e.file_name()
+                .to_string_lossy()
+                .contains("AI.Response.raw.json")
+        })
+        .expect("failure fallback response file must exist");
+    let body = std::fs::read_to_string(raw.path()).unwrap();
+    assert!(body.contains("failure_fallback"), "body: {body}");
+    assert!(body.contains("provider timeout"), "body: {body}");
+}
+
+#[test]
+fn llm_response_skips_tool_calls_without_name() {
+    // markdown 模式：缺 name 的 tool_call 条目必须整条过滤（连 arguments 都不写）。
+    let tmp = TempDir::new().unwrap();
+    let observer = RequestLoggerObserver::new(test_config(), tmp.path());
+
+    observer.on_event(&make_start_event("trace-noname", "hi"));
+    observer.on_event(&ConversationEvent {
+        event_type: EventType::LLMResponse,
+        trace_id: "trace-noname".to_string(),
+        timestamp: Local::now(),
+        data: EventData::LLMResponse(LLMResponseEventData {
+            round: 1,
+            duration_ms: 100,
+            content: "calling tools".to_string(),
+            tool_calls_count: 2,
+            finish_reason: "tool_calls".to_string(),
+            tool_calls: vec![
+                // 无 name（顶层和 function.name 都缺）→ 应被过滤
+                serde_json::json!({
+                    "id": "tc_anon",
+                    "arguments": "{\"poison_marker\": true}"
+                }),
+                // 正常带 name → 保留
+                serde_json::json!({
+                    "id": "tc_ok",
+                    "function": {"name": "web_search", "arguments": "{\"q\": \"rust\"}"}
+                }),
+            ],
+            prompt_tokens: 0,
+            completion_tokens: 0,
+            total_tokens: 0,
+            cached_tokens: None,
+            raw_request_body: None,
+            raw_response_body: None,
+        }),
+    });
+    observer.on_event(&make_end_event("trace-noname", 1));
+
+    let log_dir = tmp.path().join("logs").join("llm");
+    let session = std::fs::read_dir(&log_dir)
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .find(|e| e.file_type().map_or(false, |ft| ft.is_dir()))
+        .map(|e| e.path())
+        .expect("session dir exists");
+    let resp = std::fs::read_dir(&session)
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .find(|e| {
+            e.file_name()
+                .to_string_lossy()
+                .ends_with(".AI.Response.md")
+        })
+        .expect("response md exists");
+    let md = std::fs::read_to_string(resp.path()).unwrap();
+    assert!(md.contains("web_search"), "valid call kept: {md}");
+    assert!(
+        !md.contains("poison_marker"),
+        "nameless call must be filtered entirely: {md}"
+    );
+}

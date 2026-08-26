@@ -680,3 +680,16 @@ fn test_url_decode_query_param_invalid_percent() {
 fn test_urlencoding_tilde() {
     assert_eq!(urlencoding("hello~world"), "hello~world");
 }
+
+// ===========================================================================
+// S2 coverage (2026-08-26): validate_url fall-through to Ok (no host, and a
+// public host that passes every SSRF check)
+// ===========================================================================
+
+#[test]
+fn s2_validate_url_passes_hostless_and_public_urls() {
+    // Non-HTTP scheme: the minimal internal URL parser rejects it outright.
+    assert!(validate_url("mailto:someone@example.com").is_err());
+    // Public host that passes every blocked-host / private-range check.
+    assert!(validate_url("https://example.com/path").is_ok());
+}

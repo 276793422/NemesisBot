@@ -271,3 +271,59 @@ fn test_validate_messages_second_message_missing_content() {
         err
     );
 }
+
+// ============================================================
+// S4 coverage: field lines under a subscriber + the empty-array
+// validate arm.
+// ============================================================
+
+struct S4AllEventsSubscriber;
+impl tracing::Subscriber for S4AllEventsSubscriber {
+    fn enabled(&self, _metadata: &tracing::Metadata<'_>) -> bool {
+        true
+    }
+    fn new_span(&self, _span: &tracing::span::Attributes<'_>) -> tracing::Id {
+        tracing::Id::from_u64(1)
+    }
+    fn record(&self, _span: &tracing::Id, _values: &tracing::span::Record<'_>) {}
+    fn record_follows_from(&self, _span: &tracing::Id, _follows: &tracing::Id) {}
+    fn event(&self, _event: &tracing::Event<'_>) {}
+    fn enter(&self, _span: &tracing::Id) {}
+    fn exit(&self, _span: &tracing::Id) {}
+}
+
+fn s4_tracing_subscriber() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        let _ = tracing::subscriber::set_global_default(S4AllEventsSubscriber);
+    });
+}
+
+/// validate() rejects an empty messages array (llm.rs 188-190).
+#[test]
+fn test_s4_validate_empty_messages_array() {
+    let handler = LlmProxyHandler::new("node-a".into());
+    let err = handler
+        .validate(&serde_json::json!({"messages": []}))
+        .unwrap_err();
+    assert!(err.contains("non-empty"), "unexpected: {}", err);
+}
+
+/// A successful provider call evaluates the debug/success field lines
+/// (llm.rs 113-118, 124-129).
+#[test]
+fn test_s4_handle_with_provider_field_lines() {
+    s4_tracing_subscriber();
+    let provider = Arc::new(MockLlmProvider {
+        response: String::new(),
+        should_fail: false,
+    });
+    let handler = LlmProxyHandler::with_provider("node-s4".into(), provider);
+    let payload = serde_json::json!({
+        "messages": [{"role": "user", "content": "s4 hello"}],
+        "model": "s4-model"
+    });
+    let result = handler.handle(payload);
+    assert!(result.success);
+    assert!(result.response["content"].is_string());
+}

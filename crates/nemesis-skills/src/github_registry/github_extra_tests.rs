@@ -754,3 +754,91 @@ async fn test_search_dispatches_to_two_layer_when_no_author() {
     let results = reg.search("pdf", 10).await.unwrap();
     assert_eq!(results.len(), 1);
 }
+
+// ============================================================
+// S5 coverage: search loop limit-break arms and malformed
+// skill-path skips
+// ============================================================
+
+#[tokio::test]
+async fn test_search_two_layer_breaks_at_limit() {
+    let server = MockServer::start().await;
+    // Two matching dirs but limit=1: after the first push the next iteration
+    // must break out of the listing loop.
+    let body = r#"[
+        {"name":"pdf","type":"dir","path":"skills/pdf"},
+        {"name":"pdf-extra","type":"dir","path":"skills/pdf-extra"}
+    ]"#;
+    Mock::given(method("GET"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(body))
+        .mount(&server)
+        .await;
+
+    let mut reg = GitHubRegistry::from_source(&two_layer_api_config("org/repo"));
+    reg.set_github_api_url(&server.uri());
+    let results = reg.search("pdf", 1).await.unwrap();
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0].slug, "pdf");
+}
+
+#[tokio::test]
+async fn test_search_three_layer_breaks_at_limit() {
+    let server = MockServer::start().await;
+    let body = r#"{
+        "tree": [
+            {"path": "skills/author1/pdf/SKILL.md", "type": "blob"},
+            {"path": "skills/author2/pdf-extra/SKILL.md", "type": "blob"}
+        ]
+    }"#;
+    Mock::given(method("GET"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(body))
+        .mount(&server)
+        .await;
+
+    let mut reg = GitHubRegistry::from_source(&three_layer_config("org/repo"));
+    reg.set_github_api_url(&server.uri());
+    let results = reg.search("pdf", 1).await.unwrap();
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0].slug, "pdf");
+}
+
+#[tokio::test]
+async fn test_search_three_layer_skips_single_segment_skill_path() {
+    // "skills/lonely/SKILL.md" strips to "lonely" — only one path segment, so
+    // it cannot be the expected skills/{author}/{slug}/SKILL.md shape.
+    let server = MockServer::start().await;
+    let body = r#"{
+        "tree": [
+            {"path": "skills/lonely/SKILL.md", "type": "blob"}
+        ]
+    }"#;
+    Mock::given(method("GET"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(body))
+        .mount(&server)
+        .await;
+
+    let mut reg = GitHubRegistry::from_source(&three_layer_config("org/repo"));
+    reg.set_github_api_url(&server.uri());
+    let results = reg.search("lonely", 10).await.unwrap();
+    assert!(results.is_empty(), "malformed path must be skipped");
+}
+
+#[tokio::test]
+async fn test_search_three_layer_skips_empty_author_segment() {
+    // "skills//pdf/SKILL.md" -> author segment empty -> skipped.
+    let server = MockServer::start().await;
+    let body = r#"{
+        "tree": [
+            {"path": "skills//pdf/SKILL.md", "type": "blob"}
+        ]
+    }"#;
+    Mock::given(method("GET"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(body))
+        .mount(&server)
+        .await;
+
+    let mut reg = GitHubRegistry::from_source(&three_layer_config("org/repo"));
+    reg.set_github_api_url(&server.uri());
+    let results = reg.search("pdf", 10).await.unwrap();
+    assert!(results.is_empty(), "empty-author path must be skipped");
+}

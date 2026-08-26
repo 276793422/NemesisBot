@@ -294,3 +294,41 @@ fn test_dual_writer_partial_write() {
     // In discard mode, should report full buffer length
     assert_eq!(result.unwrap(), buf.len());
 }
+
+#[test]
+fn s12b_go_style_formatter_full_pipeline_through_subscriber() {
+    // S12b batch (quality-hardening goal 冲刺)：format_event 此前从未被端到端
+    // 驱动——用真 subscriber（自定义 event_format + DualMakeWriter 落盘）发一条
+    // 事件，验证格式化链路（时间戳/右对齐 LEVEL/target:line/message）。
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("fmt.log");
+    let mw = DualMakeWriter::with_file(&path.to_string_lossy()).unwrap();
+
+    let subscriber = tracing_subscriber::fmt()
+        .event_format(GoStyleFormatter)
+        .with_writer(mw)
+        .finish();
+    tracing::subscriber::with_default(subscriber, || {
+        tracing::info!("formatter_pipeline_marker value={}", 42);
+    });
+
+    // DualWriter 持有句柄，读文件前先显式 flush 不可行（句柄在 writer 内），
+    // 直接整段读取（同进程已写落盘；若竞争极端情况重复读取兜底）。
+    let content = std::fs::read_to_string(&path).expect("log file readable");
+    assert!(content.contains("INFO"), "level rendered: {content}");
+    assert!(
+        content.contains("nemesis_logger"),
+        "module target rendered: {content}"
+    );
+    assert!(
+        content.contains("formatter_pipeline_marker value=42"),
+        "message+fields rendered: {content}"
+    );
+    // GoStyle 特有：target:line 前缀（行号是宏调用点，值不固定——只验形状）
+    let first = content.lines().next().unwrap_or("");
+    let after_target = first.find("nemesis_logger").map(|i| &first[i..]).unwrap_or("");
+    assert!(
+        after_target.contains("format::tests:") && !after_target.ends_with(':'),
+        "target:line shape rendered, got: {first}"
+    );
+}

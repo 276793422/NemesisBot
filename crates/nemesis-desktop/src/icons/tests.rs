@@ -444,3 +444,34 @@ fn test_png_to_ico_invalid_data_fallback() {
         "invalid data should return original bytes as fallback"
     );
 }
+
+// ============================================================
+// Additional coverage: short-data pixel guard + tray icon loading
+// ============================================================
+
+#[test]
+fn test_pixel_short_data_returns_none() {
+    // load_from_bytes 对长度不符的数据前置拒绝（icons.rs:59-62，返回 None），
+    // 短数据根本构造不出 Icon——pixel() 的守卫经 x/y 越界触达。
+    assert!(Icon::load_from_bytes(vec![10, 20], 1, 1).is_none());
+    let icon = Icon::load_from_bytes(vec![1, 2, 3, 4], 1, 1).unwrap();
+    assert_eq!(icon.pixel(0, 0), Some((1, 2, 3, 4)));
+    assert_eq!(icon.pixel(1, 0), None);
+    assert_eq!(icon.pixel(0, 1), None);
+}
+
+#[cfg(all(not(target_os = "android"), not(target_os = "linux")))]
+#[test]
+fn test_load_tray_icon_checked_embedded_png_succeeds() {
+    // The embedded icons/icon.png ships with the crate; decoding it and
+    // converting to a tray_icon::Icon is pure state (no windowing).
+    let icon = load_tray_icon_checked();
+    assert!(icon.is_ok(), "load_tray_icon_checked failed: {:?}", icon.err());
+}
+
+#[cfg(all(not(target_os = "android"), not(target_os = "linux")))]
+#[test]
+fn test_load_tray_icon_embedded_does_not_panic() {
+    // Panicking wrapper — with a valid embedded PNG it must not panic.
+    let _icon = load_tray_icon();
+}

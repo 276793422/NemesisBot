@@ -376,11 +376,11 @@ impl SecurityPlugin {
     ///
     /// Equivalent to Go's `Cleanup()`.
     pub fn cleanup(&self) -> Result<(), String> {
-        // Close audit log file
-        if let Some(ref mut _logger) = *self.audit_logger.write() {
-            // AuditLogger doesn't have an explicit close, Drop handles it
-            drop(std::mem::take(&mut *self.audit_logger.write()));
-        }
+        // Close audit log file。AuditLogger 无显式 close，Drop 负责收尾——
+        // 一次性置 None 即可。原实现 if-let 持着 write guard 又嵌套 write()
+        // 同一把锁（parking_lot 不可重入）→ audit_logger=Some 时 cleanup 必
+        // 死锁；此前无调用方无测试触达，属潜伏地雷（2026-08-25 测试首触即挂）。
+        *self.audit_logger.write() = None;
 
         // Clean up auditor
         tracing::info!("[Security] Security plugin cleaned up");

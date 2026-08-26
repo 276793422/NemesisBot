@@ -1805,3 +1805,426 @@ async fn poll_device_code_success_returns_credential() {
     assert_eq!(cred.access_token, "final_at");
     assert_eq!(cred.refresh_token.as_deref(), Some("final_rt"));
 }
+
+// ---------------------------------------------------------------------------
+// wait_for_callback / handle_callback（Phase 3 覆盖率，2026-08-25）：本地
+// TCP 回调服务器的请求行解析/状态校验/响应写出分支。真 TcpListener +
+// 进程内 tokio TCP 客户端，无需真浏览器（login_browser 编排层因 open_browser
+// 会真开浏览器而结构性不测，其网络部分由这里覆盖）。
+// ---------------------------------------------------------------------------
+
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+#[tokio::test]
+async fn wait_for_callback_accepts_and_parses_callback_request() {
+    let cfg = OAuthProviderConfig::openai();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+
+    // 先发起回调连接（wait_for_callback 未 accept 前连接在 backlog 排队）。
+    let client = tokio::spawn(async move {
+        let mut sock = tokio::net::TcpStream::connect(addr).await.unwrap();
+        sock.write_all(
+            b"GET /auth/callback?code=xyz789&state=st1 HTTP/1.1\r\nHost: x\r\n\r\n",
+        )
+        .await
+        .unwrap();
+        let mut buf = vec![0u8; 4096];
+        let n = sock.read(&mut buf).await.unwrap_or(0);
+        String::from_utf8_lossy(&buf[..n]).to_string()
+    });
+
+    let code = cfg.wait_for_callback(&listener, "st1").await.unwrap();
+    assert_eq!(code, "xyz789");
+    let resp = client.await.unwrap();
+    assert!(resp.contains("200 OK"), "{resp}");
+    assert!(resp.contains("Authentication successful"), "{resp}");
+}
+
+#[tokio::test]
+async fn wait_for_callback_state_mismatch_errors() {
+    let cfg = OAuthProviderConfig::openai();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+
+    let client = tokio::spawn(async move {
+        let mut sock = tokio::net::TcpStream::connect(addr).await.unwrap();
+        sock.write_all(
+            b"GET /auth/callback?code=xyz&state=WRONG HTTP/1.1\r\nHost: x\r\n\r\n",
+        )
+        .await
+        .unwrap();
+        let mut buf = vec![0u8; 4096];
+        let n = sock.read(&mut buf).await.unwrap_or(0);
+        String::from_utf8_lossy(&buf[..n]).to_string()
+    });
+
+    let err = cfg.wait_for_callback(&listener, "st1").await.unwrap_err();
+    assert!(err.contains("state mismatch"), "{err}");
+    let resp = client.await.unwrap();
+    assert!(resp.contains("400 Bad Request"), "{resp}");
+    assert!(resp.contains("State mismatch"), "{resp}");
+}
+
+#[tokio::test]
+async fn wait_for_callback_no_code_param_errors() {
+    let cfg = OAuthProviderConfig::openai();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+
+    let client = tokio::spawn(async move {
+        let mut sock = tokio::net::TcpStream::connect(addr).await.unwrap();
+        sock.write_all(
+            b"GET /auth/callback?state=st1&error=access_denied HTTP/1.1\r\nHost: x\r\n\r\n",
+        )
+        .await
+        .unwrap();
+        let mut buf = vec![0u8; 4096];
+        let n = sock.read(&mut buf).await.unwrap_or(0);
+        String::from_utf8_lossy(&buf[..n]).to_string()
+    });
+
+    let err = cfg.wait_for_callback(&listener, "st1").await.unwrap_err();
+    assert!(err.contains("no code received"), "{err}");
+    assert!(err.contains("access_denied"), "{err}");
+    let resp = client.await.unwrap();
+    assert!(resp.contains("400 Bad Request"), "{resp}");
+}
+
+#[tokio::test]
+async fn wait_for_callback_skips_unrelated_and_post_then_continues() {
+    let cfg = OAuthProviderConfig::openai();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+
+    // 客户端 task 顺序发三个连接：无关路径 GET（→ None 跳过）、POST
+    // （非 GET → None 跳过）、真回调（→ Some）。前两个写完即弃（socket
+    // 关闭后服务端读到已缓冲字节，同样落入跳过分支，无需等响应）。
+    let client = tokio::spawn(async move {
+        let mut j1 = tokio::net::TcpStream::connect(addr).await.unwrap();
+        j1.write_all(b"GET /favicon.ico HTTP/1.1\r\nHost: x\r\n\r\n")
+            .await
+            .unwrap();
+        drop(j1);
+        let mut j2 = tokio::net::TcpStream::connect(addr).await.unwrap();
+        j2.write_all(b"POST /auth/callback HTTP/1.1\r\nHost: x\r\n\r\n")
+            .await
+            .unwrap();
+        drop(j2);
+        let mut real = tokio::net::TcpStream::connect(addr).await.unwrap();
+        real.write_all(b"GET /auth/callback?code=third&state=st9 HTTP/1.1\r\nHost: x\r\n\r\n")
+            .await
+            .unwrap();
+        let mut buf = vec![0u8; 512];
+        let n = real.read(&mut buf).await.unwrap_or(0);
+        String::from_utf8_lossy(&buf[..n]).to_string()
+    });
+
+    let code = cfg.wait_for_callback(&listener, "st9").await.unwrap();
+    assert_eq!(code, "third");
+    let resp = client.await.unwrap();
+    assert!(resp.contains("200 OK"), "{resp}");
+}
+
+// ---------------------------------------------------------------------------
+// login_device_code 编排层（wiremock）：首次 tick 立即触发 → 快速完成，
+// 不会真等 15 分钟。覆盖 usercode 请求失败 + 全链路成功两臂。
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn login_device_code_request_failed_returns_err() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/api/accounts/deviceauth/usercode"))
+        .respond_with(ResponseTemplate::new(400).set_body_string("nope"))
+        .mount(&server)
+        .await;
+
+    let cfg = cfg_for(&server);
+    let err = cfg.login_device_code().await.unwrap_err();
+    assert!(err.contains("device code request failed"), "{err}");
+}
+
+#[tokio::test]
+async fn login_device_code_full_flow_completes_on_first_poll() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/api/accounts/deviceauth/usercode"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "user_code": "USER-123",
+            "device_auth_id": "dev_1",
+            "interval": 5,
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/api/accounts/deviceauth/token"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "authorization_code": "ac_1",
+            "code_verifier": "cv_1",
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/oauth/token"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "access_token": "dev_at",
+            "refresh_token": "dev_rt",
+            "expires_in": 3600,
+        })))
+        .mount(&server)
+        .await;
+
+    let cfg = cfg_for(&server);
+    let cred = cfg.login_device_code().await.unwrap();
+    assert_eq!(cred.access_token, "dev_at");
+    assert_eq!(cred.refresh_token.as_deref(), Some("dev_rt"));
+}
+
+// ---------------------------------------------------------------------------
+// 覆盖补遗（2026-08-25）：login_browser 绑定失败臂（bind 失败发生在
+// open_browser 之前，可确定性触发，不开浏览器）、device code 轮询的
+// clamp/pending/transient-error 三臂、callback 请求行缺 URI 的跳过臂、
+// 嵌套 auth claim 无可用键时的落穿臂、独立包装函数。
+// ---------------------------------------------------------------------------
+
+/// 抢占一个端口后要求 login_browser 绑同一端口：PKCE/state/authorize URL
+/// 照常生成（与真实登录相同的前半流程），在 listener bind 处确定性失败，
+// 且永远不会走到 open_browser（不会真开浏览器）。
+#[tokio::test]
+async fn login_browser_bind_failure_returns_err_before_opening_browser() {
+    let blocker = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let taken_port = blocker.local_addr().unwrap().port();
+
+    let cfg = OAuthProviderConfig {
+        issuer: "https://auth.example.internal".to_string(),
+        client_id: "client_x".to_string(),
+        scopes: "openid".to_string(),
+        originator: "test".to_string(),
+        port: taken_port,
+    };
+
+    let err = cfg.login_browser().await.unwrap_err();
+    assert!(err.contains("starting callback server"), "{err}");
+    assert!(err.contains(&taken_port.to_string()), "{err}");
+    // 保持 blocker 存活到断言结束，确保失败确实来自端口冲突
+    drop(blocker);
+}
+
+/// 独立函数 login_browser(cfg) 委托到方法实现（同样止步于 bind 失败）。
+#[tokio::test]
+async fn standalone_login_browser_delegates_and_fails_on_busy_port() {
+    let blocker = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let taken_port = blocker.local_addr().unwrap().port();
+
+    let cfg = OAuthProviderConfig {
+        issuer: "https://auth.example.internal".to_string(),
+        client_id: "client_x".to_string(),
+        scopes: "openid".to_string(),
+        originator: "test".to_string(),
+        port: taken_port,
+    };
+
+    let err = login_browser(&cfg).await.unwrap_err();
+    assert!(err.contains("starting callback server"), "{err}");
+}
+
+/// 独立函数 login_device_code(cfg) 委托到方法实现。
+#[tokio::test]
+async fn standalone_login_device_code_delegates_to_config() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/api/accounts/deviceauth/usercode"))
+        .respond_with(ResponseTemplate::new(400).set_body_string("nope"))
+        .mount(&server)
+        .await;
+
+    let cfg = cfg_for(&server);
+    let err = login_device_code(&cfg).await.unwrap_err();
+    assert!(err.contains("device code request failed"), "{err}");
+}
+
+/// 独立函数 refresh_access_token(cred, cfg) 委托到方法实现（无网络路径）。
+#[tokio::test]
+async fn standalone_refresh_access_token_without_refresh_token_errors() {
+    let cfg = OAuthProviderConfig::openai();
+    let cred = AuthCredential {
+        access_token: "old_at".to_string(),
+        refresh_token: None,
+        expires_at: None,
+        provider: "openai".to_string(),
+        auth_method: "oauth".to_string(),
+        account_id: None,
+    };
+    let err = refresh_access_token(&cred, &cfg).await.unwrap_err();
+    assert!(err.contains("no refresh token"), "{err}");
+}
+
+/// interval < 1 时被钳制为 5（默认值臂）。tokio interval 首 tick 立即触发，
+/// 所以整个流程无需真实等待 5 秒即可在第一次轮询完成。
+#[tokio::test]
+async fn login_device_code_interval_below_one_is_clamped_to_five() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/api/accounts/deviceauth/usercode"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "user_code": "CLAMP-1",
+            "device_auth_id": "da_clamp",
+            "interval": 0,
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/api/accounts/deviceauth/token"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "authorization_code": "ac_clamp",
+            "code_verifier": "cv_clamp",
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/oauth/token"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "access_token": "clamped_at",
+            "expires_in": 3600,
+        })))
+        .mount(&server)
+        .await;
+
+    let cfg = cfg_for(&server);
+    let cred = cfg.login_device_code().await.unwrap();
+    assert_eq!(cred.access_token, "clamped_at");
+}
+
+/// 首次轮询 400（pending → Ok(None) → continue），1 秒后的第二次轮询成功。
+#[tokio::test]
+async fn login_device_code_pending_poll_then_success() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/api/accounts/deviceauth/usercode"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "user_code": "PEND-1",
+            "device_auth_id": "da_pend",
+            "interval": 1,
+        })))
+        .mount(&server)
+        .await;
+    // 挂载顺序 = 匹配优先级：限定 mock 先挂（wiremock 按挂载顺序取第一个
+    // 匹配的 mock），通用 200 后挂兜底。
+    Mock::given(method("POST"))
+        .and(path("/api/accounts/deviceauth/token"))
+        .respond_with(ResponseTemplate::new(400))
+        .up_to_n_times(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/api/accounts/deviceauth/token"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "authorization_code": "ac_pend",
+            "code_verifier": "cv_pend",
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/oauth/token"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "access_token": "pending_at",
+            "expires_in": 3600,
+        })))
+        .mount(&server)
+        .await;
+
+    let cfg = cfg_for(&server);
+    let cred = cfg.login_device_code().await.unwrap();
+    assert_eq!(cred.access_token, "pending_at");
+}
+
+/// 首次轮询 200 但 body 不是合法 DeviceTokenResponse（Err → 瞬时错误 →
+/// continue），第二次轮询成功。
+#[tokio::test]
+async fn login_device_code_transient_parse_error_then_success() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/api/accounts/deviceauth/usercode"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "user_code": "ERRS-1",
+            "device_auth_id": "da_err",
+            "interval": 1,
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/api/accounts/deviceauth/token"))
+        .respond_with(ResponseTemplate::new(200).set_body_string("<not-json>"))
+        .up_to_n_times(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/api/accounts/deviceauth/token"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "authorization_code": "ac_err",
+            "code_verifier": "cv_err",
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/oauth/token"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "access_token": "parse_err_at",
+            "expires_in": 3600,
+        })))
+        .mount(&server)
+        .await;
+
+    let cfg = cfg_for(&server);
+    let cred = cfg.login_device_code().await.unwrap();
+    assert_eq!(cred.access_token, "parse_err_at");
+}
+
+/// 请求行为 "GET "（尾随空格、无 URI）→ split_whitespace 只剩 "GET" 一段
+/// → parts.len() < 2 → Ok(None) 跳过；后续连接携带真回调继续。
+#[tokio::test]
+async fn wait_for_callback_skips_request_line_without_uri_then_continues() {
+    let cfg = OAuthProviderConfig::openai();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+
+    let client = tokio::spawn(async move {
+        let mut j = tokio::net::TcpStream::connect(addr).await.unwrap();
+        j.write_all(b"GET \r\nHost: x\r\n\r\n").await.unwrap();
+        drop(j);
+        let mut real = tokio::net::TcpStream::connect(addr).await.unwrap();
+        real.write_all(b"GET /auth/callback?code=uri-less&state=s10 HTTP/1.1\r\nHost: x\r\n\r\n")
+            .await
+            .unwrap();
+        let mut buf = vec![0u8; 512];
+        let n = real.read(&mut buf).await.unwrap_or(0);
+        String::from_utf8_lossy(&buf[..n]).to_string()
+    });
+
+    let code = cfg.wait_for_callback(&listener, "s10").await.unwrap();
+    assert_eq!(code, "uri-less");
+    let resp = client.await.unwrap();
+    assert!(resp.contains("200 OK"), "{resp}");
+}
+
+/// 嵌套 auth claim 存在但取不到可用的 chatgpt_account_id（键缺失 / 非字符串）
+/// → 内层 if let 不命中 → 落穿到 organizations 检查 / None。
+#[test]
+fn test_extract_account_id_nested_auth_without_usable_key_falls_through() {
+    let header = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(r#"{"alg":"RS256"}"#);
+
+    // 键缺失：落穿到 organizations
+    let payload = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(
+        r#"{"https://api.openai.com/auth":{"role":"owner"},"organizations":[{"id":"org_fallthrough"}]}"#,
+    );
+    let jwt = format!("{}.{}.sig", header, payload);
+    assert_eq!(extract_account_id_impl(&jwt).unwrap(), "org_fallthrough");
+
+    // 非字符串 chatgpt_account_id：同样落穿（无 organizations → None）
+    let payload = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(
+        r#"{"https://api.openai.com/auth":{"chatgpt_account_id":123}}"#,
+    );
+    let jwt = format!("{}.{}.sig", header, payload);
+    assert!(extract_account_id_impl(&jwt).is_none());
+}

@@ -787,3 +787,10 @@ pub fn null_cstr() -> *const libc::c_char {
 pub fn to_cstr(s: &str) -> CString {
     CString::new(s).unwrap_or_else(|_| CString::new("").unwrap())
 }
+
+// =============================================================================
+// Tests (Phase 3 覆盖率，2026-08-25) — 纯 helper + 未初始化状态判定
+// =============================================================================
+
+#[cfg(test)]
+mod sherpa_tests;

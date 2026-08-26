@@ -746,6 +746,13 @@ impl SkillsHandler {
 // GitHub URL parsing and auto-detection (from CLI skills command)
 // ---------------------------------------------------------------------------
 
+fn github_url_error(url: &str) -> String {
+    format!(
+        "无法解析 URL: {}。支持格式: https://github.com/user/repo, git@github.com:user/repo.git, user/repo",
+        url
+    )
+}
+
 fn parse_github_url(url: &str) -> Result<(String, String), String> {
     let url = url.trim().trim_end_matches('/');
 
@@ -759,6 +766,13 @@ fn parse_github_url(url: &str) -> Result<(String, String), String> {
             let repo = parts[1].trim_end_matches(".git").to_string();
             return Ok((parts[0].to_string(), repo));
         }
+        // (BUG #25, quality-hardening goal 冲刺 S10) 前缀命中但只有 owner
+        // 段（如 https://github.com/onlyowner）时，原实现不返回而是继续掉进
+        // 下面的 shorthand 分支，把完整 URL 按第一个 '/' 拆成
+        // ("https:", "/github.com/onlyowner") 垃圾 owner/repo——用户最终看到
+        // 的是下游结构探测失败，而不是清晰的 URL 解析错误。前缀已匹配就
+        // 不该再当 shorthand 解析，直接报 Err。
+        return Err(github_url_error(url));
     }
 
     if url.starts_with("git@github.com:") {
@@ -776,10 +790,7 @@ fn parse_github_url(url: &str) -> Result<(String, String), String> {
         }
     }
 
-    Err(format!(
-        "无法解析 URL: {}。支持格式: https://github.com/user/repo, git@github.com:user/repo.git, user/repo",
-        url
-    ))
+    Err(github_url_error(url))
 }
 
 /// Auto-detect skill structure of a GitHub repo.
@@ -926,3 +937,8 @@ fn detect_skill_structure(owner: &str, repo: &str) -> Result<(String, String, St
 
     Err("无法探测仓库结构，可能是网络问题或仓库不包含 Skills（4 种探测模式均未匹配）".to_string())
 }
+
+// 私有面测试：learn/parse_github_url/load_registry_config/source_add 重名臂/
+// wiremock 假 ClawHub 网络臂（quality-hardening goal 冲刺 S10a）。
+#[cfg(test)]
+mod tests;

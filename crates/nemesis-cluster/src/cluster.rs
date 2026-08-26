@@ -2282,7 +2282,13 @@ impl Cluster {
     /// Mirrors Go's `Cluster.confirmDelivery(peerID, taskID)`.
     pub fn confirm_delivery(&self, peer_id: &str, task_id: &str) {
         let payload = serde_json::json!({"task_id": task_id});
-        let call_fn = self.call_with_context_fn.lock();
+        // Clone the override OUT of the lock (same pattern as poll_stale_pending_tasks
+        // and handle_task_complete). Binding the guard here would hold the
+        // non-reentrant parking_lot Mutex across call_with_context, which re-locks
+        // the same mutex at its override check → guaranteed self-deadlock on the
+        // fallback branch (the production path when no test override is set).
+        // (BUG #19, quality-hardening goal 冲刺 S4)
+        let call_fn = self.call_with_context_fn.lock().clone();
         if let Some(f) = call_fn.as_ref() {
             let _ = f(peer_id, "confirm_task_delivery", payload);
         } else {

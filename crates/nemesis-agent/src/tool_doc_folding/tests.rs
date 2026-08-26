@@ -133,3 +133,16 @@ fn test_fold_passthrough_when_top_n_covers_all() {
     // Empty set likewise.
     assert!(fold_tool_defs(vec![], &sims, 0).is_empty());
 }
+
+/// one_line_summary terminator branches:
+/// - CJK '。' keeps the punctuation in the cut;
+/// - '\n' drops the terminator;
+/// - '.' followed by an uppercase word ends the sentence (ASCII rule).
+#[test]
+fn test_one_line_summary_cjk_and_newline_cuts() {
+    assert_eq!(one_line_summary("第一句。第二句"), "第一句。");
+    assert_eq!(one_line_summary("line1\nline2"), "line1");
+    assert_eq!(one_line_summary("Ends here. Then more"), "Ends here.");
+    // No terminator → whole string (already covered elsewhere, pin anyway).
+    assert_eq!(one_line_summary("just words"), "just words");
+}

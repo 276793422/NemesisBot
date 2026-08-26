@@ -170,3 +170,8 @@ fn update_model_info(ctx: &RequestContext) {
 
 #[cfg(all(test, feature = "workflow"))]
 mod tests;
+
+// S10b (2026-08-26, quality-hardening goal 冲刺 web 批次 2): real-AgentLoop
+// arms (cancel/checkpoints/rewind Some-loop + turn guards).
+#[cfg(test)]
+mod s10b_tests;

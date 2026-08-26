@@ -429,3 +429,65 @@ fn global_layer_does_not_hold_lock_during_callback() {
 
     assert_eq!(*counter.lock().unwrap(), 1);
 }
+
+// ===========================================================================
+// S12b batch（quality-hardening goal 冲刺）：Visit 类型分支补全 + 测试辅助
+// ===========================================================================
+
+#[test]
+fn s12b_captures_u64_field() {
+    // record_u64 此前从未被触发（已有测试只发 i64/bool/f64）。
+    let events = collect_events(|| {
+        tracing::info!(count = 9u64, "u64 field");
+    });
+    assert_eq!(events.len(), 1);
+    assert_eq!(
+        events[0].fields.get("count").and_then(|v| v.as_u64()),
+        Some(9)
+    );
+    assert_eq!(events[0].message, "u64 field");
+}
+
+#[test]
+fn s12b_message_typed_bool_field_routes_through_message_arm() {
+    // 显式 message 字段携带非字符串类型时走 record_* 的 message 分支
+    // （渲染成字符串而不是布尔 JSON 值）。
+    let events = collect_events(|| {
+        tracing::event!(tracing::Level::INFO, message = true);
+    });
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].message, "true");
+    assert!(
+        events[0].fields.get("message").is_none(),
+        "message 走字符串通道，不进 fields"
+    );
+}
+
+#[test]
+fn s12b_message_typed_u64_field_routes_through_message_arm() {
+    let events = collect_events(|| {
+        tracing::event!(tracing::Level::INFO, message = 7u64);
+    });
+    assert_eq!(events[0].message, "7");
+}
+
+#[test]
+fn s12b_to_summary_map_flattens_core_fields() {
+    let ev = SseLogEvent {
+        seq: 1,
+        level: "WARN".to_string(),
+        timestamp: "2026-08-23T00:00:00+08:00".to_string(),
+        target: "t".to_string(),
+        source: "security".to_string(),
+        component: "c".to_string(),
+        file: String::new(),
+        line: 0,
+        message: "m".to_string(),
+        fields: serde_json::Map::new(),
+    };
+    let m = ev.to_summary_map();
+    assert_eq!(m.get("level").map(String::as_str), Some("WARN"));
+    assert_eq!(m.get("source").map(String::as_str), Some("security"));
+    assert_eq!(m.get("component").map(String::as_str), Some("c"));
+    assert_eq!(m.get("message").map(String::as_str), Some("m"));
+}

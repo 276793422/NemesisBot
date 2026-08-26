@@ -108,3 +108,6 @@ fn try_load_plugin(
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod w2c_tests;

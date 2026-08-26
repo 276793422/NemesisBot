@@ -434,3 +434,6 @@ fn cmd_devices() -> Result<()> {
 
     Ok(())
 }
+
+#[cfg(test)]
+mod tests;

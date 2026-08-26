@@ -542,3 +542,169 @@ fn test_effort_openai_request_includes_field() {
     let body_empty = provider.build_request_body(&messages, &[], "gpt-4", &opts_empty);
     assert!(body_empty.get("reasoning_effort").is_none());
 }
+
+use serde_json::json;
+
+// ===========================================================================
+// W4c 补测（2026-08-25）：chat() HTTP 矩阵（wiremock）+ normalize 分支 + serde 默认
+// ===========================================================================
+
+use wiremock::matchers::{body_partial_json, header, method, path};
+use wiremock::{Mock, MockServer, ResponseTemplate};
+
+fn oacc_config(base: &str) -> OpenAICompatConfig {
+    OpenAICompatConfig {
+        name: "oacc-test".to_string(),
+        base_url: base.to_string(),
+        api_key: "sk-test".to_string(),
+        default_model: "default-m".to_string(),
+        timeout_secs: 10,
+        proxy: None,
+    }
+}
+
+fn oacc_messages() -> Vec<Message> {
+    vec![Message {
+        role: "user".to_string(),
+        content: "hi".to_string(),
+        tool_calls: vec![],
+        tool_call_id: None,
+        timestamp: None,
+        reasoning_content: None,
+        extra: HashMap::new(),
+    }]
+}
+
+#[tokio::test]
+async fn test_w4c_oacc_chat_success_uses_default_model_and_bearer() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .and(header("Authorization", "Bearer sk-test"))
+        .and(body_partial_json(json!({"model": "default-m"})))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "choices": [{
+                "message": {"role": "assistant", "content": "hello-back"},
+                "finish_reason": "stop"
+            }],
+            "usage": {"prompt_tokens": 3, "completion_tokens": 4, "total_tokens": 7}
+        })))
+        .mount(&server)
+        .await;
+
+    let provider = OpenAICompatProvider::new(oacc_config(&server.uri()));
+    // model 为空 → 落到 default_model
+    let resp = provider
+        .chat(&oacc_messages(), &[], "", &ChatOptions::default())
+        .await
+        .unwrap();
+    assert_eq!(resp.content, "hello-back");
+    assert_eq!(resp.usage.unwrap().total_tokens, 7);
+}
+
+#[tokio::test]
+async fn test_w4c_oacc_chat_401_maps_auth_error() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(ResponseTemplate::new(401).set_body_string("unauthorized"))
+        .mount(&server)
+        .await;
+
+    let provider = OpenAICompatProvider::new(oacc_config(&server.uri()));
+    let err = provider
+        .chat(&oacc_messages(), &[], "m", &ChatOptions::default())
+        .await
+        .unwrap_err();
+    assert!(matches!(err, FailoverError::Auth { status: 401, .. }));
+}
+
+#[tokio::test]
+async fn test_w4c_oacc_chat_invalid_json_maps_format_error() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(ResponseTemplate::new(200).set_body_string("not-json-at-all"))
+        .mount(&server)
+        .await;
+
+    let provider = OpenAICompatProvider::new(oacc_config(&server.uri()));
+    let err = provider
+        .chat(&oacc_messages(), &[], "m", &ChatOptions::default())
+        .await
+        .unwrap_err();
+    match err {
+        FailoverError::Format { message, .. } => assert!(!message.is_empty()),
+        other => panic!("expected Format, got {:?}", other),
+    }
+}
+
+#[tokio::test]
+async fn test_w4c_oacc_chat_dead_port_maps_timeout() {
+    // 指向一个必然关闭的端口：send 失败 → Timeout
+    let provider = OpenAICompatProvider::new(oacc_config("http://127.0.0.1:1"));
+    let err = provider
+        .chat(&oacc_messages(), &[], "m", &ChatOptions::default())
+        .await
+        .unwrap_err();
+    assert!(matches!(err, FailoverError::Timeout { .. }));
+}
+
+#[tokio::test]
+async fn test_w4c_oacc_chat_empty_base_url_rejected() {
+    let provider = OpenAICompatProvider::new(oacc_config(""));
+    let err = provider
+        .chat(&oacc_messages(), &[], "m", &ChatOptions::default())
+        .await
+        .unwrap_err();
+    match err {
+        FailoverError::Format { message, .. } => {
+            assert!(message.contains("API base URL not configured"))
+        }
+        other => panic!("expected Format, got {:?}", other),
+    }
+}
+
+#[test]
+fn test_w4c_oacc_config_serde_default_timeout() {
+    let c: OpenAICompatConfig = serde_json::from_str(
+        r#"{"name":"x","base_url":"http://b","api_key":"k","default_model":"m"}"#,
+    )
+    .unwrap();
+    assert_eq!(c.timeout_secs, 600);
+    assert!(c.proxy.is_none());
+}
+
+#[test]
+fn test_w4c_oacc_provider_with_proxy_builds() {
+    let mut cfg = oacc_config("http://127.0.0.1:9");
+    cfg.proxy = Some("http://127.0.0.1:9".to_string());
+    let _provider = OpenAICompatProvider::new(cfg); // 不 panic 即可
+}
+
+#[test]
+fn test_w4c_oacc_normalize_model_with_base_variants() {
+    let mut cfg = oacc_config("https://api.moonshot.cn");
+    let provider = OpenAICompatProvider::new(cfg.clone());
+    // moonshot 前缀剥除
+    assert_eq!(provider.normalize_model_with_base("moonshot/kimi"), "kimi");
+    // 无斜杠原样
+    assert_eq!(provider.normalize_model_with_base("plain"), "plain");
+    // 未知前缀保留
+    assert_eq!(
+        provider.normalize_model_with_base("weird/model"),
+        "weird/model"
+    );
+    // openrouter.ai base → 全名保留
+    cfg.base_url = "https://openrouter.ai/api/v1".to_string();
+    let or_provider = OpenAICompatProvider::new(cfg);
+    assert_eq!(
+        or_provider.normalize_model_with_base("openai/gpt-4o"),
+        "openai/gpt-4o"
+    );
+    // openrouter 前缀在普通 base 上也剥除
+    assert_eq!(
+        provider.normalize_model_with_base("openrouter/qwen"),
+        "qwen"
+    );
+}

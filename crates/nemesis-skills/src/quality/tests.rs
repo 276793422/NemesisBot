@@ -499,3 +499,65 @@ fn test_has_heading_pattern_raw_pattern() {
     let content = "## Test\nContent";
     assert!(has_heading_pattern(content, r"(?m)^##\s+Test"));
 }
+
+// ============================================================
+// S5 coverage: score_clarity partial-credit branches (single
+// code fence marker, medium line-length variance, mixed
+// script), has_heading_pattern flag injection, empty-input
+// variance guard
+// ============================================================
+
+#[test]
+fn test_score_clarity_single_fence_marker_scores_partial() {
+    // Exactly one ``` occurrence (unbalanced) -> the >=1 code-block branch
+    // (+10). Same content without the fence scores exactly 10 less.
+    let base = QualityScorer::score_clarity("# Title\n\nplain text line\n");
+    let with_fence = QualityScorer::score_clarity("# Title\n\nplain text line\nrun ``` inline\n");
+    assert_eq!(base.score, 50.0, "base details: {}", base.details);
+    assert_eq!(
+        with_fence.score,
+        60.0,
+        "fence details: {}",
+        with_fence.details
+    );
+}
+
+#[test]
+fn test_score_clarity_medium_line_length_variance_partial() {
+    // Line lengths 10 and 2: avg 6, stddev 4 -> ratio 0.667, which is in
+    // [0.5, 1.0) -> the partial +10 branch, not the full +20.
+    let dim = QualityScorer::score_clarity("0123456789\nab\n");
+    assert_eq!(dim.score, 30.0, "details: {}", dim.details);
+}
+
+#[test]
+fn test_score_clarity_mixed_script_gets_partial_credit() {
+    // Same shape as the ascii variant, but with mixed latin/cyrillic
+    // script -> is_consistent_script false -> +10 instead of +20.
+    let ascii = QualityScorer::score_clarity("hello world\n");
+    let mixed = QualityScorer::score_clarity("hello мир\n");
+    assert_eq!(ascii.score, 40.0, "ascii details: {}", ascii.details);
+    assert_eq!(mixed.score, 30.0, "mixed details: {}", mixed.details);
+}
+
+#[test]
+fn test_has_heading_pattern_injects_multiline_flag() {
+    // "(?i)^title" must become "(?im)^title" so ^ matches line starts.
+    assert!(has_heading_pattern("Intro\nTitle here", "(?i)^title"));
+    // Plain pattern gets (?m) prefix.
+    assert!(has_heading_pattern("a\n# b", "^#"));
+    // Already-multiline pattern is passed through untouched.
+    assert!(has_heading_pattern("a\n# b", "(?m)^#"));
+}
+
+#[test]
+fn test_has_heading_pattern_broken_flag_group_is_false() {
+    // "(?iabc" has no closing paren for the flag group -> the injected
+    // pattern is an invalid regex -> unwrap_or(false).
+    assert!(!has_heading_pattern("anything", "(?iabc"));
+}
+
+#[test]
+fn test_line_length_variance_empty_input_is_zero() {
+    assert_eq!(line_length_variance(&[], 0.0), 0.0);
+}

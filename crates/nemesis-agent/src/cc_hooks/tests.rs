@@ -717,3 +717,175 @@ impl LlmProvider for NoopProvider2 {
         Err("NoopProvider2 must not be called".to_string())
     }
 }
+
+// ---------------------------------------------------------------------------
+// W3a: 分支补漏（enrich 边角 / payload 合并 / 纯函数回落 / load_from_dir /
+// trait name / payload_json_event）
+// ---------------------------------------------------------------------------
+
+/// enrich_tool_input：非对象 args（数组/垃圾串）→ 空对象；无 path 类键的
+/// args → 不造 file_path。
+#[test]
+fn enrich_tool_input_non_object_and_pathless() {
+    let cwd = std::path::Path::new("/w");
+
+    let p1 = pre_tool_use_payload(&edit_call("[1,2,3]"), cwd);
+    let v1: serde_json::Value = serde_json::from_str(&p1).unwrap();
+    assert!(v1["tool_input"].is_object(), "non-object becomes object");
+    assert_eq!(v1["tool_input"].as_object().unwrap().len(), 0);
+
+    let p2 = pre_tool_use_payload(&edit_call("not json at all"), cwd);
+    let v2: serde_json::Value = serde_json::from_str(&p2).unwrap();
+    assert!(v2["tool_input"].is_object());
+
+    let p3 = pre_tool_use_payload(&edit_call("{\"query\":\"x\"}"), cwd);
+    let v3: serde_json::Value = serde_json::from_str(&p3).unwrap();
+    assert_eq!(v3["tool_input"]["query"].as_str(), Some("x"));
+    assert!(
+        v3["tool_input"].get("file_path").is_none(),
+        "no path/file keys -> no file_path alias"
+    );
+
+    // 原字段保留 + 别名补齐：path 存在时 file_path 指向同一值。
+    let p4 = pre_tool_use_payload(&edit_call("{\"path\":\"a.txt\"}"), cwd);
+    let v4: serde_json::Value = serde_json::from_str(&p4).unwrap();
+    assert_eq!(v4["tool_input"]["path"].as_str(), Some("a.txt"));
+    assert_eq!(v4["tool_input"]["file_path"].as_str(), Some("a.txt"));
+    // edit 的 CC 别名。
+    assert_eq!(v4["tool_name"].as_str(), Some("Edit"));
+}
+
+/// build_event_payload：对象 extra 合入公共字段；非对象 extra 忽略。
+#[test]
+fn build_event_payload_merges_object_extra() {
+    let cwd = std::path::Path::new("/proj");
+    let p = build_event_payload("Stop", "sk1", cwd, serde_json::json!({"stop_hook_active": true}));
+    let v: serde_json::Value = serde_json::from_str(&p).unwrap();
+    assert_eq!(v["session_id"].as_str(), Some("sk1"));
+    assert_eq!(v["hook_event_name"].as_str(), Some("Stop"));
+    assert_eq!(v["stop_hook_active"].as_bool(), Some(true));
+
+    // 非 object extra（数字）：if-let 不命中，只剩公共字段。
+    let p2 = build_event_payload("Stop", "sk1", cwd, serde_json::json!(42));
+    let v2: serde_json::Value = serde_json::from_str(&p2).unwrap();
+    assert_eq!(v2["session_id"].as_str(), Some("sk1"));
+    assert_eq!(v2.as_object().unwrap().len(), 4, "common fields only");
+}
+
+/// json_block_reason 的回落支：decision!=block → None；stdout 非法 JSON →
+/// None；decision=block 无 reason → 占位文案；非 0 退出码 → None。
+#[test]
+fn json_block_reason_non_block_and_fallbacks() {
+    let mk = |code: Option<i32>, stdout: &str| ScriptOutcome {
+        code,
+        stdout: stdout.to_string(),
+        stderr: String::new(),
+        timed_out: false,
+    };
+    assert!(mk(Some(0), "{\"decision\":\"approve\"}").json_block_reason().is_none());
+    assert!(mk(Some(0), "not json").json_block_reason().is_none());
+    assert_eq!(
+        mk(Some(0), "{\"decision\":\"block\"}").json_block_reason().as_deref(),
+        Some("blocked by hook (no reason given)")
+    );
+    assert!(mk(Some(1), "{\"decision\":\"block\"}").json_block_reason().is_none());
+}
+
+/// block_text：stderr 空 → stdout；两者皆空 → 占位。
+#[test]
+fn block_text_fallback_to_stdout_then_placeholder() {
+    let stdout_only = ScriptOutcome {
+        code: Some(2),
+        stdout: "take the stdout".into(),
+        stderr: String::new(),
+        timed_out: false,
+    };
+    assert_eq!(stdout_only.block_text(), "take the stdout");
+
+    let silent = ScriptOutcome {
+        code: Some(2),
+        stdout: String::new(),
+        stderr: String::new(),
+        timed_out: false,
+    };
+    assert_eq!(silent.block_text(), "blocked by hook (no output)");
+
+    let whitespace = ScriptOutcome {
+        code: Some(2),
+        stdout: "   ".into(),
+        stderr: "  ".into(),
+        timed_out: false,
+    };
+    assert_eq!(whitespace.block_text(), "blocked by hook (no output)");
+}
+
+/// load_from_dir 四形态：缺文件 None；空 events None；有效 Some；解析失败
+/// None（fail-open）。
+#[test]
+fn load_from_dir_branches() {
+    let cfg = tempdir();
+    let proj = tempdir();
+
+    // (a) config 目录无 hooks.json。
+    assert!(CcHookBridge::load_from_dir(&cfg, proj.clone()).is_none());
+
+    // (b) 有文件但零脚本。
+    std::fs::write(cfg.join("hooks.json"), "{\"hooks\":{}}").unwrap();
+    assert!(CcHookBridge::load_from_dir(&cfg, proj.clone()).is_none());
+
+    // (c) 有效文档 → Some。
+    std::fs::write(
+        cfg.join("hooks.json"),
+        hooks_doc("PreToolUse", Some("Edit"), "exit 0", None),
+    )
+    .unwrap();
+    let b = CcHookBridge::load_from_dir(&cfg, proj.clone()).expect("loads");
+    assert_eq!(
+        b.events.script_counts(),
+        [("PreToolUse", 1), ("PostToolUse", 0), ("SessionStart", 0), ("UserPromptSubmit", 0), ("Stop", 0)]
+    );
+
+    // (d) 垃圾 JSON → None。
+    std::fs::write(cfg.join("hooks.json"), "{not json").unwrap();
+    assert!(CcHookBridge::load_from_dir(&cfg, proj.clone()).is_none());
+
+    let _ = std::fs::remove_dir_all(&cfg);
+    let _ = std::fs::remove_dir_all(&proj);
+}
+
+/// payload_json_event：合法 payload 抠事件名；垃圾串给空。
+#[test]
+fn payload_json_event_extracts_and_tolerates_garbage() {
+    let p = build_event_payload(
+        "PostToolUse",
+        "sk",
+        std::path::Path::new("/p"),
+        serde_json::json!({"tool_name": "Write"}),
+    );
+    assert_eq!(super::payload_json_event(&p), "PostToolUse");
+    assert_eq!(super::payload_json_event("garbage"), "");
+    assert_eq!(super::payload_json_event("{}"), "");
+}
+
+/// 两个 trait 的 name() 都报 "cc-hooks"。
+#[test]
+fn bridge_trait_names() {
+    let tmp = tempdir();
+    let b = bridge_with(&hooks_doc("Stop", None, "exit 0", None), &tmp);
+    assert_eq!(ToolHook::name(&b), "cc-hooks");
+    assert_eq!(LifecycleHook::name(&b), "cc-hooks");
+    let _ = std::fs::remove_dir_all(&tmp);
+}
+
+/// stop_hook_active_for 访问器：未见过 → false；计数 >0 → true。
+#[test]
+fn stop_hook_active_for_accessor() {
+    let tmp = tempdir();
+    let b = bridge_with(&hooks_doc("Stop", None, "exit 0", None), &tmp);
+    assert!(!b.stop_hook_active_for("never-seen"));
+    b.stop_blocks.lock().unwrap().insert("k".to_string(), 2);
+    assert!(b.stop_hook_active_for("k"));
+    b.stop_blocks.lock().unwrap().insert("zero".to_string(), 0);
+    assert!(!b.stop_hook_active_for("zero"));
+    let _ = std::fs::remove_dir_all(&tmp);
+}

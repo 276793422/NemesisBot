@@ -1020,3 +1020,194 @@ fn test_tool_execution_context_custom() {
     assert_eq!(ctx.chat_id, "chat-123");
     assert_eq!(ctx.correlation_id, "corr-456");
 }
+
+// ============================================================
+// W4a coverage gap closure (register_with_plugin[_simple],
+// PluginableTool::parameters passthrough, and the is_error warn
+// arms of execute / execute_with_context / execute_with_full_context)
+// ============================================================
+
+struct W4aFailingTool;
+
+#[async_trait]
+impl Tool for W4aFailingTool {
+    fn name(&self) -> &str {
+        "w4a_fail"
+    }
+    fn description(&self) -> &str {
+        "Always fails"
+    }
+    fn parameters(&self) -> serde_json::Value {
+        serde_json::json!({"type": "object"})
+    }
+    async fn execute(&self, _args: &serde_json::Value) -> ToolResult {
+        ToolResult::error("w4a boom")
+    }
+}
+
+#[tokio::test]
+async fn w4a_register_with_plugin_wraps_and_passes_metadata_through() {
+    let registry = ToolRegistry::new();
+    registry.register_with_plugin(
+        Arc::new(EchoTool),
+        Arc::new(AllowAllPlugin),
+        "user1",
+        "cli",
+        "/ws",
+    );
+    assert!(registry.has("echo"));
+
+    let wrapped = registry.get("echo").unwrap();
+    assert_eq!(wrapped.name(), "echo");
+    assert_eq!(wrapped.description(), "Echo back the input");
+    // PluginableTool::parameters() must forward the inner tool's schema.
+    let params = wrapped.parameters();
+    assert_eq!(params["type"], "object");
+    assert_eq!(params["properties"]["text"]["type"], "string");
+
+    let result = registry
+        .execute("echo", &serde_json::json!({"text": "via-plugin"}))
+        .await;
+    assert!(!result.is_error);
+    assert_eq!(result.for_llm, "via-plugin");
+}
+
+#[tokio::test]
+async fn w4a_register_with_plugin_simple_registers_wrapped_tool() {
+    let registry = ToolRegistry::new();
+    registry.register_with_plugin_simple(Arc::new(EchoTool), Arc::new(AllowAllPlugin));
+    assert!(registry.has("echo"));
+    let result = registry
+        .execute("echo", &serde_json::json!({"text": "simple"}))
+        .await;
+    assert!(!result.is_error);
+    assert_eq!(result.for_llm, "simple");
+}
+
+#[tokio::test]
+async fn w4a_registry_execute_tool_returning_error_hits_warn_arm() {
+    let registry = ToolRegistry::new();
+    registry.register(Arc::new(W4aFailingTool));
+    let result = registry.execute("w4a_fail", &serde_json::json!({})).await;
+    assert!(result.is_error);
+    assert_eq!(result.for_llm, "w4a boom");
+}
+
+#[tokio::test]
+async fn w4a_execute_with_context_error_and_missing_arms() {
+    let registry = ToolRegistry::new();
+    registry.register(Arc::new(W4aFailingTool));
+
+    // Executed tool returns an error -> warn arm + side-channel cleanup
+    let result = registry
+        .execute_with_context("w4a_fail", &serde_json::json!({}), "web", "c1")
+        .await;
+    assert!(result.is_error);
+    assert_eq!(result.for_llm, "w4a boom");
+
+    // Missing tool -> None arm + side-channel cleanup
+    let result = registry
+        .execute_with_context("ghost", &serde_json::json!({}), "web", "c1")
+        .await;
+    assert!(result.is_error);
+    assert!(result.for_llm.contains("not found"), "got: {}", result.for_llm);
+}
+
+#[tokio::test]
+async fn w4a_execute_with_full_context_success_and_error_arms() {
+    let registry = ToolRegistry::new();
+    registry.register(Arc::new(EchoTool));
+    registry.register(Arc::new(W4aFailingTool));
+
+    let ctx = crate::registry::ToolExecutionContext {
+        channel: "web".to_string(),
+        chat_id: "c-9".to_string(),
+        ..Default::default()
+    };
+
+    let ok = registry
+        .execute_with_full_context("echo", &serde_json::json!({"text": "full"}), ctx.clone())
+        .await;
+    assert!(!ok.is_error);
+    assert_eq!(ok.for_llm, "full");
+
+    let err = registry
+        .execute_with_full_context("w4a_fail", &serde_json::json!({}), ctx)
+        .await;
+    assert!(err.is_error);
+    assert_eq!(err.for_llm, "w4a boom");
+}
+
+// ===========================================================================
+// S2 coverage (2026-08-26): tracing field arms across register/execute APIs
+// (field expressions only evaluate with a subscriber active)
+// ===========================================================================
+
+fn s2_enable_tracing() {
+    let _ = tracing_subscriber::fmt()
+        .with_max_level(tracing::Level::DEBUG)
+        .with_writer(std::io::sink)
+        .try_init();
+}
+
+#[tokio::test]
+async fn s2_registry_logging_field_arms_with_subscriber() {
+    s2_enable_tracing();
+    let registry = ToolRegistry::new();
+
+    // register_with_plugin debug fields (tool/user/source)
+    registry.register_with_plugin(
+        Arc::new(EchoTool),
+        Arc::new(AllowAllPlugin),
+        "s2-user",
+        "cli",
+        "/tmp",
+    );
+
+    // register_with_plugin_simple debug fields
+    let registry2 = ToolRegistry::new();
+    registry2.register_with_plugin_simple(Arc::new(EchoTool), Arc::new(AllowAllPlugin));
+
+    // execute success + tool-not-found arms
+    let ok = registry
+        .execute("echo", &serde_json::json!({"text": "hi"}))
+        .await;
+    assert!(!ok.is_error);
+    let missing = registry.execute("ghost", &serde_json::json!({})).await;
+    assert!(missing.is_error);
+
+    // execute_with_context success + missing-tool arms
+    let ctx_ok = registry
+        .execute_with_context("echo", &serde_json::json!({"text": "ctx"}), "web", "chat-1")
+        .await;
+    assert!(!ctx_ok.is_error);
+    let ctx_missing = registry
+        .execute_with_context("ghost", &serde_json::json!({}), "web", "chat-1")
+        .await;
+    assert!(ctx_missing.is_error);
+
+    // execute_with_full_context success + missing-tool arms
+    let full = ToolExecutionContext {
+        channel: "rpc".to_string(),
+        chat_id: "chat-9".to_string(),
+        ..Default::default()
+    };
+    let full_ok = registry
+        .execute_with_full_context("echo", &serde_json::json!({"text": "full"}), full)
+        .await;
+    assert!(!full_ok.is_error);
+    let full_missing = registry
+        .execute_with_full_context(
+            "ghost",
+            &serde_json::json!({}),
+            ToolExecutionContext::default(),
+        )
+        .await;
+    assert!(full_missing.is_error);
+
+    // simple-wrapped execute (wrapped debug fields)
+    let simple_ok = registry2
+        .execute("echo", &serde_json::json!({"text": "simple"}))
+        .await;
+    assert!(!simple_ok.is_error);
+}

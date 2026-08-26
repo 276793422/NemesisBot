@@ -423,3 +423,23 @@ async fn test_quality_evaluator_min_score_threshold() {
     let result = evaluator.evaluate_heuristic(ArtifactKind::Script, "test", "x");
     assert!(!result.stage.passed); // Score should be below 100
 }
+
+#[test]
+fn test_quality_evaluator_heuristic_long_skill_top_scores() {
+    let evaluator = QualityEvaluator::new();
+    // Skill with frontmatter marker and > 200 bytes of content.
+    let content = format!("---\nname: long-skill\n---\n{}", "d".repeat(250));
+    let result = evaluator.evaluate_heuristic(ArtifactKind::Skill, "long-skill", &content);
+
+    // Correctness: Skill with "---" and >= 100 bytes -> 75
+    assert_eq!(result.dimensions["correctness"], 75);
+    // Quality: content > 200 bytes -> 70
+    assert_eq!(result.dimensions["quality"], 70);
+    // Security: no api_key/secret -> 80
+    assert_eq!(result.dimensions["security"], 80);
+    // Reusability: non-empty name + > 100 bytes -> 65
+    assert_eq!(result.dimensions["reusability"], 65);
+    // Weighted: 75*40/100 + 70*20/100 + 80*20/100 + 65*20/100 = 73
+    assert_eq!(result.score, 73);
+    assert!(result.stage.passed); // 73 >= default min_score 60
+}

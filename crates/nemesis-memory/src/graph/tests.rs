@@ -782,3 +782,63 @@ async fn graph_default_store() {
     assert_eq!(store.entity_count().await.unwrap(), 0);
     assert_eq!(store.triple_count().await.unwrap(), 0);
 }
+
+// ---- S5 coverage: disk load with blank/malformed lines + triple persistence ----
+
+#[tokio::test]
+async fn load_from_disk_skips_blank_and_malformed_lines() {
+    let dir = tempfile::tempdir().unwrap();
+
+    // entities.jsonl: valid line + blank lines + malformed line.
+    let entity = GraphEntity::new("disk-ent".to_string(), "tool".to_string());
+    let entity_line = serde_json::to_string(&entity).unwrap();
+    std::fs::write(
+        dir.path().join("entities.jsonl"),
+        format!("\n\n{entity_line}\n\nnot-json\n"),
+    )
+    .unwrap();
+
+    // triples.jsonl: valid line + blank lines + malformed line.
+    let triple = GraphTriple::new("a".to_string(), "rel".to_string(), "b".to_string());
+    let triple_line = serde_json::to_string(&triple).unwrap();
+    std::fs::write(
+        dir.path().join("triples.jsonl"),
+        format!("\n\n{triple_line}\n\nnot-json\n"),
+    )
+    .unwrap();
+
+    let store = InMemoryGraphStore::new().with_persistence(dir.path().to_path_buf());
+    // Trigger lazy load via a read op.
+    let loaded = store.get_entity("disk-ent").await.unwrap();
+    assert!(loaded.is_some(), "valid entity line must load");
+
+    let triples = store.list_triples("a").await.unwrap();
+    assert_eq!(triples.len(), 1, "valid triple line must load");
+    assert_eq!(triples[0].object, "b");
+}
+
+#[tokio::test]
+async fn persist_and_reload_triples_roundtrip() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = InMemoryGraphStore::new().with_persistence(dir.path().to_path_buf());
+
+    store
+        .add_triple(GraphTriple::new("s1".to_string(), "p1".to_string(), "o1".to_string()))
+        .await
+        .unwrap();
+    store
+        .add_triple(GraphTriple::new("s1".to_string(), "p2".to_string(), "o2".to_string()))
+        .await
+    .unwrap();
+
+    let path = dir.path().join("triples.jsonl");
+    assert!(path.exists(), "triples must be persisted on mutation");
+    let raw = std::fs::read_to_string(&path).unwrap();
+    let lines: Vec<&str> = raw.lines().filter(|l| !l.trim().is_empty()).collect();
+    assert_eq!(lines.len(), 2, "two distinct triples → two lines");
+
+    // Reload into a fresh store and verify both survive.
+    let reloaded = InMemoryGraphStore::new().with_persistence(dir.path().to_path_buf());
+    let all = reloaded.list_triples("s1").await.unwrap();
+    assert_eq!(all.len(), 2);
+}

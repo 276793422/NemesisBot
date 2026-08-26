@@ -554,3 +554,69 @@ async fn test_edit_file_replace_entire_content() {
     let content = tokio::fs::read_to_string(&file_path).await.unwrap();
     assert_eq!(content, "replaced entirely");
 }
+
+// ============================================================
+// W4a coverage gap closure (AppendFileTool::parameters and its
+// restrict arm)
+// ============================================================
+
+#[test]
+fn w4a_append_file_tool_parameters() {
+    let dir = TempDir::new().unwrap();
+    let ws = dir.path().to_string_lossy().to_string();
+    let tool = AppendFileTool::new(&ws, false);
+    assert_eq!(tool.name(), "append_file");
+    assert!(!tool.description().is_empty());
+    let params = tool.parameters();
+    assert_eq!(params["type"], "object");
+    assert_eq!(params["properties"]["path"]["type"], "string");
+    assert_eq!(params["properties"]["content"]["type"], "string");
+    let required = params["required"].as_array().unwrap();
+    assert!(required.contains(&serde_json::json!("path")));
+    assert!(required.contains(&serde_json::json!("content")));
+}
+
+#[tokio::test]
+async fn w4a_append_file_restrict_rejects_outside_workspace() {
+    let dir = TempDir::new().unwrap();
+    let ws = dir.path().to_string_lossy().to_string();
+    let tool = AppendFileTool::new(&ws, true);
+
+    let result = tool
+        .execute(&serde_json::json!({
+            "path": "C:/Windows/w4a_target.txt",
+            "content": "nope"
+        }))
+        .await;
+    assert!(result.is_error);
+    assert!(
+        result.for_llm.contains("outside workspace"),
+        "got: {}",
+        result.for_llm
+    );
+}
+
+// ===========================================================================
+// S2 coverage (2026-08-26): resolve_path restrict=true with an in-workspace
+// path (the non-rejected fall-through edge of both tools)
+// ===========================================================================
+
+#[test]
+fn s2_edit_and_append_resolve_path_in_workspace_with_restrict() {
+    let dir = TempDir::new().unwrap();
+    let ws = dir.path().to_string_lossy().to_string();
+    let edit = EditFileTool::new(&ws, true);
+    let append = AppendFileTool::new(&ws, true);
+
+    // Relative in-workspace paths must pass the restrict check.
+    let p1 = edit.resolve_path("notes/a.txt").unwrap();
+    assert_eq!(p1, dir.path().join("notes").join("a.txt"));
+    let p2 = append.resolve_path("logs/b.txt").unwrap();
+    assert_eq!(p2, dir.path().join("logs").join("b.txt"));
+
+    // An outside absolute path must still be rejected under restrict.
+    let outside = TempDir::new().unwrap();
+    let outside_file = outside.path().join("x.txt").to_string_lossy().to_string();
+    assert!(edit.resolve_path(&outside_file).is_err());
+    assert!(append.resolve_path(&outside_file).is_err());
+}

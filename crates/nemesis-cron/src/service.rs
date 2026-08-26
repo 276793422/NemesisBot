@@ -423,8 +423,19 @@ impl CronService {
             updated_at_ms: now_ms,
             delete_after_run,
         };
-        self.store.lock().jobs.push(job.clone());
-        self.save_store()?;
+        {
+            let mut s = self.store.lock();
+            s.jobs.push(job.clone());
+        }
+        // BUG #16 (W1b): roll back the in-memory push when persistence fails.
+        // Previously the job stayed in the store after an Err return — the
+        // caller was told "create failed" while the job silently remained
+        // scheduled (memory/disk divergence + duplicate-create hazard on
+        // caller retry). Err must mean "not created".
+        if let Err(e) = self.save_store() {
+            self.store.lock().jobs.retain(|j| j.id != job.id);
+            return Err(e);
+        }
         Ok(job)
     }
 
@@ -501,6 +512,8 @@ impl CronService {
             .iter_mut()
             .find(|j| j.id == job_id)
             .ok_or_else(|| format!("job not found: {}", job_id))?;
+        // BUG #16 sweep: snapshot for rollback on save failure (see add_job_ext).
+        let before = job.clone();
         if let Some(n) = name {
             job.name = n.to_string();
         }
@@ -510,7 +523,14 @@ impl CronService {
         }
         job.updated_at_ms = now_ms;
         drop(store);
-        self.save_store()
+        if let Err(e) = self.save_store() {
+            let mut store = self.store.lock();
+            if let Some(job) = store.jobs.iter_mut().find(|j| j.id == job_id) {
+                *job = before;
+            }
+            return Err(e);
+        }
+        Ok(())
     }
 
     /// Patch a job's fields (name/schedule/message/channel/to/session_key/enabled).
@@ -526,6 +546,8 @@ impl CronService {
             .iter_mut()
             .find(|j| j.id == job_id)
             .ok_or_else(|| format!("job not found: {}", job_id))?;
+        // BUG #16 sweep: snapshot for rollback on save failure (see add_job_ext).
+        let before = job.clone();
         if let Some(n) = &patch.name {
             job.name = n.clone();
         }
@@ -567,7 +589,13 @@ impl CronService {
         job.updated_at_ms = now_ms;
         let updated = job.clone();
         drop(store);
-        self.save_store()?;
+        if let Err(e) = self.save_store() {
+            let mut store = self.store.lock();
+            if let Some(job) = store.jobs.iter_mut().find(|j| j.id == job_id) {
+                *job = before;
+            }
+            return Err(e);
+        }
         Ok(updated)
     }
 
@@ -580,6 +608,10 @@ impl CronService {
             .iter_mut()
             .find(|j| j.id == job_id)
             .ok_or_else(|| format!("job not found: {}", job_id))?;
+        // BUG #16 sweep: snapshot for rollback on save failure (see add_job_ext).
+        // toggle is NOT idempotent — without rollback, a caller retrying after
+        // a save failure would flip the job back.
+        let before = job.clone();
         job.enabled = !job.enabled;
         if job.enabled {
             job.state.next_run_at_ms = compute_next_run(&job.schedule, now_ms);
@@ -588,7 +620,13 @@ impl CronService {
         info!("[Cron] Job toggled: id={}, enabled={}", job_id, new_state);
         job.updated_at_ms = now_ms;
         drop(store);
-        self.save_store()?;
+        if let Err(e) = self.save_store() {
+            let mut store = self.store.lock();
+            if let Some(job) = store.jobs.iter_mut().find(|j| j.id == job_id) {
+                *job = before;
+            }
+            return Err(e);
+        }
         Ok(new_state)
     }
 
@@ -606,6 +644,8 @@ impl CronService {
             .iter_mut()
             .find(|j| j.id == job_id)
             .ok_or_else(|| format!("job not found: {}", job_id))?;
+        // BUG #16 sweep: snapshot for rollback on save failure (see add_job_ext).
+        let before = job.clone();
         job.enabled = enabled;
         if enabled {
             job.state.next_run_at_ms = compute_next_run(&job.schedule, now_ms);
@@ -615,7 +655,13 @@ impl CronService {
         job.updated_at_ms = now_ms;
         let updated = job.clone();
         drop(store);
-        self.save_store()?;
+        if let Err(e) = self.save_store() {
+            let mut store = self.store.lock();
+            if let Some(job) = store.jobs.iter_mut().find(|j| j.id == job_id) {
+                *job = before;
+            }
+            return Err(e);
+        }
         Ok(updated)
     }
 
@@ -887,3 +933,5 @@ fn generate_id() -> String {
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod w1b_tests;

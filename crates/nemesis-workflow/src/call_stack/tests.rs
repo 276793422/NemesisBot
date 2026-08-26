@@ -6,7 +6,6 @@ fn push_and_pop_basic() {
     let stack = WorkflowCallStack::new();
     assert!(stack.is_empty());
     assert_eq!(stack.depth(), 0);
-
     let frame = CallFrame {
         execution_id: "exec-1".to_string(),
         workflow_name: "wf".to_string(),
@@ -133,4 +132,14 @@ fn lifo_order_preserved() {
     assert_eq!(stack.pop().unwrap().execution_id, "b");
     assert_eq!(stack.pop().unwrap().execution_id, "a");
     assert!(stack.is_empty());
+}
+
+#[test]
+fn w4a_default_matches_new() {
+    // Default impl (coverage): same empty-stack semantics as new()
+    let stack = WorkflowCallStack::default();
+    assert!(stack.is_empty());
+    assert_eq!(stack.depth(), 0);
+    assert!(stack.pop().is_none());
+    assert!(stack.snapshot().is_empty());
 }

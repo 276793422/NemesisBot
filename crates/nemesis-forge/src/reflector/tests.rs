@@ -297,7 +297,7 @@ fn test_cleanup_reports() {
     let new_path = ref_dir.join("reflection_2026-05-01_120000.md");
     std::fs::write(&new_path, "new report").unwrap();
 
-    let reflector = Reflector::with_reflections_dir(ref_dir);
+    let reflector = Reflector::with_reflections_dir(ref_dir.clone());
     let deleted = reflector.cleanup_reports(30);
     assert_eq!(deleted, 1);
     assert!(!old_path.exists());
@@ -328,7 +328,7 @@ fn test_get_latest_report() {
     let report2 = ref_dir.join("reflection_2026-04-29_120000.md");
     std::fs::write(&report2, "report 2").unwrap();
 
-    let reflector = Reflector::with_reflections_dir(ref_dir);
+    let reflector = Reflector::with_reflections_dir(ref_dir.clone());
     let latest = reflector.get_latest_report();
     assert!(latest.is_some());
     assert_eq!(latest.unwrap(), report2);
@@ -340,7 +340,7 @@ fn test_get_latest_report_empty() {
     let ref_dir = dir.path().join("reflections");
     std::fs::create_dir_all(&ref_dir).unwrap();
 
-    let reflector = Reflector::with_reflections_dir(ref_dir);
+    let reflector = Reflector::with_reflections_dir(ref_dir.clone());
     assert!(reflector.get_latest_report().is_none());
 }
 
@@ -656,7 +656,7 @@ fn test_cleanup_reports_result_ok() {
     let dir = tempfile::tempdir().unwrap();
     let ref_dir = dir.path().join("reflections");
     std::fs::create_dir_all(&ref_dir).unwrap();
-    let reflector = Reflector::with_reflections_dir(ref_dir);
+    let reflector = Reflector::with_reflections_dir(ref_dir.clone());
     let result = reflector.cleanup_reports_result(30);
     assert!(result.is_ok());
 }
@@ -673,7 +673,7 @@ fn test_get_latest_report_content_no_reports() {
     let dir = tempfile::tempdir().unwrap();
     let ref_dir = dir.path().join("reflections");
     std::fs::create_dir_all(&ref_dir).unwrap();
-    let reflector = Reflector::with_reflections_dir(ref_dir);
+    let reflector = Reflector::with_reflections_dir(ref_dir.clone());
     let result = reflector.get_latest_report_content();
     assert!(result.is_err());
     assert!(result.unwrap_err().contains("no reflection"));
@@ -686,7 +686,7 @@ fn test_get_latest_report_content_with_report() {
     std::fs::create_dir_all(&ref_dir).unwrap();
     let report_path = ref_dir.join("reflection_2026-05-01_120000.md");
     std::fs::write(&report_path, "# Test Report").unwrap();
-    let reflector = Reflector::with_reflections_dir(ref_dir);
+    let reflector = Reflector::with_reflections_dir(ref_dir.clone());
     let content = reflector.get_latest_report_content().unwrap();
     assert!(content.contains("Test Report"));
 }
@@ -797,7 +797,7 @@ fn test_get_latest_report_from_dir() {
         "# Report 2",
     )
     .unwrap();
-    let reflector = Reflector::with_reflections_dir(ref_dir);
+    let reflector = Reflector::with_reflections_dir(ref_dir.clone());
     let latest = reflector.get_latest_report();
     assert!(latest.is_some());
 }
@@ -812,7 +812,7 @@ fn test_get_latest_report_content_from_dir() {
         "# Report content here",
     )
     .unwrap();
-    let reflector = Reflector::with_reflections_dir(ref_dir);
+    let reflector = Reflector::with_reflections_dir(ref_dir.clone());
     let content = reflector.get_latest_report_content();
     assert!(content.is_ok());
     assert!(content.unwrap().contains("Report content here"));
@@ -823,7 +823,7 @@ fn test_cleanup_reports_empty_dir_2() {
     let dir = tempfile::tempdir().unwrap();
     let ref_dir = dir.path().join("reflections");
     std::fs::create_dir_all(&ref_dir).unwrap();
-    let reflector = Reflector::with_reflections_dir(ref_dir);
+    let reflector = Reflector::with_reflections_dir(ref_dir.clone());
     let deleted = reflector.cleanup_reports(30);
     assert_eq!(deleted, 0);
 }
@@ -1278,3 +1278,251 @@ fn test_merge_remote_reflections_unreadable_file() {
     // Should not panic, just skip the file
     assert!(merged.remote_patterns.is_empty() || merged.merged_patterns.is_empty());
 }
+
+// --- reflect_with_llm (Stage 4 LLM) coverage ---
+
+struct ReflectorOkLLM;
+#[async_trait::async_trait]
+impl crate::reflector_llm::LLMCaller for ReflectorOkLLM {
+    async fn chat(
+        &self,
+        _system_prompt: &str,
+        _user_prompt: &str,
+        _max_tokens: Option<i64>,
+    ) -> Result<String, String> {
+        Ok("- insight one\n- insight two".to_string())
+    }
+}
+
+struct ReflectorErrLLM;
+#[async_trait::async_trait]
+impl crate::reflector_llm::LLMCaller for ReflectorErrLLM {
+    async fn chat(
+        &self,
+        _system_prompt: &str,
+        _user_prompt: &str,
+        _max_tokens: Option<i64>,
+    ) -> Result<String, String> {
+        Err("LLM service unavailable".to_string())
+    }
+}
+
+#[tokio::test]
+async fn test_reflect_with_llm_ok_provider_sets_insights() {
+    let reflector = Reflector::new();
+    reflector.set_provider(std::sync::Arc::new(ReflectorOkLLM));
+
+    let experiences = vec![
+        make_collected("file_read", "a.txt", true, 50),
+        make_collected("file_read", "b.txt", false, 150),
+    ];
+    let report = reflector
+        .reflect_with_llm(&experiences, &[], None, "today", "all")
+        .await;
+
+    let insights = report.llm_insights.expect("insights must be set on Ok");
+    assert!(insights.contains("insight one"));
+    assert!(insights.contains("insight two"));
+}
+
+#[tokio::test]
+async fn test_reflect_with_llm_error_provider_keeps_none() {
+    let reflector = Reflector::new();
+    reflector.set_provider(std::sync::Arc::new(ReflectorErrLLM));
+
+    let experiences = vec![make_collected("exec", "ls", true, 20)];
+    let report = reflector
+        .reflect_with_llm(&experiences, &[], None, "today", "all")
+        .await;
+
+    assert!(report.llm_insights.is_none(), "Err response must skip insights");
+    // Sync stages still produced stats.
+    assert_eq!(report.stats.total_records, 1);
+}
+
+#[tokio::test]
+async fn test_reflect_with_llm_no_provider_none() {
+    let reflector = Reflector::new();
+
+    let experiences = vec![make_collected("grep", "pattern", true, 10)];
+    let report = reflector
+        .reflect_with_llm(&experiences, &[], None, "today", "all")
+        .await;
+
+    assert!(report.llm_insights.is_none());
+}
+
+// ---- S8 coverage batch ---- (quality-hardening goal 冲刺 S8)
+
+#[test]
+fn test_s8_generate_reflection_evaluates_tracing_fields() {
+    let _guard = crate::test_support::quiet_trace_guard();
+    let reflector = Reflector::new();
+    let experiences = vec![
+        make_collected("tool_a", "x", true, 50),
+        make_collected("tool_a", "y", false, 80),
+    ];
+    let reflection = reflector.generate_reflection(&experiences);
+    assert!(!reflection.insights.is_empty());
+}
+
+#[tokio::test]
+async fn test_s8_reflect_with_llm_ok_evaluates_tracing_fields() {
+    let _guard = crate::test_support::quiet_trace_guard();
+    let reflector = Reflector::new();
+    reflector.set_provider(std::sync::Arc::new(ReflectorOkLLM));
+    let experiences = vec![make_collected("file_read", "a.txt", true, 50)];
+    let report = reflector
+        .reflect_with_llm(&experiences, &[], None, "today", "all")
+        .await;
+    assert!(report.llm_insights.is_some());
+}
+
+#[test]
+fn test_s8_cleanup_reports_skips_dirs_and_non_md_files() {
+    let _guard = crate::test_support::quiet_trace_guard();
+    let dir = tempfile::tempdir().unwrap();
+    let ref_dir = dir.path().join("reflections");
+    std::fs::create_dir_all(&ref_dir).unwrap();
+
+    // A subdirectory entry → is_file() false → skipped.
+    std::fs::create_dir_all(ref_dir.join("subdir")).unwrap();
+
+    // A stale non-markdown file → extension gate skips it.
+    let txt = ref_dir.join("notes.txt");
+    std::fs::write(&txt, "not a report").unwrap();
+
+    // An old markdown report → deleted.
+    let old_md = ref_dir.join("reflection_old.md");
+    std::fs::write(&old_md, "old").unwrap();
+    let old_time = std::time::SystemTime::now() - std::time::Duration::from_secs(40 * 24 * 3600);
+    filetime::set_file_mtime(&old_md, filetime::FileTime::from_system_time(old_time)).unwrap();
+
+    let reflector = Reflector::with_reflections_dir(ref_dir.clone());
+    let deleted = reflector.cleanup_reports(30);
+    assert_eq!(deleted, 1);
+    assert!(!old_md.exists());
+    assert!(txt.exists());
+    assert!(ref_dir.join("subdir").exists());
+
+    // get_latest_report on the remaining entries (txt + subdir) → None.
+    assert!(reflector.get_latest_report().is_none());
+}
+
+#[test]
+fn test_s8_get_latest_report_picks_newest_md_ignoring_others() {
+    let dir = tempfile::tempdir().unwrap();
+    let ref_dir = dir.path().join("reflections");
+    std::fs::create_dir_all(&ref_dir).unwrap();
+    std::fs::create_dir_all(ref_dir.join("nested")).unwrap();
+    std::fs::write(ref_dir.join("ignore.txt"), "x").unwrap();
+
+    let older = ref_dir.join("a.md");
+    std::fs::write(&older, "older").unwrap();
+    let newer = ref_dir.join("b.md");
+    std::fs::write(&newer, "newer").unwrap();
+    // Make b.md strictly newer than a.md.
+    let fut = std::time::SystemTime::now() + std::time::Duration::from_secs(3600);
+    filetime::set_file_mtime(&newer, filetime::FileTime::from_system_time(fut)).unwrap();
+
+    let reflector = Reflector::with_reflections_dir(ref_dir.clone());
+    let latest = reflector.get_latest_report().expect("must find md");
+    assert_eq!(latest.file_name().unwrap(), "b.md");
+    let content = reflector.get_latest_report_content().unwrap();
+    assert_eq!(content, "newer");
+}
+
+#[test]
+fn test_s8_cleanup_reports_result_locked_file_reports_error() {
+    let dir = tempfile::tempdir().unwrap();
+    let ref_dir = dir.path().join("reflections");
+    std::fs::create_dir_all(&ref_dir).unwrap();
+    std::fs::create_dir_all(ref_dir.join("subdir")).unwrap();
+
+    // Old md file held open by this process: on Windows an open handle
+    // (opened without FILE_SHARE_DELETE) makes remove_file fail.
+    let old_md = ref_dir.join("reflection_locked.md");
+    std::fs::write(&old_md, "locked").unwrap();
+    let old_time = std::time::SystemTime::now() - std::time::Duration::from_secs(40 * 24 * 3600);
+    filetime::set_file_mtime(&old_md, filetime::FileTime::from_system_time(old_time)).unwrap();
+    #[cfg(windows)]
+    let _handle = {
+        use std::os::windows::fs::OpenOptionsExt;
+        std::fs::OpenOptions::new()
+            .read(true)
+            .share_mode(0) // no share_delete -> remove_file fails
+            .open(&old_md)
+            .unwrap()
+    };
+    #[cfg(not(windows))]
+    let _handle = std::fs::File::open(&old_md).unwrap();
+
+    let reflector = Reflector::with_reflections_dir(ref_dir.clone());
+    let result = reflector.cleanup_reports_result(30);
+    match result {
+        Err(msg) => {
+            assert!(msg.contains("errors during cleanup"), "got: {}", msg);
+            assert!(msg.contains("reflection_locked.md"));
+        }
+        Ok(()) => panic!("expected deletion of the locked file to fail"),
+    }
+    assert!(old_md.exists());
+}
+
+#[test]
+fn test_s8_cleanup_reports_result_all_fresh_is_ok() {
+    let dir = tempfile::tempdir().unwrap();
+    let ref_dir = dir.path().join("reflections");
+    std::fs::create_dir_all(&ref_dir).unwrap();
+    std::fs::write(ref_dir.join("fresh.md"), "fresh").unwrap();
+    let reflector = Reflector::with_reflections_dir(ref_dir.clone());
+    assert!(reflector.cleanup_reports_result(30).is_ok());
+}
+
+#[test]
+fn test_s8_merge_remote_reflections_parses_markdown_tables() {
+    let dir = tempfile::tempdir().unwrap();
+    let report = dir.path().join("remote_report.md");
+    std::fs::write(
+        &report,
+        "# Remote Reflection\n\n| Tool | Count |\n| --- | --- |\n| read_file | 5 |\n| write_file | 3 |\n| ghost | 0 |\n",
+    )
+    .unwrap();
+
+    let reflector = Reflector::new();
+    let merged = reflector.merge_remote_reflections(&[report], &[]);
+    assert!(merged
+        .remote_patterns
+        .iter()
+        .any(|p| p.tool_name == "read_file" && p.count >= 5));
+}
+
+#[test]
+fn test_s8_cleanup_reports_locked_file_not_counted() {
+    let _guard = crate::test_support::quiet_trace_guard();
+    let dir = tempfile::tempdir().unwrap();
+    let ref_dir = dir.path().join("reflections");
+    std::fs::create_dir_all(&ref_dir).unwrap();
+
+    let old_md = ref_dir.join("reflection_locked.md");
+    std::fs::write(&old_md, "locked").unwrap();
+    let old_time = std::time::SystemTime::now() - std::time::Duration::from_secs(40 * 24 * 3600);
+    filetime::set_file_mtime(&old_md, filetime::FileTime::from_system_time(old_time)).unwrap();
+    #[cfg(windows)]
+    let _handle = {
+        use std::os::windows::fs::OpenOptionsExt;
+        std::fs::OpenOptions::new()
+            .read(true)
+            .share_mode(0)
+            .open(&old_md)
+            .unwrap()
+    };
+    #[cfg(not(windows))]
+    let _handle = std::fs::File::open(&old_md).unwrap();
+
+    let reflector = Reflector::with_reflections_dir(ref_dir);
+    // Removal fails under the exclusive handle -> not counted as deleted.
+    assert_eq!(reflector.cleanup_reports(30), 0);
+    assert!(old_md.exists());
+}
+

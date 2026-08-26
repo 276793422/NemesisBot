@@ -299,3 +299,24 @@ fn test_resolver_error_display() {
     let e = ResolverError::InvalidPort("abc".to_string());
     assert!(e.to_string().contains("abc"));
 }
+
+#[test]
+fn parse_url_embedded_credentials_rejected() {
+    let e = parse_url("http://user:pass@example.com/").unwrap_err();
+    assert!(matches!(e, ResolverError::EmbeddedCredentials), "{e:?}");
+}
+
+#[test]
+fn is_private_ip_v4_broadcast_not_classified_private() {
+    // 现行语义：is_private_ipv4 的保留段清单不含 255.255.255.255 广播地址
+    // （TCP 连广播地址本身不可路由，Go 原版同样不拦）。此处钉住现状。
+    let ip: std::net::IpAddr = "255.255.255.255".parse().unwrap();
+    assert!(!is_private_ip(&ip));
+}
+
+#[tokio::test]
+async fn resolve_host_localhost_via_dns() {
+    let ips = resolve_host("localhost").await.unwrap();
+    assert!(!ips.is_empty());
+    assert!(ips.iter().all(|i| i.is_loopback()), "{ips:?}");
+}

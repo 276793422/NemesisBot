@@ -473,3 +473,46 @@ fn test_get_var_preserves_type() {
         other => panic!("expected Number, got {:?}", other),
     }
 }
+
+#[test]
+fn w4a_resolve_unknown_reference_stays_verbatim() {
+    // Neither a variable nor a node id: the template text is returned as-is
+    // (final unresolved arm in resolve()).
+    let ctx = WorkflowContext::new(HashMap::new());
+    assert_eq!(ctx.resolve("hello {{ghost}}"), "hello {{ghost}}");
+    // Mixed with resolvable parts: only the known one is substituted
+    ctx.set_var("known", "k");
+    assert_eq!(
+        ctx.resolve("{{known}}-{{ghost}}"),
+        "k-{{ghost}}"
+    );
+}
+
+// ===========================================================================
+// S12b batch：`{{node.field}}` 引用解析失败的原样回退臂（context.rs ~156-157）。
+// ===========================================================================
+
+#[test]
+fn s12b_unresolved_node_field_reference_renders_verbatim() {
+    let ctx = WorkflowContext::new(HashMap::new());
+    // 未知 node id → 整个模板占位符原样保留
+    assert_eq!(ctx.resolve("x={{ghost.fld}}"), "x={{ghost.fld}}");
+
+    // node 存在但没有该字段 → 同样原样保留（不产出空串/panic）
+    let result = NodeResult {
+        node_id: "n1".to_string(),
+        output: json!({"other": 1}),
+        error: None,
+        state: ExecutionState::Completed,
+        started_at: Local::now(),
+        ended_at: Local::now(),
+        metadata: HashMap::new(),
+    };
+    ctx.set_node_result("n1", result);
+    assert_eq!(
+        ctx.resolve("value={{n1.missing_field}}"),
+        "value={{n1.missing_field}}"
+    );
+    // 对照：存在的字段正常替换
+    assert_eq!(ctx.resolve("value={{n1.other}}"), "value=1");
+}

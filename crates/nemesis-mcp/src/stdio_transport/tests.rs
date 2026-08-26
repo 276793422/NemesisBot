@@ -363,3 +363,211 @@ async fn send_to_nonexistent_after_connect_returns_send_error() {
     // Either a write failure or an EOF read failure — both are send_failed.
     let _ = t.close().await;
 }
+
+// ===========================================================================
+// W4c 补测（2026-08-25）：真子进程驱动 stdio 协议错误臂——stdout EOF /
+// 读超时 / 响应解析失败 / stdin 写失败（对端关闭读端）
+// ===========================================================================
+
+#[tokio::test]
+async fn test_w4c_stdio_eof_after_stdout_closed() {
+    // 首个请求正常应答后关闭 stdout（进程继续读 stdin）→ 第二次 send 读到 EOF。
+    // 注意：Windows 上 sys.stdout.close() 不会关掉底层 fd，必须 os.close(1)。
+    let script = r#"
+import sys, json, os
+n = 0
+for line in sys.stdin:
+    line = line.strip()
+    if not line:
+        continue
+    n += 1
+    req = json.loads(line)
+    if n == 1:
+        resp = {"jsonrpc": "2.0", "id": req.get("id"), "result": {"ok": True}}
+        os.write(1, (json.dumps(resp) + "\n").encode())
+        os.close(1)
+    # n >= 2：stdout 已关，不再写任何东西
+"#;
+    let mut t = StdioTransport::new(
+        "python",
+        vec!["-c".to_string(), script.to_string()],
+        vec![],
+    );
+    if t.connect().await.is_err() {
+        eprintln!("Skipping test: python not available");
+        return;
+    }
+
+    let req = TransportRequest {
+        jsonrpc: JSONRPC_VERSION.to_string(),
+        id: Some(serde_json::Value::Number(1.into())),
+        method: "first".to_string(),
+        params: None,
+    };
+    let resp = t.send(&req, 5000).await.unwrap();
+    assert!(resp.result.is_some());
+
+    // 第二次 send：进程活着（stdin 可写）但 stdout 已关 → EOF
+    let req2 = TransportRequest {
+        jsonrpc: JSONRPC_VERSION.to_string(),
+        id: Some(serde_json::Value::Number(2.into())),
+        method: "second".to_string(),
+        params: None,
+    };
+    let err = t.send(&req2, 5000).await.unwrap_err();
+    assert!(
+        err.message.contains("connection closed"),
+        "unexpected: {}",
+        err.message
+    );
+    t.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn test_w4c_stdio_read_timeout_maps_transport_timeout() {
+    // 服务器只读不答 → send 超时（300ms）
+    let script = r#"
+import sys, time
+for line in sys.stdin:
+    pass
+time.sleep(30)
+"#;
+    let mut t = StdioTransport::new(
+        "python",
+        vec!["-c".to_string(), script.to_string()],
+        vec![],
+    );
+    if t.connect().await.is_err() {
+        eprintln!("Skipping test: python not available");
+        return;
+    }
+
+    let req = TransportRequest {
+        jsonrpc: JSONRPC_VERSION.to_string(),
+        id: Some(serde_json::Value::Number(1.into())),
+        method: "ignored".to_string(),
+        params: None,
+    };
+    let err = t.send(&req, 300).await.unwrap_err();
+    assert_eq!(err.code, -3);
+    assert!(err.message.contains("timed out"));
+    t.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn test_w4c_stdio_garbage_response_maps_parse_failure() {
+    // 服务器回一行非 JSON → 解析失败
+    let script = r#"
+import sys, time
+line = sys.stdin.readline()
+sys.stdout.write("this-is-not-json\n")
+sys.stdout.flush()
+time.sleep(30)
+"#;
+    let mut t = StdioTransport::new(
+        "python",
+        vec!["-c".to_string(), script.to_string()],
+        vec![],
+    );
+    if t.connect().await.is_err() {
+        eprintln!("Skipping test: python not available");
+        return;
+    }
+
+    let req = TransportRequest {
+        jsonrpc: JSONRPC_VERSION.to_string(),
+        id: Some(serde_json::Value::Number(1.into())),
+        method: "x".to_string(),
+        params: None,
+    };
+    let err = t.send(&req, 5000).await.unwrap_err();
+    assert!(
+        err.message.contains("failed to parse response"),
+        "unexpected: {}",
+        err.message
+    );
+    t.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn test_w4c_stdio_write_to_closed_stdin_fails() {
+    // 子进程启动后立刻关闭自己的 stdin 读端（进程保持存活）→ 写 stdin 失败。
+    // 同样必须用 os.close(0)（sys.stdin.close() 不关底层 fd）。
+    let script = r#"
+import sys, time, os
+os.close(0)
+time.sleep(30)
+"#;
+    let mut t = StdioTransport::new(
+        "python",
+        vec!["-c".to_string(), script.to_string()],
+        vec![],
+    );
+    if t.connect().await.is_err() {
+        eprintln!("Skipping test: python not available");
+        return;
+    }
+    // 给子进程一点时间执行 close
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+
+    let req = TransportRequest {
+        jsonrpc: JSONRPC_VERSION.to_string(),
+        id: Some(serde_json::Value::Number(1.into())),
+        method: "x".to_string(),
+        params: None,
+    };
+    let err = t.send(&req, 5000).await.unwrap_err();
+    assert!(
+        err.message.contains("failed to write to stdin")
+            || err.message.contains("failed to flush stdin")
+            || err.message.contains("connection closed"),
+        "unexpected: {}",
+        err.message
+    );
+    t.close().await.unwrap();
+}
+
+/// S1 coverage batch (2026-08-26): stdin write failure arm (lines 147-149).
+///
+/// The child closes its read end (fd 0) first thing and then stays alive, so
+/// the parent's `write_all` deterministically hits a broken pipe instead of
+/// racing full process exit. The 1s grace period gives python ample time to
+/// start and close fd 0 (typical startup < 200ms; child lives 5s). Skips when
+/// python is unavailable, matching the e2e_jsonrpc_echo convention.
+#[tokio::test]
+async fn s1_send_fails_when_child_closes_stdin() {
+    let python_script = r#"
+import os, time
+os.close(0)
+time.sleep(5)
+"#;
+    let mut t = StdioTransport::new(
+        "python",
+        vec!["-c".to_string(), python_script.to_string()],
+        vec![],
+    );
+
+    // Skip if python is not available.
+    if t.connect().await.is_err() {
+        eprintln!("Skipping s1 test: python not available");
+        return;
+    }
+    assert!(t.is_connected());
+
+    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+
+    let req = TransportRequest {
+        jsonrpc: JSONRPC_VERSION.to_string(),
+        id: Some(serde_json::Value::Number(1.into())),
+        method: "test/method".to_string(),
+        params: None,
+    };
+    let err = t.send(&req, 3000).await.unwrap_err();
+    let msg = format!("{err}");
+    assert!(
+        msg.contains("stdin"),
+        "expected a stdin write failure, got: {msg}"
+    );
+
+    let _ = t.close().await;
+}

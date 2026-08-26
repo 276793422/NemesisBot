@@ -204,3 +204,17 @@ fn test_match_domain_pattern_throughput() {
         elapsed
     );
 }
+
+// ---- wildcard escape-arm coverage (regex metachars in pattern) ----
+
+#[test]
+fn test_match_pattern_escapes_regex_metachar() {
+    // '+' falls into the escape arm of wildcard_to_regex: literal '+' in the
+    // pattern matches a literal '+' in the target and nothing else.
+    assert!(match_pattern("file+.tmp", "file+.tmp"));
+    assert!(!match_pattern("file+.tmp", "fileXtmp"));
+    // other metachars from the escape set
+    assert!(match_pattern("a(b)", "a(b)"));
+    assert!(match_pattern("x{2}", "x{2}"));
+    assert!(match_pattern("c^d$e", "c^d$e"));
+}

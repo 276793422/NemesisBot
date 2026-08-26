@@ -636,3 +636,8 @@ fn read_catalog(home: &str) -> Option<CatalogLite> {
 // and the module compiles under every feature combo (models is ungated).
 #[cfg(test)]
 mod tests;
+
+// S10b (2026-08-26, quality-hardening goal 冲刺 web 批次 2): pin the DISABLED
+// typed-save helper's behavior (see its doc comment above).
+#[cfg(test)]
+mod s10b_tests;

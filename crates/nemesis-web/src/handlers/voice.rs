@@ -582,6 +582,12 @@ fn write_voiceprint_config(
     data: &serde_json::Value,
 ) -> Result<(), String> {
     let path = voiceprint_path(config_dir);
+    // 首写前建父目录：读路径（read_voiceprint_config）容忍文件/目录缺失回退默认，
+    // 写路径此前直接 fs::write，config/ 目录不存在时首写会以裸 OS error 3 失败
+    // （BUG #18，与同文件 ensure_voice_config 的 create_dir_all 行为对齐）。
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
     let content = serde_json::to_string_pretty(data)
         .map_err(|e| format!("failed to serialize voiceprint config: {}", e))?;
     std::fs::write(&path, content).map_err(|e| format!("failed to write voiceprint config: {}", e))
@@ -3357,3 +3363,18 @@ fn has_onnx_file(dir: &std::path::Path) -> bool {
     }
     false
 }
+
+// Phase 3 批次 18（2026-08-25）：voice.rs 纯逻辑子模块测试。子模块（而非
+// sibling 文件）是为了访问本文件私有项（DialogueSttOutput 缓冲语义 /
+// check_model_subdir_any / read_voice_config 回退 / cmd_status 文件探测 /
+// cmd_speaker_* 持久化）。原生音频臂（WASAPI / AEC / kokoro / espeak /
+// SenseVoice 真 DLL）不可 mock → 结构性豁免（台账 §9.4 VE-voice-1）。
+#[cfg(all(test, target_os = "windows"))]
+mod wweb2_tests;
+
+// quality-hardening goal 冲刺 S10a（2026-08-25）：voice.rs 非豁免行覆盖第二子模块。
+// 聚焦 VE1 豁免范围外的 WSAPI dispatch 提取臂、start/stop 状态机（注入会话）、
+// 配置读写、纯逻辑 helper 与 push 广播路径。测试间全局状态竞态由模块内
+// voice_state_lock() 串行化（wweb2_tests::voice_shutdown_idle_is_safe 也持有同一把锁）。
+#[cfg(all(test, target_os = "windows"))]
+mod s10_tests;

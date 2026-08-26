@@ -177,3 +177,105 @@ fn spawn_semantics_display() {
     assert_eq!(super::SpawnSemantics::ExecutorChild.to_string(), "executor-child");
     assert_eq!(super::SpawnSemantics::InProcess.to_string(), "in-process");
 }
+
+// ---------------------------------------------------------------------------
+// S6 覆盖率批次（quality-hardening goal 2026-08-25）：strip_verbatim 的
+// UNC/无前缀臂、normalize_lexical 的 CurDir/根级 ParentDir、trait 默认
+// supports_tool_calls、DirectWorld::name/spawn_semantics、cwd 合法 spawn、
+// stdin 注写。
+// ---------------------------------------------------------------------------
+
+#[test]
+fn strip_verbatim_unc_plain_and_prefixed() {
+    use super::strip_verbatim;
+    // UNC verbatim → \\server\share
+    assert_eq!(
+        strip_verbatim(PathBuf::from(r"\\?\UNC\server\share\dir")).to_string_lossy(),
+        r"\\server\share\dir"
+    );
+    // 普通盘符 verbatim → 剥前缀
+    assert_eq!(
+        strip_verbatim(PathBuf::from(r"\\?\C:\ws\a")).to_string_lossy(),
+        r"C:\ws\a"
+    );
+    // 无前缀 → 原样
+    assert_eq!(
+        strip_verbatim(PathBuf::from(r"C:\plain\a")).to_string_lossy(),
+        r"C:\plain\a"
+    );
+}
+
+#[test]
+fn normalize_lexical_curdir_and_root_parentdir() {
+    use super::normalize_lexical;
+    let n = |p: &str| normalize_lexical(std::path::Path::new(p)).to_string_lossy().to_string();
+    // CurDir 被消掉
+    assert!(!n(r"C:\ws\.\a.txt").contains(r"\.\"), "{}", n(r"C:\ws\.\a.txt"));
+    #[cfg(windows)]
+    {
+        // 根的 .. 保留（向上逃逸留在路径里，starts_with 自然不命中）
+        let root_escape = n(r"C:\..");
+        assert!(root_escape.ends_with(".."), "根级 .. 必须保留: {root_escape}");
+        // 前导 CurDir：components 只对开头保留 `.` → normalize_lexical 的
+        // Component::CurDir 臂只在前导时命中（中段 `.` 在 components 迭代
+        // 里已被 std 归一化掉，到不了 match）。
+        assert_eq!(n(r".\a.txt"), "a.txt", "前导 . 必须被消掉");
+    }
+}
+
+#[test]
+fn default_supports_tool_calls_is_false_for_minimal_world() {
+    struct BareWorld;
+    #[async_trait::async_trait]
+    impl ExecutionWorld for BareWorld {
+        fn name(&self) -> &str {
+            "bare"
+        }
+        fn writable_roots(&self) -> Vec<PathBuf> {
+            vec![]
+        }
+        fn spawn_semantics(&self) -> super::SpawnSemantics {
+            super::SpawnSemantics::InProcess
+        }
+        async fn run(&self, _op: ExecOp) -> Result<ExecOutcome, String> {
+            Err("bare world has no lanes".into())
+        }
+    }
+    let w = BareWorld;
+    assert!(!w.supports_tool_calls(), "trait 默认实现必须 false");
+    assert_eq!(w.name(), "bare");
+}
+
+#[tokio::test]
+async fn direct_world_name_and_spawn_semantics_accessors() {
+    let root = tmp();
+    let world = DirectWorld::new("dw-s6", vec![root.clone()], vec![root], super::SpawnSemantics::SandboxBoxed);
+    assert_eq!(world.name(), "dw-s6");
+    assert_eq!(world.spawn_semantics(), super::SpawnSemantics::SandboxBoxed);
+    assert_eq!(world.writable_roots().len(), 1);
+}
+
+#[tokio::test]
+async fn spawn_with_valid_cwd_and_stdin_roundtrip() {
+    let root = tmp();
+    // cwd 落在 spawn 根内 → current_dir 生效；stdin 注写后子进程回显
+    #[cfg(windows)]
+    let job = SpawnOp {
+        program: "cmd".into(),
+        args: vec!["/C".into(), "more".into()],
+        cwd: Some(root.clone()),
+        stdin: Some("s6-stdin-line".into()),
+        timeout_secs: Some(20),
+    };
+    #[cfg(unix)]
+    let job = SpawnOp {
+        program: "sh".into(),
+        args: vec!["-c".into(), "cat".into()],
+        cwd: Some(root.clone()),
+        stdin: Some("s6-stdin-line".into()),
+        timeout_secs: Some(20),
+    };
+    let out = guarded_direct_spawn(&job, &[root]).await.expect("spawn ok");
+    assert!(!out.failed(), "exit={:?} stderr={}", out.exit_code, out.stderr);
+    assert!(out.stdout.contains("s6-stdin-line"), "stdin 必须写进子进程: {}", out.stdout);
+}

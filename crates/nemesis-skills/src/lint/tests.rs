@@ -614,3 +614,22 @@ fn test_lint_multiline_same_pattern() {
         .count();
     assert!(dest_count >= 2, "Should match on multiple lines");
 }
+
+// ============================================================
+// S5 coverage: LintWarning serde default severity
+// ============================================================
+
+#[test]
+fn test_lint_warning_deserialize_without_severity_defaults_medium() {
+    let json = r#"{
+        "category": "Recon",
+        "message": "recon command found",
+        "pattern": "ps aux",
+        "pattern_id": "REC-001",
+        "matched_text": "ps aux"
+    }"#;
+    let warning: LintWarning = serde_json::from_str(json).unwrap();
+    assert_eq!(warning.category, LintCategory::Recon);
+    assert_eq!(warning.severity, LintSeverity::Medium);
+    assert!(warning.line.is_none());
+}

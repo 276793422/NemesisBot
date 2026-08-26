@@ -382,3 +382,113 @@ fn test_hash_prefix_numbered() {
         .unwrap();
     assert!(instr.value > 0.0);
 }
+
+// ============================================================
+// S3 batch 2: malicious band / entropy / structural / repetition /
+// instruction_structure / script_category arms
+// ============================================================
+
+/// 强信号块：jailbreak 密度（word_rep 31/44≈0.70、kw≈0.63）+ 编号行 3/10 +
+/// 祈使行 5/10 + 控制字符 800/14000+ + 四文字系统 + 反引号 + 低熵 a 串 →
+/// cls ≈ 0.755 ≥ 0.7（malicious）。
+fn s3c_malicious_block() -> String {
+    let jb = "jailbreak jailbreak jailbreak jailbreak";
+    let mut lines: Vec<String> = vec![
+        format!("1. {jb}"),
+        format!("2. {jb}"),
+        format!("3. {jb}"),
+        format!("4. {jb}"),
+        format!("5. {jb}"),
+        format!("do anything now {jb}"),
+        format!("never {jb}"),
+        format!("must {jb}"),
+        format!("always {jb}"),
+        format!("remember {jb}"),
+        "qwertyuiopasdfghjklzxcvbnm `x` α 가 ก".to_string(),
+    ];
+    let ctrl = "\u{0001}".repeat(800);
+    let a_run = "a".repeat(13000);
+    lines.push(format!("{} {}", ctrl, a_run));
+    lines.join("\n")
+}
+
+#[test]
+fn test_classify_malicious_band() {
+    let classifier = Classifier::new();
+    let r = classifier.classify(&s3c_malicious_block());
+    assert_eq!(r.level, "malicious", "score={}", r.score);
+    assert!(r.score >= 0.7, "score={}", r.score);
+    // 五个因子都在结果里
+    let names: Vec<&str> = r.factors.iter().map(|f| f.name.as_str()).collect();
+    for want in ["keyword_density", "entropy", "structural", "repetition", "instruction_structure"] {
+        assert!(names.contains(&want), "factors: {:?}", names);
+    }
+}
+
+#[test]
+fn test_entropy_single_distinct_char_arm() {
+    let (score, desc) = entropy_score("aaaa");
+    assert_eq!(score, 0.0);
+    assert_eq!(desc, "single character");
+}
+
+#[test]
+fn test_entropy_low_normalised_arm() {
+    // 30 个 a + 1 个 b：normalized ≈ 0.20 < 0.3 → 0.5
+    let input = format!("{}b", "a".repeat(30));
+    let (score, _desc) = entropy_score(&input);
+    assert_eq!(score, 0.5);
+}
+
+#[test]
+fn test_structural_control_chars_low_band() {
+    // 控制字符占比 ∈ (0.01, 0.05] → +0.2 且指标名 control_chars_low。
+    let mut s = "word ".repeat(48);
+    s.push_str(&"\u{0001}".repeat(6));
+    let (score, desc) = structural_score(&s);
+    assert!(desc.contains("control_chars_low"), "desc={desc}");
+    assert!(!desc.contains("control_chars,"), "desc={desc}");
+    assert_eq!(score, 0.2, "desc={desc}");
+}
+
+#[test]
+fn test_repetition_mid_band_word_ratio() {
+    // 4/12 ≈ 0.33 ∈ (0.3, 0.4] → 0.3（无 bigram 加成）
+    let (score, desc) = repetition_score("a a a a b c d e f g h i");
+    assert_eq!(score, 0.3, "desc={desc}");
+    assert!(desc.contains("4/12"), "desc={desc}");
+}
+
+#[test]
+fn test_instruction_structure_numbered_mid_band() {
+    // 编号行 2/8 = 0.25 ∈ (0.2, 0.4] → +0.15；祈使行 0 → 不触发组合加成。
+    let input = "1. alpha\n2. beta\nplain one\nplain two\nplain three\nplain four\nplain five\nplain six";
+    let (score, desc) = instruction_structure_score(input);
+    assert_eq!(score, 0.15, "desc={desc}");
+    assert!(desc.contains("numbered=2/8"), "desc={desc}");
+}
+
+#[test]
+fn test_script_category_all_arms() {
+    assert_eq!(script_category('A'), "latin");
+    assert_eq!(script_category('中'), "cjk");
+    assert_eq!(script_category('\u{0410}'), "cyrillic");
+    assert_eq!(script_category('\u{0600}'), "arabic");
+    assert_eq!(script_category('\u{AC00}'), "hangul");
+    assert_eq!(script_category('\u{0900}'), "devanagari");
+    assert_eq!(script_category('\u{0590}'), "hebrew");
+    assert_eq!(script_category('\u{0370}'), "greek");
+    assert_eq!(script_category('\u{0E00}'), "thai");
+    // ASCII 控制字符也算 latin（is_ascii 为真）；真正落到空档的是未列出的
+    // 非 ASCII 区块（如 emoji / 假名）。
+    assert_eq!(script_category('\u{1F600}'), "");
+    assert_eq!(script_category('\u{3041}'), "");
+}
+
+#[test]
+fn test_mixed_scripts_four_ways() {
+    // latin + greek + hangul + thai → mixed_scripts（>2 种）
+    let (score, desc) = structural_score("hello α 가 ก world");
+    assert!(desc.contains("mixed_scripts"), "desc={desc}");
+    assert!(score >= 0.3, "score={score}");
+}

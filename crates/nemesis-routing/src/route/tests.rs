@@ -1073,3 +1073,179 @@ fn test_route_with_non_default_agent_fallback() {
     // Should fall back to first available agent
     assert_eq!(route.agent_id, "actual-agent");
 }
+
+// ===========================================================================
+// S12b batch（quality-hardening goal 冲刺）：finder 防御臂（Option 无值迭代 /
+// 限定字段跳过 continue / 通配候选过滤 continue）
+// ===========================================================================
+
+/// 构造一个空 RouteInput（仅 channel/account 必填，其余 None）。
+fn s12b_input(channel: &str, account: &str) -> RouteInput {
+    RouteInput {
+        channel: channel.to_string(),
+        account_id: account.to_string(),
+        peer_kind: None,
+        peer_id: None,
+        parent_peer_kind: None,
+        parent_peer_id: None,
+        guild_id: None,
+        team_id: None,
+        identity_links: HashMap::new(),
+    }
+}
+
+#[test]
+fn s12b_find_guild_match_skips_binding_without_guild_field() {
+    // guild 输入非空，但遍历的首个绑定 match_guild_id=None → 进入 `None => {}`
+    // 防御臂后继续；第二个绑定才是真正命中的。
+    let resolver = RouteResolver::new(RouteConfig {
+        bindings: vec![
+            AgentBinding {
+                agent_id: "plain".to_string(),
+                match_channel: "web".to_string(),
+                match_account_id: "*".to_string(),
+                match_peer_kind: None,
+                match_peer_id: None,
+                match_guild_id: None,
+                match_team_id: Some("decoy".to_string()),
+            },
+            AgentBinding {
+                agent_id: "guild-agent".to_string(),
+                match_channel: "web".to_string(),
+                match_account_id: "*".to_string(),
+                match_peer_kind: None,
+                match_peer_id: None,
+                match_guild_id: Some("g1".to_string()),
+                match_team_id: None,
+            },
+        ],
+        agents: vec![
+            AgentDef { id: "main".to_string(), is_default: true },
+            AgentDef { id: "plain".to_string(), is_default: false },
+            AgentDef { id: "guild-agent".to_string(), is_default: false },
+        ],
+        dm_scope: "main".to_string(),
+    });
+    let mut input = s12b_input("web", "default");
+    input.guild_id = Some("g1".to_string());
+    let route = resolver.resolve(&input);
+    assert_eq!(route.agent_id, "guild-agent");
+    assert_eq!(route.matched_by, "binding.guild");
+}
+
+#[test]
+fn s12b_find_team_match_skips_binding_without_team_field() {
+    // 同上，对 team 维度：首个绑定无 match_team_id → None 臂。
+    let resolver = RouteResolver::new(RouteConfig {
+        bindings: vec![
+            AgentBinding {
+                agent_id: "plain".to_string(),
+                match_channel: "web".to_string(),
+                match_account_id: "*".to_string(),
+                match_peer_kind: None,
+                match_peer_id: None,
+                match_guild_id: None,
+                match_team_id: None,
+            },
+            AgentBinding {
+                agent_id: "team-agent".to_string(),
+                match_channel: "web".to_string(),
+                match_account_id: "*".to_string(),
+                match_peer_kind: None,
+                match_peer_id: None,
+                match_guild_id: None,
+                match_team_id: Some("t1".to_string()),
+            },
+        ],
+        agents: vec![
+            AgentDef { id: "main".to_string(), is_default: true },
+            AgentDef { id: "plain".to_string(), is_default: false },
+            AgentDef { id: "team-agent".to_string(), is_default: false },
+        ],
+        dm_scope: "main".to_string(),
+    });
+    let mut input = s12b_input("web", "default");
+    input.team_id = Some("t1".to_string());
+    let route = resolver.resolve(&input);
+    assert_eq!(route.agent_id, "team-agent");
+    assert_eq!(route.matched_by, "binding.team");
+}
+
+#[test]
+fn s12b_find_account_match_continues_past_scoped_bindings() {
+    // find_account_match 只接受「无任何 peer/guild/team 限定」的绑定；
+    // 带限定字段的绑定命中 continue 被跳过，随后才匹配到干净的那个。
+    let resolver = RouteResolver::new(RouteConfig {
+        bindings: vec![
+            AgentBinding {
+                agent_id: "scoped".to_string(),
+                match_channel: "web".to_string(),
+                match_account_id: "*".to_string(), // account 不挡人，但带 peer 限定
+                match_peer_kind: Some("direct".to_string()),
+                match_peer_id: Some("vip".to_string()),
+                match_guild_id: None,
+                match_team_id: None,
+            },
+            AgentBinding {
+                agent_id: "account-agent".to_string(),
+                match_channel: "web".to_string(),
+                match_account_id: "acct-1".to_string(),
+                match_peer_kind: None,
+                match_peer_id: None,
+                match_guild_id: None,
+                match_team_id: None,
+            },
+        ],
+        agents: vec![
+            AgentDef { id: "main".to_string(), is_default: true },
+            AgentDef { id: "scoped".to_string(), is_default: false },
+            AgentDef { id: "account-agent".to_string(), is_default: false },
+        ],
+        dm_scope: "main".to_string(),
+    });
+    // 普通 direct peer（非 vip）→ binding.peer 不命中；account=acct-1 → 跳过
+    // scoped 后落到 account-agent（Priority 5）。
+    let mut input = s12b_input("web", "acct-1");
+    input.peer_kind = Some("direct".to_string());
+    input.peer_id = Some("regular-user".to_string());
+    let route = resolver.resolve(&input);
+    assert_eq!(route.agent_id, "account-agent");
+    assert_eq!(route.matched_by, "binding.account");
+}
+
+#[test]
+fn s12b_channel_wildcard_match_continues_past_specific_accounts() {
+    // find_channel_wildcard_match 要求 match_account_id == "*"； Specific-account
+    // 绑定在遍历中走 `acc != "*"` 的 continue，之后才轮到通配那条。
+    let resolver = RouteResolver::new(RouteConfig {
+        bindings: vec![
+            AgentBinding {
+                agent_id: "other-acct".to_string(),
+                match_channel: "web".to_string(),
+                match_account_id: "some-other-account".to_string(),
+                match_peer_kind: None,
+                match_peer_id: None,
+                match_guild_id: None,
+                match_team_id: None,
+            },
+            AgentBinding {
+                agent_id: "wildcard".to_string(),
+                match_channel: "web".to_string(),
+                match_account_id: "*".to_string(),
+                match_peer_kind: None,
+                match_peer_id: None,
+                match_guild_id: None,
+                match_team_id: None,
+            },
+        ],
+        agents: vec![
+            AgentDef { id: "main".to_string(), is_default: true },
+            AgentDef { id: "other-acct".to_string(), is_default: false },
+            AgentDef { id: "wildcard".to_string(), is_default: false },
+        ],
+        dm_scope: "main".to_string(),
+    });
+    // account 不匹配 any 具体绑定 → Priority 6 通道级通配兜底
+    let route = resolver.resolve(&s12b_input("web", "unknown-account"));
+    assert_eq!(route.agent_id, "wildcard");
+}

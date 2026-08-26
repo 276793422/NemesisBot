@@ -45,6 +45,7 @@ async fn test_dingtalk_send_without_webhook_fails() {
         chat_id: "unknown-chat".to_string(),
         content: "Hello".to_string(),
         message_type: String::new(),
+        meta: Default::default(),
     };
     assert!(ch.send(msg).await.is_err());
 }
@@ -78,10 +79,10 @@ fn test_parse_and_dispatch_event() {
         }),
         data: Some(
             serde_json::json!({
-                "sender_staff_id": "staff-123",
-                "sender_nick": "Alice",
-                "conversation_id": "conv-456",
-                "conversation_type": "1",
+                "senderStaffId": "staff-123",
+                "senderNick": "Alice",
+                "conversationId": "conv-456",
+                "conversationType": "1",
                 "sessionWebhook": "https://example.com/webhook",
                 "text": {
                     "content": "Hello DingTalk"
@@ -122,8 +123,8 @@ fn test_parse_and_dispatch_event_filtered() {
         }),
         data: Some(
             serde_json::json!({
-                "sender_staff_id": "blocked_staff",
-                "conversation_id": "conv-789",
+                "senderStaffId": "blocked_staff",
+                "conversationId": "conv-789",
                 "text": {
                     "content": "Blocked message"
                 }

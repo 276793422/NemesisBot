@@ -38,7 +38,12 @@ pub struct BlueskyConfig {
 pub struct BlueskySessionResponse {
     pub did: String,
     pub handle: String,
+    /// BUG #13 fix (2026-08-25)：AT Protocol createSession 返回 camelCase
+    /// （accessJwt/refreshJwt）。原 snake_case-only 导致 serde 报 missing field，
+    /// 会话永远建不起来（整个 Bluesky 出站不可用）。alias 保留内部兼容。
+    #[serde(rename = "accessJwt", alias = "access_jwt")]
     pub access_jwt: String,
+    #[serde(rename = "refreshJwt", alias = "refresh_jwt")]
     pub refresh_jwt: Option<String>,
     pub active: Option<bool>,
 }

@@ -675,3 +675,341 @@ fn test_mcp_adapter_no_server_info() {
     // When no server info, should use "unknown"
     assert!(def.name.contains("unknown"));
 }
+
+// ===========================================================================
+// W4c 补测（2026-08-25）：create_tools_from_client_named + ArcClientAdapter
+// execute 分支（error/client-error/timeout/image/resource/非对象 args）+
+// sanitize_schema 边界（非对象输入 / 嵌套 properties type 数组展平）
+// ===========================================================================
+
+fn w4c_tool(name: &str, desc: Option<&str>, schema: serde_json::Value) -> McpTool {
+    McpTool {
+        name: name.to_string(),
+        description: desc.map(|s| s.to_string()),
+        input_schema: schema,
+    }
+}
+
+#[tokio::test]
+async fn test_w4c_named_uses_config_name_over_self_reported() {
+    // server_info 自报名 "self name"，配置名 "Cfg Name!" → 前缀取配置名（核心契约）
+    let mock = MockClient::new(
+        "self name",
+        vec![
+            w4c_tool("tool_a", Some("Tool A"), serde_json::json!({"type": "object"})),
+            w4c_tool("tool_b", None, serde_json::json!({"type": "object"})),
+        ],
+    );
+    let adapters = create_tools_from_client_named(Box::new(mock), "Cfg Name!", 0).await.unwrap();
+    assert_eq!(adapters.len(), 2);
+    let d0 = adapters[0].definition();
+    // "Cfg Name!" → "cfg_name_"（'!' 也被换成 '_'，故双下划线）
+    assert_eq!(d0.name, "mcp_cfg_name__tool_a");
+    // 描述里用未 sanitize 的原始配置名
+    assert!(d0.description.contains("[MCP:Cfg Name!]"));
+    assert!(d0.description.contains("Tool A"));
+    let d1 = adapters[1].definition();
+    assert_eq!(d1.name, "mcp_cfg_name__tool_b");
+    assert!(d1.description.contains("MCP tool: tool_b"));
+}
+
+#[tokio::test]
+async fn test_w4c_named_adapter_execute_text_result() {
+    let mock = MockClient::new("srv", vec![w4c_tool("echo", None, serde_json::json!({}))]);
+    mock.with_call_result(ToolCallResult::ok("echoed"));
+    let adapters = create_tools_from_client_named(Box::new(mock), "srv", 0)
+        .await
+        .unwrap();
+    let result = adapters[0].execute(serde_json::json!({"text": "hi"})).await;
+    assert!(!result.is_error);
+    assert_eq!(result.content, "echoed");
+}
+
+#[tokio::test]
+async fn test_w4c_named_adapter_execute_non_object_args_still_calls() {
+    let mock = MockClient::new("srv", vec![w4c_tool("flex", None, serde_json::json!({}))]);
+    mock.with_call_result(ToolCallResult::ok("ok"));
+    let adapters = create_tools_from_client_named(Box::new(mock), "srv", 0)
+        .await
+        .unwrap();
+    let result = adapters[0].execute(serde_json::json!("not-an-object")).await;
+    assert!(!result.is_error);
+    assert_eq!(result.content, "ok");
+}
+
+#[tokio::test]
+async fn test_w4c_named_adapter_execute_is_error_result_maps_err() {
+    let mock = MockClient::new("srv", vec![w4c_tool("boom", None, serde_json::json!({}))]);
+    mock.with_call_result(ToolCallResult {
+        content: vec![ToolContent::text("kaboom")],
+        is_error: true,
+    });
+    let adapters = create_tools_from_client_named(Box::new(mock), "srv", 0)
+        .await
+        .unwrap();
+    let result = adapters[0].execute(serde_json::json!({})).await;
+    assert!(result.is_error);
+    assert!(result.content.contains("returned error"));
+    assert!(result.content.contains("kaboom"));
+}
+
+#[tokio::test]
+async fn test_w4c_named_adapter_execute_is_error_no_text_unknown() {
+    let mock = MockClient::new("srv", vec![w4c_tool("boom2", None, serde_json::json!({}))]);
+    mock.with_call_result(ToolCallResult {
+        content: vec![],
+        is_error: true,
+    });
+    let adapters = create_tools_from_client_named(Box::new(mock), "srv", 0)
+        .await
+        .unwrap();
+    let result = adapters[0].execute(serde_json::json!({})).await;
+    assert!(result.is_error);
+    assert!(result.content.contains("unknown error"));
+}
+
+#[tokio::test]
+async fn test_w4c_named_adapter_execute_image_and_resource_content() {
+    let mock = MockClient::new(
+        "srv",
+        vec![w4c_tool("rich", None, serde_json::json!({}))],
+    );
+    mock.with_call_result(ToolCallResult {
+        content: vec![
+            ToolContent {
+                content_type: "image".to_string(),
+                text: Some("b64data".to_string()),
+            },
+            ToolContent {
+                content_type: "resource".to_string(),
+                text: Some("res-data".to_string()),
+            },
+        ],
+        is_error: false,
+    });
+    let adapters = create_tools_from_client_named(Box::new(mock), "srv", 0)
+        .await
+        .unwrap();
+    let result = adapters[0].execute(serde_json::json!({})).await;
+    assert!(!result.is_error);
+    assert!(result.content.contains("[Image: b64data]"));
+    assert!(result.content.contains("[Resource: res-data]"));
+}
+
+/// call_tool 直接返回 Err（JSON-RPC error / 传输错误）的 mock client。
+struct W4cFailingClient {
+    server_info: Option<ServerInfo>,
+}
+
+#[async_trait]
+impl Client for W4cFailingClient {
+    async fn initialize(&mut self) -> ClientResult<InitializeResult> {
+        Ok(InitializeResult {
+            protocol_version: PROTOCOL_VERSION.to_string(),
+            capabilities: ServerCapabilities::default(),
+            server_info: self.server_info.clone().unwrap(),
+        })
+    }
+    async fn list_tools(&mut self) -> ClientResult<Vec<McpTool>> {
+        Ok(vec![w4c_tool("failing", None, serde_json::json!({}))])
+    }
+    async fn call_tool(
+        &mut self,
+        _name: &str,
+        _arguments: serde_json::Value,
+    ) -> ClientResult<ToolCallResult> {
+        Err(crate::client::ClientError::NotConnected)
+    }
+    async fn list_resources(&mut self) -> ClientResult<Vec<Resource>> {
+        Ok(vec![])
+    }
+    async fn read_resource(&mut self, _uri: &str) -> ClientResult<ResourceContent> {
+        Ok(ResourceContent::default())
+    }
+    async fn list_prompts(&mut self) -> ClientResult<Vec<Prompt>> {
+        Ok(vec![])
+    }
+    async fn get_prompt(
+        &mut self,
+        _name: &str,
+        _arguments: serde_json::Value,
+    ) -> ClientResult<PromptResult> {
+        Ok(PromptResult::default())
+    }
+    async fn close(&mut self) -> ClientResult<()> {
+        Ok(())
+    }
+    fn server_info(&self) -> Option<&ServerInfo> {
+        self.server_info.as_ref()
+    }
+    fn is_connected(&self) -> bool {
+        true
+    }
+}
+
+#[tokio::test]
+async fn test_w4c_named_adapter_execute_client_error_maps_err() {
+    let client = W4cFailingClient {
+        server_info: Some(ServerInfo {
+            name: "f".to_string(),
+            version: "1".to_string(),
+        }),
+    };
+    let adapters = create_tools_from_client_named(Box::new(client), "f", 0)
+        .await
+        .unwrap();
+    let result = adapters[0].execute(serde_json::json!({})).await;
+    assert!(result.is_error);
+    assert!(result.content.contains("MCP tool 'failing' error"));
+    assert!(result.content.contains("not connected"));
+}
+
+/// call_tool 永远阻塞的 mock client（驱动 adapter 超时臂）。
+struct W4cSlowClient {
+    server_info: Option<ServerInfo>,
+}
+
+#[async_trait]
+impl Client for W4cSlowClient {
+    async fn initialize(&mut self) -> ClientResult<InitializeResult> {
+        Ok(InitializeResult {
+            protocol_version: PROTOCOL_VERSION.to_string(),
+            capabilities: ServerCapabilities::default(),
+            server_info: self.server_info.clone().unwrap(),
+        })
+    }
+    async fn list_tools(&mut self) -> ClientResult<Vec<McpTool>> {
+        Ok(vec![w4c_tool("slow", None, serde_json::json!({}))])
+    }
+    async fn call_tool(
+        &mut self,
+        _name: &str,
+        _arguments: serde_json::Value,
+    ) -> ClientResult<ToolCallResult> {
+        tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+        Ok(ToolCallResult::ok("too late"))
+    }
+    async fn list_resources(&mut self) -> ClientResult<Vec<Resource>> {
+        Ok(vec![])
+    }
+    async fn read_resource(&mut self, _uri: &str) -> ClientResult<ResourceContent> {
+        Ok(ResourceContent::default())
+    }
+    async fn list_prompts(&mut self) -> ClientResult<Vec<Prompt>> {
+        Ok(vec![])
+    }
+    async fn get_prompt(
+        &mut self,
+        _name: &str,
+        _arguments: serde_json::Value,
+    ) -> ClientResult<PromptResult> {
+        Ok(PromptResult::default())
+    }
+    async fn close(&mut self) -> ClientResult<()> {
+        Ok(())
+    }
+    fn server_info(&self) -> Option<&ServerInfo> {
+        self.server_info.as_ref()
+    }
+    fn is_connected(&self) -> bool {
+        true
+    }
+}
+
+#[tokio::test]
+async fn test_w4c_named_adapter_execute_timeout_maps_err() {
+    let client = W4cSlowClient {
+        server_info: Some(ServerInfo {
+            name: "s".to_string(),
+            version: "1".to_string(),
+        }),
+    };
+    // timeout_secs=1 → adapter 1s 超时（client 睡 30s）
+    let adapters = create_tools_from_client_named(Box::new(client), "s", 1)
+        .await
+        .unwrap();
+    let result = adapters[0].execute(serde_json::json!({})).await;
+    assert!(result.is_error);
+    assert!(result.content.contains("timed out after"));
+}
+
+#[test]
+fn test_w4c_sanitize_schema_non_object_becomes_default_object() {
+    let mock = MockClient::new("srv", vec![]);
+    let adapter = McpAdapter::new(
+        Box::new(mock),
+        w4c_tool("t", None, serde_json::json!("not-a-schema")),
+    );
+    let p = &adapter.definition().parameters;
+    assert_eq!(p["type"], "object");
+    assert_eq!(p["additionalProperties"], false);
+    assert!(p["properties"].is_object());
+}
+
+#[test]
+fn test_w4c_sanitize_schema_flattens_nested_type_arrays() {
+    let mock = MockClient::new("srv", vec![]);
+    let schema = serde_json::json!({
+        "type": "object",
+        "properties": {
+            "text": {"type": ["string", "null"]},
+            "nested": {
+                "type": "object",
+                "properties": {
+                    "inner": {"type": ["integer", "null"]}
+                }
+            }
+        }
+    });
+    let adapter = McpAdapter::new(Box::new(mock), w4c_tool("t", None, schema));
+    let p = &adapter.definition().parameters;
+    // 顶层强制 object
+    assert_eq!(p["type"], "object");
+    // 缺省时补 additionalProperties
+    assert_eq!(p["additionalProperties"], false);
+    // 一级属性 type 数组展平为首个
+    assert_eq!(p["properties"]["text"]["type"], "string");
+    // 嵌套对象的属性 type 数组也展平
+    assert_eq!(p["properties"]["nested"]["properties"]["inner"]["type"], "integer");
+}
+
+#[test]
+fn test_w4c_sanitize_schema_keeps_existing_additional_properties() {
+    let mock = MockClient::new("srv", vec![]);
+    let schema = serde_json::json!({
+        "type": "object",
+        "additionalProperties": true,
+        "properties": {}
+    });
+    let adapter = McpAdapter::new(Box::new(mock), w4c_tool("t", None, schema));
+    let p = &adapter.definition().parameters;
+    assert_eq!(p["additionalProperties"], true);
+}
+
+// ===========================================================================
+// S1 补测（2026-08-26）：execute() 内容类型 `_` 未知回退臂
+// ===========================================================================
+
+#[tokio::test]
+async fn test_s1_adapter_execute_unknown_content_type_falls_back_to_raw_text() {
+    let mock = MockClient::new("test", vec![]);
+    mock.with_call_result(ToolCallResult {
+        content: vec![ToolContent {
+            content_type: "audio".to_string(),
+            text: Some("raw-audio-marker".to_string()),
+        }],
+        is_error: false,
+    });
+
+    let mcp_tool = McpTool {
+        name: "aud_tool".to_string(),
+        description: None,
+        input_schema: serde_json::json!({}),
+    };
+    let adapter = McpAdapter::new(Box::new(mock), mcp_tool);
+
+    let result = adapter.execute(serde_json::json!({})).await;
+    assert!(!result.is_error);
+    // Unknown content types fall through with their raw text, no decoration.
+    assert_eq!(result.content, "raw-audio-marker");
+}

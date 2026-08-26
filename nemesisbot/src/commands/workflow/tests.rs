@@ -628,6 +628,9 @@ fn test_cmd_status_with_input_and_vars() {
 
 #[test]
 fn test_cmd_template_show_all_defaults() {
+    // get_templates() 经 load_templates_from_disk 读 NEMESISBOT_HOME——必须
+    // 持全局锁，否则与设置 env 的其他测试（如 template_list_picks_up_*）竞态。
+    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
     let templates = get_default_templates();
     for (name, _, _) in &templates {
         cmd_template_show(name).unwrap();
@@ -640,6 +643,10 @@ fn test_cmd_template_show_all_defaults() {
 
 #[test]
 fn test_cmd_template_create_all_defaults() {
+    // 同上：get_templates() 读 NEMESISBOT_HOME（env 测试竞争锁纪律）。
+    // 另注：get_templates 语义是"磁盘有任一模板 → 整组替换默认集"（Go 行为，
+    // workflow.rs:318-324），本测试必须保证 env home 下无模板目录。
+    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
     let templates = get_default_templates();
     for (name, _, _) in &templates {
         let tmp = tempfile::TempDir::new().unwrap();
@@ -837,4 +844,434 @@ fn test_cmd_list_with_executions() {
     std::fs::write(exec_dir.join("e2.json"), "{}").unwrap();
 
     cmd_list(&dir).unwrap();
+}
+
+// ===========================================================================
+// cmd_run 全链路 + run() 分发（S11c，quality-hardening goal 冲刺 S11）——
+// 既有 64 个测试只钉 helper/cmd_list/cmd_status/cmd_template_*/cmd_validate，
+// cmd_run（419-587，约 120 行）和 run() dispatch（903-978）从没跑过。
+// 可执行工作流用 delay 节点（内置执行器、seconds=0 零等待）；home 显式传参
+// （cmd_run 不读 env）。run() 用 env home + 锁；Run 臂的 block_in_place
+// 必须 multi_thread runtime。
+// ===========================================================================
+
+mod cmd_run_tests {
+    use super::super::cmd_run;
+
+    fn setup(home: &std::path::Path) -> std::path::PathBuf {
+        let wf_dir = home.join("workspace").join("workflow").join("definitions");
+        std::fs::create_dir_all(&wf_dir).unwrap();
+        wf_dir
+    }
+
+    fn delay_workflow_json(name: &str, desc: &str, seconds: f64) -> String {
+        serde_json::json!({
+            "name": name,
+            "description": desc,
+            "version": "1.0.0",
+            "nodes": [
+                {"id": "n1", "node_type": "delay", "config": {"seconds": seconds}, "depends_on": []}
+            ],
+            "edges": []
+        })
+        .to_string()
+    }
+
+    #[tokio::test]
+    async fn run_delay_workflow_end_to_end_saves_execution_record() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path().join(".nemesisbot");
+        let wf_dir = setup(&home);
+        std::fs::write(wf_dir.join("smoke.json"), delay_workflow_json("smoke", "冒烟", 0.0))
+            .unwrap();
+
+        // 带位置参数与键值参数（覆盖 input 打印分支）；home 无 config.json →
+        // sandbox world None 分支（executor 分离关闭提示）。
+        cmd_run(
+            &home,
+            &wf_dir,
+            "smoke",
+            &[
+                "k1=v1".to_string(),
+                "flag=true".to_string(),
+                "n=42".to_string(),
+                "positional".to_string(),
+            ],
+        )
+        .await
+        .expect("delay 工作流应跑通");
+
+        let exec_dir = wf_dir.join("executions");
+        let mut entries: Vec<_> = std::fs::read_dir(&exec_dir)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .map(|e| e.path())
+            .filter(|p| p.extension().map(|x| x == "json").unwrap_or(false))
+            .collect();
+        entries.sort();
+        assert_eq!(entries.len(), 1, "必须落一条执行记录");
+        let rec: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&entries[0]).unwrap()).unwrap();
+        assert_eq!(rec["state"], "completed");
+        assert_eq!(rec["workflow_name"], "smoke");
+    }
+
+    #[tokio::test]
+    async fn run_by_absolute_file_path() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path().join(".nemesisbot");
+        let wf_dir = setup(&home);
+        let abs = wf_dir.join("abs-flow.yaml");
+        std::fs::write(
+            &abs,
+            serde_json::to_string(&serde_json::json!({
+                "name": "abs",
+                "description": "绝对路径",
+                "version": "1.0.0",
+                "nodes": [
+                    {"id": "d", "node_type": "delay", "config": {"seconds": 0}, "depends_on": []}
+                ],
+                "edges": []
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+
+        cmd_run(&home, &wf_dir, abs.to_string_lossy().as_ref(), &[]).await
+            .expect("name 是存在的绝对路径 → 直接用（428-429 分支）");
+
+        // (BUG S11c-3) 绝对路径分支此前必然 "workflow not found"：注册键是
+        // 文件内 name（abs），查找键却是整个路径字符串。钉住修复后的行为。
+        let exec_dir = wf_dir.join("executions");
+        let entries: Vec<_> = std::fs::read_dir(&exec_dir)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .map(|e| e.path())
+            .filter(|p| p.extension().map(|x| x == "json").unwrap_or(false))
+            .collect();
+        assert_eq!(entries.len(), 1, "绝对路径运行也必须落执行记录");
+        let rec: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&entries[0]).unwrap()).unwrap();
+        assert_eq!(rec["state"], "completed");
+        assert_eq!(rec["workflow_name"], "abs");
+    }
+
+    #[tokio::test]
+    async fn run_unknown_name_errors() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path().join(".nemesisbot");
+        let wf_dir = setup(&home);
+        let err = cmd_run(&home, &wf_dir, "ghost", &[])
+            .await
+            .expect_err("三后缀 + exe_dir/templates 都找不到 → not found");
+        assert!(err.to_string().contains("not found"), "got: {err:#}");
+    }
+
+    #[tokio::test]
+    async fn run_parse_error_bubbles_as_error() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path().join(".nemesisbot");
+        let wf_dir = setup(&home);
+        std::fs::write(wf_dir.join("broken.json"), "{{{ not json").unwrap();
+        let err = cmd_run(&home, &wf_dir, "broken", &[])
+            .await
+            .expect_err("解析失败 → Parse error");
+        assert!(err.to_string().contains("Parse error"), "got: {err:#}");
+    }
+
+    #[tokio::test]
+    async fn run_validation_failure_stops_before_execution() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path().join(".nemesisbot");
+        let wf_dir = setup(&home);
+        // 边引用不存在的节点 → validate 报 unknown 'to' node。
+        std::fs::write(
+            wf_dir.join("bad-edge.json"),
+            serde_json::json!({
+                "name": "bad-edge",
+                "description": "非法边",
+                "version": "1.0.0",
+                "nodes": [
+                    {"id": "n1", "node_type": "delay", "config": {"seconds": 0}, "depends_on": []}
+                ],
+                "edges": [{"from_node": "n1", "to_node": "missing"}]
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let err = cmd_run(&home, &wf_dir, "bad-edge", &[])
+            .await
+            .expect_err("校验失败 → Workflow validation failed");
+        assert!(
+            err.to_string().contains("Workflow validation failed"),
+            "got: {err:#}"
+        );
+        assert!(
+            !wf_dir.join("executions").exists(),
+            "校验失败不得留下执行记录"
+        );
+    }
+
+    #[tokio::test]
+    async fn run_slow_workflow_reports_seconds_duration() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path().join(".nemesisbot");
+        let wf_dir = setup(&home);
+        std::fs::write(
+            wf_dir.join("slow.json"),
+            delay_workflow_json("slow", "慢流程", 1.1),
+        )
+        .unwrap();
+        cmd_run(&home, &wf_dir, "slow", &[])
+            .await
+            .expect("duration >= 1000ms → 秒格式展示分支（554）");
+    }
+
+    #[tokio::test]
+    async fn run_tool_node_on_bare_engine_fails_without_executor() {
+        // (BUG #32, quality-hardening goal 冲刺 S12b) 裸 CLI 引擎对 tool 节点
+        // 原用 nodes.rs 的 ToolNodeExecutor 桩——不执行任何工具直接回
+        // {"tool":"unknown","status":"success"} + Completed（假成功）。修复后
+        // 显式 Failed 并指明「未配置工具执行器」（真执行器只在 gateway 侧经
+        // RealToolNodeExecutor 接上）。本测试钉修复后行为：engine.run 对
+        // Failed 状态返回 Ok（仅结构性错误才 Err），执行记录 state=failed。
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path().join(".nemesisbot");
+        let wf_dir = setup(&home);
+        std::fs::write(
+            wf_dir.join("tool-flow.json"),
+            serde_json::json!({
+                "name": "tool-flow",
+                "description": "裸引擎工具节点",
+                "version": "1.0.0",
+                "nodes": [
+                    {"id": "t", "node_type": "tool", "config": {"tool_name": "web_search"}, "depends_on": []}
+                ],
+                "edges": []
+            })
+            .to_string(),
+        )
+        .unwrap();
+        cmd_run(&home, &wf_dir, "tool-flow", &[])
+            .await
+            .expect("Failed 状态不算引擎错误，cmd_run 整体 Ok");
+
+        let exec_dir = wf_dir.join("executions");
+        let entries: Vec<_> = std::fs::read_dir(&exec_dir)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .map(|e| e.path())
+            .filter(|p| p.extension().map(|x| x == "json").unwrap_or(false))
+            .collect();
+        assert_eq!(entries.len(), 1);
+        let rec: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&entries[0]).unwrap()).unwrap();
+        // 整单 Failed，不再假成功 Completed。CLI 路径的持久化记录里失败
+        // 信息由执行级 error 字段携带（node_results 在该持久化快照为空，
+        // 引擎内存态才有节点级结果——见 engine 侧 S12b 回归测试）。
+        assert_eq!(rec["state"], "failed");
+        let err = rec["error"].as_str().unwrap_or_default();
+        assert!(
+            err.contains("no tool executor configured"),
+            "执行级 error 应指明未配置工具执行器，got: {err}"
+        );
+        assert!(
+            err.contains("node \"t\" execution failed"),
+            "error 应点名失败节点 t，got: {err}"
+        );
+    }
+}
+
+mod run_arm {
+    use super::super::{run, TemplateAction, WorkflowAction};
+
+    fn with_env_home(f: impl FnOnce(std::path::PathBuf)) {
+        let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        unsafe {
+            std::env::set_var("NEMESISBOT_HOME", tmp.path());
+        }
+        f(tmp.path().join(".nemesisbot"));
+        unsafe {
+            std::env::remove_var("NEMESISBOT_HOME");
+        }
+    }
+
+    #[test]
+    fn dispatch_list_status_template_and_validate_arms() {
+        with_env_home(|_home| {
+            // List：空 definitions → No workflows defined。
+            run(WorkflowAction::List, false).expect("list ok");
+
+            // Status：无 executions → not found / 空。
+            run(WorkflowAction::Status { id: None }, false).expect("status none ok");
+            run(WorkflowAction::Status { id: Some("nope".into()) }, false)
+                .expect("status id not found ok");
+
+            // Template 默认臂（action=None）+ List 臂：磁盘无模板 → 内置默认集。
+            run(WorkflowAction::Template { action: None }, false)
+                .expect("template default list ok");
+            run(
+                WorkflowAction::Template {
+                    action: Some(TemplateAction::List),
+                },
+                false,
+            )
+            .expect("template list ok");
+
+            // Show：默认集里 researcher 必在；not-found 打印可用列表。
+            run(
+                WorkflowAction::Template {
+                    action: Some(TemplateAction::Show { name: "researcher".into() }),
+                },
+                false,
+            )
+            .expect("template show found");
+            run(
+                WorkflowAction::Template {
+                    action: Some(TemplateAction::Show { name: "ghost".into() }),
+                },
+                false,
+            )
+            .expect("template show not found");
+
+            // Validate：不存在的路径 → File not found + Ok。
+            run(
+                WorkflowAction::Validate { path: "Z:/no/such/wf.yaml".into() },
+                false,
+            )
+            .expect("validate missing ok");
+        });
+    }
+
+    #[test]
+    fn dispatch_template_create_yaml_and_json_outputs() {
+        with_env_home(|home| {
+            // 默认输出：researcher.yaml（YAML 写分支）。
+            run(
+                WorkflowAction::Template {
+                    action: Some(TemplateAction::Create {
+                        template: "researcher".into(),
+                        output: None,
+                    }),
+                },
+                false,
+            )
+            .expect("create default yaml ok");
+            let defs = home.join("workspace").join("workflow").join("definitions");
+            assert!(defs.join("researcher.yaml").exists(), "默认落 researcher.yaml");
+
+            // 显式 .json 输出：JSON 写分支（831-835）。
+            run(
+                WorkflowAction::Template {
+                    action: Some(TemplateAction::Create {
+                        template: "coder".into(),
+                        output: Some("custom.json".into()),
+                    }),
+                },
+                false,
+            )
+            .expect("create json ok");
+            let j: serde_json::Value = serde_json::from_str(
+                &std::fs::read_to_string(defs.join("custom.json")).unwrap(),
+            )
+            .unwrap();
+            assert_eq!(j["name"], "coder");
+
+            // 不存在的模板 → not found + 可用列表，Ok。
+            run(
+                WorkflowAction::Template {
+                    action: Some(TemplateAction::Create {
+                        template: "ghost".into(),
+                        output: None,
+                    }),
+                },
+                false,
+            )
+            .expect("create not found ok");
+        });
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn dispatch_run_arm_needs_multithread_runtime() {
+        // Run 臂走 tokio::task::block_in_place——current_thread runtime 会
+        // panic，必须 multi_thread（这也是给未来读代码的人钉的契约）。
+        let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        unsafe {
+            std::env::set_var("NEMESISBOT_HOME", tmp.path());
+        }
+        let err = run(
+            WorkflowAction::Run {
+                name: "ghost".into(),
+                input: vec![],
+            },
+            false,
+        )
+        .expect_err("ghost → not found");
+        assert!(err.to_string().contains("not found"), "got: {err:#}");
+        unsafe {
+            std::env::remove_var("NEMESISBOT_HOME");
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 磁盘模板扫描（load_templates_from_disk 173-213：目录存在时的遍历/解析/
+// 去重/坏文件警告臂）——既有 64 测试全在无模板目录的环境跑，循环体没进过。
+// ---------------------------------------------------------------------------
+
+#[test]
+fn template_list_picks_up_disk_templates_and_warns_on_broken() {
+    use super::{run, TemplateAction, WorkflowAction};
+
+    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let tmp = tempfile::tempdir().unwrap();
+    unsafe {
+        std::env::set_var("NEMESISBOT_HOME", tmp.path());
+    }
+    let tpl_dir = tmp
+        .path()
+        .join(".nemesisbot")
+        .join("workspace")
+        .join("workflow")
+        .join("templates");
+    std::fs::create_dir_all(&tpl_dir).unwrap();
+
+    // 一个好的用户模板 + 一个坏 YAML（Err 臂 205-213 警告）+ 一个与默认模板
+    // 同名的磁盘模板（seen_names 去重臂：磁盘在后，默认已注册 → 跳过）。
+    std::fs::write(
+        tpl_dir.join("my-disk-tpl.yaml"),
+        "name: my-disk-tpl\ndescription: 用户自定义模板\nversion: 1.0.0\nnodes:\n  - id: d\n    node_type: delay\n    config:\n      seconds: 0\n    depends_on: []\nedges: []\n",
+    )
+    .unwrap();
+    std::fs::write(tpl_dir.join("broken.yaml"), "{{{ not yaml at all").unwrap();
+    std::fs::write(
+        tpl_dir.join("dupe.yaml"),
+        "name: researcher\ndescription: 与默认同名\nversion: 1.0.0\nnodes:\n  - id: d\n    node_type: delay\n    config:\n      seconds: 0\n    depends_on: []\nedges: []\n",
+    )
+    .unwrap();
+
+    // List：应包含磁盘模板（不 panic、坏文件被跳过）。
+    run(WorkflowAction::Template { action: None }, false).expect("list with disk templates ok");
+    run(
+        WorkflowAction::Template {
+            action: Some(TemplateAction::List),
+        },
+        false,
+    )
+    .expect("explicit list ok");
+
+    // Show：磁盘模板可查（cmd_template_show 的磁盘模板路径）。
+    run(
+        WorkflowAction::Template {
+            action: Some(TemplateAction::Show { name: "my-disk-tpl".into() }),
+        },
+        false,
+    )
+    .expect("show disk template ok");
+
+    unsafe {
+        std::env::remove_var("NEMESISBOT_HOME");
+    }
 }

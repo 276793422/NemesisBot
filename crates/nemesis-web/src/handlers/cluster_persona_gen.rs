@@ -881,3 +881,10 @@ pub async fn generate_persona(
 
 #[cfg(test)]
 mod tests;
+
+// S10b (2026-08-26, quality-hardening goal 冲刺 web 批次 2): full
+// generate_persona pipeline against a wiremock OpenAI-compatible backend —
+// clean run / retry-exhausted / stage-2 parse & validate continue arms /
+// audit HTTP failure fallback.
+#[cfg(test)]
+mod s10b_tests;

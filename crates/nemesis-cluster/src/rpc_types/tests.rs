@@ -262,3 +262,24 @@ fn test_decode_request_invalid_json() {
     let result = Frame::decode_request(&invalid_bytes);
     assert!(result.is_err());
 }
+
+// ============================================================
+// S4 coverage: Custom action string in encode_request.
+// ============================================================
+
+/// A Custom action serializes its action string into the wire frame
+/// (rpc_types.rs 151).
+#[test]
+fn test_s4_encode_request_custom_action() {
+    let req = RPCRequest {
+        id: "s4-custom-1".into(),
+        action: ActionType::Custom("s4_custom_action".into()),
+        payload: serde_json::json!({"k": "v"}),
+        source: "node-a".into(),
+        target: Some("node-b".into()),
+    };
+    let bytes = Frame::encode_request(&req).unwrap();
+    let body = String::from_utf8_lossy(&bytes[Frame::HEADER_SIZE..]).to_string();
+    assert!(body.contains("s4_custom_action"), "body: {}", body);
+    assert!(body.contains("\"action\""));
+}

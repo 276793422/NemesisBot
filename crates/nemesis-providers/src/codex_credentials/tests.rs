@@ -340,3 +340,48 @@ fn test_codex_credentials_clone() {
     let cloned = creds.clone();
     assert_eq!(cloned.access_token, "tok");
 }
+
+// ===========================================================================
+// W4c 补测（2026-08-25）：token source 过期路径（mtime > 1h → 拒发）
+// ===========================================================================
+
+#[test]
+fn test_w4c_token_source_rejects_stale_auth_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let auth_path = dir.path().join("auth.json");
+    std::fs::write(
+        &auth_path,
+        r#"{"tokens":{"access_token":"tok","refresh_token":"r","account_id":"acc"}}"#,
+    )
+    .unwrap();
+    // mtime 拨回 2 小时前 → expires_at = mtime + 1h 已过
+    let f = std::fs::File::options().write(true).open(&auth_path).unwrap();
+    f.set_modified(std::time::SystemTime::now() - std::time::Duration::from_secs(7200))
+        .unwrap();
+    drop(f);
+
+    let _g2 = CodexEnvGuard::set("CODEX_HOME", dir.path().to_str().unwrap());
+    let source = create_codex_cli_token_source();
+    let err = source().unwrap_err();
+    assert!(err.contains("expired"), "unexpected: {}", err);
+    assert!(err.contains("codex login"));
+}
+
+#[test]
+fn test_w4c_token_source_fresh_file_ok() {
+    let dir = tempfile::tempdir().unwrap();
+    let auth_path = dir.path().join("auth.json");
+    std::fs::write(
+        &auth_path,
+        r#"{"tokens":{"access_token":"tok","refresh_token":"r","account_id":"acc"}}"#,
+    )
+    .unwrap();
+
+    let _guard = CodexEnvGuard::set("CODEX_HOME", dir.path().to_str().unwrap());
+    let creds = read_codex_cli_credentials().unwrap();
+    assert!(creds.expires_at > std::time::SystemTime::now());
+    let source = create_codex_cli_token_source();
+    let (token, account) = source().unwrap();
+    assert_eq!(token, "tok");
+    assert_eq!(account, "acc");
+}

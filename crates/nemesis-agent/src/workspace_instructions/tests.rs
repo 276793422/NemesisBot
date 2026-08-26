@@ -197,3 +197,32 @@ fn test_touch_invalidates_digest_and_reinjects() {
         .iter()
         .any(|m| m.content.contains("version one instructions")));
 }
+
+/// CLAUDE.md WITHOUT a sibling AGENTS.md still loads (the `(None, Some)`
+/// arm); a directory with neither contributes nothing (`(None, None)` arm).
+#[test]
+fn test_claude_only_and_neither_dirs() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().join("ws");
+    let sub = root.join("sub");
+    let empty = root.join("empty");
+    std::fs::create_dir_all(&sub).unwrap();
+    std::fs::create_dir_all(&empty).unwrap();
+    write(&root, "AGENTS.md", "root");
+    write(&sub, "CLAUDE.md", "claude only");
+
+    let chain = load_instruction_chain(&root, &sub);
+    assert_eq!(chain.len(), 2);
+    assert!(chain[1].0.ends_with("CLAUDE.md"), "claude-only dir kept");
+    assert_eq!(chain[1].1, "claude only");
+
+    // cwd = empty dir: only the root AGENTS.md is on the chain.
+    let chain2 = load_instruction_chain(&root, &empty);
+    assert_eq!(chain2.len(), 1, "dir with no files adds nothing");
+}
+
+/// Rendering an EMPTY chain yields the empty string (no header, no note).
+#[test]
+fn test_render_empty_chain_is_empty_string() {
+    assert_eq!(render_instructions_section(&[]), "");
+}

@@ -655,3 +655,167 @@ fn test_create_zip_nonexistent_source_dir() {
     let result = create_zip("/nonexistent/source", "/tmp/output.zip");
     assert!(result.is_err());
 }
+
+// ---------------------------------------------------------------------------
+// 覆盖补遗：父目录不存在时的 canonicalize 跳过臂 / 目录与文件条目创建
+// 失败臂 / create_zip 父目录创建失败臂 / is_path_within_dir 纯字符串分支
+// ---------------------------------------------------------------------------
+
+/// 条目 "sub/inner.txt" 前没有 "sub/" 目录条目 → 处理该条目时父目录尚不
+/// 存在，canonicalize 失败 → 跳过 zip-slip 预检（落到文本遍历检查），
+/// 父目录随后按需创建，解压成功。
+#[test]
+fn test_extract_zip_entry_parent_not_yet_created_skips_canonicalize_check() {
+    let dir = tempfile::tempdir().unwrap();
+    let zip_path = dir.path().join("noparent.zip");
+    let dest_dir = dir.path().join("dest");
+
+    let file = File::create(&zip_path).unwrap();
+    let writer = std::io::BufWriter::new(file);
+    let mut zip_writer = zip::ZipWriter::new(writer);
+    let options = zip::write::SimpleFileOptions::default();
+    zip_writer.start_file("sub/inner.txt", options).unwrap();
+    zip_writer.write_all(b"inner").unwrap();
+    zip_writer.finish().unwrap();
+
+    extract_zip(
+        zip_path.to_string_lossy().as_ref(),
+        dest_dir.to_string_lossy().as_ref(),
+    )
+    .unwrap();
+    assert_eq!(fs::read_to_string(dest_dir.join("sub/inner.txt")).unwrap(), "inner");
+}
+
+/// 目录条目名超长（300 字符 > 文件系统组件上限 255）→ 遍历检查通过但
+/// create_dir_all 确定性失败。
+#[test]
+fn test_extract_zip_dir_entry_with_overlong_name_fails() {
+    let dir = tempfile::tempdir().unwrap();
+    let zip_path = dir.path().join("longdir.zip");
+    let dest_dir = dir.path().join("dest");
+
+    let file = File::create(&zip_path).unwrap();
+    let writer = std::io::BufWriter::new(file);
+    let mut zip_writer = zip::ZipWriter::new(writer);
+    let options = zip::write::SimpleFileOptions::default();
+    zip_writer
+        .add_directory("A".repeat(300), options)
+        .unwrap();
+    zip_writer.finish().unwrap();
+
+    let result = extract_zip(
+        zip_path.to_string_lossy().as_ref(),
+        dest_dir.to_string_lossy().as_ref(),
+    );
+    let err = result.unwrap_err();
+    assert!(err.contains("failed to create directory"), "{err}");
+}
+
+/// 文件条目的父目录名超长 → 父目录 canonicalize 失败（跳过预检）→
+/// 按需创建父目录时确定性失败。
+#[test]
+fn test_extract_zip_file_entry_with_overlong_parent_fails() {
+    let dir = tempfile::tempdir().unwrap();
+    let zip_path = dir.path().join("longparent.zip");
+    let dest_dir = dir.path().join("dest");
+
+    let file = File::create(&zip_path).unwrap();
+    let writer = std::io::BufWriter::new(file);
+    let mut zip_writer = zip::ZipWriter::new(writer);
+    let options = zip::write::SimpleFileOptions::default();
+    zip_writer
+        .start_file(format!("{}/file.txt", "A".repeat(300)), options)
+        .unwrap();
+    zip_writer.write_all(b"x").unwrap();
+    zip_writer.finish().unwrap();
+
+    let result = extract_zip(
+        zip_path.to_string_lossy().as_ref(),
+        dest_dir.to_string_lossy().as_ref(),
+    );
+    let err = result.unwrap_err();
+    assert!(err.contains("failed to create parent directory"), "{err}");
+}
+
+/// zip 输出路径的父目录名超长 → create_zip 的父目录创建失败臂。
+#[test]
+fn test_create_zip_with_uncreatable_parent_fails() {
+    let dir = tempfile::tempdir().unwrap();
+    let source = dir.path().join("src");
+    fs::create_dir_all(&source).unwrap();
+    fs::write(source.join("a.txt"), b"a").unwrap();
+    let zip_path = dir.path().join("A".repeat(300)).join("out.zip");
+
+    let result = create_zip(
+        source.to_string_lossy().as_ref(),
+        zip_path.to_string_lossy().as_ref(),
+    );
+    let err = result.unwrap_err();
+    assert!(err.contains("failed to create parent directory"), "{err}");
+}
+
+/// 两个路径都不存在（canonicalize 双失败）→ 走纯字符串比较分支；
+/// 同一路径 → rest 为空 → true。
+#[test]
+fn test_is_path_within_dir_nonexistent_same_path_uses_string_compare() {
+    let dir = tempfile::tempdir().unwrap();
+    let p = dir.path().join("never_created_dir");
+    assert!(!p.exists());
+    assert!(is_path_within_dir(&p, &p));
+}
+
+// ---------------------------------------------------------------------------
+// S1 coverage batch (2026-08-26): `if let Some(parent)` None arms.
+// Root-drive targets ("c:\") have parent() == None, exercising the closing
+// brace regions at lines 58 / 86 (extract) and 131 (create_zip).
+// ---------------------------------------------------------------------------
+
+#[test]
+#[cfg(windows)]
+fn test_s1_extract_root_drive_entry_parent_none() {
+    // Entry name "c:" (prefix-only): the zip crate normalizes '\' to '/', and
+    // a name ending in '/' becomes a dir entry whose create_dir_all on the
+    // drive root succeeds — so use prefix-only "c:". dest_dir.join("c:")
+    // replaces the whole path ("path.prefix().is_some()" push rule) →
+    // entry_path == "c:" → parent() == None for both checks (lines 49 / 78);
+    // is_dir() is false (no trailing '/'); File::create("c:") fails (colon is
+    // not a valid filename char / resolves to the drive's current directory)
+    // → "failed to create file".
+    let dir = tempfile::tempdir().unwrap();
+    let zip_path = dir.path().join("root_entry.zip");
+    let file = File::create(&zip_path).unwrap();
+    let writer = std::io::BufWriter::new(file);
+    let mut zip_writer = zip::ZipWriter::new(writer);
+    let options = zip::write::SimpleFileOptions::default();
+
+    zip_writer.start_file("c:", options).unwrap();
+    zip_writer.write_all(b"x").unwrap();
+    zip_writer.finish().unwrap();
+
+    let dest_dir = dir.path().join("dest");
+    let result = extract_zip(
+        zip_path.to_string_lossy().as_ref(),
+        dest_dir.to_string_lossy().as_ref(),
+    );
+    let err = result.unwrap_err();
+    assert!(
+        err.contains("failed to create file"),
+        "unexpected error: {err}"
+    );
+}
+
+#[test]
+#[cfg(windows)]
+fn test_s1_create_zip_to_root_drive_parent_none() {
+    // zip_path "c:\" → parent() == None (line 128 else arm, closing brace at
+    // 131); File::create on the root directory fails → "failed to create zip file".
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("f.txt"), b"data").unwrap();
+
+    let result = create_zip(dir.path().to_string_lossy().as_ref(), "c:\\");
+    let err = result.unwrap_err();
+    assert!(
+        err.contains("failed to create zip file"),
+        "unexpected error: {err}"
+    );
+}

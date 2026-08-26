@@ -238,3 +238,37 @@ fn test_new_accepts_str() {
     let path = dir.path().join("test.jsonl");
     let _persistence = WorkflowPersistence::new(path.as_os_str());
 }
+
+// ---------------------------------------------------------------------------
+// W4a coverage gap closure (create_dir_all failure, invalid JSONL line skip)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn w4a_save_execution_parent_is_file_returns_err() {
+    let dir = tempfile::tempdir().unwrap();
+    let blocker = dir.path().join("blocker");
+    std::fs::write(&blocker, b"i am a file").unwrap();
+    // Parent of the JSONL path is a regular file -> create_dir_all fails
+    let persistence = WorkflowPersistence::new(blocker.join("nested").join("e.jsonl"));
+    let execution = Execution::new("test_wf".to_string(), HashMap::new());
+    assert!(persistence.save_execution(&execution).is_err());
+}
+
+#[test]
+fn w4a_list_executions_skips_garbage_lines() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("executions.jsonl");
+    let execution = Execution::new("test_wf".to_string(), HashMap::new());
+    let id = execution.id.clone();
+    let good = serde_json::to_string(&execution).unwrap();
+    // One garbage line, one blank line, one good line
+    let content = format!("not json at all\n\n{}\n", good);
+    std::fs::write(&path, content).unwrap();
+
+    let persistence = WorkflowPersistence::new(&path);
+    let listed = persistence.list_executions().unwrap();
+    assert_eq!(listed.len(), 1);
+    assert_eq!(listed[0].id, id);
+    // load_execution still finds the valid record
+    assert_eq!(persistence.load_execution(&id).unwrap().workflow_name, "test_wf");
+}

@@ -376,3 +376,172 @@ fn test_toggle_job_preserves_other_fields() {
     assert_eq!(jobs[0]["name"], "myjob"); // other fields preserved
     assert_eq!(jobs[0]["message"], "hello");
 }
+
+// ===========================================================================
+// run() 全臂（S11c，quality-hardening goal 冲刺 S11）—— run(action, local)
+// 此前 LH=0（toggle_job 有直调测试，但 dispatch 层从没跑过）。env home 隔离
+// + GLOBAL_STATE_LOCK 串行；store 落在 {home}/workspace/cron/jobs.json。
+// ===========================================================================
+
+mod run_arm {
+    use super::super::{run, CronAction};
+
+    fn with_env_home(f: impl FnOnce(std::path::PathBuf)) {
+        let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        unsafe {
+            std::env::set_var("NEMESISBOT_HOME", tmp.path());
+        }
+        f(tmp.path().join(".nemesisbot"));
+        unsafe {
+            std::env::remove_var("NEMESISBOT_HOME");
+        }
+    }
+
+    fn store_of(home: &std::path::Path) -> std::path::PathBuf {
+        home.join("workspace").join("cron").join("jobs.json")
+    }
+
+    fn write_store(home: &std::path::Path, body: &str) {
+        let p = store_of(home);
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        std::fs::write(p, body).unwrap();
+    }
+
+    #[test]
+    fn list_without_store_shows_hint() {
+        with_env_home(|_home| {
+            run(CronAction::List, false).expect("无 store → 提示 + Ok");
+        });
+    }
+
+    #[test]
+    fn list_covers_empty_nonarray_interval_and_string_schedules() {
+        with_env_home(|home| {
+            // 空数组。
+            write_store(&home, "[]");
+            run(CronAction::List, false).expect("空数组 → No scheduled jobs");
+
+            // 非数组 JSON（as_array None 分支）。
+            write_store(&home, r#"{"not":"an array"}"#);
+            run(CronAction::List, false).expect("非数组 → No scheduled jobs");
+
+            // 结构化 schedule（every_ms 优先）+ 字符串 schedule + 缺字段落默认。
+            write_store(
+                &home,
+                r#"[
+                    {"id":"i1","name":"n1","enabled":false,
+                     "schedule":{"kind":"interval","every_ms":120000,"display":"every 120s"}},
+                    {"id":"i2","name":"n2","schedule":"每分钟"},
+                    {"id":"i3","schedule":{"kind":"cron","expr":"* * * * *"}}
+                ]"#,
+            );
+            run(CronAction::List, false).expect("interval/string/缺字段 三态 → Ok");
+        });
+    }
+
+    #[test]
+    fn add_interval_job_persists_to_store() {
+        with_env_home(|home| {
+            run(
+                CronAction::Add {
+                    name: "j1".into(),
+                    message: "hello".into(),
+                    every: Some(30),
+                    cron: None,
+                    deliver: false,
+                    to: None,
+                    channel: None,
+                },
+                false,
+            )
+            .expect("add ok");
+            let jobs: serde_json::Value =
+                serde_json::from_str(&std::fs::read_to_string(store_of(&home)).unwrap()).unwrap();
+            let arr = jobs.as_array().unwrap();
+            assert_eq!(arr.len(), 1);
+            assert_eq!(arr[0]["name"], "j1");
+            assert_eq!(arr[0]["schedule"]["kind"], "interval");
+            assert_eq!(arr[0]["schedule"]["every_ms"], 30000);
+            assert_eq!(arr[0]["enabled"], true);
+            assert_eq!(arr[0]["id"].as_str().unwrap().len(), 8, "id 是 uuid 前 8 位");
+        });
+    }
+
+    #[test]
+    fn add_cron_job_and_neither_flag_error_paths() {
+        with_env_home(|home| {
+            run(
+                CronAction::Add {
+                    name: "j2".into(),
+                    message: "m".into(),
+                    every: None,
+                    cron: Some("*/5 * * * *".into()),
+                    deliver: true,
+                    to: Some("user1".into()),
+                    channel: Some("web".into()),
+                },
+                false,
+            )
+            .expect("cron add ok");
+            let jobs: serde_json::Value =
+                serde_json::from_str(&std::fs::read_to_string(store_of(&home)).unwrap()).unwrap();
+            assert_eq!(jobs[0]["schedule"]["kind"], "cron");
+            assert_eq!(jobs[0]["schedule"]["expr"], "*/5 * * * *");
+            assert_eq!(jobs[0]["deliver"], true);
+            assert_eq!(jobs[0]["to"], "user1");
+            assert_eq!(jobs[0]["channel"], "web");
+
+            // 两个调度参数都不给 → 错误提示后 Ok（不写文件）。
+            let before = std::fs::read_to_string(store_of(&home)).unwrap();
+            run(
+                CronAction::Add {
+                    name: "j3".into(),
+                    message: "m".into(),
+                    every: None,
+                    cron: None,
+                    deliver: false,
+                    to: None,
+                    channel: None,
+                },
+                false,
+            )
+            .expect("缺调度参数 → 打印错误 + Ok");
+            assert_eq!(std::fs::read_to_string(store_of(&home)).unwrap(), before);
+        });
+    }
+
+    #[test]
+    fn remove_found_not_found_and_no_store() {
+        with_env_home(|home| {
+            // 无 store。
+            run(CronAction::Remove { id: "x".into() }, false)
+                .expect("无 store → not found Ok");
+
+            write_store(&home, r#"[{"id":"abc","name":"n"}]"#);
+            run(CronAction::Remove { id: "abc".into() }, false).expect("remove ok");
+            let jobs: serde_json::Value =
+                serde_json::from_str(&std::fs::read_to_string(store_of(&home)).unwrap()).unwrap();
+            assert!(jobs.as_array().unwrap().is_empty(), "已删除");
+
+            run(CronAction::Remove { id: "ghost".into() }, false)
+                .expect("不存在 → not found Ok");
+        });
+    }
+
+    #[test]
+    fn enable_disable_dispatch_through_toggle() {
+        with_env_home(|home| {
+            write_store(&home, r#"[{"id":"abc","name":"n","enabled":true}]"#);
+            run(CronAction::Disable { id: "abc".into() }, false).expect("disable ok");
+            let jobs: serde_json::Value =
+                serde_json::from_str(&std::fs::read_to_string(store_of(&home)).unwrap()).unwrap();
+            assert_eq!(jobs[0]["enabled"], false);
+
+            run(CronAction::Enable { id: "abc".into() }, false).expect("enable ok");
+            let jobs: serde_json::Value =
+                serde_json::from_str(&std::fs::read_to_string(store_of(&home)).unwrap()).unwrap();
+            assert_eq!(jobs[0]["enabled"], true);
+        });
+    }
+}

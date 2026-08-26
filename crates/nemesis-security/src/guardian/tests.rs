@@ -133,3 +133,11 @@ fn parse_json_missing_outcome_field_errors() {
     let r = parse_verdict(r#"{"risk_level":"low","user_authorization":"high"}"#);
     assert!(r.is_err(), "missing outcome must fail parsing");
 }
+
+#[test]
+fn parse_verdict_malformed_braces_errors() {
+    // '}' before '{' → rfind('}') <= find('{') → malformed-braces error.
+    let r = parse_verdict("}{");
+    assert!(r.is_err());
+    assert!(r.unwrap_err().contains("malformed verdict braces"));
+}

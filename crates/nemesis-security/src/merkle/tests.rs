@@ -308,3 +308,13 @@ fn test_same_data_different_positions() {
         );
     }
 }
+
+#[test]
+fn test_verify_from_hash_invalid_direction_returns_false() {
+    // A proof step with an unrecognized direction must hard-fail verification.
+    let proof = vec![ProofStep {
+        hash: "00".to_string(),
+        direction: "up".to_string(),
+    }];
+    assert!(!MerkleTree::verify_from_hash("ab", &proof, "cd"));
+}

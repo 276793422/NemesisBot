@@ -79,3 +79,8 @@ impl ToolsHandler {
         Ok(Some(serde_json::json!({ "saved": true })))
     }
 }
+
+// Phase 3 覆盖率（2026-08-25）：list 的真 AgentLoop map 体
+// （name/description/parameters 三字段组装）+ agent not running bail。
+#[cfg(test)]
+mod tests;

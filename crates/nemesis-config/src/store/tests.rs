@@ -80,3 +80,50 @@ fn handle_clone_is_cheap_and_shared() {
             .all(|c| c.read().executor.as_ref().unwrap().sandbox)
     );
 }
+
+#[test]
+fn store_path_returns_backing_file() {
+    let (dir, store) = tmp_store();
+    assert_eq!(store.path(), dir.path().join("config.json").as_path());
+}
+
+// The process-wide singleton is a OnceLock: only the FIRST set_global takes
+// effect. This is therefore the ONLY test in the crate that may call
+// set_global — everything the singleton surface needs (set_global / global /
+// load_live / save_live) is verified here in one shot. No other crate test
+// reads global()/load_live()/save_live (grepped), so the lingering global
+// (pointing at this test's tempdir) cannot poison parallel runs.
+#[test]
+fn global_singleton_set_get_load_live_save_live() {
+    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("config.json");
+    std::fs::write(
+        &path,
+        serde_json::to_string_pretty(&Config::default()).unwrap(),
+    )
+    .unwrap();
+
+    let store = std::sync::Arc::new(ConfigStore::load(&path).unwrap());
+    set_global(store.clone());
+
+    // global() hands back the SAME store (Arc identity), exposing its path.
+    let g = global().expect("global() Some after set_global");
+    assert!(std::sync::Arc::ptr_eq(&g, &store));
+    assert_eq!(g.path(), path.as_path());
+
+    // load_live reads through the global store.
+    let live = load_live().expect("load_live Some after set_global");
+    assert_eq!(live.gateway.port, Config::default().gateway.port);
+
+    // save_live replaces the config AND persists to the backing file.
+    let mut new_cfg = Config::default();
+    new_cfg.gateway.port = 12345;
+    let res = save_live(new_cfg);
+    assert!(matches!(res, Some(Ok(()))), "save_live Some(Ok): {res:?}");
+    assert_eq!(load_live().unwrap().gateway.port, 12345);
+
+    // Persisted: a fresh load off the same file sees the write.
+    let reloaded = crate::load_config(&path).unwrap();
+    assert_eq!(reloaded.gateway.port, 12345);
+}

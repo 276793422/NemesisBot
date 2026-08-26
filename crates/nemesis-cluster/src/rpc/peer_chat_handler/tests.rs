@@ -1218,3 +1218,493 @@ async fn test_session_key_no_rpc_meta_falls_back_to_chat_id() {
     assert_eq!(task.source.node_id, "");
     assert_eq!(task.source.session_key, "cluster_rpc:web:degraded");
 }
+
+// ============================================================
+// W3b coverage batch: setter bodies (set_llm_channel /
+// set_rpc_client / set_timeout), cluster-queue enqueue +
+// queue-full Ack error, the REAL LLM timeout arm (existing
+// SlowLlmChannel drops tx → "closed" arm, never the timeout
+// arm), send_callback happy path via real server (payload +
+// conditional error field), retry exhaustion, delete-on-success
+// after successful callback.
+// ============================================================
+
+struct StaticResolverW3b {
+    port: u16,
+}
+impl crate::rpc::client::PeerResolver for StaticResolverW3b {
+    fn get_peer_info(&self, _peer_id: &str) -> Option<(Vec<String>, u16, bool)> {
+        Some((vec!["127.0.0.1".into()], self.port, true))
+    }
+    fn get_local_interfaces(&self) -> Vec<crate::rpc::client::LocalNetworkInterface> {
+        Vec::new()
+    }
+    fn get_node_id(&self) -> String {
+        "w3b-pch-client".into()
+    }
+}
+
+/// LLM channel whose receiver NEVER resolves (sender leaked) — forces the
+/// real `Err(_)` timeout arm in process_async, unlike SlowLlmChannel whose
+/// tx is dropped at submit-return (which deterministically hits the
+/// `Ok(Err(_))` channel-closed arm instead).
+struct NeverRespondChannelW3b;
+impl LlmChannel for NeverRespondChannelW3b {
+    fn submit(
+        &self,
+        _session_key: &str,
+        _content: &str,
+        _correlation_id: &str,
+    ) -> Result<oneshot::Receiver<String>, String> {
+        let (tx, rx) = oneshot::channel();
+        std::mem::forget(tx); // keep tx alive forever → rx never resolves
+        Ok(rx)
+    }
+}
+
+/// Persister that records every call for assertions.
+struct RecordingPersisterW3b {
+    running: std::sync::Mutex<Vec<String>>,
+    results: std::sync::Mutex<Vec<(String, String, String, String)>>,
+    deleted: std::sync::Mutex<Vec<String>>,
+}
+impl TaskResultPersister for RecordingPersisterW3b {
+    fn set_running(&self, task_id: &str, _source_node: &str) {
+        self.running.lock().unwrap().push(task_id.into());
+    }
+    fn set_result(
+        &self,
+        task_id: &str,
+        status: &str,
+        response: &str,
+        error: &str,
+        _source_node: &str,
+    ) -> Result<(), String> {
+        self.results
+            .lock()
+            .unwrap()
+            .push((task_id.into(), status.into(), response.into(), error.into()));
+        Ok(())
+    }
+    fn delete(&self, task_id: &str) -> Result<(), String> {
+        self.deleted.lock().unwrap().push(task_id.into());
+        Ok(())
+    }
+}
+
+fn recording_persister_w3b() -> RecordingPersisterW3b {
+    RecordingPersisterW3b {
+        running: std::sync::Mutex::new(Vec::new()),
+        results: std::sync::Mutex::new(Vec::new()),
+        deleted: std::sync::Mutex::new(Vec::new()),
+    }
+}
+
+#[test]
+fn test_w3b_setter_bodies_llm_channel_rpc_client_timeout() {
+    // Existing tests only cover set_result_persister / set_cluster_queue;
+    // set_llm_channel / set_rpc_client / set_timeout bodies are exercised here.
+    let mut handler = PeerChatHandler::with_timeout("node-b".into(), Duration::from_secs(9));
+    assert_eq!(handler.timeout_secs(), 9);
+    assert_eq!(handler.node_id(), "node-b");
+
+    handler.set_timeout(Duration::from_secs(4));
+    assert_eq!(handler.timeout_secs(), 4);
+
+    handler.set_llm_channel(Arc::new(MockLlmChannel {
+        response: "r".into(),
+        should_fail: false,
+    }));
+    assert!(handler.llm_channel.is_some());
+
+    handler.set_rpc_client(Arc::new(RpcClient::new()));
+    assert!(handler.rpc_client.is_some());
+
+    let tl = Arc::new(ClusterTaskList::new(std::env::temp_dir()));
+    let wq = Arc::new(ClusterWorkQueue::new(2));
+    handler.set_cluster_queue(tl, wq);
+    assert!(handler.cluster_task_list.is_some());
+    assert!(handler.cluster_work_queue.is_some());
+
+    handler.set_result_persister(Arc::new(recording_persister_w3b()));
+    assert!(handler.result_persister.is_some());
+}
+
+#[tokio::test]
+async fn test_w3b_handle_cluster_queue_enqueues_to_work_queue() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut handler = PeerChatHandler::new("node-b".into());
+    let tl = Arc::new(ClusterTaskList::new(tmp.path().join("tasks")));
+    let wq = Arc::new(ClusterWorkQueue::new(8));
+    handler.set_cluster_queue(tl.clone(), wq.clone());
+
+    let persister = Arc::new(recording_persister_w3b());
+    handler.set_result_persister(persister.clone());
+
+    let ack = handler.handle(
+        serde_json::json!({"content": "queued work", "task_id": "w3b-ct-1"}),
+        Some(RpcMeta {
+            from: Some("origin-node".into()),
+        }),
+    );
+    assert_eq!(ack.status, "accepted");
+    assert_eq!(ack.task_id, "w3b-ct-1");
+
+    // set_running fired because rpc_meta.from was present
+    assert_eq!(persister.running.lock().unwrap().as_slice(), ["w3b-ct-1"]);
+
+    // Task created AND actually handed to the work-queue consumer
+    let task = tl.get_task("w3b-ct-1").unwrap();
+    assert_eq!(task.content, "queued work");
+    assert_eq!(task.status, TaskStatus::Pending);
+    let next = tokio::time::timeout(Duration::from_secs(2), wq.next())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(next, "w3b-ct-1");
+}
+
+#[tokio::test]
+async fn test_w3b_handle_cluster_queue_full_returns_error_ack() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut handler = PeerChatHandler::new("node-b".into());
+    let tl = Arc::new(ClusterTaskList::new(tmp.path().join("tasks")));
+    // Capacity-1 queue pre-filled with an occupant emulates a full queue
+    // (tokio mpsc panics on capacity 0).
+    let wq = Arc::new(ClusterWorkQueue::new(1));
+    wq.submit("occupant".to_string()).unwrap();
+    handler.set_cluster_queue(tl, wq);
+
+    let ack = handler.handle(
+        serde_json::json!({"content": "no room", "task_id": "w3b-ct-2"}),
+        Some(RpcMeta {
+            from: Some("origin-node".into()),
+        }),
+    );
+    assert_eq!(ack.status, "error");
+    assert!(ack.task_id.is_empty());
+}
+
+#[tokio::test]
+async fn test_w3b_process_async_real_timeout_arm_persists_error() {
+    // The leaked-sender channel guarantees the tokio timeout branch (not the
+    // channel-closed branch) fires, and wait_for_tasks joins the spawned task,
+    // so the persister call is finished when the await returns.
+    let mut handler = PeerChatHandler::new("node-b".into());
+    handler.set_timeout(Duration::from_millis(60));
+    handler.set_llm_channel(Arc::new(NeverRespondChannelW3b));
+    let persister = Arc::new(recording_persister_w3b());
+    handler.set_result_persister(persister.clone());
+
+    let ack = handler.handle(
+        serde_json::json!({"content": "slow request", "task_id": "w3b-slow-1"}),
+        Some(RpcMeta {
+            from: Some("origin-node".into()),
+        }),
+    );
+    assert_eq!(ack.status, "accepted");
+    handler.wait_for_tasks().await;
+
+    let results = persister.results.lock().unwrap();
+    assert_eq!(results.len(), 1, "timeout should persist one error result");
+    assert_eq!(results[0].0, "w3b-slow-1");
+    assert_eq!(results[0].1, "error");
+    assert_eq!(results[0].3, "LLM processing timeout");
+}
+
+#[tokio::test]
+async fn test_w3b_send_callback_real_server_success_and_error_field() {
+    use crate::rpc::server::{RpcServer, RpcServerConfig};
+
+    let server = Arc::new(RpcServer::new(RpcServerConfig {
+        bind_address: "127.0.0.1:0".into(),
+        ..Default::default()
+    }));
+    let captured = Arc::new(std::sync::Mutex::new(Vec::<serde_json::Value>::new()));
+    let cap2 = captured.clone();
+    server.register_handler(
+        "peer_chat_callback",
+        Box::new(move |payload| {
+            cap2.lock().unwrap().push(payload.clone());
+            Ok(serde_json::json!({"status": "accepted"}))
+        }),
+    );
+    server.start().await.unwrap();
+    let port = server.port();
+
+    let client = RpcClient::with_resolver(Arc::new(StaticResolverW3b { port }));
+
+    // Success without error → payload omits the error field entirely
+    let ok = send_callback(Some(&client), "origin-node", "w3b-cb-1", "success", "done-work", "").await;
+    assert!(ok, "callback should succeed against the live server");
+    {
+        let cap = captured.lock().unwrap();
+        assert_eq!(cap.len(), 1);
+        assert_eq!(cap[0]["task_id"], "w3b-cb-1");
+        assert_eq!(cap[0]["status"], "success");
+        assert!(cap[0].get("error").is_none(), "error field omitted when empty");
+    }
+
+    // Non-empty error → payload carries it
+    let ok2 =
+        send_callback(Some(&client), "origin-node", "w3b-cb-2", "error", "", "boom-detail").await;
+    assert!(ok2);
+    {
+        let cap = captured.lock().unwrap();
+        assert_eq!(cap.len(), 2);
+        assert_eq!(cap[1]["error"], "boom-detail");
+    }
+
+    server.stop().unwrap();
+}
+
+#[tokio::test(start_paused = true)]
+async fn test_w3b_send_callback_retries_exhausted_when_peer_unreachable() {
+    // Port 1 refuses connections; the paused clock makes the 5s/10s inter-attempt
+    // backoffs instant. Three failures → false.
+    let client = RpcClient::with_resolver(Arc::new(StaticResolverW3b { port: 1 }));
+    let ok = send_callback(Some(&client), "ghost-node", "w3b-t-ex", "success", "r", "").await;
+    assert!(!ok, "all callback retries should be exhausted");
+}
+
+#[tokio::test]
+async fn test_w3b_send_callback_or_persist_deletes_after_successful_callback() {
+    use crate::rpc::server::{RpcServer, RpcServerConfig};
+
+    let server = Arc::new(RpcServer::new(RpcServerConfig {
+        bind_address: "127.0.0.1:0".into(),
+        ..Default::default()
+    }));
+    server.register_handler(
+        "peer_chat_callback",
+        Box::new(|_p| Ok(serde_json::json!({"status": "accepted"}))),
+    );
+    server.start().await.unwrap();
+    let port = server.port();
+
+    let client = RpcClient::with_resolver(Arc::new(StaticResolverW3b { port }));
+    let persister = recording_persister_w3b();
+
+    send_callback_or_persist(
+        Some(&client),
+        Some(&persister),
+        &None,
+        "origin-node",
+        "w3b-ds-1",
+        "success",
+        "answer",
+        "",
+    )
+    .await;
+
+    assert!(
+        persister.results.lock().unwrap().is_empty(),
+        "no persist on callback success"
+    );
+    assert_eq!(persister.deleted.lock().unwrap().as_slice(), ["w3b-ds-1"]);
+    server.stop().unwrap();
+}
+
+// ============================================================
+// S4 coverage: empty-content ack, persist_result skip arm with a
+// persister attached, callback delete-Err / set_result-Err arms,
+// and the retry-warn field line under a subscriber.
+// ============================================================
+
+struct S4AllEventsSubscriber;
+impl tracing::Subscriber for S4AllEventsSubscriber {
+    fn enabled(&self, _metadata: &tracing::Metadata<'_>) -> bool {
+        true
+    }
+    fn new_span(&self, _span: &tracing::span::Attributes<'_>) -> tracing::Id {
+        tracing::Id::from_u64(1)
+    }
+    fn record(&self, _span: &tracing::Id, _values: &tracing::span::Record<'_>) {}
+    fn record_follows_from(&self, _span: &tracing::Id, _follows: &tracing::Id) {}
+    fn event(&self, _event: &tracing::Event<'_>) {}
+    fn enter(&self, _span: &tracing::Id) {}
+    fn exit(&self, _span: &tracing::Id) {}
+}
+
+fn s4_tracing_subscriber() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        let _ = tracing::subscriber::set_global_default(S4AllEventsSubscriber);
+    });
+}
+
+/// Persister whose set_result/delete can be told to fail, counting calls.
+struct S4FailingPersister {
+    fail_set_result: bool,
+    fail_delete: bool,
+    set_result_calls: std::sync::atomic::AtomicUsize,
+    delete_calls: std::sync::atomic::AtomicUsize,
+}
+
+impl TaskResultPersister for S4FailingPersister {
+    fn set_running(&self, _task_id: &str, _source_node: &str) {}
+
+    fn set_result(
+        &self,
+        _task_id: &str,
+        _status: &str,
+        _response: &str,
+        _error: &str,
+        _source_node: &str,
+    ) -> Result<(), String> {
+        self.set_result_calls
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        if self.fail_set_result {
+            Err("s4 set_result boom".into())
+        } else {
+            Ok(())
+        }
+    }
+
+    fn delete(&self, _task_id: &str) -> Result<(), String> {
+        self.delete_calls
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        if self.fail_delete {
+            Err("s4 delete boom".into())
+        } else {
+            Ok(())
+        }
+    }
+}
+
+/// A payload with content present but EMPTY fails validation after successful
+/// deserialization (peer_chat_handler.rs 216-222).
+#[test]
+fn test_s4_handle_empty_content_string() {
+    s4_tracing_subscriber();
+    let handler = PeerChatHandler::new("node-b".into());
+    let payload = serde_json::json!({"content": "", "type": "chat"});
+    let ack = handler.handle(payload, None);
+    assert_eq!(ack.status, "error");
+    assert!(ack.task_id.is_empty());
+}
+
+/// persist_result with a persister attached but an empty source node skips
+/// set_result entirely (peer_chat_handler.rs 373-383).
+#[tokio::test]
+async fn test_s4_persist_result_empty_source_with_persister() {
+    s4_tracing_subscriber();
+    let mut handler = PeerChatHandler::new("node-b".into());
+    let persister = Arc::new(S4FailingPersister {
+        fail_set_result: false,
+        fail_delete: false,
+        set_result_calls: std::sync::atomic::AtomicUsize::new(0),
+        delete_calls: std::sync::atomic::AtomicUsize::new(0),
+    });
+    handler.set_result_persister(persister.clone());
+
+    handler.persist_result("s4-t", "success", "resp", "", "");
+
+    assert_eq!(
+        persister
+            .set_result_calls
+            .load(std::sync::atomic::Ordering::SeqCst),
+        0,
+        "empty source node must skip persistence"
+    );
+}
+
+/// A successful callback followed by a failing persister.delete hits the
+/// delete-error warn with field expressions (peer_chat_handler.rs 563-569).
+#[tokio::test]
+async fn test_s4_send_callback_or_persist_delete_failure_logs() {
+    use crate::rpc::server::{RpcServer, RpcServerConfig};
+
+    s4_tracing_subscriber();
+    let server = Arc::new(RpcServer::new(RpcServerConfig {
+        bind_address: "127.0.0.1:0".into(),
+        ..Default::default()
+    }));
+    server.register_handler(
+        "peer_chat_callback",
+        Box::new(|_p| Ok(serde_json::json!({"status": "accepted"}))),
+    );
+    server.start().await.unwrap();
+    let port = server.port();
+
+    let client = RpcClient::with_resolver(Arc::new(StaticResolverW3b { port }));
+    let persister = S4FailingPersister {
+        fail_set_result: false,
+        fail_delete: true,
+        set_result_calls: std::sync::atomic::AtomicUsize::new(0),
+        delete_calls: std::sync::atomic::AtomicUsize::new(0),
+    };
+
+    send_callback_or_persist(
+        Some(&client),
+        Some(&persister),
+        &None,
+        "origin-node",
+        "s4-del-1",
+        "success",
+        "answer",
+        "",
+    )
+    .await;
+
+    assert_eq!(
+        persister
+            .delete_calls
+            .load(std::sync::atomic::Ordering::SeqCst),
+        1,
+        "delete attempted after successful callback"
+    );
+    assert_eq!(
+        persister
+            .set_result_calls
+            .load(std::sync::atomic::Ordering::SeqCst),
+        0,
+        "no persist when callback succeeded"
+    );
+    server.stop().unwrap();
+}
+
+/// A failed callback with a non-empty source node and a failing set_result
+/// hits the persist-error warn (peer_chat_handler.rs 570-581).
+#[tokio::test]
+async fn test_s4_send_callback_or_persist_set_result_failure_logs() {
+    s4_tracing_subscriber();
+    let persister = S4FailingPersister {
+        fail_set_result: true,
+        fail_delete: false,
+        set_result_calls: std::sync::atomic::AtomicUsize::new(0),
+        delete_calls: std::sync::atomic::AtomicUsize::new(0),
+    };
+
+    // No rpc_client → send_callback returns false immediately.
+    send_callback_or_persist(
+        None,
+        Some(&persister),
+        &None,
+        "origin-node-2",
+        "s4-persist-1",
+        "failed",
+        "",
+        "boom",
+    )
+    .await;
+
+    assert_eq!(
+        persister
+            .set_result_calls
+            .load(std::sync::atomic::Ordering::SeqCst),
+        1,
+        "set_result attempted after failed callback"
+    );
+}
+
+/// The per-attempt warn field line only evaluates under an enabled subscriber;
+/// the paused clock makes the 5s/10s backoffs instant (peer_chat_handler.rs
+/// 633-644).
+#[tokio::test(start_paused = true)]
+async fn test_s4_send_callback_retry_warn_field_line() {
+    s4_tracing_subscriber();
+    let client = RpcClient::with_resolver(Arc::new(StaticResolverW3b { port: 1 }));
+    let ok = send_callback(Some(&client), "ghost-node", "s4-retry-1", "success", "r", "").await;
+    assert!(!ok, "all callback retries should be exhausted");
+}

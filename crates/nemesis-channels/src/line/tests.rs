@@ -1387,3 +1387,329 @@ async fn test_line_push_with_empty_text() {
     let ch = LineChannel::new(config, test_bus()).unwrap();
     let _ = ch.push_message("U123", "").await;
 }
+
+// ===========================================================================
+// W4c 补测（2026-08-25）：webhook HTTP 最小解析全路径——合法签名投递+存 reply
+// token、错签名 401、坏 JSON 400、事件守卫（非 message/无 text/无 source 跳过）、
+// running=false 直连即断
+// ===========================================================================
+
+/// 用 channel_secret 计算 LINE webhook 签名（HMAC-SHA256 → base64）。
+fn w4c_line_signature(secret: &str, body: &[u8]) -> String {
+    use base64::Engine;
+    use hmac::Mac;
+    let mut mac = <HmacSha256 as Mac>::new_from_slice(secret.as_bytes()).unwrap();
+    mac.update(body);
+    base64::engine::general_purpose::STANDARD.encode(mac.finalize().into_bytes())
+}
+
+/// 起一个一次性 TCP 监听，把 accept 到的连接交给 handle_webhook_connection。
+/// 返回 (客户端流, 端口)。
+async fn w4c_line_webhook_pair(
+    bus: &broadcast::Sender<InboundMessage>,
+    secret: &str,
+    reply_tokens: &Arc<dashmap::DashMap<String, String>>,
+    running: &Arc<parking_lot::RwLock<bool>>,
+) -> (tokio::net::TcpStream, std::net::SocketAddr) {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+
+    let bus = bus.clone();
+    let secret = secret.to_string();
+    let reply_tokens = Arc::clone(reply_tokens);
+    let running = Arc::clone(running);
+    let accept_task = tokio::spawn(async move {
+        if let Ok((stream, _)) = listener.accept().await {
+            LineChannel::handle_webhook_connection(stream, &bus, &secret, &reply_tokens, &running)
+                .await;
+        }
+    });
+
+    let client = tokio::net::TcpStream::connect(addr).await.unwrap();
+    // 等服务端 accept 完成，避免客户端先写进本地缓冲就被断言
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    let _ = accept_task;
+    (client, addr)
+}
+
+async fn w4c_read_http_response(
+    client: &mut tokio::net::TcpStream,
+) -> Option<String> {
+    use tokio::io::AsyncReadExt;
+    let mut out = String::new();
+    let mut buf = [0u8; 1024];
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        let n = tokio::time::timeout(std::time::Duration::from_secs(2), client.read(&mut buf))
+            .await
+            .ok()?;
+        match n {
+            Ok(0) => return Some(out), // EOF（连接关闭）
+            Ok(n) => {
+                out.push_str(&String::from_utf8_lossy(&buf[..n]));
+                if out.contains("\r\n\r\n") {
+                    return Some(out);
+                }
+            }
+            Err(_) => return Some(out),
+        }
+        if std::time::Instant::now() > deadline {
+            return Some(out);
+        }
+    }
+}
+
+#[tokio::test]
+async fn test_w4c_line_webhook_valid_signature_delivers_and_stores_token() {
+    use tokio::io::AsyncWriteExt;
+
+    let (bus, mut rx) = broadcast::channel::<InboundMessage>(16);
+    let secret = "w4c-secret";
+    let reply_tokens = Arc::new(dashmap::DashMap::new());
+    let running = Arc::new(parking_lot::RwLock::new(true));
+
+    let body = serde_json::json!({
+        "destination": "U-dest",
+        "events": [{
+            "type": "message",
+            "replyToken": "rt-123",
+            "message": {"type": "text", "text": "hello line"},
+            "source": {"type": "user", "userId": "U-user-1"}
+        }]
+    })
+    .to_string();
+    let sig = w4c_line_signature(secret, body.as_bytes());
+
+    let (mut client, _addr) =
+        w4c_line_webhook_pair(&bus, secret, &reply_tokens, &running).await;
+    let req = format!(
+        "POST /callback HTTP/1.1\r\nHost: localhost\r\nX-Line-Signature: {sig}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+        body.len(),
+        body
+    );
+    client.write_all(req.as_bytes()).await.unwrap();
+
+    let resp = w4c_read_http_response(&mut client).await.unwrap_or_default();
+    assert!(resp.starts_with("HTTP/1.1 200"), "expected 200 OK, got: {resp}");
+
+    let inbound = tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv())
+        .await
+        .expect("timed out: valid webhook must publish inbound")
+        .unwrap();
+    assert_eq!(inbound.channel, "line");
+    assert_eq!(inbound.chat_id, "U-user-1");
+    assert_eq!(inbound.sender_id, "U-user-1");
+    assert_eq!(inbound.content, "hello line");
+
+    assert_eq!(
+        reply_tokens.get("U-user-1").map(|v| v.clone()),
+        Some("rt-123".to_string()),
+        "reply token must be stored for the chat"
+    );
+}
+
+#[tokio::test]
+async fn test_w4c_line_webhook_invalid_signature_401() {
+    use tokio::io::AsyncWriteExt;
+
+    let (bus, mut rx) = broadcast::channel::<InboundMessage>(16);
+    let reply_tokens = Arc::new(dashmap::DashMap::new());
+    let running = Arc::new(parking_lot::RwLock::new(true));
+
+    let body = serde_json::json!({
+        "events": [{
+            "type": "message",
+            "message": {"type": "text", "text": "forged"},
+            "source": {"type": "user", "userId": "U-attacker"}
+        }]
+    })
+    .to_string();
+
+    let (mut client, _) =
+        w4c_line_webhook_pair(&bus, "real-secret", &reply_tokens, &running).await;
+    let req = format!(
+        "POST /callback HTTP/1.1\r\nHost: localhost\r\nX-Line-Signature: FORGEDSIG==\r\nContent-Length: {}\r\n\r\n{}",
+        body.len(),
+        body
+    );
+    client.write_all(req.as_bytes()).await.unwrap();
+
+    let resp = w4c_read_http_response(&mut client).await.unwrap_or_default();
+    assert!(resp.starts_with("HTTP/1.1 401"), "expected 401, got: {resp}");
+
+    let leaked = tokio::time::timeout(std::time::Duration::from_millis(500), rx.recv()).await;
+    assert!(
+        leaked.is_err() || leaked.unwrap().is_err(),
+        "forged webhook must not publish inbound"
+    );
+}
+
+#[tokio::test]
+async fn test_w4c_line_webhook_malformed_body_400() {
+    use tokio::io::AsyncWriteExt;
+
+    let (bus, _rx) = broadcast::channel::<InboundMessage>(16);
+    let reply_tokens = Arc::new(dashmap::DashMap::new());
+    let running = Arc::new(parking_lot::RwLock::new(true));
+
+    let body = "this is not json at all";
+    let sig = w4c_line_signature("w4c-secret", body.as_bytes());
+
+    let (mut client, _) = w4c_line_webhook_pair(&bus, "w4c-secret", &reply_tokens, &running).await;
+    let req = format!(
+        "POST /callback HTTP/1.1\r\nHost: localhost\r\nX-Line-Signature: {sig}\r\nContent-Length: {}\r\n\r\n{}",
+        body.len(),
+        body
+    );
+    client.write_all(req.as_bytes()).await.unwrap();
+
+    let resp = w4c_read_http_response(&mut client).await.unwrap_or_default();
+    assert!(resp.starts_with("HTTP/1.1 400"), "expected 400, got: {resp}");
+}
+
+#[tokio::test]
+async fn test_w4c_line_webhook_event_guards_skip_invalid_events() {
+    use tokio::io::AsyncWriteExt;
+
+    let (bus, mut rx) = broadcast::channel::<InboundMessage>(16);
+    let reply_tokens = Arc::new(dashmap::DashMap::new());
+    let running = Arc::new(parking_lot::RwLock::new(true));
+
+    // 四类事件：follow（非 message）/ message 无 text / message 无 source / 合法 group message
+    let body = serde_json::json!({
+        "events": [
+            {"type": "follow", "replyToken": "rt-f"},
+            {"type": "message", "replyToken": "rt-nt",
+             "message": {"type": "text", "text": ""},
+             "source": {"type": "user", "userId": "U-no-text"}},
+            {"type": "message", "replyToken": "rt-ns",
+             "message": {"type": "text", "text": "no-src"}},
+            {"type": "message", "replyToken": "rt-v",
+             "message": {"type": "text", "text": "valid one"},
+             "source": {"type": "group", "groupId": "C-grp", "userId": "U-in-grp"}}
+        ]
+    })
+    .to_string();
+    let sig = w4c_line_signature("w4c-secret", body.as_bytes());
+
+    let (mut client, _) = w4c_line_webhook_pair(&bus, "w4c-secret", &reply_tokens, &running).await;
+    let req = format!(
+        "POST /callback HTTP/1.1\r\nHost: localhost\r\nX-Line-Signature: {sig}\r\nContent-Length: {}\r\n\r\n{}",
+        body.len(),
+        body
+    );
+    client.write_all(req.as_bytes()).await.unwrap();
+    let resp = w4c_read_http_response(&mut client).await.unwrap_or_default();
+    assert!(resp.starts_with("HTTP/1.1 200"), "expected 200, got: {resp}");
+
+    let inbound = tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv())
+        .await
+        .expect("valid event must be delivered")
+        .unwrap();
+    assert_eq!(inbound.content, "valid one");
+    // group 源：chat_id 用 groupId，sender_id 用 userId
+    assert_eq!(inbound.chat_id, "C-grp");
+    assert_eq!(inbound.sender_id, "U-in-grp");
+
+    // 只有那条合法事件（其余被守卫跳过）
+    let extra = tokio::time::timeout(std::time::Duration::from_millis(500), rx.recv()).await;
+    assert!(extra.is_err() || extra.unwrap().is_err(), "guarded events must be skipped");
+}
+
+#[tokio::test]
+async fn test_w4c_line_webhook_not_running_closes_without_response() {
+    use tokio::io::AsyncWriteExt;
+
+    let (bus, _rx) = broadcast::channel::<InboundMessage>(16);
+    let reply_tokens = Arc::new(dashmap::DashMap::new());
+    let running = Arc::new(parking_lot::RwLock::new(false));
+
+    let (mut client, _) = w4c_line_webhook_pair(&bus, "w4c-secret", &reply_tokens, &running).await;
+    client.write_all(b"POST /callback HTTP/1.1\r\n\r\n{}").await.unwrap();
+
+    // running=false → handler 直接 return，客户端读到 EOF（0 字节响应）
+    let resp = w4c_read_http_response(&mut client).await.unwrap_or_default();
+    assert!(!resp.contains("HTTP/1.1"), "no HTTP response expected when not running, got: {resp}");
+}
+
+// ===========================================================================
+// S2 coverage (2026-08-26): read Ok(0) early-return / event without message
+// field / webhook accept-loop break after stop
+// ===========================================================================
+
+fn s2_line_channel(port: u16) -> (LineChannel, tokio::sync::broadcast::Receiver<InboundMessage>) {
+    let (bus, rx) = tokio::sync::broadcast::channel::<InboundMessage>(16);
+    let config = LineConfig {
+        channel_access_token: "s2-token".to_string(),
+        channel_secret: "s2-secret".to_string(),
+        webhook_port: port,
+        allow_from: vec![],
+    };
+    (LineChannel::new(config, bus).unwrap(), rx)
+}
+
+/// A TCP connection that closes without sending any byte makes the handler's
+/// `stream.read` return Ok(0) -> early return arm.
+#[tokio::test]
+async fn s2_line_webhook_connect_then_close_returns_early() {
+    let port = find_free_port();
+    let (ch, _bus) = s2_line_channel(port);
+    ch.start().await.unwrap();
+    tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+
+    let s = tokio::net::TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+    drop(s); // no bytes written -> read returns Ok(0)
+    tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+
+    ch.stop().await.unwrap();
+}
+
+/// A valid-signature webhook event of type "message" without a `message`
+/// field is answered 200 OK but skipped (`None => continue`).
+#[tokio::test]
+async fn s2_line_webhook_event_without_message_field_is_skipped() {
+    let port = find_free_port();
+    let (ch, mut bus_rx) = s2_line_channel(port);
+    ch.start().await.unwrap();
+    tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+
+    let body = r#"{"events":[{"type":"message","replyToken":"rt","source":{"type":"user","userId":"U1"}}]}"#;
+    let sig = make_signature_b64(body.as_bytes(), "s2-secret");
+    let request = format!(
+        "POST /webhook HTTP/1.1\r\nHost: localhost\r\nX-Line-Signature: {}\r\nContent-Length: {}\r\n\r\n{}",
+        sig,
+        body.len(),
+        body
+    );
+    let resp = send_raw_http(port, request.as_bytes()).await;
+    assert!(resp.starts_with("HTTP/1.1 200"), "got: {}", resp);
+
+    // Nothing may be published (no message payload).
+    let recv = tokio::time::timeout(std::time::Duration::from_millis(300), bus_rx.recv()).await;
+    assert!(recv.is_err(), "message-less event must not publish");
+
+    ch.stop().await.unwrap();
+}
+
+/// stop() flips the running flag; the accept loop wakes on one more
+/// connection, sees the flag at the loop top and breaks ("webhook server
+/// stopped" arm).
+#[tokio::test]
+async fn s2_line_webhook_accept_loop_breaks_after_stop() {
+    let port = find_free_port();
+    let (ch, _bus) = s2_line_channel(port);
+    ch.start().await.unwrap();
+    tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+
+    // One real request so the listener is definitely bound and serving.
+    let request = "POST /webhook HTTP/1.1\r\nHost: localhost\r\nContent-Length: 2\r\n\r\n{}";
+    let _ = send_raw_http(port, request.as_bytes()).await;
+
+    ch.stop().await.unwrap();
+
+    // Wake the (still blocked) accept with a fresh connection: the handler
+    // returns immediately (running=false) and the loop top then breaks.
+    let s = tokio::net::TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    drop(s);
+}

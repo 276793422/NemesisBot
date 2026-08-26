@@ -261,7 +261,6 @@ async fn test_async_exec_tool_timeout() {
     assert!(result.is_ok() || result.is_err());
 }
 
-#[cfg(test)]
 mod message_tool_edge_cases {
     use super::*;
 
@@ -299,7 +298,6 @@ mod message_tool_edge_cases {
     }
 }
 
-#[cfg(test)]
 mod file_tool_edge_cases {
     use super::*;
 
@@ -372,7 +370,6 @@ mod file_tool_edge_cases {
     }
 }
 
-#[cfg(test)]
 mod tool_registration_tests {
     use super::*;
 

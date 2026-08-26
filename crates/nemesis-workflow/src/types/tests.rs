@@ -923,3 +923,21 @@ fn workflow_compute_output_empty_node_results_is_null() {
     let output = wf.compute_output(&HashMap::new());
     assert!(output.is_null());
 }
+
+// ---------------------------------------------------------------------------
+// W4a coverage gap closure (parse_duration suffix arms with non-numeric body)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn w4a_parse_duration_suffix_with_non_numeric_body_is_none() {
+    // suffix matches but the rest doesn't parse as u64 -> falls through to None
+    assert_eq!(parse_duration("xs"), None);
+    assert_eq!(parse_duration("xm"), None);
+    assert_eq!(parse_duration("xh"), None);
+    // fractional/negative numbers also fail the u64 parse
+    assert_eq!(parse_duration("1.5s"), None);
+    assert_eq!(parse_duration("-5m"), None);
+    // sanity: the happy arms still work
+    assert_eq!(parse_duration("10s"), Some(Duration::from_secs(10)));
+    assert_eq!(parse_duration("2h"), Some(Duration::from_secs(7200)));
+}

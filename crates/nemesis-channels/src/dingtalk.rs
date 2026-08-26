@@ -36,10 +36,16 @@ pub struct DingTalkConfig {
 #[derive(Debug, Deserialize)]
 pub struct DingTalkCallbackData {
     pub text: DingTalkTextContent,
+    /// BUG #12 fix：与 DingTalkConversationMessage 同类，真实 wire 是 camelCase。
+    #[serde(rename = "senderStaffId", alias = "sender_staff_id")]
     pub sender_staff_id: String,
+    #[serde(rename = "senderNick", alias = "sender_nick")]
     pub sender_nick: String,
+    #[serde(rename = "conversationId", alias = "conversation_id")]
     pub conversation_id: String,
+    #[serde(rename = "conversationType", alias = "conversation_type")]
     pub conversation_type: String,
+    #[serde(rename = "sessionWebhook", alias = "session_webhook")]
     pub session_webhook: String,
     pub content: Option<serde_json::Value>,
 }
@@ -80,9 +86,18 @@ struct StreamEventHeaders {
 /// DingTalk conversation message payload.
 #[derive(Debug, Deserialize)]
 struct DingTalkConversationMessage {
+    /// BUG #12 fix (2026-08-25): DingTalk 真实 wire 格式是 camelCase
+    /// （senderStaffId/senderNick/conversationId/conversationType）——同结构里
+    /// sessionWebhook 早就 rename 了，这四个漏掉导致生产里全部解析成 None：
+    /// sender_id 变 "unknown"、群消息 chat_id 塌缩、sender_nick 丢失。
+    /// alias 保留 snake_case 兼容（既有内部测试用它构造）。
+    #[serde(rename = "senderStaffId", alias = "sender_staff_id")]
     sender_staff_id: Option<String>,
+    #[serde(rename = "senderNick", alias = "sender_nick")]
     sender_nick: Option<String>,
+    #[serde(rename = "conversationId", alias = "conversation_id")]
     conversation_id: Option<String>,
+    #[serde(rename = "conversationType", alias = "conversation_type")]
     conversation_type: Option<String>,
     #[serde(rename = "sessionWebhook")]
     session_webhook: Option<String>,

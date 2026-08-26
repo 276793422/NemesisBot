@@ -82,3 +82,92 @@ async fn run_errors_when_gateway_unreachable() {
     let r = run(dir.path(), false, false).await;
     assert!(r.is_err(), "gateway 不可达应报错");
 }
+
+// ===========================================================================
+// S11c（quality-hardening goal 冲刺 S11）：补齐 match (status, release,
+// engaged) 的剩余分支——既有 mock 固定回 engaged:false，engaged:true 两臂
+// （release 指令已发送 / engage ⛔ 已触发）和 engaged 缺字段臂从没到过，
+// 加 web_port=0 的早退分支（estop.rs:36-38）。
+// ===========================================================================
+
+/// 可配置响应体的 mock（对 /api/health 回 200，其余回给定 body）。
+fn start_mock_server_with(body: &'static str) -> u16 {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    std::thread::spawn(move || {
+        use std::io::{Read, Write};
+        for _ in 0..16 {
+            let Ok((mut stream, _)) = listener.accept() else {
+                break;
+            };
+            let mut buf = [0u8; 4096];
+            let _ = stream.read(&mut buf);
+            let req = String::from_utf8_lossy(&buf).to_string();
+            let (status, payload) = if req.contains("/api/health") {
+                ("200 OK", "{\"status\":\"ok\"}")
+            } else {
+                ("200 OK", body)
+            };
+            let resp = format!(
+                "HTTP/1.1 {s}\r\nContent-Type: application/json\r\nContent-Length: {l}\r\n\r\n{b}",
+                s = status,
+                l = payload.len(),
+                b = payload
+            );
+            let _ = stream.write_all(resp.as_bytes());
+        }
+    });
+    port
+}
+
+#[tokio::test]
+async fn run_engage_with_engaged_true_prints_frozen_branch() {
+    let dir = tempfile::tempdir().unwrap();
+    let port = start_mock_server_with(r#"{"status":"ok","engaged":true}"#);
+    write_home(dir.path(), "secret", port);
+    run(dir.path(), false, false)
+        .await
+        .expect("engage + engaged:true → ⛔ 已触发 分支（estop.rs:76-79）");
+}
+
+#[tokio::test]
+async fn run_release_with_engaged_true_prints_fallback_branch() {
+    let dir = tempfile::tempdir().unwrap();
+    let port = start_mock_server_with(r#"{"status":"ok","engaged":true}"#);
+    write_home(dir.path(), "secret", port);
+    run(dir.path(), true, false)
+        .await
+        .expect("release + engaged:true → 指令已发送 分支（estop.rs:75）");
+}
+
+#[tokio::test]
+async fn run_with_missing_engaged_field_falls_to_generic_branches() {
+    let dir = tempfile::tempdir().unwrap();
+    let port = start_mock_server_with(r#"{"status":"ok"}"#);
+    write_home(dir.path(), "secret", port);
+    // engaged 缺字段 → None：release 和 engage 都落到兜底臂。
+    run(dir.path(), true, false)
+        .await
+        .expect("release + engaged:None → 兜底臂");
+    run(dir.path(), false, false)
+        .await
+        .expect("engage + engaged:None → 兜底臂");
+    // status + None → 该组合也走 (true, _, Some(e)) 之外的… 实际上 status 臂
+    // 要求 Some(e)；None 时落到 release/engage 兜底——一并钉住不 panic。
+    run(dir.path(), false, true)
+        .await
+        .expect("status + engaged:None → 兜底臂，不 panic");
+}
+
+#[tokio::test]
+async fn run_errors_when_web_port_zero() {
+    let dir = tempfile::tempdir().unwrap();
+    write_home(dir.path(), "secret", 0);
+    let err = run(dir.path(), false, false)
+        .await
+        .expect_err("web_port=0 → state 无效早退（estop.rs:36-38）");
+    assert!(
+        err.to_string().contains("web_port"),
+        "got: {err}"
+    );
+}

@@ -213,3 +213,21 @@ fn test_write_file_atomic_concurrent() {
     let content = fs::read_to_string(&path).unwrap();
     assert!(content.starts_with("thread-"));
 }
+
+/// 空路径的 `Path::parent()` 返回 None → 跳过 mkdir 分支（覆盖 if-let 的
+/// None 臂）。tmp 文件落在当前目录（"."），最终 rename 到 "" 确定性失败。
+/// 测试后清理遗留在 CWD 的 .tmp-* 文件（全测试集中只有本用例往 CWD 写 tmp）。
+#[test]
+fn test_write_file_atomic_empty_path_skips_parent_creation() {
+    let result = write_file_atomic("", b"data", 0o644);
+    let err = result.unwrap_err();
+    assert!(err.starts_with("rename"), "unexpected error: {err}");
+
+    // 清理本用例落在当前目录的临时文件
+    for entry in fs::read_dir(".").unwrap().flatten() {
+        let name = entry.file_name().to_string_lossy().to_string();
+        if name.starts_with(".tmp-") {
+            let _ = fs::remove_file(entry.path());
+        }
+    }
+}

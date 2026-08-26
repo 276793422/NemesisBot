@@ -1290,3 +1290,207 @@ fn replay_real_failed_skill_run_is_legacy_flagged() {
     // 真实 driver_events 无 deny 命中。
     assert!(r.matched_rules.iter().all(|m| m.id != "outbox-deny-ssh"));
 }
+
+// =========================================================================
+// S11d 补测（quality-hardening goal 冲刺 S11）：剩余分支面。
+// - level_rank 未知档 / validate_rule 三条 bail / save_rules rename 失败
+// - match_value 各 `_ => false` 兜底 / floor_char_boundary 越界臂
+// - assess 报告缺件（meta / tool_trace / subject）+ tool_trace 顶层非数组
+// - meta.final_response_len=0 与空文件自洽时落"未产出最终回复"
+// - regex 条件 value 非字符串（空模式放行校验，但预编译表跳过）
+// - 证据摘录 >400 字节截断（floor_char_boundary 真实调用点）
+// =========================================================================
+
+#[test]
+fn level_rank_orders_medium_and_unknown_last() {
+    assert_eq!(level_rank("medium"), 2);
+    assert_eq!(level_rank("info"), 3);
+    assert_eq!(level_rank(""), 3);
+}
+
+/// 通过校验的最小合法规则（subject + exists）。
+fn minimal_rule() -> Rule {
+    Rule {
+        id: "min-rule".into(),
+        description: "d".into(),
+        level: "low".into(),
+        enabled: true,
+        source: "subject".into(),
+        conditions: vec![cond("text", "exists", serde_json::json!(null))],
+        min_count: 1,
+    }
+}
+
+#[test]
+fn validate_rule_rejects_empty_id() {
+    let mut r = minimal_rule();
+    r.id = "  ".into();
+    let err = validate_rule(&r).unwrap_err();
+    assert!(err.to_string().contains("rule id is empty"), "{err:#}");
+}
+
+#[test]
+fn validate_rule_rejects_empty_conditions() {
+    let mut r = minimal_rule();
+    r.conditions = vec![];
+    let err = validate_rule(&r).unwrap_err();
+    assert!(err.to_string().contains("conditions is empty"), "{err:#}");
+}
+
+#[test]
+fn validate_rule_rejects_gt_with_non_number_value() {
+    let mut r = minimal_rule();
+    r.conditions = vec![cond("n", "gt", serde_json::json!("seven"))];
+    let err = validate_rule(&r).unwrap_err();
+    assert!(err.to_string().contains("gt requires a number"), "{err:#}");
+}
+
+#[test]
+fn save_rules_rename_failure_cleans_tmp_and_errs() {
+    let tmp = TempDir::new().unwrap();
+    // 目标路径被目录占位 → 同目录 rename file→dir 在 Windows 必失败 →
+    // atomic-replace 错误分支 + best-effort 清理 tmp 残留。
+    let dest = tmp.path().join("eval_rules.json");
+    std::fs::create_dir(&dest).unwrap();
+    let err = save_rules(&dest, &RulesFile { rules: vec![minimal_rule()] }).unwrap_err();
+    assert!(err.to_string().contains("atomic-replace"), "err: {err:#}");
+    assert!(
+        !tmp.path().join("eval_rules.json.tmp").exists(),
+        "failed rename must clean the tmp file"
+    );
+}
+
+#[test]
+fn match_value_fallback_arms_are_false() {
+    // contains：needle 或 hay 非字符串 → false。
+    let c_num_needle = cond("f", "contains", serde_json::json!(3));
+    assert!(!match_value(&c_num_needle, &serde_json::json!("three")));
+    let c_str_needle = cond("f", "contains", serde_json::json!("ee"));
+    assert!(!match_value(&c_str_needle, &serde_json::json!(7)));
+    // gt：阈值或记录值非数字 → false。
+    let c_gt = cond("f", "gt", serde_json::json!(5));
+    assert!(!match_value(&c_gt, &serde_json::json!("7")));
+    let c_gt_bad_threshold = cond("f", "gt", serde_json::json!("five"));
+    assert!(!match_value(&c_gt_bad_threshold, &serde_json::json!(7)));
+    // 未知 op → false（validate 已挡未知 op；纯函数自防兜底）。
+    let c_bogus = cond("f", "near", serde_json::json!(1));
+    assert!(!match_value(&c_bogus, &serde_json::json!(1)));
+}
+
+#[test]
+fn floor_char_boundary_index_past_end_returns_len() {
+    assert_eq!(floor_char_boundary("abc", 10), 3);
+    assert_eq!(floor_char_boundary("", 0), 0);
+    // 多字节字符落在截断点内 → 回退到合法边界（既有行为，一并钉住）。
+    assert_eq!(floor_char_boundary("a\u{e9}z", 2), 1);
+}
+
+#[test]
+fn assess_missing_meta_tool_trace_and_subject_reports_each_gap() {
+    let tmp = TempDir::new().unwrap();
+    let dir = tmp.path().join("report");
+    write_healthy_report(&dir, "prompt");
+    std::fs::remove_file(dir.join("meta.json")).unwrap();
+    std::fs::remove_file(dir.join("tool_trace.json")).unwrap();
+    std::fs::remove_file(dir.join("subject.txt")).unwrap();
+
+    let rules = parse_rules(DEFAULT_RULES_JSON).unwrap();
+    let r = assess(&dir, &rules);
+    assert_eq!(r.conclusion, Conclusion::Unknown);
+    assert!(r.gaps.iter().any(|g| g.starts_with("meta.json:")), "gaps={:?}", r.gaps);
+    assert!(r.gaps.iter().any(|g| g.starts_with("tool_trace.json:")), "gaps={:?}", r.gaps);
+    assert!(r.gaps.iter().any(|g| g.contains("subject.txt")), "gaps={:?}", r.gaps);
+}
+
+#[test]
+fn assess_tool_trace_non_array_top_level_is_reported() {
+    let tmp = TempDir::new().unwrap();
+    let dir = tmp.path().join("report");
+    write_healthy_report(&dir, "prompt");
+    // 合法 JSON 对象（非数组、非 UNREADABLE 标记）→ 不得静默当空数组。
+    std::fs::write(dir.join("tool_trace.json"), r#"{"weird": 1}"#).unwrap();
+
+    let rules = parse_rules(DEFAULT_RULES_JSON).unwrap();
+    let r = assess(&dir, &rules);
+    assert_eq!(r.conclusion, Conclusion::Unknown);
+    assert!(r.gaps.iter().any(|g| g.contains("顶层不是数组")), "gaps={:?}", r.gaps);
+}
+
+#[test]
+fn assess_zero_final_response_len_with_empty_file_is_unknown_no_response() {
+    let tmp = TempDir::new().unwrap();
+    let dir = tmp.path().join("report");
+    write_healthy_report(&dir, "prompt");
+    // meta 与文件自洽（len=0 + 空文件）：Y9 矛盾检查通过（577 臂），
+    // 随后完整性判定落"agent 未产出最终回复"。
+    let meta: serde_json::Value = {
+        let m = std::fs::read_to_string(dir.join("meta.json")).unwrap();
+        let mut v: serde_json::Value = serde_json::from_str(&m).unwrap();
+        v["final_response_len"] = serde_json::json!(0);
+        v
+    };
+    std::fs::write(dir.join("meta.json"), serde_json::to_string_pretty(&meta).unwrap()).unwrap();
+    std::fs::write(dir.join("final_response.md"), "").unwrap();
+
+    let rules = parse_rules(DEFAULT_RULES_JSON).unwrap();
+    let r = assess(&dir, &rules);
+    assert_eq!(r.conclusion, Conclusion::Unknown);
+    assert!(r.gaps.iter().any(|g| g.contains("未产出最终回复")), "gaps={:?}", r.gaps);
+    assert!(
+        !r.gaps.iter().any(|g| g.contains("自相矛盾")),
+        "consistent empty file must not trip Y9: {:?}",
+        r.gaps
+    );
+}
+
+#[test]
+fn assess_regex_condition_with_non_string_value_never_matches() {
+    // value 非字符串：validate 用 unwrap_or("") 空模式校验（放行），
+    // 预编译表 c.value.as_str()=None 跳过 → 求值恒 false（不炸、不命中）。
+    let tmp = TempDir::new().unwrap();
+    let dir = tmp.path().join("report");
+    write_healthy_report(&dir, "prompt");
+    let rules = RulesFile {
+        rules: vec![Rule {
+            id: "regex-num-value".into(),
+            description: "d".into(),
+            level: "low".into(),
+            enabled: true,
+            source: "subject".into(),
+            conditions: vec![cond("text", "regex", serde_json::json!(42))],
+            min_count: 1,
+        }],
+    };
+    let r = assess(&dir, &rules);
+    assert_eq!(r.conclusion, Conclusion::Safe, "gaps={:?}", r.gaps);
+    assert_eq!(r.rules_loaded, 1);
+    assert!(r.matched_rules.is_empty());
+}
+
+#[test]
+fn assess_evidence_over_400_bytes_is_truncated_at_char_boundary() {
+    let tmp = TempDir::new().unwrap();
+    let dir = tmp.path().join("report");
+    write_healthy_report(&dir, "prompt");
+    // 超长 subject（含多字节字符）→ 序列化 >400 字节 → 截断 + "…"。
+    let long_text = format!("{}{}", "观察执行内容。".repeat(60), "END");
+    std::fs::write(dir.join("subject.txt"), &long_text).unwrap();
+    let rules = RulesFile {
+        rules: vec![Rule {
+            id: "long-subject-hit".into(),
+            description: "d".into(),
+            level: "low".into(),
+            enabled: true,
+            source: "subject".into(),
+            conditions: vec![cond("text", "contains", serde_json::json!("END"))],
+            min_count: 1,
+        }],
+    };
+    let r = assess(&dir, &rules);
+    assert_eq!(r.conclusion, Conclusion::Risk);
+    let m = r.matched_rules.iter().find(|m| m.id == "long-subject-hit").unwrap();
+    assert_eq!(m.evidence.len(), 1);
+    let ev = &m.evidence[0];
+    assert!(ev.ends_with('\u{2026}'), "evidence must carry the truncation marker");
+    assert!(ev.len() < 410, "evidence must be truncated, len={}", ev.len());
+}

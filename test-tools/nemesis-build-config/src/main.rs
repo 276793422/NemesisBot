@@ -162,9 +162,11 @@ fn run_init(root: &Path) -> Result<()> {
     Ok(())
 }
 
-fn run_check(root: &Path) -> Result<()> {
-    let scan = cargo_scan::scan_file(&nemesisbot_cargo(root))?;
-    let manifest = FeatureManifest::load(&manifest_path(root))?;
+/// Compare the Cargo.toml scan against the manifest; returns human-readable
+/// problem lines. S12b batch: extracted verbatim from `run_check` so the
+/// STALE/MISSING classification is testable without hitting the
+/// `std::process::exit(1)` that `run_check` performs on nonzero results.
+fn check_problems(scan: &cargo_scan::ScanResult, manifest: &FeatureManifest) -> Vec<String> {
     let cargo_names: std::collections::BTreeSet<String> = scan.names().into_iter().collect();
     let manifest_bool_ids: std::collections::BTreeSet<String> = manifest
         .features
@@ -173,28 +175,37 @@ fn run_check(root: &Path) -> Result<()> {
         .map(|f| f.id.clone())
         .collect();
 
-    let mut problems = 0;
+    let mut problems = Vec::new();
     for id in manifest_bool_ids.iter() {
         if !cargo_names.contains(id) {
-            println!("STALE: manifest has `{id}` but nemesisbot/Cargo.toml does not");
-            problems += 1;
+            problems.push(format!("STALE: manifest has `{id}` but nemesisbot/Cargo.toml does not"));
         }
     }
     for id in cargo_names.iter() {
         if !manifest_bool_ids.contains(id) {
-            println!(
+            problems.push(format!(
                 "MISSING: nemesisbot/Cargo.toml has `{id}` but manifest does not (run `init`)"
-            );
-            problems += 1;
+            ));
         }
     }
-    if problems == 0 {
+    problems
+}
+
+fn run_check(root: &Path) -> Result<()> {
+    let scan = cargo_scan::scan_file(&nemesisbot_cargo(root))?;
+    let manifest = FeatureManifest::load(&manifest_path(root))?;
+
+    let problems = check_problems(&scan, &manifest);
+    if problems.is_empty() {
         println!(
             "✓ manifest in sync with nemesisbot/Cargo.toml ({} features)",
-            cargo_names.len()
+            scan.names().len()
         );
         Ok(())
     } else {
+        for p in &problems {
+            println!("{p}");
+        }
         std::process::exit(1);
     }
 }
@@ -305,11 +316,12 @@ fn run_tui(root: &Path) -> Result<()> {
     Ok(())
 }
 
-fn main() -> Result<()> {
-    let cli = Cli::parse();
-    let root = cli.root.canonicalize().unwrap_or_else(|_| cli.root.clone());
-    match cli.cmd {
-        None => run_tui(&root),
+/// Subcommand → command dispatch (S12b batch: extracted from `main` so each
+/// arm is reachable from unit tests without re-parsing argv; `None` = no
+/// subcommand → TUI).
+fn dispatch(cmd: Option<Cmd>, root: &Path) -> Result<()> {
+    match cmd {
+        None => run_tui(root),
         Some(Cmd::Init) => run_init(&root),
         Some(Cmd::Check) => run_check(&root),
         Some(Cmd::List) => run_list(&root),
@@ -323,3 +335,14 @@ fn main() -> Result<()> {
         Some(Cmd::Load { name }) => run_load(&root, &name),
     }
 }
+
+fn main() -> Result<()> {
+    let cli = Cli::parse();
+    let root = cli.root.canonicalize().unwrap_or_else(|_| cli.root.clone());
+    dispatch(cli.cmd, &root)
+}
+
+#[cfg(test)]
+mod w5d_tests;
+#[cfg(test)]
+mod s12b_tests;

@@ -460,3 +460,75 @@ async fn test_read_cycles_preserves_order() {
     assert_eq!(cycles[1].id, "second");
     assert_eq!(cycles[2].id, "third");
 }
+
+#[tokio::test]
+async fn test_read_cycles_skips_stray_files_and_notes() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = CycleStore::from_base(dir.path());
+    store.append(&make_cycle("real")).await.unwrap();
+
+    // Stray FILE at the base dir level (not a month directory) must be skipped.
+    tokio::fs::write(dir.path().join("stray.txt"), "not a dir")
+        .await
+        .unwrap();
+    // Non-.jsonl file inside the month directory must be skipped.
+    let month_dir = dir
+        .path()
+        .read_dir()
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .find(|e| e.path().is_dir())
+        .unwrap()
+        .path();
+    tokio::fs::write(month_dir.join("notes.txt"), "notes")
+        .await
+        .unwrap();
+    // Blank and malformed JSONL lines are skipped.
+    let jsonl = month_dir
+        .read_dir()
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .find(|e| e.file_name().to_string_lossy().ends_with(".jsonl"))
+        .unwrap()
+        .path();
+    // 追加（不是覆盖）脏行——真 cycle 的 jsonl 行必须保留，才验证 skip 逻辑。
+    // tokio::fs::write 会整文件替换，之前写成 write 导致真 cycle 被抹掉、读回 0 条。
+    let mut f = tokio::fs::OpenOptions::new()
+        .append(true)
+        .open(&jsonl)
+        .await
+        .unwrap();
+    tokio::io::AsyncWriteExt::write_all(&mut f, b"\n   \nnot-json\n")
+        .await
+        .unwrap();
+
+    let cycles = store.read_cycles(None).await.unwrap();
+    assert_eq!(cycles.len(), 1);
+    assert_eq!(cycles[0].id, "real");
+}
+
+#[tokio::test]
+async fn test_cleanup_skips_non_jsonl_and_stray_entries() {
+    let dir = tempfile::tempdir().unwrap();
+
+    // An old dated jsonl file (2020) plus non-jsonl files at both levels.
+    let old_month = dir.path().join("202001");
+    tokio::fs::create_dir_all(&old_month).await.unwrap();
+    tokio::fs::write(old_month.join("20200101.jsonl"), "{}\n")
+        .await
+        .unwrap();
+    tokio::fs::write(old_month.join("notes.txt"), "notes")
+        .await
+        .unwrap();
+    tokio::fs::write(dir.path().join("stray.bin"), "x")
+        .await
+        .unwrap();
+
+    let store = CycleStore::from_base(dir.path());
+    let removed = store.cleanup(1).await.unwrap();
+    // Only the old .jsonl file is removed; notes.txt and the stray file stay.
+    assert_eq!(removed, 1);
+    assert!(!old_month.join("20200101.jsonl").exists());
+    assert!(old_month.join("notes.txt").exists());
+    assert!(dir.path().join("stray.bin").exists());
+}

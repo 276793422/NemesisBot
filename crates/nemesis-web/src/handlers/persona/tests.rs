@@ -475,3 +475,266 @@ fn convert_agent_md_empty_tools_when_no_tools_section() {
     let files = convert_agent_md(md);
     assert!(files.tools_extra.is_empty());
 }
+
+// ============================================================
+// Phase 3 覆盖率（2026-08-25）：shop.* 快乐路径离线覆盖。
+// GITHUB_API 是硬编码 const（persona.rs:25，无注入点），但三级缓存
+// （TREE_CACHE / FM_CACHE / CONTENT_CACHE）就是天然注入点——预填缓存后
+// fetch_tree 走 L1 命中臂、fetch_agent_content 走 L3 命中臂，全程无网络。
+// 本文件是 persona 的子模块，可直接访问这些私有 static。
+// ============================================================
+
+use crate::api_handlers::AppState;
+use crate::events::EventHub;
+use crate::session::SessionManager;
+use crate::ws_router::RequestContext;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicUsize};
+use std::time::Instant;
+
+fn shop_ctx(dir: &tempfile::TempDir) -> RequestContext {
+    let ws = dir.path().to_string_lossy().to_string();
+    let state = Arc::new(AppState {
+        auth_token: String::new(),
+        session_count: Arc::new(AtomicUsize::new(0)),
+        workspace: Some(ws.clone()),
+        home: Some(ws.clone()),
+        version: "test".to_string(),
+        start_time: Instant::now(),
+        model_name: Arc::new(parking_lot::Mutex::new("m".to_string())),
+        model_base: Arc::new(parking_lot::Mutex::new(String::new())),
+        model_has_key: Arc::new(AtomicBool::new(false)),
+        event_hub: Arc::new(EventHub::new()),
+        running: Arc::new(AtomicBool::new(true)),
+        session_manager: Arc::new(SessionManager::with_default_timeout()),
+        inbound_tx: None,
+        streaming_provider: None,
+        ws_router: None,
+        agent_service: None,
+        data_store: None,
+        memory_manager: None,
+        forge: None,
+        agent_loop: Arc::new(parking_lot::RwLock::new(None)),
+        cluster: None,
+        cluster_service: None,
+        cluster_log_dir: None,
+        workflow_engine: None,
+        chat_secret_store: Arc::new(nemesis_workflow::chat_secrets::ChatSecretStore::in_memory()),
+        webhook_rate_limiter: Arc::new(crate::handlers::workflow::WebhookRateLimiter::new()),
+        internal_cmd_tx: None,
+        estop: None,
+        cron: None,
+    });
+    RequestContext {
+        session_id: "s".to_string(),
+        chat_id: "c".to_string(),
+        workspace: Some(ws),
+        home: None,
+        state,
+        auth_method: crate::session::AuthMethod::default(),
+    }
+}
+
+/// 预填 L1 树缓存 + L2 frontmatter 缓存（browse/search 只依赖这两级）。
+fn seed_tree_and_fm() {
+    *TREE_CACHE.lock().unwrap() = Some(vec![
+        ("engineering/rust-dev.md".to_string(), 100),
+        ("security/pentest-pro.md".to_string(), 200),
+    ]);
+    let mut fm = FM_CACHE.lock().unwrap();
+    fm.insert(
+        "rust-dev".to_string(),
+        Frontmatter {
+            name: "Rusty".to_string(),
+            emoji: "🦀".to_string(),
+            description: "Rust expert".to_string(),
+            vibe: String::new(),
+            color: String::new(),
+            tools: String::new(),
+            raw_yaml: String::new(),
+        },
+    );
+}
+
+const AGENT_MD_SAMPLE: &str = "---\nname: Code Reviewer\ndescription: Expert reviewer\nemoji: 👁️\nvibe: Reviews like a mentor.\n---\n\n# Code Reviewer Agent\n\n## 🧠 Your Identity & Memory\n- Role: Code review specialist\n\n## 🔧 Critical Rules\n1. Be specific\n";
+
+/// shop.* 测试串行锁：TREE_CACHE/FM_CACHE/CONTENT_CACHE 是进程级全局，
+/// shop.refresh（persona_extra/persona_more 里）和本文件的种子+断言互踩
+/// （首闸门 3 失败的根因：并发 invalidate 清掉了别家种子 → fetch_tree 落到
+/// 真网络取回 270 条真数据）。凡触碰这三级缓存的测试都必须先拿这把锁。
+pub(crate) static SHOP_TEST_LOCK: std::sync::LazyLock<tokio::sync::Mutex<()>> =
+    std::sync::LazyLock::new(|| tokio::sync::Mutex::new(()));
+
+#[tokio::test]
+async fn shop_browse_offline_via_seeded_caches() {
+    let _shop_guard = SHOP_TEST_LOCK.lock().await;
+    let dir = tempfile::tempdir().unwrap();
+    seed_tree_and_fm();
+    // 预装一个 persona → installed=true 臂。注意 installed 探测路径是
+    // personas/<id>（id=文件名 stem，不含目录），不是仓库的分类子路径。
+    std::fs::create_dir_all(dir.path().join("personas/pentest-pro")).unwrap();
+
+    let h = PersonaHandler::new();
+    let ctx = shop_ctx(&dir);
+    let out = h
+        .handle_cmd("shop.browse", None, &ctx)
+        .await
+        .unwrap()
+        .unwrap();
+    let items = out["items"].as_array().unwrap();
+    assert_eq!(items.len(), 2);
+    let rusty = items.iter().find(|i| i["id"] == "rust-dev").unwrap();
+    // FM_CACHE 覆盖 parse_agent_from_path 的默认名/emoji。
+    assert_eq!(rusty["name"], "Rusty");
+    assert_eq!(rusty["emoji"], "🦀");
+    assert_eq!(rusty["division"], "开发");
+    assert_eq!(rusty["installed"], false);
+    let pentest = items.iter().find(|i| i["id"] == "pentest-pro").unwrap();
+    assert_eq!(pentest["installed"], true);
+
+    // division 过滤臂：只要安全类。
+    let out = h
+        .handle_cmd(
+            "shop.browse",
+            Some(serde_json::json!({"division": "安全"})),
+            &ctx,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    let items = out["items"].as_array().unwrap();
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0]["id"], "pentest-pro");
+    invalidate_cache();
+}
+
+#[tokio::test]
+async fn shop_search_offline_via_seeded_caches() {
+    let _shop_guard = SHOP_TEST_LOCK.lock().await;
+    let dir = tempfile::tempdir().unwrap();
+    seed_tree_and_fm();
+    let h = PersonaHandler::new();
+    let ctx = shop_ctx(&dir);
+
+    // 命中：frontmatter 名 "Rusty" 进 haystack。
+    let out = h
+        .handle_cmd(
+            "shop.search",
+            Some(serde_json::json!({"query": "rusty"})),
+            &ctx,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(out["items"].as_array().unwrap().len(), 1);
+
+    // 不命中。
+    let out = h
+        .handle_cmd(
+            "shop.search",
+            Some(serde_json::json!({"query": "zzzqqq"})),
+            &ctx,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(out["items"].as_array().unwrap().len(), 0);
+
+    // 空 query = browse 全量。
+    let out = h
+        .handle_cmd("shop.search", Some(serde_json::json!({"query": ""})), &ctx)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(out["items"].as_array().unwrap().len(), 2);
+    invalidate_cache();
+}
+
+#[tokio::test]
+async fn shop_preview_offline_via_content_cache() {
+    let _shop_guard = SHOP_TEST_LOCK.lock().await;
+    let dir = tempfile::tempdir().unwrap();
+    // L3 内容缓存命中 → fetch_agent_content 不发网络请求。
+    CONTENT_CACHE
+        .lock()
+        .unwrap()
+        .insert("code-reviewer".to_string(), AGENT_MD_SAMPLE.to_string());
+
+    let h = PersonaHandler::new();
+    let ctx = shop_ctx(&dir);
+    let out = h
+        .handle_cmd(
+            "shop.preview",
+            Some(serde_json::json!({"id": "code-reviewer"})),
+            &ctx,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(out["id"], "code-reviewer");
+    assert_eq!(out["name"], "Code Reviewer", "frontmatter 名透传");
+    assert_eq!(out["emoji"], "👁️");
+    assert_eq!(out["installed"], false);
+    assert_eq!(out["raw"], AGENT_MD_SAMPLE);
+    let converted = &out["converted"];
+    assert!(converted["IDENTITY.md"]
+        .as_str()
+        .unwrap()
+        .contains("Code Reviewer"));
+    assert!(converted["SOUL.md"].as_str().unwrap().contains("Critical Rules"));
+    assert!(!converted["AGENT.md"].as_str().unwrap().is_empty());
+    assert!(converted["PERSONA.json"]
+        .as_str()
+        .unwrap()
+        .contains("\"name\""));
+    invalidate_cache();
+}
+
+#[tokio::test]
+async fn shop_download_offline_via_content_cache() {
+    let _shop_guard = SHOP_TEST_LOCK.lock().await;
+    let dir = tempfile::tempdir().unwrap();
+    CONTENT_CACHE
+        .lock()
+        .unwrap()
+        .insert("code-reviewer".to_string(), AGENT_MD_SAMPLE.to_string());
+
+    let h = PersonaHandler::new();
+    let ctx = shop_ctx(&dir);
+    let out = h
+        .handle_cmd(
+            "shop.download",
+            Some(serde_json::json!({"id": "code-reviewer"})),
+            &ctx,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(out["downloaded"], true);
+    assert_eq!(out["name"], "Code Reviewer");
+    let pdir = dir.path().join("personas/code-reviewer");
+    for f in [
+        "PERSONA.json",
+        "IDENTITY.md",
+        "SOUL.md",
+        "AGENT.md",
+        "TOOLS.md",
+        "HEARTBEAT.md",
+    ] {
+        assert!(pdir.join(f).exists(), "download 必须落盘 {f}");
+    }
+    // ensure_initialized 副作用：default persona + _active.json 就位。
+    assert!(dir.path().join("personas/_active.json").exists());
+
+    // 重复下载 → already installed。
+    let err = h
+        .handle_cmd(
+            "shop.download",
+            Some(serde_json::json!({"id": "code-reviewer"})),
+            &ctx,
+        )
+        .await
+        .unwrap_err();
+    assert!(err.contains("already installed"), "{err}");
+    invalidate_cache();
+}

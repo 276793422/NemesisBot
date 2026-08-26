@@ -902,3 +902,175 @@ fn log_methods_without_session_are_silent_noop() {
 
     assert!(logger.session_dir().is_none());
 }
+
+// ---------------------------------------------------------------------------
+// I3 (U9): request/chat-log consistency anchor — M8 补测
+// ---------------------------------------------------------------------------
+
+/// The invariant: every persisted chat-log role sequence must be a
+/// SUBSEQUENCE of the request roles (persistence cannot invent messages
+/// the provider never saw; the request may carry extra injected context).
+#[test]
+fn consistency_identical_and_injected_extra_pass() {
+    let req = ["system", "user", "assistant", "user"];
+    let chat = ["system", "user", "assistant", "user"];
+    assert!(check_request_log_consistency(&req, &chat).is_ok());
+
+    // Request carries injected snapshot/nudge messages the log never saw.
+    let req2 = ["system", "user", "system", "user", "assistant", "user"];
+    let chat2 = ["system", "user", "assistant", "user"];
+    assert!(check_request_log_consistency(&req2, &chat2).is_ok());
+
+    // Empty chat log is vacuously consistent.
+    assert!(check_request_log_consistency(&req, &[]).is_ok());
+}
+
+#[test]
+fn consistency_missing_role_and_order_violation_fail_with_role_name() {
+    // Role present in the log but absent from the request.
+    let err = check_request_log_consistency(&["user", "assistant"], &["user", "assistant", "user"])
+        .unwrap_err();
+    assert!(err.contains("'user'"), "{err}");
+    assert!(err.contains("not present"), "{err}");
+
+    // Both roles exist but in the wrong order — not a subsequence.
+    let err = check_request_log_consistency(&["assistant", "user"], &["user", "assistant"])
+        .unwrap_err();
+    assert!(err.contains("'assistant'"), "{err}");
+}
+
+// --- W3a: create_session 失败静默、disabled 的 raw 三方法、truncated args、
+// cached tokens 上报 ---
+
+#[test]
+fn create_session_base_dir_failure_is_silent() {
+    // base_dir 的父路径是一个文件 → create_dir_all 失败 → warn + Ok(())。
+    let tmp = TempDir::new().unwrap();
+    let blocker = tmp.path().join("blocker");
+    std::fs::write(&blocker, b"x").unwrap();
+    let logger = RequestLogger::new_with_paths(
+        test_config(),
+        blocker.join("logs"),
+        None,
+    );
+    logger.create_session().expect("silent failure returns Ok");
+    assert!(logger.session_dir().is_none());
+}
+
+#[test]
+fn create_session_session_dir_failure_is_silent() {
+    // base_dir 可建，但 session 子目录名被文件占位（override 名确定性可预置）。
+    let tmp = TempDir::new().unwrap();
+    let base = tmp.path().join("logs");
+    std::fs::create_dir_all(&base).unwrap();
+    std::fs::write(base.join("blocked_name"), b"x").unwrap();
+    let logger = RequestLogger::new_with_paths(
+        test_config(),
+        base,
+        Some("blocked/name".to_string()), // sanitize 后即 blocked_name
+    );
+    logger.create_session().expect("silent failure returns Ok");
+    assert!(logger.session_dir().is_none());
+}
+
+#[test]
+fn disabled_raw_logging_methods_noop() {
+    let config = LoggingConfig {
+        enabled: false,
+        detail_level: DetailLevel::Full,
+        log_dir: String::new(),
+        save_raw: false,
+    };
+    let tmp = TempDir::new().unwrap();
+    let logger = RequestLogger::new(config, tmp.path());
+
+    // 三个 raw 方法在 disabled 下都必须早退（不建文件、不推进 index）。
+    logger.log_raw_request(
+        &serde_json::json!({"messages": []}),
+        Local::now(),
+        1,
+    );
+    logger.log_raw_request_envelope(&serde_json::json!({"round": 1}));
+    logger.log_raw_response("{\"ok\":true}", Local::now(), 1, 5);
+
+    assert!(logger.session_dir().is_none());
+    // base_dir 为空串（disabled 构造），什么都没写。
+    assert!(std::fs::read_dir(tmp.path()).unwrap().count() <= 1);
+}
+
+#[test]
+fn truncated_args_preview_in_request_md() {
+    // Truncated 档 + tool_calls 参数超限 → 参数预览带 "..." 截断。
+    let config = LoggingConfig {
+        enabled: true,
+        detail_level: DetailLevel::Truncated,
+        log_dir: "logs/llm".to_string(),
+        save_raw: false,
+    };
+    let tmp = TempDir::new().unwrap();
+    let logger = RequestLogger::new(config, tmp.path());
+    logger.create_session().unwrap();
+
+    let long_args = "a".repeat(300);
+    use crate::types::ToolCallInfo;
+    let mut info = LLMRequestInfo::default();
+    info.messages = vec![crate::r#loop::LlmMessage {
+        role: "assistant".to_string(),
+        content: "calling".to_string(),
+        tool_calls: Some(vec![ToolCallInfo {
+            id: "tc1".to_string(),
+            name: "write_file".to_string(),
+            arguments: long_args,
+        }]),
+        tool_call_id: None,
+        reasoning_content: None,
+    }];
+    info.messages_count = 1;
+    logger.log_llm_request(&info);
+
+    let dir = logger.session_dir().expect("session created");
+    let md = std::fs::read_to_string(dir.join("00.AI.Request.md")).unwrap();
+    assert!(md.contains("ToolCall: `write_file`"), "tool call listed");
+    assert!(md.contains("..."), "args preview truncated");
+    assert!(
+        !md.contains(&"a".repeat(250)),
+        "full 300-char args must not appear"
+    );
+}
+
+#[test]
+fn cached_tokens_reported_in_response_md() {
+    let tmp = TempDir::new().unwrap();
+    let logger = RequestLogger::new(test_config(), tmp.path());
+    logger.create_session().unwrap();
+
+    let mk = |cached: u32, prompt: u32| LLMResponseInfo {
+        round: 1,
+        timestamp: Local::now(),
+        duration_ms: 10,
+        content: "ans".to_string(),
+        tool_calls_count: 0,
+        finish_reason: "stop".to_string(),
+        tool_calls: Vec::new(),
+        usage: UsageInfo {
+            prompt_tokens: prompt,
+            completion_tokens: 5,
+            total_tokens: prompt + 5,
+            cached_tokens: cached,
+        },
+    };
+
+    logger.log_llm_response(&mk(50, 100)); // 50% cache hit
+    let dir = logger.session_dir().unwrap();
+    let md = std::fs::read_to_string(dir.join("00.AI.Response.md")).unwrap();
+    assert!(md.contains("Cached Tokens"), "cached row present: {md}");
+    assert!(md.contains("50"), "cache pct");
+
+    // prompt_tokens == 0 → 百分比回落 0（else 臂）。
+    let logger2 = RequestLogger::new(test_config(), tmp.path());
+    logger2.create_session().unwrap();
+    logger2.log_llm_response(&mk(10, 0));
+    let dir2 = logger2.session_dir().unwrap();
+    let md2 = std::fs::read_to_string(dir2.join("00.AI.Response.md")).unwrap();
+    assert!(md2.contains("Cached Tokens"));
+}

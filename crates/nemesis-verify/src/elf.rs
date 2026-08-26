@@ -171,3 +171,6 @@ impl ExecutableCodec for ElfCodec {
         Ok(Sha256::digest(&content[..l]).into())
     }
 }
+
+#[cfg(test)]
+mod tests;

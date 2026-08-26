@@ -1,0 +1,56 @@
+//! S9 覆盖率批次（remote_executor_tool.rs stdio 传输错误臂）。
+//! - 337-338：spawn 失败（exe 路径不存在）。
+//! - 346-360：超时 / 读失败 / 立即退出无响应 / 非 JSON 首行 parse 失败
+//!   （cmd 无参 + 管道 stdin：收 EOF 后退出或先吐 banner，四个错误臂中
+//!   确定性落入其中之一；具体落点取决于该机器 cmd 的 banner 行为）。
+//! 其余基线缺口（394-451 命名管道传输）由 bin 侧 executor L2.2 集成测试
+//! 覆盖（nemesisbot，见 sandbox L2 记忆），lib 单测无法伪造连管子进程
+//! → 环境依赖组。
+
+use super::*;
+use std::sync::Arc;
+use std::time::Duration;
+
+fn req_ctx() -> RequestContext {
+    RequestContext::new("web", "test-chat", "test-session", "/ws")
+}
+
+#[tokio::test]
+async fn stdio_spawn_failure_surfaces_error() {
+    let ch = ExecutorChannel::new(
+        std::path::PathBuf::from("Z:/nemesis_s9/no_such_executor.exe"),
+        "/ws".into(),
+        Arc::new(|| false),
+    )
+    .with_timeout(Duration::from_secs(5));
+    let err = ch
+        .spawn_and_call("exec", "{}", &req_ctx())
+        .await
+        .expect_err("bogus exe must fail to spawn");
+    assert!(
+        err.contains("failed to spawn executor child"),
+        "err: {err}"
+    );
+}
+
+#[tokio::test]
+async fn stdio_cmd_child_lands_in_an_error_arm() {
+    let cmd = std::env::var("ComSpec").unwrap_or_else(|_| "cmd.exe".to_string());
+    let ch = ExecutorChannel::new(
+        std::path::PathBuf::from(&cmd),
+        "/ws".into(),
+        Arc::new(|| false),
+    )
+    .with_timeout(Duration::from_secs(8));
+    let err = ch
+        .spawn_and_call("exec", "{}", &req_ctx())
+        .await
+        .expect_err("cmd.exe cannot answer the protocol");
+    assert!(
+        err.contains("timed out")
+            || err.contains("exited without a response")
+            || err.contains("parse executor response")
+            || err.contains("read executor response"),
+        "err: {err}"
+    );
+}

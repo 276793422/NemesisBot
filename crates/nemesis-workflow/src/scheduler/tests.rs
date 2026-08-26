@@ -979,3 +979,483 @@ async fn schedule_resume_skip_set_independent_of_conditional_edges() {
     assert!(ran.contains(&"c".to_string()));
     assert!(!ran.contains(&"a".to_string()));
 }
+
+// =========================================================================
+// W4a coverage batch — scheduler.rs gap closure
+// =========================================================================
+
+/// Edge pointing at a node that isn't in the definition: the unknown target
+/// ends up in in_degree but not node_ids, so the visited-count check flags
+/// it as a cycle (scheduler.rs ~50 + ~84).
+#[test]
+fn w4a_topological_sort_edge_to_unknown_node() {
+    let nodes = vec![make_node("a", vec![])];
+    let edges = vec![Edge {
+        from_node: "a".to_string(),
+        to_node: "ghost".to_string(),
+        condition: None,
+    }];
+    let result = topological_sort(&nodes, &edges);
+    let err = result.unwrap_err();
+    assert!(err.contains("cycle"), "unknown edge target must error, got {}", err);
+}
+
+/// schedule_resume_with_hook invokes the hook after every level
+/// (scheduler.rs ~235-254).
+#[tokio::test]
+async fn w4a_schedule_resume_with_hook_invoked_per_level() {
+    struct CountingHook {
+        levels_seen: Arc<parking_lot::Mutex<Vec<usize>>>,
+    }
+    #[async_trait]
+    impl ProgressHook for CountingHook {
+        async fn on_level_completed(&self, wf_ctx: &WorkflowContext) {
+            let n = wf_ctx.get_all_node_results().len();
+            self.levels_seen.lock().push(n);
+        }
+    }
+
+    let calls = Arc::new(parking_lot::Mutex::new(Vec::new()));
+    let registry = NodeExecutorRegistry::new();
+    registry.register(
+        "rec",
+        Arc::new(RecordingExecutor {
+            calls: calls.clone(),
+        }),
+    );
+    let nodes = vec![
+        make_typed_node("a", "rec", vec![]),
+        make_typed_node("b", "rec", vec!["a"]),
+    ];
+    let edges: Vec<Edge> = vec![];
+    let mut wf_ctx = WorkflowContext::new(HashMap::new());
+    let completed: HashSet<String> = HashSet::new();
+    let hook = CountingHook {
+        levels_seen: Arc::new(parking_lot::Mutex::new(Vec::new())),
+    };
+
+    let outcome = schedule_resume_with_hook(
+        &nodes,
+        &edges,
+        &registry,
+        &mut wf_ctx,
+        &completed,
+        CancellationToken::new(),
+        &hook,
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(outcome, ScheduleOutcome::Completed);
+    let levels = hook.levels_seen.lock().clone();
+    assert_eq!(levels, vec![1, 2], "hook after each level with growing result set");
+    assert_eq!(calls.lock().len(), 2);
+}
+
+/// A conditional edge evaluating false filters the node out of the level
+/// (scheduler.rs ~277-301).
+#[tokio::test]
+async fn w4a_schedule_conditional_edge_filters_node() {
+    let calls = Arc::new(parking_lot::Mutex::new(Vec::new()));
+    let registry = NodeExecutorRegistry::new();
+    registry.register(
+        "rec",
+        Arc::new(RecordingExecutor {
+            calls: calls.clone(),
+        }),
+    );
+    let nodes = vec![
+        make_typed_node("a", "rec", vec![]),
+        make_typed_node("b", "rec", vec![]),
+    ];
+    let edges = vec![Edge {
+        from_node: "a".to_string(),
+        to_node: "b".to_string(),
+        condition: Some("false".to_string()),
+    }];
+    let mut wf_ctx = WorkflowContext::new(HashMap::new());
+
+    let outcome = schedule(&nodes, &edges, &registry, &mut wf_ctx, CancellationToken::new()).await;
+    assert_eq!(outcome.unwrap(), ScheduleOutcome::Completed);
+    let ran = calls.lock().clone();
+    assert!(ran.contains(&"a".to_string()));
+    assert!(!ran.contains(&"b".to_string()), "false condition must filter b, ran={:?}", ran);
+    assert!(wf_ctx.get_node_result("b").is_none());
+}
+
+/// A pre-cancelled token makes schedule return Cancelled immediately
+/// without spawning any node (scheduler.rs ~288-291).
+#[tokio::test]
+async fn w4a_schedule_precancelled_returns_cancelled() {
+    let calls = Arc::new(parking_lot::Mutex::new(Vec::new()));
+    let registry = NodeExecutorRegistry::new();
+    registry.register(
+        "rec",
+        Arc::new(RecordingExecutor {
+            calls: calls.clone(),
+        }),
+    );
+    let nodes = vec![make_typed_node("a", "rec", vec![])];
+    let edges: Vec<Edge> = vec![];
+    let mut wf_ctx = WorkflowContext::new(HashMap::new());
+
+    let cancel = CancellationToken::new();
+    cancel.cancel();
+    let outcome = schedule(&nodes, &edges, &registry, &mut wf_ctx, cancel).await;
+    assert_eq!(outcome.unwrap(), ScheduleOutcome::Cancelled);
+    assert!(calls.lock().is_empty());
+}
+
+/// Executor returning Err propagates as a schedule error
+/// (scheduler.rs ~376-378 + collection arm ~417-419).
+#[tokio::test]
+async fn w4a_schedule_executor_error_fails_schedule() {
+    struct ErrExecutor;
+    #[async_trait]
+    impl NodeExecutor for ErrExecutor {
+        async fn execute(
+            &self,
+            _node: &NodeDef,
+            _ctx: &HashMap<String, serde_json::Value>,
+            _wf_ctx: &WorkflowContext,
+        ) -> Result<NodeResult, String> {
+            Err("kaput".to_string())
+        }
+    }
+
+    let registry = NodeExecutorRegistry::new();
+    registry.register("kaput", Arc::new(ErrExecutor));
+    let nodes = vec![make_typed_node("a", "kaput", vec![])];
+    let mut wf_ctx = WorkflowContext::new(HashMap::new());
+
+    let err = schedule(&nodes, &[], &registry, &mut wf_ctx, CancellationToken::new())
+        .await
+        .unwrap_err();
+    assert!(err.contains("kaput"), "got {}", err);
+    assert!(err.contains("execution failed"), "got {}", err);
+}
+
+/// Flaky executor: first attempt returns a Failed NodeResult, second
+/// succeeds — retry_count=1 exercises the backoff path and the
+/// Ok(Failed-result) collection arm (scheduler.rs ~371-384).
+#[tokio::test]
+async fn w4a_schedule_retry_backoff_fail_then_succeed() {
+    struct FlakyExecutor {
+        attempts: Arc<AtomicUsize>,
+    }
+    #[async_trait]
+    impl NodeExecutor for FlakyExecutor {
+        async fn execute(
+            &self,
+            node: &NodeDef,
+            _ctx: &HashMap<String, serde_json::Value>,
+            _wf_ctx: &WorkflowContext,
+        ) -> Result<NodeResult, String> {
+            let n = self.attempts.fetch_add(1, Ordering::SeqCst);
+            let failed = n == 0;
+            Ok(NodeResult {
+                node_id: node.id.clone(),
+                output: serde_json::json!({"attempt": n}),
+                error: if failed { Some("first try failed".to_string()) } else { None },
+                state: if failed { ExecutionState::Failed } else { ExecutionState::Completed },
+                started_at: chrono::Local::now(),
+                ended_at: chrono::Local::now(),
+                metadata: HashMap::new(),
+            })
+        }
+    }
+
+    let attempts = Arc::new(AtomicUsize::new(0));
+    let registry = NodeExecutorRegistry::new();
+    registry.register("flaky", Arc::new(FlakyExecutor { attempts: attempts.clone() }));
+
+    let mut node = make_typed_node("a", "flaky", vec![]);
+    node.retry_count = 1;
+    let mut wf_ctx = WorkflowContext::new(HashMap::new());
+
+    let start = std::time::Instant::now();
+    let outcome = schedule(&[node], &[], &registry, &mut wf_ctx, CancellationToken::new()).await;
+    assert_eq!(outcome.unwrap(), ScheduleOutcome::Completed);
+    assert_eq!(attempts.load(Ordering::SeqCst), 2, "retry must re-execute");
+    assert!(start.elapsed() >= Duration::from_millis(400), "backoff before retry");
+    assert_eq!(wf_ctx.get_node_result("a").unwrap().state, ExecutionState::Completed);
+}
+
+/// Cancelling during the retry backoff window yields Cancelled, not an
+/// error (scheduler.rs ~386-387 + collection arm ~420-424).
+#[tokio::test]
+async fn w4a_schedule_cancel_during_backoff_returns_cancelled() {
+    struct AlwaysFailedExecutor {
+        attempts: Arc<AtomicUsize>,
+    }
+    #[async_trait]
+    impl NodeExecutor for AlwaysFailedExecutor {
+        async fn execute(
+            &self,
+            node: &NodeDef,
+            _ctx: &HashMap<String, serde_json::Value>,
+            _wf_ctx: &WorkflowContext,
+        ) -> Result<NodeResult, String> {
+            self.attempts.fetch_add(1, Ordering::SeqCst);
+            Ok(NodeResult {
+                node_id: node.id.clone(),
+                output: serde_json::Value::Null,
+                error: Some("always fails".to_string()),
+                state: ExecutionState::Failed,
+                started_at: chrono::Local::now(),
+                ended_at: chrono::Local::now(),
+                metadata: HashMap::new(),
+            })
+        }
+    }
+
+    let attempts = Arc::new(AtomicUsize::new(0));
+    let registry = NodeExecutorRegistry::new();
+    registry.register(
+        "alwaysbad",
+        Arc::new(AlwaysFailedExecutor {
+            attempts: attempts.clone(),
+        }),
+    );
+
+    let mut node = make_typed_node("a", "alwaysbad", vec![]);
+    node.retry_count = 2;
+    let mut wf_ctx = WorkflowContext::new(HashMap::new());
+
+    let cancel = CancellationToken::new();
+    let timed = cancel.clone();
+    tokio::spawn(async move {
+        // First failure is immediate; cancel inside the first 500ms backoff.
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        timed.cancel();
+    });
+
+    let outcome = schedule(&[node], &[], &registry, &mut wf_ctx, cancel).await;
+    assert_eq!(outcome.unwrap(), ScheduleOutcome::Cancelled);
+    assert_eq!(
+        attempts.load(Ordering::SeqCst),
+        1,
+        "cancel lands in backoff, no second attempt"
+    );
+}
+
+/// Per-node timeout: a node exceeding its timeout is failed with a
+/// "timed out" error instead of blocking the schedule (scheduler.rs ~346-355).
+#[tokio::test]
+async fn w4a_schedule_node_timeout_fails_node() {
+    struct Sleep30Executor;
+    #[async_trait]
+    impl NodeExecutor for Sleep30Executor {
+        async fn execute(
+            &self,
+            node: &NodeDef,
+            _ctx: &HashMap<String, serde_json::Value>,
+            _wf_ctx: &WorkflowContext,
+        ) -> Result<NodeResult, String> {
+            tokio::time::sleep(Duration::from_secs(30)).await;
+            Ok(NodeResult {
+                node_id: node.id.clone(),
+                output: serde_json::Value::Null,
+                error: None,
+                state: ExecutionState::Completed,
+                started_at: chrono::Local::now(),
+                ended_at: chrono::Local::now(),
+                metadata: HashMap::new(),
+            })
+        }
+    }
+
+    let registry = NodeExecutorRegistry::new();
+    registry.register("sleep30", Arc::new(Sleep30Executor));
+
+    let mut node = make_typed_node("a", "sleep30", vec![]);
+    node.timeout = Some("1".to_string()); // plain number = seconds
+    let mut wf_ctx = WorkflowContext::new(HashMap::new());
+
+    let start = std::time::Instant::now();
+    let result = schedule(&[node], &[], &registry, &mut wf_ctx, CancellationToken::new()).await;
+    let elapsed = start.elapsed();
+    let err = result.unwrap_err();
+    assert!(err.contains("timed out"), "got {}", err);
+    assert!(elapsed < Duration::from_secs(5), "timeout must fire at ~1s, took {:?}", elapsed);
+}
+
+/// A panicking node executor surfaces as a JoinError schedule failure
+/// (scheduler.rs ~427-431).
+#[tokio::test]
+async fn w4a_schedule_panic_executor_reports_join_error() {
+    struct PanicExecutor;
+    #[async_trait]
+    impl NodeExecutor for PanicExecutor {
+        async fn execute(
+            &self,
+            _node: &NodeDef,
+            _ctx: &HashMap<String, serde_json::Value>,
+            _wf_ctx: &WorkflowContext,
+        ) -> Result<NodeResult, String> {
+            panic!("w4a scheduled panic");
+        }
+    }
+
+    let registry = NodeExecutorRegistry::new();
+    registry.register("panicky", Arc::new(PanicExecutor));
+    let nodes = vec![make_typed_node("a", "panicky", vec![])];
+    let mut wf_ctx = WorkflowContext::new(HashMap::new());
+
+    let err = schedule(&nodes, &[], &registry, &mut wf_ctx, CancellationToken::new())
+        .await
+        .unwrap_err();
+    assert!(err.contains("panicked"), "got {}", err);
+}
+
+/// Object outputs are propagated into the context as `node.field` entries
+/// (scheduler.rs ~406-415).
+#[tokio::test]
+async fn w4a_schedule_object_output_propagates_fields() {
+    struct FieldfulExecutor;
+    #[async_trait]
+    impl NodeExecutor for FieldfulExecutor {
+        async fn execute(
+            &self,
+            node: &NodeDef,
+            _ctx: &HashMap<String, serde_json::Value>,
+            _wf_ctx: &WorkflowContext,
+        ) -> Result<NodeResult, String> {
+            Ok(NodeResult {
+                node_id: node.id.clone(),
+                output: serde_json::json!({"x": 1, "y": "two"}),
+                error: None,
+                state: ExecutionState::Completed,
+                started_at: chrono::Local::now(),
+                ended_at: chrono::Local::now(),
+                metadata: HashMap::new(),
+            })
+        }
+    }
+
+    let registry = NodeExecutorRegistry::new();
+    registry.register("fieldful", Arc::new(FieldfulExecutor));
+    let nodes = vec![make_typed_node("n1", "fieldful", vec![])];
+    let mut wf_ctx = WorkflowContext::new(HashMap::new());
+
+    schedule(&nodes, &[], &registry, &mut wf_ctx, CancellationToken::new())
+        .await
+        .unwrap();
+    assert_eq!(wf_ctx.get_var("n1.x"), Some(serde_json::json!(1)));
+    assert_eq!(wf_ctx.get_var("n1.y"), Some(serde_json::json!("two")));
+    // The bare node_id key is NOT a variable — the full output lives in the
+    // node result (build_executor_context re-derives it for downstream nodes).
+    assert_eq!(wf_ctx.get_var("n1"), None);
+    assert_eq!(
+        wf_ctx.get_node_result("n1").unwrap().output,
+        serde_json::json!({"x": 1, "y": "two"})
+    );
+}
+
+// ===========================================================================
+// S12b batch（quality-hardening goal 冲刺）：per-node timeout 的 select!
+// 成功臂（scheduler.rs ~346-352）+ 节点任务 panic 的收集臂（~427-431）。
+// 注：`(id, None, None)` 且外层 token 未取消的组合在单 token 设计下会被
+// collect 阶段的 biased cancel 臂先行短路，属防御性死臂（见冲刺报告）。
+// ===========================================================================
+
+struct S12bFastOkExecutor;
+
+#[async_trait]
+impl NodeExecutor for S12bFastOkExecutor {
+    async fn execute(
+        &self,
+        node: &NodeDef,
+        _ctx: &HashMap<String, serde_json::Value>,
+        _wf_ctx: &WorkflowContext,
+    ) -> Result<NodeResult, String> {
+        Ok(NodeResult {
+            node_id: node.id.clone(),
+            output: serde_json::json!({"ok": true}),
+            error: None,
+            state: ExecutionState::Completed,
+            started_at: chrono::Local::now(),
+            ended_at: chrono::Local::now(),
+            metadata: HashMap::new(),
+        })
+    }
+}
+
+#[tokio::test]
+async fn s12b_timeout_wraps_fast_execution_success_path() {
+    // timeout 只是把 execute 包进 select!：节点先于超时完成 → Ok(inner) 臂
+    let registry = NodeExecutorRegistry::new();
+    registry.register("fast", Arc::new(S12bFastOkExecutor));
+
+    let nodes = vec![NodeDef {
+        id: "t1".to_string(),
+        node_type: "fast".to_string(),
+        config: HashMap::new(),
+        depends_on: vec![],
+        retry_count: 0,
+        timeout: Some("30s".to_string()), // 远大于实际执行耗时
+        is_terminal: false,
+    }];
+    let edges: Vec<Edge> = vec![];
+    let mut wf_ctx = WorkflowContext::new(HashMap::new());
+
+    let outcome =
+        schedule(&nodes, &edges, &registry, &mut wf_ctx, CancellationToken::new())
+            .await
+            .unwrap();
+    assert_eq!(outcome, ScheduleOutcome::Completed);
+    assert_eq!(
+        wf_ctx.get_all_node_results()["t1"].state,
+        ExecutionState::Completed
+    );
+    // 输出仍按字段下发到上下文（超时包装不改变传播语义）
+    let results = wf_ctx.get_all_node_results();
+    assert_eq!(results["t1"].output["ok"], serde_json::json!(true));
+}
+
+struct S12bPanickingExecutor;
+
+#[async_trait]
+impl NodeExecutor for S12bPanickingExecutor {
+    async fn execute(
+        &self,
+        _node: &NodeDef,
+        _ctx: &HashMap<String, serde_json::Value>,
+        _wf_ctx: &WorkflowContext,
+    ) -> Result<NodeResult, String> {
+        panic!("s12b executor exploded");
+    }
+}
+
+#[tokio::test]
+async fn s12b_panicking_executor_surfaces_task_panic_error() {
+    // 节点任务 panic → JoinHandle Err → “node task panicked” 错误串
+    let registry = NodeExecutorRegistry::new();
+    registry.register("boom", Arc::new(S12bPanickingExecutor));
+
+    let nodes = vec![NodeDef {
+        id: "p1".to_string(),
+        node_type: "boom".to_string(),
+        config: HashMap::new(),
+        depends_on: vec![],
+        retry_count: 0,
+        timeout: None,
+        is_terminal: false,
+    }];
+    let edges: Vec<Edge> = vec![];
+    let mut wf_ctx = WorkflowContext::new(HashMap::new());
+
+    let err =
+        schedule(&nodes, &edges, &registry, &mut wf_ctx, CancellationToken::new())
+            .await
+            .unwrap_err();
+    // 注：panic 臂的错误串只含 JoinError 信息，不带 node id（scheduler.rs ~431）
+    assert!(
+        err.contains("node task panicked"),
+        "err should mention panic: {err}"
+    );
+    assert!(
+        err.contains("s12b executor exploded"),
+        "err should carry the panic message: {err}"
+    );
+}

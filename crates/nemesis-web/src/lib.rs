@@ -64,3 +64,14 @@ mod llm_bridge_extra_tests;
 mod sse_chat_extra_tests;
 #[cfg(all(test, feature = "workflow"))]
 mod workflow_chat_extra_tests;
+
+// S10b (2026-08-26, quality-hardening goal 冲刺 web 批次 2): workflow_chat
+// history unknown-index / happy-read arms + send unknown-index arm.
+#[cfg(all(test, feature = "workflow"))]
+mod workflow_chat_s10b_tests;
+
+// S10b (2026-08-26, quality-hardening goal 冲刺 web 批次 2): ProviderAdapter
+// tool_calls/options/tools mapping arms + provider-Err arm (llm_bridge.rs
+// itself is compiled unconditionally, so no feature gate needed).
+#[cfg(test)]
+mod llm_bridge_s10b_tests;

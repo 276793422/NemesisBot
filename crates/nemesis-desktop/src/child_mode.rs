@@ -1064,3 +1064,5 @@ fn build_plugin_config(window_type: &str, window_data: &serde_json::Value) -> St
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod s7_tests;

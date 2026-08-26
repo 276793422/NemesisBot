@@ -165,3 +165,51 @@ fn test_flush() {
     );
     assert!(logger.flush().is_ok());
 }
+
+#[test]
+fn audit_logger_new_enabled_ok_and_reuse_same_dir() {
+    let dir = tempfile::tempdir().unwrap();
+    let cfg = AuditLogConfig {
+        audit_log_dir: dir.path().to_path_buf(),
+        enabled: true,
+    };
+    // First logger: file does not exist → header written.
+    let mut logger = AuditLogger::new(cfg.clone()).unwrap();
+    assert!(logger.flush().is_ok());
+    // Second logger on the same dir: file already exists → no-header else arm.
+    let mut logger2 = AuditLogger::new(cfg).unwrap();
+    logger2
+        .log_event("e2", "allowed", "file_read", "user", "cli", "a.txt", "low", "ok", "rule");
+    assert!(logger2.flush().is_ok());
+}
+
+#[test]
+fn audit_logger_new_missing_dir_errors() {
+    let cfg = AuditLogConfig {
+        audit_log_dir: std::path::PathBuf::new(),
+        enabled: true,
+    };
+    let e = match AuditLogger::new(cfg) {
+        Ok(_) => panic!("expected error for empty audit_log_dir"),
+        Err(e) => e,
+    };
+    assert!(e.contains("audit log directory not configured"), "{e}");
+}
+
+#[test]
+fn audit_logger_denied_event_warns_and_export_creates_parent() {
+    let dir = tempfile::tempdir().unwrap();
+    let cfg = AuditLogConfig {
+        audit_log_dir: dir.path().to_path_buf(),
+        enabled: true,
+    };
+    let mut logger = AuditLogger::new(cfg).unwrap();
+    logger.log_event(
+        "e3", "denied", "process_exec", "user", "cli", "cmd.exe", "critical", "blocked", "policy",
+    );
+    assert!(logger.flush().is_ok());
+    // Export to a destination whose parent directory does not exist yet.
+    let dest = dir.path().join("export/nested/out.log");
+    logger.export_log(&dest).unwrap();
+    assert!(dest.exists());
+}

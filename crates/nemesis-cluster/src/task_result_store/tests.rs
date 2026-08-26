@@ -1024,3 +1024,284 @@ async fn test_async_store_get_nonexistent() {
     let store = AsyncTaskResultStore::with_disk_persistence(10, dir.path());
     assert!(store.get_async("nonexistent").is_none());
 }
+
+// ============================================================
+// W3b coverage batch: I/O failure arms that the existing suite
+// never drives — cache_dir creation warn, read_dir failure,
+// per-file read failure, tmp-write / rename / delete failures
+// (sync + async), GoTaskResultStore::new create failure and
+// corrupt-index recovery.
+// ============================================================
+
+#[test]
+fn test_w3b_with_disk_persistence_create_warns_when_parent_is_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let blocker = dir.path().join("blocker");
+    std::fs::write(&blocker, b"file").unwrap();
+
+    // create_dir_all fails → warn; the store still works in memory
+    let store = TaskResultStore::with_disk_persistence(10, blocker.join("cache"));
+    store.store_success("t-w3b", "a", serde_json::json!(1));
+    assert!(store.get("t-w3b").is_some());
+}
+
+#[test]
+fn test_w3b_load_from_disk_read_dir_and_per_file_read_failures() {
+    // 1. cache_dir is a FILE → read_dir fails → 0 loaded
+    let dir = tempfile::tempdir().unwrap();
+    let as_file = dir.path().join("cache");
+    std::fs::write(&as_file, b"not a dir").unwrap();
+    let store = TaskResultStore::with_disk_persistence(10, &as_file);
+    assert_eq!(store.load_from_disk(), 0);
+
+    // 2. A *.json DIRECTORY inside cache_dir → read_to_string fails → skipped;
+    //    the valid file next to it still loads.
+    let dir2 = tempfile::tempdir().unwrap();
+    let cache = dir2.path().join("cache");
+    std::fs::create_dir_all(cache.join("weird.json")).unwrap();
+    std::fs::write(
+        cache.join("good.json"),
+        serde_json::to_string(&TaskResult {
+            task_id: "good".into(),
+            action: "a".into(),
+            result: serde_json::json!("ok"),
+            success: true,
+            stored_at: chrono::Local::now().to_rfc3339(),
+        })
+        .unwrap(),
+    )
+    .unwrap();
+    let store2 = TaskResultStore::with_disk_persistence(10, &cache);
+    assert_eq!(store2.load_from_disk(), 1, "only the readable json must load");
+    assert!(store2.get("good").is_some());
+}
+
+#[test]
+fn test_w3b_write_to_disk_rename_failure_when_dest_is_directory() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = TaskResultStore::with_disk_persistence(10, dir.path());
+    std::fs::create_dir_all(dir.path().join("blocked.json")).unwrap();
+
+    // tmp write succeeds, rename onto the directory fails → warn
+    store.store_success("blocked", "a", serde_json::json!(1));
+    assert!(store.get("blocked").is_some(), "memory entry must exist");
+    assert!(dir.path().join("blocked.json").is_dir());
+}
+
+#[test]
+fn test_w3b_write_to_disk_tmp_failure_when_tmp_is_directory() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = TaskResultStore::with_disk_persistence(10, dir.path());
+    std::fs::create_dir_all(dir.path().join("blocked2.json.tmp")).unwrap();
+
+    // tmp write fails → warn, memory entry still present
+    store.store_success("blocked2", "a", serde_json::json!(1));
+    assert!(store.get("blocked2").is_some());
+    assert!(!dir.path().join("blocked2.json").exists());
+}
+
+#[test]
+fn test_w3b_remove_delete_from_disk_failure_when_file_is_directory() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = TaskResultStore::with_disk_persistence(10, dir.path());
+    store.store_success("gone", "a", serde_json::json!(1));
+    let file = dir.path().join("gone.json");
+    assert!(file.is_file());
+
+    // Replace the file with a directory → remove_file fails → warn
+    std::fs::remove_file(&file).unwrap();
+    std::fs::create_dir_all(&file).unwrap();
+    assert!(store.remove("gone"), "memory removal must still succeed");
+    assert!(store.get("gone").is_none());
+    assert!(file.is_dir());
+}
+
+#[tokio::test]
+async fn test_w3b_async_write_and_delete_failures() {
+    // 1. Destination is a directory → rename fails (warn); memory entry kept;
+    //    cleanup then hits remove_file failure on the same directory (warn).
+    let dir = tempfile::tempdir().unwrap();
+    let store = AsyncTaskResultStore::with_disk_persistence(10, dir.path());
+    std::fs::create_dir_all(dir.path().join("a1.json")).unwrap();
+
+    store.store_success_async("a1", "act", serde_json::json!("x")).await;
+    assert!(store.get_async("a1").is_some());
+    assert!(dir.path().join("a1.json").is_dir());
+
+    assert!(store.cleanup_delivered_async("a1").await);
+    assert!(store.get_async("a1").is_none());
+
+    // 2. tmp path is a directory → async tmp write fails (warn)
+    let dir2 = tempfile::tempdir().unwrap();
+    let store2 = AsyncTaskResultStore::with_disk_persistence(10, dir2.path());
+    std::fs::create_dir_all(dir2.path().join("a2.json.tmp")).unwrap();
+    store2.store_success_async("a2", "act", serde_json::json!("y")).await;
+    assert!(store2.get_async("a2").is_some());
+    assert!(!dir2.path().join("a2.json").exists());
+}
+
+#[tokio::test]
+async fn test_w3b_async_load_from_disk_read_failures() {
+    // 1. cache_dir is a FILE → read_dir fails → 0
+    let dir = tempfile::tempdir().unwrap();
+    let as_file = dir.path().join("cache");
+    std::fs::write(&as_file, b"not a dir").unwrap();
+    let store = AsyncTaskResultStore::with_disk_persistence(10, &as_file);
+    assert_eq!(store.load_from_disk_async().await, 0);
+
+    // 2. *.json DIRECTORY → async read fails → skipped; valid file loads
+    let dir2 = tempfile::tempdir().unwrap();
+    let cache = dir2.path().join("cache");
+    std::fs::create_dir_all(cache.join("weird.json")).unwrap();
+    std::fs::write(
+        cache.join("good.json"),
+        serde_json::to_string(&TaskResult {
+            task_id: "good".into(),
+            action: "a".into(),
+            result: serde_json::json!("ok"),
+            success: true,
+            stored_at: chrono::Local::now().to_rfc3339(),
+        })
+        .unwrap(),
+    )
+    .unwrap();
+    let store2 = AsyncTaskResultStore::with_disk_persistence(10, &cache);
+    assert_eq!(store2.load_from_disk_async().await, 1);
+    assert!(store2.get_async("good").is_some());
+}
+
+#[test]
+fn test_w3b_go_store_new_failure_and_corrupt_index_recovery() {
+    // 1. Workspace path is a FILE → create_dir_all fails → Err
+    let dir = tempfile::tempdir().unwrap();
+    let blocker = dir.path().join("blocker");
+    std::fs::write(&blocker, b"file").unwrap();
+    let err = match GoTaskResultStore::new(&blocker) {
+        Ok(_) => panic!("expected create failure when workspace path is a file"),
+        Err(e) => e,
+    };
+    assert!(err.contains("failed to create"), "got: {}", err);
+
+    // 2. Corrupt index.json → load_index fails → warn + fresh index, still Ok
+    let dir2 = tempfile::tempdir().unwrap();
+    let results_dir = dir2.path().join("cluster").join("task_results");
+    std::fs::create_dir_all(&results_dir).unwrap();
+    std::fs::write(results_dir.join("index.json"), "{corrupt").unwrap();
+
+    let store = GoTaskResultStore::new(dir2.path()).unwrap();
+    assert_eq!(store.done_count(), 0, "corrupt index must reset to empty");
+    // The store remains fully usable after recovery
+    store.set_running("t1", "node-a");
+    store.set_result("t1", "success", "resp", "", "node-a").unwrap();
+    assert_eq!(store.done_count(), 1);
+}
+
+// ============================================================
+// S4 coverage: sync eviction + blocked disk delete, async load
+// arms, async eviction, async blocked delete.
+// ============================================================
+
+/// Eviction with disk persistence: the evicted entry's file is a directory,
+/// so the disk delete fails but the store keeps working
+/// (task_result_store.rs 205-215, 257-268).
+#[test]
+fn test_s4_sync_eviction_with_blocked_disk_delete() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = TaskResultStore::with_disk_persistence(1, dir.path());
+
+    store.store_success("s4-d1", "peer_chat", serde_json::json!("r1"));
+    let path = dir.path().join("s4-d1.json");
+    assert!(path.exists());
+
+    // Block the delete: replace the file with a directory.
+    std_fs::remove_file(&path).unwrap();
+    std_fs::create_dir_all(&path).unwrap();
+
+    // Second insert evicts s4-d1; the disk delete warns but memory proceeds.
+    store.store_success("s4-d2", "peer_chat", serde_json::json!("r2"));
+
+    assert_eq!(store.len(), 1);
+    assert!(store.get("s4-d2").is_some());
+    assert!(store.get("s4-d1").is_none());
+    assert!(path.is_dir(), "blocked path must remain");
+    assert!(dir.path().join("s4-d2.json").exists());
+}
+
+/// load_from_disk_async skips non-json entries (task_result_store.rs 372-374).
+#[tokio::test]
+async fn test_s4_async_load_skips_non_json() {
+    let dir = tempfile::tempdir().unwrap();
+    std_fs::write(dir.path().join("notes.txt"), "x").unwrap();
+    let store = AsyncTaskResultStore::with_disk_persistence(10, dir.path());
+    assert_eq!(store.load_from_disk_async().await, 0);
+}
+
+/// load_from_disk_async stops once the in-memory map is at capacity
+/// (task_result_store.rs 378-381).
+#[tokio::test]
+async fn test_s4_async_load_breaks_at_capacity() {
+    let dir = tempfile::tempdir().unwrap();
+    for i in 0..3 {
+        let tr = TaskResult {
+            task_id: format!("s4-c{}", i),
+            action: "a".into(),
+            result: serde_json::json!(i),
+            success: true,
+            stored_at: chrono::Local::now().to_rfc3339(),
+        };
+        std_fs::write(
+            dir.path().join(format!("s4-c{}.json", i)),
+            serde_json::to_string(&tr).unwrap(),
+        )
+        .unwrap();
+    }
+    let store = AsyncTaskResultStore::with_disk_persistence(1, dir.path());
+    assert_eq!(store.load_from_disk_async().await, 1, "capacity 1 caps the load");
+}
+
+/// load_from_disk_async warns on an undecodable json file
+/// (task_result_store.rs 384-391).
+#[tokio::test]
+async fn test_s4_async_load_invalid_json_warns() {
+    let dir = tempfile::tempdir().unwrap();
+    std_fs::write(dir.path().join("s4-bad.json"), "{not json").unwrap();
+    let store = AsyncTaskResultStore::with_disk_persistence(10, dir.path());
+    assert_eq!(store.load_from_disk_async().await, 0);
+}
+
+/// store_success_async evicts at capacity and deletes the evicted file from
+/// disk (task_result_store.rs 409-432).
+#[tokio::test]
+async fn test_s4_async_store_evicts_from_disk() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = AsyncTaskResultStore::with_disk_persistence(1, dir.path());
+    store
+        .store_success_async("s4-e1", "a", serde_json::json!(1))
+        .await;
+    assert!(dir.path().join("s4-e1.json").exists());
+
+    store
+        .store_success_async("s4-e2", "a", serde_json::json!(2))
+        .await;
+    assert!(!dir.path().join("s4-e1.json").exists(), "evicted file deleted");
+    assert!(dir.path().join("s4-e2.json").exists());
+    assert!(store.get_async("s4-e1").is_none());
+}
+
+/// cleanup_delivered_async with a blocked path warns but removes from memory
+/// (task_result_store.rs 471-483).
+#[tokio::test]
+async fn test_s4_async_cleanup_blocked_path_warns() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = AsyncTaskResultStore::with_disk_persistence(5, dir.path());
+    store
+        .store_success_async("s4-del", "a", serde_json::json!(1))
+        .await;
+    let path = dir.path().join("s4-del.json");
+    std_fs::remove_file(&path).unwrap();
+    std_fs::create_dir_all(&path).unwrap();
+
+    assert!(store.cleanup_delivered_async("s4-del").await);
+    assert!(store.get_async("s4-del").is_none());
+    assert!(path.is_dir());
+}

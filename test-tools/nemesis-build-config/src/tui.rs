@@ -197,86 +197,143 @@ fn interactive_loop(
         if !event::poll(std::time::Duration::from_millis(250))? {
             continue;
         }
-        if let Event::Key(k) = event::read()? {
-            if k.kind != KeyEventKind::Press {
-                continue;
-            }
-            match k.code {
-                // q / Esc: save the current selection and exit (so a parent
-                // build script can immediately build with the saved .config).
-                KeyCode::Char('q') | KeyCode::Esc => {
-                    if let Err(e) = cfg.save(config_path) {
-                        eprintln!("[nemesis-build-config] failed to save .config: {e}");
-                    }
-                    break;
-                }
-                // Ctrl+C: abort without saving.
-                KeyCode::Char('c')
-                    if k.modifiers
-                        .contains(crossterm::event::KeyModifiers::CONTROL) =>
-                {
-                    break;
-                }
-                KeyCode::Char('s') => {
-                    // save in place; keep editing
-                    if let Err(e) = cfg.save(config_path) {
-                        // best-effort: surface error in the dirty marker
-                        let _ = e;
-                    }
-                    dirty = false;
-                }
-                KeyCode::Down | KeyCode::Char('j') => {
-                    if let Some(i) = state.selected() {
-                        state.select(Some((i + 1).min(rows.len().saturating_sub(1))));
-                    }
-                }
-                KeyCode::Up | KeyCode::Char('k') => {
-                    if let Some(i) = state.selected() {
-                        state.select(Some(i.saturating_sub(1)));
-                    }
-                }
-                KeyCode::Char(' ') => {
-                    if let Some(i) = state.selected() {
-                        if let Some(r) = rows.get(i) {
-                            if !r.id.is_empty() && !r.is_enum {
-                                let cur = cfg.get_bool(&r.id).unwrap_or(false);
-                                cfg.set_bool(&r.id, !cur);
-                                dirty = true;
-                            }
-                        }
-                    }
-                }
-                KeyCode::Right | KeyCode::Enter => {
-                    if let Some(i) = state.selected() {
-                        if let Some(r) = rows.get(i) {
-                            if r.is_enum {
-                                if let Some(spec) = manifest.features.iter().find(|f| f.id == r.id)
-                                {
-                                    if spec.options.is_empty() {
-                                        continue;
-                                    }
-                                    let cur = cfg.get_enum(&r.id).unwrap_or("");
-                                    let idx = spec
-                                        .options
-                                        .iter()
-                                        .position(|o| o == cur)
-                                        .map(|p| p + 1)
-                                        .unwrap_or(0);
-                                    let next = &spec.options[idx % spec.options.len()];
-                                    cfg.set_enum(&r.id, next);
-                                    dirty = true;
-                                }
-                            }
-                        }
-                    }
-                }
-                _ => {}
-            }
+        let ev = event::read()?;
+        match handle_key(
+            ev,
+            &rows,
+            state.selected(),
+            manifest,
+            cfg,
+            &mut dirty,
+            config_path,
+        ) {
+            KeyDisposition::Nothing => {}
+            KeyDisposition::Select(new_sel) => state.select(new_sel),
+            // q/Esc saved inside handle_key; Ctrl+C aborted without saving —
+            // either way we fall through to the terminal restore below.
+            KeyDisposition::Exit => break,
         }
     }
     Ok(())
 }
 
+/// What [`interactive_loop`] should do after translating one raw event.
+#[derive(Debug, PartialEq, Eq)]
+enum KeyDisposition {
+    /// Keep editing; the terminal list state is unchanged.
+    Nothing,
+    /// Replace the list selection with this index.
+    Select(Option<usize>),
+    /// Leave the loop (both exits are fully handled inside [`handle_key`]).
+    Exit,
+}
+
+/// Pure key → disposition translation for the menu (S12b batch: extracted
+/// verbatim from `interactive_loop` so the navigation/toggle/save state
+/// machine is unit-testable without a live TTY; the rendering + poll loop
+/// remains structurally tied to a real terminal).
+///
+/// Semantics (unchanged):
+/// - `q`/Esc: save `.config` (best-effort, errors logged to stderr) and exit
+/// - Ctrl+C: exit **without** saving
+/// - `s`: save in place, clear the dirty marker, keep editing
+/// - ↓/j · ↑/k: move selection, clamped to `[0, rows.len()-1]`
+/// - Space: flip the boolean feature at the cursor (header rows ignored)
+/// - →/Enter: cycle an enum feature through its options (wraps; header rows
+///   and empty option lists ignored)
+fn handle_key(
+    ev: Event,
+    rows: &[Row],
+    selected: Option<usize>,
+    manifest: &FeatureManifest,
+    cfg: &mut BuildConfig,
+    dirty: &mut bool,
+    config_path: &Path,
+) -> KeyDisposition {
+    let Event::Key(k) = ev else {
+        return KeyDisposition::Nothing;
+    };
+    if k.kind != KeyEventKind::Press {
+        return KeyDisposition::Nothing;
+    }
+    match k.code {
+        // q / Esc: save the current selection and exit (so a parent
+        // build script can immediately build with the saved .config).
+        KeyCode::Char('q') | KeyCode::Esc => {
+            if let Err(e) = cfg.save(config_path) {
+                eprintln!("[nemesis-build-config] failed to save .config: {e}");
+            }
+            KeyDisposition::Exit
+        }
+        // Ctrl+C: abort without saving.
+        KeyCode::Char('c')
+            if k.modifiers
+                .contains(crossterm::event::KeyModifiers::CONTROL) =>
+        {
+            KeyDisposition::Exit
+        }
+        KeyCode::Char('s') => {
+            // save in place; keep editing
+            if let Err(e) = cfg.save(config_path) {
+                // best-effort: surface error in the dirty marker
+                let _ = e;
+            }
+            *dirty = false;
+            KeyDisposition::Nothing
+        }
+        KeyCode::Down | KeyCode::Char('j') => {
+            let next = selected
+                .map(|i| (i + 1).min(rows.len().saturating_sub(1)))
+                .or(selected);
+            KeyDisposition::Select(next)
+        }
+        KeyCode::Up | KeyCode::Char('k') => {
+            let next = selected.map(|i| i.saturating_sub(1)).or(selected);
+            KeyDisposition::Select(next)
+        }
+        KeyCode::Char(' ') => {
+            if let Some(i) = selected {
+                if let Some(r) = rows.get(i) {
+                    if !r.id.is_empty() && !r.is_enum {
+                        let cur = cfg.get_bool(&r.id).unwrap_or(false);
+                        cfg.set_bool(&r.id, !cur);
+                        *dirty = true;
+                    }
+                }
+            }
+            KeyDisposition::Nothing
+        }
+        KeyCode::Right | KeyCode::Enter => 'right: {
+            if let Some(i) = selected {
+                if let Some(r) = rows.get(i) {
+                    if r.is_enum {
+                        if let Some(spec) = manifest.features.iter().find(|f| f.id == r.id) {
+                            if spec.options.is_empty() {
+                                break 'right KeyDisposition::Nothing;
+                            }
+                            let cur = cfg.get_enum(&r.id).unwrap_or("");
+                            let idx = spec
+                                .options
+                                .iter()
+                                .position(|o| o == cur)
+                                .map(|p| p + 1)
+                                .unwrap_or(0);
+                            let next = &spec.options[idx % spec.options.len()];
+                            cfg.set_enum(&r.id, next);
+                            *dirty = true;
+                        }
+                    }
+                }
+            }
+            KeyDisposition::Nothing
+        }
+        _ => KeyDisposition::Nothing,
+    }
+}
+
 // Keep DefaultVal referenced (documentation of the value model used elsewhere).
 #[allow(dead_code)]
 fn _type_anchor(_: DefaultVal) {}
+
+#[cfg(test)]
+mod tests;

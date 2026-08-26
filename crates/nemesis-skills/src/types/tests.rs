@@ -798,3 +798,36 @@ fn test_to_lower_mixed_ascii_unicode() {
     let result = to_lower("Hello123");
     assert_eq!(result, "hello123");
 }
+
+// --- W4b 补测（批次 14）：BrowseSort 序列化映射 ---
+
+#[test]
+fn test_browse_sort_as_str_all_variants() {
+    assert_eq!(BrowseSort::Trending.as_str(), "trending");
+    assert_eq!(BrowseSort::Downloads.as_str(), "downloads");
+    assert_eq!(BrowseSort::Stars.as_str(), "stars");
+    assert_eq!(BrowseSort::Updated.as_str(), "updated");
+    assert_eq!(BrowseSort::Rating.as_str(), "rating");
+}
+
+#[test]
+fn test_browse_sort_from_str_known_values() {
+    assert_eq!(BrowseSort::from_str("downloads"), BrowseSort::Downloads);
+    assert_eq!(BrowseSort::from_str("stars"), BrowseSort::Stars);
+    assert_eq!(BrowseSort::from_str("updated"), BrowseSort::Updated);
+    assert_eq!(BrowseSort::from_str("rating"), BrowseSort::Rating);
+}
+
+#[test]
+fn test_browse_sort_from_str_unknown_defaults_to_trending() {
+    assert_eq!(BrowseSort::from_str("trending"), BrowseSort::Trending);
+    assert_eq!(BrowseSort::from_str("bogus"), BrowseSort::Trending);
+    assert_eq!(BrowseSort::from_str(""), BrowseSort::Trending);
+}
+
+#[test]
+fn test_browse_sort_as_str_from_str_roundtrip() {
+    for s in ["trending", "downloads", "stars", "updated", "rating"] {
+        assert_eq!(BrowseSort::from_str(s).as_str(), s);
+    }
+}

@@ -954,3 +954,108 @@ async fn test_ready_endpoint_with_beats_and_checks() {
     assert_eq!(json["checks"]["svc"]["healthy"], true);
     assert!(json["timestamp"].is_string());
 }
+
+// ==================== 真实 TCP 起服：start / start_with_shutdown / stop ====================
+// 补覆盖 llvm-cov 未达行：126-133（start 主路径 + bind 失败）、156/158/165
+// （优雅停机：shutdown future 被唤醒 → serve 正常返回 → stop 发送 oneshot）。
+// 仅用本地回环裸 TCP（无外部网络依赖、无额外 crate）。
+
+/// 从 OS 拿一个当前空闲的回环端口（bind :0 取端口后立刻释放）。
+fn pick_free_port() -> u16 {
+    let l = std::net::TcpListener::bind("127.0.0.1:0").expect("bind :0 for port discovery");
+    let port = l.local_addr().unwrap().port();
+    drop(l);
+    port
+}
+
+/// 用裸 TCP 发一条 HTTP/1.1 GET（Connection: close），读回完整响应文本。
+/// 任何一步失败（连接拒绝等）返回 None，供轮询重试。
+async fn try_raw_http_get(addr: &str, path: &str) -> Option<String> {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let mut stream = tokio::net::TcpStream::connect(addr).await.ok()?;
+    let req = format!("GET {path} HTTP/1.1\r\nHost: {addr}\r\nConnection: close\r\n\r\n");
+    stream.write_all(req.as_bytes()).await.ok()?;
+    let mut out = String::new();
+    stream.read_to_string(&mut out).await.ok()?;
+    Some(out)
+}
+
+/// 轮询直到服务在 addr 上以 200 应答（约 5s 上限），返回首条 200 响应全文。
+async fn wait_until_serving(addr: &str, path: &str) -> String {
+    for _ in 0..100 {
+        if let Some(resp) = try_raw_http_get(addr, path).await {
+            if resp.starts_with("HTTP/1.1 200") || resp.starts_with("HTTP/1.0 200") {
+                return resp;
+            }
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    panic!("health server at {addr}{path} did not come up within 5s");
+}
+
+#[tokio::test]
+async fn test_start_serves_real_http_health() {
+    // start() 没有优雅停机入口：起服 → 裸 TCP 验证真实 HTTP 应答 → abort 任务。
+    let port = pick_free_port();
+    let addr = format!("127.0.0.1:{port}");
+    let server = HealthServer::new(HealthServerConfig {
+        listen_addr: addr.clone(),
+        version: Some("raw-tcp-1".to_string()),
+    });
+    let handle = tokio::spawn(async move { server.start().await });
+
+    let resp = wait_until_serving(&addr, "/health").await;
+    assert!(resp.contains("\"status\":\"healthy\""), "resp: {resp}");
+    assert!(resp.contains("\"version\":\"raw-tcp-1\""), "resp: {resp}");
+
+    handle.abort();
+    let _ = handle.await;
+}
+
+#[tokio::test]
+async fn test_start_with_shutdown_full_lifecycle() {
+    // 完整优雅停机链路：起服 → HTTP 探活 → stop() → serve 优雅退出 → 返回 Ok。
+    let port = pick_free_port();
+    let addr = format!("127.0.0.1:{port}");
+    let server = Arc::new(HealthServer::new(HealthServerConfig {
+        listen_addr: addr.clone(),
+        version: None,
+    }));
+    let srv = Arc::clone(&server);
+    let handle = tokio::spawn(async move { srv.start_with_shutdown().await });
+
+    let resp = wait_until_serving(&addr, "/live").await;
+    assert!(resp.contains("\"alive\":true"), "resp: {resp}");
+
+    server.stop(); // 触发 oneshot → 优雅停机
+    let outcome = tokio::time::timeout(std::time::Duration::from_secs(5), handle)
+        .await
+        .expect("graceful shutdown should finish within 5s")
+        .expect("server task should not panic");
+    assert!(
+        outcome.is_ok(),
+        "start_with_shutdown should return Ok after stop(), got {outcome:?}"
+    );
+
+    // 二次 stop（sender 已被 take）应当是 no-op，不 panic
+    server.stop();
+}
+
+#[tokio::test]
+async fn test_start_on_occupied_port_reports_bind_failure() {
+    // 端口被占用 → start() 与 start_with_shutdown() 都应返回 "bind failed" 错误。
+    let blocker = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = blocker.local_addr().unwrap().port();
+    let server = HealthServer::new(HealthServerConfig {
+        listen_addr: format!("127.0.0.1:{port}"),
+        version: None,
+    });
+
+    let err = server.start().await.unwrap_err();
+    assert!(err.contains("bind failed"), "start() err: {err}");
+
+    let err2 = server.start_with_shutdown().await.unwrap_err();
+    assert!(err2.contains("bind failed"), "start_with_shutdown() err: {err2}");
+
+    drop(blocker);
+}

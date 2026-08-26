@@ -159,3 +159,8 @@ pub async fn handle_chat_stream(
 
 #[cfg(test)]
 mod tests;
+
+// S10b (2026-08-26, quality-hardening goal 冲刺 web 批次 2): explicit-model
+// passthrough arm + unterminated backend stream still gets handler done event.
+#[cfg(test)]
+mod s10b_tests;

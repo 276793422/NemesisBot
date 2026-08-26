@@ -284,3 +284,8 @@ fn generate_session_id() -> String {
 
 #[cfg(test)]
 mod tests;
+
+// S10b (2026-08-26, quality-hardening goal 冲刺 web 批次 2): stats /
+// all_sessions / shutdown / no-queue broadcast arms.
+#[cfg(test)]
+mod s10b_tests;

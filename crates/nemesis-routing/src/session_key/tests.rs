@@ -719,3 +719,39 @@ fn test_is_subagent_uppercase() {
     assert!(is_subagent_session_key("agent:main:subagent:456"));
     assert!(!is_subagent_session_key("AGENT:MAIN:WEB:DIRECT:USER1"));
 }
+
+// ===========================================================================
+// S12b batch（quality-hardening goal 冲刺）：DMScope Default / 解析防御臂 /
+// identity-links 空白 peer 早退
+// ===========================================================================
+
+#[test]
+fn s12b_dm_scope_default_is_main() {
+    assert!(matches!(DMScope::default(), DMScope::Main));
+}
+
+#[test]
+fn s12b_parse_agent_key_rejects_empty_agent_or_rest() {
+    // "agent::<rest>"：agent 段为空
+    assert!(parse_agent_session_key("agent::web:direct:u").is_none());
+    // "agent:a:"：rest 段为空
+    assert!(parse_agent_session_key("agent:a:").is_none());
+    // 合法对照组
+    assert!(parse_agent_session_key("agent:a:b:c").is_some());
+}
+
+#[test]
+fn s12b_resolve_linked_peer_id_blank_peer_with_nonempty_links_returns_none() {
+    let mut links: HashMap<String, Vec<String>> = HashMap::new();
+    links.insert("alice".to_string(), vec!["alice@web".to_string()]);
+    // links 非空但 peer 全空白 → 走第二道早退（而不是 links 为空那道）
+    assert_eq!(
+        resolve_linked_peer_id(&links, "web", "   "),
+        None as Option<String>
+    );
+    // 对照：非空 peer 且命中候选集 → Some(canonical)
+    assert_eq!(
+        resolve_linked_peer_id(&links, "web", "alice@web"),
+        Some("alice".to_string())
+    );
+}

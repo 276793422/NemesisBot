@@ -792,3 +792,232 @@ async fn test_clawhub_registry_trait_impl() {
     let trait_ref: &dyn SkillRegistry = &ch;
     assert_eq!(trait_ref.name(), "clawhub");
 }
+
+// ============================================================
+// S5 coverage: JoinError (panic) arm, "all registries failed"
+// with task error, and SkillRegistry delegation impls
+// (GitHub 508-536 / ClawHub 541-569 / ModelScope 574-601)
+// ============================================================
+
+use wiremock::matchers::{method, path};
+use wiremock::{Mock, MockServer, ResponseTemplate};
+
+struct PanickingRegistry;
+
+#[async_trait]
+impl SkillRegistry for PanickingRegistry {
+    fn name(&self) -> &str {
+        "panicker"
+    }
+
+    async fn search(&self, _query: &str, _limit: usize) -> Result<Vec<SkillSearchResult>> {
+        panic!("boom: registry search panicked");
+    }
+
+    async fn get_skill_meta(&self, _slug: &str) -> Result<crate::types::SkillMeta> {
+        panic!("boom: get_skill_meta panicked");
+    }
+
+    async fn download_and_install(
+        &self,
+        _slug: &str,
+        _version: &str,
+        _target_dir: &str,
+    ) -> Result<InstallResult> {
+        panic!("boom: download_and_install panicked");
+    }
+}
+
+#[tokio::test]
+async fn test_search_all_panic_only_registry_errors_with_task_error() {
+    // A registry whose search panics inside the spawned task produces a
+    // JoinError, which must surface as "all registries failed: task error".
+    let manager = RegistryManager::new_empty();
+    manager.add_registry(Arc::new(PanickingRegistry));
+    let err = manager.search_all("test", 10).await.unwrap_err();
+    let msg = err.to_string();
+    assert!(
+        msg.contains("all registries failed") && msg.contains("task error"),
+        "msg: {msg}"
+    );
+}
+
+#[tokio::test]
+async fn test_search_all_panic_alongside_success_still_succeeds() {
+    // A panicked registry is warned about, but a successful sibling keeps
+    // the overall search_all call successful.
+    let manager = RegistryManager::new_empty();
+    manager.add_registry(Arc::new(CountingRegistry::new("ok")));
+    manager.add_registry(Arc::new(PanickingRegistry));
+    let results = manager.search_all("test", 10).await.unwrap();
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0].registry_name, "ok");
+}
+
+#[tokio::test]
+async fn test_skillregistry_delegation_github() {
+    let server = MockServer::start().await;
+    let mut reg = GitHubRegistry::new(&server.uri(), 5, 1024 * 1024);
+    reg.set_github_api_url(&server.uri());
+
+    // skills.json index (search + get_skill_meta + browse all read it).
+    Mock::given(method("GET"))
+        .and(path("/276793422/nemesisbot-skills/main/skills.json"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(
+            r#"[{"name":"pdf","description":"converts documents"}]"#,
+        ))
+        .mount(&server)
+        .await;
+    // Raw SKILL.md (get_skill_content + tree download of install).
+    Mock::given(method("GET"))
+        .and(path("/276793422/nemesisbot-skills/main/skills/pdf/SKILL.md"))
+        .respond_with(ResponseTemplate::new(200).set_body_string("# pdf skill"))
+        .mount(&server)
+        .await;
+    // Tree API (install dir download).
+    Mock::given(method("GET"))
+        .and(path("/repos/276793422/nemesisbot-skills/git/trees/main"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(
+            r#"{"tree":[{"path":"skills/pdf/SKILL.md","type":"blob"}]}"#,
+        ))
+        .mount(&server)
+        .await;
+
+    let reg: Arc<dyn SkillRegistry> = Arc::new(reg);
+    assert_eq!(reg.name(), "github");
+
+    let results = reg.search("pdf", 10).await.unwrap();
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0].slug, "pdf");
+
+    let meta = reg.get_skill_meta("pdf").await.unwrap();
+    assert_eq!(meta.slug, "pdf");
+    assert_eq!(meta.summary, "converts documents");
+    assert_eq!(meta.latest_version, "latest");
+
+    let content = reg.get_skill_content("pdf").await.unwrap();
+    assert_eq!(content.slug, "pdf");
+    assert!(content.content.contains("# pdf skill"));
+
+    let dir = tempfile::tempdir().unwrap();
+    let target = dir.path().join("pdf");
+    reg.download_and_install("pdf", "latest", &target.to_string_lossy())
+        .await
+        .unwrap();
+    assert!(target.join("SKILL.md").exists());
+
+    let browse = reg.browse(&BrowseSort::Trending, 10, "").await.unwrap();
+    assert_eq!(browse.items.len(), 1);
+    assert_eq!(browse.items[0].slug, "pdf");
+}
+
+#[tokio::test]
+async fn test_skillregistry_delegation_clawhub() {
+    let server = MockServer::start().await;
+    let reg = ClawHubRegistry::with_urls(&server.uri(), &server.uri(), &server.uri());
+
+    // search (non-empty query) -> GET /api/search
+    Mock::given(method("GET"))
+        .and(path("/api/search"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(
+            r#"{"results":[{"score":4.0,"slug":"pdf","displayName":"PDF","summary":"s"}]}"#,
+        ))
+        .mount(&server)
+        .await;
+
+    // get_skill_meta + download_and_install -> POST /api/query (convex)
+    let value = serde_json::json!({
+        "owner": {"handle": "alice"},
+        "skill": {"slug": "pdf", "displayName": "PDF", "summary": "s",
+                   "stats": {"downloads": 3.0}},
+        "latestVersion": {"version": "1.2.3"},
+        "resolvedSlug": "pdf"
+    });
+    Mock::given(method("POST"))
+        .and(path("/api/query"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(
+            serde_json::json!({"status": "success", "value": value}),
+        ))
+        .mount(&server)
+        .await;
+
+    // get_skill_content strategy 1 -> GET /api/v1/skills/pdf/file
+    Mock::given(method("GET"))
+        .and(path("/api/v1/skills/pdf/file"))
+        .respond_with(ResponseTemplate::new(200).set_body_string("# clawhub pdf"))
+        .mount(&server)
+        .await;
+
+    // download_and_install zip -> GET /api/v1/download
+    let mut zip_buf = Vec::new();
+    {
+        let mut writer = zip::ZipWriter::new(std::io::Cursor::new(&mut zip_buf));
+        let options = zip::write::SimpleFileOptions::default();
+        writer.start_file("pdf/SKILL.md", options).unwrap();
+        std::io::Write::write_all(&mut writer, b"# PDF").unwrap();
+        writer.finish().unwrap();
+    }
+    Mock::given(method("GET"))
+        .and(path("/api/v1/download"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("Content-Type", "application/zip")
+                .set_body_bytes(zip_buf),
+        )
+        .mount(&server)
+        .await;
+
+    // browse -> GET /api/v1/skills
+    Mock::given(method("GET"))
+        .and(path("/api/v1/skills"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(
+            r#"{"items":[{"slug":"pdf","displayName":"PDF","summary":"s","stats":{"downloads":7}}],"nextCursor":null}"#,
+        ))
+        .mount(&server)
+        .await;
+
+    let reg: Arc<dyn SkillRegistry> = Arc::new(reg);
+    assert_eq!(reg.name(), "clawhub");
+
+    let results = reg.search("pdf", 10).await.unwrap();
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0].slug, "pdf");
+
+    let meta = reg.get_skill_meta("pdf").await.unwrap();
+    assert_eq!(meta.slug, "pdf");
+    assert_eq!(meta.latest_version, "1.2.3");
+    assert_eq!(meta.author, "alice");
+
+    let content = reg.get_skill_content("pdf").await.unwrap();
+    assert!(content.content.contains("# clawhub pdf"));
+
+    let dir = tempfile::tempdir().unwrap();
+    let target = dir.path().join("out");
+    let install = reg
+        .download_and_install("pdf", "1.2.3", &target.to_string_lossy())
+        .await
+        .unwrap();
+    assert_eq!(install.version, "1.2.3");
+    assert!(target.join("SKILL.md").exists());
+
+    let browse = reg.browse(&BrowseSort::Trending, 10, "").await.unwrap();
+    assert_eq!(browse.items.len(), 1);
+    assert_eq!(browse.items[0].slug, "pdf");
+    assert_eq!(browse.items[0].downloads, 7);
+}
+
+#[tokio::test]
+async fn test_skillregistry_delegation_modelscope_name_only() {
+    // ModelScopeRegistry::new() hardcodes modelscope.cn URLs with no
+    // injection seam, so only the offline `name()` delegation is exercised
+    // here; the network delegation bodies are recorded as structural.
+    let reg: Arc<dyn SkillRegistry> = Arc::new(ModelScopeRegistry::new());
+    assert_eq!(reg.name(), "modelscope");
+}
+
+// Structural (no injection seam; do NOT exempt):
+// - registry.rs 574-601 (SkillRegistry for ModelScopeRegistry, network
+//   methods): ModelScopeRegistry::new() hardcodes
+//   https://www.modelscope.cn bases; unlike GitHubRegistry
+//   (set_github_api_url) and ClawHubRegistry (with_urls) there is no
+//   constructor seam to point the client at a local mock.

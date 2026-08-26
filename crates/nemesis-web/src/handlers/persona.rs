@@ -1284,5 +1284,13 @@ impl PersonaHandler {
 // Tests
 // ---------------------------------------------------------------------------
 
+// pub(crate)：仅测试构建生效——SHOP_TEST_LOCK（shop.* 缓存串行锁）需要被
+// sibling 测试模块（persona_extra/persona_more）引用，防全局缓存互踩。
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;
+
+// S10b (2026-08-26, quality-hardening goal 冲刺 web 批次 2): uncovered
+// helpers + offline cache-injected shop paths + activate/restore archive
+// arms.
+#[cfg(test)]
+mod s10b_tests;

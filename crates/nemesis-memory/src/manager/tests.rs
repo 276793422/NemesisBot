@@ -1725,3 +1725,18 @@ fn test_vector_adapter_requires_plugin() {
         "init_vector_store without plugin should fail"
     );
 }
+
+// ---- S5 coverage: set_vector_enabled runtime toggle log arms ----
+
+#[test]
+fn set_vector_enabled_toggles_runtime_flag() {
+    let dir = tempfile::tempdir().unwrap();
+    let config = Config::new(dir.path());
+    let mgr = MemoryManager::new(&config);
+
+    mgr.set_vector_enabled(true);
+    assert!(mgr.is_vector_enabled(), "enable must flip the flag");
+
+    mgr.set_vector_enabled(false);
+    assert!(!mgr.is_vector_enabled(), "disable must flip the flag back");
+}

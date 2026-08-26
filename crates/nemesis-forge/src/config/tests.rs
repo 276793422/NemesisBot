@@ -265,3 +265,34 @@ fn test_reflection_config_serialization() {
     assert!(!back.use_llm);
     assert_eq!(back.interval_secs, 3600);
 }
+
+// --- S8 coverage additions (quality-hardening goal 冲刺 S8) ---
+
+#[test]
+fn test_s8_collection_config_missing_enabled_defaults_true() {
+    // `enabled` uses serde(default = "default_true") — a JSON object without
+    // the field must resolve to true (not the plain `default` false).
+    let cfg: CollectionConfig = serde_json::from_str("{}").unwrap();
+    assert!(cfg.enabled);
+    assert_eq!(cfg.buffer_size, 256);
+}
+
+#[test]
+fn test_s8_save_forge_config_creates_missing_parent_dirs() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("nested").join("deeper").join("config.json");
+    save_forge_config(&path, &ForgeConfig::default()).unwrap();
+    assert!(path.exists());
+    // Round-trip to prove the written file is parseable.
+    let loaded = load_forge_config(&path);
+    assert_eq!(loaded.collection.buffer_size, 256);
+}
+
+#[test]
+fn test_s8_save_forge_config_root_path_has_no_parent() {
+    // A root path ("/") has no parent component: save_forge_config must take
+    // the `if let Some(parent)` fall-through region, then fail to write onto
+    // a directory. Deterministic Err on Windows and Unix, no side effect.
+    let result = save_forge_config(std::path::Path::new("/"), &ForgeConfig::default());
+    assert!(result.is_err());
+}

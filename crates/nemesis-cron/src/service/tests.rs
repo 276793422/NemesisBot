@@ -2801,3 +2801,18 @@ async fn test_cron_arm_idempotent_and_latches() {
     svc.arm(); // idempotent — no panic, no double effects
     assert!(!svc.is_disarmed());
 }
+
+#[test]
+fn s12b_describe_schedule_weekday_arm() {
+    // S12b batch（quality-hardening goal 冲刺）：weekday 非通配的描述分支此前
+    // 无断言覆盖（"At <hour>:<min> on weekdays <weekday>"）。
+    assert_eq!(
+        CronService::describe_schedule("0 0 9 * * 1"),
+        "At 9:0 on weekdays 1"
+    );
+    // 对照组：month/day 非通配时不进 weekday 分支，原样返回
+    assert_eq!(
+        CronService::describe_schedule("0 0 9 15 * *"),
+        "0 0 9 15 * *"
+    );
+}

@@ -247,3 +247,137 @@ fn model_source_clones_correctly() {
     assert_eq!(cloned.files[0].local, "model.onnx");
     assert_eq!(cloned.files[0].url, "https://example.com/model.onnx");
 }
+
+// ===========================================================================
+// S12 覆盖率冲刺（2026-08-26）：serde 部分缺省臂 + 绝对路径 model_dir
+// 现有 `app_config_model_dir_absolute_path_returned_as_is` 用 "/opt/..."——
+// 在 Windows 上不是绝对路径（无盘符），189 行其实从未命中；这里用真实
+// 绝对路径（env::temp_dir，全平台绝对）补上真正的 as-is 分支。
+// ===========================================================================
+
+#[test]
+fn speaker_section_without_model_name_uses_serde_default_fn() {
+    // [speaker] 段在场但缺 model_name → serde default = "default_speaker_model"
+    //（区别于整段缺失 → derive(Default) 的空串，见上面已有测试）
+    let tmpdir = std::env::temp_dir();
+    let path = tmpdir.join(format!(
+        "nemesisbot_voice_cfg_spk_{}_{}.toml",
+        std::process::id(),
+        line!()
+    ));
+    std::fs::write(
+        &path,
+        r#"
+[stt]
+model_name = "s"
+language = "zh"
+use_itn = false
+num_threads = 1
+
+[vad]
+model_name = "v"
+threshold = 0.5
+min_silence_duration = 0.3
+min_speech_duration = 0.25
+max_speech_duration = 30.0
+window_size = 512
+
+[tts]
+model_name = "t"
+speaker_id = 0
+speed = 1.0
+num_threads = 1
+
+[audio]
+capture_device = ""
+playback_device = ""
+target_sample_rate = 16000
+
+[models]
+dir = "./data"
+auto_download = false
+
+[models.mirror]
+base = "https://example.com"
+
+[speaker]
+num_threads = 2
+"#,
+    )
+    .unwrap();
+
+    let cfg = AppConfig::load(&path).expect("parse should succeed");
+    assert_eq!(
+        cfg.speaker.model_name,
+        "3dspeaker_speech_campplus_sv_zh_en_16k-common_advanced"
+    );
+    assert_eq!(cfg.speaker.num_threads, 2);
+
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
+fn audio_section_without_gain_and_energy_threshold_uses_serde_defaults() {
+    let tmpdir = std::env::temp_dir();
+    let path = tmpdir.join(format!(
+        "nemesisbot_voice_cfg_aud_{}_{}.toml",
+        std::process::id(),
+        line!()
+    ));
+    std::fs::write(
+        &path,
+        r#"
+[stt]
+model_name = "s"
+language = "zh"
+use_itn = false
+num_threads = 1
+
+[vad]
+model_name = "v"
+threshold = 0.5
+min_silence_duration = 0.3
+min_speech_duration = 0.25
+max_speech_duration = 30.0
+window_size = 512
+
+[tts]
+model_name = "t"
+speaker_id = 0
+speed = 1.0
+num_threads = 1
+
+[audio]
+capture_device = ""
+playback_device = ""
+target_sample_rate = 16000
+# gain / energy_threshold 都缺 → serde 默认
+
+[models]
+dir = "./data"
+auto_download = false
+
+[models.mirror]
+base = "https://example.com"
+"#,
+    )
+    .unwrap();
+
+    let cfg = AppConfig::load(&path).expect("parse should succeed");
+    assert_eq!(cfg.audio.gain, 3.0);
+    assert_eq!(cfg.audio.energy_threshold, 0.015);
+
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
+fn model_dir_truly_absolute_path_returned_without_join() {
+    // env::temp_dir() 在 Windows 上带盘符（真绝对）、在 Unix 是 /tmp（真绝对）
+    let mut cfg = AppConfig::default();
+    let abs = std::env::temp_dir().join("abs-model-dir");
+    cfg.models.dir = abs.to_string_lossy().into_owned();
+    cfg.base_dir = std::env::temp_dir().join("some-base");
+
+    let dir = cfg.model_dir();
+    assert_eq!(dir, abs, "absolute dir must be returned as-is");
+}

@@ -149,3 +149,40 @@ fn rms_threshold_zero_marks_speaking_on_empty_chunk_due_to_geq() {
     // Buffer is still empty though
     assert!(d.flush().is_none(), "buffer should still be empty");
 }
+
+// ===========================================================================
+// S12 覆盖率冲刺（2026-08-26）：Silero 构造 fail-fast + 工厂回退
+// Silero 的 process/flush 需要真 VAD 引擎（真 DLL + 真模型）——结构性豁免。
+// ===========================================================================
+
+use super::{create_detector, SileroVadParams, SileroVoiceDetector};
+
+#[test]
+fn silero_new_missing_model_propagates_vad_bail() {
+    let tmp = tempfile::tempdir().unwrap();
+    let params = SileroVadParams {
+        model_path: tmp.path().join("silero_vad.onnx"),
+        threshold: 0.5,
+        min_silence_duration: 0.5,
+        min_speech_duration: 0.25,
+        max_speech_duration: 5.0,
+        window_size: 512,
+        sample_rate: 16000,
+    };
+    let err = format!("{:#}", SileroVoiceDetector::new(&params).err().expect("must fail"));
+    assert!(err.contains("VAD model not found"), "{err}");
+}
+
+#[test]
+fn create_detector_falls_back_to_rms_when_vad_model_unavailable() {
+    // base_dir 指向空 temp 目录且 sources 为空 → ensure_vad_model 失败 →
+    // 工厂回退 RMS 能量检测器（311-323 的 Err 臂）
+    let tmp = tempfile::tempdir().unwrap();
+    let mut cfg = crate::config::AppConfig::default();
+    cfg.base_dir = tmp.path().to_path_buf();
+    cfg.models.dir = "./data".to_string();
+    cfg.models.sources = vec![];
+
+    let detector = create_detector(&cfg);
+    assert_eq!(detector.name(), "RMS");
+}

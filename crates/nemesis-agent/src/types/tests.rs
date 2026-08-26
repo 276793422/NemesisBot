@@ -798,3 +798,100 @@ fn test_model_facing_tool_name_fallback() {
     let projected = t.model_facing_content().into_owned();
     assert!(projected.contains("tool"), "marker falls back to tool");
 }
+
+/// ToolDefinition::default() has the "function" tool_type and empty fn def
+/// (second file-level check near other trailing defaults; kept separate from
+/// the earlier `tool_definition_default` to avoid a name collision).
+#[test]
+fn tool_definition_default_recheck() {
+    let d = ToolDefinition::default();
+    assert_eq!(d.tool_type, "function");
+    assert_eq!(d.function.name, "");
+}
+
+fn assistant_with_calls(ids: &[&str]) -> ConversationTurn {
+    ConversationTurn {
+        role: "assistant".to_string(),
+        content: String::new(),
+        tool_calls: ids
+            .iter()
+            .map(|id| ToolCallInfo {
+                id: id.to_string(),
+                name: "t".to_string(),
+                arguments: "{}".to_string(),
+            })
+            .collect(),
+        tool_call_id: None,
+        timestamp: "2026-08-25T00:00:00Z".to_string(),
+        reasoning_content: None,
+        tool_name: None,
+        tool_result_projection: None,
+    }
+}
+
+fn tool_result_turn(id: Option<&str>, content: &str) -> ConversationTurn {
+    ConversationTurn {
+        role: "tool".to_string(),
+        content: content.to_string(),
+        tool_calls: Vec::new(),
+        tool_call_id: id.map(|s| s.to_string()),
+        timestamp: "2026-08-25T00:00:00Z".to_string(),
+        reasoning_content: None,
+        tool_name: None,
+        tool_result_projection: None,
+    }
+}
+
+/// Two tool results with the SAME id: pass 0 scans in REVERSE keeping the
+/// LAST occurrence (async placeholder followed by the real callback result —
+/// the real one wins), so the earlier duplicate is removed.
+#[test]
+fn repair_removes_duplicate_tool_ids() {
+    let mut msgs = vec![
+        assistant_with_calls(&["a"]),
+        tool_result_turn(Some("a"), "r1"),
+        tool_result_turn(Some("a"), "r2"),
+    ];
+    repair_tool_message_pairs(&mut msgs);
+    let tools: Vec<_> = msgs.iter().filter(|m| m.role == "tool").collect();
+    assert_eq!(tools.len(), 1, "duplicate tool result dropped");
+    assert_eq!(tools[0].content, "r2", "the LAST occurrence is kept");
+}
+
+/// A tool result WITHOUT an id is an orphan → removed.
+#[test]
+fn repair_removes_tool_result_without_id() {
+    let mut msgs = vec![
+        assistant_with_calls(&["a"]),
+        tool_result_turn(None, "orphan"),
+        tool_result_turn(Some("a"), "ok"),
+    ];
+    repair_tool_message_pairs(&mut msgs);
+    let tools: Vec<_> = msgs.iter().filter(|m| m.role == "tool").collect();
+    assert_eq!(tools.len(), 1);
+    assert_eq!(tools[0].content, "ok");
+}
+
+/// Assistant issued calls a+b but only a has a result → a synthesized
+/// unknown-outcome tool result is INSERTED for the unanswered call b (pass-2
+/// insertion, keeps pairs complete for providers).
+#[test]
+fn repair_synthesizes_result_for_unanswered_call() {
+    let mut msgs = vec![
+        assistant_with_calls(&["a", "b"]),
+        tool_result_turn(Some("a"), "ra"),
+    ];
+    repair_tool_message_pairs(&mut msgs);
+    // Both original calls stay on the assistant turn.
+    assert_eq!(msgs[0].tool_calls.len(), 2);
+    // A synthesized tool result for 'b' was inserted right after it.
+    let b_result = msgs
+        .iter()
+        .find(|m| m.role == "tool" && m.tool_call_id.as_deref() == Some("b"))
+        .expect("synthesized result for unanswered call 'b'");
+    assert!(
+        b_result.content.contains("TOOL_OUTCOME_UNKNOWN"),
+        "marker: {}",
+        b_result.content
+    );
+}

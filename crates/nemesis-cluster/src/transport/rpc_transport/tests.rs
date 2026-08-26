@@ -142,3 +142,132 @@ fn test_rpc_transport_error_display() {
     let err = RpcTransportError::Pool("pool exhausted".to_string());
     assert!(err.to_string().contains("pool exhausted"));
 }
+
+// ============================================================
+// S4 coverage: error-response conversion, connection-closed
+// during receive, and the receive timeout arm.
+// ============================================================
+
+fn s4_request() -> RPCRequest {
+    RPCRequest {
+        id: "s4-req".into(),
+        action: ActionType::Known(crate::rpc_types::KnownAction::Ping),
+        payload: serde_json::json!({}),
+        source: "client".into(),
+        target: Some("server".into()),
+    }
+}
+
+fn s4_pool() -> Pool {
+    Pool::new(AsyncPoolConfig {
+        max_conns: 10,
+        max_conns_per_node: 2,
+        dial_timeout: Duration::from_secs(5),
+        ..Default::default()
+    })
+}
+
+/// Server replying with an error WireMessage: `call` converts it to
+/// RPCResponse{error} and surfaces RemoteError (rpc_transport.rs 117-122,
+/// 131-132).
+#[tokio::test]
+async fn test_rpc_transport_call_error_response() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap().to_string();
+    let server_addr = addr.clone();
+
+    let server = tokio::spawn(async move {
+        let (stream, _) = listener.accept().await.unwrap();
+        let mut conn = TcpConn::new(
+            stream,
+            TcpConnConfig {
+                address: server_addr,
+                ..Default::default()
+            },
+        );
+        conn.start().await.unwrap();
+        let msg = conn.receive().await.unwrap();
+        let resp = WireMessage::new_error(&msg, "s4-boom");
+        conn.send(&resp).await.unwrap();
+        // Hold the connection open until the client finishes.
+        tokio::time::sleep(Duration::from_millis(300)).await;
+    });
+
+    let transport = RpcTransport::with_pool(s4_pool());
+    let err = transport
+        .call("server", &addr, s4_request())
+        .await
+        .expect_err("error response must surface as RemoteError");
+    match err {
+        RpcTransportError::RemoteError(msg) => assert_eq!(msg, "s4-boom"),
+        other => panic!("expected RemoteError, got {:?}", other),
+    }
+
+    transport.close();
+    let _ = server.await;
+}
+
+/// Server closing the connection after reading the request: the receive loop
+/// yields None → Connection("connection closed") (rpc_transport.rs 101-104,
+/// 137).
+#[tokio::test]
+async fn test_rpc_transport_call_connection_closed() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap().to_string();
+
+    let server = tokio::spawn(async move {
+        let (stream, _) = listener.accept().await.unwrap();
+        let mut conn = TcpConn::new(stream, TcpConnConfig::default());
+        conn.start().await.unwrap();
+        let _ = conn.receive().await.unwrap();
+        // Drop without responding.
+        drop(conn);
+    });
+
+    let transport = RpcTransport::with_pool(s4_pool());
+    let err = transport
+        .call("server", &addr, s4_request())
+        .await
+        .expect_err("closed connection must fail");
+    match err {
+        RpcTransportError::Connection(msg) => assert!(msg.contains("connection closed")),
+        other => panic!("expected Connection, got {:?}", other),
+    }
+
+    transport.close();
+    let _ = server.await;
+}
+
+/// Server that never responds: the receive loop hits the configured timeout
+/// (rpc_transport.rs 138).
+#[tokio::test]
+async fn test_rpc_transport_call_timeout() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap().to_string();
+    let server_addr = addr.clone();
+
+    let server = tokio::spawn(async move {
+        let (stream, _) = listener.accept().await.unwrap();
+        let mut conn = TcpConn::new(
+            stream,
+            TcpConnConfig {
+                address: server_addr,
+                ..Default::default()
+            },
+        );
+        conn.start().await.unwrap();
+        let _ = conn.receive().await.unwrap();
+        // Read the request but never answer; hold the socket open.
+        tokio::time::sleep(Duration::from_millis(600)).await;
+    });
+
+    let transport = RpcTransport::with_config(s4_pool(), Duration::from_millis(120));
+    let err = transport
+        .call("server", &addr, s4_request())
+        .await
+        .expect_err("silent server must time out");
+    assert!(matches!(err, RpcTransportError::Timeout), "got {:?}", err);
+
+    transport.close();
+    let _ = server.await;
+}

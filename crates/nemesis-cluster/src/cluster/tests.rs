@@ -4188,3 +4188,1613 @@ fn test_handle_discovered_node_does_not_collapse_same_host_different_port() {
         ids
     );
 }
+
+// ============================================================
+// W3b coverage batch: with_workspace empty-id, display-address
+// resolution, auth-token loading, discovery lifecycle, loops,
+// peers.toml error branches, real-RPC-client call/poll paths,
+// callback routing, setters sweep, resolver fallback edges
+// ============================================================
+
+/// Mock RPC channel used by W3b tests (set_rpc_channel wiring).
+struct MockRpcChannelW3b;
+impl std::fmt::Debug for MockRpcChannelW3b {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("MockRpcChannelW3b")
+    }
+}
+impl crate::rpc::RpcChannel for MockRpcChannelW3b {
+    fn input(
+        &self,
+        _session_key: &str,
+        _content: &str,
+        _correlation_id: &str,
+    ) -> Result<tokio::sync::oneshot::Receiver<String>, String> {
+        Err("mock input".into())
+    }
+}
+
+fn make_w3b_node(id: &str, name: &str, address: &str, status: NodeStatus) -> ExtendedNodeInfo {
+    ExtendedNodeInfo {
+        base: nemesis_types::cluster::NodeInfo {
+            id: id.into(),
+            name: name.into(),
+            role: nemesis_types::cluster::NodeRole::Worker,
+            address: address.into(),
+            category: "test".into(),
+            last_seen: chrono::Local::now().to_rfc3339(),
+        },
+        status,
+        capabilities: vec![],
+        addresses: vec![],
+        node_type: "agent".into(),
+    }
+}
+
+#[test]
+fn test_with_workspace_empty_node_id_falls_back_to_generated() {
+    let dir = tempfile::tempdir().unwrap();
+    let cluster_dir = dir.path().join("cluster");
+    std::fs::create_dir_all(&cluster_dir).unwrap();
+    // [node] section exists but id is empty → generated id must be used and persisted
+    std::fs::write(
+        cluster_dir.join("peers.toml"),
+        "[node]\nid = \"\"\nname = \"Empty\"\n\n[peers.Node-A]\naddress = \"10.0.0.1:9000\"\n",
+    )
+    .unwrap();
+
+    let mut config = make_config();
+    config.node_id = String::new();
+    let cluster = Cluster::with_workspace(config, dir.path().to_path_buf());
+
+    assert!(!cluster.node_id.is_empty(), "empty [node].id must not stick");
+    assert_ne!(cluster.node_id, "local-node-001");
+    // The generated id is persisted back so restarts keep it
+    let loaded = crate::cluster_config::load_static_config(&cluster_dir.join("peers.toml")).unwrap();
+    assert_eq!(loaded.node.id, cluster.node_id);
+    assert!(!loaded.node.id.is_empty());
+}
+
+#[test]
+fn test_start_resolves_display_address_from_wildcard_bind() {
+    let mut config = make_config();
+    config.bind_address = "0.0.0.0:9377".into();
+    let dir = tempfile::tempdir().unwrap();
+    let cluster = Cluster::with_workspace(config, dir.path().to_path_buf());
+    cluster.start();
+
+    let local = cluster.get_node_info("local-node-001").unwrap();
+    assert!(
+        !local.base.address.starts_with("0.0.0.0"),
+        "wildcard bind must be resolved to a concrete IP, got {}",
+        local.base.address
+    );
+    assert!(local.base.address.ends_with(":9377"));
+    cluster.stop();
+}
+
+#[test]
+fn test_rpc_to_udp_address_all_branches() {
+    // rpc_port > 10000 → reversed to udp convention
+    assert_eq!(Cluster::rpc_to_udp_address("10.0.0.1:21949"), "10.0.0.1:11949");
+    // port ≤ 10000 → unchanged
+    assert_eq!(Cluster::rpc_to_udp_address("10.0.0.1:9000"), "10.0.0.1:9000");
+    assert_eq!(Cluster::rpc_to_udp_address("10.0.0.1:10000"), "10.0.0.1:10000");
+    // no port → unchanged
+    assert_eq!(Cluster::rpc_to_udp_address("10.0.0.1"), "10.0.0.1");
+    // non-numeric port → unchanged
+    assert_eq!(Cluster::rpc_to_udp_address("host.example:abc"), "host.example:abc");
+    // boundary 10001
+    assert_eq!(Cluster::rpc_to_udp_address("h:10001"), "h:1");
+}
+
+#[test]
+fn test_load_rpc_auth_token_config_read_error_is_tolerated() {
+    let dir = tempfile::tempdir().unwrap();
+    // config.cluster.json is a DIRECTORY → read_to_string fails → warn + return
+    std::fs::create_dir_all(dir.path().join("config").join("config.cluster.json")).unwrap();
+    let mut cluster = Cluster::with_workspace(make_config(), dir.path().to_path_buf());
+    let server = Arc::new(crate::rpc::server::RpcServer::new(
+        crate::rpc::server::RpcServerConfig {
+            bind_address: "127.0.0.1:0".into(),
+            ..Default::default()
+        },
+    ));
+    cluster.set_rpc_server(server);
+    cluster.start();
+    assert!(cluster.is_running());
+    cluster.stop();
+}
+
+#[test]
+fn test_load_rpc_auth_token_invalid_json_is_tolerated() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join("config")).unwrap();
+    std::fs::write(
+        dir.path().join("config").join("config.cluster.json"),
+        "{ not valid json",
+    )
+    .unwrap();
+    let mut cluster = Cluster::with_workspace(make_config(), dir.path().to_path_buf());
+    let server = Arc::new(crate::rpc::server::RpcServer::new(
+        crate::rpc::server::RpcServerConfig {
+            bind_address: "127.0.0.1:0".into(),
+            ..Default::default()
+        },
+    ));
+    cluster.set_rpc_server(server);
+    cluster.start();
+    assert!(cluster.is_running());
+    cluster.stop();
+}
+
+#[test]
+fn test_load_rpc_auth_token_empty_token_runs_without_auth() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join("config")).unwrap();
+    std::fs::write(
+        dir.path().join("config").join("config.cluster.json"),
+        serde_json::json!({"token": ""}).to_string(),
+    )
+    .unwrap();
+    let mut cluster = Cluster::with_workspace(make_config(), dir.path().to_path_buf());
+    let server = Arc::new(crate::rpc::server::RpcServer::new(
+        crate::rpc::server::RpcServerConfig {
+            bind_address: "127.0.0.1:0".into(),
+            ..Default::default()
+        },
+    ));
+    cluster.set_rpc_server(server);
+    cluster.start();
+    assert!(cluster.is_running());
+    cluster.stop();
+}
+
+#[tokio::test]
+async fn test_load_rpc_auth_token_roundtrip_encrypted_rejects_plaintext() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut cluster = Cluster::with_workspace(make_config(), dir.path().to_path_buf());
+    let server = Arc::new(crate::rpc::server::RpcServer::new(
+        crate::rpc::server::RpcServerConfig {
+            bind_address: "127.0.0.1:0".into(),
+            ..Default::default()
+        },
+    ));
+    cluster.set_rpc_server(server.clone());
+    std::fs::create_dir_all(dir.path().join("config")).unwrap();
+    std::fs::write(
+        dir.path().join("config").join("config.cluster.json"),
+        serde_json::json!({"token": "w3b-secret"}).to_string(),
+    )
+    .unwrap();
+
+    cluster.start(); // initializes rpc_client + applies token to server & client
+    cluster.register_basic_handlers().unwrap();
+    server.start().await.unwrap();
+    let port = server.port();
+
+    cluster.register_node(make_w3b_node(
+        "peer-b",
+        "Peer B",
+        &format!("127.0.0.1:{}", port),
+        NodeStatus::Online,
+    ));
+
+    // A plaintext client (no token) must NOT get a successful response from
+    // the token-protected server — proves the server picked the token up.
+    let plain = Arc::new(RpcClient::with_resolver(Arc::new(ClusterPeerResolver {
+        registry: cluster.registry.clone(),
+        node_id: cluster.node_id.clone(),
+    })));
+    let req = crate::rpc_types::RPCRequest {
+        id: "plain-1".into(),
+        action: crate::rpc_types::ActionType::Custom("ping".into()),
+        payload: serde_json::json!({}),
+        source: "local".into(),
+        target: Some("peer-b".into()),
+    };
+    let plain_res = plain
+        .call_with_timeout("peer-b", req, Duration::from_secs(5))
+        .await;
+    match plain_res {
+        Ok(resp) => assert!(
+            resp.error.is_some(),
+            "plaintext client should be rejected, got {:?}",
+            resp.result
+        ),
+        Err(_) => { /* rejected at transport level — also fine */ }
+    }
+
+    // The cluster's own client (token loaded from config) must succeed —
+    // proves the client picked the token up.
+    let client = cluster.rpc_client_arc().unwrap();
+    let req2 = crate::rpc_types::RPCRequest {
+        id: "enc-1".into(),
+        action: crate::rpc_types::ActionType::Custom("ping".into()),
+        payload: serde_json::json!({}),
+        source: cluster.node_id.clone(),
+        target: Some("peer-b".into()),
+    };
+    let resp = client
+        .call_with_timeout("peer-b", req2, Duration::from_secs(5))
+        .await
+        .expect("encrypted call should succeed");
+    assert!(resp.error.is_none());
+    assert_eq!(resp.result.unwrap()["status"], "pong");
+
+    server.stop().unwrap();
+    cluster.stop();
+}
+
+#[test]
+fn test_load_discovery_secret_variants() {
+    // No config file → empty secret
+    let dir = tempfile::tempdir().unwrap();
+    let cluster = Cluster::with_workspace(make_config(), dir.path().to_path_buf());
+    assert_eq!(cluster.load_discovery_secret(), "");
+
+    // Config with token → secret returned
+    std::fs::create_dir_all(dir.path().join("config")).unwrap();
+    std::fs::write(
+        dir.path().join("config").join("config.cluster.json"),
+        serde_json::json!({"token": "disc-secret"}).to_string(),
+    )
+    .unwrap();
+    assert_eq!(cluster.load_discovery_secret(), "disc-secret");
+
+    // Unreadable config (directory) → empty secret
+    let dir2 = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir2.path().join("config").join("config.cluster.json")).unwrap();
+    let cluster2 = Cluster::with_workspace(make_config(), dir2.path().to_path_buf());
+    assert_eq!(cluster2.load_discovery_secret(), "");
+}
+
+#[test]
+fn test_start_discovery_lifecycle_double_start_and_stop_paths() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut cluster = Cluster::with_workspace(make_config(), dir.path().to_path_buf());
+    // Random UDP port + long interval keeps the broadcast thread quiet.
+    cluster.set_ports(0, 0);
+    cluster.set_broadcast_interval(Duration::from_secs(600));
+    // RPC server attached but NOT started → cluster.stop() hits its Err arm.
+    let server = Arc::new(crate::rpc::server::RpcServer::new(
+        crate::rpc::server::RpcServerConfig {
+            bind_address: "127.0.0.1:0".into(),
+            ..Default::default()
+        },
+    ));
+    cluster.set_rpc_server(server);
+    cluster.start();
+
+    let arc: Arc<Cluster> = Arc::new(cluster);
+    let cb: Arc<dyn ClusterCallbacks> = arc.clone();
+    arc.start_discovery(cb);
+    {
+        let guard = arc.discovery.lock();
+        assert!(guard.is_some(), "discovery service should be stored");
+    }
+
+    // Double start → warn + skip (flag path)
+    let cb2: Arc<dyn ClusterCallbacks> = arc.clone();
+    arc.start_discovery(cb2);
+
+    arc.stop();
+    assert!(!arc.is_running());
+}
+
+#[tokio::test]
+async fn test_start_spawns_loops_and_writes_state_toml() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut cluster = Cluster::with_workspace(make_config(), dir.path().to_path_buf());
+    cluster.set_broadcast_interval(Duration::from_millis(50));
+    cluster.start();
+
+    // The sync loop's interval fires immediately on its first tick, then every
+    // 50ms — poll briefly for {workspace}/cluster/state.toml to appear.
+    let state_path = dir.path().join("cluster").join("state.toml");
+    let deadline = std::time::Instant::now() + Duration::from_millis(800);
+    while !state_path.exists() && std::time::Instant::now() < deadline {
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert!(
+        state_path.exists(),
+        "sync loop should persist state.toml to the workspace"
+    );
+
+    cluster.stop();
+    // Give the loops a moment to observe the stop signal and exit cleanly.
+    tokio::time::sleep(Duration::from_millis(20)).await;
+}
+
+#[test]
+fn test_remove_node_peers_toml_write_error_warns() {
+    let dir = tempfile::tempdir().unwrap();
+    let cluster = Cluster::with_workspace(make_config(), dir.path().to_path_buf());
+    cluster.start();
+    cluster.handle_discovered_node(
+        "peer-gone",
+        "gone",
+        vec!["10.9.9.9".into()],
+        21949,
+        "worker",
+        "test",
+        vec![],
+        vec![],
+        "agent",
+    );
+    // peers.toml as a directory → remove_peer_from_file fails → warn path.
+    // (handle_discovered_node already persisted it as a regular file — remove first.)
+    let peers_toml = dir.path().join("cluster").join("peers.toml");
+    if peers_toml.exists() {
+        std::fs::remove_file(&peers_toml).unwrap();
+    }
+    std::fs::create_dir_all(&peers_toml).unwrap();
+    let removed = cluster.remove_node("peer-gone");
+    assert!(removed, "registry removal should still succeed");
+    cluster.stop();
+}
+
+#[test]
+fn test_handle_discovered_node_upgrades_static_placeholder_preserving_name() {
+    let dir = tempfile::tempdir().unwrap();
+    let cluster = Cluster::with_workspace(make_config(), dir.path().to_path_buf());
+    cluster.start();
+
+    // Placeholder keyed by human name at the same address the announce will use.
+    cluster.register_node(make_w3b_node("Node-A", "Node-A", "10.1.1.5:21949", NodeStatus::Online));
+    assert!(cluster.mark_peer_static("Node-A"));
+
+    // Announce carries node_id as name (common) — the placeholder's human name
+    // must survive the upgrade and static-ness must be inherited.
+    cluster.handle_discovered_node(
+        "real-x",
+        "real-x",
+        vec!["10.1.1.5".into()],
+        21949,
+        "worker",
+        "development",
+        vec![],
+        vec![],
+        "agent",
+    );
+
+    assert!(cluster.get_node_info("Node-A").is_none(), "placeholder must be removed");
+    let real = cluster.get_node_info("real-x").unwrap();
+    assert_eq!(real.base.name, "Node-A", "human name must be restored");
+    assert!(cluster.registry.is_peer_static("real-x"), "static-ness must be inherited");
+    cluster.stop();
+}
+#[test]
+fn test_upgrade_peer_in_peers_toml_same_sanitized_key_writes_real_id() {
+    let dir = tempfile::tempdir().unwrap();
+    let cluster_dir = dir.path().join("cluster");
+    std::fs::create_dir_all(&cluster_dir).unwrap();
+    std::fs::write(
+        cluster_dir.join("peers.toml"),
+        "[node]\nid = \"local-node-001\"\n\n[peers.\"peer.a\"]\naddress = \"10.0.0.1:9000\"\n",
+    )
+    .unwrap();
+
+    let cluster = Cluster::with_workspace(make_config(), dir.path().to_path_buf());
+    // 'peer.a' and 'peer:a' sanitize to the same key 'peer_a' → same-key branch
+    cluster.upgrade_peer_in_peers_toml(
+        "peer.a",
+        "peer:a",
+        &RealNodeInfo {
+            id: "peer:a".into(),
+            name: "Peer Colon".into(),
+            address: "10.0.0.1:21949".into(),
+            role: nemesis_types::cluster::NodeRole::Worker,
+            category: "test".into(),
+            capabilities: vec![],
+            node_type: "agent".into(),
+        },
+    );
+
+    let content = std::fs::read_to_string(cluster_dir.join("peers.toml")).unwrap();
+    assert!(
+        content.contains("Peer Colon"),
+        "real id entry should be written: {}",
+        content
+    );
+}
+
+#[test]
+fn test_upgrade_peer_in_peers_toml_read_error_skips() {
+    let dir = tempfile::tempdir().unwrap();
+    let cluster_dir = dir.path().join("cluster");
+    // peers.toml is a DIRECTORY → read_to_string fails → warn + skip
+    std::fs::create_dir_all(cluster_dir.join("peers.toml")).unwrap();
+
+    let cluster = Cluster::with_workspace(make_config(), dir.path().to_path_buf());
+    cluster.upgrade_peer_in_peers_toml(
+        "Node-A",
+        "real-y",
+        &RealNodeInfo {
+            id: "real-y".into(),
+            name: "Y".into(),
+            address: "10.0.0.2:21949".into(),
+            role: nemesis_types::cluster::NodeRole::Worker,
+            category: "test".into(),
+            capabilities: vec![],
+            node_type: "agent".into(),
+        },
+    );
+    // No panic; the directory stays a directory (no write happened through it).
+    assert!(cluster_dir.join("peers.toml").is_dir());
+}
+
+#[test]
+fn test_upgrade_peer_in_peers_toml_without_peers_table_persists_directly() {
+    let dir = tempfile::tempdir().unwrap();
+    let cluster_dir = dir.path().join("cluster");
+    std::fs::create_dir_all(&cluster_dir).unwrap();
+    // File with [node] only — no [peers] table → direct persist + return
+    std::fs::write(
+        cluster_dir.join("peers.toml"),
+        "[node]\nid = \"local-node-001\"\n",
+    )
+    .unwrap();
+
+    let cluster = Cluster::with_workspace(make_config(), dir.path().to_path_buf());
+    cluster.upgrade_peer_in_peers_toml(
+        "Node-A",
+        "real-z",
+        &RealNodeInfo {
+            id: "real-z".into(),
+            name: "Z".into(),
+            address: "10.0.0.3:21949".into(),
+            role: nemesis_types::cluster::NodeRole::Worker,
+            category: "test".into(),
+            capabilities: vec![],
+            node_type: "agent".into(),
+        },
+    );
+
+    let content = std::fs::read_to_string(cluster_dir.join("peers.toml")).unwrap();
+    assert!(
+        content.contains("real-z") && content.contains("[peers."),
+        "real entry should be appended under [peers]: {}",
+        content
+    );
+}
+
+#[test]
+fn test_upgrade_peer_in_peers_toml_write_error_after_removal() {
+    let dir = tempfile::tempdir().unwrap();
+    let cluster_dir = dir.path().join("cluster");
+    std::fs::create_dir_all(&cluster_dir).unwrap();
+    std::fs::write(
+        cluster_dir.join("peers.toml"),
+        "[node]\nid = \"local-node-001\"\n\n[peers.Node-A]\naddress = \"10.0.0.1:9000\"\n",
+    )
+    .unwrap();
+    // Block the atomic-write tmp path with a directory → write fails after
+    // the placeholder was removed from the in-memory doc.
+    std::fs::create_dir_all(cluster_dir.join("peers.toml.tmp")).unwrap();
+
+    let cluster = Cluster::with_workspace(make_config(), dir.path().to_path_buf());
+    cluster.upgrade_peer_in_peers_toml(
+        "Node-A",
+        "real-w",
+        &RealNodeInfo {
+            id: "real-w".into(),
+            name: "W".into(),
+            address: "10.0.0.4:21949".into(),
+            role: nemesis_types::cluster::NodeRole::Worker,
+            category: "test".into(),
+            capabilities: vec![],
+            node_type: "agent".into(),
+        },
+    );
+    // Original file content is untouched (the failed write never landed).
+    let content = std::fs::read_to_string(cluster_dir.join("peers.toml")).unwrap();
+    assert!(content.contains("[peers.Node-A]"), "file must be unchanged: {}", content);
+}
+
+#[test]
+fn test_merge_real_node_info_master_role_with_write_error() {
+    let dir = tempfile::tempdir().unwrap();
+    let cluster_dir = dir.path().join("cluster");
+    // peers.toml as directory → append fails → persist warn arm
+    std::fs::create_dir_all(cluster_dir.join("peers.toml")).unwrap();
+
+    let cluster = Cluster::with_workspace(make_config(), dir.path().to_path_buf());
+    let merged = cluster.merge_real_node_info(&RealNodeInfo {
+        id: "master-1".into(),
+        name: "Master One".into(),
+        address: "10.5.5.5:21949".into(),
+        role: nemesis_types::cluster::NodeRole::Master,
+        category: "prod".into(),
+        capabilities: vec!["llm".into()],
+        node_type: "agent".into(),
+    });
+    assert_eq!(merged, "master-1");
+    let info = cluster.get_node_info("master-1").unwrap();
+    assert_eq!(info.base.role, nemesis_types::cluster::NodeRole::Master);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_call_with_context_real_server_success_error_and_connect_failure() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut cluster = Cluster::with_workspace(make_config(), dir.path().to_path_buf());
+    let server = Arc::new(crate::rpc::server::RpcServer::new(
+        crate::rpc::server::RpcServerConfig {
+            bind_address: "127.0.0.1:0".into(),
+            ..Default::default()
+        },
+    ));
+    cluster.set_rpc_server(server.clone());
+    cluster.start();
+    cluster
+        .register_rpc_handler(
+            "w3b_ok",
+            Box::new(|_p| Ok(serde_json::json!({"ok": true}))),
+        )
+        .unwrap();
+    cluster
+        .register_rpc_handler(
+            "w3b_boom",
+            Box::new(|_p| Err("boom-error".to_string())),
+        )
+        .unwrap();
+    server.start().await.unwrap();
+    let port = server.port();
+
+    cluster.register_node(make_w3b_node(
+        "peer-live",
+        "Live",
+        &format!("127.0.0.1:{}", port),
+        NodeStatus::Online,
+    ));
+    cluster.register_node(make_w3b_node("peer-dead", "Dead", "127.0.0.1:1", NodeStatus::Online));
+
+    // Success path: result serialized to bytes
+    let ok = cluster
+        .call_with_context("peer-live", "w3b_ok", serde_json::json!({}))
+        .expect("call should succeed");
+    let parsed: serde_json::Value = serde_json::from_slice(&ok).unwrap();
+    assert_eq!(parsed["ok"], true);
+
+    // Error-response path: handler error propagates
+    let err = cluster
+        .call_with_context("peer-live", "w3b_boom", serde_json::json!({}))
+        .expect_err("handler error should surface");
+    assert!(err.contains("boom-error"), "unexpected error: {}", err);
+
+    // Connect-failure path: dead port → transport error
+    let err2 = cluster
+        .call_with_context("peer-dead", "w3b_ok", serde_json::json!({}))
+        .expect_err("dead peer should fail");
+    assert!(!err2.is_empty());
+
+    server.stop().unwrap();
+    cluster.stop();
+}
+
+#[tokio::test]
+async fn test_call_with_context_async_real_server_success_and_failure() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut cluster = Cluster::with_workspace(make_config(), dir.path().to_path_buf());
+    let server = Arc::new(crate::rpc::server::RpcServer::new(
+        crate::rpc::server::RpcServerConfig {
+            bind_address: "127.0.0.1:0".into(),
+            ..Default::default()
+        },
+    ));
+    cluster.set_rpc_server(server.clone());
+    cluster.start();
+    cluster
+        .register_rpc_handler(
+            "w3b_async",
+            Box::new(|_p| Ok(serde_json::json!({"async": true}))),
+        )
+        .unwrap();
+    server.start().await.unwrap();
+    let port = server.port();
+
+    cluster.register_node(make_w3b_node(
+        "peer-live",
+        "Live",
+        &format!("127.0.0.1:{}", port),
+        NodeStatus::Online,
+    ));
+    cluster.register_node(make_w3b_node("peer-dead", "Dead", "127.0.0.1:1", NodeStatus::Online));
+
+    let ok = cluster
+        .call_with_context_async("peer-live", "w3b_async", serde_json::json!({}), Duration::from_secs(5))
+        .await
+        .expect("async call should succeed");
+    let parsed: serde_json::Value = serde_json::from_slice(&ok).unwrap();
+    assert_eq!(parsed["async"], true);
+
+    let err = cluster
+        .call_with_context_async("peer-dead", "w3b_async", serde_json::json!({}), Duration::from_secs(5))
+        .await
+        .expect_err("dead peer should fail");
+    assert!(!err.is_empty());
+
+    server.stop().unwrap();
+    cluster.stop();
+}
+
+#[tokio::test]
+async fn test_set_cluster_task_queue_routes_callback_to_work_queue() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut cluster = Cluster::with_workspace(make_config(), dir.path().to_path_buf());
+    let server = Arc::new(crate::rpc::server::RpcServer::new(
+        crate::rpc::server::RpcServerConfig {
+            bind_address: "127.0.0.1:0".into(),
+            ..Default::default()
+        },
+    ));
+    cluster.set_rpc_server(server);
+    cluster.start();
+    // The callback handler captures the task list/queue clones when it is
+    // registered (triggered by set_rpc_channel below), so wire the queue FIRST.
+    let tl = Arc::new(crate::cluster_task::ClusterTaskList::new(dir.path().join("tasks")));
+    let wq = Arc::new(crate::cluster_task::ClusterWorkQueue::new(8));
+    cluster.set_cluster_task_queue(tl.clone(), wq.clone());
+    cluster.set_rpc_channel(Arc::new(MockRpcChannelW3b)); // running → registers handlers
+
+    tl.create_task(crate::cluster_task::ClusterTask {
+        task_id: "parent-1".into(),
+        source: crate::cluster_task::TaskSource {
+            node_id: "origin-a".into(),
+            rpc_address: "127.0.0.1:1".into(),
+            session_key: "sess-1".into(),
+        },
+        status: crate::cluster_task::TaskStatus::Pending,
+        content: "do work".into(),
+        conversation: None,
+        waiting_for_task_id: None,
+        waiting_tool_call_id: None,
+        callback_result: None,
+    });
+    tl.save_async_state(
+        "parent-1",
+        "child-9".into(),
+        "tool-9".into(),
+        serde_json::json!({"messages": []}),
+    );
+
+    let resp = cluster
+        .rpc_server
+        .as_ref()
+        .unwrap()
+        .handle_request_sync(
+            "peer_chat_callback",
+            serde_json::json!({"task_id": "child-9", "response": "final-answer"}),
+        )
+        .expect("callback should be accepted");
+    assert_eq!(resp["status"], "accepted");
+
+    let task = tl.get_task("parent-1").unwrap();
+    // inject_callback documents: status → Pending so the work queue can pick it up.
+    assert_eq!(task.status, crate::cluster_task::TaskStatus::Pending);
+    assert_eq!(task.callback_result.as_deref(), Some("final-answer"));
+
+    // The re-submitted parent must come out of the work queue
+    let next_id = tokio::time::timeout(Duration::from_secs(2), wq.next())
+        .await
+        .expect("work queue should yield the parent task")
+        .expect("queue should not be closed");
+    assert_eq!(next_id, "parent-1");
+    cluster.stop();
+}
+
+#[tokio::test]
+async fn test_callback_routing_with_full_work_queue_logs_error() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut cluster = Cluster::with_workspace(make_config(), dir.path().to_path_buf());
+    let server = Arc::new(crate::rpc::server::RpcServer::new(
+        crate::rpc::server::RpcServerConfig {
+            bind_address: "127.0.0.1:0".into(),
+            ..Default::default()
+        },
+    ));
+    cluster.set_rpc_server(server);
+    cluster.start();
+    // Wire the queue BEFORE set_rpc_channel: the callback handler captures the
+    // task list/queue clones at registration time (triggered by set_rpc_channel).
+    let tl = Arc::new(crate::cluster_task::ClusterTaskList::new(dir.path().join("tasks")));
+    let wq = Arc::new(crate::cluster_task::ClusterWorkQueue::new(1));
+    cluster.set_cluster_task_queue(tl.clone(), wq.clone());
+    wq.submit("filler".into()).unwrap();
+    cluster.set_rpc_channel(Arc::new(MockRpcChannelW3b));
+
+    tl.create_task(crate::cluster_task::ClusterTask {
+        task_id: "parent-2".into(),
+        source: crate::cluster_task::TaskSource {
+            node_id: "origin-a".into(),
+            rpc_address: "127.0.0.1:1".into(),
+            session_key: "sess-2".into(),
+        },
+        status: crate::cluster_task::TaskStatus::Pending,
+        content: "c".into(),
+        conversation: None,
+        waiting_for_task_id: None,
+        waiting_tool_call_id: None,
+        callback_result: None,
+    });
+    tl.save_async_state(
+        "parent-2",
+        "child-10".into(),
+        "tool-10".into(),
+        serde_json::json!({"messages": []}),
+    );
+
+    let resp = cluster
+        .rpc_server
+        .as_ref()
+        .unwrap()
+        .handle_request_sync(
+            "peer_chat_callback",
+            serde_json::json!({"task_id": "child-10", "response": "r"}),
+        )
+        .expect("callback still accepted despite full queue");
+    assert_eq!(resp["status"], "accepted");
+    // Callback was injected even though the queue submit failed
+    assert_eq!(tl.get_task("parent-2").unwrap().callback_result.as_deref(), Some("r"));
+    cluster.stop();
+}
+#[test]
+fn test_mark_peer_healthy_offline_static_and_excluding_self() {
+    let cluster = Cluster::new(make_config());
+    cluster.start();
+    cluster.register_node(make_w3b_node("p1", "P1", "10.0.0.1:21949", NodeStatus::Online));
+    cluster.register_node(make_w3b_node("p2", "P2", "10.0.0.2:21949", NodeStatus::Online));
+
+    cluster.mark_peer_healthy("p1");
+    assert!(cluster.get_node_info("p1").unwrap().is_online());
+
+    cluster.mark_peer_offline("p1", "probe timed out");
+    assert!(!cluster.get_node_info("p1").unwrap().is_online());
+
+    assert!(cluster.mark_peer_static("p2"));
+    assert!(!cluster.mark_peer_static("unknown-peer")); // miss → false
+
+    let online = cluster.get_online_peers_excluding_self();
+    let ids: Vec<&str> = online.iter().map(|n| n.base.id.as_str()).collect();
+    assert!(!ids.contains(&"local-node-001"), "self must be excluded");
+    assert!(ids.contains(&"p2"), "online peer p2 expected in {:?}", ids);
+    cluster.stop();
+}
+
+#[test]
+fn test_identity_setters_sweep() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut cluster = Cluster::with_workspace(make_config(), dir.path().to_path_buf());
+
+    cluster.set_broadcast_interval(Duration::from_secs(7));
+    cluster.set_node_type("node");
+    assert_eq!(cluster.node_type(), "node");
+
+    cluster.start(); // needed so sync_local_node_to_registry has a base entry
+    cluster.set_node_name("Renamed");
+    cluster.set_role("master");
+    cluster.set_category("research");
+    cluster.set_tags(vec!["t1".into(), "t2".into()]);
+    cluster.set_capabilities(vec!["grep".into(), "git".into()]);
+
+    let local = cluster.get_node_info("local-node-001").unwrap();
+    assert_eq!(local.base.name, "Renamed");
+    assert_eq!(local.base.role, nemesis_types::cluster::NodeRole::Master);
+    assert_eq!(local.base.category, "research");
+    assert!(local.capabilities.contains(&"grep".to_string()));
+    cluster.stop();
+}
+
+#[test]
+fn test_register_peer_chat_handlers_not_running_logs_errors() {
+    let cluster = Cluster::new(make_config());
+    // Channel set but cluster NOT running → every register_rpc_handler fails
+    // and each failure is logged (no panic).
+    cluster.set_rpc_channel(Arc::new(MockRpcChannelW3b)); // not running → no auto-register
+    assert!(!cluster.is_running());
+    cluster.register_peer_chat_handlers();
+}
+
+#[test]
+fn test_basic_and_diagnostics_handlers_via_handle_request_sync() {
+    let cluster = make_cluster_with_rpc_server();
+    cluster.register_basic_handlers().unwrap();
+    let server = cluster.rpc_server.as_ref().unwrap();
+
+    let caps = server.handle_request_sync("get_capabilities", serde_json::json!({})).unwrap();
+    assert!(caps.get("capabilities").is_some());
+
+    let info = server.handle_request_sync("get_info", serde_json::json!({})).unwrap();
+    assert_eq!(info["node_id"], "local-node-001");
+    assert_eq!(info["status"], "online");
+
+    let actions = server.handle_request_sync("list_actions", serde_json::json!({})).unwrap();
+    assert!(!actions["actions"].as_array().unwrap().is_empty());
+
+    let sys = server.handle_request_sync("diagnostics.system", serde_json::json!({})).unwrap();
+    assert!(sys["hostname"].is_string());
+    assert!(sys["memory_total_bytes"].is_u64());
+
+    let net = server.handle_request_sync("diagnostics.network", serde_json::json!({})).unwrap();
+    assert!(net.get("interfaces").is_some());
+    assert!(net.get("all_ips").is_some());
+
+    // cluster_state reflects the registry (local node at minimum)
+    let state = server
+        .handle_request_sync("diagnostics.cluster_state", serde_json::json!({}))
+        .unwrap();
+    assert!(state["node_count"].as_u64().unwrap() >= 1);
+    assert!(state["online_count"].as_u64().unwrap() >= 1);
+    cluster.stop();
+}
+
+#[tokio::test]
+async fn test_poll_stale_pending_tasks_wrapper_method() {
+    let dir = tempfile::tempdir().unwrap();
+    let cluster = Cluster::with_workspace(make_config(), dir.path().to_path_buf());
+    cluster.start();
+    // Empty task manager → wrapper runs without effect
+    cluster.poll_stale_pending_tasks().await;
+    assert!(cluster.list_tasks().is_empty());
+    cluster.stop();
+}
+
+#[test]
+fn test_set_rpc_client_external() {
+    let cluster = Cluster::new(make_config());
+    cluster.start();
+    assert!(cluster.rpc_client_arc().is_some()); // auto-initialized by start()
+
+    let resolver = Arc::new(ClusterPeerResolver {
+        registry: cluster.registry.clone(),
+        node_id: cluster.node_id.clone(),
+    });
+    cluster.set_rpc_client(Arc::new(RpcClient::with_resolver(resolver)));
+    assert!(cluster.rpc_client_arc().is_some());
+    cluster.stop();
+}
+
+#[tokio::test]
+async fn test_poll_stale_pending_tasks_real_client_running_done_notfound_and_dead() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut cluster = Cluster::with_workspace(make_config(), dir.path().to_path_buf());
+    let server = Arc::new(crate::rpc::server::RpcServer::new(
+        crate::rpc::server::RpcServerConfig {
+            bind_address: "127.0.0.1:0".into(),
+            ..Default::default()
+        },
+    ));
+    cluster.set_rpc_server(server.clone());
+    cluster.start();
+    cluster.set_rpc_channel(Arc::new(MockRpcChannelW3b)); // registers query/confirm handlers
+    server.start().await.unwrap();
+    let port = server.port();
+
+    cluster.register_node(make_w3b_node(
+        "peer-b",
+        "Peer B",
+        &format!("127.0.0.1:{}", port),
+        NodeStatus::Online,
+    ));
+    cluster.register_node(make_w3b_node("peer-dead", "Dead", "127.0.0.1:1", NodeStatus::Online));
+
+    let tm = cluster.task_manager.clone();
+    let client = cluster.rpc_client_arc().unwrap();
+
+    let submit_stale = |tm: &TaskManager, id: &str, peer: &str| {
+        let old_time = (chrono::Local::now() - chrono::Duration::minutes(5)).to_rfc3339();
+        tm.submit(Task {
+            id: id.to_string(),
+            status: TaskStatus::Pending,
+            action: "peer_chat".to_string(),
+            peer_id: peer.to_string(),
+            payload: serde_json::json!({}),
+            result: None,
+            original_channel: "rpc".to_string(),
+            original_chat_id: "ch".to_string(),
+            created_at: old_time,
+            completed_at: None,
+        })
+        .unwrap();
+    };
+
+    // 1. Remote reports "running" → task stays Pending
+    server.register_handler(
+        "query_task_result",
+        Box::new(|_p| Ok(serde_json::json!({"status": "running"}))),
+    );
+    submit_stale(&tm, "stale-running", "peer-b");
+    poll_stale_pending_tasks(&tm, &None, Some(client.as_ref())).await;
+    assert_eq!(tm.get_task("stale-running").unwrap().status, TaskStatus::Pending);
+
+    // 2. Remote reports "done" → completed locally + confirm sent via real client
+    server.register_handler(
+        "query_task_result",
+        Box::new(|_p| {
+            Ok(serde_json::json!({
+                "status": "done",
+                "result_status": "success",
+                "response": "remote-answer",
+                "error": "",
+            }))
+        }),
+    );
+    submit_stale(&tm, "stale-done", "peer-b");
+    poll_stale_pending_tasks(&tm, &None, Some(client.as_ref())).await;
+    assert_eq!(tm.get_task("stale-done").unwrap().status, TaskStatus::Completed);
+
+    // 3. Remote reports "not_found" → failed locally
+    server.register_handler(
+        "query_task_result",
+        Box::new(|_p| Ok(serde_json::json!({"status": "not_found"}))),
+    );
+    submit_stale(&tm, "stale-nf", "peer-b");
+    poll_stale_pending_tasks(&tm, &None, Some(client.as_ref())).await;
+    assert_eq!(tm.get_task("stale-nf").unwrap().status, TaskStatus::Failed);
+
+    // 4. Dead peer → transport error → task stays Pending
+    submit_stale(&tm, "stale-dead", "peer-dead");
+    poll_stale_pending_tasks(&tm, &None, Some(client.as_ref())).await;
+    assert_eq!(tm.get_task("stale-dead").unwrap().status, TaskStatus::Pending);
+
+    server.stop().unwrap();
+    cluster.stop();
+}
+
+#[test]
+fn test_cluster_callbacks_full_identity_sweep() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut cluster = Cluster::with_workspace(make_config(), dir.path().to_path_buf());
+    cluster.set_node_type("node");
+    cluster.start();
+    cluster.set_capabilities(vec!["grep".into(), "cluster".into(), "git".into()]);
+
+    assert_eq!(
+        ClusterCallbacks::name(&cluster),
+        cluster.get_node_info("local-node-001").unwrap().base.name
+    );
+    assert!(!ClusterCallbacks::all_local_ips(&cluster).is_empty());
+    assert!(ClusterCallbacks::capabilities(&cluster).len() >= 3);
+    assert_eq!(ClusterCallbacks::node_type(&cluster), "node");
+    cluster.stop();
+}
+
+#[test]
+fn test_cluster_peer_resolver_fallback_by_name_with_empty_address() {
+    let cluster = Cluster::new(make_config());
+    cluster.start();
+    // Peer matched by NAME with an empty primary address and no address list
+    // → fallback scan yields an empty address vec.
+    let mut peer = make_w3b_node("x1", "MyNode", "", NodeStatus::Online);
+    peer.addresses = vec![];
+    cluster.register_node(peer);
+
+    let resolver = ClusterPeerResolver {
+        registry: cluster.registry.clone(),
+        node_id: cluster.node_id.clone(),
+    };
+    let (addresses, _port, online) = resolver.get_peer_info("MyNode").unwrap();
+    assert!(addresses.is_empty());
+    assert!(online);
+    cluster.stop();
+}
+
+#[test]
+fn test_write_atomic_success_and_failures() {
+    let dir = tempfile::tempdir().unwrap();
+    let dest = dir.path().join("cfg.toml");
+
+    // Success path: tmp write + rename
+    write_atomic(&dest, b"data").unwrap();
+    assert_eq!(std::fs::read(&dest).unwrap(), b"data");
+    assert!(!dir.path().join("cfg.toml.tmp").exists(), "tmp file renamed away");
+
+    // tmp path blocked by a directory → write fails
+    let dest2 = dir.path().join("blocked.toml");
+    std::fs::create_dir_all(dir.path().join("blocked.toml.tmp")).unwrap();
+    assert!(write_atomic(&dest2, b"x").is_err());
+
+    // destination is a directory → rename fails, tmp cleaned up
+    let dest3 = dir.path().join("asdir.toml");
+    std::fs::create_dir_all(&dest3).unwrap();
+    assert!(write_atomic(&dest3, b"y").is_err());
+    assert!(
+        !dir.path().join("asdir.toml.tmp").exists(),
+        "tmp cleaned after rename failure"
+    );
+}
+
+// ============================================================
+// S4 coverage batch: auth-token wiring, sync-loop save error,
+// discovery success fields, placeholder-upgrade arms,
+// upgrade_peer_in_peers_toml branches, handler registration
+// fail-fast, forge empty filename, callback fall-through,
+// confirm_delivery fallback, poll no-client skip, async null
+// result, resolver fallback host vec, tracing field lines.
+// ============================================================
+
+/// No-op tracing subscriber that enables every event so that
+/// tracing-macro field expressions (`timeout_secs = ...` etc.)
+/// are evaluated and counted as covered. Installed once per
+/// process; a second install attempt fails harmlessly.
+struct S4AllEventsSubscriber;
+impl tracing::Subscriber for S4AllEventsSubscriber {
+    fn enabled(&self, _metadata: &tracing::Metadata<'_>) -> bool {
+        true
+    }
+    fn new_span(&self, _span: &tracing::span::Attributes<'_>) -> tracing::Id {
+        tracing::Id::from_u64(1)
+    }
+    fn record(&self, _span: &tracing::Id, _values: &tracing::span::Record<'_>) {}
+    fn record_follows_from(&self, _span: &tracing::Id, _follows: &tracing::Id) {}
+    fn event(&self, _event: &tracing::Event<'_>) {}
+    fn enter(&self, _span: &tracing::Id) {}
+    fn exit(&self, _span: &tracing::Id) {}
+}
+
+fn s4_tracing_subscriber() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        let _ = tracing::subscriber::set_global_default(S4AllEventsSubscriber);
+    });
+}
+
+/// `start()` creates the RPC client, then `load_rpc_auth_token` applies the
+/// configured token to BOTH the attached (unstarted) server and the client
+/// (cluster.rs 387-396). `stop()` afterwards hits the server-not-running Err
+/// arm (471-473).
+#[test]
+fn test_load_rpc_auth_token_applies_to_server_and_client() {
+    s4_tracing_subscriber();
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join("config")).unwrap();
+    std::fs::write(
+        dir.path().join("config").join("config.cluster.json"),
+        serde_json::json!({"token": "s4-auth-tok"}).to_string(),
+    )
+    .unwrap();
+
+    let mut cluster = Cluster::with_workspace(make_config(), dir.path().to_path_buf());
+    let server = Arc::new(crate::rpc::server::RpcServer::new(
+        crate::rpc::server::RpcServerConfig {
+            bind_address: "127.0.0.1:0".into(),
+            ..Default::default()
+        },
+    ));
+    cluster.set_rpc_server(server);
+    cluster.start();
+    assert!(cluster.is_running());
+    // Both server and client branches of load_rpc_auth_token ran during start().
+    assert!(cluster.rpc_client.lock().is_some());
+
+    // Server was never started → stop() warns and swallows the error.
+    cluster.stop();
+    assert!(!cluster.is_running());
+}
+
+/// The sync loop's first interval tick fires immediately; with
+/// `cluster/state.toml` blocked by a directory the save fails every tick and
+/// the error is logged (cluster.rs 588-590) without killing the loop.
+#[tokio::test]
+async fn test_sync_loop_state_save_error_logged() {
+    let dir = tempfile::tempdir().unwrap();
+    let state_path = dir.path().join("cluster").join("state.toml");
+    std::fs::create_dir_all(&state_path).unwrap();
+
+    let mut cluster = Cluster::with_workspace(make_config(), dir.path().to_path_buf());
+    cluster.set_broadcast_interval(Duration::from_millis(50));
+    cluster.start();
+
+    // Let at least a few ticks fire — each one hits the save error path.
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert!(state_path.is_dir(), "blocked path must remain a directory");
+
+    cluster.stop();
+    assert!(!cluster.is_running());
+}
+
+/// `start_discovery` with a configured token succeeds and evaluates the
+/// `encrypted` field of the success log (cluster.rs 423-427). Port 0 + a long
+/// interval keep the broadcast thread quiet.
+#[test]
+fn test_start_discovery_with_token_logs_encrypted_success() {
+    s4_tracing_subscriber();
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join("config")).unwrap();
+    std::fs::write(
+        dir.path().join("config").join("config.cluster.json"),
+        serde_json::json!({"token": "s4-disc-secret"}).to_string(),
+    )
+    .unwrap();
+
+    let mut cluster = Cluster::with_workspace(make_config(), dir.path().to_path_buf());
+    cluster.set_ports(0, 0);
+    cluster.set_broadcast_interval(Duration::from_secs(600));
+    let server = Arc::new(crate::rpc::server::RpcServer::new(
+        crate::rpc::server::RpcServerConfig {
+            bind_address: "127.0.0.1:0".into(),
+            ..Default::default()
+        },
+    ));
+    cluster.set_rpc_server(server);
+    cluster.start();
+
+    let arc: Arc<Cluster> = Arc::new(cluster);
+    let cb: Arc<dyn ClusterCallbacks> = arc.clone();
+    arc.start_discovery(cb);
+    {
+        let guard = arc.discovery.lock();
+        assert!(guard.is_some(), "discovery service should be stored");
+    }
+    arc.stop();
+}
+
+/// A placeholder with an EMPTY name at the announce address: the upgraded
+/// real entry falls back to the announce name (cluster.rs 734-737).
+#[test]
+fn test_handle_discovered_node_empty_placeholder_name_uses_announce_name() {
+    let dir = tempfile::tempdir().unwrap();
+    let cluster = Cluster::with_workspace(make_config(), dir.path().to_path_buf());
+    cluster.start();
+
+    // Placeholder keyed by an id with an empty human name at the same address.
+    cluster.register_node(make_w3b_node("ph-empty", "", "10.3.3.3:21949", NodeStatus::Online));
+
+    cluster.handle_discovered_node(
+        "real-empty-name",
+        "RealHuman",
+        vec!["10.3.3.3".into()],
+        21949,
+        "worker",
+        "development",
+        vec![],
+        vec![],
+        "agent",
+    );
+
+    assert!(
+        cluster.get_node_info("ph-empty").is_none(),
+        "empty-name placeholder must be removed"
+    );
+    let real = cluster.get_node_info("real-empty-name").unwrap();
+    assert_eq!(real.base.name, "RealHuman");
+    cluster.stop();
+}
+
+/// When the announce already carries a real (non-node_id) name, the
+/// name-restore branch does NOT overwrite it (cluster.rs 764 condition false).
+#[test]
+fn test_handle_discovered_node_upgrade_keeps_announce_name_when_distinct() {
+    let dir = tempfile::tempdir().unwrap();
+    let cluster = Cluster::with_workspace(make_config(), dir.path().to_path_buf());
+    cluster.start();
+
+    cluster.register_node(make_w3b_node("Node-B", "Node-B", "10.4.4.4:21949", NodeStatus::Online));
+
+    cluster.handle_discovered_node(
+        "real-w",
+        "RealW",
+        vec!["10.4.4.4".into()],
+        21949,
+        "worker",
+        "development",
+        vec![],
+        vec![],
+        "agent",
+    );
+
+    assert!(cluster.get_node_info("Node-B").is_none());
+    let real = cluster.get_node_info("real-w").unwrap();
+    assert_eq!(real.base.name, "RealW", "distinct announce name must survive");
+    cluster.stop();
+}
+
+/// An identical second announce is a no-op change: `upsert_if_changed` returns
+/// false and the unchanged-health trace fires (cluster.rs 778-782).
+#[test]
+fn test_handle_discovered_node_second_announce_unchanged() {
+    s4_tracing_subscriber();
+    let cluster = Cluster::new(make_config());
+    cluster.start();
+
+    let args = (
+        "remote-unchanged",
+        "stable-name",
+        vec!["10.7.7.7".to_string()],
+        21949u16,
+        "worker",
+        "development",
+        vec![String::new()],
+        vec![String::new()],
+        "agent",
+    );
+    let first = cluster.handle_discovered_node(
+        args.0, args.1, args.2.clone(), args.3, args.4, args.5, args.6.clone(), args.7.clone(), args.8,
+    );
+    assert!(first, "first announce should be a change");
+    let second = cluster.handle_discovered_node(
+        args.0, args.1, args.2, args.3, args.4, args.5, args.6, args.7, args.8,
+    );
+    assert!(!second, "identical second announce must be unchanged");
+    cluster.stop();
+}
+
+/// Direct calls to the private `upgrade_peer_in_peers_toml`:
+/// (a) no peers.toml at all → empty document path (cluster.rs 973-974),
+/// (b) peers.toml with [peers] but WITHOUT the placeholder key → the
+///     removed-is-none fall-through (cluster.rs 1004-1011).
+#[test]
+fn test_upgrade_peer_in_peers_toml_no_file_and_missing_key() {
+    let info_a = RealNodeInfo {
+        id: "real-a".into(),
+        name: "Alpha Real".into(),
+        address: "10.8.8.1:21949".into(),
+        role: nemesis_types::cluster::NodeRole::Worker,
+        category: "test".into(),
+        capabilities: vec![],
+        node_type: "agent".into(),
+    };
+
+    // (a) fresh workspace, ensure no peers.toml exists
+    let dir = tempfile::tempdir().unwrap();
+    let cluster = Cluster::with_workspace(make_config(), dir.path().to_path_buf());
+    let peers_toml = dir.path().join("cluster").join("peers.toml");
+    if peers_toml.exists() {
+        std::fs::remove_file(&peers_toml).unwrap();
+    }
+    cluster.upgrade_peer_in_peers_toml("ph-a", "real-a", &info_a);
+    let content = std::fs::read_to_string(&peers_toml).unwrap();
+    assert!(content.contains("Alpha Real"), "real entry appended: {}", content);
+    drop(cluster);
+
+    // (b) peers.toml with a [peers] table but no ph-b key
+    let dir2 = tempfile::tempdir().unwrap();
+    let cluster_dir = dir2.path().join("cluster");
+    std::fs::create_dir_all(&cluster_dir).unwrap();
+    std::fs::write(
+        cluster_dir.join("peers.toml"),
+        "[node]\nid = \"local-node-001\"\n\n[peers]\n\n[peers.zzz]\nname = \"zz\"\n",
+    )
+    .unwrap();
+
+    let cluster2 = Cluster::with_workspace(make_config(), dir2.path().to_path_buf());
+    let info_b = RealNodeInfo {
+        id: "real-b".into(),
+        name: "Bee Real".into(),
+        address: "10.8.8.2:21949".into(),
+        role: nemesis_types::cluster::NodeRole::Worker,
+        category: "test".into(),
+        capabilities: vec![],
+        node_type: "agent".into(),
+    };
+    cluster2.upgrade_peer_in_peers_toml("ph-b", "real-b", &info_b);
+
+    let content2 = std::fs::read_to_string(cluster_dir.join("peers.toml")).unwrap();
+    assert!(content2.contains("Bee Real"), "real-b entry appended: {}", content2);
+    assert!(
+        !content2.contains(crate::cluster_config::sanitize_peer_key("ph-b").as_str()),
+        "placeholder key must not appear: {}",
+        content2
+    );
+}
+
+/// `register_basic_handlers` on a RUNNING cluster without an RPC server: the
+/// very first registration fails and `?` aborts immediately (cluster.rs 1837).
+#[test]
+fn test_register_basic_handlers_fails_fast_without_rpc_server() {
+    let cluster = Cluster::new(make_config());
+    cluster.start();
+    assert!(cluster.is_running());
+
+    let err = cluster
+        .register_basic_handlers()
+        .expect_err("registration must fail without an RPC server");
+    assert!(
+        err.contains("RPC server is not initialized"),
+        "unexpected error: {}",
+        err
+    );
+    cluster.stop();
+}
+
+/// `forge_get_reflections` with an empty `filename` skips the read branch
+/// (cluster.rs 2042-2063) and still returns the list + node_id.
+#[test]
+fn test_register_forge_handlers_get_reflections_empty_filename() {
+    let cluster = make_cluster_with_rpc_server();
+    let dir = tempfile::tempdir().unwrap();
+
+    let provider = Box::new(crate::handlers::FileForgeProvider::new(dir.path()));
+    let result = cluster.register_forge_handlers(provider);
+    assert!(result.is_ok());
+
+    let rpc_server = cluster.rpc_server.as_ref().unwrap();
+    let list_result = rpc_server.handle_request_sync(
+        "forge_get_reflections",
+        serde_json::json!({
+            "from": "peer-x",
+            "filename": "",
+        }),
+    );
+    assert!(list_result.is_ok());
+    let resp = list_result.unwrap();
+    assert!(
+        resp.get("content").is_none(),
+        "empty filename must not read a reflection"
+    );
+    assert_eq!(resp["node_id"], "local-node-001");
+}
+
+/// A peer_chat_callback whose task_id is NOT a known child task falls through
+/// to the main TaskManager (cluster.rs 2178-2182).
+#[tokio::test]
+async fn test_peer_chat_callback_unknown_child_falls_through_to_task_manager() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut cluster = Cluster::with_workspace(make_config(), dir.path().to_path_buf());
+    let server = Arc::new(crate::rpc::server::RpcServer::new(
+        crate::rpc::server::RpcServerConfig {
+            bind_address: "127.0.0.1:0".into(),
+            ..Default::default()
+        },
+    ));
+    cluster.set_rpc_server(server);
+    cluster.start();
+    // Wire the queue BEFORE set_rpc_channel so the callback handler captures it.
+    let tl = Arc::new(crate::cluster_task::ClusterTaskList::new(dir.path().join("tasks")));
+    let wq = Arc::new(crate::cluster_task::ClusterWorkQueue::new(8));
+    cluster.set_cluster_task_queue(tl.clone(), wq.clone());
+    cluster.set_rpc_channel(Arc::new(MockRpcChannelW3b));
+
+    // A pending task in the MAIN task manager with the id the callback uses.
+    let task = Task {
+        id: "orphan-1".to_string(),
+        status: TaskStatus::Pending,
+        action: "peer_chat".to_string(),
+        peer_id: "remote-1".to_string(),
+        payload: serde_json::json!({}),
+        result: None,
+        original_channel: "rpc".to_string(),
+        original_chat_id: "ch".to_string(),
+        created_at: chrono::Local::now().to_rfc3339(),
+        completed_at: None,
+    };
+    cluster.task_manager.submit(task).unwrap();
+
+    let resp = cluster
+        .rpc_server
+        .as_ref()
+        .unwrap()
+        .handle_request_sync(
+            "peer_chat_callback",
+            serde_json::json!({"task_id": "orphan-1", "status": "completed", "response": "back-at-ya"}),
+        )
+        .expect("callback should be accepted");
+    assert_eq!(resp["status"], "accepted");
+
+    let t = cluster.task_manager.get_task("orphan-1").unwrap();
+    assert_eq!(t.status, TaskStatus::Completed, "main TaskManager must complete the task");
+    cluster.stop();
+}
+
+/// `confirm_delivery` with neither the test override nor an RPC client walks
+/// the fallback `call_with_context` branch (cluster.rs 2288-2295) and must not
+/// panic.
+#[test]
+fn test_confirm_delivery_fallback_path_without_client() {
+    let cluster = Cluster::new(make_config());
+    assert!(!cluster.is_running());
+    // rpc_client is None on a cluster that was never started.
+    assert!(cluster.rpc_client.lock().is_none());
+    cluster.confirm_delivery("peer-x", "task-1");
+}
+
+/// `set_rpc_client` logs the client timeout (cluster.rs 2300-2303) — the
+/// `timeout_secs` field must evaluate under an active subscriber.
+#[test]
+fn test_set_rpc_client_logs_timeout_field() {
+    s4_tracing_subscriber();
+    let cluster = Cluster::new(make_config());
+    let resolver = ClusterPeerResolver {
+        registry: cluster.registry.clone(),
+        node_id: cluster.node_id.clone(),
+    };
+    cluster.set_rpc_client(Arc::new(RpcClient::with_resolver(Arc::new(resolver))));
+    assert!(cluster.rpc_client.lock().is_some());
+}
+
+/// The 24h-timeout warn (cluster.rs 2391-2396) — the `age_secs` field must
+/// evaluate under an active subscriber.
+#[tokio::test]
+async fn test_poll_stale_24h_timeout_logs_age_under_subscriber() {
+    s4_tracing_subscriber();
+    let tm = Arc::new(TaskManager::new());
+    let old_time = (chrono::Local::now() - chrono::Duration::hours(25)).to_rfc3339();
+    let task = Task {
+        id: "stale-24h-s4".to_string(),
+        status: TaskStatus::Pending,
+        action: "action".to_string(),
+        peer_id: "remote-1".to_string(),
+        payload: serde_json::json!({}),
+        result: None,
+        original_channel: "rpc".to_string(),
+        original_chat_id: "ch".to_string(),
+        created_at: old_time,
+        completed_at: None,
+    };
+    tm.submit(task).unwrap();
+
+    poll_stale_pending_tasks(&tm, &None, None).await;
+    assert_eq!(tm.get_task("stale-24h-s4").unwrap().status, TaskStatus::Failed);
+}
+
+/// A task between 2 minutes and 24 hours old with a peer_id, but with NEITHER
+/// an RPC client NOR a call override → the poll skips it (cluster.rs 2444-2446)
+/// and the task stays Pending.
+#[tokio::test]
+async fn test_poll_stale_no_client_no_call_fn_continues() {
+    let tm = Arc::new(TaskManager::new());
+    let old_time = (chrono::Local::now() - chrono::Duration::minutes(5)).to_rfc3339();
+    let task = Task {
+        id: "stale-5m-noclient".to_string(),
+        status: TaskStatus::Pending,
+        action: "action".to_string(),
+        peer_id: "remote-1".to_string(),
+        payload: serde_json::json!({}),
+        result: None,
+        original_channel: "rpc".to_string(),
+        original_chat_id: "ch".to_string(),
+        created_at: old_time,
+        completed_at: None,
+    };
+    tm.submit(task).unwrap();
+
+    poll_stale_pending_tasks(&tm, &None, None).await;
+    assert_eq!(
+        tm.get_task("stale-5m-noclient").unwrap().status,
+        TaskStatus::Pending,
+        "no client + no override must leave the task pending"
+    );
+}
+
+/// `sync_to_disk` serializes an Offline peer (cluster.rs 1655), and a blocked
+/// state.toml surfaces the save error with its log fields (cluster.rs 1673-1679).
+#[test]
+fn test_sync_to_disk_offline_peer_then_save_error() {
+    s4_tracing_subscriber();
+    let dir = tempfile::tempdir().unwrap();
+    let cluster = Cluster::with_workspace(make_config(), dir.path().to_path_buf());
+    cluster.start();
+
+    cluster.register_node(make_w3b_node("peer-off", "Off", "10.6.6.6:21949", NodeStatus::Online));
+    cluster.handle_node_offline("peer-off", "test");
+    assert_eq!(
+        cluster.get_node_info("peer-off").unwrap().status,
+        NodeStatus::Offline
+    );
+
+    // First sync succeeds and hits the "offline" status arm.
+    cluster.sync_to_disk().expect("first sync should succeed");
+
+    // Block state.toml → second sync fails through the error-mapping closure.
+    let state_path = dir.path().join("cluster").join("state.toml");
+    if state_path.exists() {
+        std::fs::remove_file(&state_path).unwrap();
+    }
+    std::fs::create_dir_all(&state_path).unwrap();
+    assert!(cluster.sync_to_disk().is_err(), "blocked state.toml must fail");
+    cluster.stop();
+}
+
+/// A handler returning JSON null round-trips as `result: Some(Null)`, so the
+/// async call serializes the JSON `null` literal (cluster.rs 1308-1311); the
+/// debug fields before the call (1279-1285) evaluate under the subscriber.
+#[tokio::test]
+async fn test_async_call_null_handler_result_serializes_null() {
+    s4_tracing_subscriber();
+    let dir = tempfile::tempdir().unwrap();
+    let mut cluster = Cluster::with_workspace(make_config(), dir.path().to_path_buf());
+    let server = Arc::new(crate::rpc::server::RpcServer::new(
+        crate::rpc::server::RpcServerConfig {
+            bind_address: "127.0.0.1:0".into(),
+            ..Default::default()
+        },
+    ));
+    cluster.set_rpc_server(server.clone());
+    cluster.start();
+    cluster
+        .register_rpc_handler(
+            "s4_null",
+            Box::new(|_p| Ok(serde_json::Value::Null)),
+        )
+        .unwrap();
+    server.start().await.unwrap();
+    let port = server.port();
+
+    cluster.register_node(make_w3b_node(
+        "peer-null",
+        "Null",
+        &format!("127.0.0.1:{}", port),
+        NodeStatus::Online,
+    ));
+
+    let res = cluster
+        .call_with_context_async("peer-null", "s4_null", serde_json::json!({}), Duration::from_secs(5))
+        .await
+        .expect("null-result call should succeed");
+    // Server wraps Null as payload → client decodes result: Some(Null) →
+    // serde serializes the JSON null literal (4 bytes).
+    assert_eq!(res, b"null".to_vec());
+
+    server.stop().unwrap();
+    cluster.stop();
+}
+
+/// A direct RPCResponse frame WITHOUT a `result` field decodes to
+/// `result: None`, so the sync `call_with_context` returns empty bytes
+/// (cluster.rs 1210-1215). Requires a multi-thread runtime because the
+/// sync path bridges through `block_in_place` + `handle.block_on`.
+#[tokio::test(flavor = "multi_thread")]
+async fn test_sync_call_missing_result_field_returns_empty() {
+    s4_tracing_subscriber();
+
+    // Raw server: accept one request, reply a bare RPCResponse JSON
+    // (no result, no error) — decode_response's WireMessage parse fails,
+    // the direct fallback yields result: None.
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap().to_string();
+    let raw = tokio::spawn(async move {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        if let Ok((mut sock, _)) = listener.accept().await {
+            let mut len_buf = [0u8; 4];
+            if sock.read_exact(&mut len_buf).await.is_err() {
+                return;
+            }
+            let len = u32::from_be_bytes(len_buf) as usize;
+            let mut buf = vec![0u8; len];
+            if sock.read_exact(&mut buf).await.is_err() {
+                return;
+            }
+            let reply = br#"{"id":"s4-none-1"}"#.to_vec();
+            let total = (reply.len() as u32).to_be_bytes();
+            let _ = sock.write_all(&total).await;
+            let _ = sock.write_all(&reply).await;
+        }
+    });
+
+    let dir = tempfile::tempdir().unwrap();
+    let cluster = Cluster::with_workspace(make_config(), dir.path().to_path_buf());
+    cluster.start();
+    assert!(cluster.rpc_client.lock().is_some());
+
+    cluster.register_node(make_w3b_node("peer-none", "NoneNode", &addr, NodeStatus::Online));
+
+    let res = cluster
+        .call_with_context("peer-none", "s4_none_action", serde_json::json!({}))
+        .expect("call should succeed");
+    assert!(res.is_empty(), "missing result must decode to None → empty bytes");
+
+    cluster.stop();
+    raw.abort();
+}
+
+/// Resolver fallback matched by NAME with an empty `addresses` list but a
+/// parseable primary address → yields `vec![host]` (cluster.rs 2658-2663).
+#[test]
+fn test_cluster_peer_resolver_fallback_host_from_primary_address() {
+    let cluster = Cluster::new(make_config());
+    cluster.start();
+
+    let mut peer = make_w3b_node("x9", "HostOnlyNode", "127.0.0.1:9001", NodeStatus::Online);
+    peer.addresses = vec![]; // force the primary-address parse path
+    cluster.register_node(peer);
+
+    let resolver = ClusterPeerResolver {
+        registry: cluster.registry.clone(),
+        node_id: cluster.node_id.clone(),
+    };
+    let (addresses, port, online) = resolver.get_peer_info("HostOnlyNode").unwrap();
+    assert_eq!(addresses, vec!["127.0.0.1".to_string()]);
+    assert_eq!(port, 9001);
+    assert!(online);
+    cluster.stop();
+}

@@ -521,3 +521,85 @@ fn test_format_message_with_unicode() {
     let result = format_message(&text, 50);
     assert_eq!(result.len(), 50);
 }
+
+// ---------------------------------------------------------------------------
+// split_message 代码块边界路径（行级追踪构造的确定性输入）
+// ---------------------------------------------------------------------------
+
+/// closing ``` 在 max_len 内 → 扩展 msg_end 到闭合围栏之后（74-75 臂）。
+/// 构造：前缀 30 x + \n，"```python\n" 起始 31，三个 "code line\n"，
+/// 闭合 ``` 在 71-73（+3=74 <= 100），尾部 40 t。首轮 [..50] 自然断点在
+/// 40（末换行），候选未闭合围栏在 31 → closing_idx=74 ≤ 100 → 扩展到 74。
+#[test]
+fn test_split_message_extends_to_include_closing_fence() {
+    let content = format!(
+        "{}\n```python\n{}```\n{}",
+        "x".repeat(30),
+        "code line\n".repeat(3),
+        "t".repeat(40),
+    );
+    let result = split_message(&content, 100);
+    assert!(result.len() >= 2, "chunks: {}", result.len());
+    assert!(result[0].contains("```python"));
+    assert!(result[0].ends_with("```"), "chunk0 tail: {:?}", &result[0][result[0].len().saturating_sub(10)..]);
+}
+
+/// 无任何换行：better_end=0 ≤ header_end → msg_end = inner_limit（90-91 臂）。
+/// 构造：" ```" + 300 a：唯一空格在 0（find_last_space 返回 0）→ msg_end 落到
+/// effective_limit=50；围栏在 1，header_end=4，50 > 24 进内层；[..95] 无换行 →
+/// 走 else 的 inner_limit=95，chunk 以 "\n```" 收尾。
+#[test]
+fn test_split_message_no_newline_splits_at_inner_limit() {
+    let content = format!(" ```{}", "a".repeat(300));
+    let result = split_message(&content, 100);
+    assert!(result.len() >= 3, "chunks: {}", result.len());
+    assert!(result[0].starts_with(" ```"));
+    assert!(result[0].ends_with("```"));
+}
+
+/// 围栏前有换行 → 在围栏前的换行处切开（105-107 臂）。
+/// 构造：20 P + "\n```\n" + 200 a。首轮断点 24（围栏头换行），24 ≤ 44
+/// 不进内层 → find_last_newline([..21]) = 20 → msg_end=20 → 首 chunk 纯 P。
+#[test]
+fn test_split_message_splits_before_code_block_at_newline() {
+    let content = format!("{}\n```\n{}", "P".repeat(20), "a".repeat(200));
+    let result = split_message(&content, 100);
+    assert!(result.len() >= 2, "chunks: {}", result.len());
+    assert_eq!(result[0], "P".repeat(20));
+}
+
+/// 围栏前无换行但有空格 → 在空格处切开（109-111 臂）。
+/// 构造："AAAA BBBB CCCC" + "```\n" + 200 a。首轮断点 17，17 ≤ 37 →
+/// [..14] 无换行、空格在 9 → msg_end=9 → 首 chunk "AAAA BBBB"。
+/// 第二轮 "CCCC```" 走 114-125 臂（unclosed_idx=4 ≤ 20）。
+#[test]
+fn test_split_message_splits_before_code_block_at_space() {
+    let content = format!("AAAA BBBB CCCC```\n{}", "a".repeat(200));
+    let result = split_message(&content, 100);
+    assert!(result.len() >= 2, "chunks: {}", result.len());
+    assert_eq!(result[0], "AAAA BBBB");
+}
+
+/// 围栏前无换行无空格、unclosed_idx > 20 → 在围栏处切开（112-113 臂）。
+/// 构造：30 A + "```\n" + 200 a。断点 33 ≤ 53 → 无换行/空格 → 30 > 20 →
+/// msg_end=30 → 首 chunk 纯 A。
+#[test]
+fn test_split_message_splits_at_fence_when_no_natural_break() {
+    let content = format!("A{}```\n{}", "A".repeat(29), "a".repeat(200));
+    let result = split_message(&content, 100);
+    assert!(result.len() >= 2, "chunks: {}", result.len());
+    assert_eq!(result[0], "A".repeat(30));
+}
+
+/// unclosed_idx ≤ 20 且无自然断点 → else 的 max_len-5 臂 + 收尾围栏重开
+/// （114-125 臂）。构造：10 A + "```\n" + 200 a → msg_end=95，chunk 以
+/// "\n```" 收尾，余文以 header 重开。
+#[test]
+fn test_split_message_reopens_fence_when_unclosed_idx_small() {
+    let content = format!("A{}```\n{}", "A".repeat(9), "a".repeat(200));
+    let result = split_message(&content, 100);
+    assert!(result.len() >= 3, "chunks: {}", result.len());
+    assert!(result[0].starts_with(&"A".repeat(10)));
+    assert!(result[0].ends_with("```"));
+    assert!(result[0].contains("```"));
+}

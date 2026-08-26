@@ -149,3 +149,65 @@ fn test_pick_windows_exec_candidate_first_exec_wins() {
         Some(r"C:\x\claude.exe".to_string())
     );
 }
+
+// ---------------------------------------------------------------------------
+// run_cli_delegation 执行结果三臂 + find_cli_on_path 负例（M7 补测）
+// ---------------------------------------------------------------------------
+
+/// 非零退出是 **Ok**（工具层契约：CLI 失败也要把 stdout/stderr 原样带回
+/// 给模型，让它自己看到 CLI 的报错，而不是整轮工具调用失败）。
+#[tokio::test]
+async fn test_run_cli_delegation_nonzero_exit_returns_structured_ok() {
+    let dir = tempfile::tempdir().unwrap();
+    // fake CLI: 打一行 stdout 再 exit 2
+    let script = if cfg!(windows) {
+        let p = dir.path().join("fake_fail.bat");
+        std::fs::write(&p, "@echo off\r\necho boom on stdout\r\necho boom on stderr 1>&2\r\nexit /b 2\r\n").unwrap();
+        p
+    } else {
+        let p = dir.path().join("fake_fail.sh");
+        std::fs::write(&p, "#!/bin/sh\necho boom on stdout\necho boom on stderr 1>&2\nexit 2\n").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        p
+    };
+    let spec = CliDelegationSpec {
+        cli: &script.to_string_lossy(),
+        cli_label: "fake-fail",
+        args: vec![],
+        timeout_secs: 30,
+        cwd: dir.path(),
+    };
+    let out = run_cli_delegation(spec).await.unwrap();
+    assert!(out.starts_with("Error: fake-fail exited with"), "{out}");
+    assert!(out.contains("boom on stdout"), "{out}");
+    assert!(out.contains("boom on stderr"), "{out}");
+}
+
+/// spawn 失败（可执行文件不存在）→ Err，报 spawn 而非超时/退出码。
+#[tokio::test]
+async fn test_run_cli_delegation_spawn_failure_is_err() {
+    let missing = if cfg!(windows) {
+        r"Z:\definitely\missing\cli.xyz"
+    } else {
+        "/definitely/missing/cli.xyz"
+    };
+    let spec = CliDelegationSpec {
+        cli: missing,
+        cli_label: "ghost-cli",
+        args: vec![],
+        timeout_secs: 30,
+        cwd: std::path::Path::new("."),
+    };
+    let err = run_cli_delegation(spec).await.unwrap_err();
+    assert!(err.contains("failed to spawn ghost-cli"), "{err}");
+}
+
+/// PATH 上没有的命令 → None（注册层的「未安装就不注册工具」依据）。
+#[test]
+fn test_find_cli_on_path_missing_command_is_none() {
+    assert!(find_cli_on_path("nemesis-no-such-cli-xyz").is_none());
+}

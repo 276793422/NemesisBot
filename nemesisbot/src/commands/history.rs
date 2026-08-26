@@ -57,3 +57,11 @@ pub async fn run(action: HistoryAction, local: bool) -> Result<()> {
     }
     Ok(())
 }
+
+// S11c（quality-hardening goal 冲刺 S11）：声明式测试挂载，无内联测试。
+// run() 两个分支都经 nemesis_agent::history_search 的进程级单例
+// （default_path_manager OnceLock，无 setter）读写索引库——测试二进制里
+// 单例 home 非确定（取决于首个触碰它的测试），可能写进真实 ~/.nemesisbot，
+// 属结构性不可隔离，详见 tests.rs 头注。
+#[cfg(test)]
+mod tests;

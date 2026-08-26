@@ -471,3 +471,27 @@ fn it_real_plugin_via_boxed_trait() {
     assert_eq!(plugin.dim(), 384);
     plugin.close();
 }
+
+// ---- S5 coverage: Debug impls (display-layer, no DLL needed) ----
+
+#[test]
+fn debug_impls_render_unloaded_plugin_state() {
+    let inner = NativePluginInner {
+        library: None,
+        dim: 4,
+        closed: false,
+        host_services: None,
+    };
+    let dbg = format!("{:?}", inner);
+    assert!(dbg.contains("NativePluginInner"), "got: {dbg}");
+    assert!(dbg.contains("dim: 4"), "got: {dbg}");
+    assert!(dbg.contains("closed: false"), "got: {dbg}");
+    assert!(dbg.contains("library: None"), "got: {dbg}");
+
+    let plugin = NativePlugin {
+        inner: std::sync::Mutex::new(inner),
+    };
+    let plugin_dbg = format!("{:?}", plugin);
+    assert!(plugin_dbg.contains("NativePlugin"), "got: {plugin_dbg}");
+    assert!(plugin_dbg.contains("NativePluginInner"), "got: {plugin_dbg}");
+}

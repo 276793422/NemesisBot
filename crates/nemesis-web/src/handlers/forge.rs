@@ -976,3 +976,8 @@ fn read_learning_cycles(dir: &PathBuf) -> Vec<serde_json::Value> {
     }
     results
 }
+
+// S10b (2026-08-26, quality-hardening goal 冲刺 web 批次 2): narrow arms not
+// reached by forge_extra_tests.rs — offline only.
+#[cfg(test)]
+mod s10b_tests;

@@ -167,3 +167,6 @@ fn run_loopback_inner(stop: &Arc<AtomicBool>) -> Result<(), String> {
     tracing::info!("[AEC Loopback] stopped");
     Ok(())
 }
+
+#[cfg(test)]
+mod tests;

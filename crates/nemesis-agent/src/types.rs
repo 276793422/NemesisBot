@@ -410,3 +410,7 @@ pub fn repair_tool_message_pairs(messages: &mut Vec<ConversationTurn>) {
 
 #[cfg(test)]
 mod tests;
+
+// S9 (quality-hardening goal 冲刺 S9): 独立测试文件挂载（声明式，无内联测试）。
+#[cfg(test)]
+mod s9_tests;

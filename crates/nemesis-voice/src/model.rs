@@ -576,3 +576,6 @@ fn download_model_files(
 ) -> Result<()> {
     anyhow::bail!("Model download requires 'download' feature (enabled by default)");
 }
+
+#[cfg(test)]
+mod tests;

@@ -57,3 +57,6 @@ pub fn ed25519_verify(vk: &VerifyingKey, msg: &[u8], sig: &[u8; 64]) -> bool {
     let s = Signature::from_bytes(sig);
     vk.verify(msg, &s).is_ok()
 }
+
+#[cfg(test)]
+mod tests;

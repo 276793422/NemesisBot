@@ -1113,3 +1113,174 @@ async fn test_handle_health_includes_running_and_sessions_reflects_state() {
     assert_eq!(json["running"], false);
     assert_eq!(json["sessions"], 7);
 }
+
+// ============================================================
+// Phase 3 覆盖率（2026-08-25）：WebServer 全部 setter 一次扫过。
+// 这些是 gateway 装配线的注入点（每个一行 Arc 赋值），单测钉
+// 「可装配 + 字段真的进去」——用 build_router 成功作为装配完整信号。
+// ============================================================
+
+#[tokio::test]
+async fn webserver_all_setters_assemble() {
+    let dir = tempfile::tempdir().unwrap();
+    let config = WebServerConfig {
+        listen_addr: "127.0.0.1:0".to_string(),
+        auth_token: String::new(),
+        cors_origins: vec![],
+        ws_path: "/ws".to_string(),
+        workspace: None,
+        home: None,
+        version: String::new(),
+        static_dir: None,
+        static_files: None,
+        index_file: "index.html".to_string(),
+    };
+    let mut server = WebServer::new(config);
+
+    // streaming provider（SSE chat 用）
+    server.set_streaming_provider(std::sync::Arc::new(
+        nemesis_providers::http_provider::HttpProvider::new(
+            nemesis_providers::http_provider::HttpProviderConfig {
+                name: "t".to_string(),
+                base_url: "http://127.0.0.1:9".to_string(),
+                api_key: "k".to_string(),
+                default_model: "m".to_string(),
+                timeout_secs: 5,
+                headers: std::collections::HashMap::new(),
+                proxy: None,
+                preserve_prefix: false,
+            },
+        ),
+    ));
+
+    // agent service（start/stop 控制）+ cluster service（生命周期）
+    struct NoopSvc;
+    #[async_trait::async_trait]
+    impl nemesis_services::bot_service::AgentLoopService for NoopSvc {}
+    impl nemesis_services::bot_service::LifecycleService for NoopSvc {
+        fn start(&self) -> Result<(), String> {
+            Ok(())
+        }
+        fn stop(&self) -> Result<(), String> {
+            Ok(())
+        }
+        fn is_running(&self) -> bool {
+            false
+        }
+    }
+    let svc: std::sync::Arc<NoopSvc> = std::sync::Arc::new(NoopSvc);
+    server.set_agent_service(svc.clone());
+    server.set_cluster_service(svc);
+
+    // data store（usage 统计，真实 SQLite 落 tempdir）
+    let store = nemesis_data::DataStore::open(&dir.path().join("usage.db")).unwrap();
+    server.set_data_store(std::sync::Arc::new(store));
+
+    #[cfg(feature = "memory")]
+    server.set_memory_manager(std::sync::Arc::new(
+        nemesis_memory::manager::MemoryManager::new(&nemesis_memory::manager::Config::new(
+            dir.path().join("mem"),
+        )),
+    ));
+
+    #[cfg(feature = "forge")]
+    server.set_forge(std::sync::Arc::new(nemesis_forge::forge::Forge::new(
+        <nemesis_forge::config::ForgeConfig as Default>::default(),
+        dir.path().to_path_buf(),
+    )));
+
+    // agent loop（运行时换 provider 用）
+    struct NoopProvider;
+    #[async_trait::async_trait]
+    impl nemesis_agent::r#loop::LlmProvider for NoopProvider {
+        async fn chat(
+            &self,
+            _: &str,
+            _: Vec<nemesis_agent::r#loop::LlmMessage>,
+            _: Option<nemesis_agent::types::ChatOptions>,
+            _: Vec<nemesis_agent::types::ToolDefinition>,
+        ) -> Result<nemesis_agent::r#loop::LlmResponse, String> {
+            Ok(nemesis_agent::r#loop::LlmResponse {
+                content: String::new(),
+                tool_calls: Vec::new(),
+                finished: true,
+                reasoning_content: None,
+                usage: None,
+                raw_request_body: None,
+                raw_response_body: None,
+            })
+        }
+    }
+    let al = nemesis_agent::r#loop::AgentLoop::new(
+        Box::new(NoopProvider),
+        nemesis_agent::types::AgentConfig::default(),
+    );
+    server.set_agent_loop(std::sync::Arc::new(parking_lot::RwLock::new(Some(
+        std::sync::Arc::new(al),
+    ))));
+
+    #[cfg(feature = "cluster")]
+    server.set_cluster(std::sync::Arc::new(nemesis_cluster::cluster::Cluster::with_workspace(
+        nemesis_cluster::types::ClusterConfig::default(),
+        dir.path().to_path_buf(),
+    )));
+
+    server.set_cluster_log_dir(dir.path().join("cluster_logs").to_string_lossy().to_string());
+
+    #[cfg(feature = "workflow")]
+    {
+        struct NullWfProvider;
+        #[async_trait::async_trait]
+        impl nemesis_providers::router::LLMProvider for NullWfProvider {
+            async fn chat(
+                &self,
+                _: &[nemesis_providers::types::Message],
+                _: &[nemesis_providers::types::ToolDefinition],
+                _: &str,
+                _: &nemesis_providers::types::ChatOptions,
+            ) -> Result<
+                nemesis_providers::types::LLMResponse,
+                nemesis_providers::failover::FailoverError,
+            > {
+                Ok(nemesis_providers::types::LLMResponse {
+                    content: "stub".to_string(),
+                    tool_calls: Vec::new(),
+                    finish_reason: "stop".to_string(),
+                    usage: None,
+                    reasoning_content: None,
+                    extra: std::collections::HashMap::new(),
+                    raw_request_body: None,
+                    raw_response_body: None,
+                })
+            }
+            fn default_model(&self) -> &str {
+                "stub"
+            }
+            fn name(&self) -> &str {
+                "null"
+            }
+        }
+        let engine = nemesis_workflow::engine::WorkflowEngine::new_integrated(
+            std::sync::Arc::new(NullWfProvider),
+            std::sync::Arc::new(nemesis_tools::registry::ToolRegistry::new()),
+            None,
+        );
+        server.set_workflow_engine(engine);
+        server.set_chat_secret_store(std::sync::Arc::new(
+            nemesis_workflow::chat_secrets::ChatSecretStore::in_memory(),
+        ));
+    }
+
+    let (tx, _rx) = tokio::sync::mpsc::channel(8);
+    server.set_internal_cmd_tx(tx);
+    server.set_estop(std::sync::Arc::new(nemesis_agent::estop::EstopState::new()));
+    server.set_cron(std::sync::Arc::new(std::sync::Mutex::new(
+        nemesis_cron::CronService::new(
+            dir.path().join("cron.json").to_string_lossy().as_ref(),
+        ),
+    )));
+    server.set_conv_router(std::sync::Arc::new(crate::conv_router::ConvRouter::new()));
+
+    // 全部 setter 后 router 仍能装配（字段类型一致性信号）。
+    let _router = server.build_router();
+}

@@ -9,9 +9,10 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, Command};
+use tokio::sync::broadcast;
 use tracing::{debug, error, info, warn};
 
-use nemesis_types::channel::OutboundMessage;
+use nemesis_types::channel::{InboundMessage, OutboundMessage};
 use nemesis_types::error::{NemesisError, Result};
 
 use crate::base::{BaseChannel, Channel};
@@ -33,9 +34,13 @@ pub struct ExternalConfig {
 
 /// External channel using stdin/stdout pipes.
 pub struct ExternalChannel {
-    base: BaseChannel,
+    /// Shared handle so the input reader task can access the allow-list and
+    /// sync targets (mirrors Go's BaseChannel pointer).
+    base: Arc<BaseChannel>,
     config: ExternalConfig,
     running: Arc<AtomicBool>,
+    /// Message bus sender for publishing inbound messages from the input EXE.
+    bus_sender: broadcast::Sender<InboundMessage>,
     /// Handle to the input process (for killing on stop).
     input_child: parking_lot::Mutex<Option<Child>>,
     /// Cancellation channel for the input read loop.
@@ -44,7 +49,13 @@ pub struct ExternalChannel {
 
 impl ExternalChannel {
     /// Creates a new `ExternalChannel`.
-    pub fn new(config: ExternalConfig) -> Result<Self> {
+    ///
+    /// `bus_sender` is used to publish inbound messages read from the input
+    /// EXE's stdout (parity with Go's `NewExternalChannel(cfg, messageBus)`).
+    pub fn new(
+        config: ExternalConfig,
+        bus_sender: broadcast::Sender<InboundMessage>,
+    ) -> Result<Self> {
         if config.input_exe.is_empty() || config.output_exe.is_empty() {
             return Err(NemesisError::Channel(
                 "both input_exe and output_exe must be specified".to_string(),
@@ -52,9 +63,13 @@ impl ExternalChannel {
         }
 
         Ok(Self {
-            base: BaseChannel::new("external"),
+            base: Arc::new(BaseChannel::with_allow_list(
+                "external",
+                config.allow_from.clone(),
+            )),
             config,
             running: Arc::new(AtomicBool::new(false)),
+            bus_sender,
             input_child: parking_lot::Mutex::new(None),
             cancel_tx: parking_lot::Mutex::new(None),
         })
@@ -94,9 +109,16 @@ impl ExternalChannel {
     }
 
     /// Spawns the input process and reads stdout in a background task.
+    ///
+    /// Each non-empty line is published to the message bus as an
+    /// `InboundMessage` (parity with Go's `readInputEXEStdout` →
+    /// `HandleMessage` + `SyncToTargets`).
     fn spawn_input_reader(&self) {
         let input_exe = self.config.input_exe.clone();
+        let chat_id = self.config.chat_id.clone();
         let running = self.running.clone();
+        let base = Arc::clone(&self.base);
+        let bus_sender = self.bus_sender.clone();
 
         let (cancel_tx, cancel_rx) = tokio::sync::oneshot::channel::<()>();
         *self.cancel_tx.lock() = Some(cancel_tx);
@@ -143,6 +165,35 @@ impl ExternalChannel {
                                 let trimmed = line.trim();
                                 if !trimmed.is_empty() {
                                     debug!(line = %trimmed, "[ExternalChannel] received from input EXE");
+
+                                    // Allow-list check (mirrors Go HandleMessage → IsAllowed)
+                                    if base.is_allowed(&chat_id) {
+                                        let inbound = InboundMessage {
+                                            channel: base.name().to_string(),
+                                            sender_id: chat_id.clone(),
+                                            chat_id: chat_id.clone(),
+                                            content: trimmed.to_string(),
+                                            media: Vec::new(),
+                                            session_key: chat_id.clone(),
+                                            correlation_id: String::new(),
+                                            metadata: std::collections::HashMap::new(),
+                                            voice_playback: None,
+                                        };
+                                        if let Err(e) = bus_sender.send(inbound) {
+                                            warn!(
+                                                error = %e,
+                                                "[ExternalChannel] failed to publish inbound message"
+                                            );
+                                        }
+
+                                        // Sync to configured targets (mirrors Go SyncToTargets)
+                                        base.sync_to_targets(trimmed).await;
+                                    } else {
+                                        warn!(
+                                            chat_id = %chat_id,
+                                            "[ExternalChannel] message blocked by allow-list"
+                                        );
+                                    }
                                 }
                                 line.clear();
                             }

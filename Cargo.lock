@@ -3324,6 +3324,7 @@ dependencies = [
  "tokio",
  "tokio-util",
  "tracing",
+ "tracing-subscriber",
  "uuid",
 ]
 
@@ -3356,6 +3357,7 @@ dependencies = [
  "ratatui",
  "serde",
  "serde_json",
+ "tempfile",
  "toml 0.8.2",
 ]
 
@@ -3393,6 +3395,7 @@ dependencies = [
  "tokio",
  "tokio-tungstenite 0.26.2",
  "tracing",
+ "tracing-subscriber",
  "uuid",
 ]
 
@@ -3537,6 +3540,7 @@ dependencies = [
  "thiserror 2.0.18",
  "tokio",
  "tracing",
+ "tracing-subscriber",
  "uuid",
 ]
 
@@ -3566,6 +3570,7 @@ dependencies = [
  "tempfile",
  "tokio",
  "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]
@@ -3628,7 +3633,9 @@ dependencies = [
  "thiserror 2.0.18",
  "tokio",
  "tracing",
+ "tracing-subscriber",
  "uuid",
+ "wiremock",
 ]
 
 [[package]]
@@ -3756,6 +3763,7 @@ dependencies = [
  "thiserror 2.0.18",
  "tokio",
  "tracing",
+ "tracing-subscriber",
  "zip",
 ]
 
@@ -3881,6 +3889,7 @@ dependencies = [
  "thiserror 2.0.18",
  "tokio",
  "tracing",
+ "tracing-subscriber",
  "uuid",
 ]
 
@@ -3916,6 +3925,7 @@ dependencies = [
  "tempfile",
  "tokio",
  "tracing",
+ "tracing-subscriber",
  "wiremock",
  "zip",
 ]
@@ -3932,6 +3942,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
+ "tempfile",
 ]
 
 [[package]]
@@ -3983,6 +3994,7 @@ dependencies = [
  "nemesis-security",
  "nemesis-services",
  "nemesis-skills",
+ "nemesis-tools",
  "nemesis-types",
  "nemesis-utils",
  "nemesis-voice",
@@ -4001,6 +4013,7 @@ dependencies = [
  "tracing",
  "url",
  "uuid",
+ "wiremock",
  "zip",
 ]
 

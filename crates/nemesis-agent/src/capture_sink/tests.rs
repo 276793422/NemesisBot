@@ -126,3 +126,119 @@ fn overwrite_auto_flushes() {
 
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+// --- W3a: ringbuffer bounds, disabled arms, flush IO-error arm ---
+
+fn disabled_sink() -> CaptureSink {
+    CaptureSink {
+        workspace: std::path::PathBuf::new(),
+        enabled: false,
+        buffers: std::sync::Mutex::new(std::collections::HashMap::new()),
+    }
+}
+
+fn tool_cap(name: &str) -> ToolCapture {
+    ToolCapture {
+        tool_name: name.to_string(),
+        arguments: "{}".to_string(),
+        result: "r".to_string(),
+        success: true,
+        duration_ms: 1,
+        error: String::new(),
+        llm_round: 1,
+        ts: String::new(),
+    }
+}
+
+fn write_cap(overwrite: bool) -> SessionWriteCapture {
+    SessionWriteCapture {
+        writer: "add_message".to_string(),
+        op: "add_message".to_string(),
+        before_len: Some(1),
+        after_len: Some(2),
+        first_role: Some("user".to_string()),
+        last_role: Some("assistant".to_string()),
+        messages_hash: "h".to_string(),
+        overwrite_detected: overwrite,
+        ts: String::new(),
+    }
+}
+
+/// record_tool on a disabled sink is a no-op (early return).
+#[test]
+fn record_tool_disabled_is_noop() {
+    let sink = disabled_sink();
+    sink.record_tool("sk", tool_cap("t"));
+    assert!(sink.buffers.lock().unwrap().is_empty());
+}
+
+/// record_session_write on a disabled sink is a no-op (early return).
+#[test]
+fn record_session_write_disabled_is_noop() {
+    let sink = disabled_sink();
+    sink.record_session_write("sk", write_cap(false));
+    assert!(sink.buffers.lock().unwrap().is_empty());
+}
+
+/// flush on a disabled sink returns before touching the filesystem.
+#[test]
+fn flush_disabled_is_noop() {
+    let sink = disabled_sink();
+    sink.flush("sk", "context_error", None, Some("boom"));
+    assert!(!sink.workspace.join("logs").exists());
+}
+
+/// Tool ringbuffer is bounded at MAX_TOOLS=50: oldest entries dropped.
+#[test]
+fn tool_ringbuffer_drains_oldest_beyond_50() {
+    let dir = std::env::temp_dir().join(format!("nemesis_cap_rb_{}_{}", std::process::id(), line!()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let sink = CaptureSink::for_test(dir.clone());
+    for i in 0..52 {
+        sink.record_tool("rb", tool_cap(&format!("t{i}")));
+    }
+    {
+        let bufs = sink.buffers.lock().unwrap();
+        let buf = bufs.get("rb").unwrap();
+        assert_eq!(buf.tools.len(), 50, "bounded at MAX_TOOLS");
+        assert_eq!(buf.tools[0].tool_name, "t2", "oldest two dropped");
+        assert_eq!(buf.tools[49].tool_name, "t51");
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Session-write ringbuffer is bounded at MAX_SESSION_WRITES=200 (and
+/// overwrite=false records never auto-flush).
+#[test]
+fn session_write_ringbuffer_drains_oldest_beyond_200() {
+    let dir = std::env::temp_dir().join(format!("nemesis_cap_wr_{}_{}", std::process::id(), line!()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let sink = CaptureSink::for_test(dir.clone());
+    for _ in 0..202 {
+        sink.record_session_write("wr", write_cap(false));
+    }
+    {
+        let bufs = sink.buffers.lock().unwrap();
+        let buf = bufs.get("wr").unwrap();
+        assert_eq!(buf.session_writes.len(), 200, "bounded at MAX_SESSION_WRITES");
+        // ts was auto-filled (non-empty) on record.
+        assert!(!buf.session_writes[0].ts.is_empty());
+    }
+    assert!(
+        !dir.join("logs").exists(),
+        "no auto-flush without overwrite signal"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// flush with a workspace whose path is a FILE: create_dir_all fails ->
+/// warn + early return (best-effort, no panic).
+#[test]
+fn flush_with_file_workspace_warns_and_returns() {
+    let tmp = tempfile::tempdir().unwrap();
+    let blocker = tmp.path().join("blocker");
+    std::fs::write(&blocker, b"x").unwrap();
+    let sink = CaptureSink::for_test(blocker);
+    sink.record_tool("sk2", tool_cap("t"));
+    sink.flush("sk2", "llm_retry_exhausted", None, None); // must not panic
+}

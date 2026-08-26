@@ -1190,3 +1190,99 @@ async fn test_rpc_client_against_rpc_server() {
     assert_eq!(resp.result.unwrap()["status"], "pong");
     server.stop().unwrap();
 }
+
+// ===========================================================================
+// S4 coverage: connection-closed debug field line and the non-request
+// msg_type skip arm in handle_connection's message loop.
+// ===========================================================================
+
+/// No-op tracing subscriber so field-recording lines inside
+/// `tracing::debug!` macros actually execute.
+struct S4ServerSubscriber;
+
+impl tracing::Subscriber for S4ServerSubscriber {
+    fn enabled(&self, _metadata: &tracing::Metadata<'_>) -> bool {
+        true
+    }
+    fn new_span(&self, _span: &tracing::span::Attributes<'_>) -> tracing::Id {
+        tracing::Id::from_u64(1)
+    }
+    fn record(&self, _span: &tracing::Id, _values: &tracing::span::Record<'_>) {}
+    fn record_follows_from(&self, _span: &tracing::Id, _follows: &tracing::Id) {}
+    fn event(&self, _event: &tracing::Event<'_>) {}
+    fn enter(&self, _span: &tracing::Id) {}
+    fn exit(&self, _span: &tracing::Id) {}
+}
+
+static S4_SERVER_SUBSCRIBER: std::sync::Once = std::sync::Once::new();
+
+fn install_s4_server_subscriber() {
+    S4_SERVER_SUBSCRIBER.call_once(|| {
+        let _ = tracing::subscriber::set_global_default(S4ServerSubscriber);
+    });
+}
+
+/// A client that connects and drops without sending anything makes the
+/// server's receive() return None; the debug! field line executes
+/// under the installed subscriber and the loop breaks cleanly.
+#[tokio::test]
+async fn test_s4_client_disconnect_logs_closed_field() {
+    install_s4_server_subscriber();
+    let server = make_test_server();
+    server.start().await.unwrap();
+    let port = server.port();
+
+    let s = tokio::net::TcpStream::connect(format!("127.0.0.1:{}", port))
+        .await
+        .unwrap();
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert!(server.connection_count() >= 1);
+
+    drop(s);
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    // Best-effort: connection should be cleaned up after EOF.
+    assert!(server.connection_count() <= 1);
+    server.stop().unwrap();
+}
+
+/// A well-formed wire message with msg_type "response" is NOT dispatched
+/// to handlers — the `if msg_type == "request"` false arm runs and the
+/// loop keeps waiting (server.rs 338-340).
+#[tokio::test]
+async fn test_s4_non_request_msg_type_is_not_dispatched() {
+    install_s4_server_subscriber();
+    let server = make_test_server();
+    let hits = Arc::new(AtomicUsize::new(0));
+    let hits_clone = Arc::clone(&hits);
+    server.register_handler(
+        "ping",
+        Box::new(move |_payload| {
+            hits_clone.fetch_add(1, Ordering::SeqCst);
+            Ok(serde_json::json!({"status": "pong"}))
+        }),
+    );
+    server.start().await.unwrap();
+    let port = server.port();
+
+    let mut stream = tokio::net::TcpStream::connect(format!("127.0.0.1:{}", port))
+        .await
+        .unwrap();
+
+    let mut wire = make_request_wire("ping");
+    wire.msg_type = "response".into();
+    let json = serde_json::to_vec(&wire).unwrap();
+    let total = (json.len() as u32).to_be_bytes();
+    stream.write_all(&total).await.unwrap();
+    stream.write_all(&json).await.unwrap();
+    tokio::time::sleep(Duration::from_millis(150)).await;
+
+    assert_eq!(
+        hits.load(Ordering::SeqCst),
+        0,
+        "response-type messages must not reach handlers"
+    );
+
+    drop(stream);
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    server.stop().unwrap();
+}

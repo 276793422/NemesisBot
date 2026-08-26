@@ -7017,5 +7017,8 @@ fn textwise_similar(a: &str, b: &str) -> f64 {
 
 #[cfg(test)]
 mod inbox_tests;
+// S9 (quality-hardening goal 冲刺 S9): 独立测试文件挂载（声明式，无内联测试）。
+#[cfg(test)]
+mod s9_tests;
 #[cfg(test)]
 mod tests;

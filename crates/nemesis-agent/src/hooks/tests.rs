@@ -957,3 +957,112 @@ async fn turn_end_hooks_first_continue_short_circuits_with_feedback() {
         "first Continue must short-circuit; later hooks must not run"
     );
 }
+
+// ---------------------------------------------------------------------------
+// W3a: LlmHook / LifecycleHook 默认实现 + 两个 manager 的 len/is_empty
+// ---------------------------------------------------------------------------
+
+/// 什么都不覆盖的空实现：三个 trait 的默认方法都必须是「无害放行」。
+#[tokio::test]
+async fn llm_and_lifecycle_defaults_are_permissive() {
+    struct BareAll;
+    #[async_trait]
+    impl ToolHook for BareAll {}
+    #[async_trait]
+    impl LlmHook for BareAll {}
+    #[async_trait]
+    impl crate::hooks::LifecycleHook for BareAll {}
+
+    let b = BareAll;
+    // LlmHook 默认 name / pre / post。
+    assert_eq!(LlmHook::name(&b), "unnamed-llm-hook");
+    let call = HookLlmCall {
+        model: "m".to_string(),
+        session_key: "s".to_string(),
+        round: 1,
+    };
+    let resp = scripted_resp("ok");
+    match b.pre_llm_call(&call, &[]).await {
+        LlmRequestDecision::Proceed => {}
+        other => panic!("default pre_llm_call must Proceed, got {other:?}"),
+    }
+    match b.post_llm_call(&call, &resp).await {
+        LlmResponseDecision::Allow => {}
+        other => panic!("default post_llm_call must Allow, got {other:?}"),
+    }
+
+    // LifecycleHook 默认 name / on_user_prompt / on_turn_end。
+    assert_eq!(
+        crate::hooks::LifecycleHook::name(&b),
+        "unnamed-lifecycle-hook"
+    );
+    let prompt = crate::hooks::HookPrompt {
+        session_key: "s".to_string(),
+        channel: "web".to_string(),
+        chat_id: "c".to_string(),
+        prompt: "hi".to_string(),
+    };
+    assert_eq!(
+        b.on_user_prompt(&prompt).await,
+        crate::hooks::PromptDecision::Allow
+    );
+    let end = crate::hooks::HookTurnEnd {
+        session_key: "s".to_string(),
+        channel: "web".to_string(),
+        chat_id: "c".to_string(),
+        final_content: "done".to_string(),
+        stop_hook_active: false,
+    };
+    assert_eq!(
+        b.on_turn_end(&end).await,
+        crate::hooks::TurnEndDecision::Stop
+    );
+}
+
+/// LlmHookManager / LifecycleHookManager 的 add/len/is_empty/snapshot。
+#[test]
+fn llm_and_lifecycle_managers_add_len_snapshot() {
+    struct BareLlm;
+    #[async_trait]
+    impl LlmHook for BareLlm {}
+    struct BareLife;
+    #[async_trait]
+    impl crate::hooks::LifecycleHook for BareLife {}
+
+    let mut lm = LlmHookManager::new();
+    assert!(lm.is_empty());
+    lm.add(std::sync::Arc::new(BareLlm));
+    assert_eq!(lm.len(), 1);
+    assert!(!lm.is_empty());
+    assert_eq!(lm.snapshot().len(), 1);
+
+    let mut lc = crate::hooks::LifecycleHookManager::new();
+    assert!(lc.is_empty());
+    lc.add(std::sync::Arc::new(BareLife));
+    assert_eq!(lc.len(), 1);
+    assert!(!lc.is_empty());
+    assert_eq!(lc.snapshot().len(), 1);
+}
+
+/// run_user_prompt_hooks / run_turn_end_hooks 空钩子链：放行（None / Stop）。
+#[tokio::test]
+async fn user_prompt_and_turn_end_empty_chains_pass() {
+    let prompt = crate::hooks::HookPrompt {
+        session_key: "s".to_string(),
+        channel: "web".to_string(),
+        chat_id: "c".to_string(),
+        prompt: "hi".to_string(),
+    };
+    let end = crate::hooks::HookTurnEnd {
+        session_key: "s".to_string(),
+        channel: "web".to_string(),
+        chat_id: "c".to_string(),
+        final_content: "done".to_string(),
+        stop_hook_active: false,
+    };
+    assert!(crate::hooks::run_user_prompt_hooks(&[], &prompt).await.is_none());
+    assert_eq!(
+        crate::hooks::run_turn_end_hooks(&[], &end).await,
+        crate::hooks::TurnEndDecision::Stop
+    );
+}

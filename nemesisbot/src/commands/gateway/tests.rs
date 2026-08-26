@@ -2223,3 +2223,306 @@ fn test_web_server_url_custom_host() {
     let url = format!("http://{}:{}", resolved, port);
     assert_eq!(url, "http://192.168.1.5:8080");
 }
+
+// =========================================================================
+// S11d 补测（quality-hardening goal 冲刺 S11）：全装配冒烟 + 剩余 helper。
+// =========================================================================
+
+/// 隔离 home 环境（与 channel/cluster/eval 测试同款模式）。
+/// env set_var 是进程级操作 → 持 crate::GLOBAL_STATE_LOCK 串行。
+struct TempHomeEnv {
+    _tmp: tempfile::TempDir,
+    home: std::path::PathBuf,
+}
+
+impl Drop for TempHomeEnv {
+    fn drop(&mut self) {
+        unsafe { std::env::remove_var("NEMESISBOT_HOME") };
+    }
+}
+
+fn temp_home_env() -> TempHomeEnv {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let home = tmp.path().join(".nemesisbot");
+    std::fs::create_dir_all(&home).unwrap();
+    unsafe { std::env::set_var("NEMESISBOT_HOME", tmp.path()) };
+    TempHomeEnv { _tmp: tmp, home }
+}
+
+// -------------------------------------------------------------------------
+// 全装配冒烟：run() 从 Step 1 跑到 wait_for_shutdown。
+//
+// 策略：临时 home + 编译期默认配置改写（所有网络面归零：web/health 绑
+// 127.0.0.1:0 → OS 分配临时端口；cluster/websocket/devices/memory/forge
+// 全关；model_list 塞死端点条目）。run() 的 future 是 !Send（cron_service
+// 的 std MutexGuard 跨 await，gateway.rs:3339 —— 生产也只走 block_on），
+// 不能 tokio::spawn → 放进独立 OS 线程的自建 runtime 里 block_on。测试线
+// 程轮询 {home}/workspace/state/gateway.json 的 web_port != 0（web server
+// 真实 bind 后写入的就绪信号）+ TCP 连通复证，等尾巴（banner/agent
+// adapter/bot service/tray）跑完即返回。gateway 线程随测试进程退出销毁
+// （挂起在 wait_for_shutdown；优雅 shutdown 段只能由 Ctrl+C/broadcast
+// 唤醒，列结构豁免）。
+//
+// 纪律边界：不占生产端口（全 0 → OS 分配）；不碰生产 home（NEMESISBOT_HOME
+// → tempdir）；无真 LLM/外网调用（死端点，且启动期间无人调 LLM）；tray 在
+// Windows 走独立线程 + catch_unwind；临时目录因日志句柄被 gateway 线程
+// 持有而留 %TEMP% 残留（无害，进程退出即失效）。
+// -------------------------------------------------------------------------
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn full_assembly_starts_and_binds_web_and_health() {
+    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let th = temp_home_env();
+
+    // 编译期默认配置 → 覆盖网络面 + 模型条目。
+    let mut cfg: serde_json::Value =
+        serde_json::from_str(crate::CONFIG_DEFAULT).expect("parse CONFIG_DEFAULT");
+    cfg["channels"]["web"]["host"] = serde_json::json!("127.0.0.1");
+    cfg["channels"]["web"]["port"] = serde_json::json!(0);
+    cfg["gateway"]["host"] = serde_json::json!("127.0.0.1");
+    cfg["gateway"]["port"] = serde_json::json!(0);
+    cfg["agents"]["defaults"]["llm"] = serde_json::json!("mini-model");
+    // workspace 指到临时 home（默认 ~ 展开指向真实用户目录，必须改写）。
+    cfg["agents"]["defaults"]["workspace"] =
+        serde_json::json!(th.home.join("workspace").to_string_lossy().to_string());
+    cfg["model_list"] = serde_json::json!([{
+        "model_name": "mini-model",
+        "model": "testai/mini-model",
+        "api_key": "test-key",
+        "api_base": "http://127.0.0.1:9",
+        "model_tier": "mini"
+    }]);
+    std::fs::write(th.home.join("config.json"), cfg.to_string()).unwrap();
+
+    let state_path = th.home.join("workspace").join("state").join("gateway.json");
+
+    // run() !Send → 独立 OS 线程 + 自建 runtime block_on（与生产 main 相同
+    // 的调用形态）。线程随测试进程退出，无需 join。
+    std::thread::Builder::new()
+        .name("gateway-full-assembly".into())
+        .spawn(move || {
+            let rt = tokio::runtime::Builder::new_multi_thread()
+                .worker_threads(2)
+                .enable_all()
+                .build()
+                .expect("build gateway test runtime");
+            let _ = rt.block_on(async { run(false, &[]).await });
+        })
+        .expect("spawn gateway thread");
+
+    // 轮询就绪：web_port 在 TcpListener 真实 bind 后写入（Step 17）。
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
+    let web_port: u16 = loop {
+        if let Ok(txt) = std::fs::read_to_string(&state_path) {
+            if let Ok(v) = serde_json::from_str::<serde_json::Value>(&txt) {
+                let p = v.get("web_port").and_then(|x| x.as_i64()).unwrap_or(0);
+                if p > 0 {
+                    break p as u16;
+                }
+            }
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "gateway 未在 120s 内完成 web bind；state={:?}",
+            std::fs::read_to_string(&state_path)
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    };
+
+    // web server 真在监听（run() 自己也是 TCP connect 验证，这里独立复证）。
+    tokio::net::TcpStream::connect(("127.0.0.1", web_port))
+        .await
+        .expect("web server must accept TCP on the reported port");
+
+    // 给 web bind 之后的启动尾巴时间（agent adapter / bot service(health) /
+    // ProcessManager / internal cmd loop / tray 装配在 state 文件更新之后）。
+    tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+
+    // 断言启动已完成到 banner 阶段：state 文件里 host 已是真实 bind 信息。
+    let final_state: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(&state_path).expect("state file readable"),
+    )
+    .expect("state json");
+    assert_eq!(final_state["web_host"], "127.0.0.1");
+    assert_eq!(final_state["web_port"].as_i64(), Some(web_port as i64));
+}
+
+// -------------------------------------------------------------------------
+// migrate_legacy_workflow_dir（旧扁平布局 → 四子目录布局）
+// -------------------------------------------------------------------------
+
+#[cfg(feature = "workflow")]
+mod migrate_legacy_workflow_tests {
+    use super::*;
+
+    fn setup(home: &std::path::Path) -> (std::path::PathBuf, std::path::PathBuf) {
+        let exec_dir = home.join("workspace").join("workflow").join("executions");
+        let ckpt_dir = home.join("workspace").join("workflow").join("checkpoints");
+        std::fs::create_dir_all(&exec_dir).unwrap();
+        std::fs::create_dir_all(&ckpt_dir).unwrap();
+        (exec_dir, ckpt_dir)
+    }
+
+    #[test]
+    fn migrate_moves_jsonl_and_checkpoints_then_removes_empty_legacy_dir() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path();
+        let (exec_dir, ckpt_dir) = setup(home);
+
+        let legacy = home.join("workflow");
+        std::fs::create_dir_all(legacy.join("checkpoints").join("exec-1")).unwrap();
+        std::fs::write(legacy.join("wf_a_exec1.jsonl"), "{\"e\":1}").unwrap();
+        std::fs::write(
+            legacy.join("checkpoints").join("exec-1").join("cp.json"),
+            "{\"cp\":1}",
+        )
+        .unwrap();
+
+        migrate_legacy_workflow_dir(home, &exec_dir, &ckpt_dir);
+
+        assert!(exec_dir.join("wf_a_exec1.jsonl").exists(), "jsonl 迁到 executions/");
+        assert!(
+            ckpt_dir.join("exec-1").join("cp.json").exists(),
+            "checkpoint 子目录整体迁移"
+        );
+        assert!(!legacy.exists(), "清空后的 legacy 目录应被删除");
+    }
+
+    #[test]
+    fn migrate_skips_existing_destination_files() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path();
+        let (exec_dir, ckpt_dir) = setup(home);
+
+        let legacy = home.join("workflow");
+        std::fs::create_dir_all(&legacy).unwrap();
+        std::fs::write(legacy.join("wf_x.jsonl"), "OLD").unwrap();
+        // 目的地已有同名文件 → 跳过（幂等；不覆盖新数据）。
+        std::fs::write(exec_dir.join("wf_x.jsonl"), "NEW").unwrap();
+
+        migrate_legacy_workflow_dir(home, &exec_dir, &ckpt_dir);
+
+        assert_eq!(
+            std::fs::read_to_string(exec_dir.join("wf_x.jsonl")).unwrap(),
+            "NEW",
+            "已存在的目的地文件不被覆盖"
+        );
+        assert!(legacy.join("wf_x.jsonl").exists(), "legacy 文件保留（未搬走）");
+        assert!(legacy.exists(), "非空 legacy 目录保留（partial 分支）");
+    }
+
+    #[test]
+    fn migrate_keeps_unrecognized_files_in_place() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path();
+        let (exec_dir, ckpt_dir) = setup(home);
+
+        let legacy = home.join("workflow");
+        std::fs::create_dir_all(&legacy).unwrap();
+        std::fs::write(legacy.join("notes.txt"), "user data").unwrap();
+        std::fs::write(legacy.join("wf_y.jsonl"), "{}").unwrap();
+
+        migrate_legacy_workflow_dir(home, &exec_dir, &ckpt_dir);
+
+        assert!(exec_dir.join("wf_y.jsonl").exists());
+        assert!(legacy.exists(), "含未识别文件的 legacy 目录必须原地保留");
+        assert!(legacy.join("notes.txt").exists());
+    }
+
+    #[test]
+    fn migrate_noop_when_legacy_dir_absent() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path();
+        let (exec_dir, ckpt_dir) = setup(home);
+        // 无 legacy 目录 → 立即返回，不产生任何文件。
+        migrate_legacy_workflow_dir(home, &exec_dir, &ckpt_dir);
+        assert!(exec_dir.read_dir().unwrap().next().is_none());
+    }
+}
+
+// -------------------------------------------------------------------------
+// GatewayAgentRunner —— workflow `agent` 节点 → 主 AgentLoop 桥
+// -------------------------------------------------------------------------
+
+#[cfg(feature = "workflow")]
+mod gateway_agent_runner_tests {
+    use super::*;
+    use nemesis_agent::r#loop::{AgentLoop, LlmMessage, LlmProvider, LlmResponse};
+    use nemesis_agent::types::AgentConfig;
+    use nemesis_workflow::nodes::AgentRunner;
+
+    /// 可脚本化的假 provider（不联网）：Ok → 固定回复，Err → 错误传播。
+    struct FixedProvider {
+        reply: Result<LlmResponse, String>,
+    }
+
+    #[async_trait::async_trait]
+    impl LlmProvider for FixedProvider {
+        async fn chat(
+            &self,
+            _model: &str,
+            _messages: Vec<LlmMessage>,
+            _options: Option<nemesis_agent::types::ChatOptions>,
+            _tools: Vec<nemesis_agent::types::ToolDefinition>,
+        ) -> Result<LlmResponse, String> {
+            self.reply.clone()
+        }
+    }
+
+    fn make_loop(reply: Result<LlmResponse, String>) -> std::sync::Arc<AgentLoop> {
+        std::sync::Arc::new(AgentLoop::new(
+            Box::new(FixedProvider { reply }),
+            AgentConfig {
+                model: "test-model".to_string(),
+                system_prompt: Some("test".to_string()),
+                max_turns: 1,
+                tools: vec![],
+                ..Default::default()
+            },
+        ))
+    }
+
+    fn ok_response(content: &str) -> Result<LlmResponse, String> {
+        Ok(LlmResponse {
+            content: content.to_string(),
+            tool_calls: Vec::new(),
+            finished: true,
+            reasoning_content: None,
+            usage: None,
+            raw_request_body: None,
+            raw_response_body: None,
+        })
+    }
+
+    #[tokio::test]
+    async fn run_direct_returns_final_response_with_workflow_session_key() {
+        let runner = GatewayAgentRunner::new(make_loop(ok_response("workflow done")));
+        let result = runner
+            .run_direct("do the thing", "agent-1", 5, None)
+            .await
+            .expect("run_direct success");
+        assert_eq!(result.response, "workflow done");
+        assert!(result.tools_used.is_empty());
+    }
+
+    #[tokio::test]
+    async fn run_direct_with_model_override_warns_and_uses_default() {
+        // model=Some → 走 warn 分支（per-call 切换尚不支持），仍用默认模型完成。
+        let runner = GatewayAgentRunner::new(make_loop(ok_response("ok")));
+        let result = runner
+            .run_direct("prompt", "agent-2", 3, Some("other-model"))
+            .await
+            .expect("model override must not fail the run");
+        assert_eq!(result.response, "ok");
+    }
+
+    #[tokio::test]
+    async fn run_direct_propagates_loop_error() {
+        let runner = GatewayAgentRunner::new(make_loop(Err("llm dead".to_string())));
+        let err = runner
+            .run_direct("prompt", "agent-3", 1, None)
+            .await
+            .expect_err("provider error must propagate");
+        assert!(err.contains("llm dead"), "err: {err}");
+    }
+}

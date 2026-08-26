@@ -580,3 +580,108 @@ fn test_export_empty_chain() {
     let content = std::fs::read_to_string(&export_path).unwrap();
     assert_eq!(content, "[]");
 }
+
+// ============================================================
+// S3 batch 3: rotated-segment export / tampered load_chain /
+// verify_range edge arms / cross-segment get_event / fresh close
+// ============================================================
+
+#[test]
+fn test_export_chain_with_rotated_segments() {
+    let dir = tempfile::tempdir().unwrap();
+    let config = AuditChainConfig {
+        storage_path: dir.path().join("audit.jsonl"),
+        max_events_per_segment: 2,
+        ..Default::default()
+    };
+    let chain = AuditChain::new(config);
+    for i in 0..5 {
+        chain
+            .append("test", "tool", "u", "c", &format!("f{i}"), "allowed", "")
+            .unwrap();
+    }
+    assert!(chain.segment_count() >= 2, "segments: {}", chain.segment_count());
+
+    // 导出会合并主文件 + 所有 _seg 段文件
+    let export_path = dir.path().join("rotated_export.json");
+    chain.export_chain(&export_path).unwrap();
+    let content = std::fs::read_to_string(&export_path).unwrap();
+    let events: Vec<AuditEvent> = serde_json::from_str(&content).unwrap();
+    assert_eq!(events.len(), 5);
+    for (i, e) in events.iter().enumerate() {
+        assert_eq!(e.target, format!("f{i}"), "event {i}: {:?}", e.target);
+    }
+}
+
+#[test]
+fn test_load_chain_tampered_hash_errors() {
+    let dir = tempfile::tempdir().unwrap();
+    let config = AuditChainConfig {
+        storage_path: dir.path().join("audit.jsonl"),
+        ..Default::default()
+    };
+    let chain = AuditChain::new(config);
+    chain.append("op1", "t1", "u", "c", "x", "a", "").unwrap();
+    chain.append("op2", "t2", "u", "c", "y", "d", "").unwrap();
+
+    let export_path = dir.path().join("tampered.json");
+    chain.export_chain(&export_path).unwrap();
+
+    // 篡改第二个事件的 hash → verify_chain 失败 → load_chain 报错
+    let mut events: Vec<AuditEvent> =
+        serde_json::from_str(&std::fs::read_to_string(&export_path).unwrap()).unwrap();
+    events[1].hash = vec!['0'; events[1].hash.len()].into_iter().collect();
+    std::fs::write(&export_path, serde_json::to_string(&events).unwrap()).unwrap();
+
+    let config2 = AuditChainConfig {
+        storage_path: dir.path().join("audit2.jsonl"),
+        ..Default::default()
+    };
+    let chain2 = AuditChain::new(config2);
+    let err = chain2.load_chain(&export_path).unwrap_err();
+    assert!(err.contains("chain verification failed"), "{err}");
+}
+
+#[test]
+fn test_verify_range_single_event_and_out_of_range() {
+    let dir = tempfile::tempdir().unwrap();
+    let config = AuditChainConfig {
+        storage_path: dir.path().join("audit.jsonl"),
+        ..Default::default()
+    };
+    let chain = AuditChain::new(config);
+    chain.append("op1", "t1", "u", "c", "x", "a", "").unwrap();
+    chain.append("op2", "t2", "u", "c", "y", "d", "").unwrap();
+    chain.append("op3", "t3", "u", "c", "z", "a", "").unwrap();
+
+    // 单事件区间（len<2）→ 直接 Ok(true)
+    assert!(chain.verify_range(0, 0).unwrap());
+    // from 超出事件总数 → 空区间 → Ok(true)
+    assert!(chain.verify_range(10, 12).unwrap());
+}
+
+#[test]
+fn test_get_event_across_rotated_segments_and_close() {
+    let dir = tempfile::tempdir().unwrap();
+    let config = AuditChainConfig {
+        storage_path: dir.path().join("audit.jsonl"),
+        max_events_per_segment: 2,
+        ..Default::default()
+    };
+    let chain = AuditChain::new(config);
+    for i in 0..5 {
+        chain
+            .append("test", "tool", "u", "c", &format!("f{i}"), "allowed", "")
+            .unwrap();
+    }
+    // 索引 4 落在第二个段文件里
+    let e4 = chain.get_event(4).unwrap();
+    assert_eq!(e4.target, "f4");
+    assert!(chain.get_event(5).is_none());
+
+    // 全新链 close（was_closed=false 路径）+ 幂等
+    assert!(!chain.is_closed());
+    chain.close().unwrap();
+    assert!(chain.is_closed());
+    chain.close().unwrap();
+}

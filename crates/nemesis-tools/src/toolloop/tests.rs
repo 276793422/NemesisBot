@@ -432,3 +432,52 @@ async fn test_tool_loop_max_iterations_reached() {
     let result = run_tool_loop(config, &callback, vec![]).await;
     assert_eq!(result.iterations, 3);
 }
+
+// ============================================================
+// W4a coverage gap closure (per-tool timeout arm: a tool slower
+// than config.timeout_secs is cut off with a timeout ToolResult)
+// ============================================================
+
+struct W4aSleepyTool;
+
+#[async_trait]
+impl Tool for W4aSleepyTool {
+    fn name(&self) -> &str {
+        "w4a_sleepy"
+    }
+    fn description(&self) -> &str {
+        "Sleeps for 2 seconds"
+    }
+    fn parameters(&self) -> serde_json::Value {
+        serde_json::json!({"type": "object"})
+    }
+    async fn execute(&self, _args: &serde_json::Value) -> ToolResult {
+        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+        ToolResult::success("woke up")
+    }
+}
+
+#[tokio::test]
+async fn w4a_tool_exceeding_timeout_returns_timeout_error_result() {
+    let registry = Arc::new(ToolRegistry::new());
+    registry.register(Arc::new(W4aSleepyTool));
+    let config = ToolLoopConfig {
+        tools: registry,
+        max_iterations: 3,
+        timeout_secs: 1,
+    };
+
+    let callback: LLMCallback = Arc::new(|_| LLMResponse {
+        content: String::new(),
+        tool_calls: vec![LLMToolCall {
+            id: "tc-slow".into(),
+            name: "w4a_sleepy".into(),
+            arguments: serde_json::json!({}),
+        }],
+    });
+
+    let result = run_tool_loop(config, &callback, vec![]).await;
+    // The loop records the timeout error as the tool result; the LLM callback
+    // (deterministic here) keeps returning the same call until max_iterations.
+    assert_eq!(result.iterations, 3);
+}

@@ -61,7 +61,14 @@ struct Cli {
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
+    run(cli).await
+}
 
+/// 完整启动路径（S12b batch, quality-hardening goal 冲刺：从 `main` 原样抽出，
+/// 使 --init-keys 密钥生成、AppState 组装、路由装配、bind+serve 可被单测触达——
+/// 测试用「探测空闲口 → --bind 127.0.0.1:<probe>」技巧在临时目录起真服务；
+/// `main()` 本体只留 argv 解析）。
+async fn run(cli: Cli) -> Result<()> {
     if cli.init_keys {
         let h = nemesis_verify::keygen::generate_hierarchy(0, u64::MAX);
         h.save(&cli.keys_file)?;
@@ -104,3 +111,8 @@ async fn main() -> Result<()> {
     axum::serve(listener, app).await?;
     Ok(())
 }
+
+#[cfg(test)]
+mod tests;
+#[cfg(test)]
+mod s12b_tests;

@@ -1291,3 +1291,70 @@ async fn test_rpc_send_rpc_like_but_not_prefix() {
     // Should not deliver since no [rpc:...] prefix
     assert_eq!(ch.pending_count(), 1);
 }
+
+// ===========================================================================
+// S2 coverage (2026-08-26): tracing field arms (timeout_secs / sweep counters),
+// cleanup task weak-upgrade break, Channel::is_running trait impl
+// ===========================================================================
+
+fn s2_enable_tracing() {
+    let _ = tracing_subscriber::fmt()
+        .with_max_level(tracing::Level::DEBUG)
+        .with_writer(std::io::sink)
+        .try_init();
+}
+
+/// input_with_timeout debug fields + cleanup sweep summary fields only
+/// evaluate with a subscriber active, so re-drive both paths here.
+#[tokio::test]
+async fn s2_rpc_input_with_timeout_and_cleanup_log_field_arms() {
+    s2_enable_tracing();
+    let config = RPCChannelConfig {
+        request_timeout: Duration::from_millis(30),
+        cleanup_interval: Duration::from_millis(10),
+    };
+    let ch = RPCChannel::new(config);
+    ch.start().await.unwrap();
+
+    // Long custom timeout: exercises the input_with_timeout field arm and
+    // must survive the sweep.
+    let _rx_long = ch
+        .input_with_timeout("s2-fields", Duration::from_secs(120))
+        .unwrap();
+    // Default (30ms) timeout: expires and drives the sweep counters.
+    let _rx_short = ch.input("s2-sweep").unwrap();
+    assert_eq!(ch.pending_count(), 2);
+
+    // Wait past the short entry's expiry, then sweep with the subscriber
+    // active so the "cleanup sweep completed" counter fields evaluate.
+    tokio::time::sleep(Duration::from_millis(80)).await;
+    ch.cleanup_expired();
+    assert_eq!(ch.pending_count(), 1, "only the short-timeout entry expires");
+    ch.stop().await.unwrap();
+}
+
+/// Dropping all strong refs makes the cleanup task's weak.upgrade() fail,
+/// hitting the `break` arm of the periodic cleanup loop.
+#[tokio::test]
+async fn s2_rpc_cleanup_task_breaks_when_channel_dropped() {
+    let config = RPCChannelConfig {
+        request_timeout: Duration::from_secs(60),
+        cleanup_interval: Duration::from_millis(10),
+    };
+    let arc = std::sync::Arc::new(RPCChannel::new(config));
+    arc.start_cleanup_task();
+
+    drop(arc);
+    // Give the ticker a tick so the upgrade fails and the task breaks.
+    tokio::time::sleep(Duration::from_millis(60)).await;
+}
+
+/// The Channel trait's is_running impl was never called by any test.
+#[tokio::test]
+async fn s2_rpc_trait_is_running_before_and_after_start() {
+    let ch = RPCChannel::new(RPCChannelConfig::default());
+    assert!(!ch.is_running());
+    ch.start().await.unwrap();
+    ch.stop().await.unwrap();
+    assert!(!ch.is_running());
+}

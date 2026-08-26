@@ -959,3 +959,36 @@ fn test_addr_matches_port_mismatch() {
 fn test_addr_matches_host_mismatch() {
     assert!(!addr_matches("192.168.1.10:9000", "192.168.1.11:9000"));
 }
+
+// ============================================================
+// S4 coverage: mark_failed fall-through + static-peer health skip.
+// ============================================================
+
+/// One failure stays below the Offline threshold and exits the if-let body;
+/// an unknown node id also falls through to `false` (registry.rs 191-199).
+#[test]
+fn test_s4_mark_failed_below_threshold_returns_false() {
+    let registry = PeerRegistry::new(HealthConfig::default());
+    registry.upsert(make_node("s4-n1"));
+    assert!(!registry.mark_failed("s4-n1"), "1st failure must not evict");
+
+    // Unknown node: the if-let finds no entry, falls through to false.
+    assert!(!registry.mark_failed("s4-ghost"));
+}
+
+/// A static peer marked Online with a stale health timestamp is skipped by
+/// check_health instead of being expired (registry.rs 365-372).
+#[test]
+fn test_s4_check_health_skips_static_peer() {
+    let registry = PeerRegistry::new(HealthConfig::default());
+    let old = (chrono::Local::now() - chrono::Duration::hours(1)).to_rfc3339();
+    insert_peer_with_timestamp(&registry, "s4-static", NodeStatus::Online, &old, vec![]);
+    assert!(registry.mark_static("s4-static"));
+
+    let stale = registry.check_health();
+    assert!(stale.is_empty(), "static peer must be exempt: {:?}", stale);
+    assert_eq!(
+        registry.get("s4-static").unwrap().status,
+        NodeStatus::Online
+    );
+}

@@ -56,6 +56,11 @@ pub mod tool_doc_folding;
 pub mod turn_guard;
 pub mod types;
 
+// S9 (quality-hardening goal 冲刺 S9): 测试共享 helper（thread-local tracing
+// subscriber），声明式挂载指向独立文件，无内联测试。
+#[cfg(test)]
+mod test_support;
+
 pub use capture_sink::{CaptureSink, SessionWriteCapture, ToolCapture};
 pub use context::RequestContext;
 pub use estop::EstopState;

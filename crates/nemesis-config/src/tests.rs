@@ -2493,6 +2493,147 @@ fn test_adjust_paths_no_llm_logging() {
     assert!(config.logging.as_ref().unwrap().general.is_some());
 }
 
+// ============================================================================
+// Coverage batch 2026-08-25: remaining uncovered branches in lib.rs.
+// Only lines NOT already covered by tests.rs / extra_tests.rs are targeted
+// here (verified against existing test bodies before writing each one).
+// ============================================================================
+
+#[test]
+fn test_flexible_string_vec_expecting_non_seq_input() {
+    // `expecting()` (lib.rs:61-63) only runs when serde rejects the input
+    // with an invalid-type error — feed allow_from a non-array value.
+    let err =
+        serde_json::from_str::<WhatsAppConfig>(r#"{"allow_from": "not-an-array"}"#).unwrap_err();
+    let msg = err.to_string();
+    assert!(
+        msg.contains("an array of strings or numbers"),
+        "expecting() message surfaces: {msg}"
+    );
+
+    // A map input hits the same invalid-type path.
+    let err2 = serde_json::from_str::<WhatsAppConfig>(r#"{"allow_from": {"a": 1}}"#).unwrap_err();
+    assert!(
+        err2.to_string().contains("an array of strings or numbers"),
+        "map input also rejected: {err2}"
+    );
+}
+
+#[test]
+fn test_capture_config_default_enabled() {
+    // CaptureConfig::default (lib.rs:218-221) — failure-triggered diagnostic
+    // capture defaults ON.
+    assert!(CaptureConfig::default().enabled);
+    // Same impl backs DebugConfig::default (serde `#[serde(default)] capture`).
+    assert!(DebugConfig::default().capture.enabled);
+}
+
+// 注：lib.rs:1651-1653 的 serde_json serialize 错误分支为结构性不可达——
+// AgentDefaults.temperature 是全 Config 唯一 f64，而 serde_json 对非有限 f64
+// 写 null 不报错，其余字段全为 bool/i64/String/Vec，永不会序列化失败。
+// （曾试图用 NaN 触发，实测 save 成功 NaN→null，测试前提错误已删。）
+
+
+#[test]
+fn test_save_config_write_target_is_directory_errors() {
+    // lib.rs:1675-1678 (non-unix arm) — fs::write onto an existing DIRECTORY
+    // fails with an OS error on Windows.
+    let _guard = GLOBAL_STATE_LOCK.lock().unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let target = dir.path().join("iamdir");
+    std::fs::create_dir_all(&target).unwrap();
+
+    let mut config = Config::default();
+    let err = save_config(&target, &mut config).unwrap_err();
+    assert!(matches!(err, ConfigError::Io(_)), "write error: {err:?}");
+}
+
+#[test]
+fn test_config_loader_save_to_file_parent_is_file_errors() {
+    // lib.rs:2426-2428 — create_dir_all fails when the parent path exists as
+    // a regular FILE; the `?` propagates a ConfigError::Io.
+    let dir = tempfile::tempdir().unwrap();
+    let blocker = dir.path().join("blocker.txt");
+    std::fs::write(&blocker, b"x").unwrap();
+
+    let err =
+        ConfigLoader::save_to_file(&Config::default(), &blocker.join("config.json")).unwrap_err();
+    assert!(matches!(err, ConfigError::Io(_)), "create-dir error: {err:?}");
+}
+
+#[test]
+fn test_save_mcp_config_error_paths() {
+    // lib.rs:2080-2085 (parent-is-file → create_dir_all error) and
+    // 2090-2093 (target-is-dir → fs::write error).
+    let dir = tempfile::tempdir().unwrap();
+    let cfg = McpConfig {
+        enabled: false,
+        servers: vec![],
+        timeout: 30,
+    };
+
+    let blocker = dir.path().join("blocker.txt");
+    std::fs::write(&blocker, b"x").unwrap();
+    let err = save_mcp_config(&blocker.join("config.mcp.json"), &cfg).unwrap_err();
+    assert!(matches!(err, ConfigError::Io(_)), "create-dir error: {err:?}");
+
+    let target = dir.path().join("iamdir");
+    std::fs::create_dir_all(&target).unwrap();
+    let err = save_mcp_config(&target, &cfg).unwrap_err();
+    assert!(matches!(err, ConfigError::Io(_)), "write error: {err:?}");
+}
+
+#[test]
+fn test_save_security_config_error_paths() {
+    // lib.rs:2131-2136 and 2141-2144.
+    let dir = tempfile::tempdir().unwrap();
+    let cfg = SecurityConfig::default();
+
+    let blocker = dir.path().join("blocker.txt");
+    std::fs::write(&blocker, b"x").unwrap();
+    let err = save_security_config(&blocker.join("config.security.json"), &cfg).unwrap_err();
+    assert!(matches!(err, ConfigError::Io(_)), "create-dir error: {err:?}");
+
+    let target = dir.path().join("iamdir");
+    std::fs::create_dir_all(&target).unwrap();
+    let err = save_security_config(&target, &cfg).unwrap_err();
+    assert!(matches!(err, ConfigError::Io(_)), "write error: {err:?}");
+}
+
+#[test]
+fn test_save_scanner_config_error_paths() {
+    // lib.rs:2182-2187 and 2192-2195.
+    let dir = tempfile::tempdir().unwrap();
+    let cfg = ScannerFullConfig::default();
+
+    let blocker = dir.path().join("blocker.txt");
+    std::fs::write(&blocker, b"x").unwrap();
+    let err = save_scanner_config(&blocker.join("config.scanner.json"), &cfg).unwrap_err();
+    assert!(matches!(err, ConfigError::Io(_)), "create-dir error: {err:?}");
+
+    let target = dir.path().join("iamdir");
+    std::fs::create_dir_all(&target).unwrap();
+    let err = save_scanner_config(&target, &cfg).unwrap_err();
+    assert!(matches!(err, ConfigError::Io(_)), "write error: {err:?}");
+}
+
+#[test]
+fn test_save_skills_config_error_paths() {
+    // lib.rs:2233-2238 and 2243-2246.
+    let dir = tempfile::tempdir().unwrap();
+    let cfg = SkillsFullConfig::default();
+
+    let blocker = dir.path().join("blocker.txt");
+    std::fs::write(&blocker, b"x").unwrap();
+    let err = save_skills_config(&blocker.join("config.skills.json"), &cfg).unwrap_err();
+    assert!(matches!(err, ConfigError::Io(_)), "create-dir error: {err:?}");
+
+    let target = dir.path().join("iamdir");
+    std::fs::create_dir_all(&target).unwrap();
+    let err = save_skills_config(&target, &cfg).unwrap_err();
+    assert!(matches!(err, ConfigError::Io(_)), "write error: {err:?}");
+}
+
 #[test]
 fn test_config_error_io_error() {
     let io_err = std::io::Error::new(std::io::ErrorKind::NotFound, "not found");

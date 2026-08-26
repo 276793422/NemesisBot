@@ -1688,3 +1688,572 @@ async fn test_setup_sync_targets_replaces() {
     mgr.setup_sync_targets(&config2).await;
     assert_eq!(mgr.get_sync_targets("a").await, vec!["c"]);
 }
+
+// ===========================================================================
+// W4c 补测（2026-08-25）：init_channels 全通道块（default + feature-gated，两臂：
+// 有效配置注册成功 / 无效配置 Err 跳过）、dispatch loop shutdown-flag break、
+// stop_all 错误续行、setup_sync_targets add 错误跳过
+// ===========================================================================
+
+/// 填充所有已启用 feature 的通道配置（有效值）。
+/// 未启用的 feature 块被 cfg 掉，测试在 default / all-features 两种闸门下都成立。
+fn w4c_valid_init_config() -> ChannelInitConfig {
+    let mut cfg = ChannelInitConfig::default();
+
+    #[cfg(feature = "telegram")]
+    {
+        cfg.telegram = Some(crate::telegram::TelegramConfig {
+            token: "tg-token".to_string(),
+            ..Default::default()
+        });
+    }
+    #[cfg(feature = "discord")]
+    {
+        cfg.discord = Some(crate::discord::DiscordConfig {
+            token: "dc-token".to_string(),
+            ..Default::default()
+        });
+    }
+    #[cfg(feature = "slack")]
+    {
+        cfg.slack = Some(crate::slack::SlackConfig {
+            bot_token: "xoxb-t".to_string(),
+            app_token: "xapp-t".to_string(),
+            allow_from: vec![],
+        });
+    }
+    #[cfg(feature = "whatsapp")]
+    {
+        cfg.whatsapp = Some(crate::whatsapp::WhatsAppConfig {
+            bridge_url: "http://127.0.0.1:1/bridge".to_string(),
+            api_key: None,
+            allow_from: vec![],
+        });
+    }
+    #[cfg(feature = "feishu")]
+    {
+        cfg.feishu = Some(crate::feishu::FeishuConfig {
+            app_id: "app".to_string(),
+            app_secret: "sec".to_string(),
+            verification_token: "vt".to_string(),
+            encrypt_key: "ek".to_string(),
+            allow_from: vec![],
+        });
+    }
+    #[cfg(feature = "dingtalk")]
+    {
+        cfg.dingtalk = Some(crate::dingtalk::DingTalkConfig {
+            client_id: "cid".to_string(),
+            client_secret: "csec".to_string(),
+            allow_from: vec![],
+        });
+    }
+    #[cfg(feature = "tencent")]
+    {
+        cfg.qq = Some(crate::qq::QQConfig {
+            app_id: "qqid".to_string(),
+            app_secret: "qqsec".to_string(),
+            ..Default::default()
+        });
+    }
+    #[cfg(feature = "email")]
+    {
+        cfg.email = Some(crate::email::EmailConfig {
+            imap_host: "imap.example.com".to_string(),
+            smtp_host: "smtp.example.com".to_string(),
+            imap_username: "u".to_string(),
+            imap_password: "p".to_string(),
+            ..Default::default()
+        });
+    }
+    #[cfg(feature = "matrix")]
+    {
+        cfg.matrix = Some(crate::matrix::MatrixConfig {
+            homeserver: "https://matrix.example.com".to_string(),
+            user_id: "@bot:example.com".to_string(),
+            access_token: "mt".to_string(),
+            room_id: None,
+            allow_from: vec![],
+        });
+    }
+    #[cfg(feature = "irc")]
+    {
+        cfg.irc = Some(crate::irc::IRCConfig {
+            server: "irc.example.com".to_string(),
+            nick: "nem".to_string(),
+            channel: "#test".to_string(),
+            ..Default::default()
+        });
+    }
+    #[cfg(feature = "signal")]
+    {
+        cfg.signal = Some(crate::signal::SignalConfig {
+            api_url: "http://127.0.0.1:1".to_string(),
+            phone_number: "+10000000000".to_string(),
+            allow_from: vec![],
+        });
+    }
+    #[cfg(feature = "mastodon")]
+    {
+        cfg.mastodon = Some(crate::mastodon::MastodonConfig {
+            server: "https://mastodon.example.com".to_string(),
+            access_token: "mdt".to_string(),
+            allow_from: vec![],
+        });
+    }
+    #[cfg(feature = "bluesky")]
+    {
+        cfg.bluesky = Some(crate::bluesky::BlueskyConfig {
+            server: "https://bsky.example.com".to_string(),
+            handle: "nem.example.com".to_string(),
+            password: "bp".to_string(),
+            did: None,
+            poll_interval: 10,
+            allow_from: vec![],
+        });
+    }
+    #[cfg(feature = "onebot")]
+    {
+        cfg.onebot = Some(crate::onebot::OneBotConfig {
+            ws_url: "ws://127.0.0.1:1/ws".to_string(),
+            access_token: None,
+            reconnect_interval: 5,
+            group_trigger_prefix: vec![],
+            allow_from: vec![],
+        });
+    }
+
+    // 无 feature 闸的通道（default 编译就有）
+    cfg.line = Some(crate::line::LineConfig {
+        channel_access_token: "lt".to_string(),
+        channel_secret: "ls".to_string(),
+        webhook_port: 0,
+        allow_from: vec![],
+    });
+    cfg.external = Some(crate::external::ExternalConfig {
+        input_exe: "nonexistent-input.exe".to_string(),
+        output_exe: "nonexistent-output.exe".to_string(),
+        chat_id: "external".to_string(),
+        sync_to: vec![],
+        allow_from: vec![],
+    });
+    cfg.maixcam = Some(crate::maixcam::MaixCamConfig {
+        host: "127.0.0.1".to_string(),
+        port: 0,
+        allow_from: vec![],
+    });
+    cfg.web = Some(crate::web::WebChannelConfig::default());
+    cfg.websocket = Some(crate::websocket::WebSocketChannelConfig::default());
+
+    cfg
+}
+
+#[tokio::test]
+async fn test_w4c_init_channels_valid_configs_register_all() {
+    let mgr = ChannelManager::new();
+    let (bus, _rx) = tokio::sync::broadcast::channel(16);
+    let cfg = w4c_valid_init_config();
+
+    // init_channels 只构造+注册，不 start —— 不监听端口、不连远端
+    mgr.init_channels(&cfg, bus).await.unwrap();
+
+    let expected: Vec<&str> = vec![
+        #[cfg(feature = "telegram")]
+        "telegram",
+        #[cfg(feature = "discord")]
+        "discord",
+        #[cfg(feature = "slack")]
+        "slack",
+        #[cfg(feature = "whatsapp")]
+        "whatsapp",
+        #[cfg(feature = "feishu")]
+        "feishu",
+        #[cfg(feature = "dingtalk")]
+        "dingtalk",
+        #[cfg(feature = "tencent")]
+        "qq",
+        #[cfg(feature = "email")]
+        "email",
+        #[cfg(feature = "matrix")]
+        "matrix",
+        #[cfg(feature = "irc")]
+        "irc",
+        #[cfg(feature = "signal")]
+        "signal",
+        #[cfg(feature = "mastodon")]
+        "mastodon",
+        #[cfg(feature = "bluesky")]
+        "bluesky",
+        #[cfg(feature = "onebot")]
+        "onebot",
+        "line",
+        "external",
+        "maixcam",
+        "web",
+        "websocket",
+    ];
+
+    assert_eq!(mgr.channel_count().await, expected.len());
+    for name in &expected {
+        assert!(
+            mgr.get(name).await.is_some(),
+            "channel '{}' should be registered after init_channels",
+            name
+        );
+    }
+}
+
+/// 无效配置（必填字段为空）→ 各通道 Err 臂：记日志、不注册、init_channels 整体仍 Ok。
+#[tokio::test]
+async fn test_w4c_init_channels_invalid_configs_skip_registration() {
+    let mgr = ChannelManager::new();
+    let (bus, _rx) = tokio::sync::broadcast::channel(16);
+    let cfg = ChannelInitConfig {
+        #[cfg(feature = "telegram")]
+        telegram: Some(crate::telegram::TelegramConfig::default()),
+        #[cfg(feature = "discord")]
+        discord: Some(crate::discord::DiscordConfig::default()),
+        #[cfg(feature = "slack")]
+        slack: Some(crate::slack::SlackConfig {
+            bot_token: String::new(),
+            app_token: String::new(),
+            allow_from: vec![],
+        }),
+        #[cfg(feature = "whatsapp")]
+        whatsapp: Some(crate::whatsapp::WhatsAppConfig {
+            bridge_url: String::new(),
+            api_key: None,
+            allow_from: vec![],
+        }),
+        #[cfg(feature = "feishu")]
+        feishu: Some(crate::feishu::FeishuConfig {
+            app_id: String::new(),
+            app_secret: String::new(),
+            verification_token: String::new(),
+            encrypt_key: String::new(),
+            allow_from: vec![],
+        }),
+        #[cfg(feature = "dingtalk")]
+        dingtalk: Some(crate::dingtalk::DingTalkConfig {
+            client_id: String::new(),
+            client_secret: String::new(),
+            allow_from: vec![],
+        }),
+        #[cfg(feature = "tencent")]
+        qq: Some(crate::qq::QQConfig::default()),
+        #[cfg(feature = "email")]
+        email: Some(crate::email::EmailConfig::default()),
+        #[cfg(feature = "matrix")]
+        matrix: Some(crate::matrix::MatrixConfig {
+            homeserver: String::new(),
+            user_id: String::new(),
+            access_token: String::new(),
+            room_id: None,
+            allow_from: vec![],
+        }),
+        #[cfg(feature = "irc")]
+        irc: Some(crate::irc::IRCConfig::default()),
+        #[cfg(feature = "signal")]
+        signal: Some(crate::signal::SignalConfig {
+            api_url: String::new(),
+            phone_number: String::new(),
+            allow_from: vec![],
+        }),
+        #[cfg(feature = "mastodon")]
+        mastodon: Some(crate::mastodon::MastodonConfig {
+            server: String::new(),
+            access_token: String::new(),
+            allow_from: vec![],
+        }),
+        #[cfg(feature = "bluesky")]
+        bluesky: Some(crate::bluesky::BlueskyConfig {
+            server: String::new(),
+            handle: String::new(),
+            password: String::new(),
+            did: None,
+            poll_interval: 0,
+            allow_from: vec![],
+        }),
+        #[cfg(feature = "onebot")]
+        onebot: Some(crate::onebot::OneBotConfig {
+            ws_url: String::new(),
+            access_token: None,
+            reconnect_interval: 0,
+            group_trigger_prefix: vec![],
+            allow_from: vec![],
+        }),
+        // line 空 token → Err；external 空 exe → Err；maixcam/web/websocket 无 Err 臂
+        line: Some(crate::line::LineConfig {
+            channel_access_token: String::new(),
+            channel_secret: String::new(),
+            webhook_port: 0,
+            allow_from: vec![],
+        }),
+        external: Some(crate::external::ExternalConfig {
+            input_exe: String::new(),
+            output_exe: String::new(),
+            chat_id: String::new(),
+            sync_to: vec![],
+            allow_from: vec![],
+        }),
+        // maixcam/web/websocket 构造无校验 → 必注册（各 1 个）
+        maixcam: Some(crate::maixcam::MaixCamConfig {
+            host: "127.0.0.1".to_string(),
+            port: 0,
+            allow_from: vec![],
+        }),
+        web: Some(crate::web::WebChannelConfig::default()),
+        websocket: Some(crate::websocket::WebSocketChannelConfig::default()),
+        web_server_ops: None,
+    };
+
+    let result = mgr.init_channels(&cfg, bus).await;
+    assert!(result.is_ok(), "init_channels must not fail on bad configs");
+
+    // 只有三个无校验构造的通道注册成功
+    assert_eq!(mgr.channel_count().await, 3);
+    assert!(mgr.get("maixcam").await.is_some());
+    assert!(mgr.get("web").await.is_some());
+    assert!(mgr.get("websocket").await.is_some());
+    // 其余全部因校验失败被跳过
+    #[cfg(feature = "telegram")]
+    assert!(mgr.get("telegram").await.is_none());
+    #[cfg(feature = "discord")]
+    assert!(mgr.get("discord").await.is_none());
+    #[cfg(feature = "tencent")]
+    assert!(mgr.get("qq").await.is_none());
+    assert!(mgr.get("line").await.is_none());
+    assert!(mgr.get("external").await.is_none());
+}
+
+#[tokio::test]
+async fn test_w4c_dispatch_loop_breaks_after_shutdown_flag() {
+    // stop_all() 置 shutdown 标志后，即使克隆的 sender 还活着（mgr 自持
+    // outbound_tx），循环也必须在下一轮顶部 break。
+    let mgr = std::sync::Arc::new(ChannelManager::new());
+    let stub = std::sync::Arc::new(StubChannel::new("stub"));
+    mgr.register(stub.clone()).await.unwrap();
+    mgr.start_dispatch_loop().unwrap();
+
+    let tx = mgr.outbound_sender();
+    let m1 = OutboundMessage::new("stub", "c1", "one");
+    tx.send(m1).await.unwrap();
+    tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+    assert_eq!(stub.sent_messages().len(), 1);
+
+    // 置 shutdown 标志（同时停止通道）
+    mgr.stop_all().await.unwrap();
+
+    // 再发两条：循环若还活着会处理（race），但 break 之后必须全部静默丢弃
+    tx.send(OutboundMessage::new("stub", "c2", "two"))
+        .await
+        .unwrap();
+    tx.send(OutboundMessage::new("stub", "c3", "three"))
+        .await
+        .unwrap();
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+
+    let sent = stub.sent_messages().len();
+    assert!(
+        sent <= 2,
+        "dispatch loop should have exited after shutdown flag; got {} messages",
+        sent
+    );
+}
+
+/// stop() 返回 Err 的通道：stop_all 记 error 日志后继续停其余通道。
+struct W4cErrorStopChannel {
+    base: crate::base::BaseChannel,
+    stopped: std::sync::Arc<parking_lot::RwLock<bool>>,
+}
+
+#[async_trait]
+impl Channel for W4cErrorStopChannel {
+    fn name(&self) -> &str {
+        self.base.name()
+    }
+    fn is_running(&self) -> bool {
+        self.base.is_running()
+    }
+    async fn start(&self) -> Result<()> {
+        self.base.set_running(true);
+        Ok(())
+    }
+    async fn stop(&self) -> Result<()> {
+        // 记录“被调过”然后返回 Err
+        *self.stopped.write() = true;
+        Err(NemesisError::Channel("stop always fails".to_string()))
+    }
+    async fn send(&self, _msg: OutboundMessage) -> Result<()> {
+        Ok(())
+    }
+}
+
+#[tokio::test]
+async fn test_w4c_stop_all_continues_after_channel_stop_error() {
+    let mgr = ChannelManager::new();
+    let stopped_flag = std::sync::Arc::new(parking_lot::RwLock::new(false));
+    let err_ch = std::sync::Arc::new(W4cErrorStopChannel {
+        base: crate::base::BaseChannel::new("err-stop"),
+        stopped: stopped_flag.clone(),
+    });
+    let ok_ch = std::sync::Arc::new(StubChannel::new("after-err"));
+    ok_ch.start().await.unwrap();
+
+    mgr.register(err_ch).await.unwrap();
+    mgr.register(ok_ch.clone()).await.unwrap();
+
+    // stop_all 对 Err 只记日志，整体 Ok，且后续通道也被停掉
+    mgr.stop_all().await.unwrap();
+    assert!(*stopped_flag.read(), "error-stop channel's stop() must be called");
+    assert!(!ok_ch.is_started(), "channel after the error must still be stopped");
+}
+
+/// add_sync_target 返回 Err 的源通道：setup_sync_targets 跳过该对并继续。
+struct W4cRejectSyncChannel {
+    base: crate::base::BaseChannel,
+}
+
+#[async_trait]
+impl Channel for W4cRejectSyncChannel {
+    fn name(&self) -> &str {
+        self.base.name()
+    }
+    fn is_running(&self) -> bool {
+        self.base.is_running()
+    }
+    async fn start(&self) -> Result<()> {
+        self.base.set_running(true);
+        Ok(())
+    }
+    async fn stop(&self) -> Result<()> {
+        self.base.set_running(false);
+        Ok(())
+    }
+    async fn send(&self, _msg: OutboundMessage) -> Result<()> {
+        Ok(())
+    }
+    fn add_sync_target(
+        &self,
+        _name: &str,
+        _channel: std::sync::Arc<dyn Channel>,
+    ) -> Result<()> {
+        Err(NemesisError::Channel("sync rejected".to_string()))
+    }
+}
+
+#[tokio::test]
+async fn test_w4c_setup_sync_targets_add_error_is_skipped() {
+    let mgr = ChannelManager::new();
+    let src = std::sync::Arc::new(W4cRejectSyncChannel {
+        base: crate::base::BaseChannel::new("reject-src"),
+    });
+    let target = std::sync::Arc::new(StubChannel::new("tgt"));
+    let good_src = std::sync::Arc::new(StubChannel::new("good-src"));
+    let good_tgt = std::sync::Arc::new(StubChannel::new("good-tgt"));
+
+    mgr.register(src).await.unwrap();
+    mgr.register(target).await.unwrap();
+    mgr.register(good_src).await.unwrap();
+    mgr.register(good_tgt).await.unwrap();
+
+    let mut targets = std::collections::HashMap::new();
+    targets.insert("reject-src".to_string(), vec!["tgt".to_string()]);
+    targets.insert("good-src".to_string(), vec!["good-tgt".to_string()]);
+    let sync_cfg = ChannelSyncConfig { targets };
+
+    mgr.setup_sync_targets(&sync_cfg).await;
+
+    // 失败对不进 sync_targets 表；成功对进
+    assert!(mgr.get_sync_targets("reject-src").await.is_empty());
+    assert_eq!(
+        mgr.get_sync_targets("good-src").await,
+        vec!["good-tgt".to_string()]
+    );
+}
+
+// ===========================================================================
+// S2 coverage (2026-08-26): dispatch loop content_len tracing field +
+// init_channels web_server_ops set_server arm
+// ===========================================================================
+
+fn s2_enable_tracing() {
+    let _ = tracing_subscriber::fmt()
+        .with_max_level(tracing::Level::DEBUG)
+        .with_writer(std::io::sink)
+        .try_init();
+}
+
+/// The non-internal outbound message debug! has `content_len` as a field
+/// expression: it only evaluates with a subscriber active.
+#[tokio::test]
+async fn s2_dispatch_loop_non_internal_message_logs_content_len_field() {
+    s2_enable_tracing();
+    let mgr = Arc::new(ChannelManager::new());
+    let ch = Arc::new(StubChannel::new("s2-loop"));
+    mgr.register(ch.clone()).await.unwrap();
+
+    mgr.start_dispatch_loop().unwrap();
+    let tx = mgr.outbound_sender();
+
+    let msg = OutboundMessage {
+        channel: "s2-loop".to_string(),
+        chat_id: "c1".to_string(),
+        content: "field coverage".to_string(),
+        message_type: String::new(),
+        meta: Default::default(),
+    };
+    tx.send(msg).await.unwrap();
+
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    let sent = ch.sent_messages();
+    assert!(sent.contains(&"field coverage".to_string()));
+
+    drop(tx);
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+}
+
+/// init_channels with `web_server_ops` set must call `ch.set_server(ops)`
+/// (the Some arm of the web block).
+#[tokio::test]
+async fn s2_init_channels_web_with_server_ops_sets_server() {
+    struct S2WebOps;
+    impl crate::web::WebServerOps for S2WebOps {
+        fn send_to_session(
+            &self,
+            _: &str,
+            _: &str,
+            _: &str,
+            _: Option<&str>,
+        ) -> std::result::Result<(), String> {
+            Ok(())
+        }
+        fn send_history_to_session(&self, _: &str, _: &str) -> std::result::Result<(), String> {
+            Ok(())
+        }
+        fn broadcast(&self, _: &str) -> std::result::Result<(), String> {
+            Ok(())
+        }
+        fn active_session_ids(&self) -> Vec<String> {
+            Vec::new()
+        }
+        fn start_server(&self) -> std::result::Result<(), String> {
+            Ok(())
+        }
+        fn stop_server(&self) {}
+    }
+
+    let (bus, _rx) = tokio::sync::broadcast::channel::<InboundMessage>(16);
+    let mgr = ChannelManager::new();
+    let mut config = ChannelInitConfig::default();
+    config.web = Some(crate::web::WebChannelConfig::default());
+    config.web_server_ops = Some(Arc::new(S2WebOps));
+
+    mgr.init_channels(&config, bus).await.unwrap();
+
+    assert_eq!(mgr.channel_count().await, 1);
+    assert!(
+        mgr.get("web").await.is_some(),
+        "web channel must be registered"
+    );
+}

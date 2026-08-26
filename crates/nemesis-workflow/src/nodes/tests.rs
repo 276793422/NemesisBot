@@ -71,7 +71,7 @@ async fn test_parallel_node_executor_with_registry() {
         "nodes".to_string(),
         serde_json::json!([
             { "id": "a", "node_type": "llm", "config": { "prompt": "hello" } },
-            { "id": "b", "node_type": "tool", "config": { "tool": "grep" } },
+            { "id": "b", "node_type": "delay", "config": { "seconds": 0 } },
         ]),
     );
     let node = make_node("n1", "parallel", config);
@@ -526,29 +526,59 @@ async fn test_loop_stub_default_iterations() {
 // ============================================================
 
 #[tokio::test]
-async fn test_tool_node_executor_default() {
+async fn test_tool_node_executor_default_fails_loudly() {
+    // (BUG S12b-1) 裸引擎占位执行器不再伪造成功：无任何配置时也要显式
+    // Failed + 指明「未配置工具执行器」，错误里带节点 id 与 unknown 工具名。
     let exec = ToolNodeExecutor;
     let node = make_node("n1", "tool", HashMap::new());
     let result = exec
         .execute(&node, &HashMap::new(), &empty_wf_ctx())
         .await
         .unwrap();
-    assert_eq!(result.state, ExecutionState::Completed);
-    assert_eq!(result.output["tool"].as_str().unwrap(), "unknown");
-    assert_eq!(result.output["status"].as_str().unwrap(), "success");
+    assert_eq!(result.state, ExecutionState::Failed);
+    let err = result.error.as_deref().unwrap_or_default();
+    assert!(err.contains("no tool executor configured"), "got: {err}");
+    assert!(err.contains("未配置工具执行器"), "got: {err}");
+    assert!(err.contains("'n1'"), "error should name the node: {err}");
+    assert!(err.contains("'unknown'"), "error should name the tool: {err}");
 }
 
 #[tokio::test]
-async fn test_tool_node_executor_with_name() {
+async fn test_tool_node_executor_names_configured_tool() {
+    // (BUG S12b-1) 错误消息引用配置的工具名；"name" 字段优先于遗留 "tool"
+    // （与 RealToolNodeExecutor 同一解析顺序）。
     let exec = ToolNodeExecutor;
     let mut config = HashMap::new();
-    config.insert("tool".to_string(), serde_json::json!("grep"));
-    let node = make_node("n1", "tool", config);
+    config.insert("name".to_string(), serde_json::json!("web_search"));
+    let node = make_node("t", "tool", config);
     let result = exec
         .execute(&node, &HashMap::new(), &empty_wf_ctx())
         .await
         .unwrap();
-    assert_eq!(result.output["tool"].as_str().unwrap(), "grep");
+    assert_eq!(result.state, ExecutionState::Failed);
+    let err = result.error.as_deref().unwrap_or_default();
+    assert!(
+        err.contains("'web_search'"),
+        "error should carry the requested tool name: {err}"
+    );
+
+    // 遗留 "tool" 字段同样能进错误消息。
+    let mut legacy = HashMap::new();
+    legacy.insert("tool".to_string(), serde_json::json!("grep"));
+    let node2 = make_node("t2", "tool", legacy);
+    let result2 = exec
+        .execute(&node2, &HashMap::new(), &empty_wf_ctx())
+        .await
+        .unwrap();
+    assert_eq!(result2.state, ExecutionState::Failed);
+    assert!(
+        result2
+            .error
+            .as_deref()
+            .unwrap_or_default()
+            .contains("'grep'"),
+        "legacy 'tool' field should surface in the error"
+    );
 }
 
 #[tokio::test]
@@ -4380,4 +4410,574 @@ async fn u10_script_world_tool_lane_error_surfaces() {
     assert_eq!(result.state, ExecutionState::Failed);
     let err = result.error.unwrap();
     assert!(err.contains("executor channel unavailable"), "err={err}");
+}
+
+// ---------------------------------------------------------------------------
+// W4a coverage gap closure (accessors, template/items/json_path arms, loop
+// item_var + failed-child fallback, HTTP success vs local server, script
+// interpreter failure, tool-result error arm, classifier/extractor explicit
+// model+temperature, parse_json_object/normalize/validate/type_name helpers,
+// execute_inline_node dispatch, evaluate_condition/compare_values/
+// resolve_operand/is_truthy_str arms)
+// ---------------------------------------------------------------------------
+
+/// Minimal ExecutionWorld double for constructor wiring tests.
+struct W4aWorld;
+
+#[async_trait]
+impl nemesis_sandbox::exec_world::ExecutionWorld for W4aWorld {
+    fn name(&self) -> &str {
+        "w4a-world"
+    }
+    fn writable_roots(&self) -> Vec<std::path::PathBuf> {
+        Vec::new()
+    }
+    fn spawn_semantics(&self) -> nemesis_sandbox::exec_world::SpawnSemantics {
+        nemesis_sandbox::exec_world::SpawnSemantics::InProcess
+    }
+    async fn run(
+        &self,
+        _op: nemesis_sandbox::exec_world::ExecOp,
+    ) -> Result<nemesis_sandbox::exec_world::ExecOutcome, String> {
+        Err("w4a world run not implemented".to_string())
+    }
+}
+
+#[test]
+fn w4a_executor_accessors_expose_wired_internals() {
+    // RealLLMNodeExecutor::provider (with_usage_store is pub(crate), shared slot)
+    let provider: Arc<dyn LLMProvider> = Arc::new(StubProvider::success("stub", "m", "x"));
+    let llm = RealLLMNodeExecutor::with_usage_store(Arc::clone(&provider), new_usage_store_slot());
+    assert!(std::sync::Arc::ptr_eq(llm.provider(), &provider));
+
+    // RealToolNodeExecutor::tools
+    let tools = Arc::new(nemesis_tools::registry::ToolRegistry::new());
+    let tool_exec = RealToolNodeExecutor::new(Arc::clone(&tools));
+    assert!(std::sync::Arc::ptr_eq(tool_exec.tools(), &tools));
+
+    // classifier / extractor provider accessors
+    let cls = QuestionClassifierNodeExecutor::new(Arc::clone(&provider));
+    assert!(std::sync::Arc::ptr_eq(cls.provider(), &provider));
+    let ext = ParameterExtractorNodeExecutor::new(Arc::clone(&provider));
+    assert!(std::sync::Arc::ptr_eq(ext.provider(), &provider));
+}
+
+#[test]
+fn w4a_script_executor_default_and_with_tools_and_world_ctors() {
+    // Default == new() (no tools, no world): direct-spawn lane
+    let _default = ScriptNodeExecutor::default();
+    // with_tools_and_world: registry + world both wired
+    let _both = ScriptNodeExecutor::with_tools_and_world(
+        Arc::new(nemesis_tools::registry::ToolRegistry::new()),
+        Arc::new(W4aWorld),
+    );
+    // with_tools keeps world empty
+    let _tools_only =
+        ScriptNodeExecutor::with_tools(Arc::new(nemesis_tools::registry::ToolRegistry::new()));
+}
+
+#[test]
+fn w4a_resolve_template_value_array_arm() {
+    let mut ctx = HashMap::new();
+    ctx.insert("a".to_string(), serde_json::json!("v"));
+    let out = resolve_template_value(
+        &serde_json::json!(["{{a}}", 1, {"k": "{{a}}"}, null]),
+        &ctx,
+    );
+    assert_eq!(out, serde_json::json!(["v", 1, {"k": "v"}, null]));
+}
+
+#[test]
+fn w4a_resolve_items_list_ref_variants() {
+    let mut ctx = HashMap::new();
+    // {{ref}} where ref IS an array -> raw array pulled (no stringification)
+    ctx.insert("ref".to_string(), serde_json::json!([1, 2]));
+    assert_eq!(
+        resolve_items_list(&serde_json::json!("{{ref}}"), &ctx).unwrap(),
+        vec![serde_json::json!(1), serde_json::json!(2)]
+    );
+    // {{ref}} where ref is a JSON-array STRING -> falls through, parses back
+    ctx.insert("ref".to_string(), serde_json::json!("[3, 4]"));
+    assert_eq!(
+        resolve_items_list(&serde_json::json!("{{ref}}"), &ctx).unwrap(),
+        vec![serde_json::json!(3), serde_json::json!(4)]
+    );
+    // {{ref}} where ref is a scalar -> fall-through -> single-element line
+    ctx.insert("ref".to_string(), serde_json::json!(42));
+    assert_eq!(
+        resolve_items_list(&serde_json::json!("{{ref}}"), &ctx).unwrap(),
+        vec![serde_json::json!("42")]
+    );
+    // literal array input is template-resolved per element; note template
+    // resolution stringifies ({{x}} -> "1"), it does not preserve JSON types
+    ctx.insert("x".to_string(), serde_json::json!(1));
+    assert_eq!(
+        resolve_items_list(&serde_json::json!(["{{x}}", 2]), &ctx).unwrap(),
+        vec![serde_json::json!("1"), serde_json::json!(2)]
+    );
+    // neither array nor string -> error
+    assert!(resolve_items_list(&serde_json::json!(17), &ctx).is_err());
+}
+
+#[test]
+fn w4a_json_path_lookup_edge_paths() {
+    let root = serde_json::json!({"a": [7, 8], "o": {"b": 1}, "nested": [[10, 20], [30, 40]]});
+    // empty path -> whole root
+    assert_eq!(json_path_lookup(&root, ""), root.clone());
+    // key lookup on non-object (array) -> Null
+    assert_eq!(json_path_lookup(&serde_json::json!([1]), "a"), serde_json::Value::Null);
+    // trailing junk after ] -> stops applying, returns current
+    assert_eq!(json_path_lookup(&root, "a[0]x"), serde_json::json!(7));
+    // unterminated [ -> stops, returns the array itself
+    assert_eq!(json_path_lookup(&root, "a[0"), serde_json::json!([7, 8]));
+    // non-parse index -> Null
+    assert_eq!(json_path_lookup(&root, "a[x]"), serde_json::Value::Null);
+    // positive index
+    assert_eq!(json_path_lookup(&root, "a[1]"), serde_json::json!(8));
+    // negative index (last)
+    assert_eq!(json_path_lookup(&root, "a[-1]"), serde_json::json!(8));
+    // index applied to non-array -> Null
+    assert_eq!(json_path_lookup(&root, "o[0]"), serde_json::Value::Null);
+    // whitespace between indices still chains
+    assert_eq!(json_path_lookup(&root, "nested[0] [1]"), serde_json::json!(20));
+    // dotted field + index combo
+    assert_eq!(json_path_lookup(&root, "o.b"), serde_json::json!(1));
+}
+
+/// Node executor that records the values its context had for a given key.
+struct W4aCapturingExecutor {
+    key: &'static str,
+    seen: std::sync::Arc<std::sync::Mutex<Vec<serde_json::Value>>>,
+}
+
+#[async_trait]
+impl NodeExecutor for W4aCapturingExecutor {
+    async fn execute(
+        &self,
+        node: &NodeDef,
+        context: &HashMap<String, serde_json::Value>,
+        _wf_ctx: &WorkflowContext,
+    ) -> Result<NodeResult, String> {
+        let v = context.get(self.key).cloned().unwrap_or(serde_json::Value::Null);
+        self.seen.lock().unwrap().push(v.clone());
+        let now = Local::now();
+        Ok(NodeResult {
+            node_id: node.id.clone(),
+            output: serde_json::json!({ "seen": v }),
+            error: None,
+            state: ExecutionState::Completed,
+            started_at: now,
+            ended_at: Local::now(),
+            metadata: HashMap::new(),
+        })
+    }
+}
+
+/// Executor that FAILS with error: None (forces the loop's generic fallback).
+struct W4aSilentFailExecutor;
+
+#[async_trait]
+impl NodeExecutor for W4aSilentFailExecutor {
+    async fn execute(
+        &self,
+        node: &NodeDef,
+        _context: &HashMap<String, serde_json::Value>,
+        _wf_ctx: &WorkflowContext,
+    ) -> Result<NodeResult, String> {
+        let now = Local::now();
+        Ok(NodeResult {
+            node_id: node.id.clone(),
+            output: serde_json::Value::Null,
+            error: None,
+            state: ExecutionState::Failed,
+            started_at: now,
+            ended_at: Local::now(),
+            metadata: HashMap::new(),
+        })
+    }
+}
+
+#[tokio::test]
+async fn w4a_loop_foreach_custom_item_var() {
+    let registry = Arc::new(NodeExecutorRegistry::new());
+    let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    registry.register(
+        "w4a_capture",
+        Arc::new(W4aCapturingExecutor { key: "elem", seen: Arc::clone(&seen) }),
+    );
+    let exec = LoopNodeExecutor::new(Arc::clone(&registry));
+
+    let mut config = HashMap::new();
+    config.insert("mode".to_string(), serde_json::json!("foreach"));
+    config.insert("items".to_string(), serde_json::json!([10, 20]));
+    config.insert("item_var".to_string(), serde_json::json!("elem"));
+    config.insert(
+        "nodes".to_string(),
+        serde_json::json!([{ "id": "c1", "node_type": "w4a_capture" }]),
+    );
+    let node = make_node("loop1", "loop", config);
+    let result = exec
+        .execute(&node, &HashMap::new(), &empty_wf_ctx())
+        .await
+        .unwrap();
+    assert_eq!(result.state, ExecutionState::Completed);
+    // The custom item_var carried each element to the child context
+    let seen = seen.lock().unwrap().clone();
+    assert_eq!(seen, vec![serde_json::json!(10), serde_json::json!(20)]);
+    assert_eq!(result.output["iterations"].as_u64().unwrap(), 2);
+    // last_output is the final child's output
+    assert_eq!(result.output["last_output"]["seen"], serde_json::json!(20));
+}
+
+#[tokio::test]
+async fn w4a_loop_child_failed_without_error_uses_generic_message() {
+    let registry = Arc::new(NodeExecutorRegistry::new());
+    registry.register("w4a_silent_fail", Arc::new(W4aSilentFailExecutor));
+    let exec = LoopNodeExecutor::new(Arc::clone(&registry));
+
+    let mut config = HashMap::new();
+    config.insert("max_iterations".to_string(), serde_json::json!(3));
+    config.insert(
+        "nodes".to_string(),
+        serde_json::json!([{ "id": "boom", "node_type": "w4a_silent_fail" }]),
+    );
+    let node = make_node("loop1", "loop", config);
+    let result = exec
+        .execute(&node, &HashMap::new(), &empty_wf_ctx())
+        .await
+        .unwrap();
+    // Actual contract: the loop node itself stays Completed; child failure is
+    // surfaced ONLY through `error` (the scheduler keys failure off
+    // result.error, mirroring the sub_workflow contract).
+    assert_eq!(result.state, ExecutionState::Completed);
+    let err = result.error.unwrap();
+    assert!(
+        err.contains("loop iteration 0 node boom failed"),
+        "unexpected fallback error: {err}"
+    );
+    // failed before completing iteration 1
+    assert_eq!(result.output["iterations"].as_u64().unwrap(), 0);
+}
+
+/// Spawn a one-shot raw HTTP server on 127.0.0.1 returning `body`.
+/// Handles `conns` connections; returns the bound port.
+fn w4a_one_shot_http_server(body: &'static str, conns: usize) -> u16 {
+    use std::io::{Read, Write};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    std::thread::spawn(move || {
+        for _ in 0..conns {
+            let Ok((mut stream, _)) = listener.accept() else {
+                return;
+            };
+            // Drain the request head (and any body) so the client can finish.
+            let mut buf = [0u8; 4096];
+            let _ = stream.read(&mut buf);
+            let resp = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            let _ = stream.write_all(resp.as_bytes());
+            let _ = stream.flush();
+        }
+    });
+    port
+}
+
+#[tokio::test]
+async fn w4a_http_node_success_against_local_server() {
+    let port = w4a_one_shot_http_server("hello", 1);
+    let exec = HTTPNodeExecutor;
+    let mut config = HashMap::new();
+    config.insert(
+        "url".to_string(),
+        serde_json::json!(format!("http://127.0.0.1:{}/x", port)),
+    );
+    config.insert("method".to_string(), serde_json::json!("GET"));
+    let node = make_node("n1", "http", config);
+    let result = exec
+        .execute(&node, &HashMap::new(), &empty_wf_ctx())
+        .await
+        .unwrap();
+    assert_eq!(result.state, ExecutionState::Completed);
+    assert_eq!(result.output["status_code"].as_u64().unwrap(), 200);
+    assert_eq!(result.output["body"].as_str().unwrap(), "hello");
+    let headers = result.output["headers"].as_object().unwrap();
+    assert!(headers.contains_key("content-type"));
+}
+
+#[tokio::test]
+async fn w4a_execute_inline_node_dispatches_basic_types() {
+    // http
+    let port = w4a_one_shot_http_server("inline-body", 1);
+    let http_def = NodeDef {
+        id: "ih".to_string(),
+        node_type: "http".to_string(),
+        config: HashMap::from([
+            ("url".to_string(), serde_json::json!(format!("http://127.0.0.1:{}/y", port))),
+            ("method".to_string(), serde_json::json!("GET")),
+        ]),
+        depends_on: Vec::new(),
+        retry_count: 0,
+        timeout: None,
+        is_terminal: false,
+    };
+    let r = execute_inline_node(&http_def, &HashMap::new()).await.unwrap();
+    assert_eq!(r.state, ExecutionState::Completed);
+    assert_eq!(r.output["body"].as_str().unwrap(), "inline-body");
+
+    // script (direct-spawn lane: new() has no tools/world)
+    let script_def = NodeDef {
+        id: "is".to_string(),
+        node_type: "script".to_string(),
+        config: script_node_config("echo inline-hi", None),
+        depends_on: Vec::new(),
+        retry_count: 0,
+        timeout: None,
+        is_terminal: false,
+    };
+    let r = execute_inline_node(&script_def, &HashMap::new()).await.unwrap();
+    assert_eq!(r.state, ExecutionState::Completed);
+    assert!(r.output["stdout"].as_str().unwrap().contains("inline-hi"));
+
+    // human_review
+    let review_def = NodeDef {
+        id: "ir".to_string(),
+        node_type: "human_review".to_string(),
+        config: HashMap::from([(
+            "message".to_string(),
+            serde_json::json!("check this"),
+        )]),
+        depends_on: Vec::new(),
+        retry_count: 0,
+        timeout: None,
+        is_terminal: false,
+    };
+    let r = execute_inline_node(&review_def, &HashMap::new()).await.unwrap();
+    assert_eq!(r.state, ExecutionState::Waiting);
+    assert_eq!(r.output["status"].as_str().unwrap(), "waiting_for_review");
+}
+
+#[tokio::test]
+async fn w4a_script_missing_interpreter_errors() {
+    // python2 is not installed on this host; the direct-spawn lane's
+    // Command::new fails and must surface as an Err string.
+    let exec = ScriptNodeExecutor::new();
+    let mut config = HashMap::new();
+    config.insert("script".to_string(), serde_json::json!("print(1)"));
+    config.insert("language".to_string(), serde_json::json!("python2"));
+    let node = make_node("n1", "script", config);
+    let err = exec
+        .execute(&node, &HashMap::new(), &empty_wf_ctx())
+        .await
+        .unwrap_err();
+    assert!(
+        err.starts_with("failed to execute script:"),
+        "unexpected error: {err}"
+    );
+}
+
+#[test]
+fn w4a_script_tool_result_to_node_result_error_arm() {
+    let started = Local::now();
+    let tool_result = nemesis_tools::types::ToolResult {
+        for_llm: "spawn timed out".to_string(),
+        for_user: None,
+        silent: false,
+        is_error: true,
+        is_async: false,
+        task_id: None,
+    };
+    let nr = script_tool_result_to_node_result("n9", started, "bash", tool_result);
+    assert_eq!(nr.state, ExecutionState::Failed);
+    assert_eq!(nr.error.as_deref(), Some("run_script: spawn timed out"));
+    assert!(nr.output.is_null());
+}
+
+#[tokio::test]
+async fn w4a_classifier_explicit_model_and_temperature() {
+    let provider = Arc::new(StubProvider::success("stub", "stub-model", "billing"));
+    let exec = QuestionClassifierNodeExecutor::new(Arc::clone(&provider) as Arc<dyn LLMProvider>);
+    let mut config = classifier_config("refund please", &[("billing", "..."), ("support", "...")]);
+    config.insert("model".to_string(), serde_json::json!("custom-x"));
+    config.insert("temperature".to_string(), serde_json::json!(0.7));
+    let node = make_node("classify", "question_classifier", config);
+    let result = exec
+        .execute(&node, &HashMap::new(), &empty_wf_ctx())
+        .await
+        .unwrap();
+    assert_eq!(result.state, ExecutionState::Completed);
+    assert_eq!(result.output["class_id"].as_str().unwrap(), "billing");
+    // Explicit config overrode the provider default model + temperature
+    assert_eq!(
+        provider.last_model.lock().unwrap().as_deref(),
+        Some("custom-x")
+    );
+    let opts = provider.last_options.lock().unwrap().clone().unwrap();
+    assert_eq!(opts.temperature, Some(0.7));
+}
+
+#[tokio::test]
+async fn w4a_extractor_explicit_model_and_temperature() {
+    let provider = Arc::new(StubProvider::success(
+        "stub",
+        "stub-model",
+        r#"{"name":"Alice"}"#,
+    ));
+    let exec = ParameterExtractorNodeExecutor::new(Arc::clone(&provider) as Arc<dyn LLMProvider>);
+    let mut config = extractor_config("book Alice", &[("name", "string", "who", true)]);
+    config.insert("model".to_string(), serde_json::json!("custom-y"));
+    config.insert("temperature".to_string(), serde_json::json!(0.5));
+    let node = make_node("extract", "parameter_extractor", config);
+    let result = exec
+        .execute(&node, &HashMap::new(), &empty_wf_ctx())
+        .await
+        .unwrap();
+    assert_eq!(result.state, ExecutionState::Completed);
+    assert_eq!(
+        result.output["parameters"]["name"].as_str().unwrap(),
+        "Alice"
+    );
+    assert_eq!(
+        provider.last_model.lock().unwrap().as_deref(),
+        Some("custom-y")
+    );
+    let opts = provider.last_options.lock().unwrap().clone().unwrap();
+    assert_eq!(opts.temperature, Some(0.5));
+}
+
+#[test]
+fn w4a_parse_json_object_all_recovery_arms() {
+    // direct plain object
+    let v = parse_json_object(r#"{ "a": 1 }"#).unwrap();
+    assert_eq!(v, serde_json::json!({"a": 1}));
+    // fenced (```json ... ```)
+    let v = parse_json_object("```json\n{\"a\": 2}\n```").unwrap();
+    assert_eq!(v, serde_json::json!({"a": 2}));
+    // prose-wrapped: outermost {...} extraction
+    let v = parse_json_object("Sure, here's the JSON:\n{ \"name\": \"foo\" }\nHope this helps!").unwrap();
+    assert_eq!(v, serde_json::json!({"name": "foo"}));
+    // non-object JSON values rejected
+    assert!(parse_json_object("[1, 2]").is_err());
+    assert!(parse_json_object("42").is_err());
+    assert!(parse_json_object("not json at all").is_err());
+}
+
+#[test]
+fn w4a_normalize_object_wraps_non_object_and_fills_missing() {
+    // non-object parsed value is wrapped under "_value"
+    let out = normalize_object(&serde_json::json!("scalar"), &[]);
+    assert_eq!(out, serde_json::json!({ "_value": "scalar" }));
+    // missing declared params are filled with null
+    let params = vec![
+        serde_json::from_value::<ParamDef>(serde_json::json!({"name": "a"})).unwrap(),
+        serde_json::from_value::<ParamDef>(serde_json::json!({"name": "b"})).unwrap(),
+    ];
+    let out = normalize_object(&serde_json::json!({"a": 1}), &params);
+    assert_eq!(out, serde_json::json!({"a": 1, "b": null}));
+}
+
+#[test]
+fn w4a_validate_required_params_arms() {
+    let required: ParamDef =
+        serde_json::from_value(serde_json::json!({"name": "a", "required": true})).unwrap();
+    let optional: ParamDef =
+        serde_json::from_value(serde_json::json!({"name": "b"})).unwrap();
+    // non-object -> Err
+    assert_eq!(
+        validate_required_params(&serde_json::json!("x"), &[required.clone()]),
+        Err("output is not an object".to_string())
+    );
+    // required missing -> Err naming it
+    let err = validate_required_params(
+        &serde_json::json!({"b": 1}),
+        &[required.clone(), optional],
+    )
+    .unwrap_err();
+    assert_eq!(err, "a");
+    // required present but null -> still Err
+    assert!(validate_required_params(&serde_json::json!({"a": null}), &[required]).is_err());
+    // satisfied -> Ok
+    assert!(validate_required_params(&serde_json::json!({"a": 0}), &[serde_json::from_value::<ParamDef>(serde_json::json!({"name": "a", "required": true})).unwrap()]).is_ok());
+}
+
+#[test]
+fn w4a_type_name_all_variants() {
+    assert_eq!(type_name(&serde_json::Value::Null), "null");
+    assert_eq!(type_name(&serde_json::json!(true)), "bool");
+    assert_eq!(type_name(&serde_json::json!(1)), "number");
+    assert_eq!(type_name(&serde_json::json!("s")), "string");
+    assert_eq!(type_name(&serde_json::json!([1])), "array");
+    assert_eq!(type_name(&serde_json::json!({})), "object");
+}
+
+#[test]
+fn w4a_evaluate_condition_edge_arms() {
+    let mut ctx = HashMap::new();
+    ctx.insert("flag_true".to_string(), serde_json::json!(true));
+    ctx.insert("flag_false".to_string(), serde_json::json!(false));
+    // empty / whitespace-only -> false
+    assert!(!evaluate_condition("", &ctx));
+    assert!(!evaluate_condition("   ", &ctx));
+    // bare variable truthiness via context
+    assert!(evaluate_condition("flag_true", &ctx));
+    assert!(!evaluate_condition("flag_false", &ctx));
+    // unknown bare name falls back to string truthiness
+    assert!(evaluate_condition("some_unknown_name", &ctx));
+    // falsy string literals
+    assert!(!evaluate_condition("0", &ctx));
+    assert!(!evaluate_condition("false", &ctx));
+    assert!(evaluate_condition("true", &ctx));
+}
+
+#[test]
+fn w4a_compare_values_string_fallbacks() {
+    let ctx = HashMap::new();
+    // Quoted non-numeric operands force the lexicographic arms
+    assert!(evaluate_condition("'apple' < 'banana'", &ctx));
+    assert!(!evaluate_condition("'banana' < 'apple'", &ctx));
+    assert!(evaluate_condition("'b' >= 'a'", &ctx));
+    assert!(evaluate_condition("'a' <= 'a'", &ctx));
+    assert!(evaluate_condition("'a' == 'a'", &ctx));
+    assert!(evaluate_condition("'a' != 'b'", &ctx));
+    assert!(evaluate_condition("'b' > 'a'", &ctx));
+    // numeric comparisons still take the numeric path
+    assert!(evaluate_condition("5 >= 5", &ctx));
+    assert!(evaluate_condition("3 != 4", &ctx));
+}
+
+#[test]
+fn w4a_resolve_operand_literal_kinds() {
+    let mut ctx = HashMap::new();
+    ctx.insert("v".to_string(), serde_json::json!(5));
+    // empty -> Null
+    assert_eq!(resolve_operand("", &ctx), serde_json::Value::Null);
+    assert_eq!(resolve_operand("   ", &ctx), serde_json::Value::Null);
+    // quoted literals are unquoted
+    assert_eq!(resolve_operand("'sq'", &ctx), serde_json::json!("sq"));
+    assert_eq!(resolve_operand("\"dq\"", &ctx), serde_json::json!("dq"));
+    // context lookup wins over literal shapes
+    assert_eq!(resolve_operand("v", &ctx), serde_json::json!(5));
+    // numeric literal
+    assert_eq!(resolve_operand("3.5", &ctx), serde_json::json!(3.5));
+    // boolean / null literals
+    assert_eq!(resolve_operand("true", &ctx), serde_json::json!(true));
+    assert_eq!(resolve_operand("false", &ctx), serde_json::json!(false));
+    assert_eq!(resolve_operand("null", &ctx), serde_json::Value::Null);
+    // bare word -> string
+    assert_eq!(resolve_operand("bare", &ctx), serde_json::json!("bare"));
+}
+
+#[test]
+fn w4a_is_truthy_str_arms() {
+    assert!(!is_truthy_str(""));
+    assert!(!is_truthy_str("   "));
+    assert!(!is_truthy_str("false"));
+    assert!(!is_truthy_str("FALSE"));
+    assert!(!is_truthy_str("0"));
+    assert!(!is_truthy_str("0.0"));
+    assert!(is_truthy_str("x"));
+    assert!(is_truthy_str("00"));
+    assert!(is_truthy_str(" true "));
 }

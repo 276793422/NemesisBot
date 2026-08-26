@@ -399,3 +399,40 @@ fn test_slack_webhook_detected() {
     );
     assert!(result.has_matches);
 }
+
+#[test]
+fn mask_mode_default_is_keep_prefix() {
+    assert!(matches!(MaskMode::default(), MaskMode::KeepPrefix));
+}
+
+#[test]
+fn scan_content_key_value_mask_short_and_long_values() {
+    // "Basic A" matches basic_auth with a 7-byte full match → KeyValue mask's
+    // <=8-byte [REDACTED] arm.
+    let short = Scanner::with_mask_mode(true, "log", MaskMode::KeyValue);
+    let r = short.scan_content("Authorization: Basic A");
+    assert!(r.has_matches);
+    assert!(
+        r.matches.iter().any(|m| m.redacted == "[REDACTED]"),
+        "matches: {:?}",
+        r.matches
+    );
+    // 20-byte AWS key → KeyValue keep-prefix/suffix arm ("AKIA...MPLE").
+    let long = Scanner::with_mask_mode(true, "log", MaskMode::KeyValue);
+    let r2 = long.scan_content("AKIAIOSFODNN7EXAMPLE");
+    assert!(r2.has_matches);
+    assert!(
+        r2.matches.iter().any(|m| m.redacted.contains("...")),
+        "matches: {:?}",
+        r2.matches
+    );
+}
+
+#[test]
+fn scan_tool_output_match_and_clean_paths() {
+    let scanner = Scanner::new(true, "warn");
+    let hit = scanner.scan_tool_output("shell", "key=AKIAIOSFODNN7EXAMPLE tail");
+    assert!(hit.has_matches);
+    let clean = scanner.scan_tool_output("shell", "nothing sensitive in this output");
+    assert!(!clean.has_matches);
+}

@@ -57,8 +57,7 @@ fn test_remove_trigger() {
 
 #[test]
 fn test_match_event() {
-    let mgr = TriggerManager::new();
-    let trigger = make_trigger("event", HashMap::from([("type", "file_created")]));
+    let mgr = TriggerManager::new();    let trigger = make_trigger("event", HashMap::from([("type", "file_created")]));
     mgr.register_trigger("file_processor", trigger).unwrap();
 
     let mut data = HashMap::new();
@@ -423,4 +422,206 @@ fn match_message_empty_config_matches_everything() {
         content: "any",
     };
     assert_eq!(mgr.match_message(&msg), vec!["catchall_wf"]);
+}
+
+// =========================================================================
+// W4a coverage batch — triggers.rs gap closure
+// =========================================================================
+
+/// CronTimezone::label (triggers.rs ~59-64).
+#[test]
+fn w4a_cron_timezone_labels() {
+    assert_eq!(CronTimezone::Local.label(), "local");
+    assert_eq!(CronTimezone::Utc.label(), "utc");
+}
+
+/// match_trigger_event skips triggers that aren't type "event" — a cron
+/// trigger whose config happens to carry event_type must not match
+/// (triggers.rs ~192).
+#[test]
+fn w4a_match_trigger_event_ignores_non_event_triggers() {
+    let mgr = TriggerManager::new();
+    let trigger = make_trigger(
+        "cron",
+        HashMap::from([("event_type", "workflow.completed"), ("schedule", "0 * * * *")]),
+    );
+    mgr.register_trigger("cron_wf", trigger).unwrap();
+
+    let mut data = HashMap::new();
+    data.insert("status".to_string(), serde_json::json!("completed"));
+    let event = crate::event_dispatcher::TriggerEvent::new("workflow.completed", data);
+    assert!(mgr.match_trigger_event(&event).is_empty());
+}
+
+/// match_message skips triggers that aren't type "message" — a webhook
+/// trigger whose config looks message-shaped must not match
+/// (triggers.rs ~233).
+#[test]
+fn w4a_match_message_ignores_non_message_triggers() {
+    let mgr = TriggerManager::new();
+    let trigger = make_trigger("webhook", HashMap::from([("content", "hello")]));
+    mgr.register_trigger("hook_wf", trigger).unwrap();
+
+    let msg = InboundMessageRef {
+        channel: "web",
+        sender_id: "u",
+        chat_id: "c",
+        content: "hello",
+    };
+    assert!(mgr.match_message(&msg).is_empty());
+}
+
+/// match_event_data: a config key missing from the event data fails the
+/// match; a glob that doesn't match also fails (triggers.rs ~262 + ~267-269).
+#[test]
+fn w4a_match_trigger_event_data_missing_key_and_glob_miss() {
+    let mgr = TriggerManager::new();
+
+    // Missing key: trigger wants "level", event only carries "status".
+    let missing = make_trigger(
+        "event",
+        HashMap::from([("event_type", "app.log"), ("level", "error")]),
+    );
+    mgr.register_trigger("missing_key_wf", missing).unwrap();
+
+    // Glob mismatch: pattern "err*" vs actual "info".
+    let glob = make_trigger(
+        "event",
+        HashMap::from([("event_type", "app.log"), ("level", "err*")]),
+    );
+    mgr.register_trigger("glob_miss_wf", glob).unwrap();
+
+    let mut data = HashMap::new();
+    data.insert("status".to_string(), serde_json::json!("ok"));
+    data.insert("level".to_string(), serde_json::json!("info"));
+    let event = crate::event_dispatcher::TriggerEvent::new("app.log", data);
+
+    let matched = mgr.match_trigger_event(&event);
+    assert!(!matched.contains(&"missing_key_wf".to_string()));
+    assert!(!matched.contains(&"glob_miss_wf".to_string()));
+}
+
+/// match_message_data: chat_id key is honoured, unknown keys are ignored
+/// (triggers.rs ~285-286).
+#[test]
+fn w4a_match_message_chat_id_and_unknown_key() {
+    let mgr = TriggerManager::new();
+
+    // chat_id filter matches only the right conversation.
+    let by_chat = make_trigger("message", HashMap::from([("chat_id", "room-7")]));
+    mgr.register_trigger("chat_wf", by_chat).unwrap();
+
+    // Unknown config keys are ignored (permissive), so this still matches.
+    let with_unknown = make_trigger(
+        "message",
+        HashMap::from([("mystery_key", "whatever"), ("channel", "web")]),
+    );
+    mgr.register_trigger("unknown_key_wf", with_unknown).unwrap();
+
+    let in_room = InboundMessageRef {
+        channel: "web",
+        sender_id: "u",
+        chat_id: "room-7",
+        content: "hi",
+    };
+    let matched = mgr.match_message(&in_room);
+    assert!(matched.contains(&"chat_wf".to_string()));
+    assert!(matched.contains(&"unknown_key_wf".to_string()));
+
+    let other_room = InboundMessageRef {
+        channel: "web",
+        sender_id: "u",
+        chat_id: "room-9",
+        content: "hi",
+    };
+    let matched2 = mgr.match_message(&other_room);
+    assert!(!matched2.contains(&"chat_wf".to_string()));
+    assert!(matched2.contains(&"unknown_key_wf".to_string()));
+}
+
+/// register_workflow_triggers: registers every trigger from a Workflow
+/// definition and propagates the first error (triggers.rs ~325-338).
+#[test]
+fn w4a_register_workflow_triggers_registers_and_errors() {
+    let mgr = TriggerManager::new();
+
+    let wf = crate::types::Workflow {
+        name: "multi_wf".to_string(),
+        description: String::new(),
+        version: "1.0.0".to_string(),
+        triggers: vec![
+            crate::types::TriggerConfig {
+                trigger_type: "cron".to_string(),
+                config: HashMap::from([(
+                    "schedule".to_string(),
+                    serde_json::json!("0 * * * *"),
+                )]),
+            },
+            crate::types::TriggerConfig {
+                trigger_type: "webhook".to_string(),
+                config: HashMap::new(),
+            },
+        ],
+        nodes: vec![],
+        edges: vec![],
+        variables: HashMap::new(),
+        metadata: HashMap::new(),
+    };
+    mgr.register_workflow_triggers("multi_wf", &wf.triggers).unwrap();
+    assert_eq!(mgr.list_triggers("multi_wf").len(), 2);
+    assert!(mgr.get_cron_workflows().contains_key("multi_wf"));
+    assert_eq!(mgr.get_webhook_workflows(), vec!["multi_wf"]);
+
+    // An invalid type surfaces the error.
+    let bad = vec![crate::types::TriggerConfig {
+        trigger_type: "nonsense".to_string(),
+        config: HashMap::new(),
+    }];
+    let err = mgr.register_workflow_triggers("bad_wf", &bad);
+    assert!(err.is_err());
+}
+
+/// match_event (legacy path): a config key absent from the data map fails;
+/// a non-matching glob fails (triggers.rs ~367 + ~375). The legacy matcher
+/// compares trigger_type against the event_type string, so a registered
+/// "event"-typed trigger matches the literal event_type "event".
+#[test]
+fn w4a_match_event_legacy_missing_key_and_glob_miss() {
+    let mgr = TriggerManager::new();
+
+    let missing = make_trigger("event", HashMap::from([("env", "prod")]));
+    mgr.register_trigger("missing_wf", missing).unwrap();
+
+    let glob = make_trigger("event", HashMap::from([("env", "stg*")]));
+    mgr.register_trigger("glob_wf", glob).unwrap();
+
+    // Region-only data (no env at all) exercises the literal missing-key arm.
+    let mut no_env = HashMap::new();
+    no_env.insert("region".to_string(), serde_json::json!("eu"));
+    let matched2 = mgr.match_event("event", &no_env);
+    assert!(!matched2.contains(&"missing_wf".to_string()));
+    assert!(!matched2.contains(&"glob_wf".to_string()));
+
+    // env present but non-matching values: plain mismatch + glob mismatch.
+    let mut data = HashMap::new();
+    data.insert("region".to_string(), serde_json::json!("eu"));
+    data.insert("env".to_string(), serde_json::json!("dev"));
+    let matched = mgr.match_event("event", &data);
+    assert!(!matched.contains(&"missing_wf".to_string()));
+    assert!(!matched.contains(&"glob_wf".to_string()));
+
+    // Matching data resolves both.
+    let mut ok_data = HashMap::new();
+    ok_data.insert("env".to_string(), serde_json::json!("stg-9"));
+    let matched3 = mgr.match_event("event", &ok_data);
+    assert!(matched3.contains(&"glob_wf".to_string()));
+}
+
+/// match_glob: a middle segment that never appears makes the match fail
+/// (triggers.rs ~422).
+#[test]
+fn w4a_match_glob_middle_part_missing() {
+    assert!(match_glob("a*b*c", "aXXbXXc"));
+    assert!(!match_glob("a*b*c", "aXXc"));
+    assert!(!match_glob("a*b*c", "bXXbXXc"));
 }

@@ -598,3 +598,48 @@ fn test_api_key_env_empty_reference_fails_loud() {
     };
     assert!(resolve_model_config(&cfg, "bad").is_err());
 }
+
+#[test]
+fn test_api_key_env_var_set_but_empty_fails_loud() {
+    // Distinct from the empty REFERENCE case above: the variable is NAMED and
+    // EXISTS in the environment but holds an empty string — still a loud
+    // error naming the variable (never a silent empty key → mystery 401).
+    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let var = unique_env_var("set_but_empty");
+    // SAFETY: env-test discipline — GLOBAL_STATE_LOCK held, unique var name.
+    unsafe { std::env::set_var(&var, "") };
+
+    let err = resolve_api_key_value(&format!("env:{}", var), "m").unwrap_err();
+    let msg = format!("{:?}", err);
+    assert!(msg.contains("is set but empty"), "diagnosis is set-but-empty: {msg}");
+    assert!(msg.contains(&var), "error names the variable: {msg}");
+
+    // SAFETY: same lock held, unique var.
+    unsafe { std::env::remove_var(&var) };
+}
+
+// Insurance for the by-vendor/model-field resolution arms (resolve_model_config
+// line ~92 and find_model_by_name line ~198): an entry whose model_name does
+// NOT match the ref, matched via its `model` field instead.
+#[test]
+fn test_resolve_and_find_by_model_field_arm() {
+    let cfg = Config {
+        model_list: vec![ModelConfig {
+            model_name: "alias-only".to_string(),
+            model: "zhipu/glm-4.7".to_string(),
+            api_key: "k".to_string(),
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+
+    // resolve_model_config: model_name miss → contains('/') → model-field hit.
+    let res = resolve_model_config(&cfg, "zhipu/glm-4.7").unwrap();
+    assert_eq!(res.provider_name, "zhipu");
+    assert_eq!(res.model_name, "glm-4.7");
+    assert_eq!(res.api_key, "k");
+
+    // find_model_by_name: same two-stage lookup, by-model-field arm.
+    let found = find_model_by_name(&cfg, "zhipu/glm-4.7").unwrap();
+    assert_eq!(found.model_name, "alias-only");
+}

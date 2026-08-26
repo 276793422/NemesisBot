@@ -657,3 +657,10 @@ mod tests;
 
 #[cfg(all(test, feature = "workflow"))]
 mod extra_tests;
+
+// S10b (2026-08-26, quality-hardening goal 冲刺 web 批次 2): workflow-chat
+// auth arm, no-router request error, workflow_chat spawn block, inbound
+// channel arms, protocol ping frame, abrupt-drop cleanup — live-socket tests
+// on ephemeral ports.
+#[cfg(all(test, feature = "workflow"))]
+mod s10b_tests;

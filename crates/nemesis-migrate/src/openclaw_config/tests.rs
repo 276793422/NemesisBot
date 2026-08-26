@@ -497,3 +497,170 @@ fn test_find_openclaw_config_with_subdir() {
     assert!(result.is_ok());
     assert!(result.unwrap().contains("config.json"));
 }
+
+// ============================================================
+// 覆盖缺口补测（llvm-cov 指定行：109 / 111-115 / 121 / 129 /
+// 170-171 / 180 / 242 / 252-254 / 279 / 297）
+//
+// 结构性不可达（本文件不试图覆盖，仅记录证据）：
+// - 152（providers match 的 `_ => continue`）：SUPPORTED_PROVIDERS 恰好
+//   等于 match 的 7 个具名 arm，能走到 match 的 name 必在 7 个之内。
+// - 205（`config["channels"].get_mut(name)` 的 None 分支）：默认模板
+//   config.channels 已包含 match 支持的全部 7 个通道名。
+// - 207（channels match 的 `_ => {}`）：SUPPORTED_CHANNELS 恰好等于
+//   match 的 7 个具名 arm。
+// - 170（model_list.as_array_mut() 的 None 分支）：convert_config 初始
+//   模板固定 `"model_list": []`，且无任何路径会把它改成非数组。
+// ============================================================
+
+#[test]
+fn test_convert_config_defaults_temperature_and_max_tool_iterations() {
+    // 覆盖 109（temperature 赋值）+ 111-115（max_tool_iterations 赋值）
+    let mut data = HashMap::new();
+    data.insert(
+        "agents".to_string(),
+        serde_json::json!({
+            "defaults": {"temperature": 0.3, "max_tool_iterations": 55}
+        }),
+    );
+    let (config, warnings) = convert_config(&data);
+    assert!(warnings.is_empty());
+    assert_eq!(config["agents"]["defaults"]["temperature"], 0.3);
+    assert_eq!(config["agents"]["defaults"]["max_tool_iterations"], 55);
+}
+
+#[test]
+fn test_convert_config_agents_without_defaults_key() {
+    // 覆盖 121：agents 存在但没有 defaults 子对象 → 整段跳过，模板值保留
+    let mut data = HashMap::new();
+    data.insert(
+        "agents".to_string(),
+        serde_json::json!({"other": true}),
+    );
+    let (config, warnings) = convert_config(&data);
+    assert!(warnings.is_empty());
+    // defaults 保持初始模板值
+    assert_eq!(config["agents"]["defaults"]["max_tokens"], 8192);
+    assert_eq!(config["agents"]["defaults"]["max_tool_iterations"], 100);
+}
+
+#[test]
+fn test_convert_config_provider_value_not_an_object() {
+    // 覆盖 129：provider 值不是对象 → continue（发生在 SUPPORTED 检查前，
+    // 不产生警告）
+    let mut data = HashMap::new();
+    data.insert(
+        "providers".to_string(),
+        serde_json::json!({"openai": "not-an-object"}),
+    );
+    let (config, warnings) = convert_config(&data);
+    assert!(warnings.is_empty());
+    assert!(config["model_list"].as_array().unwrap().is_empty());
+}
+
+#[test]
+fn test_convert_config_supported_provider_without_credentials() {
+    // 覆盖 171：受支持 provider 但 api_key/api_base 均空 → 不入 model_list
+    let mut data = HashMap::new();
+    data.insert(
+        "providers".to_string(),
+        serde_json::json!({"zhipu": {}}),
+    );
+    let (config, warnings) = convert_config(&data);
+    assert!(warnings.is_empty());
+    assert!(config["model_list"].as_array().unwrap().is_empty());
+}
+
+#[test]
+fn test_convert_config_channel_value_not_an_object() {
+    // 覆盖 180：channel 值不是对象 → continue（同样在 SUPPORTED 检查前）
+    let mut data = HashMap::new();
+    data.insert(
+        "channels".to_string(),
+        serde_json::json!({"telegram": 3}),
+    );
+    let (config, warnings) = convert_config(&data);
+    assert!(warnings.is_empty());
+    // 模板 telegram 保持禁用
+    assert_eq!(config["channels"]["telegram"]["enabled"], false);
+}
+
+#[test]
+fn test_convert_config_search_without_api_key() {
+    // 覆盖 242：search 对象存在但没有 api_key → 只迁 max_results，
+    // 不设置 brave.enabled
+    let mut data = HashMap::new();
+    data.insert(
+        "tools".to_string(),
+        serde_json::json!({"web": {"search": {"max_results": 5}}}),
+    );
+    let (config, _) = convert_config(&data);
+    assert_eq!(config["tools"]["web"]["brave"]["max_results"], 5);
+    assert_eq!(config["tools"]["web"]["duck_duck_go"]["max_results"], 5);
+    assert!(config["tools"]["web"]["brave"].get("enabled").is_none());
+    assert!(config["tools"]["web"]["brave"].get("api_key").is_none());
+}
+
+#[test]
+fn test_convert_config_search_api_key_without_max_results() {
+    // 覆盖 252：search 有 api_key 但没有 max_results → 只迁 api_key/enabled
+    let mut data = HashMap::new();
+    data.insert(
+        "tools".to_string(),
+        serde_json::json!({"web": {"search": {"api_key": "my-key"}}}),
+    );
+    let (config, _) = convert_config(&data);
+    assert_eq!(config["tools"]["web"]["brave"]["api_key"], "my-key");
+    assert_eq!(config["tools"]["web"]["brave"]["enabled"], true);
+    assert!(config["tools"]["web"]["brave"].get("max_results").is_none());
+    assert!(config["tools"]["web"].get("duck_duck_go").is_none());
+}
+
+#[test]
+fn test_convert_config_web_and_tools_missing_search_variants() {
+    // 覆盖 253（tools.web 存在但无 search 键）+ 254（tools 存在但无 web 键）
+    let mut data = HashMap::new();
+    data.insert(
+        "tools".to_string(),
+        serde_json::json!({"web": {"other": 1}}),
+    );
+    let (config, _) = convert_config(&data);
+    assert!(config.get("tools").is_none());
+
+    let mut data2 = HashMap::new();
+    data2.insert(
+        "tools".to_string(),
+        serde_json::json!({"other": 1}),
+    );
+    let (config2, _) = convert_config(&data2);
+    assert!(config2.get("tools").is_none());
+}
+
+#[test]
+fn test_merge_config_existing_without_model_list() {
+    // 覆盖 279：existing 没有 model_list 数组 → model_list 合并整段跳过
+    // （不补建 model_list 键）
+    let mut existing = serde_json::json!({"channels": {}});
+    let incoming = serde_json::json!({
+        "model_list": [{"model_name": "m"}],
+        "channels": {}
+    });
+    merge_config(&mut existing, &incoming);
+    assert!(existing.get("model_list").is_none());
+}
+
+#[test]
+fn test_merge_config_existing_without_channels() {
+    // 覆盖 297：existing 没有 channels 对象 → channels 合并整段跳过，
+    // 但 model_list 合并仍生效
+    let mut existing = serde_json::json!({"model_list": []});
+    let incoming = serde_json::json!({
+        "model_list": [{"model_name": "m"}],
+        "channels": {"telegram": {"enabled": true}}
+    });
+    merge_config(&mut existing, &incoming);
+    let models = existing["model_list"].as_array().unwrap();
+    assert_eq!(models.len(), 1);
+    assert_eq!(models[0]["model_name"], "m");
+    assert!(existing.get("channels").is_none());
+}

@@ -490,3 +490,57 @@ fn test_compute_broadcast_class_c() {
     let broadcast = compute_broadcast(ip, mask);
     assert_eq!(broadcast, Ipv4Addr::new(192, 168, 1, 255));
 }
+
+// ============================================================
+// S4 coverage: handler-absent receive path, empty name/category
+// node-info fallbacks
+// ============================================================
+
+/// A datagram arriving while no handler is installed is parsed but then
+/// dropped on the `if let Some(handler_fn)` else path (must not panic).
+#[test]
+fn test_udp_listener_receive_without_handler_ignores_message() {
+    let listener = UdpListener::new(0, None).unwrap();
+    let port = listener.port();
+
+    // Intentionally no set_message_handler call.
+    listener.start().unwrap();
+    std::thread::sleep(Duration::from_millis(50));
+
+    let sender = UdpSocket::bind("0.0.0.0:0").unwrap();
+    let msg = make_announce("no-handler-node", &["10.0.0.1"], 9000);
+    sender
+        .send_to(
+            &msg.to_bytes().unwrap(),
+            SocketAddrV4::new(Ipv4Addr::LOCALHOST, port),
+        )
+        .unwrap();
+
+    std::thread::sleep(Duration::from_millis(200));
+    listener.stop().unwrap(); // reaching here without panic is the assertion
+}
+
+/// Empty announce name falls back to "node-<first 8 id chars>", empty
+/// category falls back to "development".
+#[test]
+fn test_message_to_node_info_empty_name_and_category_fallbacks() {
+    use crate::discovery::message::{DiscoveryMessage, DiscoveryMessageType};
+    let msg = DiscoveryMessage {
+        version: "1.0".into(),
+        msg_type: DiscoveryMessageType::Announce,
+        node_id: "abcdefgh1234".into(),
+        name: String::new(),
+        addresses: vec!["10.0.0.3".into()],
+        rpc_port: 9000,
+        role: "worker".into(),
+        category: String::new(),
+        tags: vec![],
+        capabilities: vec![],
+        node_type: "agent".into(),
+        timestamp: 1700000000,
+    };
+    let info = message_to_node_info(&msg);
+    assert_eq!(info.base.name, "node-abcdefgh");
+    assert_eq!(info.base.category, "development");
+    assert_eq!(info.base.address, "10.0.0.3:9000");
+}

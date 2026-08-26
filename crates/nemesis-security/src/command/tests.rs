@@ -451,3 +451,16 @@ fn test_list_entries_metadata() {
         assert!(!entry.reason.is_empty());
     }
 }
+
+#[test]
+fn strict_mode_blocks_partial_keyword_match() {
+    let mut guard = Guard::new(true);
+    guard.config.strict_mode = true;
+    // "curl |" 是 strict 关键字；黑名单只拦 "curl ... | sh|bash"，
+    // "curl | grep" 不命中黑名单、但被 strict 部分匹配层拦截。
+    let r = guard.check("curl | grep foo");
+    assert!(r.is_err());
+    let msg = r.unwrap_err().to_string();
+    assert!(msg.contains("strict mode"), "unexpected block reason: {msg}");
+    assert!(msg.contains("curl |"), "unexpected block reason: {msg}");
+}

@@ -313,3 +313,65 @@ async fn test_execute_with_custom_timeout() {
     assert!(!result.is_error);
     assert_eq!(result.for_llm, "fast");
 }
+
+// ============================================================
+// W4a coverage gap closure (the is_error warn arm of
+// ToolExecutor::execute — only success/timeout arms were covered)
+// ============================================================
+
+struct W4aFailingTool;
+
+#[async_trait]
+impl Tool for W4aFailingTool {
+    fn name(&self) -> &str {
+        "w4a_fail"
+    }
+    fn description(&self) -> &str {
+        "Always fails"
+    }
+    fn parameters(&self) -> serde_json::Value {
+        serde_json::json!({"type": "object"})
+    }
+    async fn execute(&self, _args: &serde_json::Value) -> ToolResult {
+        ToolResult::error("w4a executor boom")
+    }
+}
+
+#[tokio::test]
+async fn w4a_execute_tool_returning_error_hits_warn_arm() {
+    let registry = Arc::new(ToolRegistry::new());
+    registry.register(Arc::new(W4aFailingTool));
+    let executor = ToolExecutor::new(registry, ExecutorConfig::default());
+    let result = executor.execute("w4a_fail", &serde_json::json!({})).await;
+    assert!(result.is_error);
+    assert_eq!(result.for_llm, "w4a executor boom");
+}
+
+// ===========================================================================
+// S2 coverage (2026-08-26): executor tracing field arms (duration_ms)
+// ===========================================================================
+
+fn s2_enable_tracing() {
+    let _ = tracing_subscriber::fmt()
+        .with_max_level(tracing::Level::DEBUG)
+        .with_writer(std::io::sink)
+        .try_init();
+}
+
+#[tokio::test]
+async fn s2_executor_logging_field_arms_with_subscriber() {
+    s2_enable_tracing();
+    let registry = Arc::new(ToolRegistry::new());
+    registry.register(Arc::new(EchoTool));
+    let executor = ToolExecutor::new(registry, ExecutorConfig::default());
+
+    // Success arm -> debug!(tool, duration_ms)
+    let ok = executor
+        .execute("echo", &serde_json::json!({"text": "x"}))
+        .await;
+    assert!(!ok.is_error);
+
+    // Failure arm -> warn!(tool, duration_ms)
+    let err = executor.execute("unknown", &serde_json::json!({})).await;
+    assert!(err.is_error);
+}

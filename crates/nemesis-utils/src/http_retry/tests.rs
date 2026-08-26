@@ -1033,3 +1033,59 @@ async fn test_reqwest_retry_clonable_body_retries() {
     let body = resp.text().await.unwrap();
     assert_eq!(body, "accepted");
 }
+
+/// 流式 body（wrap_stream(bytes_stream())）不可 clone：Request::try_clone()
+/// 返回 None → 不发任何请求直接返回 None（last_resp 仍为初始 None）。
+#[tokio::test]
+async fn test_reqwest_retry_non_cloneable_streaming_body_returns_none() {
+    let server = MockServer::start().await;
+    let client = retry_client();
+
+    // 用真实响应构造流式 body：bytes_stream() 返回 opaque impl Stream，
+    // 满足 wrap_stream 的 TryStream 约束（reqwest "stream" feature 已启用）。
+    Mock::given(method("GET"))
+        .and(path("/seed"))
+        .respond_with(ResponseTemplate::new(200).set_body_string("seed-body"))
+        .mount(&server)
+        .await;
+    let resp = client
+        .get(format!("{}/seed", server.uri()))
+        .send()
+        .await
+        .unwrap();
+    let streaming_body = reqwest::Body::wrap_stream(resp.bytes_stream());
+    let req = client
+        .post(format!("{}/target", server.uri()))
+        .body(streaming_body)
+        .build()
+        .unwrap();
+
+    assert!(req.try_clone().is_none());
+    let result = do_request_with_retry_reqwest(&client, &req).await;
+    assert!(result.is_none());
+}
+
+/// 绑一个临时端口后立刻释放 → 所有尝试都拿到 connection refused（Err 臂，
+/// 含最后一次的 `return Some(Err(e))`）。真实退避 sleep 共 ~3s（1s+2s），
+/// 与既有 503 重试测试同量级。
+#[tokio::test]
+async fn test_reqwest_retry_connection_error_returns_err_after_retries() {
+    let probe = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = probe.local_addr().unwrap().port();
+    drop(probe);
+
+    let client = retry_client();
+    let req = client
+        .get(format!("http://127.0.0.1:{}/down", port))
+        .build()
+        .unwrap();
+
+    let result = do_request_with_retry_reqwest(&client, &req).await;
+    let err = result
+        .expect("should be Some")
+        .expect_err("should be Err");
+    assert!(
+        err.is_connect() || err.is_request(),
+        "expected connect/request error, got: {err}"
+    );
+}

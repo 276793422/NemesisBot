@@ -1610,3 +1610,323 @@ fn test_get_audit_log_malformed_line() {
     // Malformed lines are skipped
     assert!(events.len() <= 1);
 }
+
+// ============================================================
+// 2026-08-25 coverage push: approval-manager getter, log write
+// error arms, default-arm rules, validate_path Ok arms,
+// filter mismatch arms, monitor loop, read-error path
+// ============================================================
+
+fn sample_event(id: &str) -> AuditEvent {
+    AuditEvent {
+        event_id: id.to_string(),
+        request: OperationRequest::default(),
+        decision: "allowed".to_string(),
+        reason: "test".to_string(),
+        timestamp: "2026-06-15T10:00:00Z".to_string(),
+        policy_rule: "test".to_string(),
+    }
+}
+
+#[test]
+fn test_auditor_get_approval_manager() {
+    struct RunningMgr;
+    impl ApprovalManager for RunningMgr {
+        fn is_running(&self) -> bool {
+            true
+        }
+        fn request_approval_sync(
+            &self,
+            _: &str,
+            _: &str,
+            _: &str,
+            _: &str,
+            _: &str,
+            _: u64,
+        ) -> Result<bool, String> {
+            Ok(true)
+        }
+    }
+
+    let auditor = SecurityAuditor::new(AuditorConfig::default());
+    assert!(auditor.get_approval_manager().is_none());
+    auditor.set_approval_manager(Arc::new(RunningMgr));
+    let mgr = auditor.get_approval_manager().expect("manager must be set");
+    assert!(mgr.is_running());
+}
+
+#[test]
+fn test_export_audit_log_parent_is_file_errors() {
+    // 导出目标的父路径是文件 → create_dir_all Err → "failed to create directory"。
+    let dir = tempfile::tempdir().unwrap();
+    let blocker = dir.path().join("blocker.txt");
+    std::fs::write(&blocker, "i am a file").unwrap();
+    let auditor = SecurityAuditor::new(AuditorConfig::default());
+    let target = blocker.join("export.json").to_string_lossy().to_string();
+    let err = auditor.export_audit_log(&target).unwrap_err();
+    assert!(
+        err.contains("failed to create directory"),
+        "unexpected error: {err}"
+    );
+}
+
+#[test]
+fn test_log_audit_event_jsonl_open_fails_when_audit_jsonl_is_dir() {
+    // audit.jsonl 是目录 → OpenOptions open Err → warn 分支（不 panic）。
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join("audit.jsonl")).unwrap();
+    let config = AuditorConfig {
+        audit_log_file_enabled: true,
+        audit_log_dir: Some(dir.path().to_string_lossy().to_string()),
+        ..Default::default()
+    };
+    let auditor = SecurityAuditor::new(config);
+    auditor.log_audit_event(&sample_event("evt-openfail"));
+}
+
+#[test]
+fn test_log_audit_event_jsonl_empty_dir_string_skips_block() {
+    // audit_log_file_enabled=true 但 dir 是空串 → 整个 JSONL 块跳过（不 panic）。
+    let config = AuditorConfig {
+        audit_log_file_enabled: true,
+        audit_log_dir: Some(String::new()),
+        ..Default::default()
+    };
+    let auditor = SecurityAuditor::new(config);
+    auditor.log_audit_event(&sample_event("evt-emptydir"));
+}
+
+#[test]
+fn test_log_audit_event_log_file_path_open_fails_for_directory() {
+    // set_log_file 指向目录 → open Err → warn 分支（不 panic）。
+    let dir = tempfile::tempdir().unwrap();
+    let blocker_dir = dir.path().join("as_dir.log");
+    std::fs::create_dir_all(&blocker_dir).unwrap();
+    let auditor = SecurityAuditor::new(AuditorConfig::default());
+    auditor.set_log_file(&blocker_dir.to_string_lossy());
+    auditor.log_audit_event(&sample_event("evt-logpath-openfail"));
+}
+
+#[test]
+fn test_evaluate_request_default_arm_hardware_and_system_rules() {
+    // evaluate_request 的 `_` 兜底臂：Hardware/System 类操作走
+    // `pattern == "*" || match_pattern(...)` 路径。
+    let auditor = SecurityAuditor::new(AuditorConfig {
+        enabled: true,
+        default_action: "deny".to_string(),
+        ..Default::default()
+    });
+
+    // 非 "*" 模式 → match_pattern 路径（无 '/' 的通配模式按全局匹配）
+    auditor.set_rules(
+        OperationType::SystemConfig,
+        vec![SecurityRule {
+            pattern: "cfg-*".to_string(),
+            action: "allow".to_string(),
+            comment: String::new(),
+        }],
+    );
+    let req = OperationRequest {
+        id: "syscfg-1".to_string(),
+        op_type: OperationType::SystemConfig,
+        danger_level: DangerLevel::Critical,
+        user: "test".to_string(),
+        source: "cli".to_string(),
+        target: "cfg-edit".to_string(),
+        timestamp: None,
+        ..Default::default()
+    };
+    let (allowed, _, _) = auditor.request_permission(&req);
+    assert!(allowed, "cfg-* rule must allow SystemConfig via match_pattern");
+
+    // "*" 模式 → 短路匹配
+    auditor.set_rules(
+        OperationType::HardwareGPIO,
+        vec![SecurityRule {
+            pattern: "*".to_string(),
+            action: "allow".to_string(),
+            comment: String::new(),
+        }],
+    );
+    let req2 = OperationRequest {
+        id: "gpio-1".to_string(),
+        op_type: OperationType::HardwareGPIO,
+        danger_level: DangerLevel::Medium,
+        user: "test".to_string(),
+        source: "cli".to_string(),
+        target: "/dev/gpiochip0".to_string(),
+        timestamp: None,
+        ..Default::default()
+    };
+    let (allowed2, _, _) = auditor.request_permission(&req2);
+    assert!(allowed2, "* rule must allow HardwareGPIO via short-circuit");
+}
+
+#[test]
+fn test_validate_path_inside_workspace_ok_and_dotdot_escape_denied() {
+    let ws = tempfile::tempdir().unwrap();
+    // ① 工作区内真实文件 → canonicalize 后 strip_prefix Ok(rel)，rel 不以 .. 开头 → Ok
+    std::fs::write(ws.path().join("file.txt"), "x").unwrap();
+    let ok = validate_path_internal(
+        &ws.path().join("file.txt").to_string_lossy(),
+        &ws.path().to_string_lossy(),
+    )
+    .unwrap();
+    assert!(ok.contains("file.txt"), "validated path: {ok}");
+
+    // ② 双方都不存在 → canonicalize 回退原始路径 → strip_prefix Ok("../..")
+    //    → rel 以 .. 开头 → "path outside workspace"
+    let missing_ws = ws.path().join("ws_missing");
+    let escape = missing_ws.join("..").join("secret.txt");
+    let err = validate_path_internal(&escape.to_string_lossy(), &missing_ws.to_string_lossy())
+        .unwrap_err();
+    assert!(
+        err.contains("outside workspace"),
+        "unexpected error: {err}"
+    );
+}
+
+#[test]
+fn test_audit_filter_source_mismatch_and_end_time() {
+    let event = AuditEvent {
+        event_id: "evt-filter".to_string(),
+        request: OperationRequest {
+            id: "req-filter".to_string(),
+            op_type: OperationType::FileRead,
+            danger_level: DangerLevel::Low,
+            user: "test".to_string(),
+            source: "cli".to_string(),
+            target: "/tmp/test.txt".to_string(),
+            timestamp: None,
+            ..Default::default()
+        },
+        decision: "allowed".to_string(),
+        reason: "test".to_string(),
+        timestamp: "2026-06-15T10:00:00Z".to_string(),
+        policy_rule: "test".to_string(),
+    };
+
+    // source 不匹配（contains 失败）
+    let f = AuditFilter {
+        source: Some("web".to_string()),
+        ..Default::default()
+    };
+    assert!(!f.matches(&event));
+
+    // event source 为空串 → 任何 source 过滤都不匹配
+    let mut ev_empty = event.clone();
+    ev_empty.request.source = String::new();
+    let f2 = AuditFilter {
+        source: Some("cli".to_string()),
+        ..Default::default()
+    };
+    assert!(!f2.matches(&ev_empty));
+
+    // end_time 早于事件时间戳 → 排除
+    let f3 = AuditFilter {
+        end_time: Some("2026-01-01T00:00:00Z".to_string()),
+        ..Default::default()
+    };
+    assert!(!f3.matches(&event));
+}
+
+#[test]
+fn test_get_audit_log_read_error_when_audit_jsonl_is_dir() {
+    // audit.jsonl 存在但是目录 → read_to_string Err → warn + 空 vec。
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join("audit.jsonl")).unwrap();
+    let config = AuditorConfig {
+        audit_log_file_enabled: true,
+        audit_log_dir: Some(dir.path().to_string_lossy().to_string()),
+        ..Default::default()
+    };
+    let auditor = SecurityAuditor::new(config);
+    let events = get_audit_log(&auditor, &AuditFilter::default());
+    assert!(events.is_empty());
+}
+
+#[test]
+fn test_reset_global_auditor_noop() {
+    // 显式调用覆盖 #[cfg(test)] no-op（OnceLock 不支持 reset）。
+    _reset_global_auditor();
+}
+
+#[tokio::test]
+async fn monitor_security_status_tick_then_shutdown() {
+    let auditor = Arc::new(SecurityAuditor::new(AuditorConfig::default()));
+    let (tx, rx) = tokio::sync::watch::channel(false);
+    let handle = tokio::spawn(monitor_security_status(auditor.clone(), 1, rx));
+
+    // interval 首个 tick 立即触发 → tick 分支执行；1s 内不会到第二个 tick
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    assert!(!handle.is_finished(), "monitor must still be running");
+
+    tx.send(true).unwrap();
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    assert!(handle.is_finished(), "monitor must exit after shutdown signal");
+}
+
+// ============================================================
+// S3 batch 3: export 父目录 / 显式 log_file_path 成功写入 /
+// validate_path Err 臂 / monitor 关停臂
+// ============================================================
+
+#[test]
+fn test_export_audit_log_creates_parent_dirs() {
+    let auditor = SecurityAuditor::new(AuditorConfig::default());
+    let dir = tempfile::tempdir().unwrap();
+    let dest = dir.path().join("nested").join("deeper").join("audit.json");
+    auditor
+        .export_audit_log(&dest.to_string_lossy())
+        .unwrap();
+    assert!(dest.exists());
+    let content = std::fs::read_to_string(&dest).unwrap();
+    assert!(content.contains("total_events"), "{content}");
+}
+
+#[test]
+fn test_log_audit_event_writes_to_explicit_log_file_path() {
+    let dir = tempfile::tempdir().unwrap();
+    let auditor = SecurityAuditor::new(AuditorConfig::default());
+    let log_path = dir.path().join("logs").join("audit_events.log");
+    auditor.set_log_file(&log_path.to_string_lossy());
+    assert_eq!(auditor.get_log_file_path(), Some(log_path.clone()));
+
+    auditor.log_audit_event(&sample_event("evt-explicit-path"));
+
+    let content = std::fs::read_to_string(&log_path).unwrap();
+    assert!(content.contains("evt-explicit-path"), "{content}");
+    // 每行是一条 JSON 事件
+    let lines: Vec<&str> = content.lines().collect();
+    assert_eq!(lines.len(), 1);
+    let v: serde_json::Value = serde_json::from_str(lines[0]).unwrap();
+    assert_eq!(v["event_id"], "evt-explicit-path");
+    assert_eq!(v["decision"], "allowed");
+}
+
+#[test]
+fn test_validate_path_missing_file_outside_workspace_denied() {
+    // 目标路径不存在（canonicalize 失败）且不在工作区前缀下 → Err(_) 臂拒绝。
+    let ws = tempfile::tempdir().unwrap();
+    let outside = if cfg!(target_os = "windows") {
+        r"C:\definitely\outside\missing.txt"
+    } else {
+        "/definitely/outside/missing.txt"
+    };
+    let err = validate_path(outside, &ws.path().to_string_lossy()).unwrap_err();
+    assert!(err.contains("outside workspace"), "{err}");
+}
+
+#[tokio::test]
+async fn test_monitor_security_status_shutdown_arm() {
+    use std::sync::Arc;
+    let auditor = Arc::new(SecurityAuditor::new(AuditorConfig::default()));
+    let (tx, rx) = tokio::sync::watch::channel(false);
+    let handle = tokio::spawn(monitor_security_status(auditor, 3600, rx));
+    // 立刻请求关停 → changed() 分支触发 → 函数返回
+    tx.send(true).unwrap();
+    tokio::time::timeout(std::time::Duration::from_secs(5), handle)
+        .await
+        .expect("monitor must exit on shutdown")
+        .unwrap();
+}

@@ -326,3 +326,146 @@ fn test_status_model_parsing_mixed_models() {
     assert_eq!(provider_counts.len(), 3);
     assert_eq!(no_provider_count, 2); // "no-slash-model" and ""
 }
+
+// ===========================================================================
+// run() 全臂（S11c，quality-hardening goal 冲刺 S11）
+//
+// 上面现存的全是"影子测试"（把 run() 的逻辑复制一遍断言局部变量），run()
+// 本体一行都没跑过（LH=0）。这里直接走真 run(false) + NEMESISBOT_HOME 隔离
+// （GLOBAL_STATE_LOCK 串行），钉：无 config / 有 config（带 slash、无 slash
+// 模型、空 model_list）/ 非法 JSON config / auth.json 各凭据状态分支。
+// ===========================================================================
+
+mod run_arm {
+    use super::super::run;
+
+    async fn with_env_home<F, Fut>(f: F)
+    where
+        F: FnOnce(std::path::PathBuf) -> Fut,
+        Fut: std::future::Future<Output = ()>,
+    {
+        let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        unsafe {
+            std::env::set_var("NEMESISBOT_HOME", tmp.path());
+        }
+        f(tmp.path().join(".nemesisbot")).await;
+        unsafe {
+            std::env::remove_var("NEMESISBOT_HOME");
+        }
+    }
+
+    #[tokio::test]
+    async fn no_config_and_no_auth_prints_not_found() {
+        with_env_home(|_home| async {
+            run(false).expect("缺 config/auth → 纯打印，Ok");
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn full_config_covers_model_provider_lines() {
+        with_env_home(|home| async move {
+            std::fs::create_dir_all(&home).unwrap();
+            std::fs::write(
+                home.join("config.json"),
+                serde_json::to_string(&serde_json::json!({
+                    "default_model": "test/model-1",
+                    "model_list": [
+                        {"model": "openai/gpt-4", "api_key": "sk-x"},
+                        {"model": "openai/gpt-3.5", "api_key": ""},
+                        {"model": "no-slash-model", "api_key": "k"},
+                        {"model": "", "api_key": "k2"}
+                    ],
+                    "security": {"enabled": false},
+                    "forge": {"enabled": true}
+                }))
+                .unwrap(),
+            )
+            .unwrap();
+            std::fs::create_dir_all(home.join("workspace")).unwrap();
+            run(false).expect("完整 config → Ok（provider 计数/无 slash 跳过分支）");
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn empty_model_list_skips_provider_block() {
+        with_env_home(|home| async move {
+            std::fs::create_dir_all(&home).unwrap();
+            std::fs::write(
+                home.join("config.json"),
+                serde_json::to_string(&serde_json::json!({"model_list": []})).unwrap(),
+            )
+            .unwrap();
+            run(false).expect("空 model_list → 跳过 Configured Models 块，Ok");
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn invalid_config_json_is_skipped_gracefully() {
+        with_env_home(|home| async move {
+            std::fs::create_dir_all(&home).unwrap();
+            std::fs::write(home.join("config.json"), "not json{{{").unwrap();
+            run(false).expect("非法 JSON → from_str Ok 分支跳过，不 Err");
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn auth_file_with_all_credential_states() {
+        with_env_home(|home| async move {
+            std::fs::create_dir_all(&home).unwrap();
+            // expired / needs-refresh / active / 带 account_id+expires_at 四种
+            // 凭据状态一起过（status.rs:121-152 全分支）。
+            let store = nemesis_auth::AuthStore::new(
+                &home.join("auth.json").to_string_lossy(),
+            );
+            let mk = |expires_at: Option<chrono::DateTime<chrono::Local>>,
+                      account: Option<&str>|
+             nemesis_auth::AuthCredential {
+                access_token: "tok".into(),
+                refresh_token: None,
+                expires_at,
+                provider: "openai".into(),
+                auth_method: "token".into(),
+                account_id: account.map(str::to_string),
+            };
+            store
+                .save(
+                    "openai",
+                    mk(Some(chrono::Local::now() - chrono::Duration::hours(1)), None),
+                )
+                .unwrap();
+            store
+                .save(
+                    "anthropic",
+                    mk(Some(chrono::Local::now() + chrono::Duration::minutes(3)), None),
+                )
+                .unwrap();
+            store
+                .save(
+                    "zhipu",
+                    mk(
+                        Some(chrono::Local::now() + chrono::Duration::hours(2)),
+                        Some("acct-42"),
+                    ),
+                )
+                .unwrap();
+            run(false).expect("三种凭据状态 + Account/Expires 行 → Ok");
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn auth_file_with_zero_providers() {
+        with_env_home(|home| async move {
+            std::fs::create_dir_all(&home).unwrap();
+            // 空对象文件存在但无 provider → "No credentials stored."
+            std::fs::write(home.join("auth.json"), "{}").unwrap();
+            run(false).expect("空 auth.json → Ok");
+        })
+        .await;
+    }
+}

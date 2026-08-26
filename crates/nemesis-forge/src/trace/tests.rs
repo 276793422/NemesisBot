@@ -64,3 +64,44 @@ fn test_clear() {
     collector.clear();
     assert!(collector.is_empty());
 }
+
+#[test]
+fn test_trace_stats_default_all_zeros() {
+    let stats = TraceStats::default();
+    assert_eq!(stats.total_traces, 0);
+    assert_eq!(stats.avg_rounds, 0.0);
+    assert_eq!(stats.efficiency_score, 0.0);
+    assert!(stats.tool_chain_patterns.is_empty());
+    assert!(stats.retry_patterns.is_empty());
+    assert!(stats.signal_summary.is_empty());
+}
+
+#[test]
+fn test_default_collector_empty_stats() {
+    let collector = TraceCollector::default();
+    assert!(collector.is_empty());
+    assert_eq!(collector.len(), 0);
+
+    // Empty collector: both avg_rounds and efficiency fall to the 0.0 arms.
+    let stats = collector.compute_stats();
+    assert_eq!(stats.total_traces, 0);
+    assert_eq!(stats.avg_rounds, 0.0);
+    assert_eq!(stats.efficiency_score, 0.0);
+    assert!(stats.signal_summary.is_empty());
+}
+
+#[test]
+fn test_avg_rounds_zero_without_llm_response() {
+    // Events that never include an "llm_response" leave session_rounds empty,
+    // so avg_rounds takes the else arm (0.0) even though traces exist.
+    let collector = TraceCollector::new();
+    collector.record_event(make_event("tool_call", "sess-1"));
+    collector.record_event(make_event("tool_call", "sess-1"));
+    collector.record_event(make_event("conversation_start", "sess-2"));
+
+    let stats = collector.compute_stats();
+    assert_eq!(stats.total_traces, 3);
+    assert_eq!(stats.avg_rounds, 0.0);
+    // 2 of 3 events are tool calls -> efficiency 2/3
+    assert!((stats.efficiency_score - 2.0 / 3.0).abs() < 1e-9);
+}

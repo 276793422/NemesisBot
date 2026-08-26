@@ -620,3 +620,31 @@ fn replace_tool_result_dedupes_multiple_matches() {
     assert_eq!(tool_msgs[0].content, "final replace");
     assert_eq!(tool_msgs[0].tool_call_id.as_deref(), Some("tc_X"));
 }
+
+// ----- W3a branch coverage -----
+
+/// compress_history with >2 turns but NO non-system turns: early return at the
+/// `non_system.is_empty()` guard — history must be left untouched (no
+/// compression note injected).
+#[test]
+fn compress_history_all_system_turns_is_noop() {
+    let instance = AgentInstance::new(test_config());
+    let mk_sys = |content: &str| ConversationTurn {
+        role: "system".to_string(),
+        content: content.to_string(),
+        tool_calls: Vec::new(),
+        tool_call_id: None,
+        timestamp: "t".to_string(),
+        reasoning_content: None,
+        tool_name: None,
+        tool_result_projection: None,
+    };
+    instance.set_history(vec![mk_sys("s1"), mk_sys("s2"), mk_sys("s3")]);
+    instance.compress_history();
+    let history = instance.get_history();
+    assert_eq!(history.len(), 3, "all-system history must not be compressed");
+    assert!(
+        !history.iter().any(|t| t.content.contains("Session compressed")),
+        "no compression note for empty non-system set"
+    );
+}

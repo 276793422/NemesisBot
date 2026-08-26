@@ -736,3 +736,86 @@ fn test_extract_conversation_patterns_returns_combined() {
         patterns.iter().map(|p| p.pattern_type.as_str()).collect();
     assert!(types.contains("tool_chain"));
 }
+
+// ---- S8 coverage batch ---- (quality-hardening goal 冲刺 S8)
+
+#[test]
+fn test_s8_detect_conversation_efficiency_issues_full_paths() {
+    fn exp_full(tool: &str, duration: u64, session: &str, ts: &str) -> CollectedExperience {
+        CollectedExperience {
+            experience: Experience {
+                id: uuid::Uuid::new_v4().to_string(),
+                tool_name: tool.into(),
+                input_summary: "test".into(),
+                output_summary: "ok".into(),
+                success: true,
+                duration_ms: duration,
+                timestamp: ts.into(),
+                session_key: session.into(),
+            },
+            dedup_hash: format!("hash-{}-{}", tool, ts),
+        }
+    }
+
+    let mut exps = Vec::new();
+    // 10 fast single-exp sessions (drive the global average down).
+    for i in 0..10 {
+        exps.push(exp_full("fast", 10, &format!("fast-{}", i), "2026-01-01T00:00:05+08:00"));
+    }
+    // 3 slow single-exp sessions with the SAME chain ("slow") → same
+    // fingerprint, count 3; distinct timestamps so both the first_seen
+    // (older) and last_seen (newer) update branches can be taken depending
+    // on hash iteration order.
+    exps.push(exp_full("slow", 1000, "s1", "2026-01-01T00:00:10+08:00"));
+    exps.push(exp_full("slow", 1000, "s2", "2026-01-01T00:00:20+08:00"));
+    exps.push(exp_full("slow", 1000, "s3", "2026-01-01T00:00:30+08:00"));
+    // 1 slow session with a 4-long chain → skipped by the len > 3 guard.
+    for i in 0..4 {
+        exps.push(exp_full(
+            "slow",
+            1000,
+            "s4",
+            &format!("2026-01-01T00:00:4{}+08:00", i),
+        ));
+    }
+    // global avg = (10*10 + 7*1000) / 17 ≈ 417.6 → 2x ≈ 835 < 1000, so all
+    // slow sessions qualify; fast sessions are skipped by the 2x filter.
+
+    // HashMap iteration order is random per call: re-run enough times that
+    // both timestamp comparison directions inside the merge get exercised.
+    for _ in 0..40 {
+        let patterns = detect_conversation_efficiency_issues(&exps, 3);
+        assert_eq!(patterns.len(), 1);
+        let p = &patterns[0];
+        assert_eq!(p.pattern_type, ConversationPatternType::EfficiencyIssue);
+        assert_eq!(p.frequency, 3);
+        assert!(p.efficiency_score.is_some());
+        assert_eq!(p.tool_chain.as_deref(), Some("slow"));
+        assert!(p.description.contains("Efficiency issue"));
+        assert!(p.avg_duration_ms.is_some());
+        assert!(p.avg_rounds.is_some());
+        // first_seen must be the oldest of the three, last_seen the newest.
+        assert_eq!(p.first_seen, "2026-01-01T00:00:10+08:00");
+        assert_eq!(p.last_seen, "2026-01-01T00:00:30+08:00");
+    }
+}
+
+// ---- S8 Wave 2 ----
+
+/// A session with a single experience cannot form a chain: the `exps.len() < 2`
+/// guard skips it, so no conversation tool-chain pattern is emitted.
+#[test]
+fn test_s8_tool_chains_single_experience_session_skipped() {
+    let single = vec![make_exp_session("solo_tool", true, 100, "solo-session")];
+    let patterns = detect_conversation_tool_chains(&single, 1);
+    assert!(patterns.is_empty(), "patterns: {:?}", patterns.len());
+
+    // Sanity: the same tool repeated in one session DOES form a chain.
+    let pair = vec![
+        make_exp_session("duo_tool", true, 100, "duo-session"),
+        make_exp_session("duo_tool", true, 100, "duo-session"),
+    ];
+    let patterns = detect_conversation_tool_chains(&pair, 1);
+    assert_eq!(patterns.len(), 1);
+    assert_eq!(patterns[0].frequency, 1);
+}

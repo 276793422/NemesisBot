@@ -503,3 +503,66 @@ fn test_detect_plugin_path_does_not_panic() {
     // Just ensure no panic — result is environment dependent.
     let _ = MemoryManager::detect_plugin_path();
 }
+
+// ============================================================
+// embed_text (I5) + is_vector_enabled — M8 补测（quality-hardening goal）
+// ============================================================
+
+/// No store initialized → callers degrade to None (never panic).
+#[test]
+fn test_embed_text_none_without_store() {
+    let dir = tempfile::tempdir().unwrap();
+    let cfg = Config::new(dir.path());
+    let mgr = MemoryManager::new(&cfg);
+    assert!(mgr.embed_text("anything").is_none());
+}
+
+/// Delegates through the wired backend; a failing backend degrades to
+/// None (the M5 lock-discipline path: handle cloned out of the store
+/// guard BEFORE inference — delegating proves the handle survives the
+/// clone and runs).
+#[test]
+fn test_embed_text_delegates_and_degrades() {
+    let dir = tempfile::tempdir().unwrap();
+    let cfg = Config::new(dir.path());
+    let mgr = MemoryManager::new(&cfg);
+
+    let store_cfg = StoreConfig {
+        embedding_tier: "ngram".into(),
+        plugin_path: None,
+        config_dir: None,
+        max_results: 10,
+        similarity_threshold: 0.7,
+        storage_path: dir.path().join("v.jsonl").to_string_lossy().to_string(),
+    };
+    let embed: crate::vector::EmbeddingFunc =
+        Box::new(|text: &str| Ok(vec![text.len() as f32, 1.0]));
+    mgr.init_vector_store_with_embed(embed, store_cfg).unwrap();
+    assert_eq!(mgr.embed_text("abcd"), Some(vec![4.0, 1.0]));
+
+    // Failing backend → None, not Err/panic.
+    let store_cfg2 = StoreConfig {
+        embedding_tier: "ngram".into(),
+        plugin_path: None,
+        config_dir: None,
+        max_results: 10,
+        similarity_threshold: 0.7,
+        storage_path: dir.path().join("v2.jsonl").to_string_lossy().to_string(),
+    };
+    let failing: crate::vector::EmbeddingFunc = Box::new(|_: &str| Err("backend down".into()));
+    mgr.init_vector_store_with_embed(failing, store_cfg2).unwrap();
+    assert!(mgr.embed_text("x").is_none());
+}
+
+/// is_vector_enabled reflects the runtime toggle (default off).
+#[test]
+fn test_is_vector_enabled_reflects_toggle() {
+    let dir = tempfile::tempdir().unwrap();
+    let cfg = Config::new(dir.path());
+    let mgr = MemoryManager::new(&cfg);
+    assert!(!mgr.is_vector_enabled());
+    mgr.set_vector_enabled(true);
+    assert!(mgr.is_vector_enabled());
+    mgr.set_vector_enabled(false);
+    assert!(!mgr.is_vector_enabled());
+}

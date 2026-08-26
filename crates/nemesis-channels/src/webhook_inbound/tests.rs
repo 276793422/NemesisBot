@@ -443,3 +443,15 @@ async fn test_start_stop_idempotent() {
     ch.stop().await.unwrap();
     ch.stop().await.unwrap(); // second stop
 }
+
+// ===========================================================================
+// S2 coverage (2026-08-26): Channel trait is_running impl
+// ===========================================================================
+
+/// The trait's is_running impl was never called (existing tests poke the
+/// `running` field directly).
+#[test]
+fn s2_webhook_trait_is_running_call() {
+    let ch = WebhookInboundChannel::new(WebhookInboundConfig::default()).unwrap();
+    assert!(!ch.is_running());
+}

@@ -325,3 +325,86 @@ fn memory_store_paths() {
     assert!(store.memory_dir().ends_with("memory"));
     assert!(store.memory_file().ends_with("memory/MEMORY.md"));
 }
+
+/// Token-walk summarization: with a small keep_tokens budget, summarize()
+/// drops the oldest non-system turns and keeps the recent tail. Covers the
+/// `removed > 0` branch (drain/truncate/extend) of the walk.
+#[test]
+fn summarize_walk_drops_old_turns_keeps_tail() {
+    let cfg = MemoryConfig {
+        max_tokens: 32000,
+        keep_tokens: 50, // ~200 chars of tail
+    };
+    let mut memory = ConversationMemory::new(cfg);
+    memory.add(make_turn("system", "sys"));
+    memory.add(make_turn("user", &"x".repeat(200)));
+    memory.add(make_turn("assistant", &"y".repeat(200)));
+    memory.add(make_turn("user", &"z".repeat(200)));
+    memory.add(make_turn("assistant", &"w".repeat(200)));
+    memory.add(make_turn("user", "tail"));
+
+    let before = memory.len();
+    let removed = memory.summarize();
+    assert!(removed > 0, "should remove at least one turn");
+    assert_eq!(memory.len(), before - removed);
+    // First turn stays (system preserved), last turn stays.
+    assert_eq!(memory.get_context()[0].role, "system");
+    assert_eq!(memory.get_context().last().unwrap().content, "tail");
+}
+
+/// Nothing to remove when the tail alone fills the keep budget → summarize()
+/// == 0 and nothing is truncated. (Note: production only calls summarize()
+/// via check_truncation when total > max_tokens, so the walk always exceeds
+/// keep_tokens mid-conversation there; the direct-call noop arm is "the last
+/// turn alone >= keep_tokens", pinned here with a small config.)
+#[test]
+fn summarize_noop_when_under_budget() {
+    let cfg = crate::memory::MemoryConfig {
+        max_tokens: 100,
+        keep_tokens: 10,
+    };
+    let mut memory = crate::memory::ConversationMemory::new(cfg);
+    memory.add(make_turn("system", "sys"));
+    memory.add(make_turn("user", &"x".repeat(100)));
+    assert_eq!(memory.summarize(), 0);
+    assert_eq!(memory.len(), 2);
+}
+
+/// MemoryStore long-term + daily note IO roundtrips (missing-file defaults,
+/// write/read, append-with-header).
+#[test]
+fn memory_store_long_term_and_daily_notes() {
+    let tmp = tempfile::tempdir().unwrap();
+    let store = MemoryStore::new(tmp.path().join("ws2").to_str().unwrap());
+
+    // Missing files → empty defaults, not errors.
+    assert_eq!(store.read_long_term(), "");
+    assert_eq!(store.read_today(), "");
+
+    // Long-term write + read.
+    store.write_long_term("remember this").unwrap();
+    assert_eq!(store.read_long_term(), "remember this");
+
+    // Today's note: first append adds the date header, second appends after.
+    store.append_today("first entry").unwrap();
+    store.append_today("second entry").unwrap();
+    let today = store.read_today();
+    assert!(today.contains("# "), "date header present");
+    assert!(today.contains("first entry"));
+    assert!(today.contains("second entry"));
+
+    // Recent daily notes include today's file.
+    let recent = store.get_recent_daily_notes(3);
+    assert!(recent.contains("first entry"));
+}
+
+/// Keyword search is case-insensitive substring match over turns.
+#[test]
+fn search_case_insensitive() {
+    let mut memory = ConversationMemory::with_defaults();
+    memory.add(make_turn("user", "Tell me about Rust"));
+    memory.add(make_turn("assistant", "Rust is a systems language"));
+    memory.add(make_turn("user", "unrelated"));
+    let hits = memory.search("rust");
+    assert_eq!(hits.len(), 2);
+}

@@ -191,7 +191,20 @@ pub fn parse_footer(bytes: &[u8; FOOTER_LEN]) -> Result<ParsedFooter> {
 
 /// 给定 footer 偏移与解析结果，返回明文 body 的 `[start, end)`。
 pub fn envelope_body_range(footer_offset: usize, parsed: &ParsedFooter) -> (usize, usize) {
-    let envelope_start = footer_offset + FOOTER_LEN - parsed.total_len;
+    // (BUG #22, quality-hardening goal 冲刺 S6) crafted footer 的 total_len/body_len 超界
+    // 防越界钳制：parse_footer 只验 magic/CRC，不校验 total_len/body_len 上界——
+    // 恶意/损坏文件可声明 total_len > footer_offset+FOOTER_LEN（usize 减法下溢：
+    // debug 直接 panic）或 body_len=0xFFFFFFFF（start+body_len 越界：view.rs 三处
+    // `&bytes[bs..be]` 是直接切片，release 也 panic，恶意文件可崩掉跨进程调用方）。
+    // 钳成 (0,0) 空区间，让调用方既有错误路径统一归 Malformed/None（verify 走
+    // .get()=None，view 走 parse_body 空 body → too short）。合法 envelope 恒满足
+    // total_len ≤ footer_offset+FOOTER_LEN（footer 紧随自身 body/padding 之后），
+    // 不受影响。
+    let avail = footer_offset + FOOTER_LEN;
+    if parsed.total_len > avail || parsed.body_len > avail {
+        return (0, 0);
+    }
+    let envelope_start = avail - parsed.total_len;
     (envelope_start, envelope_start + parsed.body_len)
 }
 
@@ -449,3 +462,6 @@ pub fn find_all_footers(
     }
     found
 }
+
+#[cfg(test)]
+mod tests;

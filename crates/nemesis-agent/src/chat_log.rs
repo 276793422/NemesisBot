@@ -464,3 +464,7 @@ pub fn append_boundary_event(session_key: &str, kind: &str, detail: &str) {
         let _ = writeln!(file, "{}", line);
     }
 }
+
+// S9 (quality-hardening goal 冲刺 S9): 独立测试文件挂载（声明式，无内联测试）。
+#[cfg(test)]
+mod s9_tests;

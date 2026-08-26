@@ -446,7 +446,11 @@ impl MemoryManager {
         if let Some(ref vs) = *vs_guard {
             let ve = crate::vector::VectorEntry {
                 id: id.to_string(),
-                entry_type: format!("{:?}", entry.typ).to_lowercase(),
+                // Display form ("short_term") — the read path
+                // (parse_memory_type_from_str) parses Display forms; the
+                // former Debug-lowercase ("shortterm") lost the type on
+                // roundtrip (BUG #15, quality-hardening goal W2c).
+                entry_type: entry.typ.to_string(),
                 content: entry.content.clone(),
                 metadata: entry.metadata.clone(),
                 tags: entry.tags.clone(),
@@ -485,7 +489,7 @@ impl MemoryManager {
             let vs_guard = self.vector_store.read();
             if let Some(ref vs) = *vs_guard {
                 let type_filter: Vec<String> = memory_type
-                    .map(|mt| format!("{:?}", mt).to_lowercase())
+                    .map(|mt| mt.to_string())
                     .into_iter()
                     .collect();
                 let result = vs
@@ -915,6 +919,9 @@ fn parse_memory_type_from_str(s: &str) -> MemoryType {
 
 #[cfg(test)]
 mod extra_tests;
+
+#[cfg(test)]
+mod w2c_tests;
 
 // ---------------------------------------------------------------------------
 // Tests

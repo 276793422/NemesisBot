@@ -1240,3 +1240,439 @@ fn test_import_export_roundtrip_multiple_keys() {
         assert_eq!(verifying_key.to_bytes(), imported.to_bytes());
     }
 }
+
+// ============================================================
+// TrustStore save/load error arms + defaults (2026-08-25 push)
+// ============================================================
+
+#[test]
+fn test_trust_store_file_path() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("ts.json");
+    let store = TrustStore::new(Some(&path));
+    assert_eq!(store.file_path(), Some(path.as_path()));
+
+    let mem = TrustStore::in_memory();
+    assert!(mem.file_path().is_none());
+}
+
+#[test]
+fn test_trust_store_default_is_in_memory() {
+    let store = TrustStore::default();
+    assert_eq!(store.key_count(), 0);
+    assert!(store.file_path().is_none());
+}
+
+#[test]
+fn test_verifier_config_default() {
+    let cfg = Config::default();
+    assert!(cfg.enabled);
+    assert!(!cfg.strict);
+    assert!(cfg.trust_store_path.is_empty());
+}
+
+#[test]
+fn test_verification_result_err_with_files() {
+    let result = VerificationResult::err_with_files("content mismatch", 7);
+    assert!(!result.valid);
+    assert_eq!(result.error, "content mismatch");
+    assert_eq!(result.files_verified, 7);
+    assert_eq!(result.trust_level, TrustLevel::Unknown);
+    assert_eq!(result.algorithm, "ed25519");
+    assert!(result.signer.is_empty());
+    assert!(!result.timestamp.is_empty());
+}
+
+#[test]
+fn test_trust_store_save_parent_is_file_errors() {
+    // path 的父目录是个文件 → create_dir_all Err → save Err（save 私有，
+    // 同模块测试可直接调用观察 Err，而非只能靠 `let _ =` 吞掉）。
+    let dir = tempfile::tempdir().unwrap();
+    let blocker = dir.path().join("blocker.txt");
+    std::fs::write(&blocker, "i am a file").unwrap();
+    let path = blocker.join("ts.json");
+    let store = TrustStore::new(Some(&path));
+    let err = store.save().unwrap_err();
+    assert!(!err.is_empty(), "save must fail when parent is a file");
+    // 内存操作不受影响
+    store.add_key("key-a", "alice", TrustLevel::Verified);
+    assert_eq!(store.key_count(), 1);
+    assert!(!path.exists());
+}
+
+#[test]
+fn test_trust_store_save_rename_to_directory_errors() {
+    // 目标 path 是已存在目录 → rename 失败 → "failed to rename trust store"
+    // + 清理 tmp 文件（remove_file 分支）。
+    // 注意：add_key 内部 auto-save 失败时**已经**走了 rename 失败分支并清掉
+    // tmp，所以事后无法断言 tmp 曾存在——由下面 err 文本（rename 已尝试，
+    // 即 tmp 必然写过）间接证明。
+    let dir = tempfile::tempdir().unwrap();
+    let store_dir = dir.path().join("store_dir");
+    std::fs::create_dir_all(&store_dir).unwrap();
+    let tmp = dir.path().join("store_dir.tmp");
+    let store = TrustStore::new(Some(&store_dir));
+    store.add_key("key-a", "alice", TrustLevel::Verified);
+    assert!(!tmp.exists(), "auto-save failure path must have cleaned tmp");
+    // 再显式调一次观察错误文本
+    let err = store.save().unwrap_err();
+    assert!(
+        err.contains("failed to rename trust store"),
+        "unexpected error: {err}"
+    );
+    assert!(!tmp.exists(), "tmp file must be cleaned after rename failure");
+}
+
+#[test]
+fn test_trust_store_load_empty_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("ts.json");
+    std::fs::write(&path, "").unwrap();
+    let store = TrustStore::new(Some(&path));
+    assert_eq!(store.key_count(), 0);
+    // 空文件加载后 store 仍可正常写读。key 必须用**真 hex 公钥**：
+    // load() 侧会对每条 key 做 hex+Ed25519 校验并跳过坏条目（见
+    // signature.rs load 注释），假串 "key-a" 会在重载时被跳过 → 0。
+    let kp = generate_key_pair().unwrap();
+    store.add_key(&kp.public_key, "alice", TrustLevel::Verified);
+    let store2 = TrustStore::new(Some(&path));
+    assert_eq!(store2.key_count(), 1);
+}
+
+// ============================================================
+// verify_skill error-envelope arms (2026-08-25 push)
+// ============================================================
+
+fn make_verifier(dir: &Path) -> Verifier {
+    Verifier::new(Config {
+        enabled: true,
+        strict: false,
+        trust_store_path: dir.join("truststore.json").to_string_lossy().to_string(),
+    })
+    .unwrap()
+}
+
+fn write_envelope(skill: &Path, algorithm: &str, public_key: &str, signature: &str) {
+    let env = serde_json::json!({
+        "algorithm": algorithm,
+        "signature": signature,
+        "public_key": public_key,
+        "signer_name": "tester",
+        "signed_at": "2026-01-01T00:00:00Z",
+        "file_count": 1,
+        "hash": "00",
+    });
+    std::fs::write(skill.join(SIGNATURE_FILE_NAME), env.to_string()).unwrap();
+}
+
+fn make_skill_dir(dir: &Path, name: &str) -> std::path::PathBuf {
+    let skill = dir.join(name);
+    std::fs::create_dir_all(&skill).unwrap();
+    std::fs::write(skill.join("SKILL.md"), "# Test").unwrap();
+    skill
+}
+
+#[test]
+fn test_verify_skill_path_not_exists() {
+    let dir = tempfile::tempdir().unwrap();
+    let v = make_verifier(dir.path());
+    let result = v.verify_skill(&dir.path().join("definitely_missing_skill"));
+    assert!(!result.valid);
+    assert!(
+        result.error.contains("cannot access skill path"),
+        "error: {}",
+        result.error
+    );
+    assert_eq!(result.files_verified, 0);
+}
+
+#[test]
+fn test_verify_skill_signature_file_is_directory() {
+    // .signature 是目录 → read_to_string Err（非 NotFound）→ read-error 分支。
+    let dir = tempfile::tempdir().unwrap();
+    let skill = make_skill_dir(dir.path(), "sigdir");
+    std::fs::create_dir_all(skill.join(SIGNATURE_FILE_NAME)).unwrap();
+    let v = make_verifier(dir.path());
+    let result = v.verify_skill(&skill);
+    assert!(!result.valid);
+    assert!(
+        result.error.contains("cannot read signature file"),
+        "error: {}",
+        result.error
+    );
+}
+
+#[test]
+fn test_verify_skill_unsupported_algorithm() {
+    let dir = tempfile::tempdir().unwrap();
+    let skill = make_skill_dir(dir.path(), "algoal");
+    write_envelope(&skill, "rsa4096", "AAAA", "AAAA");
+    let v = make_verifier(dir.path());
+    let result = v.verify_skill(&skill);
+    assert!(!result.valid);
+    assert!(
+        result.error.contains("unsupported algorithm: rsa4096"),
+        "error: {}",
+        result.error
+    );
+    assert_eq!(result.algorithm, "rsa4096");
+}
+
+#[test]
+fn test_verify_skill_invalid_public_key_b64() {
+    let dir = tempfile::tempdir().unwrap();
+    let skill = make_skill_dir(dir.path(), "badpk");
+    write_envelope(&skill, "ed25519", "not-base64!!!", "AAAA");
+    let v = make_verifier(dir.path());
+    let result = v.verify_skill(&skill);
+    assert!(!result.valid);
+    assert!(
+        result.error.contains("invalid public key in signature"),
+        "error: {}",
+        result.error
+    );
+}
+
+#[test]
+fn test_verify_skill_invalid_signature_b64() {
+    let dir = tempfile::tempdir().unwrap();
+    let skill = make_skill_dir(dir.path(), "badsig");
+    // public_key 必须合法（32 字节 b64），否则走不到 signature 解码分支
+    let kp = generate_key_pair().unwrap();
+    let sk_bytes = hex_decode_32(&kp.private_key).unwrap();
+    let signing_key = SigningKey::from_bytes(&sk_bytes);
+    let valid_pk = export_public_key(&signing_key.verifying_key());
+    write_envelope(&skill, "ed25519", &valid_pk, "%%%not-base64%%%");
+    let v = make_verifier(dir.path());
+    let result = v.verify_skill(&skill);
+    assert!(!result.valid);
+    assert!(
+        result.error.contains("invalid signature encoding"),
+        "error: {}",
+        result.error
+    );
+}
+
+#[test]
+fn test_verify_skill_signature_by_wrong_key() {
+    // envelope 的 hash 与内容一致，但公钥被换成另一个人的 →
+    // hash 校验通过、Ed25519 验签失败 → "signature verification failed"。
+    let dir = tempfile::tempdir().unwrap();
+    let skill = make_skill_dir(dir.path(), "wrongkey");
+
+    let kp_a = generate_key_pair().unwrap();
+    let sk_a = SigningKey::from_bytes(&hex_decode_32(&kp_a.private_key).unwrap());
+    sign_skill(&skill, &sk_a, "signer-a").unwrap();
+
+    // 篡改 envelope：只换 public_key 为 B 的
+    let kp_b = generate_key_pair().unwrap();
+    let sk_b = SigningKey::from_bytes(&hex_decode_32(&kp_b.private_key).unwrap());
+    let pk_b = export_public_key(&sk_b.verifying_key());
+
+    let sig_path = skill.join(SIGNATURE_FILE_NAME);
+    let mut env: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&sig_path).unwrap()).unwrap();
+    env["public_key"] = serde_json::json!(pk_b);
+    std::fs::write(&sig_path, env.to_string()).unwrap();
+
+    let v = make_verifier(dir.path());
+    let result = v.verify_skill(&skill);
+    assert!(!result.valid);
+    assert!(
+        result.error.contains("signature verification failed"),
+        "error: {}",
+        result.error
+    );
+    assert!(result.files_verified >= 1);
+}
+
+// ============================================================
+// verify_file fall-through / verify_file_with_key length arm
+// ============================================================
+
+#[test]
+fn test_verify_file_non_matching_key_in_store_falls_through() {
+    // store 里有未吊销的合法 key，但签名不匹配 / 长度不对 →
+    // 逐 key 落空后走到最终 invalid（覆盖 for 循环体三层 if 的穿透路径）。
+    let dir = tempfile::tempdir().unwrap();
+    let file_path = dir.path().join("test.txt");
+    std::fs::write(&file_path, b"hello").unwrap();
+
+    let kp1 = generate_key_pair().unwrap();
+    let sk1 = SigningKey::from_bytes(&hex_decode_32(&kp1.private_key).unwrap());
+    let pk1_b64 = export_public_key(&sk1.verifying_key());
+
+    let kp2 = generate_key_pair().unwrap();
+    let sk2 = SigningKey::from_bytes(&hex_decode_32(&kp2.private_key).unwrap());
+    let wrong_key_sig = sign_file(&file_path, &sk2).unwrap();
+
+    let v = make_verifier(dir.path());
+    v.trust_store().add_key(&pk1_b64, "alice", TrustLevel::Verified);
+
+    // 64 字节但由别的 key 签的 → verify 失败穿透
+    let result = v.verify_file(&file_path, &wrong_key_sig).unwrap();
+    assert!(!result.valid);
+    assert!(
+        result.error.contains("does not match any trusted key"),
+        "error: {}",
+        result.error
+    );
+
+    // 非 64 字节 → len 分支穿透
+    let result = v.verify_file(&file_path, b"short").unwrap();
+    assert!(!result.valid);
+}
+
+#[test]
+fn test_verify_file_with_key_wrong_length() {
+    let dir = tempfile::tempdir().unwrap();
+    let file_path = dir.path().join("test.txt");
+    std::fs::write(&file_path, b"hello").unwrap();
+
+    let kp = generate_key_pair().unwrap();
+    let sk = SigningKey::from_bytes(&hex_decode_32(&kp.private_key).unwrap());
+    let vk = sk.verifying_key();
+
+    let result = verify_file_with_key(&file_path, &vk, b"short").unwrap();
+    assert!(!result.valid);
+    assert!(
+        result.error.contains("invalid signature length"),
+        "error: {}",
+        result.error
+    );
+    assert_eq!(result.files_verified, 1);
+}
+
+// ============================================================
+// verify_signature_ed25519 穿透臂 + compute_directory_hash 嵌套
+// ============================================================
+
+#[test]
+fn test_verify_signature_ed25519_fallthrough_arms() {
+    let kp = generate_key_pair().unwrap();
+    let sk = SigningKey::from_bytes(&hex_decode_32(&kp.private_key).unwrap());
+    let sig_hex = sign_content_hex("content", &kp.private_key).unwrap();
+
+    // ① sig hex 合法但解码后非 64 字节
+    assert!(!verify_signature_ed25519(b"content", "abcd", &kp.public_key));
+    // ② sig 合法 64 字节但 pk hex 长度不对（hex_decode_32 Err）
+    assert!(!verify_signature_ed25519(b"content", &sig_hex, "abcd"));
+    // ③ sig 本身不是合法 hex（hex_decode_vec Err）
+    assert!(!verify_signature_ed25519(b"content", "not-hex!", &kp.public_key));
+    // 正向对照：真实签名验证通过
+    assert!(verify_signature_ed25519(b"content", &sig_hex, &kp.public_key));
+}
+
+#[test]
+fn test_compute_directory_hash_nested_signature_included() {
+    // 根级 .signature 被 filter_entry 排除；嵌套在子目录里的 .signature
+    // 不会被跳过，作为普通文件参与哈希（walk 循环内的 954-957 检查路径）。
+    let dir = tempfile::tempdir().unwrap();
+    let skill = dir.path().join("nested");
+    std::fs::create_dir_all(skill.join("sub")).unwrap();
+    std::fs::write(skill.join("SKILL.md"), "# Test").unwrap();
+    std::fs::write(skill.join("sub").join(SIGNATURE_FILE_NAME), "junk-signature").unwrap();
+    // 根级 .signature 也会被排除，不计数
+    std::fs::write(skill.join(SIGNATURE_FILE_NAME), "root sig").unwrap();
+
+    let (hash1, count) = compute_directory_hash(&skill).unwrap();
+    assert_eq!(count, 2, "SKILL.md + nested sub/.signature, root .signature excluded");
+    let (hash2, _) = compute_directory_hash(&skill).unwrap();
+    assert_eq!(hash1, hash2, "hash must be deterministic");
+}
+
+// ============================================================
+// S3 batch 3: trust-store revoke/save-with-parent, verify_skill
+// hash mismatch, verify_file success, directory-hash round trip
+// ============================================================
+
+#[test]
+fn test_trust_store_revoke_key_by_name_success() {
+    let dir = tempfile::tempdir().unwrap();
+    let store_path = dir.path().join("sub").join("truststore.json"); // 父目录不存在 → save 里 create_dir_all
+    let store = TrustStore::new(Some(&store_path));
+
+    let kp = generate_key_pair().unwrap();
+    let sk = SigningKey::from_bytes(&hex_decode_32(&kp.private_key).unwrap());
+    let pk_b64 = export_public_key(&sk.verifying_key());
+    store.add_key(&pk_b64, "carol", TrustLevel::Verified);
+    assert!(store_path.exists(), "save() must create parent + file");
+
+    // 按名字吊销成功 → level 变 Revoked，且持久化
+    store.revoke_key("carol").unwrap();
+    assert!(matches!(store.get_key_by_name("carol").map(|k| k.level), Some(TrustLevel::Revoked)));
+
+    // 不存在的名字 → Err
+    assert!(store.revoke_key("nobody").is_err());
+
+    // 重新加载磁盘文件，吊销状态被持久化
+    let reloaded = TrustStore::new(Some(&store_path));
+    assert!(matches!(reloaded.get_key_by_name("carol").map(|k| k.level), Some(TrustLevel::Revoked)));
+}
+
+#[test]
+fn test_verify_skill_content_hash_mismatch() {
+    // 签名后修改目录内容 → 聚合哈希对不上 → "hash mismatch" 失败臂。
+    let dir = tempfile::tempdir().unwrap();
+    let skill = dir.path().join("tampered-skill");
+    std::fs::create_dir_all(&skill).unwrap();
+    std::fs::write(skill.join("SKILL.md"), "# original").unwrap();
+    std::fs::write(skill.join("extra.txt"), "data").unwrap();
+
+    let kp = generate_key_pair().unwrap();
+    let sk = SigningKey::from_bytes(&hex_decode_32(&kp.private_key).unwrap());
+    let pk_b64 = export_public_key(&sk.verifying_key());
+    sign_skill(&skill, &sk, "signer-t").unwrap();
+
+    // 篡改内容（不动签名文件）
+    std::fs::write(skill.join("extra.txt"), "tampered").unwrap();
+
+    let v = make_verifier(dir.path());
+    v.trust_store().add_key(&pk_b64, "signer-t", TrustLevel::Verified);
+    let result = v.verify_skill(&skill);
+    assert!(!result.valid);
+    assert!(result.error.contains("hash mismatch"), "error: {}", result.error);
+}
+
+#[test]
+fn test_verify_file_success_with_trusted_key() {
+    // verify_file 的成功返回臂（valid + signer + trust_level）。
+    let dir = tempfile::tempdir().unwrap();
+    let file_path = dir.path().join("signed.txt");
+    std::fs::write(&file_path, b"hello world").unwrap();
+
+    let kp = generate_key_pair().unwrap();
+    let sk = SigningKey::from_bytes(&hex_decode_32(&kp.private_key).unwrap());
+    let pk_b64 = export_public_key(&sk.verifying_key());
+    let sig = sign_file(&file_path, &sk).unwrap();
+
+    let v = make_verifier(dir.path());
+    v.trust_store().add_key(&pk_b64, "dave", TrustLevel::Verified);
+    let result = v.verify_file(&file_path, &sig).unwrap();
+    assert!(result.valid, "error: {}", result.error);
+    assert_eq!(result.signer, "dave");
+    assert!(matches!(result.trust_level, TrustLevel::Verified));
+    assert_eq!(result.files_verified, 1);
+}
+
+#[test]
+fn test_compute_directory_hash_signature_file_excluded_roundtrip() {
+    // 根级 .signature 不参与哈希：sign → hash 与手算（排除 .signature）一致。
+    let dir = tempfile::tempdir().unwrap();
+    let skill = dir.path().join("rt-skill");
+    std::fs::create_dir_all(skill.join("nested")).unwrap();
+    std::fs::write(skill.join("SKILL.md"), "# body").unwrap();
+    std::fs::write(skill.join("nested").join("data.bin"), b"\x00\x01").unwrap();
+
+    let (h_before, count) = compute_directory_hash(&skill).unwrap();
+    assert_eq!(count, 2);
+
+    let kp = generate_key_pair().unwrap();
+    let sk = SigningKey::from_bytes(&hex_decode_32(&kp.private_key).unwrap());
+    sign_skill(&skill, &sk, "rt").unwrap();
+
+    // 签名后重算：根级 .signature 被排除，其余文件未变 → 哈希不变
+    let (h_after, count_after) = compute_directory_hash(&skill).unwrap();
+    assert_eq!(count_after, 2);
+    assert_eq!(h_before, h_after);
+}

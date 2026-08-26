@@ -481,3 +481,119 @@ fn test_tree_response_tree_can_be_huge() {
     let r: TreeResponse = serde_json::from_str(&json).unwrap();
     assert_eq!(r.tree.len(), 1000);
 }
+
+// ============================================================
+// S5 coverage: blob==prefix continue arm, path traversal
+// Security error, parent-create Io failure
+// ============================================================
+
+#[tokio::test]
+async fn test_download_skill_tree_blob_equal_to_prefix_is_skipped() {
+    // A tree entry whose path is exactly the dir prefix (with trailing
+    // slash) strips to an empty relative path and must be skipped.
+    let server = MockServer::start().await;
+    let tree_body = r#"{"tree":[
+        {"path":"skills/pdf/","type":"blob"},
+        {"path":"skills/pdf/SKILL.md","type":"blob"}
+    ]}"#;
+    Mock::given(method("GET"))
+        .and(path("/repos/org/repo/git/trees/main"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(tree_body))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/org/repo/main/skills/pdf/SKILL.md"))
+        .respond_with(ResponseTemplate::new(200).set_body_string("# content"))
+        .mount(&server)
+        .await;
+
+    let client = http_client();
+    let dir = tempfile::tempdir().unwrap();
+    let raw_base = server.uri();
+    download_skill_tree_from_github(
+        &client,
+        &server.uri(),
+        &raw_base,
+        "org/repo",
+        "main",
+        "skills/pdf",
+        dir.path().to_str().unwrap(),
+        0,
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        std::fs::read(dir.path().join("SKILL.md")).unwrap(),
+        b"# content"
+    );
+}
+
+#[tokio::test]
+async fn test_download_skill_tree_rejects_path_traversal_entry() {
+    let server = MockServer::start().await;
+    let tree_body = r#"{"tree":[
+        {"path":"skills/pdf/../../evil.md","type":"blob"}
+    ]}"#;
+    Mock::given(method("GET"))
+        .and(path("/repos/org/repo/git/trees/main"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(tree_body))
+        .mount(&server)
+        .await;
+
+    let client = http_client();
+    let dir = tempfile::tempdir().unwrap();
+    let raw_base = server.uri();
+    let err = download_skill_tree_from_github(
+        &client,
+        &server.uri(),
+        &raw_base,
+        "org/repo",
+        "main",
+        "skills/pdf",
+        dir.path().to_str().unwrap(),
+        0,
+    )
+    .await
+    .unwrap_err();
+    let msg = err.to_string();
+    assert!(msg.contains("path traversal"), "msg: {msg}");
+    // Nothing may have been written outside the target directory.
+    assert!(!dir.path().join("../../evil.md").exists());
+    let parent = dir.path().parent().unwrap().join("evil.md");
+    assert!(!parent.exists());
+}
+
+#[tokio::test]
+async fn test_download_skill_tree_parent_create_fails_when_parent_is_file() {
+    let server = MockServer::start().await;
+    let tree_body = r#"{"tree":[
+        {"path":"skills/pdf/sub/file.txt","type":"blob"}
+    ]}"#;
+    Mock::given(method("GET"))
+        .and(path("/repos/org/repo/git/trees/main"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(tree_body))
+        .mount(&server)
+        .await;
+
+    let client = http_client();
+    let dir = tempfile::tempdir().unwrap();
+    let target = dir.path().join("out");
+    std::fs::create_dir_all(&target).unwrap();
+    // Pre-create target/sub as a FILE: create_dir_all(parent) must fail.
+    std::fs::write(target.join("sub"), "i am a file").unwrap();
+
+    let raw_base = server.uri();
+    let err = download_skill_tree_from_github(
+        &client,
+        &server.uri(),
+        &raw_base,
+        "org/repo",
+        "main",
+        "skills/pdf",
+        target.to_str().unwrap(),
+        0,
+    )
+    .await
+    .unwrap_err();
+    assert!(matches!(err, nemesis_types::error::NemesisError::Io(_)), "got: {err}");
+}

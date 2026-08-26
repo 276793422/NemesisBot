@@ -201,3 +201,6 @@ impl ExecutableCodec for PeCodec {
             .collect()
     }
 }
+
+#[cfg(test)]
+mod tests;

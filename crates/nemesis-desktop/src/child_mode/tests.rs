@@ -1062,3 +1062,328 @@ fn test_send_window_data_then_receive_roundtrip() {
         serde_json::from_str(String::from_utf8(child_output).unwrap().trim()).unwrap();
     assert!(ack.is_ack());
 }
+
+// --- Additional coverage: top-level entry / host_decode_png / WsHandle / headless ---
+
+#[test]
+fn test_run_child_mode_without_flag_returns_error() {
+    // The test harness argv never contains --multiple, so the flag check at
+    // the top of run_child_mode trips before any real I/O happens.
+    let rt = tokio::runtime::Builder::new_current_thread().build().unwrap();
+    let err = rt.block_on(run_child_mode()).unwrap_err();
+    assert_eq!(err, "not in child mode");
+}
+
+#[cfg(not(target_os = "android"))]
+mod host_decode_png_tests {
+    use super::*;
+
+    fn make_png(w: u32, h: u32, rgba: [u8; 4]) -> Vec<u8> {
+        let img = image::RgbaImage::from_pixel(w, h, image::Rgba(rgba));
+        let mut buf = Vec::new();
+        img.write_to(&mut Cursor::new(&mut buf), image::ImageFormat::Png)
+            .unwrap();
+        buf
+    }
+
+    #[test]
+    fn test_host_decode_png_null_png_data_returns_minus_one() {
+        let mut w: u32 = 0;
+        let mut h: u32 = 0;
+        let rc = host_decode_png(
+            std::ptr::null(),
+            0,
+            std::ptr::null_mut(),
+            0,
+            &mut w,
+            &mut h,
+        );
+        assert_eq!(rc, -1);
+    }
+
+    #[test]
+    fn test_host_decode_png_null_width_pointer_returns_minus_one() {
+        let png = make_png(2, 2, [255, 0, 0, 255]);
+        let mut h: u32 = 0;
+        let rc = host_decode_png(
+            png.as_ptr(),
+            png.len(),
+            std::ptr::null_mut(),
+            0,
+            std::ptr::null_mut(),
+            &mut h,
+        );
+        assert_eq!(rc, -1);
+    }
+
+    #[test]
+    fn test_host_decode_png_null_height_pointer_returns_minus_one() {
+        let png = make_png(2, 2, [255, 0, 0, 255]);
+        let mut w: u32 = 0;
+        let rc = host_decode_png(
+            png.as_ptr(),
+            png.len(),
+            std::ptr::null_mut(),
+            0,
+            &mut w,
+            std::ptr::null_mut(),
+        );
+        assert_eq!(rc, -1);
+    }
+
+    #[test]
+    fn test_host_decode_png_invalid_bytes_returns_minus_two() {
+        let bad = b"this is definitely not a png".to_vec();
+        let mut w: u32 = 0;
+        let mut h: u32 = 0;
+        let rc = host_decode_png(
+            bad.as_ptr(),
+            bad.len(),
+            std::ptr::null_mut(),
+            0,
+            &mut w,
+            &mut h,
+        );
+        assert_eq!(rc, -2);
+    }
+
+    #[test]
+    fn test_host_decode_png_query_mode_returns_minus_three_with_dimensions() {
+        let png = make_png(3, 2, [1, 2, 3, 4]);
+        let mut w: u32 = 0;
+        let mut h: u32 = 0;
+        // Query mode: null output buffer still receives the dimensions.
+        let rc = host_decode_png(png.as_ptr(), png.len(), std::ptr::null_mut(), 0, &mut w, &mut h);
+        assert_eq!(rc, -3);
+        assert_eq!(w, 3);
+        assert_eq!(h, 2);
+    }
+
+    #[test]
+    fn test_host_decode_png_small_output_buffer_returns_minus_three() {
+        let png = make_png(2, 2, [9, 9, 9, 9]); // needs 2*2*4 = 16 bytes
+        let mut out = vec![0u8; 8]; // too small
+        let mut w: u32 = 0;
+        let mut h: u32 = 0;
+        let rc = host_decode_png(
+            png.as_ptr(),
+            png.len(),
+            out.as_mut_ptr(),
+            out.len(),
+            &mut w,
+            &mut h,
+        );
+        assert_eq!(rc, -3);
+        assert_eq!(w, 2);
+        assert_eq!(h, 2);
+    }
+
+    #[test]
+    fn test_host_decode_png_success_copies_rgba_pixels() {
+        let png = make_png(2, 2, [255, 0, 0, 255]);
+        let mut out = vec![0u8; 2 * 2 * 4];
+        let mut w: u32 = 0;
+        let mut h: u32 = 0;
+        let rc = host_decode_png(
+            png.as_ptr(),
+            png.len(),
+            out.as_mut_ptr(),
+            out.len(),
+            &mut w,
+            &mut h,
+        );
+        assert_eq!(rc, 0);
+        assert_eq!(w, 2);
+        assert_eq!(h, 2);
+        // Every pixel is opaque red.
+        for chunk in out.chunks_exact(4) {
+            assert_eq!(chunk, &[255, 0, 0, 255]);
+        }
+    }
+}
+
+#[test]
+fn test_ws_handle_close_sets_shutdown_and_disconnects_client() {
+    let client = Arc::new(crate::websocket::client::WebSocketClient::new(
+        &crate::websocket::client::WebSocketKey {
+            key: "k".to_string(),
+            port: 1,
+            path: "/ws".to_string(),
+        },
+    ));
+    let shutdown = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let handle = WsHandle {
+        client: client.clone(),
+        shutdown: shutdown.clone(),
+    };
+    assert!(!shutdown.load(std::sync::atomic::Ordering::SeqCst));
+    handle.close();
+    assert!(shutdown.load(std::sync::atomic::Ordering::SeqCst));
+    assert!(!client.is_connected());
+}
+
+#[test]
+fn test_bring_to_front_fn_set_and_call_invokes_function() {
+    static CALLED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    unsafe extern "C" fn probe() {
+        CALLED.store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+    unsafe extern "C" fn noop() {}
+
+    let f = BringToFrontFn::new();
+    // Null pointer: call() must be a no-op (already covered by an existing
+    // test, but re-assert here as the baseline for the non-null path below).
+    f.call();
+    assert!(!CALLED.load(std::sync::atomic::Ordering::SeqCst));
+
+    f.set(probe);
+    f.call();
+    assert!(CALLED.load(std::sync::atomic::Ordering::SeqCst));
+
+    // Reset so any later call becomes a no-op.
+    f.set(noop);
+}
+
+#[test]
+fn test_connect_ws_with_handler_loopback_fires_bring_to_front() {
+    use crate::websocket::server::{KeyGenerator, WebSocketServer};
+
+    static PROBE_CALLED: std::sync::atomic::AtomicBool =
+        std::sync::atomic::AtomicBool::new(false);
+    unsafe extern "C" fn probe() {
+        PROBE_CALLED.store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+    unsafe extern "C" fn noop() {}
+
+    BRING_TO_FRONT_FN_PTR.set(probe);
+
+    let key_gen = Arc::new(KeyGenerator::new());
+    let server = WebSocketServer::new(key_gen.clone());
+    // multi_thread：server.start() spawn 的 accept loop 要靠 runtime 工作线程
+    // 持续 poll——current_thread 在 block_on 返回后就停了，服务端永远不接受。
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let port = rt.block_on(server.start()).unwrap();
+    let key = key_gen.generate("bt-front-child", 77);
+
+    // Empty path is normalized to "/ws" inside connect_ws_with_handler.
+    let handle = connect_ws_with_handler(&key, port, "", true);
+    assert!(handle.is_some());
+    let handle = handle.unwrap();
+
+    // Wait for the client connection to register on the server side.
+    let mut registered = false;
+    for _ in 0..40 {
+        if server.get_connection("bt-front-child").is_some() {
+            registered = true;
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    assert!(registered, "client connection never registered on server");
+
+    // send_notification uses try_lock on the connection; retry while busy.
+    let mut notified = false;
+    for _ in 0..10 {
+        if server
+            .send_notification(
+                "bt-front-child",
+                "window.bring_to_front",
+                serde_json::json!({}),
+            )
+            .is_ok()
+        {
+            notified = true;
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    assert!(notified, "send_notification kept failing (busy)");
+
+    // Wait for the client read task to dispatch into the registered handler,
+    // which calls BRING_TO_FRONT_FN_PTR (our probe).
+    let mut fired = false;
+    for _ in 0..40 {
+        if PROBE_CALLED.load(std::sync::atomic::Ordering::SeqCst) {
+            fired = true;
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    assert!(fired, "bring_to_front probe never ran");
+
+    handle.close();
+    // Background thread polls the shutdown flag every 200ms; give it time
+    // to exit so the test leaves no threads behind.
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    BRING_TO_FRONT_FN_PTR.set(noop); // reset global for test isolation
+    server.stop();
+}
+
+#[test]
+fn test_run_headless_auto_approve_without_ws_still_succeeds() {
+    // Empty key + zero port → connect_ws_with_handler returns None → the
+    // "no WS client" arm runs, notify is skipped entirely, and the function
+    // still returns Ok after its keep-alive sleeps.
+    let result = run_headless_auto_approve("headless-none", &approval_with_risk("LOW"), "", 0, "");
+    assert!(result.is_ok());
+}
+
+#[test]
+fn test_run_headless_auto_approve_loopback_sends_approval() {
+    use crate::websocket::server::{KeyGenerator, WebSocketServer};
+
+    let key_gen = Arc::new(KeyGenerator::new());
+    let server = WebSocketServer::new(key_gen.clone());
+    // multi_thread：同 test_connect_ws_with_handler…——accept loop 需要常驻
+    // 工作线程 poll，current_thread 的 block_on 返回后服务端即停摆。
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let port = rt.block_on(server.start()).unwrap();
+    let key = key_gen.generate("headless-1", 4242);
+
+    // Helper thread: once the child connects, register a notification
+    // handler that captures the approval.submit payload. run_headless
+    // sleeps 1s before sending, so this has a wide margin.
+    let captured: Arc<std::sync::Mutex<Option<serde_json::Value>>> =
+        Arc::new(std::sync::Mutex::new(None));
+    let captured_clone = captured.clone();
+    let server_ref = &server;
+    std::thread::scope(|s| {
+        s.spawn(move || {
+            for _ in 0..40 {
+                if let Some(conn) = server_ref.get_connection("headless-1") {
+                    let guard = conn.blocking_lock();
+                    guard.dispatcher.register_notification(
+                        "approval.submit",
+                        move |msg| {
+                            let mut c = captured_clone.lock().unwrap();
+                            *c = msg.params.clone();
+                        },
+                    );
+                    return;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+        });
+
+        let result = run_headless_auto_approve(
+            "headless-1",
+            &approval_with_risk("HIGH"),
+            &key,
+            port,
+            "/child/headless-1",
+        );
+        assert!(result.is_ok(), "run_headless failed: {:?}", result);
+    });
+
+    let payload = captured.lock().unwrap().clone();
+    let payload = payload.expect("approval.submit notification never arrived");
+    assert_eq!(payload["action"], "approved");
+    assert_eq!(payload["request_id"], "req");
+    server.stop();
+}

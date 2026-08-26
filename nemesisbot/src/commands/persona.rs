@@ -668,3 +668,6 @@ fn parse_sections_simple(content: &str) -> (String, Vec<(String, String)>) {
     }
     (preamble_lines.join("\n").trim().to_string(), sections)
 }
+
+#[cfg(test)]
+mod tests;

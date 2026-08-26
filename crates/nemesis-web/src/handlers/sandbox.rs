@@ -538,3 +538,9 @@ impl ModuleHandler for SandboxHandler {
 
 #[cfg(test)]
 mod tests;
+
+// S10b (2026-08-26, quality-hardening goal 冲刺 web 批次 2): fake-box-tree
+// selection/commit/delete paths + set_executor_config + set_config
+// allow_network arm. All offline — no Sandboxie/UAC/downloads.
+#[cfg(test)]
+mod s10b_tests;

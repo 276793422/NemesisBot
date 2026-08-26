@@ -716,3 +716,229 @@ async fn test_x1_pruned_tool_result_replay_byte_exact() {
     cleanup_sidecars(&key);
     let _ = std::fs::remove_dir_all(dir);
 }
+
+// ---------------------------------------------------------------------------
+// W3a: 分支补漏（append 失败臂 / 越界注入 push / voice 变异 / verify 的
+// tool_calls 与 field 臂 / char-boundary 帮助函数 / verify_session_round 的
+// Rebuilt 路径 / read_raw_request_messages）
+// ---------------------------------------------------------------------------
+
+/// append_projection_record：账本路径被目录占位 → warn + 静默返回。
+#[test]
+fn append_projection_record_open_failure_warns() {
+    let key = unique_key("t8_open_fail");
+    let dir = nemesis_path::default_path_manager().boundary_events_dir();
+    let safe = key.replace(':', "_");
+    let _ = std::fs::create_dir_all(&dir);
+    let ledger = dir.join(format!("{}.replay.jsonl", safe));
+    let _ = std::fs::remove_file(&ledger);
+    std::fs::create_dir_all(&ledger).unwrap();
+
+    append_projection_record(&RequestProjectionRecord {
+        trace_id: "t".to_string(),
+        session_key: key.clone(),
+        round: 1,
+        ts: now_rfc3339(),
+        messages_count: 1,
+        roles: vec!["user".to_string()],
+        history_len_at_build: 1,
+        injections: vec![],
+        voice_append: None,
+        summary_as_of: None,
+    });
+    assert!(load_projection_records(&key).is_empty(), "nothing written");
+
+    std::fs::remove_dir(&ledger).unwrap();
+}
+
+/// 注入 index 超出 view 末端 → push 到尾部；voice 变异落在 push 出来的
+/// 消息上。
+#[test]
+fn rebuild_pushes_injection_beyond_view_end_and_applies_voice() {
+    let key = unique_key("t8_push_inj");
+    let (store, dir) = temp_store(&key);
+    store.set_history(
+        &key,
+        vec![
+            (&turn("system", "sys")).into(),
+            (&turn("user", "q")).into(),
+        ],
+    );
+    append_projection_record(&RequestProjectionRecord {
+        trace_id: "t".to_string(),
+        session_key: key.clone(),
+        round: 1,
+        ts: now_rfc3339(),
+        messages_count: 3,
+        roles: vec!["system".into(), "user".into(), "system".into()],
+        history_len_at_build: 2,
+        injections: vec![InjectionRecord {
+            index: 5, // 越过 view.len()==2 → push 到尾部
+            role: "system".to_string(),
+            source: INJECTION_GRACE_NUDGE.to_string(),
+            content: "wrap up".to_string(),
+        }],
+        voice_append: Some(VoiceAppend {
+            index: 2, // push 之后注入消息正好在 idx 2
+            suffix: " [voice]".to_string(),
+        }),
+        summary_as_of: None,
+    });
+
+    match rebuild_request_messages(&store, &key, 1).expect("rebuild") {
+        RebuildOutcome::Rebuilt(view) => {
+            assert_eq!(view.len(), 3);
+            assert_eq!(view[0].role, "system");
+            assert_eq!(view[1].content, "q");
+            assert_eq!(view[2].content, "wrap up [voice]", "push + voice suffix");
+        }
+        other => panic!("expected Rebuilt, got {:?}", other),
+    }
+
+    cleanup_sidecars(&key);
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// verify_request_replay 的 tool_calls 臂与「role/content 之外的 field」臂。
+#[test]
+fn verify_request_replay_tool_calls_and_field_arms() {
+    use crate::r#loop::LlmMessage;
+    let msg = |role: &str, content: &str| LlmMessage {
+        role: role.to_string(),
+        content: content.to_string(),
+        tool_calls: None,
+        tool_call_id: None,
+        reasoning_content: None,
+    };
+
+    // tool_calls 臂：rebuilt 无 tool_calls，recorded 带数组。
+    let rebuilt = vec![msg("assistant", "calling")];
+    let recorded = vec![serde_json::json!({
+        "role": "assistant",
+        "content": "calling",
+        "tool_calls": [
+            {"id": "1", "type": "function", "function": {"name": "t", "arguments": "{}"}}
+        ]
+    })];
+    let diff = verify_request_replay(&rebuilt, &recorded).unwrap_err();
+    assert_eq!(diff.kind, "tool_calls");
+    assert_eq!(diff.index, 0);
+
+    // field 臂：role/content/tool_calls 全一致，差异在 reasoning_content。
+    let mut with_reasoning = msg("assistant", "ans");
+    with_reasoning.reasoning_content = Some("thinking...".to_string());
+    let recorded2 = vec![serde_json::json!({
+        "role": "assistant",
+        "content": "ans",
+        "tool_calls": null,
+    })];
+    let diff2 = verify_request_replay(&[with_reasoning], &recorded2).unwrap_err();
+    assert_eq!(diff2.kind, "field");
+    assert!(diff2.detail.contains("beyond role/content/tool_calls"));
+}
+
+/// first_diff_offset 的 char-boundary 回落与 preview 的换行转义。
+#[test]
+fn first_diff_offset_char_boundary_and_preview_escape() {
+    // 完全一致：i 走到 len → 早退支。
+    assert_eq!(first_diff_offset("abc", "abc"), 3);
+    assert_eq!(first_diff_offset("", ""), 0);
+
+    // 差异落在一个多字节字符内部：回落到该字符的起始边界。
+    // “文” = e6 96 87；U+6580 = e6 96 80 → 第 5 字节才不同（“文”的中间）。
+    let a = "中文";
+    let b = "中\u{6580}";
+    assert_eq!(first_diff_offset(a, b), 3, "must floor to char start");
+
+    // preview：换行转成 \\n 字面量。
+    let p = preview("line1\nline2", 5);
+    assert!(p.contains("\\n"), "newline escaped: {p}");
+}
+
+/// verify_session_round 的 Rebuilt→ByteExact 主路径（此前只测过 NoLedger
+/// 与 Unavailable 两个退化支）。
+#[test]
+fn verify_session_round_rebuilt_path_byte_exact() {
+    let key = unique_key("t8_round_exact");
+    let (store, dir) = temp_store(&key);
+    store.set_history(
+        &key,
+        vec![
+            (&turn("system", "sys prompt")).into(),
+            (&turn("user", "hello")).into(),
+        ],
+    );
+    append_projection_record(&RequestProjectionRecord {
+        trace_id: "t".to_string(),
+        session_key: key.clone(),
+        round: 1,
+        ts: now_rfc3339(),
+        messages_count: 2,
+        roles: vec!["system".into(), "user".into()],
+        history_len_at_build: 2,
+        injections: vec![],
+        voice_append: None,
+        summary_as_of: None,
+    });
+
+    let recorded: Vec<serde_json::Value> = ["sys prompt", "hello"]
+        .iter()
+        .enumerate()
+        .map(|(i, c)| {
+            serde_json::json!({
+                "role": if i == 0 { "system" } else { "user" },
+                "content": c,
+                "tool_calls": null,
+                "tool_call_id": null,
+            })
+        })
+        .collect();
+
+    match verify_session_round(&store, &key, 1, &recorded) {
+        Ok(ReplayCheck::ByteExact) => {}
+        other => panic!("expected ByteExact, got {:?}", other),
+    }
+
+    cleanup_sidecars(&key);
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// read_raw_request_messages：完整 envelope、缺文件、垃圾、缺 round、
+/// messages 非数组。
+#[test]
+fn read_raw_request_messages_variants() {
+    let tmp = tempfile::tempdir().unwrap();
+
+    // happy path。
+    let p = tmp.path().join("01.raw.json");
+    std::fs::write(
+        &p,
+        serde_json::json!({
+            "round": 2,
+            "body": { "messages": [
+                {"role": "system", "content": "s"},
+                {"role": "user", "content": "u"},
+            ]}
+        })
+        .to_string(),
+    )
+    .unwrap();
+    let (round, msgs) = read_raw_request_messages(&p).expect("parses");
+    assert_eq!(round, 2);
+    assert_eq!(msgs.len(), 2);
+
+    // 缺文件。
+    assert!(read_raw_request_messages(&tmp.path().join("nope.json")).is_none());
+    // 垃圾内容。
+    let g = tmp.path().join("garbage.json");
+    std::fs::write(&g, "NOT JSON").unwrap();
+    assert!(read_raw_request_messages(&g).is_none());
+    // 缺 round。
+    let nr = tmp.path().join("noround.json");
+    std::fs::write(&nr, r#"{"body":{"messages":[]}}"#).unwrap();
+    assert!(read_raw_request_messages(&nr).is_none());
+    // messages 不是数组。
+    let na = tmp.path().join("notarray.json");
+    std::fs::write(&na, r#"{"round":1,"body":{"messages":42}}"#).unwrap();
+    assert!(read_raw_request_messages(&na).is_none());
+}

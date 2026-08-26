@@ -20,6 +20,7 @@ zip = "2"
 
 [dev-dependencies]
 tempfile = "3"
+tracing-subscriber = { workspace = true }
 
 # U11 userland sandbox: landlock LSM bindings (Linux only).
 [target.'cfg(target_os = "linux")'.dependencies]

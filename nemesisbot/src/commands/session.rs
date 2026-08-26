@@ -212,3 +212,6 @@ fn interactive_pick(session_key: &str) -> Result<Option<usize>> {
         _ => bail!("无效轮次 {:?}（需要 >= 1 的整数，或回车全量）", line),
     }
 }
+
+#[cfg(test)]
+mod tests;

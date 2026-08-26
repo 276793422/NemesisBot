@@ -974,3 +974,628 @@ fn test_model_set_effort_cli() {
         serde_json::from_str(&fs::read_to_string(&cfg_path).unwrap()).unwrap();
     assert_eq!(loaded["model_list"][0]["reasoning_effort"], serde_json::json!(""));
 }
+
+// =========================================================================
+// S11b 覆盖率冲刺：run() 全 arm 端到端 + format_probe_report 直测
+//
+// 策略：NEMESISBOT_HOME 指向临时目录（resolve_home 优先级 2），run(action,
+// false) 全程只读写临时 home。env set_var 是进程级 → 持 crate::
+// GLOBAL_STATE_LOCK 串行（与 cluster/tests.rs 同款 TempHomeEnv 模式）。
+// Probe/CatalogUpdate 只测 cfg-missing bail——真 LLM 调用/真网络属结构性豁免。
+// =========================================================================
+
+/// RAII 守卫：设置 NEMESISBOT_HOME 指向临时根，drop 时移除。
+struct S11bTempHomeEnv {
+    _tmp: tempfile::TempDir,
+    home: std::path::PathBuf,
+}
+
+impl Drop for S11bTempHomeEnv {
+    fn drop(&mut self) {
+        unsafe { std::env::remove_var("NEMESISBOT_HOME") };
+    }
+}
+
+fn s11b_temp_home_env() -> S11bTempHomeEnv {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let home = tmp.path().join(".nemesisbot");
+    fs::create_dir_all(&home).unwrap();
+    unsafe { std::env::set_var("NEMESISBOT_HOME", tmp.path()) };
+    S11bTempHomeEnv { _tmp: tmp, home }
+}
+
+fn s11b_write_cfg(home: &std::path::Path, cfg: serde_json::Value) {
+    fs::write(home.join("config.json"), serde_json::to_string(&cfg).unwrap()).unwrap();
+}
+
+fn s11b_read_cfg(home: &std::path::Path) -> serde_json::Value {
+    serde_json::from_str(&fs::read_to_string(home.join("config.json")).unwrap()).unwrap()
+}
+
+#[tokio::test]
+async fn test_s11b_run_add_no_config_bails() {
+    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let _th = s11b_temp_home_env();
+    let err = super::run(
+        super::ModelAction::Add {
+            model: "zhipu/glm-4.7".into(),
+            key: None,
+            base: None,
+            proxy: None,
+            auth: None,
+            default: false,
+        },
+        false,
+    )
+    .await
+    .unwrap_err();
+    assert!(err.to_string().contains("Configuration not found"));
+}
+
+#[tokio::test]
+async fn test_s11b_run_add_invalid_format_bails() {
+    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let th = s11b_temp_home_env();
+    s11b_write_cfg(&th.home, serde_json::json!({"model_list": []}));
+    let err = super::run(
+        super::ModelAction::Add {
+            model: "glm-4.7".into(), // 无 vendor 前缀
+            key: None,
+            base: None,
+            proxy: None,
+            auth: None,
+            default: false,
+        },
+        false,
+    )
+    .await
+    .unwrap_err();
+    assert!(err.to_string().contains("Invalid model identifier"));
+    // 失败路径不落盘任何条目
+    assert!(s11b_read_cfg(&th.home)["model_list"].as_array().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn test_s11b_run_add_basic_writes_entry() {
+    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let th = s11b_temp_home_env();
+    s11b_write_cfg(&th.home, serde_json::json!({"model_list": []}));
+    super::run(
+        super::ModelAction::Add {
+            model: "zhipu/glm-4.7".into(),
+            key: Some("sk-test".into()),
+            base: None,
+            proxy: None,
+            auth: None,
+            default: false,
+        },
+        false,
+    )
+    .await
+    .unwrap();
+    let cfg = s11b_read_cfg(&th.home);
+    let arr = cfg["model_list"].as_array().unwrap();
+    assert_eq!(arr.len(), 1);
+    assert_eq!(arr[0]["model"], "zhipu/glm-4.7");
+    assert_eq!(arr[0]["model_name"], "glm-4.7", "alias 是斜杠后半段");
+    assert_eq!(arr[0]["api_key"], "sk-test");
+    assert_eq!(arr[0]["model_tier"], "auto", "Phase 4a 自动打 auto 档");
+    // 唯一模型 + 无默认 → 自动设默认
+    assert_eq!(cfg["agents"]["defaults"]["llm"], "glm-4.7");
+}
+
+#[tokio::test]
+async fn test_s11b_run_add_full_fields() {
+    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let th = s11b_temp_home_env();
+    s11b_write_cfg(&th.home, serde_json::json!({"model_list": []}));
+    super::run(
+        super::ModelAction::Add {
+            model: "openai/gpt-4o".into(),
+            key: Some("k1".into()),
+            base: Some("http://127.0.0.1:1/v1".into()),
+            proxy: Some("http://127.0.0.1:1".into()),
+            auth: Some("token".into()),
+            default: false,
+        },
+        false,
+    )
+    .await
+    .unwrap();
+    let cfg = s11b_read_cfg(&th.home);
+    let e = &cfg["model_list"][0];
+    assert_eq!(e["api_base"], "http://127.0.0.1:1/v1");
+    assert_eq!(e["proxy"], "http://127.0.0.1:1");
+    assert_eq!(e["auth_method"], "token");
+}
+
+#[tokio::test]
+async fn test_s11b_run_add_default_flag_sets_llm() {
+    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let th = s11b_temp_home_env();
+    // 已有一个别的模型 + 已有默认 → --default 显式覆盖默认
+    s11b_write_cfg(
+        &th.home,
+        serde_json::json!({
+            "model_list": [{"model_name": "old", "model": "zhipu/old"}],
+            "agents": {"defaults": {"llm": "old"}}
+        }),
+    );
+    super::run(
+        super::ModelAction::Add {
+            model: "openai/gpt-4o".into(),
+            key: None,
+            base: None,
+            proxy: None,
+            auth: None,
+            default: true,
+        },
+        false,
+    )
+    .await
+    .unwrap();
+    let cfg = s11b_read_cfg(&th.home);
+    assert_eq!(cfg["model_list"].as_array().unwrap().len(), 2);
+    assert_eq!(cfg["agents"]["defaults"]["llm"], "gpt-4o", "--default 写 alias");
+}
+
+#[tokio::test]
+async fn test_s11b_run_add_auto_default_skipped_when_default_exists() {
+    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let th = s11b_temp_home_env();
+    s11b_write_cfg(
+        &th.home,
+        serde_json::json!({
+            "model_list": [],
+            "agents": {"defaults": {"llm": "old"}}
+        }),
+    );
+    super::run(
+        super::ModelAction::Add {
+            model: "openai/gpt-4o".into(),
+            key: None,
+            base: None,
+            proxy: None,
+            auth: None,
+            default: false,
+        },
+        false,
+    )
+    .await
+    .unwrap();
+    // 已有默认 → 不自动改默认
+    assert_eq!(s11b_read_cfg(&th.home)["agents"]["defaults"]["llm"], "old");
+}
+
+#[tokio::test]
+async fn test_s11b_run_add_duplicate_replaces() {
+    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let th = s11b_temp_home_env();
+    s11b_write_cfg(&th.home, serde_json::json!({"model_list": []}));
+    for key in ["sk-one", "sk-two"] {
+        super::run(
+            super::ModelAction::Add {
+                model: "zhipu/glm-4.7".into(),
+                key: Some(key.into()),
+                base: None,
+                proxy: None,
+                auth: None,
+                default: false,
+            },
+            false,
+        )
+        .await
+        .unwrap();
+    }
+    let cfg = s11b_read_cfg(&th.home);
+    let arr = cfg["model_list"].as_array().unwrap();
+    assert_eq!(arr.len(), 1, "同 model 重复 add 是替换不是追加");
+    assert_eq!(arr[0]["api_key"], "sk-two");
+}
+
+#[tokio::test]
+async fn test_s11b_run_add_catalog_hit_fills_context_window() {
+    use crate::commands::model::catalog::{self, CatalogEntry};
+    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let th = s11b_temp_home_env();
+    s11b_write_cfg(&th.home, serde_json::json!({"model_list": []}));
+    catalog::save_cache(
+        &th.home,
+        vec![CatalogEntry {
+            key: "testorg/coolmodel".into(),
+            context_window: 123456,
+            max_output_tokens: Some(8192),
+            family: Some("cool".into()),
+        }],
+    )
+    .unwrap();
+    super::run(
+        super::ModelAction::Add {
+            model: "testorg/coolmodel".into(),
+            key: None,
+            base: None,
+            proxy: None,
+            auth: None,
+            default: false,
+        },
+        false,
+    )
+    .await
+    .unwrap();
+    let e = &s11b_read_cfg(&th.home)["model_list"][0];
+    assert_eq!(e["context_window"], 123456, "目录命中自动填 context_window");
+    assert_eq!(e["max_output_tokens"], 8192);
+    // 目录字段不透传到 config 条目
+    assert!(e.get("family").is_none());
+}
+
+#[tokio::test]
+async fn test_s11b_run_list_variants() {
+    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    // 无配置 → 打印提示后 Ok
+    {
+        let _th = s11b_temp_home_env();
+        super::run(super::ModelAction::List { verbose: false }, false).await.unwrap();
+    }
+    // 空 model_list
+    {
+        let th = s11b_temp_home_env();
+        s11b_write_cfg(&th.home, serde_json::json!({"model_list": []}));
+        super::run(super::ModelAction::List { verbose: false }, false).await.unwrap();
+    }
+    // 有模型 + verbose（脱敏 bullet 输出）+ default 标记
+    {
+        let th = s11b_temp_home_env();
+        s11b_write_cfg(
+            &th.home,
+            serde_json::json!({
+                "model_list": [
+                    {"model": "zhipu/glm-4.7", "model_name": "glm-4.7", "api_key": "sk-x"},
+                    {"model": "openai/gpt-4o", "model_name": "gpt-4o"}
+                ],
+                "agents": {"defaults": {"llm": "glm-4.7"}}
+            }),
+        );
+        super::run(super::ModelAction::List { verbose: true }, false).await.unwrap();
+        super::run(super::ModelAction::List { verbose: false }, false).await.unwrap();
+    }
+    // model_list 缺失（else 分支）
+    {
+        let th = s11b_temp_home_env();
+        s11b_write_cfg(&th.home, serde_json::json!({}));
+        super::run(super::ModelAction::List { verbose: false }, false).await.unwrap();
+    }
+}
+
+#[tokio::test]
+async fn test_s11b_run_remove_no_config_bails() {
+    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let _th = s11b_temp_home_env();
+    let err = super::run(
+        super::ModelAction::Remove { name: "x".into(), force: true },
+        false,
+    )
+    .await
+    .unwrap_err();
+    assert!(err.to_string().contains("Configuration not found"));
+}
+
+#[tokio::test]
+async fn test_s11b_run_remove_default_protected() {
+    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let th = s11b_temp_home_env();
+    s11b_write_cfg(
+        &th.home,
+        serde_json::json!({
+            "model_list": [{"model": "zhipu/glm-4.7", "model_name": "glm-4.7"}],
+            "agents": {"defaults": {"llm": "glm-4.7"}}
+        }),
+    );
+    // 默认模型（alias 命中）→ 拒绝删除，Ok 返回不 bails
+    super::run(
+        super::ModelAction::Remove { name: "glm-4.7".into(), force: true },
+        false,
+    )
+    .await
+    .unwrap();
+    // 默认模型（全名命中）
+    super::run(
+        super::ModelAction::Remove { name: "zhipu/glm-4.7".into(), force: true },
+        false,
+    )
+    .await
+    .unwrap();
+    assert_eq!(s11b_read_cfg(&th.home)["model_list"].as_array().unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn test_s11b_run_remove_force_full_name_and_alias() {
+    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let th = s11b_temp_home_env();
+    s11b_write_cfg(
+        &th.home,
+        serde_json::json!({
+            "model_list": [
+                {"model": "zhipu/glm-4.7", "model_name": "glm-4.7"},
+                {"model": "openai/gpt-4o", "model_name": "gpt-4o"}
+            ]
+        }),
+    );
+    // alias（suffix 匹配 vendor 斜杠 name）
+    super::run(
+        super::ModelAction::Remove { name: "glm-4.7".into(), force: true },
+        false,
+    )
+    .await
+    .unwrap();
+    // 全名
+    super::run(
+        super::ModelAction::Remove { name: "openai/gpt-4o".into(), force: true },
+        false,
+    )
+    .await
+    .unwrap();
+    assert!(s11b_read_cfg(&th.home)["model_list"].as_array().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn test_s11b_run_remove_not_found_bails() {
+    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let th = s11b_temp_home_env();
+    s11b_write_cfg(&th.home, serde_json::json!({"model_list": []}));
+    let err = super::run(
+        super::ModelAction::Remove { name: "nope".into(), force: true },
+        false,
+    )
+    .await
+    .unwrap_err();
+    assert!(err.to_string().contains("Model not found"));
+}
+
+#[tokio::test]
+async fn test_s11b_run_default_arm() {
+    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    // 无配置 → Ok（打印提示）
+    {
+        let _th = s11b_temp_home_env();
+        super::run(super::ModelAction::Default, false).await.unwrap();
+    }
+    // 无默认
+    {
+        let th = s11b_temp_home_env();
+        s11b_write_cfg(&th.home, serde_json::json!({}));
+        super::run(super::ModelAction::Default, false).await.unwrap();
+    }
+    // agents.defaults.llm 命中
+    {
+        let th = s11b_temp_home_env();
+        s11b_write_cfg(
+            &th.home,
+            serde_json::json!({"agents": {"defaults": {"llm": "glm-4.7"}}}),
+        );
+        super::run(super::ModelAction::Default, false).await.unwrap();
+    }
+    // 兼容字段 default_model 回退
+    {
+        let th = s11b_temp_home_env();
+        s11b_write_cfg(&th.home, serde_json::json!({"default_model": "legacy"}));
+        super::run(super::ModelAction::Default, false).await.unwrap();
+    }
+}
+
+#[tokio::test]
+async fn test_s11b_run_settier_matrix() {
+    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let th = s11b_temp_home_env();
+    s11b_write_cfg(
+        &th.home,
+        serde_json::json!({"model_list": [{"model": "zhipu/glm-4.7", "model_name": "glm-4.7"}]}),
+    );
+    // 非法 tier
+    let err = super::run(
+        super::ModelAction::SetTier { name: "glm-4.7".into(), tier: "huge".into() },
+        false,
+    )
+    .await
+    .unwrap_err();
+    assert!(err.to_string().contains("Invalid tier"));
+    // 合法 mini
+    super::run(
+        super::ModelAction::SetTier { name: "glm-4.7".into(), tier: "mini".into() },
+        false,
+    )
+    .await
+    .unwrap();
+    assert_eq!(s11b_read_cfg(&th.home)["model_list"][0]["model_tier"], "mini");
+    // 找不到模型
+    let err = super::run(
+        super::ModelAction::SetTier { name: "nope".into(), tier: "big".into() },
+        false,
+    )
+    .await
+    .unwrap_err();
+    assert!(err.to_string().contains("Model not found"));
+    // 无配置
+    {
+        let _th2 = s11b_temp_home_env();
+        let err = super::run(
+            super::ModelAction::SetTier { name: "x".into(), tier: "big".into() },
+            false,
+        )
+        .await
+        .unwrap_err();
+        assert!(err.to_string().contains("Configuration not found"));
+    }
+}
+
+#[tokio::test]
+async fn test_s11b_run_seteffort_matrix() {
+    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let th = s11b_temp_home_env();
+    s11b_write_cfg(
+        &th.home,
+        serde_json::json!({"model_list": [{"model": "zhipu/glm-4.7", "model_name": "glm-4.7"}]}),
+    );
+    // 非法
+    let err = super::run(
+        super::ModelAction::SetEffort { name: "glm-4.7".into(), effort: "extreme".into() },
+        false,
+    )
+    .await
+    .unwrap_err();
+    assert!(err.to_string().contains("Invalid effort"));
+    // off → 清空
+    super::run(
+        super::ModelAction::SetEffort { name: "glm-4.7".into(), effort: "off".into() },
+        false,
+    )
+    .await
+    .unwrap();
+    assert_eq!(s11b_read_cfg(&th.home)["model_list"][0]["reasoning_effort"], "");
+    // high → 写入
+    super::run(
+        super::ModelAction::SetEffort { name: "glm-4.7".into(), effort: "high".into() },
+        false,
+    )
+    .await
+    .unwrap();
+    assert_eq!(s11b_read_cfg(&th.home)["model_list"][0]["reasoning_effort"], "high");
+    // 找不到
+    let err = super::run(
+        super::ModelAction::SetEffort { name: "nope".into(), effort: "low".into() },
+        false,
+    )
+    .await
+    .unwrap_err();
+    assert!(err.to_string().contains("Model not found"));
+}
+
+#[tokio::test]
+async fn test_s11b_run_setsize_matrix() {
+    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let th = s11b_temp_home_env();
+    s11b_write_cfg(
+        &th.home,
+        serde_json::json!({"model_list": [{"model": "x/lite", "model_name": "lite"}]}),
+    );
+    // 非法
+    let err = super::run(
+        super::ModelAction::SetSize { name: "lite".into(), size: "huge".into() },
+        false,
+    )
+    .await
+    .unwrap_err();
+    assert!(err.to_string().contains("Invalid size"));
+    // 30B
+    super::run(
+        super::ModelAction::SetSize { name: "lite".into(), size: "30B".into() },
+        false,
+    )
+    .await
+    .unwrap();
+    assert_eq!(s11b_read_cfg(&th.home)["model_list"][0]["model_size_b"], 30);
+    // 裸数字
+    super::run(
+        super::ModelAction::SetSize { name: "lite".into(), size: "70".into() },
+        false,
+    )
+    .await
+    .unwrap();
+    assert_eq!(s11b_read_cfg(&th.home)["model_list"][0]["model_size_b"], 70);
+    // 找不到
+    let err = super::run(
+        super::ModelAction::SetSize { name: "nope".into(), size: "9b".into() },
+        false,
+    )
+    .await
+    .unwrap_err();
+    assert!(err.to_string().contains("Model not found"));
+}
+
+#[tokio::test]
+async fn test_s11b_run_setrealname_matrix() {
+    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let th = s11b_temp_home_env();
+    s11b_write_cfg(
+        &th.home,
+        serde_json::json!({"model_list": [{"model": "x/opaque", "model_name": "opaque"}]}),
+    );
+    super::run(
+        super::ModelAction::SetRealName {
+            name: "opaque".into(),
+            real_name: "Qwen3-30B-A3B".into(),
+        },
+        false,
+    )
+    .await
+    .unwrap();
+    assert_eq!(s11b_read_cfg(&th.home)["model_list"][0]["real_name"], "Qwen3-30B-A3B");
+    let err = super::run(
+        super::ModelAction::SetRealName { name: "nope".into(), real_name: "X".into() },
+        false,
+    )
+    .await
+    .unwrap_err();
+    assert!(err.to_string().contains("Model not found"));
+}
+
+#[tokio::test]
+async fn test_s11b_run_probe_no_config_bails() {
+    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let _th = s11b_temp_home_env();
+    // cfg-missing bail 在 block_in_place 之前 → current_thread runtime 可跑。
+    // 真 LLM 探针属结构性豁免（7 次真实模型调用）。
+    let err = super::run(super::ModelAction::Probe { name: "glm-4.7".into() }, false)
+        .await
+        .unwrap_err();
+    assert!(err.to_string().contains("Configuration not found"));
+}
+
+#[tokio::test]
+async fn test_s11b_run_catalog_update_no_config_bails() {
+    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let _th = s11b_temp_home_env();
+    // cfg-missing bail；真网络拉取 models.dev 属结构性豁免。
+    let err = super::run(super::ModelAction::CatalogUpdate, false).await.unwrap_err();
+    assert!(err.to_string().contains("Configuration not found"));
+}
+
+#[test]
+fn test_s11b_format_probe_report_direct() {
+    use nemesis_agent::probe::{ProbeReport, ProbeScore};
+    use nemesis_types::capability::ModelTier;
+    let report = ProbeReport {
+        format_score: 0.85,
+        selection_score: 0.71,
+        schema_score: 0.92,
+        tier: ModelTier::Normal,
+        per_task: vec![
+            (
+                "exec".to_string(),
+                ProbeScore { format: 1.0, selection: 0.0, schema: 1.0 },
+            ),
+            (
+                "grep".to_string(),
+                ProbeScore { format: 0.5, selection: 1.0, schema: 0.5 },
+            ),
+        ],
+    };
+    let s = super::format_probe_report("glm-4.7", &report);
+    assert!(s.contains("能力探针报告: glm-4.7"));
+    assert!(s.contains("format=0.85"), "总分保留两位小数：{s}");
+    assert!(s.contains("selection=0.71"));
+    assert!(s.contains("schema=0.92"));
+    assert!(s.contains("exec"), "每任务得分行：{s}");
+    assert!(s.contains("grep"));
+    assert!(s.contains("tier=normal"), "tier 结论行：{s}");
+    // 空任务表也能格式化
+    let empty = ProbeReport {
+        format_score: 0.0,
+        selection_score: 0.0,
+        schema_score: 0.0,
+        tier: ModelTier::Mini,
+        per_task: vec![],
+    };
+    let s2 = super::format_probe_report("m", &empty);
+    assert!(s2.contains("tier=mini"));
+}

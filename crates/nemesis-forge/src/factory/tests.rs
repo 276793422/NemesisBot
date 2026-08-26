@@ -102,3 +102,157 @@ fn test_evaluate_artifact() {
         eval.quality_score
     );
 }
+
+struct ErrorLLMCaller;
+
+#[async_trait]
+impl LLMCaller for ErrorLLMCaller {
+    async fn chat(
+        &self,
+        _system_prompt: &str,
+        _user_prompt: &str,
+        _max_tokens: Option<i64>,
+    ) -> Result<String, String> {
+        Err("LLM provider unavailable".to_string())
+    }
+}
+
+#[tokio::test]
+async fn test_create_skill_llm_error_falls_back_to_template() {
+    let factory = Factory::with_llm(Box::new(ErrorLLMCaller));
+    let experiences = vec![make_collected("file_read", "read a.txt", true)];
+
+    let artifact = factory.create_skill("fallback-skill", &experiences).await;
+    assert_eq!(artifact.kind, ArtifactKind::Skill);
+    // Template fallback content mentions the skill name and tools.
+    assert!(artifact.content.contains("fallback-skill"));
+    assert!(artifact.content.contains("file_read"));
+    assert!(!artifact.tool_signature.is_empty());
+}
+
+#[tokio::test]
+async fn test_create_script_llm_error_falls_back_to_template() {
+    let factory = Factory::with_llm(Box::new(ErrorLLMCaller));
+    let experiences = vec![make_collected("shell_exec", "run job", true)];
+
+    let artifact = factory.create_script("fallback-script", &experiences).await;
+    assert_eq!(artifact.kind, ArtifactKind::Script);
+    // Template fallback starts with a bash shebang.
+    assert!(artifact.content.contains("#!/usr/bin/env bash"));
+    assert!(artifact.content.contains("fallback-script"));
+}
+
+#[test]
+fn test_evaluate_artifact_tiny_no_signature() {
+    let factory = Factory::new();
+    let artifact = Artifact {
+        id: "art-tiny".into(),
+        name: "tiny".into(),
+        kind: ArtifactKind::Skill,
+        version: "0.1.0".into(),
+        status: ArtifactStatus::Draft,
+        content: "abc".into(),
+        tool_signature: Vec::new(),
+        created_at: chrono::Local::now().to_rfc3339(),
+        updated_at: chrono::Local::now().to_rfc3339(),
+        usage_count: 0,
+        last_degraded_at: None,
+        success_rate: 0.0,
+        consecutive_observing_rounds: 0,
+    };
+
+    let eval = factory.evaluate_artifact(&artifact);
+    assert_eq!(eval.quality_score, 0.0);
+    assert!(eval
+        .feedback
+        .iter()
+        .any(|f| f.contains("Content is very short")));
+    assert!(eval.feedback.iter().any(|f| f.contains("No tool signature")));
+    assert!(eval
+        .feedback
+        .iter()
+        .any(|f| f.contains("Missing recommended sections")));
+}
+
+#[test]
+fn test_evaluate_artifact_medium_content_short_warning() {
+    let factory = Factory::new();
+    let artifact = Artifact {
+        id: "art-med".into(),
+        name: "medium".into(),
+        kind: ArtifactKind::Skill,
+        version: "0.1.0".into(),
+        status: ArtifactStatus::Draft,
+        content: "d".repeat(80),
+        tool_signature: vec!["tool_a".into()],
+        created_at: chrono::Local::now().to_rfc3339(),
+        updated_at: chrono::Local::now().to_rfc3339(),
+        usage_count: 0,
+        last_degraded_at: None,
+        success_rate: 0.0,
+        consecutive_observing_rounds: 0,
+    };
+
+    let eval = factory.evaluate_artifact(&artifact);
+    // 0.15 (length) + 0.2 (signature) + 0 sections
+    assert!((eval.quality_score - 0.35).abs() < 1e-9);
+    assert!(eval.feedback.iter().any(|f| f.contains("Content is short")));
+}
+
+#[test]
+fn test_evaluate_artifact_active_status_bonus() {
+    let factory = Factory::new();
+
+    let make = |status| Artifact {
+        id: "art-bonus".into(),
+        name: "bonus".into(),
+        kind: ArtifactKind::Skill,
+        version: "0.1.0".into(),
+        status,
+        // 不含 section 词、长度 ≥200：draft = 0.3(长度)+0.2(签名) = 0.5，
+        // Active +0.1 = 0.6 —— 不触发 clamp(1.0)（原 fixture 含全部 3 个
+        // section，draft=0.95、active 被夹到 1.0，差值断言 0.1 必挂）。
+        content: "x".repeat(250),
+        tool_signature: vec!["tool_a".into()],
+        created_at: chrono::Local::now().to_rfc3339(),
+        updated_at: chrono::Local::now().to_rfc3339(),
+        usage_count: 0,
+        last_degraded_at: None,
+        success_rate: 0.0,
+        consecutive_observing_rounds: 0,
+    };
+
+    let draft_eval = factory.evaluate_artifact(&make(ArtifactStatus::Draft));
+    let active_eval = factory.evaluate_artifact(&make(ArtifactStatus::Active));
+    // Non-draft status grants a flat +0.1 bonus.
+    assert!((active_eval.quality_score - draft_eval.quality_score - 0.1).abs() < 1e-9);
+}
+
+#[test]
+fn test_factory_default_is_template_based() {
+    let factory = Factory::default();
+    let experiences = vec![make_collected("tool_x", "input", true)];
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let artifact = rt.block_on(factory.create_skill("default-skill", &experiences));
+    assert_eq!(artifact.name, "default-skill");
+    assert!(!artifact.content.is_empty());
+}
+
+// --- S8 coverage additions (quality-hardening goal 冲刺 S8) ---
+
+#[tokio::test]
+async fn test_s8_create_evaluates_tracing_field_expressions() {
+    // tracing field expressions (experience_count / has_llm) only evaluate
+    // when a subscriber is enabled on this thread; install a quiet one.
+    let _guard = crate::test_support::quiet_trace_guard();
+    let factory = Factory::new();
+    let experiences = vec![make_collected("file_read", "a.txt", true)];
+
+    let skill = factory.create_skill("trace-skill", &experiences).await;
+    assert_eq!(skill.kind, ArtifactKind::Skill);
+    assert!(!skill.content.is_empty());
+
+    let script = factory.create_script("trace-script", &experiences).await;
+    assert_eq!(script.kind, ArtifactKind::Script);
+    assert!(!script.content.is_empty());
+}

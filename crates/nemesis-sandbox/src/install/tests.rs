@@ -56,3 +56,128 @@ fn read_allow_network_defaults_false_when_unset_or_broken() {
     std::fs::write(home.join("config.json"), "not json {").expect("write config");
     assert!(!read_allow_network(&paths), "unparseable config.json → false, not panic");
 }
+
+// ---------------------------------------------------------------------------
+// S6 覆盖率批次（quality-hardening goal 2026-08-25）：
+// wait_for_state / wait_for_installed 的立即命中与超时臂（只读 sc query）、
+// start 的 verify_runtime 前置 bail、stop 的 tolerant 流程（tempdir 缺
+// KmdUtil.exe → spawn 失败被吞，零系统副作用）+ purge、stop_service、
+// start_service / ensure_installed 的前置 bail。
+// 真装驱动/服务/写 HKLM 的深层臂 = 红线结构性不测（见批次报告）。
+// ---------------------------------------------------------------------------
+
+/// 一个肯定不存在的服务名：sc query 1060 → NotFound（跨机器确定性）。
+const MISSING_SVC: &str = "NemesisS6DefinitelyMissing9527";
+
+#[test]
+fn wait_for_state_immediate_hit_and_timeout() {
+    // 立即命中：目标态 == 当前态（垃圾名 → NotFound）→ 不睡直接返回
+    let t0 = std::time::Instant::now();
+    assert_eq!(
+        wait_for_state(MISSING_SVC, ServiceState::NotFound, std::time::Duration::from_secs(5)),
+        ServiceState::NotFound
+    );
+    assert!(t0.elapsed() < std::time::Duration::from_secs(2), "命中态必须立即返回");
+    // 超时臂：目标态永不达成 → 睡满循环后返回当前态
+    let t1 = std::time::Instant::now();
+    assert_eq!(
+        wait_for_state(MISSING_SVC, ServiceState::Running, std::time::Duration::from_millis(400)),
+        ServiceState::NotFound
+    );
+    assert!(t1.elapsed() >= std::time::Duration::from_millis(300), "超时臂必须真等");
+}
+
+#[test]
+fn wait_for_installed_timeout_when_service_missing() {
+    let s = wait_for_installed(MISSING_SVC, std::time::Duration::from_millis(200));
+    assert_eq!(s, ServiceState::NotFound, "不存在 + 超时 → NotFound");
+}
+
+#[cfg(windows)]
+#[test]
+fn wait_for_installed_returns_early_for_real_service() {
+    // Themes 存在于所有桌面 Windows：立即返回非 NotFound（机器依赖，宽容）
+    let s = wait_for_installed("Themes", std::time::Duration::from_secs(5));
+    assert_ne!(s, ServiceState::NotFound);
+}
+
+#[test]
+fn start_bails_on_missing_runtime_before_touching_system() {
+    let _log = crate::test_util::capture_logs();
+    let tmp = tempfile::tempdir().unwrap();
+    let paths = SandboxPaths::new(tmp.path());
+    // 空 tempdir：verify_runtime 先失败——绝不能走到 KmdUtil/注册表
+    let err = start(&paths).unwrap_err();
+    let msg = format!("{err:#}");
+    assert!(msg.contains("runtime files missing"), "{msg}");
+    assert!(msg.contains("sandbox install"), "{msg}");
+}
+
+#[test]
+fn stop_is_tolerant_and_purge_removes_only_our_tempdirs() {
+    let _log = crate::test_util::capture_logs();
+    let tmp = tempfile::tempdir().unwrap();
+    let paths = SandboxPaths::new(tmp.path());
+    // 预置会被 purge 删的三处 + 一个 purge 不该碰的外层文件
+    std::fs::create_dir_all(&paths.runtime_dir).unwrap();
+    std::fs::write(paths.runtime_dir.join("SbieDrv.sys"), b"x").unwrap();
+    std::fs::create_dir_all(&paths.box_root).unwrap();
+    std::fs::write(&paths.ini_path, b"[NemesisBox]").unwrap();
+    let keep = tmp.path().join("keep.txt");
+    std::fs::write(&keep, b"keep").unwrap();
+
+    // tempdir 里没有 KmdUtil.exe → 四个 stop/delete 的 spawn 全部失败并被
+    // tolerant 吞掉（零系统副作用）；sc query 只读
+    stop(&paths, true).expect("tolerant stop 必须成功");
+
+    assert!(!paths.runtime_dir.exists(), "purge 删 runtime");
+    assert!(!paths.box_root.exists(), "purge 删 box root");
+    assert!(!paths.ini_path.exists(), "purge 删 ini");
+    assert!(keep.exists(), "purge 绝不能删 runtime/box/ini 之外的文件");
+}
+
+#[test]
+fn stop_without_purge_keeps_files() {
+    let _log = crate::test_util::capture_logs();
+    let tmp = tempfile::tempdir().unwrap();
+    let paths = SandboxPaths::new(tmp.path());
+    std::fs::create_dir_all(&paths.runtime_dir).unwrap();
+    stop(&paths, false).expect("tolerant stop ok");
+    assert!(paths.runtime_dir.exists(), "无 purge 保留 runtime（可再 start）");
+}
+
+#[test]
+fn stop_service_missing_kmdutil_is_ok() {
+    let _log = crate::test_util::capture_logs();
+    let tmp = tempfile::tempdir().unwrap();
+    let paths = SandboxPaths::new(tmp.path());
+    stop_service(&paths).expect("spawn 失败被 tolerant 吞 → Ok");
+}
+
+#[cfg(windows)]
+#[test]
+fn start_service_consistent_with_current_sbievc_state() {
+    let _log = crate::test_util::capture_logs();
+    let tmp = tempfile::tempdir().unwrap();
+    let paths = SandboxPaths::new(tmp.path());
+    let running = matches!(service_state(USERMODE_SERVICE), ServiceState::Running);
+    let r = start_service(&paths);
+    if running {
+        assert!(r.is_ok(), "SbieSvc 已在跑 → 复用直接 Ok（零副作用）");
+    } else {
+        // tempdir 缺 KmdUtil.exe → spawn Err → context 后 Err
+        let err = r.unwrap_err();
+        assert!(format!("{err:#}").contains("start SbieSvc"));
+    }
+}
+
+#[test]
+fn ensure_installed_bails_on_missing_runtime() {
+    let _log = crate::test_util::capture_logs();
+    let tmp = tempfile::tempdir().unwrap();
+    let paths = SandboxPaths::new(tmp.path());
+    // 空 tempdir → verify_runtime 先失败：绝不进归属门/注册表/KmdUtil
+    let err = ensure_installed(&paths).unwrap_err();
+    let msg = format!("{err:#}");
+    assert!(msg.contains("runtime files missing"), "{msg}");
+}

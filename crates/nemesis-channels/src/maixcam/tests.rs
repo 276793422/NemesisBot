@@ -1,9 +1,14 @@
 use super::*;
 
+/// W4c：测试用 bus sender（BUG #14 修复后构造函数需要）。
+fn w4c_test_bus() -> tokio::sync::broadcast::Sender<InboundMessage> {
+    tokio::sync::broadcast::channel(16).0
+}
+
 #[tokio::test]
 async fn test_maixcam_channel_lifecycle() {
     let config = MaixCamConfig::default();
-    let ch = MaixCamChannel::new(config).unwrap();
+    let ch = MaixCamChannel::new(config, w4c_test_bus()).unwrap();
     assert_eq!(ch.name(), "maixcam");
 
     ch.start().await.unwrap();
@@ -20,14 +25,14 @@ fn test_listen_addr() {
         port: 9999,
         allow_from: Vec::new(),
     };
-    let ch = MaixCamChannel::new(config).unwrap();
+    let ch = MaixCamChannel::new(config, w4c_test_bus()).unwrap();
     assert_eq!(ch.listen_addr(), "0.0.0.0:9999");
 }
 
 #[test]
 fn test_process_person_detected() {
     let config = MaixCamConfig::default();
-    let ch = MaixCamChannel::new(config).unwrap();
+    let ch = MaixCamChannel::new(config, w4c_test_bus()).unwrap();
 
     let mut data = HashMap::new();
     data.insert("class_name".to_string(), serde_json::json!("person"));
@@ -60,7 +65,7 @@ fn test_process_person_detected() {
 #[test]
 fn test_process_heartbeat() {
     let config = MaixCamConfig::default();
-    let ch = MaixCamChannel::new(config).unwrap();
+    let ch = MaixCamChannel::new(config, w4c_test_bus()).unwrap();
 
     let msg = MaixCamMessage {
         msg_type: Some("heartbeat".to_string()),
@@ -84,7 +89,7 @@ fn test_build_command() {
 #[tokio::test]
 async fn test_send_no_clients() {
     let config = MaixCamConfig::default();
-    let ch = MaixCamChannel::new(config).unwrap();
+    let ch = MaixCamChannel::new(config, w4c_test_bus()).unwrap();
     ch.start().await.unwrap();
 
     let msg = OutboundMessage {
@@ -100,7 +105,7 @@ async fn test_send_no_clients() {
 #[tokio::test]
 async fn test_send_with_clients() {
     let config = MaixCamConfig::default();
-    let ch = MaixCamChannel::new(config).unwrap();
+    let ch = MaixCamChannel::new(config, w4c_test_bus()).unwrap();
     ch.start().await.unwrap();
     ch.connect_client();
 
@@ -168,7 +173,7 @@ fn test_build_command_serialization() {
 #[test]
 fn test_process_status_message() {
     let config = MaixCamConfig::default();
-    let ch = MaixCamChannel::new(config).unwrap();
+    let ch = MaixCamChannel::new(config, w4c_test_bus()).unwrap();
 
     let mut data = HashMap::new();
     data.insert("cpu".to_string(), serde_json::json!(45.2));
@@ -193,7 +198,7 @@ fn test_process_status_message() {
 #[test]
 fn test_process_status_message_no_data() {
     let config = MaixCamConfig::default();
-    let ch = MaixCamChannel::new(config).unwrap();
+    let ch = MaixCamChannel::new(config, w4c_test_bus()).unwrap();
 
     let msg = MaixCamMessage {
         msg_type: Some("status".to_string()),
@@ -214,7 +219,7 @@ fn test_process_status_message_no_data() {
 #[test]
 fn test_process_unknown_message_type() {
     let config = MaixCamConfig::default();
-    let ch = MaixCamChannel::new(config).unwrap();
+    let ch = MaixCamChannel::new(config, w4c_test_bus()).unwrap();
 
     let msg = MaixCamMessage {
         msg_type: Some("custom_event".to_string()),
@@ -235,7 +240,7 @@ fn test_process_unknown_message_type() {
 #[test]
 fn test_process_message_no_type() {
     let config = MaixCamConfig::default();
-    let ch = MaixCamChannel::new(config).unwrap();
+    let ch = MaixCamChannel::new(config, w4c_test_bus()).unwrap();
 
     let msg = MaixCamMessage {
         msg_type: None,
@@ -256,7 +261,7 @@ fn test_process_message_no_type() {
 #[test]
 fn test_client_count_tracking() {
     let config = MaixCamConfig::default();
-    let ch = MaixCamChannel::new(config).unwrap();
+    let ch = MaixCamChannel::new(config, w4c_test_bus()).unwrap();
 
     assert_eq!(ch.client_count(), 0);
 
@@ -278,7 +283,7 @@ fn test_client_count_tracking() {
 #[test]
 fn test_person_detected_without_data() {
     let config = MaixCamConfig::default();
-    let ch = MaixCamChannel::new(config).unwrap();
+    let ch = MaixCamChannel::new(config, w4c_test_bus()).unwrap();
 
     let msg = MaixCamMessage {
         msg_type: Some("person_detected".to_string()),
@@ -328,7 +333,7 @@ fn test_deserialize_message_with_tips() {
 #[test]
 fn test_drain_outbound_empty() {
     let config = MaixCamConfig::default();
-    let ch = MaixCamChannel::new(config).unwrap();
+    let ch = MaixCamChannel::new(config, w4c_test_bus()).unwrap();
     let outbound = ch.drain_outbound();
     assert!(outbound.is_empty());
 }
@@ -338,7 +343,7 @@ fn test_drain_outbound_empty() {
 #[tokio::test]
 async fn test_send_not_running() {
     let config = MaixCamConfig::default();
-    let ch = MaixCamChannel::new(config).unwrap();
+    let ch = MaixCamChannel::new(config, w4c_test_bus()).unwrap();
     // Not started
     let msg = OutboundMessage {
         channel: "maixcam".to_string(),
@@ -355,7 +360,7 @@ async fn test_send_not_running() {
 #[tokio::test]
 async fn test_stop_clears_state() {
     let config = MaixCamConfig::default();
-    let ch = MaixCamChannel::new(config).unwrap();
+    let ch = MaixCamChannel::new(config, w4c_test_bus()).unwrap();
     ch.start().await.unwrap();
     ch.connect_client();
     assert_eq!(ch.client_count(), 1);
@@ -368,7 +373,7 @@ async fn test_stop_clears_state() {
 #[test]
 fn test_process_message_with_tips() {
     let config = MaixCamConfig::default();
-    let ch = MaixCamChannel::new(config).unwrap();
+    let ch = MaixCamChannel::new(config, w4c_test_bus()).unwrap();
 
     let mut data = HashMap::new();
     data.insert("class_name".to_string(), serde_json::json!("person"));
@@ -394,7 +399,7 @@ fn test_process_message_with_tips() {
 #[test]
 fn test_process_message_with_coordinates() {
     let config = MaixCamConfig::default();
-    let ch = MaixCamChannel::new(config).unwrap();
+    let ch = MaixCamChannel::new(config, w4c_test_bus()).unwrap();
 
     let mut data = HashMap::new();
     data.insert("class_name".to_string(), serde_json::json!("person"));
@@ -429,7 +434,7 @@ fn test_process_message_with_coordinates() {
 #[tokio::test]
 async fn test_start_stop_multiple_cycles() {
     let config = MaixCamConfig::default();
-    let ch = MaixCamChannel::new(config).unwrap();
+    let ch = MaixCamChannel::new(config, w4c_test_bus()).unwrap();
     for _ in 0..3 {
         ch.start().await.unwrap();
         assert!(*ch.running.read());
@@ -449,7 +454,7 @@ fn test_deserialize_status_with_data() {
 #[tokio::test]
 async fn test_send_queues_when_no_writers_but_has_count() {
     let config = MaixCamConfig::default();
-    let ch = MaixCamChannel::new(config).unwrap();
+    let ch = MaixCamChannel::new(config, w4c_test_bus()).unwrap();
     ch.start().await.unwrap();
     // Manually set client count but don't add writers
     *ch.client_count.write() = 1;
@@ -482,7 +487,7 @@ fn test_build_command_serialization_roundtrip() {
 #[tokio::test]
 async fn test_send_when_not_started() {
     let config = MaixCamConfig::default();
-    let ch = MaixCamChannel::new(config).unwrap();
+    let ch = MaixCamChannel::new(config, w4c_test_bus()).unwrap();
     // Not started
     let msg = OutboundMessage {
         channel: "maixcam".to_string(),
@@ -499,7 +504,7 @@ async fn test_send_when_not_started() {
 #[test]
 fn test_disconnect_client_decrements() {
     let config = MaixCamConfig::default();
-    let ch = MaixCamChannel::new(config).unwrap();
+    let ch = MaixCamChannel::new(config, w4c_test_bus()).unwrap();
     ch.connect_client();
     ch.connect_client();
     assert_eq!(ch.client_count(), 2);
@@ -512,7 +517,7 @@ fn test_disconnect_client_decrements() {
 #[test]
 fn test_disconnect_client_never_goes_negative() {
     let config = MaixCamConfig::default();
-    let ch = MaixCamChannel::new(config).unwrap();
+    let ch = MaixCamChannel::new(config, w4c_test_bus()).unwrap();
     // Disconnect without connect
     ch.disconnect_client();
     assert_eq!(ch.client_count(), 0);
@@ -521,7 +526,7 @@ fn test_disconnect_client_never_goes_negative() {
 #[test]
 fn test_drain_outbound_when_empty() {
     let config = MaixCamConfig::default();
-    let ch = MaixCamChannel::new(config).unwrap();
+    let ch = MaixCamChannel::new(config, w4c_test_bus()).unwrap();
     let drained = ch.drain_outbound();
     assert!(drained.is_empty());
 }
@@ -529,7 +534,7 @@ fn test_drain_outbound_when_empty() {
 #[test]
 fn test_drain_outbound_multiple() {
     let config = MaixCamConfig::default();
-    let ch = MaixCamChannel::new(config).unwrap();
+    let ch = MaixCamChannel::new(config, w4c_test_bus()).unwrap();
     ch.outbound_queue.write().push(OutboundMessage {
         channel: "maixcam".to_string(),
         chat_id: "c1".to_string(),
@@ -553,7 +558,7 @@ fn test_drain_outbound_multiple() {
 #[test]
 fn test_process_person_detected_with_timestamp() {
     let config = MaixCamConfig::default();
-    let ch = MaixCamChannel::new(config).unwrap();
+    let ch = MaixCamChannel::new(config, w4c_test_bus()).unwrap();
 
     let mut data = HashMap::new();
     data.insert("class_name".to_string(), serde_json::json!("vehicle"));
@@ -592,7 +597,7 @@ fn test_process_person_detected_with_timestamp() {
 #[test]
 fn test_process_person_detected_defaults() {
     let config = MaixCamConfig::default();
-    let ch = MaixCamChannel::new(config).unwrap();
+    let ch = MaixCamChannel::new(config, w4c_test_bus()).unwrap();
 
     let msg = MaixCamMessage {
         msg_type: Some("person_detected".to_string()),
@@ -636,7 +641,7 @@ fn test_deserialize_minimal_message() {
 #[tokio::test]
 async fn test_stop_clears_writers() {
     let config = MaixCamConfig::default();
-    let ch = MaixCamChannel::new(config).unwrap();
+    let ch = MaixCamChannel::new(config, w4c_test_bus()).unwrap();
     ch.start().await.unwrap();
     assert!(*ch.running.read());
     ch.stop().await.unwrap();
@@ -652,14 +657,14 @@ fn test_listen_addr_custom() {
         port: 7777,
         allow_from: Vec::new(),
     };
-    let ch = MaixCamChannel::new(config).unwrap();
+    let ch = MaixCamChannel::new(config, w4c_test_bus()).unwrap();
     assert_eq!(ch.listen_addr(), "127.0.0.1:7777");
 }
 
 #[tokio::test]
 async fn test_send_no_clients_returns_error() {
     let config = MaixCamConfig::default();
-    let ch = MaixCamChannel::new(config).unwrap();
+    let ch = MaixCamChannel::new(config, w4c_test_bus()).unwrap();
     ch.start().await.unwrap();
     // client_count = 0, client_writers empty -> should error
     let msg = OutboundMessage {
@@ -678,7 +683,7 @@ async fn test_send_no_clients_returns_error() {
 #[test]
 fn test_process_message_person_detected_no_data() {
     let config = MaixCamConfig::default();
-    let ch = MaixCamChannel::new(config).unwrap();
+    let ch = MaixCamChannel::new(config, w4c_test_bus()).unwrap();
     let msg = MaixCamMessage {
         msg_type: Some("person_detected".to_string()),
         tips: None,
@@ -698,7 +703,7 @@ fn test_process_message_person_detected_no_data() {
 #[test]
 fn test_process_message_status_with_data() {
     let config = MaixCamConfig::default();
-    let ch = MaixCamChannel::new(config).unwrap();
+    let ch = MaixCamChannel::new(config, w4c_test_bus()).unwrap();
     let mut data = HashMap::new();
     data.insert("cpu".to_string(), serde_json::json!(80.0));
     let msg = MaixCamMessage {
@@ -719,7 +724,7 @@ fn test_process_message_status_with_data() {
 #[test]
 fn test_process_message_unknown_type() {
     let config = MaixCamConfig::default();
-    let ch = MaixCamChannel::new(config).unwrap();
+    let ch = MaixCamChannel::new(config, w4c_test_bus()).unwrap();
     let msg = MaixCamMessage {
         msg_type: Some("custom_event".to_string()),
         tips: None,
@@ -733,7 +738,7 @@ fn test_process_message_unknown_type() {
 #[test]
 fn test_process_message_empty_type() {
     let config = MaixCamConfig::default();
-    let ch = MaixCamChannel::new(config).unwrap();
+    let ch = MaixCamChannel::new(config, w4c_test_bus()).unwrap();
     let msg = MaixCamMessage {
         msg_type: None,
         tips: None,
@@ -777,7 +782,7 @@ fn test_maixcam_command_serialize() {
 #[tokio::test]
 async fn test_start_stop_clears_writers_and_queue() {
     let config = MaixCamConfig::default();
-    let ch = MaixCamChannel::new(config).unwrap();
+    let ch = MaixCamChannel::new(config, w4c_test_bus()).unwrap();
     ch.start().await.unwrap();
     ch.connect_client();
     ch.outbound_queue.write().push(OutboundMessage {
@@ -830,7 +835,7 @@ fn test_maixcam_event_person_detected_debug() {
 #[test]
 fn test_person_detected_partial_data() {
     let config = MaixCamConfig::default();
-    let ch = MaixCamChannel::new(config).unwrap();
+    let ch = MaixCamChannel::new(config, w4c_test_bus()).unwrap();
 
     // Only class_name, no coordinates
     let mut data = HashMap::new();
@@ -859,7 +864,7 @@ fn test_person_detected_partial_data() {
 #[test]
 fn test_person_detected_with_non_standard_class() {
     let config = MaixCamConfig::default();
-    let ch = MaixCamChannel::new(config).unwrap();
+    let ch = MaixCamChannel::new(config, w4c_test_bus()).unwrap();
 
     let mut data = HashMap::new();
     data.insert("class_name".to_string(), serde_json::json!("vehicle"));
@@ -889,7 +894,7 @@ fn test_person_detected_with_non_standard_class() {
 #[test]
 fn test_status_with_no_data() {
     let config = MaixCamConfig::default();
-    let ch = MaixCamChannel::new(config).unwrap();
+    let ch = MaixCamChannel::new(config, w4c_test_bus()).unwrap();
 
     let msg = MaixCamMessage {
         msg_type: Some("status".to_string()),
@@ -910,7 +915,7 @@ fn test_status_with_no_data() {
 #[tokio::test]
 async fn test_send_with_queued_messages_and_no_writers() {
     let config = MaixCamConfig::default();
-    let ch = MaixCamChannel::new(config).unwrap();
+    let ch = MaixCamChannel::new(config, w4c_test_bus()).unwrap();
     ch.start().await.unwrap();
     // Set client count > 0 but no writers
     *ch.client_count.write() = 2;
@@ -947,7 +952,7 @@ fn test_person_detected_score_as_integer_defaults_to_zero() {
     // score provided as a JSON integer (not float): as_f64() still works for
     // integers, so this confirms integer scores are accepted.
     let config = MaixCamConfig::default();
-    let ch = MaixCamChannel::new(config).unwrap();
+    let ch = MaixCamChannel::new(config, w4c_test_bus()).unwrap();
 
     let mut data = HashMap::new();
     data.insert("score".to_string(), serde_json::json!(1)); // integer
@@ -971,7 +976,7 @@ fn test_person_detected_score_as_integer_defaults_to_zero() {
 fn test_person_detected_score_as_string_defaults_to_zero() {
     // score provided as a string cannot be coerced via as_f64 -> defaults 0.0.
     let config = MaixCamConfig::default();
-    let ch = MaixCamChannel::new(config).unwrap();
+    let ch = MaixCamChannel::new(config, w4c_test_bus()).unwrap();
 
     let mut data = HashMap::new();
     data.insert("score".to_string(), serde_json::json!("0.9")); // string
@@ -1000,7 +1005,7 @@ fn test_person_detected_score_as_string_defaults_to_zero() {
 fn test_person_detected_class_name_as_non_string_defaults_to_person() {
     // class_name provided as a number cannot be coerced via as_str -> "person".
     let config = MaixCamConfig::default();
-    let ch = MaixCamChannel::new(config).unwrap();
+    let ch = MaixCamChannel::new(config, w4c_test_bus()).unwrap();
 
     let mut data = HashMap::new();
     data.insert("class_name".to_string(), serde_json::json!(42)); // number
@@ -1026,7 +1031,7 @@ fn test_person_detected_class_name_as_non_string_defaults_to_person() {
 fn test_person_detected_coordinates_as_strings_default_to_zero() {
     // x/y/w/h as strings -> as_f64 None -> all default to 0.0.
     let config = MaixCamConfig::default();
-    let ch = MaixCamChannel::new(config).unwrap();
+    let ch = MaixCamChannel::new(config, w4c_test_bus()).unwrap();
 
     let mut data = HashMap::new();
     data.insert("class_name".to_string(), serde_json::json!("person"));
@@ -1056,7 +1061,7 @@ fn test_person_detected_coordinates_as_strings_default_to_zero() {
 fn test_person_detected_timestamp_negative_excluded_from_metadata() {
     // timestamp of Some(...) is always inserted; None is always skipped.
     let config = MaixCamConfig::default();
-    let ch = MaixCamChannel::new(config).unwrap();
+    let ch = MaixCamChannel::new(config, w4c_test_bus()).unwrap();
 
     let msg = MaixCamMessage {
         msg_type: Some("person_detected".to_string()),
@@ -1080,7 +1085,7 @@ fn test_person_detected_timestamp_negative_excluded_from_metadata() {
 fn test_person_detected_full_metadata_keys() {
     // When all fields are present, metadata has exactly timestamp/class_name/score.
     let config = MaixCamConfig::default();
-    let ch = MaixCamChannel::new(config).unwrap();
+    let ch = MaixCamChannel::new(config, w4c_test_bus()).unwrap();
 
     let mut data = HashMap::new();
     data.insert("class_name".to_string(), serde_json::json!("cat"));
@@ -1107,7 +1112,7 @@ fn test_person_detected_full_metadata_keys() {
 fn test_status_update_includes_data_debug_repr() {
     // StatusUpdate formats the data HashMap with {:?}; verify the key appears.
     let config = MaixCamConfig::default();
-    let ch = MaixCamChannel::new(config).unwrap();
+    let ch = MaixCamChannel::new(config, w4c_test_bus()).unwrap();
 
     let mut data = HashMap::new();
     data.insert("battery".to_string(), serde_json::json!(87));
@@ -1184,7 +1189,7 @@ fn test_listen_addr_with_ipv6_host() {
         port: 1234,
         allow_from: Vec::new(),
     };
-    let ch = MaixCamChannel::new(config).unwrap();
+    let ch = MaixCamChannel::new(config, w4c_test_bus()).unwrap();
     assert_eq!(ch.listen_addr(), "::1:1234");
 }
 
@@ -1192,7 +1197,7 @@ fn test_listen_addr_with_ipv6_host() {
 fn test_process_message_person_detected_full_content_format() {
     // Verify the full content template (all six fields formatted).
     let config = MaixCamConfig::default();
-    let ch = MaixCamChannel::new(config).unwrap();
+    let ch = MaixCamChannel::new(config, w4c_test_bus()).unwrap();
 
     let mut data = HashMap::new();
     data.insert("class_name".to_string(), serde_json::json!("vehicle"));
@@ -1217,4 +1222,216 @@ fn test_process_message_person_detected_full_content_format() {
         }
         _ => panic!("expected PersonDetected"),
     }
+}
+
+// ===========================================================================
+// W4c 补测（2026-08-25）：BUG #14 回归——TCP 设备行必须发布 InboundMessage 到
+// bus（修复前解析结果直接丢弃）；连接/断开计数；stop 后 accept 循环退出
+// ===========================================================================
+
+#[tokio::test]
+async fn test_w4c_maixcam_tcp_person_detected_publishes_to_bus() {
+    use tokio::io::AsyncWriteExt;
+
+    let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+    let port = listener.local_addr().unwrap().port();
+    drop(listener);
+
+    let (bus, mut rx) = tokio::sync::broadcast::channel::<InboundMessage>(16);
+    let config = MaixCamConfig {
+        host: "127.0.0.1".to_string(),
+        port,
+        allow_from: vec![],
+    };
+    let ch = MaixCamChannel::new(config, bus).unwrap();
+    ch.start().await.unwrap();
+    tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+
+    // 模拟设备：连上后发一行 person_detected JSON
+    let mut dev = tokio::net::TcpStream::connect(("127.0.0.1", port))
+        .await
+        .unwrap();
+    let payload = serde_json::json!({
+        "type": "person_detected",
+        "timestamp": 1724500000.0,
+        "data": {
+            "class_name": "person",
+            "class_id": 0.0,
+            "score": 0.95,
+            "x": 10.0, "y": 20.0, "w": 100.0, "h": 200.0
+        }
+    })
+    .to_string();
+    dev.write_all(format!("{payload}\n").as_bytes()).await.unwrap();
+
+    let inbound = tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv())
+        .await
+        .expect("timed out: device person_detected must publish to the bus")
+        .unwrap();
+    assert_eq!(inbound.channel, "maixcam");
+    assert_eq!(inbound.sender_id, "maixcam");
+    assert_eq!(inbound.chat_id, "default");
+    assert!(inbound.content.contains("Person detected!"), "got: {}", inbound.content);
+    assert!(inbound.content.contains("Class: person"));
+    assert_eq!(inbound.metadata.get("class_name").unwrap(), "person");
+    assert_eq!(inbound.metadata.get("score").unwrap(), "0.95");
+
+    // 连接计数：1 台设备在线
+    assert_eq!(ch.client_count(), 1);
+    drop(dev);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while ch.client_count() != 0 && std::time::Instant::now() < deadline {
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    assert_eq!(ch.client_count(), 0, "client count must drop to 0 after disconnect");
+
+    ch.stop().await.unwrap();
+}
+
+#[tokio::test]
+async fn test_w4c_maixcam_tcp_heartbeat_and_garbage_do_not_publish() {
+    use tokio::io::AsyncWriteExt;
+
+    let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+    let port = listener.local_addr().unwrap().port();
+    drop(listener);
+
+    let (bus, mut rx) = tokio::sync::broadcast::channel::<InboundMessage>(16);
+    let config = MaixCamConfig {
+        host: "127.0.0.1".to_string(),
+        port,
+        allow_from: vec![],
+    };
+    let ch = MaixCamChannel::new(config, bus).unwrap();
+    ch.start().await.unwrap();
+    tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+
+    let mut dev = tokio::net::TcpStream::connect(("127.0.0.1", port))
+        .await
+        .unwrap();
+    // 非法 JSON、心跳、空行：都不允许产生入站消息
+    dev.write_all(b"not-json\n").await.unwrap();
+    dev.write_all(b"{\"type\":\"heartbeat\"}\n").await.unwrap();
+    dev.write_all(b"\n").await.unwrap();
+    tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+
+    let leaked = tokio::time::timeout(std::time::Duration::from_millis(300), rx.recv()).await;
+    assert!(
+        leaked.is_err() || leaked.unwrap().is_err(),
+        "heartbeat/garbage must not publish inbound"
+    );
+
+    ch.stop().await.unwrap();
+}
+
+/// stop() 之后 accept 循环退出：新连接不被 accept（client_count 保持 0）。
+#[tokio::test]
+async fn test_w4c_maixcam_stop_ends_accept_loop() {
+    let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+    let port = listener.local_addr().unwrap().port();
+    drop(listener);
+
+    let (bus, _rx) = tokio::sync::broadcast::channel::<InboundMessage>(16);
+    let config = MaixCamConfig {
+        host: "127.0.0.1".to_string(),
+        port,
+        allow_from: vec![],
+    };
+    let ch = MaixCamChannel::new(config, bus).unwrap();
+    ch.start().await.unwrap();
+    tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+    ch.stop().await.unwrap();
+    tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+
+    // stop 后再连：不会被 accept（连得上 TCP backlog，但 client_count 不涨）
+    let _dev = tokio::net::TcpStream::connect(("127.0.0.1", port)).await;
+    tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+    assert_eq!(ch.client_count(), 0, "accept loop must be dead after stop()");
+    assert!(!ch.is_running());
+}
+
+// ===========================================================================
+// S2 coverage (2026-08-26): bind-failure error arm / reader break after stop /
+// no-receiver publish warn / StatusUpdate + Unknown classify arms (TCP path)
+// ===========================================================================
+
+fn s2_enable_tracing() {
+    let _ = tracing_subscriber::fmt()
+        .with_max_level(tracing::Level::DEBUG)
+        .with_writer(std::io::sink)
+        .try_init();
+}
+
+/// start() with a port already owned by another listener: the spawned accept
+/// task's bind fails and the error arm fires (task returns, no panic).
+#[tokio::test]
+async fn s2_maixcam_bind_failure_logs_error_and_returns() {
+    s2_enable_tracing();
+    // Keep this std listener alive for the whole test so the port stays taken.
+    let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+    let port = listener.local_addr().unwrap().port();
+
+    let (bus, _rx) = tokio::sync::broadcast::channel::<InboundMessage>(16);
+    let config = MaixCamConfig {
+        host: "127.0.0.1".to_string(),
+        port,
+        allow_from: vec![],
+    };
+    let ch = MaixCamChannel::new(config, bus).unwrap();
+    ch.start().await.unwrap();
+
+    // Let the spawned task attempt the (failing) bind.
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    ch.stop().await.unwrap();
+    drop(listener);
+}
+
+/// One device connection driving: person_detected with zero bus receivers
+/// (warn arm), StatusUpdate, Unknown, then stop() + one more line so the
+/// reader loop breaks at the loop top.
+#[tokio::test]
+async fn s2_maixcam_reader_arms_and_break_after_stop() {
+    use tokio::io::AsyncWriteExt;
+
+    s2_enable_tracing();
+    let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+    let port = listener.local_addr().unwrap().port();
+    drop(listener);
+
+    let (bus, rx) = tokio::sync::broadcast::channel::<InboundMessage>(16);
+    drop(rx); // zero receivers: person_detected publish must hit the warn arm
+    let config = MaixCamConfig {
+        host: "127.0.0.1".to_string(),
+        port,
+        allow_from: vec![],
+    };
+    let ch = MaixCamChannel::new(config, bus).unwrap();
+    ch.start().await.unwrap();
+    tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+
+    let mut dev = tokio::net::TcpStream::connect(("127.0.0.1", port))
+        .await
+        .unwrap();
+
+    // 1. person_detected with no receivers -> bus send Err -> warn arm.
+    dev.write_all(b"{\"type\":\"person_detected\",\"data\":{\"score\":0.9}}\n")
+        .await
+        .unwrap();
+    tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+
+    // 2. status -> StatusUpdate arm.
+    dev.write_all(b"{\"type\":\"status\",\"data\":{\"k\":\"v\"}}\n")
+        .await
+        .unwrap();
+    tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+
+    // 3. unknown type (valid JSON) -> Unknown arm.
+    dev.write_all(b"{\"type\":\"whatever\"}\n").await.unwrap();
+    tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+
+    // 4. stop, then one more line: the reader finishes processing and the
+    // loop top sees running=false -> break.
+    ch.stop().await.unwrap();
+    let _ = dev.write_all(b"{\"type\":\"heartbeat\"}\n").await;
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
 }

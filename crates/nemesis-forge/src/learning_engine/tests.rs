@@ -2124,3 +2124,620 @@ fn test_action_to_summary_conversion() {
     assert_eq!(summary.status, "pending");
     assert_eq!(summary.artifact_id, Some("art-1".into()));
 }
+
+// =========================================================================
+// S8 coverage batch (quality-hardening goal 冲刺 S8)
+// =========================================================================
+
+/// A valid skill draft that passes pipeline validation (Stage 3 scores 70
+/// without an LLM -> Active). Mirrors the fc1 mock.
+const S8_VALID_DRAFT: &str = "---\nname: verify-skill\ndescription: A verification skill that does useful agent work\nversion: \"1.0\"\n---\n\n# Verify Skill\n\nFollow these steps to complete the verification task reliably and well.\n";
+
+/// A draft that fails static validation (hardcoded secret).
+const S8_BAD_DRAFT: &str =
+    "---\nname: bad\ndescription: x\napi_key: \"leaksecret123\"\n---\nbad draft that fails\n";
+
+/// Scripted LLM mock: pops queued responses in order; empty queue -> Err.
+struct S8QueueLLM {
+    responses: std::sync::Mutex<Vec<Result<String, String>>>,
+}
+
+impl S8QueueLLM {
+    fn new(responses: Vec<Result<String, String>>) -> Self {
+        Self {
+            responses: std::sync::Mutex::new(responses),
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl crate::reflector_llm::LLMCaller for S8QueueLLM {
+    async fn chat(&self, _s: &str, _u: &str, _m: Option<i64>) -> Result<String, String> {
+        let mut q = self.responses.lock().unwrap();
+        if q.is_empty() {
+            Err("s8 queue exhausted".to_string())
+        } else {
+            q.remove(0)
+        }
+    }
+}
+
+/// Build an engine rooted at `<dir>/forge` with a separate cycle store.
+fn s8_engine(dir: &std::path::Path, config: ForgeConfig) -> (LearningEngine, Arc<Registry>) {
+    std::fs::create_dir_all(dir.join("forge")).unwrap();
+    let registry = Arc::new(Registry::new(RegistryConfig::default()));
+    let engine = LearningEngine::with_forge_dir(
+        config,
+        dir.join("forge"),
+        registry.clone(),
+        CycleStore::from_base(dir.join("cycles")),
+    );
+    (engine, registry)
+}
+
+/// Build a registry artifact with the given kind/status.
+fn s8_artifact(
+    id: &str,
+    kind: nemesis_types::forge::ArtifactKind,
+    status: nemesis_types::forge::ArtifactStatus,
+) -> nemesis_types::forge::Artifact {
+    nemesis_types::forge::Artifact {
+        id: id.to_string(),
+        name: id.to_string(),
+        kind,
+        version: "1.0".to_string(),
+        status,
+        content: String::new(),
+        tool_signature: vec![],
+        created_at: chrono::Local::now().to_rfc3339(),
+        updated_at: chrono::Local::now().to_rfc3339(),
+        usage_count: 0,
+        last_degraded_at: None,
+        success_rate: 0.0,
+        consecutive_observing_rounds: 0,
+    }
+}
+
+/// with_forge_dir tracing field expression (forge_dir display).
+#[test]
+fn test_s8_with_forge_dir_tracing() {
+    let _g = crate::test_support::quiet_trace_guard();
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join("forge")).unwrap();
+    let registry = Arc::new(Registry::new(RegistryConfig::default()));
+    let engine = LearningEngine::with_forge_dir(
+        ForgeConfig::default(),
+        dir.path().join("forge"),
+        registry,
+        CycleStore::from_base(dir.path()),
+    );
+    let _ = engine.get_latest_cycle();
+}
+
+/// generate/refine wrappers called from a non-async context — the
+/// call_llm_sync branch that spins up a temporary runtime.
+#[test]
+fn test_s8_llm_wrappers_without_runtime() {
+    let dir = tempfile::tempdir().unwrap();
+    let (engine, _registry) = s8_engine(dir.path(), ForgeConfig::default());
+
+    struct OkLLM;
+    #[async_trait::async_trait]
+    impl crate::reflector_llm::LLMCaller for OkLLM {
+        async fn chat(&self, _s: &str, _u: &str, _m: Option<i64>) -> Result<String, String> {
+            Ok("ok".to_string())
+        }
+    }
+    let mock = OkLLM;
+    let action = LearningAction::new("create_skill", "high", "s8 description");
+
+    let draft = engine.generate_skill_draft_action(&mock, &action);
+    assert!(draft.is_ok());
+
+    let refined = engine.refine_skill_draft_action(&mock, &action, "prev", "diagnosis");
+    assert_eq!(refined.unwrap(), "ok");
+}
+
+/// run_cycle with max_auto_creates=0 (default limit 3), four distinct
+/// tool_chain patterns: the first three register as drafts (no pipeline),
+/// the fourth is skipped at the auto-create limit.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_s8_run_cycle_auto_limit_and_no_pipeline_drafts() {
+    use std::sync::atomic::{AtomicU8, Ordering};
+    let dir = tempfile::tempdir().unwrap();
+    let mut config = ForgeConfig::default();
+    config.learning.max_auto_creates = 0; // -> default limit 3
+    config.learning.min_pattern_frequency = 0; // -> default 3
+    config.learning.high_conf_threshold = 0.0; // -> default 0.8
+    let (engine, registry) = s8_engine(dir.path(), config);
+
+    // LLM always returns a usable draft; no pipeline -> Draft registration.
+    struct DraftLLM {
+        call: AtomicU8,
+    }
+    #[async_trait::async_trait]
+    impl crate::reflector_llm::LLMCaller for DraftLLM {
+        async fn chat(&self, _s: &str, _u: &str, _m: Option<i64>) -> Result<String, String> {
+            let _ = self.call.fetch_add(1, Ordering::SeqCst);
+            Ok(S8_VALID_DRAFT.to_string())
+        }
+    }
+    engine.set_provider(Arc::new(DraftLLM {
+        call: AtomicU8::new(0),
+    }));
+
+    // 4 distinct tools x 12 successes -> 4 create_skill actions, limit 3.
+    let mut exps = Vec::new();
+    for tool in ["alpha", "beta", "gamma", "delta"] {
+        for _ in 0..12 {
+            exps.push(make_collected(tool, true));
+        }
+    }
+
+    let _g = crate::test_support::quiet_trace_guard();
+    let cycle = engine.run_cycle(&exps).await;
+
+    assert_eq!(cycle.status, nemesis_types::forge::CycleStatus::Completed);
+    let skills = registry
+        .list(None, None)
+        .iter()
+        .filter(|a| matches!(a.kind, nemesis_types::forge::ArtifactKind::Skill))
+        .count();
+    assert_eq!(skills, 3, "auto-create limit of 3 should cap registrations");
+}
+
+/// run_cycle with a cycle store whose base path is a regular file — the
+/// persist step errs (warn branch).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_s8_run_cycle_persist_err() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join("forge")).unwrap();
+    let registry = Arc::new(Registry::new(RegistryConfig::default()));
+    // Cycle-store base is a FILE -> append fails.
+    let file_base = dir.path().join("cycles-as-file");
+    std::fs::write(&file_base, "not a dir").unwrap();
+    let engine = LearningEngine::with_forge_dir(
+        ForgeConfig::default(),
+        dir.path().join("forge"),
+        registry,
+        CycleStore::from_base(file_base),
+    );
+
+    let _g = crate::test_support::quiet_trace_guard();
+    let cycle = engine.run_cycle(&[]).await;
+    assert_eq!(cycle.status, nemesis_types::forge::CycleStatus::Completed);
+}
+
+/// execute_create_skill with no draft name returns immediately.
+#[test]
+fn test_s8_execute_create_skill_no_draft_name() {
+    let dir = tempfile::tempdir().unwrap();
+    let (engine, _registry) = s8_engine(dir.path(), ForgeConfig::default());
+    let action = LearningAction::new("create_skill", "high", "no name");
+    engine.execute_create_skill(&action); // early return, no panic
+}
+
+/// execute_create_skill refine failure: first draft fails validation, the
+/// refine LLM call errors -> abort (no deploy).
+#[test]
+fn test_s8_execute_create_skill_refine_err() {
+    let dir = tempfile::tempdir().unwrap();
+    let (engine, registry) = s8_engine(dir.path(), ForgeConfig::default());
+    engine.set_pipeline(Arc::new(crate::pipeline::Pipeline::new(
+        ForgeConfig::default(),
+        registry.clone(),
+    )));
+    engine.set_provider(Arc::new(S8QueueLLM::new(vec![
+        Ok(S8_BAD_DRAFT.to_string()), // fails static validation
+        Err("refine boom".to_string()), // refinement errors
+    ])));
+
+    let _g = crate::test_support::quiet_trace_guard();
+    let mut action = LearningAction::new("create_skill", "high", "s8 chain");
+    action.draft_name = Some("s8-refine-err".into());
+    engine.execute_create_skill(&action);
+
+    assert!(
+        registry.list(None, None).is_empty(),
+        "no artifact should be deployed when refinement fails"
+    );
+}
+
+/// execute_create_skill at the filesystem root: forge_dir.parent() is None —
+/// the workspace-copy step is skipped but deployment still registers.
+#[test]
+fn test_s8_execute_create_skill_root_forge_dir() {
+    let dir = tempfile::tempdir().unwrap();
+    let registry = Arc::new(Registry::new(RegistryConfig::default()));
+    // forge_dir = filesystem root: parent() -> None.
+    let engine = LearningEngine::with_forge_dir(
+        ForgeConfig::default(),
+        std::path::PathBuf::from("/"),
+        registry.clone(),
+        CycleStore::from_base(dir.path().join("cycles")),
+    );
+    engine.set_pipeline(Arc::new(crate::pipeline::Pipeline::new(
+        ForgeConfig::default(),
+        registry.clone(),
+    )));
+    engine.set_provider(Arc::new(S8QueueLLM::new(vec![Ok(
+        S8_VALID_DRAFT.to_string(),
+    )])));
+
+    let mut action = LearningAction::new("create_skill", "high", "s8 chain");
+    action.draft_name = Some("s8-root-skill".into());
+    engine.execute_create_skill(&action);
+
+    assert!(
+        registry
+            .list(None, None)
+            .iter()
+            .any(|a| a.name == "s8-root-skill"),
+        "skill should still register at the root forge dir"
+    );
+}
+
+/// execute_suggest_prompt failure paths: prompts dir being a file, and the
+/// target suggestion path being a directory.
+#[test]
+fn test_s8_suggest_prompt_write_failures() {
+    // Case 1: workspace/prompts is a regular file -> create_dir_all errs.
+    let dir1 = tempfile::tempdir().unwrap();
+    {
+        let (engine, _r) = s8_engine(dir1.path(), ForgeConfig::default());
+        std::fs::write(dir1.path().join("prompts"), "not a dir").unwrap();
+        let mut action = LearningAction::new("suggest_prompt", "medium", "d");
+        action.draft_name = Some("s8-prompt-a".into());
+        engine.execute_suggest_prompt_for_test(&mut action);
+        assert_eq!(action.status, "failed");
+        assert!(action.error_msg.unwrap().contains("prompts dir"));
+    }
+
+    // Case 2: target file path already exists as a DIRECTORY -> write errs.
+    let dir2 = tempfile::tempdir().unwrap();
+    {
+        let (engine, _r) = s8_engine(dir2.path(), ForgeConfig::default());
+        let prompts = dir2.path().join("prompts");
+        std::fs::create_dir_all(prompts.join("blocked_suggestion.md")).unwrap();
+        let mut action = LearningAction::new("suggest_prompt", "medium", "d");
+        action.draft_name = Some("blocked".into());
+        engine.execute_suggest_prompt_for_test(&mut action);
+        assert_eq!(action.status, "failed");
+        assert!(action.error_msg.unwrap().contains("Failed to write suggestion"));
+    }
+}
+
+/// check_suggestion_adoption: retires *_suggestion.md only when a deployed
+/// skill exists; read errors are swallowed.
+#[test]
+fn test_s8_check_suggestion_adoption() {
+    // Case 1: deployed skill + suggestion files -> removal happens.
+    let dir1 = tempfile::tempdir().unwrap();
+    {
+        let (engine, registry) = s8_engine(dir1.path(), ForgeConfig::default());
+        registry.add(s8_artifact(
+            "s8-deployed",
+            nemesis_types::forge::ArtifactKind::Skill,
+            nemesis_types::forge::ArtifactStatus::Active,
+        ));
+        let prompts = dir1.path().join("prompts");
+        std::fs::create_dir_all(&prompts).unwrap();
+        std::fs::write(prompts.join("old_suggestion.md"), "x").unwrap();
+        std::fs::write(prompts.join("keep.txt"), "y").unwrap();
+
+        engine.check_suggestion_adoption_for_test(&[]);
+        assert!(!prompts.join("old_suggestion.md").exists());
+        assert!(prompts.join("keep.txt").exists());
+    }
+
+    // Case 2: prompts dir is a regular file -> read_dir errs -> early return.
+    let dir2 = tempfile::tempdir().unwrap();
+    {
+        let (engine, registry) = s8_engine(dir2.path(), ForgeConfig::default());
+        registry.add(s8_artifact(
+            "s8-deployed2",
+            nemesis_types::forge::ArtifactKind::Skill,
+            nemesis_types::forge::ArtifactStatus::Active,
+        ));
+        std::fs::write(dir2.path().join("prompts"), "not a dir").unwrap();
+        engine.check_suggestion_adoption_for_test(&[]); // no panic
+    }
+}
+
+/// adjust_confidence_from_outcomes verdict handling: empty artifact id,
+/// negative delta, and unknown verdict (no adjustment).
+#[test]
+fn test_s8_adjust_confidence_verdicts() {
+    let dir = tempfile::tempdir().unwrap();
+    let (engine, registry) = s8_engine(dir.path(), ForgeConfig::default());
+    registry.add(s8_artifact(
+        "s8-conf",
+        nemesis_types::forge::ArtifactKind::Skill,
+        nemesis_types::forge::ArtifactStatus::Active,
+    ));
+
+    let outcomes = vec![
+        crate::monitor::EvaluationResult {
+            artifact_id: String::new(), // skipped (no artifact)
+            verdict: "positive".into(),
+            improvement_score: 1.0,
+            sample_size: 1,
+        },
+        crate::monitor::EvaluationResult {
+            artifact_id: "s8-conf".into(),
+            verdict: "negative".into(), // -0.2
+            improvement_score: -1.0,
+            sample_size: 2,
+        },
+        crate::monitor::EvaluationResult {
+            artifact_id: "s8-conf".into(),
+            verdict: "neutral".into(), // no delta
+            improvement_score: 0.0,
+            sample_size: 3,
+        },
+    ];
+    engine.adjust_confidence_for_test(&outcomes);
+
+    let art = registry
+        .list(None, None)
+        .into_iter()
+        .find(|a| a.id == "s8-conf")
+        .expect("artifact present");
+    // Initial 0.0, negative delta -0.2 clamps at the 0.0 floor; the neutral
+    // verdict and the empty artifact id must not adjust anything.
+    assert!(
+        (art.success_rate - 0.0).abs() < 1e-9,
+        "negative delta from 0.0 clamps to 0.0: got {}",
+        art.success_rate
+    );
+}
+
+/// adjust_confidence negative delta from a non-zero base: 0.5 - 0.2 = 0.3.
+#[test]
+fn test_s8_adjust_confidence_negative_from_base() {
+    let dir = tempfile::tempdir().unwrap();
+    let (engine, registry) = s8_engine(dir.path(), ForgeConfig::default());
+    registry.add(s8_artifact(
+        "s8-conf2",
+        nemesis_types::forge::ArtifactKind::Skill,
+        nemesis_types::forge::ArtifactStatus::Active,
+    ));
+    registry.update("s8-conf2", |a| a.success_rate = 0.5);
+
+    engine.adjust_confidence_for_test(&[crate::monitor::EvaluationResult {
+        artifact_id: "s8-conf2".into(),
+        verdict: "negative".into(),
+        improvement_score: -1.0,
+        sample_size: 2,
+    }]);
+
+    let art = registry
+        .list(None, None)
+        .into_iter()
+        .find(|a| a.id == "s8-conf2")
+        .unwrap();
+    assert!(
+        (art.success_rate - 0.3).abs() < 1e-9,
+        "0.5 - 0.2 = 0.3: got {}",
+        art.success_rate
+    );
+}
+
+/// disable_degraded_skills_impl branch matrix: non-skill artifact, non-
+/// degraded skill, degraded skill without file, rename failure.
+#[test]
+fn test_s8_disable_degraded_variants() {
+    use nemesis_types::forge::{ArtifactKind, ArtifactStatus};
+    let dir = tempfile::tempdir().unwrap();
+    let (engine, registry) = s8_engine(dir.path(), ForgeConfig::default());
+
+    // Non-Skill degraded artifact -> skipped by kind.
+    registry.add(s8_artifact("s8-script", ArtifactKind::Script, ArtifactStatus::Degraded));
+    // Skill but not degraded -> skipped by status.
+    registry.add(s8_artifact("s8-active-skill", ArtifactKind::Skill, ArtifactStatus::Active));
+    // Degraded skill with no workspace file -> exists() false branch.
+    registry.add(s8_artifact("s8-no-file", ArtifactKind::Skill, ArtifactStatus::Degraded));
+    // Degraded skill whose SKILL.md exists but rename fails (target is a dir).
+    registry.add(s8_artifact("s8-blocked", ArtifactKind::Skill, ArtifactStatus::Degraded));
+    let blocked_dir = dir.path().join("skills").join("s8-blocked-forge");
+    std::fs::create_dir_all(blocked_dir.join("SKILL.md.disabled")).unwrap();
+    std::fs::write(blocked_dir.join("SKILL.md"), "content").unwrap();
+
+    let _g = crate::test_support::quiet_trace_guard();
+    engine.disable_degraded_skills_impl(); // no panic
+
+    // The blocked skill file is still in place (rename failed).
+    assert!(blocked_dir.join("SKILL.md").exists());
+}
+
+/// get_latest_cycle_from_store: Ok path (empty store -> None) and Err path
+/// (store base is a file -> fallback to in-memory cache).
+#[tokio::test]
+async fn test_s8_get_latest_cycle_from_store() {
+    // Ok path: valid empty store.
+    let dir1 = tempfile::tempdir().unwrap();
+    {
+        let registry = Arc::new(Registry::new(RegistryConfig::default()));
+        let engine = LearningEngine::new(
+            ForgeConfig::default(),
+            registry,
+            CycleStore::from_base(dir1.path().join("cycles")),
+        );
+        assert!(engine.get_latest_cycle_from_store().await.is_none());
+    }
+
+    // Err path: store base is a regular file -> fallback (None here).
+    let dir2 = tempfile::tempdir().unwrap();
+    {
+        let file_base = dir2.path().join("cycles-as-file");
+        std::fs::write(&file_base, "not a dir").unwrap();
+        let registry = Arc::new(Registry::new(RegistryConfig::default()));
+        let engine = LearningEngine::new(
+            ForgeConfig::default(),
+            registry,
+            CycleStore::from_base(file_base),
+        );
+        let _g = crate::test_support::quiet_trace_guard();
+        assert!(engine.get_latest_cycle_from_store().await.is_none());
+    }
+}
+
+/// execute_create_skill_action (public wrapper) variants with max_auto_creates=0
+/// (default refine budget): happy deploy, refine-error failure, and the
+/// no-pipeline draft registration.
+#[test]
+fn test_s8_execute_create_skill_action_variants() {
+    // Happy path: valid draft deploys through the pipeline.
+    {
+        let dir = tempfile::tempdir().unwrap();
+        let mut config = ForgeConfig::default();
+        config.learning.max_auto_creates = 0; // -> default 3 refine rounds
+        let (engine, registry) = s8_engine(dir.path(), config);
+        engine.set_pipeline(Arc::new(crate::pipeline::Pipeline::new(
+            ForgeConfig::default(),
+            registry.clone(),
+        )));
+        engine.set_provider(Arc::new(S8QueueLLM::new(vec![Ok(
+            S8_VALID_DRAFT.to_string(),
+        )])));
+        let mut action = LearningAction::new("create_skill", "high", "s8 chain");
+        action.draft_name = Some("s8-pub-happy".into());
+        let result = engine.execute_create_skill_action(&action);
+        assert_eq!(result.status, "executed");
+        assert!(result.artifact_id.is_some());
+    }
+
+    // Refine error: first draft fails, refine call errors -> failed.
+    {
+        let dir = tempfile::tempdir().unwrap();
+        let (engine, registry) = s8_engine(dir.path(), ForgeConfig::default());
+        engine.set_pipeline(Arc::new(crate::pipeline::Pipeline::new(
+            ForgeConfig::default(),
+            registry.clone(),
+        )));
+        engine.set_provider(Arc::new(S8QueueLLM::new(vec![
+            Ok(S8_BAD_DRAFT.to_string()),
+            Err("refine boom".to_string()),
+        ])));
+        let mut action = LearningAction::new("create_skill", "high", "s8 chain");
+        action.draft_name = Some("s8-pub-refine-err".into());
+        let result = engine.execute_create_skill_action(&action);
+        assert_eq!(result.status, "failed");
+        assert!(result.error_msg.unwrap().contains("refinement"));
+    }
+
+    // Refine then deploy: bad first draft, valid refined draft.
+    {
+        let dir = tempfile::tempdir().unwrap();
+        let (engine, registry) = s8_engine(dir.path(), ForgeConfig::default());
+        engine.set_pipeline(Arc::new(crate::pipeline::Pipeline::new(
+            ForgeConfig::default(),
+            registry.clone(),
+        )));
+        engine.set_provider(Arc::new(S8QueueLLM::new(vec![
+            Ok(S8_BAD_DRAFT.to_string()),
+            Ok(S8_VALID_DRAFT.to_string()),
+        ])));
+        let mut action = LearningAction::new("create_skill", "high", "s8 chain");
+        action.draft_name = Some("s8-pub-refined".into());
+        let result = engine.execute_create_skill_action(&action);
+        assert_eq!(result.status, "executed");
+    }
+
+    // No pipeline: registers as Draft and still reports executed.
+    {
+        let dir = tempfile::tempdir().unwrap();
+        let (engine, registry) = s8_engine(dir.path(), ForgeConfig::default());
+        engine.set_provider(Arc::new(S8QueueLLM::new(vec![Ok(
+            S8_VALID_DRAFT.to_string(),
+        )])));
+        let mut action = LearningAction::new("create_skill", "high", "s8 chain");
+        action.draft_name = Some("s8-pub-nopipe".into());
+        let result = engine.execute_create_skill_action(&action);
+        assert_eq!(result.status, "executed");
+        assert!(
+            registry
+                .list(None, None)
+                .iter()
+                .any(|a| a.name == "s8-pub-nopipe"
+                    && a.status == nemesis_types::forge::ArtifactStatus::Draft),
+            "no-pipeline path should register a Draft artifact"
+        );
+    }
+}
+
+/// generate_skill_name with a chain whose compressed form exceeds 50 chars —
+/// the truncation branch (the existing truncation test's input compresses to
+/// 39 chars, so the branch never ran).
+#[test]
+fn test_s8_generate_skill_name_truncates_over_50() {
+    let long_tool = "a".repeat(80);
+    let name = generate_skill_name(&long_tool);
+    assert!(name.len() <= 50 + "-workflow".len());
+    assert!(name.ends_with("-workflow"));
+}
+
+/// build_diagnosis with all three stages present: stage 1 passed (no
+/// section), stage 2 failed (errors listed), stage 3 with dimensions.
+#[test]
+fn test_s8_build_diagnosis_full() {
+    use crate::pipeline::{
+        ArtifactValidation, FunctionalValidationResult, QualityValidationResult,
+        StaticValidationResult, ValidationStage,
+    };
+    let stage_ok = ValidationStage {
+        passed: true,
+        timestamp: String::new(),
+        errors: vec![],
+    };
+    let stage_fail = ValidationStage {
+        passed: false,
+        timestamp: String::new(),
+        errors: vec!["missing steps".to_string()],
+    };
+    let mut dims = std::collections::HashMap::new();
+    dims.insert("clarity".to_string(), 40u32);
+    let validation = ArtifactValidation {
+        stage1_static: Some(StaticValidationResult {
+            stage: stage_ok,
+            warnings: vec![],
+        }),
+        stage2_functional: Some(FunctionalValidationResult {
+            stage: stage_fail,
+            tests_run: 3,
+            tests_passed: 1,
+        }),
+        stage3_quality: Some(QualityValidationResult {
+            stage: ValidationStage {
+                passed: true,
+                timestamp: String::new(),
+                errors: vec![],
+            },
+            score: 40,
+            notes: "weak".to_string(),
+            dimensions: dims,
+        }),
+        last_validated: String::new(),
+    };
+
+    let diagnosis = build_diagnosis_public(&validation);
+    assert!(diagnosis.contains("Stage 2 (Functional) FAILED"));
+    assert!(diagnosis.contains("missing steps"));
+    assert!(diagnosis.contains("Stage 3 (Quality) Score: 40/100"));
+    assert!(diagnosis.contains("clarity"));
+    assert!(!diagnosis.contains("Stage 1 (Static) FAILED"));
+}
+
+/// IterativeRefiner: all rounds exhausted — round-1 structure and round-2
+/// error-handling heuristics both applied.
+#[test]
+fn test_s8_iterative_refiner_exhausts_rounds() {
+    // max_rounds 3 so heuristics run at rounds 0, 1 AND 2 (at the final
+    // round no refinement is applied anymore).
+    let refiner = IterativeRefiner::new(3);
+    let (content, ok) = refiner.refine("plain content", |_| false);
+    assert!(!ok);
+    assert!(content.contains("---")); // round 0: frontmatter
+    assert!(content.contains("## Steps")); // round 1: structure
+    assert!(content.contains("## Error Handling")); // round 2: errors
+}

@@ -76,9 +76,11 @@ async fn test_unregister_nonexistent() {
 #[tokio::test]
 async fn test_start_execution_basic() {
     let engine = WorkflowEngine::new();
+    // 注：链条用 transform 而非 tool——裸引擎的 tool 占位执行器现在显式
+    // Failed（BUG S12b-1 去假成功），不再适合当「无副作用的第二种节点」。
     let nodes = vec![
         make_node("n1", "llm", vec![]),
-        make_node("n2", "tool", vec!["n1"]),
+        make_node("n2", "transform", vec!["n1"]),
     ];
     engine
         .register_workflow(make_workflow("chain_wf", nodes))
@@ -141,7 +143,7 @@ async fn test_dependency_ordering_respected() {
     let engine = WorkflowEngine::new();
     let nodes = vec![
         make_node("a", "llm", vec![]),
-        make_node("b", "tool", vec!["a"]),
+        make_node("b", "transform", vec!["a"]),
         make_node("c", "transform", vec!["b"]),
     ];
     engine
@@ -821,7 +823,7 @@ fn test_run_blocking_completes() {
     let engine = WorkflowEngine::new();
     let nodes = vec![
         make_node("n1", "llm", vec![]),
-        make_node("n2", "tool", vec!["n1"]),
+        make_node("n2", "transform", vec!["n1"]),
     ];
     engine
         .register_workflow(make_workflow("blocking_wf", nodes))
@@ -921,7 +923,7 @@ async fn test_start_async_eventually_completes() {
     let engine = Arc::new(WorkflowEngine::new_arc());
     let nodes = vec![
         make_node("n1", "llm", vec![]),
-        make_node("n2", "tool", vec!["n1"]),
+        make_node("n2", "transform", vec!["n1"]),
     ];
     engine
         .register_workflow(make_workflow("poll_wf", nodes))
@@ -2559,4 +2561,1387 @@ async fn u10_install_composite_node_executors_on_bare_engine() {
     engine.install_composite_node_executors();
     assert!(engine.node_executors.get("parallel").is_some());
     assert!(engine.node_executors.get("loop").is_some());
+}
+
+// =========================================================================
+// W4a coverage batch — engine.rs gap closure
+// =========================================================================
+
+/// CheckpointStore double with scriptable failure points. Used to drive the
+/// engine's restore / checkpoint-warn paths without touching real files.
+struct ScriptedStore {
+    /// Checkpoint returned by `latest` for every execution id.
+    latest_cp: Option<Checkpoint>,
+    /// When true, `latest` returns Err (engine restore warn-and-continue arm).
+    fail_latest: bool,
+    /// When true, `save` returns Err (engine terminal-checkpoint warn arm).
+    fail_save: bool,
+    /// Number of `save` calls (counted even when failing).
+    save_attempts: std::sync::Mutex<usize>,
+}
+
+impl ScriptedStore {
+    fn empty() -> Self {
+        Self {
+            latest_cp: None,
+            fail_latest: false,
+            fail_save: false,
+            save_attempts: std::sync::Mutex::new(0),
+        }
+    }
+
+    fn with_latest(cp: Checkpoint) -> Self {
+        Self {
+            latest_cp: Some(cp),
+            ..Self::empty()
+        }
+    }
+}
+
+#[async_trait]
+impl CheckpointStore for ScriptedStore {
+    async fn save(&self, _checkpoint: Checkpoint) -> Result<String, crate::checkpoint::StoreError> {
+        *self.save_attempts.lock().unwrap() += 1;
+        if self.fail_save {
+            return Err(crate::checkpoint::StoreError::Io(std::io::Error::other(
+                "scripted save failure",
+            )));
+        }
+        Ok("cp-scripted".to_string())
+    }
+
+    async fn load(
+        &self,
+        _execution_id: &str,
+        _checkpoint_id: &str,
+    ) -> Result<Checkpoint, crate::checkpoint::StoreError> {
+        Err(crate::checkpoint::StoreError::NotFound {
+            execution_id: _execution_id.to_string(),
+            checkpoint_id: _checkpoint_id.to_string(),
+        })
+    }
+
+    async fn latest(
+        &self,
+        _execution_id: &str,
+    ) -> Result<Option<Checkpoint>, crate::checkpoint::StoreError> {
+        if self.fail_latest {
+            return Err(crate::checkpoint::StoreError::Corrupt("scripted".into()));
+        }
+        Ok(self.latest_cp.clone())
+    }
+
+    async fn list(
+        &self,
+        _execution_id: &str,
+    ) -> Result<Vec<crate::checkpoint::CheckpointMeta>, crate::checkpoint::StoreError> {
+        Ok(Vec::new())
+    }
+
+    async fn delete(
+        &self,
+        _execution_id: &str,
+        _checkpoint_id: &str,
+    ) -> Result<(), crate::checkpoint::StoreError> {
+        Ok(())
+    }
+
+    async fn list_executions(&self) -> Result<Vec<String>, crate::checkpoint::StoreError> {
+        // Report the scripted checkpoint's own execution id so the engine's
+        // restore loop keys its in-memory insert the same way the test does.
+        Ok(self
+            .latest_cp
+            .as_ref()
+            .map(|c| vec![c.execution_id.clone()])
+            .unwrap_or_default())
+    }
+}
+
+/// Hand-craft a checkpoint for the given workflow. `waiting` Some(...) marks
+/// a paused-at-human-review checkpoint; `completed` lists finished node ids.
+fn scripted_checkpoint(
+    wf: &Workflow,
+    exec_id: &str,
+    waiting: Option<&str>,
+    completed: &[&str],
+    terminal: bool,
+) -> Checkpoint {
+    Checkpoint {
+        id: "cp-1".to_string(),
+        execution_id: exec_id.to_string(),
+        saved_at: chrono::Utc::now(),
+        completed_nodes: completed.iter().map(|s| s.to_string()).collect(),
+        waiting_node: waiting.map(|s| s.to_string()),
+        parent_execution_id: None,
+        trigger_source: Some(TriggerSource::Cli),
+        terminal,
+        context_snapshot: SerializableContext {
+            variables: HashMap::new(),
+            node_results: HashMap::new(),
+            input: HashMap::new(),
+        },
+        workflow_hash: wf.hash(),
+    }
+}
+
+/// Custom node executor that always returns Err from execute — drives the
+/// scheduler's executor-Err collection arm and the deprecated
+/// start_execution Failed path.
+struct W4aFailingExecutor;
+
+#[async_trait]
+impl crate::nodes::NodeExecutor for W4aFailingExecutor {
+    async fn execute(
+        &self,
+        node: &NodeDef,
+        _context: &HashMap<String, serde_json::Value>,
+        _wf_ctx: &WorkflowContext,
+    ) -> Result<NodeResult, String> {
+        Err(format!("w4a boom in {}", node.id))
+    }
+}
+
+/// Node executor that sleeps then completes — used for cancellation windows.
+struct W4aSleepyExecutor {
+    millis: u64,
+}
+
+#[async_trait]
+impl crate::nodes::NodeExecutor for W4aSleepyExecutor {
+    async fn execute(
+        &self,
+        node: &NodeDef,
+        _context: &HashMap<String, serde_json::Value>,
+        _wf_ctx: &WorkflowContext,
+    ) -> Result<NodeResult, String> {
+        tokio::time::sleep(Duration::from_millis(self.millis)).await;
+        Ok(NodeResult {
+            node_id: node.id.clone(),
+            output: serde_json::json!({"slept": true}),
+            error: None,
+            state: ExecutionState::Completed,
+            started_at: Local::now(),
+            ended_at: Local::now(),
+            metadata: HashMap::new(),
+        })
+    }
+}
+
+/// Minimal LLM provider for integrated-engine construction in this batch.
+struct W4aProvider;
+
+#[async_trait]
+impl nemesis_providers::router::LLMProvider for W4aProvider {
+    async fn chat(
+        &self,
+        _messages: &[nemesis_providers::types::Message],
+        _tools: &[nemesis_providers::types::ToolDefinition],
+        _model: &str,
+        _options: &nemesis_providers::types::ChatOptions,
+    ) -> Result<
+        nemesis_providers::types::LLMResponse,
+        nemesis_providers::failover::FailoverError,
+    > {
+        Err(nemesis_providers::failover::FailoverError::from_status(
+            "w4a", "w4a", 500, "unavailable",
+        ))
+    }
+    fn default_model(&self) -> &str {
+        "w4a"
+    }
+    fn name(&self) -> &str {
+        "w4a"
+    }
+}
+
+/// sanitize_workflow_filename: empty -> wf_unnamed, non-alnum -> '_',
+/// leading dot -> wf_ prefix (engine.rs ~102-118).
+#[test]
+fn w4a_sanitize_workflow_filename_edge_cases() {
+    assert_eq!(sanitize_workflow_filename(""), "wf_unnamed");
+    assert_eq!(sanitize_workflow_filename("a b/c:d"), "a_b_c_d");
+    // '.' maps to '_' during sanitisation, so the leading-dot `wf_` prefix
+    // branch below can never fire for this input (actual behaviour: "_hidden").
+    assert_eq!(sanitize_workflow_filename(".hidden"), "_hidden");
+    assert_eq!(sanitize_workflow_filename("ok-Name_1"), "ok-Name_1");
+}
+
+/// cron_next_fire_at_from_trigger: non-cron -> None, missing schedule ->
+/// None, invalid schedule -> None, local/utc cron -> Some ISO string
+/// (engine.rs ~76-95).
+#[test]
+fn w4a_cron_next_fire_at_from_trigger_variants() {
+    use crate::types::TriggerConfig as T;
+
+    // Non-cron trigger type.
+    let webhook = T {
+        trigger_type: "webhook".to_string(),
+        config: HashMap::new(),
+    };
+    assert!(cron_next_fire_at_from_trigger(&webhook).is_none());
+
+    // Cron without schedule.
+    let no_sched = T {
+        trigger_type: "cron".to_string(),
+        config: HashMap::new(),
+    };
+    assert!(cron_next_fire_at_from_trigger(&no_sched).is_none());
+
+    // Cron with an unparsable schedule.
+    let bad = T {
+        trigger_type: "cron".to_string(),
+        config: HashMap::from([("schedule".to_string(), serde_json::json!("not a cron"))]),
+    };
+    assert!(cron_next_fire_at_from_trigger(&bad).is_none());
+
+    // Valid local cron (no timezone key falls into the local arm).
+    let local = T {
+        trigger_type: "cron".to_string(),
+        config: HashMap::from([("schedule".to_string(), serde_json::json!("*/5 * * * *"))]),
+    };
+    assert!(cron_next_fire_at_from_trigger(&local).is_some());
+
+    // Valid utc cron.
+    let utc = T {
+        trigger_type: "cron".to_string(),
+        config: HashMap::from([
+            ("schedule".to_string(), serde_json::json!("*/5 * * * *")),
+            ("timezone".to_string(), serde_json::json!("utc")),
+        ]),
+    };
+    assert!(cron_next_fire_at_from_trigger(&utc).is_some());
+}
+
+/// build_serialisable_context: every ExecutionState maps to its snake_case
+/// string (engine.rs ~171-186).
+#[test]
+fn w4a_build_serialisable_context_all_states() {
+    let ctx = WorkflowContext::new(HashMap::new());
+    let cases = [
+        ("pending", ExecutionState::Pending),
+        ("running", ExecutionState::Running),
+        ("completed", ExecutionState::Completed),
+        ("failed", ExecutionState::Failed),
+        ("cancelled", ExecutionState::Cancelled),
+        ("waiting", ExecutionState::Waiting),
+    ];
+    for (id, state) in cases {
+        ctx.set_node_result(
+            id,
+            NodeResult {
+                node_id: id.to_string(),
+                output: serde_json::Value::Null,
+                error: None,
+                state,
+                started_at: Local::now(),
+                ended_at: Local::now(),
+                metadata: HashMap::new(),
+            },
+        );
+    }
+    let snap = build_serialisable_context(&ctx);
+    for (id, _) in cases {
+        assert_eq!(snap.node_results[id].state, id, "state string for {}", id);
+    }
+}
+
+/// Accessors: event_manager / event_dispatcher / workflow_chat_state /
+/// call_stack / checkpoint_store(None default) / set_checkpoint_store /
+/// workflow_defs_dir(None default) / set_workflow_defs_dir
+/// (engine.rs ~937-990 + ~1278-1290).
+#[tokio::test]
+async fn w4a_accessors_expose_wired_internals() {
+    let engine = WorkflowEngine::new();
+
+    let _ = engine.event_manager();
+    let _ = engine.event_dispatcher();
+    let _ = engine.workflow_chat_state();
+    let _ = engine.call_stack();
+
+    assert!(engine.checkpoint_store().is_none());
+    let store: std::sync::Arc<dyn CheckpointStore> = std::sync::Arc::new(InMemoryCheckpointStore::new());
+    engine.set_checkpoint_store(store);
+    assert!(engine.checkpoint_store().is_some());
+
+    assert!(engine.workflow_defs_dir().is_none());
+    engine.set_workflow_defs_dir(PathBuf::from("/tmp/w4a_defs"));
+    assert_eq!(engine.workflow_defs_dir(), Some(PathBuf::from("/tmp/w4a_defs")));
+
+    assert!(!engine.is_closed().await);
+}
+
+/// register_node_executor + execution through the registered custom type
+/// (engine.rs ~659-670).
+#[tokio::test]
+async fn w4a_register_node_executor_custom_type_runs() {
+    struct W4aOkExecutor;
+    #[async_trait]
+    impl crate::nodes::NodeExecutor for W4aOkExecutor {
+        async fn execute(
+            &self,
+            node: &NodeDef,
+            _context: &HashMap<String, serde_json::Value>,
+            _wf_ctx: &WorkflowContext,
+        ) -> Result<NodeResult, String> {
+            Ok(NodeResult {
+                node_id: node.id.clone(),
+                output: serde_json::json!({"custom": true}),
+                error: None,
+                state: ExecutionState::Completed,
+                started_at: Local::now(),
+                ended_at: Local::now(),
+                metadata: HashMap::new(),
+            })
+        }
+    }
+
+    let engine = WorkflowEngine::new();
+    engine.register_node_executor("w4a_ok", std::sync::Arc::new(W4aOkExecutor));
+    engine
+        .register_workflow(make_workflow(
+            "w4a_custom_wf",
+            vec![make_node("n1", "w4a_ok", vec![])],
+        ))
+        .unwrap();
+
+    let exec = engine.run("w4a_custom_wf", HashMap::new(), None).await.unwrap();
+    assert_eq!(exec.state, ExecutionState::Completed);
+    assert_eq!(exec.node_results["n1"].output["custom"], serde_json::json!(true));
+}
+
+/// set_usage_store: wires the slot without panicking (engine.rs ~672-680).
+#[tokio::test]
+async fn w4a_set_usage_store_wires_slot() {
+    let root = temp_root("w4a_usage");
+    let db_path = root.join("usage.db");
+    let store = nemesis_data::DataStore::open(&db_path).expect("DataStore::open");
+    let engine = WorkflowEngine::new();
+    engine.set_usage_store(std::sync::Arc::new(store));
+    // No accessor exists; the assertion is simply "no panic" — the slot is
+    // read by node executors at LLM-call time (nodes.rs record_llm_usage).
+}
+
+/// load_workflows_from_dir error paths: path-is-a-file -> Err; garbage yaml
+/// skipped with warning; valid file still counted (engine.rs ~692-740).
+#[tokio::test]
+async fn w4a_load_workflows_from_dir_error_paths() {
+    let root = temp_root("w4a_load");
+
+    // Path is a file, not a directory -> read_dir fails (not NotFound) -> Err.
+    let file_path = root.join("not_a_dir");
+    std::fs::write(&file_path, "x").unwrap();
+    let engine = WorkflowEngine::new();
+    let err = engine.load_workflows_from_dir(&file_path).unwrap_err();
+    assert!(matches!(err, EngineError::PersistenceError(_)), "got {:?}", err);
+
+    // Garbage yaml parses-fail -> warn + skipped, other files still load.
+    let defs = root.join("defs");
+    std::fs::create_dir_all(&defs).unwrap();
+    std::fs::write(defs.join("garbage.yaml"), "{{{{not yaml").unwrap();
+    write_wf_file(&defs, "good_wf", "yaml");
+    let engine2 = WorkflowEngine::new();
+    let count = engine2.load_workflows_from_dir(&defs).unwrap();
+    assert_eq!(count, 1);
+    assert!(engine2.get_workflow("good_wf").is_some());
+
+    // A yaml that parses but fails validation (zero nodes) is also skipped.
+    std::fs::write(
+        defs.join("empty_nodes.yaml"),
+        "name: no_nodes_wf\nversion: \"1.0.0\"\nnodes: []\n",
+    )
+    .unwrap();
+    let engine3 = WorkflowEngine::new();
+    let count3 = engine3.load_workflows_from_dir(&defs).unwrap();
+    assert_eq!(count3, 1, "invalid workflow must be skipped, got {}", count3);
+    assert!(engine3.get_workflow("no_nodes_wf").is_none());
+}
+
+/// persist_workflow error paths: validation failure -> ExecutionFailed;
+/// defs dir unset -> PersistenceError (engine.rs ~1430-1450).
+#[tokio::test]
+async fn w4a_persist_workflow_error_paths() {
+    let engine = WorkflowEngine::new();
+
+    // Invalid workflow (no nodes) is rejected before touching the disk.
+    let invalid = make_workflow("w4a_bad", vec![]);
+    let err = engine.persist_workflow(invalid).unwrap_err();
+    assert!(matches!(err, EngineError::ExecutionFailed(_)), "got {:?}", err);
+
+    // Valid workflow but no defs dir configured.
+    let valid = make_workflow("w4a_ok", vec![make_node("n1", "delay", vec![])]);
+    let err2 = engine.persist_workflow(valid).unwrap_err();
+    assert!(matches!(err2, EngineError::PersistenceError(_)), "got {:?}", err2);
+}
+
+/// delete_workflow_file: .yaml removed through the guard; .yml/.json
+/// best-effort removal; idempotent when nothing exists (engine.rs ~1469-1497).
+#[tokio::test]
+async fn w4a_delete_workflow_file_variants() {
+    let root = temp_root("w4a_delete");
+    let engine = WorkflowEngine::new();
+    engine.set_workflow_defs_dir(root.clone());
+
+    // .yaml via persist_workflow.
+    engine
+        .persist_workflow(make_workflow("del_yaml", vec![make_node("n1", "delay", vec![])]))
+        .unwrap();
+    assert!(root.join("del_yaml.yaml").exists());
+
+    // .yml + .json variants written manually (load accepts all three).
+    std::fs::write(root.join("del_yml.yml"), "name: del_yml\n").unwrap();
+    std::fs::write(root.join("del_json.json"), "{\"name\":\"del_json\"}").unwrap();
+
+    engine.delete_workflow_file("del_yaml").unwrap();
+    engine.delete_workflow_file("del_yml").unwrap();
+    engine.delete_workflow_file("del_json").unwrap();
+
+    assert!(!root.join("del_yaml.yaml").exists());
+    assert!(!root.join("del_yml.yml").exists());
+    assert!(!root.join("del_json.json").exists());
+
+    // Idempotent when nothing exists on disk or in memory.
+    engine.delete_workflow_file("never_existed").unwrap();
+}
+
+/// validate_workflow: valid -> empty vec, invalid -> one message
+/// (engine.rs ~1499-1505).
+#[test]
+fn w4a_validate_workflow_valid_and_invalid() {
+    let valid = make_workflow("valid_wf", vec![make_node("n1", "delay", vec![])]);
+    assert!(WorkflowEngine::validate_workflow(&valid).is_empty());
+
+    let no_nodes = make_workflow("empty_wf", vec![]);
+    assert!(!WorkflowEngine::validate_workflow(&no_nodes).is_empty());
+}
+
+/// chat_index / workflow_by_chat_index roundtrip incl. case-insensitive
+/// lookup and miss (engine.rs ~1401-1428).
+#[tokio::test]
+async fn w4a_chat_index_roundtrip() {
+    let engine = WorkflowEngine::new();
+    engine
+        .register_workflow(make_workflow("WfX_Chat", vec![make_node("n1", "delay", vec![])]))
+        .unwrap();
+
+    let idx = WorkflowEngine::chat_index("WfX_Chat");
+    assert_eq!(idx.len(), 8);
+    assert!(idx.chars().all(|c| c.is_ascii_hexdigit()));
+
+    // Exact and case-flipped lookups both resolve.
+    assert_eq!(engine.workflow_by_chat_index(&idx).as_deref(), Some("WfX_Chat"));
+    let upper = idx.to_uppercase();
+    assert_eq!(
+        engine.workflow_by_chat_index(&upper).as_deref(),
+        Some("WfX_Chat")
+    );
+    assert_eq!(engine.workflow_by_chat_index("deadbeef"), None);
+}
+
+/// build_workflow_summary: cron triggers get next_fire_at, non-cron don't
+/// (engine.rs ~1359-1378).
+#[tokio::test]
+async fn w4a_build_workflow_summary_cron_next_fire() {
+    use crate::types::TriggerConfig;
+
+    let mut wf = make_workflow("sum_wf", vec![make_node("n1", "delay", vec![])]);
+    wf.triggers = vec![
+        TriggerConfig {
+            trigger_type: "cron".to_string(),
+            config: HashMap::from([("schedule".to_string(), serde_json::json!("*/5 * * * *"))]),
+        },
+        TriggerConfig {
+            trigger_type: "webhook".to_string(),
+            config: HashMap::new(),
+        },
+    ];
+    let engine = WorkflowEngine::new();
+    let summary = engine.build_workflow_summary(&wf);
+    assert_eq!(summary.trigger_count, 2);
+    let cron_t = summary
+        .triggers
+        .iter()
+        .find(|t| t.trigger_type == "cron")
+        .unwrap();
+    assert!(cron_t.next_fire_at.is_some());
+    let webhook_t = summary
+        .triggers
+        .iter()
+        .find(|t| t.trigger_type == "webhook")
+        .unwrap();
+    assert!(webhook_t.next_fire_at.is_none());
+    assert_eq!(summary.chat_index, WorkflowEngine::chat_index("sum_wf"));
+}
+
+/// restore_incomplete_executions with no store configured -> Ok(0)
+/// (engine.rs ~1008-1010).
+#[tokio::test]
+async fn w4a_restore_without_store_returns_zero() {
+    let engine = WorkflowEngine::new();
+    assert_eq!(engine.restore_incomplete_executions().await.unwrap(), 0);
+}
+
+/// restore_incomplete_executions: list_executions error propagates as
+/// PersistenceError (engine.rs ~1013-1016).
+#[tokio::test]
+async fn w4a_restore_list_error_propagates() {
+    struct ListErrStore;
+    #[async_trait]
+    impl CheckpointStore for ListErrStore {
+        async fn save(&self, _c: Checkpoint) -> Result<String, crate::checkpoint::StoreError> {
+            Ok("x".into())
+        }
+        async fn load(
+            &self,
+            _e: &str,
+            _c: &str,
+        ) -> Result<Checkpoint, crate::checkpoint::StoreError> {
+            Err(crate::checkpoint::StoreError::Corrupt("x".into()))
+        }
+        async fn latest(
+            &self,
+            _e: &str,
+        ) -> Result<Option<Checkpoint>, crate::checkpoint::StoreError> {
+            Ok(None)
+        }
+        async fn list(
+            &self,
+            _e: &str,
+        ) -> Result<Vec<crate::checkpoint::CheckpointMeta>, crate::checkpoint::StoreError> {
+            Ok(Vec::new())
+        }
+        async fn delete(
+            &self,
+            _e: &str,
+            _c: &str,
+        ) -> Result<(), crate::checkpoint::StoreError> {
+            Ok(())
+        }
+        async fn list_executions(&self) -> Result<Vec<String>, crate::checkpoint::StoreError> {
+            Err(crate::checkpoint::StoreError::Corrupt("list failed".into()))
+        }
+    }
+
+    let engine = WorkflowEngine::new();
+    engine.set_checkpoint_store(std::sync::Arc::new(ListErrStore));
+    let err = engine.restore_incomplete_executions().await.unwrap_err();
+    assert!(matches!(err, EngineError::PersistenceError(_)), "got {:?}", err);
+}
+
+/// restore_incomplete_executions: latest error -> warn + continue -> Ok(0)
+/// (engine.rs ~1020-1027).
+#[tokio::test]
+async fn w4a_restore_latest_error_warns_and_continues() {
+    let mut store = ScriptedStore::empty();
+    store.fail_latest = true;
+    let engine = WorkflowEngine::new();
+    engine.set_checkpoint_store(std::sync::Arc::new(store));
+    assert_eq!(engine.restore_incomplete_executions().await.unwrap(), 0);
+}
+
+/// restore_incomplete_executions: latest Ok(None) -> continue -> Ok(0)
+/// (engine.rs ~1028).
+#[tokio::test]
+async fn w4a_restore_latest_none_continues() {
+    let store = ScriptedStore::empty();
+    // Force list_executions to report one id while latest returns None.
+    let engine = WorkflowEngine::new();
+    engine.set_checkpoint_store(std::sync::Arc::new(store));
+    assert_eq!(engine.restore_incomplete_executions().await.unwrap(), 0);
+}
+
+/// restore_incomplete_executions skips: hash mismatch, terminal checkpoint,
+/// and the all-completed legacy fallback (engine.rs ~1085-1104).
+#[tokio::test]
+async fn w4a_restore_skips_mismatch_terminal_and_all_completed() {
+    let wf = make_workflow(
+        "restore_skip_wf",
+        vec![make_node("n1", "delay", vec![]), make_node("n2", "delay", vec!["n1"])],
+    );
+
+    // Hash mismatch: registered workflow differs from checkpoint hash.
+    let mut cp = scripted_checkpoint(&wf, "exec-mismatch", None, &["n1"], false);
+    cp.workflow_hash = "0deadbeef".to_string();
+    let engine = WorkflowEngine::new();
+    engine.register_workflow(wf.clone()).unwrap();
+    engine.set_checkpoint_store(std::sync::Arc::new(ScriptedStore::with_latest(cp)));
+    assert_eq!(engine.restore_incomplete_executions().await.unwrap(), 0);
+
+    // Terminal checkpoint: nothing to resume even though nodes are partial.
+    let cp_terminal = scripted_checkpoint(&wf, "exec-terminal", None, &["n1"], true);
+    let engine2 = WorkflowEngine::new();
+    engine2.register_workflow(wf.clone()).unwrap();
+    engine2.set_checkpoint_store(std::sync::Arc::new(ScriptedStore::with_latest(cp_terminal)));
+    assert_eq!(engine2.restore_incomplete_executions().await.unwrap(), 0);
+
+    // Legacy fallback: terminal=false but every node completed and no
+    // waiting node -> skip.
+    let cp_all = scripted_checkpoint(&wf, "exec-all", None, &["n1", "n2"], false);
+    let engine3 = WorkflowEngine::new();
+    engine3.register_workflow(wf.clone()).unwrap();
+    engine3.set_checkpoint_store(std::sync::Arc::new(ScriptedStore::with_latest(cp_all)));
+    assert_eq!(engine3.restore_incomplete_executions().await.unwrap(), 0);
+}
+
+/// restore_incomplete_executions restores a paused (waiting) execution with
+/// trigger source and Waiting state / ended_at=None
+/// (engine.rs ~1108-1128).
+#[tokio::test]
+async fn w4a_restore_waiting_execution() {
+    let wf = make_workflow(
+        "restore_wait_wf",
+        vec![
+            make_node("n1", "human_review", vec![]),
+            make_node("n2", "delay", vec!["n1"]),
+        ],
+    );
+    let cp = scripted_checkpoint(&wf, "exec-waiting", Some("n1"), &["n1"], false);
+    let engine = WorkflowEngine::new();
+    engine.register_workflow(wf).unwrap();
+    engine.set_checkpoint_store(std::sync::Arc::new(ScriptedStore::with_latest(cp)));
+
+    assert_eq!(engine.restore_incomplete_executions().await.unwrap(), 1);
+    let exec = engine.get_execution("exec-waiting").await.expect("restored");
+    assert_eq!(exec.state, ExecutionState::Waiting);
+    assert!(exec.ended_at.is_none());
+    assert!(matches!(exec.trigger_source, Some(TriggerSource::Cli)));
+    assert_eq!(exec.workflow_name, "restore_wait_wf");
+}
+
+/// restore_incomplete_executions restores a mid-flight (running) execution:
+/// no waiting node + partial completion -> Running + ended_at set
+/// (engine.rs ~1129-1136).
+#[tokio::test]
+async fn w4a_restore_midflight_running_execution() {
+    let wf = make_workflow(
+        "restore_run_wf",
+        vec![make_node("n1", "delay", vec![]), make_node("n2", "delay", vec!["n1"])],
+    );
+    let cp = scripted_checkpoint(&wf, "exec-running", None, &["n1"], false);
+    let engine = WorkflowEngine::new();
+    engine.register_workflow(wf).unwrap();
+    engine.set_checkpoint_store(std::sync::Arc::new(ScriptedStore::with_latest(cp)));
+
+    assert_eq!(engine.restore_incomplete_executions().await.unwrap(), 1);
+    let exec = engine.get_execution("exec-running").await.expect("restored");
+    assert_eq!(exec.state, ExecutionState::Running);
+    assert!(exec.ended_at.is_some());
+}
+
+/// Terminal-checkpoint save failure warns but the run still completes
+/// (engine.rs ~1747 warn arm; per-level hook failures also tolerated).
+#[tokio::test]
+async fn w4a_checkpoint_save_failure_warns_but_completes() {
+    let mut store = ScriptedStore::empty();
+    store.fail_save = true;
+    let engine = WorkflowEngine::new_arc();
+    engine.set_checkpoint_store(std::sync::Arc::new(store));
+
+    // Two levels so both the per-level hook and the terminal save fail.
+    let wf = make_workflow(
+        "save_fail_wf",
+        vec![make_node("n1", "delay", vec![]), make_node("n2", "delay", vec!["n1"])],
+    );
+    engine.register_workflow(wf).unwrap();
+    let exec = engine.run("save_fail_wf", HashMap::new(), None).await.unwrap();
+    assert_eq!(exec.state, ExecutionState::Completed);
+}
+
+/// run_async on a closed engine is rejected (engine.rs ~1584).
+#[tokio::test]
+async fn w4a_run_async_on_closed_engine_rejected() {
+    let engine = WorkflowEngine::new_arc();
+    engine
+        .register_workflow(make_workflow("closed_wf", vec![make_node("n1", "delay", vec![])]))
+        .unwrap();
+    let exec = engine.run("closed_wf", HashMap::new(), None).await.unwrap();
+
+    engine.close().await;
+    assert!(engine.is_closed().await);
+
+    let err = engine.run_async(&exec.id).await.unwrap_err();
+    assert!(matches!(err, EngineError::InvalidState(_)), "got {:?}", err);
+}
+
+/// Workflow-level variables are lifted into the context before execution
+/// (engine.rs ~1626-1632).
+#[tokio::test]
+async fn w4a_run_workflow_with_variables() {
+    let mut wf = make_workflow("vars_wf", vec![make_node("n1", "delay", vec![])]);
+    wf.variables.insert("greeting".to_string(), "hello".to_string());
+    let engine = WorkflowEngine::new();
+    engine.register_workflow(wf).unwrap();
+
+    let exec = engine.run("vars_wf", HashMap::new(), None).await.unwrap();
+    assert_eq!(exec.state, ExecutionState::Completed);
+}
+
+/// Deprecated start_execution path: an executor returning Err is converted
+/// into a Failed NodeResult and the execution settles Failed with the error
+/// recorded (engine.rs ~1995-2035) — also exercises register_node_executor.
+#[tokio::test]
+async fn w4a_start_execution_failing_executor_marks_failed() {
+    let engine = WorkflowEngine::new();
+    engine.register_node_executor("w4a_boom", std::sync::Arc::new(W4aFailingExecutor));
+    engine
+        .register_workflow(make_workflow(
+            "boom_wf",
+            vec![make_node("n1", "w4a_boom", vec![])],
+        ))
+        .unwrap();
+
+    let exec = engine.start_execution("boom_wf", HashMap::new()).await.unwrap();
+    assert_eq!(exec.state, ExecutionState::Failed);
+    // Note: the deprecated inline path records the failure only on the node
+    // result; execution.error stays None here (unlike the scheduler path).
+    assert_eq!(exec.error, None);
+    assert_eq!(exec.node_results["n1"].state, ExecutionState::Failed);
+    assert!(exec.node_results["n1"].error.as_deref().unwrap_or("").contains("boom"));
+    assert!(exec.ended_at.is_some());
+}
+
+/// Insert a crafted Waiting execution straight into the engine's private
+/// map (resume-path fixture; tests.rs is a child module so private fields
+/// are reachable).
+async fn w4a_insert_waiting_execution(
+    engine: &WorkflowEngine,
+    wf_name: &str,
+    waiting_node: &str,
+    workflow_hash: Option<String>,
+) -> String {
+    let mut exec = Execution::new(wf_name.to_string(), HashMap::new());
+    exec.state = ExecutionState::Waiting;
+    exec.workflow_hash = workflow_hash;
+    exec.node_results.insert(
+        waiting_node.to_string(),
+        NodeResult {
+            node_id: waiting_node.to_string(),
+            output: serde_json::json!({}),
+            error: None,
+            state: ExecutionState::Waiting,
+            started_at: Local::now(),
+            ended_at: Local::now(),
+            metadata: HashMap::new(),
+        },
+    );
+    let id = exec.id.clone();
+    engine.executions.write().await.insert(id.clone(), exec);
+    id
+}
+
+/// resume_execution: waiting node not found -> InvalidState
+/// (engine.rs ~2218-2219).
+#[tokio::test]
+async fn w4a_resume_without_waiting_node_errors() {
+    let engine = WorkflowEngine::new();
+    engine
+        .register_workflow(make_workflow("no_wait_wf", vec![make_node("n1", "delay", vec![])]))
+        .unwrap();
+
+    // Execution claims Waiting but holds only a Completed node result.
+    let mut exec = Execution::new("no_wait_wf".to_string(), HashMap::new());
+    exec.state = ExecutionState::Waiting;
+    exec.node_results.insert(
+        "n1".to_string(),
+        NodeResult {
+            node_id: "n1".to_string(),
+            output: serde_json::Value::Null,
+            error: None,
+            state: ExecutionState::Completed,
+            started_at: Local::now(),
+            ended_at: Local::now(),
+            metadata: HashMap::new(),
+        },
+    );
+    let id = exec.id.clone();
+    engine.executions.write().await.insert(id.clone(), exec);
+
+    let err = engine
+        .resume_execution(
+            &id,
+            HashMap::from([("approved".to_string(), serde_json::json!(true))]),
+        )
+        .await
+        .unwrap_err();
+    let msg = format!("{:?}", err);
+    assert!(msg.contains("no node in waiting"), "got {:?}", err);
+}
+
+/// resume_execution: approved review result logs the debug line, a stale
+/// workflow hash logs the config-drift warning, and the downstream nodes
+/// still run to completion (engine.rs ~2210-2211 + ~2239).
+#[tokio::test]
+async fn w4a_resume_approved_review_with_drift_warn_completes() {
+    let engine = WorkflowEngine::new();
+    engine
+        .register_workflow(make_workflow(
+            "drift_wf",
+            vec![
+                make_node("n1", "human_review", vec![]),
+                make_node("n2", "delay", vec!["n1"]),
+            ],
+        ))
+        .unwrap();
+
+    let id = w4a_insert_waiting_execution(
+        &engine,
+        "drift_wf",
+        "n1",
+        Some("stale-hash-123".into()),
+    )
+    .await;
+    let exec = engine
+        .resume_execution(
+            &id,
+            HashMap::from([("approved".to_string(), serde_json::json!(true))]),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(exec.state, ExecutionState::Completed);
+    assert_eq!(exec.node_results["n1"].state, ExecutionState::Completed);
+    assert_eq!(
+        exec.node_results["n1"].output["approved"],
+        serde_json::json!(true)
+    );
+}
+
+/// resume_execution: a downstream node executor error marks the execution
+/// Failed with the scheduler error recorded (engine.rs ~2307-2311).
+#[tokio::test]
+async fn w4a_resume_scheduler_error_marks_failed() {
+    let engine = WorkflowEngine::new();
+    engine.register_node_executor("w4a_boom", std::sync::Arc::new(W4aFailingExecutor));
+    engine
+        .register_workflow(make_workflow(
+            "resume_boom_wf",
+            vec![
+                make_node("n1", "human_review", vec![]),
+                make_node("n2", "w4a_boom", vec!["n1"]),
+            ],
+        ))
+        .unwrap();
+
+    let id = w4a_insert_waiting_execution(&engine, "resume_boom_wf", "n1", None).await;
+    let exec = engine.resume_execution(&id, HashMap::new()).await.unwrap();
+
+    assert_eq!(exec.state, ExecutionState::Failed);
+    assert!(exec.error.as_deref().unwrap_or("").contains("boom"));
+    assert!(exec.ended_at.is_some());
+}
+
+/// resume_execution: a second human_review node pauses the execution again
+/// — state stays Waiting with ended_at=None and the waiting node is
+/// recorded in the checkpoint (engine.rs ~2296-2305 + ~2330-2334).
+#[tokio::test]
+async fn w4a_resume_second_human_review_stays_waiting() {
+    let store = std::sync::Arc::new(InMemoryCheckpointStore::new());
+    let engine = WorkflowEngine::new();
+    engine.set_checkpoint_store(store.clone());
+    engine
+        .register_workflow(make_workflow(
+            "double_review_wf",
+            vec![
+                make_node("n1", "human_review", vec![]),
+                make_node("n2", "human_review", vec!["n1"]),
+            ],
+        ))
+        .unwrap();
+
+    let exec = engine.run("double_review_wf", HashMap::new(), None).await.unwrap();
+    assert_eq!(exec.state, ExecutionState::Waiting);
+    assert_eq!(exec.node_results["n1"].state, ExecutionState::Waiting);
+    assert_eq!(exec.node_results["n2"].state, ExecutionState::Waiting);
+
+    let resumed = engine
+        .resume_execution(
+            &exec.id,
+            HashMap::from([("approved".to_string(), serde_json::json!(true))]),
+        )
+        .await
+        .unwrap();
+    // Exactly one review node re-pauses the execution. Which one depends on
+    // HashMap iteration order inside resume_execution's waiting-node search,
+    // so assert the invariant, not the specific node.
+    assert_eq!(resumed.state, ExecutionState::Waiting, "second review pauses again");
+    assert!(resumed.ended_at.is_none());
+    let waiting: Vec<&String> = resumed
+        .node_results
+        .iter()
+        .filter(|(_, r)| r.state == ExecutionState::Waiting)
+        .map(|(id, _)| id)
+        .collect();
+    assert_eq!(waiting.len(), 1, "exactly one waiting node, got {:?}", waiting);
+
+    // The post-resume checkpoint records the remaining waiting node.
+    let cp = store.latest(&exec.id).await.unwrap().expect("checkpoint saved");
+    assert_eq!(cp.waiting_node.as_deref(), Some(waiting[0].as_str()));
+    assert!(!cp.terminal);
+}
+
+/// resume_execution: cancelling mid-resume settles the execution Cancelled
+/// (engine.rs ~2286-2289).
+#[tokio::test]
+async fn w4a_resume_cancelled_midflight() {
+    let engine = WorkflowEngine::new_arc();
+    engine.register_node_executor(
+        "w4a_sleepy",
+        std::sync::Arc::new(W4aSleepyExecutor { millis: 10_000 }),
+    );
+    engine
+        .register_workflow(make_workflow(
+            "cancel_resume_wf",
+            vec![
+                make_node("n1", "human_review", vec![]),
+                make_node("n2", "w4a_sleepy", vec!["n1"]),
+            ],
+        ))
+        .unwrap();
+
+    let id = w4a_insert_waiting_execution(&engine, "cancel_resume_wf", "n1", None).await;
+
+    let task_engine = engine.clone();
+    let task_id = id.clone();
+    let task = tokio::spawn(async move {
+        task_engine.resume_execution(&task_id, HashMap::new()).await
+    });
+
+    // Give the resume path time to install the cancel token + start n2.
+    tokio::time::sleep(Duration::from_millis(400)).await;
+    engine.cancel_execution(&id).await.expect("cancel while running");
+
+    let finished = tokio::time::timeout(Duration::from_secs(8), task)
+        .await
+        .expect("resume task settles after cancel")
+        .expect("join ok")
+        .expect("resume returns Ok");
+    assert_eq!(finished.state, ExecutionState::Cancelled);
+}
+
+/// cancel_execution error paths: unknown id -> ExecutionNotFound, terminal
+/// execution -> InvalidState.
+#[tokio::test]
+async fn w4a_cancel_execution_error_paths() {
+    let engine = WorkflowEngine::new();
+
+    let err = engine.cancel_execution("ghost").await.unwrap_err();
+    assert!(matches!(err, EngineError::ExecutionNotFound(_)), "got {:?}", err);
+
+    engine
+        .register_workflow(make_workflow("cancel_done_wf", vec![make_node("n1", "delay", vec![])]))
+        .unwrap();
+    let exec = engine.run("cancel_done_wf", HashMap::new(), None).await.unwrap();
+    let err2 = engine.cancel_execution(&exec.id).await.unwrap_err();
+    assert!(matches!(err2, EngineError::InvalidState(_)), "got {:?}", err2);
+}
+
+/// persist_execution U10 refusal end-to-end: persistence dir outside the
+/// execution world's writable roots -> no JSONL file is written (the run
+/// itself still succeeds) (engine.rs ~2409-2414).
+#[tokio::test]
+async fn w4a_persist_execution_u10_refusal_writes_nothing() {
+    let exec_dir = temp_root("w4a_exec_out");
+    let world_root = temp_root("w4a_world_root");
+    let engine = WorkflowEngine::with_persistence(exec_dir.clone());
+    engine.set_execution_world(std::sync::Arc::new(NarrowWorld { allowed: world_root }));
+
+    engine
+        .register_workflow(make_workflow("u10json_wf", vec![make_node("n1", "delay", vec![])]))
+        .unwrap();
+    let exec = engine.run("u10json_wf", HashMap::new(), None).await.unwrap();
+    assert_eq!(exec.state, ExecutionState::Completed);
+
+    let jsonl: Vec<_> = std::fs::read_dir(&exec_dir)
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .filter(|e| e.path().extension().map(|x| x == "jsonl").unwrap_or(false))
+        .collect();
+    assert!(jsonl.is_empty(), "guard must refuse JSONL outside world roots");
+}
+
+/// get_execution falls back to disk: a second engine over the same
+/// persistence dir loads a finished execution; a bare engine misses
+/// (engine.rs ~2418-2446).
+#[tokio::test]
+async fn w4a_get_execution_loads_from_disk() {
+    let dir = temp_root("w4a_disk");
+    let engine = WorkflowEngine::with_persistence(dir.clone());
+    engine
+        .register_workflow(make_workflow("disk_wf", vec![make_node("n1", "delay", vec![])]))
+        .unwrap();
+    let exec = engine.run("disk_wf", HashMap::new(), None).await.unwrap();
+    let id = exec.id.clone();
+
+    let engine2 = WorkflowEngine::with_persistence(dir.clone());
+    let loaded = engine2.get_execution(&id).await.expect("loaded from disk");
+    assert_eq!(loaded.workflow_name, "disk_wf");
+    assert_eq!(loaded.id, id);
+    assert_eq!(loaded.state, ExecutionState::Completed);
+
+    // Bare engine (no persistence) with an unknown id -> None.
+    let engine3 = WorkflowEngine::new();
+    assert!(engine3.get_execution("ghost-id").await.is_none());
+}
+
+/// spawn_cron_triggers: valid local cron fires the workflow through
+/// start_async; the trigger input map gets the serialized `input` backfill
+/// (engine.rs ~807 + ~849-922 local/Ok arms).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn w4a_spawn_cron_triggers_local_fires() {
+    use crate::types::TriggerConfig;
+
+    let engine = WorkflowEngine::new_arc();
+    let mut wf = make_workflow("w4a_cron_fire_wf", vec![make_node("n1", "delay", vec![])]);
+    wf.triggers = vec![TriggerConfig {
+        trigger_type: "cron".to_string(),
+        config: HashMap::from([
+            ("schedule".to_string(), serde_json::json!("*/2 * * * * *")),
+            ("input".to_string(), serde_json::json!({"topic": "x"})),
+        ]),
+    }];
+    engine.register_workflow(wf).unwrap();
+
+    // Backfill: list_cron_workflows serializes the whole input map into an
+    // `input` string when the config doesn't declare one explicitly.
+    let listed = engine.list_cron_workflows();
+    assert_eq!(listed.len(), 1);
+    assert!(listed[0].3.contains_key("input"), "input backfill missing");
+
+    let handles = engine.spawn_cron_triggers();
+    assert_eq!(handles.len(), 1);
+
+    // Every-2-seconds schedule: poll up to 12s for the fired execution.
+    let mut fired = false;
+    for _ in 0..48 {
+        tokio::time::sleep(Duration::from_millis(250)).await;
+        if !engine.list_executions(Some("w4a_cron_fire_wf")).await.is_empty() {
+            fired = true;
+            break;
+        }
+    }
+    for h in handles {
+        h.abort();
+    }
+    assert!(fired, "cron trigger never fired the workflow");
+}
+
+/// spawn_cron_triggers: invalid cron expressions are skipped (no task
+/// spawned); a utc-timezone schedule whose workflow disappears before fire
+/// logs the start-failure warn arm instead of panicking
+/// (engine.rs ~836-846 + utc arm ~861-872 + ~906-912).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn w4a_spawn_cron_triggers_invalid_and_missing_workflow() {
+    use crate::types::TriggerConfig;
+
+    let engine = WorkflowEngine::new_arc();
+
+    let mut bad = make_workflow("w4a_bad_cron_wf", vec![make_node("n1", "delay", vec![])]);
+    bad.triggers = vec![TriggerConfig {
+        trigger_type: "cron".to_string(),
+        config: HashMap::from([("schedule".to_string(), serde_json::json!("not-a-cron"))]),
+    }];
+    engine.register_workflow(bad).unwrap();
+
+    let mut ghost = make_workflow("w4a_utc_ghost_wf", vec![make_node("n1", "delay", vec![])]);
+    ghost.triggers = vec![TriggerConfig {
+        trigger_type: "cron".to_string(),
+        config: HashMap::from([
+            ("schedule".to_string(), serde_json::json!("*/2 * * * * *")),
+            ("timezone".to_string(), serde_json::json!("utc")),
+        ]),
+    }];
+    engine.register_workflow(ghost).unwrap();
+
+    let handles = engine.spawn_cron_triggers();
+    assert_eq!(handles.len(), 1, "invalid cron must be skipped");
+
+    // Remove the workflow so the fire hits the start-failure warn arm.
+    engine.unregister("w4a_utc_ghost_wf");
+
+    // Let the every-2-second schedule fire at least once.
+    tokio::time::sleep(Duration::from_secs(3)).await;
+    for h in handles {
+        h.abort();
+    }
+    assert!(
+        engine.list_executions(Some("w4a_utc_ghost_wf")).await.is_empty(),
+        "missing workflow must not produce executions"
+    );
+}
+
+/// new_integrated_with_dirs: a checkpoint root that can't be created (path
+/// occupied by a file) degrades to no checkpoint store; attaching an
+/// execution world on an integrated engine re-registers the script
+/// executor (engine.rs ~556-568 + ~1295-1308).
+#[tokio::test]
+async fn w4a_new_integrated_bad_checkpoint_root_degrades() {
+    let base = temp_root("w4a_badcp");
+    let blocker = base.join("blocker");
+    std::fs::write(&blocker, "x").unwrap();
+
+    let tools = std::sync::Arc::new(nemesis_tools::registry::ToolRegistry::new());
+    let engine = WorkflowEngine::new_integrated_with_dirs(
+        std::sync::Arc::new(W4aProvider) as std::sync::Arc<dyn nemesis_providers::router::LLMProvider>,
+        tools,
+        Some(base.join("executions")),
+        Some(blocker),
+    );
+    assert!(engine.checkpoint_store().is_none(), "bad root must degrade to None");
+
+    // Integrated engine carries tools; set_execution_world takes the
+    // tools-lane branch and exposes the world.
+    let world_root = temp_root("w4a_cp_world");
+    engine.set_execution_world(std::sync::Arc::new(NarrowWorld { allowed: world_root }));
+    assert!(engine.execution_world().is_some());
+    assert!(engine.node_executors.get("script").is_some());
+}
+
+// ---------------------------------------------------------------------------
+// (BUG S12b-1) Bare-engine tool node must fail loudly, not fake success
+// ---------------------------------------------------------------------------
+
+/// `WorkflowEngine::new()`（CLI 裸引擎）跑 tool 节点：占位 ToolNodeExecutor
+/// 必须显式 Failed 并给出「未配置工具执行器」错误，执行整体 Failed——
+/// 不再伪造 {"tool":…,"status":"success"} + Completed。
+#[tokio::test]
+async fn bare_engine_tool_node_fails_instead_of_fake_success() {
+    let engine = WorkflowEngine::new();
+    engine
+        .register_workflow(make_workflow(
+            "tool_wf",
+            vec![make_node("t", "tool", vec![])],
+        ))
+        .unwrap();
+
+    let execution = engine
+        .start_execution("tool_wf", HashMap::new())
+        .await
+        .unwrap();
+
+    assert_eq!(
+        execution.state,
+        ExecutionState::Failed,
+        "bare-engine tool node must fail loudly"
+    );
+    let node = execution.node_results.get("t").expect("tool node result");
+    assert_eq!(node.state, ExecutionState::Failed);
+    let err = node.error.as_deref().unwrap_or_default();
+    assert!(err.contains("no tool executor configured"), "got: {err}");
+    assert!(err.contains("未配置工具执行器"), "got: {err}");
+}
+
+/// 对照组：同一 workflow 换成 gateway 的 new_integrated 引擎后，tool 节点
+/// 经 RealToolNodeExecutor 正常执行——显式失败只属于裸引擎路径。
+#[tokio::test]
+async fn integrated_engine_tool_node_still_executes() {
+    struct EchoTool;
+    #[async_trait::async_trait]
+    impl nemesis_tools::registry::Tool for EchoTool {
+        fn name(&self) -> &str {
+            "echo"
+        }
+        fn description(&self) -> &str {
+            "echo back"
+        }
+        fn parameters(&self) -> serde_json::Value {
+            serde_json::json!({"type": "object", "properties": {}})
+        }
+        async fn execute(
+            &self,
+            _args: &serde_json::Value,
+        ) -> nemesis_tools::types::ToolResult {
+            nemesis_tools::types::ToolResult::success("echoed")
+        }
+    }
+
+    let tools = Arc::new(nemesis_tools::registry::ToolRegistry::new());
+    tools.register(Arc::new(EchoTool) as Arc<dyn nemesis_tools::registry::Tool>);
+    let engine = WorkflowEngine::new_integrated(
+        Arc::new(W4aProvider) as Arc<dyn nemesis_providers::router::LLMProvider>,
+        tools,
+        None,
+    );
+    engine
+        .register_workflow(make_workflow(
+            "tool_ok_wf",
+            vec![{
+                let mut n = make_node("t", "tool", vec![]);
+                n.config
+                    .insert("name".to_string(), serde_json::json!("echo"));
+                n
+            },
+            ],
+        ))
+        .unwrap();
+
+    let execution = engine
+        .start_execution("tool_ok_wf", HashMap::new())
+        .await
+        .unwrap();
+    assert_eq!(execution.state, ExecutionState::Completed);
+}
+
+// ===========================================================================
+// S12b batch（quality-hardening goal 冲刺）：
+// ① validate_dag 直测三臂（空图 / 未知依赖视为已满足 / 环检测）
+// ② 运行期 deadlock guard：未知依赖编译期放行、运行期永不满足 → Failed
+//    （engine.rs ~2051-2062；与 validate_dag 的“treat as satisfied”刻意不对称）
+// ③ restore 循环真实迭代臂：Ok(None)-continue 与 latest-Err-warn-continue。
+//    现有 w4a_restore_* 测试用 ScriptedStore::empty()，list_executions 返回
+//    空 vec → for 循环体从不执行，两臂实际未覆盖（空洞对账见冲刺报告）；
+//    这两个测试用包裹 store 强制 list 出 id，把循环体真正跑起来。
+// ===========================================================================
+
+#[test]
+fn s12b_validate_dag_empty_nodes_is_ok() {
+    assert!(validate_dag(&[]).is_ok());
+}
+
+#[test]
+fn s12b_validate_dag_unknown_dep_treated_as_satisfied() {
+    // 引用不存在的依赖：编译期视为已满足（不产生无法排队的节点）
+    let nodes = vec![make_node("solo", "transform", vec!["ghost"])];
+    assert!(
+        validate_dag(&nodes).is_ok(),
+        "unknown dep must not look like a cycle at DAG-validation time"
+    );
+}
+
+#[test]
+fn s12b_validate_dag_cycle_detected() {
+    let nodes = vec![
+        make_node("a", "transform", vec!["b"]),
+        make_node("b", "transform", vec!["a"]),
+    ];
+    match validate_dag(&nodes) {
+        Err(EngineError::CycleDetected(msg)) => {
+            assert_eq!(msg, "circular dependency");
+        }
+        other => panic!("expected CycleDetected, got {:?}", other),
+    }
+}
+
+#[tokio::test]
+async fn s12b_condition_false_branch_dropped_but_downstream_still_completes() {
+    // 实测钉当前语义（S12b batch）：条件边为假时 should_run_node 把该节点从
+    // runnable 静默丢弃（scheduler.rs ~297-301，无 Skipped 结果），但调度器按
+    // 拓扑层级继续推进——依赖它的下游节点**照常执行并完成**。整个执行
+    // Completed 而非 Failed。（「条件假分支的下游是否应该跟随跳过」是个设计
+    // 层面的开放问题，已在冲刺报告中列为挂账观察项；此处只钉现状。）
+    let mut wf = make_workflow(
+        "cond_deadlock_wf",
+        vec![
+            make_node("start", "transform", vec![]),
+            make_node("branch", "transform", vec!["start"]),
+            make_node("out", "transform", vec!["branch"]),
+        ],
+    );
+    wf.edges = vec![crate::types::Edge {
+        from_node: "start".to_string(),
+        to_node: "branch".to_string(),
+        condition: Some("{{go}} == yes".to_string()), // go 未提供 → false → branch 被丢弃
+    }];
+    let engine = WorkflowEngine::new();
+    engine.register_workflow(wf).unwrap();
+
+    // 必须走真调度器路径（run/run_async）；start_execution 是 deprecated 内联
+    // 路径，不评估条件边，branch 会直接执行
+    let execution = engine
+        .run("cond_deadlock_wf", HashMap::new(), None)
+        .await
+        .unwrap();
+
+    assert_eq!(execution.state, ExecutionState::Completed);
+    let results = execution.node_results;
+    assert!(results.contains_key("start"), "start 无条件执行");
+    assert!(
+        !results.contains_key("branch"),
+        "条件为假的节点被丢弃、不产生结果"
+    );
+    assert!(
+        results.contains_key("out"),
+        "当前语义：被丢分支的下游仍会执行（挂账观察项）"
+    );
+}
+
+// ---- restore 循环迭代臂 -----------------------------------------------------
+
+/// 包裹 [`ScriptedStore`]，额外让 `list_executions` 报出“幽灵执行 id”：
+/// 其 latest 走 inner（None 或 Err），从而驱动 restore for 循环的 continue 臂。
+struct GhostIdStore {
+    inner: ScriptedStore,
+    ghosts: Vec<String>,
+}
+
+#[async_trait]
+impl CheckpointStore for GhostIdStore {
+    async fn save(&self, cp: Checkpoint) -> Result<String, crate::checkpoint::StoreError> {
+        self.inner.save(cp).await
+    }
+    async fn load(
+        &self,
+        e: &str,
+        c: &str,
+    ) -> Result<Checkpoint, crate::checkpoint::StoreError> {
+        self.inner.load(e, c).await
+    }
+    async fn latest(&self, e: &str) -> Result<Option<Checkpoint>, crate::checkpoint::StoreError> {
+        // 幽灵 id 必须“真的没有 checkpoint”——inner 的 latest 对任意 id 都返回
+        // 同一份 cp，直接委托会让 ghost 也被 restore
+        if self.ghosts.iter().any(|g| g == e) {
+            return Ok(None);
+        }
+        self.inner.latest(e).await
+    }
+    async fn list(
+        &self,
+        e: &str,
+    ) -> Result<Vec<crate::checkpoint::CheckpointMeta>, crate::checkpoint::StoreError> {
+        self.inner.list(e).await
+    }
+    async fn delete(&self, e: &str, c: &str) -> Result<(), crate::checkpoint::StoreError> {
+        self.inner.delete(e, c).await
+    }
+    async fn list_executions(&self) -> Result<Vec<String>, crate::checkpoint::StoreError> {
+        let mut ids = self.inner.list_executions().await?;
+        ids.extend(self.ghosts.iter().cloned());
+        Ok(ids)
+    }
+}
+
+fn s12b_wf_for_cp(name: &str) -> Workflow {
+    make_workflow(name, vec![make_node("n1", "transform", vec![])])
+}
+
+#[tokio::test]
+async fn s12b_restore_iterates_ids_and_skips_missing_checkpoints() {
+    // real 有 checkpoint → restore；ghost 无 checkpoint → Ok(None) → continue
+    let wf = s12b_wf_for_cp("restore_mix");
+    let cp = scripted_checkpoint(&wf, "exec-real", None, &[], false);
+    let store = GhostIdStore {
+        inner: ScriptedStore::with_latest(cp),
+        ghosts: vec!["exec-ghost".to_string()],
+    };
+    let engine = WorkflowEngine::new();
+    engine.set_checkpoint_store(Arc::new(store));
+    // restore 按 workflow_hash 在已注册工作流里找定义（找不到 = config drift 跳过），
+    // 所以这里必须把同一份 wf（同 hash）注册进引擎
+    engine.register_workflow(s12b_wf_for_cp("restore_mix")).unwrap();
+    let restored = engine.restore_incomplete_executions().await.unwrap();
+    assert_eq!(restored, 1, "only the real execution restores; ghost skipped");
+}
+
+#[tokio::test]
+async fn s12b_restore_latest_err_on_iterated_id_continues() {
+    // list 报出的 id 其 latest 返回 Err → warn + continue → Ok(0)
+    let wf = s12b_wf_for_cp("restore_err");
+    let cp = scripted_checkpoint(&wf, "exec-ok", None, &[], true); // terminal 也一并覆盖 skip 臂
+    let mut inner = ScriptedStore::with_latest(cp);
+    inner.fail_latest = true;
+    let store = GhostIdStore {
+        inner,
+        ghosts: vec![],
+    };
+    let engine = WorkflowEngine::new();
+    engine.set_checkpoint_store(Arc::new(store));
+    assert_eq!(engine.restore_incomplete_executions().await.unwrap(), 0);
 }

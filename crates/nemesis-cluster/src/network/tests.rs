@@ -552,3 +552,87 @@ fn test_get_all_local_ips_filtered_same() {
     let ips2 = get_all_local_ips_filtered();
     assert_eq!(ips1, ips2);
 }
+
+// ============================================================
+// S4 coverage: mixed address-family arm in is_same_subnet (194),
+// busy-port continue (385), and port exhaustion errors (388-391,
+// 408-411).
+// ============================================================
+
+/// An IPv6 vs IPv4 pair can never match a V4 mask: the mixed-family
+/// arm continues to the next interface (network.rs 184-195).
+#[test]
+fn test_s4_is_same_subnet_mixed_family_never_matches() {
+    // Deterministic result (false) regardless of the host's interfaces:
+    // no V4 mask can pair with a V6 address, and the simple /24 fallback
+    // also rejects the pair.
+    assert!(!is_same_subnet("::1", "127.0.0.1"));
+    assert!(!is_same_subnet("127.0.0.1", "::1"));
+    assert!(!is_same_subnet("fe80::1", "fe80::2"));
+}
+
+/// A port held by another listener is skipped via the continue arm
+/// (network.rs 385). The holder must bind `0.0.0.0:P` — the same address
+/// the finder probes — since Windows permits a wildcard bind to coexist
+/// with an existing loopback-specific bind on the same port.
+#[test]
+fn test_s4_find_available_port_skips_busy_port() {
+    let holder = std::net::TcpListener::bind("0.0.0.0:0").unwrap();
+    let held = holder.local_addr().unwrap().port();
+    let found = find_available_port(held).expect("next port should be free");
+    assert_ne!(found, held, "held port must be skipped");
+    assert!(
+        (held.saturating_add(1)..=held.saturating_add(100)).contains(&found),
+        "expected a port in the scanned range, got {}",
+        found
+    );
+}
+
+/// Holding (or being unable to bind) all 100 scanned ports makes the
+/// TCP finder fail with the exhaustion error (network.rs 388-391).
+#[test]
+fn test_s4_find_available_port_all_busy_errors() {
+    let probe = std::net::TcpListener::bind("0.0.0.0:0").unwrap();
+    let start = probe.local_addr().unwrap().port();
+    drop(probe);
+
+    // Hold every port in the scanned range. Ports we fail to bind are
+    // held by someone else — equally unavailable to the finder.
+    let mut holders = Vec::new();
+    for offset in 0..100u16 {
+        let port = start.saturating_add(offset);
+        if let Ok(l) = std::net::TcpListener::bind(format!("0.0.0.0:{}", port)) {
+            holders.push(l);
+        }
+    }
+
+    let err = find_available_port(start).unwrap_err();
+    assert!(
+        err.contains("no available port found"),
+        "unexpected error: {}",
+        err
+    );
+}
+
+/// Same exhaustion check for the UDP finder (network.rs 408-411).
+#[test]
+fn test_s4_find_available_udp_port_all_busy_errors() {
+    let probe = std::net::UdpSocket::bind("0.0.0.0:0").unwrap();
+    let start = probe.local_addr().unwrap().port();
+    drop(probe);
+
+    let mut holders = Vec::new();
+    for offset in 0..100u16 {
+        let port = start.saturating_add(offset);
+        if let Ok(s) = std::net::UdpSocket::bind(format!("0.0.0.0:{}", port)) {
+            holders.push(s);
+        }
+    }
+
+    let err = find_available_udp_port(start).unwrap_err();
+    assert!(
+        err.contains("no available UDP port found"),
+        "unexpected error: {}",
+        err
+    );
+}

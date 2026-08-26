@@ -45,6 +45,7 @@ async fn test_whatsapp_send_queues_on_bridge_failure() {
         chat_id: "12345".to_string(),
         content: "Hello".to_string(),
         message_type: String::new(),
+        meta: Default::default(),
     };
     ch.send(msg).await.unwrap(); // should succeed (queued on bridge failure)
 

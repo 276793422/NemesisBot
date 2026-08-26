@@ -63,3 +63,6 @@ pub async fn run(action: CredentialsAction, local: bool) -> Result<()> {
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod tests;

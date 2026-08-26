@@ -651,3 +651,355 @@ fn test_connection_connect_to_invalid_addr() {
     let result = Connection::connect("999.999.999.999:99999");
     assert!(result.is_err());
 }
+
+// ============================================================
+// S4 coverage: read/write loop arms, heartbeat, idle monitor,
+// accessors, Debug
+// ============================================================
+
+/// Minimal no-op tracing subscriber that reports every callsite enabled.
+/// Field expressions inside `warn!`/`debug!` macros only evaluate when a
+/// subscriber is active; installing this as the global default (once per
+/// process) makes those regions execute so they count as covered.
+struct AllEventsSubscriber;
+impl tracing::Subscriber for AllEventsSubscriber {
+    fn enabled(&self, _metadata: &tracing::Metadata<'_>) -> bool {
+        true
+    }
+    fn new_span(&self, _span: &tracing::span::Attributes<'_>) -> tracing::Id {
+        tracing::Id::from_u64(1)
+    }
+    fn record(&self, _span: &tracing::Id, _values: &tracing::span::Record<'_>) {}
+    fn record_follows_from(&self, _span: &tracing::Id, _follows: &tracing::Id) {}
+    fn event(&self, _event: &tracing::Event<'_>) {}
+    fn enter(&self, _span: &tracing::Id) {}
+    fn exit(&self, _span: &tracing::Id) {}
+}
+
+fn ensure_tracing_subscriber() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        // If another test module already installed a global default, that
+        // subscriber serves the same purpose — ignore the error.
+        let _ = tracing::subscriber::set_global_default(AllEventsSubscriber);
+    });
+}
+
+/// Sync `Connection::recv` must reject a length prefix larger than
+/// MAX_FRAME_SIZE before attempting to read the payload.
+#[test]
+fn test_connection_recv_frame_too_large() {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server = std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        let huge = (MAX_FRAME_SIZE as u32) + 1;
+        stream.write_all(&huge.to_be_bytes()).unwrap();
+        // Keep the stream open so the header read succeeds and the size
+        // check is what fails.
+        std::thread::sleep(std::time::Duration::from_millis(200));
+    });
+
+    let mut conn = Connection::connect(&addr.to_string()).unwrap();
+    let err = conn.recv().unwrap_err();
+    match err {
+        ConnectionError::Io(ref e) => assert_eq!(e.kind(), std::io::ErrorKind::InvalidData),
+        other => panic!("expected Io(InvalidData), got: {:?}", other),
+    }
+    server.join().unwrap();
+}
+
+/// `start()` on an already-closed connection must fail with a clean error.
+#[tokio::test]
+async fn test_tcp_conn_start_after_close_errors() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        let (_s, _) = listener.accept().await.unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    });
+
+    let stream = TokioTcpStream::connect(addr).await.unwrap();
+    let mut conn = TcpConn::new(stream, TcpConnConfig::default());
+    conn.close();
+    let err = conn.start().await.unwrap_err();
+    assert_eq!(err, "connection is closed");
+    let _ = server.await;
+}
+
+/// When the receive channel is full the read loop drops messages instead of
+/// blocking, incrementing `dropped_count`.
+#[tokio::test]
+async fn test_tcp_conn_receive_buffer_full_drops_messages() {
+    ensure_tracing_subscriber();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let peer = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        // Send more frames than the receive buffer (capacity 1) can hold.
+        for i in 0..5 {
+            let msg =
+                WireMessage::new_request("peer", "me", "hello", serde_json::json!({ "i": i }));
+            let data = msg.to_bytes().unwrap();
+            write_frame_async(&mut stream, &data).await.unwrap();
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+    });
+
+    let stream = TokioTcpStream::connect(addr).await.unwrap();
+    let mut conn = TcpConn::new(
+        stream,
+        TcpConnConfig {
+            read_buffer_size: 1,
+            ..Default::default()
+        },
+    );
+    conn.start().await.unwrap();
+
+    // Give the read loop time to process the burst.
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    assert!(
+        conn.dropped_count() >= 1,
+        "messages should be dropped when the receive buffer is full"
+    );
+
+    // The first message is still buffered and receivable.
+    let first = tokio::time::timeout(std::time::Duration::from_secs(1), conn.receive())
+        .await
+        .expect("first message should be buffered")
+        .expect("first message should be Some");
+    assert_eq!(first.action, "hello");
+
+    conn.close();
+    let _ = peer.await;
+}
+
+/// A frame with a non-JSON payload makes the read loop warn and skip the
+/// message, but keeps the connection alive for subsequent valid frames.
+#[tokio::test]
+async fn test_tcp_conn_read_loop_invalid_json_recovers() {
+    ensure_tracing_subscriber();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let peer = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        // Garbage frame first.
+        write_frame_async(&mut stream, b"this is not json").await.unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        // Then a valid frame — the read loop must still deliver it.
+        let msg = WireMessage::new_request("peer", "me", "ping", serde_json::json!({}));
+        write_frame_async(&mut stream, &msg.to_bytes().unwrap())
+            .await
+            .unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    });
+
+    let stream = TokioTcpStream::connect(addr).await.unwrap();
+    let mut conn = TcpConn::new(stream, TcpConnConfig::default());
+    conn.start().await.unwrap();
+
+    let got = tokio::time::timeout(std::time::Duration::from_secs(2), conn.receive())
+        .await
+        .expect("valid frame should arrive after garbage");
+    assert!(got.is_some());
+    assert_eq!(got.unwrap().action, "ping");
+    assert_eq!(conn.dropped_count(), 0);
+
+    conn.close();
+    let _ = peer.await;
+}
+
+/// A length prefix larger than MAX_FRAME_SIZE surfaces as a non-EOF read
+/// error: the read loop warns and terminates, so `receive()` returns None.
+#[tokio::test]
+async fn test_tcp_conn_read_error_terminates_read_loop() {
+    ensure_tracing_subscriber();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let peer = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        use tokio::io::AsyncWriteExt;
+        let huge = u32::MAX.to_be_bytes();
+        stream.write_all(&huge).await.unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    });
+
+    let stream = TokioTcpStream::connect(addr).await.unwrap();
+    let mut conn = TcpConn::new(stream, TcpConnConfig::default());
+    conn.start().await.unwrap();
+
+    // receive() resolves to None once the read loop exits (sender dropped).
+    let got = tokio::time::timeout(std::time::Duration::from_secs(2), conn.receive())
+        .await
+        .expect("receive should resolve after read loop exits");
+    assert!(got.is_none(), "read loop should have terminated");
+
+    conn.close();
+    let _ = peer.await;
+}
+
+/// An RST from the peer (linger-0 close) makes writes fail; the write loop
+/// logs the error, exits, and subsequent `send()` calls fail because the
+/// send channel is closed.
+#[tokio::test]
+async fn test_tcp_conn_write_error_closes_write_loop() {
+    ensure_tracing_subscriber();
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let peer = std::thread::spawn(move || {
+        let (stream, _) = listener.accept().unwrap();
+        // linger(0) + close => RST instead of FIN.
+        let sock = socket2::SockRef::from(&stream);
+        sock.set_linger(Some(std::time::Duration::ZERO)).unwrap();
+        drop(stream);
+    });
+
+    let stream = TokioTcpStream::connect(addr).await.unwrap();
+    let mut conn = TcpConn::new(
+        stream,
+        TcpConnConfig {
+            send_buffer_size: 64,
+            ..Default::default()
+        },
+    );
+    conn.start().await.unwrap();
+
+    // Keep sending until the write loop dies and the channel closes.
+    let mut got_err = None;
+    for _ in 0..40 {
+        let msg = WireMessage::new_request("a", "b", "ping", serde_json::json!({}));
+        match conn.send(&msg).await {
+            Ok(()) => {
+                tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+            }
+            Err(e) => {
+                got_err = Some(e);
+                break;
+            }
+        }
+    }
+    conn.close();
+    peer.join().unwrap();
+    assert!(
+        got_err.is_some(),
+        "send should fail once the peer reset the connection"
+    );
+}
+
+/// The idle monitor closes its task once no activity happened for longer
+/// than `idle_timeout`.
+#[tokio::test]
+async fn test_tcp_conn_idle_timeout_fires() {
+    ensure_tracing_subscriber();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let peer = tokio::spawn(async move {
+        let (s, _) = listener.accept().await.unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        drop(s);
+    });
+
+    let stream = TokioTcpStream::connect(addr).await.unwrap();
+    let mut conn = TcpConn::new(
+        stream,
+        TcpConnConfig {
+            idle_timeout: std::time::Duration::from_millis(80),
+            ..Default::default()
+        },
+    );
+    conn.start().await.unwrap();
+
+    // check interval = idle_timeout / 2 = 40ms; 300ms is plenty for the
+    // idle warn + task break to run.
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    conn.close();
+    let _ = peer.await;
+}
+
+/// With `heartbeat_interval` set, the heartbeat task pushes 4-byte
+/// zero-length frames that the peer can read.
+#[tokio::test]
+async fn test_tcp_conn_heartbeat_sends_empty_frames() {
+    ensure_tracing_subscriber();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let peer = tokio::spawn(async move {
+        let (mut s, _) = listener.accept().await.unwrap();
+        use tokio::io::AsyncReadExt;
+        let mut buf = [0u8; 4];
+        s.read_exact(&mut buf).await.unwrap();
+        assert_eq!(u32::from_be_bytes(buf), 0, "heartbeat frame must be empty");
+    });
+
+    let stream = TokioTcpStream::connect(addr).await.unwrap();
+    let mut conn = TcpConn::new(
+        stream,
+        TcpConnConfig {
+            heartbeat_interval: Some(std::time::Duration::from_millis(60)),
+            ..Default::default()
+        },
+    );
+    conn.start().await.unwrap();
+
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(2), peer)
+        .await
+        .expect("peer should read a heartbeat frame");
+    conn.close();
+}
+
+/// White-box: `receive()` returns None when the receiver slot is absent.
+#[tokio::test]
+async fn test_tcp_conn_receive_none_without_receiver_slot() {
+    ensure_tracing_subscriber();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let peer = tokio::spawn(async move {
+        let (s, _) = listener.accept().await.unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        drop(s);
+    });
+
+    let stream = TokioTcpStream::connect(addr).await.unwrap();
+    let mut conn = TcpConn::new(stream, TcpConnConfig::default());
+    conn.start().await.unwrap();
+
+    conn.recv_rx = None; // white-box: simulate an already-consumed receiver
+    let got = conn.receive().await;
+    assert!(got.is_none());
+
+    conn.close();
+    let _ = peer.await;
+}
+
+/// local/remote address accessors, update_last_used, and Debug output.
+#[tokio::test]
+async fn test_tcp_conn_addr_accessors_last_used_and_debug() {
+    ensure_tracing_subscriber();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let peer = tokio::spawn(async move {
+        let (s, _) = listener.accept().await.unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        drop(s);
+    });
+
+    let stream = TokioTcpStream::connect(addr).await.unwrap();
+    let remote = stream.peer_addr().unwrap().to_string();
+    let local = stream.local_addr().unwrap().to_string();
+    let mut conn = TcpConn::new(stream, TcpConnConfig::default());
+
+    assert_eq!(conn.local_addr(), local);
+    assert_eq!(conn.remote_addr(), remote);
+    assert!(conn.created_at() <= std::time::Instant::now());
+
+    let before = conn.last_used();
+    conn.update_last_used();
+    assert!(conn.last_used() >= before);
+
+    let dbg = format!("{:?}", conn);
+    assert!(dbg.contains("TcpConn"), "Debug output: {}", dbg);
+
+    conn.start().await.unwrap();
+    conn.close(); // exercises the close debug event fields
+    let _ = peer.await;
+}

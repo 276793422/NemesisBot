@@ -1,4 +1,5 @@
 use super::*;
+use tokio::io::AsyncBufReadExt; // read_line 所在 trait（E0599）
 
 #[tokio::test]
 async fn test_stub_scan_file_clean() {
@@ -1430,4 +1431,1282 @@ fn test_extract_paths_cron_no_command() {
     let args = serde_json::json!({"action": "add", "message": "reminder"});
     let paths = chain.extract_paths_from_args("cron", &args);
     assert!(paths.is_empty());
+}
+
+// ============================================================
+// MockEngine + chain arms (2026-08-25 coverage push)
+// ============================================================
+// StubScanner 永远 clean，覆盖不了 chain 的 blocked / not-ready-skip /
+// start/stop warn 分支。MockEngine 按 flags 可控返回感染/未就绪/启停失败。
+
+struct MockEngine {
+    ready: bool,
+    infected: bool,
+    fail_start: bool,
+    fail_stop: bool,
+}
+
+#[async_trait]
+impl VirusScanner for MockEngine {
+    fn name(&self) -> &str {
+        "mock"
+    }
+
+    async fn get_info(&self) -> EngineInfo {
+        EngineInfo {
+            name: "mock".to_string(),
+            version: String::new(),
+            address: String::new(),
+            ready: self.ready,
+            start_time: String::new(),
+        }
+    }
+
+    async fn start(&self) -> Result<(), String> {
+        if self.fail_start {
+            Err("mock start failure".to_string())
+        } else {
+            Ok(())
+        }
+    }
+
+    async fn stop(&self) -> Result<(), String> {
+        if self.fail_stop {
+            Err("mock stop failure".to_string())
+        } else {
+            Ok(())
+        }
+    }
+
+    async fn is_ready(&self) -> bool {
+        self.ready
+    }
+
+    async fn scan_file(&self, path: &Path) -> ScanResult {
+        if self.infected {
+            ScanResult::with_threats("mock", "Mock.Virus", &path.to_string_lossy())
+        } else {
+            ScanResult::clean_with_path("mock", &path.to_string_lossy())
+        }
+    }
+
+    async fn scan_content(&self, _content: &[u8]) -> ScanResult {
+        if self.infected {
+            ScanResult::with_threats("mock", "Mock.Virus", "")
+        } else {
+            ScanResult::clean_from("mock")
+        }
+    }
+
+    async fn scan_directory(&self, dir: &Path) -> Vec<ScanResult> {
+        if self.infected {
+            vec![ScanResult::with_threats(
+                "mock",
+                "Mock.Virus",
+                &dir.join("x.bin").to_string_lossy(),
+            )]
+        } else {
+            Vec::new()
+        }
+    }
+
+    async fn get_database_status(&self) -> DatabaseStatus {
+        DatabaseStatus::default()
+    }
+
+    async fn update_database(&self) -> Result<(), String> {
+        Ok(())
+    }
+
+    fn get_stats(&self) -> HashMap<String, serde_json::Value> {
+        let mut stats = HashMap::new();
+        stats.insert("mock".to_string(), serde_json::json!(true));
+        stats
+    }
+}
+
+fn mock_engine(ready: bool, infected: bool) -> MockEngine {
+    MockEngine {
+        ready,
+        infected,
+        fail_start: false,
+        fail_stop: false,
+    }
+}
+
+fn mock_chain(infected: bool) -> ScanChain {
+    let mut chain = ScanChain::with_defaults();
+    chain.add_engine(Box::new(mock_engine(true, infected)));
+    chain.set_enabled(true);
+    chain
+}
+
+#[tokio::test]
+async fn test_mock_chain_scan_file_blocked_short_circuits() {
+    let mut chain = ScanChain::with_defaults();
+    chain.add_engine(Box::new(mock_engine(true, true)));
+    let dir = tempfile::tempdir().unwrap();
+    let f = dir.path().join("target.exe");
+    std::fs::write(&f, "x").unwrap();
+    let result = chain.scan_file(&f).await;
+    assert!(result.blocked);
+    assert!(!result.clean);
+    assert_eq!(result.engine, "mock");
+    assert_eq!(result.virus, "Mock.Virus");
+    assert_eq!(result.results.len(), 1);
+}
+
+#[tokio::test]
+async fn test_mock_chain_scan_file_not_ready_skipped() {
+    let mut chain = ScanChain::with_defaults();
+    chain.add_engine(Box::new(mock_engine(false, true)));
+    let dir = tempfile::tempdir().unwrap();
+    let f = dir.path().join("skip.exe");
+    std::fs::write(&f, "x").unwrap();
+    let result = chain.scan_file(&f).await;
+    assert!(result.clean);
+    assert!(!result.blocked);
+    assert!(result.results.is_empty(), "engine must be skipped");
+}
+
+#[tokio::test]
+async fn test_mock_chain_scan_content_blocked() {
+    let chain = mock_chain(true);
+    let result = chain.scan_content(b"bad").await;
+    assert!(result.blocked);
+    assert_eq!(result.engine, "mock");
+    assert_eq!(result.virus, "Mock.Virus");
+}
+
+#[tokio::test]
+async fn test_mock_chain_scan_content_not_ready_skipped() {
+    let mut chain = ScanChain::with_defaults();
+    chain.add_engine(Box::new(mock_engine(false, true)));
+    let result = chain.scan_content(b"bad").await;
+    assert!(result.clean);
+    assert!(result.results.is_empty());
+}
+
+#[tokio::test]
+async fn test_mock_chain_scan_directory_blocked() {
+    let chain = mock_chain(true);
+    let dir = tempfile::tempdir().unwrap();
+    let result = chain.scan_directory(dir.path()).await;
+    assert!(result.blocked);
+    assert_eq!(result.engine, "mock");
+}
+
+#[tokio::test]
+async fn test_mock_chain_scan_directory_not_ready_skipped() {
+    let mut chain = ScanChain::with_defaults();
+    chain.add_engine(Box::new(mock_engine(false, true)));
+    let dir = tempfile::tempdir().unwrap();
+    let result = chain.scan_directory(dir.path()).await;
+    assert!(result.clean);
+    assert!(result.results.is_empty());
+}
+
+#[tokio::test]
+async fn test_chain_start_stop_with_failing_engine_only_warns() {
+    // start()/stop() 对引擎错误只 warn 不 panic —— 覆盖两条 warn 分支。
+    let mut chain = ScanChain::with_defaults();
+    chain.add_engine(Box::new(MockEngine {
+        ready: true,
+        infected: false,
+        fail_start: true,
+        fail_stop: true,
+    }));
+    chain.start().await;
+    chain.stop().await;
+}
+
+#[test]
+fn test_chain_clear_engines_resets_count() {
+    let mut chain = ScanChain::with_defaults();
+    chain.add_engine(Box::new(StubScanner));
+    chain.add_engine(Box::new(mock_engine(true, false)));
+    assert_eq!(chain.engine_count(), 2);
+    chain.clear_engines();
+    assert_eq!(chain.engine_count(), 0);
+}
+
+// ---- scan_tool_invocation blocked arms (infection via MockEngine) ----
+
+#[tokio::test]
+async fn test_mock_invocation_write_file_content_blocked() {
+    let chain = mock_chain(true);
+    let args = serde_json::json!({"path": "a.bin", "content": "payload"});
+    let (allowed, err) = chain.scan_tool_invocation("write_file", &args).await;
+    assert!(!allowed);
+    let e = err.expect("virus error");
+    assert!(e.contains("Mock.Virus"), "{e}");
+    assert!(e.contains("a.bin"), "{e}");
+}
+
+#[tokio::test]
+async fn test_mock_invocation_edit_file_content_blocked() {
+    let chain = mock_chain(true);
+    let args = serde_json::json!({"path": "b.bin", "content": "payload"});
+    let (allowed, err) = chain.scan_tool_invocation("edit_file", &args).await;
+    assert!(!allowed);
+    assert!(err.unwrap().contains("Mock.Virus"));
+}
+
+#[tokio::test]
+async fn test_mock_invocation_download_file_blocked() {
+    let chain = mock_chain(true);
+    let args = serde_json::json!({"path": "dl.exe"});
+    let (allowed, err) = chain.scan_tool_invocation("download", &args).await;
+    assert!(!allowed);
+    assert!(err.unwrap().contains("dl.exe"));
+}
+
+#[tokio::test]
+async fn test_mock_invocation_exec_file_blocked() {
+    let chain = mock_chain(true);
+    let args = serde_json::json!({"path": "run.exe"});
+    let (allowed, err) = chain.scan_tool_invocation("exec", &args).await;
+    assert!(!allowed);
+    assert!(err.unwrap().contains("run.exe"));
+}
+
+#[tokio::test]
+async fn test_mock_invocation_web_fetch_file_blocked() {
+    let chain = mock_chain(true);
+    let args = serde_json::json!({"url": "http://x/y", "path": "page.exe"});
+    let (allowed, err) = chain.scan_tool_invocation("web_fetch", &args).await;
+    assert!(!allowed);
+    assert!(err.unwrap().contains("page.exe"));
+}
+
+#[tokio::test]
+async fn test_mock_invocation_web_fetch_html_content_blocked() {
+    // content/data/body/html 四键循环，用 html 键覆盖。
+    let chain = mock_chain(true);
+    let args = serde_json::json!({"url": "http://x/y", "html": "<script>evil</script>"});
+    let (allowed, err) = chain.scan_tool_invocation("web_fetch", &args).await;
+    assert!(!allowed);
+    assert!(err.unwrap().contains("content from web_fetch"));
+}
+
+#[tokio::test]
+async fn test_mock_invocation_screen_capture_file_blocked() {
+    let chain = mock_chain(true);
+    let args = serde_json::json!({"save_path": "shot.exe"});
+    let (allowed, err) = chain.scan_tool_invocation("screen_capture", &args).await;
+    assert!(!allowed);
+    assert!(err.unwrap().contains("shot.exe"));
+}
+
+#[tokio::test]
+async fn test_mock_invocation_install_skill_file_blocked() {
+    let chain = mock_chain(true);
+    let args = serde_json::json!({"path": "skill.exe"});
+    let (allowed, err) = chain.scan_tool_invocation("install_skill", &args).await;
+    assert!(!allowed);
+    assert!(err.unwrap().contains("skill.exe"));
+}
+
+#[tokio::test]
+async fn test_mock_invocation_cron_command_blocked() {
+    let chain = mock_chain(true);
+    let args = serde_json::json!({"command": "run evil.exe"});
+    let (allowed, err) = chain.scan_tool_invocation("cron", &args).await;
+    assert!(!allowed);
+    assert!(err.unwrap().contains("cron command"));
+}
+
+// ---- extract_paths_from_args gaps ----
+
+#[test]
+fn test_extract_paths_file_write_uses_both_keys() {
+    let chain = ScanChain::with_defaults();
+    let args = serde_json::json!({"path": "/tmp/a.txt", "file_path": "/tmp/b.txt"});
+    let paths = chain.extract_paths_from_args("file_write", &args);
+    assert_eq!(
+        paths,
+        vec!["/tmp/a.txt".to_string(), "/tmp/b.txt".to_string()]
+    );
+}
+
+#[test]
+fn test_extract_paths_network_download_keys() {
+    let chain = ScanChain::with_defaults();
+    let args = serde_json::json!({"save_path": "/dl/x.zip", "path": "/alt/y.zip"});
+    let paths = chain.extract_paths_from_args("network_download", &args);
+    assert_eq!(
+        paths,
+        vec!["/dl/x.zip".to_string(), "/alt/y.zip".to_string()]
+    );
+}
+
+#[test]
+fn test_extract_paths_process_exec_command_parts() {
+    let chain = ScanChain::with_defaults();
+    let args = serde_json::json!({"command": "run /bin/tool.sh arg"});
+    let paths = chain.extract_paths_from_args("process_exec", &args);
+    assert!(paths.contains(&"/bin/tool.sh".to_string()));
+}
+
+#[test]
+fn test_extract_paths_exec_windows_backslash_path() {
+    let chain = ScanChain::with_defaults();
+    let args = serde_json::json!({"command": "C:\\tools\\evil.exe -x"});
+    let paths = chain.extract_paths_from_args("exec", &args);
+    assert!(paths.contains(&"C:\\tools\\evil.exe".to_string()), "{paths:?}");
+}
+
+// ---- create_engine config keys ----
+
+#[test]
+fn test_create_engine_clamav_empty_config_defaults() {
+    let engine = create_engine("clamav", &serde_json::json!({})).unwrap();
+    assert_eq!(engine.name(), "clamav");
+}
+
+#[test]
+fn test_create_engine_clamav_full_config_keys() {
+    // 全键变体：address/enabled/timeout_secs 走 scanner_config，
+    // clamav_path/data_dir/update_interval 走 wrapper setters。
+    let cfg = serde_json::json!({
+        "address": "127.0.0.1:33100",
+        "enabled": false,
+        "timeout_secs": 45,
+        "clamav_path": "/opt/clamav",
+        "data_dir": "/var/lib/clamav",
+        "update_interval": "12h",
+    });
+    let engine = create_engine("clamav", &cfg).unwrap();
+    assert_eq!(engine.name(), "clamav");
+}
+
+#[test]
+fn test_scan_result_is_clean_helper() {
+    assert!(ScanResult::clean_from("e").is_clean());
+    assert!(!ScanResult::with_threats("e", "V", "/p").is_clean());
+}
+
+#[test]
+fn test_load_from_full_config_unknown_engine_skipped() {
+    // enabled 列了 bogus 且给了 config → create_engine Err → warn + 跳过。
+    let mut chain = ScanChain::with_defaults();
+    let mut full = ScannerFullConfig::default();
+    full.enabled.push("bogus".to_string());
+    full.engines.insert(
+        "bogus".to_string(),
+        serde_json::json!({"state": {"install_status": "installed"}}),
+    );
+    chain.load_from_full_config(&full);
+    assert_eq!(chain.engine_count(), 0);
+}
+
+// ============================================================
+// ClamAVEngine success paths via fake clamd (2026-08-25 coverage push)
+// ============================================================
+
+async fn serve_clamd(
+    responder: Arc<dyn Fn(&str) -> Vec<u8> + Send + Sync>,
+    instream_reply: &'static str,
+) -> String {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let jh = tokio::spawn(async move {
+        loop {
+            let (socket, _) = match listener.accept().await {
+                Ok(x) => x,
+                Err(_) => return,
+            };
+            let responder = responder.clone();
+            tokio::spawn(async move {
+                let mut socket = socket;
+                let (read_half, mut write_half) = socket.split();
+                let mut reader = tokio::io::BufReader::new(read_half);
+                let mut line = String::new();
+                if reader.read_line(&mut line).await.is_err() {
+                    return;
+                }
+                let cmd = line.trim().strip_prefix('n').unwrap_or(line.trim()).to_string();
+                if cmd == "INSTREAM" {
+                    let mut lenbuf = [0u8; 4];
+                    let mut terminated = false;
+                    loop {
+                        if reader.read_exact(&mut lenbuf).await.is_err() {
+                            break;
+                        }
+                        let len = u32::from_be_bytes(lenbuf) as usize;
+                        if len == 0 {
+                            terminated = true;
+                            break;
+                        }
+                        let mut chunk = vec![0u8; len];
+                        if reader.read_exact(&mut chunk).await.is_err() {
+                            break;
+                        }
+                    }
+                    if terminated {
+                        let _ = write_half.write_all(instream_reply.as_bytes()).await;
+                    }
+                } else {
+                    let resp = responder(&cmd);
+                    if !resp.is_empty() {
+                        let _ = write_half.write_all(&resp).await;
+                    }
+                }
+            });
+        }
+    });
+    tokio::spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+        jh.abort();
+    });
+    addr.to_string()
+}
+
+fn exe_name() -> &'static str {
+    if cfg!(windows) {
+        "clamd.exe"
+    } else {
+        "clamd"
+    }
+}
+
+fn engine_on(addr: &str) -> ClamAVEngine {
+    ClamAVEngine::new(ClamAVEngineConfig {
+        address: addr.to_string(),
+        ..Default::default()
+    })
+}
+
+fn pong_and(
+    f: impl Fn(&str) -> Vec<u8> + Send + Sync + 'static,
+) -> Arc<dyn Fn(&str) -> Vec<u8> + Send + Sync> {
+    Arc::new(move |cmd: &str| {
+        if cmd == "PING" {
+            b"PONG\n".to_vec()
+        } else {
+            f(cmd)
+        }
+    })
+}
+
+#[tokio::test]
+async fn test_engine_get_database_status_default() {
+    let engine = engine_on("127.0.0.1:1");
+    let status = engine.get_database_status().await;
+    assert!(!status.available);
+}
+
+#[test]
+fn test_engine_detect_install_path_found() {
+    let dir = tempfile::tempdir().unwrap();
+    let inst = dir.path().join("inst");
+    std::fs::create_dir_all(&inst).unwrap();
+    std::fs::write(inst.join(exe_name()), "MZ").unwrap();
+    let engine = ClamAVEngine::new(ClamAVEngineConfig::default());
+    let found = engine.detect_install_path(dir.path()).unwrap();
+    assert_eq!(found, inst.to_string_lossy().to_string());
+}
+
+#[test]
+fn test_engine_validate_success() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join(exe_name()), "MZ").unwrap();
+    let engine = ClamAVEngine::new(ClamAVEngineConfig::default());
+    engine.validate(&dir.path().to_string_lossy()).unwrap();
+}
+
+#[tokio::test]
+async fn test_engine_start_ping_fail_errors() {
+    let engine = engine_on("127.0.0.1:1");
+    let err = engine.start().await.unwrap_err();
+    assert!(err.contains("ClamAV ping failed"), "{err}");
+    assert!(!engine.is_ready().await);
+}
+
+#[tokio::test]
+async fn test_engine_start_success_via_fake_clamd() {
+    // start 成功（PONG）→ is_ready → scan_file 感染 → update_database Ok → stop。
+    let addr = serve_clamd(
+        pong_and(|cmd: &str| {
+            if let Some(p) = cmd.strip_prefix("SCAN ") {
+                format!("{}: Win.Evil FOUND\n", p).into_bytes()
+            } else {
+                Vec::new()
+            }
+        }),
+        "stream: OK\n",
+    )
+    .await;
+    let engine = engine_on(&addr);
+    engine.start().await.unwrap();
+    assert!(engine.is_ready().await);
+
+    let dir = tempfile::tempdir().unwrap();
+    let f = dir.path().join("x.exe");
+    std::fs::write(&f, "MZ").unwrap();
+    let r = engine.scan_file(&f).await;
+    assert!(r.infected);
+    assert_eq!(r.virus, "Win.Evil");
+    assert_eq!(r.engine, "clamav");
+
+    // ready → update_database Ok 分支
+    engine.update_database().await.unwrap();
+
+    engine.stop().await.unwrap();
+    assert!(!engine.is_ready().await);
+}
+
+#[tokio::test]
+async fn test_engine_scan_file_error_maps_to_scan_error() {
+    // started + SCAN 应答空（client "empty response" Err）→ raw "scan error: ..."
+    let addr = serve_clamd(pong_and(|_| Vec::new()), "stream: OK\n").await;
+    let engine = engine_on(&addr);
+    engine.start().await.unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let f = dir.path().join("y.bin");
+    std::fs::write(&f, "data").unwrap();
+    let r = engine.scan_file(&f).await;
+    assert!(!r.infected);
+    assert!(r.raw.contains("scan error"), "raw: {}", r.raw);
+}
+
+#[tokio::test]
+async fn test_engine_scan_content_success_infected() {
+    let addr = serve_clamd(pong_and(|_| Vec::new()), "stream: Mock.Stream.Virus FOUND\n").await;
+    let engine = engine_on(&addr);
+    engine.start().await.unwrap();
+    let r = engine.scan_content(b"bad").await;
+    assert!(r.infected);
+    assert_eq!(r.virus, "Mock.Stream.Virus");
+    assert_eq!(r.engine, "clamav");
+}
+
+#[tokio::test]
+async fn test_engine_scan_content_error_maps_to_scan_error() {
+    // INSTREAM 应答缺失（服务端不回）→ client Err → "scan error: ..."
+    let addr = serve_clamd(pong_and(|_| Vec::new()), "").await;
+    let engine = engine_on(&addr);
+    engine.start().await.unwrap();
+    let r = engine.scan_content(b"bad").await;
+    assert!(!r.infected);
+    assert!(r.raw.contains("scan error"), "raw: {}", r.raw);
+}
+
+#[tokio::test]
+async fn test_engine_scan_directory_started_scans_each_file() {
+    let addr = serve_clamd(
+        pong_and(|cmd: &str| {
+            if let Some(p) = cmd.strip_prefix("SCAN ") {
+                format!("{}: OK\n", p).into_bytes()
+            } else {
+                Vec::new()
+            }
+        }),
+        "stream: OK\n",
+    )
+    .await;
+    let engine = engine_on(&addr);
+    engine.start().await.unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("a.bin"), "aaa").unwrap();
+    std::fs::write(dir.path().join("b.bin"), "bbb").unwrap();
+    let results = engine.scan_directory(dir.path()).await;
+    assert_eq!(results.len(), 2);
+    assert!(results.iter().all(|r| !r.infected));
+}
+
+// ---- ClamAVEngine download via hand-rolled HTTP server ----
+
+/// 一次性 HTTP 应答服务器：accept → 读请求头 → 写 `resp`；
+/// `hold_open_secs` > 0 时写完后保持连接（挂住读端）。
+async fn serve_http(resp: Arc<Vec<u8>>, hold_open_secs: u64) -> String {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let jh = tokio::spawn(async move {
+        loop {
+            let (mut s, _) = match listener.accept().await {
+                Ok(x) => x,
+                Err(_) => return,
+            };
+            let resp = resp.clone();
+            tokio::spawn(async move {
+                let mut buf = [0u8; 2048];
+                let _ = s.read(&mut buf).await;
+                let _ = s.write_all(&resp).await;
+                if hold_open_secs > 0 {
+                    tokio::time::sleep(std::time::Duration::from_secs(hold_open_secs)).await;
+                }
+            });
+        }
+    });
+    tokio::spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+        jh.abort();
+    });
+    addr.to_string()
+}
+
+fn engine_with_url(url: String) -> ClamAVEngine {
+    ClamAVEngine::new(ClamAVEngineConfig {
+        url,
+        ..Default::default()
+    })
+}
+
+#[tokio::test]
+async fn test_engine_download_connection_refused() {
+    // 关闭端口 → reqwest Err；嵌套目标目录先被 create_dir_all 建好。
+    let engine = engine_with_url("http://127.0.0.1:1/clamav.zip".to_string());
+    let dir = tempfile::tempdir().unwrap();
+    let dest = dir.path().join("nested").join("deep");
+    let err = engine
+        .download(
+            &dest.to_string_lossy(),
+            tokio_util::sync::CancellationToken::new(),
+            None,
+        )
+        .await
+        .unwrap_err();
+    assert!(err.contains("download failed"), "{err}");
+    assert!(dest.is_dir(), "target dir must be created before download");
+}
+
+#[tokio::test]
+async fn test_engine_download_non_success_status() {
+    let resp: Vec<u8> =
+        b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".to_vec();
+    let addr = serve_http(Arc::new(resp), 0).await;
+    let engine = engine_with_url(format!("http://{}/clamav.zip", addr));
+    let dir = tempfile::tempdir().unwrap();
+    let err = engine
+        .download(
+            &dir.path().to_string_lossy(),
+            tokio_util::sync::CancellationToken::new(),
+            None,
+        )
+        .await
+        .unwrap_err();
+    assert!(err.contains("status: 404"), "{err}");
+}
+
+#[tokio::test]
+async fn test_engine_download_truncated_stream() {
+    // Content-Length: 100 但只发 10 字节就关连接 → stream Err → "download read failed"
+    let mut resp = b"HTTP/1.1 200 OK\r\nContent-Length: 100\r\nConnection: close\r\n\r\n".to_vec();
+    resp.extend_from_slice(b"0123456789");
+    let addr = serve_http(Arc::new(resp), 0).await;
+    let engine = engine_with_url(format!("http://{}/clamav.zip", addr));
+    let dir = tempfile::tempdir().unwrap();
+    let err = engine
+        .download(
+            &dir.path().to_string_lossy(),
+            tokio_util::sync::CancellationToken::new(),
+            None,
+        )
+        .await
+        .unwrap_err();
+    assert!(err.contains("download read failed"), "{err}");
+    // 失败路径必须清掉临时 zip
+    assert!(!dir.path().join("clamav-download.zip").exists());
+}
+
+#[tokio::test]
+async fn test_engine_download_cancelled_token() {
+    // 只发响应头、不发 body 并挂住连接 → stream.next() pending；
+    // 预取消的 token 立即就绪 → select 走取消分支。
+    let resp: Vec<u8> = b"HTTP/1.1 200 OK\r\nContent-Length: 100\r\n\r\n".to_vec();
+    let addr = serve_http(Arc::new(resp), 5).await;
+    let engine = engine_with_url(format!("http://{}/clamav.zip", addr));
+    let dir = tempfile::tempdir().unwrap();
+    let token = tokio_util::sync::CancellationToken::new();
+    token.cancel();
+    let err = engine
+        .download(&dir.path().to_string_lossy(), token, None)
+        .await
+        .unwrap_err();
+    assert!(err.contains("cancelled"), "{err}");
+    assert!(!dir.path().join("clamav-download.zip").exists());
+}
+
+#[tokio::test]
+async fn test_engine_download_success_extracts_and_detects() {
+    use std::io::Write;
+    // 真 zip（zip::ZipWriter 手搓）：含 clamd(.exe) → 下载 → 解压 →
+    // detect_install_path → 写 clamav_path + 最终进度回调 (len, len)。
+    let mut zw = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+    let opts = zip::write::SimpleFileOptions::default();
+    zw.start_file(exe_name(), opts).unwrap();
+    zw.write_all(b"fake clamd binary").unwrap();
+    let cursor = zw.finish().unwrap();
+    let zip_bytes = cursor.into_inner();
+
+    let mut resp = format!(
+        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        zip_bytes.len()
+    )
+    .into_bytes();
+    resp.extend_from_slice(&zip_bytes);
+    let addr = serve_http(Arc::new(resp), 0).await;
+
+    let engine = engine_with_url(format!("http://{}/clamav.zip", addr));
+    let dir = tempfile::tempdir().unwrap();
+    let dir_str = dir.path().to_string_lossy().to_string();
+
+    let calls: Arc<std::sync::Mutex<Vec<(u64, u64)>>> =
+        Arc::new(std::sync::Mutex::new(Vec::new()));
+    let cb_calls = calls.clone();
+    let cb: Arc<dyn Fn(u64, u64) + Send + Sync> =
+        Arc::new(move |a, b| cb_calls.lock().unwrap().push((a, b)));
+
+    engine
+        .download(&dir_str, tokio_util::sync::CancellationToken::new(), Some(cb))
+        .await
+        .unwrap();
+
+    assert!(dir.path().join(exe_name()).exists(), "zip must be extracted");
+    assert_eq!(engine.get_clamav_path(), dir_str, "install path auto-detected");
+    assert!(
+        !dir.path().join("clamav-download.zip").exists(),
+        "temp zip must be cleaned up"
+    );
+    let got = calls.lock().unwrap().clone();
+    let total = zip_bytes.len() as u64;
+    assert!(got.contains(&(total, total)), "progress calls: {got:?}");
+}
+
+#[test]
+fn test_extract_zip_archive_skips_unsafe_names() {
+    use std::io::Write;
+    // "../evil.txt" → enclosed_name None → continue（不逃逸解压）。
+    let dir = tempfile::tempdir().unwrap();
+    let zip_path = dir.path().join("evil.zip");
+    let mut zw = zip::ZipWriter::new(std::fs::File::create(&zip_path).unwrap());
+    let opts = zip::write::SimpleFileOptions::default();
+    zw.start_file("../evil.txt", opts).unwrap();
+    zw.write_all(b"escape").unwrap();
+    zw.finish().unwrap();
+
+    let dest = dir.path().join("dest");
+    std::fs::create_dir_all(&dest).unwrap();
+    extract_zip_archive(&zip_path, &dest).unwrap();
+    assert!(!dir.path().join("evil.txt").exists());
+    assert!(!dest.join("evil.txt").exists());
+}
+
+#[test]
+fn test_extract_zip_archive_dir_and_nested_entries() {
+    use std::io::Write;
+    // 目录条目（is_dir 分支）+ 嵌套父目录（parent create 分支）。
+    let dir = tempfile::tempdir().unwrap();
+    let zip_path = dir.path().join("nested.zip");
+    let mut zw = zip::ZipWriter::new(std::fs::File::create(&zip_path).unwrap());
+    let opts = zip::write::SimpleFileOptions::default();
+    zw.add_directory("sub/", opts).unwrap();
+    zw.start_file("a/b/c.txt", opts).unwrap();
+    zw.write_all(b"nested content").unwrap();
+    zw.finish().unwrap();
+
+    let dest = dir.path().join("out");
+    extract_zip_archive(&zip_path, &dest).unwrap();
+    assert!(dest.join("sub").is_dir());
+    assert_eq!(
+        std::fs::read_to_string(dest.join("a").join("b").join("c.txt")).unwrap(),
+        "nested content"
+    );
+}
+
+// ============================================================
+// ClamavScannerWrapper internals (2026-08-25 coverage push)
+// ============================================================
+// wrapper 是 scanner 模块私有 struct —— tests 子模块可直接访问私有字段
+// （manager / manager_config / started）与私有方法。
+
+fn wrapper_on(addr: &str) -> ClamavScannerWrapper {
+    ClamavScannerWrapper::new(crate::clamav::scanner::ScannerConfig {
+        address: addr.to_string(),
+        ..Default::default()
+    })
+}
+
+#[test]
+fn test_wrapper_setters_populate_manager_config() {
+    let mut w = wrapper_on("127.0.0.1:3310");
+    assert!(w.manager_config.clamav_path.is_empty());
+    w.set_clamav_path("C:/clamav".to_string());
+    w.set_data_dir("C:/clamav/data".to_string());
+    w.set_update_interval("12h".to_string());
+    assert_eq!(w.manager_config.clamav_path, "C:/clamav");
+    assert_eq!(w.manager_config.data_dir, "C:/clamav/data");
+    assert_eq!(w.manager_config.update_interval, "12h");
+}
+
+#[tokio::test]
+async fn test_wrapper_clamd_is_ours_false_for_foreign_listener() {
+    // 端口有监听者但它是测试进程（exe 不叫 clamd.exe）→ 非我们的 → false。
+    let addr = serve_clamd(pong_and(|_| Vec::new()), "stream: OK\n").await;
+    let w = wrapper_on(&addr);
+    assert!(!w.clamd_is_ours());
+}
+
+#[tokio::test]
+async fn test_wrapper_restart_clamd_if_down_up_returns_true() {
+    // ping 通 → true（第一分支）。
+    let addr = serve_clamd(pong_and(|_| Vec::new()), "stream: OK\n").await;
+    let w = wrapper_on(&addr);
+    assert!(w.restart_clamd_if_down().await);
+}
+
+#[tokio::test]
+async fn test_wrapper_restart_clamd_if_down_no_manager_returns_false() {
+    // ping 失败 + 无 manager → warn + false。
+    let w = wrapper_on("127.0.0.1:1");
+    assert!(!w.restart_clamd_if_down().await);
+}
+
+#[tokio::test]
+async fn test_wrapper_restart_clamd_if_down_manager_error_returns_false() {
+    // manager Some 但未启动 → restart Err("no daemon to restart") → false。
+    let w = wrapper_on("127.0.0.1:1");
+    let mgr = crate::clamav::manager::Manager::new(crate::clamav::manager::ManagerConfig {
+        enabled: false,
+        clamav_path: String::new(),
+        data_dir: String::new(),
+        address: String::new(),
+        scanner: None,
+        update_interval: String::new(),
+    });
+    *w.manager.lock().await = Some(mgr);
+    assert!(!w.restart_clamd_if_down().await);
+}
+
+// ---- Windows-only: where.exe 假 clamd.exe + 进程内 PONG ----
+
+#[cfg(windows)]
+fn place_where_as(dir: &std::path::Path, name: &str) {
+    let windir = std::env::var("WINDIR").unwrap_or_else(|_| r"C:\Windows".to_string());
+    let src = std::path::Path::new(&windir).join("System32").join("where.exe");
+    assert!(src.exists(), "where.exe not found at {}", src.display());
+    std::fs::copy(&src, dir.join(format!("{}.exe", name))).unwrap();
+}
+
+#[cfg(windows)]
+async fn serve_pong() -> String {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let jh = tokio::spawn(async move {
+        loop {
+            let (mut s, _) = match listener.accept().await {
+                Ok(x) => x,
+                Err(_) => return,
+            };
+            let mut buf = [0u8; 64];
+            let _ = s.read(&mut buf).await;
+            let _ = s.write_all(b"PONG\n").await;
+        }
+    });
+    tokio::spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+        jh.abort();
+    });
+    addr.to_string()
+}
+
+#[cfg(windows)]
+fn fake_started_manager(clamav_dir: &std::path::Path, data_dir: &std::path::Path, addr: String) -> crate::clamav::manager::Manager {
+    crate::clamav::manager::Manager::new(crate::clamav::manager::ManagerConfig {
+        enabled: true,
+        clamav_path: clamav_dir.to_string_lossy().to_string(),
+        data_dir: data_dir.to_string_lossy().to_string(),
+        address: addr,
+        scanner: None,
+        update_interval: "1h".to_string(),
+    })
+}
+
+#[cfg(windows)]
+#[tokio::test]
+async fn test_wrapper_restart_clamd_if_down_manager_restart_ok_returns_true() {
+    // wrapper 指向关闭端口（ping 失败 → manager 分支）；注入一个完整假启动的
+    // manager（readiness 地址=进程内 PONG）→ restart Ok → true。
+    let clamav_dir = tempfile::tempdir().unwrap();
+    place_where_as(clamav_dir.path(), "clamd");
+    let data_dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(data_dir.path().join("database")).unwrap();
+    std::fs::write(data_dir.path().join("database").join("main.cvd"), "fake cvd").unwrap();
+
+    let pong = serve_pong().await;
+    let mut mgr = fake_started_manager(clamav_dir.path(), data_dir.path(), pong);
+    mgr.start().await.unwrap();
+
+    let w = wrapper_on("127.0.0.1:1");
+    *w.manager.lock().await = Some(mgr);
+    assert!(w.restart_clamd_if_down().await);
+}
+
+#[tokio::test]
+async fn test_wrapper_stop_foreign_clamd_skips_shutdown() {
+    // started=true + manager None + 端口无监听（非我们的）→ Ok 且不发 SHUTDOWN。
+    let w = wrapper_on("127.0.0.1:1");
+    w.started.store(true, Ordering::SeqCst);
+    w.stop().await.unwrap();
+}
+
+#[cfg(windows)]
+#[tokio::test]
+async fn test_wrapper_stop_with_manager_stops_manager() {
+    // manager Some 分支：stop() → mgr.stop()（杀 where.exe 死 child）→ Ok。
+    let clamav_dir = tempfile::tempdir().unwrap();
+    place_where_as(clamav_dir.path(), "clamd");
+    let data_dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(data_dir.path().join("database")).unwrap();
+    std::fs::write(data_dir.path().join("database").join("main.cvd"), "fake cvd").unwrap();
+
+    let pong = serve_pong().await;
+    let mut mgr = fake_started_manager(clamav_dir.path(), data_dir.path(), pong);
+    mgr.start().await.unwrap();
+
+    let w = wrapper_on("127.0.0.1:1");
+    *w.manager.lock().await = Some(mgr);
+    w.started.store(true, Ordering::SeqCst);
+    w.stop().await.unwrap();
+}
+
+#[tokio::test]
+async fn test_wrapper_start_residual_foreign_refused() {
+    // 残留检测：ping 通但不是我们的 clamd → Err "not ours"。
+    let addr = serve_clamd(pong_and(|_| Vec::new()), "stream: OK\n").await;
+    let w = wrapper_on(&addr);
+    let err = w.start().await.unwrap_err();
+    assert!(err.contains("not ours"), "{err}");
+    assert!(!w.started.load(Ordering::SeqCst));
+}
+
+#[tokio::test]
+async fn test_wrapper_start_manager_fail_then_ping_fail() {
+    // clamav_path 指向空目录 → Manager::start Err → 回退 ping-only →
+    // 关闭端口 ping 失败 → Err "ClamAV ping failed"。
+    let mut w = wrapper_on("127.0.0.1:1");
+    let empty = tempfile::tempdir().unwrap();
+    w.set_clamav_path(empty.path().to_string_lossy().to_string());
+    let err = w.start().await.unwrap_err();
+    assert!(err.contains("ClamAV ping failed"), "{err}");
+}
+
+#[tokio::test]
+async fn test_wrapper_start_manager_fail_fallback_foreign_refused() {
+    // Manager 失败 + 回退 ping 通但非我们的 → Err "not reusing foreign"。
+    let addr = serve_clamd(pong_and(|_| Vec::new()), "stream: OK\n").await;
+    let mut w = wrapper_on(&addr);
+    let empty = tempfile::tempdir().unwrap();
+    w.set_clamav_path(empty.path().to_string_lossy().to_string());
+    let err = w.start().await.unwrap_err();
+    // 实际消息是 "clamd at {addr} is not ours; refusing to reuse foreign
+    // ClamAV"——注意是 "refusing to reuse"，不是 "not reusing"。
+    assert!(err.contains("refusing to reuse foreign ClamAV"), "{err}");
+}
+
+#[tokio::test]
+async fn test_wrapper_get_info_ready_with_pong() {
+    let addr = serve_clamd(pong_and(|_| Vec::new()), "stream: OK\n").await;
+    let w = wrapper_on(&addr);
+    let info = w.get_info().await;
+    assert!(info.ready);
+    assert_eq!(info.address, addr);
+}
+
+#[tokio::test]
+async fn test_wrapper_is_ready_manager_not_running_returns_false() {
+    // manager Some 且 is_running()=false → 提前 false（不 ping）。
+    let w = wrapper_on("127.0.0.1:1");
+    let mgr = crate::clamav::manager::Manager::new(crate::clamav::manager::ManagerConfig {
+        enabled: false,
+        clamav_path: String::new(),
+        data_dir: String::new(),
+        address: String::new(),
+        scanner: None,
+        update_interval: String::new(),
+    });
+    *w.manager.lock().await = Some(mgr);
+    w.started.store(true, Ordering::SeqCst);
+    assert!(!w.is_ready().await);
+}
+
+#[tokio::test]
+async fn test_wrapper_scan_file_success_when_started() {
+    let addr = serve_clamd(
+        pong_and(|cmd: &str| {
+            if let Some(p) = cmd.strip_prefix("SCAN ") {
+                format!("{}: OK\n", p).into_bytes()
+            } else {
+                Vec::new()
+            }
+        }),
+        "stream: OK\n",
+    )
+    .await;
+    let w = wrapper_on(&addr);
+    w.started.store(true, Ordering::SeqCst);
+    let dir = tempfile::tempdir().unwrap();
+    let f = dir.path().join("z.exe");
+    std::fs::write(&f, "MZ").unwrap();
+    let r = w.scan_file(&f).await;
+    assert!(!r.infected);
+    assert!(r.path.contains("z.exe"));
+    assert_eq!(r.engine, "clamav");
+}
+
+#[tokio::test]
+async fn test_wrapper_scan_file_fail_open_after_restart_attempt() {
+    // started + 连不上 → restart_clamd_if_down false → G5 fail-open（clean +
+    // raw "scan error (clamd unavailable, restart attempted)"）。
+    let w = wrapper_on("127.0.0.1:1");
+    w.started.store(true, Ordering::SeqCst);
+    let dir = tempfile::tempdir().unwrap();
+    let f = dir.path().join("q.bin");
+    std::fs::write(&f, "d").unwrap();
+    let r = w.scan_file(&f).await;
+    assert!(!r.infected);
+    assert!(r.raw.contains("restart attempted"), "raw: {}", r.raw);
+}
+
+#[tokio::test]
+async fn test_wrapper_scan_content_success_when_started() {
+    let addr = serve_clamd(pong_and(|_| Vec::new()), "stream: OK\n").await;
+    let w = wrapper_on(&addr);
+    w.started.store(true, Ordering::SeqCst);
+    let r = w.scan_content(b"payload").await;
+    assert!(!r.infected);
+}
+
+#[tokio::test]
+async fn test_wrapper_scan_content_fail_open_after_restart_attempt() {
+    let w = wrapper_on("127.0.0.1:1");
+    w.started.store(true, Ordering::SeqCst);
+    let r = w.scan_content(b"payload").await;
+    assert!(!r.infected);
+    assert!(r.raw.contains("restart attempted"), "raw: {}", r.raw);
+}
+
+// ============================================================
+// S3 batch 4: ScanResult::merge / detect_install_path /
+// extension-rule skip / scan_directory / scan_tool_invocation
+// 各工具臂 / load_from_full_config 跳过未安装引擎
+// ============================================================
+
+#[test]
+fn test_scan_result_merge_fills_empty_fields() {
+    let mut empty = ScanResult::clean();
+    let other = ScanResult::with_threats("clamav", "Win.Eicar", "/tmp/x.exe");
+    empty.merge(&other);
+    assert!(empty.infected);
+    assert_eq!(empty.virus, "Win.Eicar");
+    assert_eq!(empty.engine, "clamav");
+    assert_eq!(empty.path, "/tmp/x.exe");
+
+    // 已有值不被覆盖：再 merge 另一个威胁，virus/engine 保持第一次的
+    let second = ScanResult::with_threats("other", "Other.Virus", "/tmp/y.exe");
+    empty.merge(&second);
+    assert_eq!(empty.virus, "Win.Eicar");
+    assert_eq!(empty.engine, "clamav");
+}
+
+#[test]
+fn test_clamav_engine_detect_install_path_found_and_missing() {
+    use crate::scanner::InstallableEngine;
+    let engine = ClamAVEngine::new(ClamAVEngineConfig::default());
+
+    // 目录里放一个假 clamd 可执行 → 找到其父目录
+    let dir = tempfile::tempdir().unwrap();
+    let nest = dir.path().join("deep").join("bin");
+    std::fs::create_dir_all(&nest).unwrap();
+    let exe_name = if cfg!(target_os = "windows") { "clamd.exe" } else { "clamd" };
+    std::fs::write(nest.join(exe_name), b"fake").unwrap();
+    let found = engine.detect_install_path(dir.path()).unwrap();
+    assert!(found.ends_with("bin"), "found: {found}");
+
+    // 空目录 → Err
+    let empty_dir = tempfile::tempdir().unwrap();
+    let err = engine.detect_install_path(empty_dir.path()).unwrap_err();
+    assert!(err.contains("target executable not found"), "{err}");
+}
+
+/// 可配置 mock：文件/内容/目录都可指定是否感染。
+struct S3MockEngine {
+    infected: bool,
+}
+
+#[async_trait::async_trait]
+impl crate::scanner::VirusScanner for S3MockEngine {
+    fn name(&self) -> &str {
+        "s3mock"
+    }
+    async fn get_info(&self) -> crate::scanner::EngineInfo {
+        crate::scanner::EngineInfo {
+            name: "s3mock".to_string(),
+            version: String::new(),
+            address: String::new(),
+            ready: true,
+            start_time: String::new(),
+        }
+    }
+    async fn start(&self) -> Result<(), String> {
+        Ok(())
+    }
+    async fn stop(&self) -> Result<(), String> {
+        Ok(())
+    }
+    async fn is_ready(&self) -> bool {
+        true
+    }
+    async fn scan_file(&self, path: &std::path::Path) -> crate::scanner::ScanResult {
+        if self.infected {
+            crate::scanner::ScanResult::with_threats("s3mock", "S3.Test", &path.to_string_lossy())
+        } else {
+            crate::scanner::ScanResult::clean_with_path("s3mock", &path.to_string_lossy())
+        }
+    }
+    async fn scan_content(&self, _content: &[u8]) -> crate::scanner::ScanResult {
+        if self.infected {
+            crate::scanner::ScanResult::with_threats("s3mock", "S3.Test", "")
+        } else {
+            crate::scanner::ScanResult::clean_from("s3mock")
+        }
+    }
+    async fn scan_directory(&self, dir: &std::path::Path) -> Vec<crate::scanner::ScanResult> {
+        if self.infected {
+            vec![crate::scanner::ScanResult::with_threats(
+                "s3mock",
+                "S3.Test",
+                &dir.join("found.exe").to_string_lossy(),
+            )]
+        } else {
+            Vec::new()
+        }
+    }
+    async fn get_database_status(&self) -> crate::scanner::DatabaseStatus {
+        crate::scanner::DatabaseStatus::default()
+    }
+    async fn update_database(&self) -> Result<(), String> {
+        Ok(())
+    }
+    fn get_stats(&self) -> HashMap<String, serde_json::Value> {
+        HashMap::new()
+    }
+}
+
+#[tokio::test]
+async fn test_scan_file_extension_whitelist_skips_file() {
+    // 白名单只扫 exe → txt 文件直接 clean，即便引擎是"全感染" mock。
+    let mut chain = ScanChain::with_defaults();
+    chain.add_engine(Box::new(S3MockEngine { infected: true }));
+    chain.rules = ExtensionRules::new(vec!["exe".to_string()], vec![]);
+
+    let dir = tempfile::tempdir().unwrap();
+    let txt = dir.path().join("notes.txt");
+    std::fs::write(&txt, "plain").unwrap();
+    let r = chain.scan_file(&txt).await;
+    assert!(r.clean);
+    assert!(!r.blocked);
+
+    // exe 在白名单 → 被 mock 拦
+    let exe = dir.path().join("prog.exe");
+    std::fs::write(&exe, b"MZ").unwrap();
+    let r2 = chain.scan_file(&exe).await;
+    assert!(r2.blocked);
+    assert_eq!(r2.engine, "s3mock");
+}
+
+#[tokio::test]
+async fn test_scan_directory_empty_engines_and_blocked() {
+    // 无引擎 → clean
+    let empty_chain = ScanChain::new(ScanChainConfig::default());
+    let dir = tempfile::tempdir().unwrap();
+    let r = empty_chain.scan_directory(dir.path()).await;
+    assert!(r.clean);
+
+    // 感染引擎 → 目录扫描 blocked
+    let mut chain = ScanChain::with_defaults();
+    chain.add_engine(Box::new(S3MockEngine { infected: true }));
+    let r2 = chain.scan_directory(dir.path()).await;
+    assert!(r2.blocked);
+    assert!(r2.path.ends_with("found.exe"), "path: {}", r2.path);
+    assert_eq!(r2.engine, "s3mock");
+}
+
+#[tokio::test]
+async fn test_scan_tool_invocation_no_engines_early_ok() {
+    // enabled 但零引擎 → (true, None)
+    let chain = ScanChain::with_defaults();
+    chain.set_enabled(true);
+    let (allowed, err) = chain
+        .scan_tool_invocation("download", &serde_json::json!({"save_path": "/tmp/x.exe"}))
+        .await;
+    assert!(allowed);
+    assert!(err.is_none());
+}
+
+#[tokio::test]
+async fn test_scan_tool_invocation_blocks_each_tool_arm() {
+    let mut chain = ScanChain::with_defaults();
+    chain.add_engine(Box::new(S3MockEngine { infected: true }));
+    chain.set_enabled(true);
+
+    // write_file：content 感染
+    let (a, e) = chain
+        .scan_tool_invocation("write_file", &serde_json::json!({"path": "/tmp/o.exe", "content": "payload"}))
+        .await;
+    assert!(!a);
+    assert!(e.as_deref().unwrap_or("").contains("virus detected"), "{e:?}");
+
+    // download：save_path 文件感染
+    let (a, e) = chain
+        .scan_tool_invocation("download", &serde_json::json!({"save_path": "/tmp/dl.exe"}))
+        .await;
+    assert!(!a);
+    assert!(e.as_deref().unwrap_or("").contains("/tmp/dl.exe"), "{e:?}");
+
+    // exec：path 文件感染
+    let (a, e) = chain
+        .scan_tool_invocation("exec", &serde_json::json!({"path": "/tmp/run.exe"}))
+        .await;
+    assert!(!a);
+    assert!(e.as_deref().unwrap_or("").contains("/tmp/run.exe"), "{e:?}");
+
+    // web_fetch：save_path 文件感染
+    let (a, e) = chain
+        .scan_tool_invocation("web_fetch", &serde_json::json!({"save_path": "/tmp/fetched.exe"}))
+        .await;
+    assert!(!a);
+    assert!(e.as_deref().unwrap_or("").contains("/tmp/fetched.exe"), "{e:?}");
+
+    // cron：command 内容感染
+    let (a, e) = chain
+        .scan_tool_invocation("cron", &serde_json::json!({"command": "rm -rf /"}))
+        .await;
+    assert!(!a);
+    assert!(e.as_deref().unwrap_or("").contains("cron command"), "{e:?}");
+
+    // 未知工具 → 放行
+    let (a, e) = chain
+        .scan_tool_invocation("unknown_tool", &serde_json::json!({"path": "/tmp/x.exe"}))
+        .await;
+    assert!(a);
+    assert!(e.is_none());
+}
+
+#[tokio::test]
+async fn test_load_from_full_config_skips_pending_engine() {
+    // install_status != "installed" → 引擎被跳过
+    let mut chain = ScanChain::with_defaults();
+    let mut full_config = ScannerFullConfig::default();
+    full_config.enabled.push("clamav".to_string());
+    full_config.engines.insert(
+        "clamav".to_string(),
+        serde_json::json!({"state": {"install_status": "pending"}}),
+    );
+    chain.load_from_full_config(&full_config);
+    assert_eq!(chain.engine_count(), 0, "pending engine must be skipped");
 }

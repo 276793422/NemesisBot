@@ -693,3 +693,76 @@ fn test_delete_rewrites_persist_file() {
     assert!(!content.contains("rw1"));
     assert!(content.contains("rw2"));
 }
+
+// ---- S5 coverage: new() error arm, async load_persisted, persist parent fail ----
+
+#[test]
+fn vector_store_new_fails_without_plugin() {
+    let dir = tempfile::tempdir().unwrap();
+    // Empty plugin path → embedding func creation fails → new() returns Err.
+    let err = match VectorStore::new(make_store_config(
+        &dir.path().join("s.jsonl").to_string_lossy(),
+    )) {
+        Ok(_) => panic!("expected Err when plugin_path is empty"),
+        Err(e) => e,
+    };
+    assert!(err.contains("No plugin path configured"), "got: {err}");
+
+    // Nonexistent plugin path → same Err arm, different inner message.
+    let mut cfg = make_store_config(&dir.path().join("s2.jsonl").to_string_lossy());
+    cfg.plugin_path = Some(dir.path().join("missing.dll").to_string_lossy().to_string());
+    let err2 = match VectorStore::new(cfg) {
+        Ok(_) => panic!("expected Err for nonexistent plugin path"),
+        Err(e) => e,
+    };
+    assert!(err2.contains("Plugin DLL not found"), "got: {err2}");
+}
+
+#[tokio::test]
+async fn load_persisted_async_wrapper_ingests_new_lines() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("vec.jsonl");
+    let entry = make_entry("lp-1", "first content");
+    std::fs::write(&path, serde_json::to_string(&entry).unwrap() + "\n").unwrap();
+
+    let store = VectorStore::new_from_embed(
+        stub_embed(),
+        make_store_config(&path.to_string_lossy()),
+    );
+    assert_eq!(store.len(), 1, "constructor sync-loads the initial line");
+
+    // Append a second line, then exercise the async wrapper.
+    let second = make_entry("lp-2", "second content");
+    let mut line = serde_json::to_string(&second).unwrap();
+    line.push('\n');
+    use std::io::Write;
+    let mut f = std::fs::OpenOptions::new().append(true).open(&path).unwrap();
+    f.write_all(line.as_bytes()).unwrap();
+    drop(f);
+
+    store.load_persisted().await.unwrap();
+    // load is append-only (documented by test_load_persisted_sync_idempotent):
+    // 1 initial entry + 2 reloaded lines = 3.
+    assert_eq!(
+        store.len(),
+        3,
+        "async wrapper must re-ingest all lines (append-only)"
+    );
+    assert!(store.get_by_id("lp-2").is_some());
+}
+
+#[tokio::test]
+async fn persist_entry_fails_when_parent_is_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let blocker = dir.path().join("blocker");
+    std::fs::write(&blocker, "x").unwrap();
+    let path = blocker.join("vec.jsonl");
+
+    let store = VectorStore::new_from_embed(
+        stub_embed(),
+        make_store_config(&path.to_string_lossy()),
+    );
+    let entry = make_entry("p-1", "content");
+    let err = store.persist_entry(&entry).await.unwrap_err();
+    assert!(!err.is_empty(), "persist against file-as-parent must fail: {err}");
+}

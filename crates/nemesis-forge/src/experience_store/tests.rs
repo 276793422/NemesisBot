@@ -719,3 +719,309 @@ async fn test_file_newer_than_invalid_filename() {
         &chrono::Local::now()
     ));
 }
+
+// --- constructor / walk / cleanup edge coverage ---
+
+#[tokio::test]
+async fn test_with_config_ctor_applies_daily_limit() {
+    let dir = tempfile::tempdir().unwrap();
+    let config = ExperienceStoreConfig {
+        max_experiences_per_day: 1,
+    };
+    let store = ExperienceStore::with_config(dir.path().to_path_buf(), config);
+
+    store
+        .append_aggregated(&make_aggregated("h1", "tool_a", 1))
+        .await
+        .unwrap();
+    // Second record on the same day is silently skipped by the limit.
+    store
+        .append_aggregated(&make_aggregated("h2", "tool_b", 1))
+        .await
+        .unwrap();
+
+    let all = store.read_aggregated().await.unwrap();
+    assert_eq!(all.len(), 1, "daily limit of 1 must cap the day's writes");
+    assert_eq!(all[0].tool_name, "tool_a");
+}
+
+#[tokio::test]
+async fn test_from_forge_dir_with_config_ctor() {
+    let dir = tempfile::tempdir().unwrap();
+    let config = ExperienceStoreConfig {
+        max_experiences_per_day: 1,
+    };
+    let store = ExperienceStore::from_forge_dir_with_config(dir.path(), config);
+
+    store
+        .append_aggregated(&make_aggregated("ha", "tool_x", 3))
+        .await
+        .unwrap();
+    store
+        .append_aggregated(&make_aggregated("hb", "tool_y", 4))
+        .await
+        .unwrap();
+
+    // Base dir must be {forge_dir}/experiences.
+    let exp_dir = dir.path().join("experiences");
+    assert!(exp_dir.exists(), "from_forge_dir must add experiences subdir");
+    let all = store.read_aggregated().await.unwrap();
+    assert_eq!(all.len(), 1, "custom daily limit must apply");
+}
+
+#[tokio::test]
+async fn test_count_lines_in_file_read_error_returns_zero() {
+    // A path that exists but is a directory: read_to_string fails -> 0 lines.
+    let dir = tempfile::tempdir().unwrap();
+    let store = ExperienceStore::new(dir.path().to_path_buf());
+    let as_dir = dir.path().join("not_a_file.jsonl");
+    std::fs::create_dir_all(&as_dir).unwrap();
+
+    let count = store.count_lines_in_file(&as_dir).await;
+    assert_eq!(count, 0, "unreadable path must count as zero lines");
+}
+
+#[tokio::test]
+async fn test_walk_jsonl_skips_stray_entries_and_blank_lines() {
+    let dir = tempfile::tempdir().unwrap();
+    let base = dir.path();
+    let month = base.join("202608");
+    std::fs::create_dir_all(&month).unwrap();
+
+    // Top-level stray file (not a YYYYMM dir) must be skipped.
+    std::fs::write(base.join("stray.txt"), "junk").unwrap();
+    // Non-.jsonl file inside the month dir must be skipped.
+    std::fs::write(month.join("notes.txt"), "junk").unwrap();
+
+    let valid = serde_json::to_string(&make_aggregated("hk", "keep_me", 2)).unwrap();
+    let day_file = month.join("20260801.jsonl");
+    std::fs::write(&day_file, format!("{}\n\nnot json at all\n", valid)).unwrap();
+
+    let store = ExperienceStore::new(base.to_path_buf());
+    let all = store.read_aggregated().await.unwrap();
+    assert_eq!(all.len(), 1, "only the single valid record must parse");
+    assert_eq!(all[0].tool_name, "keep_me");
+    assert_eq!(all[0].count, 2);
+}
+
+#[tokio::test]
+async fn test_walk_jsonl_files_wrapper_no_filter() {
+    // The backward-compat wrapper behaves like read_aggregated with no filter.
+    let dir = tempfile::tempdir().unwrap();
+    let base = dir.path();
+    let month = base.join("202608");
+    std::fs::create_dir_all(&month).unwrap();
+    let valid = serde_json::to_string(&make_aggregated("hw", "wrap_tool", 5)).unwrap();
+    std::fs::write(month.join("20260801.jsonl"), format!("{}\n", valid)).unwrap();
+
+    let store = ExperienceStore::new(base.to_path_buf());
+    let mut results = Vec::new();
+    store.walk_jsonl_files(&mut results).await.unwrap();
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0].tool_name, "wrap_tool");
+}
+
+#[tokio::test]
+async fn test_read_all_skips_blank_lines() {
+    use crate::types::CollectedExperience;
+    let dir = tempfile::tempdir().unwrap();
+    let base = dir.path();
+    std::fs::create_dir_all(base).unwrap();
+
+    let ce = CollectedExperience {
+        experience: make_experience("blank_tool"),
+        dedup_hash: "hb1".into(),
+    };
+    let line = serde_json::to_string(&ce).unwrap();
+    std::fs::write(
+        base.join("experiences.jsonl"),
+        format!("\n{}\n\n   \n", line),
+    )
+    .unwrap();
+
+    let store = ExperienceStore::new(base.to_path_buf());
+    let all = store.read_all().await.unwrap();
+    assert_eq!(all.len(), 1, "blank lines must be skipped");
+    assert_eq!(all[0].experience.tool_name, "blank_tool");
+}
+
+#[tokio::test]
+async fn test_cleanup_drops_legacy_aggregate_lines() {
+    // Lines that parse as AggregatedExperience (legacy pollution) are dropped
+    // during the flat-file rewrite even when young.
+    use crate::types::CollectedExperience;
+    let dir = tempfile::tempdir().unwrap();
+    let base = dir.path();
+    std::fs::create_dir_all(base).unwrap();
+
+    let ce = CollectedExperience {
+        experience: make_experience("young_tool"),
+        dedup_hash: "hy".into(),
+    };
+    let legacy = serde_json::to_string(&make_aggregated("legacyhash", "agg_tool", 9)).unwrap();
+    std::fs::write(
+        base.join("experiences.jsonl"),
+        format!("{}\n{}\n", serde_json::to_string(&ce).unwrap(), legacy),
+    )
+    .unwrap();
+
+    let store = ExperienceStore::new(base.to_path_buf());
+    let removed = store.cleanup(30).await.unwrap();
+    assert!(removed >= 1, "legacy aggregate line counts as removed");
+
+    let remaining = std::fs::read_to_string(base.join("experiences.jsonl")).unwrap();
+    assert!(
+        remaining.contains("young_tool"),
+        "young collected experience must survive: {}",
+        remaining
+    );
+    assert!(
+        !remaining.contains("legacyhash"),
+        "legacy aggregate line must be dropped: {}",
+        remaining
+    );
+}
+
+#[tokio::test]
+async fn test_cleanup_rename_skipped_when_tmp_write_fails() {
+    // If the temp rewrite target cannot be written (blocked by a directory),
+    // the rename is skipped and the original flat file stays intact.
+    use crate::types::CollectedExperience;
+    let dir = tempfile::tempdir().unwrap();
+    let base = dir.path();
+    std::fs::create_dir_all(base).unwrap();
+
+    let mk_old = || {
+        serde_json::to_string(&CollectedExperience {
+            experience: Experience {
+                id: "old".into(),
+                tool_name: "old_tool".into(),
+                input_summary: "x".into(),
+                output_summary: "y".into(),
+                success: true,
+                duration_ms: 1,
+                timestamp: "2020-01-01T00:00:00+08:00".into(),
+                session_key: "s".into(),
+            },
+            dedup_hash: "ho".into(),
+        })
+        .unwrap()
+    };
+    std::fs::write(
+        base.join("experiences.jsonl"),
+        format!("{}\n", mk_old()),
+    )
+    .unwrap();
+    // Block the temp path with a directory.
+    std::fs::create_dir_all(base.join("experiences.jsonl.tmp")).unwrap();
+
+    let store = ExperienceStore::new(base.to_path_buf());
+    let removed = store.cleanup(30).await.unwrap();
+    assert!(removed >= 1, "the old entry is still counted as removed");
+
+    // Original file untouched because the rewrite never happened.
+    let remaining = std::fs::read_to_string(base.join("experiences.jsonl")).unwrap();
+    assert!(
+        remaining.contains("old_tool"),
+        "rewrite failure must leave the original file intact: {}",
+        remaining
+    );
+}
+
+// --- S8 coverage additions (quality-hardening goal 冲刺 S8) ---
+
+#[tokio::test]
+async fn test_s8_get_top_patterns_keeps_latest_last_seen() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = ExperienceStore::new(dir.path());
+
+    let mut r1 = make_aggregated("p1", "tool_a", 3);
+    r1.last_seen = "2026-01-01T00:00:00Z".to_string();
+    let mut r2 = make_aggregated("p1", "tool_a", 5);
+    r2.last_seen = "2026-02-02T00:00:00Z".to_string();
+
+    store.append_aggregated(&r1).await.unwrap();
+    store.append_aggregated(&r2).await.unwrap();
+
+    let top = store.get_top_patterns(10).await.unwrap();
+    assert_eq!(top.len(), 1);
+    assert_eq!(top[0].count, 8);
+    // Merged record must carry the LATER last_seen.
+    assert_eq!(top[0].last_seen, "2026-02-02T00:00:00Z");
+}
+
+#[tokio::test]
+async fn test_s8_cleanup_ignores_non_jsonl_files_and_missing_flat() {
+    let dir = tempfile::tempdir().unwrap();
+    let month = dir.path().join("202001");
+    std::fs::create_dir_all(&month).unwrap();
+    std::fs::write(month.join("20200101.jsonl"), "\n").unwrap();
+    std::fs::write(month.join("notes.txt"), "keep me").unwrap();
+
+    let store = ExperienceStore::new(dir.path());
+    let removed = store.cleanup(1).await.unwrap();
+    // Only the dated .jsonl file is old enough; notes.txt untouched and the
+    // flat experiences.jsonl does not exist at all.
+    assert_eq!(removed, 1);
+    assert!(month.join("notes.txt").exists());
+    assert!(!month.join("20200101.jsonl").exists());
+}
+
+#[tokio::test]
+async fn test_s8_cleanup_flat_file_skips_blank_and_legacy_lines() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = ExperienceStore::new(dir.path());
+
+    // A young (kept) collected experience.
+    let exp = Experience {
+        id: "kept-1".into(),
+        tool_name: "tool_a".into(),
+        input_summary: "in".into(),
+        output_summary: "out".into(),
+        success: true,
+        duration_ms: 10,
+        timestamp: chrono::Local::now().to_rfc3339(),
+        session_key: "sess".into(),
+    };
+    let ce = crate::types::CollectedExperience {
+        experience: exp,
+        dedup_hash: "sha256:deadbeef".into(),
+    };
+    store.append(&ce).await.unwrap();
+
+    // Blank line + unparsable legacy line in the flat file.
+    use std::io::Write;
+    let flat = dir.path().join("experiences.jsonl");
+    let mut f = std::fs::OpenOptions::new().append(true).open(&flat).unwrap();
+    writeln!(f).unwrap();
+    writeln!(f, "not json").unwrap();
+
+    let removed = store.cleanup(30).await.unwrap();
+    assert_eq!(removed, 1); // only the legacy line dropped
+    assert_eq!(store.count().await.unwrap(), 1);
+}
+
+#[tokio::test]
+async fn test_s8_append_empty_base_dir_takes_no_parent_branch() {
+    // base_dir "" has no parent component → the `if let Some(parent)`
+    // fall-through in append() runs. create_dir_all("") is a no-op, and the
+    // open may create experiences.jsonl in the CWD — remove it afterwards so
+    // the working tree stays clean either way.
+    let store = ExperienceStore::new("");
+    let exp = Experience {
+        id: "e1".into(),
+        tool_name: "t".into(),
+        input_summary: "i".into(),
+        output_summary: "o".into(),
+        success: true,
+        duration_ms: 1,
+        timestamp: chrono::Local::now().to_rfc3339(),
+        session_key: "s".into(),
+    };
+    let ce = crate::types::CollectedExperience {
+        experience: exp,
+        dedup_hash: "sha256:x".into(),
+    };
+    let _ = store.append(&ce).await;
+    let _ = tokio::fs::remove_file(std::path::Path::new("experiences.jsonl")).await;
+}

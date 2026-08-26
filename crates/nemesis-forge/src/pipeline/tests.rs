@@ -605,3 +605,173 @@ fn test_run_from_content() {
     let validation = pipeline.run_from_content(&artifact, content);
     assert!(validation.stage1_static.as_ref().unwrap().stage.passed);
 }
+
+// ---- S8 coverage batch ---- (quality-hardening goal 冲刺 S8)
+
+#[test]
+fn test_s8_validate_stage2_failure_skips_stage3() {
+    let pipeline = Pipeline::new(
+        ForgeConfig::default(),
+        Arc::new(Registry::new(crate::types::RegistryConfig::default())),
+    );
+
+    // Static passes (>=50 chars, no errors) but the simple functional check
+    // fails: the content contains no '#' and no '-' anywhere (no frontmatter,
+    let content = "This is a long enough plain text without any hash or dash characters inside it, exceeding fifty chars.";
+    let validation = pipeline.validate(ArtifactKind::Skill, "demo", content);
+    assert!(validation.stage1_static.as_ref().unwrap().stage.passed);
+    assert!(!validation.stage2_functional.as_ref().unwrap().stage.passed);
+    // Stage 3 must not run after a stage 2 failure.
+    assert!(validation.stage3_quality.is_none());
+}
+
+#[test]
+fn test_s8_determine_status_all_stages_none_returns_observing() {
+    let pipeline = Pipeline::new(
+        ForgeConfig::default(),
+        Arc::new(Registry::new(crate::types::RegistryConfig::default())),
+    );
+
+    let validation = ArtifactValidation {
+        stage1_static: None,
+        stage2_functional: None,
+        stage3_quality: None,
+        last_validated: chrono::Local::now().to_rfc3339(),
+    };
+    assert_eq!(pipeline.determine_status(&validation), ArtifactStatus::Observing);
+}
+
+#[tokio::test]
+async fn test_s8_evaluate_quality_float_scores_script_kind() {
+    use crate::reflector_llm::LLMCaller;
+    use async_trait::async_trait;
+
+    struct MockFloatLLM;
+
+    #[async_trait]
+    impl LLMCaller for MockFloatLLM {
+        async fn chat(
+            &self,
+            _system_prompt: &str,
+            _user_prompt: &str,
+            _max_tokens: Option<i64>,
+        ) -> Result<String, String> {
+            // Float values exercise the as_f64() fallback (as_u64() is None).
+            Ok(r#"{"correctness": 90.5, "quality": 80.5, "security": 85.0, "reusability": 70.5, "notes": "float scores"}"#.to_string())
+        }
+    }
+
+    let pipeline = Pipeline::new(
+        ForgeConfig::default(),
+        Arc::new(Registry::new(crate::types::RegistryConfig::default())),
+    );
+    pipeline.set_provider(Arc::new(MockFloatLLM));
+
+    // Script kind → the "script" kind_str arm.
+    let result = pipeline
+        .evaluate_quality(ArtifactKind::Script, "demo", "echo hello")
+        .await;
+    assert!(result.stage.passed);
+    assert!(result.score > 0);
+    assert_eq!(result.notes, "float scores");
+    // 90*40/100 + 80*20/100 + 85*20/100 + 70*20/100 = 36+16+17+14 = 83
+    assert_eq!(result.score, 83);
+
+    // Mcp kind → the "mcp" kind_str arm (reuse same provider).
+    let result2 = pipeline
+        .evaluate_quality(ArtifactKind::Mcp, "demo2", "def x(): pass")
+        .await;
+    assert!(result2.score > 0);
+}
+
+#[tokio::test]
+async fn test_s8_evaluate_quality_unparseable_llm_response() {
+    use crate::reflector_llm::LLMCaller;
+    use async_trait::async_trait;
+
+    struct MockGarbageLLM;
+
+    #[async_trait]
+    impl LLMCaller for MockGarbageLLM {
+        async fn chat(
+            &self,
+            _system_prompt: &str,
+            _user_prompt: &str,
+            _max_tokens: Option<i64>,
+        ) -> Result<String, String> {
+            Ok("this is not json at all".to_string())
+        }
+    }
+
+    let pipeline = Pipeline::new(
+        ForgeConfig::default(),
+        Arc::new(Registry::new(crate::types::RegistryConfig::default())),
+    );
+    pipeline.set_provider(Arc::new(MockGarbageLLM));
+
+    let result = pipeline
+        .evaluate_quality(ArtifactKind::Skill, "demo", "content")
+        .await;
+    assert!(!result.stage.passed);
+    assert_eq!(result.score, 0);
+    assert!(result
+        .stage
+        .errors
+        .iter()
+        .any(|e| e.contains("Failed to parse LLM response as JSON")));
+}
+
+#[tokio::test]
+async fn test_s8_evaluate_quality_llm_call_error() {
+    use crate::reflector_llm::LLMCaller;
+    use async_trait::async_trait;
+
+    struct MockFailingLLM;
+
+    #[async_trait]
+    impl LLMCaller for MockFailingLLM {
+        async fn chat(
+            &self,
+            _system_prompt: &str,
+            _user_prompt: &str,
+            _max_tokens: Option<i64>,
+        ) -> Result<String, String> {
+            Err("connection refused".to_string())
+        }
+    }
+
+    let pipeline = Pipeline::new(
+        ForgeConfig::default(),
+        Arc::new(Registry::new(crate::types::RegistryConfig::default())),
+    );
+    pipeline.set_provider(Arc::new(MockFailingLLM));
+
+    let result = pipeline
+        .evaluate_quality(ArtifactKind::Skill, "demo", "content")
+        .await;
+    assert!(!result.stage.passed);
+    assert_eq!(result.score, 0);
+    assert!(result
+        .stage
+        .errors
+        .iter()
+        .any(|e| e.contains("LLM call failed: connection refused")));
+}
+
+#[tokio::test]
+async fn test_s8_validate_async_stage2_failure_skips_stage3() {
+    let pipeline = Pipeline::new(
+        ForgeConfig::default(),
+        Arc::new(Registry::new(crate::types::RegistryConfig::default())),
+    );
+
+    // Same shape as the sync variant, but exercising validate_async's own
+    // stage-2 early return: no '#' and no '-' anywhere, >=50 chars.
+    let content = "This is a long enough plain text without any hash or dash characters inside it, exceeding fifty chars.";
+    let validation = pipeline
+        .validate_async(ArtifactKind::Skill, "demo", content)
+        .await;
+    assert!(validation.stage1_static.as_ref().unwrap().stage.passed);
+    assert!(!validation.stage2_functional.as_ref().unwrap().stage.passed);
+    assert!(validation.stage3_quality.is_none());
+}

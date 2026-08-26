@@ -320,3 +320,29 @@ fn test_ping_response_node_id() {
     assert_eq!(result.response["status"], "ok");
     assert_eq!(result.response["node_id"], "node-ping");
 }
+
+// ============================================================
+// S4 coverage: peer_chat_callback parse-Ok + validate-Err arm.
+// ============================================================
+
+/// A well-formed callback payload with an empty task_id parses but fails
+/// validation (default_handler.rs 74-81).
+#[test]
+fn test_s4_callback_payload_valid_but_invalid_semantics() {
+    let handler = DefaultHandler::new("node-s4".into());
+    let result = handler.handle(
+        "peer_chat_callback",
+        serde_json::json!({
+            "task_id": "",
+            "response": "some answer",
+            "success": true,
+        }),
+    );
+    assert!(!result.success);
+    assert_eq!(
+        result.error.as_deref(),
+        Some("task_id is required"),
+        "unexpected: {:?}",
+        result.error
+    );
+}

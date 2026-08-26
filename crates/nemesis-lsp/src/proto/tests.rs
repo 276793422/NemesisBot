@@ -211,3 +211,44 @@ fn parse_hover_all_contents_shapes() {
     assert_eq!(parse_hover(&serde_json::Value::Null), "");
     assert_eq!(parse_hover(&serde_json::json!({})), "");
 }
+
+// ===========================================================================
+// S1 补测（2026-08-26）：FrameDecoder::default()；uri_to_path 小写十六进制 /
+// 非法十六进制回退；parse_hover 无 value 字段的对象
+// ===========================================================================
+
+#[test]
+fn s1_frame_decoder_default_is_empty() {
+    let mut d = FrameDecoder::default();
+    assert!(d.next_message().unwrap().is_none());
+    d.push(b"Content-Length: 2\r\n\r\n{}");
+    assert_eq!(
+        d.next_message().unwrap().unwrap(),
+        serde_json::json!({})
+    );
+}
+
+#[test]
+fn s1_uri_to_path_lowercase_hex_decodes() {
+    // Lowercase hex digits take the b'a'..=b'f' arm: %2f → '/'.
+    assert_eq!(uri_to_path("file:///a%2fb%2fc.rs"), "/a/b/c.rs");
+    assert_eq!(uri_to_path("file:///x%5e"), "/x^");
+}
+
+#[test]
+fn s1_uri_to_path_invalid_hex_passes_through_literally() {
+    // %zz is not a valid escape: the '%' and the following bytes are pushed
+    // as-is (tolerant decoding for servers that echo raw characters).
+    assert_eq!(uri_to_path("file:///a%zzb.rs"), "/a%zzb.rs");
+    // Trailing percent at end of string (i+2 < len fails) also passes through.
+    assert_eq!(uri_to_path("file:///tail%"), "/tail%");
+}
+
+#[test]
+fn s1_parse_hover_object_without_value_is_empty() {
+    // {kind: "plaintext"} has neither language+value nor value → "".
+    assert_eq!(
+        parse_hover(&serde_json::json!({"contents": {"kind": "plaintext"}})),
+        ""
+    );
+}

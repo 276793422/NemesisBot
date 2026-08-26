@@ -170,3 +170,13 @@ pub fn verify_response<T: Serialize>(
 
 #[cfg(test)]
 mod tests;
+
+/// 跨模块共享的测试串行锁（S6 覆盖率批次引入）。
+///
+/// env（NEMESIS_ROOT_PUBKEY / NEMESIS_REVOCATION_URL / NEMESIS_STRICT_OFFLINE）
+/// 与全局 CRL_CACHE 是进程级可变状态：revocation / verify / c_abi / keygen 的
+/// 测试都会在 verify 流程里读到它们，各模块各一把锁挡不住跨模块并行竞争
+/// （env-test-race-lock-pattern：必须 crate 根唯一一把）。
+/// 仅测试构建存在；形态是 static（非内联测试模块），不违反独立测试文件纪律。
+#[cfg(test)]
+pub(crate) static GLOBAL_STATE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());

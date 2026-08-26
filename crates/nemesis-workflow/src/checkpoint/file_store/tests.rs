@@ -208,3 +208,65 @@ fn collect_relative_paths(root: &Path, dir: &Path, out: &mut Vec<String>) {
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// W4a coverage gap closure (quarantine paths: load() corrupt, latest() scan
+// corrupt, quarantine-rename-failure fallback)
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn w4a_load_corrupt_file_returns_corrupt_and_quarantines() {
+    let (tmp, store) = make_store();
+    store.save(make_checkpoint("e", "cp1", 0)).await.unwrap();
+    // Corrupt the on-disk JSON behind the store's back
+    let cp_path = tmp.path().join("checkpoints").join("e").join("cp1.json");
+    assert!(cp_path.exists());
+    std::fs::write(&cp_path, b"{ not checkpoint json").unwrap();
+
+    let err = store.load("e", "cp1").await.unwrap_err();
+    assert!(matches!(err, StoreError::Corrupt(_)));
+    // The bad file was moved into the .corrupt quarantine dir
+    assert!(!cp_path.exists());
+    let quarantined = tmp.path().join("checkpoints").join("e").join(".corrupt").join("cp1.json");
+    assert!(quarantined.exists());
+}
+
+#[tokio::test]
+async fn w4a_latest_scan_skips_and_quarantines_corrupt_file() {
+    let (tmp, store) = make_store();
+    store.save(make_checkpoint("e", "cp1", 0)).await.unwrap();
+    store.save(make_checkpoint("e", "cp2", 10)).await.unwrap();
+    // Corrupt the NEWEST checkpoint; latest() must quarantine it and still
+    // return the older good one.
+    let cp2_path = tmp.path().join("checkpoints").join("e").join("cp2.json");
+    std::fs::write(&cp2_path, b"garbage").unwrap();
+
+    let latest = store.latest("e").await.unwrap().unwrap();
+    assert_eq!(latest.id, "cp1");
+    assert!(!cp2_path.exists());
+    assert!(tmp
+        .path()
+        .join("checkpoints")
+        .join("e")
+        .join(".corrupt")
+        .join("cp2.json")
+        .exists());
+}
+
+#[tokio::test]
+async fn w4a_quarantine_rename_failure_removes_in_place() {
+    let (tmp, store) = make_store();
+    store.save(make_checkpoint("e", "cp1", 0)).await.unwrap();
+    let cp_path = tmp.path().join("checkpoints").join("e").join("cp1.json");
+    std::fs::write(&cp_path, b"garbage").unwrap();
+    // Pre-create .corrupt as a regular FILE so create_dir_all inside
+    // quarantine_corrupt fails -> falls back to removing the file in place.
+    let corrupt_as_file = tmp.path().join("checkpoints").join("e").join(".corrupt");
+    std::fs::write(&corrupt_as_file, b"i am a file").unwrap();
+
+    let err = store.load("e", "cp1").await.unwrap_err();
+    assert!(matches!(err, StoreError::Corrupt(_)));
+    // Fallback branch: the corrupt file is gone, quarantine dir never created
+    assert!(!cp_path.exists());
+    assert!(corrupt_as_file.is_file());
+}

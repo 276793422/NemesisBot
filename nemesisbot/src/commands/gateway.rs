@@ -3575,6 +3575,12 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
         let url = format!("http://{}:{}", web_host, real_port);
         let token = cfg.channels.web.auth_token.clone();
         let mut rx = internal_cmd_rx;
+        // (BUG #31, quality-hardening goal 冲刺 S11e) `nemesisbot shutdown`
+        // 的 HTTP 臂经 POST /api/internal {"cmd":"shutdown"} 落到这里的
+        // Shutdown 变体：与托盘 Quit 同源的优雅停机——置全局标志后调用
+        // ServiceManager.shutdown()，其 broadcast 让 Step 23 的
+        // wait_for_shutdown 返回，进入 Step 24 统一善 teardown。
+        let shutdown_svc_internal = Arc::clone(&svc_mgr);
         tokio::spawn(async move {
             while let Some(cmd) = rx.recv().await {
                 match cmd {
@@ -3591,6 +3597,14 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
                                 "[Gateway] Internal command: open_dashboard (no desktop / android)"
                             );
                         }
+                    }
+                    nemesis_web::internal::InternalCommand::Shutdown => {
+                        info!(
+                            "[Gateway] Internal command: shutdown via /api/internal (BUG #31)"
+                        );
+                        #[cfg(not(target_os = "android"))]
+                        trigger_global_shutdown();
+                        shutdown_svc_internal.shutdown();
                     }
                 }
             }

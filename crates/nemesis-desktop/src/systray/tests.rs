@@ -552,3 +552,172 @@ mod platform_tray_tests {
         let _ = tray;
     }
 }
+
+// ============================================================
+// Additional coverage: remaining PlatformTray setters, cluster
+// menu Some-branch, and lazy tracing field expressions
+// ============================================================
+
+#[cfg(not(target_os = "android"))]
+mod extra_platform_tray_tests {
+    use super::*;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    #[test]
+    fn test_platform_tray_set_on_cluster_start() {
+        let mut tray = PlatformTray::new();
+        let called = Arc::new(AtomicBool::new(false));
+        let called_clone = called.clone();
+        tray.set_on_cluster_start(Box::new(move || {
+            called_clone.store(true, Ordering::SeqCst);
+        }));
+        let _ = tray;
+    }
+
+    #[test]
+    fn test_platform_tray_set_on_cluster_stop() {
+        let mut tray = PlatformTray::new();
+        let called = Arc::new(AtomicBool::new(false));
+        let called_clone = called.clone();
+        tray.set_on_cluster_stop(Box::new(move || {
+            called_clone.store(true, Ordering::SeqCst);
+        }));
+        let _ = tray;
+    }
+
+    #[test]
+    fn test_platform_tray_set_on_estop() {
+        let mut tray = PlatformTray::new();
+        let called = Arc::new(AtomicBool::new(false));
+        let called_clone = called.clone();
+        tray.set_on_estop(Box::new(move || {
+            called_clone.store(true, Ordering::SeqCst);
+        }));
+        let _ = tray;
+    }
+
+    #[test]
+    fn test_platform_tray_set_on_release() {
+        let mut tray = PlatformTray::new();
+        let called = Arc::new(AtomicBool::new(false));
+        let called_clone = called.clone();
+        tray.set_on_release(Box::new(move || {
+            called_clone.store(true, Ordering::SeqCst);
+        }));
+        let _ = tray;
+    }
+
+    #[test]
+    fn test_platform_tray_all_nine_callbacks_set() {
+        let mut tray = PlatformTray::new();
+        let counter = Arc::new(AtomicUsize::new(0));
+        let bump = |delta: usize| -> Box<dyn Fn() + Send + Sync> {
+            let c = counter.clone();
+            Box::new(move || {
+                c.fetch_add(delta, Ordering::SeqCst);
+            })
+        };
+        tray.set_on_start(bump(1));
+        tray.set_on_stop(bump(1));
+        tray.set_on_cluster_start(bump(1));
+        tray.set_on_cluster_stop(bump(1));
+        tray.set_on_open_dashboard(bump(1));
+        tray.set_on_open_chat(bump(1));
+        tray.set_on_quit(bump(1));
+        tray.set_on_estop(bump(1));
+        tray.set_on_release(bump(1));
+        let _ = tray;
+        // None of the callbacks run without a real event loop.
+        assert_eq!(counter.load(Ordering::SeqCst), 0);
+    }
+}
+
+/// Exercise the `Some` branch of `enable_cluster_menu_items` /
+/// `disable_cluster_menu_items` by populating the thread-local with real
+/// (unattached) menu items. `MenuItem` state manipulation works without a
+/// window — this mirrors how production creates the items before the tray
+/// loop attaches them.
+#[cfg(all(not(target_os = "android"), not(target_os = "linux")))]
+mod extra_cluster_menu_tests {
+    use super::*;
+
+    fn read_enabled(which: usize) -> bool {
+        CLUSTER_MENU_ITEMS.with(|items| {
+            let b = items.borrow();
+            let (start, stop) = b.as_ref().expect("menu items not set");
+            if which == 0 {
+                start.is_enabled()
+            } else {
+                stop.is_enabled()
+            }
+        })
+    }
+
+    #[test]
+    fn test_cluster_menu_items_enable_disable_some_branch() {
+        CLUSTER_MENU_ITEMS.with(|items| {
+            *items.borrow_mut() = Some((
+                tray_icon::menu::MenuItem::with_id(
+                    "cluster_start",
+                    "cluster-start",
+                    false,
+                    None,
+                ),
+                tray_icon::menu::MenuItem::with_id("cluster_stop", "cluster-stop", false, None),
+            ));
+        });
+
+        // Created disabled.
+        assert!(!read_enabled(0));
+        assert!(!read_enabled(1));
+
+        enable_cluster_menu_items();
+        assert!(read_enabled(0), "start item not enabled");
+        assert!(read_enabled(1), "stop item not enabled");
+
+        disable_cluster_menu_items();
+        assert!(!read_enabled(0), "start item not disabled");
+        assert!(!read_enabled(1), "stop item not disabled");
+
+        // Reset the thread-local so other tests see None.
+        CLUSTER_MENU_ITEMS.with(|items| {
+            *items.borrow_mut() = None;
+        });
+    }
+}
+
+#[test]
+fn test_system_tray_new_evaluates_lazy_log_fields() {
+    // `tracing::info!(menu_count = config.menu_items.len(), ...)` evaluates
+    // field expressions lazily — they only run when a subscriber is enabled.
+    // Install a thread-local subscriber that enables everything so the
+    // field expression actually executes.
+    struct EnableAllSubscriber;
+    impl tracing::Subscriber for EnableAllSubscriber {
+        fn enabled(&self, _metadata: &tracing::Metadata<'_>) -> bool {
+            true
+        }
+        fn new_span(&self, _attrs: &tracing::span::Attributes<'_>) -> tracing::span::Id {
+            tracing::span::Id::from_u64(1)
+        }
+        // tracing_core 无默认实现的必需方法（E0046）；no-op 即可——惰性字段
+        // 求值发生在 Event 构造时，与 event() 的实现体无关。
+        fn record(&self, _span: &tracing::Id, _values: &tracing::span::Record<'_>) {}
+        fn record_follows_from(&self, _span: &tracing::Id, _follows: &tracing::Id) {}
+        fn event(&self, _event: &tracing::Event<'_>) {}
+        fn enter(&self, _span: &tracing::Id) {}
+        fn exit(&self, _span: &tracing::Id) {}
+    }
+    let _guard = tracing::subscriber::set_default(EnableAllSubscriber);
+
+    let config = TrayConfig {
+        title: "t".to_string(),
+        tooltip: "tip".to_string(),
+        menu_items: vec![
+            MenuItem::new("start", "Start", true),
+            MenuItem::new("quit", "Quit", true),
+        ],
+    };
+    let tray = SystemTray::new(config);
+    assert_eq!(tray.menu_count(), 2);
+}

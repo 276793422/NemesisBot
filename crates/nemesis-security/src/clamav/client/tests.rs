@@ -467,3 +467,343 @@ async fn test_client_scan_stream_connection_refused() {
     let result = client.scan_stream(b"test content").await;
     assert!(result.is_err());
 }
+
+// ============================================================
+// Fake clamd protocol server tests (2026-08-25 coverage push)
+// ============================================================
+// 手搓假 clamd：tokio TcpListener 127.0.0.1:0，每个连接读一行 `nCMD\n`
+// 按脚本应答后关闭（对端读到 EOF 结束多行命令）。协议要点：
+// - PING/VERSION/SCAN/CONTSCAN 单行应答（client 读到第一行即 break）
+// - RELOAD/STATS/SHUTDOWN 多行应答（client 读到 EOF）
+// - INSTREAM：4 字节大端长度前缀 chunk，0 长度终止，一行应答
+
+use std::sync::Arc;
+
+/// 起假 clamd。`responder` 收到去掉 `n` 前缀的命令行，返回应答字节
+/// （空 Vec = 不写任何字节直接关连接 → 客户端读到空响应）。
+/// INSTREAM 特殊处理：吞完全部 chunk 后应答 `stream: <总字节数> FOUND`
+/// （用病毒名携带总字节数，跨 chunk 完整性可断言）。
+async fn serve_clamd(responder: Arc<dyn Fn(&str) -> Vec<u8> + Send + Sync>) -> String {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let jh = tokio::spawn(async move {
+        loop {
+            let (socket, _) = match listener.accept().await {
+                Ok(x) => x,
+                Err(_) => return,
+            };
+            let responder = responder.clone();
+            tokio::spawn(async move {
+                let mut socket = socket;
+                let (read_half, mut write_half) = socket.split();
+                let mut reader = tokio::io::BufReader::new(read_half);
+                let mut line = String::new();
+                if reader.read_line(&mut line).await.is_err() {
+                    return;
+                }
+                let cmd = line.trim().strip_prefix('n').unwrap_or(line.trim()).to_string();
+                if cmd == "INSTREAM" {
+                    // 吞 chunk 直到 0 长度终止，统计总字节数
+                    let mut total: usize = 0;
+                    let mut lenbuf = [0u8; 4];
+                    loop {
+                        if reader.read_exact(&mut lenbuf).await.is_err() {
+                            break;
+                        }
+                        let len = u32::from_be_bytes(lenbuf) as usize;
+                        if len == 0 {
+                            break;
+                        }
+                        let mut chunk = vec![0u8; len];
+                        if reader.read_exact(&mut chunk).await.is_err() {
+                            break;
+                        }
+                        total += len;
+                    }
+                    let resp = format!("stream: {} FOUND\n", total);
+                    let _ = write_half.write_all(resp.as_bytes()).await;
+                } else {
+                    let resp = responder(&cmd);
+                    if !resp.is_empty() {
+                        let _ = write_half.write_all(&resp).await;
+                    }
+                }
+                // drop → 对端读到 EOF
+            });
+        }
+    });
+    tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_secs(30)).await;
+        jh.abort();
+    });
+    addr.to_string()
+}
+
+/// 常用应答器：PING→PONG；SCAN <path>→原样回显路径 + OK（client 发的是
+/// canonicalize 过的绝对路径，服务端回显即与最终 result.path 对齐）。
+fn pong_scan_ok() -> Arc<dyn Fn(&str) -> Vec<u8> + Send + Sync> {
+    Arc::new(|cmd: &str| {
+        if let Some(path) = cmd.strip_prefix("SCAN ") {
+            format!("{}: OK\n", path).into_bytes()
+        } else if cmd == "PING" {
+            b"PONG\n".to_vec()
+        } else if cmd == "VERSION" {
+            b"ClamAV 1.4.2/27350/Mon Jan  1 00:00:00 2026\n".to_vec()
+        } else {
+            Vec::new()
+        }
+    })
+}
+
+#[tokio::test]
+async fn fake_server_ping_success() {
+    let addr = serve_clamd(pong_scan_ok()).await;
+    let client = Client::new(&addr);
+    client.ping().await.unwrap();
+}
+
+#[tokio::test]
+async fn fake_server_ping_unexpected_response() {
+    let addr = serve_clamd(Arc::new(|_cmd: &str| b"WHAT\n".to_vec())).await;
+    let client = Client::new(&addr);
+    let err = client.ping().await.unwrap_err();
+    assert!(err.contains("unexpected ping response"), "{err}");
+}
+
+#[tokio::test]
+async fn fake_server_version_success() {
+    let addr = serve_clamd(pong_scan_ok()).await;
+    let client = Client::new(&addr);
+    let v = client.version().await.unwrap();
+    assert!(v.contains("ClamAV 1.4.2"), "{v}");
+}
+
+#[tokio::test]
+async fn fake_server_shutdown_success() {
+    // 真 clamd 关连接不回话，但 client 要求非空响应才算 Ok —— 按 client
+    // 实际实现测试：回一行非空即可。
+    let addr = serve_clamd(Arc::new(|cmd: &str| {
+        if cmd == "SHUTDOWN" {
+            b"BYE\n".to_vec()
+        } else {
+            Vec::new()
+        }
+    }))
+    .await;
+    let client = Client::new(&addr);
+    client.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn fake_server_empty_response_is_error() {
+    let addr = serve_clamd(Arc::new(|_cmd: &str| Vec::new())).await;
+    let client = Client::new(&addr);
+    let err = client.version().await.unwrap_err();
+    assert!(err.contains("empty response"), "{err}");
+}
+
+#[tokio::test]
+async fn fake_server_scan_file_clean_absolute_path() {
+    // 已知坑：scan_file 必须发 canonicalize 绝对路径；服务端回显收到的
+    // 路径，断言 result.path 含文件名（canonicalize 后回显对齐）。
+    let addr = serve_clamd(pong_scan_ok()).await;
+    let client = Client::new(&addr);
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("target.txt");
+    std::fs::write(&file, "clean content").unwrap();
+    let result = client.scan_file(&file).await.unwrap();
+    assert!(result.clean());
+    assert!(result.path.contains("target.txt"), "{}", result.path);
+    // 绝对路径（Windows 盘符 / Unix 根）
+    let p = &result.path;
+    assert!(
+        p.len() >= 3
+            && (p.as_bytes()[1] == b':' || p.starts_with('/')),
+        "not absolute: {p}"
+    );
+}
+
+#[tokio::test]
+async fn fake_server_scan_file_infected() {
+    let addr = serve_clamd(Arc::new(|cmd: &str| {
+        if let Some(path) = cmd.strip_prefix("SCAN ") {
+            format!("{}: EICAR-Test-File FOUND\n", path).into_bytes()
+        } else {
+            b"PONG\n".to_vec()
+        }
+    }))
+    .await;
+    let client = Client::new(&addr);
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("eicar.txt");
+    std::fs::write(&file, "eicar test payload").unwrap();
+    let result = client.scan_file(&file).await.unwrap();
+    assert!(result.infected);
+    assert_eq!(result.virus, "EICAR-Test-File");
+    assert!(!result.clean());
+}
+
+#[tokio::test]
+async fn fake_server_scan_file_no_separator_falls_back_clean() {
+    // 应答无 ": " 也无 " FOUND"（如裸 "OK"）→ parse fallback：clean + 空 path。
+    let addr = serve_clamd(Arc::new(|_cmd: &str| b"OK\n".to_vec())).await;
+    let client = Client::new(&addr);
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("any.txt");
+    std::fs::write(&file, "x").unwrap();
+    let result = client.scan_file(&file).await.unwrap();
+    assert!(result.clean());
+    assert!(result.path.is_empty());
+}
+
+#[tokio::test]
+async fn fake_server_cont_scan_single_line_response() {
+    // CONTSCAN 是单行应答命令（is_single_response_command=true，读完第一行
+    // 即 break），parse_multi 拿到一行。
+    let addr = serve_clamd(Arc::new(|cmd: &str| {
+        if let Some(path) = cmd.strip_prefix("CONTSCAN ") {
+            format!("{}: OK\n", path).into_bytes()
+        } else {
+            b"PONG\n".to_vec()
+        }
+    }))
+    .await;
+    let client = Client::new(&addr);
+    let dir = tempfile::tempdir().unwrap();
+    let results = client.cont_scan(dir.path()).await.unwrap();
+    assert_eq!(results.len(), 1);
+    assert!(results[0].clean());
+}
+
+#[tokio::test]
+async fn fake_server_scan_stream_small_content() {
+    // 病毒名携带服务端收到的总字节数 → 断言字节完整到达。
+    let addr = serve_clamd(Arc::new(|_cmd: &str| Vec::new())).await;
+    let client = Client::new(&addr);
+    let result = client.scan_stream(b"hello").await.unwrap();
+    assert!(result.infected);
+    assert_eq!(result.virus, "5");
+}
+
+#[tokio::test]
+async fn fake_server_scan_stream_multi_chunk() {
+    // 70_000 字节 > 32KB chunk_size → 强制走 2+ chunk 路径；总字节数
+    // 必须仍是 70000（跨 chunk 无丢失）。
+    let addr = serve_clamd(Arc::new(|_cmd: &str| Vec::new())).await;
+    let client = Client::new(&addr);
+    let content = vec![b'A'; 70_000];
+    let result = client.scan_stream(&content).await.unwrap();
+    assert!(result.infected);
+    assert_eq!(result.virus, "70000");
+}
+
+#[tokio::test]
+async fn fake_server_scan_stream_empty_content() {
+    // 空内容：不发任何 chunk，直接 0 长度终止 → 服务端 total=0。
+    let addr = serve_clamd(Arc::new(|_cmd: &str| Vec::new())).await;
+    let client = Client::new(&addr);
+    let result = client.scan_stream(b"").await.unwrap();
+    assert!(result.infected);
+    assert_eq!(result.virus, "0");
+}
+
+#[tokio::test]
+async fn fake_server_reload_success() {
+    let addr = serve_clamd(Arc::new(|cmd: &str| {
+        if cmd == "RELOAD" {
+            b"RELOADING\n".to_vec()
+        } else {
+            Vec::new()
+        }
+    }))
+    .await;
+    let client = Client::new(&addr);
+    client.reload().await.unwrap();
+}
+
+#[tokio::test]
+async fn fake_server_reload_unexpected_response() {
+    let addr = serve_clamd(Arc::new(|cmd: &str| {
+        if cmd == "RELOAD" {
+            b"BUSY\n".to_vec()
+        } else {
+            Vec::new()
+        }
+    }))
+    .await;
+    let client = Client::new(&addr);
+    let err = client.reload().await.unwrap_err();
+    assert!(err.contains("unexpected reload response"), "{err}");
+}
+
+#[tokio::test]
+async fn fake_server_stats_multi_line() {
+    // STATS 是多行命令：client 读到 EOF；多行 join("\n")。
+    let addr = serve_clamd(Arc::new(|cmd: &str| {
+        if cmd == "STATS" {
+            b"POOLS: 1\nQUEUE: 0 items\n\nMEMORY: 64.00 MB\n".to_vec()
+        } else {
+            Vec::new()
+        }
+    }))
+    .await;
+    let client = Client::new(&addr);
+    let stats = client.stats().await.unwrap();
+    assert!(stats.contains("POOLS: 1"), "{stats}");
+    assert!(stats.contains("QUEUE: 0 items"), "{stats}");
+    assert!(stats.contains("MEMORY"), "{stats}");
+}
+
+#[tokio::test]
+async fn fake_server_with_timeout_client_roundtrip() {
+    // with_timeout 构造 + 真协议往返。
+    let addr = serve_clamd(pong_scan_ok()).await;
+    let client = Client::with_timeout(&addr, Duration::from_secs(10));
+    assert_eq!(client.timeout(), Duration::from_secs(10));
+    client.ping().await.unwrap();
+}
+
+#[tokio::test]
+async fn fake_server_scan_file_error_response_is_not_infected() {
+    // "<path>: ... ERROR" → clean 且 path 清空（ERROR 分支）。
+    let addr = serve_clamd(Arc::new(|cmd: &str| {
+        if let Some(path) = cmd.strip_prefix("SCAN ") {
+            format!("{}: Access denied ERROR\n", path).into_bytes()
+        } else {
+            Vec::new()
+        }
+    }))
+    .await;
+    let client = Client::new(&addr);
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("denied.txt");
+    std::fs::write(&file, "x").unwrap();
+    let result = client.scan_file(&file).await.unwrap();
+    assert!(!result.infected);
+    assert!(result.path.is_empty());
+    assert!(result.raw.contains("ERROR"));
+}
+
+#[tokio::test]
+#[allow(deprecated)] // set_linger(0) 故意发 RST 复现读错误分支
+async fn send_command_read_error_breaks_out_of_loop() {
+    use tokio::io::AsyncReadExt;
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let srv = tokio::spawn(async move {
+        let (mut s, _) = listener.accept().await.unwrap();
+        let mut buf = [0u8; 64];
+        let _ = s.read(&mut buf).await;
+        // linger(0) + close sends RST instead of FIN → the client's read_line
+        // fails with a connection-reset error (not a clean EOF).
+        let _ = s.set_linger(Some(std::time::Duration::ZERO));
+        drop(s);
+    });
+    let client = Client::with_timeout(&addr.to_string(), std::time::Duration::from_secs(5));
+    // STATS is a multi-line command: the read loop continues after each line,
+    // so the reset hits inside the loop's Err(_) => break arm.
+    let r = client.stats().await;
+    assert!(r.is_err());
+    let _ = srv.await;
+}

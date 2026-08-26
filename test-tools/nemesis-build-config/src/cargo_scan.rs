@@ -58,3 +58,5 @@ pub fn scan_file(path: &Path) -> anyhow::Result<ScanResult> {
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod w5d_tests;

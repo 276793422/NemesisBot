@@ -204,6 +204,7 @@ async fn test_handle_api_internal_no_token_required_when_empty() {
     assert!(received.is_ok());
     match received.unwrap().unwrap() {
         crate::internal::InternalCommand::OpenDashboard => {}
+        _ => panic!("expected OpenDashboard"), // (BUG #31) shutdown 变体加入后保持穷尽
     }
 }
 
@@ -1269,4 +1270,69 @@ fn test_verify_token_one_empty_one_not() {
     assert!(verify_token("non-empty", ""));
     // But empty token against non-empty expected fails
     assert!(!verify_token("", "expected"));
+}
+
+// ============================================================
+// handle_api_internal: "shutdown" arm (BUG #31, quality-hardening
+// goal 冲刺 S11e) — CLI `nemesisbot shutdown` 的 HTTP 兜底臂后端。
+// 鉴权语义与 open_dashboard 完全同源（同一 handler 入口）。
+// ============================================================
+
+#[tokio::test]
+async fn test_handle_api_internal_correct_token_shutdown() {
+    let (tx, mut rx) = tokio::sync::mpsc::channel::<crate::internal::InternalCommand>(8);
+    let state = make_state_with_tx(None, None, "secret", Some(tx));
+    let mut headers = axum::http::HeaderMap::new();
+    headers.insert("X-Auth-Token", "secret".parse().unwrap());
+    let body = serde_json::json!({"cmd": "shutdown"});
+    let result = handle_api_internal(headers, axum::extract::State(state), Json(body)).await;
+    assert!(result.is_ok());
+    let json = result.unwrap().0;
+    assert_eq!(json["status"], "ok");
+    let received = tokio::time::timeout(std::time::Duration::from_millis(500), rx.recv()).await;
+    assert!(received.is_ok(), "shutdown command must be delivered");
+    match received.unwrap().unwrap() {
+        crate::internal::InternalCommand::Shutdown => {} // 收到的正是 Shutdown 变体
+        _ => panic!("expected InternalCommand::Shutdown"),
+    }
+}
+
+#[tokio::test]
+async fn test_handle_api_internal_shutdown_wrong_token_unauthorized() {
+    // shutdown 与 open_dashboard 同一鉴权门：错 token → 401，且命令不得入队。
+    // 注意：必须额外持有一个 Sender 存活——否则 handler 返回后全部 Sender
+    // 落弃、recv() 立刻回 Closed（而非 pend），无法用 timeout 区分「空」与「关」。
+    let (tx, mut rx) = tokio::sync::mpsc::channel::<crate::internal::InternalCommand>(8);
+    let keep_alive = tx.clone();
+    let state = make_state_with_tx(None, None, "expected", Some(tx));
+    let mut headers = axum::http::HeaderMap::new();
+    headers.insert("X-Auth-Token", "wrong".parse().unwrap());
+    let body = serde_json::json!({"cmd": "shutdown"});
+    let result = handle_api_internal(headers, axum::extract::State(state), Json(body)).await;
+    assert!(result.is_err());
+    let (status, json) = result.unwrap_err();
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    assert_eq!(json.0["error"], "unauthorized");
+    // 未鉴权 → 通道必须保持空：唯一存活 Sender 挂着、无数据 → recv 只能 pend 到超时。
+    let drained =
+        tokio::time::timeout(std::time::Duration::from_millis(100), rx.recv()).await;
+    assert!(drained.is_err(), "unauthorized shutdown must NOT enqueue");
+    drop(keep_alive);
+}
+
+#[tokio::test]
+async fn test_handle_api_internal_shutdown_no_token_config_accepted() {
+    // 空 auth_token（未配置 token）的既有约定：空 token 可过（与 open_dashboard 一致）。
+    let (tx, mut rx) = tokio::sync::mpsc::channel::<crate::internal::InternalCommand>(8);
+    let state = make_state_with_tx(None, None, "", Some(tx));
+    let headers = axum::http::HeaderMap::new(); // 不带任何头
+    let body = serde_json::json!({"cmd": "shutdown"});
+    let result = handle_api_internal(headers, axum::extract::State(state), Json(body)).await;
+    assert!(result.is_ok());
+    let received = tokio::time::timeout(std::time::Duration::from_millis(500), rx.recv()).await;
+    assert!(received.is_ok());
+    match received.unwrap().unwrap() {
+        crate::internal::InternalCommand::Shutdown => {}
+        _ => panic!("expected InternalCommand::Shutdown"),
+    }
 }

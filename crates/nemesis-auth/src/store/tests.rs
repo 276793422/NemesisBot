@@ -334,3 +334,31 @@ fn test_persistence_file_format_is_json() {
     assert!(parsed.is_object());
     assert!(parsed.get("prov").is_some());
 }
+
+/// 路径含 NUL 字节时 fs::create_dir_all(父目录) 确定性失败 → persist 的
+/// create-dir 错误臂。load 阶段 exists() 对 NUL 路径返回 false，
+/// 所以 AuthStore::new 仍能成功构造。
+#[test]
+fn test_save_fails_when_parent_directory_cannot_be_created() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir
+        .path()
+        .join("bad\0dir")
+        .join("auth.json")
+        .to_string_lossy()
+        .to_string();
+    let store = AuthStore::new(&path);
+    let result = store.save("prov", test_cred());
+    let err = result.unwrap_err();
+    assert!(err.contains("create dir"), "{err}");
+}
+
+/// 空路径的 `Path::parent()` 返回 None → persist 跳过 mkdir（if-let 的
+/// None 臂，line 76），随后 fs::write("") 确定性失败。
+#[test]
+fn test_save_empty_path_skips_parent_creation_then_write_fails() {
+    let store = AuthStore::new("");
+    let result = store.save("prov", test_cred());
+    let err = result.unwrap_err();
+    assert!(err.starts_with("write"), "{err}");
+}

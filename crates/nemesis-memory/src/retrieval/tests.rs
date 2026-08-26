@@ -65,3 +65,78 @@ fn keep_top_relative_score_empty_and_zero_top() {
         "zero top score → no trimming"
     );
 }
+
+#[test]
+fn bm25_term_missing_from_df_is_skipped() {
+    // counts has the term but df does not → df-miss continue (score stays 0).
+    let mut counts = HashMap::new();
+    counts.insert("ghost".to_string(), 3usize);
+    let df = document_frequency(&[]); // empty df: no term has a df entry
+    let q = vec!["ghost".to_string()];
+    let score = bm25_score(&counts, 3, &q, &df, 5, 3.0);
+    assert_eq!(score, 0.0, "term absent from df must contribute nothing");
+    // df entry of 0 is equally skipped.
+    let mut df0 = HashMap::new();
+    df0.insert("ghost".to_string(), 0usize);
+    assert_eq!(bm25_score(&counts, 3, &q, &df0, 5, 3.0), 0.0);
+    // tf of 0 is skipped too (counts value 0).
+    let mut counts0 = HashMap::new();
+    counts0.insert("ghost".to_string(), 0usize);
+    let mut df1 = HashMap::new();
+    df1.insert("ghost".to_string(), 1usize);
+    assert_eq!(bm25_score(&counts0, 3, &q, &df1, 5, 3.0), 0.0);
+}
+
+#[test]
+fn make_snippet_zero_max_and_short_text_return_whole() {
+    // max_chars == 0 → early return of whitespace-compacted text.
+    assert_eq!(make_snippet("  hello   world  ", &["zz".to_string()], 0), "hello world");
+    // text shorter than max_chars → early return too.
+    assert_eq!(make_snippet("tiny", &["zz".to_string()], 10), "tiny");
+}
+
+#[test]
+fn make_snippet_centers_on_multichar_hit() {
+    let words: Vec<String> = (0..20).map(|i| format!("w{i:02}")).collect();
+    let text = words.join(" ");
+    let snippet = make_snippet(&text, &["w10".to_string()], 11);
+    assert!(snippet.contains("w10"), "snippet must contain the hit: {snippet}");
+    assert!(snippet.starts_with("..."), "start>0 → prefix ellipsis: {snippet}");
+    assert!(snippet.ends_with("..."), "end<total → suffix ellipsis: {snippet}");
+}
+
+#[test]
+fn make_snippet_cjk_single_char_is_a_valid_term() {
+    // Single CJK char must NOT be skipped by the latin-only guard.
+    let words: Vec<String> = (0..15).map(|i| format!("t{i:02}")).collect();
+    let text = format!("{} 你好吗 {}", words[..3].join(" "), words[3..].join(" "));
+    let snippet = make_snippet(&text, &["你".to_string()], 9);
+    assert!(snippet.contains('你'), "CJK single-char term must hit: {snippet}");
+}
+
+#[test]
+fn make_snippet_hit_near_end_recomputes_start() {
+    // Hit at the tail: start+max > total → end=total, start recomputed from end.
+    let words: Vec<String> = (0..10).map(|i| format!("p{i:02}")).collect();
+    let text = words.join(" ");
+    let snippet = make_snippet(&text, &["p09".to_string()], 7);
+    assert!(snippet.contains("p09"), "snippet must contain tail hit: {snippet}");
+    assert!(snippet.starts_with("..."), "recomputed start>0 → ellipsis: {snippet}");
+    assert!(!snippet.ends_with("..."), "end==total → no suffix: {snippet}");
+}
+
+#[test]
+fn find_subslice_boundaries() {
+    let hay: Vec<char> = "abcabd".chars().collect();
+    // Empty needle → None.
+    assert_eq!(find_subslice(&hay, &[]), None);
+    // Needle longer than haystack → None.
+    let long: Vec<char> = "abcdefg".chars().collect();
+    assert_eq!(find_subslice(&hay, &long), None);
+    // Match at the last possible offset.
+    let needle: Vec<char> = "bd".chars().collect();
+    assert_eq!(find_subslice(&hay, &needle), Some(4));
+    // No match.
+    let miss: Vec<char> = "xyz".chars().collect();
+    assert_eq!(find_subslice(&hay, &miss), None);
+}

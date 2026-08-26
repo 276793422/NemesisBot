@@ -1282,3 +1282,1182 @@ fn test_base64_encode_matches_standard() {
     assert_eq!(base64_encode(b"\x00\x01"), "AAE=");
     assert_eq!(base64_encode(b"\x00\x01\x02"), "AAEC");
 }
+
+// =========================================================================
+// run() 端到端分支覆盖（S11 覆盖率冲刺）
+//
+// 策略：NEMESISBOT_HOME 指向临时目录（resolve_home 优先级 2），
+// `run(action, false)` 全程只读写临时 home，绝不触碰生产 home。
+// env set_var 是进程级操作 → 全部持 crate::GLOBAL_STATE_LOCK 串行。
+// =========================================================================
+
+/// RAII 守卫：设置 NEMESISBOT_HOME 指向临时根，drop 时移除。
+/// home = `{tmp}/.nemesisbot`（resolve_home 会自动拼 .nemesisbot）。
+struct TempHomeEnv {
+    _tmp: TempDir,
+    home: std::path::PathBuf,
+}
+
+impl Drop for TempHomeEnv {
+    fn drop(&mut self) {
+        unsafe { std::env::remove_var("NEMESISBOT_HOME") };
+    }
+}
+
+fn temp_home_env() -> TempHomeEnv {
+    let tmp = TempDir::new().unwrap();
+    let home = tmp.path().join(".nemesisbot");
+    std::fs::create_dir_all(home.join("workspace").join("config")).unwrap();
+    unsafe { std::env::set_var("NEMESISBOT_HOME", tmp.path()) };
+    TempHomeEnv { _tmp: tmp, home }
+}
+
+fn write_peers_toml(home: &std::path::Path, content: &str) {
+    let dir = crate::common::cluster_dir(home);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("peers.toml"), content).unwrap();
+}
+
+fn read_cluster_cfg(home: &std::path::Path) -> serde_json::Value {
+    let p = crate::common::cluster_config_path(home);
+    serde_json::from_str(&std::fs::read_to_string(p).unwrap()).unwrap()
+}
+
+#[tokio::test]
+async fn test_run_status_not_initialized() {
+    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let th = temp_home_env();
+    // 无 config.cluster.json → 走 "[not found]" 分支
+    run(ClusterAction::Status, false).await.unwrap();
+    assert!(!crate::common::cluster_config_path(&th.home).exists());
+}
+
+#[tokio::test]
+async fn test_run_status_with_config_and_peers() {
+    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let th = temp_home_env();
+    write_cluster_config(
+        &th.home,
+        &serde_json::json!({
+            "enabled": true, "port": 11949, "rpc_port": 21949, "broadcast_interval": 30
+        }),
+    );
+    write_peers_toml(
+        &th.home,
+        "[node]\nid = \"node-a\"\nname = \"Node A\"\nrole = \"manager\"\ncategory = \"ops\"\n",
+    );
+    run(ClusterAction::Status, false).await.unwrap();
+}
+
+#[tokio::test]
+async fn test_run_status_config_without_peers() {
+    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let th = temp_home_env();
+    write_cluster_config(&th.home, &serde_json::json!({ "enabled": false }));
+    run(ClusterAction::Status, false).await.unwrap();
+}
+
+#[tokio::test]
+async fn test_run_config_updates_when_values_differ() {
+    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let th = temp_home_env();
+    write_cluster_config(
+        &th.home,
+        &serde_json::json!({ "port": 11949, "rpc_port": 21949, "broadcast_interval": 30 }),
+    );
+    run(
+        ClusterAction::Config {
+            udp_port: 12345,
+            rpc_port: 23456,
+            broadcast_interval: 60,
+        },
+        false,
+    )
+    .await
+    .unwrap();
+    let cfg = read_cluster_cfg(&th.home);
+    assert_eq!(cfg["port"], serde_json::json!(12345));
+    assert_eq!(cfg["rpc_port"], serde_json::json!(23456));
+    assert_eq!(cfg["broadcast_interval"], serde_json::json!(60));
+}
+
+#[tokio::test]
+async fn test_run_config_same_values_no_rewrite() {
+    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let th = temp_home_env();
+    write_cluster_config(
+        &th.home,
+        &serde_json::json!({ "port": 11949, "rpc_port": 21949, "broadcast_interval": 30 }),
+    );
+    run(
+        ClusterAction::Config {
+            udp_port: 11949,
+            rpc_port: 21949,
+            broadcast_interval: 30,
+        },
+        false,
+    )
+    .await
+    .unwrap();
+    // 未变化 → 不写回（文件内容保持原样）
+    let cfg = read_cluster_cfg(&th.home);
+    assert_eq!(cfg.as_object().unwrap().len(), 3);
+}
+
+#[tokio::test]
+async fn test_run_config_missing_keys_not_backfilled_until_diff() {
+    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let th = temp_home_env();
+    // 配置缺 key → cur 值取 unwrap_or 默认（11949/21949/30）；
+    // 传与默认相同的值 → 判定"未变化"→ 不回填缺 key（生产现状）
+    write_cluster_config(&th.home, &serde_json::json!({}));
+    run(
+        ClusterAction::Config {
+            udp_port: 11949,
+            rpc_port: 21949,
+            broadcast_interval: 30,
+        },
+        false,
+    )
+    .await
+    .unwrap();
+    let cfg = read_cluster_cfg(&th.home);
+    assert!(cfg.as_object().unwrap().is_empty());
+    // 传不同值 → 触发写入，三个 key 一次性补齐
+    run(
+        ClusterAction::Config {
+            udp_port: 20000,
+            rpc_port: 30000,
+            broadcast_interval: 90,
+        },
+        false,
+    )
+    .await
+    .unwrap();
+    let cfg = read_cluster_cfg(&th.home);
+    assert_eq!(cfg["port"], serde_json::json!(20000));
+    assert_eq!(cfg["rpc_port"], serde_json::json!(30000));
+    assert_eq!(cfg["broadcast_interval"], serde_json::json!(90));
+}
+
+#[tokio::test]
+async fn test_run_config_missing_file() {
+    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let th = temp_home_env();
+    run(
+        ClusterAction::Config {
+            udp_port: 1,
+            rpc_port: 2,
+            broadcast_interval: 3,
+        },
+        false,
+    )
+    .await
+    .unwrap();
+    assert!(!crate::common::cluster_config_path(&th.home).exists());
+}
+
+#[tokio::test]
+async fn test_run_info_updates_fields_and_saves() {
+    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let th = temp_home_env();
+    write_peers_toml(
+        &th.home,
+        "[node]\nid = \"node-a\"\nname = \"old\"\nrole = \"worker\"\ncategory = \"general\"\n",
+    );
+    run(
+        ClusterAction::Info {
+            name: Some("new-name".into()),
+            role: Some("manager".into()),
+            category: Some("ops".into()),
+            tags: Some("a, b ,,".into()),
+            address: Some("127.0.0.1:21949".into()),
+        },
+        false,
+    )
+    .await
+    .unwrap();
+    let content =
+        std::fs::read_to_string(crate::common::cluster_dir(&th.home).join("peers.toml")).unwrap();
+    assert!(content.contains("new-name"));
+    assert!(content.contains("manager"));
+    assert!(content.contains("ops"));
+    assert!(content.contains("127.0.0.1:21949"));
+    let doc: toml::Value = content.parse().unwrap();
+    assert_eq!(
+        doc["node"]["tags"],
+        toml::Value::Array(vec!["a".into(), "b".into()])
+    );
+}
+
+#[tokio::test]
+async fn test_run_info_read_only_no_changes() {
+    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let th = temp_home_env();
+    write_peers_toml(
+        &th.home,
+        "[node]\nid = \"node-a\"\nname = \"Node A\"\n",
+    );
+    run(
+        ClusterAction::Info {
+            name: None,
+            role: None,
+            category: None,
+            tags: None,
+            address: None,
+        },
+        false,
+    )
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn test_run_info_missing_peers_file() {
+    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let _th = temp_home_env();
+    run(
+        ClusterAction::Info {
+            name: Some("x".into()),
+            role: None,
+            category: None,
+            tags: None,
+            address: None,
+        },
+        false,
+    )
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn test_run_peers_no_subcommand_usage() {
+    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let _th = temp_home_env();
+    run(ClusterAction::Peers { action: None }, false)
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn test_run_peers_list_with_file() {
+    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let th = temp_home_env();
+    write_peers_toml(&th.home, "[node]\nid = \"node-a\"\n");
+    run(
+        ClusterAction::Peers {
+            action: Some(PeerAction::List),
+        },
+        false,
+    )
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn test_run_peers_list_without_file() {
+    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let _th = temp_home_env();
+    run(
+        ClusterAction::Peers {
+            action: Some(PeerAction::List),
+        },
+        false,
+    )
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn test_run_peers_add_creates_entry() {
+    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let th = temp_home_env();
+    run(
+        ClusterAction::Peers {
+            action: Some(PeerAction::Add {
+                id: "peer-x".into(),
+                name: Some("Peer X".into()),
+                address: Some("10.1.1.1:21949".into()),
+                role: Some("worker".into()),
+                category: Some("dev".into()),
+                priority: Some(1),
+            }),
+        },
+        false,
+    )
+    .await
+    .unwrap();
+    let content =
+        std::fs::read_to_string(crate::common::cluster_dir(&th.home).join("peers.toml")).unwrap();
+    // 权威写路径 sanitize_peer_key 只替换 `.`/`:`，保留 `-`
+    assert!(content.contains("peer-x"));
+    assert!(content.contains("10.1.1.1:21949"));
+}
+
+#[tokio::test]
+async fn test_run_peers_remove_dash_id_after_add() {
+    // (BUG #26, quality-hardening goal 冲刺 S11) 回归：
+    // add 写 `[peers.node-a]`（dash 保留），remove --id node-a 必须能删掉
+    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let th = temp_home_env();
+    run(
+        ClusterAction::Peers {
+            action: Some(PeerAction::Add {
+                id: "node-a".into(),
+                name: None,
+                address: Some("10.2.3.4:21949".into()),
+                role: None,
+                category: None,
+                priority: None,
+            }),
+        },
+        false,
+    )
+    .await
+    .unwrap();
+    run(
+        ClusterAction::Peers {
+            action: Some(PeerAction::Remove { id: "node-a".into() }),
+        },
+        false,
+    )
+    .await
+    .unwrap();
+    let content =
+        std::fs::read_to_string(crate::common::cluster_dir(&th.home).join("peers.toml")).unwrap();
+    assert!(!content.contains("node-a"));
+}
+
+#[tokio::test]
+async fn test_run_peers_remove_by_address_fallback() {
+    // (BUG #26, quality-hardening goal 冲刺 S11) 按 address 兜底删除
+    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let th = temp_home_env();
+    write_peers_toml(
+        &th.home,
+        "[peers]\n[peers.foo]\naddress = \"9.9.9.9:1234\"\nrole = \"worker\"\n",
+    );
+    run(
+        ClusterAction::Peers {
+            action: Some(PeerAction::Remove { id: "9.9.9.9:1234".into() }),
+        },
+        false,
+    )
+    .await
+    .unwrap();
+    let content =
+        std::fs::read_to_string(crate::common::cluster_dir(&th.home).join("peers.toml")).unwrap();
+    assert!(!content.contains("foo"));
+}
+
+#[tokio::test]
+async fn test_run_peers_add_defaults() {
+    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let th = temp_home_env();
+    run(
+        ClusterAction::Peers {
+            action: Some(PeerAction::Add {
+                id: "peer-d".into(),
+                name: None,
+                address: None,
+                role: None,
+                category: None,
+                priority: None,
+            }),
+        },
+        false,
+    )
+    .await
+    .unwrap();
+    let content =
+        std::fs::read_to_string(crate::common::cluster_dir(&th.home).join("peers.toml")).unwrap();
+    assert!(content.contains("127.0.0.1:11949"));
+    assert!(content.contains("worker"));
+}
+
+#[tokio::test]
+async fn test_run_peers_remove_existing() {
+    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let th = temp_home_env();
+    write_peers_toml(
+        &th.home,
+        "[peers]\n[peers.peer_1]\naddress = \"10.0.0.1:21949\"\nrole = \"worker\"\n",
+    );
+    run(
+        ClusterAction::Peers {
+            action: Some(PeerAction::Remove { id: "peer-1".into() }),
+        },
+        false,
+    )
+    .await
+    .unwrap();
+    let content =
+        std::fs::read_to_string(crate::common::cluster_dir(&th.home).join("peers.toml")).unwrap();
+    assert!(!content.contains("peer_1"));
+}
+
+#[tokio::test]
+async fn test_run_peers_remove_not_found() {
+    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let th = temp_home_env();
+    write_peers_toml(&th.home, "[peers]\n[peers.other]\naddress = \"1.1.1.1:1\"\n");
+    run(
+        ClusterAction::Peers {
+            action: Some(PeerAction::Remove { id: "ghost".into() }),
+        },
+        false,
+    )
+    .await
+    .unwrap();
+    // 未命中 → 文件保持原样
+    let content =
+        std::fs::read_to_string(crate::common::cluster_dir(&th.home).join("peers.toml")).unwrap();
+    assert!(content.contains("other"));
+}
+
+#[tokio::test]
+async fn test_run_peers_remove_no_file() {
+    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let _th = temp_home_env();
+    run(
+        ClusterAction::Peers {
+            action: Some(PeerAction::Remove { id: "x".into() }),
+        },
+        false,
+    )
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn test_run_peers_enable_and_disable() {
+    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let th = temp_home_env();
+    write_peers_toml(
+        &th.home,
+        "[peers]\n[peers.p1]\naddress = \"10.0.0.9:21949\"\nrole = \"worker\"\nenabled = false\n",
+    );
+    run(
+        ClusterAction::Peers {
+            action: Some(PeerAction::Enable { id: "10.0.0.9:21949".into() }),
+        },
+        false,
+    )
+    .await
+    .unwrap();
+    let content =
+        std::fs::read_to_string(crate::common::cluster_dir(&th.home).join("peers.toml")).unwrap();
+    let doc: toml::Value = content.parse().unwrap();
+    assert_eq!(doc["peers"]["p1"]["enabled"], toml::Value::Boolean(true));
+
+    run(
+        ClusterAction::Peers {
+            action: Some(PeerAction::Disable { id: "10.0.0.9:21949".into() }),
+        },
+        false,
+    )
+    .await
+    .unwrap();
+    let content =
+        std::fs::read_to_string(crate::common::cluster_dir(&th.home).join("peers.toml")).unwrap();
+    let doc: toml::Value = content.parse().unwrap();
+    assert_eq!(doc["peers"]["p1"]["enabled"], toml::Value::Boolean(false));
+}
+
+#[tokio::test]
+async fn test_run_peers_enable_no_file() {
+    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let _th = temp_home_env();
+    run(
+        ClusterAction::Peers {
+            action: Some(PeerAction::Enable { id: "x".into() }),
+        },
+        false,
+    )
+    .await
+    .unwrap();
+    run(
+        ClusterAction::Peers {
+            action: Some(PeerAction::Disable { id: "x".into() }),
+        },
+        false,
+    )
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn test_run_token_generate_save_persists() {
+    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let th = temp_home_env();
+    write_cluster_config(&th.home, &serde_json::json!({ "enabled": false }));
+    run(
+        ClusterAction::Token {
+            action: TokenAction::Generate { length: 32, save: true },
+        },
+        false,
+    )
+    .await
+    .unwrap();
+    let cfg = read_cluster_cfg(&th.home);
+    let token = cfg["token"].as_str().unwrap();
+    assert!(!token.is_empty());
+}
+
+#[tokio::test]
+async fn test_run_token_generate_nosave_and_missing_config() {
+    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let th = temp_home_env();
+    // 无 config 且 --save → 提示后正常返回
+    run(
+        ClusterAction::Token {
+            action: TokenAction::Generate { length: 32, save: true },
+        },
+        false,
+    )
+    .await
+    .unwrap();
+    assert!(!crate::common::cluster_config_path(&th.home).exists());
+    // 不带 --save → 只打印不落盘
+    run(
+        ClusterAction::Token {
+            action: TokenAction::Generate { length: 16, save: false },
+        },
+        false,
+    )
+    .await
+    .unwrap();
+    assert!(!crate::common::cluster_config_path(&th.home).exists());
+}
+
+#[tokio::test]
+async fn test_run_token_generate_bad_length_bails() {
+    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let _th = temp_home_env();
+    let err = run(
+        ClusterAction::Token {
+            action: TokenAction::Generate { length: 8, save: false },
+        },
+        false,
+    )
+    .await
+    .unwrap_err();
+    assert!(err.to_string().contains("between 16 and 128"));
+}
+
+#[tokio::test]
+async fn test_run_token_show_variants() {
+    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let th = temp_home_env();
+    // 有 token：masked + full
+    write_cluster_config(
+        &th.home,
+        &serde_json::json!({ "token": "abcdefghijklmnop" }),
+    );
+    run(
+        ClusterAction::Token {
+            action: TokenAction::Show { full: false },
+        },
+        false,
+    )
+    .await
+    .unwrap();
+    run(
+        ClusterAction::Token {
+            action: TokenAction::Show { full: true },
+        },
+        false,
+    )
+    .await
+    .unwrap();
+    // 无 token 字段
+    write_cluster_config(&th.home, &serde_json::json!({}));
+    run(
+        ClusterAction::Token {
+            action: TokenAction::Show { full: false },
+        },
+        false,
+    )
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn test_run_token_show_no_config() {
+    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let _th = temp_home_env();
+    run(
+        ClusterAction::Token {
+            action: TokenAction::Show { full: false },
+        },
+        false,
+    )
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn test_run_token_set_value_and_generate() {
+    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let th = temp_home_env();
+    write_cluster_config(&th.home, &serde_json::json!({}));
+    // 显式值
+    run(
+        ClusterAction::Token {
+            action: TokenAction::Set {
+                token: Some("0123456789abcdef".into()),
+                generate: false,
+                length: 32,
+            },
+        },
+        false,
+    )
+    .await
+    .unwrap();
+    let cfg = read_cluster_cfg(&th.home);
+    assert_eq!(cfg["token"].as_str().unwrap(), "0123456789abcdef");
+    // --generate 自动生成
+    run(
+        ClusterAction::Token {
+            action: TokenAction::Set {
+                token: None,
+                generate: true,
+                length: 24,
+            },
+        },
+        false,
+    )
+    .await
+    .unwrap();
+    let cfg = read_cluster_cfg(&th.home);
+    assert_ne!(cfg["token"].as_str().unwrap(), "0123456789abcdef");
+    // 什么都没给 → 提示后 Ok 提前返回（不 bail）
+    run(
+        ClusterAction::Token {
+            action: TokenAction::Set {
+                token: None,
+                generate: false,
+                length: 32,
+            },
+        },
+        false,
+    )
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn test_run_token_set_validation_errors() {
+    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let _th = temp_home_env();
+    // 显式值太短
+    let err = run(
+        ClusterAction::Token {
+            action: TokenAction::Set {
+                token: Some("short".into()),
+                generate: false,
+                length: 32,
+            },
+        },
+        false,
+    )
+    .await
+    .unwrap_err();
+    assert!(err.to_string().contains("between 16 and 128"));
+    // --generate 长度非法
+    let err = run(
+        ClusterAction::Token {
+            action: TokenAction::Set {
+                token: None,
+                generate: true,
+                length: 8,
+            },
+        },
+        false,
+    )
+    .await
+    .unwrap_err();
+    assert!(err.to_string().contains("between 16 and 128"));
+}
+
+#[tokio::test]
+async fn test_run_token_set_missing_config() {
+    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let _th = temp_home_env();
+    run(
+        ClusterAction::Token {
+            action: TokenAction::Set {
+                token: Some("0123456789abcdef".into()),
+                generate: false,
+                length: 32,
+            },
+        },
+        false,
+    )
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn test_run_token_verify_variants() {
+    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let th = temp_home_env();
+    write_cluster_config(
+        &th.home,
+        &serde_json::json!({ "token": "0123456789abcdef" }),
+    );
+    // 匹配
+    run(
+        ClusterAction::Token {
+            action: TokenAction::Verify {
+                token: "0123456789abcdef".into(),
+            },
+        },
+        false,
+    )
+    .await
+    .unwrap();
+    // 不匹配
+    run(
+        ClusterAction::Token {
+            action: TokenAction::Verify {
+                token: "ffffffffffffffff".into(),
+            },
+        },
+        false,
+    )
+    .await
+    .unwrap();
+    // 无 token 字段
+    write_cluster_config(&th.home, &serde_json::json!({}));
+    run(
+        ClusterAction::Token {
+            action: TokenAction::Verify {
+                token: "whatever".into(),
+            },
+        },
+        false,
+    )
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn test_run_token_verify_no_config() {
+    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let _th = temp_home_env();
+    run(
+        ClusterAction::Token {
+            action: TokenAction::Verify {
+                token: "x".into(),
+            },
+        },
+        false,
+    )
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn test_run_token_revoke_removes_token() {
+    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let th = temp_home_env();
+    write_cluster_config(
+        &th.home,
+        &serde_json::json!({ "enabled": false, "token": "0123456789abcdef" }),
+    );
+    run(
+        ClusterAction::Token {
+            action: TokenAction::Revoke,
+        },
+        false,
+    )
+    .await
+    .unwrap();
+    let cfg = read_cluster_cfg(&th.home);
+    assert!(cfg.get("token").is_none());
+    assert_eq!(cfg["enabled"], serde_json::json!(false));
+}
+
+#[tokio::test]
+async fn test_run_token_revoke_no_config() {
+    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let _th = temp_home_env();
+    run(
+        ClusterAction::Token {
+            action: TokenAction::Revoke,
+        },
+        false,
+    )
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn test_run_init_fresh_home() {
+    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let th = temp_home_env();
+    run(
+        ClusterAction::Init {
+            name: Some("TestNode".into()),
+            role: Some("manager".into()),
+            category: Some("testing".into()),
+            tags: Some("t1,t2".into()),
+            address: Some("127.0.0.1:21949".into()),
+        },
+        false,
+    )
+    .await
+    .unwrap();
+    // config.cluster.json 已写（默认模板 + token）
+    let cfg = read_cluster_cfg(&th.home);
+    assert!(!cfg["token"].as_str().unwrap_or("").is_empty());
+    // peers.toml 身份段已写
+    let peers =
+        std::fs::read_to_string(crate::common::cluster_dir(&th.home).join("peers.toml")).unwrap();
+    assert!(peers.contains("TestNode"));
+    assert!(peers.contains("manager"));
+    assert!(peers.contains("testing"));
+    assert!(peers.contains("127.0.0.1:21949"));
+    let doc: toml::Value = peers.parse().unwrap();
+    assert_eq!(
+        doc["node"]["tags"],
+        toml::Value::Array(vec!["t1".into(), "t2".into()])
+    );
+}
+
+#[tokio::test]
+async fn test_run_init_defaults_and_reinit_nontty() {
+    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let th = temp_home_env();
+    // 无任何参数 → default_name/node_id 生成
+    run(
+        ClusterAction::Init {
+            name: None,
+            role: None,
+            category: None,
+            tags: None,
+            address: None,
+        },
+        false,
+    )
+    .await
+    .unwrap();
+    let peers1 =
+        std::fs::read_to_string(crate::common::cluster_dir(&th.home).join("peers.toml")).unwrap();
+    assert!(peers1.contains("worker"));
+    assert!(peers1.contains("development"));
+    // 已存在 + stdin 非终端（cargo test 管道）→ 跳过交互确认直接覆盖
+    run(
+        ClusterAction::Init {
+            name: Some("Second".into()),
+            role: None,
+            category: None,
+            tags: None,
+            address: None,
+        },
+        false,
+    )
+    .await
+    .unwrap();
+    let peers2 =
+        std::fs::read_to_string(crate::common::cluster_dir(&th.home).join("peers.toml")).unwrap();
+    assert!(peers2.contains("Second"));
+}
+
+#[tokio::test]
+async fn test_run_enable_writes_enabled_true() {
+    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let th = temp_home_env();
+    write_cluster_config(&th.home, &serde_json::json!({ "enabled": false }));
+    run(ClusterAction::Enable, false).await.unwrap();
+    let cfg = read_cluster_cfg(&th.home);
+    assert_eq!(cfg["enabled"], serde_json::json!(true));
+}
+
+#[tokio::test]
+async fn test_run_enable_already_enabled() {
+    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let th = temp_home_env();
+    write_cluster_config(&th.home, &serde_json::json!({ "enabled": true }));
+    run(ClusterAction::Enable, false).await.unwrap();
+    let cfg = read_cluster_cfg(&th.home);
+    assert_eq!(cfg["enabled"], serde_json::json!(true));
+}
+
+#[tokio::test]
+async fn test_run_enable_not_initialized_bails() {
+    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let _th = temp_home_env();
+    let err = run(ClusterAction::Enable, false).await.unwrap_err();
+    assert!(err.to_string().contains("Cluster not initialized"));
+}
+
+#[tokio::test]
+async fn test_run_enable_with_main_config_writes_cluster_section() {
+    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let th = temp_home_env();
+    write_cluster_config(&th.home, &serde_json::json!({}));
+    std::fs::write(
+        crate::common::config_path(&th.home),
+        serde_json::to_string(&serde_json::json!({ "model_list": [] })).unwrap(),
+    )
+    .unwrap();
+    run(ClusterAction::Enable, false).await.unwrap();
+    let main: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(crate::common::config_path(&th.home)).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(main["cluster"]["enabled"], serde_json::json!(true));
+}
+
+#[tokio::test]
+async fn test_run_disable_writes_enabled_false() {
+    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let th = temp_home_env();
+    write_cluster_config(&th.home, &serde_json::json!({ "enabled": true }));
+    // 主 config 存在 → 同步写 cluster.enabled=false
+    std::fs::write(
+        crate::common::config_path(&th.home),
+        serde_json::to_string(&serde_json::json!({ "cluster": { "enabled": true } })).unwrap(),
+    )
+    .unwrap();
+    run(ClusterAction::Disable, false).await.unwrap();
+    let cfg = read_cluster_cfg(&th.home);
+    assert_eq!(cfg["enabled"], serde_json::json!(false));
+    let main: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(crate::common::config_path(&th.home)).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(main["cluster"]["enabled"], serde_json::json!(false));
+}
+
+#[tokio::test]
+async fn test_run_disable_already_disabled() {
+    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let th = temp_home_env();
+    write_cluster_config(&th.home, &serde_json::json!({ "enabled": false }));
+    run(ClusterAction::Disable, false).await.unwrap();
+    let cfg = read_cluster_cfg(&th.home);
+    assert_eq!(cfg["enabled"], serde_json::json!(false));
+}
+
+#[tokio::test]
+async fn test_run_start_stop_aliases() {
+    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let th = temp_home_env();
+    write_cluster_config(&th.home, &serde_json::json!({ "enabled": false }));
+    run(ClusterAction::Start, false).await.unwrap();
+    assert_eq!(
+        read_cluster_cfg(&th.home)["enabled"],
+        serde_json::json!(true)
+    );
+    // Start 已启用 → 提前返回
+    run(ClusterAction::Start, false).await.unwrap();
+    run(ClusterAction::Stop, false).await.unwrap();
+    assert_eq!(
+        read_cluster_cfg(&th.home)["enabled"],
+        serde_json::json!(false)
+    );
+    // Stop 已停用 → 提前返回
+    run(ClusterAction::Stop, false).await.unwrap();
+}
+
+#[tokio::test]
+async fn test_run_reset_soft_removes_state() {
+    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let th = temp_home_env();
+    let state = crate::common::cluster_dir(&th.home).join("state.toml");
+    std::fs::create_dir_all(state.parent().unwrap()).unwrap();
+    std::fs::write(&state, "[x]\n").unwrap();
+    run(ClusterAction::Reset { hard: false }, false)
+        .await
+        .unwrap();
+    assert!(!state.exists());
+    // 无 state 文件 → no-op 分支
+    run(ClusterAction::Reset { hard: false }, false)
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn test_run_reset_hard_aborts_without_tty_confirm() {
+    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let th = temp_home_env();
+    write_cluster_config(&th.home, &serde_json::json!({ "enabled": true }));
+    write_peers_toml(&th.home, "[node]\nid = \"node-a\"\n");
+    // stdin 是管道（cargo test）→ read_line 得到 EOF 空串 ≠ "y" → Aborted
+    run(ClusterAction::Reset { hard: true }, false)
+        .await
+        .unwrap();
+    // 中止 → 文件原样保留
+    assert!(crate::common::cluster_config_path(&th.home).exists());
+    assert!(
+        crate::common::cluster_dir(&th.home)
+            .join("peers.toml")
+            .exists()
+    );
+}
+
+#[tokio::test]
+async fn test_run_identity_show_missing_and_present() {
+    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let th = temp_home_env();
+    run(
+        ClusterAction::Identity {
+            action: IdentityAction::Show,
+        },
+        false,
+    )
+    .await
+    .unwrap();
+    let id_path = crate::common::cluster_dir(&th.home).join("IDENTITY.md");
+    std::fs::create_dir_all(id_path.parent().unwrap()).unwrap();
+    std::fs::write(&id_path, "custom identity").unwrap();
+    run(
+        ClusterAction::Identity {
+            action: IdentityAction::Show,
+        },
+        false,
+    )
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn test_run_identity_edit_creates_then_exists() {
+    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let th = temp_home_env();
+    run(
+        ClusterAction::Identity {
+            action: IdentityAction::Edit,
+        },
+        false,
+    )
+    .await
+    .unwrap();
+    let id_path = crate::common::cluster_dir(&th.home).join("IDENTITY.md");
+    let content = std::fs::read_to_string(&id_path).unwrap();
+    assert_eq!(content, crate::CLUSTER_IDENTITY_TEMPLATE);
+    // 第二次 Edit → already exists 分支（不覆盖）
+    std::fs::write(&id_path, "hand-edited").unwrap();
+    run(
+        ClusterAction::Identity {
+            action: IdentityAction::Edit,
+        },
+        false,
+    )
+    .await
+    .unwrap();
+    assert_eq!(std::fs::read_to_string(&id_path).unwrap(), "hand-edited");
+}
+
+#[tokio::test]
+async fn test_run_identity_reset_writes_default() {
+    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let th = temp_home_env();
+    run(
+        ClusterAction::Identity {
+            action: IdentityAction::Reset,
+        },
+        false,
+    )
+    .await
+    .unwrap();
+    let id_path = crate::common::cluster_dir(&th.home).join("IDENTITY.md");
+    let content = std::fs::read_to_string(&id_path).unwrap();
+    assert_eq!(content, crate::DEFAULT_IDENTITY_CLUSTER);
+    // 覆盖已有文件同样成立
+    std::fs::write(&id_path, "temp").unwrap();
+    run(
+        ClusterAction::Identity {
+            action: IdentityAction::Reset,
+        },
+        false,
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        std::fs::read_to_string(&id_path).unwrap(),
+        crate::DEFAULT_IDENTITY_CLUSTER
+    );
+}
+
+#[tokio::test]
+async fn test_run_node_not_initialized_bails() {
+    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let _th = temp_home_env();
+    let err = run(
+        ClusterAction::Node {
+            udp_port: None,
+            rpc_port: None,
+            name: None,
+            broadcast_interval: 10,
+        },
+        false,
+    )
+    .await
+    .unwrap_err();
+    assert!(err.to_string().contains("Cluster not initialized"));
+}
+
+// -------------------------------------------------------------------------
+// parse_host_port / update_main_config_cluster 直测
+// -------------------------------------------------------------------------
+
+#[test]
+fn test_parse_host_port_typical() {
+    assert_eq!(parse_host_port("10.0.0.1:21949"), ("10.0.0.1".into(), 21949));
+}
+
+#[test]
+fn test_parse_host_port_no_port() {
+    assert_eq!(parse_host_port("localhost"), ("localhost".into(), 0));
+}
+
+#[test]
+fn test_parse_host_port_bad_port() {
+    assert_eq!(parse_host_port("host:abc"), ("host".into(), 0));
+}
+
+#[test]
+fn test_parse_host_port_last_segment_is_port() {
+    // rsplitn(2, ':') → 最后一段当端口
+    let (host, port) = parse_host_port("::1:8080");
+    assert_eq!(port, 8080);
+    assert_eq!(host, "::1");
+}
+
+#[test]
+fn test_update_main_config_cluster_missing_config_ok() {
+    let tmp = TempDir::new().unwrap();
+    let home = make_home(&tmp);
+    // config.json 不存在 → Ok 且不创建文件
+    update_main_config_cluster(&home, true).unwrap();
+    assert!(!crate::common::config_path(&home).exists());
+}
+
+#[test]
+fn test_update_main_config_cluster_writes_section() {
+    let tmp = TempDir::new().unwrap();
+    let home = make_home(&tmp);
+    std::fs::write(
+        crate::common::config_path(&home),
+        serde_json::to_string(&serde_json::json!({ "other": 1 })).unwrap(),
+    )
+    .unwrap();
+    update_main_config_cluster(&home, true).unwrap();
+    let cfg: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(crate::common::config_path(&home)).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(cfg["cluster"]["enabled"], serde_json::json!(true));
+    assert_eq!(cfg["other"], serde_json::json!(1));
+    // 再关 → 覆盖为 false
+    update_main_config_cluster(&home, false).unwrap();
+    let cfg: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(crate::common::config_path(&home)).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(cfg["cluster"]["enabled"], serde_json::json!(false));
+}

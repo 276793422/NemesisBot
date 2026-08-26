@@ -723,3 +723,189 @@ async fn test_load_append_preserves_existing() {
     collector.load_from_file(&path).await.unwrap();
     assert_eq!(collector.len(), 1);
 }
+
+#[tokio::test]
+async fn test_collector_is_empty() {
+    let collector = Collector::new(CollectorConfig::default());
+    assert!(collector.is_empty());
+    assert_eq!(collector.len(), 0);
+
+    let exp = make_experience("tool", "input", true);
+    collector.record(exp).await;
+    assert!(!collector.is_empty());
+    assert_eq!(collector.len(), 1);
+}
+
+#[tokio::test]
+async fn test_load_from_file_skips_blank_lines() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("blanks.jsonl");
+
+    let exp = make_experience("tool_blank", "input", true);
+    let ce = CollectedExperience {
+        experience: exp,
+        dedup_hash: Collector::dedup_hash("tool_blank", &serde_json::json!({"input_summary": "input"})),
+    };
+    let line = serde_json::to_string(&ce).unwrap();
+    // Blank lines (including whitespace-only) must be skipped without error.
+    let content = format!("\n   \n{}\n\n", line);
+    tokio::fs::write(&path, content).await.unwrap();
+
+    let collector = Collector::new(CollectorConfig::default());
+    collector.load_from_file(&path).await.unwrap();
+    assert_eq!(collector.len(), 1);
+    assert_eq!(collector.experiences()[0].experience.tool_name, "tool_blank");
+}
+
+#[tokio::test]
+async fn test_clear_resets_all_state() {
+    let collector = Collector::new(CollectorConfig::default());
+    let exp = make_experience("tool_c", "input", true);
+    collector.record(exp).await;
+    // record_with_args 内部就会调 process_record（doc: "Always aggregate into
+    // pattern_counts"），这里显式再记一条不同 hash 的 pattern → 共 2 个。
+    collector.process_record("tool_c", "h_c", 100, true, "2026-01-01T00:00:00Z");
+    assert_eq!(collector.len(), 1);
+    assert_eq!(collector.pattern_count(), 2);
+
+    collector.clear();
+    assert_eq!(collector.len(), 0);
+    assert!(collector.is_empty());
+    assert_eq!(collector.pattern_count(), 0);
+    assert!(collector.experiences().is_empty());
+}
+
+#[test]
+fn test_sanitize_args_non_object_passthrough() {
+    // Non-object args (string/number/array/null) are returned unchanged.
+    let scalar = serde_json::json!("some-string");
+    assert_eq!(Collector::sanitize_args(&scalar, &["api_key"]), scalar);
+
+    let num = serde_json::json!(42);
+    assert_eq!(Collector::sanitize_args(&num, &["secret"]), num);
+
+    let arr = serde_json::json!([1, 2, 3]);
+    assert_eq!(Collector::sanitize_args(&arr, &["password"]), arr);
+}
+
+#[tokio::test]
+async fn test_forge_plugin_start_sets_running() {
+    let plugin = ForgePlugin::new(CollectorConfig::default());
+    assert!(!plugin.is_running());
+    plugin.start().await;
+    assert!(plugin.is_running());
+    plugin.stop();
+    assert!(!plugin.is_running());
+}
+
+#[tokio::test]
+async fn test_on_tool_call_error_arm() {
+    let plugin = ForgePlugin::new(CollectorConfig::default());
+    plugin.on_tool_call(
+        "sess-err",
+        "file_read",
+        &serde_json::json!({"path": "/tmp/a.txt"}),
+        None,
+        Some("boom something went wrong badly"),
+        10,
+    );
+
+    let processed = plugin.process_pending().await;
+    assert!(processed >= 1);
+    let exps = plugin.collector().experiences();
+    let last = exps.last().unwrap();
+    assert!(!last.experience.success);
+    assert!(
+        last.experience.output_summary.starts_with("Error: "),
+        "output_summary should start with 'Error: ', got: {}",
+        last.experience.output_summary
+    );
+    assert!(last.experience.output_summary.contains("boom"));
+}
+
+#[tokio::test]
+async fn test_on_tool_call_no_output_arm() {
+    let plugin = ForgePlugin::new(CollectorConfig::default());
+    plugin.on_tool_call(
+        "sess-none",
+        "sleep",
+        &serde_json::json!({"ms": 100}),
+        None,
+        None,
+        5,
+    );
+
+    let processed = plugin.process_pending().await;
+    assert!(processed >= 1);
+    let exps = plugin.collector().experiences();
+    let last = exps.last().unwrap();
+    assert!(last.experience.success);
+    assert_eq!(last.experience.output_summary, "no output");
+}
+
+#[tokio::test]
+async fn test_process_pending_after_receiver_taken() {
+    let plugin = ForgePlugin::new(CollectorConfig::default());
+    let rx = plugin.take_input_receiver();
+    assert!(rx.is_some());
+    drop(rx);
+
+    // With the receiver taken out, process_pending returns 0 without panicking.
+    let count = plugin.process_pending().await;
+    assert_eq!(count, 0);
+}
+
+#[test]
+fn test_plugin_as_any_downcast() {
+    let plugin = ForgePlugin::new(CollectorConfig::default());
+    let any = nemesis_plugin::Plugin::as_any(&plugin);
+    assert!(any.downcast_ref::<ForgePlugin>().is_some());
+}
+
+// --- S8 coverage additions (quality-hardening goal 冲刺 S8) ---
+
+#[test]
+fn test_s8_collector_new_evaluates_tracing_field_expressions() {
+    let _guard = crate::test_support::quiet_trace_guard();
+    let dir = tempfile::tempdir().unwrap();
+    let mut config = CollectorConfig::default();
+    config.persistence_path = dir.path().join("x.jsonl").to_string_lossy().to_string();
+    let collector = Collector::new(config);
+    assert!(collector.experiences().is_empty());
+}
+
+#[tokio::test]
+async fn test_s8_record_persistence_failure_still_succeeds_in_memory() {
+    // persistence_path whose parent is a regular file → create_dir_all in
+    // new() fails (ignored), append_jsonl cannot open the target → warn path.
+    let dir = tempfile::tempdir().unwrap();
+    let blocker = dir.path().join("blocker");
+    std::fs::write(&blocker, "not a dir").unwrap();
+    let mut config = CollectorConfig::default();
+    config.persistence_path = blocker.join("x.jsonl").to_string_lossy().to_string();
+    let collector = Collector::new(config);
+
+    let inserted = collector.record(make_experience("tool_a", "input", true)).await;
+    assert!(inserted);
+    assert_eq!(collector.experiences().len(), 1);
+}
+
+#[tokio::test]
+async fn test_s8_flush_write_failure_logs_warning_and_skips_count() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut config = CollectorConfig::default();
+    config.persistence_path = dir.path().join("experiences.jsonl").to_string_lossy().to_string();
+    let collector = Collector::new(config);
+
+    collector
+        .record(make_experience("tool_a", "input", true))
+        .await;
+
+    // Make the aggregates target un-openable: a DIRECTORY where the file
+    // should be (flush writes to sibling aggregates.jsonl).
+    std::fs::create_dir_all(dir.path().join("aggregates.jsonl")).unwrap();
+
+    let count = collector.flush().await.unwrap();
+    // The single aggregated pattern failed to append → not counted.
+    assert_eq!(count, 0);
+}

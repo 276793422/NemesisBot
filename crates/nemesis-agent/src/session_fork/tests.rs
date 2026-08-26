@@ -401,3 +401,24 @@ fn test_session_store_disk_fallback_on_miss() {
     let empty = store_b.get_or_create(&bad_key);
     assert!(empty.messages.is_empty());
 }
+
+/// The store-based (SUPERSEDED, kept-per-discipline) helpers still behave:
+/// `user_turn_count` counts user rows; `turn_cut` lands right before the
+/// (N+1)-th user message and past-the-end N keeps the whole history.
+#[test]
+fn superseded_store_helpers_count_and_cut_correctly() {
+    let msgs = vec![
+        msg("system", "sys"),
+        msg("user", "q1"),
+        msg("assistant", "a1"),
+        msg("user", "q2"),
+        msg("assistant", "a2"),
+    ];
+    assert_eq!(user_turn_count(&msgs), 2);
+    assert_eq!(turn_cut(&msgs, 1), 3, "cut lands before the 2nd user msg");
+    assert_eq!(turn_cut(&msgs, 2), 5, "N == turn count keeps everything");
+    assert_eq!(turn_cut(&msgs, 99), 5, "N past the end keeps everything");
+    // Empty set edge cases.
+    assert_eq!(user_turn_count(&[]), 0);
+    assert_eq!(turn_cut(&[], 0), 0);
+}

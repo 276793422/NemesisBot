@@ -21,8 +21,6 @@ type WsStream = WebSocketStream<MaybeTlsStream<TcpStream>>;
 
 /// Shared state for the WebSocket client that can be sent across tasks.
 struct ClientState {
-    /// Pending request-response channels, keyed by message ID.
-    pending: HashMap<String, oneshot::Sender<Message>>,
     /// Connected flag.
     connected: bool,
     /// Channel to send outgoing messages to the write task.
@@ -54,6 +52,12 @@ pub struct WebSocketClient {
     /// Message dispatcher for incoming requests/notifications.
     /// Wrapped in Arc so it can be shared with the spawned read task.
     dispatcher: Arc<Dispatcher>,
+    /// Pending request-response channels, keyed by message ID.
+    /// (BUG #21, quality-hardening goal 冲刺 S7) 单一真相源：pending map
+    /// 从 ClientState 挪成客户端级字段，与读循环共享同一个 map。原来
+    /// call() 写 state.pending、读循环查 connect() 时克隆出的另一个 map，
+    /// connect() 之后发起的 call() 的响应永远查不到 -> 全部 30s 超时。
+    pending: Arc<parking_lot::Mutex<HashMap<String, oneshot::Sender<Message>>>>,
     /// Shared mutable state behind parking_lot::Mutex (Send-safe).
     state: parking_lot::Mutex<ClientState>,
 }
@@ -67,8 +71,8 @@ impl WebSocketClient {
             key: ws_key.key.clone(),
             server_url,
             dispatcher: Arc::new(Dispatcher::new()),
+            pending: Arc::new(parking_lot::Mutex::new(HashMap::new())),
             state: parking_lot::Mutex::new(ClientState {
-                pending: HashMap::new(),
                 connected: false,
                 send_tx: None,
                 shutdown_tx: None,
@@ -134,23 +138,14 @@ impl WebSocketClient {
 
         // Spawn read task
         let read_id = self.id.clone();
-        let pending_map: Arc<parking_lot::Mutex<HashMap<String, oneshot::Sender<Message>>>> =
-            Arc::new(parking_lot::Mutex::new(HashMap::new()));
+        // (BUG #21) 读循环与 call() 共享同一个客户端级 pending map；
+        // 不再在每次 connect() 时新建 map 并做一次性 drain。
+        let pending_map = self.pending.clone();
         let dispatcher = self.dispatcher.clone();
         let send_tx = {
             let state = self.state.lock();
             state.send_tx.clone()
         };
-
-        // Move existing pending entries to the shared map (oneshot::Sender is not Clone,
-        // so we drain from state into the Arc map)
-        {
-            let mut state = self.state.lock();
-            let mut pending = pending_map.lock();
-            for (k, v) in state.pending.drain() {
-                pending.insert(k, v);
-            }
-        }
 
         tokio::spawn(async move {
             Self::read_loop(
@@ -399,8 +394,8 @@ impl WebSocketClient {
         // Create a pending channel
         let (tx, rx) = oneshot::channel();
         {
-            let mut state = self.state.lock();
-            state.pending.insert(msg_id.clone(), tx);
+            // (BUG #21) 插入与读循环共享的 pending map，响应才能路由回来。
+            self.pending.lock().insert(msg_id.clone(), tx);
         }
 
         // Wait for response with timeout
@@ -408,8 +403,7 @@ impl WebSocketClient {
 
         // Clean up pending
         {
-            let mut state = self.state.lock();
-            state.pending.remove(&msg_id);
+            self.pending.lock().remove(&msg_id);
         }
 
         match result {
@@ -456,7 +450,9 @@ impl WebSocketClient {
 
         state.connected = false;
         state.send_tx = None;
-        state.pending.clear();
+        drop(state);
+        // (BUG #21) pending 挂起请求随连接关闭一并作废。
+        self.pending.lock().clear();
     }
 
     /// Check if connected.
@@ -486,5 +482,7 @@ impl WebSocketClient {
 
 #[cfg(test)]
 mod extra_tests;
+#[cfg(test)]
+mod s7_tests;
 #[cfg(test)]
 mod tests;

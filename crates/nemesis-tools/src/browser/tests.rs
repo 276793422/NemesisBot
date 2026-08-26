@@ -646,3 +646,23 @@ fn test_desktop_tool_metadata() {
     assert_eq!(params["type"], "object");
     assert!(params["properties"]["action"].is_object());
 }
+
+// ============================================================
+// W4a coverage gap closure (set_timeout setters on the three
+// MCP-backed tools — trivial mutators otherwise never called)
+// ============================================================
+
+#[test]
+fn w4a_set_timeout_on_all_three_mcp_tools() {
+    let mut browser = BrowserTool::new(".", None);
+    browser.set_timeout(Duration::from_secs(120));
+    let mut capture = ScreenCaptureTool::new(".", None);
+    capture.set_timeout(Duration::from_secs(45));
+    let mut desktop = DesktopTool::new(".", None);
+    desktop.set_timeout(Duration::from_secs(90));
+    // No getters exist; the setters are plain field writes. Calling them is
+    // the coverage goal; assert the tools still expose their metadata.
+    assert_eq!(browser.name(), "browser");
+    assert_eq!(capture.name(), "screen_capture");
+    assert_eq!(desktop.name(), "desktop");
+}

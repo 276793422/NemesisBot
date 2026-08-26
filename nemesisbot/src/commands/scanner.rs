@@ -694,34 +694,42 @@ fn cmd_check(security_cfg: &std::path::Path) -> Result<()> {
 
 /// Download an engine from a URL and extract it.
 /// Returns the path to the directory containing the extracted files.
-fn download_engine(url: &str, target_dir: &std::path::Path) -> Result<String> {
+///
+/// (BUG #27, quality-hardening goal 冲刺 S11) 这里必须用【异步】reqwest
+/// Client：本函数唯一调用方 cmd_clamav_install_inner 是 async fn，在
+/// run_command 的 tokio runtime 上下文里执行。reqwest::blocking::Client
+/// 内部持有一个嵌套 runtime，其 drop 会走 tokio blocking-pool shutdown 的
+/// wait() → try_enter_blocking_region() 在 Entered 上下文返回 None →
+/// panic "Cannot drop a runtime in a context where blocking is not allowed"
+/// （已在同拓扑探针测试中实证：multi_thread rt + block_on + blocking client
+/// drop → 必 panic）。旧实现 `scanner clamav install --url ...` 会在下载
+/// 完成后崩溃。改成异步 client 后无嵌套 runtime，drop 安全。
+async fn download_engine(url: &str, target_dir: &std::path::Path) -> Result<String> {
     let file_name = url.split('/').last().unwrap_or("engine.zip");
     let archive_path = target_dir.join(file_name);
 
-    // Download the file
-    let client = reqwest::blocking::Client::builder()
+    // Download the file（异步 client，同 300s 总超时语义）
+    let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(300))
         .build()?;
 
-    let mut response = client.get(url).header("User-Agent", "nemesisbot").send()?;
+    let mut response = client
+        .get(url)
+        .header("User-Agent", "nemesisbot")
+        .send()
+        .await?;
 
     if !response.status().is_success() {
         anyhow::bail!("HTTP {}", response.status());
     }
 
     {
-        use std::io::Read;
         let mut file = std::fs::File::create(&archive_path)?;
-        let mut buffer = [0u8; 8192];
         let mut total_bytes: u64 = 0;
-        loop {
-            let n = response.read(&mut buffer)?;
-            if n == 0 {
-                break;
-            }
+        while let Some(chunk) = response.chunk().await? {
             use std::io::Write;
-            file.write_all(&buffer[..n])?;
-            total_bytes += n as u64;
+            file.write_all(&chunk)?;
+            total_bytes += chunk.len() as u64;
         }
         println!("    Downloaded {} bytes", total_bytes);
     }
@@ -968,7 +976,7 @@ async fn cmd_clamav_install_inner(
                 let download_dir = std::path::Path::new(&install_dir).join("clamav");
                 let _ = std::fs::create_dir_all(&download_dir);
 
-                match download_engine(url, &download_dir) {
+                match download_engine(url, &download_dir).await {
                     Ok(extracted_path) => {
                         detected_path = extracted_path;
                         println!("  clamav           downloaded to {}", detected_path);

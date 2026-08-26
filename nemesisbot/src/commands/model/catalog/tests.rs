@@ -204,3 +204,168 @@ fn test_by_family_groups_and_none_bucket() {
     );
     assert_eq!(grouped.len(), 3, "exactly three buckets");
 }
+
+// =========================================================================
+// S11b 覆盖率冲刺：parser 边界 + 缓存读写 + catalog_from/by_family/lookup
+// （fetch_http* 属真网络豁免，不在此测。）
+// =========================================================================
+
+#[test]
+fn test_s11b_parse_models_json_skip_rules() {
+    let raw = r#"{
+        "data": [
+            {"id": "anthropic/claude-opus-4.7-fast", "context_length": 1000000},
+            {"id": "~openai/gpt-4o-2024", "context_length": 128000},
+            {"id": "no-slash-id", "context_length": 4096},
+            {"id": "zhipu/glm-4.7", "context_length": 0},
+            {"id": "x/missing-ctx"},
+            {"no-id": true, "context_length": 8192},
+            {"id": "openai/gpt-4o", "context_length": 128000,
+             "top_provider": {"max_completion_tokens": 16384}}
+        ]
+    }"#;
+    let entries = parse_models_json(raw).unwrap();
+    // 只有第 1 条和最后 1 条合法（~ 前缀/无斜杠/ctx==0/缺 ctx/缺 id 全跳过）
+    assert_eq!(entries.len(), 2, "{:?}", entries);
+    assert_eq!(entries[0].key, "anthropic/claude-opus-4.7-fast", "按 key 排序");
+    assert_eq!(entries[0].context_window, 1000000);
+    assert_eq!(entries[0].max_output_tokens, None);
+    assert_eq!(entries[1].key, "openai/gpt-4o");
+    assert_eq!(entries[1].max_output_tokens, Some(16384));
+}
+
+#[test]
+fn test_s11b_parse_models_json_shapes_and_dedup() {
+    // 非 JSON → Err
+    assert!(parse_models_json("not json").is_err());
+    // 缺 data 数组 → Err
+    assert!(parse_models_json("{}").is_err());
+    assert!(parse_models_json(r#"{"data": {}}"#).is_err());
+    // 同 id 重复 → dedup
+    let raw = r#"{"data": [
+        {"id": "a/one", "context_length": 100},
+        {"id": "a/one", "context_length": 200}
+    ]}"#;
+    let entries = parse_models_json(raw).unwrap();
+    assert_eq!(entries.len(), 1);
+    // 空数组 → Ok（空）——由 parse_any 负责判 zero-entry
+    assert!(parse_models_json(r#"{"data": []}"#).unwrap().is_empty());
+}
+
+#[test]
+fn test_s11b_parse_api_json_skip_rules() {
+    let raw = r#"{
+        "zhipu": {
+            "models": {
+                "glm-4.7": {"limit": {"context": 128000, "output": 4096}, "family": "glm"},
+                "no-limit": {"family": "x"},
+                "no-context": {"limit": {"output": 100}},
+                "zero-context": {"limit": {"context": 0}}
+            }
+        },
+        "empty-provider": {"id": "empty-provider"},
+        "meta-only": {"info": "not a provider"}
+    }"#;
+    let entries = parse_api_json(raw).unwrap();
+    assert_eq!(entries.len(), 1, "缺 limit/缺 context/ctx==0 的模型与无 models 的 provider 全跳过");
+    assert_eq!(entries[0].key, "zhipu/glm-4.7");
+    assert_eq!(entries[0].context_window, 128000);
+    assert_eq!(entries[0].max_output_tokens, Some(4096));
+    assert_eq!(entries[0].family.as_deref(), Some("glm"));
+}
+
+#[test]
+fn test_s11b_parse_api_json_shapes() {
+    // 顶层非对象 → Err
+    assert!(parse_api_json("[1,2]").is_err());
+    assert!(parse_api_json(r#""str""#).is_err());
+    // 对象但没有任何 provider（models 映射）→ Err（wrong shape）
+    assert!(parse_api_json(r#"{"data": [{"id": "a/b", "context_length": 1}]}"#).is_err());
+}
+
+#[test]
+fn test_s11b_parse_any_prefers_api_shape_and_zero_entry_is_miss() {
+    let api = r#"{"p": {"models": {"m": {"limit": {"context": 8}}}}}"#;
+    let models = r#"{"data": [{"id": "a/b", "context_length": 100}]}"#;
+    // api.json 形状直接命中
+    let e = parse_any(api).unwrap();
+    assert_eq!(e.len(), 1);
+    assert_eq!(e[0].key, "p/m");
+    // models.json 形状回退
+    let e = parse_any(models).unwrap();
+    assert_eq!(e[0].key, "a/b");
+    // 两种形状都解析不出条目 → Err（zero-entry 不算成功）
+    assert!(parse_any("{}").is_err());
+    assert!(parse_any(r#"{"data": []}"#).is_err());
+    // 非 JSON → Err
+    assert!(parse_any("garbage").is_err());
+}
+
+#[test]
+fn test_s11b_cache_roundtrip_missing_and_corrupt() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path().join("nested").join("cfg"); // save_cache 要 mkdir 父链
+    // 缺失 → Ok(None)
+    assert!(load_cache(&dir).unwrap().is_none());
+    // 保存（触发 mkdir 分支）→ 读回
+    save_cache(
+        &dir,
+        vec![CatalogEntry {
+            key: "a/b".into(),
+            context_window: 42,
+            max_output_tokens: None,
+            family: None,
+        }],
+    )
+    .unwrap();
+    assert!(catalog_path(&dir).exists());
+    assert!(!catalog_path(&dir).with_extension("json.tmp").exists(), "tmp 已 rename 走");
+    let cat = load_cache(&dir).unwrap().expect("cache present");
+    assert_eq!(cat.version, 1);
+    assert!(!cat.fetched_at.is_empty());
+    assert_eq!(cat.entries.len(), 1);
+    assert_eq!(cat.entries[0].key, "a/b");
+    // 目录而非文件 → Err（present-but-unreadable 一族）
+    std::fs::create_dir_all(catalog_path(&dir).with_extension("json"))
+        .unwrap_or(()); // 同名拓展冲突时不影响下面用独立目录验证 corrupt
+    let dir2 = tmp.path().join("cfg2");
+    std::fs::create_dir_all(&dir2).unwrap();
+    std::fs::write(catalog_path(&dir2), "{corrupt").unwrap();
+    assert!(load_cache(&dir2).is_err(), "corrupt cache 必须响亮报错");
+}
+
+#[test]
+fn test_s11b_catalog_from_by_family_and_lookup() {
+    let cat = catalog_from(vec![
+        CatalogEntry {
+            key: "a/x".into(),
+            context_window: 1,
+            max_output_tokens: None,
+            family: Some("f1".into()),
+        },
+        CatalogEntry {
+            key: "a/y".into(),
+            context_window: 2,
+            max_output_tokens: Some(3),
+            family: Some("f1".into()),
+        },
+        CatalogEntry {
+            key: "b/z".into(),
+            context_window: 4,
+            max_output_tokens: None,
+            family: None,
+        },
+    ]);
+    assert_eq!(cat.version, 1);
+    assert_eq!(cat.entries.len(), 3);
+    // family 反查：f1 → 2 keys；无 family → (none) 桶
+    let grouped = by_family(&cat);
+    assert_eq!(grouped.get("f1").unwrap().len(), 2);
+    assert!(grouped.get("f1").unwrap().contains(&"a/x".to_string()));
+    assert_eq!(grouped.get("(none)").unwrap(), &vec!["b/z".to_string()]);
+    // lookup 精确命中 / 未命中
+    let hit = lookup(&cat, "a/y").expect("exact hit");
+    assert_eq!(hit.context_window, 2);
+    assert_eq!(hit.max_output_tokens, Some(3));
+    assert!(lookup(&cat, "a/nope").is_none());
+}

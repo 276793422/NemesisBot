@@ -329,3 +329,204 @@ fn test_sanitize_alias() {
     assert_eq!(sanitize_alias("my model"), "my_model");
     assert_eq!(sanitize_alias(""), "model");
 }
+
+// ---------------------------------------------------------------------------
+// Coverage batch 2026-08-25: file-IO error branches + import corner cases.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_load_credentials_blank_file_is_default() {
+    // A whitespace-only file parses to an EMPTY store (not an error).
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("credentials.yaml");
+    std::fs::write(&path, "  \n\t\n").unwrap();
+    let file = load_credentials_file(&path).unwrap();
+    assert!(file.keys.is_empty(), "blank file → default store");
+}
+
+#[test]
+fn test_load_credentials_invalid_yaml_fails_loud() {
+    // `keys:` must be a map — a sequence is invalid YAML FOR THIS SHAPE and
+    // fails with a remedy message (never silently treated as empty).
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("credentials.yaml");
+    std::fs::write(&path, "keys: [not, a, map]").unwrap();
+    let err = load_credentials_file(&path).unwrap_err();
+    let msg = format!("{:?}", err);
+    assert!(msg.contains("not valid YAML"), "error names the shape problem: {msg}");
+    assert!(msg.contains("keys"), "error carries the expected shape: {msg}");
+}
+
+#[test]
+fn test_save_credentials_parent_is_file_fails() {
+    // Parent path exists as a regular FILE → create_dir_all fails.
+    let dir = tempfile::tempdir().unwrap();
+    let blocker = dir.path().join("blocker.txt");
+    std::fs::write(&blocker, b"x").unwrap();
+    let path = blocker.join("credentials.yaml");
+
+    let err = save_credentials_file(&path, &CredentialsFile::default()).unwrap_err();
+    let msg = format!("{:?}", err);
+    assert!(
+        msg.contains("cannot create credentials dir"),
+        "create-dir error surfaces: {msg}"
+    );
+}
+
+#[test]
+fn test_save_credentials_target_is_directory_fails() {
+    // Target path is an existing DIRECTORY → fs::write fails (dir creation
+    // and serialization both succeed first, isolating the write-error branch).
+    let dir = tempfile::tempdir().unwrap();
+    let target = dir.path().join("iamdir");
+    std::fs::create_dir_all(&target).unwrap();
+
+    let err = save_credentials_file(&target, &CredentialsFile::default()).unwrap_err();
+    let msg = format!("{:?}", err);
+    assert!(
+        msg.contains("cannot write credentials file"),
+        "write error surfaces: {msg}"
+    );
+}
+
+#[test]
+fn test_yaml_alias_set_but_empty_fails_loud() {
+    // Alias EXISTS in the file but maps to an empty value → loud error with
+    // the alias and the remedy (never a silent empty key).
+    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let cred_path = dir.path().join("credentials.yaml");
+    save_credentials_file(
+        &cred_path,
+        &CredentialsFile {
+            keys: [("e".to_string(), String::new())].into(),
+        },
+    )
+    .unwrap();
+    let _g = GlobalPathGuard::set(&cred_path);
+
+    let cfg = model_config_with_key("yaml:e");
+    let err = format!("{:?}", crate::resolve_model_config(&cfg, "ref").unwrap_err());
+    assert!(err.contains("set but empty"), "error names the empty value: {err}");
+    assert!(err.contains("'e'"), "error names the alias: {err}");
+}
+
+/// Write a config.json with one model entry built from explicit parts.
+fn temp_home_with_entry(model_name: &str, model: &str, api_key: &str) -> (tempfile::TempDir, PathBuf, PathBuf) {
+    let dir = tempfile::tempdir().unwrap();
+    let home = dir.path().to_path_buf();
+    std::fs::create_dir_all(home.join("workspace").join("config")).unwrap();
+    let mut cfg = Config::default();
+    cfg.model_list.push(ModelConfig {
+        model_name: model_name.to_string(),
+        model: model.to_string(),
+        api_key: api_key.to_string(),
+        ..Default::default()
+    });
+    let config_path = home.join("config.json");
+    std::fs::write(&config_path, serde_json::to_string_pretty(&cfg).unwrap()).unwrap();
+    let cred_path = credentials_path_for_home(&home);
+    (dir, config_path, cred_path)
+}
+
+#[test]
+fn test_import_reuses_same_value_alias() {
+    // Pre-existing alias with the SAME value → reused (file untouched),
+    // config still rewritten to the `yaml:` reference.
+    let (_dir, config_path, cred_path) = temp_home_with_entry("m0", "openai/gpt-0", "sk-same");
+    save_credentials_file(
+        &cred_path,
+        &CredentialsFile {
+            keys: [("m0".to_string(), "sk-same".to_string())].into(),
+        },
+    )
+    .unwrap();
+
+    let report = run_import(&config_path, &cred_path).unwrap();
+    assert_eq!(report.reused, 1, "same-value alias reused: {report:?}");
+    assert_eq!(report.migrated.len(), 1);
+    assert_eq!(report.migrated[0], ("m0".to_string(), "m0".to_string()));
+
+    // No new alias inserted — the file keeps exactly one key.
+    let creds = load_credentials_file(&cred_path).unwrap();
+    assert_eq!(creds.keys.len(), 1);
+    assert_eq!(creds.keys.get("m0").unwrap(), "sk-same");
+
+    // config.json rewritten to the reference.
+    let raw = std::fs::read_to_string(&config_path).unwrap();
+    assert!(raw.contains("yaml:m0"), "config references the alias: {raw}");
+    assert!(!raw.contains("sk-same"), "no plaintext left: {raw}");
+}
+
+#[test]
+fn test_import_conflict_reuses_existing_suffixed_alias_with_same_value() {
+    // m0 exists with a different value AND m0__2 already holds EXACTLY the
+    // literal being imported → the suffix scan stops at m0__2 (break-on-same
+    // arm) and no new alias is inserted.
+    let (_dir, config_path, cred_path) = temp_home_with_entry("m0", "openai/gpt-0", "sk-new");
+    save_credentials_file(
+        &cred_path,
+        &CredentialsFile {
+            keys: [
+                ("m0".to_string(), "sk-old".to_string()),
+                ("m0__2".to_string(), "sk-new".to_string()),
+            ]
+            .into(),
+        },
+    )
+    .unwrap();
+
+    let report = run_import(&config_path, &cred_path).unwrap();
+    assert_eq!(report.conflicts, vec![("m0".to_string(), "m0__2".to_string())]);
+    assert_eq!(report.migrated[0], ("m0".to_string(), "m0__2".to_string()));
+
+    let creds = load_credentials_file(&cred_path).unwrap();
+    assert_eq!(creds.keys.len(), 2, "no extra alias created: {:?}", creds.keys);
+    assert_eq!(creds.keys.get("m0__2").unwrap(), "sk-new");
+}
+
+#[test]
+fn test_import_conflict_advances_past_taken_suffixes() {
+    // m0, m0__2, m0__3 all taken with DIFFERENT values → the scan advances
+    // (n += 1 arm, twice) and lands on m0__4.
+    let (_dir, config_path, cred_path) = temp_home_with_entry("m0", "openai/gpt-0", "sk-new");
+    save_credentials_file(
+        &cred_path,
+        &CredentialsFile {
+            keys: [
+                ("m0".to_string(), "v-old".to_string()),
+                ("m0__2".to_string(), "v-2".to_string()),
+                ("m0__3".to_string(), "v-3".to_string()),
+            ]
+            .into(),
+        },
+    )
+    .unwrap();
+
+    let report = run_import(&config_path, &cred_path).unwrap();
+    assert_eq!(report.conflicts, vec![("m0".to_string(), "m0__4".to_string())]);
+    assert_eq!(report.migrated[0], ("m0".to_string(), "m0__4".to_string()));
+
+    let creds = load_credentials_file(&cred_path).unwrap();
+    assert_eq!(creds.keys.get("m0__4").unwrap(), "sk-new");
+    // Nothing pre-existing was overwritten.
+    assert_eq!(creds.keys.get("m0").unwrap(), "v-old");
+    assert_eq!(creds.keys.get("m0__3").unwrap(), "v-3");
+}
+
+#[test]
+fn test_import_empty_model_name_uses_model_string() {
+    // Empty model_name → both the ALIAS base and the REPORT display name come
+    // from the `model` string (sanitized for the alias).
+    let (_dir, config_path, cred_path) = temp_home_with_entry("", "openai/gpt-9", "sk-nine");
+
+    let report = run_import(&config_path, &cred_path).unwrap();
+    assert_eq!(
+        report.migrated,
+        vec![("openai/gpt-9".to_string(), "openai_gpt-9".to_string())],
+        "display name = model, alias = sanitized model: {report:?}"
+    );
+
+    let creds = load_credentials_file(&cred_path).unwrap();
+    assert_eq!(creds.keys.get("openai_gpt-9").unwrap(), "sk-nine");
+}

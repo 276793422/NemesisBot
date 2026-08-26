@@ -301,7 +301,18 @@ impl TrustStore {
         let mut map = self.keys.write();
         for k in f.keys {
             // Validate the public key format by attempting to decode.
-            if import_public_key(&k.public_key).is_err() {
+            // 兼容两种历史并存的编码：base64（export_public_key，44 字符）与
+            // hex（KeyPair.public_key / verify_skill 的 public_key_hex，64 字符）。
+            // 原实现只用 base64 的 import_public_key：64 个 hex 字符恰好是
+            // 合法 base64（解码 48 字节）→ 校验必失败 → 持久化的 hex key 在
+            // 重载时被全部静默跳过（trust store 重启即清空，2026-08-25 测试
+            // 首触即抓）。
+            let b64_ok = import_public_key(&k.public_key).is_ok();
+            let hex_ok = match hex_decode_32(&k.public_key) {
+                Ok(bytes) => VerifyingKey::from_bytes(&bytes).is_ok(),
+                Err(_) => false,
+            };
+            if !(b64_ok || hex_ok) {
                 continue; // skip malformed entries
             }
             map.insert(k.public_key.clone(), k);

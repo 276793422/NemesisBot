@@ -2564,3 +2564,280 @@ fn extra_elevated_allows_eleven_ops() {
     }
     assert_eq!(count, 11); // FileRead, FileWrite, FileDelete, DirRead, DirCreate, DirDelete, ProcessExec, ProcessSpawn, NetworkRequest, NetworkDownload, NetworkUpload
 }
+
+// ============================================================
+// S3 batch 5: kill/terminate 真实分支、wait 已退出分支、
+// 本地 raw-TCP HTTP 服务器驱动 download_url / get / post /
+// do_request / dial_http 的成功与错误臂、batch 单条被规则
+// 拒绝而汇总放行的分支
+// ============================================================
+
+use std::io::{Read, Write};
+
+/// 在 127.0.0.1:0 起一个一次性 HTTP 服务器，按序为每个连接返回
+/// `(status, body)`。HEAD 请求只回头部（body 置空）。返回基准 URL。
+fn s3_local_http_server(responses: Vec<(u16, String)>) -> String {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    std::thread::spawn(move || {
+        for (status, body) in responses {
+            let (mut stream, _) = match listener.accept() {
+                Ok(v) => v,
+                Err(_) => break,
+            };
+            // 读完请求头（以及 Content-Length 指定的 body）
+            let mut got = String::new();
+            let mut buf = [0u8; 8192];
+            loop {
+                match stream.read(&mut buf) {
+                    Ok(0) | Err(_) => break,
+                    Ok(n) => {
+                        got.push_str(&String::from_utf8_lossy(&buf[..n]));
+                        if let Some(pos) = got.find("\r\n\r\n") {
+                            let cl = got[..pos]
+                                .lines()
+                                .find_map(|l| {
+                                    l.to_ascii_lowercase()
+                                        .strip_prefix("content-length:")
+                                        .and_then(|v| v.trim().parse::<usize>().ok())
+                                })
+                                .unwrap_or(0);
+                            if got[pos + 4..].len() >= cl {
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+            let is_head = got.starts_with("HEAD");
+            let reason = if status == 200 { "OK" } else { "Not Found" };
+            let (len, payload) = if is_head {
+                (0, String::new())
+            } else {
+                (body.len(), body)
+            };
+            let resp = format!(
+                "HTTP/1.1 {} {}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                status, reason, len, payload
+            );
+            let _ = stream.write_all(resp.as_bytes());
+            let _ = stream.flush();
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+    });
+    format!("http://{}/", addr)
+}
+
+/// 已关闭监听的端口 → 连接必然被拒（覆盖连接失败错误臂）。
+fn s3_refused_base_url() -> String {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    drop(listener);
+    format!("http://{}/", addr)
+}
+
+#[test]
+fn extra_batch_operation_individual_denied_by_rule_while_summary_approved() {
+    // 汇总请求（ProcessExec + 默认放行）通过，但其中一条 FileRead
+    // 命中 deny 规则 → "individual operation denied" 分支。
+    let config = AuditorConfig {
+        enabled: true,
+        default_action: "allow".to_string(),
+        ..Default::default()
+    };
+    let auditor = Arc::new(SecurityAuditor::new(config));
+    auditor.set_rules(
+        OperationType::FileRead,
+        vec![crate::types::SecurityRule {
+            pattern: "/secret/*".to_string(),
+            action: "deny".to_string(),
+            comment: "deny secret reads".to_string(),
+        }],
+    );
+    let mw = SecurityMiddleware::with_preset(
+        auditor,
+        "u",
+        "s",
+        "/ws",
+        PermissionPreset::Elevated,
+    );
+    let batch = BatchOperationRequest {
+        id: "batch-indiv-rule".to_string(),
+        operations: vec![
+            OperationRequest {
+                id: "ok-op".to_string(),
+                op_type: OperationType::FileRead,
+                danger_level: DangerLevel::Low,
+                user: "u".to_string(),
+                source: "s".to_string(),
+                target: "/tmp/ok.txt".to_string(),
+                timestamp: None,
+                ..Default::default()
+            },
+            OperationRequest {
+                id: "secret-op".to_string(),
+                op_type: OperationType::FileRead,
+                danger_level: DangerLevel::Low,
+                user: "u".to_string(),
+                source: "s".to_string(),
+                target: "/secret/key".to_string(),
+                timestamp: None,
+                ..Default::default()
+            },
+        ],
+        ..Default::default()
+    };
+    let err = mw.request_batch_permission(&batch).unwrap_err();
+    // 汇总已放行、单条被规则拒绝：走 individual 循环的 Err 臂
+    // （auditor 返回 Some(消息)，故 unwrap_or_else 回落串不出现）。
+    assert!(
+        err.contains("Security policy denied") && err.contains("/secret/key"),
+        "unexpected error: {err}"
+    );
+}
+
+#[tokio::test]
+async fn extra_process_kill_spawned_process_success() {
+    // 杀掉真实存活的自有进程 → taskkill /F 成功 → Ok(()) 臂。
+    let mw = make_middleware_with_preset(PermissionPreset::Unrestricted, "allow");
+    let w = SecureProcessWrapper::new(&mw);
+    let spawn_cmd = if cfg!(target_os = "windows") {
+        "ping -n 30 127.0.0.1"
+    } else {
+        "sleep 30"
+    };
+    let pid = w.spawn(spawn_cmd).await.unwrap();
+    let result = w.kill(pid).await;
+    assert!(result.is_ok(), "kill must succeed: {result:?}");
+}
+
+#[cfg(target_os = "windows")]
+#[tokio::test]
+async fn extra_process_kill_system_pid_access_denied_returns_error() {
+    // PID 4（System，受保护、无窗口）：taskkill /F 必然 Access denied，
+    // stderr 不含 "no such process"/"not found" → 走 Err 臂。
+    let mw = make_middleware_with_preset(PermissionPreset::Unrestricted, "allow");
+    let w = SecureProcessWrapper::new(&mw);
+    let err = w.kill(4).await.unwrap_err();
+    assert!(
+        err.contains("failed to kill process 4"),
+        "unexpected error: {err}"
+    );
+}
+
+#[cfg(target_os = "windows")]
+#[tokio::test]
+async fn extra_process_terminate_system_pid_returns_error() {
+    // 对受保护系统进程做优雅终止：taskkill /PID 4 → Access denied → Err 臂。
+    let mw = make_middleware_with_preset(PermissionPreset::Unrestricted, "allow");
+    let w = SecureProcessWrapper::new(&mw);
+    let err = w.terminate(4).await.unwrap_err();
+    assert!(
+        err.contains("failed to terminate process 4"),
+        "unexpected error: {err}"
+    );
+}
+
+#[tokio::test]
+async fn extra_process_wait_on_dead_pid_returns_zero() {
+    // 从不存在的 PID：第一次轮询即发现未运行 → 立即 Ok(0)。
+    let mw = make_middleware_with_preset(PermissionPreset::Elevated, "allow");
+    let w = SecureProcessWrapper::new(&mw);
+    let result = w.wait(999_999, 2).await;
+    assert_eq!(result.unwrap(), 0);
+}
+
+#[tokio::test]
+async fn extra_network_download_url_success_from_local_server() {
+    let base = s3_local_http_server(vec![(200, "hello".to_string())]);
+    let mw = make_middleware_with_preset(PermissionPreset::Standard, "allow");
+    let w = SecureNetworkWrapper::new(&mw);
+    let bytes = w.download_url(&base, 1024).await.unwrap();
+    assert_eq!(bytes, b"hello");
+}
+
+#[tokio::test]
+async fn extra_network_download_url_404_status_error() {
+    let base = s3_local_http_server(vec![(404, String::new())]);
+    let mw = make_middleware_with_preset(PermissionPreset::Standard, "allow");
+    let w = SecureNetworkWrapper::new(&mw);
+    let err = w.download_url(&base, 1024).await.unwrap_err();
+    assert!(err.contains("HTTP 404"), "unexpected error: {err}");
+}
+
+#[tokio::test]
+async fn extra_network_download_url_response_too_large() {
+    let base = s3_local_http_server(vec![(200, "x".repeat(100))]);
+    let mw = make_middleware_with_preset(PermissionPreset::Standard, "allow");
+    let w = SecureNetworkWrapper::new(&mw);
+    let err = w.download_url(&base, 10).await.unwrap_err();
+    assert!(err.contains("response too large"), "unexpected error: {err}");
+    assert!(err.contains("limit: 10"), "unexpected error: {err}");
+}
+
+#[tokio::test]
+async fn extra_network_download_url_connection_refused() {
+    let base = s3_refused_base_url();
+    let mw = make_middleware_with_preset(PermissionPreset::Standard, "allow");
+    let w = SecureNetworkWrapper::new(&mw);
+    let err = w.download_url(&base, 1024).await.unwrap_err();
+    assert!(err.contains("request failed"), "unexpected error: {err}");
+}
+
+#[tokio::test]
+async fn extra_network_get_success_from_local_server() {
+    let base = s3_local_http_server(vec![(200, "hello".to_string())]);
+    let mw = make_middleware_with_preset(PermissionPreset::Standard, "allow");
+    let w = SecureNetworkWrapper::new(&mw);
+    let resp = w.get(&base).await.unwrap();
+    assert_eq!(resp.status_code, 200);
+    assert_eq!(resp.body, "hello");
+    assert!(resp.success);
+}
+
+#[tokio::test]
+async fn extra_network_post_success_from_local_server() {
+    let base = s3_local_http_server(vec![(200, "posted".to_string())]);
+    let mw = make_middleware_with_preset(PermissionPreset::Unrestricted, "allow");
+    let w = SecureNetworkWrapper::new(&mw);
+    let resp = w.post(&base, "payload", "text/plain").await.unwrap();
+    assert_eq!(resp.status_code, 200);
+    assert_eq!(resp.body, "posted");
+    assert!(resp.success);
+}
+
+#[tokio::test]
+async fn extra_network_post_connection_refused() {
+    let base = s3_refused_base_url();
+    let mw = make_middleware_with_preset(PermissionPreset::Unrestricted, "allow");
+    let w = SecureNetworkWrapper::new(&mw);
+    let err = w.post(&base, "payload", "text/plain").await.unwrap_err();
+    assert!(err.contains("POST request failed"), "unexpected error: {err}");
+}
+
+#[tokio::test]
+async fn extra_network_do_request_success_from_local_server() {
+    let base = s3_local_http_server(vec![(200, "done".to_string())]);
+    let mw = make_middleware_with_preset(PermissionPreset::Standard, "allow");
+    let w = SecureNetworkWrapper::new(&mw);
+    let req = HttpRequest {
+        url: base,
+        method: "GET".to_string(),
+        headers: vec![("X-S3".to_string(), "1".to_string())],
+        body: None,
+        timeout_secs: Some(5),
+    };
+    let resp = w.do_request(&req).await.unwrap();
+    assert_eq!(resp.status_code, 200);
+    assert_eq!(resp.body, "done");
+    assert!(resp.success);
+}
+
+#[tokio::test]
+async fn extra_network_dial_http_success_from_local_server() {
+    let base = s3_local_http_server(vec![(200, String::new())]);
+    let mw = make_middleware_with_preset(PermissionPreset::Standard, "allow");
+    let w = SecureNetworkWrapper::new(&mw);
+    let status = w.dial_http(&base).await.unwrap();
+    assert_eq!(status, 200);
+}

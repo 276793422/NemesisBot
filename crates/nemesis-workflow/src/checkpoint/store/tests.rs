@@ -114,3 +114,17 @@ async fn test_delete_missing_is_ok() {
     // Deleting something that was never saved is a no-op.
     store.delete("none", "none").await.unwrap();
 }
+
+// ---------------------------------------------------------------------------
+// W4a coverage gap closure (Default impls)
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn w4a_default_matches_new() {
+    let store = InMemoryCheckpointStore::default();
+    assert!(store.list("e").await.unwrap().is_empty());
+    assert!(store.latest("e").await.unwrap().is_none());
+    // and it is functional: save + latest round-trip through the default ctor
+    store.save(make_checkpoint("e", "cp1", 0)).await.unwrap();
+    assert_eq!(store.latest("e").await.unwrap().unwrap().id, "cp1");
+}

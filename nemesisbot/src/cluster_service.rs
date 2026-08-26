@@ -280,3 +280,6 @@ async fn start_cluster_components(
         }
     }
 }
+
+#[cfg(test)]
+mod tests;

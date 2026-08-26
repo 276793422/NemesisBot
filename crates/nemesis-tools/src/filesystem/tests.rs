@@ -1014,3 +1014,202 @@ async fn test_delete_dir_tool_nonexistent_path() {
         .await;
     assert!(result.is_error);
 }
+
+// ============================================================
+// W4a coverage gap closure (parameters() schemas, private
+// resolve_existing_ancestor branches, restrict/validate arms,
+// delete_dir metadata branches)
+// ============================================================
+
+#[test]
+fn w4a_tool_parameters_schemas_all_tools() {
+    // The tool_interface tests below only call name()/description();
+    // parameters() bodies of all 7 tools are otherwise never executed.
+    let dir = TempDir::new().unwrap();
+    let ws = dir.path().to_string_lossy().to_string();
+
+    let read = ReadFileTool::new(&ws, false);
+    let p = read.parameters();
+    assert_eq!(p["type"], "object");
+    assert_eq!(p["properties"]["path"]["type"], "string");
+    assert_eq!(p["required"][0], "path");
+
+    let write = WriteFileTool::new(&ws, false);
+    let p = write.parameters();
+    assert_eq!(p["properties"]["path"]["type"], "string");
+    assert_eq!(p["properties"]["content"]["type"], "string");
+    assert_eq!(p["required"].as_array().unwrap().len(), 2);
+
+    let list = ListDirTool::new(&ws, false);
+    let p = list.parameters();
+    assert!(p.get("properties").is_some());
+    assert!(p.get("required").is_none(), "list has no required fields");
+
+    let exists = FileExistsTool::new(&ws, false);
+    let p = exists.parameters();
+    assert_eq!(p["required"][0], "path");
+
+    let create = CreateDirectoryTool::new(&ws, false);
+    let p = create.parameters();
+    assert_eq!(p["properties"]["path"]["type"], "string");
+    assert_eq!(p["required"][0], "path");
+
+    let delete_file = DeleteFileTool::new(&ws, false);
+    let p = delete_file.parameters();
+    assert_eq!(p["required"][0], "path");
+
+    let delete_dir = DeleteDirTool::new(&ws, false);
+    let p = delete_dir.parameters();
+    assert_eq!(p["properties"]["path"]["description"], "Directory path to delete");
+    assert_eq!(p["required"][0], "path");
+}
+
+#[test]
+fn w4a_resolve_existing_ancestor_branches() {
+    let dir = TempDir::new().unwrap();
+
+    // 1. Existing path: canonicalize succeeds (returns \\?\ form on Windows).
+    let existing = dir.path().join("real.txt");
+    std::fs::write(&existing, b"x").unwrap();
+    let resolved = resolve_existing_ancestor(&existing);
+    assert!(resolved.is_absolute());
+    assert!(normalize_for_comparison(&resolved).ends_with("real.txt"));
+
+    // 2. Nonexistent child under existing dir: walk up + append components.
+    let ghost = dir.path().join("no_such_dir").join("leaf.txt");
+    let resolved = resolve_existing_ancestor(&ghost);
+    let normalized = normalize_for_comparison(&resolved);
+    assert!(
+        normalized.ends_with("no_such_dir\\leaf.txt") || normalized.ends_with("no_such_dir/leaf.txt"),
+        "non-existing tail must be appended onto the canonical ancestor: {normalized}"
+    );
+
+    // 3. Absent drive (Z: not mounted on this host): walk-up hits the root
+    //    without any existing component -> original path returned unchanged.
+    let absent = Path::new("Z:\\w4a\\never\\exists.txt");
+    if !Path::new("Z:\\").exists() {
+        assert_eq!(resolve_existing_ancestor(absent), absent.to_path_buf());
+    }
+}
+
+#[tokio::test]
+async fn w4a_read_file_restricted_outside_workspace_rejected() {
+    // restrict=true + absolute path outside the workspace must be rejected by
+    // validate_path (symlink-resolution + prefix comparison).
+    let dir = TempDir::new().unwrap();
+    let outside = TempDir::new().unwrap();
+    let ws = dir.path().to_string_lossy().to_string();
+    let tool = ReadFileTool::new(&ws, true);
+
+    let victim = outside.path().join("secret.txt");
+    std::fs::write(&victim, b"top secret").unwrap();
+    let result = tool
+        .execute(&serde_json::json!({"path": victim.to_string_lossy()}))
+        .await;
+    assert!(result.is_error);
+    assert!(result.for_llm.contains("outside workspace"), "got: {}", result.for_llm);
+    // and a file inside the workspace still reads fine under restrict
+    let inside = dir.path().join("ok.txt");
+    std::fs::write(&inside, b"fine").unwrap();
+    let result = tool
+        .execute(&serde_json::json!({"path": "ok.txt"}))
+        .await;
+    assert!(!result.is_error, "inside file must read: {}", result.for_llm);
+}
+
+#[tokio::test]
+async fn w4a_create_directory_relative_path_joins_workspace() {
+    // CreateDirectoryTool validates via its own logic; relative paths join the
+    // workspace root. Also covers the missing-'path' error arm.
+    let dir = TempDir::new().unwrap();
+    let ws = dir.path().to_string_lossy().to_string();
+    let tool = CreateDirectoryTool::new(&ws, false);
+
+    let result = tool
+        .execute(&serde_json::json!({"path": "w4a_new/sub"}))
+        .await;
+    assert!(!result.is_error, "create should succeed: {}", result.for_llm);
+    assert!(dir.path().join("w4a_new").join("sub").is_dir());
+
+    // missing path argument
+    let result = tool.execute(&serde_json::json!({})).await;
+    assert!(result.is_error);
+}
+
+#[tokio::test]
+async fn w4a_delete_dir_restricted_outside_workspace_rejected() {
+    let dir = TempDir::new().unwrap();
+    let outside = TempDir::new().unwrap();
+    let ws = dir.path().to_string_lossy().to_string();
+    let tool = DeleteDirTool::new(&ws, true);
+
+    let victim = outside.path().join("victim_dir");
+    std::fs::create_dir_all(&victim).unwrap();
+    let result = tool
+        .execute(&serde_json::json!({"path": victim.to_string_lossy()}))
+        .await;
+    assert!(result.is_error);
+    assert!(result.for_llm.contains("outside workspace"), "got: {}", result.for_llm);
+    assert!(victim.exists(), "outside dir must NOT be deleted");
+}
+
+#[tokio::test]
+async fn w4a_delete_dir_not_a_directory_is_rejected() {
+    // Pointing delete_dir at a regular file hits the metadata is_dir()==false arm.
+    let dir = TempDir::new().unwrap();
+    let ws = dir.path().to_string_lossy().to_string();
+    let tool = DeleteDirTool::new(&ws, false);
+
+    let file = dir.path().join("plain_file.txt");
+    std::fs::write(&file, b"data").unwrap();
+    let result = tool
+        .execute(&serde_json::json!({"path": file.to_string_lossy()}))
+        .await;
+    assert!(result.is_error);
+    assert!(result.for_llm.contains("is not a directory"), "got: {}", result.for_llm);
+    assert!(file.exists(), "file must survive a delete_dir attempt");
+}
+
+#[tokio::test]
+async fn w4a_delete_dir_success_is_silent() {
+    // Successful delete_dir returns a silent ToolResult (for_llm message only,
+    // for_user None, silent=true).
+    let dir = TempDir::new().unwrap();
+    let ws = dir.path().to_string_lossy().to_string();
+    let tool = DeleteDirTool::new(&ws, false);
+
+    let victim = dir.path().join("doomed");
+    std::fs::create_dir_all(victim.join("nested")).unwrap();
+    std::fs::write(victim.join("nested").join("f.txt"), b"x").unwrap();
+
+    let result = tool
+        .execute(&serde_json::json!({"path": victim.to_string_lossy()}))
+        .await;
+    assert!(!result.is_error);
+    assert!(result.silent, "successful delete_dir is silent");
+    assert!(result.for_user.is_none());
+    assert!(result.for_llm.contains("Directory deleted"));
+    assert!(!victim.exists(), "directory tree must be gone");
+}
+
+// ===========================================================================
+// S2 coverage (2026-08-26): DeleteFileTool relative-path validate arm.
+//
+// resolve_existing_ancestor canonicalize-failure arms (lines 16/35) are
+// STRUCTURAL on Windows: an empirical rustc probe showed std reports
+// exists() == false for every NUL-device path variant (C:\dir\nul, C:\nul,
+// \\.\nul) and canonicalize fails with os error 87 — there is no
+// deterministic Windows path with exists() == true && canonicalize() == Err,
+// so the guard `p.exists()` never admits a canonicalize-failing path.
+// ===========================================================================
+
+/// DeleteFileTool::validate_path with a relative path joins the workspace
+/// (the non-absolute arm of the target resolution).
+#[test]
+fn s2_delete_file_validate_path_relative_joins_workspace() {
+    let dir = TempDir::new().unwrap();
+    let tool = DeleteFileTool::new(&dir.path().to_string_lossy(), false);
+
+    let resolved = tool.validate_path("rel/deep.txt").unwrap();
+    assert_eq!(resolved, dir.path().join("rel").join("deep.txt"));
+}

@@ -991,3 +991,9 @@ async fn update_db_inner(
 
     Ok(())
 }
+
+// Phase 3 批次 18（2026-08-25）：scanner.rs 纯逻辑子模块测试（私有项访问：
+// cmd_cancel 三态匹配 / install 与 update_db 早期错误臂 / mark_op 去重 /
+// format_bytes / 进度回调）。真下载与真扫描臂 → 结构性豁免（台账 §9.4）。
+#[cfg(test)]
+mod wweb2_tests;

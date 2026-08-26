@@ -73,3 +73,6 @@ impl Drop for PunctEngine {
         unsafe { sherpa::SherpaOnnxDestroyOfflinePunctuation(self.punct) };
     }
 }
+
+#[cfg(test)]
+mod tests;

@@ -158,9 +158,20 @@ async fn run_approval_headless(expected: &str) -> Result<()> {
     );
 
     // 4. Spawn child process
-    let (child_id, result_rx) = pm
-        .spawn_child("approval", &data)
-        .map_err(|e| anyhow::anyhow!("spawn_child failed: {}", e))?;
+    // (BUG #28, quality-hardening goal 冲刺 S11) 原 `?` 直接早退：
+    // NEMESISBOT_FORCE_HEADLESS 残留在进程 env、ProcessManager（WS server
+    // + 后台 monitor）不停——与成功路径（pm.stop + remove_var）不对称。
+    // 改为对称清理后再返回错误。
+    let (child_id, result_rx) = match pm.spawn_child("approval", &data) {
+        Ok(v) => v,
+        Err(e) => {
+            let _ = pm.stop();
+            unsafe {
+                std::env::remove_var("NEMESISBOT_FORCE_HEADLESS");
+            }
+            return Err(anyhow::anyhow!("spawn_child failed: {}", e));
+        }
+    };
     println!("  [4/5] Child spawned: {}", child_id);
 
     // 5. Wait for result

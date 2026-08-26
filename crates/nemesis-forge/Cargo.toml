@@ -25,3 +25,4 @@ tokio = { workspace = true, features = ["test-util", "macros"] }
 mockall = { workspace = true }
 tempfile = "3"
 filetime = "0.2"
+tracing-subscriber = { workspace = true }

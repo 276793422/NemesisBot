@@ -2115,3 +2115,331 @@ fn test_validate_config_not_loaded() {
     assert!(result.is_err());
     assert!(svc.get_error().unwrap().contains("no models"));
 }
+
+// ============================================================
+// 覆盖缺口补测（llvm-cov 指定行）
+//
+// 覆盖对象与手段：
+// - 1248-1363（init_components 各 info! 的 Component::X.label() 参数）：
+//   tracing 宏的格式参数是惰性求值——没有全局 subscriber 时 enabled 检查
+//   不过，这些行永远不执行。装一个 enabled()=true 的最小空 subscriber，
+//   再用全开关 config 跑一次 start()，让每个分支的 label() 都求值。
+// - 849/852（heartbeat handler 的 response.len() 参数）：同上，注入
+//   返回非空响应的 agent 后调用 handler。
+// - 968（register_log_hook 的 log_hooks.len() 参数）：同上。
+// - 358/370/374/456/460/466（serde default 函数）：用「键存在但子字段
+//   缺失」的 config 文件触发字段级 default，用「cron 键缺失」触发
+//   结构体级 default_cron_timeout。
+// - 1038：config_path 为空串 → parent() 为 None。
+// - 1052-1054：rename 失败（目标是已存在目录）→ 清理 temp + 返错。
+// - 1075：save_config(restart=true) 的后台 restart 回调返回 Err。
+// - 1181：直接调用私有 validate_config()，config 未加载。
+// - 1422/1437：注入 start() 失败的 health/agent，覆盖后台 spawn 里的
+//   error! 分支（#[tokio::test] 提供 runtime）。
+//
+// 结构性不可达（不试图覆盖，仅记录证据）：
+// - 650-654（start() Phase 3 init_components 失败 arm）：init_components
+//   唯一的 Err 是 config_file 为 None（bot_service.rs:1231），而走到
+//   Phase 3 前提是 Phase 1 load_config 成功（会把 config_file 置 Some）、
+//   Phase 2 validate_config 通过（config_loaded=true ⇒ config_file 必为
+//   Some）→ 650-654 只有在 load_config 成功但 config_file 又是 None 的
+//   矛盾状态下才可达。
+// ============================================================
+
+// --- 最小 tracing Subscriber（见上方说明） ---
+
+struct CoverageSubscriber;
+
+impl tracing::Subscriber for CoverageSubscriber {
+    fn enabled(&self, _metadata: &tracing::Metadata<'_>) -> bool {
+        true
+    }
+    fn new_span(&self, _span: &tracing::span::Attributes<'_>) -> tracing::span::Id {
+        tracing::span::Id::from_u64(1)
+    }
+    fn record(&self, _span: &tracing::span::Id, _values: &tracing::span::Record<'_>) {}
+    fn record_follows_from(&self, _span: &tracing::span::Id, _follows: &tracing::span::Id) {}
+    fn event(&self, _event: &tracing::Event<'_>) {}
+    fn enter(&self, _span: &tracing::span::Id) {}
+    fn exit(&self, _span: &tracing::span::Id) {}
+}
+
+static SUBSCRIBER_ONCE: std::sync::Once = std::sync::Once::new();
+
+fn init_test_subscriber() {
+    SUBSCRIBER_ONCE.call_once(|| {
+        let _ = tracing::subscriber::set_global_default(CoverageSubscriber);
+    });
+}
+
+// --- trait 默认实现 ---
+
+#[test]
+fn test_lifecycle_default_is_running() {
+    // 覆盖 152-154：LifecycleService::is_running 默认 false
+    let svc = MockLifecycle;
+    assert!(!svc.is_running());
+}
+
+#[test]
+fn test_agent_loop_default_cancel_methods() {
+    // 覆盖 205-207 + 210-212：cancel_session/cancel_all_sessions 默认实现
+    let agent = MockAgentDefault;
+    assert!(!agent.cancel_session("session-key"));
+    assert_eq!(agent.cancel_all_sessions(), 0);
+}
+
+// --- serde default 函数 ---
+
+#[test]
+fn test_config_file_serde_defaults_subfields() {
+    // 覆盖 358（default_heartbeat_interval）、370（default_host）、
+    // 374（default_port）、456（default_cron_timeout_minutes）、
+    // 466（default_true）：键存在但子字段缺失 → 字段级 default 生效。
+    let dir = tempfile::tempdir().unwrap();
+    let config_path = dir.path().join("config.json");
+    std::fs::write(
+        &config_path,
+        serde_json::to_string(&serde_json::json!({
+            "models": [
+                { "model": "test/1.0", "api_key": "k", "base_url": "", "is_default": true }
+            ],
+            "heartbeat": {},
+            "gateway": {},
+            "tools": { "cron": {} }
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+
+    let svc = BotService::new(BotServiceConfig {
+        config_path,
+        workspace: dir.path().to_path_buf(),
+        ..BotServiceConfig::default()
+    });
+    // 反序列化成功（default 未报错）+ 校验通过 + 无注入启动
+    svc.start().unwrap();
+    assert_eq!(svc.get_state(), BotState::Running);
+    svc.stop().unwrap();
+}
+
+#[test]
+fn test_config_file_serde_default_cron_struct() {
+    // 覆盖 460（default_cron_timeout）：tools 存在但 cron 缺失 →
+    // 结构体级 default 函数生效。
+    let dir = tempfile::tempdir().unwrap();
+    let config_path = dir.path().join("config.json");
+    std::fs::write(
+        &config_path,
+        serde_json::to_string(&serde_json::json!({
+            "models": [
+                { "model": "test/1.0", "api_key": "k", "base_url": "", "is_default": true }
+            ],
+            "tools": {}
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+
+    let svc = BotService::new(BotServiceConfig {
+        config_path,
+        workspace: dir.path().to_path_buf(),
+        ..BotServiceConfig::default()
+    });
+    svc.start().unwrap();
+    assert_eq!(svc.get_state(), BotState::Running);
+    svc.stop().unwrap();
+}
+
+// --- subscriber 驱动的惰性参数覆盖（一次性覆盖 1248-1363/849/852/968） ---
+
+#[test]
+fn test_init_components_all_labels_with_subscriber() {
+    init_test_subscriber();
+
+    // 全开关：Bus/Agent/Channels/Cron/Health/Skills/Observer 无条件 +
+    // Heartbeat/Devices（file）+ Security/Workflow/Forge/Cluster/Memory
+    // （flags）→ init_components 的所有 info! label() 参数全部求值。
+    let dir = tempfile::tempdir().unwrap();
+    let config = make_config_with_flags(dir.path(), true, true, true, true, true, true);
+    let svc = BotService::new(config);
+    svc.start().unwrap();
+    assert_eq!(svc.get_state(), BotState::Running);
+
+    let enabled = svc.enabled_components();
+    assert!(enabled.is_enabled(Component::Forge));
+    assert!(enabled.is_enabled(Component::Cluster));
+    assert!(enabled.is_enabled(Component::Memory));
+    assert!(enabled.is_enabled(Component::Workflow));
+    assert!(enabled.is_enabled(Component::Devices));
+    assert!(enabled.is_enabled(Component::Heartbeat));
+
+    // 847-852：注入返回非空心跳响应的 agent（在 start 之后注入，避免
+    // start_services 里 tokio::spawn 需要异步上下文）→ handler 内
+    // info!(response_len = response.len()) 求值。
+    struct AgentNonEmptyHeartbeat;
+    impl LifecycleService for AgentNonEmptyHeartbeat {
+        fn start(&self) -> Result<(), String> {
+            Ok(())
+        }
+        fn stop(&self) -> Result<(), String> {
+            Ok(())
+        }
+    }
+    impl AgentLoopService for AgentNonEmptyHeartbeat {
+        fn process_heartbeat(&self) -> Result<String, String> {
+            Ok("alive and well".to_string())
+        }
+    }
+    svc.inject_agent(Arc::new(AgentNonEmptyHeartbeat));
+    let handler = svc.create_heartbeat_handler();
+    handler(); // 不应 panic；response 非空 → info! 参数求值
+
+    // 966-969：register_log_hook 的 len() 参数求值
+    struct NullHook;
+    impl crate::log_hook::LogHook for NullHook {
+        fn on_log(&self, _event: crate::log_hook::LogEvent) {}
+    }
+    svc.register_log_hook(Arc::new(NullHook));
+    assert_eq!(svc.log_hooks().len(), 1);
+
+    svc.stop().unwrap();
+}
+
+// --- save_config 缺口 ---
+
+#[test]
+fn test_save_config_empty_config_path_no_parent() {
+    // 覆盖 1038：config_path 为空串 → parent() None → 跳过 mkdir；
+    // 随后写 ""（with_extension 对空路径是 no-op）失败 → Err。
+    let svc = BotService::new(BotServiceConfig {
+        config_path: PathBuf::from(""),
+        ..BotServiceConfig::default()
+    });
+
+    let json = serde_json::json!({
+        "models": [
+            { "model": "test/1.0", "api_key": "k", "base_url": "", "is_default": true }
+        ]
+    });
+    let result = svc.save_config(&json, false);
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_save_config_rename_failure_cleanup() {
+    // 覆盖 1052-1054：config_path 是已存在的目录 → temp 文件
+    // （cfgdir.json.tmp）写成功，但 rename(文件 → 已存在目录) 失败 →
+    // 清理 temp 文件并返回 Io 错误。
+    let dir = tempfile::tempdir().unwrap();
+    let config_path = dir.path().join("cfgdir");
+    std::fs::create_dir_all(&config_path).unwrap();
+
+    let svc = BotService::new(BotServiceConfig {
+        config_path: config_path.clone(),
+        workspace: dir.path().to_path_buf(),
+        ..BotServiceConfig::default()
+    });
+
+    let json = serde_json::json!({
+        "models": [
+            { "model": "test/1.0", "api_key": "k", "base_url": "", "is_default": true }
+        ]
+    });
+    let result = svc.save_config(&json, false);
+    assert!(result.is_err());
+    // temp 文件应已被清理
+    let temp = config_path.with_extension("json.tmp");
+    assert!(!temp.exists(), "temp file should be cleaned up");
+}
+
+#[tokio::test]
+async fn test_save_config_restart_callback_error() {
+    // 覆盖 1075：save_config(restart=true) 在 100ms 延迟后的后台任务里
+    // 调用 restart 回调，回调返回 Err → error! 分支。
+    let dir = tempfile::tempdir().unwrap();
+    let config = make_config_with_file(dir.path());
+    let svc = BotService::new(config);
+    svc.start().unwrap();
+    assert_eq!(svc.get_state(), BotState::Running);
+
+    svc.set_restart_callback(Box::new(|| {
+        Err(nemesis_types::error::NemesisError::Other(
+            "restart boom".to_string(),
+        ))
+    }));
+
+    let json = serde_json::json!({
+        "models": [
+            { "model": "test/1.0", "api_key": "k", "base_url": "", "is_default": true }
+        ],
+        "workspace": dir.path().to_string_lossy(),
+    });
+    svc.save_config(&json, true).unwrap();
+
+    // 等 100ms 延迟的后台 restart 任务跑完（current_thread runtime 下
+    // sleep 会让出给 spawn 的任务）
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+
+    svc.stop().unwrap();
+}
+
+// --- validate_config 直接调用 ---
+
+#[test]
+fn test_validate_config_direct_call_not_loaded() {
+    // 覆盖 1181：直接调用私有 validate_config()（未经 start()/load_config）
+    // → config_loaded=false → "config not loaded"。
+    let svc = BotService::new(make_config());
+    let err = svc.validate_config().unwrap_err();
+    assert!(err.contains("config not loaded"));
+}
+
+// --- start_services 后台 spawn 的 error! 分支 ---
+
+#[tokio::test]
+async fn test_start_with_failing_health_service() {
+    // 覆盖 1422：注入 start() 失败的 health 服务 → 后台 spawn 任务里
+    // error!("[BotService] Health server error: ...")。失败不阻断启动。
+    let dir = tempfile::tempdir().unwrap();
+    let config = make_config_with_file(dir.path());
+    let svc = BotService::new(config);
+
+    struct FailingHealth;
+    impl LifecycleService for FailingHealth {
+        fn start(&self) -> Result<(), String> {
+            Err("health boom".to_string())
+        }
+    }
+    impl HealthServer for FailingHealth {}
+    svc.inject_health(Arc::new(FailingHealth));
+
+    svc.start().unwrap();
+    // 让 spawn 的 health 任务有机会执行
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    assert_eq!(svc.get_state(), BotState::Running);
+    svc.stop().unwrap();
+}
+
+#[tokio::test]
+async fn test_start_with_failing_agent_service() {
+    // 覆盖 1437：注入 start() 失败的 agent loop → 后台 spawn 任务里
+    // error!("[BotService] Agent loop error: ...")。失败不阻断启动。
+    let dir = tempfile::tempdir().unwrap();
+    let config = make_config_with_file(dir.path());
+    let svc = BotService::new(config);
+
+    struct FailingAgent;
+    impl LifecycleService for FailingAgent {
+        fn start(&self) -> Result<(), String> {
+            Err("agent boom".to_string())
+        }
+    }
+    impl AgentLoopService for FailingAgent {}
+    svc.inject_agent(Arc::new(FailingAgent));
+
+    svc.start().unwrap();
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    assert_eq!(svc.get_state(), BotState::Running);
+    svc.stop().unwrap();
+}

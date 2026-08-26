@@ -95,3 +95,75 @@ fn resampler_new_succeeds_with_unusual_rates() {
     let r2 = Resampler::new(192000, 48000).unwrap();
     assert!(r2.ratio() < 1.0);
 }
+
+// ===========================================================================
+// S12 覆盖率冲刺（2026-08-26）：设备枚举 / 伪设备名 fail-fast / far-end 单例
+// 只做 cpal 设备**枚举**与名字匹配失败路径——不 open 任何真实音频流
+// （真麦克风/真扬声器打开是红线，报告里列结构性豁免）。
+// ===========================================================================
+
+#[test]
+fn list_devices_enumerates_or_fails_cleanly() {
+    // 有音频栈的机器：返回设备列表（输入在前、输出在后，索引连续）；
+    // 无音频栈的 CI：允许 Err（host 构造失败），但绝不能 panic。
+    match list_devices() {
+        Ok(devices) => {
+            for (i, d) in devices.iter().enumerate() {
+                assert_eq!(d.index, i, "indices must be contiguous (name={})", d.name);
+                assert!(!d.name.is_empty() || d.name == "Unknown");
+            }
+        }
+        Err(e) => {
+            let msg = format!("{e}");
+            assert!(!msg.is_empty());
+        }
+    }
+}
+
+#[test]
+fn audio_capture_bogus_device_name_bails_without_opening_stream() {
+    let err = format!("{:#}", AudioCapture::new("no-such-input-device-xyz").err().expect("must fail"));
+    assert!(err.contains("Input device 'no-such-input-device-xyz' not found"), "{err}");
+}
+
+#[test]
+fn audio_playback_bogus_device_name_bails_without_opening_stream() {
+    let err = format!(
+        "{:#}",
+        AudioPlayback::new("no-such-output-device-xyz", 16000, 1.0)
+            .err()
+            .expect("must fail")
+    );
+    assert!(err.contains("Output device 'no-such-output-device-xyz' not found"), "{err}");
+}
+
+#[test]
+fn far_end_buffer_returns_shared_handle() {
+    let a = far_end_buffer();
+    let b = far_end_buffer();
+    assert!(Arc::ptr_eq(&a, &b), "must be the same shared buffer");
+    // 写进一个句柄，另一个句柄可见（AEC 读端语义）
+    a.lock().unwrap().push_back(0.5f32);
+    assert_eq!(b.lock().unwrap().back(), Some(&0.5));
+    // 清理，避免污染其他测试读到的 far-end
+    b.lock().unwrap().clear();
+}
+
+#[test]
+fn far_end_sample_rate_defaults_to_48000() {
+    // 从未创建过播放设备时的兜底默认（166 行）；不写 FAR_END_RATE 保持默认语义
+    assert_eq!(far_end_sample_rate(), 48000);
+}
+
+#[test]
+fn resampler_ratio_and_reset() {
+    let mut r = Resampler::new(48000, 16000).unwrap();
+    assert!((r.ratio() - 1.0 / 3.0).abs() < 1e-6);
+    let out = r.resample(&[1.0, 0.5, 1.0, 0.5, 1.0, 0.5]);
+    assert!(!out.is_empty());
+    r.reset(); // no-op，但钉住 API 不 panic
+    // 同率直通
+    let mut same = Resampler::new(16000, 16000).unwrap();
+    assert_eq!(same.ratio(), 1.0);
+    assert_eq!(same.resample(&[0.25, -0.25]), vec![0.25, -0.25]);
+}

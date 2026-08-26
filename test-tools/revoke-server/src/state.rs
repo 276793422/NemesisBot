@@ -34,3 +34,6 @@ impl AppState {
 pub fn now_secs() -> u64 {
     chrono::Utc::now().timestamp().max(0) as u64
 }
+
+#[cfg(test)]
+mod tests;

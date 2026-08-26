@@ -421,3 +421,6 @@ fn summarize(tags: &[ToolTag]) -> FindingsSummary {
     }
     s
 }
+
+#[cfg(test)]
+mod tests;

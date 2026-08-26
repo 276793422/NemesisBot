@@ -525,14 +525,20 @@ async fn cmd_run(
             }
         }
     }
+    let workflow_name = workflow.name.clone();
     engine
         .register_workflow(workflow)
         .map_err(|e| anyhow::anyhow!("Registration error: {}", e))?;
 
     println!("  Executing...");
+    // (BUG #29, quality-hardening goal 冲刺 S11) 查找键必须与注册键同源：
+    // register_workflow 按文件内 `name` 字段注册（engine.rs:1193
+    // `workflows.insert(workflow.name.clone(), ...)`），此处原样传用户输入的
+    // `name`——传绝对路径（428-429 分支）或文件名与内部 name 不一致时必然
+    // "workflow not found"。改用解析出的 workflow.name，与注册同一真相源。
     let result = engine
         .run(
-            name,
+            &workflow_name,
             input_map,
             Some(nemesis_workflow::types::TriggerSource::Cli),
         )

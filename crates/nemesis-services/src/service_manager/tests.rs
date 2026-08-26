@@ -120,6 +120,27 @@ async fn test_wait_for_services_with_zero_count() {
 }
 
 #[tokio::test]
+async fn s12b_wait_for_services_returns_true_when_count_reaches_zero_in_time() {
+    // S12b batch（quality-hardening goal 冲刺）：`rx.changed()` 成功臂此前只有
+    // timeout/zero-count 两个测试——先 start_basic_services 抬高计数，再在后台
+    // shutdown 把它清零，wait_for_services 应通过 watch 通道的 changed 返回 true。
+    let mgr = std::sync::Arc::new(ServiceManager::new());
+    mgr.start_basic_services().unwrap();
+
+    let bg = mgr.clone();
+    tokio::spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        bg.shutdown();
+    });
+
+    assert!(
+        mgr.wait_for_services(std::time::Duration::from_secs(2))
+            .await,
+        "count reached zero well before the 2s timeout"
+    );
+}
+
+#[tokio::test]
 async fn test_wait_for_shutdown_with_trigger() {
     let mgr = ServiceManager::new();
     let (tx, rx) = tokio::sync::oneshot::channel::<()>();
@@ -529,4 +550,101 @@ fn test_full_lifecycle_basic_start_shutdown() {
     mgr.shutdown();
     assert!(!mgr.is_bot_running());
     assert!(!mgr.is_basic_services_started());
+}
+
+// ============================================================
+// 覆盖缺口补测（llvm-cov 指定行：204-207 / 246-248 / 378-390 /
+// 411-412）
+//
+// 结构性不可达（不试图覆盖，仅记录证据）：
+// - 383-385 / 408-410 / 448-450 / 481-483：四个 wait_* 函数里
+//   tokio::signal::ctrl_c() 的 arm——测试进程无法向自身注入 SIGINT/SIGTERM，
+//   只能走 broadcast / desktop watch / oneshot / timeout 其余 arm。
+// ============================================================
+
+#[test]
+fn test_start_bot_failure_invalid_config() {
+    // 覆盖 204-207：basic services 已启动但 bot_service.start() 失败
+    //（config 文件不存在）→ error! + 返回 Err。
+    let dir = tempfile::tempdir().unwrap();
+    let mgr = ServiceManager::with_config(BotServiceConfig {
+        config_path: dir.path().join("nonexistent_config.json"),
+        workspace: dir.path().to_path_buf(),
+        ..BotServiceConfig::default()
+    });
+
+    mgr.start_basic_services().unwrap();
+    let result = mgr.start_bot();
+    assert!(result.is_err());
+    let err = result.unwrap_err();
+    assert!(err.contains("failed to load config"), "{}", err);
+    assert!(!mgr.is_bot_running());
+}
+
+#[test]
+fn test_restart_bot_success_full_lifecycle() {
+    // 覆盖 246-248：restart_bot 在运行中的 bot 上成功（stop + 500ms +
+    // start → Ok）。无注入服务，不需要异步上下文。
+    let dir = tempfile::tempdir().unwrap();
+    let config_path = dir.path().join("config.json");
+    let config_content = serde_json::json!({
+        "models": [
+            { "model": "test/1.0", "api_key": "test-key", "base_url": "", "is_default": true }
+        ]
+    });
+    std::fs::write(
+        &config_path,
+        serde_json::to_string(&config_content).unwrap(),
+    )
+    .unwrap();
+
+    let mgr = ServiceManager::with_config(BotServiceConfig {
+        config_path,
+        workspace: dir.path().to_path_buf(),
+        ..BotServiceConfig::default()
+    });
+
+    mgr.start_basic_services().unwrap();
+    mgr.start_bot().unwrap();
+    assert!(mgr.is_bot_running());
+
+    mgr.restart_bot().unwrap();
+    assert!(mgr.is_bot_running());
+
+    mgr.shutdown();
+    assert!(!mgr.is_bot_running());
+}
+
+#[tokio::test]
+async fn test_wait_for_shutdown_broadcast_trigger() {
+    // 覆盖 386-388：后台 trigger_shutdown → broadcast arm。
+    //（ctrl_c arm 383-385 见上方结构性不可达说明）
+    let mgr = Arc::new(ServiceManager::new());
+
+    let mgr_clone = Arc::clone(&mgr);
+    tokio::spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        mgr_clone.trigger_shutdown();
+    });
+
+    mgr.wait_for_shutdown().await;
+    // 到这里说明 broadcast arm 正常返回
+}
+
+#[tokio::test]
+async fn test_wait_for_shutdown_with_desktop_broadcast_trigger() {
+    // 覆盖 411-412：desktop watch 一直不触发（sender 存活、值不变），
+    // 由 shutdown broadcast 触发返回。
+    let mgr = Arc::new(ServiceManager::new());
+    let (tx, rx) = tokio::sync::watch::channel(false);
+
+    let mgr_clone = Arc::clone(&mgr);
+    tokio::spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        mgr_clone.trigger_shutdown();
+        // sender 保持存活到 broadcast 之后，desktop arm 不应触发
+        drop(tx);
+    });
+
+    mgr.wait_for_shutdown_with_desktop(rx).await;
 }

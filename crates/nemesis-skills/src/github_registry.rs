@@ -750,3 +750,6 @@ mod tests;
 
 #[cfg(test)]
 mod github_extra_tests;
+
+#[cfg(test)]
+mod w4b_tests;

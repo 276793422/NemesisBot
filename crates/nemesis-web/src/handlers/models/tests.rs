@@ -405,3 +405,193 @@ fn set_default_reorders_and_preserves_extras() {
     assert_eq!(list[1]["real_name"], "Qwen3-30B");
     assert_eq!(list[1]["custom_note"], "keep-me");
 }
+
+// ============================================================
+// Phase 3 覆盖率补测（2026-08-25）：delete 默认模型拒绝臂、
+// set_default 的运行时 provider 热切（含 api_base 推断/显式/失败
+// 三臂 + Forge 桥）、real_name trim 落盘、catalog 无 key 条目跳过。
+// ============================================================
+
+#[test]
+fn delete_default_model_refused() {
+    let dir = tempfile::tempdir().unwrap();
+    // SEED + agents.defaults.llm 指向 m1 → 删除 m1 必须被拒。
+    let mut v: serde_json::Value = serde_json::from_str(SEED).unwrap();
+    v["agents"]["defaults"]["llm"] = serde_json::json!("m1");
+    std::fs::write(
+        dir.path().join("config.json"),
+        serde_json::to_string_pretty(&v).unwrap(),
+    )
+    .unwrap();
+    let h = ModelsHandler::new();
+
+    let err = h.delete(&home_str(&dir), "m1").unwrap_err();
+    assert!(
+        err.contains("cannot delete default model"),
+        "got: {err}"
+    );
+    // 文件不动。
+    let cfg = read_config_raw(dir.path());
+    assert_eq!(cfg["model_list"].as_array().unwrap().len(), 2);
+}
+
+// --- runtime swap：真 AgentLoop ---
+
+struct SwapProvider;
+#[async_trait::async_trait]
+impl nemesis_agent::r#loop::LlmProvider for SwapProvider {
+    async fn chat(
+        &self,
+        _: &str,
+        _: Vec<nemesis_agent::r#loop::LlmMessage>,
+        _: Option<nemesis_agent::types::ChatOptions>,
+        _: Vec<nemesis_agent::types::ToolDefinition>,
+    ) -> Result<nemesis_agent::r#loop::LlmResponse, String> {
+        Ok(nemesis_agent::r#loop::LlmResponse {
+            content: String::new(),
+            tool_calls: Vec::new(),
+            finished: true,
+            reasoning_content: None,
+            usage: None,
+            raw_request_body: None,
+            raw_response_body: None,
+        })
+    }
+}
+
+// 注意：这里不接 forge 参数 —— nemesis-forge 是可选依赖，窄 feature 构建下
+// `nemesis_forge` 命名空间不存在，签名一旦引用类型就编不过。forge 专属测试
+// 自行组 ctx（见 set_default_syncs_forge_provider_bridge）。
+fn ctx_with_loop(dir: &tempfile::TempDir) -> crate::ws_router::RequestContext {
+    let mut ctx = make_ctx(dir);
+    let al = nemesis_agent::r#loop::AgentLoop::new(
+        Box::new(SwapProvider),
+        nemesis_agent::types::AgentConfig::default(),
+    );
+    let state = crate::api_handlers::AppState {
+        agent_loop: Arc::new(parking_lot::RwLock::new(Some(Arc::new(al)))),
+        ..(*ctx.state).clone()
+    };
+    ctx.state = Arc::new(state);
+    ctx
+}
+
+#[test]
+fn set_default_with_live_loop_swaps_runtime_provider() {
+    let dir = tempfile::tempdir().unwrap();
+    write_config(
+        dir.path(),
+        r#"{ "model_list": [
+            { "model_name": "zm", "model": "zhipu/glm-4.7-flash", "api_key": "sk" },
+            { "model_name": "em", "model": "x/y", "api_key": "sk", "api_base": "http://127.0.0.1:9" }
+        ] }"#,
+    );
+    let h = ModelsHandler::new();
+
+    // 臂 1：api_base 空 → infer_provider("zhipu/...") 推默认 base。
+    let ctx = ctx_with_loop(&dir);
+    h.set_default(&home_str(&dir), "zm", &ctx).unwrap().unwrap();
+    assert_eq!(
+        read_config_raw(dir.path())["agents"]["defaults"]["llm"],
+        "zm"
+    );
+
+    // 臂 2：显式 api_base 原样使用。
+    let ctx = ctx_with_loop(&dir);
+    h.set_default(&home_str(&dir), "em", &ctx).unwrap().unwrap();
+    assert_eq!(
+        read_config_raw(dir.path())["agents"]["defaults"]["llm"],
+        "em"
+    );
+
+    // 臂 3：create_provider 失败（未知 provider 无 base）→ warn 但配置已保存。
+    write_config(
+        dir.path(),
+        r#"{ "model_list": [
+            { "model_name": "zm", "model": "zhipu/glm-4.7-flash", "api_key": "sk" },
+            { "model_name": "em", "model": "x/y", "api_key": "sk", "api_base": "http://127.0.0.1:9" },
+            { "model_name": "uk", "model": "??/totally-unknown", "api_key": "sk" }
+        ] }"#,
+    );
+    let ctx = ctx_with_loop(&dir);
+    h.set_default(&home_str(&dir), "uk", &ctx).unwrap().unwrap();
+    assert_eq!(
+        read_config_raw(dir.path())["agents"]["defaults"]["llm"],
+        "uk",
+        "provider 创建失败不能吞掉配置写入"
+    );
+}
+
+#[cfg(feature = "forge")]
+#[test]
+fn set_default_syncs_forge_provider_bridge() {
+    let dir = tempfile::tempdir().unwrap();
+    write_config(
+        dir.path(),
+        r#"{ "model_list": [
+            { "model_name": "zm", "model": "zhipu/glm-4.7-flash", "api_key": "sk" }
+        ] }"#,
+    );
+    let forge = Arc::new(nemesis_forge::forge::Forge::new(
+        <nemesis_forge::config::ForgeConfig as Default>::default(),
+        dir.path().to_path_buf(),
+    ));
+    // forge 测试自组 ctx（helper 不接 forge 参数，见其注释）。
+    let mut ctx = make_ctx(&dir);
+    let al = nemesis_agent::r#loop::AgentLoop::new(
+        Box::new(SwapProvider),
+        nemesis_agent::types::AgentConfig::default(),
+    );
+    let state = crate::api_handlers::AppState {
+        agent_loop: Arc::new(parking_lot::RwLock::new(Some(Arc::new(al)))),
+        forge: Some(forge),
+        ..(*ctx.state).clone()
+    };
+    ctx.state = Arc::new(state);
+    let h = ModelsHandler::new();
+    // 走完 Forge 桥分支不 panic + 配置照常落盘。
+    h.set_default(&home_str(&dir), "zm", &ctx).unwrap().unwrap();
+    assert_eq!(
+        read_config_raw(dir.path())["agents"]["defaults"]["llm"],
+        "zm"
+    );
+}
+
+#[test]
+fn real_name_is_trimmed_on_update() {
+    let dir = tempfile::tempdir().unwrap();
+    write_config(dir.path(), SEED);
+    let h = ModelsHandler::new();
+    h.update_field(
+        &home_str(&dir),
+        &serde_json::json!({ "name": "m1", "field": "real_name", "value": "  Qwen3-30B  " }),
+    )
+    .unwrap()
+    .unwrap();
+    assert_eq!(
+        read_config_raw(dir.path())["model_list"][0]["real_name"],
+        "Qwen3-30B"
+    );
+}
+
+#[test]
+fn catalog_entries_without_key_are_skipped() {
+    if nemesis_config::global().is_some() {
+        eprintln!("skip catalog_entries_without_key: process-global ConfigStore installed");
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    write_config(dir.path(), SEED);
+    // 无 key 条目必须被 read_catalog 跳过，不影响同批合法条目命中。
+    write_catalog(
+        dir.path(),
+        r#"[
+            { "context_window": 999 },
+            { "key": "qwen/qwen3-30b", "context_window": 131072 }
+        ]"#,
+    );
+    let h = ModelsHandler::new();
+    let out = h.list(&home_str(&dir)).unwrap().unwrap();
+    let m1 = &out["models"][0];
+    assert_eq!(m1["catalog_match"]["context_window"], 131072);
+}

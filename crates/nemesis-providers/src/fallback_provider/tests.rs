@@ -785,3 +785,162 @@ fn test_resolve_candidates_preserves_order() {
     assert_eq!(candidates[0].provider.name(), "p1");
     assert_eq!(candidates[4].provider.name(), "p5");
 }
+
+// ===========================================================================
+// W4c 补测（2026-08-25）：全链冷却落空臂 / 显式 model 覆盖 / Display 明细
+// ===========================================================================
+
+/// 记录收到的 model 参数的 mock（验证 effective_model 覆盖语义）。
+struct RecordingProvider {
+    name: String,
+    model: String,
+    seen: parking_lot::Mutex<Vec<String>>,
+}
+
+#[async_trait]
+impl LLMProvider for RecordingProvider {
+    async fn chat(
+        &self,
+        _messages: &[Message],
+        _tools: &[ToolDefinition],
+        model: &str,
+        _options: &ChatOptions,
+    ) -> Result<LLMResponse, FailoverError> {
+        self.seen.lock().push(model.to_string());
+        Ok(LLMResponse {
+            content: "ok".to_string(),
+            tool_calls: vec![],
+            finish_reason: "stop".to_string(),
+            usage: None,
+            reasoning_content: None,
+            extra: std::collections::HashMap::new(),
+            raw_request_body: None,
+            raw_response_body: None,
+        })
+    }
+    fn default_model(&self) -> &str {
+        &self.model
+    }
+    fn name(&self) -> &str {
+        &self.name
+    }
+}
+
+fn w4c_msg() -> Vec<Message> {
+    vec![Message {
+        role: "user".to_string(),
+        content: "hi".to_string(),
+        tool_calls: vec![],
+        tool_call_id: None,
+        timestamp: None,
+        reasoning_content: None,
+        extra: std::collections::HashMap::new(),
+    }]
+}
+
+#[tokio::test]
+async fn test_w4c_execute_detailed_all_in_cooldown_falls_through_exhausted() {
+    // 两个 provider 都在冷却 → 循环全部 continue → 落到尾部 exhausted 返回
+    let cooldown = Arc::new(CooldownTracker::new());
+    cooldown.mark_failure("p1", FailoverReason::RateLimit);
+    cooldown.mark_failure("p2", FailoverReason::RateLimit);
+
+    let provider = FallbackProvider::with_cooldown(
+        "all-cooled",
+        vec![
+            FallbackEntry {
+                provider: Arc::new(MockSuccessProvider {
+                    name: "p1".to_string(),
+                    model: "m1".to_string(),
+                }),
+                model: "m1".to_string(),
+            },
+            FallbackEntry {
+                provider: Arc::new(MockSuccessProvider {
+                    name: "p2".to_string(),
+                    model: "m2".to_string(),
+                }),
+                model: "m2".to_string(),
+            },
+        ],
+        cooldown,
+    );
+
+    let result = provider
+        .execute_detailed(&w4c_msg(), &[], "", &ChatOptions::default())
+        .await;
+    assert!(result.response.is_none());
+    let err = result.exhausted_error.unwrap();
+    assert_eq!(err.chain_name, "all-cooled");
+    // 两个都被跳过，errors 空（跳过不进 errors），attempts 各带 cooldown 标记
+    assert_eq!(err.errors.len(), 0);
+    assert_eq!(result.attempts.len(), 2);
+    assert!(result.attempts.iter().all(|a| a
+        .error
+        .as_ref()
+        .map(|e| e.contains("cooldown"))
+        .unwrap_or(false)));
+}
+
+#[tokio::test]
+async fn test_w4c_execute_detailed_explicit_model_overrides_entry_model() {
+    // 非空 model → effective_model = 请求的 model（不取 entry.model）
+    let recorder = Arc::new(RecordingProvider {
+        name: "rec".to_string(),
+        model: "entry-model".to_string(),
+        seen: parking_lot::Mutex::new(Vec::new()),
+    });
+    let provider = FallbackProvider::new(
+        "ov",
+        vec![FallbackEntry {
+            provider: recorder.clone(),
+            model: "entry-model".to_string(),
+        }],
+    );
+    let result = provider
+        .execute_detailed(&w4c_msg(), &[], "explicit-model", &ChatOptions::default())
+        .await;
+    assert!(result.response.is_some());
+    assert_eq!(recorder.seen.lock()[0], "explicit-model");
+}
+
+#[test]
+fn test_w4c_fallback_exhausted_display_lists_provider_errors() {
+    let e = FallbackExhaustedError {
+        chain_name: "chain-x".to_string(),
+        providers_attempted: 2,
+        total_providers: 2,
+        errors: vec![
+            ("pa".to_string(), "boom-a".to_string()),
+            ("pb".to_string(), "boom-b".to_string()),
+        ],
+    };
+    let s = format!("{}", e);
+    assert!(s.contains("chain 'chain-x' exhausted: 2/2"));
+    assert!(s.contains("- pa: boom-a"));
+    assert!(s.contains("- pb: boom-b"));
+}
+
+#[tokio::test]
+async fn test_w4c_chat_trait_method_explicit_model_reaches_provider() {
+    // LLMProvider::chat 走同样链路（走 trait 对象而非 execute_detailed）
+    let recorder = Arc::new(RecordingProvider {
+        name: "rec".to_string(),
+        model: "entry-model".to_string(),
+        seen: parking_lot::Mutex::new(Vec::new()),
+    });
+    let provider = FallbackProvider::new(
+        "trait",
+        vec![FallbackEntry {
+            provider: recorder.clone(),
+            model: "entry-model".to_string(),
+        }],
+    );
+    use crate::router::LLMProvider as _;
+    let resp = provider
+        .chat(&w4c_msg(), &[], "trait-model", &ChatOptions::default())
+        .await
+        .unwrap();
+    assert_eq!(resp.content, "ok");
+    assert_eq!(recorder.seen.lock()[0], "trait-model");
+}

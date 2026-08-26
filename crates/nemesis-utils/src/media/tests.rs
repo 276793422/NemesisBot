@@ -619,3 +619,263 @@ fn test_download_options_with_custom_headers() {
     assert_eq!(opts.extra_headers.len(), 2);
     assert_eq!(opts.logger_prefix, "custom");
 }
+
+// ---------------------------------------------------------------------------
+// download_file / download_file_with_opts 网络路径（wiremock + 手搓假服务器）
+// ---------------------------------------------------------------------------
+
+use wiremock::matchers::{header, method, path};
+use wiremock::{Mock, MockServer, ResponseTemplate};
+
+/// 启一个 wiremock 服务器，GET <uri>/file.bin 返回 200 + body。
+/// 返回 server 句柄（保持存活）+ URL；wiremock 的 server 随句柄 drop 关闭。
+async fn serve_ok_download(body: &'static str) -> (MockServer, String) {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/file.bin"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(body))
+        .mount(&server)
+        .await;
+    let url = format!("{}/file.bin", server.uri());
+    (server, url)
+}
+
+/// 手搓一次性 HTTP 服务器：声明 Content-Length: 100 但只发少量 body 字节
+/// 就关闭连接 → 客户端 resp.bytes() 解码 body 时确定性报错。
+async fn spawn_truncated_body_server() -> String {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        if let Ok((mut sock, _)) = listener.accept().await {
+            let mut buf = vec![0u8; 2048];
+            // 读一次请求（客户端立即发送；超时兜底防挂死）
+            let _ = tokio::time::timeout(Duration::from_secs(5), sock.read(&mut buf)).await;
+            let resp = "HTTP/1.1 200 OK\r\nContent-Length: 100\r\nConnection: close\r\n\r\nshort";
+            let _ = sock.write_all(resp.as_bytes()).await;
+            let _ = sock.shutdown().await;
+        }
+    });
+    format!("http://{}/file.bin", addr)
+}
+
+#[tokio::test]
+async fn test_download_file_success_writes_local_file() {
+    let (_server, url) = serve_ok_download("payload-bytes").await;
+    let local = download_file(&url, "hello bin.txt", Duration::from_secs(10))
+        .await
+        .unwrap();
+    assert!(local.ends_with("hello bin.txt"), "path: {local}");
+    let content = std::fs::read_to_string(&local).unwrap();
+    assert_eq!(content, "payload-bytes");
+}
+
+#[tokio::test]
+async fn test_download_file_http_error_status() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/missing"))
+        .respond_with(ResponseTemplate::new(404))
+        .mount(&server)
+        .await;
+    let err = download_file(
+        &format!("{}/missing", server.uri()),
+        "f.txt",
+        Duration::from_secs(10),
+    )
+    .await
+    .unwrap_err();
+    assert!(err.contains("HTTP 404"), "{err}");
+}
+
+#[tokio::test]
+async fn test_download_file_truncated_body_errors() {
+    let url = spawn_truncated_body_server().await;
+    let err = download_file(&url, "t.bin", Duration::from_secs(10))
+        .await
+        .unwrap_err();
+    assert!(err.contains("read body"), "{err}");
+}
+
+#[tokio::test]
+async fn test_download_file_with_opts_success_applies_headers_and_prefix() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/dl.bin"))
+        .and(header("Authorization", "Bearer tok123"))
+        .respond_with(ResponseTemplate::new(200).set_body_string("opt-body"))
+        .mount(&server)
+        .await;
+
+    let mut headers = HashMap::new();
+    headers.insert("Authorization".to_string(), "Bearer tok123".to_string());
+    let opts = DownloadOptions {
+        timeout: Duration::from_secs(10),
+        extra_headers: headers,
+        logger_prefix: "media-test".to_string(),
+    };
+    let local = download_file_with_opts(&format!("{}/dl.bin", server.uri()), "opt.txt", opts).await;
+    assert!(!local.is_empty(), "download should succeed");
+    assert_eq!(std::fs::read_to_string(&local).unwrap(), "opt-body");
+    // 带 header 匹配器的 mock 确实被命中（证明 extra_headers 已随请求发送）
+    server.verify().await;
+}
+
+#[tokio::test]
+async fn test_download_file_with_opts_http_error_status_returns_empty() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/denied"))
+        .respond_with(ResponseTemplate::new(403))
+        .mount(&server)
+        .await;
+    let local = download_file_with_opts(
+        &format!("{}/denied", server.uri()),
+        "d.txt",
+        DownloadOptions::default(),
+    )
+    .await;
+    assert!(local.is_empty());
+}
+
+#[tokio::test]
+async fn test_download_file_with_opts_truncated_body_returns_empty() {
+    let url = spawn_truncated_body_server().await;
+    let local = download_file_with_opts(&url, "t.bin", DownloadOptions::default()).await;
+    assert!(local.is_empty());
+}
+
+// ---------------------------------------------------------------------------
+// S1 coverage batch (2026-08-26): download_file_with_opts error arms
+// (non-200 lazy `status` field at 204, media-dir mkdir failure at 221-222,
+// write failure at 230-231). The tracing field arguments only evaluate under
+// an enabled subscriber, hence the thread-local sink subscriber.
+// ---------------------------------------------------------------------------
+
+static S1_ENV_LOCK: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
+
+fn s1_subscriber() -> impl tracing::Subscriber + Send + Sync + 'static {
+    // TRACE sink to /dev/null: only exists to make tracing evaluate event
+    // field arguments. Thread-local via with_default, no global state.
+    tracing_subscriber::fmt()
+        .with_max_level(tracing::Level::TRACE)
+        .with_writer(std::io::sink)
+        .finish()
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_s1_download_with_opts_non_200_status_field() {
+    use wiremock::matchers::method;
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .respond_with(ResponseTemplate::new(500).set_body_string("boom"))
+        .mount(&server)
+        .await;
+
+    let handle = tokio::runtime::Handle::current();
+    let url = format!("{}/file.txt", server.uri());
+    let out = tokio::task::block_in_place(|| {
+        tracing::subscriber::with_default(s1_subscriber(), || {
+            handle.block_on(download_file_with_opts(
+                &url,
+                "a.txt",
+                DownloadOptions {
+                    timeout: Duration::from_secs(5),
+                    ..Default::default()
+                },
+            ))
+        })
+    });
+    assert_eq!(out, "");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_s1_download_with_opts_mkdir_failure() {
+    use wiremock::matchers::method;
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .respond_with(ResponseTemplate::new(200).set_body_string("payload"))
+        .mount(&server)
+        .await;
+
+    // Redirect TMP/TEMP to a dir where "nemesisbot_media" is a FILE:
+    // create_dir_all fails → tracing::error! + return "" (lines 221-222).
+    let tmp = tempfile::tempdir().unwrap();
+    std::fs::write(tmp.path().join("nemesisbot_media"), b"not a dir").unwrap();
+
+    let _guard = S1_ENV_LOCK.lock();
+    let saved_tmp = std::env::var("TMP").ok();
+    let saved_temp = std::env::var("TEMP").ok();
+    // SAFETY: guarded by S1_ENV_LOCK (the only env mutation in this crate's
+    // tests); other tests only read env (temp_dir/tempfile), which stays valid
+    // because the redirected TMP/TEMP is a real directory.
+    unsafe {
+        std::env::set_var("TMP", tmp.path());
+        std::env::set_var("TEMP", tmp.path());
+    }
+
+    let handle = tokio::runtime::Handle::current();
+    let url = format!("{}/file.txt", server.uri());
+    let out = tokio::task::block_in_place(|| {
+        tracing::subscriber::with_default(s1_subscriber(), || {
+            handle.block_on(download_file_with_opts(
+                &url,
+                "a.txt",
+                DownloadOptions {
+                    timeout: Duration::from_secs(5),
+                    ..Default::default()
+                },
+            ))
+        })
+    });
+
+    // SAFETY: restoring the exact pre-test values under S1_ENV_LOCK.
+    unsafe {
+        match saved_tmp {
+            Some(v) => std::env::set_var("TMP", v),
+            None => std::env::remove_var("TMP"),
+        }
+        match saved_temp {
+            Some(v) => std::env::set_var("TEMP", v),
+            None => std::env::remove_var("TEMP"),
+        }
+    }
+    drop(_guard);
+
+    assert_eq!(out, "");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_s1_download_with_opts_write_failure_nul_filename() {
+    use wiremock::matchers::method;
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .respond_with(ResponseTemplate::new(200).set_body_string("payload"))
+        .mount(&server)
+        .await;
+
+    // sanitize_filename keeps the NUL byte (see test_sanitize_filename_null_char),
+    // so the sanitized local path contains \x00 → fs::write fails with an
+    // invalid-input error on every platform (lines 230-231).
+    let handle = tokio::runtime::Handle::current();
+    let url = format!("{}/file.txt", server.uri());
+    let out = tokio::task::block_in_place(|| {
+        tracing::subscriber::with_default(s1_subscriber(), || {
+            handle.block_on(download_file_with_opts(
+                &url,
+                "bad\0name.txt",
+                DownloadOptions {
+                    timeout: Duration::from_secs(5),
+                    ..Default::default()
+                },
+            ))
+        })
+    });
+    assert_eq!(out, "");
+}

@@ -84,3 +84,6 @@ pub fn engine_owned(paths: &crate::SandboxPaths) -> bool {
     }
     true
 }
+
+#[cfg(test)]
+mod tests;

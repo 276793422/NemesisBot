@@ -68,7 +68,18 @@ sandbox = ["dep:nemesis-sandbox"]
 
 [dev-dependencies]
 tempfile = "3"
+# S10a 覆盖率（2026-08-26）：workflow 同步 run 超时臂测试用
+# #[tokio::test(start_paused = true)] 暂停时钟（test-util 不在 "full" 内，
+# 仅测试用，不进生产依赖图）。
+tokio = { workspace = true, features = ["test-util"] }
 tokio-tungstenite = { workspace = true }
+# Phase 3 覆盖率（2026-08-25）：server setter 全扫测试要构造
+# WorkflowEngine::new_integrated 的 ToolRegistry 参数（仅测试用，
+# 不进生产依赖图）。
+nemesis-tools = { workspace = true }
+# Phase 3 覆盖率（2026-08-25）：sse_chat handler 测试用 wiremock 起 SSE 假
+# LLM 后端（与 nemesis-providers 同版本），全程进程内无 TCP 端口竞争。
+wiremock = "0.6"
 # P2-2: sdk_embed tests open the embedded bytes as a real archive (structural
 # round-trip — the guarantee that unzip/pip install work, not just non-empty).
 zip = { version = "2", default-features = false, features = ["deflate"] }

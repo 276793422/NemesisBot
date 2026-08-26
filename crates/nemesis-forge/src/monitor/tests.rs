@@ -774,3 +774,183 @@ fn test_evaluate_exact_baseline_neutral() {
     let result = monitor.evaluate(&monitor.registry.get(&id).unwrap());
     assert_eq!(result.verdict, "neutral");
 }
+
+// ---- S8 coverage batch ---- (quality-hardening goal 冲刺 S8)
+
+#[test]
+fn test_s8_evaluate_outcomes_all_traces_outside_window_returns_empty() {
+    let registry = Arc::new(Registry::new(crate::types::RegistryConfig::default()));
+    let mut artifact = make_artifact("old1", 10, ArtifactStatus::Active);
+    artifact.tool_signature = vec!["file_read".to_string()];
+    registry.add(artifact);
+
+    let monitor = DeploymentMonitor::new(ForgeConfig::default(), registry);
+
+    // Trace with a parseable start_time far outside the 7-day window →
+    // recent_traces empty → early return with no outcomes.
+    let old_trace = ConversationTrace {
+        start_time: "2020-01-01T00:00:00+08:00".to_string(),
+        total_rounds: 3,
+        duration_ms: 100,
+        tool_steps: vec![ToolStep {
+            tool_name: "file_read".to_string(),
+        }],
+        signals: vec![],
+    };
+    let outcomes = monitor.evaluate_outcomes(&[old_trace]);
+    assert!(outcomes.is_empty());
+}
+
+#[test]
+fn test_s8_evaluate_outcomes_skips_non_active_artifact() {
+    let registry = Arc::new(Registry::new(crate::types::RegistryConfig::default()));
+    // Observing (not Active) → skipped by the status filter.
+    let mut artifact = make_artifact("skip1", 10, ArtifactStatus::Observing);
+    artifact.tool_signature = vec!["file_read".to_string()];
+    registry.add(artifact);
+
+    let monitor = DeploymentMonitor::new(ForgeConfig::default(), registry);
+    let traces = vec![make_trace(3, 100, &["file_read"], false)];
+    let outcomes = monitor.evaluate_outcomes(&traces);
+    assert!(outcomes.is_empty());
+}
+
+#[test]
+fn test_s8_evaluate_artifact_before_traces_insufficient_after() {
+    let registry = Arc::new(Registry::new(crate::types::RegistryConfig::default()));
+    // min_outcome_samples = 0 → the default minimum of 5 applies; zero
+    // after-traces → "insufficient_data" early return.
+    let mut cfg = ForgeConfig::default();
+    cfg.learning.min_outcome_samples = 0;
+    let monitor = DeploymentMonitor::new(cfg, registry.clone());
+
+    let mut artifact = make_artifact("ins1", 10, ArtifactStatus::Active);
+    artifact.tool_signature = vec!["file_read".to_string()];
+    // Deploy time = now; traces below are 1h old → "before" bucket.
+    let id = registry.add(artifact);
+
+    let old = chrono::Local::now() - chrono::Duration::hours(1);
+    let before_trace = ConversationTrace {
+        start_time: old.to_rfc3339(),
+        total_rounds: 4,
+        duration_ms: 100,
+        tool_steps: vec![ToolStep {
+            tool_name: "file_read".to_string(),
+        }],
+        signals: vec![],
+    };
+
+    let outcomes = monitor.evaluate_outcomes(&[before_trace]);
+    assert_eq!(outcomes.len(), 1);
+    assert_eq!(outcomes[0].artifact_id, id);
+    assert_eq!(outcomes[0].verdict, "insufficient_data");
+    assert_eq!(outcomes[0].sample_size, 0);
+}
+
+#[test]
+fn test_s8_try_deprecate_default_cooldown_config_branch() {
+    let registry = Arc::new(Registry::new(crate::types::RegistryConfig::default()));
+    // degradation_cooldown_days = 0 → default 7-day fallback branch;
+    // no prior degradation → the degrade path runs.
+    let mut cfg = ForgeConfig::default();
+    cfg.learning.degradation_cooldown_days = 0;
+    let monitor = DeploymentMonitor::new(cfg, registry.clone());
+
+    let artifact = make_artifact("dep1", 10, ArtifactStatus::Active);
+    let id = registry.add(artifact);
+
+    let fetched = monitor.registry.get(&id).unwrap();
+    monitor.try_deprecate(&fetched);
+    let updated = monitor.registry.get(&id).unwrap();
+    assert_eq!(updated.status, ArtifactStatus::Degraded);
+    assert!(updated.last_degraded_at.is_some());
+}
+
+#[test]
+fn test_s8_try_deprecate_within_cooldown_returns_early() {
+    let registry = Arc::new(Registry::new(crate::types::RegistryConfig::default()));
+    let mut cfg = ForgeConfig::default();
+    cfg.learning.degradation_cooldown_days = 7;
+    let monitor = DeploymentMonitor::new(cfg, registry.clone());
+
+    let mut artifact = make_artifact("cool1", 10, ArtifactStatus::Active);
+    artifact.last_degraded_at = Some(chrono::Local::now().to_rfc3339()); // just degraded
+    let id = registry.add(artifact);
+
+    let fetched = monitor.registry.get(&id).unwrap();
+    monitor.try_deprecate(&fetched);
+    let updated = monitor.registry.get(&id).unwrap();
+    // Still in cooldown → status must remain Active.
+    assert_eq!(updated.status, ArtifactStatus::Active);
+}
+
+#[test]
+fn test_s8_track_observing_unknown_artifact_is_noop() {
+    let registry = Arc::new(Registry::new(crate::types::RegistryConfig::default()));
+    let monitor = DeploymentMonitor::new(ForgeConfig::default(), registry);
+
+    // Artifact id not present in the registry → update is a no-op and the
+    // re-read get() returns None without panicking.
+    let orphan = make_artifact("ghost", 1, ArtifactStatus::Observing);
+    monitor.track_observing(&orphan);
+    assert!(monitor.registry.get("ghost").is_none());
+}
+
+#[test]
+fn test_s8_run_evaluation_cycle_non_negative_verdict_no_degradation() {
+    let registry = Arc::new(Registry::new(crate::types::RegistryConfig::default()));
+    // Low-usage observing artifact → non-negative verdict in the cycle;
+    // no degradation attempted.
+    registry.add(make_artifact("ok1", 2, ArtifactStatus::Observing));
+    let monitor = DeploymentMonitor::new(ForgeConfig::default(), registry);
+
+    let results = monitor.run_evaluation_cycle();
+    assert_eq!(results.len(), 1);
+    assert_ne!(results[0].verdict, "negative");
+    let a = monitor.registry.get(&results[0].artifact_id).unwrap();
+    assert_ne!(a.status, ArtifactStatus::Degraded);
+}
+
+#[test]
+fn test_s8_try_deprecate_unparseable_degraded_timestamp_still_degrades() {
+    let registry = Arc::new(Registry::new(crate::types::RegistryConfig::default()));
+    let monitor = DeploymentMonitor::new(ForgeConfig::default(), registry.clone());
+
+    // last_degraded_at present but unparseable → the parse-Err fall-through
+    // must NOT block degradation.
+    let mut artifact = make_artifact("badts", 10, ArtifactStatus::Active);
+    artifact.last_degraded_at = Some("not-a-timestamp".to_string());
+    let id = registry.add(artifact);
+
+    let fetched = monitor.registry.get(&id).unwrap();
+    monitor.try_deprecate(&fetched);
+    let updated = monitor.registry.get(&id).unwrap();
+    assert_eq!(updated.status, ArtifactStatus::Degraded);
+}
+
+// ---- S8 Wave 2 ----
+
+/// try_deprecate with a last_degraded_at OLDER than the cooldown window: the
+/// cooldown no longer blocks and the artifact is degraded again.
+#[test]
+fn test_s8_try_deprecate_expired_cooldown_degrades() {
+    let registry = Arc::new(Registry::new(crate::types::RegistryConfig::default()));
+    let monitor = DeploymentMonitor::new(ForgeConfig::default(), registry.clone());
+
+    let old = chrono::Local::now() - chrono::Duration::days(30);
+    let mut artifact = make_artifact("cooldown-expired", 0, ArtifactStatus::Degraded);
+    artifact.last_degraded_at = Some(old.to_rfc3339());
+    artifact.consecutive_observing_rounds = 0;
+    registry.add(artifact);
+
+    monitor.try_deprecate(&registry.get("cooldown-expired").unwrap());
+
+    let after = registry.get("cooldown-expired").unwrap();
+    assert_eq!(after.status, ArtifactStatus::Degraded);
+    // last_degraded_at was refreshed to now (within the last minute).
+    let refreshed = chrono::DateTime::parse_from_rfc3339(after.last_degraded_at.as_deref().unwrap())
+        .unwrap()
+        .with_timezone(&chrono::Local);
+    let delta = chrono::Local::now() - refreshed;
+    assert!(delta.num_minutes() < 1, "delta: {:?}", delta);
+}

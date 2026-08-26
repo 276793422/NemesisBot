@@ -1072,3 +1072,8 @@ fn count_episodic(dir: &std::path::Path) -> (usize, usize) {
 
 #[cfg(all(test, feature = "memory"))]
 mod tests;
+
+// S10b (2026-08-26, quality-hardening goal 冲刺 web 批次 2): manager-dependent
+// arms + offline model-install success + helper edge cases.
+#[cfg(all(test, feature = "memory"))]
+mod s10b_tests;

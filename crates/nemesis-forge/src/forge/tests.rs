@@ -1203,3 +1203,412 @@ async fn test_reflection_cycle_learning_disabled() {
         "report should be written even with learning disabled"
     );
 }
+
+// =========================================================================
+// S8 coverage batch (quality-hardening goal 冲刺 S8)
+// =========================================================================
+
+/// Bridge whose share_reflection always fails — drives the cluster-share
+/// error branch of run_reflection_cycle.
+struct S8FailingBridge;
+
+#[async_trait::async_trait]
+impl crate::bridge::ClusterForgeBridge for S8FailingBridge {
+    async fn share_reflection(&self, _report_json: serde_json::Value) -> Result<usize, String> {
+        Err("share boom".to_string())
+    }
+    async fn get_remote_reflections(&self) -> Result<Vec<serde_json::Value>, String> {
+        Ok(vec![])
+    }
+    async fn get_online_peers(&self) -> Result<Vec<String>, String> {
+        Ok(vec![])
+    }
+    fn local_node_id(&self) -> &str {
+        "s8-node"
+    }
+    fn is_cluster_enabled(&self) -> bool {
+        false
+    }
+}
+
+/// Build a Forge with reflector + syncer (bridge-controlled) and pre-written
+/// experiences — the minimal setup for the run_reflection_cycle cluster-share
+/// step.
+async fn s8_forge_with_syncer(
+    dir: &std::path::Path,
+    bridge: Arc<dyn crate::bridge::ClusterForgeBridge>,
+) -> Arc<Forge> {
+    let mut forge = Forge::new(ForgeConfig::default(), dir.to_path_buf());
+    let reflections_dir = dir.join("forge").join("reflections");
+    std::fs::create_dir_all(&reflections_dir).unwrap();
+    forge.init_reflector(Reflector::with_reflections_dir(reflections_dir));
+    forge.set_bridge(bridge);
+    forge.init_syncer();
+    let forge = Arc::new(forge);
+    write_test_experiences(&forge.forge_dir(), 3).await;
+    forge
+}
+
+/// Forge::new tracing field expressions (workspace/forge_dir display).
+#[test]
+fn test_s8_forge_new_tracing_fields() {
+    let _g = crate::test_support::quiet_trace_guard();
+    let dir = tempfile::tempdir().unwrap();
+    let forge = Forge::new(ForgeConfig::default(), dir.path().to_path_buf());
+    assert!(!forge.is_running());
+}
+
+/// Background loops (collector/reflector/cleanup) fire once their interval
+/// elapses. Real time with 1s intervals: the collector flush tick must write
+/// aggregates.jsonl (observable proof the loop body ran), the reflection and
+/// cleanup ticks run with no data (early returns).
+#[tokio::test]
+async fn test_s8_background_loops_fire_intervals() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut config = ForgeConfig::default();
+    config.collection.flush_interval_secs = 1;
+    config.reflection.interval_secs = 1;
+    config.storage.cleanup_interval_secs = 1;
+    let forge = Arc::new(Forge::new(config, dir.path().to_path_buf()));
+
+    // Seed one experience pattern so the collector flush tick has observable
+    // output (aggregates.jsonl under forge/experiences).
+    forge
+        .collector()
+        .record(nemesis_types::forge::Experience {
+            id: "s8-bg".into(),
+            tool_name: "s8_tool".into(),
+            input_summary: "in".into(),
+            output_summary: "out".into(),
+            success: true,
+            duration_ms: 10,
+            timestamp: chrono::Local::now().to_rfc3339(),
+            session_key: "s8".into(),
+        })
+        .await;
+
+    Arc::clone(&forge).start().await;
+    assert!(forge.is_running());
+
+    // Let all three loops tick at least once (interval = 1s).
+    tokio::time::sleep(std::time::Duration::from_millis(1800)).await;
+
+    forge.stop().await;
+    assert!(!forge.is_running());
+
+    let aggregates = dir
+        .path()
+        .join("forge")
+        .join("experiences")
+        .join("aggregates.jsonl");
+    assert!(
+        aggregates.exists(),
+        "collector loop tick should have flushed aggregates.jsonl"
+    );
+}
+
+/// run_reflection_cycle cluster-share happy path: reflector writes a report,
+/// syncer (NoOpBridge) shares it successfully.
+#[tokio::test]
+async fn test_s8_reflection_cycle_cluster_share_ok() {
+    let dir = tempfile::tempdir().unwrap();
+    let forge = s8_forge_with_syncer(
+        dir.path(),
+        Arc::new(crate::bridge::NoOpBridge::new("s8-ok".into())),
+    )
+    .await;
+
+    let _g = crate::test_support::quiet_trace_guard();
+    forge.run_reflection_cycle().await;
+
+    // A report must exist and the cycle must not panic.
+    let reflections_dir = dir.path().join("forge").join("reflections");
+    let count = std::fs::read_dir(&reflections_dir)
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .filter(|e| e.path().extension().map(|x| x == "md").unwrap_or(false))
+        .count();
+    assert!(count > 0, "expected a reflection report to be written");
+}
+
+/// run_reflection_cycle cluster-share failure path: a bridge that errors on
+/// share triggers the warn branch (no panic, report still written).
+#[tokio::test]
+async fn test_s8_reflection_cycle_cluster_share_err() {
+    let dir = tempfile::tempdir().unwrap();
+    let forge = s8_forge_with_syncer(dir.path(), Arc::new(S8FailingBridge)).await;
+
+    let _g = crate::test_support::quiet_trace_guard();
+    forge.run_reflection_cycle().await;
+
+    let reflections_dir = dir.path().join("forge").join("reflections");
+    let count = std::fs::read_dir(&reflections_dir)
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .filter(|e| e.path().extension().map(|x| x == "md").unwrap_or(false))
+        .count();
+    assert!(count > 0, "report written even if cluster share fails");
+}
+
+/// run_reflection_cycle write_report failure: reflections dir is a regular
+/// file -> write_report errs -> share step skipped, no panic.
+#[tokio::test]
+async fn test_s8_reflection_cycle_write_report_err() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut forge = Forge::new(ForgeConfig::default(), dir.path().to_path_buf());
+
+    std::fs::create_dir_all(dir.path().join("forge")).unwrap();
+    let ref_dir = dir.path().join("forge").join("reflections");
+    std::fs::write(&ref_dir, "not a directory").unwrap();
+    forge.init_reflector(Reflector::with_reflections_dir(ref_dir));
+
+    let forge = Arc::new(forge);
+    write_test_experiences(&forge.forge_dir(), 3).await;
+
+    let _g = crate::test_support::quiet_trace_guard();
+    forge.run_reflection_cycle().await; // must not panic
+}
+
+/// Cleanup cycle with: experience store base being a FILE (read_dir Err),
+/// no reflector, no cycle store — exercises all three early/Err regions.
+#[tokio::test]
+async fn test_s8_cleanup_cycle_store_err_no_reflector_no_cycles() {
+    let dir = tempfile::tempdir().unwrap();
+    let forge = Forge::new(ForgeConfig::default(), dir.path().to_path_buf());
+
+    // Collector::new pre-creates forge/experiences as a directory — replace
+    // it with a regular file so read_dir errs (covers the cleanup Err region).
+    std::fs::create_dir_all(dir.path().join("forge")).unwrap();
+    std::fs::remove_dir_all(dir.path().join("forge").join("experiences")).unwrap();
+    std::fs::write(dir.path().join("forge").join("experiences"), "file").unwrap();
+
+    let forge = Arc::new(forge);
+    let _g = crate::test_support::quiet_trace_guard();
+    forge.run_cleanup_cycle().await; // must not panic
+}
+
+/// Cleanup cycle removing an old learning-cycle file (cycle_store branch,
+/// removed > 0).
+#[tokio::test]
+async fn test_s8_cleanup_cycle_removes_old_cycles() {
+    let dir = tempfile::tempdir().unwrap();
+    let forge = create_integration_forge(dir.path());
+
+    let old_dir = dir.path().join("forge").join("learning").join("202001");
+    std::fs::create_dir_all(&old_dir).unwrap();
+    let old_file = old_dir.join("20200101.jsonl");
+    std::fs::write(&old_file, "{}\n").unwrap();
+
+    let _g = crate::test_support::quiet_trace_guard();
+    forge.run_cleanup_cycle().await;
+
+    assert!(!old_file.exists(), "old learning cycle file should be removed");
+}
+
+/// Cleanup cycle where the cycle-store base dir is a FILE -> cleanup errs.
+#[tokio::test]
+async fn test_s8_cleanup_cycle_store_base_is_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let forge = create_integration_forge(dir.path());
+
+    std::fs::write(dir.path().join("forge").join("learning"), "file").unwrap();
+
+    let _g = crate::test_support::quiet_trace_guard();
+    forge.run_cleanup_cycle().await; // must not panic
+}
+
+/// started_at lifecycle + runtime learning toggle.
+#[tokio::test]
+async fn test_s8_started_at_and_learning_toggle() {
+    let dir = tempfile::tempdir().unwrap();
+    let forge = Arc::new(Forge::new(ForgeConfig::default(), dir.path().to_path_buf()));
+
+    assert!(forge.started_at().is_none());
+    Arc::clone(&forge).start().await;
+    let ts = forge.started_at().expect("started_at set after start");
+    assert!(!ts.is_empty());
+
+    let _g = crate::test_support::quiet_trace_guard();
+    forge.set_learning_enabled(true);
+    assert!(forge.is_learning_enabled());
+    forge.set_learning_enabled(false);
+    assert!(!forge.is_learning_enabled());
+
+    forge.stop().await;
+    assert!(forge.started_at().is_none());
+}
+
+/// init_learning with a pipeline already configured -> engine gets the
+/// pipeline injected (the set_pipeline branch).
+#[test]
+fn test_s8_init_learning_with_pipeline() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut forge = Forge::new(ForgeConfig::default(), dir.path().to_path_buf());
+
+    let registry = Arc::new(Registry::new(RegistryConfig::default()));
+    forge.init_pipeline(Arc::new(Pipeline::new(
+        ForgeConfig::default(),
+        registry.clone(),
+    )));
+
+    let engine = LearningEngine::new(
+        ForgeConfig::default(),
+        registry.clone(),
+        CycleStore::from_base(dir.path()),
+    );
+    let monitor = Arc::new(DeploymentMonitor::new(ForgeConfig::default(), registry));
+    let store = CycleStore::from_base(dir.path().join("cycles"));
+    forge.init_learning(engine, monitor, store);
+
+    assert!(forge.learning_engine().is_some());
+}
+
+/// reflect_now happy path with a subscriber installed (field expressions).
+#[test]
+fn test_s8_reflect_now_with_reflector_tracing() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut forge = Forge::new(ForgeConfig::default(), dir.path().to_path_buf());
+
+    let ref_dir = dir.path().join("forge").join("reflections");
+    std::fs::create_dir_all(&ref_dir).unwrap();
+    forge.init_reflector(Reflector::with_reflections_dir(ref_dir));
+
+    let _g = crate::test_support::quiet_trace_guard();
+    let exps = vec![make_collected_experience("s8_tool", true, 42)];
+    let result = forge.reflect_now(&exps);
+    assert!(result.is_ok());
+}
+
+/// receive_reflection with a syncer: valid payload stores the remote report,
+/// missing content errors out.
+#[test]
+fn test_s8_receive_reflection_with_syncer() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut forge = Forge::new(ForgeConfig::default(), dir.path().to_path_buf());
+    forge.set_bridge(Arc::new(crate::bridge::NoOpBridge::new("s8-rx".into())));
+    forge.init_syncer();
+
+    let _g = crate::test_support::quiet_trace_guard();
+
+    // Ok path: content + filename
+    let ok = forge.receive_reflection(&serde_json::json!({
+        "content": "# remote insight\nsome text",
+        "filename": "s8_remote.md",
+        "from": "peer-1",
+    }));
+    assert!(ok.is_ok(), "valid payload should be accepted: {:?}", ok);
+    let stored = dir
+        .path()
+        .join("forge")
+        .join("reflections")
+        .join("remote")
+        .join("peer-1_s8_remote.md");
+    assert!(stored.exists(), "remote report file should be written");
+
+    // Err path: missing content
+    let err = forge
+        .receive_reflection(&serde_json::json!({"filename": "x.md"}))
+        .unwrap_err();
+    assert!(err.contains("content"), "unexpected error: {}", err);
+}
+
+/// create_skill with auto_validate enabled and a pipeline initialized —
+/// the validation/status-update/registry-get chain runs.
+#[test]
+fn test_s8_create_skill_auto_validate_with_pipeline() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut config = ForgeConfig::default();
+    config.validation.auto_validate = true;
+    let mut forge = Forge::new(config.clone(), dir.path().to_path_buf());
+
+    forge.init_pipeline(Arc::new(Pipeline::new(
+        config,
+        Arc::new(Registry::new(RegistryConfig::default())),
+    )));
+
+    let content =
+        "# S8 Skill\nLong enough body so the functional validation passes its length check.\n";
+    let artifact = forge
+        .create_skill("s8_auto_validate", content, "s8 test skill", vec!["read".into()])
+        .expect("create_skill with pipeline should succeed");
+    assert!(artifact.id.starts_with("skill-"));
+    assert_eq!(artifact.name, "s8_auto_validate");
+}
+
+/// cleanup_prompt_suggestions when workspace/prompts exists but is a regular
+/// file (read_dir errs -> early return, no panic).
+#[test]
+fn test_s8_cleanup_prompt_suggestions_prompts_is_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let forge = Forge::new(ForgeConfig::default(), dir.path().to_path_buf());
+
+    std::fs::write(dir.path().join("prompts"), "not a directory").unwrap();
+
+    forge.cleanup_prompt_suggestions(30); // must not panic
+}
+
+/// SkillCreator trait delegation: the trait method forwards to
+/// Forge::create_skill.
+#[test]
+fn test_s8_skill_creator_trait_delegation() {
+    let dir = tempfile::tempdir().unwrap();
+    let forge = Forge::new(ForgeConfig::default(), dir.path().to_path_buf());
+
+    let creator: &dyn SkillCreator = &forge;
+    let artifact = creator
+        .create_skill(
+            "s8_trait_skill",
+            "# Trait delegation\nLong enough body content for the validator.\n",
+            "trait delegation test",
+            vec![],
+        )
+        .expect("SkillCreator::create_skill should delegate successfully");
+    assert_eq!(artifact.name, "s8_trait_skill");
+    assert!(dir
+        .path()
+        .join("forge")
+        .join("skills")
+        .join("s8_trait_skill")
+        .join("SKILL.md")
+        .exists());
+}
+
+/// Background loops with interval = 2s: the first 1s tick must take the
+/// "elapsed < interval" branch of each loop (the else-arms of the
+/// `elapsed >= interval` checks) before the second tick fires the action.
+/// Observable proof the loops are alive: aggregates.jsonl appears once the
+/// flush interval elapses.
+#[tokio::test]
+async fn test_s8_background_loops_interval_ladder() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut config = ForgeConfig::default();
+    config.collection.flush_interval_secs = 2;
+    config.reflection.interval_secs = 2;
+    config.storage.cleanup_interval_secs = 2;
+    let forge = Arc::new(Forge::new(config, dir.path().to_path_buf()));
+
+    forge
+        .collector()
+        .record(nemesis_types::forge::Experience {
+            id: "s8-ladder".into(),
+            tool_name: "s8_ladder_tool".into(),
+            input_summary: "in".into(),
+            output_summary: "out".into(),
+            success: true,
+            duration_ms: 5,
+            timestamp: chrono::Local::now().to_rfc3339(),
+            session_key: "s8".into(),
+        })
+        .await;
+
+    Arc::clone(&forge).start().await;
+    // Tick 1 (~1s): all three loops take the not-yet branch.
+    // Tick 2 (~2s): flush/reflection/cleanup fire.
+    tokio::time::sleep(std::time::Duration::from_millis(2800)).await;
+    forge.stop().await;
+    assert!(!forge.is_running());
+    assert!(
+        dir.path().join("forge").join("experiences").join("aggregates.jsonl").exists(),
+        "collector flush tick should have written aggregates.jsonl"
+    );
+}

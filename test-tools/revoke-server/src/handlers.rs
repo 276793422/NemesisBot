@@ -545,3 +545,6 @@ fn check_admin(state: &AppState, headers: &HeaderMap) -> Result<(), (StatusCode,
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod tests;

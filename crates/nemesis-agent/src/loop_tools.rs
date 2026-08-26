@@ -5262,3 +5262,12 @@ mod loop_tools_extra_tests;
 mod skill_manage_tests;
 #[cfg(test)]
 mod tests;
+
+// S9 (quality-hardening goal 冲刺 S9): 独立测试文件挂载（声明式，无内联测试）。
+#[cfg(test)]
+mod s9_tests;
+#[cfg(test)]
+mod s9c_tests;
+// S9 (quality-hardening goal 冲刺 S9): 独立测试文件挂载（声明式，无内联测试）。
+#[cfg(test)]
+mod s9d_tests;

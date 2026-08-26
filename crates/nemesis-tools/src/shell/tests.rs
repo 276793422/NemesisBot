@@ -997,3 +997,147 @@ fn test_new_with_config_disabled_patterns() {
             .is_ok()
     );
 }
+
+// ============================================================
+// W4a coverage gap closure (new_with_config error arms, setters,
+// get_short_path, workspace path-scan loop)
+// ============================================================
+
+#[test]
+fn w4a_new_with_config_invalid_custom_pattern_is_skipped() {
+    // An invalid regex among custom patterns is warned+skipped; the valid
+    // ones still compile and apply. Invalid input must not panic.
+    let tool = ShellTool::new_with_config(".", false, Some(&["[invalid", r"\bw4aforbidden\b"]), true);
+    assert!(
+        tool.guard_command("w4aforbidden thing", std::path::Path::new("."))
+            .is_err(),
+        "valid pattern among custom list must still deny"
+    );
+    // unrelated command passes
+    assert!(
+        tool.guard_command("echo hi", std::path::Path::new("."))
+            .is_ok()
+    );
+}
+
+#[test]
+fn w4a_new_with_config_empty_custom_falls_back_to_defaults() {
+    // Some(&[]) is the `_` arm -> default deny patterns are installed.
+    let tool = ShellTool::new_with_config(".", false, Some(&[]), true);
+    assert!(
+        tool.guard_command("rm -rf /", std::path::Path::new("."))
+            .is_err(),
+        "empty custom list must fall back to default patterns"
+    );
+    // None arm behaves the same
+    let tool_none = ShellTool::new_with_config(".", false, None, true);
+    assert!(
+        tool_none
+            .guard_command("rm -rf /", std::path::Path::new("."))
+            .is_err()
+    );
+}
+
+#[tokio::test]
+async fn w4a_set_timeout_enforced_by_execute() {
+    // set_timeout changes the default timeout used when args carry no
+    // explicit "timeout". A ~2s ping against a 1s budget must time out.
+    let mut tool = ShellTool::new(".", false);
+    tool.set_timeout(std::time::Duration::from_secs(1));
+    let result = tool
+        .execute(&serde_json::json!({"command": "ping -n 3 127.0.0.1"}))
+        .await;
+    assert!(result.is_error, "should hit the 1s default timeout");
+    assert!(
+        result.for_llm.contains("timed out after 1s"),
+        "unexpected message: {}",
+        result.for_llm
+    );
+}
+
+#[test]
+fn w4a_set_restrict_to_workspace_toggles_guard() {
+    let mut tool = ShellTool::new(".", false);
+    // Unrestricted: traversal-looking command is not blocked by workspace guard
+    assert!(
+        tool.guard_command("cat ../etc/passwd", std::path::Path::new("."))
+            .is_ok()
+    );
+    // Flip the switch on: same command now hits the traversal check
+    tool.set_restrict_to_workspace(true);
+    let err = tool
+        .guard_command("cat ../etc/passwd", std::path::Path::new("."))
+        .err()
+        .expect("restricted tool must block traversal");
+    assert!(err.contains("path traversal"), "got: {err}");
+}
+
+#[test]
+fn w4a_get_short_path_escapes_spaces() {
+    let short = ShellTool::get_short_path("C:\\Program Files\\My App\\x.exe").unwrap();
+    assert_eq!(short, "C:\\Program^ Files\\My^ App\\x.exe");
+    // No spaces: returned unchanged
+    let plain = ShellTool::get_short_path("C:\\plain\\path.exe").unwrap();
+    assert_eq!(plain, "C:\\plain\\path.exe");
+}
+
+#[test]
+fn w4a_guard_workspace_path_scan_absolute_outside_paths_are_not_blocked() {
+    // Documents ACTUAL behavior of the workspace path-scan loop: absolute
+    // paths outside cwd are extracted and canonicalized, but strip_prefix
+    // against cwd FAILS for them, so the loop moves on and the guard
+    // returns Ok. (The ".."-relative check below is the only blocker.)
+    let tool = make_restricted_tool();
+    let tmp = tempfile::TempDir::new().unwrap();
+    // Existing absolute path outside the workspace: canonicalize succeeds,
+    // strip_prefix fails -> allowed by this loop.
+    assert!(
+        tool.guard_command("type C:\\Windows\\win.ini", tmp.path())
+            .is_ok()
+    );
+    // Nonexistent absolute path: canonicalize falls back to the raw path,
+    // strip_prefix still fails -> allowed.
+    assert!(
+        tool.guard_command("type C:\\w4a_no_such\\file.txt", tmp.path())
+            .is_ok()
+    );
+    // Unix-style path is NOT is_absolute() on Windows -> join arm
+    assert!(
+        tool.guard_command("type /w4a/unix/style.txt", tmp.path())
+            .is_ok()
+    );
+}
+
+#[test]
+fn w4a_guard_blocks_dotted_filename_under_nonexistent_cwd() {
+    // The "path outside working dir" branch fires when cwd cannot be
+    // canonicalized (nonexistent dir) AND the extracted absolute path,
+    // whose canonicalize also fails, textually sits under cwd with a
+    // component starting with ".." (here "..leak.txt" — note it contains
+    // neither "../" nor "..\" so it survives the earlier traversal check).
+    let tool = make_restricted_tool();
+    let cwd = std::path::Path::new("C:\\w4a_no_such_dir");
+    let err = tool
+        .guard_command("type C:\\w4a_no_such_dir\\..leak.txt", cwd)
+        .err()
+        .expect("dotted component under raw cwd must be blocked");
+    assert!(err.contains("path outside working dir"), "got: {err}");
+}
+
+// ===========================================================================
+// S2 coverage (2026-08-26): guard_command restrict=true with an in-workspace
+// absolute path (the strip_prefix-Ok / not-".." fall-through edge)
+// ===========================================================================
+
+#[test]
+fn s2_shell_guard_command_in_workspace_absolute_path_passes() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let file = dir.path().join("file.txt");
+    std::fs::write(&file, "x").unwrap();
+
+    let mut tool = ShellTool::new(&dir.path().to_string_lossy(), false);
+    tool.set_restrict_to_workspace(true);
+
+    let cmd = format!("type {}", file.to_string_lossy());
+    tool.guard_command(&cmd, dir.path()).unwrap();
+}

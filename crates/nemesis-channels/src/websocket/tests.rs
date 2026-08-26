@@ -981,7 +981,6 @@ async fn test_websocket_missing_token_rejected() {
 
 #[tokio::test]
 async fn test_websocket_token_with_other_query_params() {
-    use futures::StreamExt;
     use tokio_tungstenite::connect_async;
 
     let port = find_free_port();
@@ -1386,10 +1385,10 @@ async fn test_websocket_start_stop_multiple_cycles() {
         path: "/ws".to_string(),
         ..Default::default()
     };
-    let ch = WebSocketChannel::new(config, bus_tx);
+    let _ch = WebSocketChannel::new(config, bus_tx);
 
     // Note: TcpListener doesn't release immediately on stop, so use different ports
-    for i in 0..2 {
+    for _i in 0..2 {
         let port_i = find_free_port();
         let (bus_i, _) = tokio::sync::broadcast::channel::<InboundMessage>(64);
         let cfg_i = WebSocketChannelConfig {
@@ -1404,4 +1403,252 @@ async fn test_websocket_start_stop_multiple_cycles() {
         ch_i.stop().await.unwrap();
         assert!(!ch_i.is_running());
     }
+}
+
+// ===========================================================================
+// W4c 补测（2026-08-25）：auth 分支的 wrong-path 校验、Close/Binary/Ping/Err
+// 四类帧的 reader 分支、断开后 active_conn 清理（后续 send 报 no client）
+// ===========================================================================
+
+#[tokio::test]
+async fn test_w4c_ws_wrong_path_with_auth_token_rejected() {
+    use tokio_tungstenite::connect_async;
+
+    let port = find_free_port();
+    let (bus_tx, _) = tokio::sync::broadcast::channel::<InboundMessage>(64);
+    let config = WebSocketChannelConfig {
+        host: "127.0.0.1".to_string(),
+        port,
+        path: "/ws".to_string(),
+        auth_token: "secret123".to_string(),
+        ..Default::default()
+    };
+    let ch = WebSocketChannel::new(config, bus_tx);
+    ch.start().await.unwrap();
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    // 带鉴权分支（auth_token 非空）下的路径校验
+    let url = format!("ws://127.0.0.1:{port}/wrong?token=secret123");
+    let result = connect_async(url).await;
+    assert!(result.is_err(), "wrong path must be rejected in auth branch");
+
+    ch.stop().await.unwrap();
+}
+
+/// 等待 send() 进入指定状态（轮询，避免断连清理的时序抖动）。
+async fn w4c_wait_send_state(
+    ch: &WebSocketChannel,
+    want_ok: bool,
+    deadline_ms: u64,
+) -> Option<String> {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_millis(deadline_ms);
+    loop {
+        let msg = OutboundMessage {
+            channel: "websocket".to_string(),
+            chat_id: "websocket:c1".to_string(),
+            content: "probe".to_string(),
+            message_type: String::new(),
+            meta: Default::default(),
+        };
+        let r = ch.send(msg).await;
+        if want_ok && r.is_ok() {
+            return None;
+        }
+        if !want_ok {
+            if let Err(e) = r {
+                let s = e.to_string();
+                if s.contains("no websocket client connected") {
+                    return Some(s);
+                }
+            }
+        }
+        if std::time::Instant::now() > deadline {
+            return None;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+}
+
+#[tokio::test]
+async fn test_w4c_ws_close_frame_cleans_active_connection() {
+    use futures::{SinkExt, StreamExt};
+    use tokio_tungstenite::connect_async;
+    use tokio_tungstenite::tungstenite::Message;
+
+    let port = find_free_port();
+    let (bus_tx, _) = tokio::sync::broadcast::channel::<InboundMessage>(64);
+    let config = WebSocketChannelConfig {
+        host: "127.0.0.1".to_string(),
+        port,
+        path: "/ws".to_string(),
+        ..Default::default()
+    };
+    let ch = WebSocketChannel::new(config, bus_tx);
+    ch.start().await.unwrap();
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    let (ws_stream, _) = connect_async(format!("ws://127.0.0.1:{port}/ws"))
+        .await
+        .unwrap();
+    let (mut write, _read) = ws_stream.split();
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
+    // 连接存活时 send 成功
+    assert!(
+        w4c_wait_send_state(&ch, true, 3000).await.is_none(),
+        "send should succeed while client connected"
+    );
+
+    // 发 Close 帧 → reader 收到 Close 分支 → 清理 active_conn
+    write.send(Message::Close(None)).await.unwrap();
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
+    let err = w4c_wait_send_state(&ch, false, 5000).await;
+    assert!(
+        err.is_some(),
+        "after close frame, send must fail with 'no websocket client connected'"
+    );
+
+    ch.stop().await.unwrap();
+}
+
+#[tokio::test]
+async fn test_w4c_ws_binary_frame_ignored_text_still_works() {
+    use futures::{SinkExt, StreamExt};
+    use tokio_tungstenite::connect_async;
+    use tokio_tungstenite::tungstenite::Message;
+
+    let port = find_free_port();
+    let (bus_tx, mut bus_rx) = tokio::sync::broadcast::channel::<InboundMessage>(64);
+    let config = WebSocketChannelConfig {
+        host: "127.0.0.1".to_string(),
+        port,
+        path: "/ws".to_string(),
+        ..Default::default()
+    };
+    let ch = WebSocketChannel::new(config, bus_tx);
+    ch.start().await.unwrap();
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    let (ws_stream, _) = connect_async(format!("ws://127.0.0.1:{port}/ws"))
+        .await
+        .unwrap();
+    let (mut write, _read) = ws_stream.split();
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
+    // Binary 帧：reader 记 warn 后忽略，连接保持
+    write.send(Message::Binary(vec![1, 2, 3].into())).await.unwrap();
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+
+    // Ping 帧：Ok(_) 空分支
+    write.send(Message::Ping(vec![0].into())).await.unwrap();
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+
+    // 连接仍活着：文本消息照常发布到 bus
+    let text = r#"{"type":"message","content":"after-binary"}"#;
+    write.send(Message::Text(text.into())).await.unwrap();
+    let inbound = tokio::time::timeout(std::time::Duration::from_secs(5), bus_rx.recv())
+        .await
+        .expect("timed out: text message after binary/ping should still be published")
+        .unwrap();
+    assert_eq!(inbound.content, "after-binary");
+
+    let _ = write.send(Message::Close(None)).await;
+    ch.stop().await.unwrap();
+}
+
+#[tokio::test]
+async fn test_w4c_ws_abrupt_drop_cleans_active_connection() {
+    use futures::StreamExt;
+    use tokio_tungstenite::connect_async;
+
+    let port = find_free_port();
+    let (bus_tx, _) = tokio::sync::broadcast::channel::<InboundMessage>(64);
+    let config = WebSocketChannelConfig {
+        host: "127.0.0.1".to_string(),
+        port,
+        path: "/ws".to_string(),
+        ..Default::default()
+    };
+    let ch = WebSocketChannel::new(config, bus_tx);
+    ch.start().await.unwrap();
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    let (ws_stream, _) = connect_async(format!("ws://127.0.0.1:{port}/ws"))
+        .await
+        .unwrap();
+    let (_write, _read) = ws_stream.split();
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    assert!(
+        w4c_wait_send_state(&ch, true, 3000).await.is_none(),
+        "send should succeed while client connected"
+    );
+
+    // 不发 Close 直接 drop → reader 走 Err 分支 → 清理
+    drop(_write);
+    drop(_read);
+
+    let err = w4c_wait_send_state(&ch, false, 5000).await;
+    assert!(
+        err.is_some(),
+        "after abrupt drop, send must fail with 'no websocket client connected'"
+    );
+
+    ch.stop().await.unwrap();
+}
+
+// ===========================================================================
+// S2 coverage (2026-08-26): start() bind failure + send() dead send-queue
+// ===========================================================================
+
+/// `start()` on a port already bound by another listener must return
+/// `Err` containing "WebSocket bind failed" (bind map_err arm).
+#[tokio::test]
+async fn s2_websocket_start_bind_failure_returns_err() {
+    // Pre-bind a std listener so the channel's TcpListener::bind must fail.
+    let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+    let port = listener.local_addr().unwrap().port();
+
+    let (bus_tx, _rx) = tokio::sync::broadcast::channel::<InboundMessage>(16);
+    let config = WebSocketChannelConfig {
+        host: "127.0.0.1".to_string(),
+        port,
+        ..Default::default()
+    };
+    let ch = WebSocketChannel::new(config, bus_tx);
+
+    let err = ch.start().await.unwrap_err();
+    assert!(
+        err.to_string().contains("WebSocket bind failed"),
+        "got: {}",
+        err
+    );
+    drop(listener);
+}
+
+/// `send()` with a running flag but a dead send-queue (writer task gone)
+/// must return `Err` containing "client disconnected".
+#[tokio::test]
+async fn s2_websocket_send_dead_sender_returns_disconnected_err() {
+    let (bus_tx, _rx) = tokio::sync::broadcast::channel::<InboundMessage>(16);
+    let ch = WebSocketChannel::new(WebSocketChannelConfig::default(), bus_tx);
+
+    // Inject a dead send-queue: drop the receiver so send_tx.send() fails.
+    let (dead_tx, dead_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+    drop(dead_rx);
+    *ch.active_conn.lock() = Some(ActiveConnection {
+        send_tx: dead_tx,
+        client_id: "s2-test-client".to_string(),
+    });
+    ch.base.set_running(true);
+
+    let err = ch
+        .send(OutboundMessage::new("websocket", "s2-chat", "hello"))
+        .await
+        .unwrap_err();
+    assert!(
+        err.to_string().contains("client disconnected"),
+        "got: {}",
+        err
+    );
 }

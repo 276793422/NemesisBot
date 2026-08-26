@@ -336,3 +336,6 @@ pub extern "C" fn nv_get_signature(
     }
     0
 }
+
+#[cfg(test)]
+mod tests;

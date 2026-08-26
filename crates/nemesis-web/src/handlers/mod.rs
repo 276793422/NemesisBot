@@ -39,6 +39,26 @@ pub mod voice;
 #[cfg(feature = "workflow")]
 pub mod workflow;
 
+// Phase 3 覆盖率（2026-08-25）：sessions 各命令缺参 bail 臂。
+// create/rename happy path 不测——chat_log::write_session_meta 走
+// default_path_manager() 进程级 OnceLock 单例 home，会写真实 ~/.nemesisbot。
+#[cfg(test)]
+mod sessions_extra_tests;
+
+// S10b (2026-08-26, quality-hardening goal 冲刺 web 批次 2): sessions
+// success arms (list prefix-strip, clear/delete/export) — create/rename
+// happy paths stay excluded per the note above.
+#[cfg(test)]
+mod sessions_s10b_tests;
+
+// S10b (2026-08-26, quality-hardening goal 冲刺 web 批次 2): shared path/file
+// utility arms (absolute/traversal rejection, canonicalize fallback, atomic
+// write fallback) + ConfigHandler error arms and CORS stubs.
+#[cfg(test)]
+mod s10b_tests;
+#[cfg(test)]
+mod config_s10b_tests;
+
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -293,6 +313,11 @@ mod tests;
 mod cluster_extra_tests;
 #[cfg(all(test, feature = "cluster"))]
 mod cluster_more_tests;
+// P3-web3 (2026-08-25): cluster.rs deep coverage — runtime metrics, real TCP
+// ping probes, nodes.refresh full arms, tasks log enrichment, topology real
+// connections, config fallbacks, firewall AddrInUse, persona_generate/apply.
+#[cfg(all(test, feature = "cluster"))]
+mod cluster_deep_tests;
 #[cfg(all(test, feature = "forge"))]
 mod forge_extra_tests;
 #[cfg(all(test, feature = "memory"))]

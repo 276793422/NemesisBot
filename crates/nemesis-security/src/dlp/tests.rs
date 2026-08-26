@@ -694,3 +694,214 @@ fn test_scan_text_max_length_multibyte_no_panic() {
         "content truncated before the key → no match"
     );
 }
+
+// ============================================================
+// S3 batch 3: dynamic-rule filter arms / redact / tool-output
+// truncation / severity downgrade / defensive validator arms
+// ============================================================
+
+#[test]
+fn test_scan_text_dynamic_rule_disabled_and_filtered_skipped() {
+    let mut engine = DlpEngine::new(true, "block");
+
+    // 禁用的动态规则被跳过（enabled continue 臂）
+    engine
+        .add_rule(DlpRule {
+            name: "dyn-off".to_string(),
+            category: "custom".to_string(),
+            pattern: r"XYZMARKER\d+".to_string(),
+            enabled: false,
+            action: "log".to_string(),
+            confidence: DlpConfidence::High,
+        })
+        .unwrap();
+    let r = engine.scan_text("value XYZMARKER9 here");
+    assert!(
+        !r.matches.iter().any(|m| m.rule_name == "dyn-off"),
+        "disabled rule must be skipped: {:?}",
+        r.matches
+    );
+
+    // enabled_rules 过滤器不含该规则名 → 跳过（is_rule_enabled continue 臂）
+    engine.config.enabled_rules = vec!["some-other-rule".to_string()];
+    engine
+        .add_rule(DlpRule {
+            name: "dyn-filtered".to_string(),
+            category: "custom".to_string(),
+            pattern: r"XYZMARKER\d+".to_string(),
+            enabled: true,
+            action: "block".to_string(),
+            confidence: DlpConfidence::High,
+        })
+        .unwrap();
+    let r = engine.scan_text("value XYZMARKER9 here");
+    assert!(
+        !r.matches.iter().any(|m| m.rule_name == "dyn-filtered"),
+        "rule not in enabled_rules must be skipped: {:?}",
+        r.matches
+    );
+
+    // enabled_rules 包含该规则名 → 命中（动态循环的命中臂）
+    engine.config.enabled_rules = vec!["dyn-filtered".to_string()];
+    let r = engine.scan_text("value XYZMARKER9 here");
+    assert!(
+        r.matches.iter().any(|m| m.rule_name == "dyn-filtered"),
+        "enabled dynamic rule must match: {:?}",
+        r.matches
+    );
+}
+
+#[test]
+fn test_redact_content_disabled_returns_unchanged() {
+    let engine = DlpEngine::new(false, "block");
+    let text = "AKIAIOSFODNN7EXAMPLE";
+    assert_eq!(engine.redact_content(text), text);
+}
+
+#[test]
+fn test_redact_content_dynamic_rule_and_trailing_text() {
+    let engine = DlpEngine::new(true, "block");
+    engine
+        .add_rule(DlpRule {
+            name: "dyn-redact".to_string(),
+            category: "custom".to_string(),
+            pattern: r"TOPSECRETWORD".to_string(),
+            enabled: true,
+            action: "block".to_string(),
+            confidence: DlpConfidence::High,
+        })
+        .unwrap();
+    let out = engine.redact_content("prefix TOPSECRETWORD suffix");
+    assert_eq!(out, "prefix [REDACTED] suffix", "{out}");
+}
+
+#[test]
+fn test_redact_content_overlap_prefers_longer_span() {
+    // 两条动态规则跨度重叠（abcd 与 cdex）→ 后开始的短跨度被跳过。
+    let engine = DlpEngine::new(true, "block");
+    engine
+        .add_rule(DlpRule {
+            name: "dyn-long".to_string(),
+            category: "custom".to_string(),
+            pattern: "abcd".to_string(),
+            enabled: true,
+            action: "log".to_string(),
+            confidence: DlpConfidence::High,
+        })
+        .unwrap();
+    engine
+        .add_rule(DlpRule {
+            name: "dyn-overlap".to_string(),
+            category: "custom".to_string(),
+            pattern: "cdex".to_string(),
+            enabled: true,
+            action: "log".to_string(),
+            confidence: DlpConfidence::High,
+        })
+        .unwrap();
+    let out = engine.redact_content("abcdex");
+    assert_eq!(out, "[REDACTED]ex", "{out}");
+}
+
+#[test]
+fn test_get_rule_names_includes_dynamic() {
+    let engine = DlpEngine::new(true, "block");
+    let before = engine.get_rule_names();
+    engine
+        .add_rule(DlpRule {
+            name: "dyn-named".to_string(),
+            category: "custom".to_string(),
+            pattern: "zzq".to_string(),
+            enabled: true,
+            action: "log".to_string(),
+            confidence: DlpConfidence::Medium,
+        })
+        .unwrap();
+    let after = engine.get_rule_names();
+    assert!(after.len() == before.len() + 1);
+    assert!(after.contains(&"dyn-named".to_string()));
+}
+
+#[test]
+fn test_scan_tool_output_truncates_beyond_5000_bytes() {
+    let engine = DlpEngine::new(true, "block");
+    // 命中点在 5000 字节之前 → 检出
+    let near = format!("{}{}", "x".repeat(4900), "AKIAIOSFODNN7EXAMPLE");
+    let r = engine.scan_tool_output("shell", &near);
+    assert!(r.matches.iter().any(|m| m.rule_name == "aws_access_key"), "{:?}", r.matches);
+
+    // 命中点在 5000 字节之后 → 被截掉，不检出
+    let far = format!("{}{}", "x".repeat(5010), " AKIAIOSFODNN7EXAMPLE");
+    let r2 = engine.scan_tool_output("shell", &far);
+    assert!(
+        !r2.matches.iter().any(|m| m.rule_name == "aws_access_key"),
+        "{:?}",
+        r2.matches
+    );
+}
+
+#[test]
+fn test_scan_tool_output_downgrades_critical_to_high() {
+    let engine = DlpEngine::new(true, "block");
+    // scan_text：credential 类别 → Critical
+    let r = engine.scan_text("key AKIAIOSFODNN7EXAMPLE");
+    assert!(
+        r.matches
+            .iter()
+            .any(|m| m.severity == DlpSeverity::Critical && m.rule_name == "aws_access_key"),
+        "{:?}",
+        r.matches
+    );
+    // scan_tool_output：同一命中被降级为 High
+    let r2 = engine.scan_tool_output("shell", "key AKIAIOSFODNN7EXAMPLE");
+    assert!(
+        r2.matches
+            .iter()
+            .any(|m| m.severity == DlpSeverity::High && m.rule_name == "aws_access_key"),
+        "{:?}",
+        r2.matches
+    );
+    assert!(
+        !r2.matches
+            .iter()
+            .any(|m| m.severity == DlpSeverity::Critical),
+        "no Critical should remain in tool output scan: {:?}",
+        r2.matches
+    );
+}
+
+#[test]
+fn test_scan_args_extracts_array_elements() {
+    let engine = DlpEngine::new(true, "block");
+    let args = serde_json::json!(["AKIAIOSFODNN7EXAMPLE", {"nested": "AIzaABCDEFGHIJKLMNOPQRSTUVWXYZ012345678"}]);
+    let r = engine.scan_tool_input("exec", &args);
+    assert!(r.matches.iter().any(|m| m.rule_name == "aws_access_key"), "{:?}", r.matches);
+    assert!(
+        r.matches.iter().any(|m| m.rule_name == "google_api_key"),
+        "{:?}",
+        r.matches
+    );
+    // 纯标量走 _ 空串臂
+    assert_eq!(extract_text(&serde_json::json!(42)), "");
+    assert_eq!(extract_text(&serde_json::json!(true)), "");
+    assert_eq!(extract_text(&serde_json::Value::Null), "");
+}
+
+#[test]
+fn test_luhn_valid_defensive_arms() {
+    // get(start..end) 非字符边界 → None → false
+    assert!(!luhn_valid("aé中", 0, 4));
+    // 数字字符 < 2 → false
+    assert!(!luhn_valid("x", 0, 1));
+    assert!(!luhn_valid("ab", 0, 2));
+}
+
+#[test]
+fn test_china_id_valid_defensive_arms() {
+    // 非字符边界 → None → false
+    assert!(!china_id_valid("aé中", 0, 4));
+    // 长度 != 18 → false
+    assert!(!china_id_valid("12345", 0, 5));
+    // 前 17 位含非数字 → to_digit None → false
+    assert!(!china_id_valid("ABCDEFGHIJKLMNOPQR", 0, 18));
+}

@@ -119,3 +119,40 @@ async fn test_config_path_in_workspace() {
     let path = installer.config_path();
     assert!(path.to_string_lossy().contains("config"));
 }
+
+#[tokio::test]
+async fn test_invalid_json_config_is_installed_false() {
+    let dir = tempfile::tempdir().unwrap();
+    let installer = MCPInstaller::new(dir.path());
+
+    // Write garbage where config.mcp.json should be.
+    let config_dir = dir.path().join("config");
+    tokio::fs::create_dir_all(&config_dir).await.unwrap();
+    tokio::fs::write(config_dir.join("config.mcp.json"), "{not valid json")
+        .await
+        .unwrap();
+
+    // load_config fails with InvalidData...
+    let loaded = installer.load_config().await;
+    assert!(loaded.is_err());
+    assert_eq!(
+        loaded.unwrap_err().kind(),
+        std::io::ErrorKind::InvalidData
+    );
+
+    // ...and is_installed treats a load failure as "not installed".
+    assert!(!installer.is_installed("anything").await);
+}
+
+// --- S8 coverage additions (quality-hardening goal 冲刺 S8) ---
+
+#[tokio::test]
+async fn test_s8_install_into_brand_new_workspace() {
+    // config/ does not exist yet in a fresh workspace; install must create it.
+    let dir = tempfile::tempdir().unwrap();
+    let installer = MCPInstaller::new(&dir.path().join("ws"));
+    assert!(!installer.config_path().exists());
+    installer.install("fresh", "python", vec!["-m".into()]).await.unwrap();
+    assert!(installer.config_path().exists());
+    assert!(installer.is_installed("fresh").await);
+}

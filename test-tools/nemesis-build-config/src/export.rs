@@ -106,3 +106,5 @@ pub fn frontend_env(cfg: &BuildConfig, manifest: &FeatureManifest) -> String {
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod w5d_tests;

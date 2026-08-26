@@ -1116,3 +1116,490 @@ fn test_active_count_reflects_direct_inserts_and_removals() {
     }
     assert_eq!(mgr.active_count(), 0);
 }
+
+// ============================================================
+// Additional coverage: stop() warn arms, monitor loop, log args
+// ============================================================
+
+/// Executor whose terminate/cleanup always fail — drives the warn arms of
+/// `ProcessManager::stop()` (no real process involved).
+struct FailingExecutor;
+
+impl PlatformExecutor for FailingExecutor {
+    fn spawn_child(&self, _exe_path: &str, _args: &[String]) -> Result<ChildProcess, String> {
+        Err("spawn disabled in FailingExecutor".to_string())
+    }
+    fn terminate_child(&self, _child: &mut ChildProcess) -> Result<(), String> {
+        Err("terminate failed".to_string())
+    }
+    fn is_process_alive(&self, _child: &ChildProcess) -> bool {
+        false
+    }
+    fn cleanup(&self, _child: &mut ChildProcess) -> Result<(), String> {
+        Err("cleanup failed".to_string())
+    }
+}
+
+#[test]
+fn test_stop_warn_arms_on_executor_failure() {
+    let mgr = ProcessManager::with_executor(Arc::new(FailingExecutor));
+    {
+        let mut state = mgr.state.lock();
+        state.children.insert(
+            "w1".to_string(),
+            ChildProcess::new("w1".to_string(), 1, "dashboard".to_string()),
+        );
+    }
+    // stop() must still succeed even though terminate+cleanup both fail.
+    mgr.stop().unwrap();
+    assert_eq!(mgr.active_count(), 0);
+}
+
+#[tokio::test(start_paused = true)]
+async fn test_monitor_loop_cleans_dead_children_and_stops() {
+    let mgr = ProcessManager::new();
+    mgr.start().await.unwrap();
+
+    // Insert an already-dead child plus a stale result channel.
+    {
+        let mut state = mgr.state.lock();
+        let mut child = ChildProcess::new("dead-1".to_string(), 1, "approval".to_string());
+        child.kill().unwrap();
+        state.children.insert("dead-1".to_string(), child);
+        let (tx, _rx) = tokio::sync::oneshot::channel();
+        state.result_channels.insert("dead-1".to_string(), tx);
+    }
+    assert_eq!(mgr.active_count(), 1);
+
+    // tokio::time::interval fires its first tick immediately, so one yield
+    // is enough for the monitor to sweep the dead child.
+    tokio::time::sleep(Duration::from_millis(10)).await;
+    assert_eq!(mgr.active_count(), 0, "monitor did not clean dead child");
+    assert!(!mgr.submit_result("dead-1", serde_json::json!({})));
+
+    // Shutdown arm of the monitor loop.
+    mgr.stop().unwrap();
+    tokio::time::sleep(Duration::from_millis(10)).await;
+}
+
+#[tokio::test]
+async fn test_start_stop_with_subscriber_covers_lazy_log_args() {
+    // tracing event arguments are evaluated lazily; install a thread-local
+    // subscriber that enables everything so the info! arg expressions
+    // actually run.
+    struct EnableAllSubscriber;
+    impl tracing::Subscriber for EnableAllSubscriber {
+        fn enabled(&self, _metadata: &tracing::Metadata<'_>) -> bool {
+            true
+        }
+        fn new_span(&self, _attrs: &tracing::span::Attributes<'_>) -> tracing::span::Id {
+            tracing::span::Id::from_u64(1)
+        }
+        // tracing_core 无默认实现的必需方法（E0046）；no-op 即可——info! 的惰性
+        // 参数求值发生在 Event 构造时，与 event() 的实现体无关。
+        fn record(&self, _span: &tracing::Id, _values: &tracing::span::Record<'_>) {}
+        fn record_follows_from(&self, _span: &tracing::Id, _follows: &tracing::Id) {}
+        fn event(&self, _event: &tracing::Event<'_>) {}
+        fn enter(&self, _span: &tracing::Id) {}
+        fn exit(&self, _span: &tracing::Id) {}
+    }
+    let _guard = tracing::subscriber::set_default(EnableAllSubscriber);
+
+    let mgr = ProcessManager::new();
+    mgr.start().await.unwrap();
+    assert!(mgr.ws_port() > 0);
+    mgr.stop().unwrap();
+    // 端口语义按既有钉死契约：stop 后**保留**（见 test_start_stop_ws_port_assigned
+    // "port should still be the same (not reset)"），此处不重复断言。
+    assert_eq!(mgr.active_count(), 0);
+}
+
+// ============================================================
+// Real spawn coverage via a scripted PowerShell child
+// (Windows only; the script logs every stdin line to a temp file and
+// replies per variant so the manager's pipe protocol is exercised end
+// to end against a real child process).
+// ============================================================
+
+#[cfg(windows)]
+mod scripted_spawn_tests {
+    use super::*;
+    use futures_util::{SinkExt, StreamExt};
+    use tokio_tungstenite::tungstenite::Message as WsMessage;
+
+    // --- base64 of UTF-16LE (PowerShell -EncodedCommand format) ---
+
+    fn b64_encode(data: &[u8]) -> String {
+        const TABLE: &[u8; 64] =
+            b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+        let mut out = String::new();
+        for chunk in data.chunks(3) {
+            let b = [
+                chunk[0],
+                *chunk.get(1).unwrap_or(&0),
+                *chunk.get(2).unwrap_or(&0),
+            ];
+            let n = ((b[0] as u32) << 16) | ((b[1] as u32) << 8) | b[2] as u32;
+            out.push(TABLE[(n >> 18) as usize & 63] as char);
+            out.push(TABLE[(n >> 12) as usize & 63] as char);
+            out.push(if chunk.len() > 1 {
+                TABLE[(n >> 6) as usize & 63] as char
+            } else {
+                '='
+            });
+            out.push(if chunk.len() > 2 {
+                TABLE[n as usize & 63] as char
+            } else {
+                '='
+            });
+        }
+        out
+    }
+
+    fn ps_encode(script: &str) -> String {
+        let utf16: Vec<u8> = script
+            .encode_utf16()
+            .flat_map(|u| u.to_le_bytes().to_vec())
+            .collect();
+        b64_encode(&utf16)
+    }
+
+    // --- script builder ---
+
+    fn build_script(variant: &str, log_path: &str) -> String {
+        const ACK: &str =
+            "[Console]::Out.WriteLine('{\"type\":\"ack\"}'); [Console]::Out.Flush()";
+        const HELLO: &str =
+            "[Console]::Out.WriteLine('{\"type\":\"hello\"}'); [Console]::Out.Flush()";
+
+        if variant == "exit_now" {
+            // Child exits before answering the handshake.
+            return "Start-Sleep -Milliseconds 300\nexit 0\n".to_string();
+        }
+
+        // Messages: 1 = handshake, 2 = ws_key, 3 = window_data
+        let reply = match variant {
+            "ack_all" => ACK.to_string(),
+            "hello_first" => format!("if ($n -eq 1) {{ {HELLO} }} else {{ {ACK} }}"),
+            "ack_then_hello" => format!("if ($n -le 1) {{ {ACK} }} else {{ {HELLO} }}"),
+            "ack_then_exit" => format!("if ($n -eq 1) {{ {ACK} }} else {{ exit 0 }}"),
+            "ack2_then_hello" => format!("if ($n -le 2) {{ {ACK} }} else {{ {HELLO} }}"),
+            "ack2_then_exit" => format!("if ($n -le 2) {{ {ACK} }} else {{ exit 0 }}"),
+            other => panic!("unknown script variant: {}", other),
+        };
+
+        format!(
+            "$log = '{path}'\n$n = 0\nwhile ($true) {{\n  $line = [Console]::In.ReadLine()\n  if ($null -eq $line) {{ break }}\n  [System.IO.File]::AppendAllText($log, $line + [char]10)\n  $n = $n + 1\n  {reply}\n}}\nStart-Sleep -Seconds 60\n",
+            path = log_path,
+            reply = reply
+        )
+    }
+
+    // --- executor that swaps the real exe/args for the scripted PS child ---
+
+    struct ScriptedExecutor {
+        inner: DefaultPlatformExecutor,
+        log_path: std::path::PathBuf,
+        variant: &'static str,
+    }
+
+    impl PlatformExecutor for ScriptedExecutor {
+        fn spawn_child(&self, _exe_path: &str, _args: &[String]) -> Result<ChildProcess, String> {
+            let script = build_script(self.variant, &self.log_path.to_string_lossy());
+            let args: Vec<String> = vec![
+                "-NoProfile".to_string(),
+                "-NonInteractive".to_string(),
+                "-ExecutionPolicy".to_string(),
+                "Bypass".to_string(),
+                "-EncodedCommand".to_string(),
+                ps_encode(&script),
+            ];
+            self.inner.spawn_child("powershell.exe", &args)
+        }
+        fn terminate_child(&self, child: &mut ChildProcess) -> Result<(), String> {
+            // Instant teardown (skip the 5s graceful poll): PowerShell is
+            // spawned with CREATE_NEW_PROCESS_GROUP and ignores CTRL_C.
+            self.inner.cleanup(child)
+        }
+        fn is_process_alive(&self, child: &ChildProcess) -> bool {
+            self.inner.is_process_alive(child)
+        }
+        fn cleanup(&self, child: &mut ChildProcess) -> Result<(), String> {
+            self.inner.cleanup(child)
+        }
+    }
+
+    fn mgr_with_script(variant: &'static str) -> (ProcessManager, std::path::PathBuf) {
+        let log_path = std::env::temp_dir().join(format!(
+            "nb-desktop-mgr-{}.log",
+            uuid::Uuid::new_v4()
+        ));
+        let mgr = ProcessManager::with_executor(Arc::new(ScriptedExecutor {
+            inner: DefaultPlatformExecutor::with_defaults(),
+            log_path: log_path.clone(),
+            variant,
+        }));
+        (mgr, log_path)
+    }
+
+    fn read_ws_key_from_log(log_path: &std::path::Path) -> String {
+        let content = std::fs::read_to_string(log_path).expect("child log readable");
+        for line in content.lines() {
+            let line = line.trim();
+            if line.is_empty() {
+                continue;
+            }
+            if let Ok(v) = serde_json::from_str::<serde_json::Value>(line) {
+                if v["type"] == "ws_key" {
+                    return v["data"]["key"]
+                        .as_str()
+                        .expect("key field in ws_key message")
+                        .to_string();
+                }
+            }
+        }
+        panic!("no ws_key line found in child log:\n{}", content);
+    }
+
+    // --- failure variants (plain #[test]: they never reach tokio::spawn) ---
+
+    #[test]
+    fn test_spawn_handshake_hello_reply_fails() {
+        let (mgr, _log) = mgr_with_script("hello_first");
+        let err = mgr
+            .spawn_child("dashboard", &serde_json::json!({}))
+            .unwrap_err();
+        // Handshake detail is swallowed by the manager; only the generic text escapes.
+        assert_eq!(err, "handshake failed");
+        assert_eq!(mgr.active_count(), 0); // cleanup_failed_child removed it
+        mgr.stop().unwrap();
+    }
+
+    #[test]
+    fn test_spawn_child_exits_before_ack_fails() {
+        let (mgr, _log) = mgr_with_script("exit_now");
+        let err = mgr
+            .spawn_child("dashboard", &serde_json::json!({}))
+            .unwrap_err();
+        assert_eq!(err, "handshake failed");
+        assert_eq!(mgr.active_count(), 0);
+        mgr.stop().unwrap();
+    }
+
+    #[test]
+    fn test_spawn_ws_key_non_ack_reply_fails() {
+        let (mgr, _log) = mgr_with_script("ack_then_hello");
+        let err = mgr
+            .spawn_child("dashboard", &serde_json::json!({}))
+            .unwrap_err();
+        assert_eq!(err, "failed to send WS key: expected ack, got hello");
+        assert_eq!(mgr.active_count(), 0);
+        mgr.stop().unwrap();
+    }
+
+    #[test]
+    fn test_spawn_ws_key_pipe_closed_fails() {
+        let (mgr, _log) = mgr_with_script("ack_then_exit");
+        let err = mgr
+            .spawn_child("dashboard", &serde_json::json!({}))
+            .unwrap_err();
+        assert!(
+            err.starts_with("failed to send WS key: failed to read ACK"),
+            "unexpected error: {}",
+            err
+        );
+        assert_eq!(mgr.active_count(), 0);
+        mgr.stop().unwrap();
+    }
+
+    #[test]
+    fn test_spawn_window_data_non_ack_reply_fails() {
+        let (mgr, _log) = mgr_with_script("ack2_then_hello");
+        let err = mgr
+            .spawn_child("approval", &serde_json::json!({}))
+            .unwrap_err();
+        assert_eq!(
+            err,
+            "failed to send window data: expected ack, got hello"
+        );
+        assert_eq!(mgr.active_count(), 0);
+        mgr.stop().unwrap();
+    }
+
+    #[test]
+    fn test_spawn_window_data_pipe_closed_fails() {
+        let (mgr, _log) = mgr_with_script("ack2_then_exit");
+        let err = mgr
+            .spawn_child("approval", &serde_json::json!({}))
+            .unwrap_err();
+        assert!(
+            err.starts_with("failed to send window data: failed to read ACK"),
+            "unexpected error: {}",
+            err
+        );
+        assert_eq!(mgr.active_count(), 0);
+        mgr.stop().unwrap();
+    }
+
+    // --- success paths (#[tokio::test]: approval path calls tokio::spawn) ---
+
+    #[tokio::test]
+    async fn test_spawn_dashboard_success_notify_and_call() {
+        let (mgr, log_path) = mgr_with_script("ack_all");
+        mgr.start().await.unwrap();
+
+        let (child_id, rx) = mgr
+            .spawn_child(
+                "dashboard",
+                &serde_json::json!({"token": "t", "web_port": 1, "web_host": "127.0.0.1"}),
+            )
+            .expect("dashboard spawn should succeed");
+        assert_eq!(child_id, "child-0");
+        assert!(rx.is_none()); // persistent window: no result channel
+        assert_eq!(mgr.active_count(), 1);
+        assert!(matches!(
+            mgr.get_child(&child_id),
+            Some(ProcessStatus::Handshaking)
+        ));
+
+        // Rogue "child": connect to the manager's WS server with the key the
+        // real child received (parsed from the child's stdin log).
+        let key = read_ws_key_from_log(&log_path);
+        let port = mgr.ws_port();
+        let (mut ws, _) = tokio_tungstenite::connect_async(format!(
+            "ws://127.0.0.1:{}/child/{}",
+            port, key
+        ))
+        .await
+        .expect("rogue connect");
+        let auth = serde_json::json!({"type": "auth", "key": key});
+        ws.send(WsMessage::Text(auth.to_string().into()))
+            .await
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(300)).await; // let auth register
+
+        // notify_child: send_notification uses try_lock, retry while busy.
+        let mut notified = false;
+        for _ in 0..10 {
+            if mgr
+                .notify_child(&child_id, "window.minimize", serde_json::json!({}))
+                .is_ok()
+            {
+                notified = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        assert!(notified, "notify_child kept failing");
+
+        // call_child: move the socket into a responder task that answers any
+        // request by echoing its id, then await the call result.
+        let responder = tokio::spawn(async move {
+            while let Some(Ok(WsMessage::Text(text))) = ws.next().await {
+                let m: Message = match serde_json::from_str(&text) {
+                    Ok(m) => m,
+                    Err(_) => continue,
+                };
+                if m.is_request() {
+                    let resp = Message::new_response(
+                        m.id.as_deref().unwrap_or(""),
+                        serde_json::json!({"echo": true}),
+                    );
+                    let _ = ws
+                        .send(WsMessage::Text(serde_json::to_string(&resp).unwrap().into()))
+                        .await;
+                }
+            }
+        });
+        let call = tokio::time::timeout(
+            Duration::from_secs(5),
+            mgr.call_child(&child_id, "echo.method", serde_json::json!({"v": 1})),
+        )
+        .await
+        .expect("call_child timed out")
+        .expect("call_child failed");
+        assert_eq!(call.result.unwrap()["echo"], true);
+        responder.abort();
+        // ws 已 move 进 responder，abort 后 socket 随任务 drop 关闭，无需显式 close。
+
+        mgr.stop().unwrap();
+        assert_eq!(mgr.active_count(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_spawn_approval_result_channel_e2e() {
+        let (mgr, log_path) = mgr_with_script("ack_all");
+        mgr.start().await.unwrap();
+
+        let (child_id, rx) = mgr
+            .spawn_child(
+                "approval",
+                &serde_json::json!({"request_id": "r1", "risk_level": "HIGH"}),
+            )
+            .expect("approval spawn should succeed");
+        let mut rx = rx.expect("approval window returns a result receiver");
+
+        // Rogue child connects with the key from the child's stdin log.
+        let key = read_ws_key_from_log(&log_path);
+        let port = mgr.ws_port();
+        let (mut ws, _) = tokio_tungstenite::connect_async(format!(
+            "ws://127.0.0.1:{}/child/{}",
+            port, key
+        ))
+        .await
+        .expect("rogue connect");
+        let auth = serde_json::json!({"type": "auth", "key": key});
+        ws.send(WsMessage::Text(auth.to_string().into()))
+            .await
+            .unwrap();
+        // spawn_wait_for_result polls for the connection every 100ms and then
+        // registers the approval.submit handler; give it time.
+        tokio::time::sleep(Duration::from_millis(500)).await;
+
+        // Deliver the approval result as a notification from the "child".
+        let note = Message::new_notification(
+            "approval.submit",
+            serde_json::json!({"action": "approved", "request_id": "r1"}),
+        );
+        ws.send(WsMessage::Text(serde_json::to_string(&note).unwrap().into()))
+            .await
+            .unwrap();
+
+        let value = tokio::time::timeout(Duration::from_secs(5), &mut rx)
+            .await
+            .expect("result channel timed out")
+            .expect("oneshot dropped without a value");
+        assert_eq!(value["action"], "approved");
+        assert_eq!(value["request_id"], "r1");
+
+        let _ = ws.close(None).await;
+        mgr.stop().unwrap();
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn test_spawn_approval_no_connection_times_out_and_cleans_channel() {
+        let (mgr, _log) = mgr_with_script("ack_all");
+        // No mgr.start(): the WS server never runs, so no connection can ever
+        // appear and spawn_wait_for_result exhausts its 100 poll attempts.
+
+        let (child_id, rx) = mgr
+            .spawn_child("approval", &serde_json::json!({}))
+            .expect("spawn itself succeeds (pipe protocol only)");
+        let mut rx = rx.expect("approval returns result receiver");
+
+        // Paused clock auto-advances: 100 × 100ms polls (~10s virtual), then
+        // the 300s wait fires at ~310s virtual — long before our 320s cap.
+        // When the task cleans up the result channel the oneshot sender is
+        // dropped and the receiver resolves with an error.
+        let outcome = tokio::time::timeout(Duration::from_secs(320), &mut rx).await;
+        match outcome {
+            Ok(Err(_recv_error)) => { /* channel dropped by cleanup, as expected */ }
+            other => panic!("expected dropped channel, got {:?}", other.is_ok()),
+        }
+        // Result channel was removed by the wait task's cleanup.
+        assert!(!mgr.submit_result(&child_id, serde_json::json!({})));
+
+        mgr.stop().unwrap(); // reaps the PowerShell child instantly
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+}

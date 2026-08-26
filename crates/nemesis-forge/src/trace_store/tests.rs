@@ -308,3 +308,30 @@ async fn test_cleanup_partial() {
     assert_eq!(remaining.len(), 1);
     assert_eq!(remaining[0].event_type, "new");
 }
+
+#[tokio::test]
+async fn test_append_creates_nested_parent_dirs() {
+    let dir = tempfile::tempdir().unwrap();
+    // No part of tmp/sub/dir exists beforehand — append must create parents.
+    let path = dir.path().join("sub").join("dir").join("traces.jsonl");
+    let store = TraceStore::new(&path);
+
+    store.append(&make_event("nested")).await.unwrap();
+    assert!(path.exists());
+
+    let events = store.read_all().await.unwrap();
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].event_type, "nested");
+}
+
+// --- S8 coverage additions (quality-hardening goal 冲刺 S8) ---
+
+#[tokio::test]
+async fn test_s8_append_empty_path_takes_no_parent_branch() {
+    // An empty path has no parent component: append() must take the
+    // `if let Some(parent)` fall-through region, then fail to open "" as a
+    // file. Deterministic Err on Windows and Unix, no filesystem side effect.
+    let store = TraceStore::new("");
+    let result = store.append(&make_event("no-parent")).await;
+    assert!(result.is_err());
+}

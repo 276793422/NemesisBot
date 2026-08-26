@@ -443,3 +443,140 @@ async fn test_share_reflection_with_mock_peers() {
     assert_eq!(count, 5, "Should report sharing with 5 peers");
     assert_eq!(share_call_count.load(Ordering::SeqCst), 1);
 }
+
+#[test]
+fn test_receive_reflection_filename_dotdot_falls_back() {
+    // filename ".." has no file_name() component, so the sanitizer falls back
+    // to a generated "remote_{timestamp}.md" name instead of a path.
+    let dir = tempfile::tempdir().unwrap();
+    let bridge = Arc::new(NoOpBridge::new("test".into()));
+    let syncer = Syncer::with_forge_dir(bridge, dir.path().to_path_buf());
+
+    let payload = serde_json::json!({
+        "content": "dotdot payload",
+        "filename": "..",
+        "from": "node-a",
+    });
+
+    syncer.receive_reflection(&payload).unwrap();
+
+    let remote_dir = dir.path().join("reflections").join("remote");
+    let entries: Vec<String> = std::fs::read_dir(&remote_dir)
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .map(|e| e.file_name().to_string_lossy().to_string())
+        .collect();
+    assert_eq!(entries.len(), 1, "exactly one remote file expected");
+    assert!(
+        entries[0].starts_with("node-a_remote_"),
+        "expected fallback remote_* name with node prefix, got: {}",
+        entries[0]
+    );
+    assert!(entries[0].ends_with(".md"));
+}
+
+#[test]
+fn test_get_reflections_list_payload_error_when_reflections_is_file() {
+    // When the reflections path exists but is a FILE (not a directory),
+    // read_md_files fails and the payload carries the error key.
+    let dir = tempfile::tempdir().unwrap();
+    let bridge = Arc::new(NoOpBridge::new("test".into()));
+    let syncer = Syncer::with_forge_dir(bridge, dir.path().to_path_buf());
+
+    std::fs::write(dir.path().join("reflections"), "not a directory").unwrap();
+
+    let payload = syncer.get_reflections_list_payload();
+    let reflections = payload["reflections"].as_array().unwrap();
+    assert!(reflections.is_empty());
+    assert!(
+        payload.get("error").is_some(),
+        "expected an error key in payload, got: {}",
+        payload
+    );
+}
+
+// --- S8 coverage additions (quality-hardening goal 冲刺 S8) ---
+
+#[tokio::test]
+async fn test_s8_share_reflection_evaluates_tracing_field_expressions() {
+    // node_id = %self.bridge.local_node_id() only evaluates with a subscriber.
+    let _guard = crate::test_support::quiet_trace_guard();
+    let bridge = Arc::new(NoOpBridge::new("trace-node".into()));
+    let syncer = Syncer::new(bridge);
+    let count = syncer
+        .share_reflection(serde_json::json!({"insights": ["x"]}))
+        .await
+        .unwrap();
+    assert_eq!(count, 0); // NoOp bridge shares with nobody
+}
+
+// ---- S8 Wave 2: receive_reflection / read_reflection_content branches ----
+
+/// receive_reflection without a "from" node: sanitize_node_id maps the empty
+/// id to "unknown", so the file is prefixed "unknown_" and the header renders
+/// with that fallback node id. (The unprefixed else-arm at syncer.rs:147 is
+/// therefore unreachable — sanitize_node_id never returns an empty string.)
+#[test]
+fn test_s8_receive_reflection_no_from() {
+    let dir = tempfile::tempdir().unwrap();
+    let bridge = Arc::new(NoOpBridge::new("local".into()));
+    let syncer = Syncer::with_forge_dir(bridge, dir.path().to_path_buf());
+
+    let payload = serde_json::json!({
+        "content": "# remote insight\nhello",
+        "filename": "r8.md",
+        "timestamp": "2026-08-26T10:00:00Z",
+    });
+    syncer.receive_reflection(&payload).unwrap();
+
+    let written = dir.path().join("reflections").join("remote").join("unknown_r8.md");
+    let body = std::fs::read_to_string(&written)
+        .unwrap_or_else(|e| panic!("expected {:?}: {}", written, e));
+    assert!(body.contains("<!-- Remote reflection from unknown at"), "body: {}", body);
+    assert!(body.contains("# remote insight"));
+}
+
+/// receive_reflection with "from": filename gets the sanitized node prefix.
+#[test]
+fn test_s8_receive_reflection_with_from() {
+    let dir = tempfile::tempdir().unwrap();
+    let bridge = Arc::new(NoOpBridge::new("local".into()));
+    let syncer = Syncer::with_forge_dir(bridge, dir.path().to_path_buf());
+
+    let payload = serde_json::json!({
+        "content": "peer report",
+        "filename": "p1.md",
+        "from": "peer-node-1",
+    });
+    syncer.receive_reflection(&payload).unwrap();
+
+    let written = dir.path().join("reflections").join("remote").join("peer-node-1_p1.md");
+    assert!(written.exists(), "expected prefixed file at {:?}", written);
+}
+
+/// read_reflection_content on a file that does not exist: canonicalize of the
+/// file fails and the containment check rejects the unresolved path.
+#[test]
+fn test_s8_read_reflection_content_missing_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let bridge = Arc::new(NoOpBridge::new("local".into()));
+    let syncer = Syncer::with_forge_dir(bridge, dir.path().to_path_buf());
+    std::fs::create_dir_all(dir.path().join("reflections")).unwrap();
+
+    let result = syncer.read_reflection_content("missing.md");
+    assert!(result.is_err(), "expected err, got {:?}", result);
+}
+
+/// read_reflection_content round-trip for an existing report.
+#[test]
+fn test_s8_read_reflection_content_roundtrip() {
+    let dir = tempfile::tempdir().unwrap();
+    let bridge = Arc::new(NoOpBridge::new("local".into()));
+    let syncer = Syncer::with_forge_dir(bridge, dir.path().to_path_buf());
+    let report = dir.path().join("reflections").join("r1.md");
+    std::fs::create_dir_all(report.parent().unwrap()).unwrap();
+    std::fs::write(&report, "# report body").unwrap();
+
+    let content = syncer.read_reflection_content("r1.md").unwrap();
+    assert_eq!(content, "# report body");
+}

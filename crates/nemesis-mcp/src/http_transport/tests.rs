@@ -243,3 +243,281 @@ async fn test_connect_sets_connected_flag() {
     transport.connect().await.unwrap();
     assert!(transport.is_connected());
 }
+
+// ===========================================================================
+// W4c 补测（2026-08-25）：send() 真实 HTTP 往返（wiremock）——JSON 分支 /
+// 空体 / 解析失败 / SSE 流 / 会话 ID 回传 / 202 / 5xx / 连接失败 / 缺 content-type
+// ===========================================================================
+
+use wiremock::matchers::{header, method, path};
+use wiremock::{Mock, MockServer, ResponseTemplate};
+
+fn w4c_request(method: &str, id: i64) -> TransportRequest {
+    TransportRequest {
+        jsonrpc: "2.0".to_string(),
+        id: Some(serde_json::Value::Number(id.into())),
+        method: method.to_string(),
+        params: None,
+    }
+}
+
+#[tokio::test]
+async fn test_w4c_http_send_json_response_round_trip() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/mcp"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "jsonrpc": "2.0", "id": 7, "result": {"tools": [{"name": "t1"}]}
+        })))
+        .mount(&server)
+        .await;
+
+    let mut t = HttpTransport::new(format!("{}/mcp", server.uri()));
+    t.connect().await.unwrap();
+    let resp = t.send(&w4c_request("tools/list", 7), 5000).await.unwrap();
+    assert_eq!(resp.id, serde_json::Value::Number(7.into()));
+    assert!(resp.result.is_some());
+    assert_eq!(resp.result.unwrap()["tools"][0]["name"], "t1");
+    t.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn test_w4c_http_send_empty_body_returns_synthetic_result() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/mcp"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(""))
+        .mount(&server)
+        .await;
+
+    let mut t = HttpTransport::new(format!("{}/mcp", server.uri()));
+    t.connect().await.unwrap();
+    let resp = t.send(&w4c_request("anything", 3), 5000).await.unwrap();
+    assert!(resp.result.is_some());
+    assert!(resp.error.is_none());
+    t.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn test_w4c_http_send_invalid_json_maps_send_failed() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/mcp"))
+        .respond_with(ResponseTemplate::new(200).set_body_string("<<<not-json"))
+        .mount(&server)
+        .await;
+
+    let mut t = HttpTransport::new(format!("{}/mcp", server.uri()));
+    t.connect().await.unwrap();
+    let err = t.send(&w4c_request("x", 1), 5000).await.unwrap_err();
+    assert!(err.message.contains("Failed to parse JSON response"));
+    t.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn test_w4c_http_send_sse_stream_parsed() {
+    let server = MockServer::start().await;
+    let body = "event: message\r\ndata: {\"jsonrpc\":\"2.0\",\"id\":9,\"result\":{\"ok\":true}}\r\n\r\n";
+    Mock::given(method("POST"))
+        .and(path("/mcp"))
+        .respond_with(ResponseTemplate::new(200).set_body_raw(body, "text/event-stream"))
+        .mount(&server)
+        .await;
+
+    let mut t = HttpTransport::new(format!("{}/mcp", server.uri()));
+    t.connect().await.unwrap();
+    let resp = t.send(&w4c_request("initialize", 9), 5000).await.unwrap();
+    assert_eq!(resp.id, serde_json::Value::Number(9.into()));
+    assert_eq!(resp.result.unwrap()["ok"], true);
+    t.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn test_w4c_http_send_sse_stream_without_data_is_error() {
+    let server = MockServer::start().await;
+    let body = "event: message\r\n: only a comment\r\n\r\n";
+    Mock::given(method("POST"))
+        .and(path("/mcp"))
+        .respond_with(ResponseTemplate::new(200).set_body_raw(body, "text/event-stream"))
+        .mount(&server)
+        .await;
+
+    let mut t = HttpTransport::new(format!("{}/mcp", server.uri()));
+    t.connect().await.unwrap();
+    let err = t.send(&w4c_request("x", 4), 5000).await.unwrap_err();
+    // 流结束（EOF）→ buffer 里只剩注释行 → no data field
+    assert!(err.message.contains("no data field") || err.message.contains("ended without data"));
+    t.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn test_w4c_http_send_202_returns_synthetic_result() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/mcp"))
+        .respond_with(ResponseTemplate::new(202))
+        .mount(&server)
+        .await;
+
+    let mut t = HttpTransport::new(format!("{}/mcp", server.uri()));
+    t.connect().await.unwrap();
+    let resp = t.send(&w4c_request("notifications/initialized", 5), 5000)
+        .await
+        .unwrap();
+    assert!(resp.result.is_some());
+    assert!(resp.error.is_none());
+    t.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn test_w4c_http_send_error_status_maps_send_failed() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/mcp"))
+        .respond_with(ResponseTemplate::new(500).set_body_string("server exploded"))
+        .mount(&server)
+        .await;
+
+    let mut t = HttpTransport::new(format!("{}/mcp", server.uri()));
+    t.connect().await.unwrap();
+    let err = t.send(&w4c_request("x", 1), 5000).await.unwrap_err();
+    assert!(err.message.contains("HTTP 500"));
+    assert!(err.message.contains("server exploded"));
+    t.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn test_w4c_http_send_connection_failure_maps_send_failed() {
+    // 指向必然拒绝连接的端口
+    let mut t = HttpTransport::new("http://127.0.0.1:1/mcp");
+    t.connect().await.unwrap();
+    let err = t.send(&w4c_request("x", 1), 2000).await.unwrap_err();
+    assert!(err.message.contains("HTTP request failed"));
+}
+
+#[tokio::test]
+async fn test_w4c_http_session_id_echoed_on_subsequent_requests() {
+    let server = MockServer::start().await;
+    // wiremock 按挂载顺序取第一个匹配的 mock：带 header 的请求必须先挂
+    // 第二个请求：必须带上 Mcp-Session-Id: sid-abc
+    Mock::given(method("POST"))
+        .and(path("/mcp"))
+        .and(header("Mcp-Session-Id", "sid-abc"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(
+            serde_json::json!({"jsonrpc":"2.0","id":2,"result":{"echo":true}}),
+        ))
+        .mount(&server)
+        .await;
+    // 第一个请求（无 session header 落到这里）：响应头里发 Mcp-Session-Id
+    Mock::given(method("POST"))
+        .and(path("/mcp"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("mcp-session-id", "sid-abc")
+                .set_body_json(serde_json::json!({"jsonrpc":"2.0","id":1,"result":{}})),
+        )
+        .mount(&server)
+        .await;
+
+    let mut t = HttpTransport::new(format!("{}/mcp", server.uri()));
+    t.connect().await.unwrap();
+    let r1 = t.send(&w4c_request("initialize", 1), 5000).await.unwrap();
+    assert!(r1.result.is_some());
+    assert_eq!(t.session_id.as_deref(), Some("sid-abc"));
+
+    let r2 = t.send(&w4c_request("tools/list", 2), 5000).await.unwrap();
+    assert_eq!(r2.result.unwrap()["echo"], true);
+    t.close().await.unwrap();
+    // close 清掉 session id
+    assert!(t.session_id.is_none());
+}
+
+#[tokio::test]
+async fn test_w4c_http_send_without_content_type_still_parses_json() {
+    // 无 content-type 头 → 按空串处理 → 走 JSON 解析分支
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/mcp"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_string(r#"{"jsonrpc":"2.0","id":11,"result":{"plain":1}}"#),
+        )
+        .mount(&server)
+        .await;
+
+    let mut t = HttpTransport::new(format!("{}/mcp", server.uri()));
+    t.connect().await.unwrap();
+    let resp = t.send(&w4c_request("x", 11), 5000).await.unwrap();
+    assert_eq!(resp.result.unwrap()["plain"], 1);
+    t.close().await.unwrap();
+}
+
+// ===========================================================================
+// S1 补测（2026-08-26）：SSE LF 分隔（"\n\n"）/ 空流 EOF / 响应体截断读取失败
+// ===========================================================================
+
+#[tokio::test]
+async fn test_s1_http_send_sse_lf_only_delimiter() {
+    // Existing SSE tests use CRLF bodies, so the `buffer.find("\n\n")` fast
+    // path never fires. LF-only framing must hit it.
+    let server = MockServer::start().await;
+    let body = "event: message\ndata: {\"jsonrpc\":\"2.0\",\"id\":31,\"result\":{\"lf\":true}}\n\n";
+    Mock::given(method("POST"))
+        .and(path("/mcp"))
+        .respond_with(ResponseTemplate::new(200).set_body_raw(body, "text/event-stream"))
+        .mount(&server)
+        .await;
+
+    let mut t = HttpTransport::new(format!("{}/mcp", server.uri()));
+    t.connect().await.unwrap();
+    let resp = t.send(&w4c_request("initialize", 31), 5000).await.unwrap();
+    assert_eq!(resp.result.unwrap()["lf"], true);
+    t.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn test_s1_http_send_sse_empty_stream_maps_ended_without_data() {
+    // Truly empty SSE body → EOF with an empty buffer → the dedicated
+    // "stream ended without data" error (not the no-data-field parse error).
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/mcp"))
+        .respond_with(ResponseTemplate::new(200).set_body_raw("", "text/event-stream"))
+        .mount(&server)
+        .await;
+
+    let mut t = HttpTransport::new(format!("{}/mcp", server.uri()));
+    t.connect().await.unwrap();
+    let err = t.send(&w4c_request("x", 32), 5000).await.unwrap_err();
+    assert!(err.message.contains("ended without data"), "got: {}", err.message);
+    t.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn test_s1_http_send_truncated_body_maps_read_failure() {
+    // Raw socket server that advertises Content-Length: 100 but sends 5 bytes
+    // and closes → reqwest text() fails mid-body → "Failed to read response".
+    use std::io::{Read, Write};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server_thread = std::thread::spawn(move || {
+        if let Ok((mut sock, _)) = listener.accept() {
+            let mut buf = [0u8; 8192];
+            let _ = sock.read(&mut buf); // drain the request (best effort)
+            let resp = b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 100\r\nConnection: close\r\n\r\nshort";
+            let _ = sock.write_all(resp);
+            let _ = sock.flush();
+            let _ = sock.shutdown(std::net::Shutdown::Both);
+        }
+    });
+
+    let mut t = HttpTransport::new(format!("http://{}/mcp", addr));
+    t.connect().await.unwrap();
+    let err = t.send(&w4c_request("x", 33), 5000).await.unwrap_err();
+    assert!(
+        err.message.contains("Failed to read response"),
+        "got: {}",
+        err.message
+    );
+    server_thread.join().unwrap();
+}

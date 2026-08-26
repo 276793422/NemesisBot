@@ -75,3 +75,5 @@ impl BuildConfig {
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod w5d_tests;

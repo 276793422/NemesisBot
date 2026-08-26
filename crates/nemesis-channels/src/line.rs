@@ -55,8 +55,14 @@ pub struct LineEvent {
 pub struct LineSource {
     #[serde(rename = "type")]
     pub source_type: String,
+    /// LINE webhook JSON uses camelCase keys (`userId`/`groupId`/`roomId`).
+    /// BUG #11 fix (2026-08-25): 缺 rename 时反序列化得到 None，
+    /// 导致所有入站消息 sender_id/chat_id 变成 "unknown"。
+    #[serde(rename = "userId", alias = "user_id")]
     pub user_id: Option<String>,
+    #[serde(rename = "groupId", alias = "group_id")]
     pub group_id: Option<String>,
+    #[serde(rename = "roomId", alias = "room_id")]
     pub room_id: Option<String>,
 }
 

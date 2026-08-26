@@ -1,0 +1,21 @@
+last_sync = "2026-08-27T00:18:56.678735600+08:00"
+
+[[discovered]]
+id = "test-node"
+name = "Bot test-nod"
+address = "127.0.0.1:0"
+addresses = []
+rpc_port = 0
+role = "worker"
+category = "general"
+priority = 1
+enabled = true
+
+[discovered.status]
+state = "online"
+last_seen = "2026-08-27T00:18:56.670338400+08:00"
+uptime = "8.3915ms"
+tasks_completed = 0
+success_rate = 0.0
+avg_response_time = 0
+last_error = ""

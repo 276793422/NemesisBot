@@ -595,10 +595,19 @@ $results | ConvertTo-Json -Compress
             "[Tools] Running PowerShell script"
         );
 
+        // (BUG #33, quality-hardening goal 冲刺 S13) Windows PowerShell 5.1 对
+        // 重定向管道的 stdout 用 OEM 代码页（中文系统 cp936）+ best-fit 回退：
+        // 窗口标题里的不可映射字符（emoji/PUA 字形等）会被替换成控制字节
+        // （实测 0x18/0x19），from_utf8_lossy 原样保留后 serde_json 拒绝字符
+        // 串内裸控制字符——只要任一开着的窗口标题含此类字符，
+        // list_windows/JSON 解析路径必失败。前置强制 UTF-8 输出（对所有
+        // PowerShell 调用方生效，拿到的是真实标题而非替换符）。
+        let utf8_script =
+            format!("[Console]::OutputEncoding=[System.Text.Encoding]::UTF8; {script}");
         let output = tokio::time::timeout(
             timeout,
             tokio::process::Command::new("powershell.exe")
-                .args(["-NoProfile", "-NonInteractive", "-Command", script])
+                .args(["-NoProfile", "-NonInteractive", "-Command", &utf8_script])
                 .output(),
         )
         .await

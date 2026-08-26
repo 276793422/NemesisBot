@@ -513,3 +513,344 @@ async fn test_list_pending_deduplicates() {
         "list_pending should still not contain duplicates after recover"
     );
 }
+
+// ============================================================
+// W3b coverage batch: save/persist failure arms (warn-not-fail),
+// barrier-loop error propagation + memory-hit arm, IO error on
+// dir-at-snapshot-path, remove-warn, cleanup_old error propagation,
+// recover read errors, cache_dir getter
+// ============================================================
+
+#[tokio::test]
+async fn test_w3b_save_warns_and_continues_when_cache_dir_is_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let blocker = dir.path().join("blocker");
+    std::fs::write(&blocker, b"i am a file").unwrap();
+
+    // cache_dir occupied by a regular file → create_dir_all fails →
+    // save() must only warn and still record the snapshot in memory.
+    let store = ContinuationStore::new(&blocker);
+    store.save(make_snapshot("w3b-nodisk")).await.unwrap();
+    assert!(store.contains("w3b-nodisk"), "memory must win when disk fails");
+    assert_eq!(store.len(), 1);
+}
+
+#[tokio::test]
+async fn test_w3b_save_persist_tmp_and_rename_failures() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = ContinuationStore::new(dir.path());
+
+    // (a) tmp path blocked by a directory → tmp write fails → warn, still Ok
+    std::fs::create_dir_all(dir.path().join("w3b-tmpfail.json.tmp")).unwrap();
+    store.save(make_snapshot("w3b-tmpfail")).await.unwrap();
+    assert!(store.contains("w3b-tmpfail"));
+
+    // (b) final path blocked by a directory → rename fails → warn, still Ok
+    std::fs::create_dir_all(dir.path().join("w3b-renfail.json")).unwrap();
+    store.save(make_snapshot("w3b-renfail")).await.unwrap();
+    assert!(store.contains("w3b-renfail"));
+    // The tmp file was written before the rename failed.
+    assert!(dir.path().join("w3b-renfail.json.tmp").exists());
+}
+
+#[tokio::test]
+async fn test_w3b_load_barrier_loop_propagates_parse_error() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = ContinuationStore::new(dir.path());
+
+    // tmp exists → the retry loop is entered; the final .json exists but is
+    // corrupt → load_from_disk_inner returns Json (not NotFound) which must
+    // propagate immediately instead of sleeping through all 50 retries.
+    std::fs::write(dir.path().join("w3b-corrupt.json.tmp"), "saving").unwrap();
+    std::fs::write(dir.path().join("w3b-corrupt.json"), "<<<not json>>>").unwrap();
+
+    let start = std::time::Instant::now();
+    let result = store.load("w3b-corrupt").await;
+    let elapsed = start.elapsed();
+    assert!(
+        matches!(result, Err(ContinuationError::Json(_))),
+        "expected Json error, got: {:?}",
+        result
+    );
+    assert!(
+        elapsed < std::time::Duration::from_secs(2),
+        "parse error must propagate immediately, took {:?}",
+        elapsed
+    );
+}
+
+#[tokio::test]
+async fn test_w3b_load_barrier_loop_memory_hit() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = std::sync::Arc::new(ContinuationStore::new(dir.path()));
+    let task_id = "w3b-memhit".to_string();
+
+    // A stale tmp file makes load() enter the retry loop (memory + disk both
+    // initially miss). A parallel writer inserts the snapshot into memory
+    // mid-retry; the loop's memory check must pick it up on a later iteration.
+    std::fs::write(dir.path().join("w3b-memhit.json.tmp"), "saving").unwrap();
+
+    let writer = {
+        let store = store.clone();
+        let task_id = task_id.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(60)).await;
+            store
+                .snapshots
+                .lock()
+                .insert(task_id, make_snapshot("w3b-memhit"));
+        })
+    };
+
+    let loaded = store.load(&task_id).await.unwrap();
+    assert_eq!(loaded.task_id, "w3b-memhit");
+    writer.await.unwrap();
+}
+
+#[tokio::test]
+async fn test_w3b_load_read_error_when_snapshot_is_directory() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = ContinuationStore::new(dir.path());
+
+    // {task}.json as a directory: exists() is true so the NotFound guard is
+    // skipped, but read_to_string fails → Io error surfaces.
+    std::fs::create_dir_all(dir.path().join("w3b-ioerr.json")).unwrap();
+    let result = store.load("w3b-ioerr").await;
+    assert!(
+        matches!(result, Err(ContinuationError::Io(_))),
+        "expected Io error, got: {:?}",
+        result
+    );
+}
+
+#[tokio::test]
+async fn test_w3b_remove_warns_when_disk_file_is_directory() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = ContinuationStore::new(dir.path());
+
+    store.save(make_snapshot("w3b-rmwarn")).await.unwrap();
+    let path = dir.path().join("w3b-rmwarn.json");
+    std::fs::remove_file(&path).unwrap();
+    std::fs::create_dir_all(&path).unwrap(); // dir where the file used to be
+
+    // remove() still reports success for the in-memory entry; the disk
+    // delete failure is only logged.
+    assert!(store.remove("w3b-rmwarn").await);
+    assert!(!store.contains("w3b-rmwarn"));
+    assert!(path.is_dir(), "the directory must survive the failed delete");
+}
+
+#[tokio::test]
+async fn test_w3b_cleanup_old_read_dir_error_and_dir_named_json_remove_error() {
+    // (a) cache_dir occupied by a regular file → exists() passes but
+    // read_dir fails → the io::Error must propagate via `?`.
+    let holder = tempfile::tempdir().unwrap();
+    let blocker = holder.path().join("blocker");
+    std::fs::write(&blocker, b"file").unwrap();
+    let store = ContinuationStore::new(&blocker);
+    let result = store.cleanup_old(std::time::Duration::from_secs(3600)).await;
+    assert!(result.is_err(), "read_dir failure must propagate");
+
+    // (b) a DIRECTORY named *.json inside a valid cache dir passes the
+    // extension/mtime checks but remove_file(dir) fails → propagate.
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join("stale.json")).unwrap();
+    let store2 = ContinuationStore::new(dir.path());
+    // Ensure the directory's mtime is strictly older than the cutoff.
+    tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+    let result2 = store2.cleanup_old(std::time::Duration::ZERO).await;
+    assert!(result2.is_err(), "remove_file on a directory must fail");
+    assert!(dir.path().join("stale.json").is_dir(), "dir must survive");
+}
+
+#[tokio::test]
+async fn test_w3b_recover_read_dir_error_and_per_file_read_error() {
+    // (a) cache_dir occupied by a regular file → read_dir propagates via `?`
+    let holder = tempfile::tempdir().unwrap();
+    let blocker = holder.path().join("blocker");
+    std::fs::write(&blocker, b"file").unwrap();
+    let store = ContinuationStore::new(&blocker);
+    assert!(store.recover_from_disk().await.is_err());
+
+    // (b) *.json DIRECTORY next to a valid snapshot → per-file read warn is
+    // skipped, the good file is still recovered.
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join("weird.json")).unwrap();
+    let good = make_snapshot("w3b-good");
+    std::fs::write(
+        dir.path().join("w3b-good.json"),
+        serde_json::to_string_pretty(&good).unwrap(),
+    )
+    .unwrap();
+
+    let store2 = ContinuationStore::new(dir.path());
+    let recovered = store2.recover_from_disk().await.unwrap();
+    assert_eq!(recovered, 1, "only the readable snapshot is recovered");
+    assert!(store2.contains("w3b-good"));
+}
+
+#[tokio::test]
+async fn test_w3b_cache_dir_getter() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = ContinuationStore::new(dir.path());
+    assert_eq!(store.cache_dir(), dir.path());
+}
+
+// ============================================================
+// S4 coverage: save-barrier final attempt, remove warn arm,
+// cleanup_old removal, list_pending dedupe, recover_from_disk
+// skip/deser-err/read-err arms.
+// ============================================================
+
+struct S4AllEventsSubscriber;
+impl tracing::Subscriber for S4AllEventsSubscriber {
+    fn enabled(&self, _metadata: &tracing::Metadata<'_>) -> bool {
+        true
+    }
+    fn new_span(&self, _span: &tracing::span::Attributes<'_>) -> tracing::Id {
+        tracing::Id::from_u64(1)
+    }
+    fn record(&self, _span: &tracing::Id, _values: &tracing::span::Record<'_>) {}
+    fn record_follows_from(&self, _span: &tracing::Id, _follows: &tracing::Id) {}
+    fn event(&self, _event: &tracing::Event<'_>) {}
+    fn enter(&self, _span: &tracing::Id) {}
+    fn exit(&self, _span: &tracing::Id) {}
+}
+
+fn s4_tracing_subscriber() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        let _ = tracing::subscriber::set_global_default(S4AllEventsSubscriber);
+    });
+}
+
+/// A snapshot appearing in memory between the last retry check and the final
+/// post-loop check is returned by the final attempt
+/// (continuation_store.rs 132-139). The paused clock makes the 50x100ms
+/// retry loop instant; the insert is scheduled at t=4950ms — after the 50th
+/// loop memory check (t=4900) but before the final check (t=5000).
+#[tokio::test(start_paused = true)]
+async fn test_s4_load_final_attempt_after_retry_exhaustion() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path()).unwrap();
+    // Presence of the tmp file makes `might_be_saving` true → retry loop.
+    std::fs::write(dir.path().join("s4-late.json.tmp"), b"").unwrap();
+
+    let store = std::sync::Arc::new(ContinuationStore::new(dir.path()));
+
+    let waiter_store = store.clone();
+    let waiter =
+        tokio::spawn(
+            async move { waiter_store.load("s4-late").await },
+        );
+
+    let inserter_store = store.clone();
+    tokio::spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_millis(4950)).await;
+        inserter_store
+            .snapshots
+            .lock()
+            .insert("s4-late".to_string(), make_snapshot("s4-late"));
+    });
+
+    let snap = waiter.await.unwrap().unwrap();
+    assert_eq!(snap.task_id, "s4-late");
+}
+
+/// remove() with the snapshot path blocked by a directory warns but still
+/// reports memory removal (continuation_store.rs 150-159).
+#[tokio::test]
+async fn test_s4_remove_snapshot_path_is_directory() {
+    s4_tracing_subscriber();
+    let dir = tempfile::tempdir().unwrap();
+    let store = ContinuationStore::new(dir.path());
+    store.save(make_snapshot("s4-rm")).await.unwrap();
+
+    // Replace the snapshot file with a directory to break remove_file.
+    let path = dir.path().join("s4-rm.json");
+    std::fs::remove_file(&path).unwrap();
+    std::fs::create_dir_all(&path).unwrap();
+
+    assert!(store.remove("s4-rm").await, "memory removal still succeeds");
+    assert!(!store.contains("s4-rm"));
+    assert!(path.is_dir(), "blocked path untouched");
+}
+
+/// cleanup_old removes an aged snapshot from memory and disk
+/// (continuation_store.rs 203-217).
+#[tokio::test]
+async fn test_s4_cleanup_old_removes_aged_snapshot() {
+    s4_tracing_subscriber();
+    let dir = tempfile::tempdir().unwrap();
+    let store = ContinuationStore::new(dir.path());
+    store.save(make_snapshot("s4-old")).await.unwrap();
+    assert!(dir.path().join("s4-old.json").exists());
+
+    // Make the file clearly older than a 20ms cutoff.
+    tokio::time::sleep(std::time::Duration::from_millis(60)).await;
+    let removed = store
+        .cleanup_old(std::time::Duration::from_millis(20))
+        .await
+        .unwrap();
+    assert_eq!(removed, 1);
+    assert!(!store.contains("s4-old"));
+    assert!(!dir.path().join("s4-old.json").exists());
+}
+
+/// list_pending skips non-json entries and dedupes a disk file already
+/// present in memory (continuation_store.rs 240-252).
+#[tokio::test]
+async fn test_s4_list_pending_dedupe_and_non_json() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = ContinuationStore::new(dir.path());
+    store.save(make_snapshot("s4-dup")).await.unwrap();
+    std::fs::write(dir.path().join("s4-notes.txt"), "ignore me").unwrap();
+
+    let ids = store.list_pending().await;
+    assert_eq!(
+        ids.iter().filter(|id| *id == "s4-dup").count(),
+        1,
+        "no duplicate entries: {:?}",
+        ids
+    );
+    assert!(!ids.iter().any(|id| id.ends_with(".txt")));
+}
+
+/// recover_from_disk: skips in-memory duplicates, warns on undecodable and
+/// unreadable snapshot files, recovers the good one
+/// (continuation_store.rs 271-312).
+#[tokio::test]
+async fn test_s4_recover_from_disk_mixed_entries() {
+    s4_tracing_subscriber();
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path()).unwrap();
+
+    // Good snapshot on disk.
+    std::fs::write(
+        dir.path().join("s4-ok.json"),
+        serde_json::to_string(&make_snapshot("s4-ok")).unwrap(),
+    )
+    .unwrap();
+    // Duplicate of an in-memory snapshot → skip.
+    std::fs::write(
+        dir.path().join("s4-skip.json"),
+        serde_json::to_string(&make_snapshot("s4-skip")).unwrap(),
+    )
+    .unwrap();
+    // Invalid JSON → deserialize error.
+    std::fs::write(dir.path().join("s4-bad.json"), "{not json").unwrap();
+    // Unreadable entry (directory with .json name) → read error.
+    std::fs::create_dir_all(dir.path().join("s4-dir.json")).unwrap();
+
+    let store = ContinuationStore::new(dir.path());
+    store
+        .snapshots
+        .lock()
+        .insert("s4-skip".to_string(), make_snapshot("s4-skip"));
+
+    let recovered = store.recover_from_disk().await.unwrap();
+    assert_eq!(recovered, 1, "only s4-ok is newly recovered");
+    assert!(store.contains("s4-ok"));
+    assert!(store.contains("s4-skip"));
+    assert!(!store.contains("s4-bad"));
+}

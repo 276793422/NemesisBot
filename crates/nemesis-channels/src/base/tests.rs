@@ -1076,3 +1076,64 @@ fn test_handle_message_with_allowed_user() {
     assert!(ch.handle_message("alice"));
     assert_eq!(ch.messages_received(), 1);
 }
+
+// ===========================================================================
+// W4c 补测（2026-08-25）：BaseChannel Clone 保留运行态（enabled/running 快照 +
+// stats Arc 共享 + sync_targets 独立副本）
+// ===========================================================================
+
+#[tokio::test]
+async fn test_w4c_clone_preserves_state_and_shares_stats() {
+    let ch = BaseChannel::new("w4c-clone-src");
+    ch.set_enabled(true);
+    ch.set_running(true);
+    ch.record_sent();
+    ch.record_received();
+
+    let cloned = ch.clone();
+
+    // 快照字段随克隆走
+    assert!(cloned.is_running());
+    // stats 是 Arc：两边共享同一份计数
+    assert_eq!(cloned.messages_sent(), 1);
+    assert_eq!(cloned.messages_received(), 1);
+    ch.record_sent();
+    assert_eq!(cloned.messages_sent(), 2, "stats must be Arc-shared across clones");
+
+    // sync_targets 是独立副本：加到克隆上不影响原件
+    let target = MockChannel::new("w4c-clone-tgt");
+    cloned.add_sync_target("w4c-clone-tgt", Arc::new(target)).unwrap();
+    let sent_before = ch.messages_sent();
+    ch.sync_to_targets("should go nowhere").await;
+    assert_eq!(ch.messages_sent(), sent_before, "original must not have the clone's target");
+}
+
+// ===========================================================================
+// S2 coverage (2026-08-26): tracing field arms in sync_to_targets
+// ===========================================================================
+
+/// Enable a global tracing subscriber for this test binary (idempotent).
+/// Tracing macro field expressions only evaluate when a subscriber is
+/// active; existing tests already exercise the code path but without a
+/// subscriber the `content_len = ...`-style field lines never run.
+fn s2_enable_tracing() {
+    let _ = tracing_subscriber::fmt()
+        .with_max_level(tracing::Level::DEBUG)
+        .with_writer(std::io::sink)
+        .try_init();
+}
+
+#[tokio::test]
+async fn s2_sync_to_targets_logs_field_arms_with_subscriber() {
+    s2_enable_tracing();
+    let ch = BaseChannel::new("source");
+    let target1 = Arc::new(MockChannel::new("target1"));
+    ch.add_sync_target("target1", Arc::clone(&target1) as Arc<dyn Channel>)
+        .unwrap();
+
+    ch.sync_to_targets("subscriber field coverage").await;
+
+    let msgs = target1.sent_messages();
+    assert_eq!(msgs.len(), 1);
+    assert_eq!(msgs[0].content, "subscriber field coverage");
+}

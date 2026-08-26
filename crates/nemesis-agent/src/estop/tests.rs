@@ -60,3 +60,13 @@ fn multiple_subscribers_all_see_change() {
     assert_eq!(*rx1.borrow(), false);
     assert_eq!(*rx2.borrow(), false);
 }
+
+/// Default impl == new(): released, subscribable. (Covers `Default`.)
+#[test]
+fn default_matches_new() {
+    let e = EstopState::default();
+    assert!(!e.is_engaged());
+    let rx = e.subscribe();
+    e.trigger();
+    assert_eq!(*rx.borrow(), true);
+}

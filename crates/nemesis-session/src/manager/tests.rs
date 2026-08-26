@@ -1009,3 +1009,39 @@ fn test_message_fields_serialization_order() {
     assert!(!json.contains("\"tool_calls\""));
     assert!(!json.contains("\"tool_call_id\""));
 }
+
+// ===========================================================================
+// S12b batch（quality-hardening goal 冲刺）：load_chat_sessions 目录扫描防御臂
+// ===========================================================================
+
+#[test]
+fn s12b_load_chat_sessions_skips_non_json_and_corrupt_files() {
+    use std::io::Write as _;
+
+    let dir = tempfile::tempdir().unwrap();
+    let storage = dir.path().join("sessions");
+    std::fs::create_dir_all(&storage).unwrap();
+
+    // 非 .json 文件 → extension 守卫 continue
+    let mut txt = std::fs::File::create(storage.join("notes.txt")).unwrap();
+    txt.write_all(b"not a session").unwrap();
+    // .json 但内容损坏 → 反序列化失败被静默跳过
+    let mut bad = std::fs::File::create(storage.join("corrupt.json")).unwrap();
+    bad.write_all(b"{ not valid json !!!").unwrap();
+    // 合法会话文件 → 正常载入
+    let good = r#"{
+        "key": "legacy",
+        "messages": [],
+        "created": "2026-08-23T00:00:00Z",
+        "updated": "2026-08-23T00:00:00Z"
+    }"#;
+    let mut ok = std::fs::File::create(storage.join("legacy.json")).unwrap();
+    ok.write_all(good.as_bytes()).unwrap();
+
+    let mgr = SessionMgr::with_storage(Duration::from_secs(3600), &storage.to_string_lossy());
+    // 只有合法那条真正进内存
+    let history = mgr.get_history("legacy");
+    assert_eq!(history.len(), 0, "空消息数组载入为空历史（不 panic 即可）");
+    // 坏文件没有把垃圾塞进任何键
+    assert_eq!(mgr.get_history("corrupt").len(), 0);
+}

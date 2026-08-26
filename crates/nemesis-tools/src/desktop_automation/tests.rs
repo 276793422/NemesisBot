@@ -1854,3 +1854,129 @@ async fn test_list_windows_no_title_does_not_set_title_contains() {
         .await;
     assert!(!result.is_error);
 }
+
+// ============================================================
+// W4a coverage gap closure (standalone PowerShell read-only
+// lane). Same weak-assertion pattern as the existing
+// test_desktop_tool_list_windows_no_mcp above: with no MCP
+// backend, find_window falls back to enumerate_windows_ps,
+// which spawns a real powershell.exe against the live desktop.
+// The outcome (no match / match / enumeration error) depends on
+// host window state, so only "does not panic / returns a
+// ToolResult" can be asserted hermetically.
+//
+// NOT exercised here (structural exemption, see goal doc §9.4):
+// standalone_click_at (moves the real mouse via mouse_event),
+// standalone_type_text (sends real keystrokes via SendKeys) and
+// standalone_screenshot (real CopyFromScreen) physically act on
+// the operator's desktop and must never run in tests.
+// ============================================================
+
+#[tokio::test]
+async fn w4a_find_window_without_mcp_runs_standalone_enumeration() {
+    let tool = DesktopTool::new(PathBuf::from("."), None);
+    let result = tool
+        .execute(&serde_json::json!({
+            "action": "find_window",
+            "title": "w4a_no_such_window_title_zz"
+        }))
+        .await;
+    // Read-only enumeration; any of the three outcomes is valid
+    // depending on host state, so no is_error assertion.
+    let _ = &result;
+}
+
+// ===========================================================================
+// S2 coverage (2026-08-26): screenshot without MCP caller (standalone
+// fall-through) + find_window without MCP caller (read-only PS enumeration)
+// ===========================================================================
+
+fn s2_enable_tracing() {
+    let _ = tracing_subscriber::fmt()
+        .with_max_level(tracing::Level::DEBUG)
+        .with_writer(std::io::sink)
+        .try_init();
+}
+
+/// take_screenshot with `mcp_caller: None` and all four region params set
+/// skips the screen-bounds pre-step and does a benign 10x10 capture.
+#[cfg(target_os = "windows")]
+#[tokio::test]
+async fn s2_take_screenshot_without_mcp_uses_standalone_capture() {
+    s2_enable_tracing();
+    let dir = tempfile::tempdir().unwrap();
+    let tool = DesktopTool::new(dir.path().to_path_buf(), None);
+
+    let result = tool
+        .execute(&serde_json::json!({
+            "action": "take_screenshot",
+            "x": 0,
+            "y": 0,
+            "width": 10,
+            "height": 10
+        }))
+        .await;
+
+    assert!(!result.is_error, "got: {}", result.for_llm);
+    assert!(
+        result.for_llm.contains("desktop_screenshot_"),
+        "expected saved file in result, got: {}",
+        result.for_llm
+    );
+}
+
+/// find_window without MCP caller: the Found path (non-empty match set ->
+/// serde pretty serialization) needs a live titled window on the interactive
+/// desktop. The search needle is derived from the live list_windows output so
+/// the test never depends on a specific app being open; in a headless session
+/// with zero titled windows it degrades to a no-op pass.
+#[cfg(target_os = "windows")]
+#[tokio::test]
+async fn s2_find_window_without_mcp_found_path_via_live_title() {
+    let dir = tempfile::tempdir().unwrap();
+    let tool = DesktopTool::new(dir.path().to_path_buf(), None);
+
+    let listed = tool
+        .execute(&serde_json::json!({"action": "list_windows"}))
+        .await;
+    assert!(!listed.is_error, "list failed: {}", listed.for_llm);
+
+    // Pull up to 5 title values out of the pretty-printed JSON.
+    let mut needles: Vec<String> = Vec::new();
+    for line in listed.for_llm.lines().filter(|l| l.contains("\"title\":")) {
+        let raw = line.split("\"title\":").nth(1).unwrap_or("").trim();
+        let Some(start) = raw.find('"') else { continue };
+        let Some(rel_end) = raw[start + 1..].rfind('"') else { continue };
+        let value = &raw[start + 1..start + 1 + rel_end];
+        let needle: String = value.chars().take(6).collect();
+        let usable = needle.chars().count() >= 3
+            && !needle.contains('"')
+            && !needle.contains('\\');
+        if usable && !needles.contains(&needle) {
+            needles.push(needle);
+        }
+        if needles.len() >= 5 {
+            break;
+        }
+    }
+
+    if needles.is_empty() {
+        // Headless/no titled windows: Found path unreachable in this session.
+        return;
+    }
+
+    for needle in &needles {
+        let result = tool
+            .execute(&serde_json::json!({"action": "find_window", "title": needle}))
+            .await;
+        assert!(!result.is_error, "got: {}", result.for_llm);
+        if result.for_llm.contains("Found") {
+            assert!(result.for_llm.contains("matching"), "got: {}", result.for_llm);
+            return;
+        }
+    }
+    panic!(
+        "none of the live window titles matched anymore: {:?}",
+        needles
+    );
+}

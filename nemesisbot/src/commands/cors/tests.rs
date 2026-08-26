@@ -651,3 +651,320 @@ fn test_cors_default_config_values() {
     );
     assert_eq!(config["max_age"], 3600);
 }
+
+// ===========================================================================
+// run() 全臂（S11c，quality-hardening goal 冲刺 S11）—— 此前 LH=0，40 个既有
+// 测试只覆盖 helper（load_or_create_cors 等），dispatch 层从没跑过。
+// env home 隔离 + GLOBAL_STATE_LOCK 串行；配置落 {home}/config/cors.json。
+// ===========================================================================
+
+mod run_arm {
+    use super::super::{run, CorsAction, CorsDevModeAction};
+    use serde_json::json;
+
+    fn with_env_home(f: impl FnOnce(std::path::PathBuf)) {
+        let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        unsafe {
+            std::env::set_var("NEMESISBOT_HOME", tmp.path());
+        }
+        f(tmp.path().join(".nemesisbot"));
+        unsafe {
+            std::env::remove_var("NEMESISBOT_HOME");
+        }
+    }
+
+    fn cors_of(home: &std::path::Path) -> std::path::PathBuf {
+        home.join("config").join("cors.json")
+    }
+
+    fn write_cors(home: &std::path::Path, cfg: serde_json::Value) {
+        let p = cors_of(home);
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        std::fs::write(p, serde_json::to_string_pretty(&cfg).unwrap()).unwrap();
+    }
+
+    fn read_cors(home: &std::path::Path) -> serde_json::Value {
+        serde_json::from_str(&std::fs::read_to_string(cors_of(home)).unwrap()).unwrap()
+    }
+
+    // --- List ---
+
+    #[test]
+    fn list_without_config_prints_initialize_hint() {
+        with_env_home(|_home| {
+            run(CorsAction::List, false).expect("无 cors.json → 提示 + Ok");
+        });
+    }
+
+    #[test]
+    fn list_with_empty_and_populated_config_covers_all_branches() {
+        with_env_home(|home| {
+            // 空配置 → 两组 (none) 分支。
+            write_cors(&home, json!({}));
+            run(CorsAction::List, false).expect("空对象 → unwrap_or 默认分支");
+
+            // 填满 → 数组非空 + dev_mode/credentials/max_age 各分支。
+            write_cors(
+                &home,
+                json!({
+                    "allowed_origins": ["https://a.test"],
+                    "allowed_cdn_domains": ["cdn.test"],
+                    "development_mode": true,
+                    "allow_localhost": false,
+                    "allow_credentials": false,
+                    "max_age": 60
+                }),
+            );
+            run(CorsAction::List, false).expect("全字段 → Ok");
+        });
+    }
+
+    // --- Add ---
+
+    #[test]
+    fn add_rejects_non_http_origin() {
+        with_env_home(|home| {
+            let err = run(
+                CorsAction::Add { origin: "notaurl".into(), cdn: false },
+                false,
+            )
+            .expect_err("非 http(s) 前缀 → bail");
+            assert!(
+                err.to_string().contains("Invalid origin URL"),
+                "got: {err:#}"
+            );
+            assert!(!cors_of(&home).exists(), "bail 在任何写盘之前");
+        });
+    }
+
+    #[test]
+    fn add_valid_origin_and_cdn_domain_and_duplicate_noop() {
+        with_env_home(|home| {
+            run(
+                CorsAction::Add { origin: "https://app.test".into(), cdn: false },
+                false,
+            )
+            .expect("首个 origin 会顺带初始化 cors.json");
+            let cfg = read_cors(&home);
+            assert_eq!(cfg["allowed_origins"][0], "https://app.test");
+
+            run(CorsAction::Add { origin: "cdn.test".into(), cdn: true }, false)
+                .expect("cdn add ok");
+            assert_eq!(read_cors(&home)["allowed_cdn_domains"][0], "cdn.test");
+
+            // 重复添加 → already exists 分支，不重复入列。
+            run(
+                CorsAction::Add { origin: "https://app.test".into(), cdn: false },
+                false,
+            )
+            .expect("duplicate → Ok");
+            let cfg = read_cors(&home);
+            assert_eq!(
+                cfg["allowed_origins"].as_array().unwrap().len(),
+                1,
+                "重复 origin 不得二次入列"
+            );
+        });
+    }
+
+    // --- Remove ---
+
+    #[test]
+    fn remove_no_config_found_and_not_found() {
+        with_env_home(|home| {
+            // 无配置文件。
+            run(
+                CorsAction::Remove { origin: "https://x.test".into(), cdn: false },
+                false,
+            )
+            .expect("无 cors.json → No CORS configuration found");
+
+            write_cors(
+                &home,
+                json!({
+                    "allowed_origins": ["https://a.test", "https://b.test"],
+                    "allowed_cdn_domains": ["cdn.test"]
+                }),
+            );
+            run(
+                CorsAction::Remove { origin: "https://a.test".into(), cdn: false },
+                false,
+            )
+            .expect("remove ok");
+            let cfg = read_cors(&home);
+            assert_eq!(cfg["allowed_origins"], json!(["https://b.test"]));
+
+            run(
+                CorsAction::Remove { origin: "ghost.test".into(), cdn: true },
+                false,
+            )
+            .expect("cdn not found → Ok");
+            assert_eq!(
+                read_cors(&home)["allowed_cdn_domains"],
+                json!(["cdn.test"])
+            );
+        });
+    }
+
+    // --- DevMode ---
+
+    #[test]
+    fn devmode_enable_disable_and_status_states() {
+        with_env_home(|home| {
+            // Disable 无配置文件分支（264-267）。
+            run(
+                CorsAction::DevMode { action: CorsDevModeAction::Disable },
+                false,
+            )
+            .expect("无文件 disable → already disabled Ok");
+
+            // Status 无配置文件 → false 分支。
+            run(
+                CorsAction::DevMode { action: CorsDevModeAction::Status },
+                false,
+            )
+            .expect("无文件 status → DISABLED");
+
+            // Enable → 写文件；Status 读到 true。
+            run(
+                CorsAction::DevMode { action: CorsDevModeAction::Enable },
+                false,
+            )
+            .expect("enable ok");
+            assert_eq!(read_cors(&home)["development_mode"], true);
+            run(
+                CorsAction::DevMode { action: CorsDevModeAction::Status },
+                false,
+            )
+            .expect("enabled status ok");
+
+            // Disable 有配置文件 → 置 false。
+            run(
+                CorsAction::DevMode { action: CorsDevModeAction::Disable },
+                false,
+            )
+            .expect("disable ok");
+            assert_eq!(read_cors(&home)["development_mode"], false);
+        });
+    }
+
+    // --- Show ---
+
+    #[test]
+    fn show_without_and_with_config() {
+        with_env_home(|home| {
+            run(CorsAction::Show, false).expect("无 cors.json → 提示 + Ok");
+            write_cors(&home, json!({"allowed_origins": ["https://a.test"]}));
+            run(CorsAction::Show, false).expect("有配置 → 打印原文 + Ok");
+        });
+    }
+
+    // --- Validate ---
+
+    #[test]
+    fn validate_without_config_is_denied() {
+        with_env_home(|_home| {
+            run(
+                CorsAction::Validate { origin: "https://any.test".into() },
+                false,
+            )
+            .expect("无配置 → DENIED + Ok");
+        });
+    }
+
+    #[test]
+    fn validate_matches_exact_cdn_subdomain_and_wildcard() {
+        with_env_home(|home| {
+            write_cors(
+                &home,
+                json!({
+                    "allowed_origins": ["https://app.test"],
+                    "allowed_cdn_domains": ["cdn.test", "*.wild.test"],
+                    "development_mode": false,
+                    "allow_localhost": false
+                }),
+            );
+            // allowed_origins 精确命中。
+            run(
+                CorsAction::Validate { origin: "https://app.test".into() },
+                false,
+            )
+            .expect("exact origin ok");
+            // cdn 精确命中。
+            run(CorsAction::Validate { origin: "cdn.test".into() }, false)
+                .expect("cdn exact ok");
+            // cdn 子域命中（.cdn.test 后缀）。
+            run(
+                CorsAction::Validate { origin: "static.cdn.test".into() },
+                false,
+            )
+            .expect("cdn subdomain ok");
+            // 通配 *wild.test 前缀命中。
+            run(CorsAction::Validate { origin: "*wild.test".into() }, false)
+                .expect("wildcard prefix ok");
+            // 都不命中 + localhost 关 → DENIED。
+            run(
+                CorsAction::Validate { origin: "https://evil.test".into() },
+                false,
+            )
+            .expect("denied ok");
+        });
+    }
+
+    #[test]
+    fn validate_localhost_via_allow_localhost_and_via_dev_mode() {
+        with_env_home(|home| {
+            // allow_localhost=true、dev_mode=false → "allow_localhost" 来源。
+            write_cors(
+                &home,
+                json!({
+                    "allowed_origins": [],
+                    "allowed_cdn_domains": [],
+                    "development_mode": false,
+                    "allow_localhost": true
+                }),
+            );
+            for origin in [
+                "http://localhost:8080",
+                "http://127.0.0.1:49000",
+                "http://LOCALHOST:5173",
+            ] {
+                run(CorsAction::Validate { origin: origin.into() }, false)
+                    .expect("localhost 允许分支");
+            }
+
+            // dev_mode=true 时 localhost 也放行（development_mode + localhost）。
+            write_cors(
+                &home,
+                json!({
+                    "allowed_origins": [],
+                    "allowed_cdn_domains": [],
+                    "development_mode": true,
+                    "allow_localhost": false
+                }),
+            );
+            run(
+                CorsAction::Validate { origin: "http://localhost:3000".into() },
+                false,
+            )
+            .expect("dev_mode + localhost ok");
+
+            // 两者都关 → localhost DENIED。
+            write_cors(
+                &home,
+                json!({
+                    "allowed_origins": [],
+                    "allowed_cdn_domains": [],
+                    "development_mode": false,
+                    "allow_localhost": false
+                }),
+            );
+            run(
+                CorsAction::Validate { origin: "http://localhost:9999".into() },
+                false,
+            )
+            .expect("localhost 关闭 → DENIED");
+        });
+    }
+}

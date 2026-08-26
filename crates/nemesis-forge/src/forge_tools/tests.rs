@@ -1727,3 +1727,1229 @@ fn test_compute_quality_score_medium_content() {
     let (score, _) = compute_quality_score(&content, &ArtifactKind::Skill);
     assert!(score >= 5);
 }
+
+// =========================================================================
+// S8 coverage batch (quality-hardening goal 冲刺 S8)
+// =========================================================================
+
+/// MCP server content that passes Stage-1 static checks, all five Stage-2
+/// functional checks, and scores >= 60 on Stage-3 quality assessment
+/// (long + documented + error handling + typed defs). No security-gate
+/// patterns (no api_key/secret_key/rm -rf/curl|bash).
+const S8_MCP_PASS: &str = r#"# MCP server module (s8 fixture)
+# Usage: uv run server.py
+# description: coverage fixture server with error handling
+# This block fence exercises the documentation dimension:
+```
+not parsed as code, only counted
+```
+from mcp.server import Server
+
+server = Server("s8-fixture")
+
+def handle_tool(input: str) -> str:
+    try:
+        return input.upper()
+    except Exception as e:
+        return None
+
+@server.tool()
+def my_tool(input: str) -> str:
+    # delegate to the handler above
+    return handle_tool(input)
+
+if __name__ == "__main__":
+    server.run()
+"#;
+
+/// Minimal Go MCP content passing all five functional checks.
+const S8_MCP_GO_PASS: &str = r#"package main
+
+import "fmt"
+
+func main() {
+    fmt.Println("MCP server")
+}"#;
+
+/// Build a bare registry artifact with the given id/kind (Draft, no usage).
+fn s8_ft_artifact(id: &str, kind: ArtifactKind) -> nemesis_types::forge::Artifact {
+    nemesis_types::forge::Artifact {
+        id: id.to_string(),
+        name: id.to_string(),
+        kind,
+        version: "1.0".to_string(),
+        status: nemesis_types::forge::ArtifactStatus::Draft,
+        content: String::new(),
+        tool_signature: vec![],
+        created_at: chrono::Local::now().to_rfc3339(),
+        updated_at: chrono::Local::now().to_rfc3339(),
+        usage_count: 0,
+        last_degraded_at: None,
+        success_rate: 0.0,
+        consecutive_observing_rounds: 0,
+    }
+}
+
+/// Bridge mock whose share result is switchable at construction.
+struct S8ShareBridge {
+    ok: bool,
+    node_id: String,
+}
+
+#[async_trait::async_trait]
+impl ClusterForgeBridge for S8ShareBridge {
+    async fn share_reflection(&self, _report_json: serde_json::Value) -> Result<usize, String> {
+        if self.ok {
+            Ok(2)
+        } else {
+            Err("s8 share boom".to_string())
+        }
+    }
+    async fn get_remote_reflections(&self) -> Result<Vec<serde_json::Value>, String> {
+        Ok(vec![])
+    }
+    async fn get_online_peers(&self) -> Result<Vec<String>, String> {
+        Ok(vec!["p1".into()])
+    }
+    fn local_node_id(&self) -> &str {
+        &self.node_id
+    }
+    fn is_cluster_enabled(&self) -> bool {
+        true
+    }
+}
+
+/// Record one experience into the forge collector.
+async fn s8_record_exp(forge: &Forge, id: &str, tool: &str, success: bool, duration_ms: u64) {
+    forge
+        .collector()
+        .record(nemesis_types::forge::Experience {
+            id: id.to_string(),
+            tool_name: tool.to_string(),
+            input_summary: "in".into(),
+            output_summary: "out".into(),
+            success,
+            duration_ms,
+            timestamp: chrono::Local::now().to_rfc3339(),
+            session_key: "s8".into(),
+        })
+        .await;
+}
+
+/// quality_assessment: >500-byte content (completeness +10) and a fenced
+/// code block (documentation +5) must both contribute.
+#[test]
+fn test_s8_quality_assessment_long_fenced_content() {
+    let body = format!(
+        "# T\n\n# Usage: sample doc\n# description: demo body\n## S\n\n- a\n- b\n\n```\nblock\n```\n{}",
+        "x".repeat(600)
+    );
+    let r = quality_assessment(&body, &ArtifactKind::Skill);
+    let doc = r
+        .dimensions
+        .iter()
+        .find(|d| d.name == "Documentation")
+        .expect("documentation dimension");
+    assert!(doc.score >= 20, "doc score = {}", doc.score);
+    let comp = r
+        .dimensions
+        .iter()
+        .find(|d| d.name == "Content completeness")
+        .expect("completeness dimension");
+    assert!(comp.score > 10, "completeness score = {}", comp.score);
+}
+
+/// quality_assessment: Mcp content with `if __name__` main entry gets the
+/// +3 completeness bonus (385) and the full fixture scores >= 60.
+#[test]
+fn test_s8_quality_assessment_mcp_main_entry_high_score() {
+    let r = quality_assessment(S8_MCP_PASS, &ArtifactKind::Mcp);
+    assert!(r.score >= 60, "fixture score = {}", r.score);
+}
+
+/// forge_reflect must render the Recommendations section when the
+/// reflector produces recommendations (failing + slow tools).
+#[tokio::test]
+async fn test_s8_reflect_outputs_recommendations() {
+    let dir = tempfile::tempdir().unwrap();
+    let forge = Arc::new(Forge::new(ForgeConfig::default(), dir.path().to_path_buf()));
+    for i in 0..3 {
+        s8_record_exp(&forge, &format!("s8f-{}", i), "flaky_tool", false, 10).await;
+    }
+    for i in 0..2 {
+        s8_record_exp(&forge, &format!("s8s-{}", i), "slow_tool", true, 8000).await;
+    }
+    let executor = ForgeToolExecutor::new(forge);
+    let result = executor
+        .execute("forge_reflect", &serde_json::json!({}))
+        .await;
+    assert!(result.success);
+    assert!(
+        result.content.contains("### Recommendations"),
+        "no recommendations section: {}",
+        result.content
+    );
+    assert!(result.content.contains("Investigate failures in tool 'flaky_tool'"));
+    assert!(result.content.contains("Consider optimizing or caching results for tool 'slow_tool'"));
+}
+
+/// forge_create skill with a hardcoded secret is rejected by the security
+/// gate inside Forge::create_skill (Err branch of the skill path).
+#[tokio::test]
+async fn test_s8_create_skill_security_rejected() {
+    let dir = tempfile::tempdir().unwrap();
+    let forge = Arc::new(Forge::new(ForgeConfig::default(), dir.path().to_path_buf()));
+    let executor = ForgeToolExecutor::new(forge);
+    let result = executor
+        .execute(
+            "forge_create",
+            &serde_json::json!({
+                "type": "skill",
+                "name": "leaky-skill",
+                "description": "d",
+                "content": "# H\n\napi_key: \"leaksecret123\"\n"
+            }),
+        )
+        .await;
+    assert!(!result.success);
+    assert!(
+        result.content.contains("Failed to create skill"),
+        "content: {}",
+        result.content
+    );
+}
+
+/// forge_create script with `rm -rf /` is blocked by the inline security
+/// gate BEFORE the file is written.
+#[tokio::test]
+async fn test_s8_create_script_security_rejected() {
+    let dir = tempfile::tempdir().unwrap();
+    let forge = Arc::new(Forge::new(ForgeConfig::default(), dir.path().to_path_buf()));
+    let executor = ForgeToolExecutor::new(forge);
+    let result = executor
+        .execute(
+            "forge_create",
+            &serde_json::json!({
+                "type": "script",
+                "name": "danger-script",
+                "content": "#!/bin/bash\nrm -rf /data\necho done\n",
+                "test_cases": [{"input": "x"}]
+            }),
+        )
+        .await;
+    assert!(!result.success);
+    assert!(
+        result.content.contains("Content failed security validation"),
+        "content: {}",
+        result.content
+    );
+}
+
+/// forge_create script write failure: the artifact parent path is occupied
+/// by a regular file, so create_dir_all is silently skipped and the write
+/// fails.
+#[tokio::test]
+async fn test_s8_create_script_write_failure() {
+    let dir = tempfile::tempdir().unwrap();
+    let scripts_dir = dir.path().join("forge").join("scripts");
+    std::fs::create_dir_all(&scripts_dir).unwrap();
+    std::fs::write(scripts_dir.join("utils"), b"blocker").unwrap();
+
+    let forge = Arc::new(Forge::new(ForgeConfig::default(), dir.path().to_path_buf()));
+    let executor = ForgeToolExecutor::new(forge);
+    let result = executor
+        .execute(
+            "forge_create",
+            &serde_json::json!({
+                "type": "script",
+                "name": "blocked-script",
+                "content": "#!/bin/bash\necho hi\n",
+                "test_cases": [{"input": "x"}]
+            }),
+        )
+        .await;
+    assert!(!result.success);
+    assert!(
+        result.content.contains("Failed to write artifact file"),
+        "content: {}",
+        result.content
+    );
+}
+
+/// forge_create with validation.auto_validate = false: no TestRunner stage,
+/// status stays Draft and no validation info line is emitted.
+#[tokio::test]
+async fn test_s8_create_script_no_auto_validate() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut config = ForgeConfig::default();
+    config.validation.auto_validate = false;
+    let forge = Arc::new(Forge::new(config, dir.path().to_path_buf()));
+    let executor = ForgeToolExecutor::new(forge);
+    let result = executor
+        .execute(
+            "forge_create",
+            &serde_json::json!({
+                "type": "script",
+                "name": "plain-script",
+                "content": "#!/bin/bash\necho hi\n",
+                "test_cases": [{"input": "x"}]
+            }),
+        )
+        .await;
+    assert!(result.success, "content: {}", result.content);
+    assert!(result.content.contains("- Status: Draft"));
+    assert!(!result.content.contains("- Validation:"));
+}
+
+/// forge_create mcp that passes validation becomes Active and is
+/// auto-registered to config.mcp.json through the MCP installer
+/// (python entry → command "uv").
+#[tokio::test]
+async fn test_s8_create_mcp_active_registers_python() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut forge = Forge::new(ForgeConfig::default(), dir.path().to_path_buf());
+    forge.init_mcp_installer(crate::mcp_installer::MCPInstaller::new(dir.path().to_path_buf()));
+    let forge = Arc::new(forge);
+    let executor = ForgeToolExecutor::new(forge.clone());
+
+    let result = executor
+        .execute(
+            "forge_create",
+            &serde_json::json!({
+                "type": "mcp",
+                "name": "regmcp",
+                "content": S8_MCP_PASS,
+                "test_cases": [{"input": "x"}]
+            }),
+        )
+        .await;
+    assert!(result.success, "content: {}", result.content);
+    assert!(
+        result.content.contains("MCP auto-registered to config.mcp.json"),
+        "content: {}",
+        result.content
+    );
+    let art = forge.registry().get("mcp-regmcp").expect("registered");
+    assert_eq!(art.status, nemesis_types::forge::ArtifactStatus::Active);
+
+    let mcp_json =
+        std::fs::read_to_string(dir.path().join("config").join("config.mcp.json")).unwrap();
+    assert!(mcp_json.contains("regmcp"), "config: {}", mcp_json);
+    assert!(mcp_json.contains("uv"), "config: {}", mcp_json);
+}
+
+/// Same as above but with language=go (entry file main.go, command "go").
+#[tokio::test]
+async fn test_s8_create_mcp_active_registers_go() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut forge = Forge::new(ForgeConfig::default(), dir.path().to_path_buf());
+    forge.init_mcp_installer(crate::mcp_installer::MCPInstaller::new(dir.path().to_path_buf()));
+    let forge = Arc::new(forge);
+    let executor = ForgeToolExecutor::new(forge);
+
+    let result = executor
+        .execute(
+            "forge_create",
+            &serde_json::json!({
+                "type": "mcp",
+                "name": "gomcp",
+                "language": "go",
+                "content": S8_MCP_GO_PASS,
+                "test_cases": [{"input": "x"}]
+            }),
+        )
+        .await;
+    assert!(result.success, "content: {}", result.content);
+    assert!(result.content.contains("MCP auto-registered"));
+    assert!(dir.path().join("forge").join("mcp").join("gomcp").join("main.go").exists());
+
+    let mcp_json =
+        std::fs::read_to_string(dir.path().join("config").join("config.mcp.json")).unwrap();
+    assert!(mcp_json.contains("\"go\""), "config: {}", mcp_json);
+}
+
+/// Active mcp created on a forge WITHOUT an installer: the registration
+/// block is skipped silently (None arm).
+#[tokio::test]
+async fn test_s8_create_mcp_active_without_installer() {
+    let dir = tempfile::tempdir().unwrap();
+    let forge = Arc::new(Forge::new(ForgeConfig::default(), dir.path().to_path_buf()));
+    let executor = ForgeToolExecutor::new(forge.clone());
+    let result = executor
+        .execute(
+            "forge_create",
+            &serde_json::json!({
+                "type": "mcp",
+                "name": "noinst",
+                "content": S8_MCP_PASS,
+                "test_cases": [{"input": "x"}]
+            }),
+        )
+        .await;
+    assert!(result.success, "content: {}", result.content);
+    assert!(!result.content.contains("MCP auto-registered"));
+    let art = forge.registry().get("mcp-noinst").expect("registered");
+    assert_eq!(art.status, nemesis_types::forge::ArtifactStatus::Active);
+}
+
+/// Installer failure path: workspace/config occupied by a file so the
+/// installer cannot save — the create still succeeds but reports the
+/// registration failure.
+#[tokio::test]
+async fn test_s8_create_mcp_installer_failure() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("config"), b"blocker").unwrap();
+    let mut forge = Forge::new(ForgeConfig::default(), dir.path().to_path_buf());
+    forge.init_mcp_installer(crate::mcp_installer::MCPInstaller::new(dir.path().to_path_buf()));
+    let forge = Arc::new(forge);
+    let executor = ForgeToolExecutor::new(forge);
+
+    let result = executor
+        .execute(
+            "forge_create",
+            &serde_json::json!({
+                "type": "mcp",
+                "name": "failreg",
+                "content": S8_MCP_PASS,
+                "test_cases": [{"input": "x"}]
+            }),
+        )
+        .await;
+    assert!(result.success, "content: {}", result.content);
+    assert!(
+        result.content.contains("MCP registration failed"),
+        "content: {}",
+        result.content
+    );
+}
+
+/// forge_update write failure: SKILL.md path replaced by a directory so the
+/// post-snapshot write fails.
+#[tokio::test]
+async fn test_s8_update_write_failure() {
+    let dir = tempfile::tempdir().unwrap();
+    let forge = Arc::new(Forge::new(ForgeConfig::default(), dir.path().to_path_buf()));
+    let executor = ForgeToolExecutor::new(forge);
+    let created = executor
+        .execute(
+            "forge_create",
+            &serde_json::json!({
+                "type": "skill",
+                "name": "upd-skill",
+                "description": "d",
+                "content": "# H\n\n- a\n"
+            }),
+        )
+        .await;
+    assert!(created.success);
+
+    let skill_md = dir.path().join("forge").join("skills").join("upd-skill").join("SKILL.md");
+    std::fs::remove_file(&skill_md).unwrap();
+    std::fs::create_dir(&skill_md).unwrap();
+
+    let result = executor
+        .execute(
+            "forge_update",
+            &serde_json::json!({
+                "id": "skill-upd-skill",
+                "content": "# H2\n\n- b\n"
+            }),
+        )
+        .await;
+    assert!(!result.success);
+    assert!(
+        result.content.contains("Failed to update file"),
+        "content: {}",
+        result.content
+    );
+}
+
+/// forge_update on a non-skill artifact (script) skips the workspace skills
+/// copy branch; updating an Active mcp re-registers it when an installer is
+/// present and skips silently when not.
+#[tokio::test]
+async fn test_s8_update_script_and_active_mcp_reregister() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut forge = Forge::new(ForgeConfig::default(), dir.path().to_path_buf());
+    forge.init_mcp_installer(crate::mcp_installer::MCPInstaller::new(dir.path().to_path_buf()));
+    let forge = Arc::new(forge);
+    let executor = ForgeToolExecutor::new(forge);
+
+    // Script update (non-Skill branch of the skills copy).
+    let created = executor
+        .execute(
+            "forge_create",
+            &serde_json::json!({
+                "type": "script",
+                "name": "upd-script",
+                "content": "#!/bin/bash\necho v1\n",
+                "test_cases": [{"input": "x"}]
+            }),
+        )
+        .await;
+    assert!(created.success);
+    let updated = executor
+        .execute(
+            "forge_update",
+            &serde_json::json!({
+                "id": "script-upd-script",
+                "content": "#!/bin/bash\necho v2\n"
+            }),
+        )
+        .await;
+    assert!(updated.success, "content: {}", updated.content);
+
+    // Active MCP update with installer → re-register.
+    let mcp_created = executor
+        .execute(
+            "forge_create",
+            &serde_json::json!({
+                "type": "mcp",
+                "name": "rereg",
+                "content": S8_MCP_PASS,
+                "test_cases": [{"input": "x"}]
+            }),
+        )
+        .await;
+    assert!(mcp_created.success);
+    let mcp_updated = executor
+        .execute(
+            "forge_update",
+            &serde_json::json!({
+                "id": "mcp-rereg",
+                "content": S8_MCP_PASS,
+                "change_description": "v2"
+            }),
+        )
+        .await;
+    assert!(mcp_updated.success, "content: {}", mcp_updated.content);
+    let mcp_json =
+        std::fs::read_to_string(dir.path().join("config").join("config.mcp.json")).unwrap();
+    assert!(mcp_json.contains("rereg"), "config: {}", mcp_json);
+
+    // Active MCP update WITHOUT installer → skipped silently.
+    let dir2 = tempfile::tempdir().unwrap();
+    let forge2 = Arc::new(Forge::new(ForgeConfig::default(), dir2.path().to_path_buf()));
+    let executor2 = ForgeToolExecutor::new(forge2);
+    let c = executor2
+        .execute(
+            "forge_create",
+            &serde_json::json!({
+                "type": "mcp",
+                "name": "noreg",
+                "content": S8_MCP_PASS,
+                "test_cases": [{"input": "x"}]
+            }),
+        )
+        .await;
+    assert!(c.success);
+    let u = executor2
+        .execute(
+            "forge_update",
+            &serde_json::json!({"id": "mcp-noreg", "content": S8_MCP_PASS}),
+        )
+        .await;
+    assert!(u.success, "content: {}", u.content);
+    assert!(!dir2.path().join("config").join("config.mcp.json").exists());
+}
+
+/// forge_list computes the success-rate percentage for artifacts with
+/// usage_count > 0 (usage 10 / (10+2) → 83%).
+#[tokio::test]
+async fn test_s8_list_success_rate_computed() {
+    let dir = tempfile::tempdir().unwrap();
+    let forge = Arc::new(Forge::new(ForgeConfig::default(), dir.path().to_path_buf()));
+    let mut art = s8_ft_artifact("s8-usage", ArtifactKind::Skill);
+    art.usage_count = 10;
+    art.consecutive_observing_rounds = 2;
+    forge.registry().add(art);
+    let executor = ForgeToolExecutor::new(forge);
+    let result = executor
+        .execute("forge_list", &serde_json::json!({}))
+        .await;
+    assert!(result.success);
+    assert!(
+        result.content.contains("83%"),
+        "expected 83% in table: {}",
+        result.content
+    );
+}
+
+/// forge_evaluate status ladder: all-pass + score>=60 → Active.
+#[tokio::test]
+async fn test_s8_evaluate_active_status() {
+    let dir = tempfile::tempdir().unwrap();
+    let forge = Arc::new(Forge::new(ForgeConfig::default(), dir.path().to_path_buf()));
+    let executor = ForgeToolExecutor::new(forge);
+    let created = executor
+        .execute(
+            "forge_create",
+            &serde_json::json!({
+                "type": "mcp",
+                "name": "evalmcp",
+                "content": S8_MCP_PASS,
+                "test_cases": [{"input": "x"}]
+            }),
+        )
+        .await;
+    assert!(created.success);
+
+    let result = executor
+        .execute("forge_evaluate", &serde_json::json!({"id": "mcp-evalmcp"}))
+        .await;
+    assert!(result.success);
+    assert!(
+        result.content.contains("**New status: Active**"),
+        "content: {}",
+        result.content
+    );
+}
+
+/// forge_evaluate: stages 1+2 pass but quality < 60 → Observing.
+#[tokio::test]
+async fn test_s8_evaluate_observing_status() {
+    let dir = tempfile::tempdir().unwrap();
+    let forge = Arc::new(Forge::new(ForgeConfig::default(), dir.path().to_path_buf()));
+    let executor = ForgeToolExecutor::new(forge);
+    let created = executor
+        .execute(
+            "forge_create",
+            &serde_json::json!({
+                "type": "skill",
+                "name": "obs-skill",
+                "description": "short skill",
+                "content": "# Heading\n\n- item one\n- item two\n"
+            }),
+        )
+        .await;
+    assert!(created.success);
+
+    let result = executor
+        .execute("forge_evaluate", &serde_json::json!({"id": "skill-obs-skill"}))
+        .await;
+    assert!(result.success);
+    assert!(
+        result.content.contains("**New status: Observing**"),
+        "content: {}",
+        result.content
+    );
+}
+
+/// forge_evaluate: stage 1 fails (no headings) → Draft.
+#[tokio::test]
+async fn test_s8_evaluate_draft_static_fail() {
+    let dir = tempfile::tempdir().unwrap();
+    let forge = Arc::new(Forge::new(ForgeConfig::default(), dir.path().to_path_buf()));
+    let executor = ForgeToolExecutor::new(forge);
+    let created = executor
+        .execute(
+            "forge_create",
+            &serde_json::json!({
+                "type": "skill",
+                "name": "nohead-skill",
+                "description": "no headings here",
+                "content": "plain body without any heading marks at all"
+            }),
+        )
+        .await;
+    assert!(created.success);
+
+    let result = executor
+        .execute("forge_evaluate", &serde_json::json!({"id": "skill-nohead-skill"}))
+        .await;
+    assert!(result.success);
+    assert!(
+        result.content.contains("**New status: Draft**"),
+        "content: {}",
+        result.content
+    );
+    assert!(result.content.contains("Stage 1: Static Validation\n- **Failed**"));
+}
+
+/// forge_build_mcp argument validation: missing id, non-MCP artifact, and
+/// unknown action.
+#[tokio::test]
+async fn test_s8_build_mcp_validation_errors() {
+    let dir = tempfile::tempdir().unwrap();
+    let forge = Arc::new(Forge::new(ForgeConfig::default(), dir.path().to_path_buf()));
+    let executor = ForgeToolExecutor::new(forge);
+
+    let r1 = executor
+        .execute("forge_build_mcp", &serde_json::json!({}))
+        .await;
+    assert!(!r1.success);
+    assert!(r1.content.contains("id is required"));
+
+    let created = executor
+        .execute(
+            "forge_create",
+            &serde_json::json!({
+                "type": "skill",
+                "name": "bm-skill",
+                "description": "d",
+                "content": "# H\n\n- a\n"
+            }),
+        )
+        .await;
+    assert!(created.success);
+    let r2 = executor
+        .execute("forge_build_mcp", &serde_json::json!({"id": "skill-bm-skill"}))
+        .await;
+    assert!(!r2.success);
+    assert!(r2.content.contains("is not an MCP type"));
+
+    let mcp = executor
+        .execute(
+            "forge_create",
+            &serde_json::json!({
+                "type": "mcp",
+                "name": "bmmcp",
+                "content": S8_MCP_PASS,
+                "test_cases": [{"input": "x"}]
+            }),
+        )
+        .await;
+    assert!(mcp.success);
+    let r3 = executor
+        .execute(
+            "forge_build_mcp",
+            &serde_json::json!({"id": "mcp-bmmcp", "action": "bogus"}),
+        )
+        .await;
+    assert!(!r3.success);
+    assert!(r3.content.contains("Unknown action"));
+}
+
+/// forge_build_mcp build action on a passing mcp promotes it to Active.
+#[tokio::test]
+async fn test_s8_build_mcp_build_action_active() {
+    let dir = tempfile::tempdir().unwrap();
+    let forge = Arc::new(Forge::new(ForgeConfig::default(), dir.path().to_path_buf()));
+    let executor = ForgeToolExecutor::new(forge);
+    let mcp = executor
+        .execute(
+            "forge_create",
+            &serde_json::json!({
+                "type": "mcp",
+                "name": "buildmcp",
+                "content": S8_MCP_PASS,
+                "test_cases": [{"input": "x"}]
+            }),
+        )
+        .await;
+    assert!(mcp.success);
+
+    let result = executor
+        .execute(
+            "forge_build_mcp",
+            &serde_json::json!({"id": "mcp-buildmcp", "action": "build"}),
+        )
+        .await;
+    assert!(result.success, "content: {}", result.content);
+    assert!(result.content.contains("Active"));
+    assert!(result.content.contains("Functional validation: passed"));
+}
+
+/// forge_build_mcp install action: go entry detection, python fallback when
+/// neither entry file exists, and a config lacking mcpServers.
+#[tokio::test]
+async fn test_s8_build_mcp_install_go_and_fallback() {
+    let dir = tempfile::tempdir().unwrap();
+    let forge = Arc::new(Forge::new(ForgeConfig::default(), dir.path().to_path_buf()));
+    let executor = ForgeToolExecutor::new(forge);
+
+    let go_created = executor
+        .execute(
+            "forge_create",
+            &serde_json::json!({
+                "type": "mcp",
+                "name": "instgo",
+                "language": "go",
+                "content": S8_MCP_GO_PASS,
+                "test_cases": [{"input": "x"}]
+            }),
+        )
+        .await;
+    assert!(go_created.success, "content: {}", go_created.content);
+    let inst = executor
+        .execute(
+            "forge_build_mcp",
+            &serde_json::json!({"id": "mcp-instgo", "action": "install"}),
+        )
+        .await;
+    assert!(inst.success, "content: {}", inst.content);
+    assert!(inst.content.contains("Command: go"), "content: {}", inst.content);
+
+    // Remove the go entry so neither server.py nor main.go exists → the
+    // generic python fallback fires.
+    std::fs::remove_file(dir.path().join("forge").join("mcp").join("instgo").join("main.go"))
+        .unwrap();
+    let fallback = executor
+        .execute(
+            "forge_build_mcp",
+            &serde_json::json!({"id": "mcp-instgo", "action": "install"}),
+        )
+        .await;
+    assert!(fallback.success, "content: {}", fallback.content);
+    assert!(fallback.content.contains("Command: python"), "content: {}", fallback.content);
+
+    // Existing config without an mcpServers object → section is created.
+    std::fs::write(
+        dir.path().join("config").join("config.mcp.json"),
+        r#"{"foo": 1}"#,
+    )
+    .unwrap();
+    let repaired = executor
+        .execute(
+            "forge_build_mcp",
+            &serde_json::json!({"id": "mcp-instgo", "action": "install"}),
+        )
+        .await;
+    assert!(repaired.success, "content: {}", repaired.content);
+    let cfg: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(dir.path().join("config").join("config.mcp.json")).unwrap(),
+    )
+    .unwrap();
+    assert!(cfg["mcpServers"].is_object(), "cfg: {}", cfg);
+    assert!(cfg["mcpServers"]["forge-instgo"].is_object(), "cfg: {}", cfg);
+}
+
+/// forge_build_mcp install when config.mcp.json is a directory: the read
+/// fails (fresh config) and the final write fails.
+#[tokio::test]
+async fn test_s8_build_mcp_install_unwritable_config() {
+    let dir = tempfile::tempdir().unwrap();
+    let forge = Arc::new(Forge::new(ForgeConfig::default(), dir.path().to_path_buf()));
+    let executor = ForgeToolExecutor::new(forge);
+    let mcp = executor
+        .execute(
+            "forge_create",
+            &serde_json::json!({
+                "type": "mcp",
+                "name": "dirconf",
+                "content": S8_MCP_PASS,
+                "test_cases": [{"input": "x"}]
+            }),
+        )
+        .await;
+    assert!(mcp.success);
+    std::fs::create_dir_all(dir.path().join("config").join("config.mcp.json")).unwrap();
+
+    let result = executor
+        .execute(
+            "forge_build_mcp",
+            &serde_json::json!({"id": "mcp-dirconf", "action": "install"}),
+        )
+        .await;
+    assert!(!result.success);
+    assert!(
+        result.content.contains("Failed to write MCP config"),
+        "content: {}",
+        result.content
+    );
+}
+
+/// forge_build_mcp uninstall action: missing config, no mcpServers section,
+/// entry not present, and unreadable config.
+#[tokio::test]
+async fn test_s8_build_mcp_uninstall_variants() {
+    let dir = tempfile::tempdir().unwrap();
+    let forge = Arc::new(Forge::new(ForgeConfig::default(), dir.path().to_path_buf()));
+    let executor = ForgeToolExecutor::new(forge);
+    let mcp = executor
+        .execute(
+            "forge_create",
+            &serde_json::json!({
+                "type": "mcp",
+                "name": "unimcp",
+                "content": S8_MCP_PASS,
+                "test_cases": [{"input": "x"}]
+            }),
+        )
+        .await;
+    assert!(mcp.success);
+    let config_path = dir.path().join("config").join("config.mcp.json");
+    let args = serde_json::json!({"id": "mcp-unimcp", "action": "uninstall"});
+
+    // No config file at all (config dir may not exist either).
+    let r1 = executor.execute("forge_build_mcp", &args).await;
+    assert!(r1.success);
+    assert!(r1.content.contains("does not exist"), "content: {}", r1.content);
+
+    // Config without mcpServers.
+    std::fs::create_dir_all(config_path.parent().unwrap()).unwrap();
+    std::fs::write(&config_path, r#"{"foo": 1}"#).unwrap();
+    let r2 = executor.execute("forge_build_mcp", &args).await;
+    assert!(r2.success);
+    assert!(r2.content.contains("no mcpServers section"), "content: {}", r2.content);
+
+    // mcpServers present but entry absent.
+    std::fs::write(&config_path, r#"{"mcpServers": {}}"#).unwrap();
+    let r3 = executor.execute("forge_build_mcp", &args).await;
+    assert!(r3.success);
+    assert!(r3.content.contains("already uninstalled"), "content: {}", r3.content);
+
+    // Config unreadable (directory).
+    std::fs::remove_file(&config_path).unwrap();
+    std::fs::create_dir(&config_path).unwrap();
+    let r4 = executor.execute("forge_build_mcp", &args).await;
+    assert!(!r4.success);
+    assert!(r4.content.contains("Failed to read MCP config"), "content: {}", r4.content);
+}
+
+/// forge_share branches: no report found, report_path outside reflections,
+/// successful share with auto-discovered (latest) report including
+/// subdirectory scanning, and bridge failure.
+#[tokio::test]
+async fn test_s8_share_branches() {
+    // Failing bridge forge.
+    let dir_fail = tempfile::tempdir().unwrap();
+    let forge_fail = Arc::new(Forge::new(ForgeConfig::default(), dir_fail.path().to_path_buf()));
+    forge_fail.set_bridge(Arc::new(S8ShareBridge {
+        ok: false,
+        node_id: "s8-fail".into(),
+    }));
+    let exec_fail = ForgeToolExecutor::new(forge_fail);
+    // No reflections dir → find_latest_report returns None.
+    let r0 = exec_fail.execute("forge_share", &serde_json::json!({})).await;
+    assert!(!r0.success);
+    assert!(r0.content.contains("No reflection report found"), "content: {}", r0.content);
+
+    // Ok bridge forge with reports.
+    let dir = tempfile::tempdir().unwrap();
+    let forge = Arc::new(Forge::new(ForgeConfig::default(), dir.path().to_path_buf()));
+    forge.set_bridge(Arc::new(S8ShareBridge {
+        ok: true,
+        node_id: "s8-ok".into(),
+    }));
+    let executor = ForgeToolExecutor::new(forge.clone());
+
+    // report_path outside the reflections directory → rejected. The
+    // reflections dir must exist for the containment check to engage.
+    let reflections_pre = dir.path().join("forge").join("reflections");
+    std::fs::create_dir_all(&reflections_pre).unwrap();
+    let outside = dir.path().join("outside.md");
+    std::fs::write(&outside, b"x").unwrap();
+    let rout = executor
+        .execute(
+            "forge_share",
+            &serde_json::json!({"report_path": outside.to_string_lossy().to_string()}),
+        )
+        .await;
+    assert!(!rout.success);
+    assert!(
+        rout.content.contains("must be within forge reflections directory"),
+        "content: {}",
+        rout.content
+    );
+
+    // Reports in place (top-level + subdirectory) → auto-discovery shares
+    // the newest one.
+    let reflections = dir.path().join("forge").join("reflections");
+    std::fs::create_dir_all(reflections.join("remote")).unwrap();
+    std::fs::write(reflections.join("r1.md"), b"# r1").unwrap();
+    std::fs::write(reflections.join("remote").join("r2.md"), b"# r2").unwrap();
+    let rok = executor.execute("forge_share", &serde_json::json!({})).await;
+    assert!(rok.success, "content: {}", rok.content);
+    assert!(rok.content.contains("shared with 2 peers"), "content: {}", rok.content);
+
+    // Bridge failure → error surfaces.
+    forge.set_bridge(Arc::new(S8ShareBridge {
+        ok: false,
+        node_id: "s8-fail2".into(),
+    }));
+    let rerr = executor.execute("forge_share", &serde_json::json!({})).await;
+    assert!(!rerr.success);
+    assert!(rerr.content.contains("Share failed"), "content: {}", rerr.content);
+}
+
+/// forge_learning_status with an engine holding a completed cycle and Active
+/// learning artifacts in the forge registry: renders the cycle block and the
+/// artifacts table (both percentage and N/A rows).
+#[tokio::test]
+async fn test_s8_learning_status_cycle_and_artifacts() {
+    use crate::cycle_store::CycleStore;
+    use crate::learning_engine::LearningEngine;
+    use crate::monitor::DeploymentMonitor;
+    use crate::registry::Registry;
+    use crate::types::RegistryConfig;
+
+    let dir = tempfile::tempdir().unwrap();
+    let mut config = ForgeConfig::default();
+    config.learning.enabled = true;
+    let mut forge = Forge::new(config.clone(), dir.path().to_path_buf());
+
+    let engine_registry = Arc::new(Registry::new(RegistryConfig::default()));
+    let engine = LearningEngine::new(
+        config.clone(),
+        engine_registry.clone(),
+        CycleStore::from_base(dir.path().join("cycles")),
+    );
+    // Empty cycle still completes and lands in the in-memory latest_cycle.
+    let cycle = engine.run_cycle(&[]).await;
+    assert_eq!(cycle.status, nemesis_types::forge::CycleStatus::Completed);
+
+    let monitor = Arc::new(DeploymentMonitor::new(config, engine_registry));
+    forge.init_learning(engine, monitor, CycleStore::from_base(dir.path().join("cycles2")));
+
+    let mut used = s8_ft_artifact("used-skill", ArtifactKind::Skill);
+    used.status = nemesis_types::forge::ArtifactStatus::Active;
+    used.tool_signature = vec!["tool_a".into(), "tool_b".into()];
+    used.usage_count = 3;
+    used.consecutive_observing_rounds = 1;
+    forge.registry().add(used);
+
+    let mut fresh = s8_ft_artifact("fresh-skill", ArtifactKind::Skill);
+    fresh.status = nemesis_types::forge::ArtifactStatus::Active;
+    fresh.tool_signature = vec!["tool_c".into()];
+    forge.registry().add(fresh);
+
+    let executor = ForgeToolExecutor::new(Arc::new(forge));
+    let result = executor
+        .execute("forge_learning_status", &serde_json::json!({}))
+        .await;
+    assert!(result.success, "content: {}", result.content);
+    assert!(result.content.contains("### Latest Learning Cycle"), "content: {}", result.content);
+    assert!(result.content.contains("- Completed:"), "content: {}", result.content);
+    assert!(result.content.contains("### Active Learning Artifacts (2)"), "content: {}", result.content);
+    assert!(result.content.contains("75%"), "content: {}", result.content);
+    assert!(result.content.contains("N/A"), "content: {}", result.content);
+}
+
+/// resolve_artifact_path: Mcp artifact with neither entry file falls back to
+/// server.py.
+#[test]
+fn test_s8_resolve_artifact_path_mcp_no_entry() {
+    let dir = tempfile::tempdir().unwrap();
+    let art = s8_ft_artifact("nomain", ArtifactKind::Mcp);
+    let p = resolve_artifact_path(dir.path(), &art);
+    assert_eq!(p, dir.path().join("mcp").join("nomain").join("server.py"));
+}
+
+/// compute_quality_score: 200 < len <= 500 content hits the 15-point branch.
+#[test]
+fn test_s8_compute_quality_score_200_to_500() {
+    let content = format!("#!/bin/bash\n{}", "a".repeat(240));
+    let (score, _) = compute_quality_score(&content, &ArtifactKind::Script);
+    assert!(score >= 15, "score = {}", score);
+}
+
+/// forge_create with `"test_cases": null` for a script: the entry guard
+/// rejects null test_cases upfront (they are mandatory for script/mcp).
+#[tokio::test]
+async fn test_s8_create_script_null_test_cases() {
+    let dir = tempfile::tempdir().unwrap();
+    let forge = Arc::new(Forge::new(ForgeConfig::default(), dir.path().to_path_buf()));
+    let executor = ForgeToolExecutor::new(forge);
+
+    let result = executor
+        .execute(
+            "forge_create",
+            &serde_json::json!({
+                "type": "script",
+                "name": "nulltc",
+                "content": "#!/bin/bash\necho ok\n",
+                "test_cases": null
+            }),
+        )
+        .await;
+    assert!(!result.success);
+    assert!(
+        result
+            .content
+            .contains("Script and MCP types require test_cases"),
+        "content: {}",
+        result.content
+    );
+}
+
+/// forge_update on a Draft (non-Active) MCP artifact: the re-register branch
+/// is skipped because status is not Active.
+#[tokio::test]
+async fn test_s8_update_non_active_mcp_skips_reregister() {
+    let dir = tempfile::tempdir().unwrap();
+    // auto_validate=false → artifact stays Draft.
+    let mut config = ForgeConfig::default();
+    config.validation.auto_validate = false;
+    let mut forge = Forge::new(config, dir.path().to_path_buf());
+    forge.init_mcp_installer(crate::mcp_installer::MCPInstaller::new(dir.path().to_path_buf()));
+    let forge = Arc::new(forge);
+    let executor = ForgeToolExecutor::new(forge);
+
+    let created = executor
+        .execute(
+            "forge_create",
+            &serde_json::json!({
+                "type": "mcp",
+                "name": "draftmcp",
+                "content": S8_MCP_PASS,
+                "test_cases": [{"input": "x"}]
+            }),
+        )
+        .await;
+    assert!(created.success, "content: {}", created.content);
+
+    let updated = executor
+        .execute(
+            "forge_update",
+            &serde_json::json!({
+                "id": "mcp-draftmcp",
+                "content": S8_MCP_PASS,
+                "change_description": "draft v2"
+            }),
+        )
+        .await;
+    assert!(updated.success, "content: {}", updated.content);
+    // Draft artifact must NOT be registered into config.mcp.json.
+    let cfg_path = dir.path().join("config").join("config.mcp.json");
+    let cfg = std::fs::read_to_string(&cfg_path).unwrap_or_default();
+    assert!(!cfg.contains("draftmcp"), "config: {}", cfg);
+}
+
+/// forge_learning_status with an initialized learning engine that has never
+/// completed a cycle → the "No learning cycle recorded yet." branch.
+#[tokio::test]
+async fn test_s8_learning_status_no_cycle() {
+    use crate::cycle_store::CycleStore;
+    use crate::learning_engine::LearningEngine;
+    use crate::monitor::DeploymentMonitor;
+    use crate::registry::Registry;
+    use crate::types::RegistryConfig;
+
+    let dir = tempfile::tempdir().unwrap();
+    let mut config = ForgeConfig::default();
+    config.learning.enabled = true;
+    let mut forge = Forge::new(config.clone(), dir.path().to_path_buf());
+
+    let engine_registry = Arc::new(Registry::new(RegistryConfig::default()));
+    let engine = LearningEngine::new(
+        config.clone(),
+        engine_registry.clone(),
+        CycleStore::from_base(dir.path().join("cycles")),
+    );
+    // No run_cycle call → latest cycle stays None.
+    let monitor = Arc::new(DeploymentMonitor::new(config, engine_registry));
+    forge.init_learning(engine, monitor, CycleStore::from_base(dir.path().join("cycles2")));
+
+    let executor = ForgeToolExecutor::new(Arc::new(forge));
+    let result = executor
+        .execute("forge_learning_status", &serde_json::json!({}))
+        .await;
+    assert!(result.success, "content: {}", result.content);
+    assert!(
+        result.content.contains("No learning cycle recorded yet."),
+        "content: {}",
+        result.content
+    );
+}
+
+/// forge_share with a non-md file next to reports in a reflections
+/// subdirectory: the extension filter must skip it during discovery.
+#[tokio::test]
+async fn test_s8_share_subdir_non_md_ignored() {
+    let dir = tempfile::tempdir().unwrap();
+    let forge = Arc::new(Forge::new(ForgeConfig::default(), dir.path().to_path_buf()));
+    forge.set_bridge(Arc::new(S8ShareBridge {
+        ok: true,
+        node_id: "s8-nonmd".into(),
+    }));
+    let executor = ForgeToolExecutor::new(forge.clone());
+
+    let reflections = dir.path().join("forge").join("reflections");
+    std::fs::create_dir_all(reflections.join("remote")).unwrap();
+    std::fs::write(reflections.join("remote").join("r2.md"), b"# r2").unwrap();
+    std::fs::write(reflections.join("remote").join("notes.txt"), b"not a report").unwrap();
+
+    let result = executor.execute("forge_share", &serde_json::json!({})).await;
+    assert!(result.success, "content: {}", result.content);
+    assert!(
+        result.content.contains("shared with 2 peers"),
+        "content: {}",
+        result.content
+    );
+}
+
+/// forge_share with the reflections directory entirely absent: report
+/// discovery finds nothing (read_dir on the missing dir fails internally).
+#[tokio::test]
+async fn test_s8_share_no_reflections_dir() {
+    let dir = tempfile::tempdir().unwrap();
+    let forge = Arc::new(Forge::new(ForgeConfig::default(), dir.path().to_path_buf()));
+    forge.set_bridge(Arc::new(S8ShareBridge {
+        ok: true,
+        node_id: "s8-nodir".into(),
+    }));
+    let executor = ForgeToolExecutor::new(forge);
+    // Ensure no reflections dir was created by construction.
+    assert!(!dir.path().join("forge").join("reflections").exists());
+
+    let result = executor.execute("forge_share", &serde_json::json!({})).await;
+    assert!(!result.success);
+    assert!(
+        result.content.contains("No reflection report found"),
+        "content: {}",
+        result.content
+    );
+}
+
+/// forge_share with an external report_path while the reflections directory
+/// does not exist: the containment check cannot canonicalize the reflections
+/// dir, so the path is passed through unmodified.
+#[tokio::test]
+async fn test_s8_share_external_path_no_reflections_dir() {
+    let dir = tempfile::tempdir().unwrap();
+    let forge = Arc::new(Forge::new(ForgeConfig::default(), dir.path().to_path_buf()));
+    forge.set_bridge(Arc::new(S8ShareBridge {
+        ok: true,
+        node_id: "s8-passthru".into(),
+    }));
+    let executor = ForgeToolExecutor::new(forge);
+    assert!(!dir.path().join("forge").join("reflections").exists());
+
+    let outside = dir.path().join("loose.md");
+    std::fs::write(&outside, b"x").unwrap();
+    let result = executor
+        .execute(
+            "forge_share",
+            &serde_json::json!({"report_path": outside.to_string_lossy().to_string()}),
+        )
+        .await;
+    // No reflections dir → containment check skipped → share proceeds.
+    assert!(result.success, "content: {}", result.content);
+    assert!(
+        result.content.contains("shared with 2 peers"),
+        "content: {}",
+        result.content
+    );
+}
+
+/// forge_share with a report_path that does not exist on disk: canonicalize
+/// of the path itself fails, the containment check is skipped, and the share
+/// still runs with the given path string.
+#[tokio::test]
+async fn test_s8_share_nonexistent_report_path() {
+    let dir = tempfile::tempdir().unwrap();
+    let forge = Arc::new(Forge::new(ForgeConfig::default(), dir.path().to_path_buf()));
+    forge.set_bridge(Arc::new(S8ShareBridge {
+        ok: true,
+        node_id: "s8-ghost".into(),
+    }));
+    let executor = ForgeToolExecutor::new(forge);
+    let reflections = dir.path().join("forge").join("reflections");
+    std::fs::create_dir_all(&reflections).unwrap();
+
+    let ghost = reflections.join("ghost.md");
+    assert!(!ghost.exists());
+    let result = executor
+        .execute(
+            "forge_share",
+            &serde_json::json!({"report_path": ghost.to_string_lossy().to_string()}),
+        )
+        .await;
+    assert!(result.success, "content: {}", result.content);
+    assert!(
+        result.content.contains("shared with 2 peers"),
+        "content: {}",
+        result.content
+    );
+}

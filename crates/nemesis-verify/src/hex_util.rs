@@ -42,3 +42,6 @@ pub fn hex_decode_vec(hex: &str) -> Result<Vec<u8>, String> {
         })
         .collect()
 }
+
+#[cfg(test)]
+mod tests;

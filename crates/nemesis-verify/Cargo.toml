@@ -19,3 +19,6 @@ rand = { workspace = true }
 base64 = { workspace = true }
 # P2a：DLL 联网查 CRL（数据模式，blocking 同步 HTTP + rustls，无 OpenSSL 依赖）
 reqwest = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3"

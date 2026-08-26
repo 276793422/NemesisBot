@@ -541,3 +541,98 @@ async fn test_subagent_tool_execute_with_non_object_args() {
     let result = tool.execute(&serde_json::json!(42)).await;
     assert!(result.is_error);
 }
+
+// ============================================================
+// W4a coverage gap closure (spawn()'s background lanes: the
+// spawned async block only runs when a tokio runtime handle is
+// available — plain #[test] callers skip it entirely)
+// ============================================================
+
+#[tokio::test]
+async fn w4a_spawn_in_runtime_without_llm_completes_with_placeholder_callback() {
+    use std::sync::Arc as StdArc;
+    let manager = SubagentManager::new();
+    assert!(!manager.has_llm_callback());
+
+    let seen: StdArc<std::sync::Mutex<Vec<String>>> = StdArc::new(std::sync::Mutex::new(Vec::new()));
+    let seen_cb = seen.clone();
+    let id = manager.spawn(
+        "placeholder task".to_string(),
+        "ph".to_string(),
+        String::new(),
+        "web".to_string(),
+        "chat-1".to_string(),
+        Some(Box::new(move |result| {
+            seen_cb.lock().unwrap().push(result.for_llm);
+        })),
+    );
+
+    // Give the spawned background task a moment to land.
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    let seen = seen.lock().unwrap();
+    assert_eq!(seen.len(), 1, "callback must fire exactly once");
+    assert!(
+        seen[0].contains(&format!("Subagent task '{id}' completed (placeholder)")),
+        "unexpected placeholder: {}",
+        seen[0]
+    );
+}
+
+#[tokio::test]
+async fn w4a_spawn_in_runtime_with_llm_runs_tool_loop_and_callbacks() {
+    use std::sync::Arc as StdArc;
+    let manager = SubagentManager::new();
+    manager.set_llm_callback(Arc::new(|_msgs| crate::toolloop::LLMResponse {
+        content: "subagent done: all good".to_string(),
+        tool_calls: vec![],
+    }));
+
+    let seen: StdArc<std::sync::Mutex<Vec<String>>> = StdArc::new(std::sync::Mutex::new(Vec::new()));
+    let seen_cb = seen.clone();
+    let id = manager.spawn(
+        "real task".to_string(),
+        "rt".to_string(),
+        String::new(),
+        "web".to_string(),
+        "chat-1".to_string(),
+        Some(Box::new(move |result| {
+            seen_cb.lock().unwrap().push(result.for_llm);
+        })),
+    );
+
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    let seen = seen.lock().unwrap();
+    assert_eq!(seen.len(), 1, "callback must fire exactly once");
+    assert!(
+        seen[0].contains(&format!("Subagent '{id}' completed (iterations: 1)")),
+        "unexpected summary: {}",
+        seen[0]
+    );
+    assert!(seen[0].contains("subagent done: all good"), "LLM reply must surface: {}", seen[0]);
+    // Task record still tracks as running (caller updates it, per design)
+    assert_eq!(manager.get_task(&id).unwrap().status, "running");
+}
+
+// ===========================================================================
+// S2 coverage (2026-08-26): spawn() info! field arm (has_llm)
+// ===========================================================================
+
+fn s2_enable_tracing() {
+    let _ = tracing_subscriber::fmt()
+        .with_max_level(tracing::Level::DEBUG)
+        .with_writer(std::io::sink)
+        .try_init();
+}
+
+#[tokio::test]
+async fn s2_subagent_spawn_logs_has_llm_field_with_subscriber() {
+    s2_enable_tracing();
+    let manager = Arc::new(SubagentManager::new());
+    let tool = SubagentTool::new(manager);
+
+    let result = tool
+        .execute(&serde_json::json!({"task": "field coverage", "label": "s2"}))
+        .await;
+    assert!(!result.is_error);
+    assert!(result.for_llm.contains("Subagent task completed"));
+}

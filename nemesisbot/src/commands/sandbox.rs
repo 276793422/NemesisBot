@@ -791,3 +791,6 @@ fn status(paths: &nemesis_sandbox::SandboxPaths) -> Result<()> {
     println!("  sandbox ready:     {ready}");
     Ok(())
 }
+
+#[cfg(test)]
+mod tests;

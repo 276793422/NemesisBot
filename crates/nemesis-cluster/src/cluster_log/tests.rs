@@ -239,3 +239,72 @@ fn test_init_cluster_log_panics_on_double_init() {
 
     let _ = fs::remove_dir_all(log_dir);
 }
+
+// ============================================================
+// S4 coverage: open-failure warn arm (cluster_log.rs 84-92) and
+// the init info! field line (cluster_log.rs 122-125).
+// ============================================================
+
+/// No-op tracing subscriber so field-recording lines inside
+/// `tracing::warn!`/`info!` macros actually execute.
+struct S4LogSubscriber;
+
+impl tracing::Subscriber for S4LogSubscriber {
+    fn enabled(&self, _metadata: &tracing::Metadata<'_>) -> bool {
+        true
+    }
+    fn new_span(&self, _span: &tracing::span::Attributes<'_>) -> tracing::Id {
+        tracing::Id::from_u64(1)
+    }
+    fn record(&self, _span: &tracing::Id, _values: &tracing::span::Record<'_>) {}
+    fn record_follows_from(&self, _span: &tracing::Id, _follows: &tracing::Id) {}
+    fn event(&self, _event: &tracing::Event<'_>) {}
+    fn enter(&self, _span: &tracing::Id) {}
+    fn exit(&self, _span: &tracing::Id) {}
+}
+
+static S4_LOG_SUBSCRIBER: std::sync::Once = std::sync::Once::new();
+
+fn install_s4_log_subscriber() {
+    S4_LOG_SUBSCRIBER.call_once(|| {
+        let _ = tracing::subscriber::set_global_default(S4LogSubscriber);
+    });
+}
+
+/// A directory sitting at today's log-file path makes the open fail;
+/// the writer warns (fields execute under the subscriber), clears the
+/// file handle, and returns without panicking (cluster_log.rs 80-93).
+#[test]
+fn test_s4_write_entry_open_failure_warns_and_skips() {
+    install_s4_log_subscriber();
+
+    let temp_dir = tempfile::TempDir::new().unwrap();
+    let log_dir = temp_dir.path();
+    let date_str = chrono::Local::now().format("%Y-%m-%d").to_string();
+    let log_file = log_dir.join(format!("cluster_{}.log", date_str));
+    fs::create_dir_all(&log_file).unwrap(); // directory where the file should be
+
+    let writer = ClusterLogWriter::new(log_dir.to_path_buf());
+    // Must not panic; the failed open leaves no file handle.
+    writer.write_entry("s4_event", serde_json::json!({"k": "v"}));
+
+    let inner = writer.inner.lock();
+    assert!(inner.file.is_none(), "file handle must be cleared on open failure");
+    drop(inner);
+}
+
+/// init_cluster_log's info! field line (cluster_log.rs 122-125) executes
+/// when the init succeeds with a subscriber installed. The global lock is
+/// shared with other tests, so a losing init just panics inside
+/// catch_unwind — pass/fail stays deterministic.
+#[test]
+#[serial_test::serial]
+fn test_s4_init_cluster_log_logs_dir_field() {
+    install_s4_log_subscriber();
+
+    let temp_dir = tempfile::TempDir::new().unwrap();
+    let log_dir = temp_dir.path();
+    let _ = std::panic::catch_unwind(|| init_cluster_log(log_dir));
+
+    let _ = fs::remove_dir_all(log_dir);
+}

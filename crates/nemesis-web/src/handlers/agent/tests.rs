@@ -229,6 +229,11 @@ fn make_ctx_with_loop(workspace: Option<String>) -> RequestContext {
             std::path::PathBuf::from(ws),
         )));
     }
+    make_ctx_from_loop(Arc::new(al), workspace)
+}
+
+/// 由调用方预装配 AgentLoop（带自备 CheckpointStore 等）再组 ctx。
+fn make_ctx_from_loop(al: Arc<AgentLoop>, workspace: Option<String>) -> RequestContext {
     let state = Arc::new(AppState {
         auth_token: String::new(),
         session_count: Arc::new(AtomicUsize::new(0)),
@@ -249,7 +254,7 @@ fn make_ctx_with_loop(workspace: Option<String>) -> RequestContext {
         data_store: None,
         memory_manager: None,
         forge: None,
-        agent_loop: Arc::new(parking_lot::RwLock::new(Some(Arc::new(al)))),
+        agent_loop: Arc::new(parking_lot::RwLock::new(Some(al))),
         cluster: None,
         cluster_service: None,
         cluster_log_dir: None,
@@ -311,4 +316,87 @@ async fn rewind_nonexistent_turn_returns_empty() {
     assert_eq!(r["turn"], 999);
     assert!(r["written"].as_array().unwrap().is_empty());
     assert!(r["deleted"].as_array().unwrap().is_empty());
+}
+
+// ============================================================
+// Phase 3 覆盖率补测（2026-08-25）：rewind 的 Err 透传臂、
+// checkpoints 的非空 map 体、update_model_info 双臂。
+// ============================================================
+
+#[tokio::test]
+async fn rewind_without_checkpoint_store_errors() {
+    let handler = AgentHandler;
+    // workspace=None → 未挂 CheckpointStore → AgentLoop::rewind Err
+    // （handler 必须原样透传，不吞成 Ok）。
+    let ctx = make_ctx_with_loop(None);
+    let err = handler
+        .handle_cmd("rewind", Some(serde_json::json!({"turn": 1})), &ctx)
+        .await
+        .unwrap_err();
+    assert_eq!(err, "checkpoint store not attached");
+}
+
+#[tokio::test]
+async fn checkpoints_with_seeded_store_map_nonempty_list() {
+    let handler = AgentHandler;
+    let dir = tempfile::tempdir().unwrap();
+    // 预置一个 in-flight checkpoint（begin → cur），list_meta 包含 cur。
+    let store = Arc::new(CheckpointStore::new(None, dir.path().to_path_buf()));
+    store.begin(1, "seed prompt");
+    let al = AgentLoop::new(Box::new(WebMockProvider), AgentConfig::default());
+    al.set_checkpoint_store(store);
+    let ctx = make_ctx_from_loop(
+        Arc::new(al),
+        Some(dir.path().to_string_lossy().to_string()),
+    );
+
+    let r = handler
+        .handle_cmd("checkpoints", None, &ctx)
+        .await
+        .unwrap()
+        .unwrap();
+    let cps = r["checkpoints"].as_array().unwrap();
+    assert_eq!(cps.len(), 1, "非空列表必须进 map 体逐条组装");
+    assert_eq!(cps[0]["turn"], 1);
+    assert_eq!(cps[0]["prompt"], "seed prompt");
+    assert!(cps[0]["time"].is_string(), "time 字段必须序列化");
+    assert!(cps[0]["paths"].is_array(), "paths 字段必须序列化");
+}
+
+#[test]
+fn update_model_info_no_home_returns_early() {
+    let ctx = make_ctx_with_agent(Arc::new(MockAgentService::new(true)));
+    // home 缺失 → 早退，AppState 字段保持原值（不被清空）。
+    super::update_model_info(&ctx);
+    assert_eq!(*ctx.state.model_name.lock(), "test-model");
+    assert!(!ctx.state.model_has_key.load(Ordering::SeqCst));
+}
+
+#[test]
+fn update_model_info_reads_config_and_updates_state() {
+    let dir = tempfile::tempdir().unwrap();
+    // get_effective_llm 缺省回 "zhipu/glm-4.7-flash" → model_list 同名精确命中。
+    std::fs::write(
+        dir.path().join("config.json"),
+        serde_json::json!({
+            "model_list": [{
+                "model_name": "zhipu/glm-4.7-flash",
+                "model": "zhipu/glm-4.7-flash",
+                "api_base": "http://127.0.0.1:9",
+                "api_key": "sk-x"
+            }]
+        })
+        .to_string(),
+    )
+    .unwrap();
+
+    let mut ctx = make_ctx_with_agent(Arc::new(MockAgentService::new(true)));
+    ctx.home = Some(dir.path().to_string_lossy().to_string());
+    super::update_model_info(&ctx);
+
+    // resolve_from_model_config 会剥掉 vendor 前缀（zhipu/glm-4.7-flash →
+    // glm-4.7-flash），回填的是裸模型名。
+    assert_eq!(*ctx.state.model_name.lock(), "glm-4.7-flash");
+    assert_eq!(*ctx.state.model_base.lock(), "http://127.0.0.1:9");
+    assert!(ctx.state.model_has_key.load(Ordering::SeqCst));
 }

@@ -486,28 +486,40 @@ pub fn init_logger_from_config(config_path: &Path, check_args: &[String]) -> u32
             .and_then(|s| s.to_str())
             .unwrap_or("nemesisbot");
 
-        if let Err(e) = std::fs::create_dir_all(dir) {
-            eprintln!(
-                "[Logger] Warning: failed to create log directory '{}': {}",
-                dir.display(),
-                e
-            );
-        } else {
-            eprintln!(
-                "[Logger] Logging to file (daily rotation): {}/{}<YYYY-MM-DD>",
-                dir.display(),
-                prefix
-            );
+        // (BUG #30, quality-hardening goal 冲刺 S11) 根因：tracing-appender
+        // 0.2.5 的 RollingFileAppender::new 内部对日志目录创建失败直接
+        // .expect panic（rolling.rs:156）——原先 create_dir_all 失败只 warn
+        // 想继续，随后却无条件构造 appender，进程照样 panic（warn-and-
+        // continue 意图落空，gateway 启动即崩）。修复：目录创建失败时跳过
+        // 文件层，降级为 console-only（文件日志只是增强，不应致命）。
+        match std::fs::create_dir_all(dir) {
+            Err(e) => {
+                eprintln!(
+                    "[Logger] Warning: failed to create log directory '{}': {} — file logging disabled, console only",
+                    dir.display(),
+                    e
+                );
+            }
+            Ok(()) => {
+                eprintln!(
+                    "[Logger] Logging to file (daily rotation): {}/{}<YYYY-MM-DD>",
+                    dir.display(),
+                    prefix
+                );
+
+                let appender = nemesis_logger::RollingFileAppender::new(
+                    nemesis_logger::Rotation::DAILY,
+                    dir,
+                    prefix,
+                );
+
+                layers.push(Box::new(
+                    tracing_subscriber::fmt::layer()
+                        .event_format(nemesis_logger::JsonLinesFormatter)
+                        .with_writer(appender),
+                ));
+            }
         }
-
-        let appender =
-            nemesis_logger::RollingFileAppender::new(nemesis_logger::Rotation::DAILY, dir, prefix);
-
-        layers.push(Box::new(
-            tracing_subscriber::fmt::layer()
-                .event_format(nemesis_logger::JsonLinesFormatter)
-                .with_writer(appender),
-        ));
     }
 
     let layered = tracing_subscriber::registry()

@@ -850,7 +850,7 @@ impl ChannelManager {
         {
             if let Some(ref cfg) = config.external {
                 info!("[ChannelManager] attempting to initialize External channel");
-                match crate::external::ExternalChannel::new(cfg.clone()) {
+                match crate::external::ExternalChannel::new(cfg.clone(), bus_sender.clone()) {
                     Ok(ch) => {
                         self.register_or_replace(Arc::new(ch)).await;
                         info!("[ChannelManager] External channel enabled successfully");
@@ -866,7 +866,7 @@ impl ChannelManager {
         {
             if let Some(ref cfg) = config.maixcam {
                 info!("[ChannelManager] attempting to initialize MaixCam channel");
-                match crate::maixcam::MaixCamChannel::new(cfg.clone()) {
+                match crate::maixcam::MaixCamChannel::new(cfg.clone(), bus_sender.clone()) {
                     Ok(ch) => {
                         self.register_or_replace(Arc::new(ch)).await;
                         info!("[ChannelManager] MaixCam channel enabled successfully");

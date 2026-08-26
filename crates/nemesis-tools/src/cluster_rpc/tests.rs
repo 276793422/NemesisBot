@@ -441,3 +441,116 @@ fn test_stub_cluster_default() {
     assert!(!ops.connected);
     assert!(ops.node_id.is_empty());
 }
+
+// ============================================================
+// W4a coverage gap closure (parameters() peer-description arms
+// and the async submit failure arm)
+// ============================================================
+
+/// ClusterOps double whose submit_task always fails.
+struct W4aFailingCluster;
+impl ClusterOps for W4aFailingCluster {
+    fn node_id(&self) -> String {
+        "node-1".to_string()
+    }
+    fn is_connected(&self) -> bool {
+        true
+    }
+    fn get_online_peers(&self) -> Vec<PeerInfo> {
+        vec![PeerInfo {
+            id: "node-2".to_string(),
+            name: "Bot2".to_string(),
+            capabilities: vec!["chat".to_string()],
+            status: "online".to_string(),
+        }]
+    }
+    fn get_capabilities(&self) -> Vec<String> {
+        vec!["chat".to_string()]
+    }
+    fn submit_task(
+        &self,
+        _peer_id: &str,
+        _action: &str,
+        _payload: &serde_json::Value,
+        _origin_channel: &str,
+        _origin_chat_id: &str,
+    ) -> Result<String, String> {
+        Err("cluster unreachable".to_string())
+    }
+    fn call_with_context(
+        &self,
+        _peer_id: &str,
+        _action: &str,
+        _payload: &serde_json::Value,
+    ) -> Result<String, String> {
+        Err("cluster unreachable".to_string())
+    }
+    fn get_local_ips(&self) -> Vec<String> {
+        vec![]
+    }
+    fn get_rpc_port(&self) -> u16 {
+        0
+    }
+}
+
+#[tokio::test]
+async fn w4a_async_peer_chat_submit_failure_returns_error() {
+    let tool = ClusterRpcTool::with_cluster(Arc::new(W4aFailingCluster));
+    let result = tool
+        .execute(&serde_json::json!({
+            "peer_id": "node-2",
+            "action": "peer_chat",
+            "data": {"message": "hi"}
+        }))
+        .await;
+    assert!(result.is_error);
+    assert!(
+        result.for_llm.contains("Failed to submit task: cluster unreachable"),
+        "got: {}",
+        result.for_llm
+    );
+}
+
+#[test]
+fn w4a_parameters_peer_description_variants() {
+    // (a) connected with zero online peers
+    let tool = ClusterRpcTool::with_cluster(Arc::new(StubClusterOps::connected("n1")));
+    let desc = tool.parameters()["properties"]["peer_id"]["description"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert!(desc.contains("no peers currently online"), "got: {desc}");
+
+    // (b) connected with a capable peer + a capability-less peer
+    let mut stub = StubClusterOps::connected("n1");
+    stub.peers = vec![
+        PeerInfo {
+            id: "n2".to_string(),
+            name: "Bot2".to_string(),
+            capabilities: vec!["chat".to_string(), "tools".to_string()],
+            status: "online".to_string(),
+        },
+        PeerInfo {
+            id: "n3".to_string(),
+            name: "Bot3".to_string(),
+            capabilities: vec![],
+            status: "online".to_string(),
+        },
+    ];
+    let tool = ClusterRpcTool::with_cluster(Arc::new(stub));
+    let desc = tool.parameters()["properties"]["peer_id"]["description"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert!(desc.contains("Available online peers"), "got: {desc}");
+    assert!(desc.contains("- n2 (Bot2): chat, tools"), "got: {desc}");
+    assert!(desc.contains("- n3 (Bot3): unknown capabilities"), "got: {desc}");
+
+    // (c) disconnected
+    let tool = ClusterRpcTool::with_cluster(Arc::new(StubClusterOps::new()));
+    let desc = tool.parameters()["properties"]["peer_id"]["description"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert!(desc.contains("cluster not connected"), "got: {desc}");
+}

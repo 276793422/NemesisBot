@@ -388,3 +388,104 @@ fn test_export_manifest_deserialization() {
     assert_eq!(manifest.kind, "script");
     assert!(manifest.files.is_empty());
 }
+
+// --- copy_dir_recursive direct coverage ---
+
+#[tokio::test]
+async fn test_copy_dir_recursive_non_dir_returns_empty() {
+    let dir = tempfile::tempdir().unwrap();
+    let dst = dir.path().join("dst");
+    tokio::fs::create_dir_all(&dst).await.unwrap();
+
+    // Nonexistent path is not a dir -> empty result, no panic.
+    let copied = copy_dir_recursive(Path::new("definitely/not/here"), &dst).await;
+    assert!(copied.is_empty());
+
+    // A FILE src is also not a dir -> empty result.
+    let file_src = dir.path().join("src_file.txt");
+    tokio::fs::write(&file_src, "x").await.unwrap();
+    let copied = copy_dir_recursive(&file_src, &dst).await;
+    assert!(copied.is_empty());
+}
+
+#[tokio::test]
+async fn test_copy_dir_recursive_nested_subdirs() {
+    let dir = tempfile::tempdir().unwrap();
+    let src = dir.path().join("src");
+    let dst = dir.path().join("dst");
+    tokio::fs::create_dir_all(src.join("sub")).await.unwrap();
+    tokio::fs::write(src.join("top.txt"), "top").await.unwrap();
+    tokio::fs::write(src.join("sub").join("nested.txt"), "nested").await.unwrap();
+
+    let copied = copy_dir_recursive(&src, &dst).await;
+    assert_eq!(copied.len(), 2, "both files must be reported: {:?}", copied);
+    assert!(copied.contains(&"top.txt".to_string()));
+    assert!(
+        copied.contains(&"sub/nested.txt".to_string()),
+        "nested file reported with subdir prefix: {:?}",
+        copied
+    );
+    assert!(dst.join("top.txt").exists());
+    assert_eq!(
+        tokio::fs::read_to_string(dst.join("sub").join("nested.txt"))
+            .await
+            .unwrap(),
+        "nested"
+    );
+}
+
+#[tokio::test]
+async fn test_copy_dir_recursive_write_fail_skips_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let src = dir.path().join("src");
+    let dst = dir.path().join("dst");
+    tokio::fs::create_dir_all(&src).await.unwrap();
+    tokio::fs::create_dir_all(&dst).await.unwrap();
+    tokio::fs::write(src.join("good.txt"), "good").await.unwrap();
+    tokio::fs::write(src.join("blocked.txt"), "blocked").await.unwrap();
+
+    // Pre-create a DIRECTORY where blocked.txt would be written -> write fails,
+    // the file is skipped, but good.txt is still copied.
+    tokio::fs::create_dir_all(dst.join("blocked.txt")).await.unwrap();
+
+    let copied = copy_dir_recursive(&src, &dst).await;
+    assert_eq!(copied.len(), 1, "only the writable file reported: {:?}", copied);
+    assert!(copied.contains(&"good.txt".to_string()));
+    assert!(dst.join("good.txt").exists());
+}
+
+// --- S8 coverage additions (quality-hardening goal 冲刺 S8) ---
+
+#[tokio::test]
+async fn test_s8_export_artifact_copies_project_files_and_tests_dir() {
+    let dir = tempfile::tempdir().unwrap();
+    let config = ExportConfig::new(dir.path());
+    let exporter = Exporter::new(config);
+
+    let artifact = make_artifact("proj-skill", ArtifactKind::Skill, ArtifactStatus::Active);
+
+    // Project-structure files live next to the artifact's source dir.
+    let src_dir = dir.path().join("forge").join("skills").join("proj-skill");
+    std::fs::create_dir_all(&src_dir).unwrap();
+    std::fs::write(src_dir.join("requirements.txt"), "flask\n").unwrap();
+    std::fs::write(src_dir.join("README.md"), "# readme").unwrap();
+
+    // tests/ subdir with both a flat file and a nested subdirectory.
+    let tests_src = src_dir.join("tests");
+    std::fs::create_dir_all(tests_src.join("sub")).unwrap();
+    std::fs::write(tests_src.join("test_a.py"), "def test_a(): pass").unwrap();
+    std::fs::write(tests_src.join("sub").join("test_b.py"), "def test_b(): pass").unwrap();
+
+    let target = dir.path().join("export");
+    let out = exporter.export_artifact(&artifact, &target).await.unwrap();
+
+    assert!(out.join("requirements.txt").exists());
+    assert!(out.join("README.md").exists());
+    assert!(out.join("tests").join("test_a.py").exists());
+    assert!(out.join("tests").join("sub").join("test_b.py").exists());
+
+    let manifest = std::fs::read_to_string(out.join("forge-manifest.json")).unwrap();
+    assert!(manifest.contains("requirements.txt"));
+    assert!(manifest.contains("tests/test_a.py"));
+    assert!(manifest.contains("tests/sub/test_b.py"));
+}

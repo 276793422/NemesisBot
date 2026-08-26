@@ -397,4 +397,7 @@ impl VectorStore {
 mod extra_tests;
 
 #[cfg(test)]
+mod w2c_tests;
+
+#[cfg(test)]
 mod tests;

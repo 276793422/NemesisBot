@@ -425,3 +425,30 @@ fn test_build_full_analysis_prompt_trace_signals() {
     assert!(prompt.contains("retry"));
     assert!(prompt.contains("backtrack"));
 }
+
+#[test]
+fn test_build_full_analysis_prompt_caps_top_patterns_at_five() {
+    // Only the first 5 top patterns are included in the prompt.
+    let mut stats = make_reflection_stats();
+    stats.top_patterns = (1..=7)
+        .map(|i| PatternInsight {
+            tool_name: format!("tp{}", i),
+            count: 100 - i as i32,
+            avg_duration_ms: 100,
+            success_rate: 0.9,
+            suggestion: format!("suggestion {}", i),
+        })
+        .collect();
+
+    let prompt = build_full_analysis_prompt(&stats, &[], None, None);
+    assert!(prompt.contains("tp5"), "5th pattern must be included");
+    assert!(!prompt.contains("tp6"), "6th pattern must be excluded");
+    assert!(!prompt.contains("tp7"), "7th pattern must be excluded");
+}
+
+#[test]
+fn test_extract_json_end_before_start_returns_none() {
+    // '}' occurs before '{' so the slice bounds are inverted -> None.
+    assert!(extract_json("}{").is_none());
+    assert!(extract_json("no braces at all").is_none());
+}

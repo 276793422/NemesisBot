@@ -83,3 +83,6 @@ fn set_version(conn: &Connection, version: i32) -> Result<(), String> {
     conn.pragma_update(None, "user_version", version)
         .map_err(|e| format!("Failed to set schema version: {e}"))
 }
+
+#[cfg(test)]
+mod tests;

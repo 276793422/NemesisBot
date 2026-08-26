@@ -676,3 +676,6 @@ fn exe_dir() -> Result<PathBuf> {
         .map(|p| p.to_path_buf())
         .context("Failed to get exe directory")
 }
+
+#[cfg(test)]
+mod tests;

@@ -1606,3 +1606,319 @@ fn test_spi_parameters_required_and_confirm() {
     // confirm must be documented for transfer
     assert!(params["properties"]["confirm"].is_object());
 }
+
+// ============================================================
+// W4a coverage gap closure (direct calls to the private per-action
+// methods). NOTE: execute() short-circuits with a "Linux only"
+// error on non-Linux hosts BEFORE any action dispatch, so every
+// existing execute()-based validation test passes vacuously on
+// Windows. Calling detect/scan/read_device/write_device directly
+// exercises the real validation logic; the trailing
+// #[cfg(not(target_os = "linux"))] arms after validation ARE
+// reachable (no device existence check), while scan() requires an
+// actual /dev/i2c-N node (see §9.4 exemption).
+// ============================================================
+
+#[tokio::test]
+async fn w4a_i2c_detect_reports_no_buses_on_this_host() {
+    let tool = I2CTool::new();
+    let result = tool.detect().await;
+    // No /dev/i2c-* nodes exist on Windows -> the "no buses" help branch.
+    assert!(!result.is_error);
+    assert!(
+        result.for_llm.contains("No I2C buses found"),
+        "got: {}",
+        result.for_llm
+    );
+    assert!(result.for_llm.contains("modprobe i2c-dev"));
+}
+
+#[tokio::test]
+async fn w4a_i2c_scan_validation_and_missing_device() {
+    let tool = I2CTool::new();
+    // missing bus
+    let r = tool.scan(&serde_json::json!({})).await;
+    assert!(r.is_error);
+    assert!(r.for_llm.contains("bus is required"), "got: {}", r.for_llm);
+    // non-numeric bus
+    let r = tool
+        .scan(&serde_json::json!({"bus": "abc"}))
+        .await;
+    assert!(r.is_error);
+    assert!(r.for_llm.contains("invalid bus identifier"), "got: {}", r.for_llm);
+    // well-formed bus but /dev/i2c-1 does not exist on this host
+    let r = tool
+        .scan(&serde_json::json!({"bus": "1"}))
+        .await;
+    assert!(r.is_error);
+    assert!(
+        r.for_llm.contains("failed to open /dev/i2c-1"),
+        "got: {}",
+        r.for_llm
+    );
+}
+
+#[tokio::test]
+async fn w4a_i2c_read_validation_and_platform_arm() {
+    let tool = I2CTool::new();
+    // missing bus
+    let r = tool.read_device(&serde_json::json!({"address": 0x38})).await;
+    assert!(r.is_error);
+    assert!(r.for_llm.contains("bus is required"));
+    // address below range
+    let r = tool
+        .read_device(&serde_json::json!({"bus": "1", "address": 0x02}))
+        .await;
+    assert!(r.is_error);
+    assert!(r.for_llm.contains("0x03-0x77"), "got: {}", r.for_llm);
+    // address above range
+    let r = tool
+        .read_device(&serde_json::json!({"bus": "1", "address": 0x78}))
+        .await;
+    assert!(r.is_error);
+    // valid args on a non-Linux host: falls through to the
+    // "platform not supported" silent arm (length clamped to 256)
+    let r = tool
+        .read_device(&serde_json::json!({"bus": "1", "address": 0x38, "length": 9999}))
+        .await;
+    assert!(!r.is_error);
+    assert!(
+        r.for_llm.contains("I2C read 256 bytes from 0x38 (platform not supported"),
+        "got: {}",
+        r.for_llm
+    );
+}
+
+#[tokio::test]
+async fn w4a_i2c_write_full_validation_matrix_and_platform_arm() {
+    let tool = I2CTool::new();
+    // confirm required first
+    let r = tool
+        .write_device(&serde_json::json!({"bus": "1", "address": 0x38, "data": [1]}))
+        .await;
+    assert!(r.is_error);
+    assert!(r.for_llm.contains("require confirm: true"), "got: {}", r.for_llm);
+    // missing bus
+    let r = tool
+        .write_device(&serde_json::json!({"confirm": true, "address": 0x38, "data": [1]}))
+        .await;
+    assert!(r.is_error);
+    assert!(r.for_llm.contains("bus is required"));
+    // non-numeric bus
+    let r = tool
+        .write_device(&serde_json::json!({"confirm": true, "bus": "x9", "address": 0x38, "data": [1]}))
+        .await;
+    assert!(r.is_error);
+    // address out of range
+    let r = tool
+        .write_device(&serde_json::json!({"confirm": true, "bus": "1", "address": 0x99, "data": [1]}))
+        .await;
+    assert!(r.is_error);
+    // missing data
+    let r = tool
+        .write_device(&serde_json::json!({"confirm": true, "bus": "1", "address": 0x38}))
+        .await;
+    assert!(r.is_error);
+    assert!(r.for_llm.contains("data is required"));
+    // empty data array
+    let r = tool
+        .write_device(&serde_json::json!({"confirm": true, "bus": "1", "address": 0x38, "data": []}))
+        .await;
+    assert!(r.is_error);
+    // data too long (257)
+    let big: Vec<u64> = (0..257).collect();
+    let r = tool
+        .write_device(&serde_json::json!({"confirm": true, "bus": "1", "address": 0x38, "data": big}))
+        .await;
+    assert!(r.is_error);
+    assert!(r.for_llm.contains("maximum 256 bytes"), "got: {}", r.for_llm);
+    // register out of range
+    let r = tool
+        .write_device(&serde_json::json!({"confirm": true, "bus": "1", "address": 0x38, "register": 256, "data": [1]}))
+        .await;
+    assert!(r.is_error);
+    assert!(r.for_llm.contains("register must be between"), "got: {}", r.for_llm);
+    // invalid byte in data (256)
+    let r = tool
+        .write_device(&serde_json::json!({"confirm": true, "bus": "1", "address": 0x38, "data": [0, 256]}))
+        .await;
+    assert!(r.is_error);
+    assert!(r.for_llm.contains("data[1] is not a valid byte"), "got: {}", r.for_llm);
+    // valid write on non-Linux: platform arm; register counts into the length
+    let r = tool
+        .write_device(&serde_json::json!({"confirm": true, "bus": "1", "address": 0x38, "register": 0x10, "data": [0xAA, 0x55]}))
+        .await;
+    assert!(!r.is_error);
+    assert!(
+        r.for_llm.contains("I2C write 3 bytes to 0x38 (platform not supported"),
+        "register+2 data bytes expected, got: {}",
+        r.for_llm
+    );
+}
+
+#[tokio::test]
+async fn w4a_spi_list_reports_no_devices_on_this_host() {
+    let tool = SPITool::new();
+    let result = tool.list().await;
+    assert!(!result.is_error);
+    assert!(
+        result.for_llm.contains("No SPI devices found"),
+        "got: {}",
+        result.for_llm
+    );
+    assert!(result.for_llm.contains("spidev"));
+}
+
+#[tokio::test]
+async fn w4a_spi_transfer_validation_and_platform_arm() {
+    let tool = SPITool::new();
+    // confirm required
+    let r = tool
+        .transfer(&serde_json::json!({"device": "2.0", "data": [1]}))
+        .await;
+    assert!(r.is_error);
+    assert!(r.for_llm.contains("require confirm: true"), "got: {}", r.for_llm);
+    // missing device
+    let r = tool
+        .transfer(&serde_json::json!({"confirm": true, "data": [1]}))
+        .await;
+    assert!(r.is_error);
+    assert!(r.for_llm.contains("device is required"));
+    // malformed device (two dots)
+    let r = tool
+        .transfer(&serde_json::json!({"confirm": true, "device": "1.2.3", "data": [1]}))
+        .await;
+    assert!(r.is_error);
+    assert!(r.for_llm.contains("X.Y"), "got: {}", r.for_llm);
+    // speed/mode/bits validation via validate_spi_params
+    let r = tool
+        .transfer(&serde_json::json!({"confirm": true, "device": "2.0", "speed": 999_999_999, "data": [1]}))
+        .await;
+    assert!(r.is_error);
+    assert!(r.for_llm.contains("125 MHz"), "got: {}", r.for_llm);
+    // missing data
+    let r = tool
+        .transfer(&serde_json::json!({"confirm": true, "device": "2.0"}))
+        .await;
+    assert!(r.is_error);
+    assert!(r.for_llm.contains("data is required"));
+    // data too long (4097)
+    let big: Vec<u64> = (0..4097).collect();
+    let r = tool
+        .transfer(&serde_json::json!({"confirm": true, "device": "2.0", "data": big}))
+        .await;
+    assert!(r.is_error);
+    assert!(r.for_llm.contains("maximum 4096 bytes"), "got: {}", r.for_llm);
+    // invalid byte
+    let r = tool
+        .transfer(&serde_json::json!({"confirm": true, "device": "2.0", "data": [7, 300]}))
+        .await;
+    assert!(r.is_error);
+    assert!(r.for_llm.contains("data[1] is not a valid byte"), "got: {}", r.for_llm);
+    // valid transfer on non-Linux: platform arm
+    let r = tool
+        .transfer(&serde_json::json!({"confirm": true, "device": "2.0", "data": [0xDE, 0xAD], "speed": 1_000_000, "mode": 0, "bits": 8}))
+        .await;
+    assert!(!r.is_error);
+    assert!(
+        r.for_llm.contains("SPI transfer 2 bytes (platform not supported"),
+        "got: {}",
+        r.for_llm
+    );
+}
+
+#[tokio::test]
+async fn w4a_spi_read_validation_and_platform_arm() {
+    let tool = SPITool::new();
+    // missing device
+    let r = tool.read_device(&serde_json::json!({})).await;
+    assert!(r.is_error);
+    assert!(r.for_llm.contains("device is required"));
+    // malformed device
+    let r = tool
+        .read_device(&serde_json::json!({"device": "abc"}))
+        .await;
+    assert!(r.is_error);
+    assert!(r.for_llm.contains("X.Y"));
+    // length 0 rejected
+    let r = tool
+        .read_device(&serde_json::json!({"device": "2.0", "length": 0}))
+        .await;
+    assert!(r.is_error);
+    assert!(r.for_llm.contains("between 1 and 4096"), "got: {}", r.for_llm);
+    // length too large
+    let r = tool
+        .read_device(&serde_json::json!({"device": "2.0", "length": 5000}))
+        .await;
+    assert!(r.is_error);
+    // valid read on non-Linux: platform arm
+    let r = tool
+        .read_device(&serde_json::json!({"device": "2.0", "length": 16}))
+        .await;
+    assert!(!r.is_error);
+    assert!(
+        r.for_llm.contains("SPI read 16 bytes (platform not supported"),
+        "got: {}",
+        r.for_llm
+    );
+}
+
+// ===========================================================================
+// S2 coverage (2026-08-26): direct private-method calls for paths that the
+// public execute() cannot reach on Windows (cfg(linux) dispatch)
+// ===========================================================================
+
+/// I2CTool::detect on Windows finds no /dev/i2c-* -> silent hint result.
+#[tokio::test]
+async fn s2_i2c_detect_no_buses_reports_hint() {
+    let tool = I2CTool::new();
+    let r = tool.detect().await;
+    assert!(!r.is_error);
+    assert!(
+        r.for_llm.contains("No I2C buses found"),
+        "got: {}",
+        r.for_llm
+    );
+}
+
+/// I2CTool::scan for a bus with no /dev/i2c-1 -> metadata check errors.
+#[tokio::test]
+async fn s2_i2c_scan_missing_device_errors() {
+    let tool = I2CTool::new();
+    let r = tool.scan(&serde_json::json!({"bus": "1"})).await;
+    assert!(r.is_error);
+    assert!(
+        r.for_llm.contains("failed to open"),
+        "got: {}",
+        r.for_llm
+    );
+}
+
+/// SPITool::list on Windows finds no /dev/spidevX.Y -> silent hint result.
+#[tokio::test]
+async fn s2_spi_list_no_devices_reports_hint() {
+    let tool = SPITool::new();
+    let r = tool.list().await;
+    assert!(!r.is_error);
+    assert!(
+        r.for_llm.contains("No SPI devices found"),
+        "got: {}",
+        r.for_llm
+    );
+}
+
+/// SPITool::read_device with an out-of-range speed fails parameter
+/// validation before any device IO.
+#[tokio::test]
+async fn s2_spi_read_device_invalid_speed_errors_in_validation() {
+    let tool = SPITool::new();
+    let r = tool
+        .read_device(&serde_json::json!({"device": "0.0", "speed": 0}))
+        .await;
+    assert!(r.is_error);
+    assert!(
+        r.for_llm.contains("speed must be between"),
+        "got: {}",
+        r.for_llm
+    );
+}

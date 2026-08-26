@@ -1063,3 +1063,235 @@ async fn test_search_network_error_returns_err() {
     // The connection failure surfaces as an Other error mentioning the request.
     assert!(err.to_string().to_lowercase().contains("modelscope"));
 }
+
+// ============================================================
+// S5 coverage: parse_github_tree_url edges, list_repo_files /
+// fetch_repo_raw error arms, fetch_full_skill empty, install
+// fallback-skip + canonical escape, get_skill_content mismatch
+// ============================================================
+
+#[test]
+fn test_parse_github_tree_url_shapes() {
+    // Valid shape.
+    assert_eq!(
+        parse_github_tree_url("https://github.com/o/r/tree/main/skills/pdf"),
+        Some(("o", "r", "main", "skills/pdf"))
+    );
+    // Non-github host.
+    assert_eq!(parse_github_tree_url("https://gitlab.com/o/r/tree/main/x"), None);
+    // Missing 4th segment (bare repo root).
+    assert_eq!(parse_github_tree_url("https://github.com/o/r"), None);
+    // Not a /tree/ URL.
+    assert_eq!(parse_github_tree_url("https://github.com/o/r/blob/main/x"), None);
+    // Trailing slash -> path empty -> None.
+    assert_eq!(parse_github_tree_url("https://github.com/o/r/tree/main/"), None);
+    // No slash after branch.
+    assert_eq!(parse_github_tree_url("https://github.com/o/r/tree/main"), None);
+}
+
+#[tokio::test]
+async fn test_list_repo_files_http_error() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/PantherAng/pdf/repo/files"))
+        .respond_with(ResponseTemplate::new(500).set_body_string("boom"))
+        .mount(&server)
+        .await;
+    let reg = make_registry_pointing_at(&server).await;
+
+    let err = reg.list_repo_files("PantherAng", "pdf", "").await.unwrap_err();
+    let msg = err.to_string();
+    assert!(msg.contains("file-list HTTP 500"), "msg: {msg}");
+}
+
+#[tokio::test]
+async fn test_list_repo_files_api_error_code() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/PantherAng/pdf/repo/files"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(
+            r#"{"Code":500,"Data":{"Files":[]},"Message":"db down","Success":false}"#,
+        ))
+        .mount(&server)
+        .await;
+    let reg = make_registry_pointing_at(&server).await;
+
+    let err = reg.list_repo_files("PantherAng", "pdf", "").await.unwrap_err();
+    let msg = err.to_string();
+    assert!(
+        msg.contains("file-list API error") && msg.contains("db down"),
+        "msg: {msg}"
+    );
+}
+
+#[tokio::test]
+async fn test_fetch_repo_raw_http_error() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/PantherAng/pdf/repo/raw"))
+        .respond_with(ResponseTemplate::new(404).set_body_string("gone"))
+        .mount(&server)
+        .await;
+    let reg = make_registry_pointing_at(&server).await;
+
+    let err = reg
+        .fetch_repo_raw("PantherAng", "pdf", "SKILL.md")
+        .await
+        .unwrap_err();
+    let msg = err.to_string();
+    assert!(msg.contains("file HTTP 404"), "msg: {msg}");
+}
+
+#[tokio::test]
+async fn test_fetch_repo_raw_api_error_code() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/PantherAng/pdf/repo/raw"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(
+            r#"{"Code":404,"Data":{"Content":""},"Message":"no such file","Success":false}"#,
+        ))
+        .mount(&server)
+        .await;
+    let reg = make_registry_pointing_at(&server).await;
+
+    let err = reg
+        .fetch_repo_raw("PantherAng", "pdf", "SKILL.md")
+        .await
+        .unwrap_err();
+    let msg = err.to_string();
+    assert!(
+        msg.contains("file API error") && msg.contains("no such file"),
+        "msg: {msg}"
+    );
+}
+
+#[tokio::test]
+async fn test_fetch_full_skill_empty_listing_errors() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/PantherAng/pdf/repo/files"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(
+            r#"{"Code":200,"Data":{"Files":[]},"Message":"ok","Success":true}"#,
+        ))
+        .mount(&server)
+        .await;
+    let reg = make_registry_pointing_at(&server).await;
+
+    let err = reg
+        .fetch_full_skill("PantherAng", "pdf")
+        .await
+        .unwrap_err();
+    let msg = err.to_string();
+    assert!(
+        msg.contains("has no files") && msg.contains("PantherAng/pdf"),
+        "msg: {msg}"
+    );
+}
+
+#[tokio::test]
+async fn test_download_and_install_github_source_unparseable_url_skips_fallback() {
+    // Source=github + no subdirs, but SourceUrl is NOT a github tree URL ->
+    // the fallback branch is evaluated (parse returns None) and skipped; the
+    // mirrored SKILL.md installs. No real network is touched.
+    let server = MockServer::start().await;
+    Mock::given(method("PUT"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(
+            r#"{"Code":200,"Data":{"SkillList":[{"Name":"pdf","DisplayName":"PDF","Description":"s","Path":"PantherAng","Source":"github","SourceUrl":"https://gitlab.com/x/y"}],"TotalCount":1},"Message":"ok","Success":true}"#,
+        ))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/PantherAng/pdf/repo/files"))
+        .and(query_param("Root", ""))
+        .respond_with(ResponseTemplate::new(200).set_body_string(
+            r#"{"Code":200,"Data":{"Files":[{"Path":"SKILL.md","Type":"blob"}]},"Message":"ok","Success":true}"#,
+        ))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/PantherAng/pdf/repo/raw"))
+        .and(query_param("FilePath", "SKILL.md"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(
+            r#"{"Code":200,"Data":{"Content":"---\nname: pdf\n---\nbody"},"Message":"ok","Success":true}"#,
+        ))
+        .mount(&server)
+        .await;
+
+    let dir = tempfile::tempdir().unwrap();
+    let reg = make_registry_pointing_at(&server).await;
+    reg.download_and_install("pdf", "1.0", dir.path().to_str().unwrap())
+        .await
+        .expect("mirror install must succeed without the github fallback");
+    assert!(dir.path().join("SKILL.md").exists());
+}
+
+#[cfg(windows)]
+#[tokio::test]
+async fn test_download_and_install_canonical_escape_rejected() {
+    // A listing entry with an absolute Windows path passes the cheap textual
+    // guard (no leading slash, no ".."), but Path::join replaces the target
+    // entirely -> canonical parent escapes -> Security error before any write.
+    let server = MockServer::start().await;
+    Mock::given(method("PUT"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(
+            r#"{"Code":200,"Data":{"SkillList":[{"Name":"pdf","DisplayName":"PDF","Description":"s","Path":"PantherAng","SourceUrl":"x"}],"TotalCount":1},"Message":"ok","Success":true}"#,
+        ))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/PantherAng/pdf/repo/files"))
+        .and(query_param("Root", ""))
+        .respond_with(ResponseTemplate::new(200).set_body_string(
+            r#"{"Code":200,"Data":{"Files":[{"Path":"C:\\\\nemesis_s5_evil.txt","Type":"blob"}]},"Message":"ok","Success":true}"#,
+        ))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/PantherAng/pdf/repo/raw"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(
+            r#"{"Code":200,"Data":{"Content":"evil"},"Message":"ok","Success":true}"#,
+        ))
+        .mount(&server)
+        .await;
+
+    let dir = tempfile::tempdir().unwrap();
+    let reg = make_registry_pointing_at(&server).await;
+    let err = reg
+        .download_and_install("pdf", "1.0", dir.path().to_str().unwrap())
+        .await
+        .unwrap_err();
+    let msg = err.to_string();
+    assert!(
+        msg.contains("path traversal") || msg.contains("traversal"),
+        "msg: {msg}"
+    );
+    assert!(!std::path::Path::new("C:\\nemesis_s5_evil.txt").exists());
+}
+
+#[tokio::test]
+async fn test_get_skill_content_name_mismatch_errors() {
+    let server = MockServer::start().await;
+    Mock::given(method("PUT"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(
+            r#"{"Code":200,"Data":{"SkillList":[{"Name":"not-pdf","Path":"X"}],"TotalCount":1},"Message":"ok","Success":true}"#,
+        ))
+        .mount(&server)
+        .await;
+    let reg = make_registry_pointing_at(&server).await;
+
+    let err = reg.get_skill_content("pdf").await.unwrap_err();
+    let msg = err.to_string();
+    assert!(
+        msg.contains("not found") && msg.contains("not-pdf"),
+        "msg: {msg}"
+    );
+}
+
+// Structural (no injection seam; do NOT exempt):
+// - 569-601: the github full-tree fallback inside download_and_install
+//   hardcodes https://api.github.com + raw.githubusercontent.com; reachable
+//   only with real network. (Line 568's `if let` guard itself IS exercised —
+//   with an unparseable SourceUrl — by the unparseable-URL test above.)
+// - 634-635: the canonicalize-failure arm of the install write loop —
+//   create_dir_all(parent) at 625 runs immediately before, so the parent
+//   canonicalize at 627 essentially always succeeds.

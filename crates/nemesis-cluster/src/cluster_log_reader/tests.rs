@@ -342,3 +342,185 @@ fn test_format_event_rpc_call_unknown_direction_hidden() {
         events
     );
 }
+
+// ============================================================
+// S4 coverage: aggregation filters, trace limits, log-reading
+// edge lines, format_event arms
+// ============================================================
+
+fn today_log_path(log_dir: &std::path::Path) -> std::path::PathBuf {
+    log_dir.join(format!("cluster_{}.log", Local::now().format("%Y-%m-%d")))
+}
+
+/// task_assigned without an action field, events without task_id,
+/// completions for unknown tasks, and assigned-but-never-completed nodes.
+#[test]
+fn test_aggregate_node_stats_missing_and_unmatched_fields() {
+    let temp_dir = TempDir::new().unwrap();
+    let log_dir = temp_dir.path();
+
+    let log_content = r#"{"event":"task_assigned","ts":"2024-01-01T10:00:00+00:00","task_id":"task-1"}
+{"event":"task_assigned","ts":"2024-01-01T10:01:00+00:00","task_id":"task-2","action":"node1"}
+{"event":"cluster_start","ts":"2024-01-01T10:02:00+00:00","node_id":"local"}
+{"event":"task_completed","ts":"2024-01-01T10:03:00+00:00","task_id":"task-unknown","action":"x"}
+"#;
+    fs::write(today_log_path(log_dir), log_content).unwrap();
+
+    let stats = aggregate_node_stats(log_dir);
+
+    // task-1 was assigned without action → no node mapping → not counted.
+    // node1 got task-2 assigned but no completion → zero-success entry.
+    assert_eq!(stats.len(), 1, "only node1 should have stats: {:?}", stats);
+    let s = &stats["node1"];
+    assert_eq!(s.task_count, 1);
+    assert_eq!(s.success_count, 0);
+    assert_eq!(s.fail_count, 0);
+    assert_eq!(s.success_rate, 0.0);
+}
+
+/// Events for tasks outside the requested ID set are skipped, as are
+/// in-set events of irrelevant types.
+#[test]
+fn test_aggregate_task_summaries_filters_out_of_set_and_other_events() {
+    let temp_dir = TempDir::new().unwrap();
+    let log_dir = temp_dir.path();
+
+    let log_content = r#"{"event":"task_llm_start","ts":"2024-01-01T10:00:00+00:00","task_id":"other-task"}
+{"event":"task_llm_start","ts":"2024-01-01T10:01:00+00:00","task_id":"task-1"}
+{"event":"task_completed","ts":"2024-01-01T10:02:00+00:00","task_id":"task-1"}
+{"event":"task_tool_call","ts":"2024-01-01T10:03:00+00:00","task_id":"task-1","tool":"grep"}
+"#;
+    fs::write(today_log_path(log_dir), log_content).unwrap();
+
+    let summaries = aggregate_task_summaries(log_dir, &["task-1".to_string()]);
+    assert_eq!(summaries.len(), 1);
+    let s = &summaries["task-1"];
+    assert_eq!(s.rounds, 1, "only in-set llm_start counts");
+    assert_eq!(s.tool_calls, 1);
+    assert_eq!(s.tool_chain, vec!["grep".to_string()]);
+}
+
+/// Non-rpc events and outbound rpc_call without request_id are skipped.
+#[test]
+fn test_reconstruct_traces_skips_non_rpc_and_missing_request_id() {
+    let temp_dir = TempDir::new().unwrap();
+    let log_dir = temp_dir.path();
+
+    let log_content = r#"{"event":"cluster_start","ts":"2024-01-01T10:00:00+00:00","node_id":"n1"}
+{"event":"rpc_call","ts":"2024-01-01T10:01:00+00:00","direction":"outbound","source":"a","target":"b"}
+{"event":"rpc_call","ts":"2024-01-01T10:02:00+00:00","direction":"outbound","request_id":"req-ok","source":"a","target":"b"}
+"#;
+    fs::write(today_log_path(log_dir), log_content).unwrap();
+
+    let traces = reconstruct_traces(log_dir);
+    assert_eq!(traces.len(), 1, "only the trace with request_id survives");
+    assert_eq!(traces[0].id, "req-ok");
+}
+
+/// More than 50 traces → only the last 50 are kept.
+#[test]
+fn test_reconstruct_traces_keeps_last_50() {
+    let temp_dir = TempDir::new().unwrap();
+    let log_dir = temp_dir.path();
+
+    let mut content = String::new();
+    for i in 1..=51 {
+        content.push_str(&format!(
+            r#"{{"event":"rpc_call","ts":"2024-01-01T10:00:00+00:00","direction":"outbound","request_id":"req-{}","source":"a","target":"b"}}"#,
+            i
+        ));
+        content.push('\n');
+    }
+    fs::write(today_log_path(log_dir), content).unwrap();
+
+    let traces = reconstruct_traces(log_dir);
+    assert_eq!(traces.len(), 50, "trace list is capped at 50");
+    assert_eq!(traces[0].id, "req-2", "oldest trace dropped");
+    assert_eq!(traces[49].id, "req-51", "newest trace kept");
+}
+
+/// read_rpc_connections skips non-rpc events entirely, and rpc_call
+/// events missing one endpoint are filtered too.
+#[test]
+fn test_read_rpc_connections_skips_non_rpc_events() {
+    let temp_dir = TempDir::new().unwrap();
+    let log_dir = temp_dir.path();
+
+    let log_content = r#"{"event":"cluster_start","ts":"2024-01-01T10:00:00+00:00","node_id":"n1"}
+{"event":"rpc_call","ts":"2024-01-01T10:02:00+00:00","source":"broadcast","target":"d"}
+"#;
+    fs::write(today_log_path(log_dir), log_content).unwrap();
+
+    let connections = read_rpc_connections(log_dir);
+    assert_eq!(
+        connections.len(),
+        0,
+        "non-rpc and broadcast events must be skipped: {:?}",
+        connections
+    );
+}
+
+/// A log file path that is a directory (unreadable), blank lines, and
+/// invalid JSON lines are all skipped without panic.
+#[test]
+fn test_read_recent_events_skips_unreadable_blank_and_invalid_lines() {
+    let temp_dir = TempDir::new().unwrap();
+    let log_dir = temp_dir.path();
+
+    // Today's "file" is actually a directory → read_to_string fails.
+    let dir_path = today_log_path(log_dir);
+    fs::create_dir(&dir_path).unwrap();
+
+    // Blank + invalid lines must not break parsing of valid lines.
+    let yesterday = Local::now() - chrono::Duration::days(1);
+    let yesterday_path = log_dir.join(format!("cluster_{}.log", yesterday.format("%Y-%m-%d")));
+    let log_content = "\n{\"event\":\"cluster_stop\",\"ts\":\"2024-01-01T10:00:00+00:00\"}\nthis is not json\n\n";
+    fs::write(yesterday_path, log_content).unwrap();
+
+    let events = read_recent_events(log_dir, 10);
+    assert_eq!(events.len(), 1, "only the valid line survives: {:?}", events);
+    assert_eq!(events[0].r#type, "system");
+}
+
+/// Timestamps that are not RFC3339 fall back to substring extraction or
+/// verbatim copy; remaining format_event arms get exercised.
+#[test]
+fn test_format_event_ts_fallbacks_and_remaining_arms() {
+    let temp_dir = TempDir::new().unwrap();
+    let log_dir = temp_dir.path();
+
+    let log_content = r#"{"event":"node_offline","ts":"2024-01-01 10:00:00.123456","node_id":"n1","peer_addr":"10.0.0.9:9000"}
+{"event":"node_offline","ts":"short","node_id":"n2"}
+{"event":"node_removed","ts":"2024-01-01T10:01:00+00:00","node_id":"n3"}
+{"event":"task_assigned","ts":"2024-01-01T10:02:00+00:00","task_id":"task-1","node_id":"n4"}
+{"event":"task_exec_done","ts":"2024-01-01T10:03:00+00:00","task_id":"task-1","action":"peer_chat"}
+{"event":"task_failed","ts":"2024-01-01T10:04:00+00:00","task_id":"task-1","action":"peer_chat"}
+{"event":"task_timeout","ts":"2024-01-01T10:05:00+00:00","task_id":"task-1","action":"peer_chat"}
+{"event":"mystery_event","ts":"2024-01-01T10:06:00+00:00","task_id":"task-1"}
+"#;
+    fs::write(today_log_path(log_dir), log_content).unwrap();
+
+    let events = read_recent_events(log_dir, 50);
+    // mystery_event formats to None → 7 events survive.
+    assert_eq!(events.len(), 7, "unexpected events: {:?}", events);
+
+    let times: Vec<&String> = events.iter().map(|e| &e.time).collect();
+    // Non-RFC3339 ts with len>=19 → "HH:MM:SS" substring.
+    assert!(
+        times.contains(&&"10:00:00".to_string()),
+        "substring ts fallback missing: {:?}",
+        times
+    );
+    // Short ts → verbatim copy.
+    assert!(times.contains(&&"short".to_string()), "verbatim ts missing: {:?}", times);
+
+    let messages: Vec<&String> = events.iter().map(|e| &e.message).collect();
+    // node_offline with peer_addr shows the addr; without falls back to node_id.
+    assert!(messages.iter().any(|m| m.contains("10.0.0.9:9000")));
+    assert!(messages.contains(&&"节点离线 n2".to_string()));
+    assert!(messages.contains(&&"节点移除 n3".to_string()));
+    assert!(messages.contains(&&"任务分配 task-1 → n4".to_string()));
+    assert!(messages.contains(&&"任务完成 task-1 (peer_chat)".to_string()));
+    assert!(messages.contains(&&"任务失败 task-1 (peer_chat)".to_string()));
+    assert!(messages.contains(&&"任务超时 task-1 (peer_chat)".to_string()));
+}

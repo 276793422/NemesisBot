@@ -107,3 +107,6 @@ impl nemesis_channels::base::VoiceTranscriber for LocalVoiceTranscriber {
         })
     }
 }
+
+#[cfg(test)]
+mod tests;

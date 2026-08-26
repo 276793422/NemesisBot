@@ -446,7 +446,21 @@ fn resolve_prompt_template(template: &str, context: &HashMap<String, serde_json:
 // Tool Node
 // ---------------------------------------------------------------------------
 
-/// Built-in tool node executor (mock).
+/// Placeholder executor for `tool` nodes on engines without a tool bridge.
+///
+/// The real executor is [`RealToolNodeExecutor`] — it dispatches to a shared
+/// [`nemesis_tools::registry::ToolRegistry`] and is wired by
+/// `WorkflowEngine::new_integrated*` (gateway side). Engines built with
+/// `WorkflowEngine::new()` (CLI bare engine) have no registry, so this
+/// placeholder answers instead.
+///
+/// (BUG #32, quality-hardening goal 冲刺) It previously fabricated
+/// `{"tool":…,"status":"success"}` + Completed without executing anything —
+/// a silent fake success: `nemesisbot workflow run` reported Completed for
+/// tool-node workflows while doing none of the work. It now surfaces an
+/// explicit **Failed** NodeResult carrying the reason, mirroring the
+/// `execute_inline_node` precedent for unconfigured complex types, so the
+/// failure is loud and branchable instead of silent.
 pub struct ToolNodeExecutor;
 
 #[async_trait]
@@ -457,24 +471,27 @@ impl NodeExecutor for ToolNodeExecutor {
         _context: &HashMap<String, serde_json::Value>,
         _wf_ctx: &WorkflowContext,
     ) -> Result<NodeResult, String> {
-        let now = Local::now();
+        let started = Local::now();
+        // Resolve the configured tool name the same way RealToolNodeExecutor
+        // does ("name" preferred, legacy "tool") so the error names what the
+        // workflow author asked for.
         let tool_name = node
             .config
-            .get("tool")
+            .get("name")
             .and_then(|v| v.as_str())
+            .or_else(|| node.config.get("tool").and_then(|v| v.as_str()))
             .unwrap_or("unknown");
-        Ok(NodeResult {
-            node_id: node.id.clone(),
-            output: serde_json::json!({
-                "tool": tool_name,
-                "status": "success",
-            }),
-            error: None,
-            state: ExecutionState::Completed,
-            started_at: now,
-            ended_at: Local::now(),
-            metadata: HashMap::new(),
-        })
+        Ok(failed_node_result(
+            &node.id,
+            started,
+            &format!(
+                "tool node '{}' requests tool '{}' but this engine has no tool executor \
+                 configured (未配置工具执行器): bare WorkflowEngine::new() cannot execute tools; \
+                 wire RealToolNodeExecutor via new_integrated_with_dirs or register an executor \
+                 for node type 'tool'",
+                node.id, tool_name
+            ),
+        ))
     }
 }
 

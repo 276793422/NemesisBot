@@ -1486,3 +1486,637 @@ fn test_scanner_config_multiple_engines() {
     assert_eq!(cfg.engines.len(), 2);
     assert_eq!(cfg.enabled.len(), 1);
 }
+
+// =========================================================================
+// S11b 覆盖率冲刺：scanner run() 分发 arm + cmd_check 深路径（installed/
+// failed/pending/db 状态、url 截断、recommendations、persist）+
+// download_engine（本地 TcpListener 假 HTTP：非归档/404/坏 zip/tar.gz+
+// detect）+ cmd_install / cmd_clamav_install_inner 离线全路径 +
+// cmd_clamav enable/disable/update/info。
+// 豁免（不测）：真网络下载 URL 分支（下载走本地假服务器覆盖）、
+// freshclam 真跑、cmd_clamav_test（engine.start+2s sleep+exit(1)）、
+// 全部 exit(1) 分支（cmd_add 非法名 / cmd_remove / cmd_enable 未配置 /
+// install/update/info/test 无 clamav 配置）。
+// =========================================================================
+
+struct S11bTempHomeEnv {
+    _tmp: tempfile::TempDir,
+    home: std::path::PathBuf,
+}
+
+impl Drop for S11bTempHomeEnv {
+    fn drop(&mut self) {
+        unsafe { std::env::remove_var("NEMESISBOT_HOME") };
+    }
+}
+
+fn s11b_temp_home_env() -> S11bTempHomeEnv {
+    let tmp = tempfile::tempdir().unwrap();
+    let home = tmp.path().join(".nemesisbot");
+    std::fs::create_dir_all(home.join("workspace").join("config")).unwrap();
+    unsafe { std::env::set_var("NEMESISBOT_HOME", tmp.path()) };
+    S11bTempHomeEnv { _tmp: tmp, home }
+}
+
+/// PATH → 空临时目录（RAII 恢复）。让 lookup_system_clamav 确定性返回
+/// None（which 只扫 PATH）。必须持 GLOBAL_STATE_LOCK 使用。
+struct S11bMinimalPathEnv {
+    _tmp: tempfile::TempDir,
+    old: Option<std::ffi::OsString>,
+}
+
+impl S11bMinimalPathEnv {
+    fn new() -> Self {
+        let tmp = tempfile::tempdir().unwrap();
+        let old = std::env::var_os("PATH");
+        unsafe { std::env::set_var("PATH", tmp.path().as_os_str()) };
+        S11bMinimalPathEnv { _tmp: tmp, old }
+    }
+}
+
+impl Drop for S11bMinimalPathEnv {
+    fn drop(&mut self) {
+        match self.old.take() {
+            Some(v) => unsafe { std::env::set_var("PATH", v) },
+            None => unsafe { std::env::remove_var("PATH") },
+        }
+    }
+}
+
+fn s11b_engine_json(
+    url: &str,
+    clamav_path: &str,
+    address: &str,
+    data_dir: &str,
+    install_status: &str,
+    db_status: &str,
+) -> serde_json::Value {
+    serde_json::json!({
+        "url": url,
+        "clamav_path": clamav_path,
+        "address": address,
+        "data_dir": data_dir,
+        "state": {
+            "install_status": install_status,
+            "install_error": "",
+            "db_status": db_status,
+            "last_install_attempt": "",
+            "last_db_update": ""
+        }
+    })
+}
+
+fn s11b_write_cfg(path: &std::path::Path, enabled: &[&str], engines: serde_json::Value) {
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(
+        path,
+        serde_json::json!({"enabled": enabled, "engines": engines}).to_string(),
+    )
+    .unwrap();
+}
+
+fn s11b_read_cfg(path: &std::path::Path) -> serde_json::Value {
+    serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap()
+}
+
+/// 本地假 HTTP 服务器（原始 TcpListener，不用真网络）：服务 `hits` 次后退出。
+/// 返回 `http://127.0.0.1:PORT/<file>` URL。
+fn s11b_serve(file: &str, status: u16, body: Vec<u8>, hits: usize) -> String {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let file = file.to_string();
+    std::thread::spawn(move || {
+        let mut served = 0usize;
+        for stream in listener.incoming() {
+            if served >= hits {
+                break;
+            }
+            let mut stream = match stream {
+                Ok(s) => s,
+                Err(_) => break,
+            };
+            use std::io::{Read, Write};
+            // 读完请求头（GET 无 body）
+            let mut buf = [0u8; 4096];
+            let mut req = Vec::new();
+            loop {
+                let n = stream.read(&mut buf).unwrap_or(0);
+                if n == 0 {
+                    break;
+                }
+                req.extend_from_slice(&buf[..n]);
+                if req.windows(4).any(|w| w == b"\r\n\r\n") {
+                    break;
+                }
+            }
+            let reason = if status == 200 { "OK" } else { "Not Found" };
+            let head = format!(
+                "HTTP/1.1 {} {}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                status,
+                reason,
+                body.len()
+            );
+            let _ = stream.write_all(head.as_bytes());
+            let _ = stream.write_all(&body);
+            let _ = stream.flush();
+            served += 1;
+        }
+    });
+    format!("http://{}/{}", addr, file)
+}
+
+// ------------------------------ run() 分发 --------------------------------
+
+#[tokio::test]
+async fn test_s11b_run_dispatch_arms() {
+    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let th = s11b_temp_home_env();
+
+    run(ScannerAction::List, false).await.unwrap(); // 无配置
+    run(
+        ScannerAction::Add {
+            name: "clamav".into(),
+            url: Some("http://example.invalid/clamav.zip".into()),
+            path: None,
+            address: Some("127.0.0.1:1".into()),
+        },
+        false,
+    )
+    .await
+    .unwrap();
+    run(ScannerAction::List, false).await.unwrap();
+    run(
+        ScannerAction::Enable { name: "clamav".into() },
+        false,
+    )
+    .await
+    .unwrap();
+    run(ScannerAction::Check, false).await.unwrap(); // enabled clamav 深路径
+    run(
+        ScannerAction::Disable { name: "clamav".into() },
+        false,
+    )
+    .await
+    .unwrap();
+    run(
+        ScannerAction::Remove { name: "clamav".into() },
+        false,
+    )
+    .await
+    .unwrap();
+    run(ScannerAction::Check, false).await.unwrap(); // enabled 空 → 早退
+    run(ScannerAction::Install { dir: None }, false)
+        .await
+        .unwrap(); // enabled 空 → 早退
+    assert!(crate::common::scanner_config_path(&th.home).exists());
+}
+
+#[tokio::test]
+async fn test_s11b_run_clamav_subcommand_arms() {
+    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let th = s11b_temp_home_env();
+    let cfg_path = crate::common::scanner_config_path(&th.home);
+
+    // 未配置 clamav → Disable 走 "not enabled"；Enable / Info / Update /
+    // Install 的「未配置」分支全是 exit(1)（豁免），先 Add 配置再测。
+    run(
+        ScannerAction::Add {
+            name: "clamav".into(),
+            url: None,
+            path: None,
+            address: Some("127.0.0.1:1".into()),
+        },
+        false,
+    )
+    .await
+    .unwrap();
+    run(
+        ScannerAction::Clamav {
+            action: ClamavAction::Disable,
+        },
+        false,
+    )
+    .await
+    .unwrap();
+    // 未安装 → Enable bail
+    assert!(
+        run(
+            ScannerAction::Clamav {
+                action: ClamavAction::Enable,
+            },
+            false,
+        )
+        .await
+        .is_err()
+    );
+    // Info：地址 127.0.0.1:1（连接拒绝）→ ready=false
+    run(
+        ScannerAction::Clamav {
+            action: ClamavAction::Info,
+        },
+        false,
+    )
+    .await
+    .unwrap();
+    // Install（clamav install arm）：无 URL/无路径（PATH 收窄 → 无系统安装）
+    // → FAILED: no download URL 落盘
+    {
+        let _path_guard = S11bMinimalPathEnv::new();
+        run(
+            ScannerAction::Clamav {
+                action: ClamavAction::Install {
+                    force: false,
+                    url: None,
+                    dir: None,
+                },
+            },
+            false,
+        )
+        .await
+        .unwrap();
+    }
+    let cfg = s11b_read_cfg(&cfg_path);
+    assert_eq!(cfg["engines"]["clamav"]["state"]["install_status"], "failed");
+    assert!(
+        cfg["engines"]["clamav"]["state"]["install_error"]
+            .as_str()
+            .unwrap()
+            .contains("no download URL")
+    );
+    // Update：无路径 + PATH 收窄 → bail "ClamAV not found"
+    {
+        let _path_guard = S11bMinimalPathEnv::new();
+        let err = run(
+            ScannerAction::Clamav {
+                action: ClamavAction::Update,
+            },
+            false,
+        )
+        .await;
+        assert!(err.is_err());
+    }
+}
+
+// --------------------------- cmd_check 深路径 ------------------------------
+
+#[test]
+fn test_s11b_cmd_check_installed_failed_disabled_and_url_truncate() {
+    let tmp = tempfile::tempdir().unwrap();
+    let cfg_path = tmp.path().join("config").join("config.scanner.json");
+
+    let good = tmp.path().join("good_av");
+    std::fs::create_dir_all(good.join("database")).unwrap();
+    std::fs::write(good.join("clamd.exe"), "MZ").unwrap();
+    std::fs::write(good.join("database").join("daily.cvd"), "db").unwrap();
+    let bad = tmp.path().join("bad_av");
+    std::fs::create_dir_all(&bad).unwrap();
+    let long_url = format!("http://example.invalid/{}a.tar.gz", "x".repeat(40));
+
+    s11b_write_cfg(
+        &cfg_path,
+        &["clamav", "stub"],
+        serde_json::json!({
+            "clamav": s11b_engine_json(&long_url, good.to_str().unwrap(), "127.0.0.1:1", "", "", ""),
+            "stub":   s11b_engine_json("", bad.to_str().unwrap(), "", "", "", ""),
+            "off":    s11b_engine_json("", "", "", "", "pending", "missing")
+        }),
+    );
+    cmd_check(&cfg_path).unwrap();
+
+    // 持久化校验：clamav=installed+ready；stub=failed+install_error；off 未动
+    let cfg = s11b_read_cfg(&cfg_path);
+    assert_eq!(cfg["engines"]["clamav"]["state"]["install_status"], "installed");
+    assert_eq!(cfg["engines"]["clamav"]["state"]["db_status"], "ready");
+    assert_eq!(cfg["engines"]["clamav"]["clamav_path"], good.to_str().unwrap());
+    // 注意：cmd_check 的 marshal 第 4 参（data_dir）传 ""，不落 data_dir
+    assert_eq!(cfg["engines"]["clamav"]["data_dir"], "");
+    assert_eq!(cfg["engines"]["stub"]["state"]["install_status"], "failed");
+    assert!(
+        cfg["engines"]["stub"]["state"]["install_error"]
+            .as_str()
+            .unwrap()
+            .contains("executable not found")
+    );
+    assert_eq!(cfg["engines"]["off"]["state"]["install_status"], "pending", "disabled 引擎不改状态");
+}
+
+#[test]
+fn test_s11b_cmd_check_pending_and_recommendations() {
+    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let tmp = tempfile::tempdir().unwrap();
+    let cfg_path = tmp.path().join("config").join("config.scanner.json");
+    let ok_exe = tmp.path().join("ok_av");
+    std::fs::create_dir_all(ok_exe.join("database")).unwrap();
+    std::fs::write(ok_exe.join("clamd.exe"), "MZ").unwrap();
+    // data_dir 指向空库目录 → db missing → "Run update" 建议
+    let empty_db = tmp.path().join("empty_db");
+    std::fs::create_dir_all(&empty_db).unwrap();
+
+    s11b_write_cfg(
+        &cfg_path,
+        &["fresh", "broken", "nodb"],
+        serde_json::json!({
+            // 无路径 + PATH 收窄 → pending → "Run install" 建议
+            "fresh":  s11b_engine_json("", "", "", "", "", ""),
+            "broken": s11b_engine_json("", tmp.path().join("bad_av").to_str().unwrap(), "", "", "", ""),
+            "nodb":   s11b_engine_json("", ok_exe.to_str().unwrap(), "", empty_db.to_str().unwrap(), "", "")
+        }),
+    );
+    {
+        let _path_guard = S11bMinimalPathEnv::new();
+        cmd_check(&cfg_path).unwrap();
+    }
+    let cfg = s11b_read_cfg(&cfg_path);
+    assert_eq!(cfg["engines"]["fresh"]["state"]["install_status"], "pending");
+    assert_eq!(cfg["engines"]["broken"]["state"]["install_status"], "failed");
+    assert_eq!(cfg["engines"]["nodb"]["state"]["db_status"], "missing");
+    assert_eq!(cfg["engines"]["nodb"]["state"]["install_status"], "installed");
+}
+
+// ---------------------------- download_engine -----------------------------
+
+#[tokio::test]
+async fn test_s11b_download_engine_non_archive_and_404() {
+    let tmp = tempfile::tempdir().unwrap();
+    let target = tmp.path().join("dl");
+    std::fs::create_dir_all(&target).unwrap();
+
+    // 1) 非归档（URL 文件名 clamd.exe）→ 落盘即返回 target（根目录无子目录可 detect）
+    let url = s11b_serve("clamd.exe", 200, b"MZ-fake".to_vec(), 1);
+    let dir = download_engine(&url, &target).await.unwrap();
+    assert_eq!(std::path::Path::new(&dir), target.as_path());
+    assert_eq!(
+        std::fs::read(target.join("clamd.exe")).unwrap(),
+        b"MZ-fake".to_vec()
+    );
+
+    // 2) 404 → bail "HTTP 404 Not Found"
+    let url404 = s11b_serve("engine.zip", 404, b"nope".to_vec(), 1);
+    let err = download_engine(&url404, &target).await.unwrap_err();
+    assert!(err.to_string().contains("HTTP 404"), "err={err}");
+}
+
+#[tokio::test]
+async fn test_s11b_download_engine_invalid_zip_expandarchive_rc0_quirk() {
+    let tmp = tempfile::tempdir().unwrap();
+    let target = tmp.path().join("dl");
+    std::fs::create_dir_all(&target).unwrap();
+    // 坏 zip 在 Windows PowerShell 5.1 上的实际行为：Expand-Archive 把异常
+    // 写进 error 流但进程退出码仍是 0（手工实证）→ 代码当作“解压成功”→
+    // 删归档、返回 target。此处钉住该行为；“Could not auto-extract（归档
+    // 保留）”分支需要 Expand-Archive 非零退出，本机 PS 5.1 对坏 zip 不产
+    // 生，列为结构性豁免候选。
+    let url = s11b_serve("engine.zip", 200, b"definitely not a zip".to_vec(), 1);
+    let dir = download_engine(&url, &target).await.unwrap();
+    assert_eq!(std::path::Path::new(&dir), target.as_path());
+    assert!(
+        !target.join("engine.zip").exists(),
+        "Expand-Archive rc=0 → 代码视为解压成功并删除归档"
+    );
+}
+
+#[tokio::test]
+async fn test_s11b_download_engine_tar_gz_extracts_and_detects_exe_dir() {
+    let tmp = tempfile::tempdir().unwrap();
+    // 造真 tar.gz：payload/bin/clamd.exe
+    let staging = tmp.path().join("staging");
+    let payload_bin = staging.join("payload").join("bin");
+    std::fs::create_dir_all(&payload_bin).unwrap();
+    std::fs::write(payload_bin.join("clamd.exe"), b"MZ").unwrap();
+    let tgz = tmp.path().join("pkg.tar.gz");
+    let out = std::process::Command::new("tar")
+        .args(["czf", &tgz.to_string_lossy(), "-C", &staging.to_string_lossy(), "payload"])
+        .output()
+        .expect("tar (Win10+ bsdtar) 应可用");
+    assert!(out.status.success(), "tar czf 失败: {out:?}");
+    let body = std::fs::read(&tgz).unwrap();
+
+    let target = tmp.path().join("dl");
+    std::fs::create_dir_all(&target).unwrap();
+    let url = s11b_serve("pkg.tar.gz", 200, body, 1);
+    let dir = download_engine(&url, &target).await.unwrap();
+    // detect_executable_dir 应定位到含 clamd.exe 的子目录
+    let detected = std::path::PathBuf::from(&dir);
+    assert!(detected.join("clamd.exe").exists(), "detected={dir}");
+    assert!(!target.join("pkg.tar.gz").exists(), "成功解压后归档被清理");
+}
+
+// ------------------------ cmd_install / install_inner ---------------------
+
+#[tokio::test]
+async fn test_s11b_cmd_install_empty_and_stub_and_delegate() {
+    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let tmp = tempfile::tempdir().unwrap();
+    let cfg_path = tmp.path().join("config").join("config.scanner.json");
+
+    // 空 enabled → 早退
+    s11b_write_cfg(&cfg_path, &[], serde_json::json!({}));
+    cmd_install(&cfg_path, None).await.unwrap();
+
+    // 非 clamav 引擎 → "install not implemented"
+    s11b_write_cfg(&cfg_path, &["stubengine"], serde_json::json!({}));
+    cmd_install(&cfg_path, None).await.unwrap();
+
+    // clamav → 委派 install_inner：无 URL（PATH 收窄）→ FAILED persisted
+    s11b_write_cfg(
+        &cfg_path,
+        &["clamav"],
+        serde_json::json!({"clamav": s11b_engine_json("", "", "127.0.0.1:1", "", "", "")}),
+    );
+    {
+        let _path_guard = S11bMinimalPathEnv::new();
+        cmd_install(&cfg_path, None).await.unwrap();
+    }
+    let cfg = s11b_read_cfg(&cfg_path);
+    assert_eq!(cfg["engines"]["clamav"]["state"]["install_status"], "failed");
+}
+
+#[tokio::test]
+async fn test_s11b_clamav_install_inner_full_offline_path() {
+    let tmp = tempfile::tempdir().unwrap();
+    let cfg_path = tmp.path().join("config").join("config.scanner.json");
+    let av = tmp.path().join("av");
+    std::fs::create_dir_all(&av).unwrap();
+    std::fs::write(av.join("clamd.exe"), "MZ").unwrap();
+
+    // 初始未安装：step1 路径命中 → 校验过 → 生成 conf → freshclam 缺失 →
+    // updater 快失败 → db missing → 持久化 installed
+    s11b_write_cfg(
+        &cfg_path,
+        &["clamav"],
+        serde_json::json!({"clamav": s11b_engine_json("", av.to_str().unwrap(), "127.0.0.1:1", "", "", "")}),
+    );
+    cmd_clamav_install_inner(false, None, None, &cfg_path)
+        .await
+        .unwrap();
+    let cfg = s11b_read_cfg(&cfg_path);
+    assert_eq!(cfg["engines"]["clamav"]["state"]["install_status"], "installed");
+    assert_eq!(cfg["engines"]["clamav"]["state"]["db_status"], "missing");
+    assert!(
+        cfg["engines"]["clamav"]["state"]["last_install_attempt"]
+            .as_str()
+            .unwrap()
+            .len()
+            > 0,
+        "last_install_attempt 已写入"
+    );
+    assert!(av.join("freshclam.conf").exists(), "freshclam.conf 已生成");
+    assert!(av.join("clamd.conf").exists(), "clamd.conf 已生成");
+    assert!(av.join("logs").exists(), "logs 目录已建");
+
+    // 已安装 + !force → 早退（路径不变）
+    cmd_clamav_install_inner(false, None, None, &cfg_path)
+        .await
+        .unwrap();
+
+    // force → 重装路径（状态清空重走全流程）
+    cmd_clamav_install_inner(true, None, None, &cfg_path)
+        .await
+        .unwrap();
+    let cfg = s11b_read_cfg(&cfg_path);
+    assert_eq!(cfg["engines"]["clamav"]["state"]["install_status"], "installed");
+
+    // 路径无执行体 → failed "executable not found"
+    let empty = tmp.path().join("empty_av");
+    std::fs::create_dir_all(&empty).unwrap();
+    s11b_write_cfg(
+        &cfg_path,
+        &["clamav"],
+        serde_json::json!({"clamav": s11b_engine_json("", empty.to_str().unwrap(), "", "", "", "")}),
+    );
+    cmd_clamav_install_inner(false, None, None, &cfg_path)
+        .await
+        .unwrap();
+    let cfg = s11b_read_cfg(&cfg_path);
+    assert_eq!(cfg["engines"]["clamav"]["state"]["install_status"], "failed");
+    assert!(
+        cfg["engines"]["clamav"]["state"]["install_error"]
+            .as_str()
+            .unwrap()
+            .contains("executable not found")
+    );
+}
+
+#[tokio::test]
+async fn test_s11b_clamav_install_inner_download_branches() {
+    let tmp = tempfile::tempdir().unwrap();
+    let cfg_path = tmp.path().join("config").join("config.scanner.json");
+    let install_dir = tmp.path().join("tools");
+
+    // 1) 本地假服务器的 tar.gz → 下载解压 detect → installed
+    let staging = tmp.path().join("staging");
+    let payload_bin = staging.join("payload").join("bin");
+    std::fs::create_dir_all(&payload_bin).unwrap();
+    std::fs::write(payload_bin.join("clamd.exe"), b"MZ").unwrap();
+    let tgz = tmp.path().join("pkg.tar.gz");
+    let out = std::process::Command::new("tar")
+        .args(["czf", &tgz.to_string_lossy(), "-C", &staging.to_string_lossy(), "payload"])
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let url = s11b_serve("pkg.tar.gz", 200, std::fs::read(&tgz).unwrap(), 1);
+
+    s11b_write_cfg(
+        &cfg_path,
+        &["clamav"],
+        serde_json::json!({"clamav": s11b_engine_json(&url, "", "", "", "", "")}),
+    );
+    cmd_clamav_install_inner(false, None, Some(install_dir.to_str().unwrap()), &cfg_path)
+        .await
+        .unwrap();
+    let cfg = s11b_read_cfg(&cfg_path);
+    assert_eq!(cfg["engines"]["clamav"]["state"]["install_status"], "installed");
+    let detected = cfg["engines"]["clamav"]["clamav_path"].as_str().unwrap();
+    assert!(detected.contains("clamav"), "detected={detected}");
+    assert!(std::path::Path::new(detected).join("clamd.exe").exists());
+
+    // 2) 死地址下载失败 → "download failed" 落盘 failed，返回 Ok
+    s11b_write_cfg(
+        &cfg_path,
+        &["clamav"],
+        serde_json::json!({"clamav": s11b_engine_json("http://127.0.0.1:1/x.zip", "", "", "", "", "")}),
+    );
+    cmd_clamav_install_inner(false, None, Some(install_dir.to_str().unwrap()), &cfg_path)
+        .await
+        .unwrap();
+    let cfg = s11b_read_cfg(&cfg_path);
+    assert_eq!(cfg["engines"]["clamav"]["state"]["install_status"], "failed");
+    assert!(
+        cfg["engines"]["clamav"]["state"]["install_error"]
+            .as_str()
+            .unwrap()
+            .contains("download failed")
+    );
+}
+
+// ------------------- cmd_clamav enable/disable/update/info ----------------
+
+#[tokio::test]
+async fn test_s11b_cmd_clamav_enable_disable_update_info() {
+    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let tmp = tempfile::tempdir().unwrap();
+    let cfg_path = tmp.path().join("config").join("config.scanner.json");
+
+    // 未配置 → bail
+    s11b_write_cfg(&cfg_path, &[], serde_json::json!({}));
+    assert!(cmd_clamav_enable(&cfg_path).is_err());
+
+    // 已配置但未安装 → bail "not installed"
+    s11b_write_cfg(
+        &cfg_path,
+        &[],
+        serde_json::json!({"clamav": s11b_engine_json("", "", "", "", "pending", "")}),
+    );
+    let err = cmd_clamav_enable(&cfg_path).unwrap_err();
+    assert!(err.to_string().contains("not installed"), "err={err}");
+
+    // installed → enable 成功，enabled 列表加 clamav；再 disable
+    s11b_write_cfg(
+        &cfg_path,
+        &[],
+        serde_json::json!({"clamav": s11b_engine_json("", "", "", "", "installed", "")}),
+    );
+    cmd_clamav_enable(&cfg_path).unwrap();
+    assert!(s11b_read_cfg(&cfg_path)["enabled"].as_array().unwrap().iter().any(|v| v == "clamav"));
+    cmd_clamav_disable(&cfg_path).unwrap();
+    assert!(!s11b_read_cfg(&cfg_path)["enabled"].as_array().unwrap().iter().any(|v| v == "clamav"));
+    cmd_clamav_disable(&cfg_path).unwrap(); // 未启用 → "not enabled" Ok
+
+    // update：无路径 + PATH 收窄 → bail "ClamAV not found"
+    s11b_write_cfg(
+        &cfg_path,
+        &[],
+        serde_json::json!({"clamav": s11b_engine_json("", "", "", "", "installed", "")}),
+    );
+    {
+        let _path_guard = S11bMinimalPathEnv::new();
+        let err = cmd_clamav_update(&cfg_path).await.unwrap_err();
+        assert!(err.to_string().contains("ClamAV not found"), "err={err}");
+    }
+
+    // update：本地 av 目录（有 clamd.exe、无 freshclam）→ 生成 freshclam.conf
+    // 后 updater 快失败（freshclam not found）→ Err("freshclam failed")
+    let av = tmp.path().join("av");
+    std::fs::create_dir_all(&av).unwrap();
+    std::fs::write(av.join("clamd.exe"), "MZ").unwrap();
+    s11b_write_cfg(
+        &cfg_path,
+        &[],
+        serde_json::json!({"clamav": s11b_engine_json("", av.to_str().unwrap(), "", "", "installed", "")}),
+    );
+    let err = cmd_clamav_update(&cfg_path).await.unwrap_err();
+    assert!(err.to_string().contains("freshclam"), "err={err}");
+    assert!(av.join("freshclam.conf").exists(), "conf 缺失时先生成");
+
+    // info：地址 127.0.0.1:1（连接拒绝）→ ready=false，Ok
+    cmd_clamav_info(&cfg_path).await.unwrap();
+}
+
+// --------------------- PATH 收窄下 lookup 确定性 ---------------------------
+
+#[test]
+fn test_s11b_lookup_system_clamav_none_with_minimal_path() {
+    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let _path_guard = S11bMinimalPathEnv::new();
+    assert!(lookup_system_clamav().is_none());
+}

@@ -981,3 +981,77 @@ async fn test_multi_process_uses_request_timeout_when_set() {
     );
     let _ = sender;
 }
+
+#[test]
+fn cleanup_expired_ignores_malformed_timestamp() {
+    let m = ApprovalManager::new(60);
+    m.requests.write().insert(
+        "bad".to_string(),
+        ApprovalRequest {
+            id: "bad".to_string(),
+            operation: "file_write".to_string(),
+            requester: "test".to_string(),
+            timestamp: "not-an-rfc3339-timestamp".to_string(),
+            status: ApprovalStatus::Pending,
+            deny_reason: None,
+        },
+    );
+    // Malformed timestamp cannot be parsed → request is skipped (not expired).
+    assert_eq!(m.cleanup_expired(), 0);
+    assert!(matches!(
+        m.get("bad").map(|r| r.status),
+        Some(ApprovalStatus::Pending)
+    ));
+}
+
+/// Factory whose spawned "child" never answers: the sender is parked inside
+/// the factory so the result channel stays open but silent → timeout arm.
+struct SilentFactory {
+    tx: std::sync::Mutex<Option<oneshot::Sender<serde_json::Value>>>,
+}
+
+impl ChildProcessFactory for SilentFactory {
+    fn spawn_child(
+        &self,
+        _window_type: &str,
+        _data: HashMap<String, serde_json::Value>,
+    ) -> Result<(String, oneshot::Receiver<serde_json::Value>), String> {
+        let (tx, rx) = oneshot::channel();
+        *self.tx.lock().unwrap() = Some(tx);
+        Ok(("child-1".to_string(), rx))
+    }
+}
+
+#[tokio::test]
+async fn multi_approval_timeout_uses_manager_default_timeout() {
+    let m = MultiProcessApprovalManager::new(1);
+    m.set_child_factory(std::sync::Arc::new(SilentFactory {
+        tx: std::sync::Mutex::new(None),
+    }));
+    m.start().unwrap();
+    let req = MultiApprovalRequest {
+        request_id: "r1".to_string(),
+        operation: "process_exec".to_string(),
+        target: "cmd.exe".to_string(),
+        risk_level: "HIGH".to_string(),
+        reason: "test timeout fallback".to_string(),
+        context: HashMap::new(),
+        // timeout_seconds = 0 → falls back to the manager's timeout_secs.
+        timeout_seconds: 0,
+        timestamp: chrono::Local::now().timestamp(),
+    };
+    let resp = m.request_approval(&req).await.unwrap();
+    assert!(!resp.approved);
+    assert!(resp.timed_out);
+}
+
+#[test]
+fn multi_manager_set_config_roundtrip() {
+    let m = MultiProcessApprovalManager::with_default_timeout();
+    let cfg = ApprovalConfig {
+        enabled: false,
+        ..Default::default()
+    };
+    m.set_config(cfg);
+    assert!(!m.get_config().enabled);
+}

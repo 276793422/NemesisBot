@@ -695,3 +695,5 @@ impl Default for ProcessManager {
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod s7_tests;

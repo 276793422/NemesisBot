@@ -201,3 +201,69 @@ async fn test_panic_in_observer_does_not_affect_others() {
     // other observer's task.
     assert_eq!(healthy.snapshot().len(), 1);
 }
+
+// ---------------------------------------------------------------------------
+// W4a coverage gap closure (accessor arms for the remaining variants,
+// WorkflowEventManager::default)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn w4a_event_accessors_all_variants() {
+    let now = chrono::Local::now();
+    let node_completed = WorkflowEvent::NodeCompleted {
+        execution_id: "ec".to_string(),
+        node_id: "n1".to_string(),
+        state: crate::types::ExecutionState::Completed,
+        timestamp: now,
+    };
+    assert_eq!(node_completed.execution_id(), "ec");
+    assert_eq!(node_completed.workflow_name(), None);
+
+    let node_failed = WorkflowEvent::NodeFailed {
+        execution_id: "ef".to_string(),
+        node_id: "n1".to_string(),
+        error: "boom".to_string(),
+        timestamp: now,
+    };
+    assert_eq!(node_failed.execution_id(), "ef");
+    assert_eq!(node_failed.workflow_name(), None);
+
+    let completed = WorkflowEvent::Completed {
+        execution_id: "ed".to_string(),
+        workflow_name: "wf_done".to_string(),
+        timestamp: now,
+    };
+    assert_eq!(completed.execution_id(), "ed");
+    assert_eq!(completed.workflow_name(), Some("wf_done"));
+
+    let failed = WorkflowEvent::Failed {
+        execution_id: "fl".to_string(),
+        workflow_name: "wf_fail".to_string(),
+        error: "kaput".to_string(),
+        timestamp: now,
+    };
+    assert_eq!(failed.execution_id(), "fl");
+    assert_eq!(failed.workflow_name(), Some("wf_fail"));
+
+    let cancelled = WorkflowEvent::Cancelled {
+        execution_id: "cx".to_string(),
+        workflow_name: "wf_cancel".to_string(),
+        timestamp: now,
+    };
+    assert_eq!(cancelled.execution_id(), "cx");
+    assert_eq!(cancelled.workflow_name(), Some("wf_cancel"));
+}
+
+#[tokio::test]
+async fn w4a_event_manager_default_is_empty() {
+    let manager = WorkflowEventManager::default();
+    assert!(!manager.has_observers().await);
+    // register/unregister still work on the default instance
+    let observer = Arc::new(RecordingObserver::new("dflt"));
+    manager
+        .register(Arc::clone(&observer) as Arc<dyn WorkflowObserver>)
+        .await;
+    assert!(manager.has_observers().await);
+    manager.unregister("dflt").await;
+    assert!(!manager.has_observers().await);
+}

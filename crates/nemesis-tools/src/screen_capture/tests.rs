@@ -732,3 +732,219 @@ fn test_capture_mode_from_str_error_message() {
     assert!(err.contains("unknown capture mode"));
     assert!(err.contains("invalid_mode"));
 }
+
+// ============================================================
+// W4a coverage gap closure:
+// - prepare_output_path create_dir_all failure arm (workspace
+//   path is a regular file, so {workspace}/temp cannot be made)
+// - execute_capture timeout arm (set_timeout shorter than
+//   powershell.exe startup; the capture future is dropped and
+//   the child is killed — no screen content is ever captured)
+// - region mode MCP-Err arm (warn + fall through to PowerShell)
+// - window mode find_window_by_title non-JSON parse arm
+// NOT exercised here (structural exemption, goal doc §9.4):
+// successful real captures (CopyFromScreen arms 158-180 and the
+// PowerShell success paths write real screenshots of the live
+// desktop) and the powershell.exe spawn-failure arm 138-139
+// (no injection seam; spawn only fails if powershell.exe is
+// missing from PATH).
+// ============================================================
+
+#[tokio::test]
+async fn w4a_workspace_pointing_at_a_file_fails_to_create_temp_dir() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let ws_file = dir.path().join("w4a_is_a_file");
+    std::fs::write(&ws_file, "not a directory").unwrap();
+    let tool = ScreenCaptureTool::new(ws_file, None);
+    let result = tool
+        .execute(&serde_json::json!({"mode": "full_screen"}))
+        .await;
+    assert!(result.is_error);
+    assert!(
+        result.for_llm.contains("failed to create temp directory"),
+        "got: {}",
+        result.for_llm
+    );
+}
+
+#[tokio::test]
+async fn w4a_capture_times_out_when_timeout_shorter_than_powershell_startup() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let tool = ScreenCaptureTool::new(dir.path().to_path_buf(), None);
+    // 1ms is far below any powershell.exe startup time, so the
+    // tokio::time::timeout arm must fire deterministically.
+    tool.set_timeout(Duration::from_millis(1)).await;
+    let result = tool
+        .execute(&serde_json::json!({"mode": "full_screen"}))
+        .await;
+    assert!(result.is_error);
+    assert!(
+        result.for_llm.contains("screen capture timed out"),
+        "got: {}",
+        result.for_llm
+    );
+}
+
+#[tokio::test]
+async fn w4a_region_mcp_error_falls_back_to_powershell_and_times_out() {
+    struct FailingRegionMCP;
+    impl crate::browser::MCPToolCaller for FailingRegionMCP {
+        fn call_tool(
+            &self,
+            _tool_name: &str,
+            _args: &serde_json::Value,
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send + '_>>
+        {
+            Box::pin(async { Err("region backend down".to_string()) })
+        }
+        fn is_connected(&self) -> bool {
+            true
+        }
+    }
+    let dir = tempfile::TempDir::new().unwrap();
+    let tool = ScreenCaptureTool::new(
+        dir.path().to_path_buf(),
+        Some(Arc::new(FailingRegionMCP)),
+    );
+    tool.set_timeout(Duration::from_millis(1)).await;
+    let result = tool
+        .execute(&serde_json::json!({
+            "mode": "region", "x": 1, "y": 1, "width": 2, "height": 2
+        }))
+        .await;
+    // MCP Err -> warn + fall through to the PowerShell script builder,
+    // which then hits the same 1ms timeout.
+    assert!(result.is_error);
+    assert!(
+        result.for_llm.contains("screen capture timed out"),
+        "got: {}",
+        result.for_llm
+    );
+}
+
+#[tokio::test]
+async fn w4a_window_mode_title_find_returning_garbage_captures_without_hwnd() {
+    struct GarbageFindMCP;
+    impl crate::browser::MCPToolCaller for GarbageFindMCP {
+        fn call_tool(
+            &self,
+            tool_name: &str,
+            args: &serde_json::Value,
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send + '_>>
+        {
+            let name = tool_name.to_string();
+            let has_hwnd = args.get("hwnd").is_some();
+            Box::pin(async move {
+                match name.as_str() {
+                    // Non-JSON body -> serde parse fails -> resolved_hwnd
+                    // stays empty -> capture proceeds without a hwnd arg.
+                    "find_window_by_title" => Ok("definitely not json".to_string()),
+                    "capture_screenshot_to_file" => {
+                        assert!(
+                            !has_hwnd,
+                            "capture must be called without hwnd when find failed to parse"
+                        );
+                        Ok("captured anyway".to_string())
+                    }
+                    _ => Err("unknown tool".to_string()),
+                }
+            })
+        }
+        fn is_connected(&self) -> bool {
+            true
+        }
+    }
+    let dir = tempfile::TempDir::new().unwrap();
+    let tool = ScreenCaptureTool::new(
+        dir.path().to_path_buf(),
+        Some(Arc::new(GarbageFindMCP)),
+    );
+    let result = tool
+        .execute(&serde_json::json!({
+            "mode": "window", "window_title": "Whatever"
+        }))
+        .await;
+    assert!(!result.is_error);
+    assert!(
+        result.for_llm.contains("Window screenshot saved"),
+        "got: {}",
+        result.for_llm
+    );
+}
+
+// ===========================================================================
+// S2 coverage (2026-08-26): region capture with no MCP caller (PowerShell
+// fallback + success info! fields), window capture with a disconnected MCP
+// caller (skip block -> PowerShell fallback, bogus hwnd errors)
+// ===========================================================================
+
+fn s2_enable_tracing() {
+    let _ = tracing_subscriber::fmt()
+        .with_max_level(tracing::Level::DEBUG)
+        .with_writer(std::io::sink)
+        .try_init();
+}
+
+/// Region capture with `mcp_caller: None` runs the PowerShell path end to
+/// end: execute_capture debug/info fields evaluate, the capture succeeds and
+/// the file lands in {workspace}/temp/.
+#[cfg(target_os = "windows")]
+#[tokio::test]
+async fn s2_region_capture_without_mcp_covers_fallback_and_success_fields() {
+    s2_enable_tracing();
+    let dir = tempfile::tempdir().unwrap();
+    let tool = ScreenCaptureTool::new(dir.path().to_path_buf(), None);
+
+    let result = tool
+        .execute(&serde_json::json!({
+            "mode": "region",
+            "x": 0,
+            "y": 0,
+            "width": 10,
+            "height": 10
+        }))
+        .await;
+
+    assert!(!result.is_error, "got: {}", result.for_llm);
+    assert!(
+        result.for_llm.contains("screenshot_"),
+        "expected saved file in result, got: {}",
+        result.for_llm
+    );
+}
+
+/// Window capture with a present-but-disconnected MCP caller must skip the
+/// MCP block entirely and run the PowerShell fallback; a bogus hwnd makes
+/// GetWindowRect yield an empty rect so the capture errors deterministically.
+#[cfg(target_os = "windows")]
+#[tokio::test]
+async fn s2_window_capture_disconnected_mcp_falls_back_to_powershell() {
+    s2_enable_tracing();
+    struct S2DeadMcp;
+    impl crate::browser::MCPToolCaller for S2DeadMcp {
+        fn call_tool(
+            &self,
+            _tool_name: &str,
+            _args: &serde_json::Value,
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send + '_>>
+        {
+            Box::pin(async { Ok("must not be called".to_string()) })
+        }
+        fn is_connected(&self) -> bool {
+            false
+        }
+    }
+
+    let dir = tempfile::tempdir().unwrap();
+    let tool = ScreenCaptureTool::new(dir.path().to_path_buf(), Some(Arc::new(S2DeadMcp)));
+
+    let result = tool
+        .execute(&serde_json::json!({"mode": "window", "hwnd": "HWND(0x1)"}))
+        .await;
+
+    assert!(
+        result.is_error,
+        "bogus hwnd should fail the PowerShell rect lookup, got: {}",
+        result.for_llm
+    );
+}

@@ -130,15 +130,16 @@ impl Sanitizer {
         // Replace workspace path first (more specific)
         if let Some(ref ws) = self.workspace_dir {
             if !ws.is_empty() {
-                // Handle both forward-slash and backslash variants
+                // Handle both forward-slash and backslash variants.
+                // (BUG #24, quality-hardening goal 冲刺 S8) 顺序替换全部拼写变体——
+                // 原 else-if 链在内容混用分隔符拼写时只替换第一个命中的变体，
+                // 另一种拼写的路径原样泄露。
                 let ws_normalized = ws.replace('\\', "/");
                 let ws_backslash = ws.replace('/', "\\");
-                if result.contains(ws) {
-                    result = result.replace(ws, "[WORKSPACE]");
-                } else if result.contains(&ws_normalized) {
-                    result = result.replace(&ws_normalized, "[WORKSPACE]");
-                } else if result.contains(&ws_backslash) {
-                    result = result.replace(&ws_backslash, "[WORKSPACE]");
+                for v in [ws.as_str(), ws_normalized.as_str(), ws_backslash.as_str()] {
+                    if result.contains(v) {
+                        result = result.replace(v, "[WORKSPACE]");
+                    }
                 }
             }
         }
@@ -148,12 +149,10 @@ impl Sanitizer {
             if !home.is_empty() {
                 let home_normalized = home.replace('\\', "/");
                 let home_backslash = home.replace('/', "\\");
-                if result.contains(home) {
-                    result = result.replace(home, "[HOME]");
-                } else if result.contains(&home_normalized) {
-                    result = result.replace(&home_normalized, "[HOME]");
-                } else if result.contains(&home_backslash) {
-                    result = result.replace(&home_backslash, "[HOME]");
+                for v in [home.as_str(), home_normalized.as_str(), home_backslash.as_str()] {
+                    if result.contains(v) {
+                        result = result.replace(v, "[HOME]");
+                    }
                 }
             }
         }

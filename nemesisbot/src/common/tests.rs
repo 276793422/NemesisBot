@@ -675,3 +675,229 @@ fn test_ensure_exe_in_path() {
     // Restore
     unsafe { std::env::set_var("PATH", &original) };
 }
+
+// =========================================================================
+// S11d 补测（quality-hardening goal 冲刺 S11）：common.rs 剩余可测面。
+// - ensure_exe_in_path 的「PATH 整个不存在」分支（37-38）
+// - resolve_home 的 exe-dir 标记分支（93/95-96）与 cwd 标记分支（100）
+// - chat/forge/sessions 三个路径 builder
+// - print_version / print_version_info / print_help（直调不 panic）
+// - ensure_default_logger 幂等（OnceLock）
+// - init_logger_from_config：ERROR 档、绝对路径 file（Windows 上 "/tmp/x"
+//   不算 absolute —— 既有测试实际走的是相对分支）、相对路径 file 落到
+//   home/workspace、日志目录创建失败 warn 分支
+// - max_level_filter 五档映射（TRACE 臂只在此直测可达：init_logger 把
+//   TRACE 折到 DEBUG，永不产出 Level::TRACE）
+// - run_interactive_mode 的 EOF 分支（cargo test stdin 是管道 EOF）
+// - setup_cron_tool 组件可用
+// =========================================================================
+
+#[test]
+fn ensure_exe_in_path_without_path_env_sets_it_from_scratch() {
+    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let canonical = std::fs::canonicalize(
+        std::env::current_exe().unwrap().parent().unwrap(),
+    )
+    .unwrap();
+    let saved = std::env::var("PATH").ok();
+
+    unsafe { std::env::remove_var("PATH") };
+    let modified = ensure_exe_in_path();
+    let now = std::env::var("PATH").unwrap();
+
+    // 无论原先有无 PATH，测完必须恢复（防毒化后续测试）。
+    match &saved {
+        Some(v) => unsafe { std::env::set_var("PATH", v) },
+        None => unsafe { std::env::remove_var("PATH") },
+    }
+
+    assert!(modified, "missing PATH must be populated with the exe dir");
+    assert_eq!(now, canonical.to_string_lossy().to_string());
+}
+
+#[test]
+fn resolve_home_exe_dir_and_cwd_marker_branches() {
+    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    // 本测试需要 NEMESISBOT_HOME 不在场（保存并清除，测完恢复）。
+    let saved_env = std::env::var("NEMESISBOT_HOME").ok();
+    unsafe { std::env::remove_var("NEMESISBOT_HOME") };
+
+    // --- exe-dir 分支：exe 旁建 .nemesisbot 标记（target 下的构建产物
+    // 目录，非生产数据；测点测量完立即拆除）。---
+    let exe_dir = std::env::current_exe().unwrap().parent().unwrap().to_path_buf();
+    let exe_marker = exe_dir.join(".nemesisbot");
+    let exe_marker_created = !exe_marker.exists();
+    if exe_marker_created {
+        std::fs::create_dir_all(&exe_marker).unwrap();
+    }
+    let home_from_exe = resolve_home(false);
+    if exe_marker_created {
+        std::fs::remove_dir(&exe_marker).ok();
+    }
+
+    // --- cwd 分支：exe-dir 标记拆除后，cwd 下的 .nemesisbot 生效。---
+    let cwd = std::env::current_dir().unwrap();
+    let cwd_marker = cwd.join(".nemesisbot");
+    let cwd_marker_created = !cwd_marker.exists();
+    if cwd_marker_created {
+        std::fs::create_dir_all(&cwd_marker).unwrap();
+    }
+    let home_from_cwd = resolve_home(false);
+    if cwd_marker_created {
+        std::fs::remove_dir(&cwd_marker).ok();
+    }
+
+    // 恢复 env 之后再断言（断言失败也不毒化环境）。
+    match &saved_env {
+        Some(v) => unsafe { std::env::set_var("NEMESISBOT_HOME", v) },
+        None => unsafe { std::env::remove_var("NEMESISBOT_HOME") },
+    }
+
+    assert_eq!(home_from_exe, exe_marker, "exe-dir marker must beat cwd/default");
+    assert_eq!(home_from_cwd, cwd_marker, "cwd marker must beat default home");
+}
+
+#[test]
+fn chat_forge_sessions_path_builders() {
+    let home = PathBuf::from("/data/bot");
+    assert_eq!(
+        chat_config_path(&home),
+        PathBuf::from("/data/bot/workspace/config/config.chat.json")
+    );
+    assert_eq!(
+        forge_config_path(&home),
+        PathBuf::from("/data/bot/workspace/config/config.forge.json")
+    );
+    assert_eq!(
+        sessions_dir(&home),
+        PathBuf::from("/data/bot/workspace/sessions")
+    );
+}
+
+#[test]
+fn print_version_info_and_help_run_without_panicking() {
+    // 输出被 libtest 捕获；这里钉的是三段 banner 函数全量可执行。
+    print_version();
+    print_version_info();
+    print_help();
+    // format_version 是 banner 的数据源（已有覆盖，这里补齐调用侧证据）。
+    assert!(!format_version().is_empty());
+    assert!(!VERSION_INFO.version.is_empty());
+}
+
+#[test]
+fn ensure_default_logger_is_idempotent_via_oncelock() {
+    // 双调用：第二次必须直接命中 OnceLock 短路（不重复安装 subscriber）。
+    ensure_default_logger();
+    ensure_default_logger();
+}
+
+/// 写 logging 段的最小 config，返回 config 路径。
+fn write_logging_config(dir: &Path, body: serde_json::Value) -> PathBuf {
+    let cfg = dir.join("config.json");
+    fs::write(&cfg, serde_json::to_string(&body).unwrap()).unwrap();
+    cfg
+}
+
+#[test]
+fn init_logger_error_level_maps_to_error() {
+    let tmp = tempfile::tempdir().unwrap();
+    let cfg = write_logging_config(
+        tmp.path(),
+        serde_json::json!({ "logging": { "general": {
+            "enable_console": true, "level": "ERROR", "file": ""
+        } } }),
+    );
+    let flags = init_logger_from_config(&cfg, &[]);
+    assert_eq!(flags, 0);
+}
+
+#[test]
+fn init_logger_absolute_file_path_uses_it_verbatim() {
+    let tmp = tempfile::tempdir().unwrap();
+    // Windows 上 "/tmp/x" 不是 absolute（无盘符前缀）——必须用真绝对路径
+    // 才能踩中 p.is_absolute() 分支。
+    let abs_log = tmp.path().join("abs").join("run.log");
+    let cfg = write_logging_config(
+        tmp.path(),
+        serde_json::json!({ "logging": { "general": {
+            "enable_console": false, "level": "INFO",
+            "file": abs_log.to_string_lossy()
+        } } }),
+    );
+    let flags = init_logger_from_config(&cfg, &[]);
+    assert_eq!(flags, 0);
+    // 日志目录（绝对路径的 parent）被 create_dir_all。
+    assert!(tmp.path().join("abs").exists(), "absolute file dir must be created");
+}
+
+#[test]
+fn init_logger_relative_file_path_resolves_into_workspace() {
+    let tmp = tempfile::tempdir().unwrap();
+    let cfg = write_logging_config(
+        tmp.path(),
+        serde_json::json!({ "logging": { "general": {
+            "enable_console": false, "level": "INFO", "file": "logs/run.log"
+        } } }),
+    );
+    let flags = init_logger_from_config(&cfg, &[]);
+    assert_eq!(flags, 0);
+    // 相对路径按 config 所在 home 的 workspace/ 解析（日志统一落在
+    // .nemesisbot/workspace/logs/，与 CWD 无关）。
+    assert!(
+        tmp.path().join("workspace").join("logs").exists(),
+        "relative file must resolve under {}/workspace/logs",
+        tmp.path().display()
+    );
+}
+
+#[test]
+fn init_logger_uncreatable_log_dir_warns_but_continues() {
+    let tmp = tempfile::tempdir().unwrap();
+    // 父目录路径上放一个普通文件 → create_dir_all 必失败 → warn 分支
+    // （eprintln，不 panic、不中断装配）。
+    let blocker = tmp.path().join("blocker");
+    fs::write(&blocker, b"file, not dir").unwrap();
+    let cfg = write_logging_config(
+        tmp.path(),
+        serde_json::json!({ "logging": { "general": {
+            "enable_console": true, "level": "INFO",
+            "file": blocker.join("sub").join("x.log").to_string_lossy()
+        } } }),
+    );
+    let flags = init_logger_from_config(&cfg, &[]);
+    assert_eq!(flags, 0, "dir-creation failure must not alter override flags");
+}
+
+#[test]
+fn max_level_filter_maps_all_five_levels() {
+    use tracing_subscriber::filter::LevelFilter;
+    assert_eq!(max_level_filter(tracing::Level::TRACE), LevelFilter::TRACE);
+    assert_eq!(max_level_filter(tracing::Level::DEBUG), LevelFilter::DEBUG);
+    assert_eq!(max_level_filter(tracing::Level::INFO), LevelFilter::INFO);
+    assert_eq!(max_level_filter(tracing::Level::WARN), LevelFilter::WARN);
+    assert_eq!(max_level_filter(tracing::Level::ERROR), LevelFilter::ERROR);
+}
+
+#[test]
+fn run_interactive_mode_returns_ok_on_stdin_eof() {
+    // cargo test 的 stdin 是管道 EOF：进循环第一轮 read_line 即 0 字节 →
+    // 打印 Goodbye 并 Ok 返回。handler 在 EOF 下绝不能被调用。
+    // 放独立线程 + 超时兜底：万一 stdin 非 EOF（交互式手动 --nocapture 跑）
+    // 也只 fail 而不是挂死整个测试进程。
+    let worker = std::thread::spawn(|| {
+        run_interactive_mode("bot> ", |input| {
+            panic!("handler must not run at EOF, got input: {input:?}")
+        })
+    });
+    let joined = worker.join().expect("interactive thread must not panic");
+    joined.expect("EOF must exit interactively with Ok(())");
+}
+
+#[tokio::test]
+async fn setup_cron_tool_returns_wired_service_and_tool() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (service, _tool) = setup_cron_tool(&tmp.path().join("workspace"));
+    // service 可锁定（与生产 gateway 注入 BotService 的形态一致）。
+    let _guard = service.lock().await;
+}

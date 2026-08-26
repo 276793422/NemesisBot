@@ -490,3 +490,24 @@ fn recorded_request_debug() {
     let debug = format!("{:?}", rr);
     assert!(debug.contains("\"m\""));
 }
+
+// ===========================================================================
+// S1 补测（2026-08-26）：MockTransport::name() trait 方法 + SharedMockTransport
+// ::take_requests 排空路径
+// ===========================================================================
+
+#[test]
+fn s1_mock_transport_name_returns_mock() {
+    let t = MockTransport::new_connected();
+    assert_eq!(t.name(), "mock");
+}
+
+#[tokio::test]
+async fn s1_shared_mock_transport_take_requests_drains_empty() {
+    // SharedMockTransport has no Transport impl in this crate, so requests
+    // can only be recorded through the inner MockTransport; from the shared
+    // wrapper take_requests() must return (and drain) the empty vec.
+    let t = SharedMockTransport::new();
+    assert!(t.take_requests().await.is_empty());
+    assert_eq!(t.request_count().await, 0);
+}

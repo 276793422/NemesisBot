@@ -122,3 +122,6 @@ pub fn detect_codec(bytes: &[u8]) -> Box<dyn ExecutableCodec> {
         Box::new(RawCodec)
     }
 }
+
+#[cfg(test)]
+mod tests;

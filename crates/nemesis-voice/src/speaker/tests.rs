@@ -106,3 +106,38 @@ fn cosine_similarity_large_vectors_do_not_overflow_to_nan() {
         s
     );
 }
+
+// ===========================================================================
+// S12 覆盖率冲刺（2026-08-26）：引擎构造分支 + FFI 结构甄别
+// 无 DLL 时 sherpa_fn 包装器在符号查找处 panic "sherpa-onnx not initialized"
+// ——should_panic 测试正好覆盖 #[repr(C)] 结构构造后到 FFI 调用之间的代码。
+// ===========================================================================
+
+#[test]
+fn speaker_engine_new_missing_model_bails() {
+    let tmp = tempfile::tempdir().unwrap();
+    let err = format!("{:#}", SpeakerEngine::new(tmp.path(), 1).err().expect("must fail"));
+    assert!(err.contains("Speaker model not found"), "{err}");
+    assert!(
+        err.contains("3dspeaker_speech_campplus_sv_zh_en_16k-common_advanced.onnx"),
+        "{err}"
+    );
+}
+
+#[test]
+#[should_panic(expected = "sherpa-onnx not initialized")]
+fn speaker_engine_new_with_model_builds_structs_until_ffi() {
+    let tmp = tempfile::tempdir().unwrap();
+    std::fs::write(
+        tmp.path().join("3dspeaker_speech_campplus_sv_zh_en_16k-common_advanced.onnx"),
+        b"fixture",
+    )
+    .unwrap();
+    let _ = SpeakerEngine::new(tmp.path(), 2);
+}
+
+#[test]
+#[should_panic(expected = "sherpa-onnx not initialized")]
+fn speaker_manager_new_panics_at_symbol_lookup() {
+    let _ = SpeakerManager::new(192);
+}

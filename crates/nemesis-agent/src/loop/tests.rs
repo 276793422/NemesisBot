@@ -1867,6 +1867,28 @@ fn test_concurrent_mode_default() {
     assert_eq!(ConcurrentMode::default(), ConcurrentMode::Reject);
 }
 
+/// M3 补测（quality-hardening goal 2026-08-25）：配置串解析的归一化 + 未知值
+/// 兜底（fail-safe 回 Reject）。agent_factory 只在 unknown 时 warn，行为兜底
+/// 在这里——此前无直接断言。
+#[test]
+fn test_parse_concurrent_mode_normalizes_and_falls_back() {
+    use std::fmt::Write as _;
+    // 精确值
+    assert!(matches!(parse_concurrent_mode("queue"), ConcurrentMode::Queue));
+    assert!(matches!(parse_concurrent_mode("steer"), ConcurrentMode::Steer));
+    assert!(matches!(parse_concurrent_mode("reject"), ConcurrentMode::Reject));
+    // 大小写 + 首尾空白归一
+    assert!(matches!(parse_concurrent_mode("  QUEUE "), ConcurrentMode::Queue));
+    assert!(matches!(parse_concurrent_mode("Steer"), ConcurrentMode::Steer));
+    // 未知值 / 空串 → Reject（fail-safe）
+    assert!(matches!(parse_concurrent_mode("fuzzy"), ConcurrentMode::Reject));
+    assert!(matches!(parse_concurrent_mode(""), ConcurrentMode::Reject));
+    // 三种取值可 Debug 输出（派生断言：用于 tracing 日志）
+    let mut dbg = String::new();
+    let _ = write!(dbg, "{:?}{:?}{:?}", ConcurrentMode::Reject, ConcurrentMode::Queue, ConcurrentMode::Steer);
+    assert!(!dbg.is_empty());
+}
+
 #[test]
 fn test_process_options_default() {
     let opts = ProcessOptions::default();

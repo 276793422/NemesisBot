@@ -126,3 +126,36 @@ fn test_empty_content() {
     let out = expand_at_files("", tmp.path());
     assert_eq!(out, "");
 }
+
+/// "@" followed ONLY by trailing-punctuation chars: the trimmed path is empty
+/// → the capture is skipped (no panic, no ref block).
+#[test]
+fn test_punctuation_only_reference_skipped() {
+    let tmp = TempDir::new().unwrap();
+    let out = expand_at_files("hello @. world @)!!!", tmp.path());
+    assert_eq!(out, "hello @. world @)!!!");
+    assert!(!out.contains("--- Referenced files ---"));
+}
+
+/// A file that exists but is not valid UTF-8: read_to_string fails → the
+/// reference is silently skipped (the `if let Ok` guard).
+#[test]
+fn test_non_utf8_file_skipped() {
+    let tmp = TempDir::new().unwrap();
+    let bad = tmp.path().join("bad.bin");
+    std::fs::write(&bad, [0xffu8, 0xfe, 0x00, 0x01]).unwrap();
+    let out = expand_at_files("see @bad.bin", tmp.path());
+    // File exists but can't be inlined → left untouched.
+    assert_eq!(out, "see @bad.bin");
+}
+
+/// Absolute path that exists gets inlined (absolute branch).
+#[test]
+fn test_absolute_path_inlined() {
+    let tmp = TempDir::new().unwrap();
+    let abs = tmp.path().join("abs.txt");
+    std::fs::write(&abs, "ABS").unwrap();
+    let out = expand_at_files(format!("see @{}", abs.display()).as_str(), tmp.path());
+    assert!(out.contains("ABS"));
+    assert!(out.contains("abs.txt"));
+}

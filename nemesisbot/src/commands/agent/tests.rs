@@ -547,3 +547,544 @@ fn test_history_preview_81_chars() {
     assert!(preview.ends_with("..."));
     assert!(preview.len() <= 80);
 }
+
+// =========================================================================
+// S11b 覆盖率冲刺（quality-hardening goal）：真实调用面测试。
+// - ProviderAdapter（LlmProvider impl）全转换路径：LlmMessage→Message、
+//   ToolDefinition 转发、ChatOptions Some/None、响应 tool_calls 过滤 +
+//   finished 判定 + usage 映射、provider Err→String。
+// - run() 无子命令：cfg 缺失 bail / build 失败 bail+提示 / 单消息模式
+//   死地址 provider 全流程（连接拒绝 → "Agent error" → Ok(())）。
+// - run() Set Llm：cfg 缺失 bail / resolve 成功写回 agents.defaults.llm。
+// - run() Set ConcurrentMode：非法 mode bail / reject / queue 带尺寸 /
+//   queue 默认 8 / 无 config.json → Ok 不写。
+// 豁免（不测）：rustyline 交互 REPL（stdin）、Set Llm resolve 失败后的
+// y/N stdin 确认、真实 LLM 调用。
+// =========================================================================
+
+struct S11bAgentHomeEnv {
+    _tmp: tempfile::TempDir,
+    home: std::path::PathBuf,
+}
+
+impl Drop for S11bAgentHomeEnv {
+    fn drop(&mut self) {
+        unsafe { std::env::remove_var("NEMESISBOT_HOME") };
+    }
+}
+
+fn s11b_agent_home_env() -> S11bAgentHomeEnv {
+    let tmp = tempfile::tempdir().unwrap();
+    let home = tmp.path().join(".nemesisbot");
+    std::fs::create_dir_all(&home).unwrap();
+    unsafe { std::env::set_var("NEMESISBOT_HOME", tmp.path()) };
+    S11bAgentHomeEnv { _tmp: tmp, home }
+}
+
+fn s11b_write_agent_config(home: &std::path::Path, cfg: serde_json::Value) {
+    std::fs::write(
+        home.join("config.json"),
+        serde_json::to_string_pretty(&cfg).unwrap(),
+    )
+    .unwrap();
+}
+
+fn s11b_read_agent_config(home: &std::path::Path) -> serde_json::Value {
+    serde_json::from_str(&std::fs::read_to_string(home.join("config.json")).unwrap()).unwrap()
+}
+
+/// 死地址模型条目（127.0.0.1:1 立即连接拒绝，无重试等待）。
+fn s11b_dead_provider_config() -> serde_json::Value {
+    serde_json::json!({
+        "agents": {"defaults": {"llm": "fake"}},
+        "model_list": [{
+            "model_name": "fake",
+            "model": "openai/gpt-fake",
+            "api_base": "http://127.0.0.1:1",
+            "api_key": "k"
+        }]
+    })
+}
+
+// ------------------------------ mock provider ------------------------------
+
+enum S11bMockReply {
+    /// finish_reason=stop、无 tool_calls、带 usage。
+    Stop,
+    /// finish_reason=tool_calls、1 个正常 + 1 个缺 function 的 tool_calls。
+    WithToolCalls,
+    /// FailoverError::Unknown。
+    Fail,
+}
+
+/// 记录 chat 入参快照的 mock provider（实现 provider 侧 LLMProvider trait）。
+struct S11bMockProvider {
+    calls: std::sync::Mutex<Vec<serde_json::Value>>,
+    reply: S11bMockReply,
+}
+
+#[async_trait::async_trait]
+impl nemesis_providers::router::LLMProvider for S11bMockProvider {
+    async fn chat(
+        &self,
+        messages: &[nemesis_providers::types::Message],
+        tools: &[nemesis_providers::types::ToolDefinition],
+        model: &str,
+        options: &nemesis_providers::types::ChatOptions,
+    ) -> Result<
+        nemesis_providers::types::LLMResponse,
+        nemesis_providers::failover::FailoverError,
+    > {
+        let snapshot = serde_json::json!({
+            "model": model,
+            "messages": serde_json::to_value(messages).unwrap(),
+            "tools": serde_json::to_value(tools).unwrap(),
+            "temperature": options.temperature,
+            "max_tokens": options.max_tokens,
+            "top_p": options.top_p,
+            "stop": options.stop,
+            "reasoning_effort": options.reasoning_effort,
+        });
+        self.calls.lock().unwrap().push(snapshot);
+        match self.reply {
+            S11bMockReply::Stop => Ok(nemesis_providers::types::LLMResponse {
+                content: "mock-reply".to_string(),
+                tool_calls: vec![],
+                finish_reason: "stop".to_string(),
+                usage: Some(nemesis_providers::types::UsageInfo {
+                    prompt_tokens: 11,
+                    completion_tokens: 7,
+                    total_tokens: 18,
+                    cached_tokens: Some(3),
+                    ..Default::default()
+                }),
+                reasoning_content: None,
+                extra: std::collections::HashMap::new(),
+                raw_request_body: None,
+                raw_response_body: None,
+            }),
+            S11bMockReply::WithToolCalls => {
+                Ok(nemesis_providers::types::LLMResponse {
+                    content: String::new(),
+                    tool_calls: vec![
+                        nemesis_providers::types::ToolCall {
+                            id: "tc1".to_string(),
+                            call_type: Some("function".to_string()),
+                            function: Some(nemesis_providers::types::FunctionCall {
+                                name: "read_file".to_string(),
+                                arguments: "{\"path\":\"a.txt\"}".to_string(),
+                            }),
+                            name: None,
+                            arguments: None,
+                        },
+                        // 缺 function 的畸形 tool_call —— adapter 必须丢弃
+                        nemesis_providers::types::ToolCall {
+                            id: "tc2".to_string(),
+                            call_type: None,
+                            function: None,
+                            name: None,
+                            arguments: None,
+                        },
+                    ],
+                    finish_reason: "tool_calls".to_string(),
+                    usage: None,
+                    reasoning_content: None,
+                    extra: std::collections::HashMap::new(),
+                    raw_request_body: None,
+                    raw_response_body: None,
+                })
+            }
+            S11bMockReply::Fail => Err(nemesis_providers::failover::FailoverError::Unknown {
+                provider: "mock".to_string(),
+                message: "boom-s11b".to_string(),
+            }),
+        }
+    }
+    fn default_model(&self) -> &str {
+        "mock-default-model"
+    }
+    fn name(&self) -> &str {
+        "mock"
+    }
+}
+
+fn s11b_adapter(
+    reply: S11bMockReply,
+) -> (
+    ProviderAdapter,
+    std::sync::Arc<S11bMockProvider>,
+) {
+    let inner = std::sync::Arc::new(S11bMockProvider {
+        calls: std::sync::Mutex::new(Vec::new()),
+        reply,
+    });
+    (
+        ProviderAdapter::new(inner.clone(), "mock-default-model".to_string()),
+        inner,
+    )
+}
+
+// -------------------------- ProviderAdapter tests --------------------------
+
+#[tokio::test]
+async fn test_s11b_adapter_model_fallback_to_default() {
+    let (adapter, inner) = s11b_adapter(S11bMockReply::Stop);
+    // 空 model → default_model
+    adapter
+        .chat("", vec![], None, vec![])
+        .await
+        .unwrap();
+    // 非空 model → 原样透传
+    adapter
+        .chat("m2", vec![], None, vec![])
+        .await
+        .unwrap();
+    let calls = inner.calls.lock().unwrap();
+    assert_eq!(calls[0]["model"], "mock-default-model");
+    assert_eq!(calls[1]["model"], "m2");
+}
+
+#[tokio::test]
+async fn test_s11b_adapter_message_and_tool_conversion() {
+    let (adapter, inner) = s11b_adapter(S11bMockReply::Stop);
+    let messages = vec![
+        LlmMessage {
+            role: "assistant".to_string(),
+            content: String::new(),
+            tool_calls: Some(vec![AgentToolCallInfo {
+                id: "t9".to_string(),
+                name: "shell".to_string(),
+                arguments: "{}".to_string(),
+            }]),
+            tool_call_id: None,
+            reasoning_content: None,
+        },
+        LlmMessage {
+            role: "user".to_string(),
+            content: "hi there".to_string(),
+            tool_calls: None,
+            tool_call_id: None,
+            reasoning_content: None,
+        },
+        LlmMessage {
+            role: "tool".to_string(),
+            content: "tool output".to_string(),
+            tool_calls: None,
+            tool_call_id: Some("t9".to_string()),
+            reasoning_content: Some("because".to_string()),
+        },
+    ];
+    let tools = vec![nemesis_agent::types::ToolDefinition {
+        tool_type: "function".to_string(),
+        function: nemesis_agent::types::ToolFunctionDef {
+            name: "grep_code".to_string(),
+            description: "search code".to_string(),
+            parameters: serde_json::json!({"type": "object"}),
+        },
+    }];
+    adapter.chat("m", messages, None, tools).await.unwrap();
+
+    let calls = inner.calls.lock().unwrap();
+    let msgs = calls[0]["messages"].as_array().unwrap();
+    assert_eq!(msgs.len(), 3);
+    // assistant 消息的 tool_calls → call_type 固定 "function" + function 载荷
+    assert_eq!(msgs[0]["role"], "assistant");
+    let tc = &msgs[0]["tool_calls"][0];
+    assert_eq!(tc["type"], "function");
+    assert_eq!(tc["function"]["name"], "shell");
+    assert_eq!(tc["function"]["arguments"], "{}");
+    assert!(tc.get("name").is_none() || tc["name"].is_null());
+    // user 消息原样、无 tool_call 字段
+    assert_eq!(msgs[1]["content"], "hi there");
+    // tool_calls None → 空 vec → serde skip_serializing_if 省略整个字段
+    assert!(msgs[1]["tool_calls"].is_null());
+    // tool 消息 tool_call_id + reasoning_content 透传
+    assert_eq!(msgs[2]["tool_call_id"], "t9");
+    assert_eq!(msgs[2]["reasoning_content"], "because");
+    // 工具定义转发（名称 + 类型）
+    let tools = calls[0]["tools"].as_array().unwrap();
+    assert_eq!(tools.len(), 1);
+    assert_eq!(tools[0]["type"], "function");
+    assert_eq!(tools[0]["function"]["name"], "grep_code");
+    assert_eq!(tools[0]["function"]["parameters"]["type"], "object");
+}
+
+#[tokio::test]
+async fn test_s11b_adapter_options_passthrough() {
+    let (adapter, inner) = s11b_adapter(S11bMockReply::Stop);
+    adapter
+        .chat(
+            "m",
+            vec![],
+            Some(nemesis_agent::types::ChatOptions {
+                temperature: Some(0.25),
+                max_tokens: Some(55),
+                top_p: Some(0.5),
+                stop: Some(vec!["END".to_string()]),
+                reasoning_effort: Some("low".to_string()),
+            }),
+            vec![],
+        )
+        .await
+        .unwrap();
+    let calls = inner.calls.lock().unwrap();
+    assert_eq!(calls[0]["temperature"], 0.25);
+    assert_eq!(calls[0]["max_tokens"], 55);
+    assert_eq!(calls[0]["top_p"], 0.5);
+    assert_eq!(calls[0]["stop"], serde_json::json!(["END"]));
+    assert_eq!(calls[0]["reasoning_effort"], "low");
+}
+
+#[tokio::test]
+async fn test_s11b_adapter_options_defaults_when_none() {
+    let (adapter, inner) = s11b_adapter(S11bMockReply::Stop);
+    adapter.chat("m", vec![], None, vec![]).await.unwrap();
+    let calls = inner.calls.lock().unwrap();
+    // None → temperature 0.7 / max_tokens 8192 / 其余空
+    assert_eq!(calls[0]["temperature"], 0.7);
+    assert_eq!(calls[0]["max_tokens"], 8192);
+    assert!(calls[0]["top_p"].is_null());
+    assert!(calls[0]["stop"].is_null());
+    assert!(calls[0]["reasoning_effort"].is_null());
+}
+
+#[tokio::test]
+async fn test_s11b_adapter_tool_calls_filter_and_unfinished() {
+    let (adapter, _inner) = s11b_adapter(S11bMockReply::WithToolCalls);
+    let resp = adapter.chat("m", vec![], None, vec![]).await.unwrap();
+    // 缺 function 的 tc2 被丢弃，只留 tc1
+    assert_eq!(resp.tool_calls.len(), 1);
+    assert_eq!(resp.tool_calls[0].id, "tc1");
+    assert_eq!(resp.tool_calls[0].name, "read_file");
+    assert_eq!(resp.tool_calls[0].arguments, "{\"path\":\"a.txt\"}");
+    // finish_reason=tool_calls 且 tool_calls 非空 → 未结束
+    assert!(!resp.finished);
+}
+
+#[tokio::test]
+async fn test_s11b_adapter_stop_reply_finished_and_usage() {
+    let (adapter, _inner) = s11b_adapter(S11bMockReply::Stop);
+    let resp = adapter.chat("m", vec![], None, vec![]).await.unwrap();
+    assert_eq!(resp.content, "mock-reply");
+    assert!(resp.tool_calls.is_empty());
+    assert!(resp.finished);
+    let usage = resp.usage.expect("usage mapped from provider");
+    assert_eq!(usage.prompt_tokens, 11);
+    assert_eq!(usage.completion_tokens, 7);
+    assert_eq!(usage.total_tokens, 18);
+    assert_eq!(usage.cached_tokens, Some(3));
+    assert_eq!(usage.cache_creation_tokens, None);
+}
+
+#[tokio::test]
+async fn test_s11b_adapter_provider_error_to_string() {
+    let (adapter, _inner) = s11b_adapter(S11bMockReply::Fail);
+    let err = adapter.chat("m", vec![], None, vec![]).await.unwrap_err();
+    // provider FailoverError → String（Display 含消息原文）
+    assert!(err.contains("boom-s11b"), "error should embed message: {err}");
+}
+
+// ------------------------------- run() tests -------------------------------
+
+#[tokio::test]
+async fn test_s11b_run_agent_mode_config_missing_bails() {
+    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let _th = s11b_agent_home_env();
+    // 无 config.json → 在 build/REPL 之前 bail（不会进入交互模式）
+    let err = run(None, Some("hi".to_string()), "s11b".to_string(), false, false, false, false)
+        .await
+        .unwrap_err();
+    assert!(err.to_string().contains("Configuration not found"), "{err}");
+}
+
+#[tokio::test]
+async fn test_s11b_run_agent_mode_build_fail() {
+    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let th = s11b_agent_home_env();
+    // llm 指向不存在的模型（无关键词可推断 provider）→ build_agent_loop Err
+    s11b_write_agent_config(
+        &th.home,
+        serde_json::json!({"agents": {"defaults": {"llm": "nosuchmodel-xyz"}}}),
+    );
+    let err = run(None, Some("hi".to_string()), "s11b".to_string(), false, false, false, false)
+        .await
+        .unwrap_err();
+    assert!(
+        err.to_string().contains("Failed to resolve model"),
+        "{err}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_s11b_run_agent_mode_single_message_dead_provider() {
+    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let th = s11b_agent_home_env();
+    s11b_write_agent_config(&th.home, s11b_dead_provider_config());
+    // build 成功 + 单消息模式：LLM 调用打到死地址 → process_direct Err →
+    // "Agent error" 打印后 run 返回 Ok(())（不 panic、不上抛）
+    let res = run(
+        None,
+        Some("say hi".to_string()),
+        "s11b-session".to_string(),
+        false,
+        false,
+        false,
+        false,
+    )
+    .await;
+    assert!(res.is_ok(), "single-message mode must not propagate LLM error: {res:?}");
+}
+
+#[test]
+fn test_s11b_build_agent_loop_registers_default_agent() {
+    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let th = s11b_agent_home_env();
+    s11b_write_agent_config(&th.home, s11b_dead_provider_config());
+    let cfg = nemesis_config::load_config(&th.home.join("config.json")).unwrap();
+    let agent_loop = build_agent_loop(&cfg, &th.home).expect("dead-addr provider builds fine");
+    // 共享工具注册后 tool_count 明显非零（register_shared_tools 生效）。
+    // standalone 构造路径 registry 为 None（get_registry 只在 gateway 侧装配）。
+    assert!(agent_loop.tool_count() >= 20, "tools registered: {}", agent_loop.tool_count());
+    assert!(agent_loop.get_registry().is_none());
+}
+
+#[tokio::test]
+async fn test_s11b_run_set_llm_config_missing_bails() {
+    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let _th = s11b_agent_home_env();
+    let err = run(
+        Some(AgentSetCommand::Set {
+            action: AgentSetAction::Llm { model: "x".to_string() },
+        }),
+        None,
+        "s11b".to_string(),
+        false,
+        false,
+        false,
+        false,
+    )
+    .await
+    .unwrap_err();
+    assert!(err.to_string().contains("Configuration not found"), "{err}");
+}
+
+#[tokio::test]
+async fn test_s11b_run_set_llm_resolved_writes_config() {
+    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let th = s11b_agent_home_env();
+    // config 无 agents 段但 model_list 含 "fake"（resolve 成功，不走 y/N 确认）
+    // → 写回时补齐 agents.defaults.llm
+    s11b_write_agent_config(
+        &th.home,
+        serde_json::json!({
+            "model_list": [{
+                "model_name": "fake",
+                "model": "openai/gpt-fake",
+                "api_base": "http://127.0.0.1:1",
+                "api_key": "k"
+            }]
+        }),
+    );
+    run(
+        Some(AgentSetCommand::Set {
+            action: AgentSetAction::Llm { model: "fake".to_string() },
+        }),
+        None,
+        "s11b".to_string(),
+        false,
+        false,
+        false,
+        false,
+    )
+    .await
+    .unwrap();
+    let cfg = s11b_read_agent_config(&th.home);
+    assert_eq!(cfg["agents"]["defaults"]["llm"], "fake");
+}
+
+#[tokio::test]
+async fn test_s11b_run_set_concurrent_mode_invalid_bails() {
+    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let th = s11b_agent_home_env();
+    s11b_write_agent_config(&th.home, serde_json::json!({"agents": {"defaults": {}}}));
+    let err = run(
+        Some(AgentSetCommand::Set {
+            action: AgentSetAction::ConcurrentMode {
+                mode: "bogus".to_string(),
+                queue_size: None,
+            },
+        }),
+        None,
+        "s11b".to_string(),
+        false,
+        false,
+        false,
+        false,
+    )
+    .await
+    .unwrap_err();
+    assert!(err.to_string().contains("Invalid mode"), "{err}");
+}
+
+#[tokio::test]
+async fn test_s11b_run_set_concurrent_mode_reject_then_queue() {
+    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let th = s11b_agent_home_env();
+    s11b_write_agent_config(&th.home, serde_json::json!({"agents": {"defaults": {}}}));
+
+    let set_mode = |mode: &str, queue_size: Option<usize>| {
+        Some(AgentSetCommand::Set {
+            action: AgentSetAction::ConcurrentMode {
+                mode: mode.to_string(),
+                queue_size,
+            },
+        })
+    };
+
+    // reject：写 concurrent_request_mode，不写 queue_size
+    run(set_mode("reject", None), None, "s11b".to_string(), false, false, false, false)
+        .await
+        .unwrap();
+    let cfg = s11b_read_agent_config(&th.home);
+    assert_eq!(cfg["agents"]["defaults"]["concurrent_request_mode"], "reject");
+    assert!(cfg["agents"]["defaults"].get("queue_size").is_none());
+
+    // queue 带尺寸
+    run(set_mode("queue", Some(3)), None, "s11b".to_string(), false, false, false, false)
+        .await
+        .unwrap();
+    let cfg = s11b_read_agent_config(&th.home);
+    assert_eq!(cfg["agents"]["defaults"]["concurrent_request_mode"], "queue");
+    assert_eq!(cfg["agents"]["defaults"]["queue_size"], 3);
+
+    // queue 默认尺寸 8
+    run(set_mode("queue", None), None, "s11b".to_string(), false, false, false, false)
+        .await
+        .unwrap();
+    let cfg = s11b_read_agent_config(&th.home);
+    assert_eq!(cfg["agents"]["defaults"]["queue_size"], 8);
+}
+
+#[tokio::test]
+async fn test_s11b_run_set_concurrent_mode_no_config_ok() {
+    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let th = s11b_agent_home_env();
+    // 无 config.json → 跳过写盘，仍 Ok
+    run(
+        Some(AgentSetCommand::Set {
+            action: AgentSetAction::ConcurrentMode {
+                mode: "reject".to_string(),
+                queue_size: None,
+            },
+        }),
+        None,
+        "s11b".to_string(),
+        false,
+        false,
+        false,
+        false,
+    )
+    .await
+    .unwrap();
+    assert!(!th.home.join("config.json").exists());
+}

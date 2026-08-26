@@ -352,3 +352,9 @@ pub fn cors_layer_from_manager(mgr: &CORSManager) -> CorsLayer {
 
 #[cfg(test)]
 mod tests;
+
+// S10b (2026-08-26, quality-hardening goal 冲刺 web 批次 2): error arms —
+// invalid JSON load, create_dir_all failure, read-only rename fallback,
+// CDN Url::parse failure.
+#[cfg(test)]
+mod s10b_tests;

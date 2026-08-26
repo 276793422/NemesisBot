@@ -1338,3 +1338,168 @@ fn test_load_skill_builtin_fallback() {
     assert!(content.is_some());
     assert!(content.unwrap().contains("Builtin content"));
 }
+
+// ============================================================
+// S5 coverage: get_skill_metadata JSON->YAML fallback,
+// scan_skill_security no-op arms, scan_directory_into skip
+// arms (stray file / unreadable SKILL.md), security lint block,
+// static scan_directory warn arm
+// ============================================================
+
+#[test]
+fn test_get_skill_metadata_json_without_name_or_description_falls_back_to_yaml() {
+    // JSON frontmatter parses but yields neither name nor description ->
+    // must fall through to the simple YAML parser, which also finds nothing.
+    let dir = tempfile::tempdir().unwrap();
+    let skill_md = dir.path().join("SKILL.md");
+    fs::write(
+        &skill_md,
+        "---\n{\"x\": \"1\"}\n---\n# body\n",
+    )
+    .unwrap();
+
+    let meta = get_skill_metadata(&skill_md).expect("metadata must parse");
+    assert_eq!(meta.name, "");
+    assert_eq!(meta.description, "");
+}
+
+#[test]
+fn test_scan_skill_security_disabled_is_noop() {
+    let dir = tempfile::tempdir().unwrap();
+    let skill_md = dir.path().join("SKILL.md");
+    fs::write(&skill_md, "ps aux\n").unwrap();
+
+    let loader = SkillsLoader {
+        workspace: PathBuf::from("/nonexistent"),
+        workspace_skills: PathBuf::from("/nonexistent/skills"),
+        global_skills: PathBuf::from("/nonexistent/global"),
+        builtin_skills: PathBuf::from("/nonexistent/builtin"),
+        enable_security: false,
+        linter: None,
+    };
+    let mut info = SkillInfo {
+        name: "x".to_string(),
+        path: String::new(),
+        source: "local".to_string(),
+        description: "d".to_string(),
+        lint_score: None,
+        has_warnings: false,
+    };
+    loader.scan_skill_security(&mut info, &skill_md);
+    assert!(info.lint_score.is_none());
+    assert!(!info.has_warnings);
+}
+
+#[test]
+fn test_scan_skill_security_without_linter_is_noop() {
+    // enable_security=true but linter never constructed (only reachable via
+    // struct literal; enable_security() always sets both).
+    let dir = tempfile::tempdir().unwrap();
+    let skill_md = dir.path().join("SKILL.md");
+    fs::write(&skill_md, "ps aux\n").unwrap();
+
+    let loader = SkillsLoader {
+        workspace: PathBuf::from("/nonexistent"),
+        workspace_skills: PathBuf::from("/nonexistent/skills"),
+        global_skills: PathBuf::from("/nonexistent/global"),
+        builtin_skills: PathBuf::from("/nonexistent/builtin"),
+        enable_security: true,
+        linter: None,
+    };
+    let mut info = SkillInfo {
+        name: "x".to_string(),
+        path: String::new(),
+        source: "local".to_string(),
+        description: "d".to_string(),
+        lint_score: None,
+        has_warnings: false,
+    };
+    loader.scan_skill_security(&mut info, &skill_md);
+    assert!(info.lint_score.is_none());
+}
+
+#[test]
+fn test_list_skills_skips_stray_file_in_skills_dir() {
+    let workspace = tempfile::tempdir().unwrap();
+    let skills_dir = workspace.path().join("skills");
+    fs::create_dir_all(&skills_dir).unwrap();
+    fs::write(skills_dir.join("notes.txt"), "stray file, not a skill").unwrap();
+
+    let loader = SkillsLoader::new(
+        workspace.path().to_str().unwrap(),
+        "/nonexistent/global",
+        "/nonexistent/builtin",
+    );
+    let skills = loader.list_skills();
+    assert!(skills.is_empty(), "stray file must be skipped");
+}
+
+#[test]
+fn test_list_skills_skips_skill_whose_skill_md_is_a_directory() {
+    // SKILL.md exists (as a directory), so the exists() guard passes, but
+    // read_to_string fails -> scan_single_skill Err -> warn + continue.
+    let workspace = tempfile::tempdir().unwrap();
+    let broken = workspace.path().join("skills").join("broken");
+    fs::create_dir_all(broken.join("SKILL.md")).unwrap();
+
+    let loader = SkillsLoader::new(
+        workspace.path().to_str().unwrap(),
+        "/nonexistent/global",
+        "/nonexistent/builtin",
+    );
+    let skills = loader.list_skills();
+    assert!(skills.is_empty(), "unreadable SKILL.md must be skipped");
+}
+
+#[test]
+fn test_list_skills_with_security_enabled_sets_lint_score() {
+    let workspace = tempfile::tempdir().unwrap();
+    let skill_dir = workspace.path().join("skills").join("pdf");
+    fs::create_dir_all(&skill_dir).unwrap();
+    fs::write(
+        skill_dir.join("SKILL.md"),
+        "---\nname: pdf\ndescription: converts documents\n---\n# pdf\n",
+    )
+    .unwrap();
+
+    let mut loader = SkillsLoader::new(
+        workspace.path().to_str().unwrap(),
+        "/nonexistent/global",
+        "/nonexistent/builtin",
+    );
+    loader.enable_security();
+    let skills = loader.list_skills();
+    assert_eq!(skills.len(), 1);
+    assert_eq!(skills[0].name, "pdf");
+    assert!(
+        skills[0].lint_score.is_some(),
+        "security scan must populate lint_score"
+    );
+}
+
+#[test]
+fn test_scan_directory_warns_and_skips_unreadable_skill_md() {
+    // Static variant: broken/SKILL.md is a directory -> read_to_string Err ->
+    // warn arm, but scan_directory still returns Ok for the rest.
+    let dir = tempfile::tempdir().unwrap();
+    let broken = dir.path().join("broken");
+    fs::create_dir_all(broken.join("SKILL.md")).unwrap();
+    let good = dir.path().join("good");
+    fs::create_dir_all(&good).unwrap();
+    fs::write(
+        good.join("SKILL.md"),
+        "---\nname: good\ndescription: fine\n---\n# good\n",
+    )
+    .unwrap();
+
+    let skills = SkillsLoader::scan_directory(dir.path()).unwrap();
+    assert_eq!(skills.len(), 1);
+    assert_eq!(skills[0].name, "good");
+}
+
+// Structural (not injectable in-process; do NOT exempt):
+// - loader.rs ~376: read_dir iterator entry-Err continue arm — std yields
+//   entry errors only on unrecoverable dir-handle failure, not injectable on
+//   Windows.
+// - loader.rs ~422-426 inner `if let Ok(content)` read-failure arm: same
+//   reason as above (std read of a regular file cannot fail in-process).

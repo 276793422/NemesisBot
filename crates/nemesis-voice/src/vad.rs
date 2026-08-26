@@ -126,3 +126,6 @@ impl Drop for VadEngine {
         unsafe { sherpa::SherpaOnnxDestroyVoiceActivityDetector(self.vad) };
     }
 }
+
+#[cfg(test)]
+mod tests;

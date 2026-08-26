@@ -158,3 +158,5 @@ impl DashboardWindow {
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod s7_tests;

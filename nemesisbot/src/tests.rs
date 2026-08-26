@@ -730,3 +730,130 @@ fn test_cli_has_version_command() {
     assert!(names.contains(&"workflow"));
     assert!(names.contains(&"voice"));
 }
+
+// =========================================================================
+// S11d 补测（quality-hardening goal 冲刺 S11）：run_command 分发臂
+// （Onboard default / Onboard args 变体 / 已有配置跳过 / Version）。
+//
+// 只挑无 process::exit 风险的臂：Onboard 全程离线（纯文件写入 + 内嵌模板
+// 提取）；Version 只打印。Estop/Dashboard 等臂失败即 process::exit(1) 会
+// 杀掉测试进程 → 列结构豁免（需真网关 HTTP）。
+// =========================================================================
+
+/// 隔离 home（NEMESISBOT_HOME → tempdir；resolve_home Priority 2）。
+struct TempHomeEnv {
+    _tmp: TempDir,
+    home: std::path::PathBuf,
+}
+
+impl Drop for TempHomeEnv {
+    fn drop(&mut self) {
+        unsafe { std::env::remove_var("NEMESISBOT_HOME") };
+    }
+}
+
+fn temp_home_env() -> TempHomeEnv {
+    let tmp = TempDir::new().unwrap();
+    let home = tmp.path().join(".nemesisbot");
+    std::fs::create_dir_all(&home).unwrap();
+    unsafe { std::env::set_var("NEMESISBOT_HOME", tmp.path()) };
+    TempHomeEnv { _tmp: tmp, home }
+}
+
+#[tokio::test]
+async fn run_command_onboard_default_writes_full_home() {
+    let _guard = GLOBAL_STATE_LOCK.lock().unwrap();
+    let th = temp_home_env();
+
+    let cli = Cli {
+        local: false,
+        command: Commands::Onboard {
+            default: true,
+            args: vec![],
+        },
+    };
+    run_command(cli).await.expect("onboard default must succeed offline");
+
+    // 主配置 + 各子系统配置 + workspace 模板 + 人格文件 + peers.toml。
+    assert!(th.home.join("config.json").exists(), "main config");
+    let cfg: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(th.home.join("config.json")).unwrap(),
+    )
+    .unwrap();
+    // onboard default 的三处特征改写：web 端口 49000 / websocket 开 / security 开。
+    assert_eq!(cfg["channels"]["web"]["port"], 49000);
+    assert_eq!(cfg["channels"]["websocket"]["enabled"], true);
+    assert_eq!(cfg["security"]["enabled"], true);
+
+    assert!(th.home.join("workspace").join("config").exists());
+    assert!(th.home.join("workspace").join("IDENTITY.md").exists());
+    assert!(th.home.join("workspace").join("SOUL.md").exists());
+    assert!(th.home.join("workspace").join("USER.md").exists());
+    assert!(th.home.join("workspace").join("cluster").join("IDENTITY.md").exists());
+    assert!(th.home.join("workspace").join("workflow").join("definitions").exists());
+    assert!(th.home.join("workspace").join("cluster").join("peers.toml").exists());
+    // Step 7.8：eval 规则种子（feature 开时）。
+    #[cfg(feature = "eval")]
+    assert!(th.home.join("workspace").join("config").join("eval_rules.json").exists());
+}
+
+#[tokio::test]
+async fn run_command_onboard_via_args_variant_also_defaults() {
+    // `onboard` 不带 --default 但 args 里含 "default" → 同样走默认装配分支。
+    let _guard = GLOBAL_STATE_LOCK.lock().unwrap();
+    let th = temp_home_env();
+
+    let cli = Cli {
+        local: false,
+        command: Commands::Onboard {
+            default: false,
+            args: vec!["default".to_string()],
+        },
+    };
+    run_command(cli).await.expect("onboard args=default must succeed");
+    assert!(th.home.join("config.json").exists());
+}
+
+#[tokio::test]
+async fn run_command_onboard_existing_config_keeps_main_config() {
+    // 已有 config.json + cargo test 的 stdin 是管道 EOF（read_line 空串）→
+    // 覆盖确认走「保留既有配置」分支：旧内容不被改写，其余配置仍生成。
+    let _guard = GLOBAL_STATE_LOCK.lock().unwrap();
+    let th = temp_home_env();
+    std::fs::write(
+        th.home.join("config.json"),
+        r#"{ "channels": { "web": { "port": 12345 } } }"#,
+    )
+    .unwrap();
+
+    let cli = Cli {
+        local: false,
+        command: Commands::Onboard {
+            default: true,
+            args: vec![],
+        },
+    };
+    run_command(cli).await.expect("onboard with existing config must succeed");
+
+    let cfg: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(th.home.join("config.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        cfg["channels"]["web"]["port"], 12345,
+        "EOF 输入 ≠ y → 既有主配置必须保留"
+    );
+    // 其余配置文件仍写入。
+    assert!(th.home.join("workspace").join("cluster").join("peers.toml").exists());
+}
+
+#[tokio::test]
+async fn run_command_version_arm_is_safe_no_op() {
+    let _guard = GLOBAL_STATE_LOCK.lock().unwrap();
+    let _th = temp_home_env();
+    let cli = Cli {
+        local: false,
+        command: Commands::Version,
+    };
+    run_command(cli).await.expect("version arm must succeed");
+}

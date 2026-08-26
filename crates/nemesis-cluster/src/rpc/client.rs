@@ -428,15 +428,40 @@ impl RpcClient {
         all_addresses: &[String],
         request: &RPCRequest,
     ) -> Result<RPCResponse, RpcClientError> {
+        // Remember the last underlying failure so the final generic error can
+        // carry it. Without this, a single-address peer that WAS reached but
+        // failed mid-exchange (e.g. response decrypt failure) reported the
+        // same opaque "all connection attempts failed" as an unreachable
+        // peer — the same error-masking class as BUG #9 below, on the
+        // non-Remote branch. (BUG #20, quality-hardening goal 冲刺 S4)
+        // 无初始值：match 全臂要么早退要么赋值，落到这里必然已持有一条真实错误
+        //（消灭 dead initializer 警告：Option + None 兜底在数据流上不可达）。(BUG #20 收尾)
+        let mut last_err: String;
+
         // Try best address first
         match self.try_connect_and_send(best_addr, request).await {
             Ok(resp) => return Ok(resp),
+            // The peer was reached and returned a handler-level error
+            // response. Retrying other addresses of the SAME peer cannot
+            // change that outcome, and falling through to the generic
+            // "all connection attempts failed" would mask the real error
+            // (single-address peers lost their handler errors entirely).
+            // (BUG #9, quality-hardening goal W3b)
+            Err(RpcClientError::RemoteError(err)) => {
+                tracing::warn!(
+                    addr = best_addr,
+                    peer_error = %err,
+                    "[RpcClient] Peer returned an error response, not retrying fallbacks"
+                );
+                return Err(RpcClientError::RemoteError(err));
+            }
             Err(e) => {
                 tracing::debug!(
                     addr = best_addr,
                     error = %e,
                     "[RpcClient] Failed to connect to best address, trying fallbacks"
                 );
+                last_err = e.to_string();
             }
         }
 
@@ -456,14 +481,26 @@ impl RpcClient {
                     tracing::info!(addr = addr, "[RpcClient] Connected to fallback address");
                     return Ok(resp);
                 }
+                // Same as above: peer reached, request itself failed —
+                // propagate the real error instead of masking it.
+                Err(RpcClientError::RemoteError(err)) => {
+                    tracing::warn!(
+                        addr = addr,
+                        peer_error = %err,
+                        "[RpcClient] Fallback peer returned an error response"
+                    );
+                    return Err(RpcClientError::RemoteError(err));
+                }
                 Err(e) => {
                     tracing::debug!(addr = addr, error = %e, "[RpcClient] Fallback address failed");
+                    last_err = e.to_string();
                 }
             }
         }
 
         Err(RpcClientError::Connection(format!(
-            "all connection attempts failed for peer",
+            "all connection attempts failed for peer: last error: {}",
+            last_err,
         )))
     }
 

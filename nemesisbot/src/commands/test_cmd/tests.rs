@@ -276,3 +276,86 @@ fn test_approval_data_with_special_chars() {
     assert_eq!(data["request_id"], "req-<script>");
     assert_eq!(data["target"], "C:\\Users\\test & verify\\file.txt");
 }
+
+// ===========================================================================
+// run() 分发 + 真实 ProcessManager 通路（S11c，quality-hardening goal 冲刺 S11）
+// —— 既有 27 个测试只钉 make_approval_data 纯函数，四个 run_* 全没跑过。
+// 关键事实：spawn_child 用 current_exe 起子进程，测试二进制把
+// `--multiple --child-id ... --window-type approval` 交给 clap → 参数不识别
+// 立即退出 → 管道 EOF → handshake 确定性失败（不起 UI、不装 DLL、不占端口；
+// WS server 绑 127.0.0.1:0）。ApprovalUi / Dashboard 在更早的
+// check_plugin_library_exists 就 bail（测试 exe 旁无 plugins/）。
+// ===========================================================================
+
+mod run_arm {
+    use super::*;
+
+    #[test]
+    fn check_plugin_library_missing_errors_deterministically() {
+        let err = check_plugin_library_exists().expect_err("测试 exe 旁无 plugins/ → Err");
+        assert!(
+            err.to_string().contains("plugin-ui"),
+            "got: {err:#}"
+        );
+    }
+
+    #[test]
+    fn print_result_both_banners_do_not_panic() {
+        print_result(true, "ok banner");
+        print_result(false, "fail banner");
+    }
+
+    #[cfg(feature = "desktop")]
+    #[tokio::test]
+    async fn approval_headless_fails_fast_when_handshake_eof_and_cleans_env() {
+        let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        unsafe {
+            std::env::remove_var("NEMESISBOT_FORCE_HEADLESS");
+        }
+
+        let err = run(TestAction::ApprovalHeadless {
+            expected: "approved".into(),
+        })
+        .await
+        .expect_err("子进程（=测试二进制）不认 child 参数 → handshake EOF → Err");
+        assert!(
+            err.to_string().contains("spawn_child failed"),
+            "got: {err:#}"
+        );
+        // (BUG S11c-2) 对称清理：失败路径必须回收 env，不得残留给后续测试。
+        assert_eq!(
+            std::env::var("NEMESISBOT_FORCE_HEADLESS").unwrap_or_default(),
+            "",
+            "失败路径必须清掉 NEMESISBOT_FORCE_HEADLESS"
+        );
+    }
+
+    #[cfg(feature = "desktop")]
+    #[tokio::test]
+    async fn approval_ui_and_dashboard_bail_at_plugin_check() {
+        let err = run(TestAction::ApprovalUi {
+            risk_level: "HIGH".into(),
+            operation: "file_write".into(),
+            target: "C:\\Temp\\t.txt".into(),
+        })
+        .await
+        .expect_err("无 plugin-ui → 第一步就 bail");
+        assert!(err.to_string().contains("plugin-ui"), "got: {err:#}");
+
+        let err = run(TestAction::Dashboard {
+            host: "127.0.0.1".into(),
+            port: 49000,
+            token: "token".into(),
+        })
+        .await
+        .expect_err("无 plugin-ui → 第一步就 bail（不起真 dashboard）");
+        assert!(err.to_string().contains("plugin-ui"), "got: {err:#}");
+    }
+
+    #[cfg(feature = "desktop")]
+    #[tokio::test]
+    async fn ws_test_full_local_roundtrip() {
+        // 全本地回路：WS server（127.0.0.1:0）+ 客户端连入 + 通知往返。
+        run(TestAction::Ws).await.expect("WS ping-pong 回路应通过");
+    }
+}

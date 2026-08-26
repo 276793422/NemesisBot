@@ -970,3 +970,151 @@ fn test_set_callback_replaces_existing_v2() {
         "callback2 should fire on fail too"
     );
 }
+
+#[tokio::test]
+async fn test_w3b_start_cleanup_loop_processes_tasks_between_ticks() {
+    // Drives the actual background loop spawned by start(): a stale Pending
+    // task (25h) must be failed and an old Completed task (3h) deleted by the
+    // loop's interval ticks — not by a direct cleanup_completed() call.
+    let store: Arc<dyn TaskStore> = Arc::new(InMemoryTaskStore::new());
+    let mut tm = TaskManager::with_store_and_interval(store.clone(), std::time::Duration::from_millis(20));
+
+    let stale = Task {
+        id: "w3b-old-pending".to_string(),
+        status: TaskStatus::Pending,
+        action: "a".to_string(),
+        peer_id: String::new(),
+        payload: serde_json::json!({}),
+        result: None,
+        original_channel: "rpc".to_string(),
+        original_chat_id: "ch".to_string(),
+        created_at: (chrono::Local::now() - chrono::Duration::hours(25)).to_rfc3339(),
+        completed_at: None,
+    };
+    store.create(stale).unwrap();
+
+    let old_done = Task {
+        id: "w3b-old-completed".to_string(),
+        status: TaskStatus::Completed,
+        action: "a".to_string(),
+        peer_id: String::new(),
+        payload: serde_json::json!({}),
+        result: Some(serde_json::json!("done")),
+        original_channel: "rpc".to_string(),
+        original_chat_id: "ch".to_string(),
+        created_at: (chrono::Local::now() - chrono::Duration::hours(4)).to_rfc3339(),
+        completed_at: Some((chrono::Local::now() - chrono::Duration::hours(3)).to_rfc3339()),
+    };
+    store.create(old_done).unwrap();
+
+    let recent = Task {
+        id: "w3b-recent".to_string(),
+        status: TaskStatus::Pending,
+        action: "a".to_string(),
+        peer_id: String::new(),
+        payload: serde_json::json!({}),
+        result: None,
+        original_channel: "rpc".to_string(),
+        original_chat_id: "ch".to_string(),
+        created_at: chrono::Local::now().to_rfc3339(),
+        completed_at: None,
+    };
+    store.create(recent).unwrap();
+
+    tm.start();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    loop {
+        let stale_failed = tm
+            .get_task("w3b-old-pending")
+            .map(|t| t.status == TaskStatus::Failed)
+            .unwrap_or(false);
+        let old_gone = tm.get_task("w3b-old-completed").is_none();
+        if (stale_failed && old_gone) || std::time::Instant::now() > deadline {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+
+    assert_eq!(
+        tm.get_task("w3b-old-pending").unwrap().status,
+        TaskStatus::Failed,
+        "loop must time out the 25h-old pending task"
+    );
+    assert!(
+        tm.get_task("w3b-old-completed").is_none(),
+        "loop must delete the 3h-old completed task"
+    );
+    assert_eq!(
+        tm.get_task("w3b-recent").unwrap().status,
+        TaskStatus::Pending,
+        "recent pending task must be untouched"
+    );
+    tm.stop();
+}
+
+// ============================================================
+// S4 coverage: stop-arm of the background cleanup loop + direct
+// cleanup_completed call over the completed_at branch.
+// ============================================================
+
+/// start()+stop() with yields on both sides lets the spawned loop run at
+/// least one tick and then observe the stop signal before this test's
+/// runtime is dropped (task_manager.rs 217-229).
+#[tokio::test]
+async fn test_s4_cleanup_loop_stop_arm_runs() {
+    let store: Arc<dyn TaskStore> = Arc::new(InMemoryTaskStore::new());
+    let mut tm = TaskManager::with_store_and_interval(
+        store,
+        std::time::Duration::from_millis(50),
+    );
+
+    tm.start();
+    assert!(tm.stop_tx.is_some(), "loop must be started");
+    tokio::time::sleep(std::time::Duration::from_millis(80)).await; // ≥1 tick
+
+    tm.stop();
+    assert!(tm.stop_tx.is_none());
+    // Give the spawned task time to process the stop signal before the
+    // runtime is torn down at test end.
+    tokio::time::sleep(std::time::Duration::from_millis(80)).await;
+}
+
+/// Direct cleanup_completed call: a 3h-old Completed task is deleted, a
+/// just-completed task survives (task_manager.rs 467-477).
+#[test]
+fn test_s4_cleanup_completed_deletes_old_completed_task() {
+    let store: Arc<dyn TaskStore> = Arc::new(InMemoryTaskStore::new());
+
+    let old_done = Task {
+        id: "s4-old-done".to_string(),
+        status: TaskStatus::Completed,
+        action: "a".to_string(),
+        peer_id: String::new(),
+        payload: serde_json::json!({}),
+        result: Some(serde_json::json!("done")),
+        original_channel: "rpc".to_string(),
+        original_chat_id: "ch".to_string(),
+        created_at: (chrono::Local::now() - chrono::Duration::hours(4)).to_rfc3339(),
+        completed_at: Some((chrono::Local::now() - chrono::Duration::hours(3)).to_rfc3339()),
+    };
+    store.create(old_done).unwrap();
+
+    let fresh_done = Task {
+        id: "s4-fresh-done".to_string(),
+        status: TaskStatus::Completed,
+        action: "a".to_string(),
+        peer_id: String::new(),
+        payload: serde_json::json!({}),
+        result: Some(serde_json::json!("done")),
+        original_channel: "rpc".to_string(),
+        original_chat_id: "ch".to_string(),
+        created_at: chrono::Local::now().to_rfc3339(),
+        completed_at: Some(chrono::Local::now().to_rfc3339()),
+    };
+    store.create(fresh_done).unwrap();
+
+    cleanup_completed(&store, &None);
+
+    assert!(store.get("s4-old-done").is_err(), "3h-old task deleted");
+    assert!(store.get("s4-fresh-done").is_ok(), "fresh task kept");
+}

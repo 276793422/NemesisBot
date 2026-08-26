@@ -1020,3 +1020,349 @@ async fn test_plugin_execute_download_allowed() {
     let (allowed, _) = plugin.execute(&inv);
     assert!(allowed);
 }
+
+// ============================================================
+// Dir rules / Layer-7 blocked / judge / scanner lifecycle (2026-08-25)
+// ============================================================
+
+#[test]
+fn test_plugin_dir_rules_deny() {
+    // dir_rules 非空 → 注册到 DirRead/DirCreate/DirDelete（280-287）。
+    let plugin = SecurityPlugin::new(SecurityPluginConfig {
+        enabled: true,
+        default_action: "allow".to_string(),
+        dir_rules: vec![SecurityRule {
+            pattern: "/tmp/.*".to_string(),
+            action: "deny".to_string(),
+            comment: "deny tmp dirs".to_string(),
+        }],
+        ..Default::default()
+    });
+    let inv = ToolInvocation {
+        tool_name: "create_dir".to_string(),
+        args: serde_json::json!({"path": "/tmp/forbidden_dir"}),
+        user: "test".to_string(),
+        source: "cli".to_string(),
+        metadata: Default::default(),
+    };
+    let (allowed, err) = plugin.execute(&inv);
+    assert!(!allowed);
+    assert!(err.is_some());
+}
+
+// ---- LLM judge (guardian) wiring ----
+
+struct StubJudge;
+
+#[async_trait::async_trait]
+impl crate::guardian::LlmJudge for StubJudge {
+    async fn judge(
+        &self,
+        _req: &crate::guardian::JudgeRequest,
+    ) -> Result<crate::guardian::JudgeVerdict, String> {
+        Ok(crate::guardian::JudgeVerdict {
+            risk_level: "low".to_string(),
+            user_authorization: "high".to_string(),
+            outcome: crate::guardian::JudgeOutcome::Allow,
+            rationale: "stub".to_string(),
+        })
+    }
+}
+
+#[tokio::test]
+async fn test_plugin_set_judge_and_is_critical_tool() {
+    let plugin = make_plugin();
+    assert!(plugin.judge().is_none());
+    plugin.set_judge(std::sync::Arc::new(StubJudge));
+    assert!(plugin.judge().is_some());
+
+    // exec → process_exec（CRITICAL）；read_file → LOW；未知工具 → false。
+    assert!(plugin.is_critical_tool("exec"));
+    assert!(!plugin.is_critical_tool("read_file"));
+    assert!(!plugin.is_critical_tool("totally_unknown_tool"));
+}
+
+// ---- 感染型 Mock 引擎：Layer 7 拦截 / stop_scanner / scan_invocation ----
+
+struct MockVirus(bool /* infected */);
+
+#[async_trait::async_trait]
+impl crate::scanner::VirusScanner for MockVirus {
+    fn name(&self) -> &str {
+        "mockvirus"
+    }
+    async fn get_info(&self) -> crate::scanner::EngineInfo {
+        crate::scanner::EngineInfo {
+            name: "mockvirus".to_string(),
+            version: String::new(),
+            address: String::new(),
+            ready: true,
+            start_time: String::new(),
+        }
+    }
+    async fn start(&self) -> Result<(), String> {
+        Ok(())
+    }
+    async fn stop(&self) -> Result<(), String> {
+        Ok(())
+    }
+    async fn is_ready(&self) -> bool {
+        true
+    }
+    async fn scan_file(&self, path: &std::path::Path) -> crate::scanner::ScanResult {
+        if self.0 {
+            crate::scanner::ScanResult::with_threats("mockvirus", "EICAR", &path.to_string_lossy())
+        } else {
+            crate::scanner::ScanResult::clean_with_path("mockvirus", &path.to_string_lossy())
+        }
+    }
+    async fn scan_content(&self, _content: &[u8]) -> crate::scanner::ScanResult {
+        if self.0 {
+            crate::scanner::ScanResult::with_threats("mockvirus", "EICAR", "")
+        } else {
+            crate::scanner::ScanResult::clean_from("mockvirus")
+        }
+    }
+    async fn scan_directory(&self, _dir: &std::path::Path) -> Vec<crate::scanner::ScanResult> {
+        Vec::new()
+    }
+    async fn get_database_status(&self) -> crate::scanner::DatabaseStatus {
+        crate::scanner::DatabaseStatus::default()
+    }
+    async fn update_database(&self) -> Result<(), String> {
+        Ok(())
+    }
+    fn get_stats(&self) -> HashMap<String, serde_json::Value> {
+        HashMap::new()
+    }
+}
+
+async fn install_infected_chain(plugin: &SecurityPlugin) {
+    let mut chain = crate::scanner::ScanChain::with_defaults();
+    chain.add_engine(Box::new(MockVirus(true)));
+    chain.set_enabled(true);
+    *plugin.scan_chain().write().await = chain;
+}
+
+/// 只在 content 臂报感染、file 臂干净的引擎：隔离 Layer 7 的 content-scan
+/// 分支（MockVirus 全拦时 file 臂先挡，消息带 path 而非 content_key，
+/// 测不到 content 臂的消息格式）。
+struct MockVirusContentOnly;
+
+#[async_trait::async_trait]
+impl crate::scanner::VirusScanner for MockVirusContentOnly {
+    fn name(&self) -> &str {
+        "mockvirus"
+    }
+    async fn get_info(&self) -> crate::scanner::EngineInfo {
+        crate::scanner::EngineInfo {
+            name: "mockvirus".to_string(),
+            version: String::new(),
+            address: String::new(),
+            ready: true,
+            start_time: String::new(),
+        }
+    }
+    async fn start(&self) -> Result<(), String> {
+        Ok(())
+    }
+    async fn stop(&self) -> Result<(), String> {
+        Ok(())
+    }
+    async fn is_ready(&self) -> bool {
+        true
+    }
+    async fn scan_file(&self, path: &std::path::Path) -> crate::scanner::ScanResult {
+        crate::scanner::ScanResult::clean_with_path("mockvirus", &path.to_string_lossy())
+    }
+    async fn scan_content(&self, _content: &[u8]) -> crate::scanner::ScanResult {
+        crate::scanner::ScanResult::with_threats("mockvirus", "EICAR", "")
+    }
+    async fn scan_directory(&self, _dir: &std::path::Path) -> Vec<crate::scanner::ScanResult> {
+        Vec::new()
+    }
+    async fn get_database_status(&self) -> crate::scanner::DatabaseStatus {
+        crate::scanner::DatabaseStatus::default()
+    }
+    async fn update_database(&self) -> Result<(), String> {
+        Ok(())
+    }
+    fn get_stats(&self) -> HashMap<String, serde_json::Value> {
+        HashMap::new()
+    }
+}
+
+async fn install_content_only_infected_chain(plugin: &SecurityPlugin) {
+    let mut chain = crate::scanner::ScanChain::with_defaults();
+    chain.add_engine(Box::new(MockVirusContentOnly));
+    chain.set_enabled(true);
+    *plugin.scan_chain().write().await = chain;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_plugin_execute_layer7_blocks_infected_content() {
+    // write_file content → chain.scan_content 感染 → 拦截。
+    // 用 content-only 引擎：MockVirus 全拦时 file 臂（扫 target path）先挡，
+    // 消息是 path 不是 content_key，测不到 content 臂的消息格式。
+    let plugin = make_plugin();
+    install_content_only_infected_chain(&plugin).await;
+    let inv = ToolInvocation {
+        tool_name: "write_file".to_string(),
+        args: serde_json::json!({"path": "/tmp/out.bin", "content": "X5O!P%@AP[EICAR]"}),
+        user: "test".to_string(),
+        source: "cli".to_string(),
+        metadata: Default::default(),
+    };
+    let (allowed, err) = plugin.execute(&inv);
+    assert!(!allowed);
+    let e = err.expect("virus block reason");
+    assert!(e.contains("virus scanner"), "{e}");
+    assert!(e.contains("content"), "{e}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_plugin_execute_layer7_blocks_infected_path() {
+    // download save_path → chain.scan_file 感染 → 拦截。
+    let plugin = make_plugin();
+    install_infected_chain(&plugin).await;
+    let inv = ToolInvocation {
+        tool_name: "download".to_string(),
+        args: serde_json::json!({"save_path": "/tmp/dl.exe"}),
+        user: "test".to_string(),
+        source: "cli".to_string(),
+        metadata: Default::default(),
+    };
+    let (allowed, err) = plugin.execute(&inv);
+    assert!(!allowed);
+    let e = err.expect("virus block reason");
+    assert!(e.contains("virus scanner"), "{e}");
+    assert!(e.contains("/tmp/dl.exe"), "{e}");
+}
+
+#[tokio::test]
+async fn test_plugin_scan_invocation_detects_threat() {
+    // scan_invocation 的 true 分支（威胁检出）。
+    let plugin = make_plugin();
+    install_infected_chain(&plugin).await;
+    let args = r#"{"path": "/tmp/x.bin", "content": "infected"}"#;
+    assert!(plugin.scan_invocation("write_file", args).await);
+}
+
+#[tokio::test]
+async fn test_plugin_stop_scanner_stops_engines() {
+    let plugin = make_plugin();
+    install_infected_chain(&plugin).await;
+    plugin.stop_scanner().await; // 引擎 stop Ok，不 panic
+    let sc = plugin.scan_chain();
+    let chain = sc.read().await;
+    assert_eq!(chain.engine_count(), 1);
+}
+
+#[tokio::test]
+async fn test_plugin_init_scanner_from_config_no_engines() {
+    // 空 enabled → warn + return（chain 保持 disabled）。
+    let plugin = make_plugin();
+    plugin
+        .init_scanner_from_config(&crate::scanner::ScannerFullConfig::default())
+        .await;
+    let sc = plugin.scan_chain();
+    let chain = sc.read().await;
+    assert!(!chain.is_enabled());
+}
+
+#[tokio::test]
+async fn test_plugin_init_scanner_from_config_with_stub() {
+    let mut full = crate::scanner::ScannerFullConfig::default();
+    full.enabled.push("stub".to_string());
+    full.engines.insert(
+        "stub".to_string(),
+        serde_json::json!({"state": {"install_status": "installed"}}),
+    );
+    let plugin = make_plugin();
+    plugin.init_scanner_from_config(&full).await;
+    let sc = plugin.scan_chain();
+    let chain = sc.read().await;
+    assert!(chain.is_enabled());
+    assert_eq!(chain.engine_count(), 1);
+}
+
+// ---- audit logger 分支 ----
+
+#[test]
+fn test_plugin_cleanup_with_audit_logger_set() {
+    // audit_logger Some → cleanup 走 take 分支。
+    let dir = tempfile::tempdir().unwrap();
+    let plugin = SecurityPlugin::new(SecurityPluginConfig {
+        enabled: true,
+        audit_log_enabled: true,
+        audit_log_dir: Some(dir.path().to_string_lossy().to_string()),
+        default_action: "allow".to_string(),
+        ..Default::default()
+    });
+    plugin.cleanup().unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_plugin_audit_log_dir_is_file_degrades_gracefully() {
+    // audit_log_dir 指向文件 → AuditLogger::new Err → error! + None 降级，
+    // 插件仍可用（log_audit_event 无 logger 时 no-op）。
+    // 必须 multi_thread：execute() 的 Layer 7 走 block_in_place + Handle::current，
+    // 同步 #[test] 无 runtime / current_thread flavor 都会 panic。
+    let dir = tempfile::tempdir().unwrap();
+    let blocker = dir.path().join("blocker.log");
+    std::fs::write(&blocker, "i am a file").unwrap();
+    let plugin = SecurityPlugin::new(SecurityPluginConfig {
+        enabled: true,
+        audit_log_enabled: true,
+        audit_log_dir: Some(blocker.to_string_lossy().to_string()),
+        default_action: "allow".to_string(),
+        ..Default::default()
+    });
+    let inv = ToolInvocation {
+        tool_name: "read_file".to_string(),
+        args: serde_json::json!({"path": "/tmp/ok.txt"}),
+        user: "test".to_string(),
+        source: "cli".to_string(),
+        metadata: Default::default(),
+    };
+    let (allowed, _) = plugin.execute(&inv);
+    assert!(allowed);
+}
+
+// ============================================================
+// S3 batch 4: hardware/registry 规则注册臂
+// ============================================================
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_register_rules_hardware_and_registry_arms() {
+    // hardware_rules / registry_rules 非空 → register_rules 把它们挂到
+    // HardwareI2C/SPI/GPIO 与 RegistryRead/Write/Delete 六个操作类型上
+    // （构造路径本身即覆盖这些 set_rules 臂；工具名映射表里没有
+    // hardware/registry 工具，故这里只验证构造 + 插件仍正常工作）。
+    let plugin = SecurityPlugin::new(SecurityPluginConfig {
+        enabled: true,
+        default_action: "allow".to_string(),
+        hardware_rules: vec![SecurityRule {
+            pattern: ".*".to_string(),
+            action: "deny".to_string(),
+            comment: "deny all i2c/gpio".to_string(),
+        }],
+        registry_rules: vec![SecurityRule {
+            pattern: "HKLM.*".to_string(),
+            action: "deny".to_string(),
+            comment: "deny machine software keys".to_string(),
+        }],
+        ..Default::default()
+    });
+
+    // 构造成功后插件仍正常放行 allow 默认的读操作
+    let inv = ToolInvocation {
+        tool_name: "read_file".to_string(),
+        args: serde_json::json!({"path": "/tmp/ok.txt"}),
+        user: "test".to_string(),
+        source: "cli".to_string(),
+        metadata: Default::default(),
+    };
+    let (a1, _) = plugin.execute(&inv);
+    assert!(a1);
+}

@@ -541,3 +541,455 @@ fn test_default_timeout_value_is_30() {
     let raw = std::fs::read_to_string(mgr.config_path()).unwrap();
     assert!(raw.contains("\"timeout\": 30"));
 }
+
+// ===========================================================================
+// W4c 补测（2026-08-25）：discovery 三函数——discover_tools（成功/起不来/
+// init 错误/超时 + 工具执行矩阵）、discover_server_metadata（stdio 成功+超时）、
+// discover_server_metadata_http（wiremock 成功/超时/5xx）
+// ===========================================================================
+
+/// 完整假 MCP 服务器（newline-delimited JSON-RPC over stdio）。
+/// tools/call 按 arguments 分支：fail → isError、img → image 内容、slow → 睡 10s。
+const W4C_FAKE_MCP: &str = r#"
+import sys, json
+for line in sys.stdin:
+    line = line.strip()
+    if not line:
+        continue
+    req = json.loads(line)
+    rid = req.get("id")
+    if rid is None:
+        continue
+    m = req.get("method", "")
+    if m == "initialize":
+        result = {"protocolVersion": "2024-11-05", "capabilities": {}, "serverInfo": {"name": "fake", "version": "1.2.3"}}
+    elif m == "tools/list":
+        result = {"tools": [{"name": "echo", "description": "echo tool", "inputSchema": {"type": "object", "properties": {"text": {"type": ["string", "null"]}}}}]}
+    elif m == "tools/call":
+        args = req.get("params", {}).get("arguments", {})
+        if args.get("fail"):
+            sys.stdout.write(json.dumps({"jsonrpc": "2.0", "id": rid, "result": {"content": [{"type": "text", "text": "boom"}], "isError": True}}) + "\n")
+            sys.stdout.flush()
+            continue
+        if args.get("img"):
+            result = {"content": [{"type": "image", "text": "b64x"}], "isError": False}
+        elif args.get("slow"):
+            import time
+            time.sleep(10)
+            result = {"content": [{"type": "text", "text": "late"}], "isError": False}
+        else:
+            result = {"content": [{"type": "text", "text": "called"}], "isError": False}
+    elif m == "resources/list":
+        result = {"resources": [{"uri": "file:///x", "name": "x"}]}
+    elif m == "prompts/list":
+        result = {"prompts": [{"name": "p1", "description": "pd"}]}
+    else:
+        result = {}
+    sys.stdout.write(json.dumps({"jsonrpc": "2.0", "id": rid, "result": result}) + "\n")
+    sys.stdout.flush()
+"#;
+
+fn w4c_have_python() -> bool {
+    std::process::Command::new("python")
+        .arg("--version")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
+
+fn w4c_fake_server_config(name: &str, timeout_secs: u64) -> ServerConfig {
+    ServerConfig::new(name, "python")
+        .arg("-c")
+        .arg(W4C_FAKE_MCP)
+        .timeout(timeout_secs)
+}
+
+#[tokio::test]
+async fn test_w4c_discover_tools_success_and_execute_matrix() {
+    if !w4c_have_python() {
+        eprintln!("Skipping test: python not available");
+        return;
+    }
+    let tmp = TempDir::new().unwrap();
+    let mgr = McpManager::new(tmp.path().to_path_buf().join("config.mcp.json"));
+    let cfg = w4c_fake_server_config("Fake Srv", 5);
+
+    let tools = mgr.discover_tools(&cfg).await.unwrap();
+    assert_eq!(tools.len(), 1);
+    let def = tools[0].definition();
+    // 配置名（非自报名 "fake"）用于前缀
+    assert_eq!(def.name, "mcp_fake_srv_echo");
+    assert!(def.description.contains("[MCP:Fake Srv]"));
+
+    // 正常调用 → text
+    let r = tools[0]
+        .execute(serde_json::json!({"text": "hi"}))
+        .await;
+    assert!(!r.is_error);
+    assert_eq!(r.content, "called");
+
+    // image 内容分支
+    let r = tools[0].execute(serde_json::json!({"img": true})).await;
+    assert!(!r.is_error);
+    assert!(r.content.contains("[Image: b64x]"));
+
+    // 服务器侧 isError → "returned error"
+    let r = tools[0].execute(serde_json::json!({"fail": true})).await;
+    assert!(r.is_error);
+    assert!(r.content.contains("returned error"));
+    assert!(r.content.contains("boom"));
+}
+
+#[tokio::test]
+async fn test_w4c_discover_tools_adapter_timeout() {
+    if !w4c_have_python() {
+        eprintln!("Skipping test: python not available");
+        return;
+    }
+    let tmp = TempDir::new().unwrap();
+    let mgr = McpManager::new(tmp.path().to_path_buf().join("config.mcp.json"));
+    // timeout_secs=3 → adapter 3s 超时（slow 分支睡 10s）。
+    // 注意不能太小：initialize 里的 notifications/initialized 通知固定等 1s 传输超时。
+    let cfg = w4c_fake_server_config("slow-srv", 3);
+    let tools = mgr.discover_tools(&cfg).await.unwrap();
+    let r = tools[0].execute(serde_json::json!({"slow": true})).await;
+    assert!(r.is_error);
+    assert!(r.content.contains("timed out after"));
+}
+
+#[tokio::test]
+async fn test_w4c_discover_tools_spawn_failure() {
+    let tmp = TempDir::new().unwrap();
+    let mgr = McpManager::new(tmp.path().to_path_buf().join("config.mcp.json"));
+    let cfg = ServerConfig::new("nope", "/absolutely/nonexistent/command/xyz");
+    let err = match mgr.discover_tools(&cfg).await {
+        Ok(_) => panic!("expected error"),
+        Err(e) => e,
+    };
+    assert!(err.contains("nope"), "unexpected: {}", err);
+    assert!(err.contains("initialization failed"), "unexpected: {}", err);
+}
+
+#[tokio::test]
+async fn test_w4c_discover_tools_init_error_response() {
+    if !w4c_have_python() {
+        eprintln!("Skipping test: python not available");
+        return;
+    }
+    let script = r#"
+import sys, json
+line = sys.stdin.readline()
+req = json.loads(line)
+sys.stdout.write(json.dumps({"jsonrpc": "2.0", "id": req.get("id"), "error": {"code": -32600, "message": "denied"}}) + "\n")
+sys.stdout.flush()
+import time
+time.sleep(30)
+"#;
+    let tmp = TempDir::new().unwrap();
+    let mgr = McpManager::new(tmp.path().to_path_buf().join("config.mcp.json"));
+    let cfg = ServerConfig::new("err-srv", "python")
+        .arg("-c")
+        .arg(script)
+        .timeout(5);
+    let err = match mgr.discover_tools(&cfg).await {
+        Ok(_) => panic!("expected error"),
+        Err(e) => e,
+    };
+    assert!(err.contains("err-srv"), "unexpected: {}", err);
+    assert!(err.contains("initialization failed"), "unexpected: {}", err);
+    assert!(err.contains("denied"), "unexpected: {}", err);
+}
+
+#[tokio::test]
+async fn test_w4c_discover_tools_init_timeout() {
+    if !w4c_have_python() {
+        eprintln!("Skipping test: python not available");
+        return;
+    }
+    let script = r#"
+import time
+time.sleep(30)
+"#;
+    let tmp = TempDir::new().unwrap();
+    let mgr = McpManager::new(tmp.path().to_path_buf().join("config.mcp.json"));
+    let cfg = ServerConfig::new("hang-srv", "python")
+        .arg("-c")
+        .arg(script)
+        .timeout(1);
+    let err = match mgr.discover_tools(&cfg).await {
+        Ok(_) => panic!("expected error"),
+        Err(e) => e,
+    };
+    assert!(err.contains("hang-srv"), "unexpected: {}", err);
+    assert!(err.contains("initialization timed out"), "unexpected: {}", err);
+}
+
+#[tokio::test]
+async fn test_w4c_discover_server_metadata_success() {
+    if !w4c_have_python() {
+        eprintln!("Skipping test: python not available");
+        return;
+    }
+    let result =
+        discover_server_metadata("python", vec!["-c".into(), W4C_FAKE_MCP.into()], vec![], 5)
+            .await
+            .expect("discovery should succeed");
+    let info = result.server_info.expect("server_info");
+    assert_eq!(info.name, "fake");
+    assert_eq!(info.version, "1.2.3");
+    assert_eq!(result.tools.len(), 1);
+    assert_eq!(result.tools[0].name, "echo");
+    assert_eq!(result.resources.len(), 1);
+    assert_eq!(result.resources[0].name, "x");
+    assert_eq!(result.prompts.len(), 1);
+    assert_eq!(result.prompts[0].name, "p1");
+}
+
+#[tokio::test]
+async fn test_w4c_discover_server_metadata_timeout_hint() {
+    if !w4c_have_python() {
+        eprintln!("Skipping test: python not available");
+        return;
+    }
+    let script = "import time\ntime.sleep(30)\n";
+    let err = match discover_server_metadata(
+        "python",
+        vec!["-c".into(), script.into()],
+        vec![],
+        1,
+    )
+    .await
+    {
+        Ok(_) => panic!("expected error"),
+        Err(e) => e,
+    };
+    assert!(err.contains("timed out after 1s"), "unexpected: {}", err);
+    assert!(err.contains("parameter instead"), "unexpected: {}", err);
+}
+
+#[tokio::test]
+async fn test_w4c_discover_server_metadata_http_success() {
+    use wiremock::matchers::{body_partial_json, method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/mcp"))
+        .and(body_partial_json(serde_json::json!({"method": "initialize"})))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "jsonrpc": "2.0", "id": 1,
+            "result": {"protocolVersion": "2024-11-05", "capabilities": {}, "serverInfo": {"name": "httpfake", "version": "9.9"}}
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/mcp"))
+        .and(body_partial_json(serde_json::json!({"method": "tools/list"})))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "jsonrpc": "2.0", "id": 2,
+            "result": {"tools": [{"name": "ht", "description": "http tool", "inputSchema": {"type": "object"}}]}
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/mcp"))
+        .and(body_partial_json(serde_json::json!({"method": "resources/list"})))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "jsonrpc": "2.0", "id": 3, "result": {"resources": [{"uri": "u://1", "name": "r1"}]}
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/mcp"))
+        .and(body_partial_json(serde_json::json!({"method": "prompts/list"})))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "jsonrpc": "2.0", "id": 4, "result": {"prompts": [{"name": "pp", "description": "pd"}]}
+        })))
+        .mount(&server)
+        .await;
+
+    let url = format!("{}/mcp", server.uri());
+    let result = discover_server_metadata_http(&url, 5).await.unwrap();
+    assert_eq!(result.server_info.unwrap().name, "httpfake");
+    assert_eq!(result.tools.len(), 1);
+    assert_eq!(result.tools[0].name, "ht");
+    assert_eq!(result.resources[0].name, "r1");
+    assert_eq!(result.prompts[0].name, "pp");
+}
+
+#[tokio::test]
+async fn test_w4c_discover_server_metadata_http_timeout() {
+    use std::time::Duration;
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/mcp"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(
+            serde_json::json!({"jsonrpc":"2.0","id":1,"result":{}}),
+        ).set_delay(Duration::from_secs(5)))
+        .mount(&server)
+        .await;
+
+    let url = format!("{}/mcp", server.uri());
+    let err = match discover_server_metadata_http(&url, 1).await {
+        Ok(_) => panic!("expected error"),
+        Err(e) => e,
+    };
+    assert!(err.contains("timed out"), "unexpected: {}", err);
+}
+
+#[tokio::test]
+async fn test_w4c_discover_server_metadata_http_error_status() {
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/mcp"))
+        .respond_with(ResponseTemplate::new(500).set_body_string("backend down"))
+        .mount(&server)
+        .await;
+
+    let url = format!("{}/mcp", server.uri());
+    let err = match discover_server_metadata_http(&url, 5).await {
+        Ok(_) => panic!("expected error"),
+        Err(e) => e,
+    };
+    assert!(err.contains("initialization failed"), "unexpected: {}", err);
+}
+
+// ===========================================================================
+// S1 补测（2026-08-26）：timeout_secs=0 的 30s 回退臂；initialize 成功后
+// list_tools/list_resources/list_prompts 失败的 warn!/Vec::new() 回退臂
+// （stdio + HTTP 两个变体）
+// ===========================================================================
+
+#[tokio::test]
+async fn test_s1_discover_tools_zero_timeout_uses_default_fallback() {
+    // timeout_secs=0 → the `else { 30 }` fallback arm. The command does not
+    // exist, so initialize() fails immediately and we never actually wait.
+    let tmp = TempDir::new().unwrap();
+    let mgr = McpManager::new(tmp.path().to_path_buf().join("config.mcp.json"));
+    let cfg = ServerConfig::new("zero-t-srv", "/absolutely/nonexistent/command/xyz").timeout(0);
+    let err = match mgr.discover_tools(&cfg).await {
+        Ok(_) => panic!("expected error"),
+        Err(e) => e,
+    };
+    assert!(err.contains("zero-t-srv"), "unexpected: {}", err);
+    assert!(err.contains("initialization failed"), "unexpected: {}", err);
+}
+
+fn s1_sink_subscriber() -> impl tracing::Subscriber + Send + Sync + 'static {
+    tracing_subscriber::fmt()
+        .with_max_level(tracing::Level::TRACE)
+        .with_writer(std::io::sink)
+        .finish()
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_s1_discover_server_metadata_list_failures_after_init() {
+    if !w4c_have_python() {
+        eprintln!("Skipping test: python not available");
+        return;
+    }
+    // Answers initialize correctly, then exits: every subsequent list_*
+    // request hits EOF and must fall back to an empty vec (warn! arm) while
+    // discovery itself still succeeds.
+    let script = r#"
+import sys, json
+line = sys.stdin.readline()
+req = json.loads(line)
+sys.stdout.write(json.dumps({"jsonrpc": "2.0", "id": req.get("id"), "result": {"protocolVersion": "2024-11-05", "capabilities": {}, "serverInfo": {"name": "die-after-init", "version": "0.0.1"}}}) + "\n")
+sys.stdout.flush()
+sys.exit(0)
+"#;
+    let handle = tokio::runtime::Handle::current();
+    let result = tokio::task::block_in_place(|| {
+        tracing::subscriber::with_default(s1_sink_subscriber(), || {
+            handle.block_on(discover_server_metadata(
+                "python",
+                vec!["-c".into(), script.into()],
+                vec![],
+                5,
+            ))
+        })
+    })
+    .expect("discovery must still succeed (lists are best-effort)");
+
+    let info = result.server_info.expect("server_info");
+    assert_eq!(info.name, "die-after-init");
+    assert!(result.tools.is_empty());
+    assert!(result.resources.is_empty());
+    assert!(result.prompts.is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_s1_discover_server_metadata_http_list_failures() {
+    use wiremock::matchers::{body_partial_json, method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    let server = MockServer::start().await;
+    // Mount order matters: initialize first, then per-method 500s, then a
+    // catch-all 202 (for the fire-and-forget notifications/initialized POST).
+    Mock::given(method("POST"))
+        .and(path("/mcp"))
+        .and(body_partial_json(serde_json::json!({"method": "initialize"})))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "jsonrpc": "2.0", "id": 1, "result": {
+                "protocolVersion": "2024-11-05", "capabilities": {},
+                "serverInfo": {"name": "httpflaky", "version": "9.9.9"}
+            }
+        })))
+        .mount(&server)
+        .await;
+    for m in ["tools/list", "resources/list", "prompts/list"] {
+        Mock::given(method("POST"))
+            .and(path("/mcp"))
+            .and(body_partial_json(serde_json::json!({"method": m})))
+            .respond_with(ResponseTemplate::new(500).set_body_string("backend down"))
+            .mount(&server)
+            .await;
+    }
+    Mock::given(method("POST"))
+        .and(path("/mcp"))
+        .respond_with(ResponseTemplate::new(202))
+        .mount(&server)
+        .await;
+
+    let url = format!("{}/mcp", server.uri());
+    let handle = tokio::runtime::Handle::current();
+    let result = tokio::task::block_in_place(|| {
+        tracing::subscriber::with_default(s1_sink_subscriber(), || {
+            handle.block_on(discover_server_metadata_http(&url, 5))
+        })
+    })
+    .expect("HTTP discovery must still succeed (lists are best-effort)");
+
+    let info = result.server_info.expect("server_info");
+    assert_eq!(info.name, "httpflaky");
+    assert!(result.tools.is_empty());
+    assert!(result.resources.is_empty());
+    assert!(result.prompts.is_empty());
+}
+
+// ---------------------------------------------------------------------------
+// S1 coverage batch (2026-08-26): save_config parent() == None arm (line 93).
+// ---------------------------------------------------------------------------
+
+#[test]
+#[cfg(windows)]
+fn test_s1_save_config_root_drive_parent_none() {
+    // "c:\" 的 parent() == None → 跳过建目录分支（行 90 的 else 臂，闭括号
+    // 计数落在行 93）；随后 tmp 路径仍为 "c:\"（with_extension 对无 file_name
+    // 的路径原样返回）→ fs::write 失败 → "Failed to write MCP config"。
+    let mgr = McpManager::new(PathBuf::from("c:\\"));
+    let err = mgr.save_config().unwrap_err();
+    assert!(
+        err.starts_with("Failed to write MCP config"),
+        "unexpected error: {err}"
+    );
+}

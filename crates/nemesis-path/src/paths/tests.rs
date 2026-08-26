@@ -2526,3 +2526,15 @@ fn test_fallback_home_dir_consistent_with_resolve() {
     assert!(resolved.to_string_lossy().ends_with(".nemesisbot"));
     assert!(fallback.to_string_lossy().ends_with(".nemesisbot"));
 }
+
+#[test]
+fn s12b_boundary_events_dir_lives_outside_session_logs() {
+    // S12b batch（quality-hardening goal 冲刺）：boundary 审计目录此前零调用。
+    let pm = PathManager::with_home(std::path::PathBuf::from("/tmp/s12b_home"));
+    let d = pm.boundary_events_dir();
+    assert!(d.ends_with("boundary"), "got: {d:?}");
+    assert!(
+        !d.to_string_lossy().contains("session_logs"),
+        "must stay OUTSIDE session_logs (phantom-session guard): {d:?}"
+    );
+}

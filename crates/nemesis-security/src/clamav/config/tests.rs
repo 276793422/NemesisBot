@@ -240,3 +240,116 @@ fn test_generate_freshclam_config_includes_update_log_file() {
     let expected = log_path.to_string_lossy().replace('\\', "/");
     assert!(content.contains(&format!("UpdateLogFile {}", expected)));
 }
+
+// ============================================================
+// Parent-dir / write-error branches (2026-08-25 coverage push)
+// ============================================================
+
+#[test]
+fn test_generate_clamd_config_creates_nested_parent() {
+    // 嵌套父目录不存在 → create_dir_all 真创建。
+    let dir = tempfile::tempdir().unwrap();
+    let nested = dir.path().join("conf").join("deep").join("clamd.conf");
+    let cfg = DaemonConfig {
+        config_file: nested.to_string_lossy().to_string(),
+        listen_addr: "127.0.0.1:3310".to_string(),
+        ..Default::default()
+    };
+    generate_clamd_config(&cfg).unwrap();
+    assert!(nested.exists());
+}
+
+#[test]
+fn test_generate_clamd_config_parent_is_file_errors() {
+    // 父路径是个文件 → create_dir_all Err → "create config dir"。
+    let dir = tempfile::tempdir().unwrap();
+    let blocker = dir.path().join("blocker.txt");
+    std::fs::write(&blocker, "i am a file").unwrap();
+    let cfg = DaemonConfig {
+        config_file: blocker.join("clamd.conf").to_string_lossy().to_string(),
+        ..Default::default()
+    };
+    let err = generate_clamd_config(&cfg).unwrap_err();
+    assert!(err.contains("create config dir"), "{err}");
+}
+
+#[test]
+fn test_generate_clamd_config_write_target_is_dir_errors() {
+    // config_file 指向已存在的目录 → fs::write Err → "write clamd.conf"。
+    let dir = tempfile::tempdir().unwrap();
+    let cfg = DaemonConfig {
+        config_file: dir.path().to_string_lossy().to_string(),
+        ..Default::default()
+    };
+    let err = generate_clamd_config(&cfg).unwrap_err();
+    assert!(err.contains("write clamd.conf"), "{err}");
+}
+
+#[test]
+fn test_generate_freshclam_config_creates_nested_parent() {
+    let dir = tempfile::tempdir().unwrap();
+    let nested = dir.path().join("conf").join("deep").join("freshclam.conf");
+    let db_dir = dir.path().join("database");
+    generate_freshclam_config(
+        &db_dir.to_string_lossy(),
+        &nested.to_string_lossy(),
+        "",
+    )
+    .unwrap();
+    assert!(nested.exists());
+    assert!(db_dir.is_dir(), "db dir must be created");
+    let content = fs::read_to_string(&nested).unwrap();
+    assert!(content.contains("DatabaseDirectory"));
+}
+
+#[test]
+fn test_generate_freshclam_config_parent_is_file_errors() {
+    let dir = tempfile::tempdir().unwrap();
+    let blocker = dir.path().join("blocker.txt");
+    std::fs::write(&blocker, "i am a file").unwrap();
+    let err = generate_freshclam_config(
+        "",
+        &blocker.join("freshclam.conf").to_string_lossy(),
+        "",
+    )
+    .unwrap_err();
+    assert!(err.contains("create config dir"), "{err}");
+}
+
+#[test]
+fn test_generate_freshclam_config_write_target_is_dir_errors() {
+    let dir = tempfile::tempdir().unwrap();
+    let err = generate_freshclam_config("", &dir.path().to_string_lossy(), "").unwrap_err();
+    assert!(err.contains("write freshclam.conf"), "{err}");
+}
+
+#[test]
+fn generate_clamd_config_empty_path_errors() {
+    let cfg = DaemonConfig {
+        config_file: String::new(),
+        ..Default::default()
+    };
+    let e = generate_clamd_config(&cfg).unwrap_err();
+    assert!(e.contains("config file path is required"), "{e}");
+}
+
+#[test]
+fn generate_freshclam_config_empty_path_errors() {
+    let e = generate_freshclam_config("db", "", "log").unwrap_err();
+    assert!(e.contains("config file path is required"), "{e}");
+}
+
+#[test]
+fn detect_clamav_path_only_returns_dir_with_clamd_exe() {
+    if let Some(dir) = detect_clamav_path() {
+        let exe = if cfg!(target_os = "windows") {
+            "clamd.exe"
+        } else {
+            "clamd"
+        };
+        assert!(
+            std::path::Path::new(&dir).join(exe).exists(),
+            "detect_clamav_path returned {dir} without {exe}"
+        );
+    }
+}

@@ -176,3 +176,44 @@ fn test_cluster_config_serialization() {
     assert_eq!(parsed.node_id, "node-test");
     assert_eq!(parsed.peers.len(), 1);
 }
+
+// ============================================================
+// S4 coverage: nested-parent save, unreadable app config,
+// config dir creation on save.
+// ============================================================
+
+/// save_config creates missing parent directories (config_loader.rs 33-36).
+#[test]
+fn test_s4_save_config_creates_nested_parent_dirs() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("nested").join("deeper").join("cluster.json");
+    save_config(&path, &ClusterConfig::default()).unwrap();
+    assert!(path.exists());
+}
+
+/// config.cluster.json existing as a directory: exists() is true but the read
+/// fails → default config (config_loader.rs 98-102).
+#[test]
+fn test_s4_load_app_config_unreadable_file_falls_back() {
+    let dir = tempfile::tempdir().unwrap();
+    let cfg = dir.path().join("config").join("config.cluster.json");
+    std::fs::create_dir_all(&cfg).unwrap(); // directory: exists() but read fails
+    let app = load_app_config(dir.path());
+    assert_eq!(app.port, 11949, "default port after read failure");
+}
+
+/// save_app_config creates the missing config directory
+/// (config_loader.rs 112-115).
+#[test]
+fn test_s4_save_app_config_creates_config_dir() {
+    let dir = tempfile::tempdir().unwrap();
+    let app = AppConfig {
+        enabled: true,
+        ..Default::default()
+    };
+    save_app_config(dir.path(), &app).unwrap();
+    let path = dir.path().join("config").join("config.cluster.json");
+    assert!(path.exists());
+    let loaded = load_app_config(dir.path());
+    assert!(loaded.enabled);
+}

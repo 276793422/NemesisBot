@@ -492,3 +492,62 @@ fn test_sanitize_experience_both_fields_dirty() {
     assert!(!exp.success);
     assert_eq!(exp.duration_ms, 999);
 }
+
+#[test]
+fn test_clean_paths_home_separator_variants() {
+    // The home-dir redaction handles the swapped-separator spellings of the
+    // detected home directory (forward-slash and backslash variants).
+    let sanitizer = Sanitizer::new();
+    let home = std::env::var("USERPROFILE")
+        .or_else(|_| std::env::var("HOME"))
+        .ok()
+        .filter(|h| !h.is_empty());
+
+    if let Some(home) = home {
+        let normalized = home.replace('\\', "/");
+        let backslash = home.replace('/', "\\");
+        let content = format!("a:{}:x b:{}:y", normalized, backslash);
+        let cleaned = sanitizer.clean_paths(&content);
+        assert!(
+            !cleaned.contains(&normalized),
+            "normalized home variant should be redacted, got: {}",
+            cleaned
+        );
+        assert!(
+            !cleaned.contains(&backslash),
+            "backslash home variant should be redacted, got: {}",
+            cleaned
+        );
+        assert!(cleaned.contains("[HOME]"));
+    }
+    // If no home dir is detected the call must still complete without panic.
+}
+
+// --- S8 coverage additions (quality-hardening goal 冲刺 S8) ---
+
+#[test]
+fn test_s8_clean_paths_without_workspace_config() {
+    // Sanitizer::new() leaves workspace_dir as None → the `if let Some(ref ws)`
+    // fall-through region in clean_paths must execute.
+    let s = Sanitizer::new();
+    let out = s.clean_paths("no workspace markers in this text");
+    assert_eq!(out, "no workspace markers in this text");
+}
+
+#[test]
+fn test_s8_is_private_ip_172_boundaries() {
+    // 172.16-31.x.x is the private class-B range; the 172 branch with a
+    // parseable but out-of-range second octet must fall through to false.
+    assert!(!is_private_ip("172.15.0.1"));
+    assert!(!is_private_ip("172.32.0.1"));
+    assert!(is_private_ip("172.16.0.1"));
+    assert!(is_private_ip("172.31.255.255"));
+}
+
+#[test]
+fn test_s8_is_private_ip_172_non_numeric_octet() {
+    // Second octet not a number → the `if let Ok(second)` fall-through
+    // region (parse failure) must be taken and return false.
+    assert!(!is_private_ip("172.x.0.1"));
+    assert!(!is_private_ip("172..0.1"));
+}

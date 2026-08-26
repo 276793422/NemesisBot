@@ -152,6 +152,14 @@ impl Client {
                 .await
                 .map_err(|e| format!("read response: {}", e))?;
 
+            // 空应答（clamd 收完 INSTREAM 后直接关连接、不给结论）必须报 Err，
+            // 与 send_command 的空应答处理对称。原实现把空串喂给
+            // parse_scan_response → Ok(raw=""、infected=false)，静默当 clean
+            // ——与 scan_file 注释里"相对路径假阴性"同类的静默漏检面。
+            if resp_line.trim().is_empty() {
+                return Err("empty response from clamd".to_string());
+            }
+
             Ok::<ClamavScanResult, String>(parse_scan_response(resp_line.trim()))
         })
         .await

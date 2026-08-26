@@ -319,3 +319,59 @@ fn test_search_no_match() {
     let results = registry.search("weather", 10);
     assert!(results.is_empty());
 }
+
+// ============================================================
+// S5 coverage: browse cursor pagination and parse-fallback arms
+// ============================================================
+
+fn registry_with_three() -> MockRegistry {
+    let mut registry = MockRegistry::new("mock");
+    for i in 0..3 {
+        registry.add_search_result(SkillSearchResult {
+            score: 1.0,
+            slug: format!("skill-{}", i),
+            display_name: format!("Skill {}", i),
+            summary: "s".to_string(),
+            version: "1.0".to_string(),
+            registry_name: "mock".to_string(),
+            source_repo: String::new(),
+            download_path: String::new(),
+            downloads: 0,
+            truncated: false,
+        });
+    }
+    registry
+}
+
+#[test]
+fn test_browse_first_page_has_next_cursor() {
+    let registry = registry_with_three();
+    let result = registry.browse(&BrowseSort::Trending, 2, "");
+    assert_eq!(result.items.len(), 2);
+    assert_eq!(result.items[0].slug, "skill-0");
+    assert_eq!(result.items[1].slug, "skill-1");
+    assert_eq!(result.next_cursor.as_deref(), Some("offset:2"));
+}
+
+#[test]
+fn test_browse_last_page_has_no_next_cursor() {
+    let registry = registry_with_three();
+    let result = registry.browse(&BrowseSort::Trending, 2, "offset:2");
+    assert_eq!(result.items.len(), 1);
+    assert_eq!(result.items[0].slug, "skill-2");
+    assert_eq!(result.next_cursor, None);
+}
+
+#[test]
+fn test_browse_non_numeric_offset_falls_back_to_zero() {
+    let registry = registry_with_three();
+    let result = registry.browse(&BrowseSort::Trending, 10, "offset:xyz");
+    assert_eq!(result.items.len(), 3);
+}
+
+#[test]
+fn test_browse_cursor_without_prefix_starts_at_zero() {
+    let registry = registry_with_three();
+    let result = registry.browse(&BrowseSort::Trending, 10, "junk");
+    assert_eq!(result.items.len(), 3);
+}

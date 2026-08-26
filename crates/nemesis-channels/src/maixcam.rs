@@ -11,7 +11,7 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{TcpListener, TcpStream};
 use tracing::{debug, error, info, warn};
 
-use nemesis_types::channel::OutboundMessage;
+use nemesis_types::channel::{InboundMessage, OutboundMessage};
 use nemesis_types::error::{NemesisError, Result};
 
 use crate::base::{BaseChannel, Channel};
@@ -61,6 +61,8 @@ pub struct MaixCamCommand {
 pub struct MaixCamChannel {
     base: BaseChannel,
     config: MaixCamConfig,
+    /// Message bus sender for publishing inbound device events.
+    bus_sender: tokio::sync::broadcast::Sender<InboundMessage>,
     running: Arc<parking_lot::RwLock<bool>>,
     client_count: Arc<parking_lot::RwLock<usize>>,
     outbound_queue: parking_lot::RwLock<Vec<OutboundMessage>>,
@@ -72,10 +74,18 @@ pub struct MaixCamChannel {
 
 impl MaixCamChannel {
     /// Creates a new `MaixCamChannel`.
-    pub fn new(config: MaixCamConfig) -> Result<Self> {
+    ///
+    /// `bus_sender` publishes inbound device events (person detection) to the
+    /// message bus — parity with Go's `NewMaixCamChannel(cfg, bus)` ->
+    /// `HandleMessage`（BUG #14：修复前设备消息只 debug 日志直接丢弃）.
+    pub fn new(
+        config: MaixCamConfig,
+        bus_sender: tokio::sync::broadcast::Sender<InboundMessage>,
+    ) -> Result<Self> {
         Ok(Self {
-            base: BaseChannel::new("maixcam"),
+            base: BaseChannel::with_allow_list("maixcam", config.allow_from.clone()),
             config,
+            bus_sender,
             running: Arc::new(parking_lot::RwLock::new(false)),
             client_count: Arc::new(parking_lot::RwLock::new(0)),
             outbound_queue: parking_lot::RwLock::new(Vec::new()),
@@ -109,6 +119,12 @@ impl MaixCamChannel {
 
     /// Processes a MaixCam message.
     pub fn process_message(&self, msg: &MaixCamMessage) -> MaixCamEvent {
+        Self::classify_message(msg)
+    }
+
+    /// Classifies a raw device message into an event（单一真相源，
+    /// `process_message` 与 TCP reader 共用）.
+    pub fn classify_message(msg: &MaixCamMessage) -> MaixCamEvent {
         let msg_type = msg.msg_type.as_deref().unwrap_or("");
 
         match msg_type {
@@ -196,6 +212,7 @@ impl MaixCamChannel {
         let addr = format!("{}:{}", self.config.host, self.config.port);
         let running = self.running.clone();
         let client_count = self.client_count.clone();
+        let bus_sender = self.bus_sender.clone();
 
         let (cancel_tx, cancel_rx) = tokio::sync::oneshot::channel::<()>();
         *self.cancel_tx.lock() = Some(cancel_tx);
@@ -227,6 +244,7 @@ impl MaixCamChannel {
                                 // Spawn per-connection reader
                                 let running = running.clone();
                                 let client_count = client_count.clone();
+                                let bus_sender = bus_sender.clone();
                                 let peer_str = peer.to_string();
 
                                 tokio::spawn(async move {
@@ -248,10 +266,38 @@ impl MaixCamChannel {
                                                 let trimmed = line.trim();
                                                 if !trimmed.is_empty() {
                                                     debug!(peer = %peer_str, data = %trimmed, "[MaixCamChannel] data");
-                                                    // Parse JSON message
+                                                    // Parse JSON message and publish to the bus
+                                                    // (BUG #14: 修复前解析结果直接丢弃)
                                                     if let Ok(msg) = serde_json::from_str::<MaixCamMessage>(trimmed) {
                                                         let msg_type = msg.msg_type.as_deref().unwrap_or("");
                                                         debug!(msg_type = %msg_type, "[MaixCamChannel] event");
+                                                        match MaixCamChannel::classify_message(&msg) {
+                                                            MaixCamEvent::PersonDetected { content, metadata, sender_id, chat_id } => {
+                                                                let inbound = InboundMessage {
+                                                                    channel: "maixcam".to_string(),
+                                                                    sender_id,
+                                                                    chat_id,
+                                                                    content,
+                                                                    media: Vec::new(),
+                                                                    session_key: "maixcam:default".to_string(),
+                                                                    correlation_id: String::new(),
+                                                                    metadata,
+                                                                    voice_playback: None,
+                                                                };
+                                                                if let Err(e) = bus_sender.send(inbound) {
+                                                                    warn!(error = %e, "[MaixCamChannel] failed to publish inbound message");
+                                                                }
+                                                            }
+                                                            MaixCamEvent::Heartbeat => {
+                                                                debug!(peer = %peer_str, "[MaixCamChannel] heartbeat");
+                                                            }
+                                                            MaixCamEvent::StatusUpdate(data) => {
+                                                                info!(peer = %peer_str, status = %data, "[MaixCamChannel] status update");
+                                                            }
+                                                            MaixCamEvent::Unknown(t) => {
+                                                                debug!(msg_type = %t, "[MaixCamChannel] unknown message type");
+                                                            }
+                                                        }
                                                     }
                                                 }
                                             }

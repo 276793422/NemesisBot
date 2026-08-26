@@ -168,3 +168,6 @@ pub(crate) async fn send_internal_command_get_json(
         Err(format!("Internal command failed: {} {}", status, body).into())
     }
 }
+
+#[cfg(test)]
+mod tests;

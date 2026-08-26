@@ -1553,3 +1553,859 @@ async fn test_execute_forget_removes_from_vector_store() {
 
     // Do NOT call mgr.close() — shared fixture must not be released
 }
+
+// ============================================================
+// S5 coverage: failing-backend error branches + display arms
+// ============================================================
+
+use crate::episodic::{EpisodicStore, Episode};
+use crate::graph::{GraphEntity, GraphQueryResult, GraphStore, GraphTriple};
+use crate::store::MemoryStore;
+use crate::types::{MemoryType, SearchResult};
+
+/// General store with configurable query/delete behavior.
+struct ConfigurableStore {
+    query_err: bool,
+    delete_result: Result<bool, String>,
+}
+
+#[async_trait::async_trait]
+impl MemoryStore for ConfigurableStore {
+    async fn store(&self, _entry: crate::types::Entry) -> Result<String, String> {
+        Ok("id-1".to_string())
+    }
+    async fn query(
+        &self,
+        _query: &str,
+        _memory_type: Option<MemoryType>,
+        _limit: usize,
+    ) -> Result<SearchResult, String> {
+        if self.query_err {
+            Err("store query boom".to_string())
+        } else {
+            Ok(SearchResult {
+                entries: Vec::new(),
+                total: 0,
+            })
+        }
+    }
+    async fn get(&self, _id: &str) -> Result<Option<crate::types::Entry>, String> {
+        Ok(None)
+    }
+    async fn delete(&self, _id: &str) -> Result<bool, String> {
+        self.delete_result.clone()
+    }
+    async fn list(
+        &self,
+        _memory_type: Option<MemoryType>,
+        _limit: usize,
+        _offset: usize,
+    ) -> Result<Vec<crate::types::Entry>, String> {
+        Ok(Vec::new())
+    }
+    async fn close(&self) -> Result<(), String> {
+        Ok(())
+    }
+}
+
+/// Episodic store with configurable failure / canned delete_by_id result.
+struct ConfigurableEpisodic {
+    err: bool,
+    delete_by_id_result: Result<bool, String>,
+}
+
+#[async_trait::async_trait]
+impl EpisodicStore for ConfigurableEpisodic {
+    async fn append(&self, _episode: Episode) -> Result<String, String> {
+        if self.err {
+            Err("episodic append boom".to_string())
+        } else {
+            Ok("ep-1".to_string())
+        }
+    }
+    async fn get_session(&self, _session_key: &str) -> Result<Vec<Episode>, String> {
+        if self.err {
+            Err("episodic get_session boom".to_string())
+        } else {
+            Ok(Vec::new())
+        }
+    }
+    async fn get_recent(&self, _session_key: &str, _limit: usize) -> Result<Vec<Episode>, String> {
+        if self.err {
+            Err("episodic get_recent boom".to_string())
+        } else {
+            Ok(Vec::new())
+        }
+    }
+    async fn search(&self, _query: &str, _limit: usize) -> Result<Vec<Episode>, String> {
+        if self.err {
+            Err("episodic search boom".to_string())
+        } else {
+            Ok(Vec::new())
+        }
+    }
+    async fn delete_session(&self, _session_key: &str) -> Result<usize, String> {
+        if self.err {
+            Err("episodic delete_session boom".to_string())
+        } else {
+            Ok(0)
+        }
+    }
+    async fn delete_by_id(&self, _id: &str) -> Result<bool, String> {
+        if self.err {
+            Err("episodic delete_by_id boom".to_string())
+        } else {
+            self.delete_by_id_result.clone()
+        }
+    }
+    async fn cleanup(&self, _older_than_days: usize) -> Result<usize, String> {
+        if self.err {
+            Err("episodic cleanup boom".to_string())
+        } else {
+            Ok(0)
+        }
+    }
+    async fn list_sessions(&self) -> Result<Vec<String>, String> {
+        if self.err {
+            Err("episodic list_sessions boom".to_string())
+        } else {
+            Ok(Vec::new())
+        }
+    }
+    async fn session_count(&self) -> Result<usize, String> {
+        if self.err {
+            Err("episodic session_count boom".to_string())
+        } else {
+            Ok(0)
+        }
+    }
+    async fn episode_count(&self) -> Result<usize, String> {
+        if self.err {
+            Err("episodic episode_count boom".to_string())
+        } else {
+            Ok(0)
+        }
+    }
+}
+
+/// Graph store with configurable failure.
+struct ConfigurableGraph {
+    err: bool,
+}
+
+#[async_trait::async_trait]
+impl GraphStore for ConfigurableGraph {
+    async fn add_triple(&self, _triple: GraphTriple) -> Result<(), String> {
+        if self.err {
+            Err("graph add_triple boom".to_string())
+        } else {
+            Ok(())
+        }
+    }
+    async fn upsert_entity(&self, _entity: GraphEntity) -> Result<(), String> {
+        if self.err {
+            Err("graph upsert_entity boom".to_string())
+        } else {
+            Ok(())
+        }
+    }
+    async fn remove_triple(
+        &self,
+        _subject: &str,
+        _predicate: &str,
+        _object: &str,
+    ) -> Result<bool, String> {
+        Ok(false)
+    }
+    async fn get_entity(&self, _name: &str) -> Result<Option<GraphEntity>, String> {
+        if self.err {
+            Err("graph get_entity boom".to_string())
+        } else {
+            Ok(None)
+        }
+    }
+    async fn query_bfs(
+        &self,
+        _start_entity: &str,
+        _max_depth: usize,
+    ) -> Result<GraphQueryResult, String> {
+        Ok(GraphQueryResult {
+            paths: Vec::new(),
+            entities: Vec::new(),
+        })
+    }
+    async fn list_triples(&self, _entity: &str) -> Result<Vec<GraphTriple>, String> {
+        Ok(Vec::new())
+    }
+    async fn search(&self, _query: &str, _limit: usize) -> Result<Vec<GraphTriple>, String> {
+        if self.err {
+            Err("graph search boom".to_string())
+        } else {
+            Ok(Vec::new())
+        }
+    }
+    async fn delete_entity(&self, _name: &str) -> Result<(), String> {
+        if self.err {
+            Err("graph delete_entity boom".to_string())
+        } else {
+            Ok(())
+        }
+    }
+    async fn query_triples(
+        &self,
+        _subject: &str,
+        _predicate: &str,
+        _object: &str,
+    ) -> Result<Vec<GraphTriple>, String> {
+        if self.err {
+            Err("graph query_triples boom".to_string())
+        } else {
+            Ok(Vec::new())
+        }
+    }
+    async fn get_related(
+        &self,
+        _entity_name: &str,
+        _depth: usize,
+    ) -> Result<Vec<GraphTriple>, String> {
+        if self.err {
+            Err("graph get_related boom".to_string())
+        } else {
+            Ok(Vec::new())
+        }
+    }
+    async fn entity_count(&self) -> Result<usize, String> {
+        if self.err {
+            Err("graph entity_count boom".to_string())
+        } else {
+            Ok(0)
+        }
+    }
+    async fn triple_count(&self) -> Result<usize, String> {
+        if self.err {
+            Err("graph triple_count boom".to_string())
+        } else {
+            Ok(0)
+        }
+    }
+}
+
+/// Build a manager from configurable backends.
+fn manager_with_backends(
+    store: ConfigurableStore,
+    episodic: ConfigurableEpisodic,
+    graph: ConfigurableGraph,
+) -> Arc<MemoryManager> {
+    Arc::new(MemoryManager::with_backends(
+        Arc::new(store),
+        Arc::new(episodic),
+        Arc::new(graph),
+    ))
+}
+
+fn ok_backends() -> (ConfigurableStore, ConfigurableEpisodic, ConfigurableGraph) {
+    (
+        ConfigurableStore {
+            query_err: false,
+            delete_result: Ok(false),
+        },
+        ConfigurableEpisodic {
+            err: false,
+            delete_by_id_result: Ok(false),
+        },
+        ConfigurableGraph { err: false },
+    )
+}
+
+#[tokio::test]
+async fn test_search_semantic_error_branch_reports_error() {
+    let (store, epi, g) = ok_backends();
+    let store = ConfigurableStore {
+        query_err: true,
+        ..store
+    };
+    let mgr = manager_with_backends(store, epi, g);
+    let executor = MemoryToolExecutor::new(mgr);
+    let result = executor
+        .execute(
+            "memory_search",
+            &serde_json::json!({"query": "rust", "memory_type": "all"}),
+        )
+        .await;
+    assert!(result.success);
+    assert!(
+        result
+            .content
+            .contains("Semantic search error: store query boom"),
+        "got: {}",
+        result.content
+    );
+}
+
+#[tokio::test]
+async fn test_search_episodic_error_branch_reports_error() {
+    let (store, epi, g) = ok_backends();
+    let epi = ConfigurableEpisodic { err: true, ..epi };
+    let mgr = manager_with_backends(store, epi, g);
+    let executor = MemoryToolExecutor::new(mgr);
+    let result = executor
+        .execute(
+            "memory_search",
+            &serde_json::json!({"query": "rust", "memory_type": "all"}),
+        )
+        .await;
+    assert!(result.success);
+    assert!(
+        result
+            .content
+            .contains("Episodic search error: episodic search boom"),
+        "got: {}",
+        result.content
+    );
+}
+
+#[tokio::test]
+async fn test_search_graph_error_branch_reports_error() {
+    let (store, epi, _g) = ok_backends();
+    let mgr = manager_with_backends(store, epi, ConfigurableGraph { err: true });
+    let executor = MemoryToolExecutor::new(mgr);
+    let result = executor
+        .execute(
+            "memory_search",
+            &serde_json::json!({"query": "rust", "memory_type": "all"}),
+        )
+        .await;
+    assert!(result.success);
+    assert!(
+        result
+            .content
+            .contains("Graph search error: graph search boom"),
+        "got: {}",
+        result.content
+    );
+}
+
+#[tokio::test]
+async fn test_store_episodic_error_branch() {
+    let (store, epi, g) = ok_backends();
+    let epi = ConfigurableEpisodic { err: true, ..epi };
+    let mgr = manager_with_backends(store, epi, g);
+    let executor = MemoryToolExecutor::new(mgr);
+    let result = executor
+        .execute(
+            "memory_store",
+            &serde_json::json!({"memory_type": "episodic", "content": "hello"}),
+        )
+        .await;
+    assert!(!result.success);
+    assert!(
+        result
+            .content
+            .contains("failed to store episodic memory: episodic append boom"),
+        "got: {}",
+        result.content
+    );
+}
+
+#[tokio::test]
+async fn test_store_graph_entity_error_branch() {
+    let (store, epi, _g) = ok_backends();
+    let mgr = manager_with_backends(store, epi, ConfigurableGraph { err: true });
+    let executor = MemoryToolExecutor::new(mgr);
+    let result = executor
+        .execute(
+            "memory_store",
+            &serde_json::json!({"memory_type": "graph", "entity_name": "rust", "entity_type": "language"}),
+        )
+        .await;
+    assert!(!result.success);
+    assert!(
+        result
+            .content
+            .contains("failed to store entity: graph upsert_entity boom"),
+        "got: {}",
+        result.content
+    );
+}
+
+#[tokio::test]
+async fn test_store_graph_triple_error_branch() {
+    let (store, epi, _g) = ok_backends();
+    let mgr = manager_with_backends(store, epi, ConfigurableGraph { err: true });
+    let executor = MemoryToolExecutor::new(mgr);
+    let result = executor
+        .execute(
+            "memory_store",
+            &serde_json::json!({
+                "memory_type": "graph",
+                "triple_subject": "a",
+                "triple_predicate": "relates",
+                "triple_object": "b"
+            }),
+        )
+        .await;
+    assert!(!result.success);
+    assert!(
+        result
+            .content
+            .contains("failed to store triple: graph add_triple boom"),
+        "got: {}",
+        result.content
+    );
+}
+
+#[tokio::test]
+async fn test_forget_delete_session_error_branch() {
+    let (store, epi, g) = ok_backends();
+    let epi = ConfigurableEpisodic { err: true, ..epi };
+    let mgr = manager_with_backends(store, epi, g);
+    let executor = MemoryToolExecutor::new(mgr);
+    let result = executor
+        .execute(
+            "memory_forget",
+            &serde_json::json!({"action": "delete_session", "session_key": "s1"}),
+        )
+        .await;
+    assert!(!result.success);
+    assert!(
+        result.content.contains("failed to delete session:"),
+        "got: {}",
+        result.content
+    );
+    assert!(
+        result.content.contains("boom"),
+        "got: {}",
+        result.content
+    );
+}
+
+#[tokio::test]
+async fn test_forget_cleanup_error_branch() {
+    let (store, epi, g) = ok_backends();
+    let epi = ConfigurableEpisodic { err: true, ..epi };
+    let mgr = manager_with_backends(store, epi, g);
+    let executor = MemoryToolExecutor::new(mgr);
+    let result = executor
+        .execute(
+            "memory_forget",
+            &serde_json::json!({"action": "cleanup", "older_than_days": 30}),
+        )
+        .await;
+    assert!(!result.success);
+    assert!(
+        result.content.contains("cleanup failed:"),
+        "got: {}",
+        result.content
+    );
+    assert!(
+        result.content.contains("boom"),
+        "got: {}",
+        result.content
+    );
+}
+
+#[tokio::test]
+async fn test_forget_delete_entity_error_branch() {
+    let (store, epi, _g) = ok_backends();
+    let mgr = manager_with_backends(store, epi, ConfigurableGraph { err: true });
+    let executor = MemoryToolExecutor::new(mgr);
+    let result = executor
+        .execute(
+            "memory_forget",
+            &serde_json::json!({"action": "delete_entity", "entity_name": "rust"}),
+        )
+        .await;
+    assert!(!result.success);
+    assert!(
+        result
+            .content
+            .contains("failed to delete entity: graph delete_entity boom"),
+        "got: {}",
+        result.content
+    );
+}
+
+#[tokio::test]
+async fn test_forget_delete_by_id_true_branch() {
+    let (store, _epi, g) = ok_backends();
+    let epi = ConfigurableEpisodic {
+        err: false,
+        delete_by_id_result: Ok(true),
+    };
+    let mgr = manager_with_backends(store, epi, g);
+    let executor = MemoryToolExecutor::new(mgr);
+    let result = executor
+        .execute(
+            "memory_forget",
+            &serde_json::json!({"action": "delete_by_id", "id": "ep-42"}),
+        )
+        .await;
+    assert!(result.success);
+    assert!(
+        result.content.contains("'ep-42' deleted successfully"),
+        "got: {}",
+        result.content
+    );
+}
+
+#[tokio::test]
+async fn test_forget_delete_by_id_false_branch() {
+    let (store, epi, g) = ok_backends();
+    let mgr = manager_with_backends(store, epi, g);
+    let executor = MemoryToolExecutor::new(mgr);
+    let result = executor
+        .execute(
+            "memory_forget",
+            &serde_json::json!({"action": "delete_by_id", "id": "missing"}),
+        )
+        .await;
+    assert!(result.success);
+    assert!(
+        result.content.contains("No memory entry found with ID 'missing'"),
+        "got: {}",
+        result.content
+    );
+}
+
+#[tokio::test]
+async fn test_forget_delete_by_id_error_branch() {
+    let (store, _epi, g) = ok_backends();
+    let epi = ConfigurableEpisodic {
+        err: false,
+        delete_by_id_result: Err("delete_by_id boom".to_string()),
+    };
+    let mgr = manager_with_backends(store, epi, g);
+    let executor = MemoryToolExecutor::new(mgr);
+    let result = executor
+        .execute(
+            "memory_forget",
+            &serde_json::json!({"action": "delete_by_id", "id": "ep-1"}),
+        )
+        .await;
+    assert!(!result.success);
+    assert!(
+        result
+            .content
+            .contains("failed to delete by ID: delete_by_id boom"),
+        "got: {}",
+        result.content
+    );
+}
+
+#[tokio::test]
+async fn test_list_status_reports_episodic_and_graph_unavailable() {
+    let (store, _epi, _g) = ok_backends();
+    let mgr = manager_with_backends(
+        store,
+        ConfigurableEpisodic {
+            err: true,
+            delete_by_id_result: Ok(false),
+        },
+        ConfigurableGraph { err: true },
+    );
+    let executor = MemoryToolExecutor::new(mgr);
+    let result = executor
+        .execute("memory_list", &serde_json::json!({"list_type": "status"}))
+        .await;
+    assert!(result.success);
+    assert!(
+        result.content.contains("### Episodic Memory\n- Not available"),
+        "got: {}",
+        result.content
+    );
+    assert!(
+        result
+            .content
+            .contains("### Knowledge Graph\n- Not available"),
+        "got: {}",
+        result.content
+    );
+}
+
+#[tokio::test]
+async fn test_list_episodes_error_branch() {
+    let (store, epi, g) = ok_backends();
+    let epi = ConfigurableEpisodic { err: true, ..epi };
+    let mgr = manager_with_backends(store, epi, g);
+    let executor = MemoryToolExecutor::new(mgr);
+    let result = executor
+        .execute(
+            "memory_list",
+            &serde_json::json!({"list_type": "episodes", "session_key": "s1"}),
+        )
+        .await;
+    assert!(!result.success);
+    assert!(
+        result
+            .content
+            .contains("failed to list episodes: episodic get_recent boom"),
+        "got: {}",
+        result.content
+    );
+}
+
+#[tokio::test]
+async fn test_list_graph_related_error_branch() {
+    let (store, epi, _g) = ok_backends();
+    let mgr = manager_with_backends(store, epi, ConfigurableGraph { err: true });
+    let executor = MemoryToolExecutor::new(mgr);
+    let result = executor
+        .execute(
+            "memory_list",
+            &serde_json::json!({"list_type": "graph_related", "entity_name": "rust"}),
+        )
+        .await;
+    assert!(!result.success);
+    assert!(
+        result
+            .content
+            .contains("failed to get related entities: graph get_related boom"),
+        "got: {}",
+        result.content
+    );
+}
+
+// ---- Happy-path display arms against a real manager ----
+
+#[tokio::test]
+async fn test_search_displays_semantic_results_with_score_and_tags() {
+    let dir = tempfile::tempdir().unwrap();
+    let config = crate::manager::Config::new(dir.path());
+    let mgr = Arc::new(MemoryManager::new(&config));
+
+    let entry = crate::types::Entry::new(
+        MemoryType::LongTerm,
+        "alpha beta gamma delta".to_string(),
+    )
+    .with_tags(vec!["rust".to_string(), "lang".to_string()]);
+    mgr.store(entry).await.unwrap();
+
+    let executor = MemoryToolExecutor::new(mgr.clone());
+    let result = executor
+        .execute(
+            "memory_search",
+            &serde_json::json!({"query": "alpha", "memory_type": "all"}),
+        )
+        .await;
+    assert!(result.success);
+    assert!(
+        result.content.contains("### Semantic Memories (1 results)"),
+        "got: {}",
+        result.content
+    );
+    assert!(
+        result.content.contains("Tags: rust, lang"),
+        "got: {}",
+        result.content
+    );
+}
+
+#[tokio::test]
+async fn test_search_displays_episodic_tags() {
+    let dir = tempfile::tempdir().unwrap();
+    let config = crate::manager::Config::new(dir.path());
+    let mgr = Arc::new(MemoryManager::new(&config));
+
+    let episode = Episode {
+        id: "ep-1".to_string(),
+        session_key: "s-tags".to_string(),
+        role: "user".to_string(),
+        content: "unique-zephyr-content".to_string(),
+        timestamp: chrono::Local::now(),
+        metadata: std::collections::HashMap::new(),
+        tags: vec!["tag-a".to_string(), "tag-b".to_string()],
+    };
+    mgr.append_episode(episode).await.unwrap();
+
+    let executor = MemoryToolExecutor::new(mgr.clone());
+    let result = executor
+        .execute(
+            "memory_search",
+            &serde_json::json!({"query": "zephyr", "memory_type": "all"}),
+        )
+        .await;
+    assert!(result.success);
+    assert!(
+        result.content.contains("Tags: tag-a, tag-b"),
+        "got: {}",
+        result.content
+    );
+}
+
+#[tokio::test]
+async fn test_search_displays_graph_confidence() {
+    let dir = tempfile::tempdir().unwrap();
+    let config = crate::manager::Config::new(dir.path());
+    let mgr = Arc::new(MemoryManager::new(&config));
+
+    let triple = GraphTriple::new(
+        "rustlang".to_string(),
+        "used-for".to_string(),
+        "systems".to_string(),
+    )
+    .with_confidence(0.5);
+    mgr.add_triple(triple).await.unwrap();
+
+    let executor = MemoryToolExecutor::new(mgr.clone());
+    let result = executor
+        .execute(
+            "memory_search",
+            &serde_json::json!({"query": "rustlang", "memory_type": "graph"}),
+        )
+        .await;
+    assert!(result.success);
+    assert!(
+        result.content.contains("rustlang --[used-for]--> systems"),
+        "got: {}",
+        result.content
+    );
+    assert!(
+        result.content.contains("(confidence: 50%)"),
+        "got: {}",
+        result.content
+    );
+}
+
+#[tokio::test]
+async fn test_list_status_shows_session_keys() {
+    let dir = tempfile::tempdir().unwrap();
+    let config = crate::manager::Config::new(dir.path());
+    let mgr = Arc::new(MemoryManager::new(&config));
+
+    let episode = Episode {
+        id: "ep-9".to_string(),
+        session_key: "sess-keys".to_string(),
+        role: "assistant".to_string(),
+        content: "hello".to_string(),
+        timestamp: chrono::Local::now(),
+        metadata: std::collections::HashMap::new(),
+        tags: Vec::new(),
+    };
+    mgr.append_episode(episode).await.unwrap();
+
+    let executor = MemoryToolExecutor::new(mgr.clone());
+    let result = executor
+        .execute("memory_list", &serde_json::json!({"list_type": "status"}))
+        .await;
+    assert!(result.success);
+    assert!(
+        result.content.contains("- Session keys:"),
+        "got: {}",
+        result.content
+    );
+    assert!(
+        result.content.contains("sess-keys"),
+        "got: {}",
+        result.content
+    );
+}
+
+#[tokio::test]
+async fn test_list_graph_query_displays_metadata() {
+    let dir = tempfile::tempdir().unwrap();
+    let config = crate::manager::Config::new(dir.path());
+    let mgr = Arc::new(MemoryManager::new(&config));
+
+    let mut triple = GraphTriple::new(
+        "src-meta".to_string(),
+        "links".to_string(),
+        "dst-meta".to_string(),
+    );
+    triple
+        .metadata
+        .insert("source".to_string(), "wiki".to_string());
+    mgr.add_triple(triple).await.unwrap();
+
+    let executor = MemoryToolExecutor::new(mgr.clone());
+    let result = executor
+        .execute(
+            "memory_list",
+            &serde_json::json!({"list_type": "graph_query", "subject": "src-meta"}),
+        )
+        .await;
+    assert!(result.success);
+    assert!(
+        result.content.contains("Metadata: source=wiki"),
+        "got: {}",
+        result.content
+    );
+}
+
+#[tokio::test]
+async fn test_list_graph_related_entity_with_properties_and_triples() {
+    let dir = tempfile::tempdir().unwrap();
+    let config = crate::manager::Config::new(dir.path());
+    let mgr = Arc::new(MemoryManager::new(&config));
+
+    let mut entity = GraphEntity::new("ent-props".to_string(), "tool".to_string());
+    entity
+        .properties
+        .insert("license".to_string(), "MIT".to_string());
+    mgr.upsert_entity(entity).await.unwrap();
+    mgr.add_triple(GraphTriple::new(
+        "ent-props".to_string(),
+        "part-of".to_string(),
+        "suite".to_string(),
+    ))
+    .await
+    .unwrap();
+
+    let executor = MemoryToolExecutor::new(mgr.clone());
+    let result = executor
+        .execute(
+            "memory_list",
+            &serde_json::json!({"list_type": "graph_related", "entity_name": "ent-props"}),
+        )
+        .await;
+    assert!(result.success);
+    assert!(
+        result.content.contains("### Entity: ent-props"),
+        "got: {}",
+        result.content
+    );
+    assert!(
+        result.content.contains("license: MIT"),
+        "got: {}",
+        result.content
+    );
+    assert!(
+        result.content.contains("ent-props --[part-of]--> suite"),
+        "got: {}",
+        result.content
+    );
+}
+
+#[tokio::test]
+async fn test_list_graph_related_unknown_entity_reports_no_relations() {
+    let dir = tempfile::tempdir().unwrap();
+    let config = crate::manager::Config::new(dir.path());
+    let mgr = Arc::new(MemoryManager::new(&config));
+    let executor = MemoryToolExecutor::new(mgr);
+    let result = executor
+        .execute(
+            "memory_list",
+            &serde_json::json!({"list_type": "graph_related", "entity_name": "ghost"}),
+        )
+        .await;
+    assert!(result.success);
+    assert!(
+        result
+            .content
+            .contains("No relationships found for: ghost"),
+        "got: {}",
+        result.content
+    );
+}
+
+#[test]
+fn test_truncate_text_walks_back_to_char_boundary() {
+    // Multi-byte chars force the boundary walk (max_len <= 3 branch).
+    let s = "a你好";
+    assert_eq!(truncate_text(s, 2), "a");
+    // max_len > 3 branch: boundary = max_len - 3 may land mid-char.
+    let s2 = "abc你好世界";
+    let out = truncate_text(s2, 4);
+    assert!(out.chars().count() <= 4);
+    // No truncation needed.
+    assert_eq!(truncate_text("short", 200), "short");
+}

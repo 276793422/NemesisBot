@@ -292,3 +292,10 @@ fn has_onnx_files(dir: &Path) -> bool {
     }
     false
 }
+
+// (孤儿测试修复（S11c，测试基建）, quality-hardening goal 冲刺 S11) cmd_* 签名重构（去掉 Paths
+// 参数、改用 common::*_path）时 `#[cfg(test)] mod tests;` 声明被一并删除，
+// memory/tests.rs 沦为孤儿文件（LH=0 / 全文件 MISS）。本行恢复声明；测试
+// 侧同步改为新签名。
+#[cfg(test)]
+mod tests;

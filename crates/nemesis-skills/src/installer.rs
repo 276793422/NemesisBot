@@ -469,3 +469,5 @@ impl SkillInstaller {
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod w4b_tests;

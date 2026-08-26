@@ -133,3 +133,10 @@ fn test_sleep_tool_new() {
     let tool = SleepTool::new();
     assert_eq!(tool.name(), "sleep");
 }
+
+#[test]
+fn w4a_sleep_tool_default_matches_new() {
+    let tool = SleepTool::default();
+    assert_eq!(tool.name(), "sleep");
+    assert!(!tool.description().is_empty());
+}

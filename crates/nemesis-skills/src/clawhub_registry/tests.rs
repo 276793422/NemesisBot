@@ -1843,3 +1843,270 @@ async fn test_download_and_install_zip_wrong_content_type_falls_back_to_github()
         "expected github fallback to fail without network"
     );
 }
+
+// ============================================================
+// S5 coverage: ZIP download error arms, empty-version default,
+// get_skill_content fallback trigger arms, extract_zip edges,
+// move_dir_contents write-failure arm
+// ============================================================
+
+#[tokio::test]
+async fn test_download_and_install_empty_version_defaults_to_latest() {
+    let server = MockServer::start().await;
+    let registry = ClawHubRegistry::with_urls(&server.uri(), &server.uri(), &server.uri());
+
+    // latestVersion.version empty -> install_version becomes "latest".
+    let value = serde_json::json!({
+        "owner": {"handle": "alice"},
+        "skill": {"slug": "pdf", "displayName": "PDF", "summary": "s",
+                   "stats": {"downloads": 0.0}},
+        "latestVersion": {"version": ""},
+        "resolvedSlug": "pdf"
+    });
+    Mock::given(method("POST"))
+        .and(path("/api/query"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(convex_body("success", value)))
+        .mount(&server)
+        .await;
+
+    let dir = tempfile::tempdir().unwrap();
+    let target = dir.path().join("out");
+    let mut zip_buf = Vec::new();
+    {
+        let mut writer = zip::ZipWriter::new(std::io::Cursor::new(&mut zip_buf));
+        let options = zip::write::SimpleFileOptions::default();
+        writer.start_file("pdf/SKILL.md", options).unwrap();
+        std::io::Write::write_all(&mut writer, b"# PDF").unwrap();
+        writer.finish().unwrap();
+    }
+    Mock::given(method("GET"))
+        .and(path("/api/v1/download"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("Content-Type", "application/zip")
+                .set_body_bytes(zip_buf),
+        )
+        .mount(&server)
+        .await;
+
+    let result = registry
+        .download_and_install("pdf", "", &target.to_string_lossy())
+        .await
+        .unwrap();
+    assert_eq!(result.version, "latest");
+    assert!(target.join("SKILL.md").exists());
+}
+
+// --- download_skill_zip error arms (called directly to avoid the
+// GitHub fallback that download_and_install would trigger on failure) ---
+
+#[tokio::test]
+async fn test_download_skill_zip_http_error_reports_status() {
+    let server = MockServer::start().await;
+    let registry = ClawHubRegistry::with_urls(&server.uri(), &server.uri(), &server.uri());
+
+    Mock::given(method("GET"))
+        .and(path("/api/v1/download"))
+        .respond_with(ResponseTemplate::new(503).set_body_string("unavailable"))
+        .mount(&server)
+        .await;
+
+    let err = registry
+        .download_skill_zip("pdf", "/tmp/nemesis_s5_zip_status")
+        .await
+        .unwrap_err();
+    let msg = err.to_string();
+    assert!(msg.contains("ZIP download failed with status 503"), "msg: {msg}");
+}
+
+#[tokio::test]
+async fn test_download_skill_zip_wrong_content_type_rejected() {
+    let server = MockServer::start().await;
+    let registry = ClawHubRegistry::with_urls(&server.uri(), &server.uri(), &server.uri());
+
+    Mock::given(method("GET"))
+        .and(path("/api/v1/download"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("Content-Type", "text/html")
+                .set_body_bytes(b"<html/>".to_vec()),
+        )
+        .mount(&server)
+        .await;
+
+    let err = registry
+        .download_skill_zip("pdf", "/tmp/nemesis_s5_zip_ct")
+        .await
+        .unwrap_err();
+    let msg = err.to_string();
+    assert!(
+        msg.contains("unexpected content type") && msg.contains("text/html"),
+        "msg: {msg}"
+    );
+}
+
+#[tokio::test]
+async fn test_download_skill_zip_rejects_oversized_body() {
+    let server = MockServer::start().await;
+    let registry = ClawHubRegistry::with_urls(&server.uri(), &server.uri(), &server.uri());
+
+    Mock::given(method("GET"))
+        .and(path("/api/v1/download"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("Content-Type", "application/zip")
+                .set_body_bytes(vec![0u8; 51 * 1024 * 1024]),
+        )
+        .mount(&server)
+        .await;
+
+    let err = registry
+        .download_skill_zip("pdf", "/tmp/nemesis_s5_zip_big")
+        .await
+        .unwrap_err();
+    let msg = err.to_string();
+    assert!(msg.contains("too large"), "msg: {msg}");
+}
+
+// --- get_skill_content strategy-1 failure-to-fallback trigger arms ---
+
+#[tokio::test]
+async fn test_get_skill_content_non_utf8_body_lossy_decoded_by_strategy_one() {
+    // reqwest's text() lossy-decodes non-UTF-8 bodies (replacement chars),
+    // so strategy 1 SUCCEEDS with mojibake content — the text()-error arm
+    // is only reachable on transport failure (covered by the send-error
+    // test below). Documented actual behavior here.
+    let server = MockServer::start().await;
+    let registry = ClawHubRegistry::with_urls(&server.uri(), &server.uri(), "");
+
+    Mock::given(method("GET"))
+        .and(path("/api/v1/skills/pdf/file"))
+        .respond_with(ResponseTemplate::new(200).set_body_bytes(vec![0xFF, 0xFE, 0xFD, 0x00]))
+        .mount(&server)
+        .await;
+
+    let content = registry.get_skill_content("pdf").await.unwrap();
+    assert!(content.content.contains('\u{FFFD}'), "lossy decode expected");
+    assert!(content.content.ends_with('\0'));
+}
+
+#[tokio::test]
+async fn test_get_skill_content_file_api_send_error_falls_back_to_convex() {
+    // base_url points at a dead local port -> strategy-1 send() fails.
+    let server = MockServer::start().await;
+    let registry = ClawHubRegistry::with_urls("http://127.0.0.1:1", &server.uri(), "");
+
+    let value = serde_json::json!({
+        "owner": {"handle": ""},
+        "skill": {"slug": "pdf", "displayName": "", "summary": "",
+                   "stats": {"downloads": 0.0}},
+        "latestVersion": {"version": ""},
+        "resolvedSlug": "pdf"
+    });
+    Mock::given(method("POST"))
+        .and(path("/api/query"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(convex_body("success", value)))
+        .mount(&server)
+        .await;
+
+    let err = registry.get_skill_content("pdf").await.unwrap_err();
+    assert!(err.to_string().contains("owner handle not found"));
+    server.verify().await;
+}
+
+// --- extract_zip_to_dir edges ---
+
+#[test]
+fn test_extract_zip_to_dir_mixed_top_dirs_no_common_prefix() {
+    // Entries under two different top-level dirs -> find_common_prefix None
+    // -> prefix is empty string.
+    let dir = tempfile::tempdir().unwrap();
+    let target = dir.path().join("mixed");
+
+    let mut buf = Vec::new();
+    {
+        let mut writer = zip::ZipWriter::new(std::io::Cursor::new(&mut buf));
+        let options = zip::write::SimpleFileOptions::default();
+        writer.start_file("dir1/a.txt", options).unwrap();
+        std::io::Write::write_all(&mut writer, b"aaa").unwrap();
+        writer.start_file("dir2/b.txt", options).unwrap();
+        std::io::Write::write_all(&mut writer, b"bbb").unwrap();
+        writer.finish().unwrap();
+    }
+
+    extract_zip_to_dir(&buf, &target.to_string_lossy()).unwrap();
+    assert!(target.join("dir1/a.txt").exists());
+    assert!(target.join("dir2/b.txt").exists());
+}
+
+#[test]
+fn test_extract_zip_to_dir_rejects_path_traversal() {
+    let dir = tempfile::tempdir().unwrap();
+    let target = dir.path().join("trav");
+    std::fs::create_dir_all(&target).unwrap();
+
+    let mut buf = Vec::new();
+    {
+        let mut writer = zip::ZipWriter::new(std::io::Cursor::new(&mut buf));
+        let options = zip::write::SimpleFileOptions::default();
+        writer
+            .start_file("my-skill/../../../evil.txt", options)
+            .unwrap();
+        std::io::Write::write_all(&mut writer, b"evil").unwrap();
+        writer.finish().unwrap();
+    }
+
+    let err = extract_zip_to_dir(&buf, &target.to_string_lossy()).unwrap_err();
+    let msg = err.to_string();
+    assert!(msg.contains("path traversal"), "msg: {msg}");
+    // Nothing may have been written outside the target.
+    assert!(!dir.path().join("evil.txt").exists());
+}
+
+#[test]
+fn test_extract_zip_to_dir_parent_create_fails_when_parent_is_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let target = dir.path().join("blocked");
+    // Pre-create target/sub as a FILE: create_dir_all(parent) must fail.
+    std::fs::create_dir_all(&target).unwrap();
+    std::fs::write(target.join("sub"), "i am a file").unwrap();
+
+    let mut buf = Vec::new();
+    {
+        let mut writer = zip::ZipWriter::new(std::io::Cursor::new(&mut buf));
+        let options = zip::write::SimpleFileOptions::default();
+        writer.start_file("my-skill/sub/file.txt", options).unwrap();
+        std::io::Write::write_all(&mut writer, b"data").unwrap();
+        writer.finish().unwrap();
+    }
+
+    let err = extract_zip_to_dir(&buf, &target.to_string_lossy()).unwrap_err();
+    assert!(matches!(err, NemesisError::Io(_)), "got: {err}");
+}
+
+// --- move_dir_contents write-failure arm ---
+
+#[test]
+fn test_move_dir_contents_write_fails_when_dest_path_is_directory() {
+    let src_dir = tempfile::tempdir().unwrap();
+    let dst_dir = tempfile::tempdir().unwrap();
+    std::fs::write(src_dir.path().join("clash.txt"), "data").unwrap();
+    // Destination name already exists as a DIRECTORY -> fs::write fails.
+    std::fs::create_dir_all(dst_dir.path().join("clash.txt")).unwrap();
+
+    let err = move_dir_contents(src_dir.path(), dst_dir.path()).unwrap_err();
+    let msg = err.to_string();
+    assert!(msg.contains("failed to write"), "msg: {msg}");
+}
+
+// Structural (no injection seam; do NOT exempt):
+// - 225-235: download_and_install strategy-2 hardcodes
+//   https://api.github.com + raw.githubusercontent.com; only reachable with
+//   real network.
+// - 296-309: get_skill_content strategy-2 GitHub raw fetch uses a hardcoded
+//   https://raw.githubusercontent.com URL.
+// - 629: `relative.is_empty()` continue is dead-defensive — a name equal to
+//   `prefix` necessarily ends with '/' and is already skipped by the
+//   directory-entry check at 617-619.
+// - 723-729: move_dir_contents read-failure arm — std read of a regular file
+//   cannot be made to fail in-process on Windows (no share-mode handle API).

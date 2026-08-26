@@ -37,6 +37,13 @@ pub struct HeartbeatResult {
 pub type HeartbeatHandler =
     Box<dyn Fn(String, String, String) -> Option<HeartbeatResult> + Send + Sync>;
 
+/// Internal shared form of [`HeartbeatHandler`]. BUG #17: `start()` clones
+/// this into the spawned task instead of `take()`ing it, so a stop()+start()
+/// cycle keeps the handler (previously the restart silently dropped it and
+/// every tick after logged "handler not configured").
+type SharedHeartbeatHandler =
+    Arc<dyn Fn(String, String, String) -> Option<HeartbeatResult> + Send + Sync>;
+
 /// Message bus trait for sending outbound heartbeat responses.
 pub trait MessageBus: Send + Sync {
     /// Publish an outbound message to a channel.
@@ -107,7 +114,7 @@ pub struct HeartbeatService {
     last_beat: Arc<Mutex<chrono::DateTime<Local>>>,
     beat_count: Arc<AtomicU64>,
     handle: Mutex<Option<JoinHandle<()>>>,
-    handler: Mutex<Option<HeartbeatHandler>>,
+    handler: Mutex<Option<SharedHeartbeatHandler>>,
     skip_file: Arc<Mutex<Option<String>>>,
     message_bus: Mutex<Option<Arc<dyn MessageBus>>>,
     state_manager: Mutex<Option<Arc<dyn StateManager>>>,
@@ -147,7 +154,7 @@ impl HeartbeatService {
 
     /// Set a custom heartbeat handler called on each tick.
     pub fn set_handler(&self, handler: HeartbeatHandler) {
-        *self.handler.lock() = Some(handler);
+        *self.handler.lock() = Some(Arc::from(handler));
     }
 
     /// Set the skip file path (BOOTSTRAP.md). If the file exists, heartbeat is skipped.
@@ -183,8 +190,9 @@ impl HeartbeatService {
         let beat_count = self.beat_count.clone();
         let skip_file = self.skip_file.clone();
 
-        // Move handler into task (same pattern as Go's goroutine captures hs.handler).
-        let handler = self.handler.lock().take();
+        // Clone the shared handler into the task (BUG #17: was a `take()`,
+        // which dropped the handler on any stop+start restart).
+        let handler = self.handler.lock().clone();
 
         // Clone Arc references needed for execute_heartbeat logic.
         // These are needed because the spawned task cannot hold &self.
@@ -596,7 +604,7 @@ Add your heartbeat tasks below this line:
 /// 5. Handle result (5 branches: error, async, silent, for_user, for_llm)
 /// 6. Send response via message bus
 fn execute_heartbeat_tick(
-    handler: &Option<HeartbeatHandler>,
+    handler: &Option<SharedHeartbeatHandler>,
     workspace: &Option<String>,
     message_bus: &Option<Arc<dyn MessageBus>>,
     state_manager: &Option<Arc<dyn StateManager>>,
@@ -852,3 +860,7 @@ fn send_response_static(
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod w1b_tests;
+#[cfg(test)]
+mod s1_tests;

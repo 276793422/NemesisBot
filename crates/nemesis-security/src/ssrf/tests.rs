@@ -683,3 +683,62 @@ fn test_validate_url_no_blocks_private_passes() {
     let result = guard.check_ip("10.0.0.1");
     assert!(result.is_ok());
 }
+
+// ============================================================
+// S3 batch 3: resolve_and_validate 独立入口的各臂
+// ============================================================
+
+#[test]
+fn test_resolve_and_validate_disabled_ok() {
+    let guard = Guard::new(SsrfConfig {
+        enabled: false,
+        ..SsrfConfig::default()
+    })
+    .unwrap();
+    guard.resolve_and_validate("http://127.0.0.1/secret").unwrap();
+}
+
+#[test]
+fn test_resolve_and_validate_invalid_url_errors() {
+    let guard = Guard::new(SsrfConfig::default()).unwrap();
+    let err = guard.resolve_and_validate("not a url").unwrap_err();
+    assert!(matches!(err, SsrfError::InvalidUrl(_)), "{err}");
+}
+
+#[test]
+fn test_resolve_and_validate_allowed_host_bypass() {
+    let guard = Guard::new(SsrfConfig {
+        allowed_hosts: vec!["Trusted.Example.COM".to_string()],
+        ..SsrfConfig::default()
+    })
+    .unwrap();
+    // 大小写归一化后命中白名单 → 直接 Ok（不做 DNS/IP 检查）
+    guard.resolve_and_validate("http://trusted.example.com/anything").unwrap();
+}
+
+#[test]
+fn test_resolve_and_validate_localhost_hostname_blocked() {
+    let guard = Guard::new(SsrfConfig::default()).unwrap();
+    let err = guard.resolve_and_validate("http://localhost:8080/x").unwrap_err();
+    assert!(matches!(err, SsrfError::Localhost(_)), "{err}");
+}
+
+#[test]
+fn test_resolve_and_validate_ip_literal_blocked() {
+    let guard = Guard::new(SsrfConfig::default()).unwrap();
+    let err = guard.resolve_and_validate("http://10.0.0.1/secret").unwrap_err();
+    assert!(matches!(err, SsrfError::PrivateIp(_)), "{err}");
+}
+
+#[test]
+fn test_resolve_and_validate_dns_failure_errors() {
+    // RFC 2606 保留 TLD .invalid → 解析必然失败 → DnsFailed
+    let guard = Guard::new(SsrfConfig::default()).unwrap();
+    let err = guard
+        .resolve_and_validate("http://definitely-no-such-host-s3.invalid/")
+        .unwrap_err();
+    assert!(
+        matches!(err, SsrfError::DnsFailed { .. } | SsrfError::NoAddresses(_)),
+        "unexpected error: {err}"
+    );
+}

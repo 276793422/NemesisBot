@@ -777,3 +777,45 @@ fn skill_info_debug() {
     assert!(debug_str.contains("test-skill"));
 }
 
+
+// ----- W3a branch coverage -----
+
+/// SKILL.md that exists but is NOT valid UTF-8: read_to_string fails → the
+/// skill is skipped silently; a sibling valid skill still loads.
+#[test]
+fn context_builder_load_skills_skips_non_utf8_skill_md() {
+    let tmp = tempfile::tempdir().unwrap();
+    let skills_dir = tmp.path().join("Skills");
+    let bad = skills_dir.join("bad-skill");
+    let good = skills_dir.join("good-skill");
+    std::fs::create_dir_all(&bad).unwrap();
+    std::fs::create_dir_all(&good).unwrap();
+    std::fs::write(bad.join("SKILL.md"), [0xffu8, 0xfe, 0x00, 0x02]).unwrap();
+    std::fs::write(good.join("SKILL.md"), "# Good skill\nDoes things.").unwrap();
+
+    let mut builder = ContextBuilder::new(tmp.path());
+    builder.load_skills(&skills_dir);
+    let infos = builder.get_skills_info();
+    assert_eq!(infos.len(), 1, "only the valid skill loads");
+    assert_eq!(infos[0].name, "good-skill");
+    assert_eq!(infos[0].description, "Good skill");
+}
+
+/// A stray FILE directly under the Skills dir (not a subdirectory): skipped
+/// by the is_dir check.
+#[test]
+fn context_builder_load_skills_skips_stray_file_entries() {
+    let tmp = tempfile::tempdir().unwrap();
+    let skills_dir = tmp.path().join("Skills");
+    std::fs::create_dir_all(&skills_dir).unwrap();
+    // Stray file (with an extension-less name so it isn't mistaken for a dir
+    // on any platform).
+    std::fs::write(skills_dir.join("README"), b"not a skill dir").unwrap();
+
+    let mut builder = ContextBuilder::new(tmp.path());
+    builder.load_skills(&skills_dir);
+    assert!(
+        builder.get_skills_info().is_empty(),
+        "file entry must not become a skill"
+    );
+}

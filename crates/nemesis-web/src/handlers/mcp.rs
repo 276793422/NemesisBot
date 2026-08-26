@@ -244,3 +244,8 @@ impl McpHandler {
         Ok(Some(serde_json::json!({ "saved": true })))
     }
 }
+
+// Phase 3 覆盖率（2026-08-25）：servers 列表 legacy 归一化显示 +
+// server.update 全可选字段 patch 臂（旧清单只盖 url/args/env/timeout）。
+#[cfg(test)]
+mod tests;

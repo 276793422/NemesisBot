@@ -534,3 +534,116 @@ fn llm_events_without_prior_start_are_dropped() {
         "without ConversationStart, nothing is written"
     );
 }
+
+// =========================================================================
+// S11d 补测（quality-hardening goal 冲刺 S11）：Observer trait 接线
+// （name + on_event 转发）、LLMResponse tool_calls 三种 JSON 形态映射
+//（顶层 id/name/arguments、嵌套 function.name/arguments、无名条目跳过）、
+// 失败工具调用（success=false → "Failed" + error 透传）、create_session
+// 失败（设备目录被同名文件占住 → warn + 该 trace 被忽略）。
+// =========================================================================
+
+/// 读 session 目录下所有文件内容拼成一个大字符串（内容级断言用）。
+fn dump_session_files(device_dir: &std::path::Path) -> String {
+    let mut out = String::new();
+    for entry in std::fs::read_dir(device_dir).unwrap().filter_map(|e| e.ok()) {
+        let p = entry.path();
+        if p.is_dir() {
+            for f in std::fs::read_dir(&p).unwrap().filter_map(|e| e.ok()) {
+                out.push_str(&std::fs::read_to_string(f.path()).unwrap_or_default());
+                out.push('\n');
+            }
+        } else {
+            out.push_str(&std::fs::read_to_string(&p).unwrap_or_default());
+            out.push('\n');
+        }
+    }
+    out
+}
+
+#[tokio::test]
+async fn observer_trait_name_and_on_event_dispatch_converted_events() {
+    let tmp = TempDir::new().unwrap();
+    let observer = ClusterRequestLoggerObserver::new(test_config(), tmp.path());
+
+    use nemesis_observer::Observer;
+    assert_eq!(Observer::name(&observer), "cluster_request_logger");
+
+    // nemesis_observer 原生事件 → convert_event → dispatch 全链。
+    let ev = nemesis_observer::ConversationEvent {
+        event_type: nemesis_observer::EventType::ConversationStart,
+        trace_id: "trace-obs".to_string(),
+        timestamp: Local::now(),
+        data: nemesis_observer::EventData::ConversationStart(
+            nemesis_observer::ConversationStartData {
+                session_key: "s".to_string(),
+                channel: "rpc".to_string(),
+                chat_id: "c".to_string(),
+                sender_id: "u".to_string(),
+                content: "hello via trait".to_string(),
+            },
+        ),
+    };
+    observer.on_event(ev).await;
+    assert_eq!(observer.active_count(), 1, "start must register the trace");
+    assert!(
+        tmp.path().join("logs").join("cluster_logs").join("_unknown").exists(),
+        "on_event must land files like dispatch does"
+    );
+}
+
+#[test]
+fn llm_response_tool_calls_mapping_variants() {
+    let tmp = TempDir::new().unwrap();
+    let observer = ClusterRequestLoggerObserver::new(test_config(), tmp.path());
+    observer.set_task_context("task-map".to_string(), "node-M".to_string());
+
+    let trace = "trace-map";
+    observer.dispatch(&make_start_event(trace, "call tools"));
+
+    let mut ev = make_llm_response_event(trace, 1);
+    if let EventData::LLMResponse(ref mut d) = ev.data {
+        d.tool_calls_count = 2; // 实际有效映射 2 条（无名条目被跳过）
+        d.tool_calls = vec![
+            // 顶层形态：id/name/arguments 平铺。
+            serde_json::json!({"id": "call-1", "name": "read_file", "arguments": "{\"path\":\"/a\"}"}),
+            // 嵌套形态：function.name / function.arguments（OpenAI 兼容）。
+            serde_json::json!({"id": "call-2", "function": {"name": "exec", "arguments": "{\"command\":\"ls\"}"}}),
+            // 无名条目：name 抠不出 → 跳过（不产出半截 detail）。
+            serde_json::json!({"id": "call-3"}),
+        ];
+    }
+    observer.dispatch(&ev);
+    observer.dispatch(&make_end_event(trace, 1));
+    assert_eq!(observer.active_count(), 0);
+
+    let device_dir = tmp.path().join("logs").join("cluster_logs").join("node-M");
+    let dump = dump_session_files(&device_dir);
+    assert!(dump.contains("read_file"), "top-level name mapped: {dump}");
+    assert!(dump.contains("/a"), "top-level arguments mapped");
+    assert!(dump.contains("exec"), "nested function.name mapped");
+    assert!(dump.contains("ls"), "nested function.arguments mapped");
+    assert!(dump.contains("call-1"), "id mapped");
+}
+
+#[test]
+fn failed_tool_call_logs_failed_status_and_error_text() {
+    let tmp = TempDir::new().unwrap();
+    let observer = ClusterRequestLoggerObserver::new(test_config(), tmp.path());
+    observer.set_task_context("task-fail".to_string(), "node-F".to_string());
+
+    let trace = "trace-fail";
+    observer.dispatch(&make_start_event(trace, "doomed"));
+    observer.dispatch(&make_tool_call_event(trace, 1, "exec", false));
+    observer.dispatch(&make_end_event(trace, 1));
+
+    let device_dir = tmp.path().join("logs").join("cluster_logs").join("node-F");
+    let dump = dump_session_files(&device_dir);
+    assert!(dump.contains("Failed"), "success=false → Failed status: {dump}");
+    assert!(dump.contains("boom"), "error text must be carried through");
+}
+
+// 注：handle_conversation_start 的 create_session Err 分支（源文件 207-212）
+// 不可达 —— RequestLogger::create_session（request_logger.rs:314-343）对
+// 所有内部失败都「Silent failure」返回 Ok(())，Err 只可能来自未来新增的
+// 失败模式。结构性豁免，见批次报告。

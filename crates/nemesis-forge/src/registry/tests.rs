@@ -541,3 +541,24 @@ fn test_auto_save_on_remove_with_path() {
     let parsed: Vec<serde_json::Value> = serde_json::from_str(&content).unwrap();
     assert!(parsed.is_empty());
 }
+
+// --- S8 coverage additions (quality-hardening goal 冲刺 S8) ---
+
+#[test]
+fn test_s8_increment_version_three_part_non_numeric_patch() {
+    // "x.y.z" shape but the patch part is not a u32 → falls through to the
+    // "{}.1" suffix fallback.
+    assert_eq!(Registry::increment_version("1.0.beta"), "1.0.beta.1");
+    assert_eq!(Registry::increment_version("2.5.0rc1"), "2.5.0rc1.1");
+}
+
+#[test]
+fn test_s8_add_existing_non_numeric_patch_version_bumps_with_suffix() {
+    let registry = Registry::new(RegistryConfig::default());
+    let mut a1 = make_artifact("ver-quirk", ArtifactKind::Skill);
+    a1.version = "0.1.0rc1".to_string();
+    let id = registry.add(a1);
+    let a2 = make_artifact("ver-quirk", ArtifactKind::Skill);
+    registry.add(a2);
+    assert_eq!(registry.get(&id).unwrap().version, "0.1.0rc1.1");
+}

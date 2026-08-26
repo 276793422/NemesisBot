@@ -601,4 +601,6 @@ impl WebSocketServer {
 #[cfg(test)]
 mod extra_tests;
 #[cfg(test)]
+mod s7_tests;
+#[cfg(test)]
 mod tests;

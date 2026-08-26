@@ -119,3 +119,52 @@ async fn execute_rejects_non_integer_positions() {
         .unwrap_err();
     assert!(err.contains("line"), "{err}");
 }
+
+/// Malformed JSON args surface the parse error (model sees its own typo).
+#[tokio::test]
+async fn execute_rejects_invalid_json_args() {
+    let t = LspTool::new(None, None);
+    let err = t.execute("{not json", &test_ctx()).await.unwrap_err();
+    assert!(err.contains("Invalid arguments"), "{err}");
+}
+
+/// Missing required fields are named individually (op / path).
+#[tokio::test]
+async fn execute_rejects_missing_op_and_missing_path() {
+    let t = LspTool::new(None, None);
+    let err = t
+        .execute(r#"{"path":"/x/a.rs","line":0,"character":0}"#, &test_ctx())
+        .await
+        .unwrap_err();
+    assert!(err.contains("Missing 'op'"), "{err}");
+
+    let err = t
+        .execute(r#"{"op":"hover","line":0,"character":0}"#, &test_ctx())
+        .await
+        .unwrap_err();
+    assert!(err.contains("Missing 'path'"), "{err}");
+}
+
+/// Positions beyond u32 are rejected explicitly instead of truncating
+/// silently (a wrapped 2^32+offset would query the wrong line).
+#[tokio::test]
+async fn execute_rejects_position_overflow() {
+    let t = LspTool::new(None, None);
+    let err = t
+        .execute(
+            r#"{"op":"hover","path":"/x/a.rs","line":4294967296,"character":0}"#,
+            &test_ctx(),
+        )
+        .await
+        .unwrap_err();
+    assert!(err.contains("'line' out of range"), "{err}");
+
+    let err = t
+        .execute(
+            r#"{"op":"hover","path":"/x/a.rs","line":0,"character":99999999999}"#,
+            &test_ctx(),
+        )
+        .await
+        .unwrap_err();
+    assert!(err.contains("'character' out of range"), "{err}");
+}

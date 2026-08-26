@@ -138,3 +138,20 @@ fn test_parse_with_extra_fields() {
     assert!(config.enabled);
     assert_eq!(config.active, "large");
 }
+
+#[test]
+fn test_auto_inject_defaults_off_and_top_k_3() {
+    // Grey-release invariant (P3.1): absent fields default to auto_inject=false
+    // (message stream byte-identical to pre-feature) and top_k=3.
+    let config: EmbeddingConfig = serde_json::from_str("{}").unwrap();
+    assert!(!config.auto_inject);
+    assert_eq!(config.auto_inject_top_k, 3);
+    assert_eq!(EmbeddingConfig::default().auto_inject, false);
+    assert_eq!(EmbeddingConfig::default().auto_inject_top_k, 3);
+
+    // Explicit values survive a roundtrip.
+    let json = r#"{"auto_inject": true, "auto_inject_top_k": 5}"#;
+    let config: EmbeddingConfig = serde_json::from_str(json).unwrap();
+    assert!(config.auto_inject);
+    assert_eq!(config.auto_inject_top_k, 5);
+}

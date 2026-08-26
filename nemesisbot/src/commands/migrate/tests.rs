@@ -474,3 +474,258 @@ fn test_confirm_returns_false_in_test_env() {
     // Note: We can't call confirm() directly because it reads from stdin
     // But we can test the underlying atty_isnt logic
 }
+
+// ===========================================================================
+// run() 全臂 + convert_config_fallback（S11c，quality-hardening goal 冲刺 S11）
+// —— 既有测试只钉 helper 片段，run() 本体（219 MISS 行）从没跑过。全部用
+// openclaw_home/nemesisbot_home 双 override 指向临时目录，零 env 依赖；
+// confirm 在测试 stdin（管道 EOF）下必返 false，非 --force 一律取消。
+// ===========================================================================
+
+fn write_full_openclaw_layout(openclaw: &std::path::Path) {
+    std::fs::create_dir_all(openclaw.join("workspace")).unwrap();
+    std::fs::write(openclaw.join("workspace").join("MEMORY.md"), "mem").unwrap();
+    std::fs::create_dir_all(openclaw.join("prompts")).unwrap();
+    std::fs::write(openclaw.join("prompts").join("p1.md"), "prompt").unwrap();
+    std::fs::create_dir_all(openclaw.join("skills")).unwrap();
+    std::fs::write(openclaw.join("skills").join("s1.md"), "skill").unwrap();
+    std::fs::write(openclaw.join("IDENTITY.md"), "identity").unwrap();
+    std::fs::write(openclaw.join("SOUL.md"), "soul").unwrap();
+    std::fs::write(openclaw.join("USER.md"), "user").unwrap();
+    std::fs::write(
+        openclaw.join("config.yaml"),
+        "default_model: \"gpt-x\"\nport: 12345\n",
+    )
+    .unwrap();
+    std::fs::write(openclaw.join("models.yaml"), "- name: m1\n- name: m2\n").unwrap();
+}
+
+fn opts(openclaw: &std::path::Path, target: &std::path::Path) -> MigrateOptions {
+    MigrateOptions {
+        dry_run: false,
+        config_only: false,
+        workspace_only: false,
+        force: true,
+        openclaw_home: Some(openclaw.to_string_lossy().into()),
+        refresh: false,
+        nemesisbot_home: Some(target.to_string_lossy().into()),
+    }
+}
+
+#[test]
+fn run_openclaw_missing_reports_not_found_ok() {
+    let tmp = tempfile::tempdir().unwrap();
+    let target = tmp.path().join("nb");
+    let mut o = opts(&tmp.path().join("no-such-openclaw"), &target);
+    o.openclaw_home = Some(tmp.path().join("no-such-openclaw").to_string_lossy().into());
+    run(o, false).expect("探测失败 → 提示 + Ok");
+    assert!(!target.exists(), "不得创建任何目标文件");
+}
+
+#[test]
+fn run_empty_openclaw_reports_nothing_to_migrate() {
+    let tmp = tempfile::tempdir().unwrap();
+    let src = tmp.path().join("openclaw");
+    std::fs::create_dir_all(&src).unwrap();
+    let target = tmp.path().join("nb");
+    run(opts(&src, &target), false).expect("空源 → Nothing to migrate + Ok");
+    assert!(!target.exists());
+}
+
+#[test]
+fn run_dry_run_makes_no_changes() {
+    let tmp = tempfile::tempdir().unwrap();
+    let src = tmp.path().join("openclaw");
+    std::fs::create_dir_all(&src).unwrap();
+    write_full_openclaw_layout(&src);
+    let target = tmp.path().join("nb");
+    let mut o = opts(&src, &target);
+    o.dry_run = true;
+    run(o, false).expect("dry-run → 预览 + Ok");
+    assert!(!target.exists(), "dry-run 绝不落盘");
+}
+
+#[test]
+fn run_without_force_is_cancelled_by_non_interactive_confirm() {
+    let tmp = tempfile::tempdir().unwrap();
+    let src = tmp.path().join("openclaw");
+    std::fs::create_dir_all(&src).unwrap();
+    write_full_openclaw_layout(&src);
+    let target = tmp.path().join("nb");
+    let mut o = opts(&src, &target);
+    o.force = false;
+    run(o, false).expect("confirm=false → Migration cancelled + Ok");
+    assert!(!target.join("config.json").exists(), "取消后不得写 config");
+    assert!(!target.join("IDENTITY.md").exists());
+}
+
+#[test]
+fn run_force_migrates_config_workspace_prompts_skills_and_persona_files() {
+    let tmp = tempfile::tempdir().unwrap();
+    let src = tmp.path().join("openclaw");
+    std::fs::create_dir_all(&src).unwrap();
+    write_full_openclaw_layout(&src);
+    let target = tmp.path().join("nb");
+    run(opts(&src, &target), false).expect("full migration ok");
+
+    // config：存在且是合法 JSON。
+    let cfg: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(target.join("config.json")).unwrap())
+            .expect("迁移产物 config.json 必须可解析");
+    assert!(cfg.is_object());
+
+    // workspace / prompts / skills。
+    assert_eq!(
+        std::fs::read_to_string(target.join("workspace").join("MEMORY.md")).unwrap(),
+        "mem"
+    );
+    assert_eq!(
+        std::fs::read_to_string(target.join("workspace").join("prompts").join("p1.md")).unwrap(),
+        "prompt"
+    );
+    assert_eq!(
+        std::fs::read_to_string(target.join("workspace").join("skills").join("s1.md")).unwrap(),
+        "skill"
+    );
+
+    // 人格三件套落 home 根。
+    assert_eq!(
+        std::fs::read_to_string(target.join("IDENTITY.md")).unwrap(),
+        "identity"
+    );
+    assert_eq!(std::fs::read_to_string(target.join("SOUL.md")).unwrap(), "soul");
+    assert_eq!(std::fs::read_to_string(target.join("USER.md")).unwrap(), "user");
+}
+
+#[test]
+fn run_backs_up_existing_target_config_before_overwrite() {
+    let tmp = tempfile::tempdir().unwrap();
+    let src = tmp.path().join("openclaw");
+    std::fs::create_dir_all(&src).unwrap();
+    write_full_openclaw_layout(&src);
+    let target = tmp.path().join("nb");
+    std::fs::create_dir_all(&target).unwrap();
+    std::fs::write(target.join("config.json"), "{\"old\":true}").unwrap();
+
+    run(opts(&src, &target), false).expect("overwrite ok");
+    let bak = std::fs::read_to_string(target.join("config.json.bak"))
+        .expect("旧 config 必须先备份成 .bak");
+    assert_eq!(bak, "{\"old\":true}");
+    let new: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(target.join("config.json")).unwrap())
+            .unwrap();
+    assert!(new.get("old").is_none(), "新 config 是转换产物而非旧文件");
+}
+
+#[test]
+fn run_config_only_skips_workspace_and_vice_versa() {
+    let tmp = tempfile::tempdir().unwrap();
+    let src = tmp.path().join("openclaw");
+    std::fs::create_dir_all(&src).unwrap();
+    write_full_openclaw_layout(&src);
+
+    // config_only：只迁 config。
+    let t1 = tmp.path().join("nb1");
+    let mut o1 = opts(&src, &t1);
+    o1.config_only = true;
+    run(o1, false).expect("config only ok");
+    assert!(t1.join("config.json").exists());
+    assert!(!t1.join("workspace").join("MEMORY.md").exists());
+    assert!(!t1.join("IDENTITY.md").exists());
+
+    // workspace_only：只迁工作区。
+    let t2 = tmp.path().join("nb2");
+    let mut o2 = opts(&src, &t2);
+    o2.workspace_only = true;
+    run(o2, false).expect("workspace only ok");
+    assert!(!t2.join("config.json").exists());
+    assert!(t2.join("workspace").join("MEMORY.md").exists());
+    assert!(t2.join("IDENTITY.md").exists());
+}
+
+#[test]
+fn run_refresh_flag_overwrites_conflicting_target_files() {
+    let tmp = tempfile::tempdir().unwrap();
+    let src = tmp.path().join("openclaw");
+    std::fs::create_dir_all(&src).unwrap();
+    write_full_openclaw_layout(&src);
+    let target = tmp.path().join("nb");
+
+    // 第一次迁移。
+    run(opts(&src, &target), false).unwrap();
+    // 改源文件；目标同路径已有旧内容。
+    std::fs::write(src.join("workspace").join("MEMORY.md"), "mem-v2").unwrap();
+
+    // 不带 refresh：已存在文件跳过。
+    run(opts(&src, &target), false).unwrap();
+    assert_eq!(
+        std::fs::read_to_string(target.join("workspace").join("MEMORY.md")).unwrap(),
+        "mem",
+        "无 refresh 时目标已存在 → 保留"
+    );
+
+    // 带 refresh：覆盖。
+    let mut o = opts(&src, &target);
+    o.refresh = true;
+    run(o, false).unwrap();
+    assert_eq!(
+        std::fs::read_to_string(target.join("workspace").join("MEMORY.md")).unwrap(),
+        "mem-v2",
+        "refresh 必须覆盖目标同名文件"
+    );
+}
+
+// --- convert_config_fallback（crate 找不到 config 时的 YAML 抽取）---
+
+#[test]
+fn fallback_conversion_extracts_default_model_port_and_models() {
+    let tmp = tempfile::tempdir().unwrap();
+    // 只放 config.yml（不在 has_config 的 .yaml 白名单里也没关系——
+    // fallback 的查找循环覆盖 yaml/yml/openclaw.*），不放 crate 认的配置。
+    std::fs::write(
+        tmp.path().join("config.yml"),
+        "default_model: 'claude-9'\nport: 4321\n",
+    )
+    .unwrap();
+    std::fs::write(tmp.path().join("models.yaml"), "- name: alpha\n- model: \"beta\"\n").unwrap();
+
+    let (cfg, warnings) = convert_config_fallback(tmp.path()).unwrap();
+    assert_eq!(cfg["default_model"], "claude-9", "单引号 YAML 值也要剥干净");
+    assert_eq!(cfg["channels"]["web"]["port"], 4321);
+    let models = cfg["model_list"].as_array().unwrap();
+    assert_eq!(models.len(), 2, "- name: 和 - model: 两种条目都要抓到");
+    assert_eq!(models[0]["model"], "alpha");
+    assert_eq!(models[1]["model"], "beta");
+    assert!(
+        warnings.iter().any(|w| w.contains("fallback")),
+        "必须带 fallback 警告：{warnings:?}"
+    );
+}
+
+#[test]
+fn fallback_conversion_with_no_sources_keeps_defaults() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (cfg, _) = convert_config_fallback(tmp.path()).unwrap();
+    assert_eq!(cfg["default_model"], "");
+    assert_eq!(cfg["channels"]["web"]["port"], 8080, "缺省端口 8080");
+    assert_eq!(
+        cfg["model_list"].as_array().unwrap().len(),
+        0,
+        "无 models.yaml → 空 model_list"
+    );
+}
+
+#[test]
+fn copy_dir_recursive_nested_tree_count() {
+    let tmp = tempfile::tempdir().unwrap();
+    let src = tmp.path().join("src");
+    std::fs::create_dir_all(src.join("a").join("b")).unwrap();
+    std::fs::write(src.join("f1"), "1").unwrap();
+    std::fs::write(src.join("a").join("f2"), "2").unwrap();
+    std::fs::write(src.join("a").join("b").join("f3"), "3").unwrap();
+
+    let dst = tmp.path().join("dst");
+    let n = copy_dir_recursive(&src, &dst, false).unwrap();
+    assert_eq!(n, 3, "三层三文件全拷");
+    assert!(dst.join("a").join("b").join("f3").exists());
+}

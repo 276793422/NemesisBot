@@ -730,6 +730,9 @@ async fn test_shop_download_missing_workspace() {
 
 #[tokio::test]
 async fn test_shop_browse_with_division_filter() {
+    // shop.* 缓存串行锁：本测试会触发 fetch_tree（无种子时落真网络），
+    // 与 persona/tests.rs 里种子+断言的离线测试互踩。
+    let _shop_guard = crate::handlers::persona::tests::SHOP_TEST_LOCK.lock().await;
     let dir = tempfile::tempdir().unwrap();
     let ctx = make_ctx(&dir);
     let h = PersonaHandler::new();
@@ -740,6 +743,7 @@ async fn test_shop_browse_with_division_filter() {
 
 #[tokio::test]
 async fn test_shop_search_with_query() {
+    let _shop_guard = crate::handlers::persona::tests::SHOP_TEST_LOCK.lock().await;
     let dir = tempfile::tempdir().unwrap();
     let ctx = make_ctx(&dir);
     let h = PersonaHandler::new();
@@ -766,6 +770,8 @@ async fn test_persona_unknown_command_with_workspace() {
 
 #[tokio::test]
 async fn test_persona_shop_refresh_clears_caches() {
+    // refresh 会清空三级全局缓存，必须与种子测试互斥。
+    let _shop_guard = crate::handlers::persona::tests::SHOP_TEST_LOCK.lock().await;
     let dir = tempfile::tempdir().unwrap();
     let ctx = make_ctx(&dir);
     let h = PersonaHandler::new();

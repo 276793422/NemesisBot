@@ -121,3 +121,79 @@ fn test_config_default_values() {
     assert_eq!(config.default_model, DEFAULT_COPILOT_MODEL);
     assert_eq!(config.timeout_secs, 120);
 }
+
+use serde_json::json;
+use std::collections::HashMap;
+
+// ===========================================================================
+// W4c 补测（2026-08-25）：chat() HTTP 矩阵（wiremock，uri 可配）
+// ===========================================================================
+
+use wiremock::matchers::{method, path};
+use wiremock::{Mock, MockServer, ResponseTemplate};
+
+fn gh_messages() -> Vec<Message> {
+    vec![Message {
+        role: "user".to_string(),
+        content: "hello".to_string(),
+        tool_calls: vec![],
+        tool_call_id: None,
+        timestamp: None,
+        reasoning_content: None,
+        extra: HashMap::new(),
+    }]
+}
+
+#[tokio::test]
+async fn test_w4c_gh_chat_success_via_configured_uri() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/copilot/chat"))
+        .respond_with(ResponseTemplate::new(200).set_body_string("copilot says hi"))
+        .mount(&server)
+        .await;
+
+    let provider = GitHubCopilotProvider::new(GitHubCopilotConfig {
+        uri: server.uri(),
+        connect_mode: String::new(),
+        default_model: "ghp-m".to_string(),
+        timeout_secs: 10,
+    });
+    let resp = provider
+        .chat(&gh_messages(), &[], "ignored", &ChatOptions::default())
+        .await
+        .unwrap();
+    assert_eq!(resp.content, "copilot says hi");
+    assert_eq!(resp.finish_reason, "stop");
+}
+
+#[tokio::test]
+async fn test_w4c_gh_chat_error_status_maps_failover() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/copilot/chat"))
+        .respond_with(ResponseTemplate::new(503).set_body_string("overloaded"))
+        .mount(&server)
+        .await;
+
+    let provider = GitHubCopilotProvider::new(GitHubCopilotConfig {
+        uri: server.uri(),
+        connect_mode: String::new(),
+        default_model: "ghp-m".to_string(),
+        timeout_secs: 10,
+    });
+    let err = provider
+        .chat(&gh_messages(), &[], "m", &ChatOptions::default())
+        .await
+        .unwrap_err();
+    assert!(matches!(err, FailoverError::Overloaded { .. }));
+}
+
+#[test]
+fn test_w4c_gh_messages_to_prompt_serializes_roles() {
+    let provider = GitHubCopilotProvider::new(GitHubCopilotConfig::default());
+    let p = provider.messages_to_prompt(&gh_messages());
+    let v: serde_json::Value = serde_json::from_str(&p).unwrap();
+    assert_eq!(v[0]["role"], "user");
+    assert_eq!(v[0]["content"], "hello");
+}

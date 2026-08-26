@@ -325,3 +325,262 @@ fn test_async_pool_config_debug() {
     let debug = format!("{:?}", config);
     assert!(debug.contains("max_conns"));
 }
+
+// ============================================================
+// S4 coverage: sync reuse path (63), async first-check reuse
+// (238-241), dead-entry path (243), double-check per-node limit
+// (280-285), cleanup_dead removal (422-431), dec_node_count
+// arcs (470-477).
+// ============================================================
+
+/// No-op tracing subscriber so field-recording lines inside
+/// `tracing::info!`/`debug!` macros actually execute.
+struct S4PoolSubscriber;
+
+impl tracing::Subscriber for S4PoolSubscriber {
+    fn enabled(&self, _metadata: &tracing::Metadata<'_>) -> bool {
+        true
+    }
+    fn new_span(&self, _span: &tracing::span::Attributes<'_>) -> tracing::Id {
+        tracing::Id::from_u64(1)
+    }
+    fn record(&self, _span: &tracing::Id, _values: &tracing::span::Record<'_>) {}
+    fn record_follows_from(&self, _span: &tracing::Id, _follows: &tracing::Id) {}
+    fn event(&self, _event: &tracing::Event<'_>) {}
+    fn enter(&self, _span: &tracing::Id) {}
+    fn exit(&self, _span: &tracing::Id) {}
+}
+
+static S4_POOL_SUBSCRIBER: std::sync::Once = std::sync::Once::new();
+
+fn install_s4_pool_subscriber() {
+    S4_POOL_SUBSCRIBER.call_once(|| {
+        let _ = tracing::subscriber::set_global_default(S4PoolSubscriber);
+    });
+}
+
+/// Sync pool: a returned healthy connection is reused by the next
+/// get_or_connect (pool.rs 62-63).
+#[test]
+fn test_s4_sync_pool_reuses_returned_connection() {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap().to_string();
+    // One accept suffices: the second get_or_connect must REUSE, not dial.
+    let handle = std::thread::spawn(move || listener.accept().unwrap());
+
+    let pool = ConnectionPool::new(PoolConfig::default());
+    let conn = pool.get_or_connect(&addr).unwrap();
+    pool.return_connection(&addr, conn);
+    assert_eq!(pool.total_connections(), 1);
+
+    // Second call must reuse the pooled connection instead of dialing.
+    let conn2 = pool.get_or_connect(&addr).unwrap();
+    assert!(conn2.is_connected());
+    assert_eq!(pool.total_connections(), 0, "reused conn leaves pool");
+
+    drop(conn2);
+    pool.close_all();
+    handle.join().unwrap();
+}
+
+/// Async pool: return a healthy connection, then get again — the
+/// first-check reuses the pooled entry (pool.rs 237-241).
+#[tokio::test]
+async fn test_s4_async_pool_reuses_returned_connection() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap().to_string();
+    let server = tokio::spawn(async move {
+        let mut kept = Vec::new();
+        while let Ok((stream, _)) = listener.accept().await {
+            kept.push(stream);
+        }
+    });
+
+    let pool = Pool::new(AsyncPoolConfig {
+        max_conns: 10,
+        max_conns_per_node: 3,
+        ..Default::default()
+    });
+
+    let (key, conn) = pool.get("s4-reuse", &addr).await.unwrap();
+    pool.return_connection(key.clone(), conn);
+    assert_eq!(pool.active_connection_count(), 1);
+
+    // Re-get must hit the first-check reuse path and hand back the same key.
+    let (key2, conn2) = pool.get("s4-reuse", &addr).await.unwrap();
+    assert_eq!(key2, key);
+    assert!(conn2.is_active());
+    // dec_node_count ran during reuse: counts for the node are empty again.
+    assert!(pool.get_stats().node_conns.is_empty());
+
+    drop(conn2);
+    pool.close();
+    server.abort();
+}
+
+/// Async pool: a pooled-but-dead entry takes the dead branch of the
+/// first check (pool.rs 242-244) and a fresh connection is dialed.
+#[tokio::test]
+async fn test_s4_async_pool_first_check_dead_entry() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap().to_string();
+    let server = tokio::spawn(async move {
+        let mut kept = Vec::new();
+        while let Ok((stream, _)) = listener.accept().await {
+            kept.push(stream);
+        }
+    });
+
+    let pool = Pool::new(AsyncPoolConfig {
+        max_conns: 10,
+        max_conns_per_node: 3,
+        ..Default::default()
+    });
+
+    let (key, mut conn) = pool.get("s4-dead", &addr).await.unwrap();
+    assert_eq!(pool.active_connection_count(), 1);
+
+    // Close the conn and re-insert it into the pool (bypassing
+    // return_connection, which would refuse a dead conn).
+    conn.close();
+    assert!(!conn.is_active());
+    let node_id = conn.node_id().to_string();
+    let address = conn.address().to_string();
+    pool.conns.lock().insert(
+        key.clone(),
+        PoolEntry {
+            conn,
+            node_id,
+            address,
+        },
+    );
+
+    // Next get finds the dead entry, decrements active_count, dials fresh.
+    let (key2, conn2) = pool.get("s4-dead", &addr).await.unwrap();
+    assert_eq!(key2, key);
+    assert!(conn2.is_active());
+    assert_eq!(pool.active_connection_count(), 1);
+
+    drop(conn2);
+    pool.close();
+    server.abort();
+}
+
+/// Async pool: the per-node double-check after semaphore acquisition
+/// (pool.rs 275-288). The caller passes the first per-node check, parks
+/// on the exhausted semaphore, and the node count is raised while it
+/// waits — deterministically reproduced by holding the only permit,
+/// inserting the count, then releasing a permit.
+#[tokio::test]
+async fn test_s4_pool_double_check_per_node_after_semaphore() {
+    let pool = std::sync::Arc::new(Pool::new(AsyncPoolConfig {
+        max_conns: 1,
+        max_conns_per_node: 1,
+        dial_timeout: Duration::from_secs(5),
+        ..Default::default()
+    }));
+
+    // Consume the single permit so any getter parks on the semaphore.
+    let held = pool.semaphore.clone();
+    let permit = held.try_acquire_owned().unwrap();
+    assert_eq!(pool.semaphore.available_permits(), 0);
+
+    let getter_pool = pool.clone();
+    let getter = tokio::spawn(async move {
+        getter_pool
+            .get_with_timeout("s4-dc", "127.0.0.1:1")
+            .await
+    });
+
+    // Let the getter run up to its semaphore wait.
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    // Simulate another connection completing its dial for this node.
+    pool.node_counts.lock().insert("s4-dc".to_string(), 1);
+
+    // Release a permit so the getter wakes and re-checks the per-node limit.
+    pool.semaphore.add_permits(1);
+
+    let result = getter.await.unwrap();
+    let err = result.err().expect("expected per-node double-check failure");
+    assert!(
+        err.contains("after acquiring semaphore"),
+        "unexpected error: {}",
+        err
+    );
+    assert_eq!(pool.active_connection_count(), 0);
+    // The permit was dropped by the error path, so one permit is available.
+    assert_eq!(pool.semaphore.available_permits(), 1);
+
+    drop(permit);
+    pool.close();
+}
+
+/// cleanup_dead removes a pooled dead entry and releases its semaphore
+/// slot (pool.rs 412-435).
+#[tokio::test]
+async fn test_s4_cleanup_dead_removes_dead_entry() {
+    install_s4_pool_subscriber();
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap().to_string();
+    let server = tokio::spawn(async move {
+        let mut kept = Vec::new();
+        while let Ok((stream, _)) = listener.accept().await {
+            kept.push(stream);
+        }
+    });
+
+    let pool = Pool::new(AsyncPoolConfig {
+        max_conns: 10,
+        max_conns_per_node: 3,
+        ..Default::default()
+    });
+
+    let (key, mut conn) = pool.get("s4-cd", &addr).await.unwrap();
+    conn.close();
+    assert!(!conn.is_active());
+    let node_id = conn.node_id().to_string();
+    let address = conn.address().to_string();
+    pool.conns.lock().insert(
+        key,
+        PoolEntry {
+            conn,
+            node_id,
+            address,
+        },
+    );
+    let before_permits = pool.semaphore.available_permits();
+
+    let removed = pool.cleanup_dead();
+    assert_eq!(removed, 1);
+    assert_eq!(pool.active_connection_count(), 0);
+    assert!(pool.conns.lock().is_empty());
+    assert!(pool.node_counts.lock().is_empty());
+    assert_eq!(
+        pool.semaphore.available_permits(),
+        before_permits + 1,
+        "dead entry's forgotten permit must be returned"
+    );
+
+    pool.close();
+    server.abort();
+}
+
+/// dec_node_count arcs (pool.rs 470-478): decrement to a non-zero value,
+/// decrement to zero (key removed), and decrement for an absent key.
+#[test]
+fn test_s4_dec_node_count_arcs() {
+    let pool = Pool::with_defaults();
+
+    pool.node_counts.lock().insert("s4-arc".to_string(), 2);
+    pool.dec_node_count("s4-arc");
+    assert_eq!(pool.node_counts.lock().get("s4-arc").copied(), Some(1));
+
+    pool.dec_node_count("s4-arc");
+    assert!(pool.node_counts.lock().get("s4-arc").is_none());
+
+    // Absent key: must be a no-op, not a panic.
+    pool.dec_node_count("s4-arc-absent");
+    assert!(pool.node_counts.lock().is_empty());
+}

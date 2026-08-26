@@ -28,3 +28,6 @@ pub mod trace;
 pub mod trace_store;
 pub mod types;
 pub mod validator;
+
+#[cfg(test)]
+mod test_support;

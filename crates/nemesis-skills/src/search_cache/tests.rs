@@ -554,3 +554,38 @@ fn test_cache_stats_default() {
     assert_eq!(stats.hit_count, 0);
     assert_eq!(stats.miss_count, 0);
 }
+
+// ============================================================
+// S5 coverage: expired similar entry skipped during similarity
+// match, jaccard on empty inputs
+// ============================================================
+
+#[test]
+fn test_get_skips_expired_similar_entry() {
+    let cache = SearchCache::new(SearchCacheConfig {
+        max_size: 10,
+        ttl: Duration::from_millis(1),
+    });
+    cache.put("alpha query", make_search_result("r", 1));
+    std::thread::sleep(Duration::from_millis(10));
+
+    // Different key: exact miss; the similar-but-expired "alpha query" entry
+    // must be skipped by the similarity loop, yielding an overall miss.
+    let hit = cache.get("alpha queryx", 10);
+    assert!(hit.is_none(), "expired similar entry must not match");
+}
+
+#[test]
+fn test_jaccard_similarity_empty_inputs() {
+    // Both empty -> 1.0 (documented: identical empty sets).
+    assert_eq!(jaccard_similarity(&[], &[]), 1.0);
+    // Exactly one empty -> 0.0 (no overlap possible).
+    assert_eq!(jaccard_similarity(&[1, 2], &[]), 0.0);
+    assert_eq!(jaccard_similarity(&[], &[3, 4]), 0.0);
+}
+
+// Structural (dead-defensive; do NOT exempt):
+// - search_cache.rs ~136 (`key == query` continue in the similarity loop):
+//   when the loop is reached with a key equal to the query, the exact-match
+//   branch above has already REMOVED the entry (expired) or returned, so the
+//   loop can never observe the query key itself.

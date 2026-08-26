@@ -1176,3 +1176,793 @@ fn test_format_token_for_channel_display() {
         "my-s...alue"
     );
 }
+
+// =========================================================================
+// run() 端到端分支覆盖（S11 覆盖率冲刺）
+//
+// 策略：NEMESISBOT_HOME 指向临时目录（resolve_home 优先级 2），
+// config.json 全程只读写临时 home 下的 {tmp}/.nemesisbot/config.json。
+// env set_var 是进程级操作 → 持 crate::GLOBAL_STATE_LOCK 串行。
+// 交互式分支（Auth/Clear/Setup）在 cargo test 下 stdin 为管道 EOF，
+// read_line 得到空串 → 走取消/默认值路径，不会阻塞。
+// =========================================================================
+
+struct TempHomeEnv {
+    _tmp: TempDir,
+    home: std::path::PathBuf,
+}
+
+impl Drop for TempHomeEnv {
+    fn drop(&mut self) {
+        unsafe { std::env::remove_var("NEMESISBOT_HOME") };
+    }
+}
+
+fn temp_home_env() -> TempHomeEnv {
+    let tmp = TempDir::new().unwrap();
+    let home = tmp.path().join(".nemesisbot");
+    std::fs::create_dir_all(&home).unwrap();
+    unsafe { std::env::set_var("NEMESISBOT_HOME", tmp.path()) };
+    TempHomeEnv { _tmp: tmp, home }
+}
+
+fn write_main_cfg(home: &std::path::Path, cfg: &serde_json::Value) {
+    std::fs::write(
+        crate::common::config_path(home),
+        serde_json::to_string_pretty(cfg).unwrap(),
+    )
+    .unwrap();
+}
+
+fn read_main_cfg(home: &std::path::Path) -> serde_json::Value {
+    serde_json::from_str(&std::fs::read_to_string(crate::common::config_path(home)).unwrap())
+        .unwrap()
+}
+
+// -------------------------------------------------------------------------
+// List
+// -------------------------------------------------------------------------
+
+#[test]
+fn test_run_list_with_config() {
+    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let th = temp_home_env();
+    write_main_cfg(
+        &th.home,
+        &serde_json::json!({
+            "channels": {
+                "web": { "enabled": true },
+                "telegram": { "enabled": false }
+            }
+        }),
+    );
+    run(ChannelAction::List, false).unwrap();
+}
+
+#[test]
+fn test_run_list_without_config() {
+    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let _th = temp_home_env();
+    run(ChannelAction::List, false).unwrap();
+}
+
+// -------------------------------------------------------------------------
+// Enable / Disable
+// -------------------------------------------------------------------------
+
+#[test]
+fn test_run_enable_known_channel_existing_entry() {
+    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let th = temp_home_env();
+    write_main_cfg(
+        &th.home,
+        &serde_json::json!({ "channels": { "telegram": { "enabled": false, "token": "t" } } }),
+    );
+    run(ChannelAction::Enable { name: "telegram".into() }, false).unwrap();
+    let ch = &read_main_cfg(&th.home)["channels"]["telegram"];
+    assert_eq!(ch["enabled"], serde_json::json!(true));
+    assert_eq!(ch["token"], serde_json::json!("t"));
+}
+
+#[test]
+fn test_run_enable_known_channel_new_entry() {
+    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let th = temp_home_env();
+    // channels 对象存在但没有该条目 → else 分支插入
+    write_main_cfg(&th.home, &serde_json::json!({ "channels": {} }));
+    run(ChannelAction::Enable { name: "discord".into() }, false).unwrap();
+    assert_eq!(
+        read_main_cfg(&th.home)["channels"]["discord"]["enabled"],
+        serde_json::json!(true)
+    );
+}
+
+#[test]
+fn test_run_enable_unknown_channel() {
+    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let th = temp_home_env();
+    write_main_cfg(&th.home, &serde_json::json!({ "channels": {} }));
+    run(ChannelAction::Enable { name: "nope".into() }, false).unwrap();
+    assert!(read_main_cfg(&th.home)["channels"].get("nope").is_none());
+}
+
+#[test]
+fn test_run_enable_without_config_file() {
+    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let th = temp_home_env();
+    run(ChannelAction::Enable { name: "web".into() }, false).unwrap();
+    assert!(!crate::common::config_path(&th.home).exists());
+}
+
+#[test]
+fn test_run_disable_known_channel() {
+    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let th = temp_home_env();
+    write_main_cfg(
+        &th.home,
+        &serde_json::json!({ "channels": { "web": { "enabled": true } } }),
+    );
+    run(ChannelAction::Disable { name: "web".into() }, false).unwrap();
+    assert_eq!(
+        read_main_cfg(&th.home)["channels"]["web"]["enabled"],
+        serde_json::json!(false)
+    );
+}
+
+#[test]
+fn test_run_disable_unknown_and_no_config() {
+    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let th = temp_home_env();
+    write_main_cfg(&th.home, &serde_json::json!({ "channels": {} }));
+    run(ChannelAction::Disable { name: "nope".into() }, false).unwrap();
+    // 无 config → Ok 且不创建
+    let _th2 = temp_home_env();
+    run(ChannelAction::Disable { name: "web".into() }, false).unwrap();
+    assert!(!crate::common::config_path(&_th2.home).exists());
+    drop(th);
+}
+
+// -------------------------------------------------------------------------
+// Status（web / websocket / 默认 / 未配置 / 无 config）
+// -------------------------------------------------------------------------
+
+#[test]
+fn test_run_status_web_with_auth() {
+    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let th = temp_home_env();
+    write_main_cfg(
+        &th.home,
+        &serde_json::json!({
+            "channels": {
+                "web": { "enabled": true, "host": "127.0.0.1", "port": 9999, "auth_token": "abcdefgh1234" }
+            }
+        }),
+    );
+    run(ChannelAction::Status { name: "web".into() }, false).unwrap();
+}
+
+#[test]
+fn test_run_status_web_without_auth_defaults() {
+    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let th = temp_home_env();
+    // 缺 host/port/auth → unwrap_or 默认值分支
+    write_main_cfg(
+        &th.home,
+        &serde_json::json!({ "channels": { "web": { "enabled": false } } }),
+    );
+    run(ChannelAction::Status { name: "web".into() }, false).unwrap();
+}
+
+#[test]
+fn test_run_status_websocket_with_and_without_auth() {
+    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let th = temp_home_env();
+    write_main_cfg(
+        &th.home,
+        &serde_json::json!({
+            "channels": { "websocket": { "enabled": true, "auth_token": "tok12345", "path": "/custom" } }
+        }),
+    );
+    run(
+        ChannelAction::Status { name: "websocket".into() },
+        false,
+    )
+    .unwrap();
+    write_main_cfg(
+        &th.home,
+        &serde_json::json!({ "channels": { "websocket": { "enabled": false } } }),
+    );
+    run(
+        ChannelAction::Status { name: "websocket".into() },
+        false,
+    )
+    .unwrap();
+}
+
+#[test]
+fn test_run_status_generic_channel_extra_fields() {
+    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let th = temp_home_env();
+    write_main_cfg(
+        &th.home,
+        &serde_json::json!({
+            "channels": { "telegram": { "enabled": true, "bot_token": "abc", "api_url": "http://x" } }
+        }),
+    );
+    run(
+        ChannelAction::Status { name: "telegram".into() },
+        false,
+    )
+    .unwrap();
+}
+
+#[test]
+fn test_run_status_not_configured_and_no_config() {
+    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let th = temp_home_env();
+    write_main_cfg(&th.home, &serde_json::json!({ "channels": {} }));
+    run(
+        ChannelAction::Status { name: "discord".into() },
+        false,
+    )
+    .unwrap();
+    let _th2 = temp_home_env();
+    run(ChannelAction::Status { name: "web".into() }, false).unwrap();
+    drop(th);
+}
+
+// -------------------------------------------------------------------------
+// Web 子命令
+// -------------------------------------------------------------------------
+
+#[test]
+fn test_run_web_auth_interactive_eof_empty_token() {
+    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let th = temp_home_env();
+    write_main_cfg(&th.home, &serde_json::json!({ "channels": { "web": {} } }));
+    // stdin EOF → token 空 → 报错提前返回，不写配置
+    run(
+        ChannelAction::Web { action: WebAction::Auth },
+        false,
+    )
+    .unwrap();
+    assert!(
+        read_main_cfg(&th.home)["channels"]["web"]
+            .get("auth_token")
+            .is_none()
+    );
+}
+
+#[test]
+fn test_run_web_auth_set_normal_token() {
+    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let th = temp_home_env();
+    write_main_cfg(&th.home, &serde_json::json!({ "channels": { "web": {} } }));
+    run(
+        ChannelAction::Web {
+            action: WebAction::AuthSet { token: "longenoughtoken".into() },
+        },
+        false,
+    )
+    .unwrap();
+    assert_eq!(
+        read_main_cfg(&th.home)["channels"]["web"]["auth_token"],
+        serde_json::json!("longenoughtoken")
+    );
+}
+
+#[test]
+fn test_run_web_auth_set_short_and_empty() {
+    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let th = temp_home_env();
+    write_main_cfg(&th.home, &serde_json::json!({ "channels": { "web": {} } }));
+    // 短 token → 警告但仍然写入
+    run(
+        ChannelAction::Web {
+            action: WebAction::AuthSet { token: "abc".into() },
+        },
+        false,
+    )
+    .unwrap();
+    assert_eq!(
+        read_main_cfg(&th.home)["channels"]["web"]["auth_token"],
+        serde_json::json!("abc")
+    );
+    // 空 token → 报错提前返回（覆盖 4 字符以下 "***" 分支前的早退）
+    run(
+        ChannelAction::Web {
+            action: WebAction::AuthSet { token: String::new() },
+        },
+        false,
+    )
+    .unwrap();
+    assert_eq!(
+        read_main_cfg(&th.home)["channels"]["web"]["auth_token"],
+        serde_json::json!("abc")
+    );
+}
+
+#[test]
+fn test_run_web_auth_get_set_and_unset() {
+    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let th = temp_home_env();
+    write_main_cfg(&th.home, &serde_json::json!({ "channels": { "web": {} } }));
+    run(ChannelAction::Web { action: WebAction::AuthGet }, false).unwrap();
+    run(
+        ChannelAction::Web {
+            action: WebAction::AuthSet { token: "my-secret-auth-token-value".into() },
+        },
+        false,
+    )
+    .unwrap();
+    run(ChannelAction::Web { action: WebAction::AuthGet }, false).unwrap();
+}
+
+#[test]
+fn test_run_web_host_and_port() {
+    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let th = temp_home_env();
+    write_main_cfg(&th.home, &serde_json::json!({ "channels": { "web": {} } }));
+    run(
+        ChannelAction::Web {
+            action: WebAction::Host { host: "127.0.0.1".into() },
+        },
+        false,
+    )
+    .unwrap();
+    run(
+        ChannelAction::Web {
+            action: WebAction::Port { port: 49152 },
+        },
+        false,
+    )
+    .unwrap();
+    let web = &read_main_cfg(&th.home)["channels"]["web"];
+    assert_eq!(web["host"], serde_json::json!("127.0.0.1"));
+    assert_eq!(web["port"], serde_json::json!("49152"));
+}
+
+#[test]
+fn test_run_web_status_configured_and_not() {
+    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let th = temp_home_env();
+    write_main_cfg(
+        &th.home,
+        &serde_json::json!({
+            "channels": {
+                "web": { "enabled": true, "auth_token": "token12345", "path": "/sock" }
+            }
+        }),
+    );
+    run(
+        ChannelAction::Web { action: WebAction::Status },
+        false,
+    )
+    .unwrap();
+    // 无 web 条目 → (not configured)
+    write_main_cfg(&th.home, &serde_json::json!({ "channels": {} }));
+    run(
+        ChannelAction::Web { action: WebAction::Status },
+        false,
+    )
+    .unwrap();
+    // 无 config 文件 → No configuration found
+    let _th2 = temp_home_env();
+    run(
+        ChannelAction::Web { action: WebAction::Status },
+        false,
+    )
+    .unwrap();
+    drop(th);
+}
+
+#[test]
+fn test_run_web_clear_interactive_eof_cancels() {
+    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let th = temp_home_env();
+    write_main_cfg(
+        &th.home,
+        &serde_json::json!({ "channels": { "web": { "auth_token": "tok123456" } } }),
+    );
+    // stdin EOF → 答案非 y → Cancelled，token 保留
+    run(
+        ChannelAction::Web { action: WebAction::Clear },
+        false,
+    )
+    .unwrap();
+    assert_eq!(
+        read_main_cfg(&th.home)["channels"]["web"]["auth_token"],
+        serde_json::json!("tok123456")
+    );
+}
+
+#[test]
+fn test_run_web_config_full_fields_and_missing() {
+    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let th = temp_home_env();
+    // 覆盖 TLS/CORS/max_connections/额外字段打印分支
+    write_main_cfg(
+        &th.home,
+        &serde_json::json!({
+            "channels": {
+                "web": {
+                    "enabled": true,
+                    "host": "0.0.0.0",
+                    "port": 8080,
+                    "auth_token": "verylongtoken1234",
+                    "path": "/ws",
+                    "tls_cert": "cert.pem",
+                    "tls_key": "key.pem",
+                    "cors": true,
+                    "max_connections": 64,
+                    "custom_extra": "x"
+                }
+            }
+        }),
+    );
+    run(
+        ChannelAction::Web { action: WebAction::Config },
+        false,
+    )
+    .unwrap();
+    // 最小字段（enabled 未设 → "(not set)"）
+    write_main_cfg(
+        &th.home,
+        &serde_json::json!({ "channels": { "web": { "host": "h" } } }),
+    );
+    run(
+        ChannelAction::Web { action: WebAction::Config },
+        false,
+    )
+    .unwrap();
+    // 无 web 条目
+    write_main_cfg(&th.home, &serde_json::json!({ "channels": {} }));
+    run(
+        ChannelAction::Web { action: WebAction::Config },
+        false,
+    )
+    .unwrap();
+    // 无 config 文件
+    let _th2 = temp_home_env();
+    run(
+        ChannelAction::Web { action: WebAction::Config },
+        false,
+    )
+    .unwrap();
+    drop(th);
+}
+
+// -------------------------------------------------------------------------
+// WebSocket 子命令
+// -------------------------------------------------------------------------
+
+#[test]
+fn test_run_websocket_setup_interactive_eof_defaults() {
+    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let th = temp_home_env();
+    write_main_cfg(
+        &th.home,
+        &serde_json::json!({
+            "channels": {
+                "websocket": { "enabled": false, "host": "10.0.0.5", "port": "49001", "path": "/ws" },
+                "web": {}
+            }
+        }),
+    );
+    // 全部提示 EOF → 用现有值；sync 问题答案 "" != "n" → 走同步分支
+    run(
+        ChannelAction::WebSocket { action: WebSocketAction::Setup },
+        false,
+    )
+    .unwrap();
+    let cfg = read_main_cfg(&th.home);
+    assert_eq!(
+        cfg["channels"]["websocket"]["enabled"],
+        serde_json::json!(true)
+    );
+    assert_eq!(cfg["channels"]["websocket"]["host"], serde_json::json!("10.0.0.5"));
+    // 同步到 web：session_id 生成（ws- 前缀）
+    let session = cfg["channels"]["web"]["session_id"].as_str().unwrap();
+    assert!(session.starts_with("ws-"));
+    assert_eq!(cfg["channels"]["web"]["port"], serde_json::json!("49001"));
+}
+
+#[test]
+fn test_run_websocket_setup_from_scratch_defaults() {
+    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let th = temp_home_env();
+    // 无已有值 → 默认 127.0.0.1/49001//ws；无 channels 键也能建
+    write_main_cfg(&th.home, &serde_json::json!({}));
+    run(
+        ChannelAction::WebSocket { action: WebSocketAction::Setup },
+        false,
+    )
+    .unwrap();
+    let cfg = read_main_cfg(&th.home);
+    assert_eq!(
+        cfg["channels"]["websocket"]["host"],
+        serde_json::json!("127.0.0.1")
+    );
+    assert_eq!(cfg["channels"]["websocket"]["port"], serde_json::json!("49001"));
+    assert_eq!(cfg["channels"]["websocket"]["path"], serde_json::json!("/ws"));
+}
+
+#[test]
+fn test_run_websocket_config_variants() {
+    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let th = temp_home_env();
+    write_main_cfg(
+        &th.home,
+        &serde_json::json!({
+            "channels": { "websocket": { "enabled": true, "port": "49001" } }
+        }),
+    );
+    run(
+        ChannelAction::WebSocket { action: WebSocketAction::Config },
+        false,
+    )
+    .unwrap();
+    // 无 websocket 条目 → (not configured)
+    write_main_cfg(&th.home, &serde_json::json!({ "channels": {} }));
+    run(
+        ChannelAction::WebSocket { action: WebSocketAction::Config },
+        false,
+    )
+    .unwrap();
+    // 无 config 文件 → Ok（无输出）
+    let _th2 = temp_home_env();
+    run(
+        ChannelAction::WebSocket { action: WebSocketAction::Config },
+        false,
+    )
+    .unwrap();
+    drop(th);
+}
+
+#[test]
+fn test_run_websocket_set_validations() {
+    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let th = temp_home_env();
+    write_main_cfg(&th.home, &serde_json::json!({ "channels": { "websocket": {} } }));
+    // 非数字端口 → Err
+    let err = run(
+        ChannelAction::WebSocket {
+            action: WebSocketAction::Set {
+                key: "port".into(),
+                value: "abc".into(),
+            },
+        },
+        false,
+    )
+    .unwrap_err();
+    assert!(err.to_string().contains("Invalid port number"));
+    // 端口 0 → bail
+    let err = run(
+        ChannelAction::WebSocket {
+            action: WebSocketAction::Set {
+                key: "port".into(),
+                value: "0".into(),
+            },
+        },
+        false,
+    )
+    .unwrap_err();
+    assert!(err.to_string().contains("cannot be 0"));
+    // 合法端口写入
+    run(
+        ChannelAction::WebSocket {
+            action: WebSocketAction::Set {
+                key: "port".into(),
+                value: "49152".into(),
+            },
+        },
+        false,
+    )
+    .unwrap();
+    assert_eq!(
+        read_main_cfg(&th.home)["channels"]["websocket"]["port"],
+        serde_json::json!("49152")
+    );
+    // path 缺 "/" → 自动补
+    run(
+        ChannelAction::WebSocket {
+            action: WebSocketAction::Set {
+                key: "path".into(),
+                value: "sock".into(),
+            },
+        },
+        false,
+    )
+    .unwrap();
+    assert_eq!(
+        read_main_cfg(&th.home)["channels"]["websocket"]["path"],
+        serde_json::json!("/sock")
+    );
+    // 普通键直写
+    run(
+        ChannelAction::WebSocket {
+            action: WebSocketAction::Set {
+                key: "host".into(),
+                value: "127.0.0.1".into(),
+            },
+        },
+        false,
+    )
+    .unwrap();
+}
+
+#[test]
+fn test_run_websocket_get_set_and_unset() {
+    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let th = temp_home_env();
+    write_main_cfg(&th.home, &serde_json::json!({ "channels": { "websocket": {} } }));
+    run(
+        ChannelAction::WebSocket {
+            action: WebSocketAction::Get { key: "host".into() },
+        },
+        false,
+    )
+    .unwrap();
+    run(
+        ChannelAction::WebSocket {
+            action: WebSocketAction::Set {
+                key: "host".into(),
+                value: "192.168.1.1".into(),
+            },
+        },
+        false,
+    )
+    .unwrap();
+    run(
+        ChannelAction::WebSocket {
+            action: WebSocketAction::Get { key: "host".into() },
+        },
+        false,
+    )
+    .unwrap();
+}
+
+// -------------------------------------------------------------------------
+// External 子命令
+// -------------------------------------------------------------------------
+
+#[test]
+fn test_run_external_setup_interactive_eof_defaults() {
+    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let th = temp_home_env();
+    write_main_cfg(
+        &th.home,
+        &serde_json::json!({
+            "channels": {
+                "external": { "enabled": false, "input_exe": "in.bat", "output_exe": "out.bat" }
+            }
+        }),
+    );
+    run(
+        ChannelAction::External { action: ExternalAction::Setup },
+        false,
+    )
+    .unwrap();
+    let ext = &read_main_cfg(&th.home)["channels"]["external"];
+    assert_eq!(ext["enabled"], serde_json::json!(true));
+    assert_eq!(ext["input_exe"], serde_json::json!("in.bat"));
+    assert_eq!(ext["output_exe"], serde_json::json!("out.bat"));
+    assert_eq!(ext["chat_id"], serde_json::json!("external:main"));
+}
+
+#[test]
+fn test_run_external_setup_from_scratch_removes_empty() {
+    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let th = temp_home_env();
+    // 无已有值 → input/output 空 → remove（本就没有）；chat_id 默认写入
+    write_main_cfg(&th.home, &serde_json::json!({ "channels": {} }));
+    run(
+        ChannelAction::External { action: ExternalAction::Setup },
+        false,
+    )
+    .unwrap();
+    let ext = &read_main_cfg(&th.home)["channels"]["external"];
+    assert!(ext.get("input_exe").is_none());
+    assert!(ext.get("output_exe").is_none());
+    assert_eq!(ext["chat_id"], serde_json::json!("external:main"));
+}
+
+#[test]
+fn test_run_external_config_variants() {
+    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let th = temp_home_env();
+    write_main_cfg(
+        &th.home,
+        &serde_json::json!({ "channels": { "external": { "enabled": true } } }),
+    );
+    run(
+        ChannelAction::External { action: ExternalAction::Config },
+        false,
+    )
+    .unwrap();
+    write_main_cfg(&th.home, &serde_json::json!({ "channels": {} }));
+    run(
+        ChannelAction::External { action: ExternalAction::Config },
+        false,
+    )
+    .unwrap();
+    let _th2 = temp_home_env();
+    run(
+        ChannelAction::External { action: ExternalAction::Config },
+        false,
+    )
+    .unwrap();
+    drop(th);
+}
+
+#[test]
+fn test_run_external_test_not_configured() {
+    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let th = temp_home_env();
+    write_main_cfg(&th.home, &serde_json::json!({ "channels": {} }));
+    // 两个 exe 都没配 → 提示后提前返回
+    run(
+        ChannelAction::External { action: ExternalAction::Test },
+        false,
+    )
+    .unwrap();
+}
+
+#[test]
+fn test_run_external_test_not_found_and_failed_spawn() {
+    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let th = temp_home_env();
+    // input=不存在的路径 → NOT FOUND；output=存在但是目录 → spawn Err → FAILED
+    let dir_as_exe = th.home.join("workspace").to_string_lossy().to_string();
+    write_main_cfg(
+        &th.home,
+        &serde_json::json!({
+            "channels": {
+                "external": {
+                    "input_exe": "Z:/definitely/not/there.exe",
+                    "output_exe": dir_as_exe
+                }
+            }
+        }),
+    );
+    run(
+        ChannelAction::External { action: ExternalAction::Test },
+        false,
+    )
+    .unwrap();
+}
+
+#[test]
+fn test_run_external_set_and_get() {
+    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let th = temp_home_env();
+    write_main_cfg(&th.home, &serde_json::json!({ "channels": { "external": {} } }));
+    run(
+        ChannelAction::External {
+            action: ExternalAction::Set {
+                key: "input_exe".into(),
+                value: "input.bat".into(),
+            },
+        },
+        false,
+    )
+    .unwrap();
+    assert_eq!(
+        read_main_cfg(&th.home)["channels"]["external"]["input_exe"],
+        serde_json::json!("input.bat")
+    );
+    run(
+        ChannelAction::External {
+            action: ExternalAction::Get { key: "input_exe".into() },
+        },
+        false,
+    )
+    .unwrap();
+    run(
+        ChannelAction::External {
+            action: ExternalAction::Get { key: "ghost".into() },
+        },
+        false,
+    )
+    .unwrap();
+}

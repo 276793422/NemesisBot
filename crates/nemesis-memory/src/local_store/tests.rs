@@ -324,3 +324,97 @@ fn test_tfidf_score_partial_overlap() {
     let score = tfidf_score(&query, &doc, total_docs, &doc_freq);
     assert!(score > 0.0 && score < 1.0, "Expected (0, 1), got {score}");
 }
+
+// ---- S5 coverage: blank-line skip, flush parent fail, metadata tokens, tfidf edges ----
+
+#[tokio::test]
+async fn load_skips_blank_lines() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("store.jsonl");
+
+    let store = TfIdfLocalStore::new(&path).await.unwrap();
+    store
+        .store(make_entry(MemoryType::LongTerm, "hello world"))
+        .await
+        .unwrap();
+
+    // Inject blank lines, then reload: the valid entry survives, blanks skipped.
+    let mut content = std::fs::read_to_string(&path).unwrap();
+    content.insert_str(0, "\n\n");
+    content.push_str("\n\n");
+    std::fs::write(&path, content).unwrap();
+
+    let reloaded = TfIdfLocalStore::new(&path).await.unwrap();
+    let res = reloaded.query("hello", None, 10).await.unwrap();
+    assert!(
+        res.entries.iter().any(|se| se.entry.content.contains("hello world")),
+        "entry must survive reload across blank lines"
+    );
+}
+
+#[tokio::test]
+async fn store_flush_fails_when_parent_is_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let blocker = dir.path().join("blocker");
+    std::fs::write(&blocker, "x").unwrap();
+    let path = blocker.join("store.jsonl");
+
+    // load: path does not exist → Ok. store(): flush → create_dir_all(parent=file) fails.
+    let store = TfIdfLocalStore::new(&path).await.unwrap();
+    let err = store
+        .store(make_entry(MemoryType::LongTerm, "x"))
+        .await
+        .unwrap_err();
+    assert!(
+        err.contains("Failed to create store directory"),
+        "got: {err}"
+    );
+}
+
+#[test]
+fn entry_tokens_includes_metadata_values() {
+    let mut entry = make_entry(MemoryType::LongTerm, "content alpha");
+    entry
+        .metadata
+        .insert("k".to_string(), "metavalue beta".to_string());
+    let toks = entry_tokens(&entry);
+    assert!(toks.contains(&"metavalue".to_string()), "tokens: {toks:?}");
+    assert!(toks.contains(&"beta".to_string()), "tokens: {toks:?}");
+    assert!(toks.contains(&"content".to_string()), "tokens: {toks:?}");
+    // Tags were already covered elsewhere but assert for completeness.
+    let mut tagged = make_entry(MemoryType::LongTerm, "body");
+    tagged.tags = vec!["TagWord".to_string()];
+    assert!(entry_tokens(&tagged).contains(&"tagword".to_string()));
+}
+
+#[test]
+fn tfidf_score_empty_inputs_return_zero() {
+    let doc = vec!["a".to_string(), "b".to_string()];
+    let mut df = HashMap::new();
+    df.insert("a".to_string(), 1);
+    df.insert("b".to_string(), 1);
+    // Empty query tokens.
+    assert_eq!(tfidf_score(&[], &doc, 5, &df), 0.0);
+    // Empty doc tokens.
+    let q = vec!["a".to_string()];
+    assert_eq!(tfidf_score(&q, &[], 5, &df), 0.0);
+    // Zero total docs.
+    assert_eq!(tfidf_score(&q, &doc, 0, &df), 0.0);
+}
+
+#[test]
+fn tfidf_score_df_zero_terms_contribute_nothing() {
+    let q = vec!["zz".to_string()];
+    let doc = vec!["zz".to_string()];
+    let mut df = HashMap::new();
+    df.insert("zz".to_string(), 0); // query-side df==0 continue → norms stay 0
+    assert_eq!(tfidf_score(&q, &doc, 5, &df), 0.0);
+
+    // Doc-side df==0 continue: query term has df, an extra doc term does not.
+    let mut df2 = HashMap::new();
+    df2.insert("a".to_string(), 2);
+    let q2 = vec!["a".to_string()];
+    let doc2 = vec!["a".to_string(), "b".to_string()];
+    let score = tfidf_score(&q2, &doc2, 5, &df2);
+    assert!(score > 0.0 && score <= 1.0, "got {score}");
+}

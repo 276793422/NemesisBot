@@ -207,3 +207,8 @@ impl SecurityHandler {
         })))
     }
 }
+
+// S10b (2026-08-26, quality-hardening goal 冲刺 web 批次 2): audit paging +
+// decision normalization + flatten/extract fallback arms + config error arms.
+#[cfg(test)]
+mod s10b_tests;

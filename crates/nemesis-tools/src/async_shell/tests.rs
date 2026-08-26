@@ -257,3 +257,51 @@ fn test_new_with_config_disabled_patterns() {
     assert!(!tool.is_dangerous("rm -rf /"));
     assert!(!tool.is_dangerous("reboot"));
 }
+
+#[test]
+fn w4a_new_with_config_invalid_custom_pattern_is_skipped() {
+    // Invalid regexes among custom patterns are warned+skipped without
+    // panicking; the valid ones still compile and deny.
+    let tool = AsyncExecTool::new_with_config(
+        ".",
+        false,
+        Some(&["[invalid", r"\bw4abad\b"]),
+        true,
+    );
+    assert!(tool.is_dangerous("w4abad thing"));
+    assert!(!tool.is_dangerous("echo fine"));
+}
+
+#[test]
+fn w4a_new_with_config_empty_custom_falls_back_to_defaults() {
+    // Some(&[]) takes the `_` arm -> default deny patterns installed.
+    let tool = AsyncExecTool::new_with_config(".", false, Some(&[]), true);
+    assert!(tool.is_dangerous("rm -rf /"), "empty list must fall back to defaults");
+}
+
+#[test]
+fn w4a_set_restrict_to_workspace_toggles_traversal_guard() {
+    let mut tool = AsyncExecTool::new(".", false);
+    assert!(tool.guard_command("cat ../etc/passwd").is_ok());
+    tool.set_restrict_to_workspace(true);
+    let err = tool
+        .guard_command("cat ../etc/passwd")
+        .err()
+        .expect("restricted must block traversal");
+    assert!(err.contains("path traversal"), "got: {err}");
+    // mixed case still caught (guard lowercases before checking)
+    assert!(tool.guard_command("cat ..\\Windows").is_err());
+}
+
+// ===========================================================================
+// S2 coverage (2026-08-26): guard_command non-dangerous fall-through edge
+// (restrict=true, no traversal)
+// ===========================================================================
+
+#[test]
+fn s2_async_guard_command_restrict_no_traversal_passes() {
+    let tool = AsyncExecTool::new(".", true);
+    tool.guard_command("echo hello").unwrap();
+    // Empty command still rejected.
+    assert!(tool.guard_command("   ").is_err());
+}

@@ -1604,3 +1604,7 @@ pub(crate) fn projected_messages_from_rows(rows: &[serde_json::Value]) -> Vec<St
 
 #[cfg(test)]
 mod tests;
+
+// S9 (quality-hardening goal 冲刺 S9): 独立测试文件挂载（声明式，无内联测试）。
+#[cfg(test)]
+mod s9_tests;

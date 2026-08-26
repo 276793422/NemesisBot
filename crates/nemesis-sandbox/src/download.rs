@@ -103,3 +103,6 @@ pub async fn download_release(
     download_and_verify(installer_url, expected.as_deref(), &dest).await?;
     Ok(dest)
 }
+
+#[cfg(test)]
+mod tests;

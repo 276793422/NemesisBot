@@ -125,6 +125,14 @@ fn parse_github_url(url: &str) -> Result<(String, String)> {
             let repo = parts[1].trim_end_matches(".git").to_string();
             return Ok((parts[0].to_string(), repo));
         }
+        // (BUG #25, quality-hardening goal 冲刺 S10) 前缀命中但只有 owner
+        // 段时原实现掉进下面的 shorthand 分支，产出 ("https:", "/github.com/
+        // onlyowner") 垃圾解析。与 nemesis-web handlers/skills.rs 同修：
+        // 前缀已匹配就直接报错，不再当 shorthand。
+        return Err(anyhow::anyhow!(
+            "Invalid GitHub URL: {}. Supported formats: https://github.com/user/repo, git@github.com:user/repo.git, user/repo",
+            url
+        ));
     }
 
     // git@github.com:user/repo.git
@@ -210,21 +218,29 @@ fn get_builtin_skills() -> Vec<(&'static str, &'static str)> {
 
 /// Detect the skill structure of a GitHub repository.
 /// Returns (index_type, skill_path_pattern, branch).
-fn detect_skill_structure(owner: &str, repo: &str) -> (String, String, String) {
+///
+/// (BUG #27 同类横向, quality-hardening goal 冲刺 S11e) 改为 async fn 用
+/// 【异步】reqwest client：唯一调用方 cmd_source_add 已随之 async 化，经
+/// run() 的 block_in_place 臂在 CLI 的 tokio runtime 上驱动（同文件 Search/
+/// Install/Learn 臂的既有模式）。reqwest::blocking::Client 内部嵌套 runtime，
+/// 在 run_command 的 block_on 上下文 drop 必 panic（#27 同拓扑探针实证，
+/// 见 shutdown/tests.rs 探针段）。显式 .timeout(30s) 保持与 blocking 默认
+/// 超时语义一致。
+async fn detect_skill_structure(owner: &str, repo: &str) -> (String, String, String) {
     let branches = ["main", "master"];
 
     for branch in &branches {
         let base_url = format!("https://api.github.com/repos/{}/{}/contents", owner, repo);
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(30))
+            .build()
+            .unwrap_or_else(|_| reqwest::Client::new());
 
         // Mode A: skills/{slug}/SKILL.md (two-level)
         let skills_url = format!("{}{}?ref={}", base_url, "/skills", branch);
-        if let Ok(resp) = reqwest::blocking::Client::new()
-            .get(&skills_url)
-            .header("User-Agent", "nemesisbot")
-            .send()
-        {
+        if let Ok(resp) = client.get(&skills_url).header("User-Agent", "nemesisbot").send().await {
             if resp.status().is_success() {
-                if let Ok(entries) = resp.json::<Vec<serde_json::Value>>() {
+                if let Ok(entries) = resp.json::<Vec<serde_json::Value>>().await {
                     let skill_dirs: Vec<&str> = entries
                         .iter()
                         .filter_map(|e| {
@@ -243,10 +259,8 @@ fn detect_skill_structure(owner: &str, repo: &str) -> (String, String, String) {
                             "{}{}{}{}/SKILL.md?ref={}",
                             base_url, "/skills/", dir, "", branch
                         );
-                        if let Ok(r) = reqwest::blocking::Client::new()
-                            .get(&check_url)
-                            .header("User-Agent", "nemesisbot")
-                            .send()
+                        if let Ok(r) =
+                            client.get(&check_url).header("User-Agent", "nemesisbot").send().await
                         {
                             if r.status().is_success() {
                                 has_skill_md = true;
@@ -275,13 +289,9 @@ fn detect_skill_structure(owner: &str, repo: &str) -> (String, String, String) {
             "https://raw.githubusercontent.com/{}/{}/{}/skills.json",
             owner, repo, branch
         );
-        if let Ok(resp) = reqwest::blocking::Client::new()
-            .get(&index_url)
-            .header("User-Agent", "nemesisbot")
-            .send()
-        {
+        if let Ok(resp) = client.get(&index_url).header("User-Agent", "nemesisbot").send().await {
             if resp.status().is_success() {
-                if let Ok(data) = resp.text() {
+                if let Ok(data) = resp.text().await {
                     if serde_json::from_str::<Vec<serde_json::Value>>(&data).is_ok() {
                         return (
                             "skills_json".to_string(),
@@ -295,13 +305,9 @@ fn detect_skill_structure(owner: &str, repo: &str) -> (String, String, String) {
 
         // Mode D: {slug}/SKILL.md at root level
         let root_url = format!("{}?ref={}", base_url, branch);
-        if let Ok(resp) = reqwest::blocking::Client::new()
-            .get(&root_url)
-            .header("User-Agent", "nemesisbot")
-            .send()
-        {
+        if let Ok(resp) = client.get(&root_url).header("User-Agent", "nemesisbot").send().await {
             if resp.status().is_success() {
-                if let Ok(entries) = resp.json::<Vec<serde_json::Value>>() {
+                if let Ok(entries) = resp.json::<Vec<serde_json::Value>>().await {
                     let skip_dirs = [
                         "src", "pkg", "cmd", "internal", "docs", ".github", "test", "tests",
                         "examples", "scripts", "config",
@@ -325,13 +331,11 @@ fn detect_skill_structure(owner: &str, repo: &str) -> (String, String, String) {
 
                     for dir in &root_dirs {
                         let check_url = format!("{}/{}?ref={}", base_url, dir, branch);
-                        if let Ok(r) = reqwest::blocking::Client::new()
-                            .get(&check_url)
-                            .header("User-Agent", "nemesisbot")
-                            .send()
+                        if let Ok(r) =
+                            client.get(&check_url).header("User-Agent", "nemesisbot").send().await
                         {
                             if r.status().is_success() {
-                                if let Ok(sub_entries) = r.json::<Vec<serde_json::Value>>() {
+                                if let Ok(sub_entries) = r.json::<Vec<serde_json::Value>>().await {
                                     if sub_entries.iter().any(|e| {
                                         e.get("name").and_then(|v| v.as_str()) == Some("SKILL.md")
                                             && e.get("type").and_then(|v| v.as_str())
@@ -830,7 +834,11 @@ fn cmd_source_list(skills_cfg: &std::path::Path) -> Result<()> {
     Ok(())
 }
 
-fn cmd_source_add(skills_cfg: &std::path::Path, url: &str) -> Result<()> {
+/// (BUG #27 同类横向, quality-hardening goal 冲刺 S11e) async 化：见
+/// [`detect_skill_structure`] 注释——原同步实现内部 reqwest::blocking 在
+/// run_command 的 runtime 上下文 drop 必 panic；现由 run() 的 block_in_place
+/// 臂驱动，内部全异步 client（显式 30s 超时 = blocking 默认语义）。
+async fn cmd_source_add(skills_cfg: &std::path::Path, url: &str) -> Result<()> {
     let (owner, repo) = parse_github_url(url)?;
     let full_repo = format!("{}/{}", owner, repo);
 
@@ -838,15 +846,15 @@ fn cmd_source_add(skills_cfg: &std::path::Path, url: &str) -> Result<()> {
 
     // Verify repo exists via GitHub API (retry up to 3 times with 2s delay)
     let api_url = format!("https://api.github.com/repos/{}", full_repo);
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(30))
+        .build()
+        .unwrap_or_else(|_| reqwest::Client::new());
     let max_retries = 3;
     let mut verified = false;
 
     for attempt in 1..=max_retries {
-        match reqwest::blocking::Client::new()
-            .get(&api_url)
-            .header("User-Agent", "nemesisbot")
-            .send()
-        {
+        match client.get(&api_url).header("User-Agent", "nemesisbot").send().await {
             Ok(resp) => {
                 if resp.status() == reqwest::StatusCode::NOT_FOUND {
                     println!("Error: Repository '{}' not found (404).", full_repo);
@@ -871,7 +879,7 @@ fn cmd_source_add(skills_cfg: &std::path::Path, url: &str) -> Result<()> {
                             attempt + 1,
                             max_retries
                         );
-                        std::thread::sleep(std::time::Duration::from_secs(2));
+                        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
                         continue;
                     }
                 }
@@ -884,7 +892,7 @@ fn cmd_source_add(skills_cfg: &std::path::Path, url: &str) -> Result<()> {
                         attempt + 1,
                         max_retries
                     );
-                    std::thread::sleep(std::time::Duration::from_secs(2));
+                    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
                     continue;
                 }
             }
@@ -896,7 +904,8 @@ fn cmd_source_add(skills_cfg: &std::path::Path, url: &str) -> Result<()> {
     }
 
     // Auto-detect skill structure
-    let (index_type, skill_path_pattern, branch) = detect_skill_structure(&owner, &repo);
+    let (index_type, skill_path_pattern, branch) =
+        detect_skill_structure(&owner, &repo).await;
     println!(
         "  Detected structure: {} (pattern: {}, branch: {})",
         index_type, skill_path_pattern, branch
@@ -1066,7 +1075,10 @@ fn cmd_list_builtin() -> Result<()> {
     Ok(())
 }
 
-fn cmd_install_clawhub(
+/// (BUG #27 同类横向, quality-hardening goal 冲刺 S11e) async 化：理由同
+/// [`cmd_source_add`]——blocking client 在 run_command 的 runtime 上下文
+/// drop 必 panic；30s 超时语义保持不变。
+async fn cmd_install_clawhub(
     skills_dir: &std::path::Path,
     author: &str,
     skill_name: &str,
@@ -1085,15 +1097,15 @@ fn cmd_install_clawhub(
         author, skill_name
     );
 
-    let client = reqwest::blocking::Client::builder()
+    let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(30))
         .build()
-        .unwrap_or_else(|_| reqwest::blocking::Client::new());
+        .unwrap_or_else(|_| reqwest::Client::new());
 
-    match client.get(&url).header("User-Agent", "nemesisbot").send() {
+    match client.get(&url).header("User-Agent", "nemesisbot").send().await {
         Ok(resp) => {
             if resp.status().is_success() {
-                if let Ok(content) = resp.text() {
+                if let Ok(content) = resp.text().await {
                     let target = skills_dir.join(out_name);
                     let _ = std::fs::create_dir_all(&target);
                     std::fs::write(target.join("SKILL.md"), &content)?;
@@ -1151,10 +1163,22 @@ pub fn run(action: SkillsAction, local: bool) -> Result<()> {
         SkillsAction::Remove { name } => cmd_remove(&skills_dir, &name)?,
         SkillsAction::Source { action } => match action {
             SourceAction::List => cmd_source_list(&skills_cfg)?,
-            SourceAction::Add { url } => cmd_source_add(&skills_cfg, &url)?,
+            // (BUG #27 同类横向, quality-hardening goal 冲刺 S11e) add 已 async
+            // 化（内部异步 reqwest client），走同文件既有 block_in_place 桥。
+            SourceAction::Add { url } => {
+                let result = tokio::task::block_in_place(|| {
+                    tokio::runtime::Handle::current().block_on(cmd_source_add(&skills_cfg, &url))
+                })?;
+                result
+            }
             SourceAction::Remove { name } => cmd_source_remove(&skills_cfg, &name)?,
         },
-        SkillsAction::AddSource { url } => cmd_source_add(&skills_cfg, &url)?,
+        SkillsAction::AddSource { url } => {
+            let result = tokio::task::block_in_place(|| {
+                tokio::runtime::Handle::current().block_on(cmd_source_add(&skills_cfg, &url))
+            })?;
+            result
+        }
         SkillsAction::Validate { path } => cmd_validate(&path)?,
         SkillsAction::Show { name } => cmd_show(&skills_dir, &name)?,
         SkillsAction::Cache { action } => match action {
@@ -1177,7 +1201,19 @@ pub fn run(action: SkillsAction, local: bool) -> Result<()> {
             author,
             skill_name,
             output_name,
-        } => cmd_install_clawhub(&skills_dir, &author, &skill_name, output_name.as_deref())?,
+        } => {
+            // (BUG #27 同类横向, quality-hardening goal 冲刺 S11e) async 化桥接，
+            // 同 block_in_place 既有模式。
+            let result = tokio::task::block_in_place(|| {
+                tokio::runtime::Handle::current().block_on(cmd_install_clawhub(
+                    &skills_dir,
+                    &author,
+                    &skill_name,
+                    output_name.as_deref(),
+                ))
+            })?;
+            result
+        }
         SkillsAction::Learn { source, name } => {
             let result = tokio::task::block_in_place(|| {
                 tokio::runtime::Handle::current().block_on(cmd_learn(

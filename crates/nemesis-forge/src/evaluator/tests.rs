@@ -412,3 +412,16 @@ async fn test_evaluate_with_provider_notes_not_string() {
     // Notes is not a string, so should default to ""
     assert_eq!(result.details, "");
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_evaluate_sync_inside_multi_thread_runtime() {
+    // Inside a multi-thread runtime, Handle::try_current() succeeds and
+    // evaluate_sync takes the block_in_place path (which requires a
+    // multi-thread runtime — a current-thread runtime would panic).
+    let evaluator = QualityEvaluator::new(EvaluatorConfig::default());
+    let result = evaluator.evaluate_sync("skill", "mt", "1.0", "content");
+
+    assert!(result.passed);
+    assert_eq!(result.score, 70);
+    assert!(result.details.contains("default score"));
+}

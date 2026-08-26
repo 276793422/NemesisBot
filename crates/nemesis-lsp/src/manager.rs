@@ -93,10 +93,14 @@ impl Session {
                         proto::Incoming::Response(resp) => {
                             if let Some(err) = resp.get("error") {
                                 if !err.is_null() {
-                                    if attempt < TRANSIENT_RETRIES
-                                        && proto::is_transient_error(err)
-                                    {
-                                        break; // re-send with a fresh id
+                                    if proto::is_transient_error(err) {
+                                        // Re-send with a fresh id; on the
+                                        // last attempt the `break` falls out
+                                        // of the for-loop to the descriptive
+                                        // "kept cancelling" error below (a
+                                        // bare -32800 would tell the model
+                                        // nothing about the retry budget).
+                                        break;
                                     }
                                     return Err(format!(
                                         "server error on {method}: {err}"
@@ -264,6 +268,13 @@ impl LspManager {
                     root.display()
                 );
                 self.sessions.lock().await.remove(&(lang, root.clone()));
+                // Tree-kill the dead session's child now instead of waiting
+                // for the Arc drop: kill_on_drop only reaps the direct child
+                // (the shim), and a shim-wrapped server would leak the real
+                // server process as an orphan holding our pipes.
+                if let Ok(mut inner) = session.inner.try_lock() {
+                    kill_tree(&mut inner.child).await;
+                }
                 let fresh = self.get_or_spawn(lang, &root, &server_path).await?;
                 *fresh.last_used.lock().unwrap() = Instant::now();
                 fresh.request(op.method(), params, self.request_timeout).await
@@ -357,10 +368,33 @@ impl LspManager {
             let exit = proto::notification("exit", Value::Null);
             let _ = inner.stdin.write_all(&proto::encode(&exit)).await;
             let _ = inner.stdin.flush().await;
-            let _ = inner.child.kill().await;
+            kill_tree(&mut inner.child).await;
         }
         true
     }
+}
+
+/// Kill the child AND its descendants. LSP servers on Windows are routinely
+/// shim-wrapped (`.cmd`/npm shims): TerminateProcess on the shim orphans
+/// the grandchild, and a surviving grandchild holds the host's pipes
+/// hostage — the host process then refuses to exit until the orphan dies
+/// on its own (observed with the fake-server tests: a hung shim-wrapped
+/// python kept the whole test process alive past its own sleep). Same
+/// lesson as the CLI-delegation layer's tree-kill.
+async fn kill_tree(child: &mut Child) {
+    #[cfg(windows)]
+    if let Some(pid) = child.id() {
+        let mut c = tokio::process::Command::new("taskkill");
+        c.args(["/T", "/F", "/PID", &pid.to_string()])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            // Never open a console window (project background-process rule).
+            .creation_flags(0x0800_0000);
+        let _ = c.status().await;
+    }
+    // Non-Windows: process groups make the direct kill sufficient (and
+    // kill_on_drop remains the backstop on every platform).
+    let _ = child.kill().await;
 }
 
 async fn spawn_session(

@@ -860,7 +860,9 @@ pub fn write_json_response<T: serde::Serialize>(value: &T) -> Vec<u8> {
 /// `POST /api/internal` — internal control endpoint for CLI commands.
 ///
 /// Requires `X-Auth-Token` header matching `web.auth_token`.
-/// Body: `{ "cmd": "open_dashboard" }`
+/// Body: `{ "cmd": "open_dashboard" }` or `{ "cmd": "shutdown" }`
+/// (BUG #31, quality-hardening goal 冲刺 S11e: `shutdown` = graceful-stop
+/// request from the CLI; open_dashboard's InternalCommand path is shared).
 pub async fn handle_api_internal(
     headers: axum::http::HeaderMap,
     State(state): State<Arc<AppState>>,
@@ -923,6 +925,19 @@ pub async fn handle_api_internal(
     match cmd {
         "open_dashboard" => {
             tx.send(crate::internal::InternalCommand::OpenDashboard)
+                .await
+                .map_err(|_| {
+                    (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(serde_json::json!({"error": "send failed"})),
+                    )
+                })?;
+        }
+        // (BUG #31, quality-hardening goal 冲刺 S11e) `nemesisbot shutdown`
+        // 的 HTTP 臂：此前打 `/api/shutdown`（从未注册，必 404 = 死臂）。
+        // 现在落到既有 mpsc 通道 → gateway 接收环走 Ctrl+C 同源的优雅停机。
+        "shutdown" => {
+            tx.send(crate::internal::InternalCommand::Shutdown)
                 .await
                 .map_err(|_| {
                     (
@@ -1223,3 +1238,11 @@ mod sdk_route_tests;
 // workflow-typed AppState fields).
 #[cfg(test)]
 mod fork_route_tests;
+
+// S10b (2026-08-26, quality-hardening goal 冲刺 web 批次 2): pure helpers
+// (request-summary walk, daily-log matcher, log tail reader, sanitize_map,
+// first_line_trunc, resolve_fork_store) + api_key masking arms + turns
+// leading-row arm + fork title arm. No feature gate needed (same shape as
+// fork_route_tests).
+#[cfg(test)]
+mod s10b_tests;

@@ -803,3 +803,19 @@ fn test_extract_url_cluster_rpc() {
     let args = serde_json::json!({"peer_id": "bot-3", "action": "chat"});
     assert_eq!(extract_url("cluster_rpc", &args), "");
 }
+
+#[test]
+fn operation_type_display_late_variants() {
+    assert_eq!(OperationType::SystemService.to_string(), "system_service");
+    assert_eq!(OperationType::SystemInstall.to_string(), "system_install");
+    assert_eq!(OperationType::RegistryRead.to_string(), "registry_read");
+}
+
+#[test]
+fn validate_path_existing_file_inside_workspace_ok() {
+    let ws = tempfile::tempdir().unwrap();
+    let f = ws.path().join("a.txt");
+    std::fs::write(&f, "x").unwrap();
+    let r = validate_path(f.to_str().unwrap(), ws.path().to_str().unwrap());
+    assert!(r.is_ok(), "{r:?}");
+}

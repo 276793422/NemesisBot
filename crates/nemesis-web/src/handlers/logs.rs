@@ -1784,3 +1784,14 @@ mod tests;
 // security-gated: these commands depend only on nemesis-agent (non-optional).
 #[cfg(test)]
 mod history_tests;
+
+// Phase 3 覆盖率（2026-08-25）：requests/cluster_task/session 浏览面
+// （分页、device 过滤、self/peer perspective、cron 标记、BM25 过滤）。
+#[cfg(test)]
+mod browse_tests;
+
+// Phase 3 批次 18（2026-08-25）：security/chain_list/chain_verify 命令 +
+// 管道格式解析 + meta sidecar + markdown helper 直测。链夹具用真实
+// AuditChain（integrity.rs 写入端）生成，保证格式断言钉的是真磁盘契约。
+#[cfg(all(test, feature = "security"))]
+mod wweb2_tests;

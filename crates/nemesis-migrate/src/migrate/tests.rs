@@ -1832,3 +1832,222 @@ fn test_needs_migration_with_config_default() {
     let migrator = Migrator::new(config);
     assert!(!migrator.needs_migration());
 }
+
+// ============================================================
+// 覆盖缺口补测（llvm-cov 指定行：migrate.rs 168-176 / 361-362 /
+// 570-571 / 582 / 495）
+//
+// 覆盖对象与手段：
+// - 168-176：run_full_migration 的交互确认主路径（!force 且非 dry_run）。
+//   测试进程 stdin 不连接交互输入，无法进程内覆盖 → 子进程自举：
+//   父角色用 current_exe() + --exact 重新进入本测试函数，父写 y/n 到
+//   子进程 stdin 管道。
+// - 361-362：confirm() 的 stdin 读错误分支 → 父向子 stdin 写入非 UTF-8
+//   字节后关闭管道，read_line 返回 InvalidData → confirm 返 false。
+// - 570-571 / 582：dirs_home() 无 HOME/USERPROFILE 的 Err 分支 +
+//   expand_home 的回退分支。进程内清 env 会与本文件不持 GLOBAL_STATE_LOCK
+//   的既有测试（test_dirs_home_returns_ok 等）并行竞争 → 也走子进程
+//   （Command::env_remove 只影响子进程环境块，零竞争）。
+// - 495：execute_config_migration 的 create_dir_all(parent) 失败分支，
+//   用「父路径是普通文件」的 dst 触发。
+//
+// 防假绿守卫：结果经 NEMESIS_MIGRATE_CHILD_OUTCOME 指定文件回传；若
+// --exact 过滤名写错，libtest 会 0 匹配静默退出 0，outcome 文件缺失 →
+// 父角色 panic，而不是误判通过。
+// ============================================================
+
+#[test]
+fn test_execute_config_migration_create_dir_fails() {
+    let dir = tempfile::tempdir().unwrap();
+    let src_path = dir.path().join("openclaw.json");
+    std::fs::write(
+        &src_path,
+        r#"{"agents": {"defaults": {}}, "providers": {}, "channels": {}}"#,
+    )
+    .unwrap();
+    // blocker 是普通文件 → parent() 得到它，create_dir_all 对「已存在的
+    // 非目录路径」报错 → 覆盖 495 行 map_err 分支。
+    let blocker = dir.path().join("blocker");
+    std::fs::write(&blocker, "i am a file").unwrap();
+    let dst = blocker.join("config.json");
+
+    let err = execute_config_migration(
+        src_path.to_string_lossy().as_ref(),
+        dst.to_string_lossy().as_ref(),
+    )
+    .unwrap_err();
+    assert!(err.contains("create dir"), "unexpected error: {}", err);
+}
+
+#[test]
+fn test_execute_config_migration_success_no_existing_dst() {
+    let dir = tempfile::tempdir().unwrap();
+    let src_path = dir.path().join("openclaw.json");
+    std::fs::write(
+        &src_path,
+        r#"{"agents": {"defaults": {}}, "providers": {}, "channels": {}}"#,
+    )
+    .unwrap();
+    let dst = dir.path().join("nested").join("config.json");
+
+    execute_config_migration(
+        src_path.to_string_lossy().as_ref(),
+        dst.to_string_lossy().as_ref(),
+    )
+    .unwrap();
+    let content = std::fs::read_to_string(&dst).unwrap();
+    let parsed: serde_json::Value = serde_json::from_str(&content).unwrap();
+    assert!(parsed.get("agents").is_some());
+}
+
+/// 交互确认 + 无 HOME 场景的统一入口测试。
+///
+/// 父角色（无 NEMESIS_MIGRATE_CHILD_MODE 环境变量）：逐场景 spawn 子进程
+/// 并断言 outcome；子角色：按模式执行场景，把结果写入 outcome 文件后
+/// 正常返回（libtest 视为 pass）。
+#[test]
+fn test_run_full_migration_interactive_confirm_scenarios() {
+    use std::io::Write as _;
+
+    let mode = std::env::var("NEMESIS_MIGRATE_CHILD_MODE").unwrap_or_default();
+    if mode.is_empty() {
+        run_confirm_scenarios_parent();
+        return;
+    }
+
+    // ---- 子进程角色 ----
+    let outcome = match mode.as_str() {
+        "confirm_y" | "confirm_n" | "confirm_err" => {
+            // 构造假 OpenClaw 工作区：根放 openclaw.json，workspace 放一个
+            // 会被 Copy 的文件。force=false 且非 dry_run → 走交互确认分支。
+            let tmp = tempfile::tempdir().expect("child tempdir");
+            let openclaw_home = tmp.path().join(".openclaw");
+            let ws = openclaw_home.join("workspace");
+            std::fs::create_dir_all(&ws).unwrap();
+            std::fs::write(
+                openclaw_home.join("openclaw.json"),
+                r#"{"agents": {"defaults": {}}, "providers": {}, "channels": {}}"#,
+            )
+            .unwrap();
+            std::fs::write(ws.join("SOUL.md"), "soul content").unwrap();
+
+            let opts = MigrateOptions {
+                openclaw_home: openclaw_home.to_string_lossy().to_string(),
+                nemesisbot_home: tmp.path().join(".nemesisbot").to_string_lossy().to_string(),
+                force: false,
+                ..Default::default()
+            };
+            match run_full_migration(&opts) {
+                Ok(r) => format!(
+                    "ok copied={} skipped={} migrated={}",
+                    r.files_copied, r.files_skipped, r.config_migrated
+                ),
+                Err(e) => format!("err {}", e),
+            }
+        }
+        "no_home" => {
+            // 父进程已 env_remove HOME/USERPROFILE：dirs_home 应 Err，
+            // expand_home 应回退原样返回（覆盖 570-571 + 582）。
+            let dh = dirs_home();
+            let e1 = expand_home("~/some/path");
+            let e2 = expand_home("~");
+            format!(
+                "dirs_home={} expand1={} expand2={}",
+                dh.map(|_| "ok".to_string())
+                    .unwrap_or_else(|e| format!("err:{}", e)),
+                e1,
+                e2
+            )
+        }
+        other => format!("unknown mode {}", other),
+    };
+
+    if let Ok(path) = std::env::var("NEMESIS_MIGRATE_CHILD_OUTCOME") {
+        std::fs::write(&path, &outcome).expect("write outcome file");
+    }
+}
+
+/// 父角色驱动器：spawn 子进程、喂 stdin、校验 outcome 文件。
+fn run_confirm_scenarios_parent() {
+    let exe = std::env::current_exe().expect("current_exe");
+    // 子进程过滤名用裸函数名子串（非 --exact）：libtest 的可见测试名不带
+    // crate 前缀（`migrate::tests::…`），而 module_path!() 展开含 crate 名
+    // （`nemesis_migrate::migrate::tests::…`），--exact 永不匹配（2026-08-25
+    // 真跑抓到：outcome 守卫 panic。函数名在本 crate 唯一，子串即精确）。
+    let filter = "test_run_full_migration_interactive_confirm_scenarios";
+
+    // (模式, 写入子进程 stdin 的字节, 是否需要管道 stdin)
+    let cases: &[(&str, &[u8], bool)] = &[
+        ("confirm_y", &b"y\n"[..], true),
+        ("confirm_n", &b"n\n"[..], true),
+        // 无换行的非法 UTF-8：read_line 报 InvalidData → confirm 返 false。
+        ("confirm_err", &b"\xff\xfe"[..], true),
+        ("no_home", &b""[..], false),
+    ];
+
+    for &(mode, stdin_bytes, need_stdin) in cases {
+        let outcome_dir = tempfile::tempdir().expect("outcome tempdir");
+        let outcome_path = outcome_dir.path().join("outcome.txt");
+
+        let mut cmd = std::process::Command::new(&exe);
+        cmd.arg(&filter)
+            .env("NEMESIS_MIGRATE_CHILD_MODE", mode)
+            .env("NEMESIS_MIGRATE_CHILD_OUTCOME", &outcome_path)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null());
+        if need_stdin {
+            cmd.stdin(std::process::Stdio::piped());
+        } else {
+            cmd.stdin(std::process::Stdio::null());
+        }
+        if mode == "no_home" {
+            cmd.env_remove("HOME").env_remove("USERPROFILE");
+        }
+
+        let mut child = cmd.spawn().unwrap_or_else(|e| panic!("spawn {}: {}", mode, e));
+        if need_stdin {
+            if let Some(mut stdin) = child.stdin.take() {
+                let _ = stdin.write_all(stdin_bytes);
+            } // drop → EOF
+        }
+        let status = child.wait().expect("wait child");
+        assert!(
+            status.success(),
+            "child mode {} exited with {:?}",
+            mode,
+            status.code()
+        );
+
+        let outcome = std::fs::read_to_string(&outcome_path).unwrap_or_else(|_| {
+            panic!(
+                "outcome file missing for mode {} (libtest filter `{}` matched nothing?)",
+                mode, filter
+            )
+        });
+
+        match mode {
+            "confirm_y" => {
+                // 确认通过 → 真正执行迁移。
+                assert!(
+                    outcome.starts_with("ok"),
+                    "confirm_y outcome: {}",
+                    outcome
+                );
+                assert!(outcome.contains("migrated=true"), "outcome: {}", outcome);
+                assert!(!outcome.contains("copied=0"), "outcome: {}", outcome);
+            }
+            "confirm_n" | "confirm_err" => {
+                // 拒绝/读错 → Aborted，什么都没拷。
+                assert!(outcome.starts_with("ok"), "outcome: {}", outcome);
+                assert!(outcome.contains("copied=0"), "outcome: {}", outcome);
+                assert!(outcome.contains("migrated=false"), "outcome: {}", outcome);
+            }
+            "no_home" => {
+                assert!(outcome.contains("dirs_home=err"), "outcome: {}", outcome);
+                assert!(outcome.contains("expand1=~/some/path"), "outcome: {}", outcome);
+                assert!(outcome.contains("expand2=~"), "outcome: {}", outcome);
+            }
+            _ => unreachable!(),
+        }
+    }
+}

@@ -910,3 +910,29 @@ fn test_plan_migration_backed_up_in_subdir() {
             .any(|a| a.action_type == ActionType::Backup && a.destination.ends_with("existing.md"))
     );
 }
+
+// ============================================================
+// 覆盖缺口补测（llvm-cov 指定行：236；89 为结构性不可达）
+//
+// - 236：copy_file_with_mkdir 的 dst_path.parent() == None 分支。
+//   Path::new("").parent() 返回 None（单组件路径 "foo.txt" 的 parent
+//   是 Some("")，只有空串才是 None）→ 用 dst="" 直接调用私有函数覆盖，
+//   随后 fs::copy(src, "") 报错，正好断言 Err。
+// - 89（dir 遍历 match 的 `_ => {}`）：结构性不可达。该 arm 只匹配
+//   Skip，而 plan_dir_copy 内产生的 Skip 只能来自 plan_file_copy 的
+//   `!src.exists()`（workspace.rs:169）；dir 内条目来自 read_dir 枚举，
+//   单线程确定性测试里必然存在 → 89 只有在并发删除（TOCTOU 竞争）下
+//   才可能命中。已有测试（test_plan_migration_with_skip_in_dir 等）
+//   注释声称覆盖该分支，但其夹具实际从未在 dir 遍历中产生过 Skip。
+// ============================================================
+
+#[test]
+fn test_copy_file_with_mkdir_dst_empty_no_parent() {
+    // dst 为空串 → parent() 为 None → 跳过 mkdir，直接 fs::copy 失败
+    let dir = TempDir::new().unwrap();
+    let src = dir.path().join("a.txt");
+    fs::write(&src, "content").unwrap();
+
+    let err = copy_file_with_mkdir(src.to_str().unwrap(), "").unwrap_err();
+    assert!(err.contains("copy"), "unexpected error: {}", err);
+}
