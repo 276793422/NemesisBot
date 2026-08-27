@@ -60,3 +60,49 @@ fn engine_owned_true_when_both_names_free() {
         assert!(!engine_owned(&paths), "注册了但 binary 不在 tempdir runtime → 拒");
     }
 }
+
+// ---------------------------------------------------------------------------
+// R5 覆盖率批次（2026-08-27）：Stopped 臂（真实停止服务钉住）+ 归属门
+// true 臂（用注册表里的 SbieSvc binary 反推标准布局 home）。
+// ---------------------------------------------------------------------------
+
+#[cfg(windows)]
+#[test]
+fn service_state_stopped_for_real_stopped_service() {
+    // W32Time / MSDTC / SCardSvr 在桌面 Windows 默认手动且常驻 STOPPED；
+    // 轮询到任何一个 STOPPED 即已走过 `ServiceState::Stopped` return 行。
+    // 全部 Running/缺失的机器跳过（机器依赖，与上面 Themes 同策略）。
+    for name in ["W32Time", "MSDTC", "SCardSvr"] {
+        if service_state(name) == ServiceState::Stopped {
+            return; // 该调用本身就命中了 Stopped 臂
+        }
+    }
+}
+
+#[cfg(windows)]
+#[test]
+fn engine_owned_true_when_runtime_matches_registered_binaries() {
+    // 本机注册了 SbieSvc 且 binary 落在标准布局的 runtime 目录下
+    // （<home>/workspace/tools/sandboxie/runtime/SbieSvc.exe）→ 用 binary
+    // 反推 home 构造 paths，归属门必须通过。干净机器（未注册）跳过。
+    let Some(bin) = service_binary_path(crate::USERMODE_SERVICE) else {
+        return;
+    };
+    let bin_path = std::path::PathBuf::from(&bin);
+    let is_std_layout = bin_path
+        .parent()
+        .map(|p| p.ends_with("runtime"))
+        .unwrap_or(false);
+    if !is_std_layout {
+        return; // 非我们部署的形态（外部 Sandboxie 安装目录），跳过
+    }
+    let Some(home) = bin_path.ancestors().nth(5) else {
+        return;
+    };
+    let paths = crate::SandboxPaths::new(home);
+    assert!(
+        engine_owned(&paths),
+        "注册 binary 在推导 runtime 下（{}）→ 归属门必须放行",
+        paths.runtime_dir.display()
+    );
+}

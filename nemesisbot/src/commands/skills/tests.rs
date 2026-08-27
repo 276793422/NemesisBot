@@ -1678,3 +1678,985 @@ fn probe_block_in_place_bridge_with_async_client_is_panic_free() {
         assert_eq!(status, 200, "HTTP 往返应成功");
     })
 }
+
+// ===========================================================================
+// wave_b（覆盖率补测 2026-08-27）——只补「进程内可构造」的 miss 行。
+//
+// 不触网纪律的三条实现路径：
+// 1. nemesis-skills 的 ClawHub registry 的 base_url / convex_url 来自
+//    config.skills.json（ClawHubConfig），可指到 127.0.0.1 临时端口上的
+//    本地 mock——这是 cmd_search 渲染链路唯一的离线可达入口。
+// 2. CLI build_agent_loop 的 api_base 来自 config.json（OpenAI 兼容
+//    HttpCompat provider，POST {base}/chat/completions），同样可注入本地
+//    mock——cmd_learn 成功链路（build Ok 臂 + process_direct Ok 臂）由此覆盖。
+// 3. GitHub 硬编码端点（api.github.com / raw.githubusercontent.com）无任何
+//    重定向钩子 → 相关代码一律 EXEMPT。cmd_install 的 GitHub 回退是雷区：
+//    install 失败必然带着合法 owner/repo 进 cmd_install_github 的下载循环，
+//    所以本块用**含空格的 slug**毒化 full_ref（parse_github_url 的 shorthand
+//    分支要求不含空格 → 在任何 socket 之前的第 580 行 parse 处即死）；
+//    且 validate_skill_identifier（types.rs:480）允许空格，slug 能一路活着
+//    到达 install 失败点——两条事实合起来才构成离线安全证明。
+// 涉及环境变量的测试持 crate::GLOBAL_STATE_LOCK，prev-value 按 Option 恢复。
+// ===========================================================================
+
+mod wave_b {
+    use super::*;
+
+    // -----------------------------------------------------------------------
+    // 本地 mock HTTP 服务（一次性路由表 + 计数自停）
+    // -----------------------------------------------------------------------
+
+    struct WaveBMock {
+        addr: std::net::SocketAddr,
+    }
+
+    impl WaveBMock {
+        /// `routes`: (请求头子串匹配模式, 响应 body)；按序首个命中生效。
+        /// 未命中一律回 `{"results":[]}`。服务满 expected_requests 个请求后
+        /// 线程自然退出。
+        fn start(routes: Vec<(&'static str, String)>, expected_requests: usize) -> Self {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let addr = listener.local_addr().unwrap();
+            let rem = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(
+                expected_requests,
+            ));
+            std::thread::spawn(move || {
+                use std::io::Read;
+                use std::sync::atomic::Ordering;
+                while rem.load(Ordering::SeqCst) > 0 {
+                    let Ok((mut stream, _)) = listener.accept() else {
+                        break;
+                    };
+                    // ── 读请求头（直到 \r\n\r\n）──
+                    let mut buf: Vec<u8> = Vec::new();
+                    let mut chunk = [0u8; 2048];
+                    loop {
+                        match stream.read(&mut chunk) {
+                            Ok(0) | Err(_) => break,
+                            Ok(n) => {
+                                buf.extend_from_slice(&chunk[..n]);
+                                if buf.windows(4).any(|w| w == b"\r\n\r\n") {
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                    let head_end = buf
+                        .windows(4)
+                        .position(|w| w == b"\r\n\r\n")
+                        .map(|p| p + 4)
+                        .unwrap_or(buf.len());
+                    let head = String::from_utf8_lossy(&buf[..head_end]).to_ascii_lowercase();
+                    // ── 有 body 就补读完（避免下一连接读到脏字节）──
+                    let content_len: usize = head
+                        .lines()
+                        .find_map(|l| l.strip_prefix("content-length:"))
+                        .and_then(|v| v.trim().parse().ok())
+                        .unwrap_or(0);
+                    let mut have = buf.len() - head_end;
+                    while have < content_len {
+                        match stream.read(&mut chunk) {
+                            Ok(0) | Err(_) => break,
+                            Ok(n) => {
+                                buf.extend_from_slice(&chunk[..n]);
+                                have += n;
+                            }
+                        }
+                    }
+                    // ── 选路由并应答（Connection: close → 客户端每次新连接）──
+                    let req_head = String::from_utf8_lossy(&buf[..head_end]).to_string();
+                    let body = routes
+                        .iter()
+                        .find(|(pat, _)| req_head.contains(pat))
+                        .map(|(_, b)| b.clone())
+                        .unwrap_or_else(|| r#"{"results":[]}"#.to_string());
+                    let resp = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {l}\r\nConnection: close\r\n\r\n{b}",
+                        l = body.len(),
+                        b = body
+                    );
+                    let _ = std::io::Write::write_all(&mut stream, resp.as_bytes());
+                    rem.fetch_sub(1, Ordering::SeqCst);
+                }
+            });
+            WaveBMock { addr }
+        }
+
+        fn base_url(&self) -> String {
+            format!("http://{}", self.addr)
+        }
+    }
+
+    /// 写一份启用 ClawHub（base 指向 mock）的 config.skills.json。
+    /// convex_url 可与 base 不同源（列表端点走 convex、搜索走 base）。
+    fn wave_b_write_clawhub_cfg(
+        home: &std::path::Path,
+        base_url: &str,
+        convex_url: &str,
+    ) {
+        std::fs::create_dir_all(home.join("workspace").join("config")).unwrap();
+        write_skills_cfg(
+            home,
+            &serde_json::json!({
+                "search_cache": { "enabled": false },
+                "clawhub": {
+                    "enabled": true,
+                    "base_url": base_url,
+                    "convex_url": convex_url
+                }
+            }),
+        );
+    }
+
+    /// NEMESISBOT_HOME 守卫：纪律要求 prev-value 按 Option 恢复
+    /// （既有 temp_home_env 不恢复环境变量，本块不沿用）。调用方必须持
+    /// crate::GLOBAL_STATE_LOCK。
+    struct WaveBHomeGuard {
+        prev: Option<std::ffi::OsString>,
+    }
+
+    impl WaveBHomeGuard {
+        fn set(root: &std::path::Path) -> Self {
+            let prev = std::env::var_os("NEMESISBOT_HOME");
+            unsafe { std::env::set_var("NEMESISBOT_HOME", root) };
+            Self { prev }
+        }
+    }
+
+    impl Drop for WaveBHomeGuard {
+        fn drop(&mut self) {
+            match self.prev.take() {
+                Some(v) => unsafe { std::env::set_var("NEMESISBOT_HOME", v) },
+                None => unsafe { std::env::remove_var("NEMESISBOT_HOME") },
+            }
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // load_registry_config / save_registry_config 缺口（169 / 184）
+    // -----------------------------------------------------------------------
+
+    /// config 路径指向一个【目录】：exists()==true 但 read_to_string 失败 →
+    /// 走读取失败回落分支（169 一带区域）。产物必须是干净默认值。
+    #[test]
+    fn wave_b_load_registry_config_unreadable_path_returns_default() {
+        let tmp = TempDir::new().unwrap();
+        // 目标本身就是已存在的目录
+        let cfg_dir = tmp.path().join("config.skills.json");
+        std::fs::create_dir_all(&cfg_dir).unwrap();
+
+        let config = load_registry_config(&cfg_dir);
+        assert!(config.github_sources.is_empty(), "读取失败必须回落默认");
+        assert!(config.github_sources_legacy.is_empty());
+        assert!(!config.clawhub.enabled);
+    }
+
+    /// save_registry_config 的写盘目标本身是目录 → fs::write Err 经 184 行的
+    /// `?` 向上传播（此前测试只走过成功路径）。
+    #[test]
+    fn wave_b_save_registry_config_write_error_propagates() {
+        let tmp = TempDir::new().unwrap();
+        let target = tmp.path().join("occupied");
+        std::fs::create_dir_all(&target).unwrap();
+
+        let config = nemesis_skills::types::RegistryConfig::default();
+        let err = save_registry_config(&target, &config)
+            .expect_err("对目录写文件必须失败传播（184 行 ?）");
+        assert!(
+            err.to_string().to_lowercase().contains("denied")
+                || err.to_string().to_lowercase().contains("os error"),
+            "期望 OS 写失败，got: {err}"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // cmd_search 缺口（466-523）：经 ClawHub 本地 mock 全离线驱动
+    // -----------------------------------------------------------------------
+
+    /// 所有 registry 搜索失败（此处 base 指向已被释放的本地端口，连接秒拒）
+    /// → Err 臂的 Fallback 提示三连打印（515-520）+ 正常收尾（522）。
+    /// 同时覆盖非空 registry 时才出现的 "Searching N registry/ies" 打印（466/468-469）。
+    #[tokio::test]
+    async fn wave_b_cmd_search_all_registries_fail_prints_fallback_hint() {
+        let tmp = TempDir::new().unwrap();
+        let home = tmp.path().join(".nemesisbot");
+        // 抢一个端口后立刻释放 → 后续连接被本机拒绝（纯回环，不出机器）
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let dead_port = listener.local_addr().unwrap().port();
+        drop(listener);
+        wave_b_write_clawhub_cfg(
+            &home,
+            &format!("http://127.0.0.1:{dead_port}"),
+            &format!("http://127.0.0.1:{dead_port}"),
+        );
+
+        cmd_search(&skills_cfg_of(&home), "wifi", 5).await.unwrap();
+
+        // 再来一次空 query 路线（convex 列表端点同样被拒）确保两条搜索路线都进 Err 臂
+        cmd_search(&skills_cfg_of(&home), "", 5).await.unwrap();
+    }
+
+    /// 非 query 搜索命中 mock：结果组渲染主链路——长摘要截断（>100 字符取
+    /// 前 97 加省略号）、display_name 空/非空双臂、短摘要直显、总数统计。
+    #[tokio::test]
+    async fn wave_b_cmd_search_renders_groups_names_summaries_and_totals() {
+        let tmp = TempDir::new().unwrap();
+        let home = tmp.path().join(".nemesisbot");
+        let long_summary = format!("very long summary padding {}", "x".repeat(120));
+        let payload = serde_json::json!({
+            "results": [
+                { "score": 0.92, "slug": "demo-one", "displayName": "Demo One",
+                  "summary": long_summary },
+                { "score": 0.51, "slug": "demo-two", "displayName": "", "summary": "" }
+            ]
+        })
+        .to_string();
+        let _mock = WaveBMock::start(vec![("/api/search", payload)], 1);
+        wave_b_write_clawhub_cfg(&home, &_mock.base_url(), &_mock.base_url());
+
+        cmd_search(&skills_cfg_of(&home), "demo", 5).await.unwrap();
+    }
+
+    /// 空 query 走 Convex 列表端点且恰好返回 limit 条 → 组级 truncated=true
+    /// → cmd_search 的 ", truncated" 标签臂（483-484）。
+    #[tokio::test]
+    async fn wave_b_cmd_search_truncated_group_label_via_local_list_endpoint() {
+        let tmp = TempDir::new().unwrap();
+        let home = tmp.path().join(".nemesisbot");
+        let list_payload = serde_json::json!({
+            "status": "success",
+            "value": [
+                { "slug": "list-one", "displayName": "List One",
+                  "summary": "short summary", "stats": { "downloads": 42 } }
+            ]
+        })
+        .to_string();
+        // 请求头区分路由：GET /api/search?... vs POST /api/query
+        let _mock = WaveBMock::start(vec![("POST /api/query", list_payload)], 1);
+        wave_b_write_clawhub_cfg(&home, &_mock.base_url(), &_mock.base_url());
+
+        cmd_search(&skills_cfg_of(&home), "", 1).await.unwrap();
+    }
+
+    // -----------------------------------------------------------------------
+    // cmd_install 缺口（525-576 一带的离线可达行）
+    // -----------------------------------------------------------------------
+
+    /// registry/slug 直拆分支 + install 失败后的 GitHub 回退【毒化】终局：
+    /// slug 含空格 → full_ref=`clawhub/bad slug` → parse_github_url 在任何
+    /// 网络语句之前报错返回（shorthand 要求不含空格）。零出网。
+    #[tokio::test]
+    async fn wave_b_cmd_install_direct_ref_poisons_github_fallback() {
+        let tmp = TempDir::new().unwrap();
+        let home = tmp.path().join(".nemesisbot");
+        std::fs::create_dir_all(home.join("workspace")).unwrap();
+        let skills_dir = crate::common::workspace_path(&home).join("skills");
+
+        let err = cmd_install(&skills_dir, &skills_cfg_of(&home), "clawhub/bad slug")
+            .await
+            .expect_err("registry 未注册 → install 失败 → 毒化回退必以 Invalid GitHub URL 终结");
+        assert!(err.to_string().contains("Invalid GitHub URL"), "err: {err}");
+    }
+
+    /// 无斜杠 skill_ref：搜遍空 registry 不中 → "Trying GitHub fallback"
+    /// 分支（546-550）→ 回退以裸名进 parse → 同样在任何 socket 前终结。
+    #[tokio::test]
+    async fn wave_b_cmd_install_no_slash_search_miss_falls_back_to_invalid_github() {
+        let tmp = TempDir::new().unwrap();
+        let home = tmp.path().join(".nemesisbot");
+        std::fs::create_dir_all(home.join("workspace")).unwrap();
+        let skills_dir = crate::common::workspace_path(&home).join("skills");
+
+        let err = cmd_install(&skills_dir, &skills_cfg_of(&home), "zz-noslash-anywhere")
+            .await
+            .expect_err("裸名找不到 → fallback parse 必失败");
+        assert!(err.to_string().contains("Invalid GitHub URL"), "err: {err}");
+    }
+
+    /// 无斜杠 + mock 搜索命中（slug 故意含空格）→ Found 分支（540-544 拿到
+    /// registry/slug 元组）→ install 链走到 convex（指 ：9 回环死端口，连接
+    /// 即拒）失败 → 567-568 → 毒化 full_ref 回退在 parse 处安全终结。
+    #[tokio::test]
+    async fn wave_b_cmd_install_found_via_mock_registry_then_poisoned_full_ref() {
+        let tmp = TempDir::new().unwrap();
+        let home = tmp.path().join(".nemesisbot");
+        std::fs::create_dir_all(home.join("workspace")).unwrap();
+        let skills_dir = crate::common::workspace_path(&home).join("skills");
+
+        let search_payload = serde_json::json!({
+            "results": [
+                { "score": 1.0, "slug": "bad slug", "displayName": "Poison Slug",
+                  "summary": "poisoned slug full_ref dies at parse" }
+            ]
+        })
+        .to_string();
+        let _mock = WaveBMock::start(vec![("/api/search", search_payload)], 1);
+        // convex 走死端口：identifier 校验放行空格 slug 后，第一步 convex 调用即败
+        wave_b_write_clawhub_cfg(&home, &_mock.base_url(), "http://127.0.0.1:9");
+
+        let err = cmd_install(&skills_dir, &skills_cfg_of(&home), "poison-demo")
+            .await
+            .expect_err("install 失败 → 毒化回退终结");
+        assert!(err.to_string().contains("Invalid GitHub URL"), "err: {err}");
+    }
+
+    // -----------------------------------------------------------------------
+    // run() 分发臂缺口（Install / Source::Add 的 block_in_place 桥）
+    // -----------------------------------------------------------------------
+
+    /// Install 臂的桥接体（1153-1158 + 1160-1161）：走上面同款离线终局。
+    #[tokio::test(flavor = "multi_thread")]
+    async fn wave_b_run_skills_install_arm_bridge_dispatch() {
+        let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let home_root = TempDir::new().unwrap();
+        std::fs::create_dir_all(home_root.path().join(".nemesisbot")).unwrap();
+        let _env = WaveBHomeGuard::set(home_root.path());
+        let err = run(
+            SkillsAction::Install {
+                skill: "zz-noslash-anywhere".into(),
+            },
+            false,
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("Invalid GitHub URL"), "err: {err}");
+    }
+
+    /// Source::Add 子臂（1168-1172）：非法 URL 在任何网络语句之前被 parse 拒绝。
+    #[tokio::test(flavor = "multi_thread")]
+    async fn wave_b_run_skills_source_add_arm_bridge_invalid_url() {
+        let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let home_root = TempDir::new().unwrap();
+        std::fs::create_dir_all(home_root.path().join(".nemesisbot")).unwrap();
+        let _env = WaveBHomeGuard::set(home_root.path());
+        let err = run(
+            SkillsAction::Source {
+                action: SourceAction::Add {
+                    url: "not-a-github-url!".into(),
+                },
+            },
+            false,
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("Invalid GitHub URL"), "err: {err}");
+    }
+
+    // -----------------------------------------------------------------------
+    // cmd_cache_stats：.stats.json 存在但不可读（目录伪装成文件）→ (0,0) 臂
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn wave_b_cmd_cache_stats_stats_file_directory_degrades_zero() {
+        let tmp = TempDir::new().unwrap();
+        let home = tmp.path().join(".nemesisbot");
+        std::fs::create_dir_all(home.join("workspace").join("config")).unwrap();
+        write_skills_cfg(
+            &home,
+            &serde_json::json!({ "search_cache": { "enabled": true, "max_size": 10, "ttl_secs": 60 } }),
+        );
+        let dir = make_cache_dir(&home);
+        put_entries(&dir, 2);
+        // 目录让 exists()==true 成立但 read_to_string 必败 → 719 行 (0,0) 臂
+        std::fs::create_dir_all(dir.join(".stats.json")).unwrap();
+
+        cmd_cache_stats(&skills_cfg_of(&home)).await.unwrap();
+    }
+
+    // -----------------------------------------------------------------------
+    // cmd_validate：security_check 的 BLOCKED / warnings 两臂（1012 / 1014-1017）
+    // 触发内容依据 nemesis-skills lint 模式表：
+    //   DEST-001 `rm\s+-rf\s+/` Critical·Destructive → blocked（has_critical）
+    //   RECN-001 `(?i)(?:^|\W)nmap(?:\s|$)` → 仅告警，单条 Recon 扣分远不到 0.3
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn wave_b_cmd_validate_blocked_skill_reports_security_block() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path().join("evil-skill");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("SKILL.md"),
+            "# evil\nname: evil\ndescription: bad\nsteps:\n- run rm -rf /important",
+        )
+        .unwrap();
+
+        cmd_validate(&dir.to_string_lossy()).unwrap();
+    }
+
+    #[test]
+    fn wave_b_cmd_validate_warned_skill_lists_warning_count() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path().join("nosy-skill");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("SKILL.md"),
+            "# nosy\nname: nosy\ndescription: scans network\nsteps:\n- probe with nmap -sV",
+        )
+        .unwrap();
+
+        cmd_validate(&dir.to_string_lossy()).unwrap();
+    }
+
+    // -----------------------------------------------------------------------
+    // cmd_source_list：legacy 来源循环体（818-823）+ 配置存在但零来源（832）
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn wave_b_cmd_source_list_legacy_rows_and_empty_registry_notice() {
+        let tmp = TempDir::new().unwrap();
+
+        // legacy 条目渲染（github_sources 空、仅 legacy 命中 817-823 循环体）
+        let path = tmp.path().join("legacy.json");
+        let data = serde_json::json!({
+            "github_sources": [],
+            "github_sources_legacy": [
+                { "name": "old-src", "url": "https://github.com/org/repo", "branch": "main" }
+            ],
+            "clawhub": { "enabled": false, "base_url": "" }
+        });
+        std::fs::write(&path, serde_json::to_string_pretty(&data).unwrap()).unwrap();
+        cmd_source_list(&path).unwrap();
+
+        // 配置文件存在但全部为空 → found_any=false → "No registries configured."（832）
+        let empty_path = tmp.path().join("empty.json");
+        std::fs::write(&empty_path, "{}").unwrap();
+        cmd_source_list(&empty_path).unwrap();
+    }
+
+    // -----------------------------------------------------------------------
+    // cmd_learn：成功链路（1246 Ok 臂 / 1255-1258 提示拼装 / 1267-1272 输出 /
+    // 1277 收尾）—— 经 CLI build_agent_loop 的 OpenAI 兼容 api_base 打到本地
+    // mock；以及 provider 连不通时 process_direct Err → "Agent error"（1273-1274，
+    // api_base 用 127.0.0.1:9 回环拒绝，agent_factory 测试同款手法）。
+    // -----------------------------------------------------------------------
+
+    fn wave_b_completions_payload() -> String {
+        serde_json::json!({
+            "id": "wave-b-1",
+            "object": "chat.completion",
+            "choices": [{
+                "index": 0,
+                "message": { "role": "assistant", "content": "wave-b learn mock reply" },
+                "finish_reason": "stop"
+            }],
+            "usage": { "prompt_tokens": 11, "completion_tokens": 5, "total_tokens": 16 }
+        })
+        .to_string()
+    }
+
+    fn wave_b_write_llm_home(home: &std::path::Path, api_base: &str) {
+        std::fs::create_dir_all(home).unwrap();
+        let cfg = serde_json::json!({
+            "agents": { "defaults": { "llm": "wave-b-model", "max_tool_iterations": 5 } },
+            "model_list": [{
+                "model_name": "wave-b-model",
+                "model": "testai/wave-b-model",
+                "api_key": "wave-b-key",
+                "api_base": api_base,
+                "model_tier": "mini"
+            }]
+        });
+        std::fs::write(home.join("config.json"), cfg.to_string()).unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn wave_b_cmd_learn_success_round_trip_local_llm_mock() {
+        let tmp = TempDir::new().unwrap();
+        let home = tmp.path().join(".nemesisbot");
+        let _mock = WaveBMock::start(
+            vec![("/chat/completions", wave_b_completions_payload())],
+            1,
+        );
+        wave_b_write_llm_home(&home, &format!("{}/v1", _mock.base_url()));
+
+        cmd_learn(&home, "some learning source", Some("wave-b-name"))
+            .await
+            .expect("本地 mock 应答 → cmd_learn 全链路 Ok（1246/1255-1258/1267-1272/1277）");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn wave_b_cmd_learn_provider_failure_surfaces_agent_error() {
+        let tmp = TempDir::new().unwrap();
+        let home = tmp.path().join(".nemesisbot");
+        // provider 构造离线可成功（:9 是保留丢弃端口，仅回环连接拒绝）
+        wave_b_write_llm_home(&home, "http://127.0.0.1:9");
+
+        let err = cmd_learn(&home, "src", None)
+            .await
+            .expect_err("provider 不可达 → process_direct Err → Agent error bail");
+        assert!(err.to_string().contains("Agent error"), "err: {err}");
+    }
+}
+
+// ===========================================================================
+// wave_c（覆盖率补测 2026-08-27）——cmd_install 的 ClawHub ZIP 安装成功链。
+//
+// 分类定性轮认定的安装成功链残行（563-566 `Ok(version)` 的 ✅ Installed +
+// Location 打印臂、575 收尾 `Ok(())`）：wave_b 只把 install 的【失败】终局
+// 钉死（毒化回退），成功臂此前只能走真网。真正的 seam 在 config.skills.json
+// 的 ClawHubConfig：base_url / convex_url / convex_site_url 三者皆可注入，
+// RegistryManager::from_config（registry.rs「ClawHub support」段）原样喂给
+// with_urls → getBySlug 明细 + ZIP 下载两条网络腿全部落在 127.0.0.1 随机
+// 高位端口的本地 mock 上，全程零外联。
+//
+// mock 返回的 ZIP 由本模块手搓 STORE（method 0）格式拼装：nemesisbot 的
+// dev-deps 只有 tempfile，不为测试改 Cargo.toml；CRC32 用无表位旋算法，
+// zip crate 解压时实校验 CRC，算错即红——保留的是真实解压+落盘路径。
+// ZIP 成功后 download_and_install 提前返回，绝不会坠入硬编码
+// api.github.com 的 GitHub Trees 回退（那条分支保持豁免口径不变）。
+// ===========================================================================
+
+mod wave_c {
+    use super::*;
+
+    /// 无表 CRC32（IEEE 反射多项式 0xEDB88320）。
+    fn wave_c_crc32(data: &[u8]) -> u32 {
+        let mut crc: u32 = 0xFFFF_FFFF;
+        for &b in data {
+            crc ^= u32::from(b);
+            for _ in 0..8 {
+                let mask = (crc & 1).wrapping_neg();
+                crc = (crc >> 1) ^ (0xEDB8_8320 & mask);
+            }
+        }
+        !crc
+    }
+
+    /// 手搓最小 STORE-ZIP（每条目 local header + 中央目录 + EOCD）。
+    fn wave_c_store_zip(entries: &[(&str, &[u8])]) -> Vec<u8> {
+        struct CentralEntry {
+            name: Vec<u8>,
+            crc: u32,
+            size: u32,
+            offset: u32,
+        }
+
+        let mut out: Vec<u8> = Vec::new();
+        let mut centrals: Vec<CentralEntry> = Vec::new();
+
+        for (name, data) in entries {
+            let name = name.as_bytes().to_vec();
+            let offset = out.len() as u32;
+            out.extend_from_slice(&[0x50, 0x4B, 0x03, 0x04]); // local header sig
+            out.extend_from_slice(&20u16.to_le_bytes()); // version needed
+            out.extend_from_slice(&0u16.to_le_bytes()); // flags
+            out.extend_from_slice(&0u16.to_le_bytes()); // method = STORE
+            out.extend_from_slice(&0u16.to_le_bytes()); // mod time
+            out.extend_from_slice(&0x5821u16.to_le_bytes()); // mod date 2024-01-01
+            let crc = wave_c_crc32(data);
+            out.extend_from_slice(&crc.to_le_bytes());
+            out.extend_from_slice(&(data.len() as u32).to_le_bytes());
+            out.extend_from_slice(&(data.len() as u32).to_le_bytes());
+            out.extend_from_slice(&(name.len() as u16).to_le_bytes());
+            out.extend_from_slice(&0u16.to_le_bytes()); // extra len
+            out.extend_from_slice(&name);
+            out.extend_from_slice(data);
+            centrals.push(CentralEntry {
+                name,
+                crc,
+                size: data.len() as u32,
+                offset,
+            });
+        }
+
+        let cd_offset = out.len() as u32;
+        for c in &centrals {
+            out.extend_from_slice(&[0x50, 0x4B, 0x01, 0x02]); // central dir sig
+            out.extend_from_slice(&20u16.to_le_bytes()); // version made by
+            out.extend_from_slice(&20u16.to_le_bytes()); // version needed
+            out.extend_from_slice(&0u16.to_le_bytes()); // flags
+            out.extend_from_slice(&0u16.to_le_bytes()); // method
+            out.extend_from_slice(&0u16.to_le_bytes()); // mod time
+            out.extend_from_slice(&0x5821u16.to_le_bytes()); // mod date
+            out.extend_from_slice(&c.crc.to_le_bytes());
+            out.extend_from_slice(&c.size.to_le_bytes());
+            out.extend_from_slice(&c.size.to_le_bytes());
+            out.extend_from_slice(&(c.name.len() as u16).to_le_bytes());
+            out.extend_from_slice(&0u16.to_le_bytes()); // extra len
+            out.extend_from_slice(&0u16.to_le_bytes()); // comment len
+            out.extend_from_slice(&0u16.to_le_bytes()); // disk start
+            out.extend_from_slice(&0u16.to_le_bytes()); // internal attrs
+            out.extend_from_slice(&0u32.to_le_bytes()); // external attrs
+            out.extend_from_slice(&c.offset.to_le_bytes());
+            out.extend_from_slice(&c.name);
+        }
+        let cd_size = out.len() as u32 - cd_offset;
+
+        out.extend_from_slice(&[0x50, 0x4B, 0x05, 0x06]); // EOCD sig
+        out.extend_from_slice(&0u16.to_le_bytes()); // this disk
+        out.extend_from_slice(&0u16.to_le_bytes()); // cd disk
+        out.extend_from_slice(&(centrals.len() as u16).to_le_bytes());
+        out.extend_from_slice(&(centrals.len() as u16).to_le_bytes());
+        out.extend_from_slice(&cd_size.to_le_bytes());
+        out.extend_from_slice(&cd_offset.to_le_bytes());
+        out.extend_from_slice(&0u16.to_le_bytes()); // comment len
+        out
+    }
+
+    /// ClawHub 双端点本地 mock（绑 127.0.0.1 随机高位端口）：
+    /// POST /api/query（skills:getBySlug）→ Convex envelope 明细；
+    /// GET /api/v1/download?slug=… → application/zip 字节流。
+    /// 每应答往通道发一个路由标签（"convex"/"zip"）作调用凭证；
+    /// 请求按声明 Content-Length 读满再应答，防大请求体半读。
+    fn wave_c_start_clawhub_mock(
+        convex_json: String,
+        zip: Vec<u8>,
+    ) -> (
+        String,
+        std::sync::mpsc::Receiver<&'static str>,
+    ) {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind ephemeral port");
+        let addr = listener.local_addr().unwrap();
+        let (tx, rx) = std::sync::mpsc::channel::<&'static str>();
+        std::thread::spawn(move || {
+            use std::io::{Read, Write};
+            for _ in 0..2 {
+                let Ok((mut stream, _)) = listener.accept() else {
+                    break;
+                };
+                let mut buf: Vec<u8> = Vec::new();
+                let mut chunk = [0u8; 4096];
+                loop {
+                    match stream.read(&mut chunk) {
+                        Ok(0) | Err(_) => break,
+                        Ok(n) => {
+                            buf.extend_from_slice(&chunk[..n]);
+                            if let Some(h) = buf
+                                .windows(4)
+                                .position(|w| w == b"\r\n\r\n")
+                                .map(|p| p + 4)
+                            {
+                                let clen: usize = String::from_utf8_lossy(&buf[..h])
+                                    .to_ascii_lowercase()
+                                    .lines()
+                                    .find_map(|l| {
+                                        l.strip_prefix("content-length:")
+                                            .and_then(|v| v.trim().parse().ok())
+                                    })
+                                    .unwrap_or(0);
+                                if buf.len() >= h + clen {
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+                let req_head = String::from_utf8_lossy(&buf).to_ascii_lowercase();
+                let (served, ctype, body): (&'static str, &'static str, Vec<u8>) =
+                    if req_head.contains("/api/v1/download") {
+                        ("zip", "application/zip", zip.clone())
+                    } else {
+                        ("convex", "application/json", convex_json.clone().into_bytes())
+                    };
+                let resp = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: {ct}\r\nContent-Length: {cl}\r\nConnection: close\r\n\r\n",
+                    ct = ctype,
+                    cl = body.len()
+                );
+                let _ = stream.write_all(resp.as_bytes());
+                let _ = stream.write_all(&body);
+                let _ = stream.flush();
+                let _ = tx.send(served);
+            }
+        });
+        (format!("http://{addr}"), rx)
+    }
+
+    const WAVE_C_SKILL_MD: &str = "# wavec-zip-skill\nname: wavec-zip-skill\ndescription: offline ClawHub ZIP install regression\nsteps:\n- say hi from the local mock\n";
+
+    /// 主回归：config 注入本地 ClawHub 三 URL → cmd_install 全成功链。
+    /// 覆盖意图：555 📥 打印、562 manager.install Ok、563-566 ✅ Installed +
+    /// Location、575 收尾 Ok(())；下游 ClawHubRegistry 的 getBySlug 解析、
+    /// ZIP content-type 校验、STORE 解压、单顶层文件非平铺直写、目标落盘。
+    #[tokio::test]
+    async fn wave_c_cmd_install_clawhub_zip_success_round_trip() {
+        let tmp = TempDir::new().unwrap();
+        let home = tmp.path().join(".nemesisbot");
+        std::fs::create_dir_all(home.join("workspace").join("config")).unwrap();
+        let skills_dir = crate::common::workspace_path(&home).join("skills");
+
+        let zip = wave_c_store_zip(&[("SKILL.md", WAVE_C_SKILL_MD.as_bytes())]);
+        let detail = serde_json::json!({
+            "status": "success",
+            "value": {
+                "owner": { "handle": "wavec-author" },
+                "skill": {
+                    "slug": "wavec-zip-skill",
+                    "displayName": "WaveC Zip Skill",
+                    "summary": "offline ClawHub ZIP install round trip",
+                    "stats": { "downloads": 7 }
+                },
+                "latestVersion": { "version": "1.2.3" },
+                "resolvedSlug": "wavec-zip-skill"
+            }
+        })
+        .to_string();
+
+        let (base, rx) = wave_c_start_clawhub_mock(detail, zip);
+        write_skills_cfg(
+            &home,
+            &serde_json::json!({
+                "search_cache": { "enabled": false },
+                "clawhub": {
+                    "enabled": true,
+                    "base_url": base,
+                    "convex_url": base,
+                    "convex_site_url": base
+                }
+            }),
+        );
+
+        cmd_install(&skills_dir, &skills_cfg_of(&home), "clawhub/wavec-zip-skill")
+            .await
+            .expect("ClawHub ZIP 成功链必须 Ok（✅ Installed 臂 + 收尾 Ok）");
+
+        // 断言点①：技能文件确实落到 tempdir 工作区 skills/<slug>/SKILL.md 且内容匹配。
+        let landed = skills_dir.join("wavec-zip-skill").join("SKILL.md");
+        assert!(landed.exists(), "SKILL.md 必须落在 workspace skills/<slug>/ 下");
+        assert_eq!(
+            std::fs::read_to_string(&landed).unwrap(),
+            WAVE_C_SKILL_MD,
+            "落盘内容须与 ZIP 内条目逐字节一致"
+        );
+
+        // 断言点②：真实网络链路确实走过两条腿（convex 明细 → site ZIP 下载），
+        // 而不是某处短路提前返回 Ok。
+        assert_eq!(
+            rx.recv_timeout(std::time::Duration::from_secs(10)),
+            Ok("convex"),
+            "第一腿：POST /api/query（skills:getBySlug）"
+        );
+        assert_eq!(
+            rx.recv_timeout(std::time::Duration::from_secs(10)),
+            Ok("zip"),
+            "第二腿：GET /api/v1/download（application/zip）"
+        );
+    }
+}
+
+// ===========================================================================
+// r10 wave（覆盖率 95% goal 第七波）——cmd_source_add 主干 + 安装离线终点臂。
+//
+// GitHub 端点（api.github.com / raw.githubusercontent.com）在 cmd_* 内部硬编码、
+// 无 URL 注入 seam，无法指到本地 mock；改用 reqwest 的系统代理语义：
+// HTTPS_PROXY 指向回环死端口（127.0.0.1:9）后所有出网连接立刻被本机拒绝——
+// 验证重试循环走满 3 次（~4s 睡眠）、detect_skill_structure 两分支全部
+// if-let Err 落穿到默认兜底元组。为兼容"机器配了系统级代理导致真连上
+// GitHub"的奇异环境，探测目标固定用真实存在的冻结仓库 octocat/Hello-World：
+// 无论离线拒绝 / 在线验证成功 / 限流，主干最终都把同名源写进
+// config.skills.json（网络世界的差异只影响写回之前是否早退，不影响写回断言；
+// 重名拒绝臂在所有世界里都会执行到，因为它不依赖 verified 标志）。
+// env 是进程全局 → 全部相关测试持 crate::GLOBAL_STATE_LOCK；prev 值按
+// Option 恢复（wave_b HomeGuard 同款纪律）。
+// ===========================================================================
+
+mod r10_wave {
+    use super::*;
+    use std::ffi::OsString;
+
+    /// 真实存在的冻结仓库：任何网络世界下 trunk 终局一致。
+    const R10_URL: &str = "octocat/Hello-World";
+
+    struct R10OfflineNet {
+        prev: Option<OsString>,
+    }
+
+    impl R10OfflineNet {
+        fn engage() -> Self {
+            let prev = std::env::var_os("HTTPS_PROXY");
+            unsafe { std::env::set_var("HTTPS_PROXY", "http://127.0.0.1:9") };
+            Self { prev }
+        }
+    }
+
+    impl Drop for R10OfflineNet {
+        fn drop(&mut self) {
+            match self.prev.take() {
+                Some(v) => unsafe { std::env::set_var("HTTPS_PROXY", v) },
+                None => unsafe { std::env::remove_var("HTTPS_PROXY") },
+            }
+        }
+    }
+
+    struct R10HomeGuard {
+        prev: Option<OsString>,
+    }
+
+    impl R10HomeGuard {
+        fn set(root: &std::path::Path) -> Self {
+            let prev = std::env::var_os("NEMESISBOT_HOME");
+            unsafe { std::env::set_var("NEMESISBOT_HOME", root) };
+            Self { prev }
+        }
+    }
+
+    impl Drop for R10HomeGuard {
+        fn drop(&mut self) {
+            match self.prev.take() {
+                Some(v) => unsafe { std::env::set_var("NEMESISBOT_HOME", v) },
+                None => unsafe { std::env::remove_var("NEMESISBOT_HOME") },
+            }
+        }
+    }
+
+    fn r10_fresh_home() -> (TempDir, std::path::PathBuf) {
+        let tmp = TempDir::new().unwrap();
+        let home = tmp.path().join(".nemesisbot");
+        std::fs::create_dir_all(home.join("workspace").join("config")).unwrap();
+        (tmp, home)
+    }
+
+    /// 主干全链：parse → 验证（重试耗尽或成功皆可）→ 结构探测兜底 →
+    /// 写回 github_sources + github_sources_legacy 双份登记。
+    #[tokio::test]
+    async fn r10_skills_source_add_trunk_persists_new_registry_source() {
+        let _lock = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let _net = R10OfflineNet::engage();
+        let (_tmp, home) = r10_fresh_home();
+        let cfg = skills_cfg_of(&home);
+
+        cmd_source_add(&cfg, R10_URL)
+            .await
+            .expect("无论验证成功与否主干都应写回配置并返回 Ok");
+
+        let saved: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&cfg).unwrap())
+                .expect("config.skills.json 必须被写回且是合法 JSON");
+        let srcs = saved["github_sources"]
+            .as_array()
+            .expect("sources 数组存在");
+        assert_eq!(srcs.len(), 1, "恰好登记一个新源");
+        assert_eq!(srcs[0]["name"], "Hello-World");
+        assert_eq!(srcs[0]["repo"], "octocat/Hello-World");
+        assert_eq!(srcs[0]["enabled"], true);
+        let legacy = saved["github_sources_legacy"].as_array().unwrap();
+        assert_eq!(legacy.len(), 1);
+        assert_eq!(legacy[0]["name"], "Hello-World");
+        assert_eq!(legacy[0]["url"], R10_URL);
+    }
+
+    /// 重名拒绝臂：检测阶段照跑（含网络重试/探测），但走到重名检查时
+    /// 提前 Ok 返回——既不加新条目也不写 legacy。
+    #[tokio::test]
+    async fn r10_skills_source_add_duplicate_name_rejected_before_second_write() {
+        let _lock = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let _net = R10OfflineNet::engage();
+        let (_tmp, home) = r10_fresh_home();
+
+        write_skills_cfg(
+            &home,
+            &serde_json::json!({
+                "github_sources": [
+                    { "name": "Hello-World", "repo": "original/holder",
+                      "branch": "main", "index_type": "flat", "enabled": true,
+                      "skill_path_pattern": "skills/{slug}/SKILL.md" }
+                ]
+            }),
+        );
+        let cfg = skills_cfg_of(&home);
+
+        cmd_source_add(&cfg, R10_URL)
+            .await
+            .expect("重名时提前返回 Ok（打印 Error 后结束）");
+
+        let saved: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&cfg).unwrap()).unwrap();
+        let srcs = saved["github_sources"].as_array().unwrap();
+        assert_eq!(srcs.len(), 1, "不得出现第二个同名源");
+        assert_eq!(srcs[0]["repo"], "original/holder", "原条目原样保留");
+        // 提前返回发生在 legacy push 之前 → 空的 github_sources_legacy 会被
+        // 序列化器整个省略（实测：缺省键而非空数组）。键缺省 / 非数组 / 空数组
+        // 都视为「未追加」；断言面不用会毒化全局锁的 unwrap。
+        let legacy_added = saved
+            .get("github_sources_legacy")
+            .and_then(|v| v.as_array())
+            .map(|a| !a.is_empty())
+            .unwrap_or(false);
+        assert!(!legacy_added, "提前返回前不得追加 legacy 登记");
+    }
+
+    /// run() 的 AddSource 分发桥（合法 URL 变体）：此前只有非法 URL 早退版本，
+    /// 这里补上「桥接体真正驱动完整个 async 主干」的分发路径。
+    #[tokio::test(flavor = "multi_thread")]
+    async fn r10_run_add_source_arm_drives_full_trunk_via_bridge() {
+        let _lock = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let tmp_root = TempDir::new().unwrap();
+        std::fs::create_dir_all(tmp_root.path().join(".nemesisbot")).unwrap();
+        let _home = R10HomeGuard::set(tmp_root.path());
+        let _net = R10OfflineNet::engage();
+
+        run(
+            SkillsAction::AddSource {
+                url: R10_URL.to_string(),
+            },
+            false,
+        )
+        .expect("分发桥 + 主干全链应 Ok");
+
+        let cfg = skills_cfg_of(&tmp_root.path().join(".nemesisbot"));
+        assert!(cfg.exists(), "run() 链路同样必须落盘配置");
+    }
+
+    /// cmd_install_github 的下载穷尽终局：owner/repo 合法解析后 4 路径 × 2
+    /// 分支共 8 次 raw 请求全部失败（离线被拒 / 在线 404 / 限流），落在
+    /// "Failed to download skill from GitHub" 打印后干净收尾。
+    #[tokio::test]
+    async fn r10_cmd_install_github_download_exhaustion_ends_cleanly() {
+        let _lock = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let _net = R10OfflineNet::engage();
+        let tmp = TempDir::new().unwrap();
+        let skills_dir = tmp.path().join("skills");
+
+        cmd_install_github(&skills_dir, R10_URL)
+            .await
+            .expect("8 连 miss 必须以 Ok 收尾而非报错");
+
+        // 失败穷尽路径不创建任何安装目录（只有下载成功的写入分支才建目录）。
+        assert!(!skills_dir.join("Hello-World").exists());
+    }
+
+    /// cmd_install_clawhub 不可达终点臂：openclaw/skills 的 raw URL 打不通时
+    /// 打印排障提示并 Ok 收尾；output_name None / Some 两变体都过一遍
+    /// （覆盖 out_name 解析两个臂）。
+    #[tokio::test]
+    async fn r10_cmd_install_clawhub_unreachable_reports_and_returns_ok() {
+        let _lock = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let _net = R10OfflineNet::engage();
+        let tmp = TempDir::new().unwrap();
+        let skills_dir = tmp.path().join("skills");
+
+        cmd_install_clawhub(&skills_dir, "r10-none-author", "r10-none-skill", None)
+            .await
+            .expect("下载失败也必须收在 Ok");
+        cmd_install_clawhub(
+            &skills_dir,
+            "r10-none-author",
+            "r10-none-skill",
+            Some("r10-renamed-output"),
+        )
+        .await
+        .expect("output_name 变体同样 Ok");
+
+        assert!(!skills_dir.join("r10-renamed-output").exists());
+    }
+
+    /// run() 的 InstallClawhub 分发桥：既有测试从未驱动过的 async 命令包装臂
+    /// （block_in_place + Handle::block_on 承载内部异步 client）。
+    #[tokio::test(flavor = "multi_thread")]
+    async fn r10_run_install_clawhub_bridge_dispatches_offline_error_arm() {
+        let _lock = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let tmp_root = TempDir::new().unwrap();
+        std::fs::create_dir_all(tmp_root.path().join(".nemesisbot")).unwrap();
+        let _home = R10HomeGuard::set(tmp_root.path());
+        let _net = R10OfflineNet::engage();
+
+        run(
+            SkillsAction::InstallClawhub {
+                author: "r10-none-author".to_string(),
+                skill_name: "r10-none-skill".to_string(),
+                output_name: None,
+            },
+            false,
+        )
+        .expect("分发桥驱动下载失败臂后收在 Ok");
+    }
+}

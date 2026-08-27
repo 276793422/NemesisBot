@@ -495,3 +495,24 @@ fn debug_impls_render_unloaded_plugin_state() {
     assert!(plugin_dbg.contains("NativePlugin"), "got: {plugin_dbg}");
     assert!(plugin_dbg.contains("NativePluginInner"), "got: {plugin_dbg}");
 }
+
+// ---- R1 coverage: Library::new failure on an existing non-library file ----
+
+#[test]
+fn load_rejects_existing_non_library_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let fake = dir.path().join("not_a_real_plugin.dll");
+    std::fs::write(&fake, b"this is not a valid PE/ELF library").unwrap();
+
+    // The file exists (so the early "file not found" arm does not fire) and
+    // the OS loader cleanly rejects the invalid image.
+    let p = fake.to_string_lossy().to_string();
+    let err = match NativePlugin::load(&p) {
+        Err(e) => e,
+        Ok(_) => panic!("loading a text blob as a DLL must fail"),
+    };
+    assert!(
+        format!("{err:?}").contains("not_a_real_plugin.dll"),
+        "error must carry the offending path, got: {err:?}"
+    );
+}

@@ -903,3 +903,29 @@ fn test_client_register_then_close() {
     let result = client.dispatcher().dispatch(&req).unwrap().unwrap();
     assert!(result.is_success_response());
 }
+
+// ---- R3 coverage: send_raw state-guard arms ----
+
+#[test]
+fn test_send_raw_rejects_when_not_connected() {
+    // Fresh client: connected=false, send_tx=None → the very first guard fires.
+    let ws_key = make_ws_key();
+    let client = WebSocketClient::new(&ws_key);
+    let msg = Message::new_request("anything", serde_json::Value::Null);
+    let err = client.send_raw(&msg).unwrap_err();
+    assert_eq!(err, "not connected");
+}
+
+#[test]
+fn test_send_raw_rejects_when_no_send_channel() {
+    // connected=true but send_tx=None (window never attached a tx) → second guard.
+    let ws_key = make_ws_key();
+    let client = WebSocketClient::new(&ws_key);
+    {
+        let mut state = client.state.lock();
+        state.connected = true;
+    }
+    let msg = Message::new_request("anything", serde_json::Value::Null);
+    let err = client.send_raw(&msg).unwrap_err();
+    assert_eq!(err, "no send channel");
+}

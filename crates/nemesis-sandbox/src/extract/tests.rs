@@ -188,3 +188,22 @@ async fn extract_release_with_cached_7z_propagates_extraction_error() {
     let err = extract_release(&installer, tmp.path()).await.unwrap_err();
     assert!(format!("{err:#}").contains("7z extraction failed"));
 }
+
+// ---------------------------------------------------------------------------
+// R5 覆盖率批次（2026-08-27）：resolve_seven_zip 的 system 臂（机器依赖
+// 守卫：本机装有系统 7-Zip 才测；干净机器会走网络下载分支，本测试绝不
+// 联网）。cached 臂已由上面 prefers_cached 测试钉住。
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn resolve_seven_zip_uses_system_7z_when_no_cache() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (ok, src) = seven_zip_status(tmp.path());
+    if src != "system" {
+        eprintln!("skip: 本机无系统 7z（ok={ok}, src={src}），system 臂不可离线测");
+        return;
+    }
+    let p = resolve_seven_zip(tmp.path()).await.unwrap();
+    assert_ne!(p, tmp.path().join("7z").join("7z.exe"), "无缓存必不返回 cached 路径");
+    assert!(p.exists(), "系统 7z 路径必须真实存在: {}", p.display());
+}

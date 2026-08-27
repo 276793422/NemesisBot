@@ -84,10 +84,23 @@ async fn start_and_wait(
     let exe = std::env::current_exe()?;
 
     let mut cmd = std::process::Command::new(&exe);
-    if local {
-        cmd.arg("--local");
+    if cfg!(test) {
+        // BUG #48（2026-08-28）：测试二进制的 main 是 libtest，CLI 参数会被
+        // 当成测试过滤器——`["gateway"]` 让直调单测 spawn 出一个嵌套重跑全部
+        // commands::gateway 测试（217 个）的 rogue 子进程：双倍 live 负载 +
+        // 幻影 result 行污染全量闸门（曾致随机 live 测试 60s 窗超时失败）。
+        // 测试形态改传 libtest 空过滤器（--exact 不存在的名字）→ 子进程
+        // 0 测试秒退、stdio 归零、零副作用。生产二进制走 else 分支，
+        // --local/gateway argv 字节不变（cfg!(test) 编译期常量）。
+        cmd.arg("--exact").arg("__dashboard_start_and_wait_stub__");
+        cmd.stdout(std::process::Stdio::null());
+        cmd.stderr(std::process::Stdio::null());
+    } else {
+        if local {
+            cmd.arg("--local");
+        }
+        cmd.arg("gateway");
     }
-    cmd.arg("gateway");
 
     #[cfg(target_os = "windows")]
     {

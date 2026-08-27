@@ -11,7 +11,6 @@
 //! - extract_usage() helper for various provider formats
 
 use super::*;
-use crate::types::*;
 use std::collections::HashMap;
 use wiremock::matchers::{header, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};

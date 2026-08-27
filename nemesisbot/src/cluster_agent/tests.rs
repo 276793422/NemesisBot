@@ -753,3 +753,494 @@ mod loop_e2e {
         rig.stop().await;
     }
 }
+
+// =========================================================================
+// wave_b（coverage 补测批次 B）
+//
+// 目标 miss：resume-Err 臂（90-97）、restored>0 日志（151）、
+// execute/resume 的 observer 生命周期臂（161-168 / 174-184 / 271-278 /
+// 284-294）、truncate_str 长串两分支（348-353 / 355）、summary cache
+// restore 的 covers=Some/clamp 与 legacy=None 两臂 + persist 的 cache-Some
+// 写路径（403-417 / 444-447）、extract_async_info 前驱回看的两种未命中形态
+// （528-529）、count_llm_rounds 两形态（554-560）。
+// 豁免不碰：48-49（queue.next() None break——队列内部持有 tx，结构性死码）。
+// 本地复刻 loop_e2e 的 provider/rig（兄弟 mod 私有项不可见）。
+// =========================================================================
+
+mod wave_b {
+    use super::*;
+    use nemesis_agent::r#loop::{LlmMessage, LlmProvider, LlmResponse, Tool};
+    use nemesis_agent::request_logger::LoggingConfig;
+    use nemesis_agent::types::{ChatOptions, ToolDefinition};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+
+    // -- 直接单测：truncate_str ---------------------------------------------
+
+    /// ASCII 超长串 → char_indices().nth(max_len) 命中 Some(idx) 分支：
+    /// 截到 max_len 个字符再补 "..."。
+    #[test]
+    fn wb_truncate_str_long_ascii_appends_ellipsis() {
+        let s = "a".repeat(250);
+        let out = truncate_str(&s, 200);
+        assert_eq!(out.chars().count(), 203);
+        assert!(out.ends_with("..."));
+        assert_eq!(&out[..200], "a".repeat(200));
+    }
+
+    /// 多字节串：字节长超限但字符数没超 → nth(max_len)==None → 原样返回，
+    /// 绝不做非边界切片（str 切多字节会 panic，见 MEMORY 教训）。
+    #[test]
+    fn wb_truncate_str_multibyte_under_char_limit_returns_original() {
+        let s = "字".repeat(100); // 300 bytes / 100 chars
+        let out = truncate_str(&s, 200);
+        assert_eq!(out, s, "char count under limit → untouched");
+    }
+
+    // -- 直接单测：extract_async_info 前驱回看未命中形态 ---------------------
+
+    /// marker 前一turn不是 assistant（user）→ tool_call_id 拿不到 → None。
+    #[test]
+    fn wb_extract_async_info_prev_turn_not_assistant_returns_none() {
+        let convo = vec![
+            make_turn(
+                "user",
+                "直接贴 marker",
+                vec![],
+            ),
+            make_turn(
+                "tool",
+                "__CLUSTER_ASYNC__{\"task_id\":\"wb-no-assist\"}",
+                vec![],
+            ),
+        ];
+        assert!(extract_async_info(&convo).is_none());
+    }
+
+    /// 前一turn是 assistant 但没有 tool_calls → first()==None → None。
+    #[test]
+    fn wb_extract_async_info_prev_assistant_without_tool_calls_returns_none() {
+        let convo = vec![
+            make_turn("user", "hi", vec![]),
+            make_turn("assistant", "无工具调用的回合", vec![]),
+            make_turn(
+                "tool",
+                "__CLUSTER_ASYNC__{\"task_id\":\"wb-no-tc\"}",
+                vec![],
+            ),
+        ];
+        assert!(extract_async_info(&convo).is_none());
+    }
+
+    // -- 直接单测：count_llm_rounds -----------------------------------------
+
+    /// 空事件序列 → ToolCall 计数 0 + 1 = 1。
+    #[test]
+    fn wb_count_llm_rounds_empty_events_is_one() {
+        assert_eq!(count_llm_rounds(&[]), 1);
+    }
+
+    /// N 个 ToolCall 事件 → N+1（镜像主 agent 公式）。
+    #[test]
+    fn wb_count_llm_rounds_counts_tool_calls_plus_one() {
+        let events = vec![
+            AgentEvent::Message("start".to_string()),
+            AgentEvent::ToolCall(vec![]),
+            AgentEvent::Message("mid".to_string()),
+            AgentEvent::ToolCall(vec![]),
+            AgentEvent::Done("done".to_string()),
+        ];
+        assert_eq!(count_llm_rounds(&events), 3);
+    }
+
+    // -- summary cache 持久化 / 恢复双臂 --------------------------------------
+
+    use nemesis_agent::instance::SummaryCache;
+
+    /// persist 带 SummaryCache → store 写入 text+covers_up_to（444-447 臂）；
+    /// 新实例 restore 时 covers=Some 走 clamp 分支恢复缓存（Some 臂）。
+    #[test]
+    fn wb_persist_then_restore_carries_summary_cache_with_covers() {
+        let (agent_loop, store) = make_loop_with_session_store();
+        let inst = AgentInstance::new(make_test_config());
+        inst.add_user_message("wb-cache-q");
+        inst.add_assistant_message("wb-cache-a", Vec::new(), None);
+        inst.set_summary_cache(Some(SummaryCache {
+            covers_up_to: 2,
+            text: "wb-summary-text".to_string(),
+        }));
+        persist_session_history(&agent_loop, &inst, "sess-wb-covers");
+
+        // store 侧：cache-Some 写路径生效。
+        assert_eq!(store.get_summary("sess-wb-covers"), "wb-summary-text");
+        assert_eq!(
+            store.get_summary_covers_up_to("sess-wb-covers"),
+            Some(2)
+        );
+
+        // restore 侧：covers=Some → clamp(1..=len) 保住索引并重建实例缓存。
+        let fresh = AgentInstance::new(make_test_config());
+        let restored = restore_session_history(&agent_loop, &fresh, "sess-wb-covers");
+        assert_eq!(restored, 3); // [system, user, assistant]
+        let cache = fresh.get_summary_cache().expect("summary cache restored");
+        assert_eq!(cache.text, "wb-summary-text");
+        assert_eq!(cache.covers_up_to, 2);
+    }
+
+    /// legacy 存量（有 summary 文本但无 covers 索引）→ restore 走
+    /// take_while(system).count().max(1) 默认推导分支（None 臂）。
+    #[test]
+    fn wb_restore_legacy_summary_without_index_computes_default_cover() {
+        let (agent_loop, store) = make_loop_with_session_store();
+        let inst = AgentInstance::new(make_test_config());
+        inst.add_user_message("wb-legacy-q");
+        inst.add_assistant_message("wb-legacy-a", Vec::new(), None);
+        // 无 summary cache → persist 走 None 臂写空摘要。
+        persist_session_history(&agent_loop, &inst, "sess-wb-legacy");
+
+        // 手工制造 legacy 磁盘形态：只有文本、没有索引。
+        store.set_summary("sess-wb-legacy", "wb-legacy-summary");
+
+        let fresh = AgentInstance::new(make_test_config());
+        let restored = restore_session_history(&agent_loop, &fresh, "sess-wb-legacy");
+        assert_eq!(restored, 3);
+        let cache = fresh.get_summary_cache().expect("legacy summary restored");
+        assert_eq!(cache.text, "wb-legacy-summary");
+        // [system,...] 前缀只数出 system 提示一条 → max(1) 兜底为 1。
+        assert_eq!(cache.covers_up_to, 1);
+    }
+
+    // -- 端到端 rig（本地复刻 loop_e2e 形态）---------------------------------
+
+    struct WbScriptedProvider {
+        first_tool_call: Option<ToolCallInfo>,
+        final_text: String,
+        calls: AtomicUsize,
+    }
+
+    #[async_trait::async_trait]
+    impl LlmProvider for WbScriptedProvider {
+        async fn chat(
+            &self,
+            _model: &str,
+            _messages: Vec<LlmMessage>,
+            _options: Option<ChatOptions>,
+            _tools: Vec<ToolDefinition>,
+        ) -> Result<LlmResponse, String> {
+            let n = self.calls.fetch_add(1, Ordering::SeqCst);
+            if n == 0 && self.first_tool_call.is_some() {
+                return Ok(LlmResponse {
+                    content: String::new(),
+                    tool_calls: vec![self.first_tool_call.clone().unwrap()],
+                    finished: false,
+                    reasoning_content: None,
+                    usage: None,
+                    raw_request_body: None,
+                    raw_response_body: None,
+                });
+            }
+            Ok(LlmResponse {
+                content: self.final_text.clone(),
+                tool_calls: Vec::new(),
+                finished: true,
+                reasoning_content: None,
+                usage: None,
+                raw_request_body: None,
+                raw_response_body: None,
+            })
+        }
+    }
+
+    /// 假 cluster_rpc 工具：返回 __CLUSTER_ASYNC__ 标记驱动异步挂起路径。
+    struct WbFakeClusterRpc {
+        result: String,
+    }
+
+    #[async_trait::async_trait]
+    impl Tool for WbFakeClusterRpc {
+        async fn execute(
+            &self,
+            _args: &str,
+            _context: &nemesis_agent::context::RequestContext,
+        ) -> Result<String, String> {
+            Ok(self.result.clone())
+        }
+    }
+
+    fn wb_config(tools: bool) -> AgentConfig {
+        AgentConfig {
+            model: "test-model".to_string(),
+            system_prompt: Some("cluster wave-b test".to_string()),
+            max_turns: 4,
+            tools: if tools {
+                vec!["cluster_rpc".to_string()]
+            } else {
+                vec![]
+            },
+            ..Default::default()
+        }
+    }
+
+    fn wb_make_task(task_id: &str) -> ClusterTask {
+        ClusterTask {
+            task_id: task_id.to_string(),
+            source: TaskSource {
+                node_id: "node-wb".to_string(),
+                rpc_address: "127.0.0.1:9".to_string(),
+                session_key: format!("sess-{task_id}"),
+            },
+            status: TaskStatus::Pending,
+            content: "wave-b please do the thing".to_string(),
+            conversation: None,
+            waiting_for_task_id: None,
+            waiting_tool_call_id: None,
+            callback_result: None,
+        }
+    }
+
+    async fn wb_wait_until(deadline_ms: u64, f: impl Fn() -> bool) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_millis(deadline_ms);
+        while !f() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "condition not met within {deadline_ms}ms"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+    }
+
+    struct WbRig {
+        task_list: Arc<ClusterTaskList>,
+        work_queue: Arc<ClusterWorkQueue>,
+        shutdown_tx: tokio::sync::broadcast::Sender<()>,
+        handle: tokio::task::JoinHandle<()>,
+    }
+
+    impl WbRig {
+        async fn stop(self) {
+            let _ = self.shutdown_tx.send(());
+            let _ = self.handle.await;
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn spawn_wb_rig(
+        agent_loop: AgentLoop,
+        config: AgentConfig,
+        data_dir: &std::path::Path,
+        observer: Option<Arc<crate::cluster_request_logger_observer::ClusterRequestLoggerObserver>>,
+    ) -> WbRig {
+        let task_list = Arc::new(ClusterTaskList::new(data_dir));
+        let work_queue = Arc::new(ClusterWorkQueue::new(8));
+        let (shutdown_tx, shutdown_rx) = tokio::sync::broadcast::channel(1);
+        let handle = tokio::spawn(cluster_agent_loop(
+            Arc::new(agent_loop),
+            config,
+            work_queue.clone(),
+            task_list.clone(),
+            None, // rpc_client=None：回调走无客户端跳过（无网络）
+            observer,
+            shutdown_rx,
+        ));
+        WbRig { task_list, work_queue, shutdown_tx, handle }
+    }
+
+    /// resume-Err 臂（90-91/96-97）：conversation 快照存在、callback_result
+    /// 存在、但 waiting_tool_call_id 缺失 → resume_task 在
+    /// ok_or("No waiting_tool_call_id") 处失败 → handle_task_error → Failed
+    /// → complete（任务移除）。
+    /// （既有 loop_e2e::resume_without_conversation_snapshot… 因
+    /// conversation=None 根本没进 resume 分支——本测试补上真命中。）
+    #[tokio::test]
+    async fn wb_resume_missing_waiting_tool_call_id_fails_the_task() {
+        let tmp = tempfile::tempdir().unwrap();
+        let provider = WbScriptedProvider {
+            first_tool_call: None,
+            final_text: "unused".to_string(),
+            calls: AtomicUsize::new(0),
+        };
+        let agent_loop = AgentLoop::new(Box::new(provider), wb_config(false));
+        let rig = spawn_wb_rig(agent_loop, wb_config(false), tmp.path(), None);
+
+        let mut task = wb_make_task("t-wb-resume-err");
+        task.conversation = Some(serde_json::json!([])); // 可反序列化的空快照
+        task.callback_result = Some("late reply".to_string());
+        // waiting_tool_call_id 保持 None。
+        rig.task_list.create_task(task);
+        rig.work_queue.submit("t-wb-resume-err".to_string()).unwrap();
+
+        wb_wait_until(10_000, || {
+            rig.task_list.get_task("t-wb-resume-err").is_none()
+        })
+        .await;
+
+        rig.stop().await;
+    }
+
+    /// 新任务执行时带 SessionStore 种子历史 + ClusterRequestLoggerObserver：
+    /// restore>0 日志臂、observer start/end 臂全部走到；
+    /// 完成后 full history 回写 store（restore 3 条 + 本轮 user/assistant）。
+    #[tokio::test]
+    async fn wb_execute_restores_history_and_emits_observer_lifecycle() {
+        let tmp = tempfile::tempdir().unwrap();
+        let provider = WbScriptedProvider {
+            first_tool_call: None,
+            final_text: "wb-obs-done".to_string(),
+            calls: AtomicUsize::new(0),
+        };
+        let mut agent_loop = AgentLoop::new(Box::new(provider), wb_config(false));
+        let store = Arc::new(SessionStore::new_in_memory());
+        agent_loop.set_session_store(store.clone());
+
+        // 种子上一轮历史：[system, user, assistant]。
+        let seed = AgentInstance::new(wb_config(false));
+        seed.add_user_message("earlier question");
+        seed.add_assistant_message("earlier answer", Vec::new(), None);
+        persist_session_history(&agent_loop, &seed, "sess-t-wb-obs");
+
+        // LoggingConfig 默认 enabled=false → observer 臂执行但零磁盘副作用。
+        let observer = Arc::new(
+            crate::cluster_request_logger_observer::ClusterRequestLoggerObserver::new(
+                LoggingConfig::default(),
+                tmp.path(),
+            ),
+        );
+        let rig = spawn_wb_rig(agent_loop, wb_config(false), tmp.path(), Some(observer));
+
+        rig.task_list.create_task(wb_make_task("t-wb-obs"));
+        rig.work_queue.submit("t-wb-obs".to_string()).unwrap();
+        wb_wait_until(10_000, || rig.task_list.get_task("t-wb-obs").is_none()).await;
+
+        // store 收尾状态：seed 3 条 + 本轮 user("...content") + assistant("wb-obs-done")。
+        let msgs = store.get_history("sess-t-wb-obs");
+        assert_eq!(msgs.len(), 5);
+        assert_eq!(msgs[1].content, "earlier question");
+        assert_eq!(msgs[2].content, "earlier answer");
+        assert_eq!(msgs[3].role, "user");
+        assert_eq!(msgs[4].role, "assistant");
+        assert_eq!(msgs[4].content, "wb-obs-done");
+
+        rig.stop().await;
+    }
+
+    /// resume 全流程 observer 臂（271-278 / 284-294）：
+    /// 先异步挂起（WaitingRemote + save_async_state），回调注入后 resume
+    /// 完成 → observer 的 set_task_context / emit_conversation_start/end /
+    /// clear_task_context 全部在 resume 路径各走一遍。
+    #[tokio::test]
+    async fn wb_resume_path_emits_observer_start_end_arms() {
+        let tmp = tempfile::tempdir().unwrap();
+        let provider = WbScriptedProvider {
+            first_tool_call: Some(ToolCallInfo {
+                id: "tc-wb-obs".to_string(),
+                name: "cluster_rpc".to_string(),
+                arguments: "{}".to_string(),
+            }),
+            final_text: "wb-resume-final".to_string(),
+            calls: AtomicUsize::new(0),
+        };
+        let mut agent_loop = AgentLoop::new(Box::new(provider), wb_config(true));
+        agent_loop.register_tool(
+            "cluster_rpc".to_string(),
+            Box::new(WbFakeClusterRpc {
+                result: "__CLUSTER_ASYNC__{\"task_id\":\"wb-child\"}".to_string(),
+            }),
+        );
+        let observer = Arc::new(
+            crate::cluster_request_logger_observer::ClusterRequestLoggerObserver::new(
+                LoggingConfig::default(),
+                tmp.path(),
+            ),
+        );
+        let rig = spawn_wb_rig(agent_loop, wb_config(true), tmp.path(), Some(observer));
+
+        rig.task_list.create_task(wb_make_task("t-wb-resume-obs"));
+        rig.work_queue.submit("t-wb-resume-obs".to_string()).unwrap();
+
+        // 第一段：exec 异步挂起。
+        wb_wait_until(10_000, || {
+            matches!(
+                rig.task_list.get_task("t-wb-resume-obs").map(|t| t.status),
+                Some(TaskStatus::WaitingRemote)
+            )
+        })
+        .await;
+        let saved = rig.task_list.get_task("t-wb-resume-obs").unwrap();
+        assert_eq!(saved.waiting_for_task_id.as_deref(), Some("wb-child"));
+        assert_eq!(saved.waiting_tool_call_id.as_deref(), Some("tc-wb-obs"));
+        assert!(saved.conversation.is_some());
+
+        // 第二段：纯文本回调 → replace_tool_result 抹掉 marker → 同步完成。
+        rig.task_list.inject_callback("t-wb-resume-obs", "plain remote answer");
+        rig.work_queue.submit("t-wb-resume-obs".to_string()).unwrap();
+        wb_wait_until(10_000, || {
+            rig.task_list.get_task("t-wb-resume-obs").is_none()
+        })
+        .await;
+
+        rig.stop().await;
+    }
+}
+
+// =========================================================================
+// wave_c 补测（coverage 补测批次 C）：restore 的 covers 索引边界。
+//
+// 目标 miss 邻域：restore_session_history 里 SummaryCache 重建的
+// clamp(1..=len) 边界（0 下溢钳到 1、超大上溢钳到 history.len()）。
+// 另注（豁免结论，基于读码）：
+// - cluster_agent.rs:48-49（work queue closed → break）：ClusterWorkQueue
+//   自持 mpsc Sender（cluster_task.rs:80 结构体字段），Arc<Queue> 存活期间
+//   next() 不可能返回 None —— 结构性死码，测试不可达；
+// - :528-529 前驱回看未命中形态：wave_b 已有两条直测覆盖该路径（map 单行
+//   区域颗粒度噪声），无新的可达形态；
+// - :417 内层 !history.is_empty() 假臂：line 394 已保证 messages 非空、
+//   set_history 后必非空 —— 同为结构性死码。
+// =========================================================================
+
+mod wave_c {
+    use super::*;
+    use nemesis_agent::instance::SummaryCache;
+
+    /// covers=Some(0)（下界溢出垃圾值）→ clamp 到 1，绝不让 covers 落在
+    /// 历史[1..=len]范围之外。
+    #[test]
+    fn wc_restore_clamps_zero_covers_index_to_floor_one() {
+        let (agent_loop, _store) = make_loop_with_session_store();
+        let inst = AgentInstance::new(make_test_config());
+        inst.add_user_message("wc-floor-q");
+        inst.add_assistant_message("wc-floor-a", Vec::new(), None);
+        inst.set_summary_cache(Some(SummaryCache {
+            covers_up_to: 0,
+            text: "wc-summary".to_string(),
+        }));
+        persist_session_history(&agent_loop, &inst, "sess-wc-floor");
+
+        let fresh = AgentInstance::new(make_test_config());
+        let restored = restore_session_history(&agent_loop, &fresh, "sess-wc-floor");
+        assert_eq!(restored, 3);
+        let cache = fresh.get_summary_cache().expect("cache restored");
+        assert_eq!(cache.covers_up_to, 1, "0 must clamp to lower bound 1");
+        assert_eq!(cache.text, "wc-summary");
+    }
+
+    /// covers=Some(999)（远超历史长度的垃圾值）→ clamp 到 history.len()。
+    #[test]
+    fn wc_restore_clamps_oversized_covers_index_to_history_len() {
+        let (agent_loop, _store) = make_loop_with_session_store();
+        let inst = AgentInstance::new(make_test_config());
+        inst.add_user_message("wc-ceil-q");
+        inst.add_assistant_message("wc-ceil-a", Vec::new(), None);
+        inst.set_summary_cache(Some(SummaryCache {
+            covers_up_to: 999,
+            text: "wc-ceil-summary".to_string(),
+        }));
+        persist_session_history(&agent_loop, &inst, "sess-wc-ceil");
+
+        let fresh = AgentInstance::new(make_test_config());
+        let restored = restore_session_history(&agent_loop, &fresh, "sess-wc-ceil");
+        assert_eq!(restored, 3);
+        let cache = fresh.get_summary_cache().expect("cache restored");
+        assert_eq!(cache.covers_up_to, 3, "999 must clamp to history length");
+        assert_eq!(cache.text, "wc-ceil-summary");
+    }
+}

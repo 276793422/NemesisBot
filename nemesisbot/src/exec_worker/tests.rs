@@ -424,3 +424,210 @@ mod pipe_transport_via_run {
         unsafe { std::env::remove_var("NEMESISBOT_EXECUTOR_WORKSPACE") };
     }
 }
+
+// =========================================================================
+// wave_b（覆盖率补测 2026-08-27）：pipe_loop 的读错误臂（exec_worker.rs:358）
+// ——tokio lines() 对非 UTF-8 行返回 InvalidData → pipe_loop 上抛
+// "pipe read: ..."（区别于 Ok(None) 的干净 EOF 退出）。沿用上面同一套
+// 具名管道 + worker 线程夹具；全程零子进程、零生产端口。
+// =========================================================================
+#[cfg(windows)]
+mod wave_b {
+    use super::*;
+    use nemesis_agent::executor_pipe::{create_server, pipe_name, unique_pipe_id};
+    use tokio::io::AsyncWriteExt;
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn wave_b_pipe_read_invalid_utf8_line_surfaces_error() {
+        let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let name = pipe_name(&unique_pipe_id());
+        let mut server = create_server(&name).expect("create pipe server");
+
+        unsafe { std::env::set_var("NEMESISBOT_EXECUTOR_WORKSPACE", tmp.path()) };
+        unsafe { std::env::set_var("NEMESISBOT_EXECUTOR_PIPE", &name) };
+        unsafe { std::env::remove_var("NEMESISBOT_EXECUTOR_SANDBOX") };
+        unsafe { std::env::remove_var("NEMESISBOT_EXECUTOR_REEXEC") };
+        unsafe { std::env::remove_var("NEMESISBOT_EXECUTOR_HOME") };
+
+        // run() 在专用线程里自建 current_thread runtime（与生产形态一致）。
+        let worker = std::thread::Builder::new()
+            .name("t-exec-pipe-badutf8".into())
+            .spawn(move || {
+                let rt = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .expect("worker runtime");
+                rt.block_on(run())
+            })
+            .expect("spawn worker thread");
+
+        // 假 gateway 写入一行带非法 UTF-8 字节的请求（以 \n 结尾触发行解码）：
+        // lines() 解码失败 → Err(InvalidData) → pipe_loop 的 pipe-read 错误臂。
+        server.connect().await.expect("server side connect");
+        let bad: Vec<u8> = b"\xff\xfe not-utf8 \x80 payload\n".to_vec();
+        server.write_all(&bad).await.expect("write invalid utf8 line");
+        server.flush().await.expect("flush");
+        drop(server); // 关管道，别让服务端悬着
+
+        let res = worker.join().expect("worker join");
+        let err = res.expect_err("非 UTF-8 行必须让 pipe loop 以错误退出");
+        assert!(
+            err.to_string().contains("pipe read"),
+            "必须是 pipe read 错误臂: {err:#}"
+        );
+
+        unsafe { std::env::remove_var("NEMESISBOT_EXECUTOR_PIPE") };
+        unsafe { std::env::remove_var("NEMESISBOT_EXECUTOR_WORKSPACE") };
+    }
+}
+
+// =========================================================================
+// wave_r10（95% 覆盖率 goal 第七波）：stdio_loop 循环体经【真实子进程】走通。
+//
+// dispatch 协议四臂已由上方 dispatch_protocol 单测逐行钉死；本批补的是
+// stdio_loop 本体的 读一行→dispatch→序列化→write_all→flush→再读 循环
+// （exec_worker.rs ~380-388）——libtest 内进程的 stdin 是死的、无法注入多行，
+// 只能按 gateway 生产同款 spawn 形态（ROLE=executor + 绝对路径 WORKSPACE、
+// 不带任何 CLI 参数 = main() 短路在 clap 之前）喂两条协议请求：
+//   ① 坏 JSON 行      → {"ok":false,...,"error":"bad request line: ..."}
+//   ② 未知工具合法行   → {"ok":false,...,"error":"unknown tool: r10_no_such_tool"}
+// 然后关 stdin 让子进程在 EOF 干净退出（退码 0）。全程看门狗限时强杀保护。
+//
+// 隔离：WORKSPACE 指向独立 tempdir 绝对路径；显式 env_remove 掉 PIPE/SANDBOX/
+// REEXEC/HOME 四个干扰键，绝不触任何真实 home。不占任何端口。
+// 仅 Windows：resolve_nemesisbot_bin 解析 .exe（与其他子进程测试同门）。
+// =========================================================================
+#[cfg(windows)]
+mod wave_r10_stdio_subprocess {
+    use std::io::{BufRead, Write};
+    use std::process::{Command, Stdio};
+    use std::time::{Duration, Instant};
+
+    use test_harness::resolve_nemesisbot_bin;
+
+    /// executor 子进程协议全链：坏 JSON 行 + 未知工具行 → 逐行错误响应；
+    /// stdin EOF → 干净退出 0。覆盖 stdio_loop 的读-分发-写-刷循环体。
+    #[test]
+    fn r10_exec_child_stdio_two_request_protocol_round_trip() {
+        let bin = match resolve_nemesisbot_bin() {
+            Ok(p) => p,
+            Err(e) => panic!("nemesisbot.exe 未找到（先构建或设 NEMESISBOT_TEST_BIN）: {e}"),
+        };
+        let tmp = tempfile::tempdir().expect("tempdir workspace");
+
+        let mut child = Command::new(&bin)
+            .env("NEMESISBOT_ROLE", "executor")
+            // 绝对路径 tempdir 工作空间；生产 spawn 形态同款 env 键
+            .env("NEMESISBOT_EXECUTOR_WORKSPACE", tmp.path())
+            .env_remove("NEMESISBOT_EXECUTOR_PIPE")
+            .env_remove("NEMESISBOT_EXECUTOR_SANDBOX")
+            .env_remove("NEMESISBOT_EXECUTOR_REEXEC")
+            .env_remove("NEMESISBOT_EXECUTOR_HOME")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("spawn executor-role child");
+
+        // stdout/stderr 各一条排水线程（防管道堵死 + 收集诊断证据）
+        let out_pipe = child.stdout.take().expect("piped stdout");
+        let err_pipe = child.stderr.take().expect("piped stderr");
+        let out_handle = std::thread::spawn(move || {
+            let mut lines = Vec::new();
+            for l in std::io::BufReader::new(out_pipe).lines() {
+                match l {
+                    Ok(x) => lines.push(x),
+                    Err(_) => break,
+                }
+            }
+            lines
+        });
+        let err_handle = std::thread::spawn(move || {
+            let mut s = String::new();
+            use std::io::Read;
+            let _ = std::io::BufReader::new(err_pipe).read_to_string(&mut s);
+            s
+        });
+
+        // 写两条协议请求后关 stdin → 子进程处理两行 → EOF → run_loop Ok(()) 退出
+        let bad_line = "{ definitely broken json";
+        let req = serde_json::json!({
+            "tool": "r10_no_such_tool",
+            "args": "{\"k\":1}",
+            "context": { "channel": "web", "chat_id": "c1", "user": "u1", "session_key": "s1" },
+        });
+        {
+            let mut sin = child.stdin.take().expect("piped stdin");
+            writeln!(sin, "{bad_line}")
+                .and_then(|_| writeln!(sin, "{req}"))
+                .expect("write protocol lines");
+            let _ = sin.flush();
+            drop(sin); // EOF 触发器
+        }
+
+        // 限时收齐恰好两行响应
+        let deadline = Instant::now() + Duration::from_secs(60);
+        let lines = loop {
+            if out_handle.is_finished() {
+                break out_handle.join().expect("stdout drain join");
+            }
+            assert!(
+                Instant::now() < deadline,
+                "timed out waiting for two protocol responses"
+            );
+            std::thread::sleep(Duration::from_millis(100));
+        };
+        assert_eq!(
+            lines.len(),
+            2,
+            "exactly one response per request line expected, got:\n{lines:?}"
+        );
+
+        // 行①：坏 JSON → "bad request line: ..." 且 ok=false
+        let r1: serde_json::Value = serde_json::from_str(&lines[0])
+            .unwrap_or_else(|e| panic!("response line 1 not JSON ({e}): {:?}", lines[0]));
+        assert_eq!(r1["ok"], serde_json::json!(false), "{r1}");
+        assert!(
+            r1["error"]
+                .as_str()
+                .unwrap_or("")
+                .starts_with("bad request line"),
+            "line1 must be a bad-request-line error: {r1}"
+        );
+
+        // 行②：未知工具合法行 → "unknown tool: r10_no_such_tool"（指向工具名）
+        let r2: serde_json::Value = serde_json::from_str(&lines[1])
+            .unwrap_or_else(|e| panic!("response line 2 not JSON ({e}): {:?}", lines[1]));
+        assert_eq!(r2["ok"], serde_json::json!(false), "{r2}");
+        assert_eq!(
+            r2["error"].as_str(),
+            Some("unknown tool: r10_no_such_tool"),
+            "line2 must name the unknown tool verbatim: {r2}"
+        );
+
+        // EOF → 子进程自退 0；限时兜底强杀防挂死测试二进制
+        let deadline = Instant::now() + Duration::from_secs(30);
+        let mut status_opt = None;
+        while Instant::now() < deadline {
+            if let Ok(Some(s)) = child.try_wait() {
+                status_opt = Some(s);
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        match status_opt {
+            Some(status) => assert!(
+                status.success(),
+                "child must exit cleanly on stdin EOF, got {status}; stderr:\n{}",
+                err_handle.join().unwrap_or_default()
+            ),
+            None => {
+                let _ = child.kill();
+                let _ = child.wait();
+                panic!("executor child didn't exit after stdin EOF within 30s");
+            }
+        }
+        drop(err_handle);
+    }
+}

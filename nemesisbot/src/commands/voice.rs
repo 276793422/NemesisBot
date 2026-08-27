@@ -129,7 +129,7 @@ fn cmd_status(voice_dir: &std::path::Path) -> Result<()> {
         let punct_name = &cfg.punct.model_name;
         let punct_dir = model_dir.join("punct").join(punct_name);
         if punct_dir.exists() {
-            println!("  [OK] Punct model: {}", stt_name);
+            println!("  [OK] Punct model: {}", punct_name);
         } else {
             println!("  [--] Punct model: {} (not downloaded)", punct_name);
         }

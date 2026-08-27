@@ -647,3 +647,62 @@ fn failed_tool_call_logs_failed_status_and_error_text() {
 // 不可达 —— RequestLogger::create_session（request_logger.rs:314-343）对
 // 所有内部失败都「Silent failure」返回 Ok(())，Err 只可能来自未来新增的
 // 失败模式。结构性豁免，见批次报告。
+
+// ===========================================================================
+// wave_r9（R9 补测批零头组，2026-08-27）：hostile log 根静默降级 +
+// Err 臂不可达性存档。
+//
+// 结构性发现：RequestLogger::create_session（nemesis-agent request_logger.rs
+// 314-345）对每一条 fs 失败都是 warn! + Ok(())（源码注释原文即 "Silent
+// failure"）——因此 observer handle_conversation_start 里
+// `if let Err(e) = logger.create_session()`（本文件 207-213）的 Err 分支是
+// 【不可达的死防御代码】：没有任何 fs 失败能从 create_session 冒出 Err 来。
+//
+// 本测试钉住真正可达的行为契约——日志根被普通文件占位时：
+//   不 panic；对话仍进 active 册（create_session 返回 Ok）；0→1→0 清账；
+//   hostile 文件原样保留；不会出现任何会话目录。
+// ===========================================================================
+
+mod wave_r9 {
+    use super::*;
+
+    #[test]
+    fn hostile_log_root_file_degrades_silently_and_bookkeeping_cleans_up() {
+        let tmp = TempDir::new().unwrap();
+        let cluster_logs = tmp.path().join("logs").join("cluster_logs");
+        std::fs::create_dir_all(&cluster_logs).unwrap();
+        let dev_path = cluster_logs.join("dev-x");
+        std::fs::write(&dev_path, "普通文件占据 device 目录位").unwrap();
+
+        let observer = ClusterRequestLoggerObserver::new(test_config(), tmp.path());
+        observer.set_task_context("t-1".to_string(), "dev-x".to_string());
+        assert_eq!(observer.active_count(), 0);
+
+        observer.dispatch(&make_start_event("trace-h1", "hello from remote peer"));
+        assert_eq!(
+            observer.active_count(),
+            1,
+            "create_session 对 mkdir 失败结构性返回 Ok → 对话照常入册（207-213 的 \
+             Err 臂由此不可达）"
+        );
+
+        // 中途 LLM 事件同样静默降级、绝不 panic。
+        observer.dispatch(&make_llm_request_event("trace-h1", 1));
+
+        observer.dispatch(&make_end_event("trace-h1", 1));
+        assert_eq!(observer.active_count(), 0, "结束事件照常清账");
+
+        // hostile 占位文件原样保留，且 cluster_logs 下不出现任何别的东西
+        //（会话目录根本建不出来——父级是文件）。
+        assert!(dev_path.is_file());
+        let entries: Vec<_> = std::fs::read_dir(&cluster_logs)
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert_eq!(
+            entries.len(),
+            1,
+            "cluster_logs 下只应有那一个占位文件，实际: {entries:?}"
+        );
+    }
+}

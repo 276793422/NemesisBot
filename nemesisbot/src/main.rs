@@ -518,9 +518,15 @@ async fn run_command(cli: Cli) -> Result<()> {
 
             if write_main_config {
                 // Use compile-time embedded config (always available)
-                match serde_json::from_str::<serde_json::Value>(CONFIG_DEFAULT) {
-                    Ok(mut cfg) => {
-                        // Enable LLM logging
+                // [2026-08-27 R9 死码处置·简化] 原 match 的 Err(_) =>
+                // write_fallback_config 分支恒不触发：CONFIG_DEFAULT 是编译期
+                // 嵌入常量，from_str 不可能失败（若真失败，onboard 任一测试
+                // 第一跑即 panic 暴露）。恒 Ok 路径行为不变；write_fallback_config
+                // 已随之注释禁用（见文件底部）。
+                let mut cfg = serde_json::from_str::<serde_json::Value>(CONFIG_DEFAULT)
+                    .expect("embedded CONFIG_DEFAULT must be valid JSON (compile-time constant)");
+                {
+                    // Enable LLM logging
                         if let Some(logging) = cfg.get_mut("logging").and_then(|v| v.get_mut("llm"))
                         {
                             if let Some(obj) = logging.as_object_mut() {
@@ -600,10 +606,6 @@ async fn run_command(cli: Cli) -> Result<()> {
                             serde_json::to_string_pretty(&cfg).unwrap_or_default(),
                         )?;
                         println!("  Main config saved to .nemesisbot/config.json");
-                    }
-                    Err(_) => {
-                        write_fallback_config(&cfg_path)?;
-                    }
                 }
             }
 
@@ -631,22 +633,22 @@ async fn run_command(cli: Cli) -> Result<()> {
             // config.cluster.json 不再含身份字段（name/role/node_id 等），
             // 身份信息全部由 peers.toml 的 [node] 段承载。
             let cluster_cfg_path = common::cluster_config_path(&home);
-            match serde_json::from_str::<serde_json::Value>(CONFIG_CLUSTER_DEFAULT) {
-                Ok(mut cluster_cfg) => {
-                    if let Some(obj) = cluster_cfg.as_object_mut() {
-                        obj.insert(
-                            "token".to_string(),
-                            serde_json::Value::String(uuid::Uuid::new_v4().to_string()),
-                        );
-                    }
-                    let _ = std::fs::write(
-                        &cluster_cfg_path,
-                        serde_json::to_string_pretty(&cluster_cfg).unwrap_or_default(),
+            // [2026-08-27 R9 死码处置·简化] 原 match 的 Err(_) 兜底分支恒不
+            // 触发：CONFIG_CLUSTER_DEFAULT 是编译期嵌入常量，from_str 不可能
+            // 失败。恒 Ok 路径行为不变。
+            let mut cluster_cfg = serde_json::from_str::<serde_json::Value>(CONFIG_CLUSTER_DEFAULT)
+                .expect("embedded CONFIG_CLUSTER_DEFAULT must be valid JSON (compile-time constant)");
+            {
+                if let Some(obj) = cluster_cfg.as_object_mut() {
+                    obj.insert(
+                        "token".to_string(),
+                        serde_json::Value::String(uuid::Uuid::new_v4().to_string()),
                     );
                 }
-                Err(_) => {
-                    let _ = std::fs::write(&cluster_cfg_path, CONFIG_CLUSTER_DEFAULT);
-                }
+                let _ = std::fs::write(
+                    &cluster_cfg_path,
+                    serde_json::to_string_pretty(&cluster_cfg).unwrap_or_default(),
+                );
             }
             println!("  Cluster config created");
 
@@ -963,6 +965,12 @@ async fn run_command(cli: Cli) -> Result<()> {
 }
 
 /// Write fallback minimal config when no embedded config is available.
+///
+/// [2026-08-27 R9 死码处置注记] 生产侧唯一调用方（CONFIG_DEFAULT 解析的
+/// Err 兜底臂）恒不触发——编译期常量 from_str 不可能失败——该臂已删除。
+/// 函数保留：tests.rs 的 5 个既有测试以它为对象钉住最小配置 schema，
+/// 属"测试保活"状态。恢复生产接线：在 onboard 主配置写入处补 match/Err。
+#[allow(dead_code)]
 fn write_fallback_config(cfg_path: &std::path::Path) -> anyhow::Result<()> {
     let default_cfg = serde_json::json!({
         "version": "1.0",

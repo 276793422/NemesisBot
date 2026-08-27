@@ -14,7 +14,8 @@ use super::*;
 
 /// Spawn a std-thread HTTP server that serves exactly `responses.len()`
 /// requests, then exits. Each response is (status_line, body).
-fn spawn_http_server(responses: Vec<(&'static str, &'static str)>) -> u16 {
+/// `pub(super)`: shared with cov_tests.rs (subscriber 翻绿批次).
+pub(super) fn spawn_http_server(responses: Vec<(&'static str, &'static str)>) -> u16 {
     use std::io::{Read, Write};
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();
@@ -55,7 +56,7 @@ fn base_config(active: &str) -> EmbeddingConfig {
     c
 }
 
-fn set_model_urls(config: &mut EmbeddingConfig, model_url: &str, tokenizer_url: &str) {
+pub(super) fn set_model_urls(config: &mut EmbeddingConfig, model_url: &str, tokenizer_url: &str) {
     let key = config.active.clone();
     let mc = config.models.get_mut(&key).unwrap();
     mc.model_url = model_url.to_string();

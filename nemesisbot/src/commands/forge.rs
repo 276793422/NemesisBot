@@ -629,7 +629,9 @@ fn cmd_evaluate(forge_dir: &std::path::Path, id: &str) -> Result<()> {
 fn cmd_export(
     forge_dir: &std::path::Path,
     output: Option<&str>,
-    export_all: bool,
+    // CLI 兼容保留：当前 Exporter::export_all 无按激活状态过滤的能力，
+    // --all 与默认范围一致；待 exporter 支持后在这里接线。
+    _export_all: bool,
     artifact_id: Option<&str>,
 ) -> Result<()> {
     if !forge_dir.exists() {
@@ -691,12 +693,9 @@ fn cmd_export(
 
         println!("  Artifact exported to: {}", export_dir.display());
     } else {
-        // Export all (active or all) artifacts
-        if export_all {
-            println!("Exporting all artifacts...");
-        } else {
-            println!("Exporting all active artifacts...");
-        }
+        // Export all artifacts（注意：当前 Exporter::export_all 无 scope 参数，
+        // --all 与默认范围一致 —— 文案如实反映，不得虚构二者差异）
+        println!("Exporting artifacts...");
 
         let count = tokio::task::block_in_place(|| {
             tokio::runtime::Handle::current().block_on(exporter.export_all(&target_dir))
@@ -705,9 +704,6 @@ fn cmd_export(
 
         if count == 0 {
             println!("  No artifacts to export.");
-            if !export_all {
-                println!("  Use --all to include non-active artifacts.");
-            }
         } else {
             println!(
                 "  Exported {} artifact(s) to: {}",

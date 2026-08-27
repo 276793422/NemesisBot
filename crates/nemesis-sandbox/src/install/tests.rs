@@ -181,3 +181,74 @@ fn ensure_installed_bails_on_missing_runtime() {
     let msg = format!("{err:#}");
     assert!(msg.contains("runtime files missing"), "{msg}");
 }
+
+// ---------------------------------------------------------------------------
+// R5 覆盖率批次（2026-08-27）：verify_runtime 通过后的 start /
+// ensure_installed 深层臂——用「dummy 内容的假 runtime」让 verify 放行，
+// 但 KmdUtil.exe 非 PE → spawn 必败（零系统副作用），钉住错误传播路径。
+// ---------------------------------------------------------------------------
+
+/// 造一套最小假 runtime：verify_runtime 要求的 5 个文件（内容 dummy，
+/// 不可执行——正是要让 spawn 失败）。
+fn plant_fake_runtime(paths: &SandboxPaths) {
+    std::fs::create_dir_all(&paths.runtime_dir).unwrap();
+    for f in ["SbieDrv.sys", "SbieSvc.exe", "SbieMsg.dll", "KmdUtil.exe", "Start.exe"] {
+        std::fs::write(paths.runtime_dir.join(f), b"dummy-not-a-pe").unwrap();
+    }
+}
+
+#[test]
+fn start_propagates_kmdutil_spawn_failure_after_runtime_ok() {
+    let _log = crate::test_util::capture_logs();
+    let tmp = tempfile::tempdir().unwrap();
+    let paths = SandboxPaths::new(tmp.path());
+    plant_fake_runtime(&paths);
+    // dummy KmdUtil.exe 非 PE → kmdutil::run spawn 失败 → start 的
+    // "install SbieDrv" context 传播。确定性、零系统副作用。
+    let err = start(&paths).unwrap_err();
+    let msg = format!("{err:#}");
+    assert!(msg.contains("install SbieDrv"), "{msg}");
+    assert!(msg.contains("spawn"), "失败必须发生在 spawn 层（非真 KmdUtil 执行）: {msg}");
+}
+
+#[cfg(windows)]
+#[test]
+fn ensure_installed_bails_on_foreign_or_fails_at_service_start() {
+    if crate::elevation::is_elevated() {
+        return; // 提权 + 干净机器会真写 HKLM/真注册服务（dummy KmdUtil 也被
+                // tolerant 吞掉不执行真操作，但 set_ini_path 会真写）——跳过
+    }
+    let _log = crate::test_util::capture_logs();
+    let tmp = tempfile::tempdir().unwrap();
+    let paths = SandboxPaths::new(tmp.path());
+    plant_fake_runtime(&paths);
+    let err = ensure_installed(&paths).unwrap_err();
+    let msg = format!("{err:#}");
+    // 两种机器形态都确定性 Err：
+    // - 本机（SbieSvc/SbieDrv 注册在别处）：foreign 归属门 bail；
+    // - 干净机器：tolerant 主体全吞 → start_service 的 KmdUtil spawn 失败。
+    assert!(
+        msg.contains("foreign Sandboxie") || msg.contains("start SbieSvc"),
+        "{msg}"
+    );
+}
+
+#[cfg(windows)]
+#[test]
+fn start_fails_at_set_ini_path_without_elevation() {
+    if crate::elevation::is_elevated() {
+        return; // 提权会真写 HKLM\SbieDrv\IniPath（重定向真沙盒 ini），跳过
+    }
+    let _log = crate::test_util::capture_logs();
+    let tmp = tempfile::tempdir().unwrap();
+    let paths = SandboxPaths::new(tmp.path());
+    plant_fake_runtime(&paths);
+    // KmdUtil.exe 用 rundll32.exe 顶替：spawnable PE + 任意参数 exit 0
+    // （实测），让 install_driver 这步"成功"，推进到 set_ini_path——非提权下
+    // reg add HKLM 必 ACCESS DENIED → 确定性 Err，零注册表副作用。
+    std::fs::copy(r"C:\Windows\System32\rundll32.exe", paths.kmdutil()).unwrap();
+    let err = start(&paths).unwrap_err();
+    let msg = format!("{err:#}");
+    assert!(msg.contains("set IniPath"), "{msg}");
+    assert!(msg.contains("reg add"), "{msg}");
+}

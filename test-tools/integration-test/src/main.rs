@@ -712,8 +712,22 @@ async fn main() -> Result<()> {
     all_results.extend(ui_batch_series::test_ui_p5_sandbox(&ws).await);
 
     // ---- Cleanup ----
+    // Coverage-safe teardown: graceful /api/internal shutdown lets an
+    // instrumented gateway flush .profraw on its clean-exit path
+    // (TerminateProcess would lose the counters). Falls back to kill.
     println!("\n  Stopping services...");
-    gateway.kill().await;
+    match graceful_shutdown_gateway(WEB_PORT, AUTH_TOKEN).await {
+        Ok(()) => {
+            if let Err(e) = gateway.wait_for_exit(Duration::from_secs(20)).await {
+                println!("  warning: {e}; falling back to kill");
+                gateway.kill().await;
+            }
+        }
+        Err(e) => {
+            println!("  warning: graceful shutdown failed ({e}); killing gateway");
+            gateway.kill().await;
+        }
+    }
     ai_server.kill().await;
 
     // ---- Print results ----

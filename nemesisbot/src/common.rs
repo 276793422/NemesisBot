@@ -1,9 +1,8 @@
 //! Shared helpers for CLI commands.
 //!
 //! Provides path resolution, version info, logger initialization,
-//! interactive mode, directory copy, and other common utilities.
+//! directory copy, and other common utilities.
 
-use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use tracing_subscriber::prelude::*;
 
@@ -550,47 +549,10 @@ fn max_level_filter(level: tracing::Level) -> tracing_subscriber::filter::LevelF
 // =========================================================================
 // Interactive mode
 // =========================================================================
-
-/// Run a simple interactive CLI chat loop.
-///
-/// Reads lines from stdin, calls the provided handler for each input,
-/// and prints the response. Type "exit" or "quit" to stop.
-#[allow(dead_code)]
-pub fn run_interactive_mode<F>(prompt: &str, handler: F) -> anyhow::Result<()>
-where
-    F: Fn(&str) -> anyhow::Result<String>,
-{
-    println!("Interactive mode. Type 'exit' or 'quit' to stop.");
-    println!();
-
-    let stdin = io::stdin();
-    loop {
-        print!("{}", prompt);
-        io::stdout().flush()?;
-
-        let mut line = String::new();
-        let bytes_read = stdin.read_line(&mut line)?;
-        if bytes_read == 0 {
-            // EOF
-            println!("Goodbye!");
-            return Ok(());
-        }
-
-        let input = line.trim();
-        if input.is_empty() {
-            continue;
-        }
-        if input == "exit" || input == "quit" {
-            println!("Goodbye!");
-            return Ok(());
-        }
-
-        match handler(input) {
-            Ok(response) => println!("\n{}\n", response),
-            Err(e) => eprintln!("Error: {}\n", e),
-        }
-    }
-}
+// [2026-08-27 R9 死码处置·已删除] run_interactive_mode（原 554-593 行）：
+// 全仓库零生产调用方（#[allow(dead_code)] 工具函数，grep 实证仅自身定义），
+// 且 stdin 循环在进程内测试无法注入。按用户 2026-08-27 裁决删除——
+// 恢复方式：git 历史本提交前的版本。
 
 // =========================================================================
 // Directory copy

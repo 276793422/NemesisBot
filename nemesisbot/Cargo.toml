@@ -131,6 +131,10 @@ winresource = "0.1"
 
 [dev-dependencies]
 tempfile = "3"
+# R9：子进程级测试（REPL 管道 stdin / eval 探测式真链路 / main 短路退码断言）
+# 需要 resolve_nemesisbot_bin + run_cli_with_stdin + MockAiServer（scripted
+# OpenAI 兼容回环服务器——TestAIServer 回复内容钉死，测不了工具选择/精确文本）。
+test-harness = { path = "../test-tools/test-harness" }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_System_Threading", "Win32_System_JobObjects"] }

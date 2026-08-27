@@ -712,6 +712,10 @@ fn print_gateway_banner(
 #[cfg(test)]
 mod tests;
 
+/// R9 补测批：gateway 活动场景组（live 双节点/心跳/审批/工作流，见模块头注释）。
+#[cfg(test)]
+mod tests_r9_live;
+
 /// Parse "host:port" string into (host, port).
 #[cfg(any(feature = "cluster", test))]
 fn parse_host_port(addr: &str) -> (String, u16) {
@@ -2864,9 +2868,19 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
             web_server.set_cluster(adapter.cluster().clone());
             info!("[Gateway] Cluster instance injected into web server");
 
-            // Initialize cluster log writer for structured JSONL logging
+            // Initialize cluster log writer for structured JSONL logging.
+            // try_ 幂等变体：同一进程内第二次 run()（in-process 测试复跑网关）
+            // 不再 panic "called more than once"；生产单 gateway 每进程只走一次，
+            // 行为不变。
             let cluster_log_dir = home.join("workspace/logs/cluster_logs");
-            nemesis_cluster::cluster_log::init_cluster_log(&cluster_log_dir);
+            if nemesis_cluster::cluster_log::try_init_cluster_log(&cluster_log_dir) {
+                info!(
+                    dir = %cluster_log_dir.display(),
+                    "[ClusterLog] Initialized"
+                );
+            } else {
+                info!("[ClusterLog] Already initialized in this process — reusing existing writer");
+            }
 
             // Inject cluster lifecycle service for start/stop control
             web_server.set_cluster_service(
@@ -3342,12 +3356,28 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
         } else {
             info!("[Gateway] Cron scheduler started");
         }
-        // H1 (U12) armed gate: basic services (bus + agent) are up at this
-        // point — latch the arm so persisted jobs may fire. Everything before
-        // this line ran with the service disarmed (fresh-process protection:
-        // a restart must not silently resume autonomous scheduling).
-        cron.arm();
+        // H1 (U12) armed gate：这里只 start 不 arm——arm() 被移到 Step 17 之后
+        // （agent 已订阅 + web 已 bind）。此前 arm 挂在本处是 BUG #49（2026-08-28）
+        // 的根因：boot 顺序是 arm(Step14) → web bind/state 写盘(Step17) →
+        // agent_adapter.start() 才订阅 bus inbound(旧 Step18)，中间没有任何
+        // 订阅者。overdue 的持久化 job 在 arm 后第一个 1s tick 即 fire，消息
+        // publish 进 tokio broadcast 时零订阅者 = 静默丢弃（cron fire-and-forget
+        // 照记 last_status=ok，agent 的 LLM 一次不发）。空载时间隙 <1s 订阅赢，
+        // 负载下间隙拉开 >1s 必丢——测试全部通过/失败随负载轮换的根源。
+        // tick 调度器在 disarm 状态下空转（见 service.rs H1 gate），晚 arm 无
+        // 副作用，只是把 fire 时机推迟到"订阅者就位"之后。
     }
+
+    // Step 14b: Start AgentLoop's bus processing（原 Step 18 上移，BUG #49）
+    // 订阅必须在所有 inbound 生产者上线之前完成：
+    //   - web server（Step 17 起 accept WS 消息 → bus.publish_inbound）；
+    //   - cron.arm()（下移到 Step 17 之后，armed 后第一个 tick 即 fire）。
+    // tokio broadcast 零订阅者时 publish 即丢，所以顺序不变量是：
+    // agent 订阅 → web 上线 → cron arm。
+    if let Err(e) = agent_adapter.start() {
+        warn!("[Gateway] Agent adapter start note: {}", e);
+    }
+    info!("[Gateway] Agent loop started via adapter, listening on bus");
 
     // Step 15: Print agent startup info
     print_agent_startup_info(&home, initial_tool_count);
@@ -3464,11 +3494,15 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
         &cfg.gateway.host, cfg.gateway.port
     );
 
-    // Step 18: Start AgentLoop's bus processing via adapter
-    if let Err(e) = agent_adapter.start() {
-        warn!("[Gateway] Agent adapter start note: {}", e);
+    // Step 18: Arm cron（原 agent_adapter.start() 位置，BUG #49 调序后）
+    // 此时序不变量全部就位：agent 已订阅 bus（Step 14b）+ web 已 bind 且
+    // gateway state 已写盘（上方 Step 17 尾部）——armed 后第一个 tick fire
+    // 的 overdue job，其消息有订阅者接、deliver=true 的回复有 web channel 投。
+    // fresh-process 保护语义不变：arm 之前的一切启动流程仍在 disarm 下跑。
+    {
+        let cron = cron_service.lock().unwrap();
+        cron.arm();
     }
-    info!("[Gateway] Agent loop started via adapter, listening on bus");
 
     // Step 19: Start bot service (for state tracking)
     if let Err(e) = svc_mgr.start_bot() {

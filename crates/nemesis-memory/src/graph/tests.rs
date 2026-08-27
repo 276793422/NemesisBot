@@ -842,3 +842,36 @@ async fn persist_and_reload_triples_roundtrip() {
     let all = reloaded.list_triples("s1").await.unwrap();
     assert_eq!(all.len(), 2);
 }
+
+// ---- R1 coverage: load-from-disk failure swallow + save-side dedup ----
+
+#[tokio::test]
+async fn persistence_dir_pointing_at_file_starts_empty() {
+    // The persistence dir itself is a REGULAR FILE → entities.jsonl can
+    // never be read → load_from_disk errs → ensure_loaded swallows the
+    // error (warn-only) and the store works from an empty slate.
+    let dir = tempfile::tempdir().unwrap();
+    let bogus = dir.path().join("not_a_dir");
+    std::fs::write(&bogus, b"x").unwrap();
+
+    let store = InMemoryGraphStore::new().with_persistence(bogus);
+    let all = store.list_triples("anything").await.unwrap();
+    assert!(all.is_empty(), "load errors are swallowed; got: {all:?}");
+}
+
+#[tokio::test]
+async fn persist_triples_dedupes_identical_keys_on_save() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = InMemoryGraphStore::new().with_persistence(dir.path().to_path_buf());
+
+    let t = GraphTriple::new("s".into(), "p".into(), "o".into());
+    store.add_triple(t.clone()).await.unwrap();
+    store.add_triple(t.clone()).await.unwrap(); // same key → save-side dedup
+
+    // In-memory keeps every push; the JSONL snapshot dedupes by key.
+    let all = store.list_triples("s").await.unwrap();
+    let raw = std::fs::read_to_string(dir.path().join("triples.jsonl"))
+        .unwrap_or_default();
+    let on_disk = raw.lines().filter(|l| !l.trim().is_empty()).count();
+    assert_eq!(on_disk, std::cmp::min(all.len(), 1), "dup keys collapse on disk");
+}

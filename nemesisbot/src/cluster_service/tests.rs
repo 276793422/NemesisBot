@@ -261,3 +261,208 @@ async fn lifecycle_start_stop_flips_flag_and_is_idempotent() {
     assert!(flag.load(std::sync::atomic::Ordering::Relaxed));
     adapter.stop().expect("final stop");
 }
+
+// =========================================================================
+// wave_c 补测（coverage 补测批次 C）：first_start / start / stop 的错误与
+// 降级臂。
+//
+// 目标 miss：restore_from_disk 失败 warn（lenient 不致命）、恢复重提撞满
+// 队列容量的 submit-Err 分支、start_cluster_components 里 RPC server
+// 绑定失败向上传播、shared 无 ClusterRpcTool 旗标（None）时 start/stop
+// 全程容忍、agent 构建失败后 stop() 拿不到 handle 的 None 臂。
+// 全部离线：LLM 指向 127.0.0.1:9（立即拒绝），UDP/RPC 绑定口冲突用
+// 本进程先占端口的方式确定性构造。
+// =========================================================================
+
+/// 种子 N 个 Pending 任务并持久化到磁盘（供 restore_from_disk 恢复）。
+fn seed_pending_tasks(task_dir: &std::path::Path, ids: &[&str]) {
+    let seeder = ClusterTaskList::new(task_dir);
+    for id in ids {
+        seeder.create_task(make_pending_task(id));
+    }
+    seeder.persist_to_disk().expect("seed persist must succeed");
+}
+
+/// restore_from_disk 读损坏的 tasks.json 索引失败 → first_start 只 warn
+/// 不失败（lenient），running 照常置位。
+#[tokio::test]
+async fn wave_c_first_start_lenient_when_tasks_index_is_corrupt() {
+    let tmp = tempfile::tempdir().unwrap();
+    let task_dir = tmp.path().join("tasks");
+    let index_dir = task_dir.join("cluster");
+    std::fs::create_dir_all(&index_dir).unwrap();
+    std::fs::write(index_dir.join("tasks.json"), "{{{ corrupt").unwrap();
+
+    // 坏 config（无 config.json）→ agent 构建走 lenient 分支；两处 lenient
+    // 叠加也不影响 Ok。
+    let (adapter, _cluster, _shared, _tl, _wq, _flag) =
+        make_adapter(&tmp.path().join("home"), &task_dir);
+    adapter.first_start().expect("restore failure must be lenient");
+    assert!(LifecycleService::is_running(&adapter));
+}
+
+/// 恢复重提撞满队列容量：容量 8、磁盘上 10 个 Pending 任务、无消费者
+/// （坏 config → agent 构建失败）→ 前 8 个入队成功、其余 submit Err
+/// （内部只 warn）。可观察结果：队列里恰好能抽到 8 个 id。
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn wave_c_first_start_resubmit_overflow_is_bounded_by_queue_capacity() {
+    const CAPACITY: usize = 8;
+    let tmp = tempfile::tempdir().unwrap();
+    let task_dir = tmp.path().join("tasks");
+    std::fs::create_dir_all(&task_dir).unwrap();
+    let ids: Vec<String> = (0..CAPACITY + 2).map(|i| format!("wc-task-{i}")).collect();
+    let id_refs: Vec<&str> = ids.iter().map(String::as_str).collect();
+    seed_pending_tasks(&task_dir, &id_refs);
+
+    let (adapter, _cluster, _shared, task_list, work_queue, _flag) =
+        make_adapter(&tmp.path().join("home"), &task_dir);
+    adapter.first_start().expect("first_start");
+
+    // 全部恢复成 Pending。
+    for id in &ids {
+        let t = task_list.get_task(id).expect("restored task present");
+        assert_eq!(t.status, TaskStatus::Pending);
+    }
+    // 队列有界：恰好 CAPACITY 个被接受，多出的两个被 try_send 拒绝（warn 内吞）。
+    // 注意：ClusterWorkQueue 自持 sender，next() 永不返回 None（见 S11d 注），
+    // 排空判定必须用超时而非等 None。
+    let mut drained = Vec::new();
+    for _ in 0..ids.len() + 4 {
+        match tokio::time::timeout(
+            std::time::Duration::from_millis(500),
+            work_queue.next(),
+        )
+        .await
+        {
+            Ok(Some(id)) => drained.push(id),
+            _ => break,
+        }
+    }
+    assert_eq!(drained.len(), CAPACITY, "queue must accept exactly capacity items");
+    // 抽到的都是合法任务 id 且无重复。
+    drained.sort();
+    drained.dedup();
+    assert_eq!(drained.len(), CAPACITY);
+
+    // 清理：停掉可能存在的 agent 任务（本例 agent 未构建，但保持对称）。
+    LifecycleService::stop(&adapter).ok();
+}
+
+/// start() 里 RPC server 绑定到已被占用的端口 → 错误向上传播为
+/// "RPC server start: ..."，且 running 保持 false（无半开状态泄漏）。
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn wave_c_start_fails_when_rpc_port_is_already_bound() {
+    let tmp = tempfile::tempdir().unwrap();
+    let home = tmp.path().join("home");
+    write_cluster_model_config(&home);
+
+    // 先在本进程占住一个端口（最可靠的确定性口冲突构造）。
+    let blocker = std::net::TcpListener::bind("127.0.0.1:0").expect("bind ephemeral port");
+    let busy_port = blocker.local_addr().unwrap().port();
+
+    let mut cluster = nemesis_cluster::cluster::Cluster::new(ClusterConfig {
+        node_id: "wc-busy-port".to_string(),
+        bind_address: "127.0.0.1:0".to_string(),
+        peers: Vec::new(),
+    });
+    cluster.set_rpc_server(Arc::new(
+        nemesis_cluster::rpc::server::RpcServer::new(
+            nemesis_cluster::rpc::server::RpcServerConfig {
+                bind_address: format!("127.0.0.1:{busy_port}"),
+                ..Default::default()
+            },
+        ),
+    ));
+    let cluster = Arc::new(cluster);
+
+    let shared = make_shared_with_flag(&home);
+    let task_list = Arc::new(ClusterTaskList::new(tmp.path().join("tasks")));
+    let work_queue = Arc::new(ClusterWorkQueue::new(8));
+    let adapter = ClusterServiceAdapter::new(
+        cluster,
+        shared,
+        tokio::runtime::Handle::current(),
+        home,
+        task_list,
+        work_queue,
+    );
+
+    let err = adapter.start().expect_err("busy rpc port must fail start");
+    assert!(
+        err.contains("RPC server start"),
+        "error must identify the failing component, got: {err}"
+    );
+    assert!(!LifecycleService::is_running(&adapter));
+    drop(blocker);
+}
+
+/// shared 没有 ClusterRpcTool 使能旗标（None）+ agent 构建失败（无
+/// config.json）→ start/stop 都要容忍：running 正常翻转，stop 在拿不到
+/// agent handle 时走 None 臂不 panic。
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn wave_c_lifecycle_tolerates_flagless_shared_and_absent_agent_handle() {
+    let tmp = tempfile::tempdir().unwrap();
+    let cluster = Arc::new(nemesis_cluster::cluster::Cluster::new(ClusterConfig {
+        node_id: "wc-flagless".to_string(),
+        bind_address: "127.0.0.1:0".to_string(),
+        peers: Vec::new(),
+    }));
+    // Default shared：cluster_rpc_enabled 为 None。
+    let shared = Arc::new(crate::agent_factory::SharedResources {
+        home: tmp.path().to_path_buf(),
+        ..Default::default()
+    });
+    assert!(shared.cluster_rpc_enabled.read().is_none());
+    let adapter = ClusterServiceAdapter::new(
+        cluster,
+        shared,
+        tokio::runtime::Handle::current(),
+        tmp.path().to_path_buf(),
+        Arc::new(ClusterTaskList::new(tmp.path().join("tasks"))),
+        Arc::new(ClusterWorkQueue::new(8)),
+    );
+
+    // agent 构建 lenient-Ok(None) → running=true 但 handle 缺席。
+    adapter.start().expect("start with bad config is lenient");
+    assert!(LifecycleService::is_running(&adapter));
+
+    // stop：handle.take()==None 的臂 + 旗标缺席的臂都要无害通过。
+    adapter.stop().expect("stop tolerates absent handle");
+    assert!(!LifecycleService::is_running(&adapter));
+}
+
+// =========================================================================
+// r10（覆盖率 A 类 miss 补充）：恢复统计的 tracing::info! 参数行。
+// tracing 的字段表达式（count = recovered.len() 等）编译进惰性闭包——只有
+// 存在已启用 subscriber 时才求值。默认测试进程无 subscriber → info! 外层
+// 行被执行而参数行 span 永不执行。本测试先 ensure_default_logger() 安装
+// INFO 级 fmt subscriber，再驱动带存量任务的 first_start()，让
+// 「Recovered N tasks」事件的字段闭包真实执行。
+// =========================================================================
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn r10_first_start_recovery_info_fields_execute_with_subscriber() {
+    crate::common::ensure_default_logger();
+
+    let tmp = tempfile::tempdir().unwrap();
+    let task_dir = tmp.path().join("tasks");
+    std::fs::create_dir_all(&task_dir).unwrap();
+
+    let seeder = ClusterTaskList::new(&task_dir);
+    seeder.create_task(make_pending_task("r10-recover-a"));
+    let mut waiting = make_pending_task("r10-recover-b");
+    waiting.status = TaskStatus::WaitingRemote;
+    seeder.create_task(waiting);
+    seeder.persist_to_disk().expect("seed persist must succeed");
+    drop(seeder);
+
+    // 坏 config（无 config.json）→ agent 构建失败 lenient，但恢复分支先行。
+    let (adapter, _cluster, _shared, _tl, _wq, _flag) =
+        make_adapter(&tmp.path().join("home"), &task_dir);
+    adapter.first_start().expect("first_start");
+
+    assert!(
+        LifecycleService::is_running(&adapter),
+        "first_start 完成后必须置 running"
+    );
+}

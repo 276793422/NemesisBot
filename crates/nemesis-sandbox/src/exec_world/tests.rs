@@ -279,3 +279,43 @@ async fn spawn_with_valid_cwd_and_stdin_roundtrip() {
     assert!(!out.failed(), "exit={:?} stderr={}", out.exit_code, out.stderr);
     assert!(out.stdout.contains("s6-stdin-line"), "stdin 必须写进子进程: {}", out.stdout);
 }
+
+// ---------------------------------------------------------------------------
+// R5 覆盖率批次（2026-08-27）：SpawnOp.stdin 管道臂——子进程真实读入
+// stdin（findstr/grep 过滤），钉住 write_all + shutdown 路径。
+// ---------------------------------------------------------------------------
+
+#[cfg(unix)]
+fn stdin_filter_cmd() -> SpawnOp {
+    SpawnOp {
+        program: "sh".into(),
+        args: vec!["-c".into(), "grep needle".into()],
+        cwd: None,
+        stdin: Some("noise\nneedle-line\n".into()),
+        timeout_secs: Some(10),
+    }
+}
+#[cfg(windows)]
+fn stdin_filter_cmd() -> SpawnOp {
+    SpawnOp {
+        program: "cmd".into(),
+        args: vec!["/C".into(), "findstr needle".into()],
+        cwd: None,
+        stdin: Some("noise\r\nneedle-line\r\n".into()),
+        timeout_secs: Some(10),
+    }
+}
+
+#[tokio::test]
+async fn spawn_pipes_stdin_to_child() {
+    let root = tmp();
+    let out = guarded_direct_spawn(&stdin_filter_cmd(), &[root])
+        .await
+        .expect("spawn ok");
+    assert!(!out.failed(), "exit={:?} stderr={}", out.exit_code, out.stderr);
+    assert!(
+        out.stdout.trim().contains("needle-line"),
+        "子进程必须真读到 stdin: stdout={}",
+        out.stdout
+    );
+}

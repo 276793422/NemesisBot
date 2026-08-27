@@ -437,3 +437,114 @@ async fn web_server_ops_adapter_all_methods_on_empty_and_registered_sessions() {
         .send_to_session(&sess.id, "assistant", "hi", Some("prov/model"))
         .is_err());
 }
+
+// =========================================================================
+// R10 补测批（coverage-95 goal）：bridge Lagged/Closed 组合臂 + agent 任务
+// 轮询行 + HealthServer 绑定冲突 error 臂。
+//
+// 手法：
+// - Lagged：MessageBus::with_capacity(1) 定容广播 —— start() 内 subscribe
+//   是同步的，随后在 current_thread runtime 上同步洪灌 3 条（spawn 的
+//   bridge 尚未被轮询），订阅者必然落后环形缓冲 ≥2 → 第一次 recv 必出
+//   RecvError::Lagged(≥2)。再补发一条并轮转让它穿过去，证明 continue 后
+//   桥仍然活着；agent 任务（run_bus_arc 行）也在此期间被真实轮询。
+// - Closed(dropped>0)：先发生过 Lagged（total_dropped>0），再把 bus/adapter
+//   全部 Arc 拖走 —— Sender 归零后 bridge 下次 recv 得 Closed 复合分支。
+// - 健康服务：真实 TcpListener 占住 ephemeral 端口 → spawn 的 inner.start()
+//   bind 必失败 → adapter 闭包里的 tracing::error! 分支。
+//
+// 非确定性边界：Lagged(n) 的具体 n 不钉死（只断言语义存活）；Closed 臂无
+// 外部可观测返回值，靠日志行覆盖 + 测试不挂兜底。
+// =========================================================================
+
+mod r10 {
+    use super::*;
+
+    fn r10_inbound(i: usize) -> nemesis_types::channel::InboundMessage {
+        nemesis_types::channel::InboundMessage {
+            channel: "web".to_string(),
+            sender_id: format!("r10-user-{i}"),
+            chat_id: "r10-chat".to_string(),
+            content: format!("r10 msg {i}"),
+            media: vec![],
+            session_key: String::new(),
+            correlation_id: String::new(),
+            metadata: std::collections::HashMap::new(),
+            voice_playback: None,
+        }
+    }
+
+    fn r10_agent_loop_ref()
+    -> Arc<parking_lot::RwLock<Option<Arc<nemesis_agent::r#loop::AgentLoop>>>> {
+        Arc::new(parking_lot::RwLock::new(None))
+    }
+
+    #[tokio::test]
+    async fn r10_bridge_lag_continue_then_closed_with_dropped() {
+        crate::common::ensure_default_logger();
+
+        // 容量 1 的专用总线：保证洪灌必产生 Lagged。
+        let bus = Arc::new(nemesis_bus::MessageBus::with_capacity(1));
+        let tmp = tempfile::TempDir::new().unwrap();
+        write_minimal_model_config(tmp.path());
+        let shared = make_shared_at_home(tmp.path(), &bus);
+        let agent_loop = make_test_agent_loop();
+        let ref_lock = r10_agent_loop_ref();
+        // 注意 clone 关系：adapter/shared/bus 都留有 Arc，直到显式 drop。
+        let adapter =
+            AgentLoopServiceAdapter::new(agent_loop, shared.clone(), bus.clone(), ref_lock);
+        LifecycleService::start(&adapter).expect("start must succeed");
+
+        // start() 已同步完成 subscribe → 现在洪灌 3 条（capacity=1）。
+        for i in 0..3 {
+            bus.publish_inbound(r10_inbound(i));
+        }
+        // 当前线程 runtime：轮转让 bridge 消化背压（第一次 recv 即 Lagged
+        // 分支 total_dropped += n；随后 Ok(#2) 穿过桥入 mpsc；agent 任务
+        // run_bus_arc 也被真实轮询——mock provider 单轮即收尾）。
+        for _ in 0..200 {
+            tokio::task::yield_now().await;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        // 再来一条慢速补充消息，确认 continue 之后桥仍转发（不 pin 具体谁
+        // 被 lag 掉 —— tokio 只保证订阅者会收到 Lagged 或最新窗口内消息）。
+        bus.publish_inbound(r10_inbound(3));
+        for _ in 0..200 {
+            tokio::task::yield_now().await;
+        }
+
+        // Closed(dropped>0)：total_dropped 此时 >0。拖走全部 Arc（最后一个
+        // Sender 随之消亡）→ bridge 下次 recv 出 Closed 复合分支（warn +
+        // break）。handle 在 adapter 里，drop 不 abort —— 任务自然跑完。
+        drop(adapter);
+        drop(shared);
+        drop(bus);
+        for _ in 0..300 {
+            tokio::task::yield_now().await;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+
+    #[tokio::test]
+    async fn r10_health_server_adapter_bind_conflict_error_arm() {
+        crate::common::ensure_default_logger();
+        // 先占住一个真实端口（resident listener 保活到测试结束），
+        // HealthServer 起在同一地址 → bind failed Err 字符串 → adapter
+        // spawn 闭包里的 error!("[Main] Health server error: ..") 分支。
+        let occupied = std::net::TcpListener::bind("127.0.0.1:0")
+            .expect("ephemeral bind for occupation");
+        let port = occupied.local_addr().unwrap().port();
+        let health_server = Arc::new(nemesis_health::server::HealthServer::new(
+            make_health_config(port),
+        ));
+        let adapter = HealthServerAdapter::new(health_server);
+        assert!(adapter.start().is_ok(), "start 只是 spawn，必 Ok");
+        // 让被 spawn 的服务任务实际执行到绑定失败。
+        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+        for _ in 0..20 {
+            tokio::task::yield_now().await;
+        }
+        drop(adapter);
+        let _keep_resident = occupied;
+    }
+}

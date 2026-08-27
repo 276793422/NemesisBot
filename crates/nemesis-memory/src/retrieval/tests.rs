@@ -140,3 +140,24 @@ fn find_subslice_boundaries() {
     let miss: Vec<char> = "xyz".chars().collect();
     assert_eq!(find_subslice(&hay, &miss), None);
 }
+
+// ---- R1 coverage: CJK-boundary buffer flush + snippet hit path ----
+
+#[test]
+fn tokens_flushes_latin_run_before_cjk() {
+    // The pending latin buffer must flush when the first CJK rune arrives,
+    // then each CJK rune becomes its own term; trailing latin run flushes
+    // at the end of input.
+    let t = tokens("abc中文x9");
+    assert_eq!(t, vec!["abc", "中", "文", "x9"]);
+}
+
+#[test]
+fn make_snippet_centers_on_first_hit() {
+    let text = "alpha beta gamma delta epsilon";
+    let out = make_snippet(text, &["beta".to_string()], 12);
+    assert!(
+        out.contains("beta"),
+        "snippet must be built around the first term hit, got: {out}"
+    );
+}

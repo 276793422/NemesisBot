@@ -1626,3 +1626,591 @@ async fn test_s11b_run_scanner_delegate_list() {
     .await
     .unwrap();
 }
+
+// =========================================================================
+// wave_b（覆盖率补测 2026-08-27）：规则引擎剩余可测臂 + run() 分发缺口。
+//   - 列表三态：有条目分组打印 / rules 空对象 "No rules defined."；
+//   - add 对缺类型键的 rules 对象 insert 空数组臂；
+//   - test 的 op 不匹配 continue 臂 + ask→deny 审批 reason 臂；
+//   - pending 存在但为空数组的臂（走真实解析路径 pending.json="[]"）；
+//   - write_rules_config 落盘失败上抛（父目录段被普通文件阻断）；
+//   - run() 分发 Rules::Add / Rules::Remove 两臂（既有 dispatch 测试只走了
+//     List/Test，Add/Remove 的解构传参臂从未到过）。
+// 豁免：EDITOR 未设时的 notepad/vi GUI 回退（会 spawn 编辑器）、ConfigReset
+// 全链路（真 stdin 交互，无法在测试里喂输入）。
+// =========================================================================
+mod wave_b {
+    use super::*;
+
+    /// 直接写一份 config.security.json（不经 write_rules_config，控制原始形状）。
+    fn wb_write_cfg(path: &std::path::Path, body: &str) {
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, body).unwrap();
+    }
+
+    #[test]
+    fn wave_b_rules_list_prints_indexed_entries_per_operation() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let path = tmp.path().join("config.security.json");
+        // file: read x2（索引 [0]/[1] 连续出现在同一 op 组），write x1，
+        // network: request x1；其余 op 打 (none)。
+        wb_write_cfg(
+            &path,
+            r#"{"rules": {"file": [
+                {"pattern":"*.txt","operation":"read","action":"allow"},
+                {"pattern":"secret*","operation":"read","action":"deny"},
+                {"pattern":"*.log","operation":"write","action":"ask"}
+              ],
+              "network": [{"pattern":"**","operation":"request","action":"deny"}]}}"#,
+        );
+        cmd_rules_list(&path, None).unwrap();
+        // 指定类型也过一遍过滤分支
+        cmd_rules_list(&path, Some("file")).unwrap();
+    }
+
+    #[test]
+    fn wave_b_rules_list_empty_rules_object_says_no_rules_defined() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let path = tmp.path().join("config.security.json");
+        // rules 是空对象：所有 get(rt) 都 None → found_any=false + 无 rule_type
+        // → "No rules defined."（区别于缺 rules 键——那走 default_rules 全空数组）。
+        wb_write_cfg(&path, r#"{"rules": {}}"#);
+        cmd_rules_list(&path, None).unwrap();
+    }
+
+    #[test]
+    fn wave_b_rules_add_creates_missing_type_key_array_then_pushes_entry() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let path = tmp.path().join("config.security.json");
+        wb_write_cfg(&path, r#"{"rules": {}}"#);
+
+        cmd_rules_add(&path, "registry", "read", Some("**HKLM**"), Some("deny")).unwrap();
+
+        let cfg = read_rules_config(&path).unwrap();
+        let arr = cfg["rules"]["registry"].as_array().expect("type key created");
+        assert_eq!(arr.len(), 1);
+        assert_eq!(arr[0]["pattern"], "**HKLM**");
+        assert_eq!(arr[0]["operation"], "read");
+        assert_eq!(arr[0]["action"], "deny");
+    }
+
+    #[test]
+    fn wave_b_rules_test_operation_mismatch_continues_to_later_rules() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let path = tmp.path().join("config.security.json");
+        // 规则 0：pattern `*` 会匹配任意 target，但 operation=delete ≠ write
+        // → 必须被 continue 跳过；规则 1 才是命中者。若 continue 缺失/错位，
+        // 规则 0 会把 final_action 抢成 deny（本例断言只能靠行为顺序无副作用，
+        // 所以再放一个 allow 收尾规则验证「跳过后仍能继续扫」）。
+        wb_write_cfg(
+            &path,
+            r#"{"rules": {"file": [
+                {"pattern":"*","operation":"delete","action":"deny"},
+                {"pattern":"*.txt","operation":"write","action":"allow"}
+              ]}}"#,
+        );
+        cmd_rules_test(&path, "file", "write", "a.txt").unwrap();
+    }
+
+    #[test]
+    fn wave_b_rules_test_ask_action_reports_approval_reason_and_deny() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let path = tmp.path().join("config.security.json");
+        wb_write_cfg(
+            &path,
+            r#"{"rules": {"network": [
+                {"pattern":"*.evil.example","operation":"request","action":"ask"}
+              ]}}"#,
+        );
+        // ask 命中 → final_action 映射为 deny + reason 走「requires approval」臂。
+        cmd_rules_test(&path, "network", "request", "c2.evil.example").unwrap();
+    }
+
+    #[tokio::test]
+    async fn wave_b_pending_existing_file_with_empty_array_prints_no_ops() {
+        let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let th = s11b_temp_home_env();
+        // 双 workspace 解析路径（S11b-1 挂账形状）：pending.json 存在且为 []，
+        // 走 exists→读取→空数组提示臂（非不存在早退、也非条目列表）。
+        let pending_path = s11b_write_dead_pending(&th.home, &[]);
+        assert_eq!(
+            std::fs::read_to_string(&pending_path).unwrap().trim(),
+            "[]",
+            "空 ids 应写出空数组"
+        );
+        run(SecurityAction::Pending, false).await.unwrap();
+    }
+
+    #[test]
+    fn wave_b_write_rules_config_errors_when_parent_component_is_regular_file() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        // 中间路径段是普通文件 → create_dir_all 被 `let _` 吞掉后
+        // fs::write 的 `?` 上抛（security.rs:208-216 的 Err 路径）。
+        let blocker = tmp.path().join("blocker");
+        std::fs::write(&blocker, b"occupies dir slot").unwrap();
+        let cfg_path = blocker.join("sub").join("config.security.json");
+        let res = write_rules_config(&cfg_path, &default_security_config());
+        assert!(res.is_err(), "fs::write 到文件下级路径必须失败");
+        assert!(!cfg_path.exists());
+    }
+
+    #[tokio::test]
+    async fn wave_b_run_rules_add_dispatch_destructures_and_persists_rule() {
+        let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let th = s11b_temp_home_env();
+        let sec_cfg = th.home.join("workspace").join("config").join("config.security.json");
+
+        run(
+            SecurityAction::Rules {
+                action: RulesAction::Add {
+                    rule_type: "process".into(),
+                    operation: "exec".into(),
+                    pattern: Some("**taskkill**".into()),
+                    action: Some("deny".into()),
+                },
+            },
+            false,
+        )
+        .await
+        .unwrap();
+
+        let cfg = read_rules_config(&sec_cfg).unwrap();
+        let arr = cfg["rules"]["process"].as_array().expect("run-level Add 写盘");
+        assert_eq!(arr.len(), 1);
+        assert_eq!(arr[0]["operation"], "exec");
+        assert_eq!(arr[0]["action"], "deny");
+    }
+
+    #[tokio::test]
+    async fn wave_b_run_rules_remove_dispatch_removes_matched_operation_entry() {
+        let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let th = s11b_temp_home_env();
+        let sec_cfg = th.home.join("workspace").join("config").join("config.security.json");
+
+        // 预置两条 file.read 规则；Remove #0 应摘除第一条（matching[0]=实际 idx 0）
+        cmd_rules_add(&sec_cfg, "file", "read", Some("*.tmp"), Some("allow")).unwrap();
+        cmd_rules_add(&sec_cfg, "file", "read", Some("keep.txt"), Some("deny")).unwrap();
+
+        run(
+            SecurityAction::Rules {
+                action: RulesAction::Remove {
+                    rule_type: "file".into(),
+                    operation: "read".into(),
+                    index: 0,
+                },
+            },
+            false,
+        )
+        .await
+        .unwrap();
+
+        let cfg = read_rules_config(&sec_cfg).unwrap();
+        let arr = cfg["rules"]["file"].as_array().unwrap();
+        assert_eq!(arr.len(), 1, "#0 已摘除");
+        assert_eq!(arr[0]["pattern"], "keep.txt", "留下的是第二条");
+    }
+
+    #[tokio::test]
+    async fn wave_b_audit_denied_with_only_allowed_entries_prints_no_ops() {
+        let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let th = s11b_temp_home_env();
+        let audit_path = crate::common::workspace_path(&th.home).join("audit_chain.jsonl");
+        std::fs::create_dir_all(audit_path.parent().unwrap()).unwrap();
+        // 审计文件存在但全是 allowed（区别于无文件早退、也区别于有 denied 条目
+        // 的列表臂）→ 过滤后空集 → "No denied operations found." 臂。
+        std::fs::write(
+            &audit_path,
+            [
+                r#"{"timestamp":"t1","operation":"file_read","tool_name":"read_file","decision":"allowed","reason":""}"#,
+                r#"{"timestamp":"t2","operation":"dir_list","tool_name":"list_dir","decision":"allowed","reason":""}"#,
+            ]
+            .join("\n"),
+        )
+        .unwrap();
+
+        run(
+            SecurityAction::Audit {
+                action: Some(AuditAction::Denied),
+            },
+            false,
+        )
+        .await
+        .unwrap();
+    }
+}
+
+// =========================================================================
+// wave_c（覆盖率补测 C 波）：损坏配置夹具臂 + EOF 零输入交互臂。
+//   - security 配置文件存在但 JSON 解析失败：read_rules_config 的 `?`
+//     上抛 + run() 各 caller（Status / Rules Add）的报错传播与
+//     「错误时不得改盘」不变量；
+//   - 主配置 config.json 损坏：Status / Enable / Disable 的早退传播，
+//     并钉住 Enable 的副作用顺序——主配置解析失败必须先于默认
+//     security 配置的播种（否则会留下半初始化现场）；
+//   - 主配置是合法 JSON 但非对象（数组）：Enable 对主文件静默无操作、
+//     默认 security 配置照常播种（现状行为钉住）；
+//   - Config Show 对任意字节原样打印、从不解析（宽容行为钉住）；
+//   - ConfigReset 在 EOF stdin（cargo test 常态）下走 Aborted 臂，
+//     文件不被触碰；直接函数层 + run() 分发层各过一遍。
+//     （确认=y 的真重置链路仍是豁免项——需要喂真实 stdin。）
+//   - Audit Export 输出路径被普通文件阻断时的写盘 Err 上抛
+//     （成功臂已由 S11b 的 export 断言覆盖，此处补 Err 臂）。
+// =========================================================================
+mod wave_c {
+    use super::*;
+
+    /// 原样写一份（可能损坏的）security 配置，不经 write_rules_config，
+    /// 以控制磁盘上的原始字节。
+    fn wc_write_raw(path: &std::path::Path, body: &str) {
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, body).unwrap();
+    }
+
+    #[test]
+    fn wc_read_rules_config_corrupt_json_is_err() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let path = tmp.path().join("config.security.json");
+        // 截断的 JSON：exists()==true 但 from_str 失败 → Err 上抛（167-168）。
+        wc_write_raw(&path, r#"{"default_action": "deny""#);
+        assert!(read_rules_config(&path).is_err());
+    }
+
+    #[tokio::test]
+    async fn wc_run_status_corrupt_security_config_propagates_error() {
+        let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let th = s11b_temp_home_env();
+        let sec_cfg = crate::common::security_config_path(&th.home);
+        wc_write_raw(&sec_cfg, "{{{ definitely-not-json");
+        // Status 在打印完头部后 read_rules_config 上抛 → run 返回 Err（不 panic）
+        assert!(run(SecurityAction::Status, false).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn wc_run_status_corrupt_main_config_propagates_error() {
+        let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let th = s11b_temp_home_env();
+        std::fs::write(crate::common::config_path(&th.home), "{ broken").unwrap();
+        // Status 第一段读主配置处 from_str 失败即上抛
+        assert!(run(SecurityAction::Status, false).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn wc_run_enable_corrupt_main_config_fails_before_seeding_security_defaults() {
+        let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let th = s11b_temp_home_env();
+        std::fs::write(
+            crate::common::config_path(&th.home),
+            "{ broken-main-cfg",
+        )
+        .unwrap();
+        let sec_cfg = crate::common::security_config_path(&th.home);
+
+        assert!(run(SecurityAction::Enable, false).await.is_err());
+        // 副作用顺序不变量：Enable 先处理主配置再播种默认 security 配置，
+        // 所以主配置坏了时后者绝不能被创建（半初始化现场防护）。
+        assert!(
+            !sec_cfg.exists(),
+            "主配置解析失败时不得播种默认 security 配置"
+        );
+    }
+
+    #[tokio::test]
+    async fn wc_run_disable_corrupt_main_config_propagates_error() {
+        let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let th = s11b_temp_home_env();
+        std::fs::write(
+            crate::common::config_path(&th.home),
+            r#"{"security": "#,
+        )
+        .unwrap();
+        assert!(run(SecurityAction::Disable, false).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn wc_run_enable_non_object_main_config_is_silent_noop_for_main_file() {
+        let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let th = s11b_temp_home_env();
+        let cfg_path = crate::common::config_path(&th.home);
+        // 合法 JSON 但顶层是数组：as_object_mut() 为 None → security 段插入被
+        // 静默跳过且不回写主文件；默认 security 配置照常播种（现状钉住）。
+        std::fs::write(&cfg_path, "[1, 2]").unwrap();
+        let sec_cfg = crate::common::security_config_path(&th.home);
+
+        run(SecurityAction::Enable, false).await.unwrap();
+
+        assert_eq!(
+            std::fs::read_to_string(&cfg_path).unwrap().trim(),
+            "[1, 2]",
+            "非对象主配置不被改写"
+        );
+        assert!(sec_cfg.exists(), "默认 security 配置照常播种");
+    }
+
+    #[tokio::test]
+    async fn wc_run_rules_add_on_corrupt_policy_errors_and_preserves_garbage() {
+        let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let th = s11b_temp_home_env();
+        let sec_cfg = crate::common::security_config_path(&th.home);
+        const GARBAGE: &str = r#"{"rules": {"file": ["#;
+        wc_write_raw(&sec_cfg, GARBAGE);
+
+        let res = run(
+            SecurityAction::Rules {
+                action: RulesAction::Add {
+                    rule_type: "file".into(),
+                    operation: "read".into(),
+                    pattern: Some("**blocked**".into()),
+                    action: Some("deny".into()),
+                },
+            },
+            false,
+        )
+        .await;
+
+        // 解析失败上抛；磁盘上的坏内容原封不动（错误路径不改盘）
+        assert!(res.is_err());
+        assert_eq!(
+            std::fs::read_to_string(&sec_cfg).unwrap(),
+            GARBAGE,
+            "报错路径不得半写"
+        );
+    }
+
+    #[tokio::test]
+    async fn wc_run_config_show_prints_raw_bytes_without_parsing() {
+        let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let th = s11b_temp_home_env();
+        let sec_cfg = crate::common::security_config_path(&th.home);
+        // Show 不做任何 JSON 校验，任意字节原样输出且命令成功（宽容行为现状）。
+        wc_write_raw(&sec_cfg, "<html>not-json & raw bytes 0x01\x02");
+        run(
+            SecurityAction::Config {
+                action: Some(SecurityConfigAction::Show),
+            },
+            false,
+        )
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn wc_run_config_reset_stdin_eof_aborts_without_touching_file() {
+        let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let th = s11b_temp_home_env();
+        let sec_cfg = crate::common::security_config_path(&th.home);
+        wc_write_raw(&sec_cfg, r#"{"sentinel": true}"#);
+
+        // cargo test 下 stdin 为管道 EOF → read_line 得空串 → 非 y → Aborted。
+        // 函数层与 run() 分发层各走一遍；确认=y 的重置链路仍是豁免项。
+        cmd_config_reset(&sec_cfg).unwrap();
+        run(SecurityAction::ConfigReset, false).await.unwrap();
+
+        assert_eq!(
+            std::fs::read_to_string(&sec_cfg).unwrap().trim(),
+            r#"{"sentinel": true}"#,
+            "Aborted 臂不得触碰配置文件"
+        );
+    }
+
+    /// Edit 收尾分支收口：EDITOR 脚本退出码 0 且吃掉路径参数 → 命中
+    /// match status 的 success 分支（"Configuration saved." 打印区）。
+    /// （既有 S11b 用 EDITOR=hostname 尝试过此分支，但 hostname 带参
+    /// 实际退非零 → 只到过 "exited with status" 分支。）
+    #[tokio::test]
+    async fn wc_run_edit_editor_exit_zero_reaches_saved_branch() {
+        let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let _th = s11b_temp_home_env();
+        let tmp = tempfile::tempdir().unwrap();
+        let bat = tmp.path().join("ok0.bat");
+        std::fs::write(&bat, "@rem noop\r\n@exit /b 0\r\n").unwrap();
+        let _ed = S11bEditorEnv::set(bat.to_str().unwrap());
+        run(SecurityAction::Edit, false).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn wc_run_audit_export_write_failure_propagates_when_output_blocked() {
+        let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let th = s11b_temp_home_env();
+        let audit_path = crate::common::workspace_path(&th.home).join("audit_chain.jsonl");
+        std::fs::create_dir_all(audit_path.parent().unwrap()).unwrap();
+        std::fs::write(
+            &audit_path,
+            r#"{"timestamp":"t","operation":"file_read","tool_name":"read_file","decision":"allowed","reason":""}"#,
+        )
+        .unwrap();
+
+        // 输出路径的父目录段被普通文件占用 → fs::write 失败 → Export `?` 上抛
+        // （Export 成功写入臂由 S11b 覆盖；此处补写盘 Err 臂）。
+        let blocker = th.home.join("outblock");
+        std::fs::write(&blocker, b"occupies dir slot").unwrap();
+        let out = blocker.join("export.json");
+        let res = run(
+            SecurityAction::Audit {
+                action: Some(AuditAction::Export {
+                    output: out.to_string_lossy().into_owned(),
+                }),
+            },
+            false,
+        )
+        .await;
+        assert!(res.is_err(), "被阻断的输出路径必须上抛而非静默成功");
+        assert!(!out.exists());
+    }
+}
+
+// ===========================================================================
+// r10（覆盖率 goal R10 批）：config reset 确认=y 链路（此前 S11b/wave_c 的
+// 明示豁免项）+ 嵌套 Config 分发线 + corrupt 夹具直调四连。
+//   • 子进程 "y\n"：test_harness 起真二进制喂 stdin，覆盖 cmd_config_reset
+//     的确认臂（写默认配置 + 回执打印）与嵌套派发行（Nested Reset → fn）。
+//   • 进程内嵌套分发：stdin 管道 EOF → Aborted 臂（不触盘），同锁纪律。
+//   • corrupt 直调族：read_rules_config 合法但结构错位（标量根 / 标量槽 /
+//     对象槽）时 add/remove/test 的 if-let 失败跳过路径——纯函数调用，
+//     显式路径无 env 依赖。
+// ===========================================================================
+
+mod r10_arcs {
+    use super::*;
+    use test_harness::{resolve_nemesisbot_bin, TestWorkspace};
+
+    /// 确认=y：真二进制 `security config reset` 吃到 "y" → 重置为默认并落盘。
+    #[tokio::test]
+    async fn r10_config_reset_answered_y_resets_file_to_defaults_subprocess() {
+        let ws = TestWorkspace::new().unwrap();
+        std::fs::create_dir_all(ws.home()).unwrap();
+        let sec_cfg = crate::common::security_config_path(&ws.home());
+        std::fs::create_dir_all(sec_cfg.parent().unwrap()).unwrap();
+        std::fs::write(&sec_cfg, r#"{"default_action":"zz-r10-sentinel"}"#).unwrap();
+
+        let Ok(bin) = resolve_nemesisbot_bin() else {
+            return;
+        };
+        let out = ws
+            .run_cli_with_stdin(
+                &bin,
+                &["security", "config", "reset"],
+                "y\n",
+                60,
+            )
+            .await;
+
+        assert!(
+            out.success(),
+            "确认=y 是正常收尾 rc 0\nstdout={} stderr={}",
+            out.stdout,
+            out.stderr
+        );
+        assert!(
+            out.stdout_contains("Security configuration reset to defaults."),
+            "必须走重置回执而非 Aborted：{}",
+            out.stdout
+        );
+
+        // 文件被 default_security_config 整体替换：sentinel 消失，
+        // default_action 回到默认值。
+        let raw = std::fs::read_to_string(&sec_cfg).unwrap();
+        assert!(!raw.contains("zz-r10-sentinel"), "旧内容被整体替换: {raw}");
+        let v: serde_json::Value = serde_json::from_str(&raw).unwrap();
+        assert_eq!(v["default_action"], "ask", "reset 后默认动作是 ask: {raw}");
+    }
+
+    /// 嵌套派发：run(Config{Some(Reset)}) → 分发行 → cmd_config_reset；
+    /// cargo test 下 stdin 为管道 EOF → "非 y" → Aborted 且不动盘。
+    #[tokio::test]
+    async fn r10_nested_config_reset_dispatch_eof_aborts_without_touching_file() {
+        let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let th = s11b_temp_home_env();
+        let sec_cfg = crate::common::security_config_path(&th.home);
+        std::fs::write(&sec_cfg, r#"{"r10":"untouched"}"#).unwrap();
+
+        run(
+            SecurityAction::Config {
+                action: Some(SecurityConfigAction::Reset),
+            },
+            false,
+        )
+        .await
+        .expect("EOF → Aborted → Ok");
+
+        assert_eq!(
+            std::fs::read_to_string(&sec_cfg).unwrap(),
+            r#"{"r10":"untouched"}"#,
+            "未确认的重置不得触碰配置"
+        );
+    }
+
+    // --------------------- corrupt 结构直调族 ---------------------
+
+    /// 标量根 `{"rules":42}`：add 的规则表 if-let 整体跳过，但收尾仍整包重写
+    /// （cfg 值原样序列化）；Ok 不 panic、rules 仍为标量。
+    #[test]
+    fn r10_rules_add_scalar_rules_root_skips_merge_but_keeps_value() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("config.security.json");
+        std::fs::write(&path, r#"{"rules":42}"#).unwrap();
+
+        cmd_rules_add(&path, "file", "read", Some("*.txt"), None)
+            .expect("标量根不算解析错误，静默跳过 merge");
+
+        let v: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(
+            v["rules"],
+            42,
+            "merge 被跳过 → rules 必须仍是原标量"
+        );
+    }
+
+    /// 类型槽标量 `{"rules":{"file":7}}`：remove 找不到数组 → not-found 臂
+    /// 且**不回写**（字节级原样）。
+    #[test]
+    fn r10_rules_remove_scalar_type_slot_reports_not_found_without_write() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("config.security.json");
+        std::fs::write(&path, r#"{"rules":{"file":7}}"#).unwrap();
+
+        cmd_rules_remove(&path, "file", "read", 0).expect("槽标量 → found=false → Ok");
+
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            r#"{"rules":{"file":7}}"#,
+            "not-found 不得回写"
+        );
+    }
+
+    /// 类型槽对象 `{"rules":{"file":{"a":1}}}`：test 的 as_array 失败 →
+    /// 规则遍历跳过 → 默认 deny 结论臂。
+    #[test]
+    fn r10_rules_test_object_type_slot_skips_iteration_defaults_deny() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("config.security.json");
+        std::fs::write(&path, r#"{"rules":{"file":{"a":1}}}"#).unwrap();
+
+        cmd_rules_test(&path, "file", "read", "*.txt")
+            .expect("槽对象 → 无数组可比对 → Ok");
+    }
+
+    /// config.json 是顶层数组时 Disable：as_object_mut 失败 → 整段编辑跳过、
+    /// 不回写主配置、也不创建 security 配置（Disable 与 Enable 不同，后者
+    /// 会补默认 security cfg）。
+    #[tokio::test]
+    async fn r10_disable_top_level_array_config_skips_edit_without_writes() {
+        let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let th = s11b_temp_home_env();
+        let cfg_path = crate::common::config_path(&th.home);
+        std::fs::write(&cfg_path, "[1,2]").unwrap();
+        let sec_cfg = crate::common::security_config_path(&th.home);
+
+        run(SecurityAction::Disable, false).await.expect("非对象主配置 → 跳过编辑 → Ok");
+
+        assert_eq!(
+            std::fs::read_to_string(&cfg_path).unwrap(),
+            "[1,2]",
+            "非对象主配置必须原样保留"
+        );
+        assert!(
+            !sec_cfg.exists(),
+            "Disable 不负责补建 security 配置（那是 Enable 的职责）"
+        );
+    }
+}

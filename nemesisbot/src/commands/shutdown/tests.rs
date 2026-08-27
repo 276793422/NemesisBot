@@ -479,6 +479,61 @@ mod run_arm {
             assert!(home.join("shutdown.signal").exists());
         });
     }
+
+    #[test]
+    fn run_http_401_reports_auth_mismatch_and_keeps_signal_file() {
+        // R7（coverage-95 goal）Ok(401) 臂：token 配置不一致时如实提示，
+        // 且不走清理路径（signal 文件保留，供人工排查）。
+        with_env_home(|home| {
+            std::fs::create_dir_all(&home).unwrap();
+            let (port, rx) = start_mock("401 Unauthorized", r#"{"error":"unauthorized"}"#);
+            std::fs::write(
+                home.join("config.json"),
+                serde_json::json!({
+                    "channels": {"web": {"port": port, "auth_token": "tok-mismatch"}}
+                })
+                .to_string(),
+            )
+            .unwrap();
+            run(false).expect("HTTP 401 → 打印 mismatch 提示 + Ok");
+            assert!(
+                home.join("shutdown.signal").exists(),
+                "401 不算送达 → signal 文件保留"
+            );
+            let rec = rx
+                .recv_timeout(std::time::Duration::from_secs(2))
+                .expect("mock 必须收到请求");
+            assert_eq!(rec.auth_token.as_deref(), Some("tok-mismatch"));
+        });
+    }
+
+    #[test]
+    fn run_corrupt_config_json_skips_http_block_and_keeps_signal() {
+        // config.json 存在但 JSON 损坏：serde 解析失败 → 跳过整个 HTTP 块
+        //（隐式 else 边），落到收尾提示；信号文件必须已落盘。
+        with_env_home(|home| {
+            std::fs::create_dir_all(&home).unwrap();
+            std::fs::write(home.join("config.json"), "{ broken json").unwrap();
+            run(false).expect("损坏 config → 跳过 HTTP 块 + Ok");
+            assert!(home.join("shutdown.signal").exists());
+        });
+    }
+
+    #[test]
+    fn run_pid_unreadable_directory_falls_through_to_signal_file() {
+        // gateway.pid 是【目录】而非文件：exists()==true 但 read_to_string
+        // 失败 → 内层 if-let 的 None 边（PID 文件臂的读取失败分支）。
+        // 必须继续走 Method 2/3 收尾而不是 panic。
+        with_env_home(|home| {
+            std::fs::create_dir_all(home.join("gateway.pid")).unwrap();
+            run(false).expect("pid 目录不可读 → 穿透到 signal 文件路径 + Ok");
+            assert!(home.join("shutdown.signal").exists());
+            assert!(
+                home.join("gateway.pid").is_dir(),
+                "该分支不清理 PID 文件"
+            );
+        });
+    }
 }
 
 // ===========================================================================
@@ -489,7 +544,8 @@ mod run_arm {
 // 且全程不存在嵌套 runtime 的 blocking client。
 // 每个【首次使用】的模式必须有 catch_unwind 探针实证（#27 的探针拓扑纪律）：
 //   红①：multi_thread rt + block_on 内创建并 drop reqwest::blocking::Client
-//         → 必 panic（文档化为什么不能用旧写法）。
+//         → 按 profile 断言（debug 必 panic / release 守卫编译掉不 panic，
+//           BUG #50 勘误：reqwest enter() 守卫带 cfg(debug_assertions)）。
 //   绿②：同样的 async 上下文里调用 post_internal_shutdown（内部走独立线程）
 //         → 绝不 panic 且往返成功。
 // ===========================================================================
@@ -498,9 +554,18 @@ mod probes {
     use super::*;
 
     /// 红①对照探针：在 multi_thread runtime 的 block_on 未来体里创建并 drop
-    /// reqwest::blocking::Client 必 panic（忠实复刻 main.rs 非 gateway 命令的
-    /// 拓扑：rt.block_on(run_command) 里同步代码创建/丢弃 blocking client）。
-    /// 实证 #27 结论对本文件的旧 Method 3 同样成立——这就是重写的理由。
+    /// reqwest::blocking::Client（忠实复刻 main.rs 非 gateway 命令的拓扑：
+    /// rt.block_on(run_command) 里同步代码创建/丢弃 blocking client）。
+    /// 契约是 **profile 依赖**的（BUG #50，2026-08-28 勘误）——reqwest 0.12.28
+    /// src/blocking/wait.rs 的 `enter()` 嵌套-runtime 守卫带
+    /// `#[cfg(debug_assertions)]`（workspace 无 package 覆盖，两侧同 profile）：
+    ///   - debug：守卫在编译 → new() 内 shell runtime 在 async 上下文建+弃 →
+    ///     tokio panic「Cannot drop a runtime in a context where blocking is
+    ///     not allowed」→ block_on 必须 Err（#27 当年实证的就是这条）。
+    ///   - release：守卫被编译掉 → new/drop 都不 panic（drop 只是 join 后台
+    ///     线程，后台线程上的 runtime 弃置合法）——但会 park/join 一个 worker
+    ///     线程（满载饿死隐患，生产注释第 2 层理由）。此前 release 全量跑的
+    ///     偶发"通过"= 负载下 new() 资源失败的另一种 panic（假红），非本守卫。
     #[test]
     fn probe_blocking_client_drop_inside_block_on_panics_red_documentation() {
         std::thread::scope(|s| {
@@ -511,22 +576,28 @@ mod probes {
                     .unwrap();
                 // catch_unwind 包住 block_on 整体（未来体里的 panic 会传播到
                 // block_on 调用方）。未来的 poll 期间线程持有 runtime enter
-                // guard——这正是会炸掉 blocking client drop 的上下文。
+                // guard——这正是 debug 守卫要拦的上下文。
                 let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                     rt.block_on(async {
                         let client = reqwest::blocking::Client::new();
-                        drop(client); // ← 嵌套 runtime 在此 drop → 应当 panic
+                        drop(client);
                     })
                 }));
                 drop(rt); // block_on 已返回，无 enter guard，drop 合法
                 outcome
             });
             let inner = handle.join().expect("探针宿主线程自身不能炸");
-            assert!(
-                inner.is_err(),
-                "blocking client 在 block_on 上下文 drop 应当 panic（若不再 panic 说明 tokio 行为变了，生产注释与本测试都要更新）"
-            );
-            // 消息文本不强校验：不同 tokio 版本措辞可能微调；钉死的契约是「必 panic」行为。
+            if cfg!(debug_assertions) {
+                assert!(
+                    inner.is_err(),
+                    "debug 构建：blocking client 在 block_on 上下文创建/drop 必 panic（reqwest enter() 守卫）；若不再 panic 说明 reqwest/tokio 行为变了，生产注释与本测试都要更新"
+                );
+            } else {
+                assert!(
+                    inner.is_ok(),
+                    "release 构建：enter() 守卫被 cfg(debug_assertions) 编译掉，new/drop 都不应 panic（worker park 是隐患不是 panic 源）；若 panic 了说明 reqwest/tokio 行为变了（或环境资源失败），生产注释与本测试都要更新"
+                );
+            }
         });
     }
 
@@ -572,5 +643,234 @@ mod probes {
                 .expect("HTTP 往返应当成功");
             assert_eq!(status, 200, "探针 mock 固定回 200");
         });
+    }
+}
+
+// ===========================================================================
+// r9_zero（R9 补测批零头组，2026-08-27）：taskkill 无 /F 礼貌路径的成功分支
+// （shutdown.rs 33-37：「Shutdown signal sent to PID {}." + 删 PID 文件」）。
+//
+// 受害进程选型（pre-compaction 探针 %TEMP%\r9probe.ps1 实证过）：控制台进程
+// （ping/console sleeper）对 WM_CLOSE 无动于衷，taskkill 不带 /F 必回「只能强
+// 制终止」非 success；唯一可靠 victim 是离屏 WinForms Form 的消息泵——GUI 进程
+// 收到 taskkill 的 WM_CLOSE 后正常退出。
+// run() 经子进程 CLI 驱动（println 断言才可观测）；--local + cwd 定位 pid 文件。
+// ===========================================================================
+
+#[cfg(target_os = "windows")]
+mod r9_zero {
+    use std::os::windows::process::CommandExt;
+    use test_harness::{resolve_nemesisbot_bin, TestWorkspace};
+
+    const CREATE_NO_WINDOW: u32 = 0x08000000;
+
+    /// 离屏 WinForms 消息泵脚本：Form 放屏幕外（-32000,-32000）、不进任务栏，
+    /// ShowDialog 维持泵直到收到 WM_CLOSE。用 Left/Top int 属性避开
+    /// System.Drawing 类型加载。
+    const VICTIM_SCRIPT: &str = r#"
+Add-Type -AssemblyName System.Windows.Forms | Out-Null
+$form = New-Object System.Windows.Forms.Form
+$form.StartPosition = 'Manual'
+$form.Left = -32000
+$form.Top = -32000
+$form.ShowInTaskbar = $false
+[void]$form.ShowDialog()
+"#;
+
+    /// 轮询目标进程是否已有可见窗口（MainWindowHandle != 0）——即消息泵就绪、
+    /// 能接收 WM_CLOSE。20s 上限。
+    fn wait_until_window_ready(pid: u32) -> bool {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+        let probe = format!("(Get-Process -Id {}).MainWindowHandle", pid);
+        while std::time::Instant::now() < deadline {
+            let out = std::process::Command::new("powershell")
+                .args(["-NoProfile", "-Command", &probe])
+                .creation_flags(CREATE_NO_WINDOW)
+                .output();
+            if let Ok(out) = out {
+                let text = String::from_utf8_lossy(&out.stdout).trim().to_string();
+                if let Ok(h) = text.parse::<usize>() {
+                    if h != 0 {
+                        return true;
+                    }
+                }
+            }
+            std::thread::sleep(std::time::Duration::from_millis(500));
+        }
+        false
+    }
+
+    fn force_kill(pid: u32) {
+        let _ = std::process::Command::new("taskkill")
+            .args(["/PID", &pid.to_string(), "/F"])
+            .creation_flags(CREATE_NO_WINDOW)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status();
+    }
+
+    #[tokio::test]
+    async fn taskkill_graceful_success_signals_pid_and_removes_pid_file() {
+        // PowerShell 缺失（极端裁剪环境）→ 整个场景无从谈起，软跳过。
+        if std::process::Command::new("powershell")
+            .arg("-?")
+            .creation_flags(CREATE_NO_WINDOW)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .map(|s| !s.success())
+            .unwrap_or(true)
+        {
+            return;
+        }
+
+        let tmp = tempfile::tempdir().unwrap();
+        let script_path = tmp.path().join("r9_victim_form.ps1");
+        std::fs::write(&script_path, VICTIM_SCRIPT).unwrap();
+
+        // 起 victim（独立于 shutdown CLI 的 workspace 临时区，随 tempdir 清理）。
+        let mut victim = std::process::Command::new("powershell")
+            .args([
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+                &script_path.to_string_lossy(),
+            ])
+            .creation_flags(CREATE_NO_WINDOW)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .expect("victim spawn");
+        let pid = victim.id();
+
+        // 消息泵没就绪说明这个环境跑不了 GUI victim——收尾后软跳过。
+        if !wait_until_window_ready(pid) {
+            force_kill(pid);
+            let _ = victim.wait();
+            return;
+        }
+
+        let ws_guard = TestWorkspace::new().unwrap();
+        let ws = &ws_guard;
+        std::fs::create_dir_all(ws.home()).unwrap();
+        std::fs::write(ws.home().join("gateway.pid"), format!("{pid}\n")).unwrap();
+
+        let bin = resolve_nemesisbot_bin().expect("需已构建二进制");
+        let out = ws.run_cli_with_timeout(&bin, &["shutdown"], 60).await;
+
+        assert!(
+            out.success(),
+            "PID 文件臂成功后 run() 返回 Ok\nstdout={} stderr={}",
+            out.stdout,
+            out.stderr
+        );
+        assert!(out.stdout_contains("Sending shutdown signal..."));
+        assert!(
+            out.stdout_contains(&format!("Found gateway PID: {}", pid)),
+            "要回显找到的 PID：\n{}",
+            out.stdout
+        );
+        assert!(
+            out.stdout_contains(&format!("Shutdown signal sent to PID {}.", pid)),
+            "33-37 成功分支的核心输出缺失：\n{}",
+            out.stdout
+        );
+        assert!(
+            !ws.home().join("gateway.pid").exists(),
+            "成功分支必须清理 PID 文件"
+        );
+
+        // victim 应已被礼貌终止；10s 内轮询确认，超时强制收尸并打红。
+        let dead_in_time = {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+            loop {
+                match victim.try_wait() {
+                    Ok(Some(_)) => break true,
+                    Ok(None) if std::time::Instant::now() >= deadline => break false,
+                    Ok(None) => std::thread::sleep(std::time::Duration::from_millis(250)),
+                    Err(_) => break true, // 句柄异常视作已不在
+                }
+            }
+        };
+        force_kill(pid); // 兜底收尸（幂等）
+        let _ = victim.wait();
+        assert!(
+            dead_in_time,
+            "taskkill 礼貌信号发出后 victim 未能退出——WM_CLOSE 未生效？"
+        );
+    }
+}
+
+// ===========================================================================
+// r10（覆盖率 A 类 miss 补充）：Command::new("taskkill").output() 的 spawn
+// Err 臂（47 行 "Failed to send signal"）。可行解不是清 PATH、也不是 CWD
+// 诱饵——System32\taskkill.exe 不依赖 PATH 解析，且新版 Rust std 已把 CWD
+// 从 CreateProcess 遗留搜索序中剔除；真正排在最前的是**调用方 exe 所在
+// 目录**。子进程是 target/release/nemesisbot.exe，所以在它的同目录预置一个
+// 零字节 taskkill.exe 文件：CreateProcess 命中应用目录候选后加载非 PE 内容
+// → ERROR_BAD_EXE_FORMAT（os error 193）→ Command::output 返回 Err。诱饵只
+// 进 workspace 的 target 构建目录、guard 保证必清场（含 panic 路径）。无 env
+// 竞争、不持全局锁。
+// ===========================================================================
+
+#[cfg(target_os = "windows")]
+mod r10 {
+    use test_harness::{resolve_nemesisbot_bin, TestWorkspace};
+
+    /// taskkill.exe 零字节诱饵的 RAII guard：构造时写入，Drop 时删除
+    /// （声明序在 run_cli 之前，panic 时也先于 TempDir 清理执行）。
+    struct BadExeDecoy(std::path::PathBuf);
+
+    impl BadExeDecoy {
+        fn arm(bin_dir: &std::path::Path) -> Self {
+            let p = bin_dir.join("taskkill.exe");
+            std::fs::write(&p, b"").expect("写入零字节诱饵");
+            Self(p)
+        }
+    }
+
+    impl Drop for BadExeDecoy {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(&self.0);
+        }
+    }
+
+    #[tokio::test]
+    async fn r10_taskkill_spawn_failure_reports_failed_to_send_signal_and_keeps_pid_file() {
+        let ws = TestWorkspace::new().expect("workspace");
+        std::fs::create_dir_all(ws.home()).unwrap();
+        // 合法可解析的 PID（值本身无所谓：spawn 根本走不到执行）。
+        std::fs::write(ws.home().join("gateway.pid"), "999999\n").unwrap();
+
+        // 诱饵：release nemesisbot.exe 同目录下的零字节 taskkill.exe ——
+        // 应用目录在 CreateProcess 搜索序中优先于 System32，坏镜像直接让
+        // spawn 报 Err（而非运行真实 taskkill 得到 "not found" 输出）。
+        let bin = resolve_nemesisbot_bin().expect("release binary");
+        let bin_path: std::path::PathBuf = bin.clone();
+        let _decoy = BadExeDecoy::arm(bin_path.parent().expect("bin dir"));
+
+        let out = ws.run_cli_with_timeout(&bin, &["shutdown"], 30).await;
+        assert!(
+            out.success(),
+            "spawn 失败也是 Ok 早退：stdout={} stderr={}",
+            out.stdout,
+            out.stderr
+        );
+        assert!(
+            out.stdout_contains("Found gateway PID: 999999"),
+            "PID 文件必须先被读出：\n{}",
+            out.stdout
+        );
+        assert!(
+            out.stdout_contains("Failed to send signal"),
+            "必须命中 Command::output Err 臂：\n{}",
+            out.stdout
+        );
+        assert!(
+            ws.home().join("gateway.pid").exists(),
+            "信号发送失败不得清理 PID 文件"
+        );
     }
 }

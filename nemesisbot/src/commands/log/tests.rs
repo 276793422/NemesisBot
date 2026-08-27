@@ -812,3 +812,288 @@ mod run_arm {
         });
     }
 }
+
+// ===========================================================================
+// wave_a（R7 中批补盲，2026-08-27）：① logging 段存在但缺 llm 键的默认注入
+// （194-198 / 356-360 / 425-432 —— 注意 read_logging_config 对「连 logging
+// 段都没有」的输入会兜底整份默认，永远打不进这些注入臂，必须造 partial）、
+// ② llm:{} 空对象的双默认填充（204-226 全程）、③ status 空串字段默认填充
+// （287/290）、④ 旧 console 键 fallback 闭包（553-557 or_else 体）、⑤
+// write_logging_config 写失败冒泡（181 `?`）。
+// 已知不可测：cmd_llm_config 非法 detail_level 走 std::process::exit(1)
+// （366-370），在测试进程内无法断言 → 豁免池。
+// ===========================================================================
+
+mod wave_a {
+    use super::super::{
+        cmd_general_console, cmd_llm_enable, cmd_llm_status, default_logging_config, run,
+        write_logging_config, LlmAction, LogAction,
+    };
+
+    fn with_env_home(f: impl FnOnce(std::path::PathBuf)) {
+        let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        unsafe {
+            std::env::set_var("NEMESISBOT_HOME", tmp.path());
+        }
+        f(tmp.path().join(".nemesisbot"));
+        unsafe {
+            std::env::remove_var("NEMESISBOT_HOME");
+        }
+    }
+
+    #[test]
+    fn llm_enable_inserts_defaults_when_logging_lacks_llm_key() {
+        // logging 段真实存在但没有 llm 键 → read_logging_config 原样返回该段，
+        // cmd_llm_enable 进 194-198 默认注入（部分段才触发；缺整个 logging 段
+        // 时 read_logging_config 兜底整份默认、含 llm，永远到不了这里）。
+        let tmp = tempfile::tempdir().unwrap();
+        let cfg = tmp.path().join("config.json");
+        std::fs::write(&cfg, r#"{"logging":{"general":{"enabled":true}}}"#).unwrap();
+
+        cmd_llm_enable(&cfg, &tmp.path().join("workspace")).unwrap();
+
+        let data: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&cfg).unwrap()).unwrap();
+        assert_eq!(data["logging"]["llm"]["log_dir"], "logs/request_logs");
+        assert_eq!(data["logging"]["llm"]["detail_level"], "full");
+        assert_eq!(data["logging"]["llm"]["enabled"], true);
+        // 原 general 段保留。
+        assert_eq!(data["logging"]["general"]["enabled"], true);
+    }
+
+    #[test]
+    fn llm_empty_object_fills_both_defaults_on_enable() {
+        // llm 为空对象：as_object_mut 成功但两字段缺失 → 空 → 双默认插入
+        // （204-226 的完整空值路径，含收尾括号区）。
+        let tmp = tempfile::tempdir().unwrap();
+        let cfg = tmp.path().join("config.json");
+        std::fs::write(&cfg, r#"{"logging":{"llm":{}}}"#).unwrap();
+
+        cmd_llm_enable(&cfg, &tmp.path().join("workspace")).unwrap();
+
+        let data: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&cfg).unwrap()).unwrap();
+        assert_eq!(data["logging"]["llm"]["log_dir"], "logs/request_logs");
+        assert_eq!(data["logging"]["llm"]["detail_level"], "full");
+        assert_eq!(data["logging"]["llm"]["enabled"], true);
+    }
+
+    #[test]
+    fn llm_status_applies_defaults_for_empty_string_fields() {
+        // enabled + 两字段为空串 → 287/290 空值默认填充后正常打印。
+        let tmp = tempfile::tempdir().unwrap();
+        let cfg = tmp.path().join("config.json");
+        std::fs::write(
+            &cfg,
+            r#"{"logging":{"llm":{"enabled":true,"detail_level":"","log_dir":""}}}"#,
+        )
+        .unwrap();
+        let workspace = tmp.path().join("workspace");
+        std::fs::create_dir_all(&workspace).unwrap();
+
+        cmd_llm_status(&cfg, &workspace).expect("空串字段走默认填充分支");
+    }
+
+    #[test]
+    fn dispatch_type_raw_creates_llm_section_with_save_raw() {
+        // logging 段存在但没有 llm 键 + dispatch 层 Type raw → 425-432 带
+        // save_raw 的默认注入 + 607 dispatch 尾臂。
+        with_env_home(|home| {
+            std::fs::create_dir_all(&home).unwrap();
+            std::fs::write(home.join("config.json"), r#"{"logging":{}}"#).unwrap();
+
+            run(
+                LogAction::Llm {
+                    action: LlmAction::Type { log_type: "raw".into() },
+                },
+                false,
+            )
+            .expect("type raw on partial config");
+
+            let data: serde_json::Value =
+                serde_json::from_str(&std::fs::read_to_string(home.join("config.json")).unwrap())
+                    .unwrap();
+            assert_eq!(data["logging"]["llm"]["save_raw"], true);
+            assert_eq!(data["logging"]["llm"]["log_dir"], "logs/request_logs");
+        });
+    }
+
+    #[test]
+    fn general_console_toggle_falls_back_to_legacy_console_key() {
+        // 只有旧键 console:false、无 enable_console → 553-557 or_else 闭包体
+        // 读到 false → 翻转为 true 且双键同步写回。
+        let tmp = tempfile::tempdir().unwrap();
+        let cfg = tmp.path().join("config.json");
+        std::fs::write(
+            &cfg,
+            r#"{"logging":{"general":{"console":false,"level":"INFO"}}}"#,
+        )
+        .unwrap();
+
+        cmd_general_console(&cfg).unwrap();
+
+        let data: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&cfg).unwrap()).unwrap();
+        assert_eq!(
+            data["logging"]["general"]["enable_console"],
+            true,
+            "fallback 读到旧键 false 后必须翻为 true"
+        );
+        assert_eq!(data["logging"]["general"]["console"], true);
+        assert_eq!(data["logging"]["general"]["level"], "INFO", "其它字段保留");
+    }
+
+    #[test]
+    fn write_logging_config_err_bubbles_when_parent_is_regular_file() {
+        // 父路径是普通文件：create_dir_all 被 `let _` 吞掉，写失败 → 181 `?` 冒泡。
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("blocker"), "not a dir").unwrap();
+        let cfg = tmp.path().join("blocker").join("config.json");
+        assert!(
+            write_logging_config(&cfg, &default_logging_config()).is_err(),
+            "父路径为文件 → 配置写必须报错"
+        );
+    }
+}
+
+// ===========================================================================
+// wave_c（coverage 补测，2026-08-27）：cmd_llm_config 的 llm 段缺省注入臂
+// （355-361）。既有 Config 测试全部基于 make_config（llm 键已存在）或
+// None/None「无改动」路径；「logging 段存在但缺 llm 键」的 partial 配置只
+// 测过 enable（194-198）/ type raw（425-432）两个入口，config 入口的默认
+// 注入从未跑过。全部走合法 detail_level——非法值会 std::process::exit(1)
+// 杀死测试进程（见 S11c 头注），绝不碰。
+// ===========================================================================
+
+mod wave_c {
+    use super::*;
+
+    #[test]
+    fn wave_c_llm_config_injects_llm_defaults_when_key_missing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cfg = tmp.path().join("config.json");
+        std::fs::write(&cfg, r#"{"logging":{"general":{"enabled":true}}}"#).unwrap();
+        let workspace = tmp.path().join("workspace");
+        std::fs::create_dir_all(&workspace).unwrap();
+
+        cmd_llm_config(&cfg, &workspace, Some("truncated"), None).expect("config ok");
+
+        let data: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&cfg).unwrap()).unwrap();
+        assert_eq!(
+            data["logging"]["llm"]["detail_level"], "truncated",
+            "显式 detail_level 在注入后的 llm 段上生效"
+        );
+        assert_eq!(
+            data["logging"]["llm"]["log_dir"], "logs/request_logs",
+            "注入臂带默认 log_dir"
+        );
+        assert_eq!(
+            data["logging"]["general"]["enabled"], true,
+            "原 general 段保留"
+        );
+    }
+
+    #[test]
+    fn wave_c_llm_config_log_dir_creates_resolved_dir_and_keeps_defaults() {
+        // llm 键缺失 + 只传相对 log_dir：注入默认结构 → resolve_path 落盘并
+        // create_dir_all 建目录（390）；未指定的 detail_level 保持注入默认。
+        let tmp = tempfile::tempdir().unwrap();
+        let cfg = tmp.path().join("config.json");
+        std::fs::write(&cfg, r#"{"logging":{"general":{"level":"WARN"}}}"#).unwrap();
+        let workspace = tmp.path().join("ws");
+        std::fs::create_dir_all(&workspace).unwrap();
+
+        cmd_llm_config(&cfg, &workspace, None, Some("llm-dirs")).expect("config ok");
+
+        let data: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&cfg).unwrap()).unwrap();
+        let written = data["logging"]["llm"]["log_dir"].as_str().unwrap();
+        assert!(
+            written.starts_with(workspace.to_string_lossy().as_ref()),
+            "相对 log_dir 必须解析到 workspace 下：{written}"
+        );
+        assert!(std::path::Path::new(written).exists(), "log_dir 目录被创建");
+        assert_eq!(data["logging"]["llm"]["detail_level"], "full", "保持注入默认");
+        assert_eq!(data["logging"]["general"]["level"], "WARN", "原字段保留");
+    }
+}
+
+// ===========================================================================
+// r10（覆盖率 A 类 miss 补充）：
+// - enable 对「字段存在但为空串」的填充臂（wave_a 只测了字段缺失形态；
+//   unwrap_or("") 使两条输入殊途同归，但显式空串是独立夹具、补上更稳）。
+// - 非法 detail_level 的 std::process::exit(1)（366-370）：进程内必然杀死
+//   测试二进制（wave_a/wave_c 两代头注都判「豁免池」），子进程解锁——
+//   run_cli 自动接 coverage_cli_env，断言退码 1 与错误文案。
+// ===========================================================================
+
+#[test]
+fn r10_llm_enable_fills_explicit_empty_string_fields() {
+    let tmp = tempfile::tempdir().unwrap();
+    let cfg = tmp.path().join("config.json");
+    std::fs::write(
+        &cfg,
+        r#"{"logging":{"llm":{"enabled":false,"detail_level":"","log_dir":""}}}"#,
+    )
+    .unwrap();
+
+    cmd_llm_enable(&cfg, &tmp.path().join("workspace")).unwrap();
+
+    let data: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&cfg).unwrap()).unwrap();
+    assert_eq!(data["logging"]["llm"]["detail_level"], "full", "显式空串必须被填成默认 full");
+    assert_eq!(data["logging"]["llm"]["log_dir"], "logs/request_logs");
+    assert_eq!(data["logging"]["llm"]["enabled"], true);
+}
+
+mod r10_subprocess {
+    use test_harness::{resolve_nemesisbot_bin, TestWorkspace};
+
+    #[tokio::test]
+    async fn r10_invalid_detail_level_exits_1_in_child_process() {
+        // 进程内 std::process::exit(1) 会杀掉测试二进制 → 只能在子进程钉。
+        let ws = TestWorkspace::new().expect("workspace");
+        std::fs::create_dir_all(ws.home()).unwrap();
+        std::fs::write(&ws.config_path(), r#"{"logging":{"llm":{"enabled":true}}}"#).unwrap();
+
+        let bin = resolve_nemesisbot_bin().expect("release binary");
+        let out = ws
+            .run_cli(
+                &bin,
+                &[
+                    "log",
+                    "llm",
+                    "config",
+                    "--detail-level",
+                    "r10-bogus-level",
+                ],
+            )
+            .await;
+        assert_eq!(
+            out.exit_code, 1,
+            "非法 detail_level 必须以退码 1 终止：stdout={} stderr={}",
+            out.stdout, out.stderr
+        );
+        assert!(
+            out.stdout.contains("Invalid detail level 'r10-bogus-level'"),
+            "错误文案必须指名非法值：\n{}",
+            out.stdout
+        );
+
+        // 对照组：合法值正常退码 0 且落盘。
+        let ok = ws
+            .run_cli(&bin, &["log", "llm", "config", "--detail-level", "truncated"])
+            .await;
+        assert!(
+            ok.success(),
+            "合法 detail_level 应成功：stdout={} stderr={}",
+            ok.stdout,
+            ok.stderr
+        );
+        let cfg: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(ws.config_path()).unwrap()).unwrap();
+        assert_eq!(cfg["logging"]["llm"]["detail_level"], "truncated");
+    }
+}

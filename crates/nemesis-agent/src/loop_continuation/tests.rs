@@ -126,7 +126,8 @@ fn test_disk_recovery_on_startup() {
     store.save(&snapshot).unwrap();
 
     // Create a manager with disk store -- it should recover the snapshot on startup.
-    // Uses a synchronous test since with_disk_store uses blocking_lock internally.
+    // with_disk_store runs sync recovery; its sync locks use try_lock() (never
+    // blocks), so a plain #[test] is safe.
     let manager = ContinuationManager::with_disk_store(tmp.path());
     assert!(manager.has_continuation_sync("task-recover"));
 }
@@ -1149,7 +1150,7 @@ fn test_disk_persistence_load_from_disk() {
     };
     store.save(&snapshot).unwrap();
 
-    // Create manager with disk store and verify recovery (sync test because with_disk_store uses blocking_lock)
+    // Create manager with disk store and verify recovery (sync API; recovery uses try_lock internally).
     let manager = ContinuationManager::with_disk_store(tmp.path());
     assert!(manager.has_continuation_sync("task-disk-load"));
 }
@@ -1517,8 +1518,9 @@ async fn test_disk_recovery_preserves_session_key_for_handle() {
     let workspace = tmp.path().to_path_buf();
 
     // Phase 1: write snapshot to disk via a manager that immediately drops.
-    // with_disk_store uses blocking_lock during recovery, so it must run on a
-    // background thread (multi_thread flavor + spawn_blocking).
+    // (spawn_blocking here is historical: with_disk_store's recovery now uses
+    // try_lock, so it no longer needs a background thread — see the regression
+    // test recover_from_disk_inside_async_runtime_does_not_panic below.)
     {
         let workspace = workspace.clone();
         let session_key_phase1 = session_key.clone();
@@ -1816,10 +1818,9 @@ async fn test_load_continuation_falls_back_to_disk() {
 #[test]
 fn test_recover_to_manager_skips_corrupt_snapshot() {
     // A corrupt .json file on disk makes load() fail → warn branch is hit and
-    // the entry is skipped (no panic). Uses the sync API because
-    // `with_disk_store` → `recover_to_manager` internally calls
-    // `has_continuation_sync` which uses `blocking_lock` — that cannot run
-    // inside a tokio runtime worker thread.
+    // the entry is skipped (no panic). with_disk_store's recovery uses
+    // try_lock() for its sync memory lookups, so it is safe from any context
+    // (including a tokio runtime worker thread).
     let tmp = TempDir::new().unwrap();
     let cache_dir = tmp.path().join("cluster").join("rpc_cache");
     std::fs::create_dir_all(&cache_dir).unwrap();
@@ -1827,6 +1828,52 @@ fn test_recover_to_manager_skips_corrupt_snapshot() {
 
     let mgr = ContinuationManager::with_disk_store(tmp.path());
     assert!(!mgr.has_continuation_sync("corrupt"));
+}
+
+/// Regression for BUG #45 (2026-08-27): `ContinuationManager::with_disk_store`
+/// runs `recover_to_manager` synchronously, which calls
+/// `has_continuation_sync`/`insert_continuation_sync`. Under the old code those
+/// used `tokio::sync::Mutex::blocking_lock()`, which panics with
+/// "Cannot block the current thread from within a runtime" when invoked on a
+/// tokio runtime worker thread — exactly the context of gateway startup
+/// (`build_agent_loop` at agent_factory.rs:437 calls `with_disk_store` directly
+/// inside the async `gateway::run`, NOT via `spawn_blocking`). A leftover
+/// `rpc_cache/*.json` (gateway died mid-cluster-rpc) tripped `list_pending()`
+/// non-empty → the blocking_lock panic → a restart crash loop. The fix replaces
+/// `blocking_lock()` with `try_lock()` (non-blocking CAS, never parks the
+/// thread, safe from any context). This test seeds a real snapshot and calls
+/// `with_disk_store` directly from a `#[tokio::test]` (current_thread runtime
+/// worker thread) — the exact context that used to panic. It must recover the
+/// entry without panicking.
+#[tokio::test]
+async fn recover_from_disk_inside_async_runtime_does_not_panic() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let workspace = tmp.path().to_path_buf();
+
+    // Seed a valid snapshot on disk exactly as production leaves behind when
+    // the gateway dies mid-cluster-rpc.
+    let store = ContinuationStore::new(&workspace);
+    let task_id = format!("bug45-{}", std::process::id());
+    let snapshot = ContinuationSnapshot {
+        task_id: task_id.clone(),
+        messages: r#"[{"role":"user","content":"cluster rpc in flight"}]"#
+            .to_string(),
+        tool_call_id: "tc_bug45".to_string(),
+        channel: "web".to_string(),
+        chat_id: "chat_bug45".to_string(),
+        session_key: String::new(),
+        created_at: "2026-08-27T00:00:00Z".to_string(),
+    };
+    store.save(&snapshot).unwrap();
+    drop(store);
+
+    // Direct call from the async runtime worker thread — NO spawn_blocking.
+    // Under the old blocking_lock code this panicked here.
+    let mgr = ContinuationManager::with_disk_store(&workspace);
+    assert!(
+        mgr.has_continuation_sync(&task_id),
+        "snapshot must be recovered from disk into the in-memory map at startup"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -2143,8 +2190,8 @@ async fn wait_for_continuation_barrier_notified_path() {
     let data = not_ready_data();
     let ready = data.ready.clone();
     let ready_flag = data.ready_flag.clone();
-    // insert_continuation_sync 用 blocking_lock：只能在非 async 线程调
-    // （生产只在启动同步阶段用），测试侧经 spawn_blocking 落到阻塞线程池。
+    // insert_continuation_sync 用 try_lock（永不阻塞），任何上下文安全；
+    // spawn_blocking 是历史遗留（旧 blocking_lock 时代的规避），保留无害。
     let m0 = manager.clone();
     let d0 = data.clone();
     tokio::task::spawn_blocking(move || {
@@ -2173,7 +2220,7 @@ async fn wait_for_continuation_barrier_timeout_path() {
     // 条目存在但永不 ready → barrier_timeout 到期 → None（落盘兜底）。
     let mut manager = ContinuationManager::new();
     manager.set_barrier_timeout(Duration::from_millis(80));
-    // blocking_lock 不能在 async 线程调 → spawn_blocking（同上）。
+    // try_lock 任何上下文安全；spawn_blocking 同上，历史遗留保留。
     let manager = Arc::new(manager);
     let m0 = manager.clone();
     tokio::task::spawn_blocking(move || {

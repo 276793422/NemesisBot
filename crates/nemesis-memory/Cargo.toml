@@ -27,6 +27,7 @@ reqwest = { workspace = true, features = ["blocking", "json"] }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util", "macros"] }
+tracing-subscriber = { workspace = true }
 tempfile = "3"
 nemesis-config = { workspace = true }
 nemesis-types = { workspace = true }

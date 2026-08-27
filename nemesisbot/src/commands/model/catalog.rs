@@ -234,7 +234,7 @@ pub fn fetch_http_blocking() -> Result<Vec<CatalogEntry>, String> {
         .build()
         .map_err(|e| format!("http client: {e}"))?;
     let mut last_err = String::new();
-    for url in [API_URL, API_MIRROR_URL] {
+    for url in catalog_endpoints() {
         match client.get(url).send() {
             Ok(resp) if resp.status().is_success() => match resp.text() {
                 Ok(body) => match parse_any(&body) {
@@ -248,6 +248,23 @@ pub fn fetch_http_blocking() -> Result<Vec<CatalogEntry>, String> {
         }
     }
     Err(format!("all catalog endpoints failed — last: {last_err}"))
+}
+
+/// Endpoint pair with an optional test seam.
+///
+/// `NEMESISBOT_CATALOG_API_URL`（未设置时与 `[API_URL, API_MIRROR_URL]` 完全
+/// 一致）替换主端点，使 fetch 的成功/坏 body/非 2xx 臂能对本地 mock 确定性
+/// 测试（此前 URL 常量硬编码，这些臂只能靠真网络或留豁免）。
+fn catalog_endpoints() -> [&'static str; 2] {
+    match std::env::var("NEMESISBOT_CATALOG_API_URL") {
+        Ok(url) if !url.is_empty() => {
+            // Leak 一次把 String 钉成 'static：该函数仅在 CLI 单次运行中调用，
+            // 泄漏量 = 一个短字符串，可忽略。
+            let leaked: &'static str = Box::leak(url.into_boxed_str());
+            [leaked, API_MIRROR_URL]
+        }
+        _ => [API_URL, API_MIRROR_URL],
+    }
 }
 
 /// Async wrapper: run [`fetch_http_blocking`] on the blocking pool.

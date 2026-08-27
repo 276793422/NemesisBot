@@ -1275,3 +1275,324 @@ fn template_list_picks_up_disk_templates_and_warns_on_broken() {
         std::env::remove_var("NEMESISBOT_HOME");
     }
 }
+
+// ===========================================================================
+// wave_b（coverage 补测，2026-08-27）：miss 行清零补洞。
+//
+// 目标行（workflow.rs）与本模块的对应关系：
+//  - 384-385（描述 >37 截断）/387（空描述 "-"）/398-400（多 triggers join）/
+//    405-410（列表行解析失败 "(parse error)"）→ wave_b_list_description_
+//    trigger_and_parse_error_arms；
+//  - 514-522（executor.sandbox 分离开启时的 Some(world) 分支：打印 world 名、
+//    set_execution_world + install_composite_node_executors）→
+//    wave_b_run_attaches_execution_world_when_separation_enabled。确定性依据：
+//    home 是全新 tempdir，其下永远没有 tools/sandboxie/Start.exe ⇒ will_attach
+//    恒 false ⇒ build_executor_channel 走 stdio 落到 Ok(Some(channel))；
+//    ConfigStore::load(path) 是纯读盘函数，不触碰 GLOBAL_STORE 单例；
+//  - 641（详情 <1s 毫秒臂）/645-646（started/ended 解析失败静默跳过）/
+//    702-704（节点输出 >200 截断 floor_char_boundary）/742-743（executions 目录
+//    存在但无 .json → "No executions found." 内层臂）/772（列表行 started 短串
+//    原样展示）/775（列表行 JSON 解析失败跳过整行）→ wave_b_status_detail_
+//    conditional_matrix + wave_b_status_list_view_edge_rows；
+//  - 178/186/195（模板扫描：非文件 continue / 扩展名不符 continue /
+//    seen_names 去重 continue）→ wave_b_template_scan_skips_and_dedup。
+//
+// ARTIFACT/ALREADY（本模块不再重复覆盖）：126/157/216/562/576-577/588/
+// 663-664/676-677/692/709/712/841/921 —— 全部是已执行 span 的闭括号/续行
+// 计数伪影或既有测试已覆盖（exec-002/exec-err 详情夹具走遍 input/variables/
+// node_results 打印块；run_tool_node_on_bare_engine 钉 576-577 错误行；
+// run_slow_workflow 钉秒单位；template create json 由 run_arm 覆盖；921 是
+// dispatch_run_arm_needs_multithread_runtime 的 Run 臂尾表达式）。
+//
+// EXEMPT（结构性行不可达）：
+//  - 447-448/451-452 cmd_run 的 exe_dir/templates 回退——命中它必须在共享的
+//    target/debug/deps/ 旁建 templates/<name>.yaml。get_templates 的语义是
+//    「磁盘扫描非空 ⇒ 整组替换默认模板」（318-324），种进去的文件会全局劫持
+//    二进制内所有并行运行 template 测试的期望集（默认回退测试会随机拿到磁盘
+//    集），隔离性禁止，宁缺勿染。
+// ===========================================================================
+
+mod wave_b {
+    use super::super::{cmd_list, cmd_run, cmd_status, run, TemplateAction, WorkflowAction};
+
+    /// 组装一个能被 parser 接受的最小 delay 工作流 YAML 文本。
+    fn delay_yaml(name: &str, description: &str, triggers: &str) -> String {
+        let mut s = String::new();
+        s.push_str(&format!("name: {name}\n"));
+        s.push_str(&format!("description: \"{description}\"\n"));
+        s.push_str("version: \"1.0.0\"\n");
+        if !triggers.is_empty() {
+            s.push_str(triggers);
+        }
+        s.push_str(
+            "nodes:\n  - id: d\n    node_type: delay\n    config:\n      seconds: 0\n    depends_on: []\nedges: []\n",
+        );
+        s
+    }
+
+    #[test]
+    fn wave_b_list_description_trigger_and_parse_error_arms() {
+        let tmp = tempfile::tempdir().unwrap();
+        let def_dir = tmp.path().join("definitions");
+        std::fs::create_dir_all(&def_dir).unwrap();
+
+        // 长（>37 字节）描述 → 383-385 截断臂。
+        let long_desc = "L".repeat(60);
+        std::fs::write(def_dir.join("long.yaml"), delay_yaml("long", &long_desc, "")).unwrap();
+        // 空描述 → 386-387 "-" 臂。
+        std::fs::write(def_dir.join("blank.yaml"), delay_yaml("blank", "", "")).unwrap();
+        // 双 triggers → 398-400 join(", ") 臂。
+        std::fs::write(
+            def_dir.join("duo.yaml"),
+            delay_yaml(
+                "duo",
+                "triggered",
+                "triggers:\n  - trigger_type: cron\n  - trigger_type: event\n",
+            ),
+        )
+        .unwrap();
+        // 解析失败文件 → 405-410 "(parse error)" 行。
+        std::fs::write(def_dir.join("bad.json"), "{{{ not json").unwrap();
+
+        cmd_list(&def_dir).expect("cmd_list with mixed fixture must succeed");
+    }
+
+    #[test]
+    fn wave_b_status_detail_conditional_matrix() {
+        let tmp = tempfile::tempdir().unwrap();
+        let exec_dir = tmp.path().join("executions");
+        std::fs::create_dir_all(&exec_dir).unwrap();
+
+        // d-fast：<1000ms duration（毫秒臂 640-641）；有 input 无 variables
+        // 无 node_results（覆盖打印块与相邻 skip 边缘）。
+        let fast = serde_json::json!({
+            "id": "d-fast", "workflow_name": "wf", "state": "completed",
+            "started_at": "2026-01-15T10:00:00.000Z",
+            "ended_at": "2026-01-15T10:00:00.500Z",
+            "input": {"k": "v"}
+        });
+        // d-badts：started_at 不可解析 → 637 元组匹配失败 → 645-646 静默收口。
+        let badts = serde_json::json!({
+            "id": "d-badts", "workflow_name": "wf", "state": "completed",
+            "started_at": "not-a-timestamp",
+            "ended_at": "2026-01-15T10:00:05Z"
+        });
+        // d-bigout：240 字符 ASCII 输出 → 700-704 截断臂（floor_char_boundary
+        // 安全切在 ASCII 上无歧义）；node n2 只带 state 的裸行。
+        let big_out = "O".repeat(240);
+        let bigout = serde_json::json!({
+            "id": "d-bigout", "workflow_name": "wf", "state": "completed",
+            "node_results": {
+                "n1": {"state": "completed", "output": big_out,
+                        "started_at": "2026-01-15T10:00:00Z",
+                        "ended_at": "2026-01-15T10:00:01Z"},
+                "n2": {"state": "skipped"}
+            }
+        });
+        // d-emptynr：node_results 为空对象 → 682 内层 false → 711-713 收口。
+        let emptynr = serde_json::json!({
+            "id": "d-emptynr", "workflow_name": "wf", "state": "failed",
+            "error": "", "node_results": {}
+        });
+
+        for (id, data) in [
+            ("d-fast", fast),
+            ("d-badts", badts),
+            ("d-bigout", bigout),
+            ("d-emptynr", emptynr),
+        ] {
+            std::fs::write(
+                exec_dir.join(format!("{id}.json")),
+                serde_json::to_string_pretty(&data).unwrap(),
+            )
+            .unwrap();
+            cmd_status(tmp.path(), Some(id)).expect("detail view must succeed");
+        }
+    }
+
+    #[test]
+    fn wave_b_status_list_view_edge_rows() {
+        let tmp = tempfile::tempdir().unwrap();
+        let exec_dir = tmp.path().join("executions");
+        std::fs::create_dir_all(&exec_dir).unwrap();
+
+        // 第一阶段：目录存在但没有任何 *.json → 741-743 内层空臂。
+        std::fs::write(exec_dir.join("note.txt"), "ignore me").unwrap();
+        cmd_status(tmp.path(), None).expect("empty-after-filter list view ok");
+
+        // 第二阶段：
+        //  - broken.json 整行 JSON 解析失败 → 757 的 else 边（756-775 收口）。
+        //  - 无 started_at 的记录 → unwrap_or("?") len=1 → 769-773 短串原样臂。
+        std::fs::write(exec_dir.join("broken.json"), "{{{").unwrap();
+        std::fs::write(
+            exec_dir.join("ok.json"),
+            serde_json::json!({
+                "id": "ok", "workflow_name": "wf", "state": "completed"
+            })
+            .to_string(),
+        )
+        .unwrap();
+        cmd_status(tmp.path(), None).expect("list view with edge rows ok");
+    }
+
+    #[tokio::test]
+    async fn wave_b_run_attaches_execution_world_when_separation_enabled() {
+        // executor.enabled=true（sandbox=false）+ tempdir home（永远无 Start.exe）
+        // ⇒ build_workflow_world 返回 Ok(Some(ExecutorWorld))，match 走 Some(world)
+        // 臂（514-521：打印 + set_execution_world + install_composite）。配置纯读，
+        // 不触 GLOBAL_STORE；delay 节点不与 world 交互，全流程本地确定。
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path().join(".nemesisbot");
+        let wf_dir = home.join("workspace").join("workflow").join("definitions");
+        std::fs::create_dir_all(&wf_dir).unwrap();
+        std::fs::write(
+            home.join("config.json"),
+            serde_json::json!({"executor": {"enabled": true, "sandbox": false}}).to_string(),
+        )
+        .unwrap();
+        std::fs::write(
+            wf_dir.join("worldy.json"),
+            serde_json::json!({
+                "name": "worldy",
+                "description": "execution-world smoke",
+                "version": "1.0.0",
+                "nodes": [
+                    {"id": "d", "node_type": "delay", "config": {"seconds": 0}, "depends_on": []}
+                ],
+                "edges": []
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        cmd_run(&home, &wf_dir, "worldy", &[])
+            .await
+            .expect("run with separation enabled must complete");
+
+        let recs: Vec<_> = std::fs::read_dir(wf_dir.join("executions"))
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .map(|e| e.path())
+            .filter(|p| p.extension().map(|x| x == "json").unwrap_or(false))
+            .collect();
+        assert_eq!(recs.len(), 1, "separation-on run 也必须落执行记录");
+        let rec: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&recs[0]).unwrap()).unwrap();
+        assert_eq!(rec["state"], "completed");
+    }
+
+    #[test]
+    fn wave_b_template_scan_skips_and_dedup() {
+        // 目标行 177-179（目录 continue）/185-187（扩展名 continue）/
+        // 194-196（seen_names 去重 continue —— 同 stem 双扩展名触发）。
+        // get_templates 语义是「磁盘非空 ⇒ 整组替换默认」，必须持全局锁隔离。
+        let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        unsafe {
+            std::env::set_var("NEMESISBOT_HOME", tmp.path());
+        }
+        let tpl_dir = tmp
+            .path()
+            .join(".nemesisbot")
+            .join("workspace")
+            .join("workflow")
+            .join("templates");
+        std::fs::create_dir_all(tpl_dir.join("subdir")).unwrap(); // 目录 entry
+
+        let good_body =
+            "name: good\ndescription: g\nversion: 1.0.0\nnodes:\n  - id: d\n    node_type: delay\n    config:\n      seconds: 0\n    depends_on: []\nedges: []\n";
+        std::fs::write(tpl_dir.join("good.yaml"), good_body).unwrap();
+        std::fs::write(tpl_dir.join("notes.txt"), "wrong extension").unwrap(); // 扩展名臂
+        // a.yaml / a.yml 同 stem —— 第二个进 seen_names 去重臂。
+        let twin_a =
+            "name: anything\ndescription: t\nversion: 1.0.0\nnodes:\n  - id: d\n    node_type: delay\n    config:\n      seconds: 0\n    depends_on: []\nedges: []\n";
+        std::fs::write(tpl_dir.join("a.yaml"), twin_a).unwrap();
+        std::fs::write(tpl_dir.join("a.yml"), twin_a).unwrap();
+
+        let templates = super::super::load_templates_from_disk();
+        let names: Vec<&str> = templates.iter().map(|(n, _, _)| n.as_str()).collect();
+        assert_eq!(
+            names,
+            vec!["a", "good"],
+            "目录/txt/重复 stem 都必须被跳过：{names:?}"
+        );
+
+        // 同一环境跑一次显式 List（消费 disk 模板路径）。
+        run(WorkflowAction::Template { action: Some(TemplateAction::List) }, false)
+            .expect("template list over scanned disk templates ok");
+
+        unsafe {
+            std::env::remove_var("NEMESISBOT_HOME");
+        }
+    }
+}
+
+// ===========================================================================
+// r10（覆盖率 A 类 miss 补充）：
+// - run() 的 Run 分发臂走完整成功路径（此前 dispatch_run_arm 只到 ghost
+//   not-found 早退；cmd_run 直接调用覆盖了函数体，但 919-922 分发行只在
+//   失败路径上被 span 过）。
+// - 节点级 Failed + error 文案：transform 挂未知 expression →
+//   failed_node_result 带 per-node error → cmd_run 展示循环的错误臂
+//   （571-578 的 else 边）+ result.error 顶层打印（563-565）。裸引擎内置
+//   transform 执行器（nodes.rs 注册），无外部依赖。
+// ===========================================================================
+
+mod r10 {
+    use super::super::{run, WorkflowAction};
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn r10_run_dispatch_success_path_with_failed_transform_node_prints_error() {
+        let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        unsafe {
+            std::env::set_var("NEMESISBOT_HOME", tmp.path());
+        }
+        let home = tmp.path().join(".nemesisbot");
+        let wf_dir = home.join("workspace").join("workflow").join("definitions");
+        std::fs::create_dir_all(&wf_dir).unwrap();
+
+        // 单 transform 节点、expression 未知 → per-node Failed + error 文案；
+        // 引擎对节点级失败返回 Ok（Failed 状态），cmd_run 整体 Ok。
+        std::fs::write(
+            wf_dir.join("r10-badx.json"),
+            serde_json::json!({
+                "name": "r10-badx",
+                "description": "transform unknown expression → node error",
+                "version": "1.0.0",
+                "nodes": [
+                    {"id": "tx", "node_type": "transform", "config": {"expression": "definitely-not-a-real-expression"}, "depends_on": []}
+                ],
+                "edges": []
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        // 经 run() 分发臂（block_in_place 必须 multi_thread）走到执行记录落盘。
+        let out = run(
+            WorkflowAction::Run {
+                name: "r10-badx".into(),
+                input: vec![],
+            },
+            false,
+        );
+        assert!(out.is_ok(), "Failed 状态不算命令错误，got: {:?}", out.err());
+
+        let rec_path = wf_dir.join("executions");
+        let entries: Vec<_> = std::fs::read_dir(&rec_path)
+            .expect("execution record dir must exist")
+            .filter_map(|e| e.ok())
+            .map(|e| e.path())
+            .filter(|p| p.extension().map(|x| x == "json").unwrap_or(false))
+            .collect();
+        assert_eq!(entries.len(), 1, "分发成功路径必须恰好落一条执行记录");
+        let rec: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&entries[0]).unwrap()).unwrap();
+        assert_eq!(rec["state"], "failed", "未知 expression 必须是节点级失败");
+
+        unsafe {
+            std::env::remove_var("NEMESISBOT_HOME");
+        }
+    }
+}

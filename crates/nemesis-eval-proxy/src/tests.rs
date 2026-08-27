@@ -2,7 +2,7 @@
 //! pointing at it, and verify pass-through + auth substitution.
 
 use axum::body::Body;
-use axum::http::{Request, StatusCode};
+use axum::http::StatusCode;
 use axum::routing::{get, post};
 use axum::Router;
 

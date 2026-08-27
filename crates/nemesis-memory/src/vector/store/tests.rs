@@ -571,3 +571,59 @@ async fn st_plugin_persistence_roundtrip() {
     assert!(result.total >= 1, "Should find results in loaded store");
     println!("[P2] Persistence roundtrip — PASS");
 }
+
+// ============================================================
+// R1 coverage: offline constructor paths (no plugin needed)
+// ============================================================
+
+/// VectorStore::new without any configured embedding backend must fail with
+/// the combined guidance message (empty storage_path keeps the built-in
+/// default persist-path arm; empty plugin_path trips the embedding factory's
+/// first guard).
+#[test]
+fn new_without_plugin_reports_embedding_guidance_error() {
+    let config = StoreConfig {
+        ..Default::default()
+    };
+    let err = match VectorStore::new(config) {
+        Err(e) => e,
+        Ok(_) => panic!("constructor must fail without any plugin configured"),
+    };
+    assert!(
+        err.contains("Failed to create embedding function"),
+        "unexpected error: {err}"
+    );
+    assert!(
+        err.contains("No plugin path configured"),
+        "unexpected error: {err}"
+    );
+}
+
+/// With an explicit (non-empty) storage_path the constructor takes the custom
+/// persist-path arm before failing on the absent plugin DLL.
+#[test]
+fn new_with_explicit_storage_path_still_requires_plugin() {
+    let dir = tempfile::tempdir().unwrap();
+    let bogus_dll = dir.path().join("definitely-missing.dll");
+    let config = StoreConfig {
+        storage_path: dir
+            .path()
+            .join("vector_store.jsonl")
+            .to_string_lossy()
+            .to_string(),
+        plugin_path: Some(bogus_dll.to_string_lossy().to_string()),
+        ..Default::default()
+    };
+    let err = match VectorStore::new(config) {
+        Err(e) => e,
+        Ok(_) => panic!("constructor must fail when the plugin dll is absent"),
+    };
+    assert!(
+        err.contains("Plugin DLL not found"),
+        "unexpected error: {err}"
+    );
+    assert!(
+        err.contains("Failed to create embedding function"),
+        "unexpected error: {err}"
+    );
+}

@@ -3,6 +3,12 @@ use super::*;
 /// 最小 HTTP mock（std::net，独立线程）：对所有请求回 200 + 固定 JSON。
 /// 最多接 16 个连接后线程退出（够测试用，不永挂）。
 fn start_mock_server() -> u16 {
+    start_mock_engaged(false)
+}
+
+/// 与 start_mock_server 同构，但 engaged 值可指定——覆盖 status 输出的
+/// ENGAGED 分支（此前固定回 false，「⛔ ENGAGED」打印臂从未点亮）。
+fn start_mock_engaged(engaged: bool) -> u16 {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();
     std::thread::spawn(move || {
@@ -13,7 +19,7 @@ fn start_mock_server() -> u16 {
             };
             let mut buf = [0u8; 4096];
             let _ = stream.read(&mut buf);
-            let body = r#"{"status":"ok","engaged":false}"#;
+            let body = format!(r#"{{"status":"ok","engaged":{engaged}}}"#);
             let resp = format!(
                 "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
                 body.len(),
@@ -55,6 +61,18 @@ async fn run_errors_when_config_missing() {
     let dir = tempfile::tempdir().unwrap();
     let r = run(dir.path(), false, false).await;
     assert!(r.is_err(), "缺 config.json 应报错");
+}
+
+#[tokio::test]
+async fn run_status_reports_engaged_true_branch() {
+    // R7（coverage-95 goal）：status + 服务端 engaged=true → 「⛔ ENGAGED」
+    // 打印臂（此前 mock 固定 engaged=false，该臂从未点亮）。
+    let dir = tempfile::tempdir().unwrap();
+    let port = start_mock_engaged(true);
+    write_home(dir.path(), "", port);
+    run(dir.path(), false, true)
+        .await
+        .expect("status against engaged=true mock → Ok");
 }
 
 #[tokio::test]

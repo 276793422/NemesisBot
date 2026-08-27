@@ -647,7 +647,7 @@ async fn admin_create_user_default_and_missing_issuer() {
     assert_eq!(code, StatusCode::BAD_REQUEST);
     assert_eq!(msg, "issuer 'ghost' not found");
     // 先建发行方再建用户 → 成功
-    admin_create_issuer(
+    let _ = admin_create_issuer(
         State(state.clone()),
         admin_headers(),
         Json(CreateIssuerReq {
@@ -764,7 +764,7 @@ async fn list_issuers_shape_and_no_private_key_leak() {
     assert_eq!(v, serde_json::json!([]));
     // 建 2 个 → 数组 2 项，字段恰好 {name, issuer_pub, created_at}（不泄漏 issuer_sk/cert/chain）
     for name in ["i-one", "i-two"] {
-        admin_create_issuer(
+        let _ = admin_create_issuer(
             State(state.clone()),
             admin_headers(),
             Json(CreateIssuerReq {

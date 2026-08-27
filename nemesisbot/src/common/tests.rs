@@ -80,6 +80,52 @@ fn test_init_logger_with_config_file() {
     assert_eq!(flags, 0);
 }
 
+// ---------------------------------------------------------------------------
+// R7（coverage-95 goal）：init_logger_from_config 配置解析的细分支补测
+// —— 纯解析路径（不发 tracing 全局订阅），直接对返回 flags 断言。
+// ---------------------------------------------------------------------------
+
+#[test]
+fn init_logger_config_general_without_level_key_keeps_defaults() {
+    // general 对象存在但缺 level 字段：跳过级别解析（if-let None 边），
+    // 其余开关照常生效（console 关 → flags 0）。
+    let tmp = tempfile::TempDir::new().unwrap();
+    let cfg = tmp.path().join("config.json");
+    let data = serde_json::json!({
+        "logging": {"general": {"enabled": true, "enable_console": false}}
+    });
+    fs::write(&cfg, data.to_string()).unwrap();
+    let flags = init_logger_from_config(&cfg, &vec![]);
+    assert_eq!(flags, 0);
+}
+
+#[test]
+fn init_logger_config_general_without_file_key_is_fine() {
+    // file 字段整个缺席（不是空串）：file_path 保持 None 的隐式 else 边；
+    // 其余配置照常解析（console 开是默认态、不置任何非常规位 → 0）。
+    let tmp = tempfile::TempDir::new().unwrap();
+    let cfg = tmp.path().join("config.json");
+    let data = serde_json::json!({
+        "logging": {"general": {"enabled": true, "enable_console": true, "level": "ERROR"}}
+    });
+    fs::write(&cfg, data.to_string()).unwrap();
+    let flags = init_logger_from_config(&cfg, &vec![]);
+    assert_eq!(flags, 0);
+}
+
+#[test]
+fn init_logger_config_unknown_level_string_maps_to_info() {
+    // 未识别的 level 字符串走 `_ => INFO` 兜底臂，不 panic 不报错。
+    let tmp = tempfile::TempDir::new().unwrap();
+    let cfg = tmp.path().join("config.json");
+    let data = serde_json::json!({
+        "logging": {"general": {"enabled": true, "enable_console": false, "level": "LOUD"}}
+    });
+    fs::write(&cfg, data.to_string()).unwrap();
+    let flags = init_logger_from_config(&cfg, &vec![]);
+    assert_eq!(flags, 0);
+}
+
 #[test]
 fn test_copy_directory() {
     let tmp = tempfile::TempDir::new().unwrap();
@@ -879,20 +925,9 @@ fn max_level_filter_maps_all_five_levels() {
     assert_eq!(max_level_filter(tracing::Level::ERROR), LevelFilter::ERROR);
 }
 
-#[test]
-fn run_interactive_mode_returns_ok_on_stdin_eof() {
-    // cargo test 的 stdin 是管道 EOF：进循环第一轮 read_line 即 0 字节 →
-    // 打印 Goodbye 并 Ok 返回。handler 在 EOF 下绝不能被调用。
-    // 放独立线程 + 超时兜底：万一 stdin 非 EOF（交互式手动 --nocapture 跑）
-    // 也只 fail 而不是挂死整个测试进程。
-    let worker = std::thread::spawn(|| {
-        run_interactive_mode("bot> ", |input| {
-            panic!("handler must not run at EOF, got input: {input:?}")
-        })
-    });
-    let joined = worker.join().expect("interactive thread must not panic");
-    joined.expect("EOF must exit interactively with Ok(())");
-}
+// [2026-08-27 R9 死码处置] run_interactive_mode_returns_ok_on_stdin_eof
+// 随 run_interactive_mode 一并删除：该函数全仓库零生产调用方（用户
+// 2026-08-27 裁决删除），测试无存续对象。
 
 #[tokio::test]
 async fn setup_cron_tool_returns_wired_service_and_tool() {
@@ -900,4 +935,70 @@ async fn setup_cron_tool_returns_wired_service_and_tool() {
     let (service, _tool) = setup_cron_tool(&tmp.path().join("workspace"));
     // service 可锁定（与生产 gateway 注入 BotService 的形态一致）。
     let _guard = service.lock().await;
+}
+
+// ===========================================================================
+// r9_zero（R9 补测批零头组，2026-08-27）：resolve_home 的「exe 旁 .nemesisbot」
+// 优先级——代码序（common.rs 77-105）是 local → NEMESISBOT_HOME →
+// 【exe 目录】→ cwd 自动探测 → ~/.nemesisbot。注意文件头 doc 注释（71-76 行）
+// 把 exe 目录和 cwd 的顺序写反了，以实现为准（本测试就是 3 号位的回归钉）。
+//
+// 夹具：拷贝真 exe 到 <tmp>/bin/nemesisbot.exe，marker config 放在
+// <tmp>/bin/.nemesisbot/config.json；启动 cwd 是无 .nemesisbot 的空目录、并显式
+// env_remove("NEMESISBOT_HOME") → 子进程只能经 exe 目录臂命中 marker。
+// 磁盘成本：一次 ~50MB 拷贝，TempDir 析构自动回收。
+// ===========================================================================
+
+mod r9_zero {
+    #[test]
+    fn resolve_home_priority3_exe_side_dotnemesisbot_wins_before_cwd_autodetect() {
+        let tmp = tempfile::tempdir().unwrap();
+        let bin_src = test_harness::resolve_nemesisbot_bin()
+            .unwrap_or_else(|e| panic!("需要已构建的 nemesisbot 二进制: {e}"));
+
+        let bin_dir = tmp.path().join("bin");
+        std::fs::create_dir_all(bin_dir.join(".nemesisbot")).unwrap();
+        let exe_name = if cfg!(windows) { "nemesisbot.exe" } else { "nemesisbot" };
+        let bin_dst = bin_dir.join(exe_name);
+        std::fs::copy(&bin_src, &bin_dst).expect("拷贝 exe 到临时 bin/");
+
+        // marker config：唯一能证明「读的是 exe 旁 home」的指纹。
+        let marker_config = serde_json::json!({
+            "model_list": [
+                {"model": "r9/exe-home-marker", "model_name": "exe-home-marker"}
+            ]
+        });
+        std::fs::write(
+            bin_dir.join(".nemesisbot").join("config.json"),
+            marker_config.to_string(),
+        )
+        .unwrap();
+
+        // 启动目录刻意无 .nemesisbot（cwd 自动探测臂必须落空）。
+        let cwd = tmp.path().join("cwd");
+        std::fs::create_dir_all(&cwd).unwrap();
+
+        // 不动测试进程自身 env —— 只在子进程 env 里删掉 NEMESISBOT_HOME，
+        // 天然免 GLOBAL_STATE_LOCK 串行（对并行 env 用例零竞争）。
+        let out = std::process::Command::new(&bin_dst)
+            .args(["model", "list"])
+            .current_dir(&cwd)
+            .env_remove("NEMESISBOT_HOME")
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .output()
+            .expect("spawn exe 副本");
+
+        let stdout = String::from_utf8_lossy(&out.stdout).to_string();
+        assert!(
+            out.status.success(),
+            "model list 应 rc 0\nstdout={stdout}\nstderr={}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert!(stdout.contains("Configured Models"), "stdout:\n{stdout}");
+        assert!(
+            stdout.contains("r9/exe-home-marker"),
+            "必须命中 exe 目录旁的 .nemesisbot（否则 marker 不会出现）：\n{stdout}"
+        );
+    }
 }

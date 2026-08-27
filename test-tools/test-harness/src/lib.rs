@@ -7,6 +7,11 @@
 //! - CLI command execution with output capture
 //! - HTTP health check polling
 //! - Assertion helpers
+//!
+//! R9 additions: stdin-fed CLI runs ([`TestWorkspace::run_cli_with_stdin`])
+//! and the scripted OpenAI-compatible responder ([`mock_ai::MockAiServer`]).
+
+pub mod mock_ai;
 
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -31,6 +36,76 @@ pub const AUTH_TOKEN: &str = "276793422";
 // Process management
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Coverage plumbing (R2 measurement reform)
+// ---------------------------------------------------------------------------
+
+/// Per-process LLVM profile path injected into spawned nemesisbot processes.
+///
+/// Set `NEMESISBOT_COVERAGE_DIR` in the outer `cargo test` environment to
+/// make every [`ManagedProcess::spawn`] gateway write its counters to
+/// `<dir>/<slug>-%p-%m.profraw`. The `%p` placeholder keeps concurrent
+/// gateways from clobbering each other; a clean exit (graceful shutdown, not
+/// TerminateProcess) is what actually flushes them — see
+/// [`ManagedProcess::wait_for_exit`] and [`graceful_shutdown_gateway`].
+///
+/// Gateway long-run processes cover the bulk of nemesisbot's runtime surface
+/// (web handlers / channels / agent loop / security pipeline all live in the
+/// gateway process), which the plain-L2 runs previously measured as zero.
+///
+/// CLI child processes (via [`TestWorkspace::run_cli`]) additionally require
+/// `NEMESISBOT_COVERAGE_CLI=1`: every instrumented process writes a full
+/// (~55MB) counter image regardless of how little it executed, so collecting
+/// the dozens of short-lived CLI invocations costs gigabytes of %TEMP%.
+pub fn coverage_profile_file(slug: &str) -> Option<String> {
+    let dir = std::env::var("NEMESISBOT_COVERAGE_DIR").ok()?;
+    let safe: String = slug
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c.to_ascii_lowercase() } else { '_' })
+        .collect();
+    // A bare `%p-%m` pattern is NOT unique across a long measurement run:
+    // Windows recycles PIDs aggressively, so among the hundreds of short-lived
+    // CLI subprocesses spawned by one full bin-suite pass, later processes can
+    // be handed the pid of an earlier one and silently overwrite that earlier
+    // process's profraw (last-writer-wins). The R9 B1 leg lost most of its CLI
+    // coverage this way (eval happened to survive; skills/cluster/scanner/
+    // channel/dashboard/exec_worker all came back near-zero). Stamp every spawn
+    // with a nanosecond tick + pid so filenames never collide.
+    //
+    // R10（2026-08-27 覆盖率终测）：模板里再去掉 `%m`（merge-pool 模式）。
+    // `%m` 让同一条 LLVM_PROFILE_FILE 的多个写入方走 LLVM 内置池合并——但本
+    // 工具链的父子继承场景会互相吃掉计数器（实证：dashboard r9_spawn_fail 里
+    // CLI 子进程 start_and_wait 再 spawn 孙辈 gateway，两代继承同一文件名，
+    // 终态文件里只剩孙辈 gateway.rs 的运行时计数，CLI 子进程自己的
+    // dashboard.rs 计数全部丢失——llvm-profdata show 该函数零条目）。
+    // 我们的协议本来就是离线 `llvm-profdata merge` 求和，每个进程写一份
+    // 独立完整镜像即可；时间戳纳秒 + %p 已保证唯一，不需要池模式。
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    Some(format!(
+        "{}\\{}-{}-%p.profraw",
+        dir.trim_end_matches(['\\', '/']),
+        safe,
+        stamp
+    ))
+}
+
+/// CLI-gated profile environment: empty unless BOTH `NEMESISBOT_COVERAGE_DIR`
+/// and `NEMESISBOT_COVERAGE_CLI=1` are set (see [`coverage_profile_file`] for
+/// why CLI collection is opt-in — every short-lived instrumented invocation
+/// still writes a full counter image, so this is disk-budgeted per run).
+pub fn coverage_cli_env() -> Vec<(String, String)> {
+    if std::env::var("NEMESISBOT_COVERAGE_CLI").as_deref() != Ok("1") {
+        return Vec::new();
+    }
+    match coverage_profile_file("cli") {
+        Some(profile) => vec![("LLVM_PROFILE_FILE".to_string(), profile)],
+        None => Vec::new(),
+    }
+}
+
 /// A managed child process that is killed on drop.
 pub struct ManagedProcess {
     child: Option<tokio::process::Child>,
@@ -41,12 +116,16 @@ impl ManagedProcess {
     /// Spawn a new managed process. stderr is inherited so error messages are visible.
     pub fn spawn(name: &'static str, program: &Path, args: &[&str], cwd: &Path) -> Result<Self> {
         println!("  Starting {}...", name);
-        let child = tokio::process::Command::new(program)
-            .args(args)
+        let mut cmd = tokio::process::Command::new(program);
+        cmd.args(args)
             .current_dir(cwd)
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit())
-            .kill_on_drop(true)
+            .kill_on_drop(true);
+        if let Some(profile) = coverage_profile_file(name) {
+            cmd.env("LLVM_PROFILE_FILE", &profile);
+        }
+        let child = cmd
             .spawn()
             .with_context(|| format!("Failed to spawn {}: {}", name, program.display()))?;
         println!("  {} started (PID: {:?})", name, child.id());
@@ -79,6 +158,37 @@ impl ManagedProcess {
             println!("  {} stopped", self.name);
         }
     }
+
+    /// Wait for the managed process to exit on its own (post graceful shutdown).
+    ///
+    /// Unlike [`Self::kill`] / the Drop terminator — both of which TerminateProcess
+    /// the child and therefore skip its atexit handlers — this lets an LLVM
+    /// coverage-instrumented binary flush its `.profraw` counters to disk.
+    pub async fn wait_for_exit(&mut self, timeout: std::time::Duration) -> Result<()> {
+        let Some(child) = self.child.as_mut() else {
+            bail!("{} already stopped", self.name);
+        };
+        let deadline = tokio::time::Instant::now() + timeout;
+        loop {
+            match child.try_wait().context("try_wait failed")? {
+                Some(status) => {
+                    println!("  {} exited with: {}", self.name, status);
+                    self.child = None;
+                    return Ok(());
+                }
+                None => {
+                    if tokio::time::Instant::now() >= deadline {
+                        bail!(
+                            "{} did not exit within {:?} after graceful shutdown",
+                            self.name,
+                            timeout
+                        );
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+                }
+            }
+        }
+    }
 }
 
 impl Drop for ManagedProcess {
@@ -87,6 +197,38 @@ impl Drop for ManagedProcess {
             let _ = child.start_kill();
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// Graceful gateway shutdown (coverage-safe teardown)
+// ---------------------------------------------------------------------------
+
+/// Ask a running nemesisbot gateway to shut down cleanly.
+///
+/// POSTs `{"cmd":"shutdown"}` to `/api/internal` — the same mpsc path Ctrl+C
+/// takes (BUG #31 fix, quality-hardening goal S11e), so the process exits
+/// through its normal atexit chain. A coverage-instrumented binary only
+/// writes `.profraw` on that clean-exit path; [`ManagedProcess::kill`]/Drop
+/// (TerminateProcess) would lose the counters.
+///
+/// Returns Ok once the server ack'd the command. Wait for actual process exit
+/// with [`ManagedProcess::wait_for_exit`].
+pub async fn graceful_shutdown_gateway(port: u16, token: &str) -> Result<()> {
+    let url = format!("http://127.0.0.1:{}/api/internal", port);
+    let client = reqwest::Client::new();
+    let resp = client
+        .post(&url)
+        .header("X-Auth-Token", token)
+        .json(&serde_json::json!({"cmd": "shutdown"}))
+        .timeout(std::time::Duration::from_secs(15))
+        .send()
+        .await
+        .with_context(|| format!("POST {url} failed"))?;
+    if !resp.status().is_success() {
+        bail!("POST {url} returned {}", resp.status());
+    }
+    println!("  graceful shutdown requested via {url}");
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -145,6 +287,84 @@ impl TestWorkspace {
         self.run_cli_with_timeout(nemesisbot_bin, args, 15).await
     }
 
+    /// `run_cli` variant that feeds `stdin_input` to the child's stdin and
+    /// then closes it (the child sees the scripted bytes followed by EOF).
+    ///
+    /// This is what makes piped-stdin interactive flows testable: the REPL
+    /// (rustyline falls back to `readline_direct` on a pipe — no TTY gating),
+    /// the eval-rules wizard (`ask`/`ask_choice` are plain `print!` +
+    /// `stdin().read_line`), and y/N confirms all walk their whole flow on a
+    /// pipe. Tests drive them by scripting every answer, ending the input
+    /// with the quit/EOF path where the flow expects it.
+    pub async fn run_cli_with_stdin(
+        &self,
+        nemesisbot_bin: &Path,
+        args: &[&str],
+        stdin_input: &str,
+        timeout_secs: u64,
+    ) -> CliOutput {
+        let mut full_args = vec!["--local"];
+        full_args.extend(args);
+
+        let spawned = tokio::process::Command::new(nemesisbot_bin)
+            .args(&full_args)
+            .current_dir(self.path())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .stdin(Stdio::piped())
+            .kill_on_drop(true)
+            .envs(coverage_cli_env())
+            .spawn();
+        let mut child = match spawned {
+            Ok(c) => c,
+            Err(e) => {
+                return CliOutput {
+                    exit_code: -1,
+                    stdout: String::new(),
+                    stderr: format!("Failed to execute: {}", e),
+                }
+            }
+        };
+        // Write the script, then drop stdin so the child observes EOF —
+        // that's the only way a REPL/wizard reading until EOF can terminate.
+        if let Some(mut stdin) = child.stdin.take() {
+            use tokio::io::AsyncWriteExt;
+            let _ = stdin.write_all(stdin_input.as_bytes()).await;
+            let _ = stdin.shutdown().await;
+            drop(stdin);
+        }
+        // wait_with_output takes the Child by value; move it through an
+        // Option so the async block owns it. kill_on_drop(true) means a
+        // timeout (which drops the future, which drops the Child) kills
+        // the child instead of leaking it.
+        let mut child_opt = Some(child);
+        match tokio::time::timeout(Duration::from_secs(timeout_secs), async {
+            child_opt
+                .take()
+                .expect("child consumed twice")
+                .wait_with_output()
+                .await
+        })
+        .await
+        {
+            Ok(Ok(output)) => CliOutput {
+                exit_code: output.status.code().unwrap_or(-1),
+                stdout: String::from_utf8_lossy(&output.stdout).to_string(),
+                stderr: String::from_utf8_lossy(&output.stderr).to_string(),
+            },
+            Ok(Err(e)) => CliOutput {
+                exit_code: -1,
+                stdout: String::new(),
+                stderr: format!("Failed to execute: {}", e),
+            },
+            Err(_) => CliOutput {
+                exit_code: -2,
+                stdout: String::new(),
+                stderr: format!("Command timed out ({}s)", timeout_secs),
+            },
+        }
+    }
+
     /// `run_cli` with an explicit per-command timeout (seconds) — for
     /// commands that legitimately take longer than the 15s default
     /// (e.g. `model catalog-update` fetching the online catalog).
@@ -164,6 +384,7 @@ impl TestWorkspace {
                 .current_dir(self.path())
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped())
+                .envs(coverage_cli_env())
                 .output(),
         )
         .await;
@@ -405,9 +626,12 @@ pub fn skip(name: &str, msg: impl Into<String>) -> TestResult {
 pub fn resolve_project_root() -> Result<PathBuf> {
     let exe_dir = std::env::current_exe()?.parent().unwrap().to_path_buf();
 
-    // Try going up from test-tools/integration-test/target/release/
+    // Try going up from test-tools/integration-test/target/release/.
+    // 12 层覆盖 cargo llvm-cov 的嵌套产物目录（<covdir>/llvm-cov-target/debug/deps
+    // 比标准 target/debug/deps 深 2 层；5 层上限会差一轮 check 不到 workspace root，
+    // 曾致 llvm-cov 下 254 个 spawn 子进程的测试连环失败）。
     let mut dir = exe_dir.clone();
-    for _ in 0..5 {
+    for _ in 0..12 {
         if dir.join("Cargo.toml").exists()
             && std::fs::read_to_string(dir.join("Cargo.toml"))?.contains("[workspace]")
         {
@@ -421,7 +645,22 @@ pub fn resolve_project_root() -> Result<PathBuf> {
 }
 
 /// Resolve the nemesisbot binary path.
+///
+/// `NEMESISBOT_TEST_BIN` overrides the default target-dir resolution so a
+/// coverage-instrumented build (`cargo llvm-cov -p nemesisbot --no-run`,
+/// which lands in its own target dir) can be driven through the same L2
+/// pipeline. Falls back to the normal lookup when unset or missing.
 pub fn resolve_nemesisbot_bin() -> Result<PathBuf> {
+    if let Ok(bin) = std::env::var("NEMESISBOT_TEST_BIN") {
+        let bin = PathBuf::from(bin);
+        if bin.exists() {
+            return Ok(bin);
+        }
+        bail!(
+            "NEMESISBOT_TEST_BIN={} does not exist; refusing silent fallback",
+            bin.display()
+        );
+    }
     let root = resolve_project_root()?;
     let bin = root.join("target/release/nemesisbot.exe");
     if bin.exists() {

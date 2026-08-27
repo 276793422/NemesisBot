@@ -913,7 +913,9 @@ async fn test_reqwest_retry_non_retryable_status_not_retried() {
     let client = retry_client();
 
     // 404 is not retryable -> function returns immediately after one call.
-    let mock = Mock::given(method("GET"))
+    //（_mock = mount 返回的 MockGuard，绑定到作用域尾保持挂载；原 drop(mock)
+    //  是对 Copy 值的 no-op 已删——server.verify() 才是"恰好 1 次"的真校验）
+    let _mock = Mock::given(method("GET"))
         .and(path("/data"))
         .respond_with(ResponseTemplate::new(404).set_body_string("not found"))
         .expect(1)
@@ -931,7 +933,7 @@ async fn test_reqwest_retry_non_retryable_status_not_retried() {
         .expect("should be Ok");
     assert_eq!(resp.status().as_u16(), 404);
     // Confirm exactly one request was made (no retries).
-    drop(mock);
+    //（原 drop(mock) 是对 Copy 值的 no-op，已删；server.verify() 才是真校验）
     server.verify().await;
 }
 

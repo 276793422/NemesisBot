@@ -60,6 +60,9 @@ async fn fetch_expected_sha256_missing_filename_bails() {
 
 #[tokio::test]
 async fn download_and_verify_matching_hash_writes_file() {
+    // R5（2026-08-27）：装 subscriber 让 info!/warn! 的参数行（bytes.len() 等）
+    // 真实求值——无 subscriber 时该行 lcov 恒 0（S6 批次钉过的机制）。
+    let _log = crate::test_util::capture_logs();
     let payload = b"sandboxie-installer-bytes".to_vec();
     let expected = {
         use sha2::Digest;
@@ -100,6 +103,7 @@ async fn download_and_verify_hash_mismatch_bails_without_writing() {
 #[tokio::test]
 async fn download_and_verify_without_expected_hash_still_writes() {
     // checksums 拿不到时降级为不校验直落盘（warn 路径）。
+    let _log = crate::test_util::capture_logs(); // R5：同上，warn 参数行确定性求值
     let body: &'static str = "unverified-content";
     let url = serve(body, "200 OK").await;
     let dir = tempfile::tempdir().unwrap();

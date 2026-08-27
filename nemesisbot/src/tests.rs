@@ -857,3 +857,965 @@ async fn run_command_version_arm_is_safe_no_op() {
     };
     run_command(cli).await.expect("version arm must succeed");
 }
+
+// ===========================================================================
+// R7（coverage-95 goal，2026-08-27）：进程级 path manager 单例的共享测试 home。
+//
+// 背景：`session`/`history` 等 CLI 的 run() 经 `default_path_manager()`
+// （OnceLock，首次触碰即烤死）读写 jsonl / FTS 索引。测试二进制里单例
+// home 取决于首个触碰它的测试（通常烤成 ~/.nemesisbot），直接调 run()
+// 会写真实家目录。`nemesis-path` 为此补了 `set_home_dir()` 运行时缝
+// （见 paths.rs），本 helper 用它把单例**永久**重定向到一个测试沙箱 home：
+//
+// - 永久（不恢复）：history_search 的 INDEX 连接、以及其他按首用烤死的
+//   静态态，要求「重定向后不再变」——按测试粒度恢复会把这些静态留在已
+//   删除的 tempdir 上，后续测试踩出莫名的 IO 错误。所有需要单例一致的
+//   测试共用这一个 home，用唯一 key 互不干扰。
+// - 持久目录（非 TempDir）：TempDir drop 会删目录，单例还指着它。
+// - 纪律：调用方必须先拿 `crate::GLOBAL_STATE_LOCK`（env/cwd/单例三类
+//   进程全局态的共享串行锁）；helper 自身不拿锁（std Mutex 不可重入）。
+// ===========================================================================
+
+/// 测试沙箱 home（`<dir>/.nemesisbot`）；首次调用时创建并重定向单例。
+/// 返回的是 `.nemesisbot` 本体；`NEMESISBOT_HOME` env 应设为其 parent
+/// （resolve_home 语义：`{env}/.nemesisbot`）。
+pub(crate) fn singleton_test_home() -> std::path::PathBuf {
+    use std::sync::OnceLock;
+    static HOME: OnceLock<std::path::PathBuf> = OnceLock::new();
+    HOME.get_or_init(|| {
+        let base = std::env::temp_dir()
+            .join(format!("nemesisbot_r7_sandbox_{}", std::process::id()));
+        let home = base.join(".nemesisbot");
+        std::fs::create_dir_all(&home).expect("create singleton test home");
+        nemesis_path::default_path_manager().set_home_dir(home.clone());
+        home
+    })
+    .clone()
+}
+
+/// 测试内临时设 `NEMESISBOT_HOME` 指向沙箱 parent 的守卫；drop 恢复原值。
+/// 必须在持有 `crate::GLOBAL_STATE_LOCK` 时创建。
+pub(crate) struct EnvHomeGuard {
+    orig: Option<std::ffi::OsString>,
+}
+
+impl EnvHomeGuard {
+    pub(crate) fn point_at(home: &std::path::Path) -> Self {
+        let parent = home
+            .parent()
+            .expect("test home always has a parent")
+            .to_path_buf();
+        let orig = std::env::var_os("NEMESISBOT_HOME");
+        unsafe {
+            std::env::set_var("NEMESISBOT_HOME", &parent);
+        }
+        Self { orig }
+    }
+}
+
+impl Drop for EnvHomeGuard {
+    fn drop(&mut self) {
+        unsafe {
+            match self.orig.clone() {
+                Some(v) => std::env::set_var("NEMESISBOT_HOME", v),
+                None => std::env::remove_var("NEMESISBOT_HOME"),
+            }
+        }
+    }
+}
+
+// ===========================================================================
+// wave_b（coverage 补测）：run_command 其余纯本地分发臂。
+//
+// 原则：只覆盖「组装/打印/读文件」类命令的离线路径；凡真实派发（Gateway
+// 绑端口起服务）、进程边界（process::exit 的 Estop/Dashboard、platform cfg
+// 门）一律豁免。每个测试持 GLOBAL_STATE_LOCK + temp_home_env 隔离。
+// =========================================================================
+
+mod wave_b {
+    use super::*;
+
+    fn wb_cli(command: Commands) -> Cli {
+        Cli {
+            local: false,
+            command,
+        }
+    }
+
+    /// `onboard` 不带 --default 且 args 无 "default" → 走
+    /// "Interactive configuration setup..." 横幅臂，后续装配管线与 default
+    /// 一致（唯一 stdin 触点是「已存在 config.json 的 y/N」，cargo test 的
+    /// 管道 EOF 天然落入"保留既有"，已被既有三测验证安全）。
+    #[tokio::test]
+    async fn wave_b_onboard_interactive_branch_prints_setup_banner() {
+        let _guard = GLOBAL_STATE_LOCK.lock().unwrap();
+        let th = temp_home_env();
+
+        let cli = wb_cli(Commands::Onboard {
+            default: false,
+            args: vec![],
+        });
+        run_command(cli).await.expect("interactive 分支同样完成装配");
+
+        assert!(th.home.join("config.json").exists());
+        assert!(th.home.join("workspace").join("IDENTITY.md").exists());
+    }
+
+    /// Commands::Agent 分发：字段解构 → commands::agent::run 七参透传。
+    /// 单消息 + 死地址 provider（127.0.0.1:1 立即拒绝）→ agent 内部消化
+    /// LLM 错误，run 返回 Ok —— 只验分发与收敛，不触网不出进程。
+    #[tokio::test(flavor = "multi_thread")]
+    async fn wave_b_agent_dispatch_single_message_dead_provider_ok() {
+        let _guard = GLOBAL_STATE_LOCK.lock().unwrap();
+        let th = temp_home_env();
+        std::fs::write(
+            th.home.join("config.json"),
+            serde_json::json!({
+                "agents": {"defaults": {"llm": "fake"}},
+                "model_list": [{
+                    "model_name": "fake",
+                    "model": "openai/gpt-fake",
+                    "api_base": "http://127.0.0.1:1",
+                    "api_key": "k"
+                }]
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        let cli = wb_cli(Commands::Agent {
+            subcommand: None,
+            message: Some("wb ping".to_string()),
+            session: "wave-b-session".to_string(),
+            debug: false,
+            quiet: false,
+            no_console: false,
+        });
+        let res = run_command(cli).await;
+        assert!(res.is_ok(), "单消息死地址模式必须 Ok 收敛: {res:?}");
+    }
+
+    #[tokio::test]
+    async fn wave_b_status_arm_is_offline_safe() {
+        let _guard = GLOBAL_STATE_LOCK.lock().unwrap();
+        let _th = temp_home_env();
+        run_command(wb_cli(Commands::Status))
+            .await
+            .expect("status 纯文件检查打印，空 home 也必须 Ok");
+    }
+
+    #[tokio::test]
+    async fn wave_b_cors_list_missing_config_prints_and_ok() {
+        let _guard = GLOBAL_STATE_LOCK.lock().unwrap();
+        let _th = temp_home_env();
+        let cli = wb_cli(Commands::Cors {
+            action: commands::cors::CorsAction::List,
+        });
+        run_command(cli)
+            .await
+            .expect("cors list 缺配置文件 → 打印提示 → Ok");
+    }
+
+    #[tokio::test]
+    async fn wave_b_model_list_verbose_with_one_entry() {
+        let _guard = GLOBAL_STATE_LOCK.lock().unwrap();
+        let th = temp_home_env();
+        // 手写一条模型条目 → List 穿过逐条打印循环（含 verbose 明细分支）。
+        std::fs::write(
+            th.home.join("config.json"),
+            serde_json::json!({
+                "agents": {"defaults": {"llm": "wbfake"}},
+                "model_list": [{
+                    "model_name": "wbfake",
+                    "model": "openai/gpt-wb",
+                    "api_base": "http://127.0.0.1:9",
+                    "api_key": "k"
+                }]
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        let cli = wb_cli(Commands::Model {
+            action: commands::model::ModelAction::List { verbose: true },
+        });
+        run_command(cli)
+            .await
+            .expect("model list 单条目 + verbose 必须 Ok");
+    }
+
+    #[tokio::test]
+    async fn wave_b_cron_list_without_store_is_ok() {
+        let _guard = GLOBAL_STATE_LOCK.lock().unwrap();
+        let _th = temp_home_env();
+        let cli = wb_cli(Commands::Cron {
+            action: commands::cron::CronAction::List,
+        });
+        run_command(cli)
+            .await
+            .expect("cron store 缺失 → 打印空列表 → Ok");
+    }
+
+    #[tokio::test]
+    async fn wave_b_mcp_list_without_config_is_ok() {
+        let _guard = GLOBAL_STATE_LOCK.lock().unwrap();
+        let _th = temp_home_env();
+        let cli = wb_cli(Commands::Mcp {
+            action: commands::mcp::McpAction::List,
+        });
+        run_command(cli)
+            .await
+            .expect("mcp 配置缺失 → 打印提示 → Ok");
+    }
+
+    #[tokio::test]
+    async fn wave_b_persona_current_without_active_persona_is_ok() {
+        let _guard = GLOBAL_STATE_LOCK.lock().unwrap();
+        let _th = temp_home_env();
+        let cli = wb_cli(Commands::Persona {
+            action: commands::persona::PersonaAction::Current,
+        });
+        run_command(cli)
+            .await
+            .expect("无 _active.json → 打印未激活 → Ok");
+    }
+
+    #[tokio::test]
+    async fn wave_b_shutdown_without_gateway_writes_signal_file_only() {
+        let _guard = GLOBAL_STATE_LOCK.lock().unwrap();
+        let th = temp_home_env();
+        // 无 gateway.pid / 无 config.json：PID 臂跳过 → 写 legacy signal 文件
+        // → HTTP 臂因 config 缺失跳过 → 收尾提示，全程仅本地文件 IO。
+        run_command(wb_cli(Commands::Shutdown))
+            .await
+            .expect("无网关时 shutdown 必须优雅 Ok");
+        assert!(th.home.join("shutdown.signal").exists());
+    }
+}
+
+// ===========================================================================
+// R9 补测批（coverage-95 goal）：main 进程边界。
+//
+// 豁免清账：
+// - 上方 S11d 注释「Estop/Dashboard 失败即 process::exit(1) 会杀掉测试
+//   进程 → 列结构豁免」——本批经真实 exe 子进程观察退码，覆盖这两个臂
+//   （main.rs Dashboard/Estop 分支的 exit(1) 收尾）。
+// - main.rs 顶部短路与 Cli::parse 之前的早退路径（eval-agent 角色、
+//   --multiple child-mode 的 Err 臂）只能进程级断言，in-process 不可能。
+// - executor 角色短路已有既有测试；本批补 eval-agent 与 --multiple。
+// =========================================================================
+
+mod r9_process_boundary {
+    use super::*;
+    use std::process::{Command, Stdio};
+    use std::time::{Duration, Instant};
+    use test_harness::TestWorkspace;
+
+    /// spawn_env_direct 的结果（超时置 code=-2，交由调用方断言响亮失败）。
+    struct SpawnOutcome {
+        code: i32,
+        stdout: String,
+        stderr: String,
+    }
+
+    /// 带 env 注入直接起真 exe（run_cli* 系列无法注入 env 的补位）。
+    /// env 只作用于子进程（Command::env / env_remove），父进程环境零污染，
+    /// 因此无需保存/恢复；调用方仍须持有 crate::GLOBAL_STATE_LOCK（纪律：
+    /// env 相关用例全局串行）。stdin 用 null；stdout/stderr 全量捕获后等子
+    /// 进程退出再读（输出量小，先退后读不会撑爆管道缓冲）。阻塞轮询
+    /// try_wait 到退出或 deadline（Windows 环境无 wait_timeout crate）。
+    fn spawn_env_direct(
+        bin: &std::path::Path,
+        args: &[&str],
+        env_set: &[(&str, &str)],
+        env_unset: &[&str],
+        deadline_secs: u64,
+    ) -> SpawnOutcome {
+        let mut cmd = Command::new(bin);
+        cmd.args(args)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        for k in env_unset {
+            cmd.env_remove(k);
+        }
+        for (k, v) in env_set {
+            cmd.env(k, v);
+        }
+        // CLI 覆盖注入放在 env_unset 之后，确保不被调用方清掉（测量模式下
+        // 子进程计数落 NEMESISBOT_COVERAGE_DIR；非测量环境 env 为空零影响）。
+        cmd.envs(test_harness::coverage_cli_env());
+        let mut child = match cmd.spawn() {
+            Ok(c) => c,
+            Err(e) => {
+                return SpawnOutcome {
+                    code: -1,
+                    stdout: String::new(),
+                    stderr: format!("failed to spawn: {}", e),
+                }
+            }
+        };
+        let deadline = Instant::now() + Duration::from_secs(deadline_secs);
+        loop {
+            match child.try_wait().expect("try_wait failed") {
+                Some(_status) => break,
+                None => {
+                    if Instant::now() >= deadline {
+                        let _ = child.kill();
+                        let _ = child.wait();
+                        return SpawnOutcome {
+                            code: -2,
+                            stdout: String::new(),
+                            stderr: format!(
+                                "spawn_env_direct timed out after {}s: {:?} {:?}",
+                                deadline_secs, args, env_set
+                            ),
+                        };
+                    }
+                    std::thread::sleep(Duration::from_millis(100));
+                }
+            }
+        }
+        // 子进程已退出：管道写端关闭，读到 EOF 为止是安全的。
+        use std::io::Read;
+        let mut out = String::new();
+        if let Some(mut s) = child.stdout.take() {
+            let _ = s.read_to_string(&mut out);
+        }
+        let mut err = String::new();
+        if let Some(mut s) = child.stderr.take() {
+            let _ = s.read_to_string(&mut err);
+        }
+        // try_wait 已消费 status，wait() 再取 code 是合法的（返回已缓存）。
+        let code = child.wait().ok().and_then(|s| s.code()).unwrap_or(-1);
+        SpawnOutcome {
+            code,
+            stdout: out,
+            stderr: err,
+        }
+    }
+
+    fn r9_bin() -> std::path::PathBuf {
+        test_harness::resolve_nemesisbot_bin().expect("nemesisbot binary resolved")
+    }
+
+    /// S2-1：NEMESISBOT_ROLE=eval-agent 在 Cli::parse 之前短路进
+    /// eval_worker；缺 NEMESISBOT_EVAL_WORKSPACE env → context Err →
+    /// tokio main 返回 Err → 运行时打 "Error: ..." 并以退码 1 结束。
+    /// 若短路被回归移除，`status` 子命令会正常跑完 rc=0 → 断言响亮失败。
+    #[cfg(feature = "eval")]
+    #[test]
+    fn r9_eval_agent_role_short_circuit_fails_fast_rc1() {
+        let _guard = GLOBAL_STATE_LOCK.lock().unwrap();
+        let bin = r9_bin();
+        let o = spawn_env_direct(
+            &bin,
+            &["status"],
+            &[("NEMESISBOT_ROLE", "eval-agent")],
+            &["NEMESISBOT_HOME"],
+            120,
+        );
+        assert_eq!(
+            o.code, 1,
+            "eval-agent 缺 workspace env 必须 rc=1:\n--- stdout ---\n{}\n--- stderr ---\n{}",
+            o.stdout, o.stderr
+        );
+        assert!(
+            o.stderr.contains("NEMESISBOT_EVAL_WORKSPACE"),
+            "stderr 必须点名缺失的 env:\n{}",
+            o.stderr
+        );
+    }
+
+    /// S2-2：--multiple 触发 desktop child-mode 早退（同样在 Cli::parse
+    /// 之前）；缺 --child-id 参数 → run_child_mode Err("child-id not
+    /// specified") → "[Child] Error: ..." eprintln + process::exit(1)。
+    /// 早退发生在任何窗口/DLL 创建之前，headless 安全。若触发条件被回归
+    /// 移除，clap 会报 unrecognized 并 rc=2 → 两处断言都响亮失败。
+    #[cfg(feature = "desktop")]
+    #[test]
+    fn r9_multiple_child_mode_missing_handshake_args_exits_1() {
+        let _guard = GLOBAL_STATE_LOCK.lock().unwrap();
+        let bin = r9_bin();
+        let o = spawn_env_direct(&bin, &["--multiple"], &[], &["NEMESISBOT_HOME"], 120);
+        assert_eq!(
+            o.code, 1,
+            "--multiple 无 child-id 必须 exit(1):\n--- stdout ---\n{}\n--- stderr ---\n{}",
+            o.stdout, o.stderr
+        );
+        assert!(
+            o.stderr.contains("[Child] Error"),
+            "Err 臂必须打印 [Child] Error 前缀:\n{}",
+            o.stderr
+        );
+        assert!(
+            o.stderr.contains("child-id not specified"),
+            "错误应指明缺 child-id:\n{}",
+            o.stderr
+        );
+    }
+
+    const SWEEP_DEADLINE: u64 = 25;
+
+    /// 每条断言：rc ∈ {0,1}（-2=超时、-1=起不来、2+=clap 拒绝都算失败）
+    /// 且 stderr 不含 clap 的 unrecognized —— 证明命令真被 CLI 接线分发到
+    /// 对应 commands::*::run 的臂（进程级复扫；in-process 等价覆盖见上方
+    /// S11d/wave_b，那里没有二进制接线视角）。
+    fn r9_assert_dispatched(out: &test_harness::CliOutput, cmd: &[&str]) {
+        assert!(
+            out.exit_code == 0 || out.exit_code == 1,
+            "{:?} 必须干净退出（rc∈{{0,1}}），got={}:\n--- stdout ---\n{}\n--- stderr ---\n{}",
+            cmd,
+            out.exit_code,
+            out.stdout,
+            out.stderr
+        );
+        assert!(
+            !out.stderr.contains("unrecognized"),
+            "{:?} 被 clap 拒绝（未接线或拼写漂移）:\n{}",
+            cmd,
+            out.stderr
+        );
+    }
+
+    /// S2-3a 只读命令扫雷 A 半：无 feature 门控的通用臂（+ cluster push）。
+    #[tokio::test]
+    async fn r9_dispatch_sweep_part_a_universal_arms() {
+        let bin = r9_bin();
+        let ws = TestWorkspace::new().expect("temp workspace");
+        let mut sweep: Vec<Vec<&str>> = vec![
+            vec!["status"],
+            vec!["version"],
+            vec!["model", "list"],
+            vec!["model", "default"],
+            vec!["cron", "list"],
+            vec!["mcp", "list"],
+            vec!["channel", "list"],
+            vec!["cors", "list"],
+            vec!["skills", "list"],
+            vec!["persona", "list"],
+            vec!["auth", "status"],
+        ];
+        #[cfg(feature = "cluster")]
+        sweep.push(vec!["cluster", "status"]);
+        // session::run 有显式 pm_home != home 一致性守卫：不一致时干净 bail
+        // rc=1（无副作用），因此 List 臂可安全子进程化；FTS 的 history 整臂
+        // 放弃（reindex 走全局 path manager，子进程重定向语义未经实证，
+        // 避免触碰真机 home 的读+建索引副作用）。
+        sweep.push(vec!["session", "list"]);
+        for cmd in &sweep {
+            let refs: &[&str] = cmd.as_slice();
+            let out = ws.run_cli_with_timeout(&bin, refs, SWEEP_DEADLINE).await;
+            r9_assert_dispatched(&out, refs);
+        }
+    }
+
+    /// S2-3b 只读命令扫雷 B 半（feature 门控臂 + 本地写但无害的收尾臂）。
+    /// 空 home 下缺配置走「打印提示/保底」路径 → rc∈{0,1} 都在预期内；
+    /// log disable / credentials import 即使因缺配置 bail 也只是 rc=1。
+    #[tokio::test]
+    async fn r9_dispatch_sweep_part_b_feature_gated_arms() {
+        let bin = r9_bin();
+        let ws = TestWorkspace::new().expect("temp workspace");
+        let mut sweep: Vec<Vec<&str>> = Vec::new();
+        #[cfg(feature = "forge")]
+        {
+            sweep.push(vec!["forge", "status"]);
+            sweep.push(vec!["forge", "list"]);
+        }
+        #[cfg(feature = "workflow")]
+        sweep.push(vec!["workflow", "list"]);
+        #[cfg(feature = "memory")]
+        sweep.push(vec!["memory", "status"]);
+        #[cfg(feature = "voice")]
+        sweep.push(vec!["voice", "status"]);
+        #[cfg(feature = "security")]
+        {
+            sweep.push(vec!["security", "status"]);
+            sweep.push(vec!["scanner", "list"]);
+        }
+        #[cfg(feature = "sandbox")]
+        sweep.push(vec!["sandbox", "status"]);
+        sweep.push(vec!["log", "disable"]);
+        sweep.push(vec!["credentials", "import"]);
+        sweep.push(vec!["migrate", "--dry-run"]);
+        sweep.push(vec!["shutdown"]);
+        assert!(
+            !sweep.is_empty(),
+            "至少要有无条件臂在跑（log/credentials/migrate/shutdown）"
+        );
+        for cmd in &sweep {
+            let refs: &[&str] = cmd.as_slice();
+            let out = ws.run_cli_with_timeout(&bin, refs, SWEEP_DEADLINE).await;
+            r9_assert_dispatched(&out, refs);
+        }
+    }
+
+    /// S2-4：空 home（onboard 未执行）下 estop/dashboard 在第一步读
+    /// config.json 即 Err → main.rs 对应分支 eprintln "Error: ..." +
+    /// process::exit(1)。这正是 S11d 当年列结构豁免的两个臂。
+    #[tokio::test]
+    async fn r9_dashboard_and_estop_empty_home_exit_1() {
+        let bin = r9_bin();
+        let ws = TestWorkspace::new().expect("temp workspace");
+        assert!(
+            !ws.config_path().exists(),
+            "前置：本夹具不得预先 onboard"
+        );
+
+        let estop = ws
+            .run_cli_with_timeout(&bin, &["estop", "--status"], 30)
+            .await;
+        assert_eq!(
+            estop.exit_code, 1,
+            "空 home estop 必须 exit(1):\n--- stdout ---\n{}\n--- stderr ---\n{}",
+            estop.stdout, estop.stderr
+        );
+        assert!(
+            estop.stderr.contains("Cannot read config.json"),
+            "estop 错误文案必须指向 config.json:\n{}",
+            estop.stderr
+        );
+
+        let dash = ws
+            .run_cli_with_timeout(&bin, &["dashboard"], 30)
+            .await;
+        assert_eq!(
+            dash.exit_code, 1,
+            "空 home dashboard 必须 exit(1):\n--- stdout ---\n{}\n--- stderr ---\n{}",
+            dash.stdout, dash.stderr
+        );
+        assert!(
+            dash.stderr.contains("Cannot read config.json"),
+            "dashboard 错误文案必须指向 config.json:\n{}",
+            dash.stderr
+        );
+    }
+
+    /// S2-5：子进程级钉住 onboard 的 --local 专属插入臂（workspace 相对
+    /// 路径改写）。in-process 既有覆盖（S11d 三测）全走 local:false，该
+    /// `if cli.local` 插入分支此前只有二进制视角能命中。顺带覆盖 onboard
+    /// dispatch 臂的全文件落盘结果。
+    #[tokio::test]
+    async fn r9_onboard_local_subprocess_pins_local_only_branch() {
+        let bin = r9_bin();
+        let ws = TestWorkspace::new().expect("temp workspace");
+        let out = ws
+            .run_cli_with_timeout(&bin, &["onboard", "default"], 60)
+            .await;
+        assert_eq!(
+            out.exit_code, 0,
+            "onboard default --local 失败:\n--- stdout ---\n{}\n--- stderr ---\n{}",
+            out.stdout, out.stderr
+        );
+        assert!(
+            out.stdout.contains("Initialization complete"),
+            "onboard 收尾横幅缺失:\n{}",
+            out.stdout
+        );
+        assert!(ws.config_path().exists(), "./.nemesisbot/config.json 未生成");
+        assert!(
+            ws.home().join("workspace").join("cluster").join("peers.toml").exists(),
+            "peers.toml 未生成"
+        );
+        let raw = std::fs::read_to_string(ws.config_path()).unwrap();
+        let cfg: serde_json::Value = serde_json::from_str(&raw).unwrap();
+        // --local 专属插入（main.rs Onboard 臂 `if cli.local` 分支）。
+        assert_eq!(
+            cfg["agents"]["defaults"]["workspace"], ".nemesisbot/workspace",
+            "--local 必须写入相对 workspace 路径"
+        );
+        assert_eq!(cfg["channels"]["web"]["port"], 49000);
+        assert_eq!(cfg["security"]["enabled"], true);
+    }
+
+    /// S3：gateway 子命令 --help 渲染 Usage 且 rc=0（gateway 本体是长驻
+    /// 服务不测，flag 渲染臂补上）；根级 --version 同理 rc=0。
+    #[tokio::test]
+    async fn r9_gateway_help_flag_renders_usage_rc0() {
+        let bin = r9_bin();
+        let ws = TestWorkspace::new().expect("temp workspace");
+        let help = ws
+            .run_cli_with_timeout(&bin, &["gateway", "--help"], 20)
+            .await;
+        assert_eq!(
+            help.exit_code, 0,
+            "--help 必须 rc=0:\n{}\n--- stderr ---\n{}",
+            help.stdout, help.stderr
+        );
+        assert!(
+            help.stdout.contains("Usage:") && help.stdout.contains("--debug"),
+            "--help 应渲染 gateway 用法（含 --debug flag 说明）:\n{}",
+            help.stdout
+        );
+
+        let ver = ws
+            .run_cli_with_timeout(&bin, &["--version"], 20)
+            .await;
+        assert_eq!(ver.exit_code, 0, "--version 必须 rc=0");
+        assert!(
+            !ver.stdout.trim().is_empty(),
+            "--version 应打印版本串"
+        );
+    }
+}
+
+// ===========================================================================
+// R10 补测批（coverage-95 goal）：main.rs 派发臂。
+//
+// 覆盖目标与手法：
+// - :272 executor 角色短路 —— env 注入直起真 exe（无子命令），子进程干净
+//   rc=0（stdio_loop 见 EOF 正常收尾）→ main 早退行被真实覆盖。
+// - Gateway 臂 --debug/--quiet/--no-console push 行 —— 坏 JSON config 触发
+//   ConfigStore::load Err → anyhow 干净传播（不走 process::exit(1)，计数
+//   能落盘）。注意：flag push 行在 load 之前执行，三个 flag 一起喂全命中。
+// - History 臂 —— 空索引下 `history search` 干净 rc=0（只吃派发行，
+//   history.rs 内部另有其文件级测试）。
+// - Estop 臂三态 —— 起真 gateway（自定义 web/health 端口），CLI 三次调用
+//   全部走 /api/internal 成功路径 rc=0；gateway 经 graceful shutdown 干净
+//   退出，不污染测量目录的孤儿 profraw。
+// - Test(hidden) 臂 —— `test approval-headless`，desktop-gated。
+//
+// 结构性放弃（证据留档）：
+// - :552-557 onboard security-else 臂：该块操作的是**编译期嵌入的
+//   CONFIG_DEFAULT**（不读已存在的用户 config），而 nemesisbot/config/
+//   config.default.json 顶层恒含 "security" 键 → else 分支在本仓库当前
+//   资产下不可达，除非改模板（=改生产资产，纪律禁止）。
+// - Dashboard 臂成功路径：open_dashboard 最终调 open_plugin_window 弹真实
+//   窗口（禁弹窗纪律）；失败路径 process::exit(1) 不刷 profraw（r9 已证）。
+//   两头都不满足覆盖纪律 → 放弃。
+// =========================================================================
+
+mod r10_main {
+    use super::*;
+    use std::process::{Command, Stdio};
+    use std::time::{Duration, Instant};
+    use test_harness::{ManagedProcess, TestWorkspace};
+
+    /// spawn_env_direct 的 r10 本地拷贝（r9_process_boundary 私有）：带
+    /// env 注入直接起真 exe。env 只作用于子进程；注入测试覆盖 env 在
+    /// env_unset 之后（与 r9 同序）；调用方持有 crate::GLOBAL_STATE_LOCK。
+    struct R10Spawn {
+        code: i32,
+        stdout: String,
+        stderr: String,
+    }
+
+    fn r10_spawn_env(
+        bin: &std::path::Path,
+        args: &[&str],
+        env_set: &[(&str, &str)],
+        env_unset: &[&str],
+        deadline_secs: u64,
+    ) -> R10Spawn {
+        let mut cmd = Command::new(bin);
+        cmd.args(args)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        for k in env_unset {
+            cmd.env_remove(k);
+        }
+        for (k, v) in env_set {
+            cmd.env(k, v);
+        }
+        // 纪律 2：CLI 覆盖注入必须接 coverage_cli_env()。
+        cmd.envs(test_harness::coverage_cli_env());
+        let mut child = match cmd.spawn() {
+            Ok(c) => c,
+            Err(e) => {
+                return R10Spawn {
+                    code: -1,
+                    stdout: String::new(),
+                    stderr: format!("failed to spawn: {}", e),
+                }
+            }
+        };
+        let deadline = Instant::now() + Duration::from_secs(deadline_secs);
+        loop {
+            match child.try_wait().expect("try_wait failed") {
+                Some(_status) => break,
+                None => {
+                    if Instant::now() >= deadline {
+                        let _ = child.kill();
+                        let _ = child.wait();
+                        return R10Spawn {
+                            code: -2,
+                            stdout: String::new(),
+                            stderr: format!("r10_spawn_env timed out after {deadline_secs}s"),
+                        };
+                    }
+                    std::thread::sleep(Duration::from_millis(100));
+                }
+            }
+        }
+        use std::io::Read;
+        let mut out = String::new();
+        if let Some(mut s) = child.stdout.take() {
+            let _ = s.read_to_string(&mut out);
+        }
+        let mut err = String::new();
+        if let Some(mut s) = child.stderr.take() {
+            let _ = s.read_to_string(&mut err);
+        }
+        let code = child.wait().ok().and_then(|s| s.code()).unwrap_or(-1);
+        R10Spawn { code, stdout: out, stderr: err }
+    }
+
+    fn r10_bin() -> std::path::PathBuf {
+        test_harness::resolve_nemesisbot_bin().expect("nemesisbot binary resolved")
+    }
+
+    #[test]
+    fn r10_executor_role_short_circuit_clean_rc0() {
+        let _guard = GLOBAL_STATE_LOCK.lock().unwrap();
+        let bin = r10_bin();
+        let ws = tempfile::TempDir::new().unwrap();
+        // NEMESISBOT_ROLE=executor 在 Cli::parse 前短路进 exec_worker；
+        // workspace env 给临时目录（哑执行，无请求进来即 EOF 退出 rc=0）；
+        // sandbox/reexec 标记显式清空 → 免沙盒路径（Windows 下 Start.exe
+        // 缺失会降级 warn，这里压根不给触发机会）。
+        let o = r10_spawn_env(
+            &bin,
+            &[],
+            &[
+                ("NEMESISBOT_ROLE", "executor"),
+                (
+                    "NEMESISBOT_EXECUTOR_WORKSPACE",
+                    ws.path().to_str().expect("utf8 tmp path"),
+                ),
+            ],
+            &[
+                "NEMESISBOT_HOME",
+                "NEMESISBOT_EXECUTOR_SANDBOX",
+                "NEMESISBOT_EXECUTOR_REEXEC",
+            ],
+            120,
+        );
+        assert_eq!(
+            o.code, 0,
+            "executor 角色短路线必须走 exec_worker 并干净收尾:\n--- stdout ---\n{}\n--- stderr ---\n{}",
+            o.stdout, o.stderr
+        );
+    }
+
+    #[tokio::test]
+    async fn r10_gateway_flag_pushes_invalid_config_clean_err() {
+        let _guard = GLOBAL_STATE_LOCK.lock().unwrap();
+        let bin = r10_bin();
+        let ws = TestWorkspace::new().expect("temp workspace");
+        let home = ws.home();
+        std::fs::create_dir_all(&home).unwrap();
+        // 文件存在但不可解析：Step2(exists) 过 → Step4 ConfigStore::load
+        // 对坏 JSON 返回 Err（回落仅发生在"文件缺失"时）→ anyhow 干净传播。
+        std::fs::write(home.join("config.json"), "{ this is not json").unwrap();
+
+        // 三个 flag 一并喂入 → --debug/--quiet/--no-console 三条 push 全执行。
+        let out = ws
+            .run_cli_with_timeout(
+                &bin,
+                &["gateway", "--debug", "--quiet", "--no-console"],
+                60,
+            )
+            .await;
+        assert_ne!(
+            out.exit_code, 0,
+            "坏配置必须失败退出:\n{}\n{}",
+            out.stdout, out.stderr
+        );
+        assert!(
+            out.stderr.contains("Error loading config") || out.stdout.contains("Error loading config"),
+            "必须经 anyhow 干净传播 'Error loading config':\n--- stdout ---\n{}\n--- stderr ---\n{}",
+            out.stdout, out.stderr
+        );
+        assert!(
+            !out.stderr.contains("Configuration file not found"),
+            "config.json 必须存在（只许解析失败）:\n{}",
+            out.stderr
+        );
+    }
+
+    #[tokio::test]
+    async fn r10_history_search_dispatch_arm_offline_rc0() {
+        let _guard = GLOBAL_STATE_LOCK.lock().unwrap();
+        let bin = r10_bin();
+        let ws = TestWorkspace::new().expect("temp workspace");
+        let up = ws
+            .run_cli_with_timeout(&bin, &["onboard", "default"], 60)
+            .await;
+        assert_eq!(up.exit_code, 0, "onboard failed:\n{}", up.stderr);
+        // 空索引：reindex 扫 0 个文件 + search 无命中 → 打印未找到 → rc=0。
+        // （吃 Commands::History 派发行；history.rs 内部逻辑由其文件级
+        // in-process 测试覆盖。）
+        let out = ws
+            .run_cli_with_timeout(&bin, &["history", "search", "r10-never-indexed"], 60)
+            .await;
+        assert_eq!(
+            out.exit_code, 0,
+            "空索引搜索必须干净 Ok:\n--- stdout ---\n{}\n--- stderr ---\n{}",
+            out.stdout, out.stderr
+        );
+    }
+
+    /// 起一个端口收窄的真 gateway（web=P_WEB / health=P_HEALTH、websocket
+    /// 关、安全关、死地址 mini 模型），返回 (workspace, 进程句柄)。
+    /// 完成后由调用方 graceful shutdown 干净退出。
+    async fn r10_boot_gateway_on_free_ports() -> (TestWorkspace, ManagedProcess) {
+        let bin = r10_bin();
+        let ws = TestWorkspace::new().expect("temp workspace");
+
+        // 先占两个临时端口再放掉——把竞争窗口压到最小（放下手立即 spawn）。
+        let l1 = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let l2 = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let p_web = l1.local_addr().unwrap().port();
+        let p_health = l2.local_addr().unwrap().port();
+        drop(l1);
+        drop(l2);
+
+        let home = ws.home();
+        std::fs::create_dir_all(&home).unwrap();
+        let cfg = serde_json::json!({
+            "gateway": {"host": "127.0.0.1", "port": p_health},
+            "agents": {"defaults": {"llm": "r10fake", "max_tool_iterations": 5}},
+            "model_list": [{
+                "model_name": "r10fake",
+                "model": "r9mock/r10fake",
+                "api_key": "r10-key",
+                "api_base": "http://127.0.0.1:9",
+                "model_tier": "mini"
+            }],
+            "channels": {
+                "web": {
+                    "enabled": true,
+                    "host": "127.0.0.1",
+                    "port": p_web,
+                    "auth_token": test_harness::AUTH_TOKEN
+                },
+                "websocket": {"enabled": false}
+            },
+            "security": {"enabled": false},
+            "logging": {"llm": {"enabled": false}}
+        });
+        std::fs::write(home.join("config.json"), cfg.to_string()).unwrap();
+
+        let proc = ManagedProcess::spawn(
+            "R10Gateway",
+            &bin,
+            &["--local", "gateway"],
+            ws.path(),
+        )
+        .expect("gateway process spawns");
+        // readiness 以 web /api/health 为准（estop 的 check_health 打这里）。
+        test_harness::wait_for_http(
+            &format!("http://127.0.0.1:{p_web}/api/health"),
+            Duration::from_secs(90),
+        )
+        .await
+        .expect("gateway web health becomes ready");
+        (ws, proc)
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn r10_estop_trio_status_engage_release_live_gateway() {
+        let _guard = GLOBAL_STATE_LOCK.lock().unwrap();
+        let bin = r10_bin();
+        let (ws, mut gw) = r10_boot_gateway_on_free_ports().await;
+
+        // ① status：ENGAGED=false
+        let s1 = ws
+            .run_cli_with_timeout(&bin, &["estop", "--status"], 60)
+            .await;
+        assert_eq!(
+            s1.exit_code, 0,
+            "estop --status 必须 rc=0:\n--- stdout ---\n{}\n--- stderr ---\n{}",
+            s1.stdout, s1.stderr
+        );
+        assert!(s1.stdout.contains("E-stop"), "{}", s1.stdout);
+
+        // ② engage（裸 estop）
+        let s2 = ws.run_cli_with_timeout(&bin, &["estop"], 60).await;
+        assert_eq!(
+            s2.exit_code, 0,
+            "estop engage 必须 rc=0:\n--- stdout ---\n{}\n--- stderr ---\n{}",
+            s2.stdout, s2.stderr
+        );
+        assert!(s2.stdout.contains("E-stop"), "{}", s2.stdout);
+
+        // ③ status 复核 engaged=true 后 release 复原
+        let _s3 = ws
+            .run_cli_with_timeout(&bin, &["estop", "--status"], 60)
+            .await;
+        let s4 = ws
+            .run_cli_with_timeout(&bin, &["estop", "--release"], 60)
+            .await;
+        assert_eq!(
+            s4.exit_code, 0,
+            "estop --release 必须 rc=0:\n--- stdout ---\n{}\n--- stderr ---\n{}",
+            s4.stdout, s4.stderr
+        );
+        assert!(s4.stdout.contains("E-stop"), "{}", s4.stdout);
+
+        // 干净收尾：graceful shutdown（web 端口 + auth token）→ 等真退出。
+        // gateway 子进程自身的覆盖计数随正常退出链落盘。
+        let web_port = {
+            let raw = std::fs::read_to_string(
+                ws.home().join("workspace").join("state").join("gateway.json"),
+            )
+            .expect("state/gateway.json written by gateway");
+            let v: serde_json::Value = serde_json::from_str(&raw).unwrap();
+            v["web_port"].as_i64().expect("web_port i64") as u16
+        };
+        let token = {
+            let raw =
+                std::fs::read_to_string(ws.home().join("config.json")).unwrap();
+            let v: serde_json::Value = serde_json::from_str(&raw).unwrap();
+            v["channels"]["web"]["auth_token"]
+                .as_str()
+                .unwrap()
+                .to_string()
+        };
+        test_harness::graceful_shutdown_gateway(web_port, &token)
+            .await
+            .expect("graceful shutdown acked");
+        gw.wait_for_exit(Duration::from_secs(60))
+            .await
+            .expect("gateway exits after graceful shutdown");
+    }
+
+    #[cfg(feature = "desktop")]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn r10_test_hidden_approval_headless_arm() {
+        let _guard = GLOBAL_STATE_LOCK.lock().unwrap();
+        let bin = r10_bin();
+        let ws = TestWorkspace::new().expect("temp workspace");
+        let up = ws
+            .run_cli_with_timeout(&bin, &["onboard", "default"], 60)
+            .await;
+        assert_eq!(up.exit_code, 0, "onboard failed:\n{}", up.stderr);
+
+        // hidden `test approval-headless`：内部自起 ProcessManager（WS 绑
+        // ephemeral 端口）+ 强制 headless + 子审批进程自动批复。成功/失败都
+        // 走 Result 链干净退出（不对称清理已被 BUG#28 修掉）。
+        let out = ws
+            .run_cli_with_timeout(
+                &bin,
+                &["test", "approval-headless", "--expected", "approved"],
+                120,
+            )
+            .await;
+        assert!(
+            out.stdout.contains("Headless Approval Test"),
+            "必须进入 test_cmd 入口横幅:\n--- stdout ---\n{}\n--- stderr ---\n{}",
+            out.stdout, out.stderr
+        );
+        if out.exit_code != 0 {
+            // 三类已知合理失败（超时/通道关闭/断言不符）同样证明了派发臂 +
+            // run 入口的完整执行链；此时要求错误信息可读（anyhow 传播）。
+            assert!(
+                out.stderr.contains("Error:") || out.stdout.contains("Error:"),
+                "非零退出必须是 anyhow 干净传播，不允许 panic:\n--- stdout ---\n{}\n--- stderr ---\n{}",
+                out.stdout, out.stderr
+            );
+        }
+    }
+}

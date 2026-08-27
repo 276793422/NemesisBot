@@ -1531,7 +1531,7 @@ mod scripted_spawn_tests {
         let (mgr, log_path) = mgr_with_script("ack_all");
         mgr.start().await.unwrap();
 
-        let (child_id, rx) = mgr
+        let (_child_id, rx) = mgr
             .spawn_child(
                 "approval",
                 &serde_json::json!({"request_id": "r1", "risk_level": "HIGH"}),

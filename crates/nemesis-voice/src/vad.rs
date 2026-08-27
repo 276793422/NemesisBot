@@ -127,5 +127,6 @@ impl Drop for VadEngine {
     }
 }
 
+// pub(crate)（cfg(test) 内）：voice_detect 等跨模块白盒测试要复用 null_engine()
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;

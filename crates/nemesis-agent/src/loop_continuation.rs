@@ -588,18 +588,30 @@ impl ContinuationManager {
 
     /// Check whether a continuation exists in memory (synchronous).
     ///
-    /// Uses `blocking_lock` — safe during initialisation before any async
-    /// tasks are competing for the lock.
+    /// Uses `try_lock()` — never blocks the thread, never touches the tokio
+    /// runtime, so it is safe to call from a sync fn (`with_disk_store` at
+    /// gateway startup) even though that runs on the async gateway thread.
+    /// The prior `blocking_lock()` panicked there ("Cannot block the current
+    /// thread from within a runtime"). At boot the map is uncontended, so
+    /// `try_lock` succeeds; on the rare contended miss it returns `false` and
+    /// the async wait path falls back to the disk store (source of truth).
     pub fn has_continuation_sync(&self, task_id: &str) -> bool {
-        self.continuations.blocking_lock().contains_key(task_id)
+        match self.continuations.try_lock() {
+            Ok(g) => g.contains_key(task_id),
+            Err(_) => false,
+        }
     }
 
     /// Insert a continuation into the in-memory map (synchronous).
     ///
-    /// Used during disk recovery at startup. Uses `blocking_lock` — safe
-    /// during initialisation before any async tasks are competing for the lock.
+    /// Used during disk recovery at startup (`recover_to_manager` at boot).
+    /// See `has_continuation_sync` for why `try_lock()` (not `blocking_lock()`)
+    /// is the correct sync entry here. A failed acquisition is skipped — the
+    /// entry remains on disk and is picked up lazily by the async wait path.
     pub fn insert_continuation_sync(&self, task_id: String, data: Arc<ContinuationData>) {
-        self.continuations.blocking_lock().insert(task_id, data);
+        if let Ok(mut g) = self.continuations.try_lock() {
+            g.insert(task_id, data);
+        }
     }
 }
 

@@ -369,3 +369,378 @@ fn test_s11b_catalog_from_by_family_and_lookup() {
     assert_eq!(hit.max_output_tokens, Some(3));
     assert!(lookup(&cat, "a/nope").is_none());
 }
+
+// ===========================================================================
+// wave_a（R7 中批补盲，2026-08-27）：save_cache 的 mkdir 失败冒泡臂
+// （catalog.rs 205-206 —— config_dir 本身是普通文件时 create_dir_all 必败，
+// Err 里带 mkdir 前缀）。fetch_http_blocking / fetch_http 的网络臂（230-258）
+// 不打真网（网络劣化批次已有教训）→ 豁免池。
+// ===========================================================================
+
+#[test]
+fn test_wave_a_save_cache_mkdir_failure_bubbles_with_prefix() {
+    use tempfile::TempDir;
+    let tmp = TempDir::new().unwrap();
+    std::fs::write(tmp.path().join("as_file"), "not a dir").unwrap();
+    let err = save_cache(&tmp.path().join("as_file"), vec![]).unwrap_err();
+    assert!(err.contains("mkdir"), "got: {err}");
+}
+
+// ===========================================================================
+// r9_fetch_seams（R9 补测批零头组，2026-08-27）：fetch_http_blocking 的网络
+// 错误臂改走测试接缝 —— NEMESISBOT_CATALOG_API_URL 把主端点指到本进程内的
+// 一次性 TcpListener mock；镜像端点恒为 https，用「死代理
+// HTTPS_PROXY=http://127.0.0.1:1」瞬间杀死（reqwest 按 scheme 匹配代理：
+// 本地 http:// mock 不受影响）。覆盖 wave_a 豁免池中让位的三个臂：
+//   ① 主端点 200 + 合法 api.json → Ok(entries)；
+//   ② 主端点 200 + 坏 body（parse_any 失败）→ 回落镜像 → 全端点失败 Err；
+//   ③ 主端点 HTTP 500 → 同样回落并报 "all catalog endpoints failed"。
+// 全部同步直调（plain #[test]，无 ambient tokio——reqwest::blocking 在 async
+// 上下文 drop 会 panic，这里不进 async 测试运行时）。
+// ===========================================================================
+
+mod r9_fetch_seams {
+    use super::*;
+
+    /// 环境变量快照 + Drop 恢复：把这些 var 恢复到进入前状态（含删除）。
+    /// 必须在 GLOBAL_STATE_LOCK 持有期间构造/销毁（Drop 先于锁释放：声明序
+    /// 反序 drop，_env 声明在 _guard 之后）。
+    struct EnvRestore(Vec<(&'static str, Option<String>)>);
+
+    impl EnvRestore {
+        const VARS: [&'static str; 8] = [
+            "NEMESISBOT_CATALOG_API_URL",
+            "HTTPS_PROXY",
+            "https_proxy",
+            "HTTP_PROXY",
+            "http_proxy",
+            "ALL_PROXY",
+            "all_proxy",
+            "NO_PROXY",
+        ];
+
+        fn snapshot_and_apply(sets: &[(&'static str, String)]) -> Self {
+            let mut saved = Vec::new();
+            for name in Self::VARS {
+                saved.push((name, std::env::var(name).ok()));
+                unsafe {
+                    std::env::remove_var(name);
+                }
+            }
+            for (name, val) in sets {
+                unsafe {
+                    std::env::set_var(name, val);
+                }
+            }
+            Self(saved)
+        }
+    }
+
+    impl Drop for EnvRestore {
+        fn drop(&mut self) {
+            for (name, val) in self.0.drain(..) {
+                unsafe {
+                    match val {
+                        Some(v) => std::env::set_var(name, v),
+                        None => std::env::remove_var(name),
+                    }
+                }
+            }
+        }
+    }
+
+    /// 一次性单请求 HTTP mock：accept 一次、回固定响应后由对端 Connection:close 收尾。
+    fn serve_once(status_line: &'static str, body: String) -> u16 {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            use std::io::{Read as _, Write as _};
+            if let Ok((mut stream, _)) = listener.accept() {
+                let mut buf = [0u8; 4096];
+                let _ = stream.read(&mut buf);
+                let resp = format!(
+                    "HTTP/1.1 {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    status_line,
+                    body.len(),
+                    body
+                );
+                let _ = stream.write_all(resp.as_bytes());
+                let _ = stream.flush();
+            }
+        });
+        port
+    }
+
+    const DEAD_PROXY: &str = "http://127.0.0.1:1";
+
+    #[test]
+    fn seam_success_parses_api_json_entries() {
+        let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let port = serve_once(
+            "200 OK",
+            r#"{"prov1":{"id":"prov1","models":{"m-1":{"family":"fam-a","limit":{"context":400000,"output":128000}}}}}"#
+                .to_string(),
+        );
+        let _env = EnvRestore::snapshot_and_apply(&[(
+            "NEMESISBOT_CATALOG_API_URL",
+            format!("http://127.0.0.1:{port}"),
+        )]);
+
+        let entries = fetch_http_blocking().expect("合法 api.json 必须成功");
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].key, "prov1/m-1");
+        assert_eq!(entries[0].context_window, 400000);
+        assert_eq!(entries[0].max_output_tokens, Some(128000));
+        assert_eq!(entries[0].family.as_deref(), Some("fam-a"));
+    }
+
+    #[test]
+    fn seam_bad_body_falls_back_to_mirror_and_reports_all_failed() {
+        let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        // 200 但解析不出来 → try 镜像；镜像 https 被死代理瞬杀 → 全失败。
+        let port = serve_once("200 OK", "not-json{{{".to_string());
+        let _env = EnvRestore::snapshot_and_apply(&[
+            ("NEMESISBOT_CATALOG_API_URL", format!("http://127.0.0.1:{port}")),
+            ("HTTPS_PROXY", DEAD_PROXY.to_string()),
+        ]);
+
+        let err = fetch_http_blocking().expect_err("两端点皆败必须 Err");
+        assert!(
+            err.contains("all catalog endpoints failed"),
+            "got: {err}"
+        );
+        // last_err 只保留最后一条：必须是镜像端点的错误。
+        assert!(
+            err.contains("cdn.jsdelivr.net"),
+            "last 错误应来自镜像端点，got: {err}"
+        );
+    }
+
+    #[test]
+    fn seam_http_500_also_falls_back_and_fails_loudly() {
+        let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let port = serve_once("500 Internal Server Error", "{}".to_string());
+        let _env = EnvRestore::snapshot_and_apply(&[
+            ("NEMESISBOT_CATALOG_API_URL", format!("http://127.0.0.1:{port}")),
+            ("HTTPS_PROXY", DEAD_PROXY.to_string()),
+        ]);
+
+        let err = fetch_http_blocking().expect_err("非 2xx 不是成功");
+        assert!(err.contains("all catalog endpoints failed"), "got: {err}");
+        assert!(err.contains("cdn.jsdelivr.net"), "got: {err}");
+    }
+}
+
+// ===========================================================================
+// r9_offline_cli（同批）：`model catalog-update` 的离线双臂子进程真链路
+// （run() CatalogUpdate Err 分支 628-647：有缓存→保留缓存打印 Ok；无缓存→
+// bail 非零退码）。死代理让 https 主/镜像端点都秒败，全程无真实网络。
+// GLOBAL_STATE_LOCK 全程持有：子进程在 spawn 时继承 env，必须保证没有其它
+// 并行测试线程正在改写这些全局变量。
+// ===========================================================================
+
+mod r9_offline_cli {
+    use test_harness::{resolve_nemesisbot_bin, TestWorkspace};
+
+    const DEAD_PROXY: &str = "http://127.0.0.1:1";
+
+    /// 快照全部相关 env → 清空 → 设死代理；Drop 恢复。与 r9_fetch_seams 的
+    /// EnvRestore 同义，此处独立实现以免跨模块引用私有类型。
+    struct ProxyKill {
+        saved: Vec<(String, Option<String>)>,
+    }
+
+    impl ProxyKill {
+        fn arm() -> Self {
+            let names = [
+                "HTTPS_PROXY",
+                "https_proxy",
+                "HTTP_PROXY",
+                "http_proxy",
+                "ALL_PROXY",
+                "all_proxy",
+                "NO_PROXY",
+                "NEMESISBOT_CATALOG_API_URL",
+            ];
+            let saved: Vec<(String, Option<String>)> =
+                names.iter().map(|n| (n.to_string(), std::env::var(n).ok())).collect();
+            for n in ["HTTPS_PROXY", "https_proxy"] {
+                unsafe {
+                    std::env::set_var(n, DEAD_PROXY);
+                }
+            }
+            for n in [
+                "HTTP_PROXY",
+                "http_proxy",
+                "ALL_PROXY",
+                "all_proxy",
+                "NO_PROXY",
+                "NEMESISBOT_CATALOG_API_URL",
+            ] {
+                unsafe {
+                    std::env::remove_var(n);
+                }
+            }
+            Self { saved }
+        }
+    }
+
+    impl Drop for ProxyKill {
+        fn drop(&mut self) {
+            for (n, v) in self.saved.drain(..) {
+                unsafe {
+                    match v {
+                        Some(val) => std::env::set_var(&n, val),
+                        None => std::env::remove_var(&n),
+                    }
+                }
+            }
+        }
+    }
+
+    fn fresh_ws_with_empty_config() -> TestWorkspace {
+        let ws = TestWorkspace::new().unwrap();
+        std::fs::create_dir_all(ws.home()).unwrap();
+        std::fs::write(&ws.config_path(), "{}").unwrap();
+        ws
+    }
+
+    #[tokio::test]
+    async fn offline_with_seed_cache_keeps_cache_and_exits_zero() {
+        let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let _kill = ProxyKill::arm();
+        let ws = fresh_ws_with_empty_config();
+        // 种一版本地缓存（serde 版本化格式）。
+        let cache = serde_json::json!({
+            "version": 1,
+            "fetched_at": "2026-08-01T12:00:00+08:00",
+            "entries": [{"key": "p/m", "context_window": 12345}]
+        });
+        std::fs::write(
+            ws.home().join("models_catalog.json"),
+            serde_json::to_string_pretty(&cache).unwrap(),
+        )
+        .unwrap();
+
+        let bin = resolve_nemesisbot_bin().unwrap();
+        let out = ws.run_cli_with_timeout(&bin, &["model", "catalog-update"], 60).await;
+        assert!(
+            out.success(),
+            "有缓存时离线只警告不清缓存：stdout={} stderr={}",
+            out.stdout,
+            out.stderr
+        );
+        assert!(out.stdout_contains("拉取失败"));
+        assert!(out.stdout_contains("保留现有缓存：1 个模型"));
+        assert!(out
+            .stdout_contains("fetched_at=2026-08-01T12:00:00+08:00"));
+        // 缓存文件必须原样保留。
+        assert!(ws.home().join("models_catalog.json").exists());
+    }
+
+    #[tokio::test]
+    async fn offline_without_cache_bails_nonzero() {
+        let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let _kill = ProxyKill::arm();
+        let ws = fresh_ws_with_empty_config();
+
+        let bin = resolve_nemesisbot_bin().unwrap();
+        let out = ws.run_cli_with_timeout(&bin, &["model", "catalog-update"], 60).await;
+        assert!(
+            !out.success(),
+            "无缓存离线必须非零退码提示用户拷贝缓存"
+        );
+        let combined = format!("{} {}", out.stdout, out.stderr);
+        assert!(combined.contains("拉取失败且无本地缓存"), "{combined}");
+        assert!(combined.contains("拷贝"), "应提示内网拷贝路径");
+    }
+}
+
+// ===========================================================================
+// r10_body_read_arm：catalog.rs fetch_http_blocking 的 body-read Err 臂
+// （`Err(e) => last_err = format!("{url}: body read: {e}")`）。触发条件是
+// 「HTTP 层成功（200）但 resp.text() 读体失败」——本地确定性构造：raw
+// TcpListener 回 200 头但 Content-Length 声明大于实际写出字节数，随后立刻
+// 关连接；hyper 在读体阶段得到 incomplete message 必返 Err（若 reqwest 反常
+// 地把截断体当 Ok 交回，parse_any 对这个未闭合 JSON 也必败——两种情形最终
+// 都走「回落镜像→死代理→all endpoints failed」，断言不至于假绿；body-read
+// 臂本身由行执行覆盖，其字符串会被随后镜像端点的错误覆写，不对外可见）。
+// env 快照恢复手抄 r9_fetch_seams::EnvRestore 的模式（该类型模块私有）。
+// ===========================================================================
+#[cfg(test)]
+mod r10_body_read {
+    #[test]
+    fn r10_truncated_200_body_hits_body_read_err_arm() {
+        let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+
+        // 手工快照要动的全部代理/接缝变量，Drop 时按进入前状态恢复。
+        struct EnvGuard(Vec<(&'static str, Option<String>)>);
+        impl Drop for EnvGuard {
+            fn drop(&mut self) {
+                for (name, val) in self.0.drain(..) {
+                    unsafe {
+                        match val {
+                            Some(v) => std::env::set_var(name, v),
+                            None => std::env::remove_var(name),
+                        }
+                    }
+                }
+            }
+        }
+        let mut saved: Vec<(&'static str, Option<String>)> = Vec::new();
+        for name in [
+            "NEMESISBOT_CATALOG_API_URL",
+            "HTTPS_PROXY",
+            "https_proxy",
+            "HTTP_PROXY",
+            "http_proxy",
+            "ALL_PROXY",
+            "all_proxy",
+            "NO_PROXY",
+        ] {
+            saved.push((name, std::env::var(name).ok()));
+            unsafe {
+                std::env::remove_var(name);
+            }
+        }
+
+        // 死代理杀 https 镜像端点（reqwest 按 scheme 匹配，本地 http 不受影响）。
+        unsafe {
+            std::env::set_var("HTTPS_PROXY", "http://127.0.0.1:1");
+        }
+
+        // 截断 mock：声明 Content-Length=500 只写 ~90 字节就关连接。
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let served = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let served_cloned = served.clone();
+        std::thread::spawn(move || {
+            use std::io::{Read as _, Write as _};
+            if let Ok((mut stream, _)) = listener.accept() {
+                let mut buf = [0u8; 4096];
+                let _ = stream.read(&mut buf);
+                let head_and_partial =
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 500\r\nConnection: close\r\n\r\n{\"prov1\":{\"id\":\"prov1\",\"models\":{\"m-1\":{\"limit\":{\"context\":";
+                let ok = stream.write_all(head_and_partial.as_bytes()).is_ok()
+                    && stream.flush().is_ok();
+                served_cloned.store(ok, std::sync::atomic::Ordering::SeqCst);
+                // stream drop → 连接关闭 → 客户端读体时 early EOF。
+            }
+        });
+        unsafe {
+            std::env::set_var("NEMESISBOT_CATALOG_API_URL", format!("http://127.0.0.1:{port}"));
+        }
+        let _env = EnvGuard(saved);
+
+        let entries = super::fetch_http_blocking();
+        assert!(served.load(std::sync::atomic::Ordering::SeqCst),
+            "mock 必须真的被请求到并完整写出截断响应");
+        let err = entries.expect_err("主端点读体失败 + 镜像死代理必须整体 Err");
+        assert!(
+            err.contains("all catalog endpoints failed"),
+            "got: {err}"
+        );
+        // last_err 被最后尝试的镜像端点覆写。
+        assert!(err.contains("cdn.jsdelivr.net"), "got: {err}");
+    }
+}

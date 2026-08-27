@@ -1672,3 +1672,67 @@ async fn persona_apply_expertise_written_and_corrupt_peers_fails() {
         .unwrap_err();
     assert!(err.contains("加载 peers.toml 失败"), "{err}");
 }
+
+// -----------------------------------------------------------------------
+// R4 覆盖率（2026-08-27）：tasks_list/tasks_detail 的 Cancelled / Running
+// 状态映射臂（此前 map_status 的 Cancelled→"failed" 与 detail 的 Running
+// 分支未走到）。Cancelled 任务没有公开 API 能自然产生（tasks.cancel 直接
+// delete），用 TaskManager::submit 全量 Task 构造钉住映射语义。
+// -----------------------------------------------------------------------
+
+#[tokio::test]
+async fn tasks_list_maps_cancelled_status_to_failed() {
+    let handler = cluster::ClusterHandler::new();
+    let dir = tempfile::tempdir().unwrap();
+    let ws = dir.path().to_string_lossy().to_string();
+    let cluster = test_cluster(&dir);
+    let ctx = ctx_ws(&dir, Some(cluster.clone()), Some(ws.clone()), None);
+
+    use nemesis_types::cluster::{Task, TaskStatus};
+    let cancelled = Task {
+        id: "t-cancelled".to_string(),
+        status: TaskStatus::Cancelled,
+        action: "peer_chat".to_string(),
+        peer_id: "n1".to_string(),
+        payload: serde_json::json!({}),
+        result: None,
+        original_channel: "dashboard".to_string(),
+        original_chat_id: "c1".to_string(),
+        created_at: chrono::Local::now().to_rfc3339(),
+        completed_at: Some(chrono::Local::now().to_rfc3339()),
+    };
+    cluster.task_manager().submit(cancelled).unwrap();
+
+    let out = handler
+        .handle_cmd("tasks.list", None, &ctx)
+        .await
+        .unwrap()
+        .unwrap();
+    let tasks = out["tasks"].as_array().unwrap();
+    let hit = tasks.iter().find(|t| t["id"] == "t-cancelled").unwrap();
+    assert_eq!(hit["status"], "failed", "cancelled must map to failed");
+}
+
+#[tokio::test]
+async fn tasks_detail_reports_running_status() {
+    let handler = cluster::ClusterHandler::new();
+    let dir = tempfile::tempdir().unwrap();
+    let ws = dir.path().to_string_lossy().to_string();
+    let cluster = test_cluster(&dir);
+    cluster.register_node(node("n1", "alpha", NodeRole::Worker, true, "10.0.0.1:12000"));
+    let ctx = ctx_ws(&dir, Some(cluster.clone()), Some(ws.clone()), None);
+
+    let id = cluster.submit_task("peer_chat", serde_json::json!({"content":"hi"}), "dashboard", "s1");
+    assert!(cluster.task_manager().assign_task(&id, "n1"));
+
+    let out = handler
+        .handle_cmd(
+            "tasks.detail",
+            Some(serde_json::json!({ "task_id": id })),
+            &ctx,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(out["status"], "running");
+}

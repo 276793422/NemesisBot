@@ -61,6 +61,50 @@ fn init_sherpa_missing_main_lib_bails_with_hint() {
     assert!(err.contains("voice setup"), "{err}");
 }
 
+// ===========================================================================
+// R6 覆盖率批次（2026-08-27）：init_sherpa 哑 DLL 臂 + run() 组装路径
+// ===========================================================================
+
+#[test]
+fn init_sherpa_dummy_dll_fails_past_existence_check() {
+    // 90-91 行：主库在场（哑字节）→ 走到 sherpa::init → 加载失败 Err
+    let tmp = tempfile::tempdir().unwrap();
+    touch(&tmp.path().join(REQUIRED_LIBS[0]), b"not-a-real-dll");
+    let err = format!("{:#}", init_sherpa(tmp.path()).unwrap_err());
+    assert!(!err.contains("Voice runtime not found"), "{err}");
+}
+
+#[test]
+fn run_with_prepopulated_dummy_libs_reaches_init_and_fails() {
+    // 76-79 行：run() = exe_dir() + run_in_dir。测试二进制目录预置哑 DLL
+    // → all_present → 跳过下载（不碰网络）→ init 失败于哑 DLL → Err。
+    // Drop 守卫确保哑文件清理，不长期污染 target 目录。
+    struct Cleanup(Vec<PathBuf>);
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            for p in &self.0 {
+                let _ = std::fs::remove_file(p);
+            }
+        }
+    }
+
+    let exe = exe_dir().unwrap();
+    let mut guard = Cleanup(Vec::new());
+    for lib in REQUIRED_LIBS {
+        let p = exe.join(lib);
+        if !p.exists() {
+            std::fs::write(&p, b"dummy-for-run-test").unwrap();
+            guard.0.push(p);
+        }
+    }
+
+    let tmp = tempfile::tempdir().unwrap();
+    let config_path = tmp.path().join("config.toml");
+    let err = format!("{:#}", run(&config_path).unwrap_err());
+    assert!(!err.contains("Voice runtime not found"), "{err}");
+    assert!(!err.contains("Downloading"), "{err}");
+}
+
 // ---------------------------------------------------------------------------
 // run_in_dir —— 全在场（哑 DLL）→ config 创建 + init 失败于哑 DLL
 // ---------------------------------------------------------------------------

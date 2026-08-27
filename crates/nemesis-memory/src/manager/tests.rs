@@ -1740,3 +1740,144 @@ fn set_vector_enabled_toggles_runtime_flag() {
     mgr.set_vector_enabled(false);
     assert!(!mgr.is_vector_enabled(), "disable must flip the flag back");
 }
+
+// ---- R1 coverage: init_vector_store_from_config arms + close() blocking drop ----
+
+/// Fresh manager without a detected plugin: `init_vector_store_from_config`
+/// must surface the "not found" error instead of panicking.
+///
+/// Deterministic in tests: detection scans `{test_exe_dir}/plugins/` for
+/// plugin_onnx, which never exists under target/debug/deps.
+#[test]
+fn init_vector_store_from_config_errors_when_plugin_missing() {
+    let dir = tempfile::tempdir().unwrap();
+    let config = Config::new(dir.path());
+    let mgr = MemoryManager::new(&config);
+
+    let err = mgr
+        .init_vector_store_from_config(dir.path())
+        .expect_err("plugin must be absent from the test exe dir");
+    assert!(err.contains("not found"), "unexpected error: {err}");
+}
+
+/// Explicit store config whose persist file lives inside the test's tmpdir
+/// (never a cwd-relative default path — BUG #34 hygiene).
+fn scoped_store_config(dir: &std::path::Path) -> crate::vector::StoreConfig {
+    crate::vector::StoreConfig {
+        storage_path: dir
+            .join("vector")
+            .join("vector_store.jsonl")
+            .to_string_lossy()
+            .to_string(),
+        ..Default::default()
+    }
+}
+
+/// With a live vector store already wired, `init_vector_store_from_config`
+/// takes the short-circuit enable-only arm (no plugin re-detection).
+#[test]
+fn init_vector_store_from_config_reuses_existing_store() {
+    let dir = tempfile::tempdir().unwrap();
+    let config = Config::new(dir.path());
+    let mgr = MemoryManager::new(&config);
+
+    let embed: crate::vector::EmbeddingFunc = Box::new(|_text: &str| Ok(vec![0.0_f32; 4]));
+    mgr.init_vector_store_with_embed(embed, scoped_store_config(dir.path()))
+        .unwrap();
+    assert!(!mgr.is_vector_enabled());
+
+    mgr.init_vector_store_from_config(dir.path())
+        .expect("already-initialized manager must short-circuit to enabled");
+    assert!(mgr.is_vector_enabled(), "short-circuit arm must enable");
+}
+
+/// embed_text routes through the wired store's embed handle; None when no
+/// store is initialized.
+#[tokio::test]
+async fn embed_text_some_with_store_none_without() {
+    let dir = tempfile::tempdir().unwrap();
+    let config = Config::new(dir.path());
+    let mgr = MemoryManager::new(&config);
+    assert!(mgr.embed_text("hello").is_none());
+
+    let embed: crate::vector::EmbeddingFunc =
+        Box::new(|text: &str| Ok(vec![text.len() as f32; 3]));
+    mgr.init_vector_store_with_embed(embed, scoped_store_config(dir.path()))
+        .unwrap();
+    let vec = mgr.embed_text("hello").expect("store is live");
+    assert_eq!(vec, vec![5.0, 5.0, 5.0]);
+}
+
+/// `close()` with a live vector store must drop it on a blocking thread (the
+/// plugin performs blocking cleanup that would panic inside an async runtime)
+/// and succeed; a second close takes the empty-arm path cleanly.
+#[tokio::test]
+async fn close_drops_live_vector_store_on_blocking_thread() {
+    let dir = tempfile::tempdir().unwrap();
+    let config = Config::new(dir.path());
+    let mgr = MemoryManager::new(&config);
+
+    let embed: crate::vector::EmbeddingFunc = Box::new(|_text: &str| Ok(vec![0.0_f32; 4]));
+    mgr.init_vector_store_with_embed(embed, scoped_store_config(dir.path()))
+        .unwrap();
+
+    mgr.close()
+        .await
+        .expect("close with live vector store should succeed");
+    assert!(!mgr.is_enabled(), "close must disable the manager");
+
+    // Idempotent: closing again finds no vector store and still succeeds.
+    mgr.close()
+        .await
+        .expect("second close must take the empty-vector-store arm");
+}
+
+// ---- R1 coverage: live vector store drives the adapter paths ----
+
+#[tokio::test]
+async fn live_store_drives_search_store_forget_vector_paths() {
+    let dir = tempfile::tempdir().unwrap();
+    let config = Config::new(dir.path());
+    let mgr = MemoryManager::new(&config);
+
+    // A live vector store that always embeds deterministically.
+    let embed: crate::vector::EmbeddingFunc =
+        Box::new(|text: &str| Ok(vec![text.len() as f32; 3]));
+    mgr.init_vector_store_with_embed(embed, scoped_store_config(dir.path()))
+        .unwrap();
+    mgr.set_vector_enabled(true);
+    assert!(mgr.is_vector_enabled());
+
+    // Semantic query over an EMPTY index finds nothing and falls through
+    // to the keyword path.
+    let empty = mgr.search("needle", None, 5).await.unwrap();
+    assert_eq!(empty.total, 0);
+
+    // store_entry mirrors into the live vector store and persists to disk.
+    let id = mgr
+        .store_entry(Entry::new(
+            MemoryType::LongTerm,
+            "the golden needle at dawn".to_string(),
+        ))
+        .await
+        .expect("store_entry with live vector store");
+
+    // Non-empty index now answers from the semantic arm.
+    let hits = mgr.search("golden needle", None, 5).await.unwrap();
+    assert!(hits.total >= 1, "vector-backed search should find the entry");
+
+    // delete_by_id reaches the episodic AND vector stores.
+    assert!(
+        mgr.delete_by_id(&id).await.unwrap(),
+        "delete_by_id must report the entry found"
+    );
+    // General-store deletion goes through forget().
+    let forgot = mgr.forget(&id).await.unwrap();
+    assert!(forgot, "forget must report the entry deleted");
+
+    let remaining = mgr.list(None, 50, 0).await.unwrap();
+    assert!(
+        remaining.iter().all(|e| e.id != id),
+        "entry {id} survived delete_by_id + forget"
+    );
+}

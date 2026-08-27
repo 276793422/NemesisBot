@@ -853,7 +853,7 @@ fn test_save_chat_session_invalid_directory_permission() {
 
     // Should not panic, just fail silently
     mgr.add_message("web:user_failing", "user", "test");
-    let result = mgr.save_chat_session("web:user_failing");
+    let _result = mgr.save_chat_session("web:user_failing");
     // The result might be Ok or Err depending on filesystem, but shouldn't panic
     // We just verify the manager is still functional
     let history = mgr.get_history("web:user_failing");

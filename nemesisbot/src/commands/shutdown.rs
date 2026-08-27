@@ -37,7 +37,7 @@ pub fn run(local: bool) -> Result<()> {
                         }
                         Ok(output) => {
                             let stderr = String::from_utf8_lossy(&output.stderr);
-                            if stderr.contains("not found") || stderr.contains("not found") {
+                            if stderr.contains("not found") {
                                 println!("  Process {} is not running.", pid);
                                 let _ = std::fs::remove_file(&pid_path);
                             } else {
@@ -126,16 +126,23 @@ pub fn run(local: bool) -> Result<()> {
 /// Returns `Ok(http_status)` on a completed round-trip (the CLI inspects
 /// success/non-success), `Err(message)` for transport failure.
 ///
-/// (BUG #31 / BUG #27 同类横向, quality-hardening goal 冲刺 S11e) 为什么是
-/// 「独立线程 + 私有 runtime + 【异步】client」而不是 `reqwest::blocking`：
-/// 本命令以同步签名被 main.rs 的 async `run_command` 直接调用（本批次不允许
-/// 改 main.rs 把它 await 化），而 `run_command` 运行在 multi-thread runtime 的
-/// block_on 上下文里。`reqwest::blocking::Client` 内部持有一个嵌套 runtime，
-/// 在该上下文 drop 必 panic "Cannot drop a runtime in a context where blocking
-/// is not allowed"（#27 已在同拓扑探针测试实证）。这里把整段 HTTP 调用搬到一条
-/// 全新 OS 线程上执行：新线程没有任何 ambient runtime context，私有 runtime 的
-/// 创建与销毁都合法；且全程使用异步 client，不产生嵌套-runtime drop 问题。
-/// 探针测试见 shutdown/tests.rs（含「旧 blocking 写法必 panic」的红对照）。
+/// (BUG #31 / BUG #27 同类横向, quality-hardening goal 冲刺 S11e；机制勘误
+/// 见 BUG #50, 2026-08-28) 为什么是「独立线程 + 私有 runtime + 【异步】client」
+/// 而不是 `reqwest::blocking`：本命令以同步签名被 main.rs 的 async
+/// `run_command` 直接调用（本批次不允许改 main.rs 把它 await 化），而
+/// `run_command` 运行在 multi-thread runtime 的 block_on 上下文里。
+/// `reqwest::blocking::Client` 在该上下文的问题分两层：
+///   1. debug 构建：new() 内部 wait::enter() 的嵌套-runtime 守卫（reqwest
+///      0.12.28 src/blocking/wait.rs，**带 `#[cfg(debug_assertions)]`**）会让
+///      守卫 shell runtime 在 async 上下文内建+弃 → tokio panic「Cannot drop
+///      a runtime in a context where blocking is not allowed」（#27 实证）。
+///   2. release 构建：守卫被编译掉、不 panic——但 new()/drop 会 park/join
+///      一个 worker 线程，满载下可把 multi-thread runtime 饿死（同样不可用，
+///      只是死法不同）。
+/// 这里把整段 HTTP 调用搬到一条全新 OS 线程上执行：新线程没有任何 ambient
+/// runtime context，私有 runtime 的创建与销毁都合法；且全程使用异步 client，
+/// 两种 profile 下都安全。
+/// 探针测试见 shutdown/tests.rs（红对照按 profile 断言，见 BUG #50）。
 fn post_internal_shutdown(port: u16, token: &str) -> Result<u16, String> {
     let url = format!("http://127.0.0.1:{}/api/internal", port);
     let token = token.to_string();

@@ -58,10 +58,9 @@ pub async fn run(action: HistoryAction, local: bool) -> Result<()> {
     Ok(())
 }
 
-// S11c（quality-hardening goal 冲刺 S11）：声明式测试挂载，无内联测试。
-// run() 两个分支都经 nemesis_agent::history_search 的进程级单例
-// （default_path_manager OnceLock，无 setter）读写索引库——测试二进制里
-// 单例 home 非确定（取决于首个触碰它的测试），可能写进真实 ~/.nemesisbot，
-// 属结构性不可隔离，详见 tests.rs 头注。
+// R7（coverage-95 goal，2026-08-27）：声明式测试挂载，无内联测试。
+// run() 两分支经 nemesis_agent::history_search 的进程级单例读写索引库；
+// 单例 home 由 tests 侧 crate::tests::singleton_test_home() 重定向到测试
+// 沙箱（nemesis-path 的 set_home_dir 运行时缝），成功路径可测，见 tests.rs。
 #[cfg(test)]
 mod tests;

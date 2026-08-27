@@ -122,7 +122,6 @@ fn test_config_default_values() {
     assert_eq!(config.timeout_secs, 120);
 }
 
-use serde_json::json;
 use std::collections::HashMap;
 
 // ===========================================================================

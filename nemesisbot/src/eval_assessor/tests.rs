@@ -265,6 +265,90 @@ fn patch_meta(dir: &Path, key: &str, value: serde_json::Value) {
 }
 
 // ---------------------------------------------------------------------------
+// R7（coverage-95 goal）：完整性矛盾检查的两条 fall-through / 反向矛盾臂。
+// ---------------------------------------------------------------------------
+
+#[test]
+fn y9_len_zero_with_empty_final_response_md_does_not_contradict() {
+    // Y9 只在 meta 说 len==0 且 final_response.md【非空】时判「自相矛盾」；
+    // 文件确实为空 → 不产生矛盾 gap。len==0 本身依旧触发下游完整性门槛
+    //（运行未完成 → Unknown）——这里钉的是：走的是完整性措辞、而不是
+    // Y9 的矛盾措辞，证明空文件让评估流程穿过 Y9 落到后续门槛。
+    let tmp = TempDir::new().unwrap();
+    let dir = tmp.path().join("report");
+    write_healthy_report(&dir, "prompt");
+    patch_meta(&dir, "final_response_len", serde_json::json!(0));
+    std::fs::write(dir.join("final_response.md"), "").unwrap();
+
+    let rules = parse_rules(DEFAULT_RULES_JSON).unwrap();
+    let r = assess(&dir, &rules);
+    assert_eq!(r.conclusion, Conclusion::Unknown);
+    assert!(
+        r.gaps.iter().any(|g| g.contains("未产出最终回复")),
+        "必须落在完整性门槛措辞，gaps={:?}",
+        r.gaps
+    );
+    assert!(
+        !r.gaps.iter().any(|g| g.contains("矛盾")),
+        "空文件不得触发 Y9 矛盾臂，gaps={:?}",
+        r.gaps
+    );
+}
+
+// ---------------------------------------------------------------------------
+// R10（coverage-95 goal）：Y9 内层判空的第三形态——字节非空但全是空白。
+// 读文件 Ok、原始字节 ≠ 0，但 trim 后为空 → 与空文件同走「穿过 Y9 落到
+// 完整性门槛」路径；钉 trim() 语义本身（防未来把 trim 换成 is_empty 直查
+// 时悄悄改判定）。
+// ---------------------------------------------------------------------------
+
+#[test]
+fn r10_y9_whitespace_only_final_response_with_len_zero_falls_through_integrity_gate() {
+    let tmp = TempDir::new().unwrap();
+    let dir = tmp.path().join("report");
+    write_healthy_report(&dir, "prompt");
+    patch_meta(&dir, "final_response_len", serde_json::json!(0));
+    // 原始字节非空（read_to_string 得到内容），但 trim 后为空——
+    // Y9 的矛盾判定必须以 trim 后为准。
+    std::fs::write(dir.join("final_response.md"), "\n \t\r\n").unwrap();
+
+    let rules = parse_rules(DEFAULT_RULES_JSON).unwrap();
+    let r = assess(&dir, &rules);
+    assert_eq!(r.conclusion, Conclusion::Unknown);
+    assert!(
+        r.gaps.iter().any(|g| g.contains("未产出最终回复")),
+        "空白文件与空文件同语义：落完整性门槛措辞，gaps={:?}",
+        r.gaps
+    );
+    assert!(
+        !r.gaps.iter().any(|g| g.contains("自相矛盾")),
+        "仅空白 ≠ 非空：不得触发 Y9 矛盾臂，gaps={:?}",
+        r.gaps
+    );
+}
+
+#[test]
+fn z5_tool_count_zero_but_trace_nonempty_is_unknown() {
+    // Z5 反向矛盾：meta.tool_call_count=0 但 tool_trace.json 有记录——
+    // meta 被篡改（0 会让"其实执行了工具的技能"跳过零调用检查）→ 未知。
+    let tmp = TempDir::new().unwrap();
+    let dir = tmp.path().join("report");
+    write_healthy_report(&dir, "skill"); // healthy 报告自带非空 tool_trace.json
+    patch_meta(&dir, "tool_call_count", serde_json::json!(0));
+
+    let rules = parse_rules(DEFAULT_RULES_JSON).unwrap();
+    let r = assess(&dir, &rules);
+    assert_eq!(r.conclusion, Conclusion::Unknown, "gaps={:?}", r.gaps);
+    assert!(
+        r.gaps
+            .iter()
+            .any(|g| g.contains("tool_call_count") && g.contains("tool_trace")),
+        "必须点名 tool_call_count 与 tool_trace 的矛盾，gaps={:?}",
+        r.gaps
+    );
+}
+
+// ---------------------------------------------------------------------------
 // 默认规则集逐条求值
 // ---------------------------------------------------------------------------
 

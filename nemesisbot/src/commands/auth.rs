@@ -6,6 +6,22 @@
 use crate::common;
 use anyhow::Result;
 
+/// OpenAI OAuth config with an optional test seam.
+///
+/// `NEMESISBOT_OAUTH_ISSUER`（未设置时行为与 `OAuthProviderConfig::openai()`
+/// 完全一致）覆盖 issuer endpoint，使 CLI 层 OAuth 流能指向本地 mock——
+/// crate 层（nemesis-auth/src/oauth/tests.rs）已有全套 issuer 可注入的
+/// mock 测试，此前只差 CLI 层这个硬编码常量没有注入口。
+fn oauth_openai_config_or_override() -> nemesis_auth::OAuthProviderConfig {
+    let mut cfg = nemesis_auth::OAuthProviderConfig::openai();
+    if let Ok(issuer) = std::env::var("NEMESISBOT_OAUTH_ISSUER") {
+        if !issuer.is_empty() {
+            cfg.issuer = issuer;
+        }
+    }
+    cfg
+}
+
 #[derive(clap::Subcommand)]
 pub enum AuthAction {
     /// Login via OAuth or paste token
@@ -48,7 +64,7 @@ pub async fn run(action: AuthAction, local: bool) -> Result<()> {
             // Try real OAuth flow for OpenAI
             if provider == "openai" {
                 let store = nemesis_auth::AuthStore::new(&auth_path.to_string_lossy());
-                let oauth_config = nemesis_auth::OAuthProviderConfig::openai();
+                let oauth_config = oauth_openai_config_or_override();
 
                 let result = if device_code {
                     println!("  Using device code flow...");

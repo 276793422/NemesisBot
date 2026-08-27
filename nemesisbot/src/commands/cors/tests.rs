@@ -968,3 +968,292 @@ mod run_arm {
         });
     }
 }
+
+// ===========================================================================
+// wave_a（R7 中批补盲，2026-08-27）：此前 run_arm 已铺满主干臂，这里只补
+// 仍然真实的缺口 —— ① cdn 标签重复/已存在删除臂（179/231）、② 纯 origin
+// 未命中删除臂（243）、③ https://localhost 走 contains-only 第三个条件
+// （366-368 短路时前两个 starts_with 吃掉命中）、④ 显式空数组的 (none)
+// 提示臂（107-108/118-119；json!({}) 缺键走的是 if-let 整段跳过）、⑤ 写
+// 失败冒泡（74/84）：父路径为普通文件 / 只读文件两类确定性构造。
+// ===========================================================================
+
+mod wave_a {
+    use super::super::{load_or_create_cors, run, CorsAction};
+
+    fn with_env_home(f: impl FnOnce(std::path::PathBuf)) {
+        let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        unsafe {
+            std::env::set_var("NEMESISBOT_HOME", tmp.path());
+        }
+        f(tmp.path().join(".nemesisbot"));
+        unsafe {
+            std::env::remove_var("NEMESISBOT_HOME");
+        }
+    }
+
+    fn cors_of(home: &std::path::Path) -> std::path::PathBuf {
+        home.join("config").join("cors.json")
+    }
+
+    fn write_cors(home: &std::path::Path, cfg: serde_json::Value) {
+        let p = cors_of(home);
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        std::fs::write(p, serde_json::to_string_pretty(&cfg).unwrap()).unwrap();
+    }
+
+    fn read_cors(home: &std::path::Path) -> serde_json::Value {
+        serde_json::from_str(&std::fs::read_to_string(cors_of(home)).unwrap()).unwrap()
+    }
+
+    #[cfg(unix)]
+    fn deny_write(p: &std::path::Path) {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perm = std::fs::metadata(p).unwrap().permissions();
+        perm.set_mode(0o444);
+        std::fs::set_permissions(p, perm).unwrap();
+    }
+
+    #[cfg(unix)]
+    fn allow_write(p: &std::path::Path) {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perm = std::fs::metadata(p).unwrap().permissions();
+        perm.set_mode(0o644);
+        std::fs::set_permissions(p, perm).unwrap();
+    }
+
+    #[cfg(windows)]
+    fn deny_write(p: &std::path::Path) {
+        let mut perm = std::fs::metadata(p).unwrap().permissions();
+        perm.set_readonly(true);
+        std::fs::set_permissions(p, perm).unwrap();
+    }
+
+    #[cfg(windows)]
+    fn allow_write(p: &std::path::Path) {
+        let mut perm = std::fs::metadata(p).unwrap().permissions();
+        perm.set_readonly(false);
+        std::fs::set_permissions(p, perm).unwrap();
+    }
+
+    #[test]
+    fn add_duplicate_cdn_origin_reports_cdn_label() {
+        with_env_home(|home| {
+            write_cors(
+                &home,
+                serde_json::json!({
+                    "allowed_origins": [],
+                    "allowed_cdn_domains": ["cdn.test"]
+                }),
+            );
+            run(
+                CorsAction::Add { origin: "cdn.test".into(), cdn: true },
+                false,
+            )
+            .expect("重复 cdn 域 → already exists + Ok");
+            assert_eq!(
+                read_cors(&home)["allowed_cdn_domains"],
+                serde_json::json!(["cdn.test"]),
+                "不得二次入列"
+            );
+        });
+    }
+
+    #[test]
+    fn remove_found_cdn_entry_and_missing_plain_origin() {
+        with_env_home(|home| {
+            write_cors(
+                &home,
+                serde_json::json!({
+                    "allowed_origins": ["https://a.test"],
+                    "allowed_cdn_domains": ["cdn.test"]
+                }),
+            );
+            // 已存在的 cdn 条目被移除（230-235 found + cdn 标签臂）。
+            run(
+                CorsAction::Remove { origin: "cdn.test".into(), cdn: true },
+                false,
+            )
+            .expect("remove 存在的 cdn 条目");
+            assert_eq!(
+                read_cors(&home)["allowed_cdn_domains"],
+                serde_json::json!([])
+            );
+            // 不存在的纯 origin（236-245 not-found + 非 cdn 标签臂）。
+            run(
+                CorsAction::Remove { origin: "https://ghost.test".into(), cdn: false },
+                false,
+            )
+            .expect("remove 不存在的纯 origin");
+            assert_eq!(
+                read_cors(&home)["allowed_origins"],
+                serde_json::json!(["https://a.test"])
+            );
+        });
+    }
+
+    #[test]
+    fn validate_https_localhost_matches_via_contains_only() {
+        with_env_home(|home| {
+            // https:// 前缀让两个 http:// starts_with 都不中，只有第三个
+            // contains("localhost:") 条件能放行（368 行所在短路链尾）；
+            // 大写 LOCALHOST 验证 lowercase 归一在条件之前完成。
+            write_cors(
+                &home,
+                serde_json::json!({
+                    "allowed_origins": [],
+                    "allowed_cdn_domains": [],
+                    "development_mode": false,
+                    "allow_localhost": true
+                }),
+            );
+            run(
+                CorsAction::Validate { origin: "https://LOCALHOST:8443".into() },
+                false,
+            )
+            .expect("contains-only localhost 臂放行");
+        });
+    }
+
+    #[test]
+    fn list_with_present_but_empty_arrays_prints_none_hints() {
+        with_env_home(|home| {
+            // 显式空数组键（区别于缺键：缺键走 if-let 整段跳过，
+            // 只有显式 [] 才进 is_empty → "(none)" 分支）。
+            write_cors(
+                &home,
+                serde_json::json!({
+                    "allowed_origins": [],
+                    "allowed_cdn_domains": []
+                }),
+            );
+            run(CorsAction::List, false).expect("空数组 → 两组 (none) 提示");
+        });
+    }
+
+    #[test]
+    fn load_or_create_write_failure_when_parent_is_regular_file_bubbles() {
+        // 父路径是普通文件：create_dir_all 失败被 `let _` 吞掉，
+        // 随后的 fs::write 打不开路径 → 74 行 `?` 把 Err 冒给调用方。
+        let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("config"), "not a dir").unwrap();
+        let path = tmp.path().join("config").join("cors.json");
+        assert!(
+            load_or_create_cors(&path).is_err(),
+            "父路径为文件 → 写初始化必须报错"
+        );
+    }
+
+    #[test]
+    fn run_add_save_failure_propagates_when_existing_config_is_readonly() {
+        // 只读 cors.json：exists → 读入正常，push 后 save_cors 写失败 → 84 行 `?`。
+        // Windows readonly 属性 / unix 0o444 都会拒绝写打开，语义一致。
+        let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        unsafe {
+            std::env::set_var("NEMESISBOT_HOME", tmp.path());
+        }
+        let home = tmp.path().join(".nemesisbot");
+        let p = cors_of(&home);
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        std::fs::write(&p, r#"{"allowed_origins":["https://a.test"]}"#).unwrap();
+
+        deny_write(&p);
+        let res = run(
+            CorsAction::Add { origin: "https://b.test".into(), cdn: false },
+            false,
+        );
+        allow_write(&p); // 先恢复再清场，TempDir 才能删掉
+        unsafe {
+            std::env::remove_var("NEMESISBOT_HOME");
+        }
+        assert!(res.is_err(), "只读配置上的 Add 必须把写错误冒上来");
+    }
+}
+
+// ===========================================================================
+// r10（覆盖率 A 类 miss 补充）：Validate 的匹配矩阵合并夹具 ——
+// ① 精确 origin 命中后 break，跳过整个 CDN 块（336-351 的关闭区）；
+// ② CDN 子域通配命中（origin.ends_with(".domain") 臂）；
+// ③ 仅 development_mode=true → match_source 走 dev 分支文案（371-372）；
+// ④ 仅 allow_localhost=true → else 分支文案（374-375）。
+// 全程 run() 分发 + tempdir home（持全局锁），零网络。
+// ===========================================================================
+
+mod r10_validate {
+    use super::super::{run, CorsAction};
+
+    fn with_env_home(f: impl FnOnce(&std::path::Path)) {
+        let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        unsafe {
+            std::env::set_var("NEMESISBOT_HOME", tmp.path());
+        }
+        let home = tmp.path().join(".nemesisbot");
+        f(home.as_path());
+        unsafe {
+            std::env::remove_var("NEMESISBOT_HOME");
+        }
+    }
+
+    fn write_cors(home: &std::path::Path, cfg: serde_json::Value) {
+        let p = home.join("config").join("cors.json");
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        std::fs::write(p, serde_json::to_string_pretty(&cfg).unwrap()).unwrap();
+    }
+
+    fn validate(origin: &str) {
+        run(
+            CorsAction::Validate {
+                origin: origin.to_string(),
+            },
+            false,
+        )
+        .expect("validate 必须为 Ok（打印型命令）");
+    }
+
+    #[test]
+    fn r10_validate_exact_hit_skips_cdn_and_wildcard_and_localhost_labels() {
+        with_env_home(|home| {
+            // 相位①+②：精确命中 + CDN 子域通配。
+            write_cors(
+                home,
+                serde_json::json!({
+                    "allowed_origins": ["https://exact.test"],
+                    "allowed_cdn_domains": ["cdn.example"],
+                    "development_mode": false,
+                    "allow_localhost": false,
+                }),
+            );
+            validate("https://exact.test"); // allowed_origins 命中 → break，不进 CDN 块
+            validate("https://sub.cdn.example"); // ends_with(".cdn.example") 命中
+            validate("https://denied.test"); // 三块全 miss → DENIED 臂
+
+            // 相位③：仅 dev_mode → localhost 命中走 dev 文案臂。
+            write_cors(
+                home,
+                serde_json::json!({
+                    "allowed_origins": [],
+                    "allowed_cdn_domains": [],
+                    "development_mode": true,
+                    "allow_localhost": false,
+                }),
+            );
+            validate("http://localhost:1234");
+
+            // 相位④：仅 allow_localhost → else 文案臂。
+            write_cors(
+                home,
+                serde_json::json!({
+                    "allowed_origins": [],
+                    "allowed_cdn_domains": [],
+                    "development_mode": false,
+                    "allow_localhost": true,
+                }),
+            );
+            validate("http://127.0.0.1:9999");
+        });
+    }
+}

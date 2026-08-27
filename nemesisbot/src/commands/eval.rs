@@ -1213,13 +1213,20 @@ fn close_temp_with_retry(tmp: tempfile::TempDir, eval_box_root: &Path) {
     let mut opt = Some(tmp);
     let path = opt.as_ref().expect("tempdir").path().to_path_buf();
     // Phase 1: explicit close with retries for late handle release.
+    // NOTE: TempDir::close() neutralizes its inner path and mem::forget()s
+    // itself even on FAILURE (verified against tempfile 3.27 source), so
+    // after one failed attempt `opt` stays None — a second close() is
+    // impossible. Fall through to Phase 2 instead of returning early, or
+    // the promised remove_dir_all recovery below becomes dead code and the
+    // box dir leaks silently under %TEMP%.
     for _ in 0..6 {
-        if let Some(t) = opt.take() {
-            if t.close().is_ok() {
-                return;
+        match opt.take() {
+            Some(t) => {
+                if t.close().is_ok() {
+                    return;
+                }
             }
-        } else {
-            return; // consumed successfully in an earlier iteration
+            None => break,
         }
         std::thread::sleep(std::time::Duration::from_millis(500));
     }

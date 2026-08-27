@@ -270,3 +270,117 @@ async fn run_success_when_mock_gateway_already_running() {
         std::env::remove_var("NEMESISBOT_HOME");
     }
 }
+
+// ===========================================================================
+// r9_spawn_fail（R9 补测批零头组，2026-08-27）：start_and_wait 的 spawn-poll
+// 循环（dashboard.rs 79-118）首次真链路覆盖。确定性设计：
+//   - state 文件预置 web_port=1（必然拒绝连接）→ run() 走进 start_and_wait；
+//   - config.json 写 {"model_list":"not-an-array"}：合法 JSON Value 但过不了
+//     Config 反序列化 → 被 spawn 的子网关在绑定任何端口之前响亮退出；
+//   - 于是父进程轮询满固定 30s 预算 → Err("Gateway did not start within 30
+//     seconds") → main.rs 打 "Error: ..." + exit(1)。
+// 无残留进程（子网关自毙）、不占任何生产端口。慢测（~32s），全程持锁串行。
+// ===========================================================================
+
+mod r9_spawn_fail {
+    use test_harness::{resolve_nemesisbot_bin, TestWorkspace};
+
+    #[tokio::test]
+    async fn start_and_wait_times_out_when_spawned_gateway_dies_on_bad_config() {
+        let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let ws = TestWorkspace::new().unwrap();
+
+        std::fs::create_dir_all(ws.workspace().join("state")).unwrap();
+        std::fs::write(ws.config_path(), r#"{"model_list":"not-an-array"}"#).unwrap();
+        std::fs::write(
+            ws.workspace().join("state").join("gateway.json"),
+            serde_json::json!({
+                "pid": 999999u64,
+                "web_host": "127.0.0.1",
+                "web_port": 1
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        let bin = resolve_nemesisbot_bin().expect("需已构建二进制");
+        let out = ws.run_cli_with_timeout(&bin, &["dashboard"], 75).await;
+
+        assert!(
+            !out.success(),
+            "子网关起不来时 dashboard 必须以失败收场\nstdout={} stderr={}",
+            out.stdout,
+            out.stderr
+        );
+        let combined = format!("{} {}", out.stdout, out.stderr);
+        assert!(
+            combined.contains("Starting gateway..."),
+            "要进入 start_and_wait：\n{combined}"
+        );
+        assert!(
+            combined.contains("Gateway did not start within 30 seconds"),
+            "30s 预算耗尽的错误文本缺失：\n{combined}"
+        );
+    }
+}
+
+// ===========================================================================
+// r10_start_wait_direct（R10 终测补测，2026-08-27）：start_and_wait 的
+// 进程内直调覆盖。r9_spawn_fail 走子进程链（CLI 子进程里跑生产代码），但
+// 实测该子进程的 error-exit 镜像在插桩测量下不可靠（llvm 计数器丢失，
+// merged lcov 里 79-119 仍 miss）。直调形态让这些行落进测试二进制自己的
+// 镜像（Leg A 语义），完全绕开子进程 flush 不确定性：
+//   - 成功轮询臂：state 文件预置指向本地 mock health 端口 → 第一轮 poll
+//     就 check_health Ok → Ok 返回（107-115）；
+//   - 超时臂：state 文件永不出现 → 30s 预算耗尽 Err（118-119）。
+// 两臂都会 spawn current_exe（= 测试二进制本身，非网关）：BUG #48 修复后
+// start_and_wait 在 cfg!(test) 下传 libtest 空过滤器（--exact 不存在名）
+// → 子进程 0 测试秒退，无副作用、不占端口、无残留进程、零输出。
+// （修复前传 "gateway" 会被 libtest 当过滤器，嵌套重跑 217 个网关测试。）
+// ===========================================================================
+
+mod r10_start_wait_direct {
+    use super::*;
+
+    /// 成功臂：预置 state 指向 mock（health 200 + internal 200），首轮
+    /// poll 命中 → Ok((host,port)) 与 mock 一致。
+    #[tokio::test]
+    async fn start_and_wait_poll_success_against_local_mock_state() {
+        let port = start_mock_gateway("200 OK", r#"{"ok":true}"#);
+        let dir = tempfile::tempdir().unwrap();
+        let state_path = dir.path().join("gateway.json");
+        std::fs::write(
+            &state_path,
+            serde_json::json!({
+                "pid": 42u64,
+                "web_host": "127.0.0.1",
+                "web_port": port
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        let (host, got) = start_and_wait(true, &state_path)
+            .await
+            .expect("state 已就绪 + health 200 → 秒级 Ok");
+        assert_eq!(host, "127.0.0.1");
+        assert_eq!(got, port as i64);
+    }
+
+    /// 超时臂：state 文件所在目录不存在 → read_gateway_state 恒 None →
+    /// 30s 预算耗尽返回 Err（慢测 ~31s：函数内预算写死 Duration 30s）。
+    #[tokio::test]
+    async fn start_and_wait_times_out_when_state_never_appears() {
+        let dir = tempfile::tempdir().unwrap();
+        let state_path = dir.path().join("no_such_dir").join("gateway.json");
+
+        let err = start_and_wait(false, &state_path)
+            .await
+            .expect_err("state 永不出现必须超时 Err");
+        assert!(
+            err.to_string()
+                .contains("Gateway did not start within 30 seconds"),
+            "got: {err}"
+        );
+    }
+}

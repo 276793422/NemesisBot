@@ -100,6 +100,10 @@ fn resampler_new_succeeds_with_unusual_rates() {
 // S12 覆盖率冲刺（2026-08-26）：设备枚举 / 伪设备名 fail-fast / far-end 单例
 // 只做 cpal 设备**枚举**与名字匹配失败路径——不 open 任何真实音频流
 // （真麦克风/真扬声器打开是红线，报告里列结构性豁免）。
+// 【R6 修订 2026-08-27】：默认设备路径补真机守卫测试（Ok/Err 双收，不断言
+// 硬件在场；播放用 gain=0.0 静音，采集只开即弃）——964 行缺口的主体在
+// AudioCapture/AudioPlayback 的默认设备路径，纯豁免撑不起口径，改为
+// 「有硬件机器覆盖全臂、无硬件机器覆盖 bail 臂」的机器态守卫式。
 // ===========================================================================
 
 #[test]
@@ -166,4 +170,78 @@ fn resampler_ratio_and_reset() {
     let mut same = Resampler::new(16000, 16000).unwrap();
     assert_eq!(same.ratio(), 1.0);
     assert_eq!(same.resample(&[0.25, -0.25]), vec![0.25, -0.25]);
+}
+
+// ===========================================================================
+// R6（2026-08-27）：默认设备路径——机器态守卫式（Ok/Err 双收）
+// 有音频硬件的机器覆盖完整臂；无硬件的机器覆盖 default_device bail 臂。
+// 播放全部 gain=0.0（静音）；采集开即弃（不消费数据）。
+// ===========================================================================
+
+#[test]
+fn audio_capture_default_device_opens_or_bails_cleanly() {
+    match AudioCapture::new("") {
+        Ok(cap) => {
+            assert!(cap.sample_rate > 0, "sample_rate must be positive");
+            assert!(
+                cap.channels == 1 || cap.channels == 2,
+                "channels must be 1 or 2, got {}",
+                cap.channels
+            );
+            // 留 400ms 真采集窗：cpal 的输入回调在音频线程上执行（mono 折混
+            // /try_send 封送代码在那跑），立即 drop 会一个回调都收不到
+            std::thread::sleep(std::time::Duration::from_millis(400));
+            let _ = cap.try_receive();
+            drop(cap); // 立即关流，不长期占麦克风
+        }
+        Err(e) => {
+            // 无默认输入设备的机器：default_input_device() None → context bail
+            let msg = format!("{e}");
+            assert!(msg.contains("No default input device found"), "{msg}");
+        }
+    }
+}
+
+#[test]
+fn audio_playback_default_device_opens_or_bails_cleanly() {
+    match AudioPlayback::new("", 16000, 0.0) {
+        Ok(pb) => {
+            assert!(pb.sample_rate > 0, "device sample_rate must be positive");
+            pb.stop();
+            drop(pb);
+        }
+        Err(e) => {
+            let msg = format!("{e}");
+            assert!(msg.contains("No default output device found"), "{msg}");
+        }
+    }
+}
+
+#[test]
+fn audio_playback_play_blocking_resamples_and_drains() {
+    // 22050 输入率：Windows shared-mode 设备率是 44100/48000，几乎必然走
+    // 重采样臂；增益 0.0 → 放的是静音，不打扰人。短缓冲（~72ms）控制时长。
+    let pb = match AudioPlayback::new("", 22050, 0.0) {
+        Ok(pb) => pb,
+        Err(_) => return, // 无输出设备的机器：bail 臂由上一测试覆盖
+    };
+    let samples: Vec<f32> = vec![0.0_f32; 1600];
+    pb.play_blocking(&samples, 22050).unwrap();
+
+    // 等率直通臂（input == device rate → else 分支不重采样）
+    pb.play_blocking(&[0.0_f32; 16], pb.sample_rate).unwrap();
+
+    // stop 清空队列（幂等安全）
+    pb.stop();
+    pb.stop();
+}
+
+#[test]
+fn audio_playback_stop_clears_pending_queue() {
+    let pb = match AudioPlayback::new("", 16000, 0.0) {
+        Ok(pb) => pb,
+        Err(_) => return,
+    };
+    // 不 play，直接 stop → 空队列上 clear 无害；再立即关流
+    pb.stop();
 }

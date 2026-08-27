@@ -40,7 +40,11 @@ pub mod vad;
 #[cfg(target_os = "windows")]
 pub mod voice_detect;
 
-// --- Cloud re-exports (cross-platform) ---
+// --- 测试辅助（仅测试编译；见 test_util.rs 头注） ---
+#[cfg(all(test, target_os = "windows"))]
+mod test_util;
+
+// --- Cloud transcription (cross-platform) ---
 pub use config::AppConfig;
 pub use transcriber::{AudioFormat, Transcriber, TranscriptionResponse};
 

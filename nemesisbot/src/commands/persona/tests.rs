@@ -423,3 +423,258 @@ fn map_category_simple_remaining_arms() {
     assert_eq!(map_category_simple("testing"), "测试");
     assert_eq!(map_category_simple("support"), "客服");
 }
+
+// ===========================================================================
+// wave_b（覆盖率补测 B 波）：本地命令剩余分支 + 解析辅助剩余臂。
+//
+// 不在此测（EXEMPT）：cmd_search / cmd_install 的联网路径与
+// fetch_and_convert / search_personas 整体函数体 —— GitHub API 真网络，
+// 结构性禁离线单测；Install 的唯一可离线触点是「已安装早退」（下方测）。
+// ===========================================================================
+
+mod wave_b {
+    use super::*;
+
+    fn wb_seed(workspace: &std::path::Path, name: &str, identity: &str) {
+        let dir = workspace.join("personas").join(name);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("IDENTITY.md"), identity).unwrap();
+        std::fs::write(dir.join("SOUL.md"), format!("soul of {name}")).unwrap();
+    }
+
+    fn wb_active(workspace: &std::path::Path, name: &str) {
+        let pdir = workspace.join("personas");
+        std::fs::create_dir_all(&pdir).unwrap();
+        std::fs::write(
+            pdir.join("_active.json"),
+            serde_json::json!({ "name": name }).to_string(),
+        )
+        .unwrap();
+    }
+
+    /// cmd_current：PERSONA.json 的 description 缺失（as_str None 臂，78 行区）
+    /// 与空串（Some("") 但 !is_empty 为假 → 不打印描述行）两种形态。
+    #[test]
+    fn wave_b_current_description_absent_and_empty_arms() {
+        // (a) 无 description 键 → if let Some(desc) 的 None 落穿。
+        let d1 = tempfile::tempdir().unwrap();
+        wb_seed(d1.path(), "bare", "i-bare");
+        std::fs::write(
+            d1.path().join("personas/bare/PERSONA.json"),
+            r#"{"name":"Bare","emoji":"🙂"}"#,
+        )
+        .unwrap();
+        wb_active(d1.path(), "bare");
+        cmd_current(d1.path()).expect("PERSONA.json 缺 description 也应 Ok");
+
+        // (b) description 为空串 → 内层 !desc.is_empty() 为假。
+        let d2 = tempfile::tempdir().unwrap();
+        wb_seed(d2.path(), "quiet", "i-quiet");
+        std::fs::write(
+            d2.path().join("personas/quiet/PERSONA.json"),
+            r#"{"name":"Quiet","emoji":"🤫","description":""}"#,
+        )
+        .unwrap();
+        wb_active(d2.path(), "quiet");
+        cmd_current(d2.path()).expect("空 description 也应 Ok");
+    }
+
+    /// cmd_list：读 _active.json 确定 active 标记（96-98）、循环中跳过
+    /// 非目录杂散文件（107-108）、以及含 default 的多元素排序（132-140 三臂：
+    /// Less=default 在左 / Greater=default 在右 / 双非 default 按名比较）。
+    #[test]
+    fn wave_b_list_reads_active_marker_sorts_and_skips_plain_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let ws = dir.path();
+        wb_seed(ws, "default", "identity-default");
+        wb_seed(ws, "zulu", "identity-z");
+        wb_seed(ws, "alpha", "identity-a");
+        wb_seed(ws, "mike", "identity-m");
+        // 杂散文件（非目录）→ 循环 continue。
+        std::fs::create_dir_all(ws.join("personas")).unwrap();
+        std::fs::write(ws.join("personas/README.txt"), "not a persona").unwrap();
+        wb_active(ws, "default");
+        cmd_list(ws).expect("带 marker + 杂散文件 + 多人格的 list 应 Ok");
+    }
+
+    /// cmd_install 已安装早退：在 GitHub fetch 之前 bail（273-282），
+    /// 经 run() 分发触达对应 arm（40）。这是 Install 唯一可离线测的路径。
+    #[tokio::test]
+    async fn wave_b_run_install_already_installed_bails_before_network() {
+        let dir = tempfile::tempdir().unwrap();
+        let ws_str = dir.path().to_string_lossy().to_string();
+        wb_seed(dir.path(), "dupe", "already-here");
+        let err = run(
+            PersonaAction::Install { id: "dupe".to_string() },
+            "home",
+            &ws_str,
+        )
+        .await
+        .expect_err("已安装人格必须 Err 且不发生任何网络请求");
+        assert!(
+            err.to_string().contains("已经安装"),
+            "err: {err:#}"
+        );
+    }
+
+    /// cmd_remove：删除活动人格但 personas/default 不存在 → 不执行恢复块，
+    /// _active.json 悬空指向已删除的人格（产品现状，见报告可疑点）。
+    /// 这覆盖「匹配活动名但 default 目录缺席」的落穿区域（209-221 家族）。
+    #[test]
+    fn wave_b_remove_active_persona_without_default_dir_leaves_marker_dangling() {
+        let dir = tempfile::tempdir().unwrap();
+        let ws = dir.path();
+        wb_seed(ws, "only", "only-identity");
+        cmd_activate(ws, "only").unwrap();
+        cmd_remove(ws, "only").expect("删除活动人格（无 default 可恢复）应 Ok");
+        assert!(!ws.join("personas/only").exists(), "目录已删");
+        let marker: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(ws.join("personas/_active.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            marker["name"], "only",
+            "无 default 时 marker 原样悬空指向已删人格"
+        );
+    }
+
+    /// cmd_remove：完全无 _active.json → 跳过整个活动恢复检测块（204 存在性假臂），
+    /// 直接删目录。
+    #[test]
+    fn wave_b_remove_persona_without_any_active_marker() {
+        let dir = tempfile::tempdir().unwrap();
+        let ws = dir.path();
+        wb_seed(ws, "loner", "loner-identity");
+        cmd_remove(ws, "loner").expect("无 marker 时 remove 应 Ok");
+        assert!(!ws.join("personas/loner").exists());
+        assert!(!ws.join("personas/_active.json").exists(), "不创建 marker");
+    }
+
+    /// strip_emoji_simple：U+1F000 段（低补充平面 emoji 区间臂，592 行模式段）。
+    #[test]
+    fn wave_b_strip_emoji_low_supplementary_plane_range() {
+        // U+1F000（麻将牌）落在 '\u{1F000}'..='\u{1FFFF}' 过滤臂，
+        // 与既有测试常用的 U+1F300.. 区分臂不同。
+        assert_eq!(strip_emoji_simple("\u{1F000}kept"), "kept");
+        assert_eq!(strip_emoji_simple("\u{1F0CF}"), "");
+    }
+
+    /// parse_sections_simple：frontmatter 以 --- 开头但无闭合 ---
+    /// → body 回退整段原文（635-637 else 臂）；所有非 H2 行进 preamble，
+    /// sections 为空。
+    #[test]
+    fn wave_b_parse_sections_unclosed_frontmatter_keeps_whole_body() {
+        let md = "---\nname: never-closed\nnot-a-section tail";
+        let (preamble, sections) = parse_sections_simple(md);
+        assert!(sections.is_empty(), "无闭合 frontmatter 不产生 section");
+        assert_eq!(preamble, md, "原文整体留在 preamble");
+    }
+}
+
+// ===========================================================================
+// r10 wave（覆盖率 95% goal 第七波）：Search / Install 的网络前置段。
+//
+// GitHub API 端点在 search_personas / fetch_and_convert 内部硬编码，无注入
+// seam；用 reqwest 系统代理语义把出网钉死在本机死端口（HTTPS_PROXY=
+// http://127.0.0.1:9）→ send().await? 的 Err 一路 `?` 上抛。前置段（参数
+// 归一、workspace 快照、client 构造、GET 发起）由此全部可达；渲染段结构性
+// 属真网集成域（与文件头既有豁免口径一致）。罕见的「机器有系统级代理穿透」
+// 环境下这两个命令可能转 Ok——本块按主环境（无系统代理、env 生效）断言。
+// cmd_search / cmd_install 内部 block_in_place 必须 multi_thread runtime；
+// env 是进程全局 → 持 crate::GLOBAL_STATE_LOCK，prev 值按 Option 恢复。
+// ===========================================================================
+
+mod r10_lead_in {
+    use super::*;
+    use std::ffi::OsString;
+
+    struct NetDead {
+        prev: Option<OsString>,
+    }
+
+    impl NetDead {
+        fn engage() -> Self {
+            let prev = std::env::var_os("HTTPS_PROXY");
+            unsafe { std::env::set_var("HTTPS_PROXY", "http://127.0.0.1:9") };
+            Self { prev }
+        }
+    }
+
+    impl Drop for NetDead {
+        fn drop(&mut self) {
+            match self.prev.take() {
+                Some(v) => unsafe { std::env::set_var("HTTPS_PROXY", v) },
+                None => unsafe { std::env::remove_var("HTTPS_PROXY") },
+            }
+        }
+    }
+
+    /// cmd_search 前置段：query 归一 → 提示打印 → workspace 快照克隆 →
+    /// block_in_place 桥内 GET；send Err 经 `?` 一路上抛成 Err。
+    #[tokio::test(flavor = "multi_thread")]
+    async fn r10_persona_search_lead_in_errors_at_dead_upstream() {
+        let _lock = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let _net = NetDead::engage();
+        let ws = tempfile::tempdir().unwrap();
+
+        let res = cmd_search(ws.path(), Some("r10-query"));
+        assert!(res.is_err(), "上游不可达 → 前置段之后必须以 Err 收场");
+    }
+
+    /// cmd_install 前置段：persona 目录不存在性检查通过 → 下载提示 →
+    /// fetch_and_convert 第一腿（tree GET）即败；双层 Result 的两个 `?`
+    /// 无论哪层接力，最终都 Err 且绝不创建 personas/<id>（安装目录只在
+    /// 内容写盘阶段创建——离线 Err 与在线"未找到"两条世界同守此断言）。
+    #[tokio::test(flavor = "multi_thread")]
+    async fn r10_persona_install_uninstalled_id_bails_after_network_leg_one() {
+        let _lock = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let _net = NetDead::engage();
+        let ws = tempfile::tempdir().unwrap();
+        let id = "r10-absent-persona";
+
+        let res = cmd_install(ws.path(), id);
+        assert!(res.is_err(), "第一腿即断 → install 必须 Err");
+        assert!(
+            !ws.path().join("personas").join(id).exists(),
+            "前置段失败不得留下安装目录"
+        );
+    }
+
+    /// run() 的 Search / Install 两条分发臂（此前只钉过本地五臂）：即便套上
+    /// run 的 async 包装层，前置段的 Err 语义同样成立。
+    #[tokio::test(flavor = "multi_thread")]
+    async fn r10_persona_run_dispatch_reaches_search_and_install_arms() {
+        let _lock = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let _net = NetDead::engage();
+        let ws = tempfile::tempdir().unwrap();
+        let ws_str = ws.path().to_string_lossy().to_string();
+
+        assert!(
+            run(
+                PersonaAction::Search {
+                    query: Some("q".to_string()),
+                },
+                "home-unused",
+                &ws_str,
+            )
+            .await
+            .is_err(),
+            "Search 分发臂前置段应 Err"
+        );
+
+        let id = "r10-absent-persona-run";
+        assert!(
+            run(
+                PersonaAction::Install {
+                    id: id.to_string(),
+                },
+                "home-unused",
+                &ws_str,
+            )
+            .await
+            .is_err(),
+            "Install 分发臂前置段应 Err"
+        );
+        assert!(!ws.path().join("personas").join(id).exists());
+    }
+}

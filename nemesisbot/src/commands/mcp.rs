@@ -302,9 +302,15 @@ fn cmd_add(
         "timeout": timeout,
     });
 
-    if let Some(servers) = cfg.get_mut("servers").and_then(|v| v.as_array_mut()) {
-        servers.push(server);
+    // servers 数组缺失（旧 schema / 手工编辑）时补建，否则下面 push 静默
+    // 跳过仍报成功 —— 用户以为已添加，实际文件里没有该服务器。
+    if !cfg.get("servers").map(serde_json::Value::is_array).unwrap_or(false) {
+        cfg["servers"] = serde_json::json!([]);
     }
+    cfg["servers"]
+        .as_array_mut()
+        .expect("just normalized to array")
+        .push(server);
     cfg["enabled"] = serde_json::Value::Bool(true);
 
     std::fs::write(

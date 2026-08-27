@@ -198,6 +198,23 @@ mod layers {
         assert!(f.credentials_in.is_none());
         assert!(f.credentials_out.is_none());
     }
+
+    // ── r9（覆盖率补测批 2026-08-27）：dlp 入站命中臂。既有 layers 夹具只
+    //    钉过出站(dlp_out)与无命中两侧，scan_tool_input 的 has_matches=true
+    //    路径（346 行）从未点亮——Luhn 通过的确定性卡号样本补上这块。
+    #[tokio::test]
+    async fn credit_card_number_in_args_flags_dlp_inbound() {
+        let (_dir, obs) = observer_in_tmp_home();
+        // 4111111111111111 是 Luhn 校验通过的标准样例卡号（DLP 引擎 confidence
+        // 分级 + Luhn 校验后的确定性命中样本）。
+        let args = serde_json::json!({"command": "echo card=4111111111111111"});
+        let f = obs.run_layers("exec", &args, &args.to_string(), "").await;
+        let hits = f.dlp_in.expect("Luhn-valid card in args must produce inbound DLP findings");
+        assert!(!hits.is_empty(), "入站命中必须有 summary");
+        assert!(!hits[0].is_empty(), "summary 不能是空串");
+        // 空 result → 出站不产出（与入站对称）。
+        assert!(f.dlp_out.is_none());
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -433,5 +450,318 @@ mod run_error_paths {
         let werr = std::fs::read_to_string(tmp.path().join("worker_error.txt"))
             .expect("worker_error.txt must be written");
         assert!(werr.contains("build agent loop"), "werr: {werr}");
+    }
+}
+
+// =========================================================================
+// 覆盖率补测 wave B（2026-08-27）：run_inner 成功链 + agent loop 错误映射
+// + run_layers 补充分支 + Observer::name。
+//
+// - 成功链用进程内 mock LLM：std TcpListener 手写一发 HTTP/1.1 应答
+//   （本 crate 无 wiremock dev-dep，也不允许为此改 Cargo.toml）。
+//   HttpProvider POST {base}/chat/completions（base 不带 /v1），最小可解析
+//   应答体仿 http_provider_extra_tests.rs 的 wiremock 夹具契约。
+// - 拒绝端点统一用 127.0.0.1:1（连接立即拒绝、零网络外联）。
+// - run_inner:95 block_in_place 在 current-thread 测试 runtime 会 panic →
+//   run() 全链两个测试用多线程 flavor。
+// - env 窗口持 crate::GLOBAL_STATE_LOCK；guard 复刻 run_error_paths 的
+//   prev-value Option-match 恢复纪律（跨模块私有，故本地复刻）。
+// =========================================================================
+mod wave_b {
+    use super::*;
+    use nemesis_observer::Observer;
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
+
+    /// RAII：设置 NEMESISBOT_EVAL_WORKSPACE，Drop 按 prev-value Option 恢复。
+    struct WaveBEvalEnvGuard(Option<String>);
+    impl WaveBEvalEnvGuard {
+        fn set_workspace(path: &std::path::Path) -> Self {
+            let saved = std::env::var("NEMESISBOT_EVAL_WORKSPACE").ok();
+            unsafe { std::env::set_var("NEMESISBOT_EVAL_WORKSPACE", path) };
+            Self(saved)
+        }
+    }
+    impl Drop for WaveBEvalEnvGuard {
+        fn drop(&mut self) {
+            match self.0.take() {
+                Some(v) => unsafe { std::env::set_var("NEMESISBOT_EVAL_WORKSPACE", v) },
+                None => unsafe { std::env::remove_var("NEMESISBOT_EVAL_WORKSPACE") },
+            }
+        }
+    }
+
+    /// 最小可解析 config.json：模型带【非 openai】provider 前缀（wbprov/），
+    /// 工厂 resolve 落 HttpCompat(HttpProvider)，base_url 即给定 api_base、
+    /// 端点 /chat/completions。⚠️ 不能用裸名：parse_model_ref 对无前缀名
+    /// 默认 provider="openai" → 工厂映射 Codex（POST {base}/responses,
+    /// Chat 补全格式解析为空 → 3 次空 final → turn_guard 放弃文案）。
+    fn wave_b_write_llm_config(ws: &std::path::Path, api_base: &str) {
+        let cfg = serde_json::json!({
+            "agents": {"defaults": {"llm": "wbprov/waveb-probe"}},
+            "model_list": [{
+                "model_name": "waveb-probe",
+                "model": "wbprov/waveb-probe",
+                "api_key": "waveb-fake-key",
+                "api_base": api_base,
+            }],
+        });
+        std::fs::write(
+            ws.join("config.json"),
+            serde_json::to_string_pretty(&cfg).unwrap(),
+        )
+        .unwrap();
+    }
+
+    fn wave_b_header_end(buf: &[u8]) -> Option<usize> {
+        buf.windows(4).position(|w| w == b"\r\n\r\n")
+    }
+
+    fn wave_b_content_length(headers: &[u8]) -> usize {
+        String::from_utf8_lossy(headers)
+            .lines()
+            .find_map(|l| {
+                let (k, v) = l.split_once(':')?;
+                if !k.trim().eq_ignore_ascii_case("content-length") {
+                    return None;
+                }
+                v.trim().parse::<usize>().ok()
+            })
+            .unwrap_or(0)
+    }
+
+    /// 进程内 mock LLM：任何请求都回一条 finish_reason=stop 的补全。
+    /// accept 用 nonblocking+轮询以便 stop 置位后退出线程；served 上限兜底。
+    fn wave_b_spawn_mock_llm() -> (String, Arc<AtomicBool>) {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind ephemeral port");
+        let addr = listener.local_addr().unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let stop = Arc::new(AtomicBool::new(false));
+        let stop2 = stop.clone();
+        std::thread::spawn(move || {
+            let body = concat!(
+                r#"{"choices":[{"index":0,"message":{"role":"assistant","#,
+                r#""content":"waveb mock reply"},"finish_reason":"stop"}],"#,
+                r#""usage":{"prompt_tokens":3,"completion_tokens":4,"total_tokens":7}}"#,
+            );
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            let mut served = 0usize;
+            while served < 16 && !stop2.load(Ordering::Acquire) {
+                match listener.accept() {
+                    Ok((mut stream, _)) => {
+                        served += 1;
+                        // 读完整请求头+体（Content-Length 口径）再应答，
+                        // 防止大请求体下早答导致半读。
+                        let mut buf = Vec::new();
+                        let mut chunk = [0u8; 8192];
+                        loop {
+                            match stream.read(&mut chunk) {
+                                Ok(0) | Err(_) => break,
+                                Ok(n) => {
+                                    buf.extend_from_slice(&chunk[..n]);
+                                    if let Some(pos) = wave_b_header_end(&buf) {
+                                        if buf.len()
+                                            >= pos + 4 + wave_b_content_length(&buf[..pos])
+                                        {
+                                            break;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        let _ = stream.write_all(response.as_bytes());
+                        let _ = stream.flush();
+                        // Connection: close → drop(stream) 即断开。
+                    }
+                    Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                        std::thread::sleep(std::time::Duration::from_millis(5));
+                    }
+                    Err(_) => break,
+                }
+            }
+        });
+        (format!("http://{addr}"), stop)
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn wave_b_worker_writes_full_report_after_successful_llm_round() {
+        let ws = tempfile::tempdir().unwrap();
+        let (base, stop) = wave_b_spawn_mock_llm();
+        wave_b_write_llm_config(ws.path(), &base);
+
+        // env 为进程全局：锁横跨整个 run()（与 run_error_paths 同纪律，
+        // 并行测试互踩会让报告写进别人的 workspace）。
+        let _lock = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let _env = WaveBEvalEnvGuard::set_workspace(ws.path());
+
+        // 兜底护栏：单轮 mock 补全应秒级完成；超时=链路挂死直接失败。
+        let res = tokio::time::timeout(std::time::Duration::from_secs(90), run()).await;
+        stop.store(true, Ordering::Release);
+
+        res.expect("run() 不得超时")
+            .expect("成功 LLM 轮次 → run() Ok");
+
+        // 入口标记在场（进入过 worker main）。
+        let alive =
+            std::fs::read_to_string(ws.path().join("worker_alive.txt")).expect("entry marker");
+        assert!(alive.contains("pid="));
+
+        // 三件报告齐活 + 内容正确性。
+        let report = ws.path().join("logs").join("eval");
+        let final_md = std::fs::read_to_string(report.join("final_response.md"))
+            .expect("final_response.md 必须落盘");
+        assert!(
+            final_md.contains("waveb mock reply"),
+            "最终回复应为 mock 内容原文: {final_md}"
+        );
+
+        let trace: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(report.join("tool_trace.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            trace.as_array().map(|a| a.len()),
+            Some(0),
+            "零工具调用 → tool_trace=[]"
+        );
+
+        let findings: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(report.join("security_findings.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(findings["total_tool_calls"], 0);
+
+        assert!(
+            !ws.path().join("worker_error.txt").exists(),
+            "成功路径不得写 worker_error.txt"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn wave_b_worker_maps_agent_loop_llm_error_into_worker_error_txt() {
+        let ws = tempfile::tempdir().unwrap();
+        // 127.0.0.1:1 连接拒绝 → LLM 层瞬态重试烧尽 → Error 事件、无 Done →
+        // process_direct Err → :119 map_err 成 "agent loop error: ..."。
+        wave_b_write_llm_config(ws.path(), "http://127.0.0.1:1/v1");
+
+        let _lock = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let _env = WaveBEvalEnvGuard::set_workspace(ws.path());
+
+        let res = tokio::time::timeout(std::time::Duration::from_secs(90), run()).await;
+        let err = res.expect("run() 不得超时").expect_err("LLM 全灭必须 Err");
+        let msg = format!("{err:#}");
+        assert!(msg.contains("agent loop error"), "err: {msg}");
+
+        // run() 错误链必须落 worker_error.txt（盒内唯一诊断线索）。
+        let werr = std::fs::read_to_string(ws.path().join("worker_error.txt"))
+            .expect("worker_error.txt 必须落盘");
+        assert!(werr.contains("agent loop error"), "werr: {werr}");
+    }
+
+    // ---------------------------------------------------------------------
+    // Observer 协议 + run_layers 分支补充（layers/observer_protocol 空档）
+    // ---------------------------------------------------------------------
+
+    fn wave_b_observer_in_tmp_home() -> (tempfile::TempDir, EvalTaggingObserver) {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let shared = Arc::new(crate::agent_factory::SharedResources {
+            home: dir.path().to_path_buf(),
+            ..Default::default()
+        });
+        (dir, EvalTaggingObserver::new(&shared))
+    }
+
+    #[test]
+    fn wave_b_observer_name_is_eval_tagging() {
+        let (_d, obs) = wave_b_observer_in_tmp_home();
+        assert_eq!(obs.name(), "eval-tagging");
+    }
+
+    #[tokio::test]
+    async fn wave_b_run_layers_credential_hit_in_tool_result_flags_outbound() {
+        let (_d, obs) = wave_b_observer_in_tmp_home();
+        let args = serde_json::json!({"command": "cat secrets.env"});
+        // 结果带 AWS 访问键（credential/tests.rs 的确定性样例）→ 出站扫描命中，
+        // credentials_out Some(vec![summary])（既有夹具只钉过入站/无命中两态）。
+        let result = "The output is key=AKIAIOSFODNN7EXAMPLE123456";
+        let f = obs.run_layers("exec", &args, &args.to_string(), result).await;
+        let cout = f.credentials_out.expect("出站凭据命中必须有 finding");
+        assert!(!cout.is_empty());
+        // 入参干净 → 入站仍为 None（对称语义固定）。
+        assert!(f.credentials_in.is_none());
+    }
+
+    #[tokio::test]
+    async fn wave_b_run_layers_dlp_hit_in_tool_result_flags_dlp_outbound() {
+        let (_d, obs) = wave_b_observer_in_tmp_home();
+        let args = serde_json::json!({"command": "echo done"});
+        // 结果带 Luhn 通过的 Visa 卡号（dlp/tests.rs 的确定性样例）→ dlp_out Some。
+        let result = "Card: 4111111111111111";
+        let f = obs.run_layers("exec", &args, &args.to_string(), result).await;
+        let dout = f.dlp_out.expect("DLP 出站命中必须有 finding");
+        assert!(!dout.is_empty());
+    }
+
+    #[tokio::test]
+    async fn wave_b_run_layers_public_ip_literal_url_passes_ssrf_without_network() {
+        let (_d, obs) = wave_b_observer_in_tmp_home();
+        // 1.1.1.1 是公网字面量：非 loopback/metadata/private/link-local/
+        // reserved 且 blocked_nets 默认空 → resolver.rs 对 IP 直判短路（不
+        // 发 DNS 不建连接）→ validate_url Ok(())。既有夹具只钉过拦截面。
+        let args = serde_json::json!({"url": "http://1.1.1.1/dns-query"});
+        let f = obs.run_layers("web_fetch", &args, &args.to_string(), "").await;
+        let s = f.ssrf.expect("url 字段 → ssrf finding 必产出");
+        assert!(!s.blocked, "公网 IP 字面量不应拦: {}", s.reason);
+        assert_eq!(s.url, "http://1.1.1.1/dns-query");
+        assert!(s.reason.is_empty(), "Ok 臂 reason 为空串");
+    }
+
+    /// 一次 run_layers 同时点亮全部安全层引擎块（wave C 收口：分类定性轮
+    /// 标出的各引擎 if-let 块尾部残余区域）——blocked 命令 + 入站凭据命中 +
+    /// 出入站凭据/DLP + SSRF 拦截在同一调用内共存，注入层照常产出。
+    #[tokio::test]
+    async fn wave_b_run_layers_all_engine_blocks_report_findings_in_one_call() {
+        let (_d, obs) = wave_b_observer_in_tmp_home();
+        let args = serde_json::json!({
+            "command": "rm -rf /",
+            "url": "http://169.254.169.254/latest/meta-data"
+        });
+        // 入参串同时埋凭据（AWS 访问键样例）与出参埋凭据 + Luhn 通过的卡号
+        // （credential/dlp tests 钉过的确定性样例口径）。
+        let args_str = concat!(
+            r#"{"command":"rm -rf /","url":"http://169.254.169.254/latest/meta-data","#,
+            r#""secret":"AKIAIOSFODNN7EXAMPLE"}"#
+        );
+        let result = "key=AKIAIOSFODNN7EXAMPLE123456 Card: 4111111111111111";
+        let f = obs.run_layers("exec", &args, args_str, result).await;
+
+        // L1 注入：总是产出 finding 结构。
+        assert!(f.injection.is_some(), "L1 注入层必须产出 finding");
+        if let Some(inj) = &f.injection {
+            // level 序列化契约（plan C2 修复）：小写字符串，非双重引号包装。
+            assert!(!inj.level.starts_with('"'), "level 不得带字面引号: {}", inj.level);
+        }
+        // L2 command guard：rm -rf / 确定性拦截。
+        let cg = f.command_guard.expect("command 字段 → guard finding");
+        assert!(cg.blocked, "rm -rf / 必须拦");
+        assert!(!cg.reason.is_empty());
+        // L3 credentials：双向命中。
+        let cin = f.credentials_in.expect("入站凭据命中");
+        assert!(!cin.is_empty());
+        let cout = f.credentials_out.expect("出站凭据命中");
+        assert!(!cout.is_empty());
+        // L5 SSRF：metadata 地址确定性拦截。
+        let s = f.ssrf.expect("url 字段 → ssrf finding");
+        assert!(s.blocked);
+        // L4 DLP 出站（卡号）在此一并走通；入站方向布尔两臂均已由
+        // 既有/上句夹具覆盖，此处不再加约束钉死检测器灵敏度。
+        let dout = f.dlp_out.expect("出站 DLP 命中");
+        assert!(!dout.is_empty());
     }
 }

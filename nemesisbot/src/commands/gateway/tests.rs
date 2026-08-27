@@ -2292,7 +2292,103 @@ async fn full_assembly_starts_and_binds_web_and_health() {
         "api_base": "http://127.0.0.1:9",
         "model_tier": "mini"
     }]);
+
+    // ---------------------------------------------------------------------
+    // wave_b 补测解锁（就地翻转 config，可直接还原）：以下 flip 全部为
+    // localhost-only / 无外网的装配分支，用于点亮 llvm-cov miss 区段。
+    // ---------------------------------------------------------------------
+    // security.enabled=true → 点亮 security 装配块 2447-2542 + 审批/guardian
+    // 接线 3532-3567（不 spawn 弹窗：弹窗仅在 ask 规则命中时才触发）。
+    cfg["security"]["enabled"] = serde_json::json!(true);
+    // forge.enabled=true → 点亮 1523-1527 启动臂（后台任务，无网络）。
+    cfg["forge"]["enabled"] = serde_json::json!(true);
+    // memory.enabled=true → 点亮 MemoryManager 构造 1609-1619 + web 注入
+    // 2845-2848（embedding 默认关，无模型加载）。
+    cfg["memory"]["enabled"] = serde_json::json!(true);
+    // logging.llm 开启 + detail_level="truncated" + log_dir="" → 点亮 observer
+    // 装配链 2562-2595（含 Truncated match 臂与空 log_dir 回退臂）+ 2603-2604。
+    cfg["logging"]["llm"]["enabled"] = serde_json::json!(true);
+    cfg["logging"]["llm"]["detail_level"] = serde_json::json!("truncated");
+    cfg["logging"]["llm"]["log_dir"] = serde_json::json!("");
+    // DDG websearch 提示分支 1626-1637（仅 info 打印路径的 flip）。
+    cfg["tools"]["web"]["duckduckgo"]["enabled"] = serde_json::json!(true);
+    // websocket 通道开 + 绑 127.0.0.1:0（OS 分配临时端口）+ sync_to 非空 →
+    // 点亮 enabled_channels 2237、ChannelInitConfig Some 臂 2326-2333、
+    // add_sync! 插入 2367。
+    cfg["channels"]["websocket"]["enabled"] = serde_json::json!(true);
+    cfg["channels"]["websocket"]["host"] = serde_json::json!("127.0.0.1");
+    cfg["channels"]["websocket"]["port"] = serde_json::json!(0);
+    cfg["channels"]["websocket"]["sync_to"] = serde_json::json!(["web"]);
+    // channels.web.host 保持 "127.0.0.1"：改 "0.0.0.0" 可点亮 2176 的地址归一
+    // 分支，但会绑定所有网卡，可能触发 Windows 防火墙弹窗 —— 有意不改。
+
     std::fs::write(th.home.join("config.json"), cfg.to_string()).unwrap();
+
+    // wave_b 种子文件（全部落在临时 home 下；workspace/config 目录先建）。
+    let ws_config_dir = th.home.join("workspace").join("config");
+    std::fs::create_dir_all(&ws_config_dir).unwrap();
+    // config.security.json：default_action + DLP 键位 + layer 开关 +
+    // audit_chain_enabled=true → 点亮 load_security_rules 有效解析臂 /
+    // DLP 解析 2461-2488 / audit chain 路径设置 2495-2503。
+    // 规则 pattern 故意含危险词但 default_action=allow + action=allow：
+    // 只是注册进 auditor，不拦任何测试流量。
+    std::fs::write(
+        ws_config_dir.join("config.security.json"),
+        r#"{
+            "default_action": "allow",
+            "audit_chain_enabled": true,
+            "layers": {
+                "injection": {"enabled": true},
+                "command_guard": {"enabled": true},
+                "credential": {"enabled": true},
+                "ssrf": {"enabled": true},
+                "dlp": {
+                    "enabled": false,
+                    "action": "log",
+                    "rules": ["phone"],
+                    "low_confidence_action": "log",
+                    "inbound_action": "log"
+                }
+            },
+            "process_rules": {"exec": [{"pattern": "never-matches-*", "action": "allow", "comment": "wave_b seed"}]},
+            "registry_rules": {"read": [{"pattern": "never-matches-*", "action": "allow"}]}
+        }"#,
+    )
+    .unwrap();
+    // config.forge.json 存在 → 走 load_forge_config 分支（1419）。
+    std::fs::write(ws_config_dir.join("config.forge.json"), "{}").unwrap();
+    // config.skills.json 有效 JSON → skills registry 走 from_config 成功臂
+    // （1566-1576），否则落 absent/parse-err 分支。
+    std::fs::write(ws_config_dir.join("config.skills.json"), "{}").unwrap();
+    // peers.toml：cluster.enabled 仍为 false（无 UDP/RPC 网络）；此文件只被
+    // 无条件静态-peer 加载循环读取（1719-1769）。node-empty 地址为空 → 命中
+    // addr.is_empty() continue（1736-1738）。
+    std::fs::create_dir_all(th.home.join("workspace").join("cluster")).unwrap();
+    std::fs::write(
+        th.home.join("workspace").join("cluster").join("peers.toml"),
+        r#"
+[peers.node-a]
+address = "127.0.0.1:11949"
+name = "WaveB Peer A"
+role = "worker"
+category = "general"
+
+[peers.node-empty]
+address = ""
+name = "Empty Addr Peer"
+"#,
+    )
+    .unwrap();
+    // BOOTSTRAP.md：heartbeat 跳过文件存在 → set_skip_file 被调用（3248）。
+    std::fs::write(th.home.join("workspace").join("BOOTSTRAP.md"), "# bootstrap\n").unwrap();
+    // cors.json：development_mode=false + 一个 origin → CORSManager Ok 且走
+    // list_origins 信息臂（2192-2199）。
+    std::fs::create_dir_all(th.home.join("config")).unwrap();
+    std::fs::write(
+        th.home.join("config").join("cors.json"),
+        r#"{"allowed_origins": ["http://localhost:5173"], "development_mode": false}"#,
+    )
+    .unwrap();
 
     let state_path = th.home.join("workspace").join("state").join("gateway.json");
 
@@ -2438,6 +2534,54 @@ mod migrate_legacy_workflow_tests {
         migrate_legacy_workflow_dir(home, &exec_dir, &ckpt_dir);
         assert!(exec_dir.read_dir().unwrap().next().is_none());
     }
+
+    /// R10 终测补测：rename 失败 warn 臂 + 循环 continue 臂。
+    /// - jsonl rename 失败：目的地同名**目录**挡道（file→occupied-dir 的
+    ///   rename 在 Windows/Unix 都是 Err）→ 走 warn! 分支，源文件保留；
+    /// - checkpoint 子目录 rename 失败：目的地同名**文件**挡道 → warn! 分支；
+    /// - checkpoints 循环的两个 continue：目的地已存在（跳过）、条目是文件
+    ///   而非目录（跳过）。
+    #[test]
+    fn migrate_rename_failures_and_continue_arms_leave_sources_in_place() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path();
+        let (exec_dir, ckpt_dir) = setup(home);
+
+        let legacy = home.join("workflow");
+        // jsonl 家族：一个会被搬走、一个目的地被目录挡道。
+        std::fs::create_dir_all(&legacy).unwrap();
+        std::fs::write(legacy.join("wf_ok.jsonl"), "ok").unwrap();
+        std::fs::write(legacy.join("wf_blocked.jsonl"), "src").unwrap();
+        std::fs::create_dir_all(exec_dir.join("wf_blocked.jsonl")).unwrap();
+        // checkpoints 家族：正常子目录 / 目的地已存在 / 条目是文件 / 目的地被文件挡道。
+        std::fs::create_dir_all(legacy.join("checkpoints").join("cp_ok")).unwrap();
+        std::fs::create_dir_all(legacy.join("checkpoints").join("cp_exists")).unwrap();
+        std::fs::create_dir_all(ckpt_dir.join("cp_exists")).unwrap();
+        std::fs::write(legacy.join("checkpoints").join("stray.txt"), "f").unwrap();
+        std::fs::create_dir_all(legacy.join("checkpoints").join("cp_blocked")).unwrap();
+        std::fs::write(ckpt_dir.join("cp_blocked"), "file-in-the-way").unwrap();
+
+        migrate_legacy_workflow_dir(home, &exec_dir, &ckpt_dir);
+
+        assert!(exec_dir.join("wf_ok.jsonl").exists(), "无阻挡的 jsonl 正常迁移");
+        assert!(
+            legacy.join("wf_blocked.jsonl").exists(),
+            "rename 失败的 jsonl 源文件保留"
+        );
+        assert!(ckpt_dir.join("cp_ok").exists(), "无阻挡的 checkpoint 子目录迁移");
+        assert!(
+            legacy.join("checkpoints").join("cp_exists").exists(),
+            "目的地已存在的 checkpoint 跳过（源保留）"
+        );
+        assert!(
+            legacy.join("checkpoints").join("stray.txt").exists(),
+            "checkpoints 里的文件条目跳过"
+        );
+        assert!(
+            legacy.join("checkpoints").join("cp_blocked").exists(),
+            "rename 失败的 checkpoint 子目录保留"
+        );
+    }
 }
 
 // -------------------------------------------------------------------------
@@ -2525,4 +2669,1403 @@ mod gateway_agent_runner_tests {
             .expect_err("provider error must propagate");
         assert!(err.contains("llm dead"), "err: {err}");
     }
+}
+
+// =========================================================================
+// wave_b 补测（llvm-cov 覆盖回填）：装配块内联类型（适配器/guardian）+
+// 迁移 rename 失败分支。全部进程内、无网络、无弹窗、无子进程。
+// =========================================================================
+
+mod wave_b {
+    use super::*;
+
+    #[test]
+    fn wave_b_count_enabled_channels_all_flags() {
+    // 13 个通道位全开（web/websocket/telegram/discord/feishu/slack/external/
+    // whatsapp/dingtalk/qq/line/onebot/maixcam），点亮剩余 11 个 miss 推入臂。
+    let mut config = nemesis_config::Config::default();
+    config.channels.web.enabled = true;
+    config.channels.websocket.enabled = true;
+    config.channels.telegram.enabled = true;
+    config.channels.discord.enabled = true;
+    config.channels.feishu.enabled = true;
+    config.channels.slack.enabled = true;
+    config.channels.external.enabled = true;
+    config.channels.whatsapp.enabled = true;
+    config.channels.dingtalk.enabled = true;
+    config.channels.qq.enabled = true;
+    config.channels.line.enabled = true;
+    config.channels.onebot.enabled = true;
+    config.channels.maixcam.enabled = true;
+    assert_eq!(count_enabled_channels(&config), 13);
+}
+
+// -------------------------------------------------------------------------
+// GatewayLlmJudge —— guardian LLM 二审桥（security）
+// -------------------------------------------------------------------------
+
+#[cfg(feature = "security")]
+struct WaveBRouterProvider {
+    reply: Result<
+        nemesis_providers::types::LLMResponse,
+        nemesis_providers::failover::FailoverError,
+    >,
+    /// 共享捕获：记录 provider 收到的每条消息 content（供测试断言提示词组装）。
+    seen_user_content: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+}
+
+#[cfg(feature = "security")]
+impl WaveBRouterProvider {
+    fn llm_response(content: &str) -> nemesis_providers::types::LLMResponse {
+        nemesis_providers::types::LLMResponse {
+            content: content.to_string(),
+            tool_calls: vec![],
+            finish_reason: "stop".to_string(),
+            usage: None,
+            reasoning_content: None,
+            extra: std::collections::HashMap::new(),
+            raw_request_body: None,
+            raw_response_body: None,
+        }
+    }
+}
+
+#[cfg(feature = "security")]
+#[async_trait::async_trait]
+impl nemesis_providers::router::LLMProvider for WaveBRouterProvider {
+    async fn chat(
+        &self,
+        messages: &[nemesis_providers::types::Message],
+        _tools: &[nemesis_providers::types::ToolDefinition],
+        _model: &str,
+        _options: &nemesis_providers::types::ChatOptions,
+    ) -> Result<
+        nemesis_providers::types::LLMResponse,
+        nemesis_providers::failover::FailoverError,
+    > {
+        self.seen_user_content
+            .lock()
+            .unwrap()
+            .extend(messages.iter().map(|m| m.content.clone()));
+        // Result 整体不可 clone（FailoverError 无 Clone），按边分别复制：
+        // Ok 边 LLMResponse 自带 Clone；Err 边仅测试用到 Unknown{provider,message}。
+        match &self.reply {
+            Ok(r) => Ok(r.clone()),
+            Err(nemesis_providers::failover::FailoverError::Unknown { provider, message }) => {
+                Err(nemesis_providers::failover::FailoverError::Unknown {
+                    provider: provider.clone(),
+                    message: message.clone(),
+                })
+            }
+            #[allow(unreachable_patterns)]
+            _ => unreachable!("wave_b mock 只构造 Unknown 错误"),
+        }
+    }
+
+    fn default_model(&self) -> &str {
+        "wave-b-model"
+    }
+
+    fn name(&self) -> &str {
+        "wave-b-router-mock"
+    }
+}
+
+#[cfg(feature = "security")]
+#[tokio::test]
+async fn wave_b_guardian_judge_parses_fenced_verdict_and_builds_prompt() {
+    use nemesis_security::guardian::LlmJudge;
+
+    // 带 ```json 围栏的合法裁决 → parse_verdict 容忍围栏 → Ok(Allow)。
+    let fenced = "```json\n\
+                  {\"risk_level\":\"low\",\"user_authorization\":\"high\",\
+                  \"outcome\":\"allow\",\"rationale\":\"explicitly requested\"}\n\
+                  ```";
+    let seen_user_content = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let judge = GatewayLlmJudge {
+        provider: std::sync::Arc::new(WaveBRouterProvider {
+            reply: Ok(WaveBRouterProvider::llm_response(fenced)),
+            seen_user_content: seen_user_content.clone(),
+        }),
+        model: "wave-b-model".to_string(),
+    };
+    let req = nemesis_security::guardian::JudgeRequest {
+        action: "process_exec".to_string(),
+        risk_level: "low".to_string(),
+        transcript: "user: please list files".to_string(),
+    };
+    let verdict = judge.judge(&req).await.expect("verdict parses");
+    assert_eq!(
+        verdict.outcome,
+        nemesis_security::guardian::JudgeOutcome::Allow
+    );
+    assert_eq!(verdict.risk_level, "low");
+    assert_eq!(verdict.user_authorization, "high");
+    assert_eq!(verdict.rationale, "explicitly requested");
+
+    // 提示词组装：system 含 guardian 提示词本体，user 含动作/风险/转录。
+    let seen = seen_user_content.lock().unwrap().clone();
+    assert!(
+        seen.iter().any(|c| c.contains("You are a safety gate")),
+        "GUARDIAN_PROMPT 必须作为 system 消息下发，seen={seen:?}"
+    );
+    assert!(
+        seen.iter()
+            .any(|c| c.contains("Proposed action")
+                && c.contains("process_exec")
+                && c.contains("please list files")),
+        "user 消息必须携带动作与转录证据，seen={seen:?}"
+    );
+}
+
+#[cfg(feature = "security")]
+#[tokio::test]
+async fn wave_b_guardian_judge_propagates_llm_error() {
+    use nemesis_security::guardian::LlmJudge;
+
+    let judge = GatewayLlmJudge {
+        provider: std::sync::Arc::new(WaveBRouterProvider {
+            reply: Err(nemesis_providers::failover::FailoverError::Unknown {
+                provider: "wave-b".to_string(),
+                message: "llm exploded".to_string(),
+            }),
+            seen_user_content: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
+        }),
+        model: "wave-b-model".to_string(),
+    };
+    let req = nemesis_security::guardian::JudgeRequest {
+        action: "file_delete".to_string(),
+        risk_level: "critical".to_string(),
+        transcript: String::new(),
+    };
+    let err = judge.judge(&req).await.expect_err("LLM 错误必须向上传播");
+    assert!(
+        err.contains("guardian LLM call failed"),
+        "err 应含统一前缀: {err}"
+    );
+}
+
+// -------------------------------------------------------------------------
+// load_security_rules 的读失败/解析失败臂（security）
+// -------------------------------------------------------------------------
+
+#[cfg(feature = "security")]
+#[test]
+fn wave_b_load_security_rules_survives_unreadable_and_malformed_config() {
+    use nemesis_security::pipeline::{SecurityPlugin, SecurityPluginConfig};
+
+    let make_plugin = || Arc::new(SecurityPlugin::new(SecurityPluginConfig::default()));
+
+    // ① 路径是一个目录 → read_to_string 直接报错 → 读失败告警臂后安全返回。
+    let tmp = tempfile::tempdir().unwrap();
+    let as_dir = tmp.path().join("config.security.json");
+    std::fs::create_dir_all(&as_dir).unwrap();
+    let plugin_a = make_plugin();
+    load_security_rules(&plugin_a, &as_dir); // 必须不 panic
+    drop(plugin_a);
+
+    // ② 文件存在但内容是非法 JSON → 解析失败告警臂后安全返回。
+    let bad = tmp.path().join("config.security.bad.json");
+    std::fs::write(&bad, "{{{ not json at all").unwrap();
+    let plugin_b = make_plugin();
+    load_security_rules(&plugin_b, &bad); // 必须不 panic
+}
+
+// -------------------------------------------------------------------------
+// ApprovalPopupAdapter —— 弹窗审批桥（desktop + security）
+// -------------------------------------------------------------------------
+
+#[cfg(all(feature = "desktop", feature = "security"))]
+#[test]
+fn wave_b_approval_adapter_is_running_and_denies_without_plugin_ui_dll() {
+    use nemesis_security::auditor::ApprovalManager;
+
+    let pm = std::sync::Arc::new(nemesis_desktop::process::ProcessManager::new());
+    let adapter = ApprovalPopupAdapter::new(pm);
+    assert!(adapter.is_running(), "适配器恒报运行中（探活语义）");
+
+    // plugin_ui.dll 不在测试二进制旁 → 早退分支直接 deny（不 spawn 子进程）。
+    if plugin_ui_library_exists() {
+        eprintln!("wave_b: plugin ui dll 在旁，跳过早退断言（避免真弹窗路径）");
+        return;
+    }
+    let decision = adapter.request_approval_sync(
+        "req-wave-b",
+        "file_write",
+        "C:/tmp/waveb-target",
+        "HIGH",
+        "wave_b unit probe",
+        5,
+    );
+    match decision {
+        Ok(approved) => assert!(
+            !approved,
+            "无插件 UI 时必须安全侧默认拒绝"
+        ),
+        Err(e) => panic!("早退分支应返回 Ok(deny) 而非 Err: {e}"),
+    }
+}
+
+// -------------------------------------------------------------------------
+// 集群桥接适配器（cluster）
+// -------------------------------------------------------------------------
+
+#[cfg(feature = "cluster")]
+#[test]
+fn wave_b_cluster_persister_running_success_error_and_delete_noop() {
+    use nemesis_cluster::rpc::peer_chat_handler::TaskResultPersister;
+
+    let store = std::sync::Arc::new(nemesis_cluster::task_result_store::TaskResultStore::new(16));
+    let adapter = ClusterResultPersisterAdapter {
+        result_store: store.clone(),
+        node_id: "node-wave-b".to_string(),
+    };
+
+    // set_running → 以 "peer_chat"/running 占位结果成功态写入。
+    adapter.set_running("task-run", "peer-a");
+    let running = store.get("task-run").expect("running 结果应已入库");
+    assert!(running.success);
+    assert_eq!(running.action, "peer_chat");
+    assert_eq!(running.result["status"], "running");
+    assert_eq!(running.result["from"], "node-wave-b");
+
+    // set_result 成功态 → 包 content + from。
+    adapter
+        .set_result("task-ok", "ok", "最终回复正文", "", "peer-a")
+        .expect("成功态写库应通过");
+    let ok = store.get("task-ok").expect("成功结果应已入库");
+    assert!(ok.success);
+    assert_eq!(ok.result["content"], "最终回复正文");
+    assert_eq!(ok.result["from"], "node-wave-b");
+
+    // set_result 错误态 → store_failure。
+    adapter
+        .set_result("task-err", "error", "", "远端炸了", "peer-a")
+        .expect("错误态写库应通过");
+    let failed = store.get("task-err").expect("失败结果应已入库");
+    assert!(!failed.success);
+    assert_eq!(failed.result["error"], "远端炸了");
+
+    // delete 是有意的 no-op（回调成功后由 TaskResultStore 自己清）。
+    adapter.delete("task-run").expect("delete 不应报错");
+    assert!(
+        store.get("task-run").is_some(),
+        "delete 为 no-op：结果保留待 A 端消费"
+    );
+    assert_eq!(store.len(), 3);
+}
+
+#[cfg(feature = "cluster")]
+#[test]
+fn wave_b_bus_to_cluster_adapter_publishes_mapped_inbound_message() {
+    use nemesis_cluster::cluster::MessageBus as _;
+
+    let bus = std::sync::Arc::new(nemesis_bus::MessageBus::new());
+    // broadcast 是晚订阅语义：先订阅再发布才能收到。
+    let mut rx = bus.subscribe_inbound();
+    let adapter = BusToClusterAdapter {
+        bus: bus.clone(),
+    };
+
+    adapter.publish_inbound(nemesis_cluster::cluster::BusInboundMessage {
+        channel: "cluster".to_string(),
+        sender_id: "peer-node-x".to_string(),
+        chat_id: "chat-42".to_string(),
+        content: "cross-node hello".to_string(),
+    });
+
+    let msg = rx
+        .try_recv()
+        .expect("适配器必须把 BusInboundMessage 映射到真实总线");
+    assert_eq!(msg.channel, "cluster");
+    assert_eq!(msg.sender_id, "peer-node-x");
+    assert_eq!(msg.chat_id, "chat-42");
+    assert_eq!(msg.content, "cross-node hello");
+    // 映射时补齐的默认字段：无媒体/空会话键/空关联 ID/无元数据。
+    assert!(msg.media.is_empty());
+    assert_eq!(msg.session_key, "");
+    assert_eq!(msg.correlation_id, "");
+    assert!(msg.metadata.is_empty());
+    assert!(msg.voice_playback.is_none());
+}
+
+// -------------------------------------------------------------------------
+// migrate_legacy_workflow_dir 的 rename 失败与非目录跳过分支（workflow）
+// -------------------------------------------------------------------------
+
+#[cfg(feature = "workflow")]
+#[test]
+fn wave_b_migrate_skips_stray_file_and_existing_dest_checkpoint_dirs() {
+    let tmp = tempfile::tempdir().unwrap();
+    let home = tmp.path();
+    let exec_dir = home.join("workspace").join("workflow").join("executions");
+    let ckpt_dir = home.join("workspace").join("workflow").join("checkpoints");
+    std::fs::create_dir_all(&exec_dir).unwrap();
+    std::fs::create_dir_all(&ckpt_dir).unwrap();
+
+    let legacy = home.join("workflow");
+    std::fs::create_dir_all(legacy.join("checkpoints")).unwrap();
+    // 非目录条目：checkpoints/ 下混进一个散文件 → 跳过且原地保留。
+    std::fs::write(legacy.join("checkpoints").join("stray-note.txt"), "keep me").unwrap();
+    // 目的地已有同名 checkpoint 目录 → 跳过（幂等，不覆盖新数据）。
+    std::fs::create_dir_all(ckpt_dir.join("exec-exists")).unwrap();
+    std::fs::write(
+        ckpt_dir.join("exec-exists").join("cp.json"),
+        "{\"v\":2}",
+    )
+    .unwrap();
+    std::fs::create_dir_all(legacy.join("checkpoints").join("exec-exists")).unwrap();
+    std::fs::write(
+        legacy.join("checkpoints").join("exec-exists").join("cp.json"),
+        "{\"v\":1}",
+    )
+    .unwrap();
+    // 一个可正常迁移的对照目录。
+    std::fs::create_dir_all(legacy.join("checkpoints").join("exec-fresh")).unwrap();
+    std::fs::write(
+        legacy.join("checkpoints").join("exec-fresh").join("cp.json"),
+        "{\"v\":9}",
+    )
+    .unwrap();
+
+    migrate_legacy_workflow_dir(home, &exec_dir, &ckpt_dir);
+
+    assert!(
+        legacy.join("checkpoints").join("stray-note.txt").exists(),
+        "非目录条目必须原地保留"
+    );
+    assert_eq!(
+        std::fs::read_to_string(ckpt_dir.join("exec-exists").join("cp.json")).unwrap(),
+        "{\"v\":2}",
+        "目的地已存在的 checkpoint 目录不被覆盖"
+    );
+    assert!(
+        legacy.join("checkpoints").join("exec-exists").is_dir(),
+        "被跳过的来源 checkpoint 目录原地保留"
+    );
+    assert_eq!(
+        std::fs::read_to_string(ckpt_dir.join("exec-fresh").join("cp.json")).unwrap(),
+        "{\"v\":9}",
+        "对照目录正常迁入"
+    );
+}
+
+/// Windows 专属：用 std::os::windows::fs::OpenOptionsExt::share_mode 打开
+/// 句柄并剥掉 FILE_SHARE_DELETE → 目标文件的 fs::rename 报
+/// ERROR_SHARING_VIOLATION，确定性走进 rename 失败告警分支。
+#[cfg(all(windows, feature = "workflow"))]
+#[test]
+fn wave_b_migrate_locked_jsonl_rename_failure_warns_and_keeps_legacy_intact() {
+    use std::os::windows::fs::OpenOptionsExt;
+
+    const FILE_SHARE_READ: u32 = 0x1;
+    const FILE_SHARE_WRITE: u32 = 0x2; // 故意缺 FILE_SHARE_DELETE(0x4)
+
+    let tmp = tempfile::tempdir().unwrap();
+    let home = tmp.path();
+    let exec_dir = home.join("workspace").join("workflow").join("executions");
+    let ckpt_dir = home.join("workspace").join("workflow").join("checkpoints");
+    std::fs::create_dir_all(&exec_dir).unwrap();
+    std::fs::create_dir_all(&ckpt_dir).unwrap();
+
+    let legacy = home.join("workflow");
+    std::fs::create_dir_all(&legacy).unwrap();
+    // 被锁的 jsonl：rename 将失败 → 告警后原样留在 legacy。
+    let locked_path = legacy.join("wf_locked_exec1.jsonl");
+    std::fs::write(&locked_path, "{\"e\":\"locked\"}").unwrap();
+    let _lock = std::fs::OpenOptions::new()
+        .read(true)
+        .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
+        .open(&locked_path)
+        .expect("打开共享锁句柄");
+    // 自由文件作对照：随迁移搬走。
+    std::fs::write(legacy.join("wf_free_exec2.jsonl"), "{\"e\":\"free\"}").unwrap();
+
+    migrate_legacy_workflow_dir(home, &exec_dir, &ckpt_dir);
+
+    assert!(
+        exec_dir.join("wf_free_exec2.jsonl").exists(),
+        "自由 jsonl 正常迁入 executions/"
+    );
+    assert!(
+        locked_path.exists(),
+        "被锁 jsonl rename 失败后必须原地保留（不得丢数据）"
+    );
+    assert!(
+        legacy.exists(),
+        "仍持有残留数据的 legacy 目录不得删除（partial 保护）"
+    );
+}
+} // mod wave_b
+
+// =========================================================================
+// R9 gateway 活动场景补测（llvm-cov miss 区段回填 · 子进程级真启动）
+//
+// 覆盖目标区间（nemesisbot/src/commands/gateway.rs）：
+//   - 1017-1034 缺配置文件两段 eprintln + exit(1)（真实子进程退码断言）
+//   - 1574-1600 skills 配置缺失 info 臂（此前只有 valid 分支被种子过）
+//   - 1840-1844 cluster.llm_timeout_secs=0 → 24h 回退臂
+//   - 2188-2191 CORS development_mode info 臂；2201-2207 CORS 坏 JSON warn 臂
+//   - 2232-2341 全部 13 个通道 push 臂 + ChannelInitConfig 外部通道 Some 构造臂
+//   - 2454-2460 security.enabled=true 但 config.security.json 缺失的 sec_json=None 臂
+//     （+ 同块尾部 scanner 配置缺失 info 臂）
+//   - 2540-2545 Security plugin disabled by configuration 显式禁用臂
+//   - 2568-2572 logging.llm 非空 log_dir else 臂（空字符串回退臂已由 S11d 覆盖）
+//   - 3254-3285 devices.enabled=true 的 DeviceService 启动成功 info 臂
+//   - 1182-1280 workflow 装配块的活动分支：defs 加载 Ok(n>0) info / cron 触发器
+//     注册计数>0 info / checkpoint 恢复 Ok(n>0) info / executor world Some 接线 /
+//     legacy 目录迁移在真实启动路径上执行
+//   - 3420-3447 web bind 冲突：error!/fallback warn + state 文件回落写入配置端口
+//
+// 形态说明：
+//   - 端口纪律：web/health/websocket/maixcam 一律 127.0.0.1:0 由 OS 分配；
+//     line webhook 与端口冲突占用者用「先探测再使用」的高位空闲端口，
+//     绝不触碰生产端口 18790/49000/49001/8080。
+//   - 不用 test_harness::ManagedProcess 承载长跑网关：它把子进程 stdout 设为
+//     piped 且不排空，INFO 级日志长时间写入会触发管道回压把子进程卡死。
+//     本模块自带 R9GatewayProc（双流继承 + Drop 兜底强杀 + 优雅停机等退）。
+//   - 优雅停机走 test_harness::graceful_shutdown_gateway（/api/internal +
+//     X-Auth-Token），保证覆盖插桩二进制走正常 atexit 落 .profraw。
+//   - 端口冲突场景无法优雅停机（web server 死了 /api/internal 就不可达），
+//     采用 S11d 的结构豁免先例：in-process 独立线程跑 run()，测试进程正常
+//     退出时统一落盘覆盖率，线程挂起在 wait_for_shutdown 随进程销毁。
+// =========================================================================
+
+mod r9_gateway_boot_scenarios {
+    use super::*;
+
+    // ---------------------------------------------------------------------
+    // 子进程托管（双流继承版，规避 ManagedProcess 的 stdout 回压隐患）
+    // ---------------------------------------------------------------------
+
+    struct R9GatewayProc {
+        child: Option<tokio::process::Child>,
+        #[allow(dead_code)]
+        name: &'static str,
+    }
+
+    /// 子网关的 LLVM_PROFILE_FILE 注入。曾因 test-harness 对应 helper 私有而
+    /// 整段复刻（漂移风险），现直接委托公开的单一真相源实现。
+    fn r9_coverage_profile(slug: &str) -> Option<String> {
+        test_harness::coverage_profile_file(slug)
+    }
+
+    /// 先 bind 再放手，取一个「此刻空闲」的高位端口（line webhook / 冲突占位用）。
+    /// 有固有 TOCTOU 窗口；对 line 场景即使被抢也只是通道内部 bind warn，
+    /// 不影响网关就绪与断言。
+    fn r9_probe_free_tcp_port() -> u16 {
+        std::net::TcpListener::bind(("127.0.0.1", 0))
+            .expect("probe ephemeral port")
+            .local_addr()
+            .expect("local addr")
+            .port()
+    }
+
+    impl R9GatewayProc {
+        fn spawn(name: &'static str, program: &std::path::Path, cwd: &std::path::Path) -> Self {
+            let mut cmd = tokio::process::Command::new(program);
+            cmd.args(["--local", "gateway"])
+                .current_dir(cwd)
+                .stdout(std::process::Stdio::inherit())
+                .stderr(std::process::Stdio::inherit())
+                .kill_on_drop(true);
+            if let Some(profile) = r9_coverage_profile(name) {
+                cmd.env("LLVM_PROFILE_FILE", profile);
+            }
+            let child = cmd.spawn().unwrap_or_else(|e| panic!("spawn {name}: {e}"));
+            Self { child: Some(child), name }
+        }
+
+        /// 优雅停机后等子进程自然退出（让插桩二进制走 atexit 落 .profraw）。
+        async fn wait_exit(&mut self, timeout: std::time::Duration) {
+            let Some(child) = self.child.as_mut() else {
+                panic!("{} already stopped", self.name);
+            };
+            let deadline = tokio::time::Instant::now() + timeout;
+            loop {
+                match child.try_wait().expect("try_wait") {
+                    Some(status) => {
+                        eprintln!("  {} exited with: {}", self.name, status);
+                        self.child = None;
+                        return;
+                    }
+                    None => {
+                        assert!(
+                            tokio::time::Instant::now() < deadline,
+                            "{} 未在 {:?} 内退出",
+                            self.name,
+                            timeout
+                        );
+                        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+                    }
+                }
+            }
+        }
+    }
+
+    impl Drop for R9GatewayProc {
+        fn drop(&mut self) {
+            if let Some(mut child) = self.child.take() {
+                let _ = child.start_kill();
+            }
+        }
+    }
+
+    /// 共享基座配置：编译期默认值改写网络面（全 0 → OS 分配、host 收敛到
+    /// 127.0.0.1）、workspace 指向临时 home、模型条目指向死端点（启动期无 LLM
+    /// 流量，死端点即安全）。与 S11d full_assembly 同款骨架。
+    ///
+    /// 注意保持与既有测试的差异面最小：security/devices/memory/logging 等
+    /// 开关一律留给各场景自己翻转，基座不动。
+    fn r9_base_config(home: &std::path::Path) -> serde_json::Value {
+        let mut cfg: serde_json::Value =
+            serde_json::from_str(crate::CONFIG_DEFAULT).expect("parse CONFIG_DEFAULT");
+        cfg["channels"]["web"]["host"] = serde_json::json!("127.0.0.1");
+        cfg["channels"]["web"]["port"] = serde_json::json!(0);
+        cfg["gateway"]["host"] = serde_json::json!("127.0.0.1");
+        cfg["gateway"]["port"] = serde_json::json!(0);
+        cfg["agents"]["defaults"]["llm"] = serde_json::json!("mini-model");
+        cfg["agents"]["defaults"]["workspace"] =
+            serde_json::json!(home.join("workspace").to_string_lossy().to_string());
+        cfg["model_list"] = serde_json::json!([{
+            "model_name": "mini-model",
+            "model": "testai/mini-model",
+            "api_key": "test-key",
+            "api_base": "http://127.0.0.1:9",
+            "model_tier": "mini"
+        }]);
+        cfg
+    }
+
+    /// 启动网关子进程直到 state 文件出现非零 web_port（bind 后才写），留出
+    /// 尾巴时间，然后优雅停机并等自然退出；返回最终 state JSON 供断言。
+    async fn r9_spawn_until_ready_then_graceful_stop(
+        name: &'static str,
+        ws: &test_harness::TestWorkspace,
+        cfg: serde_json::Value,
+    ) -> serde_json::Value {
+        // TestWorkspace::new() 只建 tempdir，.nemesisbot 子目录需显式创建，
+        // 否则 write(config.json) 直接 NotFound（channel_ladder 等直接走本 helper
+        // 的场景没有夹具先写别的文件顺带建目录）。
+        std::fs::create_dir_all(ws.home()).expect("create home dir");
+        std::fs::write(ws.config_path(), cfg.to_string()).expect("write config.json");
+
+        let bin = test_harness::resolve_nemesisbot_bin().expect("resolve nemesisbot bin");
+        let mut proc = R9GatewayProc::spawn(name, &bin, ws.path());
+
+        let state_path = ws.home().join("workspace").join("state").join("gateway.json");
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
+        let web_port: u16 = loop {
+            if let Ok(txt) = std::fs::read_to_string(&state_path) {
+                if let Ok(v) = serde_json::from_str::<serde_json::Value>(&txt) {
+                    let p = v.get("web_port").and_then(|x| x.as_i64()).unwrap_or(0);
+                    if p > 0 {
+                        break p as u16;
+                    }
+                }
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "{name} 未在 120s 内完成 web bind；state={:?}",
+                std::fs::read_to_string(&state_path)
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        };
+
+        // 尾巴时间：state 写入之后还有 banner / 连通性自检 / bot service 等。
+        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+
+        let final_state: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(&state_path).expect("state file readable"),
+        )
+        .expect("state json");
+
+        let token = cfg["channels"]["web"]["auth_token"]
+            .as_str()
+            .unwrap_or_default()
+            .to_string();
+        test_harness::graceful_shutdown_gateway(web_port, &token)
+            .await
+            .expect("graceful shutdown accepted");
+        proc.wait_exit(std::time::Duration::from_secs(90)).await;
+
+        final_state
+    }
+
+    // ---------------------------------------------------------------------
+    // 场景 A：缺 config.json → 两段 eprintln + exit(1)（1017-1034）
+    // ---------------------------------------------------------------------
+
+    /// 真实子进程负向断言：cwd 下没有 `.nemesisbot`（--local 解析到的 home），
+    /// gateway 必须立刻打错误提示并以退码 1 结束，绝不进入装配流程。
+    #[tokio::test]
+    async fn r9_gateway_missing_config_exits_1_with_onboard_hint() {
+        let bin = test_harness::resolve_nemesisbot_bin().expect("resolve nemesisbot bin");
+        let ws = test_harness::TestWorkspace::new().expect("temp workspace");
+        // 故意不创建 .nemesisbot：config.json 必然缺失。
+
+        let mut cmd = tokio::process::Command::new(&bin);
+        cmd.args(["--local", "gateway"])
+            .current_dir(ws.path())
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::piped());
+        if let Some(profile) = r9_coverage_profile("r9_gateway_missing_config") {
+            cmd.env("LLVM_PROFILE_FILE", profile);
+        }
+        let mut child = cmd.spawn().expect("spawn negative gateway");
+
+        let status = tokio::time::timeout(std::time::Duration::from_secs(60), child.wait())
+            .await
+            .expect("must exit within 60s")
+            .expect("wait status");
+        assert_eq!(status.code(), Some(1), "缺配置必须 exit(1)");
+
+        // 管道数据在写端关闭后仍可读：校验两段用户指引文案都在。
+        let mut stderr_text = String::new();
+        {
+            use tokio::io::AsyncReadExt as _;
+            let mut err_stream = child.stderr.take().expect("stderr piped");
+            err_stream
+                .read_to_string(&mut stderr_text)
+                .await
+                .expect("read stderr");
+        }
+        assert!(
+            stderr_text.contains("Configuration file not found"),
+            "应含缺失配置报错，stderr={stderr_text}"
+        );
+        assert!(
+            stderr_text.contains("onboard default"),
+            "应含修复指引，stderr={stderr_text}"
+        );
+    }
+
+    // ---------------------------------------------------------------------
+    // 场景 B/C/D/E/F：五个一次性启动实例（每实例一组互斥翻转）
+    // ---------------------------------------------------------------------
+
+    /// 「安静翻转」实例：security 显式禁用 + skills 配置缺席 + CORS dev-mode +
+    /// logging.llm detail_level 非 truncated 且 log_dir 非空 + devices.enabled=true
+    /// + cluster llm_timeout_secs=0。
+    ///
+    /// 点亮：2540-2545 禁用臂、1597-1600 缺席 info 臂、2188-2191 dev-mode 臂、
+    /// 2568-2572 非空 log_dir 臂（_=>Full 由默认 summary 已命中，仍显式给值
+    /// 保持意图）、3276-3285 DeviceService 启动成功臂、1843 的 24h 回退臂。
+    /// 这些分支只能靠日志文本观测，测试断言收敛到「按期就绪 + 干净退出」。
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn r9_gateway_quiet_flips_boot_reaches_ready_and_exits_cleanly() {
+        let ws = test_harness::TestWorkspace::new().expect("temp workspace");
+        let home = ws.home();
+
+        let mut cfg = r9_base_config(&home);
+        cfg["security"]["enabled"] = serde_json::json!(false);
+        // skills 配置故意不种 → 1560-1600 的 else 缺席 info 臂。
+        cfg["logging"]["llm"]["enabled"] = serde_json::json!(true);
+        cfg["logging"]["llm"]["detail_level"] = serde_json::json!("full");
+        cfg["logging"]["llm"]["log_dir"] = serde_json::json!("logs/request_logs_r9");
+        cfg["devices"]["enabled"] = serde_json::json!(true);
+
+        // cluster 应用配置：enabled=false（不开 UDP/RPC 网络），但
+        // llm_timeout_secs=0 → 1840-1844 的 24h 回退臂。
+        let ws_config_dir = home.join("workspace").join("config");
+        std::fs::create_dir_all(&ws_config_dir).unwrap();
+        std::fs::write(
+            ws_config_dir.join("config.cluster.json"),
+            r#"{"enabled":false,"port":11949,"rpc_port":21949,"broadcast_interval":30,"llm_timeout_secs":0}"#,
+        )
+        .unwrap();
+
+        // CORS dev-mode：2188-2191 info 臂。
+        let home_config_dir = home.join("config");
+        std::fs::create_dir_all(&home_config_dir).unwrap();
+        std::fs::write(
+            home_config_dir.join("cors.json"),
+            r#"{"allowed_origins": [], "development_mode": true}"#,
+        )
+        .unwrap();
+
+        let state =
+            r9_spawn_until_ready_then_graceful_stop("gateway-r9-quiet-flips", &ws, cfg).await;
+        assert_eq!(state["web_host"], "127.0.0.1");
+        assert!(
+            state["web_port"].as_i64().unwrap_or(0) > 0,
+            "state={state}"
+        );
+    }
+
+    /// 「坏 JSON 种子」实例：config.skills.json 非法 JSON + cors.json 非法 JSON
+    /// + security.enabled=true 但完全不给 config.security.json / config.scanner.json。
+    ///
+    /// 点亮：1586-1595 skills 坏 JSON warn 臂、2201-2207 CORS 坏 JSON warn 臂、
+    /// 2454-2460 sec_json=None 臂 + 插件照常构造、scanner 配置缺失 info 臂。
+    /// 断言核心：坏文件绝不阻断启动。
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn r9_gateway_bad_json_seeds_keep_boot_alive() {
+        let ws = test_harness::TestWorkspace::new().expect("temp workspace");
+        let home = ws.home();
+
+        let mut cfg = r9_base_config(&home);
+        cfg["security"]["enabled"] = serde_json::json!(true);
+
+        let ws_config_dir = home.join("workspace").join("config");
+        std::fs::create_dir_all(&ws_config_dir).unwrap();
+        // skills registry 解析失败 warn 臂（必须能让 serde 拒收的内容）。
+        std::fs::write(ws_config_dir.join("config.skills.json"), "{{{ not json").unwrap();
+        // 刻意不写 config.security.json / config.scanner.json。
+
+        let home_config_dir = home.join("config");
+        std::fs::create_dir_all(&home_config_dir).unwrap();
+        // CORSManager::load_from_file 失败 → 2201-2207 warn 臂（宽松默认继续）。
+        std::fs::write(home_config_dir.join("cors.json"), "[not an object").unwrap();
+
+        let state = r9_spawn_until_ready_then_graceful_stop("gateway-r9-bad-json", &ws, cfg).await;
+        assert_eq!(state["web_host"], "127.0.0.1");
+        assert!(state["web_port"].as_i64().unwrap_or(0) > 0, "state={state}");
+    }
+
+    /// 「通道全家桶」实例：13 个通道开关全开（push 臂全覆盖）+ line/maixcam/
+    /// websocket 的 ChannelInitConfig Some 构造臂；external 开启但 exe 留空 ——
+    /// manager 构造器会报错并被容忍（error! 后 continue），验证初始化失败不致命。
+    ///
+    /// 注意：telegram/discord/feishu/slack/whatsapp/dingtalk/qq/onebot 在默认
+    /// 构建里未编译（channels-* feature 默认只开 web/webhook/rpc），它们的
+    /// 开关只点亮 gateway 侧 push 行和 enabled_channels 计数，不会拉起网络。
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn r9_gateway_channel_ladder_boot_constructs_all_init_configs() {
+        let ws = test_harness::TestWorkspace::new().expect("temp workspace");
+        let home = ws.home();
+
+        let mut cfg = r9_base_config(&home);
+
+        // 13 个通道位全开（2232-2272 push 臂逐个点亮）。
+        for name in [
+            "web", "websocket", "telegram", "discord", "feishu", "slack", "whatsapp",
+            "dingtalk", "qq", "line", "onebot", "maixcam", "external",
+        ] {
+            cfg["channels"][name]["enabled"] = serde_json::json!(true);
+        }
+
+        // websocket：wave_b/S11d 同款安全参数（127.0.0.1:0 → Some 构造臂 2326-2333）。
+        cfg["channels"]["websocket"]["host"] = serde_json::json!("127.0.0.1");
+        cfg["channels"]["websocket"]["port"] = serde_json::json!(0);
+        cfg["channels"]["websocket"]["sync_to"] = serde_json::json!(["web"]);
+
+        // maixcam：loopback + 0 端口（TcpListener 字面接受 0 → 临时端口，
+        // 不经手任何 8080 类默认替换），Some 构造臂 2309-2321。
+        cfg["channels"]["maixcam"]["host"] = serde_json::json!("127.0.0.1");
+        cfg["channels"]["maixcam"]["port"] = serde_json::json!(0);
+
+        // line：webhook_port=0 会被通道内部替换成 8080（生产端口禁区！），
+        // 必须喂一个真实探测到的高位空闲端口。Some 构造臂 2300-2307。
+        let line_port = r9_probe_free_tcp_port();
+        cfg["channels"]["line"]["channel_access_token"] = serde_json::json!("r9-dummy-token");
+        cfg["channels"]["line"]["channel_secret"] = serde_json::json!("r9-dummy-secret");
+        cfg["channels"]["line"]["webhook_port"] = serde_json::json!(line_port);
+
+        // external：exe 留默认空串 → ExternalChannel::new 返回 Err → manager
+        // 记录错误并继续（恒 Ok），验证通道初始化失败不影响网关存活。
+
+        let state = r9_spawn_until_ready_then_graceful_stop("gateway-r9-channels", &ws, cfg).await;
+        assert_eq!(state["web_host"], "127.0.0.1");
+        assert!(state["web_port"].as_i64().unwrap_or(0) > 0, "state={state}");
+    }
+
+    /// 无 workflow 定义的对照位已被 G 组顺带覆盖（Ok(0)/Ok(_) 空恢复臂）；
+    /// 本组专注 workflow 有料臂，单列一个实例避免 YAML/检查点噪声污染 G 组。
+    ///
+    /// seeds：
+    ///   - definitions/ 三件套：合法 cron 触发 YAML（2 月 29 日表达式，测试期
+    ///     不会真的触发）、可恢复目标双节点链、坏 YAML（引擎 warn-skip）。
+    ///   - checkpoints：用 FileCheckpointStore 以引擎同构方式落一个 hash 匹配
+    ///     的 waiting 检查点 + 一个损坏 JSON（引发隔离/告警路径）。
+    ///   - legacy {home}/workflow/ 目录（jsonl + checkpoints + 干扰文件）驱动
+    ///     真实启动路径上的旧布局迁移（含 partial 清理告警）。
+    ///   - executor.enabled=true + sandbox=false → build_workflow_world Some(world)
+    ///     接线臂（Layer-1 stdio 世界不需要 Sandboxie 就绪）。
+    #[cfg(feature = "workflow")]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn r9_gateway_workflow_defs_cron_checkpoint_restore_live() {
+        use nemesis_workflow::checkpoint::{
+            Checkpoint, CheckpointStore as _, FileCheckpointStore, SerializableContext,
+        };
+
+        let ws = test_harness::TestWorkspace::new().expect("temp workspace");
+        let home = ws.home();
+
+        let mut cfg = r9_base_config(&home);
+        cfg["executor"] = serde_json::json!({"enabled": true, "sandbox": false});
+
+        let wf_root = home.join("workspace").join("workflow");
+        let defs_dir = wf_root.join("definitions");
+        std::fs::create_dir_all(&defs_dir).unwrap();
+
+        // ① cron 触发工作流：schedule 用「2 月 29 日 02:30」——表达式合法
+        //    （croner 接受），实际下一次触发放到数年之后，测试期内绝不会开跑。
+        std::fs::write(
+            defs_dir.join("wf_cron.yaml"),
+            r#"
+name: r9_cron_wf
+description: R9 cron trigger fixture
+version: "1.0.0"
+nodes:
+  - id: n1
+    node_type: llm
+    config: {}
+    depends_on: []
+    retry_count: 0
+edges: []
+triggers:
+  - trigger_type: cron
+    config:
+      schedule: "30 2 29 2 *"
+      timezone: local
+variables: {}
+"#,
+        )
+        .unwrap();
+
+        // ② 恢复目标：双节点链（n1 完成、停在 n2 等待），给检查点做 hash 匹配。
+        std::fs::write(
+            defs_dir.join("wf_restore_target.yaml"),
+            r#"
+name: r9_restore_wf
+description: R9 checkpoint restore fixture
+version: "1.0.0"
+nodes:
+  - id: n1
+    node_type: llm
+    config: {}
+    depends_on: []
+    retry_count: 0
+  - id: n2
+    node_type: llm
+    config: {}
+    depends_on: [n1]
+    retry_count: 0
+edges:
+  - from_node: n1
+    to_node: n2
+triggers: []
+variables: {}
+"#,
+        )
+        .unwrap();
+
+        // ③ 坏 YAML：load 循环 warn-skip，不计入加载数，也不炸启动。
+        std::fs::write(defs_dir.join("broken.yaml"), "{ not yaml :: [").unwrap();
+
+        // 用引擎同款解析器算 hash（Workflow::hash 为定义结构 SHA-256），
+        // 保证网关端 restore 时能按 hash 找回注册的定义。
+        let parsed = nemesis_workflow::parser::parse_file(&defs_dir.join("wf_restore_target.yaml"))
+            .expect("parse restore target");
+        let workflow_hash = parsed.hash();
+
+        let ckpt_store =
+            FileCheckpointStore::new(wf_root.join("checkpoints")).expect("checkpoint store root");
+        ckpt_store
+            .save(Checkpoint {
+                id: "cp-r9-1".to_string(),
+                execution_id: "r9-exec-1".to_string(),
+                saved_at: chrono::Utc::now(),
+                completed_nodes: ["n1".to_string()].into_iter().collect(),
+                waiting_node: Some("n2".to_string()),
+                parent_execution_id: None,
+                trigger_source: None,
+                terminal: false,
+                context_snapshot: SerializableContext {
+                    variables: std::collections::HashMap::new(),
+                    node_results: std::collections::HashMap::new(),
+                    input: std::collections::HashMap::new(),
+                },
+                workflow_hash,
+            })
+            .await
+            .expect("save waiting checkpoint");
+
+        // 损坏检查点：file_store 读取时 quarantine/告警，restore 计数不受影响。
+        let broken_exec = wf_root
+            .join("checkpoints")
+            .join("checkpoints")
+            .join("r9-exec-broken");
+        std::fs::create_dir_all(&broken_exec).unwrap();
+        std::fs::write(broken_exec.join("broken.json"), "{\"half\": tru").unwrap();
+
+        // legacy 旧扁平布局（位于 home/workflow）：两个可迁移条目 + 一个干扰
+        // 文件 → 迁移搬走可识别项、保留干扰项、legacy 目录不清空（partial）。
+        let legacy = home.join("workflow");
+        std::fs::create_dir_all(legacy.join("checkpoints").join("exec-old")).unwrap();
+        std::fs::write(legacy.join("wf_old_exec1.jsonl"), "{\"e\":1}").unwrap();
+        std::fs::write(
+            legacy.join("checkpoints").join("exec-old").join("cp.json"),
+            "{\"cp\":1}",
+        )
+        .unwrap();
+        std::fs::write(legacy.join("notes.txt"), "user data stays").unwrap();
+
+        let state =
+            r9_spawn_until_ready_then_graceful_stop("gateway-r9-workflow-live", &ws, cfg).await;
+        assert_eq!(state["web_host"], "127.0.0.1");
+        assert!(state["web_port"].as_i64().unwrap_or(0) > 0, "state={state}");
+
+        // 迁移副作用事后复核：legacy 内容被搬进新布局，notes.txt 留守原地。
+        // 注意落点深度：migrate 把 legacy/checkpoints/<exec> 直搬进
+        // workspace/workflow/checkpoints/（无内层 checkpoints 段）——与引擎的
+        // FileCheckpointStore（root/checkpoints/<exec>）是不同层级，互不干扰。
+        assert!(wf_root.join("executions").join("wf_old_exec1.jsonl").exists());
+        assert!(wf_root
+            .join("checkpoints")
+            .join("exec-old")
+            .join("cp.json")
+            .exists());
+        assert!(legacy.join("notes.txt").exists(), "partial 保留不得删干扰文件");
+    }
+
+    // ---------------------------------------------------------------------
+    // 场景 G：web bind 冲突 → error!/fallback warn + state 回落写配置端口
+    // ---------------------------------------------------------------------
+
+    /// in-process 版（S11d 结构豁免先例）：测试先占住 web 目标端口，网关线程
+    /// 里 axum bind 失败 → error@3428 + bound_rx Err → warn@3440 → real_port=
+    /// 配置端口 → state 文件照常写出。断言确定性来自「端口全程被我持有」：
+    /// state.web_port 只可能等于这个被占用端口本身，别无来路。
+    ///
+    /// 为什么不能优雅停机：/api/internal 挂在死掉的 web server 上，POST 不可达；
+    /// 强杀子进程会丢 profraw——所以与本模块其余子进程用例不同，这里走
+    /// 进程内线程，测试进程自身干净退出时统一落盘覆盖率（同 S11d 注释里的
+    /// 「线程随测试进程退出销毁」豁免条款）。
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn r9_gateway_web_bind_conflict_writes_config_port_into_state() {
+        let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let th = temp_home_env();
+
+        // 占住目标端口（探测→立刻转正为长期持有者，消除窗口竞争）。
+        let busy_port = r9_probe_free_tcp_port();
+        let busy_holder = std::net::TcpListener::bind(("127.0.0.1", busy_port))
+            .expect("hold busy port for conflict scenario");
+
+        let mut cfg = r9_base_config(&th.home);
+        cfg["channels"]["web"]["port"] = serde_json::json!(busy_port);
+        std::fs::create_dir_all(th.home.join("workspace").join("config")).unwrap();
+        std::fs::write(th.home.join("config.json"), cfg.to_string()).unwrap();
+
+        let state_path = th.home.join("workspace").join("state").join("gateway.json");
+        std::thread::Builder::new()
+            .name("gateway-r9-bind-conflict".into())
+            .spawn(move || {
+                let rt = tokio::runtime::Builder::new_multi_thread()
+                    .worker_threads(2)
+                    .enable_all()
+                    .build()
+                    .expect("build gateway conflict-test runtime");
+                let _ = rt.block_on(async { run(false, &[]).await });
+            })
+            .expect("spawn gateway thread");
+
+        // 就绪信号 = state 文件出现 web_port>0；本场景里它只能是配置端口
+        // （fallback 臂的产物），而不是某个新分配的临时端口。
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
+        let observed: u16 = loop {
+            if let Ok(txt) = std::fs::read_to_string(&state_path) {
+                if let Ok(v) = serde_json::from_str::<serde_json::Value>(&txt) {
+                    if let Some(p) = v.get("web_port").and_then(|x| x.as_i64()) {
+                        if p > 0 {
+                            break p as u16;
+                        }
+                    }
+                }
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "bind-conflict 网关未在 120s 内写出 state；holder={:?}",
+                busy_holder.local_addr()
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        };
+
+        // 尾巴时间让 banner / 自检输出跑完（全部发生在 fallback 之后）。
+        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+
+        let final_state: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(&state_path).expect("state readable"),
+        )
+        .expect("state json");
+        assert_eq!(final_state["web_host"], "127.0.0.1");
+        assert_eq!(
+            final_state["web_port"].as_u64(),
+            Some(busy_port as u64),
+            "端口被占用时 state 必须回落成配置端口（fallback 臂证据）"
+        );
+        assert_eq!(observed, busy_port);
+
+        // busy_holder 保活到断言结束（放在末尾抑制 unused 警告的真实用途注解）。
+        drop(busy_holder);
+        // 网关线程按 S11d 豁免条款挂起在 wait_for_shutdown，随测试进程销毁。
+    }
+
+    // =====================================================================
+    // R10 确定性批（2026-08-27 MERGED miss 快照 A 类收口的 r10 波次）
+    //
+    // 分工：R9 各场景管「正常翻转启动面」；R10 批管「敌意文件系统种子 +
+    // 配置角落分支 + 直调孪生补保险」。全部子进程形态（敌意种子只是普通
+    // 文件/目录，不需要进程内装配，也不需要 GLOBAL_STATE_LOCK），复用本模
+    // 块既有的 R9GatewayProc / 探测端口 / 优雅停机骨架。
+    // =====================================================================
+
+    /// 固定端口就绪等待器。state 文件被敌意化的场景里 gateway.json 不再是
+    /// 可靠就绪信号，改用「配置端口可 TCP 连通」作 bind 完成证据。
+    async fn r10_wait_tcp_ready(port: u16, what: &str) {
+        let addr = std::net::SocketAddr::from(([127, 0, 0, 1], port));
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(120);
+        loop {
+            if std::net::TcpStream::connect_timeout(&addr, std::time::Duration::from_millis(500))
+                .is_ok()
+            {
+                return;
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "{what}: web port {port} never became connectable within 120s"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+        }
+    }
+
+    /// 通用轮询等待器（与 tests_r9_live 的 wait_until 同构；两文件互为独立
+    /// 测试模块无法互相导入，就地复制保持各文件的单一真相源自足）。
+    async fn r10_wait_until(timeout_secs: u64, what: &str, mut cond: impl FnMut() -> bool) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(timeout_secs);
+        while !cond() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "r10_wait_until({what}): condition not met within {timeout_secs}s"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+        }
+    }
+
+    /// 组装一条预种子过期 "at" 任务（schema 逐字段复刻 nemesis-cron 序列化
+    /// 形态；session_key/max_rounds 由调用方对返回值就地改写以驱动 Opt2 分支
+    /// 与 T3 元数据插入）。
+    fn r10_seed_at_job(id: &str, name: &str, message: &str, due_ms: i64) -> serde_json::Value {
+        serde_json::json!({
+            "id": id,
+            "name": name,
+            "enabled": true,
+            "schedule": {
+                "kind": "at",
+                "at_ms": due_ms,
+                "every_ms": null,
+                "expr": null,
+                "tz": null,
+            },
+            "payload": {
+                "kind": "agent_turn",
+                "message": message,
+                "command": null,
+                "deliver": true,
+                "channel": "web",
+                "to": null,
+                "session_key": null,
+                "max_rounds": null,
+            },
+            "state": {
+                "next_run_at_ms": due_ms,
+                "last_run_at_ms": null,
+                "last_status": null,
+                "last_error": null,
+                "history": [],
+            },
+            "created_at_ms": due_ms - 1000,
+            "updated_at_ms": due_ms - 1000,
+            "delete_after_run": false,
+        })
+    }
+
+    fn r10_seed_cron_store(home: &std::path::Path, jobs: Vec<serde_json::Value>) {
+        let store = serde_json::json!({ "version": 1, "jobs": jobs });
+        let dir = home.join("workspace").join("cron");
+        std::fs::create_dir_all(&dir).expect("mkdir cron dir");
+        std::fs::write(
+            dir.join("jobs.json"),
+            serde_json::to_string_pretty(&store).expect("ser cron store"),
+        )
+        .expect("write cron store");
+    }
+
+    fn r10_cron_last_status(home: &std::path::Path, id: &str) -> Option<String> {
+        let txt =
+            std::fs::read_to_string(home.join("workspace").join("cron").join("jobs.json")).ok()?;
+        let v: serde_json::Value = serde_json::from_str(&txt).ok()?;
+        v.get("jobs")?
+            .as_array()?
+            .iter()
+            .find(|j| j.get("id").and_then(|x| x.as_str()) == Some(id))?
+            .pointer("/state/last_status")
+            .and_then(|s| s.as_str().map(str::to_owned))
+    }
+
+    // ---------------------------------------------------------------------
+    // r10-A：migrate_legacy_workflow_dir 直调孪生（成功布局搬迁 + partial
+    // 干扰保留）。直调层已有 mod migrate_legacy_workflow_tests 四例，这两例
+    // 以同函数再走一遍保证最新测量必然命中入口 info/搬迁循环/cleanup 三段。
+    // ---------------------------------------------------------------------
+
+    #[cfg(feature = "workflow")]
+    #[test]
+    fn r10_migrate_success_moves_layouts_then_removes_legacy_dir() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path();
+        let exec_dir = home.join("workspace").join("workflow").join("executions");
+        let ckpt_dir = home.join("workspace").join("workflow").join("checkpoints");
+        std::fs::create_dir_all(&exec_dir).unwrap();
+        std::fs::create_dir_all(&ckpt_dir).unwrap();
+
+        let legacy = home.join("workflow");
+        std::fs::create_dir_all(legacy.join("checkpoints").join("exec-a")).unwrap();
+        std::fs::write(legacy.join("wf_a_e1.jsonl"), "{\"e\":1}").unwrap();
+        std::fs::write(
+            legacy.join("checkpoints").join("exec-a").join("cp.json"),
+            "{\"cp\":1}",
+        )
+        .unwrap();
+
+        migrate_legacy_workflow_dir(home, &exec_dir, &ckpt_dir);
+
+        assert!(exec_dir.join("wf_a_e1.jsonl").exists(), "jsonl 已迁入 executions/");
+        assert!(
+            ckpt_dir.join("exec-a").join("cp.json").exists(),
+            "checkpoint 子目录整体迁移"
+        );
+        assert!(!legacy.exists(), "清空后的 legacy 根目录应被删除（info 臂）");
+    }
+
+    #[cfg(feature = "workflow")]
+    #[test]
+    fn r10_migrate_partial_keeps_unrecognized_files_keeps_legacy_dir() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path();
+        let exec_dir = home.join("workspace").join("workflow").join("executions");
+        let ckpt_dir = home.join("workspace").join("workflow").join("checkpoints");
+        std::fs::create_dir_all(&exec_dir).unwrap();
+        std::fs::create_dir_all(&ckpt_dir).unwrap();
+
+        let legacy = home.join("workflow");
+        std::fs::create_dir_all(&legacy).unwrap();
+        std::fs::write(legacy.join("notes.txt"), "user data").unwrap();
+        std::fs::write(legacy.join("wf_y.jsonl"), "{}").unwrap();
+
+        migrate_legacy_workflow_dir(home, &exec_dir, &ckpt_dir);
+
+        assert!(exec_dir.join("wf_y.jsonl").exists());
+        assert!(legacy.exists(), "含未识别文件的 legacy 必须原地保留（partial warn 臂）");
+        assert!(legacy.join("notes.txt").exists());
+    }
+
+    // ---------------------------------------------------------------------
+    // r10-B/C：workspace/state 敌意化两连（1095-1097 create_dir_all warn +
+    // 1104-1105 write warn；顺带后续 3468 的状态更新 warn）。state 文件不可
+    // 用后就绪信号换固定端口的 TCP 连通；停机走 /api/internal POST。
+    // ---------------------------------------------------------------------
+
+    /// 场景 B：{home}/workspace/state 是一个**普通文件**——create_dir_all
+    /// 报错 → warn 臂；随后向 <file>/gateway.json 写 state 也报错 → 第二个
+    /// warn 臂。断言核心：启动不被阻断，web 真实 bind 固定探测端口。
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn r10_state_dir_as_regular_file_boot_warns_but_binds_web() {
+        let ws = test_harness::TestWorkspace::new().expect("temp workspace");
+        let home = ws.home();
+
+        let web_port = r9_probe_free_tcp_port();
+        let mut cfg = r9_base_config(&home);
+        cfg["channels"]["web"]["host"] = serde_json::json!("127.0.0.1");
+        cfg["channels"]["web"]["port"] = serde_json::json!(web_port);
+        cfg["channels"]["web"]["auth_token"] = serde_json::json!("r10-state-token");
+
+        // 敌意种子：workspace/ 正常建目录，但 state 是一个文件。
+        std::fs::create_dir_all(home.join("workspace")).expect("mkdir workspace");
+        std::fs::write(home.join("workspace").join("state"), b"I am a file").unwrap();
+
+        std::fs::create_dir_all(&home).expect("create home dir");
+        std::fs::write(ws.config_path(), cfg.to_string()).expect("write config.json");
+
+        let bin = test_harness::resolve_nemesisbot_bin().expect("resolve nemesisbot bin");
+        let mut proc = R9GatewayProc::spawn("gateway-r10-statefile", &bin, ws.path());
+
+        r10_wait_tcp_ready(web_port, "state-as-file boot").await;
+        // 尾巴时间：banner / 自检 / 3461 处二次 state 更新 warn 都跑完。
+        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+
+        test_harness::graceful_shutdown_gateway(web_port, "r10-state-token")
+            .await
+            .expect("graceful shutdown accepted on hostile-state gateway");
+        proc.wait_exit(std::time::Duration::from_secs(90)).await;
+    }
+
+    /// 场景 C：state 目录正常、gateway.json 本身是**目录**——首次 fs::write
+    /// 命中 1104-1105 warn（else 臂反向：info@1107 不触发）。其余与场景 B 相同。
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn r10_state_gateway_json_as_directory_boot_survives_first_write_warn() {
+        let ws = test_harness::TestWorkspace::new().expect("temp workspace");
+        let home = ws.home();
+
+        let web_port = r9_probe_free_tcp_port();
+        let mut cfg = r9_base_config(&home);
+        cfg["channels"]["web"]["host"] = serde_json::json!("127.0.0.1");
+        cfg["channels"]["web"]["port"] = serde_json::json!(web_port);
+        cfg["channels"]["web"]["auth_token"] = serde_json::json!("r10-statedir-token");
+
+        std::fs::create_dir_all(home.join("workspace").join("state")).expect("mkdir state dir");
+        std::fs::create_dir_all(home.join("workspace").join("state").join("gateway.json"))
+            .expect("pre-create gateway.json AS directory");
+
+        std::fs::create_dir_all(&home).expect("create home dir");
+        std::fs::write(ws.config_path(), cfg.to_string()).expect("write config.json");
+
+        let bin = test_harness::resolve_nemesisbot_bin().expect("resolve nemesisbot bin");
+        let mut proc = R9GatewayProc::spawn("gateway-r10-statedir", &bin, ws.path());
+
+        r10_wait_tcp_ready(web_port, "gateway.json-as-dir boot").await;
+        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+
+        test_harness::graceful_shutdown_gateway(web_port, "r10-statedir-token")
+            .await
+            .expect("graceful shutdown accepted");
+        proc.wait_exit(std::time::Duration::from_secs(90)).await;
+    }
+
+    // ---------------------------------------------------------------------
+    // r10-D：综合敌意种子伞——一次启动吃掉一串互不干扰的降级分支：
+    //   - channels.web.host 保持模板 "0.0.0.0" → 归一到 127.0.0.1 再 bind
+    //     （2178-2184；listen 恒在 loopback，无防火墙弹窗风险）
+    //   - workspace/workflow/definitions 是文件 → 子目录创建 warn 循环命中 +
+    //     load_workflows_from_dir read_dir 非 NotFound → PersistenceError →
+    //     外层 warn 臂（1241-1256）
+    //   - config.skills.json 是目录 → read_to_string Err → warn 臂（1591-1597）
+    //   - security.enabled=true + dlp.rules:["phone"] 解析臂（2477-2482）
+    //     + audit_chain_enabled=true 路径设置臂（2494-2507）
+    //   - logs/security_logs 是文件 → init_audit_log_file Err → warn 臂（2519-2522）
+    //   - config.scanner.json {"enabled":["bogus-engine"]} → info + init 调用，
+    //     引擎数 0 → 链内 warn "remains disabled"（零网络）（2531-2538）
+    //   - logging.llm.log_dir="" → 默认回退臂（2568-2576）
+    //   - workspace/data/nemesisbot_data.db 写入垃圾字节 → SCHEMA_V1 立即炸
+    //     → DataStore::open Err → warn 臂（2618-2626）
+    //   - 预种子过期 cron 任务 session_key="agent:r10umb"（非空 → Opt2 router
+    //     分支 1365-1372）+ max_rounds=3（T3 元数据插入 1389-1391）；模型死端
+    //     点即可：on_job 只发布到总线即记 ok，不依赖 LLM 成败
+    // 断言：state 文件 web_host=="127.0.0.1"（归一化铁证）+ cron last_status
+    // =="ok"。state 文件在本场景完好，复用 R9 的标准就绪等待器。
+    // ---------------------------------------------------------------------
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn r10_hostile_fs_and_config_seeds_boot_reaches_web_with_normalized_host() {
+        let ws = test_harness::TestWorkspace::new().expect("temp workspace");
+        let home = ws.home();
+
+        let web_port = r9_probe_free_tcp_port();
+        let mut cfg = r9_base_config(&home);
+        // 有意保持 host 为模板默认 "0.0.0.0"（归一化臂的直接输入）。
+        cfg["channels"]["web"]["port"] = serde_json::json!(web_port);
+        cfg["channels"]["web"]["auth_token"] = serde_json::json!("r10-umb-token");
+        cfg["security"]["enabled"] = serde_json::json!(true);
+        cfg["logging"]["llm"]["enabled"] = serde_json::json!(true);
+        cfg["logging"]["llm"]["log_dir"] = serde_json::json!("");
+
+        let ws_config = home.join("workspace").join("config");
+        std::fs::create_dir_all(&ws_config).unwrap();
+
+        // config.security.json：DLP rules 键位 + audit_chain_enabled。
+        std::fs::write(
+            ws_config.join("config.security.json"),
+            r#"{
+                "default_action": "allow",
+                "audit_chain_enabled": true,
+                "layers": {
+                    "dlp": {
+                        "enabled": false,
+                        "action": "log",
+                        "rules": ["phone"],
+                        "low_confidence_action": "log",
+                        "inbound_action": "log"
+                    }
+                },
+                "process_rules": {"exec": [{"pattern": "never-matches-*", "action": "allow"}]}
+            }"#,
+        )
+        .unwrap();
+
+        // scanner：未知引擎名 → enabled 非空进 info/init 臂，链自降级为零引擎。
+        std::fs::write(
+            ws_config.join("config.scanner.json"),
+            r#"{"enabled": ["bogus-engine"], "engines": {}}"#,
+        )
+        .unwrap();
+
+        // workflow：根是目录、definitions 是文件 → 创建 warn + 加载 PersistenceError。
+        let wf_root = home.join("workspace").join("workflow");
+        std::fs::create_dir_all(&wf_root).unwrap();
+        std::fs::write(wf_root.join("definitions"), b"I am not a directory").unwrap();
+
+        // skills 配置路径变成目录 → read_to_string 直接失败。
+        std::fs::create_dir_all(ws_config.join("config.skills.json"))
+            .expect("create config.skills.json AS directory");
+
+        // logs/security_logs 是文件 → 安全审计日志初始化失败（warn，非致命）。
+        let logs_dir = home.join("workspace").join("logs");
+        std::fs::create_dir_all(&logs_dir).unwrap();
+        std::fs::write(logs_dir.join("security_logs"), b"audit dir hostage").unwrap();
+
+        // DataStore：垃圾字节让 SCHEMA_V1 在 open 时即刻报错。
+        let data_dir = home.join("workspace").join("data");
+        std::fs::create_dir_all(&data_dir).unwrap();
+        std::fs::write(
+            data_dir.join("nemesisbot_data.db"),
+            b"definitely not sqlite \x00\x01\x02 garbage",
+        )
+        .unwrap();
+
+        // cron：Opt2 分支（session_key 非空）+ max_rounds=3 元数据（T3）。
+        let mut job = r10_seed_at_job(
+            "r10umbcron",
+            "opt2-router-driver",
+            "r10 umbrella cron probe please",
+            0, // 由于 below 改写为过期时刻
+        );
+        let due = chrono_millis_now() - 4000;
+        job["schedule"]["at_ms"] = serde_json::json!(due);
+        job["state"]["next_run_at_ms"] = serde_json::json!(due);
+        job["created_at_ms"] = serde_json::json!(due - 1000);
+        job["updated_at_ms"] = serde_json::json!(due - 1000);
+        job["payload"]["session_key"] = serde_json::json!("agent:r10umbrella");
+        job["payload"]["max_rounds"] = serde_json::json!(3);
+        r10_seed_cron_store(&home, vec![job]);
+
+        let state =
+            r9_spawn_until_ready_then_graceful_stop("gateway-r10-umbrella", &ws, cfg).await;
+
+        // 归一化铁证：模板 host "0.0.0.0" 只可能出现在 state 里为归一结果。
+        assert_eq!(
+            state["web_host"],
+            "127.0.0.1",
+            "template 0.0.0.0 must normalize to 127.0.0.1 before bind"
+        );
+        assert!(state["web_port"].as_i64().unwrap_or(0) > 0);
+
+        // Opt2/max_rounds 副作用：任务被执行并记账 ok（agent LLM 死端点无关）。
+        r10_wait_until(90, "umbrella cron job marked ok", || {
+            r10_cron_last_status(&home, "r10umbcron").as_deref() == Some("ok")
+        })
+        .await;
+
+        // 结构复核：敌意种子没有被启动流程破坏性修复（warn-and-continue 语义）。
+        assert!(ws_config.join("config.skills.json").is_dir());
+        assert!(wf_root.join("definitions").is_file());
+    }
+}
+
+/// 毫秒时间戳（cron 种子的过期时刻锚点；模块级自由函数避免在每个测试里重复）。
+fn chrono_millis_now() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("clock before epoch")
+        .as_millis() as i64
 }

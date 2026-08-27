@@ -152,7 +152,14 @@ pub fn run(action: CronAction, local: bool) -> Result<()> {
             let _ = std::fs::create_dir_all(dir);
             let mut jobs: Vec<serde_json::Value> = if store_path.exists() {
                 let data = std::fs::read_to_string(&store_path)?;
-                serde_json::from_str(&data).unwrap_or_default()
+                // 已存在的存储解析失败 ⇒ 拒绝覆盖（否则 unwrap_or_default
+                // 会拿空数组顶掉全部旧任务再写盘，静默毁数据）。
+                serde_json::from_str(&data).map_err(|e| {
+                    anyhow::anyhow!(
+                        "定时任务存储已损坏，已中止新增以免覆盖既有任务: {} ({e})",
+                        store_path.display()
+                    )
+                })?
             } else {
                 vec![]
             };

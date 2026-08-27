@@ -321,21 +321,21 @@ fn test_set_channel_config_empty_value() {
 // -------------------------------------------------------------------------
 
 #[test]
-fn test_get_channel_config_numeric_value_returns_none() {
+fn test_get_channel_config_numeric_value_returns_text() {
     let tmp = TempDir::new().unwrap();
     let cfg = make_config(&tmp);
-    // port is numeric in config, as_str() should return None
+    // BUG #41 修复后端口落 JSON 数字；get 侧按原文回显（非数字才回 "(not set)"）
     let val = get_channel_config(&cfg, "web", "port");
-    assert!(val.is_none());
+    assert_eq!(val.as_deref(), Some("8080"));
 }
 
 #[test]
-fn test_get_channel_config_bool_value_returns_none() {
+fn test_get_channel_config_bool_value_returns_text() {
     let tmp = TempDir::new().unwrap();
     let cfg = make_config(&tmp);
-    // enabled is bool, as_str() should return None
+    // bool 按原文回显为 "true"/"false"
     let val = get_channel_config(&cfg, "web", "enabled");
-    assert!(val.is_none());
+    assert_eq!(val.as_deref(), Some("true"));
 }
 
 // -------------------------------------------------------------------------
@@ -1519,7 +1519,8 @@ fn test_run_web_host_and_port() {
     .unwrap();
     let web = &read_main_cfg(&th.home)["channels"]["web"];
     assert_eq!(web["host"], serde_json::json!("127.0.0.1"));
-    assert_eq!(web["port"], serde_json::json!("49152"));
+    // BUG #41 修复后端口必须落为 JSON 数字（typed 读侧 i64 / as_u64 才能读到）
+    assert_eq!(web["port"], serde_json::json!(49152));
 }
 
 #[test]
@@ -1664,7 +1665,7 @@ fn test_run_websocket_setup_interactive_eof_defaults() {
     // 同步到 web：session_id 生成（ws- 前缀）
     let session = cfg["channels"]["web"]["session_id"].as_str().unwrap();
     assert!(session.starts_with("ws-"));
-    assert_eq!(cfg["channels"]["web"]["port"], serde_json::json!("49001"));
+    assert_eq!(cfg["channels"]["web"]["port"], serde_json::json!(49001));
 }
 
 #[test]
@@ -1683,7 +1684,7 @@ fn test_run_websocket_setup_from_scratch_defaults() {
         cfg["channels"]["websocket"]["host"],
         serde_json::json!("127.0.0.1")
     );
-    assert_eq!(cfg["channels"]["websocket"]["port"], serde_json::json!("49001"));
+    assert_eq!(cfg["channels"]["websocket"]["port"], serde_json::json!(49001));
     assert_eq!(cfg["channels"]["websocket"]["path"], serde_json::json!("/ws"));
 }
 
@@ -1748,7 +1749,7 @@ fn test_run_websocket_set_validations() {
     )
     .unwrap_err();
     assert!(err.to_string().contains("cannot be 0"));
-    // 合法端口写入
+    // 合法端口写入（BUG #41 修复后落 JSON 数字）
     run(
         ChannelAction::WebSocket {
             action: WebSocketAction::Set {
@@ -1761,7 +1762,7 @@ fn test_run_websocket_set_validations() {
     .unwrap();
     assert_eq!(
         read_main_cfg(&th.home)["channels"]["websocket"]["port"],
-        serde_json::json!("49152")
+        serde_json::json!(49152)
     );
     // path 缺 "/" → 自动补
     run(
@@ -1965,4 +1966,668 @@ fn test_run_external_set_and_get() {
         false,
     )
     .unwrap();
+}
+
+// =========================================================================
+// wave_b（覆盖率补测 B 波）：
+//
+// 复用上方 TempHomeEnv / temp_home_env / write_main_cfg / read_main_cfg。
+// stdin 交互型分支（需用户真正键入非空 token/路径/"y"/"n" 的臂）不可单测，
+// 见报告 EXEMPT 表；本模块只测可离线构造的分支：
+//   - Disable 已知通道但 channels 条目缺失 → pointer_mut None 臂 + 照样回写
+//   - Status web 短 auth_token（raw 掩码臂）/ 非对象条目（字段转储跳过）
+//   - Web Status 短 token 与无 token 条目；Web Config 短 token 与非对象条目
+//   - WebSocket Setup：预置 auth_token 的保留与同步到 web 臂；
+//     websocket 条目为非对象时 enabling 被静默跳过（可疑点 C1）
+//   - External Setup：external 条目为非对象同样静默跳过（可疑点 C1）
+// =========================================================================
+
+mod wave_b {
+    use super::*;
+
+    /// Disable 已知通道、但 config 中无该条目 → pointer_mut None（不新建），
+    /// 但文件仍被无害回写（171-194 家族的完整执行）。
+    #[test]
+    fn wave_b_disable_known_channel_absent_entry_still_rewrites_config() {
+        let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let th = temp_home_env();
+        write_main_cfg(&th.home, &serde_json::json!({ "channels": {} }));
+        run(ChannelAction::Disable { name: "slack".into() }, false).unwrap();
+        let cfg = read_main_cfg(&th.home);
+        assert!(
+            cfg["channels"].get("slack").is_none(),
+            "Disable 对缺失条目不得新建"
+        );
+        // 能从磁盘重新解析即证明回写已发生且 JSON 合法。
+    }
+
+    /// Status web：auth_token 长度 ≤4 → last4 掩码走 raw 分支（227 区），
+    /// 不经 ceil_char_boundary 切片。
+    #[test]
+    fn wave_b_status_web_short_auth_token_uses_raw_mask_arm() {
+        let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let th = temp_home_env();
+        write_main_cfg(
+            &th.home,
+            &serde_json::json!({
+                "channels": { "web": { "enabled": true, "auth_token": "ab" } }
+            }),
+        );
+        run(ChannelAction::Status { name: "web".into() }, false).unwrap();
+    }
+
+    /// Status 泛型臂：channels.<name> 是字符串而非对象 → as_object None，
+    /// 字段转储循环整体跳过（260 关联区域）。
+    #[test]
+    fn wave_b_status_non_object_channel_entry_skips_field_dump() {
+        let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let th = temp_home_env();
+        write_main_cfg(
+            &th.home,
+            &serde_json::json!({ "channels": { "discord": "bogus-not-an-object" } }),
+        );
+        run(
+            ChannelAction::Status { name: "discord".into() },
+            false,
+        )
+        .unwrap();
+    }
+
+    /// Web Status 两形态：(a) auth_token ≤4 字符 → raw 掩码臂（378）；
+    /// (b) web 条目存在但完全无 auth_token → has_auth=false，掩码块整体落穿（381 区）。
+    #[test]
+    fn wave_b_web_status_short_auth_then_no_auth_entry() {
+        let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let th = temp_home_env();
+        write_main_cfg(
+            &th.home,
+            &serde_json::json!({
+                "channels": {
+                    "web": { "enabled": true, "host": "127.0.0.1", "port": 8080, "auth_token": "abc" }
+                }
+            }),
+        );
+        run(ChannelAction::Web { action: WebAction::Status }, false).unwrap();
+
+        write_main_cfg(
+            &th.home,
+            &serde_json::json!({
+                "channels": { "web": { "enabled": true, "path": "/ws" } }
+            }),
+        );
+        run(ChannelAction::Web { action: WebAction::Status }, false).unwrap();
+    }
+
+    /// Web Config 两形态：(a) 短 auth_token → raw 分支（452）；
+    /// (b) web 条目是非对象字符串 → as_object None，额外字段循环跳过（488 区）。
+    #[test]
+    fn wave_b_web_config_short_auth_then_non_object_entry() {
+        let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let th = temp_home_env();
+        write_main_cfg(
+            &th.home,
+            &serde_json::json!({
+                "channels": { "web": { "auth_token": "abc", "port": 5000 } }
+            }),
+        );
+        run(ChannelAction::Web { action: WebAction::Config }, false).unwrap();
+
+        write_main_cfg(
+            &th.home,
+            &serde_json::json!({ "channels": { "web": "junk-string" } }),
+        );
+        run(ChannelAction::Web { action: WebAction::Config }, false).unwrap();
+    }
+
+    /// WebSocket Setup：预置 ws.auth_token（EOF 保持原值）→ 提示语预览已有
+    /// token 前 4 位（546）、保留分支 set_channel_config 非 remove（563-565）、
+    /// 同步到 web 的 token 保留臂（610-612）。session_id 照常生成。
+    #[test]
+    fn wave_b_websocket_setup_preserves_seeded_token_and_syncs_to_web() {
+        let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let th = temp_home_env();
+        write_main_cfg(
+            &th.home,
+            &serde_json::json!({
+                "channels": {
+                    "websocket": {
+                        "enabled": false,
+                        "host": "10.9.9.9",
+                        "port": "49002",
+                        "path": "/ws",
+                        "auth_token": "wstoken12345"
+                    },
+                    "web": {}
+                }
+            }),
+        );
+        run(
+            ChannelAction::WebSocket { action: WebSocketAction::Setup },
+            false,
+        )
+        .unwrap();
+        let cfg = read_main_cfg(&th.home);
+        let ws = &cfg["channels"]["websocket"];
+        assert_eq!(ws["enabled"], serde_json::json!(true), "正常对象条目 → 置位");
+        assert_eq!(
+            ws["auth_token"], serde_json::json!("wstoken12345"),
+            "EOF 无输入 → 原有 token 保留而非移除"
+        );
+        let web = &cfg["channels"]["web"];
+        assert_eq!(
+            web["auth_token"], serde_json::json!("wstoken12345"),
+            "同步到 web 时非空 token 走 set 而非 remove"
+        );
+        assert_eq!(web["host"], serde_json::json!("10.9.9.9"));
+        assert_eq!(web["port"], serde_json::json!(49002));
+        assert_eq!(web["path"], serde_json::json!("/ws"));
+        assert!(web["session_id"].as_str().unwrap().starts_with("ws-"));
+    }
+
+    /// WebSocket Setup：websocket 条目是字符串（配置损坏）→ BUG #42 修复后
+    /// 第一个写点即 loud bail，命令返回 Err 且文件一字节不动。
+    #[test]
+    fn wave_b_websocket_setup_non_object_ws_entry_loud_bails_untouched() {
+        let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let th = temp_home_env();
+        let original = serde_json::json!({ "channels": { "websocket": "junk" } });
+        write_main_cfg(&th.home, &original);
+        let err = run(
+            ChannelAction::WebSocket { action: WebSocketAction::Setup },
+            false,
+        )
+        .unwrap_err();
+        assert!(
+            err.to_string().contains("配置已损坏"),
+            "应点名配置损坏而非静默成功: {}",
+            err
+        );
+        assert_eq!(
+            read_main_cfg(&th.home),
+            original,
+            "拒绝覆盖：非对象条目必须原样保留"
+        );
+    }
+
+    /// External Setup：external 条目为字符串 → 与 WebSocket 同型的 loud bail。
+    #[test]
+    fn wave_b_external_setup_non_object_entry_loud_bails_untouched() {
+        let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let th = temp_home_env();
+        let original = serde_json::json!({ "channels": { "external": "nope" } });
+        write_main_cfg(&th.home, &original);
+        let err = run(
+            ChannelAction::External { action: ExternalAction::Setup },
+            false,
+        )
+        .unwrap_err();
+        assert!(
+            err.to_string().contains("配置已损坏"),
+            "应点名配置损坏而非静默成功: {}",
+            err
+        );
+        assert_eq!(
+            read_main_cfg(&th.home)["channels"]["external"],
+            serde_json::json!("nope"),
+            "拒绝覆盖：非对象条目必须原样保留"
+        );
+    }
+}
+
+// =========================================================================
+// wave_c（覆盖率补测 C 波）：非对象条目拒绝臂 + External Test 探测臂。
+//   - Enable / Disable 已知通道、但该条目是非对象（损坏配置）→ BUG #42
+//     修复后 loud bail 且文件原样保留（此前是静默跳过仍报成功）；
+//   - ExternalAction::Test 的半配置形态：只配 output 不配 input →
+//     不双双为空早退，而走 "Input program: not configured" 侧臂；
+//   - 探测程序存在且可启动（绝对路径，同 S11b EDITOR 豁免裁定：无窗口、
+//     立即退出）→ input/output 两槽的 spawn-Ok → kill/wait → OK 臂；
+//   - input 槽存在但是目录 → spawn Err → FAILED 臂；output 槽未配置 →
+//     "Output program: not configured" 侧臂。
+//   另含 BUG #41 回归：端口数字落盘 + read_port_flex 对旧字符串盘的容错读。
+// 豁免：Setup/Auth/交互式提示里需要用户真实键入的赋值臂（stdin 无法注入）。
+// =========================================================================
+
+mod wave_c {
+    use super::*;
+
+    /// Enable 已知通道、条目为字符串：BUG #42 修复后 loud bail、文件不动。
+    #[test]
+    fn wc_enable_non_object_entry_loud_bails_untouched() {
+        let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let th = temp_home_env();
+        let original = serde_json::json!({ "channels": { "web": "junk-string" } });
+        write_main_cfg(&th.home, &original);
+
+        let err = run(ChannelAction::Enable { name: "web".into() }, false).unwrap_err();
+
+        assert!(
+            err.to_string().contains("配置已损坏"),
+            "应点名配置损坏而非静默成功: {}",
+            err
+        );
+        assert_eq!(
+            read_main_cfg(&th.home),
+            original,
+            "拒绝覆盖：非对象条目必须原样保留"
+        );
+    }
+
+    /// Disable 同型：条目为数组（非对象）→ loud bail、字节不变。
+    #[test]
+    fn wc_disable_non_object_entry_loud_bails_untouched() {
+        let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let th = temp_home_env();
+        let original =
+            serde_json::json!({ "channels": { "slack": ["not", "an", "object"] } });
+        write_main_cfg(&th.home, &original);
+
+        let err = run(ChannelAction::Disable { name: "slack".into() }, false).unwrap_err();
+
+        assert!(
+            err.to_string().contains("配置已损坏"),
+            "应点名配置损坏而非静默成功: {}",
+            err
+        );
+        assert_eq!(read_main_cfg(&th.home), original);
+    }
+
+    /// BUG #41 显示侧回归：read_port_flex 对旧字符串端口如实报告而非落默认。
+    #[test]
+    fn wc_read_port_flex_tolerates_legacy_string_and_number() {
+        let n = serde_json::json!(49152);
+        let s = serde_json::json!("49153");
+        let s_ws = serde_json::json!(" 8081 ");
+        let junk = serde_json::json!("abc");
+        assert_eq!(super::super::read_port_flex(Some(&n), 8080), 49152);
+        assert_eq!(super::super::read_port_flex(Some(&s), 8080), 49153);
+        assert_eq!(super::super::read_port_flex(Some(&s_ws), 8080), 8081);
+        // 垃圾字符串与非数字类型：如实落默认，不假装成功
+        assert_eq!(super::super::read_port_flex(Some(&junk), 8080), 8080);
+        assert_eq!(
+            super::super::read_port_flex(Some(&serde_json::json!([1])), 8080),
+            8080
+        );
+        assert_eq!(super::super::read_port_flex(None, 8080), 8080);
+    }
+
+    /// External Test 半配置形态：input 未配置 + output 配了（不存在路径）
+    /// → 不走双双为空的早退，而是分别打印 Input-not-configured 侧臂与
+    /// output 的 NOT FOUND 判定。
+    #[test]
+    fn wc_external_test_half_configured_reports_input_not_configured() {
+        let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let th = temp_home_env();
+        write_main_cfg(
+            &th.home,
+            &serde_json::json!({
+                "channels": {
+                    "external": { "output_exe": "Z:/definitely/not/there.exe" }
+                }
+            }),
+        );
+        run(
+            ChannelAction::External {
+                action: ExternalAction::Test,
+            },
+            false,
+        )
+        .unwrap();
+    }
+
+    /// 探测程序存在且能启动：spawn 后立刻 kill/wait → "OK (starts
+    /// successfully)"（Ok-child 臂此前从未到达——既有测试只有 NOT FOUND
+    /// 与 FAILED）。注意源码守卫是 `Path::new(&exe).exists()`——只接受
+    /// 文件路径而非 PATH 命令名，所以必须解析出绝对路径（which）；
+    /// 解析失败则整个用例跳过（环境性豁免，不算失败）。
+    #[test]
+    fn wc_external_test_existing_program_spawn_ok_for_input_and_output_slots() {
+        let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let th = temp_home_env();
+        let Ok(exe) = which::which("hostname") else {
+            return; // 无 hostname 的环境：跳过（NOT FOUND 臂由既有测试覆盖）
+        };
+        let exe = exe.to_string_lossy().into_owned();
+        write_main_cfg(
+            &th.home,
+            &serde_json::json!({
+                "channels": {
+                    "external": {
+                        "input_exe": exe.clone(),
+                        "output_exe": exe
+                    }
+                }
+            }),
+        );
+        run(
+            ChannelAction::External {
+                action: ExternalAction::Test,
+            },
+            false,
+        )
+        .unwrap();
+    }
+
+    /// input 槽存在但是目录 → path.exists()==true 但 spawn 失败 →
+    /// input 侧 FAILED 臂；output 槽未配置 → "Output program: not
+    /// configured" 侧臂（该 else 此前同样从未到过）。
+    #[test]
+    fn wc_external_test_input_slot_directory_spawn_failed_and_output_unconfigured() {
+        let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let th = temp_home_env();
+        write_main_cfg(
+            &th.home,
+            &serde_json::json!({
+                "channels": {
+                    "external": { "input_exe": th.home.to_string_lossy() }
+                }
+            }),
+        );
+        run(
+            ChannelAction::External {
+                action: ExternalAction::Test,
+            },
+            false,
+        )
+        .unwrap();
+    }
+
+    /// output 槽存在但是目录（path.exists()==true 但 spawn 失败）→
+    /// output 侧 FAILED 臂（input 槽用真实可执行文件走 OK，保证执行
+    /// 流推进到第二段 spawn 块的 Err 分支）。
+    #[test]
+    fn wc_external_test_output_slot_directory_spawn_failed_after_input_ok() {
+        let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let th = temp_home_env();
+        let Ok(exe) = which::which("hostname") else {
+            return; // 无 hostname 的环境：跳过
+        };
+        write_main_cfg(
+            &th.home,
+            &serde_json::json!({
+                "channels": {
+                    "external": {
+                        "input_exe": exe.to_string_lossy(),
+                        "output_exe": th.home.to_string_lossy()
+                    }
+                }
+            }),
+        );
+        run(
+            ChannelAction::External {
+                action: ExternalAction::Test,
+            },
+            false,
+        )
+        .unwrap();
+    }
+}
+
+// =========================================================================
+// r10（覆盖率补测批 2026-08-27）：channel 交互式子命令 A 类 miss 行收口。
+// 此前交互分支（Auth/Clear/Setup）只有 EOF 默认/取消侧——wave_c 豁免区把
+// "需要用户真实键入的赋值臂" 判为 stdin 无法注入；本批换 r9 同款武器
+// （test_harness::run_cli_with_stdin 管道喂完整答案序列）点亮：
+//   * Web Auth：空 token 早退 / 短 token 警告 / y 保存（长 token 掩码臂 +
+//     ≤4 字符 "***" 臂）/ n 取消；
+//   * Web Clear："y" 确认删除臂（415-417）；
+//   * WebSocket Setup：host/port/path/token 四个非空赋值臂（532/541/555/
+//     571）+ 同步块显式 session ID 臂（618）+ 同步问题答 "n" 整块跳过收口
+//     （632 跳出边）；
+//   * External Setup：input/output/chat_id 三值非空输入臂（712/728/737）；
+//   * websocket set port 成功落盘 JSON 数字臂尾（667-672，进程内直调）。
+// 夹具纪律（r9 先例）：run_cli* 自动 prepend --local + cwd=tempdir，父进程
+// 环境零改动 → 子进程测试无需 GLOBAL_STATE_LOCK；二进制解析不了则 SKIP。
+// 注意：set_channel_config 在 config.json 缺失时 bail（同文件既有测试同理
+// 都先种子化），所以每个子进程场景先写一份 {"channels":{…}} 到 home 根。
+// =========================================================================
+mod r10_interactive_flows {
+    use super::*;
+
+    /// 解析真二进制；解析不了（未构建 / 非 Windows 平台）→ SKIP。
+    fn r10_bin_or_skip() -> Option<std::path::PathBuf> {
+        match test_harness::resolve_nemesisbot_bin() {
+            Ok(b) => Some(b),
+            Err(e) => {
+                println!("[r10 SKIP] 未找到 nemesisbot 可执行文件（先构建 release 版）：{e:#}");
+                None
+            }
+        }
+    }
+
+    /// 隔离工作区 + 预置最小 channels 配置（子进程写路径要求文件已存在）。
+    fn r10_ws_with_cfg(channels: serde_json::Value) -> Option<(test_harness::TestWorkspace, std::path::PathBuf)> {
+        let bin = r10_bin_or_skip()?;
+        let tw = test_harness::TestWorkspace::new().expect("tempdir");
+        std::fs::create_dir_all(tw.home()).unwrap();
+        std::fs::write(
+            tw.config_path(),
+            serde_json::to_string_pretty(&serde_json::json!({ "channels": channels })).unwrap(),
+        )
+        .unwrap();
+        Some((tw, bin))
+    }
+
+    /// 读回子进程落盘后的主配置（= <home>/config.json = common::config_path）。
+    fn r10_read_cfg(tw: &test_harness::TestWorkspace) -> serde_json::Value {
+        serde_json::from_str(&std::fs::read_to_string(tw.config_path()).unwrap()).unwrap()
+    }
+
+    // ── ⭐ Web Auth 保存双形态：长 token（len>4 掩码切片臂 311-313）+ 短 token
+    // （<8 警告臂 295-299 且 len≤4 落 "***" 兜底臂 315）。两次独立调用同一工作区，
+    // 第二次覆盖第一次的值，断言以最后一次为准。─────────────────────────────────
+    #[tokio::test]
+    async fn r10_web_auth_interactive_save_long_and_short_token_arms() {
+        let Some((tw, bin)) = r10_ws_with_cfg(serde_json::json!({ "web": {} })) else { return };
+
+        // 长 token + y 主流程：295 警告不触发、y 确认、auth_token 原样落盘。
+        let long = tw
+            .run_cli_with_stdin(bin.as_path(), &["channel", "web", "auth"], "webtoken-long-01\ny\n", 30)
+            .await;
+        assert!(long.success(), "{}\n{}", long.stdout, long.stderr);
+        assert!(
+            long.stdout.contains("Web auth token set:") && long.stdout.contains("webt****"),
+            "长 token 掩码打印前 4 字符，got:\n{}",
+            long.stdout
+        );
+        assert_eq!(r10_read_cfg(&tw)["channels"]["web"]["auth_token"], serde_json::json!("webtoken-long-01"));
+
+        // 短 token（<8）：警告臂触发后仍走确认；len≤4 → 掩码走 "***" 分支。
+        let short = tw
+            .run_cli_with_stdin(bin.as_path(), &["channel", "web", "auth"], "abc\ny\n", 30)
+            .await;
+        assert!(short.success(), "{}\n{}", short.stdout, short.stderr);
+        assert!(
+            short.stdout.contains("Warning: Token is short"),
+            "短 token 必须警告，got:\n{}",
+            short.stdout
+        );
+        assert!(short.stdout.contains("***"), "≤4 字符掩码兜底为 ***");
+        assert_eq!(r10_read_cfg(&tw)["channels"]["web"]["auth_token"], serde_json::json!("abc"));
+    }
+
+    // ── Web Auth 早退/取消双出口：空 token 报错返回（288-294）；合法 token 但
+    //    确认答 n → Cancelled 不落盘（304-306）。两态都不触碰 auth_token 键。──
+    #[tokio::test]
+    async fn r10_web_auth_empty_token_returns_and_decline_cancels_without_write() {
+        let Some((tw, bin)) = r10_ws_with_cfg(serde_json::json!({ "web": {} })) else { return };
+
+        // 空 token → Error 提示提前 return Ok。
+        let empty = tw
+            .run_cli_with_stdin(bin.as_path(), &["channel", "web", "auth"], "\n", 30)
+            .await;
+        assert!(empty.success(), "早退是正常出口退 0:\n{}\n{}", empty.stdout, empty.stderr);
+        assert!(
+            empty.stdout.contains("Token cannot be empty"),
+            "got:\n{}",
+            empty.stdout
+        );
+
+        // 合法 token + 答 n → Cancelled，绝不写入。
+        let decline = tw
+            .run_cli_with_stdin(bin.as_path(), &["channel", "web", "auth"], "validtoken99\nn\n", 30)
+            .await;
+        assert!(decline.success(), "{}\n{}", decline.stdout, decline.stderr);
+        assert!(decline.stdout.contains("Cancelled"));
+        assert!(
+            r10_read_cfg(&tw)["channels"]["web"].get("auth_token").is_none(),
+            "两个退出臂都不得留下 auth_token"
+        );
+    }
+
+    // ── Web Clear "y" 确认臂（415-417）：remove_channel_config + 回执文案。───
+    #[tokio::test]
+    async fn r10_web_clear_confirm_y_removes_auth_token_from_disk() {
+        let Some((tw, bin)) = r10_ws_with_cfg(serde_json::json!({ "web": { "auth_token": "tok123456" } }))
+        else {
+            return;
+        };
+        let out = tw
+            .run_cli_with_stdin(bin.as_path(), &["channel", "web", "clear"], "y\n", 30)
+            .await;
+        assert!(out.success(), "{}\n{}", out.stdout, out.stderr);
+        assert!(
+            out.stdout.contains("Web auth token cleared."),
+            "got:\n{}",
+            out.stdout
+        );
+        assert!(
+            r10_read_cfg(&tw)["channels"]["web"].get("auth_token").is_none(),
+            "确认后 auth_token 必须从盘上移除"
+        );
+    }
+
+    // ── WebSocket Setup 四个非空输入臂 + 同步块显式 session ID 臂：一次脚本全走 ──
+    #[tokio::test]
+    async fn r10_websocket_setup_four_nonempty_inputs_then_explicit_session_id_synced() {
+        let Some((tw, bin)) = r10_ws_with_cfg(serde_json::json!({ "websocket": { "enabled": false } }))
+        else {
+            return;
+        };
+        // 时序：Host → Port → Path → Token → Sync? → Session ID。
+        let out = tw
+            .run_cli_with_stdin(
+                bin.as_path(),
+                &["channel", "web-socket", "setup"],
+                "192.0.2.7\n55021\n/customws\ntok98765\ny\nsess-explicit-77\n",
+                30,
+            )
+            .await;
+        assert!(out.success(), "{}\n{}", out.stdout, out.stderr);
+        assert!(
+            out.stdout.contains("Synced to Web channel (session: sess-explicit-77)"),
+            "同步回执带用户显式 session id，got:\n{}",
+            out.stdout
+        );
+        assert!(out.stdout.contains("WebSocket channel configured and enabled."));
+
+        let cfg = r10_read_cfg(&tw);
+        let ws = &cfg["channels"]["websocket"];
+        assert_eq!(ws["enabled"], serde_json::json!(true));
+        assert_eq!(ws["host"], serde_json::json!("192.0.2.7"), "非空 host 臂生效");
+        assert_eq!(
+            ws["port"],
+            serde_json::json!(55021),
+            "端口必须落 JSON 数字（BUG #41 契约），got: {}",
+            ws["port"]
+        );
+        assert_eq!(ws["path"], serde_json::json!("/customws"), "非空 path 臂生效");
+        assert_eq!(ws["auth_token"], serde_json::json!("tok98765"), "非空 token 臂生效");
+
+        let web = &cfg["channels"]["web"];
+        assert_eq!(web["host"], serde_json::json!("192.0.2.7"));
+        assert_eq!(web["port"], serde_json::json!(55021));
+        assert_eq!(web["path"], serde_json::json!("/customws"));
+        assert_eq!(web["auth_token"], serde_json::json!("tok98765"));
+        assert_eq!(
+            web["session_id"],
+            serde_json::json!("sess-explicit-77"),
+            "显式 session ID 覆盖 uuid 默认生成"
+        );
+    }
+
+    // ── 同步问题答 "n" → 整个 sync 块跳过（608 false 边收口到 632）：
+    //    web 条目绝不被创建，其余默认值照常落盘并启用。──────────────────────
+    #[tokio::test]
+    async fn r10_websocket_setup_sync_answer_n_skips_web_mirror_block() {
+        let Some((tw, bin)) = r10_ws_with_cfg(serde_json::json!({ "websocket": { "enabled": false } }))
+        else {
+            return;
+        };
+        let out = tw
+            .run_cli_with_stdin(
+                bin.as_path(),
+                &["channel", "web-socket", "setup"],
+                "\n\n\n\nn\n",
+                30,
+            )
+            .await;
+        assert!(out.success(), "{}\n{}", out.stdout, out.stderr);
+        assert!(out.stdout.contains("WebSocket channel configured and enabled."));
+        assert!(
+            !out.stdout.contains("Synced to Web channel"),
+            "答 n 不得出现同步回执"
+        );
+
+        let cfg = r10_read_cfg(&tw);
+        assert_eq!(
+            cfg["channels"]["websocket"]["enabled"],
+            serde_json::json!(true),
+            "启用照常发生"
+        );
+        assert_eq!(cfg["channels"]["websocket"]["port"], serde_json::json!(49001), "EOF 空输入保持默认端口且落数字");
+        assert!(
+            cfg["channels"].get("web").is_none(),
+            "答 n 后 web 条目必须完全不存在"
+        );
+    }
+
+    // ── External Setup 三值非空输入臂（712/728/737）+ 启用 + 三行回执。──────
+    #[tokio::test]
+    async fn r10_external_setup_three_nonempty_inputs_persisted_and_enabled() {
+        let Some((tw, bin)) = r10_ws_with_cfg(serde_json::json!({ "external": { "enabled": false } }))
+        else {
+            return;
+        };
+        let out = tw
+            .run_cli_with_stdin(
+                bin.as_path(),
+                &["channel", "external", "setup"],
+                "demo-in.exe\ndemo-out.exe\nexternal:alpha\n",
+                30,
+            )
+            .await;
+        assert!(out.success(), "{}\n{}", out.stdout, out.stderr);
+        assert!(out.stdout.contains("External channel configured and enabled."));
+        assert!(out.stdout.contains("external:alpha"));
+
+        let ext = &r10_read_cfg(&tw)["channels"]["external"];
+        assert_eq!(ext["input_exe"], serde_json::json!("demo-in.exe"), "非空 input_exe 臂生效");
+        assert_eq!(ext["output_exe"], serde_json::json!("demo-out.exe"), "非空 output_exe 臂生效");
+        assert_eq!(ext["chat_id"], serde_json::json!("external:alpha"), "非空 chat_id 臂生效");
+        assert_eq!(ext["enabled"], serde_json::json!(true));
+    }
+
+    // ── websocket set port 成功落盘分支尾（667-672）：set_channel_config_value
+    //    以 JSON 数字写入；进程内直调即可覆盖（无 stdin 参与）。────────────────
+    #[test]
+    fn r10_websocket_set_port_success_saves_json_number_tail() {
+        let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let th = temp_home_env();
+        write_main_cfg(&th.home, &serde_json::json!({ "channels": { "websocket": {} } }));
+        run(
+            ChannelAction::WebSocket {
+                action: WebSocketAction::Set { key: "port".into(), value: "55501".into() },
+            },
+            false,
+        )
+        .unwrap();
+        let port = read_main_cfg(&th.home)["channels"]["websocket"]["port"].clone();
+        assert_eq!(
+            port,
+            serde_json::json!(55501),
+            "成功路径尾部必须是 JSON 数字而非字符串"
+        );
+        assert!(port.is_u64(), "类型契约：as_u64 读侧可见，got: {}", port);
+    }
 }

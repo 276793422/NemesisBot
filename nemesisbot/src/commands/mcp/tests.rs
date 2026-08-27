@@ -859,3 +859,444 @@ async fn test_s11b_run_async_dispatch_arms() {
     )
     .unwrap();
 }
+
+// =========================================================================
+// wave_b（覆盖率补测 B 波）：
+//
+// 纯文件臂：find_server 无 servers 键 / sync_mcp_master_switch 真 None-parent /
+// cmd_list 无 servers 键与配置路径不可读 / cmd_add 无 servers 数组时静默丢
+// server（可疑点 S1，按现状钉住）/ cmd_remove 无 servers 键。
+//
+// 活服务器臂（沿用 s11b_fake_mcp 的 newline-delimited JSON-RPC stdio 假服
+// 务器模式；脚本落盘为 .py 文件、以 args 数组直传 cmd_* 函数，绕开 CLI 逗号
+// 切分）：连接失败 / tools/list 报错响应 / 空列表臂 / required 星标与参数
+// 渲染 / resource description+mimeType 打印 / prompt arguments 全矩阵 /
+// discover 空 list 区段与富渲染区段。全部持 python 探测守卫。
+// （discover 的「Server: (unknown)」臂不可达：InitializeResult.serverInfo
+// 为必填字段，健康握手后 server_info() 恒为 Some —— 见报告 EXEMPT 表。）
+// =========================================================================
+
+mod wave_b {
+    use super::*;
+    use tempfile::TempDir;
+
+    // ------------------------- 纯文件/解析臂 ------------------------------
+
+    /// find_server：config 存在但没有 "servers" 键 → if-let None 落穿返回
+    /// Ok(None)（95 关联区域）。
+    #[test]
+    fn wave_b_find_server_without_servers_key_returns_none() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path().join("config");
+        std::fs::create_dir_all(&dir).unwrap();
+        let cfg = dir.join("config.mcp.json");
+        std::fs::write(&cfg, r#"{"enabled": true}"#).unwrap();
+        assert!(find_server(&cfg, "any").unwrap().is_none());
+    }
+
+    /// sync_mcp_master_switch：mcp_cfg_path 的 parent() 真为 None（根路径 "/",
+    /// 以及空路径）→ Ok 早退（160-163）。纯词法操作，不触盘。
+    /// 注：既有 test_s11b_sync_master_switch_no_parent_dir 传入裸文件名，
+    /// 其 parent() 实际是 Some("")——真正的 None 臂由本测试补上。
+    #[test]
+    fn wave_b_sync_master_switch_root_and_empty_paths_have_no_parent() {
+        sync_mcp_master_switch(std::path::Path::new("/"), true).unwrap();
+        sync_mcp_master_switch(std::path::Path::new(""), false).unwrap();
+    }
+
+    /// cmd_list：enabled 配置但无 "servers" 键 → else 臂打印 0 服务（253-256）。
+    #[test]
+    fn wave_b_cmd_list_enabled_config_without_servers_key() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path().join("config");
+        std::fs::create_dir_all(&dir).unwrap();
+        let cfg = dir.join("config.mcp.json");
+        std::fs::write(&cfg, r#"{"enabled": true}"#).unwrap();
+        cmd_list(&cfg).unwrap();
+    }
+
+    /// cmd_list：配置路径存在但不可读（目录）→ 首个 read_to_string Err
+    /// 跳过 disabled 检查（192-199 家族），随后 exists()+read 触发 Err 传播。
+    #[test]
+    fn wave_b_cmd_list_unreadable_directory_config_propagates_err() {
+        let tmp = TempDir::new().unwrap();
+        let cfg = tmp.path().join("not-a-file");
+        std::fs::create_dir_all(&cfg).unwrap();
+        assert!(cmd_list(&cfg).is_err(), "目录当配置文件必须 Err");
+    }
+
+    /// （历史注记）cmd_add 对无 servers 数组的旧配置曾静默丢弃服务器，
+    /// BUG 台账 #38 修复为自动补建数组并持久化 —— 行为由文件尾部两条
+    /// test_cmd_add_missing_servers_key_still_persists / non_array 回归钉住。
+
+    /// cmd_remove：config 存在但无 "servers" 键 → if-let None（336 区），
+    /// found=false 走 not-found 提示且不回写。
+    #[test]
+    fn wave_b_cmd_remove_on_config_without_servers_key_reports_not_found() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path().join("config");
+        std::fs::create_dir_all(&dir).unwrap();
+        let cfg = dir.join("config.mcp.json");
+        std::fs::write(&cfg, r#"{"enabled": true}"#).unwrap();
+        cmd_remove(&cfg, "ghost").unwrap();
+        let data: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&cfg).unwrap()).unwrap();
+        assert!(data.get("servers").is_none(), "未找到时不新增键");
+    }
+
+    /// cmd_add 对既有 servers 数组的两条路径：
+    /// 相位1 无重名 → for 完整扫描掉落（289/291）、push 追加成功、
+    /// 主开关 false→true 翻转并写盘 —— 这是有数组时的正常路径，
+    /// 与下方 S1 可疑点（无数组时静默丢弃）互为对照。
+    /// 相位2 重名 → 扫描命中直接早退（285-288）：不追加、不覆盖旧条目、
+    /// 主开关保持原值不翻转。
+    #[test]
+    fn wave_b_cmd_add_append_then_duplicate_short_circuit() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path().join("config");
+        std::fs::create_dir_all(&dir).unwrap();
+        let cfg = dir.join("config.mcp.json");
+        std::fs::write(
+            &cfg,
+            r#"{"enabled": false, "servers": [{"name": "first", "command": "original-cmd", "args": [], "env": [], "timeout": 5}]}"#,
+        )
+        .unwrap();
+
+        // 相位1：追加新名
+        cmd_add(&cfg, "second", "python", None, &[], 9).unwrap();
+        let data: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&cfg).unwrap()).unwrap();
+        let servers = data["servers"].as_array().unwrap();
+        assert_eq!(servers.len(), 2, "无重名时追加一条");
+        assert_eq!(servers[0]["name"], "first", "旧条目不动");
+        assert_eq!(servers[1]["name"], "second");
+        assert_eq!(servers[1]["timeout"], 9);
+        assert_eq!(data["enabled"], true, "主开关翻转落盘");
+
+        // 相位2：重名短路（快照对比整份文件不变）
+        let before = std::fs::read_to_string(&cfg).unwrap();
+        cmd_add(&cfg, "second", "replacement-cmd", None, &[], 77).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&cfg).unwrap(),
+            before,
+            "重名时早退，文件零改动"
+        );
+        let data: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&cfg).unwrap()).unwrap();
+        assert_eq!(
+            data["servers"].as_array().unwrap()[1]["command"],
+            "python",
+            "旧条目不被同名替换"
+        );
+    }
+
+    // ------------------------- 假服务器臂 ---------------------------------
+
+    const WB_DEAD_SERVER: &str = "import sys\nsys.exit(0)\n";
+
+    const WB_ERR_TOOLS_SERVER: &str = r#"
+import sys, json
+def send(o):
+    sys.stdout.write(json.dumps(o) + "\n")
+    sys.stdout.flush()
+for line in sys.stdin:
+    line = line.strip()
+    if not line:
+        continue
+    req = json.loads(line)
+    rid = req.get("id")
+    if rid is None:
+        continue
+    m = req.get("method", "")
+    if m == "initialize":
+        send({"jsonrpc": "2.0", "id": rid, "result": {"protocolVersion": "2024-11-05", "capabilities": {}, "serverInfo": {"name": "wberr", "version": "0.0.1"}}})
+    elif m == "tools/list":
+        send({"jsonrpc": "2.0", "id": rid, "error": {"code": -32601, "message": "wb intentional tools error"}})
+    else:
+        send({"jsonrpc": "2.0", "id": rid, "result": {"tools": [], "resources": [], "prompts": []}})
+"#;
+
+    const WB_MIN_SERVER: &str = r#"
+import sys, json
+def send(o):
+    sys.stdout.write(json.dumps(o) + "\n")
+    sys.stdout.flush()
+for line in sys.stdin:
+    line = line.strip()
+    if not line:
+        continue
+    req = json.loads(line)
+    rid = req.get("id")
+    if rid is None:
+        continue
+    m = req.get("method", "")
+    if m == "initialize":
+        send({"jsonrpc": "2.0", "id": rid, "result": {"protocolVersion": "2024-11-05", "capabilities": {}, "serverInfo": {"name": "wbmin", "version": "0.0.2"}}})
+    else:
+        send({"jsonrpc": "2.0", "id": rid, "result": {"tools": [], "resources": [], "prompts": []}})
+"#;
+
+    const WB_RICH_SERVER: &str = r#"
+import sys, json
+def send(o):
+    sys.stdout.write(json.dumps(o) + "\n")
+    sys.stdout.flush()
+RICH_TOOLS = [
+    {"name": "starred", "description": "tool with required param",
+     "inputSchema": {"type": "object",
+                     "properties": {"path": {"type": "string"}, "force": {"type": "boolean"}},
+                     "required": ["path"]}},
+    {"name": "schemaless", "description": "schema without properties",
+     "inputSchema": {"type": "object"}}
+]
+RICH_RESOURCES = [
+    {"uri": "file:///rich", "name": "rich", "description": "rich description text", "mimeType": "text/plain"},
+    {"uri": "file:///blank", "name": "blank", "description": "", "mimeType": ""}
+]
+RICH_PROMPTS = [
+    {"name": "prich", "description": "prich desc",
+     "arguments": [{"name": "reqd", "description": "give me a value", "required": True},
+                   {"name": "optz", "description": "", "required": False},
+                   {"name": "ghost"}]},
+    {"name": "nodesc"},
+    {"name": "chatty", "description": "talks but takes no arguments"}
+]
+for line in sys.stdin:
+    line = line.strip()
+    if not line:
+        continue
+    req = json.loads(line)
+    rid = req.get("id")
+    if rid is None:
+        continue
+    m = req.get("method", "")
+    if m == "initialize":
+        send({"jsonrpc": "2.0", "id": rid, "result": {"protocolVersion": "2024-11-05", "capabilities": {}, "serverInfo": {"name": "wbrich", "version": "0.0.3"}}})
+    elif m == "tools/list":
+        send({"jsonrpc": "2.0", "id": rid, "result": {"tools": RICH_TOOLS}})
+    elif m == "resources/list":
+        send({"jsonrpc": "2.0", "id": rid, "result": {"resources": RICH_RESOURCES}})
+    elif m == "prompts/list":
+        send({"jsonrpc": "2.0", "id": rid, "result": {"prompts": RICH_PROMPTS}})
+    else:
+        send({"jsonrpc": "2.0", "id": rid, "result": {}})
+"#;
+
+    /// 写一份指向 python 假服务器的 mcp 配置；脚本作为 .py 文件落盘，
+    /// 经 config args 数组直传（不经 CLI 逗号切分）。返回 (配置路径, 脚本路径)。
+    fn wb_fake_server(tmp: &TempDir, tag: &str, script: &str, timeout: u64) -> std::path::PathBuf {
+        let dir = tmp.path().join(tag).join("config");
+        std::fs::create_dir_all(&dir).unwrap();
+        let script_path = tmp.path().join(tag).join("fake_server.py");
+        std::fs::write(&script_path, script).unwrap();
+        let cfg_path = dir.join("config.mcp.json");
+        let config = serde_json::json!({
+            "enabled": true,
+            "servers": [{
+                "name": format!("wb-{tag}"),
+                "command": "python",
+                "args": [script_path.to_string_lossy()],
+                "env": [],
+                "timeout": timeout,
+            }]
+        });
+        std::fs::write(&cfg_path, serde_json::to_string_pretty(&config).unwrap()).unwrap();
+        cfg_path
+    }
+
+    /// cmd_test：命令在 PATH 但进程秒退 → initialize 失败 → 连接 FAILED
+    /// 错误臂（402-405）。
+    #[tokio::test]
+    async fn wave_b_cmd_test_dead_process_prints_connection_failed_arm() {
+        if !s11b_have_python() {
+            eprintln!("Skipping test: python not available");
+            return;
+        }
+        let tmp = TempDir::new().unwrap();
+        let cfg = wb_fake_server(&tmp, "dead", WB_DEAD_SERVER, 15);
+        cmd_test(&cfg, "wb-dead").await.unwrap();
+    }
+
+    /// cmd_test：tools/list 返回 JSON-RPC error 对象 → list_tools Err →
+    /// 「Tools: error - ...」臂（391）；随后 close 正常。
+    #[tokio::test]
+    async fn wave_b_cmd_test_tools_error_response_prints_error_line() {
+        if !s11b_have_python() {
+            eprintln!("Skipping test: python not available");
+            return;
+        }
+        let tmp = TempDir::new().unwrap();
+        let cfg = wb_fake_server(&tmp, "err", WB_ERR_TOOLS_SERVER, 15);
+        cmd_test(&cfg, "wb-err").await.unwrap();
+    }
+
+    /// cmd_tools：空列表 → 「No tools available.」（428-429）；
+    /// 富列表 → required 星标分支（455）+ inputSchema 无 properties 时跳过
+    /// 参数转储（465 关联区域）+ 双工具渲染。
+    #[tokio::test]
+    async fn wave_b_cmd_tools_empty_then_rich_rendering() {
+        if !s11b_have_python() {
+            eprintln!("Skipping test: python not available");
+            return;
+        }
+        let tmp = TempDir::new().unwrap();
+        let min_cfg = wb_fake_server(&tmp, "mintools", WB_MIN_SERVER, 15);
+        cmd_tools(&min_cfg, "wb-mintools").await.unwrap();
+
+        let rich_cfg = wb_fake_server(&tmp, "richtools", WB_RICH_SERVER, 15);
+        cmd_tools(&rich_cfg, "wb-richtools").await.unwrap();
+    }
+
+    /// cmd_resources：空 → 「No resources available.」（494-495）；富 →
+    /// 非空 description 打印（503-505）、非空 mimeType 打印（508-510）、
+    /// 以及同循环内空串跳过臂。
+    #[tokio::test]
+    async fn wave_b_cmd_resources_empty_then_rich_rendering() {
+        if !s11b_have_python() {
+            eprintln!("Skipping test: python not available");
+            return;
+        }
+        let tmp = TempDir::new().unwrap();
+        let min_cfg = wb_fake_server(&tmp, "minres", WB_MIN_SERVER, 15);
+        cmd_resources(&min_cfg, "wb-minres").await.unwrap();
+
+        let rich_cfg = wb_fake_server(&tmp, "richres", WB_RICH_SERVER, 15);
+        cmd_resources(&rich_cfg, "wb-richres").await.unwrap();
+    }
+
+    /// cmd_prompts：空 → 「No prompts available.」（540-541）；富 →
+    /// arguments 全矩阵：required=true 星标 / required=false 素名 / 无 required
+    /// 字段 / 有描述 / 空描述 / 缺描述字段 / prompt 无 description（551 区）/
+    /// 无 arguments 的 prompt（552 假臂→570 区）。
+    #[tokio::test]
+    async fn wave_b_cmd_prompts_empty_then_rich_argument_matrix() {
+        if !s11b_have_python() {
+            eprintln!("Skipping test: python not available");
+            return;
+        }
+        let tmp = TempDir::new().unwrap();
+        let min_cfg = wb_fake_server(&tmp, "minprompts", WB_MIN_SERVER, 15);
+        cmd_prompts(&min_cfg, "wb-minprompts").await.unwrap();
+
+        let rich_cfg = wb_fake_server(&tmp, "richprompts", WB_RICH_SERVER, 15);
+        cmd_prompts(&rich_cfg, "wb-richprompts").await.unwrap();
+    }
+
+    /// discover（stdio）：握手成功 + 四类列表全空 → Tools/Resources/Prompts
+    /// 三个 "(none)" 臂（631-632 / 670-671 / 686-687）与 Discovery complete。
+    #[tokio::test]
+    async fn wave_b_cmd_discover_min_renders_all_none_sections() {
+        if !s11b_have_python() {
+            eprintln!("Skipping test: python not available");
+            return;
+        }
+        let tmp = TempDir::new().unwrap();
+        let script_path = tmp.path().join("min_disc.py");
+        std::fs::write(&script_path, WB_MIN_SERVER).unwrap();
+        let args_str = script_path.to_str().unwrap();
+        assert!(!args_str.contains(','));
+        cmd_discover(Some("python"), None, Some(args_str), 15)
+            .await
+            .unwrap();
+    }
+
+    /// discover（stdio）：富渲染 → 工具 required 星标（655）+
+    /// schemaless 工具 properties-None 跳过（664 区）、resource description
+    /// 打印（677-679）、prompt description 打印（696）。
+    #[tokio::test]
+    async fn wave_b_cmd_discover_rich_renders_required_marks_and_descriptions() {
+        if !s11b_have_python() {
+            eprintln!("Skipping test: python not available");
+            return;
+        }
+        let tmp = TempDir::new().unwrap();
+        let script_path = tmp.path().join("rich_disc.py");
+        std::fs::write(&script_path, WB_RICH_SERVER).unwrap();
+        let args_str = script_path.to_str().unwrap();
+        assert!(!args_str.contains(','));
+        cmd_discover(Some("python"), None, Some(args_str), 15)
+            .await
+            .unwrap();
+    }
+}
+
+// ---------------------------------------------------------------------------
+// BUG 台账 #38 回归：已存在的 config.mcp.json 缺失 "servers" 键（旧 schema /
+// 手工编辑）时，原实现的 get_mut(servers) 静默 no-op 仍打印成功 —— 服务器
+// 根本没写进文件。新契约：缺键/非数组 ⇒ 自动补建空数组后插入，必定持久化。
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_cmd_add_missing_servers_key_still_persists() {
+    let tmp = TempDir::new().unwrap();
+    let dir = tmp.path().join("config");
+    std::fs::create_dir_all(&dir).unwrap();
+    let cfg = dir.join("config.mcp.json");
+    // 有文件但没有 servers 数组 —— 修复前这里静默丢服务器。
+    std::fs::write(&cfg, r#"{"enabled": false}"#).unwrap();
+
+    cmd_add(&cfg, "late-server", "python", None, &[], 30).unwrap();
+
+    let data: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&cfg).unwrap()).unwrap();
+    assert_eq!(data["enabled"], true);
+    let servers = data["servers"].as_array().expect("servers 必须被补建成数组");
+    assert_eq!(servers.len(), 1, "服务器必须真实落盘（恰好一条）");
+    assert_eq!(servers[0]["name"], "late-server");
+    assert_eq!(servers[0]["command"], "python");
+}
+
+#[test]
+fn test_cmd_add_non_array_servers_is_repaired_not_dropped() {
+    let tmp = TempDir::new().unwrap();
+    let dir = tmp.path().join("config");
+    std::fs::create_dir_all(&dir).unwrap();
+    let cfg = dir.join("config.mcp.json");
+    std::fs::write(&cfg, r#"{"enabled": true, "servers": {}}"#).unwrap();
+
+    cmd_add(&cfg, "healed-server", "node", None, &[], 30).unwrap();
+
+    let data: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&cfg).unwrap()).unwrap();
+    let servers = data["servers"].as_array().expect("坏类型 servers 必须重置为数组");
+    assert_eq!(servers.len(), 1);
+    assert_eq!(servers[0]["name"], "healed-server");
+}
+
+// ===========================================================================
+// r10（覆盖率 A 类 miss 补充）：
+// - cmd_list 的「配置存在但无 enabled 键」通路：显式 disabled 早退判否
+//   （cfg.get("enabled") 为 None ≠ Some(false)）后落穿收口括号区，servers
+//   渲染走满 args join / timeout>0 / env>0 展示臂。wave_b 已有无 servers
+//   键变体、旧批次有显式 false 变体；本夹具补齐缺失键 + 带 servers 组合。
+// - 诚实边界：discover "(unknown)" 臂按 wave_b 头注结构性豁免
+//  （InitializeResult.serverInfo 必填 → 健康握手后 server_info 恒 Some）；
+//   run() Add 尾臂由 test_s11b_run_sync_arms 覆盖。
+// ===========================================================================
+
+#[test]
+fn r10_cmd_list_without_enabled_key_renders_servers_fully() {
+    let tmp = TempDir::new().unwrap();
+    let dir = tmp.path().join("config");
+    std::fs::create_dir_all(&dir).unwrap();
+    let cfg = dir.join("config.mcp.json");
+    std::fs::write(
+        &cfg,
+        serde_json::json!({
+            "servers": [
+                {
+                    "name": "r10-srv",
+                    "command": "python",
+                    "args": ["-m", "server"],
+                    "env": ["K=V", "K2=V2"],
+                    "timeout": 60
+                }
+            ]
+        })
+        .to_string(),
+    )
+    .unwrap();
+
+    // 无 enabled 键：不得被当作 disabled 早退，必须完整渲染 servers 列表。
+    cmd_list(&cfg).unwrap();
+}

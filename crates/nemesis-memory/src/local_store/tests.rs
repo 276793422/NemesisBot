@@ -418,3 +418,25 @@ fn tfidf_score_df_zero_terms_contribute_nothing() {
     let score = tfidf_score(&q2, &doc2, 5, &df2);
     assert!(score > 0.0 && score <= 1.0, "got {score}");
 }
+
+// ---- R1 coverage: TfIdf flush directory-creation failure arm ----
+
+#[tokio::test]
+async fn tfidf_flush_fails_when_parent_is_a_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let blocker = dir.path().join("blocker");
+    std::fs::write(&blocker, b"x").unwrap();
+
+    // Constructor only records the path; the parent check fires on flush().
+    let store = TfIdfLocalStore::new(blocker.join("store.jsonl"))
+        .await
+        .unwrap();
+    let err = match store.store(make_entry(MemoryType::LongTerm, "x")).await {
+        Err(e) => e,
+        Ok(_) => panic!("flushing into a parent-is-file path must fail"),
+    };
+    assert!(
+        err.contains("Failed to create store directory"),
+        "got: {err}"
+    );
+}

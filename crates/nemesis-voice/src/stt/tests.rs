@@ -90,3 +90,43 @@ fn stt_new_full_fixture_model_onnx_builds_structs_until_ffi() {
 fn decode_recognizer_null_recognizer_panics_at_symbol_lookup() {
     let _ = super::decode_recognizer(std::ptr::null(), &[0.0f32; 4], 16000);
 }
+
+// ---------------------------------------------------------------------------
+// R6（2026-08-27）：白盒 null 引擎 → recognize / recognize_detail / Drop 封送路径
+// `SttEngine { recognizer: null, restriction: None }` 不触发任何 FFI 构造；
+// recognize → recognize_detail → decode_recognizer 在 FFI 符号查找处 panic。
+// 剩余不可达 = FFI 成功返回值语义（真模型 + 真 DLL）。
+// 方法 panic 测试用 catch_panic_msg + mem::forget（Drop 也 panic，should_panic
+// 会双 panic fail-fast，见 test_util.rs）。
+// ---------------------------------------------------------------------------
+
+/// 白盒 null 识别器引擎（不触发任何 FFI 构造）。
+/// pub(crate)：供跨模块测试（channel_bridge 的白盒）复用。
+pub(crate) fn null_stt_engine() -> SttEngine {
+    SttEngine {
+        recognizer: std::ptr::null(),
+        restriction: None,
+    }
+}
+
+#[test]
+fn stt_recognize_null_engine_panics_at_symbol_lookup() {
+    let engine = null_stt_engine();
+    let msg = crate::test_util::catch_panic_msg(|| engine.recognize(&[0.0f32; 8], 16000));
+    assert!(msg.contains("sherpa-onnx not initialized"), "{msg}");
+    std::mem::forget(engine);
+}
+
+#[test]
+fn stt_recognize_detail_null_engine_no_restriction_panics_at_symbol_lookup() {
+    let engine = null_stt_engine();
+    let msg = crate::test_util::catch_panic_msg(|| engine.recognize_detail(&[0.0f32; 8], 16000));
+    assert!(msg.contains("sherpa-onnx not initialized"), "{msg}");
+    std::mem::forget(engine);
+}
+
+#[test]
+#[should_panic(expected = "sherpa-onnx not initialized")]
+fn stt_drop_null_engine_panics_at_destroy() {
+    let _ = null_stt_engine();
+}

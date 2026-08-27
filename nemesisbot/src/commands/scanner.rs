@@ -505,6 +505,18 @@ fn cmd_disable(security_cfg: &std::path::Path, name: &str) -> Result<()> {
 }
 
 /// Check install and database status (matches Go cmdScannerCheck).
+/// URL 列展示截断：>40 字节时取前 37 字节加省略号。截断点必须落在
+/// char boundary —— URL 允许用户配置非 ASCII（IDN/中文参数），裸 `[..37]`
+/// 会 panic（str-slice-multibyte 家族，BUG 台账 #35）。
+fn url_display_truncated(url: &str) -> String {
+    if url.len() > 40 {
+        let cut = nemesis_types::utils::floor_char_boundary(url, 37);
+        format!("{}...", &url[..cut])
+    } else {
+        url.to_string()
+    }
+}
+
 fn cmd_check(security_cfg: &std::path::Path) -> Result<()> {
     let mut cfg = load_scanner_config(security_cfg)?;
 
@@ -612,13 +624,7 @@ fn cmd_check(security_cfg: &std::path::Path) -> Result<()> {
         } else {
             &engine_cfg.address
         };
-        let url_display = if engine_cfg.url.is_empty() {
-            "-".to_string()
-        } else if engine_cfg.url.len() > 40 {
-            format!("{}...", &engine_cfg.url[..37])
-        } else {
-            engine_cfg.url.clone()
-        };
+        let url_display = url_display_truncated(&engine_cfg.url);
 
         println!(
             "  {:<10} {:<10} {:<12} {:<10} {:<20} {}",

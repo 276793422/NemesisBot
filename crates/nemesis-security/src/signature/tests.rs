@@ -1550,7 +1550,7 @@ fn test_verify_file_with_key_wrong_length() {
 #[test]
 fn test_verify_signature_ed25519_fallthrough_arms() {
     let kp = generate_key_pair().unwrap();
-    let sk = SigningKey::from_bytes(&hex_decode_32(&kp.private_key).unwrap());
+    let _sk = SigningKey::from_bytes(&hex_decode_32(&kp.private_key).unwrap());
     let sig_hex = sign_content_hex("content", &kp.private_key).unwrap();
 
     // ① sig hex 合法但解码后非 64 字节

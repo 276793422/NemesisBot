@@ -414,3 +414,171 @@ fn test_s11b_run_startexe_timeout_hang_tree_killed_false() {
     assert!(!ok);
     assert!(t0.elapsed() < std::time::Duration::from_secs(5), "超时后必须树杀返回");
 }
+
+// =========================================================================
+// wave_b（覆盖率补测 2026-08-27）：CLI 编排层剩余可测臂。沿用 S11b 夹具
+// （临时 NEMESISBOT_HOME + GLOBAL_STATE_LOCK + 假 Start.exe），零 UAC /
+// 零真实引擎触碰：
+//   1) commit 失败臂：真落盘路径的父目录被普通文件占位 → commit_file 的
+//      create_dir_all 必然失败 → CLI 打印 FAILED 行并继续（sandbox.rs:182）；
+//   2) kill 指定盒且该盒确在 ini（vec![b.clone()] 臂，sandbox.rs:281-282）；
+//   3) kill 全量但 ini 无任何 NemesisEvalBox_* 段（早退提示臂 :294-295）；
+//   4) kill 时 Start.exe 为非法 PE（垃圾字节）→ spawn 秒败 → term_ok=false
+//      → 打印「无响应跳过」臂（sandbox.rs:328-331）——全程不产生任何进程；
+//   5) status 三 present 分支（Start.exe / Sandboxie.ini / runtime 目录都
+//      存在时，sandbox.rs:768/777/786）——status 内部只做存在性判断 +
+//      只读 SCM 查询（与既有 test_s11b_run_status_fresh_home 同安全级别）。
+// 豁免不变式：Install（真下载）、Start/Stop/EnsureReady（UAC/真引擎，
+// 本机 SbieSvc RUNNING 绝不触碰）、ensure_sandbox_ready Row≥gate（可确定
+// 到达需伪造服务注册＝动注册表；干净机器上会落入 install/UAC 臂，跨环境
+// 不安全）、clear 非 force 交互提问（真 stdin）、ChildJob API 失败注入、
+// run_startexe_timeout 的 try_wait Err 臂（句柄有效后 Windows 几乎不会 Err）。
+// =========================================================================
+mod wave_b {
+    use super::*;
+
+    /// box 内镜像一个「real 路径」文件（drive/<L>/… 形态），返回盒内路径。
+    fn wb_mirror(real: &std::path::Path, box_root: &std::path::Path) -> std::path::PathBuf {
+        s11b_box_mirror(real, box_root)
+    }
+
+    #[tokio::test]
+    async fn wave_b_commit_failed_line_when_real_parent_is_regular_file() {
+        let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let th = s11b_temp_home_env();
+        let paths = s11b_paths(&th.home);
+
+        let ws = th.home.join("workspace");
+        // 可正常提交的文件：ws/ok.txt
+        let ok_real = ws.join("ok.txt");
+        let ok_box = wb_mirror(&ok_real, &paths.box_root);
+        std::fs::create_dir_all(ok_box.parent().unwrap()).unwrap();
+        std::fs::write(&ok_box, "ok-body").unwrap();
+
+        // 阻断文件：ws/zed 是普通文件 → blocked.txt 的提交需要
+        // create_dir_all(ws/zed) → 必失败 → FAILED 行 + 循环继续。
+        let blocked_real = ws.join("zed").join("blocked.txt");
+        let blocked_box = wb_mirror(&blocked_real, &paths.box_root);
+        std::fs::create_dir_all(blocked_box.parent().unwrap()).unwrap();
+        std::fs::write(&blocked_box, "doomed").unwrap();
+        std::fs::create_dir_all(&ws).unwrap();
+        std::fs::write(ws.join("zed"), b"occupies parent slot").unwrap();
+
+        run(
+            SandboxCommand::Commit {
+                all: true,
+                files: vec![],
+            },
+            false,
+        )
+        .await
+        .expect("commit 单文件失败只打印行，不整体报错");
+
+        // 正常那份落了真盘；被阻断那份没落、占位文件原样保留。
+        assert_eq!(std::fs::read_to_string(&ok_real).unwrap(), "ok-body");
+        assert!(!blocked_real.exists(), "被普通文件阻断的目标不得写入");
+        assert!(ws.join("zed").is_file(), "占位文件保持为文件");
+    }
+
+    #[tokio::test]
+    async fn wave_b_kill_specific_box_present_in_ini_runs_terminate_chain() {
+        let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let th = s11b_temp_home_env();
+        let paths = s11b_paths(&th.home);
+        assert!(s11b_fake_start_exe(&paths));
+
+        let root = th.home.join("waveb_root");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::create_dir_all(paths.ini_path.parent().unwrap()).unwrap();
+        std::fs::write(
+            &paths.ini_path,
+            format!(
+                "[GlobalSettings]\nEnabled=y\n\n[WaveBBox]\nFileRootPath={}\n",
+                root.display()
+            ),
+        )
+        .unwrap();
+
+        // 指定盒在 ini 且 FileRootPath 存活 → vec![b.clone()] 后走完整
+        // /terminate + delete_sandbox_silent（假 Start.exe = cmd.exe 副本，
+        // 与 S11b 已实证的同款调用形态，秒退无副作用）。
+        run(
+            SandboxCommand::Kill {
+                box_name: Some("WaveBBox".into()),
+            },
+            false,
+        )
+        .await
+        .unwrap();
+
+        assert!(root.exists(), "kill 只清盒内容登记，不删 FileRootPath 本体");
+    }
+
+    #[tokio::test]
+    async fn wave_b_kill_all_with_no_eval_sections_returns_early_hint() {
+        let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let th = s11b_temp_home_env();
+        let paths = s11b_paths(&th.home);
+        assert!(s11b_fake_start_exe(&paths));
+        std::fs::create_dir_all(paths.ini_path.parent().unwrap()).unwrap();
+        std::fs::write(
+            &paths.ini_path,
+            "[GlobalSettings]\nEnabled=y\n\n[NemesisBox]\nEnabled=y\n",
+        )
+        .unwrap();
+
+        // 无任何 NemesisEvalBox_* 段 → 枚举空 → 早退提示 + Ok。
+        run(SandboxCommand::Kill { box_name: None }, false)
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn wave_b_kill_with_unspawnable_startexe_reports_no_response_and_skips() {
+        let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let th = s11b_temp_home_env();
+        let paths = s11b_paths(&th.home);
+
+        // 「存在但非 PE」的 Start.exe：CreateProcess 直接 BAD_EXE_FORMAT
+        // 秒拒 → run_startexe_timeout 进 spawn-Err 即刻返 false（不等待、
+        // 不树杀、零进程创建）→ kill 打印 /terminate 无响应臂后照常收尾。
+        std::fs::create_dir_all(&paths.runtime_dir).unwrap();
+        std::fs::write(paths.start_exe(), b"not a PE image - wave_b marker").unwrap();
+
+        let root = th.home.join("waveb_garbage_root");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::create_dir_all(paths.ini_path.parent().unwrap()).unwrap();
+        std::fs::write(
+            &paths.ini_path,
+            format!(
+                "[GlobalSettings]\n\n[NemesisEvalBox_wb]\nFileRootPath={}\n",
+                root.display()
+            ),
+        )
+        .unwrap();
+
+        run(SandboxCommand::Kill { box_name: None }, false)
+            .await
+            .unwrap();
+        assert!(paths.start_exe().is_file(), "垃圾 Start.exe 保持原样");
+    }
+
+    #[tokio::test]
+    async fn wave_b_status_present_arms_when_runtime_ini_startexe_exist() {
+        let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let th = s11b_temp_home_env();
+        let paths = s11b_paths(&th.home);
+
+        // 三件套就位：Start.exe 占位文件（status 只判存在，不执行它）、
+        // Sandboxie.ini、runtime 目录本体。
+        std::fs::create_dir_all(&paths.runtime_dir).unwrap();
+        std::fs::write(paths.start_exe(), b"placeholder, not executed").unwrap();
+        std::fs::create_dir_all(paths.ini_path.parent().unwrap()).unwrap();
+        std::fs::write(&paths.ini_path, "[GlobalSettings]\nEnabled=y\n").unwrap();
+
+        run(SandboxCommand::Status, false).await.unwrap();
+
+        assert!(paths.start_exe().is_file());
+        assert!(paths.ini_path.is_file());
+    }
+}

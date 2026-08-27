@@ -544,4 +544,212 @@ mod run_arm {
             assert_eq!(jobs[0]["enabled"], true);
         });
     }
+
+    // -----------------------------------------------------------------------
+    // R7（coverage-95 goal）：Add/Remove 的 store-已存在读臂 + 写失败臂。
+    // - Add 在 store 已存在时必须读旧数组做合并（此前只测过空新建）；
+    // - {home}/workspace 是普通文件时 create_dir_all 被静默吞掉、
+    //   fs::write 因父路径不是目录而失败 → ? 上抛 Err；
+    // - store 文件只读（Windows READONLY attr / unix 0444）时 Remove 的
+    //   收尾 fs::write 失败 → ? 上抛 Err，且原内容保持不变。
+    // -----------------------------------------------------------------------
+
+    /// 只读化（跨平台）：Windows std 把 0o444 映射为 FILE_ATTRIBUTE_READONLY，
+    /// unix 即权限位。返回恢复闭包句柄由调用方在断言后手动还原。
+    fn deny_write(p: &std::path::Path) {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perm = std::fs::metadata(p).unwrap().permissions();
+            perm.set_mode(0o444);
+            std::fs::set_permissions(p, perm).unwrap();
+        }
+        #[cfg(windows)]
+        {
+            let mut perm = std::fs::metadata(p).unwrap().permissions();
+            perm.set_readonly(true);
+            std::fs::set_permissions(p, perm).unwrap();
+        }
+    }
+
+    fn allow_write(p: &std::path::Path) {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perm = std::fs::metadata(p).unwrap().permissions();
+            perm.set_mode(0o644);
+            std::fs::set_permissions(p, perm).unwrap();
+        }
+        #[cfg(windows)]
+        {
+            let mut perm = std::fs::metadata(p).unwrap().permissions();
+            perm.set_readonly(false);
+            std::fs::set_permissions(p, perm).unwrap();
+        }
+    }
+
+    #[test]
+    fn add_merges_into_existing_store() {
+        with_env_home(|home| {
+            write_store(&home, r#"[{"id":"keep1","name":"kept"}]"#);
+            run(
+                CronAction::Add {
+                    name: "j9".into(),
+                    message: "m".into(),
+                    every: Some(5),
+                    cron: None,
+                    deliver: false,
+                    to: None,
+                    channel: None,
+                },
+                false,
+            )
+            .expect("store 已存在 → 读旧数组合并后追加");
+            let jobs: serde_json::Value =
+                serde_json::from_str(&std::fs::read_to_string(store_of(&home)).unwrap()).unwrap();
+            let arr = jobs.as_array().unwrap();
+            assert_eq!(arr.len(), 2, "旧 job 保留 + 新 job 追加");
+            assert_eq!(arr[0]["id"], "keep1");
+            assert_eq!(arr[1]["name"], "j9");
+            assert_eq!(arr[1]["schedule"]["every_ms"], 5000);
+        });
+    }
+
+    #[test]
+    fn add_write_failure_when_workspace_is_regular_file_surfaces_error() {
+        with_env_home(|home| {
+            std::fs::create_dir_all(&home).unwrap();
+            // workspace 是普通文件：create_dir_all({home}/workspace/cron)
+            // 失败但被 `let _` 吞掉；store.exists()==false（祖先被文件挡住）
+            // → 初始化空 vec；最终 fs::write 打不开父路径 → Err 上抛。
+            std::fs::write(home.join("workspace"), b"not a directory").unwrap();
+
+            let r = run(
+                CronAction::Add {
+                    name: "blocked".into(),
+                    message: "m".into(),
+                    every: Some(5),
+                    cron: None,
+                    deliver: false,
+                    to: None,
+                    channel: None,
+                },
+                false,
+            );
+            assert!(r.is_err(), "写路径被普通文件阻断必须 Err");
+            assert!(!store_of(&home).exists(), "store 没能创建");
+        });
+    }
+
+    #[test]
+    fn remove_write_failure_denied_by_readonly_store_surfaces_error() {
+        with_env_home(|home| {
+            write_store(&home, r#"[{"id":"abc","name":"n"}]"#);
+            let store = store_of(&home);
+            deny_write(&store);
+
+            let r = run(CronAction::Remove { id: "abc".into() }, false);
+
+            allow_write(&store); // 先还原再断言，保证 TempDir 能清理
+            assert!(r.is_err(), "readonly store → 收尾写入被拒 → Err");
+            // 原内容保持不变（删除没有落盘）。
+            let jobs: serde_json::Value =
+                serde_json::from_str(&std::fs::read_to_string(&store).unwrap()).unwrap();
+            assert_eq!(jobs[0]["id"], "abc");
+        });
+    }
+}
+
+// =========================================================================
+// wave_b（覆盖率补测 2026-08-27）：Add 读臂的损坏 store 形态。
+// 既有 add_merges_into_existing_store 已合法 JSON 路径走过 153-155/160-163；
+// 本测试补「文件存在但内容损坏」这一不同分支形状：serde 解析失败 →
+// unwrap_or_default 回退空数组（旧内容静默丢弃，见生产可疑点报告）→
+// 追加新 job 后整体重写为合法数组。钉住该语义，防止未来改动悄悄变更行为。
+// 注：with_env_home/store_of/write_store 是 run_arm 内私有 helper，
+// 兄弟模块不可见，此处最小克隆。
+// =========================================================================
+mod wave_b {
+    use super::super::{run, CronAction};
+
+    fn with_env_home(f: impl FnOnce(std::path::PathBuf)) {
+        let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        unsafe {
+            std::env::set_var("NEMESISBOT_HOME", tmp.path());
+        }
+        f(tmp.path().join(".nemesisbot"));
+        unsafe {
+            std::env::remove_var("NEMESISBOT_HOME");
+        }
+    }
+
+    fn store_of(home: &std::path::Path) -> std::path::PathBuf {
+        home.join("workspace").join("cron").join("jobs.json")
+    }
+
+    #[test]
+    fn wave_b_add_over_corrupt_store_fails_loud_and_keeps_store_untouched() {
+        // BUG 台账 #37：原实现 unwrap_or_default 把损坏 store 当空数组 →
+        // 写盘静默顶掉全部旧任务。新契约：Add 遇损坏存储必须 Err 且
+        // 文件保持原样（绝不半覆盖）。
+        with_env_home(|home| {
+            let store = store_of(&home);
+            std::fs::create_dir_all(store.parent().unwrap()).unwrap();
+            let corrupt = "not-a-json-array {{{";
+            std::fs::write(&store, corrupt).unwrap();
+
+            let err = run(
+                CronAction::Add {
+                    name: "wb-corrupt".into(),
+                    message: "m".into(),
+                    every: Some(7),
+                    cron: None,
+                    deliver: false,
+                    to: None,
+                    channel: None,
+                },
+                false,
+            )
+            .expect_err("损坏 store 必须 loud 失败");
+            assert!(
+                err.to_string().contains("已损坏"),
+                "错误信息应点明存储损坏: {err}"
+            );
+
+            // 文件必须一个字节都没被改。
+            let after = std::fs::read_to_string(&store).unwrap();
+            assert_eq!(after, corrupt, "失败路径不得触碰磁盘上的存储文件");
+        });
+    }
+
+    #[test]
+    fn wave_b_add_on_missing_store_still_creates_fresh_store() {
+        // 对照组：无存储时 Add 照常建库（首插臂不受损坏守卫影响）。
+        with_env_home(|home| {
+            let store = store_of(&home);
+            assert!(!store.exists());
+
+            run(
+                CronAction::Add {
+                    name: "wb-fresh".into(),
+                    message: "m".into(),
+                    every: Some(5),
+                    cron: None,
+                    deliver: false,
+                    to: None,
+                    channel: None,
+                },
+                false,
+            )
+            .expect("缺省存储 → 正常新建");
+
+            let jobs: serde_json::Value =
+                serde_json::from_str(&std::fs::read_to_string(&store).unwrap())
+                    .expect("add 后 store 是合法 JSON 数组");
+            let arr = jobs.as_array().unwrap();
+            assert_eq!(arr.len(), 1);
+            assert_eq!(arr[0]["name"], "wb-fresh");
+        });
+    }
 }

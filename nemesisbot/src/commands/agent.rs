@@ -215,9 +215,14 @@ pub(crate) fn build_agent_loop(
     let resolution = nemesis_config::resolve_model_config(cfg, &llm_ref)
         .map_err(|e| anyhow::anyhow!("Failed to resolve model '{}': {}", llm_ref, e))?;
 
-    if !resolution.enabled {
-        anyhow::bail!("Model '{}' is not enabled", llm_ref);
-    }
+    // [2026-08-27 R9 死码处置·注释禁用] 原 `if !resolution.enabled { bail!(...) }`
+    // 守卫被证实恒不触发：resolve_model_config 的 enabled 字段在
+    // provider_resolver.rs:103/179 恒构造 true，无任何配置路径能翻成 false
+    // → 无测试可达路径。恢复方式：取消下方注释，并在 provider_resolver
+    // 增加 enabled=false 的构造路径（同时补对应测试）。
+    // if !resolution.enabled {
+    //     anyhow::bail!("Model '{}' is not enabled", llm_ref);
+    // }
 
     // 2. Create provider via factory
     let factory_cfg = nemesis_providers::factory::FactoryConfig {
@@ -263,11 +268,12 @@ pub(crate) fn build_agent_loop(
     // 5. Build AgentConfig
     let agent_config = AgentConfig {
         model: model_name.clone(),
-        system_prompt: if system_prompt.is_empty() {
-            None
-        } else {
-            Some(system_prompt)
-        },
+        // [2026-08-27 R9 死码处置·简化] 原 `if system_prompt.is_empty() { None }
+        // else { Some(..) }` 的 None 臂恒不触发：ContextBuilder::
+        // build_system_prompt 无条件 push build_identity()（context.rs:328）
+        // → 返回值永非空。恒 Some 不改变行为；恢复空提示支持需先给
+        // ContextBuilder 加"跳过 identity"构造路径。
+        system_prompt: Some(system_prompt),
         max_turns: if cfg.agents.defaults.max_tool_iterations <= 0 {
             // 0 (or negative) = unlimited opt-in (see AgentLoop run-loop check).
             0

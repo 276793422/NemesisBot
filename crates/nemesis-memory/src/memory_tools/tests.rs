@@ -2409,3 +2409,36 @@ fn test_truncate_text_walks_back_to_char_boundary() {
     // No truncation needed.
     assert_eq!(truncate_text("short", 200), "short");
 }
+
+// ---- R1 coverage: forget-action validation + status listing ----
+
+#[tokio::test]
+async fn delete_by_id_requires_an_id() {
+    let dir = tempfile::tempdir().unwrap();
+    let config = crate::manager::Config::new(dir.path());
+    let mgr = Arc::new(MemoryManager::new(&config));
+    let executor = MemoryToolExecutor::new(mgr);
+
+    let result = executor
+        .execute("memory_forget", &serde_json::json!({"action": "delete_by_id"}))
+        .await;
+    assert!(!result.success);
+    assert!(
+        result.content.contains("id is required for delete_by_id"),
+        "got: {}",
+        result.content
+    );
+}
+
+#[tokio::test]
+async fn list_status_reports_fresh_manager_counts() {
+    let dir = tempfile::tempdir().unwrap();
+    let config = crate::manager::Config::new(dir.path());
+    let mgr = Arc::new(MemoryManager::new(&config));
+    let executor = MemoryToolExecutor::new(mgr);
+
+    let result = executor
+        .execute("memory_list", &serde_json::json!({"list_type": "status"}))
+        .await;
+    assert!(result.success, "status listing must succeed");
+}

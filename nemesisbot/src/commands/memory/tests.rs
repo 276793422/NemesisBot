@@ -446,3 +446,225 @@ async fn run_enable_without_plugin_errors_via_env_home() {
     })
     .await;
 }
+
+// ===========================================================================
+// R7（coverage-95 goal，2026-08-27）：cmd_enable 成功链（原 S11 标注
+// 「结构性豁免：需真实 dll+模型」）——用 R6 bootstrap 先例的哑 DLL +
+// 种子模型文件解锁。detect_plugin_path 探测 {exe_dir}/plugins/（测试二
+// 进程级全局），所以哑 DLL 的写/删必须整体持 GLOBAL_STATE_LOCK。
+// cmd_* 无单例参与，home 隔离走 NEMESISBOT_HOME（父目录）env 即可。
+// ===========================================================================
+mod r7_enable_success_chain {
+    use super::*;
+    use std::path::PathBuf;
+
+    fn config_dir_of(home: &std::path::Path) -> PathBuf {
+        common::enhanced_memory_config_path(home)
+            .parent()
+            .unwrap()
+            .to_path_buf()
+    }
+
+    /// 哑 DLL 守卫：Drop 必删文件并尽力清空 plugins 目录（panic unwind 也执行）。
+    struct DummyPluginGuard {
+        path: PathBuf,
+    }
+
+    impl DummyPluginGuard {
+        fn install() -> Self {
+            let exe = std::env::current_exe().unwrap();
+            let plugins_dir = exe.parent().unwrap().join("plugins");
+            std::fs::create_dir_all(&plugins_dir).unwrap();
+            let p = plugins_dir.join(nemesis_utils::plugin_library_filename("plugin_onnx"));
+            std::fs::write(&p, b"r7 dummy plugin (not a real library)").unwrap();
+            Self { path: p }
+        }
+    }
+
+    impl Drop for DummyPluginGuard {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(&self.path);
+        }
+    }
+
+    /// 最小 embedding 配置：active=medium、name=r7-probe、dim 384。
+    /// ModelConfig 字段全 #[serde(default)]，钉 name/dimension 即可解析。
+    fn seed_embedding_config(home: &std::path::Path) {
+        let cfg = serde_json::json!({
+            "enabled": false,
+            "active": "medium",
+            "models": {"medium": {"name": "r7-probe", "dimension": 384}}
+        });
+        let dir = config_dir_of(home);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("config.enhanced_memory.json"),
+            serde_json::to_string_pretty(&cfg).unwrap(),
+        )
+        .unwrap();
+    }
+
+    /// embedding_data_dir(config_dir) = {home}/workspace/tools/memory/data/embedding，
+    /// 模型目录名取 active tier 的 name → r7-probe/model.onnx（嵌套层触发
+    /// has_onnx_files 的递归臂）。
+    fn seed_model_files(home: &std::path::Path) {
+        let dir =
+            nemesis_memory::vector::embedding_config::embedding_data_dir(&config_dir_of(home))
+                .join("r7-probe");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("model.onnx"), b"r7 dummy onnx").unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn run_enable_full_success_chain_flips_both_switches() {
+        // 锁与守卫同生命周期：DLL 写入期间其它内存测试不得并发探测 exe 目录。
+        let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let _dll = DummyPluginGuard::install();
+        let tmp = tempfile::tempdir().unwrap();
+        unsafe {
+            std::env::set_var("NEMESISBOT_HOME", tmp.path());
+        }
+        let home = tmp.path().join(".nemesisbot");
+        std::fs::create_dir_all(&home).unwrap();
+        std::fs::write(
+            home.join("config.json"),
+            serde_json::to_string_pretty(
+                &serde_json::json!({"version": "1.0.0", "memory": {"enabled": false}}),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        seed_embedding_config(&home);
+        seed_model_files(&home);
+
+        let r = run(MemoryAction::Enable, false).await;
+
+        unsafe {
+            std::env::remove_var("NEMESISBOT_HOME");
+        }
+        r.expect("enable 全链路 ok");
+        let cfg: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(home.join("config.json")).unwrap())
+                .unwrap();
+        assert_eq!(cfg["memory"]["enabled"], true, "主开关翻 true");
+        let em_path = common::enhanced_memory_config_path(&home);
+        let em: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&em_path).unwrap()).unwrap();
+        assert_eq!(em["enabled"], true, "子开关翻 true");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn run_status_overall_ready_branch_with_all_ingredients() {
+        let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let _dll = DummyPluginGuard::install();
+        let tmp = tempfile::tempdir().unwrap();
+        unsafe {
+            std::env::set_var("NEMESISBOT_HOME", tmp.path());
+        }
+        let home = tmp.path().join(".nemesisbot");
+        std::fs::create_dir_all(&home).unwrap();
+        std::fs::write(
+            home.join("config.json"),
+            serde_json::to_string(&serde_json::json!({"memory": {"enabled": true}})).unwrap(),
+        )
+        .unwrap();
+        seed_embedding_config(&home);
+        seed_model_files(&home);
+        // 子开关开 → status READY 臂 + Plugin DLL [OK] 打印臂。
+        let em_path = common::enhanced_memory_config_path(&home);
+        let mut em = serde_json::from_str::<serde_json::Value>(
+            &std::fs::read_to_string(&em_path).unwrap(),
+        )
+        .unwrap();
+        if let Some(obj) = em.as_object_mut() {
+            obj.insert("enabled".to_string(), serde_json::Value::Bool(true));
+        }
+        std::fs::write(&em_path, serde_json::to_string_pretty(&em).unwrap()).unwrap();
+
+        let r = run(MemoryAction::Status, false).await;
+
+        unsafe {
+            std::env::remove_var("NEMESISBOT_HOME");
+        }
+        r.expect("status with full stack ok");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn run_enable_plugin_ok_but_model_missing_maps_install_hint() {
+        let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let _dll = DummyPluginGuard::install();
+        let tmp = tempfile::tempdir().unwrap();
+        unsafe {
+            std::env::set_var("NEMESISBOT_HOME", tmp.path());
+        }
+        let home = tmp.path().join(".nemesisbot");
+        std::fs::create_dir_all(&home).unwrap();
+        std::fs::write(
+            home.join("config.json"),
+            serde_json::to_string(&serde_json::json!({})).unwrap(),
+        )
+        .unwrap();
+        seed_embedding_config(&home);
+        // 不种模型文件 → resolve_model_files Err → 映射「请先运行 memory install」。
+
+        let r = run(MemoryAction::Enable, false).await;
+
+        unsafe {
+            std::env::remove_var("NEMESISBOT_HOME");
+        }
+        let err = r.expect_err("模型缺失 → Err");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("memory install"),
+            "应映射安装提示，got: {msg}"
+        );
+    }
+
+    /// R7（coverage-95 goal）：workspace 是普通文件 → config 目录创建必然
+    /// 失败，with_context 的错误臂（错误发生在 DLL 探测之前，无需哑 DLL）。
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn run_enable_blocked_when_workspace_is_regular_file() {
+        let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        unsafe {
+            std::env::set_var("NEMESISBOT_HOME", tmp.path());
+        }
+        let home = tmp.path().join(".nemesisbot");
+        std::fs::create_dir_all(&home).unwrap();
+        std::fs::write(home.join("workspace"), b"not a directory").unwrap();
+
+        let r = run(MemoryAction::Enable, false).await;
+
+        unsafe {
+            std::env::remove_var("NEMESISBOT_HOME");
+        }
+        let err = r.expect_err("create_dir_all 被普通文件阻断 → Err");
+        assert!(
+            err.to_string().contains("creating config dir"),
+            "必须携带 context 错误信息, got: {err}"
+        );
+    }
+
+    /// R7（coverage-95 goal）：has_onnx_files 的 false 臂——空目录 / 无
+    /// onnx 扩展名文件 / 目录本身不存在都返回 false（true 臂由上面成功链
+    /// 的嵌套递归覆盖）。
+    #[test]
+    fn has_onnx_files_false_arms_on_empty_missing_and_non_onnx() {
+        let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+
+        // 目录不存在 → read_dir Err → false。
+        assert!(!has_onnx_files(&tmp.path().join("missing")));
+
+        // 空目录 → false。
+        let empty = tmp.path().join("empty");
+        std::fs::create_dir_all(&empty).unwrap();
+        assert!(!has_onnx_files(&empty));
+
+        // 只有非 onnx 文件 → false。
+        let plain = tmp.path().join("plain");
+        std::fs::create_dir_all(&plain).unwrap();
+        std::fs::write(plain.join("weights.bin"), b"x").unwrap();
+        assert!(!has_onnx_files(&plain));
+    }
+}

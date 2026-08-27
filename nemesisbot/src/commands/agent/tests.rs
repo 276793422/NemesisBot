@@ -1088,3 +1088,738 @@ async fn test_s11b_run_set_concurrent_mode_no_config_ok() {
     .unwrap();
     assert!(!th.home.join("config.json").exists());
 }
+
+// ===========================================================================
+// wave_b（coverage 补测）：build_agent_loop 的 skills / registry /
+// RequestLogger 分支 + run() CLI 开关臂 + 本地回环 mock LLM 全流程。
+//
+// 不可测豁免（证据）：
+// - agent.rs:218-219 `!resolution.enabled` 守卫：resolve_model_config 三处
+//   硬编码 enabled:true（provider_resolver.rs:59/103/179）→ 死分支。
+// - agent.rs:266 `system_prompt.is_empty()` None 臂：ContextBuilder::
+//   build_system_prompt 无条件 push build_identity()（context.rs:328）
+//   → 永非空。
+// - rustyline REPL / Set-Llm y/N stdin 确认：交互 tty 下 read_line 阻塞。
+// =========================================================================
+
+mod wave_b {
+    use super::*;
+
+    /// 本地回环 OpenAI 兼容 mock：POST /chat/completions 返回一条
+    /// finish_reason=stop、无 tool_calls 的补全。adapter 走非流式 chat()，
+    /// 普通 JSON 即可；若请求体出现 "stream":true 则回 SSE（防御，现路径
+    /// 不触发）。返回端口；连接计数供调用方断言至少被调一次。
+    fn start_openai_mock(content: &'static str) -> (u16, std::sync::Arc<std::sync::atomic::AtomicUsize>) {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let hits = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let hits_clone = hits.clone();
+        std::thread::spawn(move || {
+            use std::io::{Read, Write};
+            for _ in 0..8 {
+                let Ok((mut stream, _)) = listener.accept() else {
+                    break;
+                };
+                hits_clone.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                let _ = stream.set_read_timeout(Some(std::time::Duration::from_millis(800)));
+                let mut buf = Vec::new();
+                let mut chunk = [0u8; 4096];
+                loop {
+                    match stream.read(&mut chunk) {
+                        Ok(0) | Err(_) => break,
+                        Ok(n) => {
+                            buf.extend_from_slice(&chunk[..n]);
+                            if buf.windows(4).any(|w| w == b"\r\n\r\n") {
+                                break;
+                            }
+                        }
+                    }
+                }
+                let head_end = buf
+                    .windows(4)
+                    .position(|w| w == b"\r\n\r\n")
+                    .map(|p| p + 4)
+                    .unwrap_or(buf.len());
+                let head = String::from_utf8_lossy(&buf[..head_end]).to_string();
+                let content_length = head
+                    .lines()
+                    .find_map(|l| {
+                        let (k, v) = l.split_once(':')?;
+                        if !k.trim().eq_ignore_ascii_case("content-length") {
+                            return None;
+                        }
+                        v.trim().parse::<usize>().ok()
+                    })
+                    .unwrap_or(0);
+                let mut body = buf[head_end.min(buf.len())..].to_vec();
+                while body.len() < content_length {
+                    match stream.read(&mut chunk) {
+                        Ok(0) | Err(_) => break,
+                        Ok(n) => body.extend_from_slice(&chunk[..n]),
+                    }
+                }
+                let wants_stream = body.windows(13).any(|w| w == b"\"stream\":true");
+                let resp = if wants_stream {
+                    let mut sse = String::new();
+                    sse.push_str(
+                        "data: {\"id\":\"wb\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"wb-mock-reply\"}}]}\n\n",
+                    );
+                    sse.push_str(
+                        "data: {\"id\":\"wb\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n",
+                    );
+                    sse.push_str("data: [DONE]\n\n");
+                    format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\nContent-Length: {}\r\n\r\n{}",
+                        sse.len(),
+                        sse
+                    )
+                } else {
+                    format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nConnection: close\r\nContent-Length: {}\r\n\r\n{}",
+                        content.len(),
+                        content
+                    )
+                };
+                let _ = stream.write_all(resp.as_bytes());
+                let _ = stream.flush();
+            }
+        });
+        (port, hits)
+    }
+
+    #[test]
+    fn wave_b_build_loop_loads_skills_when_dir_present() {
+        let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let th = s11b_agent_home_env();
+        s11b_write_agent_config(&th.home, s11b_dead_provider_config());
+        // workspace/skills 存在 → context_builder.load_skills 分支被触发。
+        let skills_dir = th.home.join("workspace").join("skills").join("wb-skill");
+        std::fs::create_dir_all(&skills_dir).unwrap();
+        std::fs::write(
+            skills_dir.join("SKILL.md"),
+            "---\nname: wb-skill\ndescription: wave-b probe skill\n---\nbody",
+        )
+        .unwrap();
+
+        let cfg = nemesis_config::load_config(&th.home.join("config.json")).unwrap();
+        build_agent_loop(&cfg, &th.home).expect("skills 目录在场不影响构建 → Ok");
+    }
+
+    #[test]
+    fn wave_b_build_loop_zero_max_tool_iterations_maps_unlimited() {
+        let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let th = s11b_agent_home_env();
+        // max_tool_iterations=0 → max_turns 映射为 0（unlimited opt-in 分支）。
+        s11b_write_agent_config(
+            &th.home,
+            serde_json::json!({
+                "agents": {"defaults": {"llm": "fake", "max_tool_iterations": 0}},
+                "model_list": [{
+                    "model_name": "fake",
+                    "model": "openai/gpt-fake",
+                    "api_base": "http://127.0.0.1:1",
+                    "api_key": "k"
+                }]
+            }),
+        );
+        let cfg = nemesis_config::load_config(&th.home.join("config.json")).unwrap();
+        build_agent_loop(&cfg, &th.home).expect("unlimited 档位照常构建 → Ok");
+    }
+
+    #[test]
+    fn wave_b_build_loop_skills_registry_from_config_skills_json() {
+        let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let th = s11b_agent_home_env();
+        s11b_write_agent_config(&th.home, s11b_dead_provider_config());
+        // workspace/config/config.skills.json 在场 → skills_registry 解析分支；
+        // RegistryConfig 全字段 #[serde(default)]，`{}` 合法。
+        let cfg_dir = th.home.join("workspace").join("config");
+        std::fs::create_dir_all(&cfg_dir).unwrap();
+        std::fs::write(cfg_dir.join("config.skills.json"), "{}").unwrap();
+
+        let cfg = nemesis_config::load_config(&th.home.join("config.json")).unwrap();
+        build_agent_loop(&cfg, &th.home)
+            .expect("config.skills.json={} 可解析 → RegistryManager 构建成功 → Ok");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn wave_b_build_loop_request_logger_truncated_custom_logdir() {
+        let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let th = s11b_agent_home_env();
+        // logging.llm{truncated,自定义 log_dir,save_raw} → DetailLevel::Truncated
+        // + 自定义目录三路匹配全命中；block_in_place 注册 observer。
+        s11b_write_agent_config(
+            &th.home,
+            serde_json::json!({
+                "agents": {"defaults": {"llm": "fake"}},
+                "logging": {"llm": {
+                    "enabled": true,
+                    "detail_level": "truncated",
+                    "log_dir": "wb-request-logs",
+                    "save_raw": true
+                }},
+                "model_list": [{
+                    "model_name": "fake",
+                    "model": "openai/gpt-fake",
+                    "api_base": "http://127.0.0.1:1",
+                    "api_key": "k"
+                }]
+            }),
+        );
+        let cfg = nemesis_config::load_config(&th.home.join("config.json")).unwrap();
+        build_agent_loop(&cfg, &th.home).expect("RequestLogger(truncated+custom dir) 注册后构建 Ok");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn wave_b_build_loop_request_logger_defaults_full_and_default_logdir() {
+        let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let th = s11b_agent_home_env();
+        // 只给 enabled → detail_level 兜底 Full + log_dir 空串兜底
+        // "logs/request_logs"（两条 `_ =>`/空串 else 分支）。
+        s11b_write_agent_config(
+            &th.home,
+            serde_json::json!({
+                "agents": {"defaults": {"llm": "fake"}},
+                "logging": {"llm": {"enabled": true}},
+                "model_list": [{
+                    "model_name": "fake",
+                    "model": "openai/gpt-fake",
+                    "api_base": "http://127.0.0.1:1",
+                    "api_key": "k"
+                }]
+            }),
+        );
+        let cfg = nemesis_config::load_config(&th.home.join("config.json")).unwrap();
+        build_agent_loop(&cfg, &th.home).expect("RequestLogger 默认 Full+默认目录注册后构建 Ok");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn wave_b_run_flags_debug_quiet_no_console_single_message_dead_provider() {
+        let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let th = s11b_agent_home_env();
+        s11b_write_agent_config(&th.home, s11b_dead_provider_config());
+        // debug/quiet/no_console 全开：--debug/--quiet/--no-console 注入 +
+        // 两个 println 臂（Debug/Quiet mode enabled）+ 单消息死地址 Err 臂。
+        let res = run(
+            None,
+            Some("flags trio".to_string()),
+            "wave-b-flags".to_string(),
+            true,
+            true,
+            true,
+            false,
+        )
+        .await;
+        assert!(res.is_ok(), "flags 组合不得改变单消息模式的 Ok 收敛: {res:?}");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn wave_b_run_single_message_success_via_loopback_openai_mock() {
+        let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let th = s11b_agent_home_env();
+        let (port, hits) = start_openai_mock(
+            "{\"id\":\"wb-1\",\"object\":\"chat.completion\",\"created\":1700000000,\"model\":\"mock\",\"choices\":[{\"index\":0,\"message\":{\"role\":\"assistant\",\"content\":\"wb-mock-reply\"},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":5,\"completion_tokens\":2,\"total_tokens\":7}}",
+        );
+        s11b_write_agent_config(
+            &th.home,
+            serde_json::json!({
+                "agents": {"defaults": {"llm": "wbmock"}},
+                "model_list": [{
+                    "model_name": "wbmock",
+                    "model": "openai/gpt-wb",
+                    "api_base": format!("http://127.0.0.1:{port}"),
+                    "api_key": "k"
+                }]
+            }),
+        );
+        // 单消息模式全绿通路：process_direct Ok → println!("Agent: ...") 臂，
+        // run 返回 Ok 且 mock 至少收到一次真实 HTTP 补全请求。
+        let res = run(
+            None,
+            Some("hello mock".to_string()),
+            "wave-b-mock".to_string(),
+            false,
+            false,
+            false,
+            false,
+        )
+        .await;
+        assert!(res.is_ok(), "mock provider 下单消息必须成功: {res:?}");
+        assert!(
+            hits.load(std::sync::atomic::Ordering::SeqCst) >= 1,
+            "回环 mock 未收到任何请求 —— provider 未走到网络层"
+        );
+    }
+
+    #[tokio::test]
+    async fn wave_b_run_set_llm_bare_agents_section_inserts_defaults() {
+        let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let th = s11b_agent_home_env();
+        // agents 段存在但无 defaults → 命中 `!agents.contains_key("defaults")`
+        // 插入分支（与 s11b「整个 agents 缺失」的插入互补）。
+        s11b_write_agent_config(
+            &th.home,
+            serde_json::json!({
+                "agents": {},
+                "model_list": [{
+                    "model_name": "fake",
+                    "model": "openai/gpt-fake",
+                    "api_base": "http://127.0.0.1:1",
+                    "api_key": "k"
+                }]
+            }),
+        );
+        run(
+            Some(AgentSetCommand::Set {
+                action: AgentSetAction::Llm { model: "fake".to_string() },
+            }),
+            None,
+            "s11b".to_string(),
+            false,
+            false,
+            false,
+            false,
+        )
+        .await
+        .unwrap();
+        let cfg = s11b_read_agent_config(&th.home);
+        assert_eq!(cfg["agents"]["defaults"]["llm"], "fake");
+    }
+}
+
+// ===========================================================================
+// R9 补测批（coverage-95 goal）：交互式 REPL 主循环（agent.rs 交互分支，
+// ~agent.rs:504-653）+ `agent set llm` 未命中时的裸 stdin y/N 确认
+// （~agent.rs:670-689）。全部经真实 exe 子进程 + 管道 stdin 脚本驱动。
+//
+// 豁免清账：上方 S11b 头注与 wave_b 尾注曾把「rustyline REPL」「Set-Llm
+// stdin 确认」列为不可测（当时按 tty 阻塞推断）。本批用
+// test_harness::TestWorkspace::run_cli_with_stdin（整段脚本写入管道后关闭
+// = 子进程顺序消费脚本、末尾见 EOF）推翻该豁免：rustyline 15 对非 tty
+// stdin 无 isatty 挡路，走 readline_direct 全流程；EOF → ReadlineError::
+// Eof → Goodbye 臂（agent.rs:641-644）。
+//
+// 结构性事实（agent.rs 读码实证 + 本文件既有断言 get_registry().is_none()）：
+// standalone 构造路径 registry 为 None，三个内建 slash 命令的内层体
+// （registry Some 分支，约 38 行）结构性不可达——/history 打印空行后继续、
+// /clear 恒打印 "History cleared."、/status 恒打印 "State: no registry"。
+// 因此断言目标 = 「命令被识别且不崩、循环推进到后续输入」，不钉内层文案。
+// =========================================================================
+
+mod r9_repl {
+    use std::path::PathBuf;
+    use test_harness::mock_ai::{MockAiReply, MockAiServer};
+    use test_harness::TestWorkspace;
+
+    /// mock 回复内容标记串（宽松 contains 断言，纯 ASCII 防切片坑）。
+    const MARKER: &str = "R9MOCK-REPLY-MARKER-ALPHA";
+
+    /// 立即连接拒绝的死地址（127.0.0.1:9 discard 端口，Windows 秒拒），
+    /// 给「模型调用失败 → Agent error 臂 + 循环存活」用。
+    const DEAD_BASE: &str = "http://127.0.0.1:9";
+
+    /// model id 刻意避开 infer_provider_from_model 的全部关键词
+    /// （gpt/claude/glm/gemini/llama/deepseek/kimi/mistral/sonar/cohere/
+    /// groq/nvidia/perplexity/command），provider 显式命名 "r9mock"：
+    /// factory resolve_provider_selection 里 provider=="openai" 会映射成
+    /// CodexProvider（openai→Codex 陷阱），未知 provider 名才落
+    /// HttpCompat 直连 api_base。
+    const PROVIDER_MODEL: &str = "r9mock/r9mocka";
+    const ALIAS: &str = "r9mocka";
+
+    fn r9_resolve_bin() -> PathBuf {
+        test_harness::resolve_nemesisbot_bin().expect("nemesisbot binary resolved")
+    }
+
+    /// 夹具：临时 workspace + onboard default + model add --default 指向
+    /// `base_url`。返回 (workspace, bin)。结尾断言 agents.defaults.llm 已
+    /// 写成别名——这是 build_agent_loop 解析成功的前提。
+    async fn r9_setup_model_ws(base_url: &str) -> (TestWorkspace, PathBuf) {
+        let bin = r9_resolve_bin();
+        let ws = TestWorkspace::new().expect("temp workspace");
+        let up = ws
+            .run_cli_with_timeout(&bin, &["onboard", "default"], 60)
+            .await;
+        assert_eq!(
+            up.exit_code, 0,
+            "onboard default failed:\n--- stdout ---\n{}\n--- stderr ---\n{}",
+            up.stdout, up.stderr
+        );
+        let add = ws
+            .run_cli_with_timeout(
+                &bin,
+                &[
+                    "model",
+                    "add",
+                    "--model",
+                    PROVIDER_MODEL,
+                    "--base",
+                    base_url,
+                    "--key",
+                    "r9-key",
+                    "--default",
+                ],
+                30,
+            )
+            .await;
+        assert_eq!(
+            add.exit_code, 0,
+            "model add failed:\n--- stdout ---\n{}\n--- stderr ---\n{}",
+            add.stdout, add.stderr
+        );
+        let raw = std::fs::read_to_string(ws.config_path()).expect("config.json readable");
+        let cfg: serde_json::Value = serde_json::from_str(&raw).expect("config.json valid JSON");
+        assert_eq!(
+            cfg["agents"]["defaults"]["llm"], ALIAS,
+            "model add --default 必须把 agents.defaults.llm 指到别名"
+        );
+        (ws, bin)
+    }
+
+    /// 夹具变体：只 onboard，不配任何模型——`agent set llm <不存在模型>`
+    /// 的 resolve 必失败 → 走 y/N 裸 stdin 确认分支。
+    async fn r9_setup_plain_ws() -> (TestWorkspace, PathBuf) {
+        let bin = r9_resolve_bin();
+        let ws = TestWorkspace::new().expect("temp workspace");
+        let up = ws
+            .run_cli_with_timeout(&bin, &["onboard", "default"], 60)
+            .await;
+        assert_eq!(
+            up.exit_code, 0,
+            "onboard default failed:\n--- stdout ---\n{}\n--- stderr ---\n{}",
+            up.stdout, up.stderr
+        );
+        (ws, bin)
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn r9_repl_hello_then_quit_returns_mock_reply() {
+        let srv = MockAiServer::start(vec![MockAiReply::Text(MARKER.to_string())])
+            .expect("mock ai server starts");
+        let (ws, bin) = r9_setup_model_ws(&srv.base_url()).await;
+        let out = ws
+            .run_cli_with_stdin(&bin, &["agent"], "hello\nquit\n", 60)
+            .await;
+        assert_eq!(
+            out.exit_code, 0,
+            "quit 收尾必须干净退出:\n--- stdout ---\n{}\n--- stderr ---\n{}",
+            out.stdout, out.stderr
+        );
+        assert!(
+            out.stdout.contains("Interactive mode"),
+            "缺 REPL 入场横幅:\n{}",
+            out.stdout
+        );
+        assert!(
+            out.stdout.contains(MARKER),
+            "mock 模型回复未出现在 stdout:\n{}",
+            out.stdout
+        );
+        assert!(
+            out.stdout.contains("Goodbye"),
+            "quit 必须打印 Goodbye:\n{}",
+            out.stdout
+        );
+        assert!(
+            srv.hits() >= 1,
+            "回环 mock 未收到任何 chat 请求——LLM 链路没有走通"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn r9_repl_eof_without_quit_hits_eof_goodbye_arm() {
+        let srv = MockAiServer::start(vec![MockAiReply::Text(MARKER.to_string())])
+            .expect("mock ai server starts");
+        let (ws, bin) = r9_setup_model_ws(&srv.base_url()).await;
+        // 无 quit 收尾：脚本耗尽后 stdin 关闭 → rustyline Eof → Goodbye 臂。
+        let out = ws
+            .run_cli_with_stdin(&bin, &["agent"], "hello\n", 60)
+            .await;
+        assert_eq!(
+            out.exit_code, 0,
+            "EOF 退出必须 rc=0:\n--- stdout ---\n{}\n--- stderr ---\n{}",
+            out.stdout, out.stderr
+        );
+        assert!(
+            out.stdout.contains(MARKER),
+            "EOF 场景同样应拿到模型回复:\n{}",
+            out.stdout
+        );
+        assert!(
+            out.stdout.contains("Goodbye"),
+            "EOF 必须落在 Eof→Goodbye 臂:\n{}",
+            out.stdout
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn r9_repl_unknown_slash_command_lists_options_and_loops() {
+        // 空 script：任何意外 LLM 调用会被 mock 以 500 "script exhausted"
+        // 拒绝——比静默通过更响。slash 命令不应产生任何 LLM 调用。
+        let srv = MockAiServer::start(vec![]).expect("mock ai server starts");
+        let (ws, bin) = r9_setup_model_ws(&srv.base_url()).await;
+        let out = ws
+            .run_cli_with_stdin(&bin, &["agent"], "/bogus\nquit\n", 60)
+            .await;
+        assert_eq!(
+            out.exit_code, 0,
+            "未知命令不得致崩:\n--- stdout ---\n{}\n--- stderr ---\n{}",
+            out.stdout, out.stderr
+        );
+        assert!(
+            out.stdout.contains("Unknown command: /bogus"),
+            "未识别命令必须有提示:\n{}",
+            out.stdout
+        );
+        assert!(
+            out.stdout.contains("/history, /clear, /status"),
+            "提示里要列出可用命令:\n{}",
+            out.stdout
+        );
+        assert!(
+            out.stdout.contains("Goodbye"),
+            "循环必须继续吃掉后续 quit:\n{}",
+            out.stdout
+        );
+        assert_eq!(
+            srv.hits(),
+            0,
+            "slash 命令路径不允许触发任何 LLM 调用"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn r9_repl_builtin_slash_trio_recognized_loop_survives() {
+        // registry=None 下：/history 无正文输出、/clear 恒打 "History
+        // cleared."、/status 恒打 Session/State(no registry)。三者都应被
+        // 识别并继续循环直到 quit（对应结构性不可达的内层体豁免说明）。
+        let srv = MockAiServer::start(vec![]).expect("mock ai server starts");
+        let (ws, bin) = r9_setup_model_ws(&srv.base_url()).await;
+        let out = ws
+            .run_cli_with_stdin(&bin, &["agent"], "/history\n/status\n/clear\nquit\n", 60)
+            .await;
+        assert_eq!(
+            out.exit_code, 0,
+            "三条内建 slash 命令 + quit 不得崩:\n--- stdout ---\n{}\n--- stderr ---\n{}",
+            out.stdout, out.stderr
+        );
+        assert!(
+            out.stdout.contains("State: no registry"),
+            "/status 应打印 registry=None 兜底状态:\n{}",
+            out.stdout
+        );
+        assert!(
+            out.stdout.contains("Session: cli:default"),
+            "/status 应打印当前 session key（CLI 默认 cli:default）:\n{}",
+            out.stdout
+        );
+        assert!(
+            out.stdout.contains("History cleared."),
+            "/clear 恒打印清理确认:\n{}",
+            out.stdout
+        );
+        assert!(
+            out.stdout.contains("Goodbye"),
+            "四条输入都被顺序消费:\n{}",
+            out.stdout
+        );
+        assert_eq!(srv.hits(), 0, "slash 命令不应打到 mock");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn r9_repl_set_llm_unresolved_confirm_yes_writes_default() {
+        let (ws, bin) = r9_setup_plain_ws().await;
+        // onboard 后没有任何 model_list 条目 → resolve 必失败 → WARNING +
+        // "Set anyway? (y/N):" 裸 stdin read_line。答 y → 写入默认模型。
+        let out = ws
+            .run_cli_with_stdin(
+                &bin,
+                &["agent", "set", "llm", "bogus-model-r9"],
+                "y\n",
+                30,
+            )
+            .await;
+        assert_eq!(
+            out.exit_code, 0,
+            "确认分支必须干净退出:\n--- stdout ---\n{}\n--- stderr ---\n{}",
+            out.stdout, out.stderr
+        );
+        assert!(
+            out.stdout.contains("WARNING: Model 'bogus-model-r9' not found"),
+            "未命中提示缺失:\n{}",
+            out.stdout
+        );
+        assert!(
+            out.stdout.contains("Set anyway? (y/N)"),
+            "确认问题文案缺失:\n{}",
+            out.stdout
+        );
+        assert!(
+            out.stdout.contains("Default LLM set to: bogus-model-r9"),
+            "答 y 后必须落盘默认模型:\n{}",
+            out.stdout
+        );
+        let raw = std::fs::read_to_string(ws.config_path()).expect("config.json readable");
+        let cfg: serde_json::Value = serde_json::from_str(&raw).expect("valid JSON");
+        assert_eq!(
+            cfg["agents"]["defaults"]["llm"], "bogus-model-r9",
+            "y 分支必须真的改写 config.json"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn r9_repl_set_llm_unresolved_confirm_no_cancels() {
+        let (ws, bin) = r9_setup_plain_ws().await;
+        // 答 n（小写即可拒绝；只有恰好 "y" 才放行）→ Cancelled 臂 + 不写盘。
+        let out = ws
+            .run_cli_with_stdin(
+                &bin,
+                &["agent", "set", "llm", "bogus-model-r9"],
+                "n\n",
+                30,
+            )
+            .await;
+        assert_eq!(
+            out.exit_code, 0,
+            "拒绝分支也必须 Ok 收敛:\n--- stdout ---\n{}\n--- stderr ---\n{}",
+            out.stdout, out.stderr
+        );
+        assert!(
+            out.stdout.contains("Cancelled."),
+            "答 n 必须走取消分支:\n{}",
+            out.stdout
+        );
+        assert!(
+            !out.stdout.contains("Default LLM set to"),
+            "取消后不得出现写入成功的文案:\n{}",
+            out.stdout
+        );
+        let raw = std::fs::read_to_string(ws.config_path()).expect("config.json readable");
+        assert!(
+            !raw.contains("bogus-model-r9"),
+            "取消分支不得改写 config.json"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn r9_repl_llm_failure_arm_prints_agent_error_and_loop_survives() {
+        // api_base 指向立即拒绝的死端口：hello 的 LLM 调用失败 → process_
+        // direct Err → "\nAgent error: ...\n"（eprintln）→ 循环继续吃 quit。
+        let (ws, bin) = r9_setup_model_ws(DEAD_BASE).await;
+        let out = ws
+            .run_cli_with_stdin(&bin, &["agent"], "hello\nquit\n", 90)
+            .await;
+        assert_eq!(
+            out.exit_code, 0,
+            "单次 LLM 失败后循环必须继续到 Goodbye:\n--- stdout ---\n{}\n--- stderr ---\n{}",
+            out.stdout, out.stderr
+        );
+        assert!(
+            out.stderr.contains("Agent error"),
+            "错误臂必须打到 stderr:\n--- stderr ---\n{}",
+            out.stderr
+        );
+        assert!(
+            out.stdout.contains("Goodbye"),
+            "错误后循环存活、quit 正常收尾:\n{}",
+            out.stdout
+        );
+        assert!(
+            !out.stdout.contains(MARKER),
+            "死地址场景不可能有回复内容"
+        );
+    }
+}
+
+// ===========================================================================
+// R10 补测批（coverage-95 goal）：REPL 历史文件装载 + 空行 continue。
+//
+// r9_repl 已证 REPL 可管道驱动，但从未预置 history 文件（agent.rs:518 的
+// load_history 行恒 miss）也没喂过空行（agent.rs:527-528 的 is_empty →
+// continue 恒 miss）。本批两处一起吃：先把 workspace/logs/agent_history
+// 写好再起 REPL —— 入场即命中 load_history；随后喂 "\n"（trim 后空 →
+// continue）→ "/history"（识别 slash 臂尾部 println+continue）→ quit。
+//
+// 诚实边界：/history 内层 `registry Some` 分支（约 38 行）结构性不可达
+// （standalone 构造路径 registry=None，r9_repl 头注已论证），仍不在此批。
+// =========================================================================
+
+mod r10 {
+    use std::path::PathBuf;
+
+    use test_harness::TestWorkspace;
+
+    fn r10_resolve_bin() -> PathBuf {
+        test_harness::resolve_nemesisbot_bin().expect("nemesisbot binary resolved")
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn r10_repl_seed_history_load_and_blank_line_continue() {
+        let bin = r10_resolve_bin();
+        let ws = TestWorkspace::new().expect("temp workspace");
+        let up = ws
+            .run_cli_with_timeout(&bin, &["onboard", "default"], 60)
+            .await;
+        assert_eq!(
+            up.exit_code, 0,
+            "onboard default failed:\n--- stdout ---\n{}\n--- stderr ---\n{}",
+            up.stdout, up.stderr
+        );
+
+        // build_agent_loop 需要一个带 key 的模型条目才能创建 provider
+        // （onboard default 的 model_list 为空，默认引用 zhipu/glm-4.7-flash
+        // 会因无 API key 失败）。REPL 本测只走 空行 / /history / quit，
+        // 从不真正调 LLM，所以用死地址假模型即可。model id 刻意避开
+        // infer_provider_from_model 的关键词族（同 r9 的 PROVIDER_MODEL）。
+        let add = ws
+            .run_cli_with_timeout(
+                &bin,
+                &[
+                    "model",
+                    "add",
+                    "--model",
+                    "r10mock/r10mocka",
+                    "--base",
+                    "http://127.0.0.1:9",
+                    "--key",
+                    "r10-key",
+                    "--default",
+                ],
+                30,
+            )
+            .await;
+        assert_eq!(
+            add.exit_code, 0,
+            "model add failed:\n--- stdout ---\n{}\n--- stderr ---\n{}",
+            add.stdout, add.stderr
+        );
+
+        // 预写 rustyline 历史文件（REPL 退出时会写到同一文件）—— REPL 启动
+        // 即走 agent.rs:517-520 的 exists + load_history 两行。
+        let hist_dir = ws.workspace().join("logs");
+        std::fs::create_dir_all(&hist_dir).unwrap();
+        std::fs::write(hist_dir.join("agent_history"), "/status\nprev question\n")
+            .expect("seed agent_history");
+
+        // 脚本：空行（→ trim 空，continue）→ /history（registry None → 只
+        // 打空行继续）→ quit（Goodbye + save_history 干净退出）。
+        let out = ws
+            .run_cli_with_stdin(&bin, &["agent"], "\n/history\nquit\n", 60)
+            .await;
+        assert_eq!(
+            out.exit_code, 0,
+            "REPL 必须干净退出:\n--- stdout ---\n{}\n--- stderr ---\n{}",
+            out.stdout, out.stderr
+        );
+        assert!(
+            out.stdout.contains("Interactive mode"),
+            "缺 REPL 入场横幅:\n{}",
+            out.stdout
+        );
+        assert!(
+            out.stdout.contains("Goodbye"),
+            "quit 必须走到 Goodbye:\n{}",
+            out.stdout
+        );
+    }
+}

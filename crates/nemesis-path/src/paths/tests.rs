@@ -2538,3 +2538,27 @@ fn s12b_boundary_events_dir_lives_outside_session_logs() {
         "must stay OUTSIDE session_logs (phantom-session guard): {d:?}"
     );
 }
+
+#[test]
+fn set_home_dir_repoints_instance_paths() {
+    // R7（coverage-95 goal 2026-08-27）：运行时重定向缝。OnceLock 单例无法
+    // 换实例，setter 是测试把 home 指向临时目录的唯一途径；钉住「改 home
+    // 后所有派生路径跟随」+「不影响其他实例」。
+    let a = PathManager::with_home(std::path::PathBuf::from("/tmp/home_a"));
+    assert!(a.home_dir().ends_with("home_a"));
+    a.set_home_dir(std::path::PathBuf::from("/tmp/home_b"));
+    assert!(a.home_dir().ends_with("home_b"), "home itself must follow");
+    assert!(
+        a.workspace().starts_with("/tmp/home_b"),
+        "derived paths must follow: {:?}",
+        a.workspace()
+    );
+    assert!(
+        a.sessions_log_dir().starts_with("/tmp/home_b"),
+        "sessions_log_dir must follow: {:?}",
+        a.sessions_log_dir()
+    );
+    // 其他实例不受影响。
+    let b = PathManager::with_home(std::path::PathBuf::from("/tmp/home_c"));
+    assert!(b.home_dir().ends_with("home_c"));
+}

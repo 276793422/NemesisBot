@@ -2,12 +2,7 @@
 
 #[test]
 fn test_library_imports() {
-    use crate::agent::{AgentConfig, AgentMessage, MessageRole, SessionKey};
-    use crate::channel::{ChannelUser, InboundMessage, OutboundMessage};
-    use crate::cluster::{NodeInfo, Task};
-    use crate::config::AppConfig;
-    use crate::error::{NemesisError, Result};
-    use crate::forge::{Artifact, Experience};
+    use crate::agent::SessionKey;
     use crate::memory::MemoryType;
     use crate::security::RiskLevel;
 

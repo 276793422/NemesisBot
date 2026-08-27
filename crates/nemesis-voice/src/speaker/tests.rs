@@ -141,3 +141,116 @@ fn speaker_engine_new_with_model_builds_structs_until_ffi() {
 fn speaker_manager_new_panics_at_symbol_lookup() {
     let _ = SpeakerManager::new(192);
 }
+
+// ===========================================================================
+// R6（2026-08-27）：白盒 null 指针 → embed / manager 各方法的封送路径
+// （走到 FFI 符号查找处 panic）。剩余不可达 = FFI 成功返回值语义（真 DLL）。
+// 注意：两个引擎的 Drop 同样在 null 上 panic——持有 null 实例的测试一律
+// `mem::forget` 收尾；方法 panic 用 `catch_panic_msg` 截住展开（should_panic
+// 会双 panic fail-fast，见 test_util.rs）。
+// ===========================================================================
+
+fn null_speaker_engine() -> SpeakerEngine {
+    SpeakerEngine {
+        extractor: std::ptr::null(),
+        dim: 192,
+    }
+}
+
+fn null_speaker_manager() -> SpeakerManager {
+    SpeakerManager {
+        manager: std::ptr::null(),
+        dim: 192,
+    }
+}
+
+#[test]
+fn speaker_engine_embedding_dim_is_pure_field_read() {
+    let e = null_speaker_engine();
+    assert_eq!(e.embedding_dim(), 192);
+    std::mem::forget(e);
+}
+
+#[test]
+fn speaker_engine_embed_panics_at_stream_creation() {
+    let e = null_speaker_engine();
+    let msg = crate::test_util::catch_panic_msg(|| e.embed(&[0.1; 1600], 16000));
+    assert!(msg.contains("sherpa-onnx not initialized"), "{msg}");
+    std::mem::forget(e);
+}
+
+#[test]
+fn speaker_manager_dim_is_pure_field_read() {
+    let m = null_speaker_manager();
+    assert_eq!(m.dim(), 192);
+    std::mem::forget(m);
+}
+
+#[test]
+fn speaker_manager_register_multi_empty_returns_false_without_ffi() {
+    // 空列表早退（129-131 纯逻辑），不碰 FFI
+    let mut m = null_speaker_manager();
+    assert!(!m.register_multi("alice", &[]));
+    std::mem::forget(m);
+}
+
+#[test]
+fn speaker_manager_register_panics_at_symbol_lookup() {
+    let mut m = null_speaker_manager();
+    let msg = crate::test_util::catch_panic_msg(|| m.register("alice", &[0.1; 192]));
+    assert!(msg.contains("sherpa-onnx not initialized"), "{msg}");
+    std::mem::forget(m);
+}
+
+#[test]
+fn speaker_manager_register_multi_nonempty_panics_at_symbol_lookup() {
+    let mut m = null_speaker_manager();
+    let msg =
+        crate::test_util::catch_panic_msg(|| m.register_multi("alice", &[vec![0.1; 192], vec![0.2; 192]]));
+    assert!(msg.contains("sherpa-onnx not initialized"), "{msg}");
+    std::mem::forget(m);
+}
+
+#[test]
+fn speaker_manager_remove_panics_at_symbol_lookup() {
+    let mut m = null_speaker_manager();
+    let msg = crate::test_util::catch_panic_msg(|| m.remove("alice"));
+    assert!(msg.contains("sherpa-onnx not initialized"), "{msg}");
+    std::mem::forget(m);
+}
+
+#[test]
+fn speaker_manager_verify_panics_at_symbol_lookup() {
+    let m = null_speaker_manager();
+    let msg = crate::test_util::catch_panic_msg(|| m.verify("alice", &[0.1; 192], 0.7));
+    assert!(msg.contains("sherpa-onnx not initialized"), "{msg}");
+    std::mem::forget(m);
+}
+
+#[test]
+fn speaker_manager_search_panics_at_symbol_lookup() {
+    let m = null_speaker_manager();
+    let msg = crate::test_util::catch_panic_msg(|| m.search(&[0.1; 192], 0.7));
+    assert!(msg.contains("sherpa-onnx not initialized"), "{msg}");
+    std::mem::forget(m);
+}
+
+#[test]
+fn speaker_manager_list_speakers_panics_at_symbol_lookup() {
+    let m = null_speaker_manager();
+    let msg = crate::test_util::catch_panic_msg(|| m.list_speakers());
+    assert!(msg.contains("sherpa-onnx not initialized"), "{msg}");
+    std::mem::forget(m);
+}
+
+#[test]
+#[should_panic(expected = "sherpa-onnx not initialized")]
+fn speaker_engine_drop_null_panics_at_destroy() {
+    let _ = null_speaker_engine();
+}
+
+#[test]
+#[should_panic(expected = "sherpa-onnx not initialized")]
+fn speaker_manager_drop_null_panics_at_destroy() {
+    let _ = null_speaker_manager();
+}

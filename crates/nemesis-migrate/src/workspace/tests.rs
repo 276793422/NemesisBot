@@ -798,7 +798,8 @@ fn test_plan_dir_copy_recursive() {
             .unwrap();
     // Note: only memory/ and skills/ dirs are migrated. /a/b/c/ won't appear unless inside one of those.
     // But the function still works without error.
-    assert!(plan.total_dirs >= 0);
+    //（原 assert!(>=0) 对无符号数恒真=无效断言已删；上面的 unwrap 才是断言）
+    let _ = plan.total_dirs;
 }
 
 #[test]

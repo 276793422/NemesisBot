@@ -2461,3 +2461,1113 @@ fn test_update_main_config_cluster_writes_section() {
     .unwrap();
     assert_eq!(cfg["cluster"]["enabled"], serde_json::json!(false));
 }
+
+// =========================================================================
+// wave_b（coverage 补测批次 B）
+//
+// 豁免不碰：firewall netsh 臂（spawn 进程 + 宿主防火墙变更）、run_node
+// 主流程臂（UDP 发现 + RPC server 绑定 + ctrl_c 无限循环）、Init/Reset
+// 的 TTY 确认分支、generate_token 的 getrandom 失败兜底。
+// 本批覆盖：错误传播臂（corrupt JSON Enable/Disable/Start/Stop）、
+// 静默跳过臂（Status/Config 对坏文件）、"(not set)" 显示臂、保存失败打印
+// 臂（只读文件；root/admin 会无视只读位——断言保持弱语义）、Remove 的
+// 原始 key 命中臂（quoted TOML key）。
+// =========================================================================
+
+mod wave_b {
+use super::*;
+
+/// RAII 守卫：把文件设为只读，drop 时恢复。
+/// Windows 下 READONLY 属性使 `std::fs::write` 打开即 Access Denied；
+/// Unix 下等价于移除 owner 写位（root 除外，见各测试注）。
+struct WaveBReadOnlyGuard {
+    path: std::path::PathBuf,
+}
+
+impl WaveBReadOnlyGuard {
+    fn apply(path: &std::path::Path) -> Self {
+        let mut perm = std::fs::metadata(path)
+            .expect("readonly target must exist")
+            .permissions();
+        perm.set_readonly(true);
+        std::fs::set_permissions(path, perm).expect("set readonly failed");
+        Self {
+            path: path.to_path_buf(),
+        }
+    }
+}
+
+impl Drop for WaveBReadOnlyGuard {
+    fn drop(&mut self) {
+        // 先恢复权限再让 TempDir 删除目录树
+        if let Ok(meta) = std::fs::metadata(&self.path) {
+            let mut perm = meta.permissions();
+            perm.set_readonly(false);
+            let _ = std::fs::set_permissions(&self.path, perm);
+        }
+    }
+}
+
+/// 255-256 / 276：Status 对「config.cluster.json 存在但 JSON 解析失败」与
+/// 「peers.toml 存在但解析失败」都静默跳过对应段继续输出（不报错）。
+#[tokio::test]
+async fn wave_b_status_survives_corrupt_config_and_corrupt_peers_toml() {
+    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let th = temp_home_env();
+    std::fs::write(
+        crate::common::cluster_config_path(&th.home),
+        "{{{ not json",
+    )
+    .unwrap();
+    write_peers_toml(&th.home, "invalid {{{ toml");
+    run(ClusterAction::Status, false).await.unwrap();
+}
+
+/// 338-339：Config 动作遇到无法解析的 config 文件时静默跳过且绝不改写原文件。
+#[tokio::test]
+async fn wave_b_config_leaves_unparseable_config_byte_identical() {
+    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let th = temp_home_env();
+    let cfg_path = crate::common::cluster_config_path(&th.home);
+    let garbage = "[[[ definitely not json";
+    std::fs::write(&cfg_path, garbage).unwrap();
+    run(
+        ClusterAction::Config {
+            udp_port: 10000,
+            rpc_port: 20000,
+            broadcast_interval: 40,
+        },
+        false,
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        std::fs::read_to_string(&cfg_path).unwrap(),
+        garbage,
+        "unparseable config must be left untouched"
+    );
+}
+
+/// 381 / 383-384：Info 修改字段时 save_static_config 失败（peers.toml 只读）
+/// → 打印失败信息后仍继续显示节点信息，run 正常返回。
+/// 注：以 root/admin 运行时只读位可能被无视 → 此时只是正常保存成功，
+/// 断言因此只钉 Ok 语义。
+#[tokio::test]
+async fn wave_b_info_save_failure_prints_error_and_continues() {
+    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let th = temp_home_env();
+    let peers = crate::common::cluster_dir(&th.home).join("peers.toml");
+    write_peers_toml(&th.home, "[node]\nid = \"wb-ro\"\nname = \"old\"\n");
+    let _ro = WaveBReadOnlyGuard::apply(&peers);
+    run(
+        ClusterAction::Info {
+            name: Some("renamed".into()),
+            role: None,
+            category: None,
+            tags: None,
+            address: None,
+        },
+        false,
+    )
+    .await
+    .unwrap();
+}
+
+/// 392 / 400 / 408：name/role/category 为空串时显示 "(not set)"。
+/// 注意：NodeInfo 各字段带 serde 默认值（worker/general），缺字段不会触发
+/// 这些分支 —— 必须显式写空串才能进入（见报告生产可疑点）。
+#[tokio::test]
+async fn wave_b_info_empty_identity_fields_print_not_set_markers() {
+    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let th = temp_home_env();
+    write_peers_toml(
+        &th.home,
+        "[node]\nid = \"wb-empty\"\nname = \"\"\nrole = \"\"\ncategory = \"\"\ntags = []\n",
+    );
+    run(
+        ClusterAction::Info {
+            name: None,
+            role: None,
+            category: None,
+            tags: None,
+            address: None,
+        },
+        false,
+    )
+    .await
+    .unwrap();
+}
+
+/// 430-432：peers.toml 存在但解析失败 → 打印 "Failed to parse peers.toml."。
+#[tokio::test]
+async fn wave_b_info_parse_failure_prints_failed_to_parse() {
+    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let th = temp_home_env();
+    write_peers_toml(&th.home, "{ not toml {{{");
+    run(
+        ClusterAction::Info {
+            name: Some("x".into()),
+            role: None,
+            category: None,
+            tags: None,
+            address: None,
+        },
+        false,
+    )
+    .await
+    .unwrap();
+}
+
+/// 475：peers add 时权威写路径 append_peer_to_file 失败（peers.toml 是个
+/// 目录 → read_to_string Err）→ 打印失败且目录不被破坏。
+/// 用路径形态混淆确定性触发，不依赖权限。
+#[tokio::test]
+async fn wave_b_peers_add_failure_when_peers_toml_is_directory() {
+    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let th = temp_home_env();
+    let fake = crate::common::cluster_dir(&th.home).join("peers.toml");
+    std::fs::create_dir_all(&fake).unwrap();
+    run(
+        ClusterAction::Peers {
+            action: Some(PeerAction::Add {
+                id: "wb-dir".into(),
+                name: Some("Dir Peer".into()),
+                address: Some("10.5.5.5:11949".into()),
+                role: None,
+                category: None,
+                priority: None,
+            }),
+        },
+        false,
+    )
+    .await
+    .unwrap();
+    assert!(fake.is_dir(), "directory must remain untouched");
+}
+
+/// 505：[peers] 表里存在与 id 逐字相等的 quoted key（含 '.'/':'，只能用
+/// quoted bare-key 表达）→ legacy/canonical 变体都未命中时走原始 id 分支删除。
+#[tokio::test]
+async fn wave_b_peers_remove_hits_raw_id_key_arm() {
+    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let th = temp_home_env();
+    write_peers_toml(
+        &th.home,
+        // key 是带 '.'/':' 的 quoted bare-key；address 故意与 id 不同，
+        // 否则兜底按地址扫描也能命中、掩盖 raw-id key 分支。
+        "[peers]\n[peers.\"10.0.0.77:11949\"]\naddress = \"10.9.9.9:12345\"\nrole = \"worker\"\n",
+    );
+    run(
+        ClusterAction::Peers {
+            action: Some(PeerAction::Remove {
+                id: "10.0.0.77:11949".into(),
+            }),
+        },
+        false,
+    )
+    .await
+    .unwrap();
+    let content =
+        std::fs::read_to_string(crate::common::cluster_dir(&th.home).join("peers.toml")).unwrap();
+    assert!(
+        !content.contains("10.0.0.77"),
+        "raw-id keyed peer should be removed, got: {content}"
+    );
+}
+
+/// 550 / 552 / 567：peers.toml 存在但没有 [peers] 段 →
+/// enable_peer_in_toml 报错字符串 → Enable/Disable 都打印消息且不落盘。
+#[tokio::test]
+async fn wave_b_peers_enable_disable_reports_missing_section_and_keeps_file() {
+    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let th = temp_home_env();
+    let original = "[node]\nid = \"solo\"\n";
+    write_peers_toml(&th.home, original);
+    run(
+        ClusterAction::Peers {
+            action: Some(PeerAction::Enable { id: "whatever".into() }),
+        },
+        false,
+    )
+    .await
+    .unwrap();
+    run(
+        ClusterAction::Peers {
+            action: Some(PeerAction::Disable { id: "whatever".into() }),
+        },
+        false,
+    )
+    .await
+    .unwrap();
+    let content =
+        std::fs::read_to_string(crate::common::cluster_dir(&th.home).join("peers.toml")).unwrap();
+    assert_eq!(content, original, "failed toggle must not rewrite the file");
+}
+
+/// 788：Init 重写 peers.toml 失败（预置只读文件）→ 打印失败信息后 Init 继续。
+/// root/admin 下只读位可能被无视 → 只断言 Ok。
+#[tokio::test]
+async fn wave_b_init_over_readonly_peers_toml_still_ok() {
+    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let th = temp_home_env();
+    let peers = crate::common::cluster_dir(&th.home).join("peers.toml");
+    write_peers_toml(&th.home, "[node]\nid = \"pre-existing\"\n");
+    let _ro = WaveBReadOnlyGuard::apply(&peers);
+    run(
+        ClusterAction::Init {
+            name: Some("WaveB".into()),
+            role: None,
+            category: None,
+            tags: None,
+            address: None,
+        },
+        false,
+    )
+    .await
+    .unwrap();
+}
+
+/// 810-811 / 830-832 / 850-852 / 869-871：config 存在但 JSON 解析失败时，
+/// Enable/Disable/Start/Stop 的「已启用？」前置检查静默跳过，随后
+/// update_cluster_config 解析同一个坏文件 → 错误向上传播（run 返回 Err）。
+#[tokio::test]
+async fn wave_b_enable_disable_start_stop_propagate_corrupt_config_parse_error() {
+    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let th = temp_home_env();
+    std::fs::write(
+        crate::common::cluster_config_path(&th.home),
+        "{{{ not json",
+    )
+    .unwrap();
+
+    let e1 = run(ClusterAction::Enable, false).await.expect_err("Enable must propagate");
+    let e2 = run(ClusterAction::Disable, false).await.expect_err("Disable must propagate");
+    let e3 = run(ClusterAction::Start, false).await.expect_err("Start must propagate");
+    let e4 = run(ClusterAction::Stop, false).await.expect_err("Stop must propagate");
+    for (name, e) in [("Enable", e1), ("Disable", e2), ("Start", e3), ("Stop", e4)] {
+        let msg = format!("{name}: {e}");
+        assert!(
+            !msg.is_empty(),
+            "each action must surface a parse error"
+        );
+    }
+}
+} // mod wave_b
+
+// =========================================================================
+// wave_c（coverage 补测批次 C）
+//
+// 目标 miss：目录阻断臂（路径形态：peers.toml / config.cluster.json 是
+// 目录 → exists()=true 但 read 失败 → 各动作静默跳过）、非对象 JSON 臂
+// （Value::Null/Array 解析成功但 as_object_mut()==None → 写回段整体跳过）、
+// Remove 的「doc 解析成功但无 [peers] 表」静默臂、enable_peer_in_toml
+// 扫描循环的两种未命中形态（表项非 table / 缺 address 字段）、
+// update_cluster_config / update_main_config_cluster 只读与坏 JSON 的
+// 错误传播。
+// 豁免不碰（结构性 / 机器态）：Init 的 TTY 确认分支（stdin is_terminal，
+// cargo test 管道下恒 false）、Reset --hard 的确认成功臂（read_line 在
+// 测试进程内拿不到 "y"，EOF→必走 Aborted，已由既有测试钉住）、firewall
+// netsh 臂（spawn 进程 + 变更宿主防火墙规则）、run_node 主流程（绑真实
+// UDP/RPC 端口 + ctrl_c 无限循环）、Remove 中 peers.remove(&key) 返回
+// None 的防御臂（target_key 由同锁 contains_key/find_map 判出，结构性
+// 不可达）。
+// =========================================================================
+
+mod wave_c {
+    use super::*;
+
+    /// RAII 守卫：把文件设为只读，drop 时恢复（本地复刻 wave_b 形态）。
+    struct WcReadOnlyGuard {
+        path: std::path::PathBuf,
+    }
+
+    impl WcReadOnlyGuard {
+        fn apply(path: &std::path::Path) -> Self {
+            let mut perm = std::fs::metadata(path)
+                .expect("readonly target must exist")
+                .permissions();
+            perm.set_readonly(true);
+            std::fs::set_permissions(path, perm).expect("set readonly failed");
+            Self {
+                path: path.to_path_buf(),
+            }
+        }
+    }
+
+    impl Drop for WcReadOnlyGuard {
+        fn drop(&mut self) {
+            if let Ok(meta) = std::fs::metadata(&self.path) {
+                let mut perm = meta.permissions();
+                perm.set_readonly(false);
+                let _ = std::fs::set_permissions(&self.path, perm);
+            }
+        }
+    }
+
+    /// 把目标路径替换成同名目录（若已有文件先删除）。
+    /// exists() 对目录返回 true、read_to_string 对目录返回 Err —— 用来确定性地
+    /// 构造「文件存在但读失败」的目录阻断臂，不依赖平台权限位。
+    fn make_path_a_directory(path: &std::path::Path) {
+        if path.is_file() {
+            std::fs::remove_file(path).expect("remove file before dir swap");
+        }
+        std::fs::create_dir_all(path).expect("create dir at target path");
+    }
+
+    // ---------------------------------------------------------------------
+    // Status / Config：路径存在但读失败（目录阻断）的静默跳过臂
+    // ---------------------------------------------------------------------
+
+    /// config.cluster.json 是目录 → "found" 后 read_to_string Err →
+    /// 内层解析链整体跳过，随后照常走 peers.toml 段并正常返回。
+    #[tokio::test]
+    async fn wave_c_status_silent_when_config_is_directory() {
+        let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let th = temp_home_env();
+        let cfg_path = crate::common::cluster_config_path(&th.home);
+        make_path_a_directory(&cfg_path);
+        write_peers_toml(&th.home, "[node]\nid = \"wc-dir\"\n");
+        run(ClusterAction::Status, false).await.unwrap();
+        assert!(cfg_path.is_dir(), "directory must remain untouched");
+    }
+
+    /// peers.toml 是目录 → "[found]" 后 load_static_config 失败被静默吞掉。
+    #[tokio::test]
+    async fn wave_c_status_silent_when_peers_is_directory() {
+        let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let th = temp_home_env();
+        write_cluster_config(&th.home, &serde_json::json!({ "enabled": true }));
+        let peers = crate::common::cluster_dir(&th.home).join("peers.toml");
+        make_path_a_directory(&peers);
+        run(ClusterAction::Status, false).await.unwrap();
+        assert!(peers.is_dir());
+    }
+
+    /// Config 动作遇到目录形态的配置 → 完全静默跳过且不改写任何东西。
+    #[tokio::test]
+    async fn wave_c_config_action_silent_when_config_is_directory() {
+        let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let th = temp_home_env();
+        let cfg_path = crate::common::cluster_config_path(&th.home);
+        make_path_a_directory(&cfg_path);
+        run(
+            ClusterAction::Config {
+                udp_port: 11111,
+                rpc_port: 22222,
+                broadcast_interval: 66,
+            },
+            false,
+        )
+        .await
+        .unwrap();
+        assert!(cfg_path.is_dir(), "must not replace directory with file");
+    }
+
+    // ---------------------------------------------------------------------
+    // Peers Remove：doc 解析成功但 [peers] 缺失 / 坏 TOML / 目录三连静默臂
+    // ---------------------------------------------------------------------
+
+    /// 同一测试串三个 home：
+    /// A) 合法 TOML 但无 [peers] 段 → get_mut("peers") None；
+    /// B) 非法 TOML → parse Err；
+    /// C) peers.toml 是目录 → read_to_string Err。
+    /// 三者都只静默不落盘、run 正常 Ok。
+    #[tokio::test]
+    async fn wave_c_remove_silent_skip_arms_for_missing_section_bad_toml_and_directory() {
+        let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+
+        // A) 无 [peers] 段
+        let th_a = temp_home_env();
+        let original = "[node]\nid = \"solo\"\n".to_string();
+        write_peers_toml(&th_a.home, &original);
+        run(
+            ClusterAction::Peers {
+                action: Some(PeerAction::Remove { id: "ghost-a".into() }),
+            },
+            false,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            std::fs::read_to_string(crate::common::cluster_dir(&th_a.home).join("peers.toml"))
+                .unwrap(),
+            original,
+            "missing [peers] section must not rewrite the file"
+        );
+        drop(th_a);
+
+        // B) 坏 TOML
+        let th_b = temp_home_env();
+        let garbage = "{{{ definitely not toml";
+        write_peers_toml(&th_b.home, garbage);
+        run(
+            ClusterAction::Peers {
+                action: Some(PeerAction::Remove { id: "ghost-b".into() }),
+            },
+            false,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            std::fs::read_to_string(crate::common::cluster_dir(&th_b.home).join("peers.toml"))
+                .unwrap(),
+            garbage,
+            "unparseable toml must be left untouched"
+        );
+        drop(th_b);
+
+        // C) 目录阻断
+        let th_c = temp_home_env();
+        let peers = crate::common::cluster_dir(&th_c.home).join("peers.toml");
+        make_path_a_directory(&peers);
+        run(
+            ClusterAction::Peers {
+                action: Some(PeerAction::Remove { id: "ghost-c".into() }),
+            },
+            false,
+        )
+        .await
+        .unwrap();
+        assert!(peers.is_dir());
+    }
+
+    /// Enable / Disable 遇到目录形态的 peers.toml → 读失败静默跳过，两个方向
+    /// 都不动那棵目录树。
+    #[tokio::test]
+    async fn wave_c_enable_disable_silent_when_peers_toml_is_directory() {
+        let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let th = temp_home_env();
+        let peers = crate::common::cluster_dir(&th.home).join("peers.toml");
+        make_path_a_directory(&peers);
+        run(
+            ClusterAction::Peers {
+                action: Some(PeerAction::Enable { id: "10.0.0.1:1".into() }),
+            },
+            false,
+        )
+        .await
+        .unwrap();
+        run(
+            ClusterAction::Peers {
+                action: Some(PeerAction::Disable { id: "10.0.0.1:1".into() }),
+            },
+            false,
+        )
+        .await
+        .unwrap();
+        assert!(peers.is_dir());
+    }
+
+    // ---------------------------------------------------------------------
+    // Token Revoke：非对象 JSON 跳过写回 / 只读写失败向上传播
+    // ---------------------------------------------------------------------
+
+    /// 配置是合法 JSON 但不是 object（数组）→ as_object_mut None → 不写回，
+    /// run 正常 Ok 且文件字节不变。
+    #[tokio::test]
+    async fn wave_c_token_revoke_non_object_json_skips_writeback() {
+        let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let th = temp_home_env();
+        let cfg_path = crate::common::cluster_config_path(&th.home);
+        std::fs::write(&cfg_path, "[]").unwrap();
+        run(
+            ClusterAction::Token {
+                action: TokenAction::Revoke,
+            },
+            false,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&cfg_path).unwrap(),
+            "[]",
+            "non-object json must be left untouched"
+        );
+    }
+
+    /// 配置是对象但只读 → Revoke 里 fs::write 的 `?` 把权限错误向上传播
+    /// （错误传播边界；root/admin 无视只读位的平台上该断言退化，见注）。
+    #[tokio::test]
+    async fn wave_c_token_revoke_readonly_config_propagates_write_error() {
+        let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let th = temp_home_env();
+        write_cluster_config(
+            &th.home,
+            &serde_json::json!({ "enabled": true, "token": "0123456789abcdef" }),
+        );
+        let cfg_path = crate::common::cluster_config_path(&th.home);
+        let _ro = WcReadOnlyGuard::apply(&cfg_path);
+        let result = run(
+            ClusterAction::Token {
+                action: TokenAction::Revoke,
+            },
+            false,
+        )
+        .await;
+        // Windows 下 READONLY 使 write 打开即 Access Denied → Err 必现；
+        // 其余平台（root/admin 无视只读位）语义浮动，只保留执行路径覆盖。
+        #[cfg(windows)]
+        {
+            let err = result.expect_err("readonly config must fail fs::write on windows");
+            assert!(!err.to_string().is_empty());
+        }
+        #[cfg(not(windows))]
+        {
+            let _ = result;
+        }
+    }
+
+    // ---------------------------------------------------------------------
+    // Enable / Disable / Start / Stop：null 配置（解析成功但非 object）
+    // → 前置检查取默认继续 → update_cluster_config as_object_mut None
+    // → 不写回、不报错（与坏 JSON 的 Err 传播相对的第三种形态）
+    // ---------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn wave_c_enable_disable_start_stop_null_json_is_noop_success() {
+        let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let th = temp_home_env();
+        let cfg_path = crate::common::cluster_config_path(&th.home);
+        std::fs::write(&cfg_path, "null").unwrap();
+
+        run(ClusterAction::Enable, false).await.unwrap();
+        run(ClusterAction::Disable, false).await.unwrap();
+        run(ClusterAction::Start, false).await.unwrap();
+        run(ClusterAction::Stop, false).await.unwrap();
+
+        assert_eq!(
+            std::fs::read_to_string(&cfg_path).unwrap(),
+            "null",
+            "non-object config must never be rewritten"
+        );
+    }
+
+    // ---------------------------------------------------------------------
+    // update_*_config 直测：非对象 JSON 与只读文件的错误传播臂
+    // ---------------------------------------------------------------------
+
+    #[test]
+    fn wc_update_main_config_non_object_json_leaves_file_untouched() {
+        let tmp = TempDir::new().unwrap();
+        let home = make_home(&tmp);
+        let cfg_path = crate::common::config_path(&home);
+        if let Some(parent) = cfg_path.parent() {
+            std::fs::create_dir_all(parent).unwrap();
+        }
+        std::fs::write(&cfg_path, "[]").unwrap();
+        update_main_config_cluster(&home, true).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&cfg_path).unwrap(),
+            "[]",
+            "non-object main config must be left untouched"
+        );
+    }
+
+    #[test]
+    fn wc_update_main_config_corrupt_json_propagates_error() {
+        let tmp = TempDir::new().unwrap();
+        let home = make_home(&tmp);
+        let cfg_path = crate::common::config_path(&home);
+        if let Some(parent) = cfg_path.parent() {
+            std::fs::create_dir_all(parent).unwrap();
+        }
+        std::fs::write(&cfg_path, "{{{ corrupt").unwrap();
+        let err = update_main_config_cluster(&home, true).unwrap_err();
+        assert!(!err.to_string().is_empty(), "parse error must propagate");
+    }
+
+    #[test]
+    fn wc_update_cluster_config_read_only_propagates_write_error() {
+        let tmp = TempDir::new().unwrap();
+        let home = make_home(&tmp);
+        write_cluster_config(&home, &serde_json::json!({ "enabled": false }));
+        let cfg_path = crate::common::cluster_config_path(&home);
+        let _ro = WcReadOnlyGuard::apply(&cfg_path);
+        let result = update_cluster_config(&home, "enabled", true);
+        // Windows 下 READONLY 必现 Err；其余平台权限位语义浮动。
+        #[cfg(windows)]
+        {
+            assert!(
+                result.is_err(),
+                "readonly config must fail fs::write on windows"
+            );
+        }
+        #[cfg(not(windows))]
+        {
+            let _ = result;
+        }
+    }
+
+    // ---------------------------------------------------------------------
+    // enable_peer_in_toml 扫描循环的两种未命中形态：
+    // - 表项不是 table（标量值）→ 外层 if-let 关闭；
+    // - 表项缺 address 字段 → 内层 if-let 关闭；
+    // 循环必须既不 panic、也不误改这两类条目，最终按 address 命中真目标。
+    // ---------------------------------------------------------------------
+
+    #[test]
+    fn wc_enable_peer_scan_skips_scalar_and_addressless_entries() {
+        let content = concat!(
+            "[peers]\n",
+            "scalar_entry = \"not-a-table\"\n",
+            "[peers.noaddr]\n",
+            "role = \"worker\"\n",
+            "[peers.target]\n",
+            "address = \"7.7.7.7:9999\"\n",
+            "role = \"manager\"\n"
+        );
+        let result = enable_peer_in_toml(content, "7.7.7.7:9999", true);
+        assert!(result.is_ok(), "scan must reach the real peer, got err");
+        let doc: toml::Value = result.unwrap().parse().unwrap();
+        assert_eq!(
+            doc["peers"]["target"]["enabled"],
+            toml::Value::Boolean(true)
+        );
+        // 未命中形态的原条目保持原样。
+        assert_eq!(
+            doc["peers"]["scalar_entry"].as_str(),
+            Some("not-a-table")
+        );
+        assert!(doc["peers"]["noaddr"].get("enabled").is_none());
+    }
+
+    /// 扫描完全未命中（全是异常形态）→ 报 "not found" 错误消息。
+    #[test]
+    fn wc_enable_peer_scan_all_entries_unmatchable_reports_not_found() {
+        let content = concat!(
+            "[peers]\n",
+            "scalar_entry = 42\n",
+            "[peers.noaddr]\n",
+            "role = \"worker\"\n"
+        );
+        let result = enable_peer_in_toml(content, "9.9.9.9:1", true);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("not found"));
+    }
+} // mod wave_c
+
+// =========================================================================
+// wave_r10（95% 覆盖率 goal 第七波批次 R10）：子进程级行为测试。
+//
+// 目标未覆盖行（in-process 直调 run() 吃不掉、必须走真子进程的行）：
+// - run_node 前半主流程：banner / 端口解析 / Cluster 装配 / 静态 peers 导入
+//   循环 / RPC server 启动 / UDP discovery 启动 → 进入等待循环；
+// - run_node 的「RPC 端口被占 → bail」错误传播臂（自然退出，coverage 计数
+//   可完整落盘，是 first-half 行覆盖的主载体）；
+// - Reset --hard 的 y 确认成功臂（in-process stdin 恒 EOF 必走 Aborted，
+//   只有子进程喂得进 "y"）；
+// - Enable/Start/Disable/Stop 的 guard 早退臂 + 未初始化 bail 臂的 CLI 出口
+//   （stdout/stderr + exit code 经真 main() dispatch）；
+// - token generate --save / peers remove 的子进程写盘路径。
+//
+// 隔离：全部走 TestWorkspace（tempdir cwd + --local → home={tmp}/.nemesisbot，
+// resolve_home 优先级 1 无视一切 env），零真实 home 触碰；端口用 bind(":0")
+// 系统探测后让位 + 禁用端口清单断言，不碰 18790/49000/49001/8080；所有子
+// 进程有看门狗限时强杀保护（单测试 ≤ ~75s）。
+// 结构性豁免（本轮不碰）：firewall netsh 全臂；Init 的 TTY 确认分支
+// （is_terminal 在管道下恒 false）；显示循环 tick 变更臂（需真实对端上线）
+// 与 ctrl_c 臂（无信号注入通道）；generate_token 的 RNG 失败兜底。
+// 仅 Windows：resolve_nemesisbot_bin 解析 .exe（与既有子进程测试同门）。
+// =========================================================================
+#[cfg(windows)]
+mod wave_r10 {
+    use std::io::BufRead;
+    use std::net::{TcpListener, TcpStream, UdpSocket};
+    use std::process::{Command, Stdio};
+    use std::time::{Duration, Instant};
+
+    use test_harness::{resolve_nemesisbot_bin, TestWorkspace};
+
+    /// 子进程单次等待预算（秒）。任何等待超过它就强杀并 fail。
+    const BUDGET_SECS: u64 = 60;
+
+    /// 本轮铁律禁止触碰的端口（规则 #3 双保险：探测出的临时端口绝不允许撞上）。
+    const FORBIDDEN_PORTS: [u16; 4] = [18790, 49000, 49001, 8080];
+
+    /// 解析被测二进制；缺失即失败并给出构建指引（与既有子进程测试同语义）。
+    fn require_bin() -> std::path::PathBuf {
+        match resolve_nemesisbot_bin() {
+            Ok(p) => p,
+            Err(e) => panic!(
+                "nemesisbot.exe 未找到（先 cargo build -p nemesisbot 或设 \
+                 NEMESISBOT_TEST_BIN 指向现成二进制）: {e}"
+            ),
+        }
+    }
+
+    /// 系统分配一个可用 (udp, tcp) 端口对（bind :0 探测后立即让位给被测进程）。
+    fn free_port_pair() -> (u16, u16) {
+        loop {
+            let udp = UdpSocket::bind("127.0.0.1:0")
+                .expect("probe udp")
+                .local_addr()
+                .expect("udp addr")
+                .port();
+            let tcp = TcpListener::bind("127.0.0.1:0")
+                .expect("probe tcp")
+                .local_addr()
+                .expect("tcp addr")
+                .port();
+            if !FORBIDDEN_PORTS.contains(&udp)
+                && !FORBIDDEN_PORTS.contains(&tcp)
+                && udp != tcp
+            {
+                break (udp, tcp);
+            }
+        }
+    }
+
+    /// 限时的"退出或强杀"：Some(status)=自然退出；None=超时后已被强杀。
+    fn wait_or_kill(
+        child: &mut std::process::Child,
+        secs: u64,
+    ) -> Option<std::process::ExitStatus> {
+        let deadline = Instant::now() + Duration::from_secs(secs);
+        while Instant::now() < deadline {
+            if let Ok(Some(st)) = child.try_wait() {
+                return Some(st);
+            }
+            std::thread::sleep(Duration::from_millis(150));
+        }
+        let _ = child.kill();
+        let _ = child.wait();
+        None
+    }
+
+    /// 后台排水线程：逐行收集子进程输出到字符串（防管道填满堵死子进程）。
+    fn drain_lines<R>(pipe: R) -> std::thread::JoinHandle<String>
+    where
+        R: std::io::Read + Send + 'static,
+    {
+        std::thread::spawn(move || {
+            let mut out = String::new();
+            for line in std::io::BufReader::new(pipe).lines() {
+                match line {
+                    Ok(l) => {
+                        out.push_str(&l);
+                        out.push('\n');
+                    }
+                    Err(_) => break,
+                }
+            }
+            out
+        })
+    }
+
+    /// 种子节点工作空间：config.cluster.json（系统参数+token）+ peers.toml
+    /// ([node] 静态身份 + [peers.r10ghost] 触发 run_node 的静态 peers 导入循环)。
+    fn seed_node_home(home: &std::path::Path, ghost_addr: &str) {
+        let cfg = crate::common::cluster_config_path(home);
+        std::fs::create_dir_all(cfg.parent().unwrap()).unwrap();
+        std::fs::write(
+            &cfg,
+            r#"{"enabled": true, "token": "r10-not-a-real-token-0001"}"#,
+        )
+        .unwrap();
+        let dir = crate::common::cluster_dir(home);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("peers.toml"),
+            format!(
+                "[node]\nid = \"r10-static-id\"\nname = \"Seed\"\nrole = \"worker\"\ncategory = \"development\"\n\n[peers.r10ghost]\naddress = \"{ghost_addr}\"\nrole = \"worker\"\ncategory = \"general\"\n"
+            ),
+        )
+        .unwrap();
+    }
+
+    /// run_node 前半主流程（≈76 行目标）：seed 完整节点工作空间 → 子进程起跑
+    /// → 限时轮询副作用（TCP 连上 rpc_port ⇔ RpcServer.start().await 成功绑定）
+    /// → 到点即杀（节点本体是无限等待循环，绝不等待它自然退出）。
+    /// 断言横幅各段、静态身份装载（Node ID 来自 peers.toml）、两个服务启动行。
+    #[test]
+    fn r10_cluster_node_first_half_boots_until_waiting_for_peers() {
+        let bin = require_bin();
+        let (udp_port, rpc_port) = free_port_pair();
+        let ws = TestWorkspace::new().expect("temp workspace");
+        seed_node_home(&ws.home(), "127.0.0.1:1"); // ghost peer 地址永不监听
+
+        let mut child = Command::new(&bin)
+            .args([
+                "--local",
+                "cluster",
+                "node",
+                "--udp-port",
+                &udp_port.to_string(),
+                "--rpc-port",
+                &rpc_port.to_string(),
+                "--broadcast-interval",
+                "2",
+            ])
+            .current_dir(ws.path())
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("spawn cluster node child");
+
+        let out_handle = drain_lines(child.stdout.take().expect("stdout piped"));
+        let err_handle = drain_lines(child.stderr.take().expect("stderr piped"));
+
+        // 副作用轮询：RpcServer 监听成功 ⇔ TCP 能连上 rpc_port。
+        let deadline = Instant::now() + Duration::from_secs(BUDGET_SECS);
+        let mut rpc_up = false;
+        let mut died_early = false;
+        while Instant::now() < deadline {
+            if let Ok(Some(status)) = child.try_wait() {
+                died_early = true;
+                eprintln!("node exited early with {status}");
+                break;
+            }
+            if TcpStream::connect(("127.0.0.1", rpc_port)).is_ok() {
+                rpc_up = true;
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(200));
+        }
+        // 尾部 banner 落地缓冲后杀（不等自然退出——它根本不会退）。
+        std::thread::sleep(Duration::from_millis(500));
+        let _ = child.kill();
+        let _ = child.wait();
+
+        let stdout = out_handle.join().unwrap_or_default();
+        let stderr = err_handle.join().unwrap_or_default();
+
+        assert!(
+            rpc_up && !died_early,
+            "node must reach 'RPC server listening'; early_exit={died_early}\n\
+             --- stdout ---\n{stdout}\n--- stderr ---\n{stderr}"
+        );
+        let frags: Vec<String> = vec![
+            "Cluster Node (lightweight)".into(),
+            format!("UDP Port:   {udp_port}"),
+            format!("RPC Port:   {rpc_port}"),
+            "Broadcast:  every 2s".into(),
+            "Node ID:".into(),
+            "r10-static-id".into(), // Cluster::with_workspace 从 peers.toml [node] 装载了静态身份
+            format!("RPC server started on 0.0.0.0:{rpc_port}"),
+            format!("UDP discovery started on port {udp_port}"),
+            "Waiting for peers".into(),
+        ];
+        for f in frags {
+            assert!(
+                stdout.contains(f.as_str()),
+                "expected {f:?} in node stdout:\n{stdout}\n--- stderr ---\n{stderr}"
+            );
+        }
+    }
+
+    /// 「RPC 端口已被占」错误臂：先占住 wildcard TCP 端口 → 节点的
+    /// RpcServer.start() 绑定失败 → anyhow bail 沿 main 干净退出。
+    /// 自然退出 = coverage 计数可落盘，是 run_node 前半行覆盖的主载体。
+    #[test]
+    fn r10_cluster_node_rpc_port_conflict_bails_cleanly() {
+        let bin = require_bin();
+        let holder = TcpListener::bind(("0.0.0.0", 0)).expect("hold wildcard port");
+        let rpc_port = holder.local_addr().unwrap().port();
+        assert!(
+            !FORBIDDEN_PORTS.contains(&rpc_port),
+            "holder must not sit on a forbidden port"
+        );
+        let udp_port = {
+            let s = UdpSocket::bind("127.0.0.1:0").expect("probe udp");
+            s.local_addr().unwrap().port()
+        };
+
+        let ws = TestWorkspace::new().expect("temp workspace");
+        seed_node_home(&ws.home(), "127.0.0.1:1");
+
+        let mut child = Command::new(&bin)
+            .args([
+                "--local",
+                "cluster",
+                "node",
+                "--udp-port",
+                &udp_port.to_string(),
+                "--rpc-port",
+                &rpc_port.to_string(),
+            ])
+            .current_dir(ws.path())
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("spawn cluster node child");
+
+        let out_handle = drain_lines(child.stdout.take().expect("stdout piped"));
+        let err_handle = drain_lines(child.stderr.take().expect("stderr piped"));
+
+        match wait_or_kill(&mut child, BUDGET_SECS) {
+            Some(status) => {
+                let stdout = out_handle.join().unwrap_or_default();
+                let stderr = err_handle.join().unwrap_or_default();
+                assert!(
+                    !status.success(),
+                    "occupied rpc port must fail the run; status={status}\
+                     \n--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}"
+                );
+                assert!(
+                    stderr.contains("RPC server error on port"),
+                    "expected bail message naming the port; stderr:\n{stderr}\n\
+                     --- stdout ---\n{stdout}"
+                );
+            }
+            None => panic!("node hung even though rpc port was occupied"),
+        }
+        drop(holder); // 保持占用至子进程结束后才释放
+    }
+
+    /// Reset --hard 的 y 确认成功臂（in-process stdin 恒 EOF 只能走 Aborted，
+    /// 已由 test_run_reset_hard_aborts_without_tty_confirm 钉住）：子进程喂
+    /// "y\n" → 确认提示打印 + config.cluster.json / peers.toml / state.toml
+    /// 三份持久化全部删除 + 退码 0。
+    #[tokio::test]
+    async fn r10_reset_hard_yes_flow_deletes_everything_after_confirm() {
+        let bin = require_bin();
+        let ws = TestWorkspace::new().expect("temp workspace");
+        let home = ws.home();
+        let cfg_path = crate::common::cluster_config_path(&home);
+        std::fs::create_dir_all(cfg_path.parent().unwrap()).unwrap();
+        std::fs::write(&cfg_path, r#"{"enabled": true}"#).unwrap();
+        let cdir = crate::common::cluster_dir(&home);
+        std::fs::create_dir_all(&cdir).unwrap();
+        let peers_path = cdir.join("peers.toml");
+        let state_path = cdir.join("state.toml");
+        std::fs::write(&peers_path, "[node]\nid = \"victim\"\n").unwrap();
+        std::fs::write(&state_path, "[[discovered]]\nid = \"ghost\"\n").unwrap();
+
+        let out = ws
+            .run_cli_with_stdin(&bin, &["cluster", "reset", "--hard"], "y\n", BUDGET_SECS)
+            .await;
+        assert!(
+            out.success(),
+            "exit={} stdout={} stderr={}",
+            out.exit_code,
+            out.stdout,
+            out.stderr
+        );
+        assert!(
+            out.stdout_contains("Continue? (y/N)"),
+            "confirm prompt expected in stdout:\n{}",
+            out.stdout
+        );
+        assert!(
+            out.stdout_contains("reset (hard)"),
+            "success line expected in stdout:\n{}",
+            out.stdout
+        );
+        assert!(!cfg_path.exists(), "config.cluster.json must be deleted");
+        assert!(!peers_path.exists(), "peers.toml must be deleted");
+        assert!(!state_path.exists(), "state.toml must be deleted");
+    }
+
+    /// Enable/Start/Disable/Stop 的 guard 早退臂 + 未初始化 bail 臂经 CLI 出口：
+    /// stdout 提示、exit code（guard=0 / bail≠0）、写盘与否，全部子进程级断言。
+    #[tokio::test]
+    async fn r10_enable_start_disable_stop_guards_via_cli_exit_paths() {
+        let bin = require_bin();
+        let ws = TestWorkspace::new().expect("temp workspace");
+        let cfg_path = crate::common::cluster_config_path(&ws.home());
+        std::fs::create_dir_all(cfg_path.parent().unwrap()).unwrap();
+        std::fs::write(&cfg_path, r#"{"enabled": true}"#).unwrap();
+
+        let enabled_of = || -> bool {
+            serde_json::from_str::<serde_json::Value>(
+                &std::fs::read_to_string(&cfg_path).unwrap(),
+            )
+            .unwrap()["enabled"]
+                == serde_json::json!(true)
+        };
+
+        // 已启用 → enable / start 双 guard 早退（打印 + 退码 0 + 文件不动）
+        for action in ["enable", "start"] {
+            let o = ws.run_cli(&bin, &["cluster", action]).await;
+            assert!(o.success(), "{action}: {}", o.stderr);
+            assert!(
+                o.stdout_contains("Cluster is already enabled."),
+                "{action} guard print missing:\n{}",
+                o.stdout
+            );
+            assert!(enabled_of(), "{action} guard must not rewrite the flag");
+        }
+
+        // disable 真写 false（Normal 写盘路径经 CLI）；stop 再 guard 早退
+        let o = ws.run_cli(&bin, &["cluster", "disable"]).await;
+        assert!(o.success(), "disable: {}", o.stderr);
+        assert!(o.stdout_contains("Cluster disabled."), "{}", o.stdout);
+        assert!(!enabled_of(), "disable must persist enabled=false");
+        let o = ws.run_cli(&bin, &["cluster", "stop"]).await;
+        assert!(o.success(), "stop: {}", o.stderr);
+        assert!(
+            o.stdout_contains("Cluster is already disabled."),
+            "stop guard print missing:\n{}",
+            o.stdout
+        );
+        assert!(!enabled_of());
+
+        // 未初始化工作空间 → enable 走 update_cluster_config 的 bail：
+        // 错误进 stderr、exit code ≠ 0
+        let ws2 = TestWorkspace::new().expect("temp workspace 2");
+        let o = ws2.run_cli(&bin, &["cluster", "enable"]).await;
+        assert!(
+            !o.success(),
+            "enable without init must exit non-zero; stdout={}",
+            o.stdout
+        );
+        assert!(
+            o.stderr_contains("Cluster not initialized"),
+            "bail message expected on stderr:\n{}",
+            o.stderr
+        );
+    }
+
+    /// token generate --save 与 peers remove 的子进程写盘路径（tempdir 工作
+    /// 空间真实落盘后断言文件内容）。
+    #[tokio::test]
+    async fn r10_token_generate_save_and_peers_remove_persist_via_cli() {
+        let bin = require_bin();
+        let ws = TestWorkspace::new().expect("temp workspace");
+        let home = ws.home();
+        let cfg_path = crate::common::cluster_config_path(&home);
+        std::fs::create_dir_all(cfg_path.parent().unwrap()).unwrap();
+        std::fs::write(&cfg_path, r#"{"enabled": false}"#).unwrap();
+
+        // token generate --save：stdout 带 token + 保存提示；文件里 token=44 字符 base64(32B)
+        let out = ws.run_cli(&bin, &["cluster", "token", "generate", "--save"]).await;
+        assert!(out.success(), "token generate: {}", out.stderr);
+        assert!(
+            out.stdout.contains("Generated token:") && out.stdout.contains("Token saved to cluster config."),
+            "generate/save prints missing:\n{}",
+            out.stdout
+        );
+        let cfg: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&cfg_path).unwrap()).unwrap();
+        let token = cfg["token"].as_str().unwrap_or_default();
+        assert_eq!(
+            token.len(),
+            44,
+            "32-byte token must serialize to 44-char base64, got {token:?}"
+        );
+
+        // peers remove：真实删除 [peers.<key>] 表项并回写文件
+        let cdir = crate::common::cluster_dir(&home);
+        std::fs::create_dir_all(&cdir).unwrap();
+        let peers_path = cdir.join("peers.toml");
+        std::fs::write(
+            &peers_path,
+            "[peers]\n[peers.r10node]\naddress = \"10.9.9.9:11949\"\nrole = \"worker\"\n",
+        )
+        .unwrap();
+        let out = ws.run_cli(&bin, &["cluster", "peers", "remove", "--id", "r10node"]).await;
+        assert!(out.success(), "peers remove: {}", out.stderr);
+        assert!(
+            out.stdout.contains("removed"),
+            "removal print missing:\n{}",
+            out.stdout
+        );
+        let body = std::fs::read_to_string(&peers_path).unwrap();
+        assert!(
+            !body.contains("r10node") && !body.contains("10.9.9.9"),
+            "removed peer must be gone from disk, got:\n{body}"
+        );
+    }
+} // mod wave_r10

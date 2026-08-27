@@ -87,3 +87,13 @@ fn lang_restriction_drop_null_recognizer_is_noop() {
     let lr = LangRestriction::new(zh_remedy(), std::ptr::null());
     drop(lr);
 }
+
+#[test]
+#[should_panic(expected = "sherpa-onnx not initialized")]
+fn lang_restriction_drop_nonnull_recognizer_panics_at_destroy() {
+    // R6（2026-08-27）：非 null 指针（悬垂但不解引用）→ Drop 走 136 行
+    // SherpaOnnxDestroyOfflineRecognizer → 无 DLL 在符号查找处 panic。
+    // 指针本身从不被解引用——panic 发生在 FFI 函数指针解析处。
+    let lr = LangRestriction::new(zh_remedy(), 1usize as *const _);
+    drop(lr);
+}

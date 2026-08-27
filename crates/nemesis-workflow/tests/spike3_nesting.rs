@@ -73,6 +73,7 @@ struct WorkflowFrame {
     workflow_name: String,
     trigger_source: TriggerSource,
     parent_execution_id: Option<String>, // 用于追踪嵌套关系
+    #[allow(dead_code)] // spike 文档字段：仅随 Debug 打印，无读取方
     started_at: chrono::DateTime<Utc>,
 }
 
@@ -118,6 +119,7 @@ impl WorkflowCallStack {
         Ok(())
     }
 
+    #[allow(dead_code)] // spike 栈 API 完整性演示；测试路径不触达
     fn pop(&mut self) -> Option<WorkflowFrame> {
         let frame = self.frames.pop();
         if let Some(ref f) = frame {
@@ -126,6 +128,7 @@ impl WorkflowCallStack {
         frame
     }
 
+    #[allow(dead_code)] // spike 栈 API 完整性演示；测试路径不触达
     fn current_depth(&self) -> u32 {
         // 当前栈中 AgentTool 触发的最大深度
         self.frames

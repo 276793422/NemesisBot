@@ -156,9 +156,14 @@ pub fn run(action: ChannelAction, local: bool) -> Result<()> {
                 let mut cfg: serde_json::Value = serde_json::from_str(&data)?;
                 // Set channels.<name>.enabled = true
                 if let Some(ch) = cfg.pointer_mut(&format!("/channels/{}", name)) {
-                    if let Some(obj) = ch.as_object_mut() {
-                        obj.insert("enabled".to_string(), serde_json::Value::Bool(true));
-                    }
+                    let obj = ch.as_object_mut().ok_or_else(|| {
+                        anyhow::anyhow!(
+                            "config.json 中 channels.{} 不是 JSON 对象（配置已损坏），\
+                             拒绝覆盖以免丢失数据；请手工修正该条目后重试",
+                            name
+                        )
+                    })?;
+                    obj.insert("enabled".to_string(), serde_json::Value::Bool(true));
                 } else if let Some(channels) = cfg
                     .as_object_mut()
                     .and_then(|o| o.get_mut("channels"))
@@ -184,9 +189,14 @@ pub fn run(action: ChannelAction, local: bool) -> Result<()> {
                 let data = std::fs::read_to_string(&cfg_path)?;
                 let mut cfg: serde_json::Value = serde_json::from_str(&data)?;
                 if let Some(ch) = cfg.pointer_mut(&format!("/channels/{}", name)) {
-                    if let Some(obj) = ch.as_object_mut() {
-                        obj.insert("enabled".to_string(), serde_json::Value::Bool(false));
-                    }
+                    let obj = ch.as_object_mut().ok_or_else(|| {
+                        anyhow::anyhow!(
+                            "config.json 中 channels.{} 不是 JSON 对象（配置已损坏），\
+                             拒绝覆盖以免丢失数据；请手工修正该条目后重试",
+                            name
+                        )
+                    })?;
+                    obj.insert("enabled".to_string(), serde_json::Value::Bool(false));
                 }
                 std::fs::write(
                     &cfg_path,
@@ -206,7 +216,7 @@ pub fn run(action: ChannelAction, local: bool) -> Result<()> {
                     match name.as_str() {
                         "web" => {
                             let host = ch.get("host").and_then(|v| v.as_str()).unwrap_or("0.0.0.0");
-                            let port = ch.get("port").and_then(|v| v.as_u64()).unwrap_or(8080);
+                            let port = read_port_flex(ch.get("port"), 8080);
                             let auth = ch.get("auth_token").and_then(|v| v.as_str()).unwrap_or("");
                             let has_auth = !auth.is_empty();
                             println!("  Enabled: {}", enabled);
@@ -235,7 +245,7 @@ pub fn run(action: ChannelAction, local: bool) -> Result<()> {
                                 .get("host")
                                 .and_then(|v| v.as_str())
                                 .unwrap_or("127.0.0.1");
-                            let port = ch.get("port").and_then(|v| v.as_u64()).unwrap_or(49001);
+                            let port = read_port_flex(ch.get("port"), 49001);
                             let path = ch.get("path").and_then(|v| v.as_str()).unwrap_or("/ws");
                             let auth = ch.get("auth_token").and_then(|v| v.as_str()).unwrap_or("");
                             let has_auth = !auth.is_empty();
@@ -338,7 +348,9 @@ pub fn run(action: ChannelAction, local: bool) -> Result<()> {
                     println!("Web host set to: {}", host);
                 }
                 WebAction::Port { port } => {
-                    set_channel_config(&cfg_path, "web", "port", &port.to_string())?;
+                    // 数字落盘（BUG #41：旧实现 to_string() 存字符串，typed 读侧
+                    // i64 解析失败会拖垮整个 config 加载）
+                    set_channel_config_value(&cfg_path, "web", "port", serde_json::json!(port))?;
                     println!("Web port set to: {}", port);
                 }
                 WebAction::Status => {
@@ -356,7 +368,7 @@ pub fn run(action: ChannelAction, local: bool) -> Result<()> {
                                 .get("host")
                                 .and_then(|v| v.as_str())
                                 .unwrap_or("0.0.0.0");
-                            let port = web.get("port").and_then(|v| v.as_u64()).unwrap_or(8080);
+                            let port = read_port_flex(web.get("port"), 8080);
                             let auth = web.get("auth_token").and_then(|v| v.as_str()).unwrap_or("");
                             let ws_path = web.get("path").and_then(|v| v.as_str()).unwrap_or("/ws");
                             let has_auth = !auth.is_empty();
@@ -416,7 +428,7 @@ pub fn run(action: ChannelAction, local: bool) -> Result<()> {
                                 .get("host")
                                 .and_then(|v| v.as_str())
                                 .unwrap_or("0.0.0.0");
-                            let port = web.get("port").and_then(|v| v.as_u64()).unwrap_or(8080);
+                            let port = read_port_flex(web.get("port"), 8080);
                             let auth = web.get("auth_token").and_then(|v| v.as_str()).unwrap_or("");
                             let ws_path = web.get("path").and_then(|v| v.as_str()).unwrap_or("/ws");
                             let tls_cert = web.get("tls_cert").and_then(|v| v.as_str());
@@ -528,6 +540,11 @@ pub fn run(action: ChannelAction, local: bool) -> Result<()> {
                     if !v.is_empty() {
                         port = v;
                     }
+                    // BUG #41：端口统一校验并落 JSON 数字（与 WebSocket Set 同契约）
+                    let port_num: u16 = port
+                        .trim()
+                        .parse()
+                        .map_err(|_| anyhow::anyhow!("Invalid port number: {}", port))?;
 
                     print!("Path [{}]: ", path);
                     io::stdout().flush().ok();
@@ -556,7 +573,7 @@ pub fn run(action: ChannelAction, local: bool) -> Result<()> {
 
                     // Save all values
                     set_channel_config(&cfg_path, "websocket", "host", &host)?;
-                    set_channel_config(&cfg_path, "websocket", "port", &port)?;
+                    set_channel_config_value(&cfg_path, "websocket", "port", serde_json::json!(port_num))?;
                     set_channel_config(&cfg_path, "websocket", "path", &path)?;
                     if token.is_empty() {
                         remove_channel_config(&cfg_path, "websocket", "auth_token")?;
@@ -603,7 +620,7 @@ pub fn run(action: ChannelAction, local: bool) -> Result<()> {
 
                         // Sync host, port, path, and token to web channel
                         set_channel_config(&cfg_path, "web", "host", &host)?;
-                        set_channel_config(&cfg_path, "web", "port", &port)?;
+                        set_channel_config_value(&cfg_path, "web", "port", serde_json::json!(port_num))?;
                         set_channel_config(&cfg_path, "web", "path", &path)?;
                         if token.is_empty() {
                             remove_channel_config(&cfg_path, "web", "auth_token")?;
@@ -645,7 +662,17 @@ pub fn run(action: ChannelAction, local: bool) -> Result<()> {
                     if key == "path" && !value.starts_with('/') {
                         value = format!("/{}", value);
                     }
-                    set_channel_config(&cfg_path, "websocket", &key, &value)?;
+                    if key == "port" {
+                        // 数字落盘（BUG #41）
+                        set_channel_config_value(
+                            &cfg_path,
+                            "websocket",
+                            &key,
+                            serde_json::json!(value.parse::<u16>().unwrap_or_default()),
+                        )?;
+                    } else {
+                        set_channel_config(&cfg_path, "websocket", &key, &value)?;
+                    }
                     println!("  Set websocket.{} = {}", key, value);
                 }
                 WebSocketAction::Get { key } => {
@@ -875,6 +902,22 @@ fn set_channel_config(
     key: &str,
     value: &str,
 ) -> Result<()> {
+    set_channel_config_value(cfg_path, channel, key, serde_json::Value::String(value.into()))
+}
+
+/// Value-typed variant of [`set_channel_config`]: numeric keys (ports) must be
+/// stored as JSON numbers so typed readers (`WebChannelConfig.port: i64`,
+/// BUG #41) and `as_u64()` display arms see the real value.
+///
+/// If `channels.<channel>` exists as a NON-object entry (corrupt/hand-edited
+/// config), refuse loudly instead of silently dropping the write while
+/// reporting success (BUG #42, same family as cron/mcp store corruption).
+fn set_channel_config_value(
+    cfg_path: &std::path::Path,
+    channel: &str,
+    key: &str,
+    value: serde_json::Value,
+) -> Result<()> {
     if !cfg_path.exists() {
         anyhow::bail!("Config file not found: {}", cfg_path.display());
     }
@@ -882,28 +925,31 @@ fn set_channel_config(
     let mut cfg: serde_json::Value = serde_json::from_str(&data)?;
 
     // Ensure the path channels.<channel> exists as an object
-    let channels_obj = cfg
+    if let Some(channels) = cfg
         .as_object_mut()
         .and_then(|o| o.get_mut("channels"))
-        .and_then(|v| v.as_object_mut());
-
-    if let Some(channels) = channels_obj {
-        let ch_entry = channels
-            .entry(channel)
-            .or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()));
-        if let Some(obj) = ch_entry.as_object_mut() {
-            obj.insert(
-                key.to_string(),
-                serde_json::Value::String(value.to_string()),
-            );
+        .and_then(|v| v.as_object_mut())
+    {
+        match channels.entry(channel.to_string()) {
+            serde_json::map::Entry::Vacant(vac) => {
+                vac.insert(serde_json::json!({ key: value }));
+            }
+            serde_json::map::Entry::Occupied(mut occ) => {
+                let entry = occ.get_mut();
+                let obj = entry.as_object_mut().ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "config.json 中 channels.{} 不是 JSON 对象（配置已损坏），\
+                         拒绝覆盖以免丢失数据；请手工修正该条目后重试",
+                        channel
+                    )
+                })?;
+                obj.insert(key.to_string(), value);
+            }
         }
     } else {
         // No "channels" key at all; create the full path
         let mut ch_map = serde_json::Map::new();
-        ch_map.insert(
-            key.to_string(),
-            serde_json::Value::String(value.to_string()),
-        );
+        ch_map.insert(key.to_string(), value);
         let mut channels_map = serde_json::Map::new();
         channels_map.insert(channel.to_string(), serde_json::Value::Object(ch_map));
         if let Some(obj) = cfg.as_object_mut() {
@@ -921,6 +967,18 @@ fn set_channel_config(
     Ok(())
 }
 
+/// Tolerant port reader for status/display arms: accepts JSON numbers or
+/// decimal strings. Legacy CLI builds wrote ports as strings (BUG #41), so
+/// reading with plain `as_u64()` silently displayed defaults instead of the
+/// configured value; this heals that for pre-fix disks.
+fn read_port_flex(v: Option<&serde_json::Value>, default: u16) -> u64 {
+    match v {
+        Some(serde_json::Value::Number(n)) => n.as_u64().unwrap_or(default as u64),
+        Some(serde_json::Value::String(s)) => s.trim().parse().unwrap_or(default as u64),
+        _ => default as u64,
+    }
+}
+
 /// Get a value from `channels.<channel>.<key>` in the JSON config file.
 fn get_channel_config(cfg_path: &std::path::Path, channel: &str, key: &str) -> Option<String> {
     if !cfg_path.exists() {
@@ -928,11 +986,12 @@ fn get_channel_config(cfg_path: &std::path::Path, channel: &str, key: &str) -> O
     }
     let data = std::fs::read_to_string(cfg_path).ok()?;
     let cfg: serde_json::Value = serde_json::from_str(&data).ok()?;
-    cfg.get("channels")
-        .and_then(|c| c.get(channel))
-        .and_then(|c| c.get(key))
-        .and_then(|v| v.as_str())
-        .map(|s| s.to_string())
+    let v = cfg.get("channels")?.get(channel)?.get(key)?;
+    Some(match v {
+        serde_json::Value::String(s) => s.clone(),
+        // BUG #41：端口等键修复后落 JSON 数字，读取按原文回显而非误报 (not set)
+        other => other.to_string(),
+    })
 }
 
 /// Remove a key from `channels.<channel>` in the JSON config file.

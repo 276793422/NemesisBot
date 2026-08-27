@@ -90,7 +90,8 @@ async fn wait_for_continuation_expired_deadline_falls_back() {
     let task = format!("s9wait_{}", std::process::id());
 
     // 直接构造「已插入、未就绪」的条目（复刻 save_continuation 在
-    // 381 insert 之后、411 置 ready 之前的窗口态）。
+    // 381 insert 之后、411 置 ready 之前的窗口态）。guard 只在块内持有、
+    // 块结束即 drop（块内无 await），continuations 是 tokio Mutex。
     {
         let mut conts = manager.continuations.lock().await;
         conts.insert(

@@ -1,5 +1,7 @@
 //! Tests for `kmdutil` command builders + `run` 的两态退出（Phase 3 覆盖率，
-//! 2026-08-25）。reg.exe 写 HKLM 的三个函数需要管理员 → 结构性不测。
+//! 2026-08-25）。reg.exe 写 HKLM 的三个函数：成功臂需要真管理员（且会改
+//! 真机服务键，红线不测）；错误臂在非提权 shell 下确定性 ACCESS DENIED，
+//! R5 批次（2026-08-27）已测（见文件末尾）。
 
 use super::*;
 
@@ -118,4 +120,37 @@ fn run_logs_success_and_tolerant_failure_under_subscriber() {
     // tolerant 失败 → tracing::warn! 参数行
     let bad = Command::new(&fake_kmdutil(dir.path(), "s6bad", 3));
     assert!(run(bad, true).is_ok());
+}
+
+// ---------------------------------------------------------------------------
+// R5 覆盖率批次（2026-08-27）：reg.exe 写 HKLM 的**错误臂**。非提权 shell
+// 下 `reg add HKLM\...` 必然 ACCESS DENIED → 确定性 Err（成功臂需要真提权
+// 且会改真机服务的 IniPath/服务键——红线，不测；见 S6 头注的补充）。
+// ---------------------------------------------------------------------------
+
+#[cfg(windows)]
+#[test]
+fn set_ini_path_errors_without_elevation() {
+    if crate::elevation::is_elevated() {
+        return; // 提权环境会真写 HKLM\SbieDrv\IniPath（重定向真沙盒 ini），跳过
+    }
+    let err = set_ini_path(Path::new(r"C:\tmp\definitely-not-written-r5.ini")).unwrap_err();
+    let msg = format!("{err:#}");
+    assert!(msg.contains("reg add"), "{msg}");
+    assert!(msg.contains("IniPath"), "{msg}");
+}
+
+#[cfg(windows)]
+#[test]
+fn set_sbiesvc_service_key_dwounds_errors_without_elevation() {
+    if crate::elevation::is_elevated() {
+        return; // 同上：提权会真写 SbieSvc 服务键
+    }
+    let err = set_sbiesvc_service_key_dwounds().unwrap_err();
+    let msg = format!("{err:#}");
+    assert!(msg.contains("reg add"), "{msg}");
+    assert!(
+        msg.contains("Language"),
+        "第一个 DWORD（Language）写失败即返回，不会走到 PreferExternalManifest: {msg}"
+    );
 }

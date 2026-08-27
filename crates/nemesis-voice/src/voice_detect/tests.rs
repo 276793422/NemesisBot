@@ -152,10 +152,138 @@ fn rms_threshold_zero_marks_speaking_on_empty_chunk_due_to_geq() {
 
 // ===========================================================================
 // S12 覆盖率冲刺（2026-08-26）：Silero 构造 fail-fast + 工厂回退
-// Silero 的 process/flush 需要真 VAD 引擎（真 DLL + 真模型）——结构性豁免。
+// 原注：Silero 的 process/flush 需要真 VAD 引擎——结构性豁免。
+//
+// R6（2026-08-27）修订：白盒构造（engine 指针为 null）后，next_pending /
+// is_speaking / name 是纯 Rust 可直测；process/flush 的封送路径可测到 FFI
+// 符号查找处 panic。剩余不可达 = 真引擎成功语义 + 3 秒诊断块（214 行
+// is_speech_detected 先 panic，diag 块在无 DLL 时永远走不到）。
+//
+// 注意：null 引擎的 Drop 也 panic——持有 null_silero 的测试一律
+// `mem::forget` 收尾；方法 panic 的测试用 `catch_panic_msg` 截住展开
+//（should_panic 会因析构再 panic 触发双 panic fail-fast，见 test_util.rs）。
 // ===========================================================================
 
 use super::{create_detector, SileroVadParams, SileroVoiceDetector};
+
+/// 白盒构造 Silero 检测器：VadEngine 指针为 null，不触发任何 FFI。
+/// （VadEngine 的 null 构造器在 vad::tests 里——字段私有，只有 vad 子树能建。）
+fn null_silero(pending: Vec<Vec<f32>>) -> SileroVoiceDetector {
+    SileroVoiceDetector {
+        engine: crate::vad::tests::null_engine(),
+        window_size: 512,
+        chunk_buffer: Vec::new(),
+        pending_segments: pending,
+        is_speaking: false,
+        feed_count: 0,
+        window_count: 0,
+        detect_count: 0,
+        last_diag: std::time::Instant::now(),
+    }
+}
+
+#[test]
+fn silero_name_returns_constant_and_is_speaking_default_false() {
+    let d = null_silero(vec![]);
+    assert_eq!(d.name(), "Silero VAD");
+    assert!(!d.is_speaking());
+    let mut d = d;
+    d.is_speaking = true;
+    assert!(d.is_speaking());
+    std::mem::forget(d);
+}
+
+#[test]
+fn silero_next_pending_skips_short_and_returns_long() {
+    // 16kHz 下 min_samples = 4800：短段被跳过，长段返回
+    let short = vec![0.1_f32; 100];
+    let long = vec![0.2_f32; 4800];
+    let mut d = null_silero(vec![short, long.clone()]);
+    let out = d.next_pending(16000);
+    assert_eq!(out.as_deref(), Some(long.as_slice()));
+    // 队列已空 → None
+    assert!(d.next_pending(16000).is_none());
+    std::mem::forget(d);
+}
+
+#[test]
+fn silero_next_pending_all_short_returns_none() {
+    let mut d = null_silero(vec![vec![0.1_f32; 10], vec![0.2_f32; 20]]);
+    assert!(d.next_pending(16000).is_none());
+    std::mem::forget(d);
+}
+
+#[test]
+fn silero_process_returns_pending_segment_before_touching_engine() {
+    // process 开头先回吐 pending 段（185-187）——不碰引擎即可返回
+    let long = vec![0.5_f32; 4800];
+    let mut d = null_silero(vec![long.clone()]);
+    let out = d.process(&[0.0_f32; 8], 16000);
+    assert_eq!(out.as_deref(), Some(long.as_slice()));
+    std::mem::forget(d);
+}
+
+#[test]
+fn silero_process_small_chunk_panics_at_status_lookup() {
+    // 小块不足一个窗口 → while 跳过 → 214 行 is_speech_detected FFI panic
+    let mut d = null_silero(vec![]);
+    let msg = crate::test_util::catch_panic_msg(|| d.process(&[0.0_f32; 8], 16000));
+    assert!(msg.contains("sherpa-onnx not initialized"), "{msg}");
+    std::mem::forget(d);
+}
+
+#[test]
+fn silero_process_full_window_panics_at_accept_waveform() {
+    // 整窗 → drain → accept_waveform FFI panic
+    let mut d = null_silero(vec![]);
+    let msg = crate::test_util::catch_panic_msg(|| d.process(&[0.0_f32; 512], 16000));
+    assert!(msg.contains("sherpa-onnx not initialized"), "{msg}");
+    std::mem::forget(d);
+}
+
+#[test]
+fn silero_flush_empty_buffer_panics_at_engine_flush() {
+    // chunk_buffer 空 → 跳过补窗 → engine.flush() FFI panic
+    let mut d = null_silero(vec![]);
+    let msg = crate::test_util::catch_panic_msg(|| d.flush());
+    assert!(msg.contains("sherpa-onnx not initialized"), "{msg}");
+    std::mem::forget(d);
+}
+
+#[test]
+fn silero_flush_half_window_pads_then_panics_at_accept_waveform() {
+    // 半窗 → 静音补齐到 window_size → drain → accept_waveform FFI panic
+    let mut d = null_silero(vec![]);
+    d.chunk_buffer = vec![0.1_f32; 100];
+    let msg = crate::test_util::catch_panic_msg(|| d.flush());
+    assert!(msg.contains("sherpa-onnx not initialized"), "{msg}");
+    std::mem::forget(d);
+}
+
+#[test]
+#[should_panic(expected = "sherpa-onnx not initialized")]
+fn create_detector_with_local_vad_model_builds_silero_until_ffi() {
+    // 本地 vad 模型在场 → ensure_vad_model Ok → VadEngine::new 结构构造 →
+    // FFI 符号查找 panic（无 DLL 红线内）
+    let tmp = tempfile::tempdir().unwrap();
+    let mut cfg = crate::config::AppConfig::default();
+    cfg.base_dir = tmp.path().to_path_buf();
+    cfg.models.dir = "./data".into();
+    cfg.models.sources = vec![crate::config::ModelSource {
+        name: "silero_vad".into(),
+        category: "vad".into(),
+        repo: "some/repo".into(),
+        files: vec![crate::config::ModelFile {
+            local: "silero_vad.onnx".into(),
+            remote: "silero_vad.onnx".into(),
+            url: String::new(),
+        }],
+    }];
+    let dir = tmp.path().join("data").join("vad").join("silero_vad");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("silero_vad.onnx"), b"fixture").unwrap();
+    let _ = create_detector(&cfg);
+}
 
 #[test]
 fn silero_new_missing_model_propagates_vad_bail() {

@@ -60,6 +60,15 @@ impl PathManager {
         self.home_dir.read().clone()
     }
 
+    /// Set a custom home directory (for testing or special cases).
+    ///
+    /// 仅影响本实例的后续路径解析；对 `default_path_manager()` 单例调用时
+    /// 进程全局生效——测试用它把单例 home 重定向到临时目录（OnceLock 首次
+    /// 初始化后无法换实例，setter 是唯一的运行时重定向缝）。改完记得恢复。
+    pub fn set_home_dir(&self, home_dir: PathBuf) {
+        *self.home_dir.write() = home_dir;
+    }
+
     /// Get the config file path.
     /// Priority: setter override > NEMESISBOT_CONFIG env > default (home/config.json).
     pub fn config_path(&self) -> PathBuf {

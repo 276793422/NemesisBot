@@ -1907,8 +1907,6 @@ fn test_execute_config_migration_success_no_existing_dst() {
 /// 正常返回（libtest 视为 pass）。
 #[test]
 fn test_run_full_migration_interactive_confirm_scenarios() {
-    use std::io::Write as _;
-
     let mode = std::env::var("NEMESIS_MIGRATE_CHILD_MODE").unwrap_or_default();
     if mode.is_empty() {
         run_confirm_scenarios_parent();

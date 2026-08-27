@@ -146,6 +146,7 @@ fn build_url_trims_trailing_slash_and_joins() {
 
 #[test]
 fn ensure_stt_model_local_files_hit_returns_dir_without_network() {
+    crate::test_util::ensure_global_subscriber();
     let tmp = tempfile::tempdir().unwrap();
     let dir = tmp.path().join("data").join("stt").join("sensevoice-small");
     std::fs::create_dir_all(&dir).unwrap();
@@ -185,6 +186,7 @@ fn ensure_stt_model_no_source_bails_even_with_autodownload() {
 
 #[test]
 fn ensure_vad_model_local_files_hit_returns_first_file_path() {
+    crate::test_util::ensure_global_subscriber(); // 122 行 info! 参数求值需 subscriber
     let tmp = tempfile::tempdir().unwrap();
     let dir = tmp.path().join("data").join("vad").join("silero_vad");
     std::fs::create_dir_all(&dir).unwrap();
@@ -256,6 +258,7 @@ fn ensure_punct_model_no_source_bails() {
 
 #[test]
 fn ensure_speaker_model_local_files_hit_returns_dir() {
+    crate::test_util::ensure_global_subscriber(); // 259 行 info! 参数求值需 subscriber
     let tmp = tempfile::tempdir().unwrap();
     let dir = tmp.path().join("data").join("speaker").join("3dspeaker");
     std::fs::create_dir_all(&dir).unwrap();
@@ -274,6 +277,15 @@ fn ensure_speaker_model_auto_download_disabled_bails() {
     cfg.models.auto_download = false;
     let err = format!("{:#}", ensure_speaker_model(&cfg).unwrap_err());
     assert!(err.contains("auto_download is disabled"), "{err}");
+}
+
+#[test]
+fn ensure_speaker_model_no_source_bails_even_with_autodownload() {
+    // 274 行：sources 为空（auto_download 开着）→ context bail
+    let tmp = tempfile::tempdir().unwrap();
+    let cfg = cfg_with_model_dir(tmp.path(), vec![]);
+    let err = format!("{:#}", ensure_speaker_model(&cfg).unwrap_err());
+    assert!(err.contains("not found in config [models.sources]"), "{err}");
 }
 
 // ---------------------------------------------------------------------------
@@ -475,6 +487,7 @@ fn download_file_resume_partial_gets_206_and_appends() {
         std::fs::write(&part, b"AB").unwrap(); // 已有 2 字节
         let target_check = target.clone();
 
+        crate::test_util::ensure_global_subscriber(); // 433 行续传 info! 参数求值
         run_blocking(move || {
             let client = reqwest::blocking::Client::new();
             download_file_resume(
@@ -605,5 +618,549 @@ fn get_remote_size_head_error_returns_none() {
         })
         .await;
         assert!(res.is_none(), "404 HEAD must map to None, got {res:?}");
+    });
+}
+
+// ===========================================================================
+// R6 覆盖率批次（2026-08-27）：ensure_* 下载臂（成功 + `)?` 失败传播）、
+// proxy 两臂、>4MB flush 臂、慢体 2s 进度臂（Some/None 两变体）、截断体
+// interrupted 臂、0 字节已存在文件重下。
+// ===========================================================================
+
+#[test]
+fn ensure_stt_model_download_failure_propagates_err() {
+    // 97 行 `)?` 错误传播臂：下载 HTTP 500 → Err 带 status
+    with_runtime(|| async {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/user/sv/resolve/main/model_sherpa.onnx"))
+            .respond_with(ResponseTemplate::new(500))
+            .mount(&server)
+            .await;
+
+        let server_uri = server.uri();
+        let tmp = tempfile::tempdir().unwrap();
+        let mut cfg = cfg_with_model_dir(
+            tmp.path(),
+            vec![source_with("sensevoice-small", "user/sv", &["model_sherpa.onnx"])],
+        );
+        cfg.models.mirror.base = server_uri;
+
+        let err = format!("{:#}", run_blocking(move || ensure_stt_model(&cfg))
+            .await
+            .unwrap_err());
+        assert!(err.contains("HTTP 500"), "{err}");
+    });
+}
+
+#[test]
+fn ensure_vad_model_downloads_when_missing_then_returns_file_path() {
+    with_runtime(|| async {
+        crate::test_util::ensure_global_subscriber();
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/user/vad/resolve/main/silero_vad.onnx"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("VAD"))
+            .mount(&server)
+            .await;
+
+        let server_uri = server.uri();
+        let tmp = tempfile::tempdir().unwrap();
+        let mut cfg = cfg_with_model_dir(
+            tmp.path(),
+            vec![source_with("silero_vad", "user/vad", &["silero_vad.onnx"])],
+        );
+        cfg.models.mirror.base = server_uri;
+
+        let path = run_blocking(move || ensure_vad_model(&cfg)).await.unwrap();
+        assert!(path.ends_with("silero_vad.onnx"), "{path:?}");
+        assert_eq!(std::fs::read(&path).unwrap(), b"VAD");
+    });
+}
+
+#[test]
+fn ensure_vad_model_download_failure_propagates_err() {
+    // 149 行 `)?` 错误传播臂
+    with_runtime(|| async {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/user/vad/resolve/main/silero_vad.onnx"))
+            .respond_with(ResponseTemplate::new(500))
+            .mount(&server)
+            .await;
+
+        let server_uri = server.uri();
+        let tmp = tempfile::tempdir().unwrap();
+        let mut cfg = cfg_with_model_dir(
+            tmp.path(),
+            vec![source_with("silero_vad", "user/vad", &["silero_vad.onnx"])],
+        );
+        cfg.models.mirror.base = server_uri;
+
+        let err = format!("{:#}", run_blocking(move || ensure_vad_model(&cfg))
+            .await
+            .unwrap_err());
+        assert!(err.contains("HTTP 500"), "{err}");
+    });
+}
+
+#[test]
+fn ensure_tts_model_no_source_bails() {
+    // 179-182 行 context 参数（TTS 此前无 no-source 测试）
+    let tmp = tempfile::tempdir().unwrap();
+    let mut cfg = cfg_with_model_dir(tmp.path(), vec![]);
+    cfg.tts.model_name = "kokoro".to_string();
+    let err = format!("{:#}", ensure_tts_model(&cfg).unwrap_err());
+    assert!(err.contains("not found in config [models.sources]"), "{err}");
+}
+
+#[test]
+fn ensure_tts_model_downloads_when_missing_then_returns_dir() {
+    with_runtime(|| async {
+        crate::test_util::ensure_global_subscriber();
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/user/k/resolve/main/model.onnx"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("TTS"))
+            .mount(&server)
+            .await;
+
+        let server_uri = server.uri();
+        let tmp = tempfile::tempdir().unwrap();
+        let mut cfg = cfg_with_model_dir(
+            tmp.path(),
+            vec![source_with("kokoro", "user/k", &["model.onnx"])],
+        );
+        cfg.tts.model_name = "kokoro".to_string();
+        cfg.models.mirror.base = server_uri;
+
+        let dir = run_blocking(move || ensure_tts_model(&cfg)).await.unwrap();
+        assert!(dir.ends_with("kokoro"), "{dir:?}");
+        assert_eq!(std::fs::read(dir.join("model.onnx")).unwrap(), b"TTS");
+    });
+}
+
+#[test]
+fn ensure_tts_model_download_failure_propagates_err() {
+    // 191 行 `)?` 错误传播臂
+    with_runtime(|| async {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/user/k/resolve/main/model.onnx"))
+            .respond_with(ResponseTemplate::new(500))
+            .mount(&server)
+            .await;
+
+        let server_uri = server.uri();
+        let tmp = tempfile::tempdir().unwrap();
+        let mut cfg = cfg_with_model_dir(
+            tmp.path(),
+            vec![source_with("kokoro", "user/k", &["model.onnx"])],
+        );
+        cfg.tts.model_name = "kokoro".to_string();
+        cfg.models.mirror.base = server_uri;
+
+        let err = format!("{:#}", run_blocking(move || ensure_tts_model(&cfg))
+            .await
+            .unwrap_err());
+        assert!(err.contains("HTTP 500"), "{err}");
+    });
+}
+
+#[test]
+fn ensure_punct_model_auto_download_disabled_bails() {
+    // 217-221 行（punct 此前无 auto-disabled 测试）
+    let tmp = tempfile::tempdir().unwrap();
+    let mut cfg = cfg_with_model_dir(
+        tmp.path(),
+        vec![source_with("ct-transformer-zh-en", "user/p", &["model.onnx"])],
+    );
+    cfg.models.auto_download = false;
+    let err = format!("{:#}", ensure_punct_model(&cfg).unwrap_err());
+    assert!(err.contains("auto_download is disabled"), "{err}");
+}
+
+#[test]
+fn ensure_punct_model_downloads_when_missing_then_returns_dir() {
+    with_runtime(|| async {
+        crate::test_util::ensure_global_subscriber();
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/user/p/resolve/main/model.onnx"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("PUNCT"))
+            .mount(&server)
+            .await;
+
+        let server_uri = server.uri();
+        let tmp = tempfile::tempdir().unwrap();
+        let mut cfg = cfg_with_model_dir(
+            tmp.path(),
+            vec![source_with("ct-transformer-zh-en", "user/p", &["model.onnx"])],
+        );
+        cfg.models.mirror.base = server_uri;
+
+        let dir = run_blocking(move || ensure_punct_model(&cfg)).await.unwrap();
+        assert!(dir.ends_with("ct-transformer-zh-en"), "{dir:?}");
+        assert_eq!(std::fs::read(dir.join("model.onnx")).unwrap(), b"PUNCT");
+    });
+}
+
+#[test]
+fn ensure_punct_model_download_failure_propagates_err() {
+    // 235 行 `)?` 错误传播臂
+    with_runtime(|| async {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/user/p/resolve/main/model.onnx"))
+            .respond_with(ResponseTemplate::new(500))
+            .mount(&server)
+            .await;
+
+        let server_uri = server.uri();
+        let tmp = tempfile::tempdir().unwrap();
+        let mut cfg = cfg_with_model_dir(
+            tmp.path(),
+            vec![source_with("ct-transformer-zh-en", "user/p", &["model.onnx"])],
+        );
+        cfg.models.mirror.base = server_uri;
+
+        let err = format!("{:#}", run_blocking(move || ensure_punct_model(&cfg))
+            .await
+            .unwrap_err());
+        assert!(err.contains("HTTP 500"), "{err}");
+    });
+}
+
+#[test]
+fn ensure_speaker_model_downloads_when_missing_then_returns_dir() {
+    with_runtime(|| async {
+        crate::test_util::ensure_global_subscriber();
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/user/sp/resolve/main/campplus.onnx"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("SPK"))
+            .mount(&server)
+            .await;
+
+        let server_uri = server.uri();
+        let tmp = tempfile::tempdir().unwrap();
+        let mut cfg = cfg_with_model_dir(
+            tmp.path(),
+            vec![source_with("3dspeaker", "user/sp", &["campplus.onnx"])],
+        );
+        cfg.speaker.model_name = "3dspeaker".to_string();
+        cfg.models.mirror.base = server_uri;
+
+        let dir = run_blocking(move || ensure_speaker_model(&cfg)).await.unwrap();
+        assert!(dir.ends_with("3dspeaker"), "{dir:?}");
+        assert_eq!(std::fs::read(dir.join("campplus.onnx")).unwrap(), b"SPK");
+    });
+}
+
+#[test]
+fn ensure_speaker_model_download_failure_propagates_err() {
+    // 283 行 `)?` 错误传播臂
+    with_runtime(|| async {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/user/sp/resolve/main/campplus.onnx"))
+            .respond_with(ResponseTemplate::new(500))
+            .mount(&server)
+            .await;
+
+        let server_uri = server.uri();
+        let tmp = tempfile::tempdir().unwrap();
+        let mut cfg = cfg_with_model_dir(
+            tmp.path(),
+            vec![source_with("3dspeaker", "user/sp", &["campplus.onnx"])],
+        );
+        cfg.speaker.model_name = "3dspeaker".to_string();
+        cfg.models.mirror.base = server_uri;
+
+        let err = format!("{:#}", run_blocking(move || ensure_speaker_model(&cfg))
+            .await
+            .unwrap_err());
+        assert!(err.contains("HTTP 500"), "{err}");
+    });
+}
+
+// ---------------------------------------------------------------------------
+// R6：proxy 两臂 / flush 臂 / 慢体进度两变体 / 截断体 / 0 字节重下
+// ---------------------------------------------------------------------------
+
+#[test]
+fn download_model_files_invalid_proxy_url_bails() {
+    // 313 行 Proxy::all 解析失败臂
+    with_runtime(|| async {
+        let server = MockServer::start().await;
+        let server_uri = server.uri();
+        let tmp = tempfile::tempdir().unwrap();
+        let target = tmp.path().join("stt").join("m");
+        let f = files("model.onnx", "model.onnx");
+        let res = run_blocking(move || {
+            download_model_files(&server_uri, "m", "repo", &f, &target, "http://[::1")
+        })
+        .await;
+        let err = format!("{:#}", res.unwrap_err());
+        assert!(err.contains("Invalid proxy URL"), "{err}");
+    });
+}
+
+#[test]
+fn download_model_files_dead_proxy_fails_to_connect() {
+    // 314-315 行 proxy 装上 builder 的成功臂：指向死端口 → 下载连接失败
+    with_runtime(|| async {
+        crate::test_util::ensure_global_subscriber(); // 314 行 info! 参数
+        let server = MockServer::start().await;
+        let server_uri = server.uri();
+        let tmp = tempfile::tempdir().unwrap();
+        let target = tmp.path().join("stt").join("m");
+        let f = files("model.onnx", "model.onnx");
+        let res = run_blocking(move || {
+            download_model_files(&server_uri, "m", "repo", &f, &target, "http://127.0.0.1:1")
+        })
+        .await;
+        let err = format!("{:#}", res.unwrap_err());
+        assert!(err.contains("Failed to download"), "{err}");
+    });
+}
+
+#[test]
+fn download_model_files_body_over_4mb_hits_midstream_flush() {
+    // 502-503 行：written−last_flush ≥ 4MB → sync_data 臂
+    with_runtime(|| async {
+        crate::test_util::ensure_global_subscriber();
+        let server = MockServer::start().await;
+        let body = vec![b'x'; 5 * 1024 * 1024];
+        Mock::given(method("GET"))
+            .and(path("/repo/resolve/main/model.onnx"))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(body))
+            .mount(&server)
+            .await;
+
+        let server_uri = server.uri();
+        let tmp = tempfile::tempdir().unwrap();
+        let target = tmp.path().join("stt").join("m");
+        let target_check = target.clone();
+        let f = files("model.onnx", "model.onnx");
+        run_blocking(move || {
+            download_model_files(&server_uri, "m", "repo", &f, &target, "")
+        })
+        .await
+        .unwrap();
+        assert_eq!(
+            std::fs::metadata(target_check.join("model.onnx")).unwrap().len(),
+            5 * 1024 * 1024
+        );
+    });
+}
+
+/// 慢滴服务器：HEAD 按参数回 200(CL:10) 或 404；GET 头+首块立即到，
+/// 停 3s 再发尾块——制造「两次 read 间隔 ≥2s」翻 stream_to_file 进度臂。
+/// （wiremock 的 set_delay 只能延迟整个响应=头+体同批到达，last_print 从
+/// 拿到 response 才起算，进度臂永远不触发——必须裸 TCP 分块慢滴。）
+fn spawn_drip_server(head_ok: bool) -> std::net::SocketAddr {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    std::thread::spawn(move || {
+        use std::io::{Read as _, Write as _};
+        for _ in 0..2 {
+            // HEAD（get_remote_size）与 GET 各一条连接（Connection: close 不复用）
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut buf = [0u8; 2048];
+            let mut n = 0;
+            loop {
+                let r = stream.read(&mut buf[n..]).unwrap();
+                n += r;
+                if r == 0 || buf[..n].ends_with(b"\r\n\r\n") {
+                    break;
+                }
+            }
+            let is_get = buf.starts_with(b"GET");
+            if is_get {
+                let (head, c1, c2) = if head_ok {
+                    // 带总长：Content-Length 10
+                    ("HTTP/1.1 200 OK\r\nContent-Length: 10\r\nConnection: close\r\n\r\n", "01234", "56789")
+                } else {
+                    // 不带总长：读到 EOF 为止
+                    ("HTTP/1.1 200 OK\r\nConnection: close\r\n\r\n", "SLOW-", "BODY")
+                };
+                stream.write_all(head.as_bytes()).unwrap();
+                stream.write_all(c1.as_bytes()).unwrap();
+                stream.flush().unwrap();
+                std::thread::sleep(std::time::Duration::from_secs(3));
+                stream.write_all(c2.as_bytes()).unwrap();
+                stream.flush().unwrap();
+                // drop(stream) 关连接
+            } else if head_ok {
+                stream
+                    .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 10\r\nConnection: close\r\n\r\n")
+                    .unwrap();
+                stream.flush().unwrap();
+            } else {
+                stream
+                    .write_all(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+                    .unwrap();
+                stream.flush().unwrap();
+            }
+        }
+    });
+    addr
+}
+
+#[test]
+fn download_file_resume_slow_body_with_total_reports_percentage() {
+    // 508-522 行：首读距 last_print ≥2s → Some(total) 百分比进度臂
+    with_runtime(|| async {
+        crate::test_util::ensure_global_subscriber();
+        let addr = spawn_drip_server(true);
+        let url = format!("http://{addr}/repo/resolve/main/model.onnx");
+
+        let tmp = tempfile::tempdir().unwrap();
+        let target = tmp.path().join("final.onnx");
+        let part = tmp.path().join("final.onnx.part");
+        let msgs: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+        let sink = msgs.clone();
+        let target_check = target.clone();
+        let part_check = part.clone();
+
+        run_blocking(move || {
+            set_progress(Some(Box::new(move |m: &str| {
+                sink.lock().unwrap().push(m.to_string());
+            })));
+            let client = reqwest::blocking::Client::new();
+            let r = download_file_resume(&client, &url, &target, &part, "final.onnx");
+            set_progress(None);
+            r
+        })
+        .await
+        .unwrap();
+
+        assert_eq!(std::fs::read(&target_check).unwrap(), b"0123456789");
+        assert!(!part_check.exists());
+        let got = msgs.lock().unwrap();
+        assert!(
+            got.iter().any(|m| m.contains('%')),
+            "progress messages missing percentage line: {got:?}"
+        );
+    });
+}
+
+#[test]
+fn download_file_resume_slow_body_unknown_total_reports_mb_downloaded() {
+    // 524-533 行：HEAD 404 → total None → "MB downloaded" 进度臂
+    with_runtime(|| async {
+        crate::test_util::ensure_global_subscriber();
+        let addr = spawn_drip_server(false);
+        let url = format!("http://{addr}/repo/resolve/main/model.onnx");
+
+        let tmp = tempfile::tempdir().unwrap();
+        let target = tmp.path().join("final.onnx");
+        let part = tmp.path().join("final.onnx.part");
+        let msgs: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+        let sink = msgs.clone();
+        let target_check = target.clone();
+
+        run_blocking(move || {
+            set_progress(Some(Box::new(move |m: &str| {
+                sink.lock().unwrap().push(m.to_string());
+            })));
+            let client = reqwest::blocking::Client::new();
+            let r = download_file_resume(&client, &url, &target, &part, "final.onnx");
+            set_progress(None);
+            r
+        })
+        .await
+        .unwrap();
+
+        assert_eq!(std::fs::read(&target_check).unwrap(), b"SLOW-BODY");
+        let got = msgs.lock().unwrap();
+        assert!(
+            got.iter().any(|m| m.contains("MB downloaded")),
+            "progress messages missing MB-downloaded line: {got:?}"
+        );
+    });
+}
+
+#[test]
+fn download_file_resume_truncated_body_bails_interrupted() {
+    // 536-538 行：Content-Length 虚报 + 提前断连 → read Err → interrupted bail
+    with_runtime(|| async {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        std::thread::spawn(move || {
+            use std::io::{Read as _, Write as _};
+            for _ in 0..2 {
+                // HEAD（get_remote_size）与 GET 各一条连接（Connection: close 不复用）
+                let (mut stream, _) = listener.accept().unwrap();
+                let mut buf = [0u8; 2048];
+                let mut n = 0;
+                loop {
+                    let r = stream.read(&mut buf[n..]).unwrap();
+                    n += r;
+                    if r == 0 || buf[..n].ends_with(b"\r\n\r\n") {
+                        break;
+                    }
+                }
+                let is_get = buf.starts_with(b"GET");
+                // GET 虚报 CL=100 只发 5 字节即断连；HEAD 只回头
+                let resp = if is_get {
+                    "HTTP/1.1 200 OK\r\nContent-Length: 100\r\nConnection: close\r\n\r\nSHORT"
+                } else {
+                    "HTTP/1.1 200 OK\r\nContent-Length: 100\r\nConnection: close\r\n\r\n"
+                };
+                stream.write_all(resp.as_bytes()).unwrap();
+                stream.flush().unwrap();
+                // drop(stream) 关连接 → 客户端读侧 UnexpectedEof
+            }
+        });
+
+        let tmp = tempfile::tempdir().unwrap();
+        let target = tmp.path().join("final.onnx");
+        let part = tmp.path().join("final.onnx.part");
+        let url = format!("http://{addr}/repo/resolve/main/model.onnx");
+
+        let err = format!(
+            "{:#}",
+            run_blocking(move || {
+                let client = reqwest::blocking::Client::new();
+                download_file_resume(&client, &url, &target, &part, "final.onnx")
+            })
+            .await
+            .unwrap_err()
+        );
+        assert!(err.contains("Download interrupted"), "{err}");
+        // 失败后 .part 保留（供续传），target 不落
+        assert!(tmp.path().join("final.onnx.part").exists());
+        assert!(!tmp.path().join("final.onnx").exists());
+    });
+}
+
+#[test]
+fn download_model_files_zero_byte_existing_file_is_redownloaded() {
+    // 341 行：已存在但 size == 0 → 不跳过，走下载
+    with_runtime(|| async {
+        crate::test_util::ensure_global_subscriber();
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/repo/resolve/main/model.onnx"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("NEW"))
+            .mount(&server)
+            .await;
+
+        let server_uri = server.uri();
+        let tmp = tempfile::tempdir().unwrap();
+        let target = tmp.path().join("stt").join("m");
+        std::fs::create_dir_all(&target).unwrap();
+        std::fs::write(target.join("model.onnx"), b"").unwrap(); // 0 字节占位
+        let target_check = target.clone();
+
+        let f = files("model.onnx", "model.onnx");
+        run_blocking(move || {
+            download_model_files(&server_uri, "m", "repo", &f, &target, "")
+        })
+        .await
+        .unwrap();
+        assert_eq!(std::fs::read(target_check.join("model.onnx")).unwrap(), b"NEW");
     });
 }

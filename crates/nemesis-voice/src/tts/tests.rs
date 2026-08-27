@@ -226,6 +226,80 @@ fn build_model_config_vits_active_others_empty() {
     assert_eq!(cfg.supertonic.vocoder, empty);
 }
 
+// ---------------------------------------------------------------------------
+// R6（2026-08-27）：build_kokoro_config 直调 voices 缺失臂 + 白盒 generate/Drop
+// new() 用 voices.bin 探测分支，voices 缺失时永远走 VITS——kokoro 的
+// voices.bin fail-fast 臂只能直调私有构造函数触达。
+// ---------------------------------------------------------------------------
+
+#[test]
+fn tts_build_kokoro_direct_missing_voices_bails() {
+    let tmp = tempfile::tempdir().unwrap();
+    touch(tmp.path(), "model.onnx");
+    let err = format!(
+        "{:#}",
+        TtsEngine::build_kokoro_config(tmp.path(), 1)
+            .err()
+            .expect("must fail")
+    );
+    assert!(err.contains("Kokoro voices.bin not found"), "{err}");
+}
+
+#[test]
+#[should_panic(expected = "sherpa-onnx not initialized")]
+fn tts_new_kokoro_full_fixture_with_espeak_data_and_dict_dirs() {
+    // data_dir / dict_dir 存在分支（204-208 / 211-215 的 exists=true 臂）
+    let tmp = tempfile::tempdir().unwrap();
+    touch(tmp.path(), "voices.bin");
+    touch(tmp.path(), "model.onnx");
+    touch(tmp.path(), "tokens.txt");
+    std::fs::create_dir_all(tmp.path().join("espeak-ng-data")).unwrap();
+    std::fs::create_dir_all(tmp.path().join("dict")).unwrap();
+    let _ = TtsEngine::new(tmp.path(), 2);
+}
+
+/// 白盒构造 TtsEngine（不触发任何 FFI 构造；tts 指针为 null）。
+fn null_tts_engine() -> TtsEngine {
+    TtsEngine {
+        inner: std::sync::Mutex::new(TtsInner {
+            tts: std::ptr::null(),
+        }),
+        model_dir: std::path::PathBuf::from("."),
+        num_threads: 1,
+        is_kokoro: false,
+        sample_rate: 44100,
+    }
+}
+
+#[test]
+fn tts_generate_null_engine_panics_at_symbol_lookup() {
+    // generate 的 normalize → cstr 封送 → lock 取指针 → FFI 符号查找全链路。
+    // Drop 也 panic → catch_panic_msg + forget（见 test_util.rs）。
+    let engine = null_tts_engine();
+    let msg = crate::test_util::catch_panic_msg(|| engine.generate("你好 world", 0, 1.0));
+    assert!(msg.contains("sherpa-onnx not initialized"), "{msg}");
+    std::mem::forget(engine);
+}
+
+#[test]
+#[should_panic(expected = "sherpa-onnx not initialized")]
+fn tts_drop_null_engine_panics_at_destroy() {
+    let _ = null_tts_engine();
+}
+
+// ---------------------------------------------------------------------------
+// R6：map_fullwidth_punct 直测（normalize 已覆盖逗/顿/句/问/叹，补分号冒号）
+// ---------------------------------------------------------------------------
+
+#[test]
+fn map_fullwidth_punct_semicolon_and_colon() {
+    assert_eq!(map_fullwidth_punct('；'), ';');
+    assert_eq!(map_fullwidth_punct('：'), ':');
+    // 非标点原样返回
+    assert_eq!(map_fullwidth_punct('汉'), '汉');
+    assert_eq!(map_fullwidth_punct('a'), 'a');
+}
+
 #[test]
 fn build_model_config_with_kokoro_kokoro_active_vits_empty() {
     let empty = sherpa::null_cstr();

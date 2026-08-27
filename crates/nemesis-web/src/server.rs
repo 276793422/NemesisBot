@@ -1222,3 +1222,7 @@ mod tests;
 
 #[cfg(all(test, feature = "workflow"))]
 mod extra_tests;
+
+// R4 覆盖率（2026-08-27）：workflow/chat/ 路径前缀静态壳 + bind-failed 错误路径。
+#[cfg(test)]
+mod r4_tests;

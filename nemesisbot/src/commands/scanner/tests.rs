@@ -2120,3 +2120,1275 @@ fn test_s11b_lookup_system_clamav_none_with_minimal_path() {
     let _path_guard = S11bMinimalPathEnv::new();
     assert!(lookup_system_clamav().is_none());
 }
+
+// ===========================================================================
+// wave_b（coverage 补测，2026-08-27）：miss 行清零补洞。
+//
+// 目标行（scanner.rs）与本模块的对应关系：
+//  - 169-175（lookup_system_clamav 命中返 Some(parent)）→
+//    wave_b_lookup_system_clamav_hits_fake_exe_in_narrow_path；
+//  - 600-621 渲染矩阵（disabled 引擎四列全 "-"：install/db/address/url 空 ->
+//    占位符）+ 653-681 推荐循环的 `_ => {}` 兜底臂（enabled 引擎带非标准
+//    install_status="weird"，空 path + 窄 PATH 下 lookup=None 且状态非空 =>
+//    状态机不覆写，"weird" 存活到 match 落 _）→
+//    wave_b_check_disabled_dash_row_and_weird_state_fallback_arm；
+//  - 552-570 状态机另一面：enabled + 空 path + lookup 命中 → 持久化发现的系统
+//    路径（563-565）+ 617-620 长 URL 截断臂（纯 ASCII，>40 字节）→
+//    wave_b_check_system_path_discovery_persists_and_truncates_url；
+//  - 955-960 安装 Step2 系统 PATH 发现端到端（Step1 空 → Step2 命中假 exe →
+//    Step4 判 installed → Step6 双 conf 生成 → Step7 updater 快失败 → Step8
+//    落盘）→ wave_b_install_discovers_system_path_and_generates_confs；
+//  - 1048-1051 / 1071（conf 生成的两个 Err 打印臂）——把 freshclam.conf /
+//    clamd.conf 预建成目录逼 fs::write 失败 →
+//    wave_b_install_reports_conf_generation_failures_but_continues；
+//  - 1141-1152 update 的路径解析中段（配置 path 空 → 系统 PATH 发现）+
+//    data_dir 空时的 fallback 臂 →
+//    wave_b_update_resolves_path_via_system_lookup_when_unconfigured。
+//
+// ARTIFACT（span 归因伪影 / 死防御，无行为缺口）：
+//  - 141 save_scanner_config 的 create_dir_all ?——调用方安全配置文件本身刚被
+//    load 读过（父目录必存在），该 ? 是结构性恒 Ok 直行；
+//  - 542 engines.get(name) 的 None => continue——all_names 本就来自
+//    cfg.engines.keys()，恒命中，穷尽性防御臂；
+//  - 1011-1015 install Step4 死防御——Step2/Step3 之后 detected_path 非空已被
+//    上游 match 两臂（Some 继续 / None 直接落 Step3）保证。
+//
+// ALREADY（既有测试名证据）：下载三态主体（本地假服务器 s11b_serve 系列覆盖
+// 964-1008 可达部分）、1101-1105（离线快失败断言 db missing，如
+// test_s11b_..updater 快失败先例）、推荐 pending/failed/installed-update 三条
+// 具体文案臂、enable/disable/info 往返（2085-2112 一段）。
+//
+// EXEMPT：
+//  - 真 freshclam 成功路径（1096-1100、1160 后真实更新尾部 1188-1203）、
+//    120s 超时臂（1106-1110）——需要真实病毒库下载或人为挂起外部进程；
+//  - unzip 主机依赖臂（749-750、772-776：Expand-Archive 对坏 zip rc=0 的
+//    平台怪癖已在源码注释钉住）、engine.start + sleep(2) + process::exit(1)
+//    家族（382-387/440-441/457-461/481/836/869/914-916/1132-1134/1215-1216/
+//    1253-1298）——进程级副作用与退出，测试纪律禁止；
+//  - 646-648 changed 后保存失败的 Warning 臂——save 路径与 load 路径同一文件，
+//    任何能让 save 失败的确定性 FS 故障会先打死 load（load 在其前执行并 ?），
+//    注入窗口为空。
+// ===========================================================================
+
+mod wave_b {
+    use super::{
+        cmd_check, cmd_clamav_install_inner, cmd_clamav_update, lookup_system_clamav,
+        s11b_engine_json, s11b_read_cfg, s11b_write_cfg,
+    };
+    use std::path::PathBuf;
+
+    /// 把 PATH 收窄到一个临时目录；可选地预置假可执行文件。
+    /// Drop 按 prev-value 恢复。必须持 crate::GLOBAL_STATE_LOCK 使用。
+    struct WbPathEnv {
+        _dir: tempfile::TempDir,
+        old: Option<std::ffi::OsString>,
+    }
+
+    impl WbPathEnv {
+        fn new(with_clamd: bool) -> Self {
+            let dir = tempfile::tempdir().unwrap();
+            if with_clamd {
+                std::fs::write(dir.path().join("clamd.exe"), b"MZ\x90\x00").unwrap();
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    let _ =
+                        std::fs::set_permissions(dir.path().join("clamd.exe"),
+                            std::fs::Permissions::from_mode(0o755));
+                }
+            }
+            let old = std::env::var_os("PATH");
+            unsafe { std::env::set_var("PATH", dir.path().as_os_str()) };
+            Self { _dir: dir, old }
+        }
+
+        fn fake_dir(&self) -> PathBuf {
+            self._dir.path().to_path_buf()
+        }
+    }
+
+    impl Drop for WbPathEnv {
+        fn drop(&mut self) {
+            match self.old.take() {
+                Some(v) => unsafe { std::env::set_var("PATH", v) },
+                None => unsafe { std::env::remove_var("PATH") },
+            }
+        }
+    }
+
+    #[test]
+    fn wave_b_lookup_system_clamav_hits_fake_exe_in_narrow_path() {
+        let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let env = WbPathEnv::new(true);
+        let hit = lookup_system_clamav().expect("fake clamd.exe must be discovered");
+        assert_eq!(
+            std::path::Path::new(&hit),
+            env.fake_dir(),
+            "返回值必须是含 exe 的目录：{hit}"
+        );
+    }
+
+    #[test]
+    fn wave_b_check_disabled_dash_row_and_weird_state_fallback_arm() {
+        let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let cfg_path = tmp.path().join("config.scanner.json");
+
+        // avoff：disabled + 状态字段全空 → 四个占位符列（"-"/"-"/"-"/"-"）。
+        // clamav：enabled + 非 install_status 值 + 无 path —— 窄 PATH 下
+        // lookup=None 且状态非空，状态机不覆写 ⇒ "weird" 存活进推荐 match
+        // 的 `_ => {}` 兜底臂。
+        s11b_write_cfg(
+            &cfg_path,
+            &["clamav"],
+            serde_json::json!({
+                "avoff": {
+                    "url": "", "clamav_path": "", "address": "",
+                    "data_dir": "",
+                    "state": {"install_status": "", "install_error": "",
+                              "db_status": "", "last_install_attempt": "",
+                              "last_db_update": ""}
+                },
+                "clamav": {
+                    "url": "", "clamav_path": "", "address": "",
+                    "data_dir": "",
+                    "state": {"install_status": "weird", "install_error": "",
+                              "db_status": "", "last_install_attempt": "",
+                              "last_db_update": ""}
+                }
+            }),
+        );
+
+        let _path_env = WbPathEnv::new(false); // 保证 lookup 确定性 None
+        cmd_check(&cfg_path).expect("check must render disabled rows and survive weird state");
+
+        // 断言 disabled 行不被持久化改写、weird 也未被状态机覆盖成 pending。
+        let cfg = s11b_read_cfg(&cfg_path);
+        assert_eq!(cfg["engines"]["avoff"]["state"]["install_status"], "");
+        assert_eq!(cfg["engines"]["clamav"]["state"]["install_status"], "weird");
+    }
+
+    #[test]
+    fn wave_b_check_system_path_discovery_persists_and_truncates_url() {
+        let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let cfg_path = tmp.path().join("config.scanner.json");
+        // 长 URL（54 字节 ASCII）触发 >40 截断臂（floor 边界内纯 ASCII，
+        // 有意避开生产可疑点的多字节切片风险）。
+        let long_url = "https://downloads.example.com/clamav/clamav-1.4.1.zip";
+        assert!(long_url.len() > 40);
+
+        s11b_write_cfg(
+            &cfg_path,
+            &["clamav"],
+            serde_json::json!({"clamav": s11b_engine_json(long_url, "", "", "", "", "")}),
+        );
+
+        let env = WbPathEnv::new(true);
+        cmd_check(&cfg_path).expect("check with PATH discovery must succeed");
+
+        // 发现的系统路径必须被 marshal 回配置（persist_path 写入）。
+        let cfg = s11b_read_cfg(&cfg_path);
+        assert_eq!(
+            cfg["engines"]["clamav"]["clamav_path"],
+            env.fake_dir().to_string_lossy().as_ref(),
+            "PATH 发现结果要持久化"
+        );
+        assert_eq!(cfg["engines"]["clamav"]["state"]["install_status"], "installed");
+        // database 目录不存在于假目录 ⇒ db_status 走 missing 探测分支。
+        assert_eq!(cfg["engines"]["clamav"]["state"]["db_status"], "missing");
+    }
+
+    #[tokio::test]
+    async fn wave_b_install_discovers_system_path_and_generates_confs() {
+        let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let cfg_path = tmp.path().join("config.scanner.json");
+        s11b_write_cfg(
+            &cfg_path,
+            &[],
+            serde_json::json!({"clamav": s11b_engine_json("", "", "", "", "pending", "")}),
+        );
+
+        let env = WbPathEnv::new(true);
+        cmd_clamav_install_inner(false, None, None, &cfg_path)
+            .await
+            .expect("install via system PATH discovery must complete");
+
+        // 落盘校验：发现路径 + installed 状态 + 双 conf 实际生成在发现目录。
+        let cfg = s11b_read_cfg(&cfg_path);
+        assert_eq!(
+            cfg["engines"]["clamav"]["clamav_path"],
+            env.fake_dir().to_string_lossy().as_ref()
+        );
+        assert_eq!(cfg["engines"]["clamav"]["state"]["install_status"], "installed");
+        assert!(env.fake_dir().join("freshclam.conf").exists());
+        assert!(env.fake_dir().join("clamd.conf").exists());
+        // freshclam 二进制缺席 ⇒ DB 更新快失败为 missing，但不影响安装成功语义。
+        assert_eq!(cfg["engines"]["clamav"]["state"]["db_status"], "missing");
+    }
+
+    #[tokio::test]
+    async fn wave_b_install_reports_conf_generation_failures_but_continues() {
+        let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let cfg_path = tmp.path().join("config.scanner.json");
+
+        // 配置路径直指本 tempdir 内已备好的 av 目录（Step1 命中，不走 PATH）。
+        let av = tmp.path().join("av");
+        std::fs::create_dir_all(&av).unwrap();
+        std::fs::write(av.join("clamd.exe"), b"MZ").unwrap();
+
+        s11b_write_cfg(
+            &cfg_path,
+            &[],
+            serde_json::json!({"clamav": s11b_engine_json(
+                "", av.to_str().unwrap(), "", "", "pending", "")}),
+        );
+
+        // 把两个 conf 目标预建成【目录】：生成器的 fs::write 打不开目录 ⇒
+        // 两个 Err 打印臂各命中一次。装完流程必须继续而非中断。
+        std::fs::create_dir_all(av.join("freshclam.conf")).unwrap();
+        std::fs::create_dir_all(av.join("clamd.conf")).unwrap();
+
+        cmd_clamav_install_inner(false, None, None, &cfg_path)
+            .await
+            .expect("conf generation failures must be reported, not fatal");
+
+        let cfg = s11b_read_cfg(&cfg_path);
+        assert_eq!(cfg["engines"]["clamav"]["state"]["install_status"], "installed",
+            "conf 失败只警告，安装状态照常落盘");
+    }
+
+    #[tokio::test]
+    async fn wave_b_update_resolves_path_via_system_lookup_when_unconfigured() {
+        let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let cfg_path = tmp.path().join("config.scanner.json");
+        // clamav_path 与 data_dir 都为空 ⇒ 路径靠系统 PATH 发现、data_dir 走
+        // fallback（= 发现目录）。发现目录里没有 freshclam 二进制 ⇒ 更新阶段
+        // 快失败 Err("freshclam ...")，全程离线确定。
+        s11b_write_cfg(
+            &cfg_path,
+            &[],
+            serde_json::json!({"clamav": s11b_engine_json("", "", "", "", "installed", "")}),
+        );
+
+        let env = WbPathEnv::new(true);
+        let err = cmd_clamav_update(&cfg_path).await.unwrap_err();
+        assert!(err.to_string().contains("freshclam"), "err={err}");
+        // 反证路径解析确实落在发现目录：freshclam.conf 生成到了那里。
+        assert!(
+            env.fake_dir().join("freshclam.conf").exists(),
+            "update 必须把 conf 生成到 PATH 发现目录"
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// BUG#35 回归：URL 列展示截断必须落在 char boundary（含非 ASCII 的 URL
+// 曾因裸 &url[..37] 直接 panic）。三态：短原样 / 长 ASCII 精确 37 /
+// 长多字节不 panic 且边界安全。
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_url_display_truncated_short_is_verbatim() {
+    let u = "http://127.0.0.1:3310";
+    assert_eq!(url_display_truncated(u), u);
+}
+
+#[test]
+fn test_url_display_truncated_long_ascii_cuts_exactly_37() {
+    let u = format!("http://example.com/{}", "a".repeat(60));
+    let d = url_display_truncated(&u);
+    assert!(d.ends_with("..."));
+    assert_eq!(&d[..37], &u[..37]);
+    assert_eq!(d.len(), 40, "37 字节正文 + 3 字符省略号");
+}
+
+#[test]
+fn test_url_display_truncated_multibyte_never_panics_and_stays_on_boundary() {
+    // 22 字节 ASCII 前缀 + 10 个中文（30 字节）：总长 >40，且第 37 字节
+    // 落在某个 3 字节汉字内部 —— 修复前此调用当场 panic。
+    let mut u = String::from("https://example.com/p/");
+    for _ in 0..10 {
+        u.push('中');
+    }
+    assert!(u.len() > 40);
+
+    let d = url_display_truncated(&u);
+    assert!(d.ends_with("..."));
+    let body = &d[..d.len() - 3];
+    assert!(
+        body.len() <= 37,
+        "截断点不得越过请求的 37 字节上限"
+    );
+    assert!(u.starts_with(body), "展示头必须是原文前缀");
+    assert!(
+        u.is_char_boundary(body.len()),
+        "截断点必须是 char boundary（否则后续 [..] 场景仍会炸）"
+    );
+}
+
+// ===========================================================================
+// r10 批（coverage 补测，2026-08-27）：A 类 miss 收尾。目标行（scanner.rs）
+// 与本模块的对应：
+//
+// 直接命中（in-process / 子进程）：
+//  - 169-173 lookup_system_clamav 命中返回段（仅 clamscan.exe 在窄 PATH，
+//    走迭代序号 1 命中，补 wave_b 只用 clamd.exe 的另一形态）；
+//  - 651-655 changed==false 收尾臂（enabled 引擎不在 engines map：循环零迭代）；
+//  - 382-387 / 440-441 / 457-461 / 920-922 / 1138-1140 / 1221-1222 /
+//    1262-1266 —— std::process::exit(1) 家族 + ClamavAction::Test 分发臂
+//    （875）：全部经【真 exe 子进程】观察退码 1（in-process 必杀测试进程）；
+//  - 755-756 download_engine 的 unzip 成功臂（最小 stored-zip 手工字节档）；
+//  - 777-783 双失败臂：坏 zip 且 PowerShell 解析错误退码非零（文件名内嵌
+//    单引号打破 ps_cmd 的单引号包裹 —— 已实证 ParserError → rc=1）；
+//  - 842 detect_executable_dir 对不存在根目录 read_dir Err → None；
+//  - 1080-1084 Step7「freshclam.conf 未生成 → 跳过 DB 更新」臂：
+//    把 <av>/database 预建成普通文件逼 generate_freshclam_config 在写 conf
+//    之前失败（config.rs 先 create_dir_all(db_dir) 再写 conf）；
+//  - ⭐1102-1106 install_inner Step7 更新成功链 + 1147-1211 update 成功链
+//    （含 1156 data_dir 已配置臂、1176 conf 生成、1194 成功打印、1196-1209
+//    持久化 + 1202-1204 空 path 回填臂、1211）：freshclam 桩 = 复制
+//    cmd.exe 为 freshclam.exe —— updater 只看「存在 + 退出码 0」，而
+//    cmd.exe 无 /c 时忽略多余 dash 参数、stdin 读到 EOF 立即退出 0；两个
+//    消费者都起成 stdin=null 的 CLI 子进程，EOF 语义跨环境确定。
+//  - ⭐1282-1304 cmd_clamav_test 三态：mock clamd = 复制本测试二进制为
+//    <X>\clamd.exe 并以 libtest filter 跑内置服务用例（唯一能同时满足
+//    ownership 的 QueryFullProcessImageNameW 路径匹配 == 该字面路径且会说
+//    PING/PONG 协议的办法）；is_ready→SCAN→SHUTDOWN 全协议过 mock。
+//
+// ARTIFACT / 结构性豁免（本轮重审后仍不测）：
+//  - 1235 Version 打印：create_engine 返回 ClamavScannerWrapper /
+//    ClamAVEngine 两者的 get_info().version 恒为空字符串（无任何 shell-out
+//    取版本路径），该 println 门恒 false —— 不改生产代码不可达；
+//  - 1296-1299 与 1299-1301 两个互斥打印分支由 infected/clean 两次子进
+//    程分别点亮；CLEAN 原始分支历史测试已有等价覆盖路径者不再重复统计。
+//
+// 环境 RVA（诚实边界）：
+//  - 子进程家族依赖 resolve_nemesisbot_bin（target/release 或 debug 先建好），
+//    缺失时响亮 panic（与 r9 同款纪律，不做静默 skip）；
+//  - 755-756 需要 PATH 可解析 unzip（git-bash 自带）；缺席时 download_engine
+//    自然落入 PowerShell Expand-Archive 成功臂，断言（解压成功 + 归档删除）
+//    不受影响，但那一轮不会点亮 755-756 本身。
+// ===========================================================================
+
+mod r10_process_boundary {
+    use super::*;
+    use std::io::{BufRead, BufReader, Read, Write};
+    use std::net::{TcpListener, TcpStream};
+    use std::path::{Path, PathBuf};
+    use std::process::{Command, Stdio};
+    use std::time::{Duration, Instant};
+
+    /// S3 minimal-path guard 的兄弟实现（wave_b 版是 mod 私有，借不到）。
+    /// Drop 按 prev-value 恢复。必须持 crate::GLOBAL_STATE_LOCK 使用。
+    struct R10NarrowPath {
+        _dir: tempfile::TempDir,
+        old: Option<std::ffi::OsString>,
+    }
+
+    impl R10NarrowPath {
+        fn new(files: &[&str]) -> Self {
+            let dir = tempfile::tempdir().unwrap();
+            for f in files {
+                std::fs::write(dir.path().join(f), b"MZ").unwrap();
+            }
+            let old = std::env::var_os("PATH");
+            unsafe { std::env::set_var("PATH", dir.path().as_os_str()) };
+            R10NarrowPath { _dir: dir, old }
+        }
+
+        fn dir(&self) -> PathBuf {
+            self._dir.path().to_path_buf()
+        }
+    }
+
+    impl Drop for R10NarrowPath {
+        fn drop(&mut self) {
+            match self.old.take() {
+                Some(v) => unsafe { std::env::set_var("PATH", v) },
+                None => unsafe { std::env::remove_var("PATH") },
+            }
+        }
+    }
+
+    // ---------------------------------------------------------------------
+    // 子进程装置（r9_process_boundary 的同步版 + 显式 home/env 注入）
+    // ---------------------------------------------------------------------
+
+    struct R10Outcome {
+        code: i32,
+        stdout: String,
+        stderr: String,
+    }
+
+    fn r10_system_root() -> PathBuf {
+        std::env::var_os("SystemRoot")
+            .map(PathBuf::from)
+            .filter(|p| p.exists())
+            .unwrap_or_else(|| PathBuf::from(r"C:\Windows"))
+    }
+
+    /// 给子进程用的合成 PATH：<prepend> 头插 + 最小系统目录。
+    /// 不读父进程 PATH，杜绝与并行 env 用例的任何耦合。
+    fn r10_synthetic_path(prepend: Option<&Path>) -> String {
+        let root = r10_system_root();
+        let mut parts: Vec<String> = Vec::new();
+        if let Some(p) = prepend {
+            parts.push(p.to_string_lossy().into_owned());
+        }
+        parts.push(root.join("System32").to_string_lossy().into_owned());
+        parts.push(root.to_string_lossy().into_owned());
+        parts.join(";")
+    }
+
+    /// 复制 cmd.exe 到 dest_dir/<name> 并返回该路径。
+    ///
+    /// 作桩的原理：cmd.exe 收到非 `/` 开头的自有开关一律忽略（实测
+    /// `cmd --config-file x --datadir y` rc=0），无 /c 时进入交互读 stdin，
+    /// 而 std 里父进程给了 null 句柄 ⇒ 立即 EOF ⇒ 退出码 0。updater 只验
+    /// 「文件存在 + exit 0」，故成立；绝不产生窗口（console 继承宿主控制台）。
+    fn r10_copy_cmd_as(dest_dir: &Path, name: &str) -> PathBuf {
+        let src = r10_system_root().join("System32").join("cmd.exe");
+        assert!(src.exists(), "System32\\cmd.exe 必须存在: {}", src.display());
+        let dst = dest_dir.join(name);
+        std::fs::copy(&src, &dst)
+            .unwrap_or_else(|e| panic!("复制 cmd.exe 为 {} 失败: {}", name, e));
+        dst
+    }
+
+    struct R10Child {
+        child: Option<std::process::Child>,
+    }
+
+    impl Drop for R10Child {
+        fn drop(&mut self) {
+            if let Some(mut c) = self.child.take() {
+                let _ = c.kill();
+                let _ = c.wait();
+            }
+        }
+    }
+
+    /// 起裸子进程：stdin null（cmd.exe 桩读 EOF 立退 / 服务型不被终端牵住）、
+    /// stdout/stderr 全捕获、显式 env + CLI 覆盖 profile。
+    fn r10_spawn_raw(
+        bin: &Path,
+        args: &[&str],
+        env_set: &[(&str, &str)],
+    ) -> Result<std::process::Child, std::io::Error> {
+        let mut cmd = Command::new(bin);
+        cmd.args(args)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        for (k, v) in env_set {
+            cmd.env(k, v);
+        }
+        cmd.envs(test_harness::coverage_cli_env());
+        cmd.spawn()
+    }
+
+    /// 起 bin + args + env 并等到退出；deadline 内未退则 kill，code=-2 由
+    /// 调用方响亮断言。适合「跑完即退」的驱动 CLI 与 mock 镜像以外的场景。
+    fn r10_spawn(
+        bin: &Path,
+        args: &[&str],
+        env_set: &[(&str, &str)],
+        deadline_secs: u64,
+    ) -> (R10Child, R10Outcome) {
+        let child = match r10_spawn_raw(bin, args, env_set) {
+            Ok(c) => c,
+            Err(e) => {
+                return (
+                    R10Child { child: None },
+                    R10Outcome {
+                        code: -1,
+                        stdout: String::new(),
+                        stderr: format!("failed to spawn: {}", e),
+                    },
+                )
+            }
+        };
+        let mut guard = R10Child { child: Some(child) };
+        let outcome = r10_reap(guard.child.as_mut().expect("just set"), deadline_secs);
+        (guard, outcome)
+    }
+
+    fn r10_reap(child: &mut std::process::Child, deadline_secs: u64) -> R10Outcome {
+        let deadline = Instant::now() + Duration::from_secs(deadline_secs);
+        loop {
+            match child.try_wait().expect("try_wait failed") {
+                Some(_) => break,
+                None if Instant::now() >= deadline => {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return R10Outcome {
+                        code: -2,
+                        stdout: String::new(),
+                        stderr: format!("timed out after {}s", deadline_secs),
+                    };
+                }
+                None => std::thread::sleep(Duration::from_millis(100)),
+            }
+        }
+        let mut out = String::new();
+        if let Some(mut s) = child.stdout.take() {
+            let _ = s.read_to_string(&mut out);
+        }
+        let mut err = String::new();
+        if let Some(mut s) = child.stderr.take() {
+            let _ = s.read_to_string(&mut err);
+        }
+        let code = child.wait().ok().and_then(|st| st.code()).unwrap_or(-1);
+        R10Outcome {
+            code,
+            stdout: out,
+            stderr: err,
+        }
+    }
+
+    fn r10_bin() -> PathBuf {
+        test_harness::resolve_nemesisbot_bin().expect("nemesisbot binary resolved")
+    }
+
+    /// 准备隔离 home：env 放 `<tmp>`，则子进程 resolve 得 `<tmp>\.nemesisbot`。
+    /// 返回 (cfg 文件路径)。工作目录照 r9 惯例中立化（temp 根）。
+    fn r10_stage_home(env_home_base: &Path) -> PathBuf {
+        let home = env_home_base.join(".nemesisbot");
+        let cfg_dir = home.join("workspace").join("config");
+        std::fs::create_dir_all(&cfg_dir).unwrap();
+        crate::common::scanner_config_path(&home)
+    }
+
+    fn r10_read_cfg(cfg: &Path) -> serde_json::Value {
+        serde_json::from_str(&std::fs::read_to_string(cfg).unwrap()).unwrap()
+    }
+
+    // ------------------------- in-process 碎件 ----------------------------
+
+    /// 169-173：窄 PATH 下只有 clamscan.exe —— 迭代第 1 个名字命中（wave_b
+    /// 只钉了 clamd.exe 的第 0 个），覆盖同一返回段的另一入口顺序。
+    #[test]
+    fn r10_lookup_system_clamav_hits_via_clamscan_only() {
+        let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let env = R10NarrowPath::new(&["clamscan.exe"]);
+        let hit = lookup_system_clamav().expect("clamscan.exe 必须 which 命中");
+        assert_eq!(
+            Path::new(&hit),
+            env.dir().as_path(),
+            "返回值必须是含可执行文件的目录: {hit}"
+        );
+    }
+
+    /// 651-655：changed 保持 false 的收尾臂 —— enabled 名字在 engines map
+    /// 中不存在 ⇒ 渲染循环零迭代，既不 marshal 也绝不触发保存重写。
+    #[test]
+    fn r10_cmd_check_skips_save_when_enabled_name_absent_from_engines_map() {
+        let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let cfg_path = tmp.path().join("config.scanner.json");
+
+        s11b_write_cfg(&cfg_path, &["ghost"], serde_json::json!({}));
+        let before = std::fs::read_to_string(&cfg_path).unwrap();
+
+        cmd_check(&cfg_path).expect("幽灵 enabled 名不能崩 check");
+
+        let after = std::fs::read_to_string(&cfg_path).unwrap();
+        assert_eq!(
+            before, after,
+            "changed=false 不得重写配置文件（紧凑输入若被 pretty 重写会立刻暴露）"
+        );
+    }
+
+    /// 842：根目录不存在 → read_dir Err 直落 None。
+    #[test]
+    fn r10_detect_executable_dir_missing_root_returns_none() {
+        let missing = tempfile::tempdir()
+            .unwrap()
+            .path()
+            .join("already_removed_subdir");
+        assert!(detect_executable_dir(&missing, &["clamd.exe"]).is_none());
+    }
+
+    /// 1080-1084：conf 生成失败（database 被预建成普通文件，generator 在写
+    /// conf 之前先 create_dir_all(db_dir) 即败）⇒ Step7 走「跳过 DB 更新」臂。
+    #[tokio::test]
+    async fn r10_install_inner_skips_db_update_when_conf_generation_failed() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cfg_path = tmp.path().join("config.scanner.json");
+        let av = tmp.path().join("av");
+        std::fs::create_dir_all(&av).unwrap();
+        std::fs::write(av.join("clamd.exe"), b"MZ").unwrap();
+        // 致命道具：<av>/database 是【文件】，让 generator 的 create_dir_all
+        // 炸掉并保持在写 freshclam.conf 之前 ⇒ conf 从不存在。
+        std::fs::write(av.join("database"), b"not a dir").unwrap();
+
+        s11b_write_cfg(
+            &cfg_path,
+            &[],
+            serde_json::json!({"clamav": s11b_engine_json(
+                "", av.to_str().unwrap(), "", "", "pending", "")}),
+        );
+
+        cmd_clamav_install_inner(false, None, None, &cfg_path)
+            .await
+            .expect("conf 生成失败只警告不中断");
+
+        let cfg = s11b_read_cfg(&cfg_path);
+        assert_eq!(cfg["engines"]["clamav"]["state"]["install_status"], "installed");
+        assert_eq!(cfg["engines"]["clamav"]["state"]["db_status"], "missing",
+            "conf 缺失 ⇒ 明确标记 DB missing，而不是装作 ready");
+        assert!(!av.join("freshclam.conf").exists(),
+            "生成器失败后 conf 必须保持缺席（Step7 skip 臂的前提）");
+    }
+
+    // ----------------------- exit(1) 家族（子进程）-----------------------
+
+    fn r10_expect_rc1(o: &R10Outcome, what: &str, marker: &str) {
+        assert_eq!(
+            o.code, 1,
+            "{} 必须 exit(1):\n--- stdout ---\n{}\n--- stderr ---\n{}",
+            what, o.stdout, o.stderr
+        );
+        assert!(
+            o.stderr.contains(marker) || o.stdout.contains(marker),
+            "{} 缺少标志串 {:?}:\n--- stdout ---\n{}\n--- stderr ---\n{}",
+            what,
+            marker,
+            o.stdout,
+            o.stderr
+        );
+    }
+
+    /// 382-387：非法引擎名 → Unknown engine + Available 列表 + exit(1)。
+    /// 合法性检查在 load 配置之前 ⇒ 天然与隔离 home 内容无关。
+    #[test]
+    fn r10_cli_add_unknown_engine_exits_1() {
+        let tmp = tempfile::tempdir().unwrap();
+        let o = r10_spawn(
+            &r10_bin(),
+            &["scanner", "add", "totally_not_an_engine"],
+            &[("NEMESISBOT_HOME", tmp.path().to_str().unwrap())],
+            120,
+        )
+        .1;
+        r10_expect_rc1(&o, "scanner add 非法名", "Unknown engine:");
+        assert!(o.stderr.contains("Available:"), "必须回显可用列表:\n{}", o.stderr);
+    }
+
+    /// 440-441：remove 一个不存在的引擎名 → exit(1)。
+    #[test]
+    fn r10_cli_remove_unknown_engine_exits_1() {
+        let tmp = tempfile::tempdir().unwrap();
+        let o = r10_spawn(
+            &r10_bin(),
+            &["scanner", "remove", "ghost"],
+            &[("NEMESISBOT_HOME", tmp.path().to_str().unwrap())],
+            120,
+        )
+        .1;
+        r10_expect_rc1(&o, "scanner remove 未知名", "not found in configuration");
+    }
+
+    /// 457-461：enable 一个未配置的引擎名 → exit(1)。
+    #[test]
+    fn r10_cli_enable_unknown_engine_exits_1() {
+        let tmp = tempfile::tempdir().unwrap();
+        let o = r10_spawn(
+            &r10_bin(),
+            &["scanner", "enable", "ghost"],
+            &[("NEMESISBOT_HOME", tmp.path().to_str().unwrap())],
+            120,
+        )
+        .1;
+        r10_expect_rc1(&o, "scanner enable 未知名", "Add it first");
+    }
+
+    /// 920-922：scanner clamav install 而 engines map 没有 clamav → exit(1)。
+    #[test]
+    fn r10_cli_clamav_install_unconfigured_exits_1() {
+        let tmp = tempfile::tempdir().unwrap();
+        let o = r10_spawn(
+            &r10_bin(),
+            &["scanner", "clamav", "install"],
+            &[("NEMESISBOT_HOME", tmp.path().to_str().unwrap())],
+            120,
+        )
+        .1;
+        r10_expect_rc1(&o, "clamav install 未配置", "ClamAV engine not found");
+    }
+
+    /// 1138-1140：scanner clamav update 未配置 → exit(1)。
+    #[test]
+    fn r10_cli_clamav_update_unconfigured_exits_1() {
+        let tmp = tempfile::tempdir().unwrap();
+        let o = r10_spawn(
+            &r10_bin(),
+            &["scanner", "clamav", "update"],
+            &[("NEMESISBOT_HOME", tmp.path().to_str().unwrap())],
+            120,
+        )
+        .1;
+        r10_expect_rc1(&o, "clamav update 未配置", "ClamAV engine not found");
+    }
+
+    /// 1221-1222：scanner clamav info 未配置 → exit(1)。
+    #[test]
+    fn r10_cli_clamav_info_unconfigured_exits_1() {
+        let tmp = tempfile::tempdir().unwrap();
+        let o = r10_spawn(
+            &r10_bin(),
+            &["scanner", "clamav", "info"],
+            &[("NEMESISBOT_HOME", tmp.path().to_str().unwrap())],
+            120,
+        )
+        .1;
+        r10_expect_rc1(&o, "clamav info 未配置", "ClamAV engine not found");
+    }
+
+    /// 1262-1266（头部未配置 exit(1)）+ 875（ClamavAction::Test 分发臂）：
+    /// 同一次子进程同时点亮两处 —— Test 分发此前没有任何存活调用路径。
+    #[test]
+    fn r10_cli_clamav_test_unconfigured_exits_1_and_lights_dispatch_arm() {
+        let tmp = tempfile::tempdir().unwrap();
+        let sample = tmp.path().join("sample.vx9");
+        std::fs::write(&sample, b"whatever").unwrap();
+        let o = r10_spawn(
+            &r10_bin(),
+            &["scanner", "clamav", "test", sample.to_str().unwrap()],
+            &[("NEMESISBOT_HOME", tmp.path().to_str().unwrap())],
+            120,
+        )
+        .1;
+        r10_expect_rc1(&o, "clamav test 未配置", "ClamAV engine not found");
+    }
+
+    // --------------------- download_engine 归档两侧 -----------------------
+
+    /// 最小 stored-zip 构造器（IEEE CRC32 + 本地头 + 中央目录 + EOCD）。
+    fn r10_crc32(data: &[u8]) -> u32 {
+        let mut c: u32 = 0xFFFF_FFFF;
+        for &b in data {
+            c ^= b as u32;
+            for _ in 0..8 {
+                c = if c & 1 != 0 { (c >> 1) ^ 0xEDB8_8320 } else { c >> 1 };
+            }
+        }
+        !c
+    }
+
+    fn r10_stored_zip(entries: &[(&str, &[u8])]) -> Vec<u8> {
+        let mut out: Vec<u8> = Vec::new();
+        let mut central: Vec<u8> = Vec::new();
+        for (name, data) in entries {
+            let offset = out.len() as u32;
+            let crc = r10_crc32(data);
+            let nb = name.as_bytes();
+            out.extend_from_slice(&[0x50, 0x4B, 0x03, 0x04]); // local sig
+            out.extend_from_slice(&20u16.to_le_bytes()); // version needed
+            out.extend_from_slice(&0u16.to_le_bytes()); // flags
+            out.extend_from_slice(&0u16.to_le_bytes()); // method = stored
+            out.extend_from_slice(&0u16.to_le_bytes()); // mod time
+            out.extend_from_slice(&0u16.to_le_bytes()); // mod date
+            out.extend_from_slice(&crc.to_le_bytes());
+            out.extend_from_slice(&(data.len() as u32).to_le_bytes());
+            out.extend_from_slice(&(data.len() as u32).to_le_bytes());
+            out.extend_from_slice(&(nb.len() as u16).to_le_bytes());
+            out.extend_from_slice(&0u16.to_le_bytes()); // extra len
+            out.extend_from_slice(nb);
+            out.extend_from_slice(data);
+
+            central.extend_from_slice(&[0x50, 0x4B, 0x01, 0x02]); // central sig
+            central.extend_from_slice(&20u16.to_le_bytes()); // version made by
+            central.extend_from_slice(&20u16.to_le_bytes()); // version needed
+            central.extend_from_slice(&0u16.to_le_bytes()); // flags
+            central.extend_from_slice(&0u16.to_le_bytes()); // method
+            central.extend_from_slice(&0u16.to_le_bytes()); // time/date x2
+            central.extend_from_slice(&0u16.to_le_bytes());
+            central.extend_from_slice(&crc.to_le_bytes());
+            central.extend_from_slice(&(data.len() as u32).to_le_bytes());
+            central.extend_from_slice(&(data.len() as u32).to_le_bytes());
+            central.extend_from_slice(&(nb.len() as u16).to_le_bytes());
+            central.extend_from_slice(&0u16.to_le_bytes()); // extra
+            central.extend_from_slice(&0u16.to_le_bytes()); // comment
+            central.extend_from_slice(&0u16.to_le_bytes()); // disk #
+            central.extend_from_slice(&0u16.to_le_bytes()); // int attrs
+            central.extend_from_slice(&0u32.to_le_bytes()); // ext attrs
+            central.extend_from_slice(&offset.to_le_bytes());
+            central.extend_from_slice(nb);
+        }
+        let cd_offset = out.len() as u32;
+        let cd_size = central.len() as u32;
+        out.extend_from_slice(&central);
+        out.extend_from_slice(&[0x50, 0x4B, 0x05, 0x06]); // EOCD
+        out.extend_from_slice(&0u16.to_le_bytes()); // this disk
+        out.extend_from_slice(&0u16.to_le_bytes()); // cd disk
+        out.extend_from_slice(&(entries.len() as u16).to_le_bytes());
+        out.extend_from_slice(&(entries.len() as u16).to_le_bytes());
+        out.extend_from_slice(&cd_size.to_le_bytes());
+        out.extend_from_slice(&cd_offset.to_le_bytes());
+        out.extend_from_slice(&0u16.to_le_bytes()); // comment len
+        out
+    }
+
+    /// 744-757 成功臂（755-756 删归档 + 返回 target）：手工 stored-zip 经
+    /// 本地假服务器喂入；unzip 可用时走 unzip 成功臂（755-756），缺席时落
+    /// PS Expand-Archive 成功臂 —— 两种外部状态下行为断言一致。
+    #[tokio::test]
+    async fn r10_download_zip_success_removes_archive_and_returns_target() {
+        let payload = b"clean payload text\n".to_vec();
+        let zip = r10_stored_zip(&[("z.txt", &payload)]);
+
+        let tmp = tempfile::tempdir().unwrap();
+        let target = tmp.path().join("dl");
+        std::fs::create_dir_all(&target).unwrap();
+
+        let url = s11b_serve("engine.zip", 200, zip, 1);
+        let dir = download_engine(&url, &target).await.unwrap();
+
+        assert_eq!(Path::new(&dir), target.as_path());
+        assert_eq!(std::fs::read(target.join("z.txt")).unwrap(), payload);
+        assert!(
+            !target.join("engine.zip").exists(),
+            "成功解压后归档必须被清理（unzip 或 PS 任一通道）"
+        );
+    }
+
+    /// 758-783 双失败臂：坏字节 + URL 文件名内嵌单引号 ⇒ powershell 的
+    /// `-Command` 单引号包裹被打破 → ParserError → 退出码必然非 0（已在本机
+    /// 实证 rc=1），unzip 对垃圾字节也必败。归档保留原地的兜底打印被点亮。
+    #[tokio::test]
+    async fn r10_download_corrupt_zip_double_failure_keeps_archive_in_place() {
+        let tmp = tempfile::tempdir().unwrap();
+        let target = tmp.path().join("dl");
+        std::fs::create_dir_all(&target).unwrap();
+
+        // eng'ine.zip —— 存档路径带单引号，destination 路径干净也无所谓，
+        // 第一个被打破的引号串就足以让整条命令解析失败。
+        let url = s11b_serve("eng'ine.zip", 200, b"definitely not a zip".to_vec(), 1);
+        let dir = download_engine(&url, &target).await.unwrap();
+
+        assert_eq!(Path::new(&dir), target.as_path());
+        assert!(
+            target.join("eng'ine.zip").exists(),
+            "双失败臂必须保留归档供人工处理"
+        );
+        assert!(!target.join("z.txt").exists(), "坏包不应解出任何内容");
+    }
+
+    // -------------------- ⭐ freshclam 更新成功链 -------------------------
+
+    /// 1102-1106（Step7 Ok(Ok(())) 成功臂）+ 1122-1125 persist：CLI 子进程跑
+    /// `scanner clamav install`；freshclam 桩 = cmd.exe 副本（见
+    /// r10_copy_cmd_as）。子进程 stdin=null ⇒ 桩读 EOF 秒退 0 ⇒ updater 判
+    /// 成功 ⇒ db_status=ready 持久化。
+    #[test]
+    fn r10_cli_install_full_chain_marks_db_ready_via_stub_freshclam() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cfg = r10_stage_home(tmp.path());
+
+        let av = tmp.path().join("av");
+        std::fs::create_dir_all(&av).unwrap();
+        std::fs::write(av.join("clamd.exe"), b"MZ").unwrap();
+        r10_copy_cmd_as(&av, "freshclam.exe");
+
+        s11b_write_cfg(
+            &cfg,
+            &[],
+            serde_json::json!({"clamav": s11b_engine_json(
+                "", av.to_str().unwrap(), "", "", "pending", "")}),
+        );
+
+        let o = r10_spawn(
+            &r10_bin(),
+            &["scanner", "clamav", "install"],
+            &[("NEMESISBOT_HOME", tmp.path().to_str().unwrap())],
+            180,
+        )
+        .1;
+        assert_eq!(
+            o.code, 0,
+            "install 全链必须 rc=0:\n{}\n--- stderr ---\n{}",
+            o.stdout, o.stderr
+        );
+        assert!(o.stdout.contains("virus database ready"), "stdout:\n{}", o.stdout);
+
+        let after = r10_read_cfg(&cfg);
+        assert_eq!(after["engines"]["clamav"]["state"]["install_status"], "installed");
+        assert_eq!(after["engines"]["clamav"]["state"]["db_status"], "ready");
+        assert!(
+            after["engines"]["clamav"]["state"]["last_db_update"]
+                .as_str()
+                .map(|s| !s.is_empty())
+                .unwrap_or(false),
+            "last_db_update 必须盖章"
+        );
+        assert!(av.join("freshclam.conf").exists());
+        assert!(av.join("database").exists(), "updater 会先建 datadir");
+    }
+
+    /// 1147-1211 update 成功链：path 空 ⇒ 系统 PATH 发现（合成 PATH 头插桩
+    /// 目录）⇒ 1156 data_dir 已配置臂 ⇒ 1165-1176 conf 现场生成 ⇒ 1189-1194
+    /// 成功打印 ⇒ 1196-1209 持久化（含 1202-1204 空 path 回填臂）⇒ 1211。
+    #[test]
+    fn r10_cli_update_success_chain_resolves_via_path_and_persists_ready() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cfg = r10_stage_home(tmp.path());
+
+        let stub_dir = tmp.path().join("stubbin");
+        std::fs::create_dir_all(&stub_dir).unwrap();
+        std::fs::write(stub_dir.join("clamd.exe"), b"MZ").unwrap();
+        r10_copy_cmd_as(&stub_dir, "freshclam.exe");
+        let data_dir = tmp.path().join("configured_datadir"); // 1156 配置臂
+
+        s11b_write_cfg(
+            &cfg,
+            &[],
+            serde_json::json!({"clamav": s11b_engine_json(
+                "", "", "", data_dir.to_str().unwrap(), "installed", "")}),
+        );
+        assert!(!stub_dir.join("freshclam.conf").exists(),
+            "前置：conf 缺席，逼迫 update 现场生成（1165-1176）");
+
+        let o = r10_spawn(
+            &r10_bin(),
+            &["scanner", "clamav", "update"],
+            &[
+                ("NEMESISBOT_HOME", tmp.path().to_str().unwrap()),
+                (
+                    "PATH",
+                    &r10_synthetic_path(Some(&stub_dir)),
+                ),
+            ],
+            180,
+        )
+        .1;
+        assert_eq!(
+            o.code, 0,
+            "update 全链必须 rc=0:\n{}\n--- stderr ---\n{}",
+            o.stdout, o.stderr
+        );
+        assert!(o.stdout.contains("Virus database updated."), "stdout:\n{}", o.stdout);
+
+        let after = r10_read_cfg(&cfg);
+        assert_eq!(
+            after["engines"]["clamav"]["clamav_path"],
+            stub_dir.to_string_lossy().as_ref(),
+            "空 path 必须被 PATH 发现结果回填（1202-1204）"
+        );
+        assert_eq!(after["engines"]["clamav"]["state"]["db_status"], "ready");
+        assert!(stub_dir.join("freshclam.conf").exists(), "conf 应生成到发现目录");
+    }
+
+    // ------------------- ⭐ mock clamd 扫描流程三态 -----------------------
+
+    /// mock clamd 服务体：**不在本进程运行** —— 由各扫描用例把【当前测试二
+    /// 进制】复制为 <X>\clamd.exe 后以 libtest filter 起独立进程来承载。
+    /// 这是同时满足 ownership 校验（QueryFullProcessImageNameW 得到的镜像路
+    /// 径必须等于 `<clamav_path>\clamd.exe` 字面值）与自定义 PONG/SCAN 协议
+    /// 的唯一组合。协议按 crates/nemesis-security/src/clamav/client.rs 实证：
+    /// 单行请求（如 nPING\n），首非空行响应即可。
+    ///
+    /// 测试名故意带独特 token `r10zz`：libtest 过滤参数就用这个子串精确选
+    /// 中本用例（其他用例无一含该片段）。
+    #[test]
+    fn r10zz_mock_clamd_service() {
+        let addr = match std::env::var("R10_MOCK_ADDR") {
+            Ok(a) => a,
+            Err(_) => return, // 非受控执行：静默通过，不绑端口
+        };
+        let mode = std::env::var("R10_MOCK_MODE").unwrap_or_else(|_| "clean".into());
+        let expect_infected = mode == "infected";
+
+        let listener = TcpListener::bind(&addr).expect("mock clamd bind");
+        // 有界 serve；正常由 SHUTDOWN 优雅退出（profraw 干净落盘）。
+        for stream in listener.incoming().take(64) {
+            let mut stream = match stream {
+                Ok(s) => s,
+                Err(_) => break,
+            };
+            let _ = stream.set_read_timeout(Some(Duration::from_secs(15)));
+            let mut reader = BufReader::new(stream.try_clone().expect("clone"));
+            let mut line = String::new();
+            if reader.read_line(&mut line).unwrap_or(0) == 0 {
+                continue; // 就绪探针半开连接等场景：换下一连接
+            }
+            let upper = line.to_ascii_uppercase();
+            if upper.contains("PING") {
+                let _ = stream.write_all(b"PONG\n");
+            } else if upper.contains("SHUTDOWN") {
+                let _ = stream.write_all(b"BYE\n");
+                let _ = stream.flush();
+                break; // 优雅停机
+            } else if upper.contains("SCAN") {
+                // 不假设协议前缀字节格式：取首个空格之后的部分当路径回显。
+                let requested = match line.find(' ') {
+                    Some(i) => line[i + 1..].trim_end(),
+                    None => "?",
+                };
+                let reply = if expect_infected {
+                    format!("{}: WIN.Test.EicarProbe FOUND\n", requested)
+                } else {
+                    format!("{}: OK\n", requested)
+                };
+                let _ = stream.write_all(reply.as_bytes());
+            } else {
+                let _ = stream.write_all(b"UNKNOWN COMMAND\n");
+            }
+            let _ = stream.flush();
+            drop(stream); // 每连接关闭 ⇒ client 的 read_line 拿到 EOF
+        }
+    }
+
+    /// 起复制出来的 mock 镜像（libtest 只选中 r10zz 服务用例）。不等待其退
+    /// 出 —— 它要一直监听到驱动发 SHUTDOWN；守卫 Drop 兜底清理。就绪探测：
+    /// mock 进程需几百毫秒起步，TCP 连上即算就绪；提前夭折则响亮失败并回
+    /// 带 stderr。
+    fn r10_spawn_mock(image: &Path, addr: &str, mode: &str) -> R10Child {
+        let child = r10_spawn_raw(
+            image,
+            &[
+                "r10zz", // libtest 过滤 token（唯一）
+                "--test-threads=1",
+                "--nocapture",
+            ],
+            &[
+                ("R10_MOCK_ADDR", addr),
+                ("R10_MOCK_MODE", mode),
+            ],
+        )
+        .expect("mock clamd 镜像进程必须能起");
+        let mut guard = R10Child { child: Some(child) };
+
+        let deadline = Instant::now() + Duration::from_secs(30);
+        loop {
+            match TcpStream::connect(addr) {
+                Ok(s) => {
+                    drop(s);
+                    return guard;
+                }
+                Err(_) if Instant::now() < deadline => {
+                    // 早夭检查：端口未起但进程已退 = 配置/过滤错误
+                    let exited = guard
+                        .child
+                        .as_mut()
+                        .and_then(|c| c.try_wait().ok())
+                        .flatten()
+                        .is_some();
+                    if exited {
+                        let mut err = String::new();
+                        if let Some(mut s) = guard.child.as_mut().unwrap().stderr.take()
+                        {
+                            let _ = s.read_to_string(&mut err);
+                        }
+                        panic!("mock clamd 提前退出，stderr:\n{}", err);
+                    }
+                    std::thread::sleep(Duration::from_millis(150));
+                }
+                Err(e) => panic!("mock clamd 端口 {addr} 30s 未就绪: {e}"),
+            }
+        }
+    }
+
+    /// 共同夹具：镜像复制 + 服务启动 + 引擎配置写入；返回 (地址, 采样文件,
+    /// 服务守卫)。
+    fn r10_setup_mock_scan(mode: &str, tmp: &Path) -> (String, PathBuf, R10Child) {
+        let mock_dir = tmp.join("mockbin");
+        std::fs::create_dir_all(&mock_dir).unwrap();
+        let image = r10_copy_self_image(&mock_dir, "clamd.exe");
+
+        let addr = r10_reserve_loopback_address();
+        let svc = r10_spawn_mock(&image, &addr, mode);
+
+        let home_cfg = r10_stage_home(tmp);
+        s11b_write_cfg(
+            &home_cfg,
+            &[],
+            serde_json::json!({"clamav": s11b_engine_json(
+                "", mock_dir.to_str().unwrap(), &addr, "", "installed", "")}),
+        );
+
+        let sample = tmp.join("sample.vx9"); // 非 SAFE 白名单扩展
+        std::fs::write(&sample, b"X5O!P%@AP probe content").unwrap();
+        (addr, sample, svc)
+    }
+
+    /// 把【当前测试二进制】复制为指定名字（ownership 的路径匹配前提）。
+    fn r10_copy_self_image(dest_dir: &Path, name: &str) -> PathBuf {
+        let src = std::env::current_exe().expect("current_exe");
+        let dst = dest_dir.join(name);
+        std::fs::copy(&src, &dst)
+            .unwrap_or_else(|e| panic!("复制自镜像为 {} 失败: {}", name, e));
+        dst
+    }
+
+    /// 保留一个临时环回端口供 mock 使用（bind→取号→释放端口再交还 mock 重
+    /// bind 的窗口极小，且 mock 起不来会在就绪探测处响亮失败）。
+    fn r10_reserve_loopback_address() -> String {
+        let l = TcpListener::bind("127.0.0.1:0").unwrap();
+        l.local_addr().unwrap().to_string()
+    }
+
+    /// 1288-1289 / 1291 / 1293-1298（INFECTED 打印臂）：全链
+    /// start-reuse(PING) → ownership 命中镜像 → is_ready(PING) → SCAN 裁决
+    /// FOUND → SHUTDOWN → 结果区 INFECTED + Virus 行，rc=0。
+    #[test]
+    fn r10_cli_test_scan_reports_infected_via_owned_mock_daemon() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (_addr, sample, svc) = r10_setup_mock_scan("infected", tmp.path());
+
+        let o = r10_spawn(
+            &r10_bin(),
+            &[
+                "scanner",
+                "clamav",
+                "test",
+                sample.to_str().unwrap(),
+            ],
+            &[("NEMESISBOT_HOME", tmp.path().to_str().unwrap())],
+            180,
+        )
+        .1;
+        assert_eq!(
+            o.code, 0,
+            "infected 流程应正常结束(rc=0)，拦截语义在 stdout:\n{}\n--- stderr ---\n{}",
+            o.stdout, o.stderr
+        );
+        assert!(o.stdout.contains("Scanning:"), "stdout:\n{}", o.stdout);
+        assert!(o.stdout.contains("INFECTED"), "stdout:\n{}", o.stdout);
+        assert!(o.stdout.contains("EicarProbe"), "病毒名必须透传:\n{}", o.stdout);
+        assert!(svc.child.is_some(), "服务守卫存活至断言结束");
+    }
+
+    /// 1293-1301 的 CLEAN 侧互斥臂：同样全链，裁决 OK ⇒ Status CLEAN。
+    #[test]
+    fn r10_cli_test_scan_reports_clean_via_owned_mock_daemon() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (_addr, sample, svc) = r10_setup_mock_scan("clean", tmp.path());
+
+        let o = r10_spawn(
+            &r10_bin(),
+            &["scanner", "clamav", "test", sample.to_str().unwrap()],
+            &[("NEMESISBOT_HOME", tmp.path().to_str().unwrap())],
+            180,
+        )
+        .1;
+        assert_eq!(o.code, 0, "clean 流程 rc=0:\n{}\n{}", o.stdout, o.stderr);
+        assert!(o.stdout.contains("CLEAN"), "stdout:\n{}", o.stdout);
+        assert!(!o.stdout.contains("INFECTED"), "CLEAN 分支不得出现 INFECTED:\n{}", o.stdout);
+        assert!(svc.child.is_some());
+    }
+
+    /// 1259-1263 直调入口（已配置但 daemon 不可达）+ 1274-1277 start 失败
+    /// WARN + 1280 短眠 + 1282-1286 is_ready=false → exit(1)：地址用
+    /// 127.0.0.1:1（特权保留口，连接必然瞬时拒绝）、clamav_path 留空跳过
+    /// Manager —— 全程离线秒级完成。
+    #[test]
+    fn r10_cli_test_unreachable_daemon_warns_then_exits_1() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home_cfg = r10_stage_home(tmp.path());
+        let sample = tmp.path().join("sample.vx9");
+        std::fs::write(&sample, b"x").unwrap();
+
+        s11b_write_cfg(
+            &home_cfg,
+            &[],
+            serde_json::json!({"clamav": s11b_engine_json(
+                "", "", "127.0.0.1:1", "", "installed", "")}),
+        );
+
+        let o = r10_spawn(
+            &r10_bin(),
+            &["scanner", "clamav", "test", sample.to_str().unwrap()],
+            &[("NEMESISBOT_HOME", tmp.path().to_str().unwrap())],
+            120,
+        )
+        .1;
+        assert_eq!(
+            o.code, 1,
+            "daemon 不可达必须 exit(1):\n--- stdout ---\n{}\n--- stderr ---\n{}",
+            o.stdout, o.stderr
+        );
+        assert!(
+            o.stderr.contains("Failed to start engine"),
+            "start 失败 WARN 臂:\n{}",
+            o.stderr
+        );
+        assert!(
+            o.stdout.contains("Attempting scan anyway"),
+            "降级继续打印臂:\n{}",
+            o.stdout
+        );
+        assert!(
+            o.stderr.contains("not ready"),
+            "is_ready=false 提示臂:\n{}",
+            o.stderr
+        );
+    }
+
+    // --------------------- R10 终测补测：config-guard 退码臂 ----------------
+    // scanner.rs 三处「配置缺引擎/未知引擎 → eprintln + std::process::exit(1)」
+    // 是纯 CLI 守卫，不需要真引擎/真网络。当前 merged lcov 显示 miss：
+    //   cmd_add 382-387（Unknown engine + Available 列表）
+    //   cmd_remove 440-441（not found in configuration）
+    //   cmd_enable 457-461（Add it first with 'scanner add <name>'）
+    // home 全隔离（r10_stage_home），配置文件不存在 → load_scanner_config
+    // 走默认空 engines map ⇒ contains_key 恒 false，三臂确定性可达。
+
+    /// cmd_add 未知引擎名 → 打印 Unknown engine + Available 清单后 exit(1)。
+    #[test]
+    fn r10_cmd_add_unknown_engine_lists_available_and_exits_1() {
+        let tmp = tempfile::tempdir().unwrap();
+        r10_stage_home(tmp.path()); // 返回值是 engine 配置路径清单，此臂用不上
+        let (_guard, o) = r10_spawn(
+            &r10_bin(),
+            &["scanner", "add", "boguseng", "--url", "http://127.0.0.1:9/x"],
+            &[("NEMESISBOT_HOME", tmp.path().to_string_lossy().as_ref())],
+            30,
+        );
+        assert_eq!(o.code, 1, "未知引擎必须 exit(1):\n--- stdout ---\n{}\n--- stderr ---\n{}", o.stdout, o.stderr);
+        assert!(o.stderr.contains("Unknown engine: boguseng"), "got:\n{}", o.stderr);
+        assert!(o.stderr.contains("Available"), "要列出可用引擎:\n{}", o.stderr);
+    }
+
+    /// cmd_remove 配置里没有该引擎 → not found in configuration + exit(1)。
+    #[test]
+    fn r10_cmd_remove_missing_engine_exits_1() {
+        let tmp = tempfile::tempdir().unwrap();
+        let _cfg = r10_stage_home(tmp.path());
+        let (_guard, o) = r10_spawn(
+            &r10_bin(),
+            &["scanner", "remove", "nosuch"],
+            &[("NEMESISBOT_HOME", tmp.path().to_string_lossy().as_ref())],
+            30,
+        );
+        assert_eq!(o.code, 1, "remove 缺引擎必须 exit(1):\nstdout={}\nstderr={}", o.stdout, o.stderr);
+        assert!(
+            o.stderr.contains("Engine 'nosuch' not found in configuration."),
+            "got:\n{}",
+            o.stderr
+        );
+    }
+
+    /// cmd_enable 配置里没有该引擎 → Add it first 提示 + exit(1)。
+    #[test]
+    fn r10_cmd_enable_missing_engine_exits_1() {
+        let tmp = tempfile::tempdir().unwrap();
+        let _cfg = r10_stage_home(tmp.path());
+        let (_guard, o) = r10_spawn(
+            &r10_bin(),
+            &["scanner", "enable", "nosuch"],
+            &[("NEMESISBOT_HOME", tmp.path().to_string_lossy().as_ref())],
+            30,
+        );
+        assert_eq!(o.code, 1, "enable 缺引擎必须 exit(1):\nstdout={}\nstderr={}", o.stdout, o.stderr);
+        assert!(
+            o.stderr.contains("Add it first with 'scanner add nosuch'"),
+            "got:\n{}",
+            o.stderr
+        );
+    }
+}

@@ -125,3 +125,248 @@ mod list_sessions_arm {
         list_sessions(&home).expect("目录条目 read 失败 → skip，Ok");
     }
 }
+
+// ===========================================================================
+// R7（coverage-95 goal，2026-08-27）：run() 成功路径——经 singleton 重定向。
+// 文件头上方的「结构性豁免」判断被 `nemesis-path` 新增的 `set_home_dir()`
+// 运行时缝推翻：`crate::tests::singleton_test_home()` 把进程级单例永久指向
+// 测试沙箱，`EnvHomeGuard` 让 resolve_home(local=false) 解析到同一 home，
+// 守卫（pm_home == home）通过，run() 的 List/Show/Fork 全链路可测。
+// 纪律：每测试先拿 GLOBAL_STATE_LOCK；key 全部带 r7 前缀防跨测试撞车。
+// ===========================================================================
+
+mod r7_success_paths {
+    use super::*;
+    use crate::tests::{singleton_test_home, EnvHomeGuard};
+    use std::path::PathBuf;
+
+    fn rows_fixture(n_user_turns: usize) -> Vec<serde_json::Value> {
+        // 每轮 = user 行 + assistant 行（row_user_turn_count 数 user 行）。
+        let mut rows = Vec::new();
+        for i in 0..n_user_turns {
+            rows.push(serde_json::json!({
+                "role": "user",
+                "content": format!("r7-第{}轮问题：nemesisbot", i),
+                "timestamp": format!("2026-08-27T00:0{}:00+08:00", i),
+            }));
+            rows.push(serde_json::json!({
+                "role": "assistant",
+                "content": format!("r7-第{}轮回答", i),
+                "timestamp": format!("2026-08-27T00:0{}:30+08:00", i),
+            }));
+        }
+        rows
+    }
+
+    fn write_jsonl(key: &str, rows: &[serde_json::Value]) -> PathBuf {
+        let home = singleton_test_home();
+        let safe = key.replace(':', "_");
+        let dir = home.join("workspace").join("logs").join("session_logs");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join(format!("{}.jsonl", safe));
+        let body: String = rows
+            .iter()
+            .map(|v| serde_json::to_string(v).unwrap())
+            .collect::<Vec<_>>()
+            .join("\n");
+        std::fs::write(&path, body + "\n").unwrap();
+        path
+    }
+
+    fn store_jsonl_exists(key: &str) -> bool {
+        let home = singleton_test_home();
+        let safe = key.replace(':', "_");
+        home.join("workspace")
+            .join("logs")
+            .join("session_logs")
+            .join(format!("{}.jsonl", safe))
+            .exists()
+    }
+
+    /// run(List, local=false)：env home 与单例一致 → 守卫放行 → 空会话表 Ok。
+    #[test]
+    fn run_list_via_env_home_ok_empty() {
+        let _g = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let home = singleton_test_home();
+        let _env = EnvHomeGuard::point_at(&home);
+        run(SessionAction::List, false).expect("guard passes, list ok");
+    }
+
+    /// run(Show)：有 jsonl 的会话 → 轮次表打印 Ok。
+    #[test]
+    fn run_show_prints_turn_table_ok() {
+        let _g = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let home = singleton_test_home();
+        let _env = EnvHomeGuard::point_at(&home);
+        let key = "agent:main:session:r7show1";
+        write_jsonl(key, &rows_fixture(3));
+        run(
+            SessionAction::Show {
+                session_key: key.into(),
+            },
+            false,
+        )
+        .expect("show with jsonl → turn table ok");
+    }
+
+    /// run(Fork) 全量：源 jsonl 逐行复制到新 key + store 落盘 + boundary 事件。
+    #[test]
+    fn run_fork_full_flow_copies_jsonl_and_creates_store() {
+        let _g = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let home = singleton_test_home();
+        let _env = EnvHomeGuard::point_at(&home);
+        let key = "agent:main:session:r7fork1";
+        write_jsonl(key, &rows_fixture(3));
+
+        run(
+            SessionAction::Fork {
+                session_key: key.into(),
+                at: None,
+                new_key: Some("agent:main:session:r7fork1__child".into()),
+            },
+            false,
+        )
+        .expect("fork full flow ok");
+
+        // jsonl 复制到了新 key（6 行 verbatim）。
+        let copied = singleton_test_home()
+            .join("workspace/logs/session_logs/agent_main_session_r7fork1__child.jsonl");
+        let text = std::fs::read_to_string(&copied).expect("forked jsonl exists");
+        assert_eq!(text.lines().count(), 6, "verbatim copy of all 6 rows");
+        // store json 落盘。
+        let store = singleton_test_home()
+            .join("workspace/sessions/agent_main_session_r7fork1__child.json");
+        assert!(store.exists(), "new session store json must be saved");
+    }
+
+    /// run(Fork --at 1)：只保留第 1 轮（2 行）。
+    #[test]
+    fn run_fork_at_turn_1_keeps_prefix_only() {
+        let _g = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let home = singleton_test_home();
+        let _env = EnvHomeGuard::point_at(&home);
+        let key = "agent:main:session:r7fork2";
+        write_jsonl(key, &rows_fixture(3));
+        run(
+            SessionAction::Fork {
+                session_key: key.into(),
+                at: Some(1),
+                new_key: Some("agent:main:session:r7fork2__at1".into()),
+            },
+            false,
+        )
+        .expect("fork at=1 ok");
+        let copied = singleton_test_home()
+            .join("workspace/logs/session_logs/agent_main_session_r7fork2__at1.jsonl");
+        let text = std::fs::read_to_string(&copied).unwrap();
+        assert_eq!(text.lines().count(), 2, "turn-1 prefix = user+assistant rows");
+    }
+
+    /// run(Fork) 源不存在：明确报错（jsonl 为空 → fork_session Err → run Err）。
+    #[test]
+    fn run_fork_missing_source_errors() {
+        let _g = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let home = singleton_test_home();
+        let _env = EnvHomeGuard::point_at(&home);
+        let err = run(
+            SessionAction::Fork {
+                session_key: "agent:main:session:r7-missing-source".into(),
+                at: Some(1),
+                new_key: None,
+            },
+            false,
+        )
+        .expect_err("no jsonl for source → fork errors");
+        assert!(err.to_string().contains("不存在"), "got: {err}");
+    }
+
+    /// run(Fork) 源只有 assistant 行：没有 user 轮 → 报错。
+    #[test]
+    fn run_fork_source_without_user_turns_errors() {
+        let _g = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let home = singleton_test_home();
+        let _env = EnvHomeGuard::point_at(&home);
+        let key = "agent:main:session:r7fork3";
+        write_jsonl(
+            key,
+            &[serde_json::json!({
+                "role": "assistant",
+                "content": "只有回答没有提问",
+                "timestamp": "2026-08-27T01:00:00+08:00",
+            })],
+        );
+        let err = run(
+            SessionAction::Fork {
+                session_key: key.into(),
+                at: None,
+                new_key: None,
+            },
+            false,
+        )
+        .expect_err("0 user turns → fork errors");
+        assert!(err.to_string().contains("user 轮"), "got: {err}");
+    }
+
+    /// run(Show) 对不存在的会话走 run() 入口（show_turns bail 在 tests 顶部
+    /// 已有直接调用版本；这里钉 run() 分发臂）。
+    #[test]
+    fn run_show_missing_session_dispatches_to_error() {
+        let _g = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let home = singleton_test_home();
+        let _env = EnvHomeGuard::point_at(&home);
+        let err = run(
+            SessionAction::Show {
+                session_key: "agent:main:session:r7-missing-show".into(),
+            },
+            false,
+        )
+        .expect_err("missing jsonl → show errors");
+        assert!(err.to_string().contains("不存在"), "got: {err}");
+        // 只读路径：不产生 jsonl。
+        assert!(!store_jsonl_exists("agent:main:session:r7-missing-show"));
+    }
+
+    /// run(Show) 对「只有 assistant 行」的会话：CLI 层 show_turns 自己的
+    /// zero-user-turn bail（上面 fork 测试报错来自 nemesis-agent 的
+    /// fork_session；这里是 commands/session.rs 的同义 bail 臂）。
+    #[test]
+    fn run_show_zero_user_turns_errors_from_cli_bail() {
+        let _g = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let home = singleton_test_home();
+        let _env = EnvHomeGuard::point_at(&home);
+        let key = "agent:main:session:r7show-zero";
+        write_jsonl(
+            key,
+            &[serde_json::json!({
+                "role": "assistant",
+                "content": "只有回答没有提问",
+                "timestamp": "2026-08-27T01:00:00+08:00",
+            })],
+        );
+        let err = run(
+            SessionAction::Show {
+                session_key: key.into(),
+            },
+            false,
+        )
+        .expect_err("rows exist but zero user turns → CLI bail");
+        assert!(err.to_string().contains("没有完整 user 轮次"), "got: {err}");
+    }
+}
+
+// ===========================================================================
+// wave_b（coverage 补测批次 B）—— 记账说明：本文件无新增测试。
+//
+// wave_b 批次点名的 miss 行逐一处置：
+// - 行 170（show_turns 的 zero-user-turn bail）：ALREADY —— 即上方
+//   `r7_success_paths::run_show_zero_user_turns_errors_from_cli_bail`，
+//   断言文案与源码 bail! 字符串逐字对应（"没有完整 user 轮次"），
+//   不需要重复用例。
+// - 行 199-201 + 203-212（interactive_pick 的 TTY 门控后交互体）：
+//   EXEMPT —— 这些行被 `std::io::stdin().is_terminal()` 守卫包裹；
+//   cargo test 的 stdin 是管道恒走 Ok(None) 早退（上方
+//   interactive_pick_non_tty_defaults_to_full_fork 已钉该守卫本身）。
+//   想进门控体只能伪造 TTY（进程注入/伪终端 spawn），属豁免类：
+//   禁 spawn 进程、禁触碰真实 stdin。空参数分支（回车=全量）、纯数字、
+//   非法输入三条 readline 后逻辑都是同一豁免机制的门内死区。
+// ===========================================================================

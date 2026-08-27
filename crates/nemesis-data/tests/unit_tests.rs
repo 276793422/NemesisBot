@@ -125,7 +125,7 @@ fn test_negative_timestamps() {
     let store = DataStore::open(&db_path).expect("Failed to open database");
 
     // Insert log with negative timestamp (before Unix epoch)
-    let mut log = RequestLog {
+    let log = RequestLog {
         id: 1,
         trace_id: "negative-ts".to_string(),
         model: "gpt-4".to_string(),
@@ -321,7 +321,7 @@ fn test_exact_boundary_rollup() {
     let now = chrono::Local::now().timestamp();
 
     // Insert very old log (>30 days ago)
-    let mut old_log = RequestLog {
+    let old_log = RequestLog {
         id: 1,
         trace_id: "very-old".to_string(),
         model: "gpt-4".to_string(),
@@ -342,7 +342,7 @@ fn test_exact_boundary_rollup() {
         .expect("Failed to insert old log");
 
     // Insert recent log (should not be rolled up)
-    let mut recent_log = RequestLog {
+    let recent_log = RequestLog {
         id: 2,
         trace_id: "recent".to_string(),
         model: "gpt-4".to_string(),

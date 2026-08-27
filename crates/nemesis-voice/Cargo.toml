@@ -28,6 +28,7 @@ wasapi = "0.17"
 [dev-dependencies]
 tempfile = "3"
 wiremock = "0.6"
+tracing-subscriber = { workspace = true }
 
 [build-dependencies]
 cc = "1"

@@ -10,7 +10,7 @@
 //! - Error handling and edge cases
 //! - Concurrent access
 
-use nemesis_data::{DataStore, RequestLog, TrendPoint, UsageSummary};
+use nemesis_data::{DataStore, RequestLog};
 use std::fs;
 use std::path::PathBuf;
 

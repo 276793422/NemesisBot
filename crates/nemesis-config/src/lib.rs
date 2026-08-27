@@ -81,6 +81,39 @@ where
     deserializer.deserialize_seq(FlexibleVecVisitor)
 }
 
+/// Custom deserializer for numeric fields that accepts both JSON numbers and
+/// decimal strings. Exists because historical CLI writers (`nemesisbot channel
+/// web port N`) serialized ports as strings while typed readers expected
+/// numbers — a present-but-wrong-typed field otherwise fails the whole config
+/// parse at startup (see BUG ledger #41).
+pub fn deserialize_flexible_i64<'de, D>(deserializer: D) -> std::result::Result<i64, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::de::{Error, Unexpected};
+
+    match serde_json::Value::deserialize(deserializer)? {
+        serde_json::Value::Number(n) => n.as_i64().ok_or_else(|| {
+            D::Error::invalid_type(Unexpected::Other("non-integer number"), &"an integer")
+        }),
+        serde_json::Value::String(s) => {
+            s.trim().parse::<i64>().map_err(|_| {
+                D::Error::invalid_type(Unexpected::Str(&s), &"an integer or decimal string")
+            })
+        }
+        other => Err(D::Error::invalid_type(
+            match &other {
+                serde_json::Value::Bool(b) => Unexpected::Bool(*b),
+                serde_json::Value::Array(_) => Unexpected::Seq,
+                serde_json::Value::Object(_) => Unexpected::Map,
+                serde_json::Value::Null => Unexpected::Unit,
+                _ => unreachable!(),
+            },
+            &"an integer or decimal string",
+        )),
+    }
+}
+
 // ============================================================================
 // Main Config struct - mirrors Go Config exactly
 // ============================================================================
@@ -740,7 +773,11 @@ pub struct WebChannelConfig {
     pub enabled: bool,
     #[serde(default = "default_web_host")]
     pub host: String,
-    #[serde(default = "default_web_port")]
+    // flexible_i64: 历史 CLI 把端口写成字符串（BUG #41），容忍两种磁盘形态
+    #[serde(
+        default = "default_web_port",
+        deserialize_with = "deserialize_flexible_i64"
+    )]
     pub port: i64,
     #[serde(default = "default_web_path")]
     pub path: String,
@@ -778,7 +815,8 @@ pub struct WebSocketChannelConfig {
     pub enabled: bool,
     #[serde(default)]
     pub host: String,
-    #[serde(default)]
+    // flexible_i64: 历史 CLI 把端口写成字符串（BUG #41），容忍两种磁盘形态
+    #[serde(default, deserialize_with = "deserialize_flexible_i64")]
     pub port: i64,
     #[serde(default)]
     pub path: String,

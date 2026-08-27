@@ -1599,3 +1599,577 @@ fn test_s11b_format_probe_report_direct() {
     let s2 = super::format_probe_report("m", &empty);
     assert!(s2.contains("tier=mini"));
 }
+
+// ===========================================================================
+// wave_b（coverage 补测，2026-08-27）：miss 行清零补洞。
+//
+// 目标行（model.rs）与本模块的对应关系：
+//  - 195（config 无 model_list 键时的首次插入臂）+ 236-238（tinyllama 命中
+//    small_markers → 非 big 提示 else 臂）→
+//    wave_b_run_add_inserts_model_list_key_and_mini_hint；
+//  - 333（非 verbose 也打印的 "Base URL:" 行）+ 337-355 verbose 全臂
+//    （key 非空圆点遮蔽 / key 空串 "(not set)" / API Base / Proxy 非空 /
+//    Auth Method 非空）→ wave_b_run_list_verbose_and_base_url_rows；
+//  - 500 / 537 / 566（SetEffort / SetSize / SetRealName 在 config.json 缺席时
+//    的三个 bail 臂）→ wave_b_run_setaffort_setsize_setrealname_bail_no_config；
+//  - 676（update_model_entry 对未知模型返 false 的收尾臂；用闭包 panic-on-call
+//    反证未误中条目）→ wave_b_update_model_entry_for_test_miss_and_hit。
+//
+// ARTIFACT：117 —— splitn(2,'/') 在已通过 `contains('/')` 校验后 parts.len()
+// 恒为 2，`_ => model.clone()` 是编译器要求的穷尽臂，生产语义不可达。
+//
+// ALREADY（既有测试名证据，不重复覆盖）：168（catalog 命中回填 context_window）
+// = test_s11b_run_add_catalog_hit_fills_context_window；199-220/243-282（default
+// 落盘 + 基础写路径）= test_s11b_run_add_basic_writes* 系列；491/524/555/584
+// （四个 mutate 成功后的落盘 ?行）= test_model_set_effort_cli +
+// test_s11b_run_seteffort_matrix@1432 + test_s11b_run_setsize_matrix@1474 +
+// test_s11b_run_setrealname_matrix@1516；594-596 = probe 缺配置 bail（S11b）。
+//
+// EXEMPT：
+//  - 413-422 Remove 非 force 确认分支 —— 进程内直读真实 stdin（io::stdin），
+//    cargo test 交互终端下会阻塞等待回车、CI 下读 EOF；同进程无法重定向 stdin，
+//    而 spawn 子进程被测试纪律禁止 ⇒ 不存在确定性注入手段，宁缺勿挂死全量套件。
+//  - 597-604 Probe 主体 + 609-646 CatalogUpdate 主体 —— run_probe 逐题调真实
+//    LLM 端点、catalog::fetch_http 走真网络（reqwest），均属「真外部交互」纪律
+//    豁免面；离线快失败/缓存保留语义由 catalog 单元级测试与历史 S11b 钉住。
+// ===========================================================================
+
+mod wave_b {
+    use super::{s11b_read_cfg, s11b_temp_home_env, s11b_write_cfg};
+    use super::super::{run, update_model_entry_for_test, ModelAction};
+
+    #[tokio::test]
+    async fn wave_b_run_add_inserts_model_list_key_and_mini_hint() {
+        let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let th = s11b_temp_home_env();
+        // 配置存在但没有 model_list 键 ⇒ 走 obj.insert 首插臂（194-196）。
+        s11b_write_cfg(&th.home, serde_json::json!({}));
+
+        run(
+            ModelAction::Add {
+                // tinyllama 在 capability small_markers 里 ⇒ detect_tier=Mini
+                // ⇒ 提示打印走 else 臂（236-238），而非 big 建议。
+                model: "tinyllama/local-1".into(),
+                key: Some("k".into()),
+                base: None,
+                proxy: None,
+                auth: None,
+                default: false,
+            },
+            false,
+        )
+        .await
+        .expect("add into keyless config must succeed");
+
+        let cfg = s11b_read_cfg(&th.home);
+        let list = cfg["model_list"].as_array().expect("model_list inserted");
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0]["model"], "tinyllama/local-1");
+        assert_eq!(list[0]["model_tier"], "auto");
+    }
+
+    #[tokio::test]
+    async fn wave_b_run_list_verbose_and_base_url_rows() {
+        let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let th = s11b_temp_home_env();
+        s11b_write_cfg(
+            &th.home,
+            serde_json::json!({
+                "agents": {"defaults": {"llm": "beta"}},
+                "model_list": [
+                    {"model_name": "alpha", "model": "prov/alpha",
+                     "api_key": "secret", "api_base": "http://alpha.local/v1",
+                     "proxy": "http://proxy:8080", "auth_method": "api_key"},
+                    {"model_name": "beta", "model": "prov/beta",
+                     "api_key": "", "api_base": "http://beta.local/v1"},
+                    {"model_name": "gamma", "model": "prov/gamma"}
+                ]
+            }),
+        );
+
+        // verbose=true：alpha 打全部 verbose 行（遮蔽 key/Base/Proxy/Auth），
+        // beta 走空 api_key 的 "(not set)" 分支并打 Base，gamma 三者皆缺省。
+        run(ModelAction::List { verbose: true }, false)
+            .await
+            .expect("verbose list must succeed");
+        // verbose=false：Base URL 行在本分支也照打（333 目标行的另一入口）。
+        run(ModelAction::List { verbose: false }, false)
+            .await
+            .expect("plain list must succeed");
+    }
+
+    #[tokio::test]
+    async fn wave_b_run_setaffort_setsize_setrealname_bail_no_config() {
+        let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let th = s11b_temp_home_env(); // 故意不写 config.json
+
+        let err = run(
+            ModelAction::SetEffort { name: "m".into(), effort: "low".into() },
+            false,
+        )
+        .await
+        .unwrap_err();
+        assert!(err.to_string().contains("Configuration not found"));
+
+        let err = run(ModelAction::SetSize { name: "m".into(), size: "30B".into() }, false)
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("Configuration not found"));
+
+        let err = run(
+            ModelAction::SetRealName { name: "m".into(), real_name: "Qwen3-30B".into() },
+            false,
+        )
+        .await
+        .unwrap_err();
+        assert!(err.to_string().contains("Configuration not found"));
+
+        // 收尾一致性：三条路径都不应凭空创建配置文件。
+        assert!(!th.home.join("config.json").exists());
+    }
+
+    #[test]
+    fn wave_b_update_model_entry_for_test_miss_and_hit() {
+        let mut cfg = serde_json::json!({
+            "model_list": [{"model_name": "b", "model": "prov/b"}]
+        });
+
+        // 未知名：返回 false 且绝不触碰任何条目（闭包一旦被调用即 fail）。
+        let mut closure_ran = false;
+        let updated = update_model_entry_for_test(&mut cfg, "zzz", |_e| {
+            closure_ran = true;
+        });
+        assert!(!updated, "unknown alias/full-id must yield false");
+        assert!(!closure_ran, "closure must never run on miss");
+
+        // 对照组：别名命中则突变生效。
+        let updated = update_model_entry_for_test(&mut cfg, "b", |e| {
+            e["model_tier"] = serde_json::Value::String("mini".into());
+        });
+        assert!(updated);
+        assert_eq!(cfg["model_list"][0]["model_tier"], "mini");
+    }
+}
+
+// ===========================================================================
+// wave_c（coverage 补测，2026-08-27）：update_model_entry 对畸形形状的安全面。
+// 目标行 676（`None => return false`）——cfg 缺 model_list 键 / model_list 非
+// 数组两种形状都汇入该 None 臂，既有 miss_and_hit 只走了「有数组但查无此名」
+// 的循环耗尽 false（686），676 从未被执行。顺带钉死 `{}` 空对象条目的匹配
+// 语义：缺 model/model_name 字段时按空串参与比对 → 必须被安全跳过且原样
+// 保留（不误命中、不加杂物字段），突变只落在真正命中的邻居上、原字段全保。
+// ===========================================================================
+
+mod wave_c {
+    use super::super::update_model_entry_for_test;
+
+    #[test]
+    fn wave_c_no_usable_model_list_returns_false_without_mutation() {
+        let mut called = false;
+        // ① 整个 config 是 {} —— 没有 model_list 键。
+        let mut empty_cfg = serde_json::json!({});
+        assert!(!update_model_entry_for_test(&mut empty_cfg, "any", |_e| {
+            called = true;
+        }));
+        assert_eq!(
+            empty_cfg,
+            serde_json::json!({}),
+            "miss 路径不得给 config 凭空加键"
+        );
+
+        // ② model_list 不是数组（对象形状同样路由到 676 的 None 臂）。
+        let mut non_array_cfg = serde_json::json!({"model_list": {"model": "prov/x"}});
+        assert!(!update_model_entry_for_test(&mut non_array_cfg, "x", |_e| {
+            called = true;
+        }));
+
+        assert!(!called, "两种畸形形状都必须在任何闭包调用之前返 false");
+    }
+
+    #[test]
+    fn wave_c_empty_object_entry_skipped_and_preserved() {
+        let mut cfg = serde_json::json!({
+            "model_list": [
+                {},
+                {"model_name": "real", "model": "prov/real"}
+            ]
+        });
+
+        let updated = update_model_entry_for_test(&mut cfg, "real", |e| {
+            e["model_tier"] = serde_json::Value::String("mini".into());
+        });
+        assert!(updated);
+
+        let list = cfg["model_list"].as_array().unwrap();
+        assert_eq!(list.len(), 2, "不得增删任何条目");
+        assert_eq!(
+            list[0],
+            serde_json::json!({}),
+            "`{{}}` 空条目必须原样保留（字段缺失按空串参与匹配 → 不误命中）"
+        );
+        assert_eq!(list[1]["model_tier"], "mini", "突变落在正确邻居上");
+        assert_eq!(list[1]["model"], "prov/real", "命中条目原有字段保留");
+        assert_eq!(list[1]["model_name"], "real", "命中条目原有别名保留");
+    }
+}
+
+// ===========================================================================
+// r9_subprocess（R9 补测批零头组，2026-08-27）：子进程级真链路。
+//
+// 1) `model probe` 全链（run() Probe 臂 + run_probe + agent::probe::run）：
+//    MockAiServer 按 probe_tasks() 的 FIFO 顺序回 7 个 schema 全对的
+//    tool_call → 三轴满分 → tier=Big；断言 stdout 报告行 + config.json 的
+//    model_tier 落盘。此前 692-758 行从未被执行过。
+// 2) `model remove` y/N 双臂（415-455）：管道 stdin 喂 "y\n"（删）/ "\n"
+//    （Aborted.）。run_cli_with_stdin 写完即 EOF，正是该 read_line 所需。
+//
+// 环境约束：--local 由 harness 前置（cwd 隔离），无需动 NEMESISBOT_HOME；
+// 不碰 GLOBAL_STATE_LOCK（无 env/port 依赖——MockAiServer 用随机端口）。
+// ===========================================================================
+
+mod r9_subprocess {
+    use test_harness::mock_ai::{MockAiReply, MockAiServer};
+    use test_harness::{resolve_nemesisbot_bin, TestWorkspace};
+
+    /// 按探针任务顺序给全对 tool_call：exec/read_file/create_dir/grep/
+    /// write_file/edit_file/cluster_rpc，每个的 arguments 满足其 required。
+    fn perfect_probe_script() -> Vec<MockAiReply> {
+        vec![
+            MockAiReply::ToolCall {
+                name: "exec".into(),
+                arguments: r#"{"command":"date"}"#.into(),
+            },
+            MockAiReply::ToolCall {
+                name: "read_file".into(),
+                arguments: r#"{"path":"README.md"}"#.into(),
+            },
+            MockAiReply::ToolCall {
+                name: "create_dir".into(),
+                arguments: r#"{"path":"test"}"#.into(),
+            },
+            MockAiReply::ToolCall {
+                name: "grep".into(),
+                arguments: r#"{"pattern":"TODO"}"#.into(),
+            },
+            MockAiReply::ToolCall {
+                name: "write_file".into(),
+                arguments: r#"{"path":"note.md","content":"hi"}"#.into(),
+            },
+            MockAiReply::ToolCall {
+                name: "edit_file".into(),
+                arguments: r#"{"path":"note.md","old_text":"hi","new_text":"yo"}"#.into(),
+            },
+            MockAiReply::ToolCall {
+                name: "cluster_rpc".into(),
+                arguments: r#"{"target_node":"node-b","message":"你好"}"#.into(),
+            },
+        ]
+    }
+
+    fn read_cfg(ws: &TestWorkspace) -> serde_json::Value {
+        serde_json::from_str(&std::fs::read_to_string(ws.config_path()).unwrap()).unwrap()
+    }
+
+    #[tokio::test]
+    async fn probe_full_chain_writes_tier_big_via_mock_script() {
+        let ws = TestWorkspace::new().expect("workspace");
+        std::fs::create_dir_all(ws.home()).unwrap();
+        // model add 要求 config.json 已存在（101 行 read_to_string）。
+        std::fs::write(&ws.config_path(), "{}").unwrap();
+
+        let mock = MockAiServer::start(perfect_probe_script()).expect("mock ai server");
+
+        let bin = resolve_nemesisbot_bin().expect("release binary");
+        let base = format!("{}/v1", mock.base_url());
+        let add = ws
+            .run_cli(
+                &bin,
+                &[
+                    "model",
+                    "add",
+                    "--model",
+                    "r9p/probe-x",
+                    "--key",
+                    "sk-r9",
+                    "--base",
+                    base.as_str(),
+                ],
+            )
+            .await;
+        assert!(
+            add.success(),
+            "model add 失败：stdout={} stderr={}",
+            add.stdout,
+            add.stderr
+        );
+
+        let probe = ws.run_cli_with_timeout(&bin, &["model", "probe", "r9p/probe-x"], 60).await;
+        assert!(
+            probe.success(),
+            "probe 应全对满分：stdout={} stderr={}",
+            probe.stdout,
+            probe.stderr
+        );
+        assert!(probe.stdout_contains("能力探针报告: r9p/probe-x"));
+        for task in [
+            "exec",
+            "read_file",
+            "create_dir",
+            "grep",
+            "write_file",
+            "edit_file",
+            "cluster_rpc",
+        ] {
+            assert!(
+                probe.stdout_contains(task),
+                "每工具得分行缺失 {task}"
+);
+        }
+        assert!(
+            probe.stdout_contains("→ tier=big"),
+            "7/7 全对应评 Big，实际 probe 输出：\n{}",
+            probe.stdout
+        );
+        // 确实消费完整脚本：chat 次数 ≥7（若有 models-list GET 只多不少），
+        // 剩余 0 证明恰好 7 次调度（GET 不出队，FIFO 正好被 7 题耗尽）。
+        assert!(mock.hits() >= 7, "至少 7 次 HTTP 往返");
+        assert_eq!(mock.remaining(), 0, "脚本必须正好耗尽（一题一条）");
+
+        // tier 落盘：config.json 条目 model_tier == "big"。
+        let cfg = read_cfg(&ws);
+        let entry = cfg["model_list"]
+            .as_array()
+            .and_then(|a| a.first())
+            .expect("add 必须留下一条模型记录");
+        assert_eq!(entry["model"], "r9p/probe-x");
+        assert_eq!(
+            entry["model_tier"], "big",
+            "探针结果必须写回 config.json"
+        );
+    }
+
+    #[tokio::test]
+    async fn remove_confirm_prompt_both_arms() {
+        let bin = resolve_nemesisbot_bin().expect("release binary");
+
+        // --- y 臂：确认删除 ---
+        let ws = TestWorkspace::new().unwrap();
+        std::fs::create_dir_all(ws.home()).unwrap();
+        std::fs::write(
+            &ws.config_path(),
+            serde_json::json!({
+                "model_list": [{"model_name": "rm-y", "model": "r9/rm-y", "api_key": "k"}]
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let out = ws
+            .run_cli_with_stdin(&bin, &["model", "remove", "r9/rm-y"], "y\n", 30)
+            .await;
+        assert!(
+            out.success(),
+            "y 臂失败：stdout={} stderr={}",
+            out.stdout,
+            out.stderr
+        );
+        assert!(out.stdout_contains("Remove model 'r9/rm-y'"), "先出 y/N 提示");
+        assert!(out.stdout_contains("Model removed: r9/rm-y"));
+        let cfg = read_cfg(&ws);
+        let models = cfg["model_list"].as_array().unwrap();
+        assert!(
+            !models.iter().any(|m| m["model"] == "r9/rm-y"),
+            "y 臂必须真的把条目删掉"
+        );
+
+        // --- N 臂（空回车）：Aborted 且条目原样保留 ---
+        let ws2 = TestWorkspace::new().unwrap();
+        std::fs::create_dir_all(ws2.home()).unwrap();
+        std::fs::write(
+            &ws2.config_path(),
+            serde_json::json!({
+                "model_list": [{"model_name": "rm-n", "model": "r9/rm-n", "api_key": "k"}]
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let out = ws2
+            .run_cli_with_stdin(&bin, &["model", "remove", "r9/rm-n"], "\n", 30)
+            .await;
+        assert!(out.success(), "N 臂也应是正常退出（非 Err）");
+        assert!(out.stdout_contains("Aborted."));
+        let cfg = read_cfg(&ws2);
+        let models = cfg["model_list"].as_array().unwrap();
+        assert_eq!(models.len(), 1, "取消删除后条目必须还在");
+        assert_eq!(models[0]["model"], "r9/rm-n");
+    }
+
+    /// 进程内回归：MockAiServer ToolCall → factory::create_provider("r9p/x")
+    /// → provider.chat，arguments 必须单层转义原样到达（曾 double-encode 导致
+    /// probe schema 轴 7/7 全 Invalid → tier 误判 mini）。
+    #[tokio::test]
+    async fn r9_repro_toolcall_arguments_roundtrip() {
+        let mock = MockAiServer::start(vec![MockAiReply::ToolCall {
+            name: "exec".into(),
+            arguments: r#"{"command":"date"}"#.into(),
+        }])
+        .expect("mock");
+
+        let cfg = nemesis_providers::factory::FactoryConfig {
+            llm_ref: "r9p/repro-x".into(),
+            api_key: "sk-r9".into(),
+            api_base: format!("{}/v1", mock.base_url()),
+            workspace: ".".into(),
+            connect_mode: Default::default(),
+            account_id: String::new(),
+            headers: Default::default(),
+        };
+        let provider = nemesis_providers::factory::create_provider(&cfg).expect("provider");
+
+        let messages = vec![nemesis_providers::types::Message {
+            role: "user".into(),
+            content: "run date".into(),
+            tool_calls: vec![],
+            tool_call_id: None,
+            timestamp: None,
+            reasoning_content: None,
+            extra: Default::default(),
+        }];
+        let resp = provider
+            .chat(&messages, &[], "repro-x", &Default::default())
+            .await
+            .expect("chat ok");
+        assert_eq!(resp.tool_calls.len(), 1);
+        let tc = &resp.tool_calls[0];
+        assert_eq!(tc.function.as_ref().expect("function").name, "exec");
+        let args = &tc.function.as_ref().expect("function").arguments;
+        assert_eq!(
+            args, r#"{"command":"date"}"#,
+            "arguments 必须是裸 JSON 文本（double-encode 回归）"
+        );
+        // args_validator 必须判 Valid（probe schema 轴的真实判定路径）。
+        let outcome = nemesis_agent::args_validator::check(
+            &serde_json::json!({
+                "type": "object",
+                "properties": {"command": {"type": "string"}},
+                "required": ["command"]
+            }),
+            args,
+        );
+        assert!(
+            matches!(outcome, nemesis_agent::args_validator::Outcome::Valid),
+            "Valid 才能支撑 probe tier=big，实际 {outcome:?}"
+        );
+    }
+}
+
+// ===========================================================================
+// r10（覆盖率 A 类 miss 补充）：probe 的空名臂（model.rs 702-704）——
+// `name.is_empty()` 时改走 get_effective_llm(Some(&cfg)) 取 agents.defaults.llm
+// 作为探测目标。唯一入口是 CLI 传空字符串参数；子进程 + MockAiServer 全链
+// 驱动（七题脚本沿用 r9_subprocess 形态，本模块内自带一份避免跨界借用）。
+// 空名同时意味着 update_model_entry 匹配不到任何条目 → wrote=false →
+// tier 不落盘（734-739 的写回短路边），一并断言。
+// ===========================================================================
+
+mod r10_subprocess {
+    use test_harness::mock_ai::{MockAiReply, MockAiServer};
+    use test_harness::{resolve_nemesisbot_bin, TestWorkspace};
+
+    fn perfect_probe_script() -> Vec<MockAiReply> {
+        vec![
+            MockAiReply::ToolCall {
+                name: "exec".into(),
+                arguments: r#"{"command":"date"}"#.into(),
+            },
+            MockAiReply::ToolCall {
+                name: "read_file".into(),
+                arguments: r#"{"path":"README.md"}"#.into(),
+            },
+            MockAiReply::ToolCall {
+                name: "create_dir".into(),
+                arguments: r#"{"path":"test"}"#.into(),
+            },
+            MockAiReply::ToolCall {
+                name: "grep".into(),
+                arguments: r#"{"pattern":"TODO"}"#.into(),
+            },
+            MockAiReply::ToolCall {
+                name: "write_file".into(),
+                arguments: r#"{"path":"note.md","content":"hi"}"#.into(),
+            },
+            MockAiReply::ToolCall {
+                name: "edit_file".into(),
+                arguments: r#"{"path":"note.md","old_text":"hi","new_text":"yo"}"#.into(),
+            },
+            MockAiReply::ToolCall {
+                name: "cluster_rpc".into(),
+                arguments: r#"{"target_node":"node-b","message":"你好"}"#.into(),
+            },
+        ]
+    }
+
+    #[tokio::test]
+    async fn r10_probe_with_empty_name_resolves_effective_llm_and_skips_tier_persist() {
+        let ws = TestWorkspace::new().expect("workspace");
+        std::fs::create_dir_all(ws.home()).unwrap();
+        std::fs::write(&ws.config_path(), "{}").unwrap();
+
+        let mock = MockAiServer::start(perfect_probe_script()).expect("mock ai server");
+        let bin = resolve_nemesisbot_bin().expect("release binary");
+        let base = format!("{}/v1", mock.base_url());
+
+        let add = ws
+            .run_cli(
+                &bin,
+                &[
+                    "model",
+                    "add",
+                    "--model",
+                    "r10p/empty-name",
+                    "--key",
+                    "sk-r10",
+                    "--base",
+                    base.as_str(),
+                ],
+            )
+            .await;
+        assert!(
+            add.success(),
+            "model add 失败：stdout={} stderr={}",
+            add.stdout,
+            add.stderr
+        );
+
+        // 把 effective LLM 指到该模型：agents.defaults.llm = 模型全名。
+        let cfg_path = ws.config_path();
+        let mut cfg: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&cfg_path).unwrap()).unwrap();
+        cfg["agents"]["defaults"]["llm"] =
+            serde_json::Value::String("r10p/empty-name".to_string());
+        std::fs::write(&cfg_path, serde_json::to_string_pretty(&cfg).unwrap()).unwrap();
+
+        // 关键动作：探测目标传空串 → 走 get_effective_llm 回退臂。
+        let probe = ws.run_cli_with_timeout(&bin, &["model", "probe", ""], 60).await;
+        assert!(
+            probe.success(),
+            "空名 probe 必须解析 effective LLM 后成功：stdout={} stderr={}",
+            probe.stdout,
+            probe.stderr
+        );
+        assert!(probe.stdout_contains("能力探针报告"));
+        assert_eq!(mock.remaining(), 0, "七题脚本必须恰好耗尽");
+
+        // wrote=false：空名匹配不到任何 model_list 条目 → tier 不落盘。
+        let after: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&cfg_path).unwrap()).unwrap();
+        let entry = after["model_list"]
+            .as_array()
+            .and_then(|a| a.first())
+            .expect("add 留下的条目必须在");
+        assert_ne!(
+            entry["model_tier"].as_str(),
+            Some("big"),
+            "空名 probe 不得把 tier 写回（update_model_entry 匹配不到空名条目），实际：{entry}"
+        );
+    }
+}

@@ -347,5 +347,6 @@ impl Drop for SttEngine {
     }
 }
 
+// pub(crate)（cfg(test) 内）：channel_bridge 等跨模块白盒测试要复用 null_stt_engine()
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;

@@ -1795,3 +1795,8 @@ mod browse_tests;
 // AuditChain（integrity.rs 写入端）生成，保证格式断言钉的是真磁盘契约。
 #[cfg(all(test, feature = "security"))]
 mod wweb2_tests;
+
+// R4 覆盖率（2026-08-27）：episodic 富集（memory 门控）+ 审计链
+// prev_hash mismatch 分支（security 门控），测试按 feature 各自包裹。
+#[cfg(all(test, any(feature = "memory", feature = "security")))]
+mod r4_tests;

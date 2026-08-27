@@ -216,7 +216,7 @@ async fn test_stop_idempotent_multiple_times() {
 
 #[tokio::test]
 async fn test_handle_events_task_stops_on_stop_flag() {
-    let (tx, rx) = mpsc::channel::<DeviceEvent>(8);
+    let (_tx, rx) = mpsc::channel::<DeviceEvent>(8);
     let stop = Arc::new(AtomicBool::new(false));
     let stop_clone = stop.clone();
 

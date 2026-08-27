@@ -264,7 +264,7 @@ fn ocsp_resp(code: &str) -> crate::revocation::OcspResp {
 fn ocsp_check_single_all_arms() {
     let _g = TEST_LOCK.lock().unwrap();
     let (root_sk, root_vk) = keypair(37);
-    let (other_sk, other_vk) = keypair(38);
+    let (other_sk, _other_vk) = keypair(38);
 
     // ① revoked + 根签 → Some(entry)
     let revoked = sign_response(&ocsp_resp("revoked"), &root_sk).unwrap();

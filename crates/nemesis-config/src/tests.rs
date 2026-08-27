@@ -2171,7 +2171,6 @@ fn test_mcp_server_config_normalize_existing_transport() {
 // that actually use the deserialization behavior
 
 #[test]
-#[test]
 fn test_agent_model_config_visit_map() {
     // This tests the map visitor path
     let json = r#"{"primary": "gpt-4", "fallbacks": ["claude-3"]}"#;
@@ -2799,4 +2798,71 @@ fn test_model_config_parse_only_provider() {
     let (proto, name) = model.parse_model();
     assert_eq!(proto, "anthropic");
     assert_eq!(name, "");
+}
+
+// =========================================================================
+// BUG #41 回归：历史 CLI（channel web port N）把端口写成 JSON 字符串，
+// 而 WebChannelConfig.port / WebSocketChannelConfig.port 是裸 i64 —— 存在
+// 该键的 config.json 在网关启动时整个 Config 解析直接失败。修复 = 柔性
+// deserialize_flexible_i64 容忍数字与十进制字符串两种磁盘形态。
+// =========================================================================
+
+#[test]
+fn test_web_channel_config_accepts_numeric_port() {
+    let cfg: WebChannelConfig =
+        serde_json::from_value(serde_json::json!({ "port": 49152 })).unwrap();
+    assert_eq!(cfg.port, 49152);
+}
+
+#[test]
+fn test_web_channel_config_heals_legacy_string_port() {
+    // 旧 CLI 写出的字符串形态必须能加载（存量盘自愈，无需迁移）
+    let cfg: WebChannelConfig =
+        serde_json::from_value(serde_json::json!({ "port": "49152" })).unwrap();
+    assert_eq!(cfg.port, 49152);
+    // 带空白同样容忍
+    let cfg: WebChannelConfig =
+        serde_json::from_value(serde_json::json!({ "port": " 8081 " })).unwrap();
+    assert_eq!(cfg.port, 8081);
+}
+
+#[test]
+fn test_web_channel_config_rejects_non_numeric_port() {
+    // 非数字字符串是真实损坏数据：宁可报错也不静默落默认
+    let r: std::result::Result<WebChannelConfig, _> =
+        serde_json::from_value(serde_json::json!({ "port": "not-a-port" }));
+    assert!(r.is_err());
+}
+
+#[test]
+fn test_websocket_channel_config_flexible_port() {
+    let cfg: WebSocketChannelConfig =
+        serde_json::from_value(serde_json::json!({ "port": "49001" })).unwrap();
+    assert_eq!(cfg.port, 49001);
+}
+
+#[test]
+fn test_whole_config_load_survives_legacy_string_port() {
+    // 端到端形态：完整 config.json 带 channels.web.port 字符串 → load 成功
+    let raw = r#"{
+        "channels": { "web": { "enabled": true, "host": "0.0.0.0", "port": "49160" } }
+    }"#;
+    let cfg: Config = serde_json::from_str(raw).unwrap();
+    assert_eq!(cfg.channels.web.port, 49160);
+}
+
+#[test]
+fn test_web_channel_config_rejects_all_non_port_json_types() {
+    // 五种非法 JSON 形态全部拒绝（覆盖 deserialize_flexible_i64 的兜底臂）：
+    // 非整数数字 / 布尔 / 数组 / 对象 / null —— 宁可报错也不静默落默认
+    for bad in [
+        serde_json::json!({ "port": 8080.5 }), // 非整数数字
+        serde_json::json!({ "port": true }),
+        serde_json::json!({ "port": [8080] }),
+        serde_json::json!({ "port": {} }),
+        serde_json::json!({ "port": null }),
+    ] {
+        let r: std::result::Result<WebChannelConfig, _> = serde_json::from_value(bad);
+        assert!(r.is_err(), "non-port JSON value must be rejected");
+    }
 }
