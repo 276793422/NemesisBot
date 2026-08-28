@@ -767,3 +767,21 @@ fn migrate_moves_legacy_home_root_cache() {
     // 二读直接走新位置（迁移幂等）。
     assert!(load_cache(tmp.path()).unwrap().is_some());
 }
+
+#[test]
+fn save_cache_removes_legacy_home_root_orphan() {
+    // save 路径对称清理：存量部署只跑 catalog-update（不经过读路径迁移）时，
+    // home 根的 legacy models_catalog.json 不再永久滞留成孤儿。
+    let tmp = tempfile::tempdir().unwrap();
+    let legacy = nemesis_path::legacy_models_catalog_cache_path(tmp.path());
+    std::fs::write(
+        &legacy,
+        r#"{"version":1,"fetched_at":"old","entries":[]}"#,
+    )
+    .unwrap();
+
+    save_cache(tmp.path(), vec![]).expect("save");
+
+    assert!(nemesis_path::models_catalog_cache_path(tmp.path()).exists(), "新位置已写入");
+    assert!(!legacy.exists(), "save 后 legacy 孤儿被清掉");
+}

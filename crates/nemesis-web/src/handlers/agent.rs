@@ -71,12 +71,13 @@ impl AgentHandler {
         data: Option<serde_json::Value>,
         ctx: &RequestContext,
     ) -> Result<Option<serde_json::Value>, String> {
+        // 与入站 chokepoint（server.rs）完全同规则：只判 is_empty、不 trim ——
+        // trim 会让 " abc" 查到 sanitize("abc") 而消息实际排在 sanitize(" abc")。
         let sid = data
             .as_ref()
             .and_then(|d| d.get("session_id"))
             .and_then(|v| v.as_str())
             .unwrap_or("")
-            .trim()
             .to_string();
         let session_key = if sid.is_empty() {
             "agent:main:session:legacy".to_string()

@@ -25,19 +25,33 @@ async function loadDocs() {
   loading.value = false
 }
 
+let loadSeq = 0
+// docContent 实际所属的文档 —— 保存安全性的真相源（不变量：只允许把
+// contentDoc 的内容保存回 contentDoc；activeDoc 只是「正在查看」的 tab）。
+const contentDoc = ref('')
+
 async function loadDoc(name: string) {
+  const seq = ++loadSeq
   activeDoc.value = name
   editing.value = false
   // G5：缺失文档直接呈现空内容（保存即创建），不打后端（get 对缺失文件报错）。
   const info = docs.value.find(d => d.name === name)
   if (info && info.exists === false) {
     docContent.value = ''
+    contentDoc.value = name
     return
   }
   try {
     const data = await request('identity', 'get', { name })
+    if (seq !== loadSeq) return // 已被更新的切换取代（乱序响应），不得覆盖
     docContent.value = data?.content || ''
+    contentDoc.value = name
   } catch (e: any) {
+    if (seq !== loadSeq) return
+    // 读取失败：回退到内容实际所属的文档（contentDoc），恢复
+    // docContent ↔ activeDoc 一致 —— 否则旧内容挂在新标题下，
+    // 编辑保存会把旧文档写进新文档（跨文档覆盖）。
+    activeDoc.value = contentDoc.value
     toast.error('读取失败: ' + e)
   }
 }
@@ -48,6 +62,12 @@ function startEdit() {
 }
 
 async function saveDoc() {
+  // 内容不属于当前文档（加载中 / 失败回退窗口）→ 拒绝保存，
+  // 从源头杜绝把 A 文档的内容写进 B 文档。
+  if (contentDoc.value !== activeDoc.value) {
+    toast.error('文档内容尚未加载完成，已取消保存')
+    return
+  }
   try {
     await request('identity', 'save', { name: activeDoc.value, content: editContent.value })
     toast.success('已保存')

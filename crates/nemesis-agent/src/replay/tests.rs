@@ -346,6 +346,117 @@ fn test_voice_append_replays_on_top_of_digest_insert() {
     let _ = std::fs::remove_dir_all(dir);
 }
 
+/// Unit: equal `round` numbers across turns (round restarts at 1 every turn)
+/// are disambiguated by `trace_id` — `rebuild_request_messages_in(..,
+/// Some(t))` selects THAT turn's record; `None` keeps last-record-wins.
+/// (Dashboard `replay_verify` regression: verifying round 1 of an older turn
+/// used to always hit the newest turn's round 1.)
+#[test]
+fn test_trace_id_disambiguates_equal_rounds_across_turns() {
+    let key = unique_key("t8_unit_tracedisamb");
+    let (store, dir) = temp_store(&key);
+    store.set_history(
+        &key,
+        vec![
+            turn("system", "You are a test assistant."),
+            turn("user", "hello"),
+        ]
+        .iter()
+        .map(|t| t.into())
+        .collect(),
+    );
+
+    // Turn A (older) and turn B (newer) both log round 1 — same shape,
+    // different digest bodies, so the rebuilt bytes differ per trace.
+    let mk_record = |trace_id: &str, digest_body: String| RequestProjectionRecord {
+        trace_id: trace_id.to_string(),
+        session_key: key.clone(),
+        round: 1,
+        ts: now_rfc3339(),
+        messages_count: 3,
+        roles: vec!["system".into(), "user".into(), "user".into()],
+        history_len_at_build: 2,
+        injections: vec![InjectionRecord {
+            index: 1,
+            role: "user".to_string(),
+            source: INJECTION_CONTEXT_DIGEST.to_string(),
+            content: digest_body,
+        }],
+        voice_append: None,
+        summary_as_of: None,
+    };
+    let digest_a = "<system-reminder>\nTRACE-A digest\n</system-reminder>".to_string();
+    let digest_b = "<system-reminder>\nTRACE-B digest\n</system-reminder>".to_string();
+    append_projection_record(&mk_record("trace-a", digest_a.clone()));
+    append_projection_record(&mk_record("trace-b", digest_b.clone()));
+
+    let ledger = replay_ledger_path(&key);
+    let lm = |role: &str, content: String| LlmMessage {
+        role: role.to_string(),
+        content,
+        tool_calls: None,
+        tool_call_id: None,
+        reasoning_content: None,
+    };
+    let recorded_for = |digest: &str| -> Vec<serde_json::Value> {
+        [
+            lm("system", "You are a test assistant.".to_string()),
+            lm("user", digest.to_string()),
+            lm("user", "hello".to_string()),
+        ]
+        .iter()
+        .filter_map(|m| serde_json::to_value(m).ok())
+        .collect()
+    };
+
+    match rebuild_request_messages_in(&store, &ledger, 1, Some("trace-a")).expect("rebuild a") {
+        RebuildOutcome::Rebuilt(rebuilt) => {
+            assert!(
+                verify_request_replay(&rebuilt, &recorded_for(&digest_a)).is_ok(),
+                "trace-a selection must rebuild turn A's bytes"
+            );
+            assert!(
+                verify_request_replay(&rebuilt, &recorded_for(&digest_b)).is_err(),
+                "turn A's rebuild must NOT match turn B's bytes"
+            );
+        }
+        other => panic!("expected Rebuilt for trace-a, got {:?}", other),
+    }
+    match rebuild_request_messages_in(&store, &ledger, 1, Some("trace-b")).expect("rebuild b") {
+        RebuildOutcome::Rebuilt(rebuilt) => {
+            assert!(
+                verify_request_replay(&rebuilt, &recorded_for(&digest_b)).is_ok(),
+                "trace-b selection must rebuild turn B's bytes"
+            );
+        }
+        other => panic!("expected Rebuilt for trace-b, got {:?}", other),
+    }
+    // `None` keeps the documented last-record-wins behavior (trace-b is newer).
+    match rebuild_request_messages_in(&store, &ledger, 1, None).expect("rebuild none") {
+        RebuildOutcome::Rebuilt(rebuilt) => {
+            assert!(
+                verify_request_replay(&rebuilt, &recorded_for(&digest_b)).is_ok(),
+                "None must keep last-record-wins (trace-b)"
+            );
+        }
+        other => panic!("expected Rebuilt for None, got {:?}", other),
+    }
+    // Unknown trace_id → explicit NoLedger (with the trace named), never a
+    // silent fallback to a different turn's record.
+    match rebuild_request_messages_in(&store, &ledger, 1, Some("trace-x")).expect("no err") {
+        RebuildOutcome::NoLedger { note } => {
+            assert!(
+                note.contains("trace-x"),
+                "note must name the requested trace: {note}"
+            );
+        }
+        other => panic!("expected NoLedger for unknown trace, got {:?}", other),
+    }
+
+    cleanup_sidecars(&key);
+    let _ = std::fs::remove_dir_all(dir);
+}
+
 /// Unit: ledger ABSENT for the round (pre-feature session / exempted turn) ⇒
 /// `verify_session_round` degrades EXPLICITLY to the role-subsequence anchor,
 /// with a note saying so — never silently claims byte-exactness.

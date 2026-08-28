@@ -92,10 +92,35 @@ describe('InjectionPanel', () => {
     expect(requestMock).toHaveBeenCalledWith('logs', 'replay_verify', {
       session: 'agent_main_session_s1',
       round: 1,
+      trace_id: 't1',
     })
     const badge = wrapper.find('.verify-result')
     expect(badge.classes()).toContain('ok')
     expect(badge.text()).toContain('逐字节一致')
+    wrapper.unmount()
+  })
+
+  it('校验带 trace_id（同号轮消歧）；切换会话后丢弃在途结论', async () => {
+    let resolveVerify: ((v: any) => void) | null = null
+    requestMock.mockImplementation((_m: string, cmd: string) => {
+      if (cmd === 'injection_summary') return Promise.resolve(ledgerSummary())
+      if (cmd === 'replay_verify') {
+        return new Promise(resolve => { resolveVerify = resolve })
+      }
+      return Promise.reject(new Error('unexpected ' + cmd))
+    })
+    const wrapper = await mountPanel()
+    await wrapper.find('.panel-toggle').trigger('click')
+    await flushPromises()
+
+    // 在途时切换会话：迟到的结论必须被丢弃，不得挂到新会话上。
+    await wrapper.find('.verify-btn').trigger('click')
+    expect(wrapper.vm.verifyResults['t1:1']).toBeUndefined()
+    await wrapper.setProps({ session: 'agent_main_session_s2' })
+    await flushPromises()
+    resolveVerify!({ ok: true, verdict: 'byte_exact' })
+    await flushPromises()
+    expect(wrapper.vm.verifyResults['t1:1']).toBeUndefined()
     wrapper.unmount()
   })
 

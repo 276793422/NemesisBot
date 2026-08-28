@@ -76,4 +76,32 @@ describe('SpillCard', () => {
     expect(wrapper2.text()).toContain('spill 状态不可用')
     wrapper2.unmount()
   })
+
+  it('保留期 0 → 禁用清理按钮并说明；清理响应 retention 0 → 不谎报已清理', async () => {
+    // 状态层面：按钮禁用 + title 说明（retention 0 = 清理禁用）。
+    requestMock.mockResolvedValue(spillStatus({ retention_days: 0 }))
+    const wrapper = mount(SpillCard)
+    await flushPromises()
+    const btn = wrapper.find('.spill-clean-btn')
+    expect(btn.attributes('disabled')).toBeDefined()
+    expect(btn.attributes('title')).toContain('保留期未启用')
+    wrapper.unmount()
+
+    // 响应层面：status 与 cleanup 之间配置被改（status=7天，cleanup=0）→
+    // 如实提示未执行，不显示「已清理 0 个文件」。
+    requestMock.mockImplementation((_m: string, cmd: string) => {
+      if (cmd === 'spill_status') return Promise.resolve(spillStatus())
+      if (cmd === 'spill_cleanup') {
+        return Promise.resolve(spillStatus({ retention_days: 0, deleted: 0 }))
+      }
+      return Promise.reject(new Error('unexpected ' + cmd))
+    })
+    const wrapper2 = mount(SpillCard)
+    await flushPromises()
+    await wrapper2.find('.spill-clean-btn').trigger('click')
+    await flushPromises()
+    expect(wrapper2.text()).toContain('保留期未启用')
+    expect(wrapper2.text()).not.toContain('已清理')
+    wrapper2.unmount()
+  })
 })

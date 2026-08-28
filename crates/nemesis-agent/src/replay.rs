@@ -249,28 +249,41 @@ pub fn rebuild_request_messages(
     session_key: &str,
     round: usize,
 ) -> Result<RebuildOutcome, String> {
-    rebuild_request_messages_in(store, &replay_ledger_path(session_key), round)
+    rebuild_request_messages_in(store, &replay_ledger_path(session_key), round, None)
 }
 
 /// Core rebuild for an EXPLICIT ledger path (dashboard logs handler; see
 /// `load_projection_records_from`). Semantics identical to
 /// `rebuild_request_messages` — only the ledger source differs.
+///
+/// `trace_id` disambiguates equal `round` numbers across turns (round
+/// restarts at 1 every turn): `Some(id)` selects that turn's record; `None`
+/// keeps the last-record-wins behavior.
 pub fn rebuild_request_messages_in(
     store: &SessionStore,
     ledger_path: &std::path::Path,
     round: usize,
+    trace_id: Option<&str>,
 ) -> Result<RebuildOutcome, String> {
     let records = load_projection_records_from(ledger_path);
-    let Some(rec) = records.iter().rev().find(|r| r.round == round).cloned() else {
+    let Some(rec) = records
+        .iter()
+        .rev()
+        .find(|r| r.round == round && trace_id.map_or(true, |t| r.trace_id == t))
+        .cloned()
+    else {
         let ledger_name = ledger_path
             .file_name()
             .and_then(|n| n.to_str())
             .unwrap_or("<ledger>");
+        let trace_note = trace_id
+            .map(|t| format!(" (trace_id `{t}`)"))
+            .unwrap_or_default();
         return Ok(RebuildOutcome::NoLedger {
             note: format!(
-                "no projection ledger record in `{}` for round {} \
+                "no projection ledger record in `{}` for round {}{} \
                  (pre-feature session or boundary-logging-exempt turn)",
-                ledger_name, round
+                ledger_name, round, trace_note
             ),
         });
     };
@@ -498,6 +511,7 @@ pub fn verify_session_round(
         &replay_ledger_path(session_key),
         session_key,
         round,
+        None,
         recorded,
     )
 }
@@ -505,14 +519,17 @@ pub fn verify_session_round(
 /// Core verify for an EXPLICIT ledger path (dashboard logs handler).
 /// `session_key` is the RAW store key used only by the NoLedger degraded
 /// anchor (callers resolve it from the ledger record when one exists).
+/// `trace_id` disambiguates equal `round` numbers across turns — see
+/// [`rebuild_request_messages_in`].
 pub fn verify_session_round_in(
     store: &SessionStore,
     ledger_path: &std::path::Path,
     session_key: &str,
     round: usize,
+    trace_id: Option<&str>,
     recorded: &[serde_json::Value],
 ) -> Result<ReplayCheck, ReplayDiff> {
-    match rebuild_request_messages_in(store, ledger_path, round) {
+    match rebuild_request_messages_in(store, ledger_path, round, trace_id) {
         Ok(RebuildOutcome::Rebuilt(rebuilt)) => {
             verify_request_replay(&rebuilt, recorded).map(|_| ReplayCheck::ByteExact)
         }

@@ -119,7 +119,19 @@ impl ModuleHandler for LogsHandler {
                     .get("request_id")
                     .and_then(|v| v.as_str())
                     .map(|s| s.to_string());
-                self.replay_verify(ctx, workspace, &session, round, request_id.as_deref())
+                // trace_id 消歧同号轮（round 每回合从 1 重来；省略 = 最新命中）。
+                let trace_id = data
+                    .get("trace_id")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string());
+                self.replay_verify(
+                    ctx,
+                    workspace,
+                    &session,
+                    round,
+                    request_id.as_deref(),
+                    trace_id.as_deref(),
+                )
             }
             // G3: spill 状态卡。`spill_status` 只读聚合 spill 树（文件数/
             // 字节/最老 mtime + 保留天数配置）；`spill_cleanup` 按配置保留
@@ -1254,10 +1266,15 @@ impl LogsHandler {
         session: &str,
         round: usize,
         request_id: Option<&str>,
+        trace_id: Option<&str>,
     ) -> Result<Option<serde_json::Value>, String> {
         let ledger = boundary_dir(workspace).join(ledger_file_name(session));
         let records = nemesis_agent::replay::load_projection_records_from(&ledger);
-        let rec = match records.iter().rev().find(|r| r.round == round) {
+        let rec = match records
+            .iter()
+            .rev()
+            .find(|r| r.round == round && trace_id.map_or(true, |t| r.trace_id == t))
+        {
             Some(r) => r.clone(),
             None => {
                 return Ok(Some(serde_json::json!({
@@ -1354,6 +1371,7 @@ impl LogsHandler {
             &ledger,
             &store_key,
             round,
+            trace_id,
             &recorded,
         ) {
             Ok(nemesis_agent::replay::ReplayCheck::ByteExact) => {
@@ -1811,11 +1829,20 @@ fn envelope_matches_round(
 /// `AI.Request.raw.json` entries qualify). Returns None if no such file.
 fn read_round_envelope(dir: &Path, round: usize) -> Option<Vec<serde_json::Value>> {
     for f in sorted_files(dir) {
-        if file_type_name(f.file_name()?.to_str()?) != "AI.Request.raw.json" {
+        // 单个文件的异常（损坏/非 UTF8 名/被占用）只跳过该文件，不得把
+        // 整个目录当成「无记录」（否则 replay_verify 误报 no_recording）。
+        let Some(name) = f.file_name().and_then(|n| n.to_str()) else {
+            continue;
+        };
+        if file_type_name(name) != "AI.Request.raw.json" {
             continue;
         }
-        let content = std::fs::read_to_string(&f).ok()?;
-        let envelope: serde_json::Value = serde_json::from_str(&content).ok()?;
+        let Ok(content) = std::fs::read_to_string(&f) else {
+            continue;
+        };
+        let Ok(envelope) = serde_json::from_str::<serde_json::Value>(&content) else {
+            continue;
+        };
         if envelope.get("round").and_then(|v| v.as_u64()) != Some(round as u64) {
             continue;
         }

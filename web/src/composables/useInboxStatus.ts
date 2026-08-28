@@ -42,11 +42,13 @@ export function useInboxStatus() {
   /** Fetch a fresh snapshot. `sid` updates the session the queries target. */
   async function refresh(sid?: string) {
     if (sid !== undefined) sessionId = sid
+    const target = sessionId
     try {
-      status.value = await request('agent', 'inbox_status', { session_id: sessionId })
+      const s = await request('agent', 'inbox_status', { session_id: target })
+      // 丢弃陈旧会话的乱序响应（会话切换 + 轮询并发时旧快照后到）。
+      if (target === sessionId) status.value = s
     } catch {
-      // WS offline / agent absent — degrade to the conservative default.
-      status.value = null
+      if (target === sessionId) status.value = null
     }
   }
 

@@ -90,6 +90,53 @@ describe('IdentityView 指令链（G5）', () => {
     expect(useToast().toasts.some(t => t.type === 'success')).toBe(true)
     wrapper_clean(w)
   })
+
+  it('读取失败回退到内容所属文档；加载窗口内保存被拒（跨文档覆盖写防线）', async () => {
+    const w = await mountView() // AGENT.md 已加载
+    expect(w.vm.contentDoc).toBe('AGENT.md')
+
+    // ① get IDENTITY.md 失败 → 回退到内容实际所属的 AGENT.md（不是悬在新标题下）
+    requestMock.mockImplementation((_m: string, cmd: string, data: any) => {
+      if (cmd === 'get' && data?.name === 'IDENTITY.md') return Promise.reject(new Error('ws down'))
+      if (cmd === 'get') return Promise.resolve({ name: data?.name, content: `# ${data?.name} 内容` })
+      return Promise.resolve(listResult())
+    })
+    await w.findAll('.tab').find(t => t.text().includes('身份定义'))!.trigger('click')
+    await flushPromises()
+    expect(w.vm.activeDoc).toBe('AGENT.md')
+    expect(w.vm.docContent).toBe('# AGENT.md 内容')
+    expect(useToast().toasts.some(t => t.type === 'error')).toBe(true)
+
+    // ② 加载窗口内（get 未返回）编辑+保存 → save 不得发出（A 文档内容不能写进 B 文档）
+    requestMock.mockClear()
+    let resolveGet!: (v: any) => void
+    requestMock.mockImplementation((_m: string, cmd: string, data: any) => {
+      if (cmd === 'get') {
+        return new Promise(resolve => { resolveGet = resolve })
+      }
+      return Promise.resolve({})
+    })
+    await w.findAll('.tab').find(t => t.text().includes('身份定义'))!.trigger('click')
+    await flushPromises()
+    expect(w.vm.activeDoc).toBe('IDENTITY.md')
+    expect(w.vm.contentDoc).toBe('AGENT.md') // 内容还没换成 IDENTITY 的
+    await w.findAll('button').find(b => b.text() === '编辑')!.trigger('click')
+    await w.find('textarea').setValue('# 误操作内容')
+    await w.findAll('button').find(b => b.text() === '保存')!.trigger('click')
+    await flushPromises()
+    expect(requestMock.mock.calls.filter(c => c[1] === 'save').length).toBe(0)
+    expect(useToast().toasts.some(t => t.type === 'error')).toBe(true)
+
+    // ③ get 返回后窗口关闭 → 内容与文档一致，保存恢复放行
+    resolveGet!({ name: 'IDENTITY.md', content: '# IDENTITY.md 内容' })
+    await flushPromises()
+    expect(w.vm.contentDoc).toBe('IDENTITY.md')
+    expect(w.vm.docContent).toBe('# IDENTITY.md 内容')
+    await w.findAll('button').find(b => b.text() === '保存')!.trigger('click')
+    await flushPromises()
+    expect(requestMock.mock.calls.filter(c => c[1] === 'save').length).toBe(1)
+    wrapper_clean(w)
+  })
 })
 
 function wrapper_clean(w: { unmount: () => void }) {

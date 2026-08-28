@@ -281,8 +281,12 @@ pub fn workspace_config_dir(workspace: &Path) -> PathBuf {
     workspace.join("config")
 }
 
-/// 主配置 config.json —— 注意在 **home 根**（不在 workspace 下），
-/// 与 [`workspace_config_dir`] 的子系统配置区分。
+/// `<workspace>/config.json`（workspace 布局家族拼接点）。
+///
+/// ⚠️ 注意：主配置 config.json 的现行布局在 **home 根**（`<home>/config.json`，
+/// 读方 `nemesis-config::load_config` / 写方 `common::config_path`，收敛见
+/// path-single-source 报告债务 #1）。本函数当前**无生产调用方**，勿按函数名
+/// 误当主配置路径使用。
 pub fn resolve_config_path_in_workspace(workspace: &Path) -> PathBuf {
     workspace.join("config.json")
 }

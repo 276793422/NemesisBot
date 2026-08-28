@@ -202,6 +202,8 @@ pub fn load_cache(home_dir: &Path) -> Result<Option<Catalog>, String> {
 }
 
 /// Persist the catalog to disk (atomic-ish: write temp then rename).
+/// 成功后 best-effort 清掉 home 根的 legacy 缓存（读路径有 rename 迁移，
+/// 但存量部署若只跑 catalog-update 则旧文件会永久滞留成孤儿）。
 pub fn save_cache(home_dir: &Path, entries: Vec<CatalogEntry>) -> Result<(), String> {
     let path = nemesis_path::models_catalog_cache_path(home_dir);
     if let Some(parent) = path.parent() {
@@ -216,6 +218,7 @@ pub fn save_cache(home_dir: &Path, entries: Vec<CatalogEntry>) -> Result<(), Str
     let body = serde_json::to_string_pretty(&cat).map_err(|e| format!("serialize: {e}"))?;
     std::fs::write(&tmp, body).map_err(|e| format!("write {}: {e}", tmp.display()))?;
     std::fs::rename(&tmp, &path).map_err(|e| format!("rename: {e}"))?;
+    let _ = std::fs::remove_file(nemesis_path::legacy_models_catalog_cache_path(home_dir));
     Ok(())
 }
 

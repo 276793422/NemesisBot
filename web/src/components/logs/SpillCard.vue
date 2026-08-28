@@ -27,7 +27,12 @@ async function cleanup() {
   cleaning.value = true
   try {
     const res = await request('logs', 'spill_cleanup', {})
-    lastCleanup.value = `已清理 ${res?.deleted ?? 0} 个文件`
+    if (res?.retention_days === 0) {
+      // 保留期 0 = 清理禁用：如实说明，不谎报「已清理 0 个文件」。
+      lastCleanup.value = '保留期未启用（retention_days=0），未执行清理'
+    } else {
+      lastCleanup.value = `已清理 ${res?.deleted ?? 0} 个文件`
+    }
     // cleanup 返回了清理后的新状态，直接采用。
     if (res) status.value = res
   } catch {
@@ -66,8 +71,8 @@ onMounted(refresh)
       <span v-if="lastCleanup" class="spill-result">{{ lastCleanup }}</span>
       <button
         class="spill-clean-btn"
-        :disabled="cleaning || status.files === 0"
-        title="按保留期立即清理过期落盘文件"
+        :disabled="cleaning || status.files === 0 || status.retention_days === 0"
+        :title="status.retention_days === 0 ? '保留期未启用（retention_days=0），清理已禁用' : '按保留期立即清理过期落盘文件'"
         @click="cleanup"
       >
         {{ cleaning ? '清理中…' : '立即清理' }}

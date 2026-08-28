@@ -11,6 +11,13 @@ archive/
 /bin
 /plugins/*/target
 /web/node_modules/
+# 根目录 node_modules 只会是在错误 cwd 跑 npm/vitest 的产物（2026-08-28 实例：
+# .vite/vitest 缓存落在仓库根），前端依赖只存在于 web/，防御性忽略。
+/node_modules/
+# nemesisbot/cluster/ 是 CWD 语义测试（Cluster::new 以 CWD 为 workspace，见
+# path-single-source 报告债务 #7）的运行时产物目录，非源码：曾把 state.toml
+# 测试污染（id="test-node"/"wc-flagless"）提交入库。运行时自生成，防御性忽略。
+/nemesisbot/cluster/
 /crates/nemesis-web/static
 
 *.profraw

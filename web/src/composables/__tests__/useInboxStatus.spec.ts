@@ -98,6 +98,29 @@ describe('useInboxStatus 快照与派生态', () => {
     wrapper.unmount()
   })
 
+  it('乱序防护：陈旧会话的迟到响应不覆盖当前会话快照', async () => {
+    let resolveOld!: (v: InboxStatusData) => void
+    const oldSnap = steerStatus({ session_key: 'agent:main:session:old', next_turn: 9 })
+    const newSnap = steerStatus({ session_key: 'agent:main:session:new', next_turn: 1 })
+    requestMock.mockImplementation((_m: string, _c: string, data: any) => {
+      if (data?.session_id === 'old') {
+        return new Promise<InboxStatusData>(resolve => { resolveOld = resolve })
+      }
+      return Promise.resolve(newSnap)
+    })
+    const { api, wrapper } = mountHost()
+    // 在 old 会话上发起一个挂起的请求，再切到 new 会话（立即返回）。
+    const stale = api.refresh('old')
+    await api.refresh('new')
+    expect(api.status.value?.session_key).toContain('new')
+    // old 的迟到响应落地 → 必须被丢弃，不得覆盖 new 的快照。
+    resolveOld(oldSnap)
+    await stale
+    expect(api.status.value?.session_key).toContain('new')
+    expect(api.status.value?.next_turn).toBe(1)
+    wrapper.unmount()
+  })
+
   it('queueFull：两队列合计 ≥ capacity', async () => {
     requestMock.mockResolvedValue(steerStatus({ next_turn: 8, next_step: 0, capacity: 8 }))
     const { api, wrapper } = mountHost()

@@ -602,23 +602,24 @@ impl SandboxHandler {
             .stderr(std::process::Stdio::piped());
 
         // Probe child is short-lived (network probe bounded at 3s) but goes
-        // through process spawn + landlock engage — give it 30s, off the
-        // async reactor (std::process blocks).
-        let output = tokio::time::timeout(
-            std::time::Duration::from_secs(30),
-            tokio::task::spawn_blocking(move || cmd.output()),
-        )
-        .await
-        .map_err(|_| "selftest child timed out (30s)".to_string())?
-        .map_err(|e| format!("join selftest task: {e}"))?
-        .map_err(|e| format!("spawn selftest child: {e}"))?;
+        // through process spawn + landlock engage — give it 30s. tokio Command
+        // + kill_on_drop so the timeout future's drop reaps a hung child
+        // (a plain spawn_blocking would leak it past the deadline).
+        let mut cmd = tokio::process::Command::from(cmd);
+        cmd.kill_on_drop(true);
+        let output = tokio::time::timeout(std::time::Duration::from_secs(30), cmd.output())
+            .await
+            .map_err(|_| "selftest child timed out (30s)".to_string())?
+            .map_err(|e| format!("spawn selftest child: {e}"))?;
 
         let stdout = String::from_utf8_lossy(&output.stdout);
+        // Reverse-scan for the first PARSEABLE line: wrapper backends (bwrap
+        // 等) may print trailing noise after the child's JSON verdict line.
         let verdict = stdout
             .lines()
             .rev()
-            .find(|l| !l.trim().is_empty())
-            .and_then(|l| serde_json::from_str::<serde_json::Value>(l).ok());
+            .filter(|l| !l.trim().is_empty())
+            .find_map(|l| serde_json::from_str::<serde_json::Value>(l).ok());
         let form = match backend.form() {
             BackendForm::SelfApply => "self_apply",
             BackendForm::WrapCommand => "wrap_command",

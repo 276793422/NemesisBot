@@ -83,6 +83,10 @@ fn probe_outside_write(workspace: &Path) -> ProbeCheck {
 
 /// Probe 2: outbound TCP connect to 1.1.1.1:80 (IP literal — no DNS on the
 /// probe path). Bounded by a 3s connect timeout.
+///
+/// 只有 **PermissionDenied** 才是隔离生效的证据；超时/不可达/拒连也可能是
+/// 本机无外网或上游防火墙 —— 机器可读的 blocked 不得据此为真（诚实探针：
+/// 宁可漏报也不假报绿）。原始错误始终进 evidence。
 fn probe_network() -> ProbeCheck {
     let name = "网络出站（TCP 1.1.1.1:80）";
     let addr = std::net::SocketAddr::from((Ipv4Addr::new(1, 1, 1, 1), 80));
@@ -94,10 +98,21 @@ fn probe_network() -> ProbeCheck {
             // landlock 不覆盖网络 —— 连通不代表「无沙盒」，如实展示能力缺口。
             evidence: "连接成功（允许出站；注意：landlock 不覆盖网络，bwrap --unshare-net / Seatbelt deny network 才会拦截）".to_string(),
         },
+        Err(e)
+            if e.kind() == std::io::ErrorKind::PermissionDenied =>
+        {
+            ProbeCheck {
+                name: name.to_string(),
+                blocked: true,
+                evidence: format!("连接被系统拒绝（PermissionDenied）：{e}"),
+            }
+        }
         Err(e) => ProbeCheck {
             name: name.to_string(),
-            blocked: true,
-            evidence: format!("连接被拒/失败：{e}"),
+            blocked: false,
+            evidence: format!(
+                "连接失败但非权限拒绝（可能是本机无外网/上游拦截，无法据此判定隔离生效）：{e}"
+            ),
         },
     }
 }

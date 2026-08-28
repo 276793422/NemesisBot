@@ -21,15 +21,18 @@ async function load() {
     summary.value = cache.get(props.session)
     return
   }
+  const sess = props.session
   loading.value = true
   try {
-    const data = await request('logs', 'injection_summary', { session: props.session })
+    const data = await request('logs', 'injection_summary', { session: sess })
+    if (sess !== props.session) return // 会话已切换：在途响应丢弃，不污染当前面板
     summary.value = data
-    cache.set(props.session, data)
+    cache.set(sess, data)
   } catch {
+    if (sess !== props.session) return
     summary.value = null
   } finally {
-    loading.value = false
+    if (sess === props.session) loading.value = false
   }
 }
 
@@ -39,26 +42,34 @@ watch(
   () => {
     summary.value = null
     verifyResults.value = {}
+    verifying.value = {}
     if (expanded.value) void load()
   },
 )
 
-const verifying = ref<Record<number, boolean>>({})
-const verifyResults = ref<Record<number, any>>({})
+const verifying = ref<Record<string, boolean>>({})
+const verifyResults = ref<Record<string, any>>({})
 
-async function verify(round: number) {
-  verifying.value = { ...verifying.value, [round]: true }
+/// round 每回合从 1 重来 —— 结果/在途状态都按 `trace_id:round` 组合键存，
+/// 只按 round 存会让多回合会话的同号轮互相覆盖。
+function vkey(traceId: string, round: number): string {
+  return `${traceId}:${round}`
+}
+
+async function verify(round: number, traceId: string) {
+  const sess = props.session
+  const k = vkey(traceId, round)
+  verifying.value = { ...verifying.value, [k]: true }
+  let r: any
   try {
-    const r = await request('logs', 'replay_verify', { session: props.session, round })
-    verifyResults.value = { ...verifyResults.value, [round]: r }
+    r = await request('logs', 'replay_verify', { session: sess, round, trace_id: traceId })
   } catch (e) {
-    verifyResults.value = {
-      ...verifyResults.value,
-      [round]: { ok: false, verdict: 'error', note: String(e) },
-    }
-  } finally {
-    verifying.value = { ...verifying.value, [round]: false }
+    r = { ok: false, verdict: 'error', note: String(e) }
   }
+  // 会话已切换：在途结论丢弃（A 会话的校验结论不得挂到 B 会话同名轮次上）。
+  if (sess !== props.session) return
+  verifyResults.value = { ...verifyResults.value, [k]: r }
+  verifying.value = { ...verifying.value, [k]: false }
 }
 
 const SOURCE_LABELS: Record<string, string> = {
@@ -120,14 +131,14 @@ function verdictBadge(v: any): { icon: string; text: string; cls: string; title:
       <div v-if="loading" class="panel-hint">加载中…</div>
 
       <template v-else-if="summary?.available">
-        <div v-for="r in summary.rounds" :key="r.round" class="round-row">
+        <div v-for="r in summary.rounds" :key="r.trace_id + ':' + r.round" class="round-row">
           <div class="round-head">
             <span class="round-no">第 {{ r.round }} 轮</span>
             <span class="round-meta">{{ r.messages_count }} 条消息 · 历史 {{ r.history_len }}</span>
             <span v-if="r.summary_used" class="round-flag" title="本轮请求使用了摘要折叠（covers_up_to={{ r.summary_covers_up_to }}）">📄 摘要</span>
             <span v-if="r.voice_append" class="round-flag" title="本轮有语音播报后缀注入">🔊 语音</span>
-            <button class="btn btn-sm verify-btn" :disabled="verifying[r.round]" @click="verify(r.round)">
-              {{ verifying[r.round] ? '校验中…' : '校验重放' }}
+            <button class="btn btn-sm verify-btn" :disabled="verifying[vkey(r.trace_id, r.round)]" @click="verify(r.round, r.trace_id)">
+              {{ verifying[vkey(r.trace_id, r.round)] ? '校验中…' : '校验重放' }}
             </button>
           </div>
 
@@ -138,8 +149,8 @@ function verdictBadge(v: any): { icon: string; text: string; cls: string; title:
           </div>
           <div v-else class="inj-none">无注入</div>
 
-          <div v-if="verifyResults[r.round]" class="verify-result" :class="verdictBadge(verifyResults[r.round]).cls" :title="verdictBadge(verifyResults[r.round]).title">
-            {{ verdictBadge(verifyResults[r.round]).icon }} {{ verdictBadge(verifyResults[r.round]).text }}
+          <div v-if="verifyResults[vkey(r.trace_id, r.round)]" class="verify-result" :class="verdictBadge(verifyResults[vkey(r.trace_id, r.round)]).cls" :title="verdictBadge(verifyResults[vkey(r.trace_id, r.round)]).title">
+            {{ verdictBadge(verifyResults[vkey(r.trace_id, r.round)]).icon }} {{ verdictBadge(verifyResults[vkey(r.trace_id, r.round)]).text }}
           </div>
         </div>
       </template>

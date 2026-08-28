@@ -271,3 +271,65 @@ async fn config_set_field_unknown_key_loud_rejects() {
         .unwrap_err();
     assert!(err.contains("unknown config field"), "{err}");
 }
+
+// ---------------------------------------------------------------------------
+// 数组下标路径（model_list.<i>.<field>）：set_json_path / json_path_get 必须
+// 对称支持数字段（此前 get 对数组数字段返回 None → round-trip 误报
+// "unknown config field"，set 本身也是静默 no-op）。
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn config_set_field_supports_array_index_paths() {
+    let dir = tempfile::tempdir().unwrap();
+    let ctx = make_ctx(&dir, false);
+    // 播种一个带条目的 model_list（Config 全字段 serde(default)，最小 JSON 可解析）。
+    std::fs::write(
+        dir.path().join("config.json"),
+        serde_json::json!({ "model_list": [ { "model_name": "test/m1" } ] }).to_string(),
+    )
+    .unwrap();
+    let handler = ConfigHandler::new();
+
+    // 数组下标路径可写且 round-trip 通过（不再误报 unknown config field）。
+    let out = handler
+        .handle_cmd(
+            "set_field",
+            Some(serde_json::json!({ "path": "model_list.0.model_name", "value": "test/m2" })),
+            &ctx,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(out["updated"], true);
+
+    // get 回读 + 盘上真实落盘。
+    let get = handler.handle_cmd("get", None, &ctx).await.unwrap().unwrap();
+    assert_eq!(get["model_list"][0]["model_name"], "test/m2");
+    let raw: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(dir.path().join("config.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(raw["model_list"][0]["model_name"], "test/m2");
+
+    // 越界下标 loud 报错（无 append 语义），盘上没有被半写。
+    let err = handler
+        .handle_cmd(
+            "set_field",
+            Some(serde_json::json!({ "path": "model_list.5.model_name", "value": "x" })),
+            &ctx,
+        )
+        .await
+        .unwrap_err();
+    assert!(err.contains("array index out of bounds"), "{err}");
+
+    // 数组上的非数字段 loud 报错（不是静默 no-op）。
+    let err = handler
+        .handle_cmd(
+            "set_field",
+            Some(serde_json::json!({ "path": "model_list.zero", "value": "x" })),
+            &ctx,
+        )
+        .await
+        .unwrap_err();
+    assert!(err.contains("not a valid array index"), "{err}");
+}

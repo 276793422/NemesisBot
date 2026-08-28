@@ -191,7 +191,9 @@ fn sanitize_config(json: &mut serde_json::Value) {
     }
 }
 
-/// Set a value at a dot-separated path in a JSON object.
+/// Set a value at a dot-separated path in a JSON object. Array segments are
+/// addressed by numeric index (e.g. `model_list.0.api_key`); out-of-bounds
+/// indices are a loud error (no append semantics).
 fn set_json_path(
     json: &mut serde_json::Value,
     path: &str,
@@ -201,9 +203,25 @@ fn set_json_path(
         return Err("empty path".to_string());
     }
     let parts: Vec<&str> = path.split('.').collect();
+    let last = parts.len() - 1;
     let mut current = json;
     for (i, part) in parts.iter().enumerate() {
-        if i == parts.len() - 1 {
+        // 数组节点：段必须解析为 usize 下标，越界显式报错。
+        if current.is_array() {
+            let idx: usize = part.parse().map_err(|_| {
+                format!("path segment `{part}` is not a valid array index ({path})")
+            })?;
+            if current.get(idx).is_none() {
+                return Err(format!("array index out of bounds: {path}"));
+            }
+            if i == last {
+                current[idx] = value;
+                return Ok(());
+            }
+            current = &mut current[idx];
+            continue;
+        }
+        if i == last {
             current[part] = value;
             return Ok(());
         }
@@ -216,13 +234,18 @@ fn set_json_path(
 }
 
 /// Resolve a dot path on a JSON value; None if any segment is missing.
+/// Array nodes take numeric-index segments (mirror of [`set_json_path`]).
 fn json_path_get<'a>(
     json: &'a serde_json::Value,
     path: &str,
 ) -> Option<&'a serde_json::Value> {
     let mut current = json;
     for part in path.split('.') {
-        current = current.get(part)?;
+        if current.is_array() {
+            current = current.get(part.parse::<usize>().ok()?)?;
+        } else {
+            current = current.get(part)?;
+        }
     }
     Some(current)
 }
