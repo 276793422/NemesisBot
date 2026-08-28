@@ -766,3 +766,45 @@ async fn persist_entry_fails_when_parent_is_file() {
     let err = store.persist_entry(&entry).await.unwrap_err();
     assert!(!err.is_empty(), "persist against file-as-parent must fail: {err}");
 }
+
+// ---------------------------------------------------------------------------
+// query_with_threshold（2026-08-29 注入为空根因修复）：store 层 0.7 预过滤
+// 曾把 0.35-0.7 之间的相关记忆静默裁掉，注入 prefetch 外层的 0.35 形同虚设。
+// ---------------------------------------------------------------------------
+
+#[test]
+fn query_with_threshold_recalls_docs_below_store_bar() {
+    // 手工嵌入：单位向量，余弦可控。
+    //   q=[1,0]；hi=[0.9,0.4359]（cos≈0.9，过 0.7）；lo=[0.6,0.8]（cos=0.6：
+    //   被 store 层 0.7 拦、被注入阈值 0.35 放行）。
+    let embed = move |t: &str| -> Result<Vec<f32>, String> {
+        Ok(match t {
+            // store_entry 嵌入的是 content；query 嵌入的是查询原文。
+            "q" => vec![1.0, 0.0],
+            "high" => vec![0.9, 0.435_889_894_354_067],
+            "loose" => vec![0.6, 0.8],
+            _ => vec![0.0, 0.0],
+        })
+    };
+    let embed: crate::vector::EmbeddingFunc = Box::new(embed);
+    // 与生产 gateway 构建一致的 store 层阈值（0.7）。
+    let config = StoreConfig {
+        similarity_threshold: 0.7,
+        ..make_store_config("")
+    };
+    let store = VectorStore::new_from_embed(embed, config);
+    store.store_entry(&make_entry("hi", "high")).unwrap();
+    store.store_entry(&make_entry("lo", "loose")).unwrap();
+
+    // 旧路径（store 层 0.7）：只看到 hi —— 注入路径曾在这里被清空。
+    let strict = store.query("q", 10, &[]).unwrap();
+    assert_eq!(strict.entries.len(), 1);
+    assert_eq!(strict.entries[0].id, "hi");
+
+    // 注入路径（显式 0.35）：hi + lo 都召回。
+    let recall = store
+        .query_with_threshold("q", 10, &[], crate::manager::AUTO_INJECT_MIN_SCORE)
+        .unwrap();
+    let ids: Vec<&str> = recall.entries.iter().map(|e| e.id.as_str()).collect();
+    assert_eq!(ids, vec!["hi", "lo"], "0.35 阈值下 0.6 分的 lo 必须被召回");
+}

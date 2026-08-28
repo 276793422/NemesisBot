@@ -547,3 +547,186 @@ fn migrate_legacy_fails_cleanly_when_target_parent_uncreatable() {
     migrate_legacy_vector_store(&dir.path().to_string_lossy());
     assert!(!vector_store_jsonl_path(&dir.path().to_string_lossy()).exists());
 }
+
+// -----------------------------------------------------------------------
+// 条目管理（自动记忆注入 TAB，2026-08-28）：entries.get / delete / update
+// -----------------------------------------------------------------------
+
+#[tokio::test]
+async fn entries_get_returns_full_untruncated_content_offline() {
+    let dir = tempfile::tempdir().unwrap();
+    // 300 字符内容：entries.list 会截断到 200+“...”，entries.get 必须给全量。
+    let long_content = "记".repeat(300);
+    let mut line = serde_json::json!({ "id": "long", "content": long_content }).to_string();
+    line.push('\n');
+    write_vector_jsonl(dir.path(), &line);
+
+    let ctx = make_ctx_mgr(&dir, &dir.path().join("memory_vector"));
+
+    let listed = run(&ctx, "entries.list", serde_json::json!({}))
+        .await
+        .unwrap()
+        .unwrap();
+    let listed_len = listed["entries"][0]["content"].as_str().unwrap().chars().count();
+    assert!(listed_len < 300, "list must truncate, got {}", listed_len);
+
+    let out = run(&ctx, "entries.get", serde_json::json!({ "id": "long" }))
+        .await
+        .unwrap()
+        .unwrap();
+    let got = out["entry"]["content"].as_str().unwrap();
+    assert_eq!(got.chars().count(), 300, "entries.get must return FULL content");
+
+    // 不存在的 id → entry:null，不报错。
+    let miss = run(&ctx, "entries.get", serde_json::json!({ "id": "nope" }))
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(miss["entry"].is_null());
+}
+
+#[tokio::test]
+async fn entries_delete_removes_line_offline_jsonl() {
+    let dir = tempfile::tempdir().unwrap();
+    write_vector_jsonl(
+        dir.path(),
+        concat!(
+            "{\"id\":\"a\",\"content\":\"keep\"}\n",
+            "{\"id\":\"b\",\"content\":\"drop\"}\n"
+        ),
+    );
+    let ctx = make_ctx_mgr(&dir, &dir.path().join("memory_vector"));
+
+    let out = run(&ctx, "entries.delete", serde_json::json!({ "id": "b" }))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(out["deleted"], serde_json::json!(true));
+
+    // 行级删除落盘：只剩 a。
+    let raw = std::fs::read_to_string(vector_store_jsonl_path(&dir.path().to_string_lossy()))
+        .unwrap();
+    assert!(raw.contains("\"a\"") && !raw.contains("\"drop\""), "raw: {}", raw);
+
+    // 再删同一个 id → deleted:false（不报错）。
+    let again = run(&ctx, "entries.delete", serde_json::json!({ "id": "b" }))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(again["deleted"], serde_json::json!(false));
+}
+
+#[tokio::test]
+async fn entries_update_without_manager_loud_rejects() {
+    let dir = tempfile::tempdir().unwrap();
+    let ws = dir.path().to_string_lossy().to_string();
+    let state = Arc::new(build_state(&ws, None));
+    let ctx = RequestContext {
+        session_id: "t".into(),
+        chat_id: "t".into(),
+        workspace: Some(ws.clone()),
+        home: Some(ws),
+        state,
+        auth_method: AuthMethod::default(),
+    };
+    let err = run(
+        &ctx,
+        "entries.update",
+        serde_json::json!({ "id": "x", "content": "new" }),
+    )
+    .await
+    .unwrap_err();
+    assert!(err.contains("强化记忆未启用"), "got: {}", err);
+}
+
+#[tokio::test]
+async fn entries_update_with_enabled_manager_reembeds_via_delete_and_restore() {
+    let dir = tempfile::tempdir().unwrap();
+    let ctx = make_ctx_mgr(&dir, &dir.path().join("memory_vector"));
+    let mgr = ctx.state.memory_manager.clone().unwrap();
+    mgr.set_vector_enabled(true);
+
+    let stored = run(&ctx, "entries.store", serde_json::json!({ "content": "old bytes" }))
+        .await
+        .unwrap()
+        .unwrap();
+    let old_id = stored["id"].as_str().unwrap().to_string();
+
+    let out = run(
+        &ctx,
+        "entries.update",
+        serde_json::json!({ "id": old_id, "content": "new bytes" }),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert_eq!(out["updated"], serde_json::json!(true));
+    let new_id = out["id"].as_str().unwrap().to_string();
+    assert_ne!(new_id, old_id, "update = delete + re-store → new id");
+
+    // 旧 id 已消失，新 id 带新内容可取回。
+    let got_old = mgr.get(&old_id).await.unwrap();
+    assert!(got_old.is_none(), "old entry must be gone");
+    let got_new = mgr.get(&new_id).await.unwrap().expect("new entry present");
+    assert_eq!(got_new.content, "new bytes");
+
+    // 不存在的 id → loud 报错（不静默造新条目）。
+    let err = run(
+        &ctx,
+        "entries.update",
+        serde_json::json!({ "id": "missing", "content": "x" }),
+    )
+    .await
+    .unwrap_err();
+    assert!(err.contains("entry not found"), "got: {}", err);
+}
+
+#[tokio::test]
+async fn entries_list_paginates_with_offset_and_limit() {
+    // 5 条（文件序 1..5，最新在后）→ 倒序后 5,4,3,2,1。
+    let dir = tempfile::tempdir().unwrap();
+    let body: String = (1..=5)
+        .map(|i| format!("{{\"id\":\"e{i}\",\"content\":\"c{i}\"}}\n"))
+        .collect();
+    write_vector_jsonl(dir.path(), &body);
+    let ctx = make_ctx_mgr(&dir, &dir.path().join("memory_vector"));
+
+    // 默认（无 data）→ 旧行为：最多 100 条。
+    let all = run(&ctx, "entries.list", serde_json::json!({}))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(all["total"], serde_json::json!(5));
+    assert_eq!(all["entries"].as_array().unwrap().len(), 5);
+    assert_eq!(all["entries"][0]["id"], serde_json::json!("e5"), "最新在前");
+
+    // offset=1, limit=2 → 第 2、3 条（e4、e3）。
+    let page = run(
+        &ctx,
+        "entries.list",
+        serde_json::json!({ "offset": 1, "limit": 2 }),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert_eq!(page["total"], serde_json::json!(5), "total 恒为全量条数");
+    let ids: Vec<&str> = page["entries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| e["id"].as_str().unwrap())
+        .collect();
+    assert_eq!(ids, vec!["e4", "e3"]);
+
+    // 越界 offset → 空页但 total 不变。
+    let tail = run(
+        &ctx,
+        "entries.list",
+        serde_json::json!({ "offset": 100, "limit": 2 }),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert_eq!(tail["entries"].as_array().unwrap().len(), 0);
+    assert_eq!(tail["total"], serde_json::json!(5));
+}

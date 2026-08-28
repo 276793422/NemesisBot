@@ -312,8 +312,154 @@ async function restartAgent() {
   restartingAgent.value = false
 }
 
+// 开关级联：自动注入 = 强化记忆子系统在「不问自答」方向上的应用——检索走
+// 向量语义匹配（关键词回退分数恒 0，过不了 0.35 阈值），强化记忆关着时注入
+// 永远为空。所以打开自动注入时自动带上强化记忆；反过来关强化记忆时连带关
+// 自动注入（留着也是死的）。用户只操作一个开关，依赖由界面兜住。
+// 模型未装时后端会拒绝 sub_enabled=true（开强化记忆强制要求模型），所以级联
+// 前先查模型：未装则回滚自动注入并引导去环境准备卡，避免 UI 与磁盘状态分叉。
+watch(autoInject, on => {
+  if (!on) return
+  if (!subEnabled.value) {
+    if (!envStatus.value?.models?.[activeTier.value]?.model_ready) {
+      autoInject.value = false
+      toast.error('注入模型尚未安装：请先在上方「环境准备」卡点对应档位的「安装」按钮，装好后再打开自动注入')
+      return
+    }
+    subEnabled.value = true
+    toast.info('已同步开启「强化记忆」——自动注入的语义检索依赖它')
+  }
+})
+watch(subEnabled, on => {
+  if (!on && autoInject.value) {
+    autoInject.value = false
+    toast.warn('「强化记忆」已关闭，自动注入随之关闭')
+  }
+})
+
 watch([mainEnabled, subEnabled, activeTier, similarityThreshold, maxResults, autoInject, autoInjectTopK], () => {
   saveConfigDebounced()
+})
+
+// ---------------------------------------------------------------------------
+// 自动记忆注入 TAB：记忆条目管理（查看/搜索/新增/编辑/删除）
+// ---------------------------------------------------------------------------
+
+const mgmtEntries = ref<any[]>([])
+const mgmtTotal = ref(0)
+const mgmtLimit = 50
+const mgmtSearchQuery = ref('')
+const mgmtResults = ref<any[] | null>(null)
+const mgmtNewContent = ref('')
+const mgmtAdding = ref(false)
+const mgmtEditingId = ref('')
+const mgmtEditContent = ref('')
+const mgmtSaving = ref(false)
+
+async function loadMgmtEntries() {
+  try {
+    const data = await request('memory', 'entries.list', { offset: 0, limit: mgmtLimit })
+    mgmtEntries.value = data?.entries || []
+    mgmtTotal.value = data?.total || 0
+    mgmtResults.value = null
+  } catch (e: any) {
+    toast.error('加载记忆条目失败: ' + e)
+  }
+}
+
+async function loadMoreMgmtEntries() {
+  try {
+    // 按已加载条数续页（entries.list 内容有 200 字符显示截断，编辑走 entries.get 全量）。
+    const data = await request('memory', 'entries.list', {
+      offset: mgmtEntries.value.length,
+      limit: mgmtLimit,
+    })
+    mgmtEntries.value.push(...(data?.entries || []))
+    mgmtTotal.value = data?.total || 0
+  } catch (e: any) {
+    toast.error('加载更多失败: ' + e)
+  }
+}
+
+async function addMgmtEntry() {
+  if (!mgmtNewContent.value.trim()) return
+  mgmtAdding.value = true
+  try {
+    await request('memory', 'entries.store', { content: mgmtNewContent.value })
+    toast.success('记忆条目已添加')
+    mgmtNewContent.value = ''
+    await loadMgmtEntries()
+  } catch (e: any) {
+    toast.error('添加失败: ' + e)
+  }
+  mgmtAdding.value = false
+}
+
+async function searchMgmtEntries() {
+  if (!mgmtSearchQuery.value.trim()) {
+    mgmtResults.value = null
+    return
+  }
+  try {
+    const data = await request('memory', 'entries.search', {
+      query: mgmtSearchQuery.value,
+      limit: 20,
+    })
+    mgmtResults.value = data?.results || []
+  } catch (e: any) {
+    toast.error('搜索失败: ' + e)
+  }
+}
+
+async function startMgmtEdit(entry: any) {
+  try {
+    // entries.list 的 content 截断到 200 字符——编辑必须取全量原文。
+    const data = await request('memory', 'entries.get', { id: entry.id })
+    mgmtEditContent.value = data?.entry?.content ?? entry.content ?? ''
+    mgmtEditingId.value = entry.id
+  } catch (e: any) {
+    toast.error('读取条目失败: ' + e)
+  }
+}
+
+function cancelMgmtEdit() {
+  mgmtEditingId.value = ''
+  mgmtEditContent.value = ''
+}
+
+async function saveMgmtEdit() {
+  if (!mgmtEditingId.value || !mgmtEditContent.value.trim()) return
+  mgmtSaving.value = true
+  try {
+    // update = 删除旧条目 + 重新嵌入存储 → 返回新 id。
+    await request('memory', 'entries.update', {
+      id: mgmtEditingId.value,
+      content: mgmtEditContent.value,
+    })
+    toast.success('记忆条目已更新')
+    cancelMgmtEdit()
+    await loadMgmtEntries()
+  } catch (e: any) {
+    toast.error('更新失败: ' + e)
+  }
+  mgmtSaving.value = false
+}
+
+async function deleteMgmtEntry(entry: any) {
+  if (!window.confirm('确定删除这条记忆吗？删除后不可恢复。')) return
+  try {
+    await request('memory', 'entries.delete', { id: entry.id })
+    toast.success('记忆条目已删除')
+    if (mgmtEditingId.value === entry.id) cancelMgmtEdit()
+    await loadMgmtEntries()
+  } catch (e: any) {
+    toast.error('删除失败: ' + e)
+  }
+}
+
+// 切到自动注入 TAB 时刷新条目列表（外部/agent 侧可能新增过）。
+watch(activeTab, t => {
+  if (t === 'autoinject') void loadMgmtEntries()
 })
 
 // ---------------------------------------------------------------------------
@@ -352,6 +498,7 @@ onUnmounted(() => {
       <div class="tabs">
         <button class="tab" :class="{ active: activeTab === 'documents' }" @click="activeTab = 'documents'">文档记忆</button>
         <button class="tab" :class="{ active: activeTab === 'vector' }" @click="activeTab = 'vector'">强化记忆</button>
+        <button class="tab" :class="{ active: activeTab === 'autoinject' }" @click="activeTab = 'autoinject'">自动记忆注入</button>
       </div>
 
       <!-- Documents tab (unchanged) -->
@@ -620,10 +767,78 @@ onUnmounted(() => {
 
         </div><!-- End Row 2 -->
 
-        <!-- Row 3 (P1-1, 2026-08-24): auto memory injection card -->
+      </div><!-- End vector tab -->
+
+      <!-- 自动记忆注入 TAB：环境准备（模型下载）+ 注入配置 + 记忆条目管理 -->
+      <div v-if="activeTab === 'autoinject'">
+
+        <!-- Setup progress bar -->
+        <div v-if="setupProgress" class="card" style="padding: var(--space-3) var(--space-4); background: var(--accent-bg, rgba(59,130,246,0.08)); border-color: var(--accent); margin-top: var(--space-4);">
+          <div style="display: flex; align-items: center; gap: var(--space-3);">
+            <div class="spinner spinner-sm"></div>
+            <span style="font-size: var(--text-sm); color: var(--accent);">{{ setupProgress }}</span>
+          </div>
+        </div>
+
+        <!-- 卡 1：环境准备（模型下载）—— 检查环境 → 查看配置 → 手动点安装 -->
         <div class="card" style="margin-top: var(--space-4);">
           <div class="card-header" style="display: flex; justify-content: space-between; align-items: center;">
-            <h3 style="margin: 0;">自动记忆注入（每轮自动想起）</h3>
+            <h3 style="margin: 0;">环境准备（注入模型）</h3>
+            <div style="display: flex; gap: var(--space-2);">
+              <button class="btn btn-sm" @click="toggleEmbeddingConfig">{{ showEmbeddingConfig ? '隐藏配置' : '查看配置' }}</button>
+              <button class="btn btn-sm" @click="checkEnv">检查环境</button>
+              <button class="btn btn-sm btn-primary" @click="oneClickSetup" :disabled="!!setupProgress">一键安装</button>
+            </div>
+          </div>
+          <div class="card-body">
+            <p style="color: var(--text-secondary); font-size: var(--text-xs); margin: 0 0 var(--space-3);">
+              自动注入依赖本地 ONNX 嵌入模型。流程：先「检查环境」确认插件与模型状态 →
+              需要时「查看配置」→ 再点对应档位的「安装」从 hf-mirror 国内镜像自动下载
+              （小 ~60MB / 中 ~90MB / 大 ~430MB），无需手动找文件。
+            </p>
+            <!-- Plugin status -->
+            <div style="margin-bottom: var(--space-3);">
+              <div style="font-weight: 500; margin-bottom: var(--space-2);">插件状态</div>
+              <div style="padding-left: var(--space-4);">
+                <div style="display: flex; align-items: center; gap: var(--space-2); font-size: var(--text-sm);">
+                  <span :style="{ color: envStatus?.plugin?.found ? 'var(--success)' : 'var(--text-secondary)' }">{{ envStatus?.plugin?.found ? '●' : '○' }}</span>
+                  <span>plugin_onnx.dll</span>
+                  <span v-if="envStatus?.plugin?.found" style="color: var(--text-secondary);">(已找到)</span>
+                  <span v-else style="color: var(--danger);">未找到</span>
+                </div>
+              </div>
+            </div>
+
+            <!-- Models -->
+            <div>
+              <div style="font-weight: 500; margin-bottom: var(--space-2);">模型文件</div>
+              <div style="display: flex; flex-direction: column; gap: var(--space-2); padding-left: var(--space-4);">
+                <div v-for="tier in ['large', 'medium', 'small']" :key="tier" style="display: flex; justify-content: space-between; align-items: center;">
+                  <span style="display: flex; align-items: center; gap: var(--space-2); font-size: var(--text-sm);">
+                    <span :style="{ color: envStatus?.models?.[tier]?.model_ready ? 'var(--success)' : 'var(--text-secondary)' }">{{ envStatus?.models?.[tier]?.model_ready ? '●' : '○' }}</span>
+                    <span>{{ tier === 'large' ? '大模型' : tier === 'medium' ? '中模型' : '小模型' }} ({{ envStatus?.models?.[tier]?.dimension || '?' }}d)</span>
+                    <span v-if="envStatus?.models?.[tier]?.model_ready && envStatus?.models?.[tier]?.model_size" style="color: var(--text-secondary);">({{ formatSize(envStatus.models[tier].model_size) }})</span>
+                    <span v-if="tier === activeTier" class="badge badge-neutral">当前档</span>
+                  </span>
+                  <button class="btn btn-sm" @click="installModelTier(tier, tier === 'large' ? '大模型' : tier === 'medium' ? '中模型' : '小模型')" :disabled="!!setupProgress || envStatus?.models?.[tier]?.model_ready">安装</button>
+                </div>
+              </div>
+            </div>
+
+            <!-- Config editor (toggle) -->
+            <div v-if="showEmbeddingConfig" style="margin-top: var(--space-4); border-top: 1px solid var(--border); padding-top: var(--space-4);">
+              <textarea class="form-textarea" style="min-height: 200px; font-family: var(--font-mono); font-size: var(--text-xs);" v-model="embeddingConfigContent"></textarea>
+              <div style="margin-top: var(--space-2); display: flex; justify-content: flex-end;">
+                <button class="btn btn-sm btn-primary" @click="saveEmbeddingConfig">保存</button>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- 卡 2：注入配置（自强化记忆 TAB 底部卡片迁移至此） -->
+        <div class="card" style="margin-top: var(--space-4);">
+          <div class="card-header" style="display: flex; justify-content: space-between; align-items: center;">
+            <h3 style="margin: 0;">注入配置（每轮自动想起）</h3>
             <button class="btn btn-sm" :disabled="restartingAgent" @click="restartAgent">
               {{ restartingAgent ? '重启中...' : '重启 Agent 生效' }}
             </button>
@@ -635,16 +850,35 @@ onUnmounted(() => {
               开关在 Agent 启动时读取，保存后需点击右上角「重启 Agent 生效」。
             </p>
             <div class="settings-grid">
+              <!-- 总开关（与「强化记忆」TAB 的记忆配置卡共享同一份状态/配置） -->
+              <span class="settings-key">主开关</span>
+              <label class="toggle-switch">
+                <input type="checkbox" v-model="mainEnabled" />
+                <span class="toggle-slider"></span>
+                <span class="toggle-label">{{ mainEnabled ? '启用' : '停用' }}</span>
+              </label>
+
+              <span class="settings-key">强化记忆</span>
+              <label class="toggle-switch">
+                <input type="checkbox" v-model="subEnabled" :disabled="!mainEnabled" />
+                <span class="toggle-slider"></span>
+                <span class="toggle-label">{{ subEnabled ? '启用' : '停用' }}</span>
+              </label>
+
               <!-- Prerequisite status -->
               <span class="settings-key">前置状态</span>
               <span style="display: flex; align-items: center; gap: var(--space-2); font-size: var(--text-sm);">
-                <template v-if="!mainEnabled || !subEnabled">
+                <template v-if="!mainEnabled">
+                  <span class="badge badge-neutral">主开关未启用</span>
+                  <span style="color: var(--text-muted);">先打开上方「主开关」</span>
+                </template>
+                <template v-else-if="!subEnabled">
                   <span class="badge badge-neutral">强化记忆未启用</span>
-                  <span style="color: var(--text-muted);">先打开上方「主开关 + 强化记忆」</span>
+                  <span style="color: var(--text-muted);">打开「自动注入」会自动带上它</span>
                 </template>
                 <template v-else-if="!envStatus?.models?.[activeTier]?.model_ready">
                   <span class="badge badge-error">模型未安装</span>
-                  <span style="color: var(--text-muted);">先点上方「环境管理」卡片里的安装按钮</span>
+                  <span style="color: var(--text-muted);">在上方「环境准备」卡点对应档位的「安装」按钮下载</span>
                 </template>
                 <template v-else>
                   <span class="badge badge-success">就绪</span>
@@ -652,10 +886,18 @@ onUnmounted(() => {
                 </template>
               </span>
 
-              <!-- Auto-inject switch -->
+              <!-- Active tier -->
+              <span class="settings-key">模型规格</span>
+              <select class="form-select" v-model="activeTier" style="width: 100%;" :disabled="!subEnabled">
+                <option value="large">大模型 (768d)</option>
+                <option value="medium">中模型 (384d)</option>
+                <option value="small">小模型 (256d)</option>
+              </select>
+
+              <!-- Auto-inject switch（级联：打开时自动带上强化记忆，不再禁用） -->
               <span class="settings-key">自动注入</span>
               <label class="toggle-switch">
-                <input type="checkbox" v-model="autoInject" :disabled="!subEnabled" />
+                <input type="checkbox" v-model="autoInject" />
                 <span class="toggle-slider"></span>
                 <span class="toggle-label">{{ autoInject ? '启用' : '停用' }}</span>
               </label>
@@ -668,9 +910,84 @@ onUnmounted(() => {
               </div>
             </div>
           </div>
-        </div><!-- End Row 3 -->
+        </div>
 
-      </div><!-- End vector tab -->
+        <!-- 卡 3：记忆条目管理（自动注入的内容来源） -->
+        <div class="card" style="margin-top: var(--space-4);">
+          <div class="card-header" style="display: flex; justify-content: space-between; align-items: center;">
+            <h3 style="margin: 0;">记忆条目管理</h3>
+            <button class="btn btn-sm" @click="loadMgmtEntries">刷新</button>
+          </div>
+          <div class="card-body">
+            <p style="color: var(--text-secondary); font-size: var(--text-xs); margin: 0 0 var(--space-3);">
+              这里就是会被自动注入的记忆内容——新增、编辑、删除直接生效（编辑会重新生成向量）。
+            </p>
+
+            <!-- 新增 -->
+            <div style="margin-bottom: var(--space-4);">
+              <div style="font-weight: 500; margin-bottom: var(--space-2);">新增条目</div>
+              <div style="display: flex; gap: var(--space-2);">
+                <textarea class="form-textarea" style="flex: 1; min-height: 70px; resize: vertical;" v-model="mgmtNewContent" placeholder="输入要记住的内容，之后每轮会自动想起..." @keydown.ctrl.enter="addMgmtEntry"></textarea>
+                <button class="btn btn-primary" @click="addMgmtEntry" :disabled="mgmtAdding || !mgmtNewContent.trim()">
+                  {{ mgmtAdding ? '添加中...' : '添加' }}
+                </button>
+              </div>
+            </div>
+
+            <!-- 搜索 -->
+            <div style="margin-bottom: var(--space-3);">
+              <div style="font-weight: 500; margin-bottom: var(--space-2);">搜索</div>
+              <div style="display: flex; gap: var(--space-2);">
+                <input class="form-input" style="flex: 1;" v-model="mgmtSearchQuery" placeholder="关键词搜索记忆条目..." @keydown.enter="searchMgmtEntries" />
+                <button class="btn" @click="searchMgmtEntries">搜索</button>
+                <button class="btn" v-if="mgmtResults !== null" @click="mgmtSearchQuery = ''; mgmtResults = null">清除</button>
+              </div>
+            </div>
+
+            <!-- 列表 -->
+            <div style="border: 1px solid var(--border); border-radius: var(--radius-md); max-height: 400px; overflow-y: auto;">
+              <template v-if="mgmtResults !== null">
+                <div v-if="mgmtResults.length === 0" class="empty-state" style="padding: var(--space-4);"><p>无匹配结果</p></div>
+                <div v-for="entry in mgmtResults" :key="entry.id" style="padding: var(--space-2) var(--space-3); border-bottom: 1px solid var(--border); font-size: var(--text-sm);">
+                  <div style="display: flex; justify-content: space-between; align-items: center; gap: var(--space-2);">
+                    <span style="flex: 1;">{{ entry.content }}</span>
+                    <span style="color: var(--text-muted); font-size: var(--text-xs);">搜索结果</span>
+                  </div>
+                </div>
+              </template>
+              <template v-else>
+                <div v-if="mgmtEntries.length === 0" class="empty-state" style="padding: var(--space-4);"><p>暂无记忆条目</p></div>
+                <div v-for="entry in mgmtEntries" :key="entry.id" style="padding: var(--space-2) var(--space-3); border-bottom: 1px solid var(--border); font-size: var(--text-sm);">
+                  <template v-if="mgmtEditingId === entry.id">
+                    <textarea class="form-textarea" aria-label="编辑条目" style="width: 100%; min-height: 70px; resize: vertical; margin-bottom: var(--space-2);" v-model="mgmtEditContent"></textarea>
+                    <div style="display: flex; gap: var(--space-2); justify-content: flex-end;">
+                      <button class="btn btn-sm" @click="cancelMgmtEdit">取消</button>
+                      <button class="btn btn-sm btn-primary" @click="saveMgmtEdit" :disabled="mgmtSaving || !mgmtEditContent.trim()">
+                        {{ mgmtSaving ? '保存中...' : '保存（重新生成向量）' }}
+                      </button>
+                    </div>
+                  </template>
+                  <template v-else>
+                    <div style="display: flex; justify-content: space-between; align-items: center; gap: var(--space-2);">
+                      <span style="flex: 1;">{{ entry.content }}</span>
+                      <span style="display: flex; gap: var(--space-1); flex-shrink: 0;">
+                        <button class="btn btn-sm" @click="startMgmtEdit(entry)">编辑</button>
+                        <button class="btn btn-sm" style="color: var(--danger);" @click="deleteMgmtEntry(entry)">删除</button>
+                      </span>
+                    </div>
+                    <div style="color: var(--text-muted); font-size: var(--text-xs); margin-top: 2px;">{{ (entry.id || '').substring(0, 8) }}<template v-if="entry.created_at"> · {{ entry.created_at }}</template></div>
+                  </template>
+                </div>
+              </template>
+            </div>
+            <div v-if="mgmtResults === null && mgmtEntries.length > 0" style="display: flex; align-items: center; justify-content: space-between; padding: var(--space-2) var(--space-3);">
+              <span style="color: var(--text-muted); font-size: var(--text-xs);">已显示 {{ mgmtEntries.length }} / 共 {{ mgmtTotal }} 条</span>
+              <button v-if="mgmtTotal > mgmtEntries.length" class="btn btn-sm" @click="loadMoreMgmtEntries">加载更多</button>
+            </div>
+          </div>
+        </div>
+
+      </div><!-- End autoinject tab -->
     </div>
   </div>
 </template>

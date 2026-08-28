@@ -62,7 +62,20 @@ impl ModuleHandler for MemoryHandler {
 
             // --- Enhanced memory: statistics & entries ---
             "stats" => self.stats(&config_dir, workspace),
-            "entries.list" => self.entries_list(workspace),
+            // 分页：缺省 offset=0 / limit=100（旧调用方零改动兼容）。
+            "entries.list" => {
+                let offset = data
+                    .as_ref()
+                    .and_then(|d| d.get("offset"))
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0) as usize;
+                let limit = data
+                    .as_ref()
+                    .and_then(|d| d.get("limit"))
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(100) as usize;
+                self.entries_list(workspace, offset, limit)
+            }
             "entries.search" => {
                 let data = data.ok_or("missing data")?;
                 let query = crate::handlers::get_str(&data, "query")?;
@@ -73,6 +86,24 @@ impl ModuleHandler for MemoryHandler {
                 let data = data.ok_or("missing data")?;
                 let content = crate::handlers::get_str(&data, "content")?;
                 self.entries_store(workspace, &content, ctx).await
+            }
+            // 条目管理（自动记忆注入 TAB）：编辑必须取全量内容（list 截断
+            // 200 字符），删除/更新配合前端的行内管理操作。
+            "entries.get" => {
+                let data = data.ok_or("missing data")?;
+                let id = crate::handlers::get_str(&data, "id")?;
+                self.entries_get(workspace, &id, ctx).await
+            }
+            "entries.delete" => {
+                let data = data.ok_or("missing data")?;
+                let id = crate::handlers::get_str(&data, "id")?;
+                self.entries_delete(workspace, &id, ctx).await
+            }
+            "entries.update" => {
+                let data = data.ok_or("missing data")?;
+                let id = crate::handlers::get_str(&data, "id")?;
+                let content = crate::handlers::get_str(&data, "content")?;
+                self.entries_update(workspace, &id, &content, ctx).await
             }
 
             // --- Enhanced memory: model management ---
@@ -661,7 +692,12 @@ impl MemoryHandler {
         })))
     }
 
-    fn entries_list(&self, workspace: &str) -> Result<Option<serde_json::Value>, String> {
+    fn entries_list(
+        &self,
+        workspace: &str,
+        offset: usize,
+        limit: usize,
+    ) -> Result<Option<serde_json::Value>, String> {
         migrate_legacy_vector_store(workspace);
         let jsonl_path = vector_store_jsonl_path(workspace);
         if !jsonl_path.exists() {
@@ -683,12 +719,13 @@ impl MemoryHandler {
         }
 
         let total = entries.len();
-        // Return most recent first (last in file)
+        // Return most recent first (last in file), then page.
         entries.reverse();
-        entries.truncate(100);
+        let page: Vec<serde_json::Value> =
+            entries.into_iter().skip(offset).take(limit).collect();
 
         Ok(Some(
-            serde_json::json!({ "entries": entries, "total": total }),
+            serde_json::json!({ "entries": page, "total": total, "offset": offset }),
         ))
     }
 
@@ -843,6 +880,144 @@ impl MemoryHandler {
             .map_err(|e| format!("failed to write: {}", e))?;
 
         Ok(Some(serde_json::json!({ "id": id, "stored": true })))
+    }
+
+    /// Fetch ONE entry with FULL content (`entries.list` truncates content to
+    /// 200 chars for display — editing must work on the true bytes).
+    /// Manager online → `mgr.get`; otherwise read the JSONL directly (same
+    /// durability reasoning as `entries_store`'s fallback path).
+    async fn entries_get(
+        &self,
+        workspace: &str,
+        id: &str,
+        ctx: &crate::ws_router::RequestContext,
+    ) -> Result<Option<serde_json::Value>, String> {
+        #[cfg(feature = "memory")]
+        if let Some(mgr) = ctx.state.memory_manager.as_ref() {
+            if mgr.is_vector_enabled() {
+                let entry = mgr
+                    .get(id)
+                    .await
+                    .map_err(|e| format!("get entry error: {}", e))?;
+                let json = entry
+                    .map(|e| serde_json::to_value(&e))
+                    .transpose()
+                    .map_err(|e| format!("serialize entry error: {}", e))?;
+                return Ok(Some(serde_json::json!({ "entry": json })));
+            }
+        }
+
+        migrate_legacy_vector_store(workspace);
+        let jsonl_path = vector_store_jsonl_path(workspace);
+        if !jsonl_path.exists() {
+            return Ok(Some(serde_json::json!({ "entry": null })));
+        }
+        let content = std::fs::read_to_string(&jsonl_path)
+            .map_err(|e| format!("failed to read vector store: {}", e))?;
+        for line in content.lines() {
+            let trimmed = line.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+            if let Ok(entry) = serde_json::from_str::<serde_json::Value>(trimmed) {
+                if entry.get("id").and_then(|v| v.as_str()) == Some(id) {
+                    return Ok(Some(serde_json::json!({ "entry": entry })));
+                }
+            }
+        }
+        Ok(Some(serde_json::json!({ "entry": null })))
+    }
+
+    /// Delete one entry by id. Manager online with vector enabled → route
+    /// through the manager (in-memory index + persistence, immediately
+    /// invisible to memory_search AND the auto-inject prefetch); otherwise
+    /// line-level rewrite of the JSONL (tmp + rename, same as the raw-append
+    /// fallback's durability level).
+    async fn entries_delete(
+        &self,
+        workspace: &str,
+        id: &str,
+        ctx: &crate::ws_router::RequestContext,
+    ) -> Result<Option<serde_json::Value>, String> {
+        #[cfg(feature = "memory")]
+        if let Some(mgr) = ctx.state.memory_manager.as_ref() {
+            if mgr.is_vector_enabled() {
+                let deleted = mgr
+                    .delete(id)
+                    .await
+                    .map_err(|e| format!("delete entry error: {}", e))?;
+                return Ok(Some(serde_json::json!({ "id": id, "deleted": deleted })));
+            }
+        }
+
+        migrate_legacy_vector_store(workspace);
+        let jsonl_path = vector_store_jsonl_path(workspace);
+        if !jsonl_path.exists() {
+            return Ok(Some(serde_json::json!({ "id": id, "deleted": false })));
+        }
+        let content = std::fs::read_to_string(&jsonl_path)
+            .map_err(|e| format!("failed to read vector store: {}", e))?;
+        let mut removed = false;
+        let mut kept = String::new();
+        for line in content.lines() {
+            let trimmed = line.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+            let is_target = serde_json::from_str::<serde_json::Value>(trimmed)
+                .ok()
+                .and_then(|e| e.get("id").and_then(|v| v.as_str()).map(|s| s == id))
+                .unwrap_or(false);
+            if is_target {
+                removed = true;
+                continue;
+            }
+            kept.push_str(trimmed);
+            kept.push('\n');
+        }
+        if removed {
+            let _guard = jsonl_write_lock().lock().unwrap();
+            let tmp = jsonl_path.with_extension("jsonl.tmp");
+            std::fs::write(&tmp, kept).map_err(|e| format!("failed to write tmp: {}", e))?;
+            std::fs::rename(&tmp, &jsonl_path).map_err(|e| format!("failed to rename: {}", e))?;
+        }
+        Ok(Some(serde_json::json!({ "id": id, "deleted": removed })))
+    }
+
+    /// Update an entry's content = delete + re-store (the stored vector must
+    /// be regenerated from the new content, so this REQUIRES the embedding
+    /// pipeline). Editing the offline JSONL would write a stale vector that
+    /// silently poisons semantic search — loud error instead.
+    async fn entries_update(
+        &self,
+        workspace: &str,
+        id: &str,
+        content: &str,
+        ctx: &crate::ws_router::RequestContext,
+    ) -> Result<Option<serde_json::Value>, String> {
+        #[cfg(feature = "memory")]
+        if let Some(mgr) = ctx.state.memory_manager.as_ref() {
+            if mgr.is_vector_enabled() {
+                let deleted = mgr
+                    .delete(id)
+                    .await
+                    .map_err(|e| format!("update entry error: {}", e))?;
+                if !deleted {
+                    return Err(format!("entry not found: {}", id));
+                }
+                let entry = nemesis_memory::types::Entry::new(
+                    nemesis_memory::types::MemoryType::LongTerm,
+                    content.to_string(),
+                );
+                let new_id = mgr
+                    .store_entry(entry)
+                    .await
+                    .map_err(|e| format!("store entry error: {}", e))?;
+                return Ok(Some(serde_json::json!({ "id": new_id, "updated": true })));
+            }
+        }
+        let _ = workspace;
+        Err("强化记忆未启用，无法编辑条目（需要重新生成向量）；可删除后重新添加".to_string())
     }
 }
 

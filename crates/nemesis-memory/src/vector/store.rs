@@ -200,6 +200,23 @@ impl VectorStore {
         limit: usize,
         type_filter: &[String],
     ) -> Result<QueryResult, String> {
+        self.query_with_threshold(query, limit, type_filter, self.config.similarity_threshold)
+    }
+
+    /// Query with an explicit minimum-score gate, overriding the store
+    /// config's `similarity_threshold` (0.7 — tuned for the agent's
+    /// deliberate `memory_search`). Callers with a DIFFERENT recall contract
+    /// must go through here: the auto-inject prefetch (loop.rs) uses 0.35 to
+    /// catch loosely-related memories, and a store-level 0.7 pre-filter
+    /// silently empties those results before the caller's own threshold is
+    /// ever applied (2026-08-29 注入为空的根因——两层阈值叠加，外层失效).
+    pub fn query_with_threshold(
+        &self,
+        query: &str,
+        limit: usize,
+        type_filter: &[String],
+        min_score: f64,
+    ) -> Result<QueryResult, String> {
         let query_embedding = (self.embed)(query)?;
 
         let limit = if limit <= 0 {
@@ -207,7 +224,6 @@ impl VectorStore {
         } else {
             limit
         };
-        let threshold = self.config.similarity_threshold;
 
         let docs = self.docs.read();
 
@@ -222,7 +238,7 @@ impl VectorStore {
             })
             .filter_map(|doc| {
                 let sim = cosine_similarity(&query_embedding, &doc.embedding);
-                if sim >= threshold {
+                if sim >= min_score {
                     Some((sim, doc))
                 } else {
                     None

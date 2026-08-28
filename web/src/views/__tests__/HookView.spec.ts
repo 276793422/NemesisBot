@@ -2,7 +2,7 @@ import { mount, flushPromises } from '@vue/test-utils'
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { useToast } from '../../composables/useToast'
 
-// M6 补测（quality-hardening goal 2026-08-25）：P4 设置页 hooks.json 卡 ——
+// P4 hooks.json 编辑器（2026-08-29 自设置页迁移至独立 HookView 页）——
 // get 回显（含 invalid 形态）、前端 JSON 语法自检不落盘、set 保存
 // （summary/成功 toast）、后端语义拒绝、一键重启。
 // 后端 hooks handler 行为由 handlers/hooks/tests.rs（7 测试）钉住。
@@ -12,7 +12,7 @@ vi.mock('../../composables/useWSAPI', () => ({
   useWSAPI: () => ({ request: (...args: any[]) => requestMock(...args) }),
 }))
 
-import SettingsView from '../SettingsView.vue'
+import HookView from '../HookView.vue'
 
 const VALID_HOOKS = JSON.stringify({ hooks: { pre_tool_call: [{ cmd: 'echo', on: 'exec' }] } }, null, 2)
 
@@ -34,15 +34,12 @@ afterEach(() => {
 })
 
 async function mountView() {
-  const w = mount(SettingsView)
-  await flushPromises()
-  // hooks 卡在「Hooks」tab 下
-  await w.findAll('button').find(b => b.text() === 'Hooks')!.trigger('click')
+  const w = mount(HookView)
   await flushPromises()
   return w
 }
 
-describe('SettingsView hooks.json 卡', () => {
+describe('HookView hooks.json 编辑器', () => {
   it('加载回显内容 + 脚本计数；invalid 形态渲染错误条', async () => {
     const w = await mountView()
     expect(requestMock).toHaveBeenCalledWith('hooks', 'get')
@@ -56,10 +53,7 @@ describe('SettingsView hooks.json 卡', () => {
       }
       return Promise.resolve({})
     })
-    const w2 = mount(SettingsView)
-    await flushPromises()
-    await w2.findAll('button').find(b => b.text() === 'Hooks')!.trigger('click')
-    await flushPromises()
+    const w2 = await mountView()
     expect(w2.text()).toContain('期待对象键')
   })
 

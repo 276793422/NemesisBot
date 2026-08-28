@@ -5823,23 +5823,18 @@ impl AgentLoop {
                 return None;
             }
             let mgr = self.memory_inject_manager.read().clone()?;
-            let result = mgr.search(&query, None, top_k.max(1) + 2).await.ok()?;
-            // Score threshold: vector scores are cosine (0..1) when the store
-            // is active; keep hits >= 0.35 — low enough to catch related
-            // memory, high enough to skip noise. The keyword-fallback path
-            // yields score 0.0 (no semantic confidence) → below bar.
-            const MIN_SCORE: f64 = 0.35;
+            // AUTO_INJECT_MIN_SCORE (0.35) gates INSIDE search_auto_inject —
+            // the plain search() runs the store's 0.7 bar (memory_search
+            // tuning), which silently emptied loosely-related injection hits
+            // (2026-08-29 根因).
+            let result = mgr.search_auto_inject(&query, top_k.max(1) + 2).await.ok()?;
             let mut scored: Vec<(f64, String)> = result
                 .entries
                 .into_iter()
                 .filter_map(|e| {
-                    let s = e.score;
-                    if s < MIN_SCORE {
-                        return None;
-                    }
                     let content = e.entry.content;
                     let cut = content.char_indices().nth(300).map(|(i, _)| i).unwrap_or(content.len());
-                    Some((s, content[..cut].to_string()))
+                    Some((e.score, content[..cut].to_string()))
                 })
                 .collect();
             // Sort best-first, cap at top_k.

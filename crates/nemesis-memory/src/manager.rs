@@ -20,6 +20,14 @@ use crate::types::{Entry, MemoryType, ScoredEntry, SearchResult, VectorConfig};
 use crate::vector::embedding_config;
 use crate::vector::{StoreConfig, VectorStore};
 
+/// Minimum cosine similarity for AUTO-INJECT retrieval (loop.rs
+/// `prefetch_memory_context`). Deliberately LOWER than the store config's
+/// 0.7 (tuned for the agent's deliberate `memory_search`): auto-inject must
+/// catch loosely-related memories, not just high-confidence matches.
+/// Single source of truth — store query and loop-side filtering both gate
+/// on this value via `search_auto_inject`.
+pub const AUTO_INJECT_MIN_SCORE: f64 = 0.35;
+
 // ---------------------------------------------------------------------------
 // Config
 // ---------------------------------------------------------------------------
@@ -495,7 +503,6 @@ impl MemoryManager {
                 let result = vs
                     .query(query, limit, &type_filter)
                     .map_err(|e| e.to_string())?;
-
                 if !result.entries.is_empty() {
                     let entries: Vec<ScoredEntry> = result
                         .entries
@@ -530,6 +537,64 @@ impl MemoryManager {
 
         // Fallback to keyword search
         self.store.query(query, memory_type, limit).await
+    }
+
+    /// Auto-inject retrieval (`prefetch_memory_context` in nemesis-agent):
+    /// semantic search with the LOW recall bar ([`AUTO_INJECT_MIN_SCORE`])
+    /// instead of the store config's 0.7 (which is tuned for the agent's
+    /// deliberate `memory_search`). Keyword fallback yields score 0.0 →
+    /// callers' own bar filters it out, so degrade = no injection.
+    ///
+    /// 2026-08-29 根因修复：store 层 0.7 预过滤曾把 0.35-0.7 之间的相关记忆
+    /// 静默裁掉，prefetch 外层的 0.35 阈值形同虚设——注入恒为空。
+    pub async fn search_auto_inject(
+        &self,
+        query: &str,
+        limit: usize,
+    ) -> Result<SearchResult, String> {
+        if !self.is_enabled() {
+            return Ok(SearchResult {
+                entries: Vec::new(),
+                total: 0,
+            });
+        }
+        if *self.vector_enabled.read() {
+            let vs_guard = self.vector_store.read();
+            if let Some(ref vs) = *vs_guard {
+                let result = vs
+                    .query_with_threshold(query, limit, &[], AUTO_INJECT_MIN_SCORE)
+                    .map_err(|e| e.to_string())?;
+                let entries: Vec<ScoredEntry> = result
+                    .entries
+                    .into_iter()
+                    .map(|ve| ScoredEntry {
+                        entry: Entry {
+                            id: ve.id,
+                            typ: parse_memory_type_from_str(&ve.entry_type),
+                            content: ve.content,
+                            metadata: ve.metadata,
+                            tags: ve.tags,
+                            score: Some(ve.score),
+                            created_at: chrono::DateTime::parse_from_rfc3339(&ve.created_at)
+                                .map(|dt| dt.with_timezone(&chrono::Local))
+                                .unwrap_or_else(|_| chrono::Local::now()),
+                            updated_at: chrono::DateTime::parse_from_rfc3339(&ve.updated_at)
+                                .map(|dt| dt.with_timezone(&chrono::Local))
+                                .unwrap_or_else(|_| chrono::Local::now()),
+                        },
+                        score: ve.score,
+                    })
+                    .collect();
+                let total = entries.len();
+                return Ok(SearchResult { entries, total });
+            }
+        }
+        // Vector store inactive → keyword fallback scores 0.0; return empty
+        // (auto-inject must not fire on keyword-only matches).
+        Ok(SearchResult {
+            entries: Vec::new(),
+            total: 0,
+        })
     }
 
     /// Query memories matching the text query with optional type filter.

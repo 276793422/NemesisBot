@@ -18,6 +18,12 @@ const routes: RouteRecordRaw[] = [
   ...(import.meta.env.VITE_FEATURE_MEMORY !== 'false' ? [{ path: '/memory', name: 'memory', component: () => import('../views/MemoryView.vue') }] : []),
   { path: '/skills', name: 'skills', component: () => import('../views/SkillsView.vue') },
   { path: '/mcp', name: 'mcp', component: () => import('../views/McpView.vue') },
+  // 2026-08-29：管理分组新增页（MCP 之后）。Hook 页自设置页迁移；
+  // 命令/插件/子Agent 为骨架页，细节待定。
+  { path: '/hooks', name: 'hooks', component: () => import('../views/HookView.vue') },
+  { path: '/commands', name: 'commands', component: () => import('../views/CommandsView.vue') },
+  { path: '/plugins', name: 'plugins', component: () => import('../views/PluginsView.vue') },
+  { path: '/subagents', name: 'subagents', component: () => import('../views/SubagentView.vue') },
   { path: '/channels', name: 'channels', component: () => import('../views/ChannelsView.vue') },
   // P2-1 (2026-08-24 UI entry gap): 「代码开发」页（LSP/CC/Codex 委派配置）。
   { path: '/coding', name: 'coding', component: () => import('../views/CodingView.vue') },
