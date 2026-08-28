@@ -719,6 +719,11 @@ pub struct AgentLoop {
     /// so dashboard-added models and CLI `model set-tier` are picked up live,
     /// with no stale snapshot.
     config_path: parking_lot::RwLock<Option<std::path::PathBuf>>,
+    /// 自定义 slash 命令表路径（`config.commands.json`；主 agent 专用，集群
+    /// agent 不接——命令不该跨节点复制，同 hooks 挂账决策）。
+    commands_path: parking_lot::RwLock<Option<std::path::PathBuf>>,
+    commands_mtime: parking_lot::RwLock<Option<std::time::SystemTime>>,
+    commands_cache: parking_lot::RwLock<Vec<nemesis_config::CommandEntry>>,
     /// G4 (U4): root directory for tool-result spill files
     /// (`<home>/logs/spill`). `None` disables spilling (results fall back to
     /// the G3 prune tier). Set via `set_spill_root` by the agent factory.
@@ -850,6 +855,9 @@ impl AgentLoop {
             memory_inject_cfg: parking_lot::RwLock::new((false, 3)),
             tier: parking_lot::RwLock::new(nemesis_types::capability::ModelTier::Big),
             config_path: parking_lot::RwLock::new(None),
+            commands_path: parking_lot::RwLock::new(None),
+            commands_mtime: parking_lot::RwLock::new(None),
+            commands_cache: parking_lot::RwLock::new(Vec::new()),
             spill_root: parking_lot::RwLock::new(None),
             skills_loader: parking_lot::RwLock::new(None),
             skills_digest_state: std::sync::Arc::new(crate::skills_digest::DigestState::new()),
@@ -1070,6 +1078,9 @@ impl AgentLoop {
             memory_inject_cfg: parking_lot::RwLock::new((false, 3)),
             tier: parking_lot::RwLock::new(nemesis_types::capability::ModelTier::Big),
             config_path: parking_lot::RwLock::new(None),
+            commands_path: parking_lot::RwLock::new(None),
+            commands_mtime: parking_lot::RwLock::new(None),
+            commands_cache: parking_lot::RwLock::new(Vec::new()),
             spill_root: parking_lot::RwLock::new(None),
             skills_loader: parking_lot::RwLock::new(None),
             skills_digest_state: std::sync::Arc::new(crate::skills_digest::DigestState::new()),
@@ -2017,17 +2028,22 @@ impl AgentLoop {
         &self,
         msg: &nemesis_types::channel::InboundMessage,
     ) -> (String, String, Option<String>) {
+        // 自定义 slash 命令改写（改写型，见 rewrite_custom_command）：在闸门
+        // 之前原地展开为提示词，让消息以最终形态走正常会话/LLM 流程。内置
+        // 命令不受影响（rewrite 跳过内置名，gate 内的短路检查照常先行）。
+        let mut msg = msg.clone();
+        self.rewrite_custom_command(&mut msg);
         // V5 (2026-08-23): gate first (sync classification + session
         // acquire), then the matching tail. Reject mode's serial pump and
         // all direct callers (heartbeat, tests, inline queue-drain fallback)
         // still enter here — behavior identical to the pre-split monolith.
-        match self.gate_inbound(msg) {
+        match self.gate_inbound(&msg) {
             GateOutcome::Continuation(task_id) => {
                 ("__continuation__".to_string(), task_id, None)
             }
             GateOutcome::Immediate { agent_id, response } => (agent_id, response, None),
-            GateOutcome::Ungated => self.process_ungated(msg).await,
-            GateOutcome::Admitted(admission) => self.process_admitted(msg, admission).await,
+            GateOutcome::Ungated => self.process_ungated(&msg).await,
+            GateOutcome::Admitted(admission) => self.process_admitted(&msg, admission).await,
         }
     }
 
@@ -5590,6 +5606,78 @@ impl AgentLoop {
         *self.config_path.write() = Some(path);
     }
 
+    /// 内置 slash 命令名（与 [`Self::handle_command_with_context`] 的 match 臂
+    /// **同步维护**）：自定义命令表命中这些名字时跳过改写——内置优先。
+    const BUILTIN_SLASH_COMMANDS: &'static [&'static str] =
+        &["help", "model", "show", "list", "switch"];
+
+    /// 自定义 slash 命令表路径（主 agent 专用；集群 agent 不接——命令不该
+    /// 跨节点复制，同 hooks 挂账决策）。设置时立即加载一次。
+    pub fn set_commands_path(&self, path: std::path::PathBuf) {
+        *self.commands_path.write() = Some(path);
+        self.reload_commands_if_changed();
+    }
+
+    /// mtime 变化才重新读盘（dashboard/CLI 改命令表后无需重启，同
+    /// `check_config_reload` 的 tier 热更模式）。
+    fn reload_commands_if_changed(&self) {
+        let path = match self.commands_path.read().clone() {
+            Some(p) => p,
+            None => return,
+        };
+        let mtime = std::fs::metadata(&path).and_then(|m| m.modified()).ok();
+        {
+            let mut last = self.commands_mtime.write();
+            if mtime == *last {
+                return; // unchanged since last check
+            }
+            *last = mtime;
+        }
+        let cfg = nemesis_config::load_commands_config(&path);
+        let n = cfg.commands.len();
+        *self.commands_cache.write() = cfg.commands;
+        debug!("[AgentLoop] custom commands loaded ({n}) from {}", path.display());
+    }
+
+    /// 自定义 slash 命令改写（改写型，区别于内置命令的短路型）：
+    /// `/name args` → 命令表模板中的 `$ARGUMENTS` 替换为 `args` 后**原地改写
+    /// msg.content**，随后继续正常会话/LLM 流程。未命中/内置名/非 slash 一律
+    /// 不动。每消息做一次 mtime 检查（一次 stat，可忽略）。
+    pub fn rewrite_custom_command(&self, msg: &mut nemesis_types::channel::InboundMessage) {
+        let content = msg.content.trim();
+        if !content.starts_with('/') {
+            return;
+        }
+        let rest = &content[1..]; // '/' 为 1 字节 ASCII，字节切片安全
+        let (name, args) = match rest.split_once(char::is_whitespace) {
+            Some((n, a)) => (n, a.trim()),
+            None => (rest, ""),
+        };
+        if name.is_empty() || Self::BUILTIN_SLASH_COMMANDS.contains(&name) {
+            return;
+        }
+        self.reload_commands_if_changed();
+        let cache = self.commands_cache.read();
+        let Some(cmd) = cache.iter().find(|c| c.name == name) else {
+            return;
+        };
+        // $ARGUMENTS 占位替换；模板无占位符且带参数 → 追加为独立段（对用户
+        // 更友好：模板忘写占位符时参数不至于被吞）。
+        let expanded = if cmd.prompt.contains("$ARGUMENTS") {
+            cmd.prompt.replace("$ARGUMENTS", args)
+        } else if !args.is_empty() {
+            format!("{}\n\n{}", cmd.prompt, args)
+        } else {
+            cmd.prompt.clone()
+        };
+        info!(
+            "[AgentLoop] custom command /{} expanded (prompt {} chars)",
+            name,
+            expanded.len()
+        );
+        msg.content = expanded;
+    }
+
     /// G4 (U4): enable tool-result spill with the given root directory
     /// (expected `<home>/logs/spill`). Results above the spill threshold are
     /// written whole under this root and the conversation keeps a bounded
@@ -7030,6 +7118,9 @@ fn textwise_similar(a: &str, b: &str) -> f64 {
 
 #[cfg(test)]
 mod inbox_tests;
+// 自定义 slash 命令改写（2026-08-29）：rewrite_custom_command 决策表测试。
+#[cfg(test)]
+mod commands_tests;
 // S9 (quality-hardening goal 冲刺 S9): 独立测试文件挂载（声明式，无内联测试）。
 #[cfg(test)]
 mod s9_tests;

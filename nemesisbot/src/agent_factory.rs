@@ -273,6 +273,11 @@ pub fn build_agent_loop(
     // runtime model switches and dashboard/CLI config edits re-resolve it live.
     agent_loop.set_tier(resolved_tier);
     agent_loop.set_config_path(shared.home.join("config.json"));
+    // 自定义 slash 命令表（改写型快捷提示词；集群 agent 不接——见
+    // set_commands_path 注释）。文件缺失 = 空表，无副作用。
+    agent_loop.set_commands_path(nemesis_path::resolve_commands_config_path_in_workspace(
+        &shared.home.join("workspace"),
+    ));
     // G4 (U4): enable tool-result spill under <home>/logs/spill — oversized
     // results (>64k chars) land there whole with a locator in-conversation.
     let spill_root = nemesis_path::resolve_spill_dir_for_home(&shared.home);

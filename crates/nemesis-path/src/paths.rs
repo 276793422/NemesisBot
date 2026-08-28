@@ -296,6 +296,12 @@ pub fn resolve_mcp_config_path_in_workspace(workspace: &Path) -> PathBuf {
     workspace_config_dir(workspace).join("config.mcp.json")
 }
 
+/// `<workspace>/config/config.commands.json` —— 自定义 slash 命令表
+/// （快捷提示词发送器；AgentLoop 改写与 Dashboard CommandsView 同源）。
+pub fn resolve_commands_config_path_in_workspace(workspace: &Path) -> PathBuf {
+    workspace_config_dir(workspace).join("config.commands.json")
+}
+
 /// Resolve security config path within a specific workspace.
 pub fn resolve_security_config_path_in_workspace(workspace: &Path) -> PathBuf {
     workspace_config_dir(workspace).join("config.security.json")

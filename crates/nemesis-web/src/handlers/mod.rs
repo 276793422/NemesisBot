@@ -7,6 +7,7 @@
 pub mod agent;
 pub mod channels;
 pub mod coding;
+pub mod commands;
 #[cfg(feature = "cluster")]
 pub mod cluster;
 #[cfg(feature = "cluster")]
@@ -105,6 +106,9 @@ pub fn register_all(router: &mut crate::ws_router::WsRouter) {
     // P4 (2026-08-24 UI entry gap): 设置页「Hooks」Tab — hooks.json 读写
     // (CC 方言, nemesis-agent cc_hooks)。No feature gate — cc_hooks 无条件编译。
     router.register(Arc::new(hooks::HooksHandler));
+    // 2026-08-29: 自定义 slash 命令表（快捷提示词发送器）— CommandsView CRUD。
+    // AgentLoop 侧 mtime 热重载同一文件，无需重启。No feature gate。
+    router.register(Arc::new(commands::CommandsHandler));
     #[cfg(feature = "cluster")]
     {
         router.register(Arc::new(cluster::ClusterHandler::new()));

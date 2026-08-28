@@ -6,6 +6,7 @@ import { useAuthStore } from '../stores/auth'
 import { connect, send, sendHistoryRequest, onMessage, removeMessageHandler, wsStatus } from '../composables/useWebSocket'
 import { useWSAPI } from '../composables/useWSAPI'
 import { useInboxStatus } from '../composables/useInboxStatus'
+import { useSlashCommands, filterSlashCommands, type SlashCommand } from '../composables/useSlashCommands'
 import { useSessionStore } from '../stores/session'
 import { marked } from 'marked'
 import hljs from 'highlight.js/lib/core'
@@ -564,7 +565,60 @@ function handleKeydown(e: KeyboardEvent) {
   if (e.ctrlKey && e.key === 'Enter') {
     e.preventDefault()
     sendMessage()
+    return
   }
+  // slash 命令菜单打开时接管导航键（Enter/Tab 选中，↑↓ 移动，Esc 关闭）。
+  if (handleSlashKeydown(e)) return
+}
+
+// ---------------------------------------------------------------------------
+// 自定义 slash 命令补全（2026-08-29）：输入 / + 名称片段时弹出命令菜单。
+// 选中只负责把 "/name 命令" 填进输入框；模板展开在后端 AgentLoop 入口
+// （rewrite_custom_command），对所有通道生效。
+// ---------------------------------------------------------------------------
+
+const slash = useSlashCommands()
+const slashItems = ref<SlashCommand[]>([])
+const slashIndex = ref(0)
+const slashOpen = computed(() => slashItems.value.length > 0)
+
+watch(() => chatStore.input, input => {
+  // 首次输入 / 时静默拉取命令表（失败无补全，不影响输入）。
+  if (input.startsWith('/') && !slash.loaded.value) void slash.load()
+  slashItems.value = filterSlashCommands(input, slash.commands.value)
+  if (slashIndex.value >= slashItems.value.length) slashIndex.value = 0
+})
+
+function applySlashCommand(cmd: SlashCommand) {
+  // 参数提示以灰字形式预填（用户替换为真实参数）；无参数提示则留一个空格。
+  chatStore.input = `/${cmd.name}${cmd.argument_hint ? ' ' + cmd.argument_hint : ' '}`
+  slashItems.value = []
+  chatInput.value?.focus()
+}
+
+function handleSlashKeydown(e: KeyboardEvent): boolean {
+  if (!slashOpen.value) return false
+  if (e.key === 'ArrowDown') {
+    e.preventDefault()
+    slashIndex.value = (slashIndex.value + 1) % slashItems.value.length
+    return true
+  }
+  if (e.key === 'ArrowUp') {
+    e.preventDefault()
+    slashIndex.value = (slashIndex.value - 1 + slashItems.value.length) % slashItems.value.length
+    return true
+  }
+  if (e.key === 'Enter' || e.key === 'Tab') {
+    e.preventDefault()
+    const cmd = slashItems.value[slashIndex.value]
+    if (cmd) applySlashCommand(cmd)
+    return true
+  }
+  if (e.key === 'Escape') {
+    slashItems.value = []
+    return true
+  }
+  return false
 }
 
 function handleInput(e: Event) {
@@ -842,6 +896,21 @@ onUnmounted(() => {
 
     <!-- Input -->
     <div class="chat-input-area">
+      <!-- slash 命令补全菜单 -->
+      <div v-if="slashOpen" class="slash-menu">
+        <div
+          v-for="(c, i) in slashItems"
+          :key="c.name"
+          class="slash-item"
+          :class="{ active: i === slashIndex }"
+          @mousedown.prevent="applySlashCommand(c)"
+          @mouseenter="slashIndex = i"
+        >
+          <span class="slash-item-name">/{{ c.name }}</span>
+          <span class="slash-item-desc">{{ c.description }}</span>
+          <span v-if="c.argument_hint" class="slash-item-hint">{{ c.argument_hint }}</span>
+        </div>
+      </div>
       <textarea
         ref="chatInput"
         :placeholder="props.placeholderOverride || '输入消息... (Ctrl+Enter 发送)'"
@@ -1017,5 +1086,55 @@ onUnmounted(() => {
   opacity: 0.6;
   cursor: not-allowed;
   pointer-events: none;
+}
+
+/* slash 菜单锚定：chat-input-area 全局样式无定位，本组件内补 relative。 */
+.chat-input-area {
+  position: relative;
+}
+
+/* slash 命令补全菜单（2026-08-29） */
+.slash-menu {
+  position: absolute;
+  bottom: 100%;
+  left: 12px;
+  right: 12px;
+  max-height: 240px;
+  overflow-y: auto;
+  background: var(--bg-primary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.15);
+  z-index: 50;
+}
+.slash-item {
+  display: flex;
+  gap: var(--space-2);
+  align-items: baseline;
+  padding: var(--space-2) var(--space-3);
+  cursor: pointer;
+  font-size: var(--text-sm);
+}
+.slash-item.active {
+  background: var(--bg-hover, rgba(59, 130, 246, 0.1));
+}
+.slash-item-name {
+  font-family: var(--font-mono);
+  font-weight: 600;
+  color: var(--text-primary);
+  white-space: nowrap;
+}
+.slash-item-desc {
+  flex: 1;
+  color: var(--text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.slash-item-hint {
+  color: var(--text-muted);
+  font-size: var(--text-xs);
+  font-family: var(--font-mono);
+  white-space: nowrap;
 }
 </style>

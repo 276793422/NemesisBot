@@ -16,6 +16,7 @@ security = ["dep:nemesis-security", "nemesis-security/security", "nemesis-skills
 
 [dependencies]
 nemesis-types = { workspace = true }
+nemesis-config = { workspace = true }
 nemesis-routing = { workspace = true }
 nemesis-skills = { workspace = true }
 nemesis-memory = { workspace = true, optional = true }
