@@ -2,10 +2,15 @@
 //!
 //! Fetches the models.dev public catalog (`/api.json`), extracts per-model
 //! `limit.context` (input token capacity) and `limit.output` (max output
-//! tokens), and caches it at `<config_dir>/models_catalog.json` so
-//! `model add` can auto-fill `context_window` / `max_output_tokens` for
-//! catalog hits — offline/intranet deployments reuse the cache without
-//! network.
+//! tokens), and caches it so `model add` can auto-fill `context_window` /
+//! `max_output_tokens` for catalog hits — offline/intranet deployments reuse
+//! the cache without network.
+//!
+//! 缓存路径唯一真相源 = `nemesis_path::models_catalog_cache_path`
+//! （`<home>/workspace/data/models_catalog.json`）。nemesis-web 的 models
+//! handler 与本 crate 共用该函数（nemesis-web 不能依赖 binary crate，共享
+//! 路径收在 nemesis-path）；读取入口自动 rename 2026-08-28 前的 home 根
+//! 旧位置文件（legacy 迁移）。
 //!
 //! api.json shape (verified against the models.dev repo schema, packages/
 //! core/src/schema.ts + generate.ts):
@@ -27,10 +32,7 @@
 //! are ignored — the API evolves, parsing must not break (goal §八).
 
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
-
-/// Cache file name inside the config dir.
-pub const CATALOG_FILE: &str = "models_catalog.json";
+use std::path::Path;
 
 /// Primary endpoint (per models.dev docs; same URL the Pi ecosystem's
 /// generate-models.ts fetches).
@@ -179,15 +181,16 @@ pub fn parse_api_json(raw: &str) -> Result<Vec<CatalogEntry>, String> {
     Ok(entries)
 }
 
-/// Catalog cache path for a config dir (`<config_dir>/models_catalog.json`).
-pub fn catalog_path(config_dir: &Path) -> PathBuf {
-    config_dir.join(CATALOG_FILE)
-}
-
 /// Load the cached catalog from disk. `Err` only on a present-but-unparsable
 /// file (corrupt cache should be loud); a missing file is `Ok(None)`.
-pub fn load_cache(config_dir: &Path) -> Result<Option<Catalog>, String> {
-    let path = catalog_path(config_dir);
+///
+/// 缓存路径唯一真相源 = `nemesis_path::models_catalog_cache_path`
+/// （`<home>/workspace/data/models_catalog.json`；2026-08-28 从 home 根迁入，
+/// 读取时自动 rename 旧位置文件）。本 crate 与 nemesis-web 均经该函数取路径，
+/// 禁止各自拼 join。
+pub fn load_cache(home_dir: &Path) -> Result<Option<Catalog>, String> {
+    let path = nemesis_path::models_catalog_cache_path(home_dir);
+    nemesis_path::migrate_legacy_models_catalog_cache(home_dir);
     if !path.exists() {
         return Ok(None);
     }
@@ -199,8 +202,8 @@ pub fn load_cache(config_dir: &Path) -> Result<Option<Catalog>, String> {
 }
 
 /// Persist the catalog to disk (atomic-ish: write temp then rename).
-pub fn save_cache(config_dir: &Path, entries: Vec<CatalogEntry>) -> Result<(), String> {
-    let path = catalog_path(config_dir);
+pub fn save_cache(home_dir: &Path, entries: Vec<CatalogEntry>) -> Result<(), String> {
+    let path = nemesis_path::models_catalog_cache_path(home_dir);
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|e| format!("mkdir: {e}"))?;
     }

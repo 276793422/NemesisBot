@@ -158,9 +158,11 @@ fn catalog_info_reports_cache_state() {
     assert_eq!(info["exists"], false);
     assert_eq!(info["entries"], 0);
 
-    // 真相源 = CLI 写盘位置：`<home>/models_catalog.json`（home 根）。
+    // 真相源 = nemesis_path::models_catalog_cache_path（与 CLI 写盘位置同源）。
+    let seeded = nemesis_path::models_catalog_cache_path(dir.path());
+    std::fs::create_dir_all(seeded.parent().unwrap()).unwrap();
     std::fs::write(
-        dir.path().join("models_catalog.json"),
+        seeded,
         r#"{ "version": 1, "fetched_at": "2026-08-24T00:00:00Z",
             "entries": [ { "key": "a" }, { "key": "b" } ] }"#,
     )
@@ -169,6 +171,31 @@ fn catalog_info_reports_cache_state() {
     assert_eq!(info["exists"], true);
     assert_eq!(info["entries"], 2);
     assert_eq!(info["fetched_at"], "2026-08-24T00:00:00Z");
+}
+
+/// 2026-08-28 布局迁移：home 根的 legacy 缓存在首次读取时自动 rename 进
+/// workspace/data（零重新下载），与 CLI 侧共用 nemesis-path 的迁移函数同契约。
+#[test]
+fn catalog_info_migrates_legacy_home_root_cache() {
+    let dir = tempfile::tempdir().unwrap();
+    let h = ModelsHandler::new();
+    let home = home_str(&dir);
+
+    // legacy 位置种缓存 → 读一次 → 搬到新位置且内容可读。
+    std::fs::write(
+        nemesis_path::legacy_models_catalog_cache_path(dir.path()),
+        r#"{ "version": 1, "fetched_at": "2026-08-27T00:00:00Z",
+            "entries": [ { "key": "legacy/a" } ] }"#,
+    )
+    .unwrap();
+    let info = h.catalog_info(&home).unwrap().unwrap();
+    assert_eq!(info["exists"], true);
+    assert_eq!(info["entries"], 1);
+    assert!(
+        !nemesis_path::legacy_models_catalog_cache_path(dir.path()).exists(),
+        "legacy 文件已搬走"
+    );
+    assert!(nemesis_path::models_catalog_cache_path(dir.path()).exists());
 }
 
 /// `list` must surface the raw extras (null when absent) and the exact-key
@@ -222,9 +249,11 @@ fn list_attaches_extras_and_catalog_match() {
     }
 
     // Catalog cache with an entry whose key EXACTLY matches m1's `model`.
-    // 真相源 = CLI 写盘位置：`<home>/models_catalog.json`（home 根）。
+    // 真相源 = nemesis_path::models_catalog_cache_path（与 CLI 写盘位置同源）。
+    let seeded = nemesis_path::models_catalog_cache_path(dir.path());
+    std::fs::create_dir_all(seeded.parent().unwrap()).unwrap();
     std::fs::write(
-        dir.path().join("models_catalog.json"),
+        seeded,
         r#"{ "fetched_at": "2026-08-24T00:00:00Z", "entries": [
             { "key": "qwen/qwen3-30b", "context_window": 131072,
               "max_output_tokens": 8192, "family": "qwen" },
@@ -320,10 +349,12 @@ fn make_ctx(dir: &tempfile::TempDir) -> crate::ws_router::RequestContext {
 }
 
 fn write_catalog(home: &std::path::Path, entries_json: &str) {
-    // 真相源 = CLI 写盘位置：`<home>/models_catalog.json`（home 根，
-    // config.json 旁边——不是 config/ 子目录，见 models.rs catalog_info 注释）。
+    // 真相源 = nemesis_path::models_catalog_cache_path（与 CLI 共用，见
+    // models.rs catalog_info 注释）。
+    let path = nemesis_path::models_catalog_cache_path(home);
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
     std::fs::write(
-        home.join("models_catalog.json"),
+        path,
         format!("{{ \"fetched_at\": \"t\", \"entries\": {entries_json} }}"),
     )
     .unwrap();
@@ -594,4 +625,50 @@ fn catalog_entries_without_key_are_skipped() {
     let out = h.list(&home_str(&dir)).unwrap().unwrap();
     let m1 = &out["models"][0];
     assert_eq!(m1["catalog_match"]["context_window"], 131072);
+}
+
+// ---------------------------------------------------------------------------
+// G4 (U15)：key_source 来源徽标 —— list 必须带 key_source（kind + ref），
+// 四种来源各就位，且响应中不泄露明文 key。
+// ---------------------------------------------------------------------------
+
+/// G4：env:/yaml:/inline/空 四种 api_key 形态 → classify_key_source 映射正确，
+/// ref 只携带引用名（VAR 名 / alias），绝不携带明文。
+#[test]
+fn list_key_source_covers_all_four_kinds() {
+    if nemesis_config::global().is_some() {
+        eprintln!("skip list_key_source: process-global ConfigStore installed");
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    write_config(
+        dir.path(),
+        r#"{
+          "model_list": [
+            { "model_name": "m-env", "model": "a/one", "api_key": "env:ZHIPU_API_KEY" },
+            { "model_name": "m-yaml", "model": "a/two", "api_key": "yaml:zhipu" },
+            { "model_name": "m-inline", "model": "a/three", "api_key": "sk-plain-secret-9999" },
+            { "model_name": "m-none", "model": "a/four", "api_key": "" }
+          ]
+        }"#,
+    );
+    let h = ModelsHandler::new();
+    let out = h.list(&home_str(&dir)).unwrap().unwrap();
+    let models = out["models"].as_array().unwrap();
+    assert_eq!(models.len(), 4);
+
+    assert_eq!(models[0]["key_source"]["kind"], "env");
+    assert_eq!(models[0]["key_source"]["ref"], "ZHIPU_API_KEY");
+    assert_eq!(models[1]["key_source"]["kind"], "yaml");
+    assert_eq!(models[1]["key_source"]["ref"], "zhipu");
+    assert_eq!(models[2]["key_source"]["kind"], "inline");
+    // inline 无引用名；且响应整体不泄露明文（api_key 已 mask）。
+    assert_eq!(models[2]["key_source"]["ref"], "");
+    assert_eq!(models[3]["key_source"]["kind"], "none");
+
+    let out_str = serde_json::to_string(&out).unwrap();
+    assert!(!out_str.contains("sk-plain-secret-9999"));
+    // ref 字段不能叫 "reference"（serde rename 钉住 wire 契约）。
+    assert!(models[0]["key_source"].get("ref").is_some());
+    assert!(models[0]["key_source"].get("reference").is_none());
 }

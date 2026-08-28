@@ -5,6 +5,8 @@ license.workspace = true
 edition.workspace = true
 
 [dependencies]
+# 心跳日志目录唯一真相源在 nemesis-path。
+nemesis-path = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true }

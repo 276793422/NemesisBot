@@ -5,6 +5,8 @@ license.workspace = true
 edition.workspace = true
 
 [dependencies]
+# MCP 配置路径唯一真相源在 nemesis-path（与 CLI mcp.rs / web mcp.rs 共用）。
+nemesis-path = { workspace = true }
 nemesis-types = { workspace = true }
 nemesis-plugin = { workspace = true }
 tokio = { workspace = true }

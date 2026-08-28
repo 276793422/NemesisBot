@@ -54,7 +54,7 @@ impl MCPInstaller {
 
     /// Get the config file path.
     pub fn config_path(&self) -> PathBuf {
-        self.workspace.join("config").join("config.mcp.json")
+        nemesis_path::resolve_mcp_config_path_in_workspace(&self.workspace)
     }
 
     /// Install (add or update) an MCP server.

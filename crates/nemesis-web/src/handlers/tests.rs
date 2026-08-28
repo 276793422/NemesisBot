@@ -306,11 +306,20 @@ async fn test_identity_list() {
         .unwrap()
         .unwrap();
     let docs = result["documents"].as_array().unwrap();
-    assert_eq!(docs.len(), 4); // AGENT.md, IDENTITY.md, SOUL.md, USER.md
+    // G5 (U18)：四件套 + 指令链 AGENTS.md/CLAUDE.md = 六条目
+    assert_eq!(docs.len(), 6); // AGENT/IDENTITY/SOUL/USER/AGENTS/CLAUDE .md
     let agent_doc = docs.iter().find(|d| d["name"] == "AGENT.md").unwrap();
     assert!(agent_doc["exists"].as_bool().unwrap());
     let soul_doc = docs.iter().find(|d| d["name"] == "SOUL.md").unwrap();
     assert!(!soul_doc["exists"].as_bool().unwrap());
+    // 指令链条目默认未创建 + instruction_chain 标志
+    let agents_doc = docs.iter().find(|d| d["name"] == "AGENTS.md").unwrap();
+    assert!(!agents_doc["exists"].as_bool().unwrap());
+    assert_eq!(agents_doc["instruction_chain"], true);
+    let claude_doc = docs.iter().find(|d| d["name"] == "CLAUDE.md").unwrap();
+    assert_eq!(claude_doc["instruction_chain"], true);
+    // 既有四件套不带指令链标志
+    assert_eq!(agent_doc["instruction_chain"], false);
 }
 
 #[tokio::test]
@@ -3762,20 +3771,25 @@ async fn test_config_get_nested_sensitive() {
 }
 
 // --- Config: set_field non-existent intermediate path ---
+// R1 修复后 set_field 走 round-trip 校验：为未知 section「自动创建中间对象」
+// 是 typed reparse 会静默丢弃的幻觉写入——旧契约（creates_intermediate）在这
+// 种情况下谎报 updated:true 而盘上什么都没写。本测试钉住新契约：loud 拒绝。
 #[tokio::test]
-async fn test_config_set_field_creates_intermediate() {
+async fn test_config_set_field_unknown_intermediate_rejected() {
     let handler = config::ConfigHandler::new();
     let dir = tempfile::tempdir().unwrap();
     write_config(dir.path());
     let ctx = make_ctx(&dir);
-    // Set a path that doesn't exist — should create intermediate objects
     let data = serde_json::json!({ "path": "new_section.sub.value", "value": 42 });
     let result = handler.handle_cmd("set_field", Some(data), &ctx).await;
-    assert!(
-        result.is_ok(),
-        "set_field with intermediate path should work: {:?}",
-        result
-    );
+    let err = result.expect_err("unknown intermediate path must be loud-rejected");
+    assert!(err.contains("unknown config field"), "{err}");
+    // 拒绝后盘上没有被半写（不存在中间对象被静默创建）。
+    let raw: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(dir.path().join("config.json")).unwrap(),
+    )
+    .unwrap();
+    assert!(raw.get("new_section").is_none());
 }
 
 // --- Forge: status with forge dir containing subdirs ---
@@ -4243,11 +4257,13 @@ async fn fuzz_config_set_field_various_paths() {
     write_config(dir.path());
     let ctx = make_ctx(&dir);
 
-    // Valid paths
+    // Valid paths (real Config fields — round-trip verifiable after the
+    // R1 fix; `session.max_history` 曾在这组里，但它不是 Config 真字段，
+    // 旧契约下 set_field 谎报 updated:true 才让测试假绿)。
     let valid = vec![
         ("gateway.host", serde_json::json!("0.0.0.0")),
         ("gateway.port", serde_json::json!(8080)),
-        ("session.max_history", serde_json::json!(100)),
+        ("session.dm_scope", serde_json::json!("pair")),
     ];
     for (path, value) in valid {
         let data = serde_json::json!({ "path": path, "value": value });
@@ -4258,6 +4274,14 @@ async fn fuzz_config_set_field_various_paths() {
             path,
             result
         );
+    }
+
+    // Unknown fields must loud-reject（R1 修复：不许谎报 updated:true）。
+    for path in ["session.max_history", "agents.nonexistent_key_xyz"] {
+        let data = serde_json::json!({ "path": path, "value": 1 });
+        let result = handler.handle_cmd("set_field", Some(data), &ctx).await;
+        let err = result.expect_err("unknown field must be rejected");
+        assert!(err.contains("unknown config field"), "{err}");
     }
 }
 

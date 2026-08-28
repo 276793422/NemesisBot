@@ -55,7 +55,8 @@ impl WorkspaceStateManager {
     /// (`<workspace>/state.json`).
     pub fn new(workspace: impl Into<PathBuf>) -> Arc<Self> {
         let workspace = workspace.into();
-        let state_dir = workspace.join("state");
+        // 委托 nemesis-path 唯一拼接点。
+        let state_dir = nemesis_path::resolve_state_dir_in_workspace(&workspace);
         let state_file = state_dir.join("state.json");
         let old_state_file = workspace.join("state.json");
 

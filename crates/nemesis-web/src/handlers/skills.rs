@@ -2,7 +2,7 @@
 
 use crate::handlers::{read_workspace_file, require_workspace};
 use crate::ws_router::{ModuleHandler, RequestContext};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 pub struct SkillsHandler {
     _priv: (),
@@ -156,7 +156,8 @@ async fn learn(
 }
 
 fn skills_config_path(workspace: &str) -> PathBuf {
-    PathBuf::from(workspace).join("config/config.skills.json")
+    // 委托 nemesis-path 唯一拼接点。
+    nemesis_path::resolve_skills_config_path_in_workspace(Path::new(workspace))
 }
 
 fn load_config(workspace: &str) -> Result<nemesis_config::SkillsFullConfig, String> {

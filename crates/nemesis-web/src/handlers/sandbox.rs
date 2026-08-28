@@ -531,7 +531,137 @@ impl ModuleHandler for SandboxHandler {
                     "restart_hint": "executor.enabled 变更需重启 Agent；sandbox/strict 对后续工具调用实时生效",
                 })))
             }
+            // G7 (D2)：用户态沙盒自检（一次性子进程探针；Windows / 无后端
+            // → supported:false，不 spawn）。
+            "self_test" => self.self_test(&home).await,
             other => Err(format!("unknown sandbox command: {other}")),
+        }
+    }
+}
+
+impl SandboxHandler {
+    /// G7 (D2)：用户态沙盒自检。探测「沙盒真的拦得住吗」——在**一次性子进程**
+    /// 里跑三条探针（workspace 外写 / 网络出站 / workspace 内写对照组），把
+    /// 每条的 blocked + 原始证据如实回给前端。绝不 gateway 进程内自装：
+    /// landlock 规则不可逆，装上就把 gateway 永久锁小了。
+    ///
+    /// 后端分派（与 exec_worker::engage 同一张决策表）：
+    /// - 无后端（Windows / landlock+bwrap 都不可用）→ `{supported:false}`；
+    /// - SelfApply（landlock）→ 子进程 `sandbox selftest-child` 带
+    ///   `NEMESISBOT_SELFTEST_ENGAGE=1` 自装后探测；
+    /// - WrapCommand（bwrap / Seatbelt）→ 用后端包装同一条子命令
+    ///   （`NEMESISBOT_SELFTEST_BOXED=1`，盒内实例跳过自装）。
+    async fn self_test(
+        &self,
+        home: &std::path::Path,
+    ) -> Result<Option<serde_json::Value>, String> {
+        use nemesis_sandbox::backend::{detect_backend, BackendForm};
+
+        let workspace = home.join("workspace");
+        std::fs::create_dir_all(&workspace)
+            .map_err(|e| format!("create workspace for selftest: {e}"))?;
+
+        let Some(backend) = detect_backend() else {
+            return Ok(Some(serde_json::json!({
+                "supported": false,
+                "backend": serde_json::Value::Null,
+                "checks": [],
+                "note": if cfg!(target_os = "windows") {
+                    "Windows 由 Sandboxie（内核强制）承担沙盒，无用户态后端可自检"
+                } else {
+                    "本机无可用用户态沙盒后端（landlock / bwrap 均不可用）"
+                },
+            })));
+        };
+
+        let allow_network = current_allow_network(home);
+        let exe = std::env::current_exe().map_err(|e| format!("current_exe: {e}"))?;
+        let mut cmd = std::process::Command::new(&exe);
+        cmd.arg("sandbox").arg("selftest-child");
+        match backend.form() {
+            BackendForm::SelfApply => {
+                cmd.env("NEMESISBOT_SELFTEST_ENGAGE", "1");
+            }
+            BackendForm::WrapCommand => {
+                let conf = nemesis_sandbox::backend::SandboxConf {
+                    writable_roots: vec![workspace.clone()],
+                    read_exec_roots: vec![std::path::PathBuf::from("/")],
+                    allow_network,
+                    label: "selftest".to_string(),
+                };
+                cmd = backend
+                    .wrap_command(&conf, &cmd)
+                    .map_err(|e| format!("wrap selftest child with {}: {e}", backend.name()))?;
+                cmd.env("NEMESISBOT_SELFTEST_BOXED", "1");
+            }
+        }
+        cmd.env("NEMESISBOT_SELFTEST_WORKSPACE", &workspace)
+            .env("NEMESISBOT_SELFTEST_ALLOW_NETWORK", if allow_network { "1" } else { "0" })
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped());
+
+        // Probe child is short-lived (network probe bounded at 3s) but goes
+        // through process spawn + landlock engage — give it 30s, off the
+        // async reactor (std::process blocks).
+        let output = tokio::time::timeout(
+            std::time::Duration::from_secs(30),
+            tokio::task::spawn_blocking(move || cmd.output()),
+        )
+        .await
+        .map_err(|_| "selftest child timed out (30s)".to_string())?
+        .map_err(|e| format!("join selftest task: {e}"))?
+        .map_err(|e| format!("spawn selftest child: {e}"))?;
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let verdict = stdout
+            .lines()
+            .rev()
+            .find(|l| !l.trim().is_empty())
+            .and_then(|l| serde_json::from_str::<serde_json::Value>(l).ok());
+        let form = match backend.form() {
+            BackendForm::SelfApply => "self_apply",
+            BackendForm::WrapCommand => "wrap_command",
+        };
+        let base = serde_json::json!({
+            "supported": true,
+            "backend": backend.name(),
+            "form": form,
+            "allow_network": allow_network,
+        });
+        let obj = base.as_object().expect("literal json object");
+        match verdict {
+            Some(v) if v.get("ok").and_then(|b| b.as_bool()) == Some(true) => {
+                let mut o = obj.clone();
+                o.insert("probe_ok".into(), serde_json::Value::Bool(true));
+                o.insert("checks".into(), v.get("checks").cloned().unwrap_or_default());
+                Ok(Some(serde_json::Value::Object(o)))
+            }
+            Some(v) => {
+                let mut o = obj.clone();
+                o.insert("probe_ok".into(), serde_json::Value::Bool(false));
+                o.insert(
+                    "error".into(),
+                    v.get("error").cloned().unwrap_or_else(|| "probe child reported failure".into()),
+                );
+                o.insert("checks".into(), v.get("checks").cloned().unwrap_or_default());
+                Ok(Some(serde_json::Value::Object(o)))
+            }
+            None => {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                let mut o = obj.clone();
+                o.insert("probe_ok".into(), serde_json::Value::Bool(false));
+                o.insert(
+                    "error".into(),
+                    serde_json::json!(format!(
+                        "selftest child produced no JSON verdict (status {}): {}",
+                        output.status,
+                        stderr.trim().chars().take(200).collect::<String>()
+                    )),
+                );
+                o.insert("checks".into(), serde_json::json!([]));
+                Ok(Some(serde_json::Value::Object(o)))
+            }
         }
     }
 }

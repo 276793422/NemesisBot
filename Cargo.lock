@@ -3408,6 +3408,7 @@ dependencies = [
  "chrono",
  "dashmap",
  "if-addrs",
+ "nemesis-path",
  "nemesis-types",
  "parking_lot",
  "rand 0.8.6",
@@ -3529,6 +3530,7 @@ dependencies = [
  "dashmap",
  "filetime",
  "mockall",
+ "nemesis-path",
  "nemesis-plugin",
  "nemesis-types",
  "parking_lot",
@@ -3564,6 +3566,7 @@ name = "nemesis-heartbeat"
 version = "0.1.0"
 dependencies = [
  "chrono",
+ "nemesis-path",
  "parking_lot",
  "serde",
  "serde_json",
@@ -3861,6 +3864,7 @@ name = "nemesis-state"
 version = "0.1.0"
 dependencies = [
  "chrono",
+ "nemesis-path",
  "parking_lot",
  "serde",
  "serde_json",
@@ -3991,6 +3995,7 @@ dependencies = [
  "nemesis-forge",
  "nemesis-lsp",
  "nemesis-memory",
+ "nemesis-path",
  "nemesis-providers",
  "nemesis-sandbox",
  "nemesis-security",

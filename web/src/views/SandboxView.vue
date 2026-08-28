@@ -1,7 +1,16 @@
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, defineAsyncComponent } from 'vue'
 import { useWSAPI } from '../composables/useWSAPI'
 import { useToast } from '../composables/useToast'
+
+// G7 (D1)：用户态沙盒 UI 仅在 Linux 工具链构建中打包（build-linux.sh 导出
+// VITE_USERLAND_SANDBOX=1）。env 缺省时 import.meta.env.X 被静态替换为
+// undefined → 三元常量折叠 → 动态 import 分支被 tree-shake，产物不含该
+// chunk（Windows 构建可用 assets grep 验证无 userland 符号，R3）。
+const HAS_USERLAND_UI = import.meta.env.VITE_USERLAND_SANDBOX === '1'
+const UserlandSandbox = HAS_USERLAND_UI
+  ? defineAsyncComponent(() => import('../components/sandbox/UserlandSandbox.vue'))
+  : null
 
 const { request } = useWSAPI()
 const toast = useToast()
@@ -132,13 +141,6 @@ function toggleStrict() {
     )) return
   }
   setExecutorCfg({ strict: next }, `严格模式已${next ? '开启（fail-closed）' : '关闭（fail-open）'}`)
-}
-
-function availText(a: string): string {
-  return a === 'full' ? '可用' : a === 'partial' ? '部分可用' : '不可用'
-}
-function availColor(a: string): string {
-  return a === 'full' ? 'var(--success)' : a === 'partial' ? 'var(--warning, orange)' : 'var(--danger, #ef4444)'
 }
 
 async function install7z() {
@@ -545,111 +547,34 @@ onMounted(async () => {
       </div>
       </template>
 
-      <!-- ════════ Linux / macOS 布局：用户态沙盒（P5-1） ════════ -->
+      <!-- ════════ Linux / macOS 布局：用户态沙盒（G7 D1：构建期门控组件） ════════ -->
       <template v-if="isUserland">
-      <div style="display: flex; justify-content: flex-end; margin-bottom: var(--space-3);">
-        <button class="btn btn-sm" @click="refreshAll" :disabled="!!busy">刷新</button>
-      </div>
-
-      <!-- 联动开关（同 Windows 启动/停止按钮模式：enabled+sandbox 一起翻） -->
-      <div class="card" style="margin-bottom: var(--space-3);">
-        <div class="card-header"><h3 style="margin: 0;">执行沙盒（用户态）</h3></div>
-        <div class="card-body">
-          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: var(--space-2);">
-            <div>
-              <span style="font-weight: 500;">沙盒执行</span>
-              <span
-                style="margin-left: var(--space-2); font-size: var(--text-sm);"
-                :style="{ color: executorOn ? 'var(--success)' : 'var(--text-secondary)' }"
-              >{{ executorOn ? '● 已启用' : '○ 已停用' }}</span>
-            </div>
-            <div style="display: flex; gap: var(--space-2);">
-              <button v-if="!executorOn" class="btn btn-sm btn-primary" @click="enableSandboxExec" :disabled="!!busy">启用沙盒执行</button>
-              <button v-else class="btn btn-sm btn-danger" @click="disableSandboxExec" :disabled="!!busy">停用沙盒执行</button>
-            </div>
-          </div>
-          <div style="font-size: var(--text-xs); color: var(--text-secondary);">
-            联动开关：executor.enabled + executor.sandbox 一起翻（与 Windows 启动/停止按钮同模式）。executor.enabled 需重启 Agent 生效；sandbox 对后续工具调用实时生效。
-          </div>
-        </div>
-      </div>
-
-      <!-- 后端探测（landlock / bwrap 逐个探测 + 实际选用） -->
-      <div class="card" style="margin-bottom: var(--space-3);">
-        <div class="card-header" style="display: flex; justify-content: space-between; align-items: center;">
-          <h3 style="margin: 0;">后端探测</h3>
-          <span style="font-size: var(--text-sm); color: var(--text-secondary);">
-            实际选用：<span :style="{ color: selectedBackend ? 'var(--success)' : 'var(--danger, #ef4444)' }">{{ selectedBackend ?? '无（沙盒不可用）' }}</span>
-          </span>
-        </div>
-        <div class="card-body" style="display: flex; flex-direction: column; gap: var(--space-2); font-size: var(--text-sm);">
-          <div v-for="b in backends" :key="b.name" style="display: flex; align-items: center; gap: var(--space-2); flex-wrap: wrap;">
-            <span style="font-weight: 500; min-width: 96px;">{{ b.name }}</span>
-            <span style="font-size: var(--text-xs); color: var(--text-secondary);">({{ b.form === 'SelfApply' ? '进程内自装' : '包装命令' }})</span>
-            <span :style="{ color: availColor(b.availability), fontSize: 'var(--text-sm)' }">{{ availText(b.availability) }}</span>
-            <span v-if="b.detail?.length" style="color: var(--text-secondary); font-size: var(--text-xs);">{{ b.detail.join('；') }}</span>
-            <span v-if="selectedBackend === b.name" style="font-size: var(--text-xs); color: var(--accent);">✓ 已选用</span>
-          </div>
-          <div v-if="!backends.length" style="color: var(--text-secondary);">本平台无用户态沙盒后端（探测为空）。</div>
-        </div>
-      </div>
-
-      <!-- 沙盒内联网（Linux 无 Sandboxie.ini 副作用，直接走 set_config） -->
-      <div class="card" style="margin-bottom: var(--space-3);">
-        <div class="card-header"><h3 style="margin: 0;">沙盒内联网</h3></div>
-        <div class="card-body">
-          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: var(--space-2);">
-            <span style="font-weight: 500;">executor.allow_network</span>
-            <button
-              class="btn btn-sm"
-              :class="{ 'btn-primary': allowNetworkCfg }"
-              @click="toggleUserlandNetwork"
-              :disabled="!!busy"
-            >
-              {{ allowNetworkCfg ? '已开启' : '已关闭' }}
-            </button>
-          </div>
-          <div style="font-size: var(--text-xs); color: var(--text-secondary);">
-            {{ allowNetworkCfg ? '沙盒内程序允许联网（需后端支持网络隔离才有意义：bwrap --unshare-net / Seatbelt deny network）' : '沙盒内程序禁止联网（bwrap --unshare-net / Seatbelt deny network；landlock 本身不覆盖网络）' }}
+        <!-- 构建含用户态 UI（Linux 工具链构建）：完整面板，开关请求逻辑留在本视图 -->
+        <UserlandSandbox
+          v-if="HAS_USERLAND_UI && UserlandSandbox"
+          :busy="busy"
+          :executor-on="executorOn"
+          :strict-on="strictOn"
+          :allow-network="allowNetworkCfg"
+          :sandbox-ready="sandboxReady"
+          :backends="backends"
+          :selected-backend="selectedBackend"
+          :strict-hint="strictHint"
+          @refresh="refreshAll"
+          @enable-exec="enableSandboxExec"
+          @disable-exec="disableSandboxExec"
+          @toggle-network="toggleUserlandNetwork"
+          @toggle-strict="toggleStrict"
+        />
+        <!-- 构建不含用户态 UI（Windows/Android 工具链构建）：诚实降级提示；
+             运行时平台真相源仍是 overview.platform，这里只说明 UI 缺失原因 -->
+        <div v-else class="card" data-test="userland-degrade">
+          <div class="card-body" style="color: var(--text-secondary); font-size: var(--text-sm);">
+            此构建未包含用户态沙盒 UI（构建于 Windows/Android 工具链）。沙盒配置仍可通过
+            <code>config.json</code> 的 <code>executor</code> 段管理；如需面板，请用
+            <code>scripts/build-linux.sh</code> 重新构建（自动开启用户态沙盒 UI）。
           </div>
         </div>
-      </div>
-
-      <!-- P5-2 严格模式 — 按钮旁写清 landlock/bwrap 探测结果 -->
-      <div class="card" style="margin-bottom: var(--space-3);">
-        <div class="card-header"><h3 style="margin: 0;">严格模式（fail-closed）</h3></div>
-        <div class="card-body">
-          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: var(--space-2);">
-            <span style="font-weight: 500;">executor.strict</span>
-            <button
-              class="btn btn-sm"
-              :class="{ 'btn-primary': strictOn }"
-              @click="toggleStrict"
-              :disabled="!!busy"
-            >
-              {{ strictOn ? '已开启' : '已关闭' }}
-            </button>
-          </div>
-          <div style="font-size: var(--text-sm); color: var(--text-secondary); margin-bottom: var(--space-1);">
-            {{ strictOn
-              ? '要求沙盒的调用：后端不可用即拒绝执行（不静默降级）'
-              : '要求沙盒的调用：后端不可用时降级为无盒执行（warn，现状默认）' }}
-          </div>
-          <div style="font-size: var(--text-xs); color: var(--text-secondary);">{{ strictHint }}</div>
-        </div>
-      </div>
-
-      <!-- 诚实说明卡（机制边界，如实写明） -->
-      <div class="card">
-        <div class="card-header"><h3 style="margin: 0;">机制说明（诚实边界）</h3></div>
-        <div class="card-body" style="font-size: var(--text-sm); color: var(--text-secondary);">
-          <ul style="margin: 0; padding-left: var(--space-5); display: flex; flex-direction: column; gap: var(--space-1);">
-            <li>文件系统隔离 = 内核强制（Linux: landlock；macOS: Seatbelt 配置文件）</li>
-            <li>网络隔离需要 bwrap（landlock 不覆盖网络；Seatbelt 经 deny network 规则）</li>
-            <li>无「写捕获 / 待提交」模型：越界写 = <b>直接拒绝</b>，不是关进盒等手动提交（与 Windows Sandboxie 语义不同）</li>
-          </ul>
-        </div>
-      </div>
       </template>
 
     </div>

@@ -181,8 +181,15 @@ pub fn append_projection_record(rec: &RequestProjectionRecord) {
 /// Load all projection records for a session, oldest first. Missing file →
 /// empty vec (caller treats as `NoLedger`).
 pub fn load_projection_records(session_key: &str) -> Vec<RequestProjectionRecord> {
-    let path = replay_ledger_path(session_key);
-    let file = match File::open(&path) {
+    load_projection_records_from(&replay_ledger_path(session_key))
+}
+
+/// Core loader for an EXPLICIT ledger path. `load_projection_records` is the
+/// session-key convenience wrapper; the explicit form serves callers whose
+/// workspace differs from the global path manager (dashboard logs handler —
+/// the ledger lives at `<workspace>/logs/boundary/{sanitized}.replay.jsonl`).
+pub fn load_projection_records_from(path: &std::path::Path) -> Vec<RequestProjectionRecord> {
+    let file = match File::open(path) {
         Ok(f) => f,
         Err(_) => return Vec::new(),
     };
@@ -242,23 +249,38 @@ pub fn rebuild_request_messages(
     session_key: &str,
     round: usize,
 ) -> Result<RebuildOutcome, String> {
-    let records = load_projection_records(session_key);
-    let rec = match records.iter().rev().find(|r| r.round == round) {
-        Some(r) => r.clone(),
-        None => {
-            return Ok(RebuildOutcome::NoLedger {
-                note: format!(
-                    "no projection ledger record for session `{}` round {} \
-                     (pre-feature session or boundary-logging-exempt turn)",
-                    session_key, round
-                ),
-            })
-        }
+    rebuild_request_messages_in(store, &replay_ledger_path(session_key), round)
+}
+
+/// Core rebuild for an EXPLICIT ledger path (dashboard logs handler; see
+/// `load_projection_records_from`). Semantics identical to
+/// `rebuild_request_messages` — only the ledger source differs.
+pub fn rebuild_request_messages_in(
+    store: &SessionStore,
+    ledger_path: &std::path::Path,
+    round: usize,
+) -> Result<RebuildOutcome, String> {
+    let records = load_projection_records_from(ledger_path);
+    let Some(rec) = records.iter().rev().find(|r| r.round == round).cloned() else {
+        let ledger_name = ledger_path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("<ledger>");
+        return Ok(RebuildOutcome::NoLedger {
+            note: format!(
+                "no projection ledger record in `{}` for round {} \
+                 (pre-feature session or boundary-logging-exempt turn)",
+                ledger_name, round
+            ),
+        });
     };
 
-    store.get_or_create(session_key);
+    // The ledger record carries the RAW (unsanitized) session key — the
+    // explicit-ledger path intentionally has no separate key parameter.
+    let session_key = rec.session_key.clone();
+    store.get_or_create(&session_key);
     let history: Vec<ConversationTurn> = store
-        .get_history(session_key)
+        .get_history(&session_key)
         .into_iter()
         .map(|m| m.into())
         .collect();
@@ -471,7 +493,26 @@ pub fn verify_session_round(
     round: usize,
     recorded: &[serde_json::Value],
 ) -> Result<ReplayCheck, ReplayDiff> {
-    match rebuild_request_messages(store, session_key, round) {
+    verify_session_round_in(
+        store,
+        &replay_ledger_path(session_key),
+        session_key,
+        round,
+        recorded,
+    )
+}
+
+/// Core verify for an EXPLICIT ledger path (dashboard logs handler).
+/// `session_key` is the RAW store key used only by the NoLedger degraded
+/// anchor (callers resolve it from the ledger record when one exists).
+pub fn verify_session_round_in(
+    store: &SessionStore,
+    ledger_path: &std::path::Path,
+    session_key: &str,
+    round: usize,
+    recorded: &[serde_json::Value],
+) -> Result<ReplayCheck, ReplayDiff> {
+    match rebuild_request_messages_in(store, ledger_path, round) {
         Ok(RebuildOutcome::Rebuilt(rebuilt)) => {
             verify_request_replay(&rebuilt, recorded).map(|_| ReplayCheck::ByteExact)
         }

@@ -163,3 +163,54 @@ describe('ModelsView 属性编辑', () => {
     expect((ctxInput.element as HTMLInputElement).value).toBe('128000')
   })
 })
+
+// G4 (U15)：key 来源徽标 + 明文迁移引导卡。
+describe('ModelsView key 来源徽标（G4）', () => {
+  const KS = (kind: string, ref = '') => ({ kind, ref })
+
+  it('四种来源徽标各按 kind 渲染（env/yaml/inline/none）', async () => {
+    const w = await mountView([
+      { ...MODEL, model_name: 'a', key_source: KS('env', 'ZHIPU_API_KEY') },
+      { ...MODEL, model_name: 'b', key_source: KS('yaml', 'zhipu') },
+      { ...MODEL, model_name: 'c', key_source: KS('inline') },
+      { ...MODEL, model_name: 'd', key_source: KS('none') },
+    ])
+    const badges = w.findAll('.settings-value .ks-badge')
+    expect(badges.length).toBe(4)
+    expect(badges[0].text()).toBe('env 环境变量')
+    expect(badges[0].classes()).toContain('ks-env')
+    expect(badges[1].text()).toBe('yaml 引用')
+    expect(badges[1].classes()).toContain('ks-yaml')
+    expect(badges[2].text()).toBe('⚠ 明文')
+    expect(badges[2].classes()).toContain('ks-inline')
+    expect(badges[3].text()).toBe('无 key')
+    expect(badges[3].classes()).toContain('ks-none')
+  })
+
+  it('区顶部有来源说明；无明文 key 时不显示迁移卡', async () => {
+    const w = await mountView([{ ...MODEL, key_source: KS('env', 'K') }])
+    expect(w.find('.key-source-hint').exists()).toBe(true)
+    expect(w.text()).toContain('推荐 env / yaml')
+    expect(w.find('.key-import-card').exists()).toBe(false)
+  })
+
+  it('有明文 key → 迁移引导卡出现（计数 + CLI 命令）；复制按钮写入剪贴板', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined)
+    Object.assign(navigator, { clipboard: { writeText } })
+    const w = await mountView([
+      { ...MODEL, key_source: KS('inline') },
+      { ...MODEL, model_name: 'x', key_source: KS('inline') },
+      { ...MODEL, model_name: 'y', key_source: KS('yaml', 'a') },
+    ])
+    const card = w.find('.key-import-card')
+    expect(card.exists()).toBe(true)
+    expect(card.text()).toContain('2 个模型使用明文 Key')
+    expect(card.text()).toContain('nemesisbot credentials import')
+
+    const copyBtn = card.findAll('button').find(b => b.text().includes('复制'))!
+    await copyBtn.trigger('click')
+    await flushPromises()
+    expect(writeText).toHaveBeenCalledWith('nemesisbot credentials import')
+    expect(copyBtn.text()).toContain('已复制')
+  })
+})

@@ -174,7 +174,9 @@ impl Cluster {
 
     /// Create a cluster with a workspace path for config loading.
     pub fn with_workspace(config: ClusterConfig, workspace: PathBuf) -> Self {
-        let cluster_dir = workspace.join("cluster");
+        // 路径唯一真相源 = nemesis-path（peers.toml 跨 crate 读写：本 crate /
+        // nemesis-web / CLI 三方共用，禁止各自 join）。
+        let cluster_dir = nemesis_path::cluster_dir_in_workspace(&workspace);
         let (stop_tx, _) = broadcast::channel(1);
 
         let node_id = if config.node_id.is_empty() {
@@ -232,11 +234,13 @@ impl Cluster {
             tags: parking_lot::RwLock::new(tags_default),
             capabilities: Arc::new(std::sync::Mutex::new(Vec::new())),
             workspace: workspace.clone(),
-            static_config_path: cluster_dir.join("peers.toml"),
-            dynamic_state_path: cluster_dir.join("state.toml"),
+            static_config_path: nemesis_path::resolve_cluster_peers_path_in_workspace(&workspace),
+            dynamic_state_path: nemesis_path::resolve_cluster_state_path_in_workspace(&workspace),
             registry: Arc::new(PeerRegistry::new(HealthConfig::default())),
             task_manager: Arc::new(TaskManager::new()),
-            cont_store: Arc::new(ContinuationStore::new(cluster_dir.join("rpc_cache"))),
+            cont_store: Arc::new(ContinuationStore::new(
+                nemesis_path::resolve_cluster_rpc_cache_dir_in_workspace(&workspace),
+            )),
             result_store: Arc::new(TaskResultStore::new(1000)),
             rpc_client: Mutex::new(None),
             rpc_server: None,
@@ -353,7 +357,8 @@ impl Cluster {
     /// This is called automatically during `start()` so that token auth
     /// works without any manual wiring in gateway.rs or cluster node.
     fn load_rpc_auth_token(&self) {
-        let cfg_path = self.workspace.join("config").join("config.cluster.json");
+        // 委托 nemesis-path 唯一拼接点。
+        let cfg_path = nemesis_path::resolve_cluster_config_path_in_workspace(&self.workspace);
         if !cfg_path.exists() {
             return;
         }
@@ -447,7 +452,8 @@ impl Cluster {
     /// Uses the same `token` field as RPC auth. Returns empty string if no token
     /// is configured, meaning discovery runs without encryption.
     fn load_discovery_secret(&self) -> String {
-        let cfg_path = self.workspace.join("config").join("config.cluster.json");
+        // 委托 nemesis-path 唯一拼接点。
+        let cfg_path = nemesis_path::resolve_cluster_config_path_in_workspace(&self.workspace);
         if !cfg_path.exists() {
             return String::new();
         }
@@ -576,7 +582,8 @@ impl Cluster {
                         }
 
                         // Sync state to disk
-                        let state_path = workspace.join("cluster").join("state.toml");
+                        let state_path =
+                            nemesis_path::resolve_cluster_state_path_in_workspace(&workspace);
                         let state = DynamicState {
                             discovered: registry.list_peers().iter().map(|n| {
                                 let mut pc = n.to_peer_config();

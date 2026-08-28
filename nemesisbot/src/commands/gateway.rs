@@ -1091,7 +1091,8 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
     // Step 6: Write gateway state file (PID only; web_port updated after bind)
     let pid = std::process::id();
     {
-        let state_dir = home.join("workspace").join("state");
+        let state_dir =
+            nemesis_path::resolve_state_dir_in_workspace(&common::workspace_path(&home));
         if let Err(e) = std::fs::create_dir_all(&state_dir) {
             warn!("[Gateway] Failed to create state dir: {}", e);
         }
@@ -1415,10 +1416,9 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
     #[cfg(feature = "forge")]
     {
         // Load forge config from file, fall back to defaults if missing.
-        let forge_config_path = home
-            .join("workspace")
-            .join("config")
-            .join("config.forge.json");
+        // 委托 nemesis-path 唯一拼接点（与 web forge handler / CLI 同源）。
+        let forge_config_path =
+            nemesis_path::resolve_forge_config_path_in_workspace(&common::workspace_path(&home));
         let mut forge_config = if forge_config_path.exists() {
             nemesis_forge::config::load_forge_config(&forge_config_path)
         } else {
@@ -1562,10 +1562,9 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
     };
 
     let skills_registry_arc: Option<std::sync::Arc<nemesis_skills::registry::RegistryManager>> = {
-        let skills_config_path = home
-            .join("workspace")
-            .join("config")
-            .join("config.skills.json");
+        // 委托 nemesis-path 唯一拼接点。
+        let skills_config_path =
+            nemesis_path::resolve_skills_config_path_in_workspace(&common::workspace_path(&home));
         if skills_config_path.exists() {
             match std::fs::read_to_string(&skills_config_path) {
                 Ok(content) => {
@@ -1849,7 +1848,7 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
         handler.set_timeout(llm_timeout);
 
         // Create cluster agent work queue and task list.
-        let cluster_data_dir = home.join("workspace").join("data");
+        let cluster_data_dir = nemesis_path::workspace_data_dir(&home);
         let cluster_task_list = Arc::new(nemesis_cluster::ClusterTaskList::new(&cluster_data_dir));
         let cluster_work_queue = Arc::new(nemesis_cluster::ClusterWorkQueue::new(64));
         handler.set_cluster_queue(cluster_task_list.clone(), cluster_work_queue.clone());
@@ -2516,7 +2515,12 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
             // Initialize audit log file.
             // The JSON config field is "audit_log_file_enabled"; default is true.
             // Log directory is always `{home}/workspace/logs/security_logs/`.
-            let audit_dir = format!("{}/workspace/logs/security_logs", home.display());
+            // 委托 nemesis-path 唯一拼接点（web Logs 页 security 源同源读取）。
+            let audit_dir = nemesis_path::resolve_audit_log_dir_in_workspace(
+                &common::workspace_path(&home),
+            )
+            .to_string_lossy()
+            .to_string();
             if let Err(e) = plugin.init_audit_log_file(&audit_dir) {
                 warn!("[Gateway] Failed to initialize security audit log: {}", e);
             } else {
@@ -2613,7 +2617,7 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
 
     // Step 9b: Create DataStore for usage statistics
     let data_store = {
-        let data_dir = home.join("workspace").join("data");
+        let data_dir = nemesis_path::workspace_data_dir(&home);
         let db_path = data_dir.join("nemesisbot_data.db");
         match nemesis_data::DataStore::open(&db_path) {
             Ok(store) => {
@@ -3474,7 +3478,8 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
 
     // Update gateway state with actual web port
     {
-        let state_path = home.join("workspace").join("state").join("gateway.json");
+        let state_path =
+            nemesis_path::resolve_gateway_state_path_in_workspace(&common::workspace_path(&home));
         let state_json = serde_json::json!({
             "pid": std::process::id(),
             "web_host": web_host,
@@ -3678,8 +3683,9 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
                         }
                     }
                     // Write config.cluster.json enabled = true
-                    let cluster_cfg_path =
-                        home_for_start.join("workspace/config/config.cluster.json");
+                    let cluster_cfg_path = nemesis_path::resolve_cluster_config_path_in_workspace(
+                        &common::workspace_path(&home_for_start),
+                    );
                     if let Ok(content) = std::fs::read_to_string(&cluster_cfg_path) {
                         if let Ok(mut cfg) = serde_json::from_str::<serde_json::Value>(&content) {
                             if let Some(obj) = cfg.as_object_mut() {
@@ -3702,8 +3708,9 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
                         tracing::warn!("[Gateway] Tray: failed to stop cluster: {}", e);
                     }
                     // Write config.cluster.json enabled = false
-                    let cluster_cfg_path =
-                        home_for_stop.join("workspace/config/config.cluster.json");
+                    let cluster_cfg_path = nemesis_path::resolve_cluster_config_path_in_workspace(
+                        &common::workspace_path(&home_for_stop),
+                    );
                     if let Ok(content) = std::fs::read_to_string(&cluster_cfg_path) {
                         if let Ok(mut cfg) = serde_json::from_str::<serde_json::Value>(&content) {
                             if let Some(obj) = cfg.as_object_mut() {
@@ -3878,7 +3885,9 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
     }
 
     // Clean up gateway state file
-    let _ = std::fs::remove_file(home.join("workspace").join("state").join("gateway.json"));
+    let _ = std::fs::remove_file(nemesis_path::resolve_gateway_state_path_in_workspace(
+        &common::workspace_path(&home),
+    ));
 
     println!("  OK Gateway stopped");
 

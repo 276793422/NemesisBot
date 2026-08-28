@@ -479,3 +479,53 @@ fn test_boundary_turn_end_max_turns_detection() {
     };
     assert_eq!(reason, "max_turns");
 }
+
+/// G1 (dashboard gap exposure): `inbox_status` — read-only snapshot feeding
+/// the `agent.inbox_status` WSAPI command. Pin counts/capacity/mode after
+/// direct enqueues; busy stays false (no turn is running here — the busy
+/// flag's lifecycle is owned by the gate/turn paths and pinned elsewhere).
+#[test]
+fn inbox_status_reports_queues_capacity_and_mode() {
+    let al = loop_with(
+        ConcurrentMode::Steer,
+        Box::new(ArcCapturing(std::sync::Arc::new(CapturingProvider::new(vec![])))),
+    );
+    let key = "agent:main:session:s1";
+
+    // Empty session: zeros, capacity from the loop constructor (4), mode
+    // mirrors the ConcurrentMode the loop was built with.
+    let s = al.inbox_status(key);
+    assert_eq!((s.next_turn, s.next_step), (0, 0));
+    assert_eq!(s.capacity, 4);
+    assert_eq!(s.mode, "steer");
+    assert!(!s.busy);
+
+    // 2 next-turn + 1 next-step via the same enqueue the gate uses.
+    let mk = |content: &str| crate::inbox::QueuedMessage {
+        msg: inbound(key, content),
+        timestamp: "t".to_string(),
+    };
+    assert_eq!(
+        al.inbox.enqueue_for_mode(key, mk("first"), true),
+        crate::inbox::EnqueueOutcome::QueuedForNextTurn
+    );
+    assert_eq!(
+        al.inbox.enqueue_for_mode(key, mk("second"), true),
+        crate::inbox::EnqueueOutcome::QueuedForNextTurn
+    );
+    assert_eq!(
+        al.inbox.enqueue_for_mode(key, mk("!urgent"), true),
+        crate::inbox::EnqueueOutcome::QueuedForNextStep
+    );
+
+    let s2 = al.inbox_status(key);
+    assert_eq!((s2.next_turn, s2.next_step), (2, 1));
+    assert_eq!(s2.capacity, 4);
+    assert_eq!(s2.mode, "steer");
+
+    // Unknown session still reports loop-level facts (capacity/mode), zeros
+    // for queues — the handler renders this shape verbatim.
+    let s3 = al.inbox_status("agent:main:session:other");
+    assert_eq!((s3.next_turn, s3.next_step), (0, 0));
+    assert_eq!(s3.capacity, 4);
+}

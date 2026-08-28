@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, watch } from 'vue'
 import { formatTime, formatRelative, type SessionEntry, type LlmRequestEntry } from './mockData'
+import InjectionPanel from './InjectionPanel.vue'
 
 const props = defineProps<{
   sessions: SessionEntry[]
@@ -157,6 +158,9 @@ watch(
           </div>
         </div>
 
+        <!-- G2（U9）：注入与重放可见性（折叠面板，按会话拉取台账聚合） -->
+        <InjectionPanel :session="selected.id" />
+
         <!-- 对话气泡 -->
         <div class="chat-stream scrollable">
           <div
@@ -194,7 +198,10 @@ watch(
 .explorer-layout {
   display: grid;
   grid-template-columns: 320px 1fr;
-  height: 100%;
+  /* G3：作为 SessionExplorer flex 列的成员（上方可能有 SpillCard），
+     用 flex 收缩代替固定 height:100%，避免溢出。 */
+  flex: 1;
+  min-height: 0;
 }
 
 .explorer-list {

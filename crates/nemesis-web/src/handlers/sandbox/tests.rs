@@ -388,3 +388,38 @@ async fn unknown_sandbox_command_rejected() {
     let err = h.handle_cmd("bogus", None, &ctx).await.unwrap_err();
     assert!(err.contains("unknown sandbox command"), "err: {err}");
 }
+
+// ---------------------------------------------------------------------------
+// G7 (D2)：sandbox.self_test —— 无用户态后端路径（Windows 恒定；Linux 上
+// landlock/bwrap 可用性随环境变，真机拦截证据由 R2 验收覆盖，不在单测伪造）。
+// ---------------------------------------------------------------------------
+
+#[cfg(target_os = "windows")]
+#[tokio::test]
+async fn self_test_without_userland_backend_reports_unsupported() {
+    use nemesis_sandbox::backend::detect_backend;
+    if detect_backend().is_some() {
+        eprintln!("skip self_test unsupported: userland backend unexpectedly present");
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let ctx = make_ctx(&dir);
+    let h = SandboxHandler::new();
+    let v = h
+        .handle_cmd("self_test", None, &ctx)
+        .await
+        .expect("self_test ok")
+        .expect("self_test returns a payload");
+
+    assert_eq!(v["supported"], false, "Windows 无用户态后端 → 不支持自检");
+    assert!(v["backend"].is_null());
+    assert_eq!(v["checks"], serde_json::json!([]));
+    // 说明文案必须点名 Sandboxie 承担（Windows 分支）
+    assert!(
+        v["note"].as_str().unwrap_or("").contains("Sandboxie"),
+        "note: {}",
+        v["note"]
+    );
+    // 副作用：workspace 目录被补建（探针子进程的目标目录）
+    assert!(dir.path().join("workspace").is_dir(), "workspace must be created");
+}

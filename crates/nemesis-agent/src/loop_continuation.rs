@@ -130,7 +130,9 @@ pub struct ContinuationStore {
 impl ContinuationStore {
     /// Create a new store rooted at the given workspace directory.
     pub fn new(workspace: &std::path::Path) -> Self {
-        let base_dir = workspace.join("cluster").join("rpc_cache");
+        // 路径唯一真相源 = nemesis-path（与 nemesis-cluster ContinuationStore
+        // 同一目录，两侧禁止各自 join）。
+        let base_dir = nemesis_path::resolve_cluster_rpc_cache_dir_in_workspace(workspace);
         Self { base_dir }
     }
 

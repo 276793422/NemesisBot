@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import { useWSAPI } from '../composables/useWSAPI'
 import { useToast } from '../composables/useToast'
 
@@ -26,6 +26,8 @@ interface Model {
   real_name?: string | null
   context_window?: number | string | null
   catalog_match?: CatalogMatch | null
+  // G4 (U15)：key 来源分类（后端 classify_key_source，零明文）。
+  key_source?: { kind: string; ref: string } | null
 }
 
 const models = ref<Model[]>([])
@@ -60,6 +62,29 @@ async function loadModels() {
     toast.error('加载模型失败: ' + e)
   }
   loading.value = false
+}
+
+// G4 (U15)：key 来源徽标（env 绿 / yaml 蓝 / inline 黄「⚠ 明文」/ none 灰）。
+const KEY_SOURCE_BADGES: Record<string, { label: string; cls: string; title: string }> = {
+  env: { label: 'env 环境变量', cls: 'ks-env', title: 'Key 存于环境变量，config.json 不含明文（推荐）' },
+  yaml: { label: 'yaml 引用', cls: 'ks-yaml', title: 'Key 存于 workspace/config/credentials.yaml（0600，推荐）' },
+  inline: { label: '⚠ 明文', cls: 'ks-inline', title: 'Key 以明文写在 config.json，建议迁移到 env 或 credentials.yaml' },
+  none: { label: '无 key', cls: 'ks-none', title: '未配置 API Key' },
+}
+function keySourceBadge(m: Model) {
+  return KEY_SOURCE_BADGES[m.key_source?.kind ?? 'none'] ?? KEY_SOURCE_BADGES.none
+}
+// 存在明文 key → 顶部显示「迁移明文 key」引导卡。
+const inlineKeyModels = computed(() => models.value.filter(m => m.key_source?.kind === 'inline'))
+const copiedImport = ref(false)
+async function copyImportCmd() {
+  try {
+    await navigator.clipboard.writeText('nemesisbot credentials import')
+    copiedImport.value = true
+    setTimeout(() => { copiedImport.value = false }, 2000)
+  } catch {
+    toast.error('复制失败，请手动选择命令复制')
+  }
 }
 
 async function loadCatalogInfo() {
@@ -271,6 +296,23 @@ onMounted(() => {
       </div>
     </div>
     <div class="page-body">
+      <!-- G4 (U15)：key 来源说明 + 明文迁移引导 -->
+      <div class="key-source-hint">
+        <span>🔐 Key 来源：</span>
+        <span class="ks-badge ks-env">env 环境变量</span>
+        <span class="ks-badge ks-yaml">yaml 引用</span>
+        <span class="ks-badge ks-inline">⚠ 明文</span>
+        <span class="ks-badge ks-none">无 key</span>
+        <span class="key-source-hint-note">推荐 env / yaml —— config.json 不落明文；明文 key 可用 CLI 一键迁移</span>
+      </div>
+      <div v-if="inlineKeyModels.length > 0" class="card key-import-card">
+        <div class="key-import-body">
+          <span class="key-import-title">⚠ 检测到 {{ inlineKeyModels.length }} 个模型使用明文 Key（写在 config.json）</span>
+          <span class="key-import-note">在服务器上运行以下命令，可将其迁移到 credentials.yaml（权限 0600，config.json 只留引用）：</span>
+          <code class="key-import-cmd">nemesisbot credentials import</code>
+        </div>
+        <button class="btn btn-sm" @click="copyImportCmd">{{ copiedImport ? '✓ 已复制' : '复制命令' }}</button>
+      </div>
       <!-- Add form -->
       <div v-if="showAdd" class="card" style="margin-bottom: var(--space-4);">
         <div class="card-header"><h3>添加模型</h3></div>
@@ -333,7 +375,11 @@ onMounted(() => {
           <div class="card-body">
             <div class="settings-grid" style="font-size: var(--text-sm);">
               <span class="settings-key">API Key</span>
-              <span class="settings-value">{{ m.api_key || '--' }}</span>
+              <span class="settings-value">
+                {{ m.api_key || '--' }}
+                <!-- G4 (U15)：key 来源徽标 -->
+                <span class="ks-badge" :class="keySourceBadge(m).cls" :title="keySourceBadge(m).title">{{ keySourceBadge(m).label }}</span>
+              </span>
               <span class="settings-key">Base URL</span>
               <span class="settings-value">{{ m.api_base || '--' }}</span>
               <span class="settings-key">代理</span>
@@ -486,5 +532,76 @@ onMounted(() => {
   flex: 1;
   font-size: 11px;
   color: var(--text-muted);
+}
+
+/* G4 (U15)：key 来源徽标 + 明文迁移引导卡 */
+.key-source-hint {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+  margin-bottom: var(--space-3);
+}
+
+.key-source-hint-note { opacity: 0.85; }
+
+.ks-badge {
+  display: inline-block;
+  padding: 1px 8px;
+  border-radius: var(--radius-sm);
+  font-size: 11px;
+  font-weight: 600;
+  white-space: nowrap;
+  vertical-align: middle;
+}
+
+.ks-env {
+  background: rgba(34, 197, 94, 0.15);
+  color: #16a34a;
+}
+
+.ks-yaml {
+  background: rgba(59, 130, 246, 0.15);
+  color: #2563eb;
+}
+
+.ks-inline {
+  background: rgba(245, 158, 11, 0.18);
+  color: #d97706;
+}
+
+.ks-none {
+  background: var(--bg-tertiary);
+  color: var(--text-muted);
+}
+
+.key-import-card {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  margin-bottom: var(--space-4);
+  border-left: 3px solid #f59e0b;
+}
+
+.key-import-body {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: var(--text-sm);
+}
+
+.key-import-title { font-weight: 600; color: #d97706; }
+
+.key-import-note { color: var(--text-secondary); font-size: var(--text-xs); }
+
+.key-import-cmd {
+  font-family: monospace;
+  background: var(--bg-tertiary);
+  padding: 4px 10px;
+  border-radius: var(--radius-sm);
+  width: fit-content;
 }
 </style>

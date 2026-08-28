@@ -12,7 +12,7 @@ use nemesis_security::scanner::{
     create_engine,
 };
 use std::collections::{HashMap, HashSet};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
 use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
@@ -99,7 +99,8 @@ impl ModuleHandler for ScannerHandler {
 // ---------------------------------------------------------------------------
 
 fn scanner_config_path(workspace: &str) -> PathBuf {
-    PathBuf::from(workspace).join("config/config.scanner.json")
+    // 委托 nemesis-path 唯一拼接点。
+    nemesis_path::resolve_scanner_config_path_in_workspace(Path::new(workspace))
 }
 
 /// Parse engine config JSON into the nemesis-config ClamAVEngineConfig type.

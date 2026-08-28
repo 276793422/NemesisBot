@@ -76,6 +76,15 @@ pub enum SandboxCommand {
         #[arg(long, hide = true)]
         home: Option<String>,
     },
+    /// Internal-only (hidden): one-shot userland-sandbox self-test child
+    /// (G7 D2). Spawned by the gateway's `sandbox.self_test` WSAPI command —
+    /// either wrapped by a WrapCommand backend (bwrap/Seatbelt, env
+    /// `NEMESISBOT_SELFTEST_BOXED=1`) or applying a SelfApply backend itself
+    /// (landlock, env `NEMESISBOT_SELFTEST_ENGAGE=1`). Runs the probes and
+    /// prints a single-line JSON verdict to stdout. NEVER call interactively:
+    /// the landlock path applies irreversible rules to THIS process.
+    #[command(hide = true)]
+    SelftestChild,
 }
 
 pub async fn run(action: SandboxCommand, local: bool) -> Result<()> {
@@ -96,7 +105,82 @@ pub async fn run(action: SandboxCommand, local: bool) -> Result<()> {
                 .unwrap_or_else(|| common::resolve_home(local));
             ensure_ready(&h, internal)
         }
+        SandboxCommand::SelftestChild => selftest_child(),
     }
+}
+
+// ---------------------------------------------------------------------------
+// G7 (D2)：用户态沙盒自检子进程（隐藏子命令，gateway `sandbox.self_test` 专用）
+// ---------------------------------------------------------------------------
+
+/// One-shot probe child. Env contract (all set by the parent):
+/// - `NEMESISBOT_SELFTEST_WORKSPACE` — workspace path (probes run against it).
+/// - `NEMESISBOT_SELFTEST_ENGAGE=1` — apply a SelfApply backend (landlock) to
+///   THIS process before probing (irreversible; why this must be a child).
+/// - `NEMESISBOT_SELFTEST_BOXED=1` — the parent already wrapped this process
+///   with a WrapCommand backend (bwrap/Seatbelt); skip engagement.
+/// - `NEMESISBOT_SELFTEST_ALLOW_NETWORK=0|1` — sandbox conf network switch.
+///
+/// Always exits 0 with a JSON verdict on stdout; engagement failure is a
+/// verdict (`ok:false`), not a crash — the parent parses stdout, not exit codes.
+fn selftest_child() -> Result<()> {
+    let workspace = match std::env::var_os("NEMESISBOT_SELFTEST_WORKSPACE") {
+        Some(w) => std::path::PathBuf::from(w),
+        None => {
+            nemesis_sandbox::selftest::emit(&nemesis_sandbox::selftest::SelftestChildOut {
+                ok: false,
+                error: Some("NEMESISBOT_SELFTEST_WORKSPACE not set".to_string()),
+                checks: vec![],
+            });
+            return Ok(());
+        }
+    };
+    let engage = std::env::var("NEMESISBOT_SELFTEST_ENGAGE").as_deref() == Ok("1");
+    let boxed = std::env::var("NEMESISBOT_SELFTEST_BOXED").as_deref() == Ok("1");
+
+    if engage && !boxed {
+        // SelfApply path: landlock rules are irreversible — this is exactly
+        // why the probe runs in a one-shot child, never in the gateway.
+        use nemesis_sandbox::backend::{detect_backend, SandboxConf};
+        let allow_network =
+            std::env::var("NEMESISBOT_SELFTEST_ALLOW_NETWORK").as_deref() == Ok("1");
+        let conf = SandboxConf {
+            writable_roots: vec![workspace.clone()],
+            read_exec_roots: vec![std::path::PathBuf::from("/")],
+            allow_network,
+            label: "selftest".to_string(),
+        };
+        match detect_backend() {
+            Some(backend) => {
+                // Full/Partial both fine — the probes tell the truth either way.
+                if let Err(e) = backend.apply_to_self(&conf) {
+                    nemesis_sandbox::selftest::emit(&nemesis_sandbox::selftest::SelftestChildOut {
+                        ok: false,
+                        error: Some(format!("apply_to_self({}): {e}", backend.name())),
+                        checks: vec![],
+                    });
+                    return Ok(());
+                }
+            }
+            None => {
+                // Backend vanished between parent probe and child spawn — report.
+                nemesis_sandbox::selftest::emit(&nemesis_sandbox::selftest::SelftestChildOut {
+                    ok: false,
+                    error: Some("no userland backend in child (parent saw SelfApply)".to_string()),
+                    checks: vec![],
+                });
+                return Ok(());
+            }
+        }
+    }
+
+    let checks = nemesis_sandbox::selftest::run_probes(&workspace);
+    nemesis_sandbox::selftest::emit(&nemesis_sandbox::selftest::SelftestChildOut {
+        ok: true,
+        error: None,
+        checks,
+    });
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------

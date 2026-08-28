@@ -318,6 +318,17 @@ async fn main() -> Result<()> {
         println!("Local mode enabled: using ./.nemesisbot");
     }
 
+    // R1 真机验收修复（2026-08-28）：把 CLI 解析出的 home 同步进 nemesis-path
+    // 的进程单例（default_path_manager）。该单例独立解析 home，而
+    // `set_local_mode` 从未被本二进制调用 —— exe 旁存在 `.nemesisbot` 的部署
+    // （bin_windows / --local 多实例）里，单例按 exe-dir 优先级抢在 cwd 之前，
+    // 导致 boundary 事件 / replay ledger / session_logs / history_search 写进
+    // exe 同级的另一个 home（跨实例数据串写；config/session 等走 DI 的路径
+    // 不受影响，所以才隐蔽）。`set_home_dir` 是 OnceLock 初始化后唯一的运行时
+    // 重定向缝；非 --local 时与单例自身解析结果一致，是无害的 no-op。
+    nemesis_path::default_path_manager()
+        .set_home_dir(common::resolve_home(local_mode));
+
     // Lazy logging initialization:
     // Commands like gateway/agent call init_logger_from_config() internally
     // which reads config.json and configures tracing properly. We must NOT init
@@ -402,6 +413,11 @@ fn main() -> Result<()> {
         cli.local = true;
         println!("Local mode enabled: using ./.nemesisbot");
     }
+
+    // R1 真机验收修复（2026-08-28）：与非 mac 入口同构 —— 把解析出的 home
+    // 同步进 nemesis-path 进程单例（详见非 mac 入口同位置的注释）。
+    nemesis_path::default_path_manager()
+        .set_home_dir(common::resolve_home(local_mode));
 
     // Only the Gateway command needs the main-thread tray handoff.
     if matches!(&cli.command, Commands::Gateway { .. }) {
@@ -743,7 +759,7 @@ async fn run_command(cli: Cli) -> Result<()> {
             let _ = std::fs::write(workspace_dir.join("SOUL.md"), DEFAULT_SOUL);
             let _ = std::fs::write(workspace_dir.join("USER.md"), DEFAULT_USER);
             // Cluster identity — extracted to workspace/cluster/IDENTITY.md.
-            let cluster_dir = workspace_dir.join("cluster");
+            let cluster_dir = nemesis_path::cluster_dir_in_workspace(&workspace_dir);
             let _ = std::fs::create_dir_all(&cluster_dir);
             let _ = std::fs::write(cluster_dir.join("IDENTITY.md"), DEFAULT_IDENTITY_CLUSTER);
             println!(

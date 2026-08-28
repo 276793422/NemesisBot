@@ -98,6 +98,34 @@ impl ModuleHandler for LogsHandler {
                 let session = crate::handlers::get_str(&data, "session")?;
                 self.session_detail(ctx, workspace, &session).await
             }
+            // G2 (U9 ②): injection-ledger visibility. `injection_summary`
+            // aggregates the session's projection ledger (sources/positions,
+            // NO raw content); `replay_verify` runs the byte-exact round
+            // replay against the recorded raw request. Both depend only on
+            // nemesis-agent (non-optional) — no feature gate.
+            "injection_summary" => {
+                let data = data.ok_or("missing data")?;
+                let session = crate::handlers::get_str(&data, "session")?;
+                self.injection_summary(workspace, &session)
+            }
+            "replay_verify" => {
+                let data = data.ok_or("missing data")?;
+                let session = crate::handlers::get_str(&data, "session")?;
+                let round = data
+                    .get("round")
+                    .and_then(|v| v.as_u64())
+                    .ok_or("round is required")? as usize;
+                let request_id = data
+                    .get("request_id")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string());
+                self.replay_verify(ctx, workspace, &session, round, request_id.as_deref())
+            }
+            // G3: spill 状态卡。`spill_status` 只读聚合 spill 树（文件数/
+            // 字节/最老 mtime + 保留天数配置）；`spill_cleanup` 按配置保留
+            // 期立即清理一次并返回删除数。依赖仅 nemesis-agent（非可选）。
+            "spill_status" => self.spill_status(ctx),
+            "spill_cleanup" => self.spill_cleanup(ctx),
             // T6 (U20): cross-session full-text search over session_logs.
             // Fresh-first: the mtime-incremental reindex runs before the
             // query so newly appended messages are findable (the FTS arm
@@ -136,15 +164,34 @@ fn request_log_dir(workspace: &str) -> PathBuf {
 }
 
 fn cluster_log_dir(workspace: &str) -> PathBuf {
-    PathBuf::from(workspace).join("logs/cluster_logs")
+    // 路径唯一真相源 = nemesis-path（写方 observer 与本读方共用拼接点）。
+    nemesis_path::resolve_cluster_logs_dir_in_workspace(Path::new(workspace))
 }
 
 fn security_log_dir(workspace: &str) -> PathBuf {
-    PathBuf::from(workspace).join("logs/security_logs")
+    nemesis_path::resolve_audit_log_dir_in_workspace(Path::new(workspace))
 }
 
 fn session_log_dir(workspace: &str) -> PathBuf {
-    PathBuf::from(workspace).join("logs/session_logs")
+    nemesis_path::resolve_session_logs_dir_in_workspace(Path::new(workspace))
+}
+
+/// G2: replay-ledger sidecar dir (`<workspace>/logs/boundary`)，与
+/// `PathManager::boundary_events_dir` 同经 nemesis-path 唯一拼接点，
+/// 由 handler 的 workspace 派生（测试不依赖全局 path manager）。
+fn boundary_dir(workspace: &str) -> PathBuf {
+    nemesis_path::resolve_boundary_events_dir_in_workspace(Path::new(workspace))
+}
+
+/// Ledger filename for a session id, matching `replay.rs::replay_ledger_path`
+/// (`session_key.replace(':', "_")` + `.replay.jsonl`). The dashboard passes
+/// the session_logs file stem, which already has `:` replaced — both rules
+/// applied here (idempotent) so either form resolves to the same file.
+fn ledger_file_name(session: &str) -> String {
+    format!(
+        "{}.replay.jsonl",
+        sanitize_session_key(&session.replace(':', "_"))
+    )
 }
 
 /// Read all lines of a JSONL file as JSON values; malformed/blank lines skipped.
@@ -1128,6 +1175,291 @@ impl LogsHandler {
             "messages": messages,
         })))
     }
+
+    /// G2 (U9 ②): aggregate the session's projection ledger WITHOUT raw
+    /// content — per round: injection sources with final-vec positions and
+    /// content sizes, summary-cache usage, the voice-append marker. This is
+    /// the「本轮注入了什么」view the session browser lacked. `available:false`
+    /// when no ledger exists (pre-feature sessions / boundary-exempt turns).
+    fn injection_summary(
+        &self,
+        workspace: &str,
+        session: &str,
+    ) -> Result<Option<serde_json::Value>, String> {
+        let ledger = boundary_dir(workspace).join(ledger_file_name(session));
+        let records = nemesis_agent::replay::load_projection_records_from(&ledger);
+        if records.is_empty() {
+            return Ok(Some(serde_json::json!({
+                "available": false,
+                "session": session,
+                "rounds": [],
+                "total_rounds": 0,
+                "total_injections": 0,
+            })));
+        }
+
+        let mut rounds = Vec::with_capacity(records.len());
+        let mut total_injections = 0usize;
+        for rec in &records {
+            let injections: Vec<serde_json::Value> = rec
+                .injections
+                .iter()
+                .map(|inj| {
+                    // Aggregates only — never the raw content (the panel is a
+                    // visibility aid, not a second copy of the prompt bytes).
+                    serde_json::json!({
+                        "source": inj.source,
+                        "index": inj.index,
+                        "role": inj.role,
+                        "chars": inj.content.chars().count(),
+                    })
+                })
+                .collect();
+            total_injections += injections.len();
+            rounds.push(serde_json::json!({
+                "round": rec.round,
+                "trace_id": rec.trace_id,
+                "ts": rec.ts,
+                "messages_count": rec.messages_count,
+                "history_len": rec.history_len_at_build,
+                "injections": injections,
+                "voice_append": rec.voice_append.is_some(),
+                "summary_used": rec.summary_as_of.is_some(),
+                "summary_covers_up_to":
+                    rec.summary_as_of.as_ref().map(|s| s.covers_up_to),
+            }));
+        }
+
+        Ok(Some(serde_json::json!({
+            "available": true,
+            "session": session,
+            "rounds": rounds,
+            "total_rounds": rounds.len(),
+            "total_injections": total_injections,
+        })))
+    }
+
+    /// G2 (U9 ②): verify one recorded round end-to-end — rebuild the message
+    /// list from the session store + projection ledger, then byte-compare
+    /// against the recorded `NN.AI.Request.raw.json` `body.messages`.
+    ///
+    /// `request_id` (a `logs.requests` dir id) pins the recording directly;
+    /// when omitted the dir is auto-resolved by fingerprint: latest dir whose
+    /// envelope carries the requested round AND the ledger record's exact
+    /// role sequence (scanned newest-first, capped — audit path, not hot).
+    fn replay_verify(
+        &self,
+        ctx: &RequestContext,
+        workspace: &str,
+        session: &str,
+        round: usize,
+        request_id: Option<&str>,
+    ) -> Result<Option<serde_json::Value>, String> {
+        let ledger = boundary_dir(workspace).join(ledger_file_name(session));
+        let records = nemesis_agent::replay::load_projection_records_from(&ledger);
+        let rec = match records.iter().rev().find(|r| r.round == round) {
+            Some(r) => r.clone(),
+            None => {
+                return Ok(Some(serde_json::json!({
+                    "ok": false,
+                    "verdict": "no_ledger",
+                    "session": session,
+                    "round": round,
+                    "note": "该会话/轮次没有注入台账记录（旧会话或豁免轮次），无法逐字节重放",
+                })));
+            }
+        };
+
+        // Locate the recorded request envelope.
+        let resolved_dir = match request_id {
+            Some(id) => {
+                if parse_request_dir_name(id).is_none() {
+                    return Ok(Some(serde_json::json!({
+                        "ok": false,
+                        "verdict": "no_recording",
+                        "session": session,
+                        "round": round,
+                        "request_id": id,
+                        "note": "request_id 不是合法的请求目录名（{ts}_{rand}）",
+                    })));
+                }
+                Some(request_log_dir(workspace).join(id))
+            }
+            None => {
+                let base = request_log_dir(workspace);
+                let mut found = None;
+                for dir in list_subdirs_sorted_desc(&base).into_iter().take(200) {
+                    if envelope_matches_round(&dir, round, &rec.roles, rec.messages_count) {
+                        found = Some(dir);
+                        break;
+                    }
+                }
+                found
+            }
+        };
+        let Some(dir) = resolved_dir else {
+            return Ok(Some(serde_json::json!({
+                "ok": false,
+                "verdict": "no_recording",
+                "session": session,
+                "round": round,
+                "note": "在 request_logs 中找不到匹配该轮次的原始请求目录（可显式传 request_id）",
+            })));
+        };
+        let Some(recorded) = read_round_envelope(&dir, round) else {
+            return Ok(Some(serde_json::json!({
+                "ok": false,
+                "verdict": "no_recording",
+                "session": session,
+                "round": round,
+                "request_id": dir.file_name().and_then(|n| n.to_str()).unwrap_or(""),
+                "note": "该请求目录中没有此轮次的 raw.json 记录",
+            })));
+        };
+
+        // Session store: live loop's store first (fork visibility), else the
+        // disk-backed fallback — same resolution as the fork API.
+        let store: std::sync::Arc<nemesis_agent::session::SessionStore> =
+            match ctx.state.agent_loop.read().as_ref().and_then(|al| al.session_store()) {
+                Some(s) => s.clone(),
+                None => {
+                    let home = crate::handlers::require_home(ctx)?;
+                    // home 是 home 根：先经 nemesis-path 转 workspace 再取
+                    // sessions 目录（勿把 home 直接当 workspace 传入）。
+                    std::sync::Arc::new(nemesis_agent::session::SessionStore::new_with_storage(
+                        &nemesis_path::resolve_sessions_dir_in_workspace(
+                            &nemesis_path::workspace_dir(Path::new(home)),
+                        ),
+                    ))
+                }
+            };
+        // Store lookups key on the RAW session key; the ledger record carries
+        // it (the request `session` param is the sanitized file stem).
+        let store_key = if rec.session_key.is_empty() {
+            session.to_string()
+        } else {
+            rec.session_key.clone()
+        };
+
+        let request_id_str = dir.file_name().and_then(|n| n.to_str()).unwrap_or("").to_string();
+        let base = serde_json::json!({
+            "session": session,
+            "round": round,
+            "request_id": request_id_str,
+        });
+        let obj = base.as_object().expect("base is an object").clone();
+
+        return match nemesis_agent::replay::verify_session_round_in(
+            &store,
+            &ledger,
+            &store_key,
+            round,
+            &recorded,
+        ) {
+            Ok(nemesis_agent::replay::ReplayCheck::ByteExact) => {
+                let mut o = obj;
+                o.insert("ok".into(), serde_json::json!(true));
+                o.insert("verdict".into(), serde_json::json!("byte_exact"));
+                o.insert("note".into(), serde_json::json!("重放与原始请求逐字节一致"));
+                Ok(Some(serde_json::Value::Object(o)))
+            }
+            Ok(nemesis_agent::replay::ReplayCheck::DegradedSubsequence { note, verdict }) => {
+                let mut o = obj;
+                let ok = verdict.is_ok();
+                o.insert("ok".into(), serde_json::json!(ok));
+                o.insert("verdict".into(), serde_json::json!("degraded_subsequence"));
+                o.insert("note".into(), serde_json::json!(note));
+                if let Err(ref msg) = verdict {
+                    o.insert("first_diff".into(), serde_json::json!({
+                        "index": 0, "kind": "subsequence", "detail": msg,
+                    }));
+                }
+                Ok(Some(serde_json::Value::Object(o)))
+            }
+            Ok(nemesis_agent::replay::ReplayCheck::Unavailable { needed, available }) => {
+                let mut o = obj;
+                o.insert("ok".into(), serde_json::json!(false));
+                o.insert("verdict".into(), serde_json::json!("unavailable"));
+                o.insert("note".into(), serde_json::json!(
+                    "台账存在，但所需历史已被裁剪，无法逐字节重放（不伪造）"
+                ));
+                o.insert("needed".into(), serde_json::json!(needed));
+                o.insert("available".into(), serde_json::json!(available));
+                Ok(Some(serde_json::Value::Object(o)))
+            }
+            Err(diff) => {
+                let mut o = obj;
+                o.insert("ok".into(), serde_json::json!(false));
+                o.insert("verdict".into(), serde_json::json!("mismatch"));
+                o.insert("first_diff".into(), serde_json::json!({
+                    "index": diff.index,
+                    "kind": diff.kind,
+                    "detail": diff.detail,
+                }));
+                Ok(Some(serde_json::Value::Object(o)))
+            }
+        };
+    }
+
+    /// G3: resolve the spill root the same way the agent factory points it —
+    /// the live loop's root first, else `<home>/logs/spill`.
+    fn spill_root_for(ctx: &RequestContext) -> Option<PathBuf> {
+        if let Some(al) = ctx.state.agent_loop.read().as_ref() {
+            if let Some(root) = al.spill_root_path() {
+                return Some(root);
+            }
+        }
+        let home = crate::handlers::require_home(ctx).ok()?;
+        Some(nemesis_path::resolve_spill_dir_for_home(Path::new(home)))
+    }
+
+    /// G3 (spill 状态卡): read-only spill-tree aggregate + the retention
+    /// config so the card can explain what cleanup WOULD do.
+    fn spill_status(&self, ctx: &RequestContext) -> Result<Option<serde_json::Value>, String> {
+        let root = Self::spill_root_for(ctx)
+            .ok_or_else(|| "cannot resolve spill root (no home)".to_string())?;
+        let st = nemesis_agent::spill::status(&root);
+        let retention_days = spill_retention_days();
+        Ok(Some(serde_json::json!({
+            "root": root.display().to_string(),
+            "files": st.files,
+            "bytes": st.bytes,
+            "oldest": st.oldest,
+            "retention_days": retention_days,
+            "threshold_chars": nemesis_agent::spill::SPILL_THRESHOLD_CHARS,
+        })))
+    }
+
+    /// G3 (spill 状态卡): run one retention sweep NOW (config retention; 0 =
+    /// disabled → no-op) and return the deleted count plus the fresh status.
+    fn spill_cleanup(&self, ctx: &RequestContext) -> Result<Option<serde_json::Value>, String> {
+        let root = Self::spill_root_for(ctx)
+            .ok_or_else(|| "cannot resolve spill root (no home)".to_string())?;
+        let retention_days = spill_retention_days();
+        let deleted = if retention_days == 0 {
+            0
+        } else {
+            nemesis_agent::spill::cleanup_expired(&root, retention_days)
+        };
+        let st = nemesis_agent::spill::status(&root);
+        Ok(Some(serde_json::json!({
+            "deleted": deleted,
+            "retention_days": retention_days,
+            "root": root.display().to_string(),
+            "files": st.files,
+            "bytes": st.bytes,
+            "oldest": st.oldest,
+        })))
+    }
+}
+
+/// G3: retention config with the same default as `AgentDefaults`
+/// (`default_spill_retention_days` = 7); the live ConfigStore when absent
+/// (tests / early boot) falls back to that default.
+fn spill_retention_days() -> u64 {
+    nemesis_config::load_live()
+        .map(|c| c.agents.defaults.spill_retention_days.max(0) as u64)
+        .unwrap_or(7)
 }
 
 // ---------------------------------------------------------------------------
@@ -1449,6 +1781,50 @@ fn read_json_round(path: &Path) -> Option<usize> {
         .get("round")
         .and_then(|v| v.as_u64())
         .map(|v| v as usize)
+}
+
+/// G2 (U9 ②): cheap fingerprint check — does this request dir contain a raw
+/// request envelope for `round` whose role sequence matches the ledger record?
+/// The request envelope itself carries no session key, so role-sequence +
+/// round + messages-count is the identity proxy used to auto-locate it.
+fn envelope_matches_round(
+    dir: &Path,
+    round: usize,
+    roles: &[String],
+    messages_count: usize,
+) -> bool {
+    let recorded = match read_round_envelope(dir, round) {
+        Some(r) => r,
+        None => return false,
+    };
+    if recorded.len() != messages_count {
+        return false;
+    }
+    recorded
+        .iter()
+        .zip(roles.iter())
+        .all(|(msg, role)| msg.get("role").and_then(|v| v.as_str()) == Some(role.as_str()))
+}
+
+/// G2 (U9 ②): read `body.messages` from the raw.json envelope in `dir` that
+/// carries the requested `round` (files are `{NN}.{TYPE}` pairs; only
+/// `AI.Request.raw.json` entries qualify). Returns None if no such file.
+fn read_round_envelope(dir: &Path, round: usize) -> Option<Vec<serde_json::Value>> {
+    for f in sorted_files(dir) {
+        if file_type_name(f.file_name()?.to_str()?) != "AI.Request.raw.json" {
+            continue;
+        }
+        let content = std::fs::read_to_string(&f).ok()?;
+        let envelope: serde_json::Value = serde_json::from_str(&content).ok()?;
+        if envelope.get("round").and_then(|v| v.as_u64()) != Some(round as u64) {
+            continue;
+        }
+        return envelope
+            .pointer("/body/messages")
+            .and_then(|m| m.as_array())
+            .cloned();
+    }
+    None
 }
 
 /// Build a single LlmIteration JSON from a grouped set of files.
@@ -1800,3 +2176,14 @@ mod wweb2_tests;
 // prev_hash mismatch 分支（security 门控），测试按 feature 各自包裹。
 #[cfg(all(test, any(feature = "memory", feature = "security")))]
 mod r4_tests;
+
+// G2（U9 注入/replay 可见性，2026-08-28）：injection_summary 聚合（无原文）
+// + replay_verify 逐字节校验（指纹定位 + 显式 request_id + no_ledger）。
+// 不依赖 security/memory，纯 nemesis-agent replay 契约。
+#[cfg(test)]
+mod g2_tests;
+
+// G3（spill 状态卡，2026-08-28）：spill_status 只读聚合 + spill_cleanup
+// 按保留期立即清理。不依赖 security/memory。
+#[cfg(test)]
+mod g3_tests;

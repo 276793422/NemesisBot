@@ -38,7 +38,13 @@ impl LlmProvider for NoopProvider {
 }
 
 fn make_ctx_with_loop() -> RequestContext {
-    let al = Arc::new(AgentLoop::new(Box::new(NoopProvider), AgentConfig::default()));
+    make_ctx_with_optional_loop(Some(Arc::new(AgentLoop::new(
+        Box::new(NoopProvider),
+        AgentConfig::default(),
+    ))))
+}
+
+fn make_ctx_with_optional_loop(al: Option<Arc<AgentLoop>>) -> RequestContext {
     let state = Arc::new(AppState {
         auth_token: String::new(),
         session_count: Arc::new(AtomicUsize::new(0)),
@@ -59,7 +65,7 @@ fn make_ctx_with_loop() -> RequestContext {
         data_store: None,
         memory_manager: None,
         forge: None,
-        agent_loop: Arc::new(parking_lot::RwLock::new(Some(al))),
+        agent_loop: Arc::new(parking_lot::RwLock::new(al)),
         cluster: None,
         cluster_service: None,
         cluster_log_dir: None,
@@ -127,4 +133,61 @@ async fn rewind_with_live_loop_but_no_checkpoint_store_errors() {
         .await
         .unwrap_err();
     assert!(err.contains("checkpoint store not attached"), "{err}");
+}
+
+// ============================================================
+// U7 dashboard visibility (G1): agent.inbox_status handler。
+// ============================================================
+
+#[tokio::test]
+async fn inbox_status_without_loop_reports_unavailable() {
+    let ctx = make_ctx_with_optional_loop(None);
+    let resp = AgentHandler
+        .handle_cmd(
+            "inbox_status",
+            Some(serde_json::json!({ "session_id": "x" })),
+            &ctx,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(resp["available"], false);
+    assert_eq!(resp["next_turn"], 0);
+    assert_eq!(resp["next_step"], 0);
+    assert_eq!(resp["busy"], false);
+}
+
+#[tokio::test]
+async fn inbox_status_empty_session_reports_idle() {
+    let ctx = make_ctx_with_loop();
+    let resp = AgentHandler
+        .handle_cmd(
+            "inbox_status",
+            Some(serde_json::json!({ "session_id": "inbox-t" })),
+            &ctx,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    // session_key 复刻 server.rs 入站规则：sanitize 过的 id 进 key。
+    assert_eq!(resp["session_key"], "agent:main:session:inbox-t");
+    assert_eq!(resp["available"], true);
+    assert_eq!(resp["next_turn"], 0);
+    assert_eq!(resp["next_step"], 0);
+    assert_eq!(resp["capacity"], 8, "AgentLoop::new 用 DEFAULT_QUEUE_SIZE");
+    assert_eq!(resp["busy"], false);
+    // AgentConfig::default() 是 Reject 模式。
+    assert_eq!(resp["mode"], "reject");
+}
+
+#[tokio::test]
+async fn inbox_status_missing_data_maps_to_legacy_key() {
+    let ctx = make_ctx_with_loop();
+    let resp = AgentHandler
+        .handle_cmd("inbox_status", None, &ctx)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(resp["session_key"], "agent:main:session:legacy");
+    assert_eq!(resp["available"], true);
 }

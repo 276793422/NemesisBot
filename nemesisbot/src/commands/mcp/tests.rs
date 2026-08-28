@@ -88,7 +88,7 @@ fn test_cmd_add_new_server() {
     let tmp = TempDir::new().unwrap();
     let cfg = make_empty_mcp_config(&tmp);
 
-    cmd_add(&cfg, "new-server", "python", Some("-m,server"), &[], 30).unwrap();
+    cmd_add(&cfg, &main_cfg_of(&tmp), "new-server", "python", Some("-m,server"), &[], 30).unwrap();
 
     let data: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(&cfg).unwrap()).unwrap();
@@ -104,7 +104,7 @@ fn test_cmd_add_duplicate_server() {
     let cfg = make_mcp_config(&tmp);
 
     // Should succeed but not add duplicate
-    cmd_add(&cfg, "test-server", "node", None, &[], 30).unwrap();
+    cmd_add(&cfg, &main_cfg_of(&tmp), "test-server", "node", None, &[], 30).unwrap();
 
     let data: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(&cfg).unwrap()).unwrap();
@@ -121,6 +121,7 @@ fn test_cmd_add_creates_new_config() {
 
     cmd_add(
         &cfg,
+        &main_cfg_of(&tmp),
         "fresh-server",
         "npx",
         Some("some,mcp"),
@@ -212,7 +213,7 @@ fn test_cmd_add_args_parsing() {
     let tmp = TempDir::new().unwrap();
     let cfg = make_empty_mcp_config(&tmp);
 
-    cmd_add(&cfg, "test", "cmd", Some("arg1,arg2,arg3"), &[], 30).unwrap();
+    cmd_add(&cfg, &main_cfg_of(&tmp), "test", "cmd", Some("arg1,arg2,arg3"), &[], 30).unwrap();
 
     let data: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(&cfg).unwrap()).unwrap();
@@ -315,7 +316,7 @@ fn test_cmd_add_with_env_vars() {
     let cfg = make_empty_mcp_config(&tmp);
 
     let env = vec!["API_KEY=secret123".to_string(), "DEBUG=true".to_string()];
-    cmd_add(&cfg, "env-server", "python", None, &env, 60).unwrap();
+    cmd_add(&cfg, &main_cfg_of(&tmp), "env-server", "python", None, &env, 60).unwrap();
 
     let data: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(&cfg).unwrap()).unwrap();
@@ -456,6 +457,7 @@ fn test_mcp_cmd_add_with_env_vars() {
 
     cmd_add(
         &cfg,
+        &main_cfg_of(&tmp),
         "env-server",
         "cmd",
         None,
@@ -478,6 +480,7 @@ fn test_mcp_cmd_add_with_args_and_env() {
 
     cmd_add(
         &cfg,
+        &main_cfg_of(&tmp),
         "full-server",
         "cmd",
         Some("a,b"),
@@ -616,58 +619,71 @@ fn s11b_fake_mcp_config(tmp: &TempDir) -> std::path::PathBuf {
     cfg_path
 }
 
-// ------------------------- sync_mcp_master_switch -------------------------
-
-#[test]
-fn test_s11b_sync_master_switch_no_parent_dir() {
-    // 相对裸文件名 → parent() 为 None → Ok 直接返回（165-166）
-    let p = std::path::Path::new("config.mcp.json");
-    sync_mcp_master_switch(p, true).unwrap();
+/// cmd_add 现直传真实主配置路径（2026-08-28 修复 master switch 推导错位）；
+/// 测试里主配置默认不存在 → sync 静默跳过，与 cmd_add 测试意图一致。
+fn main_cfg_of(tmp: &TempDir) -> std::path::PathBuf {
+    tmp.path().join("config.json")
 }
 
+// ------------------------- sync_mcp_master_switch -------------------------
+
+// 2026-08-28 契约更新：sync_mcp_master_switch 的参数现在**就是**主配置
+// config.json 路径（由调用方直传 common::config_path(&home)），不再从
+// config.mcp.json 父目录推导（旧推导指向无人读取的
+// `<home>/workspace/config/config.json`，mcp.enabled 从不真正置位）。
+
 #[test]
-fn test_s11b_sync_master_switch_config_json_absent() {
+fn test_s11b_sync_master_switch_nonexistent_path_ok() {
+    // 目标 config.json 不存在 → Ok 直接返回，不创建文件
     let tmp = TempDir::new().unwrap();
-    let mcp_cfg = tmp.path().join("config").join("config.mcp.json");
-    std::fs::create_dir_all(mcp_cfg.parent().unwrap()).unwrap();
-    // config.json 不存在 → Ok（167-169）
-    sync_mcp_master_switch(&mcp_cfg, true).unwrap();
-    assert!(!tmp.path().join("config").join("config.json").exists());
+    let main_cfg = tmp.path().join("config.json");
+    sync_mcp_master_switch(&main_cfg, true).unwrap();
+    assert!(!main_cfg.exists());
 }
 
 #[test]
 fn test_s11b_sync_master_switch_already_in_state() {
     let tmp = TempDir::new().unwrap();
-    let dir = tmp.path().join("config");
-    std::fs::create_dir_all(&dir).unwrap();
-    let mcp_cfg = dir.join("config.mcp.json");
-    let main_cfg = dir.join("config.json");
+    let main_cfg = tmp.path().join("config.json");
     std::fs::write(&main_cfg, r#"{"mcp": {"enabled": true}}"#).unwrap();
     let before = std::fs::read_to_string(&main_cfg).unwrap();
-    // 已是 true → Ok 早退，不重写文件（170-177）
-    sync_mcp_master_switch(&mcp_cfg, true).unwrap();
+    // 已是 true → Ok 早退，不重写文件
+    sync_mcp_master_switch(&main_cfg, true).unwrap();
     assert_eq!(std::fs::read_to_string(&main_cfg).unwrap(), before, "同态不重写");
 }
 
 #[test]
 fn test_s11b_sync_master_switch_flips_both_ways() {
     let tmp = TempDir::new().unwrap();
-    let dir = tmp.path().join("config");
-    std::fs::create_dir_all(&dir).unwrap();
-    let mcp_cfg = dir.join("config.mcp.json");
-    let main_cfg = dir.join("config.json");
-    // 无 mcp 段 → 翻 true 会插入 mcp.enabled=true（179-189）
+    let main_cfg = tmp.path().join("config.json");
+    // 无 mcp 段 → 翻 true 会插入 mcp.enabled=true
     std::fs::write(&main_cfg, r#"{"agents": {}}"#).unwrap();
-    sync_mcp_master_switch(&mcp_cfg, true).unwrap();
+    sync_mcp_master_switch(&main_cfg, true).unwrap();
     let v: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(&main_cfg).unwrap()).unwrap();
     assert_eq!(v["mcp"]["enabled"], true);
     assert_eq!(v["agents"], serde_json::json!({}), "原有键不丢");
     // true → false
-    sync_mcp_master_switch(&mcp_cfg, false).unwrap();
+    sync_mcp_master_switch(&main_cfg, false).unwrap();
     let v: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(&main_cfg).unwrap()).unwrap();
     assert_eq!(v["mcp"]["enabled"], false);
+}
+
+#[test]
+fn test_s11b_sync_master_switch_flips_real_production_layout() {
+    // 生产布局回归钉：CLI 传 <home>/config.json（home 根），修复后 master
+    // switch 必须落在**这个**文件，而非 <home>/workspace/config/config.json。
+    let tmp = TempDir::new().unwrap();
+    let home = tmp.path();
+    let main_cfg = home.join("config.json");
+    std::fs::write(&main_cfg, r#"{"mcp": {"enabled": false}}"#).unwrap();
+    sync_mcp_master_switch(&main_cfg, true).unwrap();
+    let v: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&main_cfg).unwrap()).unwrap();
+    assert_eq!(v["mcp"]["enabled"], true);
+    // 旧的错误位置不得出现
+    assert!(!home.join("workspace").join("config").join("config.json").exists());
 }
 
 // ------------------------- cmd_test / tools / resources / prompts ---------
@@ -899,8 +915,10 @@ mod wave_b {
     /// 注：既有 test_s11b_sync_master_switch_no_parent_dir 传入裸文件名，
     /// 其 parent() 实际是 Some("")——真正的 None 臂由本测试补上。
     #[test]
-    fn wave_b_sync_master_switch_root_and_empty_paths_have_no_parent() {
-        sync_mcp_master_switch(std::path::Path::new("/"), true).unwrap();
+    // 2026-08-28 契约更新：参数即主配置路径，parent() 死分支已删除。
+    // 不存在的路径 → Ok 无操作（生产对应 home 根 config.json 缺失时静默跳过）。
+    fn wave_b_sync_master_switch_nonexistent_paths_ok() {
+        sync_mcp_master_switch(std::path::Path::new("/definitely-missing-cfg"), true).unwrap();
         sync_mcp_master_switch(std::path::Path::new(""), false).unwrap();
     }
 
@@ -963,7 +981,7 @@ mod wave_b {
         .unwrap();
 
         // 相位1：追加新名
-        cmd_add(&cfg, "second", "python", None, &[], 9).unwrap();
+        cmd_add(&cfg, &main_cfg_of(&tmp), "second", "python", None, &[], 9).unwrap();
         let data: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(&cfg).unwrap()).unwrap();
         let servers = data["servers"].as_array().unwrap();
@@ -975,7 +993,7 @@ mod wave_b {
 
         // 相位2：重名短路（快照对比整份文件不变）
         let before = std::fs::read_to_string(&cfg).unwrap();
-        cmd_add(&cfg, "second", "replacement-cmd", None, &[], 77).unwrap();
+        cmd_add(&cfg, &main_cfg_of(&tmp), "second", "replacement-cmd", None, &[], 77).unwrap();
         assert_eq!(
             std::fs::read_to_string(&cfg).unwrap(),
             before,
@@ -1235,7 +1253,7 @@ fn test_cmd_add_missing_servers_key_still_persists() {
     // 有文件但没有 servers 数组 —— 修复前这里静默丢服务器。
     std::fs::write(&cfg, r#"{"enabled": false}"#).unwrap();
 
-    cmd_add(&cfg, "late-server", "python", None, &[], 30).unwrap();
+    cmd_add(&cfg, &main_cfg_of(&tmp), "late-server", "python", None, &[], 30).unwrap();
 
     let data: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(&cfg).unwrap()).unwrap();
@@ -1254,7 +1272,7 @@ fn test_cmd_add_non_array_servers_is_repaired_not_dropped() {
     let cfg = dir.join("config.mcp.json");
     std::fs::write(&cfg, r#"{"enabled": true, "servers": {}}"#).unwrap();
 
-    cmd_add(&cfg, "healed-server", "node", None, &[], 30).unwrap();
+    cmd_add(&cfg, &main_cfg_of(&tmp), "healed-server", "node", None, &[], 30).unwrap();
 
     let data: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(&cfg).unwrap()).unwrap();

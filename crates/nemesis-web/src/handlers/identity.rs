@@ -3,8 +3,23 @@
 use crate::handlers::{read_workspace_file, require_workspace, write_workspace_file};
 use crate::ws_router::{ModuleHandler, RequestContext};
 
-/// Known identity document filenames.
-const IDENTITY_FILES: &[&str] = &["AGENT.md", "IDENTITY.md", "SOUL.md", "USER.md"];
+/// Known identity document filenames. The trailing two are the H5 (U18)
+/// instruction chain roots (workspace root level) — injected per-turn by
+/// `nemesis_agent::workspace_instructions`, unlike the persona 四件套.
+const IDENTITY_FILES: &[&str] = &[
+    "AGENT.md",
+    "IDENTITY.md",
+    "SOUL.md",
+    "USER.md",
+    "AGENTS.md",
+    "CLAUDE.md",
+];
+
+/// Files that belong to the per-turn instruction chain (G5 badge on the
+/// identity page distinguishes these from the persona documents).
+pub fn is_instruction_chain(name: &str) -> bool {
+    name == "AGENTS.md" || name == "CLAUDE.md"
+}
 
 pub struct IdentityHandler;
 
@@ -48,6 +63,8 @@ impl IdentityHandler {
                 "name": name,
                 "exists": content.is_some(),
                 "size": content.as_ref().map(|c| c.len()).unwrap_or(0),
+                // G5：前端区分「指令链 · 每轮注入」与人格四件套。
+                "instruction_chain": is_instruction_chain(name),
             }));
         }
         Ok(Some(serde_json::json!({ "documents": docs })))
@@ -71,3 +88,6 @@ impl IdentityHandler {
         Ok(Some(serde_json::json!({ "saved": true, "name": name })))
     }
 }
+
+#[cfg(test)]
+mod tests;

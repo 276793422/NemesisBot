@@ -63,6 +63,34 @@ impl ImportReport {
     }
 }
 
+/// G4 (U15 dashboard badge): where a model entry's `api_key` resolves from —
+/// the same three-layer prefix contract `provider_resolver::resolve_api_key_value`
+/// applies (`env:` > `yaml:` > inline literal), but carrying ONLY the
+/// reference name, never the key value: dashboards badge the source with
+/// zero plaintext leakage.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct KeySource {
+    /// `"env"` | `"yaml"` | `"inline"` | `"none"`.
+    pub kind: String,
+    /// `env:` → the VAR name; `yaml:` → the alias; `inline`/`none` → empty.
+    #[serde(rename = "ref")]
+    pub reference: String,
+}
+
+/// Classify one raw `api_key` string into its source badge. Pure prefix
+/// logic — mirrors the resolution order without touching any store.
+pub fn classify_key_source(api_key: &str) -> KeySource {
+    if let Some(var) = api_key.strip_prefix("env:") {
+        KeySource { kind: "env".to_string(), reference: var.to_string() }
+    } else if let Some(alias) = api_key.strip_prefix("yaml:") {
+        KeySource { kind: "yaml".to_string(), reference: alias.to_string() }
+    } else if api_key.is_empty() {
+        KeySource { kind: "none".to_string(), reference: String::new() }
+    } else {
+        KeySource { kind: "inline".to_string(), reference: String::new() }
+    }
+}
+
 /// Canonical credentials.yaml path for a NemesisBot home dir:
 /// `<home>/workspace/config/credentials.yaml` (sits next to auth.json).
 pub fn credentials_path_for_home(home: &Path) -> PathBuf {

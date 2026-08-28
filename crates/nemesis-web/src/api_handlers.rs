@@ -513,9 +513,11 @@ pub async fn handle_sdk_pip() -> axum::response::Response {
 
 /// Load scanner status from the workspace config directory.
 fn load_scanner_status(workspace: &str) -> serde_json::Value {
-    let scanner_config_path = PathBuf::from(workspace)
-        .join("config")
-        .join("config.scanner.json");
+    // 委托 nemesis-path 唯一拼接点。
+    let scanner_config_path =
+        nemesis_path::resolve_scanner_config_path_in_workspace(std::path::Path::new(
+            workspace,
+        ));
 
     let data = match std::fs::read_to_string(&scanner_config_path) {
         Ok(d) => d,
@@ -608,7 +610,7 @@ fn resolve_log_file_path(workspace: &str, source: &str) -> Option<String> {
             // New JSONL daily rotation: files are `nemesisbot.YYYY-MM-DD` (no `.log` extension
             // because tracing-appender 0.2 doesn't support suffixes). Match strictly by date
             // pattern to avoid hitting any legacy unrotated `nemesisbot.log`.
-            let logs_dir = PathBuf::from(workspace).join("logs");
+            let logs_dir = nemesis_path::logs_dir_in_workspace(std::path::Path::new(workspace));
             let mut matches: Vec<String> = Vec::new();
             if let Ok(entries) = std::fs::read_dir(&logs_dir) {
                 for entry in entries.flatten() {
@@ -630,15 +632,16 @@ fn resolve_log_file_path(workspace: &str, source: &str) -> Option<String> {
         "llm" => {
             // Phase B1-3: 将来由 nemesis-providers 写 logs/llm/ 流式摘要（避免污染 request_logs 的 Markdown 目录）。
             // 在那之前 fallback 到 request_logs 最新目录，返回其 00.request.md（首条 user 消息）。
-            let dir = PathBuf::from(workspace).join("logs").join("request_logs");
+            let dir =
+                nemesis_path::resolve_request_logs_dir_in_workspace(std::path::Path::new(workspace));
             find_latest_request_summary(&dir)
         }
         "security" => {
             // Phase B1-1: audit.jsonl 是固定文件名（不是 glob），路径在 logs/security_logs/
-            let audit_file = PathBuf::from(workspace)
-                .join("logs")
-                .join("security_logs")
-                .join("audit.jsonl");
+            let audit_file = nemesis_path::resolve_audit_log_dir_in_workspace(
+                std::path::Path::new(workspace),
+            )
+            .join("audit.jsonl");
             if audit_file.exists() {
                 Some(audit_file.to_string_lossy().to_string())
             } else {
@@ -648,7 +651,9 @@ fn resolve_log_file_path(workspace: &str, source: &str) -> Option<String> {
         "cluster" => {
             // Phase B1-2: cluster_logs/ 下既有平面 cluster_YYYY-MM-DD.log（流式事件），
             // 也有 {device}/{ts}_{task}/ 子目录（LLM 详情）。这里只取平面日志文件。
-            let cluster_dir = PathBuf::from(workspace).join("logs").join("cluster_logs");
+            let cluster_dir = nemesis_path::resolve_cluster_logs_dir_in_workspace(
+                std::path::Path::new(workspace),
+            );
             let mut matches: Vec<String> = Vec::new();
             if let Ok(entries) = std::fs::read_dir(&cluster_dir) {
                 for entry in entries.flatten() {
@@ -1011,7 +1016,10 @@ fn resolve_fork_store(
             Json(serde_json::json!({"error": "home not configured"})),
         )
     })?;
-    let dir = PathBuf::from(home).join("workspace").join("sessions");
+    // home 是 home 根：先转 workspace 再取 sessions 目录。
+    let dir = nemesis_path::resolve_sessions_dir_in_workspace(&nemesis_path::workspace_dir(
+        std::path::Path::new(home),
+    ));
     Ok(Arc::new(nemesis_agent::session::SessionStore::new_with_storage(
         dir,
     )))

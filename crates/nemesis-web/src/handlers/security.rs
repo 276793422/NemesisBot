@@ -2,7 +2,7 @@
 
 use crate::handlers::require_workspace;
 use crate::ws_router::{ModuleHandler, RequestContext};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 pub struct SecurityHandler {
     _priv: (),
@@ -53,7 +53,8 @@ impl ModuleHandler for SecurityHandler {
 }
 
 fn security_config_path(workspace: &str) -> PathBuf {
-    PathBuf::from(workspace).join("config/config.security.json")
+    // 委托 nemesis-path 唯一拼接点。
+    nemesis_path::resolve_security_config_path_in_workspace(Path::new(workspace))
 }
 
 fn security_log_dir(workspace: &str) -> PathBuf {

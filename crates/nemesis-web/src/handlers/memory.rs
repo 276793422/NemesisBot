@@ -12,7 +12,7 @@ use crate::handlers::{
 use crate::ws_router::{ModuleHandler, RequestContext};
 use std::collections::HashSet;
 use std::io::Write;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
 pub struct MemoryHandler;
@@ -31,7 +31,7 @@ impl ModuleHandler for MemoryHandler {
     ) -> Result<Option<serde_json::Value>, String> {
         let workspace = require_workspace(ctx)?;
         let home = require_home(ctx)?;
-        let config_dir = PathBuf::from(workspace).join("config");
+        let config_dir = nemesis_path::workspace_config_dir(Path::new(workspace));
 
         match cmd {
             // --- Document memory (original) ---
@@ -212,7 +212,8 @@ impl MemoryHandler {
             0
         };
 
-        let em_config_path = PathBuf::from(workspace).join("config/config.enhanced_memory.json");
+        let em_config_path =
+            nemesis_path::resolve_enhanced_memory_config_path_in_workspace(Path::new(workspace));
         let vector_enabled = if em_config_path.exists() {
             nemesis_memory::vector::embedding_config::load_embedding_config(
                 &PathBuf::from(workspace).join("config"),
@@ -271,7 +272,7 @@ impl MemoryHandler {
     }
 
     fn vector_status(&self, workspace: &str) -> Result<Option<serde_json::Value>, String> {
-        let config_dir = PathBuf::from(workspace).join("config");
+        let config_dir = nemesis_path::workspace_config_dir(Path::new(workspace));
         let emb_cfg = nemesis_memory::vector::embedding_config::load_embedding_config(&config_dir);
         Ok(Some(serde_json::json!({ "enabled": emb_cfg.enabled })))
     }

@@ -14,6 +14,13 @@ vi.mock('../../composables/useWSAPI', () => ({
 
 import SandboxView from '../SandboxView.vue'
 
+// G7 (D1) 构建期门控：VITE_USERLAND_SANDBOX=1 的运行（env-on 单跑）才加载
+// UserlandSandbox 子组件；默认运行（env-off）断言诚实降级卡。
+// 子组件自身行为由 UserlandSandbox.spec.ts 直挂覆盖（与门控无关）。
+const GATE_ON = import.meta.env.VITE_USERLAND_SANDBOX === '1'
+// 门控相关用例仅在 env-on 运行时生效（默认运行 skip，不算失败）。
+const describeGate = GATE_ON ? describe : describe.skip
+
 const confirmMock = vi.fn(() => true)
 
 function linuxOverview(over: Record<string, unknown> = {}) {
@@ -48,6 +55,24 @@ beforeEach(() => {
   confirmMock.mockReset().mockReturnValue(true)
 })
 
+// env-on 运行下 UserlandSandbox 经 defineAsyncComponent 动态 import，
+// vite-node 解析 chunk 需要真实墙钟时间（~40ms），flushPromises 等不到 ——
+// 轮询直到用户态区段落位（gate-on → 子组件；gate-off → 降级卡）。
+async function waitUserlandSettled(w: { find(s: string): { exists(): boolean } }, isLinux = true) {
+  if (!GATE_ON || !isLinux) return
+  await vi.waitFor(
+    () => {
+      if (
+        !w.find('[data-test="userland-refresh"]').exists() &&
+        !w.find('[data-test="userland-degrade"]').exists()
+      ) {
+        throw new Error('userland section not settled yet')
+      }
+    },
+    { timeout: 5_000, interval: 20 },
+  )
+}
+
 async function mountView(overview: unknown) {
   requestMock.mockImplementation((_m: string, cmd: string) => {
     if (cmd === 'overview') return Promise.resolve(overview)
@@ -57,6 +82,8 @@ async function mountView(overview: unknown) {
     return Promise.resolve({})
   })
   const w = mount(SandboxView)
+  await flushPromises()
+  await waitUserlandSettled(w, (overview as any)?.platform === 'linux')
   await flushPromises()
   return w
 }
@@ -77,18 +104,25 @@ describe('SandboxView 平台自适应加载', () => {
     const cmds = requestMock.mock.calls.map(c => c[1])
     expect(cmds).toEqual(['overview'])
 
-    expect(w.text()).toContain('landlock')
-    expect(w.text()).toContain('可用')
-    expect(w.text()).toContain('bwrap')
-    expect(w.text()).toContain('不可用')
-    expect(w.text()).toContain('未安装')
-    expect(w.text()).toContain('✓ 已选用')
-    expect(w.text()).toContain('实际选用：')
-    expect(w.text()).toContain('landlock')
-    // executorOn（enabled+sandbox 均 true）
-    expect(w.text()).toContain('● 已启用')
-    // strictHint：selectedBackend 可用
-    expect(w.text()).toContain('landlock 可用 — 严格模式可兑现')
+    // 两种门控形态都必须：用户态面板不触发 status/pending（平台真相源 behavior 不变）
+    if (GATE_ON) {
+      expect(w.text()).toContain('landlock')
+      expect(w.text()).toContain('可用')
+      expect(w.text()).toContain('bwrap')
+      expect(w.text()).toContain('不可用')
+      expect(w.text()).toContain('未安装')
+      expect(w.text()).toContain('✓ 已选用')
+      expect(w.text()).toContain('实际选用：')
+      // executorOn（enabled+sandbox 均 true）
+      expect(w.text()).toContain('● 已启用')
+      // strictHint：selectedBackend 可用
+      expect(w.text()).toContain('landlock 可用 — 严格模式可兑现')
+    } else {
+      // env-off（Windows/Android 工具链构建）：诚实降级卡，无探测表
+      expect(w.find('[data-test="userland-degrade"]').exists()).toBe(true)
+      expect(w.text()).toContain('此构建未包含用户态沙盒 UI')
+      expect(w.text()).not.toContain('✓ 已选用')
+    }
   })
 
   it('overview 失败 → 静默容错（.catch(null)），页面不崩', async () => {
@@ -99,7 +133,7 @@ describe('SandboxView 平台自适应加载', () => {
   })
 })
 
-describe('SandboxView 用户态开关（P5）', () => {
+describeGate('SandboxView 用户态开关（P5，env-on 构建）', () => {
   it('沙盒内联网：allow_network false → 点击发 {allow_network:true}，toast 带 restart_hint', async () => {
     const w = await mountView(linuxOverview())
     const btn = w.findAll('button').find(b => b.text() === '已关闭')!
@@ -156,6 +190,7 @@ describe('SandboxView 用户态开关（P5）', () => {
     })
     const w = mount(SandboxView)
     await flushPromises()
+    await waitUserlandSettled(w)
 
     await w.findAll('button').find(b => b.text() === '启用沙盒执行')!.trigger('click')
     expect(confirmMock).toHaveBeenCalled()
@@ -178,6 +213,7 @@ describe('SandboxView 用户态开关（P5）', () => {
     })
     const w = mount(SandboxView)
     await flushPromises()
+    await waitUserlandSettled(w)
     await w.findAll('button').filter(b => b.text() === '已关闭')[1].trigger('click')
     await flushPromises()
     expect(useToast().toasts.some(t => t.type === 'error' && t.message.includes('config 只读'))).toBe(true)

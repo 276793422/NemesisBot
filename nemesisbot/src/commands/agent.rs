@@ -310,7 +310,7 @@ pub(crate) fn build_agent_loop(
 
     // Skills registry from config (light; network only on actual search/install).
     let skills_registry = {
-        let p = workspace_dir.join("config").join("config.skills.json");
+        let p = nemesis_path::resolve_skills_config_path_in_workspace(&workspace_dir);
         if p.exists() {
             std::fs::read_to_string(&p)
                 .ok()

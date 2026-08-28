@@ -322,3 +322,32 @@ fn test_cleanup_stray_files_under_root_swept_by_same_rule() {
     assert!(fresh.exists(), "fresh stray kept");
     let _ = std::fs::remove_dir_all(&root);
 }
+
+// ---------------------------------------------------------------------------
+// G3: status() — Dashboard spill 卡的只读聚合
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_status_missing_root_is_all_zero() {
+    let root = temp_root("status_absent");
+    let st = status(&root);
+    assert_eq!(st.files, 0);
+    assert_eq!(st.bytes, 0);
+    assert!(st.oldest.is_none());
+}
+
+#[test]
+fn test_status_counts_files_bytes_and_oldest() {
+    let root = temp_root("status_tree");
+    make_spill_file(&root, "s1", "newer.txt", 1 * 24 * 3600, "0123456789"); // 10 bytes
+    make_spill_file(&root, "s2", "older.txt", 5 * 24 * 3600, "abc"); // 3 bytes
+
+    let st = status(&root);
+    assert_eq!(st.files, 2);
+    assert_eq!(st.bytes, 13);
+    // oldest 是 RFC3339 且早于 now - 2 天（5 天前那个）。
+    let oldest = chrono::DateTime::parse_from_rfc3339(st.oldest.as_ref().unwrap()).unwrap();
+    let cutoff = chrono::Local::now() - chrono::Duration::days(2);
+    assert!(oldest < cutoff, "oldest should be the 5-day-old file");
+    let _ = std::fs::remove_dir_all(&root);
+}

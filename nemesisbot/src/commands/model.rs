@@ -77,7 +77,8 @@ pub enum ModelAction {
     Probe { name: String },
     /// U16 (sixth batch): fetch the models.dev catalog (context windows /
     /// max output tokens per model) and cache it at
-    /// `<config>/models_catalog.json`. `model add` auto-fills from the cache.
+    /// `<home>/workspace/data/models_catalog.json`. `model add` auto-fills
+    /// from the cache.
     CatalogUpdate,
 }
 
@@ -616,12 +617,15 @@ pub async fn run(action: ModelAction, local: bool) -> Result<()> {
                 Ok(entries) => {
                     let n = entries.len();
                     catalog::save_cache(&cfg_dir, entries).map_err(|e| {
-                        anyhow::anyhow!("目录写入失败（{}）：{e}", catalog::catalog_path(&cfg_dir).display())
+                        anyhow::anyhow!(
+                            "目录写入失败（{}）：{e}",
+                            nemesis_path::models_catalog_cache_path(&cfg_dir).display()
+                        )
                     })?;
                     println!(
                         "目录已更新：{} 个模型 → {}",
                         n,
-                        catalog::catalog_path(&cfg_dir).display()
+                        nemesis_path::models_catalog_cache_path(&cfg_dir).display()
                     );
                     println!("之后 `model add` 命中的模型会自动填充 context_window / max_output_tokens。");
                 }
@@ -641,7 +645,7 @@ pub async fn run(action: ModelAction, local: bool) -> Result<()> {
                             anyhow::bail!(
                                 "拉取失败且无本地缓存：{e}\n\
                                  内网部署请在外网机器上运行 `model catalog update` 后拷贝 {} 过来。",
-                                catalog::catalog_path(&cfg_dir).display()
+                                nemesis_path::models_catalog_cache_path(&cfg_dir).display()
                             );
                         }
                     }

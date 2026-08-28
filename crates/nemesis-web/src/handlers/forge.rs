@@ -6,7 +6,7 @@
 
 use crate::handlers::{list_workspace_dir, require_home, require_workspace};
 use crate::ws_router::{ModuleHandler, RequestContext};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 pub struct ForgeHandler {
     _priv: (),
@@ -120,9 +120,7 @@ impl ForgeHandler {
         let started_at = ctx.state.forge.as_ref().and_then(|f| f.started_at());
 
         // Load forge config for intervals
-        let forge_config_path = PathBuf::from(workspace)
-            .join("config")
-            .join("config.forge.json");
+        let forge_config_path = nemesis_path::resolve_forge_config_path_in_workspace(Path::new(workspace));
         let forge_config = if forge_config_path.exists() {
             nemesis_forge::config::load_forge_config(&forge_config_path)
         } else {
@@ -172,9 +170,7 @@ impl ForgeHandler {
         let forge_enabled = config.forge.as_ref().map(|f| f.enabled).unwrap_or(false);
 
         // Load full forge config from config dir if available
-        let forge_config_path = PathBuf::from(workspace)
-            .join("config")
-            .join("config.forge.json");
+        let forge_config_path = nemesis_path::resolve_forge_config_path_in_workspace(Path::new(workspace));
         let forge_config = if forge_config_path.exists() {
             nemesis_forge::config::load_forge_config(&forge_config_path)
         } else {
@@ -584,9 +580,7 @@ impl ForgeHandler {
 
         // Sync enabled to config.forge.json as well.
         let workspace = require_workspace(ctx)?;
-        let forge_config_path = PathBuf::from(workspace)
-            .join("config")
-            .join("config.forge.json");
+        let forge_config_path = nemesis_path::resolve_forge_config_path_in_workspace(Path::new(workspace));
         if let Some(parent) = forge_config_path.parent() {
             let _ = std::fs::create_dir_all(parent);
         }
@@ -654,9 +648,7 @@ impl ForgeHandler {
             .ok_or("missing 'enabled' field")?;
 
         // Ensure config.forge.json exists — auto-create from defaults if missing.
-        let forge_config_path = PathBuf::from(workspace)
-            .join("config")
-            .join("config.forge.json");
+        let forge_config_path = nemesis_path::resolve_forge_config_path_in_workspace(Path::new(workspace));
         if !forge_config_path.exists() {
             if let Some(parent) = forge_config_path.parent() {
                 let _ = std::fs::create_dir_all(parent);

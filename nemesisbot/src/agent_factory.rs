@@ -275,7 +275,7 @@ pub fn build_agent_loop(
     agent_loop.set_config_path(shared.home.join("config.json"));
     // G4 (U4): enable tool-result spill under <home>/logs/spill — oversized
     // results (>64k chars) land there whole with a locator in-conversation.
-    let spill_root = shared.home.join("logs").join("spill");
+    let spill_root = nemesis_path::resolve_spill_dir_for_home(&shared.home);
     agent_loop.set_spill_root(spill_root.clone());
     // U4 retention: startup sweep + daily midnight task. retention=0 disables.
     let spill_retention = cfg.agents.defaults.spill_retention_days.max(0) as u64;
@@ -733,7 +733,7 @@ pub fn build_cluster_agent_loop(
     // NOTE: the daily-midnight cleanup task is already spawned by
     // build_agent_loop for this same root — deliberately NOT spawned again
     // here (a second timer would double-scan).
-    let spill_root = shared.home.join("logs").join("spill");
+    let spill_root = nemesis_path::resolve_spill_dir_for_home(&shared.home);
     agent_loop.set_spill_root(spill_root.clone());
     let spill_retention = cfg.agents.defaults.spill_retention_days.max(0) as u64;
     if spill_retention > 0 {
@@ -930,11 +930,10 @@ pub fn build_cluster_agent_loop(
     // midnight task (spawn_daily_cleanup). Bounded disk usage without manual
     // intervention.
     {
-        let cluster_sessions_dir = shared
-            .home
-            .join("workspace")
-            .join("sessions")
-            .join("cluster");
+        let cluster_sessions_dir = nemesis_path::resolve_sessions_dir_in_workspace(
+            &nemesis_path::workspace_dir(&shared.home),
+        )
+        .join("cluster");
         let cluster_session_store = Arc::new(
             nemesis_agent::session::SessionStore::new_with_storage(&cluster_sessions_dir),
         );

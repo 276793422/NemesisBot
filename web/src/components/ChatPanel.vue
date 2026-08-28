@@ -5,6 +5,7 @@ import { useAppStore } from '../stores/app'
 import { useAuthStore } from '../stores/auth'
 import { connect, send, sendHistoryRequest, onMessage, removeMessageHandler, wsStatus } from '../composables/useWebSocket'
 import { useWSAPI } from '../composables/useWSAPI'
+import { useInboxStatus } from '../composables/useInboxStatus'
 import { useSessionStore } from '../stores/session'
 import { marked } from 'marked'
 import hljs from 'highlight.js/lib/core'
@@ -61,6 +62,40 @@ function activeModuleData(): Record<string, unknown> {
     md.session_id = sessionStore.currentId
   }
   return md
+}
+
+// U7 inbox visibility (G1): queue/steer state of the active session.
+const {
+  status: inboxStatus,
+  refresh: refreshInbox,
+  startPolling: startInboxPolling,
+  stopPolling: stopInboxPolling,
+  steerEnabled,
+  queueEnabled,
+  queuedTotal,
+  queueFull,
+} = useInboxStatus()
+
+/** Re-fetch the inbox mode snapshot (mount / session switch / reconnect). */
+function syncInboxMode() {
+  if (!isDefaultChat.value) return
+  void refreshInbox(sessionStore.currentId || '')
+}
+
+/** busy 时发送是否仍然有效（默认 chat + queue/steer 模式）。 */
+const canQueueWhileBusy = computed(() => isDefaultChat.value && queueEnabled.value)
+
+/** 输入以 ! 开头且处于 steer 模式 → 提示将以插队发送。 */
+const showSteerHint = computed(
+  () => steerEnabled.value && /^[!！]/.test(chatStore.input.trimStart()),
+)
+
+/** 一键插队：给输入加 `!` 前缀（已有前缀则不动）。 */
+function prefixSteer() {
+  if (!/^[!！]/.test(chatStore.input.trimStart())) {
+    chatStore.input = '! ' + chatStore.input
+  }
+  chatInput.value?.focus()
 }
 
 // Voice toolbar state
@@ -394,7 +429,9 @@ function loadHistory() {
 
 function sendMessage() {
   const content = chatStore.input.trim()
-  if (!content || chatStore.streaming) return
+  if (!content) return
+  // U7: queue/steer 模式下 busy 发送是合法操作（后端排队/插队）；reject 模式维持原样。
+  if (chatStore.streaming && !canQueueWhileBusy.value) return
 
   chatStore.addMessage({
     role: 'user',
@@ -414,6 +451,11 @@ function sendMessage() {
     module: props.module,
     moduleData: activeModuleData(),
   })
+
+  // U7: busy 中排队/插队 → 立即拉一次队列快照并轮询，chip 才能出现。
+  if (canQueueWhileBusy.value) {
+    startInboxPolling(sessionStore.currentId || '')
+  }
 
   // If dialogue mode is active, reset the accumulation buffer to prevent duplicate send
   if (voiceDialogue.value) {
@@ -600,7 +642,17 @@ const unwatchStatus = watch(wsStatus, (val) => {
     }
     if (val === 'connected') {
       initVoiceState()
+      syncInboxMode()
     }
+  }
+})
+
+// U7: streaming 结束 → 停轮询并刷新一次（队列里剩余条数清零/被消费）。
+const unwatchStreaming = watch(() => chatStore.streaming, (s) => {
+  if (!isDefaultChat.value) return
+  if (!s) {
+    stopInboxPolling()
+    syncInboxMode()
   }
 })
 
@@ -614,6 +666,7 @@ const unwatchSession = watch(
     if (newId && wsStatus.value === 'connected') {
       loadHistory()
     }
+    syncInboxMode()
   },
 )
 
@@ -652,6 +705,9 @@ onMounted(() => {
   if (wsStatus.value === 'connected') {
     initVoiceState()
   }
+
+  // U7: 挂载时拉一次 inbox 模式（失败则保守按 reject 处理）。
+  syncInboxMode()
 })
 
 onUnmounted(() => {
@@ -661,6 +717,7 @@ onUnmounted(() => {
   removeMessageHandler(handleWSMessage)
   unwatchStatus()
   unwatchSession()
+  unwatchStreaming()
   // 离开 chat 页时停掉活跃的 STT 会话，避免后端 orphan 后再回来 "already running" 卡死
   // （组件重挂载后 voiceDictation 是新 ref=false，但后端会话还在跑 → 重启报错 → 永远起不来）
   if (voiceDictation.value) {
@@ -723,6 +780,15 @@ onUnmounted(() => {
     <!-- Toolbar -->
     <div v-if="!toolbarCollapsed" class="voice-toolbar">
       <button
+        v-if="steerEnabled"
+        class="voice-btn steer-btn"
+        title="一键插队：给输入加 ! 前缀，agent 忙碌时立即送达当前轮"
+        @click="prefixSteer"
+      >
+        <span class="steer-mark">!</span>
+        插队
+      </button>
+      <button
         class="voice-btn"
         :class="{ active: voiceDictation }"
         :disabled="!sttReady"
@@ -766,6 +832,14 @@ onUnmounted(() => {
       </button>
     </div>
 
+    <!-- U7 inbox visibility: queued/steer chip + steer input hint -->
+    <div v-if="chatStore.streaming && queuedTotal > 0" class="queue-chip" :class="{ full: queueFull }">
+      ⏳ agent 处理中，已排队 {{ queuedTotal }} 条（其中插队 {{ inboxStatus?.next_step ?? 0 }}）<template v-if="queueFull"> · 队列已满</template>
+    </div>
+    <div v-if="showSteerHint" class="steer-hint">
+      ⚡ 将以插队（steer）模式发送，立即送达当前轮
+    </div>
+
     <!-- Input -->
     <div class="chat-input-area">
       <textarea
@@ -775,17 +849,17 @@ onUnmounted(() => {
         v-model="chatStore.input"
         @keydown="handleKeydown"
         @input="handleInput"
-        :disabled="chatStore.streaming"
+        :disabled="chatStore.streaming && !canQueueWhileBusy"
       ></textarea>
       <button v-if="chatStore.streaming && showStopButton" class="btn btn-stop" @click="stopGeneration" title="停止生成">
         <svg viewBox="0 0 24 24" fill="currentColor" width="16" height="16">
           <rect x="6" y="6" width="12" height="12" rx="2"/>
         </svg>
       </button>
-      <button v-else-if="!chatStore.streaming" class="btn btn-primary" @click="sendMessage" :disabled="!chatStore.input.trim()">
+      <button v-if="!chatStore.streaming || canQueueWhileBusy" class="btn btn-primary" @click="sendMessage" :disabled="!chatStore.input.trim()">
         发送
       </button>
-      <span v-else class="btn btn-primary btn-disabled-workflow" title="工作流执行中，无法中断">
+      <span v-else-if="!showStopButton" class="btn btn-primary btn-disabled-workflow" title="工作流执行中，无法中断">
         执行中...
       </span>
       <button
@@ -815,6 +889,37 @@ onUnmounted(() => {
 </template>
 
 <style scoped>
+/* U7 inbox visibility */
+.queue-chip {
+  padding: 4px 12px;
+  font-size: var(--text-xs);
+  color: var(--text-secondary);
+  background: var(--surface);
+  border-top: 1px solid var(--border);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.queue-chip.full {
+  color: #dc3545;
+}
+.steer-hint {
+  padding: 4px 12px;
+  font-size: var(--text-xs);
+  color: var(--accent);
+  background: var(--surface);
+  border-top: 1px solid var(--border);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.steer-btn {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.steer-mark {
+  font-weight: 700;
+}
 .voice-toolbar {
   display: flex;
   align-items: center;

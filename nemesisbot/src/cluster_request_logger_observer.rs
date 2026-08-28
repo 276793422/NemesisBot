@@ -175,10 +175,8 @@ impl ClusterRequestLoggerObserver {
             .filter(|s| !s.is_empty())
             .unwrap_or_else(|| UNKNOWN_DEVICE_DIR.to_string());
 
-        let base_dir = self
-            .workspace
-            .join("logs")
-            .join("cluster_logs")
+        // 委托 nemesis-path 唯一拼接点（web Logs 页 cluster 源同源读取）。
+        let base_dir = nemesis_path::resolve_cluster_logs_dir_in_workspace(&self.workspace)
             .join(RequestLogger::sanitize_filename(&device_id));
 
         let session_name = ctx.map(|c| {

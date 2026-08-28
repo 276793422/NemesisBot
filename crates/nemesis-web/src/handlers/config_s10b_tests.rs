@@ -154,3 +154,120 @@ async fn config_cors_stubs_report_not_connected() {
         .unwrap();
     assert_eq!(toggled["toggled"], false);
 }
+
+// ---------------------------------------------------------------------------
+// G6：agents.tool_doc_folding 开关 —— set_field 可写（typed round-trip），
+// config.get 回读，盘上真实落盘；错型值 loud 拒绝。
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn config_tool_doc_folding_toggle_roundtrip() {
+    let dir = tempfile::tempdir().unwrap();
+    let ctx = make_ctx(&dir, true);
+    let handler = ConfigHandler::new();
+
+    // 默认关。
+    let get = handler.handle_cmd("get", None, &ctx).await.unwrap().unwrap();
+    assert_eq!(get["agents"]["tool_doc_folding"]["enabled"], false);
+
+    // 开 → updated + get 回读 true。
+    let out = handler
+        .handle_cmd(
+            "set_field",
+            Some(serde_json::json!({ "path": "agents.tool_doc_folding.enabled", "value": true })),
+            &ctx,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(out["updated"], true);
+    let get = handler.handle_cmd("get", None, &ctx).await.unwrap().unwrap();
+    assert_eq!(get["agents"]["tool_doc_folding"]["enabled"], true);
+
+    // 盘上真实落盘（typed 序列化，不是只在内存）。
+    let raw: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(dir.path().join("config.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(raw["agents"]["tool_doc_folding"]["enabled"], true);
+    // expand_top_n 保持 serde 默认 8。
+    assert_eq!(raw["agents"]["tool_doc_folding"]["expand_top_n"], 8);
+
+    // 关回去。
+    handler
+        .handle_cmd(
+            "set_field",
+            Some(serde_json::json!({ "path": "agents.tool_doc_folding.enabled", "value": false })),
+            &ctx,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    let raw: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(dir.path().join("config.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(raw["agents"]["tool_doc_folding"]["enabled"], false);
+}
+
+#[tokio::test]
+async fn config_tool_doc_folding_rejects_wrong_typed_value() {
+    let dir = tempfile::tempdir().unwrap();
+    let ctx = make_ctx(&dir, true);
+    let handler = ConfigHandler::new();
+
+    // enabled 必须是 bool —— 字符串 "on" 走 typed 反序列化失败，loud 拒绝。
+    let err = handler
+        .handle_cmd(
+            "set_field",
+            Some(serde_json::json!({ "path": "agents.tool_doc_folding.enabled", "value": "on" })),
+            &ctx,
+        )
+        .await
+        .unwrap_err();
+    assert!(err.contains("invalid config after field update"), "{err}");
+
+    // 拒绝后盘上仍是 false（默认值），没有被半写。
+    let raw: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(dir.path().join("config.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(raw["agents"]["tool_doc_folding"]["enabled"], false);
+}
+
+// R1 真机验收发现：未知键曾走 generic set_field 静默丢弃（serde 忽略未知字段）
+// 却谎报 updated:true —— 现按 G6「未知键必须 loud 拒绝」要求 round-trip 校验。
+#[tokio::test]
+async fn config_set_field_unknown_key_loud_rejects() {
+    let dir = tempfile::tempdir().unwrap();
+    let ctx = make_ctx(&dir, true);
+    let handler = ConfigHandler::new();
+
+    let err = handler
+        .handle_cmd(
+            "set_field",
+            Some(serde_json::json!({ "path": "agents.nonexistent_key_xyz", "value": 1 })),
+            &ctx,
+        )
+        .await
+        .unwrap_err();
+    assert!(err.contains("unknown config field"), "{err}");
+
+    // 盘上没有被半写（不存在中间对象被静默创建）。
+    let raw: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(dir.path().join("config.json")).unwrap(),
+    )
+    .unwrap();
+    assert!(raw["agents"].get("nonexistent_key_xyz").is_none());
+
+    // 深层未知路径同样拒绝（set_json_path 曾自动创建中间对象）。
+    let err = handler
+        .handle_cmd(
+            "set_field",
+            Some(serde_json::json!({ "path": "agents.no_such_section.deeper", "value": true })),
+            &ctx,
+        )
+        .await
+        .unwrap_err();
+    assert!(err.contains("unknown config field"), "{err}");
+}

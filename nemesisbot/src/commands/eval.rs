@@ -223,15 +223,15 @@ async fn run_eval(
     }
 
     // Sandbox paths (engine is system-level; runtime lives in the real home).
-    let sandbox_root = real_home.join("workspace").join("tools").join("sandboxie");
-    let runtime = sandbox_root.join("runtime");
-    let start_exe = runtime.join("Start.exe");
+    // 唯一拼接点 = nemesis-sandbox::SandboxPaths（此前本函数手拼一遍、
+    // 下方又调 SandboxPaths，两套表达式并存）。
+    let paths = nemesis_sandbox::SandboxPaths::new(&real_home);
+    let sandbox_root = paths.base_dir.clone();
+    let runtime = paths.runtime_dir.clone();
+    let start_exe = paths.start_exe();
     let sbiectrl = runtime.join("SbieCtrl.exe");
     let sbiedll = runtime.join("SbieDll.dll");
     let sbieini = runtime.join("SbieIni.exe");
-
-    // 6e — sandbox readiness (three conditions, mirrors agent_factory).
-    let paths = nemesis_sandbox::SandboxPaths::new(&real_home);
     let c1 = start_exe.exists();
     let c2 = matches!(
         nemesis_sandbox::status::service_state(nemesis_sandbox::USERMODE_SERVICE),

@@ -685,14 +685,12 @@ async fn cmd_cache_stats(skills_cfg: &std::path::Path) -> Result<()> {
     println!("  TTL: {} seconds", config.search_cache.ttl_secs);
 
     // Show runtime cache stats from the file-based cache
-    let cache_dir = skills_cfg
-        .parent()
-        .unwrap()
-        .parent()
-        .unwrap()
-        .join("workspace")
-        .join("skills")
-        .join(".cache");
+    // 2026-08-28 修复：此前多拼一层 workspace（得到
+    // `<workspace>/workspace/skills/.cache`——无人写入的目录）。缓存目录
+    // 唯一真相源 = nemesis-path::resolve_skills_cache_dir_in_workspace。
+    let cache_dir = nemesis_path::resolve_skills_cache_dir_in_workspace(
+        skills_cfg.parent().unwrap().parent().unwrap(),
+    );
 
     // Cache stats file for hit/miss tracking
     let stats_file = cache_dir.join(".stats.json");
@@ -764,14 +762,12 @@ async fn cmd_cache_stats(skills_cfg: &std::path::Path) -> Result<()> {
 }
 
 async fn cmd_cache_clear(skills_cfg: &std::path::Path) -> Result<()> {
-    let cache_dir = skills_cfg
-        .parent()
-        .unwrap()
-        .parent()
-        .unwrap()
-        .join("workspace")
-        .join("skills")
-        .join(".cache");
+    // 2026-08-28 修复：此前多拼一层 workspace（得到
+    // `<workspace>/workspace/skills/.cache`——无人写入的目录）。缓存目录
+    // 唯一真相源 = nemesis-path::resolve_skills_cache_dir_in_workspace。
+    let cache_dir = nemesis_path::resolve_skills_cache_dir_in_workspace(
+        skills_cfg.parent().unwrap().parent().unwrap(),
+    );
 
     if cache_dir.exists() {
         let count = std::fs::read_dir(&cache_dir)?

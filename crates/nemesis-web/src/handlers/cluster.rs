@@ -219,11 +219,12 @@ fn format_duration(d: std::time::Duration) -> String {
 }
 
 fn cluster_config_path(workspace: &str) -> PathBuf {
-    PathBuf::from(workspace).join("config/config.cluster.json")
+    // 路径唯一真相源 = nemesis-path（peers.toml 跨 crate 读写三方共用）。
+    nemesis_path::resolve_cluster_config_path_in_workspace(Path::new(workspace))
 }
 
 fn peers_path(workspace: &str) -> PathBuf {
-    PathBuf::from(workspace).join("cluster/peers.toml")
+    nemesis_path::resolve_cluster_peers_path_in_workspace(Path::new(workspace))
 }
 
 // ---------------------------------------------------------------------------

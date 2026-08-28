@@ -121,6 +121,24 @@ impl ConfigHandler {
 
         config = serde_json::from_value(json)
             .map_err(|e| format!("invalid config after field update: {}", e))?;
+
+        // Typed reparse silently drops unknown keys (serde ignores unrecognized
+        // fields). Verify the field survived the round-trip before claiming
+        // success — otherwise an unknown path would answer `updated:true` while
+        // persisting nothing (R1 真机验收发现的诚实性缺口，G6 loud 拒绝要求).
+        let reserialized = serde_json::to_value(&config)
+            .map_err(|e| format!("failed to serialize config: {}", e))?;
+        match json_path_get(&reserialized, path) {
+            None => return Err(format!("unknown config field: {}", path)),
+            Some(actual) if actual != value => {
+                return Err(format!(
+                    "config field {} did not round-trip (value rejected or normalized)",
+                    path
+                ));
+            }
+            _ => {}
+        }
+
         save_config_to_disk(home, &mut config)?;
         Ok(Some(serde_json::json!({ "updated": true, "path": path })))
     }
@@ -195,4 +213,16 @@ fn set_json_path(
         current = &mut current[part];
     }
     Ok(())
+}
+
+/// Resolve a dot path on a JSON value; None if any segment is missing.
+fn json_path_get<'a>(
+    json: &'a serde_json::Value,
+    path: &str,
+) -> Option<&'a serde_json::Value> {
+    let mut current = json;
+    for part in path.split('.') {
+        current = current.get(part)?;
+    }
+    Some(current)
 }

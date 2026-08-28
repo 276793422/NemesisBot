@@ -171,6 +171,9 @@ impl ModelsHandler {
                     "model": m.model,
                     "api_base": m.api_base,
                     "api_key": if m.api_key.is_empty() { String::new() } else { mask_sensitive(&m.api_key) },
+                    // G4 (U15): source badge WITHOUT the value — env/yaml carry
+                    // only the reference name, inline only the marker.
+                    "key_source": nemesis_config::credentials::classify_key_source(&m.api_key),
                     "proxy": m.proxy,
                     "is_default": is_default,
                     // Raw extras (absent in file → null; frontend treats null as unset).
@@ -510,15 +513,18 @@ impl ModelsHandler {
     }
 
     /// P3-2: catalog cache status for the models page header (no spawn, no
-    /// network — reads `<home>/models_catalog.json` directly; the file shape
+    /// network — reads the cache file directly; the file shape
     /// matches the CLI's `catalog.rs` cache).
     ///
-    /// 真相源：CLI `model catalog-update` 写 `catalog_path(cfg_dir)`，其中
-    /// cfg_dir = `config.json` 的父目录 = **home 根**（不是 config/ 子目录
-    /// ——2026-08-24 L2 真机断言抓到的读写路径分叉，夹具曾跟着错路径写）。
+    /// 路径唯一真相源 = `nemesis_path::models_catalog_cache_path`
+    /// （`<home>/workspace/data/models_catalog.json`；与 CLI `model
+    /// catalog-update` 共用同一函数——2026-08-24 L2 曾抓到过一次读写路径分叉，
+    /// 2026-08-28 从 home 根迁入 workspace/data 后路径收进 nemesis-path，
+    /// 读取时自动 rename legacy 文件）。
     fn catalog_info(&self, home: &str) -> Result<Option<serde_json::Value>, String> {
-        let path = std::path::PathBuf::from(home)
-            .join("models_catalog.json");
+        let home_pb = std::path::PathBuf::from(home);
+        let path = nemesis_path::models_catalog_cache_path(&home_pb);
+        nemesis_path::migrate_legacy_models_catalog_cache(&home_pb);
         if !path.exists() {
             return Ok(Some(
                 serde_json::json!({ "exists": false, "fetched_at": "", "entries": 0 }),
@@ -606,10 +612,11 @@ struct CatalogLiteEntry {
 }
 
 fn read_catalog(home: &str) -> Option<CatalogLite> {
-    // 与 catalog_info 同源：`<home>/models_catalog.json`（CLI 的 cfg_dir 是
-    // config.json 的父目录 = home 根，见 catalog_info 的真相源注释）。
-    let path = std::path::PathBuf::from(home)
-        .join("models_catalog.json");
+    // 与 catalog_info 同源：路径唯一真相源 =
+    // `nemesis_path::models_catalog_cache_path`（见 catalog_info 的注释）。
+    let home_pb = std::path::PathBuf::from(home);
+    let path = nemesis_path::models_catalog_cache_path(&home_pb);
+    nemesis_path::migrate_legacy_models_catalog_cache(&home_pb);
     let raw = std::fs::read_to_string(path).ok()?;
     let v: serde_json::Value = serde_json::from_str(&raw).ok()?;
     let arr = v.get("entries")?.as_array()?;

@@ -21,7 +21,10 @@ pub async fn run(local: bool) -> Result<(), Box<dyn std::error::Error>> {
         .to_string();
 
     // 2. Read gateway state
-    let state_path = home.join("workspace").join("state").join("gateway.json");
+    let state_path =
+        nemesis_path::resolve_gateway_state_path_in_workspace(
+        &crate::common::workspace_path(&home),
+    );
     let gateway_info = read_gateway_state(&state_path);
 
     // 3. Check if gateway is running; start if not

@@ -2734,6 +2734,24 @@ impl AgentLoop {
         map.get(session_key).map_or(0, |s| s.queue_length)
     }
 
+    /// U7 dashboard visibility (G1): one-call snapshot of a session's inbox
+    /// state for the `agent.inbox_status` WSAPI command. Read-only — claims
+    /// and transfers stay exclusively in the turn lifecycle paths.
+    pub fn inbox_status(&self, session_key: &str) -> crate::inbox::InboxStatus {
+        let (next_turn, next_step) = self.inbox.pending(session_key);
+        crate::inbox::InboxStatus {
+            next_turn,
+            next_step,
+            capacity: self.inbox.capacity(),
+            busy: self.is_session_busy(session_key),
+            mode: match self.concurrent_mode {
+                ConcurrentMode::Reject => "reject",
+                ConcurrentMode::Queue => "queue",
+                ConcurrentMode::Steer => "steer",
+            },
+        }
+    }
+
     // -----------------------------------------------------------------------
     // Session cancellation
     // -----------------------------------------------------------------------

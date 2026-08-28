@@ -732,6 +732,8 @@ pub async fn test_ui_p3_models_update_field(ws: &TestWorkspace) -> Vec<TestResul
             e.get("model_tier").and_then(|v| v.as_str()) == Some("mini")
                 && e.get("model_size_b").and_then(|v| v.as_u64()) == Some(30)
                 && e.get("real_name").and_then(|v| v.as_str()) == Some("UiP3-Test")
+                // G4 (U15)：key_source 必须随 list 下发（真实网关响应证明）。
+                && e.get("key_source").and_then(|k| k.get("kind")).and_then(|v| v.as_str()).is_some()
         });
     results.push(if echo_ok {
         pass(&format!("{}/list_echo", suite), "extras 回读齐")
@@ -743,8 +745,9 @@ pub async fn test_ui_p3_models_update_field(ws: &TestWorkspace) -> Vec<TestResul
     });
 
     // P3-6 catalog_update 端到端证明：子进程（env 传 home.parent()，CLI join
-    // 回同一 home）写 <home>/models_catalog.json，gateway 的 catalog_info 读同
-    // 一路径 → exists:true。首跑（2026-08-24）在此抓到真 bug：handler 读点拼了
+    // 回同一 home）写 <home>/workspace/data/models_catalog.json（2026-08-28
+    // 从 home 根迁入 workspace/data），gateway 的 catalog_info 读同一路径 →
+    // exists:true。首跑（2026-08-24）在此抓到真 bug：handler 读点拼了
     // config/ 子目录与 CLI 写盘分叉 → 永远 exists:false（已修 models.rs 两处
     // 读点 + 夹具 3 处）。依赖网络（models.dev / 镜像）——网络失败按 skip 记录。
     let (data, err) = api.call("models", "catalog_update", None).await;

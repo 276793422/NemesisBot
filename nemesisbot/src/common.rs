@@ -116,58 +116,50 @@ pub fn workspace_path(home: &Path) -> PathBuf {
 
 /// Get the MCP config file path.
 pub fn mcp_config_path(home: &Path) -> PathBuf {
-    home.join("workspace")
-        .join("config")
-        .join("config.mcp.json")
+    // 委托 nemesis-path 唯一拼接点（CLI / web / forge 三方共用）。
+    nemesis_path::resolve_mcp_config_path_in_workspace(&workspace_path(home))
 }
 
 /// Get the scanner config file path.
 pub fn scanner_config_path(home: &Path) -> PathBuf {
-    home.join("workspace")
-        .join("config")
-        .join("config.scanner.json")
+    // 委托 nemesis-path 唯一拼接点。
+    nemesis_path::resolve_scanner_config_path_in_workspace(&workspace_path(home))
 }
 
 /// Get the security config file path.
 pub fn security_config_path(home: &Path) -> PathBuf {
-    home.join("workspace")
-        .join("config")
-        .join("config.security.json")
+    // 委托 nemesis-path 唯一拼接点。
+    nemesis_path::resolve_security_config_path_in_workspace(&workspace_path(home))
 }
 
 /// Get the skills config file path.
 pub fn skills_config_path(home: &Path) -> PathBuf {
-    home.join("workspace")
-        .join("config")
-        .join("config.skills.json")
+    // 委托 nemesis-path 唯一拼接点。
+    nemesis_path::resolve_skills_config_path_in_workspace(&workspace_path(home))
 }
 
 /// Get the cluster config file path.
 pub fn cluster_config_path(home: &Path) -> PathBuf {
-    home.join("workspace")
-        .join("config")
-        .join("config.cluster.json")
+    // 委托 nemesis-path 唯一拼接点（CLI / web / cluster 三方共用）。
+    nemesis_path::resolve_cluster_config_path_in_workspace(&workspace_path(home))
 }
 
 /// Get the enhanced memory config file path.
 pub fn enhanced_memory_config_path(home: &Path) -> PathBuf {
-    home.join("workspace")
-        .join("config")
-        .join("config.enhanced_memory.json")
+    // 委托 nemesis-path 唯一拼接点。
+    nemesis_path::resolve_enhanced_memory_config_path_in_workspace(&workspace_path(home))
 }
 
 /// Get the chat config file path.
 pub fn chat_config_path(home: &Path) -> PathBuf {
-    home.join("workspace")
-        .join("config")
-        .join("config.chat.json")
+    // 委托 nemesis-path 唯一拼接点。
+    nemesis_path::resolve_chat_config_path_in_workspace(&workspace_path(home))
 }
 
 /// Get the Forge self-learning config file path.
 pub fn forge_config_path(home: &Path) -> PathBuf {
-    home.join("workspace")
-        .join("config")
-        .join("config.forge.json")
+    // 委托 nemesis-path 唯一拼接点。
+    nemesis_path::resolve_forge_config_path_in_workspace(&workspace_path(home))
 }
 
 /// Get the CORS config file path.
@@ -180,7 +172,8 @@ pub fn cors_config_path(home: &Path) -> PathBuf {
 /// This is where `peers.toml` and `state.toml` live, matching Go's
 /// `workspace/cluster/` layout (NOT `home/cluster/`).
 pub fn cluster_dir(home: &Path) -> PathBuf {
-    workspace_path(home).join("cluster")
+    // 委托 nemesis-path 唯一拼接点（集群身份/拓扑/续行快照根目录）。
+    nemesis_path::cluster_dir_in_workspace(&workspace_path(home))
 }
 
 /// Get the cron store path.

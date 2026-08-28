@@ -27,6 +27,7 @@ impl ModuleHandler for AgentHandler {
             "cancel" => self.cancel(data, ctx),
             "rewind" => self.rewind(data, ctx).await,
             "checkpoints" => self.checkpoints(ctx).await,
+            "inbox_status" => Self::inbox_status(data, ctx),
             _ => Err(format!("unknown command: agent.{}", cmd)),
         }
     }
@@ -58,6 +59,57 @@ impl AgentHandler {
             "model_has_key": model_has_key,
             "active_sessions": session_count,
         })))
+    }
+
+    /// U7 dashboard visibility (G1): per-session inbox snapshot for the chat
+    /// UI's queued/steer chip. `data.session_id` is the raw conversation id
+    /// the client sends with chat messages — the SAME session_key build rule
+    /// as the web inbound chokepoint (server.rs process_messages: empty →
+    /// "legacy", else sanitized) so the queried key always matches the key
+    /// the agent actually queues under.
+    fn inbox_status(
+        data: Option<serde_json::Value>,
+        ctx: &RequestContext,
+    ) -> Result<Option<serde_json::Value>, String> {
+        let sid = data
+            .as_ref()
+            .and_then(|d| d.get("session_id"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .trim()
+            .to_string();
+        let session_key = if sid.is_empty() {
+            "agent:main:session:legacy".to_string()
+        } else {
+            format!(
+                "agent:main:session:{}",
+                nemesis_agent::session::SessionStore::sanitize_session_id(&sid)
+            )
+        };
+        let loop_guard = ctx.state.agent_loop.read();
+        match loop_guard.as_ref() {
+            Some(al) => {
+                let s = al.inbox_status(&session_key);
+                Ok(Some(serde_json::json!({
+                    "available": true,
+                    "session_key": session_key,
+                    "next_turn": s.next_turn,
+                    "next_step": s.next_step,
+                    "capacity": s.capacity,
+                    "busy": s.busy,
+                    "mode": s.mode,
+                })))
+            }
+            None => Ok(Some(serde_json::json!({
+                "available": false,
+                "session_key": session_key,
+                "next_turn": 0,
+                "next_step": 0,
+                "capacity": 0,
+                "busy": false,
+                "mode": "reject",
+            }))),
+        }
     }
 
     fn start(&self, ctx: &RequestContext) -> Result<Option<serde_json::Value>, String> {

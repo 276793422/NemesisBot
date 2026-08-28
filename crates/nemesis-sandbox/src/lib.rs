@@ -28,6 +28,7 @@ pub mod ini;
 pub mod install;
 pub mod kmdutil;
 pub mod pending;
+pub mod selftest;
 pub mod status;
 
 // ---------------------------------------------------------------------------
@@ -66,6 +67,9 @@ pub const DEFAULT_BOX_NAME: &str = "NemesisBox";
 /// (`core/drv/conf.c:256-269`), so no file lands in `C:\Windows`.
 #[derive(Debug, Clone)]
 pub struct SandboxPaths {
+    /// The `<home>/workspace/tools/sandboxie/` base — the single join point for
+    /// the Sandboxie subtree; every other location derives from it.
+    pub base_dir: PathBuf,
     /// Where the extracted runtime binaries (SbieDrv.sys, SbieSvc.exe, Start.exe,
     /// KmdUtil.exe, ...) live.
     pub runtime_dir: PathBuf,
@@ -88,6 +92,7 @@ impl SandboxPaths {
     pub fn new(home: &Path) -> Self {
         let base = home.join("workspace").join("tools").join("sandboxie");
         Self {
+            base_dir: base.clone(),
             home: home.to_path_buf(),
             runtime_dir: base.join("runtime"),
             ini_path: base.join("Sandboxie.ini"),

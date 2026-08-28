@@ -125,7 +125,7 @@ impl HeartbeatService {
     pub fn new(config: HeartbeatConfig) -> Self {
         // Ensure logs directory exists if workspace is set
         if let Some(ref workspace) = config.workspace {
-            let log_dir = std::path::Path::new(workspace).join("logs");
+            let log_dir = nemesis_path::logs_dir_in_workspace(std::path::Path::new(workspace));
             let _ = std::fs::create_dir_all(&log_dir);
         }
 
@@ -572,8 +572,7 @@ Add your heartbeat tasks below this line:
             None => return,
         };
 
-        let log_file = std::path::Path::new(workspace)
-            .join("logs")
+        let log_file = nemesis_path::logs_dir_in_workspace(std::path::Path::new(workspace))
             .join("heartbeat.log");
 
         if let Ok(f) = std::fs::OpenOptions::new()

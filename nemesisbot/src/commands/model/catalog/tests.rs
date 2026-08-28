@@ -95,7 +95,7 @@ fn test_cache_roundtrip_and_lookup() {
     let entries = parse_api_json(FIXTURE).unwrap();
     save_cache(dir, entries).expect("save");
     // Atomic rename leaves no temp residue.
-    assert!(!catalog_path(dir).with_extension("json.tmp").exists());
+    assert!(!nemesis_path::models_catalog_cache_path(dir).with_extension("json.tmp").exists());
 
     let cat = load_cache(dir).unwrap().expect("loaded after save");
     assert_eq!(cat.version, 1);
@@ -108,7 +108,8 @@ fn test_cache_roundtrip_and_lookup() {
 #[test]
 fn test_corrupt_cache_is_loud() {
     let tmp = tempfile::TempDir::new().unwrap();
-    let p = catalog_path(tmp.path());
+    let p = nemesis_path::models_catalog_cache_path(tmp.path());
+    std::fs::create_dir_all(p.parent().unwrap()).unwrap(); // 深路径：workspace/data 父链
     std::fs::write(&p, "{ broken").unwrap();
     assert!(load_cache(tmp.path()).is_err(), "present-but-corrupt → Err");
 }
@@ -318,19 +319,20 @@ fn test_s11b_cache_roundtrip_missing_and_corrupt() {
         }],
     )
     .unwrap();
-    assert!(catalog_path(&dir).exists());
-    assert!(!catalog_path(&dir).with_extension("json.tmp").exists(), "tmp 已 rename 走");
+    assert!(nemesis_path::models_catalog_cache_path(&dir).exists());
+    assert!(!nemesis_path::models_catalog_cache_path(&dir).with_extension("json.tmp").exists(), "tmp 已 rename 走");
     let cat = load_cache(&dir).unwrap().expect("cache present");
     assert_eq!(cat.version, 1);
     assert!(!cat.fetched_at.is_empty());
     assert_eq!(cat.entries.len(), 1);
     assert_eq!(cat.entries[0].key, "a/b");
     // 目录而非文件 → Err（present-but-unreadable 一族）
-    std::fs::create_dir_all(catalog_path(&dir).with_extension("json"))
+    std::fs::create_dir_all(nemesis_path::models_catalog_cache_path(&dir).with_extension("json"))
         .unwrap_or(()); // 同名拓展冲突时不影响下面用独立目录验证 corrupt
     let dir2 = tmp.path().join("cfg2");
-    std::fs::create_dir_all(&dir2).unwrap();
-    std::fs::write(catalog_path(&dir2), "{corrupt").unwrap();
+    let corrupt = nemesis_path::models_catalog_cache_path(&dir2);
+    std::fs::create_dir_all(corrupt.parent().unwrap()).unwrap();
+    std::fs::write(&corrupt, "{corrupt").unwrap();
     assert!(load_cache(&dir2).is_err(), "corrupt cache 必须响亮报错");
 }
 
@@ -610,17 +612,16 @@ mod r9_offline_cli {
         let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
         let _kill = ProxyKill::arm();
         let ws = fresh_ws_with_empty_config();
-        // 种一版本地缓存（serde 版本化格式）。
+        // 种一版本地缓存（serde 版本化格式）。种子写在 **legacy 位置**（home
+        // 根）——2026-08-28 布局迁移后 load_cache 首读会把它 rename 进
+        // workspace/data，本测试同时就是迁移行为的端到端实证。
+        let legacy = nemesis_path::legacy_models_catalog_cache_path(&ws.home());
         let cache = serde_json::json!({
             "version": 1,
             "fetched_at": "2026-08-01T12:00:00+08:00",
             "entries": [{"key": "p/m", "context_window": 12345}]
         });
-        std::fs::write(
-            ws.home().join("models_catalog.json"),
-            serde_json::to_string_pretty(&cache).unwrap(),
-        )
-        .unwrap();
+        std::fs::write(&legacy, serde_json::to_string_pretty(&cache).unwrap()).unwrap();
 
         let bin = resolve_nemesisbot_bin().unwrap();
         let out = ws.run_cli_with_timeout(&bin, &["model", "catalog-update"], 60).await;
@@ -634,8 +635,12 @@ mod r9_offline_cli {
         assert!(out.stdout_contains("保留现有缓存：1 个模型"));
         assert!(out
             .stdout_contains("fetched_at=2026-08-01T12:00:00+08:00"));
-        // 缓存文件必须原样保留。
-        assert!(ws.home().join("models_catalog.json").exists());
+        // 迁移实证：legacy 已搬走，新位置文件原样保留。
+        assert!(!legacy.exists(), "legacy home 根缓存应被迁移 rename 走");
+        assert!(
+            nemesis_path::models_catalog_cache_path(&ws.home()).exists(),
+            "缓存应落在 workspace/data"
+        );
     }
 
     #[tokio::test]
@@ -743,4 +748,22 @@ mod r10_body_read {
         // last_err 被最后尝试的镜像端点覆写。
         assert!(err.contains("cdn.jsdelivr.net"), "got: {err}");
     }
+}
+
+#[test]
+fn migrate_moves_legacy_home_root_cache() {
+    let tmp = tempfile::tempdir().unwrap();
+    let legacy = nemesis_path::legacy_models_catalog_cache_path(tmp.path());
+    std::fs::write(
+        &legacy,
+        r#"{"version":1,"fetched_at":"t","entries":[{"key":"p/m","context_window":7}]}"#,
+    )
+    .unwrap();
+    // 首读触发迁移：内容可读 + legacy 消失 + 新位置存在。
+    let cat = load_cache(tmp.path()).unwrap().expect("migrated cache loads");
+    assert_eq!(cat.entries.len(), 1);
+    assert!(!legacy.exists(), "legacy 应被 rename 走");
+    assert!(nemesis_path::models_catalog_cache_path(tmp.path()).exists(), "缓存落在新位置");
+    // 二读直接走新位置（迁移幂等）。
+    assert!(load_cache(tmp.path()).unwrap().is_some());
 }

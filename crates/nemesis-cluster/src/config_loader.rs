@@ -94,7 +94,8 @@ fn default_llm_timeout_secs() -> u64 {
 
 /// Load app configuration from workspace/config/config.cluster.json.
 pub fn load_app_config(workspace: &Path) -> AppConfig {
-    let config_path = workspace.join("config").join("config.cluster.json");
+    // 委托 nemesis-path 唯一拼接点。
+    let config_path = nemesis_path::resolve_cluster_config_path_in_workspace(workspace);
     if config_path.exists() {
         match std::fs::read_to_string(&config_path) {
             Ok(content) => serde_json::from_str(&content).unwrap_or_default(),
@@ -107,7 +108,8 @@ pub fn load_app_config(workspace: &Path) -> AppConfig {
 
 /// Save app configuration to workspace/config/config.cluster.json.
 pub fn save_app_config(workspace: &Path, config: &AppConfig) -> Result<(), ConfigError> {
-    let config_path = workspace.join("config").join("config.cluster.json");
+    // 委托 nemesis-path 唯一拼接点。
+    let config_path = nemesis_path::resolve_cluster_config_path_in_workspace(workspace);
     let json = serde_json::to_string_pretty(config)?;
     if let Some(parent) = config_path.parent() {
         std::fs::create_dir_all(parent)?;

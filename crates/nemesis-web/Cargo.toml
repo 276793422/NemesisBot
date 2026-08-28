@@ -26,6 +26,9 @@ nemesis-services = { workspace = true }
 nemesis-voice = { workspace = true, optional = true }
 nemesis-memory = { workspace = true, optional = true }
 nemesis-data = { workspace = true }
+# 目录缓存路径唯一真相源在 nemesis-path（models_catalog_cache_path 等，
+# 与 CLI catalog.rs 共用——nemesis-web 不能依赖 binary crate）。
+nemesis-path = { workspace = true }
 nemesis-agent = { workspace = true }
 nemesis-workflow = { workspace = true, optional = true }
 nemesis-utils = { workspace = true }

@@ -196,6 +196,57 @@ pub fn cleanup_expired(spill_root: &Path, retention_days: u64) -> usize {
     deleted
 }
 
+/// G3 (Logs Dashboard spill 卡): read-only spill state — file count, total
+/// bytes, and the OLDEST file's mtime (RFC3339). A missing/unreadable root
+/// yields the all-zero status (the tree simply doesn't exist yet).
+#[derive(Debug, Default, Clone, serde::Serialize)]
+pub struct SpillStatus {
+    pub files: usize,
+    pub bytes: u64,
+    /// RFC3339 mtime of the oldest spill file; `None` when the tree is empty.
+    pub oldest: Option<String>,
+}
+
+/// Sweep the spill tree (root → session dirs → files) and aggregate. Nested
+/// dirs deeper than one session level are unexpected but counted anyway —
+/// this is a status view, not an invariant check.
+pub fn status(root: &Path) -> SpillStatus {
+    let mut st = SpillStatus::default();
+    let mut oldest: Option<std::time::SystemTime> = None;
+
+    fn visit_dir(
+        dir: &Path,
+        st: &mut SpillStatus,
+        oldest: &mut Option<std::time::SystemTime>,
+    ) {
+        let entries = match std::fs::read_dir(dir) {
+            Ok(rd) => rd,
+            Err(_) => return,
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                visit_dir(&path, st, oldest);
+                continue;
+            }
+            let Ok(meta) = entry.metadata() else { continue };
+            st.files += 1;
+            st.bytes += meta.len();
+            if let Ok(mt) = meta.modified() {
+                if oldest.map_or(true, |o| mt < o) {
+                    *oldest = Some(mt);
+                }
+            }
+        }
+    }
+
+    visit_dir(root, &mut st, &mut oldest);
+    st.oldest = oldest.map(|t| {
+        chrono::DateTime::<chrono::Local>::from(t).to_rfc3339()
+    });
+    st
+}
+
 #[cfg(test)]
 mod tests;
 

@@ -560,7 +560,7 @@ impl GoTaskResultStore {
     /// The directory is created if it does not exist. The index is loaded from
     /// disk if present; otherwise an empty index is used.
     pub fn new(workspace: &Path) -> std::result::Result<Self, String> {
-        let data_dir = workspace.join("cluster").join("task_results");
+        let data_dir = nemesis_path::cluster_dir_in_workspace(workspace).join("task_results");
         std::fs::create_dir_all(&data_dir)
             .map_err(|e| format!("failed to create task_results directory: {e}"))?;
 

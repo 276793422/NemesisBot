@@ -149,18 +149,14 @@ impl PathManager {
 
     /// Get the audit log directory.
     pub fn audit_log_dir(&self) -> PathBuf {
-        self.home_dir
-            .read()
-            .join("workspace")
-            .join("logs")
-            .join("security_logs")
+        resolve_audit_log_dir_in_workspace(&self.workspace())
     }
 
     /// Get the sessions log directory.
     /// Chat history JSONL files are stored here, separate from session files
     /// used for LLM context recovery.
     pub fn sessions_log_dir(&self) -> PathBuf {
-        self.workspace().join("logs").join("session_logs")
+        resolve_session_logs_dir_in_workspace(&self.workspace())
     }
 
     /// Get the boundary-events sidecar directory (round-5 review fix).
@@ -169,7 +165,7 @@ impl PathManager {
     /// `*.jsonl` in that dir, so a sidecar placed there would surface as a
     /// phantom session in the Dashboard session list.
     pub fn boundary_events_dir(&self) -> PathBuf {
-        self.workspace().join("logs").join("boundary")
+        resolve_boundary_events_dir_in_workspace(&self.workspace())
     }
 
     /// Get the temp directory.
@@ -279,34 +275,211 @@ pub fn is_local_mode() -> bool {
     unsafe { LOCAL_MODE }
 }
 
-/// Resolve config path within a specific workspace.
+/// `<workspace>/config` —— 子系统配置区（config.*.json；用户 2026-08-28
+/// 布局指令：子系统配置归 workspace/config，禁止丢 home 根）。
+pub fn workspace_config_dir(workspace: &Path) -> PathBuf {
+    workspace.join("config")
+}
+
+/// 主配置 config.json —— 注意在 **home 根**（不在 workspace 下），
+/// 与 [`workspace_config_dir`] 的子系统配置区分。
 pub fn resolve_config_path_in_workspace(workspace: &Path) -> PathBuf {
     workspace.join("config.json")
 }
 
 /// Resolve MCP config path within a specific workspace.
 pub fn resolve_mcp_config_path_in_workspace(workspace: &Path) -> PathBuf {
-    workspace.join("config").join("config.mcp.json")
+    workspace_config_dir(workspace).join("config.mcp.json")
 }
 
 /// Resolve security config path within a specific workspace.
 pub fn resolve_security_config_path_in_workspace(workspace: &Path) -> PathBuf {
-    workspace.join("config").join("config.security.json")
+    workspace_config_dir(workspace).join("config.security.json")
 }
 
 /// Resolve cluster config path within a specific workspace.
 pub fn resolve_cluster_config_path_in_workspace(workspace: &Path) -> PathBuf {
-    workspace.join("config").join("config.cluster.json")
+    workspace_config_dir(workspace).join("config.cluster.json")
 }
 
 /// Resolve skills config path within a specific workspace.
 pub fn resolve_skills_config_path_in_workspace(workspace: &Path) -> PathBuf {
-    workspace.join("config").join("config.skills.json")
+    workspace_config_dir(workspace).join("config.skills.json")
 }
 
 /// Resolve scanner config path within a specific workspace.
 pub fn resolve_scanner_config_path_in_workspace(workspace: &Path) -> PathBuf {
-    workspace.join("config").join("config.scanner.json")
+    workspace_config_dir(workspace).join("config.scanner.json")
+}
+
+/// Resolve chat config path within a specific workspace.
+pub fn resolve_chat_config_path_in_workspace(workspace: &Path) -> PathBuf {
+    workspace_config_dir(workspace).join("config.chat.json")
+}
+
+// =======================================================================
+// workspace/data 派生数据区（2026-08-28 布局确立）
+// =======================================================================
+
+/// `<home>/workspace/data` —— 运行时派生数据统一目录（nemesisbot_data.db、
+/// models_catalog.json 目录缓存等）。布局唯一拼接点：改 data 区位置只改这里，
+/// 所有消费方经本模块取路径，禁止各自 join。
+pub fn workspace_data_dir(home_dir: &Path) -> PathBuf {
+    home_dir.join("workspace").join("data")
+}
+
+/// models.dev 目录缓存文件：`<home>/workspace/data/models_catalog.json`。
+/// 读写方：CLI `model catalog-update` / `model add`（nemesisbot catalog.rs）
+/// + Dashboard models 页（nemesis-web models.rs）——两侧都从本函数取路径。
+pub fn models_catalog_cache_path(home_dir: &Path) -> PathBuf {
+    workspace_data_dir(home_dir).join("models_catalog.json")
+}
+
+/// 旧版缓存位置（2026-08-28 前直接丢 home 根；保留仅供读时迁移与测试播种）。
+pub fn legacy_models_catalog_cache_path(home_dir: &Path) -> PathBuf {
+    home_dir.join("models_catalog.json")
+}
+
+/// 读时静默迁移：把旧 home 根缓存 rename 进 workspace/data，存量部署免手动
+/// 迁移、不重新下载。best-effort——失败不阻塞读路径（下次 save_cache 重建）。
+pub fn migrate_legacy_models_catalog_cache(home_dir: &Path) {
+    let new_path = models_catalog_cache_path(home_dir);
+    let legacy = legacy_models_catalog_cache_path(home_dir);
+    if !legacy.exists() || new_path.exists() {
+        return;
+    }
+    if let Some(parent) = new_path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let _ = std::fs::rename(&legacy, &new_path);
+}
+
+// =======================================================================
+// workspace 布局区（2026-08-28 路径唯一真相源扩展）
+// =======================================================================
+//
+// 背景：全仓审计发现 peers.toml / state.toml / rpc_cache / logs/* /
+// sessions / state 等路径在 3+ crate 里各自 join（跨 crate 读/写对曾真实
+// 分叉过，2026-08-24 L2 抓到 catalog 读写路径分叉）。本区把 workspace
+// 布局的每个子目录收敛为唯一拼接点：改布局只改这里，消费方禁止各自拼。
+
+/// `<home>/workspace` —— 工作空间根。
+pub fn workspace_dir(home_dir: &Path) -> PathBuf {
+    home_dir.join("workspace")
+}
+
+// --- cluster 区（peers.toml 读写方：nemesis-cluster / nemesis-web / CLI） ---
+
+/// `<workspace>/cluster` —— 集群身份/拓扑/续行快照根目录。
+pub fn cluster_dir_in_workspace(workspace: &Path) -> PathBuf {
+    workspace.join("cluster")
+}
+
+/// `<workspace>/cluster/peers.toml` —— 静态节点身份 + 已知 peers。
+pub fn resolve_cluster_peers_path_in_workspace(workspace: &Path) -> PathBuf {
+    cluster_dir_in_workspace(workspace).join("peers.toml")
+}
+
+/// `<workspace>/cluster/state.toml` —— 运行时发现的远程节点列表。
+pub fn resolve_cluster_state_path_in_workspace(workspace: &Path) -> PathBuf {
+    cluster_dir_in_workspace(workspace).join("state.toml")
+}
+
+/// `<workspace>/cluster/rpc_cache` —— 集群续行快照持久化目录。
+pub fn resolve_cluster_rpc_cache_dir_in_workspace(workspace: &Path) -> PathBuf {
+    cluster_dir_in_workspace(workspace).join("rpc_cache")
+}
+
+// --- 子系统配置区补充（与上方 resolve_*_config_path_in_workspace 同族） ---
+
+/// `<workspace>/config/config.forge.json` —— Forge 自学习配置。
+pub fn resolve_forge_config_path_in_workspace(workspace: &Path) -> PathBuf {
+    workspace_config_dir(workspace).join("config.forge.json")
+}
+
+/// `<workspace>/config/config.enhanced_memory.json` —— 增强内存配置。
+pub fn resolve_enhanced_memory_config_path_in_workspace(workspace: &Path) -> PathBuf {
+    workspace_config_dir(workspace).join("config.enhanced_memory.json")
+}
+
+// --- 日志区（写方 nemesis-agent/cluster observer，读方 nemesis-web Logs 页） ---
+
+/// `<workspace>/logs` —— 日志根目录。
+pub fn logs_dir_in_workspace(workspace: &Path) -> PathBuf {
+    workspace.join("logs")
+}
+
+/// `<workspace>/logs/request_logs` —— 主 Agent LLM 请求日志（写端 config
+/// `logging.llm.request_log_dir` 的默认值；改默认值须同步这里）。
+pub fn resolve_request_logs_dir_in_workspace(workspace: &Path) -> PathBuf {
+    logs_dir_in_workspace(workspace).join("request_logs")
+}
+
+/// `<workspace>/logs/cluster_logs` —— 集群请求日志
+/// （`{device_id}/{ts_ms}_{task_id}/` 目录结构）。
+pub fn resolve_cluster_logs_dir_in_workspace(workspace: &Path) -> PathBuf {
+    logs_dir_in_workspace(workspace).join("cluster_logs")
+}
+
+/// `<workspace>/logs/security_logs` —— 安全审计日志（镜像
+/// [`PathManager::audit_log_dir`] 的默认布局）。
+pub fn resolve_audit_log_dir_in_workspace(workspace: &Path) -> PathBuf {
+    logs_dir_in_workspace(workspace).join("security_logs")
+}
+
+/// `<workspace>/logs/session_logs` —— 对话历史 JSONL（镜像
+/// [`PathManager::sessions_log_dir`]）。
+pub fn resolve_session_logs_dir_in_workspace(workspace: &Path) -> PathBuf {
+    logs_dir_in_workspace(workspace).join("session_logs")
+}
+
+/// `<workspace>/logs/boundary` —— 轮次边界事件 sidecar（镜像
+/// [`PathManager::boundary_events_dir`]；必须在 session_logs 之外，否则
+/// 扫描会出幻影会话）。
+pub fn resolve_boundary_events_dir_in_workspace(workspace: &Path) -> PathBuf {
+    logs_dir_in_workspace(workspace).join("boundary")
+}
+
+// --- home 根 logs 区（不属于 workspace 的运行日志） ---
+
+/// `<home>/logs` —— home 根日志区（LLM 请求 spill 等超大临时外溢）。
+pub fn home_logs_dir(home_dir: &Path) -> PathBuf {
+    home_dir.join("logs")
+}
+
+/// `<home>/logs/spill` —— LLM 请求外溢目录（agent_factory 写 / Logs 页读）。
+pub fn resolve_spill_dir_for_home(home_dir: &Path) -> PathBuf {
+    home_logs_dir(home_dir).join("spill")
+}
+
+// --- 状态/会话区 ---
+
+/// `<workspace>/sessions` —— LLM 上下文恢复用 session JSON。
+pub fn resolve_sessions_dir_in_workspace(workspace: &Path) -> PathBuf {
+    workspace.join("sessions")
+}
+
+/// `<workspace>/state` —— 运行时状态目录（gateway.json、workspace_state）。
+pub fn resolve_state_dir_in_workspace(workspace: &Path) -> PathBuf {
+    workspace.join("state")
+}
+
+/// `<workspace>/state/gateway.json` —— gateway 运行状态
+/// （gateway 写 / dashboard、estop CLI 读）。
+pub fn resolve_gateway_state_path_in_workspace(workspace: &Path) -> PathBuf {
+    resolve_state_dir_in_workspace(workspace).join("gateway.json")
+}
+
+// --- 技能区 ---
+
+/// `<workspace>/skills` —— 已安装技能根目录。
+pub fn skills_dir_in_workspace(workspace: &Path) -> PathBuf {
+    workspace.join("skills")
+}
+
+/// `<workspace>/skills/.cache` —— 技能搜索磁盘缓存目录。
+pub fn resolve_skills_cache_dir_in_workspace(workspace: &Path) -> PathBuf {
+    skills_dir_in_workspace(workspace).join(".cache")
 }
 
 // =======================================================================

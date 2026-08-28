@@ -530,3 +530,41 @@ fn test_import_empty_model_name_uses_model_string() {
     let creds = load_credentials_file(&cred_path).unwrap();
     assert_eq!(creds.keys.get("openai_gpt-9").unwrap(), "sk-nine");
 }
+
+// ---------------------------------------------------------------------------
+// G4 (U15 dashboard badge): classify_key_source 四分支 + 零明文
+// ---------------------------------------------------------------------------
+
+#[test]
+fn classify_key_source_covers_all_four_kinds() {
+    let env = classify_key_source("env:ZHIPU_API_KEY");
+    assert_eq!(env.kind, "env");
+    assert_eq!(env.reference, "ZHIPU_API_KEY");
+
+    let yaml = classify_key_source("yaml:openai-main");
+    assert_eq!(yaml.kind, "yaml");
+    assert_eq!(yaml.reference, "openai-main");
+
+    let inline = classify_key_source("sk-plaintext-value");
+    assert_eq!(inline.kind, "inline");
+    assert_eq!(inline.reference, "", "inline 只回标记，绝不回值");
+
+    let none = classify_key_source("");
+    assert_eq!(none.kind, "none");
+    assert_eq!(none.reference, "");
+}
+
+#[test]
+fn classify_key_source_serializes_without_plaintext() {
+    // 序列化形态即 WSAPI 响应形态：{kind, ref}，键名是 "ref"。
+    let v = serde_json::to_value(classify_key_source("yaml:main")).unwrap();
+    assert_eq!(v["kind"], "yaml");
+    assert_eq!(v["ref"], "main");
+    assert!(v.get("reference").is_none(), "serde rename 生效");
+    assert_eq!(
+        serde_json::to_string(&classify_key_source("sk-secret")).unwrap()
+            .find("sk-secret"),
+        None,
+        "内联值绝不进序列化输出"
+    );
+}

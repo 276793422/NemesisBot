@@ -1086,17 +1086,12 @@ fn write_skills_cfg(home: &std::path::Path, cfg: &serde_json::Value) {
     .unwrap();
 }
 
-/// 与 cmd_cache_stats/clear 内部一致的缓存目录推导：
-/// `{workspace}/workspace/skills/.cache`（skills_cfg 上两级再拼 workspace）。
+/// 与 cmd_cache_stats/clear 内部一致的缓存目录推导（经 nemesis-path 唯一
+/// 真相源）：`{workspace}/skills/.cache`（2026-08-28 修复双重 workspace 拼接）。
 fn cache_dir_of(home: &std::path::Path) -> std::path::PathBuf {
-    skills_cfg_of(home)
-        .parent()
-        .unwrap()
-        .parent()
-        .unwrap()
-        .join("workspace")
-        .join("skills")
-        .join(".cache")
+    nemesis_path::resolve_skills_cache_dir_in_workspace(
+        skills_cfg_of(home).parent().unwrap().parent().unwrap(),
+    )
 }
 
 fn make_cache_dir(home: &std::path::Path) -> std::path::PathBuf {

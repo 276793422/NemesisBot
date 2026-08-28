@@ -74,6 +74,21 @@ pub enum EnqueueOutcome {
     Rejected,
 }
 
+/// Read-only inbox snapshot for the dashboard (`agent.inbox_status`).
+#[derive(Debug, Clone)]
+pub struct InboxStatus {
+    /// Messages waiting to start a new turn after the current one.
+    pub next_turn: usize,
+    /// Steer messages waiting to be injected before the next LLM call.
+    pub next_step: usize,
+    /// Shared capacity across both queues.
+    pub capacity: usize,
+    /// Whether the session is currently processing a turn.
+    pub busy: bool,
+    /// Concurrent mode: "reject" | "queue" | "steer".
+    pub mode: &'static str,
+}
+
 /// Sixth-batch sweep: `VecDeque` — the queues are FIFOs (push_back/pop_front);
 /// the previous `Vec` + `remove(0)` was an O(n) shift per head claim.
 #[derive(Default)]
@@ -187,6 +202,11 @@ impl Inbox {
             .get(session_key)
             .map(|q| (q.next_turn.len(), q.next_step.len()))
             .unwrap_or((0, 0))
+    }
+
+    /// Shared capacity across both queues (dashboard `agent.inbox_status`).
+    pub fn capacity(&self) -> usize {
+        self.capacity
     }
 }
 

@@ -1209,8 +1209,10 @@ impl ForgeToolExecutor {
                 };
 
                 // Read or create the MCP config file
-                let config_dir = self.forge.workspace().join("config");
-                let mcp_config_path = config_dir.join("config.mcp.json");
+                let config_dir =
+                    nemesis_path::workspace_config_dir(&self.forge.workspace());
+                let mcp_config_path =
+                    nemesis_path::resolve_mcp_config_path_in_workspace(&self.forge.workspace());
 
                 let _ = tokio::fs::create_dir_all(&config_dir).await;
 
@@ -1259,8 +1261,8 @@ impl ForgeToolExecutor {
             "uninstall" => {
                 // Remove MCP from config.mcp.json
                 let entry_name = format!("forge-{}", artifact.name);
-                let config_dir = self.forge.workspace().join("config");
-                let mcp_config_path = config_dir.join("config.mcp.json");
+                let mcp_config_path =
+                    nemesis_path::resolve_mcp_config_path_in_workspace(&self.forge.workspace());
 
                 if mcp_config_path.exists() {
                     match tokio::fs::read_to_string(&mcp_config_path).await {

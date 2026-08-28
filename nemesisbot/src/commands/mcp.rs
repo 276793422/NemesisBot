@@ -151,22 +151,23 @@ async fn connect_to_server(server: &serde_json::Value) -> Result<nemesis_mcp::cl
 // Command implementations
 // ---------------------------------------------------------------------------
 
-/// Sync the master MCP switch in config.json.
+/// Sync the master MCP switch in the home-root config.json.
 ///
 /// When `mcp add` adds the first server, we flip `mcp.enabled = true` in
 /// config.json so that the gateway sees MCP is enabled on next start.
-fn sync_mcp_master_switch(mcp_cfg_path: &std::path::Path, enabled: bool) -> Result<()> {
-    // Derive config.json path from config.mcp.json path (same parent dir)
-    let config_dir = match mcp_cfg_path.parent() {
-        Some(d) => d,
-        None => return Ok(()),
-    };
-    let config_json = config_dir.join("config.json");
-    if !config_json.exists() {
+///
+/// 2026-08-28 修复：此前从 config.mcp.json 父目录推导 config.json，得到
+/// `<home>/workspace/config/config.json`——无人读取的位置，exists() 恒
+/// miss，`mcp.enabled` 从不真正置位（静默 no-op）。现由调用方直传
+/// `common::config_path(&home)`（真实主配置路径，唯一拼接点见
+/// nemesis-path / common.rs）。
+fn sync_mcp_master_switch(config_json_path: &std::path::Path, enabled: bool) -> Result<()> {
+    if !config_json_path.exists() {
         return Ok(());
     }
 
-    let mut cfg: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&config_json)?)?;
+    let mut cfg: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(config_json_path)?)?;
     if cfg
         .get("mcp")
         .and_then(|m| m.get("enabled"))
@@ -178,7 +179,7 @@ fn sync_mcp_master_switch(mcp_cfg_path: &std::path::Path, enabled: bool) -> Resu
 
     cfg["mcp"]["enabled"] = serde_json::Value::Bool(enabled);
     std::fs::write(
-        &config_json,
+        config_json_path,
         serde_json::to_string_pretty(&cfg).unwrap_or_default(),
     )?;
     tracing::info!(
@@ -264,6 +265,7 @@ fn cmd_list(mcp_cfg_path: &std::path::Path) -> Result<()> {
 
 fn cmd_add(
     mcp_cfg_path: &std::path::Path,
+    config_json_path: &std::path::Path,
     name: &str,
     command: &str,
     args: Option<&str>,
@@ -318,8 +320,8 @@ fn cmd_add(
         serde_json::to_string_pretty(&cfg).unwrap_or_default(),
     )?;
 
-    // Sync master switch in config.json: set mcp.enabled = true
-    sync_mcp_master_switch(mcp_cfg_path, true)?;
+    // Sync master switch in the real home-root config.json: mcp.enabled = true
+    sync_mcp_master_switch(config_json_path, true)?;
 
     println!("🔌 MCP server '{}' added.", name);
     println!("Configuration saved to: {}", mcp_cfg_path.display());
@@ -730,6 +732,7 @@ pub fn run(action: McpAction, local: bool) -> Result<()> {
             timeout,
         } => cmd_add(
             &mcp_cfg_path,
+            &common::config_path(&home),
             &name,
             &command,
             args.as_deref(),

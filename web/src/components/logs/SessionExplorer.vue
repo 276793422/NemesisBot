@@ -3,6 +3,7 @@ import { ref, computed, watch } from 'vue'
 import SessionList from './SessionList.vue'
 import RequestList from './RequestList.vue'
 import ClusterTaskList from './ClusterTaskList.vue'
+import SpillCard from './SpillCard.vue'
 import { useWSAPI } from '../../composables/useWSAPI'
 import type { SessionEntry, LlmRequestEntry, ClusterTaskEntry, SessionMessage, LlmIteration } from './mockData'
 
@@ -160,6 +161,8 @@ watch(() => props.focusSession, (id) => {
     </div>
 
     <div class="explorer-content">
+      <!-- G3：spill 状态卡（会话子页可见 —— 落盘文件是会话上下文的延伸） -->
+      <SpillCard v-if="subTab === 'sessions'" />
       <SessionList
         v-if="subTab === 'sessions'"
         :sessions="sessions"
@@ -253,5 +256,8 @@ watch(() => props.focusSession, (id) => {
 .explorer-content {
   flex: 1;
   overflow: hidden;
+  /* G3：SpillCard 与列表同列堆叠，列表吃剩余高度 */
+  display: flex;
+  flex-direction: column;
 }
 </style>

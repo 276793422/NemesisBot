@@ -576,11 +576,17 @@ pub async fn test_cli_model_catalog_update(ws: &TestWorkspace, bin: &Path) -> Ve
         )
     });
     if online {
-        // Cache lands next to config.json (`cfg_path.parent()`), i.e. the
-        // home root — NOT workspace/config (model.rs:610-614).
-        let cache = ws.home().join("models_catalog.json");
+        // Cache lands under the workspace data dir (2026-08-28 moved from the
+        // home root): `<home>/workspace/data/models_catalog.json` — NOT
+        // workspace/config. Path single-sourced in nemesis-path
+        // (models_catalog_cache_path); this literal pins the real disk layout.
+        let cache = ws
+            .home()
+            .join("workspace")
+            .join("data")
+            .join("models_catalog.json");
         results.push(if cache.is_file() {
-            pass(&format!("{}/cache_file", suite), "home/models_catalog.json written")
+            pass(&format!("{}/cache_file", suite), "workspace/data/models_catalog.json written")
         } else {
             fail(&format!("{}/cache_file", suite), "cache missing after online update")
         });
