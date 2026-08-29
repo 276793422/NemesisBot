@@ -49,8 +49,11 @@
 //!
 //! # 装配
 //!
-//! `onboard` 后配置落在 `<home>/config/hooks.json`（与其他 config.*.json 同
-//! 目录）。网关主 agent 工厂（`agent_factory.rs`）启动时若存在则加载并注册
+//! 配置落位（2026-08-29 收编）：`<workspace>/config/hooks.json`（经
+//! `nemesis_path::resolve_hooks_config_path_in_workspace`）。原先游离在
+//! `<home>/config/hooks.json`——08-28 路径大迁移的漏网项；读取方启动时经
+//! `migrate_legacy_home_hooks_config` 一次性 copy-once 迁移（legacy 保留
+//! 作备份）。网关主 agent 工厂（`agent_factory.rs`）启动时若存在则加载并注册
 //! （[`CcHookBridge::load_from_dir`]）；**集群 agent 不挂**（远端节点跑的是
 //! 本地用户的任务，hook 拦截语义不该跨节点复制——挂账决策，报告注明）。
 //! 解析失败 = warn + 跳过（fail-open，绝不拖死 gateway）。
@@ -71,6 +74,32 @@ use crate::hooks::{
 
 /// hooks.json 文件名（相对 config 目录）。
 pub const HOOKS_FILE: &str = "hooks.json";
+
+/// 一次性迁移：旧落位 `<home>/config/hooks.json` → 新落位
+/// `<workspace>/config/hooks.json`。copy-once（新位已存在则不动，legacy
+/// 保留作备份）——与 `migrate_legacy_vector_store` 同款先例。
+pub fn migrate_legacy_home_hooks_config(home_config_dir: &Path, workspace_config_dir: &Path) {
+    let legacy = home_config_dir.join(HOOKS_FILE);
+    let target = workspace_config_dir.join(HOOKS_FILE);
+    if !legacy.is_file() || target.exists() {
+        return;
+    }
+    if let Some(parent) = target.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    match std::fs::copy(&legacy, &target) {
+        Ok(_) => tracing::info!(
+            "[cc-hooks] migrated legacy hooks config {} -> {}",
+            legacy.display(),
+            target.display()
+        ),
+        Err(e) => tracing::warn!(
+            "[cc-hooks] failed to migrate legacy hooks config {}: {}",
+            legacy.display(),
+            e
+        ),
+    }
+}
 
 /// CC 默认脚本超时（秒）。
 pub const DEFAULT_TIMEOUT_SECS: u64 = 60;
@@ -128,12 +157,23 @@ pub struct CcEvents {
     pre_tool_use: Vec<CcHookGroup>,
     #[serde(default)]
     post_tool_use: Vec<CcHookGroup>,
+    /// 工具执行失败后（2026-08-29 三段化扩展）。观察型：stderr 只记日志。
+    #[serde(default)]
+    post_tool_use_failure: Vec<CcHookGroup>,
     #[serde(default)]
     session_start: Vec<CcHookGroup>,
     #[serde(default)]
     user_prompt_submit: Vec<CcHookGroup>,
     #[serde(default)]
     stop: Vec<CcHookGroup>,
+    /// 会话结束（TTL 过期清理 / 显式删除）。观察型（会话已结束，无阻断）。
+    #[serde(default)]
+    session_end: Vec<CcHookGroup>,
+    /// 压缩前后（2026-08-29 扩展）。观察型：exit 2 不阻止压缩（稳定性机制）。
+    #[serde(default)]
+    pre_compact: Vec<CcHookGroup>,
+    #[serde(default)]
+    post_compact: Vec<CcHookGroup>,
 }
 
 impl CcEvents {
@@ -147,16 +187,21 @@ impl CcEvents {
 
     /// Per-event script counts（hooks.json 的 PascalCase 事件名）。诊断/用
     /// UI 用（P4 Hooks Tab 的 summary）——字段私有，外部 crate 走这里。
-    /// 顺序：PreToolUse, PostToolUse, SessionStart, UserPromptSubmit, Stop。
-    pub fn script_counts(&self) -> [(&'static str, usize); 5] {
+    /// 顺序：PreToolUse, PostToolUse, PostToolUseFailure, SessionStart,
+    /// UserPromptSubmit, Stop, SessionEnd, PreCompact, PostCompact。
+    pub fn script_counts(&self) -> [(&'static str, usize); 9] {
         let count =
             |v: &Vec<CcHookGroup>| v.iter().map(|g| g.hooks.len()).sum::<usize>();
         [
             ("PreToolUse", count(&self.pre_tool_use)),
             ("PostToolUse", count(&self.post_tool_use)),
+            ("PostToolUseFailure", count(&self.post_tool_use_failure)),
             ("SessionStart", count(&self.session_start)),
             ("UserPromptSubmit", count(&self.user_prompt_submit)),
             ("Stop", count(&self.stop)),
+            ("SessionEnd", count(&self.session_end)),
+            ("PreCompact", count(&self.pre_compact)),
+            ("PostCompact", count(&self.post_compact)),
         ]
     }
 }
@@ -598,6 +643,30 @@ impl ToolHook for CcHookBridge {
             PostHookAction::Replace(format!("{result}{notes}"))
         }
     }
+
+    /// CC `PostToolUseFailure`（2026-08-29 三段化扩展）：工具执行失败后触发。
+    /// 观察型——stderr 只记日志（失败已发生，无撤销/改写语义）。
+    async fn post_tool_use_failure(&self, call: &HookToolCall, err: &str) -> PostHookAction {
+        let payload = build_event_payload(
+            "PostToolUseFailure",
+            &call.session_key,
+            &self.project_dir,
+            serde_json::json!({
+                "tool_name": cc_tool_alias(&call.name).unwrap_or(call.name.as_str()),
+                "tool_input": enrich_tool_input(&call.arguments),
+                "tool_error": err,
+            }),
+        );
+        for o in self
+            .run_group(&self.events.post_tool_use_failure, Some(&call.name), &payload)
+            .await
+        {
+            if !o.stdout.is_empty() {
+                tracing::info!("[cc-hooks] PostToolUseFailure stdout: {}", o.stdout);
+            }
+        }
+        PostHookAction::Continue
+    }
 }
 
 #[async_trait]
@@ -672,6 +741,44 @@ impl LifecycleHook for CcHookBridge {
         // 正常放行 → 清计数（下一个 turn 的 stop_hook_active 从 false 起）。
         self.stop_blocks.lock().unwrap().remove(&end.session_key);
         TurnEndDecision::Stop
+    }
+}
+
+impl CcHookBridge {
+    /// CC `SessionEnd`（观察型）：会话被清理/删除时触发。exit 2 无阻断语义。
+    /// 固有方法而非 trait——唯一实现者是本桥，不建单实现 trait（YAGNI）。
+    pub async fn on_session_end(&self, session_key: &str, reason: &str) {
+        let payload = build_event_payload(
+            "SessionEnd",
+            session_key,
+            &self.project_dir,
+            serde_json::json!({ "reason": reason }),
+        );
+        self.run_group(&self.events.session_end, None, &payload).await;
+    }
+}
+
+impl CcHookBridge {
+    /// CC `PreCompact` / `PostCompact`（观察型）：压缩流水线前后触发。
+    /// exit 2 不阻止压缩（稳定性机制，诚实边界）。
+    pub async fn run_compact_hooks(&self, trigger: &str, phase: &str) {
+        let event = if phase == "pre" { "PreCompact" } else { "PostCompact" };
+        let payload = build_event_payload(
+            event,
+            "system",
+            &self.project_dir,
+            serde_json::json!({ "trigger": trigger }),
+        );
+        let groups = if phase == "pre" {
+            &self.events.pre_compact
+        } else {
+            &self.events.post_compact
+        };
+        for o in self.run_group(groups, None, &payload).await {
+            if !o.stdout.is_empty() {
+                tracing::info!("[cc-hooks] {event} stdout: {}", o.stdout);
+            }
+        }
     }
 }
 

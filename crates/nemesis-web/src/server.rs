@@ -585,10 +585,32 @@ impl WebServer {
             format!("invalid listen address: {}", e)
         })?;
         let app = self.build_router();
-        let listener = tokio::net::TcpListener::bind(addr).await.map_err(|e| {
-            tracing::error!("[WebServer] Bind failed on '{}': {}", addr, e);
-            format!("bind failed: {}", e)
-        })?;
+        // bind 失败重试（TIME_WAIT/残留句柄恢复窗口）：3 次 × 2s。耗尽后 loud
+        // 失败——此前静默降级（无 HTTP 服务）会让 Dashboard 子窗口空白且无提示。
+        let listener = {
+            let mut last_err = String::new();
+            let mut bound = None;
+            for attempt in 1..=3 {
+                match tokio::net::TcpListener::bind(addr).await {
+                    Ok(l) => {
+                        bound = Some(l);
+                        break;
+                    }
+                    Err(e) => {
+                        last_err = format!("{e}");
+                        tracing::error!(
+                            "[WebServer] Bind attempt {attempt}/3 failed on '{}': {}",
+                            addr,
+                            e
+                        );
+                        if attempt < 3 {
+                            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                        }
+                    }
+                }
+            }
+            bound.ok_or_else(|| format!("bind failed: {addr} after 3 attempts: {last_err}"))?
+        };
 
         let actual_addr = listener
             .local_addr()
@@ -633,10 +655,32 @@ impl WebServer {
             format!("invalid listen address: {}", e)
         })?;
         let app = self.build_router();
-        let listener = tokio::net::TcpListener::bind(addr).await.map_err(|e| {
-            tracing::error!("[WebServer] Bind failed on '{}': {}", addr, e);
-            format!("bind failed: {}", e)
-        })?;
+        // bind 失败重试（TIME_WAIT/残留句柄恢复窗口）：3 次 × 2s。耗尽后 loud
+        // 失败——此前静默降级（无 HTTP 服务）会让 Dashboard 子窗口空白且无提示。
+        let listener = {
+            let mut last_err = String::new();
+            let mut bound = None;
+            for attempt in 1..=3 {
+                match tokio::net::TcpListener::bind(addr).await {
+                    Ok(l) => {
+                        bound = Some(l);
+                        break;
+                    }
+                    Err(e) => {
+                        last_err = format!("{e}");
+                        tracing::error!(
+                            "[WebServer] Bind attempt {attempt}/3 failed on '{}': {}",
+                            addr,
+                            e
+                        );
+                        if attempt < 3 {
+                            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                        }
+                    }
+                }
+            }
+            bound.ok_or_else(|| format!("bind failed: {addr} after 3 attempts: {last_err}"))?
+        };
 
         let actual_addr = listener
             .local_addr()

@@ -116,10 +116,33 @@ pub trait ToolHook: Send + Sync {
         "unnamed-hook".to_string()
     }
 
+    /// 工具作用域（cordis 作用域过滤的移植）：`None` = 全部 agent；`Some(id)`
+    /// = 仅该 id 的 agent（主 agent 分发只接 `None`——cluster 子 agent 不继承
+    /// 主 agent 的钩子，同 hooks 挂账决策）。
+    fn scope(&self) -> Option<&str> {
+        None
+    }
+
     /// Runs before the tool executes (after the fixed security gate). Ordered;
     /// the first `Block` short-circuits the rest.
     async fn pre_tool_use(&self, _call: &HookToolCall) -> HookDecision {
         HookDecision::Allow
+    }
+
+    /// Around 包装（cordis waterfall 语义，2026-08-29 三段化补齐）：默认直通
+    /// 调 `next()`。实现可测量耗时/重试/替换结果——但**取消信号不可被包装层
+    /// 脱离**（dsh 教训），且必须恰好调用一次 `next`。
+    async fn around_tool_use(
+        &self,
+        _call: HookToolCall,
+        next: std::sync::Arc<
+            dyn Fn(HookToolCall) -> std::pin::Pin<
+                Box<dyn std::future::Future<Output = String> + Send>,
+            > + Send
+            + Sync,
+        >,
+    ) -> String {
+        next(_call).await
     }
 
     /// Runs after the tool executed, as a pipeline — each hook sees the
@@ -127,6 +150,39 @@ pub trait ToolHook: Send + Sync {
     async fn post_tool_use(&self, _call: &HookToolCall, _result: &str) -> PostHookAction {
         PostHookAction::Continue
     }
+
+    /// 工具执行失败（execute 返回 Err）时的变体。默认委托
+    /// [`Self::post_tool_use`]（错误文本作为结果，保持既有行为）；
+    /// override 用于区分成败（如 CC `PostToolUseFailure` 事件派发）。
+    async fn post_tool_use_failure(&self, call: &HookToolCall, err: &str) -> PostHookAction {
+        self.post_tool_use(call, &format!("Tool error: {err}")).await
+    }
+}
+
+/// 失败变体的管道式运行（同 [`run_post_hooks`]，走
+/// [`ToolHook::post_tool_use_failure`]）。
+pub async fn run_post_failure_hooks(
+    hooks: &[Arc<dyn ToolHook>],
+    call: &HookToolCall,
+    err: &str,
+) -> String {
+    let mut current = format!("Tool error: {err}");
+    for hook in hooks {
+        match hook.post_tool_use_failure(call, err).await {
+            PostHookAction::Continue => {}
+            PostHookAction::Replace(new) => {
+                tracing::info!(
+                    "[hooks] post-failure '{}' replaced result of '{}' ({} -> {} bytes)",
+                    hook.name(),
+                    call.name,
+                    current.len(),
+                    new.len()
+                );
+                current = new;
+            }
+        }
+    }
+    current
 }
 
 /// Ordered hook registry. Stored on `AgentLoop` behind a `parking_lot::RwLock`;
@@ -561,3 +617,74 @@ mod tests;
 // S9 (quality-hardening goal 冲刺 S9): 独立测试文件挂载（声明式，无内联测试）。
 #[cfg(test)]
 mod s9_tests;
+
+// ---------------------------------------------------------------------------
+// 内建示例：Metrics 管线插件（2026-08-29 三段化的 around 参考实现）。
+// 只读安全：计时 + tracing，无业务副作用。agent_factory 主 loop 注册，
+// 「插件」页（T4）可展示/启停。
+// ---------------------------------------------------------------------------
+
+/// 每工具调用计时的 around 插件（cordis waterfall 的 Rust 参考实现）。
+/// 进程内单例槽（同 loopback_slot 模式）：「插件」页经 WSAPI 翻转 enabled。
+pub struct MetricsPipelinePlugin {
+    enabled: std::sync::atomic::AtomicBool,
+}
+
+static METRICS_PLUGIN: std::sync::OnceLock<std::sync::Arc<MetricsPipelinePlugin>> =
+    std::sync::OnceLock::new();
+
+/// 进程级单例（agent_factory 注册进主 loop 的同一实例）。
+pub fn metrics_plugin_slot() -> &'static std::sync::Arc<MetricsPipelinePlugin> {
+    METRICS_PLUGIN.get_or_init(|| std::sync::Arc::new(MetricsPipelinePlugin::new()))
+}
+
+impl MetricsPipelinePlugin {
+    pub fn new() -> Self {
+        Self { enabled: std::sync::atomic::AtomicBool::new(true) }
+    }
+
+    pub fn set_enabled(&self, on: bool) {
+        self.enabled.store(on, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    pub fn is_enabled(&self) -> bool {
+        self.enabled.load(std::sync::atomic::Ordering::SeqCst)
+    }
+}
+
+impl Default for MetricsPipelinePlugin {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[async_trait]
+impl ToolHook for MetricsPipelinePlugin {
+    fn name(&self) -> String {
+        "metrics-pipeline".to_string()
+    }
+
+    async fn around_tool_use(
+        &self,
+        call: HookToolCall,
+        next: std::sync::Arc<
+            dyn Fn(HookToolCall) -> std::pin::Pin<
+                Box<dyn std::future::Future<Output = String> + Send>,
+            > + Send
+            + Sync,
+        >,
+    ) -> String {
+        if !self.is_enabled() {
+            return next(call).await;
+        }
+        let start = std::time::Instant::now();
+        let result = next(call.clone()).await;
+        tracing::info!(
+            "[MetricsPipeline] tool '{}' took {:?} ({} bytes)",
+            call.name,
+            start.elapsed(),
+            result.len()
+        );
+        result
+    }
+}

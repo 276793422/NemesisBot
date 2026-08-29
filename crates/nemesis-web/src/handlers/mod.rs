@@ -24,6 +24,7 @@ pub mod mcp;
 pub mod memory;
 pub mod models;
 pub mod persona;
+pub mod plugins;
 #[cfg(feature = "sandbox")]
 pub mod sandbox;
 #[cfg(feature = "security")]
@@ -109,6 +110,9 @@ pub fn register_all(router: &mut crate::ws_router::WsRouter) {
     // 2026-08-29: 自定义 slash 命令表（快捷提示词发送器）— CommandsView CRUD。
     // AgentLoop 侧 mtime 热重载同一文件，无需重启。No feature gate。
     router.register(Arc::new(commands::CommandsHandler));
+    // 2026-08-29: 插件状态总览（只读）— PluginsView 数据源。No feature gate
+    // （探测逻辑无条件编译；onnx 能力状态节内含 memory cfg 门控）。
+    router.register(Arc::new(plugins::PluginsHandler));
     #[cfg(feature = "cluster")]
     {
         router.register(Arc::new(cluster::ClusterHandler::new()));

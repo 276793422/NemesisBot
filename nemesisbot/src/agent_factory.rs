@@ -278,6 +278,10 @@ pub fn build_agent_loop(
     agent_loop.set_commands_path(nemesis_path::resolve_commands_config_path_in_workspace(
         &shared.home.join("workspace"),
     ));
+    // 内建示例管线插件（around 计时）——「插件」页 T4 可展示/启停的对象。
+    // 经进程级单例槽注册（WSAPI plugins.set_metrics_enabled 翻转同一实例）。
+    agent_loop
+        .add_tool_hook(nemesis_agent::hooks::metrics_plugin_slot().clone());
     // G4 (U4): enable tool-result spill under <home>/logs/spill — oversized
     // results (>64k chars) land there whole with a locator in-conversation.
     let spill_root = nemesis_path::resolve_spill_dir_for_home(&shared.home);
@@ -314,10 +318,26 @@ pub fn build_agent_loop(
     // 就加载并挂上（工具钩子 + 生命周期钩子）。集群 agent 不挂（远端节点跑
     // 本地用户任务，hook 拦截语义不跨节点复制——挂账决策）。加载失败 =
     // warn + 跳过（fail-open，见 cc_hooks::load_from_dir）。
-    if let Some(bridge) = nemesis_agent::cc_hooks::CcHookBridge::load_from_dir(
+    let mut cc_bridge: Option<std::sync::Arc<nemesis_agent::cc_hooks::CcHookBridge>> = None;
+    #[allow(unused_assignments)]
+    let mut cc_bridge_for_daily: Option<std::sync::Arc<nemesis_agent::cc_hooks::CcHookBridge>> =
+        None;
+    // 2026-08-29 T3 路径收编：hooks.json 落位 <workspace>/config/hooks.json
+    // （nemesis-path 真相源）；legacy <home>/config/hooks.json copy-once 迁移。
+    let ws_config_dir = nemesis_path::workspace_config_dir(&shared.home.join("workspace"));
+    nemesis_agent::cc_hooks::migrate_legacy_home_hooks_config(
         &shared.home.join("config"),
+        &ws_config_dir,
+    );
+    if let Some(bridge) = nemesis_agent::cc_hooks::CcHookBridge::load_from_dir(
+        &ws_config_dir,
         shared.home.join("workspace"),
     ) {
+        // SessionEnd 触发用（启动清理删除的会话逐个触发——2026-08-29 T3）。
+        cc_bridge = Some(std::sync::Arc::clone(&bridge));
+        cc_bridge_for_daily = Some(std::sync::Arc::clone(&bridge));
+        // PreCompact/PostCompact 触发用（loop.rs 压缩流水线经 cc_bridge 调桥）。
+        agent_loop.set_cc_hooks_bridge(std::sync::Arc::clone(&bridge));
         bridge.register(&agent_loop);
     }
 
@@ -331,17 +351,36 @@ pub fn build_agent_loop(
             &sess_dir,
         ));
         // Startup cleanup: remove sessions older than 7 days.
-        let deleted = store.cleanup_old_sessions(7);
+        // 2026-08-29 T3：改用 detailed 版（返回被删会话的原始 session key），
+        // 逐个触发 CC SessionEnd（观察型）。
+        let removed = store.cleanup_old_sessions_detailed(7);
+        let deleted = removed.len();
         if deleted > 0 {
             info!(
                 deleted,
                 "[AgentFactory] Main SessionStore startup cleanup (TTL=7d)"
             );
+            // 在 runtime 内才 spawn（测试的同步构建路径安全跳过）。
+            if let (Some(bridge), Ok(handle)) =
+                (cc_bridge.as_ref(), tokio::runtime::Handle::try_current())
+            {
+                let bridge = std::sync::Arc::clone(bridge);
+                let sessions = removed.clone();
+                handle.spawn(async move {
+                    for session_key in &sessions {
+                        bridge.on_session_end(session_key, "expired").await;
+                    }
+                });
+            }
         }
         // Daily midnight cleanup. Spawns a task that sleeps until the next local
         // midnight, then runs cleanup_old_sessions(7), and loops forever.
         // Best-effort: if the runtime shuts down, the task is cancelled.
-        spawn_daily_cleanup(store.clone(), "Main");
+        spawn_daily_cleanup(
+            store.clone(),
+            "Main",
+            cc_bridge_for_daily.as_ref().map(std::sync::Arc::clone),
+        );
         agent_loop.set_session_store(store);
         info!(
             "[AgentFactory] Session store initialized: {}",
@@ -949,7 +988,7 @@ pub fn build_cluster_agent_loop(
                 "[AgentFactory] Cluster SessionStore startup cleanup (TTL=7d)"
             );
         }
-        spawn_daily_cleanup(cluster_session_store.clone(), "Cluster");
+        spawn_daily_cleanup(cluster_session_store.clone(), "Cluster", None);
         agent_loop.set_session_store(cluster_session_store);
         info!(
             dir = %cluster_sessions_dir.display(),
@@ -1031,7 +1070,11 @@ fn load_cluster_system_prompt(home: &std::path::Path) -> Option<String> {
 /// the next start.
 ///
 /// `label` is used for logging only ("Main" / "Cluster").
-fn spawn_daily_cleanup(store: Arc<nemesis_agent::session::SessionStore>, label: &str) {
+fn spawn_daily_cleanup(
+    store: Arc<nemesis_agent::session::SessionStore>,
+    label: &str,
+    cc_bridge: Option<std::sync::Arc<nemesis_agent::cc_hooks::CcHookBridge>>,
+) {
     let label = label.to_string();
     tokio::spawn(async move {
         use chrono::TimeZone;
@@ -1052,7 +1095,10 @@ fn spawn_daily_cleanup(store: Arc<nemesis_agent::session::SessionStore>, label: 
 
             tokio::time::sleep(std::time::Duration::from_secs(sleep_secs)).await;
 
-            let deleted = store.cleanup_old_sessions(7);
+            // 2026-08-29 T3：detailed 版返回被删 key，逐个触发 CC SessionEnd
+            // （观察型；无桥/cluster 侧 = 只清理不触发）。
+            let removed = store.cleanup_old_sessions_detailed(7);
+            let deleted = removed.len();
             if deleted > 0 {
                 info!(
                     deleted,
@@ -1060,6 +1106,15 @@ fn spawn_daily_cleanup(store: Arc<nemesis_agent::session::SessionStore>, label: 
                     "[AgentFactory] {} SessionStore daily midnight cleanup (TTL=7d)",
                     label
                 );
+                if let Some(bridge) = &cc_bridge {
+                    let bridge = std::sync::Arc::clone(bridge);
+                    let keys = removed.clone();
+                    tokio::spawn(async move {
+                        for key in &keys {
+                            bridge.on_session_end(key, "expired").await;
+                        }
+                    });
+                }
             }
         }
     });

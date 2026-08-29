@@ -904,9 +904,15 @@ fn hash_messages(messages: &[StoredMessage]) -> String {
     /// [`SessionStore::rebuild_from_chat_log`] (store = rebuildable cache,
     /// chat_log = source of truth).
     pub fn cleanup_old_sessions(&self, max_age_days: u64) -> usize {
+        self.cleanup_old_sessions_detailed(max_age_days).len()
+    }
+
+    /// 同 [`Self::cleanup_old_sessions`]，但返回被删会话的**原始 session key**
+    /// （供 CC `SessionEnd` 钩子逐会话触发——2026-08-29 T3）。
+    pub fn cleanup_old_sessions_detailed(&self, max_age_days: u64) -> Vec<String> {
         let storage_dir = match &self.storage_dir {
             Some(d) => d.clone(),
-            None => return 0,
+            None => return Vec::new(),
         };
 
         let entries = match std::fs::read_dir(&storage_dir) {
@@ -917,7 +923,7 @@ fn hash_messages(messages: &[StoredMessage]) -> String {
                     error = %e,
                     "[SessionStore] cleanup: failed to read storage dir"
                 );
-                return 0;
+                return Vec::new();
             }
         };
 
@@ -989,7 +995,7 @@ fn hash_messages(messages: &[StoredMessage]) -> String {
             );
         }
 
-        deleted
+        keys_to_drop
     }
 }
 

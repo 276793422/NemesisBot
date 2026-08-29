@@ -16,9 +16,13 @@ const toast = useToast()
 const EVENTS = [
   { id: 'PreToolUse', label: 'PreToolUse', hint: '工具执行前（安全 8 层闸之后）——可拦截工具调用' },
   { id: 'PostToolUse', label: 'PostToolUse', hint: '工具执行后——stderr 可追加反馈给模型（不撤销操作）' },
+  { id: 'PostToolUseFailure', label: 'PostToolUseFailure', hint: '工具执行失败后（观察型：stderr 只记日志）' },
   { id: 'SessionStart', label: 'SessionStart', hint: '每会话首条 prompt 到达时（观察型，不阻断）' },
   { id: 'UserPromptSubmit', label: 'UserPromptSubmit', hint: '用户消息进入历史之前——可拦下 prompt' },
   { id: 'Stop', label: 'Stop', hint: '最终答案被接受后——可阻止收尾再答一轮（封顶 2 次）' },
+  { id: 'SessionEnd', label: 'SessionEnd', hint: '会话被清理/删除时（观察型，无阻断语义）' },
+  { id: 'PreCompact', label: 'PreCompact', hint: '上下文压缩前（观察型：不阻止压缩）' },
+  { id: 'PostCompact', label: 'PostCompact', hint: '上下文压缩后（观察型）' },
 ] as const
 
 interface HookEntry {
@@ -240,7 +244,7 @@ onMounted(loadHooks)
           <div class="card-body">
             <p style="font-size: var(--text-sm); margin: 0 0 var(--space-3);">
               hooks.json 采用 Claude Code 方言：每个 hook 是一条子进程脚本（stdin 收单行 JSON 事件、
-              env <code>CLAUDE_PROJECT_DIR</code>、cwd 为 workspace），五个事件映射到 Agent 内核钩点：
+              env <code>CLAUDE_PROJECT_DIR</code>、cwd 为 workspace），九个事件映射到 Agent 内核钩点：
             </p>
             <table class="hooks-table">
               <thead><tr><th>CC 事件</th><th>触发时机</th><th>阻断语义（exit 2）</th></tr></thead>
@@ -249,7 +253,11 @@ onMounted(loadHooks)
                 <tr><td>UserPromptSubmit</td><td>用户消息进入历史之前</td><td>拦下 prompt，模型永远看不到</td></tr>
                 <tr><td>PreToolUse</td><td>工具执行前（安全 8 层闸之后）</td><td>拦截工具调用，stderr 作理由回灌模型</td></tr>
                 <tr><td>PostToolUse</td><td>工具执行后（Forge 记录前）</td><td>stderr 追加到结果反馈模型（不撤销已执行操作）</td></tr>
+                <tr><td>PostToolUseFailure</td><td>工具执行失败后</td><td>观察型（stderr 只记日志）</td></tr>
                 <tr><td>Stop</td><td>最终答案被接受后、轮次结束前</td><td>阻止收尾，stderr 作反馈再答一轮（每轮封顶 2 次）</td></tr>
+                <tr><td>SessionEnd</td><td>会话被清理/删除时</td><td>观察型（无阻断语义）</td></tr>
+                <tr><td>PreCompact</td><td>上下文压缩前</td><td>观察型（不阻止压缩）</td></tr>
+                <tr><td>PostCompact</td><td>上下文压缩后</td><td>观察型</td></tr>
               </tbody>
             </table>
             <p style="font-size: var(--text-sm); margin: var(--space-3) 0 0; color: var(--text-muted);">

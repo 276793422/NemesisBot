@@ -108,6 +108,16 @@ impl ModuleHandler for SessionsHandler {
                         }
                     }
                 }
+                // CC SessionEnd（观察型，2026-08-29 T3）：显式删除也触发
+                // （桥经 AgentLoop 的 cc_hooks_bridge 访问；未装配 = 跳过）。
+                // 先把桥 Arc 克隆出 guard 作用域，再 await（guard 不跨 await）。
+                let session_end_bridge = {
+                    let guard = ctx.state.agent_loop.read();
+                    guard.as_ref().and_then(|al| al.cc_hooks_bridge())
+                };
+                if let Some(bridge) = session_end_bridge {
+                    bridge.on_session_end(&session_key, "deleted").await;
+                }
                 // Cron cascade (2026-08-25): a scheduled job pinned to this
                 // session_key would otherwise FIRE on a deleted conversation
                 // and resurrect it — an empty jsonl re-created + cron rows

@@ -10,10 +10,12 @@ use tracing::{error, info, warn};
 
 pub mod commands;
 pub mod credentials;
+pub mod hot_reload;
 pub mod provider_resolver;
 pub mod store;
 
 pub use commands::{CommandEntry, CommandsConfig, load_commands_config, save_commands_config};
+pub use hot_reload::HotReloader;
 
 // Runtime config cache (single source of truth for the live config).
 pub use store::{ConfigHandle, ConfigStore, global, load_live, save_live, set_global};

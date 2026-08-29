@@ -296,6 +296,19 @@ pub fn resolve_mcp_config_path_in_workspace(workspace: &Path) -> PathBuf {
     workspace_config_dir(workspace).join("config.mcp.json")
 }
 
+/// `<workspace>/config/cors.json` —— CORS 配置（2026-08-29 收编：原游离在
+/// `<home>/config/cors.json`，同 hooks.json 为路径大迁移漏网项）。
+pub fn resolve_cors_config_path_in_workspace(workspace: &Path) -> PathBuf {
+    workspace_config_dir(workspace).join("cors.json")
+}
+
+/// `<workspace>/config/hooks.json` —— CC 方言钩子配置（2026-08-29 收编：
+/// 原先游离在 `<home>/config/hooks.json`，为 08-28 路径大迁移的漏网项；
+/// 读取方经 `migrate_legacy_home_hooks_config` 一次性迁移）。
+pub fn resolve_hooks_config_path_in_workspace(workspace: &Path) -> PathBuf {
+    workspace_config_dir(workspace).join("hooks.json")
+}
+
 /// `<workspace>/config/config.commands.json` —— 自定义 slash 命令表
 /// （快捷提示词发送器；AgentLoop 改写与 Dashboard CommandsView 同源）。
 pub fn resolve_commands_config_path_in_workspace(workspace: &Path) -> PathBuf {

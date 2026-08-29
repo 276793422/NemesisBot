@@ -17,8 +17,8 @@ use std::sync::Arc;
 use async_trait::async_trait;
 
 use super::{
-    CcHookBridge, ScriptOutcome, build_event_payload, cc_tool_alias, parse_cc_hooks,
-    pre_tool_use_payload,
+    CcHookBridge, ScriptOutcome, build_event_payload, cc_tool_alias, migrate_legacy_home_hooks_config,
+    parse_cc_hooks, pre_tool_use_payload,
 };
 use crate::context::RequestContext;
 use crate::hooks::{HookPrompt, HookToolCall, HookTurnEnd, LifecycleHook, ToolHook};
@@ -842,7 +842,11 @@ fn load_from_dir_branches() {
     let b = CcHookBridge::load_from_dir(&cfg, proj.clone()).expect("loads");
     assert_eq!(
         b.events.script_counts(),
-        [("PreToolUse", 1), ("PostToolUse", 0), ("SessionStart", 0), ("UserPromptSubmit", 0), ("Stop", 0)]
+        [
+            ("PreToolUse", 1), ("PostToolUse", 0), ("PostToolUseFailure", 0),
+            ("SessionStart", 0), ("UserPromptSubmit", 0), ("Stop", 0),
+            ("SessionEnd", 0), ("PreCompact", 0), ("PostCompact", 0),
+        ]
     );
 
     // (d) 垃圾 JSON → None。
@@ -888,4 +892,145 @@ fn stop_hook_active_for_accessor() {
     b.stop_blocks.lock().unwrap().insert("zero".to_string(), 0);
     assert!(!b.stop_hook_active_for("zero"));
     let _ = std::fs::remove_dir_all(&tmp);
+}
+
+// ---------------------------------------------------------------------------
+// 2026-08-29 三段化扩展事件：PostToolUseFailure / SessionEnd / PreCompact /
+// PostCompact —— 真子进程执行 + 观察型语义（exit 2/其他都不阻断）。
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn session_end_hook_runs_script_and_is_observational() {
+    let dir = tempfile::tempdir().unwrap();
+    let cfg = dir.path().join("config");
+    let proj = dir.path().join("workspace");
+    std::fs::create_dir_all(&cfg).unwrap();
+    std::fs::create_dir_all(&proj).unwrap();
+    // 脚本：写 marker 到 workspace（cwd）——观察型（exit 0）。
+    let script = "echo fired > session_end_marker.txt";
+    std::fs::write(
+        cfg.join("hooks.json"),
+        hooks_doc("SessionEnd", None, script, None),
+    )
+    .unwrap();
+    let bridge = CcHookBridge::load_from_dir(&cfg, proj.clone()).expect("loads");
+
+    bridge.on_session_end("sess-1", "expired").await;
+
+    let marker = proj.join("session_end_marker.txt");
+    assert!(marker.exists(), "SessionEnd 脚本应已执行: {}", marker.display());
+    let _ = std::fs::remove_dir_all(&cfg);
+    let _ = std::fs::remove_dir_all(&proj);
+}
+
+#[tokio::test]
+async fn pre_compact_and_post_compact_hooks_both_fire() {
+    let dir = tempfile::tempdir().unwrap();
+    let cfg = dir.path().join("config");
+    let proj = dir.path().join("workspace");
+    std::fs::create_dir_all(&cfg).unwrap();
+    std::fs::create_dir_all(&proj).unwrap();
+    let pre_marker = proj.join("pre_compact_fired.txt");
+    let post_marker = proj.join("post_compact_fired.txt");
+    // 两个事件各一条脚本（exit 2 也应不阻断压缩——观察型语义验证）。
+    std::fs::write(
+        cfg.join("hooks.json"),
+        serde_json::json!({
+            "hooks": {
+                "PreCompact": [{ "hooks": [
+                    { "type": "command", "command": "echo pre > pre_compact_fired.txt" }
+                ]}],
+                "PostCompact": [{ "hooks": [
+                    { "type": "command", "command": "echo post > post_compact_fired.txt" }
+                ]}]
+            }
+        })
+        .to_string(),
+    )
+    .unwrap();
+    let bridge = CcHookBridge::load_from_dir(&cfg, proj.clone()).expect("loads");
+
+    bridge.run_compact_hooks("auto", "pre").await;
+    assert!(pre_marker.exists(), "PreCompact 脚本应已执行");
+    // exit 2 的 PreCompact 不阻断（继续 post 也能触发）。
+    let bridge2 = CcHookBridge::load_from_dir(&cfg, proj.clone()).expect("loads");
+    bridge2.run_compact_hooks("auto", "post").await;
+    assert!(post_marker.exists(), "PostCompact 脚本应已执行");
+    let _ = std::fs::remove_dir_all(&cfg);
+    let _ = std::fs::remove_dir_all(&proj);
+}
+
+#[tokio::test]
+async fn post_tool_use_failure_hook_runs_script() {
+    let dir = tempfile::tempdir().unwrap();
+    let cfg = dir.path().join("config");
+    let proj = dir.path().join("workspace");
+    std::fs::create_dir_all(&cfg).unwrap();
+    std::fs::create_dir_all(&proj).unwrap();
+    let script = "echo failure-marker > failure_marker.txt";
+    std::fs::write(
+        cfg.join("hooks.json"),
+        hooks_doc("PostToolUseFailure", None, script, None),
+    )
+    .unwrap();
+    let bridge = CcHookBridge::load_from_dir(&cfg, proj.clone()).expect("loads");
+
+    let call = HookToolCall {
+        name: "read_file".into(),
+        arguments: "{}".into(),
+        channel: "web".into(),
+        chat_id: "c1".into(),
+        session_key: "agent:main:session:s9".into(),
+    };
+    // 走 ToolHook::post_tool_use_failure（生产 Err 分支的入口）。
+    use crate::hooks::ToolHook as _;
+    let _ = bridge.post_tool_use_failure(&call, "boom").await;
+
+    let marker = proj.join("failure_marker.txt");
+    assert!(marker.exists(), "PostToolUseFailure 脚本应已执行");
+    let _ = std::fs::remove_dir_all(&cfg);
+    let _ = std::fs::remove_dir_all(&proj);
+}
+
+#[test]
+fn migrate_legacy_home_hooks_config_copies_once() {
+    // legacy <home>/config/hooks.json 存在且新位缺失 → copy-once（legacy 保留）。
+    let dir = tempfile::tempdir().unwrap();
+    let home_cfg = dir.path().join("home").join("config");
+    let ws_cfg = dir.path().join("workspace").join("config");
+    std::fs::create_dir_all(&home_cfg).unwrap();
+    let legacy = home_cfg.join("hooks.json");
+    std::fs::write(&legacy, r#"{ "hooks": { "Stop": [] } }"#).unwrap();
+
+    let target = ws_cfg.join("hooks.json");
+    assert!(!target.exists());
+    migrate_legacy_home_hooks_config(&home_cfg, &ws_cfg);
+    assert!(target.exists(), "copy-once: legacy content lands at new location");
+    assert!(legacy.exists(), "copy-once: legacy file KEPT as backup");
+
+    // 幂等：重复迁移不动已存在的新位。
+    std::fs::write(&legacy, r#"{ "hooks": { "Stop": [] }, "x": 1 }"#).unwrap();
+    migrate_legacy_home_hooks_config(&home_cfg, &ws_cfg);
+    let content = std::fs::read_to_string(&target).unwrap();
+    assert!(!content.contains("\"x\""), "existing target must win");
+}
+
+#[test]
+fn migrate_is_noop_without_legacy_or_with_existing_target() {
+    let dir = tempfile::tempdir().unwrap();
+    let home_cfg = dir.path().join("home").join("config");
+    let ws_cfg = dir.path().join("workspace").join("config");
+
+    // 无 legacy → no-op（不创建空文件）。
+    migrate_legacy_home_hooks_config(&home_cfg, &ws_cfg);
+    assert!(!ws_cfg.join("hooks.json").exists());
+
+    // legacy 存在但新位已存在 → 新位获胜，legacy 保留。
+    std::fs::create_dir_all(&home_cfg).unwrap();
+    std::fs::write(home_cfg.join("hooks.json"), r#"{ "old": true }"#).unwrap();
+    std::fs::create_dir_all(&ws_cfg).unwrap();
+    std::fs::write(ws_cfg.join("hooks.json"), r#"{ "new": true }"#).unwrap();
+    migrate_legacy_home_hooks_config(&home_cfg, &ws_cfg);
+    let content = std::fs::read_to_string(ws_cfg.join("hooks.json")).unwrap();
+    assert!(content.contains("new"), "existing target must win: {content}");
 }

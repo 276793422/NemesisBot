@@ -29,6 +29,7 @@ use serde::{Deserialize, Serialize};
 use tracing::{debug, error, info, warn};
 
 use crate::context::RequestContext;
+use crate::hooks::HookToolCall;
 use crate::instance::AgentInstance;
 use crate::registry::AgentRegistry;
 use crate::session::{SessionStore, estimate_tokens_for_turns_projected};
@@ -721,9 +722,14 @@ pub struct AgentLoop {
     config_path: parking_lot::RwLock<Option<std::path::PathBuf>>,
     /// 自定义 slash 命令表路径（`config.commands.json`；主 agent 专用，集群
     /// agent 不接——命令不该跨节点复制，同 hooks 挂账决策）。
-    commands_path: parking_lot::RwLock<Option<std::path::PathBuf>>,
-    commands_mtime: parking_lot::RwLock<Option<std::time::SystemTime>>,
-    commands_cache: parking_lot::RwLock<Vec<nemesis_config::CommandEntry>>,
+    /// 自定义命令表热重载器（HotReloader 统一收编，2026-08-29：原
+    /// path/mtime/cache 三字段手写 mtime 模式收编为一行声明）。
+    commands_hot: parking_lot::RwLock<
+        Option<nemesis_config::HotReloader<nemesis_config::CommandsConfig>>,
+    >,
+    /// CC hooks 桥（2026-08-29 T3）：PreCompact/PostCompact 触发用。
+    /// SessionEnd 经 SessionEndHookManager（factory 清理点直接调桥）。
+    cc_bridge: parking_lot::RwLock<Option<std::sync::Arc<crate::cc_hooks::CcHookBridge>>>,
     /// G4 (U4): root directory for tool-result spill files
     /// (`<home>/logs/spill`). `None` disables spilling (results fall back to
     /// the G3 prune tier). Set via `set_spill_root` by the agent factory.
@@ -855,9 +861,8 @@ impl AgentLoop {
             memory_inject_cfg: parking_lot::RwLock::new((false, 3)),
             tier: parking_lot::RwLock::new(nemesis_types::capability::ModelTier::Big),
             config_path: parking_lot::RwLock::new(None),
-            commands_path: parking_lot::RwLock::new(None),
-            commands_mtime: parking_lot::RwLock::new(None),
-            commands_cache: parking_lot::RwLock::new(Vec::new()),
+            commands_hot: parking_lot::RwLock::new(None),
+            cc_bridge: parking_lot::RwLock::new(None),
             spill_root: parking_lot::RwLock::new(None),
             skills_loader: parking_lot::RwLock::new(None),
             skills_digest_state: std::sync::Arc::new(crate::skills_digest::DigestState::new()),
@@ -1078,9 +1083,8 @@ impl AgentLoop {
             memory_inject_cfg: parking_lot::RwLock::new((false, 3)),
             tier: parking_lot::RwLock::new(nemesis_types::capability::ModelTier::Big),
             config_path: parking_lot::RwLock::new(None),
-            commands_path: parking_lot::RwLock::new(None),
-            commands_mtime: parking_lot::RwLock::new(None),
-            commands_cache: parking_lot::RwLock::new(Vec::new()),
+            commands_hot: parking_lot::RwLock::new(None),
+            cc_bridge: parking_lot::RwLock::new(None),
             spill_root: parking_lot::RwLock::new(None),
             skills_loader: parking_lot::RwLock::new(None),
             skills_digest_state: std::sync::Arc::new(crate::skills_digest::DigestState::new()),
@@ -1274,6 +1278,8 @@ impl AgentLoop {
             None => return,
         };
 
+        // 热重载收编登记（2026-08-29）：本处是 manager 重建 + 工具注册副作用
+        // （重语义），非纯数据加载——保留独立实现并登记（同 tier 注记）。
         let changed = {
             match mgr.lock() {
                 Ok(mut m) => m.check_config_changed(),
@@ -2985,6 +2991,13 @@ impl AgentLoop {
             }
         }
 
+        // CC PreCompact（观察型，2026-08-29 三段化扩展）：exit 2 不阻止压缩
+        // （稳定性机制）。先 clone Arc 再 await（不持锁跨 await）。
+        let bridge_pre = self.cc_bridge.read().as_ref().cloned();
+        if let Some(bridge) = bridge_pre {
+            bridge.run_compact_hooks("auto", "pre").await;
+        }
+
         // Fold the prefix history[..new_c] into the summary, merged with the
         // existing summary (which already covers history[..c]). summarize the
         // FULL prefix from source each time (no "keep last N" — that would
@@ -3013,6 +3026,12 @@ impl AgentLoop {
                 "[AgentLoop] auto-summarization produced no summary for {} (LLM failure or no valid content); keeping full history, covers_up_to unchanged",
                 session_key
             );
+        }
+
+        // CC PostCompact（观察型）：压缩尝试结束（成败皆触发）。
+        let bridge_post = self.cc_bridge.read().as_ref().cloned();
+        if let Some(bridge) = bridge_post {
+            bridge.run_compact_hooks("auto", "post").await;
         }
 
         {
@@ -5478,56 +5497,89 @@ impl AgentLoop {
 
         #[cfg(feature = "forge")]
         let tool_start = std::time::Instant::now();
-        let tool_opt = self.tools.read().get(&tool_call.name).cloned();
-        // Checkpoint capture: if the tool previews a file change, snapshot its
-        // pre-edit content (the edit safety net) before execution modifies it.
-        // Read-only / non-file tools return None from preview and are skipped.
-        if let Some(ref tool) = tool_opt {
-            if let Some(change) = tool.preview(&tool_call.arguments) {
-                // Drop the read guard before awaiting so the future stays Send
-                // (RwLockReadGuard is not Send and cannot cross an await point).
-                let cp_opt = {
-                    let guard = self.checkpoint_store.read();
-                    guard.as_ref().cloned()
-                };
-                if let Some(cp) = cp_opt {
-                    cp.snapshot(&change).await;
-                }
-            }
-        }
-        let tool_was_registered = tool_opt.is_some();
-        let result = match tool_opt {
-            Some(tool) => match tool.execute(&tool_call.arguments, context).await {
-                Ok(result) => {
-                    debug!(
-                        "[AgentLoop] Tool {} returned: {} bytes",
-                        tool_call.name,
-                        result.len()
-                    );
-                    result
-                }
-                Err(err) => {
-                    warn!("[AgentLoop] Tool {} error: {}", tool_call.name, err);
-                    format!("Tool error: {}", err)
-                }
-            },
-            None => {
-                warn!("[AgentLoop] Unknown tool: {}", tool_call.name);
-                format!("Error: Unknown tool '{}'", tool_call.name)
-            }
-        };
-
-        // K1a (U14): user post-tool hooks — pipeline, each hook sees the
-        // current (possibly already-replaced) result, all hooks run. Only
-        // when the tool actually executed (Pre/Post pairing — the
-        // unknown-tool path never dispatched). Runs BEFORE Forge so the
-        // recorded experience matches the final result.
-        let result = if tool_was_registered {
+        // K1a 三段化（2026-08-29，cordis waterfall 移植）：around 链——scoped
+        // hooks 逆序包装真实执行，Err 分支走 post_tool_use_failure 变体
+        // （PostToolUseFailure 语义挂点）。作用域过滤：主 agent 只接 None。
+        let scoped_hooks: Vec<std::sync::Arc<dyn crate::hooks::ToolHook>> = {
             let hooks = self.tool_hooks.read().snapshot();
-            crate::hooks::run_post_hooks(&hooks, &hook_call, result).await
-        } else {
-            result
+            hooks.into_iter().filter(|h| h.scope().is_none()).collect()
         };
+        let ctx_arc = std::sync::Arc::new(context.clone());
+        let tools_snapshot = std::sync::Arc::new(self.tools.read().clone());
+        let checkpoint_arc = std::sync::Arc::new(self.checkpoint_store.read().as_ref().cloned());
+        let hooks_arc = std::sync::Arc::new(scoped_hooks.clone());
+        type NextExec = std::sync::Arc<
+            dyn Fn(HookToolCall) -> std::pin::Pin<Box<dyn std::future::Future<Output = String> + Send>>
+                + Send
+                + Sync,
+        >;
+        let mut chain: NextExec = {
+            let ctx = ctx_arc.clone();
+            let tools = tools_snapshot.clone();
+            let cp = checkpoint_arc.clone();
+            let hooks = hooks_arc.clone();
+            std::sync::Arc::new(move |call: HookToolCall| {
+                // Fn 闭包：捕获的 Arc 每次调用克隆一份（不能 move 出 Fn）。
+                let ctx = ctx.clone();
+                let tools = tools.clone();
+                let cp = cp.clone();
+                let hooks = hooks.clone();
+                Box::pin(async move {
+                    let tool_opt = tools.get(&call.name).cloned();
+                    let tool_was_registered = tool_opt.is_some();
+                    if let Some(ref tool) = tool_opt {
+                        if let Some(change) = tool.preview(&call.arguments) {
+                            if let Some(cp) = cp.as_ref() {
+                                cp.snapshot(&change).await;
+                            }
+                        }
+                    }
+                    match tool_opt {
+                        Some(tool) => match tool.execute(&call.arguments, &ctx).await {
+                            Ok(result) => {
+                                debug!(
+                                    "[AgentLoop] Tool {} returned: {} bytes",
+                                    call.name,
+                                    result.len()
+                                );
+                                if tool_was_registered {
+                                    crate::hooks::run_post_hooks(&hooks, &call, result).await
+                                } else {
+                                    result
+                                }
+                            }
+                            Err(err) => {
+                                warn!("[AgentLoop] Tool {} error: {}", call.name, err);
+                                if tool_was_registered {
+                                    crate::hooks::run_post_failure_hooks(&hooks, &call, &err).await
+                                } else {
+                                    format!("Tool error: {err}")
+                                }
+                            }
+                        },
+                        None => {
+                            warn!("[AgentLoop] Unknown tool: {}", call.name);
+                            format!("Error: Unknown tool '{}'", call.name)
+                        }
+                    }
+                })
+            })
+        };
+        for hook in scoped_hooks.iter().rev() {
+            let hook = std::sync::Arc::clone(hook);
+            let next = std::sync::Arc::clone(&chain);
+            chain = std::sync::Arc::new(move |call: HookToolCall| {
+                // async move 捕获 owned Arc → future 'static（摆脱 &self 借用）。
+                let hook = std::sync::Arc::clone(&hook);
+                let next = std::sync::Arc::clone(&next);
+                Box::pin(async move { hook.around_tool_use(call, next).await })
+                    as std::pin::Pin<
+                        Box<dyn std::future::Future<Output = String> + Send>,
+                    >
+            }) as NextExec;
+        }
+        let hook_call_owned = hook_call.clone();
+        let result = chain(hook_call_owned).await;
 
         // Record experience for Forge self-learning (non-blocking).
         #[cfg(feature = "forge")]
@@ -5612,31 +5664,31 @@ impl AgentLoop {
         &["help", "model", "show", "list", "switch"];
 
     /// 自定义 slash 命令表路径（主 agent 专用；集群 agent 不接——命令不该
-    /// 跨节点复制，同 hooks 挂账决策）。设置时立即加载一次。
+    /// 跨节点复制，同 hooks 挂账决策）。设置时立即加载一次；mtime 变化在
+    /// `rewrite_custom_command` 的 check() 里自动重载（HotReloader 统一收编，
+    /// dashboard/CLI 改命令表后无需重启）。
     pub fn set_commands_path(&self, path: std::path::PathBuf) {
-        *self.commands_path.write() = Some(path);
-        self.reload_commands_if_changed();
+        *self.commands_hot.write() =
+            Some(nemesis_config::HotReloader::new(path, nemesis_config::load_commands_config));
     }
 
-    /// mtime 变化才重新读盘（dashboard/CLI 改命令表后无需重启，同
-    /// `check_config_reload` 的 tier 热更模式）。
-    fn reload_commands_if_changed(&self) {
-        let path = match self.commands_path.read().clone() {
-            Some(p) => p,
-            None => return,
-        };
-        let mtime = std::fs::metadata(&path).and_then(|m| m.modified()).ok();
-        {
-            let mut last = self.commands_mtime.write();
-            if mtime == *last {
-                return; // unchanged since last check
-            }
-            *last = mtime;
+    /// CC hooks 桥注入（PreCompact/PostCompact 触发用；工具/生命周期钩子走
+    /// 各自注册表，与此并存）。
+    pub fn set_cc_hooks_bridge(&self, bridge: std::sync::Arc<crate::cc_hooks::CcHookBridge>) {
+        *self.cc_bridge.write() = Some(bridge);
+    }
+
+    /// 桥的只读访问（Dashboard 删除会话时触发 CC SessionEnd 用）。
+    pub fn cc_hooks_bridge(&self) -> Option<std::sync::Arc<crate::cc_hooks::CcHookBridge>> {
+        self.cc_bridge.read().clone()
+    }
+
+    /// 触发 SessionEnd 钩子（会话 TTL 过期清理/显式删除时由装配点调用）。
+    /// 直接走 CC 桥（唯一实现者；无桥 = no-op）。
+    pub async fn run_session_end_hooks(&self, session_key: &str, reason: &str) {
+        if let Some(bridge) = self.cc_bridge.read().as_ref() {
+            bridge.on_session_end(session_key, reason).await;
         }
-        let cfg = nemesis_config::load_commands_config(&path);
-        let n = cfg.commands.len();
-        *self.commands_cache.write() = cfg.commands;
-        debug!("[AgentLoop] custom commands loaded ({n}) from {}", path.display());
     }
 
     /// 自定义 slash 命令改写（改写型，区别于内置命令的短路型）：
@@ -5656,9 +5708,13 @@ impl AgentLoop {
         if name.is_empty() || Self::BUILTIN_SLASH_COMMANDS.contains(&name) {
             return;
         }
-        self.reload_commands_if_changed();
-        let cache = self.commands_cache.read();
-        let Some(cmd) = cache.iter().find(|c| c.name == name) else {
+        let hot = self.commands_hot.read();
+        let Some(hot) = hot.as_ref() else {
+            return;
+        };
+        hot.check();
+        let commands = hot.get();
+        let Some(cmd) = commands.commands.iter().find(|c| c.name == name) else {
             return;
         };
         // $ARGUMENTS 占位替换；模板无占位符且带参数 → 追加为独立段（对用户
@@ -5744,6 +5800,9 @@ impl AgentLoop {
     /// model by reading config.json live. Per-model `model_tier`/`real_name`/
     /// `model_size_b` are honoured; a missing/unreadable config falls back to
     /// the name heuristic. Called after every model switch and on config change.
+    // 热重载收编登记（2026-08-29）：此处非纯数据加载（读 config 后写多个
+    // AgentLoop 状态），HotReloader<T> 的 fn(&Path)->T 形状装不下——保留独立
+    // 实现并登记（计划原文"诚实优于强行统一"）。收编需 trait 形状的 reloader。
     fn refresh_active_tier(&self) {
         let path = match self.config_path.read().clone() {
             Some(p) => p,

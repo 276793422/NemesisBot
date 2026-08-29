@@ -1819,3 +1819,31 @@ mod r10_main {
         }
     }
 }
+
+// -------------------------------------------------------------------------
+// cors.json 路径收编（2026-08-29）：copy-once 迁移 + 新落位解析
+// -------------------------------------------------------------------------
+
+#[test]
+fn cors_config_path_migrates_legacy_home_config_copy_once() {
+    let tmp = TempDir::new().unwrap();
+    let home = tmp.path();
+    let legacy_dir = home.join("config");
+    std::fs::create_dir_all(&legacy_dir).unwrap();
+    std::fs::write(legacy_dir.join("cors.json"), r#"{"origins":["https://a.com"]}"#).unwrap();
+
+    // 首次调用（读路径即触发 copy-once 迁移）：legacy 内容到达新位。
+    let path = common::cors_config_path(home);
+    assert!(path.exists(), "legacy cors.json must be migrated on first access");
+    let content = std::fs::read_to_string(&path).unwrap();
+    assert!(content.contains("https://a.com"));
+
+    // legacy 保留（备份）。
+    assert!(legacy_dir.join("cors.json").exists(), "legacy file kept as backup");
+
+    // 幂等：改 legacy 后再调用不覆盖已迁移的新位。
+    std::fs::write(legacy_dir.join("cors.json"), r#"{"origins":["https://changed.com"]}"#).unwrap();
+    let path2 = common::cors_config_path(home);
+    let content2 = std::fs::read_to_string(&path2).unwrap();
+    assert!(content2.contains("https://a.com"), "existing target must win");
+}

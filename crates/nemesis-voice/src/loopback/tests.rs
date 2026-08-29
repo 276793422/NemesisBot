@@ -56,14 +56,16 @@ fn start_loopback_spawns_thread_and_stop_clears_slot() {
     *loopback_slot().lock().unwrap() = None; // 从干净态开始
 
     start_loopback();
-    std::thread::sleep(std::time::Duration::from_millis(300));
-
-    // spawn 后 slot 必为 Some（spawn 失败臂只 warn 不清 slot——见 41-47 行，
-    // 失败时 slot 也保持 Some，此处不断言 spawn 成败，只验状态机）
+    // start_loopback 在 spawn 前同步置位 slot——"start 后 slot 必为 Some"
+    // 的断言必须在 sleep 前做：无渲染设备的机器上 run_loopback 线程会立即
+    // Err 早退并自清 slot，sleep 后再断言就成了对机器音频态的依赖
+    // （2026-08-29 无声卡态下必失败，R6 增补时的时序缺陷）。
     {
         let slot = loopback_slot().lock().unwrap();
         assert!(slot.is_some(), "slot must be Some after start_loopback");
     }
+    // 给线程时间进入事件循环（有声卡）或完成 Err 早退（无声卡）。
+    std::thread::sleep(std::time::Duration::from_millis(300));
 
     stop_loopback();
 

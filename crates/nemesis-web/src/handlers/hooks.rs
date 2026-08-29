@@ -1,6 +1,8 @@
 //! Hooks handler — P4 (2026-08-24 UI entry gap) 设置页「Hooks」Tab 后端。
+//! （2026-08-29：路径收编至 `<workspace>/config/hooks.json`，legacy 一次性
+//! copy-once 迁移——见 cc_hooks::migrate_legacy_home_hooks_config。）
 //!
-//! `<home>/config/hooks.json` 是 CC 方言（K2，`nemesis_agent::cc_hooks`）：
+//! `<workspace>/config/hooks.json` 是 CC 方言（K2，`nemesis_agent::cc_hooks`）：
 //! 五事件 PreToolUse/PostToolUse/SessionStart/UserPromptSubmit/Stop，每条
 //! hook 是子进程脚本（stdin JSON / env / 退出码拦放行）。
 //!
@@ -32,12 +34,20 @@ impl ModuleHandler for HooksHandler {
         data: Option<serde_json::Value>,
         ctx: &RequestContext,
     ) -> Result<Option<serde_json::Value>, String> {
+        let workspace = crate::handlers::require_workspace(ctx)?;
+        let home = crate::handlers::require_home(ctx)?;
+        // legacy 落位（<home>/config/hooks.json）一次性迁移到新落位
+        // （<workspace>/config/hooks.json）——copy-once，幂等。
+        nemesis_agent::cc_hooks::migrate_legacy_home_hooks_config(
+            std::path::Path::new(&home).join("config").as_path(),
+            &nemesis_path::workspace_config_dir(std::path::Path::new(&workspace)),
+        );
         match cmd {
-            "get" => self.get(crate::handlers::require_home(ctx)?),
+            "get" => self.get(&workspace),
             "set" => {
                 let data = data.ok_or("missing data")?;
                 let content = crate::handlers::get_str(&data, "content")?;
-                self.set(crate::handlers::require_home(ctx)?, &content)
+                self.set(&workspace, &content)
             }
             _ => Err(format!("unknown command: hooks.{}", cmd)),
         }
@@ -59,8 +69,8 @@ impl HooksHandler {
         .unwrap()
     }
 
-    pub(crate) fn get(&self, home: &str) -> Result<Option<serde_json::Value>, String> {
-        let path = std::path::Path::new(home).join("config").join(cc_hooks::HOOKS_FILE);
+    pub(crate) fn get(&self, workspace: &str) -> Result<Option<serde_json::Value>, String> {
+        let path = nemesis_path::resolve_hooks_config_path_in_workspace(std::path::Path::new(workspace));
         match std::fs::read_to_string(&path) {
             Ok(content) => {
                 let (valid, error, summary) = match cc_hooks::parse_cc_hooks(&content) {
@@ -90,12 +100,15 @@ impl HooksHandler {
         }
     }
 
-    pub(crate) fn set(&self, home: &str, content: &str) -> Result<Option<serde_json::Value>, String> {
+    pub(crate) fn set(&self, workspace: &str, content: &str) -> Result<Option<serde_json::Value>, String> {
         // 语义校验先于一切 IO（goal：校验失败不落盘）。
         let events = cc_hooks::parse_cc_hooks(content)?;
-        let cfg_dir = std::path::Path::new(home).join("config");
-        std::fs::create_dir_all(&cfg_dir).map_err(|e| format!("failed to create config dir: {e}"))?;
-        std::fs::write(cfg_dir.join(cc_hooks::HOOKS_FILE), content)
+        let path = nemesis_path::resolve_hooks_config_path_in_workspace(std::path::Path::new(workspace));
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)
+                .map_err(|e| format!("failed to create config dir: {e}"))?;
+        }
+        std::fs::write(&path, content)
             .map_err(|e| format!("failed to write hooks.json: {e}"))?;
         Ok(Some(serde_json::json!({
             "written": true,

@@ -163,8 +163,21 @@ pub fn forge_config_path(home: &Path) -> PathBuf {
 }
 
 /// Get the CORS config file path.
+///
+/// 2026-08-29 收编：落位 `<workspace>/config/cors.json`（nemesis-path 真相源）。
+/// 一次性迁移 legacy `<home>/config/cors.json`（copy-once：新位已存在则不动，
+/// legacy 保留——与 hooks.json 迁移同款先例）。
 pub fn cors_config_path(home: &Path) -> PathBuf {
-    home.join("config").join("cors.json")
+    let new_path =
+        nemesis_path::resolve_cors_config_path_in_workspace(&workspace_path(home));
+    let legacy = home.join("config").join("cors.json");
+    if legacy.is_file() && !new_path.exists() {
+        if let Some(parent) = new_path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        let _ = std::fs::copy(&legacy, &new_path);
+    }
+    new_path
 }
 
 /// Get the cluster data directory path (`{home}/workspace/cluster/`).

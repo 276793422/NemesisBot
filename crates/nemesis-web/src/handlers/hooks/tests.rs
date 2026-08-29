@@ -8,8 +8,8 @@ fn home_str(dir: &tempfile::TempDir) -> String {
     dir.path().to_string_lossy().to_string()
 }
 
-fn hooks_path(home: &std::path::Path) -> std::path::PathBuf {
-    home.join("config").join(cc_hooks::HOOKS_FILE)
+fn hooks_path(workspace: &std::path::Path) -> std::path::PathBuf {
+    nemesis_path::resolve_hooks_config_path_in_workspace(workspace)
 }
 
 /// Working CC config: 2 PreToolUse scripts in one group + 1 Stop script.
