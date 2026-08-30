@@ -3626,21 +3626,32 @@ variables: {}
     // ---------------------------------------------------------------------
 
     /// in-process 版（S11d 结构豁免先例）：测试先占住 web 目标端口，网关线程
-    /// 里 axum bind 失败 → error@3428 + bound_rx Err → warn@3440 → real_port=
-    /// 配置端口 → state 文件照常写出。断言确定性来自「端口全程被我持有」：
-    /// state.web_port 只可能等于这个被占用端口本身，别无来路。
+    /// 里 bind 走查（`bind_with_port_walk`，2026-08-30 语义：带外线性向上）
+    /// 落到邻端口 busy+1 成功 serve → bound_tx Ok(walked) → state 写走查后
+    /// 端口。断言确定性来自「busy 全程被我持有且取带外端口」：走查序列
+    /// 第一尝试即 busy（失败），第二尝试 busy+1（空闲）必中，别无来路。
     ///
-    /// 为什么不能优雅停机：/api/internal 挂在死掉的 web server 上，POST 不可达；
+    /// 2026-08-31 重写：旧「bind 冲突 → 回落写配置端口」前提在 35b092e 给
+    /// bind 加 +1×20 重试、随后 port-walk 精化为带内回绕后失效（同族前提
+    /// 修正见 crates/nemesis-web/src/server/r4_tests.rs 顶部注释）。
+    ///
+    /// 为什么不能优雅停机：/api/internal 挂在 web server 上，POST 不可达；
     /// 强杀子进程会丢 profraw——所以与本模块其余子进程用例不同，这里走
     /// 进程内线程，测试进程自身干净退出时统一落盘覆盖率（同 S11d 注释里的
     /// 「线程随测试进程退出销毁」豁免条款）。
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn r9_gateway_web_bind_conflict_writes_config_port_into_state() {
+    async fn r9_gateway_web_bind_conflict_walks_to_neighbor_port_in_state() {
         let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
         let th = temp_home_env();
 
-        // 占住目标端口（探测→立刻转正为长期持有者，消除窗口竞争）。
-        let busy_port = r9_probe_free_tcp_port();
+        // 占住目标端口：必须取带外（> WEB_PORT_MAX）端口，走查才是可预测的
+        // 线性向上；带内端口会回绕整圈，落点在并行测试下不可断言。
+        let busy_port = loop {
+            let p = r9_probe_free_tcp_port();
+            if p > nemesis_web::server::WEB_PORT_MAX && p < u16::MAX {
+                break p;
+            }
+        };
         let busy_holder = std::net::TcpListener::bind(("127.0.0.1", busy_port))
             .expect("hold busy port for conflict scenario");
 
@@ -3662,8 +3673,8 @@ variables: {}
             })
             .expect("spawn gateway thread");
 
-        // 就绪信号 = state 文件出现 web_port>0；本场景里它只能是配置端口
-        // （fallback 臂的产物），而不是某个新分配的临时端口。
+        // 就绪信号 = state 文件出现 web_port>0；本场景里它只能是走查落点
+        // busy+1（fallback 已不存在：walk 落到邻端口成功 serve）。
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
         let observed: u16 = loop {
             if let Ok(txt) = std::fs::read_to_string(&state_path) {
@@ -3683,7 +3694,7 @@ variables: {}
             tokio::time::sleep(std::time::Duration::from_millis(200)).await;
         };
 
-        // 尾巴时间让 banner / 自检输出跑完（全部发生在 fallback 之后）。
+        // 尾巴时间让 banner / 自检输出跑完（全部发生在 bind 成功之后）。
         tokio::time::sleep(std::time::Duration::from_secs(3)).await;
 
         let final_state: serde_json::Value = serde_json::from_str(
@@ -3693,10 +3704,10 @@ variables: {}
         assert_eq!(final_state["web_host"], "127.0.0.1");
         assert_eq!(
             final_state["web_port"].as_u64(),
-            Some(busy_port as u64),
-            "端口被占用时 state 必须回落成配置端口（fallback 臂证据）"
+            Some(busy_port as u64 + 1),
+            "端口被占用时走查落到邻端口 busy+1，state 必须如实写走查后端口"
         );
-        assert_eq!(observed, busy_port);
+        assert_eq!(observed, busy_port + 1);
 
         // busy_holder 保活到断言结束（放在末尾抑制 unused 警告的真实用途注解）。
         drop(busy_holder);

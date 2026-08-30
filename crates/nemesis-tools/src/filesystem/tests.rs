@@ -1213,3 +1213,30 @@ fn s2_delete_file_validate_path_relative_joins_workspace() {
     let resolved = tool.validate_path("rel/deep.txt").unwrap();
     assert_eq!(resolved, dir.path().join("rel").join("deep.txt"));
 }
+
+#[tokio::test]
+async fn spill_locator_readable_under_workspace_restriction() {
+    // U4 spill×restrict 契约（2026-08-31 迁移配套）：spill 根已迁回
+    // <workspace>/logs/spill（nemesis-path 唯一拼接点）。restrict=true 的
+    // read_file 必须能回读落在该根下的定位器全文——否则超大工具结果一旦
+    // 外溢，agent 就永远拿不到完整内容。
+    let dir = TempDir::new().unwrap();
+    let workspace = nemesis_path::workspace_dir(dir.path());
+    let spill_root = nemesis_path::resolve_spill_dir_in_workspace(&workspace);
+    std::fs::create_dir_all(&spill_root).unwrap();
+
+    let locator = spill_root.join("20260831_000000000_call_00_deadbeef.txt");
+    std::fs::write(&locator, "FULL oversized tool result lives here").unwrap();
+
+    let ws = workspace.to_string_lossy().to_string();
+    let tool = ReadFileTool::new(&ws, true);
+    let result = tool
+        .execute(&serde_json::json!({ "path": locator.to_string_lossy() }))
+        .await;
+    assert!(
+        !result.is_error,
+        "spill locator inside workspace must be readable under restrict=true, got: {}",
+        result.for_llm
+    );
+    assert!(result.for_llm.contains("FULL oversized tool result"));
+}

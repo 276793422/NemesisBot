@@ -22,6 +22,7 @@ regex = { workspace = true }
 parking_lot = { workspace = true }
 
 [dev-dependencies]
+nemesis-path = { workspace = true }
 tokio = { workspace = true, features = ["test-util", "macros"] }
 mockall = { workspace = true }
 tempfile = "3"

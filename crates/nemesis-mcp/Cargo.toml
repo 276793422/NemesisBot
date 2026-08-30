@@ -6,6 +6,9 @@ edition.workspace = true
 
 [dependencies]
 nemesis-types = { workspace = true }
+# 2026-08-31 单一真相源收敛：ServerConfig 别名到 nemesis_config::McpServerConfig
+# （宽容反序列化），manager 配置层复用 nemesis_config::McpConfig。
+nemesis-config = { workspace = true }
 tokio = { workspace = true }
 async-trait = { workspace = true }
 serde = { workspace = true }

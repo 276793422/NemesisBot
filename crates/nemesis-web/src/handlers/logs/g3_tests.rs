@@ -72,7 +72,8 @@ fn make_spill_file(root: &std::path::Path, session: &str, name: &str, age_secs: 
 fn spill_status_reports_tree_and_defaults() {
     let dir = tempfile::tempdir().unwrap();
     let ctx = make_ctx(&dir);
-    let root = dir.path().join("logs/spill");
+    // 2026-08-31 spill 迁回 workspace：根 = workspace/logs/spill（U4 设计位）
+    let root = dir.path().join("workspace").join("logs").join("spill");
     make_spill_file(&root, "s1", "newer.txt", 24 * 3600, "0123456789"); // 10 B
     make_spill_file(&root, "s2", "older.txt", 24 * 3600, "ab"); // 2 B
 
@@ -90,7 +91,7 @@ fn spill_status_reports_tree_and_defaults() {
 fn spill_cleanup_deletes_expired_and_returns_fresh_status() {
     let dir = tempfile::tempdir().unwrap();
     let ctx = make_ctx(&dir);
-    let root = dir.path().join("logs/spill");
+    let root = dir.path().join("workspace").join("logs").join("spill");
     make_spill_file(&root, "s1", "old.txt", 10 * 24 * 3600, "old!"); // 4 B, 过期
     make_spill_file(&root, "s1", "fresh.txt", 24 * 3600, "ok"); // 2 B, 保留
 

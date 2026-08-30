@@ -99,7 +99,8 @@ impl McpHandler {
                     "headers": s.headers,
                     "args": s.args,
                     "env": s.env,
-                    "timeout": s.timeout,
+                    // 线上键名保持 timeout（UI 契约）；值来自规范字段 timeout_secs
+                    "timeout": s.timeout_secs,
                     "provider_name": s.provider_name,
                     "provider_url": s.provider_url,
                     "tags": s.tags,
@@ -139,7 +140,9 @@ impl McpHandler {
                 .get("env")
                 .and_then(|v| serde_json::from_value(v.clone()).ok())
                 .unwrap_or_default(),
-            timeout: data.get("timeout").and_then(|v| v.as_i64()).unwrap_or(0),
+            // 线上键名 timeout；缺省 30（与 serde default 一致；旧值 0 会被
+            // discover 的 >0 判断回落 30，直接落 30 语义更直白）
+            timeout_secs: data.get("timeout").and_then(|v| v.as_u64()).unwrap_or(30),
             provider_name: crate::handlers::get_opt_str(data, "provider_name").unwrap_or_default(),
             provider_url: crate::handlers::get_opt_str(data, "provider_url").unwrap_or_default(),
             tags: data
@@ -193,8 +196,12 @@ impl McpHandler {
                 server.env = parsed;
             }
         }
-        if let Some(v) = data.get("timeout").and_then(|v| v.as_i64()) {
-            server.timeout = v;
+        if let Some(v) = data
+            .get("timeout")
+            .or_else(|| data.get("timeout_secs"))
+            .and_then(|v| v.as_u64())
+        {
+            server.timeout_secs = v;
         }
         if let Some(v) = data.get("provider_name").and_then(|v| v.as_str()) {
             server.provider_name = v.to_string();

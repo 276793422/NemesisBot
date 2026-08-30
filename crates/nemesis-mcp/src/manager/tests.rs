@@ -5,7 +5,7 @@ fn make_config_path(tmp: &TempDir) -> PathBuf {
     tmp.path().join("config.mcp.json")
 }
 
-fn write_config(path: &PathBuf, config: &McpFileConfig) {
+fn write_config(path: &PathBuf, config: &McpConfig) {
     let content = serde_json::to_string_pretty(config).unwrap();
     std::fs::write(path, content).unwrap();
 }
@@ -20,7 +20,7 @@ fn test_new_with_existing_config() {
     let path = make_config_path(&tmp);
     write_config(
         &path,
-        &McpFileConfig {
+        &McpConfig {
             enabled: true,
             servers: vec![ServerConfig::new("test-srv", "/usr/bin/test")],
             timeout: 60,
@@ -180,7 +180,7 @@ fn test_check_config_changed_detects_write() {
     std::thread::sleep(std::time::Duration::from_millis(50));
     write_config(
         &path,
-        &McpFileConfig {
+        &McpConfig {
             enabled: true,
             servers: vec![ServerConfig::new("new", "cmd")],
             timeout: 30,
@@ -223,7 +223,7 @@ fn test_mtime_detects_new_server_after_add() {
     // Start with one server
     write_config(
         &path,
-        &McpFileConfig {
+        &McpConfig {
             enabled: true,
             servers: vec![ServerConfig::new("srv-a", "cmd_a")],
             timeout: 30,
@@ -238,7 +238,7 @@ fn test_mtime_detects_new_server_after_add() {
     std::thread::sleep(std::time::Duration::from_millis(50));
     write_config(
         &mgr.config_path().to_path_buf(),
-        &McpFileConfig {
+        &McpConfig {
             enabled: true,
             servers: vec![
                 ServerConfig::new("srv-a", "cmd_a"),
@@ -263,7 +263,7 @@ fn test_find_new_servers_after_mtime_reload() {
 
     write_config(
         &path,
-        &McpFileConfig {
+        &McpConfig {
             enabled: true,
             servers: vec![ServerConfig::new("srv-a", "cmd_a")],
             timeout: 30,
@@ -280,7 +280,7 @@ fn test_find_new_servers_after_mtime_reload() {
     std::thread::sleep(std::time::Duration::from_millis(50));
     write_config(
         &mgr.config_path().to_path_buf(),
-        &McpFileConfig {
+        &McpConfig {
             enabled: true,
             servers: vec![
                 ServerConfig::new("srv-a", "cmd_a"),
@@ -304,7 +304,7 @@ fn test_remove_server_updates_config() {
 
     write_config(
         &path,
-        &McpFileConfig {
+        &McpConfig {
             enabled: true,
             servers: vec![
                 ServerConfig::new("srv-a", "cmd_a"),
@@ -410,7 +410,7 @@ fn test_check_config_changed_reload_failure_keeps_mtime() {
     // Start with a valid config and consume the initial mtime.
     write_config(
         &path,
-        &McpFileConfig {
+        &McpConfig {
             enabled: true,
             servers: vec![ServerConfig::new("srv-a", "cmd_a")],
             timeout: 30,
@@ -432,7 +432,7 @@ fn test_check_config_changed_reload_failure_keeps_mtime() {
     std::thread::sleep(std::time::Duration::from_millis(50));
     write_config(
         &path,
-        &McpFileConfig {
+        &McpConfig {
             enabled: true,
             servers: vec![
                 ServerConfig::new("srv-a", "cmd_a"),
@@ -528,7 +528,7 @@ fn test_new_logs_and_recovers_from_corrupt_init_config() {
 
 #[test]
 fn test_default_timeout_value_is_30() {
-    // The serde default for McpFileConfig.timeout is 30 when omitted.
+    // The serde default for McpConfig.timeout is 30 when omitted.
     let tmp = TempDir::new().unwrap();
     let path = make_config_path(&tmp);
     // Write a config that omits the timeout field entirely.

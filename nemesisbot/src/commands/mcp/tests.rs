@@ -57,6 +57,8 @@ fn test_find_server_no_file() {
 
 #[test]
 fn test_json_to_server_config_full() {
+    // 2026-08-31 单一真相源收敛：手搓 json_to_server_config 已删除，
+    // CLI 与 Dashboard/MCP runtime 同用 serde 解析 McpServerConfig。
     let json = serde_json::json!({
         "name": "my-server",
         "command": "python",
@@ -64,22 +66,22 @@ fn test_json_to_server_config_full() {
         "env": ["API_KEY=secret"],
         "timeout": 60
     });
-    let config = json_to_server_config(&json);
+    let config: nemesis_config::McpServerConfig = serde_json::from_value(json).unwrap();
     assert_eq!(config.name, "my-server");
     assert_eq!(config.command, "python");
     assert_eq!(config.args, vec!["-m", "server"]);
-    assert_eq!(config.env, Some(vec!["API_KEY=secret".to_string()]));
+    assert_eq!(config.env, vec!["API_KEY=secret".to_string()]);
     assert_eq!(config.timeout_secs, 60);
 }
 
 #[test]
 fn test_json_to_server_config_minimal() {
     let json = serde_json::json!({"name": "minimal", "command": "echo"});
-    let config = json_to_server_config(&json);
+    let config: nemesis_config::McpServerConfig = serde_json::from_value(json).unwrap();
     assert_eq!(config.name, "minimal");
     assert_eq!(config.command, "echo");
     assert!(config.args.is_empty());
-    assert!(config.env.is_none());
+    assert!(config.env.is_empty());
     assert_eq!(config.timeout_secs, 30); // default
 }
 
@@ -135,7 +137,7 @@ fn test_cmd_add_creates_new_config() {
     assert_eq!(data["enabled"], true);
     let servers = data["servers"].as_array().unwrap();
     assert_eq!(servers[0]["name"], "fresh-server");
-    assert_eq!(servers[0]["timeout"], 60);
+    assert_eq!(servers[0]["timeout_secs"], 60);
 }
 
 #[test]
@@ -224,7 +226,8 @@ fn test_cmd_add_args_parsing() {
 }
 
 // -------------------------------------------------------------------------
-// json_to_server_config edge cases
+// (ex-)json_to_server_config edge cases —— 2026-08-31 起直接测 serde 解析
+// McpServerConfig（CLI 第三条手搓解析路径已删除，与全仓同真相源）。
 // -------------------------------------------------------------------------
 
 #[test]
@@ -234,7 +237,7 @@ fn test_json_to_server_config_empty_args() {
         "command": "echo",
         "args": []
     });
-    let config = json_to_server_config(&json);
+    let config: nemesis_config::McpServerConfig = serde_json::from_value(json).unwrap();
     assert!(config.args.is_empty());
 }
 
@@ -245,9 +248,9 @@ fn test_json_to_server_config_empty_env() {
         "command": "echo",
         "env": []
     });
-    let config = json_to_server_config(&json);
-    assert!(config.env.is_some());
-    assert!(config.env.as_ref().unwrap().is_empty());
+    let config: nemesis_config::McpServerConfig = serde_json::from_value(json).unwrap();
+    // 收敛后 env 是 Vec<String>：空数组保持为空表（null 也归一为空表）
+    assert!(config.env.is_empty());
 }
 
 #[test]
@@ -257,8 +260,8 @@ fn test_json_to_server_config_multiple_env() {
         "command": "python",
         "env": ["KEY1=val1", "KEY2=val2", "KEY3=val3"]
     });
-    let config = json_to_server_config(&json);
-    assert_eq!(config.env.unwrap().len(), 3);
+    let config: nemesis_config::McpServerConfig = serde_json::from_value(json).unwrap();
+    assert_eq!(config.env.len(), 3);
 }
 
 #[test]
@@ -268,14 +271,14 @@ fn test_json_to_server_config_zero_timeout() {
         "command": "echo",
         "timeout": 0
     });
-    let config = json_to_server_config(&json);
+    let config: nemesis_config::McpServerConfig = serde_json::from_value(json).unwrap();
     assert_eq!(config.timeout_secs, 0);
 }
 
 #[test]
 fn test_json_to_server_config_no_name_or_command() {
     let json = serde_json::json!({});
-    let config = json_to_server_config(&json);
+    let config: nemesis_config::McpServerConfig = serde_json::from_value(json).unwrap();
     assert!(config.name.is_empty());
     assert!(config.command.is_empty());
 }
@@ -493,7 +496,7 @@ fn test_mcp_cmd_add_with_args_and_env() {
         serde_json::from_str(&std::fs::read_to_string(&cfg).unwrap()).unwrap();
     let server = &data["servers"][0];
     assert_eq!(server["args"].as_array().unwrap().len(), 2);
-    assert_eq!(server["timeout"], 60);
+    assert_eq!(server["timeout_secs"], 60);
 }
 
 #[test]
@@ -530,7 +533,7 @@ fn test_mcp_json_to_server_config_all_fields() {
         "env": ["KEY=val"],
         "timeout": 120
     });
-    let config = json_to_server_config(&json);
+    let config: nemesis_config::McpServerConfig = serde_json::from_value(json).unwrap();
     assert_eq!(config.name, "full");
     assert_eq!(config.command, "python");
     assert_eq!(config.args.len(), 2);
@@ -988,7 +991,7 @@ mod wave_b {
         assert_eq!(servers.len(), 2, "无重名时追加一条");
         assert_eq!(servers[0]["name"], "first", "旧条目不动");
         assert_eq!(servers[1]["name"], "second");
-        assert_eq!(servers[1]["timeout"], 9);
+        assert_eq!(servers[1]["timeout_secs"], 9);
         assert_eq!(data["enabled"], true, "主开关翻转落盘");
 
         // 相位2：重名短路（快照对比整份文件不变）

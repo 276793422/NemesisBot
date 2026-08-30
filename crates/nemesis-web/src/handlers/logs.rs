@@ -1420,7 +1420,8 @@ impl LogsHandler {
     }
 
     /// G3: resolve the spill root the same way the agent factory points it —
-    /// the live loop's root first, else `<home>/logs/spill`.
+    /// the live loop's root first, else `<workspace>/logs/spill`（2026-08-31
+    /// 迁回 workspace，U4 设计指定位置；restrict_to_workspace 内 agent 可回读）。
     fn spill_root_for(ctx: &RequestContext) -> Option<PathBuf> {
         if let Some(al) = ctx.state.agent_loop.read().as_ref() {
             if let Some(root) = al.spill_root_path() {
@@ -1428,7 +1429,9 @@ impl LogsHandler {
             }
         }
         let home = crate::handlers::require_home(ctx).ok()?;
-        Some(nemesis_path::resolve_spill_dir_for_home(Path::new(home)))
+        Some(nemesis_path::resolve_spill_dir_in_workspace(
+            &nemesis_path::workspace_dir(Path::new(home)),
+        ))
     }
 
     /// G3 (spill 状态卡): read-only spill-tree aggregate + the retention

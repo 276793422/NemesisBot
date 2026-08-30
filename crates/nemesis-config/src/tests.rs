@@ -663,7 +663,7 @@ fn test_mcp_config_roundtrip() {
                 transport_type: "stdio".to_string(),
                 args: vec!["a.js".to_string(), "b.js".to_string()],
                 env: vec!["KEY=VALUE".to_string()],
-                timeout: 30,
+                timeout_secs: 30,
                 ..Default::default()
             },
             McpServerConfig {
@@ -673,7 +673,7 @@ fn test_mcp_config_roundtrip() {
                 transport_type: "stdio".to_string(),
                 args: vec!["main.py".to_string()],
                 env: vec![],
-                timeout: 30,
+                timeout_secs: 30,
                 ..Default::default()
             },
         ],
@@ -1141,7 +1141,9 @@ fn test_mcp_config_default() {
     let cfg = McpConfig::default();
     assert!(!cfg.enabled);
     assert!(cfg.servers.is_empty());
-    assert_eq!(cfg.timeout, 0); // Default trait gives 0, serde default gives 30
+    // 2026-08-31 起手写 Default（收敛单一真相源时一并修正）：与 serde
+    // 缺省值一致均为 30，不再有「Default 给 0 / serde 给 30」的分叉。
+    assert_eq!(cfg.timeout, 30);
 }
 
 #[test]

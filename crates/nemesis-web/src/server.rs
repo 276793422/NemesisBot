@@ -36,6 +36,89 @@ use tokio::sync::mpsc;
 use tower_http::services::ServeDir;
 
 // ---------------------------------------------------------------------------
+// Port allocation（bind 失败端口走查）
+// ---------------------------------------------------------------------------
+
+/// 网关 Web 端口带下界（单一真相源）。配置端口落在此带内时，bind 走查
+/// 从配置端口起 +1 前进、到 [`WEB_PORT_MAX`] 回绕 [`WEB_PORT_MIN`]
+/// 循环往复，绕满一整圈仍无可用端口才 loud 失败。
+pub const WEB_PORT_MIN: u16 = 49000;
+
+/// 网关 Web 端口带上界（见 [`WEB_PORT_MIN`]）。
+pub const WEB_PORT_MAX: u16 = 50000;
+
+/// WebSocket 通道的专属端口（`config.json` `channels.websocket.port` 默认值）。
+/// Web 走查必须让位：web 若抢占 49001，WebSocket 通道随后 bind 直接失败。
+const WEBSOCKET_CHANNEL_PORT: u16 = 49001;
+
+/// 配置端口在 [`WEB_PORT_MIN`]..=[`WEB_PORT_MAX`] 之外时的线性走查步数
+/// （+1 最多 20 次，不回绕——不强行改写用户显式配置的端口段）。
+const OUT_OF_RANGE_WALK_ATTEMPTS: u16 = 20;
+
+/// 生成 bind 走查的端口尝试序列（纯函数，单测锚点）。
+///
+/// - `0` → `[0]`（OS 随机分配，单次 bind，不进走查）；
+/// - 端口带内 → 从 `base_port` 起回绕整圈：带内全部端口按序各出现一次
+///   （[`WEB_PORT_MIN`]..=[`WEB_PORT_MAX`] 共 1001 个），到 [`WEB_PORT_MAX`]
+///   后回绕 [`WEB_PORT_MIN`]；
+/// - 端口带外 → 从 `base_port` 线性向上 [`OUT_OF_RANGE_WALK_ATTEMPTS`] 个。
+///
+/// 序列全程跳过 [`WEBSOCKET_CHANNEL_PORT`]（49001，WebSocket 通道专属端口）。
+fn port_walk_sequence(base_port: u16) -> Vec<u16> {
+    let span = WEB_PORT_MAX - WEB_PORT_MIN + 1; // 10001
+    let mut seq: Vec<u16> = if base_port == 0 {
+        vec![0]
+    } else if (WEB_PORT_MIN..=WEB_PORT_MAX).contains(&base_port) {
+        (0..span)
+            .map(|i| WEB_PORT_MIN + (base_port - WEB_PORT_MIN + i) % span)
+            .collect()
+    } else {
+        (0..OUT_OF_RANGE_WALK_ATTEMPTS)
+            .map(|i| base_port.saturating_add(i))
+            .collect()
+    };
+    // 49001 让位 WebSocket 通道（port 0 不可能等于 49001，无需特判）。
+    seq.retain(|p| *p != WEBSOCKET_CHANNEL_PORT);
+    seq
+}
+
+/// bind 失败端口走查：按 [`port_walk_sequence`] 逐个尝试 `ip:port`，
+/// 返回第一个绑定成功的 listener；序列耗尽仍全占用则 loud 失败。
+/// 落点偏离 `base_port` 时打 warn（运维可见端口漂移）。
+async fn bind_with_port_walk(ip: std::net::IpAddr, base_port: u16) -> Result<tokio::net::TcpListener, String> {
+    let sequence = port_walk_sequence(base_port);
+    let mut last_err = String::new();
+    for (i, &try_port) in sequence.iter().enumerate() {
+        let try_addr = std::net::SocketAddr::new(ip, try_port);
+        match tokio::net::TcpListener::bind(try_addr).await {
+            Ok(l) => {
+                if try_port != base_port {
+                    tracing::warn!(
+                        "[WebServer] Port {} busy, using {} instead",
+                        base_port,
+                        try_port
+                    );
+                }
+                return Ok(l);
+            }
+            Err(e) => {
+                last_err = format!("{e}");
+                tracing::warn!(
+                    "[WebServer] Bind attempt {} failed on '{}': {}",
+                    i,
+                    try_addr,
+                    e
+                );
+            }
+        }
+    }
+    Err(format!(
+        "bind failed: no available port for base {base_port} after trying {} ports: {last_err}",
+        sequence.len()
+    ))
+}
+
+// ---------------------------------------------------------------------------
 // Configuration
 // ---------------------------------------------------------------------------
 
@@ -585,47 +668,9 @@ impl WebServer {
             format!("invalid listen address: {}", e)
         })?;
         let app = self.build_router();
-        // bind 失败自动递增端口重试（幽灵占用/TIME_WAIT 恢复）：最多 20 次。
-        // 每次失败端口 +1，直到找到可用端口——不会死守一个端口。
-        let listener = {
-            let base_port = addr.port();
-            let ip = addr.ip();
-            let mut last_err = String::new();
-            let mut bound = None;
-            for offset in 0..20u16 {
-                let try_port = base_port + offset;
-                let try_addr = std::net::SocketAddr::new(ip, try_port);
-                match tokio::net::TcpListener::bind(try_addr).await {
-                    Ok(l) => {
-                        if offset > 0 {
-                            tracing::warn!(
-                                "[WebServer] Port {} busy, using {} instead",
-                                base_port,
-                                try_port
-                            );
-                        }
-                        bound = Some(l);
-                        break;
-                    }
-                    Err(e) => {
-                        last_err = format!("{e}");
-                        tracing::warn!(
-                            "[WebServer] Bind attempt {} failed on '{}': {}",
-                            offset,
-                            try_addr,
-                            e
-                        );
-                    }
-                }
-            }
-            bound.ok_or_else(|| {
-                format!(
-                    "bind failed: no available port in range {}-{}: {last_err}",
-                    base_port,
-                    base_port + 19
-                )
-            })?
-        };
+        // bind 失败端口走查（幽灵占用/TIME_WAIT 恢复）：49000~50000 带内
+        // 循环往复、绕满一圈才 loud 失败；详见 bind_with_port_walk。
+        let listener = bind_with_port_walk(addr.ip(), addr.port()).await?;
 
         let actual_addr = listener
             .local_addr()
@@ -670,47 +715,9 @@ impl WebServer {
             format!("invalid listen address: {}", e)
         })?;
         let app = self.build_router();
-        // bind 失败自动递增端口重试（幽灵占用/TIME_WAIT 恢复）：最多 20 次。
-        // 每次失败端口 +1，直到找到可用端口——不会死守一个端口。
-        let listener = {
-            let base_port = addr.port();
-            let ip = addr.ip();
-            let mut last_err = String::new();
-            let mut bound = None;
-            for offset in 0..20u16 {
-                let try_port = base_port + offset;
-                let try_addr = std::net::SocketAddr::new(ip, try_port);
-                match tokio::net::TcpListener::bind(try_addr).await {
-                    Ok(l) => {
-                        if offset > 0 {
-                            tracing::warn!(
-                                "[WebServer] Port {} busy, using {} instead",
-                                base_port,
-                                try_port
-                            );
-                        }
-                        bound = Some(l);
-                        break;
-                    }
-                    Err(e) => {
-                        last_err = format!("{e}");
-                        tracing::warn!(
-                            "[WebServer] Bind attempt {} failed on '{}': {}",
-                            offset,
-                            try_addr,
-                            e
-                        );
-                    }
-                }
-            }
-            bound.ok_or_else(|| {
-                format!(
-                    "bind failed: no available port in range {}-{}: {last_err}",
-                    base_port,
-                    base_port + 19
-                )
-            })?
-        };
+        // bind 失败端口走查（幽灵占用/TIME_WAIT 恢复）：49000~50000 带内
+        // 循环往复、绕满一圈才 loud 失败；详见 bind_with_port_walk。
+        let listener = bind_with_port_walk(addr.ip(), addr.port()).await?;
 
         let actual_addr = listener
             .local_addr()

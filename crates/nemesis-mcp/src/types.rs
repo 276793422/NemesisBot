@@ -417,68 +417,18 @@ pub struct PromptResult {
 // Configuration
 // ---------------------------------------------------------------------------
 
-/// Configuration for spawning an external MCP server process.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ServerConfig {
-    /// Display name for this server.
-    pub name: String,
-    /// Executable command (resolved via $PATH unless absolute). Unused by
-    /// http-transport servers.
-    #[serde(default)]
-    pub command: String,
-    /// Transport: "stdio" (default) | "http" (Streamable HTTP, use `url`).
-    #[serde(default)]
-    pub transport_type: String,
-    /// Endpoint URL for HTTP-transport servers (e.g. http://127.0.0.1:8808/mcp).
-    #[serde(default)]
-    pub url: String,
-    /// Arguments passed to the command.
-    #[serde(default)]
-    pub args: Vec<String>,
-    /// Optional environment variables ("KEY=VALUE").
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub env: Option<Vec<String>>,
-    /// Timeout in seconds for requests to this server.
-    #[serde(default = "default_timeout")]
-    pub timeout_secs: u64,
-}
-
-fn default_timeout() -> u64 {
-    30
-}
-
-impl ServerConfig {
-    /// Create a new server configuration with default timeout.
-    pub fn new(name: impl Into<String>, command: impl Into<String>) -> Self {
-        Self {
-            name: name.into(),
-            command: command.into(),
-            transport_type: String::new(),
-            url: String::new(),
-            args: Vec::new(),
-            env: None,
-            timeout_secs: 30,
-        }
-    }
-
-    /// Add an argument.
-    pub fn arg(mut self, arg: impl Into<String>) -> Self {
-        self.args.push(arg.into());
-        self
-    }
-
-    /// Add an environment variable.
-    pub fn env(mut self, kv: impl Into<String>) -> Self {
-        self.env.get_or_insert_with(Vec::new).push(kv.into());
-        self
-    }
-
-    /// Set a custom timeout.
-    pub fn timeout(mut self, secs: u64) -> Self {
-        self.timeout_secs = secs;
-        self
-    }
-}
+/// Configuration for spawning an external MCP server process (or connecting
+/// to an HTTP one).
+///
+/// **2026-08-31 单一真相源收敛**：本 crate 与 nemesis-config 曾各自定义一份
+/// MCP 服务器配置结构（`env: Option<Vec<_>>` vs `Vec<_>`、`timeout_secs` vs
+/// `timeout`）——同一份 config.mcp.json 出现两种解析结果，Dashboard 侧的
+/// `"env": null` 直接解析崩溃而 runtime 一切正常。现在唯一定义在
+/// [`nemesis_config::McpServerConfig`]（宽容反序列化 + builder 全套），本
+/// 模块仅保留类型别名，存量 API（`ServerConfig::new/arg/env/timeout`）经
+/// canonical 类型原样可用。Merge 方向说明：nemesis-mcp → nemesis-config
+/// 单向依赖（反向会把 MCP 协议拖进所有 config 消费方）。
+pub type ServerConfig = nemesis_config::McpServerConfig;
 
 // ===========================================================================
 // Tests

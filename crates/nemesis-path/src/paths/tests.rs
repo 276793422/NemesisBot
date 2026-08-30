@@ -2562,3 +2562,31 @@ fn set_home_dir_repoints_instance_paths() {
     let b = PathManager::with_home(std::path::PathBuf::from("/tmp/home_c"));
     assert!(b.home_dir().ends_with("home_c"));
 }
+
+#[test]
+fn test_resolve_spill_dir_in_workspace_layout() {
+    // 2026-08-31 U4 迁移：spill 根 = <workspace>/logs/spill（唯一拼接点）。
+    let ws = std::path::PathBuf::from("/tmp/ws");
+    assert_eq!(
+        resolve_spill_dir_in_workspace(&ws),
+        ws.join("logs").join("spill")
+    );
+}
+
+#[test]
+fn test_resolve_spill_dir_in_workspace_stays_under_workspace() {
+    // U4 约束：spill 必须落在 restrict_to_workspace 限制范围内。
+    let ws = std::path::PathBuf::from("/tmp/home_x/workspace");
+    let spill = resolve_spill_dir_in_workspace(&ws);
+    assert!(spill.starts_with(&ws), "spill root must be inside workspace");
+}
+
+#[test]
+fn test_resolve_spill_dir_for_home_is_legacy_location() {
+    // 旧位置函数保留（迁移参考用），布局不得再变。
+    let home = std::path::PathBuf::from("/tmp/home_x");
+    assert_eq!(
+        resolve_spill_dir_for_home(&home),
+        home.join("logs").join("spill")
+    );
+}

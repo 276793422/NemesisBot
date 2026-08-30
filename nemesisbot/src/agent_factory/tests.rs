@@ -85,10 +85,10 @@ async fn cluster_agent_resolves_tier_and_spill_root_from_config() {
     // tool-def build time inside the loop, reading the tier asserted above).
     assert!(agent_loop.tool_count() > 0);
 
-    // D2: spill root wired to the shared <home>/logs/spill.
+    // D2: spill root wired to U4 设计位 workspace/logs/spill（2026-08-31 迁移）。
     assert_eq!(
         agent_loop.spill_root_path(),
-        Some(home.join("logs").join("spill"))
+        Some(home.join("workspace").join("logs").join("spill"))
     );
 }
 
@@ -239,7 +239,11 @@ async fn build_agent_loop_full_chain_from_disk_config() {
         nemesis_types::capability::ModelTier::Mini
     ));
     assert!(loop1.tool_count() > 0);
-    assert_eq!(loop1.spill_root_path(), Some(home.join("logs").join("spill")));
+    // 2026-08-31 spill 根迁回 workspace（U4 设计指定位置）。
+    assert_eq!(
+        loop1.spill_root_path(),
+        Some(home.join("workspace").join("logs").join("spill"))
+    );
 
     // 第二次构建（agent 重建路径）：rpc_cache / spill 的 once-guard 必须命中
     // swap=true 分支并直接返回（不重复 spawn），且构建本身仍成功。
@@ -441,8 +445,10 @@ mod r10 {
     /// 主工厂种子：过期 spill 文件 + 过期 Main session json + 过期
     /// rpc_cache 快照（后者清扫是否真的跑取决于 once-guard 抽签）。
     fn seed_aged_main_files(home: &std::path::Path) {
-        // spill：<home>/logs/spill/<sess>/<file>（cleanup_expired 只扫两层）。
+        // spill：<workspace>/logs/spill/<sess>/<file>（cleanup_expired 只扫两层；
+        // 2026-08-31 迁回 workspace，U4 设计位）。
         let spill_file = home
+            .join("workspace")
             .join("logs")
             .join("spill")
             .join("r10-sess")
@@ -494,6 +500,7 @@ mod r10 {
         .unwrap();
 
         let spill_file = home
+            .join("workspace")
             .join("logs")
             .join("spill")
             .join("r10-cluster-sess")
@@ -563,6 +570,7 @@ mod r10 {
         // build_agent_loop 内联清掉（对应两条 deleted>0 → info! 臂）。
         assert!(
             !home
+                .join("workspace")
                 .join("logs")
                 .join("spill")
                 .join("r10-sess")
@@ -655,6 +663,7 @@ mod r10 {
         );
         assert!(
             !home
+                .join("workspace")
                 .join("logs")
                 .join("spill")
                 .join("r10-cluster-sess")

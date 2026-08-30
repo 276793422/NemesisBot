@@ -282,9 +282,13 @@ pub fn build_agent_loop(
     // 经进程级单例槽注册（WSAPI plugins.set_metrics_enabled 翻转同一实例）。
     agent_loop
         .add_tool_hook(nemesis_agent::hooks::metrics_plugin_slot().clone());
-    // G4 (U4): enable tool-result spill under <home>/logs/spill — oversized
+    // G4 (U4): enable tool-result spill under <workspace>/logs/spill — oversized
     // results (>64k chars) land there whole with a locator in-conversation.
-    let spill_root = nemesis_path::resolve_spill_dir_for_home(&shared.home);
+    // 2026-08-31 迁回 workspace（U4 设计指定位置）：定位器必须在
+    // restrict_to_workspace 限制范围内，agent 的 file 工具才读得到全文；
+    // 旧 <home>/logs/spill 违反该约束，见 resolve_spill_dir_in_workspace。
+    let spill_root =
+        nemesis_path::resolve_spill_dir_in_workspace(&nemesis_path::workspace_dir(&shared.home));
     agent_loop.set_spill_root(spill_root.clone());
     // U4 retention: startup sweep + daily midnight task. retention=0 disables.
     let spill_retention = cfg.agents.defaults.spill_retention_days.max(0) as u64;
@@ -788,7 +792,9 @@ pub fn build_cluster_agent_loop(
     // NOTE: the daily-midnight cleanup task is already spawned by
     // build_agent_loop for this same root — deliberately NOT spawned again
     // here (a second timer would double-scan).
-    let spill_root = nemesis_path::resolve_spill_dir_for_home(&shared.home);
+    // 2026-08-31 迁回 workspace（U4 设计指定位置），同主 agent。
+    let spill_root =
+        nemesis_path::resolve_spill_dir_in_workspace(&nemesis_path::workspace_dir(&shared.home));
     agent_loop.set_spill_root(spill_root.clone());
     let spill_retention = cfg.agents.defaults.spill_retention_days.max(0) as u64;
     if spill_retention > 0 {

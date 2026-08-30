@@ -3629,6 +3629,7 @@ name = "nemesis-mcp"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "nemesis-config",
  "nemesis-types",
  "reqwest",
  "serde",
@@ -3884,6 +3885,7 @@ dependencies = [
  "futures",
  "libc",
  "mockall",
+ "nemesis-path",
  "nemesis-skills",
  "nemesis-types",
  "parking_lot",

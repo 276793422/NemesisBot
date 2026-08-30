@@ -56,11 +56,7 @@ impl StdioTransport {
 
     /// Create from a `ServerConfig`.
     pub fn from_config(config: &crate::types::ServerConfig) -> Self {
-        Self::new(
-            &config.command,
-            config.args.clone(),
-            config.env.clone().unwrap_or_default(),
-        )
+        Self::new(&config.command, config.args.clone(), config.env.clone())
     }
 }
 

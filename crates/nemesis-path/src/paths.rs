@@ -483,9 +483,23 @@ pub fn home_logs_dir(home_dir: &Path) -> PathBuf {
     home_dir.join("logs")
 }
 
-/// `<home>/logs/spill` —— LLM 请求外溢目录（agent_factory 写 / Logs 页读）。
+/// `<home>/logs/spill` —— 【已废弃位置，2026-08-31 迁回 workspace】LLM 请求
+/// 外溢目录的旧位置。U4 设计（docs/PLAN/2026-08-21_dsh-alignment-update-list.md
+/// U4 条目）指定 `<workspace>/logs/spill`：spill 定位器文件必须落在
+/// `restrict_to_workspace` 限制范围内，agent 的 file 工具才读得到全文；
+/// 实现期曾漂移到 home 根，且 2026-08-28 路径收敛只验证了内部一致性、
+/// 未对照设计规格，把漂移固化了下来。新代码一律用
+/// [`resolve_spill_dir_in_workspace`]；本函数保留供历史 spill 数据迁移
+/// （把旧 `<home>/logs/spill` 内容搬进新根）参考。
 pub fn resolve_spill_dir_for_home(home_dir: &Path) -> PathBuf {
     home_logs_dir(home_dir).join("spill")
+}
+
+/// `<workspace>/logs/spill` —— LLM 请求外溢目录（agent_factory 写 / Logs 页
+/// 读）。U4 设计指定位置：处于 restrict_to_workspace 限制范围内，agent 可
+/// 回读定位器指向的全文。
+pub fn resolve_spill_dir_in_workspace(workspace: &Path) -> PathBuf {
+    logs_dir_in_workspace(workspace).join("spill")
 }
 
 // --- 状态/会话区 ---

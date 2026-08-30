@@ -366,12 +366,8 @@ async fn operations_fail_before_init() {
 fn from_config_validates_command() {
     let config = ServerConfig {
         name: "test".into(),
-        transport_type: String::new(),
-        url: String::new(),
         command: "".into(),
-        args: vec![],
-        env: None,
-        timeout_secs: 30,
+        ..Default::default()
     };
     let result = McpClient::from_config(&config);
     assert!(result.is_err());
@@ -382,12 +378,8 @@ fn from_config_validates_name() {
     // Empty name is accepted - from_config only validates command
     let config = ServerConfig {
         name: "".into(),
-        transport_type: String::new(),
-        url: String::new(),
         command: "echo".into(),
-        args: vec![],
-        env: None,
-        timeout_secs: 30,
+        ..Default::default()
     };
     let result = McpClient::from_config(&config);
     // Should succeed since command is not empty

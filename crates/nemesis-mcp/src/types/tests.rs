@@ -74,7 +74,8 @@ fn server_config_default_and_builder() {
     assert_eq!(cfg.name, "test");
     assert_eq!(cfg.command, "node");
     assert_eq!(cfg.args, vec!["server.js"]);
-    assert_eq!(cfg.env.as_ref(), Some(&vec!["FOO=bar".to_string()]));
+    // 2026-08-31 收敛后 env 是 Vec<String>（非 Option）
+    assert_eq!(cfg.env, vec!["FOO=bar".to_string()]);
     assert_eq!(cfg.timeout_secs, 60);
 
     // Serialization round-trip
@@ -250,7 +251,7 @@ fn server_config_multiple_args() {
         .timeout(120);
 
     assert_eq!(cfg.args, vec!["server.py", "--port", "8080"]);
-    assert_eq!(cfg.env.as_ref().map(|e| e.len()), Some(2));
+    assert_eq!(cfg.env.len(), 2);
     assert_eq!(cfg.timeout_secs, 120);
 }
 
@@ -512,7 +513,8 @@ fn server_config_deserialize_with_defaults() {
     assert_eq!(cfg.name, "n");
     assert_eq!(cfg.command, "c");
     assert!(cfg.args.is_empty());
-    assert!(cfg.env.is_none());
+    // 2026-08-31 收敛后 env 是 Vec<String>（宽容反序列化把 null/缺失归一为空表）
+    assert!(cfg.env.is_empty());
     assert_eq!(cfg.timeout_secs, 30);
 }
 

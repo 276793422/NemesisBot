@@ -7,7 +7,7 @@
 use std::path::PathBuf;
 use std::time::SystemTime;
 
-use serde::{Deserialize, Serialize};
+use nemesis_config::McpConfig;
 use tracing::{info, warn};
 
 use crate::adapter::{self, Tool};
@@ -17,24 +17,6 @@ use crate::stdio_transport::StdioTransport;
 use crate::types::{McpTool, Resource, ServerConfig, ServerInfo};
 
 // ---------------------------------------------------------------------------
-// Config file format
-// ---------------------------------------------------------------------------
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct McpFileConfig {
-    #[serde(default)]
-    enabled: bool,
-    #[serde(default)]
-    servers: Vec<ServerConfig>,
-    #[serde(default = "default_timeout")]
-    timeout: u64,
-}
-
-fn default_timeout() -> u64 {
-    30
-}
-
-// ---------------------------------------------------------------------------
 // McpManager
 // ---------------------------------------------------------------------------
 
@@ -42,9 +24,13 @@ fn default_timeout() -> u64 {
 ///
 /// Reads/writes `config.mcp.json`, discovers tools from MCP servers,
 /// and tracks file modification time for automatic hot-reload.
+///
+/// 2026-08-31 单一真相源收敛：私有 `McpFileConfig`（与 nemesis-config 的
+/// `McpConfig` 字段分叉的同族重复定义）已删除，配置层直接复用
+/// [`McpConfig`]——与 Dashboard/CLI 解析同一类型，宽容反序列化统一生效。
 pub struct McpManager {
     config_path: PathBuf,
-    config: McpFileConfig,
+    config: McpConfig,
     last_mtime: Option<SystemTime>,
 }
 
@@ -55,11 +41,7 @@ impl McpManager {
     pub fn new(config_path: PathBuf) -> Self {
         let mut mgr = Self {
             config_path,
-            config: McpFileConfig {
-                enabled: false,
-                servers: Vec::new(),
-                timeout: 30,
-            },
+            config: McpConfig::default(),
             last_mtime: None,
         };
         if let Err(e) = mgr.load_config() {

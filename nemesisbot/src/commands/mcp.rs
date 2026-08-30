@@ -96,58 +96,16 @@ fn find_server(mcp_cfg_path: &std::path::Path, name: &str) -> Result<Option<serd
     Ok(None)
 }
 
-/// Build a ServerConfig from the JSON stored in mcp config.
-fn json_to_server_config(server: &serde_json::Value) -> nemesis_mcp::types::ServerConfig {
-    let name = server
-        .get("name")
-        .and_then(|v| v.as_str())
-        .unwrap_or("")
-        .to_string();
-    let command = server
-        .get("command")
-        .and_then(|v| v.as_str())
-        .unwrap_or("")
-        .to_string();
-    let args: Vec<String> = server
-        .get("args")
-        .and_then(|v| v.as_array())
-        .map(|a| {
-            a.iter()
-                .filter_map(|v| v.as_str().map(String::from))
-                .collect()
-        })
-        .unwrap_or_default();
-
-    let env: Option<Vec<String>> = server.get("env").and_then(|v| v.as_array()).map(|arr| {
-        arr.iter()
-            .filter_map(|v| v.as_str().map(String::from))
-            .collect()
-    });
-
-    let timeout = server.get("timeout").and_then(|v| v.as_u64()).unwrap_or(30);
-
-    nemesis_mcp::types::ServerConfig {
-        name,
-        command,
-        transport_type: server
-            .get("transport_type")
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .to_string(),
-        url: server
-            .get("url")
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .to_string(),
-        args,
-        env,
-        timeout_secs: timeout,
-    }
-}
-
 /// Connect to an MCP server, initialize, and return a client for use.
+///
+/// 2026-08-31 单一真相源收敛：删除手搓的 `json_to_server_config`（只认
+/// `timeout` 键、`env: null` 直接丢 env——与 Dashboard/MCP runtime 解析
+/// 结果分叉的第三条解析路径）。现在 serde 直接解析为
+/// [`nemesis_config::McpServerConfig`]：与全仓同一类型，宽容反序列化
+/// （null/map 形状的 args/env、timeout/timeout_secs 双键）统一生效。
 async fn connect_to_server(server: &serde_json::Value) -> Result<nemesis_mcp::client::McpClient> {
-    let config = json_to_server_config(server);
+    let config: nemesis_config::McpServerConfig = serde_json::from_value(server.clone())
+        .map_err(|e| anyhow::anyhow!("Invalid MCP server config: {}", e))?;
     let mut client = nemesis_mcp::client::McpClient::from_config(&config)
         .map_err(|e| anyhow::anyhow!("Failed to create MCP client: {}", e))?;
     client
@@ -242,7 +200,12 @@ fn cmd_list(mcp_cfg_path: &std::path::Path) -> Result<()> {
                                 .join(" ")
                         })
                         .unwrap_or_default();
-                    let timeout = server.get("timeout").and_then(|v| v.as_u64()).unwrap_or(0);
+                    // 2026-08-31 收敛：规范键 timeout_secs，旧文件 timeout 键兼容读
+                    let timeout = server
+                        .get("timeout_secs")
+                        .or_else(|| server.get("timeout"))
+                        .and_then(|v| v.as_u64())
+                        .unwrap_or(0);
                     let env_count = server
                         .get("env")
                         .and_then(|v| v.as_array())
@@ -311,7 +274,8 @@ fn cmd_add(
         "command": command,
         "args": args_array,
         "env": env,
-        "timeout": timeout,
+        // 2026-08-31 收敛：写规范键 timeout_secs（读取侧双键兼容）
+        "timeout_secs": timeout,
     });
 
     // servers 数组缺失（旧 schema / 手工编辑）时补建，否则下面 push 静默
