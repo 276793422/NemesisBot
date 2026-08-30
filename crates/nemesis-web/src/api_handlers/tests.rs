@@ -44,7 +44,7 @@ fn test_load_scanner_status_with_file() {
 #[test]
 fn test_resolve_log_file_path_general() {
     let dir = tempfile::tempdir().unwrap();
-    let logs_dir = dir.path().join("logs");
+    let logs_dir = dir.path().join("logs").join("gateway");
     std::fs::create_dir_all(&logs_dir).unwrap();
     // New JSONL daily format: nemesisbot.YYYY-MM-DD (no .log suffix).
     std::fs::write(logs_dir.join("nemesisbot.2026-06-17"), "log content").unwrap();
@@ -65,7 +65,7 @@ fn test_resolve_log_file_path_general_fallback() {
 #[test]
 fn test_resolve_log_file_path_general_picks_latest_day() {
     let dir = tempfile::tempdir().unwrap();
-    let logs_dir = dir.path().join("logs");
+    let logs_dir = dir.path().join("logs").join("gateway");
     std::fs::create_dir_all(&logs_dir).unwrap();
     std::fs::write(logs_dir.join("nemesisbot.2026-06-15"), "day 1").unwrap();
     std::fs::write(logs_dir.join("nemesisbot.2026-06-17"), "day 3").unwrap();

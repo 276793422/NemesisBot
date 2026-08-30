@@ -166,7 +166,7 @@
       "enabled": true,
       "enable_console": true,
       "level": "INFO",
-      "file": "logs/nemesisbot.log"
+      "file": "logs/gateway/nemesisbot.log"
     }
   },
   "security": {

@@ -631,7 +631,7 @@ pub fn run(action: LogAction, local: bool) -> Result<()> {
         )?,
         LogAction::SetLevel { level } => cmd_general_level(&cfg_path, &level)?,
         LogAction::EnableFile { path } => {
-            let file_path = path.unwrap_or_else(|| "logs/nemesisbot.log".to_string());
+            let file_path = path.unwrap_or_else(|| "logs/gateway/nemesisbot.log".to_string());
             let mut logging = read_logging_config(&cfg_path)?;
             if let Some(general) = logging.get_mut("general").and_then(|v| v.as_object_mut()) {
                 general.insert(

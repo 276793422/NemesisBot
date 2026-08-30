@@ -129,6 +129,16 @@ fn json_to_server_config(server: &serde_json::Value) -> nemesis_mcp::types::Serv
     nemesis_mcp::types::ServerConfig {
         name,
         command,
+        transport_type: server
+            .get("transport_type")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string(),
+        url: server
+            .get("url")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string(),
         args,
         env,
         timeout_secs: timeout,

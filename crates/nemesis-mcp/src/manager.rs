@@ -198,8 +198,23 @@ impl McpManager {
         &self,
         server: &ServerConfig,
     ) -> Result<Vec<Box<dyn Tool>>, String> {
-        let transport = StdioTransport::from_config(server);
-        let mut client: Box<dyn Client> = Box::new(McpClient::new(Box::new(transport)));
+        // 按 transport_type 分派：stdio（默认）| http（Streamable HTTP）。
+        // HTTP 型 MCP 服务器（如 desktop-pet2 的 8808/mcp 端点）不再需要
+        // stdio bridge 脚本——直接注册（2026-08-30）。
+        let transport: Box<dyn crate::transport::Transport> =
+            match server.transport_type.as_str() {
+                "http" | "streamable_http" | "streamable-http" => {
+                    if server.url.is_empty() {
+                        return Err(format!(
+                            "MCP server '{}' uses http transport but has no url",
+                            server.name
+                        ));
+                    }
+                    Box::new(crate::http_transport::HttpTransport::new(server.url.clone()))
+                }
+                _ => Box::new(crate::stdio_transport::StdioTransport::from_config(server)),
+            };
+        let mut client: Box<dyn Client> = Box::new(McpClient::new(transport));
 
         let timeout = std::time::Duration::from_secs(if server.timeout_secs > 0 {
             server.timeout_secs

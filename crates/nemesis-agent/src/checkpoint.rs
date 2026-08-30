@@ -5,11 +5,17 @@
 //! the current user turn. A rewind can then restore the workspace to an earlier
 //! turn — restoring code, or (caller-side) the conversation, or both.
 //!
-//! Git-free: snapshots live beside the session under `{workspace}/.checkpoints/
-//! <session>.ckpt/`, never touch the user's git, and work in a non-git dir. Only
+//! Git-free: snapshots live under `{workspace}/logs/checkpoints/`（2026-08-30
+//! 统一收编进 logs 家族——记录型数据归 logs，原 `.checkpoints/` 散放已废弃）,
+//! never touch the user's git, and work in a non-git dir. Only
 //! edit-tool changes are tracked — `shell`/`async_shell` side effects are NOT
 //! (their targets can't be known in advance). Persistence is one JSON file per
 //! turn (cheap delete, corruption-isolated).
+//!
+//! 落盘纪律（2026-08-30）：**只有产生了文件快照的 turn 才落盘**。内部请求
+//! （history 翻页/watchdog）的空 turn 只存在于内存、不写文件——否则每个
+//! Dashboard 翻页请求都会在目录里留一个空壳 JSON（现场 22 个文件大多如此的
+//! 根因）。
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -116,7 +122,8 @@ impl CheckpointStore {
         guard.cur = Some(cp.clone());
         guard.seen.clear();
         drop(guard);
-        self.persist(&cp);
+        // 注意：此处不落盘——begin 只是开 turn；首个文件快照（snapshot）到达
+        // 时才持久化。空 turn（无任何文件修改）不产生文件。
     }
 
     /// Snapshot the pre-edit state of the file a writer is about to change.

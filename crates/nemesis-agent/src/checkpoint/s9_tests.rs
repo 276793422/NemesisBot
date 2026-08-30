@@ -64,8 +64,21 @@ async fn truncate_from_removes_persisted_turn_files() {
     std::fs::create_dir_all(&root).unwrap();
 
     let store = CheckpointStore::new(Some(ckpt_dir.clone()), root.clone());
+    // 新语义（2026-08-30 空 turn 不落盘）：只有产生文件快照的 turn 才落盘。
     store.begin(1, "first");
+    store
+        .snapshot(&FileChange {
+            path: "f1.txt".into(),
+            kind: FileChangeKind::Modify,
+        })
+        .await;
     store.begin(2, "second");
+    store
+        .snapshot(&FileChange {
+            path: "f2.txt".into(),
+            kind: FileChangeKind::Modify,
+        })
+        .await;
     assert!(ckpt_dir.join("turn-1.json").exists());
     assert!(ckpt_dir.join("turn-2.json").exists());
 

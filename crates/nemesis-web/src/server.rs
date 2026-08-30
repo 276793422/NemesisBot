@@ -585,31 +585,46 @@ impl WebServer {
             format!("invalid listen address: {}", e)
         })?;
         let app = self.build_router();
-        // bind 失败重试（TIME_WAIT/残留句柄恢复窗口）：3 次 × 2s。耗尽后 loud
-        // 失败——此前静默降级（无 HTTP 服务）会让 Dashboard 子窗口空白且无提示。
+        // bind 失败自动递增端口重试（幽灵占用/TIME_WAIT 恢复）：最多 20 次。
+        // 每次失败端口 +1，直到找到可用端口——不会死守一个端口。
         let listener = {
+            let base_port = addr.port();
+            let ip = addr.ip();
             let mut last_err = String::new();
             let mut bound = None;
-            for attempt in 1..=3 {
-                match tokio::net::TcpListener::bind(addr).await {
+            for offset in 0..20u16 {
+                let try_port = base_port + offset;
+                let try_addr = std::net::SocketAddr::new(ip, try_port);
+                match tokio::net::TcpListener::bind(try_addr).await {
                     Ok(l) => {
+                        if offset > 0 {
+                            tracing::warn!(
+                                "[WebServer] Port {} busy, using {} instead",
+                                base_port,
+                                try_port
+                            );
+                        }
                         bound = Some(l);
                         break;
                     }
                     Err(e) => {
                         last_err = format!("{e}");
-                        tracing::error!(
-                            "[WebServer] Bind attempt {attempt}/3 failed on '{}': {}",
-                            addr,
+                        tracing::warn!(
+                            "[WebServer] Bind attempt {} failed on '{}': {}",
+                            offset,
+                            try_addr,
                             e
                         );
-                        if attempt < 3 {
-                            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-                        }
                     }
                 }
             }
-            bound.ok_or_else(|| format!("bind failed: {addr} after 3 attempts: {last_err}"))?
+            bound.ok_or_else(|| {
+                format!(
+                    "bind failed: no available port in range {}-{}: {last_err}",
+                    base_port,
+                    base_port + 19
+                )
+            })?
         };
 
         let actual_addr = listener
@@ -655,31 +670,46 @@ impl WebServer {
             format!("invalid listen address: {}", e)
         })?;
         let app = self.build_router();
-        // bind 失败重试（TIME_WAIT/残留句柄恢复窗口）：3 次 × 2s。耗尽后 loud
-        // 失败——此前静默降级（无 HTTP 服务）会让 Dashboard 子窗口空白且无提示。
+        // bind 失败自动递增端口重试（幽灵占用/TIME_WAIT 恢复）：最多 20 次。
+        // 每次失败端口 +1，直到找到可用端口——不会死守一个端口。
         let listener = {
+            let base_port = addr.port();
+            let ip = addr.ip();
             let mut last_err = String::new();
             let mut bound = None;
-            for attempt in 1..=3 {
-                match tokio::net::TcpListener::bind(addr).await {
+            for offset in 0..20u16 {
+                let try_port = base_port + offset;
+                let try_addr = std::net::SocketAddr::new(ip, try_port);
+                match tokio::net::TcpListener::bind(try_addr).await {
                     Ok(l) => {
+                        if offset > 0 {
+                            tracing::warn!(
+                                "[WebServer] Port {} busy, using {} instead",
+                                base_port,
+                                try_port
+                            );
+                        }
                         bound = Some(l);
                         break;
                     }
                     Err(e) => {
                         last_err = format!("{e}");
-                        tracing::error!(
-                            "[WebServer] Bind attempt {attempt}/3 failed on '{}': {}",
-                            addr,
+                        tracing::warn!(
+                            "[WebServer] Bind attempt {} failed on '{}': {}",
+                            offset,
+                            try_addr,
                             e
                         );
-                        if attempt < 3 {
-                            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-                        }
                     }
                 }
             }
-            bound.ok_or_else(|| format!("bind failed: {addr} after 3 attempts: {last_err}"))?
+            bound.ok_or_else(|| {
+                format!(
+                    "bind failed: no available port in range {}-{}: {last_err}",
+                    base_port,
+                    base_port + 19
+                )
+            })?
         };
 
         let actual_addr = listener

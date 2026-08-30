@@ -366,6 +366,8 @@ async fn operations_fail_before_init() {
 fn from_config_validates_command() {
     let config = ServerConfig {
         name: "test".into(),
+        transport_type: String::new(),
+        url: String::new(),
         command: "".into(),
         args: vec![],
         env: None,
@@ -380,6 +382,8 @@ fn from_config_validates_name() {
     // Empty name is accepted - from_config only validates command
     let config = ServerConfig {
         name: "".into(),
+        transport_type: String::new(),
+        url: String::new(),
         command: "echo".into(),
         args: vec![],
         env: None,

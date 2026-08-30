@@ -350,3 +350,27 @@ async fn persist_with_broken_dir_is_silent_noop() {
     let metas = store.list_meta();
     assert_eq!(metas.len(), 1, "in-memory checkpoint still exists");
 }
+
+// ---------------------------------------------------------------------------
+// 2026-08-30：空 turn 不落盘（begin 只开内存 turn，首个文件快照才持久化）
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn empty_turn_does_not_create_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = CheckpointStore::new(Some(dir.path().join("cp").to_path_buf()), dir.path().to_path_buf());
+
+    store.begin(0, "empty turn");
+    // 无任何 snapshot → 不落盘。
+    let cp_file = dir.path().join("cp").join("turn-0.json");
+    assert!(!cp_file.exists(), "empty turn must not be persisted: {cp_file:?}");
+
+    // 有文件快照的 turn → 落盘。
+    store
+        .snapshot(&FileChange {
+            path: "f.txt".into(),
+            kind: FileChangeKind::Modify,
+        })
+        .await;
+    assert!(cp_file.exists(), "turn with file changes is persisted: {cp_file:?}");
+}

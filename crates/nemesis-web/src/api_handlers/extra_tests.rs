@@ -656,7 +656,7 @@ async fn test_handle_api_config_empty_object() {
 #[tokio::test]
 async fn test_handle_api_logs_default_source_general() {
     let dir = tempfile::tempdir().unwrap();
-    let logs_dir = dir.path().join("logs");
+    let logs_dir = dir.path().join("logs").join("gateway");
     std::fs::create_dir_all(&logs_dir).unwrap();
     std::fs::write(
         logs_dir.join("nemesisbot.2026-06-17"),
@@ -680,7 +680,7 @@ async fn test_handle_api_logs_default_source_general() {
 #[tokio::test]
 async fn test_handle_api_logs_source_general_n_1() {
     let dir = tempfile::tempdir().unwrap();
-    let logs_dir = dir.path().join("logs");
+    let logs_dir = dir.path().join("logs").join("gateway");
     std::fs::create_dir_all(&logs_dir).unwrap();
     let lines: Vec<String> = (0..10).map(|i| format!(r#"{{"i":{}}}"#, i)).collect();
     std::fs::write(logs_dir.join("nemesisbot.2026-06-17"), lines.join("\n")).unwrap();
@@ -698,7 +698,7 @@ async fn test_handle_api_logs_source_general_n_1() {
 #[tokio::test]
 async fn test_handle_api_logs_n_exactly_1000() {
     let dir = tempfile::tempdir().unwrap();
-    let logs_dir = dir.path().join("logs");
+    let logs_dir = dir.path().join("logs").join("gateway");
     std::fs::create_dir_all(&logs_dir).unwrap();
     let lines: Vec<String> = (0..1500).map(|i| format!(r#"{{"i":{}}}"#, i)).collect();
     std::fs::write(logs_dir.join("nemesisbot.2026-06-17"), lines.join("\n")).unwrap();
@@ -716,7 +716,7 @@ async fn test_handle_api_logs_n_exactly_1000() {
 #[tokio::test]
 async fn test_handle_api_logs_empty_log_file_returns_empty_array() {
     let dir = tempfile::tempdir().unwrap();
-    let logs_dir = dir.path().join("logs");
+    let logs_dir = dir.path().join("logs").join("gateway");
     std::fs::create_dir_all(&logs_dir).unwrap();
     std::fs::write(logs_dir.join("nemesisbot.2026-06-17"), "").unwrap();
     let ws = dir.path().to_string_lossy().to_string();
@@ -1040,7 +1040,7 @@ fn test_resolve_log_file_path_general_no_logs_dir() {
 fn test_resolve_log_file_path_general_prefers_nemesisbot_over_app() {
     // New behavior: only nemesisbot.YYYY-MM-DD matches; legacy nemesisbot.log and app.log are ignored.
     let dir = tempfile::tempdir().unwrap();
-    let logs_dir = dir.path().join("logs");
+    let logs_dir = dir.path().join("logs").join("gateway");
     std::fs::create_dir_all(&logs_dir).unwrap();
     std::fs::write(logs_dir.join("nemesisbot.2026-06-17"), "primary").unwrap();
     std::fs::write(logs_dir.join("app.log"), "secondary").unwrap();

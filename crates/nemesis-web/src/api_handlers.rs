@@ -610,7 +610,10 @@ fn resolve_log_file_path(workspace: &str, source: &str) -> Option<String> {
             // New JSONL daily rotation: files are `nemesisbot.YYYY-MM-DD` (no `.log` extension
             // because tracing-appender 0.2 doesn't support suffixes). Match strictly by date
             // pattern to avoid hitting any legacy unrotated `nemesisbot.log`.
-            let logs_dir = nemesis_path::logs_dir_in_workspace(std::path::Path::new(workspace));
+            // 2026-08-30 统一收编：滚动日志移入 logs/gateway/ 子目录；
+            // logs 根的旧文件为历史归档，不再被本 glob 匹配。
+            let logs_dir = nemesis_path::logs_dir_in_workspace(std::path::Path::new(workspace))
+                .join("gateway");
             let mut matches: Vec<String> = Vec::new();
             if let Ok(entries) = std::fs::read_dir(&logs_dir) {
                 for entry in entries.flatten() {

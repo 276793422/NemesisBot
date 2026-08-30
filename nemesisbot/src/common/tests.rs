@@ -242,9 +242,10 @@ fn test_enhanced_memory_config_path() {
 #[test]
 fn test_cors_config_path() {
     let home = PathBuf::from("/tmp/test");
+    // 2026-08-29 收编：落位改 <workspace>/config/cors.json（nemesis-path 真相源）。
     assert_eq!(
         cors_config_path(&home),
-        PathBuf::from("/tmp/test/config/cors.json")
+        PathBuf::from("/tmp/test/workspace/config/cors.json")
     );
 }
 

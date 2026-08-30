@@ -503,11 +503,22 @@ pub fn build_agent_loop(
         }
     }
     // Checkpoint store (edit safety net): snapshots writer-tool file changes so
-    // a rewind can restore them. One per agent loop under {workspace}/.checkpoints/.
+    // a rewind can restore them. One per agent loop under
+    // {workspace}/logs/checkpoints/（2026-08-30 统一收编进 logs 家族；
+    // 旧 .checkpoints/ 散放目录一次性 move 迁移）。
     {
         let ws = shared.home.join("workspace");
+        // 旧散放目录迁移（一次性）：存在且新位缺失 → 整目录 move。
+        let legacy_cp = ws.join(".checkpoints");
+        let new_cp = nemesis_path::resolve_checkpoints_dir_in_workspace(&ws);
+        if legacy_cp.is_dir() && !new_cp.exists() {
+            if let Some(new_parent) = new_cp.parent() {
+                let _ = std::fs::create_dir_all(new_parent);
+            }
+            let _ = std::fs::rename(&legacy_cp, &new_cp);
+        }
         let store = Arc::new(nemesis_agent::checkpoint::CheckpointStore::new(
-            Some(ws.join(".checkpoints")),
+            Some(new_cp),
             ws,
         ));
         agent_loop.set_checkpoint_store(store);
@@ -999,8 +1010,10 @@ pub fn build_cluster_agent_loop(
     // 6b. Checkpoint store (edit safety net) for the cluster agent too.
     {
         let ws = shared.home.join("workspace");
+        // 同一 logs/checkpoints 目录：cluster 与 main 的 turn 计数各自独立，
+        // 平铺文件共用（与既有行为一致）；目录已由上方主 loop 迁移。
         let store = Arc::new(nemesis_agent::checkpoint::CheckpointStore::new(
-            Some(ws.join(".checkpoints")),
+            Some(nemesis_path::resolve_checkpoints_dir_in_workspace(&ws)),
             ws,
         ));
         agent_loop.set_checkpoint_store(store);

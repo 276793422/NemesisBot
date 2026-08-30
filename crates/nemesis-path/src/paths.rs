@@ -302,6 +302,19 @@ pub fn resolve_cors_config_path_in_workspace(workspace: &Path) -> PathBuf {
     workspace_config_dir(workspace).join("cors.json")
 }
 
+/// `<workspace>/logs/gateway/` —— 网关进程每日滚动日志目录（2026-08-30 统一
+/// 收编：`nemesisbot.YYYY-MM-DD` 产物原先散在 `logs/` 根，与 security_logs/
+/// cluster_logs/request_logs 等子目录混放）。
+pub fn resolve_gateway_logs_dir_in_workspace(workspace: &Path) -> PathBuf {
+    logs_dir_in_workspace(workspace).join("gateway")
+}
+
+/// `<workspace>/logs/checkpoints/` —— 编辑安全网 turn 快照（2026-08-30 统一
+/// 收编：原 `.checkpoints/` 散放 workspace 根，记录型数据归 logs 家族）。
+pub fn resolve_checkpoints_dir_in_workspace(workspace: &Path) -> PathBuf {
+    logs_dir_in_workspace(workspace).join("checkpoints")
+}
+
 /// `<workspace>/config/hooks.json` —— CC 方言钩子配置（2026-08-29 收编：
 /// 原先游离在 `<home>/config/hooks.json`，为 08-28 路径大迁移的漏网项；
 /// 读取方经 `migrate_legacy_home_hooks_config` 一次性迁移）。

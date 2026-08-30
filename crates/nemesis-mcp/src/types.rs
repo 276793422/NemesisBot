@@ -422,8 +422,16 @@ pub struct PromptResult {
 pub struct ServerConfig {
     /// Display name for this server.
     pub name: String,
-    /// Executable command (resolved via $PATH unless absolute).
+    /// Executable command (resolved via $PATH unless absolute). Unused by
+    /// http-transport servers.
+    #[serde(default)]
     pub command: String,
+    /// Transport: "stdio" (default) | "http" (Streamable HTTP, use `url`).
+    #[serde(default)]
+    pub transport_type: String,
+    /// Endpoint URL for HTTP-transport servers (e.g. http://127.0.0.1:8808/mcp).
+    #[serde(default)]
+    pub url: String,
     /// Arguments passed to the command.
     #[serde(default)]
     pub args: Vec<String>,
@@ -445,6 +453,8 @@ impl ServerConfig {
         Self {
             name: name.into(),
             command: command.into(),
+            transport_type: String::new(),
+            url: String::new(),
             args: Vec::new(),
             env: None,
             timeout_secs: 30,

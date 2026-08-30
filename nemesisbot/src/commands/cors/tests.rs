@@ -675,7 +675,8 @@ mod run_arm {
     }
 
     fn cors_of(home: &std::path::Path) -> std::path::PathBuf {
-        home.join("config").join("cors.json")
+        // 与生产 cors_config_path 新落位一致（workspace/config/cors.json）。
+        home.join("workspace").join("config").join("cors.json")
     }
 
     fn write_cors(home: &std::path::Path, cfg: serde_json::Value) {
@@ -994,7 +995,8 @@ mod wave_a {
     }
 
     fn cors_of(home: &std::path::Path) -> std::path::PathBuf {
-        home.join("config").join("cors.json")
+        // 与生产 cors_config_path 新落位一致（workspace/config/cors.json）。
+        home.join("workspace").join("config").join("cors.json")
     }
 
     fn write_cors(home: &std::path::Path, cfg: serde_json::Value) {
