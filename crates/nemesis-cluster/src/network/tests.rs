@@ -79,16 +79,27 @@ fn test_get_all_local_ips() {
 #[test]
 fn test_get_all_local_ips_excludes_virtual() {
     let ips = get_all_local_ips();
-    // Verify each returned IP is valid IPv4, not loopback, not link-local
-    for (i, ip) in ips.iter().enumerate() {
-        let parsed: IpAddr = ip
-            .parse()
-            .unwrap_or_else(|_| panic!("Invalid IP at index {}: {}", i, ip));
-        assert!(!parsed.is_loopback(), "should not include loopback: {}", ip);
-
-        if let IpAddr::V4(v4) = parsed {
-            assert!(!v4.is_link_local(), "should not include link-local: {}", ip);
-        }
+    // Each returned IP must be valid IPv4, not loopback. Link-local is
+    // allowed (kept for direct-cable / DHCP-failure topologies) but must
+    // sort AFTER any normal address (deprioritized, not dropped).
+    let parsed: Vec<IpAddr> = ips
+        .iter()
+        .enumerate()
+        .map(|(i, ip)| ip.parse().unwrap_or_else(|_| panic!("Invalid IP at index {}: {}", i, ip)))
+        .collect();
+    for ip in &parsed {
+        assert!(!ip.is_loopback(), "should not include loopback: {}", ip);
+    }
+    let first_ll = parsed.iter().position(|ip| matches!(ip, IpAddr::V4(v4) if v4.is_link_local()));
+    let last_normal = parsed
+        .iter()
+        .rposition(|ip| matches!(ip, IpAddr::V4(v4) if !v4.is_link_local()));
+    if let (Some(ll), Some(normal)) = (first_ll, last_normal) {
+        assert!(
+            ll > normal,
+            "link-local addresses must sort after normal ones: {:?}",
+            ips
+        );
     }
 }
 
@@ -540,9 +551,6 @@ fn test_get_all_local_ips_no_panic() {
     for ip in &ips {
         let parsed: IpAddr = ip.parse().unwrap();
         assert!(!parsed.is_loopback());
-        if let IpAddr::V4(v4) = parsed {
-            assert!(!v4.is_link_local());
-        }
     }
 }
 

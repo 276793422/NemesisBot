@@ -2239,6 +2239,15 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
             info!("[Gateway] Registered PeerChatHandler (async LLM + callback) for peer_chat");
         }
 
+        // --- H4: 任务恢复 handler（query_task_result / confirm_task_delivery）---
+        // gateway 装配不走 set_rpc_channel（该入口无人触发 →
+        // register_peer_chat_handlers 不会执行），这里显式补注册，与
+        // peer_chat/callback/task_cancel 并列。缺失时 A 侧
+        // poll_stale_pending_tasks（120s 周期）永远收到 "no handler"，
+        // B 重启丢结果后的 stale 恢复链路断裂（2026-09-01 跨机 E2E 实测）。
+        cluster.register_task_recovery_handlers();
+        info!("[Gateway] Registered task recovery handlers (query_task_result/confirm_task_delivery)");
+
         // --- W2 P4: task_cancel handler — per-task cancel ---
         // 取消指定 peer_chat 任务的执行：排队中的直接出队丢弃，运行中的经
         // running_tokens 广播取消（LLM 迭代间隙/工具派发前检查）。这是与

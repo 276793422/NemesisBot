@@ -807,6 +807,43 @@ fn test_submit_peer_chat() {
 }
 
 #[test]
+fn test_register_task_recovery_handlers_gateway_mode() {
+    // 回归钉（2026-09-01 跨机 E2E 发现）：gateway 模式不走 set_rpc_channel
+    // （无人调用 → register_peer_chat_handlers 不执行），gateway 又只自行
+    // 注册 peer_chat / peer_chat_callback / task_cancel——query_task_result
+    // / confirm_task_delivery 缺失使 A 侧 poll_stale_pending_tasks 永远
+    // 收到 "no handler"，stale 恢复链路断裂。gateway 现显式调用
+    // register_task_recovery_handlers；本测试钉住这两个 handler 可独立注册。
+    let cluster = make_cluster_with_rpc_server();
+    cluster.register_task_recovery_handlers();
+
+    let rpc_server = cluster.rpc_server.as_ref().unwrap();
+    for action in ["query_task_result", "confirm_task_delivery"] {
+        let result = rpc_server.handle_request_sync(action, serde_json::json!({}));
+        assert!(
+            result.is_ok(),
+            "Handler '{}' should be registered in gateway mode",
+            action
+        );
+    }
+
+    // not_found 语义：未知 task_id → {"status":"not_found"}（poll 据此判失败）
+    let out = rpc_server
+        .handle_request_sync("query_task_result", serde_json::json!({"task_id": "nope"}))
+        .unwrap();
+    assert_eq!(out["status"], "not_found");
+
+    // confirm 幂等：确认不存在的 task 也返回 confirmed
+    let out = rpc_server
+        .handle_request_sync(
+            "confirm_task_delivery",
+            serde_json::json!({"task_id": "nope"}),
+        )
+        .unwrap();
+    assert_eq!(out["status"], "confirmed");
+}
+
+#[test]
 fn test_submit_peer_chat_auto_task_id() {
     let cluster = Cluster::new(make_config());
     cluster.start();

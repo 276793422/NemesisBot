@@ -5,10 +5,11 @@
 //! 状态转移 / 指派走 store 的状态机接口（非法转移被拒），普通字段更新走 patch。
 //! 操作者身份：dashboard 登录用户 → `Actor::admin(session_id)`。
 //!
-//! **角色门控（W2 P2，board 计划 §1.2）**：board 权威只在 coordinator 节点
-//! （含旧值 master/manager）——写操作（建/改/转/指派/评论/订阅/项目）在
-//! worker 节点拒绝（403 语义，错误串以 "403:" 起头）；读操作全节点放行
-//! （worker 端可看任务详情）。worker 的写需求经集群派发到 coordinator。
+//! **角色门控（已移除，2026-08-31，见 board/tests.rs 回归钉）**：board.db 是
+//! 节点本地数据（无集群同步、CLI 同权直写），worker 对本机看板有完整写权
+//! （完整 CRUD；回归钉 `test_worker_role_never_403` 防止 role 403 门控回归）。
+//! 集群权威语义只体现在 `issue.dispatch`/`issue.cancel` 的派发链路上
+//! （dispatch 把任务发到 coordinator 选定的 worker，回报写回发起方看板）。
 
 use crate::handlers::{get_opt_str, get_str, require_workspace};
 use crate::ws_router::{ModuleHandler, RequestContext};

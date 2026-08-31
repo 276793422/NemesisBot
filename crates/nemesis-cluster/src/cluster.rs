@@ -1804,6 +1804,40 @@ impl Cluster {
         }
     }
 
+    /// Register only the H4 task-recovery handlers (query_task_result +
+    /// confirm_task_delivery).
+    ///
+    /// Gateway mode never calls [`Self::set_rpc_channel`]（该入口在 gateway
+    /// 装配流程中无人触发，`register_peer_chat_handlers` 因此不会执行），而
+    /// gateway 只自行注册 peer_chat / peer_chat_callback / task_cancel——
+    /// 不覆盖本函数注册的两个恢复 handler。缺失时 A 侧
+    /// `poll_stale_pending_tasks`（120s 周期）永远收到 "no handler"，B 重启
+    /// 丢结果后的 stale 恢复链路断裂（2026-09-01 跨机 E2E 实测发现）。
+    /// gateway 在 `Arc<Cluster>` 就绪后调用本函数；与
+    /// [`Self::register_peer_chat_handlers`] 共用同一对私有 builder（单一
+    /// 真相源），不重复实现。
+    pub fn register_task_recovery_handlers(&self) {
+        if let Err(e) =
+            self.register_rpc_handler("query_task_result", self.build_query_task_result_handler())
+        {
+            logger::log_error(
+                "cluster",
+                &format!("register query_task_result: {}", e),
+                "",
+            );
+        }
+        if let Err(e) = self.register_rpc_handler(
+            "confirm_task_delivery",
+            self.build_confirm_task_delivery_handler(),
+        ) {
+            logger::log_error(
+                "cluster",
+                &format!("register confirm_task_delivery: {}", e),
+                "",
+            );
+        }
+    }
+
     /// Register basic RPC handlers (ping, info, etc.).
     ///
     /// This can be called directly in daemon mode where RPCChannel is not

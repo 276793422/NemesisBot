@@ -72,6 +72,13 @@ pub struct NetworkInterface {
 ///
 /// Enumerates network interfaces using `if-addrs` (cross-platform).
 /// Falls back to the UDP connect trick if enumeration fails.
+///
+/// Link-local (169.254.0.0/16) interfaces are **kept**: direct Ethernet /
+/// DHCP-failure topologies have link-local as the *only* interconnect, and
+/// consumers of this list (broadcast-address enumeration in `listener.rs`,
+/// subnet matching in `is_same_subnet`) must still see those interfaces or
+/// discovery structurally cannot work on such networks. See
+/// `docs/REPORT/2026-09-01_link-local-discovery-fix.md`.
 pub fn get_local_network_interfaces() -> Vec<NetworkInterface> {
     match if_addrs::get_if_addrs() {
         Ok(interfaces) => {
@@ -83,9 +90,6 @@ pub fn get_local_network_interfaces() -> Vec<NetworkInterface> {
                 match &iface.addr {
                     if_addrs::IfAddr::V4(v4_addr) => {
                         let v4 = v4_addr.ip;
-                        if v4.is_link_local() {
-                            continue;
-                        }
                         if is_virtual_interface(&iface.name) {
                             continue;
                         }
@@ -217,15 +221,21 @@ fn is_same_subnet_simple(ip1: &str, ip2: &str) -> bool {
 struct CandidateIp {
     ip: String,
     priority: u32,
+    /// Link-local (169.254.0.0/16) addresses sort **after** all normal ones
+    /// but are not dropped: on direct-cable / DHCP-failure topologies the
+    /// link-local interface is the only interconnect, and dropping it made
+    /// UDP discovery structurally impossible there.
+    link_local: bool,
 }
 
 /// Get all local IP addresses by enumerating network interfaces.
 ///
 /// Mirrors Go's `GetAllLocalIPs()`:
 /// 1. Enumerates all network interfaces via `if-addrs` (cross-platform).
-/// 2. Skips loopback, link-local, and virtual interfaces.
-/// 3. Collects only non-loopback IPv4 addresses.
-/// 4. Sorts by interface priority (Ethernet > WiFi > Other).
+/// 2. Skips loopback and virtual interfaces.
+/// 3. Collects non-loopback IPv4 addresses; link-local (169.254.x.x) is
+///    kept but sorted last (normal addresses win when present).
+/// 4. Sorts by interface priority (Ethernet > WiFi > Other), link-local last.
 /// 5. Falls back to the UDP-connect trick if interface enumeration fails.
 pub fn get_all_local_ips() -> Vec<String> {
     // Try enumerating real network interfaces first (matches Go's net.Interfaces()).
@@ -241,11 +251,9 @@ pub fn get_all_local_ips() -> Vec<String> {
 
                 let ip = iface.addr.ip();
 
-                // Only consider IPv4, exclude link-local (169.254.x.x)
+                // Only consider IPv4; link-local is kept but deprioritized.
                 if let IpAddr::V4(v4) = ip {
-                    if v4.is_link_local() {
-                        continue;
-                    }
+                    let is_link_local = v4.is_link_local();
 
                     // Skip virtual interfaces by name
                     if is_virtual_interface(&iface.name) {
@@ -256,12 +264,14 @@ pub fn get_all_local_ips() -> Vec<String> {
                     candidates.push(CandidateIp {
                         ip: v4.to_string(),
                         priority,
+                        link_local: is_link_local,
                     });
                 }
             }
 
-            // Sort by priority (stable sort to preserve relative order)
-            candidates.sort_by_key(|c| c.priority);
+            // Sort by (priority, link-local-last); stable sort preserves
+            // relative order within the same key.
+            candidates.sort_by_key(|c| (c.priority, c.link_local));
 
             // Extract just the IP strings, deduplicating
             let mut result: Vec<String> = Vec::new();
