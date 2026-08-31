@@ -1,14 +1,24 @@
 //! Throwaway STT benchmark — measures single-utterance decode latency and the
 //! detected language, and exercises the lang_remedy (补救) dual-engine path.
 //!
+//! Windows-only: the local voice pipeline this exercises (bootstrap / model /
+//! stt) is `#[cfg(target_os = "windows")]`-gated in nemesis-voice, so the whole
+//! benchmark body is gated the same way. On other targets the example compiles
+//! to a stub main that just prints a note (keeps `cargo check --all-targets`
+//! green on Linux CI).
+//!
 //! Usage:
 //!   cargo run --release --example stt_bench -p nemesis-voice -- <voice_dir> [wav]
 
+#[cfg(target_os = "windows")]
 use anyhow::{Context, Result, bail};
+#[cfg(target_os = "windows")]
 use std::path::PathBuf;
+#[cfg(target_os = "windows")]
 use std::time::Instant;
 
 /// Read a PCM mono 16-bit WAV into f32 samples in [-1, 1]. Returns (samples, sample_rate).
+#[cfg(target_os = "windows")]
 fn read_wav_pcm_mono(path: &PathBuf) -> Result<(Vec<f32>, u32)> {
     let bytes = std::fs::read(path).with_context(|| format!("read {}", path.display()))?;
     if bytes.len() < 12 || &bytes[0..4] != b"RIFF" || &bytes[8..12] != b"WAVE" {
@@ -54,6 +64,7 @@ fn read_wav_pcm_mono(path: &PathBuf) -> Result<(Vec<f32>, u32)> {
 }
 
 /// 用指定 language 跑 N 次解码（lang_remedy=false，测原始每语言延迟），打印耗时/语言/文本。
+#[cfg(target_os = "windows")]
 fn bench_lang(
     stt_dir: &std::path::Path,
     model_name: &str,
@@ -101,6 +112,7 @@ fn bench_lang(
     Ok(())
 }
 
+#[cfg(target_os = "windows")]
 fn main() -> Result<()> {
     let voice_dir = PathBuf::from(
         std::env::args()
@@ -203,10 +215,22 @@ fn main() -> Result<()> {
     Ok(())
 }
 
+#[cfg(not(target_os = "windows"))]
+fn main() {
+    // nemesis-voice 的本地语音管线（bootstrap/model/stt）在非 Windows 平台被
+    // cfg 掉（见 crates/nemesis-voice/src/lib.rs），基准主体无法编译——留一个
+    // 说明性桩 main，保证 example 在 Linux CI 的 --all-targets 检查通过。
+    eprintln!(
+        "stt_bench: Windows-only example (nemesis-voice local voice pipeline is Windows-gated)"
+    );
+}
+
 // Small helper so we don't pull in a crate just for argv parsing.
+#[cfg(target_os = "windows")]
 trait DerefOrExit {
     fn deref_or_exit(self, msg: &str) -> String;
 }
+#[cfg(target_os = "windows")]
 impl DerefOrExit for Option<String> {
     fn deref_or_exit(self, msg: &str) -> String {
         match self {

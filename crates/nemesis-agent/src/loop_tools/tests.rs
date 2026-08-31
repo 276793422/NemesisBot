@@ -2200,26 +2200,47 @@ fn test_extract_path_empty_string() {
 
 #[tokio::test]
 async fn test_web_search_tool_missing_query() {
+    // Parse layer is LENIENT by design: extract_search_query falls back to the
+    // raw args string when "query" is absent (mirrors the extract_path family),
+    // so there is NO pre-network "missing query" error to assert. Pin that
+    // contract, then take the deterministic provider-chain error — unit tests
+    // must never depend on DuckDuckGo reachability (CI network vs. dev
+    // machines decide the outcome otherwise; this test once passed only
+    // because duckduckgo.com was unreachable locally).
+    assert_eq!(extract_search_query("{}").unwrap(), "{}");
+
     let config = WebSearchConfig {
-        duckduckgo_enabled: true,
+        duckduckgo_enabled: false,
+        brave_enabled: false,
+        perplexity_enabled: false,
         ..Default::default()
     };
     let tool = WebSearchTool::new(config);
     let ctx = RequestContext::new("web", "chat1", "user1", "sess1");
     let result = tool.execute("{}", &ctx).await;
     assert!(result.is_err());
+    assert!(result.unwrap_err().contains("No search provider"));
 }
 
 #[tokio::test]
 async fn test_web_search_tool_invalid_json() {
+    // Invalid JSON args are also LENIENT by design: extract_search_query falls
+    // back to the raw string as the query (same family as extract_path — see
+    // test_extract_path_invalid_json_raw). No parse error exists; assert the
+    // fallback contract plus the network-free deterministic provider error.
+    assert_eq!(extract_search_query("not json").unwrap(), "not json");
+
     let config = WebSearchConfig {
-        duckduckgo_enabled: true,
+        duckduckgo_enabled: false,
+        brave_enabled: false,
+        perplexity_enabled: false,
         ..Default::default()
     };
     let tool = WebSearchTool::new(config);
     let ctx = RequestContext::new("web", "chat1", "user1", "sess1");
     let result = tool.execute("not json", &ctx).await;
     assert!(result.is_err());
+    assert!(result.unwrap_err().contains("No search provider"));
 }
 
 // =========================================================================
@@ -4363,6 +4384,13 @@ async fn test_cli_reference_tool_all_command_arms() {
 async fn run_script_returns_structured_output() {
     let tool = RunScriptTool::new(std::env::temp_dir().to_string_lossy().as_ref(), false);
     let ctx = RequestContext::new("web", "chat1", "user1", "sess1");
+    // Platform-appropriate interpreter (same convention as the timeout/cwd
+    // tests below): `bash` is NOT reliably spawnable on Windows CI — PATH
+    // resolves it to System32's WSL stub (no distro → empty stdout, exit 1)
+    // because Git's usr/bin is not on the runner's PATH. cmd always exists.
+    #[cfg(windows)]
+    let args = r#"{"interpreter":"cmd","flag":"/C","script":"echo run-out & echo run-err 1>&2"}"#;
+    #[cfg(not(windows))]
     let args = r#"{"interpreter":"bash","flag":"-c","script":"echo run-out; echo run-err 1>&2"}"#;
     let result = tool
         .execute(args, &ctx)
@@ -4381,6 +4409,11 @@ async fn run_script_captures_nonzero_exit_in_struct() {
     // so the workflow script node can decide Completed vs Failed itself.
     let tool = RunScriptTool::new(std::env::temp_dir().to_string_lossy().as_ref(), false);
     let ctx = RequestContext::new("web", "chat1", "user1", "sess1");
+    // Interpreters per-platform (see run_script_returns_structured_output);
+    // `exit /b 7` propagates 7 as cmd /C's process exit code.
+    #[cfg(windows)]
+    let args = r#"{"interpreter":"cmd","flag":"/C","script":"echo bye & exit /b 7"}"#;
+    #[cfg(not(windows))]
     let args = r#"{"interpreter":"bash","flag":"-c","script":"echo bye; exit 7"}"#;
     let result = tool.execute(args, &ctx).await.expect("spawn succeeds");
     let parsed: serde_json::Value = serde_json::from_str(&result).unwrap();

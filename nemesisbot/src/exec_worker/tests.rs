@@ -303,6 +303,10 @@ mod executor_main_glue {
             }
             Self { vars }
         }
+        // Only the sandbox+windows tests below call these; gate them with the
+        // same cfg so other targets don't see them as dead code
+        // (Linux CI clippy runs with -D warnings).
+        #[cfg(all(feature = "sandbox", windows))]
         fn set_marker_and_home(&mut self, home: &std::path::Path) {
             unsafe { std::env::set_var("NEMESISBOT_EXECUTOR_SANDBOX", "1") };
             unsafe { std::env::set_var("NEMESISBOT_EXECUTOR_HOME", home) };
@@ -316,6 +320,7 @@ mod executor_main_glue {
         }
     }
 
+    #[cfg(all(feature = "sandbox", windows))]
     fn config_with(strict: bool) -> tempfile::TempDir {
         let dir = tempfile::tempdir().expect("tempdir");
         std::fs::write(
