@@ -415,7 +415,8 @@ impl SkillLinter {
             })
             .sum();
 
-        (1.0 - penalty).max(0.0).min(1.0)
+        // penalty is a sum of finite constants (never NaN), so clamp is equivalent.
+        (1.0 - penalty).clamp(0.0, 1.0)
     }
 }
 

@@ -702,7 +702,7 @@ async fn wsapi_validate_reports_errors() {
         .unwrap()
         .unwrap();
     assert_eq!(payload["valid"], false);
-    assert!(payload["errors"].as_array().unwrap().len() > 0);
+    assert!(!payload["errors"].as_array().unwrap().is_empty());
 }
 
 #[tokio::test]

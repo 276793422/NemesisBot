@@ -20,11 +20,13 @@ pub type SemanticEmbedder =
 /// Selection policy.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[derive(Default)]
 pub enum Policy {
     Cost,
     Quality,
     Latency,
     RoundRobin,
+    #[default]
     Fallback,
     /// I5 (P3.4): semantic routing — embed the conversation text and pick
     /// the candidate whose (embedded) description is closest by cosine.
@@ -33,11 +35,6 @@ pub enum Policy {
     Semantic,
 }
 
-impl Default for Policy {
-    fn default() -> Self {
-        Policy::Fallback
-    }
-}
 
 /// Policy configuration describing a named routing policy.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -277,7 +274,7 @@ impl MetricsCollector {
         let mut entry = self
             .samples
             .entry(metric.provider.clone())
-            .or_insert_with(Vec::new);
+            .or_default();
         if entry.len() >= self.max_per_provider {
             entry.remove(0);
         }
@@ -623,7 +620,7 @@ impl Router {
                 continue; // this candidate's description won't embed — skip
             };
             let score = cosine(&q, &dv);
-            if best.as_ref().map_or(true, |(bs, _)| score > *bs) {
+            if best.as_ref().is_none_or(|(bs, _)| score > *bs) {
                 best = Some((score, c));
             }
         }
@@ -664,8 +661,8 @@ impl Router {
         let resolved = self.resolve_alias(model);
 
         // Try primary
-        if let Some(candidate) = self.select(&resolved) {
-            if let Some(provider) = self.providers.get(&candidate.provider) {
+        if let Some(candidate) = self.select(&resolved)
+            && let Some(provider) = self.providers.get(&candidate.provider) {
                 let start = std::time::Instant::now();
                 match provider
                     .chat(messages, tools, &candidate.model, options)
@@ -700,8 +697,10 @@ impl Router {
                             timestamp: chrono::Local::now(),
                         });
                         if e.is_retriable() {
-                            // Try fallback candidates
-                            let candidates = self.candidates.read();
+                            // Try fallback candidates. Snapshot the vec inside
+                            // the read lock and drop it before awaiting chat —
+                            // the guard must not cross the network call.
+                            let candidates = self.candidates.read().clone();
                             for alt in candidates
                                 .iter()
                                 .filter(|c| c.model == resolved && c.provider != candidate.provider)
@@ -727,7 +726,6 @@ impl Router {
                     }
                 }
             }
-        }
 
         Err(FailoverError::Unknown {
             provider: "router".to_string(),

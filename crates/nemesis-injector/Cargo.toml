@@ -25,3 +25,6 @@ features = [
 ]
 
 # 非 Windows 编译为 stub（保 cargo check 绿，与项目其他 crate 一致）
+
+[lints]
+workspace = true

@@ -362,7 +362,7 @@ async fn run_eval(
             &proxy,
             api_base_host_for_meta.as_str(),
             &real_home,
-            &kind,
+            kind,
             &home,
             &workspace,
             &model_name,
@@ -472,7 +472,7 @@ fn acquire_eval_lock(sandbox_root: &Path) -> Result<EvalLock> {
                         .find_map(|l| l.strip_prefix("pid="))
                         .and_then(|v| v.trim().parse::<u32>().ok())
                 });
-            let holder_alive = holder_pid.is_some_and(|p| pid_alive(p));
+            let holder_alive = holder_pid.is_some_and(pid_alive);
             match holder_pid {
                 Some(p) if holder_alive => bail!(
                     "另一个 eval 正在运行（pid {p}，锁 {}）。Sandboxie.ini 是全局单文件，\
@@ -809,7 +809,7 @@ async fn run_phases(
     // 三通道立即落地（控制台/assessment.json/meta 段）；退码信号写进
     // 进程级 AtomicBool，run() 在清理守卫之后读到再 exit(2)——绝不能在
     // 这里直接 exit（会跳过 ini restore，见 assess_and_report 文档）。
-    let risk_exit = assess_and_report(&out_dir, &real_home, common_args.fail_on_risk);
+    let risk_exit = assess_and_report(&out_dir, real_home, common_args.fail_on_risk);
     RISK_EXIT_FLAG.store(risk_exit, std::sync::atomic::Ordering::Release);
 
     Ok(())
@@ -931,9 +931,9 @@ fn write_assessment(out_dir: &Path, result: &crate::eval_assessor::AssessResult)
 
     // meta.json 追加 assessment 段（读-改-写）。
     let meta_path = out_dir.join("meta.json");
-    if let Ok(content) = std::fs::read_to_string(&meta_path) {
-        if let Ok(mut meta) = serde_json::from_str::<serde_json::Value>(&content) {
-            if let Some(obj) = meta.as_object_mut() {
+    if let Ok(content) = std::fs::read_to_string(&meta_path)
+        && let Ok(mut meta) = serde_json::from_str::<serde_json::Value>(&content)
+            && let Some(obj) = meta.as_object_mut() {
                 obj.insert(
                     "assessment".to_string(),
                     serde_json::json!({
@@ -954,8 +954,6 @@ fn write_assessment(out_dir: &Path, result: &crate::eval_assessor::AssessResult)
                     eprintln!("[eval] WARN: meta.json assessment 段写入失败（{e}）");
                 }
             }
-        }
-    }
     result.fixed_notes()
 }
 
@@ -1379,7 +1377,8 @@ async fn wait_with_timeout(handle: windows_sys::Win32::Foundation::HANDLE, timeo
     // HANDLE (*mut c_void) is not Send — round-trip through usize.
     let h = handle as usize;
     let ms = wait_timeout_ms(timeout);
-    let code = tokio::task::spawn_blocking(move || unsafe {
+    
+    tokio::task::spawn_blocking(move || unsafe {
         let h = h as windows_sys::Win32::Foundation::HANDLE;
         if WaitForSingleObject(h, ms) != 0 {
             return None; // timeout or wait failure
@@ -1392,8 +1391,7 @@ async fn wait_with_timeout(handle: windows_sys::Win32::Foundation::HANDLE, timeo
     })
     .await
     .ok()
-    .flatten();
-    code
+    .flatten()
 }
 
 /// Duration → WaitForSingleObject 的 u32 毫秒。`as u32` 直接截断会把

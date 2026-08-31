@@ -134,7 +134,7 @@ fn full_conversation_lifecycle() {
     let session_dirs: Vec<_> = std::fs::read_dir(&log_dir)
         .unwrap()
         .filter_map(|e| e.ok())
-        .filter(|e| e.file_type().map_or(false, |ft| ft.is_dir()))
+        .filter(|e| e.file_type().is_ok_and(|ft| ft.is_dir()))
         .collect();
 
     // At least one session dir
@@ -599,7 +599,7 @@ fn collect_session_files(log_dir: &Path) -> Vec<String> {
     let session: std::path::PathBuf = std::fs::read_dir(log_dir)
         .unwrap()
         .filter_map(|e| e.ok())
-        .find(|e| e.file_type().map_or(false, |ft| ft.is_dir()))
+        .find(|e| e.file_type().is_ok_and(|ft| ft.is_dir()))
         .map(|e| e.path())
         .expect("session dir exists");
     std::fs::read_dir(&session)
@@ -772,7 +772,7 @@ fn raw_mode_failure_fallback_writes_error_envelope() {
     let session = std::fs::read_dir(&log_dir)
         .unwrap()
         .filter_map(|e| e.ok())
-        .find(|e| e.file_type().map_or(false, |ft| ft.is_dir()))
+        .find(|e| e.file_type().is_ok_and(|ft| ft.is_dir()))
         .map(|e| e.path())
         .expect("session dir exists");
     let raw = std::fs::read_dir(&session)
@@ -832,7 +832,7 @@ fn llm_response_skips_tool_calls_without_name() {
     let session = std::fs::read_dir(&log_dir)
         .unwrap()
         .filter_map(|e| e.ok())
-        .find(|e| e.file_type().map_or(false, |ft| ft.is_dir()))
+        .find(|e| e.file_type().is_ok_and(|ft| ft.is_dir()))
         .map(|e| e.path())
         .expect("session dir exists");
     let resp = std::fs::read_dir(&session)

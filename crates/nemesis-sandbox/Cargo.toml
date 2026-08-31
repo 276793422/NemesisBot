@@ -25,3 +25,6 @@ tracing-subscriber = { workspace = true }
 # U11 userland sandbox: landlock LSM bindings (Linux only).
 [target.'cfg(target_os = "linux")'.dependencies]
 landlock = "0.4"
+
+[lints]
+workspace = true

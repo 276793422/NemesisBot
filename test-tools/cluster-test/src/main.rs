@@ -281,7 +281,7 @@ fn test_two_node_ping() -> Result<String, String> {
         return Err(format!("expected status 'pong', got '{}'", status));
     }
 
-    server.stop().map_err(|e| e)?;
+    server.stop()?;
     Ok("B pinged A via TCP, got pong".into())
 }
 
@@ -355,8 +355,8 @@ fn test_bidirectional() -> Result<String, String> {
     let r1 = h_a_to_b.join().unwrap()?;
     let r2 = h_b_to_a.join().unwrap()?;
 
-    server_a.stop().map_err(|e| e)?;
-    server_b.stop().map_err(|e| e)?;
+    server_a.stop()?;
+    server_b.stop()?;
     Ok(format!("{}, {}", r1, r2))
 }
 
@@ -479,8 +479,8 @@ fn test_task_dispatch_callback() -> Result<String, String> {
         return Err(format!("unexpected response: {}", cb_resp));
     }
 
-    server_a.stop().map_err(|e| e)?;
-    server_b.stop().map_err(|e| e)?;
+    server_a.stop()?;
+    server_b.stop()?;
     Ok(format!(
         "ACK received, callback verified (task_id={})",
         task_id
@@ -601,7 +601,7 @@ fn test_concurrent_multi_task() -> Result<String, String> {
         }
     }
 
-    server.stop().map_err(|e| e)?;
+    server.stop()?;
     if errors.is_empty() {
         Ok(format!(
             "{} concurrent tasks, no cross-contamination",
@@ -639,7 +639,7 @@ fn test_auth_token_enforcement() -> Result<String, String> {
             }
             Err(e) => sub_results.push(format!("same_token: FAIL ({})", e)),
         }
-        server.stop().map_err(|e| e)?;
+        server.stop()?;
     }
 
     // Sub-test 2: Different token -> failure
@@ -652,7 +652,7 @@ fn test_auth_token_enforcement() -> Result<String, String> {
             Ok(_) => sub_results.push("different_token: FAIL (should have failed)".into()),
             Err(_) => sub_results.push("different_token: OK (rejected)".into()),
         }
-        server.stop().map_err(|e| e)?;
+        server.stop()?;
     }
 
     // Sub-test 3: Client no token + server has token -> failure
@@ -666,7 +666,7 @@ fn test_auth_token_enforcement() -> Result<String, String> {
             Ok(_) => sub_results.push("client_no_token: FAIL (should have failed)".into()),
             Err(_) => sub_results.push("client_no_token: OK (rejected)".into()),
         }
-        server.stop().map_err(|e| e)?;
+        server.stop()?;
     }
 
     // Sub-test 4: Both no token -> success
@@ -679,7 +679,7 @@ fn test_auth_token_enforcement() -> Result<String, String> {
             Ok(_) => sub_results.push("both_no_token: OK".into()),
             Err(e) => sub_results.push(format!("both_no_token: FAIL ({})", e)),
         }
-        server.stop().map_err(|e| e)?;
+        server.stop()?;
     }
 
     let all_ok = sub_results.iter().all(|r| r.contains(": OK"));
@@ -706,7 +706,7 @@ fn test_role_capabilities() -> Result<String, String> {
         .get("capabilities")
         .cloned()
         .unwrap_or(json!([]));
-    if caps.as_array().map_or(true, |a| a.is_empty()) {
+    if caps.as_array().is_none_or(|a| a.is_empty()) {
         return Err("expected non-empty capabilities".into());
     }
 
@@ -722,7 +722,7 @@ fn test_role_capabilities() -> Result<String, String> {
         return Err(format!("expected status 'online', got '{}'", status));
     }
 
-    server.stop().map_err(|e| e)?;
+    server.stop()?;
     Ok("get_capabilities + get_info verified".into())
 }
 
@@ -898,7 +898,7 @@ fn test_invalid_action() -> Result<String, String> {
         ));
     }
 
-    server.stop().map_err(|e| e)?;
+    server.stop()?;
     Ok(format!("no_handler error: {}", resp.error))
 }
 
@@ -941,7 +941,7 @@ fn test_message_validation() -> Result<String, String> {
         }
     }
 
-    server.stop().map_err(|e| e)?;
+    server.stop()?;
     Ok("empty_action=error, valid_ping=response".into())
 }
 
@@ -1112,8 +1112,8 @@ fn test_full_e2e() -> Result<String, String> {
     }
 
     disc.stop().map_err(|e| e.to_string())?;
-    server_a.stop().map_err(|e| e)?;
-    server_b.stop().map_err(|e| e)?;
+    server_a.stop()?;
+    server_b.stop()?;
     Ok("discovery->auth->peer_chat->callback verified".into())
 }
 
@@ -1125,7 +1125,7 @@ fn stress_basic_rpc() -> Result<String, String> {
     let (server, port) = start_server("");
     let addr = format!("127.0.0.1:{}", port);
 
-    server.register_handler("echo", Box::new(|payload| Ok(payload)));
+    server.register_handler("echo", Box::new(Ok));
 
     let req = WireMessage::new_request("client", "server", "echo", json!({"message": "hello"}));
     let resp = tcp_send_recv(&addr, &req)?;
@@ -1134,7 +1134,7 @@ fn stress_basic_rpc() -> Result<String, String> {
         return Err(format!("wrong type: {}", resp.msg_type));
     }
 
-    server.stop().map_err(|e| e)?;
+    server.stop()?;
     Ok("basic echo RPC succeeded".into())
 }
 
@@ -1174,7 +1174,7 @@ fn stress_concurrent_rpc() -> Result<String, String> {
         .filter(|&ok| ok)
         .count();
 
-    server.stop().map_err(|e| e)?;
+    server.stop()?;
     if success_count == num {
         Ok(format!(
             "{}/{} concurrent calls succeeded",
@@ -1215,7 +1215,7 @@ fn stress_sequential_rpc() -> Result<String, String> {
         }
     }
 
-    server.stop().map_err(|e| e)?;
+    server.stop()?;
     let min_expected = 45;
     if success >= min_expected {
         Ok(format!("{}/{} sequential calls succeeded", success, total))
@@ -1258,7 +1258,7 @@ fn stress_large_payload() -> Result<String, String> {
         return Err(format!("wrong type: {}", resp.msg_type));
     }
 
-    server.stop().map_err(|e| e)?;
+    server.stop()?;
     Ok(format!("100KB payload transfer: {:?}", elapsed))
 }
 
@@ -1292,7 +1292,7 @@ fn stress_timeout() -> Result<String, String> {
     write_frame(&mut &stream, &msg_data).map_err(|e| format!("send: {}", e))?;
 
     let result = read_frame(&mut &stream);
-    server.stop().map_err(|e| e)?;
+    server.stop()?;
 
     match result {
         Err(_) => Ok("timeout detected as expected".into()),
@@ -1319,28 +1319,22 @@ fn stress_connection_pool() -> Result<String, String> {
 
     let mut success = 0;
     for i in 0..5 {
-        match pool.get_or_connect(&addr) {
-            Ok(mut conn) => {
-                let req =
-                    WireMessage::new_request("client", "server", "pool_test", json!({"id": i}));
-                let data = req.to_bytes().map_err(|e| e.to_string())?;
-                if conn.send(&data).is_ok() {
-                    if let Ok(resp_data) = conn.recv() {
-                        if let Ok(resp) = WireMessage::from_bytes(&resp_data) {
-                            if resp.msg_type == "response" {
-                                success += 1;
-                            }
+        if let Ok(mut conn) = pool.get_or_connect(&addr) {
+            let req =
+                WireMessage::new_request("client", "server", "pool_test", json!({"id": i}));
+            let data = req.to_bytes().map_err(|e| e.to_string())?;
+            if conn.send(&data).is_ok()
+                && let Ok(resp_data) = conn.recv()
+                    && let Ok(resp) = WireMessage::from_bytes(&resp_data)
+                        && resp.msg_type == "response" {
+                            success += 1;
                         }
-                    }
-                }
-                pool.return_connection(&addr, conn);
-            }
-            Err(_) => {}
+            pool.return_connection(&addr, conn);
         }
     }
 
     pool.close_all();
-    server.stop().map_err(|e| e)?;
+    server.stop()?;
 
     if success >= 4 {
         Ok(format!("{}/5 pool connections succeeded", success))

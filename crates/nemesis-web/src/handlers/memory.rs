@@ -316,7 +316,7 @@ impl MemoryHandler {
 impl MemoryHandler {
     fn env_check(
         &self,
-        config_dir: &PathBuf,
+        config_dir: &Path,
         home: &str,
     ) -> Result<Option<serde_json::Value>, String> {
         let plugin = detect_plugin_path();
@@ -369,14 +369,14 @@ impl MemoryHandler {
             .models
             .get(&active_tier)
             .map(|mc| {
-                let model_ready = if !mc.local_model_path.is_empty()
+                
+                if !mc.local_model_path.is_empty()
                     && std::path::Path::new(&mc.local_model_path).exists()
                 {
                     true
                 } else {
                     emb_data_dir.join(&mc.name).join("model.onnx").exists()
-                };
-                model_ready
+                }
             })
             .unwrap_or(false);
 
@@ -403,12 +403,12 @@ impl MemoryHandler {
 
     async fn env_setup(
         &self,
-        config_dir: &PathBuf,
+        config_dir: &Path,
         home: &str,
         ctx: &RequestContext,
     ) -> Result<Option<serde_json::Value>, String> {
         let hub = ctx.state.event_hub.clone();
-        let config_dir_clone = config_dir.clone();
+        let config_dir_clone = config_dir.to_path_buf();
         let home_owned = home.to_string();
 
         let result = tokio::task::spawn_blocking(move || {
@@ -490,7 +490,7 @@ impl MemoryHandler {
 impl MemoryHandler {
     fn config_get(
         &self,
-        config_dir: &PathBuf,
+        config_dir: &Path,
         home: &str,
     ) -> Result<Option<serde_json::Value>, String> {
         let main_enabled = read_main_switch(home);
@@ -521,7 +521,7 @@ impl MemoryHandler {
 
     fn config_set(
         &self,
-        config_dir: &PathBuf,
+        config_dir: &Path,
         home: &str,
         data: &serde_json::Value,
         ctx: &crate::ws_router::RequestContext,
@@ -532,11 +532,10 @@ impl MemoryHandler {
         // Main switch
         if let Some(enabled) = get_opt_bool_loud(data, "main_enabled")? {
             set_main_switch(home, enabled)?;
-            if !enabled {
-                if let Some(mgr) = ctx.state.memory_manager.as_ref() {
+            if !enabled
+                && let Some(mgr) = ctx.state.memory_manager.as_ref() {
                     mgr.set_vector_enabled(false);
                 }
-            }
         }
 
         // Sub switch (write via unified config + runtime control)
@@ -639,7 +638,7 @@ impl MemoryHandler {
 impl MemoryHandler {
     fn stats(
         &self,
-        config_dir: &PathBuf,
+        config_dir: &Path,
         workspace: &str,
     ) -> Result<Option<serde_json::Value>, String> {
         let memory_dir = PathBuf::from(workspace).join("memory");
@@ -742,8 +741,8 @@ impl MemoryHandler {
         // substring scan over the persisted JSONL below when no manager
         // exists (memory.enabled=false) or the vector store is off.
         #[cfg(feature = "memory")]
-        if let Some(mgr) = ctx.state.memory_manager.as_ref() {
-            if mgr.is_vector_enabled() {
+        if let Some(mgr) = ctx.state.memory_manager.as_ref()
+            && mgr.is_vector_enabled() {
                 let result = mgr
                     .search(query, None, limit)
                     .await
@@ -769,7 +768,6 @@ impl MemoryHandler {
                     "query": query, "results": results, "total": total, "search_type": "semantic"
                 })));
             }
-        }
 
         migrate_legacy_vector_store(workspace);
         let jsonl_path = vector_store_jsonl_path(workspace);
@@ -824,8 +822,8 @@ impl MemoryHandler {
         // Pre-fix this command raw-appended to <workspace>/memory/vector/ —
         // a path no reader ever loaded.
         #[cfg(feature = "memory")]
-        if let Some(mgr) = ctx.state.memory_manager.as_ref() {
-            if mgr.is_vector_enabled() {
+        if let Some(mgr) = ctx.state.memory_manager.as_ref()
+            && mgr.is_vector_enabled() {
                 let entry = nemesis_memory::types::Entry::new(
                     nemesis_memory::types::MemoryType::LongTerm,
                     content.to_string(),
@@ -841,7 +839,6 @@ impl MemoryHandler {
             // persisted, so the JSONL at the load path is the only durable
             // copy — it is re-embedded when the sub-switch re-initializes
             // the vector store.
-        }
 
         migrate_legacy_vector_store(workspace);
         let jsonl_path = vector_store_jsonl_path(workspace);
@@ -893,8 +890,8 @@ impl MemoryHandler {
         ctx: &crate::ws_router::RequestContext,
     ) -> Result<Option<serde_json::Value>, String> {
         #[cfg(feature = "memory")]
-        if let Some(mgr) = ctx.state.memory_manager.as_ref() {
-            if mgr.is_vector_enabled() {
+        if let Some(mgr) = ctx.state.memory_manager.as_ref()
+            && mgr.is_vector_enabled() {
                 let entry = mgr
                     .get(id)
                     .await
@@ -905,7 +902,6 @@ impl MemoryHandler {
                     .map_err(|e| format!("serialize entry error: {}", e))?;
                 return Ok(Some(serde_json::json!({ "entry": json })));
             }
-        }
 
         migrate_legacy_vector_store(workspace);
         let jsonl_path = vector_store_jsonl_path(workspace);
@@ -919,11 +915,10 @@ impl MemoryHandler {
             if trimmed.is_empty() {
                 continue;
             }
-            if let Ok(entry) = serde_json::from_str::<serde_json::Value>(trimmed) {
-                if entry.get("id").and_then(|v| v.as_str()) == Some(id) {
+            if let Ok(entry) = serde_json::from_str::<serde_json::Value>(trimmed)
+                && entry.get("id").and_then(|v| v.as_str()) == Some(id) {
                     return Ok(Some(serde_json::json!({ "entry": entry })));
                 }
-            }
         }
         Ok(Some(serde_json::json!({ "entry": null })))
     }
@@ -940,15 +935,14 @@ impl MemoryHandler {
         ctx: &crate::ws_router::RequestContext,
     ) -> Result<Option<serde_json::Value>, String> {
         #[cfg(feature = "memory")]
-        if let Some(mgr) = ctx.state.memory_manager.as_ref() {
-            if mgr.is_vector_enabled() {
+        if let Some(mgr) = ctx.state.memory_manager.as_ref()
+            && mgr.is_vector_enabled() {
                 let deleted = mgr
                     .delete(id)
                     .await
                     .map_err(|e| format!("delete entry error: {}", e))?;
                 return Ok(Some(serde_json::json!({ "id": id, "deleted": deleted })));
             }
-        }
 
         migrate_legacy_vector_store(workspace);
         let jsonl_path = vector_store_jsonl_path(workspace);
@@ -996,8 +990,8 @@ impl MemoryHandler {
         ctx: &crate::ws_router::RequestContext,
     ) -> Result<Option<serde_json::Value>, String> {
         #[cfg(feature = "memory")]
-        if let Some(mgr) = ctx.state.memory_manager.as_ref() {
-            if mgr.is_vector_enabled() {
+        if let Some(mgr) = ctx.state.memory_manager.as_ref()
+            && mgr.is_vector_enabled() {
                 let deleted = mgr
                     .delete(id)
                     .await
@@ -1015,7 +1009,6 @@ impl MemoryHandler {
                     .map_err(|e| format!("store entry error: {}", e))?;
                 return Ok(Some(serde_json::json!({ "id": new_id, "updated": true })));
             }
-        }
         let _ = workspace;
         Err("强化记忆未启用，无法编辑条目（需要重新生成向量）；可删除后重新添加".to_string())
     }
@@ -1028,7 +1021,7 @@ impl MemoryHandler {
 impl MemoryHandler {
     async fn model_install(
         &self,
-        config_dir: &PathBuf,
+        config_dir: &Path,
         tier: &str,
         ctx: &RequestContext,
     ) -> Result<Option<serde_json::Value>, String> {
@@ -1050,7 +1043,7 @@ impl MemoryHandler {
         }
 
         let hub = ctx.state.event_hub.clone();
-        let config_dir_clone = config_dir.clone();
+        let config_dir_clone = config_dir.to_path_buf();
         let tier_owned = tier.to_string();
 
         let result = tokio::task::spawn_blocking(move || {
@@ -1197,8 +1190,8 @@ fn truncate_entry_content(mut entry: serde_json::Value) -> serde_json::Value {
         .get("content")
         .and_then(|v| v.as_str())
         .map(|s| s.to_string());
-    if let Some(c) = content {
-        if c.len() > 200 {
+    if let Some(c) = content
+        && c.len() > 200 {
             // Truncate at the nearest char boundary ≤ 200 bytes. Slicing at a
             // fixed byte index lands inside multibyte UTF-8 chars (e.g. Chinese
             // in memory content) and panics.
@@ -1213,7 +1206,6 @@ fn truncate_entry_content(mut entry: serde_json::Value) -> serde_json::Value {
                 )
             });
         }
-    }
     entry
 }
 

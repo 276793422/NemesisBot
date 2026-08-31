@@ -26,7 +26,7 @@ fn scan() -> cargo_scan::ScanResult {
 
 fn write(root: &std::path::Path, rel: &str, text: &str) -> std::path::PathBuf {
     let p = root.join(rel);
-    p.parent().map(|d| fs::create_dir_all(d).unwrap());
+    if let Some(d) = p.parent() { fs::create_dir_all(d).unwrap() }
     fs::write(&p, text).unwrap();
     p
 }

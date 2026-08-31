@@ -269,6 +269,7 @@ pub struct EngineInfo {
 
 /// Status of a scanner's virus definitions database.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Default)]
 pub struct DatabaseStatus {
     /// Whether a database is available.
     pub available: bool,
@@ -286,17 +287,6 @@ pub struct DatabaseStatus {
     pub size_bytes: i64,
 }
 
-impl Default for DatabaseStatus {
-    fn default() -> Self {
-        Self {
-            available: false,
-            version: String::new(),
-            last_update: String::new(),
-            path: String::new(),
-            size_bytes: 0,
-        }
-    }
-}
 
 // ---------------------------------------------------------------------------
 // VirusScanner trait
@@ -610,8 +600,8 @@ impl InstallableEngine for ClamAVEngine {
 
         if let Ok(entries) = walkdir(dir) {
             for path in entries {
-                if let Some(name) = path.file_name() {
-                    if targets.iter().any(|t| name == t.as_str()) {
+                if let Some(name) = path.file_name()
+                    && targets.iter().any(|t| name == t.as_str()) {
                         found_path = Some(
                             path.parent()
                                 .unwrap_or(Path::new("."))
@@ -620,7 +610,6 @@ impl InstallableEngine for ClamAVEngine {
                         );
                         break;
                     }
-                }
             }
         }
 
@@ -707,12 +696,11 @@ impl InstallableEngine for ClamAVEngine {
                             written += data.len() as u64;
 
                             // Report progress via callback (throttled to ~500ms)
-                            if let Some(ref cb) = on_progress {
-                                if last_progress.elapsed() >= std::time::Duration::from_millis(500) {
+                            if let Some(ref cb) = on_progress
+                                && last_progress.elapsed() >= std::time::Duration::from_millis(500) {
                                     cb(written, total_size.unwrap_or(0));
                                     last_progress = std::time::Instant::now();
                                 }
-                            }
 
                             // Log progress every 10 seconds
                             if last_log.elapsed() >= std::time::Duration::from_secs(10) {
@@ -938,18 +926,15 @@ impl VirusScanner for StubScanner {
 
 /// Selectable scan engine.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Default)]
 pub enum ScanEngine {
     /// No-op stub (always clean).
+    #[default]
     Stub,
     /// ClamAV virus scanner (connects to clamav daemon via TCP).
     ClamAV,
 }
 
-impl Default for ScanEngine {
-    fn default() -> Self {
-        Self::Stub
-    }
-}
 
 impl ScanEngine {
     /// Build the scanner corresponding to this engine variant.
@@ -1203,11 +1188,10 @@ impl VirusScanner for ClamavScannerWrapper {
         }
         // If manager is present, check its running state
         let guard = self.manager.lock().await;
-        if let Some(ref mgr) = *guard {
-            if !mgr.is_running() {
+        if let Some(ref mgr) = *guard
+            && !mgr.is_running() {
                 return false;
             }
-        }
         drop(guard);
         self.scanner.ping().await.is_ok()
     }
@@ -1237,8 +1221,8 @@ impl VirusScanner for ClamavScannerWrapper {
             },
             Err(e) => {
                 // Scan failed — maybe clamd crashed. Restart + retry once.
-                if self.restart_clamd_if_down().await {
-                    if let Ok(r) = self.scanner.scan_file(path).await {
+                if self.restart_clamd_if_down().await
+                    && let Ok(r) = self.scanner.scan_file(path).await {
                         return ScanResult {
                             path: r.path,
                             infected: r.infected,
@@ -1248,7 +1232,6 @@ impl VirusScanner for ClamavScannerWrapper {
                             duration: format!("{:?}", start.elapsed()),
                         };
                     }
-                }
                 // Still failing → G5 fail-open (clean on unavailable).
                 ScanResult {
                     path: path.to_string_lossy().to_string(),
@@ -1284,8 +1267,8 @@ impl VirusScanner for ClamavScannerWrapper {
                 duration: format!("{:?}", start.elapsed()),
             },
             Err(e) => {
-                if self.restart_clamd_if_down().await {
-                    if let Ok(r) = self.scanner.scan_content(content).await {
+                if self.restart_clamd_if_down().await
+                    && let Ok(r) = self.scanner.scan_content(content).await {
                         return ScanResult {
                             path: r.path,
                             infected: r.infected,
@@ -1295,7 +1278,6 @@ impl VirusScanner for ClamavScannerWrapper {
                             duration: format!("{:?}", start.elapsed()),
                         };
                     }
-                }
                 ScanResult {
                     path: String::new(),
                     infected: false,
@@ -1396,6 +1378,7 @@ pub fn available_engines() -> Vec<&'static str> {
 /// - If `scan_extensions` is non-empty, only scan files with those extensions.
 /// - Otherwise, skip files whose extension is in `skip_extensions`.
 /// - If both are empty, scan everything.
+#[derive(Default)]
 pub struct ExtensionRules {
     /// Whitelist: only scan files with these extensions.
     pub scan_extensions: Vec<String>,
@@ -1403,14 +1386,6 @@ pub struct ExtensionRules {
     pub skip_extensions: Vec<String>,
 }
 
-impl Default for ExtensionRules {
-    fn default() -> Self {
-        Self {
-            scan_extensions: Vec::new(),
-            skip_extensions: Vec::new(),
-        }
-    }
-}
 
 impl ExtensionRules {
     /// Create a new set of extension rules.
@@ -1435,11 +1410,10 @@ impl ExtensionRules {
         }
 
         // Blacklist mode: skip listed extensions.
-        if !self.skip_extensions.is_empty() {
-            if self.skip_extensions.iter().any(|e| e.to_lowercase() == ext) {
+        if !self.skip_extensions.is_empty()
+            && self.skip_extensions.iter().any(|e| e.to_lowercase() == ext) {
                 return false;
             }
-        }
 
         // Default: scan everything.
         true
@@ -1698,8 +1672,8 @@ impl ScanChain {
 
         match tool_name {
             "write_file" | "edit_file" | "append_file" => {
-                if let Some(content) = args.get("content").and_then(|v| v.as_str()) {
-                    if !content.is_empty() {
+                if let Some(content) = args.get("content").and_then(|v| v.as_str())
+                    && !content.is_empty() {
                         let result = self.scan_content(content.as_bytes()).await;
                         if result.blocked {
                             return (
@@ -1711,10 +1685,9 @@ impl ScanChain {
                             );
                         }
                     }
-                }
             }
-            "download" => {
-                if !file_path.is_empty() {
+            "download"
+                if !file_path.is_empty() => {
                     let result = self.scan_file(Path::new(file_path)).await;
                     if result.blocked {
                         return (
@@ -1726,9 +1699,8 @@ impl ScanChain {
                         );
                     }
                 }
-            }
-            "exec" | "execute_command" | "shell" | "exec_async" => {
-                if !file_path.is_empty() {
+            "exec" | "execute_command" | "shell" | "exec_async"
+                if !file_path.is_empty() => {
                     let result = self.scan_file(Path::new(file_path)).await;
                     if result.blocked {
                         return (
@@ -1740,7 +1712,6 @@ impl ScanChain {
                         );
                     }
                 }
-            }
             "web_fetch" => {
                 // Scan saved file if present
                 if !file_path.is_empty() {
@@ -1757,8 +1728,8 @@ impl ScanChain {
                 }
                 // Scan inline content fields
                 for key in &["content", "data", "body", "html"] {
-                    if let Some(content) = args.get(*key).and_then(|v| v.as_str()) {
-                        if !content.is_empty() {
+                    if let Some(content) = args.get(*key).and_then(|v| v.as_str())
+                        && !content.is_empty() {
                             let result = self.scan_content(content.as_bytes()).await;
                             if result.blocked {
                                 return (
@@ -1770,11 +1741,10 @@ impl ScanChain {
                                 );
                             }
                         }
-                    }
                 }
             }
-            "screen_capture" | "install_skill" => {
-                if !file_path.is_empty() {
+            "screen_capture" | "install_skill"
+                if !file_path.is_empty() => {
                     let result = self.scan_file(Path::new(file_path)).await;
                     if result.blocked {
                         return (
@@ -1786,11 +1756,10 @@ impl ScanChain {
                         );
                     }
                 }
-            }
             "cron" => {
                 // cron can schedule shell commands — scan referenced paths
-                if let Some(cmd) = args.get("command").and_then(|v| v.as_str()) {
-                    if !cmd.is_empty() {
+                if let Some(cmd) = args.get("command").and_then(|v| v.as_str())
+                    && !cmd.is_empty() {
                         let result = self.scan_content(cmd.as_bytes()).await;
                         if result.blocked {
                             return (
@@ -1802,7 +1771,6 @@ impl ScanChain {
                             );
                         }
                     }
-                }
             }
             _ => {}
         }
@@ -1919,14 +1887,12 @@ impl ScanChain {
             };
 
             // Skip engines not installed.
-            if let Some(state) = raw_cfg.get("state").and_then(|s| s.get("install_status")) {
-                if let Some(status) = state.as_str() {
-                    if status != INSTALL_STATUS_INSTALLED {
+            if let Some(state) = raw_cfg.get("state").and_then(|s| s.get("install_status"))
+                && let Some(status) = state.as_str()
+                    && status != INSTALL_STATUS_INSTALLED {
                         debug!("Skipping engine {} (status: {})", name, status);
                         continue;
                     }
-                }
-            }
 
             self.engines.push(engine);
         }

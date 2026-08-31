@@ -133,11 +133,7 @@ async fn run_group_nonzero_exit_logs_warn_fields() {
 async fn run_group_success_stdout_logs_info_fields() {
     let _logs = capture_logs();
     let tmp = tempdir();
-    let cmd = if cfg!(windows) {
-        "echo s9hookstdout"
-    } else {
-        "echo s9hookstdout"
-    };
+    let cmd = "echo s9hookstdout";
     let b = CcHookBridge::from_json(&hooks_doc("PreToolUse", cmd), tmp.clone())
         .expect("bridge");
     let d = b.pre_tool_use(&edit_call()).await;

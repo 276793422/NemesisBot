@@ -144,7 +144,7 @@ pub(crate) fn project_history_for_request(
 
         let mut out: Vec<crate::types::ConversationTurn> =
             Vec::with_capacity(history.len() - tail_start + 1);
-        if history.first().map_or(false, |t| t.role == "system") {
+        if history.first().is_some_and(|t| t.role == "system") {
             // Merge the summary into the configured system prompt (history[0]).
             let mut sys = history[0].clone();
             sys.content.push_str(&summary_block);
@@ -339,8 +339,10 @@ pub const BUSY_MESSAGE: &str =
 
 /// Concurrent request handling mode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Default)]
 pub enum ConcurrentMode {
     /// Reject new messages when session is busy (default; legacy behavior).
+    #[default]
     Reject,
     /// Queue messages when session is busy — processed after the current turn.
     Queue,
@@ -386,11 +388,6 @@ pub fn parse_concurrent_mode(s: &str) -> ConcurrentMode {
     }
 }
 
-impl Default for ConcurrentMode {
-    fn default() -> Self {
-        Self::Reject
-    }
-}
 
 /// Tracks busy state for sessions.
 pub struct SessionBusyTracker {
@@ -534,7 +531,7 @@ impl SentInRoundTracker {
 /// and agent config. In bus-integrated mode, it additionally owns a
 /// registry of agent instances, a message bus adapter, summarizer,
 /// and session busy tracker.
-
+///
 /// U5 (sixth batch): one parallel-executed read-only call's result, captured
 /// for serial guard replay in source order. `validation_failed` lets the
 /// serial loop replay the `validation_failures` counter exactly as the serial
@@ -1122,8 +1119,8 @@ impl AgentLoop {
             // The main loop is blocked until continuation completes,
             // ensuring serialized execution with no resource contention.
             let task_error = task_metadata.get("error").map(|s| s.as_str());
-            if let Some(ref mgr) = self.continuation_manager {
-                if let Some(ref tx) = self.outbound_tx {
+            if let Some(ref mgr) = self.continuation_manager
+                && let Some(ref tx) = self.outbound_tx {
                     // Clone data from RwLock guards before .await — guards are !Send
                     // and cannot be held across yield points in an async fn.
                     let provider = self.provider.read().clone();
@@ -1145,7 +1142,6 @@ impl AgentLoop {
                     )
                     .await;
                 }
-            }
         } else {
             // Spawn with semaphore-controlled concurrency.
             let task_error = task_metadata.get("error").cloned();
@@ -1160,8 +1156,8 @@ impl AgentLoop {
 
             tokio::spawn(async move {
                 let _permit = semaphore.acquire().await.unwrap();
-                if let Some(ref mgr) = continuation_manager {
-                    if let Some(ref tx) = outbound_tx {
+                if let Some(ref mgr) = continuation_manager
+                    && let Some(ref tx) = outbound_tx {
                         crate::loop_continuation::handle_cluster_continuation(
                             mgr.as_ref(),
                             &task_id,
@@ -1177,7 +1173,6 @@ impl AgentLoop {
                         )
                         .await;
                     }
-                }
             });
         }
     }
@@ -2192,11 +2187,10 @@ impl AgentLoop {
         }
 
         // History request.
-        if let Some(request_type) = msg.metadata.get("request_type") {
-            if request_type == "history" {
+        if let Some(request_type) = msg.metadata.get("request_type")
+            && request_type == "history" {
                 return GateOutcome::Ungated;
             }
-        }
 
         // Slash commands.
         if let Some(response) = self.handle_command_with_context(&msg.content, &msg.channel) {
@@ -2308,12 +2302,11 @@ impl AgentLoop {
         }
 
         // History request.
-        if let Some(request_type) = msg.metadata.get("request_type") {
-            if request_type == "history" {
+        if let Some(request_type) = msg.metadata.get("request_type")
+            && request_type == "history" {
                 self.handle_history_request(msg).await;
                 return (String::new(), String::new(), None);
             }
-        }
 
         // The gate classified everything else; unreachable in practice.
         (String::new(), String::new(), None)
@@ -2445,8 +2438,8 @@ impl AgentLoop {
                             Some(e) => format!("Error processing message: {}", e),
                             None => resp2,
                         };
-                        if !content.is_empty() {
-                            if let Some(ref tx) = self.outbound_tx {
+                        if !content.is_empty()
+                            && let Some(ref tx) = self.outbound_tx {
                                 let outbound = nemesis_types::channel::OutboundMessage {
                                     channel: head.msg.channel.clone(),
                                     chat_id: head.msg.chat_id.clone(),
@@ -2456,7 +2449,6 @@ impl AgentLoop {
                                 };
                                 let _ = tx.send(outbound).await;
                             }
-                        }
                     }
                 }
             }
@@ -2671,21 +2663,19 @@ impl AgentLoop {
     /// Record the last active channel for crash recovery.
     /// Mirrors Go's `state.Manager.SetLastChannel()`.
     pub fn record_last_channel(&self, channel: &str) {
-        if let Some(ref mgr) = self.state_manager {
-            if let Err(e) = mgr.set_last_channel(channel) {
+        if let Some(ref mgr) = self.state_manager
+            && let Err(e) = mgr.set_last_channel(channel) {
                 tracing::warn!("[AgentLoop] Failed to persist last channel: {}", e);
             }
-        }
     }
 
     /// Record the last active chat ID for crash recovery.
     /// Mirrors Go's `state.Manager.SetLastChatID()`.
     pub fn record_last_chat_id(&self, chat_id: &str) {
-        if let Some(ref mgr) = self.state_manager {
-            if let Err(e) = mgr.set_last_chat_id(chat_id) {
+        if let Some(ref mgr) = self.state_manager
+            && let Err(e) = mgr.set_last_chat_id(chat_id) {
                 tracing::warn!("[AgentLoop] Failed to persist last chat ID: {}", e);
             }
-        }
     }
 
     // -----------------------------------------------------------------------
@@ -2747,7 +2737,7 @@ impl AgentLoop {
     /// Check whether a session is currently busy.
     pub fn is_session_busy(&self, session_key: &str) -> bool {
         let map = self.session_busy.lock();
-        map.get(session_key).map_or(false, |s| s.busy)
+        map.get(session_key).is_some_and(|s| s.busy)
     }
 
     /// Get the queue length for a session.
@@ -2977,8 +2967,8 @@ impl AgentLoop {
         let chat_id_owned = chat_id.to_string();
         let clear_key = summarize_key.clone();
 
-        if !is_internal_channel(&channel_owned) {
-            if let Some(ref tx) = outbound_tx {
+        if !is_internal_channel(&channel_owned)
+            && let Some(ref tx) = outbound_tx {
                 let outbound = nemesis_types::channel::OutboundMessage {
                     channel: channel_owned.clone(),
                     chat_id: chat_id_owned.clone(),
@@ -2989,7 +2979,6 @@ impl AgentLoop {
                 };
                 let _ = tx.send(outbound).await;
             }
-        }
 
         // CC PreCompact（观察型，2026-08-29 三段化扩展）：exit 2 不阻止压缩
         // （稳定性机制）。先 clone Arc 再 await（不持锁跨 await）。
@@ -3730,15 +3719,14 @@ impl AgentLoop {
             let mut replay_voice: Option<crate::replay::VoiceAppend> = None;
 
             // Voice playback prompt injection: append to last user message (not stored in history).
-            if voice_playback {
-                if let Some(pos) = messages.iter().rposition(|m| m.role == "user") {
+            if voice_playback
+                && let Some(pos) = messages.iter().rposition(|m| m.role == "user") {
                     messages[pos].content.push_str(VOICE_PLAYBACK_SUFFIX);
                     replay_voice = Some(crate::replay::VoiceAppend {
                         index: pos,
                         suffix: VOICE_PLAYBACK_SUFFIX.to_string(),
                     });
                 }
-            }
 
             // ② Grace-round nudge. Transient — NOT persisted to instance history
             // or session_log; only this turn's message list carries it.
@@ -3976,15 +3964,14 @@ impl AgentLoop {
                             let mut compressed_messages = self.build_messages(instance);
 
                             // Re-apply voice playback prompt after compression.
-                            if voice_playback {
-                                if let Some(last_user) = compressed_messages
+                            if voice_playback
+                                && let Some(last_user) = compressed_messages
                                     .iter_mut()
                                     .rev()
                                     .find(|m| m.role == "user")
                                 {
                                     last_user.content.push_str("（语音播报模式已开启，请用简洁、便于口语播报的方式回复，避免使用代码块、表格等不适合语音的内容。）");
                                 }
-                            }
                             debug!(
                                 "[AgentLoop] Retry {}: sending {} messages after compression",
                                 retry_count,
@@ -4358,11 +4345,22 @@ impl AgentLoop {
             .await;
 
             // Record usage statistics if data store is available.
-            if let Some(ref ds) = self.data_store {
-                if let Some(ref usage) = response.usage {
+            if let Some(ref ds) = self.data_store
+                && let Some(ref usage) = response.usage {
                     let model_name = self.active_model.read().clone();
                     let cache_creation = usage.cache_creation_tokens.unwrap_or(0);
                     let cache_read = usage.cache_read_tokens.or(usage.cached_tokens).unwrap_or(0);
+                    // A3：分项计价 + 实际命中条目名（未命中 → 空名 + 全 0，
+                    // 明细行可区分「未命中」与「命中免费条目」）。
+                    let breakdown = ds.compute_cost_breakdown(
+                        &model_name,
+                        usage.prompt_tokens,
+                        usage.completion_tokens,
+                        cache_creation,
+                        cache_read,
+                    );
+                    let empty = nemesis_data::CostBreakdown::default();
+                    let bd = breakdown.as_ref().unwrap_or(&empty);
                     let log = nemesis_data::RequestLog {
                         id: 0,
                         trace_id: trace_id.to_string(),
@@ -4372,13 +4370,7 @@ impl AgentLoop {
                         output_tokens: usage.completion_tokens,
                         cache_creation_tokens: cache_creation,
                         cache_read_tokens: cache_read,
-                        total_cost_usd: nemesis_data::compute_cost_usd(
-                            &model_name,
-                            usage.prompt_tokens,
-                            usage.completion_tokens,
-                            cache_creation,
-                            cache_read,
-                        ),
+                        total_cost_usd: bd.total_cost_usd,
                         latency_ms: round_duration.as_millis() as i64,
                         status_code: if response.content.starts_with("Error:") {
                             500
@@ -4388,12 +4380,19 @@ impl AgentLoop {
                         error_message: None,
                         is_streaming: false,
                         created_at: chrono::Local::now().timestamp(),
+                        pricing_model: bd.pricing_model.clone(),
+                        input_cost_usd: bd.input_cost_usd,
+                        output_cost_usd: bd.output_cost_usd,
+                        cache_creation_cost_usd: bd.cache_creation_cost_usd,
+                        cache_read_cost_usd: bd.cache_read_cost_usd,
+                        // provider trait 无流式通路，TTFT 无从测量（列留 NULL）。
+                        first_token_ms: None,
+                        session_key: context.session_key.clone(),
                     };
                     if let Err(e) = ds.insert_request_log(&log) {
                         tracing::warn!("[AgentLoop] Failed to record usage: {e}");
                     }
                 }
-            }
 
             // Continue-generation on max_tokens truncation (内部专项/nanobot
             // pattern). When completion hits the cap, output is cut mid-way —
@@ -4977,12 +4976,11 @@ impl AgentLoop {
                     if tool_succeeded { None } else { Some(&gate_text) };
                 let nudge6 = turn_guard
                     .record_tool_outcome(&tc.name, error_for_guard)
-                    .map(|nudge| {
+                    .inspect(|_nudge| {
                         info!(
                             "[AgentLoop] loop guard: '{}' repeating the same failure within this turn; nudging",
                             tc.name
                         );
-                        nudge
                     });
 
                 // X1: the recorded projection override — only when the final
@@ -5011,13 +5009,10 @@ impl AgentLoop {
                 // only when the path matches a chain file name.)
                 if tool_succeeded
                     && matches!(tc.name.as_str(), "read_file" | "write_file" | "edit_file")
-                {
-                    if let Some(args_val) = serde_json::from_str::<serde_json::Value>(
+                    && let Ok(args_val) = serde_json::from_str::<serde_json::Value>(
                         &tc.arguments,
                     )
-                    .ok()
-                    {
-                        if let Some(path_str) =
+                        && let Some(path_str) =
                             args_val.get("path").and_then(|v| v.as_str())
                         {
                             let touched = std::path::PathBuf::from(path_str);
@@ -5050,8 +5045,6 @@ impl AgentLoop {
                                 }
                             }
                         }
-                    }
-                }
 
                 // ⑥ Escalation: same (tool, error) failed past the hard-stop
                 // threshold → nudges are being ignored. Latch a stop event and
@@ -5147,7 +5140,7 @@ impl AgentLoop {
     /// serial guard replay in source order. `validation_failed` lets the
     /// serial loop replay the `validation_failures` counter exactly as the
     /// serial path would (Invalid → +1; Valid/Fixed → reset to 0).
-
+    ///
     /// U5: concurrently execute an ALL-read-only batch (validated read-only
     /// by the caller). Each task runs the SAME execution path as the serial
     /// loop's match (`check_tool_args` → `handle_tool_call` or synthesize an
@@ -5454,15 +5447,15 @@ impl AgentLoop {
                 // after the rule layers allow, and only for CRITICAL operations (cost
                 // bounded). A Deny verdict blocks; errors/Allow proceed (the guardian
                 // only escalates — rules already denied cases returned above).
-                if security.is_critical_tool(&tool_call.name) {
-                    if let Some(judge) = security.judge() {
+                if security.is_critical_tool(&tool_call.name)
+                    && let Some(judge) = security.judge() {
                         let req = nemesis_security::guardian::JudgeRequest {
                             action: tool_call.name.clone(),
                             risk_level: "critical".to_string(),
                             transcript: tool_call.arguments.clone(),
                         };
-                        if let Ok(v) = judge.judge(&req).await {
-                            if v.outcome == nemesis_security::guardian::JudgeOutcome::Deny {
+                        if let Ok(v) = judge.judge(&req).await
+                            && v.outcome == nemesis_security::guardian::JudgeOutcome::Deny {
                                 warn!(
                                     "[AgentLoop] Guardian denied critical tool {}: {}",
                                     tool_call.name, v.rationale
@@ -5472,9 +5465,7 @@ impl AgentLoop {
                                     v.rationale
                                 );
                             }
-                        }
                     }
-                }
             }
         }
 
@@ -5547,13 +5538,11 @@ impl AgentLoop {
                 Box::pin(async move {
                     let tool_opt = tools.get(&call.name).cloned();
                     let tool_was_registered = tool_opt.is_some();
-                    if let Some(ref tool) = tool_opt {
-                        if let Some(change) = tool.preview(&call.arguments) {
-                            if let Some(cp) = cp.as_ref() {
+                    if let Some(ref tool) = tool_opt
+                        && let Some(change) = tool.preview(&call.arguments)
+                            && let Some(cp) = cp.as_ref() {
                                 cp.snapshot(&change).await;
                             }
-                        }
-                    }
                     match tool_opt {
                         Some(tool) => match tool.execute(&call.arguments, &ctx).await {
                             Ok(result) => {
@@ -5706,7 +5695,9 @@ impl AgentLoop {
     /// 触发 SessionEnd 钩子（会话 TTL 过期清理/显式删除时由装配点调用）。
     /// 直接走 CC 桥（唯一实现者；无桥 = no-op）。
     pub async fn run_session_end_hooks(&self, session_key: &str, reason: &str) {
-        if let Some(bridge) = self.cc_bridge.read().as_ref() {
+        // 复用 cc_hooks_bridge()（锁内 clone Arc 出来），读 guard 不得跨 await——
+        // 否则 on_session_end 整个回调期间 cc_bridge 写锁全部阻塞。
+        if let Some(bridge) = self.cc_hooks_bridge() {
             bridge.on_session_end(session_key, reason).await;
         }
     }
@@ -5878,10 +5869,7 @@ impl AgentLoop {
     /// config.json (`model set-effort`). None when unset/"off"/standalone.
     pub(crate) fn current_reasoning_effort(&self) -> Option<String> {
         let active = self.active_model.read().clone();
-        let path = match self.config_path.read().clone() {
-            Some(p) => p,
-            None => return None,
-        };
+        let path = self.config_path.read().clone()?;
         std::fs::read_to_string(&path)
             .ok()
             .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
@@ -5890,10 +5878,7 @@ impl AgentLoop {
 
     pub(crate) fn current_max_tokens(&self) -> Option<u32> {
         let active = self.active_model.read().clone();
-        let path = match self.config_path.read().clone() {
-            Some(p) => p,
-            None => return None,
-        };
+        let path = self.config_path.read().clone()?;
         std::fs::read_to_string(&path)
             .ok()
             .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
@@ -5911,10 +5896,7 @@ impl AgentLoop {
     /// real window (a 200K-window model compacted 6× too early).
     pub(crate) fn current_context_window(&self) -> Option<usize> {
         let active = self.active_model.read().clone();
-        let path = match self.config_path.read().clone() {
-            Some(p) => p,
-            None => return None,
-        };
+        let path = self.config_path.read().clone()?;
         std::fs::read_to_string(&path)
             .ok()
             .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
@@ -5998,10 +5980,10 @@ impl AgentLoop {
             let mut scored: Vec<(f64, String)> = result
                 .entries
                 .into_iter()
-                .filter_map(|e| {
+                .map(|e| {
                     let content = e.entry.content;
                     let cut = content.char_indices().nth(300).map(|(i, _)| i).unwrap_or(content.len());
-                    Some((e.score, content[..cut].to_string()))
+                    (e.score, content[..cut].to_string())
                 })
                 .collect();
             // Sort best-first, cap at top_k.
@@ -6170,8 +6152,8 @@ impl AgentLoop {
             // caller (run_llm_loop) did the async search against the CURRENT
             // user message; here we only render. Empty/None ⇒ no section ⇒
             // byte-identical output to auto_inject=false.
-            if let Some(hits) = memory_hits {
-                if !hits.is_empty() {
+            if let Some(hits) = memory_hits
+                && !hits.is_empty() {
                     let body = hits
                         .iter()
                         .map(|h| format!("- {}", h))
@@ -6181,7 +6163,6 @@ impl AgentLoop {
                         "# Memory Context\n{body}\n\n(以上是自动检索到的相关长期记忆，可能与当前对话有关，也可能无关——自行判断取舍。)"
                     ));
                 }
-            }
             // X2 (U8 refinement): runtime policy facts as the LAST section.
             // All three inputs are plain state rendered without clocks —
             // deterministic (same state ⇒ identical bytes, so the merged
@@ -6245,7 +6226,7 @@ impl AgentLoop {
             .iter()
             .rposition(|t| t.role == "user")
             .filter(|&i| i > 0)
-            .filter(|_| turns.first().map_or(false, |t| t.role == "system"));
+            .filter(|_| turns.first().is_some_and(|t| t.role == "system"));
 
         match last_user_idx {
             Some(idx) => {
@@ -6977,8 +6958,8 @@ pub fn extract_continuation_task_id(sender_id: &str) -> Option<&str> {
 /// - If `peer_kind` is set, uses `peer_id` (falls back to sender_id for "direct", chat_id otherwise)
 /// - If no metadata, returns sender_id
 pub fn extract_peer(msg: &nemesis_types::channel::InboundMessage) -> String {
-    if let Some(peer_kind) = msg.metadata.get("peer_kind") {
-        if !peer_kind.is_empty() {
+    if let Some(peer_kind) = msg.metadata.get("peer_kind")
+        && !peer_kind.is_empty() {
             let peer_id = msg.metadata.get("peer_id").cloned().unwrap_or_else(|| {
                 if peer_kind == "direct" {
                     msg.sender_id.clone()
@@ -6988,7 +6969,6 @@ pub fn extract_peer(msg: &nemesis_types::channel::InboundMessage) -> String {
             });
             return format!("{}:{}", peer_kind, peer_id);
         }
-    }
     msg.sender_id.clone()
 }
 
@@ -7055,14 +7035,10 @@ pub fn resolve_route(input: &RouteInput) -> RouteOutput {
         .parent_peer
         .as_ref()
         .and_then(|pp| {
-            if let Some(colon_pos) = pp.find(':') {
-                Some((
+            pp.find(':').map(|colon_pos| (
                     Some(pp[..colon_pos].to_string()),
                     Some(pp[colon_pos + 1..].to_string()),
                 ))
-            } else {
-                None
-            }
         })
         .unwrap_or((None, None));
 

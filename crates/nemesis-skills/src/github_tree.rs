@@ -96,7 +96,7 @@ pub async fn download_skill_tree_from_github(
     }
 
     // Create target directory.
-    std::fs::create_dir_all(target_dir).map_err(|e| NemesisError::Io(e))?;
+    std::fs::create_dir_all(target_dir).map_err(NemesisError::Io)?;
 
     // Download each file.
     for blob_path in &blob_paths {
@@ -112,24 +112,23 @@ pub async fn download_skill_tree_from_github(
             .canonicalize()
             .unwrap_or_else(|_| Path::new(target_dir).to_path_buf());
         let parent_dir = dest_path.parent().unwrap_or(Path::new(""));
-        if let Ok(canonical_dest_parent) = parent_dir.canonicalize() {
-            if !canonical_dest_parent.starts_with(&canonical_target) {
+        if let Ok(canonical_dest_parent) = parent_dir.canonicalize()
+            && !canonical_dest_parent.starts_with(&canonical_target) {
                 return Err(NemesisError::Security(format!(
                     "path traversal detected: {}",
                     relative_path
                 )));
             }
-        }
 
         // Create parent directory.
         if let Some(parent) = dest_path.parent() {
-            std::fs::create_dir_all(parent).map_err(|e| NemesisError::Io(e))?;
+            std::fs::create_dir_all(parent).map_err(NemesisError::Io)?;
         }
 
         let raw_url = format!("{}/{}/{}/{}", raw_base_url, repo, branch, blob_path);
 
         let data = download_file(client, &raw_url, max_file_size).await?;
-        std::fs::write(&dest_path, &data).map_err(|e| NemesisError::Io(e))?;
+        std::fs::write(&dest_path, &data).map_err(NemesisError::Io)?;
     }
 
     debug!(
@@ -172,8 +171,8 @@ pub fn decode_tree_blob_paths(body: &[u8], dir_prefix: &str) -> Result<Vec<Strin
         .ok_or_else(|| NemesisError::Other("empty tree response".to_string()))?
         .map_err(|e| NemesisError::Other(format!("failed to parse tree response: {}", e)))?;
 
-    if let serde_json::Value::Object(map) = root {
-        if let Some(serde_json::Value::Array(tree)) = map.get("tree") {
+    if let serde_json::Value::Object(map) = root
+        && let Some(serde_json::Value::Array(tree)) = map.get("tree") {
             for entry in tree {
                 if let serde_json::Value::Object(entry_map) = entry {
                     let entry_type = entry_map.get("type").and_then(|v| v.as_str()).unwrap_or("");
@@ -185,7 +184,6 @@ pub fn decode_tree_blob_paths(body: &[u8], dir_prefix: &str) -> Result<Vec<Strin
                 }
             }
         }
-    }
 
     Ok(blob_paths)
 }

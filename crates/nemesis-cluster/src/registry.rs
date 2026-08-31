@@ -324,8 +324,8 @@ impl PeerRegistry {
             .iter()
             .filter_map(|(id, entry)| {
                 // Only evict peers that are already offline (stale/failed)
-                if entry.info.status != NodeStatus::Online {
-                    if let Ok(last_check) =
+                if entry.info.status != NodeStatus::Online
+                    && let Ok(last_check) =
                         chrono::DateTime::parse_from_rfc3339(&entry.last_health_check)
                     {
                         let last_check_utc = last_check.with_timezone(&chrono::Local);
@@ -333,7 +333,6 @@ impl PeerRegistry {
                             return Some(id.clone());
                         }
                     }
-                }
                 None
             })
             .collect();

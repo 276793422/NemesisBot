@@ -2272,7 +2272,7 @@ fn test_load_from_disk_unreadable_dir_is_tolerated() {
     let tmp = tempfile::tempdir().unwrap();
     let blocker = tmp.path().join("blocker");
     std::fs::write(&blocker, b"x").unwrap();
-    let store = SessionStore::new_with_storage(&blocker.join("sessions"));
+    let store = SessionStore::new_with_storage(blocker.join("sessions"));
     assert!(store.is_empty());
 }
 
@@ -2313,7 +2313,7 @@ fn test_cleanup_unreadable_dir_returns_zero() {
     let tmp = tempfile::tempdir().unwrap();
     let blocker = tmp.path().join("f");
     std::fs::write(&blocker, b"x").unwrap();
-    let store = SessionStore::new_with_storage(&blocker.join("s"));
+    let store = SessionStore::new_with_storage(blocker.join("s"));
     assert_eq!(store.cleanup_old_sessions(7), 0);
 }
 
@@ -2581,7 +2581,7 @@ fn test_summarize_session_save_failure_warns_but_returns_summary() {
     let tmp = tempfile::tempdir().unwrap();
     let blocker = tmp.path().join("f");
     std::fs::write(&blocker, b"x").unwrap();
-    let store = Arc::new(SessionStore::new_with_storage(&blocker.join("s")));
+    let store = Arc::new(SessionStore::new_with_storage(blocker.join("s")));
     let key = format!(
         "test:savefail:{}",
         std::time::SystemTime::now()

@@ -563,9 +563,9 @@ pub fn assess(report_dir: &Path, rules: &RulesFile) -> AssessResult {
     // Y9 反向矛盾：meta 说 final_response_len==0 但文件非空 → meta 与文件
     // 矛盾（meta 被篡改/手改坏）→ 未知。只查这一方向：meta 非零 vs 文件
     // 实际长度的差异不报（手工编辑/换行差异是合法的）。
-    if integrity.final_response_len == Some(0) {
-        if let Ok(txt) = std::fs::read_to_string(report_dir.join("final_response.md")) {
-            if !txt.trim().is_empty() {
+    if integrity.final_response_len == Some(0)
+        && let Ok(txt) = std::fs::read_to_string(report_dir.join("final_response.md"))
+            && !txt.trim().is_empty() {
                 let mut r = make(Conclusion::Unknown, vec![]);
                 r.run_integrity = integrity.clone();
                 r.gaps.push(
@@ -574,13 +574,11 @@ pub fn assess(report_dir: &Path, rules: &RulesFile) -> AssessResult {
                 r.gaps.push("报告不一致，无法下结论；检查报告是否被篡改。".to_string());
                 return r;
             }
-        }
-    }
     // Z5：tool_call_count 同样的反向矛盾——meta 说 0 但 tool_trace 有记录
     //（Y9 只做了 final_response，这条漏了；skill 零调用判定完全依赖这个
     // 字段，被篡改的 0 会让"其实执行了工具的技能"跳过零调用检查）。
-    if integrity.tool_call_count == Some(0) {
-        if tool_trace.as_array().is_some_and(|a| !a.is_empty()) {
+    if integrity.tool_call_count == Some(0)
+        && tool_trace.as_array().is_some_and(|a| !a.is_empty()) {
             let mut r = make(Conclusion::Unknown, vec![]);
             r.run_integrity = integrity.clone();
             r.gaps.push(
@@ -589,7 +587,6 @@ pub fn assess(report_dir: &Path, rules: &RulesFile) -> AssessResult {
             r.gaps.push("报告不一致，无法下结论；检查报告是否被篡改。".to_string());
             return r;
         }
-    }
     let legacy = integrity.worker_error.is_none()
         && integrity.agent_exit.is_none()
         && integrity.monitor_shell_exit.is_none()
@@ -686,13 +683,11 @@ pub fn assess(report_dir: &Path, rules: &RulesFile) -> AssessResult {
     let mut compiled: Vec<(usize, usize, regex::Regex)> = Vec::new(); // (rule_idx, cond_idx, re)
     for (ri, rule) in enabled_rules.iter().enumerate() {
         for (ci, c) in rule.conditions.iter().enumerate() {
-            if c.op == "regex" {
-                if let Some(pat) = c.value.as_str() {
-                    if let Ok(re) = regex::Regex::new(pat) {
+            if c.op == "regex"
+                && let Some(pat) = c.value.as_str()
+                    && let Ok(re) = regex::Regex::new(pat) {
                         compiled.push((ri, ci, re));
                     }
-                }
-            }
         }
     }
 
@@ -720,7 +715,7 @@ pub fn assess(report_dir: &Path, rules: &RulesFile) -> AssessResult {
                     (eval_src, &driver_events)
                 }
                 "tool_trace" => (&trace_records, &trace_records),
-                "subject" => (&[subject_record.clone()], &[subject_record.clone()]),
+                "subject" => (std::slice::from_ref(&subject_record), std::slice::from_ref(&subject_record)),
                 _ => continue,
             };
         let mut hits = 0usize;
@@ -748,7 +743,7 @@ pub fn assess(report_dir: &Path, rules: &RulesFile) -> AssessResult {
                     let mut s = serde_json::to_string(src).unwrap_or_default();
                     if s.len() > 400 {
                         s.truncate(floor_char_boundary(&s, 400));
-                        s.push_str("…");
+                        s.push('…');
                     }
                     evidence.push(s);
                 }

@@ -36,6 +36,7 @@ impl IssueStatus {
     }
 
     /// 从库里的字符串解析（未知名回退 `None`，由调用方报错）。
+    #[allow(clippy::should_implement_trait)] // lenient parser with fallback; deliberately NOT std::str::FromStr (no Err semantics)
     pub fn from_str(s: &str) -> Option<Self> {
         match s {
             "backlog" => Some(IssueStatus::Backlog),
@@ -92,6 +93,7 @@ impl CommentType {
         }
     }
 
+    #[allow(clippy::should_implement_trait)] // lenient parser with fallback; deliberately NOT std::str::FromStr (no Err semantics)
     pub fn from_str(s: &str) -> Option<Self> {
         match s {
             "comment" => Some(CommentType::Comment),

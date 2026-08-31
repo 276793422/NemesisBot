@@ -294,11 +294,10 @@ impl Channel for ExternalChannel {
                 }
             };
 
-            if let Some(ref mut stdin) = child.stdin {
-                if let Err(e) = stdin.write_all(content.as_bytes()).await {
+            if let Some(ref mut stdin) = child.stdin
+                && let Err(e) = stdin.write_all(content.as_bytes()).await {
                     error!(error = %e, "[ExternalChannel] failed to write to output EXE stdin");
                 }
-            }
 
             match child.wait().await {
                 Ok(status) => {

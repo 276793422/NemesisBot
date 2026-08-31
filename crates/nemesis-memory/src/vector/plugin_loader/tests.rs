@@ -311,11 +311,10 @@ fn test_native_plugin_dim_default_zero() {
 // ============================================================
 
 fn real_dll_path() -> Option<String> {
-    if let Ok(path) = std::env::var("PLUGIN_ONNX_DLL_PATH") {
-        if Path::new(&path).exists() {
+    if let Ok(path) = std::env::var("PLUGIN_ONNX_DLL_PATH")
+        && Path::new(&path).exists() {
             return Some(path);
         }
-    }
     let manifest_dir = env!("CARGO_MANIFEST_DIR");
     let candidates = [
         format!(
@@ -340,11 +339,10 @@ fn real_dll_path() -> Option<String> {
 }
 
 fn real_model_dir() -> Option<String> {
-    if let Ok(dir) = std::env::var("PLUGIN_ONNX_TEST_MODEL_DIR") {
-        if Path::new(&dir).exists() {
+    if let Ok(dir) = std::env::var("PLUGIN_ONNX_TEST_MODEL_DIR")
+        && Path::new(&dir).exists() {
             return Some(dir);
         }
-    }
     let manifest_dir = env!("CARGO_MANIFEST_DIR");
     let candidates = [
         format!("{}/models/all-MiniLM-L6-v2", manifest_dir),
@@ -356,11 +354,10 @@ fn real_model_dir() -> Option<String> {
     ];
     for candidate in &candidates {
         let path = std::path::PathBuf::from(candidate);
-        if path.join("model.onnx").exists() {
-            if let Ok(canonical) = path.canonicalize() {
+        if path.join("model.onnx").exists()
+            && let Ok(canonical) = path.canonicalize() {
                 return Some(canonical.to_str().expect("valid path").to_string());
             }
-        }
     }
     None
 }

@@ -189,7 +189,7 @@ impl McpClient {
         // Parse initialize result.
         let result: InitializeResult = resp
             .result
-            .map(|v| serde_json::from_value(v))
+            .map(serde_json::from_value)
             .transpose()?
             .ok_or_else(|| ClientError::InvalidConfig("empty initialize result".into()))?;
 

@@ -102,7 +102,7 @@ fn verify_response_rejects_malformed_sig_hex() {
 
     // 128 个合法 hex 字符但签名不匹配 → Ok(false)（而非 Err）
     signed.sig = "0".repeat(128);
-    assert_eq!(verify_response(&signed, &vk).unwrap(), false);
+    assert!(!verify_response(&signed, &vk).unwrap());
 }
 
 #[test]
@@ -116,5 +116,5 @@ fn hex_decode_64_accepts_uppercase_and_trims() {
     };
     let (_, vk) = root_key(1);
     // sig 不匹配（全 AB 非真签名）但解析必须成功 → Ok(false)
-    assert_eq!(verify_response::<Crl>(&via_resp, &vk).unwrap(), false);
+    assert!(!verify_response::<Crl>(&via_resp, &vk).unwrap());
 }

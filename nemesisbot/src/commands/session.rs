@@ -150,7 +150,7 @@ fn list_sessions(home: &Path) -> Result<()> {
         return Ok(());
     }
     rows.sort_by(|a, b| b.3.cmp(&a.3));
-    println!("{:<44} {:>6} {:>9}  {:<16} {}", "SESSION KEY", "TURNS", "ROWS", "UPDATED", "");
+    println!("{:<44} {:>6} {:>9}  {:<16} ", "SESSION KEY", "TURNS", "ROWS", "UPDATED");
     for (key, turns, msgs, updated, tag) in &rows {
         println!("{:<44} {:>6} {:>9}  {:<16} {}", key, turns, msgs, updated, tag);
     }

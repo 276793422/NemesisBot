@@ -1,3 +1,9 @@
+// 刻意设计：本文件测试用进程级串行锁（GLOBAL_STATE_LOCK 等 env/资源互斥锁）
+// 保护环境操作，guard 必须跨 async 测试体的 await 持有；#[tokio::test] 每个
+// 测试独立 current_thread runtime，持锁方在自己线程上恢复运行，不会死锁。
+// 测试域统一豁免（逐处 allow ~200 个不现实）。
+#![allow(clippy::await_holding_lock)]
+
 use super::*;
 
 // -------------------------------------------------------------------------
@@ -530,7 +536,7 @@ fn test_dashboard_window_data_parsing() {
     let window_data = match window_type {
         "dashboard" => serde_json::json!({
             "token": auth_token,
-            "web_port": backend_url.split(':').last().and_then(|p| p.parse::<u16>().ok()).unwrap_or(49000),
+            "web_port": backend_url.split(':').next_back().and_then(|p| p.parse::<u16>().ok()).unwrap_or(49000),
             "web_host": backend_url.split("://").nth(1).and_then(|s| s.split(':').next()).unwrap_or("127.0.0.1"),
         }),
         "approval" => serde_json::json!({}),
@@ -573,7 +579,7 @@ fn test_backend_url_port_extraction() {
     let url = "http://192.168.1.1:8080";
     let port = url
         .split(':')
-        .last()
+        .next_back()
         .and_then(|p| p.parse::<u16>().ok())
         .unwrap_or(49000);
     assert_eq!(port, 8080);
@@ -846,9 +852,7 @@ fn test_cluster_result_persister_save_format() {
 fn test_peer_toml_key_sanitization() {
     let peer_id = "node-1.example.com:11949";
     let key_safe = peer_id
-        .replace('.', "_")
-        .replace(':', "_")
-        .replace('-', "_");
+        .replace(['.', ':', '-'], "_");
     assert_eq!(key_safe, "node_1_example_com_11949");
 }
 
@@ -1060,7 +1064,6 @@ fn test_forge_provider_bridge_construction() {
     // We can't create a real LLMProvider in unit tests, but we can verify
     // the struct layout and that the types are compatible.
     // The real test is that the code compiles with the correct types.
-    assert!(true, "ForgeProviderBridge type compiles correctly");
 }
 
 // -------------------------------------------------------------------------
@@ -1123,7 +1126,6 @@ fn test_cluster_forge_bridge_adapter_is_enabled() {
 fn test_run_bus_arc_signature_exists() {
     // Just verify the method exists by checking the type system.
     // A real functional test would require a full AgentLoop setup.
-    assert!(true, "run_bus_arc method compiles and is accessible");
 }
 
 // -------------------------------------------------------------------------
@@ -1200,7 +1202,6 @@ fn test_heartbeat_bus_adapter_type_compatible() {
     // Verify that the adapter pattern compiles by checking trait bounds.
     // The adapter is defined inline in the run() function so we can't
     // test it directly, but we verify the trait signatures match.
-    assert!(true, "HeartbeatBusAdapter types are compatible");
 }
 
 // -------------------------------------------------------------------------
@@ -1296,7 +1297,6 @@ fn test_forge_trace_store_creation() {
     let dir = tempfile::tempdir().unwrap();
     let _store = nemesis_forge::trace_store::TraceStore::new(dir.path());
     // Store was created successfully
-    assert!(true, "TraceStore created");
 }
 
 #[cfg(feature = "forge")]
@@ -1305,7 +1305,6 @@ fn test_forge_cycle_store_creation() {
     let dir = tempfile::tempdir().unwrap();
     let _store = nemesis_forge::cycle_store::CycleStore::new(dir.path());
     // CycleStore was created successfully
-    assert!(true, "CycleStore created");
 }
 
 #[cfg(feature = "forge")]
@@ -1656,7 +1655,7 @@ fn test_provider_adapter_tool_call_conversion() {
 #[test]
 fn test_provider_adapter_finished_logic_tool_calls_present() {
     // When tool_calls are present and finish_reason != "stop", finished = false
-    let tool_calls = vec![nemesis_agent::types::ToolCallInfo {
+    let tool_calls = [nemesis_agent::types::ToolCallInfo {
         id: "call_1".to_string(),
         name: "test".to_string(),
         arguments: "{}".to_string(),
@@ -2058,7 +2057,6 @@ fn test_context_builder_with_workspace() {
 
     let _builder = nemesis_agent::context::ContextBuilder::new(&workspace);
     // Just verify construction doesn't panic
-    assert!(true, "ContextBuilder created with workspace");
 }
 
 // -------------------------------------------------------------------------
@@ -2409,14 +2407,13 @@ name = "Empty Addr Peer"
     // 轮询就绪：web_port 在 TcpListener 真实 bind 后写入（Step 17）。
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
     let web_port: u16 = loop {
-        if let Ok(txt) = std::fs::read_to_string(&state_path) {
-            if let Ok(v) = serde_json::from_str::<serde_json::Value>(&txt) {
+        if let Ok(txt) = std::fs::read_to_string(&state_path)
+            && let Ok(v) = serde_json::from_str::<serde_json::Value>(&txt) {
                 let p = v.get("web_port").and_then(|x| x.as_i64()).unwrap_or(0);
                 if p > 0 {
                     break p as u16;
                 }
             }
-        }
         assert!(
             std::time::Instant::now() < deadline,
             "gateway 未在 120s 内完成 web bind；state={:?}",
@@ -3256,14 +3253,13 @@ mod r9_gateway_boot_scenarios {
         let state_path = ws.home().join("workspace").join("state").join("gateway.json");
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
         let web_port: u16 = loop {
-            if let Ok(txt) = std::fs::read_to_string(&state_path) {
-                if let Ok(v) = serde_json::from_str::<serde_json::Value>(&txt) {
+            if let Ok(txt) = std::fs::read_to_string(&state_path)
+                && let Ok(v) = serde_json::from_str::<serde_json::Value>(&txt) {
                     let p = v.get("web_port").and_then(|x| x.as_i64()).unwrap_or(0);
                     if p > 0 {
                         break p as u16;
                     }
                 }
-            }
             assert!(
                 std::time::Instant::now() < deadline,
                 "{name} 未在 120s 内完成 web bind；state={:?}",
@@ -3677,15 +3673,12 @@ variables: {}
         // busy+1（fallback 已不存在：walk 落到邻端口成功 serve）。
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
         let observed: u16 = loop {
-            if let Ok(txt) = std::fs::read_to_string(&state_path) {
-                if let Ok(v) = serde_json::from_str::<serde_json::Value>(&txt) {
-                    if let Some(p) = v.get("web_port").and_then(|x| x.as_i64()) {
-                        if p > 0 {
+            if let Ok(txt) = std::fs::read_to_string(&state_path)
+                && let Ok(v) = serde_json::from_str::<serde_json::Value>(&txt)
+                    && let Some(p) = v.get("web_port").and_then(|x| x.as_i64())
+                        && p > 0 {
                             break p as u16;
                         }
-                    }
-                }
-            }
             assert!(
                 std::time::Instant::now() < deadline,
                 "bind-conflict 网关未在 120s 内写出 state；holder={:?}",

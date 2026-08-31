@@ -207,24 +207,22 @@ async fn extra_client_call_timeout_when_no_response() {
 
     // Spawn a fake server that does WS handshake but never responds to requests
     tokio::spawn(async move {
-        loop {
-            if let Ok((stream, _)) = listener.accept().await {
-                tokio::spawn(async move {
-                    // Do WS handshake
-                    if let Ok(ws) = tokio_tungstenite::accept_async(stream).await {
-                        let (_write, mut read) = ws.split();
-                        // Read auth message
-                        if let Some(Ok(_msg)) = read.next().await {
-                            // Read the request message - then do nothing (no response)
-                            let _ = read.next().await;
-                            // Hold the connection open
-                            tokio::time::sleep(Duration::from_secs(40)).await;
-                        }
+        // while-let: a broken listener ends the accept loop (same as the old
+        // `else { break }`, one nesting level flatter).
+        while let Ok((stream, _)) = listener.accept().await {
+            tokio::spawn(async move {
+                // Do WS handshake
+                if let Ok(ws) = tokio_tungstenite::accept_async(stream).await {
+                    let (_write, mut read) = ws.split();
+                    // Read auth message
+                    if let Some(Ok(_msg)) = read.next().await {
+                        // Read the request message - then do nothing (no response)
+                        let _ = read.next().await;
+                        // Hold the connection open
+                        tokio::time::sleep(Duration::from_secs(40)).await;
                     }
-                });
-            } else {
-                break;
-            }
+                }
+            });
         }
     });
 

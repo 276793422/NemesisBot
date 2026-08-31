@@ -266,8 +266,8 @@ impl SttEngine {
     ) -> Result<(String, Option<String>)> {
         let (text, lang) = decode_recognizer(self.recognizer, samples, sample_rate)?;
 
-        if let Some(r) = &self.restriction {
-            if let Some((fb_text, fb_lang)) = r.apply(lang.as_deref(), samples, sample_rate)? {
+        if let Some(r) = &self.restriction
+            && let Some((fb_text, fb_lang)) = r.apply(lang.as_deref(), samples, sample_rate)? {
                 tracing::debug!(
                     detected = ?lang,
                     fallback = %fb_lang,
@@ -276,7 +276,6 @@ impl SttEngine {
                 );
                 return Ok((fb_text, Some(fb_lang)));
             }
-        }
 
         Ok((text, lang))
     }
@@ -310,19 +309,17 @@ pub(crate) fn decode_recognizer(
 
     if !result_ptr.is_null() {
         let result = unsafe { &*result_ptr };
-        if !result.text.is_null() {
-            if let Ok(s) = unsafe { CStr::from_ptr(result.text) }.to_str() {
+        if !result.text.is_null()
+            && let Ok(s) = unsafe { CStr::from_ptr(result.text) }.to_str() {
                 text = s.to_string();
             }
-        }
-        if !result.lang.is_null() {
-            if let Ok(s) = unsafe { CStr::from_ptr(result.lang) }.to_str() {
+        if !result.lang.is_null()
+            && let Ok(s) = unsafe { CStr::from_ptr(result.lang) }.to_str() {
                 let normalized = normalize_lang_token(s);
                 if !normalized.is_empty() {
                     lang = Some(normalized);
                 }
             }
-        }
         unsafe { sherpa::SherpaOnnxDestroyOfflineRecognizerResult(result_ptr) };
     }
 

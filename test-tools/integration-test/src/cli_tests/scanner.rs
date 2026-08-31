@@ -15,7 +15,7 @@ pub async fn test_cli_scanner_list(ws: &TestWorkspace, bin: &Path) -> Vec<TestRe
     let output = ws.run_cli(bin, &["scanner", "list"]).await;
     results.push(pass(
         &format!("{}/list", suite),
-        &format!(
+        format!(
             "exit={}, output: '{}'",
             output.exit_code,
             output.stdout.trim().chars().take(100).collect::<String>()
@@ -49,21 +49,21 @@ pub async fn test_cli_scanner_add_remove(ws: &TestWorkspace, bin: &Path) -> Vec<
         .await;
     results.push(pass(
         &format!("{}/add", suite),
-        &format!("exit={}", add.exit_code),
+        format!("exit={}", add.exit_code),
     ));
 
     // scanner info
     let info = ws.run_cli(bin, &["scanner", "info", "test-engine"]).await;
     results.push(pass(
         &format!("{}/info", suite),
-        &format!("exit={}", info.exit_code),
+        format!("exit={}", info.exit_code),
     ));
 
     // scanner remove
     let remove = ws.run_cli(bin, &["scanner", "remove", "test-engine"]).await;
     results.push(pass(
         &format!("{}/remove", suite),
-        &format!("exit={}", remove.exit_code),
+        format!("exit={}", remove.exit_code),
     ));
 
     results
@@ -84,7 +84,7 @@ pub async fn test_cli_scanner_enable_disable(ws: &TestWorkspace, bin: &Path) -> 
     let enable = ws.run_cli(bin, &["scanner", "enable", "temp-engine"]).await;
     results.push(pass(
         &format!("{}/enable", suite),
-        &format!("exit={}", enable.exit_code),
+        format!("exit={}", enable.exit_code),
     ));
 
     let disable = ws
@@ -92,7 +92,7 @@ pub async fn test_cli_scanner_enable_disable(ws: &TestWorkspace, bin: &Path) -> 
         .await;
     results.push(pass(
         &format!("{}/disable", suite),
-        &format!("exit={}", disable.exit_code),
+        format!("exit={}", disable.exit_code),
     ));
 
     // Cleanup
@@ -114,14 +114,14 @@ pub async fn test_cli_scanner_check_install(ws: &TestWorkspace, bin: &Path) -> V
     let check = ws.run_cli(bin, &["scanner", "check"]).await;
     results.push(pass(
         &format!("{}/check", suite),
-        &format!("exit={}", check.exit_code),
+        format!("exit={}", check.exit_code),
     ));
 
     // scanner install (may need network, test parsing only)
     let install = ws.run_cli(bin, &["scanner", "install"]).await;
     results.push(pass(
         &format!("{}/install", suite),
-        &format!("exit={}", install.exit_code),
+        format!("exit={}", install.exit_code),
     ));
 
     // scanner install --dir
@@ -138,7 +138,7 @@ pub async fn test_cli_scanner_check_install(ws: &TestWorkspace, bin: &Path) -> V
         .await;
     results.push(pass(
         &format!("{}/install_dir", suite),
-        &format!("exit={}", install_dir.exit_code),
+        format!("exit={}", install_dir.exit_code),
     ));
 
     results
@@ -160,21 +160,21 @@ pub async fn test_cli_scanner_download_test_update(
     let dl_help = ws.run_cli(bin, &["scanner", "download", "--help"]).await;
     results.push(pass(
         &format!("{}/download_help", suite),
-        &format!("exit={}", dl_help.exit_code),
+        format!("exit={}", dl_help.exit_code),
     ));
 
     // scanner test --help
     let test_help = ws.run_cli(bin, &["scanner", "test", "--help"]).await;
     results.push(pass(
         &format!("{}/test_help", suite),
-        &format!("exit={}", test_help.exit_code),
+        format!("exit={}", test_help.exit_code),
     ));
 
     // scanner update --help
     let update_help = ws.run_cli(bin, &["scanner", "update", "--help"]).await;
     results.push(pass(
         &format!("{}/update_help", suite),
-        &format!("exit={}", update_help.exit_code),
+        format!("exit={}", update_help.exit_code),
     ));
 
     results

@@ -23,6 +23,7 @@ pub mod handlers;
 pub mod history;
 pub mod internal;
 pub mod llm_bridge;
+pub mod pricing_sync;
 pub mod protocol;
 pub mod sdk_embed;
 pub mod server;

@@ -8,9 +8,11 @@ use std::fmt;
 
 /// Represents the current state of the Bot service.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Default)]
 pub enum BotState {
     /// Bot has not been started yet.
     #[serde(rename = "not_started")]
+    #[default]
     NotStarted,
     /// Bot is currently starting up.
     #[serde(rename = "starting")]
@@ -62,11 +64,6 @@ impl fmt::Display for BotState {
     }
 }
 
-impl Default for BotState {
-    fn default() -> Self {
-        BotState::NotStarted
-    }
-}
 
 // ---------------------------------------------------------------------------
 // Tests

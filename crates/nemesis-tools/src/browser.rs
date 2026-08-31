@@ -74,7 +74,7 @@ impl BrowserTool {
     }
 
     fn has_mcp(&self) -> bool {
-        self.mcp_caller.as_ref().map_or(false, |c| c.is_connected())
+        self.mcp_caller.as_ref().is_some_and(|c| c.is_connected())
     }
 
     fn parse_action(&self, raw: &str) -> Option<BrowserAction> {
@@ -415,8 +415,8 @@ impl Tool for ScreenCaptureTool {
 
         match mode {
             CaptureMode::FullScreen => {
-                if let Some(ref caller) = self.mcp_caller {
-                    if caller.is_connected() {
+                if let Some(ref caller) = self.mcp_caller
+                    && caller.is_connected() {
                         let mcp_args =
                             serde_json::json!({"file_path": output_path.to_string_lossy()});
                         match caller
@@ -433,7 +433,6 @@ impl Tool for ScreenCaptureTool {
                             Err(_) => { /* Fall through to PowerShell */ }
                         }
                     }
-                }
 
                 // Standalone: try PowerShell capture (Windows only)
                 if cfg!(target_os = "windows") {
@@ -459,8 +458,8 @@ impl Tool for ScreenCaptureTool {
                     );
                 }
 
-                if let Some(ref caller) = self.mcp_caller {
-                    if caller.is_connected() {
+                if let Some(ref caller) = self.mcp_caller
+                    && caller.is_connected() {
                         let mcp_args = serde_json::json!({
                             "file_path": output_path.to_string_lossy(),
                             "x": args["x"],
@@ -482,7 +481,6 @@ impl Tool for ScreenCaptureTool {
                             Err(_) => { /* Fall through */ }
                         }
                     }
-                }
 
                 ToolResult::success(&format!(
                     "Region capture placeholder (needs MCP). Output would be: {}",
@@ -499,8 +497,8 @@ impl Tool for ScreenCaptureTool {
                     );
                 }
 
-                if let Some(ref caller) = self.mcp_caller {
-                    if caller.is_connected() {
+                if let Some(ref caller) = self.mcp_caller
+                    && caller.is_connected() {
                         let mut mcp_args =
                             serde_json::json!({"file_path": output_path.to_string_lossy()});
                         if !hwnd.is_empty() {
@@ -523,7 +521,6 @@ impl Tool for ScreenCaptureTool {
                             }
                         }
                     }
-                }
 
                 ToolResult::error(
                     "window capture requires a window-mcp server (no standalone fallback available)",
@@ -570,7 +567,7 @@ impl DesktopTool {
     }
 
     fn has_mcp(&self) -> bool {
-        self.mcp_caller.as_ref().map_or(false, |c| c.is_connected())
+        self.mcp_caller.as_ref().is_some_and(|c| c.is_connected())
     }
 
     fn parse_action(&self, raw: &str) -> Option<DesktopAction> {

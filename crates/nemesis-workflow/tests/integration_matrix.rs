@@ -183,7 +183,7 @@ async fn llm_node_completes_via_cli_trigger() {
         .unwrap();
 
     assert_eq!(exec.state, ExecutionState::Completed);
-    assert!(exec.node_results.get("n1").is_some());
+    assert!(exec.node_results.contains_key("n1"));
     assert_eq!(exec.node_results["n1"].state, ExecutionState::Completed);
 }
 

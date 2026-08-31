@@ -118,6 +118,13 @@ fn sample_log(trace: &str, model: &str, cost: f64, tokens: i64, ts: i64) -> Requ
         error_message: None,
         is_streaming: false,
         created_at: ts,
+        pricing_model: model.to_string(),
+        input_cost_usd: cost * 0.6,
+        output_cost_usd: cost * 0.4,
+        cache_creation_cost_usd: 0.0,
+        cache_read_cost_usd: 0.0,
+        first_token_ms: None,
+        session_key: "sess-a".to_string(),
     }
 }
 
@@ -318,6 +325,9 @@ async fn logs_no_data_store_returns_error() {
         end: None,
         page: None,
         page_size: None,
+        model: None,
+        status: None,
+        session: None,
     });
     let Json(v) = handle_api_usage_logs(State(state), q).await;
     assert_eq!(v["error"], "DataStore not configured");
@@ -333,6 +343,9 @@ async fn logs_empty_store_returns_empty_list() {
         end: Some(now),
         page: None,
         page_size: None,
+        model: None,
+        status: None,
+        session: None,
     });
     let Json(v) = handle_api_usage_logs(State(state), q).await;
     assert_eq!(v["status"], "success");
@@ -356,6 +369,9 @@ async fn logs_with_inserted_entries() {
         end: Some(now + 60),
         page: Some(1),
         page_size: Some(10),
+        model: None,
+        status: None,
+        session: None,
     });
     let Json(v) = handle_api_usage_logs(State(state), q).await;
     assert_eq!(v["data"]["total"], 2);
@@ -378,6 +394,9 @@ async fn logs_page_size_clamped_to_100() {
         end: Some(now),
         page: None,
         page_size: Some(500),
+        model: None,
+        status: None,
+        session: None,
     });
     let Json(v) = handle_api_usage_logs(State(state), q).await;
     assert_eq!(v["data"]["pageSize"], 100);
@@ -393,6 +412,9 @@ async fn logs_page_below_one_becomes_one() {
         end: Some(now),
         page: Some(-3),
         page_size: None,
+        model: None,
+        status: None,
+        session: None,
     });
     let Json(v) = handle_api_usage_logs(State(state), q).await;
     assert_eq!(v["data"]["page"], 1);
@@ -407,6 +429,9 @@ async fn logs_default_range_used() {
         end: None,
         page: None,
         page_size: None,
+        model: None,
+        status: None,
+        session: None,
     });
     let Json(v) = handle_api_usage_logs(State(state), q).await;
     assert_eq!(v["status"], "success");
@@ -445,15 +470,18 @@ fn usage_query_empty_json_ok() {
 }
 
 // -----------------------------------------------------------------------
-// Pricing — embedded table endpoint
+// Pricing — layered table endpoint (A2)
 // -----------------------------------------------------------------------
 
 #[tokio::test]
 async fn pricing_returns_embedded_table() {
-    let Json(v) = handle_api_usage_pricing().await;
+    let Json(v) = handle_api_usage_pricing(State(make_state_no_data_store())).await;
     assert_eq!(v["status"], "success");
+    // 无 DataStore → 仅内置表 + meta null。
+    assert!(v["meta"].is_null());
     let entries = v["data"].as_array().expect("data array");
     assert!(entries.len() >= 30, "expected ~36 entries, got {}", entries.len());
+    assert!(entries.iter().all(|e| e["source"] == "embedded"));
 
     let gpt = entries
         .iter()
@@ -478,4 +506,286 @@ async fn pricing_returns_embedded_table() {
         assert!(e["maxInputTokens"].is_null() || e["maxInputTokens"].is_i64());
         assert!(e["maxOutputTokens"].is_null() || e["maxOutputTokens"].is_i64());
     }
+}
+
+// -----------------------------------------------------------------------
+// Pricing — management endpoints (A2: custom CRUD / import / update gate)
+// -----------------------------------------------------------------------
+
+use crate::api_usage::{
+    PricingCustomRemoveBody, PricingUpdateBody, handle_api_usage_pricing_custom_remove,
+    handle_api_usage_pricing_custom_upsert, handle_api_usage_pricing_import,
+    handle_api_usage_pricing_update,
+};
+
+fn custom_entry(model_id: &str, input: f64) -> nemesis_data::ModelPricing {
+    nemesis_data::ModelPricing {
+        model_id: model_id.to_string(),
+        display_name: "custom".to_string(),
+        input_cost_per_million: input,
+        output_cost_per_million: input * 2.0,
+        cache_read_cost_per_million: 0.0,
+        cache_creation_cost_per_million: 0.0,
+        max_input_tokens: None,
+        max_output_tokens: None,
+        aliases: Vec::new(),
+    }
+}
+
+#[tokio::test]
+async fn pricing_layered_view_with_store_and_custom_override() {
+    let (_dir, ds) = open_store();
+    // 预置自定义条目覆盖内置 gpt-4o。
+    ds.pricing()
+        .upsert_custom(custom_entry("gpt-4o", 123.0))
+        .unwrap();
+    let state = make_state_with_store(ds);
+
+    let Json(v) = handle_api_usage_pricing(State(state)).await;
+    assert_eq!(v["status"], "success");
+    let entries = v["data"].as_array().unwrap();
+    // 总数 = 内置 36 + 1 个自定义新条目……（gpt-4o 是覆盖不是新增）
+    // 自定义只覆盖了内置条目 → 数量不变。
+    assert_eq!(entries.len(), 36, "override must not duplicate the entry");
+    let gpt = entries.iter().find(|e| e["modelId"] == "gpt-4o").unwrap();
+    assert_eq!(gpt["source"], "custom");
+    assert_eq!(gpt["inputCostPerMillion"], 123.0);
+
+    let custom_list = v["custom"].as_array().unwrap();
+    assert_eq!(custom_list.len(), 1);
+    assert_eq!(custom_list[0]["modelId"], "gpt-4o");
+
+    // meta 有字段（尚未下载 → 值为 null）。
+    assert!(v["meta"].is_object());
+    assert!(v["meta"]["entryCount"].is_i64() || v["meta"]["entryCount"].is_null());
+}
+
+#[tokio::test]
+async fn pricing_custom_upsert_and_remove_endpoints() {
+    let (_dir, ds) = open_store();
+    let state = make_state_with_store(ds.clone());
+
+    // upsert（含 provider/ 形状 modelId —— JSON body 免 URL 编码）。
+    let Json(v) = handle_api_usage_pricing_custom_upsert(
+        State(state.clone()),
+        Json(custom_entry("zhipu/glm-4.7", 6.0)),
+    )
+    .await;
+    assert_eq!(v["status"], "success");
+    assert_eq!(ds.pricing().list_custom().len(), 1);
+
+    // 幂等 upsert。
+    let Json(v) = handle_api_usage_pricing_custom_upsert(
+        State(state.clone()),
+        Json(custom_entry("zhipu/glm-4.7", 7.0)),
+    )
+    .await;
+    assert_eq!(v["status"], "success");
+    assert_eq!(ds.pricing().list_custom().len(), 1);
+    assert_eq!(ds.pricing().list_custom()[0].input_cost_per_million, 7.0);
+
+    // 空 modelId 拒绝。
+    let Json(v) = handle_api_usage_pricing_custom_upsert(
+        State(state.clone()),
+        Json(custom_entry("  ", 1.0)),
+    )
+    .await;
+    assert!(v["error"].is_string());
+
+    // remove 存在 / 不存在。
+    let Json(v) = handle_api_usage_pricing_custom_remove(
+        State(state.clone()),
+        Json(PricingCustomRemoveBody {
+            model_id: "zhipu/glm-4.7".to_string(),
+        }),
+    )
+    .await;
+    assert_eq!(v["removed"], true);
+    let Json(v) = handle_api_usage_pricing_custom_remove(
+        State(state),
+        Json(PricingCustomRemoveBody {
+            model_id: "zhipu/glm-4.7".to_string(),
+        }),
+    )
+    .await;
+    assert!(v["error"].is_string(), "removing missing entry must error");
+}
+
+#[tokio::test]
+async fn pricing_import_parses_litellm_body() {
+    let (_dir, ds) = open_store();
+    let state = make_state_with_store(ds.clone());
+
+    let body = r#"{
+      "gpt-4o": {
+        "input_cost_per_token": 2.5e-06,
+        "output_cost_per_token": 1e-05,
+        "litellm_provider": "openai",
+        "mode": "chat"
+      },
+      "text-embedding-3-small": {
+        "input_cost_per_token": 2e-08,
+        "output_cost_per_token": 0.0,
+        "mode": "embedding"
+      }
+    }"#;
+    let Json(v) = handle_api_usage_pricing_import(State(state.clone()), body.to_string()).await;
+    assert_eq!(v["status"], "success");
+    assert_eq!(v["data"]["entryCount"], 1, "embedding entry filtered out");
+    let dl = ds.pricing().list_downloaded().unwrap();
+    assert_eq!(dl.len(), 1);
+    assert_eq!(dl[0].model_id, "gpt-4o");
+    assert!((dl[0].input_cost_per_million - 2.5).abs() < 1e-9);
+
+    // 坏 body → error，下载层保留。
+    let Json(v) = handle_api_usage_pricing_import(State(state), "{broken".to_string()).await;
+    assert!(v["error"].is_string());
+    assert_eq!(ds.pricing().list_downloaded().unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn pricing_update_requires_data_store() {
+    let state = make_state_no_data_store();
+    let Json(v) = handle_api_usage_pricing_update(
+        State(state),
+        Some(Json(PricingUpdateBody { url: None })),
+    )
+    .await;
+    assert_eq!(v["error"], "DataStore not configured");
+}
+
+// -----------------------------------------------------------------------
+// Log detail endpoint + A3 filters (A3, 2026-08-31)
+// -----------------------------------------------------------------------
+
+use crate::api_usage::handle_api_usage_log_detail;
+
+/// 列表响应包含 A3 新字段（分项成本 / pricingModel / firstTokenMs / sessionKey）。
+#[tokio::test]
+async fn logs_json_includes_a3_fields() {
+    let (_dir, ds) = open_store();
+    let now = now_ts();
+    let mut log = sample_log("t-a3", "glm-4.7", 0.02, 50, now - 60);
+    log.first_token_ms = Some(320);
+    log.status_code = 500;
+    log.error_message = Some("boom".to_string());
+    ds.insert_request_log(&log).unwrap();
+    let state = make_state_with_store(ds);
+
+    let q = Query(LogsQuery {
+        start: Some(now - 3600),
+        end: Some(now + 60),
+        page: None,
+        page_size: None,
+        model: None,
+        status: None,
+        session: None,
+    });
+    let Json(v) = handle_api_usage_logs(State(state), q).await;
+    let row = &v["data"]["logs"][0];
+    assert_eq!(row["pricingModel"], "glm-4.7");
+    assert_eq!(row["sessionKey"], "sess-a");
+    assert_eq!(row["firstTokenMs"], 320);
+    assert_eq!(row["inputCostUsd"], 0.012);
+    assert_eq!(row["outputCostUsd"], 0.008);
+    assert_eq!(row["errorMessage"], "boom");
+}
+
+/// LogsQuery 的 model/status/session 过滤参数经 handler 生效。
+#[tokio::test]
+async fn logs_filters_via_query_params() {
+    let (_dir, ds) = open_store();
+    let now = now_ts();
+    let mut err = sample_log("t-err", "gpt-4", 0.01, 10, now - 60);
+    err.status_code = 500;
+    ds.insert_request_log(&err).unwrap();
+    ds.insert_request_log(&sample_log("t-ok", "claude-3", 0.02, 20, now - 30))
+        .unwrap();
+    let state = make_state_with_store(ds);
+
+    // model 子串。
+    let q = Query(LogsQuery {
+        start: Some(now - 3600),
+        end: Some(now + 60),
+        page: None,
+        page_size: None,
+        model: Some("gpt".to_string()),
+        status: None,
+        session: None,
+    });
+    let Json(v) = handle_api_usage_logs(State(state.clone()), q).await;
+    assert_eq!(v["data"]["total"], 1);
+
+    // status 精确。
+    let q = Query(LogsQuery {
+        start: Some(now - 3600),
+        end: Some(now + 60),
+        page: None,
+        page_size: None,
+        model: None,
+        status: Some(500),
+        session: None,
+    });
+    let Json(v) = handle_api_usage_logs(State(state.clone()), q).await;
+    assert_eq!(v["data"]["total"], 1);
+    assert_eq!(v["data"]["logs"][0]["traceId"], "t-err");
+
+    // session 子串：两行 session 都是 sess-a → 都命中；换不存在的 → 0。
+    let q = Query(LogsQuery {
+        start: Some(now - 3600),
+        end: Some(now + 60),
+        page: None,
+        page_size: None,
+        model: None,
+        status: None,
+        session: Some("sess-a".to_string()),
+    });
+    let Json(v) = handle_api_usage_logs(State(state.clone()), q).await;
+    assert_eq!(v["data"]["total"], 2);
+
+    let q = Query(LogsQuery {
+        start: Some(now - 3600),
+        end: Some(now + 60),
+        page: None,
+        page_size: None,
+        model: None,
+        status: None,
+        session: Some("no-such-sess".to_string()),
+    });
+    let Json(v) = handle_api_usage_logs(State(state), q).await;
+    assert_eq!(v["data"]["total"], 0);
+}
+
+/// 详情端点：命中 → 全字段 data；未命中 → error；无 DataStore → error。
+#[tokio::test]
+async fn log_detail_found_missing_and_no_store() {
+    let (_dir, ds) = open_store();
+    let now = now_ts();
+    let mut log = sample_log("t-detail", "glm-4.7", 0.03, 70, now - 60);
+    log.first_token_ms = Some(180);
+    ds.insert_request_log(&log).unwrap();
+    // 拿真实 id（AUTOINCREMENT 从 1 起）。
+    let id = ds.query_logs(0, now + 60, 1, 10, &nemesis_data::LogFilter::default())
+        .unwrap()
+        .0[0]
+        .id;
+    let state = make_state_with_store(ds);
+
+    // 命中：data 带 A3 字段。
+    let Json(v) = handle_api_usage_log_detail(State(state.clone()), axum::extract::Path(id)).await;
+    assert_eq!(v["status"], "success");
+    assert_eq!(v["data"]["traceId"], "t-detail");
+    assert_eq!(v["data"]["pricingModel"], "glm-4.7");
+    assert_eq!(v["data"]["sessionKey"], "sess-a");
+    assert_eq!(v["data"]["firstTokenMs"], 180);
+
+    // 未命中。
+    let Json(v) =
+        handle_api_usage_log_detail(State(state.clone()), axum::extract::Path(999_999)).await;
+    assert!(v["error"].is_string(), "missing id must error");
+
+    // 无 DataStore。
+    let Json(v) =
+        handle_api_usage_log_detail(State(make_state_no_data_store()), axum::extract::Path(1)).await;
+    assert_eq!(v["error"], "DataStore not configured");
 }

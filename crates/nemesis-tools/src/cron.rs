@@ -224,8 +224,8 @@ impl CronTool {
         };
 
         // Execute command if present
-        if let Some(ref command) = job.command {
-            if !command.is_empty() {
+        if let Some(ref command) = job.command
+            && !command.is_empty() {
                 if let Some(ref shell) = self.shell_tool {
                     let args = serde_json::json!({
                         "command": command
@@ -248,7 +248,6 @@ impl CronTool {
                     return "error: no shell tool configured".to_string();
                 }
             }
-        }
 
         // If deliver=true, send message directly without agent processing
         if job.deliver {

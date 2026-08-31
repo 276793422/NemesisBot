@@ -24,8 +24,10 @@ fn test_collect_system_metrics_uptime_nonzero_on_supported_platform() {
     let (_, _, uptime) = collect_system_metrics();
     if cfg!(any(target_os = "linux", target_os = "windows")) {
         // On a freshly booted machine uptime could theoretically be very
-        // small but never 0 after init.
-        assert!(uptime > 0 || uptime == 0, "uptime call should not panic");
+        // small but never 0 after init. uptime 是 u64（`>= 0` 恒真，触发
+        // rustc unused_comparisons）；本测试只验证"调用不 panic"——panic
+        // 在上方调用处就已失败，这里消费值即可，不再写恒真断言。
+        let _ = uptime;
     }
 }
 

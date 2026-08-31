@@ -30,11 +30,11 @@ fn trigger_is_idempotent() {
 fn subscribe_sees_transitions() {
     let e = EstopState::new();
     let rx = e.subscribe();
-    assert_eq!(*rx.borrow(), false);
+    assert!(!(*rx.borrow()));
     e.trigger();
-    assert_eq!(*rx.borrow(), true);
+    assert!(*rx.borrow());
     e.release();
-    assert_eq!(*rx.borrow(), false);
+    assert!(!(*rx.borrow()));
 }
 
 #[test]
@@ -54,11 +54,11 @@ fn multiple_subscribers_all_see_change() {
     let rx1 = e.subscribe();
     let rx2 = e.subscribe();
     e.trigger();
-    assert_eq!(*rx1.borrow(), true);
-    assert_eq!(*rx2.borrow(), true);
+    assert!(*rx1.borrow());
+    assert!(*rx2.borrow());
     e.release();
-    assert_eq!(*rx1.borrow(), false);
-    assert_eq!(*rx2.borrow(), false);
+    assert!(!(*rx1.borrow()));
+    assert!(!(*rx2.borrow()));
 }
 
 /// Default impl == new(): released, subscribable. (Covers `Default`.)
@@ -68,5 +68,5 @@ fn default_matches_new() {
     assert!(!e.is_engaged());
     let rx = e.subscribe();
     e.trigger();
-    assert_eq!(*rx.borrow(), true);
+    assert!(*rx.borrow());
 }

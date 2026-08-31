@@ -305,7 +305,7 @@ fn test_person_detected_without_data() {
             assert_eq!(sender_id, "maixcam");
             assert_eq!(chat_id, "default");
             // No timestamp in metadata when timestamp is None
-            assert!(metadata.get("timestamp").is_none());
+            assert!(!metadata.contains_key("timestamp"));
             assert_eq!(metadata.get("class_name").unwrap(), "person");
         }
         _ => panic!("expected PersonDetected event"),
@@ -1152,7 +1152,7 @@ fn test_deserialize_message_with_nested_data() {
     let json = r#"{"type":"status","data":{"obj":{"nested":true},"arr":[1,2]}}"#;
     let msg: MaixCamMessage = serde_json::from_str(json).unwrap();
     let data = msg.data.unwrap();
-    assert!(data.get("obj").is_some());
+    assert!(data.contains_key("obj"));
     assert!(data.get("arr").unwrap().is_array());
 }
 

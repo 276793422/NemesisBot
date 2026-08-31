@@ -800,7 +800,7 @@ fn open_plugin_window(
     let window_data = match window_type {
         "dashboard" => serde_json::json!({
             "token": auth_token,
-            "web_port": backend_url.split(':').last().and_then(|p| p.parse::<u16>().ok()).unwrap_or(49000),
+            "web_port": backend_url.split(':').next_back().and_then(|p| p.parse::<u16>().ok()).unwrap_or(49000),
             "web_host": backend_url.split("://").nth(1).and_then(|s| s.split(':').next()).unwrap_or("127.0.0.1"),
         }),
         "approval" => serde_json::json!({}),
@@ -1107,8 +1107,8 @@ fn migrate_legacy_workflow_dir(
 
     // Move checkpoints/ subdir contents.
     let legacy_checkpoints = legacy_root.join("checkpoints");
-    if legacy_checkpoints.exists() {
-        if let Ok(entries) = std::fs::read_dir(&legacy_checkpoints) {
+    if legacy_checkpoints.exists()
+        && let Ok(entries) = std::fs::read_dir(&legacy_checkpoints) {
             for entry in entries.flatten() {
                 let path = entry.path();
                 if !path.is_dir() {
@@ -1132,7 +1132,6 @@ fn migrate_legacy_workflow_dir(
                 }
             }
         }
-    }
 
     // Best-effort cleanup: remove legacy dir if empty (ignoring the
     // now-empty checkpoints/ subdir). Don't touch non-empty dir — user may
@@ -1214,19 +1213,16 @@ fn write_back_board_dispatch(
             }
             // 成功 → in_review（coordinator 验收后定 done）；失败留在
             // in_progress，失败评论已留痕（重派走 issue.dispatch）。
-            if status != "error" {
-                if let Ok(issue) = bstore.get_issue(disp.issue_id) {
-                    if issue.status == nemesis_board::IssueStatus::InProgress {
-                        if let Err(e) = bstore.transition_issue(
+            if status != "error"
+                && let Ok(issue) = bstore.get_issue(disp.issue_id)
+                    && issue.status == nemesis_board::IssueStatus::InProgress
+                        && let Err(e) = bstore.transition_issue(
                             disp.issue_id,
                             nemesis_board::IssueStatus::InReview,
                             &worker_actor,
                         ) {
                             warn!("[Gateway] board writeback transition failed (task_id={task_id}): {e}");
                         }
-                    }
-                }
-            }
             info!(
                 "[Gateway] board dispatch writeback done (task_id={task_id}, issue_id={}, state={terminal})",
                 disp.issue_id
@@ -1304,7 +1300,7 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
     // the lightweight "start service if stopped" path may run.
     #[cfg(feature = "sandbox")]
     {
-        let sandbox_enabled = cfg.executor.as_ref().map_or(false, |ec| ec.sandbox);
+        let sandbox_enabled = cfg.executor.as_ref().is_some_and(|ec| ec.sandbox);
         crate::commands::sandbox::ensure_sandbox_ready(&home, sandbox_enabled);
     }
 
@@ -1316,7 +1312,7 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
     // overwrite / agent error funnel). Diagnostic only — does not change any
     // control flow or business logic.
     {
-        let capture_enabled = cfg.debug.as_ref().map_or(true, |d| d.capture.enabled);
+        let capture_enabled = cfg.debug.as_ref().is_none_or(|d| d.capture.enabled);
         nemesis_agent::capture_sink::CaptureSink::init(home.join("workspace"), capture_enabled);
         if capture_enabled {
             info!("[Gateway] Diagnostic capture armed (failure-triggered → logs/capture/)");
@@ -2009,10 +2005,10 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
         // The peers.toml uses [peers.Key] table format (not [[peers]] array),
         // so we parse it manually.
         let peers_toml_path = common::cluster_dir(&home).join("peers.toml");
-        if peers_toml_path.exists() {
-            if let Ok(content) = std::fs::read_to_string(&peers_toml_path) {
-                if let Ok(doc) = content.parse::<toml::Value>() {
-                    if let Some(peers_table) = doc.get("peers").and_then(|v| v.as_table()) {
+        if peers_toml_path.exists()
+            && let Ok(content) = std::fs::read_to_string(&peers_toml_path)
+                && let Ok(doc) = content.parse::<toml::Value>()
+                    && let Some(peers_table) = doc.get("peers").and_then(|v| v.as_table()) {
                         for (key, val) in peers_table {
                             // sanitize_peer_key only replaces `.` and `:` now (both are valid TOML
                             // bare key chars but ambiguous in key names). `-` and `_` are preserved
@@ -2057,9 +2053,6 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
                             cluster.mark_peer_static(&peer_id);
                         }
                     }
-                }
-            }
-        }
 
         // --- Create and set RPC Server (before start, needs &mut self) ---
         let rpc_server_config = nemesis_cluster::rpc::server::RpcServerConfig {
@@ -2358,8 +2351,8 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
                 // When the ClusterAgent's LLM generates a nested cluster_rpc, the child
                 // task's callback must be routed back to the ClusterAgent work queue,
                 // not to the main AgentLoop's continuation system.
-                if !task_id.is_empty() {
-                    if let Some(parent_task_id) = task_list_for_cb.find_by_child_task_id(task_id) {
+                if !task_id.is_empty()
+                    && let Some(parent_task_id) = task_list_for_cb.find_by_child_task_id(task_id) {
                         info!(
                             "[Gateway] Callback for child task {} matched ClusterAgent parent task {}, injecting result",
                             task_id, parent_task_id
@@ -2370,7 +2363,6 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
                         }
                         return Ok(serde_json::json!({"status": "received", "task_id": task_id}));
                     }
-                }
 
                 // Route 2: Main AgentLoop continuation — publish to bus.
                 // （board 派发任务跳过：无续行快照，进 bus 只会告警。）
@@ -2655,6 +2647,9 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
         );
 
         // Build ChannelInitConfig from gateway config (web channel is always available).
+        // Feature-gated channel fields only exist under some cfg combos, so the
+        // `..Default::default()` base is required (not dead code); the lint can't see that.
+        #[allow(clippy::needless_update)]
         let init_config = nemesis_channels::manager::ChannelInitConfig {
             web: if cfg.channels.web.enabled {
                 Some(nemesis_channels::web::WebChannelConfig {
@@ -2908,12 +2903,11 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
             // Mirrors Go's initScannerChain() which calls LoadFromConfig() + chain.Start()
             let scanner_config_path = common::scanner_config_path(&home);
             if scanner_config_path.exists() {
-                if let Some(full_config) = load_scanner_full_config(&scanner_config_path) {
-                    if !full_config.enabled.is_empty() {
+                if let Some(full_config) = load_scanner_full_config(&scanner_config_path)
+                    && !full_config.enabled.is_empty() {
                         info!("[Gateway] Initializing scanner chain from config...");
                         plugin.init_scanner_from_config(&full_config).await;
                     }
-                }
             } else {
                 info!(
                     "[Gateway] Scanner config file not found: {}, scanner chain not initialized",
@@ -2938,9 +2932,9 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
         let observer_mgr = Arc::new(nemesis_observer::Manager::new());
 
         // Register RequestLogger as Observer (if logging.llm.enabled)
-        if let Some(ref logging_cfg) = cfg.logging {
-            if let Some(llm_cfg) = &logging_cfg.llm {
-                if llm_cfg.enabled {
+        if let Some(ref logging_cfg) = cfg.logging
+            && let Some(llm_cfg) = &logging_cfg.llm
+                && llm_cfg.enabled {
                     let rl_logging_config = nemesis_agent::request_logger::LoggingConfig {
                         enabled: true,
                         detail_level: match llm_cfg.detail_level.as_str() {
@@ -2973,8 +2967,6 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
                         "[Gateway] RequestLoggerObserver registered (logging.llm.enabled = true)"
                     );
                 }
-            }
-        }
 
         // Check if any observers were registered.
         let mgr_check = observer_mgr.clone();
@@ -3143,11 +3135,10 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
             ));
             // Only perform first start when both config flags are enabled.
             // Otherwise the adapter is created but idle — can be started from Dashboard.
-            if cluster_should_start {
-                if let Err(e) = adapter.first_start() {
+            if cluster_should_start
+                && let Err(e) = adapter.first_start() {
                     warn!("[Gateway] Cluster adapter first start failed: {}", e);
                 }
-            }
             cluster_adapter = Some(adapter);
         }
     }
@@ -3222,8 +3213,9 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
         // 角色解析（goal 硬约束①：复用 NodeRole，无平行 role 字段）：
         // - cluster 启用 → 取 cluster.role()（peers.toml [node].role；
         //   from_role_str 兼容旧值 master/manager）；
-        // - cluster 关闭 / cluster feature 未编译 → Coordinator
-        //   （单节点部署即看板权威，board 计划 §1.2）。
+        // - cluster 关闭 / cluster feature 未编译 → Coordinator。
+        // role 2026-08-31 起仅为元数据（日志/诊断展示），不门控 board 写——
+        // board.db 是节点本地数据，写权限与 role 无关（见 BoardService 文档）。
         #[cfg(feature = "cluster")]
         let board_role = if cluster_should_start {
             cluster_adapter_refs
@@ -3240,12 +3232,128 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
             "[Gateway] Board service injected into web server (role={})",
             board_role.as_role_str()
         );
+
+        // --- W2.5: board 数据变化 watcher → SSE 广播 ---
+        // 独立零写入连接轮询 `PRAGMA data_version`（只对其他连接的写敏感）：
+        // WSAPI / 集群写回 / autopilot / sweep（BoardStore 自己的连接）与
+        // CLI 子命令（跨进程）的每次落库都会被看见——写路径零埋点覆盖全部
+        // 写入方。变化 → SSE `board-changed` → 前端各面板 200ms 防抖刷新。
+        // 无 SSE 订阅者（dashboard 未开）时跳过轮询读数，空闲零成本。
+        const BOARD_CHANGE_POLL_SECS: u64 = 2;
+        let board_db_for_watch = home.join("workspace").join("board").join("board.db");
+        let event_hub_for_watch = web_server.event_hub().clone();
+        match nemesis_board::watcher::open_conn(&board_db_for_watch) {
+            Ok(watch_conn) => {
+                tokio::spawn(async move {
+                    let mut ticker = tokio::time::interval(std::time::Duration::from_secs(
+                        BOARD_CHANGE_POLL_SECS,
+                    ));
+                    ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+                    let mut last = nemesis_board::watcher::data_version(&watch_conn).ok();
+                    loop {
+                        ticker.tick().await;
+                        if event_hub_for_watch.subscriber_count() == 0 {
+                            continue;
+                        }
+                        let Ok(v) = nemesis_board::watcher::data_version(&watch_conn) else {
+                            continue;
+                        };
+                        if last != Some(v) {
+                            last = Some(v);
+                            event_hub_for_watch.publish(
+                                "board-changed",
+                                serde_json::json!({ "ts": chrono::Utc::now().to_rfc3339() }),
+                            );
+                            tracing::debug!(
+                                "[Board] change detected (data_version={v}) → board-changed"
+                            );
+                        }
+                    }
+                });
+            }
+            Err(e) => {
+                tracing::warn!("[Gateway] board change watcher disabled: {e}");
+            }
+        }
     }
 
     // Inject DataStore into web server for usage statistics API
     if let Some(ref ds) = data_store {
         web_server.set_data_store(ds.clone());
         info!("[Gateway] DataStore injected into web server");
+
+        // --- A3: usage 明细变化 watcher → SSE `usage-changed` ---
+        // 独立零写入连接轮询 `PRAGMA data_version`（board 同款原语）：
+        // AgentLoop / workflow LLM 节点经 DataStore 自己连接的每次落库都
+        // 会被看见，写路径零埋点。变化 → SSE `usage-changed` → 前端请求
+        // 明细 tab 200ms 防抖静默刷新。无 SSE 订阅者（dashboard 未开）
+        // 时跳过轮询读数，空闲零成本。
+        const USAGE_CHANGE_POLL_SECS: u64 = 2;
+        let usage_db_for_watch =
+            nemesis_path::workspace_data_dir(&home).join("nemesisbot_data.db");
+        let event_hub_for_usage = web_server.event_hub().clone();
+        match nemesis_data::watcher::open_conn(&usage_db_for_watch) {
+            Ok(watch_conn) => {
+                tokio::spawn(async move {
+                    let mut ticker = tokio::time::interval(std::time::Duration::from_secs(
+                        USAGE_CHANGE_POLL_SECS,
+                    ));
+                    ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+                    let mut last = nemesis_data::watcher::data_version(&watch_conn).ok();
+                    loop {
+                        ticker.tick().await;
+                        if event_hub_for_usage.subscriber_count() == 0 {
+                            continue;
+                        }
+                        let Ok(v) = nemesis_data::watcher::data_version(&watch_conn) else {
+                            continue;
+                        };
+                        if last != Some(v) {
+                            last = Some(v);
+                            event_hub_for_usage.publish(
+                                "usage-changed",
+                                serde_json::json!({ "ts": chrono::Utc::now().to_rfc3339() }),
+                            );
+                            tracing::debug!(
+                                "[Gateway] usage change detected (data_version={v}) → usage-changed"
+                            );
+                        }
+                    }
+                });
+                info!(
+                    "[Gateway] usage change watcher armed (poll={USAGE_CHANGE_POLL_SECS}s)"
+                );
+            }
+            Err(e) => {
+                warn!("[Gateway] usage change watcher disabled: {e}");
+            }
+        }
+
+        // --- A3: 保留策略 sweep（启动时 + 每 6h）---
+        // config `usage` 段：retention_days=0 关闭按天清理（明细只增到
+        // max_rows 上限为止）；max_rows=0 无上限。此前 rollup 逻辑从未
+        // 被生产调用（只有测试），本次一并接上。
+        let usage_cfg = cfg.usage.clone().unwrap_or_default();
+        let ds_for_sweep = ds.clone();
+        tokio::spawn(async move {
+            let mut ticker = tokio::time::interval(std::time::Duration::from_secs(6 * 3600));
+            ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            // interval 首个 tick 立即返回 = 启动时先跑一次。
+            loop {
+                ticker.tick().await;
+                let max_rows = (usage_cfg.max_rows > 0).then_some(usage_cfg.max_rows);
+                if let Err(e) = ds_for_sweep.retention_sweep(
+                    (usage_cfg.retention_days > 0).then_some(usage_cfg.retention_days),
+                    max_rows,
+                ) {
+                    warn!("[Gateway] usage retention sweep failed: {e}");
+                }
+            }
+        });
+        info!(
+            "[Gateway] usage retention sweep armed (retention_days={}, max_rows={})",
+            usage_cfg.retention_days, usage_cfg.max_rows
+        );
     }
 
     // Inject MemoryManager into web server for runtime vector store control
@@ -3345,7 +3453,7 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
         // "trigger type X has no runtime driver" no longer applies as of P3.
         let msg_engine = workflow_engine.clone();
         let mut inbound_rx_for_wf = bus.subscribe_inbound();
-        let inbound_wf_handle = tokio::spawn(async move {
+        let _inbound_wf_handle = tokio::spawn(async move {
             loop {
                 match inbound_rx_for_wf.recv().await {
                     Ok(msg) => {
@@ -3418,7 +3526,7 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
 
         let evt_engine = workflow_engine.clone();
         let mut event_rx = evt_engine.event_dispatcher().subscribe();
-        let event_wf_handle = tokio::spawn(async move {
+        let _event_wf_handle = tokio::spawn(async move {
             loop {
                 match event_rx.recv().await {
                     Ok(event) => {
@@ -3496,8 +3604,6 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
             }
         });
 
-        let _ = inbound_wf_handle;
-        let _ = event_wf_handle;
         info!("[Gateway] Workflow trigger drivers spawned (event + message)");
 
         // Register the WorkflowChatReplyObserver so `/workflow/chat/<index>`
@@ -3767,14 +3873,26 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
 
     // Start cron scheduler (after on_job handler is wired).
     // Mirrors Go's bot_service.go:571-579 cronSvc.Start().
-    {
+    // 提取为嵌套 fn：await_holding_lock 是数据流型 lint，只认函数级 allow，
+    // 不认语句级 attribute——函数级 allow 必须挂在这个小 fn 上而非几千行的
+    // run() 上。
+    #[allow(clippy::await_holding_lock)]
+    async fn start_cron_scheduler(
+        cron_service: &std::sync::Arc<std::sync::Mutex<nemesis_cron::service::CronService>>,
+    ) {
+        // 启动序列唯一持有者：此时 cron handler 未运行、无并发 lock 竞争者，
+        // std guard 跨这一次性 start().await 无实际死锁风险（start(&self) 的
+        // future 借用锁内数据，结构性无法先放锁；彻底解 = Arc 化 CronService
+        // 去掉外层 std::Mutex，见 goal 文档债务记录）。
         let cron = cron_service.lock().unwrap();
         if let Err(e) = cron.start().await {
             warn!("[Gateway] Cron service start note: {}", e);
         } else {
             info!("[Gateway] Cron scheduler started");
         }
-        // H1 (U12) armed gate：这里只 start 不 arm——arm() 被移到 Step 17 之后
+    }
+    start_cron_scheduler(&cron_service).await;
+    // H1 (U12) armed gate：这里只 start 不 arm——arm() 被移到 Step 17 之后
         // （agent 已订阅 + web 已 bind）。此前 arm 挂在本处是 BUG #49（2026-08-28）
         // 的根因：boot 顺序是 arm(Step14) → web bind/state 写盘(Step17) →
         // agent_adapter.start() 才订阅 bus inbound(旧 Step18)，中间没有任何
@@ -3784,7 +3902,6 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
         // 负载下间隙拉开 >1s 必丢——测试全部通过/失败随负载轮换的根源。
         // tick 调度器在 disarm 状态下空转（见 service.rs H1 gate），晚 arm 无
         // 副作用，只是把 fire 时机推迟到"订阅者就位"之后。
-    }
 
     // Step 14b: Start AgentLoop's bus processing（原 Step 18 上移，BUG #49）
     // 订阅必须在所有 inbound 生产者上线之前完成：
@@ -3885,7 +4002,14 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
             addr.port() as i64
         }
         Err(_) => {
-            warn!("[Gateway] Failed to receive web server bound address, using config port");
+            // oneshot 发送端被 drop = web 任务在报告绑定地址前就退出（典型：
+            // build_router panic——panic 只落 stderr，error! 臂都到不了）。
+            // 此时 web 完全不可用，绝不是"退回 config 端口还能服务"，
+            // 必须 error 级别如实告警（2026-08-31 A3 路由 panic 事故教训）。
+            error!(
+                "[Gateway] Web server task exited without reporting a bound address; \
+                 web UI/API are NOT serving (check stderr for a task panic)"
+            );
             web_port
         }
     };
@@ -4065,6 +4189,24 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
         info!("[Gateway] Internal command listener started");
     }
 
+    // Ctrl+C / SIGINT 优雅停机臂（2026-08-31 web-dead 停机事故教训）：
+    // 此前 gateway 停机只有两条路——/api/internal（骑 web，web 任务一死即全断）
+    // 和托盘 Quit（要求桌面托盘存活）。控制台 Ctrl+C 落 std 默认处置=硬终止，
+    // Step 24 善后全部跳过。补一条与托盘 Quit 同源的信号臂。
+    // 注意：msys/bash `&` 起的后台子进程继承 SIG_IGN(SIGINT)，该启动方式下
+    // 本臂不会触发（Start-Process / 前台控制台启动则有效）。
+    #[cfg(not(target_os = "android"))]
+    {
+        let svc_mgr_signal = Arc::clone(&svc_mgr);
+        tokio::spawn(async move {
+            if tokio::signal::ctrl_c().await.is_ok() {
+                info!("[Gateway] Ctrl+C received, initiating graceful shutdown");
+                trigger_global_shutdown();
+                svc_mgr_signal.shutdown();
+            }
+        });
+    }
+
     // Step 22: Configure system tray (desktop only)
     #[cfg(all(feature = "desktop", not(target_os = "android")))]
     {
@@ -4081,8 +4223,8 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
                 tray.set_on_cluster_start(Box::new(move || {
                     // Write config.json cluster.enabled = true
                     let cfg_path = home_for_start.join("config.json");
-                    if let Ok(content) = std::fs::read_to_string(&cfg_path) {
-                        if let Ok(mut cfg) = serde_json::from_str::<serde_json::Value>(&content) {
+                    if let Ok(content) = std::fs::read_to_string(&cfg_path)
+                        && let Ok(mut cfg) = serde_json::from_str::<serde_json::Value>(&content) {
                             if cfg.get("cluster").is_none() {
                                 cfg["cluster"] = serde_json::json!({});
                             }
@@ -4095,21 +4237,18 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
                                 }
                             }
                         }
-                    }
                     // Write config.cluster.json enabled = true
                     let cluster_cfg_path = nemesis_path::resolve_cluster_config_path_in_workspace(
                         &common::workspace_path(&home_for_start),
                     );
-                    if let Ok(content) = std::fs::read_to_string(&cluster_cfg_path) {
-                        if let Ok(mut cfg) = serde_json::from_str::<serde_json::Value>(&content) {
-                            if let Some(obj) = cfg.as_object_mut() {
+                    if let Ok(content) = std::fs::read_to_string(&cluster_cfg_path)
+                        && let Ok(mut cfg) = serde_json::from_str::<serde_json::Value>(&content)
+                            && let Some(obj) = cfg.as_object_mut() {
                                 obj.insert("enabled".to_string(), serde_json::json!(true));
                                 if let Ok(updated) = serde_json::to_string_pretty(&cfg) {
                                     let _ = std::fs::write(&cluster_cfg_path, updated);
                                 }
                             }
-                        }
-                    }
                     if let Err(e) = ca_start.start() {
                         tracing::warn!("[Gateway] Tray: failed to start cluster: {}", e);
                     }
@@ -4125,21 +4264,19 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
                     let cluster_cfg_path = nemesis_path::resolve_cluster_config_path_in_workspace(
                         &common::workspace_path(&home_for_stop),
                     );
-                    if let Ok(content) = std::fs::read_to_string(&cluster_cfg_path) {
-                        if let Ok(mut cfg) = serde_json::from_str::<serde_json::Value>(&content) {
-                            if let Some(obj) = cfg.as_object_mut() {
+                    if let Ok(content) = std::fs::read_to_string(&cluster_cfg_path)
+                        && let Ok(mut cfg) = serde_json::from_str::<serde_json::Value>(&content)
+                            && let Some(obj) = cfg.as_object_mut() {
                                 obj.insert("enabled".to_string(), serde_json::json!(false));
                                 if let Ok(updated) = serde_json::to_string_pretty(&cfg) {
                                     let _ = std::fs::write(&cluster_cfg_path, updated);
                                 }
                             }
-                        }
-                    }
                     // Write config.json cluster.enabled = false
                     let cfg_path = home_for_stop.join("config.json");
-                    if let Ok(content) = std::fs::read_to_string(&cfg_path) {
-                        if let Ok(mut cfg) = serde_json::from_str::<serde_json::Value>(&content) {
-                            if let Some(obj) =
+                    if let Ok(content) = std::fs::read_to_string(&cfg_path)
+                        && let Ok(mut cfg) = serde_json::from_str::<serde_json::Value>(&content)
+                            && let Some(obj) =
                                 cfg.get_mut("cluster").and_then(|c| c.as_object_mut())
                             {
                                 obj.insert("enabled".to_string(), serde_json::json!(false));
@@ -4147,8 +4284,6 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
                                     let _ = std::fs::write(&cfg_path, updated);
                                 }
                             }
-                        }
-                    }
                 }));
             }
         }

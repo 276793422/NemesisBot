@@ -78,7 +78,7 @@ fn test_w1b_patch_job_name_and_message() {
     assert_eq!(patched.name, "renamed");
     assert_eq!(patched.payload.message, "new message");
     // Untouched fields survive.
-    assert_eq!(patched.payload.deliver, false);
+    assert!(!patched.payload.deliver);
 
     // Persisted: fresh service sees the patched values.
     let svc2 = CronService::new(&path);
@@ -196,7 +196,7 @@ fn test_w1b_patch_job_schedule_enabled_recomputes_disabled_does_not() {
         .patch_job(
             &job.id,
             &CronJobPatch {
-                schedule: Some(every_schedule(3600_000)),
+                schedule: Some(every_schedule(3_600_000)),
                 ..Default::default()
             },
         )

@@ -1067,8 +1067,7 @@ fn w4a_set_restrict_to_workspace_toggles_guard() {
     tool.set_restrict_to_workspace(true);
     let err = tool
         .guard_command("cat ../etc/passwd", std::path::Path::new("."))
-        .err()
-        .expect("restricted tool must block traversal");
+        .expect_err("restricted tool must block traversal");
     assert!(err.contains("path traversal"), "got: {err}");
 }
 
@@ -1119,8 +1118,7 @@ fn w4a_guard_blocks_dotted_filename_under_nonexistent_cwd() {
     let cwd = std::path::Path::new("C:\\w4a_no_such_dir");
     let err = tool
         .guard_command("type C:\\w4a_no_such_dir\\..leak.txt", cwd)
-        .err()
-        .expect("dotted component under raw cwd must be blocked");
+        .expect_err("dotted component under raw cwd must be blocked");
     assert!(err.contains("path outside working dir"), "got: {err}");
 }
 

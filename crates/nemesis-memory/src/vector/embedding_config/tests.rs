@@ -146,7 +146,7 @@ fn test_auto_inject_defaults_off_and_top_k_3() {
     let config: EmbeddingConfig = serde_json::from_str("{}").unwrap();
     assert!(!config.auto_inject);
     assert_eq!(config.auto_inject_top_k, 3);
-    assert_eq!(EmbeddingConfig::default().auto_inject, false);
+    assert!(!EmbeddingConfig::default().auto_inject);
     assert_eq!(EmbeddingConfig::default().auto_inject_top_k, 3);
 
     // Explicit values survive a roundtrip.

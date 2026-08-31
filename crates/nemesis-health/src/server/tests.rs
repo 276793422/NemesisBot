@@ -983,11 +983,10 @@ async fn try_raw_http_get(addr: &str, path: &str) -> Option<String> {
 /// 轮询直到服务在 addr 上以 200 应答（约 5s 上限），返回首条 200 响应全文。
 async fn wait_until_serving(addr: &str, path: &str) -> String {
     for _ in 0..100 {
-        if let Some(resp) = try_raw_http_get(addr, path).await {
-            if resp.starts_with("HTTP/1.1 200") || resp.starts_with("HTTP/1.0 200") {
+        if let Some(resp) = try_raw_http_get(addr, path).await
+            && (resp.starts_with("HTTP/1.1 200") || resp.starts_with("HTTP/1.0 200")) {
                 return resp;
             }
-        }
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
     }
     panic!("health server at {addr}{path} did not come up within 5s");

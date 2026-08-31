@@ -2,18 +2,24 @@
 //!
 //! These tests verify edge cases and internal behavior.
 
-use nemesis_data::{DataStore, RequestLog};
+use nemesis_data::{DataStore, LogFilter, RequestLog};
 use std::fs;
 use std::path::PathBuf;
 
 /// Create a temporary database path for testing.
+///
+/// 唯一性 = 进程 id + 进程内单调计数器。不能用时间戳命名：全量 workspace
+/// 满载并行时，同一 test binary 的测试线程可能落在同一计时精度窗口
+/// （Windows ~100ns）拿到相同值 → 两个测试打开同一个 db 文件、断言随机
+/// 错乱（2026-08-31 unit_tests 全量跑偶发 1 failed、单跑 15 轮不复现）。
 fn temp_db_path() -> PathBuf {
+    static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let mut path = std::env::temp_dir();
-    let uuid = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    path.push(format!("nemesis_data_unit_test_{}.db", uuid));
+    path.push(format!(
+        "nemesis_data_unit_test_{}_{}.db",
+        std::process::id(),
+        SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+    ));
     // Ensure file doesn't exist
     let _ = fs::remove_file(&path);
     path
@@ -64,6 +70,7 @@ fn test_database_reuse() {
             error_message: None,
             is_streaming: false,
             created_at: 1700000000,
+            ..Default::default()
         };
         store
             .insert_request_log(&log)
@@ -103,6 +110,7 @@ fn test_zero_values_in_log() {
         error_message: None,
         is_streaming: false,
         created_at: 1700000000,
+        ..Default::default()
     };
     store
         .insert_request_log(&log)
@@ -140,6 +148,7 @@ fn test_negative_timestamps() {
         error_message: None,
         is_streaming: false,
         created_at: -1000000, // Negative timestamp
+        ..Default::default()
     };
     store
         .insert_request_log(&log)
@@ -175,6 +184,7 @@ fn test_large_request_log() {
         error_message: None,
         is_streaming: false,
         created_at: 1700000000,
+        ..Default::default()
     };
     store
         .insert_request_log(&log)
@@ -211,13 +221,14 @@ fn test_special_characters_in_strings() {
         error_message: Some("Error: \n\t\"special\" chars".to_string()),
         is_streaming: false,
         created_at: 1700000000,
+        ..Default::default()
     };
     store
         .insert_request_log(&log)
         .expect("Failed to insert log with special characters");
 
     let (logs, _) = store
-        .query_logs(0, 2000000000, 1, 10)
+        .query_logs(0, 2000000000, 1, 10, &LogFilter::default())
         .expect("Failed to query logs");
     assert_eq!(logs.len(), 1);
     assert!(logs[0].trace_id.contains("'quotes'"));
@@ -250,13 +261,14 @@ fn test_very_long_strings() {
         error_message: Some(long_error),
         is_streaming: false,
         created_at: 1700000000,
+        ..Default::default()
     };
     store
         .insert_request_log(&log)
         .expect("Failed to insert log with long strings");
 
     let (logs, _) = store
-        .query_logs(0, 2000000000, 1, 10)
+        .query_logs(0, 2000000000, 1, 10, &LogFilter::default())
         .expect("Failed to query logs");
     assert_eq!(logs.len(), 1);
     assert!(logs[0].trace_id.len() > 9000);
@@ -287,6 +299,7 @@ fn test_multiple_page_sizes() {
             error_message: None,
             is_streaming: false,
             created_at: 1700000000 + i,
+            ..Default::default()
         };
         store
             .insert_request_log(&log)
@@ -295,18 +308,18 @@ fn test_multiple_page_sizes() {
 
     // Test different page sizes
     let (page1, total) = store
-        .query_logs(0, 2000000000, 1, 7)
+        .query_logs(0, 2000000000, 1, 7, &LogFilter::default())
         .expect("Failed to query with page_size=7");
     assert_eq!(page1.len(), 7);
     assert_eq!(total, 50);
 
     let (page2, _) = store
-        .query_logs(0, 2000000000, 1, 13)
+        .query_logs(0, 2000000000, 1, 13, &LogFilter::default())
         .expect("Failed to query with page_size=13");
     assert_eq!(page2.len(), 13);
 
     let (page3, _) = store
-        .query_logs(0, 2000000000, 1, 100)
+        .query_logs(0, 2000000000, 1, 100, &LogFilter::default())
         .expect("Failed to query with page_size=100");
     assert_eq!(page3.len(), 50); // All logs
 
@@ -336,6 +349,7 @@ fn test_exact_boundary_rollup() {
         error_message: None,
         is_streaming: false,
         created_at: now - 31 * 86400, // 31 days ago
+        ..Default::default()
     };
     store
         .insert_request_log(&old_log)
@@ -357,16 +371,17 @@ fn test_exact_boundary_rollup() {
         error_message: None,
         is_streaming: false,
         created_at: now - 10 * 86400, // 10 days ago
+        ..Default::default()
     };
     store
         .insert_request_log(&recent_log)
         .expect("Failed to insert recent log");
 
-    let deleted = store.rollup_old_logs().expect("Failed to rollup");
+    let deleted = store.retention_sweep(Some(30), None).expect("Failed to rollup");
     assert_eq!(deleted, 1); // Only the old log should be deleted
 
     let (remaining, _) = store
-        .query_logs(0, now + 86400, 1, 100)
+        .query_logs(0, now + 86400, 1, 100, &LogFilter::default())
         .expect("Failed to query remaining logs");
     assert_eq!(remaining.len(), 1); // Only the recent log should remain
     assert_eq!(remaining[0].trace_id, "recent");

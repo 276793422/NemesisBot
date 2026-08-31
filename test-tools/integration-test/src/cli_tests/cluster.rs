@@ -41,8 +41,8 @@ pub async fn test_cli_cluster_init(ws: &TestWorkspace, bin: &Path) -> Vec<TestRe
             &format!("{}/config_created", suite),
             "config.cluster.json created",
         ));
-        if let Ok(data) = std::fs::read_to_string(&cluster_cfg) {
-            if let Ok(cfg) = serde_json::from_str::<Value>(&data) {
+        if let Ok(data) = std::fs::read_to_string(&cluster_cfg)
+            && let Ok(cfg) = serde_json::from_str::<Value>(&data) {
                 let has_enabled = cfg.get("enabled").is_some();
                 let has_port = cfg.get("port").is_some();
                 results.push(pass(
@@ -54,7 +54,6 @@ pub async fn test_cli_cluster_init(ws: &TestWorkspace, bin: &Path) -> Vec<TestRe
                     },
                 ));
             }
-        }
     } else {
         // Create manually
         let _ = std::fs::create_dir_all(cluster_cfg.parent().unwrap());
@@ -90,7 +89,7 @@ pub async fn test_cli_cluster_status(ws: &TestWorkspace, bin: &Path) -> Vec<Test
     } else {
         results.push(fail(
             &format!("{}/output", suite),
-            &format!("No cluster info: '{}'", output.stdout.trim()),
+            format!("No cluster info: '{}'", output.stdout.trim()),
         ));
     }
 
@@ -109,7 +108,7 @@ pub async fn test_cli_cluster_config(ws: &TestWorkspace, bin: &Path) -> Vec<Test
     let output = ws.run_cli(bin, &["cluster", "config"]).await;
     results.push(pass(
         &format!("{}/show", suite),
-        &format!("exit={}", output.exit_code),
+        format!("exit={}", output.exit_code),
     ));
 
     // Set specific ports
@@ -128,7 +127,7 @@ pub async fn test_cli_cluster_config(ws: &TestWorkspace, bin: &Path) -> Vec<Test
         .await;
     results.push(pass(
         &format!("{}/set_ports", suite),
-        &format!("exit={}", set.exit_code),
+        format!("exit={}", set.exit_code),
     ));
 
     results
@@ -146,7 +145,7 @@ pub async fn test_cli_cluster_info(ws: &TestWorkspace, bin: &Path) -> Vec<TestRe
     let output = ws.run_cli(bin, &["cluster", "info"]).await;
     results.push(pass(
         &format!("{}/show", suite),
-        &format!("exit={}", output.exit_code),
+        format!("exit={}", output.exit_code),
     ));
 
     // Update info
@@ -165,7 +164,7 @@ pub async fn test_cli_cluster_info(ws: &TestWorkspace, bin: &Path) -> Vec<TestRe
         .await;
     results.push(pass(
         &format!("{}/update", suite),
-        &format!("exit={}", set.exit_code),
+        format!("exit={}", set.exit_code),
     ));
 
     results
@@ -183,13 +182,13 @@ pub async fn test_cli_cluster_enable_disable(ws: &TestWorkspace, bin: &Path) -> 
     let enable = ws.run_cli(bin, &["cluster", "enable"]).await;
     results.push(pass(
         &format!("{}/enable", suite),
-        &format!("exit={}", enable.exit_code),
+        format!("exit={}", enable.exit_code),
     ));
 
     let disable = ws.run_cli(bin, &["cluster", "disable"]).await;
     results.push(pass(
         &format!("{}/disable", suite),
-        &format!("exit={}", disable.exit_code),
+        format!("exit={}", disable.exit_code),
     ));
 
     results
@@ -207,7 +206,7 @@ pub async fn test_cli_cluster_reset(ws: &TestWorkspace, bin: &Path) -> Vec<TestR
     let output = ws.run_cli(bin, &["cluster", "reset"]).await;
     results.push(pass(
         &format!("{}/reset", suite),
-        &format!("exit={}", output.exit_code),
+        format!("exit={}", output.exit_code),
     ));
 
     // Re-init for subsequent tests
@@ -234,7 +233,7 @@ pub async fn test_cli_cluster_peers(ws: &TestWorkspace, bin: &Path) -> Vec<TestR
     let list = ws.run_cli(bin, &["cluster", "peers", "list"]).await;
     results.push(pass(
         &format!("{}/list", suite),
-        &format!("exit={}", list.exit_code),
+        format!("exit={}", list.exit_code),
     ));
 
     // peers add
@@ -258,7 +257,7 @@ pub async fn test_cli_cluster_peers(ws: &TestWorkspace, bin: &Path) -> Vec<TestR
         .await;
     results.push(pass(
         &format!("{}/add", suite),
-        &format!("exit={}", add.exit_code),
+        format!("exit={}", add.exit_code),
     ));
 
     // peers list (should show the peer)
@@ -279,7 +278,7 @@ pub async fn test_cli_cluster_peers(ws: &TestWorkspace, bin: &Path) -> Vec<TestR
         .await;
     results.push(pass(
         &format!("{}/disable", suite),
-        &format!("exit={}", disable.exit_code),
+        format!("exit={}", disable.exit_code),
     ));
 
     // peers enable
@@ -288,7 +287,7 @@ pub async fn test_cli_cluster_peers(ws: &TestWorkspace, bin: &Path) -> Vec<TestR
         .await;
     results.push(pass(
         &format!("{}/enable", suite),
-        &format!("exit={}", enable.exit_code),
+        format!("exit={}", enable.exit_code),
     ));
 
     // peers remove
@@ -297,7 +296,7 @@ pub async fn test_cli_cluster_peers(ws: &TestWorkspace, bin: &Path) -> Vec<TestR
         .await;
     results.push(pass(
         &format!("{}/remove", suite),
-        &format!("exit={}", remove.exit_code),
+        format!("exit={}", remove.exit_code),
     ));
 
     results
@@ -318,14 +317,14 @@ pub async fn test_cli_cluster_token(ws: &TestWorkspace, bin: &Path) -> Vec<TestR
         .await;
     results.push(pass(
         &format!("{}/generate", suite),
-        &format!("exit={}", gen_tok.exit_code),
+        format!("exit={}", gen_tok.exit_code),
     ));
 
     // token show
     let show = ws.run_cli(bin, &["cluster", "token", "show"]).await;
     results.push(pass(
         &format!("{}/show", suite),
-        &format!(
+        format!(
             "exit={}, output: '{}'",
             show.exit_code,
             show.stdout.trim().chars().take(60).collect::<String>()
@@ -338,7 +337,7 @@ pub async fn test_cli_cluster_token(ws: &TestWorkspace, bin: &Path) -> Vec<TestR
         .await;
     results.push(pass(
         &format!("{}/show_full", suite),
-        &format!("exit={}", show_full.exit_code),
+        format!("exit={}", show_full.exit_code),
     ));
 
     // token set
@@ -347,7 +346,7 @@ pub async fn test_cli_cluster_token(ws: &TestWorkspace, bin: &Path) -> Vec<TestR
         .await;
     results.push(pass(
         &format!("{}/set", suite),
-        &format!("exit={}", set.exit_code),
+        format!("exit={}", set.exit_code),
     ));
 
     // token verify (correct)
@@ -356,7 +355,7 @@ pub async fn test_cli_cluster_token(ws: &TestWorkspace, bin: &Path) -> Vec<TestR
         .await;
     results.push(pass(
         &format!("{}/verify_correct", suite),
-        &format!(
+        format!(
             "exit={}, matched: {}",
             verify_ok.exit_code,
             verify_ok.stdout_contains("match") || verify_ok.stdout_contains("valid")
@@ -369,14 +368,14 @@ pub async fn test_cli_cluster_token(ws: &TestWorkspace, bin: &Path) -> Vec<TestR
         .await;
     results.push(pass(
         &format!("{}/verify_wrong", suite),
-        &format!("exit={}", verify_fail.exit_code),
+        format!("exit={}", verify_fail.exit_code),
     ));
 
     // token revoke
     let revoke = ws.run_cli(bin, &["cluster", "token", "revoke"]).await;
     results.push(pass(
         &format!("{}/revoke", suite),
-        &format!("exit={}", revoke.exit_code),
+        format!("exit={}", revoke.exit_code),
     ));
 
     // Restore token

@@ -111,13 +111,11 @@ impl Updater {
                 // Check file modification times
                 if !self.config.database_dir.is_empty() {
                     let main_cvd = Path::new(&self.config.database_dir).join("main.cvd");
-                    if let Ok(meta) = std::fs::metadata(&main_cvd) {
-                        if let Ok(modified) = meta.modified() {
-                            if modified.elapsed().unwrap_or(Duration::MAX) <= max_age {
+                    if let Ok(meta) = std::fs::metadata(&main_cvd)
+                        && let Ok(modified) = meta.modified()
+                            && modified.elapsed().unwrap_or(Duration::MAX) <= max_age {
                                 return false;
                             }
-                        }
-                    }
                 }
                 true
             }

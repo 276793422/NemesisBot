@@ -9,6 +9,8 @@ fn test_dual_writer_console_only() {
         file: None,
     };
     // Should succeed — writes to stderr which is always available.
+    // （刻意用 write 而非 write_all：被测的就是 write 的返回契约；lint 局部豁免）
+    #[allow(clippy::unused_io_amount)]
     let result = w.write(b"hello\n");
     assert!(result.is_ok());
     assert!(result.unwrap() > 0);
@@ -31,8 +33,8 @@ fn test_dual_writer_with_file() {
         file: Some(Arc::new(Mutex::new(file))),
     };
 
-    w.write(b"line1\n").unwrap();
-    w.write(b"line2\n").unwrap();
+    w.write_all(b"line1\n").unwrap();
+    w.write_all(b"line2\n").unwrap();
     w.flush().unwrap();
 
     let content = std::fs::read_to_string(&*path_str).unwrap();
@@ -57,7 +59,7 @@ fn test_dual_writer_file_only() {
         file: Some(Arc::new(Mutex::new(file))),
     };
 
-    w.write(b"file_only_line\n").unwrap();
+    w.write_all(b"file_only_line\n").unwrap();
     w.flush().unwrap();
 
     let content = std::fs::read_to_string(&*path_str).unwrap();
@@ -71,6 +73,7 @@ fn test_dual_writer_discard() {
         console: false,
         file: None,
     };
+    #[allow(clippy::unused_io_amount)] // 同上：测 write 返回契约（discard 报 buf.len()）
     let result = w.write(b"discarded\n");
     assert!(result.is_ok());
     assert_eq!(result.unwrap(), 10); // reports buf.len() but writes nothing
@@ -81,7 +84,7 @@ fn test_dual_writer_discard() {
 fn test_make_writer_console_only() {
     let mw = DualMakeWriter::console_only();
     let mut w = mw.make_writer();
-    assert!(w.write(b"console\n").is_ok());
+    assert!(w.write_all(b"console\n").is_ok());
 }
 
 #[test]
@@ -94,8 +97,8 @@ fn test_make_writer_with_file() {
     let mut w1 = mw.make_writer();
     let mut w2 = mw.make_writer();
 
-    w1.write(b"w1\n").unwrap();
-    w2.write(b"w2\n").unwrap();
+    w1.write_all(b"w1\n").unwrap();
+    w2.write_all(b"w2\n").unwrap();
     w1.flush().unwrap();
     w2.flush().unwrap();
 
@@ -166,7 +169,7 @@ fn test_dual_writer_multiple_writes() {
     };
 
     for i in 0..10 {
-        w.write(format!("line {}\n", i).as_bytes()).unwrap();
+        w.write_all(format!("line {}\n", i).as_bytes()).unwrap();
     }
     w.flush().unwrap();
 
@@ -183,7 +186,7 @@ fn test_make_writer_file_only() {
 
     let mw = DualMakeWriter::file_only(&path_str).unwrap();
     let mut w = mw.make_writer();
-    w.write(b"file-only-content\n").unwrap();
+    w.write_all(b"file-only-content\n").unwrap();
     w.flush().unwrap();
 
     let content = std::fs::read_to_string(&*path_str).unwrap();
@@ -198,6 +201,7 @@ fn test_dual_writer_write_error_handling() {
         file: None,
     };
     // Write to discard mode should always succeed
+    #[allow(clippy::unused_io_amount)] // 同上：测 write 返回契约
     let result = w.write(b"test\n");
     assert!(result.is_ok());
     assert_eq!(result.unwrap(), 5); // Returns buffer length even when discarding
@@ -211,7 +215,7 @@ fn test_dual_writer_console_error_handling() {
         file: None,
     };
     // Console writes should succeed (stderr is always available)
-    assert!(w.write(b"console test\n").is_ok());
+    assert!(w.write_all(b"console test\n").is_ok());
     assert!(w.flush().is_ok());
 }
 
@@ -222,6 +226,7 @@ fn test_dual_writer_empty_buffer() {
         console: true,
         file: None,
     };
+    #[allow(clippy::unused_io_amount)] // 同上：空写返回 0 的契约
     let result = w.write(b"");
     assert!(result.is_ok());
     assert_eq!(result.unwrap(), 0);
@@ -234,8 +239,8 @@ fn test_dual_make_writer_clone_behavior() {
     let mut w1 = mw.make_writer();
     let mut w2 = mw.make_writer();
     // Both writers should work independently
-    assert!(w1.write(b"writer1\n").is_ok());
-    assert!(w2.write(b"writer2\n").is_ok());
+    assert!(w1.write_all(b"writer1\n").is_ok());
+    assert!(w2.write_all(b"writer2\n").is_ok());
 }
 
 #[test]
@@ -278,7 +283,7 @@ fn test_dual_writer_large_buffer() {
         console: true,
         file: None,
     };
-    assert!(w.write(&large_data).is_ok());
+    assert!(w.write_all(&large_data).is_ok());
 }
 
 #[test]
@@ -289,6 +294,7 @@ fn test_dual_writer_partial_write() {
         file: None,
     };
     let buf = b"partial";
+    #[allow(clippy::unused_io_amount)] // 同上：discard 模式报全长
     let result = w.write(buf);
     assert!(result.is_ok());
     // In discard mode, should report full buffer length

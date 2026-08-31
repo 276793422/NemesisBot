@@ -119,11 +119,11 @@ pub fn resolve_model_config(cfg: &Config, model_ref: &str) -> Result<ProviderRes
 /// 2. `yaml:<alias>` — resolved from `workspace/config/credentials.yaml`
 ///    (U15 completion; see `credentials` module).
 /// 3. Literal value — passes through unchanged (full backward compatibility).
-/// References are resolved per-operation with NO caching: changing the env var
-/// or credentials.yaml takes effect on the next resolve, mirroring dsh's
-/// per-operation credential resolution. A reference that does not resolve
-/// fails LOUD with the variable/alias name and remedy — never silently
-/// degrades to an empty key (which would surface later as a confusing 401).
+///    References are resolved per-operation with NO caching: changing the env var
+///    or credentials.yaml takes effect on the next resolve, mirroring dsh's
+///    per-operation credential resolution. A reference that does not resolve
+///    fails LOUD with the variable/alias name and remedy — never silently
+///    degrades to an empty key (which would surface later as a confusing 401).
 pub(crate) fn resolve_api_key_value(raw: &str, model_for_error: &str) -> Result<String> {
     if let Some(var) = raw.strip_prefix("env:") {
         if var.is_empty() {
@@ -377,7 +377,7 @@ impl ProviderResolver {
     }
 
     /// Find default model (first model in the list, or one marked as default).
-    pub fn find_default<'a>(models: &'a [ModelConfig]) -> Option<&'a ModelConfig> {
+    pub fn find_default(models: &[ModelConfig]) -> Option<&ModelConfig> {
         models.first()
     }
 

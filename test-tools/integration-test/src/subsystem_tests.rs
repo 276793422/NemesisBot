@@ -47,8 +47,8 @@ pub async fn test_memory_save_recall(ws: &TestWorkspace) -> Vec<TestResult> {
     }
 
     // Recall (read back)
-    if let Ok(data) = std::fs::read_to_string(&mem_file) {
-        if let Ok(loaded) = serde_json::from_str::<Value>(&data) {
+    if let Ok(data) = std::fs::read_to_string(&mem_file)
+        && let Ok(loaded) = serde_json::from_str::<Value>(&data) {
             let value = loaded.get("value").and_then(|v| v.as_str()).unwrap_or("");
             if value == "test value for recall" {
                 results.push(pass(
@@ -59,7 +59,6 @@ pub async fn test_memory_save_recall(ws: &TestWorkspace) -> Vec<TestResult> {
                 results.push(fail(&format!("{}/recall", suite), "Value mismatch"));
             }
         }
-    }
 
     results
 }
@@ -92,23 +91,22 @@ pub async fn test_memory_search(ws: &TestWorkspace) -> Vec<TestResult> {
     let mut found = 0;
     if let Ok(entries) = std::fs::read_dir(&memory_dir) {
         for entry in entries.flatten() {
-            if let Ok(data) = std::fs::read_to_string(entry.path()) {
-                if data.contains("ALPHA") {
+            if let Ok(data) = std::fs::read_to_string(entry.path())
+                && data.contains("ALPHA") {
                     found += 1;
                 }
-            }
         }
     }
 
     if found >= 3 {
         results.push(pass(
             &format!("{}/results", suite),
-            &format!("Found {} entries", found),
+            format!("Found {} entries", found),
         ));
     } else {
         results.push(fail(
             &format!("{}/results", suite),
-            &format!("Expected 3, found {}", found),
+            format!("Expected 3, found {}", found),
         ));
     }
 
@@ -131,7 +129,7 @@ pub async fn test_cron_crud(ws: &TestWorkspace, bin: &Path) -> Vec<TestResult> {
     } else {
         results.push(pass(
             &format!("{}/list", suite),
-            &format!("exit={}", output.exit_code),
+            format!("exit={}", output.exit_code),
         ));
     }
 
@@ -156,7 +154,7 @@ pub async fn test_cron_crud(ws: &TestWorkspace, bin: &Path) -> Vec<TestResult> {
     } else {
         results.push(pass(
             &format!("{}/add", suite),
-            &format!("exit={} (cron add may be partial)", output.exit_code),
+            format!("exit={} (cron add may be partial)", output.exit_code),
         ));
     }
 
@@ -169,7 +167,7 @@ pub async fn test_cron_crud(ws: &TestWorkspace, bin: &Path) -> Vec<TestResult> {
     } else {
         results.push(pass(
             &format!("{}/remove", suite),
-            &format!("exit={}", output.exit_code),
+            format!("exit={}", output.exit_code),
         ));
     }
 
@@ -187,8 +185,8 @@ pub async fn test_cron_scheduled_execution(ws: &TestWorkspace, _bin: &Path) -> V
 
     // Cron scheduling requires a running gateway.
     // Test that the cron service is properly configured.
-    if let Ok(data) = std::fs::read_to_string(ws.config_path()) {
-        if let Ok(cfg) = serde_json::from_str::<Value>(&data) {
+    if let Ok(data) = std::fs::read_to_string(ws.config_path())
+        && let Ok(cfg) = serde_json::from_str::<Value>(&data) {
             let has_cron = cfg.get("cron").is_some();
             results.push(pass(
                 &format!("{}/config", suite),
@@ -199,7 +197,6 @@ pub async fn test_cron_scheduled_execution(ws: &TestWorkspace, _bin: &Path) -> V
                 },
             ));
         }
-    }
 
     results.push(pass(
         &format!("{}/note", suite),
@@ -237,7 +234,7 @@ pub async fn test_mcp_crud(ws: &TestWorkspace, bin: &Path) -> Vec<TestResult> {
     } else {
         results.push(pass(
             &format!("{}/add", suite),
-            &format!("exit={}", output.exit_code),
+            format!("exit={}", output.exit_code),
         ));
     }
 
@@ -248,7 +245,7 @@ pub async fn test_mcp_crud(ws: &TestWorkspace, bin: &Path) -> Vec<TestResult> {
     } else {
         results.push(fail(
             &format!("{}/list", suite),
-            &format!("exit={}", output.exit_code),
+            format!("exit={}", output.exit_code),
         ));
     }
 
@@ -261,7 +258,7 @@ pub async fn test_mcp_crud(ws: &TestWorkspace, bin: &Path) -> Vec<TestResult> {
     } else {
         results.push(pass(
             &format!("{}/remove", suite),
-            &format!("exit={}", output.exit_code),
+            format!("exit={}", output.exit_code),
         ));
     }
 
@@ -303,7 +300,7 @@ pub async fn test_observer_events(ws: &TestWorkspace) -> Vec<TestResult> {
         let count = std::fs::read_dir(&logs_dir).map(|r| r.count()).unwrap_or(0);
         results.push(pass(
             &format!("{}/logs_dir", suite),
-            &format!("{} log files found", count),
+            format!("{} log files found", count),
         ));
     } else {
         results.push(skip(suite, "No logs directory (needs gateway running)"));
@@ -324,7 +321,7 @@ pub async fn test_heartbeat_trigger() -> Vec<TestResult> {
     // Heartbeat requires running gateway
     // Verify health endpoint is accessible as a proxy for heartbeat
     match reqwest::Client::new()
-        .get(&format!("http://127.0.0.1:{}/health", HEALTH_PORT))
+        .get(format!("http://127.0.0.1:{}/health", HEALTH_PORT))
         .timeout(Duration::from_secs(5))
         .send()
         .await
@@ -333,7 +330,7 @@ pub async fn test_heartbeat_trigger() -> Vec<TestResult> {
             results.push(pass(suite, "Health endpoint responds (heartbeat OK)"));
         }
         Ok(resp) => {
-            results.push(fail(suite, &format!("Health endpoint: {}", resp.status())));
+            results.push(fail(suite, format!("Health endpoint: {}", resp.status())));
         }
         Err(_) => {
             results.push(skip(suite, "Gateway not running"));

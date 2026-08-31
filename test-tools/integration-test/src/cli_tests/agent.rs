@@ -17,7 +17,7 @@ pub async fn test_cli_agent_set_llm(ws: &TestWorkspace, bin: &Path) -> Vec<TestR
         .await;
     results.push(pass(
         &format!("{}/set_llm", suite),
-        &format!("exit={}", output.exit_code),
+        format!("exit={}", output.exit_code),
     ));
 
     results
@@ -38,7 +38,7 @@ pub async fn test_cli_agent_set_concurrent(ws: &TestWorkspace, bin: &Path) -> Ve
         .await;
     results.push(pass(
         &format!("{}/reject", suite),
-        &format!("exit={}", reject.exit_code),
+        format!("exit={}", reject.exit_code),
     ));
 
     // Set queue mode
@@ -47,7 +47,7 @@ pub async fn test_cli_agent_set_concurrent(ws: &TestWorkspace, bin: &Path) -> Ve
         .await;
     results.push(pass(
         &format!("{}/queue", suite),
-        &format!("exit={}", queue.exit_code),
+        format!("exit={}", queue.exit_code),
     ));
 
     // Set queue mode with --queue-size
@@ -66,7 +66,7 @@ pub async fn test_cli_agent_set_concurrent(ws: &TestWorkspace, bin: &Path) -> Ve
         .await;
     results.push(pass(
         &format!("{}/queue_size", suite),
-        &format!("exit={}", queue_size.exit_code),
+        format!("exit={}", queue_size.exit_code),
     ));
 
     results
@@ -88,7 +88,7 @@ pub async fn test_cli_agent_message(ws: &TestWorkspace, bin: &Path) -> Vec<TestR
     } else {
         results.push(fail(
             &format!("{}/help", suite),
-            &format!("exit={}", help.exit_code),
+            format!("exit={}", help.exit_code),
         ));
     }
 

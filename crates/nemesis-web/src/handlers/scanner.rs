@@ -28,6 +28,12 @@ pub struct ScannerHandler {
     _priv: (),
 }
 
+impl Default for ScannerHandler {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ScannerHandler {
     pub fn new() -> Self {
         Self { _priv: () }
@@ -298,11 +304,10 @@ impl ScannerHandler {
                     || state.install_error != old_state.install_error
                 {
                     let mut updated = raw.clone();
-                    if let Some(obj) = updated.as_object_mut() {
-                        if let Ok(state_val) = serde_json::to_value(&state) {
+                    if let Some(obj) = updated.as_object_mut()
+                        && let Ok(state_val) = serde_json::to_value(&state) {
                             obj.insert("state".to_string(), state_val);
                         }
-                    }
                     cfg.engines.insert(name.clone(), updated);
                     changed = true;
                 }
@@ -315,11 +320,10 @@ impl ScannerHandler {
             ));
         }
 
-        if changed {
-            if let Err(e) = save_scanner_config(&path, &cfg) {
+        if changed
+            && let Err(e) = save_scanner_config(&path, &cfg) {
                 tracing::warn!("Failed to save scanner state after check: {}", e);
             }
-        }
 
         if target_name.is_some() && results.len() == 1 {
             Ok(Some(results.into_iter().next().unwrap()))
@@ -434,8 +438,8 @@ impl ScannerHandler {
                         );
                     } else {
                         let path = scanner_config_path(&ws);
-                        if let Ok(mut cfg) = load_scanner_config(&path) {
-                            if let Some(raw) = cfg.engines.get(&name).cloned() {
+                        if let Ok(mut cfg) = load_scanner_config(&path)
+                            && let Some(raw) = cfg.engines.get(&name).cloned() {
                                 let mut updated = raw.clone();
                                 if let Some(obj) = updated.as_object_mut() {
                                     let state = EngineState {
@@ -451,7 +455,6 @@ impl ScannerHandler {
                                 cfg.engines.insert(name.clone(), updated);
                                 let _ = save_scanner_config(&path, &cfg);
                             }
-                        }
 
                         hub.publish(
                             "scanner-progress",
@@ -503,8 +506,8 @@ impl ScannerHandler {
             match result {
                 Ok(()) => {
                     let path = scanner_config_path(&ws);
-                    if let Ok(mut cfg) = load_scanner_config(&path) {
-                        if let Some(raw) = cfg.engines.get(&name).cloned() {
+                    if let Ok(mut cfg) = load_scanner_config(&path)
+                        && let Some(raw) = cfg.engines.get(&name).cloned() {
                             let mut updated = raw.clone();
                             if let Some(obj) = updated.as_object_mut() {
                                 let mut state = parse_engine_config(&raw).state;
@@ -517,7 +520,6 @@ impl ScannerHandler {
                             cfg.engines.insert(name.clone(), updated);
                             let _ = save_scanner_config(&path, &cfg);
                         }
-                    }
 
                     hub.publish(
                         "scanner-progress",

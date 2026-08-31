@@ -89,13 +89,11 @@ fn default_forge_config() -> serde_json::Value {
 /// Load forge config from forge.json.
 fn load_forge_config(forge_dir: &std::path::Path) -> serde_json::Value {
     let config_path = forge_dir.join("forge.json");
-    if config_path.exists() {
-        if let Ok(data) = std::fs::read_to_string(&config_path) {
-            if let Ok(cfg) = serde_json::from_str::<serde_json::Value>(&data) {
+    if config_path.exists()
+        && let Ok(data) = std::fs::read_to_string(&config_path)
+            && let Ok(cfg) = serde_json::from_str::<serde_json::Value>(&data) {
                 return cfg;
             }
-        }
-    }
     default_forge_config()
 }
 
@@ -113,13 +111,11 @@ fn save_forge_config(forge_dir: &std::path::Path, cfg: &serde_json::Value) -> Re
 /// Load forge registry from registry.json.
 fn load_registry(forge_dir: &std::path::Path) -> Vec<serde_json::Value> {
     let registry_path = forge_dir.join("registry.json");
-    if registry_path.exists() {
-        if let Ok(data) = std::fs::read_to_string(&registry_path) {
-            if let Ok(arr) = serde_json::from_str::<Vec<serde_json::Value>>(&data) {
+    if registry_path.exists()
+        && let Ok(data) = std::fs::read_to_string(&registry_path)
+            && let Ok(arr) = serde_json::from_str::<Vec<serde_json::Value>>(&data) {
                 return arr;
             }
-        }
-    }
     Vec::new()
 }
 
@@ -353,9 +349,9 @@ fn cmd_disable(cfg_path: &std::path::Path) -> Result<()> {
 
 fn cmd_reflect(cfg_path: &std::path::Path, forge_dir: &std::path::Path) -> Result<()> {
     // Check if forge is enabled in main config
-    if cfg_path.exists() {
-        if let Ok(data) = std::fs::read_to_string(cfg_path) {
-            if let Ok(cfg) = serde_json::from_str::<serde_json::Value>(&data) {
+    if cfg_path.exists()
+        && let Ok(data) = std::fs::read_to_string(cfg_path)
+            && let Ok(cfg) = serde_json::from_str::<serde_json::Value>(&data) {
                 let enabled = cfg
                     .get("forge")
                     .and_then(|f| f.get("enabled"))
@@ -366,8 +362,6 @@ fn cmd_reflect(cfg_path: &std::path::Path, forge_dir: &std::path::Path) -> Resul
                     return Ok(());
                 }
             }
-        }
-    }
 
     println!("Triggering manual reflection...");
 

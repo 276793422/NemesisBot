@@ -9,6 +9,7 @@ import (
 	"testaiserver/handlers"
 	"testaiserver/logger"
 	"testaiserver/models"
+	"strings"
 	"testing"
 	"time"
 
@@ -291,8 +292,15 @@ func TestStreamingRequest(t *testing.T) {
 	w := httptest.NewRecorder()
 	router.ServeHTTP(w, req)
 
-	if w.Code != http.StatusBadRequest {
-		t.Errorf("Expected status 400, got %d", w.Code)
+	// 2026-08-31（W1.5 顺手根因修复）：handler 已实现 stream:true 的 SSE 流式
+	// 路径（handlers.go handleStreamingResponse，200 + text/event-stream），
+	// 本测试原先断言"流式不支持 → 400"是流式实现落地前的过期契约。
+	// 现契约：stream:true → 200 + text/event-stream。
+	if w.Code != http.StatusOK {
+		t.Errorf("Expected status 200, got %d", w.Code)
+	}
+	if ct := w.Header().Get("Content-Type"); !strings.Contains(ct, "text/event-stream") {
+		t.Errorf("Expected text/event-stream content type, got %q", ct)
 	}
 }
 
@@ -331,4 +339,43 @@ func ExampleModelRegistry() {
 		fmt.Println(model.Name())
 	}
 	// Output: testai-1.1
+}
+
+// W1.5 别名机制端到端：TESTAI_ALIASES 解析进 registry 后，
+// /v1/chat/completions 用别名请求 → 200；未知模型仍 404 model_not_found。
+func TestAliasModelResolvesOverHTTP(t *testing.T) {
+	router := setupTestRouter()
+	// registry 在 setupTestRouter 内部构建，这里另起一个带别名的等价 router。
+	gin.SetMode(gin.TestMode)
+	registry := models.NewModelRegistry()
+	registry.Register(models.NewTestAI11())
+	registry.Register(models.NewTestAI20())
+	if errs := registry.ApplyAliases(map[string]string{"gpt-4o-mini": "testai-1.1"}); len(errs) != 0 {
+		t.Fatalf("alias apply failed: %v", errs)
+	}
+	log, _ := logger.NewLogger()
+	handler := handlers.NewHandler(registry, log)
+	router = gin.New()
+	v1 := router.Group("/v1")
+	v1.POST("/chat/completions", handler.ChatCompletions)
+
+	// 别名请求 → 200（行为等同其目标模型 testai-1.1）。
+	body := `{"model":"gpt-4o-mini","messages":[{"role":"user","content":"hi"}]}`
+	req := httptest.NewRequest("POST", "/v1/chat/completions", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	if w.Code != 200 {
+		t.Fatalf("alias request expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	// 未知模型 → 404 model_not_found（别名未覆盖的路径零改动）。
+	body404 := `{"model":"no-such-model","messages":[{"role":"user","content":"hi"}]}`
+	req404 := httptest.NewRequest("POST", "/v1/chat/completions", bytes.NewBufferString(body404))
+	req404.Header.Set("Content-Type", "application/json")
+	w404 := httptest.NewRecorder()
+	router.ServeHTTP(w404, req404)
+	if w404.Code != 404 {
+		t.Fatalf("unknown model expected 404, got %d", w404.Code)
+	}
 }

@@ -398,7 +398,7 @@ async fn test_grep_tool_no_match() {
 async fn test_grep_tool_max_results_limits() {
     let tmp = TempDir::new().unwrap();
     // Create a file with 10 matches.
-    let content: String = std::iter::repeat("matchline\n").take(10).collect();
+    let content: String = std::iter::repeat_n("matchline\n", 10).collect();
     std::fs::write(tmp.path().join("a.rs"), &content).unwrap();
     let tool = GrepTool::new(tmp.path().to_string_lossy().to_string());
     let args = json_args(serde_json::json!({"pattern":"matchline","max_results":3}));

@@ -89,11 +89,11 @@ fn fn_wrapper_void_return_panics_when_lib_missing() {
 #[should_panic(expected = "sherpa-onnx not initialized")]
 fn safe_create_offline_tts_panics_when_lib_missing() {
     // C++ shim 包装（651-664）：先 get_raw_fn 查符号 → panic
-    let _ = safe_create_offline_tts(std::ptr::null());
+    let _ = unsafe { safe_create_offline_tts(std::ptr::null()) };
 }
 
 #[test]
 #[should_panic(expected = "sherpa-onnx not initialized")]
 fn safe_tts_generate_audio_panics_when_lib_missing() {
-    let _ = safe_tts_generate_audio(std::ptr::null(), std::ptr::null(), 0, 1.0);
+    let _ = unsafe { safe_tts_generate_audio(std::ptr::null(), std::ptr::null(), 0, 1.0) };
 }

@@ -878,8 +878,7 @@ mod r7_cmd_paths {
     fn seed_experiences(forge_dir: &std::path::Path) {
         let dir = forge_dir.join("experiences").join("202608");
         std::fs::create_dir_all(&dir).unwrap();
-        let rows = vec![
-            serde_json::json!({
+        let rows = [serde_json::json!({
                 "pattern_hash": "r7hash1", "tool_name": "read_file", "count": 10,
                 "avg_duration_ms": 12, "success_rate": 0.9,
                 "last_seen": "2026-08-27T00:00:00+08:00"
@@ -888,8 +887,7 @@ mod r7_cmd_paths {
                 "pattern_hash": "r7hash2", "tool_name": "exec", "count": 4,
                 "avg_duration_ms": 340, "success_rate": 0.25,
                 "last_seen": "2026-08-27T01:00:00+08:00"
-            }),
-        ];
+            })];
         let body: String = rows
             .iter()
             .map(|r| serde_json::to_string(r).unwrap())

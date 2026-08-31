@@ -1397,7 +1397,7 @@ mod pipeline_extra {
         };
         let plugin = SecurityPlugin::new(config);
         // Should be constructable even when disabled
-        assert!(plugin.is_enabled() == false);
+        assert!(!plugin.is_enabled());
     }
 
     #[test]

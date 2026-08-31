@@ -649,7 +649,7 @@ fn test_stats_tracks_active_and_chat_sessions_correctly() {
     assert_eq!(stats["chat_sessions"], 2);
 
     // Remove one connection session
-    mgr.remove(&mgr.get(&format!("sess_0")).unwrap().id);
+    mgr.remove(&mgr.get("sess_0").unwrap().id);
     let stats = mgr.stats();
     assert_eq!(stats["active_sessions"], 1);
     assert_eq!(stats["chat_sessions"], 2);
@@ -987,7 +987,7 @@ fn test_chat_session_timestamp_auto_fill() {
 
     // Verify the timestamp is in valid RFC3339 format
     let timestamp_str = history[0].timestamp.as_ref().unwrap();
-    assert!(timestamp_str.len() > 0); // Basic check that timestamp was filled
+    assert!(!timestamp_str.is_empty()); // Basic check that timestamp was filled
 }
 
 #[test]

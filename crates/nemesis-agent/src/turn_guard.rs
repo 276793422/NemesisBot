@@ -116,10 +116,10 @@ impl TurnGuard {
     /// - ⑥ alternating: per-turn cumulative count (never reset by success);
     /// - ④ storm: consecutive-run count (reset on any success or different
     ///   error signature).
-    /// When either reaches its threshold, return a nudge to append to the tool
-    /// result fed back to the model. The ④ storm nudge (more specific: "no
-    /// progress at all") is preferred when both fire. Returns `None` for
-    /// successes and below-threshold failures.
+    ///   When either reaches its threshold, return a nudge to append to the tool
+    ///   result fed back to the model. The ④ storm nudge (more specific: "no
+    ///   progress at all") is preferred when both fire. Returns `None` for
+    ///   successes and below-threshold failures.
     ///
     /// `error` should be `None` on success, or the error text on failure
     /// (typically the tool result string starting with `Error:` / `Tool error:`).
@@ -344,7 +344,7 @@ fn error_signature(tool: &str, error: &str) -> String {
 /// ⑤ Whether a tool's success is "write-like" (repeating an identical
 /// successful call is a no-op loop). Conservative allow-list.
 fn is_write_like_tool(name: &str) -> bool {
-    WRITE_LIKE_TOOLS.iter().any(|t| *t == name)
+    WRITE_LIKE_TOOLS.contains(&name)
 }
 
 /// ⑤ Canonicalize raw tool args for the repeat-success signature. Parses JSON

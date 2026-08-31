@@ -120,7 +120,7 @@ impl ExternalInput {
         let config_stderr = config.clone();
         std::thread::spawn(move || {
             let reader = std::io::BufReader::new(stderr);
-            for line in reader.lines().flatten() {
+            for line in reader.lines().map_while(Result::ok) {
                 log_message(&config_stderr, &format!("[Input stderr] {}", line));
             }
         });
@@ -133,16 +133,16 @@ impl ExternalInput {
                 Ok(text) => {
                     let text = text.trim();
                     if !text.is_empty() {
-                        log_message(&config, &format!("[Input] {}", text));
+                        log_message(config, &format!("[Input] {}", text));
 
                         if tx.send(text.to_string()).is_err() {
-                            log_message(&config, "⚠️  Failed to send input to main channel");
+                            log_message(config, "⚠️  Failed to send input to main channel");
                             break;
                         }
                     }
                 }
                 Err(e) => {
-                    log_message(&config, &format!("Error reading from input program: {}", e));
+                    log_message(config, &format!("Error reading from input program: {}", e));
                     break;
                 }
             }

@@ -32,3 +32,6 @@ tracing-subscriber = { workspace = true }
 
 [build-dependencies]
 cc = "1"
+
+[lints]
+workspace = true

@@ -474,11 +474,10 @@ pub async fn wait_for_http(url: &str, timeout: Duration) -> Result<()> {
         .build()?;
     let deadline = tokio::time::Instant::now() + timeout;
     loop {
-        if let Ok(resp) = client.get(url).send().await {
-            if resp.status().is_success() {
+        if let Ok(resp) = client.get(url).send().await
+            && resp.status().is_success() {
                 return Ok(());
             }
-        }
         if tokio::time::Instant::now() > deadline {
             bail!("Timeout waiting for {}", url);
         }
@@ -716,7 +715,7 @@ pub fn cleanup_ports(ports: &[u16]) {
     for port in ports {
         // Use netstat to find PIDs, then taskkill
         let output = std::process::Command::new("cmd")
-            .args(&[
+            .args([
                 "/c",
                 &format!("netstat -ano | findstr :{} | findstr LISTENING", port),
             ])
@@ -725,13 +724,12 @@ pub fn cleanup_ports(ports: &[u16]) {
             let stdout = String::from_utf8_lossy(&out.stdout);
             for line in stdout.lines() {
                 let parts: Vec<&str> = line.split_whitespace().collect();
-                if let Some(pid) = parts.last() {
-                    if let Ok(pid_num) = pid.parse::<u32>() {
+                if let Some(pid) = parts.last()
+                    && let Ok(pid_num) = pid.parse::<u32>() {
                         let _ = std::process::Command::new("taskkill")
-                            .args(&["/F", "/PID", &pid_num.to_string()])
+                            .args(["/F", "/PID", &pid_num.to_string()])
                             .output();
                     }
-                }
             }
         }
     }

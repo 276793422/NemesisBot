@@ -8,6 +8,12 @@ pub struct McpHandler {
     _priv: (),
 }
 
+impl Default for McpHandler {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl McpHandler {
     pub fn new() -> Self {
         Self { _priv: () }
@@ -181,21 +187,18 @@ impl McpHandler {
         if let Some(v) = data.get("description").and_then(|v| v.as_str()) {
             server.description = v.to_string();
         }
-        if let Some(v) = data.get("headers").cloned() {
-            if let Ok(parsed) = serde_json::from_value::<Vec<String>>(v) {
+        if let Some(v) = data.get("headers").cloned()
+            && let Ok(parsed) = serde_json::from_value::<Vec<String>>(v) {
                 server.headers = parsed;
             }
-        }
-        if let Some(v) = data.get("args").cloned() {
-            if let Ok(parsed) = serde_json::from_value::<Vec<String>>(v) {
+        if let Some(v) = data.get("args").cloned()
+            && let Ok(parsed) = serde_json::from_value::<Vec<String>>(v) {
                 server.args = parsed;
             }
-        }
-        if let Some(v) = data.get("env").cloned() {
-            if let Ok(parsed) = serde_json::from_value::<Vec<String>>(v) {
+        if let Some(v) = data.get("env").cloned()
+            && let Ok(parsed) = serde_json::from_value::<Vec<String>>(v) {
                 server.env = parsed;
             }
-        }
         if let Some(v) = data
             .get("timeout")
             .or_else(|| data.get("timeout_secs"))
@@ -209,11 +212,10 @@ impl McpHandler {
         if let Some(v) = data.get("provider_url").and_then(|v| v.as_str()) {
             server.provider_url = v.to_string();
         }
-        if let Some(v) = data.get("tags").cloned() {
-            if let Ok(parsed) = serde_json::from_value::<Vec<String>>(v) {
+        if let Some(v) = data.get("tags").cloned()
+            && let Ok(parsed) = serde_json::from_value::<Vec<String>>(v) {
                 server.tags = parsed;
             }
-        }
 
         save_mcp_config(workspace, &config)?;
         Ok(Some(serde_json::json!({ "updated": true, "name": name })))

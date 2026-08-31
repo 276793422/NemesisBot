@@ -54,10 +54,10 @@ fn test_parse_json() {
 
 #[test]
 fn test_json_helpers() {
-    let val = serde_json::json!({"name": "test", "count": 42, "rate": 3.14, "active": true});
+    let val = serde_json::json!({"name": "test", "count": 42, "rate": 2.75, "active": true});
     assert_eq!(json_get_str(&val, "name"), Some("test"));
     assert_eq!(json_get_i64(&val, "count"), Some(42));
-    assert_eq!(json_get_f64(&val, "rate"), Some(3.14));
+    assert_eq!(json_get_f64(&val, "rate"), Some(2.75));
     assert_eq!(json_get_bool(&val, "active"), Some(true));
     assert_eq!(json_get_str(&val, "missing"), None);
 }
@@ -371,7 +371,7 @@ fn test_json_get_i64_from_float() {
 
 #[test]
 fn test_json_get_f64_missing_key() {
-    let val = serde_json::json!({"rate": 3.14});
+    let val = serde_json::json!({"rate": 2.75});
     assert_eq!(json_get_f64(&val, "missing"), None);
 }
 

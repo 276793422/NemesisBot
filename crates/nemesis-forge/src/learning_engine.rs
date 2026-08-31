@@ -464,8 +464,8 @@ impl LearningEngine {
                     }
                 }
 
-                "error_recovery" => {
-                    if pattern.confidence >= high_conf {
+                "error_recovery"
+                    if pattern.confidence >= high_conf => {
                         let mut action =
                             LearningAction::new("create_skill", "high", &pattern.description);
                         action.confidence = pattern.confidence;
@@ -480,7 +480,6 @@ impl LearningEngine {
                         ));
                         actions.push(action);
                     }
-                }
 
                 "efficiency_issue" => {
                     let mut action =
@@ -495,8 +494,8 @@ impl LearningEngine {
                     actions.push(action);
                 }
 
-                "success_template" => {
-                    if pattern.confidence >= high_conf {
+                "success_template"
+                    if pattern.confidence >= high_conf => {
                         let mut action =
                             LearningAction::new("create_skill", "high", &pattern.description);
                         action.confidence = pattern.confidence;
@@ -508,7 +507,6 @@ impl LearningEngine {
                         ));
                         actions.push(action);
                     }
-                }
 
                 _ => {
                     // Unknown pattern type, skip
@@ -1183,7 +1181,7 @@ impl LearningEngine {
 
         // Iterative refinement loop
         let max_refine = if self.config.learning.max_auto_creates > 0 {
-            self.config.learning.max_auto_creates.min(3) as u32
+            self.config.learning.max_auto_creates.min(3)
         } else {
             3
         };
@@ -1396,23 +1394,21 @@ fn extract_tool_signature_from_chain(description: &str) -> Vec<String> {
 fn build_diagnosis(validation: &ArtifactValidation) -> String {
     let mut sb = String::new();
 
-    if let Some(ref s1) = validation.stage1_static {
-        if !s1.stage.passed {
+    if let Some(ref s1) = validation.stage1_static
+        && !s1.stage.passed {
             sb.push_str("Stage 1 (Static) FAILED:\n");
             for e in &s1.stage.errors {
                 sb.push_str(&format!("  - {}\n", e));
             }
         }
-    }
 
-    if let Some(ref s2) = validation.stage2_functional {
-        if !s2.stage.passed {
+    if let Some(ref s2) = validation.stage2_functional
+        && !s2.stage.passed {
             sb.push_str("Stage 2 (Functional) FAILED:\n");
             for e in &s2.stage.errors {
                 sb.push_str(&format!("  - {}\n", e));
             }
         }
-    }
 
     if let Some(ref s3) = validation.stage3_quality {
         sb.push_str(&format!("Stage 3 (Quality) Score: {}/100\n", s3.score));

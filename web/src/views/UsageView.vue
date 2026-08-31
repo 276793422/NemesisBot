@@ -1,5 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue'
+import { useToast } from '../composables/useToast'
+import { useUsageChanged } from '../composables/useUsageChanged'
 import VChart from 'vue-echarts'
 import { use } from 'echarts/core'
 import { CanvasRenderer } from 'echarts/renderers'
@@ -38,9 +40,41 @@ interface TrendPoint {
 }
 
 type RangePreset = 'today' | '1d' | '7d' | '14d' | '30d' | 'custom'
-type TabId = 'usage' | 'pricing' | 'settings'
+type TabId = 'usage' | 'pricing' | 'logs' | 'settings'
 
-// 嵌入式价目表行（/api/usage/pricing，LiteLLM 提取的静态表）。
+// 请求明细行（/api/usage/logs，A3 明细表）。
+interface LogRow {
+  id: number
+  traceId: string
+  model: string
+  providerType: string
+  inputTokens: number
+  outputTokens: number
+  cacheCreationTokens: number
+  cacheReadTokens: number
+  totalCostUsd: number
+  inputCostUsd: number
+  outputCostUsd: number
+  cacheCreationCostUsd: number
+  cacheReadCostUsd: number
+  pricingModel: string
+  latencyMs: number
+  firstTokenMs: number | null
+  statusCode: number
+  errorMessage: string | null
+  isStreaming: boolean
+  sessionKey: string
+  createdAt: number
+}
+
+interface LogsPage {
+  logs: LogRow[]
+  total: number
+  page: number
+  pageSize: number
+}
+
+// 价目表行（/api/usage/pricing，分层合并视图：custom > downloaded > embedded）。
 interface PricingRow {
   modelId: string
   displayName: string
@@ -51,6 +85,15 @@ interface PricingRow {
   maxInputTokens: number | null
   maxOutputTokens: number | null
   aliases: string[]
+  source: 'custom' | 'downloaded' | 'embedded'
+}
+
+// 下载元数据（在线更新状态展示）。
+interface PricingMeta {
+  etag: string | null
+  fetchedAt: number | null
+  sourceUrl: string | null
+  entryCount: number | null
 }
 
 // ---------------------------------------------------------------------------
@@ -76,14 +119,45 @@ const summary = ref<UsageSummary>({
 })
 const trends = ref<TrendPoint[]>([])
 
-// 价格 tab（惰性加载一次）
+// 价格 tab（惰性加载一次；在线更新 / 自定义条目变更后 force 重载）
 const pricingRows = ref<PricingRow[]>([])
 const pricingLoaded = ref(false)
 const pricingLoading = ref(false)
 const pricingError = ref('')
 const pricingQuery = ref('')
+const pricingMeta = ref<PricingMeta | null>(null)
 // 当前激活模型（/api/status，best-effort），命中行高亮。
 const activeModel = ref('')
+
+// —— 价目表在线更新 + 自定义条目（A2） ——
+const toast = useToast()
+const pricingUpdating = ref(false)
+const showCustomModal = ref(false)
+const customEditingId = ref('') // 非空 = 编辑已有自定义条目
+const customForm = ref({
+  modelId: '',
+  displayName: '',
+  input: 0,
+  output: 0,
+  cacheRead: 0,
+  cacheCreation: 0,
+})
+const customSaving = ref(false)
+
+// —— 请求明细 tab（A3，2026-08-31） ——
+const logsLoading = ref(false)
+const logsError = ref('')
+const logRows = ref<LogRow[]>([])
+const logTotal = ref(0)
+const logPage = ref(1)
+const LOG_PAGE_SIZE = 20
+// 时间范围与使用量 tab 独立（默认近 1 天，明细看近期请求）。
+const logPreset = ref<Exclude<RangePreset, 'custom'>>('1d')
+const logModel = ref('')
+const logStatus = ref('')
+const logSession = ref('')
+// 点击行打开的单条详情（null = 关闭）。
+const selectedLog = ref<LogRow | null>(null)
 
 const presets: { key: Exclude<RangePreset, 'custom'>; label: string }[] = [
   { key: 'today', label: '今天' },
@@ -130,20 +204,101 @@ function formatCost(n: number): string {
 function switchTab(t: TabId) {
   activeTab.value = t
   if (t === 'pricing') loadPricing()
+  if (t === 'logs') loadLogs()
 }
 
-async function loadPricing() {
-  if (pricingLoaded.value || pricingLoading.value) return
+// —— 请求明细 tab（A3） ——
+
+function formatTs(ts: number): string {
+  const d = new Date(ts * 1000)
+  const pad = (n: number) => String(n).padStart(2, '0')
+  return `${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`
+}
+
+// 明细场景成本数值小，保 6 位小数才不显示 $0。
+function formatCostPrecise(n: number): string {
+  if (n === 0) return '$0'
+  if (n < 0.01) return '$' + n.toFixed(6)
+  return '$' + n.toFixed(2)
+}
+
+const totalPages = computed(() => Math.max(1, Math.ceil(logTotal.value / LOG_PAGE_SIZE)))
+
+async function loadLogs(silent = false) {
+  if (logsLoading.value) return
+  logsLoading.value = true
+  if (!silent) logsError.value = ''
+  try {
+    const { start, end } = getTimeRange(logPreset.value)
+    const params = new URLSearchParams({
+      start: String(start),
+      end: String(end),
+      page: String(logPage.value),
+      page_size: String(LOG_PAGE_SIZE),
+    })
+    if (logModel.value.trim()) params.set('model', logModel.value.trim())
+    if (logStatus.value) params.set('status', logStatus.value)
+    if (logSession.value.trim()) params.set('session', logSession.value.trim())
+    const page = await fetchJSON<LogsPage>(`/api/usage/logs?${params}`)
+    logRows.value = page.logs
+    logTotal.value = page.total
+  } catch (err: any) {
+    logsError.value = err?.message || String(err)
+  }
+  logsLoading.value = false
+}
+
+function setLogPreset(p: Exclude<RangePreset, 'custom'>) {
+  logPreset.value = p
+  logPage.value = 1
+  loadLogs()
+}
+
+// 筛选条件变化 → 回到第 1 页重查。
+function applyLogFilters() {
+  logPage.value = 1
+  loadLogs()
+}
+
+function prevLogPage() {
+  if (logPage.value > 1) {
+    logPage.value--
+    loadLogs()
+  }
+}
+
+function nextLogPage() {
+  if (logPage.value < totalPages.value) {
+    logPage.value++
+    loadLogs()
+  }
+}
+
+// 明细行有新写入（gateway 轮询 usage.db data_version → SSE usage-changed）→
+// 静默刷新当前 tab；使用量 tab 同步静默重拉。
+useUsageChanged(() => {
+  if (activeTab.value === 'logs') loadLogs(true)
+  else if (activeTab.value === 'usage') loadData(true)
+})
+
+async function loadPricing(force = false) {
+  if ((pricingLoaded.value && !force) || pricingLoading.value) return
   pricingLoading.value = true
   pricingError.value = ''
   try {
-    const [rows, status] = await Promise.all([
-      fetchJSON<PricingRow[]>('/api/usage/pricing'),
+    const [status, pricingResp] = await Promise.all([
       fetch('/api/status')
         .then(r => (r.ok ? r.json() : {}))
         .catch(() => ({}) as Record<string, unknown>),
+      fetch('/api/usage/pricing').then(async r => {
+        if (!r.ok) throw new Error(`HTTP ${r.status}`)
+        const j = await r.json()
+        if (j.error) throw new Error(j.error)
+        return j as { data: PricingRow[]; meta: PricingMeta | null }
+      }),
     ])
-    pricingRows.value = [...rows].sort((a, b) => a.modelId.localeCompare(b.modelId))
+    pricingRows.value = [...pricingResp.data].sort((a, b) => a.modelId.localeCompare(b.modelId))
+    pricingMeta.value = pricingResp.meta
     const m = (status as Record<string, unknown>)?.model_name
     activeModel.value = typeof m === 'string' ? m : ''
     pricingLoaded.value = true
@@ -151,6 +306,114 @@ async function loadPricing() {
     pricingError.value = err?.message || String(err)
   }
   pricingLoading.value = false
+}
+
+// —— 在线更新（LiteLLM 主源；失败保留旧表） ——
+
+async function updatePricing() {
+  if (pricingUpdating.value) return
+  pricingUpdating.value = true
+  try {
+    const r = await fetch('/api/usage/pricing/update', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: '{}',
+    })
+    const j = await r.json()
+    if (j.error) throw new Error(j.error)
+    const d = j.data as { updated: boolean; entryCount: number }
+    toast.success(d.updated ? `价目表已更新（${d.entryCount} 个模型）` : '表已是最新（304 NotModified）')
+    await loadPricing(true)
+  } catch (err: any) {
+    toast.error('价目表更新失败：' + (err?.message || String(err)))
+  }
+  pricingUpdating.value = false
+}
+
+// —— 自定义条目（最高查表优先级） ——
+
+function openCustomCreate() {
+  customEditingId.value = ''
+  customForm.value = { modelId: '', displayName: '', input: 0, output: 0, cacheRead: 0, cacheCreation: 0 }
+  showCustomModal.value = true
+}
+
+function openCustomEdit(row: PricingRow) {
+  customEditingId.value = row.modelId
+  customForm.value = {
+    modelId: row.modelId,
+    displayName: row.displayName,
+    input: row.inputCostPerMillion,
+    output: row.outputCostPerMillion,
+    cacheRead: row.cacheReadCostPerMillion,
+    cacheCreation: row.cacheCreationCostPerMillion,
+  }
+  showCustomModal.value = true
+}
+
+async function saveCustom() {
+  if (customSaving.value) return
+  const f = customForm.value
+  if (!f.modelId.trim()) {
+    toast.error('模型名不能为空')
+    return
+  }
+  customSaving.value = true
+  try {
+    const r = await fetch('/api/usage/pricing/custom', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model_id: f.modelId.trim(),
+        display_name: f.displayName.trim() || f.modelId.trim(),
+        input_cost_per_million: f.input,
+        output_cost_per_million: f.output,
+        cache_read_cost_per_million: f.cacheRead,
+        cache_creation_cost_per_million: f.cacheCreation,
+        max_input_tokens: null,
+        max_output_tokens: null,
+        aliases: [],
+      }),
+    })
+    const j = await r.json()
+    if (j.error) throw new Error(j.error)
+    toast.success(`自定义条目已保存：${f.modelId.trim()}`)
+    showCustomModal.value = false
+    await loadPricing(true)
+  } catch (err: any) {
+    toast.error('保存失败：' + (err?.message || String(err)))
+  }
+  customSaving.value = false
+}
+
+async function removeCustom(row: PricingRow) {
+  if (!confirm(`删除自定义条目 ${row.modelId}？（下载层/内置层继续兜底）`)) return
+  try {
+    const r = await fetch('/api/usage/pricing/custom/remove', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model_id: row.modelId }),
+    })
+    const j = await r.json()
+    if (j.error) throw new Error(j.error)
+    toast.success(`已删除：${row.modelId}`)
+    await loadPricing(true)
+  } catch (err: any) {
+    toast.error('删除失败：' + (err?.message || String(err)))
+  }
+}
+
+const SOURCE_LABELS: Record<string, string> = {
+  custom: '自定义',
+  downloaded: '下载',
+  embedded: '内置',
+}
+
+function formatFetchedAt(ts: number | null): string {
+  if (!ts) return '从未更新'
+  const d = new Date(ts * 1000)
+  const pad = (n: number) => String(n).padStart(2, '0')
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`
 }
 
 // 与后端 PricingTable::lookup 同序的匹配：精确 id → 别名 → 去掉 provider 前缀的裸名。
@@ -281,9 +544,9 @@ const chartOption = computed(() => {
 // Data loading
 // ---------------------------------------------------------------------------
 
-function getTimeRange(): { start: number; end: number } {
+function getTimeRange(forPreset: RangePreset = preset.value): { start: number; end: number } {
   const end = Math.floor(Date.now() / 1000)
-  if (preset.value === 'custom') {
+  if (forPreset === 'custom') {
     if (customStart.value && customEnd.value) {
       return {
         start: Math.floor(new Date(customStart.value).getTime() / 1000),
@@ -292,12 +555,12 @@ function getTimeRange(): { start: number; end: number } {
     }
     return { start: end - 86400, end }
   }
-  if (preset.value === 'today') {
+  if (forPreset === 'today') {
     const now = new Date()
     const startOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate())
     return { start: Math.floor(startOfDay.getTime() / 1000), end }
   }
-  const days = parseInt(preset.value)
+  const days = parseInt(forPreset)
   return { start: end - days * 86400, end }
 }
 
@@ -332,8 +595,8 @@ interface ApiTrendPoint {
   totalCostUsd: number
 }
 
-async function loadData() {
-  loading.value = true
+async function loadData(silent = false) {
+  if (!silent) loading.value = true
   try {
     const { start, end } = getTimeRange()
     const groupBy = (end - start) > 86400 ? 'day' : 'hour'
@@ -367,7 +630,7 @@ async function loadData() {
   } catch (err) {
     console.error('[UsageView] Failed to load data:', err)
   }
-  loading.value = false
+  if (!silent) loading.value = false
 }
 
 function setPreset(p: Exclude<RangePreset, 'custom'>) {
@@ -425,6 +688,10 @@ onMounted(() => {
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 1v22M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg>
           价格
         </button>
+        <button class="tab-btn" :class="{ active: activeTab === 'logs' }" @click="switchTab('logs')">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12h.01M3 18h.01M3 6h.01M8 12h13M8 18h13M8 6h13"/></svg>
+          请求明细
+        </button>
         <button class="tab-btn" :class="{ active: activeTab === 'settings' }" @click="switchTab('settings')">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/></svg>
           设置
@@ -444,9 +711,22 @@ onMounted(() => {
               data-testid="pricing-search"
             />
           </div>
-          <span v-if="activeModel" class="pricing-active-model">
-            当前模型：<strong>{{ activeModel }}</strong>
-          </span>
+          <div class="pricing-toolbar-right">
+            <span v-if="activeModel" class="pricing-active-model">
+              当前模型：<strong>{{ activeModel }}</strong>
+            </span>
+            <span class="pricing-meta" data-testid="pricing-meta">
+              {{ pricingMeta && pricingMeta.entryCount ? `${pricingMeta.entryCount} 条 · ${formatFetchedAt(pricingMeta.fetchedAt)}` : '内置 36 模型表' }}
+            </span>
+            <button
+              type="button"
+              class="btn-primary"
+              data-testid="pricing-update"
+              :disabled="pricingUpdating"
+              @click="updatePricing()"
+            >{{ pricingUpdating ? '更新中…' : '在线更新' }}</button>
+            <button type="button" class="btn-secondary" data-testid="pricing-add-custom" @click="openCustomCreate()">+ 自定义</button>
+          </div>
         </div>
 
         <div v-if="pricingLoading" class="pricing-state">加载中…</div>
@@ -463,12 +743,14 @@ onMounted(() => {
               <thead>
                 <tr>
                   <th>模型</th>
+                  <th>来源</th>
                   <th class="num">输入 $/M</th>
                   <th class="num">输出 $/M</th>
                   <th class="num">缓存读 $/M</th>
                   <th class="num">缓存写 $/M</th>
                   <th class="num">上下文</th>
                   <th>别名</th>
+                  <th></th>
                 </tr>
               </thead>
               <tbody>
@@ -484,6 +766,9 @@ onMounted(() => {
                     </div>
                     <div class="pricing-model-id">{{ row.modelId }}</div>
                   </td>
+                  <td>
+                    <span class="pricing-source" :class="`is-${row.source}`">{{ SOURCE_LABELS[row.source] || row.source }}</span>
+                  </td>
                   <td class="num">{{ formatPrice(row.inputCostPerMillion) }}</td>
                   <td class="num">{{ formatPrice(row.outputCostPerMillion) }}</td>
                   <td class="num">{{ formatPrice(row.cacheReadCostPerMillion) }}</td>
@@ -493,9 +778,250 @@ onMounted(() => {
                     <span v-for="a in row.aliases" :key="a" class="pricing-alias">{{ a }}</span>
                     <span v-if="!row.aliases.length" class="text-muted">—</span>
                   </td>
+                  <td class="pricing-actions">
+                    <template v-if="row.source === 'custom'">
+                      <button type="button" class="pricing-action-btn" @click="openCustomEdit(row)">编辑</button>
+                      <button type="button" class="pricing-action-btn is-danger" @click="removeCustom(row)">删除</button>
+                    </template>
+                  </td>
                 </tr>
               </tbody>
             </table>
+          </div>
+        </div>
+
+        <!-- 自定义条目编辑弹窗（参照 cc-switch PricingEditModal） -->
+        <div v-if="showCustomModal" class="modal-backdrop" @click.self="showCustomModal = false">
+          <div class="modal" style="max-width: 480px;">
+            <div class="modal-header"><h3>{{ customEditingId ? '编辑自定义条目' : '新增自定义条目' }}</h3></div>
+            <div class="modal-body">
+              <div class="custom-form">
+                <label class="custom-form-field">
+                  <span>模型名（与 model add 一致，必填）</span>
+                  <input v-model="customForm.modelId" type="text" :disabled="!!customEditingId" placeholder="如 zhipu/glm-4.7" data-testid="custom-model-id" />
+                </label>
+                <label class="custom-form-field">
+                  <span>显示名（可选）</span>
+                  <input v-model="customForm.displayName" type="text" placeholder="缺省用模型名" />
+                </label>
+                <div class="custom-form-grid">
+                  <label class="custom-form-field">
+                    <span>输入 $/M</span>
+                    <input v-model.number="customForm.input" type="number" min="0" step="any" data-testid="custom-input-price" />
+                  </label>
+                  <label class="custom-form-field">
+                    <span>输出 $/M</span>
+                    <input v-model.number="customForm.output" type="number" min="0" step="any" data-testid="custom-output-price" />
+                  </label>
+                  <label class="custom-form-field">
+                    <span>缓存读 $/M</span>
+                    <input v-model.number="customForm.cacheRead" type="number" min="0" step="any" />
+                  </label>
+                  <label class="custom-form-field">
+                    <span>缓存写 $/M</span>
+                    <input v-model.number="customForm.cacheCreation" type="number" min="0" step="any" />
+                  </label>
+                </div>
+                <p class="custom-form-hint">自定义条目查表优先级最高；同名会覆盖下载层/内置层。</p>
+              </div>
+            </div>
+            <div class="modal-footer">
+              <button type="button" class="btn-secondary" @click="showCustomModal = false">取消</button>
+              <button type="button" class="btn-primary" :disabled="customSaving" data-testid="custom-save" @click="saveCustom()">
+                {{ customSaving ? '保存中…' : '保存' }}
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Logs tab：请求明细（A3，时间/模型/状态/会话过滤 + 单条详情） -->
+      <div v-if="activeTab === 'logs'" class="logs-tab">
+        <div class="usage-toolbar">
+          <div class="preset-group">
+            <button
+              v-for="p in presets"
+              :key="p.key"
+              class="preset-btn"
+              :class="{ active: logPreset === p.key }"
+              @click="setLogPreset(p.key)"
+            >{{ p.label }}</button>
+          </div>
+          <div class="logs-filters">
+            <input
+              v-model="logModel"
+              class="form-input logs-filter-input"
+              type="text"
+              placeholder="模型（子串）"
+              data-testid="logs-filter-model"
+              @keyup.enter="applyLogFilters"
+            />
+            <select v-model="logStatus" class="form-input logs-filter-select" data-testid="logs-filter-status" @change="applyLogFilters">
+              <option value="">全部状态</option>
+              <option v-for="s in [200, 400, 401, 403, 429, 500, 502, 503]" :key="s" :value="String(s)">{{ s }}</option>
+            </select>
+            <input
+              v-model="logSession"
+              class="form-input logs-filter-input"
+              type="text"
+              placeholder="会话（子串）"
+              data-testid="logs-filter-session"
+              @keyup.enter="applyLogFilters"
+            />
+            <button type="button" class="btn-secondary" data-testid="logs-apply" @click="applyLogFilters">筛选</button>
+          </div>
+        </div>
+
+        <div v-if="logsLoading && !logRows.length" class="pricing-state">加载中…</div>
+        <div v-else-if="logsError" class="pricing-state is-error">
+          加载失败：{{ logsError }}
+          <button type="button" class="btn btn-sm" style="margin-left: var(--space-3)" @click="logsError = ''; loadLogs()">重试</button>
+        </div>
+        <div v-else-if="!logRows.length" class="pricing-state">所选范围内没有请求记录</div>
+        <div v-else class="card">
+          <div class="pricing-table-wrap">
+            <table class="pricing-table" data-testid="logs-table">
+              <thead>
+                <tr>
+                  <th>时间</th>
+                  <th>模型</th>
+                  <th>状态</th>
+                  <th class="num">输入</th>
+                  <th class="num">输出</th>
+                  <th class="num">成本</th>
+                  <th class="num">延迟</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr
+                  v-for="row in logRows"
+                  :key="row.id"
+                  class="logs-row"
+                  data-testid="logs-row"
+                  @click="selectedLog = row"
+                >
+                  <td class="logs-ts">{{ formatTs(row.createdAt) }}</td>
+                  <td>
+                    <div class="pricing-model-name">{{ row.model }}</div>
+                    <div class="pricing-model-id">{{ row.pricingModel || '未计价' }}</div>
+                  </td>
+                  <td>
+                    <span class="logs-status" :class="row.statusCode === 200 ? 'is-ok' : 'is-fail'">{{ row.statusCode }}</span>
+                  </td>
+                  <td class="num">{{ formatTokens(row.inputTokens) }}</td>
+                  <td class="num">{{ formatTokens(row.outputTokens) }}</td>
+                  <td class="num">{{ formatCostPrecise(row.totalCostUsd) }}</td>
+                  <td class="num">{{ row.latencyMs }} ms</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          <div class="logs-pagination" data-testid="logs-pagination">
+            <span class="logs-pagination-info">共 {{ logTotal }} 条</span>
+            <div class="logs-pagination-ctrl">
+              <button type="button" class="btn-secondary" :disabled="logPage <= 1" @click="prevLogPage()">上一页</button>
+              <span>第 {{ logPage }} / {{ totalPages }} 页</span>
+              <button type="button" class="btn-secondary" :disabled="logPage >= totalPages" @click="nextLogPage()">下一页</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- 单条详情弹窗 -->
+        <div v-if="selectedLog" class="modal-backdrop" @click.self="selectedLog = null">
+          <div class="modal" style="max-width: 560px;" data-testid="log-detail-modal">
+            <div class="modal-header"><h3>请求明细</h3></div>
+            <div class="modal-body">
+              <div class="log-detail-grid">
+                <div class="log-detail-row">
+                  <span class="log-detail-label">模型</span>
+                  <span class="log-detail-value">{{ selectedLog.model }}</span>
+                </div>
+                <div class="log-detail-row">
+                  <span class="log-detail-label">计价模型</span>
+                  <span class="log-detail-value">{{ selectedLog.pricingModel || '未命中价目表' }}</span>
+                </div>
+                <div class="log-detail-row">
+                  <span class="log-detail-label">会话</span>
+                  <span class="log-detail-value">{{ selectedLog.sessionKey || '—' }}</span>
+                </div>
+                <div class="log-detail-row">
+                  <span class="log-detail-label">Trace</span>
+                  <span class="log-detail-value log-detail-mono">{{ selectedLog.traceId }}</span>
+                </div>
+                <div class="log-detail-row">
+                  <span class="log-detail-label">时间</span>
+                  <span class="log-detail-value">{{ formatTs(selectedLog.createdAt) }}</span>
+                </div>
+                <div class="log-detail-row">
+                  <span class="log-detail-label">状态</span>
+                  <span class="log-detail-value">
+                    <span class="logs-status" :class="selectedLog.statusCode === 200 ? 'is-ok' : 'is-fail'">{{ selectedLog.statusCode }}</span>
+                  </span>
+                </div>
+                <div class="log-detail-row">
+                  <span class="log-detail-label">延迟</span>
+                  <span class="log-detail-value">{{ selectedLog.latencyMs }} ms</span>
+                </div>
+                <div class="log-detail-row">
+                  <span class="log-detail-label">首 Token</span>
+                  <span class="log-detail-value">
+                    <template v-if="selectedLog.firstTokenMs !== null">{{ selectedLog.firstTokenMs }} ms</template>
+                    <template v-else>—</template>
+                  </span>
+                </div>
+                <div class="log-detail-row">
+                  <span class="log-detail-label">Tokens 输入</span>
+                  <span class="log-detail-value log-detail-mono">{{ selectedLog.inputTokens.toLocaleString() }}</span>
+                </div>
+                <div class="log-detail-row">
+                  <span class="log-detail-label">Tokens 输出</span>
+                  <span class="log-detail-value log-detail-mono">{{ selectedLog.outputTokens.toLocaleString() }}</span>
+                </div>
+                <div class="log-detail-row">
+                  <span class="log-detail-label">Tokens 缓存写</span>
+                  <span class="log-detail-value log-detail-mono">{{ selectedLog.cacheCreationTokens.toLocaleString() }}</span>
+                </div>
+                <div class="log-detail-row">
+                  <span class="log-detail-label">Tokens 缓存读</span>
+                  <span class="log-detail-value log-detail-mono">{{ selectedLog.cacheReadTokens.toLocaleString() }}</span>
+                </div>
+                <div class="log-detail-row">
+                  <span class="log-detail-label">成本 总计</span>
+                  <span class="log-detail-value log-detail-mono">{{ formatCostPrecise(selectedLog.totalCostUsd) }}</span>
+                </div>
+                <div class="log-detail-row">
+                  <span class="log-detail-label">成本 输入</span>
+                  <span class="log-detail-value log-detail-mono">{{ formatCostPrecise(selectedLog.inputCostUsd) }}</span>
+                </div>
+                <div class="log-detail-row">
+                  <span class="log-detail-label">成本 输出</span>
+                  <span class="log-detail-value log-detail-mono">{{ formatCostPrecise(selectedLog.outputCostUsd) }}</span>
+                </div>
+                <div class="log-detail-row">
+                  <span class="log-detail-label">成本 缓存写</span>
+                  <span class="log-detail-value log-detail-mono">{{ formatCostPrecise(selectedLog.cacheCreationCostUsd) }}</span>
+                </div>
+                <div class="log-detail-row">
+                  <span class="log-detail-label">成本 缓存读</span>
+                  <span class="log-detail-value log-detail-mono">{{ formatCostPrecise(selectedLog.cacheReadCostUsd) }}</span>
+                </div>
+                <div class="log-detail-row">
+                  <span class="log-detail-label">流式</span>
+                  <span class="log-detail-value">{{ selectedLog.isStreaming ? '是' : '否' }}</span>
+                </div>
+                <div class="log-detail-row">
+                  <span class="log-detail-label">Provider</span>
+                  <span class="log-detail-value">{{ selectedLog.providerType || '—' }}</span>
+                </div>
+                <div v-if="selectedLog.errorMessage" class="log-detail-row">
+                  <span class="log-detail-label">错误信息</span>
+                  <span class="log-detail-value log-detail-error">{{ selectedLog.errorMessage }}</span>
+                </div>
+              </div>
+            </div>
+            <div class="modal-footer">
+              <button type="button" class="btn-secondary" @click="selectedLog = null">关闭</button>
+            </div>
           </div>
         </div>
       </div>
@@ -1214,5 +1740,208 @@ onMounted(() => {
   border-radius: var(--radius-sm);
   padding: 0 var(--space-2);
   margin-right: var(--space-1);
+}
+
+/* —— 价目表在线更新 + 自定义条目（A2） —— */
+.pricing-toolbar-right {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+.pricing-meta {
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+}
+
+.pricing-source {
+  display: inline-block;
+  font-size: var(--text-xs);
+  border-radius: var(--radius-full, 999px);
+  padding: 0 var(--space-2);
+  line-height: 1.6;
+  border: 1px solid var(--border);
+  color: var(--text-muted);
+}
+
+.pricing-source.is-custom {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
+.pricing-source.is-downloaded {
+  color: #3B82F6;
+  border-color: rgba(59, 130, 246, 0.5);
+}
+
+.pricing-actions {
+  white-space: nowrap;
+}
+
+.pricing-action-btn {
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: var(--text-xs);
+  cursor: pointer;
+  padding: 2px var(--space-2);
+  border-radius: var(--radius-sm);
+  transition: all var(--duration-fast) var(--ease-out);
+}
+
+.pricing-action-btn:hover {
+  color: var(--text);
+  background: var(--surface-alt);
+}
+
+.pricing-action-btn.is-danger:hover {
+  color: var(--danger, #d64545);
+}
+
+.custom-form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.custom-form-field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.custom-form-field span {
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+}
+
+.custom-form-field input {
+  padding: 8px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--bg-secondary);
+  color: var(--text);
+  font-size: var(--text-sm);
+  outline: none;
+  transition: border-color var(--duration-fast);
+}
+
+.custom-form-field input:focus {
+  border-color: var(--accent);
+}
+
+.custom-form-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--space-3);
+}
+
+.custom-form-hint {
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+  margin: 0;
+}
+
+/* —— 请求明细 tab（A3） —— */
+.logs-tab {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.logs-filters {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.logs-filter-input {
+  width: 180px;
+}
+
+.logs-filter-select {
+  width: 110px;
+}
+
+.logs-row {
+  cursor: pointer;
+}
+
+.logs-ts {
+  font-variant-numeric: tabular-nums;
+  color: var(--text-muted);
+}
+
+.logs-status {
+  display: inline-block;
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  border-radius: var(--radius-full, 999px);
+  padding: 0 var(--space-2);
+  line-height: 1.6;
+}
+
+.logs-status.is-ok {
+  color: #22C55E;
+  border: 1px solid rgba(34, 197, 94, 0.4);
+}
+
+.logs-status.is-fail {
+  color: var(--danger, #d64545);
+  border: 1px solid rgba(214, 69, 69, 0.4);
+}
+
+.logs-pagination {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding-top: var(--space-3);
+  font-size: var(--text-sm);
+  color: var(--text-muted);
+}
+
+.logs-pagination-ctrl {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+.logs-pagination button:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.log-detail-grid {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.log-detail-row {
+  display: flex;
+  flex-direction: row;
+  align-items: baseline;
+  gap: var(--space-4);
+}
+
+.log-detail-label {
+  flex: 0 0 96px;
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+}
+
+.log-detail-value {
+  font-size: var(--text-sm);
+  color: var(--text);
+  word-break: break-all;
+}
+
+.log-detail-mono {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+}
+
+.log-detail-error {
+  color: var(--danger, #d64545);
 }
 </style>

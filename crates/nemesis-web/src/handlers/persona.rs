@@ -189,7 +189,7 @@ fn extract_identity_info(content: &str) -> (String, String) {
                 if !rest.is_empty() {
                     name = rest.to_string();
                 }
-            } else if let Some(rest) = line.splitn(2, |c: char| c == '：' || c == ':').nth(1) {
+            } else if let Some(rest) = line.split_once(['：', ':']).map(|x| x.1) {
                 let rest = rest.trim().trim_start_matches('*').trim();
                 if !rest.is_empty() {
                     name = rest.to_string();
@@ -728,6 +728,12 @@ fn restart_agent(ctx: &crate::ws_router::RequestContext) -> Result<(), String> {
     svc.start()?;
     tracing::info!("[Persona] Agent restarted with new persona files");
     Ok(())
+}
+
+impl Default for PersonaHandler {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl PersonaHandler {

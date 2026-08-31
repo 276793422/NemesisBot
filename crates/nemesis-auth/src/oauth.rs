@@ -183,12 +183,12 @@ impl OAuthProviderConfig {
         if refreshed
             .refresh_token
             .as_ref()
-            .map_or(true, |t| t.is_empty())
+            .is_none_or(|t| t.is_empty())
         {
             refreshed.refresh_token = Some(refresh_token.clone());
         }
         // Preserve account_id if not returned
-        if refreshed.account_id.as_ref().map_or(true, |t| t.is_empty()) {
+        if refreshed.account_id.as_ref().is_none_or(|t| t.is_empty()) {
             refreshed.account_id = cred.account_id.clone();
         }
 
@@ -256,7 +256,7 @@ impl OAuthProviderConfig {
         let query_str = uri.split('?').nth(1).unwrap_or("");
         let params = parse_query_params(query_str);
 
-        let response_body = if params.get("state").map_or(true, |s| s != expected_state) {
+        let response_body = if params.get("state").is_none_or(|s| s != expected_state) {
             let resp = "HTTP/1.1 400 Bad Request\r\nContent-Type: text/html\r\n\r\n<html><body><h2>State mismatch</h2></body></html>";
             stream
                 .write_all(resp.as_bytes())
@@ -606,33 +606,27 @@ fn extract_account_id_impl(token: &str) -> Option<String> {
     let claims = parse_jwt_claims_impl(token).ok()?;
 
     // Direct chatgpt_account_id field
-    if let Some(id) = claims.get("chatgpt_account_id").and_then(|v| v.as_str()) {
-        if !id.is_empty() {
+    if let Some(id) = claims.get("chatgpt_account_id").and_then(|v| v.as_str())
+        && !id.is_empty() {
             return Some(id.to_string());
         }
-    }
 
     // Namespaced claim
     if let Some(id) = claims
         .get("https://api.openai.com/auth.chatgpt_account_id")
         .and_then(|v| v.as_str())
-    {
-        if !id.is_empty() {
+        && !id.is_empty() {
             return Some(id.to_string());
         }
-    }
 
     // Nested auth claim
     if let Some(auth) = claims
         .get("https://api.openai.com/auth")
         .and_then(|v| v.as_object())
-    {
-        if let Some(id) = auth.get("chatgpt_account_id").and_then(|v| v.as_str()) {
-            if !id.is_empty() {
+        && let Some(id) = auth.get("chatgpt_account_id").and_then(|v| v.as_str())
+            && !id.is_empty() {
                 return Some(id.to_string());
             }
-        }
-    }
 
     // Organizations array
     if let Some(orgs) = claims.get("organizations").and_then(|v| v.as_array()) {
@@ -641,11 +635,9 @@ fn extract_account_id_impl(token: &str) -> Option<String> {
                 .as_object()
                 .and_then(|o| o.get("id"))
                 .and_then(|v| v.as_str())
-            {
-                if !id.is_empty() {
+                && !id.is_empty() {
                     return Some(id.to_string());
                 }
-            }
         }
     }
 

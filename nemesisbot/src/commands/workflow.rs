@@ -150,11 +150,10 @@ fn load_templates_from_disk() -> Vec<Template> {
         let mut dirs = Vec::new();
 
         // exe_dir/templates/
-        if let Ok(exe_path) = std::env::current_exe() {
-            if let Some(exe_dir) = exe_path.parent() {
+        if let Ok(exe_path) = std::env::current_exe()
+            && let Some(exe_dir) = exe_path.parent() {
                 dirs.push(exe_dir.join("templates"));
             }
-        }
 
         // workspace/workflow/templates/ (resolve using common helper)
         let home = common::resolve_home(false);
@@ -366,8 +365,8 @@ fn cmd_list(workflow_dir: &std::path::Path) -> Result<()> {
         println!("  Registered Workflows ({}):", files.len());
         println!();
         println!(
-            "  {:<22} {:<8} {:<40} {}",
-            "Name", "Version", "Description", "Triggers"
+            "  {:<22} {:<8} {:<40} Triggers",
+            "Name", "Version", "Description"
         );
         println!(
             "  {}{}{}{}",
@@ -404,8 +403,8 @@ fn cmd_list(workflow_dir: &std::path::Path) -> Result<()> {
                 );
             } else {
                 println!(
-                    "  {:<22} {:<8} {:<40} {}",
-                    name, "?", "(parse error)", "none"
+                    "  {:<22} {:<8} {:<40} none",
+                    name, "?", "(parse error)"
                 );
             }
         }
@@ -437,9 +436,9 @@ async fn cmd_run(
         let mut found = candidates.into_iter().find(|p| p.exists());
 
         // If not found in workspace, try exe_dir/templates/ as fallback
-        if found.is_none() {
-            if let Ok(exe_path) = std::env::current_exe() {
-                if let Some(exe_dir) = exe_path.parent() {
+        if found.is_none()
+            && let Ok(exe_path) = std::env::current_exe()
+                && let Some(exe_dir) = exe_path.parent() {
                     let template_dir = exe_dir.join("templates");
                     for ext in &["yaml", "yml", "json"] {
                         let p = template_dir.join(format!("{}.{}", name, ext));
@@ -449,8 +448,6 @@ async fn cmd_run(
                         }
                     }
                 }
-            }
-        }
 
         found.ok_or_else(|| anyhow::anyhow!("Workflow '{}' not found", name))?
     };
@@ -645,56 +642,49 @@ fn cmd_status(workflow_dir: &std::path::Path, id: Option<&str>) -> Result<()> {
                     }
                 }
             }
-            if let Some(error) = exec.get("error").and_then(|v| v.as_str()) {
-                if !error.is_empty() {
+            if let Some(error) = exec.get("error").and_then(|v| v.as_str())
+                && !error.is_empty() {
                     println!("  Error:           {}", error);
                 }
-            }
 
             // Show input
-            if let Some(input) = exec.get("input") {
-                if let Some(obj) = input.as_object() {
-                    if !obj.is_empty() {
+            if let Some(input) = exec.get("input")
+                && let Some(obj) = input.as_object()
+                    && !obj.is_empty() {
                         println!();
                         println!("  Input:");
                         for (k, v) in obj {
                             println!("    {}: {}", k, v);
                         }
                     }
-                }
-            }
 
             // Show variables
-            if let Some(vars) = exec.get("variables") {
-                if let Some(obj) = vars.as_object() {
-                    if !obj.is_empty() {
+            if let Some(vars) = exec.get("variables")
+                && let Some(obj) = vars.as_object()
+                    && !obj.is_empty() {
                         println!();
                         println!("  Variables:");
                         for (k, v) in obj {
                             println!("    {}: {}", k, v);
                         }
                     }
-                }
-            }
 
             // Show node results
-            if let Some(node_results) = exec.get("node_results").and_then(|v| v.as_object()) {
-                if !node_results.is_empty() {
+            if let Some(node_results) = exec.get("node_results").and_then(|v| v.as_object())
+                && !node_results.is_empty() {
                     println!();
                     println!("  Node Results:");
                     for (node_id, nr) in node_results {
                         let state = nr.get("state").and_then(|v| v.as_str()).unwrap_or("?");
                         println!("    [{}] {}", node_id, state);
-                        if let Some(started) = nr.get("started_at").and_then(|v| v.as_str()) {
-                            if let Some(ended) = nr.get("ended_at").and_then(|v| v.as_str()) {
+                        if let Some(started) = nr.get("started_at").and_then(|v| v.as_str())
+                            && let Some(ended) = nr.get("ended_at").and_then(|v| v.as_str()) {
                                 println!("      Started: {}  Ended: {}", started, ended);
                             }
-                        }
-                        if let Some(error) = nr.get("error").and_then(|v| v.as_str()) {
-                            if !error.is_empty() {
+                        if let Some(error) = nr.get("error").and_then(|v| v.as_str())
+                            && !error.is_empty() {
                                 println!("      Error: {}", error);
                             }
-                        }
                         if let Some(output) = nr.get("output") {
                             let output_str = output.to_string();
                             if output_str != "null" && !output_str.is_empty() {
@@ -710,7 +700,6 @@ fn cmd_status(workflow_dir: &std::path::Path, id: Option<&str>) -> Result<()> {
                         }
                     }
                 }
-            }
             println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
         }
         None => {
@@ -742,8 +731,8 @@ fn cmd_status(workflow_dir: &std::path::Path, id: Option<&str>) -> Result<()> {
                 println!("  No executions found.");
             } else {
                 println!(
-                    "  {:<38} {:<20} {:<12} {}",
-                    "ID", "Workflow", "State", "Started"
+                    "  {:<38} {:<20} {:<12} Started",
+                    "ID", "Workflow", "State"
                 );
                 println!(
                     "  {}{}{}{}",
@@ -915,10 +904,10 @@ pub fn run(action: WorkflowAction, local: bool) -> Result<()> {
     match action {
         WorkflowAction::List => cmd_list(&workflow_dir)?,
         WorkflowAction::Run { name, input } => {
-            let result = tokio::task::block_in_place(|| {
+            tokio::task::block_in_place(|| {
                 tokio::runtime::Handle::current().block_on(cmd_run(&home, &workflow_dir, &name, &input))
             })?;
-            result
+            
         }
         WorkflowAction::Status { id } => cmd_status(&workflow_dir, id.as_deref())?,
         WorkflowAction::Template { action } => {

@@ -199,8 +199,8 @@ fn print_rule_table(file: &eval_assessor::RulesFile) {
         return;
     }
     println!(
-        "{:<3} {:<28} {:<8} {:<7} {:<14} {}",
-        "#", "ID", "LEVEL", "ON", "SOURCE", "DESCRIPTION"
+        "{:<3} {:<28} {:<8} {:<7} {:<14} DESCRIPTION",
+        "#", "ID", "LEVEL", "ON", "SOURCE"
     );
     for (i, r) in file.rules.iter().enumerate() {
         let on = if r.enabled { "yes" } else { "no" };
@@ -358,11 +358,10 @@ fn ask_choice(prompt: &str, max: usize, default: usize) -> usize {
         if raw.is_empty() {
             return default;
         }
-        if let Ok(n) = raw.parse::<usize>() {
-            if (1..=max).contains(&n) {
+        if let Ok(n) = raw.parse::<usize>()
+            && (1..=max).contains(&n) {
                 return n;
             }
-        }
         println!("  请输入 1-{max}（回车 = 默认）");
     }
 }
@@ -371,7 +370,7 @@ fn ask_choice(prompt: &str, max: usize, default: usize) -> usize {
 /// - regex 元字符全部转义（用户输入按字面量处理）
 /// - 前缀 (?i) 大小写不敏感
 /// - 路径分隔符 / \ 互相兼容（用户写哪种都行）
-/// 用户永远不需要懂正则。
+///   用户永远不需要懂正则。
 fn keyword_to_pattern(kw: &str) -> String {
     let escaped: String = kw
         .chars()

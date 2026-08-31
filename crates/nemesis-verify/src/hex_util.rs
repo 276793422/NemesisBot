@@ -31,7 +31,7 @@ pub fn hex_decode_32(hex: &str) -> Result<[u8; 32], String> {
 /// 要求输入长度为偶数且全部为有效十六进制字符。
 pub fn hex_decode_vec(hex: &str) -> Result<Vec<u8>, String> {
     let hex = hex.trim();
-    if hex.len() % 2 != 0 {
+    if !hex.len().is_multiple_of(2) {
         return Err("odd hex length".to_string());
     }
     (0..hex.len())

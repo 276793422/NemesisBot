@@ -483,10 +483,11 @@ async fn test_subagent_manager_register_and_use_tool() {
     }
     manager.register_tool(Arc::new(UpperTool));
 
-    // Verify tool is accessible through the registry
-    assert!(manager.registry().has("upper"));
-    let result = manager
-        .registry()
+    // Verify tool is accessible through the registry. Use the local Arc —
+    // manager.registry() hands out a parking_lot read guard whose temporary
+    // would otherwise be held across the await below.
+    assert!(registry.has("upper"));
+    let result = registry
         .execute("upper", &serde_json::json!({"text": "hello"}))
         .await;
     assert_eq!(result.for_llm, "HELLO");

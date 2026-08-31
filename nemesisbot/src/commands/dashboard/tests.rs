@@ -4,6 +4,12 @@
 //! run() / start_and_wait 会真 spawn gateway 进程（结构性）；send_internal_*
 //! 需要活网关（结构性）。
 
+// 刻意设计：本文件测试用进程级串行锁（GLOBAL_STATE_LOCK 等 env/资源互斥锁）
+// 保护环境操作，guard 必须跨 async 测试体的 await 持有；#[tokio::test] 每个
+// 测试独立 current_thread runtime，持锁方在自己线程上恢复运行，不会死锁。
+// 测试域统一豁免（逐处 allow ~200 个不现实）。
+#![allow(clippy::await_holding_lock)]
+
 use super::*;
 
 fn state_file(dir: &tempfile::TempDir, body: &str) -> std::path::PathBuf {

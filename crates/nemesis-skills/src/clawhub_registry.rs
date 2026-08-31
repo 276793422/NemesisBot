@@ -119,7 +119,7 @@ impl ClawHubRegistry {
             .await?;
 
         let detail: ConvexSkillDetail =
-            serde_json::from_value(value).map_err(|e| NemesisError::Serialization(e))?;
+            serde_json::from_value(value).map_err(NemesisError::Serialization)?;
 
         if detail.skill.slug.is_empty() && detail.resolved_slug.is_empty() {
             return Err(NemesisError::NotFound(format!(
@@ -173,7 +173,7 @@ impl ClawHubRegistry {
             .await?;
 
         let detail: ConvexSkillDetail =
-            serde_json::from_value(value).map_err(|e| NemesisError::Serialization(e))?;
+            serde_json::from_value(value).map_err(NemesisError::Serialization)?;
 
         if detail.owner.handle.is_empty() {
             return Err(NemesisError::NotFound(format!(
@@ -250,17 +250,15 @@ impl ClawHubRegistry {
             self.base_url,
             urlencoding::encode(slug)
         );
-        if let Ok(resp) = self.client.get(&file_url).send().await {
-            if resp.status().is_success() {
-                if let Ok(content) = resp.text().await {
+        if let Ok(resp) = self.client.get(&file_url).send().await
+            && resp.status().is_success()
+                && let Ok(content) = resp.text().await {
                     return Ok(crate::types::SkillContent {
                         slug: slug.to_string(),
                         filename: "SKILL.md".to_string(),
                         content,
                     });
                 }
-            }
-        }
 
         debug!(
             "ClawHub file API failed, falling back to GitHub raw for {}",
@@ -272,7 +270,7 @@ impl ClawHubRegistry {
             .call_convex("skills:getBySlug", &[("slug", slug)])
             .await?;
         let detail: ConvexSkillDetail =
-            serde_json::from_value(value).map_err(|e| NemesisError::Serialization(e))?;
+            serde_json::from_value(value).map_err(NemesisError::Serialization)?;
 
         if detail.owner.handle.is_empty() {
             return Err(NemesisError::NotFound(format!(
@@ -282,8 +280,8 @@ impl ClawHubRegistry {
         }
 
         let url = format!(
-            "https://raw.githubusercontent.com/openclaw/skills/main/skills/{}/SKILL.md",
-            format!("{}/{}", detail.owner.handle, slug)
+            "https://raw.githubusercontent.com/openclaw/skills/main/skills/{}/{}/SKILL.md",
+            detail.owner.handle, slug
         );
 
         let resp = self
@@ -495,7 +493,7 @@ impl ClawHubRegistry {
             .await?;
 
         let items: Vec<ConvexSkillListItem> =
-            serde_json::from_value(value).map_err(|e| NemesisError::Serialization(e))?;
+            serde_json::from_value(value).map_err(NemesisError::Serialization)?;
 
         let results: Vec<SkillSearchResult> = items
             .into_iter()
@@ -595,18 +593,14 @@ fn extract_zip_to_dir(data: &[u8], target_dir: &str) -> Result<()> {
     }
 
     // Determine prefix to strip (flatten single top-level dir).
-    let prefix = if let Some(common_prefix) = find_common_prefix(&entries) {
-        common_prefix
-    } else {
-        String::new()
-    };
+    let prefix = find_common_prefix(&entries).unwrap_or_default();
 
     // Re-read and extract.
     let reader = Cursor::new(data);
     let mut archive = zip::ZipArchive::new(reader)
         .map_err(|e| NemesisError::Other(format!("failed to re-read ZIP archive: {}", e)))?;
 
-    std::fs::create_dir_all(target_dir).map_err(|e| NemesisError::Io(e))?;
+    std::fs::create_dir_all(target_dir).map_err(NemesisError::Io)?;
 
     for i in 0..archive.len() {
         let mut file = archive
@@ -635,25 +629,23 @@ fn extract_zip_to_dir(data: &[u8], target_dir: &str) -> Result<()> {
         let canonical_target = std::path::Path::new(target_dir)
             .canonicalize()
             .unwrap_or_else(|_| std::path::PathBuf::from(target_dir));
-        if let Some(parent) = dest_path.parent() {
-            if let Ok(canonical_parent) = parent.canonicalize() {
-                if !canonical_parent.starts_with(&canonical_target) {
+        if let Some(parent) = dest_path.parent()
+            && let Ok(canonical_parent) = parent.canonicalize()
+                && !canonical_parent.starts_with(&canonical_target) {
                     return Err(NemesisError::Security(format!(
                         "path traversal detected: {}",
                         relative
                     )));
                 }
-            }
-        }
 
         // Create parent directory.
         if let Some(parent) = dest_path.parent() {
-            std::fs::create_dir_all(parent).map_err(|e| NemesisError::Io(e))?;
+            std::fs::create_dir_all(parent).map_err(NemesisError::Io)?;
         }
 
         // Write file.
-        let mut output = std::fs::File::create(&dest_path).map_err(|e| NemesisError::Io(e))?;
-        std::io::copy(&mut file, &mut output).map_err(|e| NemesisError::Io(e))?;
+        let mut output = std::fs::File::create(&dest_path).map_err(NemesisError::Io)?;
+        std::io::copy(&mut file, &mut output).map_err(NemesisError::Io)?;
     }
 
     Ok(())
@@ -707,7 +699,7 @@ fn flatten_single_top_dir(staging_dir: &std::path::Path) -> std::path::PathBuf {
 #[allow(dead_code)]
 fn move_dir_contents(src_dir: &std::path::Path, dst_dir: &std::path::Path) -> Result<()> {
     let entries: Vec<_> = std::fs::read_dir(src_dir)
-        .map_err(|e| NemesisError::Io(e))?
+        .map_err(NemesisError::Io)?
         .filter_map(|e| e.ok())
         .collect();
 
@@ -717,7 +709,7 @@ fn move_dir_contents(src_dir: &std::path::Path, dst_dir: &std::path::Path) -> Re
         let dst_path = dst_dir.join(&file_name);
 
         if entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
-            std::fs::create_dir_all(&dst_path).map_err(|e| NemesisError::Io(e))?;
+            std::fs::create_dir_all(&dst_path).map_err(NemesisError::Io)?;
             move_dir_contents(&src_path, &dst_path)?;
         } else {
             let data = std::fs::read(&src_path).map_err(|e| {

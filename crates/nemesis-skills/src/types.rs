@@ -180,6 +180,7 @@ impl BrowseSort {
         }
     }
 
+    #[allow(clippy::should_implement_trait)] // lenient parser with fallback; deliberately NOT std::str::FromStr (no Err semantics)
     pub fn from_str(s: &str) -> Self {
         match s {
             "downloads" => Self::Downloads,
@@ -281,6 +282,7 @@ fn default_cache_ttl() -> u64 {
 
 /// ModelScope registry configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Default)]
 pub struct ModelScopeConfig {
     /// Whether the ModelScope registry is enabled.
     #[serde(default)]
@@ -290,14 +292,6 @@ pub struct ModelScopeConfig {
     pub timeout_secs: u64,
 }
 
-impl Default for ModelScopeConfig {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            timeout_secs: 0,
-        }
-    }
-}
 
 /// ClawHub registry configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]

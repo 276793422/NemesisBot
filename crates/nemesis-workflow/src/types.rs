@@ -17,7 +17,7 @@ use uuid::Uuid;
 /// - `"5m"` -> 5 minutes
 /// - `"1h"` -> 1 hour
 /// - `"90"` (plain number) -> 90 seconds
-/// Returns `None` if the string cannot be parsed.
+///   Returns `None` if the string cannot be parsed.
 pub fn parse_duration(s: &str) -> Option<Duration> {
     let s = s.trim();
     if s.is_empty() {
@@ -38,11 +38,10 @@ pub fn parse_duration(s: &str) -> Option<Duration> {
         if let Ok(mins) = num_str.parse::<u64>() {
             return Some(Duration::from_secs(mins * 60));
         }
-    } else if let Some(num_str) = s.strip_suffix('h') {
-        if let Ok(hours) = num_str.parse::<u64>() {
+    } else if let Some(num_str) = s.strip_suffix('h')
+        && let Ok(hours) = num_str.parse::<u64>() {
             return Some(Duration::from_secs(hours * 3600));
         }
-    }
 
     None
 }
@@ -78,7 +77,7 @@ impl fmt::Display for ExecutionState {
 /// `AgentTool` carries a `recursion_depth` so deeply nested workflow_run calls
 /// can be rejected once they exceed `MAX_RECURSION_DEPTH` (decision 6 from the
 /// Spike phase, see `WorkflowCallStack`).
-
+///
 /// Maximum nesting depth for workflow_run tool calls (decision 6 from the
 /// Spike phase). Depth counts the number of `AgentTool` frames on the call
 /// stack:

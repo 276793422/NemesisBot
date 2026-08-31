@@ -781,7 +781,7 @@ fn query_with_threshold_recalls_docs_below_store_bar() {
         Ok(match t {
             // store_entry 嵌入的是 content；query 嵌入的是查询原文。
             "q" => vec![1.0, 0.0],
-            "high" => vec![0.9, 0.435_889_894_354_067],
+            "high" => vec![0.9, 0.435_889_9],
             "loose" => vec![0.6, 0.8],
             _ => vec![0.0, 0.0],
         })

@@ -21,7 +21,7 @@ pub fn expand_at_files(content: &str, base: &Path) -> String {
     for cap in re.captures_iter(content) {
         let raw = cap.get(1).map(|m| m.as_str()).unwrap_or("");
         let path_str =
-            raw.trim_end_matches(|c: char| matches!(c, '.' | ',' | ';' | '!' | '?' | ')' | ']'));
+            raw.trim_end_matches(['.', ',', ';', '!', '?', ')', ']']);
         if path_str.is_empty() {
             continue;
         }
@@ -30,8 +30,8 @@ pub fn expand_at_files(content: &str, base: &Path) -> String {
         } else {
             base.join(path_str)
         };
-        if candidate.is_file() {
-            if let Ok(body) = std::fs::read_to_string(&candidate) {
+        if candidate.is_file()
+            && let Ok(body) = std::fs::read_to_string(&candidate) {
                 let display = candidate.strip_prefix(base).unwrap_or(&candidate).display();
                 let truncated = if body.len() > 20000 {
                     format!(
@@ -47,7 +47,6 @@ pub fn expand_at_files(content: &str, base: &Path) -> String {
                     display, truncated
                 ));
             }
-        }
     }
     if refs.is_empty() {
         content.to_string()

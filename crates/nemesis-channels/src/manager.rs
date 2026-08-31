@@ -320,8 +320,8 @@ impl ChannelManager {
         let channel_name = msg.channel.clone();
 
         // Apply allowed-channels filter
-        if let Some(ref allowed) = self.allowed_channels {
-            if !allowed.contains(&channel_name) {
+        if let Some(ref allowed) = self.allowed_channels
+            && !allowed.contains(&channel_name) {
                 self.metrics
                     .dropped_filtered
                     .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -331,7 +331,6 @@ impl ChannelManager {
                 );
                 return Ok(());
             }
-        }
 
         let map = self.channels.read().await;
         match map.get(&channel_name) {

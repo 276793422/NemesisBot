@@ -252,7 +252,7 @@ thread_local! {
     static CLUSTER_MENU_ITEMS: std::cell::RefCell<Option<(
         tray_icon::menu::MenuItem,
         tray_icon::menu::MenuItem,
-    )>> = std::cell::RefCell::new(None);
+    )>> = const { std::cell::RefCell::new(None) };
 }
 
 /// Enable the "集群启动" and "集群停止" tray menu items.

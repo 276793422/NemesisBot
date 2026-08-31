@@ -259,7 +259,7 @@ pub fn detect_conversation_tool_chains(
             .push(exp);
     }
 
-    for (_session, exps) in &sessions {
+    for exps in sessions.values() {
         if exps.len() < 2 {
             continue;
         }
@@ -442,7 +442,7 @@ pub fn detect_conversation_efficiency_issues(
             .push(exp);
     }
 
-    for (_session, exps) in &sessions {
+    for exps in sessions.values() {
         let total_dur: i64 = exps.iter().map(|e| e.experience.duration_ms as i64).sum();
         let avg_dur = total_dur as f64 / exps.len() as f64;
 
@@ -531,7 +531,7 @@ pub fn detect_conversation_success_templates(
             .push(exp);
     }
 
-    for (_session, exps) in &sessions {
+    for exps in sessions.values() {
         let all_success = exps.iter().all(|e| e.experience.success);
         if !all_success {
             continue;

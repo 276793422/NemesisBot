@@ -5,6 +5,12 @@
 //! 分析分支（用安全层引擎的真实现，输入用确定性的样例）、`summarize`
 //! 汇总计数和 `ToolTag` 序列化形状。
 
+// 刻意设计：本文件测试用进程级串行锁（GLOBAL_STATE_LOCK 等 env/资源互斥锁）
+// 保护环境操作，guard 必须跨 async 测试体的 await 持有；#[tokio::test] 每个
+// 测试独立 current_thread runtime，持锁方在自己线程上恢复运行，不会死锁。
+// 测试域统一豁免（逐处 allow ~200 个不现实）。
+#![allow(clippy::await_holding_lock)]
+
 use super::*;
 
 // ---------------------------------------------------------------------------
@@ -565,13 +571,12 @@ mod wave_b {
                                 Ok(0) | Err(_) => break,
                                 Ok(n) => {
                                     buf.extend_from_slice(&chunk[..n]);
-                                    if let Some(pos) = wave_b_header_end(&buf) {
-                                        if buf.len()
+                                    if let Some(pos) = wave_b_header_end(&buf)
+                                        && buf.len()
                                             >= pos + 4 + wave_b_content_length(&buf[..pos])
                                         {
                                             break;
                                         }
-                                    }
                                 }
                             }
                         }

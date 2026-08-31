@@ -43,11 +43,11 @@ impl ModuleHandler for HooksHandler {
             &nemesis_path::workspace_config_dir(std::path::Path::new(&workspace)),
         );
         match cmd {
-            "get" => self.get(&workspace),
+            "get" => self.get(workspace),
             "set" => {
                 let data = data.ok_or("missing data")?;
                 let content = crate::handlers::get_str(&data, "content")?;
-                self.set(&workspace, &content)
+                self.set(workspace, &content)
             }
             _ => Err(format!("unknown command: hooks.{}", cmd)),
         }

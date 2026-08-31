@@ -8,6 +8,12 @@ pub struct SecurityHandler {
     _priv: (),
 }
 
+impl Default for SecurityHandler {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl SecurityHandler {
     pub fn new() -> Self {
         Self { _priv: () }
@@ -143,15 +149,14 @@ impl SecurityHandler {
         for entry in read_dir {
             let entry = entry.map_err(|e| format!("failed to read entry: {}", e))?;
             let path = entry.path();
-            if path.extension().and_then(|e| e.to_str()) == Some("jsonl") {
-                if let Ok(content) = std::fs::read_to_string(&path) {
+            if path.extension().and_then(|e| e.to_str()) == Some("jsonl")
+                && let Ok(content) = std::fs::read_to_string(&path) {
                     for line in content.lines().rev() {
                         if let Ok(val) = serde_json::from_str::<serde_json::Value>(line) {
                             entries.push(flatten_audit_entry(&val));
                         }
                     }
                 }
-            }
         }
 
         // Sort by timestamp descending (if available)
@@ -189,8 +194,8 @@ impl SecurityHandler {
         for entry in read_dir {
             let entry = entry.map_err(|e| format!("failed to read entry: {}", e))?;
             let path = entry.path();
-            if path.extension().and_then(|e| e.to_str()) == Some("jsonl") {
-                if let Ok(content) = std::fs::read_to_string(&path) {
+            if path.extension().and_then(|e| e.to_str()) == Some("jsonl")
+                && let Ok(content) = std::fs::read_to_string(&path) {
                     for line in content.lines() {
                         if let Ok(val) = serde_json::from_str::<serde_json::Value>(line) {
                             total += 1;
@@ -199,7 +204,6 @@ impl SecurityHandler {
                         }
                     }
                 }
-            }
         }
 
         Ok(Some(serde_json::json!({

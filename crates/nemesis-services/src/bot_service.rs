@@ -488,6 +488,7 @@ struct BotServiceInner {
 
 /// Registry of initialized service handles. Each field is Option because
 /// services are created conditionally based on configuration.
+#[derive(Default)]
 struct ServiceRegistry {
     /// Forge self-learning service.
     forge: Option<Arc<dyn ForgeService>>,
@@ -515,24 +516,6 @@ struct ServiceRegistry {
     observer: Option<Arc<dyn ObserverManager>>,
 }
 
-impl Default for ServiceRegistry {
-    fn default() -> Self {
-        Self {
-            forge: None,
-            memory: None,
-            heartbeat: None,
-            devices: None,
-            health: None,
-            channels: None,
-            agent: None,
-            cron: None,
-            security: None,
-            workflow: None,
-            skills: None,
-            observer: None,
-        }
-    }
-}
 
 // ---------------------------------------------------------------------------
 // BotService
@@ -1030,21 +1013,20 @@ impl BotService {
         }
 
         // Ensure the parent directory exists
-        if let Some(parent) = self.config.config_path.parent() {
-            if !parent.exists() {
+        if let Some(parent) = self.config.config_path.parent()
+            && !parent.exists() {
                 std::fs::create_dir_all(parent)
-                    .map_err(|e| nemesis_types::error::NemesisError::Io(e))?;
+                    .map_err(nemesis_types::error::NemesisError::Io)?;
             }
-        }
 
         // Serialize with pretty formatting
         let config_str = serde_json::to_string_pretty(config_json)
-            .map_err(|e| nemesis_types::error::NemesisError::Serialization(e))?;
+            .map_err(nemesis_types::error::NemesisError::Serialization)?;
 
         // Write to disk atomically: write to temp file, then rename
         let temp_path = self.config.config_path.with_extension("json.tmp");
         std::fs::write(&temp_path, &config_str)
-            .map_err(|e| nemesis_types::error::NemesisError::Io(e))?;
+            .map_err(nemesis_types::error::NemesisError::Io)?;
 
         // Atomic rename
         std::fs::rename(&temp_path, &self.config.config_path).map_err(|e| {

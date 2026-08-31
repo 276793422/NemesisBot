@@ -533,11 +533,10 @@ impl CcHookBridge {
     ) -> Vec<ScriptOutcome> {
         let mut out = Vec::new();
         for g in groups {
-            if let Some(t) = tool {
-                if !g.matches(t) {
+            if let Some(t) = tool
+                && !g.matches(t) {
                     continue;
                 }
-            }
             for h in &g.hooks {
                 let timeout = h.timeout.unwrap_or(DEFAULT_TIMEOUT_SECS);
                 let o = run_hook_script(&h.command, timeout, payload, &self.project_dir).await;

@@ -129,7 +129,7 @@ async fn nested_call_frames_link_parent_execution_ids() {
     // themselves are independent records with different IDs — the inner run
     // created a separate execution that we can see via list_executions.
     let mut all = engine.list_executions(None).await;
-    all.sort_by_key(|e| e.started_at.clone());
+    all.sort_by_key(|e| e.started_at);
     assert_eq!(all.len(), 2, "expected outer + inner executions");
     assert_eq!(all[0].workflow_name, "outer");
     assert_eq!(all[1].workflow_name, "inner");
@@ -151,7 +151,7 @@ async fn three_layer_chain_executes_all_layers() {
     assert_eq!(outer.state, ExecutionState::Completed);
 
     let mut all = engine.list_executions(None).await;
-    all.sort_by_key(|e| e.started_at.clone());
+    all.sort_by_key(|e| e.started_at);
     assert_eq!(all.len(), 3, "expected outer + middle + inner executions");
     let names: Vec<_> = all.iter().map(|e| e.workflow_name.clone()).collect();
     assert_eq!(names, vec!["outer", "middle", "inner"]);

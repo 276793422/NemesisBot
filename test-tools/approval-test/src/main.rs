@@ -494,7 +494,7 @@ fn test_basic_approval_manager(runner: &mut TestRunner) {
     let pending = mgr.list_pending();
     runner.assert_ok(
         "list_pending includes pending request",
-        pending.len() >= 1 && pending.iter().any(|r| r.id == id3),
+        !pending.is_empty() && pending.iter().any(|r| r.id == id3),
         &format!("expected at least 1 pending, got {}", pending.len()),
     );
 

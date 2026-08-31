@@ -155,7 +155,7 @@ impl I2CTool {
         };
 
         let addr = match args["address"].as_u64() {
-            Some(a) if a >= 0x03 && a <= 0x77 => a as u8,
+            Some(a) if (0x03..=0x77).contains(&a) => a as u8,
             _ => return ToolResult::error("address is required (e.g. 0x38, range 0x03-0x77)"),
         };
 
@@ -196,7 +196,7 @@ impl I2CTool {
         };
 
         let addr = match args["address"].as_u64() {
-            Some(a) if a >= 0x03 && a <= 0x77 => a as u8,
+            Some(a) if (0x03..=0x77).contains(&a) => a as u8,
             _ => return ToolResult::error("address is required (e.g. 0x38, range 0x03-0x77)"),
         };
 
@@ -271,7 +271,7 @@ impl I2CTool {
     fn parse_address(&self, args: &serde_json::Value) -> Result<(), ToolResult> {
         match args["address"].as_u64() {
             Some(addr) => {
-                if addr < 0x03 || addr > 0x77 {
+                if !(0x03..=0x77).contains(&addr) {
                     Err(ToolResult::error(
                         "address must be in valid 7-bit range (0x03-0x77)",
                     ))
@@ -538,21 +538,18 @@ impl SPITool {
     }
 
     fn validate_spi_params(&self, args: &serde_json::Value) -> Result<(), ToolResult> {
-        if let Some(speed) = args["speed"].as_u64() {
-            if speed == 0 || speed > 125_000_000 {
+        if let Some(speed) = args["speed"].as_u64()
+            && (speed == 0 || speed > 125_000_000) {
                 return Err(ToolResult::error("speed must be between 1 Hz and 125 MHz"));
             }
-        }
-        if let Some(mode) = args["mode"].as_u64() {
-            if mode > 3 {
+        if let Some(mode) = args["mode"].as_u64()
+            && mode > 3 {
                 return Err(ToolResult::error("mode must be 0-3"));
             }
-        }
-        if let Some(bits) = args["bits"].as_u64() {
-            if bits == 0 || bits > 32 {
+        if let Some(bits) = args["bits"].as_u64()
+            && (bits == 0 || bits > 32) {
                 return Err(ToolResult::error("bits must be between 1 and 32"));
             }
-        }
         Ok(())
     }
 }

@@ -37,7 +37,7 @@ pub async fn test_cli_model_add(ws: &TestWorkspace, bin: &Path) -> Vec<TestResul
     } else {
         results.push(fail(
             &format!("{}/exit", suite),
-            &format!(
+            format!(
                 "exit={}, stdout='{}'",
                 output.exit_code,
                 output.stdout.trim()
@@ -46,8 +46,8 @@ pub async fn test_cli_model_add(ws: &TestWorkspace, bin: &Path) -> Vec<TestResul
     }
 
     // Verify config.json contains the model
-    if let Ok(data) = std::fs::read_to_string(ws.config_path()) {
-        if let Ok(cfg) = serde_json::from_str::<Value>(&data) {
+    if let Ok(data) = std::fs::read_to_string(ws.config_path())
+        && let Ok(cfg) = serde_json::from_str::<Value>(&data) {
             let has_model = cfg
                 .get("model_list")
                 .and_then(|v| v.as_array())
@@ -70,7 +70,6 @@ pub async fn test_cli_model_add(ws: &TestWorkspace, bin: &Path) -> Vec<TestResul
                 ));
             }
         }
-    }
 
     // Add second model with proxy flag
     let output2 = ws
@@ -96,7 +95,7 @@ pub async fn test_cli_model_add(ws: &TestWorkspace, bin: &Path) -> Vec<TestResul
     } else {
         results.push(pass(
             &format!("{}/with_proxy", suite),
-            &format!("exit={}", output2.exit_code),
+            format!("exit={}", output2.exit_code),
         ));
     }
 
@@ -119,7 +118,7 @@ pub async fn test_cli_model_list(ws: &TestWorkspace, bin: &Path) -> Vec<TestResu
     } else {
         results.push(fail(
             &format!("{}/exit", suite),
-            &format!("exit={}", output.exit_code),
+            format!("exit={}", output.exit_code),
         ));
     }
 
@@ -128,7 +127,7 @@ pub async fn test_cli_model_list(ws: &TestWorkspace, bin: &Path) -> Vec<TestResu
     } else {
         results.push(fail(
             &format!("{}/output", suite),
-            &format!("Output missing models: '{}'", output.stdout.trim()),
+            format!("Output missing models: '{}'", output.stdout.trim()),
         ));
     }
 
@@ -142,7 +141,7 @@ pub async fn test_cli_model_list(ws: &TestWorkspace, bin: &Path) -> Vec<TestResu
     } else {
         results.push(pass(
             &format!("{}/verbose", suite),
-            &format!("exit={}", v_output.exit_code),
+            format!("exit={}", v_output.exit_code),
         ));
     }
 
@@ -167,7 +166,7 @@ pub async fn test_cli_model_remove(ws: &TestWorkspace, bin: &Path) -> Vec<TestRe
     } else {
         results.push(fail(
             &format!("{}/exit", suite),
-            &format!(
+            format!(
                 "exit={}, stdout='{}'",
                 output.exit_code,
                 output.stdout.trim()
@@ -176,8 +175,8 @@ pub async fn test_cli_model_remove(ws: &TestWorkspace, bin: &Path) -> Vec<TestRe
     }
 
     // Verify model removed from config
-    if let Ok(data) = std::fs::read_to_string(ws.config_path()) {
-        if let Ok(cfg) = serde_json::from_str::<Value>(&data) {
+    if let Ok(data) = std::fs::read_to_string(ws.config_path())
+        && let Ok(cfg) = serde_json::from_str::<Value>(&data) {
             let still_exists = cfg
                 .get("model_list")
                 .and_then(|v| v.as_array())
@@ -199,7 +198,6 @@ pub async fn test_cli_model_remove(ws: &TestWorkspace, bin: &Path) -> Vec<TestRe
                 ));
             }
         }
-    }
 
     // Remove without --force (should fail or prompt)
     let nf_output = ws
@@ -207,7 +205,7 @@ pub async fn test_cli_model_remove(ws: &TestWorkspace, bin: &Path) -> Vec<TestRe
         .await;
     results.push(pass(
         &format!("{}/no_force", suite),
-        &format!("exit={} (without --force)", nf_output.exit_code),
+        format!("exit={} (without --force)", nf_output.exit_code),
     ));
 
     results
@@ -226,7 +224,7 @@ pub async fn test_cli_model_default(ws: &TestWorkspace, bin: &Path) -> Vec<TestR
     if output.success() || output.stdout_contains("testai") || output.stdout_contains("default") {
         results.push(pass(
             &format!("{}/output", suite),
-            &format!(
+            format!(
                 "exit={}, output: '{}'",
                 output.exit_code,
                 output.stdout.trim()
@@ -235,7 +233,7 @@ pub async fn test_cli_model_default(ws: &TestWorkspace, bin: &Path) -> Vec<TestR
     } else {
         results.push(fail(
             &format!("{}/output", suite),
-            &format!(
+            format!(
                 "exit={}, stdout='{}'",
                 output.exit_code,
                 output.stdout.trim()

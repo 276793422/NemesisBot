@@ -249,7 +249,7 @@ impl DefaultPlatformExecutor {
             // console group. For child processes created with a new
             // console (CREATE_NO_WINDOW), this is a no-op, but for
             // processes sharing the console it triggers graceful shutdown.
-            let pid = child.pid as u32;
+            let pid = child.pid;
             // CTRL_C_EVENT = 0, CTRL_BREAK_EVENT = 1
             const CTRL_C_EVENT: u32 = 0;
             unsafe {

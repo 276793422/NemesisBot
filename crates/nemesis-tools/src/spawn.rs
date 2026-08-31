@@ -116,8 +116,6 @@ impl SubagentManager {
     }
 
     /// Spawn a new subagent task.
-
-    /// Spawn a new subagent task.
     pub async fn spawn(
         &self,
         task: &str,
@@ -276,16 +274,14 @@ impl Tool for SpawnTool {
         let agent_id = args["agent_id"].as_str().unwrap_or("");
 
         // Check allowlist if targeting specific agent
-        if !agent_id.is_empty() {
-            if let Some(ref check) = self.allowlist_check {
-                if !check(agent_id) {
+        if !agent_id.is_empty()
+            && let Some(ref check) = self.allowlist_check
+                && !check(agent_id) {
                     return ToolResult::error(&format!(
                         "not allowed to spawn agent '{}'",
                         agent_id
                     ));
                 }
-            }
-        }
 
         let channel = self.channel.lock().await.clone();
         let chat_id = self.chat_id.lock().await.clone();

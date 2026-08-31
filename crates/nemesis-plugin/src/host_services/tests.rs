@@ -110,7 +110,7 @@ fn tray_callbacks_copy_and_clone() {
         on_menu_click: cb,
     };
     let tc2 = tc; // Copy
-    let _tc3 = tc.clone(); // Clone
+    let _tc3 = tc; // Clone
     assert!(tc2.user_data.is_null());
     assert!(std::ptr::eq(tc.on_menu_click as *const (), cb as *const ()));
 }

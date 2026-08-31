@@ -447,7 +447,7 @@ fn test_dlp_max_content_length() {
     let engine = DlpEngine::with_config(config);
     // Content longer than max_content_length should be truncated
     let long_text =
-        format!("SSN: 123-45-6789 and then more padding text here that goes beyond limit");
+        "SSN: 123-45-6789 and then more padding text here that goes beyond limit".to_string();
     let result = engine.scan_text(&long_text);
     // The SSN pattern is in the first 20 chars so should still be detected
     assert!(result.has_matches);

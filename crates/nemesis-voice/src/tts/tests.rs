@@ -239,8 +239,7 @@ fn tts_build_kokoro_direct_missing_voices_bails() {
     let err = format!(
         "{:#}",
         TtsEngine::build_kokoro_config(tmp.path(), 1)
-            .err()
-            .expect("must fail")
+            .expect_err("must fail")
     );
     assert!(err.contains("Kokoro voices.bin not found"), "{err}");
 }

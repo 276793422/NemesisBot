@@ -397,7 +397,7 @@ impl AgentInstance {
             // Only insert the old system prompt if new_history doesn't already have one.
             // This handles both cases: session restore from disk (no system prompt in
             // loaded data) and callers like force_compression that already include one.
-            let has_system = history.first().map_or(false, |t| t.role == "system");
+            let has_system = history.first().is_some_and(|t| t.role == "system");
             if !has_system {
                 history.insert(0, sp);
             }

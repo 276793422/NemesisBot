@@ -3,6 +3,7 @@ package main
 import (
 	"flag"
 	"fmt"
+	"os"
 	"time"
 
 	"testaiserver/handlers"
@@ -58,6 +59,7 @@ func main() {
 
 	// 注册测试模型
 	registry.Register(models.NewTestAI11())
+	registry.Register(models.NewTestAI14())
 	registry.Register(models.NewTestAI12())
 	registry.Register(models.NewTestAI13())
 	registry.Register(models.NewTestAI20())
@@ -74,7 +76,21 @@ func main() {
 	registry.Register(models.NewTestAI91())
 	registry.Register(models.NewTestAI92())
 	registry.Register(models.NewTestAI93())
-	fmt.Println("测试模型已注册: testai-1.1, testai-1.2, testai-1.3, testai-2.0, testai-2.1, testai-3.0, testai-3.1, testai-4.2, testai-4.3, testai-5.0, testai-6.0, testai-7.0, testai-8.0, testai-9.0, testai-9.1, testai-9.2, testai-9.3")
+	fmt.Println("测试模型已注册: testai-1.1, testai-1.2, testai-1.3, testai-1.4, testai-2.0, testai-2.1, testai-3.0, testai-3.1, testai-4.2, testai-4.3, testai-5.0, testai-6.0, testai-7.0, testai-8.0, testai-9.0, testai-9.1, testai-9.2, testai-9.3")
+
+	// 别名表（W1.5）：TESTAI_ALIASES="gpt-4o-mini=testai-1.1,..." 把价目表内
+	// 已知的真实模型名映射到测试模型，使计价管线断言不依赖真实模型环境。
+	// 硬编码测试模型行为零改动——别名只在 registry.Get 未命中时解析。
+	if spec := os.Getenv("TESTAI_ALIASES"); spec != "" {
+		aliases, errs := models.ParseAliases(spec)
+		errs = append(errs, registry.ApplyAliases(aliases)...)
+		for _, err := range errs {
+			fmt.Printf("别名配置告警: %v\n", err)
+		}
+		if len(aliases) > 0 {
+			fmt.Printf("别名表已装载: %d 条（TESTAI_ALIASES）\n", len(registry.Aliases()))
+		}
+	}
 
 	// 创建 Gin 路由
 	router := gin.New()

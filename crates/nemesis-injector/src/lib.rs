@@ -214,7 +214,7 @@ pub fn launch_and_inject_with_env(
             flags,
             env_block.as_ptr() as *const _,
             std::ptr::null(),
-            &mut si,
+            &si,
             &mut pi,
         ) == 0
         {
@@ -262,13 +262,13 @@ fn inject_ep_hijack(hp: HANDLE, dll_path: &str) -> Result<(), InjectError> {
     let base_addr = base as u64;
     tracing::info!("remote block = 0x{:X}", base_addr);
 
-    let k32 = GetModuleHandleA(b"kernel32.dll\0".as_ptr());
+    let k32 = GetModuleHandleA(c"kernel32.dll".as_ptr().cast());
     if k32.is_null() {
         return Err(InjectError::ResolveApi);
     }
-    let load_lib_addr = GetProcAddress(k32, b"LoadLibraryA\0".as_ptr())
+    let load_lib_addr = GetProcAddress(k32, c"LoadLibraryA".as_ptr().cast())
         .ok_or(InjectError::ResolveApi)? as usize as u64;
-    let gpa_addr = GetProcAddress(k32, b"GetProcAddress\0".as_ptr())
+    let gpa_addr = GetProcAddress(k32, c"GetProcAddress".as_ptr().cast())
         .ok_or(InjectError::ResolveApi)? as usize as u64;
 
     let mut sc = [0u8; 0x1000];

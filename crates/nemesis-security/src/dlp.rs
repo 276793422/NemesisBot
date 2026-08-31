@@ -208,7 +208,7 @@ impl DlpEngine {
             if !self.is_rule_enabled(rule.name) {
                 continue;
             }
-            for mat in rule.re.find_iter(&*scan_text) {
+            for mat in rule.re.find_iter(&scan_text) {
                 let matched_text = mat.as_str();
                 // Post-match validator (Luhn / ID checksum): demote to Low if it fails,
                 // killing "right format, not a real number" false positives.
@@ -240,7 +240,7 @@ impl DlpEngine {
                 continue;
             }
             if let Ok(re) = Regex::new(&rule.pattern) {
-                for mat in re.find_iter(&*scan_text) {
+                for mat in re.find_iter(&scan_text) {
                     let matched_text = mat.as_str();
                     let confidence = rule.confidence;
                     let effective_action = self.config.action_for(confidence);
@@ -338,12 +338,11 @@ impl DlpEngine {
         // Resolve overlaps: keep non-overlapping spans
         let mut resolved: Vec<(usize, usize)> = Vec::new();
         for span in spans {
-            if let Some(last) = resolved.last() {
-                if span.0 < last.1 {
+            if let Some(last) = resolved.last()
+                && span.0 < last.1 {
                     // Overlapping - skip (already have a longer match at this position)
                     continue;
                 }
-            }
             resolved.push(span);
         }
 
@@ -549,7 +548,7 @@ fn luhn_valid(text: &str, start: usize, end: usize) -> bool {
         sum += x;
         double = !double;
     }
-    sum % 10 == 0
+    sum.is_multiple_of(10)
 }
 
 /// Checksum validation for China resident-ID-shaped matches (18 digits).

@@ -2,6 +2,7 @@
 import { ref, onMounted } from 'vue'
 import { useWSAPI } from '../../composables/useWSAPI'
 import { useToast } from '../../composables/useToast'
+import { useBoardChanged } from '../../composables/useBoardChanged'
 import { fmtTime } from './boardMeta'
 
 // 项目面板（W2 P3）：项目列表 + 创建 + 编辑（字段级 patch）+ 归档/恢复。
@@ -30,13 +31,14 @@ const createForm = ref({ name: '', description: '', icon: '' })
 const editing = ref<Project | null>(null)
 const editForm = ref({ name: '', description: '', icon: '' })
 
-async function load() {
-  loading.value = true
+async function load(silent = false) {
+  if (!silent) loading.value = true
   try {
     const r = await request('board', 'project.list', {})
     projects.value = r?.projects || []
   } catch (e: any) {
-    toast.error('加载项目失败: ' + e)
+    if (silent) console.warn('[ProjectPanel] silent refresh failed:', e)
+    else toast.error('加载项目失败: ' + e)
   } finally {
     loading.value = false
   }
@@ -104,6 +106,8 @@ async function setStatus(p: Project, status: 'active' | 'archived') {
 }
 
 onMounted(load)
+// board-changed 推送：项目被其他入口（CLI/集群/autopilot）改动时静默换新。
+useBoardChanged(() => load(true))
 </script>
 
 <template>

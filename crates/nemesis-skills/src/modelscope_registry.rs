@@ -226,6 +226,12 @@ fn parse_github_tree_url(url: &str) -> Option<(&str, &str, &str, &str)> {
     Some((parts[0], parts[1], branch, path))
 }
 
+impl Default for ModelScopeRegistry {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ModelScopeRegistry {
     pub fn new() -> Self {
         let client = Client::builder()
@@ -502,7 +508,7 @@ impl ModelScopeRegistry {
     }
 
     pub async fn get_skill_meta(&self, slug: &str) -> Result<SkillMeta> {
-        validate_skill_identifier(slug).map_err(|e| NemesisError::Validation(e))?;
+        validate_skill_identifier(slug).map_err(NemesisError::Validation)?;
         let api = self.api_search(slug, 1, 1, "Default").await?;
         let skill = api.data.skill_list.into_iter().next().ok_or_else(|| {
             NemesisError::NotFound(format!("skill '{}' not found on ModelScope", slug))
@@ -531,7 +537,7 @@ impl ModelScopeRegistry {
         _version: &str,
         target_dir: &str,
     ) -> Result<InstallResult> {
-        validate_skill_identifier(slug).map_err(|e| NemesisError::Validation(e))?;
+        validate_skill_identifier(slug).map_err(NemesisError::Validation)?;
         let meta = self.get_skill_meta(slug).await?;
         let api = self.api_search(slug, 1, 1, "Default").await?;
         let skill = api
@@ -564,8 +570,8 @@ impl ModelScopeRegistry {
         // (references/, scripts/) are not silently dropped. Falls back to the
         // (partial) ModelScope mirror if GitHub is unreachable.
         let has_subdirs = files.iter().any(|(p, _)| p.contains('/'));
-        if !has_subdirs && skill.source == "github" {
-            if let Some((owner, repo, branch, gh_path)) = parse_github_tree_url(&skill.source_url) {
+        if !has_subdirs && skill.source == "github"
+            && let Some((owner, repo, branch, gh_path)) = parse_github_tree_url(&skill.source_url) {
                 let repo_str = format!("{}/{}", owner, repo);
                 match download_skill_tree_from_github(
                     &self.github_client,
@@ -599,7 +605,6 @@ impl ModelScopeRegistry {
                     ),
                 }
             }
-        }
 
         let target_path = std::path::Path::new(target_dir);
         std::fs::create_dir_all(target_path)
@@ -624,14 +629,13 @@ impl ModelScopeRegistry {
             if let Some(parent) = dest.parent() {
                 std::fs::create_dir_all(parent)
                     .map_err(|e| NemesisError::Other(format!("create dir failed: {}", e)))?;
-                if let Ok(canonical_parent) = parent.canonicalize() {
-                    if !canonical_parent.starts_with(&canonical_target) {
+                if let Ok(canonical_parent) = parent.canonicalize()
+                    && !canonical_parent.starts_with(&canonical_target) {
                         return Err(NemesisError::Security(format!(
                             "path traversal detected: {}",
                             rel
                         )));
                     }
-                }
             }
             std::fs::write(&dest, content)
                 .map_err(|e| NemesisError::Other(format!("write failed: {}", e)))?;
@@ -646,7 +650,7 @@ impl ModelScopeRegistry {
     }
 
     pub async fn get_skill_content(&self, slug: &str) -> Result<SkillContent> {
-        validate_skill_identifier(slug).map_err(|e| NemesisError::Validation(e))?;
+        validate_skill_identifier(slug).map_err(NemesisError::Validation)?;
         let api = self.api_search(slug, 1, 1, "Default").await?;
         let skill = api
             .data

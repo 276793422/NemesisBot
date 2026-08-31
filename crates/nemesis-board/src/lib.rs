@@ -15,6 +15,7 @@ pub mod models;
 pub mod service;
 pub mod state_machine;
 pub mod store;
+pub mod watcher;
 
 pub use assignment::{Actor, AssignmentType};
 pub use models::{

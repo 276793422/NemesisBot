@@ -269,7 +269,7 @@ pub fn rebuild_request_messages_in(
     let Some(rec) = records
         .iter()
         .rev()
-        .find(|r| r.round == round && trace_id.map_or(true, |t| r.trace_id == t))
+        .find(|r| r.round == round && trace_id.is_none_or(|t| r.trace_id == t))
         .cloned()
     else {
         let ledger_name = ledger_path
@@ -340,11 +340,10 @@ pub fn rebuild_request_messages_in(
     }
 
     // Voice suffix mutates a persisted-derived message at its final position.
-    if let Some(va) = rec.voice_append {
-        if let Some(m) = view.get_mut(va.index) {
+    if let Some(va) = rec.voice_append
+        && let Some(m) = view.get_mut(va.index) {
             m.content.push_str(&va.suffix);
         }
-    }
 
     Ok(RebuildOutcome::Rebuilt(view))
 }

@@ -108,6 +108,12 @@ pub struct KeyGenerator {
     keys: Mutex<HashMap<String, ValidatedKey>>,
 }
 
+impl Default for KeyGenerator {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl KeyGenerator {
     pub fn new() -> Self {
         Self {
@@ -407,14 +413,13 @@ impl WebSocketServer {
                                     guard.dispatcher.dispatch(&msg)
                                 };
 
-                                if msg.is_request() {
-                                    if let Ok(Some(resp_msg)) = dispatch_result {
+                                if msg.is_request()
+                                    && let Ok(Some(resp_msg)) = dispatch_result {
                                         let resp_str =
                                             serde_json::to_string(&resp_msg).unwrap_or_default();
                                         let guard = conn_arc.lock().await;
                                         let _ = guard.send(resp_str).await;
                                     }
-                                }
                             }
                         }
                     }

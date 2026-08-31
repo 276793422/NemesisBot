@@ -284,10 +284,8 @@ fn test_voice_append_replays_on_top_of_digest_insert() {
     let (store, dir) = temp_store(&key);
     store.set_history(
         &key,
-        vec![
-            turn("system", "You are a test assistant."),
-            turn("user", "hello"),
-        ]
+        [turn("system", "You are a test assistant."),
+            turn("user", "hello")]
         .iter()
         .map(|t| t.into())
         .collect(),
@@ -357,10 +355,8 @@ fn test_trace_id_disambiguates_equal_rounds_across_turns() {
     let (store, dir) = temp_store(&key);
     store.set_history(
         &key,
-        vec![
-            turn("system", "You are a test assistant."),
-            turn("user", "hello"),
-        ]
+        [turn("system", "You are a test assistant."),
+            turn("user", "hello")]
         .iter()
         .map(|t| t.into())
         .collect(),
@@ -466,11 +462,9 @@ fn test_no_ledger_degrades_to_subsequence() {
     let (store, dir) = temp_store(&key);
     store.set_history(
         &key,
-        vec![
-            turn("system", "You are a test assistant."),
+        [turn("system", "You are a test assistant."),
             turn("user", "hello"),
-            turn("assistant", "hi"),
-        ]
+            turn("assistant", "hi")]
         .iter()
         .map(|t| t.into())
         .collect(),
@@ -510,10 +504,8 @@ fn test_trimmed_history_reports_unavailable() {
     let (store, dir) = temp_store(&key);
     store.set_history(
         &key,
-        vec![
-            turn("system", "You are a test assistant."),
-            turn("user", "hello"),
-        ]
+        [turn("system", "You are a test assistant."),
+            turn("user", "hello")]
         .iter()
         .map(|t| t.into())
         .collect(),

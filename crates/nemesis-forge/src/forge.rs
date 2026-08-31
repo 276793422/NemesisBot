@@ -245,21 +245,20 @@ impl Forge {
         };
 
         // Step 2: Learning cycle (pattern detection + skill generation)
-        if let Some(ref learning_engine) = self.learning_engine {
-            if self.is_learning_enabled() {
+        if let Some(ref learning_engine) = self.learning_engine
+            && self.is_learning_enabled() {
                 let cycle = learning_engine.run_cycle(&experiences).await;
                 tracing::info!(cycle_id = %cycle.id, patterns = cycle.patterns_found, actions = cycle.actions_taken, "[Forge] learning cycle completed");
             }
-        }
 
         // Step 3: Write report
-        if let Some(ref reflector) = self.reflector {
-            if let Ok(path) = reflector.write_report(&report) {
+        if let Some(ref reflector) = self.reflector
+            && let Ok(path) = reflector.write_report(&report) {
                 tracing::info!(path = %path.display(), "[Forge] reflection report written");
 
                 // Step 4: Cluster share
-                if let Some(ref syncer) = self.syncer {
-                    if let Ok(content) = std::fs::read_to_string(&path) {
+                if let Some(ref syncer) = self.syncer
+                    && let Ok(content) = std::fs::read_to_string(&path) {
                         let json = serde_json::json!({
                             "content": content,
                             "filename": path.file_name().map(|n| n.to_string_lossy().to_string()),
@@ -268,9 +267,7 @@ impl Forge {
                             tracing::warn!(error = %e, "[Forge] cluster share failed");
                         }
                     }
-                }
             }
-        }
     }
 
     /// Run a single cleanup cycle for old data.
@@ -278,11 +275,10 @@ impl Forge {
         let max_age = self.config.storage.max_experience_age_days as i64;
 
         let store = crate::experience_store::ExperienceStore::from_forge_dir(&self.forge_dir);
-        if let Ok(removed) = store.cleanup(max_age).await {
-            if removed > 0 {
+        if let Ok(removed) = store.cleanup(max_age).await
+            && removed > 0 {
                 tracing::info!(removed, "[Forge] cleaned up old experiences");
             }
-        }
 
         if let Some(ref reflector) = self.reflector {
             let removed = reflector.cleanup_reports(max_age as u64);
@@ -291,13 +287,11 @@ impl Forge {
             }
         }
 
-        if let Some(ref cycle_store) = self.cycle_store {
-            if let Ok(removed) = cycle_store.cleanup(max_age).await {
-                if removed > 0 {
+        if let Some(ref cycle_store) = self.cycle_store
+            && let Ok(removed) = cycle_store.cleanup(max_age).await
+                && removed > 0 {
                     tracing::info!(removed, "[Forge] cleaned up old learning cycles");
                 }
-            }
-        }
     }
 
     /// Stop the forge subsystems.
@@ -554,8 +548,8 @@ impl Forge {
             let result = syncer.receive_reflection(payload);
             if result.is_ok() {
                 tracing::info!("[Forge] Remote reflection report stored successfully");
-            } else {
-                tracing::error!(error = %result.as_ref().unwrap_err(), "[Forge] Failed to store remote reflection");
+            } else if let Err(e) = &result {
+                tracing::error!(error = %e, "[Forge] Failed to store remote reflection");
             }
             result
         } else {
@@ -651,8 +645,8 @@ impl Forge {
 
         // 4. Auto-validate if configured
         let mut final_artifact = artifact;
-        if self.config.validation.auto_validate {
-            if let Some(ref pipeline) = self.pipeline {
+        if self.config.validation.auto_validate
+            && let Some(ref pipeline) = self.pipeline {
                 let validation = pipeline.validate(ArtifactKind::Skill, name, &skill_content);
                 let new_status = pipeline.determine_status(&validation);
                 self.registry.update(&artifact_id, |a| {
@@ -662,7 +656,6 @@ impl Forge {
                     final_artifact = updated;
                 }
             }
-        }
 
         tracing::info!(
             artifact_id = %final_artifact.id,
@@ -699,14 +692,13 @@ impl Forge {
             if !name_str.ends_with("_suggestion.md") {
                 continue;
             }
-            if let Ok(metadata) = entry.metadata() {
-                if let Ok(modified) = metadata.modified() {
+            if let Ok(metadata) = entry.metadata()
+                && let Ok(modified) = metadata.modified() {
                     let modified_time: chrono::DateTime<chrono::Local> = modified.into();
                     if modified_time < cutoff {
                         let _ = std::fs::remove_file(entry.path());
                     }
                 }
-            }
         }
     }
 }

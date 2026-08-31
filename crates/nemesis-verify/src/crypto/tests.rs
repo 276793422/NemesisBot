@@ -56,7 +56,7 @@ fn verifying_key_from_hex_rejects_bad_length_and_noncanonical_point() {
     use sha2::Digest;
     let mut found_rejected = false;
     for i in 0u8..=255 {
-        let cand: [u8; 32] = sha2::Sha256::digest(&[i]).into();
+        let cand: [u8; 32] = sha2::Sha256::digest([i]).into();
         if verifying_key_from_hex(&hex_encode(&cand)).is_err() {
             found_rejected = true;
             break;
@@ -74,7 +74,7 @@ fn key_fp_is_sha256_of_pubkey() {
     let vk = verifying_key_from_hex(&kp.public_key).unwrap();
     let fp = key_fp(&vk.to_bytes());
     use sha2::Digest;
-    let expect: [u8; 32] = sha2::Sha256::digest(&vk.to_bytes()).into();
+    let expect: [u8; 32] = sha2::Sha256::digest(vk.to_bytes()).into();
     assert_eq!(fp, expect);
     // 不同公钥指纹不同。
     let other = generate_key_pair();

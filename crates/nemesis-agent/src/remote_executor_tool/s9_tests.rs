@@ -3,9 +3,9 @@
 //! - 346-360：超时 / 读失败 / 立即退出无响应 / 非 JSON 首行 parse 失败
 //!   （cmd 无参 + 管道 stdin：收 EOF 后退出或先吐 banner，四个错误臂中
 //!   确定性落入其中之一；具体落点取决于该机器 cmd 的 banner 行为）。
-//! 其余基线缺口（394-451 命名管道传输）由 bin 侧 executor L2.2 集成测试
-//! 覆盖（nemesisbot，见 sandbox L2 记忆），lib 单测无法伪造连管子进程
-//! → 环境依赖组。
+//!   其余基线缺口（394-451 命名管道传输）由 bin 侧 executor L2.2 集成测试
+//!   覆盖（nemesisbot，见 sandbox L2 记忆），lib 单测无法伪造连管子进程
+//!   → 环境依赖组。
 
 use super::*;
 use std::sync::Arc;

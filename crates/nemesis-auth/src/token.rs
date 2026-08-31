@@ -28,7 +28,7 @@ impl AuthCredential {
 
     /// Check if the credential can be refreshed.
     pub fn can_refresh(&self) -> bool {
-        self.refresh_token.as_ref().map_or(false, |t| !t.is_empty())
+        self.refresh_token.as_ref().is_some_and(|t| !t.is_empty())
     }
 
     /// Check if the credential needs refresh (expires within 5 minutes).

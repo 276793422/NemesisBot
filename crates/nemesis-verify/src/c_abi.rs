@@ -47,23 +47,21 @@ pub struct NvOutcome {
 /// fallback：运行时 `NEMESIS_ROOT_PUBKEY` 环境变量（部署灵活 / 测试用）。
 fn builtin_roots() -> Vec<VerifyingKey> {
     // A1 编译期固化优先
-    if let Some(hex) = BUILTIN_ROOT_PUBKEY_HEX {
-        if let Some(vk) = crate::hex_util::hex_decode_32(hex)
+    if let Some(hex) = BUILTIN_ROOT_PUBKEY_HEX
+        && let Some(vk) = crate::hex_util::hex_decode_32(hex)
             .ok()
             .and_then(|b| VerifyingKey::from_bytes(&b).ok())
         {
             return vec![vk];
         }
-    }
     // 运行时环境变量 fallback（R7 过渡）
-    if let Ok(hex) = std::env::var("NEMESIS_ROOT_PUBKEY") {
-        if let Some(vk) = crate::hex_util::hex_decode_32(&hex)
+    if let Ok(hex) = std::env::var("NEMESIS_ROOT_PUBKEY")
+        && let Some(vk) = crate::hex_util::hex_decode_32(&hex)
             .ok()
             .and_then(|b| VerifyingKey::from_bytes(&b).ok())
         {
             return vec![vk];
         }
-    }
     Vec::new()
 }
 
@@ -111,8 +109,13 @@ fn run_verify(bytes: &[u8]) -> NvOutcome {
 ///
 /// `path`：UTF-8 路径（C 字符串）。`out`：接收结果。
 /// 返回：0=成功（读文件 + 验证完成，查 out->status）；<0=参数/IO 错误。
+///
+/// # Safety
+/// - `path` 必须指向合法 NUL 结尾的 C 字符串，或为 null（返回 -1，不解引用）。
+/// - `out` 必须指向可写的 `NvOutcome` 内存，或为 null（返回 -1）。
+/// - 其余情况不会解引用任一指针（读文件失败走 -3，不触 out）。
 #[unsafe(no_mangle)]
-pub extern "C" fn nv_verify_target(path: *const c_char, out: *mut NvOutcome) -> c_int {
+pub unsafe extern "C" fn nv_verify_target(path: *const c_char, out: *mut NvOutcome) -> c_int {
     if path.is_null() || out.is_null() {
         return -1;
     }
@@ -129,8 +132,11 @@ pub extern "C" fn nv_verify_target(path: *const c_char, out: *mut NvOutcome) -> 
 }
 
 /// 验证调用方进程的 exe（`std::env::current_exe()`）。
+///
+/// # Safety
+/// - `out` 必须指向可写的 `NvOutcome` 内存，或为 null（返回 -1，不解引用）。
 #[unsafe(no_mangle)]
-pub extern "C" fn nv_verify_current_exe(out: *mut NvOutcome) -> c_int {
+pub unsafe extern "C" fn nv_verify_current_exe(out: *mut NvOutcome) -> c_int {
     if out.is_null() {
         return -1;
     }
@@ -151,8 +157,11 @@ pub extern "C" fn nv_verify_current_exe(out: *mut NvOutcome) -> c_int {
 /// 调用方传 DLL 路径（Rust cdylib 无 DllMain 存 hinstDLL，DLL 定位自身跨平台复杂——
 /// 由调用方传路径绕过）。返回：0=Valid，<0=非 Valid / 错误（-1 null, -2 utf8, -3 read,
 /// -4 验签失败, -5 无内置根）。
+///
+/// # Safety
+/// - `dll_path` 必须指向合法 NUL 结尾的 C 字符串，或为 null（返回 -1，不解引用）。
 #[unsafe(no_mangle)]
-pub extern "C" fn nv_self_verify(dll_path: *const c_char) -> c_int {
+pub unsafe extern "C" fn nv_self_verify(dll_path: *const c_char) -> c_int {
     if dll_path.is_null() {
         return -1;
     }
@@ -240,8 +249,13 @@ impl Default for NvSigDetail {
 }
 
 /// 列所有签名（多签名）。`count` 入参 = 缓冲容量（NvSigInfo 数组大小），出参 = 实际总数。
+///
+/// # Safety
+/// - `path` 必须指向合法 NUL 结尾的 C 字符串；`out` 指向容量 `*count` 的数组；
+///   `count` 指向可写 u32。任一为 null 返回 -1（不解引用）。
+/// - 写入 `out[0..min(总数, *count)]`，只把实际总数写回 `*count`，不越界。
 #[unsafe(no_mangle)]
-pub extern "C" fn nv_list_signatures(
+pub unsafe extern "C" fn nv_list_signatures(
     path: *const c_char,
     out: *mut NvSigInfo,
     count: *mut u32,
@@ -278,8 +292,12 @@ pub extern "C" fn nv_list_signatures(
 }
 
 /// 单签名详情（含 cert chain，最多 4 级）。`index` = list_signatures 返回的索引（0=最近）。
+///
+/// # Safety
+/// - `path` 必须指向合法 NUL 结尾的 C 字符串；`out` 必须指向可写的 `NvSigDetail`。
+///   任一为 null 返回 -1（不解引用）；签名不存在返回 -4（不触 out）。
 #[unsafe(no_mangle)]
-pub extern "C" fn nv_get_signature(
+pub unsafe extern "C" fn nv_get_signature(
     path: *const c_char,
     index: u32,
     out: *mut NvSigDetail,

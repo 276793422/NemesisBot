@@ -8,6 +8,12 @@ pub struct ChannelsHandler {
     _priv: (),
 }
 
+impl Default for ChannelsHandler {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ChannelsHandler {
     pub fn new() -> Self {
         Self { _priv: () }
@@ -144,13 +150,11 @@ fn mask_sensitive_fields(value: serde_json::Value) -> serde_json::Value {
             let new_map: serde_json::Map<String, serde_json::Value> = map
                 .into_iter()
                 .map(|(k, v)| {
-                    if crate::handlers::is_sensitive_field(&k) {
-                        if let Some(s) = v.as_str() {
-                            if !s.is_empty() {
+                    if crate::handlers::is_sensitive_field(&k)
+                        && let Some(s) = v.as_str()
+                            && !s.is_empty() {
                                 return (k, serde_json::Value::String(mask_sensitive(s)));
                             }
-                        }
-                    }
                     (k, mask_sensitive_fields(v))
                 })
                 .collect();

@@ -315,12 +315,12 @@ fn test_set_get_complex_value_object() {
 fn test_set_get_complex_value_number_bool_null() {
     let ctx = WorkflowContext::new(HashMap::new());
     ctx.set_var("count", json!(42));
-    ctx.set_var("pi", json!(3.14));
+    ctx.set_var("pi", json!(2.75));
     ctx.set_var("flag", json!(true));
     ctx.set_var("empty", json!(null));
 
     assert_eq!(ctx.get_var("count"), Some(json!(42)));
-    assert_eq!(ctx.get_var("pi"), Some(json!(3.14)));
+    assert_eq!(ctx.get_var("pi"), Some(json!(2.75)));
     assert_eq!(ctx.get_var("flag"), Some(json!(true)));
     assert_eq!(ctx.get_var("empty"), Some(json!(null)));
 }
@@ -349,8 +349,8 @@ fn test_template_renders_number_as_json() {
     ctx.set_var("count", json!(42));
     assert_eq!(ctx.resolve("count={{count}}"), "count=42");
 
-    ctx.set_var("pi", json!(3.14));
-    assert_eq!(ctx.resolve("pi={{pi}}"), "pi=3.14");
+    ctx.set_var("pi", json!(2.75));
+    assert_eq!(ctx.resolve("pi={{pi}}"), "pi=2.75");
 
     ctx.set_var("flag", json!(true));
     assert_eq!(ctx.resolve("flag={{flag}}"), "flag=true");

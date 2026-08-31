@@ -67,6 +67,29 @@ edition = "2024"
 license = "AGPL-3.0-only"
 repository = "https://github.com/nemesisbot/nemesisbot"
 
+# ---- Workspace lint policy (H2 clippy 基线) ----
+# 各 crate Cargo.toml 以 `[lints] workspace = true` 挂载本表。
+# 原则：correctness 类零容忍（CI `-D warnings` 阻塞）；下表是**逐项审查后豁免**
+# 的风格/平台惯用法项，豁免理由见各注释。
+[workspace.lints.clippy]
+# Default::default() 后按条件/多语句赋值字段：lint 要求的结构化初始化对这种
+# 形态无法表达，--fix 也修不掉；78 处均为初始化惯用法非错误。
+field_reassign_with_default = "allow"
+# Arc<dyn Trait> / async 返回类型组合的复杂度提示：77 处源于类型组合本身，
+# 逐处引入 type alias 收益低、噪音大。
+type_complexity = "allow"
+# 签名参数个数提示：重构签名是侵入性 API 变化（20 处）。
+too_many_arguments = "allow"
+# Windows 删只读文件的标准惯用法：只读文件不可删，必须先 set_readonly(false)
+# 再 remove_file；17 处均为删除前清位。
+permissions_set_readonly_false = "allow"
+# Err 载荷体积提示：改 Err 类型牵连调用方 API（2 处）。
+result_large_err = "allow"
+# enum 变体体积不均衡提示：拆变体是侵入性重构（1 处）。
+large_enum_variant = "allow"
+# 模块同名嵌套（如 discovery::discovery）：重命名是文件移动 + 路径 API 变化（2 处）。
+module_inception = "allow"
+
 [workspace.dependencies]
 # Async runtime
 tokio = { version = "1", features = ["full"] }

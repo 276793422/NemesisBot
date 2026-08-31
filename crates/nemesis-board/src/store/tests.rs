@@ -800,7 +800,7 @@ fn test_notification_inbox_read_flow_and_admin_wildcard() {
             .notify(NewNotification {
                 recipient: Actor::new(kind, id),
                 kind: "commented".into(),
-                title: format!("NB-1 收件箱"),
+                title: "NB-1 收件箱".to_string(),
                 content: "hello".into(),
                 issue_id: Some(a.id),
             })

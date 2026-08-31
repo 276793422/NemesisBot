@@ -514,7 +514,7 @@ impl DiscoveryService {
                 // Initial announce with jitter
                 let jitter_secs = rand::random::<u64>() % 5;
                 std::thread::sleep(Duration::from_secs(jitter_secs));
-                send_announce_with(&*broadcast_socket, listener_port, enc_key, &*cluster);
+                send_announce_with(&broadcast_socket, listener_port, enc_key, &*cluster);
 
                 let mut tick = 0u64;
                 while running.load(Ordering::SeqCst) {
@@ -522,7 +522,7 @@ impl DiscoveryService {
                     tick += 1;
                     if tick >= interval.as_secs() {
                         tick = 0;
-                        send_announce_with(&*broadcast_socket, listener_port, enc_key, &*cluster);
+                        send_announce_with(&broadcast_socket, listener_port, enc_key, &*cluster);
                     }
                 }
             })

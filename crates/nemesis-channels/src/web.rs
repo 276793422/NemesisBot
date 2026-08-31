@@ -174,7 +174,7 @@ impl WebChannel {
     pub fn broadcast_to_all(&self, content: &str) -> Result<()> {
         let server = self.server.read();
         if let Some(srv) = server.as_ref() {
-            srv.broadcast(content).map_err(|e| NemesisError::Channel(e))
+            srv.broadcast(content).map_err(NemesisError::Channel)
         } else {
             warn!("[WebChannel] no web server configured for broadcast");
             Ok(())
@@ -280,7 +280,7 @@ impl Channel for WebChannel {
             );
             return srv
                 .broadcast(&msg.content)
-                .map_err(|e| NemesisError::Channel(e));
+                .map_err(NemesisError::Channel);
         }
 
         // Extract session ID from chat ID (format: web:<session-id>)
@@ -303,7 +303,7 @@ impl Channel for WebChannel {
             debug!(session_id = %session_id, "[WebChannel] sending history to session");
             return srv
                 .send_history_to_session(session_id, &msg.content)
-                .map_err(|e| NemesisError::Channel(e));
+                .map_err(NemesisError::Channel);
         }
 
         // Send message to session

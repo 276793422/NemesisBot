@@ -997,28 +997,29 @@ fn test_analyze_traces_with_tool_chains() {
 #[test]
 fn test_analyze_traces_with_retry_patterns() {
     let reflector = Reflector::new();
-    let mut experiences = Vec::new();
     // 2 calls, 1 error -> retry pattern
-    experiences.push(Experience {
-        id: "e1".into(),
-        tool_name: "retry_tool".into(),
-        input_summary: "input".into(),
-        output_summary: "fail".into(),
-        success: false,
-        duration_ms: 100,
-        timestamp: "2026-04-29T00:00:00Z".into(),
-        session_key: "session-1".into(),
-    });
-    experiences.push(Experience {
-        id: "e2".into(),
-        tool_name: "retry_tool".into(),
-        input_summary: "input".into(),
-        output_summary: "ok".into(),
-        success: true,
-        duration_ms: 100,
-        timestamp: "2026-04-29T00:00:00Z".into(),
-        session_key: "session-1".into(),
-    });
+    let experiences = vec![
+        Experience {
+            id: "e1".into(),
+            tool_name: "retry_tool".into(),
+            input_summary: "input".into(),
+            output_summary: "fail".into(),
+            success: false,
+            duration_ms: 100,
+            timestamp: "2026-04-29T00:00:00Z".into(),
+            session_key: "session-1".into(),
+        },
+        Experience {
+            id: "e2".into(),
+            tool_name: "retry_tool".into(),
+            input_summary: "input".into(),
+            output_summary: "ok".into(),
+            success: true,
+            duration_ms: 100,
+            timestamp: "2026-04-29T00:00:00Z".into(),
+            session_key: "session-1".into(),
+        },
+    ];
     let ces: Vec<CollectedExperience> = experiences
         .into_iter()
         .map(|e| CollectedExperience {

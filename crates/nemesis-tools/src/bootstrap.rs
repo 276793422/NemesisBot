@@ -57,7 +57,7 @@ impl Tool for CompleteBootstrapTool {
         let bootstrap_path = self.workspace.join("BOOTSTRAP.md");
 
         // Check if file exists
-        if !tokio::fs::metadata(&bootstrap_path).await.is_ok() {
+        if tokio::fs::metadata(&bootstrap_path).await.is_err() {
             return ToolResult::success(
                 "BOOTSTRAP.md has already been removed. Initialization is complete.",
             );

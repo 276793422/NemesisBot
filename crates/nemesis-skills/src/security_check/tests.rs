@@ -101,7 +101,7 @@ fn test_only_destructive_blocks() {
     let result = check_skill_security(content, "eval-skill", "Eval");
     // eval alone may trigger obfuscation warning but shouldn't be destructive-blocked
     // The exact behavior depends on lint rules
-    assert!(result.lint_result.warnings.len() > 0 || !result.blocked);
+    assert!(!result.lint_result.warnings.is_empty() || !result.blocked);
 }
 
 // ============================================================

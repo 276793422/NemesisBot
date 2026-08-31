@@ -60,8 +60,8 @@ impl nemesis_web::StaticFiles for EmbeddedStaticFiles {
 /// 2. Compile-time embedded files served from memory (production)
 pub fn resolve_static_files() -> Arc<dyn nemesis_web::StaticFiles> {
     // Development override: disk directory next to executable
-    if let Ok(exe_path) = std::env::current_exe() {
-        if let Some(exe_dir) = exe_path.parent() {
+    if let Ok(exe_path) = std::env::current_exe()
+        && let Some(exe_dir) = exe_path.parent() {
             let disk_static = exe_dir.join("static");
             if disk_static.exists() && disk_static.is_dir() {
                 tracing::info!(
@@ -71,7 +71,6 @@ pub fn resolve_static_files() -> Arc<dyn nemesis_web::StaticFiles> {
                 return Arc::new(nemesis_web::DirectoryStaticFiles::new(disk_static));
             }
         }
-    }
 
     // Production: serve directly from embedded memory
     tracing::info!("[Main] Serving static files from embedded memory (zero disk IO)");
@@ -88,14 +87,13 @@ pub fn resolve_static_files() -> Arc<dyn nemesis_web::StaticFiles> {
 #[allow(dead_code)]
 pub fn resolve_embedded_static_dir() -> Option<String> {
     // Only check disk — no more temp extraction
-    if let Ok(exe_path) = std::env::current_exe() {
-        if let Some(exe_dir) = exe_path.parent() {
+    if let Ok(exe_path) = std::env::current_exe()
+        && let Some(exe_dir) = exe_path.parent() {
             let disk_static = exe_dir.join("static");
             if disk_static.exists() && disk_static.is_dir() {
                 return Some(disk_static.to_string_lossy().to_string());
             }
         }
-    }
     None
 }
 

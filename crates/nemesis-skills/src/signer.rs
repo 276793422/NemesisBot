@@ -63,7 +63,7 @@ impl SkillSigner {
 
         // Load the private key.
         let private_key_hex = std::fs::read_to_string(key_path)
-            .map_err(|e| NemesisError::Io(e))?
+            .map_err(NemesisError::Io)?
             .trim()
             .to_string();
 
@@ -90,8 +90,8 @@ impl SkillSigner {
             "files": manifest.files,
         });
         let sig_json =
-            serde_json::to_string_pretty(&sig_data).map_err(|e| NemesisError::Serialization(e))?;
-        std::fs::write(&sig_path, sig_json).map_err(|e| NemesisError::Io(e))?;
+            serde_json::to_string_pretty(&sig_data).map_err(NemesisError::Serialization)?;
+        std::fs::write(&sig_path, sig_json).map_err(NemesisError::Io)?;
 
         debug!("Signed skill at {}", skill_path);
         Ok(())
@@ -122,8 +122,8 @@ impl SkillSigner {
         }
 
         let sig_data: serde_json::Value = std::fs::read_to_string(&sig_path)
-            .map_err(|e| NemesisError::Io(e))
-            .and_then(|s| serde_json::from_str(&s).map_err(|e| NemesisError::Serialization(e)))?;
+            .map_err(NemesisError::Io)
+            .and_then(|s| serde_json::from_str(&s).map_err(NemesisError::Serialization))?;
 
         let public_key = sig_data["public_key"].as_str().unwrap_or("").to_string();
         let signature = sig_data["signature"].as_str().unwrap_or("").to_string();
@@ -143,18 +143,18 @@ impl SkillSigner {
     /// Returns the output directory path.
     pub fn generate_key_pair(output_dir: &str) -> Result<String> {
         let out_path = Path::new(output_dir);
-        std::fs::create_dir_all(out_path).map_err(|e| NemesisError::Io(e))?;
+        std::fs::create_dir_all(out_path).map_err(NemesisError::Io)?;
 
         let key_pair = generate_key_pair()
             .map_err(|e| NemesisError::Security(format!("failed to generate key pair: {}", e)))?;
 
         // Save private key.
         let priv_path = out_path.join("skill_sign.key");
-        std::fs::write(&priv_path, &key_pair.private_key).map_err(|e| NemesisError::Io(e))?;
+        std::fs::write(&priv_path, &key_pair.private_key).map_err(NemesisError::Io)?;
 
         // Save public key.
         let pub_path = out_path.join("skill_sign.pub");
-        std::fs::write(&pub_path, &key_pair.public_key).map_err(|e| NemesisError::Io(e))?;
+        std::fs::write(&pub_path, &key_pair.public_key).map_err(NemesisError::Io)?;
 
         // Save metadata.
         let fingerprint = compute_public_key_fingerprint(&key_pair.public_key);
@@ -165,8 +165,8 @@ impl SkillSigner {
         };
         let meta_path = out_path.join("skill_sign.meta.json");
         let meta_json =
-            serde_json::to_string_pretty(&metadata).map_err(|e| NemesisError::Serialization(e))?;
-        std::fs::write(&meta_path, meta_json).map_err(|e| NemesisError::Io(e))?;
+            serde_json::to_string_pretty(&metadata).map_err(NemesisError::Serialization)?;
+        std::fs::write(&meta_path, meta_json).map_err(NemesisError::Io)?;
 
         debug!("Generated key pair in {}", output_dir);
         Ok(output_dir.to_string())
@@ -208,9 +208,9 @@ impl SkillSigner {
         combined: &mut String,
     ) -> std::result::Result<(), NemesisError> {
         use sha2::{Digest, Sha256};
-        let entries = std::fs::read_dir(current).map_err(|e| NemesisError::Io(e))?;
+        let entries = std::fs::read_dir(current).map_err(NemesisError::Io)?;
         for entry in entries {
-            let entry = entry.map_err(|e| NemesisError::Io(e))?;
+            let entry = entry.map_err(NemesisError::Io)?;
             let path = entry.path();
 
             // Skip hidden files and .signature.
@@ -222,7 +222,7 @@ impl SkillSigner {
             if path.is_dir() {
                 Self::walk_dir(base, &path, files, combined)?;
             } else {
-                let content = std::fs::read_to_string(&path).map_err(|e| NemesisError::Io(e))?;
+                let content = std::fs::read_to_string(&path).map_err(NemesisError::Io)?;
                 let relative = path
                     .strip_prefix(base)
                     .unwrap_or(&path)

@@ -234,8 +234,8 @@ impl InMemoryGraphStore {
     fn load_from_disk(&self, dir: &Path) -> Result<(), String> {
         // Load entities
         let entities_path = dir.join("entities.jsonl");
-        if entities_path.exists() {
-            if let Ok(data) = std::fs::read_to_string(&entities_path) {
+        if entities_path.exists()
+            && let Ok(data) = std::fs::read_to_string(&entities_path) {
                 for line in data.lines() {
                     let trimmed = line.trim();
                     if trimmed.is_empty() {
@@ -247,12 +247,11 @@ impl InMemoryGraphStore {
                     }
                 }
             }
-        }
 
         // Load triples
         let triples_path = dir.join("triples.jsonl");
-        if triples_path.exists() {
-            if let Ok(data) = std::fs::read_to_string(&triples_path) {
+        if triples_path.exists()
+            && let Ok(data) = std::fs::read_to_string(&triples_path) {
                 for line in data.lines() {
                     let trimmed = line.trim();
                     if trimmed.is_empty() {
@@ -274,7 +273,6 @@ impl InMemoryGraphStore {
                     }
                 }
             }
-        }
 
         Ok(())
     }
@@ -374,11 +372,10 @@ impl GraphStore for InMemoryGraphStore {
             .or_default()
             .push(triple);
 
-        if self.persistence_dir.is_some() {
-            if let Err(e) = self.persist_triples() {
+        if self.persistence_dir.is_some()
+            && let Err(e) = self.persist_triples() {
                 tracing::warn!("[GraphStore] persist_triples failed: {e}");
             }
-        }
 
         Ok(())
     }
@@ -389,11 +386,10 @@ impl GraphStore for InMemoryGraphStore {
         let name = entity.name.clone();
         self.entities.insert(name, entity);
 
-        if self.persistence_dir.is_some() {
-            if let Err(e) = self.persist_entities() {
+        if self.persistence_dir.is_some()
+            && let Err(e) = self.persist_entities() {
                 tracing::warn!("[GraphStore] persist_entities failed: {e}");
             }
-        }
 
         Ok(())
     }
@@ -418,11 +414,10 @@ impl GraphStore for InMemoryGraphStore {
             triples.retain(|t| !(t.subject == subject && t.predicate == predicate));
         }
 
-        if removed && self.persistence_dir.is_some() {
-            if let Err(e) = self.persist_triples() {
+        if removed && self.persistence_dir.is_some()
+            && let Err(e) = self.persist_triples() {
                 tracing::warn!("[GraphStore] persist_triples failed: {e}");
             }
-        }
 
         Ok(removed)
     }
@@ -528,17 +523,16 @@ impl GraphStore for InMemoryGraphStore {
 
         for entry in self.triples_by_subject.iter() {
             for t in entry.value().iter() {
-                if seen.insert((t.subject.clone(), t.predicate.clone(), t.object.clone())) {
-                    if t.subject.to_lowercase().contains(&query_lower)
+                if seen.insert((t.subject.clone(), t.predicate.clone(), t.object.clone()))
+                    && (t.subject.to_lowercase().contains(&query_lower)
                         || t.predicate.to_lowercase().contains(&query_lower)
-                        || t.object.to_lowercase().contains(&query_lower)
+                        || t.object.to_lowercase().contains(&query_lower))
                     {
                         results.push(t.clone());
                         if results.len() >= limit {
                             break;
                         }
                     }
-                }
             }
             if results.len() >= limit {
                 break;
@@ -584,11 +578,10 @@ impl GraphStore for InMemoryGraphStore {
             }
         }
 
-        if self.persistence_dir.is_some() {
-            if let Err(e) = self.persist_all() {
+        if self.persistence_dir.is_some()
+            && let Err(e) = self.persist_all() {
                 tracing::warn!("[GraphStore] persist_all failed: {e}");
             }
-        }
 
         Ok(())
     }

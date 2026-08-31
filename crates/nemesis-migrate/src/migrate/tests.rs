@@ -1988,7 +1988,7 @@ fn run_confirm_scenarios_parent() {
         let outcome_path = outcome_dir.path().join("outcome.txt");
 
         let mut cmd = std::process::Command::new(&exe);
-        cmd.arg(&filter)
+        cmd.arg(filter)
             .env("NEMESIS_MIGRATE_CHILD_MODE", mode)
             .env("NEMESIS_MIGRATE_CHILD_OUTCOME", &outcome_path)
             .stdout(std::process::Stdio::null())
@@ -2003,11 +2003,10 @@ fn run_confirm_scenarios_parent() {
         }
 
         let mut child = cmd.spawn().unwrap_or_else(|e| panic!("spawn {}: {}", mode, e));
-        if need_stdin {
-            if let Some(mut stdin) = child.stdin.take() {
+        if need_stdin
+            && let Some(mut stdin) = child.stdin.take() {
                 let _ = stdin.write_all(stdin_bytes);
             } // drop → EOF
-        }
         let status = child.wait().expect("wait child");
         assert!(
             status.success(),

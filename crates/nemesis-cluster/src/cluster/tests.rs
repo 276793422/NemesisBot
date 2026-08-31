@@ -624,8 +624,8 @@ fn test_string_value_with_object() {
 
 #[test]
 fn test_string_value_with_float() {
-    let v = serde_json::json!(3.14);
-    assert_eq!(string_value(Some(&v)), "3.14");
+    let v = serde_json::json!(2.75);
+    assert_eq!(string_value(Some(&v)), "2.75");
 }
 
 // -- Accessor tests --
@@ -3042,8 +3042,8 @@ fn test_string_value_all_branches() {
     assert_eq!(string_value(Some(&v)), "");
 
     // Float number
-    let v = serde_json::json!(3.14);
-    assert_eq!(string_value(Some(&v)), "3.14");
+    let v = serde_json::json!(2.75);
+    assert_eq!(string_value(Some(&v)), "2.75");
 
     // Boolean false
     let v = serde_json::json!(false);

@@ -166,7 +166,7 @@ impl GitHubRegistry {
 
             let body = self.do_get(&url).await?;
             let skills: Vec<GithubSkill> =
-                serde_json::from_slice(&body).map_err(|e| NemesisError::Serialization(e))?;
+                serde_json::from_slice(&body).map_err(NemesisError::Serialization)?;
 
             for skill in &skills {
                 if skill.name == slug {
@@ -238,8 +238,8 @@ impl GitHubRegistry {
         };
 
         // Use Trees API to download the full skill directory.
-        if !self.repo.is_empty() && !self.skill_path_pattern.is_empty() {
-            if let Some(dir_prefix) = self.skill_dir_prefix(slug) {
+        if !self.repo.is_empty() && !self.skill_path_pattern.is_empty()
+            && let Some(dir_prefix) = self.skill_dir_prefix(slug) {
                 download_skill_tree_from_github(
                     &self.client,
                     self.api_base_url(),
@@ -259,15 +259,14 @@ impl GitHubRegistry {
                     summary: meta.summary,
                 });
             }
-        }
 
         // Legacy fallback: download only SKILL.md.
         let url = self.build_skill_url(slug);
         let body = self.do_get(&url).await?;
 
-        std::fs::create_dir_all(target_dir).map_err(|e| NemesisError::Io(e))?;
+        std::fs::create_dir_all(target_dir).map_err(NemesisError::Io)?;
         let skill_path = std::path::Path::new(target_dir).join("SKILL.md");
-        std::fs::write(&skill_path, &body).map_err(|e| NemesisError::Io(e))?;
+        std::fs::write(&skill_path, &body).map_err(NemesisError::Io)?;
 
         Ok(InstallResult {
             version: install_version,
@@ -339,7 +338,7 @@ impl GitHubRegistry {
 
         let body = self.do_get(&url).await?;
         let skills: Vec<GithubSkill> =
-            serde_json::from_slice(&body).map_err(|e| NemesisError::Serialization(e))?;
+            serde_json::from_slice(&body).map_err(NemesisError::Serialization)?;
 
         let mut results = Vec::new();
         for skill in &skills {
@@ -561,11 +560,7 @@ impl GitHubRegistry {
         };
 
         // Remove trailing filename (e.g., "/SKILL.md").
-        if let Some(last_slash) = path.rfind('/') {
-            Some(path[..last_slash].to_string())
-        } else {
-            None
-        }
+        path.rfind('/').map(|last_slash| path[..last_slash].to_string())
     }
 
     /// Build the download URL for a skill.

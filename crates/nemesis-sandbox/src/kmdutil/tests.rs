@@ -115,10 +115,10 @@ fn run_logs_success_and_tolerant_failure_under_subscriber() {
     let _log = crate::test_util::capture_logs();
     let dir = tempfile::tempdir().unwrap();
     // 成功 → tracing::debug! 参数行
-    let ok = Command::new(&fake_kmdutil(dir.path(), "s6ok", 0));
+    let ok = Command::new(fake_kmdutil(dir.path(), "s6ok", 0));
     assert!(run(ok, false).is_ok());
     // tolerant 失败 → tracing::warn! 参数行
-    let bad = Command::new(&fake_kmdutil(dir.path(), "s6bad", 3));
+    let bad = Command::new(fake_kmdutil(dir.path(), "s6bad", 3));
     assert!(run(bad, true).is_ok());
 }
 

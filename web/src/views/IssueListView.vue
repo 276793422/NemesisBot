@@ -2,6 +2,7 @@
 import { ref, onMounted } from 'vue'
 import { useWSAPI } from '../composables/useWSAPI'
 import { useToast } from '../composables/useToast'
+import { useBoardChanged } from '../composables/useBoardChanged'
 import IssueDetailModal from '../components/board/IssueDetailModal.vue'
 import {
   PRIORITY_BADGE,
@@ -79,7 +80,7 @@ const createForm = ref({
 })
 
 // --- 数据加载 ---
-async function loadIssues() {
+async function loadIssues(silent = false) {
   const data: any = {}
   if (filterStatus.value) data.status = filterStatus.value
   if (filterQuery.value.trim()) data.query = filterQuery.value.trim()
@@ -99,7 +100,8 @@ async function loadIssues() {
     issues.value = r?.issues || []
     total.value = r?.total || 0
   } catch (e: any) {
-    toast.error('加载 issue 失败: ' + e)
+    if (silent) console.warn('[IssueList] silent refresh failed:', e)
+    else toast.error('加载 issue 失败: ' + e)
   }
 }
 
@@ -122,7 +124,55 @@ async function loadProjects() {
 }
 
 async function refresh() {
-  await Promise.all([loadIssues(), loadStats(), loadProjects(), loadWorkerNodes()])
+  // loading 必须在 finally 置回 false（对齐 BoardKanban/ProjectPanel 惯例）。
+  // 曾因漏写导致列表页永久停在 spinner 分支（v-if="loading"），创建成功后
+  // 表格也永不渲染——「添加成功但 dashboard 不显示」的根因（2026-08-31）。
+  loading.value = true
+  try {
+    await Promise.all([loadIssues(), loadStats(), loadProjects(), loadWorkerNodes()])
+  } finally {
+    loading.value = false
+  }
+}
+
+// board-changed 推送（W2.5）：不闪 loading 的静默换新（refresh 保持零参
+// 给 @click/@changed 用；本函数只给推送用）。stats/项目/节点加载器本就
+// 静默吞错，仅 issue 列表需要显式 silent 分支。
+function silentRefresh() {
+  void Promise.all([loadIssues(true), loadStats(), loadProjects(), loadWorkerNodes()])
+}
+useBoardChanged(silentRefresh)
+
+// --- 一键派发（W2.5：指派 ≠ 派发，列表行内直达）---
+// 与 IssueDetailModal.dispatchIssue 同语义（显式 target = worker 指派）；
+// 后端 dispatch_issue_core 仍是单一派发入口（状态/重复派发闸在那边）。
+const DISPATCHABLE_STATUSES = ['backlog', 'todo', 'in_progress', 'in_review']
+
+function canQuickDispatch(issue: IssueRow): boolean {
+  return (
+    issue.assignee === 'worker' &&
+    !!issue.assignee_id &&
+    DISPATCHABLE_STATUSES.includes(issue.status)
+  )
+}
+
+const dispatchingId = ref<number | null>(null)
+
+async function quickDispatch(issue: IssueRow) {
+  if (dispatchingId.value !== null) return // 串行：一次只发一单
+  dispatchingId.value = issue.id
+  try {
+    const r = await request('board', 'issue.dispatch', {
+      id: issue.id,
+      target: issue.assignee_id,
+    })
+    toast.success(`已派发 ${issue.number} → ${issue.assignee_id}（task ${(r?.task_id || '').slice(0, 8)}…），等 worker 回报后自动写回`)
+    await refresh()
+  } catch (e: any) {
+    toast.error(`派发 ${issue.number} 失败: ` + e)
+  } finally {
+    dispatchingId.value = null
+  }
 }
 
 // --- 创建 ---
@@ -166,6 +216,11 @@ async function submitCreate() {
     }
     const r = await request('board', 'issue.create', payload)
     toast.success(`已创建 ${r?.issue?.number || ''}`)
+    // 指派 ≠ 派发（W2.5）：指派给 worker 只是元数据，任务要到 worker 手里
+    // 还需一步派发——创建成功即引导，别让单子静默躺在 backlog。
+    if (createForm.value.assigneeType === 'worker') {
+      toast.info(`已指派给 ${createForm.value.assigneeId.trim()}：点列表行的「派发」下发任务`)
+    }
     showCreate.value = false
     await refresh()
   } catch (e: any) {
@@ -189,22 +244,22 @@ onMounted(refresh)
 
     <!-- 过滤条 -->
     <div class="filter-bar">
-      <select class="form-select" v-model="filterStatus" style="max-width: 160px;" @change="loadIssues">
+      <select class="form-select" v-model="filterStatus" style="max-width: 160px;" @change="loadIssues()">
         <option value="">全部状态</option>
         <option v-for="s in STATUSES" :key="s.key" :value="s.key">{{ s.label }}</option>
       </select>
-      <select class="form-select" v-model="filterProject" style="max-width: 180px;" @change="loadIssues">
+      <select class="form-select" v-model="filterProject" style="max-width: 180px;" @change="loadIssues()">
         <option value="">全部项目</option>
         <option v-for="p in projects" :key="p.id" :value="p.id">{{ p.name }}</option>
       </select>
-      <select class="form-select" v-model.number="filterPriority" style="max-width: 140px;" @change="loadIssues">
+      <select class="form-select" v-model.number="filterPriority" style="max-width: 140px;" @change="loadIssues()">
         <option :value="''">全部优先级</option>
         <option :value="0">P0 低</option>
         <option :value="1">P1 中</option>
         <option :value="2">P2 高</option>
         <option :value="3">P3 紧急</option>
       </select>
-      <select class="form-select" v-model="filterAssignee" style="max-width: 180px;" @change="loadIssues">
+      <select class="form-select" v-model="filterAssignee" style="max-width: 180px;" @change="loadIssues()">
         <option value="">全部指派</option>
         <option value="manager_self">manager（本机）</option>
         <option v-for="n in workerNodes" :key="n.id" :value="n.id">{{ n.name }}</option>
@@ -214,9 +269,9 @@ onMounted(refresh)
         v-model="filterQuery"
         placeholder="搜索编号/标题…"
         style="max-width: 240px;"
-        @keyup.enter="loadIssues"
+        @keyup.enter="loadIssues()"
       />
-      <button class="btn btn-sm" @click="loadIssues">搜索</button>
+      <button class="btn btn-sm" @click="loadIssues()">搜索</button>
       <button class="btn btn-sm" @click="refresh" title="刷新">↻</button>
       <button class="btn btn-sm btn-primary" style="margin-left: auto;" @click="openCreate">+ 新建 Issue</button>
       <span class="muted">共 {{ total }} 条</span>
@@ -236,7 +291,7 @@ onMounted(refresh)
         <thead>
           <tr>
             <th>编号</th><th>标题</th><th>状态</th><th>优先级</th>
-            <th>指派</th><th>项目</th><th>更新时间</th>
+            <th>指派</th><th>项目</th><th>更新时间</th><th>操作</th>
           </tr>
         </thead>
         <tbody>
@@ -252,13 +307,26 @@ onMounted(refresh)
               {{ projects.find((p) => p.id === issue.project_id)?.name || '—' }}
             </td>
             <td style="font-size: var(--text-sm); color: var(--text-muted);">{{ fmtTime(issue.updated_at) }}</td>
+            <td>
+              <button
+                v-if="canQuickDispatch(issue)"
+                class="btn btn-sm btn-primary"
+                :disabled="dispatchingId !== null"
+                title="把任务下发给已指派的 worker（即 issue.dispatch）"
+                @click.stop="quickDispatch(issue)"
+              >
+                {{ dispatchingId === issue.id ? '派发中…' : '派发' }}
+              </button>
+              <span v-else class="muted">—</span>
+            </td>
           </tr>
         </tbody>
       </table>
     </div>
 
-    <!-- 详情弹窗（共享组件） -->
+    <!-- 详情弹窗（共享组件；v-if 门控：issueId 置空必须收起弹层） -->
     <IssueDetailModal
+      v-if="detailIssueId !== null"
       :issue-id="detailIssueId"
       @close="detailIssueId = null"
       @changed="refresh"

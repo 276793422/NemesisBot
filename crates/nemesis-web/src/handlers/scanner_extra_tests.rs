@@ -1195,15 +1195,15 @@ async fn test_status_sorts_engines_alphabetically() {
     let mut cfg = nemesis_config::ScannerFullConfig::default();
     cfg.engines.insert(
         "zeta".to_string(),
-        serde_json::to_value(&nemesis_config::ClamAVEngineConfig::default()).unwrap(),
+        serde_json::to_value(nemesis_config::ClamAVEngineConfig::default()).unwrap(),
     );
     cfg.engines.insert(
         "alpha".to_string(),
-        serde_json::to_value(&nemesis_config::ClamAVEngineConfig::default()).unwrap(),
+        serde_json::to_value(nemesis_config::ClamAVEngineConfig::default()).unwrap(),
     );
     cfg.engines.insert(
         "clamav".to_string(),
-        serde_json::to_value(&nemesis_config::ClamAVEngineConfig::default()).unwrap(),
+        serde_json::to_value(nemesis_config::ClamAVEngineConfig::default()).unwrap(),
     );
     write_scanner_config(dir.path(), &cfg);
     let ctx = make_ctx(&dir);

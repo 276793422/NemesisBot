@@ -34,8 +34,10 @@ pub struct CredentialMatch {
 
 /// Mask function configuration.
 #[derive(Debug, Clone, Copy)]
+#[derive(Default)]
 pub enum MaskMode {
     /// Keep first 4 and last 4 chars
+    #[default]
     KeepPrefix,
     /// Replace with fixed [REDACTED]
     Fixed,
@@ -43,11 +45,6 @@ pub enum MaskMode {
     KeyValue,
 }
 
-impl Default for MaskMode {
-    fn default() -> Self {
-        Self::KeepPrefix
-    }
-}
 
 /// Credential scanner with configurable masking.
 pub struct Scanner {

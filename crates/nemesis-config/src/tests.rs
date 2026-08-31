@@ -1595,7 +1595,8 @@ fn test_deserialize_flexible_string_vec_with_bool() {
 fn test_config_default_values() {
     let config = default_config();
     assert!(config.agents.defaults.restrict_to_workspace);
-    assert!(!config.channels.web.enabled || config.channels.web.enabled); // depends on default
+    // 字段存在可读即可（默认值不进断言；旧版 `!x || x` 恒真式被 clippy deny）
+    let _ = config.channels.web.enabled;
     assert!(config.gateway.port > 0);
 }
 
@@ -2867,4 +2868,27 @@ fn test_web_channel_config_rejects_all_non_port_json_types() {
         let r: std::result::Result<WebChannelConfig, _> = serde_json::from_value(bad);
         assert!(r.is_err(), "non-port JSON value must be rejected");
     }
+}
+
+#[test]
+fn test_board_flag_config_auto_dispatch_default_off() {
+    // auto_dispatch（W2.5 接口预留）默认必须为 false：用户拍板「现阶段不做
+    // 自动派发」——缺段 / 空段 / 段内缺字段都不得意外打开。
+    let empty: Config = serde_json::from_str("{}").unwrap();
+    assert!(!empty.board.unwrap_or_default().auto_dispatch);
+    let partial: BoardFlagConfig = serde_json::from_value(serde_json::json!({
+        "dispatch_timeout_secs": 60
+    }))
+    .unwrap();
+    assert!(!partial.auto_dispatch);
+}
+
+#[test]
+fn test_board_flag_config_auto_dispatch_roundtrip() {
+    // 显式置 true → 反序列化采信；序列化回 JSON 再读回不丢。
+    let cfg: BoardFlagConfig =
+        serde_json::from_value(serde_json::json!({ "auto_dispatch": true })).unwrap();
+    assert!(cfg.auto_dispatch);
+    let re: BoardFlagConfig = serde_json::from_str(&serde_json::to_string(&cfg).unwrap()).unwrap();
+    assert!(re.auto_dispatch);
 }

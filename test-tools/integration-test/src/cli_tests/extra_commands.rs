@@ -19,7 +19,7 @@ pub async fn test_cli_memory_status(ws: &TestWorkspace, bin: &Path) -> Vec<TestR
     let out = ws.run_cli(bin, &["memory", "status"]).await;
     results.push(pass(
         &format!("{}/status_exit", suite),
-        &format!("exit={}", out.exit_code),
+        format!("exit={}", out.exit_code),
     ));
 
     // memory --help lists subcommands
@@ -29,7 +29,7 @@ pub async fn test_cli_memory_status(ws: &TestWorkspace, bin: &Path) -> Vec<TestR
     } else {
         results.push(fail(
             &format!("{}/help", suite),
-            &format!("exit={}", help.exit_code),
+            format!("exit={}", help.exit_code),
         ));
     }
 
@@ -37,12 +37,12 @@ pub async fn test_cli_memory_status(ws: &TestWorkspace, bin: &Path) -> Vec<TestR
         if help.stdout_contains(sub) {
             results.push(pass(
                 &format!("{}/help_{}", suite, sub),
-                &format!("{} listed", sub),
+                format!("{} listed", sub),
             ));
         } else {
             results.push(fail(
                 &format!("{}/help_{}", suite, sub),
-                &format!("{} missing from help", sub),
+                format!("{} missing from help", sub),
             ));
         }
     }
@@ -62,26 +62,26 @@ pub async fn test_cli_memory_disable_enable_cycle(
     let disable = ws.run_cli(bin, &["memory", "disable"]).await;
     results.push(pass(
         &format!("{}/disable_exit", suite),
-        &format!("exit={}", disable.exit_code),
+        format!("exit={}", disable.exit_code),
     ));
 
     let status_after_disable = ws.run_cli(bin, &["memory", "status"]).await;
     results.push(pass(
         &format!("{}/status_after_disable", suite),
-        &format!("exit={}", status_after_disable.exit_code),
+        format!("exit={}", status_after_disable.exit_code),
     ));
 
     // re-enable
     let enable = ws.run_cli(bin, &["memory", "enable"]).await;
     results.push(pass(
         &format!("{}/enable_exit", suite),
-        &format!("exit={}", enable.exit_code),
+        format!("exit={}", enable.exit_code),
     ));
 
     let status_after_enable = ws.run_cli(bin, &["memory", "status"]).await;
     results.push(pass(
         &format!("{}/status_after_enable", suite),
-        &format!("exit={}", status_after_enable.exit_code),
+        format!("exit={}", status_after_enable.exit_code),
     ));
 
     results
@@ -102,7 +102,7 @@ pub async fn test_cli_persona_help(ws: &TestWorkspace, bin: &Path) -> Vec<TestRe
     } else {
         results.push(fail(
             &format!("{}/help", suite),
-            &format!("exit={}", help.exit_code),
+            format!("exit={}", help.exit_code),
         ));
     }
 
@@ -113,12 +113,12 @@ pub async fn test_cli_persona_help(ws: &TestWorkspace, bin: &Path) -> Vec<TestRe
         if help.stdout_contains(sub) {
             results.push(pass(
                 &format!("{}/help_{}", suite, sub),
-                &format!("{} listed", sub),
+                format!("{} listed", sub),
             ));
         } else {
             results.push(fail(
                 &format!("{}/help_{}", suite, sub),
-                &format!("{} missing from help", sub),
+                format!("{} missing from help", sub),
             ));
         }
     }
@@ -135,14 +135,14 @@ pub async fn test_cli_persona_list_current(ws: &TestWorkspace, bin: &Path) -> Ve
     let list = ws.run_cli(bin, &["persona", "list"]).await;
     results.push(pass(
         &format!("{}/list_exit", suite),
-        &format!("exit={}", list.exit_code),
+        format!("exit={}", list.exit_code),
     ));
 
     // Current should also succeed (may report "default" or empty)
     let current = ws.run_cli(bin, &["persona", "current"]).await;
     results.push(pass(
         &format!("{}/current_exit", suite),
-        &format!("exit={}", current.exit_code),
+        format!("exit={}", current.exit_code),
     ));
 
     // Activate a nonexistent persona should fail gracefully (non-zero exit, no panic)
@@ -154,7 +154,7 @@ pub async fn test_cli_persona_list_current(ws: &TestWorkspace, bin: &Path) -> Ve
         .await;
     results.push(pass(
         &format!("{}/activate_missing_exit", suite),
-        &format!("exit={}", activate_missing.exit_code),
+        format!("exit={}", activate_missing.exit_code),
     ));
 
     // Remove a nonexistent persona should also fail gracefully
@@ -166,14 +166,14 @@ pub async fn test_cli_persona_list_current(ws: &TestWorkspace, bin: &Path) -> Ve
         .await;
     results.push(pass(
         &format!("{}/remove_missing_exit", suite),
-        &format!("exit={}", remove_missing.exit_code),
+        format!("exit={}", remove_missing.exit_code),
     ));
 
     // Restore should always succeed (resets to default)
     let restore = ws.run_cli(bin, &["persona", "restore"]).await;
     results.push(pass(
         &format!("{}/restore_exit", suite),
-        &format!("exit={}", restore.exit_code),
+        format!("exit={}", restore.exit_code),
     ));
 
     results
@@ -194,7 +194,7 @@ pub async fn test_cli_dashboard_help(ws: &TestWorkspace, bin: &Path) -> Vec<Test
     } else {
         results.push(fail(
             &format!("{}/help", suite),
-            &format!("exit={}", help.exit_code),
+            format!("exit={}", help.exit_code),
         ));
     }
 
@@ -216,7 +216,7 @@ pub async fn test_cli_voice_help(ws: &TestWorkspace, bin: &Path) -> Vec<TestResu
     } else {
         results.push(fail(
             &format!("{}/help", suite),
-            &format!("exit={}", help.exit_code),
+            format!("exit={}", help.exit_code),
         ));
     }
 

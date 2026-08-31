@@ -126,10 +126,8 @@ pub fn sign_content(
 /// 无链（单根自签）回退到 `pubkey ∈ root_pubs`。
 pub fn verify_bytes(bytes: &[u8], root_pubs: &[VerifyingKey], now: u64) -> VerifyOutcome {
     let codec = codec::detect_codec(bytes);
-    let l = match codec.compute_l(bytes) {
-        Ok(opt) => opt,
-        Err(_) => None, // 解析失败按 Raw 处理（从 content_len）
-    };
+    // 解析失败按 Raw 处理（从 content_len）
+    let l = codec.compute_l(bytes).unwrap_or_default();
     let overlay_start = l.unwrap_or(0);
     let excludes = codec.overlay_excludes(bytes);
 
@@ -241,11 +239,10 @@ pub fn verify_bytes(bytes: &[u8], root_pubs: &[VerifyingKey], now: u64) -> Verif
     }
 
     // 签名有效期 key_not_after（D4）
-    if let Some(kna) = body.key_not_after {
-        if now > kna {
+    if let Some(kna) = body.key_not_after
+        && now > kna {
             return VerifyOutcome::Expired(format!("key_not_after {} exceeded", kna));
         }
-    }
 
     // 吊销检查（P2a：联网 CRL，数据模式；Unknown 按 soft-fail/strict 处置）
     if let Some(root) = root_pubs.first() {

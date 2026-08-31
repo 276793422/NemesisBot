@@ -2,6 +2,8 @@
 
 use crate::common;
 use anyhow::Result;
+use chrono::TimeZone;
+use std::path::Path;
 
 #[derive(clap::Subcommand)]
 pub enum ModelAction {
@@ -80,6 +82,55 @@ pub enum ModelAction {
     /// `<home>/workspace/data/models_catalog.json`. `model add` auto-fills
     /// from the cache.
     CatalogUpdate,
+    /// 价目表管理（A2 在线更新：LiteLLM 主源 + 自定义条目 + 离线导入）。
+    /// 查表优先级：自定义 > 下载 > 内置（内置 36 模型表离线兜底）。
+    Prices {
+        #[command(subcommand)]
+        action: PricesAction,
+    },
+}
+
+#[derive(clap::Subcommand)]
+pub enum PricesAction {
+    /// 显示分层价目表概况（各层条数 + 下载元数据 + 自定义条目明细）。
+    List,
+    /// 在线拉取最新价目表并整体替换下载层（LiteLLM 主源，ETag 增量；
+    /// 失败保留旧表 + 退码非 0）。
+    Update {
+        /// 镜像地址覆盖（缺省 = LiteLLM 官方 raw 地址）。
+        #[arg(long)]
+        url: Option<String>,
+    },
+    /// 从本地文件导入 LiteLLM 原始 JSON（离线环境兜底：外网机器下载后拷入）。
+    Import {
+        /// LiteLLM model_prices_and_context_window.json 文件路径。
+        file: String,
+    },
+    /// 新增/更新自定义价目条目（最高查表优先级，按模型名幂等）。
+    Add {
+        /// 模型名（与 `model add` 一致，如 zhipu/glm-4.7；裸名亦可）。
+        model: String,
+        /// 输入价（USD / 百万 token）。
+        #[arg(long)]
+        input: f64,
+        /// 输出价（USD / 百万 token）。
+        #[arg(long)]
+        output: f64,
+        /// 缓存读价（USD / 百万 token）。
+        #[arg(long, default_value_t = 0.0)]
+        cache_read: f64,
+        /// 缓存写价（USD / 百万 token）。
+        #[arg(long, default_value_t = 0.0)]
+        cache_creation: f64,
+        /// 显示名（可选，缺省用模型名）。
+        #[arg(long)]
+        display: Option<String>,
+    },
+    /// 删除自定义条目（只影响自定义层；下载/内置层不动）。
+    Remove {
+        /// 自定义条目模型名（`prices add` 时的 model）。
+        model: String,
+    },
 }
 
 pub async fn run(action: ModelAction, local: bool) -> Result<()> {
@@ -152,8 +203,8 @@ pub async fn run(action: ModelAction, local: bool) -> Result<()> {
                     .parent()
                     .map(|p| p.to_path_buf())
                     .unwrap_or_default();
-                if let Ok(Some(cat)) = catalog::load_cache(&cfg_dir) {
-                    if let Some(hit) = catalog::lookup(&cat, &model) {
+                if let Ok(Some(cat)) = catalog::load_cache(&cfg_dir)
+                    && let Some(hit) = catalog::lookup(&cat, &model) {
                         entry["context_window"] =
                             serde_json::Value::Number(hit.context_window.into());
                         if let Some(mot) = hit.max_output_tokens {
@@ -167,7 +218,6 @@ pub async fn run(action: ModelAction, local: bool) -> Result<()> {
                                 .unwrap_or_else(|| "(not declared)".to_string())
                         );
                     }
-                }
             }
 
             // Add to model list
@@ -345,16 +395,14 @@ pub async fn run(action: ModelAction, local: bool) -> Result<()> {
                             if let Some(b) = base {
                                 println!("    API Base: {}", b);
                             }
-                            if let Some(p) = proxy {
-                                if !p.is_empty() {
+                            if let Some(p) = proxy
+                                && !p.is_empty() {
                                     println!("    Proxy: {}", p);
                                 }
-                            }
-                            if let Some(a) = auth_method {
-                                if !a.is_empty() {
+                            if let Some(a) = auth_method
+                                && !a.is_empty() {
                                     println!("    Auth Method: {}", a);
                                 }
-                            }
                         }
                     }
                 }
@@ -424,9 +472,9 @@ pub async fn run(action: ModelAction, local: bool) -> Result<()> {
             }
 
             let mut found = false;
-            if let Some(obj) = cfg.as_object_mut() {
-                if let Some(models) = obj.get_mut("model_list") {
-                    if let Some(arr) = models.as_array_mut() {
+            if let Some(obj) = cfg.as_object_mut()
+                && let Some(models) = obj.get_mut("model_list")
+                    && let Some(arr) = models.as_array_mut() {
                         arr.retain(|m| {
                             let model = m.get("model").and_then(|v| v.as_str()).unwrap_or("");
                             if model == name || model.ends_with(&format!("/{}", name)) {
@@ -437,8 +485,6 @@ pub async fn run(action: ModelAction, local: bool) -> Result<()> {
                             }
                         });
                     }
-                }
-            }
 
             if found {
                 std::fs::write(
@@ -652,6 +698,131 @@ pub async fn run(action: ModelAction, local: bool) -> Result<()> {
                 }
             }
         }
+        ModelAction::Prices { action } => {
+            run_prices(action, &home).await?;
+        }
+    }
+    Ok(())
+}
+
+/// A2（2026-08-31）：`model prices` 子命令实现。CLI 直开 DataStore（与
+/// gateway 同一路径真相源 `workspace_data_dir`），计价/价目管理复用
+/// nemesis-data + nemesis-web 的同步实现，不重复造轮子。
+async fn run_prices(action: PricesAction, home: &Path) -> Result<()> {
+    let db_path = nemesis_path::workspace_data_dir(home).join("nemesisbot_data.db");
+    let ds = nemesis_data::DataStore::open(&db_path)
+        .map_err(|e| anyhow::anyhow!("DataStore 打开失败（{}）：{e}", db_path.display()))?;
+    let pricing = ds.pricing();
+
+    match action {
+        PricesAction::List => {
+            let custom = pricing.list_custom();
+            let downloaded = pricing.list_downloaded();
+            let meta = pricing.meta();
+            println!("价目表分层概况（查表优先级：自定义 > 下载 > 内置）：");
+            println!("  自定义层: {} 条（最高优先）", custom.len());
+            match &downloaded {
+                Some(dl) => println!(
+                    "  下载层:   {} 条（fetched_at={}，source={}，etag={}）",
+                    dl.len(),
+                    meta.fetched_at
+                        .map(|t| chrono::Local
+                            .timestamp_opt(t, 0)
+                            .single()
+                            .map(|d| d.format("%Y-%m-%d %H:%M").to_string())
+                            .unwrap_or_else(|| t.to_string()))
+                        .unwrap_or_else(|| "从未".to_string()),
+                    meta.source_url.as_deref().unwrap_or("-"),
+                    meta.etag.as_deref().unwrap_or("-"),
+                ),
+                None => println!("  下载层:   未下载（`model prices update` 在线拉取，或 `import` 离线导入）"),
+            }
+            println!("  内置层:   {} 条（离线兜底）", nemesis_data::all_pricing().len());
+            if !custom.is_empty() {
+                println!("自定义条目：");
+                for p in &custom {
+                    println!(
+                        "  {:<32} in={:.4} out={:.4} cache_read={:.4} cache_creation={:.4} $/Mtok",
+                        p.model_id,
+                        p.input_cost_per_million,
+                        p.output_cost_per_million,
+                        p.cache_read_cost_per_million,
+                        p.cache_creation_cost_per_million
+                    );
+                }
+            }
+        }
+        PricesAction::Update { url } => {
+            let shown = url.clone().unwrap_or_else(|| nemesis_data::LITELLM_PRICE_URL.to_string());
+            println!("正在拉取价目表（{shown}）...");
+            match nemesis_web::pricing_sync::fetch_and_replace(pricing, url.as_deref()).await {
+                Ok(r) if r.updated => {
+                    println!(
+                        "价目表已更新：{} 个模型 → {}",
+                        r.entry_count,
+                        db_path.parent().unwrap_or(Path::new(".")).display()
+                    );
+                }
+                Ok(r) => println!("表已是最新（304 NotModified，{} 条，etag={}）", r.entry_count, r.etag.as_deref().unwrap_or("-")),
+                Err(e) => anyhow::bail!("{e}"),
+            }
+        }
+        PricesAction::Import { file } => {
+            let raw = std::fs::read_to_string(&file)
+                .map_err(|e| anyhow::anyhow!("读取 {} 失败：{e}", file))?;
+            let entries = nemesis_data::parse_litellm_json(&raw)
+                .map_err(|e| anyhow::anyhow!("解析失败：{e}"))?;
+            let n = entries.len();
+            pricing
+                .replace_downloaded(
+                    entries,
+                    nemesis_data::PricingMeta {
+                        etag: None,
+                        fetched_at: Some(chrono::Local::now().timestamp()),
+                        source_url: Some(format!("manual-import:{}", file)),
+                        entry_count: n,
+                    },
+                )
+                .map_err(|e| anyhow::anyhow!("落盘失败：{e}"))?;
+            println!("导入完成：{n} 个模型 → 下载层（内置层继续兜底）");
+        }
+        PricesAction::Add {
+            model,
+            input,
+            output,
+            cache_read,
+            cache_creation,
+            display,
+        } => {
+            let name = model.trim().to_string();
+            if name.is_empty() {
+                anyhow::bail!("模型名不能为空");
+            }
+            pricing
+                .upsert_custom(nemesis_data::ModelPricing {
+                    model_id: name.clone(),
+                    display_name: display.unwrap_or_else(|| name.clone()),
+                    input_cost_per_million: input,
+                    output_cost_per_million: output,
+                    cache_read_cost_per_million: cache_read,
+                    cache_creation_cost_per_million: cache_creation,
+                    max_input_tokens: None,
+                    max_output_tokens: None,
+                    aliases: Vec::new(),
+                })
+                .map_err(|e| anyhow::anyhow!("写入自定义条目失败：{e}"))?;
+            println!("自定义条目已保存：{name}（in={input} out={output} $/Mtok，最高查表优先级）");
+        }
+        PricesAction::Remove { model } => {
+            let removed = pricing
+                .remove_custom(&model)
+                .map_err(|e| anyhow::anyhow!("删除失败：{e}"))?;
+            if removed {
+                println!("已删除自定义条目：{model}");
+            } else {
+                anyhow::bail!("自定义条目不存在：{model}（`model prices list` 查看）");
+            }
+        }
     }
     Ok(())
 }
@@ -722,7 +893,7 @@ async fn run_probe(
     };
     let provider = nemesis_providers::factory::create_provider(&factory_cfg)
         .map_err(|e| anyhow::anyhow!("Failed to create provider: {}", e))?;
-    let provider_arc: Arc<dyn nemesis_providers::router::LLMProvider> = Arc::from(provider);
+    let provider_arc: Arc<dyn nemesis_providers::router::LLMProvider> = provider;
     let adapter = nemesis_web::ProviderAdapter::new(provider_arc, model_name.clone());
 
     let report = nemesis_agent::probe::run(&adapter, &model_name)

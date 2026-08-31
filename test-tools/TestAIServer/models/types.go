@@ -111,12 +111,16 @@ type ModelsListResponse struct {
 // ModelRegistry 模型注册表
 type ModelRegistry struct {
 	models map[string]Model
+	// aliases 别名表（W1.5）：TESTAI_ALIASES 配置的 别名→testai 真名 映射，
+	// 只在 Get 未命中 models 时参与解析（一层，别名指向别名不支持）。
+	aliases map[string]string
 }
 
 // NewModelRegistry 创建新的模型注册表
 func NewModelRegistry() *ModelRegistry {
 	return &ModelRegistry{
-		models: make(map[string]Model),
+		models:  make(map[string]Model),
+		aliases: make(map[string]string),
 	}
 }
 
@@ -125,10 +129,17 @@ func (r *ModelRegistry) Register(model Model) {
 	r.models[model.Name()] = model
 }
 
-// Get 获取模型
+// Get 获取模型。注册名未命中时回退查别名表（TESTAI_ALIASES，见 aliases.go）。
 func (r *ModelRegistry) Get(name string) (Model, bool) {
 	model, exists := r.models[name]
-	return model, exists
+	if exists {
+		return model, true
+	}
+	if target, ok := r.aliases[name]; ok {
+		model, exists := r.models[target]
+		return model, exists
+	}
+	return nil, false
 }
 
 // List 列出所有模型

@@ -159,14 +159,12 @@ fn sync_mcp_master_switch(config_json_path: &std::path::Path, enabled: bool) -> 
 
 fn cmd_list(mcp_cfg_path: &std::path::Path) -> Result<()> {
     // Check if MCP is explicitly disabled (even if config file doesn't exist yet)
-    if let Ok(data) = std::fs::read_to_string(mcp_cfg_path) {
-        if let Ok(cfg) = serde_json::from_str::<serde_json::Value>(&data) {
-            if cfg.get("enabled").and_then(|v| v.as_bool()) == Some(false) {
+    if let Ok(data) = std::fs::read_to_string(mcp_cfg_path)
+        && let Ok(cfg) = serde_json::from_str::<serde_json::Value>(&data)
+            && cfg.get("enabled").and_then(|v| v.as_bool()) == Some(false) {
                 println!("MCP is disabled in config.");
                 return Ok(());
             }
-        }
-    }
 
     if mcp_cfg_path.exists() {
         let data = std::fs::read_to_string(mcp_cfg_path)?;
@@ -481,16 +479,14 @@ async fn cmd_resources(mcp_cfg_path: &std::path::Path, name: &str) -> Result<()>
         for (i, res) in resources.iter().enumerate() {
             println!("{}. {}", i + 1, res.name);
             println!("   URI: {}", res.uri);
-            if let Some(desc) = res.description.as_deref() {
-                if !desc.is_empty() {
+            if let Some(desc) = res.description.as_deref()
+                && !desc.is_empty() {
                     println!("   Description: {}", desc);
                 }
-            }
-            if let Some(mime) = res.mime_type.as_deref() {
-                if !mime.is_empty() {
+            if let Some(mime) = res.mime_type.as_deref()
+                && !mime.is_empty() {
                     println!("   MIME Type: {}", mime);
                 }
-            }
         }
     }
 
@@ -526,11 +522,10 @@ async fn cmd_prompts(mcp_cfg_path: &std::path::Path, name: &str) -> Result<()> {
         println!("-------------------");
         for (i, p) in prompts.iter().enumerate() {
             println!("{}. {}", i + 1, p.name);
-            if let Some(desc) = p.description.as_deref() {
-                if !desc.is_empty() {
+            if let Some(desc) = p.description.as_deref()
+                && !desc.is_empty() {
                     println!("   Description: {}", desc);
                 }
-            }
             if !p.arguments.is_empty() {
                 println!("   Arguments:");
                 for arg in &p.arguments {
@@ -655,11 +650,10 @@ async fn cmd_discover(
                 println!("  -------------------");
                 for (i, res) in result.resources.iter().enumerate() {
                     println!("  {}. {} ({})", i + 1, res.name, res.uri);
-                    if let Some(desc) = res.description.as_deref() {
-                        if !desc.is_empty() {
+                    if let Some(desc) = res.description.as_deref()
+                        && !desc.is_empty() {
                             println!("     {}", desc);
                         }
-                    }
                 }
             }
 
@@ -671,11 +665,10 @@ async fn cmd_discover(
                 println!("  -------------------");
                 for (i, p) in result.prompts.iter().enumerate() {
                     println!("  {}. {}", i + 1, p.name);
-                    if let Some(desc) = p.description.as_deref() {
-                        if !desc.is_empty() {
+                    if let Some(desc) = p.description.as_deref()
+                        && !desc.is_empty() {
                             println!("     {}", desc);
                         }
-                    }
                 }
             }
 
@@ -715,29 +708,29 @@ pub fn run(action: McpAction, local: bool) -> Result<()> {
         )?,
         McpAction::Remove { name } => cmd_remove(&mcp_cfg_path, &name)?,
         McpAction::Test { name } => {
-            let result = tokio::task::block_in_place(|| {
+            tokio::task::block_in_place(|| {
                 tokio::runtime::Handle::current().block_on(cmd_test(&mcp_cfg_path, &name))
             })?;
-            result
+            
         }
         McpAction::Inspect { name } => cmd_inspect(&mcp_cfg_path, &name)?,
         McpAction::Tools { name } => {
-            let result = tokio::task::block_in_place(|| {
+            tokio::task::block_in_place(|| {
                 tokio::runtime::Handle::current().block_on(cmd_tools(&mcp_cfg_path, &name))
             })?;
-            result
+            
         }
         McpAction::Resources { name } => {
-            let result = tokio::task::block_in_place(|| {
+            tokio::task::block_in_place(|| {
                 tokio::runtime::Handle::current().block_on(cmd_resources(&mcp_cfg_path, &name))
             })?;
-            result
+            
         }
         McpAction::Prompts { name } => {
-            let result = tokio::task::block_in_place(|| {
+            tokio::task::block_in_place(|| {
                 tokio::runtime::Handle::current().block_on(cmd_prompts(&mcp_cfg_path, &name))
             })?;
-            result
+            
         }
         McpAction::Discover {
             command,
@@ -745,7 +738,7 @@ pub fn run(action: McpAction, local: bool) -> Result<()> {
             args,
             timeout,
         } => {
-            let result = tokio::task::block_in_place(|| {
+            tokio::task::block_in_place(|| {
                 tokio::runtime::Handle::current().block_on(cmd_discover(
                     command.as_deref(),
                     url.as_deref(),
@@ -753,7 +746,7 @@ pub fn run(action: McpAction, local: bool) -> Result<()> {
                     timeout,
                 ))
             })?;
-            result
+            
         }
     }
     Ok(())

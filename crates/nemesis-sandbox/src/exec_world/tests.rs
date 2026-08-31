@@ -25,7 +25,7 @@ fn tmp() -> PathBuf {
 #[test]
 fn within_roots_component_prefix_semantics() {
     let root = tmp();
-    assert!(path_within_roots(&root.join("a").join("b.txt"), &[root.clone()]));
+    assert!(path_within_roots(&root.join("a").join("b.txt"), std::slice::from_ref(&root)));
     // 字符串前缀但不 component 前缀：C:\ws 不覆盖 C:\ws2\...
     let sibling = root.join("ws2");
     assert!(!path_within_roots(&sibling, &[root.join("ws")]));
@@ -36,7 +36,7 @@ fn within_roots_dotdot_escape_rejected() {
     let root = tmp();
     let escape = root.join("sub").join("..").join("..").join("outside.txt");
     // root 的父目录在 root 之外 → 拒
-    assert!(!path_within_roots(&escape, &[root.clone()]));
+    assert!(!path_within_roots(&escape, std::slice::from_ref(&root)));
     // 合法留在根内的 ..
     let inside = root.join("sub").join("..").join("inside.txt");
     assert!(path_within_roots(&inside, &[root]));
@@ -47,7 +47,7 @@ fn within_roots_nonexistent_path_lexical_fallback() {
     let root = tmp();
     let not_yet = root.join("defs").join("new_workflow.yaml");
     assert!(!not_yet.exists());
-    assert!(path_within_roots(&not_yet, &[root.clone()]));
+    assert!(path_within_roots(&not_yet, std::slice::from_ref(&root)));
     assert!(!path_within_roots(
         &root.join("..").join("elsewhere.yaml"),
         &[root]
@@ -57,7 +57,7 @@ fn within_roots_nonexistent_path_lexical_fallback() {
 #[test]
 fn within_roots_exact_root_itself() {
     let root = tmp();
-    assert!(path_within_roots(&root, &[root.clone()]));
+    assert!(path_within_roots(&root, std::slice::from_ref(&root)));
 }
 
 // ---------------------------------------------------------------------------

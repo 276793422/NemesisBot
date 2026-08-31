@@ -46,7 +46,7 @@ pub async fn test_cli_model_set_effort(ws: &TestWorkspace, bin: &Path) -> Vec<Te
     } else {
         results.push(fail(
             &format!("{}/set_low", suite),
-            &format!(
+            format!(
                 "exit={} stdout='{}' stderr='{}'",
                 out.exit_code,
                 out.stdout.trim(),
@@ -63,7 +63,7 @@ pub async fn test_cli_model_set_effort(ws: &TestWorkspace, bin: &Path) -> Vec<Te
         } else {
             results.push(fail(
                 &format!("{}/config_low", suite),
-                &format!("reasoning_effort={v}"),
+                format!("reasoning_effort={v}"),
             ));
         }
     }
@@ -77,7 +77,7 @@ pub async fn test_cli_model_set_effort(ws: &TestWorkspace, bin: &Path) -> Vec<Te
     } else {
         results.push(fail(
             &format!("{}/set_off", suite),
-            &format!("exit={} stdout='{}'", out.exit_code, out.stdout.trim()),
+            format!("exit={} stdout='{}'", out.exit_code, out.stdout.trim()),
         ));
     }
 
@@ -95,7 +95,7 @@ pub async fn test_cli_model_set_effort(ws: &TestWorkspace, bin: &Path) -> Vec<Te
     } else {
         results.push(fail(
             &format!("{}/invalid", suite),
-            &format!(
+            format!(
                 "exit={} stdout='{}' stderr='{}'",
                 out.exit_code,
                 out.stdout.trim(),
@@ -118,7 +118,7 @@ pub async fn test_cli_model_set_effort(ws: &TestWorkspace, bin: &Path) -> Vec<Te
     } else {
         fail(
             &format!("{}/unknown_model", suite),
-            &format!(
+            format!(
                 "exit={} stdout='{}' stderr='{}'",
                 out.exit_code,
                 out.stdout.trim(),
@@ -169,7 +169,7 @@ pub async fn test_cli_session_fork(ws: &TestWorkspace, bin: &Path) -> Vec<TestRe
     } else {
         results.push(fail(
             &format!("{}/list_exit", suite),
-            &format!("exit={}", out.exit_code),
+            format!("exit={}", out.exit_code),
         ));
     }
 
@@ -184,7 +184,7 @@ pub async fn test_cli_session_fork(ws: &TestWorkspace, bin: &Path) -> Vec<TestRe
     } else {
         fail(
             &format!("{}/show_missing", suite),
-            &format!(
+            format!(
                 "exit={} stdout='{}' stderr='{}'",
                 out.exit_code,
                 out.stdout.trim(),
@@ -255,7 +255,7 @@ pub async fn test_cli_session_fork(ws: &TestWorkspace, bin: &Path) -> Vec<TestRe
     } else {
         fail(
             &format!("{}/list_shows", suite),
-            &format!("stdout='{}'", out.stdout.trim()),
+            format!("stdout='{}'", out.stdout.trim()),
         )
     });
 
@@ -270,7 +270,7 @@ pub async fn test_cli_session_fork(ws: &TestWorkspace, bin: &Path) -> Vec<TestRe
         } else {
             fail(
                 &format!("{}/show_turns", suite),
-                &format!("stdout='{}'", out.stdout.trim()),
+                format!("stdout='{}'", out.stdout.trim()),
             )
         },
     );
@@ -290,7 +290,7 @@ pub async fn test_cli_session_fork(ws: &TestWorkspace, bin: &Path) -> Vec<TestRe
     } else {
         results.push(fail(
             &format!("{}/fork_exit", suite),
-            &format!(
+            format!(
                 "exit={} stdout='{}' stderr='{}'",
                 out.exit_code,
                 out.stdout.trim(),
@@ -321,7 +321,7 @@ pub async fn test_cli_session_fork(ws: &TestWorkspace, bin: &Path) -> Vec<TestRe
             } else {
                 results.push(fail(
                     &format!("{}/fork_file", suite),
-                    &format!("n={n} first={first}"),
+                    format!("n={n} first={first}"),
                 ));
             }
         }
@@ -366,7 +366,7 @@ pub async fn test_cli_session_fork(ws: &TestWorkspace, bin: &Path) -> Vec<TestRe
         } else {
             fail(
                 &format!("{}/chatlog_prefix", suite),
-                &format!("fork rows={rows:?}"),
+                format!("fork rows={rows:?}"),
             )
         });
     } else {
@@ -396,7 +396,7 @@ pub async fn test_cli_history_search(ws: &TestWorkspace, bin: &Path) -> Vec<Test
         } else {
             fail(
                 &format!("{}/reindex", suite),
-                &format!(
+                format!(
                     "exit={} stdout='{}' stderr='{}'",
                     out.exit_code,
                     out.stdout.trim(),
@@ -416,7 +416,7 @@ pub async fn test_cli_history_search(ws: &TestWorkspace, bin: &Path) -> Vec<Test
         } else {
             fail(
                 &format!("{}/no_hit", suite),
-                &format!("stdout='{}'", out.stdout.trim()),
+                format!("stdout='{}'", out.stdout.trim()),
             )
         },
     );
@@ -448,7 +448,7 @@ pub async fn test_cli_history_search(ws: &TestWorkspace, bin: &Path) -> Vec<Test
         } else {
             fail(
                 &format!("{}/hit", suite),
-                &format!("stdout='{}'", out.stdout.trim()),
+                format!("stdout='{}'", out.stdout.trim()),
             )
         },
     );
@@ -481,7 +481,7 @@ pub async fn test_cli_credentials_import(ws: &TestWorkspace, bin: &Path) -> Vec<
         } else {
             fail(
                 &format!("{}/migrate", suite),
-                &format!(
+                format!(
                     "exit={} stdout='{}' stderr='{}'",
                     out.exit_code,
                     out.stdout.trim(),
@@ -494,9 +494,9 @@ pub async fn test_cli_credentials_import(ws: &TestWorkspace, bin: &Path) -> Vec<
     // Config entry now references the alias instead of the plaintext.
     if let Some(v) = read_model_field(ws, "test/effort-model", "api_key") {
         results.push(if v.starts_with("yaml:") {
-            pass(&format!("{}/config_ref", suite), &format!("api_key={v}"))
+            pass(&format!("{}/config_ref", suite), format!("api_key={v}"))
         } else {
-            fail(&format!("{}/config_ref", suite), &format!("api_key={v}"))
+            fail(&format!("{}/config_ref", suite), format!("api_key={v}"))
         });
     }
 
@@ -513,7 +513,7 @@ pub async fn test_cli_credentials_import(ws: &TestWorkspace, bin: &Path) -> Vec<
         }),
         Err(e) => results.push(fail(
             &format!("{}/yaml_store", suite),
-            &format!("read: {e}"),
+            format!("read: {e}"),
         )),
     }
 
@@ -525,7 +525,7 @@ pub async fn test_cli_credentials_import(ws: &TestWorkspace, bin: &Path) -> Vec<
         } else {
             fail(
                 &format!("{}/idempotent", suite),
-                &format!("stdout='{}'", out.stdout.trim()),
+                format!("stdout='{}'", out.stdout.trim()),
             )
         },
     );
@@ -567,7 +567,7 @@ pub async fn test_cli_model_catalog_update(ws: &TestWorkspace, bin: &Path) -> Ve
     } else {
         fail(
             &format!("{}/contract", suite),
-            &format!(
+            format!(
                 "exit={} stdout='{}' stderr='{}'",
                 out.exit_code,
                 out.stdout.trim(),

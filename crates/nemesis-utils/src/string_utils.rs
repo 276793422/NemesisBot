@@ -83,7 +83,7 @@ pub fn is_blank(s: &str) -> bool {
 
 /// Coalesce an Option<String> with a default.
 pub fn deref_str(opt: Option<&String>, default: &str) -> String {
-    opt.map(|s| s.clone())
+    opt.cloned()
         .unwrap_or_else(|| default.to_string())
 }
 

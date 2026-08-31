@@ -97,13 +97,12 @@ fn readonly_enforced(dir: &std::path::Path, want_block: bool) -> bool {
 }
 
 fn unset_readonly(path: &std::path::Path) {
-    if path.exists() {
-        if let Ok(m) = std::fs::metadata(path) {
+    if path.exists()
+        && let Ok(m) = std::fs::metadata(path) {
             let mut p = m.permissions();
             p.set_readonly(false);
             let _ = std::fs::set_permissions(path, p);
         }
-    }
 }
 
 // ---------- MessageTool 141/149 回退臂 ----------

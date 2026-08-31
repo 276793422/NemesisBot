@@ -416,9 +416,9 @@ fn match_glob(pattern: &str, s: &str) -> bool {
 
     // Check middle parts appear in order
     let mut idx = parts[0].len();
-    for i in 1..parts.len() - 1 {
-        match s[idx..].find(parts[i]) {
-            Some(pos) => idx += pos + parts[i].len(),
+    for part in &parts[1..parts.len() - 1] {
+        match s[idx..].find(part) {
+            Some(pos) => idx += pos + part.len(),
             None => return false,
         }
     }

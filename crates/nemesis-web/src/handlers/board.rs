@@ -34,20 +34,6 @@ fn require_board(ctx: &RequestContext) -> Result<Arc<BoardStore>, String> {
         .ok_or_else(|| "board service not available".to_string())
 }
 
-/// 写操作前置校验：本节点必须是看板权威（coordinator）。
-/// worker 节点只读；写需求应经集群派发到 coordinator（W2 P2 dispatch）。
-fn require_coordinator(ctx: &RequestContext) -> Result<(), String> {
-    match ctx.state.board.as_ref() {
-        Some(svc) if svc.is_coordinator() => Ok(()),
-        Some(svc) => Err(format!(
-            "403: board 写操作需要 coordinator 节点（当前 role={}，只读；\
-             写请经集群派发到 coordinator）",
-            svc.role().as_role_str()
-        )),
-        None => Err("board service not available".to_string()),
-    }
-}
-
 /// Request author → Actor（dashboard 用户记为 admin）。
 fn ctx_actor(ctx: &RequestContext) -> Actor {
     Actor::admin(&ctx.session_id)
@@ -191,11 +177,10 @@ fn build_dispatch_prompt(issue: &nemesis_board::Issue) -> String {
     if !issue.description.trim().is_empty() {
         p.push_str(&format!("\n## 描述\n{}\n", issue.description));
     }
-    if let Some(ac) = issue.acceptance_criteria.as_deref() {
-        if !ac.trim().is_empty() {
+    if let Some(ac) = issue.acceptance_criteria.as_deref()
+        && !ac.trim().is_empty() {
             p.push_str(&format!("\n## 验收标准\n{}\n", ac));
         }
-    }
     p.push_str(
         "\n## 要求\n\
          完成后在最终回复中汇报：做了什么、改动/产物在哪、结果如何。\n\
@@ -466,6 +451,98 @@ async fn issue_cancel(
     Err("issue.cancel 需要集群支持（cluster feature 未编译）".to_string())
 }
 
+/// 自动派发判定（纯函数，可单测）：config 开关开 **且** 指派对象是 worker。
+/// 开关 = `config.json` 的 `board.auto_dispatch`（W2.5 接口预留，用户拍板
+/// 2026-08-31：现阶段不做自动派发，默认 false；置 true 即激活）。
+fn should_auto_dispatch(
+    board_cfg: Option<&nemesis_config::BoardFlagConfig>,
+    assignee: Option<AssignmentType>,
+) -> bool {
+    board_cfg.map(|b| b.auto_dispatch).unwrap_or(false) && assignee == Some(AssignmentType::Worker)
+}
+
+/// 读 live config 的 board 段（全局 ConfigStore 单例；测试/CLI 无单例 →
+/// None → 判定恒 false，与「默认关」语义一致）。
+fn live_board_config() -> Option<nemesis_config::BoardFlagConfig> {
+    nemesis_config::load_live().and_then(|c| c.board)
+}
+
+/// 指派成功后的自动派发（`issue.assign` 末尾调用；W2.5 接口预留）。走
+/// [`dispatch_issue_core`] 单一派发入口。失败**不回滚指派**：warn + ⛔ 系统
+/// 评论留痕（与派发 RPC 送达失败同语义）。返回是否实际派发（调用方据此
+/// 重取 issue 保证响应反映派发后的 in_progress 态）。
+#[cfg(feature = "cluster")]
+fn auto_dispatch_after_assign(
+    store: &Arc<BoardStore>,
+    cluster: Option<&Arc<nemesis_cluster::cluster::Cluster>>,
+    issue: &nemesis_board::Issue,
+    actor: &Actor,
+) -> bool {
+    auto_dispatch_with_config(
+        live_board_config().as_ref(),
+        store,
+        cluster,
+        issue,
+        actor,
+    )
+}
+
+/// [`auto_dispatch_after_assign`] 的可测内核：config 显式入参（测试不碰
+/// 进程级全局单例），判定 + 派发 + 失败留痕全部在此。
+#[cfg(feature = "cluster")]
+fn auto_dispatch_with_config(
+    board_cfg: Option<&nemesis_config::BoardFlagConfig>,
+    store: &Arc<BoardStore>,
+    cluster: Option<&Arc<nemesis_cluster::cluster::Cluster>>,
+    issue: &nemesis_board::Issue,
+    actor: &Actor,
+) -> bool {
+    if !should_auto_dispatch(board_cfg, issue.assignee) {
+        return false;
+    }
+    let Some(target) = issue.assignee_id.clone() else {
+        return false;
+    };
+    match dispatch_issue_core(store, cluster, issue.id, &target, actor) {
+        Ok(_) => {
+            tracing::info!(
+                "[Board] auto-dispatch: issue #{} → {target}（board.auto_dispatch）",
+                issue.number
+            );
+            true
+        }
+        Err(e) => {
+            tracing::warn!("[Board] auto-dispatch failed for issue #{}: {e}", issue.number);
+            let _ = store.add_comment(nemesis_board::models::NewComment {
+                issue_id: issue.id,
+                author: nemesis_board::Actor::system("board"),
+                content: format!("⛔ 自动派发失败：{e}"),
+                parent_id: None,
+                ctype: nemesis_board::CommentType::System,
+            });
+            false
+        }
+    }
+}
+
+/// 非 cluster 编译：派发无从谈起，接口恒零操作。仍跑同一判定 gate——
+/// 开关被误开时 warn 提示（配置生效但能力缺失，行为可观测），并保持
+/// helper 在两种 feature 配置下都被使用（零 dead_code）。
+#[cfg(not(feature = "cluster"))]
+fn auto_dispatch_after_assign(
+    _store: &Arc<BoardStore>,
+    issue: &nemesis_board::Issue,
+    _actor: &Actor,
+) -> bool {
+    if should_auto_dispatch(live_board_config().as_ref(), issue.assignee) {
+        tracing::warn!(
+            "[Board] board.auto_dispatch=true 但 cluster feature 未编译，无法自动派发（issue #{})",
+            issue.number
+        );
+    }
+    false
+}
+
 // ---------------------------------------------------------------------------
 // autopilot（W2 P4 定时派活）：模板建单 + 可选派发 + cron 触发簿记
 // ---------------------------------------------------------------------------
@@ -587,8 +664,8 @@ fn arm_autopilot_job_with(
     let svc = cron
         .lock()
         .map_err(|_| "cron service lock poisoned".to_string())?;
-    if let Some(job_id) = ap.cron_job_id.as_deref() {
-        if svc.get_job(job_id).is_some() {
+    if let Some(job_id) = ap.cron_job_id.as_deref()
+        && svc.get_job(job_id).is_some() {
             svc.patch_job(
                 job_id,
                 &nemesis_cron::CronJobPatch {
@@ -599,7 +676,6 @@ fn arm_autopilot_job_with(
             )?;
             return Ok(());
         }
-    }
     // add_job_ext 返回随机 id（不支持指定 id），注册后回存映射。
     let job = svc.add_job_ext(
         &format!("board-ap:{}", ap.id),
@@ -641,7 +717,7 @@ fn disarm_autopilot_job(ctx: &RequestContext, ap: &nemesis_board::Autopilot) {
 ///      走 arm 重新登记并回存 job id。
 ///   3. 跟随：已登记的 job schedule/enabled 跟随 store（与 arm 同一逻辑，
 ///      幂等）。
-/// 返回重新登记的规则数（gateway 记日志用）。
+///      返回重新登记的规则数（gateway 记日志用）。
 pub fn sync_autopilot_jobs(
     cron: &Arc<std::sync::Mutex<nemesis_cron::service::CronService>>,
     store: &Arc<BoardStore>,
@@ -722,7 +798,6 @@ impl ModuleHandler for BoardHandler {
                 Ok(Some(serde_json::json!({ "issue": issue_to_view(&store, &issue)? })))
             }
             "issue.create" => {
-                require_coordinator(ctx)?;
                 let data = data.ok_or("missing data")?;
                 let issue = store.create_issue(build_new_issue(&data, actor)?)?;
                 Ok(Some(
@@ -730,7 +805,6 @@ impl ModuleHandler for BoardHandler {
                 ))
             }
             "issue.update" => {
-                require_coordinator(ctx)?;
                 let data = data.ok_or("missing data")?;
                 let id = data
                     .get("id")
@@ -743,7 +817,6 @@ impl ModuleHandler for BoardHandler {
                 ))
             }
             "issue.assign" => {
-                require_coordinator(ctx)?;
                 let data = data.ok_or("missing data")?;
                 let id = data
                     .get("id")
@@ -754,12 +827,28 @@ impl ModuleHandler for BoardHandler {
                     None => (None, None),
                 };
                 let issue = store.assign_issue(id, assignee, assignee_id, &actor)?;
+                // 自动派发接口（W2.5 预留，默认关；board.auto_dispatch=true
+                // 且指派给 worker 时触发）。触发后重取 issue，响应反映派发
+                // 推进的 in_progress 态。
+                #[cfg(feature = "cluster")]
+                let dispatched = auto_dispatch_after_assign(
+                    &store,
+                    ctx.state.cluster.as_ref(),
+                    &issue,
+                    &actor,
+                );
+                #[cfg(not(feature = "cluster"))]
+                let dispatched = auto_dispatch_after_assign(&store, &issue, &actor);
+                let issue = if dispatched {
+                    store.get_issue(id)?
+                } else {
+                    issue
+                };
                 Ok(Some(
                     serde_json::json!({ "assigned": true, "issue": issue_to_view(&store, &issue)? }),
                 ))
             }
             "issue.status" => {
-                require_coordinator(ctx)?;
                 let data = data.ok_or("missing data")?;
                 let id = data
                     .get("id")
@@ -774,7 +863,6 @@ impl ModuleHandler for BoardHandler {
             // 看板拖拽（W2 P3）：状态转移 + 列内排序一个原子操作（同列重排
             // 只改 position；跨列走状态机）。
             "issue.move" => {
-                require_coordinator(ctx)?;
                 let data = data.ok_or("missing data")?;
                 let id = data
                     .get("id")
@@ -794,14 +882,12 @@ impl ModuleHandler for BoardHandler {
             // 绑定入 issue_dispatch 表；worker 回报经 peer_chat_callback 由
             // gateway 写回看板（成功 → 结果评论 + in_review，失败 → 失败评论）。
             "issue.dispatch" => {
-                require_coordinator(ctx)?;
                 issue_dispatch(&store, actor, ctx, data).await
             }
             // 取消进行中的派发（W2 P4）：A 侧派发/issue 双终态 + 下行
             // task_cancel 让 worker abort。赢竞态才动账（worker 恰好回报则
             // 拒绝取消，issue 保持写回的状态）。
             "issue.cancel" => {
-                require_coordinator(ctx)?;
                 issue_cancel(&store, actor, ctx, data).await
             }
             // --- autopilot（W2 P4 定时派活）---
@@ -810,7 +896,6 @@ impl ModuleHandler for BoardHandler {
                 Ok(Some(serde_json::json!({ "autopilots": autopilots })))
             }
             "autopilot.create" => {
-                require_coordinator(ctx)?;
                 let data = data.ok_or("missing data")?;
                 let cron_expr = get_str(&data, "cron")?;
                 nemesis_cron::CronService::validate_schedule(&cron_expr)?;
@@ -835,7 +920,6 @@ impl ModuleHandler for BoardHandler {
                 Ok(Some(serde_json::json!({ "created": true, "autopilot": ap })))
             }
             "autopilot.update" => {
-                require_coordinator(ctx)?;
                 let data = data.ok_or("missing data")?;
                 let id = data
                     .get("id")
@@ -862,7 +946,6 @@ impl ModuleHandler for BoardHandler {
                 Ok(Some(serde_json::json!({ "updated": true, "autopilot": ap })))
             }
             "autopilot.remove" => {
-                require_coordinator(ctx)?;
                 let data = data.ok_or("missing data")?;
                 let id = data
                     .get("id")
@@ -876,7 +959,6 @@ impl ModuleHandler for BoardHandler {
             // 手动触发一次（到点自动触发走 gateway on_job → 同一
             // fire_autopilot 核心）。
             "autopilot.run" => {
-                require_coordinator(ctx)?;
                 let data = data.ok_or("missing data")?;
                 let id = data
                     .get("id")
@@ -912,7 +994,6 @@ impl ModuleHandler for BoardHandler {
             }
             // --- comment / activity ---
             "comment.add" => {
-                require_coordinator(ctx)?;
                 let data = data.ok_or("missing data")?;
                 let comment = store.add_comment(NewComment {
                     issue_id: data
@@ -946,7 +1027,6 @@ impl ModuleHandler for BoardHandler {
             }
             // --- subscriber ---
             "subscriber.add" => {
-                require_coordinator(ctx)?;
                 let data = data.ok_or("missing data")?;
                 let issue_id = data
                     .get("issue_id")
@@ -956,7 +1036,6 @@ impl ModuleHandler for BoardHandler {
                 Ok(Some(serde_json::json!({ "subscribed": true, "issue_id": issue_id })))
             }
             "subscriber.remove" => {
-                require_coordinator(ctx)?;
                 let data = data.ok_or("missing data")?;
                 let issue_id = data
                     .get("issue_id")
@@ -980,7 +1059,6 @@ impl ModuleHandler for BoardHandler {
                 Ok(Some(serde_json::json!({ "projects": projects })))
             }
             "project.create" => {
-                require_coordinator(ctx)?;
                 let data = data.ok_or("missing data")?;
                 let project = store.create_project(
                     &get_str(&data, "name")?,
@@ -992,7 +1070,6 @@ impl ModuleHandler for BoardHandler {
             }
             // 项目字段级更新（W2 P3）：归档走 status="archived"（软删除）。
             "project.update" => {
-                require_coordinator(ctx)?;
                 let data = data.ok_or("missing data")?;
                 let id = data
                     .get("id")
@@ -1010,7 +1087,6 @@ impl ModuleHandler for BoardHandler {
             // 附件上传（W2 P3）：base64 内容 → workspace/board/files/ 存文件
             // + 元数据入表。storage_path 记 workspace 相对路径（可移植）。
             "attachment.add" => {
-                require_coordinator(ctx)?;
                 let data = data.ok_or("missing data")?;
                 let issue_id = data
                     .get("issue_id")
@@ -1083,7 +1159,6 @@ impl ModuleHandler for BoardHandler {
                 ))
             }
             "inbox.mark_read" => {
-                require_coordinator(ctx)?;
                 let data = data.ok_or("missing data")?;
                 let marked: i64 = if data.get("all").and_then(|v| v.as_bool()).unwrap_or(false) {
                     store.mark_all_notifications_read("admin", None)? as i64

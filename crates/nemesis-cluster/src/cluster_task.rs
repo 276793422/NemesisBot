@@ -328,15 +328,14 @@ impl ClusterTaskList {
     pub fn complete_task(&self, task_id: &str) {
         // Delete conversation file from disk.
         let conv_path = self.conversation_path(task_id);
-        if conv_path.exists() {
-            if let Err(e) = std::fs::remove_file(&conv_path) {
+        if conv_path.exists()
+            && let Err(e) = std::fs::remove_file(&conv_path) {
                 tracing::warn!(
                     path = %conv_path.display(),
                     error = %e,
                     "[ClusterTaskList] Failed to delete conversation file"
                 );
             }
-        }
         self.tasks.remove(task_id);
         tracing::info!(
             task_id = %task_id,
@@ -411,11 +410,10 @@ impl ClusterTaskList {
             let mut task = task;
             if task.conversation.is_none() && matches!(status, TaskStatus::WaitingRemote) {
                 let conv_path = self.conversation_path(&task_id);
-                if conv_path.exists() {
-                    if let Ok(conv_data) = std::fs::read_to_string(&conv_path) {
+                if conv_path.exists()
+                    && let Ok(conv_data) = std::fs::read_to_string(&conv_path) {
                         task.conversation = serde_json::from_str(&conv_data).ok();
                     }
-                }
             }
 
             // Only restore tasks that are still in progress.
@@ -470,11 +468,10 @@ impl ClusterTaskList {
         }
 
         // Persist the status changes (WaitingRemote → Pending) to disk.
-        if !task_ids.is_empty() {
-            if let Err(e) = self.persist_to_disk() {
+        if !task_ids.is_empty()
+            && let Err(e) = self.persist_to_disk() {
                 tracing::warn!("[ClusterTaskList] Failed to persist after recovery: {}", e);
             }
-        }
 
         tracing::info!(
             count = task_ids.len(),

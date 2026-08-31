@@ -5,7 +5,7 @@
 //!   回退第一行（npm shim 布局的真实形态）。
 //! - cli_delegation.rs:162 — 带可执行扩展名的候选被 pick_windows_exec_candidate
 //!   选中。
-//! 环境注意：PATH 操纵在本文件静态锁内完成并立即还原；查询名全局唯一，
+//!   环境注意：PATH 操纵在本文件静态锁内完成并立即还原；查询名全局唯一，
 //!   与其他并行测试（spawn `where`）不冲突。
 
 use super::cli_delegation::find_cli_on_path;

@@ -5,6 +5,12 @@
 //! `nemesisbot/tests/executor.rs`（spawn_and_call 端到端）与 Dashboard
 //! 沙盒页真机验证覆盖。
 
+// 刻意设计：本文件测试用进程级串行锁（GLOBAL_STATE_LOCK 等 env/资源互斥锁）
+// 保护环境操作，guard 必须跨 async 测试体的 await 持有；#[tokio::test] 每个
+// 测试独立 current_thread runtime，持锁方在自己线程上恢复运行，不会死锁。
+// 测试域统一豁免（逐处 allow ~200 个不现实）。
+#![allow(clippy::await_holding_lock)]
+
 use super::*;
 
 #[test]
@@ -199,7 +205,7 @@ fn test_s11b_stop_service_if_ours_no_side_effects() {
     // 服务未跑 → 早退；在跑但二进制不在（临时）runtime 下 → 不动它。
     // 两种机器状态都无副作用。
     let tmp = tempfile::tempdir().unwrap();
-    stop_service_if_ours(&tmp.path());
+    stop_service_if_ours(tmp.path());
 }
 
 #[test]

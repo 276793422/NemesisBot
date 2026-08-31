@@ -235,8 +235,8 @@ pub async fn run(action: ClusterAction, local: bool) -> Result<()> {
             let cfg_path = common::cluster_config_path(&home);
             if cfg_path.exists() {
                 println!("  Config: {} [found]", cfg_path.display());
-                if let Ok(data) = std::fs::read_to_string(&cfg_path) {
-                    if let Ok(cfg) = serde_json::from_str::<serde_json::Value>(&data) {
+                if let Ok(data) = std::fs::read_to_string(&cfg_path)
+                    && let Ok(cfg) = serde_json::from_str::<serde_json::Value>(&data) {
                         // 系统参数从 config.cluster.json 读
                         if let Some(enabled) = cfg.get("enabled").and_then(|v| v.as_bool()) {
                             println!("  Enabled: {}", enabled);
@@ -253,7 +253,6 @@ pub async fn run(action: ClusterAction, local: bool) -> Result<()> {
                             println!("  Broadcast Interval: {}s", interval);
                         }
                     }
-                }
 
                 // 身份字段从 peers.toml [node] 段读
                 let peers_path = common::cluster_dir(&home).join("peers.toml");
@@ -291,8 +290,8 @@ pub async fn run(action: ClusterAction, local: bool) -> Result<()> {
             println!("Cluster Configuration");
             println!("======================");
             if cfg_path.exists() {
-                if let Ok(data) = std::fs::read_to_string(&cfg_path) {
-                    if let Ok(mut cfg) = serde_json::from_str::<serde_json::Value>(&data) {
+                if let Ok(data) = std::fs::read_to_string(&cfg_path)
+                    && let Ok(mut cfg) = serde_json::from_str::<serde_json::Value>(&data) {
                         // Read current values for display
                         let cur_udp =
                             cfg.get("port").and_then(|v| v.as_u64()).unwrap_or(11949) as u16;
@@ -311,11 +310,10 @@ pub async fn run(action: ClusterAction, local: bool) -> Result<()> {
                         println!("  Broadcast Interval: {}s", cur_interval);
 
                         // Only update and save if values differ from what's currently stored
-                        if udp_port != cur_udp
+                        if (udp_port != cur_udp
                             || rpc_port != cur_rpc
-                            || broadcast_interval != cur_interval
-                        {
-                            if let Some(obj) = cfg.as_object_mut() {
+                            || broadcast_interval != cur_interval)
+                            && let Some(obj) = cfg.as_object_mut() {
                                 obj.insert(
                                     "port".to_string(),
                                     serde_json::Value::Number(udp_port.into()),
@@ -334,9 +332,7 @@ pub async fn run(action: ClusterAction, local: bool) -> Result<()> {
                                 );
                                 println!("Configuration updated.");
                             }
-                        }
                     }
-                }
             } else {
                 println!("Config file not found. Run 'nemesisbot cluster init' first.");
             }
@@ -377,13 +373,12 @@ pub async fn run(action: ClusterAction, local: bool) -> Result<()> {
                         sc.node.address = a;
                         changed = true;
                     }
-                    if changed {
-                        if let Err(e) =
+                    if changed
+                        && let Err(e) =
                             nemesis_cluster::cluster_config::save_static_config(&peers_path, &sc)
                         {
                             println!("  Failed to save peers.toml: {}", e);
                         }
-                    }
                     println!("Node Information");
                     println!("================");
                     println!(
@@ -487,16 +482,16 @@ pub async fn run(action: ClusterAction, local: bool) -> Result<()> {
                 // address 扫描。
                 let peers_path = common::cluster_dir(&home).join("peers.toml");
                 if peers_path.exists() {
-                    if let Ok(data) = std::fs::read_to_string(&peers_path) {
-                        if let Ok(mut doc) = data.parse::<toml::Value>() {
-                            if let Some(peers) = doc
+                    if let Ok(data) = std::fs::read_to_string(&peers_path)
+                        && let Ok(mut doc) = data.parse::<toml::Value>()
+                            && let Some(peers) = doc
                                 .as_table_mut()
                                 .and_then(|t| t.get_mut("peers"))
                                 .and_then(|v| v.as_table_mut())
                             {
                                 let legacy_key =
-                                    id.replace('.', "_").replace(':', "_").replace('-', "_");
-                                let canonical_key = id.replace('.', "_").replace(':', "_");
+                                    id.replace(['.', ':', '-'], "_");
+                                let canonical_key = id.replace(['.', ':'], "_");
                                 let target_key = if peers.contains_key(&legacy_key) {
                                     Some(legacy_key)
                                 } else if peers.contains_key(&canonical_key) {
@@ -531,8 +526,6 @@ pub async fn run(action: ClusterAction, local: bool) -> Result<()> {
                                     println!("  Peer {} not found.", id);
                                 }
                             }
-                        }
-                    }
                 } else {
                     println!("  No peers file found.");
                 }
@@ -577,7 +570,7 @@ pub async fn run(action: ClusterAction, local: bool) -> Result<()> {
         },
         ClusterAction::Token { action } => match action {
             TokenAction::Generate { length, save } => {
-                if length < 16 || length > 128 {
+                if !(16..=128).contains(&length) {
                     anyhow::bail!("Token length must be between 16 and 128 bytes");
                 }
                 let token = generate_token(length);
@@ -644,7 +637,7 @@ pub async fn run(action: ClusterAction, local: bool) -> Result<()> {
                     }
                     t
                 } else if generate {
-                    if length < 16 || length > 128 {
+                    if !(16..=128).contains(&length) {
                         anyhow::bail!("Token length must be between 16 and 128 bytes");
                     }
                     generate_token(length)
@@ -796,10 +789,10 @@ pub async fn run(action: ClusterAction, local: bool) -> Result<()> {
         }
         ClusterAction::Enable => {
             let cfg_path = common::cluster_config_path(&home);
-            if cfg_path.exists() {
-                if let Ok(data) = std::fs::read_to_string(&cfg_path) {
-                    if let Ok(cfg) = serde_json::from_str::<serde_json::Value>(&data) {
-                        if cfg
+            if cfg_path.exists()
+                && let Ok(data) = std::fs::read_to_string(&cfg_path)
+                    && let Ok(cfg) = serde_json::from_str::<serde_json::Value>(&data)
+                        && cfg
                             .get("enabled")
                             .and_then(|v| v.as_bool())
                             .unwrap_or(false)
@@ -807,19 +800,16 @@ pub async fn run(action: ClusterAction, local: bool) -> Result<()> {
                             println!("Cluster is already enabled.");
                             return Ok(());
                         }
-                    }
-                }
-            }
             update_cluster_config(&home, "enabled", true)?;
             update_main_config_cluster(&home, true)?;
             println!("Cluster enabled. Restart gateway to apply.");
         }
         ClusterAction::Disable => {
             let cfg_path = common::cluster_config_path(&home);
-            if cfg_path.exists() {
-                if let Ok(data) = std::fs::read_to_string(&cfg_path) {
-                    if let Ok(cfg) = serde_json::from_str::<serde_json::Value>(&data) {
-                        if !cfg
+            if cfg_path.exists()
+                && let Ok(data) = std::fs::read_to_string(&cfg_path)
+                    && let Ok(cfg) = serde_json::from_str::<serde_json::Value>(&data)
+                        && !cfg
                             .get("enabled")
                             .and_then(|v| v.as_bool())
                             .unwrap_or(false)
@@ -827,19 +817,16 @@ pub async fn run(action: ClusterAction, local: bool) -> Result<()> {
                             println!("Cluster is already disabled.");
                             return Ok(());
                         }
-                    }
-                }
-            }
             update_cluster_config(&home, "enabled", false)?;
             update_main_config_cluster(&home, false)?;
             println!("Cluster disabled. Restart gateway to apply.");
         }
         ClusterAction::Start => {
             let cfg_path = common::cluster_config_path(&home);
-            if cfg_path.exists() {
-                if let Ok(data) = std::fs::read_to_string(&cfg_path) {
-                    if let Ok(cfg) = serde_json::from_str::<serde_json::Value>(&data) {
-                        if cfg
+            if cfg_path.exists()
+                && let Ok(data) = std::fs::read_to_string(&cfg_path)
+                    && let Ok(cfg) = serde_json::from_str::<serde_json::Value>(&data)
+                        && cfg
                             .get("enabled")
                             .and_then(|v| v.as_bool())
                             .unwrap_or(false)
@@ -847,18 +834,15 @@ pub async fn run(action: ClusterAction, local: bool) -> Result<()> {
                             println!("Cluster is already enabled.");
                             return Ok(());
                         }
-                    }
-                }
-            }
             update_cluster_config(&home, "enabled", true)?;
             println!("Cluster enabled. Restart gateway to apply.");
         }
         ClusterAction::Stop => {
             let cfg_path = common::cluster_config_path(&home);
-            if cfg_path.exists() {
-                if let Ok(data) = std::fs::read_to_string(&cfg_path) {
-                    if let Ok(cfg) = serde_json::from_str::<serde_json::Value>(&data) {
-                        if !cfg
+            if cfg_path.exists()
+                && let Ok(data) = std::fs::read_to_string(&cfg_path)
+                    && let Ok(cfg) = serde_json::from_str::<serde_json::Value>(&data)
+                        && !cfg
                             .get("enabled")
                             .and_then(|v| v.as_bool())
                             .unwrap_or(false)
@@ -866,9 +850,6 @@ pub async fn run(action: ClusterAction, local: bool) -> Result<()> {
                             println!("Cluster is already disabled.");
                             return Ok(());
                         }
-                    }
-                }
-            }
             update_cluster_config(&home, "enabled", false)?;
             println!("Cluster disabled. Restart gateway to apply.");
         }
@@ -1007,7 +988,7 @@ fn run_firewall(action: FirewallAction) -> Result<()> {
 #[cfg(target_os = "windows")]
 fn firewall_add_rules(udp_port: u16, tcp_port: u16) -> Result<()> {
     let udp_result = std::process::Command::new("netsh")
-        .args(&[
+        .args([
             "advfirewall",
             "firewall",
             "add",
@@ -1029,7 +1010,7 @@ fn firewall_add_rules(udp_port: u16, tcp_port: u16) -> Result<()> {
     println!("  UDP rule added: NemesisBot Discovery (port {})", udp_port);
 
     let tcp_result = std::process::Command::new("netsh")
-        .args(&[
+        .args([
             "advfirewall",
             "firewall",
             "add",
@@ -1055,7 +1036,7 @@ fn firewall_add_rules(udp_port: u16, tcp_port: u16) -> Result<()> {
 #[cfg(target_os = "windows")]
 fn firewall_remove_rules(_udp_port: u16, _tcp_port: u16) -> Result<()> {
     let udp_result = std::process::Command::new("netsh")
-        .args(&[
+        .args([
             "advfirewall",
             "firewall",
             "delete",
@@ -1070,7 +1051,7 @@ fn firewall_remove_rules(_udp_port: u16, _tcp_port: u16) -> Result<()> {
     }
 
     let tcp_result = std::process::Command::new("netsh")
-        .args(&[
+        .args([
             "advfirewall",
             "firewall",
             "delete",
@@ -1280,10 +1261,10 @@ async fn run_node(
 
     // Load static peers from peers.toml
     let peers_path = common::cluster_dir(home).join("peers.toml");
-    if peers_path.exists() {
-        if let Ok(content) = std::fs::read_to_string(&peers_path) {
-            if let Ok(doc) = content.parse::<toml::Value>() {
-                if let Some(peers_table) = doc.get("peers").and_then(|v| v.as_table()) {
+    if peers_path.exists()
+        && let Ok(content) = std::fs::read_to_string(&peers_path)
+            && let Ok(doc) = content.parse::<toml::Value>()
+                && let Some(peers_table) = doc.get("peers").and_then(|v| v.as_table()) {
                     for (key, val) in peers_table {
                         let peer_id = key.replace('_', "-");
                         let addr = val.get("address").and_then(|v| v.as_str()).unwrap_or("");
@@ -1316,9 +1297,6 @@ async fn run_node(
                         );
                     }
                 }
-            }
-        }
-    }
 
     // Create and set RPC server (before start)
     let rpc_server_config = nemesis_cluster::rpc::server::RpcServerConfig {
@@ -1375,11 +1353,7 @@ async fn run_node(
                 let count = peers.len();
                 if count != last_count {
                     let now = Local::now().format("%H:%M:%S");
-                    if count > last_count {
-                        println!("[{}] Peers changed: {} -> {} online", now, last_count, count);
-                    } else {
-                        println!("[{}] Peers changed: {} -> {} online", now, last_count, count);
-                    }
+                    println!("[{}] Peers changed: {} -> {} online", now, last_count, count);
                     for p in &peers {
                         let ntype = if p.node_type.is_empty() { "unknown" } else { &p.node_type };
                         let caps = if p.capabilities.is_empty() {
@@ -1476,7 +1450,7 @@ fn generate_token(byte_len: usize) -> String {
 /// Simple standard base64 encoding with padding (to match Go's base64.StdEncoding).
 fn base64_encode(data: &[u8]) -> String {
     const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let mut out = String::with_capacity((data.len() + 2) / 3 * 4);
+    let mut out = String::with_capacity(data.len().div_ceil(3) * 4);
     let mut i = 0;
     while i + 3 <= data.len() {
         let n = ((data[i] as u32) << 16) | ((data[i + 1] as u32) << 8) | (data[i + 2] as u32);
@@ -1538,7 +1512,7 @@ fn enable_peer_in_toml(toml_content: &str, addr: &str, enabled: bool) -> Result<
 
     // Search for the peer with matching address.
     // The peer key is the sanitized address (dots, colons, hyphens → underscores).
-    let key_safe = addr.replace('.', "_").replace(':', "_").replace('-', "_");
+    let key_safe = addr.replace(['.', ':', '-'], "_");
 
     // Try the sanitized key first, then fall back to scanning all peers for matching address.
     let target_key = if peers.contains_key(&key_safe) {
@@ -1547,14 +1521,12 @@ fn enable_peer_in_toml(toml_content: &str, addr: &str, enabled: bool) -> Result<
         // Scan all peer entries for one whose address matches
         let mut found = None;
         for (key, val) in peers.iter() {
-            if let Some(peer_table) = val.as_table() {
-                if let Some(peer_addr) = peer_table.get("address").and_then(|v| v.as_str()) {
-                    if peer_addr == addr {
+            if let Some(peer_table) = val.as_table()
+                && let Some(peer_addr) = peer_table.get("address").and_then(|v| v.as_str())
+                    && peer_addr == addr {
                         found = Some(key.clone());
                         break;
                     }
-                }
-            }
         }
         found.ok_or_else(|| format!("Peer {} not found in peers.toml", addr))?
     };

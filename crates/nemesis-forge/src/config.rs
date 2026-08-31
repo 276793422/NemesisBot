@@ -13,6 +13,7 @@ use std::path::Path;
 
 /// Top-level forge configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Default)]
 pub struct ForgeConfig {
     /// Whether the forge system is enabled (main switch).
     #[serde(default)]
@@ -47,20 +48,6 @@ pub struct ForgeConfig {
     pub learning: LearningConfig,
 }
 
-impl Default for ForgeConfig {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            collection: CollectionConfig::default(),
-            storage: StorageConfig::default(),
-            reflection: ReflectionConfig::default(),
-            artifacts: ArtifactsConfig::default(),
-            validation: ValidationConfig::default(),
-            trace: TraceConfig::default(),
-            learning: LearningConfig::default(),
-        }
-    }
-}
 
 /// Collection subsystem configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]

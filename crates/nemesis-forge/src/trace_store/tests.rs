@@ -239,7 +239,7 @@ async fn test_read_all_ignores_malformed() {
         .open(&path)
         .unwrap();
     writeln!(f, "not json").unwrap();
-    writeln!(f, "").unwrap();
+    writeln!(f).unwrap();
     let events = store.read_all().await.unwrap();
     assert_eq!(events.len(), 1);
     assert_eq!(events[0].event_type, "valid");

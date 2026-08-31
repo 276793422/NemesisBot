@@ -31,7 +31,7 @@ pub async fn test_gateway_full_lifecycle(
     ) {
         Ok(p) => p,
         Err(e) => {
-            results.push(fail(suite, &format!("Failed to start AI Server: {}", e)));
+            results.push(fail(suite, format!("Failed to start AI Server: {}", e)));
             return results;
         }
     };
@@ -48,7 +48,7 @@ pub async fn test_gateway_full_lifecycle(
             ai_server.kill().await;
             results.push(fail(
                 &format!("{}/ai_server", suite),
-                &format!("Timeout: {}", e),
+                format!("Timeout: {}", e),
             ));
             return results;
         }
@@ -62,7 +62,7 @@ pub async fn test_gateway_full_lifecycle(
                 ai_server.kill().await;
                 results.push(fail(
                     &format!("{}/gateway_start", suite),
-                    &format!("Failed: {}", e),
+                    format!("Failed: {}", e),
                 ));
                 return results;
             }
@@ -82,7 +82,7 @@ pub async fn test_gateway_full_lifecycle(
         Err(e) => {
             results.push(fail(
                 &format!("{}/gateway_ready", suite),
-                &format!("Timeout: {}", e),
+                format!("Timeout: {}", e),
             ));
             gateway.kill().await;
             ai_server.kill().await;
@@ -113,7 +113,7 @@ pub async fn test_gateway_health_endpoints() -> Vec<TestResult> {
     let client = http_client();
 
     match client
-        .get(&format!("http://127.0.0.1:{}/health", HEALTH_PORT))
+        .get(format!("http://127.0.0.1:{}/health", HEALTH_PORT))
         .send()
         .await
     {
@@ -123,16 +123,16 @@ pub async fn test_gateway_health_endpoints() -> Vec<TestResult> {
         Ok(resp) => {
             results.push(fail(
                 &format!("{}/health", suite),
-                &format!("Status: {}", resp.status()),
+                format!("Status: {}", resp.status()),
             ));
         }
         Err(e) => {
-            results.push(fail(&format!("{}/health", suite), &format!("Error: {}", e)));
+            results.push(fail(&format!("{}/health", suite), format!("Error: {}", e)));
         }
     }
 
     match client
-        .get(&format!("http://127.0.0.1:{}/ready", HEALTH_PORT))
+        .get(format!("http://127.0.0.1:{}/ready", HEALTH_PORT))
         .send()
         .await
     {
@@ -142,11 +142,11 @@ pub async fn test_gateway_health_endpoints() -> Vec<TestResult> {
         Ok(resp) => {
             results.push(fail(
                 &format!("{}/ready", suite),
-                &format!("Status: {}", resp.status()),
+                format!("Status: {}", resp.status()),
             ));
         }
         Err(e) => {
-            results.push(fail(&format!("{}/ready", suite), &format!("Error: {}", e)));
+            results.push(fail(&format!("{}/ready", suite), format!("Error: {}", e)));
         }
     }
 
@@ -164,7 +164,7 @@ pub async fn test_gateway_ws_connect() -> Vec<TestResult> {
 
     match ws_connect(WS_PORT, AUTH_TOKEN).await {
         Ok(_) => results.push(pass(suite, "WebSocket connected successfully")),
-        Err(e) => results.push(fail(suite, &format!("Connect failed: {}", e))),
+        Err(e) => results.push(fail(suite, format!("Connect failed: {}", e))),
     }
 
     results
@@ -182,7 +182,7 @@ pub async fn test_gateway_ws_auth() -> Vec<TestResult> {
     // Valid token
     match ws_connect(WS_PORT, AUTH_TOKEN).await {
         Ok(_) => results.push(pass(&format!("{}/valid", suite), "Valid token accepted")),
-        Err(e) => results.push(fail(&format!("{}/valid", suite), &format!("Failed: {}", e))),
+        Err(e) => results.push(fail(&format!("{}/valid", suite), format!("Failed: {}", e))),
     }
 
     // Wrong token
@@ -218,7 +218,7 @@ pub async fn test_gateway_ws_send_message() -> Vec<TestResult> {
     let mut stream = match ws_connect(WS_PORT, AUTH_TOKEN).await {
         Ok(s) => s,
         Err(e) => {
-            results.push(fail(suite, &format!("Connect failed: {}", e)));
+            results.push(fail(suite, format!("Connect failed: {}", e)));
             return results;
         }
     };
@@ -228,7 +228,7 @@ pub async fn test_gateway_ws_send_message() -> Vec<TestResult> {
             if !content.is_empty() {
                 results.push(pass(
                     &format!("{}/response", suite),
-                    &format!("Response received ({} bytes)", content.len()),
+                    format!("Response received ({} bytes)", content.len()),
                 ));
             } else {
                 results.push(fail(&format!("{}/response", suite), "Empty response"));
@@ -237,7 +237,7 @@ pub async fn test_gateway_ws_send_message() -> Vec<TestResult> {
         Err(e) => {
             results.push(fail(
                 &format!("{}/response", suite),
-                &format!("Failed: {}", e),
+                format!("Failed: {}", e),
             ));
         }
     }
@@ -257,7 +257,7 @@ pub async fn test_gateway_ws_multiturn() -> Vec<TestResult> {
     let mut stream = match ws_connect(WS_PORT, AUTH_TOKEN).await {
         Ok(s) => s,
         Err(e) => {
-            results.push(fail(suite, &format!("Connect failed: {}", e)));
+            results.push(fail(suite, format!("Connect failed: {}", e)));
             return results;
         }
     };
@@ -267,13 +267,13 @@ pub async fn test_gateway_ws_multiturn() -> Vec<TestResult> {
             Ok(content) => {
                 results.push(pass(
                     &format!("{}/turn{}", suite, i + 1),
-                    &format!("Response received ({} bytes)", content.len()),
+                    format!("Response received ({} bytes)", content.len()),
                 ));
             }
             Err(e) => {
                 results.push(fail(
                     &format!("{}/turn{}", suite, i + 1),
-                    &format!("Failed: {}", e),
+                    format!("Failed: {}", e),
                 ));
                 break;
             }
@@ -316,12 +316,12 @@ pub async fn test_gateway_concurrent_sessions() -> Vec<TestResult> {
     if success == num_sessions {
         results.push(pass(
             suite,
-            &format!("All {} sessions got responses", success),
+            format!("All {} sessions got responses", success),
         ));
     } else {
         results.push(fail(
             suite,
-            &format!(
+            format!(
                 "{}/{} succeeded. Errors: {:?}",
                 success, num_sessions, errors
             ),
@@ -353,7 +353,7 @@ pub async fn test_gateway_restart_recovery(
             Err(e) => {
                 results.push(fail(
                     &format!("{}/pre_restart", suite),
-                    &format!("Connect: {}", e),
+                    format!("Connect: {}", e),
                 ));
                 return results;
             }
@@ -366,7 +366,7 @@ pub async fn test_gateway_restart_recovery(
             Err(e) => {
                 results.push(fail(
                     &format!("{}/pre_restart", suite),
-                    &format!("Failed: {}", e),
+                    format!("Failed: {}", e),
                 ));
                 return results;
             }
@@ -397,7 +397,7 @@ pub async fn test_gateway_tool_execution() -> Vec<TestResult> {
     let mut stream = match ws_connect(WS_PORT, AUTH_TOKEN).await {
         Ok(s) => s,
         Err(e) => {
-            results.push(fail(suite, &format!("Connect failed: {}", e)));
+            results.push(fail(suite, format!("Connect failed: {}", e)));
             return results;
         }
     };
@@ -409,14 +409,14 @@ pub async fn test_gateway_tool_execution() -> Vec<TestResult> {
             // which will execute and return a result
             results.push(pass(
                 &format!("{}/response", suite),
-                &format!("Tool execution flow completed ({} bytes)", content.len()),
+                format!("Tool execution flow completed ({} bytes)", content.len()),
             ));
         }
         Err(e) => {
             // Tool execution might fail in test env, but the flow should work
             results.push(pass(
                 &format!("{}/response", suite),
-                &format!("Tool flow attempted: {}", e),
+                format!("Tool flow attempted: {}", e),
             ));
         }
     }
@@ -437,7 +437,7 @@ pub async fn test_gateway_security_blocks() -> Vec<TestResult> {
     let mut stream = match ws_connect(WS_PORT, AUTH_TOKEN).await {
         Ok(s) => s,
         Err(e) => {
-            results.push(fail(suite, &format!("Connect failed: {}", e)));
+            results.push(fail(suite, format!("Connect failed: {}", e)));
             return results;
         }
     };
@@ -448,14 +448,14 @@ pub async fn test_gateway_security_blocks() -> Vec<TestResult> {
             // The response should be handled (either blocked or responded)
             results.push(pass(
                 &format!("{}/handled", suite),
-                &format!("Dangerous request handled ({} bytes)", content.len()),
+                format!("Dangerous request handled ({} bytes)", content.len()),
             ));
         }
         Err(e) => {
             // Security may block it, which is expected
             results.push(pass(
                 &format!("{}/blocked", suite),
-                &format!("Request blocked by security: {}", e),
+                format!("Request blocked by security: {}", e),
             ));
         }
     }

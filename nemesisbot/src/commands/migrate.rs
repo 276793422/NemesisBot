@@ -133,11 +133,7 @@ fn confirm(prompt: &str) -> bool {
 
 /// Check if stdin is not a terminal (non-interactive mode).
 fn atty_isnt() -> bool {
-    if std::env::var("PROMPT").is_ok() || std::env::var("TERM").is_ok() {
-        false
-    } else {
-        true
-    }
+    !(std::env::var("PROMPT").is_ok() || std::env::var("TERM").is_ok())
 }
 
 // ---------------------------------------------------------------------------
@@ -194,27 +190,23 @@ fn convert_config_fallback(openclaw_home: &Path) -> Result<(serde_json::Value, V
                     let trimmed = line.trim();
                     if let Some(model) = trimmed.strip_prefix("default_model:") {
                         let model = model.trim().trim_matches('"').trim_matches('\'');
-                        if !model.is_empty() {
-                            if let Some(obj) = config.as_object_mut() {
+                        if !model.is_empty()
+                            && let Some(obj) = config.as_object_mut() {
                                 obj.insert(
                                     "default_model".to_string(),
                                     serde_json::Value::String(model.to_string()),
                                 );
                             }
-                        }
                     }
-                    if let Some(port_str) = trimmed.strip_prefix("port:") {
-                        if let Ok(port) = port_str.trim().parse::<u64>() {
-                            if let Some(web) = config.pointer_mut("/channels/web") {
-                                if let Some(obj) = web.as_object_mut() {
+                    if let Some(port_str) = trimmed.strip_prefix("port:")
+                        && let Ok(port) = port_str.trim().parse::<u64>()
+                            && let Some(web) = config.pointer_mut("/channels/web")
+                                && let Some(obj) = web.as_object_mut() {
                                     obj.insert(
                                         "port".to_string(),
                                         serde_json::Value::Number(port.into()),
                                     );
                                 }
-                            }
-                        }
-                    }
                 }
             }
             break;
@@ -223,8 +215,8 @@ fn convert_config_fallback(openclaw_home: &Path) -> Result<(serde_json::Value, V
 
     // Extract models from models.yaml
     let models_yaml = openclaw_home.join("models.yaml");
-    if models_yaml.exists() {
-        if let Ok(models_content) = std::fs::read_to_string(&models_yaml) {
+    if models_yaml.exists()
+        && let Ok(models_content) = std::fs::read_to_string(&models_yaml) {
             let mut model_list = Vec::new();
             for line in models_content.lines() {
                 let trimmed = line.trim();
@@ -241,16 +233,14 @@ fn convert_config_fallback(openclaw_home: &Path) -> Result<(serde_json::Value, V
                     }
                 }
             }
-            if !model_list.is_empty() {
-                if let Some(obj) = config.as_object_mut() {
+            if !model_list.is_empty()
+                && let Some(obj) = config.as_object_mut() {
                     obj.insert(
                         "model_list".to_string(),
                         serde_json::Value::Array(model_list),
                     );
                 }
-            }
         }
-    }
 
     warnings.push("Used fallback config conversion (no OpenClaw config file found)".to_string());
     Ok((config, warnings))
@@ -390,12 +380,11 @@ pub fn run(options: MigrateOptions, local: bool) -> Result<()> {
     }
 
     // Step 5: Confirmation.
-    if !options.force {
-        if !confirm("Proceed with migration?") {
+    if !options.force
+        && !confirm("Proceed with migration?") {
             println!("Migration cancelled.");
             return Ok(());
         }
-    }
 
     // Step 6: Perform migration.
     let mut migrated_files: u32 = 0;

@@ -3,7 +3,6 @@
 //! Tests: Rust providers → AI server → tool execution → response
 //! This validates that the Rust crates can work together end-to-end.
 
-use reqwest;
 use serde_json::Value;
 use std::time::Duration;
 
@@ -25,7 +24,7 @@ async fn call_llm(messages: Vec<Value>, tools: Vec<Value>) -> Value {
     }
 
     let resp = client
-        .post(&format!("{}/v1/chat/completions", AI_SERVER_URL))
+        .post(format!("{}/v1/chat/completions", AI_SERVER_URL))
         .header("Authorization", "Bearer test-key")
         .header("Content-Type", "application/json")
         .json(&body)
@@ -47,9 +46,9 @@ async fn call_llm(messages: Vec<Value>, tools: Vec<Value>) -> Value {
 fn extract_tool_calls(response: &Value) -> Vec<(String, String, String)> {
     // Returns (call_id, tool_name, arguments) tuples
     let mut result = Vec::new();
-    if let Some(choices) = response["choices"].as_array() {
-        if let Some(choice) = choices.first() {
-            if let Some(calls) = choice["message"]["tool_calls"].as_array() {
+    if let Some(choices) = response["choices"].as_array()
+        && let Some(choice) = choices.first()
+            && let Some(calls) = choice["message"]["tool_calls"].as_array() {
                 for call in calls {
                     let id = call["id"].as_str().unwrap_or("unknown").to_string();
                     let name = call["function"]["name"].as_str().unwrap_or("").to_string();
@@ -60,8 +59,6 @@ fn extract_tool_calls(response: &Value) -> Vec<(String, String, String)> {
                     result.push((id, name, args));
                 }
             }
-        }
-    }
     result
 }
 
@@ -360,7 +357,7 @@ async fn test_it_concurrent_requests() {
                 "messages": [{"role": "user", "content": format!("Request {}", i)}]
             });
             let resp = client
-                .post(&format!("{}/v1/chat/completions", AI_SERVER_URL))
+                .post(format!("{}/v1/chat/completions", AI_SERVER_URL))
                 .json(&body)
                 .timeout(Duration::from_secs(10))
                 .send()

@@ -113,11 +113,10 @@ fn parse_json_text(content: &str) -> Vec<(String, String)> {
             }
         }
         // Try as a single object.
-        if let Ok(obj) = serde_json::from_str::<serde_json::Value>(&cand) {
-            if let Some(c) = json_value_to_call(&obj) {
+        if let Ok(obj) = serde_json::from_str::<serde_json::Value>(&cand)
+            && let Some(c) = json_value_to_call(&obj) {
                 return vec![c];
             }
-        }
     }
     Vec::new()
 }

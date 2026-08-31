@@ -21,7 +21,7 @@ pub async fn test_cli_forge_status(ws: &TestWorkspace, bin: &Path) -> Vec<TestRe
     } else {
         results.push(fail(
             &format!("{}/output", suite),
-            &format!("No forge info: '{}'", output.stdout.trim()),
+            format!("No forge info: '{}'", output.stdout.trim()),
         ));
     }
 
@@ -40,13 +40,13 @@ pub async fn test_cli_forge_enable_disable(ws: &TestWorkspace, bin: &Path) -> Ve
     let enable = ws.run_cli(bin, &["forge", "enable"]).await;
     results.push(pass(
         &format!("{}/enable", suite),
-        &format!("exit={}", enable.exit_code),
+        format!("exit={}", enable.exit_code),
     ));
 
     let disable = ws.run_cli(bin, &["forge", "disable"]).await;
     results.push(pass(
         &format!("{}/disable", suite),
-        &format!("exit={}", disable.exit_code),
+        format!("exit={}", disable.exit_code),
     ));
 
     results
@@ -64,7 +64,7 @@ pub async fn test_cli_forge_reflect(ws: &TestWorkspace, bin: &Path) -> Vec<TestR
     let output = ws.run_cli(bin, &["forge", "reflect"]).await;
     results.push(pass(
         &format!("{}/reflect", suite),
-        &format!("exit={}", output.exit_code),
+        format!("exit={}", output.exit_code),
     ));
 
     results
@@ -83,14 +83,14 @@ pub async fn test_cli_forge_list(ws: &TestWorkspace, bin: &Path) -> Vec<TestResu
     let list = ws.run_cli(bin, &["forge", "list"]).await;
     results.push(pass(
         &format!("{}/all", suite),
-        &format!("exit={}", list.exit_code),
+        format!("exit={}", list.exit_code),
     ));
 
     // list skills
     let skills = ws.run_cli(bin, &["forge", "list", "--type", "skill"]).await;
     results.push(pass(
         &format!("{}/skills", suite),
-        &format!("exit={}", skills.exit_code),
+        format!("exit={}", skills.exit_code),
     ));
 
     // list scripts
@@ -99,14 +99,14 @@ pub async fn test_cli_forge_list(ws: &TestWorkspace, bin: &Path) -> Vec<TestResu
         .await;
     results.push(pass(
         &format!("{}/scripts", suite),
-        &format!("exit={}", scripts.exit_code),
+        format!("exit={}", scripts.exit_code),
     ));
 
     // list mcp
     let mcp = ws.run_cli(bin, &["forge", "list", "--type", "mcp"]).await;
     results.push(pass(
         &format!("{}/mcp", suite),
-        &format!("exit={}", mcp.exit_code),
+        format!("exit={}", mcp.exit_code),
     ));
 
     results
@@ -127,7 +127,7 @@ pub async fn test_cli_forge_evaluate(ws: &TestWorkspace, bin: &Path) -> Vec<Test
         .await;
     results.push(pass(
         &format!("{}/evaluate", suite),
-        &format!("exit={}", output.exit_code),
+        format!("exit={}", output.exit_code),
     ));
 
     results
@@ -146,7 +146,7 @@ pub async fn test_cli_forge_export(ws: &TestWorkspace, bin: &Path) -> Vec<TestRe
     let export_all = ws.run_cli(bin, &["forge", "export", "--all"]).await;
     results.push(pass(
         &format!("{}/all", suite),
-        &format!("exit={}", export_all.exit_code),
+        format!("exit={}", export_all.exit_code),
     ));
 
     // export with --output
@@ -164,7 +164,7 @@ pub async fn test_cli_forge_export(ws: &TestWorkspace, bin: &Path) -> Vec<TestRe
         .await;
     results.push(pass(
         &format!("{}/output", suite),
-        &format!("exit={}", export_out.exit_code),
+        format!("exit={}", export_out.exit_code),
     ));
 
     results
@@ -183,21 +183,21 @@ pub async fn test_cli_forge_learning(ws: &TestWorkspace, bin: &Path) -> Vec<Test
     let status = ws.run_cli(bin, &["forge", "learning", "status"]).await;
     results.push(pass(
         &format!("{}/status", suite),
-        &format!("exit={}", status.exit_code),
+        format!("exit={}", status.exit_code),
     ));
 
     // learning enable
     let enable = ws.run_cli(bin, &["forge", "learning", "enable"]).await;
     results.push(pass(
         &format!("{}/enable", suite),
-        &format!("exit={}", enable.exit_code),
+        format!("exit={}", enable.exit_code),
     ));
 
     // learning history
     let history = ws.run_cli(bin, &["forge", "learning", "history"]).await;
     results.push(pass(
         &format!("{}/history", suite),
-        &format!("exit={}", history.exit_code),
+        format!("exit={}", history.exit_code),
     ));
 
     // learning history --limit
@@ -206,14 +206,14 @@ pub async fn test_cli_forge_learning(ws: &TestWorkspace, bin: &Path) -> Vec<Test
         .await;
     results.push(pass(
         &format!("{}/history_limit", suite),
-        &format!("exit={}", history_limited.exit_code),
+        format!("exit={}", history_limited.exit_code),
     ));
 
     // learning disable
     let disable = ws.run_cli(bin, &["forge", "learning", "disable"]).await;
     results.push(pass(
         &format!("{}/disable", suite),
-        &format!("exit={}", disable.exit_code),
+        format!("exit={}", disable.exit_code),
     ));
 
     results

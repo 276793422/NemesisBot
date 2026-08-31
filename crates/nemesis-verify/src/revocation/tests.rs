@@ -309,7 +309,7 @@ fn verify_bytes_revoked_via_crl() {
     let signed = crate::verify::sign_content(b"revocation integration", &sk, 1000, None, None, None, None)
         .unwrap();
     use sha2::Digest;
-    let fp: [u8; 32] = sha2::Sha256::digest(&vk.to_bytes()).into();
+    let fp: [u8; 32] = sha2::Sha256::digest(vk.to_bytes()).into();
     let crl = sign_response(
         &crl_with(
             2,

@@ -102,8 +102,8 @@ fn test_datetime_timezone_handling() {
     assert_eq!(now_local.timestamp(), restored_local.timestamp());
 
     // 关键测试:不同时区序列化是否一致(模拟跨时区持久化)
-    let utc1 = DateTime::<Local>::from(now_local).with_timezone(&Utc);
-    let utc2 = DateTime::<Utc>::from(now_utc);
+    let utc1 = now_local.with_timezone(&Utc);
+    let utc2 = now_utc;
     let ser1 = serde_json::to_string(&utc1).unwrap();
     let ser2 = serde_json::to_string(&utc2).unwrap();
     assert_eq!(ser1, ser2, "UTC 序列化结果应该完全一致");

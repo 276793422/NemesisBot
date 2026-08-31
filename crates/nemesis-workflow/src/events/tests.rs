@@ -94,10 +94,10 @@ async fn test_unregister_all_clears_everything() {
     manager
         .register(Arc::new(RecordingObserver::new("b")) as Arc<dyn WorkflowObserver>)
         .await;
-    assert_eq!(manager.has_observers().await, true);
+    assert!(manager.has_observers().await);
 
     manager.unregister_all().await;
-    assert_eq!(manager.has_observers().await, false);
+    assert!(!manager.has_observers().await);
 }
 
 #[tokio::test]

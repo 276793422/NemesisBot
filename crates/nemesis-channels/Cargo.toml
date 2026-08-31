@@ -54,3 +54,6 @@ http = "1"
 tokio = { workspace = true, features = ["test-util", "macros"] }
 tempfile = "3"
 tracing-subscriber = { workspace = true }
+
+[lints]
+workspace = true

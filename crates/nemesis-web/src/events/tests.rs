@@ -230,7 +230,7 @@ fn test_broadcast_channel_capacity() {
 
     // Should be able to get events
     let mut count = 0;
-    while let Ok(_) = rx.try_recv() {
+    while rx.try_recv().is_ok() {
         count += 1;
     }
     assert!(count > 0);

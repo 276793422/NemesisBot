@@ -3491,7 +3491,7 @@ async fn test_new_integrated_wires_real_parallel_executor() {
     // marker executor.
     assert_eq!(marker_calls.load(Ordering::SeqCst), 1);
     let branch_out = result.output.get("branch_0").unwrap();
-    assert_eq!(branch_out["marker_ran"].as_bool().unwrap(), true);
+    assert!(branch_out["marker_ran"].as_bool().unwrap());
 }
 
 /// BUG #1 corollary: same wiring check for loop.
@@ -3925,7 +3925,7 @@ async fn question_classifier_records_each_retry_attempt_separately() {
     assert_eq!(summary.total_output_tokens, 10);
 
     // Verify trace_ids are distinct (the bug pre-fix: they collided).
-    let (logs, _) = store.query_logs(before, end, 1, 50).expect("query_logs");
+    let (logs, _) = store.query_logs(before, end, 1, 50, &nemesis_data::LogFilter::default()).expect("query_logs");
     assert_eq!(logs.len(), 2, "expected exactly 2 RequestLog rows");
     assert_ne!(logs[0].trace_id, logs[1].trace_id);
     for log in &logs {
@@ -3984,7 +3984,7 @@ async fn parameter_extractor_records_each_retry_attempt_separately() {
     let summary = store.query_summary(before, end).expect("query_summary");
     assert_eq!(summary.total_requests, 2);
 
-    let (logs, _) = store.query_logs(before, end, 1, 50).expect("query_logs");
+    let (logs, _) = store.query_logs(before, end, 1, 50, &nemesis_data::LogFilter::default()).expect("query_logs");
     assert_eq!(logs.len(), 2);
     assert_ne!(logs[0].trace_id, logs[1].trace_id);
 }
@@ -4886,7 +4886,7 @@ fn w4a_validate_required_params_arms() {
         serde_json::from_value(serde_json::json!({"name": "b"})).unwrap();
     // non-object -> Err
     assert_eq!(
-        validate_required_params(&serde_json::json!("x"), &[required.clone()]),
+        validate_required_params(&serde_json::json!("x"), std::slice::from_ref(&required)),
         Err("output is not an object".to_string())
     );
     // required missing -> Err naming it

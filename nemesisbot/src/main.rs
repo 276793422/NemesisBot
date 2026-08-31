@@ -556,8 +556,7 @@ async fn run_command(cli: Cli) -> Result<()> {
                 {
                     // Enable LLM logging
                         if let Some(logging) = cfg.get_mut("logging").and_then(|v| v.get_mut("llm"))
-                        {
-                            if let Some(obj) = logging.as_object_mut() {
+                            && let Some(obj) = logging.as_object_mut() {
                                 obj.insert("enabled".to_string(), serde_json::Value::Bool(true));
                                 obj.insert(
                                     "log_dir".to_string(),
@@ -568,7 +567,6 @@ async fn run_command(cli: Cli) -> Result<()> {
                                     serde_json::Value::String("full".to_string()),
                                 );
                             }
-                        }
                         println!("  LLM logging enabled");
 
                         // Enable security
@@ -589,8 +587,7 @@ async fn run_command(cli: Cli) -> Result<()> {
                         // Disable workspace restriction (security module enforces rules)
                         if let Some(agents) =
                             cfg.get_mut("agents").and_then(|v| v.get_mut("defaults"))
-                        {
-                            if let Some(obj) = agents.as_object_mut() {
+                            && let Some(obj) = agents.as_object_mut() {
                                 obj.insert(
                                     "restrict_to_workspace".to_string(),
                                     serde_json::Value::Bool(false),
@@ -604,11 +601,10 @@ async fn run_command(cli: Cli) -> Result<()> {
                                     );
                                 }
                             }
-                        }
 
                         // Set web auth token, port, websocket
-                        if let Some(web) = cfg.pointer_mut("/channels/web") {
-                            if let Some(obj) = web.as_object_mut() {
+                        if let Some(web) = cfg.pointer_mut("/channels/web")
+                            && let Some(obj) = web.as_object_mut() {
                                 obj.insert(
                                     "auth_token".to_string(),
                                     serde_json::Value::String("276793422".to_string()),
@@ -622,12 +618,10 @@ async fn run_command(cli: Cli) -> Result<()> {
                                     serde_json::Value::Number(49000.into()),
                                 );
                             }
-                        }
-                        if let Some(ws) = cfg.pointer_mut("/channels/websocket") {
-                            if let Some(obj) = ws.as_object_mut() {
+                        if let Some(ws) = cfg.pointer_mut("/channels/websocket")
+                            && let Some(obj) = ws.as_object_mut() {
                                 obj.insert("enabled".to_string(), serde_json::Value::Bool(true));
                             }
-                        }
 
                         std::fs::write(
                             &cfg_path,

@@ -146,7 +146,7 @@ async fn test_search_skills_json_invalid_json() {
     reg.base_url = server.uri();
     let err = reg.search("pdf", 10).await.unwrap_err();
     // Serialization error or "parse"
-    assert!(err.to_string().len() > 0);
+    assert!(!err.to_string().is_empty());
 }
 
 #[tokio::test]

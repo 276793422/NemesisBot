@@ -766,11 +766,9 @@ async fn test_security_audit_with_data() {
     let log_dir = ws.join("logs/security_logs");
     std::fs::create_dir_all(&log_dir).unwrap();
 
-    let entries = vec![
-        serde_json::json!({"event_id":"evt-1","request":{"op_type":"FileWrite","danger_level":"HIGH","target":"/test","user":"","source":"test"},"decision":"allowed","reason":"test","timestamp":"2026-01-01T00:00:00Z","policy_rule":"test"}),
+    let entries = [serde_json::json!({"event_id":"evt-1","request":{"op_type":"FileWrite","danger_level":"HIGH","target":"/test","user":"","source":"test"},"decision":"allowed","reason":"test","timestamp":"2026-01-01T00:00:00Z","policy_rule":"test"}),
         serde_json::json!({"event_id":"evt-2","request":{"op_type":"FileRead","danger_level":"LOW","target":"/test","user":"","source":"test"},"decision":"allowed","reason":"test","timestamp":"2026-01-02T00:00:00Z","policy_rule":"test"}),
-        serde_json::json!({"event_id":"evt-3","request":{"op_type":"ProcessExec","danger_level":"HIGH","target":"/test","user":"","source":"test"},"decision":"denied","reason":"test","timestamp":"2026-01-03T00:00:00Z","policy_rule":"test"}),
-    ];
+        serde_json::json!({"event_id":"evt-3","request":{"op_type":"ProcessExec","danger_level":"HIGH","target":"/test","user":"","source":"test"},"decision":"denied","reason":"test","timestamp":"2026-01-03T00:00:00Z","policy_rule":"test"})];
     let jsonl: String = entries
         .iter()
         .map(|e| e.to_string())
@@ -3220,7 +3218,7 @@ async fn hicon_mixed_50_concurrent_read_write() {
     }
 
     let mut errors = 0;
-    for (_i, handle) in handles.into_iter().enumerate() {
+    for handle in handles.into_iter() {
         let result = handle.await.unwrap();
         if result.is_err() {
             errors += 1;
@@ -3966,12 +3964,10 @@ async fn test_security_audit_risk_level_filter() {
     let dir = tempfile::tempdir().unwrap();
     let log_dir = dir.path().join("logs/security_logs");
     std::fs::create_dir_all(&log_dir).unwrap();
-    let entries = vec![
-        serde_json::json!({ "timestamp": "2026-01-01T00:00:00Z", "risk_level": "HIGH" }),
+    let entries = [serde_json::json!({ "timestamp": "2026-01-01T00:00:00Z", "risk_level": "HIGH" }),
         serde_json::json!({ "timestamp": "2026-01-02T00:00:00Z", "risk_level": "LOW" }),
         serde_json::json!({ "timestamp": "2026-01-03T00:00:00Z", "risk_level": "HIGH" }),
-        serde_json::json!({ "timestamp": "2026-01-04T00:00:00Z", "risk_level": "CRITICAL" }),
-    ];
+        serde_json::json!({ "timestamp": "2026-01-04T00:00:00Z", "risk_level": "CRITICAL" })];
     let jsonl: String = entries
         .iter()
         .map(|e| e.to_string())
@@ -4245,9 +4241,9 @@ async fn fuzz_models_add_various_names() {
         let data = serde_json::json!({ "name": name, "model": "test", "key": "k" });
         let result = handler.handle_cmd("add", Some(data), &ctx).await;
         // Should succeed — we accept any string as name
-        if result.is_err() {
+        if let Err(e) = result {
             // Only acceptable if it's a duplicate from a previous iteration
-            assert!(result.unwrap_err().contains("already exists"));
+            assert!(e.contains("already exists"));
         }
     }
 }
@@ -4316,16 +4312,14 @@ async fn fuzz_tasks_cron_add_various_cron_exprs() {
 
     // Valid 5-field cron expressions (the live CronService validates via
     // croner; @-macros like @reboot are not accepted, so only real exprs).
-    let exprs = vec![
-        "* * * * *",
+    let exprs = ["* * * * *",
         "0 9 * * 1-5",
         "*/15 * * * *",
         "0 0 1 1 *",
         "0 0,12 * * *",
         "30 8 * * *",
         "0 18 * * 5",
-        "*/5 * * * *",
-    ];
+        "*/5 * * * *"];
     for (i, cron) in exprs.iter().enumerate() {
         let data = serde_json::json!({
             "name": format!("cron-{}", i),
@@ -4357,12 +4351,10 @@ async fn fuzz_mcp_server_add_various_commands() {
     .unwrap();
     let ctx = make_ctx(&dir);
 
-    let commands = vec![
-        ("node", vec!["server.js"]),
+    let commands = [("node", vec!["server.js"]),
         ("python", vec!["-m", "mcp_server"]),
         ("C:\\Program Files\\tool.exe", vec![]),
-        ("/usr/bin/mcp", vec!["--port", "3000"]),
-    ];
+        ("/usr/bin/mcp", vec!["--port", "3000"])];
     for (i, (cmd, args)) in commands.iter().enumerate() {
         let data = serde_json::json!({
             "name": format!("srv-{}", i),
@@ -4532,7 +4524,7 @@ async fn stress_50_concurrent_write_with_verification() {
     for i in 0..25 {
         let ctx = ctx.clone();
         handles.push(tokio::spawn(async move {
-            let field = format!("gateway.port");
+            let field = "gateway.port".to_string();
             let value = 8000 + i;
             let h = config::ConfigHandler::new();
             h.handle_cmd(

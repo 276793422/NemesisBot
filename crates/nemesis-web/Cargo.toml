@@ -87,3 +87,6 @@ wiremock = "0.6"
 # P2-2: sdk_embed tests open the embedded bytes as a real archive (structural
 # round-trip — the guarantee that unzip/pip install work, not just non-empty).
 zip = { version = "2", default-features = false, features = ["deflate"] }
+
+[lints]
+workspace = true

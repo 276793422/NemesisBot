@@ -115,7 +115,7 @@ fn crc32(data: &[u8]) -> u32 {
 
 /// 向上对齐到 `align` 的倍数。
 pub fn align_up(n: usize, align: usize) -> usize {
-    (n + align - 1) / align * align
+    n.div_ceil(align) * align
 }
 
 fn rd_u16(b: &[u8], off: usize) -> u16 {
@@ -171,7 +171,7 @@ pub struct ParsedFooter {
 
 /// 解析 footer（校验 magic + crc32）。
 pub fn parse_footer(bytes: &[u8; FOOTER_LEN]) -> Result<ParsedFooter> {
-    if &bytes[OFF_MAGIC..OFF_MAGIC + 8] != &TRAILER_MAGIC {
+    if bytes[OFF_MAGIC..OFF_MAGIC + 8] != TRAILER_MAGIC {
         return Err(anyhow!("footer magic mismatch"));
     }
     let stored = rd_u32(bytes, OFF_CRC);
@@ -307,13 +307,12 @@ pub fn parse_body(plaintext: &[u8]) -> Result<ParsedBody> {
                 publisher =
                     Some(String::from_utf8(v).map_err(|e| anyhow!("publisher utf8: {}", e))?);
             }
-            TLV_KEY_NOT_AFTER if v.len() == 9 => {
-                if v[0] == 1 {
+            TLV_KEY_NOT_AFTER if v.len() == 9
+                && v[0] == 1 => {
                     key_not_after = Some(u64::from_le_bytes([
                         v[1], v[2], v[3], v[4], v[5], v[6], v[7], v[8],
                     ]));
                 }
-            }
             TLV_TS_TOKEN => ts_token = Some(v),
             _ => {} // 忽略未知 TLV（向前兼容）
         }
@@ -400,7 +399,7 @@ pub fn assemble_envelope(body: &[u8], footer: &[u8; FOOTER_LEN]) -> Vec<u8> {
     let padding = total_len - body.len() - FOOTER_LEN;
     let mut env = Vec::with_capacity(total_len);
     env.extend_from_slice(body);
-    env.extend(std::iter::repeat(0u8).take(padding));
+    env.extend(std::iter::repeat_n(0u8, padding));
     env.extend_from_slice(footer);
     env
 }

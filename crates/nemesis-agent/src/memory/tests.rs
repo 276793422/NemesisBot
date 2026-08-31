@@ -337,10 +337,10 @@ fn summarize_walk_drops_old_turns_keeps_tail() {
     };
     let mut memory = ConversationMemory::new(cfg);
     memory.add(make_turn("system", "sys"));
-    memory.add(make_turn("user", &"x".repeat(200)));
-    memory.add(make_turn("assistant", &"y".repeat(200)));
-    memory.add(make_turn("user", &"z".repeat(200)));
-    memory.add(make_turn("assistant", &"w".repeat(200)));
+    memory.add(make_turn("user", "x".repeat(200)));
+    memory.add(make_turn("assistant", "y".repeat(200)));
+    memory.add(make_turn("user", "z".repeat(200)));
+    memory.add(make_turn("assistant", "w".repeat(200)));
     memory.add(make_turn("user", "tail"));
 
     let before = memory.len();
@@ -365,7 +365,7 @@ fn summarize_noop_when_under_budget() {
     };
     let mut memory = crate::memory::ConversationMemory::new(cfg);
     memory.add(make_turn("system", "sys"));
-    memory.add(make_turn("user", &"x".repeat(100)));
+    memory.add(make_turn("user", "x".repeat(100)));
     assert_eq!(memory.summarize(), 0);
     assert_eq!(memory.len(), 2);
 }

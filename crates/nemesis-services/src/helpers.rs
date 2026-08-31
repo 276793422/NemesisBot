@@ -11,7 +11,7 @@ use std::path::PathBuf;
 pub fn get_config_path() -> PathBuf {
     // Check local mode: .nemesisbot in current directory
     let local_path = PathBuf::from(".nemesisbot").join("config.json");
-    if local_path.parent().map_or(false, |p| p.exists()) {
+    if local_path.parent().is_some_and(|p| p.exists()) {
         return local_path;
     }
 

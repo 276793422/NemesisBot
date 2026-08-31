@@ -11,6 +11,7 @@ use std::path::Path;
 
 /// Migration options controlling what gets migrated and how.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Default)]
 pub struct MigrateOptions {
     pub dry_run: bool,
     pub config_only: bool,
@@ -21,19 +22,6 @@ pub struct MigrateOptions {
     pub nemesisbot_home: String,
 }
 
-impl Default for MigrateOptions {
-    fn default() -> Self {
-        Self {
-            dry_run: false,
-            config_only: false,
-            workspace_only: false,
-            force: false,
-            refresh: false,
-            openclaw_home: String::new(),
-            nemesisbot_home: String::new(),
-        }
-    }
-}
 
 /// Types of migration actions that can be performed.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -59,6 +47,7 @@ pub struct FullMigrationAction {
 
 /// Result of executing a full migration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Default)]
 pub struct FullMigrationResult {
     pub files_copied: usize,
     pub files_skipped: usize,
@@ -69,19 +58,6 @@ pub struct FullMigrationResult {
     pub errors: Vec<String>,
 }
 
-impl Default for FullMigrationResult {
-    fn default() -> Self {
-        Self {
-            files_copied: 0,
-            files_skipped: 0,
-            backups_created: 0,
-            config_migrated: false,
-            dirs_created: 0,
-            warnings: Vec::new(),
-            errors: Vec::new(),
-        }
-    }
-}
 
 /// Migrator handles data migration between versions.
 pub struct Migrator {
@@ -573,14 +549,13 @@ fn dirs_home() -> Result<String, String> {
 
 /// Expand ~ to home directory.
 fn expand_home(path: &str) -> String {
-    if path.starts_with("~/") || path == "~" {
-        if let Ok(home) = dirs_home() {
+    if (path.starts_with("~/") || path == "~")
+        && let Ok(home) = dirs_home() {
             if path == "~" {
                 return home;
             }
             return format!("{}{}", home, &path[1..]);
         }
-    }
     path.to_string()
 }
 

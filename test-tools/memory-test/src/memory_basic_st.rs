@@ -32,7 +32,7 @@ async fn st_bot_basic_memory_startup() -> Result<()> {
     // Verify bot is responsive via health check
     let client = http_client();
     let resp = client
-        .get(&format!("http://127.0.0.1:{}/health", HEALTH_PORT))
+        .get(format!("http://127.0.0.1:{}/health", HEALTH_PORT))
         .send()
         .await?;
     assert!(resp.status().is_success());
@@ -64,7 +64,7 @@ async fn st_bot_enhanced_memory_local_tier() -> Result<()> {
     // Verify bot starts and is responsive
     let client = http_client();
     let resp = client
-        .get(&format!("http://127.0.0.1:{}/health", HEALTH_PORT))
+        .get(format!("http://127.0.0.1:{}/health", HEALTH_PORT))
         .send()
         .await?;
     assert!(resp.status().is_success());
@@ -163,7 +163,7 @@ async fn st_bot_invalid_config_fallback() -> Result<()> {
     // Bot should still start (falling back to basic memory)
     let client = http_client();
     let resp = client
-        .get(&format!("http://127.0.0.1:{}/health", HEALTH_PORT))
+        .get(format!("http://127.0.0.1:{}/health", HEALTH_PORT))
         .send()
         .await?;
     assert!(resp.status().is_success());

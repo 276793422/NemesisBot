@@ -166,8 +166,7 @@ pub fn run(action: IssueAction, local: bool) -> Result<()> {
                 assignee: assignee
                     .as_deref()
                     .map(parse_assignee)
-                    .transpose()?
-                    .map(|(a, id)| (a, id)),
+                    .transpose()?,
                 project_id,
                 priority: None,
                 query,

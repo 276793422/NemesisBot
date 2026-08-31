@@ -5,7 +5,7 @@ type EventHandler = (data: any) => void
 let eventSource: EventSource | null = null
 const eventHandlers: Record<string, EventHandler[]> = {}
 
-const EVENT_TYPES = ['log', 'status', 'security-alert', 'scanner-progress', 'cluster-event', 'heartbeat', 'memory-setup']
+const EVENT_TYPES = ['log', 'status', 'security-alert', 'scanner-progress', 'cluster-event', 'heartbeat', 'memory-setup', 'board-changed', 'usage-changed']
 
 function dispatch(eventType: string, data: any) {
   const handlers = eventHandlers[eventType] || []

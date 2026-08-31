@@ -22,7 +22,7 @@ pub async fn test_cli_security_status(ws: &TestWorkspace, bin: &Path) -> Vec<Tes
     } else {
         results.push(fail(
             &format!("{}/output", suite),
-            &format!(
+            format!(
                 "No security info: exit={}, stdout='{}'",
                 output.exit_code,
                 output.stdout.trim()
@@ -45,13 +45,13 @@ pub async fn test_cli_security_enable_disable(ws: &TestWorkspace, bin: &Path) ->
     let disable = ws.run_cli(bin, &["security", "disable"]).await;
     results.push(pass(
         &format!("{}/disable", suite),
-        &format!("exit={}", disable.exit_code),
+        format!("exit={}", disable.exit_code),
     ));
 
     let enable = ws.run_cli(bin, &["security", "enable"]).await;
     results.push(pass(
         &format!("{}/enable", suite),
-        &format!("exit={}", enable.exit_code),
+        format!("exit={}", enable.exit_code),
     ));
 
     results
@@ -70,14 +70,14 @@ pub async fn test_cli_security_config(ws: &TestWorkspace, bin: &Path) -> Vec<Tes
     let show = ws.run_cli(bin, &["security", "config", "show"]).await;
     results.push(pass(
         &format!("{}/show", suite),
-        &format!("exit={}", show.exit_code),
+        format!("exit={}", show.exit_code),
     ));
 
     // config reset
     let reset = ws.run_cli(bin, &["security", "config", "reset"]).await;
     results.push(pass(
         &format!("{}/reset", suite),
-        &format!("exit={}", reset.exit_code),
+        format!("exit={}", reset.exit_code),
     ));
 
     results
@@ -96,7 +96,7 @@ pub async fn test_cli_security_audit(ws: &TestWorkspace, bin: &Path) -> Vec<Test
     let show = ws.run_cli(bin, &["security", "audit", "show"]).await;
     results.push(pass(
         &format!("{}/show", suite),
-        &format!("exit={}", show.exit_code),
+        format!("exit={}", show.exit_code),
     ));
 
     // audit show --limit 5
@@ -105,14 +105,14 @@ pub async fn test_cli_security_audit(ws: &TestWorkspace, bin: &Path) -> Vec<Test
         .await;
     results.push(pass(
         &format!("{}/show_limit", suite),
-        &format!("exit={}", show_limited.exit_code),
+        format!("exit={}", show_limited.exit_code),
     ));
 
     // audit denied
     let denied = ws.run_cli(bin, &["security", "audit", "denied"]).await;
     results.push(pass(
         &format!("{}/denied", suite),
-        &format!("exit={}", denied.exit_code),
+        format!("exit={}", denied.exit_code),
     ));
 
     // audit export
@@ -130,7 +130,7 @@ pub async fn test_cli_security_audit(ws: &TestWorkspace, bin: &Path) -> Vec<Test
         .await;
     results.push(pass(
         &format!("{}/export", suite),
-        &format!("exit={}", export.exit_code),
+        format!("exit={}", export.exit_code),
     ));
 
     results
@@ -161,7 +161,7 @@ pub async fn test_cli_security_test(ws: &TestWorkspace, bin: &Path) -> Vec<TestR
         .await;
     results.push(pass(
         &format!("{}/low_risk", suite),
-        &format!("exit={}", low.exit_code),
+        format!("exit={}", low.exit_code),
     ));
 
     // Test CRITICAL risk operation
@@ -180,7 +180,7 @@ pub async fn test_cli_security_test(ws: &TestWorkspace, bin: &Path) -> Vec<TestR
         .await;
     results.push(pass(
         &format!("{}/critical_risk", suite),
-        &format!(
+        format!(
             "exit={}, blocked: {}",
             critical.exit_code,
             critical.stdout_contains("BLOCKED") || critical.stdout_contains("blocked")
@@ -203,7 +203,7 @@ pub async fn test_cli_security_rules(ws: &TestWorkspace, bin: &Path) -> Vec<Test
     let list = ws.run_cli(bin, &["security", "rules", "list"]).await;
     results.push(pass(
         &format!("{}/list", suite),
-        &format!("exit={}", list.exit_code),
+        format!("exit={}", list.exit_code),
     ));
 
     // rules add
@@ -225,7 +225,7 @@ pub async fn test_cli_security_rules(ws: &TestWorkspace, bin: &Path) -> Vec<Test
         .await;
     results.push(pass(
         &format!("{}/add", suite),
-        &format!("exit={}", add.exit_code),
+        format!("exit={}", add.exit_code),
     ));
 
     // rules list (with filter)
@@ -234,7 +234,7 @@ pub async fn test_cli_security_rules(ws: &TestWorkspace, bin: &Path) -> Vec<Test
         .await;
     results.push(pass(
         &format!("{}/list_filtered", suite),
-        &format!("exit={}", list_filtered.exit_code),
+        format!("exit={}", list_filtered.exit_code),
     ));
 
     // rules test
@@ -253,7 +253,7 @@ pub async fn test_cli_security_rules(ws: &TestWorkspace, bin: &Path) -> Vec<Test
         .await;
     results.push(pass(
         &format!("{}/test", suite),
-        &format!("exit={}", test.exit_code),
+        format!("exit={}", test.exit_code),
     ));
 
     // rules remove
@@ -272,7 +272,7 @@ pub async fn test_cli_security_rules(ws: &TestWorkspace, bin: &Path) -> Vec<Test
         .await;
     results.push(pass(
         &format!("{}/remove", suite),
-        &format!("exit={}", remove.exit_code),
+        format!("exit={}", remove.exit_code),
     ));
 
     results
@@ -291,7 +291,7 @@ pub async fn test_cli_security_approve_deny(ws: &TestWorkspace, bin: &Path) -> V
     let pending = ws.run_cli(bin, &["security", "pending"]).await;
     results.push(pass(
         &format!("{}/pending", suite),
-        &format!("exit={}", pending.exit_code),
+        format!("exit={}", pending.exit_code),
     ));
 
     // approve (with fake ID - should fail gracefully)
@@ -300,7 +300,7 @@ pub async fn test_cli_security_approve_deny(ws: &TestWorkspace, bin: &Path) -> V
         .await;
     results.push(pass(
         &format!("{}/approve", suite),
-        &format!("exit={}", approve.exit_code),
+        format!("exit={}", approve.exit_code),
     ));
 
     // deny (with fake ID and reason)
@@ -312,7 +312,7 @@ pub async fn test_cli_security_approve_deny(ws: &TestWorkspace, bin: &Path) -> V
         .await;
     results.push(pass(
         &format!("{}/deny", suite),
-        &format!("exit={}", deny.exit_code),
+        format!("exit={}", deny.exit_code),
     ));
 
     // config-reset (tests help only - actual reset may prompt)
@@ -321,7 +321,7 @@ pub async fn test_cli_security_approve_deny(ws: &TestWorkspace, bin: &Path) -> V
         .await;
     results.push(pass(
         &format!("{}/config_reset_help", suite),
-        &format!("exit={}", config_reset_help.exit_code),
+        format!("exit={}", config_reset_help.exit_code),
     ));
 
     results

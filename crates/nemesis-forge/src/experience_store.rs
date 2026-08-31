@@ -218,7 +218,7 @@ impl ExperienceStore {
 
         // Sort by count descending
         let mut sorted: Vec<AggregatedExperience> = merged.into_values().collect();
-        sorted.sort_by(|a, b| b.count.cmp(&a.count));
+        sorted.sort_by_key(|a| std::cmp::Reverse(a.count));
 
         if top_n > 0 && sorted.len() > top_n {
             sorted.truncate(top_n);
@@ -287,19 +287,17 @@ impl ExperienceStore {
                     if line.is_empty() {
                         continue;
                     }
-                    match serde_json::from_str::<CollectedExperience>(line) {
-                        Ok(ce) => {
+                    // Non-JSON lines (legacy aggregate pollution) are dropped.
+                    if let Ok(ce) = serde_json::from_str::<CollectedExperience>(line) {
                             let young =
                                 chrono::DateTime::parse_from_rfc3339(&ce.experience.timestamp)
                                     .map(|t| t.with_timezone(&chrono::Local) >= cutoff_dt)
                                     .unwrap_or(true); // unparseable ts → keep (don't lose data)
-                            if young {
-                                new_content.push_str(line);
-                                new_content.push('\n');
-                                kept += 1;
-                            }
+                        if young {
+                            new_content.push_str(line);
+                            new_content.push('\n');
+                            kept += 1;
                         }
-                        Err(_) => {} // drop legacy aggregate pollution
                     }
                 }
                 // Atomic rewrite (temp + rename) so a crash can't truncate the file.
@@ -418,11 +416,10 @@ impl ExperienceStore {
                 }
 
                 // Apply time filter on filename
-                if let Some(ref since_time) = since {
-                    if !Self::file_newer_than(&name_str, since_time) {
+                if let Some(ref since_time) = since
+                    && !Self::file_newer_than(&name_str, since_time) {
                         continue;
                     }
-                }
 
                 let content = tokio::fs::read_to_string(file_entry.path()).await?;
                 for line in content.lines() {

@@ -504,7 +504,13 @@ Write-Output "$($screen.X),$($screen.Y),$($screen.Width),$($screen.Height)"
                     Err(_) => (0, 0, 1920, 1080),
                 }
             } else {
-                (x.unwrap(), y.unwrap(), w.unwrap(), h.unwrap())
+                // All four are Some (guarded by the is_none() check above).
+                (
+                    x.unwrap_or_default(),
+                    y.unwrap_or_default(),
+                    w.unwrap_or_default(),
+                    h.unwrap_or_default(),
+                )
             };
 
         // Ensure temp directory exists
@@ -571,7 +577,7 @@ $results | ConvertTo-Json -Compress
 "#;
 
         let timeout = Duration::from_secs(15);
-        let out = self.run_powershell(script, timeout).await.map_err(|e| e)?;
+        let out = self.run_powershell(script, timeout).await?;
 
         let trimmed = out.trim();
         if trimmed.is_empty() || trimmed == "null" {

@@ -1,0 +1,158 @@
+name: CI
+
+# H1 质量门禁（project-health v2，见 docs/PLAN/2026-08-31_project-health-improvement-v2.md §H1）
+#
+# 初版范围（2026-08-31）：
+#   - ✅ cargo check / 全量测试 / inline-tests 纪律闸 / clippy -D warnings（阻塞门禁）/ 前端三件套
+#   - ❌ fmt --check 门禁：fmt 基线尚未落地（W3 H5 绝对最后一步），装上只会常红；
+#     H5 落地后在此补装（一行 job/step）。
+#
+# clippy 门禁说明：H2 已完成全库清零（基线 1195w+10e → 0w+0e，2026-08-31，
+# 六轮全量验证），自本次起 `-D warnings` 阻塞 CI。新的 clippy 警告必须当场修，
+# 禁止用 #[allow] 掩盖（确需 allow 必须带理由注释）。
+#
+# 平台策略：
+#   - check/clippy/冒烟 + 前端在 Linux（快、便宜）；
+#   - 全量 workspace 测试在 Windows（本地 21,373/0 基线即 Windows，平台一致保证
+#     "全绿"承诺诚实；Linux 全量测试放 extended-tests nightly 长期验证）。
+#
+# 关键前置：crates/nemesis-web/static/ 被 .gitignore（vite 构建产物），而 nemesisbot
+# 编译时经 include_dir! 嵌入它（nemesisbot/src/embedded.rs）——所以任何 cargo 步骤
+# 之前必须先建 Vue 前端，否则 include_dir! 展开即失败。
+#
+# 前端可复现构建：package-lock.json 入库后统一用 npm ci（npm install 策略仅保留在
+# 本地构建脚本 build-windows.bat / build-linux.sh）。
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  # PR 连推新提交时取消旧 run；main 上同理省 runner 时长
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  rust-check:
+    name: Rust check + inline-tests + clippy (Linux)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+
+      - name: Install Rust toolchain (rust-toolchain.toml 钉 stable)
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo build
+        uses: Swatinem/rust-cache@v2
+
+      - name: Setup Node.js (Vue 前端构建)
+        uses: actions/setup-node@v5
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: web/package-lock.json
+
+      # 与 daily-release 同一套系统依赖（plugin 相关；主二进制用 rustls 不依赖 OpenSSL）。
+      # ubuntu-latest 镜像自带 libasound2-dev 等，缺的这里是超集补齐。
+      - name: Install Linux system deps (GTK / webkit2gtk / appindicator)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libgtk-3-dev \
+            libwebkit2gtk-4.1-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            pkg-config
+
+      - name: Build Vue frontend (include_dir! 前置，见文件头注释)
+        shell: bash
+        run: |
+          cd web
+          npm ci
+          # 防御性清旧 hashed chunk（emptyOutDir:true 已自清，此行兜底 config 翻转）
+          rm -rf ../crates/nemesis-web/static/assets
+          npm run build
+
+      - name: cargo check --workspace --all-targets
+        run: cargo check --workspace --all-targets
+
+      # 内联测试防回归闸（四形态禁止；独立测试文件才合法）
+      - name: Inline-tests discipline gate
+        run: bash scripts/check-inline-tests.sh
+
+      # H2 已清零（2026-08-31），此步为阻塞门禁；见文件头 clippy 门禁说明
+      - name: cargo clippy -D warnings（阻塞门禁）
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      # 跨平台冒烟：核心纯逻辑 crate 在 Linux 也必须绿（全量 Linux 测试在 extended-tests）
+      - name: Linux cross-platform smoke tests
+        run: cargo test -p nemesis-types -p nemesis-config -p nemesis-bus
+
+  rust-test:
+    name: Rust full workspace tests (Windows)
+    runs-on: windows-latest
+    timeout-minutes: 90
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+
+      - name: Install Rust toolchain (rust-toolchain.toml 钉 stable)
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo build
+        uses: Swatinem/rust-cache@v2
+
+      - name: Setup Node.js (Vue 前端构建)
+        uses: actions/setup-node@v5
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: web/package-lock.json
+
+      - name: Build Vue frontend (include_dir! 前置)
+        shell: bash              # Windows 下 rm -rf 需要 bash
+        run: |
+          cd web
+          npm ci
+          rm -rf ../crates/nemesis-web/static/assets
+          npm run build
+
+      - name: cargo test --workspace
+        run: cargo test --workspace
+
+  frontend:
+    name: Frontend typecheck + vitest + build (Linux)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: web/package-lock.json
+
+      - name: Install dependencies (npm ci，lockfile 入库后可复现)
+        run: npm ci
+
+      - name: Typecheck (vue-tsc)
+        run: npm run typecheck
+
+      - name: Unit tests (vitest)
+        run: npm test
+
+      - name: Build (vite)
+        run: npm run build

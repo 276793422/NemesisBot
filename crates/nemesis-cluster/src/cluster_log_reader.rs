@@ -80,7 +80,7 @@ pub fn read_recent_events(log_dir: &Path, limit: usize) -> Vec<FormattedEvent> {
     let mut events: Vec<FormattedEvent> = entries
         .iter()
         .rev()
-        .filter_map(|e| format_event(e))
+        .filter_map(format_event)
         .take(limit)
         .collect();
     events.reverse();
@@ -98,13 +98,11 @@ pub fn aggregate_node_stats(log_dir: &Path) -> HashMap<String, NodeStats> {
     // Step 1: Build task_id → node_id mapping from task_assigned events.
     let mut task_to_node: HashMap<String, String> = HashMap::new();
     for entry in &entries {
-        if entry.event == "task_assigned" {
-            if let Some(task_id) = entry.data.get("task_id").and_then(|v| v.as_str()) {
-                if let Some(node_id) = entry.data.get("action").and_then(|v| v.as_str()) {
+        if entry.event == "task_assigned"
+            && let Some(task_id) = entry.data.get("task_id").and_then(|v| v.as_str())
+                && let Some(node_id) = entry.data.get("action").and_then(|v| v.as_str()) {
                     task_to_node.insert(task_id.to_string(), node_id.to_string());
                 }
-            }
-        }
     }
 
     // Step 2: Count tasks per node.
@@ -130,7 +128,7 @@ pub fn aggregate_node_stats(log_dir: &Path) -> HashMap<String, NodeStats> {
 
     // Build final stats: count how many tasks were assigned to each node.
     let mut node_task_counts: HashMap<String, u32> = HashMap::new();
-    for (_, node_id) in &task_to_node {
+    for node_id in task_to_node.values() {
         *node_task_counts.entry(node_id.clone()).or_insert(0) += 1;
     }
 

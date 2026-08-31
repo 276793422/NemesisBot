@@ -1468,11 +1468,10 @@ async fn drain_outbound(
     out_rx: &mut tokio::sync::mpsc::Receiver<nemesis_types::channel::OutboundMessage>,
 ) -> Vec<String> {
     let mut got = Vec::new();
-    loop {
-        match tokio::time::timeout(std::time::Duration::from_millis(200), out_rx.recv()).await {
-            Ok(Some(m)) => got.push(m.content),
-            Ok(None) | Err(_) => break,
-        }
+    while let Ok(Some(m)) =
+        tokio::time::timeout(std::time::Duration::from_millis(200), out_rx.recv()).await
+    {
+        got.push(m.content);
     }
     got
 }

@@ -51,7 +51,7 @@ async fn test_bootstrap_success() {
 
     // Verify file was deleted
     assert!(
-        !tokio::fs::metadata(&bootstrap_path).await.is_ok(),
+        tokio::fs::metadata(&bootstrap_path).await.is_err(),
         "BOOTSTRAP.md should be deleted"
     );
 }

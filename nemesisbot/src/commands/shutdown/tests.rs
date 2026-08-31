@@ -260,11 +260,10 @@ mod run_arm {
                 let request_line = lines.next().unwrap_or("").to_string();
                 let mut auth_token = None;
                 for line in lines {
-                    if let Some((k, v)) = line.split_once(':') {
-                        if k.trim().eq_ignore_ascii_case("x-auth-token") {
+                    if let Some((k, v)) = line.split_once(':')
+                        && k.trim().eq_ignore_ascii_case("x-auth-token") {
                             auth_token = Some(v.trim().to_string());
                         }
-                    }
                 }
                 // 按 Content-Length 读 body（带超时兜底）
                 let content_length = head
@@ -689,11 +688,10 @@ $form.ShowInTaskbar = $false
                 .output();
             if let Ok(out) = out {
                 let text = String::from_utf8_lossy(&out.stdout).trim().to_string();
-                if let Ok(h) = text.parse::<usize>() {
-                    if h != 0 {
+                if let Ok(h) = text.parse::<usize>()
+                    && h != 0 {
                         return true;
                     }
-                }
             }
             std::thread::sleep(std::time::Duration::from_millis(500));
         }

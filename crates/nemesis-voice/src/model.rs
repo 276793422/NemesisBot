@@ -396,7 +396,7 @@ fn download_file_resume(
     // Try resuming if we have a partial file
     if existing_size > 0 {
         // Check if already complete
-        if total_size.map_or(false, |t| existing_size >= t) {
+        if total_size.is_some_and(|t| existing_size >= t) {
             fs::rename(part_file, target_file)
                 .with_context(|| format!("Failed to rename {}", display_name))?;
             let msg = format!(

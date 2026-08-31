@@ -93,7 +93,7 @@ fn tcp_bindable(port: u16) -> bool {
 ///
 /// 不能用 `:0` 探测：Windows ephemeral 端口范围是 49152-65535，几乎全部
 /// > 55535，`:0` 会把 256 次尝试全部烧光。改为在 20000-45000 范围内以
-/// 进程 id + 毫秒时钟为起点确定性步进探测。
+/// > 进程 id + 毫秒时钟为起点确定性步进探测。
 fn probe_cluster_port_pair() -> (u16, u16) {
     let mut claimed = CLAIMED_CLUSTER_PORTS.lock().unwrap();
     // 起点混合 pid 与时间：同进程内多个测试串行调用时步进序列错开，
@@ -274,15 +274,12 @@ async fn wait_for_web_port(home: &Path) -> u16 {
     let state = home.join("workspace").join("state").join("gateway.json");
     let deadline = Instant::now() + Duration::from_secs(BOOT_TIMEOUT_SECS);
     loop {
-        if let Ok(txt) = std::fs::read_to_string(&state) {
-            if let Ok(v) = serde_json::from_str::<Value>(&txt) {
-                if let Some(p) = v.get("web_port").and_then(|x| x.as_u64()) {
-                    if p > 0 && p <= u16::MAX as u64 {
+        if let Ok(txt) = std::fs::read_to_string(&state)
+            && let Ok(v) = serde_json::from_str::<Value>(&txt)
+                && let Some(p) = v.get("web_port").and_then(|x| x.as_u64())
+                    && p > 0 && p <= u16::MAX as u64 {
                         return p as u16;
                     }
-                }
-            }
-        }
         assert!(
             Instant::now() < deadline,
             "gateway did not bind web within {}s (state={:?})",
@@ -1208,7 +1205,7 @@ fn r10_wsapi_request(
 
     const B64: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     fn b64(data: &[u8]) -> String {
-        let mut out = String::with_capacity((data.len() + 2) / 3 * 4);
+        let mut out = String::with_capacity(data.len().div_ceil(3) * 4);
         for chunk in data.chunks(3) {
             let b = [
                 chunk[0],
@@ -1588,7 +1585,7 @@ async fn r10_live_dual_node_callback_roundtrip_and_forged_error_route() {
             Ok(v) => v
                 .pointer("/data/tasks")
                 .and_then(|t| t.as_array())
-                .map_or(false, |arr| {
+                .is_some_and(|arr| {
                     arr.iter().any(|e| {
                         e.get("id").and_then(|x| x.as_str()) == Some(t10task.as_str())
                             && e.get("status").and_then(|x| x.as_str()) == Some("failed")

@@ -160,14 +160,12 @@ fn parse_github_url(url: &str) -> Result<(String, String)> {
 
 /// Load or create registry config from skills config file.
 fn load_registry_config(skills_cfg: &std::path::Path) -> nemesis_skills::types::RegistryConfig {
-    if skills_cfg.exists() {
-        if let Ok(data) = std::fs::read_to_string(skills_cfg) {
-            if let Ok(config) = serde_json::from_str::<nemesis_skills::types::RegistryConfig>(&data)
+    if skills_cfg.exists()
+        && let Ok(data) = std::fs::read_to_string(skills_cfg)
+            && let Ok(config) = serde_json::from_str::<nemesis_skills::types::RegistryConfig>(&data)
             {
                 return config;
             }
-        }
-    }
     nemesis_skills::types::RegistryConfig::default()
 }
 
@@ -238,9 +236,9 @@ async fn detect_skill_structure(owner: &str, repo: &str) -> (String, String, Str
 
         // Mode A: skills/{slug}/SKILL.md (two-level)
         let skills_url = format!("{}{}?ref={}", base_url, "/skills", branch);
-        if let Ok(resp) = client.get(&skills_url).header("User-Agent", "nemesisbot").send().await {
-            if resp.status().is_success() {
-                if let Ok(entries) = resp.json::<Vec<serde_json::Value>>().await {
+        if let Ok(resp) = client.get(&skills_url).header("User-Agent", "nemesisbot").send().await
+            && resp.status().is_success()
+                && let Ok(entries) = resp.json::<Vec<serde_json::Value>>().await {
                     let skill_dirs: Vec<&str> = entries
                         .iter()
                         .filter_map(|e| {
@@ -261,12 +259,10 @@ async fn detect_skill_structure(owner: &str, repo: &str) -> (String, String, Str
                         );
                         if let Ok(r) =
                             client.get(&check_url).header("User-Agent", "nemesisbot").send().await
-                        {
-                            if r.status().is_success() {
+                            && r.status().is_success() {
                                 has_skill_md = true;
                                 break;
                             }
-                        }
                     }
 
                     if has_skill_md {
@@ -277,8 +273,6 @@ async fn detect_skill_structure(owner: &str, repo: &str) -> (String, String, Str
                         );
                     }
                 }
-            }
-        }
 
         // Mode B: skills/{author}/{slug}/SKILL.md (three-level)
         // Check if first subdirectory of skills/ contains subdirectories with SKILL.md
@@ -289,25 +283,22 @@ async fn detect_skill_structure(owner: &str, repo: &str) -> (String, String, Str
             "https://raw.githubusercontent.com/{}/{}/{}/skills.json",
             owner, repo, branch
         );
-        if let Ok(resp) = client.get(&index_url).header("User-Agent", "nemesisbot").send().await {
-            if resp.status().is_success() {
-                if let Ok(data) = resp.text().await {
-                    if serde_json::from_str::<Vec<serde_json::Value>>(&data).is_ok() {
+        if let Ok(resp) = client.get(&index_url).header("User-Agent", "nemesisbot").send().await
+            && resp.status().is_success()
+                && let Ok(data) = resp.text().await
+                    && serde_json::from_str::<Vec<serde_json::Value>>(&data).is_ok() {
                         return (
                             "skills_json".to_string(),
                             "skills.json".to_string(),
                             branch.to_string(),
                         );
                     }
-                }
-            }
-        }
 
         // Mode D: {slug}/SKILL.md at root level
         let root_url = format!("{}?ref={}", base_url, branch);
-        if let Ok(resp) = client.get(&root_url).header("User-Agent", "nemesisbot").send().await {
-            if resp.status().is_success() {
-                if let Ok(entries) = resp.json::<Vec<serde_json::Value>>().await {
+        if let Ok(resp) = client.get(&root_url).header("User-Agent", "nemesisbot").send().await
+            && resp.status().is_success()
+                && let Ok(entries) = resp.json::<Vec<serde_json::Value>>().await {
                     let skip_dirs = [
                         "src", "pkg", "cmd", "internal", "docs", ".github", "test", "tests",
                         "examples", "scripts", "config",
@@ -333,10 +324,9 @@ async fn detect_skill_structure(owner: &str, repo: &str) -> (String, String, Str
                         let check_url = format!("{}/{}?ref={}", base_url, dir, branch);
                         if let Ok(r) =
                             client.get(&check_url).header("User-Agent", "nemesisbot").send().await
-                        {
-                            if r.status().is_success() {
-                                if let Ok(sub_entries) = r.json::<Vec<serde_json::Value>>().await {
-                                    if sub_entries.iter().any(|e| {
+                            && r.status().is_success()
+                                && let Ok(sub_entries) = r.json::<Vec<serde_json::Value>>().await
+                                    && sub_entries.iter().any(|e| {
                                         e.get("name").and_then(|v| v.as_str()) == Some("SKILL.md")
                                             && e.get("type").and_then(|v| v.as_str())
                                                 == Some("file")
@@ -347,13 +337,8 @@ async fn detect_skill_structure(owner: &str, repo: &str) -> (String, String, Str
                                             branch.to_string(),
                                         );
                                     }
-                                }
-                            }
-                        }
                     }
                 }
-            }
-        }
     }
 
     // Default fallback
@@ -603,9 +588,8 @@ async fn cmd_install_github(skills_dir: &std::path::Path, repo_path: &str) -> Re
                 .timeout(std::time::Duration::from_secs(30))
                 .send()
                 .await
-            {
-                if resp.status().is_success() {
-                    if let Ok(content) = resp.text().await {
+                && resp.status().is_success()
+                    && let Ok(content) = resp.text().await {
                         let target = skills_dir.join(&skill_name);
                         let _ = std::fs::create_dir_all(&target);
                         std::fs::write(target.join("SKILL.md"), &content)?;
@@ -613,8 +597,6 @@ async fn cmd_install_github(skills_dir: &std::path::Path, repo_path: &str) -> Re
                         println!("  Location: {}", target.display());
                         return Ok(());
                     }
-                }
-            }
         }
     }
 
@@ -743,9 +725,9 @@ async fn cmd_cache_stats(skills_cfg: &std::path::Path) -> Result<()> {
             "Excellent"
         } else if total_requests > 0 && hits as f64 / total_requests as f64 >= 0.5 {
             "Good"
-        } else if count >= config.search_cache.max_size as usize * 80 / 100 {
+        } else if count >= config.search_cache.max_size * 80 / 100 {
             "Excellent (by fill)"
-        } else if count >= config.search_cache.max_size as usize * 50 / 100 {
+        } else if count >= config.search_cache.max_size * 50 / 100 {
             "Good (by fill)"
         } else {
             "Low"
@@ -1141,20 +1123,20 @@ pub fn run(action: SkillsAction, local: bool) -> Result<()> {
         SkillsAction::List => cmd_list(&skills_dir)?,
         SkillsAction::Search { query, limit } => {
             let q = query.as_deref().unwrap_or("");
-            let result = tokio::task::block_in_place(|| {
+            tokio::task::block_in_place(|| {
                 tokio::runtime::Handle::current().block_on(cmd_search(&skills_cfg, q, limit))
             })?;
-            result
+            
         }
         SkillsAction::Install { skill } => {
-            let result = tokio::task::block_in_place(|| {
+            tokio::task::block_in_place(|| {
                 tokio::runtime::Handle::current().block_on(cmd_install(
                     &skills_dir,
                     &skills_cfg,
                     &skill,
                 ))
             })?;
-            result
+            
         }
         SkillsAction::Remove { name } => cmd_remove(&skills_dir, &name)?,
         SkillsAction::Source { action } => match action {
@@ -1162,33 +1144,33 @@ pub fn run(action: SkillsAction, local: bool) -> Result<()> {
             // (BUG #27 同类横向, quality-hardening goal 冲刺 S11e) add 已 async
             // 化（内部异步 reqwest client），走同文件既有 block_in_place 桥。
             SourceAction::Add { url } => {
-                let result = tokio::task::block_in_place(|| {
+                tokio::task::block_in_place(|| {
                     tokio::runtime::Handle::current().block_on(cmd_source_add(&skills_cfg, &url))
                 })?;
-                result
+                
             }
             SourceAction::Remove { name } => cmd_source_remove(&skills_cfg, &name)?,
         },
         SkillsAction::AddSource { url } => {
-            let result = tokio::task::block_in_place(|| {
+            tokio::task::block_in_place(|| {
                 tokio::runtime::Handle::current().block_on(cmd_source_add(&skills_cfg, &url))
             })?;
-            result
+            
         }
         SkillsAction::Validate { path } => cmd_validate(&path)?,
         SkillsAction::Show { name } => cmd_show(&skills_dir, &name)?,
         SkillsAction::Cache { action } => match action {
             CacheAction::Stats => {
-                let result = tokio::task::block_in_place(|| {
+                tokio::task::block_in_place(|| {
                     tokio::runtime::Handle::current().block_on(cmd_cache_stats(&skills_cfg))
                 })?;
-                result
+                
             }
             CacheAction::Clear => {
-                let result = tokio::task::block_in_place(|| {
+                tokio::task::block_in_place(|| {
                     tokio::runtime::Handle::current().block_on(cmd_cache_clear(&skills_cfg))
                 })?;
-                result
+                
             }
         },
         SkillsAction::InstallBuiltin { name } => cmd_install_builtin(&skills_dir, name.as_deref())?,
@@ -1200,7 +1182,7 @@ pub fn run(action: SkillsAction, local: bool) -> Result<()> {
         } => {
             // (BUG #27 同类横向, quality-hardening goal 冲刺 S11e) async 化桥接，
             // 同 block_in_place 既有模式。
-            let result = tokio::task::block_in_place(|| {
+            tokio::task::block_in_place(|| {
                 tokio::runtime::Handle::current().block_on(cmd_install_clawhub(
                     &skills_dir,
                     &author,
@@ -1208,17 +1190,17 @@ pub fn run(action: SkillsAction, local: bool) -> Result<()> {
                     output_name.as_deref(),
                 ))
             })?;
-            result
+            
         }
         SkillsAction::Learn { source, name } => {
-            let result = tokio::task::block_in_place(|| {
+            tokio::task::block_in_place(|| {
                 tokio::runtime::Handle::current().block_on(cmd_learn(
                     &home,
                     &source,
                     name.as_deref(),
                 ))
             })?;
-            result
+            
         }
     }
     Ok(())

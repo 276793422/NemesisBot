@@ -444,7 +444,7 @@ impl HttpProvider {
                         }
 
                         let usage = if finish_reason.is_some() {
-                            parsed.get("usage").map(|u| extract_usage(u))
+                            parsed.get("usage").map(extract_usage)
                         } else {
                             None
                         };
@@ -481,6 +481,7 @@ impl HttpProvider {
 
 /// A chunk of streamed LLM response.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Default)]
 pub struct StreamChunk {
     /// Incremental text content (may be empty for tool_call or usage chunks).
     #[serde(default)]
@@ -500,17 +501,6 @@ pub struct StreamChunk {
     pub reasoning_content: Option<String>,
 }
 
-impl Default for StreamChunk {
-    fn default() -> Self {
-        Self {
-            delta: String::new(),
-            tool_calls: Vec::new(),
-            finish_reason: None,
-            usage: None,
-            reasoning_content: None,
-        }
-    }
-}
 
 #[async_trait]
 impl LLMProvider for HttpProvider {
@@ -600,7 +590,7 @@ impl LLMProvider for HttpProvider {
             .unwrap_or("stop")
             .to_string();
 
-        let usage = data.get("usage").map(|u| extract_usage(u));
+        let usage = data.get("usage").map(extract_usage);
 
         let mut tool_calls =
             if let Some(tc_array) = data["choices"][0]["message"]["tool_calls"].as_array() {

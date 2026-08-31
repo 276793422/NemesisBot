@@ -82,18 +82,15 @@ impl Default for ExecutorConfig {
 
 /// Session busy state for concurrency control.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Default)]
 pub enum ConcurrentMode {
     /// Reject new messages when session is busy.
+    #[default]
     Reject,
     /// Queue messages when session is busy.
     Queue,
 }
 
-impl Default for ConcurrentMode {
-    fn default() -> Self {
-        Self::Reject
-    }
-}
 
 /// Busy message returned when session is busy.
 const BUSY_MESSAGE: &str = "AI is processing a previous request, please try again later";
@@ -644,8 +641,8 @@ impl FallbackExecutor {
             // Check cooldown.
             {
                 let cooldowns = self.cooldowns.lock().unwrap();
-                if let Some(entry) = cooldowns.get(&key) {
-                    if entry.last_failure.elapsed() < FALLBACK_COOLDOWN {
+                if let Some(entry) = cooldowns.get(&key)
+                    && entry.last_failure.elapsed() < FALLBACK_COOLDOWN {
                         debug!(
                             "[FallbackExecutor] Skipping fallback candidate {} (cooldown remaining: {:?})",
                             key,
@@ -653,7 +650,6 @@ impl FallbackExecutor {
                         );
                         continue;
                     }
-                }
             }
 
             attempts += 1;
@@ -1357,8 +1353,8 @@ impl AgentLoopExecutor {
             });
 
             // Record usage statistics if data store is available.
-            if let Some(ref ds) = self.data_store {
-                if let Some(ref usage) = response.usage {
+            if let Some(ref ds) = self.data_store
+                && let Some(ref usage) = response.usage {
                     let log = nemesis_data::RequestLog {
                         id: 0,
                         trace_id: trace_id.to_string(),
@@ -1381,12 +1377,14 @@ impl AgentLoopExecutor {
                         error_message: None,
                         is_streaming: false,
                         created_at: chrono::Local::now().timestamp(),
+                        // legacy 执行器（生产不实例化）：新明细字段不接线，
+                        // 取默认值仅为编译完整（改 agent 行为去 loop.rs）。
+                        ..Default::default()
                     };
                     if let Err(e) = ds.insert_request_log(&log) {
                         tracing::warn!("[AgentLoopExecutor] Failed to record usage: {e}");
                     }
                 }
-            }
 
             // Check if no tool calls - we're done.
             if response.tool_calls.is_empty() || response.finished {
@@ -1477,8 +1475,8 @@ impl AgentLoopExecutor {
                 });
 
                 // Save continuation snapshot for async tools.
-                if tool_result.is_async && !tool_result.task_id.is_empty() {
-                    if let Some(ref cont_mgr) = self.continuation_manager {
+                if tool_result.is_async && !tool_result.task_id.is_empty()
+                    && let Some(ref cont_mgr) = self.continuation_manager {
                         let current_messages = self.build_messages(instance);
                         cont_mgr
                             .save_continuation(
@@ -1495,7 +1493,6 @@ impl AgentLoopExecutor {
                             tool_result.task_id
                         );
                     }
-                }
 
                 // Send ForUser content to user immediately if not Silent.
                 if !tool_result.silent && !tool_result.for_user.is_empty() {
@@ -1884,14 +1881,14 @@ impl AgentLoopExecutor {
             .iter()
             .rposition(|t| t.role == "user")
             .filter(|&i| i > 0)
-            .filter(|_| history.first().map_or(false, |t| t.role == "system"));
+            .filter(|_| history.first().is_some_and(|t| t.role == "system"));
 
         match last_user_idx {
             Some(idx) => {
                 let mut messages: Vec<LlmMessage> = Vec::with_capacity(history.len() + 1);
-                messages.extend(history[..idx].into_iter().cloned().map(turn_to_msg));
+                messages.extend(history[..idx].iter().cloned().map(turn_to_msg));
                 messages.push(time_msg);
-                messages.extend(history[idx..].into_iter().cloned().map(turn_to_msg));
+                messages.extend(history[idx..].iter().cloned().map(turn_to_msg));
                 messages
             }
             None => history.into_iter().map(turn_to_msg).collect(),

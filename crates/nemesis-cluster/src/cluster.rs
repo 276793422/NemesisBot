@@ -470,19 +470,17 @@ impl Cluster {
 
         // Stop RPC server first — reject new connections, existing connections
         // drain naturally via idle_timeout.
-        if let Some(ref server) = self.rpc_server {
-            if let Err(e) = server.stop() {
+        if let Some(ref server) = self.rpc_server
+            && let Err(e) = server.stop() {
                 tracing::warn!(error = %e, "[Cluster] RPC server stop error");
             }
-        }
 
         // Stop discovery service (joins broadcast + receive threads)
         self.discovery_running.store(false, Ordering::SeqCst);
-        if let Some(discovery) = self.discovery.lock().take() {
-            if let Err(e) = discovery.stop() {
+        if let Some(discovery) = self.discovery.lock().take()
+            && let Err(e) = discovery.stop() {
                 tracing::warn!(error = %e, "[Cluster] Discovery stop error");
             }
-        }
 
         // Signal recovery/sync loops to exit
         let _ = self.stop_tx.send(());
@@ -763,14 +761,12 @@ impl Cluster {
             // name), restore the name inherited from the placeholder so that
             // lookups by human name (e.g. cluster_rpc target "Node-A") still
             // resolve via get_peer_info's name fallback.
-            if let Some(human_name) = inherited_name {
-                if let Some(mut info) = self.registry.get(node_id) {
-                    if info.base.name.is_empty() || info.base.name == node_id {
+            if let Some(human_name) = inherited_name
+                && let Some(mut info) = self.registry.get(node_id)
+                    && (info.base.name.is_empty() || info.base.name == node_id) {
                         info.base.name = human_name;
                         self.registry.upsert(info);
                     }
-                }
-            }
             // Preserve static-ness across the upgrade so a configured peer
             // (loaded from peers.toml) doesn't suddenly become UDP-expirable
             // once its placeholder key is replaced by the real node_id.
@@ -916,13 +912,11 @@ impl Cluster {
     /// input unchanged if the port can't be parsed or is ≤ 10000 (no convention to
     /// reverse — e.g. a non-standard port or an address without a port).
     fn rpc_to_udp_address(rpc_addr: &str) -> String {
-        if let Some((host, port_str)) = rpc_addr.rsplit_once(':') {
-            if let Ok(rpc_port) = port_str.parse::<u32>() {
-                if rpc_port > 10000 {
+        if let Some((host, port_str)) = rpc_addr.rsplit_once(':')
+            && let Ok(rpc_port) = port_str.parse::<u32>()
+                && rpc_port > 10000 {
                     return format!("{}:{}", host, rpc_port - 10000);
                 }
-            }
-        }
         rpc_addr.to_string()
     }
 
@@ -2037,8 +2031,8 @@ impl Cluster {
                 let mut result = provider_list.get_reflections_list_payload();
 
                 // If a specific reflection is requested, include its content (sanitized)
-                if let Some(filename) = payload.get("filename").and_then(|v| v.as_str()) {
-                    if !filename.is_empty() {
+                if let Some(filename) = payload.get("filename").and_then(|v| v.as_str())
+                    && !filename.is_empty() {
                         match provider_list.read_reflection_content(filename) {
                             Ok(content) => {
                                 result["content"] = serde_json::Value::String(
@@ -2059,7 +2053,6 @@ impl Cluster {
                             }
                         }
                     }
-                }
 
                 result["node_id"] = serde_json::Value::String(node_id_list.clone());
 
@@ -2158,8 +2151,8 @@ impl Cluster {
             );
 
             // Check if this callback is for a cluster agent task (B-side forwarding).
-            if let (Some(tl), Some(wq)) = (&cluster_task_list, &cluster_work_queue) {
-                if let Some(parent_id) = tl.find_by_child_task_id(task_id) {
+            if let (Some(tl), Some(wq)) = (&cluster_task_list, &cluster_work_queue)
+                && let Some(parent_id) = tl.find_by_child_task_id(task_id) {
                     tracing::info!(
                         child_task_id = %task_id,
                         parent_task_id = %parent_id,
@@ -2174,7 +2167,6 @@ impl Cluster {
                         "task_id": task_id,
                     }));
                 }
-            }
 
             // Fall through to main agent's TaskManager (A-side continuation).
             task_manager.complete_callback(task_id, status, response, error);

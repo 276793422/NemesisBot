@@ -157,9 +157,9 @@ async fn bench_concurrent_subscribers() -> BenchResult {
 
     let mut recv_handles = Vec::with_capacity(SUBSCRIBERS);
 
-    for i in 0..SUBSCRIBERS {
+    for counter in &counts {
+        let counter = Arc::clone(counter);
         let mut rx = bus.subscribe_inbound();
-        let counter = counts[i].clone();
         recv_handles.push(tokio::spawn(async move {
             for _ in 0..MSG_COUNT {
                 match rx.recv().await {
@@ -292,9 +292,9 @@ async fn bench_concurrent_mixed() -> BenchResult {
 
     // Spawn subscriber tasks.
     let mut sub_handles = Vec::with_capacity(SUBSCRIBERS);
-    for i in 0..SUBSCRIBERS {
+    for counter in &sub_counts {
+        let counter = Arc::clone(counter);
         let mut rx = bus.subscribe_inbound();
-        let counter = sub_counts[i].clone();
         sub_handles.push(tokio::spawn(async move {
             for _ in 0..TOTAL_PUBLISHED {
                 match rx.recv().await {
@@ -602,8 +602,8 @@ async fn bench_bidirectional() -> BenchResult {
         })
     );
 
-    let _ = in_pub.unwrap();
-    let _ = out_pub.unwrap();
+    in_pub.unwrap();
+    out_pub.unwrap();
 
     let _ = in_handle.await;
     let _ = out_handle.await;

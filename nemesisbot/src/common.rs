@@ -86,13 +86,11 @@ pub fn resolve_home(local: bool) -> PathBuf {
         return PathBuf::from(home).join(".nemesisbot");
     }
     // Priority 3: Exe directory
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(exe_dir) = exe.parent() {
-            if exe_dir.join(".nemesisbot").exists() {
+    if let Ok(exe) = std::env::current_exe()
+        && let Some(exe_dir) = exe.parent()
+            && exe_dir.join(".nemesisbot").exists() {
                 return exe_dir.join(".nemesisbot");
             }
-        }
-    }
     // Priority 4: Auto-detect cwd
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
     if cwd.join(".nemesisbot").exists() {
@@ -383,10 +381,10 @@ pub fn init_logger_from_config(config_path: &Path, check_args: &[String]) -> u32
     let mut file_path: Option<String> = None;
 
     // Read from config file if it exists
-    if config_path.exists() {
-        if let Ok(data) = std::fs::read_to_string(config_path) {
-            if let Ok(cfg) = serde_json::from_str::<serde_json::Value>(&data) {
-                if let Some(logging) = cfg.get("logging").and_then(|v| v.get("general")) {
+    if config_path.exists()
+        && let Ok(data) = std::fs::read_to_string(config_path)
+            && let Ok(cfg) = serde_json::from_str::<serde_json::Value>(&data)
+                && let Some(logging) = cfg.get("logging").and_then(|v| v.get("general")) {
                     // Console switch
                     if let Some(console) = logging.get("enable_console").and_then(|v| v.as_bool()) {
                         enable_console = console;
@@ -404,8 +402,8 @@ pub fn init_logger_from_config(config_path: &Path, check_args: &[String]) -> u32
                     // File path — resolve relative paths against the workspace directory
                     // (config_path's parent is the home dir; workspace is home/workspace).
                     // This keeps logs in `.nemesisbot/workspace/logs/` regardless of CWD.
-                    if let Some(fp) = logging.get("file").and_then(|v| v.as_str()) {
-                        if !fp.is_empty() {
+                    if let Some(fp) = logging.get("file").and_then(|v| v.as_str())
+                        && !fp.is_empty() {
                             let p = std::path::Path::new(fp);
                             let resolved = if p.is_absolute() {
                                 p.to_path_buf()
@@ -418,11 +416,7 @@ pub fn init_logger_from_config(config_path: &Path, check_args: &[String]) -> u32
                             };
                             file_path = Some(resolved.to_string_lossy().into_owned());
                         }
-                    }
                 }
-            }
-        }
-    }
 
     // Check CLI argument overrides
     let mut override_flags: u32 = 0;

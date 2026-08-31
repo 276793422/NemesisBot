@@ -74,8 +74,8 @@ impl WorkspaceStateManager {
         // Try to load from new location first
         if !mgr.state_file.exists() {
             // New file doesn't exist, try migrating from old location
-            if let Ok(data) = fs::read_to_string(&old_state_file) {
-                if let Ok(loaded) = serde_json::from_str::<WorkspaceState>(&data) {
+            if let Ok(data) = fs::read_to_string(&old_state_file)
+                && let Ok(loaded) = serde_json::from_str::<WorkspaceState>(&data) {
                     *mgr.state.write() = loaded;
                     // Migrate to new location
                     let _ = mgr.save_atomic();
@@ -85,7 +85,6 @@ impl WorkspaceStateManager {
                         mgr.state_file
                     );
                 }
-            }
         } else {
             // Load from new location
             let _ = mgr.load();

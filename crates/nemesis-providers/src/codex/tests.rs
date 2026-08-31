@@ -310,7 +310,7 @@ fn test_build_request_body_with_assistant_tool_calls() {
     let body = provider.build_request_body(&messages, &[], "gpt-4o", &ChatOptions::default());
     let input = body["input"].as_array().unwrap();
     // Should have: message + function_call
-    assert!(input.len() >= 1);
+    assert!(!input.is_empty());
 }
 
 #[test]
@@ -337,7 +337,7 @@ fn test_build_request_body_with_assistant_tool_calls_empty_content() {
     let body = provider.build_request_body(&messages, &[], "gpt-4o", &ChatOptions::default());
     let input = body["input"].as_array().unwrap();
     // Empty content should not produce a message item, only function_call
-    assert!(input.len() >= 1);
+    assert!(!input.is_empty());
 }
 
 #[test]

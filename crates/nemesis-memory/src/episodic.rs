@@ -348,11 +348,10 @@ impl EpisodicStore for FileEpisodicStore {
             .map_err(|e| format!("Dir entry error: {e}"))?
         {
             let path = entry.path();
-            if path.extension().is_some_and(|ext| ext == "jsonl") {
-                if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
+            if path.extension().is_some_and(|ext| ext == "jsonl")
+                && let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
                     sessions.push(stem.to_string());
                 }
-            }
         }
 
         sessions.sort();

@@ -147,7 +147,7 @@ pub fn read_boundary_events(session_key: &str) -> Vec<Value> {
     };
     std::io::BufReader::new(file)
         .lines()
-        .filter_map(|l| l.ok())
+        .map_while(Result::ok)
         .filter_map(|l| serde_json::from_str::<Value>(&l).ok())
         .collect()
 }
@@ -213,7 +213,7 @@ pub fn write_chat_log_rows(new_key: &str, rows: &[Value]) -> usize {
 ///   truncated, tool-intermediate-polluted history while the user picked a
 ///   turn by the clean jsonl the UI renders). `fork_session` now reads the
 ///   rows itself and writes them via `write_chat_log_rows`.
-/// Kept (not deleted) per the code-change discipline.
+///   Kept (not deleted) per the code-change discipline.
 #[allow(dead_code)]
 pub fn copy_chat_log_prefix(source_key: &str, new_key: &str, at_turn: usize) -> usize {
     // Whole-log read: fork is a one-shot admin op, not a hot path.
@@ -346,23 +346,20 @@ pub fn write_chat_log_from_store(
 /// conversation stays alive with its title). No-op if absent.
 pub fn delete_chat_log(session_key: &str) {
     let path = log_path(session_key);
-    if let Err(e) = std::fs::remove_file(&path) {
-        if e.kind() != std::io::ErrorKind::NotFound {
+    if let Err(e) = std::fs::remove_file(&path)
+        && e.kind() != std::io::ErrorKind::NotFound {
             tracing::warn!("[chat_log] Failed to delete {}: {}", path.display(), e);
         }
-    }
     let bpath = boundary_path(session_key);
-    if let Err(e) = std::fs::remove_file(&bpath) {
-        if e.kind() != std::io::ErrorKind::NotFound {
+    if let Err(e) = std::fs::remove_file(&bpath)
+        && e.kind() != std::io::ErrorKind::NotFound {
             tracing::warn!("[chat_log] Failed to delete {}: {}", bpath.display(), e);
         }
-    }
     let mpath = meta_path(session_key);
-    if let Err(e) = std::fs::remove_file(&mpath) {
-        if e.kind() != std::io::ErrorKind::NotFound {
+    if let Err(e) = std::fs::remove_file(&mpath)
+        && e.kind() != std::io::ErrorKind::NotFound {
             tracing::warn!("[chat_log] Failed to delete {}: {}", mpath.display(), e);
         }
-    }
 }
 
 /// Clear (truncate) a session's chat log, keeping the file. Used by session
@@ -374,11 +371,10 @@ pub fn clear_chat_log(session_key: &str) {
         tracing::warn!("[chat_log] Failed to clear {}: {}", path.display(), e);
     }
     let bpath = boundary_path(session_key);
-    if bpath.exists() {
-        if let Err(e) = fs::write(&bpath, "") {
+    if bpath.exists()
+        && let Err(e) = fs::write(&bpath, "") {
             tracing::warn!("[chat_log] Failed to clear {}: {}", bpath.display(), e);
         }
-    }
 }
 
 /// Path for the sidecar title meta file (`{safe_key}.meta.json`, next to the

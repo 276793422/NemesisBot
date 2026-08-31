@@ -3,6 +3,12 @@
 //! cmd_disable，编译不过，BUG S11c-1。现按现行 1 参签名重写并补
 //! cmd_enable 插件缺失错误路径 + run() 分发）。
 
+// 刻意设计：本文件测试用进程级串行锁（GLOBAL_STATE_LOCK 等 env/资源互斥锁）
+// 保护环境操作，guard 必须跨 async 测试体的 await 持有；#[tokio::test] 每个
+// 测试独立 current_thread runtime，持锁方在自己线程上恢复运行，不会死锁。
+// 测试域统一豁免（逐处 allow ~200 个不现实）。
+#![allow(clippy::await_holding_lock)]
+
 use super::*;
 use tempfile::TempDir;
 
@@ -45,7 +51,7 @@ fn test_read_main_switch_no_config() {
     let home = tmp.path().join(".nemesisbot");
     let cfg_path = home.join("config.json");
     assert!(!cfg_path.exists());
-    assert_eq!(read_main_switch(&cfg_path), false);
+    assert!(!read_main_switch(&cfg_path));
 }
 
 #[test]
@@ -57,7 +63,7 @@ fn test_read_main_switch_enabled() {
         serde_json::to_string(&serde_json::json!({"memory": {"enabled": true}})).unwrap(),
     )
     .unwrap();
-    assert_eq!(read_main_switch(&cfg_path), true);
+    assert!(read_main_switch(&cfg_path));
 }
 
 #[test]
@@ -69,7 +75,7 @@ fn test_read_main_switch_disabled() {
         serde_json::to_string(&serde_json::json!({"memory": {"enabled": false}})).unwrap(),
     )
     .unwrap();
-    assert_eq!(read_main_switch(&cfg_path), false);
+    assert!(!read_main_switch(&cfg_path));
 }
 
 #[test]
@@ -81,7 +87,7 @@ fn test_read_main_switch_missing_field() {
         serde_json::to_string(&serde_json::json!({ "agents": {} })).unwrap(),
     )
     .unwrap();
-    assert_eq!(read_main_switch(&cfg_path), false);
+    assert!(!read_main_switch(&cfg_path));
 }
 
 #[test]
@@ -94,7 +100,7 @@ fn test_read_main_switch_memory_object_without_enabled() {
             .unwrap(),
     )
     .unwrap();
-    assert_eq!(read_main_switch(&cfg_path), false);
+    assert!(!read_main_switch(&cfg_path));
 }
 
 #[test]
@@ -102,7 +108,7 @@ fn test_read_main_switch_invalid_json() {
     let tmp = TempDir::new().unwrap();
     let cfg_path = tmp.path().join("config.json");
     std::fs::write(&cfg_path, "not valid json{{{").unwrap();
-    assert_eq!(read_main_switch(&cfg_path), false);
+    assert!(!read_main_switch(&cfg_path));
 }
 
 #[test]
@@ -277,7 +283,7 @@ fn test_cmd_status_enabled_and_sub_enabled() {
     )
     .unwrap();
     cmd_status(&home).expect("status ok");
-    assert_eq!(read_main_switch(&home.join("config.json")), true);
+    assert!(read_main_switch(&home.join("config.json")));
 }
 
 #[test]

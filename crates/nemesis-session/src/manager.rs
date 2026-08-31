@@ -366,11 +366,10 @@ impl SessionMgr {
             if !path.extension().map(|e| e == "json").unwrap_or(false) {
                 continue;
             }
-            if let Ok(data) = fs::read_to_string(&path) {
-                if let Ok(session) = serde_json::from_str::<ChatSession>(&data) {
+            if let Ok(data) = fs::read_to_string(&path)
+                && let Ok(session) = serde_json::from_str::<ChatSession>(&data) {
                     sessions.insert(session.key.clone(), session);
                 }
-            }
         }
 
         Ok(())

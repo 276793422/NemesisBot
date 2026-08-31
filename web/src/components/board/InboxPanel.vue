@@ -2,6 +2,7 @@
 import { ref, onMounted } from 'vue'
 import { useWSAPI } from '../../composables/useWSAPI'
 import { useToast } from '../../composables/useToast'
+import { useBoardChanged } from '../../composables/useBoardChanged'
 import { fmtTime } from './boardMeta'
 
 // 收件箱（W2 P3）：站内通知列表。通知由后端 store 事件钩子产生（评论/
@@ -43,14 +44,15 @@ const notifications = ref<Notification[]>([])
 const unread = ref(0)
 const unreadOnly = ref(false)
 
-async function load() {
-  loading.value = true
+async function load(silent = false) {
+  if (!silent) loading.value = true
   try {
     const r = await request('board', 'inbox.list', { unread_only: unreadOnly.value })
     notifications.value = r?.notifications || []
     unread.value = r?.unread || 0
   } catch (e: any) {
-    toast.error('加载收件箱失败: ' + e)
+    if (silent) console.warn('[InboxPanel] silent refresh failed:', e)
+    else toast.error('加载收件箱失败: ' + e)
   } finally {
     loading.value = false
   }
@@ -78,6 +80,8 @@ async function markAllRead() {
 }
 
 onMounted(load)
+// board-changed 推送：新通知（评论/派发/状态变更）到达时静默换新。
+useBoardChanged(() => load(true))
 </script>
 
 <template>
@@ -87,7 +91,7 @@ onMounted(load)
         全部已读{{ unread ? `（${unread}）` : '' }}
       </button>
       <label class="muted" style="display: flex; align-items: center; gap: var(--space-1); cursor: pointer;">
-        <input type="checkbox" v-model="unreadOnly" @change="load" />
+        <input type="checkbox" v-model="unreadOnly" @change="load()" />
         仅看未读
       </label>
       <span class="muted">共 {{ notifications.length }} 条 · 未读 {{ unread }}</span>

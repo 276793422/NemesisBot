@@ -69,11 +69,10 @@ impl OpenAICompatProvider {
         let mut builder =
             reqwest::Client::builder().timeout(std::time::Duration::from_secs(config.timeout_secs));
 
-        if let Some(ref proxy_url) = config.proxy {
-            if let Ok(proxy) = reqwest::Proxy::all(proxy_url) {
+        if let Some(ref proxy_url) = config.proxy
+            && let Ok(proxy) = reqwest::Proxy::all(proxy_url) {
                 builder = builder.proxy(proxy);
             }
-        }
 
         let client = builder.build().expect("failed to build HTTP client");
         Self { config, client }
@@ -163,11 +162,10 @@ impl OpenAICompatProvider {
         // We send the field whenever a tier is set; models/gateways that do
         // not support it decide on their side (per goal: no client-side
         // model gating).
-        if let Some(ref effort) = options.reasoning_effort {
-            if !effort.is_empty() {
+        if let Some(ref effort) = options.reasoning_effort
+            && !effort.is_empty() {
                 body["reasoning_effort"] = serde_json::json!(effort);
             }
-        }
 
         body
     }

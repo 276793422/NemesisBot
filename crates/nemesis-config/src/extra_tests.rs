@@ -898,7 +898,7 @@ fn extra_workspace_resolver_ensure_workspace_failure() {
 #[test]
 fn extra_expand_tilde_only_tilde() {
     let p = expand_tilde("~");
-    assert!(p.to_string_lossy().len() > 0);
+    assert!(!p.to_string_lossy().is_empty());
     assert!(!p.to_string_lossy().starts_with("~"));
 }
 

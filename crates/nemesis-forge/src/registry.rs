@@ -119,8 +119,8 @@ impl Registry {
         let arts = self.artifacts.lock();
         arts.iter()
             .filter(|a| {
-                let kind_match = kind_filter.as_ref().map_or(true, |k| a.kind == *k);
-                let status_match = status_filter.as_ref().map_or(true, |s| a.status == *s);
+                let kind_match = kind_filter.as_ref().is_none_or(|k| a.kind == *k);
+                let status_match = status_filter.as_ref().is_none_or(|s| a.status == *s);
                 kind_match && status_match
             })
             .cloned()
@@ -171,10 +171,14 @@ impl Registry {
         if self.config.index_path.is_empty() {
             return Ok(());
         }
-        let arts = self.artifacts.lock();
-        let json = serde_json::to_string_pretty(&*arts)
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()))?;
-        drop(arts);
+        // Serialize inside the lock scope — the guard must not reach the
+        // awaits below (clippy's flow analysis recognizes block scoping,
+        // not a bare drop()).
+        let json = {
+            let arts = self.artifacts.lock();
+            serde_json::to_string_pretty(&*arts)
+                .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()))?
+        };
         // F-D4: atomic write (unique temp + rename).
         let tmp = atomic_tmp_path(&self.config.index_path);
         tokio::fs::write(&tmp, &json).await?;
@@ -207,11 +211,10 @@ impl Registry {
     fn increment_version(version: &str) -> String {
         // Simple semver patch bump: "x.y.z" -> "x.y.(z+1)"
         let parts: Vec<&str> = version.split('.').collect();
-        if parts.len() == 3 {
-            if let Ok(patch) = parts[2].parse::<u32>() {
+        if parts.len() == 3
+            && let Ok(patch) = parts[2].parse::<u32>() {
                 return format!("{}.{}.{}", parts[0], parts[1], patch + 1);
             }
-        }
         // Fallback: just append ".1"
         format!("{}.1", version)
     }

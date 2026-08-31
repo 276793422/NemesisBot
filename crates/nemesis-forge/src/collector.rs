@@ -112,11 +112,10 @@ impl Collector {
 
         // Persist to JSONL (before adding to memory so a crash between the two
         // does not lose data; re-loading will deduplicate anyway).
-        if let Some(ref path) = self.persistence_path {
-            if let Err(e) = Self::append_jsonl(path, &ce).await {
+        if let Some(ref path) = self.persistence_path
+            && let Err(e) = Self::append_jsonl(path, &ce).await {
                 tracing::warn!(path = %path.display(), error = %e, "[Collector] Failed to persist experience");
             }
-        }
 
         // Add to in-memory store
         {
@@ -519,17 +518,25 @@ impl ForgePlugin {
     ///
     /// Should be called periodically from an async context.
     pub async fn process_pending(&self) -> usize {
-        let mut rx_guard = self.input_rx.lock();
-        if let Some(ref mut rx) = *rx_guard {
-            let mut count = 0;
-            while let Ok(exp) = rx.try_recv() {
-                self.collector.record(exp).await;
-                count += 1;
+        // Drain the channel under the lock, then release the lock before
+        // awaiting each record — the parking_lot guard must not cross awaits
+        // (it would block take_input/other process_pending for the whole
+        // record-processing duration).
+        let mut batch = Vec::new();
+        {
+            let mut rx_guard = self.input_rx.lock();
+            if let Some(ref mut rx) = *rx_guard {
+                while let Ok(exp) = rx.try_recv() {
+                    batch.push(exp);
+                }
             }
-            count
-        } else {
-            0
         }
+        let mut count = 0;
+        for exp in batch {
+            self.collector.record(exp).await;
+            count += 1;
+        }
+        count
     }
 }
 

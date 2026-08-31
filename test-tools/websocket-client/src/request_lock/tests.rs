@@ -68,8 +68,10 @@ async fn test_request_lock_concurrent() {
         }
     });
 
-    let _ = tokio::time::timeout(Duration::from_secs(5), async {
+    tokio::time::timeout(Duration::from_secs(5), async {
         let _ = task1.await;
         let _ = task2.await;
-    });
+    })
+    .await
+    .expect("request lock tasks should finish within 5s");
 }

@@ -1070,8 +1070,6 @@ async fn test_send_callback_or_persist_no_source() {
         "",
     )
     .await;
-
-    let _ = _rx;
 }
 
 #[test]

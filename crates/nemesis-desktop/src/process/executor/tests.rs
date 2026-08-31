@@ -108,10 +108,8 @@ fn test_executor_config_custom() {
 
 #[test]
 fn test_default_platform_executor_new_custom() {
-    let executor = DefaultPlatformExecutor::new(ExecutorConfig { hide_window: false });
+    let _executor = DefaultPlatformExecutor::new(ExecutorConfig { hide_window: false });
     // Should be able to create with custom config
-    assert!(true);
-    let _ = executor;
 }
 
 #[test]

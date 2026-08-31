@@ -98,9 +98,9 @@ impl Scanner {
             });
         }
 
-        if self.config.max_file_size > 0 {
-            if let Ok(meta) = tokio::fs::metadata(file_path).await {
-                if meta.len() > self.config.max_file_size {
+        if self.config.max_file_size > 0
+            && let Ok(meta) = tokio::fs::metadata(file_path).await
+                && meta.len() > self.config.max_file_size {
                     return Ok(ClamavScanResult {
                         path: file_path.to_string_lossy().to_string(),
                         infected: false,
@@ -108,8 +108,6 @@ impl Scanner {
                         raw: format!("file too large ({} bytes)", meta.len()),
                     });
                 }
-            }
-        }
 
         let result = self.client.scan_file(file_path).await?;
         self.record_scan(0, result.infected, false).await;

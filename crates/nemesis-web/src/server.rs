@@ -24,7 +24,7 @@ use crate::websocket_handler::handle_websocket_upgrade;
 use axum::extract::State as AxumState;
 use axum::response::IntoResponse;
 use axum::response::sse::{Event as SseEvent, KeepAlive, Sse};
-use axum::routing::get;
+use axum::routing::{get, post};
 use axum::{Json, Router};
 use futures::stream::Stream;
 use nemesis_bus::MessageBus;
@@ -529,7 +529,30 @@ impl WebServer {
             .route("/api/usage/summary", get(handle_api_usage_summary))
             .route("/api/usage/trends", get(handle_api_usage_trends))
             .route("/api/usage/logs", get(handle_api_usage_logs))
+            .route(
+                "/api/usage/logs/{id}",
+                get(crate::api_usage::handle_api_usage_log_detail),
+            )
             .route("/api/usage/pricing", get(handle_api_usage_pricing))
+            // 价目表管理（A2 在线更新 / 自定义条目 / 离线导入）
+            .route(
+                "/api/usage/pricing/update",
+                post(crate::api_usage::handle_api_usage_pricing_update),
+            )
+            .route(
+                "/api/usage/pricing/custom",
+                post(crate::api_usage::handle_api_usage_pricing_custom_upsert),
+            )
+            .route(
+                "/api/usage/pricing/custom/remove",
+                post(crate::api_usage::handle_api_usage_pricing_custom_remove),
+            )
+            // LiteLLM 原始表 ~2MB，默认 body 上限贴边 → 放宽到 16MB。
+            .route(
+                "/api/usage/pricing/import",
+                post(crate::api_usage::handle_api_usage_pricing_import)
+                    .layer(axum::extract::DefaultBodyLimit::max(16 * 1024 * 1024)),
+            )
             // SSE event stream
             .route("/api/events/stream", get(handle_events_stream))
             // SSE chat streaming endpoint
@@ -846,8 +869,8 @@ async fn serve_embedded_static(
     //    beginning with `workflow/chat/` serves the same HTML shell; the
     //    client reads window.location.pathname to know which workflow to
     //    resolve.
-    if path.starts_with("workflow/chat/") {
-        if let Some(content) = files.get_file("workflow-chat/index.html") {
+    if path.starts_with("workflow/chat/")
+        && let Some(content) = files.get_file("workflow-chat/index.html") {
             return (
                 axum::http::StatusCode::OK,
                 [
@@ -862,11 +885,10 @@ async fn serve_embedded_static(
             )
                 .into_response();
         }
-    }
 
     // 3. SPA fallback: no file extension → serve index.html
-    if !path.contains('.') {
-        if let Some(content) = files.get_file("index.html") {
+    if !path.contains('.')
+        && let Some(content) = files.get_file("index.html") {
             return (
                 axum::http::StatusCode::OK,
                 [
@@ -881,7 +903,6 @@ async fn serve_embedded_static(
             )
                 .into_response();
         }
-    }
 
     // 4. 404
     (axum::http::StatusCode::NOT_FOUND, "Not Found").into_response()

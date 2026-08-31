@@ -29,6 +29,7 @@ impl LogLevel {
         }
     }
 
+    #[allow(clippy::should_implement_trait)] // lenient parser with fallback; deliberately NOT std::str::FromStr (no Err semantics)
     pub fn from_str(s: &str) -> Self {
         match s.to_uppercase().as_str() {
             "DEBUG" => LogLevel::Debug,
@@ -91,6 +92,12 @@ static GLOBAL_LOGGER: std::sync::OnceLock<Arc<NemesisLogger>> = std::sync::OnceL
 /// Global logger.
 pub struct NemesisLogger {
     state: Mutex<LoggerState>,
+}
+
+impl Default for NemesisLogger {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl NemesisLogger {
@@ -208,11 +215,10 @@ impl NemesisLogger {
         };
 
         // File logging (always write if configured)
-        if let Some(ref mut file) = state.file {
-            if let Ok(json) = serde_json::to_string(&entry) {
+        if let Some(ref mut file) = state.file
+            && let Ok(json) = serde_json::to_string(&entry) {
                 let _ = writeln!(file, "{}", json);
             }
-        }
 
         // Console output
         let console_enabled = state.console_enabled;

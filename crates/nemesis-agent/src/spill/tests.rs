@@ -3,7 +3,8 @@
 use super::*;
 
 fn temp_root(tag: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!(
+    
+    std::env::temp_dir().join(format!(
         "nemesis_spill_test_{}_{}_{}",
         tag,
         std::process::id(),
@@ -11,8 +12,7 @@ fn temp_root(tag: &str) -> PathBuf {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_nanos()
-    ));
-    dir
+    ))
 }
 
 /// Path traversal: a hostile session_key / call_id containing `../` must not
@@ -178,7 +178,7 @@ fn make_spill_file(root: &Path, session: &str, name: &str, age_secs: u64, conten
 fn test_cleanup_expired_deletes_old_and_keeps_fresh() {
     let root = temp_root("retention");
     make_spill_file(&root, "s1", "old.txt", 10 * 24 * 3600, "old"); // 10 days
-    make_spill_file(&root, "s1", "fresh.txt", 1 * 24 * 3600, "fresh"); // 1 day
+    make_spill_file(&root, "s1", "fresh.txt", 24 * 3600, "fresh"); // 1 day
     make_spill_file(&root, "s2", "also_old.txt", 30 * 24 * 3600, "old2"); // 30 days
 
     let deleted = cleanup_expired(&root, 7);
@@ -339,7 +339,7 @@ fn test_status_missing_root_is_all_zero() {
 #[test]
 fn test_status_counts_files_bytes_and_oldest() {
     let root = temp_root("status_tree");
-    make_spill_file(&root, "s1", "newer.txt", 1 * 24 * 3600, "0123456789"); // 10 bytes
+    make_spill_file(&root, "s1", "newer.txt", 24 * 3600, "0123456789"); // 10 bytes
     make_spill_file(&root, "s2", "older.txt", 5 * 24 * 3600, "abc"); // 3 bytes
 
     let st = status(&root);

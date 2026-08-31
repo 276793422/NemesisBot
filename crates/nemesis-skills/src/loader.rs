@@ -50,11 +50,10 @@ pub struct SkillMetadata {
 /// Supports Unix (`\n`), Windows (`\r\n`), and classic Mac (`\r`) line endings.
 pub fn extract_frontmatter(content: &str) -> String {
     let re = Regex::new(r"(?s)^---[\r\n]+(.*?)[\r\n]+---").unwrap();
-    if let Some(captures) = re.captures(content) {
-        if let Some(m) = captures.get(1) {
+    if let Some(captures) = re.captures(content)
+        && let Some(m) = captures.get(1) {
             return m.as_str().to_string();
         }
-    }
     String::new()
 }
 
@@ -127,14 +126,13 @@ pub fn get_skill_metadata(skill_path: &Path) -> Option<SkillMetadata> {
         description: Option<String>,
     }
 
-    if let Ok(json_meta) = serde_json::from_str::<JsonMeta>(&frontmatter) {
-        if json_meta.name.is_some() || json_meta.description.is_some() {
+    if let Ok(json_meta) = serde_json::from_str::<JsonMeta>(&frontmatter)
+        && (json_meta.name.is_some() || json_meta.description.is_some()) {
             return Some(SkillMetadata {
                 name: json_meta.name.unwrap_or_default(),
                 description: json_meta.description.unwrap_or_default(),
             });
         }
-    }
 
     // Fall back to simple YAML parsing
     let yaml_map = parse_simple_yaml(&frontmatter);
@@ -417,15 +415,13 @@ impl SkillsLoader {
             info.source = source.to_string();
 
             // Run security scan if enabled
-            if self.enable_security {
-                if let Some(ref linter) = self.linter {
-                    if let Ok(content) = std::fs::read_to_string(&skill_md) {
+            if self.enable_security
+                && let Some(ref linter) = self.linter
+                    && let Ok(content) = std::fs::read_to_string(&skill_md) {
                         let lint_result: LintResult = linter.lint(&content);
                         info.lint_score = Some(lint_result.score);
                         info.has_warnings = !lint_result.warnings.is_empty();
                     }
-                }
-            }
 
             debug!(
                 "Loaded skill: {} from {} ({})",

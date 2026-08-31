@@ -17,9 +17,9 @@ pub fn run(local: bool) -> Result<()> {
     println!("Sending shutdown signal...");
 
     // Method 1: Try PID file
-    if pid_path.exists() {
-        if let Ok(data) = std::fs::read_to_string(&pid_path) {
-            if let Ok(pid) = data.trim().parse::<u32>() {
+    if pid_path.exists()
+        && let Ok(data) = std::fs::read_to_string(&pid_path)
+            && let Ok(pid) = data.trim().parse::<u32>() {
                 println!("  Found gateway PID: {}", pid);
 
                 // Send SIGTERM on Unix, or use taskkill on Windows
@@ -64,8 +64,6 @@ pub fn run(local: bool) -> Result<()> {
 
                 return Ok(());
             }
-        }
-    }
 
     // (BUG #31, quality-hardening goal 冲刺 S11e) legacy 无消费方：全仓库没有
     // 任何代码读取 shutdown.signal 文件（PID 臂与 HTTP 臂是仅有的两条活路径）。
@@ -80,8 +78,8 @@ pub fn run(local: bool) -> Result<()> {
     // （gateway 经 InternalCommand mpsc 走 Ctrl+C 同源的优雅停机），鉴权用
     // config.json 的 channels.web.auth_token（未配置则不发 header——服务端
     // 空 token 可过的既有约定不变）。
-    if let Ok(data) = std::fs::read_to_string(common::config_path(&home)) {
-        if let Ok(cfg) = serde_json::from_str::<serde_json::Value>(&data) {
+    if let Ok(data) = std::fs::read_to_string(common::config_path(&home))
+        && let Ok(cfg) = serde_json::from_str::<serde_json::Value>(&data) {
             let port = cfg
                 .get("channels")
                 .and_then(|c| c.get("web"))
@@ -112,7 +110,6 @@ pub fn run(local: bool) -> Result<()> {
                 }
             }
         }
-    }
 
     println!();
     println!("  Could not reach a running gateway.");
@@ -139,10 +136,10 @@ pub fn run(local: bool) -> Result<()> {
 ///   2. release 构建：守卫被编译掉、不 panic——但 new()/drop 会 park/join
 ///      一个 worker 线程，满载下可把 multi-thread runtime 饿死（同样不可用，
 ///      只是死法不同）。
-/// 这里把整段 HTTP 调用搬到一条全新 OS 线程上执行：新线程没有任何 ambient
-/// runtime context，私有 runtime 的创建与销毁都合法；且全程使用异步 client，
-/// 两种 profile 下都安全。
-/// 探针测试见 shutdown/tests.rs（红对照按 profile 断言，见 BUG #50）。
+///      这里把整段 HTTP 调用搬到一条全新 OS 线程上执行：新线程没有任何 ambient
+///      runtime context，私有 runtime 的创建与销毁都合法；且全程使用异步 client，
+///      两种 profile 下都安全。
+///      探针测试见 shutdown/tests.rs（红对照按 profile 断言，见 BUG #50）。
 fn post_internal_shutdown(port: u16, token: &str) -> Result<u16, String> {
     let url = format!("http://127.0.0.1:{}/api/internal", port);
     let token = token.to_string();

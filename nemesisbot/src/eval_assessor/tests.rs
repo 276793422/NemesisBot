@@ -1302,7 +1302,7 @@ fn path_rules_match_native_device_paths() {    // T1 配套：三条 deny 探测
     //（.ssh / .aws / 浏览器凭据库都以原生路径出现在 driver_events 里）。
     let rules = parse_rules(DEFAULT_RULES_JSON).unwrap();
     let bs = std::path::MAIN_SEPARATOR;
-    let mk = |parts: &[&str]| parts.iter().map(|p| *p).collect::<Vec<_>>().join(&bs.to_string());
+    let mk = |parts: &[&str]| parts.to_vec().join(&bs.to_string());
     let cases: Vec<(&str, Vec<&str>)> = vec![
         ("outbox-deny-ssh", vec!["\\Device", "HarddiskVolume3", "Users", "Zoo", ".ssh", "id_rsa"]),
         ("outbox-deny-cloud-cred", vec!["\\Device", "HarddiskVolume3", "Users", "Zoo", ".aws", "credentials"]),

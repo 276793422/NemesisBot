@@ -53,12 +53,11 @@ pub fn extract_correlation_id(content: &str) -> Option<String> {
 ///
 /// If the content does not start with the RPC prefix, it is returned unchanged.
 pub fn strip_rpc_prefix(content: &str) -> String {
-    if let Some(rest) = content.strip_prefix("[rpc:") {
-        if let Some(end) = rest.find(']') {
+    if let Some(rest) = content.strip_prefix("[rpc:")
+        && let Some(end) = rest.find(']') {
             let after = &rest[end + 1..];
             return after.trim_start().to_string();
         }
-    }
     content.to_string()
 }
 

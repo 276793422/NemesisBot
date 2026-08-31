@@ -150,6 +150,6 @@ fn speex_drop_null_handle_is_noop() {
 fn speex_drop_nonnull_handle_panics_at_destroy() {
     // 非 null 句柄（悬垂但不解引用）→ AecDestroy 符号查找 panic（274-276）
     let mut aec = null_speex(160);
-    aec.handle = 1usize as *mut Aec;
+    aec.handle = std::ptr::dangling_mut::<Aec>();
     drop(aec);
 }

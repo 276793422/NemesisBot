@@ -191,7 +191,7 @@ fn selftest_child() -> Result<()> {
 fn user_profile() -> std::path::PathBuf {
     std::env::var_os("USERPROFILE")
         .map(std::path::PathBuf::from)
-        .or_else(|| dirs::home_dir())
+        .or_else(dirs::home_dir)
         .expect("USERPROFILE / home dir")
 }
 
@@ -430,13 +430,12 @@ fn box_file_root(ini_path: &std::path::Path, section: &str) -> Option<std::path:
             in_section = t.trim_start_matches('[').trim_end_matches(']') == section;
             continue;
         }
-        if in_section {
-            if let Some(v) = t.strip_prefix("FileRootPath=") {
+        if in_section
+            && let Some(v) = t.strip_prefix("FileRootPath=") {
                 // 形如 `\??\C:\...`——剥掉 NT 前缀
                 let p = v.trim().trim_start_matches(r"\??\");
                 return Some(std::path::PathBuf::from(p));
             }
-        }
     }
     None
 }

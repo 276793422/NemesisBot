@@ -195,18 +195,16 @@ impl Pipeline {
     /// Determine artifact status based on validation results.
     pub fn determine_status(&self, validation: &ArtifactValidation) -> ArtifactStatus {
         // If stage 1 failed, keep as draft
-        if let Some(ref s1) = validation.stage1_static {
-            if !s1.stage.passed {
+        if let Some(ref s1) = validation.stage1_static
+            && !s1.stage.passed {
                 return ArtifactStatus::Draft;
             }
-        }
 
         // If stage 2 failed, keep as draft
-        if let Some(ref s2) = validation.stage2_functional {
-            if !s2.stage.passed {
+        if let Some(ref s2) = validation.stage2_functional
+            && !s2.stage.passed {
                 return ArtifactStatus::Draft;
             }
-        }
 
         // Check quality score
         if let Some(ref s3) = validation.stage3_quality {
@@ -350,9 +348,12 @@ impl Pipeline {
         name: &str,
         content: &str,
     ) -> QualityValidationResult {
-        let caller = self.llm_caller.read();
+        // Clone the Arc inside the lock and drop the guard before awaiting —
+        // the parking_lot read guard must not be held across the LLM call
+        // (blocks set_llm_caller writers for the whole network round-trip).
+        let caller = self.llm_caller.read().clone();
 
-        match caller.as_ref() {
+        match caller {
             Some(caller) => {
                 // LLM-as-Judge evaluation (matches Go evaluator.go)
                 let kind_str = match kind {

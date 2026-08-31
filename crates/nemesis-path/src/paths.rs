@@ -225,13 +225,11 @@ pub fn resolve_home_dir() -> Result<PathBuf, String> {
     }
 
     // Priority 3: Exe directory
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(exe_dir) = exe.parent() {
-            if exe_dir.join(DEFAULT_HOME_DIR).is_dir() {
+    if let Ok(exe) = std::env::current_exe()
+        && let Some(exe_dir) = exe.parent()
+            && exe_dir.join(DEFAULT_HOME_DIR).is_dir() {
                 return Ok(exe_dir.join(DEFAULT_HOME_DIR));
             }
-        }
-    }
 
     // Priority 4: Auto-detect cwd
     let cwd = std::env::current_dir().map_err(|e| format!("cwd: {}", e))?;
@@ -246,14 +244,13 @@ pub fn resolve_home_dir() -> Result<PathBuf, String> {
 
 /// Expand ~ to home directory.
 pub fn expand_home(path: &str) -> PathBuf {
-    if path.starts_with('~') {
-        if let Some(home) = dirs::home_dir() {
+    if path.starts_with('~')
+        && let Some(home) = dirs::home_dir() {
             if path.len() > 1 {
                 return home.join(&path[2..]);
             }
             return home;
         }
-    }
     PathBuf::from(path)
 }
 
@@ -562,11 +559,10 @@ impl MinimalConfig {
         if ws.is_empty() {
             return None;
         }
-        if ws.starts_with("~/") {
-            if let Some(home) = dirs::home_dir() {
+        if ws.starts_with("~/")
+            && let Some(home) = dirs::home_dir() {
                 return Some(home.join(&ws[2..]));
             }
-        }
         Some(PathBuf::from(ws))
     }
 }
@@ -607,11 +603,10 @@ pub fn resolve_mcp_config_path() -> PathBuf {
     let home_dir = resolve_home_dir().unwrap_or_else(fallback_home_dir);
 
     let config_path = home_dir.join("config.json");
-    if let Some(cfg) = load_config_for_workspace(&config_path) {
-        if let Some(workspace) = cfg.workspace_path() {
+    if let Some(cfg) = load_config_for_workspace(&config_path)
+        && let Some(workspace) = cfg.workspace_path() {
             return workspace.join("config").join("config.mcp.json");
         }
-    }
 
     home_dir.join("config.mcp.json")
 }
@@ -626,11 +621,10 @@ pub fn resolve_security_config_path() -> PathBuf {
     let home_dir = resolve_home_dir().unwrap_or_else(fallback_home_dir);
 
     let config_path = home_dir.join("config.json");
-    if let Some(cfg) = load_config_for_workspace(&config_path) {
-        if let Some(workspace) = cfg.workspace_path() {
+    if let Some(cfg) = load_config_for_workspace(&config_path)
+        && let Some(workspace) = cfg.workspace_path() {
             return workspace.join("config").join("config.security.json");
         }
-    }
 
     home_dir.join("config.security.json")
 }
@@ -645,11 +639,10 @@ pub fn resolve_skills_config_path() -> PathBuf {
     let home_dir = resolve_home_dir().unwrap_or_else(fallback_home_dir);
 
     let config_path = home_dir.join("config.json");
-    if let Some(cfg) = load_config_for_workspace(&config_path) {
-        if let Some(workspace) = cfg.workspace_path() {
+    if let Some(cfg) = load_config_for_workspace(&config_path)
+        && let Some(workspace) = cfg.workspace_path() {
             return workspace.join("config").join("config.skills.json");
         }
-    }
 
     home_dir.join("config.skills.json")
 }
@@ -664,11 +657,10 @@ pub fn resolve_scanner_config_path() -> PathBuf {
     let home_dir = resolve_home_dir().unwrap_or_else(fallback_home_dir);
 
     let config_path = home_dir.join("config.json");
-    if let Some(cfg) = load_config_for_workspace(&config_path) {
-        if let Some(workspace) = cfg.workspace_path() {
+    if let Some(cfg) = load_config_for_workspace(&config_path)
+        && let Some(workspace) = cfg.workspace_path() {
             return workspace.join("config").join("config.scanner.json");
         }
-    }
 
     home_dir.join("config.scanner.json")
 }

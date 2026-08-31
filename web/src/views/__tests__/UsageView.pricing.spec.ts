@@ -17,6 +17,7 @@ const PRICING = [
     maxInputTokens: 65536,
     maxOutputTokens: 8192,
     aliases: ['deepseek/deepseek-chat'],
+    source: 'embedded',
   },
   {
     modelId: 'gpt-4o',
@@ -28,6 +29,7 @@ const PRICING = [
     maxInputTokens: null,
     maxOutputTokens: null,
     aliases: [],
+    source: 'downloaded',
   },
 ]
 
@@ -57,7 +59,9 @@ function jsonResponse(body: unknown, ok = true, status = 200) {
 }
 
 function route(url: string) {
-  if (url.startsWith('/api/usage/pricing')) return jsonResponse({ status: 'success', data: PRICING })
+  if (url.startsWith('/api/usage/pricing')) {
+    return jsonResponse({ status: 'success', data: PRICING, meta: { etag: '"v1"', fetchedAt: 1700000000, sourceUrl: 'https://x', entryCount: 2 }, custom: [] })
+  }
   if (url.startsWith('/api/status')) return jsonResponse({ model_name: 'deepseek/deepseek-chat', version: 'test' })
   if (url.startsWith('/api/usage/summary')) return jsonResponse({ data: SUMMARY })
   if (url.startsWith('/api/usage/trends')) return jsonResponse({ data: [] })
@@ -165,5 +169,118 @@ describe('UsageView 价格 tab（A⑥）', () => {
     await retry.trigger('click')
     await flushPromises()
     expect(pricedRows(w)).toHaveLength(2)
+  })
+})
+
+// -----------------------------------------------------------------------
+// A2 价目表在线更新（2026-08-31）：来源徽标 / 在线更新按钮 / 自定义条目
+// -----------------------------------------------------------------------
+
+describe('UsageView 价格 tab A2（在线更新 + 自定义条目）', () => {
+  it('来源徽标渲染：custom 行带编辑/删除按钮，非 custom 行没有', async () => {
+    const w = await mountView()
+    await clickPricingTab(w)
+    const rows = pricedRows(w)
+    // fixture：deepseek=embedded（内置）、gpt-4o=downloaded（下载）。
+    expect(rows[0].text()).toContain('内置')
+    expect(rows[1].text()).toContain('下载')
+    expect(w.text()).not.toContain('自定义条目已保存')
+    // 无 custom 行 → 无编辑/删除按钮。
+    expect(w.findAll('.pricing-action-btn')).toHaveLength(0)
+    // meta 摘要渲染（2 条 + fetchedAt 格式化）。
+    expect(w.find('[data-testid="pricing-meta"]').text()).toContain('2 条')
+  })
+
+  it('在线更新：点击 → POST /api/usage/pricing/update → 成功后强制重拉价目表', async () => {
+    const w = await mountView()
+    await clickPricingTab(w)
+    const callsBefore = fetchMock.mock.calls.length
+
+    fetchMock.mockImplementation((url: string, init?: RequestInit) => {
+      if (url === '/api/usage/pricing/update') {
+        expect(init?.method).toBe('POST')
+        return Promise.resolve(jsonResponse({ status: 'success', data: { updated: true, entryCount: 3400 } }))
+      }
+      return Promise.resolve(route(url))
+    })
+    await w.find('[data-testid="pricing-update"]').trigger('click')
+    await flushPromises()
+
+    const urls = fetchMock.mock.calls.map(c => c[0])
+    expect(urls).toContain('/api/usage/pricing/update')
+    // 更新成功 → loadPricing(true) 重拉（调用数增加）。
+    expect(fetchMock.mock.calls.length).toBeGreaterThan(callsBefore)
+  })
+
+  it('新增自定义条目：弹窗填表 → POST /api/usage/pricing/custom（snake_case body）', async () => {
+    const w = await mountView()
+    await clickPricingTab(w)
+
+    await w.find('[data-testid="pricing-add-custom"]').trigger('click')
+    const modal = w.find('.modal-backdrop')
+    expect(modal.exists()).toBe(true)
+    await modal.find('[data-testid="custom-model-id"]').setValue('my-model/v1')
+    await modal.find('[data-testid="custom-input-price"]').setValue('1.5')
+    await modal.find('[data-testid="custom-output-price"]').setValue('6')
+
+    let customBody: Record<string, unknown> | null = null
+    fetchMock.mockImplementation((url: string, init?: RequestInit) => {
+      if (url === '/api/usage/pricing/custom') {
+        customBody = JSON.parse(String(init?.body))
+        return Promise.resolve(jsonResponse({ status: 'success' }))
+      }
+      return Promise.resolve(route(url))
+    })
+    await modal.find('[data-testid="custom-save"]').trigger('click')
+    await flushPromises()
+
+    expect(customBody).not.toBeNull()
+    expect(customBody!['model_id']).toBe('my-model/v1')
+    expect(customBody!['input_cost_per_million']).toBe(1.5)
+    expect(customBody!['output_cost_per_million']).toBe(6)
+    // 保存成功 → 弹窗关 + 重拉价目表。
+    expect(w.find('.modal-backdrop').exists()).toBe(false)
+  })
+
+  it('自定义行操作：编辑回填表单；删除确认后 POST remove', async () => {
+    const withCustom = [
+      { ...PRICING[0], modelId: 'my-model/v1', source: 'custom' },
+    ]
+    fetchMock.mockImplementation((url: string) => {
+      if (url.startsWith('/api/usage/pricing')) {
+        return Promise.resolve(jsonResponse({ status: 'success', data: withCustom, meta: null, custom: [] }))
+      }
+      return Promise.resolve(route(url))
+    })
+    // confirm 返回 true（删除直接确认）。
+    vi.stubGlobal('confirm', () => true)
+    const w = await mountView()
+    await clickPricingTab(w)
+
+    const rows = pricedRows(w)
+    expect(rows[0].text()).toContain('自定义')
+    const [editBtn, delBtn] = w.findAll('.pricing-action-btn')
+
+    // 编辑：回填 modelId 与价格。
+    await editBtn.trigger('click')
+    const modal = w.find('.modal-backdrop')
+    expect((modal.find('[data-testid="custom-model-id"]').element as HTMLInputElement).value).toBe('my-model/v1')
+    expect((modal.find('[data-testid="custom-input-price"]').element as HTMLInputElement).value).toBe('0.28')
+    await modal.find('button[type="button"]').trigger('click') // 关弹窗（取消钮）
+    expect(w.find('.modal-backdrop').exists()).toBe(false)
+
+    // 删除：POST /api/usage/pricing/custom/remove。
+    let removeBody: Record<string, unknown> | null = null
+    fetchMock.mockImplementation((url: string, init?: RequestInit) => {
+      if (url === '/api/usage/pricing/custom/remove') {
+        removeBody = JSON.parse(String(init?.body))
+        return Promise.resolve(jsonResponse({ status: 'success', removed: true }))
+      }
+      return Promise.resolve(route(url))
+    })
+    await delBtn.trigger('click')
+    await flushPromises()
+    expect(removeBody).not.toBeNull()
+    expect(removeBody!['model_id']).toBe('my-model/v1')
   })
 })

@@ -27,19 +27,16 @@ use tokio::task::JoinHandle;
 /// to dashboard-only access — a session that connected via the standalone
 /// workflow-chat page must not be able to change passwords.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Default)]
 pub enum AuthMethod {
     /// Authenticated via the dashboard `token` query param (or no auth configured).
+    #[default]
     Dashboard,
     /// Authenticated via `workflow_chat=<index>&pwd=<password>` query params
     /// on the standalone `/workflow/chat/<index>` page.
     WorkflowChat,
 }
 
-impl Default for AuthMethod {
-    fn default() -> Self {
-        Self::Dashboard
-    }
-}
 
 // ---------------------------------------------------------------------------
 // Session

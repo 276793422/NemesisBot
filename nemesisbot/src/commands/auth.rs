@@ -14,11 +14,10 @@ use anyhow::Result;
 /// mock 测试，此前只差 CLI 层这个硬编码常量没有注入口。
 fn oauth_openai_config_or_override() -> nemesis_auth::OAuthProviderConfig {
     let mut cfg = nemesis_auth::OAuthProviderConfig::openai();
-    if let Ok(issuer) = std::env::var("NEMESISBOT_OAUTH_ISSUER") {
-        if !issuer.is_empty() {
+    if let Ok(issuer) = std::env::var("NEMESISBOT_OAUTH_ISSUER")
+        && !issuer.is_empty() {
             cfg.issuer = issuer;
         }
-    }
     cfg
 }
 
@@ -158,11 +157,10 @@ pub async fn run(action: AuthAction, local: bool) -> Result<()> {
                             let display = nemesis_auth::provider_display_name(provider);
                             println!("  {} ({})", display, cred.auth_method);
                             println!("    Status: {}", status);
-                            if let Some(ref account) = cred.account_id {
-                                if !account.is_empty() {
+                            if let Some(ref account) = cred.account_id
+                                && !account.is_empty() {
                                     println!("    Account: {}", account);
                                 }
-                            }
                             if let Some(expires) = cred.expires_at {
                                 println!("    Expires: {}", expires.format("%Y-%m-%d %H:%M UTC"));
                             }

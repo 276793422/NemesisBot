@@ -38,7 +38,7 @@ pub struct OutboundMeta {
 }
 
 /// Outbound message from the agent engine to a channel.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct OutboundMessage {
     pub channel: String,
     pub chat_id: String,
@@ -50,18 +50,6 @@ pub struct OutboundMessage {
     /// Extensible delivery metadata (model, future fields). Default = empty.
     #[serde(default)]
     pub meta: OutboundMeta,
-}
-
-impl Default for OutboundMessage {
-    fn default() -> Self {
-        Self {
-            channel: String::new(),
-            chat_id: String::new(),
-            content: String::new(),
-            message_type: String::new(),
-            meta: OutboundMeta::default(),
-        }
-    }
 }
 
 impl OutboundMessage {
@@ -93,6 +81,7 @@ impl OutboundMessage {
 /// Supports dual serialization for compatibility with Go's `[]string` format:
 /// - If only `url` is set (media_type empty, data None), serializes as a plain string.
 /// - Otherwise serializes as a full object.
+///
 /// Deserialization accepts both a plain string (treated as URL) and a full object.
 #[derive(Debug, Clone)]
 pub struct MediaAttachment {

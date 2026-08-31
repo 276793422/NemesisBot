@@ -255,11 +255,10 @@ impl DuckDuckGoSearchProvider {
 
             let mut url_clean = url_str.to_string();
             // Decode uddg parameter if present (DuckDuckGo redirect URL)
-            if url_clean.contains("uddg=") {
-                if let Some(decoded) = url_decode_query_param(&url_clean, "uddg") {
+            if url_clean.contains("uddg=")
+                && let Some(decoded) = url_decode_query_param(&url_clean, "uddg") {
                     url_clean = decoded;
                 }
-            }
 
             lines.push(format!("{}. {}\n   {}", i + 1, title, url_clean));
 
@@ -287,7 +286,7 @@ impl SearchProvider for DuckDuckGoSearchProvider {
     async fn search(&self, query: &str, count: usize) -> Result<String, String> {
         let url = format!(
             "https://html.duckduckgo.com/html/?q={}",
-            urlencoding(&query)
+            urlencoding(query)
         );
 
         let resp = self
@@ -525,9 +524,9 @@ impl WebSearchTool {
     /// Returns `None` if no provider is enabled.
     pub fn new(opts: &WebSearchToolOptions) -> Option<Self> {
         // Priority: Perplexity > Brave > DuckDuckGo
-        if opts.perplexity_enabled {
-            if let Some(ref key) = opts.perplexity_api_key {
-                if !key.is_empty() {
+        if opts.perplexity_enabled
+            && let Some(ref key) = opts.perplexity_api_key
+                && !key.is_empty() {
                     let max = if opts.perplexity_max_results > 0 {
                         opts.perplexity_max_results
                     } else {
@@ -538,12 +537,10 @@ impl WebSearchTool {
                         max_results: max,
                     });
                 }
-            }
-        }
 
-        if opts.brave_enabled {
-            if let Some(ref key) = opts.brave_api_key {
-                if !key.is_empty() {
+        if opts.brave_enabled
+            && let Some(ref key) = opts.brave_api_key
+                && !key.is_empty() {
                     let max = if opts.brave_max_results > 0 {
                         opts.brave_max_results
                     } else {
@@ -554,8 +551,6 @@ impl WebSearchTool {
                         max_results: max,
                     });
                 }
-            }
-        }
 
         if opts.duckduckgo_enabled {
             let max = if opts.duckduckgo_max_results > 0 {

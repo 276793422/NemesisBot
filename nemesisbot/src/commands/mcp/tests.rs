@@ -949,7 +949,7 @@ mod wave_b {
     /// （历史注记）cmd_add 对无 servers 数组的旧配置曾静默丢弃服务器，
     /// BUG 台账 #38 修复为自动补建数组并持久化 —— 行为由文件尾部两条
     /// test_cmd_add_missing_servers_key_still_persists / non_array 回归钉住。
-
+    ///
     /// cmd_remove：config 存在但无 "servers" 键 → if-let None（336 区），
     /// found=false 走 not-found 提示且不回写。
     #[test]

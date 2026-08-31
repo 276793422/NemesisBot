@@ -82,8 +82,8 @@ impl MockRegistry {
         version: &str,
         _target_dir: &str,
     ) -> InstallResult {
-        if let Some(meta) = self.skill_meta.get(slug) {
-            if meta.is_malware_blocked {
+        if let Some(meta) = self.skill_meta.get(slug)
+            && meta.is_malware_blocked {
                 return InstallResult {
                     version: version.to_string(),
                     is_malware_blocked: true,
@@ -91,7 +91,6 @@ impl MockRegistry {
                     summary: meta.summary.clone(),
                 };
             }
-        }
 
         InstallResult {
             version: version.to_string(),

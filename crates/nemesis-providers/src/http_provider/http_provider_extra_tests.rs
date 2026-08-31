@@ -694,9 +694,9 @@ async fn test_chat_stream_success_content_done() {
                 received_content.push_str(&chunk.delta);
                 if chunk.finish_reason.as_deref() == Some("stop") {
                     stop_count += 1;
-                    if chunk.usage.is_some() {
+                    if let Some(usage) = chunk.usage.as_ref() {
                         got_usage = true;
-                        assert_eq!(chunk.usage.as_ref().unwrap().total_tokens, 3);
+                        assert_eq!(usage.total_tokens, 3);
                     }
                 }
             }

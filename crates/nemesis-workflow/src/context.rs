@@ -147,13 +147,11 @@ impl WorkflowContext {
             if let Some(dot_pos) = key.find('.') {
                 let node_id = &key[..dot_pos];
                 let field = &key[dot_pos + 1..];
-                if let Some(result) = self.get_node_result(node_id) {
-                    if let Some(obj) = result.output.as_object() {
-                        if let Some(val) = obj.get(field) {
+                if let Some(result) = self.get_node_result(node_id)
+                    && let Some(obj) = result.output.as_object()
+                        && let Some(val) = obj.get(field) {
                             return value_to_string(val);
                         }
-                    }
-                }
                 return caps[0].to_string(); // unresolved
             }
 

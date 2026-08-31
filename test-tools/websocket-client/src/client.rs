@@ -225,7 +225,7 @@ impl WebSocketClient {
                                         if should_skip {
                                             // Skip this message entirely
                                             stats.messages_received.fetch_add(1, Ordering::Relaxed);
-                                            let rule_name = rule_applied.as_ref().map(|s| s.as_str()).unwrap_or("unknown");
+                                            let rule_name = rule_applied.as_deref().unwrap_or("unknown");
                                             log_message(&config, &format!("🚫 Skipped message due to rule: {}", rule_name));
                                             // println!("{}", format!("  🚫 Message skipped (rule: {})", rule_name).dimmed());
 
@@ -245,14 +245,12 @@ impl WebSocketClient {
                                             }
 
                                             // Send to output program if configured (only for assistant messages)
-                                            if role == "assistant" {
-                                                if let Some(ref output) = self.output_program {
-                                                    if let Err(e) = output.send(&processed_content).await {
+                                            if role == "assistant"
+                                                && let Some(ref output) = self.output_program
+                                                    && let Err(e) = output.send(&processed_content).await {
                                                         // eprintln!("{}", format!("⚠️  Failed to send to output program: {}", e).yellow());
                                                         log_message(&config, &format!("⚠️  Failed to send to output program: {}", e));
                                                     }
-                                                }
-                                            }
 
                                             // Release request lock if configured
                                             if let Some(ref lock) = self.request_lock {
@@ -293,10 +291,7 @@ impl WebSocketClient {
                         Some(content) => {
                             // Check request lock before sending
                             let can_send = if let Some(ref lock) = self.request_lock {
-                                match lock.try_acquire(content.clone()).await {
-                                    Ok(_) => true,
-                                    Err(_) => false,
-                                }
+                                lock.try_acquire(content.clone()).await.is_ok()
                             } else {
                                 true
                             };

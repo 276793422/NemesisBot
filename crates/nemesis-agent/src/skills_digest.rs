@@ -76,6 +76,12 @@ pub fn digest_message(rendered: &str) -> String {
 /// the place to hang per-session state again.
 pub struct DigestState;
 
+impl Default for DigestState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl DigestState {
     pub fn new() -> Self {
         Self

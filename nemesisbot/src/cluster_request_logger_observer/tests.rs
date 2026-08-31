@@ -141,7 +141,7 @@ fn path_uses_device_id_subdir_when_task_context_set() {
     let sessions: Vec<_> = std::fs::read_dir(&device_dir)
         .unwrap()
         .filter_map(|e| e.ok())
-        .filter(|e| e.file_type().map_or(false, |ft| ft.is_dir()))
+        .filter(|e| e.file_type().is_ok_and(|ft| ft.is_dir()))
         .collect();
     assert_eq!(sessions.len(), 1, "exactly one session dir expected");
 
@@ -175,7 +175,7 @@ fn path_falls_back_to_unknown_when_no_task_context() {
     let sessions: Vec<_> = std::fs::read_dir(&unknown_dir)
         .unwrap()
         .filter_map(|e| e.ok())
-        .filter(|e| e.file_type().map_or(false, |ft| ft.is_dir()))
+        .filter(|e| e.file_type().is_ok_and(|ft| ft.is_dir()))
         .collect();
     assert_eq!(sessions.len(), 1, "one session dir expected");
 }
@@ -224,7 +224,7 @@ fn unsafe_chars_in_device_id_and_task_id_are_sanitized() {
     let device_dirs: Vec<_> = std::fs::read_dir(&cluster_logs)
         .unwrap()
         .filter_map(|e| e.ok())
-        .filter(|e| e.file_type().map_or(false, |ft| ft.is_dir()))
+        .filter(|e| e.file_type().is_ok_and(|ft| ft.is_dir()))
         .map(|e| e.file_name().to_string_lossy().to_string())
         .collect();
     assert_eq!(device_dirs.len(), 1, "exactly one sanitized device dir");
@@ -239,7 +239,7 @@ fn unsafe_chars_in_device_id_and_task_id_are_sanitized() {
     let session_dirs: Vec<_> = std::fs::read_dir(cluster_logs.join(device_name))
         .unwrap()
         .filter_map(|e| e.ok())
-        .filter(|e| e.file_type().map_or(false, |ft| ft.is_dir()))
+        .filter(|e| e.file_type().is_ok_and(|ft| ft.is_dir()))
         .map(|e| e.file_name().to_string_lossy().to_string())
         .collect();
     assert_eq!(session_dirs.len(), 1);
@@ -320,7 +320,7 @@ fn full_lifecycle_creates_all_expected_files() {
     let session_dirs: Vec<_> = std::fs::read_dir(&device_dir)
         .unwrap()
         .filter_map(|e| e.ok())
-        .filter(|e| e.file_type().map_or(false, |ft| ft.is_dir()))
+        .filter(|e| e.file_type().is_ok_and(|ft| ft.is_dir()))
         .collect();
     assert_eq!(session_dirs.len(), 1);
 
@@ -371,7 +371,7 @@ fn raw_mode_writes_raw_envelope_and_response() {
     let session_dirs: Vec<_> = std::fs::read_dir(&device_dir)
         .unwrap()
         .filter_map(|e| e.ok())
-        .filter(|e| e.file_type().map_or(false, |ft| ft.is_dir()))
+        .filter(|e| e.file_type().is_ok_and(|ft| ft.is_dir()))
         .collect();
     assert_eq!(session_dirs.len(), 1);
 
@@ -459,7 +459,7 @@ fn two_concurrent_tasks_log_to_their_own_device_dirs() {
         let sessions: Vec<_> = std::fs::read_dir(&dir)
             .unwrap()
             .filter_map(|e| e.ok())
-            .filter(|e| e.file_type().map_or(false, |ft| ft.is_dir()))
+            .filter(|e| e.file_type().is_ok_and(|ft| ft.is_dir()))
             .collect();
         assert_eq!(sessions.len(), 1);
     }
@@ -504,7 +504,7 @@ fn emit_conversation_start_makes_subsequent_llm_events_logged() {
     let sessions: Vec<_> = std::fs::read_dir(&device_dir)
         .unwrap()
         .filter_map(|e| e.ok())
-        .filter(|e| e.file_type().map_or(false, |ft| ft.is_dir()))
+        .filter(|e| e.file_type().is_ok_and(|ft| ft.is_dir()))
         .collect();
     assert_eq!(sessions.len(), 1, "one session dir expected");
 }

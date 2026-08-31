@@ -60,11 +60,10 @@ impl BoardStore {
         if new.title.trim().is_empty() {
             return Err("issue title must not be empty".to_string());
         }
-        if let Some(at) = &new.assignee {
-            if new.assignee_id.as_deref().unwrap_or("").trim().is_empty() {
+        if let Some(at) = &new.assignee
+            && new.assignee_id.as_deref().unwrap_or("").trim().is_empty() {
                 return Err(format!("assignee {} requires assignee_id", at));
             }
-        }
 
         let mut conn = self.conn.lock().map_err(|e| e.to_string())?;
         let tx = conn.transaction().map_err(|e| e.to_string())?;
@@ -553,11 +552,10 @@ impl BoardStore {
         // 普通评论通知（同一人只收一条）。
         if new.ctype == CommentType::Comment {
             let mut recipients = self_subscribers(&conn, new.issue_id)?;
-            if let Some(a) = &assignee {
-                if !recipients.iter().any(|r| r == a) {
+            if let Some(a) = &assignee
+                && !recipients.iter().any(|r| r == a) {
                     recipients.push(a.clone());
                 }
-            }
             let mentioned = extract_mentions(&new.content, &recipients);
             for m in &mentioned {
                 if *m != new.author {
@@ -710,11 +708,10 @@ impl BoardStore {
     /// 字段级部分更新项目（None = 不改；改名撞 UNIQUE 约束时报错透传）。
     /// 归档走 `status = "archived"`（软删除——列表仍可见）。
     pub fn update_project(&self, id: i64, patch: &ProjectPatch) -> Result<Project, String> {
-        if let Some(n) = &patch.name {
-            if n.trim().is_empty() {
+        if let Some(n) = &patch.name
+            && n.trim().is_empty() {
                 return Err("project name must not be empty".to_string());
             }
-        }
         let conn = self.conn.lock().map_err(|e| e.to_string())?;
         let old: Project = conn
             .query_row("SELECT * FROM project WHERE id = ?1", params![id], row_to_project)
@@ -1230,21 +1227,18 @@ impl BoardStore {
 
     /// 字段级部分更新（None = 不改；空串 title/name 拒绝）。
     pub fn update_autopilot(&self, id: i64, patch: &AutopilotPatch) -> Result<Autopilot, String> {
-        if let Some(n) = &patch.name {
-            if n.trim().is_empty() {
+        if let Some(n) = &patch.name
+            && n.trim().is_empty() {
                 return Err("autopilot name must not be empty".to_string());
             }
-        }
-        if let Some(t) = &patch.title {
-            if t.trim().is_empty() {
+        if let Some(t) = &patch.title
+            && t.trim().is_empty() {
                 return Err("autopilot title must not be empty".to_string());
             }
-        }
-        if let Some(c) = &patch.cron {
-            if c.trim().is_empty() {
+        if let Some(c) = &patch.cron
+            && c.trim().is_empty() {
                 return Err("autopilot cron must not be empty".to_string());
             }
-        }
         let conn = self.conn.lock().map_err(|e| e.to_string())?;
         let old: Autopilot = conn
             .query_row("SELECT * FROM autopilot WHERE id = ?1", params![id], row_to_autopilot)
@@ -1506,11 +1500,10 @@ fn extract_mentions(content: &str, candidates: &[Actor]) -> Vec<Actor> {
         if mentioned.is_empty() {
             continue;
         }
-        if let Some(a) = candidates.iter().find(|a| a.id == mentioned) {
-            if !hits.iter().any(|h: &Actor| h.id == a.id) {
+        if let Some(a) = candidates.iter().find(|a| a.id == mentioned)
+            && !hits.iter().any(|h: &Actor| h.id == a.id) {
                 hits.push(a.clone());
             }
-        }
     }
     hits
 }

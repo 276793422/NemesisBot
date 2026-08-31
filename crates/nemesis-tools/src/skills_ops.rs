@@ -242,14 +242,13 @@ impl Tool for InstallSkillTool {
 
         // Determine target registry
         let target_registry = if !registry_name.is_empty() {
-            if let Some(ref reg) = *reg_guard {
-                if reg.get_registry(registry_name).is_none() {
+            if let Some(ref reg) = *reg_guard
+                && reg.get_registry(registry_name).is_none() {
                     return ToolResult::error(&format!(
                         "registry '{}' not found or not configured",
                         registry_name
                     ));
                 }
-            }
             registry_name.to_string()
         } else {
             // Default to first available registry (matching Go behavior)
@@ -257,14 +256,13 @@ impl Tool for InstallSkillTool {
         };
 
         // Check if skill already exists (unless force)
-        if !force {
-            if installer.get_origin_tracking(slug).is_ok() {
+        if !force
+            && installer.get_origin_tracking(slug).is_ok() {
                 return ToolResult::error(&format!(
                     "skill '{}' is already installed. Use force=true to reinstall.",
                     slug
                 ));
             }
-        }
 
         // Install from registry
         match installer.install(&target_registry, slug, version).await {

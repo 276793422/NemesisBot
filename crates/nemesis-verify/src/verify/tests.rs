@@ -20,7 +20,7 @@ fn sign_verify_raw_valid() {
         } => {
             assert_eq!(signed_at, 1000);
             assert_eq!(pubkey, vk.to_bytes());
-            let expected_fp: [u8; 32] = sha2::Sha256::digest(&vk.to_bytes()).into();
+            let expected_fp: [u8; 32] = sha2::Sha256::digest(vk.to_bytes()).into();
             assert_eq!(key_fp, expected_fp);
         }
         o => panic!("expected Valid, got {:?}", o),
@@ -156,7 +156,7 @@ fn footer_off_of(signed: &[u8]) -> usize {
 /// 探测一个 VerifyingKey::from_bytes 拒绝的 32B 编码（确定性：SHA-256(i) 序列）。
 fn rejected_pubkey() -> [u8; 32] {
     for i in 0u8..=255 {
-        let cand: [u8; 32] = sha2::Sha256::digest(&[i]).into();
+        let cand: [u8; 32] = sha2::Sha256::digest([i]).into();
         if VerifyingKey::from_bytes(&cand).is_err() {
             return cand;
         }
@@ -274,7 +274,7 @@ fn broken_pe_falls_back_to_raw_then_fails_content_hash() {
     let signed = sign_content(b"raw payload", &sk, 1000, None, None, None, None).unwrap();
     let env_only = &signed[signed.len() - envelope::ENVELOPE_ALIGN..];
     let mut f = b"MZ".to_vec();
-    f.extend(std::iter::repeat(0u8).take(0x100 - 2)); // e_lfanew=0 → 无 PE 签名
+    f.extend(std::iter::repeat_n(0u8, 0x100 - 2)); // e_lfanew=0 → 无 PE 签名
     f.extend_from_slice(env_only);
     match verify_bytes(&f, &[sk.verifying_key()], 1000) {
         VerifyOutcome::Malformed(m) => assert!(m.contains("content_hash"), "{m}"),

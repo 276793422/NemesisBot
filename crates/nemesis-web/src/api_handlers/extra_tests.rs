@@ -677,7 +677,7 @@ async fn test_handle_api_logs_default_source_general() {
     let resp = handle_api_logs(State(state), query).await;
     assert!(resp.is_ok());
     let json = resp.unwrap().0;
-    assert!(json["entries"].as_array().unwrap().len() >= 1);
+    assert!(!json["entries"].as_array().unwrap().is_empty());
 }
 
 #[tokio::test]

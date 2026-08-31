@@ -77,11 +77,10 @@ pub fn parse_url(raw_url: &str) -> Result<ParsedUrl, ResolverError> {
     }
 
     let port = parsed.port();
-    if let Some(port_val) = port {
-        if port_val.to_string().parse::<u16>().is_err() {
+    if let Some(port_val) = port
+        && port_val.to_string().parse::<u16>().is_err() {
             return Err(ResolverError::InvalidPort(port_val.to_string()));
         }
-    }
 
     Ok(ParsedUrl {
         scheme,

@@ -204,12 +204,11 @@ fn toggle_job(store_path: &std::path::Path, id: &str, enabled: bool) {
             let mut jobs: Vec<serde_json::Value> = serde_json::from_str(&data).unwrap_or_default();
             let mut found = false;
             for job in &mut jobs {
-                if job.get("id").and_then(|v| v.as_str()) == Some(id) {
-                    if let Some(obj) = job.as_object_mut() {
+                if job.get("id").and_then(|v| v.as_str()) == Some(id)
+                    && let Some(obj) = job.as_object_mut() {
                         obj.insert("enabled".to_string(), serde_json::Value::Bool(enabled));
                         found = true;
                     }
-                }
             }
             if found {
                 let _ = std::fs::write(

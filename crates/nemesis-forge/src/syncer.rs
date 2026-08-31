@@ -231,8 +231,8 @@ impl Syncer {
 
     /// Sanitize reflection content before sharing with remote peers.
     pub fn sanitize_content(&self, content: &str) -> String {
-        let sanitized = self.sanitizer.sanitize(content);
-        sanitized
+        
+        self.sanitizer.sanitize(content)
     }
 
     /// Sanitize a report before sharing (remove sensitive data).

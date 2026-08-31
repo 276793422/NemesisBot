@@ -326,7 +326,7 @@ fn parse_response(data: &serde_json::Value) -> LLMResponse {
     {
         "tool_use" => "tool_calls",
         "max_tokens" => "length",
-        "end_turn" | _ => "stop",
+        _ => "stop",
     };
 
     let usage = if let Some(u) = data.get("usage") {

@@ -174,13 +174,11 @@ fn build_completed_reply_with_workflow(
     // `{text: ...}` envelope into a bare string so the chat UI sees clean
     // text instead of JSON.
     for id in terminal_node_ids(workflow) {
-        if let Some(nr) = exec.node_results.get(&id) {
-            if let Some(s) = nr.output.as_str() {
-                if !s.is_empty() {
+        if let Some(nr) = exec.node_results.get(&id)
+            && let Some(s) = nr.output.as_str()
+                && !s.is_empty() {
                     return s.to_string();
                 }
-            }
-        }
     }
 
     // Use Workflow::compute_output for terminal merging semantics — this
@@ -190,13 +188,11 @@ fn build_completed_reply_with_workflow(
     // Agent node output signature is {"response": "..."}. If merged is an
     // object with a "response" string field, prefer that as the natural
     // language reply.
-    if let Some(obj) = merged.as_object() {
-        if let Some(resp) = obj.get("response").and_then(|v| v.as_str()) {
-            if !resp.is_empty() {
+    if let Some(obj) = merged.as_object()
+        && let Some(resp) = obj.get("response").and_then(|v| v.as_str())
+            && !resp.is_empty() {
                 return resp.to_string();
             }
-        }
-    }
 
     // Fallback: JSON-dump the merged output. Keeps the workflow_chat page
     // useful for workflows that have no agent node (just code/start/etc.).

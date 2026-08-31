@@ -542,7 +542,7 @@ fn test_avg_duration_empty() {
 
 #[test]
 fn test_avg_duration_single() {
-    let traces = vec![make_trace(1, 300, &["a"], false)];
+    let traces = [make_trace(1, 300, &["a"], false)];
     let refs: Vec<&ConversationTrace> = traces.iter().collect();
     assert_eq!(avg_duration(&refs), 300);
 }

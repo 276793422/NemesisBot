@@ -1,3 +1,9 @@
+// 刻意设计：本文件测试用进程级串行锁（GLOBAL_STATE_LOCK 等 env/资源互斥锁）
+// 保护环境操作，guard 必须跨 async 测试体的 await 持有；#[tokio::test] 每个
+// 测试独立 current_thread runtime，持锁方在自己线程上恢复运行，不会死锁。
+// 测试域统一豁免（逐处 allow ~200 个不现实）。
+#![allow(clippy::await_holding_lock)]
+
 use std::fs;
 
 #[test]
@@ -14,11 +20,10 @@ fn test_model_add_and_list() {
     let mut config: serde_json::Value = serde_json::from_str(&data).unwrap();
     let entry = serde_json::json!({"model": "test/model-1", "api_key": "test-key", "proxy": "http://proxy:8080", "auth_method": "token"});
     if let Some(obj) = config.as_object_mut() {
-        if let Some(models) = obj.get_mut("model_list") {
-            if let Some(arr) = models.as_array_mut() {
+        if let Some(models) = obj.get_mut("model_list")
+            && let Some(arr) = models.as_array_mut() {
                 arr.push(entry);
             }
-        }
         obj.insert(
             "default_model".to_string(),
             serde_json::Value::String("test/model-1".to_string()),
@@ -462,7 +467,7 @@ fn test_model_entry_construction_full() {
     let auth = Some("token".to_string());
 
     let mut entry = serde_json::json!({
-        "model_name": model.splitn(2, '/').nth(1).unwrap_or(model),
+        "model_name": model.split_once('/').map(|x| x.1).unwrap_or(model),
         "model": model,
     });
     if let Some(k) = &key {
@@ -491,7 +496,7 @@ fn test_model_entry_construction_minimal() {
     let model = "zhipu/glm-4.7";
 
     let entry = serde_json::json!({
-        "model_name": model.splitn(2, '/').nth(1).unwrap_or(model),
+        "model_name": model.split_once('/').map(|x| x.1).unwrap_or(model),
         "model": model,
     });
 
@@ -743,21 +748,30 @@ fn test_is_default_by_agents_llm() {
 // Additional coverage tests for model
 // -------------------------------------------------------------------------
 
+/// Mirror of the production display-name resolution: custom name wins,
+/// else the part after `/`, else the full model string.
+fn resolve_model_name<'a>(
+    custom_name: Option<&'a str>,
+    model: &'a str,
+    parts: &[&'a str],
+) -> &'a str {
+    custom_name.unwrap_or_else(|| if parts.len() == 2 { parts[1] } else { model })
+}
+
 #[test]
 fn test_model_entry_with_custom_name() {
     let model = "openai/gpt-4o";
     let custom_name = Some("my-gpt4");
     let parts: Vec<&str> = model.splitn(2, '/').collect();
-    let model_name = custom_name.unwrap_or_else(|| if parts.len() == 2 { parts[1] } else { model });
+    let model_name = resolve_model_name(custom_name, model, &parts);
     assert_eq!(model_name, "my-gpt4");
 }
 
 #[test]
 fn test_model_entry_default_name_from_provider() {
     let model = "openai/gpt-4o";
-    let custom_name: Option<&str> = None;
     let parts: Vec<&str> = model.splitn(2, '/').collect();
-    let model_name = custom_name.unwrap_or_else(|| if parts.len() == 2 { parts[1] } else { model });
+    let model_name = resolve_model_name(None, model, &parts);
     assert_eq!(model_name, "gpt-4o");
 }
 
@@ -1875,7 +1889,7 @@ mod r9_subprocess {
         let ws = TestWorkspace::new().expect("workspace");
         std::fs::create_dir_all(ws.home()).unwrap();
         // model add 要求 config.json 已存在（101 行 read_to_string）。
-        std::fs::write(&ws.config_path(), "{}").unwrap();
+        std::fs::write(ws.config_path(), "{}").unwrap();
 
         let mock = MockAiServer::start(perfect_probe_script()).expect("mock ai server");
 
@@ -1956,7 +1970,7 @@ mod r9_subprocess {
         let ws = TestWorkspace::new().unwrap();
         std::fs::create_dir_all(ws.home()).unwrap();
         std::fs::write(
-            &ws.config_path(),
+            ws.config_path(),
             serde_json::json!({
                 "model_list": [{"model_name": "rm-y", "model": "r9/rm-y", "api_key": "k"}]
             })
@@ -1985,7 +1999,7 @@ mod r9_subprocess {
         let ws2 = TestWorkspace::new().unwrap();
         std::fs::create_dir_all(ws2.home()).unwrap();
         std::fs::write(
-            &ws2.config_path(),
+            ws2.config_path(),
             serde_json::json!({
                 "model_list": [{"model_name": "rm-n", "model": "r9/rm-n", "api_key": "k"}]
             })
@@ -2112,7 +2126,7 @@ mod r10_subprocess {
     async fn r10_probe_with_empty_name_resolves_effective_llm_and_skips_tier_persist() {
         let ws = TestWorkspace::new().expect("workspace");
         std::fs::create_dir_all(ws.home()).unwrap();
-        std::fs::write(&ws.config_path(), "{}").unwrap();
+        std::fs::write(ws.config_path(), "{}").unwrap();
 
         let mock = MockAiServer::start(perfect_probe_script()).expect("mock ai server");
         let bin = resolve_nemesisbot_bin().expect("release binary");

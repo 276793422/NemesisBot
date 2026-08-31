@@ -290,12 +290,11 @@ pub async fn handle_workflow_webhook(
     // Signature: only enforced when the workflow defines a webhook `secret`.
     // Look up workflow → find webhook trigger → read `config.secret`.
     let secret = workflow_webhook_secret(&state, &name).await;
-    if let Some(secret) = secret {
-        if let Err(reason) = verify_signature(&headers, body_bytes, secret.as_bytes()) {
+    if let Some(secret) = secret
+        && let Err(reason) = verify_signature(&headers, body_bytes, secret.as_bytes()) {
             audit_webhook(&state, &name, client_ip, "bad_signature", Some(&reason));
             return Err(unauthorized(&reason));
         }
-    }
 
     let payload: serde_json::Value =
         serde_json::from_slice(body_bytes).unwrap_or(serde_json::Value::Null);
@@ -386,11 +385,10 @@ async fn workflow_webhook_secret(state: &AppState, name: &str) -> Option<String>
     let workflow = engine.get_workflow(name)?;
     let wf = workflow.clone();
     for trigger in &wf.triggers {
-        if trigger.trigger_type == "webhook" {
-            if let Some(s) = trigger.config.get("secret").and_then(|v| v.as_str()) {
+        if trigger.trigger_type == "webhook"
+            && let Some(s) = trigger.config.get("secret").and_then(|v| v.as_str()) {
                 return Some(s.to_string());
             }
-        }
     }
     None
 }
@@ -447,7 +445,7 @@ fn decode_signature(s: &str) -> Option<Vec<u8>> {
 
 /// Tiny hex decoder (avoids pulling a hex crate just for this).
 fn hex_decode(s: &str) -> Result<Vec<u8>, &'static str> {
-    if s.len() % 2 != 0 {
+    if !s.len().is_multiple_of(2) {
         return Err("odd-length hex");
     }
     let mut out = Vec::with_capacity(s.len() / 2);
@@ -786,9 +784,7 @@ pub async fn handle_workflow_chat_info(
             let has_human_review = wf.nodes.iter().any(|n| n.node_type == "human_review");
             let chat_eligible = !has_human_review;
             let reason = if has_human_review {
-                Some(format!(
-                    "工作流包含 human_review 节点，聊天测试不支持（v1 暂不处理 Waiting 状态）"
-                ))
+                Some("工作流包含 human_review 节点，聊天测试不支持（v1 暂不处理 Waiting 状态）".to_string())
             } else {
                 None
             };
@@ -1117,9 +1113,7 @@ impl crate::ws_router::ModuleHandler for WorkflowHandler {
                             wf.nodes.iter().any(|n| n.node_type == "human_review");
                         let chat_eligible = !has_human_review;
                         let reason = if has_human_review {
-                            Some(format!(
-                                "工作流包含 human_review 节点，聊天测试不支持（v1 暂不处理 Waiting 状态）"
-                            ))
+                            Some("工作流包含 human_review 节点，聊天测试不支持（v1 暂不处理 Waiting 状态）".to_string())
                         } else {
                             None
                         };

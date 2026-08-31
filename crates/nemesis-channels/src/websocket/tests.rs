@@ -568,7 +568,7 @@ fn test_handle_text_message_allow_list_partial_match() {
         &bus_tx,
         &send_tx,
         "websocket",
-        &vec!["websocket:allowed_client".to_string()],
+        &["websocket:allowed_client".to_string()],
     );
 
     // Should be blocked
@@ -1454,14 +1454,13 @@ async fn w4c_wait_send_state(
         if want_ok && r.is_ok() {
             return None;
         }
-        if !want_ok {
-            if let Err(e) = r {
+        if !want_ok
+            && let Err(e) = r {
                 let s = e.to_string();
                 if s.contains("no websocket client connected") {
                     return Some(s);
                 }
             }
-        }
         if std::time::Instant::now() > deadline {
             return None;
         }

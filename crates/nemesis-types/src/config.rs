@@ -57,16 +57,12 @@ pub struct ChannelsConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Default)]
 pub struct ForgeConfig {
     #[serde(default)]
     pub enabled: bool,
 }
 
-impl Default for ForgeConfig {
-    fn default() -> Self {
-        Self { enabled: false }
-    }
-}
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ClusterConfig {

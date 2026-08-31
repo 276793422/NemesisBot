@@ -172,11 +172,10 @@ impl CodexCliProvider {
 
             match event.event_type.as_str() {
                 "item.completed" => {
-                    if let Some(item) = event.item {
-                        if item.item_type == "agent_message" && !item.text.is_empty() {
+                    if let Some(item) = event.item
+                        && item.item_type == "agent_message" && !item.text.is_empty() {
                             content_parts.push(item.text);
                         }
-                    }
                 }
                 "turn.completed" => {
                     if let Some(u) = event.usage {
@@ -294,13 +293,11 @@ impl LLMProvider for CodexCliProvider {
         let stdout = String::from_utf8_lossy(&output.stdout);
 
         // Parse JSONL from stdout even if exit code is non-zero
-        if !stdout.is_empty() {
-            if let Ok(resp) = self.parse_jsonl_events(&stdout) {
-                if !resp.content.is_empty() || !resp.tool_calls.is_empty() {
+        if !stdout.is_empty()
+            && let Ok(resp) = self.parse_jsonl_events(&stdout)
+                && (!resp.content.is_empty() || !resp.tool_calls.is_empty()) {
                     return Ok(resp);
                 }
-            }
-        }
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);

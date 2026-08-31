@@ -70,12 +70,11 @@ async fn run_boots_full_server_and_init_keys_on_ephemeral_port() {
     let deadline = tokio::time::Instant::now() + Duration::from_secs(15);
     let mut health_ok = false;
     while tokio::time::Instant::now() < deadline {
-        if let Some(resp) = http_get(port, "/v1/health").await {
-            if resp.starts_with("HTTP/1.1 200") || resp.contains(" 200 ") {
+        if let Some(resp) = http_get(port, "/v1/health").await
+            && (resp.starts_with("HTTP/1.1 200") || resp.contains(" 200 ")) {
                 health_ok = true;
                 break;
             }
-        }
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
     assert!(health_ok, "server did not come up on port {port} in time");

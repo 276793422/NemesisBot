@@ -10,6 +10,7 @@ const DEFAULT_FAILURE_WINDOW: Duration = Duration::from_secs(24 * 60 * 60);
 
 /// Per-provider cooldown entry.
 #[derive(Debug, Clone)]
+#[derive(Default)]
 struct CooldownEntry {
     error_count: usize,
     failure_counts: HashMap<FailoverReason, usize>,
@@ -19,18 +20,6 @@ struct CooldownEntry {
     last_failure: Option<std::time::Instant>,
 }
 
-impl Default for CooldownEntry {
-    fn default() -> Self {
-        Self {
-            error_count: 0,
-            failure_counts: HashMap::new(),
-            cooldown_end: None,
-            disabled_until: None,
-            disabled_reason: None,
-            last_failure: None,
-        }
-    }
-}
 
 /// Trait for getting the current time (injectable for testing).
 pub trait Clock: Send + Sync {
@@ -81,12 +70,11 @@ impl CooldownTracker {
         let entry = entries.entry(provider.to_string()).or_default();
 
         // 24h failure window reset: if no failure in failure_window, reset counters.
-        if let Some(last) = entry.last_failure {
-            if now.duration_since(last) > self.failure_window {
+        if let Some(last) = entry.last_failure
+            && now.duration_since(last) > self.failure_window {
                 entry.error_count = 0;
                 entry.failure_counts.clear();
             }
-        }
 
         entry.error_count += 1;
         *entry.failure_counts.entry(reason).or_insert(0) += 1;
@@ -127,18 +115,16 @@ impl CooldownTracker {
         let now = self.clock.now();
 
         // Billing disable takes precedence (longer cooldown).
-        if let Some(until) = entry.disabled_until {
-            if now < until {
+        if let Some(until) = entry.disabled_until
+            && now < until {
                 return false;
             }
-        }
 
         // Standard cooldown.
-        if let Some(end) = entry.cooldown_end {
-            if now < end {
+        if let Some(end) = entry.cooldown_end
+            && now < end {
                 return false;
             }
-        }
 
         true
     }
@@ -168,18 +154,16 @@ impl CooldownTracker {
         let now = self.clock.now();
 
         // Check billing disable first (longer).
-        if let Some(until) = entry.disabled_until {
-            if now < until {
+        if let Some(until) = entry.disabled_until
+            && now < until {
                 return Some(until - now);
             }
-        }
 
         // Check standard cooldown.
-        if let Some(end) = entry.cooldown_end {
-            if now < end {
+        if let Some(end) = entry.cooldown_end
+            && now < end {
                 return Some(end - now);
             }
-        }
 
         None
     }

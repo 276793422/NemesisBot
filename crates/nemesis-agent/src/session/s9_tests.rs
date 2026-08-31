@@ -65,7 +65,7 @@ fn self_heal_rebuild_logs_replayed_fields() {
 /// 唯一 init 调用者」并断言其临时目录下的落盘文件；两个 init 竞争会让
 /// 先跑的一方把全局指到已 drop 的 tempdir → 对方 read_dir NotFound。
 /// 该测试已覆盖 add_message 的 capture 分支，此处不再重复初始化全局。）
-
+///
 /// delete_session：json 路径预置为目录 → remove 失败非 NotFound → warn
 /// 字段行（793-795）+ 块收尾（800）。
 #[test]

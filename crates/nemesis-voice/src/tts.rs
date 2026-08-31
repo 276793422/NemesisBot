@@ -169,7 +169,7 @@ impl TtsEngine {
             silence_scale: 0.0,
         };
 
-        let tts = sherpa::safe_create_offline_tts(&config)
+        let tts = unsafe { sherpa::safe_create_offline_tts(&config) }
             .map_err(|e| anyhow::anyhow!("Failed to create TTS engine: {}", e))?;
 
         tracing::info!("[TTS] Using VITS model");
@@ -274,7 +274,7 @@ impl TtsEngine {
             silence_scale: 0.0,
         };
 
-        let tts = sherpa::safe_create_offline_tts(&config)
+        let tts = unsafe { sherpa::safe_create_offline_tts(&config) }
             .map_err(|e| anyhow::anyhow!("Failed to create Kokoro TTS engine: {}", e))?;
 
         tracing::info!("[TTS] Using Kokoro model");
@@ -300,12 +300,9 @@ impl TtsEngine {
             guard.tts
         };
 
-        let audio_result = sherpa::safe_tts_generate_audio(
-            tts_ptr,
-            text_c.as_ptr(),
-            speaker_id as libc::c_int,
-            speed,
-        );
+        let audio_result = unsafe {
+            sherpa::safe_tts_generate_audio(tts_ptr, text_c.as_ptr(), speaker_id as libc::c_int, speed)
+        };
 
         match audio_result {
             Ok(audio) => {
@@ -512,7 +509,7 @@ fn normalize_tts_text(text: &str) -> String {
         //   (c) 后一个字符是 CJK（"周五 下午" 从后看命中）。
         // 英文单词之间的空格（前后都不是 CJK）保留——Kokoro 英文路径需要。
         if ch == ' ' {
-            let next_is_cjk = iter.peek().map_or(false, |&n| is_cjk(n));
+            let next_is_cjk = iter.peek().is_some_and(|&n| is_cjk(n));
             if prev_stripped || prev_emitted_cjk || next_is_cjk {
                 prev_stripped = false;
                 continue;

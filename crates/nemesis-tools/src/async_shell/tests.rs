@@ -286,8 +286,7 @@ fn w4a_set_restrict_to_workspace_toggles_traversal_guard() {
     tool.set_restrict_to_workspace(true);
     let err = tool
         .guard_command("cat ../etc/passwd")
-        .err()
-        .expect("restricted must block traversal");
+        .expect_err("restricted must block traversal");
     assert!(err.contains("path traversal"), "got: {err}");
     // mixed case still caught (guard lowercases before checking)
     assert!(tool.guard_command("cat ..\\Windows").is_err());

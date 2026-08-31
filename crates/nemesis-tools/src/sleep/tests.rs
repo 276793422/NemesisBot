@@ -136,7 +136,7 @@ fn test_sleep_tool_new() {
 
 #[test]
 fn w4a_sleep_tool_default_matches_new() {
-    let tool = SleepTool::default();
+    let tool = SleepTool;
     assert_eq!(tool.name(), "sleep");
     assert!(!tool.description().is_empty());
 }

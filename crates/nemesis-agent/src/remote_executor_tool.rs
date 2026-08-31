@@ -231,8 +231,8 @@ impl ExecutorChannel {
             // P5-2 严格模式（fail-closed）：本次调用要求沙盒（sandbox_probe
             // 为 true），先过严格闸门——不过则拒绝执行，绝不静默降级成无盒。
             // 闸门内部 live 读 executor.strict：false 时秒过（现状字节不变）。
-            if let Some(gate) = &self.strict_gate {
-                if let Err(reason) = gate() {
+            if let Some(gate) = &self.strict_gate
+                && let Err(reason) = gate() {
                     tracing::warn!(
                         "[Executor] strict mode refusing '{tool}': sandbox required \
                          but unavailable: {reason}"
@@ -243,7 +243,6 @@ impl ExecutorChannel {
                          '{tool}' unsandboxed"
                     ));
                 }
-            }
             #[cfg(windows)]
             {
                 return self.spawn_and_call_pipe(tool, &request_line).await;

@@ -206,7 +206,7 @@ fn test_setters() {
 
 #[test]
 fn test_static_validator_default() {
-    let validator = StaticValidator::default();
+    let validator = StaticValidator;
     let result = validator.validate(ArtifactKind::Script, "ok", "echo hello");
     assert!(result.stage.passed);
 }

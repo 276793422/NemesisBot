@@ -509,13 +509,13 @@ fn is_unicode_common(r: char) -> bool {
 /// Check if a character is CJK (Han, Hiragana, Katakana).
 fn is_cjk_char(r: char) -> bool {
     // CJK Unified Ideographs
-    (r >= '\u{4E00}' && r <= '\u{9FFF}')
+    ('\u{4E00}'..='\u{9FFF}').contains(&r)
     // CJK Extension A
-    || (r >= '\u{3400}' && r <= '\u{4DBF}')
+    || ('\u{3400}'..='\u{4DBF}').contains(&r)
     // Hiragana
-    || (r >= '\u{3040}' && r <= '\u{309F}')
+    || ('\u{3040}'..='\u{309F}').contains(&r)
     // Katakana
-    || (r >= '\u{30A0}' && r <= '\u{30FF}')
+    || ('\u{30A0}'..='\u{30FF}').contains(&r)
 }
 
 #[cfg(test)]

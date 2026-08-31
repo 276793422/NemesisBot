@@ -17,7 +17,7 @@
 //! - **WebRTC AEC3**：质量 SOTA，但需 clang/cmake 编译或 MSYS2 预编译
 //!   （与 MSVC 链接有 CRT 坑）。SpeexDSP 在廉价喇叭/强混响场景残留过多时升级用。
 //! - **神经 AEC（DTLN）on ONNX**：可复用现有 ONNX Runtime，但模型质量参差、需调参。
-//! 两者都实现同一个 [`EchoCanceller`] trait，换后端只动本文件。
+//!   两者都实现同一个 [`EchoCanceller`] trait，换后端只动本文件。
 //!
 //! ## C API（libaec.h，cbindgen 生成）
 //! ```text
@@ -224,7 +224,7 @@ impl SpeexAec {
             self.far_buf.drain(..self.frame_size);
         } else {
             self.echo_s16
-                .extend(self.far_buf.drain(..).map(|s| f32_to_s16(s)));
+                .extend(self.far_buf.drain(..).map(f32_to_s16));
             self.echo_s16.resize(self.frame_size, 0);
         }
         self.near_buf.drain(..self.frame_size);

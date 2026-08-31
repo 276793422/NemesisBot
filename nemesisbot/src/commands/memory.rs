@@ -285,7 +285,7 @@ fn has_onnx_files(dir: &Path) -> bool {
                 if has_onnx_files(&path) {
                     return true;
                 }
-            } else if path.extension().map_or(false, |e| e == "onnx") {
+            } else if path.extension().is_some_and(|e| e == "onnx") {
                 return true;
             }
         }

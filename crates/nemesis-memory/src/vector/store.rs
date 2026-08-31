@@ -219,7 +219,7 @@ impl VectorStore {
     ) -> Result<QueryResult, String> {
         let query_embedding = (self.embed)(query)?;
 
-        let limit = if limit <= 0 {
+        let limit = if limit == 0 {
             self.config.max_results
         } else {
             limit

@@ -3,6 +3,12 @@
 //! credentials/tests.rs 有自己的单测；这里钉的是 CLI 入口的接线：
 //! env home 解析 → 全局 credentials 路径注入 → 报表打印不 Err。
 
+// 刻意设计：本文件测试用进程级串行锁（GLOBAL_STATE_LOCK 等 env/资源互斥锁）
+// 保护环境操作，guard 必须跨 async 测试体的 await 持有；#[tokio::test] 每个
+// 测试独立 current_thread runtime，持锁方在自己线程上恢复运行，不会死锁。
+// 测试域统一豁免（逐处 allow ~200 个不现实）。
+#![allow(clippy::await_holding_lock)]
+
 use super::*;
 
 /// 环境操作（NEMESISBOT_HOME）+ run() 会 set_global_credentials_path

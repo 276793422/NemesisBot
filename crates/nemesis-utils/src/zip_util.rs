@@ -46,16 +46,14 @@ pub fn extract_zip(zip_path: &str, dest_dir: &str) -> Result<(), String> {
         // Security check: ensure the resolved path is within the destination directory.
         // We canonicalize the parent (which must exist since we created dest_dir) and
         // then check if it's within the destination.
-        if let Some(parent) = entry_path.parent() {
-            if let Ok(parent_canonical) = parent.canonicalize() {
-                if !parent_canonical.starts_with(&dest_dir_abs) {
+        if let Some(parent) = entry_path.parent()
+            && let Ok(parent_canonical) = parent.canonicalize()
+                && !parent_canonical.starts_with(&dest_dir_abs) {
                     return Err(format!(
                         "invalid file path: {} (zip slip detected)",
                         entry_name
                     ));
                 }
-            }
-        }
 
         // Additional check: reject entries with path traversal components
         let entry_name_lower = entry_name.to_lowercase();
@@ -173,7 +171,7 @@ fn recursively_add_directory<W: Write + std::io::Seek>(
         if path.is_dir() {
             // Add directory entry
             zip_writer
-                .add_directory(&format!("{}/", relative_str), *options)
+                .add_directory(format!("{}/", relative_str), *options)
                 .map_err(|e| format!("failed to add directory {} to zip: {}", relative_str, e))?;
 
             // Recurse

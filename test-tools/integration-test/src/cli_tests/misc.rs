@@ -19,7 +19,7 @@ pub async fn test_cli_migrate(ws: &TestWorkspace, bin: &Path) -> Vec<TestResult>
     } else {
         results.push(fail(
             &format!("{}/help", suite),
-            &format!("exit={}", help.exit_code),
+            format!("exit={}", help.exit_code),
         ));
     }
 
@@ -36,12 +36,12 @@ pub async fn test_cli_migrate(ws: &TestWorkspace, bin: &Path) -> Vec<TestResult>
         if help.stdout_contains(flag) {
             results.push(pass(
                 &format!("{}/flag_{}", suite, flag.trim_start_matches("--")),
-                &format!("{} present", flag),
+                format!("{} present", flag),
             ));
         } else {
             results.push(fail(
                 &format!("{}/flag_{}", suite, flag.trim_start_matches("--")),
-                &format!("{} missing from help", flag),
+                format!("{} missing from help", flag),
             ));
         }
     }
@@ -50,7 +50,7 @@ pub async fn test_cli_migrate(ws: &TestWorkspace, bin: &Path) -> Vec<TestResult>
     let dry_run = ws.run_cli(bin, &["migrate", "--dry-run"]).await;
     results.push(pass(
         &format!("{}/dry_run", suite),
-        &format!("exit={}", dry_run.exit_code),
+        format!("exit={}", dry_run.exit_code),
     ));
 
     results
@@ -71,7 +71,7 @@ pub async fn test_cli_gateway_flags(ws: &TestWorkspace, bin: &Path) -> Vec<TestR
     } else {
         results.push(fail(
             &format!("{}/help", suite),
-            &format!("exit={}", help.exit_code),
+            format!("exit={}", help.exit_code),
         ));
     }
 
@@ -81,12 +81,12 @@ pub async fn test_cli_gateway_flags(ws: &TestWorkspace, bin: &Path) -> Vec<TestR
         if help.stdout_contains(flag) {
             results.push(pass(
                 &format!("{}/flag_{}", suite, flag.trim_start_matches("-")),
-                &format!("{} present", flag),
+                format!("{} present", flag),
             ));
         } else {
             results.push(fail(
                 &format!("{}/flag_{}", suite, flag.trim_start_matches("-")),
-                &format!("{} missing from help", flag),
+                format!("{} missing from help", flag),
             ));
         }
     }

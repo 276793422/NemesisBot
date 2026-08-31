@@ -49,7 +49,7 @@ fn bm25_empty_corpus_or_query_returns_zero() {
     assert_eq!(bm25_score(&HashMap::new(), 0, &q, &df, 0, 0.0), 0.0);
     // avg_len <= 0 is clamped internally.
     let d1 = term_counts(&tokens("rust"));
-    let df2 = document_frequency(&[d1.clone()]);
+    let df2 = document_frequency(std::slice::from_ref(&d1));
     assert!(bm25_score(&d1, 1, &query_terms("rust"), &df2, 1, 0.0) > 0.0);
 }
 

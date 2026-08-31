@@ -510,7 +510,7 @@ fn test_resolve_mcp_config_path_with_workspace_in_config() {
     std::fs::create_dir_all(&home).unwrap();
     std::fs::write(home.join("config.json"), config_content).unwrap();
 
-    let _g1 = EnvGuard::set(ENV_HOME, &dir.path().to_string_lossy().to_string());
+    let _g1 = EnvGuard::set(ENV_HOME, dir.path().to_string_lossy().as_ref());
     let _g2 = EnvGuard::remove(ENV_MCP_CONFIG);
     set_local_mode(false);
 
@@ -690,7 +690,7 @@ fn test_resolve_mcp_config_path_with_workspace() {
     );
     std::fs::write(home.join("config.json"), &config_content).unwrap();
 
-    let _g1 = EnvGuard::set(ENV_HOME, &dir.path().to_string_lossy().to_string());
+    let _g1 = EnvGuard::set(ENV_HOME, dir.path().to_string_lossy().as_ref());
     let _g2 = EnvGuard::remove(ENV_MCP_CONFIG);
     set_local_mode(false);
 
@@ -718,7 +718,7 @@ fn test_resolve_security_config_path_with_workspace() {
     );
     std::fs::write(home.join("config.json"), &config_content).unwrap();
 
-    let _g1 = EnvGuard::set(ENV_HOME, &dir.path().to_string_lossy().to_string());
+    let _g1 = EnvGuard::set(ENV_HOME, dir.path().to_string_lossy().as_ref());
     let _g2 = EnvGuard::remove(ENV_SECURITY_CONFIG);
     set_local_mode(false);
 
@@ -742,7 +742,7 @@ fn test_resolve_skills_config_path_with_workspace() {
     );
     std::fs::write(home.join("config.json"), &config_content).unwrap();
 
-    let _g1 = EnvGuard::set(ENV_HOME, &dir.path().to_string_lossy().to_string());
+    let _g1 = EnvGuard::set(ENV_HOME, dir.path().to_string_lossy().as_ref());
     let _g2 = EnvGuard::remove(ENV_SKILLS_CONFIG);
     set_local_mode(false);
 
@@ -766,7 +766,7 @@ fn test_resolve_scanner_config_path_with_workspace() {
     );
     std::fs::write(home.join("config.json"), &config_content).unwrap();
 
-    let _g1 = EnvGuard::set(ENV_HOME, &dir.path().to_string_lossy().to_string());
+    let _g1 = EnvGuard::set(ENV_HOME, dir.path().to_string_lossy().as_ref());
     let _g2 = EnvGuard::remove(ENV_SCANNER_CONFIG);
     set_local_mode(false);
 
@@ -777,7 +777,7 @@ fn test_resolve_scanner_config_path_with_workspace() {
 #[test]
 fn test_resolve_config_path_with_home_env() {
     let dir = tempfile::tempdir().unwrap();
-    let _g1 = EnvGuard::set(ENV_HOME, &dir.path().to_string_lossy().to_string());
+    let _g1 = EnvGuard::set(ENV_HOME, dir.path().to_string_lossy().as_ref());
     let _g2 = EnvGuard::remove(ENV_CONFIG);
     set_local_mode(false);
 
@@ -1004,7 +1004,7 @@ fn test_resolve_mcp_config_path_loads_workspace_from_config() {
     );
     std::fs::write(home.join("config.json"), &config_content).unwrap();
 
-    let _g1 = EnvGuard::set(ENV_HOME, &dir.path().to_string_lossy().to_string());
+    let _g1 = EnvGuard::set(ENV_HOME, dir.path().to_string_lossy().as_ref());
     let _g2 = EnvGuard::remove(ENV_MCP_CONFIG);
     set_local_mode(false);
 
@@ -1036,7 +1036,7 @@ fn test_resolve_security_config_path_loads_workspace_from_config() {
     );
     std::fs::write(home.join("config.json"), &config_content).unwrap();
 
-    let _g1 = EnvGuard::set(ENV_HOME, &dir.path().to_string_lossy().to_string());
+    let _g1 = EnvGuard::set(ENV_HOME, dir.path().to_string_lossy().as_ref());
     let _g2 = EnvGuard::remove(ENV_SECURITY_CONFIG);
     set_local_mode(false);
 
@@ -1061,7 +1061,7 @@ fn test_resolve_skills_config_path_loads_workspace_from_config() {
     );
     std::fs::write(home.join("config.json"), &config_content).unwrap();
 
-    let _g1 = EnvGuard::set(ENV_HOME, &dir.path().to_string_lossy().to_string());
+    let _g1 = EnvGuard::set(ENV_HOME, dir.path().to_string_lossy().as_ref());
     let _g2 = EnvGuard::remove(ENV_SKILLS_CONFIG);
     set_local_mode(false);
 
@@ -1086,7 +1086,7 @@ fn test_resolve_scanner_config_path_loads_workspace_from_config() {
     );
     std::fs::write(home.join("config.json"), &config_content).unwrap();
 
-    let _g1 = EnvGuard::set(ENV_HOME, &dir.path().to_string_lossy().to_string());
+    let _g1 = EnvGuard::set(ENV_HOME, dir.path().to_string_lossy().as_ref());
     let _g2 = EnvGuard::remove(ENV_SCANNER_CONFIG);
     set_local_mode(false);
 
@@ -1349,7 +1349,7 @@ fn test_resolve_skills_config_path_with_workspace_config() {
     );
     std::fs::write(home.join("config.json"), &config_content).unwrap();
 
-    let _g1 = EnvGuard::set(ENV_HOME, &dir.path().to_string_lossy().to_string());
+    let _g1 = EnvGuard::set(ENV_HOME, dir.path().to_string_lossy().as_ref());
     let _g2 = EnvGuard::remove(ENV_SKILLS_CONFIG);
     set_local_mode(false);
 
@@ -1618,7 +1618,7 @@ fn test_resolve_mcp_config_path_workspace_resolution() {
     )
     .unwrap();
 
-    let _g1 = EnvGuard::set(ENV_HOME, &dir.path().to_string_lossy().to_string());
+    let _g1 = EnvGuard::set(ENV_HOME, dir.path().to_string_lossy().as_ref());
     let _g2 = EnvGuard::remove(ENV_MCP_CONFIG);
     set_local_mode(false);
 
@@ -1638,7 +1638,7 @@ fn test_resolve_security_config_path_workspace_resolution() {
     )
     .unwrap();
 
-    let _g1 = EnvGuard::set(ENV_HOME, &dir.path().to_string_lossy().to_string());
+    let _g1 = EnvGuard::set(ENV_HOME, dir.path().to_string_lossy().as_ref());
     let _g2 = EnvGuard::remove(ENV_SECURITY_CONFIG);
     set_local_mode(false);
 
@@ -1657,7 +1657,7 @@ fn test_resolve_skills_config_path_workspace_resolution() {
     )
     .unwrap();
 
-    let _g1 = EnvGuard::set(ENV_HOME, &dir.path().to_string_lossy().to_string());
+    let _g1 = EnvGuard::set(ENV_HOME, dir.path().to_string_lossy().as_ref());
     let _g2 = EnvGuard::remove(ENV_SKILLS_CONFIG);
     set_local_mode(false);
 
@@ -1676,7 +1676,7 @@ fn test_resolve_scanner_config_path_workspace_resolution() {
     )
     .unwrap();
 
-    let _g1 = EnvGuard::set(ENV_HOME, &dir.path().to_string_lossy().to_string());
+    let _g1 = EnvGuard::set(ENV_HOME, dir.path().to_string_lossy().as_ref());
     let _g2 = EnvGuard::remove(ENV_SCANNER_CONFIG);
     set_local_mode(false);
 
@@ -1847,7 +1847,7 @@ fn test_resolve_home_dir_priority_local_over_env() {
 fn test_resolve_home_dir_env_over_exe_dir() {
     // NEMESISBOT_HOME env should take priority over exe_dir detection
     let dir = tempfile::tempdir().unwrap();
-    let _g = EnvGuard::set(ENV_HOME, &dir.path().to_string_lossy().to_string());
+    let _g = EnvGuard::set(ENV_HOME, dir.path().to_string_lossy().as_ref());
     set_local_mode(false);
     let result = resolve_home_dir();
     assert!(result.is_ok());
@@ -2101,7 +2101,7 @@ fn test_default_path_manager_singleton() {
     let pm1 = default_path_manager();
     let pm2 = default_path_manager();
     // Same singleton instance
-    assert!(pm1 as *const _ == pm2 as *const _);
+    assert!(std::ptr::eq(pm1, pm2));
 }
 
 #[test]
@@ -2314,7 +2314,7 @@ fn test_path_manager_home_dir_returns_clone() {
 fn test_resolve_all_paths_in_temp_home() {
     // End-to-end test in a temp dir
     let dir = tempfile::tempdir().unwrap();
-    let _g = EnvGuard::set(ENV_HOME, &dir.path().to_string_lossy().to_string());
+    let _g = EnvGuard::set(ENV_HOME, dir.path().to_string_lossy().as_ref());
     let _g2 = EnvGuard::remove(ENV_CONFIG);
     let _g3 = EnvGuard::remove(ENV_MCP_CONFIG);
     let _g4 = EnvGuard::remove(ENV_SECURITY_CONFIG);
@@ -2479,7 +2479,7 @@ fn test_resolve_home_dir_with_complex_env_path() {
     let dir = tempfile::tempdir().unwrap();
     let nested = dir.path().join("a").join("b").join("c");
     std::fs::create_dir_all(&nested).unwrap();
-    let _g = EnvGuard::set(ENV_HOME, &nested.to_string_lossy().to_string());
+    let _g = EnvGuard::set(ENV_HOME, nested.to_string_lossy().as_ref());
     set_local_mode(false);
     let result = resolve_home_dir();
     assert!(result.is_ok());

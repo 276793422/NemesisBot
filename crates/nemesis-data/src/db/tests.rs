@@ -39,12 +39,13 @@ fn init_db_creates_parent_dirs_schema_and_is_idempotent() {
     }
     drop(conn);
 
-    // 幂等：第二次 init（user_version 已 >= 1，跳过建表）不报错，版本保持 1
+    // 幂等：第二次 init（user_version 已 = SCHEMA_VERSION，跳过迁移）不报错，
+    // 版本保持当前值（A3 起为 2）
     let conn2 = init_db(&db_path).expect("re-init on existing db should be idempotent");
     let ver: i32 = conn2
         .pragma_query_value(None, "user_version", |r| r.get(0))
         .unwrap();
-    assert_eq!(ver, 1);
+    assert_eq!(ver, SCHEMA_VERSION);
 
     let _ = std::fs::remove_dir_all(&base);
 }

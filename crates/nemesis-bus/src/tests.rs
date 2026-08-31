@@ -1446,7 +1446,7 @@ async fn test_broadcast_send_failure_with_active_but_slow_receiver() {
 
     // The receiver should be able to receive but may have missed messages
     // This exercises the send error path in the broadcast channel
-    let _msg_count = loop {
+    loop {
         match tokio::time::timeout(std::time::Duration::from_millis(50), rx.recv()).await {
             Ok(Ok(_)) => continue,
             Ok(Err(_)) => break, // Lagged error
@@ -1456,7 +1456,6 @@ async fn test_broadcast_send_failure_with_active_but_slow_receiver() {
 
     // At least we attempted to receive, and sends were attempted
     // The key is that the code exercised the send operation
-    assert!(true, "test completed send operations");
 }
 
 #[tokio::test]

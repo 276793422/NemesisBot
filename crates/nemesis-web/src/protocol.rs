@@ -39,7 +39,7 @@ impl ProtocolMessage {
             module: Option<String>,
         }
         match serde_json::from_slice::<Probe>(raw) {
-            Ok(p) => p.module.as_ref().map_or(false, |m| !m.is_empty()),
+            Ok(p) => p.module.as_ref().is_some_and(|m| !m.is_empty()),
             Err(_) => false,
         }
     }

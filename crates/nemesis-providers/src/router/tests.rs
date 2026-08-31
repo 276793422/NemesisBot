@@ -273,7 +273,7 @@ fn test_router_select_throughput() {
             model: format!("model-{}", i),
             cost_per_1k: 0.01,
             quality_score: 0.9,
-            priority: i as i32,
+            priority: i,
             semantic_description: String::new(),
         });
     }

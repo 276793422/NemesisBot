@@ -273,11 +273,10 @@ fn copy_dir_recursive<'a>(
             } else {
                 let src_path = entry.path();
                 let dst_path = dst_dir.join(&name_str);
-                if let Ok(data) = tokio::fs::read(&src_path).await {
-                    if tokio::fs::write(&dst_path, &data).await.is_ok() {
+                if let Ok(data) = tokio::fs::read(&src_path).await
+                    && tokio::fs::write(&dst_path, &data).await.is_ok() {
                         files.push(name_str);
                     }
-                }
             }
         }
 

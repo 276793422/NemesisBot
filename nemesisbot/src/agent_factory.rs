@@ -197,7 +197,7 @@ pub fn build_agent_loop(
     };
     let provider = nemesis_providers::factory::create_provider(&factory_cfg)
         .map_err(|e| anyhow::anyhow!("Failed to create provider: {}", e))?;
-    let provider_arc: Arc<dyn nemesis_providers::router::LLMProvider> = Arc::from(provider);
+    let provider_arc: Arc<dyn nemesis_providers::router::LLMProvider> = provider;
     info!("[AgentFactory] Provider created for {}", model_name);
 
     // 3. Build system prompt from workspace files (IDENTITY.md, SOUL.md, etc.)
@@ -743,7 +743,7 @@ pub fn build_cluster_agent_loop(
     };
     let provider = nemesis_providers::factory::create_provider(&factory_cfg)
         .map_err(|e| anyhow::anyhow!("Failed to create provider: {}", e))?;
-    let provider_arc: Arc<dyn nemesis_providers::router::LLMProvider> = Arc::from(provider);
+    let provider_arc: Arc<dyn nemesis_providers::router::LLMProvider> = provider;
 
     // 3. Load cluster system prompt from workspace/cluster/IDENTITY.md + SOUL.md.
     let system_prompt = load_cluster_system_prompt(&shared.home);
@@ -820,11 +820,9 @@ pub fn build_cluster_agent_loop(
                 }
 
                 // Extract task_id from trace_id: "cluster-XXXXXXXX" or "cluster-resume-XXXXXXXX"
-                let task_id = if trace_id.starts_with("cluster-resume-") {
-                    &trace_id["cluster-resume-".len()..]
-                } else {
-                    &trace_id["cluster-".len()..]
-                };
+                let task_id = trace_id
+                    .strip_prefix("cluster-resume-")
+                    .unwrap_or_else(|| trace_id.strip_prefix("cluster-").unwrap_or(trace_id));
 
                 match event_type {
                     "llm_request" => {
@@ -1057,16 +1055,14 @@ fn load_cluster_system_prompt(home: &std::path::Path) -> Option<String> {
     let cluster_dir = home.join("workspace").join("cluster");
     let mut parts = Vec::new();
 
-    if let Ok(content) = std::fs::read_to_string(cluster_dir.join("IDENTITY.md")) {
-        if !content.trim().is_empty() {
+    if let Ok(content) = std::fs::read_to_string(cluster_dir.join("IDENTITY.md"))
+        && !content.trim().is_empty() {
             parts.push(content);
         }
-    }
-    if let Ok(content) = std::fs::read_to_string(cluster_dir.join("SOUL.md")) {
-        if !content.trim().is_empty() {
+    if let Ok(content) = std::fs::read_to_string(cluster_dir.join("SOUL.md"))
+        && !content.trim().is_empty() {
             parts.push(content);
         }
-    }
 
     if parts.is_empty() {
         info!("[AgentFactory] No cluster identity files found, running without system prompt");

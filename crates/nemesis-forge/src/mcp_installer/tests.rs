@@ -150,7 +150,7 @@ async fn test_invalid_json_config_is_installed_false() {
 async fn test_s8_install_into_brand_new_workspace() {
     // config/ does not exist yet in a fresh workspace; install must create it.
     let dir = tempfile::tempdir().unwrap();
-    let installer = MCPInstaller::new(&dir.path().join("ws"));
+    let installer = MCPInstaller::new(dir.path().join("ws"));
     assert!(!installer.config_path().exists());
     installer.install("fresh", "python", vec!["-m".into()]).await.unwrap();
     assert!(installer.config_path().exists());

@@ -47,7 +47,7 @@ async fn st_bot_enhanced_memory_plugin() -> Result<()> {
     // Bot should start with vector store initialized
     let client = http_client();
     let resp = client
-        .get(&format!("http://127.0.0.1:{}/health", HEALTH_PORT))
+        .get(format!("http://127.0.0.1:{}/health", HEALTH_PORT))
         .send()
         .await?;
     assert!(resp.status().is_success());
@@ -74,7 +74,7 @@ async fn st_bot_memory_disabled_starts() -> Result<()> {
 
     let client = http_client();
     let resp = client
-        .get(&format!("http://127.0.0.1:{}/health", HEALTH_PORT))
+        .get(format!("http://127.0.0.1:{}/health", HEALTH_PORT))
         .send()
         .await?;
     assert!(resp.status().is_success());
@@ -112,7 +112,7 @@ async fn st_bot_plugin_auto_detection() -> Result<()> {
 
     let client = http_client();
     let resp = client
-        .get(&format!("http://127.0.0.1:{}/health", HEALTH_PORT))
+        .get(format!("http://127.0.0.1:{}/health", HEALTH_PORT))
         .send()
         .await?;
     assert!(resp.status().is_success());
@@ -204,7 +204,7 @@ async fn st_bot_degradation_missing_plugin() -> Result<()> {
         // Bot should still start (degraded to basic memory)
         let client = http_client();
         let resp = client
-            .get(&format!("http://127.0.0.1:{}/health", HEALTH_PORT))
+            .get(format!("http://127.0.0.1:{}/health", HEALTH_PORT))
             .send()
             .await?;
         assert!(resp.status().is_success());

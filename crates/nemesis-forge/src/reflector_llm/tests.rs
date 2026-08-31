@@ -433,7 +433,7 @@ fn test_build_full_analysis_prompt_caps_top_patterns_at_five() {
     stats.top_patterns = (1..=7)
         .map(|i| PatternInsight {
             tool_name: format!("tp{}", i),
-            count: 100 - i as i32,
+            count: 100 - i,
             avg_duration_ms: 100,
             success_rate: 0.9,
             suggestion: format!("suggestion {}", i),

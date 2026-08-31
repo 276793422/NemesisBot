@@ -10,18 +10,17 @@ use std::path::{Path, PathBuf};
 /// Mirrors Go's `resolveExistingAncestor(path)` + `filepath.EvalSymlinks`.
 fn resolve_existing_ancestor(path: &Path) -> PathBuf {
     // First try to canonicalize the full path (resolves all symlinks)
-    if path.exists() {
-        if let Ok(canonical) = std::fs::canonicalize(path) {
+    if path.exists()
+        && let Ok(canonical) = std::fs::canonicalize(path) {
             return canonical;
         }
-    }
 
     // Walk up to find the deepest existing ancestor
     let mut ancestors = Vec::new();
     let mut current = path.to_path_buf();
     while !current.exists() {
         if let Some(parent) = current.parent() {
-            ancestors.push(current.file_name().map(|n| PathBuf::from(n)));
+            ancestors.push(current.file_name().map(PathBuf::from));
             current = parent.to_path_buf();
         } else {
             // Reached root without finding existing path
@@ -37,10 +36,8 @@ fn resolve_existing_ancestor(path: &Path) -> PathBuf {
 
     // Append non-existing components back
     let mut result = base;
-    for component in ancestors.into_iter().rev() {
-        if let Some(name) = component {
-            result = result.join(name);
-        }
+    for name in ancestors.into_iter().rev().flatten() {
+        result = result.join(name);
     }
 
     result
@@ -51,11 +48,8 @@ fn resolve_existing_ancestor(path: &Path) -> PathBuf {
 fn normalize_for_comparison(path: &Path) -> String {
     let s = path.to_string_lossy().to_string();
     // On Windows, canonicalize may return \\?\C:\... prefix
-    if s.starts_with(r"\\?\") {
-        s[4..].to_string()
-    } else {
-        s
-    }
+    // Strip the \\?\ prefix (ASCII, so byte-slicing was safe; strip_prefix is clearer).
+    s.strip_prefix(r"\\?\").unwrap_or(&s).to_string()
 }
 
 /// File read tool.
@@ -202,11 +196,10 @@ impl Tool for WriteFileTool {
         };
 
         // Create parent directories if needed
-        if let Some(parent) = canonical.parent() {
-            if let Err(e) = tokio::fs::create_dir_all(parent).await {
+        if let Some(parent) = canonical.parent()
+            && let Err(e) = tokio::fs::create_dir_all(parent).await {
                 return ToolResult::error(&format!("failed to create directories: {}", e));
             }
-        }
 
         match tokio::fs::write(&canonical, content).await {
             Ok(()) => ToolResult::success(&format!("wrote {} bytes to {}", content.len(), path)),

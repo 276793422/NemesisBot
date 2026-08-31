@@ -215,5 +215,5 @@ async fn call_stack_accessor_returns_the_engine_stack() {
     // pushes to. This is the public surface future WSAPI commands will use.
     let engine = build_engine();
     let stack = engine.call_stack();
-    assert!(Arc::ptr_eq(&engine.call_stack(), stack));
+    assert!(Arc::ptr_eq(engine.call_stack(), stack));
 }

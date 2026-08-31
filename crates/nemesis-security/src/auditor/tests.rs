@@ -1200,7 +1200,7 @@ fn test_get_audit_log_with_content() {
     writeln!(file, "{}", serde_json::to_string(&evt1).unwrap()).unwrap();
     writeln!(file, "{}", serde_json::to_string(&evt2).unwrap()).unwrap();
     writeln!(file, "# comment line").unwrap();
-    writeln!(file, "").unwrap();
+    writeln!(file).unwrap();
 
     let config = AuditorConfig {
         audit_log_file_enabled: true,

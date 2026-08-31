@@ -1,9 +1,20 @@
 name: Daily Nightly Release
 
+# H1 改造（project-health v2 §H1）：发布不再绕过验证。
+#
+# 触发改为【Extended Tests 成功后】经 workflow_run 链式触发：
+#   extended-tests.yml（UTC 1:00 定时 + 手动）── 成功 ──▶ 本工作流
+#   extended 失败 = 当天没有 nightly（门禁的设计行为）。
+# 手动 workflow_dispatch 保留（首次验证 / 临时补发），同样吃 gate 检查。
+#
+# gate job 防漂移：仅当被验证的 commit（workflow_run.head_sha）仍等于 main HEAD
+# （github.sha）才发布；主分支在验证期间前移则放弃本次，下个 nightly 补上。
+
 on:
-  schedule:
-    # 每天 UTC 2:00（北京时间 10:00）触发
-    - cron: '0 2 * * *'
+  workflow_run:
+    workflows: ["Extended Tests"]
+    types: [completed]
+    branches: [main]
   # 允许手动触发，方便首次验证 / 临时重跑
   workflow_dispatch:
 
@@ -19,10 +30,31 @@ concurrency:
 
 jobs:
   # ============================================================
+  # Job 0: 门禁——Extended Tests 必须成功，且验证 commit 未漂移
+  # ============================================================
+  gate:
+    name: Quality gate (extended-tests green + commit fresh)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Verify trigger
+        run: |
+          echo "event        = ${{ github.event_name }}"
+          echo "tested head  = ${{ github.event.workflow_run.head_sha }}"
+          echo "current HEAD = ${{ github.sha }}"
+          # 手动触发直接放行（人工决策）；workflow_run 触发必须 success + 未漂移
+          if [ "${{ github.event_name }}" = "workflow_run" ]; then
+            test "${{ github.event.workflow_run.conclusion }}" = "success" \
+              || { echo "Extended Tests 未通过，拒绝发布"; exit 1; }
+            test "${{ github.event.workflow_run.head_sha }}" = "${{ github.sha }}" \
+              || { echo "验证期间 main 已前移，放弃本次发布（下个 nightly 补上）"; exit 1; }
+          fi
+
+  # ============================================================
   # Job 1: 构建（Linux + Windows 并行 matrix）
   # ============================================================
   build:
     name: Build (${{ matrix.platform }})
+    needs: gate
     strategy:
       fail-fast: false            # 一个平台挂了不影响另一个
       matrix:
@@ -53,9 +85,9 @@ jobs:
         with:
           node-version: '22'      # Node 20 已于 2026-04 EOL，GitHub Actions 2026-06-16 起默认 Node 24；用 22（Active LTS）
           cache: 'npm'
-          # 项目 gitignore 了 package-lock.json（用 npm install 策略，对照 build-linux.sh），
-          # CI 上没有 lockfile；用被跟踪的 package.json 做 cache key
-          cache-dependency-path: web/package.json
+          # package-lock.json 入库（H1 可复现构建）；npm install 策略仅保留在
+          # 本地构建脚本 build-windows.bat / build-linux.sh
+          cache-dependency-path: web/package-lock.json
 
       # plugin-ui.so 在 Linux 上依赖：GTK3 + webkit2gtk(4.1) + libayatana-appindicator + librsvg
       # （plugin-ui/Cargo.toml 的 webkit2gtk="2.0" 对应 libwebkit2gtk-4.1）
@@ -77,10 +109,10 @@ jobs:
         shell: bash              # 必须 bash：rm -rf 在默认 PowerShell 下会报错（-rf 不是 Remove-Item 参数）
         run: |
           cd web
-          # 项目 gitignore 了 package-lock.json、用 npm install 策略（对照 build-linux.sh），不能用 npm ci
-          npm install
-          # vite.config.ts 里 emptyOutDir:false，vite 不会自动清 outDir；
-          # 手动清旧 hashed chunk，避免被 include_dir! 重复嵌入（对照 build-linux.sh）
+          # lockfile 入库后用 npm ci（可复现构建）；npm install 策略仅保留在本地构建脚本
+          npm ci
+          # 防御性清旧 hashed chunk（emptyOutDir:true 已自清，此行兜底 config 翻转，
+          # 防 include_dir! 把残留 chunk 重复嵌进二进制）
           rm -rf ../crates/nemesis-web/static/assets
           npm run build
           echo "=== 前端产物 ==="
@@ -174,6 +206,24 @@ jobs:
       - name: Show artifacts
         run: ls -la artifacts
 
+      # H1：发布包写 manifest（版本/commit/feature/SHA-256）——下载方可自校验
+      - name: Generate manifest + SHA-256 checksums
+        run: |
+          cd artifacts
+          sha256sum nightly-linux.tar.gz nightly-windows.zip > SHA256SUMS.txt
+          VERSION=$(git describe --tags --always 2>/dev/null || echo "untagged")
+          cat > MANIFEST.txt <<EOF
+          NemesisBot Nightly Manifest
+          ==========================
+          Version  : ${VERSION}
+          Commit   : ${{ github.sha }}
+          Branch   : ${{ github.ref_name }}
+          Features : default (full)
+          Built by : ${{ github.workflow }} #${{ github.run_number }} (run ${{ github.run_id }})
+          Quality  : Extended Tests passed on the same commit
+          EOF
+          cat MANIFEST.txt SHA256SUMS.txt
+
       # 删掉旧的 nightly-build Release + Tag，实现"覆盖式"最新链接
       - name: Delete previous nightly release + tag
         run: |
@@ -191,6 +241,8 @@ jobs:
           files: |
             artifacts/nightly-linux.tar.gz
             artifacts/nightly-windows.zip
+            artifacts/MANIFEST.txt
+            artifacts/SHA256SUMS.txt
           body: |
             ## 📦 Nightly Build
 

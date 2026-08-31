@@ -742,7 +742,7 @@ async fn test_cancel_returns_cancelled_state() {
     let run_handle = tokio::spawn(async move {
         let mut input = HashMap::new();
         engine_for_run
-            .run("long_wf", input.drain().collect(), None)
+            .run("long_wf", std::mem::take(&mut input), None)
             .await
             .unwrap()
     });
@@ -793,7 +793,7 @@ async fn test_close_cancels_all_in_flight() {
     let run_handle = tokio::spawn(async move {
         let mut input = HashMap::new();
         engine_for_run
-            .run("long_wf", input.drain().collect(), None)
+            .run("long_wf", std::mem::take(&mut input), None)
             .await
             .unwrap()
     });
@@ -1132,15 +1132,14 @@ async fn test_trigger_source_preserved_through_start_async() {
     // And on the completed record after the background task finishes.
     let mut final_exec = None;
     for _ in 0..200 {
-        if let Some(e) = engine.get_execution(&execution_id).await {
-            if matches!(
+        if let Some(e) = engine.get_execution(&execution_id).await
+            && matches!(
                 e.state,
                 ExecutionState::Completed | ExecutionState::Failed | ExecutionState::Cancelled
             ) {
                 final_exec = Some(e);
                 break;
             }
-        }
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
     let final_exec = final_exec.expect("execution should complete within 2s");

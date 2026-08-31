@@ -182,7 +182,7 @@ fn elf_error_paths() {
     ));
     // 非 ELF 魔数（但 ≥0x40 字节）→ NotAnExecutable
     assert!(matches!(
-        ElfCodec.compute_l(&vec![0u8; 0x80]),
+        ElfCodec.compute_l(&[0u8; 0x80]),
         Err(CodecError::NotAnExecutable)
     ));
     // EI_CLASS 非法（3）→ UnsupportedElfClass

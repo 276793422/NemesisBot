@@ -76,7 +76,7 @@ async fn test_pool_get_and_return() {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap().to_string();
 
-    let server = tokio::spawn(async move { while let Ok(_) = listener.accept().await {} });
+    let server = tokio::spawn(async move { while listener.accept().await.is_ok() {} });
 
     let pool = Pool::new(AsyncPoolConfig {
         max_conns: 10,
@@ -107,7 +107,7 @@ async fn test_pool_per_node_limit() {
     let addr = listener.local_addr().unwrap().to_string();
 
     // Accept multiple connections
-    let server = tokio::spawn(async move { while let Ok(_) = listener.accept().await {} });
+    let server = tokio::spawn(async move { while listener.accept().await.is_ok() {} });
 
     let pool = Pool::new(AsyncPoolConfig {
         max_conns: 100,
@@ -133,7 +133,7 @@ async fn test_pool_remove() {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap().to_string();
 
-    let server = tokio::spawn(async move { while let Ok(_) = listener.accept().await {} });
+    let server = tokio::spawn(async move { while listener.accept().await.is_ok() {} });
 
     let pool = Pool::with_defaults();
     let (key, conn) = pool.get("node-1", &addr).await.unwrap();
@@ -227,7 +227,7 @@ async fn test_pool_remove_node_single_conn() {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap().to_string();
 
-    let server = tokio::spawn(async move { while let Ok(_) = listener.accept().await {} });
+    let server = tokio::spawn(async move { while listener.accept().await.is_ok() {} });
 
     let pool = Pool::new(AsyncPoolConfig {
         max_conns: 10,
@@ -253,7 +253,7 @@ async fn test_pool_return_closed_connection() {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap().to_string();
 
-    let server = tokio::spawn(async move { while let Ok(_) = listener.accept().await {} });
+    let server = tokio::spawn(async move { while listener.accept().await.is_ok() {} });
 
     let pool = Pool::new(AsyncPoolConfig {
         max_conns: 10,
@@ -502,7 +502,7 @@ async fn test_s4_pool_double_check_per_node_after_semaphore() {
     pool.semaphore.add_permits(1);
 
     let result = getter.await.unwrap();
-    let err = result.err().expect("expected per-node double-check failure");
+    let err = result.expect_err("expected per-node double-check failure");
     assert!(
         err.contains("after acquiring semaphore"),
         "unexpected error: {}",

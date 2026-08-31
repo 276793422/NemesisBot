@@ -636,7 +636,7 @@ fn test_forge_plugin_with_collector() {
     let collector = Collector::new(CollectorConfig::default());
     let plugin = ForgePlugin::with_collector(collector);
     assert_eq!(plugin.name(), "forge");
-    assert!(plugin.collector().len() == 0);
+    assert!(plugin.collector().is_empty());
 }
 
 #[test]

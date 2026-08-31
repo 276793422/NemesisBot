@@ -326,7 +326,7 @@ async fn test_memory_entries_store_creates_file_and_appends() {
         .unwrap()
         .unwrap();
     assert!(r1["stored"].as_bool().unwrap());
-    assert!(r1["id"].as_str().unwrap().len() > 0);
+    assert!(!r1["id"].as_str().unwrap().is_empty());
 
     let data2 = serde_json::json!({ "content": "second memory" });
     let r2 = handler

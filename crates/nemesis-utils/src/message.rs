@@ -91,10 +91,7 @@ pub fn split_message(content: &str, max_len: usize) -> Vec<String> {
                         }
                         let chunk = format!(
                             "{}\n```",
-                            content[..msg_end].trim_end_matches(|c| c == ' '
-                                || c == '\t'
-                                || c == '\n'
-                                || c == '\r')
+                            content[..msg_end].trim_end_matches([' ', '\t', '\n', '\r'])
                         );
                         messages.push(chunk);
                         content = format!("{}\n{}", header, content[msg_end..].trim());
@@ -115,10 +112,7 @@ pub fn split_message(content: &str, max_len: usize) -> Vec<String> {
                             msg_end = max_len - 5;
                             let chunk = format!(
                                 "{}\n```",
-                                content[..msg_end].trim_end_matches(|c| c == ' '
-                                    || c == '\t'
-                                    || c == '\n'
-                                    || c == '\r')
+                                content[..msg_end].trim_end_matches([' ', '\t', '\n', '\r'])
                             );
                             messages.push(chunk);
                             content = format!("{}\n{}", header, content[msg_end..].trim());

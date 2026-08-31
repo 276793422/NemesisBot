@@ -906,7 +906,7 @@ async fn test_w4c_external_input_syncs_to_targets() {
     let mut got = Vec::new();
     while std::time::Instant::now() < deadline {
         got = stub_received.read().clone();
-        if got.len() >= 1 {
+        if !got.is_empty() {
             break;
         }
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
@@ -953,12 +953,11 @@ async fn test_w4c_external_send_writes_to_output_exe_stdin() {
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
     let mut content = String::new();
     while std::time::Instant::now() < deadline {
-        if let Ok(s) = std::fs::read_to_string(&proof) {
-            if !s.trim().is_empty() {
+        if let Ok(s) = std::fs::read_to_string(&proof)
+            && !s.trim().is_empty() {
                 content = s;
                 break;
             }
-        }
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
     }
     let _ = std::fs::remove_file(&in_bat);

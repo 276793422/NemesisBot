@@ -19,7 +19,7 @@ use tokio::sync::broadcast;
 use tracing::{debug, info, warn};
 
 use super::executor::{ChildProcess, DefaultPlatformExecutor, PlatformExecutor, ProcessStatus};
-use super::handshake::{ACK_TIMEOUT, PipeMessage};
+use super::handshake::PipeMessage;
 use crate::websocket::protocol::Message;
 use crate::websocket::server::WebSocketServer;
 
@@ -266,41 +266,35 @@ impl ProcessManager {
         let handshake_msg = PipeMessage::handshake();
         child.send_message(&handshake_msg)?;
 
-        // Wait for ACK with timeout
-        let start = std::time::Instant::now();
-        while start.elapsed() < ACK_TIMEOUT {
-            match child.read_message::<PipeMessage>() {
-                Ok(ack) => {
-                    if ack.is_ack() {
-                        child.status = ProcessStatus::Handshaking;
-                        return Ok(super::handshake::HandshakeResult {
-                            success: true,
-                            window_id: None,
-                            error: None,
-                        });
-                    } else {
-                        return Ok(super::handshake::HandshakeResult {
-                            success: false,
-                            window_id: None,
-                            error: Some(format!("expected ack, got {}", ack.msg_type)),
-                        });
-                    }
-                }
-                Err(e) => {
-                    return Ok(super::handshake::HandshakeResult {
+        // Wait for ACK. read_message is a blocking one-shot read whose match
+        // arms all return, so the old `while elapsed < ACK_TIMEOUT` shell never
+        // iterated (clippy::never_loop) and its "ACK timeout" fall-through was
+        // unreachable — flattened to straight-line code, behavior unchanged.
+        match child.read_message::<PipeMessage>() {
+            Ok(ack) => {
+                if ack.is_ack() {
+                    child.status = ProcessStatus::Handshaking;
+                    Ok(super::handshake::HandshakeResult {
+                        success: true,
+                        window_id: None,
+                        error: None,
+                    })
+                } else {
+                    Ok(super::handshake::HandshakeResult {
                         success: false,
                         window_id: None,
-                        error: Some(format!("failed to read ACK: {}", e)),
-                    });
+                        error: Some(format!("expected ack, got {}", ack.msg_type)),
+                    })
                 }
             }
+            Err(e) => {
+                Ok(super::handshake::HandshakeResult {
+                    success: false,
+                    window_id: None,
+                    error: Some(format!("failed to read ACK: {}", e)),
+                })
+            }
         }
-
-        Ok(super::handshake::HandshakeResult {
-            success: false,
-            window_id: None,
-            error: Some("ACK timeout".to_string()),
-        })
     }
 
     /// Send the WebSocket key to a child process via stdin pipe.
@@ -315,21 +309,19 @@ impl ProcessManager {
         let ws_key_msg = PipeMessage::ws_key(key, port, &format!("/child/{}", key));
         child.send_message(&ws_key_msg)?;
 
-        // Wait for ACK
-        let start = std::time::Instant::now();
-        while start.elapsed() < ACK_TIMEOUT {
-            match child.read_message::<PipeMessage>() {
-                Ok(ack) => {
-                    if ack.is_ack() {
-                        return Ok(());
-                    } else {
-                        return Err(format!("expected ack, got {}", ack.msg_type));
-                    }
+        // Wait for ACK. Same never_loop flatten as perform_handshake above:
+        // blocking one-shot read, all arms return — the "WS key timeout"
+        // fall-through was unreachable dead code.
+        match child.read_message::<PipeMessage>() {
+            Ok(ack) => {
+                if ack.is_ack() {
+                    Ok(())
+                } else {
+                    Err(format!("expected ack, got {}", ack.msg_type))
                 }
-                Err(e) => return Err(format!("failed to read ACK: {}", e)),
             }
+            Err(e) => Err(format!("failed to read ACK: {}", e)),
         }
-        Err("ACK timeout for WS key".to_string())
     }
 
     /// Send window data to a child process via stdin pipe.
@@ -344,21 +336,19 @@ impl ProcessManager {
         let window_data_msg = PipeMessage::window_data(data);
         child.send_message(&window_data_msg)?;
 
-        // Wait for ACK
-        let start = std::time::Instant::now();
-        while start.elapsed() < ACK_TIMEOUT {
-            match child.read_message::<PipeMessage>() {
-                Ok(ack) => {
-                    if ack.is_ack() {
-                        return Ok(());
-                    } else {
-                        return Err(format!("expected ack, got {}", ack.msg_type));
-                    }
+        // Wait for ACK. Same never_loop flatten as perform_handshake above:
+        // blocking one-shot read, all arms return — the "window data timeout"
+        // fall-through was unreachable dead code.
+        match child.read_message::<PipeMessage>() {
+            Ok(ack) => {
+                if ack.is_ack() {
+                    Ok(())
+                } else {
+                    Err(format!("expected ack, got {}", ack.msg_type))
                 }
-                Err(e) => return Err(format!("failed to read ACK: {}", e)),
             }
+            Err(e) => Err(format!("failed to read ACK: {}", e)),
         }
-        Err("ACK timeout for window data".to_string())
     }
 
     /// Clean up a child that failed during spawn.

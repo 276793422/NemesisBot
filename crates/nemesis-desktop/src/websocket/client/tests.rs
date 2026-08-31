@@ -831,9 +831,9 @@ fn test_handle_message_with_null_params() {
 
     let guard = received.lock().unwrap();
     // JSON null params may deserialize as None or Some(Value::Null) depending on serde behavior
-    match guard.as_ref() {
-        Some(v) => assert!(v.is_null()),
-        None => {} // null params deserialized as None is also valid
+    // null params deserialized as None is also valid — only assert when Some.
+    if let Some(v) = guard.as_ref() {
+        assert!(v.is_null());
     }
 }
 

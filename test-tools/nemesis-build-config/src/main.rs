@@ -322,17 +322,17 @@ fn run_tui(root: &Path) -> Result<()> {
 fn dispatch(cmd: Option<Cmd>, root: &Path) -> Result<()> {
     match cmd {
         None => run_tui(root),
-        Some(Cmd::Init) => run_init(&root),
-        Some(Cmd::Check) => run_check(&root),
-        Some(Cmd::List) => run_list(&root),
+        Some(Cmd::Init) => run_init(root),
+        Some(Cmd::Check) => run_check(root),
+        Some(Cmd::List) => run_list(root),
         Some(Cmd::Export {
             features,
             profile,
             cmd,
             frontend_env,
-        }) => run_export(&root, features, profile, cmd, frontend_env),
-        Some(Cmd::HasConfig) => run_has_config(&root),
-        Some(Cmd::Load { name }) => run_load(&root, &name),
+        }) => run_export(root, features, profile, cmd, frontend_env),
+        Some(Cmd::HasConfig) => run_has_config(root),
+        Some(Cmd::Load { name }) => run_load(root, &name),
     }
 }
 

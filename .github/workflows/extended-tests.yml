@@ -1,0 +1,175 @@
+name: Extended Tests
+
+# H1 扩展测试（project-health v2 §H1，docs/PLAN/2026-08-31_project-health-improvement-v2.md）
+#
+# 职责：nightly 深度验证——CI（ci.yml）管每次 push/PR 的快速门禁，这里管三件
+# CI 不放的事：
+#   1. Linux 全量 workspace 测试（ci.yml 的 Windows 全量之外的跨平台长期验证；
+#      首次上 Linux 可能暴露平台性失败，红了按 bug 修——这正是它的价值）；
+#   2. feature 裁剪矩阵抽查：default / minimal-iot / desktop 三构建配置
+#      （对应 scripts/customize/profiles/，裁剪完度回归，防 feature 泄漏编译坏）；
+#   3. 集成测试工具：integration-test（492 断言 CLI）+ cluster-uat（T1-T18 E2E）。
+#      这两个是纯 bin runner（须 cargo run，不是 cargo test——Cargo.toml 只有
+#      [[bin]] 没有 [[test]]），依赖 test-harness 拉起真实 gateway + TestAIServer。
+#      test-harness 的二进制解析硬编码 Windows 形态（target/debug/nemesisbot.exe、
+#      testaiserver.exe、taskkill 清端口），所以放 windows-latest 跑（今天的事实）。
+#
+# 与 daily-release 的关系：daily-release 已改为 workflow_run 由本工作流【成功】
+# 触发——发布不再绕过验证。本工作流失败 = 当天没有 nightly，这是设计行为。
+#
+# fmt 门禁不在本文件（H5 fmt 基线落地后再评估放 CI 还是 extended）。
+
+on:
+  schedule:
+    # 每天 UTC 1:00（北京时间 9:00）。成功后经 workflow_run 触发 daily-release。
+    - cron: '0 1 * * *'
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: extended-tests
+  cancel-in-progress: false     # nightly 不互相掐（超时由 timeout-minutes 兜底）
+
+jobs:
+  workspace-tests-linux:
+    name: Full workspace tests (Linux)
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo build
+        uses: Swatinem/rust-cache@v2
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: web/package-lock.json
+
+      - name: Install Linux system deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libgtk-3-dev \
+            libwebkit2gtk-4.1-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            pkg-config
+
+      - name: Build Vue frontend (include_dir! 前置)
+        shell: bash
+        run: |
+          cd web
+          npm ci
+          rm -rf ../crates/nemesis-web/static/assets
+          npm run build
+
+      - name: cargo test --workspace
+        run: cargo test --workspace
+
+  feature-matrix:
+    name: Feature trimming matrix (Linux)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: default
+            # 全量默认 feature
+            flags: ''
+          - name: minimal-iot
+            # scripts/customize/profiles/minimal-iot.config 的 [features] 开关集
+            flags: --no-default-features --features channels-web,channels-rpc
+          - name: desktop
+            # scripts/customize/profiles/desktop.config 的 [features] 开关集
+            flags: --no-default-features --features channels-web,channels-webhook,channels-rpc,migrate,devices,desktop,health,heartbeat,auth,voice,cluster,forge,memory,workflow,security
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo build
+        uses: Swatinem/rust-cache@v2
+        with:
+          # 三档 feature 集差异大，分开缓存 key 避免互相踢
+          prefix-key: feature-matrix-${{ matrix.name }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: web/package-lock.json
+
+      - name: Build Vue frontend (include_dir! 前置)
+        shell: bash
+        run: |
+          cd web
+          npm ci
+          rm -rf ../crates/nemesis-web/static/assets
+          npm run build
+
+      # 编译级抽查（check 足以验证 feature 组合可编译；test 留给全量档）
+      - name: cargo check -p nemesisbot ${{ matrix.name }}
+        run: cargo check -p nemesisbot ${{ matrix.flags }}
+
+  integration-windows:
+    name: Integration + cluster UAT (Windows)
+    runs-on: windows-latest
+    timeout-minutes: 120
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo build
+        uses: Swatinem/rust-cache@v2
+
+      - name: Setup Go (TestAIServer)
+        uses: actions/setup-go@v5
+        with:
+          go-version: 'stable'
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: web/package-lock.json
+
+      - name: Build Vue frontend (include_dir! 前置)
+        shell: bash
+        run: |
+          cd web
+          npm ci
+          rm -rf ../crates/nemesis-web/static/assets
+          npm run build
+
+      # test-harness::resolve_ai_server_bin() 找的就是这个路径/文件名
+      - name: Build TestAIServer
+        shell: bash
+        run: cd test-tools/TestAIServer && go build -o testaiserver.exe
+
+      # test-harness 解析 target/debug/nemesisbot.exe（Windows 形态，debug 即可）
+      - name: Build nemesisbot (debug)
+        run: cargo build -p nemesisbot
+
+      # 纯 bin runner：cargo run（不是 cargo test——见文件头注释）
+      - name: Run integration-test (492 assertions, 22 commands)
+        run: cargo run -p integration-test
+
+      - name: Run cluster-uat (T1-T18 E2E)
+        run: cargo run -p cluster-uat

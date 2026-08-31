@@ -274,7 +274,7 @@ fn parse_chain_truncation_errors() {
     let (root_sk, _) = keypair(1);
     let (_, leaf_vk) = keypair(2);
     let cert = issue_certificate(&root_sk, &leaf_vk.to_bytes(), b"m", VALID_FROM, VALID_TO);
-    let chain = serialize_chain(&[cert.clone()]);
+    let chain = serialize_chain(std::slice::from_ref(&cert));
 
     // < 2 字节 → "chain too short for count"
     let err = parse_chain(&[0u8]).unwrap_err();

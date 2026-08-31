@@ -489,13 +489,13 @@ impl MultiProcessApprovalManager {
                 tracing::info!(
                     "[approval] No ChildProcessFactory available, rejecting dangerous operation"
                 );
-                return Ok(MultiApprovalResponse {
+                Ok(MultiApprovalResponse {
                     request_id: req.request_id.clone(),
                     approved: false,
                     timed_out: false,
                     duration_seconds: start.elapsed().as_secs_f64(),
                     response_time: chrono::Local::now().timestamp(),
-                });
+                })
             }
             Some(factory) => {
                 // Prepare window data for the child process

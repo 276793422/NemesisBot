@@ -238,28 +238,24 @@ impl CheckpointStore {
         {
             let mut guard = self.inner.lock();
             guard.done.retain(|c| c.turn < from_turn);
-            if guard.cur.as_ref().map_or(false, |c| c.turn >= from_turn) {
+            if guard.cur.as_ref().is_some_and(|c| c.turn >= from_turn) {
                 guard.cur = None;
                 guard.seen.clear();
             }
         }
-        if let Some(dir) = &self.dir {
-            if let Ok(entries) = std::fs::read_dir(dir) {
+        if let Some(dir) = &self.dir
+            && let Ok(entries) = std::fs::read_dir(dir) {
                 for ent in entries.flatten() {
                     let name = ent.file_name().to_string_lossy().to_string();
                     if let Some(rest) = name
                         .strip_prefix("turn-")
                         .and_then(|s| s.strip_suffix(".json"))
-                    {
-                        if let Ok(t) = rest.parse::<usize>() {
-                            if t >= from_turn {
+                        && let Ok(t) = rest.parse::<usize>()
+                            && t >= from_turn {
                                 let _ = std::fs::remove_file(ent.path());
                             }
-                        }
-                    }
                 }
             }
-        }
     }
 
     fn persist(&self, cp: &Checkpoint) {

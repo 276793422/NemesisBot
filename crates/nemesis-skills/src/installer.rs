@@ -171,8 +171,8 @@ impl SkillInstaller {
 
         // Security check on installed content.
         let skill_md_path = skill_dir.join("SKILL.md");
-        if skill_md_path.exists() {
-            if let Ok(content) = std::fs::read_to_string(&skill_md_path) {
+        if skill_md_path.exists()
+            && let Ok(content) = std::fs::read_to_string(&skill_md_path) {
                 let check_result = check_skill_security(&content, slug, "");
                 {
                     let mut last = self.last_security_check.lock().unwrap();
@@ -200,7 +200,6 @@ impl SkillInstaller {
                     debug!("Quality score for '{}': {:.0}/100", slug, quality.overall);
                 }
             }
-        }
 
         // Write origin tracking.
         if let Err(e) = self.write_origin_tracking(
@@ -270,7 +269,7 @@ impl SkillInstaller {
             .map_err(|e| NemesisError::Other(format!("failed to read response: {}", e)))?;
 
         // Create skill directory.
-        std::fs::create_dir_all(&skill_dir).map_err(|e| NemesisError::Io(e))?;
+        std::fs::create_dir_all(&skill_dir).map_err(NemesisError::Io)?;
 
         // Write SKILL.md atomically.
         let skill_path = skill_dir.join("SKILL.md");
@@ -303,14 +302,13 @@ impl SkillInstaller {
             );
         }
 
-        if let Some(ref quality) = check_result.quality_score {
-            if quality.overall < 40.0 {
+        if let Some(ref quality) = check_result.quality_score
+            && quality.overall < 40.0 {
                 warn!(
                     "skill has low quality score (score: {:.0}/100)",
                     quality.overall
                 );
             }
-        }
 
         debug!("Installed skill '{}' from GitHub", skill_name);
         Ok(())
@@ -327,7 +325,7 @@ impl SkillInstaller {
             )));
         }
 
-        std::fs::remove_dir_all(&skill_dir).map_err(|e| NemesisError::Io(e))?;
+        std::fs::remove_dir_all(&skill_dir).map_err(NemesisError::Io)?;
         debug!("Uninstalled skill '{}'", skill_name);
         Ok(())
     }
@@ -432,10 +430,10 @@ impl SkillInstaller {
         };
 
         let data =
-            serde_json::to_string_pretty(&origin).map_err(|e| NemesisError::Serialization(e))?;
+            serde_json::to_string_pretty(&origin).map_err(NemesisError::Serialization)?;
 
         let origin_path = Path::new(skill_dir).join(".skill-origin.json");
-        std::fs::write(&origin_path, data).map_err(|e| NemesisError::Io(e))?;
+        std::fs::write(&origin_path, data).map_err(NemesisError::Io)?;
 
         debug!(
             "Wrote origin tracking for '{}' from '{}' version '{}'",
@@ -459,9 +457,9 @@ impl SkillInstaller {
             )));
         }
 
-        let data = std::fs::read_to_string(&origin_path).map_err(|e| NemesisError::Io(e))?;
+        let data = std::fs::read_to_string(&origin_path).map_err(NemesisError::Io)?;
         let origin: SkillOrigin =
-            serde_json::from_str(&data).map_err(|e| NemesisError::Serialization(e))?;
+            serde_json::from_str(&data).map_err(NemesisError::Serialization)?;
 
         Ok(origin)
     }

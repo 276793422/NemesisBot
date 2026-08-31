@@ -1212,11 +1212,7 @@ async fn test_exec_tool_basic() {
     let tool = ExecTool::new(&tmp.path().to_string_lossy(), false);
     let ctx = RequestContext::new("web", "chat1", "user1", "sess1");
 
-    let cmd = if cfg!(target_os = "windows") {
-        "echo hello"
-    } else {
-        "echo hello"
-    };
+    let cmd = "echo hello";
     let args = serde_json::json!({"command": cmd}).to_string();
     let result = tool.execute(&args, &ctx).await.unwrap();
     assert!(result.contains("hello"));
@@ -1244,11 +1240,7 @@ async fn test_exec_tool_custom_timeout() {
     let tmp = TempDir::new().unwrap();
     let tool = ExecTool::new(&tmp.path().to_string_lossy(), false);
     let ctx = RequestContext::new("web", "chat1", "user1", "sess1");
-    let cmd = if cfg!(target_os = "windows") {
-        "echo test"
-    } else {
-        "echo test"
-    };
+    let cmd = "echo test";
     let args = serde_json::json!({"command": cmd, "timeout": 30}).to_string();
     let result = tool.execute(&args, &ctx).await.unwrap();
     assert!(result.contains("test"));
@@ -1335,11 +1327,7 @@ async fn test_async_exec_tool_fast_exit() {
     let tmp = TempDir::new().unwrap();
     let tool = AsyncExecTool::new(&tmp.path().to_string_lossy(), false);
     let ctx = RequestContext::new("web", "chat1", "user1", "sess1");
-    let cmd = if cfg!(target_os = "windows") {
-        "echo hello"
-    } else {
-        "echo hello"
-    };
+    let cmd = "echo hello";
     let args = serde_json::json!({"command": cmd, "wait_seconds": 5}).to_string();
     let result = tool.execute(&args, &ctx).await;
     // Fast-exit command completes within wait period, should return ok
@@ -2114,11 +2102,7 @@ async fn test_i2c_tool_invalid_json() {
     let tool = I2CTool;
     let ctx = RequestContext::new("web", "chat1", "user1", "sess1");
     let result = tool.execute("not json", &ctx).await;
-    if cfg!(target_os = "linux") {
-        assert!(result.is_err());
-    } else {
-        assert!(result.is_err());
-    }
+    assert!(result.is_err());
 }
 
 #[tokio::test]
@@ -2139,11 +2123,7 @@ async fn test_spi_tool_invalid_json() {
     let tool = SPITool;
     let ctx = RequestContext::new("web", "chat1", "user1", "sess1");
     let result = tool.execute("not json", &ctx).await;
-    if cfg!(target_os = "linux") {
-        assert!(result.is_err());
-    } else {
-        assert!(result.is_err());
-    }
+    assert!(result.is_err());
 }
 
 #[tokio::test]
@@ -3166,11 +3146,7 @@ async fn test_exec_tool_with_args() {
     let tmp = TempDir::new().unwrap();
     let tool = ExecTool::new(&tmp.path().to_string_lossy(), false);
     let ctx = RequestContext::new("web", "chat1", "user1", "sess1");
-    let cmd = if cfg!(target_os = "windows") {
-        "echo test output"
-    } else {
-        "echo test output"
-    };
+    let cmd = "echo test output";
     let args = serde_json::json!({"command": cmd, "timeout": 10}).to_string();
     let result = tool.execute(&args, &ctx).await.unwrap();
     assert!(result.contains("test output"));
@@ -3316,11 +3292,7 @@ async fn test_async_exec_tool_with_wait_seconds() {
     let tmp = TempDir::new().unwrap();
     let tool = AsyncExecTool::new(&tmp.path().to_string_lossy(), false);
     let ctx = RequestContext::new("web", "chat1", "user1", "sess1");
-    let cmd = if cfg!(target_os = "windows") {
-        "echo hello"
-    } else {
-        "echo hello"
-    };
+    let cmd = "echo hello";
     let args = serde_json::json!({"command": cmd, "wait_seconds": 5}).to_string();
     let result = tool.execute(&args, &ctx).await;
     assert!(result.is_ok());
@@ -3651,7 +3623,7 @@ fn test_cluster_rpc_params_empty_peers() {
         local_rpc_port: 21949,
     };
     let mut tool = ClusterRpcTool::new(config);
-    tool.set_peers_fn(Arc::new(|| vec![]));
+    tool.set_peers_fn(Arc::new(std::vec::Vec::new));
 
     let params = tool.parameters();
     let target_desc = params["properties"]["target"]["description"]
@@ -4067,7 +4039,7 @@ impl NodeExecutor for CaptureStackExecutor {
             output: serde_json::json!({"captured_frames": snap.len()}),
             error: None,
             state: ExecutionState::Completed,
-            started_at: now.clone(),
+            started_at: now,
             ended_at: now,
             metadata: std::collections::HashMap::new(),
         })

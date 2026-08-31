@@ -108,13 +108,11 @@ impl RequestContext {
     /// For RPC contexts, the output format is `[rpc:correlation_id] message`.
     /// For non-RPC contexts, the message is returned unchanged.
     pub fn format_rpc_message(&self, message: &str) -> String {
-        if self.channel == "rpc" {
-            if let Some(ref cid) = self.correlation_id {
-                if !cid.is_empty() {
+        if self.channel == "rpc"
+            && let Some(ref cid) = self.correlation_id
+                && !cid.is_empty() {
                     return format!("[rpc:{}] {}", cid, message);
                 }
-            }
-        }
         message.to_string()
     }
 
@@ -263,8 +261,8 @@ impl ContextBuilder {
             for entry in entries.flatten() {
                 if entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
                     let skill_md = entry.path().join("SKILL.md");
-                    if skill_md.exists() {
-                        if let Ok(content) = std::fs::read_to_string(&skill_md) {
+                    if skill_md.exists()
+                        && let Ok(content) = std::fs::read_to_string(&skill_md) {
                             let name = entry.file_name().to_string_lossy().to_string();
                             let description = content
                                 .lines()
@@ -279,7 +277,6 @@ impl ContextBuilder {
                                 active: true,
                             });
                         }
-                    }
                 }
             }
         }
@@ -329,11 +326,10 @@ impl ContextBuilder {
         }
 
         // Memory context section
-        if let Some(ref memory) = self.memory_context {
-            if !memory.is_empty() {
+        if let Some(ref memory) = self.memory_context
+            && !memory.is_empty() {
                 parts.push(format!("## Memory Context\n\n{}", memory));
             }
-        }
 
         // Core identity section (time, environment, workspace) — dynamic, placed last
         parts.push(self.build_identity());

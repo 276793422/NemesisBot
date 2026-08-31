@@ -263,7 +263,7 @@ async fn test_read_cycles_ignores_malformed_jsonl() {
         .open(&file_path)
         .unwrap();
     writeln!(f, "not valid json").unwrap();
-    writeln!(f, "").unwrap();
+    writeln!(f).unwrap();
 
     // Should still return the valid cycle
     let cycles = store.read_all().await.unwrap();

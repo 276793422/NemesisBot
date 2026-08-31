@@ -552,8 +552,8 @@ fn load_and_run_plugin_window(
     eprintln!("[Child] plugin_create_window returned: {}", result);
 
     // --- Approval result: read from DLL and send via WS ---
-    if window_type == "approval" {
-        if let Some(ref get_result_fn) = get_approval_result_fn {
+    if window_type == "approval"
+        && let Some(ref get_result_fn) = get_approval_result_fn {
             let ptr = unsafe { (**get_result_fn)() };
             let action = if ptr.is_null() {
                 eprintln!("[Child] Approval window closed without action, defaulting to rejected");
@@ -599,7 +599,6 @@ fn load_and_run_plugin_window(
                 eprintln!("[Child] No WS client — cannot send approval.submit!");
             }
         }
-    }
 
     // Give WS background thread time to flush any pending messages
     std::thread::sleep(std::time::Duration::from_millis(300));
@@ -737,7 +736,7 @@ fn connect_ws_with_handler(
             .enable_all()
             .build();
         if let Ok(rt) = rt {
-            let _ = rt.block_on(async {
+            rt.block_on(async {
                 if let Err(e) = client_clone.connect().await {
                     eprintln!("[Child] WebSocket connect failed: {}", e);
                 } else {

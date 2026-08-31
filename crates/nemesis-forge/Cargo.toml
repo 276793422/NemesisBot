@@ -28,3 +28,6 @@ mockall = { workspace = true }
 tempfile = "3"
 filetime = "0.2"
 tracing-subscriber = { workspace = true }
+
+[lints]
+workspace = true

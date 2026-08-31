@@ -222,11 +222,10 @@ impl Manager {
             let handle = tokio::spawn(async move {
                 o.on_event(e).await;
             });
-            if let Err(err) = handle.await {
-                if err.is_panic() {
+            if let Err(err) = handle.await
+                && err.is_panic() {
                     warn!("Observer {} panicked during emit_sync", name);
                 }
-            }
         }
     }
 

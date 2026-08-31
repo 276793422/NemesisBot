@@ -24,6 +24,7 @@ impl AssignmentType {
         }
     }
 
+    #[allow(clippy::should_implement_trait)] // lenient parser with fallback; deliberately NOT std::str::FromStr (no Err semantics)
     pub fn from_str(s: &str) -> Option<Self> {
         match s {
             "manager_self" => Some(AssignmentType::ManagerSelf),

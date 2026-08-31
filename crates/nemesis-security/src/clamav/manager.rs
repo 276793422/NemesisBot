@@ -205,12 +205,12 @@ impl Manager {
         // Step 8: Start auto-update if configured
         if update_interval > Duration::ZERO {
             let updater = self.updater.clone();
-            let handle = tokio::spawn(async move {
+            // Fire-and-forget: dropping the JoinHandle detaches the updater task.
+            tokio::spawn(async move {
                 if let Some(ref updater) = updater {
                     updater.start_auto_update().await;
                 }
             });
-            let _ = handle;
         }
 
         self.started.store(true, Ordering::SeqCst);
@@ -295,16 +295,14 @@ impl Manager {
             );
         }
 
-        if let Some(ref updater) = self.updater {
-            if let Some(last_update) = updater.last_update() {
-                if let Ok(elapsed) = last_update.elapsed() {
+        if let Some(ref updater) = self.updater
+            && let Some(last_update) = updater.last_update()
+                && let Ok(elapsed) = last_update.elapsed() {
                     stats.as_object_mut().unwrap().insert(
                         "last_update_secs_ago".to_string(),
                         serde_json::Value::Number(elapsed.as_secs().into()),
                     );
                 }
-            }
-        }
 
         stats
     }

@@ -41,11 +41,10 @@ fn build_pe(spec: &PeSpec) -> Vec<u8> {
             len = len.max((ptr + size) as usize);
         }
     }
-    if let Some((va, sz)) = spec.security {
-        if sz > 0 {
+    if let Some((va, sz)) = spec.security
+        && sz > 0 {
             len = len.max((va + sz) as usize);
         }
-    }
     if let Some(fl) = spec.force_len {
         len = fl;
     }

@@ -201,7 +201,7 @@ async fn test_exec_tool_command_execution() {
     .to_string();
 
     let result = tool.execute(&args, &ctx).await.unwrap();
-    assert!(result.contains("test") || result.len() > 0);
+    assert!(result.contains("test") || !result.is_empty());
 }
 
 #[tokio::test]
@@ -239,7 +239,7 @@ async fn test_async_exec_tool_basic() {
     .to_string();
 
     let result = tool.execute(&args, &ctx).await.unwrap();
-    assert!(result.len() > 0);
+    assert!(!result.is_empty());
 }
 
 #[tokio::test]
@@ -311,7 +311,7 @@ mod file_tool_edge_cases {
         let ctx = RequestContext::new("web", "chat1", "user1", "sess1");
 
         // Create some binary-like content
-        let binary_content = vec![0u8, 255, 128, 64, 32]
+        let binary_content = [0u8, 255, 128, 64, 32]
             .iter()
             .map(|&b| format!("{:02x}", b))
             .collect::<String>();

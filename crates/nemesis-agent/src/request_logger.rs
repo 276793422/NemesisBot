@@ -17,16 +17,13 @@ use tracing::warn;
 
 /// Detail level for log output.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Default)]
 pub enum DetailLevel {
+    #[default]
     Full,
     Truncated,
 }
 
-impl Default for DetailLevel {
-    fn default() -> Self {
-        Self::Full
-    }
-}
 
 /// Configuration for the request logger.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -165,6 +162,7 @@ pub struct LLMResponseInfo {
 
 /// Information about a local operation.
 #[derive(Debug, Clone)]
+#[derive(Default)]
 pub struct OperationInfo {
     pub op_type: String,
     pub name: String,
@@ -177,19 +175,6 @@ pub struct OperationInfo {
     pub result: String,
 }
 
-impl Default for OperationInfo {
-    fn default() -> Self {
-        Self {
-            op_type: String::new(),
-            name: String::new(),
-            status: String::new(),
-            error: String::new(),
-            duration_ms: 0,
-            arguments: String::new(),
-            result: String::new(),
-        }
-    }
-}
 
 /// Information about local operations for a round.
 #[derive(Debug, Clone)]
@@ -560,6 +545,9 @@ impl RequestLogger {
                 info.usage.prompt_tokens, info.usage.completion_tokens, info.usage.total_tokens,
             ));
             if info.usage.cached_tokens > 0 {
+                // Manual division guard: a checked_mul/checked_div chain is less
+                // readable and overflow is impossible for realistic token counts.
+                #[allow(clippy::manual_checked_ops)]
                 let cache_pct = if info.usage.prompt_tokens > 0 {
                     info.usage.cached_tokens * 100 / info.usage.prompt_tokens
                 } else {

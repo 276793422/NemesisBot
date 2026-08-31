@@ -103,7 +103,7 @@ async fn test_config_defaults(ws: &TestWorkspace) -> Vec<TestResult> {
         Err(e) => {
             results.push(fail(
                 &format!("{}/load", suite),
-                &format!("Cannot read config: {}", e),
+                format!("Cannot read config: {}", e),
             ));
             return results;
         }
@@ -114,7 +114,7 @@ async fn test_config_defaults(ws: &TestWorkspace) -> Vec<TestResult> {
         Err(e) => {
             results.push(fail(
                 &format!("{}/parse", suite),
-                &format!("Invalid JSON: {}", e),
+                format!("Invalid JSON: {}", e),
             ));
             return results;
         }
@@ -135,7 +135,7 @@ async fn test_config_defaults(ws: &TestWorkspace) -> Vec<TestResult> {
     } else {
         results.push(fail(
             &format!("{}/required_keys", suite),
-            &format!("Missing: {:?}", missing),
+            format!("Missing: {:?}", missing),
         ));
     }
 
@@ -148,7 +148,7 @@ async fn test_config_defaults(ws: &TestWorkspace) -> Vec<TestResult> {
     } else {
         results.push(pass(
             &format!("{}/web_port", suite),
-            &format!("Port: {:?}", web_port),
+            format!("Port: {:?}", web_port),
         ));
     }
 
@@ -186,7 +186,7 @@ async fn test_config_deep(ws: &TestWorkspace) -> Vec<TestResult> {
     }
     results.push(pass(
         &format!("{}/field_types", suite),
-        &format!("{}/{} type checks passed", type_ok, type_checks.len()),
+        format!("{}/{} type checks passed", type_ok, type_checks.len()),
     ));
 
     results
@@ -200,7 +200,7 @@ async fn test_health_endpoints() -> Vec<TestResult> {
     let client = http_client();
 
     match client
-        .get(&format!("http://127.0.0.1:{}/health", HEALTH_PORT))
+        .get(format!("http://127.0.0.1:{}/health", HEALTH_PORT))
         .send()
         .await
     {
@@ -209,13 +209,13 @@ async fn test_health_endpoints() -> Vec<TestResult> {
         }
         Ok(resp) => results.push(fail(
             &format!("{}/health", suite),
-            &format!("Status: {}", resp.status()),
+            format!("Status: {}", resp.status()),
         )),
-        Err(e) => results.push(fail(&format!("{}/health", suite), &format!("Error: {}", e))),
+        Err(e) => results.push(fail(&format!("{}/health", suite), format!("Error: {}", e))),
     }
 
     match client
-        .get(&format!("http://127.0.0.1:{}/ready", HEALTH_PORT))
+        .get(format!("http://127.0.0.1:{}/ready", HEALTH_PORT))
         .send()
         .await
     {
@@ -224,9 +224,9 @@ async fn test_health_endpoints() -> Vec<TestResult> {
         }
         Ok(resp) => results.push(fail(
             &format!("{}/ready", suite),
-            &format!("Status: {}", resp.status()),
+            format!("Status: {}", resp.status()),
         )),
-        Err(e) => results.push(fail(&format!("{}/ready", suite), &format!("Error: {}", e))),
+        Err(e) => results.push(fail(&format!("{}/ready", suite), format!("Error: {}", e))),
     }
 
     results
@@ -240,7 +240,7 @@ async fn test_tool_definitions(ws: &TestWorkspace) -> Vec<TestResult> {
     let mut stream = match ws_connect(WS_PORT, AUTH_TOKEN).await {
         Ok(s) => s,
         Err(e) => {
-            results.push(fail(suite, &format!("Connect failed: {}", e)));
+            results.push(fail(suite, format!("Connect failed: {}", e)));
             return results;
         }
     };
@@ -278,9 +278,9 @@ async fn test_tool_definitions(ws: &TestWorkspace) -> Vec<TestResult> {
     });
 
     if let Some(log_path) = log_path {
-        if let Ok(log_content) = std::fs::read_to_string(log_path) {
-            if let Some(start) = log_content.find("\"tools\"") {
-                if let Some(arr_start) = log_content[start..].find('[') {
+        if let Ok(log_content) = std::fs::read_to_string(log_path)
+            && let Some(start) = log_content.find("\"tools\"")
+                && let Some(arr_start) = log_content[start..].find('[') {
                     let bracket_start = start + arr_start;
                     let mut depth = 0;
                     let mut bracket_end = bracket_start;
@@ -304,18 +304,16 @@ async fn test_tool_definitions(ws: &TestWorkspace) -> Vec<TestResult> {
                         if count >= 15 {
                             results.push(pass(
                                 &format!("{}/tool_count", suite),
-                                &format!("{} tools registered", count),
+                                format!("{} tools registered", count),
                             ));
                         } else {
                             results.push(fail(
                                 &format!("{}/tool_count", suite),
-                                &format!("Expected >= 15, got {}", count),
+                                format!("Expected >= 15, got {}", count),
                             ));
                         }
                     }
                 }
-            }
-        }
     } else {
         results.push(skip(suite, "No log with tools found"));
     }

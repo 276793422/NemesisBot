@@ -20,6 +20,12 @@ use std::time::Duration;
 
 pub struct SandboxHandler;
 
+impl Default for SandboxHandler {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl SandboxHandler {
     pub fn new() -> Self {
         Self

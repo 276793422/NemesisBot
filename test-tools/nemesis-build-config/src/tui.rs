@@ -292,22 +292,20 @@ fn handle_key(
             KeyDisposition::Select(next)
         }
         KeyCode::Char(' ') => {
-            if let Some(i) = selected {
-                if let Some(r) = rows.get(i) {
-                    if !r.id.is_empty() && !r.is_enum {
+            if let Some(i) = selected
+                && let Some(r) = rows.get(i)
+                    && !r.id.is_empty() && !r.is_enum {
                         let cur = cfg.get_bool(&r.id).unwrap_or(false);
                         cfg.set_bool(&r.id, !cur);
                         *dirty = true;
                     }
-                }
-            }
             KeyDisposition::Nothing
         }
         KeyCode::Right | KeyCode::Enter => 'right: {
-            if let Some(i) = selected {
-                if let Some(r) = rows.get(i) {
-                    if r.is_enum {
-                        if let Some(spec) = manifest.features.iter().find(|f| f.id == r.id) {
+            if let Some(i) = selected
+                && let Some(r) = rows.get(i)
+                    && r.is_enum
+                        && let Some(spec) = manifest.features.iter().find(|f| f.id == r.id) {
                             if spec.options.is_empty() {
                                 break 'right KeyDisposition::Nothing;
                             }
@@ -322,9 +320,6 @@ fn handle_key(
                             cfg.set_enum(&r.id, next);
                             *dirty = true;
                         }
-                    }
-                }
-            }
             KeyDisposition::Nothing
         }
         _ => KeyDisposition::Nothing,

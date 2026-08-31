@@ -346,6 +346,12 @@ pub struct VoiceHandler {
     _priv: (),
 }
 
+impl Default for VoiceHandler {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl VoiceHandler {
     pub fn new() -> Self {
         Self { _priv: () }
@@ -1009,8 +1015,9 @@ impl VoiceHandler {
         let dir = aec_dir.clone();
         let hub = ctx.state.event_hub.clone();
 
-        let result =
-            tokio::task::spawn_blocking(move || {
+        
+
+        tokio::task::spawn_blocking(move || {
                 std::fs::create_dir_all(&dir)
                     .map_err(|e| format!("failed to create aec dir: {}", e))?;
                 hub.publish(
@@ -1041,9 +1048,7 @@ impl VoiceHandler {
                 }
             })
             .await
-            .map_err(|e| format!("install task panicked: {}", e))?;
-
-        result
+            .map_err(|e| format!("install task panicked: {}", e))?
     }
 
     async fn cmd_install_model(
@@ -1486,7 +1491,7 @@ impl VoiceHandler {
                 let state = stt_state().lock().await;
                 state
                     .as_ref()
-                    .map_or(false, |s| s.dialogue_output.is_some())
+                    .is_some_and(|s| s.dialogue_output.is_some())
             };
             Ok(Some(serde_json::json!({
                 "stt_ready": stt_ready,
@@ -1859,7 +1864,7 @@ impl VoiceHandler {
             let state = stt_state().lock().await;
             state
                 .as_ref()
-                .map_or(false, |s| s.dialogue_output.is_some())
+                .is_some_and(|s| s.dialogue_output.is_some())
         };
         #[cfg(not(target_os = "windows"))]
         let stt_dialogue_active = false;
@@ -1906,7 +1911,7 @@ impl VoiceHandler {
                     .unwrap_or_else(|| std::path::PathBuf::from("."));
                 let config_path = voice_dir.join("config.toml");
                 let cfg = nemesis_voice::AppConfig::load_or_default(&config_path);
-                let target_sr = cfg.audio.target_sample_rate as u32;
+                let target_sr = cfg.audio.target_sample_rate;
                 let device = cfg.audio.capture_device.clone();
 
                 *reg = Some(SpeakerRegistration {
@@ -2115,7 +2120,7 @@ impl VoiceHandler {
         config_dir: &std::path::Path,
         threshold: f32,
     ) -> Result<Option<serde_json::Value>, String> {
-        if threshold < 0.0 || threshold > 1.0 {
+        if !(0.0..=1.0).contains(&threshold) {
             return Err("Threshold must be between 0.0 and 1.0".to_string());
         }
         *speaker_threshold_state().lock().unwrap() = threshold;
@@ -2182,7 +2187,7 @@ impl VoiceHandler {
             tokio::task::spawn_blocking(move || {
                 let config_path = dir.join("config.toml");
                 let cfg = nemesis_voice::AppConfig::load_or_default(&config_path);
-                let target_sr = cfg.audio.target_sample_rate as u32;
+                let target_sr = cfg.audio.target_sample_rate;
                 let capture_device = if cfg.audio.capture_device.is_empty() {
                     ""
                 } else {
@@ -2215,8 +2220,8 @@ impl VoiceHandler {
                         Some(chunk) => {
                             let resampled = resampler.resample(&chunk);
 
-                            if let Some(speech) = detector.process(&resampled, target_sr) {
-                                if !speech.is_empty() {
+                            if let Some(speech) = detector.process(&resampled, target_sr)
+                                && !speech.is_empty() {
                                     // Extract embedding and compute similarity
                                     let similarity = {
                                         let engine_guard = speaker_engine_state().lock().unwrap();
@@ -2268,7 +2273,6 @@ impl VoiceHandler {
                                         }
                                     }
                                 }
-                            }
                         }
                         None => {
                             std::thread::sleep(std::time::Duration::from_millis(10));
@@ -2277,8 +2281,8 @@ impl VoiceHandler {
                 }
 
                 // Flush remaining
-                if let Some(speech) = detector.flush() {
-                    if !speech.is_empty() {
+                if let Some(speech) = detector.flush()
+                    && !speech.is_empty() {
                         let similarity = {
                             let engine_guard = speaker_engine_state().lock().unwrap();
                             if let Some(ref engine) = *engine_guard {
@@ -2322,7 +2326,6 @@ impl VoiceHandler {
                             }
                         }
                     }
-                }
 
                 tracing::info!("[Speaker Test] Stopped");
             });
@@ -2679,8 +2682,8 @@ impl VoiceHandler {
                     silence_start = Some(std::time::Instant::now());
                 } else if current_len > 0 && current_len == last_text_len {
                     // No new text, check silence timeout
-                    if let Some(start) = silence_start {
-                        if start.elapsed().as_secs_f64() >= timeout_secs {
+                    if let Some(start) = silence_start
+                        && start.elapsed().as_secs_f64() >= timeout_secs {
                             // Timeout: flush and auto-send
                             let text = dlg.flush();
                             if let Some(text) = text {
@@ -2694,7 +2697,6 @@ impl VoiceHandler {
                                 );
                             }
                         }
-                    }
                 }
             }
         });
@@ -2849,12 +2851,11 @@ fn tts_playback_loop(
 
     let cfg = nemesis_voice::AppConfig::load_or_default(&config_path);
 
-    if !nemesis_voice::sherpa_is_initialized() {
-        if let Err(e) = nemesis_voice::bootstrap::init_sherpa(voice_dir) {
+    if !nemesis_voice::sherpa_is_initialized()
+        && let Err(e) = nemesis_voice::bootstrap::init_sherpa(voice_dir) {
             tracing::error!("[TTS Playback] sherpa init failed: {}", e);
             return;
         }
-    }
 
     let mut consecutive_failures: u32 = 0;
     let max_consecutive = 3;
@@ -3060,8 +3061,8 @@ fn run_stt_loop(
     }
 
     // Flush remaining audio on exit
-    if let Some(speech) = detector.flush() {
-        if !speech.is_empty() {
+    if let Some(speech) = detector.flush()
+        && !speech.is_empty() {
             match stt_engine.recognize(&speech, target_sample_rate) {
                 Ok(text) => {
                     let trimmed = text.trim();
@@ -3073,7 +3074,6 @@ fn run_stt_loop(
                 Err(e) => tracing::warn!("[STT] Final recognition error: {}", e),
             }
         }
-    }
 
     tracing::info!(
         "[STT] Dictation stopped (session={}, chunks={}, speech_segments={})",
@@ -3223,8 +3223,8 @@ fn run_stt_pipeline(
     }
 
     // Flush remaining audio
-    if let Some(speech) = detector.flush() {
-        if !speech.is_empty() {
+    if let Some(speech) = detector.flush()
+        && !speech.is_empty() {
             let guard = stt_engine_state().lock().unwrap();
             if let Some(ref engine) = *guard {
                 match engine.recognize(&speech, target_sr) {
@@ -3239,7 +3239,6 @@ fn run_stt_pipeline(
                 }
             }
         }
-    }
 
     tracing::info!(
         "[STT Pipeline] Stopped (chunks={}, speech_segments={})",
@@ -3340,11 +3339,10 @@ fn check_model_subdir_any(parent: &std::path::Path) -> bool {
     }
     if let Ok(entries) = std::fs::read_dir(parent) {
         for entry in entries.flatten() {
-            if entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
-                if has_onnx_file(&entry.path()) {
+            if entry.file_type().map(|t| t.is_dir()).unwrap_or(false)
+                && has_onnx_file(&entry.path()) {
                     return true;
                 }
-            }
         }
     }
     false

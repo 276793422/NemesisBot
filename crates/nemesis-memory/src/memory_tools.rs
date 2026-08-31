@@ -590,14 +590,13 @@ impl MemoryToolExecutor {
                 output.push_str(&format!("- Sessions: {}\n", session_count));
                 output.push_str(&format!("- Total episodes: {}\n", episode_count));
                 // List session keys
-                if let Ok(sessions) = self.manager.list_episodic_sessions().await {
-                    if !sessions.is_empty() {
+                if let Ok(sessions) = self.manager.list_episodic_sessions().await
+                    && !sessions.is_empty() {
                         output.push_str("- Session keys:\n");
                         for sk in &sessions {
                             output.push_str(&format!("  - {}\n", sk));
                         }
                     }
-                }
                 output.push('\n');
             }
             Err(_) => {

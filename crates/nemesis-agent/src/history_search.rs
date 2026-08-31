@@ -193,14 +193,13 @@ pub fn reindex_session_logs() -> usize {
                 rusqlite::params![stem],
             );
             if let Ok(file) = std::fs::File::open(&path) {
-                let mut seq = 0usize;
-                for line in std::io::BufReader::new(file).lines().flatten() {
-                    if let Ok(v) = serde_json::from_str::<serde_json::Value>(&line) {
-                        if let Err(_) = insert_row(conn, stem, seq, &v) {
+                for (seq, line) in
+                    std::io::BufReader::new(file).lines().map_while(Result::ok).enumerate()
+                {
+                    if let Ok(v) = serde_json::from_str::<serde_json::Value>(&line)
+                        && let Err(_) = insert_row(conn, stem, seq, &v) {
                             break;
                         }
-                    }
-                    seq += 1;
                 }
             }
             indexed.insert(stem.to_string(), mtime);
@@ -335,7 +334,7 @@ fn snippet_around(content: &str, query: &str, max_chars: usize) -> String {
     let end = ceil_char_boundary(content, end);
     let mut s: String = content[start..end].to_string();
     if start > 0 {
-        s.insert_str(0, "…");
+        s.insert(0, '…');
     }
     if end < content.len() {
         s.push('…');
@@ -433,7 +432,7 @@ fn search_linear(query: &str, limit: usize) -> Vec<HistoryHit> {
         let Ok(file) = std::fs::File::open(&path) else {
             continue;
         };
-        for (seq, line) in std::io::BufReader::new(file).lines().flatten().enumerate() {
+        for (seq, line) in std::io::BufReader::new(file).lines().map_while(Result::ok).enumerate() {
             let Ok(v) = serde_json::from_str::<serde_json::Value>(&line) else {
                 continue;
             };

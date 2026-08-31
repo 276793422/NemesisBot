@@ -1,3 +1,9 @@
+// 刻意设计：本文件测试用进程级串行锁（GLOBAL_STATE_LOCK 等 env/资源互斥锁）
+// 保护环境操作，guard 必须跨 async 测试体的 await 持有；#[tokio::test] 每个
+// 测试独立 current_thread runtime，持锁方在自己线程上恢复运行，不会死锁。
+// 测试域统一豁免（逐处 allow ~200 个不现实）。
+#![allow(clippy::await_holding_lock)]
+
 use super::*;
 use tempfile::TempDir;
 
@@ -78,16 +84,14 @@ fn test_set_llm_preserves_existing_agents() {
             }
         }
     });
-    if let Some(obj) = cfg.as_object_mut() {
-        if let Some(agents) = obj.get_mut("agents").and_then(|v| v.as_object_mut()) {
-            if let Some(defaults) = agents.get_mut("defaults").and_then(|v| v.as_object_mut()) {
+    if let Some(obj) = cfg.as_object_mut()
+        && let Some(agents) = obj.get_mut("agents").and_then(|v| v.as_object_mut())
+            && let Some(defaults) = agents.get_mut("defaults").and_then(|v| v.as_object_mut()) {
                 defaults.insert(
                     "llm".to_string(),
                     serde_json::Value::String("test/model".to_string()),
                 );
             }
-        }
-    }
     assert_eq!(cfg["agents"]["defaults"]["max_tool_iterations"], 10);
     assert_eq!(cfg["agents"]["defaults"]["llm"], "test/model");
 }
@@ -102,20 +106,24 @@ fn test_set_concurrent_mode_reject() {
         "agents": {"defaults": {}}
     });
     let mode = "reject";
-    if let Some(obj) = cfg.as_object_mut() {
-        if let Some(agents) = obj.get_mut("agents").and_then(|v| v.as_object_mut()) {
-            if let Some(defaults) = agents.get_mut("defaults").and_then(|v| v.as_object_mut()) {
+    if let Some(obj) = cfg.as_object_mut()
+        && let Some(agents) = obj.get_mut("agents").and_then(|v| v.as_object_mut())
+            && let Some(defaults) = agents.get_mut("defaults").and_then(|v| v.as_object_mut()) {
                 defaults.insert(
                     "concurrent_request_mode".to_string(),
                     serde_json::Value::String(mode.to_string()),
                 );
             }
-        }
-    }
     assert_eq!(
         cfg["agents"]["defaults"]["concurrent_request_mode"],
         "reject"
     );
+}
+
+/// Mirror of the production queue_size default; kept as a fn so the
+/// `unwrap_or` fallback path stays exercised (clippy can't const-fold it).
+fn resolve_queue_size(queue_size: Option<usize>) -> usize {
+    queue_size.unwrap_or(8)
 }
 
 #[test]
@@ -125,9 +133,9 @@ fn test_set_concurrent_mode_queue_with_size() {
     });
     let mode = "queue";
     let queue_size: Option<usize> = Some(16);
-    if let Some(obj) = cfg.as_object_mut() {
-        if let Some(agents) = obj.get_mut("agents").and_then(|v| v.as_object_mut()) {
-            if let Some(defaults) = agents.get_mut("defaults").and_then(|v| v.as_object_mut()) {
+    if let Some(obj) = cfg.as_object_mut()
+        && let Some(agents) = obj.get_mut("agents").and_then(|v| v.as_object_mut())
+            && let Some(defaults) = agents.get_mut("defaults").and_then(|v| v.as_object_mut()) {
                 defaults.insert(
                     "concurrent_request_mode".to_string(),
                     serde_json::Value::String(mode.to_string()),
@@ -135,12 +143,10 @@ fn test_set_concurrent_mode_queue_with_size() {
                 if mode == "queue" {
                     defaults.insert(
                         "queue_size".to_string(),
-                        serde_json::json!(queue_size.unwrap_or(8)),
+                        serde_json::json!(resolve_queue_size(queue_size)),
                     );
                 }
             }
-        }
-    }
     assert_eq!(
         cfg["agents"]["defaults"]["concurrent_request_mode"],
         "queue"
@@ -150,8 +156,7 @@ fn test_set_concurrent_mode_queue_with_size() {
 
 #[test]
 fn test_set_concurrent_mode_queue_default_size() {
-    let queue_size: Option<usize> = None;
-    assert_eq!(queue_size.unwrap_or(8), 8);
+    assert_eq!(resolve_queue_size(None), 8);
 }
 
 // -------------------------------------------------------------------------
@@ -181,7 +186,7 @@ fn test_llm_response_finished_logic() {
     let tool_calls: Vec<AgentToolCallInfo> = vec![];
     assert!(tool_calls.is_empty()); // empty tool_calls -> finished = true
 
-    let tool_calls = vec![AgentToolCallInfo {
+    let tool_calls = [AgentToolCallInfo {
         id: "tc1".to_string(),
         name: "test".to_string(),
         arguments: "{}".to_string(),

@@ -26,7 +26,7 @@ pub async fn test_cli_skills_list(ws: &TestWorkspace, bin: &Path) -> Vec<TestRes
     } else {
         results.push(fail(
             &format!("{}/header", suite),
-            &format!(
+            format!(
                 "Missing 'Installed Skills' header: '{}'",
                 output.stdout_first_line()
             ),
@@ -56,7 +56,7 @@ pub async fn test_cli_skills_list(ws: &TestWorkspace, bin: &Path) -> Vec<TestRes
     } else {
         results.push(fail(
             &format!("{}/install_calc", suite),
-            &format!(
+            format!(
                 "Failed to install calculator: '{}'",
                 install.stdout_first_line()
             ),
@@ -73,7 +73,7 @@ pub async fn test_cli_skills_list(ws: &TestWorkspace, bin: &Path) -> Vec<TestRes
     } else {
         results.push(fail(
             &format!("{}/shows_installed", suite),
-            &format!("calculator not in list: '{}'", list2.stdout_first_line()),
+            format!("calculator not in list: '{}'", list2.stdout_first_line()),
         ));
     }
 
@@ -84,7 +84,7 @@ pub async fn test_cli_skills_list(ws: &TestWorkspace, bin: &Path) -> Vec<TestRes
     } else {
         results.push(pass(
             &format!("{}/remove", suite),
-            &format!("exit={}", remove.exit_code),
+            format!("exit={}", remove.exit_code),
         ));
     }
 
@@ -146,12 +146,12 @@ pub async fn test_cli_skills_list_builtin(ws: &TestWorkspace, bin: &Path) -> Vec
         if output.stdout_contains(skill) {
             results.push(pass(
                 &format!("{}/has_{}", suite, skill),
-                &format!("Built-in skill '{}' found", skill),
+                format!("Built-in skill '{}' found", skill),
             ));
         } else {
             results.push(fail(
                 &format!("{}/has_{}", suite, skill),
-                &format!("Built-in skill '{}' not found in output", skill),
+                format!("Built-in skill '{}' not found in output", skill),
             ));
         }
     }
@@ -191,7 +191,7 @@ pub async fn test_cli_skills_search(ws: &TestWorkspace, bin: &Path) -> Vec<TestR
     } else {
         results.push(fail(
             &format!("{}/search_started", suite),
-            &format!("Unexpected output: '{}'", output.stdout_first_line()),
+            format!("Unexpected output: '{}'", output.stdout_first_line()),
         ));
     }
 
@@ -214,7 +214,7 @@ pub async fn test_cli_skills_search(ws: &TestWorkspace, bin: &Path) -> Vec<TestR
     } else {
         results.push(fail(
             &format!("{}/results", suite),
-            &format!("Unexpected output: '{}'", output.stdout_first_line()),
+            format!("Unexpected output: '{}'", output.stdout_first_line()),
         ));
     }
 
@@ -231,7 +231,7 @@ pub async fn test_cli_skills_search(ws: &TestWorkspace, bin: &Path) -> Vec<TestR
     } else {
         results.push(fail(
             &format!("{}/limit_flag", suite),
-            &format!("--limit failed: '{}'", limited.stdout_first_line()),
+            format!("--limit failed: '{}'", limited.stdout_first_line()),
         ));
     }
 
@@ -291,7 +291,7 @@ pub async fn test_cli_skills_source(ws: &TestWorkspace, bin: &Path) -> Vec<TestR
     } else {
         results.push(fail(
             &format!("{}/add_started", suite),
-            &format!("Unexpected output: '{}'", add.stdout_first_line()),
+            format!("Unexpected output: '{}'", add.stdout_first_line()),
         ));
     }
     if add.stdout_contains("Detected structure") {
@@ -313,7 +313,7 @@ pub async fn test_cli_skills_source(ws: &TestWorkspace, bin: &Path) -> Vec<TestR
     } else {
         results.push(fail(
             &format!("{}/add_success", suite),
-            &format!("Add may have failed: '{}'", add.stdout_first_line()),
+            format!("Add may have failed: '{}'", add.stdout_first_line()),
         ));
     }
 
@@ -351,7 +351,7 @@ pub async fn test_cli_skills_source(ws: &TestWorkspace, bin: &Path) -> Vec<TestR
     } else {
         results.push(fail(
             &format!("{}/add_long_form", suite),
-            &format!("source add failed: '{}'", add2.stdout_first_line()),
+            format!("source add failed: '{}'", add2.stdout_first_line()),
         ));
     }
 
@@ -364,7 +364,7 @@ pub async fn test_cli_skills_source(ws: &TestWorkspace, bin: &Path) -> Vec<TestR
     } else {
         results.push(pass(
             &format!("{}/remove", suite),
-            &format!("exit={}", remove.exit_code),
+            format!("exit={}", remove.exit_code),
         ));
     }
 
@@ -374,7 +374,7 @@ pub async fn test_cli_skills_source(ws: &TestWorkspace, bin: &Path) -> Vec<TestR
         .await;
     results.push(pass(
         &format!("{}/remove_second", suite),
-        &format!("exit={}", remove2.exit_code),
+        format!("exit={}", remove2.exit_code),
     ));
 
     // 7. verify empty again
@@ -425,7 +425,7 @@ pub async fn test_cli_skills_validate(ws: &TestWorkspace, bin: &Path) -> Vec<Tes
     } else {
         results.push(fail(
             &format!("{}/missing_path", suite),
-            &format!("Unexpected: '{}'", val_missing.stdout_first_line()),
+            format!("Unexpected: '{}'", val_missing.stdout_first_line()),
         ));
     }
 
@@ -447,7 +447,7 @@ pub async fn test_cli_skills_validate(ws: &TestWorkspace, bin: &Path) -> Vec<Tes
     } else {
         results.push(fail(
             &format!("{}/found", suite),
-            &format!("SKILL.md not detected: '{}'", val_ok.stdout_first_line()),
+            format!("SKILL.md not detected: '{}'", val_ok.stdout_first_line()),
         ));
     }
     if val_ok.stdout_contains("Has name: true") {
@@ -482,7 +482,7 @@ pub async fn test_cli_skills_validate(ws: &TestWorkspace, bin: &Path) -> Vec<Tes
     } else {
         results.push(pass(
             &format!("{}/file_path", suite),
-            &format!("exit={}", val_file.exit_code),
+            format!("exit={}", val_file.exit_code),
         ));
     }
 
@@ -500,7 +500,7 @@ pub async fn test_cli_skills_validate(ws: &TestWorkspace, bin: &Path) -> Vec<Tes
     } else {
         results.push(pass(
             &format!("{}/no_skill_md", suite),
-            &format!("exit={}", val_empty.exit_code),
+            format!("exit={}", val_empty.exit_code),
         ));
     }
 
@@ -526,7 +526,7 @@ pub async fn test_cli_skills_show(ws: &TestWorkspace, bin: &Path) -> Vec<TestRes
     } else {
         results.push(fail(
             &format!("{}/missing", suite),
-            &format!(
+            format!(
                 "Expected 'not found': '{}'",
                 show_missing.stdout_first_line()
             ),
@@ -605,7 +605,7 @@ pub async fn test_cli_skills_cache(ws: &TestWorkspace, bin: &Path) -> Vec<TestRe
     } else {
         results.push(fail(
             &format!("{}/clear", suite),
-            &format!("Cache clear failed: '{}'", clear.stdout_first_line()),
+            format!("Cache clear failed: '{}'", clear.stdout_first_line()),
         ));
     }
 
@@ -633,7 +633,7 @@ pub async fn test_cli_skills_install_builtin(ws: &TestWorkspace, bin: &Path) -> 
     } else {
         results.push(pass(
             &format!("{}/fake", suite),
-            &format!("exit={}", fake.exit_code),
+            format!("exit={}", fake.exit_code),
         ));
     }
 
@@ -649,7 +649,7 @@ pub async fn test_cli_skills_install_builtin(ws: &TestWorkspace, bin: &Path) -> 
     } else {
         results.push(fail(
             &format!("{}/install_one", suite),
-            &format!("Failed: '{}'", calc.stdout_first_line()),
+            format!("Failed: '{}'", calc.stdout_first_line()),
         ));
     }
 
@@ -700,7 +700,7 @@ pub async fn test_cli_skills_install_builtin(ws: &TestWorkspace, bin: &Path) -> 
     } else {
         results.push(pass(
             &format!("{}/remove", suite),
-            &format!("exit={}", remove.exit_code),
+            format!("exit={}", remove.exit_code),
         ));
     }
     if !skill_path.exists() {
@@ -741,7 +741,7 @@ pub async fn test_cli_skills_install(ws: &TestWorkspace, bin: &Path) -> Vec<Test
         // The command may try GitHub fallback and timeout (15s), which is OK
         results.push(pass(
             &format!("{}/fake_registry", suite),
-            &format!("exit={}", install.exit_code),
+            format!("exit={}", install.exit_code),
         ));
     }
 
@@ -768,7 +768,7 @@ pub async fn test_cli_skills_remove(ws: &TestWorkspace, bin: &Path) -> Vec<TestR
     } else {
         results.push(pass(
             &format!("{}/missing", suite),
-            &format!("exit={}", remove.exit_code),
+            format!("exit={}", remove.exit_code),
         ));
     }
 
@@ -804,7 +804,7 @@ pub async fn test_cli_skills_install_clawhub(ws: &TestWorkspace, bin: &Path) -> 
     } else {
         results.push(fail(
             &format!("{}/fake", suite),
-            &format!("Unexpected: '{}'", clawhub.stdout_first_line()),
+            format!("Unexpected: '{}'", clawhub.stdout_first_line()),
         ));
     }
 
@@ -823,7 +823,7 @@ pub async fn test_cli_skills_install_clawhub(ws: &TestWorkspace, bin: &Path) -> 
         .await;
     results.push(pass(
         &format!("{}/with_output_name", suite),
-        &format!("exit={} (with output name arg)", with_name.exit_code),
+        format!("exit={} (with output name arg)", with_name.exit_code),
     ));
 
     results
@@ -863,7 +863,7 @@ pub async fn test_cli_skills_add_source_duplicate(
     } else {
         results.push(pass(
             &format!("{}/first_add", suite),
-            &format!("exit={}", add1.exit_code),
+            format!("exit={}", add1.exit_code),
         ));
     }
 
@@ -887,7 +887,7 @@ pub async fn test_cli_skills_add_source_duplicate(
     } else {
         results.push(pass(
             &format!("{}/duplicate", suite),
-            &format!("exit={}, may allow duplicate", add2.exit_code),
+            format!("exit={}, may allow duplicate", add2.exit_code),
         ));
     }
 

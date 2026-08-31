@@ -8,6 +8,12 @@ pub struct SkillsHandler {
     _priv: (),
 }
 
+impl Default for SkillsHandler {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl SkillsHandler {
     pub fn new() -> Self {
         Self { _priv: () }
@@ -167,14 +173,12 @@ fn load_config(workspace: &str) -> Result<nemesis_config::SkillsFullConfig, Stri
 }
 
 fn load_registry_config(path: &std::path::Path) -> nemesis_skills::types::RegistryConfig {
-    if path.exists() {
-        if let Ok(data) = std::fs::read_to_string(path) {
-            if let Ok(config) = serde_json::from_str::<nemesis_skills::types::RegistryConfig>(&data)
+    if path.exists()
+        && let Ok(data) = std::fs::read_to_string(path)
+            && let Ok(config) = serde_json::from_str::<nemesis_skills::types::RegistryConfig>(&data)
             {
                 return config;
             }
-        }
-    }
     nemesis_skills::types::RegistryConfig::default()
 }
 
@@ -290,17 +294,15 @@ impl SkillsHandler {
         // Build set of locally installed skill slugs for accurate installed checks.
         let skills_dir = PathBuf::from(workspace).join("skills");
         let mut installed_slugs = std::collections::HashSet::new();
-        if skills_dir.exists() {
-            if let Ok(read_dir) = std::fs::read_dir(&skills_dir) {
+        if skills_dir.exists()
+            && let Ok(read_dir) = std::fs::read_dir(&skills_dir) {
                 for entry in read_dir.flatten() {
-                    if entry.path().is_dir() {
-                        if let Some(name) = entry.path().file_name().and_then(|n| n.to_str()) {
+                    if entry.path().is_dir()
+                        && let Some(name) = entry.path().file_name().and_then(|n| n.to_str()) {
                             installed_slugs.insert(name.to_string());
                         }
-                    }
                 }
             }
-        }
 
         let limit = load_config(workspace)
             .map(|c| c.search_limit.max(1) as usize)
@@ -465,17 +467,15 @@ impl SkillsHandler {
         // Build installed set.
         let skills_dir = PathBuf::from(workspace).join("skills");
         let mut installed_slugs = std::collections::HashSet::new();
-        if skills_dir.exists() {
-            if let Ok(read_dir) = std::fs::read_dir(&skills_dir) {
+        if skills_dir.exists()
+            && let Ok(read_dir) = std::fs::read_dir(&skills_dir) {
                 for entry in read_dir.flatten() {
-                    if entry.path().is_dir() {
-                        if let Some(name) = entry.path().file_name().and_then(|n| n.to_str()) {
+                    if entry.path().is_dir()
+                        && let Some(name) = entry.path().file_name().and_then(|n| n.to_str()) {
                             installed_slugs.insert(name.to_string());
                         }
-                    }
                 }
             }
-        }
 
         let items: Vec<_> = result
             .items
@@ -812,9 +812,8 @@ fn detect_skill_structure(owner: &str, repo: &str) -> Result<(String, String, St
             .get(&skills_url)
             .header("User-Agent", "nemesisbot")
             .send()
-        {
-            if resp.status().is_success() {
-                if let Ok(entries) = resp.json::<Vec<serde_json::Value>>() {
+            && resp.status().is_success()
+                && let Ok(entries) = resp.json::<Vec<serde_json::Value>>() {
                     let skill_dirs: Vec<&str> = entries
                         .iter()
                         .filter_map(|e| {
@@ -835,12 +834,10 @@ fn detect_skill_structure(owner: &str, repo: &str) -> Result<(String, String, St
                             .get(&check_url)
                             .header("User-Agent", "nemesisbot")
                             .send()
-                        {
-                            if r.status().is_success() {
+                            && r.status().is_success() {
                                 has_skill_md = true;
                                 break;
                             }
-                        }
                     }
 
                     if has_skill_md {
@@ -851,8 +848,6 @@ fn detect_skill_structure(owner: &str, repo: &str) -> Result<(String, String, St
                         ));
                     }
                 }
-            }
-        }
 
         // Mode C: skills.json
         let index_url = format!(
@@ -863,19 +858,15 @@ fn detect_skill_structure(owner: &str, repo: &str) -> Result<(String, String, St
             .get(&index_url)
             .header("User-Agent", "nemesisbot")
             .send()
-        {
-            if resp.status().is_success() {
-                if let Ok(data) = resp.text() {
-                    if serde_json::from_str::<Vec<serde_json::Value>>(&data).is_ok() {
+            && resp.status().is_success()
+                && let Ok(data) = resp.text()
+                    && serde_json::from_str::<Vec<serde_json::Value>>(&data).is_ok() {
                         return Ok((
                             "skills_json".to_string(),
                             "skills.json".to_string(),
                             branch.to_string(),
                         ));
                     }
-                }
-            }
-        }
 
         // Mode D: root-level {slug}/SKILL.md
         let root_url = format!("{}?ref={}", base_url, branch);
@@ -883,9 +874,8 @@ fn detect_skill_structure(owner: &str, repo: &str) -> Result<(String, String, St
             .get(&root_url)
             .header("User-Agent", "nemesisbot")
             .send()
-        {
-            if resp.status().is_success() {
-                if let Ok(entries) = resp.json::<Vec<serde_json::Value>>() {
+            && resp.status().is_success()
+                && let Ok(entries) = resp.json::<Vec<serde_json::Value>>() {
                     let skip_dirs = [
                         "src", "pkg", "cmd", "internal", "docs", ".github", "test", "tests",
                         "examples", "scripts", "config",
@@ -913,10 +903,9 @@ fn detect_skill_structure(owner: &str, repo: &str) -> Result<(String, String, St
                             .get(&check_url)
                             .header("User-Agent", "nemesisbot")
                             .send()
-                        {
-                            if r.status().is_success() {
-                                if let Ok(sub) = r.json::<Vec<serde_json::Value>>() {
-                                    if sub.iter().any(|e| {
+                            && r.status().is_success()
+                                && let Ok(sub) = r.json::<Vec<serde_json::Value>>()
+                                    && sub.iter().any(|e| {
                                         e.get("name").and_then(|v| v.as_str()) == Some("SKILL.md")
                                             && e.get("type").and_then(|v| v.as_str())
                                                 == Some("file")
@@ -927,13 +916,8 @@ fn detect_skill_structure(owner: &str, repo: &str) -> Result<(String, String, St
                                             branch.to_string(),
                                         ));
                                     }
-                                }
-                            }
-                        }
                     }
                 }
-            }
-        }
     }
 
     Err("无法探测仓库结构，可能是网络问题或仓库不包含 Skills（4 种探测模式均未匹配）".to_string())

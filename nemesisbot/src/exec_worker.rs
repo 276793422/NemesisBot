@@ -168,7 +168,7 @@ async fn run_loop(workspace: &str) -> Result<()> {
 
     // Transport: named pipe if the gateway gave us one, else stdio (Layer 1).
     #[cfg(windows)]
-    if let Some(pipe_name) = std::env::var("NEMESISBOT_EXECUTOR_PIPE").ok() {
+    if let Ok(pipe_name) = std::env::var("NEMESISBOT_EXECUTOR_PIPE") {
         let stream = nemesis_agent::executor_pipe::connect_client(&pipe_name)
             .await
             .context("connect executor pipe")?;

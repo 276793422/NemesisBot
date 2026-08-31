@@ -65,7 +65,7 @@ impl CodingHandler {
     /// `config.set_field` with paths like `agents.lsp_tool.enabled`).
     fn config(&self, ctx: &RequestContext) -> Result<Option<serde_json::Value>, String> {
         let home = crate::handlers::require_home(ctx)?;
-        let cfg = load_config(&home)?;
+        let cfg = load_config(home)?;
         Ok(Some(serde_json::json!({
             "lsp": {
                 "enabled": cfg.agents.lsp_tool.enabled,

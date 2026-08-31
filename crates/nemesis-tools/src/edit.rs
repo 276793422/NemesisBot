@@ -82,7 +82,7 @@ impl Tool for EditFileTool {
         };
 
         // Check file exists
-        if !tokio::fs::metadata(&resolved).await.is_ok() {
+        if tokio::fs::metadata(&resolved).await.is_err() {
             return ToolResult::error(&format!("file not found: {}", path));
         }
 
@@ -187,11 +187,10 @@ impl Tool for AppendFileTool {
         };
 
         // Create parent directories if needed
-        if let Some(parent) = resolved.parent() {
-            if let Err(e) = tokio::fs::create_dir_all(parent).await {
+        if let Some(parent) = resolved.parent()
+            && let Err(e) = tokio::fs::create_dir_all(parent).await {
                 return ToolResult::error(&format!("failed to create directories: {}", e));
             }
-        }
 
         // Use OpenOptions for append
         use tokio::io::AsyncWriteExt;

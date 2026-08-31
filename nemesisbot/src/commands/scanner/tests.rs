@@ -1,3 +1,9 @@
+// 刻意设计：本文件测试用进程级串行锁（GLOBAL_STATE_LOCK 等 env/资源互斥锁）
+// 保护环境操作，guard 必须跨 async 测试体的 await 持有；#[tokio::test] 每个
+// 测试独立 current_thread runtime，持锁方在自己线程上恢复运行，不会死锁。
+// 测试域统一豁免（逐处 allow ~200 个不现实）。
+#![allow(clippy::await_holding_lock)]
+
 use super::*;
 use tempfile::TempDir;
 
@@ -15,9 +21,9 @@ fn test_clamav_engine_config_default() {
     assert!(cfg.url.is_empty());
     assert!(cfg.clamav_path.is_empty());
     assert!(cfg.data_dir.is_empty());
-    assert_eq!(cfg.scan_on_write, true);
-    assert_eq!(cfg.scan_on_download, false);
-    assert_eq!(cfg.scan_on_exec, true);
+    assert!(cfg.scan_on_write);
+    assert!(!cfg.scan_on_download);
+    assert!(cfg.scan_on_exec);
     assert_eq!(cfg.max_file_size, 52428800);
     assert_eq!(cfg.update_interval, "24h");
     assert!(!cfg.skip_extensions.is_empty());
@@ -121,8 +127,8 @@ fn test_parse_engine_config_full() {
     assert_eq!(cfg.url, "https://example.com/clamav.zip");
     assert_eq!(cfg.clamav_path, "/opt/clamav");
     assert_eq!(cfg.data_dir, "/var/lib/clamav");
-    assert_eq!(cfg.scan_on_write, false);
-    assert_eq!(cfg.scan_on_download, true);
+    assert!(!cfg.scan_on_write);
+    assert!(cfg.scan_on_download);
     assert_eq!(cfg.max_file_size, 104857600);
     assert_eq!(cfg.update_interval, "12h");
     assert_eq!(cfg.skip_extensions.len(), 2);
@@ -435,9 +441,9 @@ fn test_parse_engine_config_partial() {
     });
     let cfg = parse_engine_config(&raw);
     assert_eq!(cfg.address, "10.0.0.1:9999");
-    assert_eq!(cfg.scan_on_write, false);
+    assert!(!cfg.scan_on_write);
     // Other fields should be defaults
-    assert_eq!(cfg.scan_on_download, false);
+    assert!(!cfg.scan_on_download);
     assert_eq!(cfg.max_file_size, 52428800);
     assert_eq!(cfg.update_interval, "24h");
 }
@@ -917,7 +923,7 @@ fn test_clamav_engine_config_from_json_minimal() {
     assert!(cfg.clamav_path.is_empty());
     assert_eq!(cfg.max_file_size, 52428800); // default
     // Note: serde default for bool is false, so scan_on_write is false for partial JSON
-    assert_eq!(cfg.scan_on_write, false);
+    assert!(!cfg.scan_on_write);
 }
 
 #[test]
@@ -1586,8 +1592,7 @@ fn s11b_serve(file: &str, status: u16, body: Vec<u8>, hits: usize) -> String {
     let addr = listener.local_addr().unwrap();
     let file = file.to_string();
     std::thread::spawn(move || {
-        let mut served = 0usize;
-        for stream in listener.incoming() {
+        for (served, stream) in listener.incoming().enumerate() {
             if served >= hits {
                 break;
             }
@@ -1619,7 +1624,6 @@ fn s11b_serve(file: &str, status: u16, body: Vec<u8>, hits: usize) -> String {
             let _ = stream.write_all(head.as_bytes());
             let _ = stream.write_all(&body);
             let _ = stream.flush();
-            served += 1;
         }
     });
     format!("http://{}/{}", addr, file)
@@ -1953,11 +1957,9 @@ async fn test_s11b_clamav_install_inner_full_offline_path() {
     assert_eq!(cfg["engines"]["clamav"]["state"]["install_status"], "installed");
     assert_eq!(cfg["engines"]["clamav"]["state"]["db_status"], "missing");
     assert!(
-        cfg["engines"]["clamav"]["state"]["last_install_attempt"]
+        !cfg["engines"]["clamav"]["state"]["last_install_attempt"]
             .as_str()
-            .unwrap()
-            .len()
-            > 0,
+            .unwrap().is_empty(),
         "last_install_attempt 已写入"
     );
     assert!(av.join("freshclam.conf").exists(), "freshclam.conf 已生成");

@@ -64,3 +64,6 @@ tracing-subscriber = { workspace = true }
 # behind nemesis-memory's `test-fixture` feature.
 nemesis-memory = { workspace = true, features = ["test-fixture"] }
 tempfile = "3"
+
+[lints]
+workspace = true

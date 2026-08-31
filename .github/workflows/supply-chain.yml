@@ -1,0 +1,90 @@
+name: Supply Chain
+
+# H3 供应链安全闸（project-health v2 §H3，docs/PLAN/2026-08-31_project-health-improvement-v2.md）
+#
+# 为什么独立文件而不是塞进 ci.yml：advisory 数据库（RustSec / npm audit）是
+# 时间敏感的——纯 push/PR 触发只覆盖"改了依赖"的提交，新公告发布时不会重跑。
+# 独立工作流可以叠加每周定时 + 手动 + 锁文件路径触发三种入口。
+#
+# 三道检查：
+#   1. cargo-deny：license 白名单 / 重复依赖 / 来源 / RustSec 公告（deny.toml 配置，
+#      豁免台账见 docs/INFO/2026-08-31_dependency-rules.md）
+#   2. cargo-audit：RustSec 公告独立复核（与 cargo-deny 的 advisories 有重叠，
+#      保留两道是刻意的——工具各有的检查项互补，见 plan §H3）
+#   3. npm audit --omit=dev：生产依赖零漏洞闸。devDependencies 的已知缺口
+#      （vite 6.x / vitest 2.x 工具链，升级 vite 7 + vitest 3/4 属破坏性变更）
+#      走豁免台账（docs/INFO/2026-08-31_dependency-rules.md §4.2），不进闸。
+
+on:
+  schedule:
+    # 每周一 UTC 3:17（北京 11:17）。advisory 库每日更新，定时兜住"新公告打旧锁文件"。
+    - cron: '17 3 * * 1'
+  workflow_dispatch: {}
+  push:
+    paths:
+      - 'Cargo.lock'
+      - 'deny.toml'
+      - 'web/package-lock.json'
+      - 'web/package.json'
+      - '.github/workflows/supply-chain.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: supply-chain-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  cargo-deny:
+    name: cargo-deny (licenses / bans / sources / advisories)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+
+      # 预编译二进制，秒级安装（cargo install 源码编译要 10+ 分钟）
+      - name: Install cargo-deny
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-deny
+
+      - name: cargo deny check
+        run: cargo deny check
+
+  cargo-audit:
+    name: cargo-audit (RustSec advisories)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+
+      - name: Install cargo-audit
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-audit
+
+      - name: cargo audit
+        run: cargo audit
+
+  npm-audit:
+    name: npm audit (production deps only)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: '22'
+
+      # --omit=dev：生产依赖闸。开发链（vitest/vite/esbuild）的已知缺口在
+      # dependency-rules.md 台账里挂豁免（修复需 vitest 4 破坏性升级，另立项），
+      # 不能因为它们堵住生产依赖的干净信号。
+      - name: npm audit --omit=dev
+        working-directory: web
+        run: npm audit --omit=dev --audit-level=low

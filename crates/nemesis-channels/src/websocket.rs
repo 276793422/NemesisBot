@@ -238,12 +238,11 @@ impl Channel for WebSocketChannel {
                                 let query = req.uri().query().unwrap_or("");
                                 let mut valid = false;
                                 for pair in query.split('&') {
-                                    if let Some((key, value)) = pair.split_once('=') {
-                                        if key == "token" && value == token {
+                                    if let Some((key, value)) = pair.split_once('=')
+                                        && key == "token" && value == token {
                                             valid = true;
                                             break;
                                         }
-                                    }
                                 }
                                 if valid {
                                     Ok(response)
@@ -361,11 +360,10 @@ impl Channel for WebSocketChannel {
                             // Cleanup: clear active connection (matches Go's defer cleanup)
                             {
                                 let mut guard = read_active_conn.lock();
-                                if let Some(ref conn) = *guard {
-                                    if conn.client_id == read_client_id {
+                                if let Some(ref conn) = *guard
+                                    && conn.client_id == read_client_id {
                                         *guard = None;
                                     }
-                                }
                             }
                             info!(client_id = %read_client_id, "[WebSocketChannel] client disconnected");
                         });

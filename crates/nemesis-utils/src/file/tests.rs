@@ -180,7 +180,7 @@ fn test_read_file_string_binary_fails() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("binary.dat").to_string_lossy().to_string();
     // Write invalid UTF-8
-    fs::write(&path, &[0xFF, 0xFE, 0xFD]).unwrap();
+    fs::write(&path, [0xFF, 0xFE, 0xFD]).unwrap();
     let result = read_file_string(&path);
     assert!(result.is_err());
 }

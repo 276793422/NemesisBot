@@ -119,11 +119,10 @@ pub fn parse_models_json(raw: &str) -> Result<Vec<CatalogEntry>, String> {
 /// so lenient zero-entry successes would silently shadow the right parser).
 pub fn parse_any(raw: &str) -> Result<Vec<CatalogEntry>, String> {
     for parser in [parse_api_json, parse_models_json] {
-        if let Ok(entries) = parser(raw) {
-            if !entries.is_empty() {
+        if let Ok(entries) = parser(raw)
+            && !entries.is_empty() {
                 return Ok(entries);
             }
-        }
     }
     Err("no entries extracted from either api.json or models.json shape".to_string())
 }

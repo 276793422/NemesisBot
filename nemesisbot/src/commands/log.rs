@@ -109,11 +109,10 @@ fn expand_tilde(path: &str) -> String {
         if let Some(home) = dirs::home_dir() {
             return format!("{}{}", home.display(), &path[1..]);
         }
-    } else if path == "~" {
-        if let Some(home) = dirs::home_dir() {
+    } else if path == "~"
+        && let Some(home) = dirs::home_dir() {
             return home.to_string_lossy().to_string();
         }
-    }
     path.to_string()
 }
 
@@ -136,7 +135,7 @@ fn read_logging_config(cfg_path: &std::path::Path) -> Result<serde_json::Value> 
         Ok(cfg
             .get("logging")
             .cloned()
-            .unwrap_or_else(|| default_logging_config()))
+            .unwrap_or_else(default_logging_config))
     } else {
         Ok(default_logging_config())
     }
@@ -309,7 +308,7 @@ fn cmd_llm_status(cfg_path: &std::path::Path, workspace: &std::path::Path) -> Re
                     .filter_map(|e| e.ok())
                     .filter(|e| e.file_type().map(|t| t.is_dir()).unwrap_or(false))
                     .collect();
-                entries.sort_by(|a, b| b.file_name().cmp(&a.file_name()));
+                entries.sort_by_key(|e| std::cmp::Reverse(e.file_name()));
                 let recent: Vec<_> = entries.iter().take(5).collect();
 
                 if !recent.is_empty() {

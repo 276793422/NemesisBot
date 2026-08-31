@@ -91,8 +91,8 @@ impl Session {
                     let incoming = read_message(&mut inner).await?;
                     match proto::classify(&incoming, id) {
                         proto::Incoming::Response(resp) => {
-                            if let Some(err) = resp.get("error") {
-                                if !err.is_null() {
+                            if let Some(err) = resp.get("error")
+                                && !err.is_null() {
                                     if proto::is_transient_error(err) {
                                         // Re-send with a fresh id; on the
                                         // last attempt the `break` falls out
@@ -106,7 +106,6 @@ impl Session {
                                         "server error on {method}: {err}"
                                     ));
                                 }
-                            }
                             return Ok(resp.get("result").cloned().unwrap_or(Value::Null));
                         }
                         proto::Incoming::ServerRequest { id, method } => {
@@ -165,8 +164,8 @@ async fn read_message(inner: &mut Inner) -> Result<Value, String> {
         if trimmed.is_empty() {
             break; // end of headers
         }
-        if let Some((name, value)) = trimmed.split_once(':') {
-            if name.trim().eq_ignore_ascii_case("content-length") {
+        if let Some((name, value)) = trimmed.split_once(':')
+            && name.trim().eq_ignore_ascii_case("content-length") {
                 content_length = Some(
                     value
                         .trim()
@@ -174,7 +173,6 @@ async fn read_message(inner: &mut Inner) -> Result<Value, String> {
                         .map_err(|e| format!("bad Content-Length {value:?}: {e}"))?,
                 );
             }
-        }
     }
     let len = content_length.ok_or("message without Content-Length header")?;
     let mut body = vec![0u8; len];

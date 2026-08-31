@@ -58,7 +58,7 @@ pub fn extract_tool_calls_from_text(text: &str) -> Vec<ToolCall> {
                     arguments: tc.function.arguments,
                 }),
                 name: Some(tc.function.name),
-                arguments: arguments,
+                arguments,
             }
         })
         .collect()
@@ -93,8 +93,7 @@ pub fn find_matching_brace(text: &str, pos: usize) -> Option<usize> {
     let mut in_string = false;
     let mut escape_next = false;
 
-    for i in pos..bytes.len() {
-        let ch = bytes[i];
+    for (i, &ch) in bytes.iter().enumerate().skip(pos) {
 
         if escape_next {
             escape_next = false;

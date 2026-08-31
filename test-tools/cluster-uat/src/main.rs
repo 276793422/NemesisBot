@@ -118,7 +118,7 @@ impl GatewayProcess {
         let log_file = std::fs::File::create(&log_path)
             .with_context(|| format!("Cannot create log file for {}", name))?;
         let child = tokio::process::Command::new(bin)
-            .args(&["--local", "gateway", "--debug"])
+            .args(["--local", "gateway", "--debug"])
             .env("RUST_LOG", "debug")
             .current_dir(cwd)
             .stdout(Stdio::from(log_file.try_clone()?))
@@ -183,30 +183,26 @@ fn configure_ports(home: &Path, web_port: u16, health_port: u16) -> Result<()> {
 
     if let Some(obj) = config.as_object_mut() {
         // Set web server port (channels.web.port)
-        if let Some(channels) = obj.get_mut("channels") {
-            if let Some(ch) = channels.as_object_mut() {
-                if let Some(web) = ch.get_mut("web") {
-                    if let Some(w) = web.as_object_mut() {
+        if let Some(channels) = obj.get_mut("channels")
+            && let Some(ch) = channels.as_object_mut() {
+                if let Some(web) = ch.get_mut("web")
+                    && let Some(w) = web.as_object_mut() {
                         w.insert("port".to_string(), json!(web_port));
                     }
-                }
                 // Disable standalone websocket channel — the web server already
                 // handles WebSocket on the web port. Without this, the
                 // websocket channel binds to its default port (49001), which
                 // can conflict with a node's web port or a ghost listener.
-                if let Some(ws) = ch.get_mut("websocket") {
-                    if let Some(w) = ws.as_object_mut() {
+                if let Some(ws) = ch.get_mut("websocket")
+                    && let Some(w) = ws.as_object_mut() {
                         w.insert("enabled".to_string(), json!(false));
                     }
-                }
             }
-        }
         // Set health check port (gateway.port)
-        if let Some(gateway) = obj.get_mut("gateway") {
-            if let Some(gw) = gateway.as_object_mut() {
+        if let Some(gateway) = obj.get_mut("gateway")
+            && let Some(gw) = gateway.as_object_mut() {
                 gw.insert("port".to_string(), json!(health_port));
             }
-        }
         // Enable DEBUG level logging for detailed traces
         obj.insert(
             "logging".to_string(),
@@ -553,7 +549,7 @@ async fn ws_api_request(
         let resp = tokio::time::timeout_at(deadline, stream.next()).await;
         match resp {
             Ok(Some(Ok(Message::Text(text)))) => {
-                let Ok(v) = serde_json::from_str::<Value>(&text.to_string()) else {
+                let Ok(v) = serde_json::from_str::<Value>(text.as_ref()) else {
                     continue;
                 };
                 if v.get("type").and_then(|t| t.as_str()) != Some("response") {
@@ -947,7 +943,7 @@ async fn main() {
                     // cluster peers add sanitizes the id into a TOML key.
                     // Per TOML v1.0.0, `-` is a legal bare key char so it's
                     // preserved as-is. Only `.` and `:` get replaced with `_`.
-                    let sanitized = other.name.replace('.', "_").replace(':', "_");
+                    let sanitized = other.name.replace(['.', ':'], "_");
                     if !content.contains(&format!("[peers.{}]", sanitized)) {
                         return fail(
                             "T2",
@@ -1130,13 +1126,9 @@ async fn main() {
                     })
                     .await
                     {
-                        Ok(resp) => {
-                            if resp.contains(&content) {
-                                Ok(resp)
-                            } else {
-                                Ok(resp) // Got continuation response, content may vary
-                            }
-                        }
+                        // Either the echoed content or the continuation response is
+                        // acceptable; both are returned as-is.
+                        Ok(resp) => Ok(resp),
                         Err(e) => Err(format!("无续行响应: {}", e)),
                     }
                 });

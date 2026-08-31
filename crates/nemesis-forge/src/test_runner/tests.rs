@@ -266,7 +266,7 @@ fn test_detect_mcp_language_unknown() {
 
 #[test]
 fn test_s8_default_impl_constructs_runner() {
-    let _runner = TestRunner::default();
+    let _runner = TestRunner;
 }
 
 #[test]

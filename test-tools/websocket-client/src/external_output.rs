@@ -53,10 +53,8 @@ impl ExternalOutput {
         if let Some(stdout) = stdout {
             std::thread::spawn(move || {
                 let reader = std::io::BufReader::new(stdout);
-                for line in reader.lines() {
-                    if let Ok(l) = line {
-                        log_message(&config, &format!("[Output stdout] {}", l));
-                    }
+                for l in reader.lines().map_while(Result::ok) {
+                    log_message(&config, &format!("[Output stdout] {}", l));
                 }
             });
         }
@@ -65,10 +63,8 @@ impl ExternalOutput {
             let config = self.config.clone();
             std::thread::spawn(move || {
                 let reader = std::io::BufReader::new(stderr);
-                for line in reader.lines() {
-                    if let Ok(l) = line {
-                        log_message(&config, &format!("[Output stderr] {}", l));
-                    }
+                for l in reader.lines().map_while(Result::ok) {
+                    log_message(&config, &format!("[Output stderr] {}", l));
                 }
             });
         }

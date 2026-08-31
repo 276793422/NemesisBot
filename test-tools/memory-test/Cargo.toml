@@ -23,3 +23,6 @@ path = "src/memory_basic_st.rs"
 [[test]]
 name = "memory_enhanced_st"
 path = "src/memory_enhanced_st.rs"
+
+[lints]
+workspace = true

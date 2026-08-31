@@ -102,11 +102,10 @@ impl ModuleHandler for SessionsHandler {
                 // session_logs/*.jsonl. Best-effort; absence is not an error.
                 {
                     let guard = ctx.state.agent_loop.read();
-                    if let Some(al) = guard.as_ref() {
-                        if let Some(store) = al.session_store() {
+                    if let Some(al) = guard.as_ref()
+                        && let Some(store) = al.session_store() {
                             store.delete_session(&session_key);
                         }
-                    }
                 }
                 // CC SessionEnd（观察型，2026-08-29 T3）：显式删除也触发
                 // （桥经 AgentLoop 的 cc_hooks_bridge 访问；未装配 = 跳过）。
@@ -129,8 +128,8 @@ impl ModuleHandler for SessionsHandler {
                 // Guard released above so we never hold agent_loop + cron
                 // mutexes together.
                 let mut paused: Vec<serde_json::Value> = Vec::new();
-                if let Some(svc) = ctx.state.cron.as_ref() {
-                    if let Ok(svc) = svc.lock() {
+                if let Some(svc) = ctx.state.cron.as_ref()
+                    && let Ok(svc) = svc.lock() {
                         for job in svc.list_jobs(true) {
                             if !job.enabled {
                                 continue;
@@ -150,7 +149,6 @@ impl ModuleHandler for SessionsHandler {
                             }
                         }
                     }
-                }
                 Ok(Some(serde_json::json!({
                     "deleted": session_id,
                     "paused_cron_jobs": paused,
@@ -176,11 +174,10 @@ impl ModuleHandler for SessionsHandler {
                 // rebuild path unable to revive cleared data.
                 nemesis_agent::chat_log::clear_chat_log(&session_key);
                 let guard = ctx.state.agent_loop.read();
-                if let Some(al) = guard.as_ref() {
-                    if let Some(store) = al.session_store() {
+                if let Some(al) = guard.as_ref()
+                    && let Some(store) = al.session_store() {
                         store.clear_session(&session_key);
                     }
-                }
                 Ok(Some(serde_json::json!({ "cleared": session_id })))
             }
             "export" => {

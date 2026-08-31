@@ -1001,11 +1001,7 @@ async fn extra_file_wrapper_open_file_returns_bytes() {
 async fn extra_process_execute_command_runs_simple_command() {
     let mw = make_middleware_with_preset(PermissionPreset::Elevated, "allow");
     let w = SecureProcessWrapper::new(&mw);
-    let cmd = if cfg!(target_os = "windows") {
-        "echo hello"
-    } else {
-        "echo hello"
-    };
+    let cmd = "echo hello";
     let result = w.execute_command(cmd, 5).await;
     assert!(result.is_ok());
     assert!(result.unwrap().contains("hello"));
@@ -1136,9 +1132,8 @@ async fn extra_process_wait_times_out_on_running_process() {
     let pid = w.spawn(spawn_cmd).await.unwrap();
     let result = w.wait(pid, 1).await;
     // Should time out (or succeed if process exited)
-    match result {
-        Err(e) => assert!(e.contains("timeout") || e.contains("timed out")),
-        Ok(_) => {} // Process exited; OK
+    if let Err(e) = result {
+        assert!(e.contains("timeout") || e.contains("timed out"));
     }
     // Cleanup
     let _ = w.kill(pid).await;
@@ -2390,7 +2385,7 @@ fn extra_validate_path_empty_workspace_dangerous_still_blocked() {
 #[test]
 fn extra_permission_preset_clone_and_eq() {
     let p1 = PermissionPreset::Standard;
-    let p2 = p1.clone();
+    let p2 = p1;
     assert_eq!(p1, p2);
 }
 

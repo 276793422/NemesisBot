@@ -17,12 +17,12 @@ pub async fn test_cli_version(ws: &TestWorkspace, bin: &Path) -> Vec<TestResult>
     if output.success() && (output.stdout_contains("version") || output.stdout_contains("0.")) {
         results.push(pass(
             &format!("{}/exit_and_output", suite),
-            &format!("exit={}, output has version info", output.exit_code),
+            format!("exit={}, output has version info", output.exit_code),
         ));
     } else {
         results.push(fail(
             &format!("{}/exit_and_output", suite),
-            &format!(
+            format!(
                 "exit={}, stdout='{}', stderr='{}'",
                 output.exit_code,
                 output.stdout.trim(),
@@ -59,7 +59,7 @@ pub async fn test_cli_onboard_default(ws: &TestWorkspace, bin: &Path) -> Vec<Tes
     } else {
         results.push(fail(
             &format!("{}/exit", suite),
-            &format!(
+            format!(
                 "exit={}, stdout='{}', stderr='{}'",
                 output.exit_code,
                 output.stdout.trim(),
@@ -95,12 +95,12 @@ pub async fn test_cli_onboard_default(ws: &TestWorkspace, bin: &Path) -> Vec<Tes
     if dirs_missing.is_empty() {
         results.push(pass(
             &format!("{}/directories", suite),
-            &format!("All {} directories present", dirs_ok),
+            format!("All {} directories present", dirs_ok),
         ));
     } else {
         results.push(fail(
             &format!("{}/directories", suite),
-            &format!("Missing: {:?}", dirs_missing),
+            format!("Missing: {:?}", dirs_missing),
         ));
     }
 
@@ -147,7 +147,7 @@ pub async fn test_cli_onboard_default(ws: &TestWorkspace, bin: &Path) -> Vec<Tes
         if !cc.path.exists() {
             results.push(fail(
                 &format!("{}/config_{}", suite, cc.name),
-                &format!("{} not found at {}", cc.name, cc.path.display()),
+                format!("{} not found at {}", cc.name, cc.path.display()),
             ));
             continue;
         }
@@ -156,7 +156,7 @@ pub async fn test_cli_onboard_default(ws: &TestWorkspace, bin: &Path) -> Vec<Tes
             Err(e) => {
                 results.push(fail(
                     &format!("{}/config_{}", suite, cc.name),
-                    &format!("Cannot read {}: {}", cc.name, e),
+                    format!("Cannot read {}: {}", cc.name, e),
                 ));
                 continue;
             }
@@ -166,7 +166,7 @@ pub async fn test_cli_onboard_default(ws: &TestWorkspace, bin: &Path) -> Vec<Tes
             Err(e) => {
                 results.push(fail(
                     &format!("{}/config_{}", suite, cc.name),
-                    &format!("Invalid JSON in {}: {}", cc.name, e),
+                    format!("Invalid JSON in {}: {}", cc.name, e),
                 ));
                 continue;
             }
@@ -180,12 +180,12 @@ pub async fn test_cli_onboard_default(ws: &TestWorkspace, bin: &Path) -> Vec<Tes
         if missing.is_empty() {
             results.push(pass(
                 &format!("{}/config_{}", suite, cc.name),
-                &format!("{} exists with all required keys", cc.name),
+                format!("{} exists with all required keys", cc.name),
             ));
         } else {
             results.push(fail(
                 &format!("{}/config_{}", suite, cc.name),
-                &format!("{} missing keys: {:?}", cc.name, missing),
+                format!("{} missing keys: {:?}", cc.name, missing),
             ));
         }
     }
@@ -214,12 +214,12 @@ pub async fn test_cli_onboard_default(ws: &TestWorkspace, bin: &Path) -> Vec<Tes
     if md_missing.is_empty() {
         results.push(pass(
             &format!("{}/workspace_md_files", suite),
-            &format!("All {} md files present", md_ok),
+            format!("All {} md files present", md_ok),
         ));
     } else {
         results.push(fail(
             &format!("{}/workspace_md_files", suite),
-            &format!("Missing: {:?}", md_missing),
+            format!("Missing: {:?}", md_missing),
         ));
     }
 
@@ -259,12 +259,12 @@ pub async fn test_cli_onboard_default(ws: &TestWorkspace, bin: &Path) -> Vec<Tes
     if skills_missing.is_empty() {
         results.push(pass(
             &format!("{}/builtin_skills", suite),
-            &format!("All {} built-in skills present", skills_ok),
+            format!("All {} built-in skills present", skills_ok),
         ));
     } else {
         results.push(fail(
             &format!("{}/builtin_skills", suite),
-            &format!("Missing skills: {:?}", skills_missing),
+            format!("Missing skills: {:?}", skills_missing),
         ));
     }
 
@@ -296,34 +296,34 @@ pub async fn test_cli_onboard_default(ws: &TestWorkspace, bin: &Path) -> Vec<Tes
     if helpers_missing.is_empty() {
         results.push(pass(
             &format!("{}/helper_files", suite),
-            &format!("All {} helper files present", helpers_ok),
+            format!("All {} helper files present", helpers_ok),
         ));
     } else {
         results.push(fail(
             &format!("{}/helper_files", suite),
-            &format!("Missing: {:?}", helpers_missing),
+            format!("Missing: {:?}", helpers_missing),
         ));
     }
 
     // --- Skills config content verification ---
     let skills_cfg_path = workspace.join("config/config.skills.json");
-    if let Ok(raw) = std::fs::read_to_string(&skills_cfg_path) {
-        if let Ok(val) = serde_json::from_str::<Value>(&raw) {
+    if let Ok(raw) = std::fs::read_to_string(&skills_cfg_path)
+        && let Ok(val) = serde_json::from_str::<Value>(&raw) {
             let sources = val.get("github_sources").and_then(|v| v.as_array());
             if let Some(arr) = sources {
                 let source_names: Vec<&str> = arr
                     .iter()
                     .filter_map(|s| s.get("name").and_then(|n| n.as_str()))
                     .collect();
-                let has_anthropics = source_names.iter().any(|n| *n == "anthropics");
-                let has_openclaw = source_names.iter().any(|n| *n == "openclaw");
+                let has_anthropics = source_names.contains(&"anthropics");
+                let has_openclaw = source_names.contains(&"openclaw");
                 let has_clawhub = val.get("clawhub").and_then(|c| c.get("enabled")).is_some();
                 let count = source_names.len();
 
                 if has_anthropics && has_openclaw && has_clawhub {
                     results.push(pass(
                         &format!("{}/skills_sources", suite),
-                        &format!("{} GitHub sources (anthropics, openclaw) + clawhub", count),
+                        format!("{} GitHub sources (anthropics, openclaw) + clawhub", count),
                     ));
                 } else {
                     let mut missing = Vec::new();
@@ -338,7 +338,7 @@ pub async fn test_cli_onboard_default(ws: &TestWorkspace, bin: &Path) -> Vec<Tes
                     }
                     results.push(fail(
                         &format!("{}/skills_sources", suite),
-                        &format!("Missing: {:?}", missing),
+                        format!("Missing: {:?}", missing),
                     ));
                 }
             } else {
@@ -348,7 +348,6 @@ pub async fn test_cli_onboard_default(ws: &TestWorkspace, bin: &Path) -> Vec<Tes
                 ));
             }
         }
-    }
 
     // --- Skills list CLI verification ---
     let skills_list = ws.run_cli(bin, &["skills", "list"]).await;
@@ -369,7 +368,7 @@ pub async fn test_cli_onboard_default(ws: &TestWorkspace, bin: &Path) -> Vec<Tes
         .count();
         results.push(pass(
             &format!("{}/skills_list", suite),
-            &format!(
+            format!(
                 "skills list exit={}, found {}/6 built-in skills in output",
                 skills_list.exit_code, builtin_count
             ),
@@ -377,7 +376,7 @@ pub async fn test_cli_onboard_default(ws: &TestWorkspace, bin: &Path) -> Vec<Tes
     } else {
         results.push(fail(
             &format!("{}/skills_list", suite),
-            &format!(
+            format!(
                 "exit={}, stdout='{}'",
                 skills_list.exit_code,
                 skills_list.stdout.chars().take(200).collect::<String>()
@@ -394,7 +393,7 @@ pub async fn test_cli_onboard_default(ws: &TestWorkspace, bin: &Path) -> Vec<Tes
     let extra_ok = extra_dirs.iter().filter(|(_, p)| p.is_dir()).count();
     results.push(pass(
         &format!("{}/extra_dirs", suite),
-        &format!(
+        format!(
             "{}/{} extra directories present",
             extra_ok,
             extra_dirs.len()
@@ -415,7 +414,7 @@ pub async fn test_cli_onboard_default(ws: &TestWorkspace, bin: &Path) -> Vec<Tes
             Err(e) => {
                 results.push(fail(
                     &format!("{}/flag_format", suite),
-                    &format!("Cannot create fresh workspace: {}", e),
+                    format!("Cannot create fresh workspace: {}", e),
                 ));
                 return results;
             }
@@ -431,7 +430,7 @@ pub async fn test_cli_onboard_default(ws: &TestWorkspace, bin: &Path) -> Vec<Tes
                 .is_file();
             results.push(pass(
                 &format!("{}/flag_format", suite),
-                &format!(
+                format!(
                     "onboard --default: config={}, identity={}, skills={}",
                     config_ok, identity_ok, skills_ok
                 ),
@@ -439,7 +438,7 @@ pub async fn test_cli_onboard_default(ws: &TestWorkspace, bin: &Path) -> Vec<Tes
         } else {
             results.push(fail(
                 &format!("{}/flag_format", suite),
-                &format!("onboard --default exit={}", flag_output.exit_code),
+                format!("onboard --default exit={}", flag_output.exit_code),
             ));
         }
     }
@@ -460,12 +459,12 @@ pub async fn test_cli_status(ws: &TestWorkspace, bin: &Path) -> Vec<TestResult> 
     if output.success() || output.stdout_contains("status") || output.stdout_contains("Status") {
         results.push(pass(
             &format!("{}/output", suite),
-            &format!("exit={}, output received", output.exit_code),
+            format!("exit={}, output received", output.exit_code),
         ));
     } else {
         results.push(pass(
             &format!("{}/output", suite),
-            &format!("exit={} (may need gateway)", output.exit_code),
+            format!("exit={} (may need gateway)", output.exit_code),
         ));
     }
 
@@ -488,7 +487,7 @@ pub async fn test_cli_shutdown(ws: &TestWorkspace, bin: &Path) -> Vec<TestResult
     } else {
         results.push(fail(
             &format!("{}/help", suite),
-            &format!("exit={}", help.exit_code),
+            format!("exit={}", help.exit_code),
         ));
     }
 

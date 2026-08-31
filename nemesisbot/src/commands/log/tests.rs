@@ -30,7 +30,7 @@ fn test_expand_tilde_home() {
 #[test]
 fn test_expand_tilde_root() {
     let expanded = expand_tilde("~");
-    assert!(!expanded.starts_with('~') || !dirs::home_dir().is_some());
+    assert!(!expanded.starts_with('~') || dirs::home_dir().is_none());
 }
 
 #[test]
@@ -43,7 +43,7 @@ fn test_expand_tilde_no_tilde() {
 fn test_expand_tilde_backslash() {
     let expanded = expand_tilde("~\\test");
     // Should expand on Windows
-    assert!(!expanded.starts_with('~') || !dirs::home_dir().is_some());
+    assert!(!expanded.starts_with('~') || dirs::home_dir().is_none());
 }
 
 #[test]
@@ -67,7 +67,7 @@ fn test_resolve_path_relative() {
 fn test_resolve_path_tilde() {
     let tmp = TempDir::new().unwrap();
     let resolved = resolve_path("~/logs", tmp.path());
-    assert!(!resolved.starts_with('~') || !dirs::home_dir().is_some());
+    assert!(!resolved.starts_with('~') || dirs::home_dir().is_none());
 }
 
 #[test]
@@ -1056,7 +1056,7 @@ mod r10_subprocess {
         // 进程内 std::process::exit(1) 会杀掉测试二进制 → 只能在子进程钉。
         let ws = TestWorkspace::new().expect("workspace");
         std::fs::create_dir_all(ws.home()).unwrap();
-        std::fs::write(&ws.config_path(), r#"{"logging":{"llm":{"enabled":true}}}"#).unwrap();
+        std::fs::write(ws.config_path(), r#"{"logging":{"llm":{"enabled":true}}}"#).unwrap();
 
         let bin = resolve_nemesisbot_bin().expect("release binary");
         let out = ws

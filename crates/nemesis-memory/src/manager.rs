@@ -324,7 +324,7 @@ impl MemoryManager {
             }
         });
 
-        let vs = Arc::new(VectorStore::new(store_cfg).map_err(|e| e)?);
+        let vs = Arc::new(VectorStore::new(store_cfg)?);
 
         // Load previously persisted entries
         if let Err(e) = vs.load_persisted_sync() {
@@ -627,43 +627,52 @@ impl MemoryManager {
 
         let limit = if limit == 0 { 5 } else { limit };
 
-        // Try the vector store first.
-        let vs_guard = self.vector_store.read();
-        if let Some(ref vs) = *vs_guard {
-            let result = vs.query(query, limit, &[]).map_err(|e| e.to_string())?;
+        // Try the vector store first. Scope the read guard to this block —
+        // the keyword-store fallback await below must not run under it
+        // (clippy's flow analysis recognizes block scoping, not a bare drop()).
+        let vector_result = {
+            let vs_guard = self.vector_store.read();
+            match vs_guard.as_ref() {
+                Some(vs) => {
+                    let result = vs.query(query, limit, &[]).map_err(|e| e.to_string())?;
 
-            // Convert VectorEntry results to SearchResult.
-            let entries: Vec<ScoredEntry> = result
-                .entries
-                .into_iter()
-                .map(|ve| {
-                    let entry = Entry {
-                        id: ve.id,
-                        typ: parse_memory_type_from_str(&ve.entry_type),
-                        content: ve.content,
-                        metadata: ve.metadata,
-                        tags: ve.tags,
-                        score: Some(ve.score),
-                        created_at: chrono::DateTime::parse_from_rfc3339(&ve.created_at)
-                            .map(|dt| dt.with_timezone(&chrono::Local))
-                            .unwrap_or_else(|_| chrono::Local::now()),
-                        updated_at: chrono::DateTime::parse_from_rfc3339(&ve.updated_at)
-                            .map(|dt| dt.with_timezone(&chrono::Local))
-                            .unwrap_or_else(|_| chrono::Local::now()),
-                    };
-                    ScoredEntry {
-                        entry,
-                        score: ve.score,
-                    }
-                })
-                .collect();
+                    // Convert VectorEntry results to SearchResult.
+                    let entries: Vec<ScoredEntry> = result
+                        .entries
+                        .into_iter()
+                        .map(|ve| {
+                            let entry = Entry {
+                                id: ve.id,
+                                typ: parse_memory_type_from_str(&ve.entry_type),
+                                content: ve.content,
+                                metadata: ve.metadata,
+                                tags: ve.tags,
+                                score: Some(ve.score),
+                                created_at: chrono::DateTime::parse_from_rfc3339(&ve.created_at)
+                                    .map(|dt| dt.with_timezone(&chrono::Local))
+                                    .unwrap_or_else(|_| chrono::Local::now()),
+                                updated_at: chrono::DateTime::parse_from_rfc3339(&ve.updated_at)
+                                    .map(|dt| dt.with_timezone(&chrono::Local))
+                                    .unwrap_or_else(|_| chrono::Local::now()),
+                            };
+                            ScoredEntry {
+                                entry,
+                                score: ve.score,
+                            }
+                        })
+                        .collect();
 
-            let total = entries.len();
-            return Ok(SearchResult { entries, total });
+                    let total = entries.len();
+                    Some(Ok(SearchResult { entries, total }))
+                }
+                None => None,
+            }
+        };
+        if let Some(res) = vector_result {
+            return res;
         }
 
         // Fallback: keyword search over the general store.
-        drop(vs_guard);
         self.store.query(query, None, limit).await
     }
 
@@ -683,8 +692,8 @@ impl MemoryManager {
 
         // Fall back to vector store if initialized
         let vs_guard = self.vector_store.read();
-        if let Some(ref vs) = *vs_guard {
-            if let Some(ve) = vs.get_by_id(id) {
+        if let Some(ref vs) = *vs_guard
+            && let Some(ve) = vs.get_by_id(id) {
                 return Ok(Some(Entry {
                     id: ve.id,
                     typ: parse_memory_type_from_str(&ve.entry_type),
@@ -700,7 +709,6 @@ impl MemoryManager {
                         .unwrap_or_else(|_| chrono::Local::now()),
                 }));
             }
-        }
 
         Ok(None)
     }
@@ -868,11 +876,10 @@ impl MemoryManager {
         // Delete from vector store
         {
             let vs_guard = self.vector_store.read();
-            if let Some(ref vs) = *vs_guard {
-                if vs.delete_entry(id) {
+            if let Some(ref vs) = *vs_guard
+                && vs.delete_entry(id) {
                     found = true;
                 }
-            }
         }
         Ok(found)
     }

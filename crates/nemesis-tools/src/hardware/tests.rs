@@ -169,13 +169,13 @@ fn test_spi_validate_params() {
 
 #[test]
 fn test_i2c_tool_default() {
-    let tool = I2CTool::default();
+    let tool = I2CTool;
     assert_eq!(tool.name(), "i2c");
 }
 
 #[test]
 fn test_spi_tool_default() {
-    let tool = SPITool::default();
+    let tool = SPITool;
     assert_eq!(tool.name(), "spi");
 }
 
@@ -1284,11 +1284,7 @@ async fn test_i2c_read_non_numeric_bus() {
             "address": 0x38
         }))
         .await;
-    if !cfg!(target_os = "linux") {
-        assert!(result.is_error);
-    } else {
-        assert!(result.is_error);
-    }
+    assert!(result.is_error);
 }
 
 #[tokio::test]

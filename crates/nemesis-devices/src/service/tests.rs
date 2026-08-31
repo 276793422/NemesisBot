@@ -1330,22 +1330,19 @@ fn test_handler_receives_correct_device_info() {
     let received_clone = received_devices.clone();
 
     svc.set_handler(Box::new(move |event| {
-        match event {
-            ServiceDeviceEvent::Added { device_id, .. } => {
-                // Store the device ID that was added
-                received_clone.lock().push(Device {
-                    id: device_id,
-                    name: String::new(),
-                    device_type: String::new(),
-                    status: String::new(),
-                    vendor_id: None,
-                    product_id: None,
-                    serial: None,
-                    connected_at: None,
-                    metadata: HashMap::new(),
-                });
-            }
-            _ => {}
+        if let ServiceDeviceEvent::Added { device_id, .. } = event {
+            // Store the device ID that was added
+            received_clone.lock().push(Device {
+                id: device_id,
+                name: String::new(),
+                device_type: String::new(),
+                status: String::new(),
+                vendor_id: None,
+                product_id: None,
+                serial: None,
+                connected_at: None,
+                metadata: HashMap::new(),
+            });
         }
     }));
 

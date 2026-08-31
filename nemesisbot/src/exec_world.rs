@@ -78,7 +78,7 @@ pub fn build_executor_channel(
         .read()
         .executor
         .as_ref()
-        .map_or(false, |e| e.enabled);
+        .is_some_and(|e| e.enabled);
     if !enabled {
         return Ok(None);
     }
@@ -96,7 +96,7 @@ pub fn build_executor_channel(
             .read()
             .executor
             .as_ref()
-            .map_or(false, |ec| ec.sandbox)
+            .is_some_and(|ec| ec.sandbox)
     });
     // Live strict probe (P5-2): the gate re-reads this per call, so flipping
     // executor.strict takes effect on the next tool call — no restart.
@@ -105,7 +105,7 @@ pub fn build_executor_channel(
             .read()
             .executor
             .as_ref()
-            .map_or(false, |ec| ec.strict)
+            .is_some_and(|ec| ec.strict)
     });
 
     // Sandboxie Layer-2 attach decision (feature-gated; computed on every
@@ -220,7 +220,7 @@ pub fn build_executor_channel(
             start_exe.exists(),
             sbiesvc_running,
             if nemesis_config::load_live()
-                .map(|c| c.executor.map_or(false, |e| e.strict))
+                .map(|c| c.executor.is_some_and(|e| e.strict))
                 .unwrap_or(false)
             {
                 " — executor.strict is ON: sandboxed tool calls will be REFUSED until \

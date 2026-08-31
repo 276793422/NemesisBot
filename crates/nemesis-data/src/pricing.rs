@@ -161,6 +161,35 @@ pub fn cost_from_pricing(
         / 1_000_000.0
 }
 
+/// [`cost_from_pricing`] 的分项版：同一公式按列拆开，`total` = 分项之和
+/// （浮点上直接相加，不做二次舍入——明细表四分项之和恒等于 total）。
+pub fn cost_breakdown_from_pricing(
+    p: &ModelPricing,
+    input_tokens: i64,
+    output_tokens: i64,
+    cache_creation_tokens: i64,
+    cache_read_tokens: i64,
+) -> crate::CostBreakdown {
+    let plain_input = (input_tokens - cache_creation_tokens - cache_read_tokens).max(0);
+    let input_cost_usd = plain_input as f64 * p.input_cost_per_million / 1_000_000.0;
+    let output_cost_usd = output_tokens as f64 * p.output_cost_per_million / 1_000_000.0;
+    let cache_creation_cost_usd =
+        cache_creation_tokens as f64 * p.cache_creation_cost_per_million / 1_000_000.0;
+    let cache_read_cost_usd =
+        cache_read_tokens as f64 * p.cache_read_cost_per_million / 1_000_000.0;
+    crate::CostBreakdown {
+        pricing_model: p.model_id.clone(),
+        input_cost_usd,
+        output_cost_usd,
+        cache_creation_cost_usd,
+        cache_read_cost_usd,
+        total_cost_usd: input_cost_usd
+            + output_cost_usd
+            + cache_creation_cost_usd
+            + cache_read_cost_usd,
+    }
+}
+
 /// All embedded entries (convenience wrapper for handlers).
 pub fn all_pricing() -> &'static [ModelPricing] {
     PricingTable::embedded().entries()

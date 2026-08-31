@@ -458,7 +458,7 @@ fn test_init_default_function() {
     // Note: This test might fail if other tests have already initialized the global subscriber
     // In a real scenario, the subscriber can only be set once globally
     // We're testing that the function doesn't cause undefined behavior/crashes
-    let _ = std::panic::catch_unwind(|| init_default());
+    let _ = std::panic::catch_unwind(init_default);
     // Test passes if we get here (no crash)
 }
 
@@ -720,7 +720,7 @@ fn test_logger_fields_edge_cases() {
     let mut fields = serde_json::Map::new();
     fields.insert("string".to_string(), serde_json::json!("text"));
     fields.insert("number".to_string(), serde_json::json!(42));
-    fields.insert("float".to_string(), serde_json::json!(3.14));
+    fields.insert("float".to_string(), serde_json::json!(2.75));
     fields.insert("bool".to_string(), serde_json::json!(true));
     fields.insert("null".to_string(), serde_json::json!(()));
     fields.insert("array".to_string(), serde_json::json!([1, 2, 3]));

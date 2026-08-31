@@ -272,15 +272,14 @@ impl AuditChain {
             .unwrap_or_else(|| "audit_chain".to_string());
 
         // Read main file
-        if self.config.storage_path.exists() {
-            if let Ok(content) = std::fs::read_to_string(&self.config.storage_path) {
+        if self.config.storage_path.exists()
+            && let Ok(content) = std::fs::read_to_string(&self.config.storage_path) {
                 for line in content.lines() {
                     if let Ok(event) = serde_json::from_str::<AuditEvent>(line) {
                         all_events.push(event);
                     }
                 }
             }
-        }
 
         // Read segment files
         if let Ok(entries) = std::fs::read_dir(parent) {

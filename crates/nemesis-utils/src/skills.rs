@@ -12,8 +12,7 @@ pub fn extract_slug(skill_id: &str) -> &str {
 /// Normalize a skill name for comparison.
 pub fn normalize_skill_name(name: &str) -> String {
     name.to_lowercase()
-        .replace(' ', "-")
-        .replace('_', "-")
+        .replace([' ', '_'], "-")
         .trim_matches('-')
         .to_string()
 }

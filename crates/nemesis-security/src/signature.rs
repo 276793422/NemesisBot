@@ -31,9 +31,11 @@ const ALGORITHM_NAME: &str = "ed25519";
 
 /// Trust level for a signing key.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Default)]
 pub enum TrustLevel {
     /// Unknown key, not trusted.
     #[serde(rename = "unknown")]
+    #[default]
     Unknown,
     /// Key belongs to a community signer.
     #[serde(rename = "community")]
@@ -46,11 +48,6 @@ pub enum TrustLevel {
     Revoked,
 }
 
-impl Default for TrustLevel {
-    fn default() -> Self {
-        Self::Unknown
-    }
-}
 
 impl std::fmt::Display for TrustLevel {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -207,14 +204,13 @@ impl TrustStore {
             .iter()
             .find(|(_, v)| v.name == name)
             .map(|(k, _)| k.clone());
-        if let Some(b64) = b64 {
-            if let Some(entry) = keys.get_mut(&b64) {
+        if let Some(b64) = b64
+            && let Some(entry) = keys.get_mut(&b64) {
                 entry.level = TrustLevel::Revoked;
                 drop(keys);
                 let _ = self.save();
                 return Ok(());
             }
-        }
         Err(format!("key not found: {}", name))
     }
 
@@ -491,7 +487,7 @@ impl Verifier {
                 signer: String::new(),
                 trust_level: TrustLevel::Unknown,
                 algorithm: ALGORITHM_NAME.to_string(),
-                error: format!("cannot access skill path: not found"),
+                error: "cannot access skill path: not found".to_string(),
                 files_verified: 0,
                 timestamp: now,
             };
@@ -703,8 +699,8 @@ impl Verifier {
             if k.level == TrustLevel::Revoked {
                 continue;
             }
-            if let Ok(verifying_key) = import_public_key(&k.public_key) {
-                if signature.len() == 64 {
+            if let Ok(verifying_key) = import_public_key(&k.public_key)
+                && signature.len() == 64 {
                     let mut sig_arr = [0u8; 64];
                     sig_arr.copy_from_slice(signature);
                     let sig = Signature::from_bytes(&sig_arr);
@@ -720,7 +716,6 @@ impl Verifier {
                         });
                     }
                 }
-            }
         }
 
         Ok(VerificationResult {
@@ -905,18 +900,15 @@ pub fn sign_content_hex(content: &str, private_key_hex: &str) -> Result<String, 
 ///
 /// Used by the existing `SignatureVerifier` compatibility layer.
 pub fn verify_signature_ed25519(content: &[u8], signature_hex: &str, public_key_hex: &str) -> bool {
-    if let Ok(sig_bytes) = hex_decode_vec(signature_hex) {
-        if let Ok(pk_bytes) = hex_decode_32(public_key_hex) {
-            if let Ok(verifying_key) = VerifyingKey::from_bytes(&pk_bytes) {
-                if sig_bytes.len() == 64 {
+    if let Ok(sig_bytes) = hex_decode_vec(signature_hex)
+        && let Ok(pk_bytes) = hex_decode_32(public_key_hex)
+            && let Ok(verifying_key) = VerifyingKey::from_bytes(&pk_bytes)
+                && sig_bytes.len() == 64 {
                     let mut sig_arr = [0u8; 64];
                     sig_arr.copy_from_slice(&sig_bytes[..64]);
                     let sig = Signature::from_bytes(&sig_arr);
                     return verifying_key.verify(content, &sig).is_ok();
                 }
-            }
-        }
-    }
     false
 }
 
@@ -950,7 +942,7 @@ fn compute_directory_hash(dir_path: &Path) -> Result<([u8; 32], usize), String> 
             if !e.file_type().is_dir() && e.file_name() == SIGNATURE_FILE_NAME {
                 let rel = e.path().strip_prefix(dir_path).unwrap_or(e.path());
                 // Only skip the root-level .signature
-                rel.parent().map_or(true, |p| p.as_os_str().is_empty()) == false || false
+                rel.parent().is_some_and(|p| !p.as_os_str().is_empty())
             } else {
                 true
             }
@@ -965,7 +957,7 @@ fn compute_directory_hash(dir_path: &Path) -> Result<([u8; 32], usize), String> 
         if entry.file_name() == SIGNATURE_FILE_NAME {
             // Check if it's at the root level of the skill dir.
             let rel = entry.path().strip_prefix(dir_path).unwrap_or(entry.path());
-            if rel.parent().map_or(true, |p| p.as_os_str().is_empty()) {
+            if rel.parent().is_none_or(|p| p.as_os_str().is_empty()) {
                 continue;
             }
         }
@@ -1020,7 +1012,7 @@ fn hex_decode_32(hex: &str) -> Result<[u8; 32], String> {
 
 fn hex_decode_vec(hex: &str) -> Result<Vec<u8>, String> {
     let hex = hex.trim();
-    if hex.len() % 2 != 0 {
+    if !hex.len().is_multiple_of(2) {
         return Err("odd hex length".to_string());
     }
     (0..hex.len())

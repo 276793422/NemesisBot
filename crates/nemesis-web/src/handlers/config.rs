@@ -8,6 +8,12 @@ pub struct ConfigHandler {
     _priv: (),
 }
 
+impl Default for ConfigHandler {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ConfigHandler {
     pub fn new() -> Self {
         Self { _priv: () }
@@ -175,11 +181,10 @@ fn sanitize_config(json: &mut serde_json::Value) {
     if let Some(obj) = json.as_object_mut() {
         for (key, value) in obj.iter_mut() {
             if crate::handlers::is_sensitive_field(key) {
-                if let Some(s) = value.as_str() {
-                    if !s.is_empty() {
+                if let Some(s) = value.as_str()
+                    && !s.is_empty() {
                         *value = serde_json::Value::String(crate::handlers::mask_sensitive(s));
                     }
-                }
             } else {
                 sanitize_config(value);
             }

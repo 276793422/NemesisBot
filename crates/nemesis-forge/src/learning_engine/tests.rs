@@ -707,8 +707,8 @@ async fn test_run_cycle_persists() {
 
     let exps: Vec<CollectedExperience> = (0..3).map(|_| make_collected("tool", true)).collect();
     let cycle = engine.run_cycle(&exps).await;
-    assert!(cycle.id.len() > 0);
-    assert!(cycle.started_at.len() > 0);
+    assert!(!cycle.id.is_empty());
+    assert!(!cycle.started_at.is_empty());
     assert!(cycle.completed_at.is_some());
 }
 

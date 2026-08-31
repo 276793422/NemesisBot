@@ -10,20 +10,22 @@
 //! - Error handling and edge cases
 //! - Concurrent access
 
-use nemesis_data::{DataStore, RequestLog};
+use nemesis_data::{DataStore, LogFilter, RequestLog};
 use std::fs;
 use std::path::PathBuf;
 
 /// Create a temporary database path for testing.
+///
+/// 唯一性 = 进程 id + 进程内单调计数器（线程名命名不严格：同名测试跨
+/// test binary 并行时无区分、同测试内二次调用会撞；时间戳命名在满载
+/// 并行下有计时精度撞名窗口——见 unit_tests.rs 同名 helper 注释）。
 fn temp_db_path() -> PathBuf {
+    static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let mut path = std::env::temp_dir();
     path.push(format!(
-        "nemesis_data_test_{}.db",
-        std::thread::current()
-            .name()
-            .unwrap_or("default")
-            .replace("::", "_")
-            .replace("\"", "")
+        "nemesis_data_test_{}_{}.db",
+        std::process::id(),
+        SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
     ));
     // Ensure file doesn't exist
     let _ = fs::remove_file(&path);
@@ -47,6 +49,7 @@ fn create_test_log(id: i64, trace_id: &str, model: &str) -> RequestLog {
         error_message: None,
         is_streaming: id % 2 == 0,
         created_at: 1700000000 + id * 3600, // Hourly timestamps
+        ..Default::default()
     }
 }
 
@@ -319,20 +322,20 @@ fn test_query_logs_pagination() {
 
     // Query first page
     let (page1, total) = store
-        .query_logs(0, 2000000000, 1, 10)
+        .query_logs(0, 2000000000, 1, 10, &LogFilter::default())
         .expect("Failed to query first page");
     assert_eq!(page1.len(), 10);
     assert_eq!(total, 25);
 
     // Query second page
     let (page2, _) = store
-        .query_logs(0, 2000000000, 2, 10)
+        .query_logs(0, 2000000000, 2, 10, &LogFilter::default())
         .expect("Failed to query second page");
     assert_eq!(page2.len(), 10);
 
     // Query third page (partial)
     let (page3, _) = store
-        .query_logs(0, 2000000000, 3, 10)
+        .query_logs(0, 2000000000, 3, 10, &LogFilter::default())
         .expect("Failed to query third page");
     assert_eq!(page3.len(), 5);
 
@@ -355,7 +358,7 @@ fn test_query_logs_with_time_filter() {
 
     // Query with time filter
     let (logs, total) = store
-        .query_logs(1700000000 + 3 * 3600, 1700000000 + 8 * 3600, 1, 100)
+        .query_logs(1700000000 + 3 * 3600, 1700000000 + 8 * 3600, 1, 100, &LogFilter::default())
         .expect("Failed to query logs with time filter");
 
     assert_eq!(total, 5); // Logs 4-8
@@ -379,7 +382,7 @@ fn test_query_logs_ordering_by_created_at_desc() {
     }
 
     let (logs, _) = store
-        .query_logs(0, 2000000000, 1, 10)
+        .query_logs(0, 2000000000, 1, 10, &LogFilter::default())
         .expect("Failed to query logs");
 
     // Should be ordered by created_at DESC (newest first)
@@ -402,14 +405,14 @@ fn test_query_logs_with_invalid_page() {
 
     // Page 0 should be treated as page 1
     let (logs, total) = store
-        .query_logs(0, 2000000000, 0, 10)
+        .query_logs(0, 2000000000, 0, 10, &LogFilter::default())
         .expect("Failed to query with page 0");
     assert_eq!(logs.len(), 1);
     assert_eq!(total, 1);
 
     // Negative page should be treated as page 1
     let (logs2, _) = store
-        .query_logs(0, 2000000000, -1, 10)
+        .query_logs(0, 2000000000, -1, 10, &LogFilter::default())
         .expect("Failed to query with negative page");
     assert_eq!(logs2.len(), 1);
 
@@ -423,7 +426,7 @@ fn test_query_logs_empty_result() {
 
     // Query empty database
     let (logs, total) = store
-        .query_logs(0, 2000000000, 1, 10)
+        .query_logs(0, 2000000000, 1, 10, &LogFilter::default())
         .expect("Failed to query empty database");
 
     assert_eq!(logs.len(), 0);
@@ -457,14 +460,14 @@ fn test_rollup_old_logs() {
             .expect("Failed to insert recent log");
     }
 
-    let deleted = store.rollup_old_logs().expect("Failed to rollup old logs");
+    let deleted = store.retention_sweep(Some(30), None).expect("Failed to rollup old logs");
 
     // Should delete 5 old logs
     assert_eq!(deleted, 5);
 
     // Verify recent logs still exist
     let (recent_logs, total) = store
-        .query_logs(now - 20 * 86400, now + 86400, 1, 100)
+        .query_logs(now - 20 * 86400, now + 86400, 1, 100, &LogFilter::default())
         .expect("Failed to query recent logs");
     assert_eq!(total, 3);
     assert_eq!(recent_logs.len(), 3);
@@ -488,14 +491,14 @@ fn test_rollup_old_logs_when_no_old_logs() {
             .expect("Failed to insert recent log");
     }
 
-    let deleted = store.rollup_old_logs().expect("Failed to rollup old logs");
+    let deleted = store.retention_sweep(Some(30), None).expect("Failed to rollup old logs");
 
     // Should delete 0 logs
     assert_eq!(deleted, 0);
 
     // Verify all logs still exist
     let (logs, total) = store
-        .query_logs(now - 20 * 86400, now + 86400, 1, 100)
+        .query_logs(now - 20 * 86400, now + 86400, 1, 100, &LogFilter::default())
         .expect("Failed to query logs");
     assert_eq!(total, 3);
     assert_eq!(logs.len(), 3);
@@ -545,7 +548,7 @@ fn test_insert_log_with_streaming_flag() {
         .expect("Failed to insert non-streaming log");
 
     let (logs, _) = store
-        .query_logs(0, 2000000000, 1, 10)
+        .query_logs(0, 2000000000, 1, 10, &LogFilter::default())
         .expect("Failed to query logs");
 
     assert_eq!(logs.len(), 2);
@@ -568,7 +571,7 @@ fn test_insert_log_with_error_message() {
         .expect("Failed to insert error log");
 
     let (logs, _) = store
-        .query_logs(0, 2000000000, 1, 10)
+        .query_logs(0, 2000000000, 1, 10, &LogFilter::default())
         .expect("Failed to query logs");
 
     assert_eq!(logs.len(), 1);

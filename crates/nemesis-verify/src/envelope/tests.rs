@@ -79,7 +79,7 @@ fn body_roundtrip_all_optional_fields() {
     assert_eq!(p.ts_token.as_deref(), Some(b"tsa-token".as_slice()));
     // sig_hash TLV = SHA-256(signature)
     use sha2::Digest;
-    let expect: [u8; 32] = sha2::Sha256::digest(&[5u8; ED25519_SIG_LEN]).into();
+    let expect: [u8; 32] = sha2::Sha256::digest([5u8; ED25519_SIG_LEN]).into();
     assert_eq!(p.sig_hash, expect);
 }
 

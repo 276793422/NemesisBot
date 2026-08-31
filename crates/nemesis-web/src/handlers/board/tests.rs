@@ -14,7 +14,8 @@ fn make_ctx_with_board(dir: &std::path::Path) -> RequestContext {
     make_ctx_with_role(dir, NodeRole::Coordinator)
 }
 
-/// 按节点角色构造带 board 服务的上下文（worker → board 只读门控测试用）。
+/// 按节点角色构造带 board 服务的上下文（role 现为元数据；测试用 Worker/
+/// Coordinator 两态钉「写权限与 role 无关」）。
 fn make_ctx_with_role(dir: &std::path::Path, role: NodeRole) -> RequestContext {
     let store = BoardStore::open(&dir.join("board.db"), "NB").expect("open store");
     let service = nemesis_board::BoardService::new(Arc::new(store), role);
@@ -119,7 +120,7 @@ async fn test_issue_create_list_get_flow() {
         .unwrap()
         .unwrap();
     assert_eq!(out["issue"]["id"], id);
-    assert!(out["issue"]["activity"].as_array().unwrap().len() >= 1);
+    assert!(!out["issue"]["activity"].as_array().unwrap().is_empty());
     let out = dispatch(&ctx, "issue.get", serde_json::json!({ "number": "NB-1" }))
         .await
         .unwrap()
@@ -332,14 +333,45 @@ async fn test_projects_attachments_stats() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// W2 P2 角色门控：worker 节点 board 只读——写命令一律 403 语义拒绝，
-/// 读命令放行（worker 端可看任务详情，board 计划 §1.2）。
+/// 角色门控已移除（2026-08-31 修复）：board.db 是节点本地数据（无集群同步、
+/// CLI 同权直写），worker 对本机看板有完整写权——完整 CRUD 往返必须成功。
 #[tokio::test]
-async fn test_worker_role_gates_writes_allows_reads() {
-    let dir = unique_dir("worker-gate");
+async fn test_worker_role_has_full_write_access() {
+    let dir = unique_dir("worker-write");
     let ctx = make_ctx_with_role(&dir, NodeRole::Worker);
 
-    // 写命令（路由全覆盖）→ 403 语义（门控在参数解析前，最小 data 即可）。
+    // worker 完整 CRUD 往返。
+    let out = dispatch(&ctx, "issue.create", serde_json::json!({ "title": "worker 写入", "priority": 2 }))
+        .await
+        .expect("worker must create issues locally");
+    let issue = &out.unwrap()["issue"];
+    assert_eq!(issue["number"], "NB-1");
+    let id = issue["id"].as_i64().unwrap();
+
+    let out = dispatch(&ctx, "issue.update", serde_json::json!({ "id": id, "priority": 3 }))
+        .await
+        .expect("worker must update issues locally");
+    assert_eq!(out.unwrap()["issue"]["priority"], 3);
+
+    dispatch(&ctx, "comment.add", serde_json::json!({ "issue_id": id, "content": "来自 worker" }))
+        .await
+        .expect("worker must add comments locally");
+
+    let out = dispatch(&ctx, "issue.status", serde_json::json!({ "id": id, "status": "todo" }))
+        .await
+        .expect("worker must transition status locally");
+    assert_eq!(out.unwrap()["issue"]["status"], "todo");
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// 回归钉：曾经的 role 403 门控不得回归——18 个写命令在 worker 节点上允许
+/// 进入参数校验阶段（有错也只能是业务校验错，绝不允许再出现 "403:" 语义）。
+#[tokio::test]
+async fn test_worker_role_never_403() {
+    let dir = unique_dir("worker-no-403");
+    let ctx = make_ctx_with_role(&dir, NodeRole::Worker);
+
     for (cmd, data) in [
         ("issue.create", serde_json::json!({ "title": "x" })),
         ("issue.update", serde_json::json!({ "id": 1, "title": "x" })),
@@ -360,37 +392,18 @@ async fn test_worker_role_gates_writes_allows_reads() {
         ("autopilot.remove", serde_json::json!({ "id": 1 })),
         ("autopilot.run", serde_json::json!({ "id": 1 })),
     ] {
-        let err = dispatch(&ctx, cmd, data)
-            .await
-            .err()
-            .unwrap_or_else(|| panic!("{cmd} must be gated on worker"));
-        assert!(err.starts_with("403:"), "{cmd}: {err}");
-        assert!(err.contains("coordinator"), "{cmd}: {err}");
-    }
-
-    // 读命令放行（无 issue 时返回空集，不报 403）。
-    for (cmd, data) in [
-        ("issue.list", serde_json::json!({})),
-        ("project.list", serde_json::json!({})),
-        ("stats", serde_json::json!({})),
-        ("comment.list", serde_json::json!({ "issue_id": 1 })),
-        ("activity.list", serde_json::json!({ "issue_id": 1 })),
-        ("subscriber.list", serde_json::json!({ "issue_id": 1 })),
-        ("attachment.list", serde_json::json!({ "issue_id": 1 })),
-        ("inbox.list", serde_json::json!({})),
-        ("autopilot.list", serde_json::json!({})),
-        ("autopilot.runs", serde_json::json!({ "id": 1 })),
-    ] {
-        let out = dispatch(&ctx, cmd, data)
-            .await
-            .unwrap_or_else(|e| panic!("{cmd} must be allowed on worker: {e}"));
-        assert!(out.is_some(), "{cmd} must return data on worker");
+        if let Err(err) = dispatch(&ctx, cmd, data).await {
+            assert!(
+                !err.starts_with("403:"),
+                "{cmd} must not be role-gated on worker: {err}"
+            );
+        }
     }
 
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// coordinator（含旧值 master/manager 的 as_role_str 判定）写路径不受门控影响。
+/// coordinator 写路径照常可用（role 现在只是元数据，不改变任何权限）。
 #[tokio::test]
 async fn test_coordinator_role_writes_allowed() {
     let dir = unique_dir("coordinator-gate");
@@ -967,6 +980,146 @@ async fn test_autopilot_crud_manual_run_and_history() {
     assert!(dispatch(&ctx, "autopilot.update", serde_json::json!({ "enabled": true }))
         .await
         .is_err());
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+// ---------------------------------------------------------------------------
+// W2.5 自动派发接口（board.auto_dispatch，默认关；用户拍板 2026-08-31）
+// ---------------------------------------------------------------------------
+
+#[test]
+fn auto_dispatch_gate_requires_switch_and_worker() {
+    // 无 board 段（load_live None 的判定输入等价）→ 恒关。
+    assert!(!should_auto_dispatch(None, Some(AssignmentType::Worker)));
+    // 有段但开关关（Default）→ 关。
+    let off = nemesis_config::BoardFlagConfig::default();
+    assert!(!off.auto_dispatch);
+    assert!(!should_auto_dispatch(Some(&off), Some(AssignmentType::Worker)));
+    // 开关开 + worker 指派 → 触发。
+    let on = nemesis_config::BoardFlagConfig {
+        auto_dispatch: true,
+        ..Default::default()
+    };
+    assert!(should_auto_dispatch(Some(&on), Some(AssignmentType::Worker)));
+    // 开关开但非 worker（manager_self / 未指派）→ 不触发。
+    assert!(!should_auto_dispatch(Some(&on), Some(AssignmentType::ManagerSelf)));
+    assert!(!should_auto_dispatch(Some(&on), None));
+}
+
+#[tokio::test]
+async fn assign_worker_default_stays_pending_no_dispatch() {
+    // 默认（无全局 config store → live_board_config None）：指派给 worker
+    // 只写 assignee 元数据，不触发派发——行为与 W2.5 之前完全一致
+    //（不要求集群、状态不推进、无 ⛔ 评论）。
+    let dir = unique_dir("assign-default-off");
+    let ctx = make_ctx_with_board(&dir);
+    let out = dispatch(&ctx, "issue.create", serde_json::json!({ "title": "默认关" }))
+        .await
+        .unwrap()
+        .unwrap();
+    let id = out["issue"]["id"].as_i64().unwrap();
+
+    let out = dispatch(
+        &ctx,
+        "issue.assign",
+        serde_json::json!({ "id": id, "assignee_type": "worker", "assignee_id": "node-b" }),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert_eq!(out["assigned"], true);
+    assert_eq!(out["issue"]["assignee"], "worker");
+    assert_eq!(out["issue"]["status"], "backlog");
+
+    // 无系统评论（⛔ 自动派发失败等）产生。
+    let out = dispatch(&ctx, "comment.list", serde_json::json!({ "issue_id": id }))
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(out["comments"].as_array().unwrap().is_empty());
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[cfg(feature = "cluster")]
+#[tokio::test]
+async fn auto_dispatch_on_without_cluster_leaves_trace_comment() {
+    // 开关开 + 无集群：内核函数直接调用（config 显式入参，不碰进程级全局
+    // config store——OnceLock 不可清除，全局态操作是并行 flake 源）。断言
+    // ① 返回 false（未派发）② ⛔ 系统评论留痕（「配置生效但能力缺失」
+    // 可观测，与 issue.assign handler 内的调用同语义）。
+    let dir = unique_dir("auto-on-nocluster");
+    let ctx = make_ctx_with_board(&dir);
+    let store = ctx.state.board.as_ref().unwrap().store().clone();
+    let actor = nemesis_board::Actor::admin("test-session");
+
+    let issue = store
+        .create_issue(nemesis_board::NewIssue {
+            title: "开关开无集群".into(),
+            ..Default::default()
+        })
+        .unwrap();
+    let issue = store
+        .assign_issue(
+            issue.id,
+            Some(AssignmentType::Worker),
+            Some("node-b".to_string()),
+            &actor,
+        )
+        .unwrap();
+
+    // 开关开 + 无集群 → 派发失败留痕，返回 false。
+    let on = nemesis_config::BoardFlagConfig {
+        auto_dispatch: true,
+        ..Default::default()
+    };
+    let dispatched = super::auto_dispatch_with_config(
+        Some(&on),
+        &store,
+        None,
+        &issue,
+        &actor,
+    );
+    assert!(!dispatched, "no cluster → dispatch must not succeed");
+
+    let comments = store.list_comments(issue.id).unwrap();
+    assert!(
+        comments.iter().any(|c| {
+            matches!(c.ctype, nemesis_board::CommentType::System)
+                && c.content.contains("自动派发失败")
+        }),
+        "expected auto-dispatch failure trace comment, got {comments:?}"
+    );
+
+    // 开关关（默认）→ 同一调用零评论零派发（gate 短路，无副作用）。
+    let issue2 = store
+        .create_issue(nemesis_board::NewIssue {
+            title: "开关关".into(),
+            ..Default::default()
+        })
+        .unwrap();
+    let issue2 = store
+        .assign_issue(
+            issue2.id,
+            Some(AssignmentType::Worker),
+            Some("node-b".to_string()),
+            &actor,
+        )
+        .unwrap();
+    let off = nemesis_config::BoardFlagConfig::default();
+    assert!(!super::auto_dispatch_with_config(
+        Some(&off),
+        &store,
+        None,
+        &issue2,
+        &actor,
+    ));
+    let comments2 = store.list_comments(issue2.id).unwrap();
+    assert!(
+        !comments2.iter().any(|c| c.content.contains("自动派发失败")),
+        "gate off → no trace comment expected"
+    );
 
     let _ = std::fs::remove_dir_all(&dir);
 }

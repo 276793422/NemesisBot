@@ -216,8 +216,10 @@ impl Default for ToolFunctionDef {
 
 /// Current operational state of an agent instance.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Default)]
 pub enum AgentState {
     /// Agent is idle and ready to process a new request.
+    #[default]
     Idle,
     /// Agent is waiting for an LLM response.
     Thinking,
@@ -227,11 +229,6 @@ pub enum AgentState {
     Responding,
 }
 
-impl Default for AgentState {
-    fn default() -> Self {
-        Self::Idle
-    }
-}
 
 /// Events emitted by the agent loop during execution.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -287,13 +284,11 @@ pub fn repair_tool_message_pairs(messages: &mut Vec<ConversationTurn>) {
         let mut seen: HashSet<String> = HashSet::new();
         let mut to_remove: Vec<usize> = Vec::new();
         for (idx, msg) in messages.iter().enumerate().rev() {
-            if msg.role == "tool" {
-                if let Some(ref id) = msg.tool_call_id {
-                    if !seen.insert(id.clone()) {
+            if msg.role == "tool"
+                && let Some(ref id) = msg.tool_call_id
+                    && !seen.insert(id.clone()) {
                         to_remove.push(idx);
                     }
-                }
-            }
         }
         for idx in to_remove {
             debug!(
@@ -357,14 +352,12 @@ pub fn repair_tool_message_pairs(messages: &mut Vec<ConversationTurn>) {
             // the call IS answered. Breaking at an intervening assistant here
             // would synthesize a SECOND result for an id that already has one
             // (duplicate tool_call_id — providers reject that).
-            for j in (i + 1)..n {
-                if messages[j].role == "tool" {
-                    if let Some(ref tc_id) = messages[j].tool_call_id {
-                        if call_ids.contains(tc_id) {
+            for m in messages.iter().take(n).skip(i + 1) {
+                if m.role == "tool"
+                    && let Some(ref tc_id) = m.tool_call_id
+                        && call_ids.contains(tc_id) {
                             found_ids.insert(tc_id.clone());
                         }
-                    }
-                }
             }
             if found_ids.len() < call_ids.len() {
                 for tc in &messages[i].tool_calls {

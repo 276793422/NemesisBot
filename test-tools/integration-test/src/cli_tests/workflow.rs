@@ -15,7 +15,7 @@ pub async fn test_cli_workflow_list(ws: &TestWorkspace, bin: &Path) -> Vec<TestR
     let output = ws.run_cli(bin, &["workflow", "list"]).await;
     results.push(pass(
         &format!("{}/list", suite),
-        &format!("exit={}", output.exit_code),
+        format!("exit={}", output.exit_code),
     ));
 
     results
@@ -34,7 +34,7 @@ pub async fn test_cli_workflow_run_status(ws: &TestWorkspace, bin: &Path) -> Vec
     let run = ws.run_cli(bin, &["workflow", "run", "nonexistent"]).await;
     results.push(pass(
         &format!("{}/run", suite),
-        &format!("exit={}", run.exit_code),
+        format!("exit={}", run.exit_code),
     ));
 
     // run with key=value input
@@ -43,21 +43,21 @@ pub async fn test_cli_workflow_run_status(ws: &TestWorkspace, bin: &Path) -> Vec
         .await;
     results.push(pass(
         &format!("{}/run_with_input", suite),
-        &format!("exit={}", run_kv.exit_code),
+        format!("exit={}", run_kv.exit_code),
     ));
 
     // status
     let status = ws.run_cli(bin, &["workflow", "status"]).await;
     results.push(pass(
         &format!("{}/status", suite),
-        &format!("exit={}", status.exit_code),
+        format!("exit={}", status.exit_code),
     ));
 
     // status with id
     let status_id = ws.run_cli(bin, &["workflow", "status", "fake-id"]).await;
     results.push(pass(
         &format!("{}/status_id", suite),
-        &format!("exit={}", status_id.exit_code),
+        format!("exit={}", status_id.exit_code),
     ));
 
     results
@@ -76,7 +76,7 @@ pub async fn test_cli_workflow_template(ws: &TestWorkspace, bin: &Path) -> Vec<T
     let list = ws.run_cli(bin, &["workflow", "template", "list"]).await;
     results.push(pass(
         &format!("{}/list", suite),
-        &format!("exit={}", list.exit_code),
+        format!("exit={}", list.exit_code),
     ));
 
     // template show (fake name)
@@ -85,7 +85,7 @@ pub async fn test_cli_workflow_template(ws: &TestWorkspace, bin: &Path) -> Vec<T
         .await;
     results.push(pass(
         &format!("{}/show", suite),
-        &format!("exit={}", show.exit_code),
+        format!("exit={}", show.exit_code),
     ));
 
     // template create (fake template)
@@ -94,7 +94,7 @@ pub async fn test_cli_workflow_template(ws: &TestWorkspace, bin: &Path) -> Vec<T
         .await;
     results.push(pass(
         &format!("{}/create", suite),
-        &format!("exit={}", create.exit_code),
+        format!("exit={}", create.exit_code),
     ));
 
     // template create --output
@@ -113,7 +113,7 @@ pub async fn test_cli_workflow_template(ws: &TestWorkspace, bin: &Path) -> Vec<T
         .await;
     results.push(pass(
         &format!("{}/create_output", suite),
-        &format!("exit={}", create_out.exit_code),
+        format!("exit={}", create_out.exit_code),
     ));
 
     results
@@ -134,7 +134,7 @@ pub async fn test_cli_workflow_validate(ws: &TestWorkspace, bin: &Path) -> Vec<T
         .await;
     results.push(pass(
         &format!("{}/validate_missing", suite),
-        &format!("exit={}", validate.exit_code),
+        format!("exit={}", validate.exit_code),
     ));
 
     // Create a minimal valid workflow file and validate it
@@ -159,7 +159,7 @@ pub async fn test_cli_workflow_validate(ws: &TestWorkspace, bin: &Path) -> Vec<T
         .await;
     results.push(pass(
         &format!("{}/validate_file", suite),
-        &format!("exit={}", validate2.exit_code),
+        format!("exit={}", validate2.exit_code),
     ));
 
     results

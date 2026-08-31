@@ -222,7 +222,7 @@ fn test_get_config_path_no_home_fallback_child() {
         let child_cwd = tempfile::tempdir().unwrap();
 
         let status = std::process::Command::new(&exe)
-            .arg(&filter)
+            .arg(filter)
             .current_dir(child_cwd.path())
             .env("NEMESIS_HELPERS_CHILD", "1")
             .env("NEMESIS_HELPERS_OUTCOME", &outcome_path)

@@ -60,8 +60,8 @@ impl FrameDecoder {
         let headers = std::str::from_utf8(&self.buf[..body_start - 2])
             .map_err(|e| format!("non-UTF-8 headers: {e}"))?;
         for line in headers.split("\r\n") {
-            if let Some((name, value)) = line.split_once(':') {
-                if name.trim().eq_ignore_ascii_case("content-length") {
+            if let Some((name, value)) = line.split_once(':')
+                && name.trim().eq_ignore_ascii_case("content-length") {
                     content_length = Some(
                         value
                             .trim()
@@ -69,7 +69,6 @@ impl FrameDecoder {
                             .map_err(|e| format!("bad Content-Length {value:?}: {e}"))?,
                     );
                 }
-            }
         }
         let Some(len) = content_length else {
             return Err("message without Content-Length header".to_string());
@@ -220,13 +219,12 @@ pub fn uri_to_path(uri: &str) -> String {
     let mut out: Vec<u8> = Vec::with_capacity(b.len());
     let mut i = 0usize;
     while i < b.len() {
-        if b[i] == b'%' && i + 2 < b.len() {
-            if let (Some(h), Some(l)) = (hex(b[i + 1]), hex(b[i + 2])) {
+        if b[i] == b'%' && i + 2 < b.len()
+            && let (Some(h), Some(l)) = (hex(b[i + 1]), hex(b[i + 2])) {
                 out.push(h * 16 + l);
                 i += 3;
                 continue;
             }
-        }
         out.push(b[i]);
         i += 1;
     }

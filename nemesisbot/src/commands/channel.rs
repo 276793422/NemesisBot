@@ -582,22 +582,20 @@ pub fn run(action: ChannelAction, local: bool) -> Result<()> {
                     }
 
                     // Enable the websocket channel
-                    if let Ok(data) = std::fs::read_to_string(&cfg_path) {
-                        if let Ok(mut cfg) = serde_json::from_str::<serde_json::Value>(&data) {
-                            if let Some(ws) = cfg.pointer_mut("/channels/websocket") {
-                                if let Some(obj) = ws.as_object_mut() {
+                    if let Ok(data) = std::fs::read_to_string(&cfg_path)
+                        && let Ok(mut cfg) = serde_json::from_str::<serde_json::Value>(&data) {
+                            if let Some(ws) = cfg.pointer_mut("/channels/websocket")
+                                && let Some(obj) = ws.as_object_mut() {
                                     obj.insert(
                                         "enabled".to_string(),
                                         serde_json::Value::Bool(true),
                                     );
                                 }
-                            }
                             let _ = std::fs::write(
                                 &cfg_path,
                                 serde_json::to_string_pretty(&cfg).unwrap_or_default(),
                             );
                         }
-                    }
 
                     // Sync to Web channel question
                     print!("  Sync to Web channel? (Y/n): ");
@@ -751,22 +749,20 @@ pub fn run(action: ChannelAction, local: bool) -> Result<()> {
                     set_channel_config(&cfg_path, "external", "chat_id", &chat_id)?;
 
                     // Enable the external channel
-                    if let Ok(data) = std::fs::read_to_string(&cfg_path) {
-                        if let Ok(mut cfg) = serde_json::from_str::<serde_json::Value>(&data) {
-                            if let Some(ext) = cfg.pointer_mut("/channels/external") {
-                                if let Some(obj) = ext.as_object_mut() {
+                    if let Ok(data) = std::fs::read_to_string(&cfg_path)
+                        && let Ok(mut cfg) = serde_json::from_str::<serde_json::Value>(&data) {
+                            if let Some(ext) = cfg.pointer_mut("/channels/external")
+                                && let Some(obj) = ext.as_object_mut() {
                                     obj.insert(
                                         "enabled".to_string(),
                                         serde_json::Value::Bool(true),
                                     );
                                 }
-                            }
                             let _ = std::fs::write(
                                 &cfg_path,
                                 serde_json::to_string_pretty(&cfg).unwrap_or_default(),
                             );
                         }
-                    }
 
                     println!("External channel configured and enabled.");
                     println!(
@@ -1002,11 +998,10 @@ fn remove_channel_config(cfg_path: &std::path::Path, channel: &str, key: &str) -
     let data = std::fs::read_to_string(cfg_path)?;
     let mut cfg: serde_json::Value = serde_json::from_str(&data)?;
 
-    if let Some(ch) = cfg.pointer_mut(&format!("/channels/{}", channel)) {
-        if let Some(obj) = ch.as_object_mut() {
+    if let Some(ch) = cfg.pointer_mut(&format!("/channels/{}", channel))
+        && let Some(obj) = ch.as_object_mut() {
             obj.remove(key);
         }
-    }
 
     std::fs::write(
         cfg_path,

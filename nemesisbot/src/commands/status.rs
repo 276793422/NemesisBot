@@ -43,8 +43,8 @@ pub fn run(local: bool) -> Result<()> {
             }
 
             // Count models
-            if let Some(models) = cfg.get("model_list").and_then(|v| v.as_array()) {
-                if !models.is_empty() {
+            if let Some(models) = cfg.get("model_list").and_then(|v| v.as_array())
+                && !models.is_empty() {
                     println!();
                     println!("  Configured Models:");
                     let mut provider_counts: std::collections::HashMap<String, (usize, bool)> =
@@ -73,7 +73,6 @@ pub fn run(local: bool) -> Result<()> {
                         );
                     }
                 }
-            }
 
             // Security
             let security_enabled = cfg

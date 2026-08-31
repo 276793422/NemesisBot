@@ -190,7 +190,7 @@ async fn forward_with_headers(
 
     // Body as a byte stream (keeps pass-through semantics for any content).
     let stream = body.into_data_stream()
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e));
+        .map_err(std::io::Error::other);
     out_req = out_req.body(reqwest::Body::wrap_stream(stream));
 
     let resp = out_req.send().await?;
@@ -211,7 +211,7 @@ async fn forward_with_headers(
         }
     }
 
-    let body_stream = resp.bytes_stream().map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e));
+    let body_stream = resp.bytes_stream().map_err(std::io::Error::other);
     let body = Body::from_stream(body_stream);
 
     builder.body(body).map_err(|_| ProxyError::BadUpstream("build response"))

@@ -411,11 +411,10 @@ fn test_enable_channel_via_pointer_mut() {
     // Simulate ChannelAction::Enable for telegram
     let data = std::fs::read_to_string(&cfg).unwrap();
     let mut config: serde_json::Value = serde_json::from_str(&data).unwrap();
-    if let Some(ch) = config.pointer_mut("/channels/telegram") {
-        if let Some(obj) = ch.as_object_mut() {
+    if let Some(ch) = config.pointer_mut("/channels/telegram")
+        && let Some(obj) = ch.as_object_mut() {
             obj.insert("enabled".to_string(), serde_json::Value::Bool(true));
         }
-    }
     std::fs::write(&cfg, serde_json::to_string_pretty(&config).unwrap()).unwrap();
 
     let loaded: serde_json::Value =
@@ -431,11 +430,10 @@ fn test_disable_channel_via_pointer_mut() {
     // Simulate ChannelAction::Disable for web
     let data = std::fs::read_to_string(&cfg).unwrap();
     let mut config: serde_json::Value = serde_json::from_str(&data).unwrap();
-    if let Some(ch) = config.pointer_mut("/channels/web") {
-        if let Some(obj) = ch.as_object_mut() {
+    if let Some(ch) = config.pointer_mut("/channels/web")
+        && let Some(obj) = ch.as_object_mut() {
             obj.insert("enabled".to_string(), serde_json::Value::Bool(false));
         }
-    }
     std::fs::write(&cfg, serde_json::to_string_pretty(&config).unwrap()).unwrap();
 
     let loaded: serde_json::Value =
@@ -886,11 +884,10 @@ fn test_enable_channel_with_existing_config_preserves_fields() {
     // Telegram has no enabled field, simulate enabling it
     let data = std::fs::read_to_string(&cfg).unwrap();
     let mut config: serde_json::Value = serde_json::from_str(&data).unwrap();
-    if let Some(ch) = config.pointer_mut("/channels/telegram") {
-        if let Some(obj) = ch.as_object_mut() {
+    if let Some(ch) = config.pointer_mut("/channels/telegram")
+        && let Some(obj) = ch.as_object_mut() {
             obj.insert("enabled".to_string(), serde_json::Value::Bool(true));
         }
-    }
     std::fs::write(&cfg, serde_json::to_string_pretty(&config).unwrap()).unwrap();
 
     let loaded: serde_json::Value =
@@ -909,11 +906,10 @@ fn test_disable_channel_preserves_other_keys() {
 
     let data = std::fs::read_to_string(&cfg).unwrap();
     let mut config: serde_json::Value = serde_json::from_str(&data).unwrap();
-    if let Some(ch) = config.pointer_mut("/channels/web") {
-        if let Some(obj) = ch.as_object_mut() {
+    if let Some(ch) = config.pointer_mut("/channels/web")
+        && let Some(obj) = ch.as_object_mut() {
             obj.insert("enabled".to_string(), serde_json::Value::Bool(false));
         }
-    }
     std::fs::write(&cfg, serde_json::to_string_pretty(&config).unwrap()).unwrap();
 
     let loaded: serde_json::Value =

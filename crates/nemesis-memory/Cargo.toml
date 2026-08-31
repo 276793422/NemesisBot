@@ -56,3 +56,6 @@ path = "tests/memory_e2e.rs"
 [[test]]
 name = "real_plugin"
 path = "tests/real_plugin.rs"
+
+[lints]
+workspace = true

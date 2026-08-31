@@ -459,14 +459,13 @@ fn check_function_completeness(code: &str, lang: &str) -> Result<(), String> {
         }
         "go" => {
             for line in code.lines() {
-                if line.contains("func ") && line.trim().starts_with("func") {
-                    if !line.contains('{') {
+                if line.contains("func ") && line.trim().starts_with("func")
+                    && !line.contains('{') {
                         let trimmed = line.trim();
                         if trimmed.ends_with(')') {
                             continue; // Brace might be on next line
                         }
                     }
-                }
             }
             Ok(())
         }

@@ -81,7 +81,6 @@ impl StaticValidator {
     fn validate_script(&self, content: &str, result: &mut StaticValidationResult) {
         if content.trim().is_empty() {
             result.stage.errors.push("Script content is empty".into());
-            return;
         }
         // Dangerous-command patterns are now checked for ALL kinds in
         // check_dangerous_commands (called from validate()).

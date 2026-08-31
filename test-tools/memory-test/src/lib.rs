@@ -78,11 +78,10 @@ pub fn enable_main_memory_switch(workspace: &TestWorkspace) -> Result<()> {
     let cfg_path = workspace.config_path();
     let content = std::fs::read_to_string(&cfg_path).context("reading config.json")?;
     let mut cfg: serde_json::Value = serde_json::from_str(&content)?;
-    if let Some(mem) = cfg.get_mut("memory") {
-        if let Some(obj) = mem.as_object_mut() {
+    if let Some(mem) = cfg.get_mut("memory")
+        && let Some(obj) = mem.as_object_mut() {
             obj.insert("enabled".into(), serde_json::Value::Bool(true));
         }
-    }
     let json = serde_json::to_string_pretty(&cfg)?;
     std::fs::write(&cfg_path, json)?;
     Ok(())

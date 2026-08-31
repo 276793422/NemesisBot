@@ -435,7 +435,7 @@ impl Reflector {
         // Sort by count descending, keep top 5
         stats
             .tool_chain_patterns
-            .sort_by(|a, b| b.count.cmp(&a.count));
+            .sort_by_key(|a| std::cmp::Reverse(a.count));
         stats.tool_chain_patterns.truncate(5);
 
         // Build retry patterns
@@ -450,7 +450,7 @@ impl Reflector {
         }
         stats
             .retry_patterns
-            .sort_by(|a, b| b.retry_count.cmp(&a.retry_count));
+            .sort_by_key(|a| std::cmp::Reverse(a.retry_count));
         stats.retry_patterns.truncate(5);
 
         // Efficiency score: totalSteps / totalRounds (matching Go's formula)
@@ -533,9 +533,11 @@ impl Reflector {
     ) -> ReflectionReport {
         let mut report = self.reflect(experiences, learning_cycle, period, focus);
 
-        // Stage 4 LLM: Semantic analysis (if provider available)
-        let caller_guard = self.llm_caller.read();
-        if let Some(ref caller) = *caller_guard {
+        // Stage 4 LLM: Semantic analysis (if provider available).
+        // Clone the Arc inside the lock and drop the guard before awaiting —
+        // the parking_lot read guard must not cross the LLM call.
+        let caller = self.llm_caller.read().clone();
+        if let Some(caller) = caller {
             match crate::reflector_llm::semantic_analysis(
                 caller.as_ref(),
                 &report.stats,
@@ -599,7 +601,7 @@ impl Reflector {
 
         // Build top patterns (sorted by count)
         let mut sorted_tools: Vec<_> = tool_data.iter().collect();
-        sorted_tools.sort_by(|a, b| b.1.0.cmp(&a.1.0));
+        sorted_tools.sort_by_key(|t| std::cmp::Reverse(t.1.0));
 
         for (tool, (count, total_dur, successes, _)) in sorted_tools.iter().take(10) {
             let sr = if *count > 0 {
@@ -834,12 +836,11 @@ impl Reflector {
                         continue;
                     }
                     // Check if next field looks like a count
-                    if let Ok(count) = fields.get(i + 1).unwrap_or(&"").parse::<i32>() {
-                        if count > 0 {
+                    if let Ok(count) = fields.get(i + 1).unwrap_or(&"").parse::<i32>()
+                        && count > 0 {
                             *freq.entry(tool_name.to_string()).or_insert(0) += count;
                             break; // one tool per row
                         }
-                    }
                 }
             }
         }
@@ -914,22 +915,19 @@ impl Reflector {
                 if !path.is_file() {
                     continue;
                 }
-                if path.extension().map(|e| e == "md").unwrap_or(false) {
-                    if let Ok(metadata) = path.metadata() {
-                        if let Ok(modified) = metadata.modified() {
+                if path.extension().map(|e| e == "md").unwrap_or(false)
+                    && let Ok(metadata) = path.metadata()
+                        && let Ok(modified) = metadata.modified() {
                             let modified_time: chrono::DateTime<chrono::Local> = modified.into();
-                            if modified_time < cutoff {
-                                if std::fs::remove_file(&path).is_ok() {
+                            if modified_time < cutoff
+                                && std::fs::remove_file(&path).is_ok() {
                                     deleted += 1;
                                     tracing::debug!(
                                         path = %path.display(),
                                         "[Reflector] Deleted old reflection report"
                                     );
                                 }
-                            }
                         }
-                    }
-                }
             }
         }
 
@@ -959,15 +957,12 @@ impl Reflector {
                 if !path.is_file() {
                     continue;
                 }
-                if path.extension().map(|e| e == "md").unwrap_or(false) {
-                    if let Ok(metadata) = path.metadata() {
-                        if let Ok(modified) = metadata.modified() {
-                            if latest.as_ref().map_or(true, |(_, t)| modified > *t) {
+                if path.extension().map(|e| e == "md").unwrap_or(false)
+                    && let Ok(metadata) = path.metadata()
+                        && let Ok(modified) = metadata.modified()
+                            && latest.as_ref().is_none_or(|(_, t)| modified > *t) {
                                 latest = Some((path, modified));
                             }
-                        }
-                    }
-                }
             }
         }
 
@@ -1007,22 +1002,19 @@ impl Reflector {
                 if !path.is_file() {
                     continue;
                 }
-                if path.extension().map(|e| e == "md").unwrap_or(false) {
-                    if let Ok(metadata) = path.metadata() {
-                        if let Ok(modified) = metadata.modified() {
+                if path.extension().map(|e| e == "md").unwrap_or(false)
+                    && let Ok(metadata) = path.metadata()
+                        && let Ok(modified) = metadata.modified() {
                             let modified_time: chrono::DateTime<chrono::Local> = modified.into();
-                            if modified_time < cutoff {
-                                if let Err(e) = std::fs::remove_file(&path) {
+                            if modified_time < cutoff
+                                && let Err(e) = std::fs::remove_file(&path) {
                                     errors.push(format!(
                                         "failed to delete {}: {}",
                                         path.display(),
                                         e
                                     ));
                                 }
-                            }
                         }
-                    }
-                }
             }
         }
 
@@ -1120,7 +1112,7 @@ impl Reflector {
                 serde_json::Value::Array(
                     patterns
                         .into_iter()
-                        .map(|p| serde_json::Value::String(p))
+                        .map(serde_json::Value::String)
                         .collect(),
                 ),
             );

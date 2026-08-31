@@ -349,15 +349,14 @@ impl SessionStore {
         // before.
         if let Some(dir) = &self.storage_dir {
             let path = dir.join(format!("{}.json", sanitize_filename(key)));
-            if let Ok(data) = std::fs::read_to_string(&path) {
-                if let Ok(session) = serde_json::from_str::<StoredSession>(&data) {
+            if let Ok(data) = std::fs::read_to_string(&path)
+                && let Ok(session) = serde_json::from_str::<StoredSession>(&data) {
                     self.sessions
                         .write()
                         .unwrap()
                         .insert(key.to_string(), session.clone());
                     return session;
                 }
-            }
         }
 
         // 2026-08-25 自愈重建（TTL 生命周期不对称修复）: memory AND disk both
@@ -369,8 +368,8 @@ impl SessionStore {
         // try replaying the append-only chat_log. Persisted immediately, same
         // reasoning as the Z1 disk fallback above. In-memory-only stores (no
         // storage_dir) skip this: they are never TTL-evicted either.
-        if self.storage_dir.is_some() {
-            if let Some(session) = self.rebuild_from_chat_log(key) {
+        if self.storage_dir.is_some()
+            && let Some(session) = self.rebuild_from_chat_log(key) {
                 self.sessions
                     .write()
                     .unwrap()
@@ -378,7 +377,6 @@ impl SessionStore {
                 let _ = self.save(key);
                 return session;
             }
-        }
 
         let session = StoredSession {
             key: key.to_string(),
@@ -484,8 +482,8 @@ impl SessionStore {
             session.messages = messages;
             Self::trim_to_limit(session);
             session.updated = Local::now();
-            if capture_on {
-                if let Some(sink) = crate::capture_sink::CaptureSink::global() {
+            if capture_on
+                && let Some(sink) = crate::capture_sink::CaptureSink::global() {
                     sink.record_session_write(
                         key,
                         crate::capture_sink::SessionWriteCapture {
@@ -501,7 +499,6 @@ impl SessionStore {
                         },
                     );
                 }
-            }
         }
     }
 
@@ -652,13 +649,12 @@ fn hash_messages(messages: &[StoredMessage]) -> String {
 
     /// Truncate the history, keeping only the last N messages.
     pub fn truncate_history(&self, key: &str, keep_last: usize) {
-        if let Some(session) = self.sessions.write().unwrap().get_mut(key) {
-            if session.messages.len() > keep_last {
+        if let Some(session) = self.sessions.write().unwrap().get_mut(key)
+            && session.messages.len() > keep_last {
                 let start = session.messages.len() - keep_last;
                 session.messages = session.messages.split_off(start);
                 session.updated = Local::now();
             }
-        }
     }
 
     /// Save a session to disk.
@@ -788,15 +784,14 @@ fn hash_messages(messages: &[StoredMessage]) -> String {
         // 1. sessions/{sanitize}.json (LLM context store)
         if let Some(dir) = &self.storage_dir {
             let path = dir.join(format!("{}.json", sanitize_filename(key)));
-            if let Err(e) = std::fs::remove_file(&path) {
-                if e.kind() != std::io::ErrorKind::NotFound {
+            if let Err(e) = std::fs::remove_file(&path)
+                && e.kind() != std::io::ErrorKind::NotFound {
                     warn!(
                         file = %path.display(),
                         error = %e,
                         "[SessionStore] delete_session: failed to remove json"
                     );
                 }
-            }
         }
 
         // 2. session_logs/{safe}.jsonl (user-facing chat history)
@@ -824,15 +819,14 @@ fn hash_messages(messages: &[StoredMessage]) -> String {
         self.sessions.write().unwrap().remove(key);
         if let Some(dir) = &self.storage_dir {
             let path = dir.join(format!("{}.json", sanitize_filename(key)));
-            if let Err(e) = std::fs::remove_file(&path) {
-                if e.kind() != std::io::ErrorKind::NotFound {
+            if let Err(e) = std::fs::remove_file(&path)
+                && e.kind() != std::io::ErrorKind::NotFound {
                     warn!(
                         file = %path.display(),
                         error = %e,
                         "[SessionStore] clear_session: failed to remove json"
                     );
                 }
-            }
         }
     }
 
@@ -868,14 +862,13 @@ fn hash_messages(messages: &[StoredMessage]) -> String {
                             v["key"] =
                                 serde_json::Value::String("agent:main:session:legacy".to_string());
                         }
-                        if let Ok(out) = serde_json::to_string_pretty(&v) {
-                            if std::fs::write(&legacy_json, out).is_ok() {
+                        if let Ok(out) = serde_json::to_string_pretty(&v)
+                            && std::fs::write(&legacy_json, out).is_ok() {
                                 let _ = std::fs::remove_file(&main_json);
                                 info!(
                                     "[migrate] sessions: agent_main_main.json → agent_main_session_legacy.json"
                                 );
                             }
-                        }
                     }
                 }
                 Err(e) => warn!("[migrate] failed to read main session json: {}", e),
@@ -1002,7 +995,7 @@ fn hash_messages(messages: &[StoredMessage]) -> String {
 /// Sanitize a session key for use as a filename.
 /// Replaces ':' (volume separator on Windows) with '_'.
 fn sanitize_filename(key: &str) -> String {
-    key.replace(':', "_").replace('\\', "_").replace('/', "_")
+    key.replace([':', '\\', '/'], "_")
 }
 
 // ---------------------------------------------------------------------------

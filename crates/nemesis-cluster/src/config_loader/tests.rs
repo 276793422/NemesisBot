@@ -130,7 +130,7 @@ fn test_app_config_serialization_roundtrip() {
     };
     let json = serde_json::to_string_pretty(&config).unwrap();
     let parsed: AppConfig = serde_json::from_str(&json).unwrap();
-    assert_eq!(parsed.enabled, true);
+    assert!(parsed.enabled);
     assert_eq!(parsed.port, 9999);
     assert_eq!(parsed.rpc_port, 19999);
     assert_eq!(parsed.broadcast_interval, 45);

@@ -271,14 +271,13 @@ fn find_nemesisbot() -> Result<PathBuf> {
     let exe_name = nemesisbot_exe_name();
 
     // 1. Same directory as this tool
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(dir) = exe.parent() {
+    if let Ok(exe) = std::env::current_exe()
+        && let Some(dir) = exe.parent() {
             let candidate = dir.join(exe_name);
             if candidate.exists() {
                 return Ok(candidate);
             }
         }
-    }
 
     // 2. target/release/
     let candidate = PathBuf::from("target/release").join(exe_name);
@@ -293,8 +292,8 @@ fn find_nemesisbot() -> Result<PathBuf> {
     }
 
     // 4. Try workspace-relative paths
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(dir) = exe.parent() {
+    if let Ok(exe) = std::env::current_exe()
+        && let Some(dir) = exe.parent() {
             // Possibly in bin/bin_windows/ or similar
             for rel in &[
                 "../../target/release",
@@ -308,7 +307,6 @@ fn find_nemesisbot() -> Result<PathBuf> {
                 }
             }
         }
-    }
 
     bail!("nemesisbot binary not found. Build it first: cargo build --release -p nemesisbot");
 }

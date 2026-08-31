@@ -252,7 +252,7 @@ fn test_read_codex_cli_credentials_with_valid_file() {
     )
     .unwrap();
 
-    let _g = CodexEnvGuard::set("CODEX_HOME", &codex_dir.to_string_lossy().to_string());
+    let _g = CodexEnvGuard::set("CODEX_HOME", codex_dir.to_string_lossy().as_ref());
     let result = read_codex_cli_credentials();
 
     let creds = result.unwrap();
@@ -273,7 +273,7 @@ fn test_read_codex_cli_credentials_with_empty_token() {
     )
     .unwrap();
 
-    let _g = CodexEnvGuard::set("CODEX_HOME", &codex_dir.to_string_lossy().to_string());
+    let _g = CodexEnvGuard::set("CODEX_HOME", codex_dir.to_string_lossy().as_ref());
     let result = read_codex_cli_credentials();
 
     assert!(result.is_err());
@@ -288,7 +288,7 @@ fn test_read_codex_cli_credentials_with_invalid_json() {
     let auth_path = codex_dir.join("auth.json");
     std::fs::write(&auth_path, "not valid json").unwrap();
 
-    let _g = CodexEnvGuard::set("CODEX_HOME", &codex_dir.to_string_lossy().to_string());
+    let _g = CodexEnvGuard::set("CODEX_HOME", codex_dir.to_string_lossy().as_ref());
     let result = read_codex_cli_credentials();
 
     assert!(result.is_err());
@@ -307,7 +307,7 @@ fn test_token_source_valid_credentials() {
     )
     .unwrap();
 
-    let _g = CodexEnvGuard::set("CODEX_HOME", &codex_dir.to_string_lossy().to_string());
+    let _g = CodexEnvGuard::set("CODEX_HOME", codex_dir.to_string_lossy().as_ref());
     let source = create_codex_cli_token_source();
     let result = source();
 

@@ -1641,11 +1641,10 @@ impl WebSearchTool {
             let title = strip_tags(caps.get(2).map(|m| m.as_str()).unwrap_or(""));
 
             let mut url_clean = url_str.to_string();
-            if url_clean.contains("uddg=") {
-                if let Some(decoded) = url_decode_query_param(&url_clean, "uddg") {
+            if url_clean.contains("uddg=")
+                && let Some(decoded) = url_decode_query_param(&url_clean, "uddg") {
                     url_clean = decoded;
                 }
-            }
 
             lines.push(format!("{}. {}\n   {}", i + 1, title, url_clean));
 
@@ -1739,22 +1738,20 @@ impl WebSearchTool {
 
 /// Extract search query from tool arguments.
 fn extract_search_query(args: &str) -> Result<String, String> {
-    if let Ok(val) = serde_json::from_str::<serde_json::Value>(args) {
-        if let Some(query) = val.get("query").and_then(|v| v.as_str()) {
+    if let Ok(val) = serde_json::from_str::<serde_json::Value>(args)
+        && let Some(query) = val.get("query").and_then(|v| v.as_str()) {
             return Ok(query.to_string());
         }
-    }
     // Fallback: treat the entire argument as a query.
     Ok(args.trim().to_string())
 }
 
 /// Extract the "name" argument from tool arguments.
 fn extract_name_arg(args: &str) -> Result<String, String> {
-    if let Ok(val) = serde_json::from_str::<serde_json::Value>(args) {
-        if let Some(name) = val.get("name").and_then(|v| v.as_str()) {
+    if let Ok(val) = serde_json::from_str::<serde_json::Value>(args)
+        && let Some(name) = val.get("name").and_then(|v| v.as_str()) {
             return Ok(name.to_string());
         }
-    }
     // Fallback: treat the entire argument as a name.
     Ok(args.trim().to_string())
 }
@@ -1999,11 +1996,10 @@ fn expand_error(prefix: &str, e: &dyn std::error::Error) -> String {
 
 /// Extract URL from tool arguments.
 fn extract_url(args: &str) -> Result<String, String> {
-    if let Ok(val) = serde_json::from_str::<serde_json::Value>(args) {
-        if let Some(url) = val.get("url").and_then(|v| v.as_str()) {
+    if let Ok(val) = serde_json::from_str::<serde_json::Value>(args)
+        && let Some(url) = val.get("url").and_then(|v| v.as_str()) {
             return Ok(url.to_string());
         }
-    }
     Ok(args.trim().to_string())
 }
 
@@ -2536,14 +2532,13 @@ impl Tool for SpawnTool {
         let task = val.get("task").and_then(|v| v.as_str()).unwrap_or("");
 
         // Check allowlist.
-        if let Some(ref checker) = self.allowlist_checker {
-            if !checker(agent_id) {
+        if let Some(ref checker) = self.allowlist_checker
+            && !checker(agent_id) {
                 return Err(format!(
                     "Not allowed to spawn agent '{}'. Check sub-agent permissions.",
                     agent_id
                 ));
             }
-        }
 
         // Use context from RequestContext, falling back to stored context.
         let channel = if context.channel.is_empty() {
@@ -3588,19 +3583,17 @@ fn grep_recursive(
             }
             grep_recursive(&path, re, glob, max, out);
         } else if path.is_file() {
-            if let Some(g) = glob {
-                if let Some(fname) = path.file_name().and_then(|n| n.to_str()) {
+            if let Some(g) = glob
+                && let Some(fname) = path.file_name().and_then(|n| n.to_str()) {
                     let suffix = g.trim_start_matches('*');
                     if !fname.ends_with(suffix) {
                         continue;
                     }
                 }
-            }
-            if let Ok(meta) = std::fs::metadata(&path) {
-                if meta.len() > 1_000_000 {
+            if let Ok(meta) = std::fs::metadata(&path)
+                && meta.len() > 1_000_000 {
                     continue;
                 }
-            }
             if let Ok(content) = std::fs::read_to_string(&path) {
                 for (i, line) in content.lines().enumerate() {
                     if out.len() >= max {
@@ -3915,6 +3908,12 @@ impl Tool for ForgeBridgeTool {
 /// metadata, formats it as markdown, and closes the connection.
 pub struct McpDiscoverTool;
 
+impl Default for McpDiscoverTool {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl McpDiscoverTool {
     pub fn new() -> Self {
         Self
@@ -4008,6 +4007,12 @@ impl Tool for McpDiscoverTool {
 /// Keep data in sync with `nemesisbot/src/commands/*.rs`.
 pub struct CliReferenceTool;
 
+impl Default for CliReferenceTool {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl CliReferenceTool {
     pub fn new() -> Self {
         Self
@@ -4051,6 +4056,12 @@ impl Tool for CliReferenceTool {
 /// (session_logs). Lazy-indexes on first use (FTS5), falls back to a linear
 /// scan if the index DB is unavailable. Read-only.
 pub struct HistorySearchTool;
+
+impl Default for HistorySearchTool {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 impl HistorySearchTool {
     pub fn new() -> Self {
@@ -4640,6 +4651,7 @@ impl Tool for McpListTool {
 /// Mirrors Go's `registerSharedTools` parameters, bundling all the
 /// configuration needed for shared tool registration.
 #[derive(Clone)]
+#[derive(Default)]
 pub struct SharedToolConfig {
     /// Web search configuration.
     pub web_search: Option<WebSearchConfig>,
@@ -4711,35 +4723,6 @@ pub struct SharedToolConfig {
     pub skills_manage_approval: bool,
 }
 
-impl Default for SharedToolConfig {
-    fn default() -> Self {
-        Self {
-            web_search: None,
-            cluster_rpc: None,
-            spawn: None,
-            skills_registry: None,
-            skills_loader: None,
-            workspace: None,
-            cron_service: None,
-            claude_code_tool_enabled: false,
-            claude_code_tool_timeout_secs: None,
-            claude_code_tool_permission_mode: String::new(),
-            codex_tool_enabled: false,
-            codex_tool_timeout_secs: None,
-            codex_tool_sandbox: String::new(),
-            lsp_tool_enabled: false,
-            lsp_tool_timeout_secs: None,
-            lsp_tool_idle_secs: None,
-            forge_executor: None,
-            forge: None,
-            memory_executor: None,
-            mcp_tool_snapshot: None,
-            workflow_engine: None,
-            approval_manager: None,
-            skills_manage_approval: false,
-        }
-    }
-}
 
 impl std::fmt::Debug for SharedToolConfig {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {

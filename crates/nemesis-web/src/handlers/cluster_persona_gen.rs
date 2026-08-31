@@ -428,19 +428,16 @@ fn mk_msg(role: &str, content: String) -> Message {
 fn unwrap_single_key(v: serde_json::Value) -> serde_json::Value {
     // Some providers wrap tool args as {"<tool_name>": {...}}. Unwrap only when
     // the single inner object actually looks like one of our schemas.
-    if let Some(obj) = v.as_object() {
-        if obj.len() == 1 {
-            if let Some(inner) = obj.values().next() {
-                if inner.is_object()
+    if let Some(obj) = v.as_object()
+        && obj.len() == 1
+            && let Some(inner) = obj.values().next()
+                && inner.is_object()
                     && (inner.get("identity_md").is_some()
                         || inner.get("units").is_some()
                         || inner.get("entries").is_some())
                 {
                     return inner.clone();
                 }
-            }
-        }
-    }
     v
 }
 
@@ -476,17 +473,15 @@ fn extract_response_json(resp: &LLMResponse) -> Result<serde_json::Value, String
     for tc in &resp.tool_calls {
         if let Some(func) = &tc.function {
             let args = func.arguments.trim();
-            if !args.is_empty() {
-                if let Ok(v) = serde_json::from_str::<serde_json::Value>(args) {
+            if !args.is_empty()
+                && let Ok(v) = serde_json::from_str::<serde_json::Value>(args) {
                     return Ok(unwrap_single_key(v));
                 }
-            }
         }
-        if let Some(map) = &tc.arguments {
-            if let Ok(v) = serde_json::to_value(map) {
+        if let Some(map) = &tc.arguments
+            && let Ok(v) = serde_json::to_value(map) {
                 return Ok(unwrap_single_key(v));
             }
-        }
     }
     let cleaned = strip_code_fence(&resp.content);
     let candidate = extract_json_span(&cleaned).unwrap_or(cleaned.as_str());
@@ -674,7 +669,7 @@ async fn chat_json(
         reasoning_effort: None,
         extra: std::collections::HashMap::new(),
     };
-    let resp = (&**provider)
+    let resp = (**provider)
         .chat(&messages, &[tool], model, &opts)
         .await
         .map_err(|e| format!("LLM 调用失败: {:?}", e))?;

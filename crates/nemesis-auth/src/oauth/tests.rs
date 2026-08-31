@@ -596,7 +596,7 @@ fn test_parse_flexible_int_whitespace_string() {
 #[test]
 fn test_parse_flexible_int_float() {
     // Float -> as_i64 returns None -> 0
-    let val = serde_json::json!(3.14);
+    let val = serde_json::json!(2.75);
     assert_eq!(parse_flexible_int(&val), 0);
 }
 

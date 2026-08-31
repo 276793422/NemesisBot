@@ -1,5 +1,11 @@
 //! eval.rs 单测。Windows-only 实现的纯函数测试（box 镜像推导 / 熔断换算）。
 
+// 刻意设计：本文件测试用进程级串行锁（GLOBAL_STATE_LOCK 等 env/资源互斥锁）
+// 保护环境操作，guard 必须跨 async 测试体的 await 持有；#[tokio::test] 每个
+// 测试独立 current_thread runtime，持锁方在自己线程上恢复运行，不会死锁。
+// 测试域统一豁免（逐处 allow ~200 个不现实）。
+#![allow(clippy::await_holding_lock)]
+
 use super::*;
 
 // ---------------------------------------------------------------------------
@@ -1841,11 +1847,10 @@ mod r9_real_chain {
     fn remove_created_reports(before: &HashSet<String>, logs_eval: &Path) {
         if let Ok(rd) = std::fs::read_dir(logs_eval) {
             for e in rd.flatten() {
-                if let Ok(n) = e.file_name().into_string() {
-                    if is_ts_prompt(&n) && !before.contains(&n) {
+                if let Ok(n) = e.file_name().into_string()
+                    && is_ts_prompt(&n) && !before.contains(&n) {
                         let _ = std::fs::remove_dir_all(e.path());
                     }
-                }
             }
         }
     }

@@ -2,6 +2,7 @@
 import { ref, onMounted } from 'vue'
 import { useWSAPI } from '../../composables/useWSAPI'
 import { useToast } from '../../composables/useToast'
+import { useBoardChanged } from '../../composables/useBoardChanged'
 import { fmtTime, PRIORITY_LABEL, PRIORITY_BADGE, statusLabel, STATUS_BADGE } from './boardMeta'
 
 // 自动化面板（W2 P4）：autopilot 规则列表 + 创建/编辑 + 启停 + 立即运行 +
@@ -58,13 +59,14 @@ const viewingRuns = ref<Autopilot | null>(null)
 const runs = ref<RunIssue[]>([])
 const runsLoading = ref(false)
 
-async function load() {
-  loading.value = true
+async function load(silent = false) {
+  if (!silent) loading.value = true
   try {
     const r = await request('board', 'autopilot.list', {})
     autopilots.value = r?.autopilots || []
   } catch (e: any) {
-    toast.error('加载自动化规则失败: ' + e)
+    if (silent) console.warn('[AutopilotPanel] silent refresh failed:', e)
+    else toast.error('加载自动化规则失败: ' + e)
   } finally {
     loading.value = false
   }
@@ -166,6 +168,8 @@ async function openRuns(ap: Autopilot) {
 }
 
 onMounted(load)
+// board-changed 推送：autopilot cron 建单/启停被后端改动时静默换新。
+useBoardChanged(() => load(true))
 </script>
 
 <template>

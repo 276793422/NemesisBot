@@ -1,3 +1,9 @@
+// 刻意设计：本文件测试用进程级串行锁（GLOBAL_STATE_LOCK 等 env/资源互斥锁）
+// 保护环境操作，guard 必须跨 async 测试体的 await 持有；#[tokio::test] 每个
+// 测试独立 current_thread runtime，持锁方在自己线程上恢复运行，不会死锁。
+// 测试域统一豁免（逐处 allow ~200 个不现实）。
+#![allow(clippy::await_holding_lock)]
+
 use super::*;
 use tempfile::TempDir;
 
@@ -279,8 +285,8 @@ fn test_config_llm_logging_modification() {
     let mut cfg: serde_json::Value = serde_json::json!({
         "logging": {"llm": {}}
     });
-    if let Some(logging) = cfg.get_mut("logging").and_then(|v| v.get_mut("llm")) {
-        if let Some(obj) = logging.as_object_mut() {
+    if let Some(logging) = cfg.get_mut("logging").and_then(|v| v.get_mut("llm"))
+        && let Some(obj) = logging.as_object_mut() {
             obj.insert("enabled".to_string(), serde_json::Value::Bool(true));
             obj.insert(
                 "log_dir".to_string(),
@@ -291,7 +297,6 @@ fn test_config_llm_logging_modification() {
                 serde_json::Value::String("full".to_string()),
             );
         }
-    }
     assert_eq!(cfg["logging"]["llm"]["enabled"], true);
     assert_eq!(cfg["logging"]["llm"]["log_dir"], "logs/request_logs");
     assert_eq!(cfg["logging"]["llm"]["detail_level"], "full");
@@ -302,11 +307,10 @@ fn test_config_security_modification_existing() {
     let mut cfg: serde_json::Value = serde_json::json!({
         "security": {"some_field": "value"}
     });
-    if let Some(security) = cfg.get_mut("security") {
-        if let Some(obj) = security.as_object_mut() {
+    if let Some(security) = cfg.get_mut("security")
+        && let Some(obj) = security.as_object_mut() {
             obj.insert("enabled".to_string(), serde_json::Value::Bool(true));
         }
-    }
     assert_eq!(cfg["security"]["enabled"], true);
     assert_eq!(cfg["security"]["some_field"], "value");
 }
@@ -331,14 +335,13 @@ fn test_config_workspace_restriction_modification() {
     let mut cfg: serde_json::Value = serde_json::json!({
         "agents": {"defaults": {}}
     });
-    if let Some(agents) = cfg.get_mut("agents").and_then(|v| v.get_mut("defaults")) {
-        if let Some(obj) = agents.as_object_mut() {
+    if let Some(agents) = cfg.get_mut("agents").and_then(|v| v.get_mut("defaults"))
+        && let Some(obj) = agents.as_object_mut() {
             obj.insert(
                 "restrict_to_workspace".to_string(),
                 serde_json::Value::Bool(false),
             );
         }
-    }
     assert_eq!(cfg["agents"]["defaults"]["restrict_to_workspace"], false);
 }
 
@@ -347,8 +350,8 @@ fn test_config_web_channel_modification() {
     let mut cfg: serde_json::Value = serde_json::json!({
         "channels": {"web": {}}
     });
-    if let Some(web) = cfg.pointer_mut("/channels/web") {
-        if let Some(obj) = web.as_object_mut() {
+    if let Some(web) = cfg.pointer_mut("/channels/web")
+        && let Some(obj) = web.as_object_mut() {
             obj.insert(
                 "auth_token".to_string(),
                 serde_json::Value::String("276793422".to_string()),
@@ -359,7 +362,6 @@ fn test_config_web_channel_modification() {
             );
             obj.insert("port".to_string(), serde_json::Value::Number(49000.into()));
         }
-    }
     assert_eq!(cfg["channels"]["web"]["auth_token"], "276793422");
     assert_eq!(cfg["channels"]["web"]["port"], 49000);
 }
@@ -369,11 +371,10 @@ fn test_config_websocket_modification() {
     let mut cfg: serde_json::Value = serde_json::json!({
         "channels": {"websocket": {}}
     });
-    if let Some(ws) = cfg.pointer_mut("/channels/websocket") {
-        if let Some(obj) = ws.as_object_mut() {
+    if let Some(ws) = cfg.pointer_mut("/channels/websocket")
+        && let Some(obj) = ws.as_object_mut() {
             obj.insert("enabled".to_string(), serde_json::Value::Bool(true));
         }
-    }
     assert_eq!(cfg["channels"]["websocket"]["enabled"], true);
 }
 
@@ -678,8 +679,8 @@ fn test_config_web_channel_modification_with_pointer() {
     let mut cfg: serde_json::Value = serde_json::json!({
         "channels": {"web": {"enabled": false}}
     });
-    if let Some(web) = cfg.pointer_mut("/channels/web") {
-        if let Some(obj) = web.as_object_mut() {
+    if let Some(web) = cfg.pointer_mut("/channels/web")
+        && let Some(obj) = web.as_object_mut() {
             obj.insert(
                 "auth_token".to_string(),
                 serde_json::Value::String("test-token".to_string()),
@@ -690,7 +691,6 @@ fn test_config_web_channel_modification_with_pointer() {
             );
             obj.insert("port".to_string(), serde_json::Value::Number(8080.into()));
         }
-    }
     assert_eq!(cfg["channels"]["web"]["auth_token"], "test-token");
     assert_eq!(cfg["channels"]["web"]["host"], "0.0.0.0");
     assert_eq!(cfg["channels"]["web"]["port"], 8080);

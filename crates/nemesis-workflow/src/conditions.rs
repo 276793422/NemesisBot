@@ -62,8 +62,7 @@ fn eval_expression(expr: &str) -> Result<bool, String> {
     }
 
     // Handle "not" prefix
-    if expr.starts_with("not ") {
-        let inner = &expr[4..];
+    if let Some(inner) = expr.strip_prefix("not ") {
         let result = eval_expression(inner)?;
         return Ok(!result);
     }

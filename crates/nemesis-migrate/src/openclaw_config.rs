@@ -89,8 +89,8 @@ pub fn convert_config(data: &HashMap<String, Value>) -> (Value, Vec<String>) {
     });
 
     // Process agents.defaults
-    if let Some(agents) = data.get("agents").and_then(|v| v.as_object()) {
-        if let Some(defaults) = agents.get("defaults").and_then(|v| v.as_object()) {
+    if let Some(agents) = data.get("agents").and_then(|v| v.as_object())
+        && let Some(defaults) = agents.get("defaults").and_then(|v| v.as_object()) {
             if let Some(llm) = defaults.get("llm").and_then(|v| v.as_str()) {
                 config["agents"]["defaults"]["llm"] = Value::String(llm.to_string());
             } else if let Some(model) = defaults.get("model").and_then(|v| v.as_str()) {
@@ -119,7 +119,6 @@ pub fn convert_config(data: &HashMap<String, Value>) -> (Value, Vec<String>) {
                 config["agents"]["defaults"]["workspace"] = Value::String(rewritten);
             }
         }
-    }
 
     // Process providers
     if let Some(providers) = data.get("providers").and_then(|v| v.as_object()) {
@@ -220,9 +219,9 @@ pub fn convert_config(data: &HashMap<String, Value>) -> (Value, Vec<String>) {
     }
 
     // Migrate old "tools.web.search" config to "tools.web.brave" (mirrors Go lines 256-272)
-    if let Some(tools) = data.get("tools").and_then(|v| v.as_object()) {
-        if let Some(web) = tools.get("web").and_then(|v| v.as_object()) {
-            if let Some(search) = web.get("search").and_then(|v| v.as_object()) {
+    if let Some(tools) = data.get("tools").and_then(|v| v.as_object())
+        && let Some(web) = tools.get("web").and_then(|v| v.as_object())
+            && let Some(search) = web.get("search").and_then(|v| v.as_object()) {
                 // Ensure tools.web.brave exists in config
                 if config["tools"].is_null() {
                     config["tools"] = serde_json::json!({});
@@ -251,8 +250,6 @@ pub fn convert_config(data: &HashMap<String, Value>) -> (Value, Vec<String>) {
                         Value::Number(max_results.into());
                 }
             }
-        }
-    }
 
     (config, warnings)
 }

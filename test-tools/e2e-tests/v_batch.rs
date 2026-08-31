@@ -34,7 +34,7 @@
 //! 测试实例全走独立 home（TestWorkspace tempdir）+ 独立端口（V1 49010/49011/
 //! 18791 + AI 18090；V2 49012/49013/18792 + AI 18091；V3 49014/49015/18793
 //! + AI 18092，避开用户在跑的 gateway 49000/49001/18790）；进程 kill_on_drop
-//! 自动清理。
+//!   自动清理。
 
 use anyhow::{bail, Context, Result};
 use futures::{SinkExt, StreamExt};
@@ -165,11 +165,10 @@ fn collect_request_mds(home: &Path) -> Vec<(String, String)> {
         if let Ok(files) = std::fs::read_dir(&p) {
             for f in files.flatten() {
                 let fp = f.path();
-                if fp.extension().and_then(|e| e.to_str()) == Some("md") {
-                    if let Ok(c) = std::fs::read_to_string(&fp) {
+                if fp.extension().and_then(|e| e.to_str()) == Some("md")
+                    && let Ok(c) = std::fs::read_to_string(&fp) {
                         out.push((f.file_name().to_string_lossy().to_string(), c));
                     }
-                }
             }
         }
     }
@@ -499,11 +498,10 @@ fn collect_ai_request_files(home: &Path) -> Vec<(PathBuf, String)> {
         if let Ok(files) = std::fs::read_dir(sess.path()) {
             for f in files.flatten() {
                 let name = f.file_name().to_string_lossy().to_string();
-                if name.ends_with(".AI.Request.md") {
-                    if let Ok(c) = std::fs::read_to_string(f.path()) {
+                if name.ends_with(".AI.Request.md")
+                    && let Ok(c) = std::fs::read_to_string(f.path()) {
                         out.push((f.path(), c));
                     }
-                }
             }
         }
     }
@@ -555,7 +553,7 @@ async fn ws_api_call(
 
 /// V2 启动前钩子：enable enhanced memory（主开关 + 子开关 + auto_inject）
 /// + 落模型文件。全部在 gateway 拉起之前生效——向量库在启动时初始化，
-/// 失败会被 with_config 反手写 enabled=false 永久禁用。
+///   失败会被 with_config 反手写 enabled=false 永久禁用。
 fn v2_pre_gateway(ws: &TestWorkspace) -> Result<()> {
     let root = resolve_project_root()?;
 

@@ -23,7 +23,7 @@ pub async fn test_tool_read_file(ws: &TestWorkspace) -> Vec<TestResult> {
     let mut stream = match ws_connect(WS_PORT, AUTH_TOKEN).await {
         Ok(s) => s,
         Err(e) => {
-            results.push(fail(suite, &format!("Connect: {}", e)));
+            results.push(fail(suite, format!("Connect: {}", e)));
             return results;
         }
     };
@@ -33,13 +33,13 @@ pub async fn test_tool_read_file(ws: &TestWorkspace) -> Vec<TestResult> {
         Ok(content) => {
             results.push(pass(
                 &format!("{}/executed", suite),
-                &format!("Tool flow completed ({} bytes)", content.len()),
+                format!("Tool flow completed ({} bytes)", content.len()),
             ));
         }
         Err(e) => {
             results.push(pass(
                 &format!("{}/attempted", suite),
-                &format!("Tool attempted: {}", e),
+                format!("Tool attempted: {}", e),
             ));
         }
     }
@@ -59,7 +59,7 @@ pub async fn test_tool_write_file(ws: &TestWorkspace) -> Vec<TestResult> {
     let mut stream = match ws_connect(WS_PORT, AUTH_TOKEN).await {
         Ok(s) => s,
         Err(e) => {
-            results.push(fail(suite, &format!("Connect: {}", e)));
+            results.push(fail(suite, format!("Connect: {}", e)));
             return results;
         }
     };
@@ -74,7 +74,7 @@ pub async fn test_tool_write_file(ws: &TestWorkspace) -> Vec<TestResult> {
         Ok(content) => {
             results.push(pass(
                 &format!("{}/executed", suite),
-                &format!("Write tool flow completed ({} bytes)", content.len()),
+                format!("Write tool flow completed ({} bytes)", content.len()),
             ));
 
             // Check if file was actually created
@@ -94,7 +94,7 @@ pub async fn test_tool_write_file(ws: &TestWorkspace) -> Vec<TestResult> {
         Err(e) => {
             results.push(pass(
                 &format!("{}/attempted", suite),
-                &format!("Tool attempted: {}", e),
+                format!("Tool attempted: {}", e),
             ));
         }
     }
@@ -118,7 +118,7 @@ pub async fn test_tool_edit_file(ws: &TestWorkspace) -> Vec<TestResult> {
     let mut stream = match ws_connect(WS_PORT, AUTH_TOKEN).await {
         Ok(s) => s,
         Err(e) => {
-            results.push(fail(suite, &format!("Connect: {}", e)));
+            results.push(fail(suite, format!("Connect: {}", e)));
             return results;
         }
     };
@@ -133,13 +133,13 @@ pub async fn test_tool_edit_file(ws: &TestWorkspace) -> Vec<TestResult> {
         Ok(content) => {
             results.push(pass(
                 &format!("{}/executed", suite),
-                &format!("Edit tool flow completed ({} bytes)", content.len()),
+                format!("Edit tool flow completed ({} bytes)", content.len()),
             ));
         }
         Err(e) => {
             results.push(pass(
                 &format!("{}/attempted", suite),
-                &format!("Tool attempted: {}", e),
+                format!("Tool attempted: {}", e),
             ));
         }
     }
@@ -164,7 +164,7 @@ pub async fn test_tool_list_dir(ws: &TestWorkspace) -> Vec<TestResult> {
     let mut stream = match ws_connect(WS_PORT, AUTH_TOKEN).await {
         Ok(s) => s,
         Err(e) => {
-            results.push(fail(suite, &format!("Connect: {}", e)));
+            results.push(fail(suite, format!("Connect: {}", e)));
             return results;
         }
     };
@@ -173,13 +173,13 @@ pub async fn test_tool_list_dir(ws: &TestWorkspace) -> Vec<TestResult> {
         Ok(content) => {
             results.push(pass(
                 &format!("{}/executed", suite),
-                &format!("List dir flow completed ({} bytes)", content.len()),
+                format!("List dir flow completed ({} bytes)", content.len()),
             ));
         }
         Err(e) => {
             results.push(pass(
                 &format!("{}/attempted", suite),
-                &format!("Tool attempted: {}", e),
+                format!("Tool attempted: {}", e),
             ));
         }
     }
@@ -199,7 +199,7 @@ pub async fn test_tool_create_delete_dir(_ws: &TestWorkspace) -> Vec<TestResult>
     let mut stream = match ws_connect(WS_PORT, AUTH_TOKEN).await {
         Ok(s) => s,
         Err(e) => {
-            results.push(fail(suite, &format!("Connect: {}", e)));
+            results.push(fail(suite, format!("Connect: {}", e)));
             return results;
         }
     };
@@ -215,13 +215,13 @@ pub async fn test_tool_create_delete_dir(_ws: &TestWorkspace) -> Vec<TestResult>
         Ok(content) => {
             results.push(pass(
                 &format!("{}/executed", suite),
-                &format!("Create/delete dir flow completed ({} bytes)", content.len()),
+                format!("Create/delete dir flow completed ({} bytes)", content.len()),
             ));
         }
         Err(e) => {
             results.push(pass(
                 &format!("{}/attempted", suite),
-                &format!("Tool attempted: {}", e),
+                format!("Tool attempted: {}", e),
             ));
         }
     }
@@ -245,7 +245,7 @@ pub async fn test_tool_delete_file(ws: &TestWorkspace) -> Vec<TestResult> {
     let mut stream = match ws_connect(WS_PORT, AUTH_TOKEN).await {
         Ok(s) => s,
         Err(e) => {
-            results.push(fail(suite, &format!("Connect: {}", e)));
+            results.push(fail(suite, format!("Connect: {}", e)));
             return results;
         }
     };
@@ -254,13 +254,13 @@ pub async fn test_tool_delete_file(ws: &TestWorkspace) -> Vec<TestResult> {
         Ok(content) => {
             results.push(pass(
                 &format!("{}/executed", suite),
-                &format!("Delete file flow completed ({} bytes)", content.len()),
+                format!("Delete file flow completed ({} bytes)", content.len()),
             ));
         }
         Err(e) => {
             results.push(pass(
                 &format!("{}/attempted", suite),
-                &format!("Tool attempted: {}", e),
+                format!("Tool attempted: {}", e),
             ));
         }
     }
@@ -280,7 +280,7 @@ pub async fn test_tool_sleep() -> Vec<TestResult> {
     let mut stream = match ws_connect(WS_PORT, AUTH_TOKEN).await {
         Ok(s) => s,
         Err(e) => {
-            results.push(fail(suite, &format!("Connect: {}", e)));
+            results.push(fail(suite, format!("Connect: {}", e)));
             return results;
         }
     };
@@ -291,7 +291,7 @@ pub async fn test_tool_sleep() -> Vec<TestResult> {
             let elapsed = start.elapsed();
             results.push(pass(
                 &format!("{}/executed", suite),
-                &format!(
+                format!(
                     "Sleep flow completed in {:?} ({} bytes)",
                     elapsed,
                     content.len()
@@ -301,7 +301,7 @@ pub async fn test_tool_sleep() -> Vec<TestResult> {
         Err(e) => {
             results.push(pass(
                 &format!("{}/attempted", suite),
-                &format!("Tool attempted: {}", e),
+                format!("Tool attempted: {}", e),
             ));
         }
     }
@@ -321,7 +321,7 @@ pub async fn test_tool_message() -> Vec<TestResult> {
     let mut stream = match ws_connect(WS_PORT, AUTH_TOKEN).await {
         Ok(s) => s,
         Err(e) => {
-            results.push(fail(suite, &format!("Connect: {}", e)));
+            results.push(fail(suite, format!("Connect: {}", e)));
             return results;
         }
     };
@@ -336,13 +336,13 @@ pub async fn test_tool_message() -> Vec<TestResult> {
         Ok(content) => {
             results.push(pass(
                 &format!("{}/executed", suite),
-                &format!("Message tool flow completed ({} bytes)", content.len()),
+                format!("Message tool flow completed ({} bytes)", content.len()),
             ));
         }
         Err(e) => {
             results.push(pass(
                 &format!("{}/attempted", suite),
-                &format!("Tool attempted: {}", e),
+                format!("Tool attempted: {}", e),
             ));
         }
     }
@@ -362,7 +362,7 @@ pub async fn test_tool_multi_step(ws: &TestWorkspace) -> Vec<TestResult> {
     let mut stream = match ws_connect(WS_PORT, AUTH_TOKEN).await {
         Ok(s) => s,
         Err(e) => {
-            results.push(fail(suite, &format!("Connect: {}", e)));
+            results.push(fail(suite, format!("Connect: {}", e)));
             return results;
         }
     };
@@ -377,7 +377,7 @@ pub async fn test_tool_multi_step(ws: &TestWorkspace) -> Vec<TestResult> {
         Ok(content) => {
             results.push(pass(
                 &format!("{}/executed", suite),
-                &format!("Multi-step tool chain completed ({} bytes)", content.len()),
+                format!("Multi-step tool chain completed ({} bytes)", content.len()),
             ));
 
             // Verify the file exists
@@ -388,7 +388,7 @@ pub async fn test_tool_multi_step(ws: &TestWorkspace) -> Vec<TestResult> {
         Err(e) => {
             results.push(pass(
                 &format!("{}/attempted", suite),
-                &format!("Multi-step attempted: {}", e),
+                format!("Multi-step attempted: {}", e),
             ));
         }
     }
@@ -408,7 +408,7 @@ pub async fn test_tool_error_recovery() -> Vec<TestResult> {
     let mut stream = match ws_connect(WS_PORT, AUTH_TOKEN).await {
         Ok(s) => s,
         Err(e) => {
-            results.push(fail(suite, &format!("Connect: {}", e)));
+            results.push(fail(suite, format!("Connect: {}", e)));
             return results;
         }
     };
@@ -418,13 +418,13 @@ pub async fn test_tool_error_recovery() -> Vec<TestResult> {
             // The tool should fail gracefully and return an error message
             results.push(pass(
                 &format!("{}/handled", suite),
-                &format!("Error handled gracefully ({} bytes)", content.len()),
+                format!("Error handled gracefully ({} bytes)", content.len()),
             ));
         }
         Err(e) => {
             results.push(pass(
                 &format!("{}/handled", suite),
-                &format!("Error propagated: {}", e),
+                format!("Error propagated: {}", e),
             ));
         }
     }
@@ -444,7 +444,7 @@ pub async fn test_tool_workspace_restriction() -> Vec<TestResult> {
     let mut stream = match ws_connect(WS_PORT, AUTH_TOKEN).await {
         Ok(s) => s,
         Err(e) => {
-            results.push(fail(suite, &format!("Connect: {}", e)));
+            results.push(fail(suite, format!("Connect: {}", e)));
             return results;
         }
     };
@@ -466,14 +466,14 @@ pub async fn test_tool_workspace_restriction() -> Vec<TestResult> {
             } else {
                 results.push(pass(
                     &format!("{}/response", suite),
-                    &format!("Response received (may be mock): {} bytes", content.len()),
+                    format!("Response received (may be mock): {} bytes", content.len()),
                 ));
             }
         }
         Err(e) => {
             results.push(pass(
                 &format!("{}/blocked", suite),
-                &format!("Blocked by security: {}", e),
+                format!("Blocked by security: {}", e),
             ));
         }
     }

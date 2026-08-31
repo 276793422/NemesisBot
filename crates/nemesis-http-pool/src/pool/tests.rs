@@ -2076,7 +2076,7 @@ async fn test_client_for_custom_request() {
 
     // Use the raw client for a PUT request
     let resp = client
-        .put(&format!("{}/custom", base_url))
+        .put(format!("{}/custom", base_url))
         .body("custom body")
         .send()
         .await
@@ -2097,7 +2097,7 @@ async fn test_client_for_delete_request() {
     let client = pool.client();
 
     let resp = client
-        .delete(&format!("{}/resource", base_url))
+        .delete(format!("{}/resource", base_url))
         .send()
         .await
         .unwrap();

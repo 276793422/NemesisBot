@@ -388,14 +388,14 @@ pub async fn sign_upload(
         .map_err(internal)?;
 
     // 返签名文件 binary（浏览器下载）
-    Ok(Response::builder()
+    Response::builder()
         .header("content-type", "application/octet-stream")
         .header(
             "content-disposition",
             "attachment; filename=\"signed-file\"",
         )
         .body(Body::from(signed_file))
-        .map_err(|e| internal(e))?)
+        .map_err(internal)
 }
 
 // ===================== /v1/admin/user（创建用户/发 token）=====================

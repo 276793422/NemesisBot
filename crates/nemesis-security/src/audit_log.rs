@@ -133,8 +133,8 @@ impl AuditLogger {
         }
 
         // Write to file if enabled
-        if self.config.enabled {
-            if let Some(ref mut file) = self.log_file {
+        if self.config.enabled
+            && let Some(ref mut file) = self.log_file {
                 let timestamp = Local::now().format("%Y-%m-%d %H:%M:%S%.3f").to_string();
                 let log_line = format!(
                     "{} | {} | {} | {} | {} | {} | {} | {} | {} | {}\n",
@@ -151,7 +151,6 @@ impl AuditLogger {
                 );
                 let _ = file.write_all(log_line.as_bytes());
             }
-        }
     }
 
     /// Get the current log file path.
@@ -201,18 +200,14 @@ impl AuditLogger {
 /// Sanitize a target string for log output.
 fn sanitize_target(target: &str) -> String {
     let s = target
-        .replace('\n', " ")
-        .replace('\r', " ")
-        .replace('\t', " ");
+        .replace(['\n', '\r', '\t'], " ");
     utils::truncate(&s, 200)
 }
 
 /// Sanitize a reason string for log output.
 fn sanitize_reason(reason: &str) -> String {
     let s = reason
-        .replace('\n', " ")
-        .replace('\r', " ")
-        .replace('\t', " ");
+        .replace(['\n', '\r', '\t'], " ");
     utils::truncate(&s, 100)
 }
 

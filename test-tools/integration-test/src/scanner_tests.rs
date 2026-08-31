@@ -28,7 +28,7 @@ pub async fn test_scanner_status_initial(ws: &TestWorkspace, bin: &Path) -> Vec<
     } else {
         results.push(pass(
             &format!("{}/output", suite),
-            &format!("exit={}", output.exit_code),
+            format!("exit={}", output.exit_code),
         ));
     }
 
@@ -40,8 +40,8 @@ pub async fn test_scanner_status_initial(ws: &TestWorkspace, bin: &Path) -> Vec<
         .join("config.scanner.json");
     if scanner_config.exists() {
         results.push(pass(&format!("{}/config", suite), "Scanner config exists"));
-        if let Ok(data) = std::fs::read_to_string(&scanner_config) {
-            if let Ok(cfg) = serde_json::from_str::<Value>(&data) {
+        if let Ok(data) = std::fs::read_to_string(&scanner_config)
+            && let Ok(cfg) = serde_json::from_str::<Value>(&data) {
                 let has_enabled = cfg.get("enabled").is_some();
                 results.push(pass(
                     &format!("{}/config_content", suite),
@@ -52,7 +52,6 @@ pub async fn test_scanner_status_initial(ws: &TestWorkspace, bin: &Path) -> Vec<
                     },
                 ));
             }
-        }
     } else {
         results.push(skip(
             &format!("{}/config", suite),
@@ -88,7 +87,7 @@ pub async fn test_scanner_download(ws: &TestWorkspace, bin: &Path) -> Vec<TestRe
     } else {
         results.push(skip(
             suite,
-            &format!("Download skipped (exit={})", output.exit_code),
+            format!("Download skipped (exit={})", output.exit_code),
         ));
     }
 
@@ -114,7 +113,7 @@ pub async fn test_scanner_install_verify(ws: &TestWorkspace, bin: &Path) -> Vec<
     } else {
         results.push(skip(
             suite,
-            &format!(
+            format!(
                 "Install skipped (exit={}, needs download first)",
                 output.exit_code
             ),
@@ -140,7 +139,7 @@ pub async fn test_scanner_start_stop(ws: &TestWorkspace, bin: &Path) -> Vec<Test
     } else {
         results.push(skip(
             &format!("{}/start", suite),
-            &format!("Start skipped (exit={})", start_output.exit_code),
+            format!("Start skipped (exit={})", start_output.exit_code),
         ));
         return results;
     }
@@ -152,7 +151,7 @@ pub async fn test_scanner_start_stop(ws: &TestWorkspace, bin: &Path) -> Vec<Test
     } else {
         results.push(pass(
             &format!("{}/stop", suite),
-            &format!("Stop: exit={}", stop_output.exit_code),
+            format!("Stop: exit={}", stop_output.exit_code),
         ));
     }
 
@@ -192,7 +191,7 @@ pub async fn test_scanner_scan_clean_file(ws: &TestWorkspace, bin: &Path) -> Vec
     } else {
         results.push(skip(
             &format!("{}/scan", suite),
-            &format!(
+            format!(
                 "Scan skipped (exit={}, scanner may not be installed)",
                 output.exit_code
             ),
@@ -246,7 +245,7 @@ pub async fn test_scanner_scan_eicar(ws: &TestWorkspace, bin: &Path) -> Vec<Test
     } else {
         results.push(skip(
             suite,
-            &format!("Scan skipped (exit={})", output.exit_code),
+            format!("Scan skipped (exit={})", output.exit_code),
         ));
     }
 
@@ -288,7 +287,7 @@ pub async fn test_scanner_scan_directory(ws: &TestWorkspace, bin: &Path) -> Vec<
     } else {
         results.push(skip(
             suite,
-            &format!("Scan skipped (exit={})", output.exit_code),
+            format!("Scan skipped (exit={})", output.exit_code),
         ));
     }
 
@@ -312,8 +311,8 @@ pub async fn test_scanner_chain_config(ws: &TestWorkspace) -> Vec<TestResult> {
         .join("config.scanner.json");
 
     if scanner_config.exists() {
-        if let Ok(data) = std::fs::read_to_string(&scanner_config) {
-            if let Ok(cfg) = serde_json::from_str::<Value>(&data) {
+        if let Ok(data) = std::fs::read_to_string(&scanner_config)
+            && let Ok(cfg) = serde_json::from_str::<Value>(&data) {
                 // Check for engine list
                 let has_engines = cfg.get("enabled").is_some() || cfg.get("engines").is_some();
                 results.push(pass(
@@ -325,7 +324,6 @@ pub async fn test_scanner_chain_config(ws: &TestWorkspace) -> Vec<TestResult> {
                     },
                 ));
             }
-        }
     } else {
         results.push(skip(suite, "Scanner config not found (created by onboard)"));
     }

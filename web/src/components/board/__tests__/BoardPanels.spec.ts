@@ -21,6 +21,8 @@ import InboxPanel from '../InboxPanel.vue'
 import ProjectPanel from '../ProjectPanel.vue'
 import IssueDetailModal from '../IssueDetailModal.vue'
 import AutopilotPanel from '../AutopilotPanel.vue'
+import BoardTabs from '../BoardTabs.vue'
+import IssueListView from '../../../views/IssueListView.vue'
 
 function issue(over: Record<string, unknown> = {}) {
   return {
@@ -441,5 +443,124 @@ describe('AutopilotPanel（自动化 P4）', () => {
     expect(w.text()).toContain('NB-9')
     expect(w.text()).toContain('每日站会 2026-08-31')
     expect(w.text()).toContain('进行中')
+  })
+})
+
+describe('BoardTabs（页签顺序）', () => {
+  it('从左到右 = 使用依赖链：项目 → 列表 → 看板 → 收件箱 → 自动化', () => {
+    const w = mount(BoardTabs, { props: { modelValue: 'projects' } })
+    const labels = w.findAll('button').map((b) => b.text())
+    expect(labels).toEqual(['项目', '列表', '看板', '收件箱', '自动化'])
+  })
+
+  it('点击页签 emit update:modelValue', async () => {
+    const w = mount(BoardTabs, { props: { modelValue: 'projects' } })
+    await w.findAll('button').find((b) => b.text() === '看板')!.trigger('click')
+    expect(w.emitted('update:modelValue')![0]).toEqual(['kanban'])
+  })
+})
+
+describe('IssueListView（列表）', () => {
+  it('回归：加载完成后 loading 必须置回 false 并渲染表格行（2026-08-31 永久 spinner 根因）', async () => {
+    requestMock.mockImplementation((_m: string, cmd: string) => {
+      if (cmd === 'issue.list') return Promise.resolve({ issues: [issue()], total: 1 })
+      if (cmd === 'stats') return Promise.resolve({ by_status: { backlog: 1 } })
+      return Promise.resolve({})
+    })
+    const w = mount(IssueListView)
+    await flushPromises()
+    // 修复前：loading 永真 → 永远停在 spinner 分支，数据到位也不渲染。
+    expect(w.find('.spinner').exists()).toBe(false)
+    expect(w.find('.table-wrap').exists()).toBe(true)
+    expect(w.findAll('tbody tr').length).toBe(1)
+    expect(w.text()).toContain('NB-1')
+    expect(w.text()).toContain('任务一')
+  })
+
+  it('创建成功 → issue.create payload 正确 + toast + 刷新后新行可见', async () => {
+    let issues: any[] = []
+    requestMock.mockImplementation((_m: string, cmd: string, data: any) => {
+      if (cmd === 'issue.create') {
+        issues = [issue({ title: data.title })]
+        return Promise.resolve({ created: true, issue: issues[0] })
+      }
+      if (cmd === 'issue.list') return Promise.resolve({ issues, total: issues.length })
+      return Promise.resolve({})
+    })
+    const w = mount(IssueListView)
+    await flushPromises()
+    await w.findAll('button').find((b) => b.text() === '+ 新建 Issue')!.trigger('click')
+    await w.find('.modal input.form-input').setValue('网络自检任务')
+    await w.findAll('button').find((b) => b.text() === '创建')!.trigger('click')
+    await flushPromises()
+    expect(requestMock.mock.calls.find((c) => c[1] === 'issue.create')![2]).toMatchObject({
+      title: '网络自检任务',
+      priority: 1,
+    })
+    expect(useToast().toasts.some((t) => t.type === 'success' && t.message.includes('NB-1'))).toBe(true)
+    // 创建后 refresh() 已把新 issue 渲染进表格（不再受 loading 永真影响）。
+    expect(w.text()).toContain('网络自检任务')
+  })
+
+  it('W2.5 一键派发：worker 指派 + 可派发状态 → 行内「派发」按钮 → issue.dispatch {id, target}', async () => {
+    requestMock.mockImplementation((_m: string, cmd: string) => {
+      if (cmd === 'issue.list')
+        return Promise.resolve({ issues: [issue({ assignee: 'worker', assignee_id: 'node-b' })], total: 1 })
+      if (cmd === 'issue.dispatch')
+        return Promise.resolve({ dispatched: true, task_id: 'task-abcdef12-3456' })
+      return Promise.resolve({})
+    })
+    const w = mount(IssueListView)
+    await flushPromises()
+    const btn = w.findAll('tbody button').find((b) => b.text().includes('派发'))!
+    expect(btn.exists()).toBe(true)
+
+    await btn.trigger('click')
+    await flushPromises()
+    const call = requestMock.mock.calls.find((c) => c[1] === 'issue.dispatch')!
+    expect(call[2]).toEqual({ id: 1, target: 'node-b' })
+    expect(useToast().toasts.some((t) => t.type === 'success' && t.message.includes('node-b'))).toBe(true)
+  })
+
+  it('W2.5 一键派发：未指派行不显示按钮（—）；manager_self 行也不显示', async () => {
+    requestMock.mockImplementation((_m: string, cmd: string) => {
+      if (cmd === 'issue.list')
+        return Promise.resolve({
+          issues: [
+            issue({ id: 1, number: 'NB-1' }),
+            issue({ id: 2, number: 'NB-2', assignee: 'manager_self', assignee_id: 'local' }),
+            issue({ id: 3, number: 'NB-3', assignee: 'worker', assignee_id: 'node-b', status: 'done' }),
+          ],
+          total: 3,
+        })
+      return Promise.resolve({})
+    })
+    const w = mount(IssueListView)
+    await flushPromises()
+    expect(w.findAll('tbody button').filter((b) => b.text().includes('派发')).length).toBe(0)
+  })
+
+  it('W2.5 创建时指派 worker → 成功后 info toast 引导「派发」（指派 ≠ 派发）', async () => {
+    requestMock.mockImplementation((_m: string, cmd: string) => {
+      if (cmd === 'issue.create') return Promise.resolve({ created: true, issue: issue() })
+      if (cmd === 'issue.list') return Promise.resolve({ issues: [issue()], total: 1 })
+      return Promise.resolve({})
+    })
+    const w = mount(IssueListView)
+    await flushPromises()
+    await w.findAll('button').find((b) => b.text() === '+ 新建 Issue')!.trigger('click')
+    const modal = w.find('.modal')
+    await modal.findAll('input.form-input').find((i) => i.attributes('placeholder') === '一句话描述任务')!.setValue('派发引导任务')
+    // 指派下拉：暂不指派/manager（本机）/worker 节点。
+    const assignSelect = modal.findAll('select.form-select').find((s) =>
+      s.findAll('option').some((o) => o.element.value === 'worker'),
+    )!
+    await assignSelect.setValue('worker')
+    // 无在线节点列表 → 回退手输节点 id。
+    const idInput = modal.findAll('input.form-input').find((i) => i.attributes('placeholder') === '节点 id')!
+    await idInput.setValue('node-b')
+    await w.findAll('button').find((b) => b.text() === '创建')!.trigger('click')
+    await flushPromises()
+    expect(requestMock.mock.calls.some((c) => c[1] === 'issue.dispatch')).toBe(false) // 只指派，不自动派发
   })
 })

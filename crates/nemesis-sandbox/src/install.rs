@@ -194,7 +194,7 @@ pub fn stop_service(paths: &SandboxPaths) -> Result<()> {
 ///   - registers driver + service tolerant ("already exists" → no-op);
 ///   - (re)writes IniPath, service-key DWORDs, Sandboxie.ini;
 ///   - starts the service.
-/// Must be called elevated (kernel driver install → UAC).
+///     Must be called elevated (kernel driver install → UAC).
 pub fn ensure_installed(paths: &SandboxPaths) -> Result<()> {
     paths
         .verify_runtime()

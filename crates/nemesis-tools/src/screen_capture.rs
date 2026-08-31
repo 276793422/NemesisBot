@@ -185,8 +185,8 @@ impl ScreenCaptureTool {
     /// Capture the full screen.
     async fn capture_full_screen(&self, output_path: &std::path::Path, format: &str) -> ToolResult {
         // Use window-mcp if available
-        if let Some(ref caller) = self.mcp_caller {
-            if caller.is_connected() {
+        if let Some(ref caller) = self.mcp_caller
+            && caller.is_connected() {
                 let mcp_args = serde_json::json!({
                     "file_path": output_path.to_string_lossy().to_string()
                 });
@@ -210,7 +210,6 @@ impl ScreenCaptureTool {
                     }
                 }
             }
-        }
 
         let script = self.build_full_screen_script(output_path, format);
         self.execute_capture(&script, output_path).await
@@ -257,8 +256,8 @@ impl ScreenCaptureTool {
         };
 
         // Use window-mcp if available
-        if let Some(ref caller) = self.mcp_caller {
-            if caller.is_connected() {
+        if let Some(ref caller) = self.mcp_caller
+            && caller.is_connected() {
                 let mcp_args = serde_json::json!({
                     "file_path": output_path.to_string_lossy().to_string(),
                     "x": x,
@@ -289,7 +288,6 @@ impl ScreenCaptureTool {
                     }
                 }
             }
-        }
 
         let script = self.build_region_script(x, y, w, h, output_path, format);
         self.execute_capture(&script, output_path).await
@@ -313,8 +311,8 @@ impl ScreenCaptureTool {
 
         // Use window-mcp for window-level capture (supports background windows
         // via PrintWindow, which PowerShell's CopyFromScreen cannot do).
-        if let Some(ref caller) = self.mcp_caller {
-            if caller.is_connected() {
+        if let Some(ref caller) = self.mcp_caller
+            && caller.is_connected() {
                 let mut mcp_args = serde_json::json!({
                     "file_path": output_path.to_string_lossy().to_string()
                 });
@@ -363,7 +361,6 @@ impl ScreenCaptureTool {
                     Err(e) => return ToolResult::error(&format!("window capture failed: {}", e)),
                 }
             }
-        }
 
         // PowerShell fallback
         self.capture_window_fallback(hwnd, window_title, output_path, format)

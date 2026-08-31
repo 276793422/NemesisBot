@@ -214,7 +214,7 @@ fn read_jsonl_lines(path: &Path) -> Vec<serde_json::Value> {
         Err(_) => return Vec::new(),
     };
     let mut out = Vec::new();
-    for line in BufReader::new(file).lines().flatten() {
+    for line in BufReader::new(file).lines().map_while(Result::ok) {
         let t = line.trim();
         if t.is_empty() {
             continue;
@@ -443,11 +443,11 @@ fn sorted_files(dir: &Path) -> Vec<PathBuf> {
     let mut files: Vec<(usize, String, PathBuf)> = entries
         .flatten()
         .filter(|e| e.file_type().map(|t| t.is_file()).unwrap_or(false))
-        .filter_map(|e| {
+        .map(|e| {
             let name = e.file_name().to_string_lossy().to_string();
             let prefix_str = name.split('.').next().unwrap_or("0");
             let prefix_num: usize = prefix_str.parse().unwrap_or(usize::MAX);
-            Some((prefix_num, name, e.path()))
+            (prefix_num, name, e.path())
         })
         .collect();
     files.sort_by_key(|(n, _, _)| *n);
@@ -766,8 +766,8 @@ impl LogsHandler {
                 };
                 for sub in dev_sub.flatten() {
                     let name = sub.file_name().to_string_lossy().to_string();
-                    if let Some((_ts, id)) = parse_cluster_dir_name(&name) {
-                        if id == sanitized_target || id == task_id {
+                    if let Some((_ts, id)) = parse_cluster_dir_name(&name)
+                        && (id == sanitized_target || id == task_id) {
                             let dev_name = dev_path
                                 .file_name()
                                 .and_then(|n| n.to_str())
@@ -775,7 +775,6 @@ impl LogsHandler {
                                 .to_string();
                             candidates.push((sub.path(), dev_name));
                         }
-                    }
                 }
             }
         }
@@ -1089,7 +1088,7 @@ impl LogsHandler {
                     };
                     let mut scored: Vec<_> = sessions
                         .into_iter()
-                        .zip(docs.into_iter())
+                        .zip(docs)
                         .map(|(s, dc)| {
                             let len: usize = dc.values().sum();
                             let sc = nemesis_memory::retrieval::bm25_score(
@@ -1159,8 +1158,8 @@ impl LogsHandler {
             if let Some(ref mgr) = ctx.state.memory_manager {
                 let store = mgr.get_episodic_store();
                 for key in [session.to_string(), session.replace('_', ":")] {
-                    if let Ok(eps) = store.get_session(&key).await {
-                        if !eps.is_empty() {
+                    if let Ok(eps) = store.get_session(&key).await
+                        && !eps.is_empty() {
                             for (i, ep) in eps.iter().enumerate() {
                                 if let Some(msg) = messages.get_mut(i) {
                                     if ep.tags.iter().any(|t| t == "cluster") {
@@ -1177,7 +1176,6 @@ impl LogsHandler {
                             }
                             break;
                         }
-                    }
                 }
             }
         }
@@ -1273,7 +1271,7 @@ impl LogsHandler {
         let rec = match records
             .iter()
             .rev()
-            .find(|r| r.round == round && trace_id.map_or(true, |t| r.trace_id == t))
+            .find(|r| r.round == round && trace_id.is_none_or(|t| r.trace_id == t))
         {
             Some(r) => r.clone(),
             None => {
@@ -1344,7 +1342,7 @@ impl LogsHandler {
                     // home 是 home 根：先经 nemesis-path 转 workspace 再取
                     // sessions 目录（勿把 home 直接当 workspace 传入）。
                     std::sync::Arc::new(nemesis_agent::session::SessionStore::new_with_storage(
-                        &nemesis_path::resolve_sessions_dir_in_workspace(
+                        nemesis_path::resolve_sessions_dir_in_workspace(
                             &nemesis_path::workspace_dir(Path::new(home)),
                         ),
                     ))
@@ -1366,7 +1364,7 @@ impl LogsHandler {
         });
         let obj = base.as_object().expect("base is an object").clone();
 
-        return match nemesis_agent::replay::verify_session_round_in(
+        match nemesis_agent::replay::verify_session_round_in(
             &store,
             &ledger,
             &store_key,
@@ -1416,18 +1414,17 @@ impl LogsHandler {
                 }));
                 Ok(Some(serde_json::Value::Object(o)))
             }
-        };
+        }
     }
 
     /// G3: resolve the spill root the same way the agent factory points it —
     /// the live loop's root first, else `<workspace>/logs/spill`（2026-08-31
     /// 迁回 workspace，U4 设计指定位置；restrict_to_workspace 内 agent 可回读）。
     fn spill_root_for(ctx: &RequestContext) -> Option<PathBuf> {
-        if let Some(al) = ctx.state.agent_loop.read().as_ref() {
-            if let Some(root) = al.spill_root_path() {
+        if let Some(al) = ctx.state.agent_loop.read().as_ref()
+            && let Some(root) = al.spill_root_path() {
                 return Some(root);
             }
-        }
         let home = crate::handlers::require_home(ctx).ok()?;
         Some(nemesis_path::resolve_spill_dir_in_workspace(
             &nemesis_path::workspace_dir(Path::new(home)),
@@ -1511,8 +1508,8 @@ fn build_request_entry(dir: &Path, id: &str, ts: &str, _suffix: &str) -> serde_j
                 first_message = extract_md_first_message(&content);
             }
         } else if ftype == "AI.Request.raw.json" {
-            if let Ok(content) = std::fs::read_to_string(path) {
-                if let Ok(envelope) = serde_json::from_str::<serde_json::Value>(&content) {
+            if let Ok(content) = std::fs::read_to_string(path)
+                && let Ok(envelope) = serde_json::from_str::<serde_json::Value>(&content) {
                     if model.is_empty() {
                         model = envelope
                             .get("body")
@@ -1521,16 +1518,14 @@ fn build_request_entry(dir: &Path, id: &str, ts: &str, _suffix: &str) -> serde_j
                             .unwrap_or("")
                             .to_string();
                     }
-                    if let Some(r) = envelope.get("round").and_then(|v| v.as_u64()) {
-                        if (r as usize) > max_round {
+                    if let Some(r) = envelope.get("round").and_then(|v| v.as_u64())
+                        && (r as usize) > max_round {
                             max_round = r as usize;
                         }
-                    }
                 }
-            }
         } else if ftype == "AI.Response.raw.json" {
-            if let Ok(content) = std::fs::read_to_string(path) {
-                if let Ok(envelope) = serde_json::from_str::<serde_json::Value>(&content) {
+            if let Ok(content) = std::fs::read_to_string(path)
+                && let Ok(envelope) = serde_json::from_str::<serde_json::Value>(&content) {
                     if let Some(d) = envelope.get("duration_ms").and_then(|v| v.as_u64()) {
                         total_duration_ms = total_duration_ms.saturating_add(d);
                     }
@@ -1545,21 +1540,17 @@ fn build_request_entry(dir: &Path, id: &str, ts: &str, _suffix: &str) -> serde_j
                         .unwrap_or(0);
                     total_tool_calls += tool_count;
                 }
-            }
-        } else if ftype == "response.md" {
-            if let Ok(content) = std::fs::read_to_string(path) {
-                if let Some(d) = extract_md_header(&content, "Total Duration") {
-                    if let Some(ms) = parse_duration_seconds(&d) {
+        } else if ftype == "response.md"
+            && let Ok(content) = std::fs::read_to_string(path) {
+                if let Some(d) = extract_md_header(&content, "Total Duration")
+                    && let Some(ms) = parse_duration_seconds(&d) {
                         final_duration_ms = ms;
                     }
-                }
-                if let Some(r) = extract_md_header(&content, "LLM Rounds") {
-                    if let Ok(n) = r.parse::<usize>() {
+                if let Some(r) = extract_md_header(&content, "LLM Rounds")
+                    && let Ok(n) = r.parse::<usize>() {
                         final_rounds = n;
                     }
-                }
             }
-        }
     }
 
     // Prefer the final-response.md Total Duration (covers all rounds including
@@ -1616,8 +1607,8 @@ fn build_cluster_task_entry(
                 first_message = extract_md_first_message(&content);
             }
         } else if ftype == "AI.Response.raw.json" {
-            if let Ok(content) = std::fs::read_to_string(path) {
-                if let Ok(envelope) = serde_json::from_str::<serde_json::Value>(&content) {
+            if let Ok(content) = std::fs::read_to_string(path)
+                && let Ok(envelope) = serde_json::from_str::<serde_json::Value>(&content) {
                     if let Some(d) = envelope.get("duration_ms").and_then(|v| v.as_u64()) {
                         total_duration_ms = total_duration_ms.saturating_add(d);
                     }
@@ -1632,22 +1623,18 @@ fn build_cluster_task_entry(
                         .unwrap_or(0);
                     total_tool_calls += tool_count;
                 }
-            }
         } else if ftype == "Local.md" {
-            if let Ok(content) = std::fs::read_to_string(path) {
-                if content.contains("### Error") {
+            if let Ok(content) = std::fs::read_to_string(path)
+                && content.contains("### Error") {
                     has_error = true;
                 }
-            }
             last_was_response = false;
         } else if ftype == "response.md" {
-            if let Ok(content) = std::fs::read_to_string(path) {
-                if let Some(d) = extract_md_header(&content, "Total Duration") {
-                    if let Some(ms) = parse_duration_seconds(&d) {
+            if let Ok(content) = std::fs::read_to_string(path)
+                && let Some(d) = extract_md_header(&content, "Total Duration")
+                    && let Some(ms) = parse_duration_seconds(&d) {
                         final_duration_ms = ms;
                     }
-                }
-            }
             last_was_response = true;
         }
     }
@@ -1738,7 +1725,7 @@ fn parse_request_iterations(dir: &Path) -> serde_json::Value {
                 let round = read_json_round(path).unwrap_or(iterations.len() + 1);
                 // Attach any pending locals to the previous iteration (if any).
                 if let Some(prev) = iterations.last_mut() {
-                    prev.locals.extend(pending_locals.drain(..));
+                    prev.locals.append(&mut pending_locals);
                 } else {
                     // Locals appeared before any AI.Request — drop them.
                     pending_locals.clear();

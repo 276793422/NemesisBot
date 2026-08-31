@@ -410,7 +410,7 @@ fn test_artifact_serialization() {
 fn test_experience_default() {
     let exp = Experience::default();
     assert_eq!(exp.id, "");
-    assert_eq!(exp.success, false);
+    assert!(!exp.success);
     assert_eq!(exp.duration_ms, 0);
 }
 
@@ -428,7 +428,7 @@ fn test_experience_basic() {
     };
 
     assert_eq!(exp.tool_name, "test-tool");
-    assert_eq!(exp.success, true);
+    assert!(exp.success);
     assert_eq!(exp.duration_ms, 1000);
 }
 
@@ -464,7 +464,7 @@ fn test_reflection_basic() {
     };
 
     assert_eq!(reflection.insights.len(), 2);
-    assert_eq!(reflection.is_remote, false);
+    assert!(!reflection.is_remote);
 }
 
 #[test]
@@ -543,7 +543,7 @@ fn test_llm_request_basic() {
     };
 
     assert_eq!(request.model, "gpt-4");
-    assert_eq!(request.stream, false);
+    assert!(!request.stream);
 }
 
 #[test]

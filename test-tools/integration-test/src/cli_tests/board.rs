@@ -35,12 +35,12 @@ pub async fn test_cli_issue_crud(ws: &TestWorkspace, bin: &Path) -> Vec<TestResu
     if out.success() && out.stdout_contains("已创建 NB-") {
         results.push(pass(
             &format!("{}/create", suite),
-            &format!("exit={}", out.exit_code),
+            format!("exit={}", out.exit_code),
         ));
     } else {
         results.push(fail(
             &format!("{}/create", suite),
-            &format!("exit={} stdout={}", out.exit_code, out.stdout_first_line()),
+            format!("exit={} stdout={}", out.exit_code, out.stdout_first_line()),
         ));
     }
 
@@ -51,7 +51,7 @@ pub async fn test_cli_issue_crud(ws: &TestWorkspace, bin: &Path) -> Vec<TestResu
     } else {
         results.push(fail(
             &format!("{}/list", suite),
-            &format!("exit={} stdout={}", out.exit_code, out.stdout_first_line()),
+            format!("exit={} stdout={}", out.exit_code, out.stdout_first_line()),
         ));
     }
 
@@ -62,7 +62,7 @@ pub async fn test_cli_issue_crud(ws: &TestWorkspace, bin: &Path) -> Vec<TestResu
     } else {
         results.push(fail(
             &format!("{}/get_by_number", suite),
-            &format!("exit={} stdout={}", out.exit_code, out.stdout_first_line()),
+            format!("exit={} stdout={}", out.exit_code, out.stdout_first_line()),
         ));
     }
 
@@ -73,7 +73,7 @@ pub async fn test_cli_issue_crud(ws: &TestWorkspace, bin: &Path) -> Vec<TestResu
     } else {
         results.push(fail(
             &format!("{}/status", suite),
-            &format!("exit={} stdout={}", out.exit_code, out.stdout_first_line()),
+            format!("exit={} stdout={}", out.exit_code, out.stdout_first_line()),
         ));
     }
 
@@ -93,7 +93,7 @@ pub async fn test_cli_issue_crud(ws: &TestWorkspace, bin: &Path) -> Vec<TestResu
     } else {
         results.push(fail(
             &format!("{}/comment", suite),
-            &format!("exit={} stdout={}", out.exit_code, out.stdout_first_line()),
+            format!("exit={} stdout={}", out.exit_code, out.stdout_first_line()),
         ));
     }
     let out = ws.run_cli(bin, &["issue", "get", "NB-1"]).await;
@@ -110,7 +110,7 @@ pub async fn test_cli_issue_crud(ws: &TestWorkspace, bin: &Path) -> Vec<TestResu
     } else {
         results.push(fail(
             &format!("{}/stats", suite),
-            &format!("exit={} stdout={}", out.exit_code, out.stdout_first_line()),
+            format!("exit={} stdout={}", out.exit_code, out.stdout_first_line()),
         ));
     }
 
@@ -148,7 +148,7 @@ pub async fn test_cli_autopilot_crud(ws: &TestWorkspace, bin: &Path) -> Vec<Test
     } else {
         results.push(fail(
             &format!("{}/create", suite),
-            &format!("exit={} stdout={}", out.exit_code, out.stdout_first_line()),
+            format!("exit={} stdout={}", out.exit_code, out.stdout_first_line()),
         ));
     }
 
@@ -161,7 +161,7 @@ pub async fn test_cli_autopilot_crud(ws: &TestWorkspace, bin: &Path) -> Vec<Test
     } else {
         results.push(fail(
             &format!("{}/invalid_cron_rejected", suite),
-            &format!("exit={} stderr={}", out.exit_code, stderr_snip(&out)),
+            format!("exit={} stderr={}", out.exit_code, stderr_snip(&out)),
         ));
     }
 
@@ -172,7 +172,7 @@ pub async fn test_cli_autopilot_crud(ws: &TestWorkspace, bin: &Path) -> Vec<Test
     } else {
         results.push(fail(
             &format!("{}/list", suite),
-            &format!("exit={} stdout={}", out.exit_code, out.stdout_first_line()),
+            format!("exit={} stdout={}", out.exit_code, out.stdout_first_line()),
         ));
     }
 
@@ -185,7 +185,7 @@ pub async fn test_cli_autopilot_crud(ws: &TestWorkspace, bin: &Path) -> Vec<Test
     } else {
         results.push(fail(
             &format!("{}/update", suite),
-            &format!("exit={} stdout={}", out.exit_code, out.stdout_first_line()),
+            format!("exit={} stdout={}", out.exit_code, out.stdout_first_line()),
         ));
     }
 
@@ -196,7 +196,7 @@ pub async fn test_cli_autopilot_crud(ws: &TestWorkspace, bin: &Path) -> Vec<Test
     } else {
         results.push(fail(
             &format!("{}/disable", suite),
-            &format!("exit={} stdout={}", out.exit_code, out.stdout_first_line()),
+            format!("exit={} stdout={}", out.exit_code, out.stdout_first_line()),
         ));
     }
     let out = ws.run_cli(bin, &["autopilot", "enable", "1"]).await;
@@ -205,7 +205,7 @@ pub async fn test_cli_autopilot_crud(ws: &TestWorkspace, bin: &Path) -> Vec<Test
     } else {
         results.push(fail(
             &format!("{}/enable", suite),
-            &format!("exit={} stdout={}", out.exit_code, out.stdout_first_line()),
+            format!("exit={} stdout={}", out.exit_code, out.stdout_first_line()),
         ));
     }
 
@@ -216,7 +216,7 @@ pub async fn test_cli_autopilot_crud(ws: &TestWorkspace, bin: &Path) -> Vec<Test
     } else {
         results.push(fail(
             &format!("{}/run", suite),
-            &format!("exit={} stdout={} stderr={}", out.exit_code, out.stdout_first_line(), stderr_snip(&out)),
+            format!("exit={} stdout={} stderr={}", out.exit_code, out.stdout_first_line(), stderr_snip(&out)),
         ));
     }
     let out = ws.run_cli(bin, &["autopilot", "runs", "1"]).await;
@@ -225,7 +225,7 @@ pub async fn test_cli_autopilot_crud(ws: &TestWorkspace, bin: &Path) -> Vec<Test
     } else {
         results.push(fail(
             &format!("{}/runs", suite),
-            &format!("exit={} stdout={}", out.exit_code, out.stdout_first_line()),
+            format!("exit={} stdout={}", out.exit_code, out.stdout_first_line()),
         ));
     }
 
@@ -249,7 +249,7 @@ pub async fn test_cli_autopilot_crud(ws: &TestWorkspace, bin: &Path) -> Vec<Test
     if !out.success() {
         results.push(fail(
             &format!("{}/create_targeted", suite),
-            &format!("exit={} stdout={}", out.exit_code, out.stdout_first_line()),
+            format!("exit={} stdout={}", out.exit_code, out.stdout_first_line()),
         ));
         return results;
     }
@@ -263,7 +263,7 @@ pub async fn test_cli_autopilot_crud(ws: &TestWorkspace, bin: &Path) -> Vec<Test
     } else {
         results.push(fail(
             &format!("{}/run_targeted_rejected", suite),
-            &format!("exit={} stderr={}", out.exit_code, stderr_snip(&out)),
+            format!("exit={} stderr={}", out.exit_code, stderr_snip(&out)),
         ));
     }
 
@@ -274,7 +274,7 @@ pub async fn test_cli_autopilot_crud(ws: &TestWorkspace, bin: &Path) -> Vec<Test
     } else {
         results.push(fail(
             &format!("{}/remove", suite),
-            &format!("exit={} stdout={}", out.exit_code, out.stdout_first_line()),
+            format!("exit={} stdout={}", out.exit_code, out.stdout_first_line()),
         ));
     }
     let out = ws.run_cli(bin, &["autopilot", "list"]).await;

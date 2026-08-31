@@ -12,6 +12,12 @@ pub struct ModelsHandler {
     _priv: (),
 }
 
+impl Default for ModelsHandler {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ModelsHandler {
     pub fn new() -> Self {
         Self { _priv: () }
@@ -233,14 +239,13 @@ impl ModelsHandler {
         // U16 parity: auto-fill context_window / max_output_tokens from the
         // models.dev catalog cache on an exact-key hit (silent no-op without
         // a cache — `model catalog-update` / the dashboard button fills it).
-        if let Some(cat) = read_catalog(home) {
-            if let Some(hit) = cat.entries.iter().find(|e| e.key == model) {
+        if let Some(cat) = read_catalog(home)
+            && let Some(hit) = cat.entries.iter().find(|e| e.key == model) {
                 entry["context_window"] = serde_json::Value::Number(hit.context_window.into());
                 if let Some(mot) = hit.max_output_tokens {
                     entry["max_output_tokens"] = serde_json::Value::Number(mot.into());
                 }
             }
-        }
 
         list.push(entry);
         write_raw_config(home, &cfg)?;
@@ -360,7 +365,7 @@ impl ModelsHandler {
         let api_key = g("api_key");
         let connect_mode = g("connect_mode");
 
-        if let Some(ref agent_loop) = ctx.state.agent_loop.read().as_ref() {
+        if let Some(agent_loop) = ctx.state.agent_loop.read().as_ref() {
             let api_base = if api_base_raw.is_empty() {
                 nemesis_config::get_default_api_base(&nemesis_config::infer_provider_from_model(
                     &model_id,

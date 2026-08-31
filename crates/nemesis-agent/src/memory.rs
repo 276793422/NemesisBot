@@ -107,7 +107,7 @@ impl ConversationMemory {
             self.turns.truncate(1);
             self.turns.extend(remaining);
             // Edge case: if we didn't have a system prompt, don't keep an empty slot.
-            if system.is_none() && self.turns.first().map_or(false, |t| t.role != "system") {
+            if system.is_none() && self.turns.first().is_some_and(|t| t.role != "system") {
                 // no-op
             }
         }

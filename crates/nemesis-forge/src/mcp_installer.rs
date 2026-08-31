@@ -21,6 +21,7 @@ pub struct MCPServerConfig {
 
 /// MCP configuration file.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Default)]
 pub struct MCPConfig {
     /// Whether MCP is enabled.
     #[serde(default)]
@@ -30,14 +31,6 @@ pub struct MCPConfig {
     pub servers: Vec<MCPServerConfig>,
 }
 
-impl Default for MCPConfig {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            servers: Vec::new(),
-        }
-    }
-}
 
 /// Manages MCP server registration.
 pub struct MCPInstaller {

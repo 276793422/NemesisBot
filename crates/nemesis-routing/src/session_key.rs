@@ -11,8 +11,10 @@ use crate::agent_id::normalize_agent_id;
 
 /// Controls DM session isolation granularity.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Default)]
 pub enum DMScope {
     /// All DMs collapse to the agent's main session key.
+    #[default]
     Main,
     /// One session per peer ID (cross-channel).
     PerPeer,
@@ -22,14 +24,10 @@ pub enum DMScope {
     PerAccountChannelPeer,
 }
 
-impl Default for DMScope {
-    fn default() -> Self {
-        DMScope::Main
-    }
-}
 
 impl DMScope {
     /// Parse a DM scope from its string representation.
+    #[allow(clippy::should_implement_trait)] // lenient parser with fallback; deliberately NOT std::str::FromStr (no Err semantics)
     pub fn from_str(s: &str) -> Self {
         match s.trim().to_lowercase().as_str() {
             "per-peer" => DMScope::PerPeer,
@@ -134,13 +132,12 @@ pub fn build_agent_peer_session_key(params: SessionKeyParams) -> String {
         let mut peer_id = peer.id.trim().to_string();
 
         // Resolve identity links (cross-platform collapse)
-        if *dm_scope != DMScope::Main && !peer_id.is_empty() {
-            if let Some(linked) =
+        if *dm_scope != DMScope::Main && !peer_id.is_empty()
+            && let Some(linked) =
                 resolve_linked_peer_id(&params.identity_links, &params.channel, &peer_id)
             {
                 peer_id = linked;
             }
-        }
         let peer_id_lower = peer_id.to_lowercase();
 
         match dm_scope {

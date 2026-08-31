@@ -1,3 +1,9 @@
+// 刻意设计：本文件测试用进程级串行锁（GLOBAL_STATE_LOCK 等 env/资源互斥锁）
+// 保护环境操作，guard 必须跨 async 测试体的 await 持有；#[tokio::test] 每个
+// 测试独立 current_thread runtime，持锁方在自己线程上恢复运行，不会死锁。
+// 测试域统一豁免（逐处 allow ~200 个不现实）。
+#![allow(clippy::await_holding_lock)]
+
 use super::*;
 
 /// Mock LLM provider for testing.
@@ -2445,10 +2451,8 @@ async fn test_summarize_multipart_merge_failure_falls_back_to_concat() {
 #[tokio::test]
 async fn test_summarize_batch_failure_returns_none() {
     let provider = OutcomeMockProvider::new(vec![Err("500 upstream".to_string())]);
-    let turns = vec![
-        summary_turn("user", "question one"),
-        summary_turn("assistant", "answer one"),
-    ];
+    let turns = [summary_turn("user", "question one"),
+        summary_turn("assistant", "answer one")];
     let refs: Vec<&crate::types::ConversationTurn> = turns.iter().collect();
 
     let out = summarize_prefix_owned(&refs, "", 32_000, true, &provider, "m", None).await;
@@ -2459,7 +2463,7 @@ async fn test_summarize_batch_failure_returns_none() {
 #[tokio::test]
 async fn test_summarize_bare_concat_failure_returns_none() {
     let provider = OutcomeMockProvider::new(vec![Err("503".to_string())]);
-    let turns = vec![summary_turn("user", "q"), summary_turn("assistant", "a")];
+    let turns = [summary_turn("user", "q"), summary_turn("assistant", "a")];
     let refs: Vec<&crate::types::ConversationTurn> = turns.iter().collect();
 
     let out = summarize_prefix_owned(&refs, "", 32_000, false, &provider, "m", None).await;
@@ -4659,11 +4663,9 @@ async fn test_summarize_prefix_owned_returns_summary() {
     // summarize_prefix_owned folds ALL provided messages (no "keep last N")
     // and merges the existing summary.
     let provider = MockLlmProvider::new(vec![llm_text("prefix summary")]);
-    let turns = vec![
-        summary_turn("user", "question one"),
+    let turns = [summary_turn("user", "question one"),
         summary_turn("assistant", "answer one"),
-        summary_turn("user", "question two"),
-    ];
+        summary_turn("user", "question two")];
     let refs: Vec<&crate::types::ConversationTurn> = turns.iter().collect();
     let result = summarize_prefix_owned(
         &refs,
@@ -4693,12 +4695,10 @@ async fn test_summarize_prefix_reuse_true_keeps_g1_shape() {
         captured: std::sync::Mutex::new(Vec::new()),
         reply: "S".to_string(),
     };
-    let turns = vec![
-        summary_turn("system", "SYS"),
+    let turns = [summary_turn("system", "SYS"),
         summary_turn("user", "question one"),
         summary_turn("assistant", "answer one"),
-        summary_turn("user", "question two"),
-    ];
+        summary_turn("user", "question two")];
     let refs: Vec<&crate::types::ConversationTurn> = turns.iter().collect();
     let out = summarize_prefix_owned(
         &refs,
@@ -4736,12 +4736,10 @@ async fn test_summarize_prefix_reuse_false_uses_bare_shape() {
         captured: std::sync::Mutex::new(Vec::new()),
         reply: "S".to_string(),
     };
-    let turns = vec![
-        summary_turn("system", "SYS"),
+    let turns = [summary_turn("system", "SYS"),
         summary_turn("user", "question one"),
         summary_turn("assistant", "answer one"),
-        summary_turn("user", "question two"),
-    ];
+        summary_turn("user", "question two")];
     let refs: Vec<&crate::types::ConversationTurn> = turns.iter().collect();
     let out = summarize_prefix_owned(
         &refs,

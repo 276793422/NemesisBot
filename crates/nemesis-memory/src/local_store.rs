@@ -212,8 +212,8 @@ impl MemoryStore for TfIdfLocalStore {
             // recoverable rather than being hard-deleted. The archive file is
             // never loaded back into the active store on restart.
             let line = serde_json::to_string(&entry).unwrap_or_default();
-            if !line.is_empty() {
-                if let Ok(mut f) = tokio::fs::OpenOptions::new()
+            if !line.is_empty()
+                && let Ok(mut f) = tokio::fs::OpenOptions::new()
                     .create(true)
                     .append(true)
                     .open(self.archive_path())
@@ -222,7 +222,6 @@ impl MemoryStore for TfIdfLocalStore {
                     let _ = f.write_all(line.as_bytes()).await;
                     let _ = f.write_all(b"\n").await;
                 }
-            }
             self.flush().await?;
             Ok(true)
         } else {
@@ -244,7 +243,7 @@ impl MemoryStore for TfIdfLocalStore {
             .collect();
 
         // Sort by created_at descending (most recent first), matching Go behavior.
-        matched.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+        matched.sort_by_key(|e| std::cmp::Reverse(e.created_at));
 
         let total = matched.len();
         let offset = offset.min(total);

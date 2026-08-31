@@ -76,7 +76,7 @@ impl ConnectionPool {
         }
 
         let mut pools = self.pools.lock();
-        let conns = pools.entry(addr.to_string()).or_insert_with(Vec::new);
+        let conns = pools.entry(addr.to_string()).or_default();
 
         if conns.len() < self.config.max_per_peer {
             conns.push(conn);
@@ -248,14 +248,13 @@ impl Pool {
         // Check per-node limit
         {
             let counts = self.node_counts.lock();
-            if let Some(&count) = counts.get(node_id) {
-                if count >= self.config.max_conns_per_node {
+            if let Some(&count) = counts.get(node_id)
+                && count >= self.config.max_conns_per_node {
                     return Err(format!(
                         "per-node limit reached for {} ({}/{})",
                         node_id, count, self.config.max_conns_per_node
                     ));
                 }
-            }
         }
 
         // Acquire semaphore permit (limits total connections)
@@ -275,8 +274,8 @@ impl Pool {
         // Double-check: re-verify limits after acquiring permit
         {
             let counts = self.node_counts.lock();
-            if let Some(&count) = counts.get(node_id) {
-                if count >= self.config.max_conns_per_node {
+            if let Some(&count) = counts.get(node_id)
+                && count >= self.config.max_conns_per_node {
                     drop(counts);
                     drop(permit); // Release the semaphore permit
                     return Err(format!(
@@ -284,7 +283,6 @@ impl Pool {
                         node_id
                     ));
                 }
-            }
         }
 
         // Dial new connection

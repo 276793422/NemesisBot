@@ -2109,7 +2109,7 @@ async fn test_snapshots_list_with_files() {
     let ctx = make_ctx_with_cluster(&dir);
     let c = ctx.state.cluster.as_ref().unwrap();
     let cache_dir = c.continuation_store().cache_dir();
-    std::fs::create_dir_all(&cache_dir).unwrap();
+    std::fs::create_dir_all(cache_dir).unwrap();
     std::fs::write(cache_dir.join("task1.json"), r#"{"foo":"bar"}"#).unwrap();
     std::fs::write(cache_dir.join("task2.json"), "{}").unwrap();
     std::fs::write(cache_dir.join("readme.txt"), "hi").unwrap();
@@ -2133,7 +2133,7 @@ async fn test_snapshots_cleanup_removes_all() {
     let ctx = make_ctx_with_cluster(&dir);
     let c = ctx.state.cluster.as_ref().unwrap();
     let cache_dir = c.continuation_store().cache_dir();
-    std::fs::create_dir_all(&cache_dir).unwrap();
+    std::fs::create_dir_all(cache_dir).unwrap();
     std::fs::write(cache_dir.join("old.json"), "{}").unwrap();
 
     let result = handler

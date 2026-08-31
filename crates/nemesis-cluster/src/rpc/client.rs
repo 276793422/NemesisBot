@@ -104,7 +104,7 @@ impl RateLimiter {
         state
             .requests
             .entry(peer_id.to_string())
-            .or_insert_with(Vec::new);
+            .or_default();
 
         // Prune old timestamps in the sliding window
         let now = std::time::Instant::now();
@@ -126,8 +126,8 @@ impl RateLimiter {
         }
 
         // Check token availability
-        if let Some(tokens) = state.tokens.get_mut(peer_id) {
-            if *tokens > 0 {
+        if let Some(tokens) = state.tokens.get_mut(peer_id)
+            && *tokens > 0 {
                 *tokens -= 1;
                 state
                     .requests
@@ -136,7 +136,6 @@ impl RateLimiter {
                     .push(std::time::Instant::now());
                 return Ok(());
             }
-        }
 
         Err(RpcClientError::RateLimited(format!(
             "peer {} has no tokens available",

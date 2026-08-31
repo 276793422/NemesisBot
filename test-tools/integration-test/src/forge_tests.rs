@@ -25,7 +25,7 @@ pub async fn test_forge_enable_disable(ws: &TestWorkspace, bin: &Path) -> Vec<Te
     } else {
         results.push(fail(
             &format!("{}/enable", suite),
-            &format!(
+            format!(
                 "exit={}, stdout='{}'",
                 output.exit_code,
                 output.stdout.trim()
@@ -34,8 +34,8 @@ pub async fn test_forge_enable_disable(ws: &TestWorkspace, bin: &Path) -> Vec<Te
     }
 
     // Verify config
-    if let Ok(data) = std::fs::read_to_string(ws.config_path()) {
-        if let Ok(cfg) = serde_json::from_str::<Value>(&data) {
+    if let Ok(data) = std::fs::read_to_string(ws.config_path())
+        && let Ok(cfg) = serde_json::from_str::<Value>(&data) {
             let enabled = cfg
                 .get("forge")
                 .and_then(|f| f.get("enabled"))
@@ -53,7 +53,6 @@ pub async fn test_forge_enable_disable(ws: &TestWorkspace, bin: &Path) -> Vec<Te
                 ));
             }
         }
-    }
 
     // Check forge directories were created
     let forge_dir = ws.forge_dir();
@@ -74,7 +73,7 @@ pub async fn test_forge_enable_disable(ws: &TestWorkspace, bin: &Path) -> Vec<Te
     }
     results.push(pass(
         &format!("{}/directories", suite),
-        &format!(
+        format!(
             "{}/{} forge directories created",
             created,
             required_dirs.len()
@@ -99,7 +98,7 @@ pub async fn test_forge_enable_disable(ws: &TestWorkspace, bin: &Path) -> Vec<Te
     } else {
         results.push(fail(
             &format!("{}/disable", suite),
-            &format!(
+            format!(
                 "exit={}, stdout='{}'",
                 output.exit_code,
                 output.stdout.trim()
@@ -108,8 +107,8 @@ pub async fn test_forge_enable_disable(ws: &TestWorkspace, bin: &Path) -> Vec<Te
     }
 
     // Verify disabled in config
-    if let Ok(data) = std::fs::read_to_string(ws.config_path()) {
-        if let Ok(cfg) = serde_json::from_str::<Value>(&data) {
+    if let Ok(data) = std::fs::read_to_string(ws.config_path())
+        && let Ok(cfg) = serde_json::from_str::<Value>(&data) {
             let enabled = cfg
                 .get("forge")
                 .and_then(|f| f.get("enabled"))
@@ -127,7 +126,6 @@ pub async fn test_forge_enable_disable(ws: &TestWorkspace, bin: &Path) -> Vec<Te
                 ));
             }
         }
-    }
 
     // Re-enable for subsequent tests
     let _ = ws.run_cli(bin, &["forge", "enable"]).await;
@@ -189,7 +187,7 @@ pub async fn test_forge_reflect_manual(ws: &TestWorkspace, bin: &Path) -> Vec<Te
     } else {
         results.push(pass(
             &format!("{}/attempted", suite),
-            &format!("exit={}, partial success", output.exit_code),
+            format!("exit={}, partial success", output.exit_code),
         ));
     }
 
@@ -201,7 +199,7 @@ pub async fn test_forge_reflect_manual(ws: &TestWorkspace, bin: &Path) -> Vec<Te
             .unwrap_or(0);
         results.push(pass(
             &format!("{}/dir", suite),
-            &format!("{} reflection files", count),
+            format!("{} reflection files", count),
         ));
     }
 
@@ -260,7 +258,7 @@ pub async fn test_forge_create_skill(ws: &TestWorkspace, bin: &Path) -> Vec<Test
     } else {
         results.push(pass(
             &format!("{}/list", suite),
-            &format!(
+            format!(
                 "List completed (artifact may not show: '{}')",
                 output.stdout.trim()
             ),
@@ -288,7 +286,7 @@ pub async fn test_forge_evaluate_artifact(ws: &TestWorkspace, bin: &Path) -> Vec
     } else {
         results.push(pass(
             &format!("{}/attempted", suite),
-            &format!(
+            format!(
                 "exit={}, output='{}'",
                 output.exit_code,
                 output.stdout.trim()
@@ -315,22 +313,20 @@ pub async fn test_forge_list_artifacts(ws: &TestWorkspace, bin: &Path) -> Vec<Te
     } else {
         results.push(fail(
             &format!("{}/exit", suite),
-            &format!("exit={}", output.exit_code),
+            format!("exit={}", output.exit_code),
         ));
     }
 
     // Verify registry exists
     let registry_path = ws.forge_dir().join("registry.json");
-    if registry_path.exists() {
-        if let Ok(data) = std::fs::read_to_string(&registry_path) {
-            if let Ok(arr) = serde_json::from_str::<Vec<Value>>(&data) {
+    if registry_path.exists()
+        && let Ok(data) = std::fs::read_to_string(&registry_path)
+            && let Ok(arr) = serde_json::from_str::<Vec<Value>>(&data) {
                 results.push(pass(
                     &format!("{}/count", suite),
-                    &format!("{} artifact(s) in registry", arr.len()),
+                    format!("{} artifact(s) in registry", arr.len()),
                 ));
             }
-        }
-    }
 
     results
 }
@@ -354,26 +350,24 @@ pub async fn test_forge_learning_status(ws: &TestWorkspace, bin: &Path) -> Vec<T
     } else {
         results.push(fail(
             &format!("{}/output", suite),
-            &format!("No learning info: '{}'", output.stdout.trim()),
+            format!("No learning info: '{}'", output.stdout.trim()),
         ));
     }
 
     // Check forge.json for learning_enabled field
     let forge_config = ws.forge_dir().join("forge.json");
-    if forge_config.exists() {
-        if let Ok(data) = std::fs::read_to_string(&forge_config) {
-            if let Ok(cfg) = serde_json::from_str::<Value>(&data) {
+    if forge_config.exists()
+        && let Ok(data) = std::fs::read_to_string(&forge_config)
+            && let Ok(cfg) = serde_json::from_str::<Value>(&data) {
                 let learning_enabled = cfg
                     .get("learning_enabled")
                     .and_then(|v| v.as_bool())
                     .unwrap_or(false);
                 results.push(pass(
                     &format!("{}/config", suite),
-                    &format!("learning_enabled: {}", learning_enabled),
+                    format!("learning_enabled: {}", learning_enabled),
                 ));
             }
-        }
-    }
 
     results
 }

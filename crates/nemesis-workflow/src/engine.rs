@@ -1332,13 +1332,12 @@ impl WorkflowEngine {
     /// 装配后 path 必须落在 world 的 writable_roots 内。
     fn guard_engine_write(&self, path: &std::path::Path) -> Result<(), EngineError> {
         let world = self.execution_world.read().clone();
-        if let Some(world) = world {
-            if let Err(reason) = world.check_writable(path) {
+        if let Some(world) = world
+            && let Err(reason) = world.check_writable(path) {
                 return Err(EngineError::PersistenceError(format!(
                     "[U10 execution-world guard] {reason}"
                 )));
             }
-        }
         Ok(())
     }
 
@@ -2204,11 +2203,10 @@ impl WorkflowEngine {
                     result.output = serde_json::json!(review_result);
                     result.state = ExecutionState::Completed;
                     result.ended_at = Local::now();
-                    if let Some(approved) = review_result.get("approved") {
-                        if let Some(b) = approved.as_bool() {
+                    if let Some(approved) = review_result.get("approved")
+                        && let Some(b) = approved.as_bool() {
                             debug!("[Workflow] Node {} review result: approved={}", node_id, b);
                         }
-                    }
                     found_waiting = Some(node_id.clone());
                     break;
                 }

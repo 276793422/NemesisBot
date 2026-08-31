@@ -193,7 +193,7 @@ impl UdpListener {
         // Encrypt if encryption is enabled
         let send_data = if let Some(ref key) = self.enc_key {
             encrypt_data(key, &data)
-                .map_err(|_| io::Error::new(io::ErrorKind::Other, "encryption failed"))?
+                .map_err(|_| io::Error::other("encryption failed"))?
         } else {
             data
         };
@@ -255,13 +255,11 @@ fn local_ip_addresses() -> io::Result<Vec<(Ipv4Addr, [u8; 4])>> {
     if !interfaces.is_empty() {
         let mut results = Vec::new();
         for iface in &interfaces {
-            if let Ok(ip) = iface.ip.parse::<Ipv4Addr>() {
-                if let Ok(mask) = iface.mask.parse::<Ipv4Addr>() {
-                    if !results.iter().any(|(existing, _)| *existing == ip) {
+            if let Ok(ip) = iface.ip.parse::<Ipv4Addr>()
+                && let Ok(mask) = iface.mask.parse::<Ipv4Addr>()
+                    && !results.iter().any(|(existing, _)| *existing == ip) {
                         results.push((ip, mask.octets()));
                     }
-                }
-            }
         }
         return Ok(results);
     }
@@ -269,15 +267,12 @@ fn local_ip_addresses() -> io::Result<Vec<(Ipv4Addr, [u8; 4])>> {
     // Fallback: single IP via UDP connect trick with /24 assumption
     let mut results = Vec::new();
     let socket = UdpSocket::bind("0.0.0.0:0")?;
-    if socket.connect("8.8.8.8:53").is_ok() {
-        if let Ok(local) = socket.local_addr() {
-            if let std::net::IpAddr::V4(ip) = local.ip() {
-                if !ip.is_loopback() && !ip.is_unspecified() {
+    if socket.connect("8.8.8.8:53").is_ok()
+        && let Ok(local) = socket.local_addr()
+            && let std::net::IpAddr::V4(ip) = local.ip()
+                && !ip.is_loopback() && !ip.is_unspecified() {
                     results.push((ip, [255, 255, 255, 0]));
                 }
-            }
-        }
-    }
     Ok(results)
 }
 

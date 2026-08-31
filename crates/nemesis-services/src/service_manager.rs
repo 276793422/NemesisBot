@@ -346,11 +346,10 @@ impl ServiceManager {
         info!("[BotService] Shutting down service manager...");
 
         // Stop bot service if running
-        if self.bot_service.get_state().can_stop() {
-            if let Err(e) = self.bot_service.stop() {
+        if self.bot_service.get_state().can_stop()
+            && let Err(e) = self.bot_service.stop() {
                 error!("[BotService] Error stopping bot during shutdown: {}", e);
             }
-        }
 
         // Decrement wait group for basic services
         {

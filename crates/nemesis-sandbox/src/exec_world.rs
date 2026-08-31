@@ -254,14 +254,13 @@ pub async fn guarded_direct_spawn(
     job: &SpawnOp,
     spawn_roots: &[PathBuf],
 ) -> Result<ExecOutcome, String> {
-    if let Some(cwd) = &job.cwd {
-        if !path_within_roots(cwd, spawn_roots) {
+    if let Some(cwd) = &job.cwd
+        && !path_within_roots(cwd, spawn_roots) {
             return Err(format!(
                 "spawn cwd {:?} is outside the execution world's spawn roots {:?}",
                 cwd, spawn_roots
             ));
         }
-    }
 
     let timeout = Duration::from_secs(job.timeout_secs.unwrap_or(DEFAULT_TIMEOUT_SECS).max(1));
 
@@ -287,13 +286,12 @@ pub async fn guarded_direct_spawn(
         .spawn()
         .map_err(|e| format!("spawn {:?}: {}", job.program, e))?;
 
-    if let Some(stdin_data) = &job.stdin {
-        if let Some(mut stdin) = child.stdin.take() {
+    if let Some(stdin_data) = &job.stdin
+        && let Some(mut stdin) = child.stdin.take() {
             use tokio::io::AsyncWriteExt;
             let _ = stdin.write_all(stdin_data.as_bytes()).await;
             let _ = stdin.shutdown().await;
         }
-    }
     // stdin drop（take 后离开作用域）= EOF，脚本型子进程正常退出。
 
     let fut = child.wait_with_output();

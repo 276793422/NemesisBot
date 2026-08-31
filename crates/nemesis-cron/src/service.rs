@@ -224,7 +224,7 @@ impl CronService {
                     s.jobs
                         .iter()
                         .filter(|j| {
-                            j.enabled && j.state.next_run_at_ms.map_or(false, |t| t <= now_ms)
+                            j.enabled && j.state.next_run_at_ms.is_some_and(|t| t <= now_ms)
                         })
                         .map(|j| j.id.clone())
                         .collect()
@@ -265,10 +265,7 @@ impl CronService {
                     // Call on_job handler (outside lock)
                     let handler_result = {
                         let on_job = on_job.lock();
-                        match on_job.as_ref() {
-                            Some(h) => Some(h(&callback_job)),
-                            None => None,
-                        }
+                        on_job.as_ref().map(|h| h(&callback_job))
                     };
 
                     // Write-lock: update job state after execution
@@ -703,10 +700,7 @@ impl CronService {
         // Call on_job handler (outside lock).
         let handler_result = {
             let on_job = self.on_job.lock();
-            match on_job.as_ref() {
-                Some(h) => Some(h(&callback_job)),
-                None => None,
-            }
+            on_job.as_ref().map(|h| h(&callback_job))
         };
 
         // Write-lock: update state after execution.
@@ -782,11 +776,10 @@ impl CronService {
             return "Every minute".to_string();
         }
         // Every N minutes
-        if let Some(step) = minute.strip_prefix("*/") {
-            if hour == "*" && day == "*" && month == "*" && weekday == "*" {
+        if let Some(step) = minute.strip_prefix("*/")
+            && hour == "*" && day == "*" && month == "*" && weekday == "*" {
                 return format!("Every {} minutes", step);
             }
-        }
         // Daily at specific time
         if minute != "*" && hour != "*" && day == "*" && month == "*" && weekday == "*" {
             return format!("Daily at {}:{}", hour, minute);
@@ -874,7 +867,7 @@ pub fn compute_next_run(schedule: &CronSchedule, now_ms: i64) -> Option<i64> {
 
             let now = chrono::DateTime::from_timestamp_millis(now_ms)
                 .map(|dt| dt.with_timezone(&chrono::Local))
-                .unwrap_or_else(|| chrono::Local::now());
+                .unwrap_or_else(chrono::Local::now);
 
             let cron = match croner::Cron::from_str(expr) {
                 Ok(c) => c,

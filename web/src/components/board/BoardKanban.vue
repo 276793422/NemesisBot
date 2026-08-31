@@ -2,6 +2,7 @@
 import { ref, computed, onMounted } from 'vue'
 import { useWSAPI } from '../../composables/useWSAPI'
 import { useToast } from '../../composables/useToast'
+import { useBoardChanged } from '../../composables/useBoardChanged'
 import IssueDetailModal from './IssueDetailModal.vue'
 import {
   PRIORITY_BADGE,
@@ -46,8 +47,10 @@ function assigneeShort(i: IssueRow): string {
   return i.assignee === 'manager_self' ? 'manager' : `@${i.assignee_id}`
 }
 
-async function load() {
-  loading.value = true
+async function load(silent = false) {
+  // silent：board-changed 推送触发的静默刷新——不闪 loading、失败不弹
+  // toast（SSE 连发 + 网络抖动时避免 toast 刷屏），仅控制台留痕。
+  if (!silent) loading.value = true
   try {
     const [r, pr, nodes] = await Promise.all([
       request('board', 'issue.list', {}),
@@ -58,7 +61,8 @@ async function load() {
     projects.value = pr?.projects || []
     workerNodes.value = (nodes?.nodes || []).filter((n: any) => n.role === 'worker')
   } catch (e: any) {
-    toast.error('加载看板失败: ' + e)
+    if (silent) console.warn('[BoardKanban] silent refresh failed:', e)
+    else toast.error('加载看板失败: ' + e)
   } finally {
     loading.value = false
   }
@@ -133,6 +137,9 @@ function onDetailChanged() {
 }
 
 onMounted(load)
+// board-changed 推送（W2.5）：任何写入方（含其他节点/CLI/autopilot）改了
+// board.db → 200ms 防抖后静默换新，无需手动刷新。
+useBoardChanged(() => load(true))
 </script>
 
 <template>
@@ -185,7 +192,9 @@ onMounted(load)
       </div>
     </div>
 
+    <!-- v-if 门控：issueId 置空必须收起弹层（与 IssueListView 同款修复） -->
     <IssueDetailModal
+      v-if="detailIssueId !== null"
       :issue-id="detailIssueId"
       @close="detailIssueId = null"
       @changed="onDetailChanged"

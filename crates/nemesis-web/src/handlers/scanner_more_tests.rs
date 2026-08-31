@@ -218,11 +218,11 @@ async fn test_check_multi_engine_returns_engines_array() {
     let mut cfg = nemesis_config::ScannerFullConfig::default();
     cfg.engines.insert(
         "clamav".to_string(),
-        serde_json::to_value(&nemesis_config::ClamAVEngineConfig::default()).unwrap(),
+        serde_json::to_value(nemesis_config::ClamAVEngineConfig::default()).unwrap(),
     );
     cfg.engines.insert(
         "stub".to_string(),
-        serde_json::to_value(&nemesis_config::ClamAVEngineConfig::default()).unwrap(),
+        serde_json::to_value(nemesis_config::ClamAVEngineConfig::default()).unwrap(),
     );
     cfg.enabled.push("clamav".to_string());
     cfg.enabled.push("stub".to_string());
@@ -349,7 +349,7 @@ async fn test_check_specific_unknown_engine_with_others_present_returns_empty_ar
     let mut cfg = nemesis_config::ScannerFullConfig::default();
     cfg.engines.insert(
         "clamav".to_string(),
-        serde_json::to_value(&nemesis_config::ClamAVEngineConfig::default()).unwrap(),
+        serde_json::to_value(nemesis_config::ClamAVEngineConfig::default()).unwrap(),
     );
     write_scanner_config(dir.path(), &cfg);
     let ctx = make_ctx(&dir);
@@ -600,7 +600,7 @@ async fn test_enable_case_insensitive_match_in_enabled_list() {
     let mut cfg = nemesis_config::ScannerFullConfig::default();
     cfg.engines.insert(
         "clamav".to_string(),
-        serde_json::to_value(&nemesis_config::ClamAVEngineConfig::default()).unwrap(),
+        serde_json::to_value(nemesis_config::ClamAVEngineConfig::default()).unwrap(),
     );
     cfg.enabled.push("CLAMAV".to_string());
     write_scanner_config(dir.path(), &cfg);
@@ -655,11 +655,11 @@ async fn test_disable_unrelated_engine_keeps_others() {
     let mut cfg = nemesis_config::ScannerFullConfig::default();
     cfg.engines.insert(
         "clamav".to_string(),
-        serde_json::to_value(&nemesis_config::ClamAVEngineConfig::default()).unwrap(),
+        serde_json::to_value(nemesis_config::ClamAVEngineConfig::default()).unwrap(),
     );
     cfg.engines.insert(
         "stub".to_string(),
-        serde_json::to_value(&nemesis_config::ClamAVEngineConfig::default()).unwrap(),
+        serde_json::to_value(nemesis_config::ClamAVEngineConfig::default()).unwrap(),
     );
     cfg.enabled.push("clamav".to_string());
     cfg.enabled.push("stub".to_string());
@@ -910,7 +910,7 @@ async fn test_cmd_test_unknown_engine_returns_error() {
     let mut cfg = nemesis_config::ScannerFullConfig::default();
     cfg.engines.insert(
         "yara".to_string(),
-        serde_json::to_value(&nemesis_config::ClamAVEngineConfig::default()).unwrap(),
+        serde_json::to_value(nemesis_config::ClamAVEngineConfig::default()).unwrap(),
     );
     write_scanner_config(dir.path(), &cfg);
     let ctx = make_ctx(&dir);

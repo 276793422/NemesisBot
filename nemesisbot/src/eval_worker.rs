@@ -307,8 +307,8 @@ impl EvalTaggingObserver {
         }
 
         // L2 command guard (exec-like tools with a command field)
-        if let Some(guard) = self.plugin.command_guard() {
-            if let Some(cmd) = args_value.get("command").and_then(|v| v.as_str()) {
+        if let Some(guard) = self.plugin.command_guard()
+            && let Some(cmd) = args_value.get("command").and_then(|v| v.as_str()) {
                 match guard.check(cmd) {
                     Err(e) => {
                         out.command_guard = Some(CommandFinding {
@@ -324,7 +324,6 @@ impl EvalTaggingObserver {
                     }
                 }
             }
-        }
 
         // L3 credentials — args in, result out
         if let Some(scanner) = self.plugin.credential_scanner() {
@@ -391,16 +390,14 @@ fn summarize(tags: &[ToolTag]) -> FindingsSummary {
     };
     for t in tags {
         let f = &t.findings;
-        if let Some(i) = &f.injection {
-            if i.is_injection {
+        if let Some(i) = &f.injection
+            && i.is_injection {
                 s.injection_hits += 1;
             }
-        }
-        if let Some(c) = &f.command_guard {
-            if c.blocked {
+        if let Some(c) = &f.command_guard
+            && c.blocked {
                 s.blocked_commands += 1;
             }
-        }
         if f.credentials_in.as_ref().is_some_and(|v| !v.is_empty()) {
             s.credential_hits_in += 1;
         }
@@ -413,11 +410,10 @@ fn summarize(tags: &[ToolTag]) -> FindingsSummary {
         if f.dlp_out.as_ref().is_some_and(|v| !v.is_empty()) {
             s.dlp_hits_out += 1;
         }
-        if let Some(x) = &f.ssrf {
-            if x.blocked {
+        if let Some(x) = &f.ssrf
+            && x.blocked {
                 s.ssrf_blocks += 1;
             }
-        }
     }
     s
 }

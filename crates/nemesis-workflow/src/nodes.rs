@@ -159,27 +159,37 @@ fn record_llm_usage(
         started_at.timestamp_nanos_opt().unwrap_or(0),
         counter
     );
+    // A3：分项计价 + 实际命中条目名（未命中 → 空名 + 全 0）。工作流节点
+    // 没有 session_key（DAG 上下文非会话），记空串；TTFT 无流式通路记 NULL。
+    let in_toks = usage.prompt_tokens;
+    let out_toks = usage.completion_tokens;
+    let cc_toks = usage.cache_creation_tokens.unwrap_or(0);
+    let cr_toks = usage.cache_read_tokens.or(usage.cached_tokens).unwrap_or(0);
+    let breakdown = ds.compute_cost_breakdown(model, in_toks, out_toks, cc_toks, cr_toks);
+    let empty = nemesis_data::CostBreakdown::default();
+    let bd = breakdown.as_ref().unwrap_or(&empty);
     let log = nemesis_data::RequestLog {
         id: 0,
         trace_id,
         model: model.to_string(),
         provider_type: String::new(),
-        input_tokens: usage.prompt_tokens,
-        output_tokens: usage.completion_tokens,
-        cache_creation_tokens: usage.cache_creation_tokens.unwrap_or(0),
-        cache_read_tokens: usage.cache_read_tokens.or(usage.cached_tokens).unwrap_or(0),
-        total_cost_usd: nemesis_data::compute_cost_usd(
-            model,
-            usage.prompt_tokens,
-            usage.completion_tokens,
-            usage.cache_creation_tokens.unwrap_or(0),
-            usage.cache_read_tokens.or(usage.cached_tokens).unwrap_or(0),
-        ),
-        latency_ms: (now - started_at).num_milliseconds() as i64,
+        input_tokens: in_toks,
+        output_tokens: out_toks,
+        cache_creation_tokens: cc_toks,
+        cache_read_tokens: cr_toks,
+        total_cost_usd: bd.total_cost_usd,
+        latency_ms: (now - started_at).num_milliseconds(),
         status_code: 200,
         error_message: None,
         is_streaming: false,
         created_at: now.timestamp(),
+        pricing_model: bd.pricing_model.clone(),
+        input_cost_usd: bd.input_cost_usd,
+        output_cost_usd: bd.output_cost_usd,
+        cache_creation_cost_usd: bd.cache_creation_cost_usd,
+        cache_read_cost_usd: bd.cache_read_cost_usd,
+        first_token_ms: None,
+        session_key: String::new(),
     };
     if let Err(e) = ds.insert_request_log(&log) {
         tracing::warn!(
@@ -628,15 +638,13 @@ fn resolve_items_list(
     // stringification) so an array output stays an array.
     if trimmed.starts_with("{{") && trimmed.ends_with("}}") {
         let inner = trimmed[2..trimmed.len() - 2].trim();
-        if !inner.is_empty() && !inner.contains("{{") && !inner.contains(' ') {
-            if let Some(val) = context.get(inner) {
-                if let Some(arr) = val.as_array() {
+        if !inner.is_empty() && !inner.contains("{{") && !inner.contains(' ')
+            && let Some(val) = context.get(inner)
+                && let Some(arr) = val.as_array() {
                     return Ok(arr.clone());
                 }
                 // Referenced value isn't an array — fall through to string
                 // parsing (JSON-array string or newline-separated list).
-            }
-        }
     }
 
     // General string: resolve placeholders, then JSON-array parse, else lines.
@@ -985,9 +993,7 @@ impl NodeExecutor for TransformNodeExecutor {
             "last_line" => {
                 let line = input
                     .lines()
-                    .map(str::trim)
-                    .filter(|l| !l.is_empty())
-                    .last()
+                    .map(str::trim).rfind(|l| !l.is_empty())
                     .unwrap_or("")
                     .to_string();
                 serde_json::json!({ "text": line })
@@ -1810,8 +1816,8 @@ impl NodeExecutor for ScriptNodeExecutor {
         // pipeline per call (closing the script node's historic "no security
         // checks" gap). The tool returns structured {stdout,stderr,exit_code},
         // preserving this node's output contract.
-        if let Some(tools) = &self.tools {
-            if tools.has("run_script") {
+        if let Some(tools) = &self.tools
+            && tools.has("run_script") {
                 let args = serde_json::json!({
                     "interpreter": interpreter,
                     "flag": flag,
@@ -1827,7 +1833,6 @@ impl NodeExecutor for ScriptNodeExecutor {
             }
             // run_script not registered (minimal/test registry) → fall through
             // to the world / direct-spawn paths below.
-        }
 
         // U10 per-node `sandbox` 开关（config key，bool）：
         // - 缺省 / `true`：跟随全局（registry → world 工具车道 → 受守卫
@@ -1838,8 +1843,8 @@ impl NodeExecutor for ScriptNodeExecutor {
         //   没有通道/盒可进，`sandbox: true` 不凭空造出盒）。
         let sandbox_opt = node.config.get("sandbox").and_then(|v| v.as_bool());
 
-        if sandbox_opt == Some(false) {
-            if let Some(world) = &self.world {
+        if sandbox_opt == Some(false)
+            && let Some(world) = &self.world {
                 let op = nemesis_sandbox::exec_world::ExecOp::Spawn(
                     nemesis_sandbox::exec_world::SpawnOp {
                         program: interpreter.to_string(),
@@ -1873,14 +1878,13 @@ impl NodeExecutor for ScriptNodeExecutor {
                 }
             }
             // 无 world（单测/裸装配）→ 落到下方裸 spawn（保持旧行为）。
-        }
 
         // U10 world 工具车道：无 registry 的装配（CLI `workflow run`、裸
         // engine）经执行世界调 `run_script` —— 与 agent `exec` 同一个
         // executor 子进程 / Sandboxie 盒开关，不再有「CLI 直 spawn 绕过
         // 沙盒」的逃逸路径。
-        if let Some(world) = &self.world {
-            if world.supports_tool_calls() {
+        if let Some(world) = &self.world
+            && world.supports_tool_calls() {
                 let args = serde_json::json!({
                     "interpreter": interpreter,
                     "flag": flag,
@@ -1916,7 +1920,6 @@ impl NodeExecutor for ScriptNodeExecutor {
                     }
                 }
             }
-        }
 
         // Fallback (no registry / no world — unit tests / stub paths):
         // direct spawn.
@@ -2278,8 +2281,8 @@ impl NodeExecutor for QuestionClassifierNodeExecutor {
                     }
                     let content = resp.content;
                     let class_id = parse_classifier_output(&content);
-                    if let Some(ref id) = class_id {
-                        if classes.iter().any(|c| &c.id == id) {
+                    if let Some(ref id) = class_id
+                        && classes.iter().any(|c| &c.id == id) {
                             return Ok(NodeResult {
                                 node_id: node.id.clone(),
                                 output: serde_json::json!({
@@ -2296,7 +2299,6 @@ impl NodeExecutor for QuestionClassifierNodeExecutor {
                                 metadata: HashMap::new(),
                             });
                         }
-                    }
                     last_error = Some(format!(
                         "attempt {}: LLM returned invalid class id {:?} (raw: {:?})",
                         attempt,
@@ -2647,23 +2649,19 @@ fn parse_json_object(content: &str) -> Result<serde_json::Value, String> {
         .map(|s| s.trim_start_matches('\n').trim())
         .and_then(|s| s.strip_suffix("```").map(|s| s.trim()))
         .unwrap_or(trimmed);
-    if let Ok(v) = serde_json::from_str::<serde_json::Value>(fence_stripped) {
-        if v.is_object() {
+    if let Ok(v) = serde_json::from_str::<serde_json::Value>(fence_stripped)
+        && v.is_object() {
             return Ok(v);
         }
-    }
 
     // Last resort: pull out the outermost {...} region. Handles
     // "Sure, here's the JSON:\n{ \"name\": \"foo\" }\nHope this helps!".
-    if let (Some(start), Some(end)) = (trimmed.find('{'), trimmed.rfind('}')) {
-        if start < end {
-            if let Ok(v) = serde_json::from_str::<serde_json::Value>(&trimmed[start..=end]) {
-                if v.is_object() {
+    if let (Some(start), Some(end)) = (trimmed.find('{'), trimmed.rfind('}'))
+        && start < end
+            && let Ok(v) = serde_json::from_str::<serde_json::Value>(&trimmed[start..=end])
+                && v.is_object() {
                     return Ok(v);
                 }
-            }
-        }
-    }
 
     Err("not a JSON object".to_string())
 }
@@ -2699,7 +2697,7 @@ fn validate_required_params(
     let missing: Vec<&str> = params
         .iter()
         .filter(|p| p.required)
-        .filter(|p| obj.get(&p.name).map_or(true, |v| v.is_null()))
+        .filter(|p| obj.get(&p.name).is_none_or(|v| v.is_null()))
         .map(|p| p.name.as_str())
         .collect();
     if missing.is_empty() {
@@ -3506,11 +3504,10 @@ fn resolve_operand(s: &str, context: &HashMap<String, serde_json::Value>) -> ser
     if let Some(v) = context.get(trimmed) {
         return v.clone();
     }
-    if let Ok(n) = trimmed.parse::<f64>() {
-        if let Some(num) = serde_json::Number::from_f64(n) {
+    if let Ok(n) = trimmed.parse::<f64>()
+        && let Some(num) = serde_json::Number::from_f64(n) {
             return serde_json::Value::Number(num);
         }
-    }
     if trimmed == "true" {
         return serde_json::Value::Bool(true);
     }
@@ -3532,7 +3529,7 @@ fn is_truthy(val: &serde_json::Value) -> bool {
     match val {
         serde_json::Value::Null => false,
         serde_json::Value::Bool(b) => *b,
-        serde_json::Value::Number(n) => n.as_f64().map_or(false, |v| v != 0.0),
+        serde_json::Value::Number(n) => n.as_f64().is_some_and(|v| v != 0.0),
         serde_json::Value::String(s) => !s.is_empty(),
         serde_json::Value::Array(a) => !a.is_empty(),
         serde_json::Value::Object(o) => !o.is_empty(),

@@ -1,0 +1,91 @@
+# cargo-deny 配置（H3 供应链闸，project-health v2，2026-08-31）
+#
+# 运行：cargo deny check（CI 走 .github/workflows/supply-chain.yml 每周 + 锁文件变更触发）
+# 豁免台账（每条豁免必须有理由 + 到期日）：docs/INFO/2026-08-31_dependency-rules.md
+# 本地复现：cargo deny check licenses / advisories / bans / sources
+
+[graph]
+# 检查所有 target 的依赖并集（Windows/Linux/Android/macOS），与全量构建口径一致
+all-features = true
+
+[advisories]
+version = 2
+# v2 schema 说明（cargo-deny 0.18+）：per-severity 字段（vulnerability/unmaintained/
+# yanked/notice）已移除，级别内建——vulnerability/unmaintained = error（堵闸，必须
+# 修或逐条豁免），yanked/notice = warn（只提示）。可升级修的优先 cargo update
+# （2026-08-31：anyhow/crossbeam-epoch/h2/quick-xml/quinn-proto/memmap2 六包
+# 升级清零全部 vulnerability）；
+# 无升级路径的写进下方 ignore 豁免，与 docs/INFO/2026-08-31_dependency-rules.md
+# 台账同步维护（每条必须有理由 + 复查条件）。注意 deny 扫激活依赖图而
+# cargo-audit 扫 lockfile 全集，两道闸互补（见台账 §3.1 双闸差异教训）。
+ignore = [
+  # ===== 无升级路径的 unmaintained（全部为编译期/构建期依赖，无运行时不可信输入暴露）=====
+  # gtk3-rs 全家（2024 年归档，RUSTSEC-2024-0412/0413/0415/0416/0418/0419/0420）。
+  # 传递链：tray-icon → libappindicator → gtk 0.18（Linux 系统托盘）。项目已显式
+  # 决策保留 GTK3 托盘方案（GMenuModel 迁移因多数面板不支持被否决，ksni 迁移也已
+  # 否决，见 docs/INFO/2026-06-10_ksni-tray-migration.md）。上游 gtk3-rs 永不再发
+  # 版，等 tray-icon 生态整体迁移 gtk4 才可移除本组豁免。
+  { id = "RUSTSEC-2024-0412", reason = "gtk3-rs archived (gdk); Linux tray stack, deliberate GTK3 retention decision" },
+  { id = "RUSTSEC-2024-0413", reason = "gtk3-rs archived (gdk-sys); Linux tray stack, deliberate GTK3 retention decision" },
+  { id = "RUSTSEC-2024-0415", reason = "gtk3-rs archived (gtk3-macros); Linux tray stack, deliberate GTK3 retention decision" },
+  { id = "RUSTSEC-2024-0416", reason = "gtk3-rs archived (gtk); Linux tray stack, deliberate GTK3 retention decision" },
+  { id = "RUSTSEC-2024-0418", reason = "gtk3-rs archived (gdkx11); Linux tray stack, deliberate GTK3 retention decision" },
+  { id = "RUSTSEC-2024-0419", reason = "gtk3-rs archived (gdkwayland-sys); Linux tray stack, deliberate GTK3 retention decision" },
+  { id = "RUSTSEC-2024-0420", reason = "gtk3-rs archived (atk); Linux tray stack, deliberate GTK3 retention decision" },
+  # proc-macro-error 维护者失联（RUSTSEC-2024-0370）。传递链：glib-macros 0.18
+  # （gtk3-rs 生态，Linux 托盘链）——随 gtk3-rs 豁免一并处置；纯 proc-macro，
+  # 只在编译期展开宏，无运行时暴露。上游 glib 0.20+ 已换 proc-macro-error2。
+  { id = "RUSTSEC-2024-0370", reason = "proc-macro-error unmaintained; transitive via glib-macros (gtk3 tray chain), compile-time only" },
+  # paste 作者声明完成态（RUSTSEC-2024-0436）。传递链：ratatui（build-config TUI）
+  # + rav1e/ravif（image JPEG-XL 编码）。纯 proc-macro，编译期展开，无运行时暴露。
+  { id = "RUSTSEC-2024-0436", reason = "paste complete/stable by author's statement; transitive via ratatui + image, compile-time only" },
+  # ttf-parser 无人维护（RUSTSEC-2026-0192），无安全升级路径；传递依赖
+  # （owned_ttf_parser ← ab_glyph ← sctk-adwaita ← winit ← nemesis-desktop），
+  # 只解析本机 UI 自带字体、不解析不可信输入。等 winit/ab_glyph 生态迁移
+  # skrifa 后移除本豁免。台账：docs/INFO/2026-08-31_dependency-rules.md
+  { id = "RUSTSEC-2026-0192", reason = "ttf-parser unmaintained; transitive via winit UI stack, parses only bundled fonts" },
+]
+
+[licenses]
+version = 2
+# 宽松许可证白名单。出现新 license 时：先确认兼容性，再决定加白名单还是换依赖。
+allow = [
+  "MIT",
+  "MIT-0",
+  "Apache-2.0",
+  "Apache-2.0 WITH LLVM-exception",
+  "BSD-2-Clause",
+  "BSD-3-Clause",
+  "ISC",
+  "Zlib",
+  "BSL-1.0",
+  "0BSD",
+  "CC0-1.0",
+  "MPL-2.0",
+  "Unicode-3.0",
+  "Unicode-DFS-2016",
+  "CDLA-Permissive-2.0",
+  "OpenSSL",
+  "AGPL-3.0-only",   # 本 workspace 全部自有 crate 的许可证（58 成员）
+  "NCSA",            # libfuzzer-sys (MIT OR Apache-2.0) AND NCSA；伊利诺伊大学宽松 BSD 族
+]
+# 置信度阈值：license 声明解析可信度（默认 0.8，保持）
+confidence-threshold = 0.8
+
+[bans]
+# 重复版本多 warn 不 deny：生态现实（serde 1.x/0.x 并存等），deny 误伤率过高。
+# 多版本是审计信号不是错误——数量突增时人工看。
+multiple-versions = "warn"
+# wildcard 降 warn（cargo-deny 0.20 的已知行为缺陷：`workspace = true` 继承依赖
+# 被 metadata 报成 wildcard，34 个 member 全部误报 deny 不可用）。真正的
+# wildcard（version = "*"）在评审 + 本 warn 信号里兜住。
+wildcards = "warn"
+highlight = "all"
+# deny 清单（已知要清除的依赖在此列）：
+deny = []
+
+[sources]
+unknown-registry = "warn"
+unknown-git = "warn"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []

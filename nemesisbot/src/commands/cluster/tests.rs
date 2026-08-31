@@ -1,3 +1,9 @@
+// 刻意设计：本文件测试用进程级串行锁（GLOBAL_STATE_LOCK 等 env/资源互斥锁）
+// 保护环境操作，guard 必须跨 async 测试体的 await 持有；#[tokio::test] 每个
+// 测试独立 current_thread runtime，持锁方在自己线程上恢复运行，不会死锁。
+// 测试域统一豁免（逐处 allow ~200 个不现实）。
+#![allow(clippy::await_holding_lock)]
+
 use super::*;
 use tempfile::TempDir;
 
@@ -193,35 +199,35 @@ fn test_enable_peer_in_toml_sanitized_key_match() {
 #[test]
 fn test_key_sanitization_dots() {
     let id = "192.168.1.10";
-    let key_safe = id.replace('.', "_").replace(':', "_").replace('-', "_");
+    let key_safe = id.replace(['.', ':', '-'], "_");
     assert_eq!(key_safe, "192_168_1_10");
 }
 
 #[test]
 fn test_key_sanitization_colons() {
     let id = "host:11949";
-    let key_safe = id.replace('.', "_").replace(':', "_").replace('-', "_");
+    let key_safe = id.replace(['.', ':', '-'], "_");
     assert_eq!(key_safe, "host_11949");
 }
 
 #[test]
 fn test_key_sanitization_hyphens() {
     let id = "my-peer-node";
-    let key_safe = id.replace('.', "_").replace(':', "_").replace('-', "_");
+    let key_safe = id.replace(['.', ':', '-'], "_");
     assert_eq!(key_safe, "my_peer_node");
 }
 
 #[test]
 fn test_key_sanitization_combined() {
     let id = "192.168.1.10:11949";
-    let key_safe = id.replace('.', "_").replace(':', "_").replace('-', "_");
+    let key_safe = id.replace(['.', ':', '-'], "_");
     assert_eq!(key_safe, "192_168_1_10_11949");
 }
 
 #[test]
 fn test_key_sanitization_no_special_chars() {
     let id = "simplenode";
-    let key_safe = id.replace('.', "_").replace(':', "_").replace('-', "_");
+    let key_safe = id.replace(['.', ':', '-'], "_");
     assert_eq!(key_safe, "simplenode");
 }
 
@@ -330,7 +336,7 @@ fn test_peer_entry_format() {
     let peer_addr = "192.168.1.10:11949";
     let peer_role = "worker";
     let peer_cat = "general";
-    let key_safe = id.replace('.', "_").replace(':', "_").replace('-', "_");
+    let key_safe = id.replace(['.', ':', '-'], "_");
     let entry = format!(
         "\n[peers.{}]\naddress = \"{}\"\nrole = \"{}\"\ncategory = \"{}\"\n",
         key_safe, peer_addr, peer_role, peer_cat
@@ -344,7 +350,7 @@ fn test_peer_entry_format() {
 #[test]
 fn test_peer_entry_with_tags_and_capabilities() {
     let id = "mynode";
-    let key_safe = id.replace('.', "_").replace(':', "_").replace('-', "_");
+    let key_safe = id.replace(['.', ':', '-'], "_");
     let mut entry = format!(
         "\n[peers.{}]\naddress = \"127.0.0.1:11949\"\nrole = \"worker\"\ncategory = \"general\"\n",
         key_safe
@@ -364,7 +370,7 @@ fn test_peer_entry_with_tags_and_capabilities() {
 #[test]
 fn test_peer_entry_with_priority() {
     let id = "mynode";
-    let key_safe = id.replace('.', "_").replace(':', "_").replace('-', "_");
+    let key_safe = id.replace(['.', ':', '-'], "_");
     let mut entry = format!(
         "\n[peers.{}]\naddress = \"127.0.0.1:11949\"\nrole = \"worker\"\ncategory = \"general\"\n",
         key_safe
@@ -382,18 +388,15 @@ fn test_peer_entry_with_priority() {
 
 #[test]
 fn test_cluster_init_config_defaults() {
-    let name = None;
-    let role = None;
-    let category = None;
-    let node_id = format!("node-test");
+    let node_id = "node-test".to_string();
     let default_name = format!("Bot {}", node_id);
 
     let config = serde_json::json!({
         "enabled": false,
         "node_id": node_id,
-        "name": name.unwrap_or_else(|| default_name.clone()),
-        "role": role.unwrap_or_else(|| "worker".to_string()),
-        "category": category.unwrap_or_else(|| "development".to_string()),
+        "name": default_name.clone(),
+        "role": "worker".to_string(),
+        "category": "development".to_string(),
         "port": 11949,
         "rpc_port": 21949,
         "broadcast_interval": 30,
@@ -669,7 +672,7 @@ fn test_node_info_display_defaults() {
     assert_eq!(name, "(not set)");
     assert_eq!(role, "(not set)");
     assert_eq!(category, "(not set)");
-    assert_eq!(enabled, false);
+    assert!(!enabled);
 }
 
 #[test]
@@ -860,7 +863,7 @@ fn test_cluster_init_config_with_optional_fields() {
 #[test]
 fn test_peer_entry_no_optional_fields() {
     let id = "simple-node";
-    let key_safe = id.replace('.', "_").replace(':', "_").replace('-', "_");
+    let key_safe = id.replace(['.', ':', '-'], "_");
     let entry = format!(
         "\n[peers.{}]\naddress = \"127.0.0.1:11949\"\nrole = \"worker\"\ncategory = \"general\"\n",
         key_safe
@@ -874,7 +877,7 @@ fn test_peer_entry_no_optional_fields() {
 #[test]
 fn test_key_sanitization_empty_string() {
     let id = "";
-    let key_safe = id.replace('.', "_").replace(':', "_").replace('-', "_");
+    let key_safe = id.replace(['.', ':', '-'], "_");
     assert_eq!(key_safe, "");
 }
 
@@ -1163,7 +1166,7 @@ fn test_peers_toml_write_and_reparse() {
     // Write peer entries
     let existing = String::new();
     let id = "192.168.1.10:11949";
-    let key_safe = id.replace('.', "_").replace(':', "_").replace('-', "_");
+    let key_safe = id.replace(['.', ':', '-'], "_");
     let entry = format!(
         "\n[peers.{}]\naddress = \"{}\"\nrole = \"worker\"\ncategory = \"general\"\n",
         key_safe, id

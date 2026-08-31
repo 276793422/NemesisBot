@@ -257,15 +257,14 @@ impl TaskResultStore {
     fn delete_from_disk(&self, task_id: &str) {
         if let Some(dir) = &self.cache_dir {
             let path = dir.join(format!("{}.json", task_id));
-            if path.exists() {
-                if let Err(e) = std::fs::remove_file(&path) {
+            if path.exists()
+                && let Err(e) = std::fs::remove_file(&path) {
                     tracing::warn!(
                         "[TaskResultStore] failed to delete result file {:?}: {}",
                         path,
                         e
                     );
                 }
-            }
         }
     }
 }
@@ -405,26 +404,25 @@ impl AsyncTaskResultStore {
     // ---- Internal helpers ----
 
     async fn store_async(&self, result: TaskResult) {
-        // 1. Insert into memory (sync, fast)
-        {
+        // 1. Insert into memory (sync, fast). The evicted entry's file is
+        //    deleted AFTER the lock scope — the parking_lot guard must not
+        //    cross the async fs call (the old drop-guard/re-lock dance around
+        //    the await was both hard to read and a clippy false-positive trap).
+        let evicted_path = {
             let mut results = self.inner.results.lock();
-            if results.len() >= self.inner.max_size {
-                if let Some(key) = results.keys().next().cloned() {
-                    let evicted = results.remove(&key);
-                    if let Some(evicted) = evicted {
-                        let dir = self.inner.cache_dir.clone();
-                        let evicted_id = evicted.task_id.clone();
-                        drop(results);
-                        // Delete evicted entry from disk asynchronously
-                        if let Some(dir) = dir {
-                            let path = dir.join(format!("{}.json", evicted_id));
-                            let _ = fs::remove_file(path).await;
-                        }
-                        results = self.inner.results.lock();
-                    }
-                }
+            let mut evicted_path = None;
+            if results.len() >= self.inner.max_size
+                && let Some(key) = results.keys().next().cloned()
+                && let Some(evicted) = results.remove(&key)
+                && let Some(dir) = self.inner.cache_dir.clone()
+            {
+                evicted_path = Some(dir.join(format!("{}.json", evicted.task_id)));
             }
             results.insert(result.task_id.clone(), result.clone());
+            evicted_path
+        };
+        if let Some(path) = evicted_path {
+            let _ = fs::remove_file(path).await;
         }
 
         // 2. Write to disk asynchronously (result was cloned before move)
@@ -471,15 +469,14 @@ impl AsyncTaskResultStore {
     async fn delete_from_disk_async(&self, task_id: &str) {
         if let Some(dir) = &self.inner.cache_dir {
             let path = dir.join(format!("{}.json", task_id));
-            if Path::new(&path).exists() {
-                if let Err(e) = fs::remove_file(&path).await {
+            if Path::new(&path).exists()
+                && let Err(e) = fs::remove_file(&path).await {
                     tracing::warn!(
                         "[TaskResultStore] failed to delete async result file {:?}: {}",
                         path,
                         e
                     );
                 }
-            }
         }
     }
 }
@@ -522,18 +519,12 @@ pub struct GoTaskResultEntry {
 /// Mirrors Go's `TaskResultIndex`. Maps task IDs to their result entries.
 /// Only contains "done" entries; "running" entries are tracked in memory only.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Default)]
 pub struct GoTaskResultIndex {
     /// Map of task ID to result entry.
     pub tasks: HashMap<String, GoTaskResultEntry>,
 }
 
-impl Default for GoTaskResultIndex {
-    fn default() -> Self {
-        Self {
-            tasks: HashMap::new(),
-        }
-    }
-}
 
 /// Go-compatible task result store.
 ///

@@ -272,7 +272,8 @@ async fn test_bounded_parallel_many_tasks() {
         let c = counter.clone();
         let r = runner.clone();
         handles.push(tokio::spawn(async move {
-            let result = r
+            
+            r
                 .run(|| {
                     let c = c.clone();
                     async move {
@@ -280,8 +281,7 @@ async fn test_bounded_parallel_many_tasks() {
                         Ok(())
                     }
                 })
-                .await;
-            result
+                .await
         }));
     }
 

@@ -122,7 +122,7 @@ impl MerkleTree {
         }
         let mut level = self.leaves.clone();
         while level.len() > 1 {
-            let mut next = Vec::with_capacity((level.len() + 1) / 2);
+            let mut next = Vec::with_capacity(level.len().div_ceil(2));
             let mut i = 0;
             while i < level.len() {
                 if i + 1 < level.len() {

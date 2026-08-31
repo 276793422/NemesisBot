@@ -16,14 +16,14 @@ pub async fn test_cli_log_status_config(ws: &TestWorkspace, bin: &Path) -> Vec<T
     let status = ws.run_cli(bin, &["log", "status"]).await;
     results.push(pass(
         &format!("{}/status", suite),
-        &format!("exit={}", status.exit_code),
+        format!("exit={}", status.exit_code),
     ));
 
     // log config
     let config = ws.run_cli(bin, &["log", "config"]).await;
     results.push(pass(
         &format!("{}/config", suite),
-        &format!("exit={}", config.exit_code),
+        format!("exit={}", config.exit_code),
     ));
 
     // log config --detail-level
@@ -32,7 +32,7 @@ pub async fn test_cli_log_status_config(ws: &TestWorkspace, bin: &Path) -> Vec<T
         .await;
     results.push(pass(
         &format!("{}/config_detail_level", suite),
-        &format!("exit={}", config_detail.exit_code),
+        format!("exit={}", config_detail.exit_code),
     ));
 
     // log config --log-dir
@@ -49,7 +49,7 @@ pub async fn test_cli_log_status_config(ws: &TestWorkspace, bin: &Path) -> Vec<T
         .await;
     results.push(pass(
         &format!("{}/config_log_dir", suite),
-        &format!("exit={}", config_dir.exit_code),
+        format!("exit={}", config_dir.exit_code),
     ));
 
     results
@@ -67,13 +67,13 @@ pub async fn test_cli_log_enable_disable(ws: &TestWorkspace, bin: &Path) -> Vec<
     let disable = ws.run_cli(bin, &["log", "disable"]).await;
     results.push(pass(
         &format!("{}/disable", suite),
-        &format!("exit={}", disable.exit_code),
+        format!("exit={}", disable.exit_code),
     ));
 
     let enable = ws.run_cli(bin, &["log", "enable"]).await;
     results.push(pass(
         &format!("{}/enable", suite),
-        &format!("exit={}", enable.exit_code),
+        format!("exit={}", enable.exit_code),
     ));
 
     results
@@ -92,28 +92,28 @@ pub async fn test_cli_log_llm(ws: &TestWorkspace, bin: &Path) -> Vec<TestResult>
     let status = ws.run_cli(bin, &["log", "llm", "status"]).await;
     results.push(pass(
         &format!("{}/status", suite),
-        &format!("exit={}", status.exit_code),
+        format!("exit={}", status.exit_code),
     ));
 
     // llm enable
     let enable = ws.run_cli(bin, &["log", "llm", "enable"]).await;
     results.push(pass(
         &format!("{}/enable", suite),
-        &format!("exit={}", enable.exit_code),
+        format!("exit={}", enable.exit_code),
     ));
 
     // llm config
     let config = ws.run_cli(bin, &["log", "llm", "config"]).await;
     results.push(pass(
         &format!("{}/config", suite),
-        &format!("exit={}", config.exit_code),
+        format!("exit={}", config.exit_code),
     ));
 
     // llm disable
     let disable = ws.run_cli(bin, &["log", "llm", "disable"]).await;
     results.push(pass(
         &format!("{}/disable", suite),
-        &format!("exit={}", disable.exit_code),
+        format!("exit={}", disable.exit_code),
     ));
 
     // Re-enable
@@ -135,21 +135,21 @@ pub async fn test_cli_log_general(ws: &TestWorkspace, bin: &Path) -> Vec<TestRes
     let status = ws.run_cli(bin, &["log", "general", "status"]).await;
     results.push(pass(
         &format!("{}/status", suite),
-        &format!("exit={}", status.exit_code),
+        format!("exit={}", status.exit_code),
     ));
 
     // general level INFO
     let level = ws.run_cli(bin, &["log", "general", "level", "INFO"]).await;
     results.push(pass(
         &format!("{}/level", suite),
-        &format!("exit={}", level.exit_code),
+        format!("exit={}", level.exit_code),
     ));
 
     // general level DEBUG
     let debug = ws.run_cli(bin, &["log", "general", "level", "DEBUG"]).await;
     results.push(pass(
         &format!("{}/level_debug", suite),
-        &format!("exit={}", debug.exit_code),
+        format!("exit={}", debug.exit_code),
     ));
 
     // general file
@@ -167,7 +167,7 @@ pub async fn test_cli_log_general(ws: &TestWorkspace, bin: &Path) -> Vec<TestRes
         .await;
     results.push(pass(
         &format!("{}/file", suite),
-        &format!("exit={}", file.exit_code),
+        format!("exit={}", file.exit_code),
     ));
 
     results
@@ -186,21 +186,21 @@ pub async fn test_cli_log_level_file_console(ws: &TestWorkspace, bin: &Path) -> 
     let warn = ws.run_cli(bin, &["log", "set-level", "WARN"]).await;
     results.push(pass(
         &format!("{}/set_level_warn", suite),
-        &format!("exit={}", warn.exit_code),
+        format!("exit={}", warn.exit_code),
     ));
 
     // set-level ERROR
     let error = ws.run_cli(bin, &["log", "set-level", "ERROR"]).await;
     results.push(pass(
         &format!("{}/set_level_error", suite),
-        &format!("exit={}", error.exit_code),
+        format!("exit={}", error.exit_code),
     ));
 
     // enable-file
     let ef = ws.run_cli(bin, &["log", "enable-file"]).await;
     results.push(pass(
         &format!("{}/enable_file", suite),
-        &format!("exit={}", ef.exit_code),
+        format!("exit={}", ef.exit_code),
     ));
 
     // enable-file --path
@@ -220,28 +220,28 @@ pub async fn test_cli_log_level_file_console(ws: &TestWorkspace, bin: &Path) -> 
         .await;
     results.push(pass(
         &format!("{}/enable_file_path", suite),
-        &format!("exit={}", efp.exit_code),
+        format!("exit={}", efp.exit_code),
     ));
 
     // disable-file
     let df = ws.run_cli(bin, &["log", "disable-file"]).await;
     results.push(pass(
         &format!("{}/disable_file", suite),
-        &format!("exit={}", df.exit_code),
+        format!("exit={}", df.exit_code),
     ));
 
     // enable-console
     let ec = ws.run_cli(bin, &["log", "enable-console"]).await;
     results.push(pass(
         &format!("{}/enable_console", suite),
-        &format!("exit={}", ec.exit_code),
+        format!("exit={}", ec.exit_code),
     ));
 
     // disable-console
     let dc = ws.run_cli(bin, &["log", "disable-console"]).await;
     results.push(pass(
         &format!("{}/disable_console", suite),
-        &format!("exit={}", dc.exit_code),
+        format!("exit={}", dc.exit_code),
     ));
 
     // Restore

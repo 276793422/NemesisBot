@@ -124,8 +124,8 @@ fn msg(role: &str, content: &str, timestamp: &str) -> nemesis_agent::session::St
 /// - SessionStore = the polluted cache (round-3 regression shape): a
 ///   system row + tool rows + DIFFERENT ("august") content, written under
 ///   `<home>/workspace/sessions` — the directory the fallback store reads.
-/// Any endpoint still counting/copying from the store would surface the
-/// august content and fail the assertions.
+///   Any endpoint still counting/copying from the store would surface the
+///   august content and fail the assertions.
 fn seed_session(home: &std::path::Path, key: &str) {
     nemesis_agent::chat_log::append_chat_log(key, "user", "第一问：你好\n第二行不进预览");
     nemesis_agent::chat_log::append_chat_log_with_model(

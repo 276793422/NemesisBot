@@ -292,17 +292,16 @@ impl Guard {
         let host_lower = host.to_lowercase();
 
         // Check localhost hostname strings
-        if self.config.block_localhost {
-            if host_lower == "localhost"
+        if self.config.block_localhost
+            && (host_lower == "localhost"
                 || host_lower.ends_with(".localhost")
-                || host_lower == "localhost.localdomain"
+                || host_lower == "localhost.localdomain")
             {
                 return Err(SsrfError::Localhost(format!(
                     "localhost hostname {} is blocked",
                     host
                 )));
             }
-        }
 
         // Try to parse as IP directly
         if let Ok(ip) = host_lower.parse::<IpAddr>() {

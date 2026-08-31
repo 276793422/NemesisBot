@@ -303,7 +303,7 @@ pub(crate) fn build_agent_loop(
     ));
 
     // Minimal cron service — new() only loads jobs from disk; no set_on_job/start.
-    let cron_store_path = common::cron_store_path(&home);
+    let cron_store_path = common::cron_store_path(home);
     let cron_service = std::sync::Arc::new(std::sync::Mutex::new(
         nemesis_cron::service::CronService::new(&cron_store_path.to_string_lossy()),
     ));
@@ -376,9 +376,9 @@ pub(crate) fn build_agent_loop(
 
     // 7. Attach RequestLoggerObserver if logging.llm.enabled, so CLI agent
     //    sessions also write raw LLM request/response logs (same as gateway).
-    if let Some(ref logging_cfg) = cfg.logging {
-        if let Some(llm_cfg) = &logging_cfg.llm {
-            if llm_cfg.enabled {
+    if let Some(ref logging_cfg) = cfg.logging
+        && let Some(llm_cfg) = &logging_cfg.llm
+            && llm_cfg.enabled {
                 let rl_logging_config = nemesis_agent::request_logger::LoggingConfig {
                     enabled: true,
                     detail_level: match llm_cfg.detail_level.as_str() {
@@ -409,8 +409,6 @@ pub(crate) fn build_agent_loop(
                 agent_loop.set_observer_manager(observer_mgr);
                 info!("[Agent] RequestLoggerObserver registered (logging.llm.enabled = true)");
             }
-        }
-    }
 
     Ok(agent_loop)
 }
@@ -568,15 +566,14 @@ pub async fn run(
                                             continue;
                                         }
                                         "/clear" => {
-                                            if let Some(registry) = agent_loop.get_registry() {
-                                                if let Some(default_id) =
+                                            if let Some(registry) = agent_loop.get_registry()
+                                                && let Some(default_id) =
                                                     registry.default_agent_id()
                                                 {
                                                     registry.with_agent(&default_id, |inst| {
                                                         inst.clear_history();
                                                     });
                                                 }
-                                            }
                                             println!("  History cleared.");
                                             println!();
                                             continue;
@@ -668,7 +665,7 @@ pub async fn run(
                     .map_err(|e| anyhow::anyhow!("Failed to parse config: {}", e))?;
 
                 let resolution = nemesis_config::resolve_model_config(&typed_cfg, &model);
-                if let Err(_) = resolution {
+                if resolution.is_err() {
                     println!(
                         "  WARNING: Model '{}' not found in configured model_list.",
                         model
@@ -723,10 +720,9 @@ pub async fn run(
                 if cfg_path.exists() {
                     let data = std::fs::read_to_string(&cfg_path)?;
                     let mut cfg: serde_json::Value = serde_json::from_str(&data)?;
-                    if let Some(obj) = cfg.as_object_mut() {
-                        if let Some(agents) = obj.get_mut("agents").and_then(|v| v.as_object_mut())
-                        {
-                            if let Some(defaults) =
+                    if let Some(obj) = cfg.as_object_mut()
+                        && let Some(agents) = obj.get_mut("agents").and_then(|v| v.as_object_mut())
+                            && let Some(defaults) =
                                 agents.get_mut("defaults").and_then(|v| v.as_object_mut())
                             {
                                 defaults.insert(
@@ -740,8 +736,6 @@ pub async fn run(
                                     );
                                 }
                             }
-                        }
-                    }
                     std::fs::write(
                         &cfg_path,
                         serde_json::to_string_pretty(&cfg).unwrap_or_default(),

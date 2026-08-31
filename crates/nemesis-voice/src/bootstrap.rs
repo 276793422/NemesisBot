@@ -625,7 +625,7 @@ fn find_lib_dir(extract_dir: &Path) -> Result<PathBuf> {
                 if candidate.is_dir() && dir_has_any_target_lib(&candidate) {
                     return Ok(candidate);
                 }
-                if let Ok(sub_entries) = fs::read_dir(&entry.path()) {
+                if let Ok(sub_entries) = fs::read_dir(entry.path()) {
                     for sub in sub_entries.flatten() {
                         if sub.file_type().map(|t| t.is_dir()).unwrap_or(false) {
                             let sub_lib = sub.path().join("lib");

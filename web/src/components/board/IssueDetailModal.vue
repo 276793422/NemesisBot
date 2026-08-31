@@ -2,6 +2,7 @@
 import { ref, computed, watch } from 'vue'
 import { useWSAPI } from '../../composables/useWSAPI'
 import { useToast } from '../../composables/useToast'
+import { useBoardChanged } from '../../composables/useBoardChanged'
 import {
   PRIORITY_BADGE,
   PRIORITY_LABEL,
@@ -163,18 +164,23 @@ async function loadWorkerNodes() {
   }
 }
 
-async function loadDetail() {
+async function loadDetail(silent = false) {
   if (!props.issueId) return
   try {
     const r = await request('board', 'issue.get', { id: props.issueId })
     detail.value = r?.issue || null
-    detailAssignType.value = ''
-    detailAssignId.value = ''
-    dispatchTarget.value =
-      detail.value?.assignee === 'worker' ? detail.value?.assignee_id || '' : ''
+    if (!silent) {
+      // 仅显式加载重置指派下拉/派发目标；后台静默换新不动用户正在编辑的表单态。
+      detailAssignType.value = ''
+      detailAssignId.value = ''
+      dispatchTarget.value =
+        detail.value?.assignee === 'worker' ? detail.value?.assignee_id || '' : ''
+    }
   } catch (e: any) {
-    toast.error('加载详情失败: ' + e)
-    emit('close')
+    if (!silent) {
+      toast.error('加载详情失败: ' + e)
+      emit('close')
+    }
   }
 }
 
@@ -199,10 +205,23 @@ watch(
       loadDetail()
       loadAttachments()
       loadWorkerNodes()
+    } else {
+      // 关闭（父组件置空 issueId）→ 清 detail 让根 v-if="detail" 收起弹层。
+      detail.value = null
     }
   },
   { immediate: true },
 )
+
+// 看板数据变化推送（W2.5 SSE board-changed）：弹窗打开期间外部写入
+// （CLI 跨进程 / 其他标签页 / 集群回调 / autopilot）→ 详情静默换新，
+// 不闪 loading、失败不打扰。自己的写操作也会触发一次（幂等 GET，无害）。
+useBoardChanged(() => {
+  if (props.issueId != null && detail.value) {
+    loadDetail(true)
+    loadAttachments()
+  }
+})
 
 function changed() {
   emit('changed')

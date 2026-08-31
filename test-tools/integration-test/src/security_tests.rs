@@ -21,7 +21,7 @@ pub async fn test_security_injection_sql() -> Vec<TestResult> {
     let mut stream = match ws_connect(WS_PORT, AUTH_TOKEN).await {
         Ok(s) => s,
         Err(e) => {
-            results.push(fail(suite, &format!("Connect: {}", e)));
+            results.push(fail(suite, format!("Connect: {}", e)));
             return results;
         }
     };
@@ -51,7 +51,7 @@ pub async fn test_security_injection_sql() -> Vec<TestResult> {
         Err(e) => {
             results.push(pass(
                 &format!("{}/blocked", suite),
-                &format!("Blocked: {}", e),
+                format!("Blocked: {}", e),
             ));
         }
     }
@@ -71,7 +71,7 @@ pub async fn test_security_injection_command() -> Vec<TestResult> {
     let mut stream = match ws_connect(WS_PORT, AUTH_TOKEN).await {
         Ok(s) => s,
         Err(e) => {
-            results.push(fail(suite, &format!("Connect: {}", e)));
+            results.push(fail(suite, format!("Connect: {}", e)));
             return results;
         }
     };
@@ -86,13 +86,13 @@ pub async fn test_security_injection_command() -> Vec<TestResult> {
         Ok(content) => {
             results.push(pass(
                 &format!("{}/handled", suite),
-                &format!("Command injection handled ({} bytes)", content.len()),
+                format!("Command injection handled ({} bytes)", content.len()),
             ));
         }
         Err(e) => {
             results.push(pass(
                 &format!("{}/blocked", suite),
-                &format!("Blocked: {}", e),
+                format!("Blocked: {}", e),
             ));
         }
     }
@@ -112,7 +112,7 @@ pub async fn test_security_credential_leak() -> Vec<TestResult> {
     let mut stream = match ws_connect(WS_PORT, AUTH_TOKEN).await {
         Ok(s) => s,
         Err(e) => {
-            results.push(fail(suite, &format!("Connect: {}", e)));
+            results.push(fail(suite, format!("Connect: {}", e)));
             return results;
         }
     };
@@ -143,7 +143,7 @@ pub async fn test_security_credential_leak() -> Vec<TestResult> {
         Err(e) => {
             results.push(pass(
                 &format!("{}/handled", suite),
-                &format!("Handled: {}", e),
+                format!("Handled: {}", e),
             ));
         }
     }
@@ -163,15 +163,14 @@ pub async fn test_security_file_workspace_only(ws: &TestWorkspace) -> Vec<TestRe
     // Verify security config has workspace restriction settings
     let sec_config_path = ws.security_config_path();
     if sec_config_path.exists() {
-        if let Ok(data) = std::fs::read_to_string(&sec_config_path) {
-            if let Ok(cfg) = serde_json::from_str::<Value>(&data) {
+        if let Ok(data) = std::fs::read_to_string(&sec_config_path)
+            && let Ok(cfg) = serde_json::from_str::<Value>(&data) {
                 let restrict = cfg.get("restrict_to_workspace").and_then(|v| v.as_bool());
                 results.push(pass(
                     &format!("{}/config", suite),
-                    &format!("restrict_to_workspace: {:?}", restrict),
+                    format!("restrict_to_workspace: {:?}", restrict),
                 ));
             }
-        }
     } else {
         results.push(skip(
             &format!("{}/config", suite),
@@ -180,8 +179,8 @@ pub async fn test_security_file_workspace_only(ws: &TestWorkspace) -> Vec<TestRe
     }
 
     // Check main config for security enabled
-    if let Ok(data) = std::fs::read_to_string(ws.config_path()) {
-        if let Ok(cfg) = serde_json::from_str::<Value>(&data) {
+    if let Ok(data) = std::fs::read_to_string(ws.config_path())
+        && let Ok(cfg) = serde_json::from_str::<Value>(&data) {
             let enabled = cfg
                 .get("security")
                 .and_then(|s| s.get("enabled"))
@@ -199,7 +198,6 @@ pub async fn test_security_file_workspace_only(ws: &TestWorkspace) -> Vec<TestRe
                 ));
             }
         }
-    }
 
     results
 }
@@ -216,7 +214,7 @@ pub async fn test_security_process_exec_blocked() -> Vec<TestResult> {
     let mut stream = match ws_connect(WS_PORT, AUTH_TOKEN).await {
         Ok(s) => s,
         Err(e) => {
-            results.push(fail(suite, &format!("Connect: {}", e)));
+            results.push(fail(suite, format!("Connect: {}", e)));
             return results;
         }
     };
@@ -225,13 +223,13 @@ pub async fn test_security_process_exec_blocked() -> Vec<TestResult> {
         Ok(content) => {
             results.push(pass(
                 &format!("{}/handled", suite),
-                &format!("Process exec handled ({} bytes)", content.len()),
+                format!("Process exec handled ({} bytes)", content.len()),
             ));
         }
         Err(e) => {
             results.push(pass(
                 &format!("{}/blocked", suite),
-                &format!("Blocked: {}", e),
+                format!("Blocked: {}", e),
             ));
         }
     }
@@ -261,12 +259,12 @@ pub async fn test_security_audit_log(ws: &TestWorkspace) -> Vec<TestResult> {
                     .count();
                 results.push(pass(
                     &format!("{}/entries", suite),
-                    &format!("{} entries ({} valid JSON)", lines.len(), valid_count),
+                    format!("{} entries ({} valid JSON)", lines.len(), valid_count),
                 ));
 
                 // Check entry structure
-                if let Some(first) = lines.first() {
-                    if let Ok(evt) = serde_json::from_str::<Value>(first) {
+                if let Some(first) = lines.first()
+                    && let Ok(evt) = serde_json::from_str::<Value>(first) {
                         let has_ts = evt.get("timestamp").is_some();
                         let has_op = evt.get("operation").is_some();
                         let has_decision = evt.get("decision").is_some();
@@ -282,7 +280,6 @@ pub async fn test_security_audit_log(ws: &TestWorkspace) -> Vec<TestResult> {
                             ));
                         }
                     }
-                }
             } else {
                 results.push(skip(&format!("{}/entries", suite), "Audit log empty"));
             }
@@ -313,7 +310,7 @@ pub async fn test_security_risk_levels(ws: &TestWorkspace, bin: &Path) -> Vec<Te
     } else {
         results.push(pass(
             &format!("{}/rules_list", suite),
-            &format!("exit={}", output.exit_code),
+            format!("exit={}", output.exit_code),
         ));
     }
 
@@ -336,7 +333,7 @@ pub async fn test_security_risk_levels(ws: &TestWorkspace, bin: &Path) -> Vec<Te
     } else {
         results.push(pass(
             &format!("{}/test_low", suite),
-            &format!("exit={}", output.exit_code),
+            format!("exit={}", output.exit_code),
         ));
     }
 
@@ -367,7 +364,7 @@ pub async fn test_security_risk_levels(ws: &TestWorkspace, bin: &Path) -> Vec<Te
     } else {
         results.push(pass(
             &format!("{}/test_critical", suite),
-            &format!("exit={}", output.exit_code),
+            format!("exit={}", output.exit_code),
         ));
     }
 
@@ -390,7 +387,7 @@ pub async fn test_security_disabled_bypass(ws: &TestWorkspace, bin: &Path) -> Ve
     } else {
         results.push(fail(
             &format!("{}/disable", suite),
-            &format!(
+            format!(
                 "exit={}, stdout='{}'",
                 output.exit_code,
                 output.stdout.trim()
@@ -405,7 +402,7 @@ pub async fn test_security_disabled_bypass(ws: &TestWorkspace, bin: &Path) -> Ve
     } else {
         results.push(fail(
             &format!("{}/re_enable", suite),
-            &format!(
+            format!(
                 "exit={}, stdout='{}'",
                 output.exit_code,
                 output.stdout.trim()
@@ -414,8 +411,8 @@ pub async fn test_security_disabled_bypass(ws: &TestWorkspace, bin: &Path) -> Ve
     }
 
     // Verify config reflects the change
-    if let Ok(data) = std::fs::read_to_string(ws.config_path()) {
-        if let Ok(cfg) = serde_json::from_str::<Value>(&data) {
+    if let Ok(data) = std::fs::read_to_string(ws.config_path())
+        && let Ok(cfg) = serde_json::from_str::<Value>(&data) {
             let enabled = cfg
                 .get("security")
                 .and_then(|s| s.get("enabled"))
@@ -433,7 +430,6 @@ pub async fn test_security_disabled_bypass(ws: &TestWorkspace, bin: &Path) -> Ve
                 ));
             }
         }
-    }
 
     results
 }
@@ -450,7 +446,7 @@ pub async fn test_security_ssrf_prevention() -> Vec<TestResult> {
     let mut stream = match ws_connect(WS_PORT, AUTH_TOKEN).await {
         Ok(s) => s,
         Err(e) => {
-            results.push(fail(suite, &format!("Connect: {}", e)));
+            results.push(fail(suite, format!("Connect: {}", e)));
             return results;
         }
     };
@@ -480,7 +476,7 @@ pub async fn test_security_ssrf_prevention() -> Vec<TestResult> {
         Err(e) => {
             results.push(pass(
                 &format!("{}/blocked", suite),
-                &format!("Blocked: {}", e),
+                format!("Blocked: {}", e),
             ));
         }
     }

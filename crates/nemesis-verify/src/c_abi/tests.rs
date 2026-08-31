@@ -1,6 +1,7 @@
 //! C ABI（nv_*）单测（M5 补测，quality-hardening goal 2026-08-25）。
 //!
-//! extern "C" 函数在 lib target 下就是普通 Rust 函数，直接进程内调用即可
+//! 导出函数是 `unsafe extern "C" fn`（not_unsafe_ptr_arg_deref 公共契约要求），
+//! lib target 下进程内调用需 unsafe 包裹（契约同真实 C 调用方：指针合法），
 //! 覆盖参数校验 / 状态码映射 / out 参数填充 / 截断规则（subject_meta 64B、
 //! publisher 128B）——真正跨 DLL 边界（libloading 加载）的链路由
 //! test-tools/verify-loader 覆盖（真机 bin）。
@@ -45,24 +46,24 @@ fn nv_verify_target_argument_and_io_errors() {
     let mut out = NvOutcome::default();
     let path = c_path(&std::env::temp_dir());
     // null 参数
-    assert_eq!(nv_verify_target(std::ptr::null(), &mut out), -1);
+    assert_eq!(unsafe { nv_verify_target(std::ptr::null(), &mut out) }, -1);
     assert_eq!(
-        nv_verify_target(path.as_ptr(), std::ptr::null_mut()),
+        unsafe { nv_verify_target(path.as_ptr(), std::ptr::null_mut()) },
         -1
     );
     // 非 UTF-8 路径
     let invalid = unsafe { CString::from_vec_unchecked(vec![0xFFu8, 0xFE, 0x00]) };
-    assert_eq!(nv_verify_target(invalid.as_ptr(), &mut out), -2);
+    assert_eq!(unsafe { nv_verify_target(invalid.as_ptr(), &mut out) }, -2);
     // 文件不存在
     let missing = c_path(&std::env::temp_dir().join("nv_abi_definitely_missing_9527.bin"));
-    assert_eq!(nv_verify_target(missing.as_ptr(), &mut out), -3);
+    assert_eq!(unsafe { nv_verify_target(missing.as_ptr(), &mut out) }, -3);
 }
 
 #[test]
 fn nv_verify_target_no_signature_file() {
     let p = temp_bytes(b"plain unsigned payload".as_ref());
     let mut out = NvOutcome::default();
-    let rc = nv_verify_target(c_path(&p).as_ptr(), &mut out);
+    let rc = unsafe { nv_verify_target(c_path(&p).as_ptr(), &mut out) };
     let _ = std::fs::remove_file(&p);
     assert_eq!(rc, 0);
     assert_eq!(out.status, NV_NO_SIGNATURE);
@@ -86,7 +87,7 @@ fn nv_verify_target_valid_with_env_root() {
     unsafe { std::env::set_var("NEMESIS_ROOT_PUBKEY", crate::hex_util::hex_encode(&vk.to_bytes())) };
 
     let mut out = NvOutcome::default();
-    let rc = nv_verify_target(c_path(&p).as_ptr(), &mut out);
+    let rc = unsafe { nv_verify_target(c_path(&p).as_ptr(), &mut out) };
 
     unsafe { std::env::remove_var("NEMESIS_ROOT_PUBKEY") };
     let _ = std::fs::remove_file(&p);
@@ -96,7 +97,7 @@ fn nv_verify_target_valid_with_env_root() {
     assert_eq!(out.signed_at, 424242);
     assert_eq!(out.pubkey, vk.to_bytes());
     // key_fp = SHA-256(pubkey)
-    let fp: [u8; 32] = sha2::Sha256::digest(&vk.to_bytes()).into();
+    let fp: [u8; 32] = sha2::Sha256::digest(vk.to_bytes()).into();
     assert_eq!(out.key_fp, fp);
 }
 
@@ -113,15 +114,15 @@ fn nv_self_verify_states() {
 
     // ① 无根（env 清空）→ -5
     unsafe { std::env::remove_var("NEMESIS_ROOT_PUBKEY") };
-    let rc_no_root = nv_self_verify(c_path(&signed_path).as_ptr());
+    let rc_no_root = unsafe { nv_self_verify(c_path(&signed_path).as_ptr()) };
 
     // ② 有根 + 已签名文件 → 0
     unsafe { std::env::set_var("NEMESIS_ROOT_PUBKEY", crate::hex_util::hex_encode(&vk.to_bytes())) };
-    let rc_valid = nv_self_verify(c_path(&signed_path).as_ptr());
+    let rc_valid = unsafe { nv_self_verify(c_path(&signed_path).as_ptr()) };
     // ③ 有根 + 未签名文件 → -4
-    let rc_unsigned = nv_self_verify(c_path(&unsigned).as_ptr());
+    let rc_unsigned = unsafe { nv_self_verify(c_path(&unsigned).as_ptr()) };
     // ④ null → -1
-    let rc_null = nv_self_verify(std::ptr::null());
+    let rc_null = unsafe { nv_self_verify(std::ptr::null()) };
 
     unsafe { std::env::remove_var("NEMESIS_ROOT_PUBKEY") };
     let _ = std::fs::remove_file(&signed_path);
@@ -136,10 +137,10 @@ fn nv_self_verify_states() {
 #[test]
 fn nv_verify_current_exe_is_unsigned_in_tests() {
     // null out 参数 → -1（参数校验臂，current_exe 之前）
-    assert_eq!(nv_verify_current_exe(std::ptr::null_mut()), -1);
+    assert_eq!(unsafe { nv_verify_current_exe(std::ptr::null_mut()) }, -1);
     // 测试二进制自身无签名 → 读 exe + 验证完成（0），状态 NoSignature。
     let mut out = NvOutcome::default();
-    let rc = nv_verify_current_exe(&mut out);
+    let rc = unsafe { nv_verify_current_exe(&mut out) };
     assert_eq!(rc, 0);
     assert_eq!(out.status, NV_NO_SIGNATURE);
 }
@@ -180,7 +181,7 @@ fn nv_verify_target_maps_all_outcome_statuses() {
     let mut out = NvOutcome::default();
     let status_of = |bytes: &[u8], out: &mut NvOutcome| {
         let p = temp_bytes(bytes);
-        let rc = nv_verify_target(c_path(&p).as_ptr(), out);
+        let rc = unsafe { nv_verify_target(c_path(&p).as_ptr(), out) };
         let _ = std::fs::remove_file(&p);
         assert_eq!(rc, 0);
         out.status
@@ -238,7 +239,7 @@ fn nv_verify_target_invalid_env_root_hex_yields_empty_roots() {
     // 非法 hex → hex_decode_32 Err → 空根列表（不 panic）
     unsafe { std::env::set_var("NEMESIS_ROOT_PUBKEY", "not-hex!") };
     let mut out = NvOutcome::default();
-    let rc = nv_verify_target(c_path(&p).as_ptr(), &mut out);
+    let rc = unsafe { nv_verify_target(c_path(&p).as_ptr(), &mut out) };
     unsafe { std::env::remove_var("NEMESIS_ROOT_PUBKEY") };
     let _ = std::fs::remove_file(&p);
     assert_eq!(rc, 0, "非法 env 根是软失败：流程照常完成");
@@ -249,9 +250,9 @@ fn nv_verify_target_invalid_env_root_hex_yields_empty_roots() {
 fn nv_self_verify_io_error_codes() {
     // 非 UTF-8 路径 → -2；文件不存在 → -3（都在根解析之前，无需 env）
     let invalid = unsafe { CString::from_vec_unchecked(vec![0xFFu8, 0xFE, 0x00]) };
-    assert_eq!(nv_self_verify(invalid.as_ptr()), -2);
+    assert_eq!(unsafe { nv_self_verify(invalid.as_ptr()) }, -2);
     let missing = c_path(&std::env::temp_dir().join("nv_abi_missing_self_9527.bin"));
-    assert_eq!(nv_self_verify(missing.as_ptr()), -3);
+    assert_eq!(unsafe { nv_self_verify(missing.as_ptr()) }, -3);
 }
 
 #[test]
@@ -264,7 +265,7 @@ fn nv_verify_target_maps_revoked_via_local_crl_server() {
     unsafe { std::env::set_var("NEMESIS_ROOT_PUBKEY", crate::hex_util::hex_encode(&vk.to_bytes())) };
 
     // 本地 CRL 服务器：吊销本密钥（key_fp 维度）
-    let fp: [u8; 32] = sha2::Sha256::digest(&vk.to_bytes()).into();
+    let fp: [u8; 32] = sha2::Sha256::digest(vk.to_bytes()).into();
     let crl = crate::sign_response(
         &crate::Crl {
             version: 1,
@@ -304,7 +305,7 @@ fn nv_verify_target_maps_revoked_via_local_crl_server() {
     let signed = sign_content(b"revoked mapping", &sk, 1000, None, None, None, None).unwrap();
     let p = temp_bytes(&signed);
     let mut out = NvOutcome::default();
-    let rc = nv_verify_target(c_path(&p).as_ptr(), &mut out);
+    let rc = unsafe { nv_verify_target(c_path(&p).as_ptr(), &mut out) };
     let _ = std::fs::remove_file(&p);
 
     unsafe {
@@ -343,17 +344,17 @@ fn nv_list_signatures_counts_and_args() {
     // null 参数 → -1
     let mut infos: [NvSigInfo; 4] = std::array::from_fn(|_| NvSigInfo::default());
     let mut count: u32 = 4;
-    assert_eq!(nv_list_signatures(std::ptr::null(), infos.as_mut_ptr(), &mut count), -1);
-    assert_eq!(nv_list_signatures(path.as_ptr(), std::ptr::null_mut(), &mut count), -1);
-    assert_eq!(nv_list_signatures(path.as_ptr(), infos.as_mut_ptr(), std::ptr::null_mut()), -1);
+    assert_eq!(unsafe { nv_list_signatures(std::ptr::null(), infos.as_mut_ptr(), &mut count) }, -1);
+    assert_eq!(unsafe { nv_list_signatures(path.as_ptr(), std::ptr::null_mut(), &mut count) }, -1);
+    assert_eq!(unsafe { nv_list_signatures(path.as_ptr(), infos.as_mut_ptr(), std::ptr::null_mut()) }, -1);
     // 文件不存在 → -3
     let missing = c_path(&std::env::temp_dir().join("nv_abi_missing_list.bin"));
-    assert_eq!(nv_list_signatures(missing.as_ptr(), infos.as_mut_ptr(), &mut count), -3);
+    assert_eq!(unsafe { nv_list_signatures(missing.as_ptr(), infos.as_mut_ptr(), &mut count) }, -3);
 
     // 未签名文件 → 0 + count=0
     let plain = temp_bytes(b"no signature".as_ref());
     let mut count: u32 = 4;
-    let rc = nv_list_signatures(c_path(&plain).as_ptr(), infos.as_mut_ptr(), &mut count);
+    let rc = unsafe { nv_list_signatures(c_path(&plain).as_ptr(), infos.as_mut_ptr(), &mut count) };
     let _ = std::fs::remove_file(&plain);
     assert_eq!(rc, 0);
     assert_eq!(count, 0);
@@ -361,7 +362,7 @@ fn nv_list_signatures_counts_and_args() {
     // 单签名文件 → count=1，字段穿透（signed_at / key_fp / pubkey）
     let mut infos: [NvSigInfo; 4] = std::array::from_fn(|_| NvSigInfo::default());
     let mut count: u32 = 4;
-    let rc = nv_list_signatures(path.as_ptr(), infos.as_mut_ptr(), &mut count);
+    let rc = unsafe { nv_list_signatures(path.as_ptr(), infos.as_mut_ptr(), &mut count) };
     let _ = std::fs::remove_file(&p);
     assert_eq!(rc, 0);
     assert_eq!(count, 1);
@@ -373,7 +374,7 @@ fn nv_list_signatures_counts_and_args() {
     let p2 = temp_bytes(&signed);
     let mut one = NvSigInfo::default();
     let mut count_zero: u32 = 0;
-    let rc0 = nv_list_signatures(c_path(&p2).as_ptr(), &mut one, &mut count_zero);
+    let rc0 = unsafe { nv_list_signatures(c_path(&p2).as_ptr(), &mut one, &mut count_zero) };
     let _ = std::fs::remove_file(&p2);
     assert_eq!(rc0, 0);
     assert_eq!(count_zero, 1, "capacity 0 writes nothing but reports total");
@@ -388,12 +389,12 @@ fn nv_get_signature_detail_with_chain_and_truncation() {
 
     // index 越界 → -4；null → -1
     let mut detail = NvSigDetail::default();
-    assert_eq!(nv_get_signature(path.as_ptr(), 9, &mut detail), -4);
-    assert_eq!(nv_get_signature(std::ptr::null(), 0, &mut detail), -1);
-    assert_eq!(nv_get_signature(path.as_ptr(), 0, std::ptr::null_mut()), -1);
+    assert_eq!(unsafe { nv_get_signature(path.as_ptr(), 9, &mut detail) }, -4);
+    assert_eq!(unsafe { nv_get_signature(std::ptr::null(), 0, &mut detail) }, -1);
+    assert_eq!(unsafe { nv_get_signature(path.as_ptr(), 0, std::ptr::null_mut()) }, -1);
 
     // 正常详情：cert_count=1（chain=[leaf_cert]）、publisher 穿透、meta 穿透
-    let rc = nv_get_signature(path.as_ptr(), 0, &mut detail);
+    let rc = unsafe { nv_get_signature(path.as_ptr(), 0, &mut detail) };
     let _ = std::fs::remove_file(&p);
     assert_eq!(rc, 0);
     assert_eq!(detail.cert_count, 1);
@@ -430,7 +431,7 @@ fn nv_get_signature_detail_with_chain_and_truncation() {
     .unwrap();
     let p2 = temp_bytes(&signed2);
     let mut detail2 = NvSigDetail::default();
-    let rc2 = nv_get_signature(c_path(&p2).as_ptr(), 0, &mut detail2);
+    let rc2 = unsafe { nv_get_signature(c_path(&p2).as_ptr(), 0, &mut detail2) };
     let _ = std::fs::remove_file(&p2);
     assert_eq!(rc2, 0);
     assert_eq!(detail2.publisher_len, 128, "publisher capped at 128");

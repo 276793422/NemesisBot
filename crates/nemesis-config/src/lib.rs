@@ -125,6 +125,7 @@ where
 
 /// Top-level application configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Default)]
 pub struct Config {
     #[serde(default)]
     pub agents: AgentsConfig,
@@ -165,6 +166,33 @@ pub struct Config {
     /// 托管 Agent 看板旗标（W2 P4；None = 全默认——超时兜底 3600s）。
     #[serde(default)]
     pub board: Option<BoardFlagConfig>,
+    /// 使用统计保留策略（A3；None = 全默认——30 天 rollup，无条数上限）。
+    #[serde(default)]
+    pub usage: Option<UsageConfig>,
+}
+
+/// 使用统计保留策略（`config.json` 的 `usage` 段；`#[serde(default)]`
+/// 每字段全可省）。gateway 周期任务（启动 + 每 6h）对 request_logs 执行
+/// retention sweep：到期行 rollup 进 daily_rollups 后删除；条数超限按
+/// 最旧优先直接裁。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct UsageConfig {
+    /// 明细行保留天数（0 = 不按天清理，只 rollup？——0 视为「永不按天
+    /// 清理」；默认 30）。rollup 聚合不受此值影响：到期行先聚合再删。
+    pub retention_days: i64,
+    /// 明细行条数上限（0 = 无上限；默认 500_000）。超出按 created_at
+    /// 最旧优先直接删除。
+    pub max_rows: i64,
+}
+
+impl Default for UsageConfig {
+    fn default() -> Self {
+        Self {
+            retention_days: 30,
+            max_rows: 500_000,
+        }
+    }
 }
 
 /// 看板系统旗标（`config.json` 的 `board` 段；`#[serde(default)]` 每字段全可省）。
@@ -176,6 +204,11 @@ pub struct BoardFlagConfig {
     pub dispatch_timeout_secs: u64,
     /// sweep 扫描间隔秒数（默认 20s；不暴露到配置模板，供测试调快）。
     pub dispatch_sweep_interval_secs: u64,
+    /// 指派后自动派发（W2.5 接口预留；默认 false = 不自动派发）。用户拍板
+    /// （2026-08-31）：现阶段不做自动派发，但留出接口——置 true 后，
+    /// `issue.assign` 指派给 worker 成功即自动走派发单一入口
+    /// （dispatch_issue_core；失败不回滚指派，⛔ 系统评论留痕）。
+    pub auto_dispatch: bool,
 }
 
 impl Default for BoardFlagConfig {
@@ -183,35 +216,11 @@ impl Default for BoardFlagConfig {
         Self {
             dispatch_timeout_secs: 3600,
             dispatch_sweep_interval_secs: 20,
+            auto_dispatch: false,
         }
     }
 }
 
-impl Default for Config {
-    fn default() -> Self {
-        Self {
-            agents: AgentsConfig::default(),
-            bindings: vec![],
-            session: SessionConfig::default(),
-            channels: ChannelsConfig::default(),
-            model_list: vec![],
-            gateway: GatewayConfig::default(),
-            tools: ToolsConfig::default(),
-            heartbeat: HeartbeatConfig::default(),
-            devices: DevicesConfig::default(),
-            logging: None,
-            security: None,
-            skills: None,
-            forge: None,
-            cluster: None,
-            memory: None,
-            mcp: None,
-            executor: None,
-            debug: None,
-            board: None,
-        }
-    }
-}
 
 // ============================================================================
 // Executor Separation Config (执行体剥离 + 沙盒开关)
@@ -288,6 +297,7 @@ impl Default for CaptureConfig {
 // ============================================================================
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Default)]
 pub struct AgentsConfig {
     #[serde(default)]
     pub defaults: AgentDefaults,
@@ -346,6 +356,7 @@ impl Default for ToolDocFoldingConfig {
 
 /// L1 (U19): `agents.lsp_tool` config section.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Default)]
 pub struct LspToolConfig {
     /// Enable the `lsp` semantic-code tool (default false).
     #[serde(default)]
@@ -360,18 +371,10 @@ pub struct LspToolConfig {
     pub idle_secs: Option<u64>,
 }
 
-impl Default for LspToolConfig {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            timeout_secs: None,
-            idle_secs: None,
-        }
-    }
-}
 
 /// I4: `agents.codex_tool` config section (mirrors claude_code_tool).
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Default)]
 pub struct CodexToolConfig {
     #[serde(default)]
     pub enabled: bool,
@@ -385,18 +388,10 @@ pub struct CodexToolConfig {
     pub sandbox: String,
 }
 
-impl Default for CodexToolConfig {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            timeout_secs: None,
-            sandbox: String::new(),
-        }
-    }
-}
 
 /// H7 (U13 half): `agents.claude_code_tool` config section.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Default)]
 pub struct ClaudeCodeToolConfig {
     /// Enable the claude_code delegation tool (default false).
     #[serde(default)]
@@ -412,28 +407,7 @@ pub struct ClaudeCodeToolConfig {
     pub permission_mode: String,
 }
 
-impl Default for ClaudeCodeToolConfig {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            timeout_secs: None,
-            permission_mode: String::new(),
-        }
-    }
-}
 
-impl Default for AgentsConfig {
-    fn default() -> Self {
-        Self {
-            defaults: AgentDefaults::default(),
-            list: vec![],
-            claude_code_tool: ClaudeCodeToolConfig::default(),
-            codex_tool: CodexToolConfig::default(),
-            lsp_tool: LspToolConfig::default(),
-            tool_doc_folding: ToolDocFoldingConfig::default(),
-        }
-    }
-}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentDefaults {
@@ -1138,9 +1112,9 @@ impl<'de> serde::Deserialize<'de> for McpConfig {
 /// 2. Claude Desktop 生态形状 `{"mcpServers": {name: {...}}}`（map，name
 ///    缺省时从 key 取；数组亦可）——LLM 抄外部配置进盘也能吃；
 /// 3. 仅顶层字段（无 servers/mcpServers）——视为空配置，不再报错。
-/// env/args/headers/tags 逐字段宽容（`null`/map/数组皆收，见
-/// [`flexible_string_list`]）；全局与 per-server timeout 皆宽容
-/// （`null`/字符串数字 → 默认值）。
+///    env/args/headers/tags 逐字段宽容（`null`/map/数组皆收，见
+///    [`flexible_string_list`]）；全局与 per-server timeout 皆宽容
+///    （`null`/字符串数字 → 默认值）。
 fn mcp_config_from_value(v: serde_json::Value) -> std::result::Result<McpConfig, String> {
     let obj = match v {
         serde_json::Value::Object(o) => o,
@@ -1367,7 +1341,7 @@ where
     let v = serde_json::Value::deserialize(d)?;
     Ok(match v {
         serde_json::Value::Null => default_mcp_timeout(),
-        serde_json::Value::Number(n) => n.as_i64().unwrap_or_else(|| default_mcp_timeout()),
+        serde_json::Value::Number(n) => n.as_i64().unwrap_or_else(default_mcp_timeout),
         serde_json::Value::String(s) => s.trim().parse().unwrap_or(default_mcp_timeout()),
         _ => default_mcp_timeout(),
     })
@@ -1665,6 +1639,7 @@ pub struct RegistrySecurityRules {
 
 /// Scanner configuration loaded from config.scanner.json.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Default)]
 pub struct ScannerFullConfig {
     #[serde(default)]
     pub enabled: Vec<String>,
@@ -1672,14 +1647,6 @@ pub struct ScannerFullConfig {
     pub engines: std::collections::HashMap<String, serde_json::Value>,
 }
 
-impl Default for ScannerFullConfig {
-    fn default() -> Self {
-        Self {
-            enabled: vec![],
-            engines: std::collections::HashMap::new(),
-        }
-    }
-}
 
 /// Engine state tracking for scanner engines.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -1917,7 +1884,7 @@ pub fn save_config(config_path: &Path, config: &mut Config) -> Result<()> {
     // workspace and other paths should be relative to the config directory
     if is_local_mode(config_path) {
         let config_dir = config_path.parent().unwrap_or(Path::new("."));
-        if config_dir.file_name().map_or(false, |n| n == ".nemesisbot") {
+        if config_dir.file_name().is_some_and(|n| n == ".nemesisbot") {
             // Get the expected default workspace path
             let user_home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("~"));
             let default_workspace_path = user_home.join(".nemesisbot").join("workspace");
@@ -1937,13 +1904,11 @@ pub fn save_config(config_path: &Path, config: &mut Config) -> Result<()> {
             }
 
             // Normalize logging directory
-            if let Some(ref mut logging) = config.logging {
-                if let Some(ref mut llm) = logging.llm {
-                    if llm.log_dir.is_empty() {
+            if let Some(ref mut logging) = config.logging
+                && let Some(ref mut llm) = logging.llm
+                    && llm.log_dir.is_empty() {
                         llm.log_dir = "logs/request_logs".to_string();
                     }
-                }
-            }
         }
     }
 
@@ -1985,15 +1950,12 @@ pub fn save_config(config_path: &Path, config: &mut Config) -> Result<()> {
 pub fn is_local_mode(config_path: &Path) -> bool {
     if let Ok(cwd) = std::env::current_dir() {
         let local_dir = cwd.join(".nemesisbot");
-        if local_dir.exists() {
-            if let Ok(canonical_config) = config_path.canonicalize() {
-                if let Ok(canonical_local) = local_dir.canonicalize() {
-                    if let Some(parent) = canonical_config.parent() {
+        if local_dir.exists()
+            && let Ok(canonical_config) = config_path.canonicalize()
+                && let Ok(canonical_local) = local_dir.canonicalize()
+                    && let Some(parent) = canonical_config.parent() {
                         return parent == canonical_local;
                     }
-                }
-            }
-        }
     }
     false
 }
@@ -2034,29 +1996,25 @@ pub fn apply_env_overrides(config: &mut Config) {
     if let Ok(v) = std::env::var("NEMESISBOT_AGENTS_DEFAULTS_IMAGE_MODEL") {
         config.agents.defaults.image_model = v;
     }
-    if let Ok(v) = std::env::var("NEMESISBOT_AGENTS_DEFAULTS_MAX_TOKENS") {
-        if let Ok(n) = v.parse() {
+    if let Ok(v) = std::env::var("NEMESISBOT_AGENTS_DEFAULTS_MAX_TOKENS")
+        && let Ok(n) = v.parse() {
             config.agents.defaults.max_tokens = n;
         }
-    }
-    if let Ok(v) = std::env::var("NEMESISBOT_AGENTS_DEFAULTS_TEMPERATURE") {
-        if let Ok(f) = v.parse() {
+    if let Ok(v) = std::env::var("NEMESISBOT_AGENTS_DEFAULTS_TEMPERATURE")
+        && let Ok(f) = v.parse() {
             config.agents.defaults.temperature = f;
         }
-    }
-    if let Ok(v) = std::env::var("NEMESISBOT_AGENTS_DEFAULTS_MAX_TOOL_ITERATIONS") {
-        if let Ok(n) = v.parse() {
+    if let Ok(v) = std::env::var("NEMESISBOT_AGENTS_DEFAULTS_MAX_TOOL_ITERATIONS")
+        && let Ok(n) = v.parse() {
             config.agents.defaults.max_tool_iterations = n;
         }
-    }
     if let Ok(v) = std::env::var("NEMESISBOT_AGENTS_DEFAULTS_CONCURRENT_REQUEST_MODE") {
         config.agents.defaults.concurrent_request_mode = v;
     }
-    if let Ok(v) = std::env::var("NEMESISBOT_AGENTS_DEFAULTS_QUEUE_SIZE") {
-        if let Ok(n) = v.parse() {
+    if let Ok(v) = std::env::var("NEMESISBOT_AGENTS_DEFAULTS_QUEUE_SIZE")
+        && let Ok(n) = v.parse() {
             config.agents.defaults.queue_size = n;
         }
-    }
 
     // Web channel
     if let Ok(v) = std::env::var("NEMESISBOT_CHANNELS_WEB_ENABLED") {
@@ -2065,31 +2023,28 @@ pub fn apply_env_overrides(config: &mut Config) {
     if let Ok(v) = std::env::var("NEMESISBOT_CHANNELS_WEB_HOST") {
         config.channels.web.host = v;
     }
-    if let Ok(v) = std::env::var("NEMESISBOT_CHANNELS_WEB_PORT") {
-        if let Ok(n) = v.parse() {
+    if let Ok(v) = std::env::var("NEMESISBOT_CHANNELS_WEB_PORT")
+        && let Ok(n) = v.parse() {
             config.channels.web.port = n;
         }
-    }
 
     // Gateway
     if let Ok(v) = std::env::var("NEMESISBOT_GATEWAY_HOST") {
         config.gateway.host = v;
     }
-    if let Ok(v) = std::env::var("NEMESISBOT_GATEWAY_PORT") {
-        if let Ok(n) = v.parse() {
+    if let Ok(v) = std::env::var("NEMESISBOT_GATEWAY_PORT")
+        && let Ok(n) = v.parse() {
             config.gateway.port = n;
         }
-    }
 
     // Heartbeat
     if let Ok(v) = std::env::var("NEMESISBOT_HEARTBEAT_ENABLED") {
         config.heartbeat.enabled = v.parse().unwrap_or(true);
     }
-    if let Ok(v) = std::env::var("NEMESISBOT_HEARTBEAT_INTERVAL") {
-        if let Ok(n) = v.parse() {
+    if let Ok(v) = std::env::var("NEMESISBOT_HEARTBEAT_INTERVAL")
+        && let Ok(n) = v.parse() {
             config.heartbeat.interval = n;
         }
-    }
 
     // Security
     if let Ok(v) = std::env::var("NEMESISBOT_SECURITY_ENABLED") {
@@ -2247,6 +2202,7 @@ pub fn default_config() -> Config {
         executor: None,
         debug: None,
         board: None,
+        usage: None,
     }
 }
 
@@ -2254,11 +2210,10 @@ impl Config {
     /// Get the workspace path from config.
     pub fn workspace_path(&self) -> String {
         let ws = &self.agents.defaults.workspace;
-        if ws.starts_with("~/") {
-            if let Some(home) = dirs::home_dir() {
+        if ws.starts_with("~/")
+            && let Some(home) = dirs::home_dir() {
                 return home.join(&ws[2..]).to_string_lossy().to_string();
             }
-        }
         if ws.is_empty() {
             return WorkspaceResolver::resolve(false)
                 .join("workspace")
@@ -2327,13 +2282,11 @@ impl Config {
         }
 
         // Default log directory
-        if let Some(ref mut logging) = self.logging {
-            if let Some(ref mut llm) = logging.llm {
-                if llm.log_dir.is_empty() {
+        if let Some(ref mut logging) = self.logging
+            && let Some(ref mut llm) = logging.llm
+                && llm.log_dir.is_empty() {
                     llm.log_dir = "logs/request_logs".to_string();
                 }
-            }
-        }
     }
 }
 
@@ -2360,12 +2313,11 @@ pub fn load_mcp_config(path: &Path) -> Result<McpConfig> {
 
     info!("[Config] MCP config file not found, trying embedded default");
     let defaults = get_embedded_defaults();
-    if !defaults.mcp.is_empty() {
-        if let Ok(cfg) = serde_json::from_slice::<McpConfig>(&defaults.mcp) {
+    if !defaults.mcp.is_empty()
+        && let Ok(cfg) = serde_json::from_slice::<McpConfig>(&defaults.mcp) {
             info!("[Config] MCP config loaded from embedded default");
             return Ok(cfg);
         }
-    }
 
     info!("[Config] Using hardcoded default MCP config");
     Ok(McpConfig {
@@ -2415,12 +2367,11 @@ pub fn load_security_config(path: &Path) -> Result<SecurityConfig> {
 
     info!("[Config] Security config file not found, trying embedded default");
     let defaults = get_embedded_defaults();
-    if !defaults.security.is_empty() {
-        if let Ok(cfg) = serde_json::from_slice::<SecurityConfig>(&defaults.security) {
+    if !defaults.security.is_empty()
+        && let Ok(cfg) = serde_json::from_slice::<SecurityConfig>(&defaults.security) {
             info!("[Config] Security config loaded from embedded default");
             return Ok(cfg);
         }
-    }
 
     info!("[Config] Using hardcoded default security config");
     Ok(SecurityConfig::default())
@@ -2466,12 +2417,11 @@ pub fn load_scanner_config(path: &Path) -> Result<ScannerFullConfig> {
 
     info!("[Config] Scanner config file not found, trying embedded default");
     let defaults = get_embedded_defaults();
-    if !defaults.scanner.is_empty() {
-        if let Ok(cfg) = serde_json::from_slice::<ScannerFullConfig>(&defaults.scanner) {
+    if !defaults.scanner.is_empty()
+        && let Ok(cfg) = serde_json::from_slice::<ScannerFullConfig>(&defaults.scanner) {
             info!("[Config] Scanner config loaded from embedded default");
             return Ok(cfg);
         }
-    }
 
     info!("[Config] Using hardcoded default scanner config");
     Ok(ScannerFullConfig::default())
@@ -2517,12 +2467,11 @@ pub fn load_skills_config(path: &Path) -> Result<SkillsFullConfig> {
 
     info!("[Config] Skills config file not found, trying embedded default");
     let defaults = get_embedded_defaults();
-    if !defaults.skills.is_empty() {
-        if let Ok(cfg) = serde_json::from_slice::<SkillsFullConfig>(&defaults.skills) {
+    if !defaults.skills.is_empty()
+        && let Ok(cfg) = serde_json::from_slice::<SkillsFullConfig>(&defaults.skills) {
             info!("[Config] Skills config loaded from embedded default");
             return Ok(cfg);
         }
-    }
 
     info!("[Config] Using hardcoded default skills config");
     Ok(SkillsFullConfig::default())
@@ -2651,14 +2600,13 @@ fn default_mcp_timeout() -> i64 {
 /// Expand ~ in a path to the user's home directory.
 /// Mirrors Go's `ExpandHome` function.
 pub fn expand_tilde(path: &str) -> PathBuf {
-    if path.starts_with("~/") || path == "~" {
-        if let Some(home) = dirs::home_dir() {
+    if (path.starts_with("~/") || path == "~")
+        && let Some(home) = dirs::home_dir() {
             if path == "~" {
                 return home;
             }
             return home.join(&path[2..]);
         }
-    }
     PathBuf::from(path)
 }
 

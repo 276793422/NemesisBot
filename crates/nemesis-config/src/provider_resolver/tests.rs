@@ -101,8 +101,9 @@ fn test_get_model_by_name_round_robin() {
     // Calling multiple times should distribute across models
     let m1 = get_model_by_name(&cfg, "pool").unwrap();
     let m2 = get_model_by_name(&cfg, "pool").unwrap();
-    // At least one should be different due to round-robin
-    assert!(m1.model != m2.model || m1.model == m2.model); // Always true, but verifies no panic
+    // smoke：两次调用都成功且返回非空模型名（round-robin 分布本身不在
+    // 此处断言——旧版用 `!= || ==` 恒真式被 clippy correctness deny）。
+    assert!(!m1.model.is_empty() && !m2.model.is_empty());
 }
 
 #[test]

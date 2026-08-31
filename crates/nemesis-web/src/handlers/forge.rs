@@ -12,6 +12,12 @@ pub struct ForgeHandler {
     _priv: (),
 }
 
+impl Default for ForgeHandler {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ForgeHandler {
     pub fn new() -> Self {
         Self { _priv: () }
@@ -386,8 +392,8 @@ impl ForgeHandler {
         // Also scan forge/skills/ directory for skill files
         let skills_dir = forge_dir(workspace).join("skills");
         let mut skill_files = Vec::new();
-        if skills_dir.exists() {
-            if let Ok(entries) = std::fs::read_dir(&skills_dir) {
+        if skills_dir.exists()
+            && let Ok(entries) = std::fs::read_dir(&skills_dir) {
                 for entry in entries.flatten() {
                     let path = entry.path();
                     if path.is_dir() {
@@ -402,7 +408,6 @@ impl ForgeHandler {
                     }
                 }
             }
-        }
 
         Ok(Some(serde_json::json!({
             "artifacts": artifacts,
@@ -585,16 +590,14 @@ impl ForgeHandler {
             let _ = std::fs::create_dir_all(parent);
         }
         if forge_config_path.exists() {
-            if let Ok(content) = std::fs::read_to_string(&forge_config_path) {
-                if let Ok(mut fc) = serde_json::from_str::<serde_json::Value>(&content) {
-                    if let Some(obj) = fc.as_object_mut() {
+            if let Ok(content) = std::fs::read_to_string(&forge_config_path)
+                && let Ok(mut fc) = serde_json::from_str::<serde_json::Value>(&content)
+                    && let Some(obj) = fc.as_object_mut() {
                         obj.insert("enabled".to_string(), serde_json::Value::Bool(enabled));
                         if let Ok(updated) = serde_json::to_string_pretty(&fc) {
                             let _ = std::fs::write(&forge_config_path, updated);
                         }
                     }
-                }
-            }
         } else {
             // Auto-create from defaults with the current enabled value.
             let mut default_config = nemesis_forge::config::ForgeConfig::default();
@@ -606,8 +609,8 @@ impl ForgeHandler {
 
         // Runtime start/stop: toggle Forge background tasks without restart.
         if enabled && !was_enabled {
-            if let Some(ref forge) = ctx.state.forge {
-                if !forge.is_running() {
+            if let Some(ref forge) = ctx.state.forge
+                && !forge.is_running() {
                     // start() requires Arc<Self>, so clone the Arc.
                     let forge_arc = forge.clone();
                     // Spawn start in background — it's async and takes Arc<Self>.
@@ -616,10 +619,9 @@ impl ForgeHandler {
                     });
                     tracing::info!("[Forge] Runtime start triggered via dashboard");
                 }
-            }
-        } else if !enabled && was_enabled {
-            if let Some(ref forge) = ctx.state.forge {
-                if forge.is_running() {
+        } else if !enabled && was_enabled
+            && let Some(ref forge) = ctx.state.forge
+                && forge.is_running() {
                     // stop() is async — spawn it.
                     let forge_arc = forge.clone();
                     tokio::spawn(async move {
@@ -627,8 +629,6 @@ impl ForgeHandler {
                     });
                     tracing::info!("[Forge] Runtime stop triggered via dashboard");
                 }
-            }
-        }
 
         Ok(Some(
             serde_json::json!({ "saved": true, "enabled": enabled }),
@@ -908,15 +908,12 @@ fn find_latest_file_path(dir: &PathBuf, ext: &str) -> Option<PathBuf> {
             if !path.is_file() {
                 continue;
             }
-            if path.extension().map(|e| e == ext).unwrap_or(false) {
-                if let Ok(meta) = path.metadata() {
-                    if let Ok(modified) = meta.modified() {
-                        if latest.as_ref().map_or(true, |(_, t)| modified > *t) {
+            if path.extension().map(|e| e == ext).unwrap_or(false)
+                && let Ok(meta) = path.metadata()
+                    && let Ok(modified) = meta.modified()
+                        && latest.as_ref().is_none_or(|(_, t)| modified > *t) {
                             latest = Some((path, modified));
                         }
-                    }
-                }
-            }
         }
     }
     latest.map(|(p, _)| p)

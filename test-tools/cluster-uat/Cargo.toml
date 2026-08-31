@@ -17,3 +17,6 @@ tokio-tungstenite = { workspace = true }
 futures = { workspace = true }
 anyhow = { workspace = true }
 chrono = { workspace = true }
+
+[lints]
+workspace = true

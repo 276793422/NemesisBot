@@ -36,7 +36,7 @@ pub fn format_report_from_report(report: &ReflectionReport) -> String {
     let mut sb = String::new();
 
     // Header
-    sb.push_str(&format!("# Forge Reflection Report\n\n"));
+    sb.push_str("# Forge Reflection Report\n\n");
     sb.push_str(&format!("**Date**: {}\n", report.date));
     sb.push_str(&format!("**Period**: {}\n", report.period));
     sb.push_str(&format!("**Focus**: {}\n\n", report.focus));
@@ -100,13 +100,12 @@ pub fn format_report_from_report(report: &ReflectionReport) -> String {
     }
 
     // LLM deep analysis
-    if let Some(ref llm) = report.llm_insights {
-        if !llm.is_empty() {
+    if let Some(ref llm) = report.llm_insights
+        && !llm.is_empty() {
             sb.push_str("## LLM Deep Analysis\n\n");
             sb.push_str(llm);
             sb.push_str("\n\n");
         }
-    }
 
     // Phase 5: Trace insights
     if let Some(ref trace_stats) = report.trace_stats {
@@ -176,7 +175,7 @@ pub fn format_report(
         report.push_str("| Tool | Count | Success | Avg Duration |\n");
         report.push_str("|------|-------|---------|-------------|\n");
         let mut tools: Vec<_> = stats.tool_counts.iter().collect();
-        tools.sort_by(|a, b| b.1.count.cmp(&a.1.count));
+        tools.sort_by_key(|t| std::cmp::Reverse(t.1.count));
         for (tool, ts) in &tools {
             report.push_str(&format!(
                 "| {} | {} | {} | {:.0}ms |\n",

@@ -1,3 +1,9 @@
+// 刻意设计：本文件测试用进程级串行锁（GLOBAL_STATE_LOCK 等 env/资源互斥锁）
+// 保护环境操作，guard 必须跨 async 测试体的 await 持有；#[tokio::test] 每个
+// 测试独立 current_thread runtime，持锁方在自己线程上恢复运行，不会死锁。
+// 测试域统一豁免（逐处 allow ~200 个不现实）。
+#![allow(clippy::await_holding_lock)]
+
 use tempfile::TempDir;
 
 #[test]
@@ -162,7 +168,7 @@ fn test_multiple_provider_operations() {
 fn test_auth_credential_fields() {
     let cred = nemesis_auth::AuthCredential::login_paste_token("openai", "test-key-12345").unwrap();
     assert!(!cred.auth_method.is_empty());
-    assert!(cred.is_expired() == false || cred.is_expired() == true); // Just ensure it doesn't panic
+    assert!(!cred.is_expired() || cred.is_expired()); // Just ensure it doesn't panic
 }
 
 #[test]

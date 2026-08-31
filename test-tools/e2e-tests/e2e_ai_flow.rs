@@ -3,7 +3,6 @@
 //! Tests the complete AI pipeline: Message → Agent → LLM → Tool → Response
 //! using the test AI server as the LLM backend.
 
-use reqwest;
 use serde_json::Value;
 use std::time::Duration;
 
@@ -21,7 +20,7 @@ async fn chat_request(messages: Vec<Value>, tools: Vec<Value>) -> Value {
     }
 
     let resp = client
-        .post(&format!("{}/v1/chat/completions", AI_SERVER_URL))
+        .post(format!("{}/v1/chat/completions", AI_SERVER_URL))
         .json(&body)
         .timeout(Duration::from_secs(10))
         .send()

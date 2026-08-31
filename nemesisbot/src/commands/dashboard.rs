@@ -120,15 +120,14 @@ async fn start_and_wait(
     while start.elapsed() < timeout {
         tokio::time::sleep(Duration::from_millis(500)).await;
 
-        if let Some(info) = read_gateway_state(state_path) {
-            if info.web_port > 0 {
+        if let Some(info) = read_gateway_state(state_path)
+            && info.web_port > 0 {
                 let base_url = format!("http://{}:{}", info.web_host, info.web_port);
                 if check_health(&base_url).await.is_ok() {
                     println!("  Gateway started (port {})", info.web_port);
                     return Ok((info.web_host, info.web_port));
                 }
             }
-        }
     }
 
     Err("Gateway did not start within 30 seconds".into())

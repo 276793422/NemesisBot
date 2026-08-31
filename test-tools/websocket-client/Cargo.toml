@@ -35,3 +35,6 @@ thiserror = { workspace = true }
 
 # Command line parsing
 clap = { workspace = true }
+
+[lints]
+workspace = true

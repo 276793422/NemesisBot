@@ -98,6 +98,7 @@ impl Default for ClamAVEngineConfig {
 
 /// Engine state (matches Go config.EngineState).
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Default)]
 pub struct EngineState {
     #[serde(default)]
     pub install_status: String,
@@ -111,17 +112,6 @@ pub struct EngineState {
     pub last_db_update: String,
 }
 
-impl Default for EngineState {
-    fn default() -> Self {
-        Self {
-            install_status: String::new(),
-            install_error: String::new(),
-            db_status: String::new(),
-            last_install_attempt: String::new(),
-            last_db_update: String::new(),
-        }
-    }
-}
 
 /// Load scanner config from file.
 fn load_scanner_config(path: &std::path::Path) -> Result<ScannerFullConfig> {
@@ -167,11 +157,10 @@ fn resolve_tools_dir(security_cfg: &std::path::Path) -> PathBuf {
 fn lookup_system_clamav() -> Option<String> {
     // Check common names
     for name in &["clamd", "clamscan", "clamd.exe", "clamscan.exe"] {
-        if let Ok(path) = which::which(name) {
-            if let Some(parent) = path.parent() {
+        if let Ok(path) = which::which(name)
+            && let Some(parent) = path.parent() {
                 return Some(parent.to_string_lossy().to_string());
             }
-        }
     }
     None
 }
@@ -540,8 +529,8 @@ fn cmd_check(security_cfg: &std::path::Path) -> Result<()> {
     println!("\nScanner Engine Status:");
     println!("{}", "-".repeat(90));
     println!(
-        "  {:<10} {:<10} {:<12} {:<10} {:<20} {}",
-        "Engine", "Status", "Install", "Database", "Address", "URL"
+        "  {:<10} {:<10} {:<12} {:<10} {:<20} URL",
+        "Engine", "Status", "Install", "Database", "Address"
     );
     println!("{}", "-".repeat(90));
 
@@ -648,11 +637,10 @@ fn cmd_check(security_cfg: &std::path::Path) -> Result<()> {
     );
 
     // Save if state changed
-    if changed {
-        if let Err(e) = save_scanner_config(security_cfg, &cfg) {
+    if changed
+        && let Err(e) = save_scanner_config(security_cfg, &cfg) {
             eprintln!("Warning: failed to save updated state: {}", e);
         }
-    }
 
     // Print recommendations
     let mut recommendations = Vec::new();
@@ -675,14 +663,13 @@ fn cmd_check(security_cfg: &std::path::Path) -> Result<()> {
                         name, name
                     ));
                 }
-                "installed" => {
-                    if engine_cfg.state.db_status == "missing" {
+                "installed"
+                    if engine_cfg.state.db_status == "missing" => {
                         recommendations.push(format!(
                             "  - Run 'scanner {} update' to download virus database",
                             name
                         ));
                     }
-                }
                 _ => {}
             }
         }
@@ -711,7 +698,7 @@ fn cmd_check(security_cfg: &std::path::Path) -> Result<()> {
 /// drop → 必 panic）。旧实现 `scanner clamav install --url ...` 会在下载
 /// 完成后崩溃。改成异步 client 后无嵌套 runtime，drop 安全。
 async fn download_engine(url: &str, target_dir: &std::path::Path) -> Result<String> {
-    let file_name = url.split('/').last().unwrap_or("engine.zip");
+    let file_name = url.split('/').next_back().unwrap_or("engine.zip");
     let archive_path = target_dir.join(file_name);
 
     // Download the file（异步 client，同 300s 总超时语义）
@@ -816,7 +803,7 @@ async fn download_engine(url: &str, target_dir: &std::path::Path) -> Result<Stri
         std::path::Path::new(&extracted_dir),
         &["clamd.exe", "clamd", "clamscan.exe", "clamscan"],
     )
-    .unwrap_or_else(|| extracted_dir);
+    .unwrap_or(extracted_dir);
 
     Ok(detected_dir)
 }
@@ -958,12 +945,11 @@ async fn cmd_clamav_install_inner(
     }
 
     // Step 2: Check system PATH
-    if detected_path.is_empty() {
-        if let Some(sys_path) = lookup_system_clamav() {
+    if detected_path.is_empty()
+        && let Some(sys_path) = lookup_system_clamav() {
             detected_path = sys_path.clone();
             println!("  clamav           found in system PATH: {}", sys_path);
         }
-    }
 
     // Step 3: Download if still not found
     // URL priority: --url override > config url > error

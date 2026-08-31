@@ -1349,14 +1349,13 @@ mod scripted_spawn_tests {
             if line.is_empty() {
                 continue;
             }
-            if let Ok(v) = serde_json::from_str::<serde_json::Value>(line) {
-                if v["type"] == "ws_key" {
+            if let Ok(v) = serde_json::from_str::<serde_json::Value>(line)
+                && v["type"] == "ws_key" {
                     return v["data"]["key"]
                         .as_str()
                         .expect("key field in ws_key message")
                         .to_string();
                 }
-            }
         }
         panic!("no ws_key line found in child log:\n{}", content);
     }

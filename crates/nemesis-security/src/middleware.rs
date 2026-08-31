@@ -450,6 +450,7 @@ impl SecurityMiddleware {
 ///
 /// Equivalent to Go's `BatchOperationRequest`.
 #[derive(Debug, Clone)]
+#[derive(Default)]
 pub struct BatchOperationRequest {
     /// Batch ID.
     pub id: String,
@@ -463,17 +464,6 @@ pub struct BatchOperationRequest {
     pub description: String,
 }
 
-impl Default for BatchOperationRequest {
-    fn default() -> Self {
-        Self {
-            id: String::new(),
-            operations: Vec::new(),
-            user: String::new(),
-            source: String::new(),
-            description: String::new(),
-        }
-    }
-}
 
 // ---------------------------------------------------------------------------
 // Permission factories

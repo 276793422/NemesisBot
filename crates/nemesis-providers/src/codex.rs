@@ -229,8 +229,8 @@ pub fn resolve_codex_model(model: &str) -> ResolvedCodexModel {
     }
 
     // Strip openai/ prefix
-    let m = if m.starts_with("openai/") {
-        &m[7..]
+    let m = if let Some(stripped) = m.strip_prefix("openai/") {
+        stripped
     } else if m.contains('/') {
         return ResolvedCodexModel {
             model: CODEX_DEFAULT_MODEL.to_string(),
@@ -327,11 +327,10 @@ fn parse_codex_response(data: &serde_json::Value) -> LLMResponse {
                 "message" => {
                     if let Some(content_arr) = item.get("content").and_then(|c| c.as_array()) {
                         for c in content_arr {
-                            if c.get("type").and_then(|t| t.as_str()) == Some("output_text") {
-                                if let Some(text) = c.get("text").and_then(|t| t.as_str()) {
+                            if c.get("type").and_then(|t| t.as_str()) == Some("output_text")
+                                && let Some(text) = c.get("text").and_then(|t| t.as_str()) {
                                     content.push_str(text);
                                 }
-                            }
                         }
                     }
                 }

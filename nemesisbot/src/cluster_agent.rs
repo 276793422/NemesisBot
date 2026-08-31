@@ -171,7 +171,7 @@ async fn execute_new_task(
     // W2 P4 per-task cancel：执行窗口内注册令牌，cancel_task 下行命中 Running
     // 时 token.cancel() 打断 LLM 循环；run 结束必须注销（防 DashMap 泄漏）。
     task_list.register_cancel_token(&task.task_id, token.clone());
-    if let Some(ref obs) = cluster_observer {
+    if let Some(obs) = cluster_observer {
         obs.set_task_context(task.task_id.clone(), task.source.node_id.clone());
         obs.emit_conversation_start(
             &trace_id,
@@ -185,7 +185,7 @@ async fn execute_new_task(
         .run_with_trace(&instance, &task.content, &context, &trace_id, false, &token, None)
         .await;
     task_list.unregister_cancel_token(&task.task_id);
-    if let Some(ref obs) = cluster_observer {
+    if let Some(obs) = cluster_observer {
         let final_msg = extract_final_message(&events);
         let rounds = count_llm_rounds(&events);
         obs.emit_conversation_end(
@@ -300,7 +300,7 @@ async fn resume_task(
     // resume_execution_with_token，cancel_task 可中断续行中的 LLM 循环）。
     let token = tokio_util::sync::CancellationToken::new();
     task_list.register_cancel_token(&task.task_id, token.clone());
-    if let Some(ref obs) = cluster_observer {
+    if let Some(obs) = cluster_observer {
         obs.set_task_context(task.task_id.clone(), task.source.node_id.clone());
         obs.emit_conversation_start(
             &trace_id,
@@ -314,7 +314,7 @@ async fn resume_task(
         .resume_execution_with_token(&instance, &context, &trace_id, &token)
         .await;
     task_list.unregister_cancel_token(&task.task_id);
-    if let Some(ref obs) = cluster_observer {
+    if let Some(obs) = cluster_observer {
         let final_msg = extract_final_message(&events);
         let rounds = count_llm_rounds(&events);
         obs.emit_conversation_end(
@@ -555,24 +555,20 @@ fn extract_async_info(
             }
 
             // Fallback: text-based "Task ID: " parsing.
-            if child_task_id.is_none() && turn.content.contains("Task ID:") {
-                if let Some(pos) = turn.content.rfind("Task ID: ") {
+            if child_task_id.is_none() && turn.content.contains("Task ID:")
+                && let Some(pos) = turn.content.rfind("Task ID: ") {
                     let rest = &turn.content[pos + "Task ID: ".len()..];
                     child_task_id = rest.split_whitespace().next().map(String::from);
                 }
-            }
 
             if child_task_id.is_some() {
                 // Look at the preceding assistant turn for the tool_call_id.
-                if i > 0 {
-                    if let Some(prev) = conversation.get(i - 1) {
-                        if prev.role == "assistant" {
-                            if let Some(tc) = prev.tool_calls.first() {
+                if i > 0
+                    && let Some(prev) = conversation.get(i - 1)
+                        && prev.role == "assistant"
+                            && let Some(tc) = prev.tool_calls.first() {
                                 tool_call_id = Some(tc.id.clone());
                             }
-                        }
-                    }
-                }
                 break;
             }
         }

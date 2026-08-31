@@ -137,7 +137,7 @@ impl LineChannel {
         let _ = hex::encode(expected); // for debugging if needed
 
         // Constant-time comparison
-        hex::decode(signature).ok().map_or(false, |sig| {
+        hex::decode(signature).ok().is_some_and(|sig| {
             let expected_bytes = expected.as_slice();
             if sig.len() != expected_bytes.len() {
                 return false;

@@ -372,10 +372,10 @@ pub async fn handle_api_models(
     let sanitized_models: Vec<serde_json::Value> = models
         .into_iter()
         .map(|mut m| {
-            if let Some(obj) = m.as_object_mut() {
-                if let Some(key) = obj.get_mut("api_key") {
-                    if let Some(s) = key.as_str() {
-                        if !s.is_empty() {
+            if let Some(obj) = m.as_object_mut()
+                && let Some(key) = obj.get_mut("api_key")
+                    && let Some(s) = key.as_str()
+                        && !s.is_empty() {
                             *key = if s.len() <= 4 {
                                 serde_json::Value::String("****".to_string())
                             } else {
@@ -383,9 +383,6 @@ pub async fn handle_api_models(
                                 serde_json::Value::String(format!("{}****", &s[..end]))
                             };
                         }
-                    }
-                }
-            }
             m
         })
         .collect();
@@ -697,14 +694,12 @@ fn find_latest_request_summary(dir: &std::path::Path) -> Option<String> {
         if !entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
             continue;
         }
-        if let Ok(meta) = entry.metadata() {
-            if let Ok(mtime) = meta.modified() {
-                if mtime > latest_dir_time {
+        if let Ok(meta) = entry.metadata()
+            && let Ok(mtime) = meta.modified()
+                && mtime > latest_dir_time {
                     latest_dir_time = mtime;
                     latest_dir = Some(entry.path());
                 }
-            }
-        }
     }
 
     let target_dir = latest_dir?;
@@ -720,14 +715,12 @@ fn find_latest_request_summary(dir: &std::path::Path) -> Option<String> {
             if !name.ends_with(".md") {
                 continue;
             }
-            if let Ok(meta) = entry.metadata() {
-                if let Ok(mtime) = meta.modified() {
-                    if mtime > latest_file_time {
+            if let Ok(meta) = entry.metadata()
+                && let Ok(mtime) = meta.modified()
+                    && mtime > latest_file_time {
                         latest_file_time = mtime;
                         latest_file = Some(entry.path().to_string_lossy().to_string());
                     }
-                }
-            }
         }
     }
 
@@ -822,8 +815,8 @@ fn sanitize_map(map: &mut serde_json::Map<String, serde_json::Value>) {
     for key in keys_to_sanitize {
         if let Some(value) = map.get_mut(&key) {
             match value {
-                serde_json::Value::String(s) => {
-                    if !s.is_empty() {
+                serde_json::Value::String(s)
+                    if !s.is_empty() => {
                         if s.len() <= 4 {
                             *value = serde_json::Value::String("****".to_string());
                         } else {
@@ -831,7 +824,6 @@ fn sanitize_map(map: &mut serde_json::Map<String, serde_json::Value>) {
                             *value = serde_json::Value::String(format!("{}****", &s[..end]));
                         }
                     }
-                }
                 serde_json::Value::Object(inner_map) => {
                     sanitize_map(inner_map);
                 }
@@ -1013,11 +1005,10 @@ fn chat_session_id(key: &str) -> String {
 fn resolve_fork_store(
     state: &AppState,
 ) -> Result<Arc<nemesis_agent::session::SessionStore>, (StatusCode, Json<serde_json::Value>)> {
-    if let Some(al) = state.agent_loop.read().as_ref() {
-        if let Some(store) = al.session_store() {
+    if let Some(al) = state.agent_loop.read().as_ref()
+        && let Some(store) = al.session_store() {
             return Ok(store.clone());
         }
-    }
     let home = state.home.as_deref().ok_or_else(|| {
         (
             StatusCode::SERVICE_UNAVAILABLE,

@@ -17,11 +17,10 @@ pub fn classify_error(error_msg: &str, provider: &str, model: &str) -> Option<Fa
     }
 
     // Try HTTP status code extraction first.
-    if let Some(status) = extract_http_status(&msg) {
-        if let Some(err) = classify_by_status(status, provider, model) {
+    if let Some(status) = extract_http_status(&msg)
+        && let Some(err) = classify_by_status(status, provider, model) {
             return Some(err);
         }
-    }
 
     // Message pattern matching (priority order).
     classify_by_message(&msg, provider, model)
@@ -195,13 +194,11 @@ fn extract_http_status(msg: &str) -> Option<u16> {
     ];
 
     for p in &patterns {
-        if let Some(caps) = p.captures(msg) {
-            if let Some(m) = caps.get(1) {
-                if let Ok(code) = m.as_str().parse::<u16>() {
+        if let Some(caps) = p.captures(msg)
+            && let Some(m) = caps.get(1)
+                && let Ok(code) = m.as_str().parse::<u16>() {
                     return Some(code);
                 }
-            }
-        }
     }
     None
 }

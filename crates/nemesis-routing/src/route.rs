@@ -93,8 +93,8 @@ impl RouteResolver {
         if let (Some(kind), Some(id)) = (&input.peer_kind, &input.peer_id) {
             let kind_trimmed = kind.trim();
             let id_trimmed = id.trim();
-            if !kind_trimmed.is_empty() && !id_trimmed.is_empty() {
-                if let Some(b) = self.find_peer_match(&bindings, kind_trimmed, id_trimmed) {
+            if !kind_trimmed.is_empty() && !id_trimmed.is_empty()
+                && let Some(b) = self.find_peer_match(&bindings, kind_trimmed, id_trimmed) {
                     return self.build_route(
                         &b.agent_id,
                         &channel,
@@ -103,15 +103,14 @@ impl RouteResolver {
                         "binding.peer",
                     );
                 }
-            }
         }
 
         // Priority 2: Parent peer binding
         if let (Some(kind), Some(id)) = (&input.parent_peer_kind, &input.parent_peer_id) {
             let kind_trimmed = kind.trim();
             let id_trimmed = id.trim();
-            if !kind_trimmed.is_empty() && !id_trimmed.is_empty() {
-                if let Some(b) = self.find_peer_match(&bindings, kind_trimmed, id_trimmed) {
+            if !kind_trimmed.is_empty() && !id_trimmed.is_empty()
+                && let Some(b) = self.find_peer_match(&bindings, kind_trimmed, id_trimmed) {
                     return self.build_route(
                         &b.agent_id,
                         &channel,
@@ -120,14 +119,13 @@ impl RouteResolver {
                         "binding.peer.parent",
                     );
                 }
-            }
         }
 
         // Priority 3: Guild binding
         if let Some(guild_id) = &input.guild_id {
             let guild_trimmed = guild_id.trim();
-            if !guild_trimmed.is_empty() {
-                if let Some(b) = self.find_guild_match(&bindings, guild_trimmed) {
+            if !guild_trimmed.is_empty()
+                && let Some(b) = self.find_guild_match(&bindings, guild_trimmed) {
                     return self.build_route(
                         &b.agent_id,
                         &channel,
@@ -136,14 +134,13 @@ impl RouteResolver {
                         "binding.guild",
                     );
                 }
-            }
         }
 
         // Priority 4: Team binding
         if let Some(team_id) = &input.team_id {
             let team_trimmed = team_id.trim();
-            if !team_trimmed.is_empty() {
-                if let Some(b) = self.find_team_match(&bindings, team_trimmed) {
+            if !team_trimmed.is_empty()
+                && let Some(b) = self.find_team_match(&bindings, team_trimmed) {
                     return self.build_route(
                         &b.agent_id,
                         &channel,
@@ -152,7 +149,6 @@ impl RouteResolver {
                         "binding.team",
                     );
                 }
-            }
         }
 
         // Priority 5: Account binding (specific account_id, no peer/guild/team)
@@ -222,14 +218,11 @@ impl RouteResolver {
         guild_id: &str,
     ) -> Option<&'a AgentBinding> {
         for b in bindings {
-            match &b.match_guild_id {
-                Some(g) => {
-                    let g = g.trim();
-                    if !g.is_empty() && g == guild_id {
-                        return Some(*b);
-                    }
+            if let Some(g) = &b.match_guild_id {
+                let g = g.trim();
+                if !g.is_empty() && g == guild_id {
+                    return Some(*b);
                 }
-                None => {}
             }
         }
         None
@@ -242,14 +235,11 @@ impl RouteResolver {
         team_id: &str,
     ) -> Option<&'a AgentBinding> {
         for b in bindings {
-            match &b.match_team_id {
-                Some(t) => {
-                    let t = t.trim();
-                    if !t.is_empty() && t == team_id {
-                        return Some(*b);
-                    }
+            if let Some(t) = &b.match_team_id {
+                let t = t.trim();
+                if !t.is_empty() && t == team_id {
+                    return Some(*b);
                 }
-                None => {}
             }
         }
         None

@@ -9,9 +9,9 @@
 //! - 3495-3550 GitTool：未知 action / 非 git 目录 / 真仓库 status。
 //! - 1517-1520 WebSearchTool::extract_query（dead_code，仅测试可达）+
 //!   无 provider 配置报错。
-//! 注：1511-1736 的 search_brave/tavily/perplexity 等为硬编码外部
-//! HTTPS 端点的真实网络调用（无 base-url 覆盖入口），按纪律 3 不做真实
-//! 网络测试 → 网络依赖组，见最终报告。
+//!   注：1511-1736 的 search_brave/tavily/perplexity 等为硬编码外部
+//!   HTTPS 端点的真实网络调用（无 base-url 覆盖入口），按纪律 3 不做真实
+//!   网络测试 → 网络依赖组，见最终报告。
 
 use super::Tool;
 use crate::context::RequestContext;
@@ -293,15 +293,14 @@ async fn git_tool_status_and_unknown_action() {
         .arg("init")
         .current_dir(ws.path())
         .output();
-    if let Ok(o) = init {
-        if o.status.success() {
+    if let Ok(o) = init
+        && o.status.success() {
             let out = t
                 .execute(r#"{"action":"status"}"#, &ctx())
                 .await
                 .expect("status in fresh repo");
             assert!(!out.trim().is_empty(), "got: {}", out);
         }
-    }
 }
 
 /// WebSearchTool：默认（无 provider）配置 → execute 报「未配置」；

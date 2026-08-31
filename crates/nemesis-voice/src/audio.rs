@@ -28,11 +28,10 @@ pub struct AudioDeviceInfo {
 pub fn list_devices() -> Result<Vec<AudioDeviceInfo>> {
     let host = cpal::default_host();
     let mut devices = Vec::new();
-    let default_input = host.default_input_device().map(|d| d.name().ok()).flatten();
+    let default_input = host.default_input_device().and_then(|d| d.name().ok());
     let default_output = host
         .default_output_device()
-        .map(|d| d.name().ok())
-        .flatten();
+        .and_then(|d| d.name().ok());
 
     for (i, dev) in host.input_devices()?.enumerate() {
         let name = dev.name().unwrap_or_else(|_| "Unknown".into());

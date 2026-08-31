@@ -296,7 +296,7 @@ impl LifecycleService for AgentLoopServiceAdapter {
                         }
                     }
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
-                        total_dropped += n as u64;
+                        total_dropped += n;
                         tracing::warn!(
                             "[Main] Agent inbound bridge lagged by {} messages (total dropped: {})",
                             n, total_dropped

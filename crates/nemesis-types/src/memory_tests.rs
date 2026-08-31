@@ -16,7 +16,7 @@ fn test_memory_type_display() {
 fn test_memory_type_clone_copy() {
     let mt = MemoryType::ShortTerm;
     let mt_copy = mt;
-    let mt_clone = mt.clone();
+    let mt_clone = mt;
 
     assert_eq!(mt, mt_copy);
     assert_eq!(mt, mt_clone);

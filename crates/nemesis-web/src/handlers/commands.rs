@@ -14,6 +14,12 @@ use std::path::{Path, PathBuf};
 
 pub struct CommandsHandler;
 
+impl Default for CommandsHandler {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl CommandsHandler {
     pub fn new() -> Self {
         Self

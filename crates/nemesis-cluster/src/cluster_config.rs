@@ -256,7 +256,7 @@ pub fn create_static_config(node_id: &str, node_name: &str, address: &str) -> St
 /// both are preserved as-is. This makes the mapping user-input → key → peer_id
 /// an identity function for those characters (no round-trip loss).
 pub fn sanitize_peer_key(peer_id: &str) -> String {
-    peer_id.replace('.', "_").replace(':', "_")
+    peer_id.replace(['.', ':'], "_")
 }
 
 /// Append a peer as a `[peers.{sanitized_id}]` subtable to peers.toml.
@@ -328,7 +328,7 @@ pub fn append_peer_to_file_with_name(
     })?;
 
     // Ensure `peers` is a table (replace if it was a legacy array)
-    if !table.get("peers").map_or(false, |v| v.is_table()) {
+    if !table.get("peers").is_some_and(|v| v.is_table()) {
         table.insert(
             "peers".to_string(),
             toml::Value::Table(toml::value::Table::new()),
@@ -475,7 +475,7 @@ pub fn ensure_node_id(path: &Path, node_id: &str) -> Result<bool, ConfigError> {
     })?;
 
     // Ensure [node] is a table
-    if !table.get("node").map_or(false, |v| v.is_table()) {
+    if !table.get("node").is_some_and(|v| v.is_table()) {
         table.insert(
             "node".to_string(),
             toml::Value::Table(toml::value::Table::new()),

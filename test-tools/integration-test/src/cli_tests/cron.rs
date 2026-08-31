@@ -21,7 +21,7 @@ pub async fn test_cli_cron_list(ws: &TestWorkspace, bin: &Path) -> Vec<TestResul
     } else {
         results.push(pass(
             &format!("{}/output", suite),
-            &format!("exit={} (may need gateway)", output.exit_code),
+            format!("exit={} (may need gateway)", output.exit_code),
         ));
     }
 
@@ -51,7 +51,7 @@ pub async fn test_cli_cron_crud(ws: &TestWorkspace, bin: &Path) -> Vec<TestResul
         .await;
     results.push(pass(
         &format!("{}/add_interval", suite),
-        &format!("exit={}", add.exit_code),
+        format!("exit={}", add.exit_code),
     ));
 
     // cron add (cron expression)
@@ -72,7 +72,7 @@ pub async fn test_cli_cron_crud(ws: &TestWorkspace, bin: &Path) -> Vec<TestResul
         .await;
     results.push(pass(
         &format!("{}/add_cron_expr", suite),
-        &format!("exit={}", add_cron.exit_code),
+        format!("exit={}", add_cron.exit_code),
     ));
 
     // cron add with --deliver --to --channel
@@ -98,35 +98,35 @@ pub async fn test_cli_cron_crud(ws: &TestWorkspace, bin: &Path) -> Vec<TestResul
         .await;
     results.push(pass(
         &format!("{}/add_deliver", suite),
-        &format!("exit={}", add_deliver.exit_code),
+        format!("exit={}", add_deliver.exit_code),
     ));
 
     // cron list (should show jobs)
     let list = ws.run_cli(bin, &["cron", "list"]).await;
     results.push(pass(
         &format!("{}/list_after_add", suite),
-        &format!("exit={}", list.exit_code),
+        format!("exit={}", list.exit_code),
     ));
 
     // cron enable (with first job id if available)
     let enable = ws.run_cli(bin, &["cron", "enable", "test-job"]).await;
     results.push(pass(
         &format!("{}/enable", suite),
-        &format!("exit={}", enable.exit_code),
+        format!("exit={}", enable.exit_code),
     ));
 
     // cron disable
     let disable = ws.run_cli(bin, &["cron", "disable", "test-job"]).await;
     results.push(pass(
         &format!("{}/disable", suite),
-        &format!("exit={}", disable.exit_code),
+        format!("exit={}", disable.exit_code),
     ));
 
     // cron remove
     let remove = ws.run_cli(bin, &["cron", "remove", "test-job"]).await;
     results.push(pass(
         &format!("{}/remove", suite),
-        &format!("exit={}", remove.exit_code),
+        format!("exit={}", remove.exit_code),
     ));
 
     // Cleanup remaining jobs

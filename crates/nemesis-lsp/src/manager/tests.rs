@@ -3,6 +3,12 @@
 //! rust-analyzer is not installed — the skip itself mirrors the
 //! registration semantics (no server ⇒ no capability).
 
+// 刻意设计：本文件测试用进程级串行锁（GLOBAL_STATE_LOCK 等 env/资源互斥锁）
+// 保护环境操作，guard 必须跨 async 测试体的 await 持有；#[tokio::test] 每个
+// 测试独立 current_thread runtime，持锁方在自己线程上恢复运行，不会死锁。
+// 测试域统一豁免（逐处 allow ~200 个不现实）。
+#![allow(clippy::await_holding_lock)]
+
 use super::*;
 use crate::registry::Lang;
 
@@ -164,8 +170,8 @@ async fn query_until(
 
 /// Serialize the two live rust-analyzer tests: each spawns a real server
 /// + cargo metadata; in parallel (default test threads) they contend for
-/// CPU and stretch cold-start past any sane retry window. (tokio's Mutex
-/// isn't const-constructible, hence the OnceLock.)
+///   CPU and stretch cold-start past any sane retry window. (tokio's Mutex
+///   isn't const-constructible, hence the OnceLock.)
 static LIVE_LOCK: std::sync::OnceLock<tokio::sync::Mutex<()>> = std::sync::OnceLock::new();
 
 async fn live_lock() -> tokio::sync::MutexGuard<'static, ()> {
@@ -483,7 +489,7 @@ fn plant_fake_gopls(mode: &str) -> (tempfile::TempDir, PathRestore) {
 
     let orig = std::env::var("PATH").unwrap_or_default();
     let new_path = std::env::join_paths(std::iter::once(dir.path().to_path_buf()).chain(
-        std::env::split_paths(&orig).map(std::path::PathBuf::from),
+        std::env::split_paths(&orig),
     ))
     .unwrap()
     .to_string_lossy()

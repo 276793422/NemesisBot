@@ -95,7 +95,7 @@ fn init_logger_config_general_without_level_key_keeps_defaults() {
         "logging": {"general": {"enabled": true, "enable_console": false}}
     });
     fs::write(&cfg, data.to_string()).unwrap();
-    let flags = init_logger_from_config(&cfg, &vec![]);
+    let flags = init_logger_from_config(&cfg, &[]);
     assert_eq!(flags, 0);
 }
 
@@ -109,7 +109,7 @@ fn init_logger_config_general_without_file_key_is_fine() {
         "logging": {"general": {"enabled": true, "enable_console": true, "level": "ERROR"}}
     });
     fs::write(&cfg, data.to_string()).unwrap();
-    let flags = init_logger_from_config(&cfg, &vec![]);
+    let flags = init_logger_from_config(&cfg, &[]);
     assert_eq!(flags, 0);
 }
 
@@ -122,7 +122,7 @@ fn init_logger_config_unknown_level_string_maps_to_info() {
         "logging": {"general": {"enabled": true, "enable_console": false, "level": "LOUD"}}
     });
     fs::write(&cfg, data.to_string()).unwrap();
-    let flags = init_logger_from_config(&cfg, &vec![]);
+    let flags = init_logger_from_config(&cfg, &[]);
     assert_eq!(flags, 0);
 }
 

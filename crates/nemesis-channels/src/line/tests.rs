@@ -1443,7 +1443,7 @@ async fn w4c_line_webhook_pair(
     let secret = secret.to_string();
     let reply_tokens = Arc::clone(reply_tokens);
     let running = Arc::clone(running);
-    let accept_task = tokio::spawn(async move {
+    let _accept_task = tokio::spawn(async move {
         if let Ok((stream, _)) = listener.accept().await {
             LineChannel::handle_webhook_connection(stream, &bus, &secret, &reply_tokens, &running)
                 .await;
@@ -1453,7 +1453,6 @@ async fn w4c_line_webhook_pair(
     let client = tokio::net::TcpStream::connect(addr).await.unwrap();
     // 等服务端 accept 完成，避免客户端先写进本地缓冲就被断言
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-    let _ = accept_task;
     (client, addr)
 }
 

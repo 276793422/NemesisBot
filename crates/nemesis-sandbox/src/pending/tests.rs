@@ -20,7 +20,7 @@ fn one_pending() -> (TempDir, PendingFile) {
 fn delete_file_removes_box_file() {
     let (_tmp, pf) = one_pending();
     assert!(pf.box_path.exists());
-    assert_eq!(delete_file(&pf).unwrap(), true);
+    assert!(delete_file(&pf).unwrap());
     assert!(!pf.box_path.exists());
 }
 
@@ -29,7 +29,7 @@ fn delete_file_already_gone_is_false() {
     let (_tmp, pf) = one_pending();
     std::fs::remove_file(&pf.box_path).unwrap();
     // Already absent → Ok(false), NOT an error.
-    assert_eq!(delete_file(&pf).unwrap(), false);
+    assert!(!delete_file(&pf).unwrap());
 }
 
 #[test]
@@ -38,7 +38,7 @@ fn delete_file_never_touches_real_path() {
     // file must not create or modify anything at the real path.
     let (_tmp, pf) = one_pending();
     assert!(!pf.real_path.exists());
-    assert_eq!(delete_file(&pf).unwrap(), true);
+    assert!(delete_file(&pf).unwrap());
     assert!(!pf.real_path.exists());
 }
 

@@ -228,7 +228,7 @@ async fn main() -> Result<()> {
             Ok(_) => {
                 println!(
                     "{}",
-                    format!("✅ Output program started successfully").green()
+                    "✅ Output program started successfully".to_string().green()
                 );
                 Some(output)
             }
@@ -416,7 +416,7 @@ fn handle_command_sync(
                         let error_msg = format!("⚠️  Failed to send message: {}", e);
                         eprintln!("{}", error_msg.yellow());
                         // Release lock on send failure
-                        let _ = rt.block_on(async { lock.release().await });
+                        rt.block_on(async { lock.release().await });
                     }
                 }
             }

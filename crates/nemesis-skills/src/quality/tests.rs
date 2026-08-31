@@ -3,7 +3,7 @@ use super::*;
 #[test]
 fn test_new_quality_scorer() {
     let _scorer = QualityScorer::new();
-    let _default = QualityScorer::default();
+    let _default = QualityScorer;
 }
 
 #[test]

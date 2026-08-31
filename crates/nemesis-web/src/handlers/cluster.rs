@@ -17,6 +17,12 @@ pub struct ClusterHandler {
     _priv: (),
 }
 
+impl Default for ClusterHandler {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ClusterHandler {
     pub fn new() -> Self {
         Self { _priv: () }
@@ -1116,7 +1122,7 @@ impl ClusterHandler {
             // Send in background — don't block the WS response.
             // The task status will be updated when the callback arrives.
             let timeout = std::time::Duration::from_secs(30);
-            let _ = tokio::spawn(async move {
+            tokio::spawn(async move {
                 match rpc_client
                     .call_with_timeout(&target_owned, request, timeout)
                     .await
@@ -1251,9 +1257,9 @@ impl ClusterHandler {
 
         let mut snapshots = Vec::new();
         if cache_dir.exists() {
-            let mut entries = std::fs::read_dir(cache_dir)
+            let entries = std::fs::read_dir(cache_dir)
                 .map_err(|e| format!("failed to read cache dir: {}", e))?;
-            while let Some(entry) = entries.next() {
+            for entry in entries {
                 let entry = entry.map_err(|e| format!("failed to read entry: {}", e))?;
                 let path = entry.path();
                 if path.extension().map(|e| e == "json").unwrap_or(false) {
@@ -1365,10 +1371,9 @@ impl ClusterHandler {
             }
         } else if let Ok(workspace) = require_workspace(ctx) {
             let ppath = peers_path(workspace);
-            if ppath.exists() {
-                if let Ok(static_cfg) = nemesis_cluster::cluster_config::load_static_config(&ppath)
-                {
-                    if let Some(obj) = config.as_object_mut() {
+            if ppath.exists()
+                && let Ok(static_cfg) = nemesis_cluster::cluster_config::load_static_config(&ppath)
+                    && let Some(obj) = config.as_object_mut() {
                         obj.insert("node_id".to_string(), serde_json::json!(static_cfg.node.id));
                         obj.insert("name".to_string(), serde_json::json!(static_cfg.node.name));
                         obj.insert("role".to_string(), serde_json::json!(static_cfg.node.role));
@@ -1378,8 +1383,6 @@ impl ClusterHandler {
                         );
                         obj.insert("tags".to_string(), serde_json::json!(static_cfg.node.tags));
                     }
-                }
-            }
         }
         Ok(Some(config))
     }
@@ -1397,23 +1400,20 @@ impl ClusterHandler {
             let rpc_port = cluster_cfg.get("rpc_port").and_then(|v| v.as_u64());
 
             // Check ports in valid range (1-65535)
-            if let Some(port) = discovery_port {
-                if port == 0 || port > 65535 {
+            if let Some(port) = discovery_port
+                && (port == 0 || port > 65535) {
                     return Err("discovery_port must be between 1 and 65535".to_string());
                 }
-            }
-            if let Some(port) = rpc_port {
-                if port == 0 || port > 65535 {
+            if let Some(port) = rpc_port
+                && (port == 0 || port > 65535) {
                     return Err("rpc_port must be between 1 and 65535".to_string());
                 }
-            }
 
             // Check discovery_port != rpc_port
-            if let (Some(dp), Some(rp)) = (discovery_port, rpc_port) {
-                if dp == rp {
+            if let (Some(dp), Some(rp)) = (discovery_port, rpc_port)
+                && dp == rp {
                     return Err("discovery_port and rpc_port must be different".to_string());
                 }
-            }
         }
 
         let path = cluster_config_path(workspace);
@@ -1453,11 +1453,10 @@ impl ClusterHandler {
         if main_cfg.get("cluster").is_none() {
             main_cfg["cluster"] = serde_json::json!({});
         }
-        if let Some(cluster_obj) = main_cfg.get_mut("cluster") {
-            if let Some(obj) = cluster_obj.as_object_mut() {
+        if let Some(cluster_obj) = main_cfg.get_mut("cluster")
+            && let Some(obj) = cluster_obj.as_object_mut() {
                 obj.insert("enabled".to_string(), serde_json::json!(enabled));
             }
-        }
         let updated = serde_json::to_string_pretty(&main_cfg)
             .map_err(|e| format!("failed to serialize config.json: {}", e))?;
         std::fs::write(&main_cfg_path, updated)
@@ -2028,7 +2027,7 @@ fn test_tcp_bind(port: u16) -> serde_json::Value {
 fn check_platform_firewall(udp_port: u16, tcp_port: u16) -> serde_json::Value {
     // Check if Windows Firewall is enabled
     let fw_enabled = std::process::Command::new("netsh")
-        .args(&["advfirewall", "show", "currentprofile", "state"])
+        .args(["advfirewall", "show", "currentprofile", "state"])
         .output()
         .ok()
         .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
@@ -2037,7 +2036,7 @@ fn check_platform_firewall(udp_port: u16, tcp_port: u16) -> serde_json::Value {
 
     // Check if rules already exist
     let udp_rule_exists = std::process::Command::new("netsh")
-        .args(&[
+        .args([
             "advfirewall",
             "firewall",
             "show",
@@ -2050,7 +2049,7 @@ fn check_platform_firewall(udp_port: u16, tcp_port: u16) -> serde_json::Value {
         .unwrap_or(false);
 
     let tcp_rule_exists = std::process::Command::new("netsh")
-        .args(&[
+        .args([
             "advfirewall",
             "firewall",
             "show",
@@ -2282,7 +2281,7 @@ fn add_platform_firewall_rules(
 
     // Step 1: Try direct execution (succeeds if already running as admin)
     let udp_ok = std::process::Command::new("netsh")
-        .args(&[
+        .args([
             "advfirewall",
             "firewall",
             "add",
@@ -2299,7 +2298,7 @@ fn add_platform_firewall_rules(
         .unwrap_or(false);
 
     let tcp_ok = std::process::Command::new("netsh")
-        .args(&[
+        .args([
             "advfirewall",
             "firewall",
             "add",

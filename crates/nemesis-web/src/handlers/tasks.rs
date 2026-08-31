@@ -25,10 +25,10 @@ pub struct TasksHandler;
 ///
 /// Present-but-invalid values (wrong type, negative, fractional, 0,
 /// > u32::MAX) error LOUDLY. Degrading them to "absent" would silently wipe a
-/// job's budget on a typo'd payload, and 0 specifically is filtered to
-/// "no budget" downstream (`loop.rs` cron_max_rounds `.filter(|v| *v > 0)`),
-/// so accepting it would mean "unlimited" while looking like "zero" — both
-/// are rejected instead.
+/// > job's budget on a typo'd payload, and 0 specifically is filtered to
+/// > "no budget" downstream (`loop.rs` cron_max_rounds `.filter(|v| *v > 0)`),
+/// > so accepting it would mean "unlimited" while looking like "zero" — both
+/// > are rejected instead.
 fn parse_max_rounds_patch(data: &serde_json::Value) -> Result<Option<Option<u32>>, String> {
     match data.get("max_rounds") {
         None => Ok(None),
@@ -199,7 +199,7 @@ impl TasksHandler {
             schedule: data
                 .get("cron")
                 .and_then(|v| v.as_str())
-                .map(|c| cron_expr_to_schedule(c)),
+                .map(cron_expr_to_schedule),
             message: data
                 .get("prompt")
                 .and_then(|v| v.as_str())
@@ -221,11 +221,10 @@ impl TasksHandler {
             max_rounds: parse_max_rounds_patch(data)?,
         };
         // Validate cron expr if a new one is provided.
-        if let Some(ref sched) = patch.schedule {
-            if let Some(ref e) = sched.expr {
+        if let Some(ref sched) = patch.schedule
+            && let Some(ref e) = sched.expr {
                 CronService::validate_schedule(e)?;
             }
-        }
         let job = svc.lock().unwrap().patch_job(&id, &patch)?;
         Ok(Some(
             serde_json::json!({ "updated": true, "job": job_to_view(&job) }),

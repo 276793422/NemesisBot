@@ -21,7 +21,7 @@ use std::path::{Path, PathBuf};
 /// (pruned) inline. Must be >= `crate::prune::MAX_TOOL_RESULT_INLINE_CHARS`
 /// so the two tiers compose: <=8192 inline, 8193..65535 pruned inline,
 /// >=65536 spilled (and the spill REPLACES the inline text entirely with a
-/// short preview + locator).
+/// > short preview + locator).
 pub const SPILL_THRESHOLD_CHARS: usize = 65_536;
 
 /// Preview budget (chars) kept in-conversation for a spilled result.
@@ -163,15 +163,14 @@ pub fn cleanup_expired(spill_root: &Path, retention_days: u64) -> usize {
                     }
                 }
             }
-            if dir_empty {
-                if let Err(e) = std::fs::remove_dir(&path) {
+            if dir_empty
+                && let Err(e) = std::fs::remove_dir(&path) {
                     tracing::warn!(
                         "[Spill] retention cleanup failed to remove dir '{}': {}",
                         path.display(),
                         e
                     );
                 }
-            }
         } else if path.is_file() {
             // A stray file directly under the root (not expected from
             // spill_tool_result, but sweep it under the same rule).
@@ -232,11 +231,10 @@ pub fn status(root: &Path) -> SpillStatus {
             let Ok(meta) = entry.metadata() else { continue };
             st.files += 1;
             st.bytes += meta.len();
-            if let Ok(mt) = meta.modified() {
-                if oldest.map_or(true, |o| mt < o) {
+            if let Ok(mt) = meta.modified()
+                && oldest.is_none_or(|o| mt < o) {
                     *oldest = Some(mt);
                 }
-            }
         }
     }
 

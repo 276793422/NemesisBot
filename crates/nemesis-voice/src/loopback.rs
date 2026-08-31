@@ -26,12 +26,11 @@ fn loopback_slot() -> &'static Mutex<Option<Arc<AtomicBool>>> {
 pub fn start_loopback() {
     {
         let slot = loopback_slot().lock().unwrap();
-        if let Some(ref flag) = *slot {
-            if !flag.load(Ordering::SeqCst) {
+        if let Some(ref flag) = *slot
+            && !flag.load(Ordering::SeqCst) {
                 tracing::debug!("[AEC Loopback] already running");
                 return;
             }
-        }
     }
     let stop = Arc::new(AtomicBool::new(false));
     {

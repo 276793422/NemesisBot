@@ -108,7 +108,9 @@ impl Client {
 
     /// Scan content using the INSTREAM protocol.
     pub async fn scan_stream(&self, content: &[u8]) -> Result<ClamavScanResult, String> {
-        let result = tokio::time::timeout(self.timeout, async {
+        
+
+        tokio::time::timeout(self.timeout, async {
             let mut stream = TcpStream::connect(&self.socket_addr)
                 .await
                 .map_err(|e| format!("failed to connect to clamd: {}", e))?;
@@ -163,9 +165,7 @@ impl Client {
             Ok::<ClamavScanResult, String>(parse_scan_response(resp_line.trim()))
         })
         .await
-        .map_err(|_| "scan_stream timed out".to_string())?;
-
-        result
+        .map_err(|_| "scan_stream timed out".to_string())?
     }
 
     /// Reload the virus database.

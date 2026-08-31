@@ -730,7 +730,7 @@ async fn test_reflection_cycle_writes_report() {
     let forge = create_integration_forge(dir.path());
 
     // Pre-write 5 experiences
-    write_test_experiences(&forge.forge_dir(), 5).await;
+    write_test_experiences(forge.forge_dir(), 5).await;
 
     // Run the reflection cycle
     forge.run_reflection_cycle().await;
@@ -747,7 +747,7 @@ async fn test_reflection_cycle_writes_report() {
     }
 
     // Check learning cycle was recorded
-    if let Some(ref cycle_store) = forge.cycle_store() {
+    if let Some(cycle_store) = forge.cycle_store() {
         let cycles = cycle_store.read_all().await.unwrap();
         assert!(!cycles.is_empty(), "expected at least one learning cycle");
         assert_eq!(
@@ -785,7 +785,7 @@ async fn test_reflection_cycle_without_reflector() {
     let forge = Arc::new(forge);
 
     // Write experiences but no reflector initialized
-    write_test_experiences(&forge.forge_dir(), 3).await;
+    write_test_experiences(forge.forge_dir(), 3).await;
 
     // Should return early without panic
     forge.run_reflection_cycle().await;
@@ -803,7 +803,7 @@ async fn test_reflection_cycle_without_learning_engine() {
     forge.init_reflector(Reflector::with_reflections_dir(reflections_dir));
 
     let forge = Arc::new(forge);
-    write_test_experiences(&forge.forge_dir(), 5).await;
+    write_test_experiences(forge.forge_dir(), 5).await;
 
     forge.run_reflection_cycle().await;
 
@@ -823,7 +823,7 @@ async fn test_reflection_cycle_without_syncer() {
     let forge = create_integration_forge(dir.path());
 
     // No syncer initialized (create_integration_forge doesn't init syncer)
-    write_test_experiences(&forge.forge_dir(), 5).await;
+    write_test_experiences(forge.forge_dir(), 5).await;
 
     // Should not panic
     forge.run_reflection_cycle().await;
@@ -838,7 +838,7 @@ async fn test_cleanup_cycle_removes_old_experiences() {
     let dir = tempfile::tempdir().unwrap();
     let forge = create_integration_forge(dir.path());
 
-    let store = crate::experience_store::ExperienceStore::from_forge_dir(&forge.forge_dir());
+    let store = crate::experience_store::ExperienceStore::from_forge_dir(forge.forge_dir());
 
     // Write a recent experience (goes to today's file)
     let recent_exp = make_collected_experience("new_tool", true, 50);
@@ -922,7 +922,7 @@ async fn test_pattern_tool_chain_detection() {
     let dir = tempfile::tempdir().unwrap();
     let config = ForgeConfig::default();
     let registry = Arc::new(Registry::new(RegistryConfig::default()));
-    let cycle_store = crate::cycle_store::CycleStore::new(&dir.path());
+    let cycle_store = crate::cycle_store::CycleStore::new(dir.path());
     let engine = crate::learning_engine::LearningEngine::new(config, registry, cycle_store);
 
     // 6 experiences with the same tool (≥5 triggers tool_chain, default min_pattern_frequency=5)
@@ -944,7 +944,7 @@ async fn test_pattern_error_recovery_detection() {
     let dir = tempfile::tempdir().unwrap();
     let config = ForgeConfig::default();
     let registry = Arc::new(Registry::new(RegistryConfig::default()));
-    let cycle_store = crate::cycle_store::CycleStore::new(&dir.path());
+    let cycle_store = crate::cycle_store::CycleStore::new(dir.path());
     let engine = crate::learning_engine::LearningEngine::new(config, registry, cycle_store);
 
     // Same tool: 5 failures + 5 successes (frequency = error_count, must be ≥5)
@@ -969,7 +969,7 @@ async fn test_pattern_efficiency_issue_detection() {
     let dir = tempfile::tempdir().unwrap();
     let config = ForgeConfig::default();
     let registry = Arc::new(Registry::new(RegistryConfig::default()));
-    let cycle_store = crate::cycle_store::CycleStore::new(&dir.path());
+    let cycle_store = crate::cycle_store::CycleStore::new(dir.path());
     let engine = crate::learning_engine::LearningEngine::new(config, registry, cycle_store);
 
     // Most tools fast, one tool very slow — need enough fast tools to keep overall avg low
@@ -996,7 +996,7 @@ async fn test_pattern_success_template_detection() {
     let dir = tempfile::tempdir().unwrap();
     let config = ForgeConfig::default();
     let registry = Arc::new(Registry::new(RegistryConfig::default()));
-    let cycle_store = crate::cycle_store::CycleStore::new(&dir.path());
+    let cycle_store = crate::cycle_store::CycleStore::new(dir.path());
     let engine = crate::learning_engine::LearningEngine::new(config, registry, cycle_store);
 
     // 6 experiences all successful with the same tool (≥5 for min_pattern_frequency)
@@ -1019,7 +1019,7 @@ async fn test_no_patterns_insufficient_data() {
     let dir = tempfile::tempdir().unwrap();
     let config = ForgeConfig::default();
     let registry = Arc::new(Registry::new(RegistryConfig::default()));
-    let cycle_store = crate::cycle_store::CycleStore::new(&dir.path());
+    let cycle_store = crate::cycle_store::CycleStore::new(dir.path());
     let engine = crate::learning_engine::LearningEngine::new(config, registry, cycle_store);
 
     // Only 1 experience — below min_pattern_frequency of 3
@@ -1037,7 +1037,7 @@ async fn test_run_cycle_full_with_patterns() {
     let dir = tempfile::tempdir().unwrap();
     let config = ForgeConfig::default();
     let registry = Arc::new(Registry::new(RegistryConfig::default()));
-    let cycle_store = crate::cycle_store::CycleStore::new(&dir.path());
+    let cycle_store = crate::cycle_store::CycleStore::new(dir.path());
     let engine = crate::learning_engine::LearningEngine::new(config, registry, cycle_store);
 
     // No LLM provider — execute_create_skill will skip but pattern detection still works
@@ -1125,7 +1125,7 @@ async fn test_learning_engine_with_llm_failure() {
     let dir = tempfile::tempdir().unwrap();
     let config = ForgeConfig::default();
     let registry = Arc::new(Registry::new(RegistryConfig::default()));
-    let cycle_store = crate::cycle_store::CycleStore::new(&dir.path());
+    let cycle_store = crate::cycle_store::CycleStore::new(dir.path());
     let engine = crate::learning_engine::LearningEngine::new(config, registry, cycle_store);
 
     // Set error provider
@@ -1153,7 +1153,7 @@ async fn test_reflection_cycle_with_llm_errors() {
     // Set error LLM on all subsystems
     forge.set_provider(Arc::new(ErrorMockLLM));
 
-    write_test_experiences(&forge.forge_dir(), 5).await;
+    write_test_experiences(forge.forge_dir(), 5).await;
 
     // Should not panic despite LLM failures
     forge.run_reflection_cycle().await;
@@ -1176,18 +1176,18 @@ async fn test_reflection_cycle_learning_disabled() {
 
     // LearningEngine exists but disabled
     let registry = Arc::new(Registry::new(RegistryConfig::default()));
-    let cycle_store = crate::cycle_store::CycleStore::new(&dir.path().join("forge"));
+    let cycle_store = crate::cycle_store::CycleStore::new(dir.path().join("forge"));
     let engine =
         crate::learning_engine::LearningEngine::new(ForgeConfig::default(), registry, cycle_store);
     let monitor = Arc::new(crate::monitor::DeploymentMonitor::new(
         ForgeConfig::default(),
         Arc::new(Registry::new(RegistryConfig::default())),
     ));
-    let cs = crate::cycle_store::CycleStore::new(&dir.path().join("forge").join("cycles"));
+    let cs = crate::cycle_store::CycleStore::new(dir.path().join("forge").join("cycles"));
     forge.init_learning(engine, monitor, cs);
 
     let forge = Arc::new(forge);
-    write_test_experiences(&forge.forge_dir(), 5).await;
+    write_test_experiences(forge.forge_dir(), 5).await;
 
     forge.run_reflection_cycle().await;
 
@@ -1245,7 +1245,7 @@ async fn s8_forge_with_syncer(
     forge.set_bridge(bridge);
     forge.init_syncer();
     let forge = Arc::new(forge);
-    write_test_experiences(&forge.forge_dir(), 3).await;
+    write_test_experiences(forge.forge_dir(), 3).await;
     forge
 }
 
@@ -1363,7 +1363,7 @@ async fn test_s8_reflection_cycle_write_report_err() {
     forge.init_reflector(Reflector::with_reflections_dir(ref_dir));
 
     let forge = Arc::new(forge);
-    write_test_experiences(&forge.forge_dir(), 3).await;
+    write_test_experiences(forge.forge_dir(), 3).await;
 
     let _g = crate::test_support::quiet_trace_guard();
     forge.run_reflection_cycle().await; // must not panic

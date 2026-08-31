@@ -188,7 +188,7 @@ base = "https://example.com"
 
     let cfg = AppConfig::load(&path).expect("parse should succeed");
     assert_eq!(cfg.stt.model_name, "test-stt");
-    assert_eq!(cfg.stt.use_itn, true);
+    assert!(cfg.stt.use_itn);
     assert_eq!(cfg.vad.window_size, 256);
     assert_eq!(cfg.tts.speed, 1.2);
     assert_eq!(cfg.audio.target_sample_rate, 8000);

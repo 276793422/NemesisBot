@@ -16,7 +16,7 @@ pub async fn test_cli_auth_status(ws: &TestWorkspace, bin: &Path) -> Vec<TestRes
     let status = ws.run_cli(bin, &["auth", "status"]).await;
     results.push(pass(
         &format!("{}/status", suite),
-        &format!(
+        format!(
             "exit={}, output: '{}'",
             status.exit_code,
             status.stdout.trim().chars().take(80).collect::<String>()
@@ -33,7 +33,7 @@ pub async fn test_cli_auth_status(ws: &TestWorkspace, bin: &Path) -> Vec<TestRes
     } else {
         results.push(fail(
             &format!("{}/login_help", suite),
-            &format!("exit={}", help.exit_code),
+            format!("exit={}", help.exit_code),
         ));
     }
 
@@ -47,7 +47,7 @@ pub async fn test_cli_auth_status(ws: &TestWorkspace, bin: &Path) -> Vec<TestRes
     } else {
         results.push(fail(
             &format!("{}/logout_help", suite),
-            &format!("exit={}", logout_help.exit_code),
+            format!("exit={}", logout_help.exit_code),
         ));
     }
 
@@ -57,7 +57,7 @@ pub async fn test_cli_auth_status(ws: &TestWorkspace, bin: &Path) -> Vec<TestRes
         .await;
     results.push(pass(
         &format!("{}/login_attempt", suite),
-        &format!("exit={}", login.exit_code),
+        format!("exit={}", login.exit_code),
     ));
 
     // auth logout --provider test
@@ -66,7 +66,7 @@ pub async fn test_cli_auth_status(ws: &TestWorkspace, bin: &Path) -> Vec<TestRes
         .await;
     results.push(pass(
         &format!("{}/logout", suite),
-        &format!("exit={}", logout.exit_code),
+        format!("exit={}", logout.exit_code),
     ));
 
     results

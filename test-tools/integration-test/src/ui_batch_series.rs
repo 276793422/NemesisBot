@@ -3,7 +3,7 @@
 //! 各批交付时的测试都在 crate 级（nemesis-web handler 单测）；本套件补
 //! **真进程链路**断言：Phase 2 起的 gateway（`--local`，TestWorkspace home）
 //! + WebSocket WSAPI / HTTP 端点，覆盖 §九.3 要求的三类断言：
-//! 字段透传落盘、值校验拒绝非法值、get/set 往返。
+//!   字段透传落盘、值校验拒绝非法值、get/set 往返。
 //!
 //! 覆盖矩阵（对应 docs/PLAN/2026-08-24_ui-batch-acceptance-plan.md）：
 //! - P1-1..4  memory config.get/set（auto_inject / auto_inject_top_k）
@@ -11,10 +11,10 @@
 //! - P2-1..2  coding lsp_status / config
 //! - P2-3     SDK HTTP export/pip（公开 GET 200 + zip 魔数）
 //! - P3-1..2  HTTP turns/fork（401/404/轮次表/前缀分叉/原会话不动；
-//!            session 在 gateway 启动**前**种入——live store 构造时
-//!            load_from_disk 才能看到，这也是生产里「重启后仍可见」路径）
+//!   session 在 gateway 启动**前**种入——live store 构造时
+//!   load_from_disk 才能看到，这也是生产里「重启后仍可见」路径）
 //! - P3-3..6  models add/update_field/list/delete（合法+非法值）+
-//!            catalog_update（HOME parent() 修复的运行时证明）
+//!   catalog_update（HOME parent() 修复的运行时证明）
 //! - P4-1..4  hooks get/set（模板/原文 roundtrip/非法拒且盘上不破坏）
 //! - P5-7..10 sandbox overview/set_config/status（形状/字段级合并/非法拒）
 //!
@@ -69,7 +69,7 @@ impl WsApi {
         loop {
             match tokio::time::timeout_at(deadline, self.stream.next()).await {
                 Ok(Some(Ok(Message::Text(text)))) => {
-                    let Ok(v) = serde_json::from_str::<Value>(&text.to_string()) else {
+                    let Ok(v) = serde_json::from_str::<Value>(text.as_ref()) else {
                         continue;
                     };
                     if v.get("type").and_then(|t| t.as_str()) == Some("response")
@@ -212,7 +212,7 @@ pub async fn test_ui_p1_memory_auto_inject(ws: &TestWorkspace) -> Vec<TestResult
     let mut api = match WsApi::connect().await {
         Ok(a) => a,
         Err(e) => {
-            results.push(fail(suite, &format!("ws connect: {e}")));
+            results.push(fail(suite, format!("ws connect: {e}")));
             return results;
         }
     };
@@ -224,7 +224,7 @@ pub async fn test_ui_p1_memory_auto_inject(ws: &TestWorkspace) -> Vec<TestResult
     // P1-1 默认回显：无 config.enhanced_memory.json → false / 3
     let (data, err) = api.call("memory", "config.get", None).await;
     let ok = err.is_none()
-        && data.as_ref().map_or(false, |d| {
+        && data.as_ref().is_some_and(|d| {
             d.get("auto_inject").and_then(|v| v.as_bool()) == Some(false)
                 && d.get("auto_inject_top_k").and_then(|v| v.as_u64()) == Some(3)
         });
@@ -233,7 +233,7 @@ pub async fn test_ui_p1_memory_auto_inject(ws: &TestWorkspace) -> Vec<TestResult
     } else {
         fail(
             &format!("{}/get_defaults", suite),
-            &format!("err={err:?} data={data:?}"),
+            format!("err={err:?} data={data:?}"),
         )
     });
 
@@ -254,12 +254,12 @@ pub async fn test_ui_p1_memory_auto_inject(ws: &TestWorkspace) -> Vec<TestResult
     } else {
         fail(
             &format!("{}/set_persist", suite),
-            &format!("err={err:?} disk='{disk}'"),
+            format!("err={err:?} disk='{disk}'"),
         )
     });
 
     let (data, err) = api.call("memory", "config.get", None).await;
-    let rt_ok = data.as_ref().map_or(false, |d| {
+    let rt_ok = data.as_ref().is_some_and(|d| {
         d.get("auto_inject").and_then(|v| v.as_bool()) == Some(true)
             && d.get("auto_inject_top_k").and_then(|v| v.as_u64()) == Some(5)
     });
@@ -268,7 +268,7 @@ pub async fn test_ui_p1_memory_auto_inject(ws: &TestWorkspace) -> Vec<TestResult
     } else {
         fail(
             &format!("{}/set_roundtrip", suite),
-            &format!("err={err:?} data={data:?}"),
+            format!("err={err:?} data={data:?}"),
         )
     });
 
@@ -277,11 +277,11 @@ pub async fn test_ui_p1_memory_auto_inject(ws: &TestWorkspace) -> Vec<TestResult
         let (_, err) = api
             .call("memory", "config.set", Some(json!({"auto_inject_top_k": bad})))
             .await;
-        let refused = err.as_deref().map_or(false, |e| e.contains("1-10"));
+        let refused = err.as_deref().is_some_and(|e| e.contains("1-10"));
         results.push(if refused {
             pass(&format!("{}/reject_{bad}", suite), "越界拒")
         } else {
-            fail(&format!("{}/reject_{bad}", suite), &format!("err={err:?}"))
+            fail(&format!("{}/reject_{bad}", suite), format!("err={err:?}"))
         });
     }
 
@@ -293,7 +293,7 @@ pub async fn test_ui_p1_memory_auto_inject(ws: &TestWorkspace) -> Vec<TestResult
         results.push(if err.is_none() {
             pass(&format!("{}/boundary_{good}", suite), "边界值过")
         } else {
-            fail(&format!("{}/boundary_{good}", suite), &format!("err={err:?}"))
+            fail(&format!("{}/boundary_{good}", suite), format!("err={err:?}"))
         });
     }
 
@@ -306,14 +306,14 @@ pub async fn test_ui_p1_memory_auto_inject(ws: &TestWorkspace) -> Vec<TestResult
     let disk = std::fs::read_to_string(&mem_cfg_path).unwrap_or_default();
     let rejected = err
         .as_deref()
-        .map_or(false, |e| e.contains("auto_inject_top_k"))
+        .is_some_and(|e| e.contains("auto_inject_top_k"))
         && (disk.contains("\"auto_inject_top_k\": 10") || disk.contains("\"auto_inject_top_k\":10"));
     results.push(if rejected {
         pass(&format!("{}/string_type_rejected", suite), "拒且不落盘")
     } else {
         fail(
             &format!("{}/string_type_rejected", suite),
-            &format!("err={err:?} disk='{disk}'"),
+            format!("err={err:?} disk='{disk}'"),
         )
     });
 
@@ -331,7 +331,7 @@ pub async fn test_ui_p1_cron_max_rounds(ws: &TestWorkspace) -> Vec<TestResult> {
     let mut api = match WsApi::connect().await {
         Ok(a) => a,
         Err(e) => {
-            results.push(fail(suite, &format!("ws connect: {e}")));
+            results.push(fail(suite, format!("ws connect: {e}")));
             return results;
         }
     };
@@ -361,7 +361,7 @@ pub async fn test_ui_p1_cron_max_rounds(ws: &TestWorkspace) -> Vec<TestResult> {
     results.push(if err.is_none() {
         pass(&format!("{}/add", suite), "cron.add ok")
     } else {
-        fail(&format!("{}/add", suite), &format!("err={err:?}"))
+        fail(&format!("{}/add", suite), format!("err={err:?}"))
     });
 
     // list 找到 job id + max_rounds 回显
@@ -382,7 +382,7 @@ pub async fn test_ui_p1_cron_max_rounds(ws: &TestWorkspace) -> Vec<TestResult> {
     } else {
         fail(
             &format!("{}/list_echo", suite),
-            &format!("err={err:?} job={job:?}"),
+            format!("err={err:?} job={job:?}"),
         )
     });
 
@@ -392,7 +392,7 @@ pub async fn test_ui_p1_cron_max_rounds(ws: &TestWorkspace) -> Vec<TestResult> {
     results.push(if disk.contains("ui-p1-cron") && disk.contains("max_rounds") {
         pass(&format!("{}/jobs_json", suite), "jobs.json 含 job+max_rounds")
     } else {
-        fail(&format!("{}/jobs_json", suite), &format!("disk='{disk}'"))
+        fail(&format!("{}/jobs_json", suite), format!("disk='{disk}'"))
     });
 
     // 三态之 set：update 成 10 → 回显 10
@@ -410,7 +410,7 @@ pub async fn test_ui_p1_cron_max_rounds(ws: &TestWorkspace) -> Vec<TestResult> {
     } else {
         fail(
             &format!("{}/update_set", suite),
-            &format!("err={err:?} max_rounds={now:?}"),
+            format!("err={err:?} max_rounds={now:?}"),
         )
     });
 
@@ -423,13 +423,13 @@ pub async fn test_ui_p1_cron_max_rounds(ws: &TestWorkspace) -> Vec<TestResult> {
         )
         .await;
     let (data, _) = api.call("tasks", "cron.list", None).await;
-    let cleared = find_job(&data).map(|j| j.get("max_rounds").map_or(true, |m| m.is_null()));
+    let cleared = find_job(&data).map(|j| j.get("max_rounds").is_none_or(|m| m.is_null()));
     results.push(if err.is_none() && cleared == Some(true) {
         pass(&format!("{}/update_clear", suite), "null 清除")
     } else {
         fail(
             &format!("{}/update_clear", suite),
-            &format!("err={err:?} cleared={cleared:?}"),
+            format!("err={err:?} cleared={cleared:?}"),
         )
     });
 
@@ -442,16 +442,16 @@ pub async fn test_ui_p1_cron_max_rounds(ws: &TestWorkspace) -> Vec<TestResult> {
         )
         .await;
     let (data, _) = api.call("tasks", "cron.list", None).await;
-    let name_kept = find_job(&data).map_or(false, |j| {
+    let name_kept = find_job(&data).is_some_and(|j| {
         j.get("prompt").and_then(|p| p.as_str()) == Some("ui-p1-patched")
-            && j.get("max_rounds").map_or(true, |m| m.is_null())
+            && j.get("max_rounds").is_none_or(|m| m.is_null())
     });
     results.push(if err.is_none() && name_kept {
         pass(&format!("{}/update_absent_key", suite), "缺省 key 不动")
     } else {
         fail(
             &format!("{}/update_absent_key", suite),
-            &format!("err={err:?} kept={name_kept}"),
+            format!("err={err:?} kept={name_kept}"),
         )
     });
 
@@ -473,7 +473,7 @@ pub async fn test_ui_p2_coding() -> Vec<TestResult> {
     let mut api = match WsApi::connect().await {
         Ok(a) => a,
         Err(e) => {
-            results.push(fail(suite, &format!("ws connect: {e}")));
+            results.push(fail(suite, format!("ws connect: {e}")));
             return results;
         }
     };
@@ -488,26 +488,26 @@ pub async fn test_ui_p2_coding() -> Vec<TestResult> {
     let shape_ok = err.is_none()
         && langs.len() >= 5
         && langs.iter().all(|l| {
-            l.get("lang").map_or(false, |v| v.is_string())
-                && l.get("command").map_or(false, |v| v.is_string())
-                && l.get("available").map_or(false, |v| v.is_boolean())
+            l.get("lang").is_some_and(|v| v.is_string())
+                && l.get("command").is_some_and(|v| v.is_string())
+                && l.get("available").is_some_and(|v| v.is_boolean())
         });
     results.push(if shape_ok {
         pass(
             &format!("{}/lsp_status_shape", suite),
-            &format!("{} 语言形状齐", langs.len()),
+            format!("{} 语言形状齐", langs.len()),
         )
     } else {
         fail(
             &format!("{}/lsp_status_shape", suite),
-            &format!("err={err:?} langs={langs:?}"),
+            format!("err={err:?} langs={langs:?}"),
         )
     });
 
     // config：三段回显（lsp / claude_code / codex——默认 off）
     let (data, err) = api.call("coding", "config", None).await;
     let cfg_ok = err.is_none()
-        && data.as_ref().map_or(false, |d| {
+        && data.as_ref().is_some_and(|d| {
             d.get("lsp")
                 .and_then(|v| v.get("enabled"))
                 .and_then(|v| v.as_bool())
@@ -520,7 +520,7 @@ pub async fn test_ui_p2_coding() -> Vec<TestResult> {
     } else {
         fail(
             &format!("{}/config_sections", suite),
-            &format!("err={err:?} data={data:?}"),
+            format!("err={err:?} data={data:?}"),
         )
     });
 
@@ -545,7 +545,7 @@ pub async fn test_ui_p2_sdk_http() -> Vec<TestResult> {
         results.push(if status == 200 {
             pass(&format!("{}/public_200{tag}", suite), "200")
         } else {
-            fail(&format!("{}/public_200{tag}", suite), &format!("status={status}"))
+            fail(&format!("{}/public_200{tag}", suite), format!("status={status}"))
         });
 
         // 带 token → 200 + zip 魔数 PK\x03\x04
@@ -554,12 +554,12 @@ pub async fn test_ui_p2_sdk_http() -> Vec<TestResult> {
         results.push(if status == 200 && zip_ok {
             pass(
                 &format!("{}/zip{tag}", suite),
-                &format!("200 + zip ({}B)", body.len()),
+                format!("200 + zip ({}B)", body.len()),
             )
         } else {
             fail(
                 &format!("{}/zip{tag}", suite),
-                &format!(
+                format!(
                     "status={status} len={} head={:?}",
                     body.len(),
                     &body.get(0..4.min(body.len()))
@@ -582,7 +582,7 @@ pub async fn test_ui_p3_models_update_field(ws: &TestWorkspace) -> Vec<TestResul
     let mut api = match WsApi::connect().await {
         Ok(a) => a,
         Err(e) => {
-            results.push(fail(suite, &format!("ws connect: {e}")));
+            results.push(fail(suite, format!("ws connect: {e}")));
             return results;
         }
     };
@@ -601,7 +601,7 @@ pub async fn test_ui_p3_models_update_field(ws: &TestWorkspace) -> Vec<TestResul
         )
         .await;
     if err.is_some() {
-        results.push(fail(&format!("{}/add", suite), &format!("err={err:?}")));
+        results.push(fail(&format!("{}/add", suite), format!("err={err:?}")));
         return results;
     }
     results.push(pass(&format!("{}/add", suite), "ok"));
@@ -636,7 +636,7 @@ pub async fn test_ui_p3_models_update_field(ws: &TestWorkspace) -> Vec<TestResul
         } else {
             fail(
                 &format!("{}/set_{field}", suite),
-                &format!("err={err:?} data={data:?}"),
+                format!("err={err:?} data={data:?}"),
             )
         });
     }
@@ -659,7 +659,7 @@ pub async fn test_ui_p3_models_update_field(ws: &TestWorkspace) -> Vec<TestResul
     } else {
         fail(
             &format!("{}/set_effort_off", suite),
-            &format!("err={err:?} data={data:?}"),
+            format!("err={err:?} data={data:?}"),
         )
     });
 
@@ -711,7 +711,7 @@ pub async fn test_ui_p3_models_update_field(ws: &TestWorkspace) -> Vec<TestResul
         } else {
             fail(
                 &format!("{}/reject_no_disk_change", suite),
-                &format!("entry={entry_disk}"),
+                format!("entry={entry_disk}"),
             )
         },
     );
@@ -728,7 +728,7 @@ pub async fn test_ui_p3_models_update_field(ws: &TestWorkspace) -> Vec<TestResul
     let (data, err) = api.call("models", "list", None).await;
     let entry = find_model(&data);
     let echo_ok = err.is_none()
-        && entry.as_ref().map_or(false, |e| {
+        && entry.as_ref().is_some_and(|e| {
             e.get("model_tier").and_then(|v| v.as_str()) == Some("mini")
                 && e.get("model_size_b").and_then(|v| v.as_u64()) == Some(30)
                 && e.get("real_name").and_then(|v| v.as_str()) == Some("UiP3-Test")
@@ -740,7 +740,7 @@ pub async fn test_ui_p3_models_update_field(ws: &TestWorkspace) -> Vec<TestResul
     } else {
         fail(
             &format!("{}/list_echo", suite),
-            &format!("err={err:?} entry={entry:?}"),
+            format!("err={err:?} entry={entry:?}"),
         )
     });
 
@@ -765,12 +765,12 @@ pub async fn test_ui_p3_models_update_field(ws: &TestWorkspace) -> Vec<TestResul
     } else if err.is_some() {
         results.push(skip(
             &format!("{}/catalog_update", suite),
-            &format!("网络不可达？err={err:?}"),
+            format!("网络不可达？err={err:?}"),
         ));
     } else {
         results.push(fail(
             &format!("{}/catalog_update", suite),
-            &format!("子进程成功但 gateway 读不到 catalog（读写路径分叉？）data={data:?}"),
+            format!("子进程成功但 gateway 读不到 catalog（读写路径分叉？）data={data:?}"),
         ));
     }
 
@@ -783,7 +783,7 @@ pub async fn test_ui_p3_models_update_field(ws: &TestWorkspace) -> Vec<TestResul
     results.push(if err.is_none() && gone {
         pass(&format!("{}/cleanup", suite), "delete ok")
     } else {
-        fail(&format!("{}/cleanup", suite), &format!("err={err:?} gone={gone}"))
+        fail(&format!("{}/cleanup", suite), format!("err={err:?} gone={gone}"))
     });
 
     results
@@ -810,7 +810,7 @@ pub async fn test_ui_p3_fork_http(ws: &TestWorkspace) -> Vec<TestResult> {
     results.push(if status == 401 {
         pass(&format!("{}/turns_401", suite), "401")
     } else {
-        fail(&format!("{}/turns_401", suite), &format!("status={status}"))
+        fail(&format!("{}/turns_401", suite), format!("status={status}"))
     });
 
     // 404：不存在的 session
@@ -818,7 +818,7 @@ pub async fn test_ui_p3_fork_http(ws: &TestWorkspace) -> Vec<TestResult> {
     results.push(if status == 404 {
         pass(&format!("{}/turns_404", suite), "404")
     } else {
-        fail(&format!("{}/turns_404", suite), &format!("status={status}"))
+        fail(&format!("{}/turns_404", suite), format!("status={status}"))
     });
 
     // 200：轮次表（2 轮，turn 2 预览含 turn two q）
@@ -830,7 +830,7 @@ pub async fn test_ui_p3_fork_http(ws: &TestWorkspace) -> Vec<TestResult> {
     } else {
         fail(
             &format!("{}/turns_200", suite),
-            &format!("status={status} body='{body}'"),
+            format!("status={status} body='{body}'"),
         )
     });
 
@@ -839,13 +839,13 @@ pub async fn test_ui_p3_fork_http(ws: &TestWorkspace) -> Vec<TestResult> {
     results.push(if status == 401 {
         pass(&format!("{}/fork_401", suite), "401")
     } else {
-        fail(&format!("{}/fork_401", suite), &format!("status={status}"))
+        fail(&format!("{}/fork_401", suite), format!("status={status}"))
     });
     let (status, _) = http_post_json("/api/chat/sessions/nope/fork", "{}", true).await;
     results.push(if status == 404 {
         pass(&format!("{}/fork_404", suite), "404")
     } else {
-        fail(&format!("{}/fork_404", suite), &format!("status={status}"))
+        fail(&format!("{}/fork_404", suite), format!("status={status}"))
     });
 
     // fork at_turn=1：新 session 文件只含第 1 轮（2 条），原会话字节不动。
@@ -891,7 +891,7 @@ pub async fn test_ui_p3_fork_http(ws: &TestWorkspace) -> Vec<TestResult> {
     } else {
         fail(
             &format!("{}/fork_at1", suite),
-            &format!("status={status} new_key='{new_key}' msgs={msg_count:?} log={log_lines}"),
+            format!("status={status} new_key='{new_key}' msgs={msg_count:?} log={log_lines}"),
         )
     });
 
@@ -920,7 +920,7 @@ pub async fn test_ui_p3_fork_http(ws: &TestWorkspace) -> Vec<TestResult> {
     } else {
         fail(
             &format!("{}/fork_full", suite),
-            &format!("status={status} new_key='{new_key}' msgs={full_count:?}"),
+            format!("status={status} new_key='{new_key}' msgs={full_count:?}"),
         )
     });
 
@@ -938,7 +938,7 @@ pub async fn test_ui_p4_hooks(ws: &TestWorkspace) -> Vec<TestResult> {
     let mut api = match WsApi::connect().await {
         Ok(a) => a,
         Err(e) => {
-            results.push(fail(suite, &format!("ws connect: {e}")));
+            results.push(fail(suite, format!("ws connect: {e}")));
             return results;
         }
     };
@@ -950,10 +950,10 @@ pub async fn test_ui_p4_hooks(ws: &TestWorkspace) -> Vec<TestResult> {
     // P4-1 缺文件 → 模板（exists=false，模板自身可解析 + valid:true）
     let (data, err) = api.call("hooks", "get", None).await;
     let tmpl_ok = err.is_none()
-        && data.as_ref().map_or(false, |d| {
+        && data.as_ref().is_some_and(|d| {
             d.get("exists").and_then(|v| v.as_bool()) == Some(false)
                 && d.get("valid").and_then(|v| v.as_bool()) == Some(true)
-                && d.get("content").and_then(|c| c.as_str()).map_or(false, |c| {
+                && d.get("content").and_then(|c| c.as_str()).is_some_and(|c| {
                     serde_json::from_str::<Value>(c).is_ok()
                 })
         });
@@ -962,7 +962,7 @@ pub async fn test_ui_p4_hooks(ws: &TestWorkspace) -> Vec<TestResult> {
     } else {
         fail(
             &format!("{}/get_template", suite),
-            &format!("err={err:?} data={data:?}"),
+            format!("err={err:?} data={data:?}"),
         )
     });
 
@@ -977,7 +977,7 @@ pub async fn test_ui_p4_hooks(ws: &TestWorkspace) -> Vec<TestResult> {
     } else {
         fail(
             &format!("{}/set_verbatim", suite),
-            &format!("err={err:?} disk='{disk}'"),
+            format!("err={err:?} disk='{disk}'"),
         )
     });
 
@@ -1005,7 +1005,7 @@ pub async fn test_ui_p4_hooks(ws: &TestWorkspace) -> Vec<TestResult> {
     } else {
         fail(
             &format!("{}/get_roundtrip", suite),
-            &format!("err={err:?} data={data:?}"),
+            format!("err={err:?} data={data:?}"),
         )
     });
 
@@ -1019,7 +1019,7 @@ pub async fn test_ui_p4_hooks(ws: &TestWorkspace) -> Vec<TestResult> {
     } else {
         fail(
             &format!("{}/set_invalid_kept", suite),
-            &format!("err={err:?} disk='{disk}'"),
+            format!("err={err:?} disk='{disk}'"),
         )
     });
 
@@ -1042,7 +1042,7 @@ pub async fn test_ui_p4_hooks(ws: &TestWorkspace) -> Vec<TestResult> {
     } else {
         fail(
             &format!("{}/get_corrupt", suite),
-            &format!("err={err:?} data={data:?}"),
+            format!("err={err:?} data={data:?}"),
         )
     });
 
@@ -1062,7 +1062,7 @@ pub async fn test_ui_p5_sandbox(ws: &TestWorkspace) -> Vec<TestResult> {
     let mut api = match WsApi::connect().await {
         Ok(a) => a,
         Err(e) => {
-            results.push(fail(suite, &format!("ws connect: {e}")));
+            results.push(fail(suite, format!("ws connect: {e}")));
             return results;
         }
     };
@@ -1076,7 +1076,7 @@ pub async fn test_ui_p5_sandbox(ws: &TestWorkspace) -> Vec<TestResult> {
         .and_then(|p| p.as_str())
         .unwrap_or("")
         .to_string();
-    let exec_ok = d.get("executor").map_or(false, |e| {
+    let exec_ok = d.get("executor").is_some_and(|e| {
         ["enabled", "sandbox", "allow_network", "strict"]
             .iter()
             .all(|k| e.get(k).and_then(|v| v.as_bool()).is_some())
@@ -1100,7 +1100,7 @@ pub async fn test_ui_p5_sandbox(ws: &TestWorkspace) -> Vec<TestResult> {
             && d
                 .get("backend_probe")
                 .and_then(|b| b.get("backends"))
-                .map_or(false, |v| v.is_array())
+                .is_some_and(|v| v.is_array())
     };
     let shape_ok = err.is_none()
         && ["windows", "linux", "macos", "other"].contains(&platform.as_str())
@@ -1110,12 +1110,12 @@ pub async fn test_ui_p5_sandbox(ws: &TestWorkspace) -> Vec<TestResult> {
     results.push(if shape_ok {
         pass(
             &format!("{}/overview_shape", suite),
-            &format!("platform={platform}"),
+            format!("platform={platform}"),
         )
     } else {
         fail(
             &format!("{}/overview_shape", suite),
-            &format!("err={err:?} data={data:?}"),
+            format!("err={err:?} data={data:?}"),
         )
     });
 
@@ -1135,13 +1135,13 @@ pub async fn test_ui_p5_sandbox(ws: &TestWorkspace) -> Vec<TestResult> {
         && data
             .as_ref()
             .and_then(|d| d.get("restart_hint"))
-            .map_or(false, |h| h.is_string());
+            .is_some_and(|h| h.is_string());
     results.push(if step1 {
         pass(&format!("{}/set_enabled_sandbox", suite), "联动落盘 + restart_hint")
     } else {
         fail(
             &format!("{}/set_enabled_sandbox", suite),
-            &format!("err={err:?} disk={disk_exec}"),
+            format!("err={err:?} disk={disk_exec}"),
         )
     });
 
@@ -1160,7 +1160,7 @@ pub async fn test_ui_p5_sandbox(ws: &TestWorkspace) -> Vec<TestResult> {
     } else {
         fail(
             &format!("{}/set_merge", suite),
-            &format!("err={err:?} disk={disk_exec}"),
+            format!("err={err:?} disk={disk_exec}"),
         )
     });
 
@@ -1168,11 +1168,11 @@ pub async fn test_ui_p5_sandbox(ws: &TestWorkspace) -> Vec<TestResult> {
     let (_, err) = api
         .call("sandbox", "set_config", Some(json!({"sandbox": "yes"})))
         .await;
-    let refused_field = err.as_deref().map_or(false, |e| e.contains("sandbox"));
+    let refused_field = err.as_deref().is_some_and(|e| e.contains("sandbox"));
     results.push(if refused_field {
         pass(&format!("{}/reject_non_bool", suite), "拒并指名字段")
     } else {
-        fail(&format!("{}/reject_non_bool", suite), &format!("err={err:?}"))
+        fail(&format!("{}/reject_non_bool", suite), format!("err={err:?}"))
     });
     let (_, err) = api.call("sandbox", "set_config", Some(json!({}))).await;
     results.push(if err.is_some() {
@@ -1196,7 +1196,7 @@ pub async fn test_ui_p5_sandbox(ws: &TestWorkspace) -> Vec<TestResult> {
     results.push(if err.is_none() && data.is_some() {
         pass(&format!("{}/status_ok", suite), "status 可用")
     } else {
-        fail(&format!("{}/status_ok", suite), &format!("err={err:?}"))
+        fail(&format!("{}/status_ok", suite), format!("err={err:?}"))
     });
 
     results

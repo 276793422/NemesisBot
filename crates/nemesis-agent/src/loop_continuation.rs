@@ -146,7 +146,7 @@ impl ContinuationStore {
         self.ensure_dir()?;
         let path = self.snapshot_path(&snapshot.task_id);
         let json = serde_json::to_string_pretty(snapshot)
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+            .map_err(std::io::Error::other)?;
         std::fs::write(&path, json)?;
         Ok(())
     }
@@ -155,20 +155,19 @@ impl ContinuationStore {
     pub fn load(&self, task_id: &str) -> std::io::Result<ContinuationSnapshot> {
         let path = self.snapshot_path(task_id);
         let json = std::fs::read_to_string(&path)?;
-        serde_json::from_str(&json).map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))
+        serde_json::from_str(&json).map_err(std::io::Error::other)
     }
 
     /// Delete a continuation snapshot from disk.
     pub fn delete(&self, task_id: &str) {
         let path = self.snapshot_path(task_id);
-        if path.exists() {
-            if let Err(e) = std::fs::remove_file(&path) {
+        if path.exists()
+            && let Err(e) = std::fs::remove_file(&path) {
                 warn!(
                     "[Continuation] Failed to delete continuation snapshot {}: {}",
                     task_id, e
                 );
             }
-        }
     }
 
     /// List all pending task IDs on disk.
@@ -182,11 +181,10 @@ impl ContinuationStore {
         };
         for entry in entries.flatten() {
             let path = entry.path();
-            if path.extension().map(|e| e == "json").unwrap_or(false) {
-                if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
+            if path.extension().map(|e| e == "json").unwrap_or(false)
+                && let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
                     task_ids.push(stem.to_string());
                 }
-            }
         }
         task_ids
     }
@@ -282,11 +280,10 @@ impl ContinuationStore {
             let Ok(modified) = entry.metadata().and_then(|m| m.modified()) else {
                 continue;
             };
-            if modified < cutoff {
-                if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
+            if modified < cutoff
+                && let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
                     stale.push(stem.to_string());
                 }
-            }
         }
         stale
     }
@@ -882,8 +879,8 @@ pub async fn handle_cluster_continuation<T: ToolLookup>(
             }
 
             // Handle nested async: save a new continuation.
-            if tool_result.is_async {
-                if let Some(ref nested_task_id) = tool_result.task_id {
+            if tool_result.is_async
+                && let Some(ref nested_task_id) = tool_result.task_id {
                     manager
                         .save_continuation(
                             nested_task_id,
@@ -895,7 +892,6 @@ pub async fn handle_cluster_continuation<T: ToolLookup>(
                         )
                         .await;
                 }
-            }
 
             // Determine content for LLM.
             let content_for_llm = if tool_result.for_llm.is_empty() {
