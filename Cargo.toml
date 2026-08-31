@@ -41,6 +41,7 @@ members = [
     "crates/nemesis-voice",
     "crates/nemesis-ui",
     "crates/nemesis-lsp",
+    "crates/nemesis-board",
     "nemesisbot",
     "test-tools/integration-test",
     "test-tools/cluster-test",
@@ -173,6 +174,7 @@ nemesis-injector = { path = "crates/nemesis-injector" }
 nemesis-eval-proxy = { path = "crates/nemesis-eval-proxy" }
 nemesis-voice = { path = "crates/nemesis-voice" }
 nemesis-ui = { path = "crates/nemesis-ui" }
+nemesis-board = { path = "crates/nemesis-board" }
 
 # Build-configurator (tools/nemesis-config) — TUI + manifest parsing
 ratatui = { version = "0.29", default-features = false, features = ["crossterm"] }

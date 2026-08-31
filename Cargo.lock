@@ -3349,6 +3349,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "nemesis-board"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "nemesis-types",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "tracing",
+]
+
+[[package]]
 name = "nemesis-build-config"
 version = "0.1.0"
 dependencies = [
@@ -3421,6 +3433,7 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.18",
  "tokio",
+ "tokio-util",
  "toml 0.8.2",
  "tracing",
  "uuid",
@@ -3990,6 +4003,7 @@ dependencies = [
  "hmac",
  "http",
  "nemesis-agent",
+ "nemesis-board",
  "nemesis-bus",
  "nemesis-cluster",
  "nemesis-config",
@@ -4072,6 +4086,7 @@ dependencies = [
  "libc",
  "nemesis-agent",
  "nemesis-auth",
+ "nemesis-board",
  "nemesis-bus",
  "nemesis-channels",
  "nemesis-cluster",

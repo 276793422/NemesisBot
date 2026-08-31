@@ -354,10 +354,7 @@ fn message_to_node_info(msg: &DiscoveryMessage) -> ExtendedNodeInfo {
         msg.name.clone()
     };
 
-    let role = match msg.role.as_str() {
-        "manager" | "coordinator" | "master" => NodeRole::Master,
-        _ => NodeRole::Worker,
-    };
+    let role = NodeRole::from_role_str(&msg.role);
 
     ExtendedNodeInfo {
         base: NodeInfo {

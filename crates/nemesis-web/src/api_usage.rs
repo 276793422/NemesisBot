@@ -1,6 +1,7 @@
 //! Usage statistics API endpoints.
 //!
-//! Provides `/api/usage/summary`, `/api/usage/trends`, `/api/usage/logs`.
+//! Provides `/api/usage/summary`, `/api/usage/trends`, `/api/usage/logs`,
+//! and `/api/usage/pricing`.
 
 use crate::api_handlers::AppState;
 use axum::Json;
@@ -149,4 +150,26 @@ pub async fn handle_api_usage_logs(
         })),
         Err(e) => Json(serde_json::json!({"error": e})),
     }
+}
+
+/// GET /api/usage/pricing
+///
+/// The compile-time embedded pricing table (static data — no DataStore).
+/// Lets the frontend render the price list and match the active model via
+/// `modelId` or any of `aliases`.
+pub async fn handle_api_usage_pricing() -> Json<serde_json::Value> {
+    Json(serde_json::json!({
+        "status": "success",
+        "data": nemesis_data::all_pricing().iter().map(|p| serde_json::json!({
+            "modelId": p.model_id,
+            "displayName": p.display_name,
+            "inputCostPerMillion": p.input_cost_per_million,
+            "outputCostPerMillion": p.output_cost_per_million,
+            "cacheReadCostPerMillion": p.cache_read_cost_per_million,
+            "cacheCreationCostPerMillion": p.cache_creation_cost_per_million,
+            "maxInputTokens": p.max_input_tokens,
+            "maxOutputTokens": p.max_output_tokens,
+            "aliases": p.aliases,
+        })).collect::<Vec<_>>()
+    }))
 }

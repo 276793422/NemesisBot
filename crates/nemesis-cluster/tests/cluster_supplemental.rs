@@ -1859,13 +1859,36 @@ fn test_task_with_none_fields() {
 
 #[test]
 fn test_node_role_serialization() {
-    let json = serde_json::to_string(&NodeRole::Master).unwrap();
+    let json = serde_json::to_string(&NodeRole::Coordinator).unwrap();
+    assert_eq!(json, "\"Coordinator\"");
     let back: NodeRole = serde_json::from_str(&json).unwrap();
-    assert_eq!(back, NodeRole::Master);
+    assert_eq!(back, NodeRole::Coordinator);
 
     let json = serde_json::to_string(&NodeRole::Worker).unwrap();
     let back: NodeRole = serde_json::from_str(&json).unwrap();
     assert_eq!(back, NodeRole::Worker);
+}
+
+/// 旧值兼容（goal 硬约束①）：旧节点 UDP 广播的 `"Master"` 与旧
+/// peers.toml 的 `master`/`manager` 都必须解析为 Coordinator。
+#[test]
+fn test_node_role_legacy_value_compat() {
+    // serde alias：旧版本序列化的 "Master" 可解析。
+    let legacy: NodeRole = serde_json::from_str("\"Master\"").unwrap();
+    assert_eq!(legacy, NodeRole::Coordinator);
+
+    // 字符串映射（peers.toml [node].role / 广播 role 字段）：
+    // 现行词表 + 旧值全部归一 Coordinator，其余回落 Worker。
+    assert_eq!(NodeRole::from_role_str("coordinator"), NodeRole::Coordinator);
+    assert_eq!(NodeRole::from_role_str("master"), NodeRole::Coordinator);
+    assert_eq!(NodeRole::from_role_str("manager"), NodeRole::Coordinator);
+    assert_eq!(NodeRole::from_role_str("worker"), NodeRole::Worker);
+    assert_eq!(NodeRole::from_role_str(""), NodeRole::Worker);
+    assert_eq!(NodeRole::from_role_str("nonsense"), NodeRole::Worker);
+
+    // 规范配置词表（写 peers.toml 用）。
+    assert_eq!(NodeRole::Coordinator.as_role_str(), "coordinator");
+    assert_eq!(NodeRole::Worker.as_role_str(), "worker");
 }
 
 #[test]
@@ -1926,11 +1949,11 @@ fn test_extended_node_info_get_uptime_invalid_date() {
 
 #[test]
 fn test_extended_node_info_to_peer_config_role_mapping() {
-    let master = ExtendedNodeInfo {
+    let coordinator = ExtendedNodeInfo {
         base: NodeInfo {
-            id: "master-1".to_string(),
-            name: "master".to_string(),
-            role: NodeRole::Master,
+            id: "coordinator-1".to_string(),
+            name: "coordinator".to_string(),
+            role: NodeRole::Coordinator,
             address: "10.0.0.1:9000".to_string(),
             category: "dev".to_string(),
             last_seen: "".to_string(),
@@ -1940,8 +1963,9 @@ fn test_extended_node_info_to_peer_config_role_mapping() {
         addresses: vec![],
         node_type: "agent".into(),
     };
-    let config = master.to_peer_config();
-    assert_eq!(config.role, "master");
+    let config = coordinator.to_peer_config();
+    // 规范配置词表：Coordinator → "coordinator"。
+    assert_eq!(config.role, "coordinator");
 
     let worker = ExtendedNodeInfo {
         base: NodeInfo {

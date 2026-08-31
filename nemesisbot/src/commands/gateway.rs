@@ -28,6 +28,156 @@ use crate::adapters;
 use crate::common;
 
 // ---------------------------------------------------------------------------
+// W2 P4: board autopilot cron 触发 + 派发超时 sweep
+// ---------------------------------------------------------------------------
+
+/// 解析 `board-ap:{id}` → (store, autopilot)；store 不可用或 id 非法时报错。
+#[cfg(feature = "board")]
+fn resolve_autopilot_job<'a>(
+    job_name: &str,
+    board_store: Option<&'a std::sync::Arc<nemesis_board::BoardStore>>,
+) -> Result<
+    (
+        &'a std::sync::Arc<nemesis_board::BoardStore>,
+        nemesis_board::Autopilot,
+    ),
+    String,
+> {
+    let ap_id: i64 = job_name
+        .strip_prefix("board-ap:")
+        .and_then(|s| s.parse().ok())
+        .ok_or_else(|| format!("autopilot job 名无法解析: {job_name}"))?;
+    let store = board_store.ok_or("board service not available (autopilot)")?;
+    let ap = store
+        .get_autopilot(ap_id)
+        .map_err(|e| format!("autopilot #{ap_id} 加载失败: {e}"))?;
+    Ok((store, ap))
+}
+
+/// cron on_job 的 board autopilot 分支（job 名 `board-ap:{id}`）：按规则
+/// 模板建单（target 非空时派发）并落 last_run_at；返回值进 job run 历史。
+/// disabled 规则到点跳过（启停是用户意图，不算故障）。
+#[cfg(all(feature = "board", feature = "cluster"))]
+fn fire_board_autopilot(
+    job_name: &str,
+    board_store: Option<&std::sync::Arc<nemesis_board::BoardStore>>,
+    cluster: Option<&std::sync::Arc<nemesis_cluster::cluster::Cluster>>,
+) -> Result<String, String> {
+    let (store, ap) = resolve_autopilot_job(job_name, board_store)?;
+    if !ap.enabled {
+        return Ok(format!("autopilot「{}」已停用，跳过", ap.name));
+    }
+    let out = nemesis_web::handlers::board::fire_autopilot(
+        store,
+        cluster,
+        &ap,
+        &nemesis_board::Actor::system("autopilot"),
+    )
+    .map_err(|e| format!("autopilot「{}」触发失败: {e}", ap.name))?;
+    Ok(format!("autopilot「{}」已触发: {out}", ap.name))
+}
+
+/// 非 cluster 编译变体：只有本地建单能力（target 非空的规则由 fire_autopilot
+/// 建单前拒绝，语义与 cluster 版一致）。
+#[cfg(all(feature = "board", not(feature = "cluster")))]
+fn fire_board_autopilot(
+    job_name: &str,
+    board_store: Option<&std::sync::Arc<nemesis_board::BoardStore>>,
+) -> Result<String, String> {
+    let (store, ap) = resolve_autopilot_job(job_name, board_store)?;
+    if !ap.enabled {
+        return Ok(format!("autopilot「{}」已停用，跳过", ap.name));
+    }
+    let out = nemesis_web::handlers::board::fire_autopilot(
+        store,
+        &ap,
+        &nemesis_board::Actor::system("autopilot"),
+    )
+    .map_err(|e| format!("autopilot「{}」触发失败: {e}", ap.name))?;
+    Ok(format!("autopilot「{}」已触发: {out}", ap.name))
+}
+
+/// 一轮派发超时清扫（W2 P4-①②，board 派发无人回报时的兜底）。逐条
+/// dispatched 记录判定：
+///   ① 派发超过 `timeout_secs` 未回报 → 超时失败；
+///   ② worker 在注册表且明确离线、且距派发 ≥ 离线宽限期（600s，容忍抖动）
+///      → 离线失败。peer 缺失不判——未发现的 worker 可能只是还没上线，
+///      保守等超时。
+/// `fail_dispatch` 是竞态闸（只认 dispatched 态）：赢者补 ⛔ 系统评论 +
+/// dispatch_failed 站内通知；输者（worker 恰好回报）不动，下一轮自然不再
+/// 列出。MVP 策略 = abort + notify + 手动重派，不自动 retry/reassign——
+/// 同一 issue 双 worker 并发执行的风险大于自动化的收益（开发日志有记）。
+#[cfg(all(feature = "board", feature = "cluster"))]
+fn sweep_dispatch_timeouts(
+    store: &std::sync::Arc<nemesis_board::BoardStore>,
+    cluster: &std::sync::Arc<nemesis_cluster::cluster::Cluster>,
+    timeout_secs: u64,
+) {
+    const OFFLINE_GRACE_SECS: u64 = 600;
+    let records = match store.list_active_dispatches() {
+        Ok(r) => r,
+        Err(e) => {
+            warn!("[Board][Sweep] list active dispatches failed: {e}");
+            return;
+        }
+    };
+    if records.is_empty() {
+        return;
+    }
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    for record in records {
+        let age = now.saturating_sub(record.dispatched_at.max(0) as u64);
+        let offline = cluster
+            .get_peer(&record.worker_id)
+            .map(|p| !p.is_online())
+            .unwrap_or(false);
+        let timed_out = age >= timeout_secs;
+        let offline_expired = offline && age >= OFFLINE_GRACE_SECS;
+        if !timed_out && !offline_expired {
+            continue;
+        }
+        let reason = if timed_out {
+            format!("派发超时（{timeout_secs}s 无回报）")
+        } else {
+            format!("worker 离线（{age}s 无回报且节点已离线）")
+        };
+        match store.fail_dispatch(&record.task_id, &reason) {
+            Ok(Some(rec)) => {
+                let _ = store.add_comment(nemesis_board::NewComment {
+                    issue_id: rec.issue_id,
+                    author: nemesis_board::Actor::system("board"),
+                    content: format!(
+                        "⛔ {reason}，派发已标记失败（task {}）。可重新派发或取消任务。",
+                        rec.task_id
+                    ),
+                    parent_id: None,
+                    ctype: nemesis_board::CommentType::System,
+                });
+                if let Err(e) = store.notify_dispatch_event(
+                    rec.issue_id,
+                    nemesis_board::notification_kind::DISPATCH_FAILED,
+                    &reason,
+                ) {
+                    warn!(
+                        "[Board][Sweep] notify dispatch_failed (task {}): {e}",
+                        rec.task_id
+                    );
+                }
+                warn!(
+                    "[Board][Sweep] dispatch failed: task={} issue={} ({reason})",
+                    rec.task_id, rec.issue_id
+                );
+            }
+            Ok(None) => { /* 输竞态（worker 恰好回报），下轮不再列出 */ }
+            Err(e) => warn!("[Board][Sweep] fail_dispatch (task {}): {e}", record.task_id),
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Global shutdown state
 // ---------------------------------------------------------------------------
 
@@ -1002,6 +1152,96 @@ fn migrate_legacy_workflow_dir(
     }
 }
 
+/// W2 P2 派发写回：board 派发（`issue.dispatch`）的 task_id 命中
+/// issue_dispatch 表 → 终结派发（幂等）+ worker 结果评论 + 状态推进
+/// （成功 → in_review 等 coordinator 验收；失败留在 in_progress）。
+/// 返回是否为 board 派发任务——是则 peer_chat_callback 跳过 agent 续行
+/// 路由（board 派发无续行快照，进 bus 只会产生加载失败噪音）。
+/// board store 未注入（打开失败）→ 恒 false，写回静默关闭。
+/// 唯一调用点在 peer_chat_callback（cluster 编译时）——board-only 构建下
+/// 该函数不可达，cfg 需同时含 cluster 以免 dead_code 告警。
+#[cfg(all(feature = "board", feature = "cluster"))]
+fn write_back_board_dispatch(
+    board_store: &Option<std::sync::Arc<nemesis_board::BoardStore>>,
+    task_id: &str,
+    status: &str,
+    response: &str,
+) -> bool {
+    use nemesis_board::models::dispatch_state;
+
+    let Some(bstore) = board_store.as_ref() else {
+        return false;
+    };
+    if task_id.is_empty() {
+        return false;
+    }
+    let disp = match bstore.get_dispatch(task_id) {
+        Ok(Some(d)) => d,
+        Ok(None) => return false,
+        Err(e) => {
+            // 读失败≠非 board 任务，但也不能误吞 agent 续行——按既有路由
+            // 处理（false），告警留痕。
+            warn!("[Gateway] board dispatch lookup failed (task_id={task_id}): {e}");
+            return false;
+        }
+    };
+    if disp.state != dispatch_state::DISPATCHED {
+        info!("[Gateway] board dispatch {task_id} already terminal ({}), skip", disp.state);
+        return true;
+    }
+
+    let terminal = if status == "error" {
+        dispatch_state::FAILED
+    } else {
+        dispatch_state::DONE
+    };
+    match bstore.finish_dispatch(task_id, terminal) {
+        Ok(true) => {
+            let worker_actor = nemesis_board::Actor::agent(&disp.worker_id);
+            let content = if status == "error" {
+                format!("⛔ worker 汇报失败：\n\n{response}")
+            } else {
+                format!("✅ worker 汇报完成：\n\n{response}")
+            };
+            if let Err(e) = bstore.add_comment(nemesis_board::NewComment {
+                issue_id: disp.issue_id,
+                author: worker_actor.clone(),
+                content,
+                parent_id: None,
+                ctype: nemesis_board::CommentType::Comment,
+            }) {
+                warn!("[Gateway] board writeback comment failed (task_id={task_id}): {e}");
+            }
+            // 成功 → in_review（coordinator 验收后定 done）；失败留在
+            // in_progress，失败评论已留痕（重派走 issue.dispatch）。
+            if status != "error" {
+                if let Ok(issue) = bstore.get_issue(disp.issue_id) {
+                    if issue.status == nemesis_board::IssueStatus::InProgress {
+                        if let Err(e) = bstore.transition_issue(
+                            disp.issue_id,
+                            nemesis_board::IssueStatus::InReview,
+                            &worker_actor,
+                        ) {
+                            warn!("[Gateway] board writeback transition failed (task_id={task_id}): {e}");
+                        }
+                    }
+                }
+            }
+            info!(
+                "[Gateway] board dispatch writeback done (task_id={task_id}, issue_id={}, state={terminal})",
+                disp.issue_id
+            );
+        }
+        Ok(false) => {
+            info!("[Gateway] board dispatch {task_id} finished concurrently, skip writeback");
+        }
+        Err(e) => {
+            warn!("[Gateway] board dispatch finish failed (task_id={task_id}): {e}");
+        }
+    }
+    true
+}
+
 /// Run the gateway command.
 pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
     // macOS: acquire the tray-handoff channel guard first, so that ANY return
@@ -1335,6 +1575,28 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
         nemesis_cron::service::CronService::new(&cron_store_path.to_string_lossy()),
     ));
 
+    // W2 P1: Managed-agent board store — open (or create) {workspace}/board/board.db.
+    // Injected into the web server below; failure logs a warning and leaves the
+    // board unavailable (board.* WSAPI commands return "board service not
+    // available") instead of blocking gateway startup.
+    #[cfg(feature = "board")]
+    let board_store = {
+        let board_db = home.join("workspace").join("board").join("board.db");
+        match nemesis_board::BoardStore::open(&board_db, "NB") {
+            Ok(store) => {
+                info!(
+                    "[Gateway] Board store opened at {}",
+                    board_db.display()
+                );
+                Some(std::sync::Arc::new(store))
+            }
+            Err(e) => {
+                warn!("[Gateway] Board store open failed: {} (board.* disabled)", e);
+                None
+            }
+        }
+    };
+
     // Opt 2: conversation→WS router, shared between the cron fire handler
     // (lookup, here) and process_messages (bind, in the web server). Built
     // early so the cron closure can capture a clone before set_on_job; the
@@ -1342,15 +1604,43 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
     let conv_router: nemesis_web::SharedConvRouter =
         std::sync::Arc::new(nemesis_web::ConvRouter::new());
 
+    // W2 P4: board autopilot 的集群槽位。on_job 闭包在 cluster 创建之前
+    // 装配（cron 服务先于 cluster 就绪），用 OnceLock 让闭包在 cluster 建
+    // 好后取用；未启用集群时保持 None（target 为空的 autopilot 规则仍可
+    // 纯本地建单）。
+    #[cfg(all(feature = "board", feature = "cluster"))]
+    let autopilot_cluster_slot: Arc<std::sync::OnceLock<Arc<nemesis_cluster::cluster::Cluster>>> =
+        Arc::new(std::sync::OnceLock::new());
+
     // C3: Wire CronService — set_on_job handler + start.
     // Mirrors Go's bot_service.go:392-399, 571-579.
     {
         let bus_for_cron = bus.clone();
         let router_for_cron = conv_router.clone();
+        // W2 P4: autopilot 分支捕获（board store + 集群槽位）。
+        #[cfg(feature = "board")]
+        let store_for_ap = board_store.clone();
+        #[cfg(all(feature = "board", feature = "cluster"))]
+        let slot_for_ap = autopilot_cluster_slot.clone();
         cron_service
             .lock()
             .unwrap()
             .set_on_job(move |job: &nemesis_cron::service::CronJob| {
+                // W2 P4: board autopilot job（名 `board-ap:{id}`）→ 模板建单
+                // +（可选）派发，不走消息总线。必须放在 message 判空前——
+                // autopilot job 的 message 恒为空，否则落 "No message to
+                // deliver"。
+                #[cfg(feature = "board")]
+                if job.name.starts_with("board-ap:") {
+                    #[cfg(feature = "cluster")]
+                    return fire_board_autopilot(
+                        &job.name,
+                        store_for_ap.as_ref(),
+                        slot_for_ap.get(),
+                    );
+                    #[cfg(not(feature = "cluster"))]
+                    return fire_board_autopilot(&job.name, store_for_ap.as_ref());
+                }
                 if !job.payload.message.is_empty() {
                     let channel = job
                         .payload
@@ -1885,6 +2175,12 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
 
         let cluster = Arc::new(cluster);
 
+        // W2 P4: 回填 autopilot 集群槽位（on_job 闭包经 OnceLock 取用）。
+        #[cfg(all(feature = "board", feature = "cluster"))]
+        {
+            let _ = autopilot_cluster_slot.set(cluster.clone());
+        }
+
         // --- Inject cluster task queue into cluster for callback routing ---
         cluster.set_cluster_task_queue(cluster_task_list.clone(), cluster_work_queue.clone());
 
@@ -1950,6 +2246,66 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
             info!("[Gateway] Registered PeerChatHandler (async LLM + callback) for peer_chat");
         }
 
+        // --- W2 P4: task_cancel handler — per-task cancel ---
+        // 取消指定 peer_chat 任务的执行：排队中的直接出队丢弃，运行中的经
+        // running_tokens 广播取消（LLM 迭代间隙/工具派发前检查）。这是与
+        // estop 正交的细粒度取消（estop 冻结全部 agent 活动，此处只停一个
+        // 任务）；board issue.cancel 经此送达 worker。
+        {
+            let task_list_for_cancel = cluster_task_list.clone();
+            let _ = cluster.register_rpc_handler(
+                "task_cancel",
+                Box::new(move |payload| {
+                    let task_id = payload
+                        .get("task_id")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("");
+                    if task_id.is_empty() {
+                        return Err("missing field: task_id".to_string());
+                    }
+                    let outcome = task_list_for_cancel.cancel_task(task_id);
+                    info!(
+                        "[Gateway] task_cancel: task={} outcome={:?}",
+                        task_id, outcome
+                    );
+                    Ok(serde_json::to_value(&outcome)
+                        .unwrap_or_else(|_| serde_json::json!({"outcome": "error"})))
+                }),
+            );
+            info!("[Gateway] Registered task_cancel handler (per-task cancel)");
+        }
+
+        // --- W2 P4: 派发超时 sweep（board 派发无人回报的兜底）---
+        // board.dispatch_timeout_secs = 0 关闭；扫描间隔
+        // dispatch_sweep_interval_secs（下限 1s）。失败处置（⛔ 评论 + 通知）
+        // 在 sweep_dispatch_timeouts 内完成，赢 fail_dispatch 竞态才动账。
+        #[cfg(all(feature = "board", feature = "cluster"))]
+        {
+            let sweep_cfg = cfg.board.clone().unwrap_or_default();
+            if sweep_cfg.dispatch_timeout_secs > 0 {
+                let store_for_sweep = board_store.clone();
+                let cluster_for_sweep = cluster.clone();
+                tokio::spawn(async move {
+                    let mut ticker = tokio::time::interval(std::time::Duration::from_secs(
+                        sweep_cfg.dispatch_sweep_interval_secs.max(1),
+                    ));
+                    ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+                    loop {
+                        ticker.tick().await;
+                        let Some(store) = store_for_sweep.as_ref() else {
+                            continue;
+                        };
+                        sweep_dispatch_timeouts(store, &cluster_for_sweep, sweep_cfg.dispatch_timeout_secs);
+                    }
+                });
+                info!(
+                    "[Gateway] Board dispatch sweep armed (timeout={}s, interval={}s)",
+                    sweep_cfg.dispatch_timeout_secs,
+                    sweep_cfg.dispatch_sweep_interval_secs.max(1)
+                );
+            }
+        }
+
         // --- Now that Cluster is Arc-wrapped, wire up the real callback handler ---
         // Routes callbacks to the correct destination:
         // 1. If the callback matches a ClusterAgent child task (nested cluster_rpc),
@@ -1961,6 +2317,13 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
             let task_list_for_cb = cluster_task_list.clone();
             let work_queue_for_cb = cluster_work_queue.clone();
             let cluster_for_cb = cluster.clone();
+            // W2 P2 派发写回：board 派发的 task_id 命中 issue_dispatch →
+            // 写回看板。board feature 未编译时占位（拦截整体被 cfg 掉）。
+            #[cfg(feature = "board")]
+            let board_store_for_cb = board_store.clone();
+            #[cfg(not(feature = "board"))]
+            #[allow(unused_variables)]
+            let board_store_for_cb: Option<()> = None;
             let _ = cluster.register_rpc_handler("peer_chat_callback", Box::new(move |payload| {
                 let task_id = payload
                     .get("task_id")
@@ -1981,6 +2344,16 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
 
                 info!("[Gateway] peer_chat_callback received: task_id={}, status={}, from={}", task_id, status, source_node);
 
+                // Route 0: Board 派发写回（W2 P2）——命中 issue_dispatch 的
+                // task_id 直接写回看板（结果评论 + 状态推进），且跳过 Route 2
+                // 的 agent 续行（board 派发无续行快照）；TaskManager 状态更新
+                // （Route 3）照常，board 派发也登记了本地 task。
+                #[cfg(all(feature = "board", feature = "cluster"))]
+                let is_board_task =
+                    write_back_board_dispatch(&board_store_for_cb, task_id, status, response);
+                #[cfg(any(not(feature = "board"), not(feature = "cluster")))]
+                let is_board_task = false;
+
                 // Route 1: Check if this callback belongs to a ClusterAgent child task.
                 // When the ClusterAgent's LLM generates a nested cluster_rpc, the child
                 // task's callback must be routed back to the ClusterAgent work queue,
@@ -2000,7 +2373,8 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
                 }
 
                 // Route 2: Main AgentLoop continuation — publish to bus.
-                if !task_id.is_empty() {
+                // （board 派发任务跳过：无续行快照，进 bus 只会告警。）
+                if !task_id.is_empty() && !is_board_task {
                     let mut metadata = std::collections::HashMap::new();
                     metadata.insert("status".to_string(), status.to_string());
                     metadata.insert("source_node".to_string(), source_node.to_string());
@@ -2841,6 +3215,33 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
     web_server.set_conv_router(conv_router);
     info!("[Gateway] CronService + ConvRouter injected into web server");
 
+    // Inject the managed-agent board store (board feature only; None →
+    // board.* WSAPI commands report "board service not available").
+    #[cfg(feature = "board")]
+    if let Some(ref store) = board_store {
+        // 角色解析（goal 硬约束①：复用 NodeRole，无平行 role 字段）：
+        // - cluster 启用 → 取 cluster.role()（peers.toml [node].role；
+        //   from_role_str 兼容旧值 master/manager）；
+        // - cluster 关闭 / cluster feature 未编译 → Coordinator
+        //   （单节点部署即看板权威，board 计划 §1.2）。
+        #[cfg(feature = "cluster")]
+        let board_role = if cluster_should_start {
+            cluster_adapter_refs
+                .as_ref()
+                .map(|(c, _, _)| nemesis_types::cluster::NodeRole::from_role_str(&c.role()))
+                .unwrap_or(nemesis_types::cluster::NodeRole::Coordinator)
+        } else {
+            nemesis_types::cluster::NodeRole::Coordinator
+        };
+        #[cfg(not(feature = "cluster"))]
+        let board_role = nemesis_types::cluster::NodeRole::Coordinator;
+        web_server.set_board(nemesis_board::BoardService::new(store.clone(), board_role));
+        info!(
+            "[Gateway] Board service injected into web server (role={})",
+            board_role.as_role_str()
+        );
+    }
+
     // Inject DataStore into web server for usage statistics API
     if let Some(ref ds) = data_store {
         web_server.set_data_store(ds.clone());
@@ -3350,6 +3751,19 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
     svc_mgr
         .start_basic_services()
         .map_err(|e| anyhow::anyhow!("Error starting basic services: {}", e))?;
+
+    // W2 P4: board autopilot 启动同步——store 为真相源，删孤儿/补登记/跟随
+    // （必须在 cron.start 之前完成，防同步窗口内 job 已开始调度）。
+    #[cfg(feature = "board")]
+    if let Some(store) = board_store.as_ref() {
+        match nemesis_web::handlers::board::sync_autopilot_jobs(&cron_service, store) {
+            Ok(n) if n > 0 => {
+                info!("[Gateway] Board autopilot sync: {n} rule(s) re-armed from store")
+            }
+            Ok(_) => {}
+            Err(e) => warn!("[Gateway] Board autopilot sync failed: {}", e),
+        }
+    }
 
     // Start cron scheduler (after on_job handler is wired).
     // Mirrors Go's bot_service.go:571-579 cronSvc.Start().

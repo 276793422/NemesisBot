@@ -372,6 +372,7 @@ fn test_app_state_session_manager_ref() {
         internal_cmd_tx: None,
         estop: None,
         cron: None,
+        board: None,
     };
     let mgr = state.session_manager_ref();
     assert_eq!(mgr.active_count(), 0);
@@ -597,6 +598,7 @@ fn test_app_state_default_values() {
         internal_cmd_tx: None,
         estop: None,
         cron: None,
+        board: None,
     };
     assert_eq!(
         state
@@ -728,6 +730,7 @@ fn make_test_state(workspace: Option<String>, auth_token: &str) -> Arc<AppState>
         internal_cmd_tx: None,
         estop: None,
         cron: None,
+        board: None,
     })
 }
 

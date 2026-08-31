@@ -59,6 +59,7 @@ fn make_state(
         internal_cmd_tx: None,
         estop: None,
         cron: None,
+        board: None,
     })
 }
 
@@ -100,6 +101,7 @@ fn make_state_with_tx(
         internal_cmd_tx: tx,
         estop: None,
         cron: None,
+        board: None,
     })
 }
 
@@ -411,6 +413,7 @@ async fn test_handle_api_status_includes_model_base() {
         internal_cmd_tx: None,
         estop: None,
         cron: None,
+        board: None,
     });
     let resp = handle_api_status(State(state)).await;
     let json = resp.0;
@@ -811,6 +814,7 @@ async fn test_handle_api_sessions_with_count() {
         internal_cmd_tx: None,
         estop: None,
         cron: None,
+        board: None,
     });
     let resp = handle_api_sessions(State(state)).await;
     let json = resp.0;
@@ -1208,6 +1212,7 @@ fn test_app_state_clone() {
         internal_cmd_tx: None,
         estop: None,
         cron: None,
+        board: None,
     };
     let cloned = state.clone();
     assert_eq!(cloned.auth_token, "tok");

@@ -22,6 +22,9 @@ pub enum TaskStatus {
     WaitingRemote,
     Completed,
     Failed,
+    /// A 侧（board coordinator）下行取消（W2 P4 task_cancel）。终态：
+    /// 排队任务出队时直接报错回收；执行中任务经 CancellationToken 中断。
+    Cancelled,
 }
 
 impl std::fmt::Display for TaskStatus {
@@ -32,8 +35,23 @@ impl std::fmt::Display for TaskStatus {
             Self::WaitingRemote => write!(f, "waiting_remote"),
             Self::Completed => write!(f, "completed"),
             Self::Failed => write!(f, "failed"),
+            Self::Cancelled => write!(f, "cancelled"),
         }
     }
+}
+
+/// `cancel_task` 的结局（gateway task_cancel RPC handler 回 A 端的依据）。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "outcome", rename_all = "snake_case")]
+pub enum CancelOutcome {
+    /// 无此任务（已完结回收或从未存在）。
+    NotFound,
+    /// 排队中（Pending/WaitingRemote）→ 已标 Cancelled，不会再执行。
+    QueuedCancelled,
+    /// 执行中 → 已标 Cancelled 并触发 CancellationToken（agent loop 尽快中断）。
+    RunningCancelled,
+    /// 已是终态（附具体状态串）——幂等无操作。
+    AlreadyTerminal { status: String },
 }
 
 /// Origin of a cluster task (who sent the request).
@@ -119,6 +137,10 @@ impl ClusterWorkQueue {
 /// Thread-safe task list backed by DashMap with optional disk persistence.
 pub struct ClusterTaskList {
     tasks: DashMap<String, ClusterTask>,
+    /// 执行中任务的取消令牌（W2 P4 per-task cancel）：task_id → token。
+    /// cluster_agent 在 run 前 register、run 后 unregister；cancel_task 命中
+    /// 执行中任务时 token.cancel() 让 agent loop 尽快中断。
+    running_tokens: DashMap<String, tokio_util::sync::CancellationToken>,
     data_dir: PathBuf,
 }
 
@@ -127,6 +149,7 @@ impl ClusterTaskList {
     pub fn new<P: AsRef<Path>>(data_dir: P) -> Self {
         Self {
             tasks: DashMap::new(),
+            running_tokens: DashMap::new(),
             data_dir: data_dir.as_ref().to_path_buf(),
         }
     }
@@ -218,6 +241,23 @@ impl ClusterTaskList {
     ///    new waiting_for_task_id for the next hop (e.g., B→C→D chain).
     /// 3. Prevents a stale child_task_id from matching future callbacks with the same ID.
     pub fn inject_callback(&self, task_id: &str, response: &str) {
+        // 取消守卫（W2 P4）：任务已被 task_cancel 下行取消（终态）→ 迟到的
+        // 回调不得把它复活回 Pending（防多跳回调链重新入队）；直接回收清理。
+        // 注意先读再清理——不能在 get_mut guard 持有期间调 complete_task
+        // （其内部 remove/iter 同一把 DashMap）。
+        let cancelled = self
+            .tasks
+            .get(task_id)
+            .map(|t| t.status == TaskStatus::Cancelled)
+            .unwrap_or(false);
+        if cancelled {
+            tracing::info!(
+                task_id = %task_id,
+                "[ClusterTaskList] Late callback for cancelled task — dropping and cleaning up"
+            );
+            self.complete_task(task_id);
+            return;
+        }
         if let Some(mut task) = self.tasks.get_mut(task_id) {
             task.callback_result = Some(response.to_string());
             task.waiting_for_task_id = None;
@@ -226,6 +266,58 @@ impl ClusterTaskList {
                 task_id = %task_id,
                 "[ClusterTaskList] Injected callback, status → Pending"
             );
+        }
+    }
+
+    // -- per-task cancel（W2 P4）-------------------------------------------
+
+    /// 执行前注册取消令牌（cluster_agent 的 execute_new_task / resume 路径
+    /// 在 run_with_trace 前调用；run 结束后必须 unregister）。
+    pub fn register_cancel_token(&self, task_id: &str, token: tokio_util::sync::CancellationToken) {
+        self.running_tokens.insert(task_id.to_string(), token);
+    }
+
+    /// 执行后注销取消令牌（任务离开执行态即清——避免 DashMap 泄漏）。
+    pub fn unregister_cancel_token(&self, task_id: &str) {
+        self.running_tokens.remove(task_id);
+    }
+
+    /// 取消任务（A 侧 task_cancel 下行落点）。按任务当前状态分派：
+    /// - Pending/WaitingRemote → 直接标 Cancelled（排队中不会被执行；
+    ///   WaitingRemote 的迟到回调由 inject_callback 的取消守卫拦下）。
+    /// - Running → 标 Cancelled + token.cancel()（agent loop 尽快中断）。
+    /// - Completed/Failed/Cancelled → AlreadyTerminal（幂等无操作）。
+    pub fn cancel_task(&self, task_id: &str) -> CancelOutcome {
+        let status = self.tasks.get(task_id).map(|t| t.status);
+        let Some(status) = status else {
+            return CancelOutcome::NotFound;
+        };
+        match status {
+            TaskStatus::Completed | TaskStatus::Failed | TaskStatus::Cancelled => {
+                CancelOutcome::AlreadyTerminal {
+                    status: status.to_string(),
+                }
+            }
+            TaskStatus::Pending | TaskStatus::WaitingRemote => {
+                self.update_status(task_id, TaskStatus::Cancelled);
+                tracing::info!(
+                    task_id = %task_id,
+                    "[ClusterTaskList] Cancelled queued task (was {})",
+                    status
+                );
+                CancelOutcome::QueuedCancelled
+            }
+            TaskStatus::Running => {
+                self.update_status(task_id, TaskStatus::Cancelled);
+                if let Some((_, token)) = self.running_tokens.remove(task_id) {
+                    token.cancel();
+                }
+                tracing::info!(
+                    task_id = %task_id,
+                    "[ClusterTaskList] Cancelled running task (token fired)"
+                );
+                CancelOutcome::RunningCancelled
+            }
         }
     }
 
@@ -401,7 +493,12 @@ impl ClusterTaskList {
         let active_tasks: Vec<ClusterTask> = self
             .tasks
             .iter()
-            .filter(|e| !matches!(e.value().status, TaskStatus::Completed | TaskStatus::Failed))
+            .filter(|e| {
+                !matches!(
+                    e.value().status,
+                    TaskStatus::Completed | TaskStatus::Failed | TaskStatus::Cancelled
+                )
+            })
             .map(|e| e.value().clone())
             .collect();
 

@@ -55,6 +55,7 @@ fn make_ctx_with_memory(dir: &tempfile::TempDir) -> RequestContext {
         internal_cmd_tx: None,
         estop: None,
         cron: None,
+        board: None,
     });
     RequestContext {
         session_id: "test-session".to_string(),
@@ -286,6 +287,7 @@ async fn chain_list_prev_hash_break_reports_prev_mismatch() {
             internal_cmd_tx: None,
             estop: None,
             cron: None,
+            board: None,
         });
         RequestContext {
             session_id: "t".to_string(),

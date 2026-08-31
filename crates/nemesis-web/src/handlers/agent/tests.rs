@@ -78,6 +78,7 @@ fn make_ctx_with_agent(svc: Arc<dyn AgentLoopService>) -> RequestContext {
         internal_cmd_tx: None,
         estop: None,
         cron: None,
+        board: None,
     });
     RequestContext {
         session_id: "s".to_string(),
@@ -264,6 +265,7 @@ fn make_ctx_from_loop(al: Arc<AgentLoop>, workspace: Option<String>) -> RequestC
         internal_cmd_tx: None,
         estop: None,
         cron: None,
+        board: None,
     });
     RequestContext {
         session_id: "s".to_string(),

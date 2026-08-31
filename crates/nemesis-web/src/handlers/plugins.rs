@@ -7,7 +7,10 @@
 
 use crate::ws_router::{ModuleHandler, RequestContext};
 use nemesis_agent::hooks::ToolHook;
-use std::path::{Path, PathBuf};
+// `Path` 本体仅在 memory feature 块内使用（no-feature 下避免 unused import 警告）。
+#[cfg(feature = "memory")]
+use std::path::Path;
+use std::path::PathBuf;
 
 pub struct PluginsHandler;
 
@@ -38,7 +41,6 @@ impl PluginsHandler {
 
     fn plugins_list(&self, workspace: &str) -> Result<serde_json::Value, String> {
         let _ = workspace; // 预留：后续按 workspace 差异化（多实例/集群）时使用
-        let workspace_path = Path::new(workspace);
 
         // plugin_onnx：能力状态取自 embedding 配置（active tier 模型就绪与否）。
         // nemesis-memory 是可选依赖：feature off 时仅报告文件探测结果。
@@ -50,6 +52,7 @@ impl PluginsHandler {
         onnx["capabilities"] = serde_json::json!(["embedding 推理（tokenizer + model.onnx）"]);
         #[cfg(feature = "memory")]
         {
+            let workspace_path = Path::new(workspace);
             let config_dir = nemesis_path::workspace_config_dir(workspace_path);
             let emb =
                 nemesis_memory::vector::embedding_config::load_embedding_config(&config_dir);

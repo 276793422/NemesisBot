@@ -97,12 +97,21 @@ fn test_task_serialization() {
 
 #[test]
 fn test_node_role_serialization() {
-    let role = NodeRole::Master;
+    let role = NodeRole::Coordinator;
     let json = to_value(role).unwrap();
-    assert_eq!(json, "Master");
+    // P2 角色改名：规范序列化词 = "Coordinator"；旧词 "Master" 仅作
+    // 反序列化 alias（见 cluster.rs `#[serde(alias = "Master")]`）。
+    assert_eq!(json, "Coordinator");
 
     let deserialized: NodeRole = from_value(json).unwrap();
-    assert_eq!(deserialized, NodeRole::Master);
+    assert_eq!(deserialized, NodeRole::Coordinator);
+
+    // 旧词 master/manager 兼容解析（from_role_str 单一真相源）。
+    assert_eq!(NodeRole::from_role_str("master"), NodeRole::Coordinator);
+    assert_eq!(NodeRole::from_role_str("manager"), NodeRole::Coordinator);
+    // 旧 JSON 词 "Master" 经 serde alias 仍可反序列化（存量数据兼容）。
+    let legacy: NodeRole = from_value(to_value("Master").unwrap()).unwrap();
+    assert_eq!(legacy, NodeRole::Coordinator);
 }
 
 #[test]
@@ -125,7 +134,7 @@ fn test_node_info_clone() {
     let node = NodeInfo {
         id: "node-1".to_string(),
         name: "test-node".to_string(),
-        role: NodeRole::Master,
+        role: NodeRole::Coordinator,
         address: "127.0.0.1:8080".to_string(),
         category: "production".to_string(),
         last_seen: "2024-01-01T00:00:00Z".to_string(),

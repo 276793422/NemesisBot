@@ -18,7 +18,7 @@ path = "src/main.rs"
 default = [
     "channels-web", "channels-webhook", "channels-rpc",
     "migrate", "devices", "desktop", "health", "heartbeat", "auth", "voice", "cluster",
-    "forge", "memory", "workflow", "security", "sandbox", "eval", "usage",
+    "forge", "memory", "workflow", "security", "sandbox", "eval", "usage", "board",
 ]
 
 # Optional subsystems (on by default = current full build; drop with --no-default-features)
@@ -38,6 +38,9 @@ security = ["dep:nemesis-security", "nemesis-security/security", "nemesis-agent/
 # Sandboxie integration (executor.sandbox=true + `nemesisbot sandbox` install/use/uninstall).
 # Optional — off in minimal-iot/IoT (Sandboxie is Windows-driver-based, not used on IoT).
 sandbox = ["dep:nemesis-sandbox", "nemesis-web/sandbox"]
+# Managed-agent board (W2 P1). nemesis-web depends on nemesis-board
+# unconditionally (cron precedent); this gate covers the CLI + gateway wiring.
+board = ["dep:nemesis-board"]
 # `nemesisbot eval` — prompt/skill behaviour assessment (needs the sandbox +
 # security layers, the injector and the LLM proxy).
 eval = ["sandbox", "security", "dep:nemesis-injector", "dep:nemesis-eval-proxy"]
@@ -91,6 +94,7 @@ nemesis-health = { workspace = true, optional = true }
 nemesis-data = { workspace = true }
 nemesis-heartbeat = { workspace = true, optional = true }
 nemesis-cron = { workspace = true }
+nemesis-board = { workspace = true, optional = true }
 nemesis-state = { workspace = true }
 nemesis-desktop = { workspace = true, optional = true }
 nemesis-devices = { workspace = true, optional = true }

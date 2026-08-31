@@ -131,9 +131,23 @@ pub async fn start_ai_server(ai_bin: &Path, cwd: &Path) -> Result<ManagedProcess
     ManagedProcess::spawn("AI Server", ai_bin, &[], cwd)
 }
 
+/// Pin the gateway port to the harness HEALTH_PORT before spawn. The
+/// production default (18790) is the ghost-socket port on this dev machine
+/// (see test-harness HEALTH_PORT comment) — poller and gateway must read the
+/// same constant or they drift apart.
+pub fn set_gateway_port(cwd: &Path) -> Result<()> {
+    let cfg_path = cwd.join(".nemesisbot").join("config.json");
+    let content = std::fs::read_to_string(&cfg_path).context("reading config.json")?;
+    let mut cfg: serde_json::Value = serde_json::from_str(&content)?;
+    cfg["gateway"]["port"] = serde_json::Value::from(HEALTH_PORT as i64);
+    std::fs::write(&cfg_path, serde_json::to_string_pretty(&cfg)?)?;
+    Ok(())
+}
+
 /// Start the Gateway and wait for it to become healthy.
 pub async fn start_gateway_and_wait(nemesisbot_bin: &Path, cwd: &Path) -> Result<ManagedProcess> {
     cleanup_ports(&[WEB_PORT, HEALTH_PORT]);
+    set_gateway_port(cwd)?;
     let gw = ManagedProcess::spawn("Gateway", nemesisbot_bin, &["gateway"], cwd)?;
     wait_for_http(
         &format!("http://127.0.0.1:{}/health", HEALTH_PORT),

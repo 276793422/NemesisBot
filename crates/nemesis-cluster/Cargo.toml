@@ -25,6 +25,9 @@ aes-gcm = { workspace = true }
 toml = { workspace = true }
 if-addrs = "0.13"
 socket2 = { workspace = true }
+# per-task cancel（W2 P4）：CancellationToken 供 cluster_agent 的 agent loop
+# 中断执行中的任务（与 nemesis-agent / nemesisbot 同版本声明）。
+tokio-util = { version = "0.7", features = ["rt"] }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util", "macros"] }

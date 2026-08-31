@@ -299,6 +299,7 @@ fn test_w3b_task_status_display_all_variants() {
     assert_eq!(TaskStatus::WaitingRemote.to_string(), "waiting_remote");
     assert_eq!(TaskStatus::Completed.to_string(), "completed");
     assert_eq!(TaskStatus::Failed.to_string(), "failed");
+    assert_eq!(TaskStatus::Cancelled.to_string(), "cancelled");
 }
 
 #[tokio::test]
@@ -593,5 +594,102 @@ fn test_s4_recover_task_ids_fields_for_pending_and_waiting() {
     assert_eq!(
         list.get_task("t-s4-done").unwrap().status,
         TaskStatus::Completed
+    );
+}
+
+// ============================================================
+// W2 P4: per-task cancel（cancel_task / 取消令牌 / 迟到回调守卫）
+// ============================================================
+
+#[test]
+fn test_p4_cancel_queued_pending_task() {
+    let dir = tempfile::tempdir().unwrap();
+    let list = ClusterTaskList::new(dir.path());
+    list.create_task(make_task("t-p4-q", TaskStatus::Pending));
+
+    assert_eq!(list.cancel_task("t-p4-q"), CancelOutcome::QueuedCancelled);
+    assert_eq!(list.get_task("t-p4-q").unwrap().status, TaskStatus::Cancelled);
+
+    // 取消后的任务不进持久化索引（终态同待遇）。
+    list.persist_to_disk().unwrap();
+    let on_disk: Vec<ClusterTask> =
+        serde_json::from_str(&std::fs::read_to_string(dir.path().join("cluster/tasks.json")).unwrap())
+            .unwrap();
+    assert!(
+        on_disk.iter().all(|t| t.task_id != "t-p4-q"),
+        "cancelled task must be excluded from tasks.json"
+    );
+
+    // 重复取消 → AlreadyTerminal。
+    assert_eq!(
+        list.cancel_task("t-p4-q"),
+        CancelOutcome::AlreadyTerminal {
+            status: "cancelled".to_string()
+        }
+    );
+}
+
+#[test]
+fn test_p4_cancel_waiting_remote_and_late_callback_dropped() {
+    let dir = tempfile::tempdir().unwrap();
+    let list = ClusterTaskList::new(dir.path());
+    list.create_task(make_task("t-p4-w", TaskStatus::Running));
+    list.save_async_state(
+        "t-p4-w",
+        "child-p4".to_string(),
+        "tc_p4".to_string(),
+        serde_json::json!([{"role": "user", "content": "x"}]),
+    );
+    assert_eq!(list.get_task("t-p4-w").unwrap().status, TaskStatus::WaitingRemote);
+
+    // WaitingRemote → QueuedCancelled（排队/等待态都不会再执行）。
+    assert_eq!(list.cancel_task("t-p4-w"), CancelOutcome::QueuedCancelled);
+
+    // 迟到的子任务回调：不得复活回 Pending——取消守卫直接回收任务。
+    list.inject_callback("t-p4-w", "late child result");
+    assert!(
+        list.get_task("t-p4-w").is_none(),
+        "late callback on cancelled task must clean it up, not revive it"
+    );
+}
+
+#[test]
+fn test_p4_cancel_running_task_fires_token() {
+    let dir = tempfile::tempdir().unwrap();
+    let list = ClusterTaskList::new(dir.path());
+    list.create_task(make_task("t-p4-r", TaskStatus::Running));
+
+    let token = tokio_util::sync::CancellationToken::new();
+    assert!(!token.is_cancelled());
+    list.register_cancel_token("t-p4-r", token.clone());
+
+    assert_eq!(list.cancel_task("t-p4-r"), CancelOutcome::RunningCancelled);
+    assert!(token.is_cancelled(), "running cancel must fire the token");
+    assert_eq!(list.get_task("t-p4-r").unwrap().status, TaskStatus::Cancelled);
+
+    // run 结束路径：agent 注销令牌（幂等）。
+    list.unregister_cancel_token("t-p4-r");
+    list.unregister_cancel_token("t-p4-r"); // 双重注销不 panic
+}
+
+#[test]
+fn test_p4_cancel_terminal_and_missing_tasks() {
+    let dir = tempfile::tempdir().unwrap();
+    let list = ClusterTaskList::new(dir.path());
+    list.create_task(make_task("t-p4-done", TaskStatus::Completed));
+    list.create_task(make_task("t-p4-fail", TaskStatus::Failed));
+
+    assert!(list.cancel_task("never-existed") == CancelOutcome::NotFound);
+    assert_eq!(
+        list.cancel_task("t-p4-done"),
+        CancelOutcome::AlreadyTerminal {
+            status: "completed".to_string()
+        }
+    );
+    assert_eq!(
+        list.cancel_task("t-p4-fail"),
+        CancelOutcome::AlreadyTerminal {
+            status: "failed".to_string()
+        }
     );
 }

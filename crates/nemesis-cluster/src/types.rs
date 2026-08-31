@@ -112,10 +112,7 @@ impl ExtendedNodeInfo {
             address: self.base.address.clone(),
             addresses: self.addresses.clone(),
             rpc_port: 0,
-            role: match self.base.role {
-                NodeRole::Master => "master".into(),
-                NodeRole::Worker => "worker".into(),
-            },
+            role: self.base.role.as_role_str().into(),
             category: self.base.category.clone(),
             priority: 1,
             enabled: true,

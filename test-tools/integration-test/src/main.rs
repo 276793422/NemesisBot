@@ -507,6 +507,12 @@ async fn main() -> Result<()> {
     all_results.extend(cli_tests::test_cli_dashboard_help(&ws, &cfg.gateway_bin).await);
     all_results.extend(cli_tests::test_cli_voice_help(&ws, &cfg.gateway_bin).await);
 
+    // --- Board CLI: issue / autopilot（W2 P3/P4，直接操作共享 board.db）---
+    println!("  [1.18] Board CLI (issue / autopilot)...");
+    all_results.extend(cli_tests::board::test_cli_issue_crud(&ws, &cfg.gateway_bin).await);
+    all_results.extend(cli_tests::board::test_cli_autopilot_crud(&ws, &cfg.gateway_bin).await);
+    all_results.extend(cli_tests::board::test_cli_board_help(&ws, &cfg.gateway_bin).await);
+
     // ---- Phase 6: Forge tests (CLI, no gateway) ----
     println!("\n[Phase 6] Forge lifecycle tests...");
     all_results.extend(forge_tests::test_forge_enable_disable(&ws, &cfg.gateway_bin).await);
@@ -566,6 +572,11 @@ async fn main() -> Result<()> {
                 "web": {"enabled": true, "host": "127.0.0.1", "port": 49000, "auth_token": "276793422"},
                 "websocket": {"enabled": true}
             },
+            // Health endpoint follows gateway.port (GatewayConfig default is
+            // 18790, which has a ghost socket on this dev machine — see
+            // test-harness HEALTH_PORT). Pin it to the harness constant so
+            // config and poller can never drift apart again.
+            "gateway": {"host": "127.0.0.1", "port": HEALTH_PORT as i64},
             "agents": {
                 "defaults": {
                     "workspace": "",

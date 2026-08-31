@@ -298,10 +298,7 @@ impl Cluster {
         };
 
         let role_str = self.role.read().clone();
-        let role = match role_str.as_str() {
-            "master" | "manager" => nemesis_types::cluster::NodeRole::Master,
-            _ => nemesis_types::cluster::NodeRole::Worker,
-        };
+        let role = nemesis_types::cluster::NodeRole::from_role_str(&role_str);
         let local_node = ExtendedNodeInfo {
             base: nemesis_types::cluster::NodeInfo {
                 id: self.node_id.clone(),
@@ -932,10 +929,7 @@ impl Cluster {
     /// Persist the real peer info to peers.toml under `[peers.{real_id}]`.
     fn persist_real_peer_to_toml(&self, real_id: &str, info: &RealNodeInfo) {
         let path = &self.static_config_path;
-        let role_str = match info.role {
-            nemesis_types::cluster::NodeRole::Master => "master",
-            nemesis_types::cluster::NodeRole::Worker => "worker",
-        };
+        let role_str = info.role.as_role_str();
         // peers.toml's `address` field is the UDP host:port — the static loader
         // (gateway.rs) derives rpc_port = udp_port + 10000 from it. info.address
         // is the RPC address (host:rpc_port) used in-memory; convert it back to
@@ -1566,7 +1560,7 @@ impl Cluster {
         self.node_type = node_type.into();
     }
 
-    /// Set the node role ("master" or "worker").
+    /// Set the node role ("coordinator" — 旧值 "master"/"manager" 兼容 — or "worker").
     pub fn set_role(&self, role: impl Into<String>) {
         *self.role.write() = role.into();
         self.sync_local_node_to_registry();
@@ -1612,10 +1606,7 @@ impl Cluster {
             .unwrap_or_else(|| self.address.clone());
 
         let role_str = self.role.read().clone();
-        let role = match role_str.as_str() {
-            "master" | "manager" => nemesis_types::cluster::NodeRole::Master,
-            _ => nemesis_types::cluster::NodeRole::Worker,
-        };
+        let role = nemesis_types::cluster::NodeRole::from_role_str(&role_str);
         let caps = self
             .capabilities
             .lock()

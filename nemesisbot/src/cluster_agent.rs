@@ -66,6 +66,17 @@ pub async fn cluster_agent_loop(
             }
         };
 
+        // 取消检查（W2 P4 per-task cancel）：排队期间被 task_cancel 下行取消
+        // 的任务直接报错回收，不再执行（cancel_task 只能标终态，回收靠出队）。
+        if task.status == TaskStatus::Cancelled {
+            tracing::info!(
+                task_id = %task_id,
+                "[ClusterAgent] Dequeued task was cancelled, dropping"
+            );
+            handle_task_error(&task_list, rpc_client.as_deref(), &task, "cancelled").await;
+            continue;
+        }
+
         tracing::info!(
             task_id = %task_id,
             status = %task.status,
@@ -157,6 +168,9 @@ async fn execute_new_task(
     }
 
     let token = tokio_util::sync::CancellationToken::new();
+    // W2 P4 per-task cancel：执行窗口内注册令牌，cancel_task 下行命中 Running
+    // 时 token.cancel() 打断 LLM 循环；run 结束必须注销（防 DashMap 泄漏）。
+    task_list.register_cancel_token(&task.task_id, token.clone());
     if let Some(ref obs) = cluster_observer {
         obs.set_task_context(task.task_id.clone(), task.source.node_id.clone());
         obs.emit_conversation_start(
@@ -170,6 +184,7 @@ async fn execute_new_task(
     let events = agent_loop
         .run_with_trace(&instance, &task.content, &context, &trace_id, false, &token, None)
         .await;
+    task_list.unregister_cancel_token(&task.task_id);
     if let Some(ref obs) = cluster_observer {
         let final_msg = extract_final_message(&events);
         let rounds = count_llm_rounds(&events);
@@ -182,6 +197,20 @@ async fn execute_new_task(
             false,
         );
         obs.clear_task_context();
+    }
+
+    // 取消检查（W2 P4）：cancel_task 在执行窗口命中 → 中断后不走正常完成/
+    // async 路径，发 error 回调（"cancelled"）回收任务。A 侧 dispatch 已终态，
+    // 其写回会按 state != dispatched 幂等跳过。
+    if token.is_cancelled() {
+        tracing::info!(
+            task_id = %task.task_id,
+            "[ClusterAgent] Task was cancelled during execution"
+        );
+        nemesis_cluster::logger::log_task("exec_cancelled", &task.task_id, "");
+        send_task_callback(rpc_client, task, "error", "", "cancelled").await;
+        task_list.complete_task(&task.task_id);
+        return Ok(());
     }
 
     let conversation = instance.get_history();
@@ -267,6 +296,10 @@ async fn resume_task(
     let context = build_context(task);
     let trace_id = format!("cluster-resume-{}", &task.task_id);
 
+    // W2 P4 per-task cancel：resume 路径同样注册令牌（token 透传给
+    // resume_execution_with_token，cancel_task 可中断续行中的 LLM 循环）。
+    let token = tokio_util::sync::CancellationToken::new();
+    task_list.register_cancel_token(&task.task_id, token.clone());
     if let Some(ref obs) = cluster_observer {
         obs.set_task_context(task.task_id.clone(), task.source.node_id.clone());
         obs.emit_conversation_start(
@@ -278,8 +311,9 @@ async fn resume_task(
         );
     }
     let events = agent_loop
-        .resume_execution(&instance, &context, &trace_id)
+        .resume_execution_with_token(&instance, &context, &trace_id, &token)
         .await;
+    task_list.unregister_cancel_token(&task.task_id);
     if let Some(ref obs) = cluster_observer {
         let final_msg = extract_final_message(&events);
         let rounds = count_llm_rounds(&events);
@@ -292,6 +326,18 @@ async fn resume_task(
             false,
         );
         obs.clear_task_context();
+    }
+
+    // 取消检查（W2 P4）：续行被中断 → error 回调回收，不走 async/完成路径。
+    if token.is_cancelled() {
+        tracing::info!(
+            task_id = %task.task_id,
+            "[ClusterAgent] Resumed task was cancelled during execution"
+        );
+        nemesis_cluster::logger::log_task("exec_cancelled", &task.task_id, "");
+        send_task_callback(rpc_client, task, "error", "", "cancelled").await;
+        task_list.complete_task(&task.task_id);
+        return Ok(());
     }
 
     let conversation = instance.get_history();

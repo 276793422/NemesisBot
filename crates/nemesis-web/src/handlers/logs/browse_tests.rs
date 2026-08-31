@@ -42,13 +42,20 @@ fn make_ctx(dir: &tempfile::TempDir) -> RequestContext {
         cluster_service: None,
         cluster_log_dir: None,
         workflow_engine: None,
+        #[cfg(feature = "workflow")]
         chat_secret_store: std::sync::Arc::new(
             nemesis_workflow::chat_secrets::ChatSecretStore::in_memory(),
         ),
+        #[cfg(not(feature = "workflow"))]
+        chat_secret_store: std::sync::Arc::new(()),
+        #[cfg(feature = "workflow")]
         webhook_rate_limiter: Arc::new(crate::handlers::workflow::WebhookRateLimiter::new()),
+        #[cfg(not(feature = "workflow"))]
+        webhook_rate_limiter: Arc::new(()),
         internal_cmd_tx: None,
         estop: None,
         cron: None,
+        board: None,
     });
     RequestContext {
         session_id: "test-session".to_string(),
@@ -294,6 +301,9 @@ async fn cluster_task_detail_perspective_with_real_local_node() {
 // session_detail / session_list(BM25)
 // -----------------------------------------------------------------------
 
+// 唯一消费者是下方 memory 门控的 BM25 测试——无 memory 构建里一并门控，
+// 否则 lib test 出现 never used 警告。
+#[cfg(feature = "memory")]
 fn make_session_log(ws: &std::path::Path, id: &str, lines: &[(&str, &str)]) {
     let dir = ws.join("logs/session_logs");
     std::fs::create_dir_all(&dir).unwrap();
@@ -344,6 +354,9 @@ async fn session_detail_reads_jsonl_and_passes_cron_markers() {
     assert!(msgs[0].get("cron_job_id").is_none());
 }
 
+// BM25 query 过滤逻辑在 session_list 内是 `#[cfg(feature = "memory")]`——
+// 无 memory 的构建里 query 不参与过滤，本测试的前提不成立，整体随 feature 门控。
+#[cfg(feature = "memory")]
 #[tokio::test]
 async fn session_list_bm25_query_filters_and_ranks() {
     let dir = tempfile::tempdir().unwrap();

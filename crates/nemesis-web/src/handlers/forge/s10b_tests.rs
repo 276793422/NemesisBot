@@ -61,6 +61,7 @@ fn build_state(ws: &str, forge: Option<Arc<nemesis_forge::forge::Forge>>) -> App
         internal_cmd_tx: None,
         estop: None,
         cron: None,
+        board: None,
     }
 }
 

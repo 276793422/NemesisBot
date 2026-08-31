@@ -3467,9 +3467,23 @@ impl AgentLoop {
         context: &RequestContext,
         trace_id: &str,
     ) -> Vec<AgentEvent> {
+        // 委托带 token 版本（自造一次性 token，行为与旧实现一致）。
+        self.resume_execution_with_token(instance, context, trace_id, &tokio_util::sync::CancellationToken::new())
+            .await
+    }
+
+    /// `resume_execution` 的带取消令牌变体（W2 P4 per-task cancel）：集群续行
+    /// 任务执行前由 cluster_agent 注册 token，cancel_task 下行时可中断 LLM 循环。
+    /// 语义与 [`Self::resume_execution`] 相同，仅 token 透传。
+    pub async fn resume_execution_with_token(
+        &self,
+        instance: &AgentInstance,
+        context: &RequestContext,
+        trace_id: &str,
+        cancel_token: &tokio_util::sync::CancellationToken,
+    ) -> Vec<AgentEvent> {
         instance.set_state(crate::types::AgentState::Thinking);
-        let token = tokio_util::sync::CancellationToken::new();
-        self.run_llm_loop(instance, context, trace_id, false, &token, None)
+        self.run_llm_loop(instance, context, trace_id, false, cancel_token, None)
             .await
     }
 
@@ -4346,19 +4360,25 @@ impl AgentLoop {
             // Record usage statistics if data store is available.
             if let Some(ref ds) = self.data_store {
                 if let Some(ref usage) = response.usage {
+                    let model_name = self.active_model.read().clone();
+                    let cache_creation = usage.cache_creation_tokens.unwrap_or(0);
+                    let cache_read = usage.cache_read_tokens.or(usage.cached_tokens).unwrap_or(0);
                     let log = nemesis_data::RequestLog {
                         id: 0,
                         trace_id: trace_id.to_string(),
-                        model: self.active_model.read().clone(),
+                        model: model_name.clone(),
                         provider_type: String::new(),
                         input_tokens: usage.prompt_tokens,
                         output_tokens: usage.completion_tokens,
-                        cache_creation_tokens: usage.cache_creation_tokens.unwrap_or(0),
-                        cache_read_tokens: usage
-                            .cache_read_tokens
-                            .or(usage.cached_tokens)
-                            .unwrap_or(0),
-                        total_cost_usd: 0.0,
+                        cache_creation_tokens: cache_creation,
+                        cache_read_tokens: cache_read,
+                        total_cost_usd: nemesis_data::compute_cost_usd(
+                            &model_name,
+                            usage.prompt_tokens,
+                            usage.completion_tokens,
+                            cache_creation,
+                            cache_read,
+                        ),
                         latency_ms: round_duration.as_millis() as i64,
                         status_code: if response.content.starts_with("Error:") {
                             500

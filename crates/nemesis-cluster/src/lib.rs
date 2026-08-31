@@ -25,5 +25,7 @@ pub mod rpc;
 pub mod transport;
 
 // Re-export commonly used types
-pub use cluster_task::{ClusterTask, ClusterTaskList, ClusterWorkQueue, TaskSource, TaskStatus};
+pub use cluster_task::{
+    CancelOutcome, ClusterTask, ClusterTaskList, ClusterWorkQueue, TaskSource, TaskStatus,
+};
 pub use task_manager::{InMemoryTaskStore, TaskManager, TaskStore};

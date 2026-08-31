@@ -38,6 +38,9 @@ const routes: RouteRecordRaw[] = [
   { path: '/settings', name: 'settings', component: () => import('../views/SettingsView.vue') },
   { path: '/tools', name: 'tools', component: () => import('../views/ToolsView.vue') },
   { path: '/tasks', name: 'tasks', component: () => import('../views/TasksView.vue') },
+  // W2 P3 (2026-08-31)：托管 Agent 看板（board feature / VITE_FEATURE_BOARD 门控）。
+  // 容器视图 = 看板（Kanban 拖拽）/ 列表 / 项目 / 收件箱 四页签（ClusterView 同构）。
+  ...(import.meta.env.VITE_FEATURE_BOARD !== 'false' ? [{ path: '/board', name: 'board', component: () => import('../views/BoardView.vue') }] : []),
   ...(import.meta.env.VITE_FEATURE_CLUSTER !== 'false' ? [{ path: '/cluster', name: 'cluster', component: () => import('../views/ClusterView.vue') }] : []),
   ...(import.meta.env.VITE_FEATURE_SECURITY !== 'false' ? [{ path: '/security', name: 'security', component: () => import('../views/SecurityView.vue') }] : []),
   ...(import.meta.env.VITE_FEATURE_SECURITY !== 'false' ? [{ path: '/scanner', name: 'scanner', component: () => import('../views/ScannerView.vue') }] : []),

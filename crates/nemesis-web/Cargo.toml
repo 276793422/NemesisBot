@@ -22,6 +22,7 @@ nemesis-skills = { workspace = true }
 nemesis-security = { workspace = true, optional = true }
 nemesis-sandbox = { workspace = true, optional = true }
 nemesis-cron = { workspace = true }
+nemesis-board = { workspace = true }
 nemesis-services = { workspace = true }
 nemesis-voice = { workspace = true, optional = true }
 nemesis-memory = { workspace = true, optional = true }

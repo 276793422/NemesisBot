@@ -162,6 +162,29 @@ pub struct Config {
     pub executor: Option<ExecutorSeparationConfig>,
     #[serde(default)]
     pub debug: Option<DebugConfig>,
+    /// 托管 Agent 看板旗标（W2 P4；None = 全默认——超时兜底 3600s）。
+    #[serde(default)]
+    pub board: Option<BoardFlagConfig>,
+}
+
+/// 看板系统旗标（`config.json` 的 `board` 段；`#[serde(default)]` 每字段全可省）。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct BoardFlagConfig {
+    /// 派发超时兜底秒数：dispatched 超过该时长未回报 → sweep 标 failed +
+    /// 评论 + dispatch_failed 通知（0 = 关闭 sweep）。
+    pub dispatch_timeout_secs: u64,
+    /// sweep 扫描间隔秒数（默认 20s；不暴露到配置模板，供测试调快）。
+    pub dispatch_sweep_interval_secs: u64,
+}
+
+impl Default for BoardFlagConfig {
+    fn default() -> Self {
+        Self {
+            dispatch_timeout_secs: 3600,
+            dispatch_sweep_interval_secs: 20,
+        }
+    }
 }
 
 impl Default for Config {
@@ -185,6 +208,7 @@ impl Default for Config {
             mcp: None,
             executor: None,
             debug: None,
+            board: None,
         }
     }
 }
@@ -2222,6 +2246,7 @@ pub fn default_config() -> Config {
         mcp: None,
         executor: None,
         debug: None,
+        board: None,
     }
 }
 

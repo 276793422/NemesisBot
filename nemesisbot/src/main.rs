@@ -186,6 +186,18 @@ enum Commands {
         #[command(subcommand)]
         action: commands::forge::ForgeAction,
     },
+    /// Manage the managed-agent board (issues)
+    #[cfg(feature = "board")]
+    Issue {
+        #[command(subcommand)]
+        action: commands::issue::IssueAction,
+    },
+    /// Manage board autopilot rules (cron-triggered issue creation)
+    #[cfg(feature = "board")]
+    Autopilot {
+        #[command(subcommand)]
+        action: commands::autopilot::AutopilotAction,
+    },
     /// Manage DAG workflows
     #[cfg(feature = "workflow")]
     Workflow {
@@ -900,6 +912,16 @@ async fn run_command(cli: Cli) -> Result<()> {
         Commands::Forge { action } => {
             common::ensure_default_logger();
             commands::forge::run(action, cli.local)?;
+        }
+        #[cfg(feature = "board")]
+        Commands::Issue { action } => {
+            common::ensure_default_logger();
+            commands::issue::run(action, cli.local)?;
+        }
+        #[cfg(feature = "board")]
+        Commands::Autopilot { action } => {
+            common::ensure_default_logger();
+            commands::autopilot::run(action, cli.local)?;
         }
         #[cfg(feature = "workflow")]
         Commands::Workflow { action } => {

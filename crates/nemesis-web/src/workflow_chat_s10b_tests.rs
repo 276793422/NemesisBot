@@ -62,6 +62,7 @@ fn make_state(engine: Option<Arc<WorkflowEngine>>) -> Arc<AppState> {
         internal_cmd_tx: None,
         estop: None,
         cron: None,
+        board: None,
     })
 }
 

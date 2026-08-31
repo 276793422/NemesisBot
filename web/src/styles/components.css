@@ -78,6 +78,11 @@
   font-size: var(--text-xs);
 }
 
+.btn-xs {
+  padding: 2px var(--space-1);
+  font-size: var(--text-xs);
+}
+
 .btn-lg {
   padding: var(--space-3) var(--space-6);
   font-size: var(--text-base);

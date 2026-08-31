@@ -67,6 +67,7 @@ fn make_state(inbound_tx: Option<mpsc::UnboundedSender<IncomingMessage>>) -> Arc
         internal_cmd_tx: None,
         estop: None,
         cron: None,
+        board: None,
     })
 }
 

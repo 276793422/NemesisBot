@@ -560,6 +560,7 @@ async fn test_handle_health_endpoint() {
         internal_cmd_tx: None,
         estop: None,
         cron: None,
+        board: None,
     });
     let resp = handle_health(AxumState(state)).await;
     let json = resp.0;
@@ -602,6 +603,7 @@ async fn test_handle_health_not_running() {
         internal_cmd_tx: None,
         estop: None,
         cron: None,
+        board: None,
     });
     let resp = handle_health(AxumState(state)).await;
     let json = resp.0;
@@ -1119,6 +1121,7 @@ async fn test_handle_health_with_model_state() {
         internal_cmd_tx: None,
         estop: None,
         cron: None,
+        board: None,
     });
     let resp = handle_health(AxumState(state)).await;
     let json = resp.0;

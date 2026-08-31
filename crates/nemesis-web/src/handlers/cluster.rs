@@ -197,6 +197,15 @@ fn require_log_dir(ctx: &RequestContext) -> Result<String, String> {
 }
 
 /// Format a duration as human-readable string (e.g. "2d 3h", "45m", "12s").
+/// 前端展示词表（ClusterNodes/NodeCard 按 `role === 'manager'` 着色）——
+/// 与配置词表（`NodeRole::as_role_str`，"coordinator"）有意不同。
+fn role_display(role: NodeRole) -> &'static str {
+    match role {
+        NodeRole::Coordinator => "manager",
+        NodeRole::Worker => "worker",
+    }
+}
+
 fn format_duration(d: std::time::Duration) -> String {
     let secs = d.as_secs();
     if secs == 0 {
@@ -454,10 +463,7 @@ impl ClusterHandler {
         let result: Vec<serde_json::Value> = nodes
             .iter()
             .map(|n| {
-                let role = match n.base.role {
-                    NodeRole::Master => "manager",
-                    NodeRole::Worker => "worker",
-                };
+                let role = role_display(n.base.role);
                 let uptime = format_duration(n.get_uptime());
 
                 // Phase 3: Fill taskCount and successRate from log reader
@@ -579,11 +585,7 @@ impl ClusterHandler {
                 base: nemesis_types::cluster::NodeInfo {
                     id: peer_id.clone(),
                     name: name.clone(),
-                    role: if role == "manager" || role == "master" {
-                        NodeRole::Master
-                    } else {
-                        NodeRole::Worker
-                    },
+                    role: NodeRole::from_role_str(&role),
                     address: address.clone(),
                     category: category.clone(),
                     last_seen: String::new(),
@@ -679,11 +681,7 @@ impl ClusterHandler {
             .unwrap_or_default();
         let rpc_port = resp["rpc_port"].as_u64().unwrap_or(0) as u16;
         let role_str = resp["role"].as_str().unwrap_or("worker");
-        let role = if role_str == "manager" || role_str == "master" {
-            NodeRole::Master
-        } else {
-            NodeRole::Worker
-        };
+        let role = NodeRole::from_role_str(role_str);
         let category = resp["category"].as_str().unwrap_or("general").to_string();
         let capabilities: Vec<String> = resp["capabilities"]
             .as_array()
@@ -724,10 +722,7 @@ impl ClusterHandler {
                 "id": p.base.id,
                 "name": p.base.name,
                 "address": p.base.address,
-                "role": match p.base.role {
-                    NodeRole::Master => "manager",
-                    NodeRole::Worker => "worker",
-                },
+                "role": role_display(p.base.role),
                 "category": p.base.category,
                 "capabilities": p.capabilities,
                 "addresses": p.addresses,
@@ -748,10 +743,7 @@ impl ClusterHandler {
             .get_node_info(node_id)
             .ok_or_else(|| format!("node not found: {}", node_id))?;
 
-        let role = match node.base.role {
-            NodeRole::Master => "manager",
-            NodeRole::Worker => "worker",
-        };
+        let role = role_display(node.base.role);
         let uptime = format_duration(node.get_uptime());
 
         // Enrich with log stats
@@ -799,8 +791,9 @@ impl ClusterHandler {
         }
         if let Some(role) = data.get("role").and_then(|v| v.as_str()) {
             let role = role.trim().to_string();
-            if role != "manager" && role != "worker" {
-                return Err("role must be 'manager' or 'worker'".to_string());
+            // "coordinator" 为规范词表；"manager" 为前端展示词表别名（归一走 NodeRole::from_role_str）。
+            if NodeRole::from_role_str(&role) != NodeRole::Coordinator && role != "worker" {
+                return Err("role must be 'coordinator'/'manager' or 'worker'".to_string());
             }
             cluster.set_role(&role);
             updated["role"] = serde_json::json!(role);
@@ -1161,10 +1154,7 @@ impl ClusterHandler {
         let node_list: Vec<serde_json::Value> = nodes
             .iter()
             .map(|n| {
-                let role = match n.base.role {
-                    NodeRole::Master => "manager",
-                    NodeRole::Worker => "worker",
-                };
+                let role = role_display(n.base.role);
                 serde_json::json!({
                     "id": n.base.id,
                     "name": n.base.name,

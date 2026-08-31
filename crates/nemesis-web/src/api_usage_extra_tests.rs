@@ -3,8 +3,8 @@
 
 use crate::api_handlers::AppState;
 use crate::api_usage::{
-    LogsQuery, TrendsQuery, UsageQuery, handle_api_usage_logs, handle_api_usage_summary,
-    handle_api_usage_trends,
+    LogsQuery, TrendsQuery, UsageQuery, handle_api_usage_logs, handle_api_usage_pricing,
+    handle_api_usage_summary, handle_api_usage_trends,
 };
 use crate::events::EventHub;
 use crate::session::SessionManager;
@@ -53,6 +53,7 @@ fn make_state_no_data_store() -> Arc<AppState> {
         internal_cmd_tx: None,
         estop: None,
         cron: None,
+        board: None,
     })
 }
 
@@ -89,6 +90,7 @@ fn make_state_with_store(ds: Arc<DataStore>) -> Arc<AppState> {
         internal_cmd_tx: None,
         estop: None,
         cron: None,
+        board: None,
     };
     Arc::new(s)
 }
@@ -440,4 +442,40 @@ fn usage_query_empty_json_ok() {
     let q: UsageQuery = serde_json::from_str("{}").unwrap();
     assert!(q.start.is_none());
     assert!(q.end.is_none());
+}
+
+// -----------------------------------------------------------------------
+// Pricing — embedded table endpoint
+// -----------------------------------------------------------------------
+
+#[tokio::test]
+async fn pricing_returns_embedded_table() {
+    let Json(v) = handle_api_usage_pricing().await;
+    assert_eq!(v["status"], "success");
+    let entries = v["data"].as_array().expect("data array");
+    assert!(entries.len() >= 30, "expected ~36 entries, got {}", entries.len());
+
+    let gpt = entries
+        .iter()
+        .find(|e| e["modelId"] == "gpt-4o")
+        .expect("gpt-4o present");
+    assert_eq!(gpt["inputCostPerMillion"], 2.5);
+    assert_eq!(gpt["outputCostPerMillion"], 10.0);
+    assert_eq!(gpt["displayName"], "GPT-4o");
+    // Aliases field is always present (may be empty for OpenAI entries).
+    assert!(gpt["aliases"].is_array());
+
+    let ds = entries
+        .iter()
+        .find(|e| e["modelId"] == "deepseek-chat")
+        .expect("deepseek-chat present");
+    assert_eq!(ds["cacheReadCostPerMillion"], 0.03);
+    let aliases = ds["aliases"].as_array().unwrap();
+    assert!(aliases.iter().any(|a| a == "deepseek/deepseek-chat"));
+
+    // Optional token limits round-trip as null or number.
+    for e in entries {
+        assert!(e["maxInputTokens"].is_null() || e["maxInputTokens"].is_i64());
+        assert!(e["maxOutputTokens"].is_null() || e["maxOutputTokens"].is_i64());
+    }
 }

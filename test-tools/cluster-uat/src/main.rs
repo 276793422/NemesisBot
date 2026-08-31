@@ -7,6 +7,7 @@
 //! - 3-hop chain (A→B→D)
 //! - 4-hop chain (A→B→C→D)
 //! - Bidirectional, concurrent, and error recovery scenarios
+//! - Board dispatch full chain (T15: coordinator → worker → callback writeback)
 //!
 //! Usage:
 //!   cargo run -p cluster-uat                    # Run all tests
@@ -36,6 +37,10 @@ const SHARED_CLUSTER_TOKEN: &str = "uat-shared-cluster-token-0123456789abcdef";
 
 struct NodeConfig {
     name: &'static str,
+    /// Cluster identity role (peers.toml [node].role). Node-A is the
+    /// coordinator — the board authority for T15's issue.dispatch; peer_chat
+    /// (T4-T14) is role-agnostic, so this doesn't affect the hop tests.
+    role: &'static str,
     web_port: u16,
     health_port: u16,
     udp_port: u16,
@@ -46,15 +51,24 @@ struct NodeConfig {
 const NODES: [NodeConfig; 4] = [
     NodeConfig {
         name: "Node-A",
+        role: "coordinator",
         web_port: 49000,
-        health_port: 18790,
+        // 18790 carries kernel-orphaned LISTEN sockets (ghost PID — a prior
+        // run's gateways were taskkilled with pending connections; the handle
+        // outlived the process). The health check then times out and aborts
+        // the suite, so Node-A uses a port outside the ghost set. 18790 works
+        // again after a reboot.
+        health_port: 18794,
         udp_port: 11949,
         rpc_port: 21949,
         model: "test/testai-3.1",
     },
     NodeConfig {
         name: "Node-B",
-        web_port: 49001,
+        role: "worker",
+        // 49001 is ghost-held (see Node-A health_port comment) — T7 connects
+        // to B's web port, so it must be outside the ghost set.
+        web_port: 49005,
         health_port: 18791,
         // Distinct UDP port per node — on Windows SO_REUSEADDR lets a later
         // bind *hijack* the port rather than sharing it, so 4 processes on the
@@ -66,7 +80,8 @@ const NODES: [NodeConfig; 4] = [
     },
     NodeConfig {
         name: "Node-C",
-        web_port: 49002,
+        role: "worker",
+        web_port: 49006,
         health_port: 18792,
         udp_port: 11951,
         rpc_port: 21951,
@@ -74,6 +89,7 @@ const NODES: [NodeConfig; 4] = [
     },
     NodeConfig {
         name: "Node-D",
+        role: "worker",
         web_port: 49003,
         health_port: 18793,
         udp_port: 11952,
@@ -174,9 +190,10 @@ fn configure_ports(home: &Path, web_port: u16, health_port: u16) -> Result<()> {
                         w.insert("port".to_string(), json!(web_port));
                     }
                 }
-                // Disable standalone websocket channel — the web server already handles
-                // WebSocket on the web port. Without this, the websocket channel binds to
-                // its default port 49001, which conflicts with Node-B's web port.
+                // Disable standalone websocket channel — the web server already
+                // handles WebSocket on the web port. Without this, the
+                // websocket channel binds to its default port (49001), which
+                // can conflict with a node's web port or a ghost listener.
                 if let Some(ws) = ch.get_mut("websocket") {
                     if let Some(w) = ws.as_object_mut() {
                         w.insert("enabled".to_string(), json!(false));
@@ -205,6 +222,69 @@ fn configure_ports(home: &Path, web_port: u16, health_port: u16) -> Result<()> {
 
     std::fs::write(&config_path, serde_json::to_string_pretty(&config)?)?;
     Ok(())
+}
+
+/// Patch the `board` section into config.json — dispatch-timeout sweep with
+/// test-speed values (production default 3600s/20s would make T18 wait an
+/// hour). Must run before the gateway starts (sweep is armed at startup).
+fn configure_board_sweep(home: &Path, timeout_secs: u64, interval_secs: u64) -> Result<()> {
+    let config_path = home.join("config.json");
+    let raw = std::fs::read_to_string(&config_path)
+        .with_context(|| format!("Reading {}", config_path.display()))?;
+    let mut config: Value = serde_json::from_str(&raw)?;
+    if let Some(obj) = config.as_object_mut() {
+        obj.insert(
+            "board".to_string(),
+            json!({
+                "dispatch_timeout_secs": timeout_secs,
+                "dispatch_sweep_interval_secs": interval_secs,
+            }),
+        );
+    }
+    std::fs::write(&config_path, serde_json::to_string_pretty(&config)?)?;
+    Ok(())
+}
+
+/// Spawn a gateway and wait for full readiness: HTTP health → RPC port
+/// listening → UDP re-discovery settle. Shared by the T9/T17/T18 restart
+/// flows (kill is the caller's job — T9 probes offline state in between).
+async fn start_gateway_and_wait(
+    name: &'static str,
+    bin: &Path,
+    ws_path: &Path,
+    node: &NodeConfig,
+) -> Result<GatewayProcess, String> {
+    let gw = GatewayProcess::spawn(name, bin, ws_path)
+        .map_err(|e| format!("Cannot start {}: {}", name, e))?;
+
+    // Wait for HTTP health check (gateway web server up)
+    let health_url = format!("http://127.0.0.1:{}/health", node.health_port);
+    wait_for_http(&health_url, Duration::from_secs(15))
+        .await
+        .map_err(|e| format!("{} not healthy after start: {}", name, e))?;
+
+    // Wait for the RPC server to be listening
+    let rpc_addr = format!("127.0.0.1:{}", node.rpc_port);
+    let rpc_ready = tokio::time::timeout(Duration::from_secs(15), async {
+        loop {
+            if tokio::net::TcpStream::connect(&rpc_addr).await.is_ok() {
+                return true;
+            }
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        }
+    })
+    .await
+    .unwrap_or(false);
+    if !rpc_ready {
+        return Err(format!("{} RPC server not ready at {}", name, rpc_addr));
+    }
+    println!("    {} restarted and healthy (RPC on {})", name, node.rpc_port);
+
+    // UDP announce has 0-5s jitter; broadcast_interval is 3s in tests, so
+    // 15s covers jitter + processing before callers rely on discovery.
+    println!("    Waiting for UDP discovery to propagate (15s)...");
+    tokio::time::sleep(Duration::from_secs(15)).await;
+    Ok(gw)
 }
 
 /// Configure a single cluster node via CLI commands.
@@ -250,7 +330,7 @@ async fn setup_node(ws: &TestWorkspace, bin: &Path, node: &NodeConfig) -> Result
         bail!("{}: model add failed: {}", name, out.stderr);
     }
 
-    // 4. Initialize cluster
+    // 4. Initialize cluster (role from NODES: A=coordinator, rest=worker)
     let out = ws
         .run_cli(
             bin,
@@ -260,7 +340,7 @@ async fn setup_node(ws: &TestWorkspace, bin: &Path, node: &NodeConfig) -> Result
                 "--name",
                 name,
                 "--role",
-                "worker",
+                node.role,
                 "--category",
                 "development",
             ],
@@ -323,7 +403,7 @@ async fn setup_node(ws: &TestWorkspace, bin: &Path, node: &NodeConfig) -> Result
                     "--address",
                     &format!("127.0.0.1:{}", peer.udp_port),
                     "--role",
-                    "worker",
+                    peer.role,
                 ],
             )
             .await;
@@ -435,6 +515,79 @@ async fn ws_send_recv_until<P: Fn(&str) -> bool>(
     }
 }
 
+/// Gateway WebSocket stream type (matches `test_harness::ws_connect`).
+type WsStream = tokio_tungstenite::WebSocketStream<
+    tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
+>;
+
+/// Send a WS API request (`type=request`) and wait for the matching response
+/// (correlated by `reqId`; non-matching frames — chat.receive, pushes — are
+/// skipped). Returns the response `data` payload. A non-null `error` field is
+/// surfaced as Err.
+async fn ws_api_request(
+    stream: &mut WsStream,
+    module: &str,
+    cmd: &str,
+    data: Value,
+    timeout_secs: u64,
+) -> Result<Value> {
+    use std::sync::atomic::{AtomicU32, Ordering};
+    static SEQ: AtomicU32 = AtomicU32::new(1);
+    let req_id = format!(
+        "uat-{}-{}",
+        cmd.replace('.', "-"),
+        SEQ.fetch_add(1, Ordering::Relaxed)
+    );
+    let msg = json!({
+        "type": "request",
+        "module": module,
+        "cmd": cmd,
+        "reqId": req_id,
+        "data": data,
+        "timestamp": chrono::Local::now().to_rfc3339()
+    });
+    stream.send(Message::Text(msg.to_string().into())).await?;
+
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(timeout_secs);
+    loop {
+        let resp = tokio::time::timeout_at(deadline, stream.next()).await;
+        match resp {
+            Ok(Some(Ok(Message::Text(text)))) => {
+                let Ok(v) = serde_json::from_str::<Value>(&text.to_string()) else {
+                    continue;
+                };
+                if v.get("type").and_then(|t| t.as_str()) != Some("response") {
+                    continue; // chat.receive / push / heartbeat — not ours
+                }
+                if v.get("reqId").and_then(|r| r.as_str()) != Some(req_id.as_str()) {
+                    continue;
+                }
+                if let Some(err) = v.get("error").and_then(|e| e.as_str()) {
+                    return Err(anyhow::anyhow!("{} {} failed: {}", module, cmd, err));
+                }
+                return Ok(v.get("data").cloned().unwrap_or(Value::Null));
+            }
+            Ok(Some(Ok(Message::Ping(_)))) => {
+                let _ = stream.send(Message::Pong(vec![].into())).await;
+            }
+            Ok(Some(Ok(Message::Close(_)))) => {
+                return Err(anyhow::anyhow!("WebSocket closed"));
+            }
+            Ok(Some(Ok(_))) => {} // Ignore Binary, Pong, Frame
+            Ok(None) => return Err(anyhow::anyhow!("WebSocket stream ended")),
+            Ok(Some(Err(e))) => return Err(anyhow::anyhow!("WebSocket error: {}", e)),
+            Err(_) => {
+                return Err(anyhow::anyhow!(
+                    "Timeout after {}s waiting for {} {} response",
+                    timeout_secs,
+                    module,
+                    cmd
+                ));
+            }
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Test runner
 // ---------------------------------------------------------------------------
@@ -461,12 +614,17 @@ where
     result
 }
 
-/// Truncate a string for display.
+/// Truncate a string for display (char-boundary safe — byte-slicing Chinese
+/// text panics, see docs BUG str-slice family).
 fn trunc(s: &str, max: usize) -> String {
     if s.len() <= max {
         s.to_string()
     } else {
-        format!("{}...", &s[..max])
+        let mut end = max;
+        while end > 0 && !s.is_char_boundary(end) {
+            end -= 1;
+        }
+        format!("{}...", &s[..end])
     }
 }
 
@@ -566,6 +724,30 @@ async fn main() {
     cleanup_ports(&all_ports);
     println!("  Cleaned {} ports", all_ports.len());
 
+    // Pre-flight probe: any port that still ACCEPTS connections after
+    // cleanup is held by something cleanup_ports can't kill — typically a
+    // ghost listener (kernel-orphaned socket whose owning PID is gone; only
+    // a reboot clears it). Aborting here with a clear message beats a test
+    // hanging on a WebSocket handshake that never completes.
+    let mut ghost_ports: Vec<u16> = Vec::new();
+    for port in &all_ports {
+        if tokio::net::TcpStream::connect(("127.0.0.1", *port))
+            .await
+            .is_ok()
+        {
+            ghost_ports.push(*port);
+        }
+    }
+    if !ghost_ports.is_empty() {
+        eprintln!(
+            "\nERROR: ports still accepting connections after cleanup: {:?}. \
+             Ghost listeners cannot be killed (owning PID is gone). \
+             Reboot, or edit NODES to use free ports.",
+            ghost_ports
+        );
+        std::process::exit(1);
+    }
+
     // ------------------------------------------------------------------
     // Phase 3: Create isolated workspaces
     // ------------------------------------------------------------------
@@ -588,6 +770,14 @@ async fn main() {
     // Configure each node — no static peers, pure UDP discovery
     if let Err(e) = setup_node(&ws_a, &gateway_bin, &NODES[0]).await {
         eprintln!("ERROR: {}", e);
+        std::process::exit(1);
+    }
+    // T18 (worker offline/timeout sweep) needs a fast sweep on the
+    // coordinator — production default (3600s timeout / 20s interval) would
+    // stall the test for an hour. 15s timeout / 2s interval ⇒ failure lands
+    // within ~17s of dispatch.
+    if let Err(e) = configure_board_sweep(&ws_a.home(), 15, 2) {
+        eprintln!("ERROR: configure_board_sweep for Node-A: {}", e);
         std::process::exit(1);
     }
 
@@ -676,7 +866,7 @@ async fn main() {
     // Run Tests
     // ==================================================================
     println!("\n========================================");
-    println!("  Running Tests (T1-T13, 4-node full chain verification)");
+    println!("  Running Tests (T1-T18, 4-node full chain verification)");
     println!("========================================");
 
     // T1: Node startup and configuration verification
@@ -1025,40 +1215,13 @@ async fn main() {
             );
 
             // Step 3: Restart D and wait for full readiness
-            gw_d = match GatewayProcess::spawn("Gateway-D", &gateway_bin, ws_d.path()) {
-                Ok(p) => p,
-                Err(e) => return fail("T9", format!("Cannot restart D: {}", e)),
+            // (health → RPC port → UDP re-discovery, shared helper)
+            gw_d = match start_gateway_and_wait("Gateway-D", &gateway_bin, ws_d.path(), &NODES[3])
+                .await
+            {
+                Ok(g) => g,
+                Err(e) => return fail("T9", e),
             };
-
-            // 3a: Wait for HTTP health check (gateway web server up)
-            let health_url = format!("http://127.0.0.1:{}/health", NODES[3].health_port);
-            if let Err(e) = wait_for_http(&health_url, Duration::from_secs(15)).await {
-                return fail("T9", format!("D not healthy after restart: {}", e));
-            }
-            println!("    Node-D restarted and healthy");
-
-            // 3b: Wait for D's RPC server to be listening
-            let rpc_addr = format!("127.0.0.1:{}", NODES[3].rpc_port);
-            let rpc_ready = tokio::time::timeout(Duration::from_secs(15), async {
-                loop {
-                    if tokio::net::TcpStream::connect(&rpc_addr).await.is_ok() {
-                        return true;
-                    }
-                    tokio::time::sleep(Duration::from_millis(500)).await;
-                }
-            })
-            .await
-            .unwrap_or(false);
-            if !rpc_ready {
-                return fail("T9", format!("D RPC server not ready at {}", rpc_addr));
-            }
-            println!("    Node-D RPC server ready on port {}", NODES[3].rpc_port);
-
-            // 3c: Wait for D's UDP announce to reach A
-            // D sends announce with 0-5s jitter, A needs to process it
-            // broadcast_interval is 3s in tests, so 15s covers jitter + processing
-            println!("    Waiting for UDP discovery to propagate (15s)...");
-            tokio::time::sleep(Duration::from_secs(15)).await;
 
             // Step 4: Retry — should succeed with full async chain
             let mut ws2 = match ws_connect_gateway(NODES[0].web_port).await {
@@ -1342,6 +1505,646 @@ async fn main() {
                 }
                 Err(e) => fail("T14", format!("180s 内未收到续行响应: {}", e)),
             }
+        })
+        .await,
+    );
+
+    // T15: board dispatch full chain (W2 P2)
+    //
+    // Coordinator Node-A creates a board issue and dispatches it to worker
+    // Node-B via `board issue.dispatch` (peer_chat RPC, task_id ↔ issue
+    // binding in issue_dispatch). B's agent (TestAIServer echo model)
+    // processes the prompt and reports back through peer_chat_callback; A's
+    // gateway writes the result back to the board:
+    //   - comment "✅ worker 汇报完成：..." authored by agent Node-B
+    //   - issue transitions in_progress → in_review (awaiting acceptance)
+    //
+    // Failure modes this catches: dispatch validation wiring, RPC delivery,
+    // callback routing (task_id → issue_dispatch), and the writeback itself.
+    all_results.push(
+        run_test("T15: board dispatch A→B full chain", || async {
+            let mut ws = match ws_connect_gateway(NODES[0].web_port).await {
+                Ok(s) => s,
+                Err(e) => return fail("T15", format!("WS connect to A failed: {}", e)),
+            };
+
+            // 1. Create the issue on the coordinator (letters-only marker —
+            //    digit-heavy strings trip the DLP credit_card rule, see T14).
+            let marker = "T15BOARDDISPATCHMARKER";
+            let created = match ws_api_request(
+                &mut ws,
+                "board",
+                "issue.create",
+                json!({
+                    "title": format!("{} board dispatch e2e", marker),
+                    "description": "Dispatched by cluster-uat T15 to worker Node-B.",
+                    "acceptance_criteria": "Worker replies with a completion report.",
+                }),
+                15,
+            )
+            .await
+            {
+                Ok(v) => v,
+                Err(e) => return fail("T15", format!("issue.create failed: {}", e)),
+            };
+            let issue_id = created
+                .pointer("/issue/id")
+                .and_then(|v| v.as_i64())
+                .unwrap_or(0);
+            if issue_id == 0 {
+                return fail(
+                    "T15",
+                    format!("issue.create returned no issue id: {}", created),
+                );
+            }
+
+            // 2. Dispatch to worker Node-B → issue must land in in_progress.
+            let disp = match ws_api_request(
+                &mut ws,
+                "board",
+                "issue.dispatch",
+                json!({ "id": issue_id, "target": "Node-B" }),
+                30,
+            )
+            .await
+            {
+                Ok(v) => v,
+                Err(e) => return fail("T15", format!("issue.dispatch failed: {}", e)),
+            };
+            let task_id = disp
+                .get("task_id")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let status_now = disp
+                .pointer("/issue/status")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            if disp.get("dispatched").and_then(|v| v.as_bool()) != Some(true)
+                || task_id.is_empty()
+            {
+                return fail(
+                    "T15",
+                    format!("issue.dispatch unexpected response: {}", disp),
+                );
+            }
+            if status_now != "in_progress" {
+                return fail(
+                    "T15",
+                    format!(
+                        "issue not in_progress after dispatch (got '{}')",
+                        status_now
+                    ),
+                );
+            }
+            println!(
+                "\n         T15 dispatched (issue_id={}, task_id={})",
+                issue_id, task_id
+            );
+
+            // 3. Poll until the callback writeback moves the issue to
+            //    in_review. The worker chain is: RPC ACK → agent LLM
+            //    (TestAIServer echo) → peer_chat_callback → writeback.
+            let deadline = tokio::time::Instant::now() + Duration::from_secs(240);
+            let mut last_status = String::from(status_now);
+            loop {
+                if tokio::time::Instant::now() >= deadline {
+                    return fail(
+                        "T15",
+                        format!(
+                            "240s 内 issue 未到 in_review（最后状态='{}', task_id={}）\
+                             —— callback 写回链路未走通",
+                            last_status, task_id
+                        ),
+                    );
+                }
+                tokio::time::sleep(Duration::from_secs(3)).await;
+                let got = match ws_api_request(
+                    &mut ws,
+                    "board",
+                    "issue.get",
+                    json!({ "id": issue_id }),
+                    10,
+                )
+                .await
+                {
+                    Ok(v) => v,
+                    Err(e) => return fail("T15", format!("issue.get failed: {}", e)),
+                };
+                last_status = got
+                    .pointer("/issue/status")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                if last_status == "in_review" {
+                    break;
+                }
+            }
+
+            // 4. The worker's completion report must be on the issue as a
+            //    comment authored by agent Node-B with the fixed success
+            //    prefix (gateway write_back_board_dispatch), and it must
+            //    contain the issue marker — testai-3.1 echoes the prompt
+            //    verbatim, so the marker proves the report is the worker's
+            //    actual reply to *this* issue (end-to-end data flow).
+            let comments = match ws_api_request(
+                &mut ws,
+                "board",
+                "comment.list",
+                json!({ "issue_id": issue_id }),
+                10,
+            )
+            .await
+            {
+                Ok(v) => v,
+                Err(e) => return fail("T15", format!("comment.list failed: {}", e)),
+            };
+            let mut found: Option<String> = None;
+            if let Some(arr) = comments.get("comments").and_then(|c| c.as_array()) {
+                for c in arr {
+                    let kind = c
+                        .pointer("/author/kind")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("");
+                    let id = c
+                        .pointer("/author/id")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("");
+                    let content = c
+                        .get("content")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("");
+                    if kind == "agent"
+                        && id == "Node-B"
+                        && content.starts_with("✅ worker 汇报完成")
+                        && content.contains(marker)
+                    {
+                        found = Some(content.to_string());
+                    }
+                }
+            }
+            match found {
+                Some(content) => pass(
+                    "T15",
+                    format!(
+                        "board dispatch 全链路 OK：issue {} in_progress→in_review，\
+                         worker 回报已写回（{}）",
+                        issue_id,
+                        trunc(&content, 120)
+                    ),
+                ),
+                None => fail(
+                    "T15",
+                    format!(
+                        "issue 到达 in_review 但未找到 agent Node-B 的完成评论;\
+                         comments={}",
+                        comments
+                    ),
+                ),
+            }
+        })
+        .await,
+    );
+
+    // T16: autopilot 定时触发（开发计划 §6-T5，W2 P4 autopilot）。
+    //
+    // 建每分钟规则（target=Node-B）→ 等 cron 到点 → fire_autopilot 模板建单
+    // + 派发 → autopilot.runs 出现带 marker 的 issue 且状态 in_progress。
+    // 等 cron 最坏 ~70s（分钟边界），轮询上限 120s。
+    // 本测试先于 T17 cancel 跑（T17 会杀掉 Node-B 做竞态控制）。
+    all_results.push(
+        run_test("T16: autopilot cron 触发建单+派发", || async {
+            let mut ws = match ws_connect_gateway(NODES[0].web_port).await {
+                Ok(s) => s,
+                Err(e) => return fail("T16", format!("WS connect to A failed: {}", e)),
+            };
+
+            let marker = "T16AUTOPILOTMARKER";
+            let created = match ws_api_request(
+                &mut ws,
+                "board",
+                "autopilot.create",
+                json!({
+                    "name": "uat-autopilot-t16",
+                    "cron": "* * * * *",
+                    "title": format!("{} 定时站会 {{date}}", marker),
+                    "description": "cluster-uat T16 每分钟规则",
+                    "target": "Node-B",
+                }),
+                15,
+            )
+            .await
+            {
+                Ok(v) => v,
+                Err(e) => return fail("T16", format!("autopilot.create failed: {}", e)),
+            };
+            let ap_id = created
+                .pointer("/autopilot/id")
+                .and_then(|v| v.as_i64())
+                .unwrap_or(0);
+            if ap_id == 0 {
+                return fail("T16", format!("autopilot.create returned no id: {}", created));
+            }
+            // WSAPI create 即时挂载 cron_job。
+            if created.pointer("/autopilot/cron_job_id").is_none() {
+                return fail("T16", format!("autopilot not armed (no cron_job_id): {}", created));
+            }
+
+            // 等 cron 到点：轮询 runs 直到带 marker 的 issue 出现且 in_progress。
+            let deadline = tokio::time::Instant::now() + Duration::from_secs(120);
+            let mut found: Option<(i64, String, String)> = None;
+            while tokio::time::Instant::now() < deadline {
+                tokio::time::sleep(Duration::from_secs(5)).await;
+                let runs = match ws_api_request(
+                    &mut ws,
+                    "board",
+                    "autopilot.runs",
+                    json!({ "id": ap_id }),
+                    10,
+                )
+                .await
+                {
+                    Ok(v) => v,
+                    Err(e) => return fail("T16", format!("autopilot.runs failed: {}", e)),
+                };
+                if let Some(arr) = runs.get("issues").and_then(|i| i.as_array()) {
+                    for iss in arr {
+                        let title = iss.get("title").and_then(|t| t.as_str()).unwrap_or("");
+                        if !title.contains(marker) {
+                            continue;
+                        }
+                        let status = iss.get("status").and_then(|s| s.as_str()).unwrap_or("");
+                        let id = iss.get("id").and_then(|i| i.as_i64()).unwrap_or(0);
+                        // in_progress 证明派发已落；若 worker 在两次轮询之间
+                        // 已跑完（echo 链路快），in_review/done 同样是派发发生
+                        // 的证据（backlog/todo 才是只建单未派发）。
+                        if matches!(status, "in_progress" | "in_review" | "done") {
+                            found = Some((id, title.to_string(), status.to_string()));
+                            break;
+                        }
+                    }
+                }
+                if found.is_some() {
+                    break;
+                }
+            }
+            // 清理：删规则（防后续轮次重复触发建单）。
+            let _ = ws_api_request(&mut ws, "board", "autopilot.remove", json!({ "id": ap_id }), 10).await;
+            match found {
+                Some((id, title, status)) => pass(
+                    "T16",
+                    format!("autopilot 定时触发 OK：规则 {} cron 到点建单 issue {}（状态 {}，{}）", ap_id, id, status, trunc(&title, 50)),
+                ),
+                None => fail(
+                    "T16",
+                    format!("120s 内 cron 未触发建单+派发（rule {}）——检查 gateway on_job 挂载", ap_id),
+                ),
+            }
+        })
+        .await,
+    );
+
+    // T17: board cancel 下行（开发计划 §6-T4，W2 P4 per-task cancel）。
+    //
+    // 本地 echo 链路（testai-3.1）<2s 跑完全链——cancel 与写回是真实竞态，
+    // kill-after-ACK 追不上（run2 实测两连败"该 issue 没有进行中的派发"：
+    // 写回先落账，dispatch 已终结）。确定性方案：把 B 的默认模型切成
+    // testai-1.2（固定 30s 延迟）并重启 B → worker ACK 后挂在 LLM 上 30s，
+    // cancel（~+1s）必赢竞态：
+    //   cancel_dispatch（竞态守卫）→ issue → cancelled（终态）
+    //   → fire-and-forget task_cancel 送达活着的 B → worker 被取消，无写回。
+    // 之后等过 sweep 截止线（15s 超时 + 2s 间隔）：cancelled 记录不得被
+    // sweep 误标（无"派发超时"评论）。送达失败 ⛔ 评论路径由单测覆盖，
+    // 本 e2e 送达成功（B 活着），不断言。
+    // 注：T17 后 B 保持 testai-1.2（套件后续无测试使用 B 的 LLM）。
+    all_results.push(
+        run_test("T17: board cancel 下行 (issue.cancel)", || async {
+            // 0. B 切慢模型 + 重启（拿确定性的 30s LLM 窗口）。
+            let out = ws_b
+                .run_cli(
+                    &gateway_bin,
+                    &[
+                        "model",
+                        "add",
+                        "--model",
+                        "test/testai-1.2",
+                        "--base",
+                        &format!("http://127.0.0.1:{}/v1", AI_SERVER_PORT),
+                        "--key",
+                        "test-key",
+                        "--default",
+                    ],
+                )
+                .await;
+            if !out.success() {
+                return fail("T17", format!("B model switch failed: {}", out.stderr));
+            }
+            gw_b.kill().await;
+            gw_b = match start_gateway_and_wait("Gateway-B", &gateway_bin, ws_b.path(), &NODES[1])
+                .await
+            {
+                Ok(g) => g,
+                Err(e) => return fail("T17", e),
+            };
+
+            let mut ws = match ws_connect_gateway(NODES[0].web_port).await {
+                Ok(s) => s,
+                Err(e) => return fail("T17", format!("WS connect to A failed: {}", e)),
+            };
+
+            // 1. Create + dispatch to Node-B（ACK 即回，worker 随后挂 30s LLM）。
+            let created = match ws_api_request(
+                &mut ws,
+                "board",
+                "issue.create",
+                json!({
+                    "title": "T17CANCELMARKER cancel e2e",
+                    "description": "Dispatched then cancelled by cluster-uat T17.",
+                }),
+                15,
+            )
+            .await
+            {
+                Ok(v) => v,
+                Err(e) => return fail("T17", format!("issue.create failed: {}", e)),
+            };
+            let issue_id = created
+                .pointer("/issue/id")
+                .and_then(|v| v.as_i64())
+                .unwrap_or(0);
+            if issue_id == 0 {
+                return fail("T17", format!("issue.create returned no id: {}", created));
+            }
+            let disp = match ws_api_request(
+                &mut ws,
+                "board",
+                "issue.dispatch",
+                json!({ "id": issue_id, "target": "Node-B" }),
+                30,
+            )
+            .await
+            {
+                Ok(v) => v,
+                Err(e) => return fail("T17", format!("issue.dispatch failed: {}", e)),
+            };
+            if disp.get("dispatched").and_then(|v| v.as_bool()) != Some(true) {
+                return fail("T17", format!("issue.dispatch unexpected: {}", disp));
+            }
+
+            // 2. Cancel：worker 挂在 30s LLM 上，dispatch 仍 active，必赢竞态。
+            let cancel = match ws_api_request(
+                &mut ws,
+                "board",
+                "issue.cancel",
+                json!({ "id": issue_id }),
+                15,
+            )
+            .await
+            {
+                Ok(v) => v,
+                Err(e) => return fail("T17", format!("issue.cancel failed: {}", e)),
+            };
+            if cancel.get("cancelled").and_then(|v| v.as_bool()) != Some(true) {
+                return fail("T17", format!("issue.cancel unexpected: {}", cancel));
+            }
+            let status = cancel
+                .pointer("/issue/status")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            if status != "cancelled" {
+                return fail("T17", format!("issue not cancelled after cancel (got '{}')", status));
+            }
+
+            // 3. 重复取消被竞态守卫诚实拒绝（dispatch 已终结）。
+            match ws_api_request(
+                &mut ws,
+                "board",
+                "issue.cancel",
+                json!({ "id": issue_id }),
+                15,
+            )
+            .await
+            {
+                Ok(_) => return fail("T17", "second cancel unexpectedly succeeded"),
+                Err(e) => {
+                    let msg = e.to_string();
+                    if !(msg.contains("没有进行中的派发") || msg.contains("派发已终结")) {
+                        return fail("T17", format!("second cancel wrong error: {}", msg));
+                    }
+                }
+            }
+
+            // 4. 等过 sweep 截止线（15s 超时 + 2s 间隔 → 25s 轮询覆盖）：
+            //    cancelled 记录不被 sweep 误伤（无"派发超时"评论）。
+            let deadline = tokio::time::Instant::now() + Duration::from_secs(25);
+            while tokio::time::Instant::now() < deadline {
+                tokio::time::sleep(Duration::from_secs(3)).await;
+                let comments = match ws_api_request(
+                    &mut ws,
+                    "board",
+                    "comment.list",
+                    json!({ "issue_id": issue_id }),
+                    10,
+                )
+                .await
+                {
+                    Ok(v) => v,
+                    Err(e) => return fail("T17", format!("comment.list failed: {}", e)),
+                };
+                if let Some(arr) = comments.get("comments").and_then(|c| c.as_array()) {
+                    for c in arr {
+                        let content = c.get("content").and_then(|v| v.as_str()).unwrap_or("");
+                        if content.contains("派发超时") {
+                            return fail(
+                                "T17",
+                                format!("cancelled 记录被 sweep 误标失败：{}", content),
+                            );
+                        }
+                    }
+                }
+            }
+            pass(
+                "T17",
+                format!(
+                    "cancel 下行 OK：issue {} → cancelled；重复取消被竞态守卫拒绝；\
+                     过 sweep 截止线无派发超时误标",
+                    issue_id
+                ),
+            )
+        })
+        .await,
+    );
+
+    // T18: worker 离线/超时 → sweep 标失败（开发计划 §6-T3，W2 P4 鲁棒性）。
+    //
+    // 与 T17 同一确定性前提：echo 链路（testai-3.1）<2s 完成，写回会赶在
+    // kill 前落账（run2 实测 sweep 无账可查）。把 D 的默认模型切成
+    // testai-1.2（固定 30s 延迟）并重启 → 派发 ACK 后 kill（+2s）落在
+    // LLM 中段：写回永不抵达 → Node-A 的 dispatch sweep（config board:
+    // 15s 超时 / 2s 间隔，见 configure_board_sweep）在 ~17s 内把 dispatch
+    // 记录标 failed：issue 上出现 ⛔ system 评论，admin 收到 dispatch_failed
+    // 通知。注意：sweep 是 MVP 策略（abort+notify，不自动 retry），issue
+    // 状态保持在 in_progress 由人工重派/取消。
+    // 本测试最后跑；B 已在 T17 切慢模型（无影响，T18 不用 B 的 LLM）。
+    all_results.push(
+        run_test("T18: worker 离线 → sweep 标失败", || async {
+            // 0. D 切慢模型 + 重启（写回赶在 kill 前落账的竞态由此消除）。
+            let out = ws_d
+                .run_cli(
+                    &gateway_bin,
+                    &[
+                        "model",
+                        "add",
+                        "--model",
+                        "test/testai-1.2",
+                        "--base",
+                        &format!("http://127.0.0.1:{}/v1", AI_SERVER_PORT),
+                        "--key",
+                        "test-key",
+                        "--default",
+                    ],
+                )
+                .await;
+            if !out.success() {
+                return fail("T18", format!("D model switch failed: {}", out.stderr));
+            }
+            gw_d.kill().await;
+            gw_d = match start_gateway_and_wait("Gateway-D", &gateway_bin, ws_d.path(), &NODES[3])
+                .await
+            {
+                Ok(g) => g,
+                Err(e) => return fail("T18", e),
+            };
+
+            let mut ws = match ws_connect_gateway(NODES[0].web_port).await {
+                Ok(s) => s,
+                Err(e) => return fail("T18", format!("WS connect to A failed: {}", e)),
+            };
+
+            // 1. Create + dispatch to Node-B.
+            let created = match ws_api_request(
+                &mut ws,
+                "board",
+                "issue.create",
+                json!({
+                    "title": "T18OFFLINEMARKER offline sweep e2e",
+                    "description": "Dispatched then worker killed by cluster-uat T18.",
+                }),
+                15,
+            )
+            .await
+            {
+                Ok(v) => v,
+                Err(e) => return fail("T18", format!("issue.create failed: {}", e)),
+            };
+            let issue_id = created
+                .pointer("/issue/id")
+                .and_then(|v| v.as_i64())
+                .unwrap_or(0);
+            if issue_id == 0 {
+                return fail("T18", format!("issue.create returned no id: {}", created));
+            }
+            let disp = match ws_api_request(
+                &mut ws,
+                "board",
+                "issue.dispatch",
+                json!({ "id": issue_id, "target": "Node-D" }),
+                30,
+            )
+            .await
+            {
+                Ok(v) => v,
+                Err(e) => return fail("T18", format!("issue.dispatch failed: {}", e)),
+            };
+            if disp.get("dispatched").and_then(|v| v.as_bool()) != Some(true) {
+                return fail("T18", format!("issue.dispatch unexpected: {}", disp));
+            }
+
+            // 2. 给 worker 2s 进入执行，然后杀掉 Gateway-D（写回永不抵达）。
+            tokio::time::sleep(Duration::from_secs(2)).await;
+            gw_d.kill().await;
+
+            // 3. 轮询 issue 评论，等 ⛔ system 评论（15s 超时 + 2s sweep ≤ ~17s，
+            //    留 60s 余量给轮询抖动）。
+            let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
+            let mut sweep_comment: Option<String> = None;
+            while tokio::time::Instant::now() < deadline {
+                tokio::time::sleep(Duration::from_secs(3)).await;
+                let comments = match ws_api_request(
+                    &mut ws,
+                    "board",
+                    "comment.list",
+                    json!({ "issue_id": issue_id }),
+                    10,
+                )
+                .await
+                {
+                    Ok(v) => v,
+                    Err(e) => return fail("T18", format!("comment.list failed: {}", e)),
+                };
+                if let Some(arr) = comments.get("comments").and_then(|c| c.as_array()) {
+                    for c in arr {
+                        let kind = c.pointer("/author/kind").and_then(|v| v.as_str()).unwrap_or("");
+                        let id = c.pointer("/author/id").and_then(|v| v.as_str()).unwrap_or("");
+                        let content = c.get("content").and_then(|v| v.as_str()).unwrap_or("");
+                        if kind == "system" && id == "board" && content.starts_with('⛔') {
+                            sweep_comment = Some(content.to_string());
+                            break;
+                        }
+                    }
+                }
+                if sweep_comment.is_some() {
+                    break;
+                }
+            }
+            let Some(comment) = sweep_comment else {
+                return fail(
+                    "T18",
+                    format!("60s 内 sweep 未标失败（issue {} 无 ⛔ system 评论）——检查 board sweep 配置/挂载", issue_id),
+                );
+            };
+
+            // 4. dispatch_failed 通知到达 admin 收件箱。
+            let inbox = match ws_api_request(&mut ws, "board", "inbox.list", json!({}), 10).await {
+                Ok(v) => v,
+                Err(e) => return fail("T18", format!("inbox.list failed: {}", e)),
+            };
+            let notified = inbox
+                .get("notifications")
+                .and_then(|n| n.as_array())
+                .map(|arr| {
+                    arr.iter().any(|n| {
+                        n.get("kind").and_then(|k| k.as_str()) == Some("dispatch_failed")
+                            && n.get("issue_id").and_then(|i| i.as_i64()) == Some(issue_id)
+                    })
+                })
+                .unwrap_or(false);
+            if !notified {
+                return fail(
+                    "T18",
+                    format!("sweep 已标失败但 admin 未收到 dispatch_failed 通知：{}", inbox),
+                );
+            }
+
+            // 5. MVP 语义：issue 停在 in_progress（不自动 retry/转移）。
+            let got = match ws_api_request(&mut ws, "board", "issue.get", json!({ "id": issue_id }), 10).await {
+                Ok(v) => v,
+                Err(e) => return fail("T18", format!("issue.get failed: {}", e)),
+            };
+            let status = got
+                .pointer("/issue/status")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            if status != "in_progress" {
+                return fail(
+                    "T18",
+                    format!("sweep 后 issue 状态应为 in_progress（MVP 不自动转移），got '{}'", status),
+                );
+            }
+            pass(
+                "T18",
+                format!("离线 sweep OK：{}（issue {} 保持 in_progress 待人工处置，通知已达）", trunc(&comment, 80), issue_id),
+            )
         })
         .await,
     );

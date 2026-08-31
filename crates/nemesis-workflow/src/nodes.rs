@@ -168,9 +168,13 @@ fn record_llm_usage(
         output_tokens: usage.completion_tokens,
         cache_creation_tokens: usage.cache_creation_tokens.unwrap_or(0),
         cache_read_tokens: usage.cache_read_tokens.or(usage.cached_tokens).unwrap_or(0),
-        // Pricing is the job of the usage-pricing plan; for now the row is
-        // written with zero cost so token counts are visible.
-        total_cost_usd: 0.0,
+        total_cost_usd: nemesis_data::compute_cost_usd(
+            model,
+            usage.prompt_tokens,
+            usage.completion_tokens,
+            usage.cache_creation_tokens.unwrap_or(0),
+            usage.cache_read_tokens.or(usage.cached_tokens).unwrap_or(0),
+        ),
         latency_ms: (now - started_at).num_milliseconds() as i64,
         status_code: 200,
         error_message: None,

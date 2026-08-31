@@ -6,6 +6,24 @@ import { useToast } from '../../composables/useToast'
 const { request } = useWSAPI()
 const toast = useToast()
 
+interface CoverageEntry {
+  unit_id: string
+  status: 'covered' | 'skipped' | 'missing' | 'suspect'
+  location?: string
+  reason?: string
+}
+
+interface CoverageReport {
+  total: number
+  covered: number
+  skipped: number
+  missing: number
+  suspect: number
+  coverage_rate: number
+  entries: CoverageEntry[]
+  segment_gaps: string[]
+}
+
 interface PersonaPackage {
   node_name: string
   display_name: string
@@ -15,6 +33,7 @@ interface PersonaPackage {
   tags: string[]
   identity_md: string
   soul_md: string
+  coverage?: CoverageReport | null
 }
 
 // 双区输入，各自独立
@@ -40,6 +59,32 @@ const tagsText = computed({
     }
   },
 })
+
+// —— 覆盖报告展示（生成时的对账结果，编辑不改写它） ——
+const coverage = computed(() => pkg.value?.coverage ?? null)
+
+// 完整 = 无缺失且无整段缺口（与后端 CoverageReport::is_complete 同义）。
+const coverageComplete = computed(
+  () => !!coverage.value && coverage.value.missing === 0 && coverage.value.segment_gaps.length === 0,
+)
+
+const coverageRatePct = computed(() => {
+  if (!coverage.value) return ''
+  return `${Math.round(coverage.value.coverage_rate * 100)}%`
+})
+
+// 只列需要人看的问题条目（missing 硬缺口 + suspect 软疑点）。
+const coverageProblems = computed(() => {
+  if (!coverage.value) return []
+  return coverage.value.entries.filter(e => e.status === 'missing' || e.status === 'suspect')
+})
+
+const coverageStatusText: Record<string, string> = {
+  missing: '缺失',
+  suspect: '疑点',
+  skipped: '跳过',
+  covered: '已覆盖',
+}
 
 async function generate(kind: 'jd' | 'resume') {
   const text = kind === 'jd' ? jdText.value : resumeText.value
@@ -195,6 +240,39 @@ function clearPreview() {
           </div>
         </div>
 
+        <!-- 完整性覆盖报告（生成时对账结果） -->
+        <div v-if="coverage" class="pg-coverage" data-testid="coverage-panel">
+          <div class="pg-coverage-head">
+            <span class="pg-coverage-title">完整性覆盖</span>
+            <span class="pg-coverage-rate">{{ coverageRatePct }}</span>
+            <span class="pg-coverage-badge" :class="coverageComplete ? 'is-ok' : 'is-gap'">
+              {{ coverageComplete ? '✓ 完整' : '⚠ 有缺口' }}
+            </span>
+          </div>
+          <div class="pg-coverage-counts">
+            <span>信息单元 {{ coverage.total }}</span>
+            <span>已覆盖 {{ coverage.covered }}</span>
+            <span>跳过 {{ coverage.skipped }}</span>
+            <span class="pg-coverage-bad-count" :class="{ 'is-nonzero': coverage.missing > 0 }">缺失 {{ coverage.missing }}</span>
+            <span class="pg-coverage-bad-count" :class="{ 'is-nonzero': coverage.suspect > 0 }">疑点 {{ coverage.suspect }}</span>
+          </div>
+          <ul v-if="coverage.segment_gaps.length" class="pg-coverage-gaps">
+            <li v-for="gap in coverage.segment_gaps" :key="gap">⚠ 整段未产出：{{ gap }}</li>
+          </ul>
+          <table v-if="coverageProblems.length" class="pg-coverage-table">
+            <thead>
+              <tr><th>单元</th><th>状态</th><th>说明</th></tr>
+            </thead>
+            <tbody>
+              <tr v-for="e in coverageProblems" :key="e.unit_id + e.status">
+                <td class="pg-mono">{{ e.unit_id }}</td>
+                <td>{{ coverageStatusText[e.status] || e.status }}</td>
+                <td>{{ e.reason || e.location || '—' }}</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
         <!-- 应用 -->
         <div class="pg-apply">
           <button type="button" class="btn btn-primary" :disabled="applying" @click="apply">
@@ -328,6 +406,91 @@ function clearPreview() {
   gap: var(--space-3);
   padding-top: var(--space-2);
   border-top: 1px solid var(--border-light);
+}
+
+/* coverage */
+.pg-coverage {
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius-md);
+  padding: var(--space-3);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.pg-coverage-head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+.pg-coverage-title {
+  font-size: var(--text-sm);
+  font-weight: 600;
+}
+
+.pg-coverage-rate {
+  font-size: var(--text-lg);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.pg-coverage-badge {
+  font-size: var(--text-xs);
+  padding: 2px var(--space-2);
+  border-radius: var(--radius-full, 999px);
+}
+
+.pg-coverage-badge.is-ok {
+  color: var(--success, #2e9e5b);
+  background: color-mix(in srgb, var(--success, #2e9e5b) 12%, transparent);
+}
+
+.pg-coverage-badge.is-gap {
+  color: var(--warning, #c07f00);
+  background: color-mix(in srgb, var(--warning, #c07f00) 12%, transparent);
+}
+
+.pg-coverage-counts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+}
+
+.pg-coverage-bad-count.is-nonzero {
+  color: var(--danger, #d64545);
+  font-weight: 600;
+}
+
+.pg-coverage-gaps {
+  margin: 0;
+  padding-left: var(--space-4);
+  font-size: var(--text-xs);
+  color: var(--warning, #c07f00);
+}
+
+.pg-coverage-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--text-xs);
+}
+
+.pg-coverage-table th,
+.pg-coverage-table td {
+  text-align: left;
+  padding: var(--space-1) var(--space-2);
+  border-top: 1px solid var(--border-light);
+}
+
+.pg-coverage-table th {
+  color: var(--text-muted);
+  font-weight: 500;
+}
+
+.pg-mono {
+  font-family: var(--font-mono);
 }
 
 .pg-note {

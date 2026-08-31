@@ -77,6 +77,7 @@ fn make_state(
         internal_cmd_tx: None,
         estop: None,
         cron: None,
+        board: None,
     })
 }
 

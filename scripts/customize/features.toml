@@ -249,6 +249,17 @@ desc = "prompt/skill 沙盒内行为评估（`nemesisbot eval`，仅数据采集
 category = "subsystems"
 default = true
 
+# NOTE: `board` 可裁剪（W2 P1 managed-agent 看板）。nemesis-web 无条件依赖
+# nemesis-board（cron 先例）；此 gate 只罩 `nemesisbot issue` CLI + gateway
+# 注入（store 未注入时 board.* WSAPI 统一报 "board service not available"）。
+# 前端看板页由 VITE_FEATURE_BOARD 单独门控。
+[[feature]]
+id = "board"
+label = "托管 Agent 看板"
+desc = "manager 看板（issue/项目/评论/指派，`nemesisbot issue` + Dashboard 看板页）。单机/无任务编排场景建议关"
+category = "subsystems"
+default = true
+
 # ── Frontend-only gate (no Rust code; exists in nemesisbot/Cargo.toml [features]
 #    only so `nemesis-config check` passes) ────────────────────────────────
 

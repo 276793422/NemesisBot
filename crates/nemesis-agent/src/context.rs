@@ -149,7 +149,18 @@ impl RequestContext {
 // ---------------------------------------------------------------------------
 
 /// Bootstrap files to load from the workspace directory.
-const BOOTSTRAP_FILES: &[&str] = &["AGENT.md", "IDENTITY.md", "SOUL.md", "USER.md", "MCP.md"];
+///
+/// `EXPERTISE.md` is appended LAST so existing workspaces' prompt prefixes
+/// stay byte-stable — the section only appears once cluster persona-gen
+/// writes the file. Empty files inject nothing (see `load_bootstrap_files`).
+const BOOTSTRAP_FILES: &[&str] = &[
+    "AGENT.md",
+    "IDENTITY.md",
+    "SOUL.md",
+    "USER.md",
+    "MCP.md",
+    "EXPERTISE.md",
+];
 
 /// Builds system prompts from workspace files.
 ///
@@ -426,6 +437,9 @@ impl ContextBuilder {
             // Heartbeat mode: only load config files, do not trigger initialization
             for filename in BOOTSTRAP_FILES {
                 if let Some(content) = self.read_workspace_file(filename) {
+                    if content.trim().is_empty() {
+                        continue;
+                    }
                     result.push_str(&format!("## {}\n\n{}\n\n", filename, content));
                 }
             }
@@ -449,6 +463,11 @@ impl ContextBuilder {
         // BOOTSTRAP.md does not exist: normal mode
         for filename in BOOTSTRAP_FILES {
             if let Some(content) = self.read_workspace_file(filename) {
+                // 空文件不注入（如 persona-gen 未产出 EXPERTISE.md），
+                // 避免空标题段污染 prompt 且破坏前缀缓存语义。
+                if content.trim().is_empty() {
+                    continue;
+                }
                 result.push_str(&format!("## {}\n\n{}\n\n", filename, content));
             }
         }

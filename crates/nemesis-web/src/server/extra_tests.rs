@@ -1106,6 +1106,7 @@ async fn test_handle_health_includes_running_and_sessions_reflects_state() {
         internal_cmd_tx: None,
         estop: None,
         cron: None,
+        board: None,
     });
     let resp = handle_health(AxumState(state)).await;
     let json = resp.0;

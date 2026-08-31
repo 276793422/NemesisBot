@@ -960,7 +960,12 @@ async fn test_line_full_lifecycle_with_real_webhook() {
     assert!(response.starts_with("HTTP/1.1 200 OK"));
 
     // Should have received the message on the bus
-    let inbound = bus_rx.try_recv().unwrap();
+    // webhook 服务器是 spawn 的任务：HTTP 200 先于 bus publish 返回，
+    // try_recv 会与 publish 竞态（2026-08-31 gate flake）——必须带超时 recv。
+    let inbound = tokio::time::timeout(std::time::Duration::from_secs(5), bus_rx.recv())
+        .await
+        .expect("timed out: webhook 200 must be followed by bus publish")
+        .unwrap();
     assert_eq!(inbound.channel, "line");
     assert_eq!(inbound.sender_id, "U123");
     assert_eq!(inbound.chat_id, "U123");
@@ -1034,7 +1039,12 @@ async fn test_line_full_lifecycle_valid_signature() {
     let response = send_raw_http(port, request.as_bytes()).await;
     assert!(response.starts_with("HTTP/1.1 200 OK"));
 
-    let inbound = bus_rx.try_recv().unwrap();
+    // webhook 服务器是 spawn 的任务：HTTP 200 先于 bus publish 返回，
+    // try_recv 会与 publish 竞态（2026-08-31 gate flake）——必须带超时 recv。
+    let inbound = tokio::time::timeout(std::time::Duration::from_secs(5), bus_rx.recv())
+        .await
+        .expect("timed out: webhook 200 must be followed by bus publish")
+        .unwrap();
     assert_eq!(inbound.content, "Signed");
 
     ch.stop().await.unwrap();
@@ -1069,7 +1079,12 @@ async fn test_line_full_lifecycle_lowercase_signature_header() {
     let response = send_raw_http(port, request.as_bytes()).await;
     assert!(response.starts_with("HTTP/1.1 200 OK"));
 
-    let inbound = bus_rx.try_recv().unwrap();
+    // webhook 服务器是 spawn 的任务：HTTP 200 先于 bus publish 返回，
+    // try_recv 会与 publish 竞态（2026-08-31 gate flake）——必须带超时 recv。
+    let inbound = tokio::time::timeout(std::time::Duration::from_secs(5), bus_rx.recv())
+        .await
+        .expect("timed out: webhook 200 must be followed by bus publish")
+        .unwrap();
     assert_eq!(inbound.content, "LowerCaseHeader");
 
     ch.stop().await.unwrap();
@@ -1128,7 +1143,12 @@ async fn test_line_full_lifecycle_group_chat_id() {
     let response = send_raw_http(port, request.as_bytes()).await;
     assert!(response.starts_with("HTTP/1.1 200 OK"));
 
-    let inbound = bus_rx.try_recv().unwrap();
+    // webhook 服务器是 spawn 的任务：HTTP 200 先于 bus publish 返回，
+    // try_recv 会与 publish 竞态（2026-08-31 gate flake）——必须带超时 recv。
+    let inbound = tokio::time::timeout(std::time::Duration::from_secs(5), bus_rx.recv())
+        .await
+        .expect("timed out: webhook 200 must be followed by bus publish")
+        .unwrap();
     assert_eq!(inbound.chat_id, "G123");
     assert_eq!(inbound.sender_id, "U1");
 
@@ -1160,7 +1180,12 @@ async fn test_line_full_lifecycle_room_chat_id() {
     let response = send_raw_http(port, request.as_bytes()).await;
     assert!(response.starts_with("HTTP/1.1 200 OK"));
 
-    let inbound = bus_rx.try_recv().unwrap();
+    // webhook 服务器是 spawn 的任务：HTTP 200 先于 bus publish 返回，
+    // try_recv 会与 publish 竞态（2026-08-31 gate flake）——必须带超时 recv。
+    let inbound = tokio::time::timeout(std::time::Duration::from_secs(5), bus_rx.recv())
+        .await
+        .expect("timed out: webhook 200 must be followed by bus publish")
+        .unwrap();
     assert_eq!(inbound.chat_id, "R456");
 
     ch.stop().await.unwrap();

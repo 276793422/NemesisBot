@@ -819,3 +819,75 @@ fn context_builder_load_skills_skips_stray_file_entries() {
         "file entry must not become a skill"
     );
 }
+
+// --- EXPERTISE.md 注入（persona-gen D②，两态断言） ---
+
+#[test]
+fn expertise_md_nonempty_is_injected() {
+    let tmp = TempDir::new().unwrap();
+    std::fs::write(tmp.path().join("IDENTITY.md"), "base identity.").unwrap();
+    std::fs::write(
+        tmp.path().join("EXPERTISE.md"),
+        "## 架构方案\n\n问题：并发写。\n方案：单写者队列。",
+    )
+    .unwrap();
+
+    let builder = ContextBuilder::new(tmp.path());
+    let prompt = builder.build_system_prompt(false);
+
+    assert!(prompt.contains("## EXPERTISE.md"));
+    assert!(prompt.contains("单写者队列。"));
+    // EXPERTISE 追加在 MCP.md 之后（列表尾部，保既有前缀字节稳定）。
+    let exp = prompt.find("## EXPERTISE.md").unwrap();
+    let mcp = prompt.find("## MCP.md");
+    if let Some(mcp) = mcp {
+        assert!(mcp < exp, "EXPERTISE.md must come after MCP.md");
+    }
+
+    // heartbeat（skip_bootstrap）路径同样注入。
+    let hb = builder.load_bootstrap_files(true);
+    assert!(hb.contains("## EXPERTISE.md"));
+    assert!(hb.contains("单写者队列。"));
+}
+
+#[test]
+fn expertise_md_empty_or_missing_injects_nothing() {
+    let tmp = TempDir::new().unwrap();
+    std::fs::write(tmp.path().join("IDENTITY.md"), "base identity.").unwrap();
+    // 空文件存在：不注入（persona-gen 未产出内容的形态）。
+    std::fs::write(tmp.path().join("EXPERTISE.md"), "").unwrap();
+
+    let builder = ContextBuilder::new(tmp.path());
+    let prompt = builder.build_system_prompt(false);
+    assert!(!prompt.contains("## EXPERTISE.md"));
+    assert!(prompt.contains("## IDENTITY.md"));
+
+    // 纯空白同样不注入。
+    std::fs::write(tmp.path().join("EXPERTISE.md"), "   \n\n  \n").unwrap();
+    let prompt = builder.build_system_prompt(false);
+    assert!(!prompt.contains("## EXPERTISE.md"));
+
+    // 文件不存在：不注入。
+    std::fs::remove_file(tmp.path().join("EXPERTISE.md")).unwrap();
+    let prompt = builder.build_system_prompt(false);
+    assert!(!prompt.contains("## EXPERTISE.md"));
+
+    // heartbeat 路径空文件同样跳过。
+    std::fs::write(tmp.path().join("EXPERTISE.md"), "").unwrap();
+    let hb = builder.load_bootstrap_files(true);
+    assert!(!hb.contains("## EXPERTISE.md"));
+}
+
+#[test]
+fn empty_bootstrap_files_inject_no_headers() {
+    // 统一行为：任何 bootstrap 文件为空都不产空标题段。
+    let tmp = TempDir::new().unwrap();
+    std::fs::write(tmp.path().join("IDENTITY.md"), "").unwrap();
+    std::fs::write(tmp.path().join("SOUL.md"), "soul content.").unwrap();
+
+    let builder = ContextBuilder::new(tmp.path());
+    let prompt = builder.build_system_prompt(false);
+    assert!(!prompt.contains("## IDENTITY.md"));
+    assert!(prompt.contains("## SOUL.md"));
+    assert!(prompt.contains("soul content."));
+}

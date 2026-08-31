@@ -109,6 +109,7 @@ fn make_deep_ctx(
         internal_cmd_tx: None,
         estop: None,
         cron: None,
+        board: None,
     });
     RequestContext {
         session_id: "test-session".to_string(),
@@ -693,7 +694,7 @@ async fn nodes_detail_master_worker_with_log_stats() {
     let handler = cluster::ClusterHandler::new();
     let dir = tempfile::tempdir().unwrap();
     let cluster = test_cluster(&dir);
-    cluster.register_node(node("mA", "master-a", NodeRole::Master, true, "10.0.0.1:12000"));
+    cluster.register_node(node("mA", "master-a", NodeRole::Coordinator, true, "10.0.0.1:12000"));
     cluster.register_node(node("nB", "worker-b", NodeRole::Worker, true, "10.0.0.2:12000"));
     let log_dir = dir.path().join("cluster_logs");
     // task_assigned 的 data.action 是承接节点 id（reader 的映射约定）。
@@ -992,7 +993,7 @@ async fn topology_connections_traces_and_roles() {
     let handler = cluster::ClusterHandler::new();
     let dir = tempfile::tempdir().unwrap();
     let cluster = test_cluster(&dir);
-    cluster.register_node(node("mA", "master-a", NodeRole::Master, true, "10.0.0.1:12000"));
+    cluster.register_node(node("mA", "master-a", NodeRole::Coordinator, true, "10.0.0.1:12000"));
     cluster.register_node(node("nB", "worker-b", NodeRole::Worker, true, "10.0.0.2:12000"));
     let log_dir = dir.path().join("cluster_logs");
     write_today_cluster_log(
@@ -1288,6 +1289,7 @@ fn ctx_ws_with_provider(
         internal_cmd_tx: None,
         estop: None,
         cron: None,
+        board: None,
     };
     RequestContext {
         session_id: "test-session".to_string(),

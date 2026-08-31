@@ -81,7 +81,7 @@ fn test_message_to_node_info_manager_role() {
         "agent",
     );
     let info = message_to_node_info(&msg);
-    assert_eq!(info.base.role, NodeRole::Master);
+    assert_eq!(info.base.role, NodeRole::Coordinator);
 }
 
 // -----------------------------------------------------------------------

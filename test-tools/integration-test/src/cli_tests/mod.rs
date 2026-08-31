@@ -6,6 +6,7 @@
 pub mod agent;
 pub mod auth;
 pub mod basic;
+pub mod board;
 pub mod channel;
 pub mod cluster;
 pub mod cors;

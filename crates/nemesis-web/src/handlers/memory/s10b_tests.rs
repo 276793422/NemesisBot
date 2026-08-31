@@ -78,6 +78,7 @@ fn build_state(ws: &str, memory_manager: Option<Arc<MemoryManager>>) -> AppState
         internal_cmd_tx: None,
         estop: None,
         cron: None,
+        board: None,
     }
 }
 

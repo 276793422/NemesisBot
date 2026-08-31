@@ -942,7 +942,10 @@ pub async fn test_ui_p4_hooks(ws: &TestWorkspace) -> Vec<TestResult> {
             return results;
         }
     };
-    let hooks_path = ws.home().join("config").join("hooks.json");
+    // hooks 落位自 2026-08-29 起收编至 <workspace>/config/hooks.json
+    // （nemesis_path::resolve_hooks_config_path_in_workspace；legacy <home>/config/
+    // 仅作 copy-once 迁移源）——断言必须跟 handler 同一路径。
+    let hooks_path = ws.workspace().join("config").join("hooks.json");
 
     // P4-1 缺文件 → 模板（exists=false，模板自身可解析 + valid:true）
     let (data, err) = api.call("hooks", "get", None).await;

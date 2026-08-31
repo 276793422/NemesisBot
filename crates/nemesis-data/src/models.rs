@@ -36,7 +36,7 @@ pub struct DailyRollup {
     pub avg_latency_ms: f64,
 }
 
-/// Model pricing entry (reserved, not used yet).
+/// Model pricing entry (embedded table; see `pricing.rs`).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModelPricing {
     pub model_id: String,
@@ -45,6 +45,15 @@ pub struct ModelPricing {
     pub output_cost_per_million: f64,
     pub cache_read_cost_per_million: f64,
     pub cache_creation_cost_per_million: f64,
+    /// Max context window (input tokens). `None` = unknown.
+    #[serde(default)]
+    pub max_input_tokens: Option<i64>,
+    /// Max output tokens. `None` = unknown.
+    #[serde(default)]
+    pub max_output_tokens: Option<i64>,
+    /// Provider-qualified or historic names resolving to this entry.
+    #[serde(default)]
+    pub aliases: Vec<String>,
 }
 
 /// Aggregated usage summary for a time range.

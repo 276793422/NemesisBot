@@ -59,6 +59,7 @@ fn make_ctx(dir: &tempfile::TempDir) -> RequestContext {
         internal_cmd_tx: None,
         estop: None,
         cron: None,
+        board: None,
     });
     RequestContext {
         session_id: "test-session".to_string(),
@@ -106,6 +107,7 @@ fn make_ctx_with_log_dir(dir: &tempfile::TempDir) -> RequestContext {
         internal_cmd_tx: None,
         estop: None,
         cron: None,
+        board: None,
     });
     RequestContext {
         session_id: "test-session".to_string(),
@@ -150,6 +152,7 @@ fn make_ctx_no_workspace() -> RequestContext {
         internal_cmd_tx: None,
         estop: None,
         cron: None,
+        board: None,
     });
     RequestContext {
         session_id: "test-session".to_string(),
@@ -195,6 +198,7 @@ fn make_ctx_no_home(dir: &tempfile::TempDir) -> RequestContext {
         internal_cmd_tx: None,
         estop: None,
         cron: None,
+        board: None,
     });
     RequestContext {
         session_id: "test-session".to_string(),
@@ -1599,6 +1603,7 @@ fn make_ctx_with_cluster(dir: &tempfile::TempDir) -> RequestContext {
         internal_cmd_tx: None,
         estop: None,
         cron: None,
+        board: None,
     });
     RequestContext {
         session_id: "test-session".to_string(),
@@ -1650,6 +1655,7 @@ fn make_ctx_with_cluster_and_log_dir(dir: &tempfile::TempDir) -> RequestContext 
         internal_cmd_tx: None,
         estop: None,
         cron: None,
+        board: None,
     });
     RequestContext {
         session_id: "test-session".to_string(),
@@ -1735,7 +1741,7 @@ async fn test_nodes_list_returns_registered_nodes() {
     let ctx = make_ctx_with_cluster(&dir);
     let c = ctx.state.cluster.as_ref().unwrap();
     c.register_node(sample_node("n1", "alpha", NodeRole::Worker, true));
-    c.register_node(sample_node("n2", "beta", NodeRole::Master, false));
+    c.register_node(sample_node("n2", "beta", NodeRole::Coordinator, false));
 
     let result = handler
         .handle_cmd("nodes.list", None, &ctx)
@@ -1820,7 +1826,7 @@ async fn test_nodes_detail_known_node_returns_info() {
         .cluster
         .as_ref()
         .unwrap()
-        .register_node(sample_node("n7", "gamma", NodeRole::Master, true));
+        .register_node(sample_node("n7", "gamma", NodeRole::Coordinator, true));
 
     let result = handler
         .handle_cmd(
@@ -2207,7 +2213,7 @@ async fn test_node_update_identity_invalid_role_errors() {
         )
         .await
         .unwrap_err();
-    assert!(err.contains("role must be 'manager' or 'worker'"));
+    assert!(err.contains("role must be 'coordinator'/'manager' or 'worker'"));
 }
 
 #[tokio::test]

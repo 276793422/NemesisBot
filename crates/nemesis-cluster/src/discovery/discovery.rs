@@ -253,10 +253,7 @@ impl ClusterCallbacks for RegistryCallbacks {
         // multi-address failover, matching Go's behavior.
         let primary_address = addresses.first().cloned().unwrap_or_default();
         use nemesis_types::cluster::{NodeInfo, NodeRole};
-        let node_role = match role {
-            "manager" | "coordinator" | "master" => NodeRole::Master,
-            _ => NodeRole::Worker,
-        };
+        let node_role = NodeRole::from_role_str(role);
         let info = crate::types::ExtendedNodeInfo {
             base: NodeInfo {
                 id: node_id.to_string(),

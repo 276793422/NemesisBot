@@ -1277,7 +1277,7 @@ fn test_register_node_updates_existing() {
         base: nemesis_types::cluster::NodeInfo {
             id: "node-1".into(),
             name: "updated-name".into(),
-            role: nemesis_types::cluster::NodeRole::Master,
+            role: nemesis_types::cluster::NodeRole::Coordinator,
             address: "10.0.0.2:9000".into(),
             category: "prod".into(),
             last_seen: chrono::Local::now().to_rfc3339(),
@@ -1290,7 +1290,7 @@ fn test_register_node_updates_existing() {
 
     let node = cluster.get_node_info("node-1").unwrap();
     assert_eq!(node.base.name, "updated-name");
-    assert_eq!(node.base.role, nemesis_types::cluster::NodeRole::Master);
+    assert_eq!(node.base.role, nemesis_types::cluster::NodeRole::Coordinator);
     assert_eq!(node.capabilities.len(), 1);
     cluster.stop();
 }
@@ -3803,7 +3803,7 @@ fn test_merge_real_node_info_updates_existing_entry_with_real_id() {
         id: "node-real-1".into(),
         name: "NewName".into(),
         address: "10.0.0.5:9000".into(),
-        role: nemesis_types::cluster::NodeRole::Master,
+        role: nemesis_types::cluster::NodeRole::Coordinator,
         category: "new_cat".into(),
         capabilities: vec!["new_cap".into()],
         node_type: "new_type".into(),
@@ -3813,7 +3813,7 @@ fn test_merge_real_node_info_updates_existing_entry_with_real_id() {
     let p = cluster.get_peer("node-real-1").unwrap();
     assert_eq!(p.base.name, "NewName");
     assert_eq!(p.base.category, "new_cat");
-    assert_eq!(p.base.role, nemesis_types::cluster::NodeRole::Master);
+    assert_eq!(p.base.role, nemesis_types::cluster::NodeRole::Coordinator);
     assert_eq!(p.capabilities, vec!["new_cap".to_string()]);
     assert_eq!(p.node_type, "new_type");
 }
@@ -4704,14 +4704,14 @@ fn test_merge_real_node_info_master_role_with_write_error() {
         id: "master-1".into(),
         name: "Master One".into(),
         address: "10.5.5.5:21949".into(),
-        role: nemesis_types::cluster::NodeRole::Master,
+        role: nemesis_types::cluster::NodeRole::Coordinator,
         category: "prod".into(),
         capabilities: vec!["llm".into()],
         node_type: "agent".into(),
     });
     assert_eq!(merged, "master-1");
     let info = cluster.get_node_info("master-1").unwrap();
-    assert_eq!(info.base.role, nemesis_types::cluster::NodeRole::Master);
+    assert_eq!(info.base.role, nemesis_types::cluster::NodeRole::Coordinator);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -4979,7 +4979,7 @@ fn test_identity_setters_sweep() {
 
     let local = cluster.get_node_info("local-node-001").unwrap();
     assert_eq!(local.base.name, "Renamed");
-    assert_eq!(local.base.role, nemesis_types::cluster::NodeRole::Master);
+    assert_eq!(local.base.role, nemesis_types::cluster::NodeRole::Coordinator);
     assert_eq!(local.base.category, "research");
     assert!(local.capabilities.contains(&"grep".to_string()));
     cluster.stop();

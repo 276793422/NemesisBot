@@ -337,6 +337,7 @@ fn make_ctx(dir: &tempfile::TempDir) -> crate::ws_router::RequestContext {
         internal_cmd_tx: None,
         estop: None,
         cron: None,
+        board: None,
     });
     crate::ws_router::RequestContext {
         session_id: "test-session".to_string(),

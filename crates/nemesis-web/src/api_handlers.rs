@@ -123,6 +123,11 @@ pub struct AppState {
     /// scheduler (add/list/update/delete/toggle/run) instead of raw file I/O.
     /// nemesis-cron is an unconditional dependency, so no cfg gate.
     pub cron: Option<Arc<std::sync::Mutex<nemesis_cron::CronService>>>,
+    /// Managed-agent board service (W2 P1). nemesis-board is an unconditional
+    /// dependency (cron precedent); gateway injects `Some` only when the
+    /// `board` feature is enabled and the store opened successfully. Carries
+    /// the node role (goal 硬约束①：复用 NodeRole) — worker 节点 board 只读。
+    pub board: Option<nemesis_board::BoardService>,
 }
 
 impl AppState {

@@ -130,13 +130,20 @@ async fn make_ctx_with_cron(dir: &tempfile::TempDir) -> RequestContext {
         cluster_service: None,
         cluster_log_dir: None,
         workflow_engine: None,
+        #[cfg(feature = "workflow")]
         chat_secret_store: std::sync::Arc::new(
             nemesis_workflow::chat_secrets::ChatSecretStore::in_memory(),
         ),
+        #[cfg(not(feature = "workflow"))]
+        chat_secret_store: std::sync::Arc::new(()),
+        #[cfg(feature = "workflow")]
         webhook_rate_limiter: Arc::new(crate::handlers::workflow::WebhookRateLimiter::new()),
+        #[cfg(not(feature = "workflow"))]
+        webhook_rate_limiter: Arc::new(()),
         internal_cmd_tx: None,
         estop: None,
         cron: Some(svc),
+        board: None,
     });
     RequestContext {
         session_id: "test-session".to_string(),

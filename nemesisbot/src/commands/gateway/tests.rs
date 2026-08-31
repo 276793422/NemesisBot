@@ -4080,3 +4080,134 @@ fn chrono_millis_now() -> i64 {
         .expect("clock before epoch")
         .as_millis() as i64
 }
+
+// -------------------------------------------------------------------------
+// W2 P2 board 派发写回（write_back_board_dispatch）
+// -------------------------------------------------------------------------
+
+/// 建一个已派发（in_progress + issue_dispatch 登记）的 board store。
+#[cfg(all(feature = "board", feature = "cluster"))]
+fn dispatched_store(
+    dir: &std::path::Path,
+    task_id: &str,
+) -> std::sync::Arc<nemesis_board::BoardStore> {
+    let store = std::sync::Arc::new(
+        nemesis_board::BoardStore::open(&dir.join("board.db"), "NB").expect("open store"),
+    );
+    let issue = store
+        .create_issue(nemesis_board::NewIssue {
+            title: "派发写回".into(),
+            ..Default::default()
+        })
+        .expect("create issue");
+    store
+        .transition_issue(issue.id, nemesis_board::IssueStatus::InProgress, &nemesis_board::Actor::admin("t"))
+        .expect("transition");
+    store
+        .insert_dispatch(task_id, issue.id, "node-b", &nemesis_board::Actor::admin("t"))
+        .expect("insert dispatch");
+    store
+}
+
+#[cfg(all(feature = "board", feature = "cluster"))]
+#[test]
+fn test_writeback_success_moves_to_in_review_with_result_comment() {
+    let dir = std::env::temp_dir().join(format!(
+        "nemesisbot-gw-writeback-ok-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let store = dispatched_store(&dir, "task-ok");
+
+    let is_board = write_back_board_dispatch(&Some(store.clone()), "task-ok", "success", "改完了，产物在 foo.rs");
+    assert!(is_board, "dispatched task must be recognized as board task");
+
+    // 状态推进 in_progress → in_review（等 coordinator 验收）。
+    let issue = store.get_issue_by_number("NB-1").unwrap();
+    assert_eq!(issue.status, nemesis_board::IssueStatus::InReview);
+    // worker 结果评论（agent/node-b）。
+    let comments = store.list_comments(issue.id).unwrap();
+    assert!(comments.iter().any(|c| c.author.kind == "agent"
+        && c.author.id == "node-b"
+        && c.content.contains("改完了，产物在 foo.rs")));
+    // 派发终结为 done。
+    let rec = store.get_dispatch("task-ok").unwrap().unwrap();
+    assert_eq!(rec.state, nemesis_board::models::dispatch_state::DONE);
+    assert!(rec.completed_at.is_some());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[cfg(all(feature = "board", feature = "cluster"))]
+#[test]
+fn test_writeback_error_keeps_in_progress_with_failure_comment() {
+    let dir = std::env::temp_dir().join(format!(
+        "nemesisbot-gw-writeback-err-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let store = dispatched_store(&dir, "task-err");
+
+    let is_board = write_back_board_dispatch(&Some(store.clone()), "task-err", "error", "编译失败：…");
+    assert!(is_board);
+
+    // 失败留在 in_progress（不推 in_review），失败评论留痕。
+    let issue = store.get_issue_by_number("NB-1").unwrap();
+    assert_eq!(issue.status, nemesis_board::IssueStatus::InProgress);
+    let comments = store.list_comments(issue.id).unwrap();
+    assert!(comments.iter().any(|c| c.content.contains("编译失败：…")));
+    let rec = store.get_dispatch("task-err").unwrap().unwrap();
+    assert_eq!(rec.state, nemesis_board::models::dispatch_state::FAILED);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[cfg(all(feature = "board", feature = "cluster"))]
+#[test]
+fn test_writeback_duplicate_callback_is_idempotent() {
+    let dir = std::env::temp_dir().join(format!(
+        "nemesisbot-gw-writeback-dup-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let store = dispatched_store(&dir, "task-dup");
+
+    assert!(write_back_board_dispatch(&Some(store.clone()), "task-dup", "success", "第一份"));
+    // 重复回调：仍识别为 board 任务（跳过续行），但不重复写评论/转移。
+    assert!(write_back_board_dispatch(&Some(store.clone()), "task-dup", "success", "第一份"));
+
+    let issue = store.get_issue_by_number("NB-1").unwrap();
+    assert_eq!(issue.status, nemesis_board::IssueStatus::InReview);
+    let n = store
+        .list_comments(issue.id)
+        .unwrap()
+        .into_iter()
+        .filter(|c| c.content.contains("第一份"))
+        .count();
+    assert_eq!(n, 1, "duplicate callback must not double-comment");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[cfg(all(feature = "board", feature = "cluster"))]
+#[test]
+fn test_writeback_non_board_and_unavailable_store() {
+    // 未知 task_id → 非 board 任务（false，走既有路由）。
+    let dir = std::env::temp_dir().join(format!(
+        "nemesisbot-gw-writeback-non-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let store = dispatched_store(&dir, "task-x");
+    assert!(!write_back_board_dispatch(
+        &Some(store.clone()),
+        "other-task",
+        "success",
+        "…"
+    ));
+    assert!(!write_back_board_dispatch(&Some(store.clone()), "", "success", "…"));
+    // store 未注入 → 恒 false。
+    assert!(!write_back_board_dispatch(&None, "task-x", "success", "…"));
+    let _ = std::fs::remove_dir_all(&dir);
+}

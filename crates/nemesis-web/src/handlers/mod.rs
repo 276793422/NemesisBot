@@ -5,6 +5,7 @@
 //! transport-agnostic — they read/write configuration files and workspace data.
 
 pub mod agent;
+pub mod board;
 pub mod channels;
 pub mod coding;
 pub mod commands;
@@ -113,6 +114,10 @@ pub fn register_all(router: &mut crate::ws_router::WsRouter) {
     // 2026-08-29: 插件状态总览（只读）— PluginsView 数据源。No feature gate
     // （探测逻辑无条件编译；onnx 能力状态节内含 memory cfg 门控）。
     router.register(Arc::new(plugins::PluginsHandler));
+    // W2 P1 (2026-08-31): managed-agent 看板。No feature gate — nemesis-board
+    // 是 nemesis-web 无条件依赖（cron 先例）；store 未注入时命令统一报
+    // "board service not available"（gateway 仅在 board feature 开启时注入）。
+    router.register(Arc::new(board::BoardHandler));
     #[cfg(feature = "cluster")]
     {
         router.register(Arc::new(cluster::ClusterHandler::new()));

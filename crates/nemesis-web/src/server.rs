@@ -13,7 +13,10 @@ use crate::api_handlers::{
     handle_api_models, handle_api_readme, handle_api_scanner_status, handle_api_sessions,
     handle_api_status, handle_api_version,
 };
-use crate::api_usage::{handle_api_usage_logs, handle_api_usage_summary, handle_api_usage_trends};
+use crate::api_usage::{
+    handle_api_usage_logs, handle_api_usage_pricing, handle_api_usage_summary,
+    handle_api_usage_trends,
+};
 use crate::cors::dev_cors_layer;
 use crate::events::EventHub;
 use crate::session::SessionManager;
@@ -252,6 +255,9 @@ pub struct WebServer {
     estop: Option<Arc<nemesis_agent::estop::EstopState>>,
     /// Runtime cron service (set by gateway; flows into AppState for tasks.cron.*).
     cron: Option<Arc<std::sync::Mutex<nemesis_cron::CronService>>>,
+    /// Managed-agent board service (set by gateway when the `board` feature is on;
+    /// flows into AppState for board.* WSAPI commands).
+    board: Option<nemesis_board::BoardService>,
     /// Conversation→WS router for cron-initiated live delivery (Opt 2).
     /// Populated on inbound in `process_messages`; read by the gateway cron
     /// fire handler to pick a live `chat_id` for the targeted conversation.
@@ -295,6 +301,7 @@ impl WebServer {
             internal_cmd_tx: None,
             estop: None,
             cron: None,
+            board: None,
             conv_router: None,
         }
     }
@@ -410,6 +417,12 @@ impl WebServer {
         self.cron = Some(cron);
     }
 
+    /// Set the managed-agent board service (gateway injects when the `board`
+    /// feature is enabled and the store opened successfully).
+    pub fn set_board(&mut self, board: nemesis_board::BoardService) {
+        self.board = Some(board);
+    }
+
     /// Set the conversation→WS router (Opt 2). Gateway shares the same Arc
     /// with the cron fire handler so binds (here, on inbound) and lookups
     /// (there, on fire) see the same table.
@@ -464,6 +477,7 @@ impl WebServer {
             internal_cmd_tx: self.internal_cmd_tx.clone(),
             estop: self.estop.clone(),
             cron: self.cron.clone(),
+            board: self.board.clone(),
         };
 
         let state = Arc::new(state);
@@ -515,6 +529,7 @@ impl WebServer {
             .route("/api/usage/summary", get(handle_api_usage_summary))
             .route("/api/usage/trends", get(handle_api_usage_trends))
             .route("/api/usage/logs", get(handle_api_usage_logs))
+            .route("/api/usage/pricing", get(handle_api_usage_pricing))
             // SSE event stream
             .route("/api/events/stream", get(handle_events_stream))
             // SSE chat streaming endpoint

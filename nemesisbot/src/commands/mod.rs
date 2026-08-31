@@ -1,6 +1,8 @@
 //! CLI command modules.
 
 pub mod agent;
+#[cfg(feature = "board")]
+pub mod autopilot;
 #[cfg(feature = "auth")]
 pub mod auth;
 pub mod channel;
@@ -15,6 +17,8 @@ pub mod estop;
 pub mod forge;
 pub mod gateway;
 pub mod history;
+#[cfg(feature = "board")]
+pub mod issue;
 pub mod log;
 pub mod mcp;
 #[cfg(feature = "memory")]

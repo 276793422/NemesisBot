@@ -243,7 +243,7 @@ fn test_extended_node_info_getters() {
         base: NodeInfo {
             id: "node-42".into(),
             name: "TestBot".into(),
-            role: NodeRole::Master,
+            role: NodeRole::Coordinator,
             address: "10.0.0.1:9000".into(),
             category: "testing".into(),
             last_seen: "".into(),
@@ -260,12 +260,12 @@ fn test_extended_node_info_getters() {
 }
 
 #[test]
-fn test_to_peer_config_master_role() {
+fn test_to_peer_config_coordinator_role() {
     let node = ExtendedNodeInfo {
         base: NodeInfo {
-            id: "master-1".into(),
-            name: "MasterNode".into(),
-            role: NodeRole::Master,
+            id: "coordinator-1".into(),
+            name: "CoordinatorNode".into(),
+            role: NodeRole::Coordinator,
             address: "10.0.0.1:9000".into(),
             category: "production".into(),
             last_seen: "2026-04-29T00:00:00Z".into(),
@@ -276,7 +276,8 @@ fn test_to_peer_config_master_role() {
         node_type: "agent".into(),
     };
     let config = node.to_peer_config();
-    assert_eq!(config.role, "master");
+    // 规范配置词表：Coordinator → "coordinator"（读侧 from_role_str 兼容旧值）。
+    assert_eq!(config.role, "coordinator");
     assert_eq!(config.category, "production");
 }
 

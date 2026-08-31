@@ -52,6 +52,7 @@ fn make_ctx(dir: &tempfile::TempDir) -> RequestContext {
         internal_cmd_tx: None,
         estop: None,
         cron: None,
+        board: None,
     });
     RequestContext {
         session_id: "test-session".to_string(),
@@ -96,6 +97,7 @@ fn make_ctx_no_workspace() -> RequestContext {
         internal_cmd_tx: None,
         estop: None,
         cron: None,
+        board: None,
     });
     RequestContext {
         session_id: "test-session".to_string(),

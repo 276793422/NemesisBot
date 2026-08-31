@@ -112,15 +112,17 @@ describe('InjectionPanel', () => {
     const wrapper = await mountPanel()
     await wrapper.find('.panel-toggle').trigger('click')
     await flushPromises()
+    // script setup 内部绑定运行时可见但类型不暴露 → 测试侧类型化视图
+    const vm = wrapper.vm as unknown as { verifyResults: Record<string, unknown> }
 
     // 在途时切换会话：迟到的结论必须被丢弃，不得挂到新会话上。
     await wrapper.find('.verify-btn').trigger('click')
-    expect(wrapper.vm.verifyResults['t1:1']).toBeUndefined()
+    expect(vm.verifyResults['t1:1']).toBeUndefined()
     await wrapper.setProps({ session: 'agent_main_session_s2' })
     await flushPromises()
     resolveVerify!({ ok: true, verdict: 'byte_exact' })
     await flushPromises()
-    expect(wrapper.vm.verifyResults['t1:1']).toBeUndefined()
+    expect(vm.verifyResults['t1:1']).toBeUndefined()
     wrapper.unmount()
   })
 

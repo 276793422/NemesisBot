@@ -29,7 +29,12 @@ use tokio_tungstenite::tungstenite::Message;
 pub const AI_SERVER_PORT: u16 = 8080;
 pub const WEB_PORT: u16 = 49000;
 pub const WS_PORT: u16 = 49000;
-pub const HEALTH_PORT: u16 = 18790;
+/// Gateway/health port for spawned gateways. NOT 18790 — that value is the
+/// production gateway default (GatewayConfig.port) and this dev machine has a
+/// ghost socket orphaned on it (kernel LISTEN with no owning PID; TCP connect
+/// succeeds but nothing answers — same family as the cluster-uat NODES note).
+/// 18799 verified free (18791-18796 belong to e2e-tests).
+pub const HEALTH_PORT: u16 = 18799;
 pub const AUTH_TOKEN: &str = "276793422";
 
 // ---------------------------------------------------------------------------
@@ -491,10 +496,17 @@ pub type WsStream =
     tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
 
 /// Connect to WebSocket with auth token.
+///
+/// Bounded at 15s. Without this, connecting to a half-dead port (e.g. a
+/// kernel-orphaned LISTEN socket whose owning process is gone — TCP connect
+/// succeeds but nothing ever completes the WS handshake) hangs forever and
+/// freezes the whole suite.
 pub async fn ws_connect(port: u16, token: &str) -> Result<WsStream> {
     let url = format!("ws://127.0.0.1:{}/ws?token={}", port, token);
-    let (stream, _) = tokio_tungstenite::connect_async(&url)
+    let connect = tokio_tungstenite::connect_async(&url);
+    let (stream, _) = tokio::time::timeout(Duration::from_secs(15), connect)
         .await
+        .map_err(|_| anyhow::anyhow!("WebSocket connect timed out after 15s: {}", url))?
         .with_context(|| format!("WebSocket connect failed: {}", url))?;
     Ok(stream)
 }

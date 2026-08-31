@@ -41,8 +41,30 @@ pub struct NodeInfo {
 /// Node role in the cluster.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum NodeRole {
-    Master,
+    /// 看板权威节点（board 读写全开；旧词 master/manager 兼容解析）。
+    #[serde(alias = "Master")]
+    Coordinator,
     Worker,
+}
+
+impl NodeRole {
+    /// 解析角色字符串（单一真相源：peers.toml `[node].role`、UDP 广播、
+    /// 身份更新都走这里）。接受现行词表 `coordinator` 与旧值
+    /// `master`/`manager`（向后兼容），其余一律回落 Worker。
+    pub fn from_role_str(s: &str) -> Self {
+        match s {
+            "master" | "manager" | "coordinator" => NodeRole::Coordinator,
+            _ => NodeRole::Worker,
+        }
+    }
+
+    /// 规范配置词表（写 peers.toml / 广播身份用）。
+    pub fn as_role_str(&self) -> &'static str {
+        match self {
+            NodeRole::Coordinator => "coordinator",
+            NodeRole::Worker => "worker",
+        }
+    }
 }
 
 /// RPC message envelope.

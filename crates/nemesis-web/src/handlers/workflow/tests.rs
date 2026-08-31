@@ -155,6 +155,7 @@ fn make_test_state(auth_token: &str) -> Arc<AppState> {
         internal_cmd_tx: None,
         estop: None,
         cron: None,
+        board: None,
     })
 }
 
@@ -260,6 +261,7 @@ fn make_ctx_with_engine(engine: Arc<nemesis_workflow::engine::WorkflowEngine>) -
         internal_cmd_tx: None,
         estop: None,
         cron: None,
+        board: None,
     });
     RequestContext {
         session_id: "test-session".to_string(),

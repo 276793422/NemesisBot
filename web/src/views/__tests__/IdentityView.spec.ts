@@ -93,7 +93,9 @@ describe('IdentityView 指令链（G5）', () => {
 
   it('读取失败回退到内容所属文档；加载窗口内保存被拒（跨文档覆盖写防线）', async () => {
     const w = await mountView() // AGENT.md 已加载
-    expect(w.vm.contentDoc).toBe('AGENT.md')
+    // script setup 内部绑定运行时可见但类型不暴露 → 测试侧类型化视图
+    const vm = w.vm as unknown as { contentDoc: string; activeDoc: string; docContent: string }
+    expect(vm.contentDoc).toBe('AGENT.md')
 
     // ① get IDENTITY.md 失败 → 回退到内容实际所属的 AGENT.md（不是悬在新标题下）
     requestMock.mockImplementation((_m: string, cmd: string, data: any) => {
@@ -103,8 +105,8 @@ describe('IdentityView 指令链（G5）', () => {
     })
     await w.findAll('.tab').find(t => t.text().includes('身份定义'))!.trigger('click')
     await flushPromises()
-    expect(w.vm.activeDoc).toBe('AGENT.md')
-    expect(w.vm.docContent).toBe('# AGENT.md 内容')
+    expect(vm.activeDoc).toBe('AGENT.md')
+    expect(vm.docContent).toBe('# AGENT.md 内容')
     expect(useToast().toasts.some(t => t.type === 'error')).toBe(true)
 
     // ② 加载窗口内（get 未返回）编辑+保存 → save 不得发出（A 文档内容不能写进 B 文档）
@@ -118,8 +120,8 @@ describe('IdentityView 指令链（G5）', () => {
     })
     await w.findAll('.tab').find(t => t.text().includes('身份定义'))!.trigger('click')
     await flushPromises()
-    expect(w.vm.activeDoc).toBe('IDENTITY.md')
-    expect(w.vm.contentDoc).toBe('AGENT.md') // 内容还没换成 IDENTITY 的
+    expect(vm.activeDoc).toBe('IDENTITY.md')
+    expect(vm.contentDoc).toBe('AGENT.md') // 内容还没换成 IDENTITY 的
     await w.findAll('button').find(b => b.text() === '编辑')!.trigger('click')
     await w.find('textarea').setValue('# 误操作内容')
     await w.findAll('button').find(b => b.text() === '保存')!.trigger('click')
@@ -130,8 +132,8 @@ describe('IdentityView 指令链（G5）', () => {
     // ③ get 返回后窗口关闭 → 内容与文档一致，保存恢复放行
     resolveGet!({ name: 'IDENTITY.md', content: '# IDENTITY.md 内容' })
     await flushPromises()
-    expect(w.vm.contentDoc).toBe('IDENTITY.md')
-    expect(w.vm.docContent).toBe('# IDENTITY.md 内容')
+    expect(vm.contentDoc).toBe('IDENTITY.md')
+    expect(vm.docContent).toBe('# IDENTITY.md 内容')
     await w.findAll('button').find(b => b.text() === '保存')!.trigger('click')
     await flushPromises()
     expect(requestMock.mock.calls.filter(c => c[1] === 'save').length).toBe(1)

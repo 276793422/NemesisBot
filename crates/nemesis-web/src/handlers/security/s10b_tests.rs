@@ -57,6 +57,7 @@ fn make_ctx(ws: &str) -> RequestContext {
         internal_cmd_tx: None,
         estop: None,
         cron: None,
+        board: None,
     });
     RequestContext {
         session_id: "s10b".to_string(),

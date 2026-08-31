@@ -53,7 +53,6 @@ async fn manager_discovers_tools_from_real_stdio_server() {
     let server = mgr.get_server("test").expect("test server in config");
 
     let tools = mgr.discover_tools(server).await.expect("discover");
-    use nemesis_mcp::adapter::Tool as _;
     let names: Vec<String> = tools.iter().map(|t| t.definition().name.clone()).collect();
     // Go 测试服务器提供的工具集（适配器加 mcp_test_ 前缀）。
     // 注意：hello/config 是 MCP Resource 不是 Tool（resources 不进 discover）。
@@ -71,7 +70,6 @@ async fn mcp_echo_call_roundtrip_through_real_server() {
     let mgr = make_manager(dir.path(), &test_server_path());
     let server = mgr.get_server("test").expect("server");
     let tools = mgr.discover_tools(server).await.expect("discover");
-    use nemesis_mcp::adapter::Tool as _;
 
     let echo = tools
         .iter()
@@ -101,7 +99,6 @@ async fn echo_call_surfaces_server_error_text_on_bad_params() {
     let mgr = make_manager(dir.path(), &test_server_path());
     let server = mgr.get_server("test").expect("server");
     let tools = mgr.discover_tools(server).await.expect("discover");
-    use nemesis_mcp::adapter::Tool as _;
 
     // 缺必填参数 → 调用不挂起即通过（服务器如何响应——错误文本或空结果——
     // 均可接受；本断言钉的是"坏参数不 hang"）。

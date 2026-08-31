@@ -38,7 +38,20 @@ interface TrendPoint {
 }
 
 type RangePreset = 'today' | '1d' | '7d' | '14d' | '30d' | 'custom'
-type TabId = 'usage' | 'settings'
+type TabId = 'usage' | 'pricing' | 'settings'
+
+// 嵌入式价目表行（/api/usage/pricing，LiteLLM 提取的静态表）。
+interface PricingRow {
+  modelId: string
+  displayName: string
+  inputCostPerMillion: number
+  outputCostPerMillion: number
+  cacheReadCostPerMillion: number
+  cacheCreationCostPerMillion: number
+  maxInputTokens: number | null
+  maxOutputTokens: number | null
+  aliases: string[]
+}
 
 // ---------------------------------------------------------------------------
 // State
@@ -62,6 +75,15 @@ const summary = ref<UsageSummary>({
   cacheHitRate: 0,
 })
 const trends = ref<TrendPoint[]>([])
+
+// 价格 tab（惰性加载一次）
+const pricingRows = ref<PricingRow[]>([])
+const pricingLoaded = ref(false)
+const pricingLoading = ref(false)
+const pricingError = ref('')
+const pricingQuery = ref('')
+// 当前激活模型（/api/status，best-effort），命中行高亮。
+const activeModel = ref('')
 
 const presets: { key: Exclude<RangePreset, 'custom'>; label: string }[] = [
   { key: 'today', label: '今天' },
@@ -101,6 +123,66 @@ function formatCost(n: number): string {
   if (n === 0) return '$0'
   if (n < 0.01) return '$' + n.toFixed(4)
   return '$' + n.toFixed(2)
+}
+
+// —— 价格 tab ——
+
+function switchTab(t: TabId) {
+  activeTab.value = t
+  if (t === 'pricing') loadPricing()
+}
+
+async function loadPricing() {
+  if (pricingLoaded.value || pricingLoading.value) return
+  pricingLoading.value = true
+  pricingError.value = ''
+  try {
+    const [rows, status] = await Promise.all([
+      fetchJSON<PricingRow[]>('/api/usage/pricing'),
+      fetch('/api/status')
+        .then(r => (r.ok ? r.json() : {}))
+        .catch(() => ({}) as Record<string, unknown>),
+    ])
+    pricingRows.value = [...rows].sort((a, b) => a.modelId.localeCompare(b.modelId))
+    const m = (status as Record<string, unknown>)?.model_name
+    activeModel.value = typeof m === 'string' ? m : ''
+    pricingLoaded.value = true
+  } catch (err: any) {
+    pricingError.value = err?.message || String(err)
+  }
+  pricingLoading.value = false
+}
+
+// 与后端 PricingTable::lookup 同序的匹配：精确 id → 别名 → 去掉 provider 前缀的裸名。
+function matchesActiveModel(row: PricingRow): boolean {
+  if (!activeModel.value) return false
+  const m = activeModel.value.trim()
+  if (!m) return false
+  if (m === row.modelId || row.aliases.includes(m)) return true
+  const bare = m.split('/').pop() || m
+  return bare === row.modelId || row.aliases.includes(bare)
+}
+
+const filteredPricing = computed(() => {
+  const q = pricingQuery.value.trim().toLowerCase()
+  if (!q) return pricingRows.value
+  return pricingRows.value.filter(
+    r =>
+      r.modelId.toLowerCase().includes(q) ||
+      r.displayName.toLowerCase().includes(q) ||
+      r.aliases.some(a => a.toLowerCase().includes(q)),
+  )
+})
+
+function formatPrice(n: number): string {
+  if (n === 0) return '$0'
+  if (n < 0.01) return '$' + n.toFixed(3)
+  return '$' + n.toFixed(2)
+}
+
+function formatContext(n: number | null): string {
+  if (!n) return '—'
+  return n >= 1000 ? `${Math.round(n / 1000)}K` : String(n)
 }
 
 const chartOption = computed(() => {
@@ -335,14 +417,87 @@ onMounted(() => {
     <div class="page-body">
       <!-- Top-level tabs -->
       <div class="tab-bar">
-        <button class="tab-btn" :class="{ active: activeTab === 'usage' }" @click="activeTab = 'usage'">
+        <button class="tab-btn" :class="{ active: activeTab === 'usage' }" @click="switchTab('usage')">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 20V10M12 20V4M6 20v-6"/></svg>
           使用量
         </button>
-        <button class="tab-btn" :class="{ active: activeTab === 'settings' }" @click="activeTab = 'settings'">
+        <button class="tab-btn" :class="{ active: activeTab === 'pricing' }" @click="switchTab('pricing')">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 1v22M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg>
+          价格
+        </button>
+        <button class="tab-btn" :class="{ active: activeTab === 'settings' }" @click="switchTab('settings')">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/></svg>
           设置
         </button>
+      </div>
+
+      <!-- Pricing tab：嵌入式价目表（静态数据，惰性加载一次） -->
+      <div v-if="activeTab === 'pricing'" class="pricing-tab">
+        <div class="usage-toolbar">
+          <div class="pricing-filter">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg>
+            <input
+              v-model="pricingQuery"
+              class="form-input pricing-search"
+              type="text"
+              placeholder="搜索模型 / 别名…"
+              data-testid="pricing-search"
+            />
+          </div>
+          <span v-if="activeModel" class="pricing-active-model">
+            当前模型：<strong>{{ activeModel }}</strong>
+          </span>
+        </div>
+
+        <div v-if="pricingLoading" class="pricing-state">加载中…</div>
+        <div v-else-if="pricingError" class="pricing-state is-error">
+          加载失败：{{ pricingError }}
+          <button type="button" class="btn btn-sm" style="margin-left: var(--space-3)" @click="pricingLoaded = false; loadPricing()">重试</button>
+        </div>
+        <div v-else-if="!filteredPricing.length" class="pricing-state">
+          {{ pricingRows.length ? '没有匹配的模型' : '价目表为空' }}
+        </div>
+        <div v-else class="card">
+          <div class="pricing-table-wrap">
+            <table class="pricing-table" data-testid="pricing-table">
+              <thead>
+                <tr>
+                  <th>模型</th>
+                  <th class="num">输入 $/M</th>
+                  <th class="num">输出 $/M</th>
+                  <th class="num">缓存读 $/M</th>
+                  <th class="num">缓存写 $/M</th>
+                  <th class="num">上下文</th>
+                  <th>别名</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr
+                  v-for="row in filteredPricing"
+                  :key="row.modelId"
+                  :class="{ 'is-active-model': matchesActiveModel(row) }"
+                >
+                  <td>
+                    <div class="pricing-model-name">
+                      {{ row.displayName }}
+                      <span v-if="matchesActiveModel(row)" class="pricing-active-badge">当前</span>
+                    </div>
+                    <div class="pricing-model-id">{{ row.modelId }}</div>
+                  </td>
+                  <td class="num">{{ formatPrice(row.inputCostPerMillion) }}</td>
+                  <td class="num">{{ formatPrice(row.outputCostPerMillion) }}</td>
+                  <td class="num">{{ formatPrice(row.cacheReadCostPerMillion) }}</td>
+                  <td class="num">{{ formatPrice(row.cacheCreationCostPerMillion) }}</td>
+                  <td class="num">{{ formatContext(row.maxInputTokens) }}</td>
+                  <td class="pricing-aliases">
+                    <span v-for="a in row.aliases" :key="a" class="pricing-alias">{{ a }}</span>
+                    <span v-if="!row.aliases.length" class="text-muted">—</span>
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
       </div>
 
       <!-- Settings tab -->
@@ -942,5 +1097,122 @@ onMounted(() => {
 
 .chart-container :deep(div) {
   /* Let echarts manage its own sizing */
+}
+
+/* —— 价格 tab —— */
+.pricing-tab {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.pricing-filter {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  color: var(--text-muted);
+}
+
+.pricing-search {
+  width: 260px;
+}
+
+.pricing-active-model {
+  font-size: var(--text-sm);
+  color: var(--text-muted);
+}
+
+.pricing-active-model strong {
+  color: var(--accent);
+}
+
+.pricing-state {
+  padding: var(--space-8);
+  text-align: center;
+  color: var(--text-muted);
+}
+
+.pricing-state.is-error {
+  color: var(--danger, #d64545);
+}
+
+.pricing-table-wrap {
+  overflow-x: auto;
+}
+
+.pricing-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--text-sm);
+}
+
+.pricing-table th,
+.pricing-table td {
+  text-align: left;
+  padding: var(--space-2) var(--space-3);
+  border-bottom: 1px solid var(--border-light);
+  white-space: nowrap;
+}
+
+.pricing-table th {
+  color: var(--text-muted);
+  font-weight: 500;
+  font-size: var(--text-xs);
+}
+
+.pricing-table td.num,
+.pricing-table th.num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.pricing-table tbody tr:hover {
+  background: var(--surface-alt);
+}
+
+.pricing-table tbody tr.is-active-model {
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+}
+
+.pricing-table tbody tr.is-active-model .pricing-model-name {
+  color: var(--accent);
+}
+
+.pricing-active-badge {
+  display: inline-block;
+  margin-left: var(--space-2);
+  font-size: var(--text-xs);
+  color: var(--accent);
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-full, 999px);
+  padding: 0 var(--space-2);
+  line-height: 1.4;
+}
+
+.pricing-model-name {
+  font-weight: 500;
+}
+
+.pricing-model-id {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+}
+
+.pricing-aliases {
+  max-width: 280px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.pricing-alias {
+  display: inline-block;
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+  background: var(--surface-alt);
+  border-radius: var(--radius-sm);
+  padding: 0 var(--space-2);
+  margin-right: var(--space-1);
 }
 </style>

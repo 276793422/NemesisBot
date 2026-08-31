@@ -60,14 +60,21 @@ fn make_state(home: Option<&std::path::Path>) -> Arc<AppState> {
             nemesis_workflow::chat_secrets::ChatSecretStore::in_memory(),
         ),
         #[cfg(not(feature = "workflow"))]
+        #[cfg(feature = "workflow")]
         chat_secret_store: std::sync::Arc::(()),
+        #[cfg(not(feature = "workflow"))]
+        chat_secret_store: std::sync::Arc::new(()),
         #[cfg(feature = "workflow")]
         webhook_rate_limiter: Arc::new(crate::handlers::workflow::WebhookRateLimiter::new()),
+        #[cfg(not(feature = "workflow"))]
+        #[cfg(feature = "workflow")]
+        webhook_rate_limiter: Arc::new(()),
         #[cfg(not(feature = "workflow"))]
         webhook_rate_limiter: Arc::new(()),
         internal_cmd_tx: None,
         estop: None,
         cron: None,
+        board: None,
     })
 }
 
@@ -267,14 +274,21 @@ fn resolve_fork_store_without_home_is_503_and_with_home_is_ok() {
             nemesis_workflow::chat_secrets::ChatSecretStore::in_memory(),
         ),
         #[cfg(not(feature = "workflow"))]
+        #[cfg(feature = "workflow")]
+        chat_secret_store: std::sync::Arc::new(()),
+        #[cfg(not(feature = "workflow"))]
         chat_secret_store: std::sync::Arc::new(()),
         #[cfg(feature = "workflow")]
         webhook_rate_limiter: Arc::new(crate::handlers::workflow::WebhookRateLimiter::new()),
+        #[cfg(not(feature = "workflow"))]
+        #[cfg(feature = "workflow")]
+        webhook_rate_limiter: Arc::new(()),
         #[cfg(not(feature = "workflow"))]
         webhook_rate_limiter: Arc::new(()),
         internal_cmd_tx: None,
         estop: None,
         cron: None,
+        board: None,
     };
     match resolve_fork_store(&state_none) {
         Err((StatusCode::SERVICE_UNAVAILABLE, body)) => {
