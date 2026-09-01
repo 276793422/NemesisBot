@@ -5,17 +5,42 @@ fn test_canonicalize_for_compare_nonexistent_tail_matches_existing_root() {
     // create 前守卫的常态：path 不存在 → 必须借存在祖先归一表示，
     // 而不是词法原样（否则与 canonicalize 过的 root 前缀比较失配）。
     let dir = tempfile::tempdir().unwrap();
-    let root = dir.path().to_path_buf();
+    // 期望值必须以**规范化** root 为基准：tempdir 返回的原始路径可能带
+    // 8.3 短名/大小写差异（CI runner 的 RUNNER~1 首次踩中本测试——函数
+    // 正确归一成 runneradmin，断言却拿 RUNNER~1 形态当期望值）。
+    let root = canonicalize_for_compare(dir.path());
     let got = canonicalize_for_compare(&root.join("defs").join("new.yaml"));
     assert_eq!(got, root.join("defs").join("new.yaml"));
     assert!(got.starts_with(&root));
+
+    #[cfg(target_os = "windows")]
+    {
+        // 用大小写变体确定性模拟 CI runner 的短名条件（同一归一机制）：
+        // 输入 root 与卷上真实表示不同，输出必须归一到真实表示。
+        let name = dir.path().file_name().unwrap().to_string_lossy().to_string();
+        let flipped: String = name
+            .chars()
+            .map(|c| if c.is_ascii_lowercase() {
+                c.to_ascii_uppercase()
+            } else if c.is_ascii_uppercase() {
+                c.to_ascii_lowercase()
+            } else {
+                c
+            })
+            .collect();
+        assert_ne!(flipped, name, "tempdir name should contain a letter");
+        let variant_root = dir.path().parent().unwrap().join(flipped);
+        let got2 = canonicalize_for_compare(&variant_root.join("defs").join("new.yaml"));
+        assert_eq!(got2, root.join("defs").join("new.yaml"));
+    }
 }
 
 #[test]
 fn test_canonicalize_for_compare_dotdot_escape_kept() {
     // 逃逸语义：出栈到底的 `..` 保留为标记 → 前缀判断自然拒绝。
+    // root 先规范化（同 nonexistent_tail 测试：tempdir 原始表示不可当期望值）。
     let dir = tempfile::tempdir().unwrap();
-    let root = dir.path().to_path_buf();
+    let root = canonicalize_for_compare(dir.path());
     let got = canonicalize_for_compare(&root.join("..").join("outside.txt"));
     assert!(!got.starts_with(&root), "escape must stay outside: {}", got.display());
     // 根内的 `..` 被解析掉。
