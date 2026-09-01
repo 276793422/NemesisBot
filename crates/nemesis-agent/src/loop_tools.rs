@@ -18,6 +18,8 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
+use nemesis_path::paths::canonicalize_for_compare;
+
 use async_trait::async_trait;
 use tokio::sync::Mutex;
 use tokio::time::sleep;
@@ -737,9 +739,17 @@ impl Tool for ExecTool {
 
         // Workspace restriction check
         if self.restrict {
-            let cwd_path = std::path::Path::new(cwd);
-            let ws_path = std::path::Path::new(&self.workspace);
-            if !cwd_path.starts_with(ws_path) {
+            // 与 ExecTool（shell.rs）对齐：相对 cwd join workspace；双侧统一
+            // 归一化（nemesis-path 单一真相源）——组件级比较防前缀误判，
+            // workspace 侧归一化防 8.3 短名/大小写失配（2026-09-01）。
+            let target = if Path::new(cwd).is_absolute() {
+                PathBuf::from(cwd)
+            } else {
+                Path::new(&self.workspace).join(cwd)
+            };
+            let resolved = canonicalize_for_compare(&target);
+            let ws = canonicalize_for_compare(Path::new(&self.workspace));
+            if !resolved.starts_with(&ws) {
                 return Err(format!(
                     "Access denied: path '{}' is outside workspace",
                     cwd
@@ -906,9 +916,17 @@ impl Tool for RunScriptTool {
 
         // Workspace restriction (mirrors ExecTool).
         if self.restrict {
-            let cwd_path = std::path::Path::new(cwd);
-            let ws_path = std::path::Path::new(&self.workspace);
-            if !cwd_path.starts_with(ws_path) {
+            // 与 ExecTool（shell.rs）对齐：相对 cwd join workspace；双侧统一
+            // 归一化（nemesis-path 单一真相源）——组件级比较防前缀误判，
+            // workspace 侧归一化防 8.3 短名/大小写失配（2026-09-01）。
+            let target = if Path::new(cwd).is_absolute() {
+                PathBuf::from(cwd)
+            } else {
+                Path::new(&self.workspace).join(cwd)
+            };
+            let resolved = canonicalize_for_compare(&target);
+            let ws = canonicalize_for_compare(Path::new(&self.workspace));
+            if !resolved.starts_with(&ws) {
                 return Err(format!(
                     "Access denied: path '{}' is outside workspace",
                     cwd
@@ -1007,9 +1025,17 @@ impl Tool for AsyncExecTool {
 
         // Workspace restriction check
         if self.restrict {
-            let cwd_path = std::path::Path::new(cwd);
-            let ws_path = std::path::Path::new(&self.workspace);
-            if !cwd_path.starts_with(ws_path) {
+            // 与 ExecTool（shell.rs）对齐：相对 cwd join workspace；双侧统一
+            // 归一化（nemesis-path 单一真相源）——组件级比较防前缀误判，
+            // workspace 侧归一化防 8.3 短名/大小写失配（2026-09-01）。
+            let target = if Path::new(cwd).is_absolute() {
+                PathBuf::from(cwd)
+            } else {
+                Path::new(&self.workspace).join(cwd)
+            };
+            let resolved = canonicalize_for_compare(&target);
+            let ws = canonicalize_for_compare(Path::new(&self.workspace));
+            if !resolved.starts_with(&ws) {
                 return Err(format!(
                     "Access denied: path '{}' is outside workspace",
                     cwd

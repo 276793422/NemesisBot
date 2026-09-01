@@ -821,33 +821,21 @@ async fn test_delete_file_tool_restricted_within_workspace() {
 // ============================================================
 
 #[test]
-fn test_resolve_existing_ancestor_current_dir() {
-    // Current dir always exists
-    let resolved = resolve_existing_ancestor(Path::new("."));
-    assert!(resolved.exists() || resolved == Path::new("."));
-}
+fn test_canonicalize_for_compare_current_dir_strips_verbatim() {
+    // 替换旧局部 helper（resolve_existing_ancestor / normalize_for_comparison）
+    // 的 4 个单测——helper 已收敛到 nemesis-path 单一真相源，其内部分支由该
+    // crate 自己的测试覆盖。此处只锚消费方关心的行为：cwd 归一化为绝对路径；
+    // Windows canonicalize 的 \\?\ verbatim 前缀必须被剥掉（否则 workspace
+    // 前缀比较永远失配，CI RUNNER~1 家族，2026-09-01）。
+    let resolved = canonicalize_for_compare(Path::new("."));
+    assert!(resolved.is_absolute());
 
-#[test]
-fn test_normalize_for_comparison_regular_path() {
-    let path = Path::new("C:\\Users\\test\\file.txt");
-    let normalized = normalize_for_comparison(path);
-    assert!(!normalized.starts_with(r"\\?\"));
-}
-
-#[test]
-fn test_normalize_for_comparison_unc_prefix() {
-    // Simulate the Windows \\?\ prefix
-    let path = Path::new(r"\\?\C:\Users\test\file.txt");
-    let normalized = normalize_for_comparison(path);
-    assert!(!normalized.starts_with(r"\\?\"));
-    assert!(normalized.contains("Users"));
-}
-
-#[test]
-fn test_normalize_for_comparison_no_prefix() {
-    let path = Path::new("/home/user/file.txt");
-    let normalized = normalize_for_comparison(path);
-    assert_eq!(normalized, "/home/user/file.txt");
+    let real = std::env::current_dir().unwrap();
+    let s = canonicalize_for_compare(&real).to_string_lossy().to_string();
+    assert!(
+        !s.starts_with(r"\\?\"),
+        "verbatim prefix must be stripped for comparison: {s}"
+    );
 }
 
 #[tokio::test]
@@ -1064,31 +1052,54 @@ fn w4a_tool_parameters_schemas_all_tools() {
     assert_eq!(p["required"][0], "path");
 }
 
+#[tokio::test]
+async fn w4a_restrict_tolerates_uncanonicalized_workspace_form() {
+    // 8.3 短名失配回归（Windows CI RUNNER~1 家族，2026-09-01）：CI runner 的
+    // TEMP 在 C:\Users\RUNNER~1\...，workspace 以非 canonical 形式传入时，
+    // 旧实现只对 target 侧 resolve（canonicalize 出真实形态），workspace 侧
+    // 用原始串比较 → 恒不相等 → workspace 内读全部误拒 "outside workspace"。
+    // 本测试用大小写失配模拟同一机制：Windows 大小写不敏感 → canonicalize
+    // 出真实大小写；Linux 大小写敏感 → 两侧 fallback 同形，天然通过。
+    let dir = TempDir::new().unwrap();
+    std::fs::create_dir_all(dir.path().join("sub")).unwrap();
+    std::fs::write(dir.path().join("sub").join("f.txt"), b"data").unwrap();
+
+    let upper = dir.path().to_string_lossy().to_uppercase();
+    let tool = ReadFileTool::new(&upper, true);
+    let validated = tool
+        .validate_path("sub/f.txt")
+        .expect("workspace in uncanonicalized form must not be rejected");
+    assert!(validated.ends_with("f.txt"));
+}
+
 #[test]
-fn w4a_resolve_existing_ancestor_branches() {
+fn w4a_canonicalize_for_compare_branches() {
     let dir = TempDir::new().unwrap();
 
-    // 1. Existing path: canonicalize succeeds (returns \\?\ form on Windows).
+    // 1. Existing path: canonicalize succeeds; the \\?\ verbatim prefix is
+    //    stripped by the truth-source impl (Windows), no-op elsewhere.
     let existing = dir.path().join("real.txt");
     std::fs::write(&existing, b"x").unwrap();
-    let resolved = resolve_existing_ancestor(&existing);
+    let resolved = canonicalize_for_compare(&existing);
     assert!(resolved.is_absolute());
-    assert!(normalize_for_comparison(&resolved).ends_with("real.txt"));
+    let s = resolved.to_string_lossy();
+    assert!(!s.starts_with(r"\\?\") && s.ends_with("real.txt"), "got: {s}");
 
     // 2. Nonexistent child under existing dir: walk up + append components.
     let ghost = dir.path().join("no_such_dir").join("leaf.txt");
-    let resolved = resolve_existing_ancestor(&ghost);
-    let normalized = normalize_for_comparison(&resolved);
+    let resolved = canonicalize_for_compare(&ghost);
+    let s = resolved.to_string_lossy();
     assert!(
-        normalized.ends_with("no_such_dir\\leaf.txt") || normalized.ends_with("no_such_dir/leaf.txt"),
-        "non-existing tail must be appended onto the canonical ancestor: {normalized}"
+        s.ends_with("no_such_dir\\leaf.txt") || s.ends_with("no_such_dir/leaf.txt"),
+        "non-existing tail must be appended onto the canonical ancestor: {s}"
     );
 
     // 3. Absent drive (Z: not mounted on this host): walk-up hits the root
-    //    without any existing component -> original path returned unchanged.
+    //    without any existing component -> lexical normalization fallback
+    //    (input has no `.`/`..`, so unchanged).
     let absent = Path::new("Z:\\w4a\\never\\exists.txt");
     if !Path::new("Z:\\").exists() {
-        assert_eq!(resolve_existing_ancestor(absent), absent.to_path_buf());
+        assert_eq!(canonicalize_for_compare(absent), absent.to_path_buf());
     }
 }
 

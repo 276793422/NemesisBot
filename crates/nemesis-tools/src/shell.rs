@@ -6,6 +6,7 @@
 use crate::registry::Tool;
 use crate::types::ToolResult;
 use async_trait::async_trait;
+use nemesis_path::paths::canonicalize_for_compare;
 use regex::Regex;
 use std::path::PathBuf;
 use std::time::Duration;
@@ -495,14 +496,17 @@ impl Tool for ShellTool {
             Some(dir) => {
                 let p = PathBuf::from(dir);
                 if self.restrict {
-                    let ws = self.workspace.to_string_lossy();
                     let target = if p.is_absolute() {
                         p
                     } else {
                         self.workspace.join(&p)
                     };
-                    let target_str = target.to_string_lossy();
-                    if !target_str.starts_with(ws.as_ref()) {
+                    // 双侧统一归一化（nemesis-path 单一真相源）：组件级比较防
+                    // `C:\ws2` 前缀误判；workspace 侧归一化防 8.3 短名/大小写
+                    // 失配（CI RUNNER~1 家族，2026-09-01）。
+                    let resolved = canonicalize_for_compare(&target);
+                    let ws = canonicalize_for_compare(&self.workspace);
+                    if !resolved.starts_with(&ws) {
                         return ToolResult::error(&format!("cwd '{}' is outside workspace", dir));
                     }
                     target

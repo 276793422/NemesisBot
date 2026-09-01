@@ -3,54 +3,8 @@
 use crate::registry::Tool;
 use crate::types::ToolResult;
 use async_trait::async_trait;
+use nemesis_path::paths::canonicalize_for_compare;
 use std::path::{Path, PathBuf};
-
-/// Resolve symlinks by walking up from the path until we find an existing ancestor,
-/// then canonicalize that part and append the remaining components.
-/// Mirrors Go's `resolveExistingAncestor(path)` + `filepath.EvalSymlinks`.
-fn resolve_existing_ancestor(path: &Path) -> PathBuf {
-    // First try to canonicalize the full path (resolves all symlinks)
-    if path.exists()
-        && let Ok(canonical) = std::fs::canonicalize(path) {
-            return canonical;
-        }
-
-    // Walk up to find the deepest existing ancestor
-    let mut ancestors = Vec::new();
-    let mut current = path.to_path_buf();
-    while !current.exists() {
-        if let Some(parent) = current.parent() {
-            ancestors.push(current.file_name().map(PathBuf::from));
-            current = parent.to_path_buf();
-        } else {
-            // Reached root without finding existing path
-            return path.to_path_buf();
-        }
-    }
-
-    // Canonicalize the existing ancestor
-    let base = match std::fs::canonicalize(&current) {
-        Ok(c) => c,
-        Err(_) => return path.to_path_buf(),
-    };
-
-    // Append non-existing components back
-    let mut result = base;
-    for name in ancestors.into_iter().rev().flatten() {
-        result = result.join(name);
-    }
-
-    result
-}
-
-/// Normalize a path for comparison purposes. Strips the Windows `\\?\` prefix
-/// that `canonicalize` may return.
-fn normalize_for_comparison(path: &Path) -> String {
-    let s = path.to_string_lossy().to_string();
-    // On Windows, canonicalize may return \\?\C:\... prefix
-    // Strip the \\?\ prefix (ASCII, so byte-slicing was safe; strip_prefix is clearer).
-    s.strip_prefix(r"\\?\").unwrap_or(&s).to_string()
-}
 
 /// File read tool.
 pub struct ReadFileTool {
@@ -75,12 +29,14 @@ impl ReadFileTool {
         };
 
         if self.restrict {
-            // Resolve symlinks to prevent symlink escape attacks.
-            // Mirrors Go's resolveExistingAncestor + filepath.EvalSymlinks.
-            let resolved = resolve_existing_ancestor(&canonical);
-            let workspace_str = normalize_for_comparison(&self.workspace);
-            let resolved_str = normalize_for_comparison(&resolved);
-            if !resolved_str.starts_with(&*workspace_str) {
+            // 双侧统一归一化（nemesis-path 单一真相源）：target 侧 resolve 防
+            // symlink escape；workspace 侧同步 canonicalize，防 Windows 8.3
+            // 短名失配（CI runner 的 TEMP 是 C:\Users\RUNNER~1\...，target 经
+            // canonicalize 成长名后与原始短名串永不相等 → 误拒，2026-09-01）。
+            // Path::starts_with 为组件级比较。
+            let resolved = canonicalize_for_compare(&canonical);
+            let ws = canonicalize_for_compare(&self.workspace);
+            if !resolved.starts_with(&ws) {
                 return Err(format!("path '{}' is outside workspace", path));
             }
         }
@@ -146,10 +102,12 @@ impl WriteFileTool {
         };
 
         if self.restrict {
-            let resolved = resolve_existing_ancestor(&canonical);
-            let workspace_str = normalize_for_comparison(&self.workspace);
-            let resolved_str = normalize_for_comparison(&resolved);
-            if !resolved_str.starts_with(&*workspace_str) {
+            // 双侧统一归一化（nemesis-path 单一真相源）：target 侧 resolve 防
+            // symlink escape；workspace 侧同步 canonicalize，防 Windows 8.3
+            // 短名失配误拒（CI RUNNER~1 家族，2026-09-01）。
+            let resolved = canonicalize_for_compare(&canonical);
+            let ws = canonicalize_for_compare(&self.workspace);
+            if !resolved.starts_with(&ws) {
                 return Err(format!(
                     "access denied: path '{}' is outside the workspace",
                     path
@@ -348,10 +306,12 @@ impl CreateDirectoryTool {
         };
 
         if self.restrict {
-            let resolved = resolve_existing_ancestor(&canonical);
-            let workspace_str = normalize_for_comparison(&self.workspace);
-            let resolved_str = normalize_for_comparison(&resolved);
-            if !resolved_str.starts_with(&*workspace_str) {
+            // 双侧统一归一化（nemesis-path 单一真相源）：target 侧 resolve 防
+            // symlink escape；workspace 侧同步 canonicalize，防 Windows 8.3
+            // 短名失配误拒（CI RUNNER~1 家族，2026-09-01）。
+            let resolved = canonicalize_for_compare(&canonical);
+            let ws = canonicalize_for_compare(&self.workspace);
+            if !resolved.starts_with(&ws) {
                 return Err(format!(
                     "access denied: path '{}' is outside the workspace",
                     path
@@ -422,10 +382,12 @@ impl DeleteFileTool {
         };
 
         if self.restrict {
-            let resolved = resolve_existing_ancestor(&canonical);
-            let workspace_str = normalize_for_comparison(&self.workspace);
-            let resolved_str = normalize_for_comparison(&resolved);
-            if !resolved_str.starts_with(&*workspace_str) {
+            // 双侧统一归一化（nemesis-path 单一真相源）：target 侧 resolve 防
+            // symlink escape；workspace 侧同步 canonicalize，防 Windows 8.3
+            // 短名失配误拒（CI RUNNER~1 家族，2026-09-01）。
+            let resolved = canonicalize_for_compare(&canonical);
+            let ws = canonicalize_for_compare(&self.workspace);
+            if !resolved.starts_with(&ws) {
                 return Err(format!(
                     "access denied: path '{}' is outside the workspace",
                     path
@@ -526,11 +488,14 @@ impl Tool for DeleteDirTool {
             self.workspace.join(path)
         };
 
-        // Validate path is within workspace if restricted
+        // Validate path is within workspace if restricted.
+        // 双侧统一归一化（nemesis-path 单一真相源）：顺带补上此前缺失的
+        // symlink resolve（本工具原先两侧都不解析），并防 8.3 短名失配
+        // （CI RUNNER~1 家族，2026-09-01）。
         if self.restrict {
-            let ws = normalize_for_comparison(&self.workspace);
-            let target_str = normalize_for_comparison(&target);
-            if !target_str.starts_with(&*ws) {
+            let resolved = canonicalize_for_compare(&target);
+            let ws = canonicalize_for_compare(&self.workspace);
+            if !resolved.starts_with(&ws) {
                 return ToolResult::error(&format!("path '{}' is outside workspace", path));
             }
         }

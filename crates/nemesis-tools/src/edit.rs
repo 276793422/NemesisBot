@@ -3,6 +3,7 @@
 use crate::registry::Tool;
 use crate::types::ToolResult;
 use async_trait::async_trait;
+use nemesis_path::paths::canonicalize_for_compare;
 use std::path::{Path, PathBuf};
 
 /// Edit file tool - replaces exact text occurrences in a file.
@@ -29,9 +30,12 @@ impl EditFileTool {
         };
 
         if self.restrict {
-            let ws = self.workspace.to_string_lossy();
-            let res = resolved.to_string_lossy();
-            if !res.starts_with(ws.as_ref()) {
+            // 双侧统一归一化（nemesis-path 单一真相源）：补 symlink resolve
+            // 防护 + 组件级比较防 `C:\ws2` 前缀误判 + workspace 侧归一化防
+            // 8.3 短名/大小写失配（CI RUNNER~1 家族，2026-09-01）。
+            let resolved = canonicalize_for_compare(&resolved);
+            let ws = canonicalize_for_compare(&self.workspace);
+            if !resolved.starts_with(&ws) {
                 return Err(format!("path '{}' is outside workspace", path));
             }
         }
@@ -139,9 +143,12 @@ impl AppendFileTool {
         };
 
         if self.restrict {
-            let ws = self.workspace.to_string_lossy();
-            let res = resolved.to_string_lossy();
-            if !res.starts_with(ws.as_ref()) {
+            // 双侧统一归一化（nemesis-path 单一真相源）：补 symlink resolve
+            // 防护 + 组件级比较防 `C:\ws2` 前缀误判 + workspace 侧归一化防
+            // 8.3 短名/大小写失配（CI RUNNER~1 家族，2026-09-01）。
+            let resolved = canonicalize_for_compare(&resolved);
+            let ws = canonicalize_for_compare(&self.workspace);
+            if !resolved.starts_with(&ws) {
                 return Err(format!("path '{}' is outside workspace", path));
             }
         }

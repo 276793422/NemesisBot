@@ -51,13 +51,16 @@ async fn run_script_tool_executes_cmd_echo() {
 async fn run_script_tool_restrict_blocks_outside_cwd() {
     let ws = tempfile::tempdir().unwrap();
     let t = super::RunScriptTool::new(ws.path().to_str().unwrap(), true);
-    let err = t
-        .execute(
-            r#"{"interpreter":"cmd","script":"echo x","cwd":"C:/Windows"}"#,
-            &ctx(),
-        )
-        .await
-        .unwrap_err();
+    // 越界路径必须用当前平台的真实形态（2026-09-01 远端首跑暴露）：
+    // `C:/Windows` 在 Linux 不是绝对路径——restrict 检查 join workspace 后
+    // 落回 ws 内被放行是正确行为（相对 cwd 语义与 ExecTool 一致），脚本
+    // 随后 ENOENT 而非 Access denied。Linux 用真实绝对路径 /etc。
+    let outside_cwd = if cfg!(windows) { "C:/Windows" } else { "/etc" };
+    let args = format!(
+        r#"{{"interpreter":"cmd","script":"echo x","cwd":"{}"}}"#,
+        outside_cwd
+    );
+    let err = t.execute(&args, &ctx()).await.unwrap_err();
     assert!(err.contains("outside workspace"), "got: {}", err);
 }
 
