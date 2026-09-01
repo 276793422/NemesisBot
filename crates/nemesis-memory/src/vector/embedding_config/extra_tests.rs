@@ -370,6 +370,15 @@ fn test_download_model_files_finds_existing_in_config_dir() {
     std::fs::write(cfg_dir.join("model.onnx"), b"existing").unwrap();
 
     let mut cfg = EmbeddingConfig::default();
+    // URL 置空保证零网络：model.onnx 已在本地，model 分支直接命中（不看
+    // model_url）；tokenizer.json 缺失 + tokenizer_url 空 → 实现走静默跳过
+    // 分支。默认 URL 是 hf-mirror 真网——打真网的测试在 CI 限流下 429 假红、
+    // 本机网络好时真下载成功假绿（2026-09-01 CI 事故）。
+    {
+        let mc = cfg.models.get_mut("medium").unwrap();
+        mc.model_url = String::new();
+        mc.tokenizer_url = String::new();
+    }
     let (resolved, dim) = download_model_files(&mut cfg, &cfg_dir).unwrap();
     assert_eq!(dim, 384);
     assert_eq!(Path::new(&resolved), &cfg_dir);
@@ -411,6 +420,15 @@ fn test_download_model_files_with_local_model_path_no_download() {
 
     let mut cfg = EmbeddingConfig::default();
     cfg.models.medium.local_model_path = local_dir.join("model.onnx").to_string_lossy().to_string();
+    // URL 置空保证零网络：local_model_path 命中后 model 分支不看 model_url；
+    // tokenizer.json 缺失 + tokenizer_url 空 → 走静默跳过分支。旧版这里只放
+    // model.onnx、留默认 hf-mirror URL——CI 被限流 429 假红/本机下载成功假
+    // 绿（2026-09-01 CI 事故）。
+    {
+        let mc = cfg.models.get_mut("medium").unwrap();
+        mc.model_url = String::new();
+        mc.tokenizer_url = String::new();
+    }
     let (resolved, _) = download_model_files(&mut cfg, cfg_dir.path()).unwrap();
     // No download → local_model_path unchanged.
     assert!(cfg.models.medium.local_model_path.ends_with("model.onnx"));

@@ -42,7 +42,10 @@ pub(super) fn spawn_http_server(responses: Vec<(&'static str, &'static str)>) ->
 }
 
 /// Find a free port and abandon it (for the connection-refused arm).
-fn find_dead_port() -> u16 {
+/// `pub(super)` 供兄弟测试模块（extra_tests 等）复用：任何可能触发下载的
+/// 测试都应把 URL 指到死端口——默认 URL 是 hf-mirror 真网，CI runner 被
+/// 限流时 429 假红、本机网络好时真下载成功假绿（2026-09-01 CI 事故）。
+pub(super) fn find_dead_port() -> u16 {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();
     drop(listener);
