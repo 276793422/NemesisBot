@@ -752,23 +752,34 @@ async fn download_engine(url: &str, target_dir: &std::path::Path) -> Result<Stri
                         archive_path.display(),
                         target_dir.display()
                     );
-                    let ps_output = std::process::Command::new("powershell")
+                    // PS 5.1 对坏 zip 的 quirk：异常进 error 流但进程 rc=0
+                    // （2026-09-02 前手工实证；vs2026 CI 镜像起已改非零退出）
+                    // → 退出码不可信，以「目标目录真被解压出内容」为成功判据
+                    //（归档本身也落在 target_dir 里，必须排除）：
+                    // 静默失败时保留归档走失败分支（用户才有手工解压的退路），
+                    // 而不是删掉归档留下一头雾水。
+                    let ps_extracted = match std::process::Command::new("powershell")
                         .raw_arg(format!("-NoProfile -Command {}", ps_cmd))
-                        .output();
-                    match ps_output {
-                        Ok(o) if o.status.success() => {
-                            let _ = std::fs::remove_file(&archive_path);
-                            target_dir.to_string_lossy().to_string()
-                        }
-                        _ => {
-                            // Leave as-is, user can extract manually
-                            println!(
-                                "    Could not auto-extract. Archive at: {}",
-                                archive_path.display()
-                            );
-                            target_dir.to_string_lossy().to_string()
-                        }
+                        .output()
+                    {
+                        Ok(o) if o.status.success() => std::fs::read_dir(target_dir)
+                            .map(|rd| {
+                                rd.filter_map(Result::ok)
+                                    .any(|e| e.path() != archive_path)
+                            })
+                            .unwrap_or(false),
+                        _ => false,
+                    };
+                    if ps_extracted {
+                        let _ = std::fs::remove_file(&archive_path);
+                    } else {
+                        // Leave as-is, user can extract manually
+                        println!(
+                            "    Could not auto-extract. Archive at: {}",
+                            archive_path.display()
+                        );
                     }
+                    target_dir.to_string_lossy().to_string()
                 }
                 #[cfg(not(target_os = "windows"))]
                 {

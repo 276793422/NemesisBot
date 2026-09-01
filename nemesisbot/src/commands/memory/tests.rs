@@ -377,6 +377,11 @@ fn test_cmd_disable_no_enhanced_memory_config_creates_it_off() {
 
 #[tokio::test]
 async fn test_cmd_enable_bails_without_plugin_and_writes_no_config() {
+    // 必须持锁：r7_enable_success_chain 的哑 DLL 测试也持 GLOBAL_STATE_LOCK
+    // 串行化（模块头注释的契约）——否则并行调度撞进哑 DLL 存活窗口，本测试
+    // 的「插件必不在场」前提被击穿 → cmd_enable 返回 Ok → expect_err 假红
+    // （2026-09-02 本地全量实测一次，solo 恒绿）。
+    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
     let (_tmp, home) = setup_home(&serde_json::json!({"memory": {"enabled": false}}));
     let err = cmd_enable(&home).await.expect_err("无插件 → bail");
     assert!(err.to_string().contains("Plugin"), "got: {err:#}");

@@ -3623,9 +3623,12 @@ variables: {}
 
     /// in-process 版（S11d 结构豁免先例）：测试先占住 web 目标端口，网关线程
     /// 里 bind 走查（`bind_with_port_walk`，2026-08-30 语义：带外线性向上）
-    /// 落到邻端口 busy+1 成功 serve → bound_tx Ok(walked) → state 写走查后
-    /// 端口。断言确定性来自「busy 全程被我持有且取带外端口」：走查序列
-    /// 第一尝试即 busy（失败），第二尝试 busy+1（空闲）必中，别无来路。
+    /// 落到某个空闲邻端口成功 serve → bound_tx Ok(walked) → state 写走查后
+    /// 端口。确定性边界：「busy 全程被我持有且取带外端口」保证落点必在
+    /// busy 之上；具体步数取决于环境端口占用，不可断言——2026-09-02 CI
+    /// vs2026 镜像 busy+1/+2 被占 → 实落 busy+3（35b092e 同族第二发：钉死
+    /// 步数的断言在拥挤镜像上必假红，生产行为本身正确）。步数语义的真相源
+    /// 在 nemesis-web `port_walk_sequence` 纯函数 + r4_tests。
     ///
     /// 2026-08-31 重写：旧「bind 冲突 → 回落写配置端口」前提在 35b092e 给
     /// bind 加 +1×20 重试、随后 port-walk 精化为带内回绕后失效（同族前提
@@ -3669,8 +3672,8 @@ variables: {}
             })
             .expect("spawn gateway thread");
 
-        // 就绪信号 = state 文件出现 web_port>0；本场景里它只能是走查落点
-        // busy+1（fallback 已不存在：walk 落到邻端口成功 serve）。
+        // 就绪信号 = state 文件出现 web_port>0；本场景里它必然是走查落点
+        // （fallback 已不存在：walk 落到空闲邻端口成功 serve），步数不定。
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
         let observed: u16 = loop {
             if let Ok(txt) = std::fs::read_to_string(&state_path)
@@ -3695,12 +3698,17 @@ variables: {}
         )
         .expect("state json");
         assert_eq!(final_state["web_host"], "127.0.0.1");
+        assert!(
+            final_state["web_port"]
+                .as_u64()
+                .is_some_and(|p| p > busy_port as u64),
+            "bind 冲突后走查必须落到 busy 之上的空闲端口；state={final_state}"
+        );
         assert_eq!(
             final_state["web_port"].as_u64(),
-            Some(busy_port as u64 + 1),
-            "端口被占用时走查落到邻端口 busy+1，state 必须如实写走查后端口"
+            Some(observed as u64),
+            "state 必须如实记录走查落点（与轮询首次观察到的一致）"
         );
-        assert_eq!(observed, busy_port + 1);
 
         // busy_holder 保活到断言结束（放在末尾抑制 unused 警告的真实用途注解）。
         drop(busy_holder);

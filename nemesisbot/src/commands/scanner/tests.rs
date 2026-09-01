@@ -1861,21 +1861,22 @@ async fn test_s11b_download_engine_non_archive_and_404() {
 }
 
 #[tokio::test]
-async fn test_s11b_download_engine_invalid_zip_expandarchive_rc0_quirk() {
+async fn test_s11b_download_engine_invalid_zip_keeps_archive_and_returns_target() {
     let tmp = tempfile::tempdir().unwrap();
     let target = tmp.path().join("dl");
     std::fs::create_dir_all(&target).unwrap();
-    // 坏 zip 在 Windows PowerShell 5.1 上的实际行为：Expand-Archive 把异常
-    // 写进 error 流但进程退出码仍是 0（手工实证）→ 代码当作“解压成功”→
-    // 删归档、返回 target。此处钉住该行为；“Could not auto-extract（归档
-    // 保留）”分支需要 Expand-Archive 非零退出，本机 PS 5.1 对坏 zip 不产
-    // 生，列为结构性豁免候选。
+    // 坏 zip 的跨环境确定性契约（2026-09-02 重写）：解压必失败 → 归档保留
+    // （"Could not auto-extract" 分支）+ 返回 target、不 Err。旧版钉的是
+    // PS 5.1 rc=0 quirk（异常进 error 流但退出码 0 → 代码误判成功删归档，
+    // 当时的本机手工实证）；vs2026 CI 镜像起 PS 已改为非零退出直接暴露该
+    // 分叉。生产改以「解压出内容」为成功判据后，rc=0（旧 PS）与非零
+    //（新 PS）两形态都收敛到保留分支，断言恢复环境无关。
     let url = s11b_serve("engine.zip", 200, b"definitely not a zip".to_vec(), 1);
     let dir = download_engine(&url, &target).await.unwrap();
     assert_eq!(std::path::Path::new(&dir), target.as_path());
     assert!(
-        !target.join("engine.zip").exists(),
-        "Expand-Archive rc=0 → 代码视为解压成功并删除归档"
+        target.join("engine.zip").exists(),
+        "坏 zip 解压失败 → 归档必须保留（用户手工解压的退路）"
     );
 }
 
