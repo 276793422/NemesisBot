@@ -108,6 +108,10 @@ fn resampler_new_succeeds_with_unusual_rates() {
 
 #[test]
 fn list_devices_enumerates_or_fails_cleanly() {
+    if ci_audio_unsafe() {
+        eprintln!("{CI_AUDIO_SKIP_MSG}");
+        return;
+    }
     // 有音频栈的机器：返回设备列表（输入在前、输出在后，索引连续）；
     // 无音频栈的 CI：允许 Err（host 构造失败），但绝不能 panic。
     match list_devices() {
@@ -126,12 +130,20 @@ fn list_devices_enumerates_or_fails_cleanly() {
 
 #[test]
 fn audio_capture_bogus_device_name_bails_without_opening_stream() {
+    if ci_audio_unsafe() {
+        eprintln!("{CI_AUDIO_SKIP_MSG}");
+        return;
+    }
     let err = format!("{:#}", AudioCapture::new("no-such-input-device-xyz").err().expect("must fail"));
     assert!(err.contains("Input device 'no-such-input-device-xyz' not found"), "{err}");
 }
 
 #[test]
 fn audio_playback_bogus_device_name_bails_without_opening_stream() {
+    if ci_audio_unsafe() {
+        eprintln!("{CI_AUDIO_SKIP_MSG}");
+        return;
+    }
     let err = format!(
         "{:#}",
         AudioPlayback::new("no-such-output-device-xyz", 16000, 1.0)
@@ -184,6 +196,12 @@ fn resampler_ratio_and_reset() {
 // 测试进程秒死。native AV 无法被 Rust panic 机制捕获，测试探针也无法
 // 预判（探针本身就要开流）——因此凡会打开**真实输出流**的测试一律走
 // [`hw_audio_enabled`] opt-in 闸（SKIP 约定：eprintln + return）。
+// 【2026-09-02 二轮修订】env 门控真流后 CI 二连崩：在飞集合移到
+// audio_capture_* / list_devices——**设备枚举/默认设备查询同样挂死+AV**，
+// 且行为随并发时序漂移（首轮枚举测试全过、二轮全卡）。崩溃面 = cpal WASAPI
+// 在 CI 虚拟音频栈上的任意 host 交互，测试层不可根治 → ci.yml 已
+// `--exclude nemesis-voice` 整体规避；本文件凡触碰 cpal host 的测试
+// （枚举 4 个 + 真流 3 个）另挂 [`ci_audio_unsafe`] CI 双保险闸。
 // ===========================================================================
 
 /// 真实音频硬件测试 opt-in 闸：`NEMESISBOT_VOICE_HW_TESTS=1` 时启用。
@@ -193,8 +211,23 @@ fn hw_audio_enabled() -> bool {
 
 const HW_AUDIO_SKIP_MSG: &str = "SKIP: 会打开真实输出流（cpal WASAPI 在 CI 虚拟音频设备上播放会 0xc0000005 崩进程，2026-09-01）— 补齐命令：设 NEMESISBOT_VOICE_HW_TESTS=1";
 
+/// CI 虚拟音频栈双保险闸（2026-09-01/09-02 二连崩）：二轮实证崩溃面不止
+/// 播放流——GitHub runner 上**设备枚举/默认设备查询**（input_devices /
+/// default_input_device）同样挂死 + native AV，且行为随并发时序漂移。
+/// ci.yml 已 `--exclude nemesis-voice` 整体规避；此闸是摘掉 exclude 后的
+/// 第二道防线：CI=true 且未 opt-in 时，凡触碰 cpal host 的测试一律 SKIP。
+fn ci_audio_unsafe() -> bool {
+    !hw_audio_enabled() && std::env::var("CI").is_ok_and(|v| v == "true")
+}
+
+const CI_AUDIO_SKIP_MSG: &str = "SKIP: 触碰 cpal 设备枚举/打开（GitHub runner 虚拟音频栈上 2026-09-01/09-02 二连崩实证连枚举都挂死+AV）— 补齐命令：设 NEMESISBOT_VOICE_HW_TESTS=1";
+
 #[test]
 fn audio_capture_default_device_opens_or_bails_cleanly() {
+    if ci_audio_unsafe() {
+        eprintln!("{CI_AUDIO_SKIP_MSG}");
+        return;
+    }
     match AudioCapture::new("") {
         Ok(cap) => {
             assert!(cap.sample_rate > 0, "sample_rate must be positive");
