@@ -390,6 +390,21 @@ async fn speakers_lists_kokoro_table() {
 
 #[tokio::test]
 async fn devices_tolerant_of_host_audio_stack() {
+    // 【2026-09-02 CI nemesis-web 0xc0000005】本测试与 voice_extra_tests 的
+    // devices_returns_object 同经 cmd_devices() 穿透调用
+    // nemesis_voice::audio::list_devices() → cpal host 设备枚举。本轮 CI 实证：
+    // 同进程内**第一次**枚举调用正常返回（本测试过），**第二次**调用挂死 +
+    // 进程 native ACCESS_VIOLATION（voice crate 二连崩同族雷，时序/状态依赖）。
+    // CI=true 且未 opt-in 时 SKIP（与 nemesis-voice audio::tests 的
+    // ci_audio_unsafe 同语义；穿透面双测试同闸，防下次时序漂移换一个挂）。
+    if !std::env::var("NEMESISBOT_VOICE_HW_TESTS").is_ok_and(|v| v == "1")
+        && std::env::var("CI").is_ok_and(|v| v == "true")
+    {
+        eprintln!(
+            "SKIP: 经 cmd_devices 穿透 cpal 设备枚举（GitHub runner 虚拟音频栈 native AV，2026-09-02）— 补齐命令：设 NEMESISBOT_VOICE_HW_TESTS=1"
+        );
+        return;
+    }
     // list_devices 走宿主音频栈枚举：无断言具体硬件，只断言两种合法出口之一。
     let dir = tempfile::tempdir().unwrap();
     let ctx = make_ctx(&dir);

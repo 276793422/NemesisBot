@@ -124,18 +124,16 @@ jobs:
           rm -rf ../crates/nemesis-web/static/assets
           npm run build
 
-      # ⚠️ nemesis-voice 排除（2026-09-01/09-02 二连崩，规避决定）：cpal 0.15
-      # WASAPI 后端在 GitHub runner 的虚拟音频栈上会 native ACCESS_VIOLATION
-      # （0xc0000005）秒杀整个测试进程——首轮是输出流播放（audio_playback_*），
-      # 测试内 env 门控真流后，二轮连**设备枚举/默认设备查询**（audio_capture_*、
-      # list_devices）都挂死 + AV，且行为随并发时序漂移。native AV 不可捕获、
-      # 无日志现场、无法在真音频硬件的本地机器复现 → 只能整体规避。
-      # voice 测试的验证路径：本地 Windows 真机 + 远端 Linux（`cargo test -p
-      # nemesis-voice --lib`，两处常绿）；真实音频流/loopback 测试需
-      # NEMESISBOT_VOICE_HW_TESTS=1 opt-in（测试内另有 CI=true 双保险 SKIP 闸）。
-      # 重新评估条件：cpal 升级大版本 / runner 音频栈变化时，摘掉 --exclude 试跑。
-      - name: cargo test --workspace (excluding nemesis-voice)
-        run: cargo test --workspace --exclude nemesis-voice
+      # 【历史事故记录 2026-09-01/09-02 三连崩 → 已恢复全量】cpal 0.15 WASAPI
+      # 后端在 GitHub runner 虚拟音频栈上会 native ACCESS_VIOLATION（0xc0000005）
+      # 秒杀测试进程：①voice 播放流 → ②voice 设备枚举 → ③web 穿透调用
+      # （cmd_devices → nemesis_voice::audio::list_devices，同进程首次枚举正常、
+      # 二次挂死）。排查确认全部雷点后已恢复 --workspace 全量，防线改为测试内
+      # CI=true 双保险 SKIP 闸（凡触碰 cpal 的测试：voice 8 个 + web 穿透 2 个，
+      # 设 NEMESISBOT_VOICE_HW_TESTS=1 可在 CI opt-in）。
+      # ⚠️ 新增触碰 cpal/音频设备的测试必须挂同款闸，否则 CI 必崩。
+      - name: cargo test --workspace
+        run: cargo test --workspace
 
   frontend:
     name: Frontend typecheck + vitest + build (Linux)
