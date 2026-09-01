@@ -176,7 +176,22 @@ fn resampler_ratio_and_reset() {
 // R6（2026-08-27）：默认设备路径——机器态守卫式（Ok/Err 双收）
 // 有音频硬件的机器覆盖完整臂；无硬件的机器覆盖 default_device bail 臂。
 // 播放全部 gain=0.0（静音）；采集开即弃（不消费数据）。
+//
+// 【2026-09-01 CI 0xc0000005 事故】GitHub windows-2025 runner **有虚拟输出
+// endpoint、无输入设备**（capture 测试 400ms sleep 臂在 <10ms 内完成 =
+// bail；play_blocking 在飞未归 = 真开了流）。cpal 0.15 WASAPI 后端在其
+// 虚拟输出设备上打开/播放输出流时音频线程原生层 ACCESS_VIOLATION，整个
+// 测试进程秒死。native AV 无法被 Rust panic 机制捕获，测试探针也无法
+// 预判（探针本身就要开流）——因此凡会打开**真实输出流**的测试一律走
+// [`hw_audio_enabled`] opt-in 闸（SKIP 约定：eprintln + return）。
 // ===========================================================================
+
+/// 真实音频硬件测试 opt-in 闸：`NEMESISBOT_VOICE_HW_TESTS=1` 时启用。
+fn hw_audio_enabled() -> bool {
+    std::env::var("NEMESISBOT_VOICE_HW_TESTS").is_ok_and(|v| v == "1")
+}
+
+const HW_AUDIO_SKIP_MSG: &str = "SKIP: 会打开真实输出流（cpal WASAPI 在 CI 虚拟音频设备上播放会 0xc0000005 崩进程，2026-09-01）— 补齐命令：设 NEMESISBOT_VOICE_HW_TESTS=1";
 
 #[test]
 fn audio_capture_default_device_opens_or_bails_cleanly() {
@@ -204,6 +219,10 @@ fn audio_capture_default_device_opens_or_bails_cleanly() {
 
 #[test]
 fn audio_playback_default_device_opens_or_bails_cleanly() {
+    if !hw_audio_enabled() {
+        eprintln!("{HW_AUDIO_SKIP_MSG}");
+        return;
+    }
     match AudioPlayback::new("", 16000, 0.0) {
         Ok(pb) => {
             assert!(pb.sample_rate > 0, "device sample_rate must be positive");
@@ -219,6 +238,10 @@ fn audio_playback_default_device_opens_or_bails_cleanly() {
 
 #[test]
 fn audio_playback_play_blocking_resamples_and_drains() {
+    if !hw_audio_enabled() {
+        eprintln!("{HW_AUDIO_SKIP_MSG}");
+        return;
+    }
     // 22050 输入率：Windows shared-mode 设备率是 44100/48000，几乎必然走
     // 重采样臂；增益 0.0 → 放的是静音，不打扰人。短缓冲（~72ms）控制时长。
     let pb = match AudioPlayback::new("", 22050, 0.0) {
@@ -238,6 +261,10 @@ fn audio_playback_play_blocking_resamples_and_drains() {
 
 #[test]
 fn audio_playback_stop_clears_pending_queue() {
+    if !hw_audio_enabled() {
+        eprintln!("{HW_AUDIO_SKIP_MSG}");
+        return;
+    }
     let pb = match AudioPlayback::new("", 16000, 0.0) {
         Ok(pb) => pb,
         Err(_) => return,

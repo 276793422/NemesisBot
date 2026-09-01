@@ -4,12 +4,23 @@
 //! R6 增补真线程生命周期测试（start → spawn → stop → 线程自清 slot）。
 //!
 //! 结构性豁免：`run_loopback_inner` 的 WASAPI 深层（真 Render 设备 loopback
-//! capture 流 + bytes→mono 降混 + far_end 灌入）——真声卡硬件。真线程测试
-//! 在有声卡机器上会走到事件循环（100ms 周期），无声卡机器走 Err 早退，
-//! 两种机器态都只断言 slot 生命周期（对两条路径都成立）。
+//! capture 流 + bytes→mono 降混 + far_end 灌入）——真声卡硬件。
+//!
+//! 【2026-09-01 CI 0xc0000005 事故修订】下方真线程测试原注释假设「无声卡
+//! 机器走 get_default_device Err 早退」，但 GitHub windows-2025 runner
+//! **有虚拟输出 endpoint**（cpal 侧 audio 播放测试已实证）：真线程测试会
+//! 在其上走完整 WASAPI loopback capture 路径，同 cpal 播放一样有原生层
+//! ACCESS_VIOLATION 秒杀进程的风险（native AV 不可捕获、不可预判）。
+//! 故该测试改为 `NEMESISBOT_VOICE_HW_TESTS=1` opt-in（SKIP 约定：
+//! eprintln + return），与 audio::tests 的真实输出流测试同一把闸。
 
 use super::*;
 use std::sync::atomic::AtomicBool;
+
+/// 真实音频硬件测试 opt-in 闸（与 audio::tests 同约定）。
+fn hw_audio_enabled() -> bool {
+    std::env::var("NEMESISBOT_VOICE_HW_TESTS").is_ok_and(|v| v == "1")
+}
 
 /// 所有触碰 loopback_slot 全局态的测试必须先拿这把锁串行（同二进制并行默认）。
 /// 已有测试预置 slot、新测试真启动线程——并行会互相踩（早退/清 slot 竞争）。
@@ -49,6 +60,12 @@ fn start_loopback_already_running_returns_early_without_spawning() {
 
 #[test]
 fn start_loopback_spawns_thread_and_stop_clears_slot() {
+    if !hw_audio_enabled() {
+        eprintln!(
+            "SKIP: 会启动真实 WASAPI loopback 采集线程（CI 虚拟输出设备上有 0xc0000005 崩进程风险，2026-09-01）— 补齐命令：设 NEMESISBOT_VOICE_HW_TESTS=1"
+        );
+        return;
+    }
     // R6：真线程生命周期。start → spawn 成功则 slot=Some(flag)；
     // run_loopback 结束（有声卡：stop 置位后事件循环 ≤100ms 退出；
     // 无声卡：get_default_device Err 早退）后线程把 slot 清回 None。
