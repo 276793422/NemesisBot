@@ -178,7 +178,10 @@ async fn extract_release_with_cached_7z_propagates_extraction_error() {
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(
             seven_zip_dir.join("7z.exe"),
-            std::os::unix::fs::Permissions::from_mode(0o755),
+            // `Permissions` struct lives in std::fs; `from_mode` comes from
+            // the PermissionsExt trait imported above. (The re-export under
+            // std::os::unix::fs is private — E0603 on Linux.)
+            std::fs::Permissions::from_mode(0o755),
         )
         .unwrap();
     }

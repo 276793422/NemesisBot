@@ -36,40 +36,23 @@ pkg_root_of() {
   return 1
 }
 
-# 列出某 package Cargo.toml 中 [[test]] 声明的 path（相对 package 根，posix 化）
+# 列出某 package Cargo.toml 中 [[test]] 声明的 path（相对 package 根，posix 化）。
+# 用 POSIX sed 而非 awk：gawk 的三参数 match() 在 Ubuntu 默认的 mawk 上是
+# 语法错误（2>/dev/null 会把报错吞掉 → 白名单静默失效 → 全部误报）。
+# 结束模式用 \[[^[]（单括号节头）而非 \[：否则前一个 [[test]] 块的范围会
+# 终止在下一个 [[test]] 头行上（sed 终止行不能再开启新范围 → 每逢双数块
+# 整个丢失）。连续多个 [[test]] 块由一个范围覆盖，与原 awk 语义一致。
 declared_test_paths() {
-  awk '
-    /^\s*\[\[test\]\]/ { in_test = 1; next }
-    /^\s*\[/ { in_test = 0; next }
-    in_test && match($0, /^\s*path\s*=\s*"([^"]+)"/, m) { print m[1] }
-  ' "$1/Cargo.toml" 2>/dev/null | tr '\\' '/'
+  sed -n '/^[[:space:]]*\[\[test\]\]/,/^[[:space:]]*\[[^[]/{
+    s/^[[:space:]]*path[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p
+  }' "$1/Cargo.toml" 2>/dev/null | tr '\\' '/'
 }
 
-# 缓存：pkg_root -> 换行分隔的绝对路径集
-PKG_TESTS_CACHE_KEYS=""
-PKG_TESTS_CACHE_VALS=""
-
 is_declared_test_target() {
-  local f="$1" root; root="$(pkg_root_of "$f")" || return 1
-  local i key="" idx=-1
-  # 查缓存
-  i=0
-  while IFS=$'\t' read -r k; do
-    [ -z "$k" ] && continue
-    i=$((i+1))
-    if [ "$k" = "$root" ]; then idx=$((i-1)); break; fi
-  done <<< "$PKG_TESTS_CACHE_KEYS"
-  local paths=""
-  if [ "$idx" -ge 0 ]; then
-    paths="$(printf '%s\n' "$PKG_TESTS_CACHE_VALS" | sed -n "$((idx+1))p")"
-  else
-    paths="$(declared_test_paths "$root")"
-    PKG_TESTS_CACHE_KEYS="${PKG_TESTS_CACHE_KEYS}${root}"$'\t'
-    PKG_TESTS_CACHE_VALS="${PKG_TESTS_CACHE_VALS}${paths%$'\n'}"$'\n'
-  fi
-  [ -z "$paths" ] && return 1
+  local f="$1" root
+  root="$(pkg_root_of "$f")" || return 1
   local rel="${f#"$root"/}"
-  printf '%s\n' "$paths" | grep -qx "$rel"
+  declared_test_paths "$root" | grep -qx "$rel"
 }
 
 scan_one() {

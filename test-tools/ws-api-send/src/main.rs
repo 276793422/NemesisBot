@@ -108,12 +108,12 @@ async fn main() -> Result<()> {
                             "response" => {
                                 let rid = resp.get("reqId").and_then(|v| v.as_str()).unwrap_or("");
                                 if rid != req_id { continue; }
-                                if let Some(err) = resp.get("error") {
-                                    if !err.is_null() {
-                                        eprintln!("ERROR {}", serde_json::to_string(err).unwrap_or_default());
-                                        exit_code = 1;
-                                        break;
-                                    }
+                                if let Some(err) = resp.get("error")
+                                    && !err.is_null()
+                                {
+                                    eprintln!("ERROR {}", serde_json::to_string(err).unwrap_or_default());
+                                    exit_code = 1;
+                                    break;
                                 }
                                 println!("{}", serde_json::to_string_pretty(
                                     resp.get("data").unwrap_or(&serde_json::Value::Null)

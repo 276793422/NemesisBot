@@ -782,12 +782,9 @@ fn w4c_write_bat(name: &str, body: &str) -> std::path::PathBuf {
 }
 
 /// BUG #10 回归：input EXE 输出的每一行必须作为 InboundMessage 发布到 bus。
+#[cfg(target_os = "windows")]
 #[tokio::test]
 async fn test_w4c_external_input_publishes_to_bus() {
-    if !cfg!(target_os = "windows") {
-        eprintln!("Skipping: windows-only .bat fixture");
-        return;
-    }
     let in_bat = w4c_write_bat("w4c_ext_in", "@echo off\r\necho hello-from-input\r\n");
     let out_bat = w4c_write_bat("w4c_ext_out", "@echo off\r\n");
 
@@ -817,12 +814,9 @@ async fn test_w4c_external_input_publishes_to_bus() {
 }
 
 /// 允许列表不含 chat_id → 行被拦（不发布）。
+#[cfg(target_os = "windows")]
 #[tokio::test]
 async fn test_w4c_external_input_allow_list_blocks() {
-    if !cfg!(target_os = "windows") {
-        eprintln!("Skipping: windows-only .bat fixture");
-        return;
-    }
     let in_bat = w4c_write_bat("w4c_ext_in_block", "@echo off\r\necho blocked-line\r\n");
     let out_bat = w4c_write_bat("w4c_ext_out_block", "@echo off\r\n");
 
@@ -849,11 +843,15 @@ async fn test_w4c_external_input_allow_list_blocks() {
 }
 
 /// 简单桩通道：记录 send() 到的内容（用于验证 sync_to_targets 联动）。
+// Only the windows-gated sync test below constructs it; gate with the same
+// cfg so other targets don't see it as dead code (Linux CI clippy -D warnings).
+#[cfg(target_os = "windows")]
 struct W4cSyncStub {
     name: String,
     received: Arc<parking_lot::RwLock<Vec<String>>>,
 }
 
+#[cfg(target_os = "windows")]
 #[async_trait]
 impl Channel for W4cSyncStub {
     fn name(&self) -> &str {
@@ -875,12 +873,9 @@ impl Channel for W4cSyncStub {
 }
 
 /// input EXE 行发布到 bus 的同时必须转发到已注册的 sync target（Go SyncToTargets 对齐）。
+#[cfg(target_os = "windows")]
 #[tokio::test]
 async fn test_w4c_external_input_syncs_to_targets() {
-    if !cfg!(target_os = "windows") {
-        eprintln!("Skipping: windows-only .bat fixture");
-        return;
-    }
     let in_bat = w4c_write_bat("w4c_ext_in_sync", "@echo off\r\necho sync-me\r\n");
     let out_bat = w4c_write_bat("w4c_ext_out_sync", "@echo off\r\n");
 
@@ -919,12 +914,9 @@ async fn test_w4c_external_input_syncs_to_targets() {
 }
 
 /// send() 真正把内容写进 output EXE 的 stdin（批处理读一行并落盘验证）。
+#[cfg(target_os = "windows")]
 #[tokio::test]
 async fn test_w4c_external_send_writes_to_output_exe_stdin() {
-    if !cfg!(target_os = "windows") {
-        eprintln!("Skipping: windows-only .bat fixture");
-        return;
-    }
     let in_bat = w4c_write_bat("w4c_ext_in_send", "@echo off\r\n");
     let proof = std::env::temp_dir().join(format!("w4c_ext_proof_{}.txt", std::process::id()));
     let _ = std::fs::remove_file(&proof);
@@ -973,12 +965,9 @@ async fn test_w4c_external_send_writes_to_output_exe_stdin() {
 }
 
 /// 长驻 input EXE（stdout 无输出）→ stop() 走 cancel 臂杀进程，不挂起。
+#[cfg(target_os = "windows")]
 #[tokio::test]
 async fn test_w4c_external_stop_cancels_long_running_input() {
-    if !cfg!(target_os = "windows") {
-        eprintln!("Skipping: windows-only .bat fixture");
-        return;
-    }
     let in_bat = w4c_write_bat("w4c_ext_in_hang", "@echo off\r\nping -n 60 127.0.0.1 > nul\r\n");
     let out_bat = w4c_write_bat("w4c_ext_out_hang", "@echo off\r\n");
 
@@ -1009,12 +998,9 @@ async fn test_w4c_external_stop_cancels_long_running_input() {
 
 /// Input EXE emits a line but the bus has zero receivers -> `bus_sender.send`
 /// returns Err and the warn arm fires (line is still consumed, no panic).
+#[cfg(target_os = "windows")]
 #[tokio::test]
 async fn s2_external_input_publish_with_no_bus_receivers_logs_warn() {
-    if !cfg!(target_os = "windows") {
-        eprintln!("Skipping: windows-only .bat fixture");
-        return;
-    }
     let in_bat = w4c_write_bat("s2_ext_in_norx", "@echo off\r\necho orphan-line\r\n");
     let out_bat = w4c_write_bat("s2_ext_out_norx", "@echo off\r\n");
 
@@ -1039,12 +1025,9 @@ async fn s2_external_input_publish_with_no_bus_receivers_logs_warn() {
 
 /// Input EXE prints an empty line -> `trimmed.is_empty()` edge: line is
 /// skipped (no publish) and the loop continues via `line.clear()`.
+#[cfg(target_os = "windows")]
 #[tokio::test]
 async fn s2_external_input_empty_line_is_skipped() {
-    if !cfg!(target_os = "windows") {
-        eprintln!("Skipping: windows-only .bat fixture");
-        return;
-    }
     // `echo.` prints exactly one empty line.
     let in_bat = w4c_write_bat("s2_ext_in_empty", "@echo off\r\n@echo.\r\n");
     let out_bat = w4c_write_bat("s2_ext_out_empty", "@echo off\r\n");
@@ -1086,12 +1069,9 @@ async fn s2_external_trait_is_running_call() {
 /// Output EXE exits immediately without reading stdin; a payload larger than
 /// the OS pipe buffer then fails `write_all` (broken pipe) and the error arm
 /// fires. send() itself stays Ok (the write happens in a spawned task).
+#[cfg(target_os = "windows")]
 #[tokio::test]
 async fn s2_external_send_broken_pipe_on_output_exe_logs_error() {
-    if !cfg!(target_os = "windows") {
-        eprintln!("Skipping: windows-only .bat fixture");
-        return;
-    }
     let in_bat = w4c_write_bat("s2_ext_in_pipe", "@echo off\r\n");
     // `exit` closes stdin reader side immediately.
     let out_bat = w4c_write_bat("s2_ext_out_pipe", "@exit\r\n");

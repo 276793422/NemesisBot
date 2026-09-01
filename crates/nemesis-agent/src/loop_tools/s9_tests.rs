@@ -8,15 +8,20 @@
 //!   环境注意：PATH 操纵在本文件静态锁内完成并立即还原；查询名全局唯一，
 //!   与其他并行测试（spawn `where`）不冲突。
 
+// Only the windows-gated tests below use these; gate them with the same cfg
+// so other targets don't see them as dead code (Linux CI clippy -D warnings).
+#[cfg(windows)]
 use super::cli_delegation::find_cli_on_path;
 use super::codex_tool::CodexTool;
 use super::claude_code_tool::ClaudeCodeTool;
 use super::Tool;
 use crate::context::RequestContext;
+#[cfg(windows)]
 use std::sync::Mutex;
 
 /// 串行化 PATH 操纵（set_var 进程全局；本 crate 其他测试不读 PATH，
 /// 唯一并发面是其他 spawn `where` 的测试——查询名唯一故无交叉）。
+#[cfg(windows)]
 static PATH_LOCK: Mutex<()> = Mutex::new(());
 
 fn delegation_ctx() -> RequestContext {

@@ -631,7 +631,8 @@ mod linux_impl {
     /// Probe a single I2C address using SMBus.
     fn smbus_probe(fd: &std::fs::File, addr: usize, has_quick: bool) -> bool {
         // EEPROM ranges: use read byte (quick write can corrupt AT24RF08)
-        let use_read_byte = (addr >= 0x30 && addr <= 0x37) || (addr >= 0x50 && addr <= 0x5F);
+        let use_read_byte =
+            (0x30..=0x37).contains(&addr) || (0x50..=0x5F).contains(&addr);
 
         if !use_read_byte && has_quick {
             // SMBus Quick Write: safest probe, no data transferred

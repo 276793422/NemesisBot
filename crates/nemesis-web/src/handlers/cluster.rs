@@ -2098,69 +2098,69 @@ fn check_platform_firewall(udp_port: u16, tcp_port: u16) -> serde_json::Value {
         .output()
         .ok();
 
-    if let Some(output) = ufw_output {
-        if output.status.success() {
-            let stdout = String::from_utf8_lossy(&output.stdout);
-            if stdout.contains("inactive") {
-                return serde_json::json!({
-                    "name": "firewall_status",
-                    "pass": true,
-                    "detail": "UFW 防火墙未启用，不阻止流量"
-                });
-            }
-            // UFW is active — check if ports are allowed
-            let udp_ok =
-                stdout.contains(&format!("{}/udp", udp_port)) || stdout.contains("Anywhere");
-            let tcp_ok =
-                stdout.contains(&format!("{}/tcp", tcp_port)) || stdout.contains("Anywhere");
-            if udp_ok && tcp_ok {
-                return serde_json::json!({
-                    "name": "firewall_status",
-                    "pass": true,
-                    "detail": format!("UFW 已启用，端口 UDP {} 和 TCP {} 已放行", udp_port, tcp_port)
-                });
-            } else {
-                return serde_json::json!({
-                    "name": "firewall_status",
-                    "pass": false,
-                    "detail": format!("UFW 已启用，但端口 UDP {} 或 TCP {} 未放行", udp_port, tcp_port)
-                });
-            }
+    if let Some(output) = ufw_output
+        && output.status.success()
+    {
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        if stdout.contains("inactive") {
+            return serde_json::json!({
+                "name": "firewall_status",
+                "pass": true,
+                "detail": "UFW 防火墙未启用，不阻止流量"
+            });
+        }
+        // UFW is active — check if ports are allowed
+        let udp_ok =
+            stdout.contains(&format!("{}/udp", udp_port)) || stdout.contains("Anywhere");
+        let tcp_ok =
+            stdout.contains(&format!("{}/tcp", tcp_port)) || stdout.contains("Anywhere");
+        if udp_ok && tcp_ok {
+            return serde_json::json!({
+                "name": "firewall_status",
+                "pass": true,
+                "detail": format!("UFW 已启用，端口 UDP {} 和 TCP {} 已放行", udp_port, tcp_port)
+            });
+        } else {
+            return serde_json::json!({
+                "name": "firewall_status",
+                "pass": false,
+                "detail": format!("UFW 已启用，但端口 UDP {} 或 TCP {} 未放行", udp_port, tcp_port)
+            });
         }
     }
 
     // Fallback: check iptables
     let ipt_output = std::process::Command::new("iptables")
-        .args(&["-L", "INPUT", "-n"])
+        .args(["-L", "INPUT", "-n"])
         .output()
         .ok();
 
-    if let Some(output) = ipt_output {
-        if output.status.success() {
-            let stdout = String::from_utf8_lossy(&output.stdout);
-            let policy_accept = stdout.contains("Chain INPUT (policy ACCEPT)");
-            let udp_ok = stdout.contains(&format!("dpt:{}", udp_port));
-            let tcp_ok = stdout.contains(&format!("dpt:{}", tcp_port));
-            if policy_accept && !stdout.contains("REJECT") && !stdout.contains("DROP") {
-                return serde_json::json!({
-                    "name": "firewall_status",
-                    "pass": true,
-                    "detail": "iptables 默认策略 ACCEPT，不阻止流量"
-                });
-            }
-            if udp_ok && tcp_ok {
-                return serde_json::json!({
-                    "name": "firewall_status",
-                    "pass": true,
-                    "detail": format!("iptables 已放行端口 UDP {} 和 TCP {}", udp_port, tcp_port)
-                });
-            }
+    if let Some(output) = ipt_output
+        && output.status.success()
+    {
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let policy_accept = stdout.contains("Chain INPUT (policy ACCEPT)");
+        let udp_ok = stdout.contains(&format!("dpt:{}", udp_port));
+        let tcp_ok = stdout.contains(&format!("dpt:{}", tcp_port));
+        if policy_accept && !stdout.contains("REJECT") && !stdout.contains("DROP") {
             return serde_json::json!({
                 "name": "firewall_status",
-                "pass": false,
-                "detail": format!("iptables 可能阻止端口 UDP {} 或 TCP {}", udp_port, tcp_port)
+                "pass": true,
+                "detail": "iptables 默认策略 ACCEPT，不阻止流量"
             });
         }
+        if udp_ok && tcp_ok {
+            return serde_json::json!({
+                "name": "firewall_status",
+                "pass": true,
+                "detail": format!("iptables 已放行端口 UDP {} 和 TCP {}", udp_port, tcp_port)
+            });
+        }
+        return serde_json::json!({
+            "name": "firewall_status",
+            "pass": false,
+            "detail": format!("iptables 可能阻止端口 UDP {} 或 TCP {}", udp_port, tcp_port)
+        });
     }
 
     serde_json::json!({
@@ -2401,7 +2401,7 @@ fn add_platform_firewall_rules(
 
     // Fallback: iptables
     let udp_result = std::process::Command::new("iptables")
-        .args(&[
+        .args([
             "-I",
             "INPUT",
             "-p",
@@ -2413,7 +2413,7 @@ fn add_platform_firewall_rules(
         ])
         .output();
     let tcp_result = std::process::Command::new("iptables")
-        .args(&[
+        .args([
             "-I",
             "INPUT",
             "-p",

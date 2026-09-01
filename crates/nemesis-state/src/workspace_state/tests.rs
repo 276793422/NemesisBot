@@ -470,7 +470,8 @@ fn test_save_error_handling_directory_readonly() {
         use std::os::unix::fs::PermissionsExt;
         let mut perms = fs::metadata(&state_dir).unwrap().permissions();
         perms.set_mode(0o444); // Read-only
-        fs::set_permissions(&state_dir, perms).unwrap();
+        // Clone: `perms` is reused below to restore permissions for cleanup.
+        fs::set_permissions(&state_dir, perms.clone()).unwrap();
 
         // This should fail due to read-only directory
         let result = mgr.set_last_channel("web:test");

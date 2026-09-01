@@ -1077,7 +1077,7 @@ fn firewall_add_rules(udp_port: u16, tcp_port: u16) -> Result<()> {
 
     if ufw_exists {
         let udp_result = std::process::Command::new("ufw")
-            .args(&["allow", &format!("{}/udp", udp_port)])
+            .args(["allow", &format!("{}/udp", udp_port)])
             .output()?;
         if udp_result.status.success() {
             println!("  UFW UDP rule added: port {}", udp_port);
@@ -1088,7 +1088,7 @@ fn firewall_add_rules(udp_port: u16, tcp_port: u16) -> Result<()> {
             );
         }
         let tcp_result = std::process::Command::new("ufw")
-            .args(&["allow", &format!("{}/tcp", tcp_port)])
+            .args(["allow", &format!("{}/tcp", tcp_port)])
             .output()?;
         if tcp_result.status.success() {
             println!("  UFW TCP rule added: port {}", tcp_port);
@@ -1100,7 +1100,7 @@ fn firewall_add_rules(udp_port: u16, tcp_port: u16) -> Result<()> {
         }
     } else {
         let udp_result = std::process::Command::new("iptables")
-            .args(&[
+            .args([
                 "-I",
                 "INPUT",
                 "-p",
@@ -1120,7 +1120,7 @@ fn firewall_add_rules(udp_port: u16, tcp_port: u16) -> Result<()> {
         println!("  iptables UDP rule added: port {}", udp_port);
 
         let tcp_result = std::process::Command::new("iptables")
-            .args(&[
+            .args([
                 "-I",
                 "INPUT",
                 "-p",
@@ -1152,16 +1152,16 @@ fn firewall_remove_rules(udp_port: u16, tcp_port: u16) -> Result<()> {
 
     if ufw_exists {
         let _ = std::process::Command::new("ufw")
-            .args(&["delete", "allow", &format!("{}/udp", udp_port)])
+            .args(["delete", "allow", &format!("{}/udp", udp_port)])
             .output();
         println!("  UFW UDP rule removed: port {}", udp_port);
         let _ = std::process::Command::new("ufw")
-            .args(&["delete", "allow", &format!("{}/tcp", tcp_port)])
+            .args(["delete", "allow", &format!("{}/tcp", tcp_port)])
             .output();
         println!("  UFW TCP rule removed: port {}", tcp_port);
     } else {
         let _ = std::process::Command::new("iptables")
-            .args(&[
+            .args([
                 "-D",
                 "INPUT",
                 "-p",
@@ -1174,7 +1174,7 @@ fn firewall_remove_rules(udp_port: u16, tcp_port: u16) -> Result<()> {
             .output();
         println!("  iptables UDP rule removed: port {}", udp_port);
         let _ = std::process::Command::new("iptables")
-            .args(&[
+            .args([
                 "-D",
                 "INPUT",
                 "-p",

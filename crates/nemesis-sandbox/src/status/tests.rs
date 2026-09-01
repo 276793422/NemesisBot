@@ -4,9 +4,13 @@
 //! 服务名；真实服务（Themes 等 Windows 基础服务）只做宽容断言——
 //! 其存在性/状态随机器变化，属机器依赖。
 
+// Every test in this file is windows-gated; an ungated glob import would be
+// dead code on other targets (Linux CI clippy runs -D warnings).
+#[cfg(windows)]
 use super::*;
 
 /// 一个肯定不存在的服务名（1060 → NotFound，跨机器确定性）。
+#[cfg(windows)] // 仅下方 windows-gated 测试使用；Linux 上保持 dead_code 干净
 const MISSING: &str = "NemesisS6DefinitelyMissing9527";
 
 #[cfg(windows)]

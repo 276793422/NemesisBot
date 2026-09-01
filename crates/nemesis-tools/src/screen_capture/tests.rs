@@ -878,6 +878,9 @@ async fn w4a_window_mode_title_find_returning_garbage_captures_without_hwnd() {
 // caller (skip block -> PowerShell fallback, bogus hwnd errors)
 // ===========================================================================
 
+// Only the windows-gated tests below call this; gate it with the same cfg so
+// other targets don't see it as dead code (Linux CI clippy runs -D warnings).
+#[cfg(target_os = "windows")]
 fn s2_enable_tracing() {
     let _ = tracing_subscriber::fmt()
         .with_max_level(tracing::Level::DEBUG)

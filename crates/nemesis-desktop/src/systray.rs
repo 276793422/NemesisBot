@@ -728,6 +728,8 @@ impl PlatformTray {
     }
 
     fn run_event_loop(self) {
+        // Both blocks are cfg-exclusive; no `return` needed between them
+        // (a trailing `return;` trips clippy::needless_return on Linux).
         #[cfg(target_os = "linux")]
         {
             linux_tray::run_via_plugin_ui(
@@ -741,7 +743,6 @@ impl PlatformTray {
                 self.on_estop,
                 self.on_release,
             );
-            return;
         }
 
         #[cfg(not(target_os = "linux"))]
