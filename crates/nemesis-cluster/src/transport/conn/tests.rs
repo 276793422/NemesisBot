@@ -848,6 +848,11 @@ async fn test_tcp_conn_write_error_closes_write_loop() {
     let addr = listener.local_addr().unwrap();
     let peer = std::thread::spawn(move || {
         let (stream, _) = listener.accept().unwrap();
+        // 等客户端 connect() 先落定再发 RST：Linux 回环上对端 accept 返回
+        // 时客户端 connect 可能还在等可写事件轮询，立刻 linger(0)+drop 的
+        // RST 会把尚未返回的 connect 打成 ECONNRESET（Windows 时序松，
+        // 察觉不到；远端 Linux 实测触发）。
+        std::thread::sleep(std::time::Duration::from_millis(100));
         // linger(0) + close => RST instead of FIN.
         let sock = socket2::SockRef::from(&stream);
         sock.set_linger(Some(std::time::Duration::ZERO)).unwrap();

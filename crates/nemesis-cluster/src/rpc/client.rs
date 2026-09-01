@@ -106,11 +106,18 @@ impl RateLimiter {
             .entry(peer_id.to_string())
             .or_default();
 
-        // Prune old timestamps in the sliding window
+        // Prune old timestamps in the sliding window.
+        // checked_sub 而非裸减：`Instant` 是单调时钟（自系统启动起算），
+        // window 大于开机时长时 `now - window` 下溢 panic（新开机的机器 /
+        // CI runner 上必现，见 test_s4_rate_limiter_window_longer_than_uptime_no_underflow）。
+        // 下溢意味着整个窗口都早于开机——窗口内不可能有超限时间戳，保留全部即可。
         let now = std::time::Instant::now();
-        let window_start = now - self.window;
+        let window_start = now.checked_sub(self.window);
         if let Some(timestamps) = state.requests.get_mut(peer_id) {
-            timestamps.retain(|ts| *ts > window_start);
+            timestamps.retain(|ts| match window_start {
+                Some(start) => *ts > start,
+                None => true,
+            });
             if timestamps.len() >= self.max_requests_per_window {
                 tracing::warn!(
                     peer_id = peer_id,

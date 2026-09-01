@@ -415,10 +415,15 @@ async fn test_call_with_zero_timeout_returns_timeout() {
         .call_with_timeout("peer", req, Duration::from_millis(1))
         .await;
     assert!(result.is_err());
-    // Either Timeout (outer) or Connection (dial timeout) is acceptable here.
-    let err = result.unwrap_err();
-    let msg = format!("{}", err);
-    assert!(msg.contains("timed out") || msg.contains("timeout") || msg.contains("connection"));
+    // Either Timeout (outer) or Connection (dial failure) is acceptable here.
+    // 大小写不敏感匹配：RpcClientError 的 Display 首词大写（"Timeout waiting
+    // for response" / "Connection error: …"），原来区分大小写的小写子串在
+    // 任一平台都对不上；失败时打印实际消息便于环境取证。
+    let msg = result.unwrap_err().to_string().to_lowercase();
+    assert!(
+        msg.contains("timed out") || msg.contains("timeout") || msg.contains("connection"),
+        "expected a fast dial/timeout failure, got: {msg}"
+    );
 }
 
 #[tokio::test]
@@ -1340,6 +1345,25 @@ fn test_s4_rate_limiter_token_exhaustion_fallthrough() {
     let err = limiter.acquire("s4-peer").unwrap_err();
     match err {
         RpcClientError::RateLimited(msg) => assert!(msg.contains("no tokens"), "{}", msg),
+        other => panic!("expected RateLimited, got {:?}", other),
+    }
+}
+
+/// Regression: a sliding window longer than the system uptime must not
+/// panic with "overflow when subtracting duration from instant"
+/// (client.rs prune step). `Instant` is monotonic since boot, so a fresh
+/// machine (e.g. a CI runner) with a 3600s window underflowed on
+/// `now - window`; a 1-year window reproduces that deterministically on
+/// any machine. Window-limit rejection itself must keep working.
+#[test]
+fn test_s4_rate_limiter_window_longer_than_uptime_no_underflow() {
+    let year = Duration::from_secs(365 * 24 * 3600);
+    let limiter = RateLimiter::new(100, year, 2, year);
+    assert!(limiter.acquire("s4-peer").is_ok());
+    assert!(limiter.acquire("s4-peer").is_ok());
+    let err = limiter.acquire("s4-peer").unwrap_err();
+    match err {
+        RpcClientError::RateLimited(msg) => assert!(msg.contains("exceeded"), "{}", msg),
         other => panic!("expected RateLimited, got {:?}", other),
     }
 }

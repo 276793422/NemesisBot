@@ -266,12 +266,23 @@ async fn idle_sessions_are_reaped_and_respawn() {
     assert!(hover.contains("fixture_answer"), "warm-up query should work: {hover}");
     assert_eq!(mgr.session_count().await, 1);
 
-    // Back-date last_used past the threshold → the lazy sweep must reap it.
+    // Back-date last_used past the threshold (10s) → the lazy sweep must
+    // reap it. checked_sub 而非裸减：`Instant` 自系统启动起算，uptime 小于
+    // 回拨量时下溢 panic（新开机的 runner 上会炸）；逐级降级到仍越过阈值
+    // 的量，再小就无法构造 idle 会话 → 诚实 SKIP。
+    let backdated = {
+        let now = Instant::now();
+        now.checked_sub(Duration::from_secs(60))
+            .or_else(|| now.checked_sub(Duration::from_secs(15)))
+    };
+    let Some(backdated) = backdated else {
+        eprintln!("SKIP: system uptime under 15s — cannot back-date an idle session");
+        return;
+    };
     {
         let sessions = mgr.sessions.lock().await;
         for s in sessions.values() {
-            *s.last_used.lock().unwrap() =
-                Instant::now() - Duration::from_secs(60);
+            *s.last_used.lock().unwrap() = backdated;
         }
     }
     assert_eq!(mgr.reap_idle().await, 1, "idle session should be reaped");

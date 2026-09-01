@@ -40,25 +40,39 @@ fn test_collect_os_version_returns_nonempty() {
 #[test]
 fn test_collect_os_version_matches_os_const() {
     // Cross-platform fallback path returns std::env::consts::OS exactly.
-    // Linux/Windows paths return a richer string but should at least
-    // contain the OS family.
+    // Windows returns "ProductName (Build N)"; Linux returns the
+    // /etc/os-release PRETTY_NAME — verify against each platform's source
+    // of truth instead of guessing substrings.
     let v = collect_os_version();
     let os_const = std::env::consts::OS;
     if cfg!(not(any(target_os = "linux", target_os = "windows"))) {
         assert_eq!(v, os_const);
-    } else {
-        // The richer string should at least mention the OS family.
-        let family = if cfg!(target_os = "windows") {
-            "Windows"
-        } else {
-            "Linux"
-        };
+    } else if cfg!(target_os = "windows") {
         assert!(
-            v.contains(family) || v.contains(os_const),
-            "expected '{}' or '{}' in OS version: {}",
-            family,
-            os_const,
+            v.contains("Windows") || v.contains(os_const),
+            "expected Windows family in OS version: {}",
             v
+        );
+    } else {
+        // 很多发行版（如 Ubuntu）的 PRETTY_NAME 本身不含 "Linux" 字样，
+        // 不能按子串断言；直接对照 os-release 源头验证（os-release 缺失
+        // 时实现回退 "Linux"，这里保持同一回退）。
+        let pretty = std::fs::read_to_string("/etc/os-release")
+            .ok()
+            .and_then(|content| {
+                content
+                    .lines()
+                    .find(|line| line.starts_with("PRETTY_NAME="))
+                    .map(|line| {
+                        line.trim_start_matches("PRETTY_NAME=")
+                            .trim_matches('"')
+                            .to_string()
+                    })
+            })
+            .unwrap_or_else(|| "Linux".into());
+        assert_eq!(
+            v, pretty,
+            "OS version should mirror /etc/os-release PRETTY_NAME (or the Linux fallback)"
         );
     }
 }
