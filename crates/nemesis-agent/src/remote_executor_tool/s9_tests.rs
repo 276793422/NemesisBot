@@ -35,7 +35,15 @@ async fn stdio_spawn_failure_surfaces_error() {
 
 #[tokio::test]
 async fn stdio_cmd_child_lands_in_an_error_arm() {
-    let cmd = std::env::var("ComSpec").unwrap_or_else(|_| "cmd.exe".to_string());
+    // 平台各自的 shell：cmd.exe（无参交互态先吐 banner）或 /bin/sh（读到
+    // 协议行当命令执行 → 语法错误退出）——都不会应答执行体协议，确定性
+    // 落进错误臂之一（2026-09-01：原实现只取 ComSpec，Linux 上 spawn
+    // "cmd.exe" ENOENT 落进 spawn 失败臂，断言不含该臂 → 假红）。
+    let cmd = if cfg!(windows) {
+        std::env::var("ComSpec").unwrap_or_else(|_| "cmd.exe".to_string())
+    } else {
+        "/bin/sh".to_string()
+    };
     let ch = ExecutorChannel::new(
         std::path::PathBuf::from(&cmd),
         "/ws".into(),

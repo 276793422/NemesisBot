@@ -490,11 +490,14 @@ fn test_terminate_child_with_real_process() {
 fn test_read_stderr_with_real_process() {
     let executor = DefaultPlatformExecutor::with_defaults();
     // Use a process that may produce stderr and exits quickly
-    let exe = if cfg!(windows) { "cmd" } else { "cat" };
+    // （Linux 臂曾是裸 `cat`：无参 cat 永远读 stdin、不写 stderr 不退出，
+    // 而 read_stderr_line 是无超时阻塞读 → 测试挂死（2026-09-01 远端全量
+    // 首跑暴露，nemesis-desktop 卡死根因）。改为写 stderr 即退的 sh。）
+    let exe = if cfg!(windows) { "cmd" } else { "sh" };
     let args: Vec<String> = if cfg!(windows) {
         vec!["/c".to_string(), "echo".to_string(), "test".to_string()]
     } else {
-        vec![]
+        vec!["-c".to_string(), "echo test >&2".to_string()]
     };
 
     if let Ok(mut child) = executor.spawn_child(exe, &args) {

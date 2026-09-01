@@ -767,6 +767,11 @@ async fn w4a_workspace_pointing_at_a_file_fails_to_create_temp_dir() {
     );
 }
 
+// 前提 = Windows 宿主（2026-09-01 远端首跑暴露）：1ms timeout 打到
+// "screen capture timed out" 臂的前提是 powershell.exe 能被 spawn（只是
+// 启动慢）；Linux 上 spawn 直接 ENOENT，走的是 "screen capture failed: ..."
+// 臂，断言文案对不上。无可移植等价（没有跨平台慢启动 shell）→ 整测门控。
+#[cfg(windows)]
 #[tokio::test]
 async fn w4a_capture_times_out_when_timeout_shorter_than_powershell_startup() {
     let dir = tempfile::TempDir::new().unwrap();
@@ -785,6 +790,9 @@ async fn w4a_capture_times_out_when_timeout_shorter_than_powershell_startup() {
     );
 }
 
+// 前提 = Windows 宿主（同上）：MCP Err 后 fallback 到 PowerShell 脚本构建
+// → 1ms timeout 臂；Linux 上 powershell.exe ENOENT 走 spawn 失败臂 → 门控。
+#[cfg(windows)]
 #[tokio::test]
 async fn w4a_region_mcp_error_falls_back_to_powershell_and_times_out() {
     struct FailingRegionMCP;

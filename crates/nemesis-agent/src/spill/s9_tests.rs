@@ -101,7 +101,15 @@ fn cleanup_expired_readonly_dir_warns_on_remove_dir() {
     let filler = sess.join("filler.txt");
     std::fs::write(&filler, "x").unwrap();
     set_readonly(&sess);
-    std::fs::remove_file(&filler).unwrap();
+    // Windows：目录 readonly 属性不拦内部文件删除；Linux（chmod 555）拦。
+    // → 删除被拒就先恢复可写删掉再设回，两平台最终态一致：空 + 只读目录。
+    if std::fs::remove_file(&filler).is_err() {
+        let mut perm = std::fs::metadata(&sess).unwrap().permissions();
+        perm.set_readonly(false);
+        std::fs::set_permissions(&sess, perm).unwrap();
+        std::fs::remove_file(&filler).unwrap();
+        set_readonly(&sess);
+    }
 
     // 探针：readonly 目录的 remove_dir 是否被拒
     let blocked = std::fs::remove_dir(&sess).is_err();

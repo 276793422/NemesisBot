@@ -197,8 +197,16 @@ async fn test_screen_capture_full_screen_no_mcp() {
     let result = tool
         .execute(&serde_json::json!({"mode": "full_screen"}))
         .await;
-    // On non-Windows or without MCP, may error or return placeholder
-    assert!(!result.is_error || result.for_llm.contains("MCP"));
+    // 无 MCP 时三合法结局（2026-09-01 扩容）：Windows 上 PowerShell 截屏
+    // 成功 / 报错；非 Windows 上 powershell.exe ENOENT → "screen capture
+    // failed: ..." 臂（原宽容断言只认成功或含 "MCP"，Linux 假红）。
+    assert!(
+        !result.is_error
+            || result.for_llm.contains("MCP")
+            || result.for_llm.contains("screen capture"),
+        "got: {}",
+        result.for_llm
+    );
 }
 
 #[tokio::test]

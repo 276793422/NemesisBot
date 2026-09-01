@@ -1114,10 +1114,23 @@ fn w4a_guard_blocks_dotted_filename_under_nonexistent_cwd() {
     // whose canonicalize also fails, textually sits under cwd with a
     // component starting with ".." (here "..leak.txt" — note it contains
     // neither "../" nor "..\" so it survives the earlier traversal check).
+    // 平台各自的"不存在 cwd + 点开头组件"形态（2026-09-01：原只写 C:\ 形态，
+    // Linux 上 `\` 不拆分、`C:\...` 非 is_absolute → 走 join 臂，块检查永不
+    // 触发 → 假红）。
     let tool = make_restricted_tool();
-    let cwd = std::path::Path::new("C:\\w4a_no_such_dir");
+    let (cwd, cmd) = if cfg!(windows) {
+        (
+            std::path::Path::new("C:\\w4a_no_such_dir"),
+            "type C:\\w4a_no_such_dir\\..leak.txt",
+        )
+    } else {
+        (
+            std::path::Path::new("/w4a_no_such_dir"),
+            "cat /w4a_no_such_dir/..leak.txt",
+        )
+    };
     let err = tool
-        .guard_command("type C:\\w4a_no_such_dir\\..leak.txt", cwd)
+        .guard_command(cmd, cwd)
         .expect_err("dotted component under raw cwd must be blocked");
     assert!(err.contains("path outside working dir"), "got: {err}");
 }

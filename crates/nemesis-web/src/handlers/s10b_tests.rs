@@ -10,7 +10,17 @@ use super::*;
 fn resolve_path_rejects_absolute_forms() {
     let err = resolve_path("/ws", "/etc/passwd").unwrap_err();
     assert_eq!(err, "absolute paths not allowed");
-    assert!(resolve_path("/ws", "C:/windows/abs.txt").is_err());
+    // 平台差异断言（2026-09-01 远端首跑暴露）：
+    // - `C:/windows/abs.txt` 只在 Windows 是 is_absolute()；Linux 上是普通
+    //   相对路径（文件名含 `C:` 而已），resolve_path 放行是正确行为。
+    // - `\rooted` 在**两平台都 Err**：resolve_path 对 `\` 前缀有显式字符串
+    //   检查（防 Windows 风格 rooted 路径，跨平台防御，handlers/mod.rs），
+    //   与 Path::is_absolute 无关。
+    if cfg!(windows) {
+        assert!(resolve_path("/ws", "C:/windows/abs.txt").is_err());
+    } else {
+        assert!(resolve_path("/ws", "C:/windows/abs.txt").is_ok());
+    }
     assert!(resolve_path("/ws", "\\rooted").is_err());
     assert!(resolve_path("/ws", "plain/relative.txt").is_ok());
 }

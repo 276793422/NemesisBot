@@ -70,6 +70,10 @@ fn make_box(tmp: &TempDir) -> std::path::PathBuf {
     box_root
 }
 
+// 盒布局映射（drive/<L>/<rest> → <L>:\<rest>）是 Sandboxie Windows 盒的
+// 镜像语义，生产路径只在 Windows 运行；Linux 上 join 分隔符不同 → 字符串
+// 断言必红。三个盒布局/过滤测试 cfg(windows) 门控（2026-09-01 Linux 首跑）。
+#[cfg(windows)]
 #[test]
 fn real_path_for_box_maps_user_drive_and_rejects_metadata() {
     let tmp = TempDir::new().unwrap();
@@ -120,6 +124,7 @@ fn enumerate_box_missing_root_returns_empty() {
     assert!(files.is_empty());
 }
 
+#[cfg(windows)]
 #[test]
 fn pending_workspace_scopes_to_workspace_subtree_only() {
     // 安全命门：盒内工作区外写入（C:\Windows\evil.dll）绝不能出现在
@@ -134,6 +139,7 @@ fn pending_workspace_scopes_to_workspace_subtree_only() {
     // user/current/ws 在 %USERPROFILE% 下，不在 C:\proj 下 → 排除。
 }
 
+#[cfg(windows)]
 #[test]
 fn pending_workspace_results_sorted_by_real_path() {
     let tmp = TempDir::new().unwrap();

@@ -252,6 +252,12 @@ fn copy_dir_recursive<'a>(
             return files;
         }
 
+        // 顶层 dst 必须先建：此前只有子目录分支靠 create_dir_all(sub_dst)
+        // 顺手把 dst 带出来，顶层文件能否落盘取决于 readdir 顺序（NTFS
+        // 字母序 sub 在前侥幸全过；ext4/tmpfs 哈希序 top.txt 先到 → 写进
+        // 不存在的 dst 静默 ENOENT 跳过）。2026-09-01 Linux 首跑暴露。
+        tokio::fs::create_dir_all(dst_dir).await.ok();
+
         let mut entries = match tokio::fs::read_dir(src_dir).await {
             Ok(e) => e,
             Err(_) => return files,

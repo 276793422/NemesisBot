@@ -810,12 +810,17 @@ async fn test_s1_download_with_opts_mkdir_failure() {
     let _guard = S1_ENV_LOCK.lock();
     let saved_tmp = std::env::var("TMP").ok();
     let saved_temp = std::env::var("TEMP").ok();
+    let saved_tmpdir = std::env::var("TMPDIR").ok();
     // SAFETY: guarded by S1_ENV_LOCK (the only env mutation in this crate's
     // tests); other tests only read env (temp_dir/tempfile), which stays valid
     // because the redirected TMP/TEMP is a real directory.
     unsafe {
         std::env::set_var("TMP", tmp.path());
         std::env::set_var("TEMP", tmp.path());
+        // std::env::temp_dir() 在 Unix 读 TMPDIR（Windows 读 TMP/TEMP）——
+        // 只重定向 TMP/TEMP 在 Linux 拦不住 create_dir_all（2026-09-01 远端
+        // 首跑暴露：下载成功返回真实路径，期望 ""）。
+        std::env::set_var("TMPDIR", tmp.path());
     }
 
     let handle = tokio::runtime::Handle::current();
@@ -842,6 +847,10 @@ async fn test_s1_download_with_opts_mkdir_failure() {
         match saved_temp {
             Some(v) => std::env::set_var("TEMP", v),
             None => std::env::remove_var("TEMP"),
+        }
+        match saved_tmpdir {
+            Some(v) => std::env::set_var("TMPDIR", v),
+            None => std::env::remove_var("TMPDIR"),
         }
     }
     drop(_guard);

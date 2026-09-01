@@ -1,6 +1,18 @@
 use super::*;
 use crate::auditor::AuditorConfig;
 
+/// 跨平台测试路径拼接。禁止 `format!("{}\\file", ws)`：`\` 在 Linux 是合法
+/// 文件名字符，拼出的路径末组件是整个怪名（落在 workspace 外的父目录里），
+/// component 级 `starts_with` 判外 → 29 个 file_wrapper 测试在 Linux 全军
+/// 覆没（2026-09-01 远端首跑暴露）。统一走 PathBuf::push。
+fn ws_path(ws: &str, rel: &str) -> String {
+    let mut p = std::path::PathBuf::from(ws);
+    for c in rel.split('/') {
+        p.push(c);
+    }
+    p.to_string_lossy().into_owned()
+}
+
 fn make_middleware(preset: PermissionPreset) -> SecurityMiddleware {
     let config = AuditorConfig {
         enabled: true,
@@ -965,7 +977,7 @@ async fn test_file_wrapper_write_within_workspace() {
         PermissionPreset::Standard,
     );
     let wrapper = SecureFileWrapper::new(&mw);
-    let file_path = format!("{}\\test_write.txt", ws);
+    let file_path = ws_path(&ws, "test_write.txt");
     let result = wrapper.write_file(&file_path, "hello world").await;
     assert!(result.is_ok(), "write_file failed: {:?}", result);
     let content = std::fs::read_to_string(&file_path).unwrap();
@@ -980,7 +992,7 @@ async fn test_file_wrapper_read_within_workspace() {
         .to_str()
         .unwrap()
         .to_string();
-    let file_path = format!("{}\\test_read.txt", ws);
+    let file_path = ws_path(&ws, "test_read.txt");
     std::fs::write(&file_path, "read me").unwrap();
     let config = AuditorConfig {
         enabled: true,
@@ -1009,7 +1021,7 @@ async fn test_file_wrapper_edit_file() {
         .to_str()
         .unwrap()
         .to_string();
-    let file_path = format!("{}\\edit_test.txt", ws);
+    let file_path = ws_path(&ws, "edit_test.txt");
     std::fs::write(&file_path, "old content here").unwrap();
     let config = AuditorConfig {
         enabled: true,
@@ -1041,7 +1053,7 @@ async fn test_file_wrapper_edit_file_pattern_not_found() {
         .to_str()
         .unwrap()
         .to_string();
-    let file_path = format!("{}\\edit_notfound.txt", ws);
+    let file_path = ws_path(&ws, "edit_notfound.txt");
     std::fs::write(&file_path, "some content").unwrap();
     let config = AuditorConfig {
         enabled: true,
@@ -1072,7 +1084,7 @@ async fn test_file_wrapper_append_file() {
         .to_str()
         .unwrap()
         .to_string();
-    let file_path = format!("{}\\append_test.txt", ws);
+    let file_path = ws_path(&ws, "append_test.txt");
     std::fs::write(&file_path, "first line\n").unwrap();
     let config = AuditorConfig {
         enabled: true,
@@ -1103,7 +1115,7 @@ async fn test_file_wrapper_append_to_empty_file() {
         .to_str()
         .unwrap()
         .to_string();
-    let file_path = format!("{}\\append_empty.txt", ws);
+    let file_path = ws_path(&ws, "append_empty.txt");
     std::fs::write(&file_path, "").unwrap();
     let config = AuditorConfig {
         enabled: true,
@@ -1133,7 +1145,7 @@ async fn test_file_wrapper_append_to_file_without_newline() {
         .to_str()
         .unwrap()
         .to_string();
-    let file_path = format!("{}\\append_nonl.txt", ws);
+    let file_path = ws_path(&ws, "append_nonl.txt");
     std::fs::write(&file_path, "no newline").unwrap();
     let config = AuditorConfig {
         enabled: true,
@@ -1163,7 +1175,7 @@ async fn test_file_wrapper_delete_file() {
         .to_str()
         .unwrap()
         .to_string();
-    let file_path = format!("{}\\delete_me.txt", ws);
+    let file_path = ws_path(&ws, "delete_me.txt");
     std::fs::write(&file_path, "to be deleted").unwrap();
     let config = AuditorConfig {
         enabled: true,
@@ -1192,8 +1204,8 @@ async fn test_file_wrapper_read_directory() {
         .to_str()
         .unwrap()
         .to_string();
-    std::fs::write(format!("{}\\file1.txt", ws), "a").unwrap();
-    std::fs::create_dir(format!("{}\\subdir", ws)).unwrap();
+    std::fs::write(ws_path(&ws, "file1.txt"), "a").unwrap();
+    std::fs::create_dir(ws_path(&ws, "subdir")).unwrap();
     let config = AuditorConfig {
         enabled: true,
         default_action: "allow".to_string(),
@@ -1223,7 +1235,7 @@ async fn test_file_wrapper_create_directory() {
         .to_str()
         .unwrap()
         .to_string();
-    let new_dir = format!("{}\\new_dir", ws);
+    let new_dir = ws_path(&ws, "new_dir");
     let config = AuditorConfig {
         enabled: true,
         default_action: "allow".to_string(),
@@ -1251,9 +1263,9 @@ async fn test_file_wrapper_delete_directory() {
         .to_str()
         .unwrap()
         .to_string();
-    let del_dir = format!("{}\\del_dir", ws);
+    let del_dir = ws_path(&ws, "del_dir");
     std::fs::create_dir_all(&del_dir).unwrap();
-    std::fs::write(format!("{}\\inner.txt", del_dir), "x").unwrap();
+    std::fs::write(ws_path(&del_dir, "inner.txt"), "x").unwrap();
     let config = AuditorConfig {
         enabled: true,
         default_action: "allow".to_string(),
@@ -1281,7 +1293,7 @@ async fn test_file_wrapper_stat() {
         .to_str()
         .unwrap()
         .to_string();
-    let file_path = format!("{}\\stat_test.txt", ws);
+    let file_path = ws_path(&ws, "stat_test.txt");
     std::fs::write(&file_path, "stat content here").unwrap();
     let config = AuditorConfig {
         enabled: true,
@@ -1313,7 +1325,7 @@ async fn test_file_wrapper_open_file() {
         .to_str()
         .unwrap()
         .to_string();
-    let file_path = format!("{}\\open_test.txt", ws);
+    let file_path = ws_path(&ws, "open_test.txt");
     std::fs::write(&file_path, b"binary\x00data").unwrap();
     let config = AuditorConfig {
         enabled: true,
@@ -1342,8 +1354,8 @@ async fn test_file_wrapper_list_dir() {
         .to_str()
         .unwrap()
         .to_string();
-    std::fs::write(format!("{}\\a.txt", ws), "aaa").unwrap();
-    std::fs::write(format!("{}\\b.txt", ws), "bb").unwrap();
+    std::fs::write(ws_path(&ws, "a.txt"), "aaa").unwrap();
+    std::fs::write(ws_path(&ws, "b.txt"), "bb").unwrap();
     let config = AuditorConfig {
         enabled: true,
         default_action: "allow".to_string(),
@@ -1374,7 +1386,7 @@ async fn test_file_wrapper_remove_file_alias() {
         .to_str()
         .unwrap()
         .to_string();
-    let file_path = format!("{}\\remove_me.txt", ws);
+    let file_path = ws_path(&ws, "remove_me.txt");
     std::fs::write(&file_path, "bye").unwrap();
     let config = AuditorConfig {
         enabled: true,
@@ -1403,7 +1415,7 @@ async fn test_file_wrapper_create_dir_alias() {
         .to_str()
         .unwrap()
         .to_string();
-    let new_dir = format!("{}\\alias_dir", ws);
+    let new_dir = ws_path(&ws, "alias_dir");
     let config = AuditorConfig {
         enabled: true,
         default_action: "allow".to_string(),
@@ -1431,7 +1443,7 @@ async fn test_file_wrapper_remove_dir_alias() {
         .to_str()
         .unwrap()
         .to_string();
-    let rm_dir = format!("{}\\rm_dir", ws);
+    let rm_dir = ws_path(&ws, "rm_dir");
     std::fs::create_dir_all(&rm_dir).unwrap();
     let config = AuditorConfig {
         enabled: true,
@@ -2280,7 +2292,7 @@ async fn test_file_wrapper_write_creates_parent_dirs() {
         PermissionPreset::Standard,
     );
     let wrapper = SecureFileWrapper::new(&mw);
-    let file_path = format!("{}\\subdir\\nested\\test.txt", ws);
+    let file_path = ws_path(&ws, "subdir/nested/test.txt");
     let result = wrapper.write_file(&file_path, "nested content").await;
     assert!(
         result.is_ok(),
@@ -2313,7 +2325,7 @@ async fn test_file_wrapper_read_nonexistent_file() {
         PermissionPreset::Standard,
     );
     let wrapper = SecureFileWrapper::new(&mw);
-    let file_path = format!("{}\\nonexistent.txt", ws);
+    let file_path = ws_path(&ws, "nonexistent.txt");
     let result = wrapper.read_file(&file_path).await;
     assert!(result.is_err());
 }
@@ -2340,7 +2352,7 @@ async fn test_file_wrapper_delete_nonexistent_file() {
         PermissionPreset::Unrestricted,
     );
     let wrapper = SecureFileWrapper::new(&mw);
-    let file_path = format!("{}\\nonexistent_delete.txt", ws);
+    let file_path = ws_path(&ws, "nonexistent_delete.txt");
     let result = wrapper.delete_file(&file_path).await;
     assert!(result.is_err());
 }
@@ -2353,7 +2365,7 @@ async fn test_file_wrapper_edit_with_multiline_pattern() {
         .to_str()
         .unwrap()
         .to_string();
-    let file_path = format!("{}\\multiline.txt", ws);
+    let file_path = ws_path(&ws, "multiline.txt");
     std::fs::write(&file_path, "line1\nline2\nline3").unwrap();
     let config = AuditorConfig {
         enabled: true,
@@ -2428,7 +2440,7 @@ async fn test_file_wrapper_stat_nonexistent() {
         PermissionPreset::Standard,
     );
     let wrapper = SecureFileWrapper::new(&mw);
-    let file_path = format!("{}\\nonexistent_stat.txt", ws);
+    let file_path = ws_path(&ws, "nonexistent_stat.txt");
     let result = wrapper.stat(&file_path).await;
     assert!(result.is_err());
 }
@@ -2483,7 +2495,7 @@ async fn test_file_wrapper_delete_nonexistent_directory() {
         PermissionPreset::Unrestricted,
     );
     let wrapper = SecureFileWrapper::new(&mw);
-    let del_dir = format!("{}\\nonexistent_dir", ws);
+    let del_dir = ws_path(&ws, "nonexistent_dir");
     let result = wrapper.delete_directory(&del_dir).await;
     assert!(result.is_err());
 }
@@ -2496,8 +2508,8 @@ async fn test_file_wrapper_list_dir_with_subdirs() {
         .to_str()
         .unwrap()
         .to_string();
-    std::fs::create_dir(format!("{}\\child_dir", ws)).unwrap();
-    std::fs::write(format!("{}\\root_file.txt", ws), "hello").unwrap();
+    std::fs::create_dir(ws_path(&ws, "child_dir")).unwrap();
+    std::fs::write(ws_path(&ws, "root_file.txt"), "hello").unwrap();
     let config = AuditorConfig {
         enabled: true,
         default_action: "allow".to_string(),
@@ -2545,7 +2557,7 @@ async fn test_file_wrapper_open_file_nonexistent() {
         PermissionPreset::Standard,
     );
     let wrapper = SecureFileWrapper::new(&mw);
-    let file_path = format!("{}\\nonexistent_open.txt", ws);
+    let file_path = ws_path(&ws, "nonexistent_open.txt");
     let result = wrapper.open_file(&file_path).await;
     assert!(result.is_err());
 }
@@ -2562,7 +2574,7 @@ async fn test_file_wrapper_append_to_existing_file() {
         .to_str()
         .unwrap()
         .to_string();
-    let file_path = format!("{}\\append.txt", ws);
+    let file_path = ws_path(&ws, "append.txt");
     std::fs::write(&file_path, "line1\n").unwrap();
     let config = AuditorConfig {
         enabled: true,
@@ -2592,7 +2604,7 @@ async fn test_file_wrapper_append_to_existing_no_trailing_newline() {
         .to_str()
         .unwrap()
         .to_string();
-    let file_path = format!("{}\\append2.txt", ws);
+    let file_path = ws_path(&ws, "append2.txt");
     std::fs::write(&file_path, "nolinebreak").unwrap();
     let config = AuditorConfig {
         enabled: true,
@@ -2622,7 +2634,7 @@ async fn test_file_wrapper_append_creates_new_file() {
         .to_str()
         .unwrap()
         .to_string();
-    let file_path = format!("{}\\new_append.txt", ws);
+    let file_path = ws_path(&ws, "new_append.txt");
     let config = AuditorConfig {
         enabled: true,
         default_action: "allow".to_string(),
@@ -2651,7 +2663,7 @@ async fn test_file_wrapper_remove_file() {
         .to_str()
         .unwrap()
         .to_string();
-    let file_path = format!("{}\\to_remove.txt", ws);
+    let file_path = ws_path(&ws, "to_remove.txt");
     std::fs::write(&file_path, "content").unwrap();
     let config = AuditorConfig {
         enabled: true,
@@ -2680,7 +2692,7 @@ async fn test_file_wrapper_edit_pattern_not_found() {
         .to_str()
         .unwrap()
         .to_string();
-    let file_path = format!("{}\\edit_miss.txt", ws);
+    let file_path = ws_path(&ws, "edit_miss.txt");
     std::fs::write(&file_path, "hello world").unwrap();
     let config = AuditorConfig {
         enabled: true,
@@ -2711,7 +2723,7 @@ async fn test_file_wrapper_open_file_reads_bytes() {
         .to_str()
         .unwrap()
         .to_string();
-    let file_path = format!("{}\\binary.dat", ws);
+    let file_path = ws_path(&ws, "binary.dat");
     std::fs::write(&file_path, b"\x00\x01\x02\x03").unwrap();
     let config = AuditorConfig {
         enabled: true,
@@ -2740,7 +2752,7 @@ async fn test_file_wrapper_create_and_delete_directory() {
         .to_str()
         .unwrap()
         .to_string();
-    let new_dir = format!("{}\\new_dir", ws);
+    let new_dir = ws_path(&ws, "new_dir");
     let config = AuditorConfig {
         enabled: true,
         default_action: "allow".to_string(),
@@ -2965,9 +2977,9 @@ async fn test_file_wrapper_read_directory_with_mixed_entries() {
         .to_str()
         .unwrap()
         .to_string();
-    std::fs::write(format!("{}\\file1.txt", ws), "hello").unwrap();
-    std::fs::write(format!("{}\\file2.txt", ws), "world").unwrap();
-    std::fs::create_dir(format!("{}\\subdir", ws)).unwrap();
+    std::fs::write(ws_path(&ws, "file1.txt"), "hello").unwrap();
+    std::fs::write(ws_path(&ws, "file2.txt"), "world").unwrap();
+    std::fs::create_dir(ws_path(&ws, "subdir")).unwrap();
     let config = AuditorConfig {
         enabled: true,
         default_action: "allow".to_string(),
@@ -3000,7 +3012,7 @@ async fn test_file_wrapper_stat_file() {
         .to_str()
         .unwrap()
         .to_string();
-    let file_path = format!("{}\\stat_me.txt", ws);
+    let file_path = ws_path(&ws, "stat_me.txt");
     std::fs::write(&file_path, "stat content").unwrap();
     let config = AuditorConfig {
         enabled: true,

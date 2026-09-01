@@ -731,5 +731,11 @@ impl Tool for DesktopTool {
     }
 }
 
-#[cfg(test)]
+// 测试整体 Windows-only（2026-09-01 远端首跑暴露）：生产 execute() 入口有
+// 平台闸——非 Windows 一律提前返回 "desktop automation is only supported on
+// Windows"（desktop_automation 是 Windows-only 功能：MCP 后端是 window-mcp
+// .exe，standalone 后备是 PowerShell）。工具级测试断言的全是闸后的分发/包装
+// 行为，Linux 上全部落空（56 个假红）；文件级门控让新增测试自动继承正确
+// 前提。纯逻辑测试（枚举/serde）随 Windows CI 覆盖，无跨平台损失。
+#[cfg(all(test, target_os = "windows"))]
 mod tests;

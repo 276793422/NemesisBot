@@ -2242,6 +2242,12 @@ fn test_wrapper_setters_populate_manager_config() {
     assert_eq!(w.manager_config.update_interval, "12h");
 }
 
+// 归属检查（clamd_is_ours）的 fail-closed 语义是 Windows 专属实现
+// （netstat -ano → PID → QueryFullProcessImageNameW）；非 Windows 是文档化
+// stub（直接 true 假定是我们的，见 clamav/ownership.rs 头注）——三个
+// "外来监听者必须被拒" 测试的前提在 stub 下不成立 → cfg(windows) 门控
+// （2026-09-01 Linux 首跑暴露）。
+#[cfg(windows)]
 #[tokio::test]
 async fn test_wrapper_clamd_is_ours_false_for_foreign_listener() {
     // 端口有监听者但它是测试进程（exe 不叫 clamd.exe）→ 非我们的 → false。
@@ -2374,6 +2380,7 @@ async fn test_wrapper_stop_with_manager_stops_manager() {
     w.stop().await.unwrap();
 }
 
+#[cfg(windows)]
 #[tokio::test]
 async fn test_wrapper_start_residual_foreign_refused() {
     // 残留检测：ping 通但不是我们的 clamd → Err "not ours"。
@@ -2395,6 +2402,7 @@ async fn test_wrapper_start_manager_fail_then_ping_fail() {
     assert!(err.contains("ClamAV ping failed"), "{err}");
 }
 
+#[cfg(windows)]
 #[tokio::test]
 async fn test_wrapper_start_manager_fail_fallback_foreign_refused() {
     // Manager 失败 + 回退 ping 通但非我们的 → Err "not reusing foreign"。

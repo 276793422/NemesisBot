@@ -136,10 +136,20 @@ fn test_extract_process_name_various() {
     );
     assert_eq!(AsyncExecTool::extract_process_name("code ."), "code");
     // Quoted path with spaces: first token after quote stripping is "C:\Program" (split by space)
-    assert_eq!(
-        AsyncExecTool::extract_process_name("\"C:\\Program Files\\app.exe\""),
-        "Program"
-    );
+    // Windows Path 语义：`\` 是分隔符 → file_stem("C:\Program") = "Program"。
+    // Linux 上 `\` 是普通字符 → stem 保持整个 token（文档化平台差异，
+    // 2026-09-01 远端首跑暴露）。
+    if cfg!(windows) {
+        assert_eq!(
+            AsyncExecTool::extract_process_name("\"C:\\Program Files\\app.exe\""),
+            "Program"
+        );
+    } else {
+        assert_eq!(
+            AsyncExecTool::extract_process_name("\"C:\\Program Files\\app.exe\""),
+            "C:\\Program"
+        );
+    }
 }
 
 #[test]

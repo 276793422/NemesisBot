@@ -1433,6 +1433,10 @@ fn test_s8_get_latest_report_picks_newest_md_ignoring_others() {
     assert_eq!(content, "newer");
 }
 
+// 锁定文件"删不掉"的前提是 Windows share_mode(0) 独占句柄语义；Linux 上
+// 打开中的 fd 不阻止 unlink（无可移植等价物），测试前提不成立 → 整测
+// cfg(windows) 门控（2026-09-01 Linux 首跑暴露）。
+#[cfg(windows)]
 #[test]
 fn test_s8_cleanup_reports_result_locked_file_reports_error() {
     let dir = tempfile::tempdir().unwrap();
@@ -1446,7 +1450,6 @@ fn test_s8_cleanup_reports_result_locked_file_reports_error() {
     std::fs::write(&old_md, "locked").unwrap();
     let old_time = std::time::SystemTime::now() - std::time::Duration::from_secs(40 * 24 * 3600);
     filetime::set_file_mtime(&old_md, filetime::FileTime::from_system_time(old_time)).unwrap();
-    #[cfg(windows)]
     let _handle = {
         use std::os::windows::fs::OpenOptionsExt;
         std::fs::OpenOptions::new()
@@ -1455,8 +1458,6 @@ fn test_s8_cleanup_reports_result_locked_file_reports_error() {
             .open(&old_md)
             .unwrap()
     };
-    #[cfg(not(windows))]
-    let _handle = std::fs::File::open(&old_md).unwrap();
 
     let reflector = Reflector::with_reflections_dir(ref_dir.clone());
     let result = reflector.cleanup_reports_result(30);
@@ -1498,6 +1499,8 @@ fn test_s8_merge_remote_reflections_parses_markdown_tables() {
         .any(|p| p.tool_name == "read_file" && p.count >= 5));
 }
 
+// 同上：Windows share_mode(0) 语义专属，Linux 无"锁住不许删"等价物。
+#[cfg(windows)]
 #[test]
 fn test_s8_cleanup_reports_locked_file_not_counted() {
     let _guard = crate::test_support::quiet_trace_guard();
@@ -1509,7 +1512,6 @@ fn test_s8_cleanup_reports_locked_file_not_counted() {
     std::fs::write(&old_md, "locked").unwrap();
     let old_time = std::time::SystemTime::now() - std::time::Duration::from_secs(40 * 24 * 3600);
     filetime::set_file_mtime(&old_md, filetime::FileTime::from_system_time(old_time)).unwrap();
-    #[cfg(windows)]
     let _handle = {
         use std::os::windows::fs::OpenOptionsExt;
         std::fs::OpenOptions::new()
@@ -1518,8 +1520,6 @@ fn test_s8_cleanup_reports_locked_file_not_counted() {
             .open(&old_md)
             .unwrap()
     };
-    #[cfg(not(windows))]
-    let _handle = std::fs::File::open(&old_md).unwrap();
 
     let reflector = Reflector::with_reflections_dir(ref_dir);
     // Removal fails under the exclusive handle -> not counted as deleted.

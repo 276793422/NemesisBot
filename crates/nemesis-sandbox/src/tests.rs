@@ -2,6 +2,9 @@
 
 use super::*;
 
+// SandboxPaths 的 Windows 路径形态断言（反斜杠分隔符字面量），Linux join
+// 语义不同 → cfg(windows) 门控（2026-09-01 Linux 首跑暴露）。
+#[cfg(windows)]
 #[test]
 fn sandbox_paths_layout_under_home() {
     let home = std::path::Path::new(r"C:\BotHome");

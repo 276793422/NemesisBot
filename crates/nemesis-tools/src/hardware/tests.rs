@@ -1617,6 +1617,13 @@ fn test_spi_parameters_required_and_confirm() {
 
 #[tokio::test]
 async fn w4a_i2c_detect_reports_no_buses_on_this_host() {
+    // 前提：本机无 /dev/i2c-* 节点（detect 只做 metadata 枚举，节点存在时
+    // 如实列出）。真实 Linux 板子常挂 24+ 个 i2c 节点（2026-09-01 远端实测
+    // "Found 24 I2C bus(es)"）→ 机器依赖，按 SKIP 约定退出。
+    if std::path::Path::new("/dev/i2c-0").exists() {
+        eprintln!("SKIP: host exposes /dev/i2c-* nodes; the no-buses hint branch is not reachable — 补齐命令(换无 i2c 总线的机器)");
+        return;
+    }
     let tool = I2CTool::new();
     let result = tool.detect().await;
     // No /dev/i2c-* nodes exist on Windows -> the "no buses" help branch.
@@ -1673,16 +1680,22 @@ async fn w4a_i2c_read_validation_and_platform_arm() {
         .await;
     assert!(r.is_error);
     // valid args on a non-Linux host: falls through to the
-    // "platform not supported" silent arm (length clamped to 256)
-    let r = tool
-        .read_device(&serde_json::json!({"bus": "1", "address": 0x38, "length": 9999}))
-        .await;
-    assert!(!r.is_error);
-    assert!(
-        r.for_llm.contains("I2C read 256 bytes from 0x38 (platform not supported"),
-        "got: {}",
-        r.for_llm
-    );
+    // "platform not supported" silent arm (length clamped to 256).
+    // Linux 上合法参数走真实 /dev/i2c-1 打开路径（本机无节点/无权限 →
+    // error），平台臂不可达 → 与生产 cfg 臂同谓词门控（2026-09-01 远端
+    // 首跑暴露）。
+    #[cfg(not(target_os = "linux"))]
+    {
+        let r = tool
+            .read_device(&serde_json::json!({"bus": "1", "address": 0x38, "length": 9999}))
+            .await;
+        assert!(!r.is_error);
+        assert!(
+            r.for_llm.contains("I2C read 256 bytes from 0x38 (platform not supported"),
+            "got: {}",
+            r.for_llm
+        );
+    }
 }
 
 #[tokio::test]
@@ -1741,15 +1754,19 @@ async fn w4a_i2c_write_full_validation_matrix_and_platform_arm() {
     assert!(r.is_error);
     assert!(r.for_llm.contains("data[1] is not a valid byte"), "got: {}", r.for_llm);
     // valid write on non-Linux: platform arm; register counts into the length
-    let r = tool
-        .write_device(&serde_json::json!({"confirm": true, "bus": "1", "address": 0x38, "register": 0x10, "data": [0xAA, 0x55]}))
-        .await;
-    assert!(!r.is_error);
-    assert!(
-        r.for_llm.contains("I2C write 3 bytes to 0x38 (platform not supported"),
-        "register+2 data bytes expected, got: {}",
-        r.for_llm
-    );
+    // （Linux 上走真实打开路径 → 平台臂门控，同上）
+    #[cfg(not(target_os = "linux"))]
+    {
+        let r = tool
+            .write_device(&serde_json::json!({"confirm": true, "bus": "1", "address": 0x38, "register": 0x10, "data": [0xAA, 0x55]}))
+            .await;
+        assert!(!r.is_error);
+        assert!(
+            r.for_llm.contains("I2C write 3 bytes to 0x38 (platform not supported"),
+            "register+2 data bytes expected, got: {}",
+            r.for_llm
+        );
+    }
 }
 
 #[tokio::test]
@@ -1811,16 +1828,20 @@ async fn w4a_spi_transfer_validation_and_platform_arm() {
         .await;
     assert!(r.is_error);
     assert!(r.for_llm.contains("data[1] is not a valid byte"), "got: {}", r.for_llm);
-    // valid transfer on non-Linux: platform arm
-    let r = tool
-        .transfer(&serde_json::json!({"confirm": true, "device": "2.0", "data": [0xDE, 0xAD], "speed": 1_000_000, "mode": 0, "bits": 8}))
-        .await;
-    assert!(!r.is_error);
-    assert!(
-        r.for_llm.contains("SPI transfer 2 bytes (platform not supported"),
-        "got: {}",
-        r.for_llm
-    );
+    // valid transfer on non-Linux: platform arm（Linux 上走真实打开路径 →
+    // 平台臂门控，同上）
+    #[cfg(not(target_os = "linux"))]
+    {
+        let r = tool
+            .transfer(&serde_json::json!({"confirm": true, "device": "2.0", "data": [0xDE, 0xAD], "speed": 1_000_000, "mode": 0, "bits": 8}))
+            .await;
+        assert!(!r.is_error);
+        assert!(
+            r.for_llm.contains("SPI transfer 2 bytes (platform not supported"),
+            "got: {}",
+            r.for_llm
+        );
+    }
 }
 
 #[tokio::test]
@@ -1847,16 +1868,20 @@ async fn w4a_spi_read_validation_and_platform_arm() {
         .read_device(&serde_json::json!({"device": "2.0", "length": 5000}))
         .await;
     assert!(r.is_error);
-    // valid read on non-Linux: platform arm
-    let r = tool
-        .read_device(&serde_json::json!({"device": "2.0", "length": 16}))
-        .await;
-    assert!(!r.is_error);
-    assert!(
-        r.for_llm.contains("SPI read 16 bytes (platform not supported"),
-        "got: {}",
-        r.for_llm
-    );
+    // valid read on non-Linux: platform arm（Linux 上走真实打开路径 →
+    // 平台臂门控，同上）
+    #[cfg(not(target_os = "linux"))]
+    {
+        let r = tool
+            .read_device(&serde_json::json!({"device": "2.0", "length": 16}))
+            .await;
+        assert!(!r.is_error);
+        assert!(
+            r.for_llm.contains("SPI read 16 bytes (platform not supported"),
+            "got: {}",
+            r.for_llm
+        );
+    }
 }
 
 // ===========================================================================
@@ -1864,9 +1889,15 @@ async fn w4a_spi_read_validation_and_platform_arm() {
 // public execute() cannot reach on Windows (cfg(linux) dispatch)
 // ===========================================================================
 
-/// I2CTool::detect on Windows finds no /dev/i2c-* -> silent hint result.
+/// I2CTool::detect on a host without /dev/i2c-* finds no buses -> silent hint.
 #[tokio::test]
 async fn s2_i2c_detect_no_buses_reports_hint() {
+    // 机器依赖前提（同 w4a_i2c_detect_reports_no_buses_on_this_host）：
+    // 真实 Linux 板子常挂 i2c 节点 → detect 如实列出，hint 分支不可达。
+    if std::path::Path::new("/dev/i2c-0").exists() {
+        eprintln!("SKIP: host exposes /dev/i2c-* nodes; the no-buses hint branch is not reachable — 补齐命令(换无 i2c 总线的机器)");
+        return;
+    }
     let tool = I2CTool::new();
     let r = tool.detect().await;
     assert!(!r.is_error);

@@ -582,9 +582,18 @@ async fn w4a_append_file_restrict_rejects_outside_workspace() {
     let ws = dir.path().to_string_lossy().to_string();
     let tool = AppendFileTool::new(&ws, true);
 
+    // workspace 外的绝对路径用平台无关取法：tempdir 的父目录 + 独立文件名
+    // （2026-09-01：原写死 "C:/Windows/..." 在 Linux 上不是 is_absolute →
+    // 走相对臂放行，restrict 拒绝断言落空）。
+    let outside = dir
+        .path()
+        .parent()
+        .unwrap()
+        .join("w4a_outside_target.txt");
+
     let result = tool
         .execute(&serde_json::json!({
-            "path": "C:/Windows/w4a_target.txt",
+            "path": outside.to_string_lossy(),
             "content": "nope"
         }))
         .await;
