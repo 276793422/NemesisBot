@@ -1,6 +1,57 @@
 use super::*;
 
 #[test]
+fn test_canonicalize_for_compare_nonexistent_tail_matches_existing_root() {
+    // create 前守卫的常态：path 不存在 → 必须借存在祖先归一表示，
+    // 而不是词法原样（否则与 canonicalize 过的 root 前缀比较失配）。
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().to_path_buf();
+    let got = canonicalize_for_compare(&root.join("defs").join("new.yaml"));
+    assert_eq!(got, root.join("defs").join("new.yaml"));
+    assert!(got.starts_with(&root));
+}
+
+#[test]
+fn test_canonicalize_for_compare_dotdot_escape_kept() {
+    // 逃逸语义：出栈到底的 `..` 保留为标记 → 前缀判断自然拒绝。
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().to_path_buf();
+    let got = canonicalize_for_compare(&root.join("..").join("outside.txt"));
+    assert!(!got.starts_with(&root), "escape must stay outside: {}", got.display());
+    // 根内的 `..` 被解析掉。
+    let inside = canonicalize_for_compare(&root.join("sub").join("..").join("in.txt"));
+    assert_eq!(inside, root.join("in.txt"));
+}
+
+#[cfg(target_os = "windows")]
+#[test]
+fn test_canonicalize_for_compare_representation_mismatch_normalized() {
+    // 回归（2026-09-01 CI 首次暴露）：NTFS 大小写不敏感 → 大小写变体路径
+    // 存在但表示不同。canonicalize 把两边都归一到卷上真实大小写；8.3 短名
+    // （RUNNER~1）同属「canonicalize 才能归一」的表示差异，同一机制。
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().to_path_buf();
+    let name = root.file_name().unwrap().to_string_lossy().to_string();
+    let flipped: String = name
+        .chars()
+        .map(|c| if c.is_ascii_lowercase() {
+            c.to_ascii_uppercase()
+        } else if c.is_ascii_uppercase() {
+            c.to_ascii_lowercase()
+        } else {
+            c
+        })
+        .collect();
+    assert_ne!(flipped, name, "tempdir name should contain a letter");
+    let variant = root.parent().unwrap().join(flipped);
+    assert_eq!(
+        canonicalize_for_compare(&variant),
+        canonicalize_for_compare(&root),
+        "case-variant paths must normalize to the same real path"
+    );
+}
+
+#[test]
 fn test_path_manager_default() {
     let pm = PathManager::new();
     assert!(pm.home_dir().to_string_lossy().contains(".nemesisbot"));

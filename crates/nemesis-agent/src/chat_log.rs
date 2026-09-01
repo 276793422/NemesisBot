@@ -95,7 +95,11 @@ pub fn read_chat_log(
     before_index: Option<usize>,
 ) -> (Vec<Value>, usize, bool, usize) {
     let path = log_path(session_key);
-    if !path.exists() {
+    // is_file 而非 exists：Linux 上 File::open 对目录成功（O_RDONLY 合法），
+    // 而下面 BufReader::lines() 的 count/filter_map 在 read Err（目录 fd 每次
+    // read 都 EISDIR，Lines 迭代器不熔断）上会无限自旋。目录占位按缺失处理
+    // （Windows 上 open 目录本就失败走同臂）。（2026-09-01 Linux 首跑暴露）
+    if !path.is_file() {
         return (Vec::new(), 0, false, 0);
     }
 

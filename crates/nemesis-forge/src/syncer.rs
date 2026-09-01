@@ -218,9 +218,11 @@ impl Syncer {
         let path = self.forge_dir.join("reflections").join(&safe_name);
 
         // Security: ensure the resolved path is within the reflections directory
+        // 2026-09-01 8.3 短名统一修复：裸 canonicalize 失败回退词法原样，与
+        // canonicalize 过的另一侧表示失配 → 合法读取被误拒（fail-closed）。
         let reflections_dir = self.forge_dir.join("reflections");
-        let abs_path = std::fs::canonicalize(&path).unwrap_or_else(|_| path.clone());
-        let abs_dir = std::fs::canonicalize(&reflections_dir).unwrap_or(reflections_dir.clone());
+        let abs_path = nemesis_path::paths::canonicalize_for_compare(&path);
+        let abs_dir = nemesis_path::paths::canonicalize_for_compare(&reflections_dir);
 
         if !abs_path.starts_with(&abs_dir) {
             return Err(format!("invalid path: {}", filename));

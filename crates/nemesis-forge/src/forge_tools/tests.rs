@@ -2893,8 +2893,11 @@ async fn test_s8_share_no_reflections_dir() {
 }
 
 /// forge_share with an external report_path while the reflections directory
-/// does not exist: the containment check cannot canonicalize the reflections
-/// dir, so the path is passed through unmodified.
+/// does not exist: the containment check is unconditional —
+/// canonicalize_for_compare resolves the nonexistent reflections dir via its
+/// longest existing ancestor, so the outside path is rejected (fail-closed;
+/// 2026-09-01 tightening — the old skip-when-uncanonicalizable behavior let
+/// the path through).
 #[tokio::test]
 async fn test_s8_share_external_path_no_reflections_dir() {
     let dir = tempfile::tempdir().unwrap();
@@ -2914,18 +2917,20 @@ async fn test_s8_share_external_path_no_reflections_dir() {
             &serde_json::json!({"report_path": outside.to_string_lossy().to_string()}),
         )
         .await;
-    // No reflections dir → containment check skipped → share proceeds.
-    assert!(result.success, "content: {}", result.content);
+    // 守卫无条件生效：reflections 目录不存在也拦（fail-closed 收紧）。
+    assert!(!result.success, "content: {}", result.content);
     assert!(
-        result.content.contains("shared with 2 peers"),
+        result
+            .content
+            .contains("must be within forge reflections directory"),
         "content: {}",
         result.content
     );
 }
 
-/// forge_share with a report_path that does not exist on disk: canonicalize
-/// of the path itself fails, the containment check is skipped, and the share
-/// still runs with the given path string.
+/// forge_share with a report_path that does not exist on disk: the
+/// containment check still resolves it (longest-existing-ancestor
+/// canonicalize sees it inside the reflections dir), so the share runs.
 #[tokio::test]
 async fn test_s8_share_nonexistent_report_path() {
     let dir = tempfile::tempdir().unwrap();
@@ -2949,6 +2954,41 @@ async fn test_s8_share_nonexistent_report_path() {
     assert!(result.success, "content: {}", result.content);
     assert!(
         result.content.contains("shared with 2 peers"),
+        "content: {}",
+        result.content
+    );
+}
+
+/// forge_share with a NONEXISTENT report_path OUTSIDE the reflections
+/// directory: the old fail-open path (canonicalize of the path itself fails
+/// → containment check skipped entirely) would have shared it to cluster
+/// peers. Regression for the 2026-09-01 fail-open fix: the unconditional
+/// guard resolves the path via its longest existing ancestor and rejects.
+#[tokio::test]
+async fn test_s8_share_nonexistent_external_path_rejected() {
+    let dir = tempfile::tempdir().unwrap();
+    let forge = Arc::new(Forge::new(ForgeConfig::default(), dir.path().to_path_buf()));
+    forge.set_bridge(Arc::new(S8ShareBridge {
+        ok: true,
+        node_id: "s8-failopen".into(),
+    }));
+    let executor = ForgeToolExecutor::new(forge);
+    let reflections = dir.path().join("forge").join("reflections");
+    std::fs::create_dir_all(&reflections).unwrap();
+
+    let ghost_outside = dir.path().join("evil").join("ghost.md");
+    assert!(!ghost_outside.exists());
+    let result = executor
+        .execute(
+            "forge_share",
+            &serde_json::json!({"report_path": ghost_outside.to_string_lossy().to_string()}),
+        )
+        .await;
+    assert!(!result.success, "content: {}", result.content);
+    assert!(
+        result
+            .content
+            .contains("must be within forge reflections directory"),
         "content: {}",
         result.content
     );

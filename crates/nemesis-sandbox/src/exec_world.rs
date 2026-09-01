@@ -55,10 +55,11 @@
 //! 届时 `SpawnSemantics` 的盒内分支按平台后端解析。
 
 use std::collections::HashMap;
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use async_trait::async_trait;
+use nemesis_path::paths::canonicalize_for_compare;
 
 /// 工具车道的 spawn 语义（描述轴，见模块文档）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -167,57 +168,19 @@ pub trait ExecutionWorld: Send + Sync {
 ///
 /// 语义 = **component 前缀**（`Path::starts_with`），不是字符串前缀
 /// （`C:\ws` 不覆盖 `C:\ws2\...`）。先对双方做 best-effort canonicalize
-/// 消掉 `..` / 符号链接后再比；canonicalize 失败（文件不存在等）时退回
-/// 原始词法路径比较——不存在路径的 create 链路由父目录 canonicalize 兜住。
+/// 消掉 `..` / 符号链接 / 8.3 短名 / 大小写等一切表示差异后再比；整体
+/// canonicalize 失败（文件不存在等，create 前守卫的常态）时由
+/// [`canonicalize_for_compare`] 借最长存在祖先对齐表示、词法尾巴消解。
 ///
 /// Windows 坑（实测）：`canonicalize` 返回 `\\?\C:\...` verbatim 前缀路径，
 /// 词法路径没有该前缀 → 直接 starts_with 永假（clamd client.rs 同款坑）。
-/// 两边统一过 [`canon_for_compare`] 剥 verbatim 后再比。
+/// 双方统一走 [`canonicalize_for_compare`]（nemesis-path 唯一真相源）后再比。
 pub fn path_within_roots(path: &Path, roots: &[PathBuf]) -> bool {
-    let canon = canon_for_compare(path);
+    let canon = canonicalize_for_compare(path);
     roots.iter().any(|root| {
-        let canon_root = canon_for_compare(root);
+        let canon_root = canonicalize_for_compare(root);
         canon.starts_with(&canon_root)
     })
-}
-
-/// 比较用规范化：canonicalize 成功 → 剥 Windows verbatim 前缀；失败 →
-/// 词法规范化（不碰文件系统）。
-fn canon_for_compare(path: &Path) -> PathBuf {
-    match std::fs::canonicalize(path) {
-        Ok(p) => strip_verbatim(p),
-        Err(_) => normalize_lexical(path),
-    }
-}
-
-/// 剥 `\\?\C:\...` / `\\?\UNC\...` verbatim 前缀（非 Windows 原样返回）。
-fn strip_verbatim(p: PathBuf) -> PathBuf {
-    let s = p.as_os_str().to_string_lossy();
-    if let Some(rest) = s.strip_prefix(r"\\?\UNC\") {
-        PathBuf::from(format!(r"\\{}", rest))
-    } else if let Some(rest) = s.strip_prefix(r"\\?\") {
-        PathBuf::from(rest)
-    } else {
-        p
-    }
-}
-
-/// 词法规范化：消掉 `.`，解析掉能解析的 `..`（不碰文件系统）。
-fn normalize_lexical(path: &Path) -> PathBuf {
-    let mut out = PathBuf::new();
-    for comp in path.components() {
-        match comp {
-            Component::CurDir => {}
-            Component::ParentDir => {
-                // 根的 `..` 保留（向上逃逸留在路径里，starts_with 自然不命中）
-                if !out.pop() {
-                    out.push("..");
-                }
-            }
-            other => out.push(other.as_os_str()),
-        }
-    }
-    out
 }
 
 /// 执行体运输层内部变量——本进程直 spawn 前必须剥掉（见模块文档「env 清洗」）。

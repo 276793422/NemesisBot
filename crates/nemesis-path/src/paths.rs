@@ -1,7 +1,7 @@
 //! Unified path management.
 
 use parking_lot::RwLock;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 /// Environment variable names.
 pub const ENV_HOME: &str = "NEMESISBOT_HOME";
@@ -663,6 +663,83 @@ pub fn resolve_scanner_config_path() -> PathBuf {
         }
 
     home_dir.join("config.scanner.json")
+}
+
+// ---------------------------------------------------------------------------
+// Path comparison normalization (canonicalize_for_compare)
+// ---------------------------------------------------------------------------
+
+/// 比较用规范化：canonicalize 成功 → 返回剥掉 Windows verbatim 前缀的真实
+/// 路径；失败（path 不存在，create 前守卫的常态）→ 找**最长的存在祖先**做
+/// canonicalize（解析 8.3 短名 / 符号链接 / 大小写等一切表示差异），剩余
+/// 词法尾巴接在规范化祖先上继续消解；连存在祖先都没有 → 纯词法规范化。
+///
+/// 为什么不能只用「整体 canonicalize 失败 → 词法原样」：path 不存在时词法
+/// 回退保留输入的原始表示，而存在的对侧（root/workspace）被 canonicalize
+/// 成卷上真实表示——Windows 上路径含 8.3 短名（如 `RUNNER~1`，用户名
+/// \> 8 字符的机器常态）或大小写不同时，component 前缀/相等比较恒 false。
+/// 2026-09-01 CI runner（`C:\Users\RUNNER~1\...`）首次在 nemesis-sandbox
+/// 写守卫暴露；本函数是全库统一的比较规范化入口（sandbox 写守卫 /
+/// security ABAC workspace 校验 / forge 路径守卫 / agent touch 链比较）。
+///
+/// 尾巴里的 `..` 语义：可出栈则出栈；出到底（根/盘符）则保留为 `..` 逃逸
+/// 标记，让 starts_with 前缀判断自然拒绝逃逸路径。
+pub fn canonicalize_for_compare(path: &Path) -> PathBuf {
+    if let Ok(p) = std::fs::canonicalize(path) {
+        return strip_verbatim(p);
+    }
+    // 逐级向上找最靠近 path 的存在祖先（更近的都 canonicalize 失败了，
+    // 第一个成功的即最长存在祖先）。盘根/根目录总存在，通常走不到兜底。
+    for anc in path.ancestors().skip(1) {
+        if let Ok(p) = std::fs::canonicalize(anc) {
+            let mut out = strip_verbatim(p);
+            let tail = path.components().skip(anc.components().count());
+            for comp in tail {
+                match comp {
+                    Component::CurDir => {}
+                    Component::ParentDir => {
+                        if !out.pop() {
+                            out.push("..");
+                        }
+                    }
+                    other => out.push(other.as_os_str()),
+                }
+            }
+            return out;
+        }
+    }
+    normalize_lexical(path)
+}
+
+/// 剥 `\\?\C:\...` / `\\?\UNC\...` verbatim 前缀（非 Windows 原样返回），
+/// 使 canonicalize 结果与词法路径可直接比较。
+fn strip_verbatim(p: PathBuf) -> PathBuf {
+    let s = p.as_os_str().to_string_lossy();
+    if let Some(rest) = s.strip_prefix(r"\\?\UNC\") {
+        PathBuf::from(format!(r"\\{}", rest))
+    } else if let Some(rest) = s.strip_prefix(r"\\?\") {
+        PathBuf::from(rest)
+    } else {
+        p
+    }
+}
+
+/// 词法规范化（不碰文件系统）：消掉 `.`，解析掉能解析的 `..`；
+/// 根部的 `..` 保留（向上逃逸留在路径里，前缀判断自然不命中）。
+fn normalize_lexical(path: &Path) -> PathBuf {
+    let mut out = PathBuf::new();
+    for comp in path.components() {
+        match comp {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                if !out.pop() {
+                    out.push("..");
+                }
+            }
+            other => out.push(other.as_os_str()),
+        }
+    }
+    out
 }
 
 #[cfg(test)]

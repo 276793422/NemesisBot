@@ -60,6 +60,41 @@ fn within_roots_exact_root_itself() {
     assert!(path_within_roots(&root, std::slice::from_ref(&root)));
 }
 
+#[cfg(target_os = "windows")]
+#[test]
+fn within_roots_representation_mismatch_short_name_ancestor() {
+    // 回归（2026-09-01 CI 首次暴露）：path 不存在时旧实现纯词法回退，
+    // 保留输入的原始表示；存在的 root 被 canonicalize 成卷上真实表示
+    // （8.3 短名 → 长名、大小写归一）。CI runner 的 TEMP 在
+    // `C:\Users\RUNNER~1\...`（用户名 runneradmin 短名化），本地短用户名
+    // 无短名化 → 本地绿 CI 红。这里用大小写变体在同一机制上确定性复现：
+    // NTFS 大小写不敏感 → 变体路径存在但表示不同，旧实现 component 前缀
+    // 比较恒 false（根内写入被误拒）。
+    let root = tmp();
+    let name = root.file_name().unwrap().to_string_lossy().to_string();
+    let flipped: String = name
+        .chars()
+        .map(|c| if c.is_ascii_alphabetic() && !c.is_ascii_uppercase() {
+            c.to_ascii_uppercase()
+        } else if c.is_ascii_uppercase() {
+            c.to_ascii_lowercase()
+        } else {
+            c
+        })
+        .collect();
+    assert_ne!(flipped, name, "tempdir name should contain a letter");
+    let variant = root.parent().unwrap().join(flipped);
+    assert!(path_within_roots(
+        &variant.join("a").join("new.txt"),
+        std::slice::from_ref(&root)
+    ));
+    // 表示差异不得影响逃逸判定。
+    assert!(!path_within_roots(
+        &variant.join("..").join("outside.txt"),
+        std::slice::from_ref(&root)
+    ));
+}
+
 // ---------------------------------------------------------------------------
 // check_writable（trait 默认实现）
 // ---------------------------------------------------------------------------
@@ -179,49 +214,12 @@ fn spawn_semantics_display() {
 }
 
 // ---------------------------------------------------------------------------
-// S6 覆盖率批次（quality-hardening goal 2026-08-25）：strip_verbatim 的
-// UNC/无前缀臂、normalize_lexical 的 CurDir/根级 ParentDir、trait 默认
+// S6 覆盖率批次（quality-hardening goal 2026-08-25）：trait 默认
 // supports_tool_calls、DirectWorld::name/spawn_semantics、cwd 合法 spawn、
-// stdin 注写。
+// stdin 注写。（strip_verbatim / normalize_lexical 的直接覆盖随
+// canonicalize_for_compare 收敛迁到 nemesis-path/src/paths/tests.rs，
+// 2026-09-01 8.3 短名统一修复。）
 // ---------------------------------------------------------------------------
-
-#[test]
-fn strip_verbatim_unc_plain_and_prefixed() {
-    use super::strip_verbatim;
-    // UNC verbatim → \\server\share
-    assert_eq!(
-        strip_verbatim(PathBuf::from(r"\\?\UNC\server\share\dir")).to_string_lossy(),
-        r"\\server\share\dir"
-    );
-    // 普通盘符 verbatim → 剥前缀
-    assert_eq!(
-        strip_verbatim(PathBuf::from(r"\\?\C:\ws\a")).to_string_lossy(),
-        r"C:\ws\a"
-    );
-    // 无前缀 → 原样
-    assert_eq!(
-        strip_verbatim(PathBuf::from(r"C:\plain\a")).to_string_lossy(),
-        r"C:\plain\a"
-    );
-}
-
-#[test]
-fn normalize_lexical_curdir_and_root_parentdir() {
-    use super::normalize_lexical;
-    let n = |p: &str| normalize_lexical(std::path::Path::new(p)).to_string_lossy().to_string();
-    // CurDir 被消掉
-    assert!(!n(r"C:\ws\.\a.txt").contains(r"\.\"), "{}", n(r"C:\ws\.\a.txt"));
-    #[cfg(windows)]
-    {
-        // 根的 .. 保留（向上逃逸留在路径里，starts_with 自然不命中）
-        let root_escape = n(r"C:\..");
-        assert!(root_escape.ends_with(".."), "根级 .. 必须保留: {root_escape}");
-        // 前导 CurDir：components 只对开头保留 `.` → normalize_lexical 的
-        // Component::CurDir 臂只在前导时命中（中段 `.` 在 components 迭代
-        // 里已被 std 归一化掉，到不了 match）。
-        assert_eq!(n(r".\a.txt"), "a.txt", "前导 . 必须被消掉");
-    }
-}
 
 #[test]
 fn default_supports_tool_calls_is_false_for_minimal_world() {

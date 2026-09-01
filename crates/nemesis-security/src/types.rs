@@ -406,14 +406,16 @@ pub fn is_safe_command(command: &str) -> (bool, String) {
 
 /// Validate path is within workspace and safe.
 pub fn validate_path(path: &str, workspace: &str) -> Result<String, String> {
-    let abs_path = std::path::Path::new(path)
-        .canonicalize()
-        .unwrap_or_else(|_| std::path::PathBuf::from(path));
+    use nemesis_path::paths::canonicalize_for_compare;
+    // 2026-09-01 8.3 短名统一修复（与 auditor::validate_path_internal 同款）：
+    // 裸 canonicalize + 词法回退在「workspace 已存在（canonicalize 成长名）
+    // 而 path 尚不存在（create 前守卫常态，回退保留 RUNNER~1 短名）」时前缀
+    // 比较恒 false → 根内写入全被误拒。canonicalize_for_compare 借最长存在
+    // 祖先对齐双方表示后再比。
+    let abs_path = canonicalize_for_compare(std::path::Path::new(path));
 
     if !workspace.is_empty() {
-        let abs_workspace = std::path::Path::new(workspace)
-            .canonicalize()
-            .unwrap_or_else(|_| std::path::PathBuf::from(workspace));
+        let abs_workspace = canonicalize_for_compare(std::path::Path::new(workspace));
 
         match abs_path.strip_prefix(&abs_workspace) {
             Ok(rel) => {
@@ -430,17 +432,20 @@ pub fn validate_path(path: &str, workspace: &str) -> Result<String, String> {
         }
     }
 
-    // Check dangerous system paths
-    let path_str = abs_path.to_string_lossy();
+    // Check dangerous system paths —— 对**原始输入**与规范化结果都查：
+    // 规范化会把 POSIX 风格输入经根祖先拼成 Windows 盘符路径（/etc/passwd →
+    // C:\etc\passwd），只查规范化结果会漏掉字面前缀命中（2026-09-01）。
     let dangerous = [
         "/etc/passwd",
         "/etc/shadow",
         "/etc/sudoers",
         "C:\\Windows\\System32\\drivers\\etc\\hosts",
     ];
-    for d in &dangerous {
-        if path_str.starts_with(d) {
-            return Err("access denied: protected system path".to_string());
+    for candidate in [path, abs_path.to_string_lossy().as_ref()] {
+        for d in &dangerous {
+            if candidate.starts_with(d) {
+                return Err("access denied: protected system path".to_string());
+            }
         }
     }
 

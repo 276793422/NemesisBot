@@ -95,11 +95,13 @@ pub fn render_instructions_section(chain: &[(PathBuf, String)]) -> String {
 /// Whether a touched path is a file on this chain (for touch-driven
 /// invalidation). Compares by canonicalized path where possible.
 pub fn path_is_on_chain(chain: &[(PathBuf, String)], touched: &Path) -> bool {
-    let canon = touched.canonicalize().unwrap_or_else(|_| touched.to_path_buf());
-    chain.iter().any(|(p, _)| {
-        let cp = p.canonicalize().unwrap_or_else(|_| p.clone());
-        cp == canon
-    })
+    // 2026-09-01 8.3 短名统一修复：两侧各自 canonicalize-or-lexical，表示
+    // 失配（短名 vs 长名 / 大小写）时相等比较恒 false → touch 失效链漏判。
+    use nemesis_path::paths::canonicalize_for_compare;
+    let canon = canonicalize_for_compare(touched);
+    chain
+        .iter()
+        .any(|(p, _)| canonicalize_for_compare(p) == canon)
 }
 
 #[cfg(test)]

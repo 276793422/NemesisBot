@@ -1314,13 +1314,19 @@ impl ForgeToolExecutor {
                     // Validate report_path is within reflections directory
                     let reflections_dir = self.forge.workspace().join("forge").join("reflections");
                     let abs_path = PathBuf::from(&report_path);
-                    if let Ok(canonical) = abs_path.canonicalize()
-                        && let Ok(refl_canonical) = reflections_dir.canonicalize()
-                            && !canonical.starts_with(&refl_canonical) {
-                                return ForgeToolResult::err(
-                                    "report_path must be within forge reflections directory",
-                                );
-                            }
+                    // 2026-09-01 fail-open 修复：旧逻辑 `if let Ok(canonicalize)`
+                    // 在路径不存在 / 表示差异（8.3 短名）时**整体跳过守卫**，
+                    // reflections 目录外的任意路径都能流进 share 上报给集群
+                    // 对端。canonicalize_for_compare 无条件解析（不存在路径借
+                    // 最长存在祖先对齐表示），守卫恒生效。
+                    let canonical = nemesis_path::paths::canonicalize_for_compare(&abs_path);
+                    let refl_canonical =
+                        nemesis_path::paths::canonicalize_for_compare(&reflections_dir);
+                    if !canonical.starts_with(&refl_canonical) {
+                        return ForgeToolResult::err(
+                            "report_path must be within forge reflections directory",
+                        );
+                    }
                     report_path
                 };
 
