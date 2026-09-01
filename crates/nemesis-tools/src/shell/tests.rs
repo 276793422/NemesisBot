@@ -1152,3 +1152,61 @@ fn s2_shell_guard_command_in_workspace_absolute_path_passes() {
     let cmd = format!("type {}", file.to_string_lossy());
     tool.guard_command(&cmd, dir.path()).unwrap();
 }
+
+// ===========================================================================
+// resolve_posix_shell_path（2026-09-02 CI 首跑实证）：Windows 系统 PATH 中
+// System32 恒排最前，`Command::new("bash")` 命中的是 WSL launcher（feature
+// 启用但无发行版 = exit 1 空壳）。helper 按 ProgramFiles 驱动探测 Git/MSYS2
+// 安装路径。探测是否命中是机器态（装没装 Git）——断言写成宽容式：命中 →
+// 绝对路径且文件存在；未命中 → 原样返回，两形态都合法。
+// ===========================================================================
+
+#[test]
+fn resolve_posix_shell_path_leaves_non_posix_interpreters_untouched() {
+    // 只劫持 bash/sh；其余解释器的 PATH 由各自安装器维护
+    assert_eq!(super::resolve_posix_shell_path("python3"), "python3");
+    assert_eq!(super::resolve_posix_shell_path("node"), "node");
+    assert_eq!(super::resolve_posix_shell_path("cmd"), "cmd");
+    assert_eq!(super::resolve_posix_shell_path("powershell"), "powershell");
+}
+
+#[test]
+fn resolve_posix_shell_path_passthrough_absolute_paths() {
+    // 幂等：已是绝对路径的原样放行（兼容调用方已解析过的场景）
+    #[cfg(windows)]
+    {
+        assert_eq!(
+            super::resolve_posix_shell_path(r"C:\Git\bin\bash.exe"),
+            r"C:\Git\bin\bash.exe"
+        );
+    }
+    #[cfg(not(windows))]
+    {
+        assert_eq!(
+            super::resolve_posix_shell_path("/usr/bin/bash"),
+            "/usr/bin/bash"
+        );
+    }
+}
+
+#[test]
+fn resolve_posix_shell_path_bash_is_runnable_or_identity() {
+    let resolved = super::resolve_posix_shell_path("bash");
+    if resolved != "bash" {
+        // 探测命中：必须是存在的绝对路径（两平台都成立的强断言——非
+        // Windows 恒返回原样，走到这里必是 Windows 命中臂）
+        let p = std::path::Path::new(&resolved);
+        assert!(p.is_absolute() && p.is_file(), "got {resolved}");
+        assert!(resolved.ends_with("bash.exe"), "got {resolved}");
+    }
+    // 原样返回（非 Windows / 无 Git 机器）也是合法形态
+}
+
+#[test]
+fn resolve_posix_shell_path_sh_resolution_agrees_with_bash() {
+    // 同目录族探测：bash 命中与否必须和 sh 一致（Git/MSYS2 的 bin 目录
+    // 恒同时带 bash.exe + sh.exe；非 Windows 两者同为 identity）
+    let bash = super::resolve_posix_shell_path("bash");
+    let sh = super::resolve_posix_shell_path("sh");
+    assert_eq!(bash != "bash", sh != "sh");
+}

@@ -29,6 +29,62 @@ const MAX_OUTPUT_LEN: usize = 10_000;
 const TRUNCATE_HEAD_CHARS: usize = 4000;
 const TRUNCATE_TAIL_CHARS: usize = 4000;
 
+/// Resolve a POSIX shell interpreter name (`bash` / `sh`) to a real
+/// executable on Windows; identity elsewhere.
+///
+/// 【2026-09-02 CI 首跑实证】Windows 系统 PATH 中 `System32` 恒排最前，
+/// `Command::new("bash")` 命中的是 `C:\Windows\System32\bash.exe`（WSL
+/// launcher）。WSL feature 已启用但**未装任何 Linux 发行版**时（GitHub
+/// windows-2025 runner 镜像即此形态；装了 Docker Desktop 但没装发行版的
+/// 用户机器同此），该 launcher 打印提示后 exit 1 且 stderr 为空——脚本
+/// 执行表现为 "Script exited with code 1" 的静默失败。而 Git for Windows
+/// 的 bash 在 `Git\bin`（安装器只把 `Git\cmd` 加入 PATH，且排在 System32
+/// 之后），PATH 解析永远够不到它。
+///
+/// 修法：按序探测 Git for Windows / MSYS2 的标准安装路径（`ProgramFiles`
+/// 环境变量驱动，不硬编码盘符），命中即返回绝对路径；全部未命中时原样
+/// 返回（保持 PATH 语义，不引入行为回归）。已接入调用方：workflow
+/// script 节点（全部四条车道）+ agent `run_script` 工具。
+pub fn resolve_posix_shell_path(interpreter: &str) -> String {
+    // 两个 cfg 块互斥，各自独占尾表达式位置（不能写成两个 return，
+    // 否则另一平台报 needless_return / unused import——2026-09-02 远端实测）。
+    #[cfg(not(windows))]
+    {
+        // Linux/macOS：PATH 上的 bash/sh 就是真 shell，无需修补。
+        interpreter.to_string()
+    }
+    #[cfg(windows)]
+    {
+        // 只修补 PATH 解析不可靠的 POSIX shell；python/node/cmd/powershell
+        // 的 PATH 由各自安装器维护，不在此劫持。绝对路径原样放行（幂等，
+        // 兼容调用方已解析过的场景）。
+        if (interpreter != "bash" && interpreter != "sh")
+            || std::path::Path::new(interpreter).is_absolute()
+        {
+            return interpreter.to_string();
+        }
+        let exe = format!("{interpreter}.exe");
+        let mut dirs: Vec<PathBuf> = Vec::new();
+        if let Ok(pf) = std::env::var("ProgramFiles") {
+            let pf = PathBuf::from(pf);
+            dirs.push(pf.join(r"Git\bin"));
+            dirs.push(pf.join(r"Git\usr\bin"));
+        }
+        if let Ok(pf86) = std::env::var("ProgramFiles(x86)") {
+            dirs.push(PathBuf::from(pf86).join(r"Git\bin"));
+        }
+        dirs.push(PathBuf::from(r"C:\msys64\usr\bin"));
+        for dir in &dirs {
+            let candidate = dir.join(&exe);
+            if candidate.is_file() {
+                return candidate.to_string_lossy().into_owned();
+            }
+        }
+        // 未命中：保持 PATH 语义（用户可能自装了 bash，或有可用 WSL 发行版）
+        interpreter.to_string()
+    }
+}
+
 /// Default deny patterns compiled from regex strings.
 /// These mirror the Go version's `defaultDenyPatterns`.
 fn default_deny_patterns() -> Vec<Regex> {

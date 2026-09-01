@@ -1807,6 +1807,12 @@ impl NodeExecutor for ScriptNodeExecutor {
         // semantics — falling through to bash would run bat syntax under
         // bash and immediately fail.
         let (interpreter, _ext, flag) = select_script_interpreter(language);
+        // Windows：裸 "bash"/"sh" 经 PATH 恒命中 System32 的 WSL launcher
+        // （feature 启用但无发行版 = exit 1 空壳，2026-09-02 CI 实证）→
+        // 解析到 Git/MSYS2 的真 bash。下方四条车道（registry 工具 args /
+        // world SpawnOp / world 工具 args / 裸 spawn）消费同一解析结果；
+        // 单一真相源 nemesis-tools::shell。
+        let interpreter = nemesis_tools::shell::resolve_posix_shell_path(interpreter);
 
         // Sandbox-aware path: delegate to the `run_script` agent tool (a
         // MOVE_TOOL). When executor separation is on, RemoteExecutorTool runs

@@ -2077,7 +2077,15 @@ async fn test_script_node_delegates_to_run_script_tool() {
         .captured_args()
         .expect("run_script should have been called via the registry");
     // (2) …with the language-resolved interpreter/flag + the script body.
-    assert_eq!(captured["interpreter"].as_str(), Some("bash"));
+    // 2026-09-02 起 interpreter 经 resolve_posix_shell_path 二次解析（Windows
+    // 上裸 "bash" 经 PATH 恒命中 System32 的 WSL launcher 空壳），断言对齐
+    // 单一真相源而非钉住平台相关字面量。
+    assert_eq!(
+        captured["interpreter"].as_str(),
+        Some(
+            nemesis_tools::shell::resolve_posix_shell_path("bash").as_str()
+        )
+    );
     assert_eq!(captured["flag"].as_str(), Some("-c"));
     assert_eq!(captured["script"].as_str(), Some("echo delegated-out"));
 

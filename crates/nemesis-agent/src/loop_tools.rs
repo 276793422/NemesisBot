@@ -937,7 +937,11 @@ impl Tool for RunScriptTool {
         // Spawn `interpreter [flag] script` — identical to ScriptNodeExecutor's
         // direct spawn. stdin=null + kill_on_drop so interactive prompts / hung
         // children don't survive the timeout.
-        let mut cmd = tokio::process::Command::new(interpreter);
+        // Windows：裸 "bash"/"sh" 经 PATH 恒命中 System32 的 WSL launcher
+        // （feature 启用但无发行版 = exit 1 空壳，2026-09-02 CI 实证）→
+        // 解析到 Git/MSYS2 的真 bash。单一真相源 nemesis-tools::shell。
+        let interpreter = nemesis_tools::shell::resolve_posix_shell_path(interpreter);
+        let mut cmd = tokio::process::Command::new(&interpreter);
         if !flag.is_empty() {
             cmd.arg(flag);
         }
