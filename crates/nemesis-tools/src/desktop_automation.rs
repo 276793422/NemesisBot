@@ -405,23 +405,13 @@ impl DesktopTool {
 
     /// Click at screen coordinates using PowerShell.
     async fn standalone_click_at(&self, x: i64, y: i64, button: &str) -> ToolResult {
-        let mouse_down;
-        let mouse_up;
-        match button {
-            "right" => {
-                mouse_down = "0x0008";
-                mouse_up = "0x0010";
-            }
-            "middle" => {
-                mouse_down = "0x0020";
-                mouse_up = "0x0040";
-            }
-            _ => {
-                // left
-                mouse_down = "0x0002";
-                mouse_up = "0x0004";
-            }
-        }
+        // 直接元组赋值，避免 late-init（clippy::needless_late_init, clippy 1.98+）。
+        let (mouse_down, mouse_up) = match button {
+            "right" => ("0x0008", "0x0010"),
+            "middle" => ("0x0020", "0x0040"),
+            // left
+            _ => ("0x0002", "0x0004"),
+        };
 
         let script = format!(
             r#"

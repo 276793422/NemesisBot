@@ -1,14 +1,18 @@
 # Toolchain override for NemesisBot.
 #
-# Uses the stable channel (currently rustc 1.95.0 / rustfmt 1.9.0) — the same
-# channel CI installs via dtolnay/rust-toolchain@stable — so local and CI
-# formatting agree, and cloning the repo does NOT force anyone to download a
-# specific-version toolchain.
+# Pinned to an exact version (1.95.0) as of 2026-09-01. This file previously
+# tracked "stable", but CI (dtolnay/rust-toolchain@stable) floats to the latest
+# stable on every run: CI clippy 1.98 shipped lints the 1.95 toolchains on the
+# dev machines had never seen (needless_late_init on late-init-in-match-arms),
+# producing "green everywhere, red only on CI". This file is the single source
+# of truth for the toolchain version everywhere (local / remote device / CI —
+# rustup's directory override beats whatever the CI action installed).
 #
-# Tradeoff: tracking `stable` means a new stable release can ship a rustfmt that
-# formats slightly differently and makes `cargo fmt --check` flag the baseline.
-# If/when that happens — or to fully freeze formatting — change `channel` to an
-# exact version such as "1.95.0". Be aware that pinning a specific version makes
-# rustup download that toolchain on every machine that doesn't already have it.
+# To upgrade the toolchain: bump the version here, let rustup fetch it locally,
+# fix any new clippy/rustfmt findings, verify, and only then commit. CI always
+# follows this file — never the other way round. rustup auto-installs the
+# pinned toolchain (per profile/components below) on machines that lack it.
 [toolchain]
-channel = "stable"
+channel = "1.95.0"
+profile = "minimal"
+components = ["clippy", "rustfmt"]
